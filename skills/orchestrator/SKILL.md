@@ -239,13 +239,13 @@ Available in any pipeline phase:
 
 ### Learning System
 
-**Trust gradient** (highest → lowest): `/reflect` (manual, user confirms) → Lesson capture (council/review delta) → `/learn`+`/learn-eval` (manual ECC patterns) → ECC v2 observer (automatic, requires `/promote`)
+**Trust gradient** (highest → lowest): `busdriver:reflect` (manual, user confirms) → Lesson capture (council/review delta) → `/learn`+`/learn-eval` (manual ECC patterns) → ECC v2 observer (automatic, requires `/promote`)
 
-**ECC v2 observer** re-enabled 2026-03-21 with safety fixes. Writes to `homunculus/projects/<hash>/instincts/personal/` with `source: session-observation`. Auto-generated instincts require `promoted: true` (via `/promote`) before loading — quarantine applies to ALL directories. `load-orchestrator.sh` loads instincts with confidence ≥ 0.7, max 20, sanitized, symlinks rejected. Council decision (2026-03-19): no auto-promote.
+**ECC v2 observer** re-enabled 2026-03-21 with safety fixes. Writes to `homunculus/projects/<hash>/instincts/personal/` with `source: session-observation`. Two-tier promotion model: (1) `source: session-observation` instincts require `promoted: true` (via `/promote`) before loading — quarantine enforced. (2) `source: distill` or `source: inherited` instincts auto-load without promotion (human-curated). `load-orchestrator.sh` loads instincts with confidence ≥ 0.7, max 20, sanitized, symlinks rejected. Council decision (2026-03-19): no auto-promote for session-observation source.
 
 **Lesson capture:** Save when council/review produced a recommendation delta (insight that changed the decision). Triggers: dissent changed recommendation, 2+ voices agreed against Claude, reviewer found HIGH+ unanticipated issue. Storage: `~/.claude/notes/lesson-{council|review}-{date}-{slug}.md`. <150 words per lesson.
 
-**Commands:** `/reflect`, `/instinct-status`, `/promote`, `/evolve`, `/projects`, `/learn`, `/learn-eval`
+**Skills/Commands:** `busdriver:reflect` (skill), `/instinct-status`, `/promote`, `/evolve`, `/projects`, `/learn`, `/learn-eval`
 
 ## System Alert Handling
 

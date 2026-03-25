@@ -1,7 +1,7 @@
 ---
 name: design-anti-slop
 description: "Explicit AI design cliché blacklist — opt-in supplement for frontend-design skill to prevent generic AI-generated UI patterns"
-targets: frontend-design skill, document-skills:frontend-design
+targets: document-skills:frontend-design, busdriver:frontend-patterns
 type: supplement
 opt_in: true
 source: gstack /design-consultation
@@ -10,7 +10,7 @@ added: 2026-03-24
 
 # Design Anti-Slop Patterns
 
-> **Opt-in supplement.** Load alongside `frontend-design` when the user wants to avoid generic AI-generated design patterns. Not loaded by default — invoke explicitly or when the user mentions "avoid AI slop", "make it unique", "don't make it generic".
+> **Opt-in supplement.** Load alongside `document-skills:frontend-design` or `busdriver:frontend-patterns` when the user wants to avoid generic AI-generated design patterns. Not loaded by default — invoke explicitly or when the user mentions "avoid AI slop", "make it unique", "don't make it generic".
 
 ## AI Design Clichés to Avoid
 

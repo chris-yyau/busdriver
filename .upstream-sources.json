@@ -614,16 +614,6 @@
       "status": "local"
     },
     {
-      "path": "hooks/gate-scripts/pre-commit-gitleaks.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "hooks/gate-scripts/pre-commit-iac-scan.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
       "path": "hooks/gate-scripts/pre-implementation-gate.sh",
       "source": "local",
       "status": "local"
@@ -810,6 +800,306 @@
       "path": "scripts/prune-notes.py",
       "source": "local",
       "status": "local"
+    },
+    {
+      "path": "scripts/lib/agent-compress.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/agent-compress.js"
+    },
+    {
+      "path": "scripts/lib/hook-flags.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/hook-flags.js"
+    },
+    {
+      "path": "scripts/lib/inspection.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/inspection.js"
+    },
+    {
+      "path": "scripts/lib/install-executor.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install-executor.js"
+    },
+    {
+      "path": "scripts/lib/install-lifecycle.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install-lifecycle.js"
+    },
+    {
+      "path": "scripts/lib/install-manifests.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install-manifests.js"
+    },
+    {
+      "path": "scripts/lib/install-state.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install-state.js"
+    },
+    {
+      "path": "scripts/lib/install-targets/antigravity-project.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install-targets/antigravity-project.js"
+    },
+    {
+      "path": "scripts/lib/install-targets/claude-home.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install-targets/claude-home.js"
+    },
+    {
+      "path": "scripts/lib/install-targets/codex-home.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install-targets/codex-home.js"
+    },
+    {
+      "path": "scripts/lib/install-targets/cursor-project.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install-targets/cursor-project.js"
+    },
+    {
+      "path": "scripts/lib/install-targets/helpers.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install-targets/helpers.js"
+    },
+    {
+      "path": "scripts/lib/install-targets/opencode-home.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install-targets/opencode-home.js"
+    },
+    {
+      "path": "scripts/lib/install-targets/registry.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install-targets/registry.js"
+    },
+    {
+      "path": "scripts/lib/install/apply.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install/apply.js"
+    },
+    {
+      "path": "scripts/lib/install/config.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install/config.js"
+    },
+    {
+      "path": "scripts/lib/install/request.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install/request.js"
+    },
+    {
+      "path": "scripts/lib/install/runtime.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install/runtime.js"
+    },
+    {
+      "path": "scripts/lib/orchestration-session.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/orchestration-session.js"
+    },
+    {
+      "path": "scripts/lib/package-manager.d.ts",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/package-manager.d.ts"
+    },
+    {
+      "path": "scripts/lib/package-manager.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/package-manager.js"
+    },
+    {
+      "path": "scripts/lib/project-detect.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/project-detect.js"
+    },
+    {
+      "path": "scripts/lib/resolve-ecc-root.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/resolve-ecc-root.js"
+    },
+    {
+      "path": "scripts/lib/resolve-formatter.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/resolve-formatter.js"
+    },
+    {
+      "path": "scripts/lib/session-adapters/canonical-session.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/session-adapters/canonical-session.js"
+    },
+    {
+      "path": "scripts/lib/session-adapters/claude-history.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/session-adapters/claude-history.js"
+    },
+    {
+      "path": "scripts/lib/session-adapters/dmux-tmux.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/session-adapters/dmux-tmux.js"
+    },
+    {
+      "path": "scripts/lib/session-adapters/registry.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/session-adapters/registry.js"
+    },
+    {
+      "path": "scripts/lib/session-aliases.d.ts",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/session-aliases.d.ts"
+    },
+    {
+      "path": "scripts/lib/session-aliases.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/session-aliases.js"
+    },
+    {
+      "path": "scripts/lib/session-manager.d.ts",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/session-manager.d.ts"
+    },
+    {
+      "path": "scripts/lib/session-manager.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/session-manager.js"
+    },
+    {
+      "path": "scripts/lib/shell-split.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/shell-split.js"
+    },
+    {
+      "path": "scripts/lib/skill-evolution/dashboard.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/skill-evolution/dashboard.js"
+    },
+    {
+      "path": "scripts/lib/skill-evolution/health.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/skill-evolution/health.js"
+    },
+    {
+      "path": "scripts/lib/skill-evolution/index.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/skill-evolution/index.js"
+    },
+    {
+      "path": "scripts/lib/skill-evolution/provenance.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/skill-evolution/provenance.js"
+    },
+    {
+      "path": "scripts/lib/skill-evolution/tracker.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/skill-evolution/tracker.js"
+    },
+    {
+      "path": "scripts/lib/skill-evolution/versioning.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/skill-evolution/versioning.js"
+    },
+    {
+      "path": "scripts/lib/skill-improvement/amendify.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/skill-improvement/amendify.js"
+    },
+    {
+      "path": "scripts/lib/skill-improvement/evaluate.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/skill-improvement/evaluate.js"
+    },
+    {
+      "path": "scripts/lib/skill-improvement/health.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/skill-improvement/health.js"
+    },
+    {
+      "path": "scripts/lib/skill-improvement/observations.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/skill-improvement/observations.js"
+    },
+    {
+      "path": "scripts/lib/state-store/index.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/state-store/index.js"
+    },
+    {
+      "path": "scripts/lib/state-store/migrations.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/state-store/migrations.js"
+    },
+    {
+      "path": "scripts/lib/state-store/queries.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/state-store/queries.js"
+    },
+    {
+      "path": "scripts/lib/state-store/schema.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/state-store/schema.js"
+    },
+    {
+      "path": "scripts/lib/tmux-worktree-orchestrator.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/tmux-worktree-orchestrator.js"
+    },
+    {
+      "path": "scripts/lib/utils.d.ts",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/utils.d.ts"
+    },
+    {
+      "path": "scripts/lib/utils.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/utils.js"
     },
     {
       "path": "skills/SKILL.md",

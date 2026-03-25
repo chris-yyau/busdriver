@@ -1,0 +1,349 @@
+---
+name: codex-reviewer
+description: >
+  Use before git commits, deployments, or PR creation. Trigger when about to:
+  commit code, push changes, deploy to production, create pull requests, or
+  finalize any code changes. Required before all code deployment actions.
+---
+
+# Codex Reviewer
+
+<EXTREMELY-IMPORTANT>
+YOU MUST RUN THE CODEX REVIEW LOOP BEFORE EVERY COMMIT. NO EXCEPTIONS.
+
+This is a BLOCKING, MANDATORY gate. Code CANNOT be committed without a PASS from the review loop.
+
+DO NOT rationalize skipping review. These thoughts are violations:
+- "This change is too simple to review"
+- "I already manually reviewed the code"
+- "The user said it's urgent, I'll review later"
+- "It's just a config/typo/docs change"
+- "I'll fix it in the next commit"
+- "The tests pass, so it must be fine"
+- "I already ran the review on a similar change"
+- "The diff is too small to matter"
+
+EVERY commit MUST:
+1. Run `run-review-loop.sh` as a BLOCKING bash call (timeout=660000)
+2. Wait for the result — NEVER run in background
+3. If FAIL: fix issues silently, re-run — do NOT ask user between iterations
+4. If PASS: proceed to tests and commit
+5. NEVER use `--no-verify` or skip hooks to bypass review
+</EXTREMELY-IMPORTANT>
+
+## Purpose
+
+Enforce automated code quality gates before committing or deploying code. Review code for bugs, security issues, performance problems, and maintainability using OpenAI Codex CLI.
+
+## When to Use
+
+**BLOCKING REQUIREMENT:** Invoke this skill BEFORE:
+- `git commit`
+- `git push`
+- Deployment commands
+- PR creation
+- Any action finalizing code changes
+
+**Trigger when thinking:**
+- "Time to commit this code"
+- "Let me write a commit message"
+- "Ready to deploy/push/create PR"
+
+## Red Flags - STOP and Run Review
+
+These thoughts mean you're about to violate the requirement:
+
+| Excuse | Reality |
+|--------|---------|
+| "This change is too simple to review" | Simple bugs exist. Review takes 30 seconds. |
+| "I'll review after commit" | Defeats purpose. Review prevents bad commits. |
+| "Already manually tested" | Manual ≠ automated review. Different issues found. |
+| "User said it's urgent" | Bad code is slower than review. Quality > speed. |
+| "Review takes too long" | Wasted debugging time > review time. |
+| "Code is obviously correct" | Obvious bugs are the most common. |
+| "This is just a typo fix" | Typos can break functionality. Review everything. |
+| "I'll fix it in the next commit" | Then review the next commit. No exceptions. |
+
+**All of these mean: STOP. Run codex review. No exceptions.**
+
+## Core Workflow
+
+### Recommended: Use Pre-Commit Hooks (Automatic)
+
+**Best approach:** Projects with pre-commit hooks handle review automatically.
+
+1. **Check for hooks:** `ls -la .git/hooks/pre-commit`
+2. **If hooks exist:** Just commit normally - review runs automatically
+   ```bash
+   git add -A
+   git commit -m "Your message"
+   # Hook automatically runs review before committing
+   ```
+3. **If hooks don't exist:** See "Manual Workflow" below
+
+### Manual Workflow (5 Steps)
+
+Use this only if pre-commit hooks aren't available:
+
+**1. Set script path:**
+```bash
+CODEX_SCRIPTS="$HOME/.claude/skills/codex-reviewer/scripts"
+```
+
+**2. Initialize:** `bash $CODEX_SCRIPTS/init-review-loop.sh`
+   (Defaults to 10 max iterations)
+
+**3. Run Review (BLOCKING - wait for result):**
+```bash
+# Run as BLOCKING call - just wait for the result
+Bash(
+    command='bash "$HOME/.claude/skills/codex-reviewer/scripts/run-review-loop.sh"',
+    timeout=660000  # 11 min timeout (inner timeout is 10 min)
+)
+```
+
+**4. Auto-Continue Loop (fully silent):**
+- **PASS (exit 0)** → Proceed to step 5 (tests & commit)
+- **FAIL (exit 1)** → **Silently** fix all issues, stage, re-run step 3
+  - Do NOT show user each iteration
+  - Do NOT ask for permission between iterations
+  - Do NOT use background tasks or polling
+  - Just fix → stage → re-run in a tight loop
+- **TOO LARGE (exit 2)** → Auto-split into smaller commits (see below)
+- **TIMEOUT (exit 124)** → Split into smaller commits and retry each group
+- **Max iterations (10)** → Stop, show summary, ask user
+- **Only talk to user when:** PASS, max iterations, or codex quota error
+
+**5. Run Tests & Commit:** Only after review passes, tests pass
+```bash
+npm test                    # Run test suite
+git commit -m "Message"
+```
+
+## Auto-Continue Loop (Default Behavior)
+
+**This is the default workflow** - fully automated, silent iteration:
+
+1. Run review (BLOCKING, 11 min timeout) → get result
+2. If PASS → done, proceed to tests & commit
+3. If FAIL → **silently** fix issues, stage, re-run step 1
+4. If TOO LARGE (exit 2) or TIMEOUT (exit 124) → auto-split (see below)
+5. Repeat until PASS or max iterations (10)
+
+**CRITICAL RULES:**
+- **NO background tasks** - run blocking, wait for result
+- **NO polling/sleep loops** - just use timeout=660000
+- **NO user interaction** between iterations - fix silently
+- **NO verbose progress** - don't narrate each step
+- **ONLY talk to user when:** PASS, max iterations, or error
+
+## Auto-Split on Large Diffs
+
+When the review script exits with code **2** (TOO LARGE) or **124** (TIMEOUT), the staged diff is too large for a single review. The script outputs a suggested split plan grouping files by directory.
+
+**What to do on exit code 2 or 124:**
+
+1. Read the script output — it lists staged files with line counts and suggested groups
+2. `git reset HEAD` — unstage all files
+3. Group files into logical commits (same module/feature together, using the suggestions as a starting point)
+4. For each group:
+   a. `git add <files in group>`
+   b. `bash $CODEX_SCRIPTS/init-review-loop.sh`
+   c. `bash $CODEX_SCRIPTS/run-review-loop.sh` (review loop for this group)
+   d. Fix issues if FAIL, re-run until PASS
+   e. `git commit -m '<descriptive message for this group>'`
+5. Repeat until all files are committed
+
+**Why auto-split:**
+- Each commit is logically coherent (not "batch 1 of 3")
+- Smaller diffs = faster reviews that complete within timeout
+- Better git history with meaningful commit messages
+- Prevents crashes from oversized prompts
+
+**Thresholds (commit mode only — PR mode skips size check):** Weighted lines use additions at 1x + deletions at 0.25x (deleted code needs minimal review). Triggers: >800 weighted lines (>2000 for single-file) OR >2000 total raw lines OR >8 staged files. Override with `CODEX_MAX_WEIGHTED_LINES` env var.
+
+**Example:**
+```
+Claude: "Review detected large diff (847 lines, 12 files). Auto-splitting..."
+Claude: "Group 1: src/security/ (3 files, 230 lines)"
+  → init → review → PASS → commit "feat: add path guard security module"
+Claude: "Group 2: src/workers/ (2 files, 180 lines)"
+  → init → review → PASS → commit "feat: add claude code worker"
+Claude: "Group 3: src/utils/ (4 files, 290 lines)"
+  → init → review → PASS → commit "feat: add utility modules"
+Claude: "All groups committed successfully."
+```
+
+**State persists in:** `.claude/codex-review-state.md`
+
+## Example: Silent Auto-Continue
+
+```
+Claude: "Running codex review for commit 1 (database schema)..."
+[Runs 3 iterations silently - user sees nothing]
+Claude: "✅ Codex review PASSED after 3 iterations. Committing..."
+git commit -m "feat: Add notification database schema"
+```
+
+**Anti-pattern (DO NOT DO THIS):**
+```
+Claude: "Running review in background..."
+Claude: "Still running... 20s"
+Claude: "Still running... 40s"
+Claude: "Review found 2 issues. Let me fix them..."
+Claude: "Fixed! Re-running..."
+Claude: "Still running... 20s"
+[User falls asleep]
+```
+
+<CRITICAL>
+<!-- advisory: the real gate is the PreToolUse hook in pre-commit-gate.sh -->
+EXECUTION MUST BE BLOCKING. NEVER run review in background.
+
+If you are about to set `run_in_background=True` for the review loop, STOP. This defeats the entire gate — you'll proceed to commit while review is still running.
+</CRITICAL>
+
+## Execution Pattern
+
+```bash
+# ✅ CORRECT - blocking, silent
+Bash(
+    command='bash "$HOME/.claude/skills/codex-reviewer/scripts/run-review-loop.sh"',
+    timeout=660000  # 11 min (inner timeout is 10 min)
+)
+# Parse exit code: 0=PASS, 1=FAIL (fix and re-run), 2=TOO_LARGE (split), 124=TIMEOUT (split)
+
+# ❌ WRONG - background + polling
+Bash(
+    command="...",
+    run_in_background=True  # NEVER use this for codex review
+)
+```
+
+**Note:** If project has pre-commit hooks, just use `git commit` normally.
+
+## Review Output
+
+JSON format: `{"status": "PASS"|"FAIL", "issues": [{file, line, severity, category, description, suggestion}, ...]}`
+
+- **PASS:** No issues or only low-severity
+- **FAIL:** One or more high/medium severity issues
+
+## Violation Recovery
+
+**If already committed without review:**
+
+```bash
+# Uncommit (keep changes)
+git reset --soft HEAD~1
+
+# If using pre-commit hooks:
+git commit -m "Your message"  # Hooks will enforce review
+
+# If using manual approach:
+CODEX_SCRIPTS="$HOME/.claude/skills/codex-reviewer/scripts"
+bash $CODEX_SCRIPTS/init-review-loop.sh 10
+bash $CODEX_SCRIPTS/run-review-loop.sh
+# Fix issues, iterate until PASS, then commit again
+```
+
+**If already pushed:**
+
+```bash
+git reset --soft HEAD~1
+# Review, fix, iterate until PASS
+git push --force-with-lease  # Use with caution
+```
+
+## Quick Reference
+
+**With pre-commit hooks (recommended):**
+```bash
+git add -A              # Stage changes
+git commit -m "Message" # Hooks automatically run review
+git push                # Push after review passes
+```
+
+**Manual approach (if no hooks):**
+```bash
+git add -A                                                          # Stage changes
+CODEX="$HOME/.claude/skills/codex-reviewer/scripts"
+bash $CODEX/init-review-loop.sh 10                                  # Initialize
+bash $CODEX/run-review-loop.sh                                      # Review (auto-loops)
+# Fix if FAIL, run again until PASS
+npm test                                                            # Tests
+git commit -m "Message"                                             # Commit
+```
+
+## PR Review Mode
+
+When the pre-PR gate blocks `gh pr create`, run the review in PR mode to review the full branch diff:
+
+```bash
+# Initialize in PR mode
+CODEX_REVIEW_MODE=pr bash "$HOME/.claude/skills/codex-reviewer/scripts/init-review-loop.sh"
+
+# Run review (reviews base..HEAD instead of staged changes)
+CODEX_REVIEW_MODE=pr bash "$HOME/.claude/skills/codex-reviewer/scripts/run-review-loop.sh"
+```
+
+**Differences from commit mode:**
+- Reviews `base..HEAD` diff instead of `git diff --cached`
+- Writes `.claude/pr-review-passed.local` instead of `.claude/codex-review-passed.local`
+- Prompt includes cross-commit issues check (inconsistent changes, partial refactors)
+- No staged changes required — works on committed code
+
+**Environment variables:**
+- `CODEX_REVIEW_MODE=pr` — switches to PR review mode
+- `CODEX_PR_BASE=main` — override base branch (defaults to `origin/HEAD` or `main`)
+
+## Key Principles
+
+1. **Review before commit** - No exceptions
+2. **Silent auto-continue** - Fix and re-review without talking to user
+3. **Max iterations safety** - Stop at 10, ask user
+4. **Blocking execution** - Run with timeout=660000, NEVER use background
+5. **Structured output** - Parse JSON for status and issues
+6. **Test after pass** - Run test suite before committing
+7. **Split large commits** - If >800 weighted lines (override: `CODEX_MAX_WEIGHTED_LINES`), split into logical commits FIRST. PR mode skips size check.
+8. **Staged-only scope** - Reviews only `git diff --cached`, not unstaged/untracked files
+9. **Iteration memory** - Previous findings are injected into the next pass to prevent re-reporting
+10. **Convergence cap** - Max 3 new issues per iteration to ensure the loop converges
+
+## Convergence System
+
+The review loop uses three mechanisms to ensure convergence:
+
+**Scope control:** The prompt includes the staged diff (`git diff --cached`) explicitly, so the LLM reviews exactly what will be committed — not unstaged work or untracked files.
+
+**Iteration history:** After each FAIL, the issues found are saved to `/tmp/codex-iteration-history.jsonl`. On the next iteration, this history is injected into the prompt so the LLM knows what was already reported and can focus on verifying fixes.
+
+**Convergence rules in prompt:**
+- Do NOT re-report fixed issues from previous iterations
+- Only report NEW issues not seen in any previous iteration
+- Maximum 3 new issues per iteration
+- If all previous issues are fixed and no new issues found, return PASS
+
+History is cleared on PASS or on `init-review-loop.sh` (fresh start).
+
+## Additional Resources
+
+Load these references as needed:
+
+- **`references/workflow-details.md`** - Detailed iteration examples, automation patterns
+- **`references/advanced-features.md`** - Changelog system, completion promises, Ralph Loop details
+- **`references/script-reference.md`** - Complete script documentation and integration patterns
+- **`references/legacy-approach.md`** - Manual counter method (backward compatibility)
+- **`references/troubleshooting.md`** - Common issues and solutions
+- **`references/examples.md`** - Violation examples and best practices
+- **`references/advanced-usage.md`** - CI/CD integration, custom prompts, multi-repo workflows
+
+**When to load:**
+- **workflow-details.md:** Need to understand iteration flow
+- **advanced-features.md:** Using changelog or completion promises
+- **script-reference.md:** Custom integrations or automation
+- **troubleshooting.md:** Encountering errors or unexpected behavior
+
+---
+
+**Remember:** This is a BLOCKING requirement. Code cannot be committed, pushed, or deployed without passing review.

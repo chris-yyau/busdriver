@@ -1,0 +1,2439 @@
+{
+  "version": "1.0",
+  "upstreams": {
+    "superpowers": {
+      "repo": "obra/superpowers",
+      "ref": "main"
+    },
+    "ecc": {
+      "repo": "affaan-m/everything-claude-code",
+      "ref": "main"
+    }
+  },
+  "files": [
+    {
+      "path": ".claude-plugin/plugin.json",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "README.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "agents/architect.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/architect.md"
+    },
+    {
+      "path": "agents/build-error-resolver.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/build-error-resolver.md"
+    },
+    {
+      "path": "agents/chief-of-staff.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/chief-of-staff.md"
+    },
+    {
+      "path": "agents/code-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/code-reviewer.md"
+    },
+    {
+      "path": "agents/cpp-build-resolver.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/cpp-build-resolver.md"
+    },
+    {
+      "path": "agents/cpp-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/cpp-reviewer.md"
+    },
+    {
+      "path": "agents/database-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/database-reviewer.md"
+    },
+    {
+      "path": "agents/doc-updater.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/doc-updater.md"
+    },
+    {
+      "path": "agents/docs-lookup.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/docs-lookup.md"
+    },
+    {
+      "path": "agents/e2e-runner.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/e2e-runner.md"
+    },
+    {
+      "path": "agents/flutter-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/flutter-reviewer.md"
+    },
+    {
+      "path": "agents/go-build-resolver.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/go-build-resolver.md"
+    },
+    {
+      "path": "agents/go-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/go-reviewer.md"
+    },
+    {
+      "path": "agents/harness-optimizer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/harness-optimizer.md"
+    },
+    {
+      "path": "agents/java-build-resolver.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/java-build-resolver.md"
+    },
+    {
+      "path": "agents/java-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/java-reviewer.md"
+    },
+    {
+      "path": "agents/kotlin-build-resolver.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/kotlin-build-resolver.md"
+    },
+    {
+      "path": "agents/kotlin-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/kotlin-reviewer.md"
+    },
+    {
+      "path": "agents/loop-operator.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/loop-operator.md"
+    },
+    {
+      "path": "agents/plan-code-reviewer.md",
+      "source": "superpowers",
+      "status": "custom",
+      "upstream_path": "agents/code-reviewer.md"
+    },
+    {
+      "path": "agents/planner.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/planner.md"
+    },
+    {
+      "path": "agents/python-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/python-reviewer.md"
+    },
+    {
+      "path": "agents/pytorch-build-resolver.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/pytorch-build-resolver.md"
+    },
+    {
+      "path": "agents/refactor-cleaner.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/refactor-cleaner.md"
+    },
+    {
+      "path": "agents/rust-build-resolver.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/rust-build-resolver.md"
+    },
+    {
+      "path": "agents/rust-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/rust-reviewer.md"
+    },
+    {
+      "path": "agents/security-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/security-reviewer.md"
+    },
+    {
+      "path": "agents/tdd-guide.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/tdd-guide.md"
+    },
+    {
+      "path": "agents/typescript-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/typescript-reviewer.md"
+    },
+    {
+      "path": "commands/aside.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/aside.md"
+    },
+    {
+      "path": "commands/brainstorm.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "commands/brainstorm.md"
+    },
+    {
+      "path": "commands/build-fix.md",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "commands/build-fix.md"
+    },
+    {
+      "path": "commands/checkpoint.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/checkpoint.md"
+    },
+    {
+      "path": "commands/claw.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/claw.md"
+    },
+    {
+      "path": "commands/code-review.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/code-review.md"
+    },
+    {
+      "path": "commands/context-budget.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/context-budget.md"
+    },
+    {
+      "path": "commands/cpp-build.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/cpp-build.md"
+    },
+    {
+      "path": "commands/cpp-review.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/cpp-review.md"
+    },
+    {
+      "path": "commands/cpp-test.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/cpp-test.md"
+    },
+    {
+      "path": "commands/devfleet.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/devfleet.md"
+    },
+    {
+      "path": "commands/docs.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/docs.md"
+    },
+    {
+      "path": "commands/e2e.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/e2e.md"
+    },
+    {
+      "path": "commands/eval.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/eval.md"
+    },
+    {
+      "path": "commands/evolve.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/evolve.md"
+    },
+    {
+      "path": "commands/execute-plan.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "commands/execute-plan.md"
+    },
+    {
+      "path": "commands/go-build.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/go-build.md"
+    },
+    {
+      "path": "commands/go-review.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/go-review.md"
+    },
+    {
+      "path": "commands/go-test.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/go-test.md"
+    },
+    {
+      "path": "commands/gradle-build.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/gradle-build.md"
+    },
+    {
+      "path": "commands/harness-audit.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/harness-audit.md"
+    },
+    {
+      "path": "commands/instinct-export.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/instinct-export.md"
+    },
+    {
+      "path": "commands/instinct-import.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/instinct-import.md"
+    },
+    {
+      "path": "commands/instinct-status.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/instinct-status.md"
+    },
+    {
+      "path": "commands/kotlin-build.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/kotlin-build.md"
+    },
+    {
+      "path": "commands/kotlin-review.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/kotlin-review.md"
+    },
+    {
+      "path": "commands/kotlin-test.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/kotlin-test.md"
+    },
+    {
+      "path": "commands/learn-eval.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/learn-eval.md"
+    },
+    {
+      "path": "commands/learn.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/learn.md"
+    },
+    {
+      "path": "commands/loop-start.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/loop-start.md"
+    },
+    {
+      "path": "commands/loop-status.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/loop-status.md"
+    },
+    {
+      "path": "commands/model-route.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/model-route.md"
+    },
+    {
+      "path": "commands/multi-backend.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/multi-backend.md"
+    },
+    {
+      "path": "commands/multi-execute.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/multi-execute.md"
+    },
+    {
+      "path": "commands/multi-frontend.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/multi-frontend.md"
+    },
+    {
+      "path": "commands/multi-plan.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/multi-plan.md"
+    },
+    {
+      "path": "commands/multi-workflow.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/multi-workflow.md"
+    },
+    {
+      "path": "commands/orchestrate.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/orchestrate.md"
+    },
+    {
+      "path": "commands/plan.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/plan.md"
+    },
+    {
+      "path": "commands/pm2.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/pm2.md"
+    },
+    {
+      "path": "commands/projects.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/projects.md"
+    },
+    {
+      "path": "commands/promote.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/promote.md"
+    },
+    {
+      "path": "commands/prompt-optimize.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/prompt-optimize.md"
+    },
+    {
+      "path": "commands/prune.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/prune.md"
+    },
+    {
+      "path": "commands/python-review.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/python-review.md"
+    },
+    {
+      "path": "commands/quality-gate.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/quality-gate.md"
+    },
+    {
+      "path": "commands/refactor-clean.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/refactor-clean.md"
+    },
+    {
+      "path": "commands/refine-notes.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "commands/resume-session.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/resume-session.md"
+    },
+    {
+      "path": "commands/rules-distill.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/rules-distill.md"
+    },
+    {
+      "path": "commands/rust-build.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/rust-build.md"
+    },
+    {
+      "path": "commands/rust-review.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/rust-review.md"
+    },
+    {
+      "path": "commands/rust-test.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/rust-test.md"
+    },
+    {
+      "path": "commands/save-session.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/save-session.md"
+    },
+    {
+      "path": "commands/sessions.md",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "commands/sessions.md"
+    },
+    {
+      "path": "commands/setup-pm.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/setup-pm.md"
+    },
+    {
+      "path": "commands/skill-create.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/skill-create.md"
+    },
+    {
+      "path": "commands/skill-health.md",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "commands/skill-health.md"
+    },
+    {
+      "path": "commands/tdd.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/tdd.md"
+    },
+    {
+      "path": "commands/test-coverage.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/test-coverage.md"
+    },
+    {
+      "path": "commands/update-codemaps.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/update-codemaps.md"
+    },
+    {
+      "path": "commands/update-docs.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/update-docs.md"
+    },
+    {
+      "path": "commands/verify.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/verify.md"
+    },
+    {
+      "path": "commands/write-plan.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "commands/write-plan.md"
+    },
+    {
+      "path": "hooks/gate-scripts/auto-push-config.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "hooks/gate-scripts/check-design-document.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "hooks/gate-scripts/check-plugin-updates.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "hooks/gate-scripts/go-post-edit.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "hooks/gate-scripts/load-orchestrator.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "hooks/gate-scripts/post-commit-consume-marker.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "hooks/gate-scripts/pre-commit-gate.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "hooks/gate-scripts/pre-commit-gitleaks.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "hooks/gate-scripts/pre-commit-iac-scan.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "hooks/gate-scripts/pre-implementation-gate.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "hooks/gate-scripts/pre-pr-gate.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "hooks/hooks.json",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "scripts/hooks/auto-tmux-dev.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/auto-tmux-dev.js"
+    },
+    {
+      "path": "scripts/hooks/check-console-log.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/check-console-log.js"
+    },
+    {
+      "path": "scripts/hooks/check-hook-enabled.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/check-hook-enabled.js"
+    },
+    {
+      "path": "scripts/hooks/config-protection.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/config-protection.js"
+    },
+    {
+      "path": "scripts/hooks/cost-tracker.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/cost-tracker.js"
+    },
+    {
+      "path": "scripts/hooks/doc-file-warning.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/doc-file-warning.js"
+    },
+    {
+      "path": "scripts/hooks/evaluate-session.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/evaluate-session.js"
+    },
+    {
+      "path": "scripts/hooks/governance-capture.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/governance-capture.js"
+    },
+    {
+      "path": "scripts/hooks/insaits-security-monitor.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/insaits-security-monitor.py"
+    },
+    {
+      "path": "scripts/hooks/insaits-security-wrapper.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/insaits-security-wrapper.js"
+    },
+    {
+      "path": "scripts/hooks/mcp-health-check.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/mcp-health-check.js"
+    },
+    {
+      "path": "scripts/hooks/post-bash-build-complete.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/post-bash-build-complete.js"
+    },
+    {
+      "path": "scripts/hooks/post-bash-pr-created.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/post-bash-pr-created.js"
+    },
+    {
+      "path": "scripts/hooks/post-edit-console-warn.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/post-edit-console-warn.js"
+    },
+    {
+      "path": "scripts/hooks/post-edit-format.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/post-edit-format.js"
+    },
+    {
+      "path": "scripts/hooks/post-edit-typecheck.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/post-edit-typecheck.js"
+    },
+    {
+      "path": "scripts/hooks/pre-bash-dev-server-block.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/pre-bash-dev-server-block.js"
+    },
+    {
+      "path": "scripts/hooks/pre-bash-git-push-reminder.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/pre-bash-git-push-reminder.js"
+    },
+    {
+      "path": "scripts/hooks/pre-bash-tmux-reminder.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/pre-bash-tmux-reminder.js"
+    },
+    {
+      "path": "scripts/hooks/pre-compact.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/pre-compact.js"
+    },
+    {
+      "path": "scripts/hooks/pre-write-doc-warn.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/pre-write-doc-warn.js"
+    },
+    {
+      "path": "scripts/hooks/quality-gate.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/quality-gate.js"
+    },
+    {
+      "path": "scripts/hooks/run-with-flags-shell.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/run-with-flags-shell.sh"
+    },
+    {
+      "path": "scripts/hooks/run-with-flags.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/run-with-flags.js"
+    },
+    {
+      "path": "scripts/hooks/session-end-marker.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/session-end-marker.js"
+    },
+    {
+      "path": "scripts/hooks/session-end.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/session-end.js"
+    },
+    {
+      "path": "scripts/hooks/session-start.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/session-start.js"
+    },
+    {
+      "path": "scripts/hooks/suggest-compact.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/suggest-compact.js"
+    },
+    {
+      "path": "scripts/prune-notes.py",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/SKILL.md"
+    },
+    {
+      "path": "skills/agent-eval/SKILL.md",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "skills/agent-eval/SKILL.md"
+    },
+    {
+      "path": "skills/agent-harness-construction/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/agent-harness-construction/SKILL.md"
+    },
+    {
+      "path": "skills/agentic-engineering/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/agentic-engineering/SKILL.md"
+    },
+    {
+      "path": "skills/ai-first-engineering/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/ai-first-engineering/SKILL.md"
+    },
+    {
+      "path": "skills/ai-regression-testing/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/ai-regression-testing/SKILL.md"
+    },
+    {
+      "path": "skills/android-clean-architecture/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/android-clean-architecture/SKILL.md"
+    },
+    {
+      "path": "skills/api-design/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/api-design/SKILL.md"
+    },
+    {
+      "path": "skills/architecture-decision-records/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/architecture-decision-records/SKILL.md"
+    },
+    {
+      "path": "skills/article-writing/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/article-writing/SKILL.md"
+    },
+    {
+      "path": "skills/autonomous-loops/SKILL.md",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "skills/autonomous-loops/SKILL.md"
+    },
+    {
+      "path": "skills/backend-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/backend-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/benchmark/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/benchmark/SKILL.md"
+    },
+    {
+      "path": "skills/blueprint/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/blueprint/SKILL.md"
+    },
+    {
+      "path": "skills/browser-qa/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/browser-qa/SKILL.md"
+    },
+    {
+      "path": "skills/bun-runtime/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/bun-runtime/SKILL.md"
+    },
+    {
+      "path": "skills/canary-watch/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/canary-watch/SKILL.md"
+    },
+    {
+      "path": "skills/carrier-relationship-management/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/carrier-relationship-management/SKILL.md"
+    },
+    {
+      "path": "skills/claude-api/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/claude-api/SKILL.md"
+    },
+    {
+      "path": "skills/claude-devfleet/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/claude-devfleet/SKILL.md"
+    },
+    {
+      "path": "skills/click-path-audit/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/click-path-audit/SKILL.md"
+    },
+    {
+      "path": "skills/clickhouse-io/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/clickhouse-io/SKILL.md"
+    },
+    {
+      "path": "skills/codebase-onboarding/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/codebase-onboarding/SKILL.md"
+    },
+    {
+      "path": "skills/coding-standards/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/coding-standards/SKILL.md"
+    },
+    {
+      "path": "skills/compose-multiplatform-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/compose-multiplatform-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/configure-ecc/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/configure-ecc/SKILL.md"
+    },
+    {
+      "path": "skills/content-engine/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/content-engine/SKILL.md"
+    },
+    {
+      "path": "skills/content-hash-cache-pattern/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/content-hash-cache-pattern/SKILL.md"
+    },
+    {
+      "path": "skills/context-budget/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/context-budget/SKILL.md"
+    },
+    {
+      "path": "skills/continuous-agent-loop/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-agent-loop/SKILL.md"
+    },
+    {
+      "path": "skills/continuous-learning-v2/SKILL.md",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "skills/continuous-learning-v2/SKILL.md"
+    },
+    {
+      "path": "skills/continuous-learning-v2/agents/observer-loop.sh",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "skills/continuous-learning-v2/agents/observer-loop.sh"
+    },
+    {
+      "path": "skills/continuous-learning-v2/agents/observer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning-v2/agents/observer.md"
+    },
+    {
+      "path": "skills/continuous-learning-v2/agents/session-guardian.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning-v2/agents/session-guardian.sh"
+    },
+    {
+      "path": "skills/continuous-learning-v2/agents/start-observer.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning-v2/agents/start-observer.sh"
+    },
+    {
+      "path": "skills/continuous-learning-v2/config.json",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "skills/continuous-learning-v2/config.json"
+    },
+    {
+      "path": "skills/continuous-learning-v2/hooks/observe.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning-v2/hooks/observe.sh"
+    },
+    {
+      "path": "skills/continuous-learning-v2/hooks/observe.sh.test",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning-v2/hooks/observe.sh.test"
+    },
+    {
+      "path": "skills/continuous-learning-v2/scripts/__pycache__/instinct-cli.cpython-313.pyc",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning-v2/scripts/__pycache__/instinct-cli.cpython-313.pyc"
+    },
+    {
+      "path": "skills/continuous-learning-v2/scripts/detect-project.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning-v2/scripts/detect-project.sh"
+    },
+    {
+      "path": "skills/continuous-learning-v2/scripts/instinct-cli.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning-v2/scripts/instinct-cli.py"
+    },
+    {
+      "path": "skills/continuous-learning-v2/scripts/test_parse_instinct.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning-v2/scripts/test_parse_instinct.py"
+    },
+    {
+      "path": "skills/continuous-learning/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning/SKILL.md"
+    },
+    {
+      "path": "skills/continuous-learning/config.json",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning/config.json"
+    },
+    {
+      "path": "skills/continuous-learning/evaluate-session.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning/evaluate-session.sh"
+    },
+    {
+      "path": "skills/cost-aware-llm-pipeline/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/cost-aware-llm-pipeline/SKILL.md"
+    },
+    {
+      "path": "skills/cpp-coding-standards/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/cpp-coding-standards/SKILL.md"
+    },
+    {
+      "path": "skills/cpp-testing/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/cpp-testing/SKILL.md"
+    },
+    {
+      "path": "skills/crosspost/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/crosspost/SKILL.md"
+    },
+    {
+      "path": "skills/customs-trade-compliance/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/customs-trade-compliance/SKILL.md"
+    },
+    {
+      "path": "skills/data-scraper-agent/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/data-scraper-agent/SKILL.md"
+    },
+    {
+      "path": "skills/database-migrations/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/database-migrations/SKILL.md"
+    },
+    {
+      "path": "skills/deep-research/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/deep-research/SKILL.md"
+    },
+    {
+      "path": "skills/deployment-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/deployment-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/design-system/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/design-system/SKILL.md"
+    },
+    {
+      "path": "skills/django-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/django-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/django-security/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/django-security/SKILL.md"
+    },
+    {
+      "path": "skills/django-tdd/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/django-tdd/SKILL.md"
+    },
+    {
+      "path": "skills/django-verification/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/django-verification/SKILL.md"
+    },
+    {
+      "path": "skills/dmux-workflows/SKILL.md",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "skills/dmux-workflows/SKILL.md"
+    },
+    {
+      "path": "skills/docker-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/docker-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/documentation-lookup/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/documentation-lookup/SKILL.md"
+    },
+    {
+      "path": "skills/e2e-testing/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/e2e-testing/SKILL.md"
+    },
+    {
+      "path": "skills/energy-procurement/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/energy-procurement/SKILL.md"
+    },
+    {
+      "path": "skills/enterprise-agent-ops/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/enterprise-agent-ops/SKILL.md"
+    },
+    {
+      "path": "skills/eval-harness/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/eval-harness/SKILL.md"
+    },
+    {
+      "path": "skills/exa-search/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/exa-search/SKILL.md"
+    },
+    {
+      "path": "skills/fal-ai-media/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/fal-ai-media/SKILL.md"
+    },
+    {
+      "path": "skills/flutter-dart-code-review/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/flutter-dart-code-review/SKILL.md"
+    },
+    {
+      "path": "skills/foundation-models-on-device/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/foundation-models-on-device/SKILL.md"
+    },
+    {
+      "path": "skills/frontend-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/frontend-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/frontend-slides/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/frontend-slides/SKILL.md"
+    },
+    {
+      "path": "skills/frontend-slides/STYLE_PRESETS.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/frontend-slides/STYLE_PRESETS.md"
+    },
+    {
+      "path": "skills/golang-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/golang-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/golang-testing/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/golang-testing/SKILL.md"
+    },
+    {
+      "path": "skills/inventory-demand-planning/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/inventory-demand-planning/SKILL.md"
+    },
+    {
+      "path": "skills/investor-materials/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/investor-materials/SKILL.md"
+    },
+    {
+      "path": "skills/investor-outreach/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/investor-outreach/SKILL.md"
+    },
+    {
+      "path": "skills/iterative-retrieval/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/iterative-retrieval/SKILL.md"
+    },
+    {
+      "path": "skills/java-coding-standards/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/java-coding-standards/SKILL.md"
+    },
+    {
+      "path": "skills/jpa-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/jpa-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/kotlin-coroutines-flows/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/kotlin-coroutines-flows/SKILL.md"
+    },
+    {
+      "path": "skills/kotlin-exposed-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/kotlin-exposed-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/kotlin-ktor-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/kotlin-ktor-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/kotlin-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/kotlin-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/kotlin-testing/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/kotlin-testing/SKILL.md"
+    },
+    {
+      "path": "skills/laravel-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/laravel-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/laravel-security/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/laravel-security/SKILL.md"
+    },
+    {
+      "path": "skills/laravel-tdd/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/laravel-tdd/SKILL.md"
+    },
+    {
+      "path": "skills/laravel-verification/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/laravel-verification/SKILL.md"
+    },
+    {
+      "path": "skills/liquid-glass-design/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/liquid-glass-design/SKILL.md"
+    },
+    {
+      "path": "skills/logistics-exception-management/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/logistics-exception-management/SKILL.md"
+    },
+    {
+      "path": "skills/market-research/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/market-research/SKILL.md"
+    },
+    {
+      "path": "skills/mcp-server-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/mcp-server-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/nanoclaw-repl/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/nanoclaw-repl/SKILL.md"
+    },
+    {
+      "path": "skills/nextjs-turbopack/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/nextjs-turbopack/SKILL.md"
+    },
+    {
+      "path": "skills/nutrient-document-processing/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/nutrient-document-processing/SKILL.md"
+    },
+    {
+      "path": "skills/nuxt4-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/nuxt4-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/perl-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/perl-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/perl-security/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/perl-security/SKILL.md"
+    },
+    {
+      "path": "skills/perl-testing/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/perl-testing/SKILL.md"
+    },
+    {
+      "path": "skills/plankton-code-quality/SKILL.md",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "skills/plankton-code-quality/SKILL.md"
+    },
+    {
+      "path": "skills/postgres-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/postgres-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/product-lens/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/product-lens/SKILL.md"
+    },
+    {
+      "path": "skills/production-scheduling/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/production-scheduling/SKILL.md"
+    },
+    {
+      "path": "skills/project-guidelines-example/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/project-guidelines-example/SKILL.md"
+    },
+    {
+      "path": "skills/prompt-optimizer/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/prompt-optimizer/SKILL.md"
+    },
+    {
+      "path": "skills/python-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/python-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/python-testing/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/python-testing/SKILL.md"
+    },
+    {
+      "path": "skills/pytorch-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/pytorch-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/quality-nonconformance/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/quality-nonconformance/SKILL.md"
+    },
+    {
+      "path": "skills/ralphinho-rfc-pipeline/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/ralphinho-rfc-pipeline/SKILL.md"
+    },
+    {
+      "path": "skills/regex-vs-llm-structured-text/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/regex-vs-llm-structured-text/SKILL.md"
+    },
+    {
+      "path": "skills/returns-reverse-logistics/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/returns-reverse-logistics/SKILL.md"
+    },
+    {
+      "path": "skills/rules-distill/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/rules-distill/SKILL.md"
+    },
+    {
+      "path": "skills/rules-distill/scripts/scan-rules.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/rules-distill/scripts/scan-rules.sh"
+    },
+    {
+      "path": "skills/rules-distill/scripts/scan-skills.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/rules-distill/scripts/scan-skills.sh"
+    },
+    {
+      "path": "skills/rust-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/rust-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/rust-testing/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/rust-testing/SKILL.md"
+    },
+    {
+      "path": "skills/safety-guard/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/safety-guard/SKILL.md"
+    },
+    {
+      "path": "skills/santa-method/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/santa-method/SKILL.md"
+    },
+    {
+      "path": "skills/search-first/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/search-first/SKILL.md"
+    },
+    {
+      "path": "skills/security-review/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/security-review/SKILL.md"
+    },
+    {
+      "path": "skills/security-review/cloud-infrastructure-security.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/security-review/cloud-infrastructure-security.md"
+    },
+    {
+      "path": "skills/security-scan/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/security-scan/SKILL.md"
+    },
+    {
+      "path": "skills/skill-comply/.gitignore",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/.gitignore"
+    },
+    {
+      "path": "skills/skill-comply/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/SKILL.md"
+    },
+    {
+      "path": "skills/skill-comply/fixtures/compliant_trace.jsonl",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/fixtures/compliant_trace.jsonl"
+    },
+    {
+      "path": "skills/skill-comply/fixtures/noncompliant_trace.jsonl",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/fixtures/noncompliant_trace.jsonl"
+    },
+    {
+      "path": "skills/skill-comply/fixtures/tdd_spec.yaml",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/fixtures/tdd_spec.yaml"
+    },
+    {
+      "path": "skills/skill-comply/prompts/classifier.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/prompts/classifier.md"
+    },
+    {
+      "path": "skills/skill-comply/prompts/scenario_generator.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/prompts/scenario_generator.md"
+    },
+    {
+      "path": "skills/skill-comply/prompts/spec_generator.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/prompts/spec_generator.md"
+    },
+    {
+      "path": "skills/skill-comply/pyproject.toml",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/pyproject.toml"
+    },
+    {
+      "path": "skills/skill-comply/scripts/__init__.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/scripts/__init__.py"
+    },
+    {
+      "path": "skills/skill-comply/scripts/classifier.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/scripts/classifier.py"
+    },
+    {
+      "path": "skills/skill-comply/scripts/grader.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/scripts/grader.py"
+    },
+    {
+      "path": "skills/skill-comply/scripts/parser.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/scripts/parser.py"
+    },
+    {
+      "path": "skills/skill-comply/scripts/report.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/scripts/report.py"
+    },
+    {
+      "path": "skills/skill-comply/scripts/run.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/scripts/run.py"
+    },
+    {
+      "path": "skills/skill-comply/scripts/runner.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/scripts/runner.py"
+    },
+    {
+      "path": "skills/skill-comply/scripts/scenario_generator.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/scripts/scenario_generator.py"
+    },
+    {
+      "path": "skills/skill-comply/scripts/spec_generator.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/scripts/spec_generator.py"
+    },
+    {
+      "path": "skills/skill-comply/scripts/utils.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/scripts/utils.py"
+    },
+    {
+      "path": "skills/skill-comply/tests/test_grader.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/tests/test_grader.py"
+    },
+    {
+      "path": "skills/skill-comply/tests/test_parser.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/tests/test_parser.py"
+    },
+    {
+      "path": "skills/skill-stocktake/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-stocktake/SKILL.md"
+    },
+    {
+      "path": "skills/skill-stocktake/scripts/quick-diff.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-stocktake/scripts/quick-diff.sh"
+    },
+    {
+      "path": "skills/skill-stocktake/scripts/save-results.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-stocktake/scripts/save-results.sh"
+    },
+    {
+      "path": "skills/skill-stocktake/scripts/scan.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-stocktake/scripts/scan.sh"
+    },
+    {
+      "path": "skills/springboot-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/springboot-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/springboot-security/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/springboot-security/SKILL.md"
+    },
+    {
+      "path": "skills/springboot-tdd/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/springboot-tdd/SKILL.md"
+    },
+    {
+      "path": "skills/springboot-verification/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/springboot-verification/SKILL.md"
+    },
+    {
+      "path": "skills/strategic-compact/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/strategic-compact/SKILL.md"
+    },
+    {
+      "path": "skills/strategic-compact/suggest-compact.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/strategic-compact/suggest-compact.sh"
+    },
+    {
+      "path": "skills/swift-actor-persistence/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/swift-actor-persistence/SKILL.md"
+    },
+    {
+      "path": "skills/swift-concurrency-6-2/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/swift-concurrency-6-2/SKILL.md"
+    },
+    {
+      "path": "skills/swift-protocol-di-testing/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/swift-protocol-di-testing/SKILL.md"
+    },
+    {
+      "path": "skills/swiftui-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/swiftui-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/tdd-workflow/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/tdd-workflow/SKILL.md"
+    },
+    {
+      "path": "skills/team-builder/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/team-builder/SKILL.md"
+    },
+    {
+      "path": "skills/verification-loop/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/verification-loop/SKILL.md"
+    },
+    {
+      "path": "skills/video-editing/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/video-editing/SKILL.md"
+    },
+    {
+      "path": "skills/videodb/SKILL.md",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "skills/videodb/SKILL.md"
+    },
+    {
+      "path": "skills/videodb/reference/api-reference.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/videodb/reference/api-reference.md"
+    },
+    {
+      "path": "skills/videodb/reference/capture-reference.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/videodb/reference/capture-reference.md"
+    },
+    {
+      "path": "skills/videodb/reference/capture.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/videodb/reference/capture.md"
+    },
+    {
+      "path": "skills/videodb/reference/editor.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/videodb/reference/editor.md"
+    },
+    {
+      "path": "skills/videodb/reference/generative.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/videodb/reference/generative.md"
+    },
+    {
+      "path": "skills/videodb/reference/rtstream-reference.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/videodb/reference/rtstream-reference.md"
+    },
+    {
+      "path": "skills/videodb/reference/rtstream.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/videodb/reference/rtstream.md"
+    },
+    {
+      "path": "skills/videodb/reference/search.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/videodb/reference/search.md"
+    },
+    {
+      "path": "skills/videodb/reference/streaming.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/videodb/reference/streaming.md"
+    },
+    {
+      "path": "skills/videodb/reference/use-cases.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/videodb/reference/use-cases.md"
+    },
+    {
+      "path": "skills/videodb/scripts/ws_listener.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/videodb/scripts/ws_listener.py"
+    },
+    {
+      "path": "skills/visa-doc-translate/README.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/visa-doc-translate/README.md"
+    },
+    {
+      "path": "skills/visa-doc-translate/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/visa-doc-translate/SKILL.md"
+    },
+    {
+      "path": "skills/x-api/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/x-api/SKILL.md"
+    },
+    {
+      "path": "skills/codex-reviewer/SKILL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/prompt_template.txt",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/references/advanced-features.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/references/advanced-usage.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/references/examples.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/references/legacy-approach.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/references/script-reference.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/references/troubleshooting.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/references/workflow-details.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/execute_review.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/init-review-loop.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/lib/exclude-generated.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/lib/iteration-history.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/lib/parse-narrative.py",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/lib/validation.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/load_changelog.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/run-review-loop.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/save_changelog.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/suggest-split.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/SKILL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/config/default_config.json",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/prompts/claude_validation_prompt.txt",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/prompts/comprehensive_review_prompt.txt",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/auto_fix_engine.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/consensus_analyzer.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/generate_report.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/init-design-review.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/lib/confidence_scoring.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/lib/extract_review_json.py",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/lib/semantic_similarity.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/lib/state_management.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/lib/validation.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/run-design-review-loop.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/run_design_review.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/brainstorming/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/brainstorming/SKILL.md"
+    },
+    {
+      "path": "skills/brainstorming/scripts/frame-template.html",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/brainstorming/scripts/frame-template.html"
+    },
+    {
+      "path": "skills/brainstorming/scripts/helper.js",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/brainstorming/scripts/helper.js"
+    },
+    {
+      "path": "skills/brainstorming/scripts/server.cjs",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/brainstorming/scripts/server.cjs"
+    },
+    {
+      "path": "skills/brainstorming/scripts/start-server.sh",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/brainstorming/scripts/start-server.sh"
+    },
+    {
+      "path": "skills/brainstorming/scripts/stop-server.sh",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/brainstorming/scripts/stop-server.sh"
+    },
+    {
+      "path": "skills/brainstorming/spec-document-reviewer-prompt.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/brainstorming/spec-document-reviewer-prompt.md"
+    },
+    {
+      "path": "skills/brainstorming/visual-companion.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/brainstorming/visual-companion.md"
+    },
+    {
+      "path": "skills/dispatching-parallel-agents/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/dispatching-parallel-agents/SKILL.md"
+    },
+    {
+      "path": "skills/executing-plans/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/executing-plans/SKILL.md"
+    },
+    {
+      "path": "skills/finishing-a-development-branch/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/finishing-a-development-branch/SKILL.md"
+    },
+    {
+      "path": "skills/receiving-code-review/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/receiving-code-review/SKILL.md"
+    },
+    {
+      "path": "skills/requesting-code-review/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/requesting-code-review/SKILL.md"
+    },
+    {
+      "path": "skills/requesting-code-review/code-reviewer.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/requesting-code-review/code-reviewer.md"
+    },
+    {
+      "path": "skills/subagent-driven-development/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/subagent-driven-development/SKILL.md"
+    },
+    {
+      "path": "skills/subagent-driven-development/code-quality-reviewer-prompt.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/subagent-driven-development/code-quality-reviewer-prompt.md"
+    },
+    {
+      "path": "skills/subagent-driven-development/implementer-prompt.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/subagent-driven-development/implementer-prompt.md"
+    },
+    {
+      "path": "skills/subagent-driven-development/spec-reviewer-prompt.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/subagent-driven-development/spec-reviewer-prompt.md"
+    },
+    {
+      "path": "skills/systematic-debugging/CREATION-LOG.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/CREATION-LOG.md"
+    },
+    {
+      "path": "skills/systematic-debugging/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/SKILL.md"
+    },
+    {
+      "path": "skills/systematic-debugging/condition-based-waiting-example.ts",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/condition-based-waiting-example.ts"
+    },
+    {
+      "path": "skills/systematic-debugging/condition-based-waiting.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/condition-based-waiting.md"
+    },
+    {
+      "path": "skills/systematic-debugging/defense-in-depth.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/defense-in-depth.md"
+    },
+    {
+      "path": "skills/systematic-debugging/find-polluter.sh",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/find-polluter.sh"
+    },
+    {
+      "path": "skills/systematic-debugging/root-cause-tracing.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/root-cause-tracing.md"
+    },
+    {
+      "path": "skills/systematic-debugging/test-academic.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/test-academic.md"
+    },
+    {
+      "path": "skills/systematic-debugging/test-pressure-1.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/test-pressure-1.md"
+    },
+    {
+      "path": "skills/systematic-debugging/test-pressure-2.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/test-pressure-2.md"
+    },
+    {
+      "path": "skills/systematic-debugging/test-pressure-3.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/test-pressure-3.md"
+    },
+    {
+      "path": "skills/test-driven-development/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/test-driven-development/SKILL.md"
+    },
+    {
+      "path": "skills/test-driven-development/testing-anti-patterns.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/test-driven-development/testing-anti-patterns.md"
+    },
+    {
+      "path": "skills/using-git-worktrees/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/using-git-worktrees/SKILL.md"
+    },
+    {
+      "path": "skills/using-superpowers/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/using-superpowers/SKILL.md"
+    },
+    {
+      "path": "skills/using-superpowers/references/codex-tools.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/using-superpowers/references/codex-tools.md"
+    },
+    {
+      "path": "skills/using-superpowers/references/gemini-tools.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/using-superpowers/references/gemini-tools.md"
+    },
+    {
+      "path": "skills/verification-before-completion/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/verification-before-completion/SKILL.md"
+    },
+    {
+      "path": "skills/writing-plans/SKILL.md",
+      "source": "superpowers",
+      "status": "custom",
+      "upstream_path": "skills/writing-plans/SKILL.md"
+    },
+    {
+      "path": "skills/writing-plans/plan-document-reviewer-prompt.md",
+      "source": "superpowers",
+      "status": "custom",
+      "upstream_path": "skills/writing-plans/plan-document-reviewer-prompt.md"
+    },
+    {
+      "path": "skills/writing-skills/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/writing-skills/SKILL.md"
+    },
+    {
+      "path": "skills/writing-skills/anthropic-best-practices.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/writing-skills/anthropic-best-practices.md"
+    },
+    {
+      "path": "skills/writing-skills/examples/CLAUDE_MD_TESTING.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/writing-skills/examples/CLAUDE_MD_TESTING.md"
+    },
+    {
+      "path": "skills/writing-skills/graphviz-conventions.dot",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/writing-skills/graphviz-conventions.dot"
+    },
+    {
+      "path": "skills/writing-skills/persuasion-principles.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/writing-skills/persuasion-principles.md"
+    },
+    {
+      "path": "skills/writing-skills/render-graphs.js",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/writing-skills/render-graphs.js"
+    },
+    {
+      "path": "skills/writing-skills/testing-skills-with-subagents.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/writing-skills/testing-skills-with-subagents.md"
+    },
+    {
+      "path": "skills/supplements/MANIFEST.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/anti-sycophancy.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/confidence-gated-findings.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/design-anti-slop.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/diff-aware-qa.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/directory-freeze.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/llm-security-audit.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/nutrient-api-terms.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/skill-supply-chain.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/spec-review-convergence.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/three-layer-knowledge.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/browser-automation/SKILL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/canary/SKILL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/council/SKILL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/dispatch-cli/SKILL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/dispatch-cli/scripts/dispatch.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/orchestrator/INSTALL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/orchestrator/README.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/orchestrator/SKILL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/orchestrator/domain-supplements.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/reflect/SKILL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/web-research/SKILL.md",
+      "source": "local",
+      "status": "local"
+    }
+  ]
+}

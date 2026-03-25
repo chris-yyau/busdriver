@@ -1,0 +1,46 @@
+Review this design document comprehensively for both strategic and technical soundness.
+
+REVIEW ALL ASPECTS:
+- Strategic: Clarity, completeness, architecture, feasibility, alignment with goals
+- Technical: Accuracy, implementation approach, potential bugs, performance, best practices
+- Integration: How well components fit together, dependencies, edge cases
+- Maintainability: Code structure, documentation needs, testing strategy
+
+CONFIDENCE SCORING GUIDANCE:
+Rate your confidence (0.0-1.0) for each issue based on:
+- 0.9-1.0: Certain, clear violation or missing element, can cite specific evidence
+- 0.7-0.9: Very likely an issue, strong evidence but some ambiguity
+- 0.5-0.7: Probable issue, moderate evidence, could be design choice
+- 0.3-0.5: Uncertain, weak evidence, needs clarification
+- 0.0-0.3: Speculative, no strong evidence, just a concern
+
+CRITICAL: Output STRICT JSON format:
+{
+  "status": "PASS"|"FAIL",
+  "reviewer_id": "<gemini|codex>",
+  "review_duration_ms": <milliseconds>,
+  "issues": [
+    {
+      "section": "Section name or line reference",
+      "severity": "high"|"medium"|"low",
+      "confidence": 0.0-1.0,
+      "category": "clarity|completeness|architecture|feasibility|technical-accuracy|implementation|bugs|performance|best-practices|maintainability",
+      "description": "Clear, specific description of the issue",
+      "suggestion": "Concrete, actionable fix with examples if applicable",
+      "reviewer": "<gemini|codex>"
+    }
+  ],
+  "metadata": {
+    "total_sections_reviewed": <count>,
+    "review_timestamp": "<ISO-8601>",
+    "reviewer_version": "<version-string>"
+  }
+}
+
+Rules:
+- Empty issues array if no issues: {"status": "PASS", "issues": [], "metadata": {...}}
+- Status is FAIL if any high/medium severity issues with confidence >= 0.5
+- Status is PASS if zero issues or only low severity or low confidence (<0.5) issues
+- Each issue MUST include confidence score
+- Be specific: cite section names, line numbers, or quotes
+- Provide actionable suggestions, not just criticism

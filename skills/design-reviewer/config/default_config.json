@@ -1,0 +1,31 @@
+{
+  "consensus": {
+    "similarity_threshold": 0.7,
+    "confidence_auto_fix_min": 0.8,
+    "confidence_recommend_min": 0.7,
+    "max_auto_fixes_per_iteration": 5
+  },
+  "claude_validation": {
+    "max_codebase_files": 20,
+    "skip_low_severity": true,
+    "timeout_ms": 300000
+  },
+  "iteration": {
+    "max_iterations": 5,
+    "convergence_threshold": 0
+  },
+  "reviewers": {
+    "gemini": {
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    "codex": {
+      "enabled": true,
+      "timeout_ms": 300000
+    },
+    "claude": {
+      "enabled": true,
+      "timeout_ms": 300000
+    }
+  }
+}

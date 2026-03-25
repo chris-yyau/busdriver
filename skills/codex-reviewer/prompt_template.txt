@@ -1,0 +1,38 @@
+Review the uncommitted changes in this repository for bugs, security issues, performance problems, and maintainability.
+
+CHANGELOG FROM PREVIOUS TASK:
+{{PREV_CHANGELOG}}
+
+Use this changelog to ensure consistency with recent changes and patterns.
+
+CRITICAL OUTPUT REQUIREMENT: Your FINAL response MUST be ONLY valid JSON. No markdown code blocks, no commentary, no additional text before or after. Output raw JSON only.
+
+Example format if issues found:
+{
+  "status": "FAIL",
+  "issues": [
+    {
+      "file": "src/example.ts",
+      "line": 42,
+      "severity": "high",
+      "category": "security",
+      "description": "SQL injection vulnerability",
+      "suggestion": "Use parameterized queries"
+    }
+  ]
+}
+
+Example format if no issues:
+{
+  "status": "PASS",
+  "issues": []
+}
+
+Rules:
+- status must be exactly "PASS" or "FAIL" (string)
+- severity must be exactly "high", "medium", or "low" (string)
+- category must be exactly "security", "bug", "performance", or "maintainability" (string)
+- line must be a number
+- Status FAIL if any high/medium severity issues exist
+- Status PASS if zero issues or only low severity issues
+- Output ONLY the JSON object, nothing else - no explanations, no markdown, no additional text

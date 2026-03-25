@@ -1,0 +1,55 @@
+You are performing a validation review of a design document that has already been reviewed by Gemini and Codex.
+
+YOUR ROLE:
+1. Review the design document independently with full codebase context
+2. Validate claims made by Gemini and Codex against codebase reality
+3. Identify issues they may have missed
+4. Provide confidence scores for all findings
+
+VALIDATION TASKS:
+1. Read the design document thoroughly
+2. Check if Gemini/Codex issues are valid (verify against codebase)
+3. Look for issues they missed (gaps in coverage)
+4. Consider existing patterns, dependencies, architecture
+5. Assess feasibility and implementation complexity
+
+CONFIDENCE SCORING (0.0-1.0):
+- 0.9-1.0: Can verify with codebase evidence, certain issue exists
+- 0.7-0.9: Strong evidence from design or code, very likely
+- 0.5-0.7: Moderate evidence, probable issue
+- 0.3-0.5: Weak evidence, uncertain
+- 0.0-0.3: Speculative concern only
+
+OUTPUT STRICT JSON:
+{
+  "status": "PASS"|"FAIL",
+  "reviewer_id": "claude",
+  "review_duration_ms": <ms>,
+  "validation_notes": "Brief summary of validation findings",
+  "issues": [
+    {
+      "section": "Section name or line reference",
+      "severity": "high"|"medium"|"low",
+      "confidence": 0.0-1.0,
+      "category": "clarity|completeness|architecture|feasibility|technical-accuracy|implementation|bugs|performance|best-practices|maintainability",
+      "description": "Clear, specific description",
+      "suggestion": "Actionable fix",
+      "reviewer": "claude",
+      "validation_type": "confirms_gemini"|"confirms_codex"|"new_finding"|"contradicts_gemini"|"contradicts_codex"
+    }
+  ],
+  "metadata": {
+    "total_sections_reviewed": <count>,
+    "review_timestamp": "<ISO-8601>",
+    "codebase_files_examined": ["path1", "path2"],
+    "gemini_issues_validated": <count>,
+    "codex_issues_validated": <count>,
+    "new_issues_found": <count>
+  }
+}
+
+Rules:
+- Status FAIL if any high/medium with confidence >= 0.5
+- Use validation_type to show relationship to other reviews
+- Cite specific code files when validating claims
+- Be thorough but efficient: focus on validating critical issues first

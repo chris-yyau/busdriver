@@ -1,0 +1,13 @@
+{
+  "name": "busdriver",
+  "version": "0.1.0",
+  "description": "Unified workflow orchestrator — consolidates pipeline process, domain tools, and enforcement gates into one plugin",
+  "author": {
+    "name": "Chris Yau"
+  },
+  "license": "MIT",
+  "keywords": [
+    "claude-code", "orchestrator", "workflow", "pipeline",
+    "tdd", "code-review", "security", "gates", "agents"
+  ]
+}

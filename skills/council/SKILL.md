@@ -67,24 +67,24 @@ Agent(
 
 **4b. Pre-check CLI availability, then dispatch:**
 
-Before dispatching, run a quick availability check to avoid wasting timeout waits:
+Before dispatching, check CLI availability and find the dispatch script:
 
 ```bash
 HAS_GEMINI=$(which gemini &>/dev/null && echo yes || echo no)
 HAS_CODEX=$(which codex &>/dev/null && echo yes || echo no)
+DISPATCH="${CLAUDE_PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
 ```
 
-Then dispatch only to available CLIs:
+Then dispatch available CLIs in a **single Bash call** with both as background processes. This is critical — if Gemini and Codex are separate parallel Bash tool calls, one failing cancels the other. A single call with `&` and `wait` keeps them independent:
 
 ```bash
-[ "$HAS_GEMINI" = "yes" ] && ~/.claude/skills/dispatch-cli/scripts/dispatch.sh \
+DISPATCH="${CLAUDE_PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
+[ "$(which gemini &>/dev/null && echo yes || echo no)" = "yes" ] && "$DISPATCH" \
   --cli gemini --timeout 120 \
   --prompt "<Pragmatist prompt>" &
-
-[ "$HAS_CODEX" = "yes" ] && ~/.claude/skills/dispatch-cli/scripts/dispatch.sh \
+[ "$(which codex &>/dev/null && echo yes || echo no)" = "yes" ] && "$DISPATCH" \
   --cli codex --timeout 120 \
   --prompt "<Critic prompt>" &
-
 wait
 ```
 
@@ -93,7 +93,7 @@ wait
 **For Gemini:** Role = "Pragmatist", Lens = "shipping speed, simplicity, user impact, practical tradeoffs"
 **For Codex:** Role = "Critic", Lens = "edge cases, risks, failure modes, what could go wrong"
 
-**IMPORTANT:** Launch the Agent tool call AND the Bash dispatch call in the **same message** so all three run concurrently. Do not wait for one before starting the others.
+**IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing both Gemini and Codex as background processes) in the **same message** so all three voices run concurrently. Do NOT use separate Bash tool calls for Gemini and Codex — one failing will cancel the other.
 
 **Degradation:** The Fresh Claude (Agent tool) is always available, so the council always has at least 2 voices (Architect + Skeptic). If one CLI is missing → 3-voice council. If both are missing → 2-voice council. Note the composition in the report.
 

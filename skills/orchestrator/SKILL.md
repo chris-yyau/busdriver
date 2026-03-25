@@ -53,8 +53,8 @@ All gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects 
 
 ### Codex Reviewer (Pre-Commit + Pre-PR)
 **Trigger:** `git commit` OR `gh pr create` in Bash
-**Pre-commit:** Blocks until `/codex-reviewer` passes → writes `.claude/codex-review-passed.local` marker. Consumed after successful commit via PostToolUse. DEGRADED markers rejected.
-**Pre-PR:** Blocks `gh pr create` until codex review passes. Accepts either `.claude/codex-review-passed.local` (per-commit marker) or `.claude/pr-review-passed.local` (written by `CODEX_REVIEW_MODE=pr` full-branch review). Also passes if all `base..HEAD` commits were per-commit reviewed (tracked in `reviewed-commits.local`).
+**Pre-commit (fast — 1 voice):** Blocks until `/codex-reviewer` passes → writes `.claude/codex-review-passed.local` marker. Consumed after successful commit via PostToolUse. DEGRADED markers rejected.
+**Pre-PR (deep — multi-voice):** Blocks `gh pr create` until codex review passes. Runs codex CLI pass THEN 5 parallel review agents (guidelines, bugs, history, cross-commit, security) with confidence scoring. Blocks on CRITICAL/HIGH at 80+ confidence. Accepts `.claude/pr-review-passed.local` (with HEAD SHA verification). Also passes if all `base..HEAD` commits were per-commit reviewed (tracked in `reviewed-commits.local`). 3-of-5 agent quorum required; <3 agents = fail-closed. `CODEX_PR_FAST=1` skips multi-agent (audited).
 **Skip:** `.claude/skip-codex-review.local` (single-use, 30s self-bypass detection) or `SKIP_CODEX_REVIEW=1`
 **Escalation:** 10 consecutive blocks → warn user about escape hatch. `git push` intentionally NOT gated.
 
@@ -146,11 +146,16 @@ Run `busdriver:verification-loop` (build + lint + tests). Django: `django-verifi
 
 **DISPATCH `security-reviewer` agent** if auth, user input, API endpoints, payments, or secrets were touched.
 
+**DISPATCH selective specialists** (pr-review-toolkit, advisory) based on what changed:
+- Error handling code → `silent-failure-hunter` agent
+- Type definitions/interfaces → `type-design-analyzer` agent
+- Tests added/modified → `pr-test-analyzer` agent
+
 Consider `council` if architecturally significant or results seem "too clean."
 
 ### Phase 6: Finishing → `busdriver:finishing-a-development-branch`
 Handles: verify tests → present 4 options (merge/PR/keep/discard) → execute → clean up worktree.
-**Gate:** Codex Reviewer fires automatically at `git commit` time.
+**Gate:** Codex Reviewer fires automatically — fast mode at `git commit`, deep mode (multi-voice) at `gh pr create`.
 
 ## Domain Supplements
 
@@ -220,6 +225,10 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Video Production** | edit video, analyze, transcribe | `videodb` / `video-editing` / `fal-ai-media` |
 | **Presentations** | create slides, convert PPT | `frontend-slides` |
 | **Agent Architecture** | agent loops, multi-agent DAGs | `autonomous-loops` / `continuous-agent-loop` / `enterprise-agent-ops` / `agent-harness-construction` / `agentic-engineering` / `santa-method`. Agents: `harness-optimizer`, `loop-operator` |
+| **Error Handling Review** | check error handling, silent failures, catch blocks | `silent-failure-hunter` agent (pr-review-toolkit) |
+| **Type Design Review** | review types, check invariants, type safety | `type-design-analyzer` agent (pr-review-toolkit) |
+| **Test Coverage Review** | check test quality, test gaps, edge cases | `pr-test-analyzer` agent (pr-review-toolkit) |
+| **Code Polish** | simplify code, make clearer, refine | `code-simplifier` agent (on-demand, Opus) |
 
 Skills not listed above are discoverable via the system-prompt skill registry. The orchestrator only routes to busdriver-owned skills.
 
@@ -230,8 +239,8 @@ Available in any pipeline phase:
 | Category | Route(s) |
 |----------|----------|
 | **Context/Session** | `/save-session`, `/resume-session`, `/aside`, `/sessions`, `strategic-compact`, `context-budget` |
-| **Web Research** | `web-research` skill (routes to Brave/Tavily/Firecrawl) |
-| **Browser Automation** | `browser-automation` skill |
+| **Web Research** | `web-research` skill (global — `~/.claude/skills/`) |
+| **Browser Automation** | `browser-automation` skill (global — `~/.claude/skills/`) |
 | **Project Setup** | `/setup-pm`, `configure-ecc`, `codebase-onboarding` |
 | **Docs Lookup** | `docs-lookup` agent or `/docs` command (Context7 MCP) |
 | **Eval/Benchmark** | `eval-harness` |
@@ -257,11 +266,10 @@ Available in any pipeline phase:
 
 ## Automatic Behaviors (Hooks)
 
-### Custom Hooks (settings.json)
+### Busdriver Plugin Hooks
 
 | Phase | Hook | Enforcement | What It Does |
 |-------|------|-------------|-------------|
-| **SessionStart** | Plugin override patcher | context | Auto-patches plugin override files |
 | **SessionStart** | Plugin update checker | context | Checks for updates; emits `<update-alert>` for user after task completes |
 | **SessionStart** | Orchestrator loader | context | Loads this skill + staleness + instincts |
 | **PreToolUse** (Bash) | Pre-commit gate | **GATE** | Blocks `git commit` until codex + design review pass |
@@ -272,7 +280,7 @@ Available in any pipeline phase:
 | **PostToolUse** (Bash) | Post-commit marker | cleanup | Consumes codex marker after successful commit |
 | **SessionEnd** | Auto-push config | persistence | Commits auto-generated pipeline state to remote |
 
-ECC plugin hooks (auto-provided): quality-gate, cost-tracker, session persistence, post-edit format (JS/TS), suggest-compact, block-no-verify, auto-tmux-dev, config-protection, mcp-health-check, observe.sh (continuous learning). These run alongside custom hooks but do NOT enforce gates.
+Inherited hooks (from ECC upstream): quality-gate, cost-tracker, session persistence, post-edit format (JS/TS), suggest-compact, block-no-verify, auto-tmux-dev, config-protection, mcp-health-check, observe.sh (continuous learning). These run alongside gate hooks but do NOT enforce gates.
 
 ## Quick Reference
 

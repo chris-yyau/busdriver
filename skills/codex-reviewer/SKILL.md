@@ -275,27 +275,92 @@ npm test                                                            # Tests
 git commit -m "Message"                                             # Commit
 ```
 
-## PR Review Mode
+## PR Review Mode (Deep — Multi-Voice)
 
-When the pre-PR gate blocks `gh pr create`, run the review in PR mode to review the full branch diff:
+When the pre-PR gate blocks `gh pr create`, run the deep review. This combines the codex CLI pass with a 5-agent multi-voice review for cross-commit depth.
+
+### Step 1: Codex CLI Pass (fast)
 
 ```bash
-# Initialize in PR mode
+# Initialize and run in PR mode (same as before)
 CODEX_REVIEW_MODE=pr bash "$HOME/.claude/skills/codex-reviewer/scripts/init-review-loop.sh"
-
-# Run review (reviews base..HEAD instead of staged changes)
 CODEX_REVIEW_MODE=pr bash "$HOME/.claude/skills/codex-reviewer/scripts/run-review-loop.sh"
 ```
 
-**Differences from commit mode:**
-- Reviews `base..HEAD` diff instead of `git diff --cached`
-- Writes `.claude/pr-review-passed.local` instead of `.claude/codex-review-passed.local`
-- Prompt includes cross-commit issues check (inconsistent changes, partial refactors)
-- No staged changes required — works on committed code
+If FAIL → fix and re-run (same auto-continue loop as commit mode).
+
+### Step 2: Multi-Agent Deep Review
+
+After codex CLI passes, dispatch **5 parallel review agents** using the Agent tool. Each reviews the full `base..HEAD` diff from a different lens. Launch all 5 in a **single message** for concurrency.
+
+| Agent | Lens | Focus |
+|-------|------|-------|
+| 1 | **Guidelines** | CLAUDE.md compliance, project conventions, naming consistency |
+| 2 | **Bugs** | Logic errors, off-by-one, null/undefined, race conditions (changes only, not full codebase) |
+| 3 | **History** | Run `git log --oneline base..HEAD` and `git blame` on changed files. Flag: reverted changes, contradictory commits, partial refactors |
+| 4 | **Cross-commit** | Inconsistent naming across commits, partial migrations, orphaned imports, incomplete renames |
+| 5 | **Security** | Hardcoded secrets, injection, auth bypass, error messages leaking internals, unsafe dependencies |
+
+**Agent prompt template** (adapt per lens):
+```
+Review this PR diff for [LENS]. The diff is from base..HEAD.
+
+## Diff
+[paste git diff base..HEAD output, max ~4000 tokens]
+
+## Project Guidelines
+[paste relevant CLAUDE.md sections if they exist]
+
+For each issue found, output JSON:
+{"file": "path", "line": N, "severity": "CRITICAL|HIGH|MEDIUM|LOW", "confidence": 0-100, "description": "...", "suggestion": "..."}
+
+Rules:
+- Only report issues in CHANGED code, not pre-existing
+- Confidence 0-100: 0=guess, 50=plausible, 80=likely real, 100=certain
+- Do NOT report issues already caught by linters/type checkers
+- Maximum 5 issues per agent
+```
+
+### Step 3: Score and Filter
+
+After all 5 agents return:
+
+1. **Collect** all findings into one list
+2. **Deduplicate** — same file + same line + similar description = keep highest confidence
+3. **Filter** — only surface findings with confidence ≥ 80
+4. **Classify**:
+   - CRITICAL/HIGH at 80+ confidence → **FAIL** (do not write marker)
+   - MEDIUM/LOW at 80+ confidence → **advisory** (show but don't block)
+   - Below 80 confidence → **suppress** (don't show)
+
+### Step 4: Gate Decision
+
+| Result | Action |
+|--------|--------|
+| Codex CLI PASS + no CRITICAL/HIGH at 80+ | Write `.claude/pr-review-passed.local` → gate passes |
+| Codex CLI PASS + CRITICAL/HIGH at 80+ | Report findings. Fix, then re-run Step 2 only |
+| Codex CLI FAIL | Fix, re-run from Step 1 |
+
+### Degraded States
+
+| Failure | Handling |
+|---------|----------|
+| Agent timeout/crash | **3-of-5 quorum** — valid if ≥3 agents return. <3 → `inconclusive`, fail-closed |
+| All agents timeout | Fail-closed. Fall back to codex CLI result only (degrade to fast mode) |
+| Codex CLI unavailable | Multi-agent review only (skip Step 1). Marker still written if deep review passes |
+
+### Marker Encoding
+
+PR markers include diff hash for staleness detection:
+```
+PASS pr-review <short-sha-of-HEAD> <timestamp>
+```
+The pre-PR gate verifies the marker's SHA matches current HEAD. Stale markers from prior reviews are rejected.
 
 **Environment variables:**
-- `CODEX_REVIEW_MODE=pr` — switches to PR review mode
+- `CODEX_REVIEW_MODE=pr` — switches to PR deep review mode
 - `CODEX_PR_BASE=main` — override base branch (defaults to `origin/HEAD` or `main`)
+- `CODEX_PR_FAST=1` — skip multi-agent review, use fast mode only (audited in bypass-log)
 
 ## Key Principles
 

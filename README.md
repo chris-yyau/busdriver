@@ -9,7 +9,8 @@ Think of it as the designated driver for your codebase — it won't let Claude l
 ## Install
 
 ```bash
-claude plugin install busdriver
+claude plugin marketplace add github:chris-yyau/busdriver
+claude plugin install busdriver@busdriver
 ```
 
 ## What It Does
@@ -33,7 +34,7 @@ All skills live in `skills/` (flat structure for Claude Code auto-discovery). Co
 
 Built on the shoulders of:
 - **[Superpowers](https://github.com/obra/superpowers)** by Jesse Vincent — the pipeline backbone
-- **[Everything Claude Code](https://github.com/anthropics/courses/blob/master/prompt_engineering_interactive_tutorial/Anthropic%201P/07_Using_Tools_(Function_Calling).ipynb)** by Affaan Mustafa — domain tools, hooks, and agents
+- **[Everything Claude Code](https://github.com/affaan-m/everything-claude-code)** by Affaan Mustafa — domain tools, hooks, and agents
 
 ## License
 

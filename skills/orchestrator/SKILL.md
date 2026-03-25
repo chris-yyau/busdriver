@@ -54,7 +54,7 @@ All gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects 
 ### Codex Reviewer (Pre-Commit + Pre-PR)
 **Trigger:** `git commit` OR `gh pr create` in Bash
 **Pre-commit:** Blocks until `/codex-reviewer` passes → writes `.claude/codex-review-passed.local` marker. Consumed after successful commit via PostToolUse. DEGRADED markers rejected.
-**Pre-PR:** Blocks `gh pr create` until marker exists OR all `base..HEAD` commits were per-commit reviewed (tracked in `reviewed-commits.local`).
+**Pre-PR:** Blocks `gh pr create` until codex review passes. Accepts either `.claude/codex-review-passed.local` (per-commit marker) or `.claude/pr-review-passed.local` (written by `CODEX_REVIEW_MODE=pr` full-branch review). Also passes if all `base..HEAD` commits were per-commit reviewed (tracked in `reviewed-commits.local`).
 **Skip:** `.claude/skip-codex-review.local` (single-use, 30s self-bypass detection) or `SKIP_CODEX_REVIEW=1`
 **Escalation:** 10 consecutive blocks → warn user about escape hatch. `git push` intentionally NOT gated.
 

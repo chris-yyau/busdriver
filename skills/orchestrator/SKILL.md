@@ -314,7 +314,6 @@ brainstorming → writing-plans → using-git-worktrees → execution mode → v
 1. SKILL.md routing sections (authoritative)
 2. domain-supplements.md (language/framework detection)
 3. System-prompt skill descriptions (fallback)
-4. `/find-skills` (last resort)
 
 **Namespace:** `busdriver:` is this plugin's namespace. Other plugins use their own (`document-skills:`, `hookify:`, `plugin-dev:`, `claude-mem:`, etc.). Unprefixed skills resolve from local `~/.claude/skills/`.
 

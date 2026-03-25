@@ -34,7 +34,7 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Standards: `busdriver:java-coding-standards`
 - Verification: `busdriver:springboot-verification`
 - Review: `java-reviewer` agent (see Phase 4 DISPATCH rules)
-- Build issues: `busdriver:java-build` command / `java-build-resolver` agent
+- Build issues: `java-build-resolver` agent
 
 ### Frontend (React / Next.js / TypeScript)
 **Detection:** `*.tsx`, `*.jsx`, `*.ts`, React components, Next.js, TypeScript

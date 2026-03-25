@@ -2538,24 +2538,6 @@
       "upstream_path": "skills/using-git-worktrees/SKILL.md"
     },
     {
-      "path": "skills/using-superpowers/SKILL.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/using-superpowers/SKILL.md"
-    },
-    {
-      "path": "skills/using-superpowers/references/codex-tools.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/using-superpowers/references/codex-tools.md"
-    },
-    {
-      "path": "skills/using-superpowers/references/gemini-tools.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/using-superpowers/references/gemini-tools.md"
-    },
-    {
       "path": "skills/verification-before-completion/SKILL.md",
       "source": "superpowers",
       "status": "sync",

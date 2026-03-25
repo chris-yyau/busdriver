@@ -69,11 +69,19 @@ try:
             print(target_dir)
             break
 except Exception:
-    pass
+    # Fail-CLOSED: fast pre-filter matched gh pr create but parser failed.
+    print('error')
+    print('')
 " 2>/dev/null || true)
 
 IS_GH_PR_CREATE=$(echo "$PARSE_RESULT" | head -1)
 TARGET_DIR=$(echo "$PARSE_RESULT" | sed -n '2p')
+
+# Fail-closed: parser error after fast pre-filter matched → block as precaution
+if [ "$IS_GH_PR_CREATE" = "error" ]; then
+    block_emit "Pre-PR gate: failed to parse tool input for command matching gh pr create pattern. Blocking as precaution (fail-closed). If stuck, create .claude/skip-codex-review.local in your terminal."
+    exit 0
+fi
 
 [ "$IS_GH_PR_CREATE" != "yes" ] && exit 0
 

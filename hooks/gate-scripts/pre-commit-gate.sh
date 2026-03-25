@@ -102,11 +102,20 @@ try:
                 print(target_dir)
                 break
 except Exception:
-    pass
+    # Fail-CLOSED: fast pre-filter matched git commit pattern but parser
+    # failed. Print sentinel so bash can block rather than silently approve.
+    print('error')
+    print('')
 " 2>/dev/null || true)
 
 IS_GIT_COMMIT=$(echo "$PARSE_RESULT" | head -1)
 TARGET_DIR=$(echo "$PARSE_RESULT" | sed -n '2p')
+
+# Fail-closed: parser error after fast pre-filter matched → block as precaution
+if [ "$IS_GIT_COMMIT" = "error" ]; then
+    block_emit "Pre-commit gate: failed to parse tool input for command matching git commit pattern. Blocking as precaution (fail-closed). If stuck, create .claude/skip-codex-review.local in your terminal."
+    exit 0
+fi
 
 [ "$IS_GIT_COMMIT" != "yes" ] && exit 0
 

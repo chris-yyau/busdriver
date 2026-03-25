@@ -153,14 +153,21 @@ try:
     else:
         print("SAFE|")
 except Exception:
-    print("SAFE|")
-' 2>/dev/null || echo "SAFE|")
+    # Fail-CLOSED: can'"'"'t parse tool input during active design review.
+    print("PARSE_ERROR|")
+' 2>/dev/null || echo "PARSE_ERROR|")
 
 TOOL_TYPE="${PARSED%%|*}"
 TOOL_VALUE="${PARSED#*|}"
 
 # Non-Write/Edit or safe Bash → approve
 [ "$TOOL_TYPE" = "SAFE" ] && exit 0
+
+# Fail-closed: parser error during active design review → block as precaution
+if [ "$TOOL_TYPE" = "PARSE_ERROR" ]; then
+    block_emit "Pre-implementation gate: failed to parse tool input while design docs are unreviewed. Blocking as precaution (fail-closed). Run /design-reviewer or create .claude/skip-design-review.local to bypass."
+    exit 0
+fi
 
 # ── For Write/Edit: apply file-path allowlists ─────────────────────────
 if [ "$TOOL_TYPE" = "WRITE_EDIT" ]; then
@@ -175,12 +182,14 @@ if [ "$TOOL_TYPE" = "WRITE_EDIT" ]; then
     #   - .claude/ config files
     #   - docs/reviews/ (review artifacts)
     #   - CLAUDE.md, NOTES.md, *.local* files
-    case "$FILE_PATH" in
-        *PLAN*.md|*DESIGN*.md|*ARCHITECTURE*.md) exit 0 ;;
+    # Case-insensitive: matches detection logic in check-design-document.sh
+    FILE_LOWER=$(echo "$FILE_PATH" | tr '[:upper:]' '[:lower:]')
+    case "$FILE_LOWER" in
+        *plan*.md|*design*.md|*architecture*.md) exit 0 ;;
         *docs/plans/*) exit 0 ;;
         *docs/reviews/*) exit 0 ;;
         *docs/superpowers/*) exit 0 ;;
-        *CLAUDE.md|*NOTES.md) exit 0 ;;
+        *claude.md|*notes.md) exit 0 ;;
     esac
 
     # Allow .claude/ config writes EXCEPT security-sensitive gate markers

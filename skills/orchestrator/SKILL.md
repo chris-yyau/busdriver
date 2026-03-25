@@ -215,7 +215,7 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Presentations** | create slides, convert PPT | `frontend-slides` |
 | **Agent Architecture** | agent loops, multi-agent DAGs | `autonomous-loops` / `continuous-agent-loop` / `enterprise-agent-ops` / `agent-harness-construction` / `agentic-engineering` / `santa-method`. Agents: `harness-optimizer`, `loop-operator` |
 
-**External skills** not routed here are discoverable via the system-prompt skill registry. Other plugins (`document-skills:*`, `hookify:*`, `plugin-dev:*`, `claude-mem:*`, etc.) and local skills (`~/.claude/skills/`) resolve through their own descriptions — the orchestrator does not duplicate their routing.
+Skills not listed above are discoverable via the system-prompt skill registry. The orchestrator only routes to busdriver-owned skills.
 
 ## Cross-Cutting Utilities
 
@@ -225,7 +225,7 @@ Available in any pipeline phase:
 |----------|----------|
 | **Context/Session** | `/save-session`, `/resume-session`, `/aside`, `/sessions`, `strategic-compact`, `context-budget` |
 | **Web Research** | `web-research` skill (routes to Brave/Tavily/Firecrawl) |
-| **Browser Automation** | `browser-automation` skill (routes to Playwright/Chrome DevTools/agent-browser) |
+| **Browser Automation** | `browser-automation` skill |
 | **Project Setup** | `/setup-pm`, `configure-ecc`, `codebase-onboarding` |
 | **Docs Lookup** | `docs-lookup` agent or `/docs` command (Context7 MCP) |
 | **Eval/Benchmark** | `eval-harness` |
@@ -315,7 +315,7 @@ brainstorming → writing-plans → using-git-worktrees → execution mode → v
 2. domain-supplements.md (language/framework detection)
 3. System-prompt skill descriptions (fallback)
 
-**Namespace:** `busdriver:` is this plugin's namespace. Other plugins use their own (`document-skills:`, `hookify:`, `plugin-dev:`, `claude-mem:`, etc.). Unprefixed skills resolve from local `~/.claude/skills/`.
+**Namespace:** `busdriver:` is this plugin's namespace. Unprefixed skills in this file are also busdriver-owned.
 
 ### Pipeline Self-Maintenance
 Commit and push changes to `~/.claude/hooks/`, `~/.claude/skills/`, or `${CLAUDE_PLUGIN_ROOT}/` before ending session.

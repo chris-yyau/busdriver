@@ -42,7 +42,7 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Patterns: `busdriver:frontend-patterns`
 - Standards: `busdriver:coding-standards`
 - Review: `typescript-reviewer` agent (type safety, async correctness, Node/web security, idiomatic patterns)
-- Design: `busdriver:design-system` (generate/audit design tokens). For richer design direction, install Impeccable (`pbakaus/impeccable`) or `document-skills:frontend-design` separately.
+- Design: `busdriver:design-system` (generate/audit design tokens)
 - **Next.js-specific** (detect: `next.config.*`, `app/` with `layout.tsx`/`page.tsx`, RSC patterns):
   - Turbopack: `busdriver:nextjs-turbopack` (Next.js 16+ incremental bundling, FS caching, when to use Turbopack vs webpack)
 - **Bun** (detect: `bun.lock`, `bun.lockb`, `bunfig.toml`, Bun imports):

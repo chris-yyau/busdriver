@@ -91,13 +91,15 @@ Skip files are single-use (consumed after one bypass) and logged to `.claude/byp
 
 | User's state | Entry | INVOKE | Then mandatory |
 |---|---|---|---|
-| Vague idea, exploring | Phase 1 | `busdriver:brainstorming` | → 2 → 3 → 4 → 5 → 6 |
-| Clear requirements | Phase 2 | `busdriver:writing-plans` | → 3 → 4 → 5 → 6 |
+| Vague idea, exploring | Phase 1 | `busdriver:brainstorming` | → 2 → 3–6 (auto) |
+| Clear requirements | Phase 2 | `busdriver:writing-plans` | → 3–6 (auto) |
 | Has a plan file | Phase 3 | `busdriver:using-git-worktrees` | → 4 → 5 → 6 |
 | Small specific task | Phase 4 | Execute directly | → 5 → 6 |
 | Bug, test failure | Phase 4 | `busdriver:systematic-debugging` | Debug → fix → 5 → 6 |
 | Write tests | Phase 4 | `/tdd` (tdd-guide agent) | Test task only |
 | Not sure? | **Ask the user** | — | — |
+
+**Auto-execution (Phases 3–6):** After plan review passes in Phase 2, the pipeline auto-continues without user pause: design-review → worktree → subagent-driven-development → verification → finishing. Halts on: design review rejection (3 attempts), baseline test failure, or task blocker requiring human input.
 
 <STRONG-GUIDANCE>
 DO NOT skip phases after your entry point. The ONLY exception is small specific tasks entering at Phase 4.
@@ -105,11 +107,11 @@ DO NOT skip phases after your entry point. The ONLY exception is small specific 
 
 ### Phase 1: Discovery → `busdriver:brainstorming`
 Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design, domain patterns, `busdriver:frontend-patterns` + `busdriver:design-system` for UI/UX, `busdriver:api-design` for API boundaries. Design Reviewer triggers when design doc is written. Consider `council` if 2+ viable approaches.
-**NEXT:** Phase 2 only. INVOKE `busdriver:writing-plans`. Do NOT start coding.
+**NEXT:** Phase 2 only. INVOKE `busdriver:writing-plans`. Do NOT start coding. After Phase 2 completes, auto-execution carries through Phases 3–6 without user pause.
 
 ### Phase 2: Planning → `busdriver:writing-plans`
 Produces TDD tasks with file paths, commands, expected output. Saves to `docs/plans/`. Design Reviewer triggers on plan doc. Consider `council` for unfamiliar tech or security-sensitive flows.
-**NEXT:** Phase 3 only. INVOKE `busdriver:using-git-worktrees`. Do NOT code on main.
+**AUTO-EXECUTION:** After plan review passes, writing-plans auto-continues: design-review → worktree → subagent-driven-development → verification → finishing. No user pause between phases 2–6. Stop conditions: design review rejects (3 attempts), baseline test failure, task blocker requiring human input.
 
 ### Phase 3: Worktree → `busdriver:using-git-worktrees`
 Creates isolated workspace, verifies baseline tests pass.
@@ -286,14 +288,15 @@ Inherited hooks (from ECC upstream): quality-gate, cost-tracker, session persist
 
 ### Pipeline — INVOKE Each Phase
 ```
-brainstorming → writing-plans → using-git-worktrees → execution mode → verification → finishing
-(Phase 1)       (Phase 2)       (Phase 3)              (Phase 4)        (Phase 5)     (Phase 6)
+brainstorming → writing-plans → [AUTO] → design-review → worktree → execute → verify → finish
+(Phase 1)       (Phase 2)       ──────────(Phase 3)───────(Phase 4)──(Phase 5)──(Phase 6)
 ```
+After Phase 2 plan review passes, Phases 3–6 execute automatically via subagent-driven-development.
 
 ### Entry Points — Use Skill Tool, NOT EnterPlanMode
-- Vague idea → `busdriver:brainstorming` → full pipeline
-- Clear requirements → `busdriver:writing-plans` → skip discovery
-- Has plan → `busdriver:using-git-worktrees` → skip to execution
+- Vague idea → `busdriver:brainstorming` → Phase 2 → auto-execute 3–6
+- Clear requirements → `busdriver:writing-plans` → auto-execute 3–6
+- Has plan → `busdriver:using-git-worktrees` → manual 4 → 5 → 6
 - Small task → Execute directly (Phase 4)
 - Bug → `busdriver:systematic-debugging`
 

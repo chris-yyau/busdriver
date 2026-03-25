@@ -103,21 +103,30 @@ if echo "$FILE_PATH" | grep -qE '(\.claude|docs)/([^/]+/)*(plans|specs)/.*\.md$'
 fi
 if [ "$IS_DESIGN" = true ]; then
   # Determine if file needs flagging:
-  # - Write (new file): ALWAYS flag, even if marker is present (anti-self-stamp)
+  # - Write/Bash on NEW file: flag + strip PASS (anti-self-stamp)
   #   Claude can embed <!-- design-reviewed: PASS --> at creation time to bypass review.
-  #   New files must go through review regardless.
-  # - Edit (existing file): Only flag if marker is ABSENT (legitimate review adds it via Edit)
+  # - Write/Bash on PREVIOUSLY REVIEWED file: flag but PRESERVE PASS marker.
+  #   Rewrites of already-reviewed files (e.g. applying review findings) should not
+  #   reset review status. "Previously reviewed" = git committed version has PASS.
+  # - Edit: Only flag if PASS marker is ABSENT (design-reviewer adds it via Edit)
   NEEDS_FLAG=false
   if [ "$TOOL_NAME" = "Write" ] || [ "$TOOL_NAME" = "Bash" ]; then
-    # New file creation or Bash redirect — always flag (marker would be self-stamped)
     NEEDS_FLAG=true
-    # Strip any pre-embedded marker so the pre-commit gate enforces review
+    # Anti-self-stamp: strip PASS only for truly new or unreviewed files.
+    # If git's committed version already has PASS, this is a rewrite of a
+    # reviewed file — preserve the marker to avoid infinite review loops.
     if grep -q "<!-- design-reviewed: PASS -->" "$FILE_PATH" 2>/dev/null; then
-      # Cross-platform sed -i (macOS vs GNU Linux)
-      if [[ "$(uname)" == "Darwin" ]]; then
-        sed -i '' 's/<!-- design-reviewed: PASS -->/<!-- design-reviewed: PENDING -->/' "$FILE_PATH" 2>/dev/null || true
-      else
-        sed -i 's/<!-- design-reviewed: PASS -->/<!-- design-reviewed: PENDING -->/' "$FILE_PATH" 2>/dev/null || true
+      PREVIOUSLY_REVIEWED=false
+      if git show "HEAD:$FILE_PATH" 2>/dev/null | grep -q "<!-- design-reviewed: PASS -->"; then
+        PREVIOUSLY_REVIEWED=true
+      fi
+      if [ "$PREVIOUSLY_REVIEWED" = false ]; then
+        # New or unreviewed file with embedded PASS — strip (anti-self-stamp)
+        if [[ "$(uname)" == "Darwin" ]]; then
+          sed -i '' 's/<!-- design-reviewed: PASS -->/<!-- design-reviewed: PENDING -->/' "$FILE_PATH" 2>/dev/null || true
+        else
+          sed -i 's/<!-- design-reviewed: PASS -->/<!-- design-reviewed: PENDING -->/' "$FILE_PATH" 2>/dev/null || true
+        fi
       fi
     fi
   else

@@ -199,19 +199,13 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Multi-Model** | multi-model planning | `/multi-plan`, `/multi-backend`, `/multi-frontend`, `/multi-execute`, `/multi-workflow` |
 | **Council** | perspectives, group wisdom, tradeoffs | `council` skill (4-voice: Architect + Skeptic + Pragmatist + Critic) |
 | **Communication** | email triage, Slack, inbox | `chief-of-staff` agent |
-| **Documents** | .docx/.xlsx/.pptx/.pdf, OCR | `document-skills:docx`/`xlsx`/`pptx`/`pdf`, `nutrient-document-processing` |
-| **Creative Artifacts** | poster, generative art, GIF, HTML artifact | `document-skills:canvas-design` / `document-skills:algorithmic-art` / `document-skills:slack-gif-creator` / `document-skills:web-artifacts-builder` / `document-skills:theme-factory` |
-| **Writing** | internal comms, status reports, co-author docs | `document-skills:doc-coauthoring` / `document-skills:internal-comms` / `document-skills:brand-guidelines` |
-| **Claude API/SDK** | imports anthropic/claude_agent_sdk | `claude-api` skill, `agent-sdk-dev:new-sdk-app` |
-| **Plugin Dev** | create plugin, add command/agent | `plugin-dev:create-plugin` and sub-skills |
-| **Hook Management** | create hook rule, hookify | `hookify:hookify` / `hookify:list` / `hookify:configure` |
-| **MCP Dev** | build MCP server | `document-skills:mcp-builder` + `mcp-server-patterns` |
-| **CLAUDE.md** | update/audit CLAUDE.md | `claude-md-management:revise-claude-md` |
+| **Documents** | .docx/.xlsx/.pptx/.pdf, OCR | `nutrient-document-processing` |
+| **Claude API/SDK** | imports anthropic/claude_agent_sdk | `claude-api` skill |
+| **MCP Dev** | build MCP server | `mcp-server-patterns` |
 | **Canary** | watch deploy, post-deploy check | `canary` skill |
 | **Scheduled Agents** | cron job, run on schedule | `CronCreate`/`CronList`/`CronDelete` tools |
 | **Recurring Tasks** | run every N minutes | `/loop-start` command, `loop-operator` agent |
 | **Notes** | check notes health, refine | `/refine-notes` command |
-| **Webapp Testing** | test local web app, Playwright | `document-skills:webapp-testing` |
 | **Prompt Engineering** | optimize prompt, improve prompt | `/prompt-optimize` command (advisory only) |
 | **Content** | articles, newsletters | `article-writing` / `content-engine` / `crosspost` / `x-api` |
 | **Data Pipelines** | data collector, scheduled scraping | `data-scraper-agent` |
@@ -221,7 +215,7 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Presentations** | create slides, convert PPT | `frontend-slides` |
 | **Agent Architecture** | agent loops, multi-agent DAGs | `autonomous-loops` / `continuous-agent-loop` / `enterprise-agent-ops` / `agent-harness-construction` / `agentic-engineering` / `santa-method`. Agents: `harness-optimizer`, `loop-operator` |
 
-**Unrouted niche skills** (invoke by name): supply chain/manufacturing, ADRs, NanoClaw REPL. See the skill registry for full list. External skills (Impeccable design verbs, marketing/CRO, framework-specific) resolve from local `~/.claude/skills/` if installed separately.
+**External skills** not routed here are discoverable via the system-prompt skill registry. Other plugins (`document-skills:*`, `hookify:*`, `plugin-dev:*`, `claude-mem:*`, etc.) and local skills (`~/.claude/skills/`) resolve through their own descriptions — the orchestrator does not duplicate their routing.
 
 ## Cross-Cutting Utilities
 
@@ -230,11 +224,9 @@ Available in any pipeline phase:
 | Category | Route(s) |
 |----------|----------|
 | **Context/Session** | `/save-session`, `/resume-session`, `/aside`, `/sessions`, `strategic-compact`, `context-budget` |
-| **Cross-Session Memory** | `claude-mem:mem-search`, `claude-mem:make-plan`, `claude-mem:do`, `claude-mem:smart-explore`, `claude-mem:timeline-report` |
 | **Web Research** | `web-research` skill (routes to Brave/Tavily/Firecrawl) |
 | **Browser Automation** | `browser-automation` skill (routes to Playwright/Chrome DevTools/agent-browser) |
 | **Project Setup** | `/setup-pm`, `configure-ecc`, `codebase-onboarding` |
-| **Codebase Understanding** | `greptile` plugin (PR reviews, indexed repo search — requires Greptile MCP) |
 | **Docs Lookup** | `docs-lookup` agent or `/docs` command (Context7 MCP) |
 | **Eval/Benchmark** | `eval-harness` |
 | **Performance** | `content-hash-cache-pattern` |
@@ -324,7 +316,7 @@ brainstorming → writing-plans → using-git-worktrees → execution mode → v
 3. System-prompt skill descriptions (fallback)
 4. `/find-skills` (last resort)
 
-**Namespace:** `busdriver:` and `document-skills:` are plugin namespaces. Unprefixed skills resolve from local `~/.claude/skills/` if installed.
+**Namespace:** `busdriver:` is this plugin's namespace. Other plugins use their own (`document-skills:`, `hookify:`, `plugin-dev:`, `claude-mem:`, etc.). Unprefixed skills resolve from local `~/.claude/skills/`.
 
 ### Pipeline Self-Maintenance
 Commit and push changes to `~/.claude/hooks/`, `~/.claude/skills/`, or `${CLAUDE_PLUGIN_ROOT}/` before ending session.

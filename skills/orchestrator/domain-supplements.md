@@ -156,5 +156,4 @@ Domain skills are loaded as context during execution. They are **additive** — 
 
 ### MCP Development
 **Detection:** MCP server code, `@modelcontextprotocol/sdk`, tool/resource definitions
-- Creation: `document-skills:mcp-builder` (guided MCP server creation — supports both Python FastMCP and TypeScript)
 - Patterns (Node/TS only): `busdriver:mcp-server-patterns` (Node/TS SDK — tools, resources, prompts, Zod validation, stdio vs Streamable HTTP. Do NOT load for Python FastMCP projects.)

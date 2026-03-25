@@ -30,9 +30,6 @@ fi
 if ! command -v jq &>/dev/null; then
     GATE_HEALTH_WARNINGS="${GATE_HEALTH_WARNINGS}\n**WARNING: jq not found.** Gate hooks use a printf fallback to emit block decisions — enforcement still works but JSON output may be less robust with special characters. Install jq for reliable gate output.\n\n\`brew install jq\` or \`apt-get install jq\`"
 fi
-if ! command -v gitleaks &>/dev/null; then
-    GATE_HEALTH_WARNINGS="${GATE_HEALTH_WARNINGS}\n**WARNING: gitleaks not found.** Secret scanning gate is DISABLED — secrets in staged changes will NOT be detected before commit. Secrets in git history are catastrophic and irreversible. Install gitleaks immediately.\n\n\`brew install gitleaks\` or see https://github.com/gitleaks/gitleaks#installing"
-fi
 if ! command -v codex &>/dev/null; then
     GATE_HEALTH_WARNINGS="${GATE_HEALTH_WARNINGS}\n**WARNING: codex CLI not found.** Codex reviewer will run in DEGRADED mode (marker-only, no automated review). Install codex CLI for full code review enforcement.\n\n\`npm install -g @openai/codex\`"
 fi

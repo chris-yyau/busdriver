@@ -40,17 +40,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/pre-commit-gitleaks.sh\"",
-            "timeout": 10
-          }
-        ],
-        "description": "[GATE] Scan staged changes for secrets. Fail-CLOSED for findings."
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/pre-commit-gate.sh\"",
             "timeout": 10
           }
@@ -78,17 +67,6 @@
           }
         ],
         "description": "[GATE] Block impl code while design docs unreviewed"
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/pre-commit-iac-scan.sh\"",
-            "timeout": 30
-          }
-        ],
-        "description": "[GATE] checkov=BLOCK, zizmor/trivy=WARN for IaC files"
       },
       {
         "matcher": "Bash",

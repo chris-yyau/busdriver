@@ -267,7 +267,7 @@ if [ -f "$MARKER" ]; then
         # which verifies the commit actually succeeded before deleting.
         #
         # Why: PreToolUse runs BEFORE git commit executes. If consumed here
-        # and the commit subsequently fails (gitleaks, git hooks, conflicts),
+        # and the commit subsequently fails (git hooks, conflicts, errors),
         # the marker is lost — forcing a full re-review for unchanged code.
         exit 0
     fi

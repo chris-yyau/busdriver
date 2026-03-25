@@ -51,10 +51,6 @@ When invoking a skill or dispatching an agent, check `skills/supplements/MANIFES
 
 All gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects the tool call — Claude cannot bypass.
 
-### Gitleaks (Pre-Commit Secret Scan)
-**Trigger:** `git commit` in Bash | **Fail mode:** CLOSED for findings, OPEN for tool errors/missing binary
-**Skip:** `SKIP_GITLEAKS=1` env var only. Deterministic gate, fires BEFORE codex review.
-
 ### Codex Reviewer (Pre-Commit + Pre-PR)
 **Trigger:** `git commit` OR `gh pr create` in Bash
 **Pre-commit:** Blocks until `/codex-reviewer` passes → writes `.claude/codex-review-passed.local` marker. Consumed after successful commit via PostToolUse. DEGRADED markers rejected.
@@ -74,10 +70,6 @@ All gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects 
 To review design/plan documents, you MUST invoke the `design-reviewer` SKILL (via Skill tool).
 Do NOT use `code-reviewer` agent — it cannot write the `<!-- design-reviewed: PASS -->` marker.
 </CRITICAL>
-
-### IaC Security Scan (Pre-Commit)
-**Trigger:** `git commit` when staged files include IaC (Terraform, CloudFormation, K8s, GH Actions, Dockerfiles)
-**Enforcement:** checkov=BLOCK, zizmor=WARN, trivy=WARN. Errors fail-OPEN. **Skip:** `SKIP_IAC_SCAN=1`
 
 ## The Pipeline
 
@@ -258,11 +250,9 @@ Available in any pipeline phase:
 | **SessionStart** | Plugin override patcher | context | Auto-patches plugin override files |
 | **SessionStart** | Plugin update checker | context | Checks for updates; emits `<update-alert>` for user after task completes |
 | **SessionStart** | Orchestrator loader | context | Loads this skill + staleness + instincts |
-| **PreToolUse** (Bash) | Gitleaks | **GATE** | Scans staged changes for secrets. Fail-CLOSED for findings. Skip: `SKIP_GITLEAKS=1` |
 | **PreToolUse** (Bash) | Pre-commit gate | **GATE** | Blocks `git commit` until codex + design review pass |
 | **PreToolUse** (Bash) | Pre-PR gate | **GATE** | Blocks `gh pr create` until codex review passes |
 | **PreToolUse** (Write\|Edit\|Bash) | Pre-implementation gate | **GATE** | Blocks impl code while design docs unreviewed |
-| **PreToolUse** (Bash) | IaC scan | **MIXED** | checkov=BLOCK, zizmor/trivy=WARN. Skip: `SKIP_IAC_SCAN=1` |
 | **PostToolUse** (Write\|Edit\|Bash) | Design doc detector | state | Flags design docs for review gate |
 | **PostToolUse** (Edit) | Go post-edit | formatting | gofmt/goimports/go vet on .go files |
 | **PostToolUse** (Bash) | Post-commit marker | cleanup | Consumes codex marker after successful commit |
@@ -291,11 +281,9 @@ brainstorming → writing-plans → using-git-worktrees → execution mode → v
 - `busdriver:requesting-code-review` — after EVERY task
 
 ### Gates (Hook-Enforced, Cannot Bypass)
-- Gitleaks → secrets before `git commit` (deterministic, fail-CLOSED)
-- Design Reviewer → after plan/design docs, blocks impl + commit
 - Codex Reviewer → before `git commit` and `gh pr create`
+- Design Reviewer → after plan/design docs, blocks impl + commit
 - Pre-implementation → blocks file writes while design unreviewed
-- IaC scan → checkov BLOCK, zizmor/trivy WARN
 
 ### Strong Guidance (Advisory)
 - Pipeline phase ordering (1→2→3→4→5→6)

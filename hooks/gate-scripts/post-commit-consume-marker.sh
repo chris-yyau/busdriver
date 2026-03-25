@@ -5,8 +5,8 @@
 # and approves the commit, but does NOT delete it. This hook runs AFTER the
 # git commit completes and consumes the marker only if the commit succeeded.
 #
-# Why: If consumed in PreToolUse and the commit then fails (gitleaks, git
-# hooks, merge conflict, nothing to commit), the marker is lost — forcing
+# Why: If consumed in PreToolUse and the commit then fails (git hooks,
+# merge conflict, nothing to commit, errors), the marker is lost — forcing
 # a full re-review for unchanged code.
 #
 # Success detection: checks for git's "[branch hash]" pattern OR absence of

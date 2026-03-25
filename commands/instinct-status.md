@@ -19,7 +19,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/skills/continuous-learning-v2/scripts/instinct-cl
 Or if `CLAUDE_PLUGIN_ROOT` is not set (manual installation), use:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/skills/continuous-learning-v2/scripts/instinct-cli.py" status
+python3 ~/.claude/skills/continuous-learning-v2/scripts/instinct-cli.py status
 ```
 
 ## Usage

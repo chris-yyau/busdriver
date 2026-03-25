@@ -22,7 +22,7 @@ dmux is a tmux-based orchestration tool that manages AI agent panes:
 - Press `m` to merge pane output back to the main session
 - Supports: Claude Code, Codex, OpenCode, Cline, Gemini, Qwen
 
-**Install:** `npm install -g dmux` or see [github.com/standardagents/dmux](https://github.com/standardagents/dmux)
+**Install:** Install dmux from its repository after reviewing the package. See [github.com/standardagents/dmux](https://github.com/standardagents/dmux)
 
 ## Quick Start
 
@@ -150,7 +150,7 @@ Example `plan.json`:
 {
   "sessionName": "skill-audit",
   "baseRef": "HEAD",
-  "launcherCommand": "cd '{worktree_path}' && codex --quiet --approval-mode full-auto -p \"$(cat '{task_file}')\"",
+  "launcherCommand": "codex exec --cwd {worktree_path} --task-file {task_file}",
   "workers": [
     { "name": "docs-a", "task": "Fix skills 1-4 and write handoff notes." },
     { "name": "docs-b", "task": "Fix skills 5-8 and write handoff notes." }

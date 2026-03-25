@@ -228,26 +228,10 @@ print(json.dumps({"timestamp": os.environ["TIMESTAMP"], "event": "parse_error", 
   exit 0
 fi
 
-# Archive if file too large OR too old (atomic: rename with unique suffix to avoid race)
-# Size-based: rotate at MAX_FILE_SIZE_MB (10MB)
-# Age-based: rotate at MAX_FILE_AGE_DAYS (90 days) to prevent stale observation accumulation
-MAX_FILE_AGE_DAYS="${ECC_OBSERVATION_MAX_AGE_DAYS:-90}"
+# Archive if file too large (atomic: rename with unique suffix to avoid race)
 if [ -f "$OBSERVATIONS_FILE" ]; then
-  should_rotate=false
   file_size_mb=$(du -m "$OBSERVATIONS_FILE" 2>/dev/null | cut -f1)
   if [ "${file_size_mb:-0}" -ge "$MAX_FILE_SIZE_MB" ]; then
-    should_rotate=true
-  fi
-  # Age-based rotation: rotate files older than MAX_FILE_AGE_DAYS (only if >100KB to avoid rotating near-empty files)
-  if [ "$should_rotate" = "false" ]; then
-    file_bytes=$(wc -c < "$OBSERVATIONS_FILE" 2>/dev/null || echo 0)
-    if [ "$file_bytes" -gt 102400 ]; then
-      if [ -n "$(find "$OBSERVATIONS_FILE" -mtime +${MAX_FILE_AGE_DAYS} 2>/dev/null)" ]; then
-        should_rotate=true
-      fi
-    fi
-  fi
-  if [ "$should_rotate" = "true" ]; then
     archive_dir="${PROJECT_DIR}/observations.archive"
     mkdir -p "$archive_dir"
     mv "$OBSERVATIONS_FILE" "$archive_dir/observations-$(date +%Y%m%d-%H%M%S)-$$.jsonl" 2>/dev/null || true

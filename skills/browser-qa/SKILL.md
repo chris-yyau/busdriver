@@ -1,8 +1,3 @@
----
-name: browser-qa
-description: "Automated visual testing and interaction verification using browser MCP — smoke tests, form validation, responsive checks, and accessibility audits."
----
-
 # Browser QA — Automated Visual Testing & Interaction
 
 ## When to Use

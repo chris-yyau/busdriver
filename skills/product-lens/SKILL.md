@@ -1,8 +1,3 @@
----
-name: product-lens
-description: "Product thinking diagnostic — validates the 'why' before building, runs feature prioritization, and sanity-checks user journeys."
----
-
 # Product Lens — Think Before You Build
 
 ## When to Use

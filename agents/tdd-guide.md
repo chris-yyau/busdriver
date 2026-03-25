@@ -47,37 +47,6 @@ npm run test:coverage
 | **Integration** | API endpoints, database operations | Always |
 | **E2E** | Critical user flows (Playwright) | Critical paths |
 
-## Property-Based Testing (When Applicable)
-
-When code touches **parsers, validators, serializers, auth logic, or money/financial calculations**, suggest property-based tests alongside regular unit tests. Property tests generate random inputs to find edge cases you didn't think of.
-
-| Language | Library | Install |
-|----------|---------|---------|
-| Python | `hypothesis` | `pip install hypothesis` |
-| TypeScript | `fast-check` | `npm install -D fast-check` |
-| Go | `testing/quick` | stdlib (built-in) |
-
-**When to suggest property tests:**
-- Input parsing/validation (URLs, emails, dates, JSON schemas)
-- Serialization round-trips (encode then decode should equal original)
-- Financial calculations (monetary arithmetic, tax, discounts)
-- Auth token generation/validation
-- State machine transitions
-- Any function with invariants (sorted output, idempotent operations)
-
-**What to test as properties:**
-- Round-trip: `decode(encode(x)) == x`
-- Invariants: `sort(xs).length == xs.length`
-- Commutativity: `add(a, b) == add(b, a)`
-- No-crash: function handles arbitrary valid input without exceptions
-- Bounds: output is always within expected range
-
-**Do NOT suggest property tests for:**
-- Simple CRUD operations
-- UI rendering
-- Configuration loading
-- One-off scripts
-
 ## Edge Cases You MUST Test
 
 1. **Null/Undefined** input

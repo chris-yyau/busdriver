@@ -201,9 +201,9 @@ Agent 1 MUST complete first. Its output is input for all other agents.
 
 ## Integration with Other Skills
 
-- Run AFTER `/busdriver:systematic-debugging` (which finds the other 54 bug types)
-- Run BEFORE `/busdriver:verification-before-completion` (which verifies fixes work)
-- Feeds into `/busdriver:test-driven-development` — every bug found here should get a test
+- Run AFTER `/superpowers:systematic-debugging` (which finds the other 54 bug types)
+- Run BEFORE `/superpowers:verification-before-completion` (which verifies fixes work)
+- Feeds into `/superpowers:test-driven-development` — every bug found here should get a test
 
 ---
 

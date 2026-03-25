@@ -49,7 +49,7 @@ This structure informs the task decomposition. Each task should produce self-con
 ```markdown
 # [Feature Name] Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use busdriver:subagent-driven-development (recommended) or busdriver:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** [One sentence describing what this builds]
 
@@ -110,31 +110,23 @@ git commit -m "feat: add specific feature"
 - Reference relevant skills with @ syntax
 - DRY, YAGNI, TDD, frequent commits
 
-## Plan Review Pipeline
+## Plan Review Loop
 
-Two-stage review after saving the plan — content quality first, then architectural sign-off.
+After writing the complete plan:
 
-### Stage 1: Plan Content Review
+1. Dispatch a single plan-document-reviewer subagent (see plan-document-reviewer-prompt.md) with precisely crafted review context — never your session history. This keeps the reviewer focused on the plan, not your thought process.
+   - Provide: path to the plan document, path to spec document
+2. If ❌ Issues Found: fix the issues, re-dispatch reviewer for the whole plan
+3. If ✅ Approved: proceed to execution handoff
 
-Dispatch a plan-document-reviewer subagent (see `plan-document-reviewer-prompt.md`) to verify completeness, spec alignment, task decomposition, and buildability.
-
-1. Dispatch a single reviewer subagent with the plan path and spec path — never your session history
-2. If **Issues Found**: fix the issues, re-dispatch the reviewer
-3. If **Approved**: proceed to Stage 2
-4. If loop exceeds 3 iterations, surface to user for guidance
-
-### Stage 2: Design Review Gate
-
-1. Announce: "Plan content approved. Running design review for architectural sign-off."
-2. Run design review on the plan document — checks architectural soundness, feasibility, and missing edge cases. The specific tool depends on the user's environment (e.g., `design-reviewer` skill, manual review, or CI integration).
-3. If the review finds issues, fix the plan first, then re-run the review (if changes are substantial — e.g., task boundaries or file structure changed — re-run Stage 1 first)
-4. Only proceed to Execution Handoff after the plan passes design review
-
-**Note:** Some environments enforce Stage 2 mechanically via a pre-implementation gate hook that blocks code writes while unreviewed design docs exist. Running both stages here catches issues before wasted implementation work.
+**Review loop guidance:**
+- Same agent that wrote the plan fixes it (preserves context)
+- If loop exceeds 3 iterations, surface to human for guidance
+- Reviewers are advisory — explain disagreements if you believe feedback is incorrect
 
 ## Execution Handoff
 
-After design review passes, offer execution choice:
+After saving the plan, offer execution choice:
 
 **"Plan complete and saved to `docs/superpowers/plans/<filename>.md`. Two execution options:**
 
@@ -145,9 +137,9 @@ After design review passes, offer execution choice:
 **Which approach?"**
 
 **If Subagent-Driven chosen:**
-- **REQUIRED SUB-SKILL:** Use busdriver:subagent-driven-development
+- **REQUIRED SUB-SKILL:** Use superpowers:subagent-driven-development
 - Fresh subagent per task + two-stage review
 
 **If Inline Execution chosen:**
-- **REQUIRED SUB-SKILL:** Use busdriver:executing-plans
+- **REQUIRED SUB-SKILL:** Use superpowers:executing-plans
 - Batch execution with checkpoints for review

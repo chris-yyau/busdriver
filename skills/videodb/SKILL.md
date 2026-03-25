@@ -304,7 +304,7 @@ Use `ws_listener.py` to capture WebSocket events during recording sessions. Desk
 #### Quick Start
 
 1. **Choose state dir**: `STATE_DIR="${VIDEODB_EVENTS_DIR:-$HOME/.local/state/videodb}"`
-2. **Start listener**: `VIDEODB_EVENTS_DIR="$STATE_DIR" python "$HOME/.claude/skills/videodb/scripts/ws_listener.py" --clear "$STATE_DIR" &`
+2. **Start listener**: `VIDEODB_EVENTS_DIR="$STATE_DIR" python scripts/ws_listener.py --clear "$STATE_DIR" &`
 3. **Get WebSocket ID**: `cat "$STATE_DIR/videodb_ws_id"`
 4. **Run capture code** (see reference/capture.md for the full workflow)
 5. **Events written to**: `$STATE_DIR/videodb_events.jsonl`
@@ -372,5 +372,3 @@ Reference documentation is in the `reference/` directory adjacent to this SKILL.
 
 Reference material for this skill is vendored locally under `skills/videodb/reference/`.
 Use the local copies above instead of following external repository links at runtime.
-
-**Maintained By:** [VideoDB](https://www.videodb.io/)

@@ -1,8 +1,3 @@
----
-name: benchmark
-description: "Performance baseline capture and regression detection using browser metrics, CLI benchmarks, and bundle analysis."
----
-
 # Benchmark — Performance Baseline & Regression Detection
 
 ## When to Use

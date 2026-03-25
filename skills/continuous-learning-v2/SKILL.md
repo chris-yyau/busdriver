@@ -149,14 +149,14 @@ Add to your `~/.claude/settings.json`.
       "matcher": "*",
       "hooks": [{
         "type": "command",
-        "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags-shell.sh \"pre:observe\" \"skills/continuous-learning-v2/hooks/observe.sh\" \"standard,strict\""
+        "command": "${CLAUDE_PLUGIN_ROOT}/skills/continuous-learning-v2/hooks/observe.sh"
       }]
     }],
     "PostToolUse": [{
       "matcher": "*",
       "hooks": [{
         "type": "command",
-        "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags-shell.sh \"pre:observe\" \"skills/continuous-learning-v2/hooks/observe.sh\" \"standard,strict\""
+        "command": "${CLAUDE_PLUGIN_ROOT}/skills/continuous-learning-v2/hooks/observe.sh"
       }]
     }]
   }
@@ -172,14 +172,14 @@ Add to your `~/.claude/settings.json`.
       "matcher": "*",
       "hooks": [{
         "type": "command",
-        "command": "bash ~/.claude/skills/continuous-learning-v2/hooks/observe.sh pre"
+        "command": "~/.claude/skills/continuous-learning-v2/hooks/observe.sh"
       }]
     }],
     "PostToolUse": [{
       "matcher": "*",
       "hooks": [{
         "type": "command",
-        "command": "bash ~/.claude/skills/continuous-learning-v2/hooks/observe.sh pre"
+        "command": "~/.claude/skills/continuous-learning-v2/hooks/observe.sh"
       }]
     }]
   }
@@ -227,7 +227,7 @@ Edit `config.json` to control the background observer:
 {
   "version": "2.1",
   "observer": {
-    "enabled": true,
+    "enabled": false,
     "run_interval_minutes": 5,
     "min_observations_to_analyze": 20
   }
@@ -236,7 +236,7 @@ Edit `config.json` to control the background observer:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `observer.enabled` | `true` | Enable the background observer agent (re-enabled 2026-03-21 after safety fixes) |
+| `observer.enabled` | `false` | Enable the background observer agent |
 | `observer.run_interval_minutes` | `5` | How often the observer analyzes observations |
 | `observer.min_observations_to_analyze` | `20` | Minimum observations before analysis runs |
 
@@ -297,16 +297,13 @@ When the same instinct appears in multiple projects with high confidence, it's a
 
 ```bash
 # Promote a specific instinct
-# Use /promote command (recommended) or run instinct-cli.py directly:
-# Plugin install: python3 "$CLAUDE_PLUGIN_ROOT/skills/continuous-learning-v2/scripts/instinct-cli.py" promote prefer-explicit-errors
-# Manual install: python3 "${CLAUDE_PLUGIN_ROOT}/skills/continuous-learning-v2/scripts/instinct-cli.py" promote prefer-explicit-errors
-python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/continuous-learning-v2/..}/skills/continuous-learning-v2/scripts/instinct-cli.py" promote prefer-explicit-errors
+python3 instinct-cli.py promote prefer-explicit-errors
 
 # Auto-promote all qualifying instincts
-python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/forked/everything-claude-code}/skills/continuous-learning-v2/scripts/instinct-cli.py" promote
+python3 instinct-cli.py promote
 
 # Preview without changes
-python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/forked/everything-claude-code}/skills/continuous-learning-v2/scripts/instinct-cli.py" promote --dry-run
+python3 instinct-cli.py promote --dry-run
 ```
 
 The `/evolve` command also suggests promotion candidates.
@@ -359,7 +356,7 @@ v2.1 is fully compatible with v2.0 and v1:
 
 ## Related
 
-- [Skill Creator](https://skill-creator.app) - Generate instincts from repo history
+- [ECC-Tools GitHub App](https://github.com/apps/ecc-tools) - Generate instincts from repo history
 - Homunculus - Community project that inspired the v2 instinct-based architecture (atomic observations, confidence scoring, instinct evolution pipeline)
 - [The Longform Guide](https://x.com/affaanmustafa/status/2014040193557471352) - Continuous learning section
 

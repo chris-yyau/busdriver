@@ -17,7 +17,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/skills/continuous-learning-v2/scripts/instinct-cl
 Or if `CLAUDE_PLUGIN_ROOT` is not set (manual installation):
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/skills/continuous-learning-v2/scripts/instinct-cli.py" import <file-or-url>
+python3 ~/.claude/skills/continuous-learning-v2/scripts/instinct-cli.py import <file-or-url>
 ```
 
 Import instincts from local file paths or HTTP(S) URLs.

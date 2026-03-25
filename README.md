@@ -15,7 +15,7 @@ claude plugin install busdriver@busdriver
 
 ## What It Does
 
-- **Forces a process** — 6-phase pipeline from brainstorming to merge. No skipping phases. No "it's simple, I'll just code it." No.
+- **Forces a process** — 6-phase pipeline from brainstorming to merge. Small, specific tasks (bug fix, typo, config tweak) can skip straight to execution, but everything else goes through the full pipeline. No "it's simple, I'll just code it" for features.
 - **Reviews everything** — Codex reviewer gates every commit. Design reviewer gates every plan. Pre-implementation gate blocks code while plans are unreviewed. Claude will try to rationalize its way past these. It will fail.
 - **Speaks 17 languages** — Go, Python, Rust, TypeScript, Swift, Kotlin, C++, Java, PHP, Perl, Flutter, Django, Spring Boot, Laravel, Nuxt, and more. Each with dedicated patterns, testing skills, and reviewer agents.
 - **29 specialized agents** — Architect, planner, TDD guide, security reviewer, 10 language-specific reviewers, 6 build resolvers, and more. They argue with each other so you don't have to.

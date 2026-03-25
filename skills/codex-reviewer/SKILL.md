@@ -87,7 +87,7 @@ Use this only if pre-commit hooks aren't available:
 
 **1. Set script path:**
 ```bash
-CODEX_SCRIPTS="$HOME/.claude/skills/codex-reviewer/scripts"
+CODEX_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
 ```
 
 **2. Initialize:** `bash $CODEX_SCRIPTS/init-review-loop.sh`
@@ -97,7 +97,7 @@ CODEX_SCRIPTS="$HOME/.claude/skills/codex-reviewer/scripts"
 ```bash
 # Run as BLOCKING call - just wait for the result
 Bash(
-    command='bash "$HOME/.claude/skills/codex-reviewer/scripts/run-review-loop.sh"',
+    command='bash "${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh"',
     timeout=660000  # 11 min timeout (inner timeout is 10 min)
 )
 ```
@@ -208,7 +208,7 @@ If you are about to set `run_in_background=True` for the review loop, STOP. This
 ```bash
 # ✅ CORRECT - blocking, silent
 Bash(
-    command='bash "$HOME/.claude/skills/codex-reviewer/scripts/run-review-loop.sh"',
+    command='bash "${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh"',
     timeout=660000  # 11 min (inner timeout is 10 min)
 )
 # Parse exit code: 0=PASS, 1=FAIL (fix and re-run), 2=TOO_LARGE (split), 124=TIMEOUT (split)
@@ -241,7 +241,7 @@ git reset --soft HEAD~1
 git commit -m "Your message"  # Hooks will enforce review
 
 # If using manual approach:
-CODEX_SCRIPTS="$HOME/.claude/skills/codex-reviewer/scripts"
+CODEX_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
 bash $CODEX_SCRIPTS/init-review-loop.sh 10
 bash $CODEX_SCRIPTS/run-review-loop.sh
 # Fix issues, iterate until PASS, then commit again
@@ -267,7 +267,7 @@ git push                # Push after review passes
 **Manual approach (if no hooks):**
 ```bash
 git add -A                                                          # Stage changes
-CODEX="$HOME/.claude/skills/codex-reviewer/scripts"
+CODEX="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
 bash $CODEX/init-review-loop.sh 10                                  # Initialize
 bash $CODEX/run-review-loop.sh                                      # Review (auto-loops)
 # Fix if FAIL, run again until PASS
@@ -283,8 +283,8 @@ When the pre-PR gate blocks `gh pr create`, run the deep review. This combines t
 
 ```bash
 # Initialize and run in PR mode (same as before)
-CODEX_REVIEW_MODE=pr bash "$HOME/.claude/skills/codex-reviewer/scripts/init-review-loop.sh"
-CODEX_REVIEW_MODE=pr bash "$HOME/.claude/skills/codex-reviewer/scripts/run-review-loop.sh"
+CODEX_REVIEW_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/init-review-loop.sh"
+CODEX_REVIEW_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh"
 ```
 
 If FAIL → fix and re-run (same auto-continue loop as commit mode).

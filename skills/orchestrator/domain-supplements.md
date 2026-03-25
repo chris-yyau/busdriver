@@ -42,28 +42,16 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Patterns: `busdriver:frontend-patterns`
 - Standards: `busdriver:coding-standards`
 - Review: `typescript-reviewer` agent (type safety, async correctness, Node/web security, idiomatic patterns)
-- Design direction: `frontend-design` (local skill — aesthetics, visual hierarchy, anti-slop patterns. `document-skills:frontend-design` is an equivalent alternative)
-- Design context: If `.impeccable.md` exists, read it first. If missing for generative work, suggest `teach-impeccable`.
-- Design refinement: Impeccable-family skills (`animate`, `bolder`, `delight`, `polish`, `colorize`, `distill`, `arrange`, `typeset`, `normalize`, `critique`, `audit`, etc.) — see orchestrator "Design Refinement" section
+- Design: `busdriver:design-system` (generate/audit design tokens). For richer design direction, install Impeccable (`pbakaus/impeccable`) or `document-skills:frontend-design` separately.
 - **Next.js-specific** (detect: `next.config.*`, `app/` with `layout.tsx`/`page.tsx`, RSC patterns):
-  - Framework: `next-best-practices` (file conventions, RSC boundaries, data patterns, async APIs)
   - Turbopack: `busdriver:nextjs-turbopack` (Next.js 16+ incremental bundling, FS caching, when to use Turbopack vs webpack)
-  - Performance: `vercel-react-best-practices` (React + Next.js optimization from Vercel)
-  - Composition: `vercel-composition-patterns` (component patterns that scale)
 - **Bun** (detect: `bun.lock`, `bun.lockb`, `bunfig.toml`, Bun imports):
   - Runtime: `busdriver:bun-runtime` (Bun as runtime, package manager, bundler, test runner; migration from Node)
-- **Video/Media** (detect: Remotion imports, video component creation):
-  - Video: `remotion-best-practices`
 
 ### Nuxt
 **Detection:** `nuxt.config.*`, `.nuxt/` directory, `useFetch`, `useAsyncData`, Nuxt imports
 - Patterns: `busdriver:nuxt4-patterns` (hydration safety, SSR, route rules, lazy loading, data fetching)
 - Review: `code-reviewer` agent (no Nuxt-specific reviewer yet)
-
-### Mobile (React Native / Expo)
-**Detection:** `app.json` with expo config, React Native imports, `*.tsx` with native components, `expo-router`
-- Framework: `vercel-react-native-skills` (performance, navigation, optimization)
-- Native UI: `building-native-ui` (Expo Router, styling, components, animations)
 
 ### Backend (Node.js / Express / Next.js API)
 **Detection:** `*.js`, `*.ts` in API routes, Express/Node.js context
@@ -92,7 +80,6 @@ Domain skills are loaded as context during execution. They are **additive** — 
 ### Database
 **Detection:** SQL, migrations, schema changes, database operations
 - PostgreSQL: `busdriver:postgres-patterns`
-- Supabase Postgres: `supabase-postgres-best-practices` (Supabase-specific Postgres optimization — connection pooling, RLS policies, query performance)
 - ClickHouse: `busdriver:clickhouse-io`
 - Migrations: `busdriver:database-migrations`
 - **DISPATCH `database-reviewer` agent** via Agent tool when writing SQL queries, creating migrations, designing schemas, or modifying database operations. This is NOT optional for database work — the agent catches query performance issues, missing indexes, RLS gaps, and schema design problems.
@@ -156,28 +143,16 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - RAG/retrieval: `busdriver:iterative-retrieval`
 - Text extraction: `busdriver:regex-vs-llm-structured-text`
 - Document processing: `busdriver:nutrient-document-processing`
-- Agent tools: `agent-tools` (inference.sh CLI — image/video generation, multi-model pipelines)
 - Documentation: `busdriver:documentation-lookup` (up-to-date library/framework docs via Context7 MCP — use instead of training data for API references, setup guides, code examples)
 - **PyTorch** (detect: `torch` imports, training loops, CUDA usage):
   - Patterns: `busdriver:pytorch-patterns` (training pipelines, model architectures, data loading)
   - Build issues: `pytorch-build-resolver` agent (tensor shape, CUDA, gradient, DataLoader, mixed precision errors)
-
-### Marketing & Growth
-**Detection:** Marketing copy, landing pages, SEO work, conversion optimization, analytics setup, pricing decisions
-**Sub-categories:**
-- **CRO:** `form-cro`, `page-cro`, `onboarding-cro`, `signup-flow-cro`, `popup-cro`, `paywall-upgrade-cro`, `ab-test-setup`, `analytics-tracking`
-- **Content & Copy:** `content-strategy`, `copywriting`, `copy-editing`, `social-content`, `email-sequence`, `product-marketing-context`
-- **Growth & Monetization:** `pricing-strategy`, `launch-strategy`, `referral-program`, `free-tool-strategy`, `paid-ads`, `competitor-alternatives`, `audit-website`
-- **SEO:** `programmatic-seo`, `seo-audit`, `schema-markup`
-- **Psychology:** `marketing-psychology` (behavioral science, mental models)
-- **Ideas:** `marketing-ideas` (strategy inspiration)
 
 ### Video & Media
 **Detection:** Video files, FFmpeg commands, Remotion imports, video editing context
 - Understanding/indexing: `busdriver:videodb` (ingest, index, search video/audio)
 - Editing workflows: `busdriver:video-editing` (FFmpeg, Remotion, ElevenLabs, fal.ai)
 - Generation: `busdriver:fal-ai-media` (text-to-image/video/audio)
-- Remotion: `remotion-best-practices` (video creation in React)
 
 ### MCP Development
 **Detection:** MCP server code, `@modelcontextprotocol/sdk`, tool/resource definitions

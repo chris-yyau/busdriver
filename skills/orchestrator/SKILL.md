@@ -98,7 +98,7 @@ DO NOT skip phases after your entry point. The ONLY exception is small specific 
 </STRONG-GUIDANCE>
 
 ### Phase 1: Discovery → `busdriver:brainstorming`
-Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design, domain patterns, `frontend-design` + `teach-impeccable` for UI/UX, `busdriver:api-design` for API boundaries. Design Reviewer triggers when design doc is written. Consider `council` if 2+ viable approaches.
+Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design, domain patterns, `busdriver:frontend-patterns` + `busdriver:design-system` for UI/UX, `busdriver:api-design` for API boundaries. Design Reviewer triggers when design doc is written. Consider `council` if 2+ viable approaches.
 **NEXT:** Phase 2 only. INVOKE `busdriver:writing-plans`. Do NOT start coding.
 
 ### Phase 2: Planning → `busdriver:writing-plans`
@@ -157,9 +157,8 @@ Domain skills are **additive** — load all that match. **Full catalog:** `${CLA
 | Python | `*.py` | `python-patterns`, `python-testing`, `python-reviewer` agent |
 | Django | `manage.py` | `django-patterns`, `django-security`, `django-tdd` |
 | Spring Boot | `pom.xml` | `springboot-patterns`, `springboot-security`, `springboot-tdd` |
-| Frontend | `*.tsx`, `*.jsx` | `frontend-patterns`, `next-best-practices`, `coding-standards`, `typescript-reviewer` agent |
+| Frontend | `*.tsx`, `*.jsx` | `frontend-patterns`, `coding-standards`, `typescript-reviewer` agent |
 | Bun | `bun.lock`, `bunfig.toml` | `bun-runtime` |
-| Mobile | `app.json` (expo) | `vercel-react-native-skills`, `building-native-ui` |
 | Backend | API routes | `backend-patterns`, `coding-standards` |
 | C++ | `*.cpp`, `CMakeLists.txt` | `cpp-coding-standards`, `cpp-testing` |
 | Kotlin | `*.kt`, `build.gradle.kts` | `kotlin-patterns`, `kotlin-testing`, `kotlin-coroutines-flows`, `kotlin-reviewer` agent |
@@ -173,7 +172,6 @@ Domain skills are **additive** — load all that match. **Full catalog:** `${CLA
 | Nuxt | `nuxt.config.*` | `nuxt4-patterns` |
 | Perl | `*.pl`, `*.pm` | `perl-patterns`, `perl-security`, `perl-testing` |
 | PHP/Laravel | `*.php`, `composer.json` | `laravel-patterns`, `laravel-security`, `laravel-tdd` |
-| Marketing | Copy, SEO, CRO | `copywriting`, `page-cro`, `seo-audit`, `pricing-strategy` |
 
 ## Non-Pipeline Tasks
 
@@ -182,10 +180,8 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | Task | Trigger keywords | Route(s) |
 |------|-----------------|----------|
 | **Refactoring** | cleanup, dead code | `refactor-cleaner` agent |
-| **Authentication** | login, signup, OAuth, Better Auth | `better-auth-best-practices` + `security-review` |
-| **UI/UX Design** | design, UI review, make it look better | `frontend-design` + `busdriver:frontend-patterns`. Preflight: read `.impeccable.md` if exists |
-| **Design Refinement** | bolder, animations, polish, simplify | Match dimension → `bolder`/`quieter`/`animate`/`delight`/`polish`/`colorize`/`distill`/`arrange`/`typeset`/`normalize`/`extract`/`onboard`/`harden`/`optimize`/`adapt`/`critique`/`web-design-guidelines`/`overdrive`/`clarify`/`audit` |
-| **Design Context** | design guidelines, teach impeccable | `teach-impeccable` |
+| **Authentication** | login, signup, OAuth | `security-review` |
+| **UI/UX Design** | design, UI review, make it look better | `busdriver:frontend-patterns` + `busdriver:design-system` |
 | **Skill Creation** | create/edit skill | `busdriver:writing-skills` |
 | **API Design** | REST endpoints, API versioning | `busdriver:api-design` |
 | **E2E Testing** | browser testing, e2e | `/e2e` command + `e2e-testing` skill |
@@ -204,29 +200,28 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Council** | perspectives, group wisdom, tradeoffs | `council` skill (4-voice: Architect + Skeptic + Pragmatist + Critic) |
 | **Communication** | email triage, Slack, inbox | `chief-of-staff` agent |
 | **Documents** | .docx/.xlsx/.pptx/.pdf, OCR | `document-skills:docx`/`xlsx`/`pptx`/`pdf`, `nutrient-document-processing` |
-| **Creative Artifacts** | poster, generative art, GIF, HTML artifact | `canvas-design` / `algorithmic-art` / `slack-gif-creator` / `web-artifacts-builder` / `theme-factory` |
-| **Writing** | internal comms, status reports, co-author docs | `doc-coauthoring` / `internal-comms` / `brand-guidelines` |
+| **Creative Artifacts** | poster, generative art, GIF, HTML artifact | `document-skills:canvas-design` / `document-skills:algorithmic-art` / `document-skills:slack-gif-creator` / `document-skills:web-artifacts-builder` / `document-skills:theme-factory` |
+| **Writing** | internal comms, status reports, co-author docs | `document-skills:doc-coauthoring` / `document-skills:internal-comms` / `document-skills:brand-guidelines` |
 | **Claude API/SDK** | imports anthropic/claude_agent_sdk | `claude-api` skill, `agent-sdk-dev:new-sdk-app` |
 | **Plugin Dev** | create plugin, add command/agent | `plugin-dev:create-plugin` and sub-skills |
 | **Hook Management** | create hook rule, hookify | `hookify:hookify` / `hookify:list` / `hookify:configure` |
 | **MCP Dev** | build MCP server | `document-skills:mcp-builder` + `mcp-server-patterns` |
-| **CLAUDE.md** | update/audit CLAUDE.md | `claude-md-management:revise-claude-md` / `claude-md-improver` |
+| **CLAUDE.md** | update/audit CLAUDE.md | `claude-md-management:revise-claude-md` |
 | **Canary** | watch deploy, post-deploy check | `canary` skill |
 | **Scheduled Agents** | cron job, run on schedule | `CronCreate`/`CronList`/`CronDelete` tools |
 | **Recurring Tasks** | run every N minutes | `/loop-start` command, `loop-operator` agent |
 | **Notes** | check notes health, refine | `/refine-notes` command |
 | **Webapp Testing** | test local web app, Playwright | `document-skills:webapp-testing` |
 | **Prompt Engineering** | optimize prompt, improve prompt | `/prompt-optimize` command (advisory only) |
-| **Content** | articles, social content, email sequences | `article-writing` / `content-engine` / `crosspost` / `email-sequence` / `x-api` |
+| **Content** | articles, newsletters | `article-writing` / `content-engine` / `crosspost` / `x-api` |
 | **Data Pipelines** | data collector, scheduled scraping | `data-scraper-agent` |
 | **Fundraising** | pitch deck, investor materials | `investor-materials` / `investor-outreach` / `market-research` |
-| **Website Audit** | audit website, site scan | `audit-website` (squirrelscan) |
 | **Media Generation** | generate image/video/audio | `fal-ai-media` |
 | **Video Production** | edit video, analyze, transcribe | `videodb` / `video-editing` / `fal-ai-media` |
 | **Presentations** | create slides, convert PPT | `frontend-slides` |
 | **Agent Architecture** | agent loops, multi-agent DAGs | `autonomous-loops` / `continuous-agent-loop` / `enterprise-agent-ops` / `agent-harness-construction` / `agentic-engineering` / `santa-method`. Agents: `harness-optimizer`, `loop-operator` |
 
-**Unrouted niche skills** (invoke by name or use `/find-skills`): supply chain/manufacturing, marketing CRO/content niches, ADRs, NanoClaw REPL. See the skill registry for full list.
+**Unrouted niche skills** (invoke by name): supply chain/manufacturing, ADRs, NanoClaw REPL. See the skill registry for full list. External skills (Impeccable design verbs, marketing/CRO, framework-specific) resolve from local `~/.claude/skills/` if installed separately.
 
 ## Cross-Cutting Utilities
 
@@ -240,7 +235,6 @@ Available in any pipeline phase:
 | **Browser Automation** | `browser-automation` skill (routes to Playwright/Chrome DevTools/agent-browser) |
 | **Project Setup** | `/setup-pm`, `configure-ecc`, `codebase-onboarding` |
 | **Codebase Understanding** | `greptile` plugin (PR reviews, indexed repo search — requires Greptile MCP) |
-| **Skill Discovery** | `find-skills` |
 | **Docs Lookup** | `docs-lookup` agent or `/docs` command (Context7 MCP) |
 | **Eval/Benchmark** | `eval-harness` |
 | **Performance** | `content-hash-cache-pattern` |
@@ -330,7 +324,7 @@ brainstorming → writing-plans → using-git-worktrees → execution mode → v
 3. System-prompt skill descriptions (fallback)
 4. `/find-skills` (last resort)
 
-**Namespace:** `busdriver:` and `document-skills:` are plugin namespaces. Unprefixed skills are local.
+**Namespace:** `busdriver:` and `document-skills:` are plugin namespaces. Unprefixed skills resolve from local `~/.claude/skills/` if installed.
 
 ### Pipeline Self-Maintenance
 Commit and push changes to `~/.claude/hooks/`, `~/.claude/skills/`, or `${CLAUDE_PLUGIN_ROOT}/` before ending session.

@@ -85,6 +85,14 @@ fi
 #    This prevents false positives like "lesson-council-reflection-design.md"
 # 2. File is inside a plans/ or specs/ directory under .claude/ or docs/
 #    (covers docs/plans/, docs/superpowers/plans/, docs/superpowers/specs/, etc.)
+#
+# Exclusion: files in structural directories that never contain design docs
+# (agents/, commands/, scripts/, hooks/, tests/, src/, lib/, skills/)
+# Prevents false positives like agents/plan-code-reviewer.md
+if echo "$FILE_PATH" | grep -qE '(^|/)(agents|commands|scripts|hooks|tests|src|lib|skills)/'; then
+  exit 0
+fi
+
 BASENAME=$(basename "$FILE_PATH")
 IS_DESIGN=false
 if echo "$BASENAME" | grep -qiE '^(PLAN|DESIGN|ARCHITECTURE).*\.md$'; then

@@ -71,6 +71,20 @@ To review design/plan documents, you MUST invoke the `design-reviewer` SKILL (vi
 Do NOT use `code-reviewer` agent — it cannot write the `<!-- design-reviewed: PASS -->` marker.
 </CRITICAL>
 
+### Skip File Protocol
+
+Skip files (`.claude/skip-codex-review.local`, `.claude/skip-design-review.local`) have a 30-second self-bypass detection. Files created within 30s are rejected and deleted — this prevents Claude from creating skip files itself to bypass gates.
+
+**When a gate blocks and the user needs to bypass:**
+1. Tell the user to create the appropriate skip file using the **full absolute path** (their terminal CWD may differ from the project):
+   - Codex gate: `touch /absolute/path/to/project/.claude/skip-codex-review.local`
+   - Design gate: `touch /absolute/path/to/project/.claude/skip-design-review.local`
+2. Wait for user confirmation
+3. **You** run `sleep 32` before attempting the gated action — never ask the user to wait
+4. Then retry the blocked action
+
+Skip files are single-use (consumed after one bypass) and logged to `.claude/bypass-log.jsonl`.
+
 ## The Pipeline
 
 ### Entry Routing

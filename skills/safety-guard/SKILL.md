@@ -1,3 +1,8 @@
+---
+name: safety-guard
+description: "Prevent destructive operations on production systems — restricts edits to specific directories and blocks dangerous commands during autonomous runs."
+---
+
 # Safety Guard — Prevent Destructive Operations
 
 ## When to Use

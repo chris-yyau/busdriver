@@ -1,3 +1,8 @@
+---
+name: design-system
+description: "Generate and audit visual design systems — extracts tokens, components, and patterns from codebases for consistency reviews."
+---
+
 # Design System — Generate & Audit Visual Systems
 
 ## When to Use

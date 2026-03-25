@@ -1,3 +1,8 @@
+---
+name: canary-watch
+description: "Post-deploy monitoring loop that watches a deployed URL for regressions after shipping, merging risky PRs, or during launch windows."
+---
+
 # Canary Watch — Post-Deploy Monitoring
 
 ## When to Use

@@ -24,7 +24,7 @@ DO NOT rationalize skipping review. These thoughts are violations:
 - "The diff is too small to matter"
 
 EVERY commit MUST:
-1. Run `run-review-loop.sh` as a BLOCKING bash call (timeout=660000)
+1. Run `run-review-loop.sh` as a BLOCKING bash call (timeout=1860000)
 2. Wait for the result — NEVER run in background
 3. If FAIL: fix issues silently, re-run — do NOT ask user between iterations
 4. If PASS: proceed to tests and commit
@@ -98,7 +98,7 @@ CODEX_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
 # Run as BLOCKING call - just wait for the result
 Bash(
     command='bash "${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh"',
-    timeout=660000  # 11 min timeout (inner timeout is 10 min)
+    timeout=1860000  # 31 min timeout (inner codex review timeout is 30 min)
 )
 ```
 
@@ -124,7 +124,7 @@ git commit -m "Message"
 
 **This is the default workflow** - fully automated, silent iteration:
 
-1. Run review (BLOCKING, 11 min timeout) → get result
+1. Run review (BLOCKING, 31 min timeout) → get result
 2. If PASS → done, proceed to tests & commit
 3. If FAIL → **silently** fix issues, stage, re-run step 1
 4. If TOO LARGE (exit 2) or TIMEOUT (exit 124) → auto-split (see below)
@@ -132,7 +132,7 @@ git commit -m "Message"
 
 **CRITICAL RULES:**
 - **NO background tasks** - run blocking, wait for result
-- **NO polling/sleep loops** - just use timeout=660000
+- **NO polling/sleep loops** - just use timeout=1860000
 - **NO user interaction** between iterations - fix silently
 - **NO verbose progress** - don't narrate each step
 - **ONLY talk to user when:** PASS, max iterations, or error
@@ -209,7 +209,7 @@ If you are about to set `run_in_background=True` for the review loop, STOP. This
 # ✅ CORRECT - blocking, silent
 Bash(
     command='bash "${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh"',
-    timeout=660000  # 11 min (inner timeout is 10 min)
+    timeout=1860000  # 11 min (inner timeout is 10 min)
 )
 # Parse exit code: 0=PASS, 1=FAIL (fix and re-run), 2=TOO_LARGE (split), 124=TIMEOUT (split)
 
@@ -388,7 +388,7 @@ The pre-PR gate verifies the marker's SHA matches current HEAD. Stale markers fr
 1. **Review before commit** - No exceptions
 2. **Silent auto-continue** - Fix and re-review without talking to user
 3. **Max iterations safety** - Stop at 10, ask user
-4. **Blocking execution** - Run with timeout=660000, NEVER use background
+4. **Blocking execution** - Run with timeout=1860000, NEVER use background
 5. **Structured output** - Parse JSON for status and issues
 6. **Test after pass** - Run test suite before committing
 7. **Split large commits** - If >800 weighted lines (override: `CODEX_MAX_WEIGHTED_LINES`), split into logical commits FIRST. PR mode skips size check.

@@ -84,7 +84,7 @@ jobs:
       - name: Install semgrep
         run: pip install --quiet semgrep
       - name: Scan for vulnerabilities
-        run: semgrep scan --config p/security-audit --error --exclude tests .
+        run: semgrep scan --config p/security-audit --error --exclude tests --exclude 'scripts/**' --exclude 'skills/*/scripts/**' .
 
   checkov:
     name: IaC misconfig

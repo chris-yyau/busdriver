@@ -248,8 +248,8 @@ Available in any pipeline phase:
 | Category | Route(s) |
 |----------|----------|
 | **Context/Session** | `/save-session`, `/resume-session`, `/aside`, `/sessions`, `strategic-compact`, `context-budget` |
-| **Web Research** | `web-research` skill (global — `~/.claude/skills/`) |
-| **Browser Automation** | `browser-automation` skill (global — `~/.claude/skills/`) |
+| **Web Research** | `deep-research` (Firecrawl + Exa), `exa-search` (neural search) |
+| **Browser Automation** | `agent-browser` CLI, Playwright MCP, Chrome DevTools MCP |
 | **Project Setup** | `/setup-pm`, `configure-ecc`, `codebase-onboarding` |
 | **Docs Lookup** | `docs-lookup` agent or `/docs` command (Context7 MCP) |
 | **Eval/Benchmark** | `eval-harness` |

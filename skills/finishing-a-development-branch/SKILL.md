@@ -135,7 +135,7 @@ EOF
 )"
 ```
 
-Then: Doc sync (Step 6) → Cleanup worktree (Step 7)
+Then: Doc sync (Step 6) → Offer Land & Deploy (Step 8) → Cleanup worktree (Step 9)
 
 #### Option 3: Keep As-Is
 
@@ -197,7 +197,121 @@ done
 
 **If no stale references:** Note "Doc sync: no stale references found" and continue.
 
-### Step 7: Cleanup Worktree
+### Step 7: Land & Deploy (Option 2 only, optional)
+
+After PR is created, offer to continue through merge and deployment:
+
+```
+PR created. Would you like me to land and deploy?
+
+This will: merge the PR → wait for CI → verify production health.
+
+[Yes / No, I'll handle it]
+```
+
+**If user declines:** Stop. The PR is ready for manual handling.
+
+**If user accepts:**
+
+#### 7a. Merge the PR
+
+```bash
+# Wait for PR CI checks to pass
+gh pr checks <PR_NUMBER> --watch
+
+# Merge (prefer squash for clean history)
+gh pr merge <PR_NUMBER> --squash --delete-branch
+```
+
+If CI fails, report the failure and stop. Do NOT merge with failing checks.
+
+#### 7b. Detect Deploy Mechanism
+
+```bash
+# Check for common deploy configurations
+[ -f "vercel.json" ] && echo "vercel"
+[ -f "netlify.toml" ] && echo "netlify"
+[ -f "fly.toml" ] && echo "fly"
+[ -f "railway.json" ] && echo "railway"
+[ -f "render.yaml" ] && echo "render"
+[ -f "Procfile" ] && echo "heroku"
+[ -f ".github/workflows/deploy.yml" ] && echo "github-actions"
+```
+
+| Platform | Deploy trigger | How to verify |
+|----------|---------------|---------------|
+| Vercel / Netlify | Auto-deploy on merge to main | Watch post-merge run: `gh run list -b main --limit 1 --json status` |
+| Fly.io | `fly deploy` or CI | `fly status` |
+| GitHub Actions | Auto-trigger on push to main | `gh run list -b main --limit 1` then `gh run watch <RUN_ID>` |
+| Custom script | Check `package.json` scripts or `Makefile` | Ask user for deploy command |
+
+**After merge, watch the post-merge CI/deploy run** (not the PR checks, which cover the PR context only):
+```bash
+# Wait for the post-merge run to appear and complete
+sleep 5  # Give CI a moment to trigger
+gh run list -b main --limit 1 --json databaseId,status,conclusion
+gh run watch <RUN_ID>  # Watch until completion
+```
+
+**If auto-deploy platform detected:** Wait for deploy run to complete.
+**If manual deploy needed:** Ask user for the deploy command before proceeding.
+**If no deploy mechanism found:** Skip to health check or ask user.
+
+#### 7c. Verify Production Health
+
+After deployment completes:
+
+```bash
+# If production URL is known
+curl -s -o /dev/null -w "%{http_code}" <PRODUCTION_URL>
+```
+
+Report:
+
+```
+## Land & Deploy Summary
+
+| Step | Status |
+|------|--------|
+| PR merged | ✓ Squash-merged to <base-branch> |
+| CI checks | ✓ All passing |
+| Deploy | ✓ Deployed via <platform> |
+| Health check | ✓ Production returning 200 |
+```
+
+**If health check fails:**
+
+```
+⚠ Production health check failed.
+
+Rollback options:
+1. Revert the merge commit: git revert <merge-sha> && git push
+2. Re-deploy previous version: <platform-specific command>
+3. Investigate (invoke busdriver:systematic-debugging)
+
+Which option?
+```
+
+**Always provide rollback instructions.** The user must have an explicit escape path — never leave them with a broken deploy and no guidance.
+
+#### 7d. Post-Deploy Monitoring (optional)
+
+If the `busdriver:canary` skill is available and a production URL is known, offer canary monitoring:
+
+```
+Deploy verified. Want me to start canary monitoring? (watches for console errors,
+performance regressions, and page failures for the next hour)
+
+[Yes / No]
+```
+
+If yes:
+1. First capture a **baseline** using `busdriver:canary` in baseline mode (this is required — canary compares against it)
+2. Then start monitoring mode
+
+If no baseline can be captured (e.g., no browser available), note the limitation and skip canary.
+
+### Step 8: Cleanup Worktree
 
 **For Options 1, 2, 4:**
 
@@ -223,14 +337,15 @@ git worktree remove <worktree-path>
 | 4. Options | Present 4 choices | Always |
 | 5. Execute | Run chosen option | Always |
 | 6. Doc sync | Cross-reference docs vs diff | Options 1 & 2 |
-| 7. Worktree cleanup | Remove worktree | Options 1, 2, 4 |
+| 7. Land & Deploy | Merge PR → CI → deploy → verify | Option 2 (if user accepts) |
+| 8. Worktree cleanup | Remove worktree | Options 1, 2, 4 |
 
-| Option | Merge | Push | Doc Sync | Cleanup |
-|--------|-------|------|----------|---------|
-| 1. Merge locally | ✓ | - | ✓ | ✓ |
-| 2. Create PR | - | ✓ | ✓ | ✓ |
-| 3. Keep as-is | - | - | - | - |
-| 4. Discard | - | - | - | ✓ (force) |
+| Option | Merge | Push | Doc Sync | Cleanup | Land & Deploy |
+|--------|-------|------|----------|---------|---------------|
+| 1. Merge locally | ✓ | - | ✓ | ✓ | - |
+| 2. Create PR | - | ✓ | ✓ | ✓ | Optional |
+| 3. Keep as-is | - | - | - | - | - |
+| 4. Discard | - | - | - | ✓ (force) | - |
 
 ## Common Mistakes
 
@@ -262,6 +377,8 @@ git worktree remove <worktree-path>
 - Delete work without confirmation
 - Force-push without explicit request
 - Skip doc sync when files were renamed or deleted
+- Merge a PR with failing CI checks
+- Deploy without providing rollback instructions
 
 **Always:**
 - Verify tests before offering options
@@ -270,6 +387,8 @@ git worktree remove <worktree-path>
 - Run doc sync for Options 1 & 2
 - Get typed confirmation for Option 4
 - Clean up worktree for Options 1, 2 & 4
+- Provide explicit rollback path after every deploy
+- Ask before starting Land & Deploy — never auto-deploy
 
 ## Integration
 
@@ -279,3 +398,4 @@ git worktree remove <worktree-path>
 
 **Pairs with:**
 - **using-git-worktrees** - Cleans up worktree created by that skill
+- **canary** - Post-deploy monitoring (offered at end of Land & Deploy)

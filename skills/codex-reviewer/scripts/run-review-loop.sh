@@ -287,7 +287,7 @@ echo ""
 # Execute codex review
 # Uses global reasoning mode for deep analysis
 # Prompt includes CRITICAL_INSTRUCTION to force JSON at end
-REVIEW_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-1800}"  # 30 minutes default, configurable via env var
+REVIEW_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-1200}"  # 20 minutes default, configurable via env var
 set +e
 REVIEW_OUTPUT=$(timeout "$REVIEW_TIMEOUT" codex review "$FINAL_PROMPT" 2>&1)
 REVIEW_EXIT=$?

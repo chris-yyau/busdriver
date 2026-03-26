@@ -98,7 +98,7 @@ CODEX_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
 # Run as BLOCKING call - just wait for the result
 Bash(
     command='bash "${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh"',
-    timeout=1860000  # 31 min timeout (inner codex review timeout is 30 min)
+    timeout=1260000  # 21 min timeout (inner codex review timeout is 20 min)
 )
 ```
 
@@ -124,7 +124,7 @@ git commit -m "Message"
 
 **This is the default workflow** - fully automated, silent iteration:
 
-1. Run review (BLOCKING, 31 min timeout) → get result
+1. Run review (BLOCKING, 21 min timeout) → get result
 2. If PASS → done, proceed to tests & commit
 3. If FAIL → **silently** fix issues, stage, re-run step 1
 4. If TOO LARGE (exit 2) or TIMEOUT (exit 124) → auto-split (see below)
@@ -209,7 +209,7 @@ If you are about to set `run_in_background=True` for the review loop, STOP. This
 # ✅ CORRECT - blocking, silent
 Bash(
     command='bash "${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh"',
-    timeout=1860000  # 31 min timeout (inner codex review timeout is 30 min)
+    timeout=1260000  # 21 min timeout (inner codex review timeout is 20 min)
 )
 # Parse exit code: 0=PASS, 1=FAIL (fix and re-run), 2=TOO_LARGE (split), 124=TIMEOUT (split)
 

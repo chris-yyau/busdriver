@@ -209,7 +209,7 @@ If you are about to set `run_in_background=True` for the review loop, STOP. This
 # ✅ CORRECT - blocking, silent
 Bash(
     command='bash "${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh"',
-    timeout=1860000  # 11 min (inner timeout is 10 min)
+    timeout=1860000  # 31 min timeout (inner codex review timeout is 30 min)
 )
 # Parse exit code: 0=PASS, 1=FAIL (fix and re-run), 2=TOO_LARGE (split), 124=TIMEOUT (split)
 

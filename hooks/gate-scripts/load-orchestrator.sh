@@ -287,10 +287,6 @@ fi
 # observation (ECC v2 observer + /reflect manual system). Only loads instincts with
 # confidence >= 0.7 (strong patterns only). Format: compact one-liner per instinct.
 # Security: instinct content is sanitized (HTML tags, markdown injection stripped).
-INSTINCT_DIRS=(
-    "${HOME}/.claude/homunculus/instincts/inherited"
-    "${HOME}/.claude/homunculus/instincts/personal"
-)
 instinct_output=$(python3 << 'INSTINCT_EOF' 2>/dev/null || true
 import os, glob, re
 from datetime import datetime

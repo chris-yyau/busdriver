@@ -14,8 +14,29 @@ When invoked:
 1. **Gather context** — Run `git diff --staged` and `git diff` to see all changes. If no diff, check recent commits with `git log --oneline -5`.
 2. **Understand scope** — Identify which files changed, what feature/fix they relate to, and how they connect.
 3. **Read surrounding code** — Don't review changes in isolation. Read the full file and understand imports, dependencies, and call sites.
-4. **Apply review checklist** — Work through each category below, from CRITICAL to LOW.
-5. **Report findings** — Use the output format below. Only report issues you are confident about (>80% sure it is a real problem).
+4. **Fix-First pass** — Silently fix deterministic trivial issues before reporting (see Fix-First section below).
+5. **Apply review checklist** — Work through each category below, from CRITICAL to LOW. Include production bug patterns.
+6. **Report findings** — Use the output format below. Only report issues you are confident about (>80% sure it is a real problem). Include estimated fix time.
+
+## Fix-First Mode
+
+Before reporting findings, **silently fix** these deterministic, low-risk issues directly in the code:
+
+| Auto-fix | Example |
+|----------|---------|
+| Unused imports | `import { foo, bar } from 'x'` where `bar` is never used → remove `bar` |
+| Trailing whitespace | Strip trailing spaces/tabs |
+| Missing trailing newline | Add newline at end of file |
+| Duplicate imports | Merge `import { a } from 'x'; import { b } from 'x'` → `import { a, b } from 'x'` |
+
+**DO NOT auto-fix** (report instead):
+- `console.log` statements — some are intentional program output (CLI tools, scripts). Report them and let the author decide.
+- Unused variables (may indicate incomplete implementation)
+- Any change to logic, control flow, or data handling
+- Anything touching error handling, retries, or concurrency
+- Anything requiring judgment about intent
+
+After fixing, note in the review summary what was auto-fixed. Do NOT stage the changes yourself (`git add`) — the caller handles staging. This preserves the reviewer's contract as a reporter, not a mutator of the patch under review.
 
 ## Confidence-Based Filtering
 
@@ -156,6 +177,43 @@ const usersWithPosts = await db.query(`
 `);
 ```
 
+### Production Bug Patterns (HIGH)
+
+These patterns pass CI but blow up in production. Hunt for them explicitly:
+
+- **Broken invariants** — Balance/counter updates without atomic transactions; data constraints that can be violated by concurrent writes
+- **Stale reads** — Queries inside transactions without `FOR UPDATE` or appropriate isolation level; read-then-write patterns without locking
+- **Bad retry logic** — Retries without exponential backoff or jitter; missing circuit breakers; retrying non-idempotent operations
+- **Forgotten enum handlers** — Switch/match statements missing cases for known enum values; default branches that silently swallow unexpected variants
+- **Missing index hints** — Foreign key columns, WHERE clause columns, or JOIN columns without indexes (flag for DB reviewer)
+- **Trust boundary violations** — Internal service responses used without validation; assuming upstream data is well-formed
+
+```typescript
+// BAD: Broken invariant — balance can go negative under concurrent access
+const balance = await db.query('SELECT balance FROM accounts WHERE id = $1', [id]);
+if (balance >= amount) {
+  await db.query('UPDATE accounts SET balance = balance - $1 WHERE id = $2', [amount, id]);
+}
+
+// GOOD: Atomic check-and-update
+await db.query(
+  'UPDATE accounts SET balance = balance - $1 WHERE id = $2 AND balance >= $1',
+  [amount, id]
+);
+```
+
+```typescript
+// BAD: Retry without backoff on non-idempotent operation
+for (let i = 0; i < 3; i++) {
+  try { await createOrder(data); break; } catch { continue; }
+}
+
+// GOOD: Idempotency key + exponential backoff
+await retryWithBackoff(() => createOrder(data, { idempotencyKey }), {
+  maxRetries: 3, baseDelay: 1000, jitter: true
+});
+```
+
 ### Performance (MEDIUM)
 
 - **Inefficient algorithms** — O(n^2) when O(n log n) or O(n) is possible
@@ -175,10 +233,10 @@ const usersWithPosts = await db.query(`
 
 ## Review Output Format
 
-Organize findings by severity. For each issue:
+Organize findings by severity. For each issue, include estimated fix time:
 
 ```
-[CRITICAL] Hardcoded API key in source
+[CRITICAL] Hardcoded API key in source (~5 min fix)
 File: src/api/client.ts:42
 Issue: API key "sk-abc..." exposed in source code. This will be committed to git history.
 Fix: Move to environment variable and add to .gitignore/.env.example
@@ -186,6 +244,11 @@ Fix: Move to environment variable and add to .gitignore/.env.example
   const apiKey = "sk-abc123";           // BAD
   const apiKey = process.env.API_KEY;   // GOOD
 ```
+
+**Fix time estimates** help prioritize — a 5-minute fix should never be deferred:
+- `~5 min` — Mechanical change (rename, move, add guard clause)
+- `~15 min` — Requires reading context (add error handling, fix a pattern)
+- `~30+ min` — Structural change (refactor, add test coverage, rethink approach)
 
 ### Summary Format
 
@@ -201,6 +264,7 @@ End every review with:
 | MEDIUM   | 3     | info   |
 | LOW      | 1     | note   |
 
+Auto-fixed: 2 issues (removed 1 console.log, 1 unused import)
 Verdict: WARNING — 2 HIGH issues should be resolved before merge.
 ```
 

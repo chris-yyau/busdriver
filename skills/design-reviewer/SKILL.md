@@ -59,9 +59,9 @@ Three-tier consensus model:
 
 | Component | Focus | Typical Time | Confidence Range |
 |-----------|-------|--------------|------------------|
-| Gemini | Comprehensive (all aspects) | 30-60s | Self-reported 0.0-1.0 |
-| Codex | Comprehensive (all aspects) | 2-5min | Self-reported 0.0-1.0 |
-| Claude | Validation + codebase context | 2-4min | Self-reported 0.0-1.0 |
+| Gemini | Comprehensive (all aspects) | 1-5min | Self-reported 0.0-1.0 |
+| Codex | Comprehensive (all aspects) | 1-5min | Self-reported 0.0-1.0 |
+| Claude | Validation + codebase context | 2-5min | Self-reported 0.0-1.0 |
 | Consensus | Agreement detection + auto-fix | 10-30s | Weighted average |
 
 **Completion criteria:** All three reviewers PASS (only low-severity or low-confidence issues remain)
@@ -117,8 +117,8 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/design-reviewer/scripts/run-design-review-loo
 ```
 
 **Automated workflow:**
-1. **Run Gemini review** sequentially (est. 30-60s)
-2. **Run Codex review** sequentially (est. 2-5min)
+1. **Run Gemini review** sequentially (est. 1-5min)
+2. **Run Codex review** sequentially (est. 1-5min)
 3. **Run Claude validation** with codebase access (requires manual step or pre-existing output)
 4. **Analyze consensus** using semantic similarity (0.7 threshold)
 5. **Apply auto-fixes** for unanimous high-confidence issues (max 5)
@@ -395,7 +395,7 @@ If not installed, the workflow falls back to placeholder mode. Install CLIs for 
 
 - Limit files examined: `max_codebase_files` in config (default: 20)
 - Skip validation for low severity: `skip_low_severity: true`
-- Increase timeout: `timeout_ms` (default: 300000 = 5min)
+- Increase timeout: `timeout_ms` (default: 600000 = 10min)
 
 **Issue: Reviews conflict (one PASS, others FAIL)**
 
@@ -421,7 +421,7 @@ Edit `${CLAUDE_PLUGIN_ROOT}/skills/design-reviewer/config/default_config.json`:
   "claude_validation": {
     "max_codebase_files": 20,           // Limit files examined
     "skip_low_severity": true,          // Skip validating low issues
-    "timeout_ms": 300000                // 5 minutes
+    "timeout_ms": 600000                // 10 minutes
   },
   "iteration": {
     "max_iterations": 5,                // Loop safety limit

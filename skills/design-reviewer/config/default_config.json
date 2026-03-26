@@ -8,7 +8,7 @@
   "claude_validation": {
     "max_codebase_files": 20,
     "skip_low_severity": true,
-    "timeout_ms": 300000
+    "timeout_ms": 600000
   },
   "iteration": {
     "max_iterations": 5,
@@ -17,15 +17,15 @@
   "reviewers": {
     "gemini": {
       "enabled": true,
-      "timeout_ms": 120000
+      "timeout_ms": 600000
     },
     "codex": {
       "enabled": true,
-      "timeout_ms": 300000
+      "timeout_ms": 600000
     },
     "claude": {
       "enabled": true,
-      "timeout_ms": 300000
+      "timeout_ms": 600000
     }
   }
 }

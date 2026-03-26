@@ -300,7 +300,7 @@ DO NOT:
 - Create the PR while agents are still running
 - Use early agent results to decide "no blocking issues" before all return
 
-If an agent is slow, WAIT. If it times out after 5 minutes, mark it as timed-out and proceed with the remaining results. But never proceed while agents are still "running" or "in progress".
+If an agent is slow, WAIT. If it times out after 10 minutes, mark it as timed-out and proceed with the remaining results. But never proceed while agents are still "running" or "in progress".
 </EXTREMELY-IMPORTANT>
 
 After codex CLI passes, dispatch **5 parallel review agents** using the Agent tool. Each reviews the full `base..HEAD` diff from a different lens. Launch all 5 in a **single message** for concurrency.
@@ -360,11 +360,11 @@ mkdir -p .claude && echo "PASS pr-review $(git rev-parse --short HEAD) $(date +%
 
 ### Degraded States
 
-Wait for all agents. Only apply quorum AFTER agents have timed out (5 min), never while they're still running.
+Wait for all agents. Only apply quorum AFTER agents have timed out (10 min), never while they're still running.
 
 | Failure | Handling |
 |---------|----------|
-| Agent times out (>5 min) | Mark as timed-out. Proceed with returned results only after ALL agents are either returned or timed-out |
+| Agent times out (>10 min) | Mark as timed-out. Proceed with returned results only after ALL agents are either returned or timed-out |
 | ≥3 agents returned | **3-of-5 quorum** — valid review. Evaluate findings from returned agents |
 | <3 agents returned | `inconclusive` — fail-closed, do not write marker |
 | All agents timeout | Fail-closed. Fall back to codex CLI result only (degrade to fast mode) |

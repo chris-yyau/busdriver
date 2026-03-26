@@ -2653,11 +2653,6 @@
       "status": "local"
     },
     {
-      "path": "skills/browser-automation/SKILL.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
       "path": "skills/canary/SKILL.md",
       "source": "local",
       "status": "local"
@@ -2699,11 +2694,6 @@
     },
     {
       "path": "skills/reflect/SKILL.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/web-research/SKILL.md",
       "source": "local",
       "status": "local"
     }

@@ -5,6 +5,8 @@ description: Post-deploy canary monitoring — baseline capture + continuous mon
 
 # Post-Deploy Canary Monitor
 
+<!-- Origin: inspired by garrytan/gstack /canary skill -->
+
 Monitor production health after deployment by comparing against a pre-deploy baseline. Detects regressions in page load times, console errors, and page availability.
 
 ## When to Use

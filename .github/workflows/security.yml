@@ -5,8 +5,39 @@ name: Security
 on:
   push:
     branches: [main]
+    paths:
+      - '.github/**'
+      - '**/*.sh'
+      - '**/*.js'
+      - '**/*.mjs'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - 'package.json'
+      - '**/package-lock.json'
+    paths-ignore:
+      - '**/*.md'
   pull_request:
-    branches: [main]
+    paths:
+      - '.github/**'
+      - '**/*.sh'
+      - '**/*.js'
+      - '**/*.mjs'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - 'package.json'
+      - '**/package-lock.json'
+    paths-ignore:
+      - '**/*.md'
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   trivy:
@@ -92,7 +123,29 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - name: Verify SHA pinning
+        run: bash .github/scripts/check-pinned-uses.sh
       - name: Install zizmor
         run: pip install --quiet zizmor
       - name: Scan GitHub Actions workflows
         run: zizmor .github/workflows/
+
+  reports:
+    if: always()
+    needs: [trivy, semgrep, checkov, zizmor]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - name: Write summary
+        run: |
+          {
+            echo "## Security Backstop"
+            echo "| Scanner | Result |"
+            echo "|---------|--------|"
+            echo "| trivy | ${{ needs.trivy.result }} |"
+            echo "| semgrep | ${{ needs.semgrep.result }} |"
+            echo "| checkov | ${{ needs.checkov.result }} |"
+            echo "| zizmor | ${{ needs.zizmor.result }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

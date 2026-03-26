@@ -80,10 +80,10 @@ Then dispatch available CLIs in a **single Bash call** with both as background p
 ```bash
 DISPATCH="${CLAUDE_PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
 [ "$(which gemini &>/dev/null && echo yes || echo no)" = "yes" ] && "$DISPATCH" \
-  --cli gemini --timeout 120 \
+  --cli gemini --timeout 300 \
   --prompt "<Pragmatist prompt>" &
 [ "$(which codex &>/dev/null && echo yes || echo no)" = "yes" ] && "$DISPATCH" \
-  --cli codex --timeout 120 \
+  --cli codex --timeout 300 \
   --prompt "<Critic prompt>" &
 wait
 ```

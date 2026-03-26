@@ -21,6 +21,47 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST
 
 If you haven't completed Phase 1, you cannot propose fixes.
 
+## The 3-Fix Rule
+
+```
+3 FAILED FIXES = STOP. QUESTION THE ARCHITECTURE.
+```
+
+After 3 unsuccessful fix attempts, you MUST stop and discuss with your human partner whether the architecture itself is the problem. Do NOT attempt Fix #4 without this discussion. Each fix that reveals a new problem in a different place is a signal you're fighting the architecture, not a bug.
+
+## Scope Lock (Freeze/Guard)
+
+**On entering Phase 1, activate scope lock:**
+
+```bash
+# Lock edits to the directory under investigation
+echo "path/to/investigation/scope" > .claude/freeze-scope.local
+```
+
+This activates a PreToolUse hook that blocks Write/Edit operations targeting files outside the specified directory. This prevents accidentally modifying unrelated code during investigation.
+
+- **Expand scope:** `echo "new/path" > .claude/freeze-scope.local`
+- **Unfreeze:** `rm .claude/freeze-scope.local`
+- Scope lock is automatically removed when debugging concludes
+
+Infrastructure files (.claude/*, CLAUDE.md, docs/) are always allowed regardless of freeze scope.
+
+## Hypothesis Counter
+
+Track hypotheses explicitly. This prevents implicit retesting of the same theory and makes it obvious when you've exhausted simple explanations.
+
+```
+Hypothesis #1: [theory] — because [evidence]
+  Result: [confirmed/rejected] — [what we learned]
+
+Hypothesis #2: [theory] — because [evidence]
+  Result: [confirmed/rejected] — [what we learned]
+
+Hypothesis #3: [theory] — because [evidence]
+  Result: [confirmed/rejected] — [what we learned]
+  → 3-FIX RULE TRIGGERED: Discuss architecture with human partner
+```
+
 ## When to Use
 
 Use for ANY technical issue:
@@ -50,6 +91,12 @@ You MUST complete each phase before proceeding to the next.
 ### Phase 1: Root Cause Investigation
 
 **BEFORE attempting ANY fix:**
+
+0. **Activate Scope Lock**
+   - Identify the directory most likely containing the bug
+   - Run: `echo "path/to/scope" > .claude/freeze-scope.local`
+   - This prevents accidental edits outside the investigation area
+   - You can expand scope later if the root cause is elsewhere
 
 1. **Read Error Messages Carefully**
    - Don't skip past errors or warnings
@@ -212,6 +259,10 @@ You MUST complete each phase before proceeding to the next.
 
    This is NOT a failed hypothesis - this is a wrong architecture.
 
+6. **Release Scope Lock**
+   - After the fix is verified: `rm -f .claude/freeze-scope.local`
+   - Do NOT leave the freeze active after debugging concludes
+
 ## Red Flags - STOP and Follow Process
 
 If you catch yourself thinking:
@@ -226,6 +277,7 @@ If you catch yourself thinking:
 - Proposing solutions before tracing data flow
 - **"One more fix attempt" (when already tried 2+)**
 - **Each fix reveals new problem in different place**
+- **Editing files outside the investigation scope** (freeze should be active)
 
 **ALL of these mean: STOP. Return to Phase 1.**
 

@@ -69,6 +69,17 @@
         "description": "[GATE] Block impl code while design docs unreviewed"
       },
       {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/freeze-guard.sh\"",
+            "timeout": 3
+          }
+        ],
+        "description": "[GATE] Freeze/Guard — restrict edits to investigation scope during debugging"
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {

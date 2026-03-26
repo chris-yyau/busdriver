@@ -71,6 +71,13 @@ To review design/plan documents, you MUST invoke the `design-reviewer` SKILL (vi
 Do NOT use `code-reviewer` agent — it cannot write the `<!-- design-reviewed: PASS -->` marker.
 </CRITICAL>
 
+### Freeze/Guard (Debugging Scope Lock)
+**Trigger:** `.claude/freeze-scope.local` exists (created by systematic-debugging skill on Phase 1 entry)
+**Behavior:** Blocks Write/Edit operations targeting files outside the directory specified in the state file. Infrastructure files (.claude/*, CLAUDE.md, docs/) always allowed.
+**Activate:** `echo "path/to/scope" > .claude/freeze-scope.local`
+**Deactivate:** `rm .claude/freeze-scope.local`
+**Purpose:** Prevents agents from accidentally modifying unrelated files during focused debugging sessions.
+
 ### Skip File Protocol
 
 Skip files (`.claude/skip-codex-review.local`, `.claude/skip-design-review.local`) have a 30-second self-bypass detection. Files created within 30s are rejected and deleted — this prevents Claude from creating skip files itself to bypass gates.
@@ -277,6 +284,7 @@ Available in any pipeline phase:
 | **PreToolUse** (Bash) | Pre-commit gate | **GATE** | Blocks `git commit` until codex + design review pass |
 | **PreToolUse** (Bash) | Pre-PR gate | **GATE** | Blocks `gh pr create` until codex review passes |
 | **PreToolUse** (Write\|Edit\|Bash) | Pre-implementation gate | **GATE** | Blocks impl code while design docs unreviewed |
+| **PreToolUse** (Write\|Edit) | Freeze/Guard | **GATE** | Restricts edits to investigation scope during debugging |
 | **PostToolUse** (Write\|Edit\|Bash) | Design doc detector | state | Flags design docs for review gate |
 | **PostToolUse** (Edit) | Go post-edit | formatting | gofmt/goimports/go vet on .go files |
 | **PostToolUse** (Bash) | Post-commit marker | cleanup | Consumes codex marker after successful commit |
@@ -309,6 +317,7 @@ After Phase 2 plan review passes, Phases 3–6 execute automatically via subagen
 - Codex Reviewer → before `git commit` and `gh pr create`
 - Design Reviewer → after plan/design docs, blocks impl + commit
 - Pre-implementation → blocks file writes while design unreviewed
+- Freeze/Guard → restricts edits to investigation scope during debugging
 
 ### Strong Guidance (Advisory)
 - Pipeline phase ordering (1→2→3→4→5→6)

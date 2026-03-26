@@ -4,6 +4,8 @@ on:
   schedule:
     - cron: "0 6 * * 1"
 
+permissions: {}
+
 defaults:
   run:
     shell: bash

@@ -236,7 +236,7 @@ else
   esac
   MAX_WEIGHTED_LINES_SINGLE_FILE=2000
   MAX_TOTAL_LINES_CEILING=2000
-  MAX_STAGED_FILES=8
+  MAX_STAGED_FILES="${CODEX_MAX_STAGED_FILES:-8}"
   EFFECTIVE_MAX=$MAX_WEIGHTED_LINES
   if [ "$STAGED_FILE_COUNT" -eq 1 ]; then
     EFFECTIVE_MAX=$MAX_WEIGHTED_LINES_SINGLE_FILE
@@ -257,7 +257,7 @@ else
     echo ""
     echo "⚠️  Diff too large for single review ($TOO_LARGE_REASON)"
     echo "   Thresholds: weighted >$EFFECTIVE_MAX OR total >$MAX_TOTAL_LINES_CEILING OR files >$MAX_STAGED_FILES"
-    echo "   Override: CODEX_MAX_WEIGHTED_LINES=$((WEIGHTED_LINES + 100)) to raise for this project"
+    echo "   Override: CODEX_MAX_WEIGHTED_LINES=$((WEIGHTED_LINES + 100)) or CODEX_MAX_STAGED_FILES=$((STAGED_FILE_COUNT + 2)) to raise"
     echo ""
     # Run suggest-split helper to show grouping advice (only useful for multi-file diffs)
     if [ "$STAGED_FILE_COUNT" -gt 1 ]; then

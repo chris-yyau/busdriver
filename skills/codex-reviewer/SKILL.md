@@ -160,7 +160,7 @@ When the review script exits with code **2** (TOO LARGE) or **124** (TIMEOUT), t
 - Better git history with meaningful commit messages
 - Prevents crashes from oversized prompts
 
-**Thresholds (commit mode only — PR mode skips size check):** Weighted lines use additions at 1x + deletions at 0.25x (deleted code needs minimal review). Triggers: >800 weighted lines (>2000 for single-file) OR >2000 total raw lines OR >8 staged files. Override with `CODEX_MAX_WEIGHTED_LINES` env var.
+**Thresholds (commit mode only — PR mode skips size check):** Weighted lines use additions at 1x + deletions at 0.25x (deleted code needs minimal review). Triggers: >800 weighted lines (>2000 for single-file) OR >2000 total raw lines OR >8 staged files. Override with `CODEX_MAX_WEIGHTED_LINES` and `CODEX_MAX_STAGED_FILES` env vars.
 
 **Example:**
 ```

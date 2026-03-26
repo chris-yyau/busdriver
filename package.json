@@ -1,6 +1,5 @@
 {
   "private": true,
-  "type": "module",
   "version": "0.0.0-development",
   "name": "busdriver",
   "description": "Unified workflow orchestrator for Claude Code"

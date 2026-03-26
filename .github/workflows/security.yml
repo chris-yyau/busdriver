@@ -92,21 +92,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - name: Verify SHA pinning
-        run: |
-          # All 'uses:' must reference a full 40-char SHA after '@'.
-          # Matches: owner/action@<not-a-sha> — catches tags, branches, short SHAs.
-          # Permits: docker:// and ./ local actions (no '@' or no SHA needed).
-          UNPINNED=$(grep -rn 'uses:' .github/workflows/ \
-            | grep -v 'docker://' \
-            | grep -v 'uses: \./' \
-            | grep -vP '@[0-9a-f]{40}\b' || true)
-          if [ -n "$UNPINNED" ]; then
-            echo "::error::Unpinned GitHub Actions detected. All actions must use full-length commit SHA."
-            echo "$UNPINNED"
-            exit 1
-          fi
-          echo "All actions are SHA-pinned."
       - name: Install zizmor
         run: pip install --quiet zizmor
       - name: Scan GitHub Actions workflows

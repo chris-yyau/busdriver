@@ -53,7 +53,7 @@ All gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects 
 
 ### Codex Reviewer (Pre-Commit + Pre-PR)
 **Trigger:** `git commit` OR `gh pr create` in Bash
-**Pre-commit (fast — 1 voice):** Blocks until `/codex-reviewer` passes → writes `.claude/codex-review-passed.local` marker. Consumed after successful commit via PostToolUse. DEGRADED markers rejected.
+**Pre-commit (fast — 1 voice):** Blocks until `/codex-reviewer` passes → writes `.claude/codex-review-passed.local` marker. Consumed after successful commit via PostToolUse. DEGRADED markers rejected. **Design-reviewed bypass:** If ALL staged files are design-reviewed specs (`.md` in `plans/`/`specs/` or basename PLAN/DESIGN/ARCHITECTURE, each with `<!-- design-reviewed: PASS -->`), Gate 2 auto-passes — codex review is redundant after 3-tier design review.
 **Pre-PR (deep — multi-voice):** Blocks `gh pr create` until codex review passes. Runs codex CLI pass THEN 5 parallel review agents (guidelines, bugs, history, cross-commit, security) with confidence scoring. Blocks on CRITICAL/HIGH at 80+ confidence. Accepts `.claude/pr-review-passed.local` (with HEAD SHA verification). Also passes if all `base..HEAD` commits were per-commit reviewed (tracked in `reviewed-commits.local`). 3-of-5 agent quorum required; <3 agents = fail-closed. `CODEX_PR_FAST=1` skips multi-agent (audited).
 **Skip:** `.claude/skip-codex-review.local` (single-use, 30s self-bypass detection) or `SKIP_CODEX_REVIEW=1`
 **Escalation:** 10 consecutive blocks → warn user about escape hatch. `git push` intentionally NOT gated.

@@ -259,6 +259,39 @@ if git -C "$REPO_DIR" rev-parse MERGE_HEAD &>/dev/null; then
     # Merge with changes → fall through to require review
 fi
 
+# ── Design-reviewed bypass: skip codex gate for spec-only commits ────────
+# When ALL staged files are design-reviewed specs (plans/specs .md with PASS
+# marker), codex review is redundant — the 3-tier design reviewer (Gemini +
+# Codex + Claude) already covered them. Skip Gate 2 to avoid wrong ordering
+# where codex-reviewer runs on specs before design-reviewer.
+ALL_DESIGN_REVIEWED=true
+HAS_STAGED=false
+while IFS= read -r staged_file; do
+    [ -z "$staged_file" ] && continue
+    HAS_STAGED=true
+    FULL_PATH="$REPO_DIR/$staged_file"
+    # Check if file is a design/spec doc with PASS marker
+    IS_REVIEWED_SPEC=false
+    if echo "$staged_file" | grep -qE '\.md$'; then
+        # Match design doc patterns: basename starts with PLAN/DESIGN/ARCHITECTURE,
+        # or file is in a plans/ or specs/ directory under .claude/ or docs/
+        if echo "$staged_file" | grep -qiE '(^|/)(PLAN|DESIGN|ARCHITECTURE)[^/]*\.md$' || \
+           echo "$staged_file" | grep -qE '(\.claude|docs)/([^/]+/)*(plans|specs)/.*\.md$'; then
+            if [ -f "$FULL_PATH" ] && grep -q "<!-- design-reviewed: PASS -->" "$FULL_PATH" 2>/dev/null; then
+                IS_REVIEWED_SPEC=true
+            fi
+        fi
+    fi
+    if [ "$IS_REVIEWED_SPEC" = false ]; then
+        ALL_DESIGN_REVIEWED=false
+        break
+    fi
+done < <(git -C "$REPO_DIR" diff --cached --name-only 2>/dev/null)
+
+if [ "$HAS_STAGED" = true ] && [ "$ALL_DESIGN_REVIEWED" = true ]; then
+    exit 0  # All staged files are design-reviewed specs → codex review redundant
+fi
+
 # ── Gate 2: Codex review ─────────────────────────────────────────────────
 MARKER="$REPO_DIR/.claude/codex-review-passed.local"
 if [ -f "$MARKER" ]; then

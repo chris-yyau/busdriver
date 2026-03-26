@@ -402,8 +402,19 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
   # Write review-passed marker for the appropriate gate
   mkdir -p .claude
   if [ "$REVIEW_MODE" = "pr" ]; then
-    # PR mode: write PR-specific marker for pre-PR gate
-    git diff "${PR_BASE_BRANCH}...HEAD" 2>/dev/null | shasum -a 256 | cut -d' ' -f1 > ".claude/pr-review-passed.local"
+    # PR mode: marker writing depends on whether deep review is enabled.
+    # CODEX_PR_FAST=1 skips multi-agent review — write marker immediately.
+    # Otherwise, the SKILL.md multi-agent deep review (Step 2) must run after
+    # this script passes. The marker is written by Claude after the 5-agent
+    # review completes. Writing it here would short-circuit the deep review.
+    if [ "${CODEX_PR_FAST:-0}" = "1" ]; then
+      git diff "${PR_BASE_BRANCH}...HEAD" 2>/dev/null | shasum -a 256 | cut -d' ' -f1 > ".claude/pr-review-passed.local"
+      mkdir -p .claude
+      printf '{"ts":"%s","event":"pr-fast-bypass","gate":"pre-pr"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
+      echo "   ⚠️  CODEX_PR_FAST=1 — skipped multi-agent deep review (logged)"
+    else
+      echo "   ℹ️  Codex CLI pass complete. Multi-agent deep review pending (Step 2)."
+    fi
   else
     # Commit mode: write commit marker for pre-commit gate
     git diff --cached 2>/dev/null | shasum -a 256 | cut -d' ' -f1 > ".claude/codex-review-passed.local"

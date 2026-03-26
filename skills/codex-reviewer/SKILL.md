@@ -337,9 +337,14 @@ After all 5 agents return:
 
 | Result | Action |
 |--------|--------|
-| Codex CLI PASS + no CRITICAL/HIGH at 80+ | Write `.claude/pr-review-passed.local` → gate passes |
+| Codex CLI PASS + no CRITICAL/HIGH at 80+ | Write marker (see below) → gate passes |
 | Codex CLI PASS + CRITICAL/HIGH at 80+ | Report findings. Fix, then re-run Step 2 only |
 | Codex CLI FAIL | Fix, re-run from Step 1 |
+
+**Write the marker** (the script does NOT write it in PR mode — you must):
+```bash
+mkdir -p .claude && echo "PASS pr-review $(git rev-parse --short HEAD) $(date +%s)" > .claude/pr-review-passed.local
+```
 
 ### Degraded States
 

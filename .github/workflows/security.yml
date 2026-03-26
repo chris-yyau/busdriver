@@ -1,0 +1,98 @@
+# CI backstop for security checks that seatbelt runs at commit time.
+# Defense-in-depth: catches issues from commits that bypass local hooks.
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  trivy:
+    name: Dependency CVEs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Check for compliance job
+        id: check
+        run: |
+          if grep -ql 'trivy-action\|scanners.*vuln' .github/workflows/tests.yml 2>/dev/null; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Trivy already covered by compliance job — skipping"
+          fi
+      - name: Install trivy
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sudo sh -s -- -b /usr/local/bin
+          trivy --version
+      - name: Scan dependencies
+        if: steps.check.outputs.skip != 'true'
+        run: trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 --skip-dirs tests .
+
+  semgrep:
+    name: Code security
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install semgrep
+        run: pip install --quiet semgrep
+      - name: Scan for vulnerabilities
+        run: semgrep scan --config p/security-audit --error --exclude tests .
+
+  checkov:
+    name: IaC misconfig
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install checkov
+        run: pip install --quiet checkov
+      - name: Scan for misconfigurations
+        run: checkov -d . --skip-path tests --quiet --compact
+
+  zizmor:
+    name: Actions security
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install zizmor
+        run: pip install --quiet zizmor
+      - name: Scan GitHub Actions workflows
+        run: zizmor .github/workflows/

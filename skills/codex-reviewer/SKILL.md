@@ -300,8 +300,6 @@ DO NOT:
 - Create the PR while agents are still running
 - Use early agent results to decide "no blocking issues" before all return
 
-The seatbelt v6 incident: Claude created a PR after 1-of-5 agents completed. The cross-commit agent — which completed AFTER the PR was created — found a real HIGH-confidence bug (92). Partial evaluation missed it.
-
 If an agent is slow, WAIT. If it times out after 5 minutes, mark it as timed-out and proceed with the remaining results. But never proceed while agents are still "running" or "in progress".
 </EXTREMELY-IMPORTANT>
 

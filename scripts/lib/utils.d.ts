@@ -18,8 +18,14 @@ export function getHomeDir(): string;
 /** Get the Claude config directory (~/.claude) */
 export function getClaudeDir(): string;
 
-/** Get the sessions directory (~/.claude/sessions) */
+/** Get the canonical ECC sessions directory (~/.claude/session-data) */
 export function getSessionsDir(): string;
+
+/** Get the legacy Claude-managed sessions directory (~/.claude/sessions) */
+export function getLegacySessionsDir(): string;
+
+/** Get session directories to search, with canonical storage first and legacy fallback second */
+export function getSessionSearchDirs(): string[];
 
 /** Get the learned skills directory (~/.claude/skills/learned) */
 export function getLearnedSkillsDir(): string;
@@ -49,19 +55,14 @@ export function getDateTimeString(): string;
 
 /**
  * Sanitize a string for use as a session filename segment.
- * Replaces characters not in [a-zA-Z0-9_-] with hyphens, collapses runs,
- * strips leading dots (e.g., ".claude" → "claude").
- * For pure non-ASCII names (CJK, Cyrillic, emoji), returns a stable 8-char
- * hex hash. For mixed-script names, returns the ASCII part with a 6-char
- * hash suffix (e.g., "app-a1b2c3"). Returns null for empty, whitespace-only,
- * or punctuation-only input.
+ * Replaces invalid characters, strips leading dots, and returns null when
+ * nothing meaningful remains. Non-ASCII names are hashed for stability.
  */
 export function sanitizeSessionId(raw: string | null | undefined): string | null;
 
 /**
  * Get short session ID from CLAUDE_SESSION_ID environment variable.
- * Returns last 8 characters, falls back to sanitized project name then the provided fallback.
- * Output is always safe for session filenames (matches SESSION_FILENAME_REGEX).
+ * Returns last 8 characters, falls back to a sanitized project name then the provided fallback.
  */
 export function getSessionIdShort(fallback?: string): string;
 

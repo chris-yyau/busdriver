@@ -1102,12 +1102,6 @@
       "upstream_path": "scripts/lib/utils.js"
     },
     {
-      "path": "skills/SKILL.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "skills/SKILL.md"
-    },
-    {
       "path": "skills/agent-eval/SKILL.md",
       "source": "ecc",
       "status": "custom",
@@ -1322,18 +1316,6 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "skills/continuous-learning-v2/hooks/observe.sh"
-    },
-    {
-      "path": "skills/continuous-learning-v2/hooks/observe.sh.test",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "skills/continuous-learning-v2/hooks/observe.sh.test"
-    },
-    {
-      "path": "skills/continuous-learning-v2/scripts/__pycache__/instinct-cli.cpython-313.pyc",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "skills/continuous-learning-v2/scripts/__pycache__/instinct-cli.cpython-313.pyc"
     },
     {
       "path": "skills/continuous-learning-v2/scripts/detect-project.sh",
@@ -2696,6 +2678,198 @@
       "path": "skills/reflect/SKILL.md",
       "source": "local",
       "status": "local"
+    },
+    {
+      "path": "scripts/sync-ecc-to-codex.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/sync-ecc-to-codex.sh"
+    },
+    {
+      "path": "scripts/install-apply.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/install-apply.js"
+    },
+    {
+      "path": "scripts/install-plan.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/install-plan.js"
+    },
+    {
+      "path": "scripts/setup-package-manager.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/setup-package-manager.js"
+    },
+    {
+      "path": "scripts/ecc.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ecc.js"
+    },
+    {
+      "path": "scripts/skills-health.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/skills-health.js"
+    },
+    {
+      "path": "scripts/ci/catalog.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/catalog.js"
+    },
+    {
+      "path": "scripts/ci/validate-install-manifests.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/validate-install-manifests.js"
+    },
+    {
+      "path": "scripts/ci/validate-rules.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/validate-rules.js"
+    },
+    {
+      "path": "scripts/ci/validate-skills.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/validate-skills.js"
+    },
+    {
+      "path": "scripts/ci/validate-no-personal-paths.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/validate-no-personal-paths.js"
+    },
+    {
+      "path": "scripts/ci/validate-commands.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/validate-commands.js"
+    },
+    {
+      "path": "scripts/ci/validate-hooks.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/validate-hooks.js"
+    },
+    {
+      "path": "scripts/ci/validate-agents.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/validate-agents.js"
+    },
+    {
+      "path": "scripts/sessions-cli.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/sessions-cli.js"
+    },
+    {
+      "path": "scripts/session-inspect.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/session-inspect.js"
+    },
+    {
+      "path": "scripts/repair.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/repair.js"
+    },
+    {
+      "path": "scripts/codex/merge-mcp-config.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/codex/merge-mcp-config.js"
+    },
+    {
+      "path": "scripts/codex/install-global-git-hooks.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/codex/install-global-git-hooks.sh"
+    },
+    {
+      "path": "scripts/codex/check-codex-global-state.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/codex/check-codex-global-state.sh"
+    },
+    {
+      "path": "scripts/orchestrate-worktrees.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/orchestrate-worktrees.js"
+    },
+    {
+      "path": "scripts/list-installed.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/list-installed.js"
+    },
+    {
+      "path": "scripts/skill-create-output.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/skill-create-output.js"
+    },
+    {
+      "path": "scripts/hooks/desktop-notify.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/desktop-notify.js"
+    },
+    {
+      "path": "scripts/status.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/status.js"
+    },
+    {
+      "path": "scripts/claw.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/claw.js"
+    },
+    {
+      "path": "scripts/release.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/release.sh"
+    },
+    {
+      "path": "scripts/harness-audit.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/harness-audit.js"
+    },
+    {
+      "path": "scripts/doctor.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/doctor.js"
+    },
+    {
+      "path": "scripts/orchestrate-codex-worker.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/orchestrate-codex-worker.sh"
+    },
+    {
+      "path": "scripts/uninstall.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/uninstall.js"
+    },
+    {
+      "path": "scripts/orchestration-status.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/orchestration-status.js"
     }
   ]
 }

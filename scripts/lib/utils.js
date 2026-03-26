@@ -6,12 +6,20 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const { execSync, spawnSync } = require('child_process');
 
 // Platform detection
 const isWindows = process.platform === 'win32';
 const isMacOS = process.platform === 'darwin';
 const isLinux = process.platform === 'linux';
+const SESSION_DATA_DIR_NAME = 'session-data';
+const LEGACY_SESSIONS_DIR_NAME = 'sessions';
+const WINDOWS_RESERVED_SESSION_IDS = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'
+]);
 
 /**
  * Get the user's home directory (cross-platform)
@@ -31,7 +39,21 @@ function getClaudeDir() {
  * Get the sessions directory
  */
 function getSessionsDir() {
-  return path.join(getClaudeDir(), 'sessions');
+  return path.join(getClaudeDir(), SESSION_DATA_DIR_NAME);
+}
+
+/**
+ * Get the legacy sessions directory used by older ECC installs
+ */
+function getLegacySessionsDir() {
+  return path.join(getClaudeDir(), LEGACY_SESSIONS_DIR_NAME);
+}
+
+/**
+ * Get all session directories to search, in canonical-first order
+ */
+function getSessionSearchDirs() {
+  return Array.from(new Set([getSessionsDir(), getLegacySessionsDir()]));
 }
 
 /**
@@ -109,49 +131,48 @@ function getProjectName() {
 
 /**
  * Sanitize a string for use as a session filename segment.
- * Replaces characters not in [a-zA-Z0-9_-] with hyphens,
- * collapses consecutive hyphens, strips leading/trailing hyphens,
- * and strips leading dots (hidden dir names like ".claude").
- * Returns null if the result is empty after sanitization.
+ * Replaces invalid characters with hyphens, collapses runs, strips
+ * leading/trailing hyphens, and removes leading dots so hidden-dir names
+ * like ".claude" map cleanly to "claude".
+ *
+ * Pure non-ASCII inputs get a stable 8-char hash so distinct names do not
+ * collapse to the same fallback session id. Mixed-script inputs retain their
+ * ASCII part and gain a short hash suffix for disambiguation.
  */
 function sanitizeSessionId(raw) {
   if (!raw || typeof raw !== 'string') return null;
-  // Check for non-ASCII content before sanitizing (used for disambiguation below)
-  const hasNonAscii = /[^\x00-\x7F]/.test(raw);
-  // Normalize: strip leading dots before all paths (so '.foo' and 'foo' hash identically)
+
+  const hasNonAscii = Array.from(raw).some(char => char.codePointAt(0) > 0x7f);
   const normalized = raw.replace(/^\.+/, '');
   const sanitized = normalized
-    .replace(/[^a-zA-Z0-9_-]/g, '-') // replace invalid chars
-    .replace(/-{2,}/g, '-')          // collapse runs of hyphens
-    .replace(/^-+|-+$/g, '');        // trim leading/trailing hyphens
+    .replace(/[^a-zA-Z0-9_-]/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '');
+
   if (sanitized.length > 0) {
-    if (!hasNonAscii) return sanitized;
-    // Mixed-script names (e.g., '我的app') retain ASCII part but need
-    // disambiguation — 'app' and '我的app' must not collide.
-    // Hash the normalized input so '.foo' and 'foo' variants are consistent.
-    const crypto = require('crypto');
     const suffix = crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 6);
+    if (WINDOWS_RESERVED_SESSION_IDS.has(sanitized.toUpperCase())) {
+      return `${sanitized}-${suffix}`;
+    }
+    if (!hasNonAscii) return sanitized;
     return `${sanitized}-${suffix}`;
   }
-  // Pure non-ASCII names (CJK, Cyrillic, emoji, symbols like ₿/™/♥) — hash.
-  // Only whitespace + punctuation (\p{P}) is "not meaningful".
+
   const meaningful = normalized.replace(/[\s\p{P}]/gu, '');
   if (meaningful.length === 0) return null;
-  const crypto = require('crypto');
+
   return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 8);
 }
 
 /**
  * Get short session ID from CLAUDE_SESSION_ID environment variable
- * Returns last 8 characters, falls back to sanitized project name then 'default'.
- * Output is always safe for use in session filenames (matches SESSION_FILENAME_REGEX).
+ * Returns last 8 characters, falls back to a sanitized project name then 'default'.
  */
 function getSessionIdShort(fallback = 'default') {
   const sessionId = process.env.CLAUDE_SESSION_ID;
   if (sessionId && sessionId.length > 0) {
     const sanitized = sanitizeSessionId(sessionId.slice(-8));
     if (sanitized) return sanitized;
-    // Session ID sanitized to empty (e.g., all whitespace) — fall through
   }
   return sanitizeSessionId(getProjectName()) || sanitizeSessionId(fallback) || 'default';
 }
@@ -562,6 +583,8 @@ module.exports = {
   getHomeDir,
   getClaudeDir,
   getSessionsDir,
+  getLegacySessionsDir,
+  getSessionSearchDirs,
   getLearnedSkillsDir,
   getTempDir,
   ensureDir,

@@ -73,20 +73,16 @@ gemini_status: ""
 codex_status: ""
 claude_status: ""
 
-# Issue tracking
-total_issues: 0
-issues_addressed: 0
-auto_fixes_applied: 0
-pending_human_decisions: 0
-
-# Convergence tracking
-previous_issue_count: 0
-improvement_trend: "unknown"
+# Progress model (replaces binary FAIL/PASS)
+progress_status: ""
+high_issues: 0
+medium_issues: 0
+low_issues: 0
 ---
 
 # Design Review State
 
-This file tracks the state of the ongoing design review process.
+Claude is the arbiter. Convergence = Claude's verdict.
 
 ## Current Status
 
@@ -179,42 +175,11 @@ update_review_statuses() {
   update_state_field "claude_status" "\"$claude_status\""
 }
 
-# Update issue counts
-update_issue_counts() {
-  local total="$1"
-  local addressed="$2"
-  local auto_fixes="$3"
-  local pending="$4"
-
-  update_state_field "total_issues" "$total"
-  update_state_field "issues_addressed" "$addressed"
-  update_state_field "auto_fixes_applied" "$auto_fixes"
-  update_state_field "pending_human_decisions" "$pending"
-}
-
-# Update improvement trend
-update_improvement_trend() {
-  local current_issue_count="$1"
-  local previous_issue_count=$(get_state_field "previous_issue_count")
-
-  local trend="stable"
-  if [[ $current_issue_count -lt $previous_issue_count ]]; then
-    trend="improving"
-  elif [[ $current_issue_count -gt $previous_issue_count ]]; then
-    trend="regressing"
-  fi
-
-  update_state_field "improvement_trend" "\"$trend\""
-  update_state_field "previous_issue_count" "$current_issue_count"
-}
-
-# Check convergence (all reviewers PASS)
+# Check convergence — Claude is the arbiter (Critic #4)
+# PASS = progress_status is "passed" or "low_issues_only"
 check_convergence() {
-  local gemini_status=$(get_state_field "gemini_status")
-  local codex_status=$(get_state_field "codex_status")
-  local claude_status=$(get_state_field "claude_status")
-
-  [[ "$gemini_status" == "PASS" && "$codex_status" == "PASS" && "$claude_status" == "PASS" ]]
+  local progress=$(get_state_field "progress_status")
+  [[ "$progress" == "passed" || "$progress" == "low_issues_only" ]]
 }
 
 # Check if an active review exists and whether it's stale

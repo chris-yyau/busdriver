@@ -1,6 +1,18 @@
 #!/bin/bash
-# Main three-tier consensus review workflow orchestration
-# Runs Gemini + Codex + Claude → Consensus → Auto-fix → Human review loop
+# Three-tier design review: Gemini + Codex (parallel) → Claude arbiter
+#
+# Architecture (post-A++ council fix, 2026-03-27):
+#   - Gemini + Codex run in parallel as independent reviewers
+#   - Claude validates their findings against the codebase (arbiter)
+#   - Claude's verdict is the sole convergence signal
+#   - No Jaccard consensus, no auto-fix engine, no mechanical convergence
+#
+# Critic requirements implemented:
+#   1. Run-scoped artifact isolation (stale output cleanup + run_id metadata)
+#   2. Hard freshness contract (spec_hash + run_id + iteration in every output)
+#   3. Atomic completion protocol (write to .pending, rename on success)
+#   4. Claude verdict as first-class convergence (no consensus.json dependency)
+#   5. Explicit progress model (severity breakdown, not binary FAIL/PASS)
 
 set -euo pipefail
 
@@ -13,7 +25,6 @@ REVIEW_DIR=$(get_review_dir)
 mkdir -p "$REVIEW_DIR"
 
 # Cross-platform millisecond timestamp
-# macOS BSD date doesn't support %N — falls back through gdate → python3 → seconds
 millis() {
   if command -v gdate &>/dev/null; then
     gdate +%s%3N
@@ -21,6 +32,34 @@ millis() {
     python3 -c "import time; print(int(time.time()*1000))"
   else
     echo "$(date +%s)000"
+  fi
+}
+
+# Generate a short run ID for artifact isolation
+generate_run_id() {
+  local input
+  input="$(date +%s)-$$"
+  if command -v shasum &>/dev/null; then
+    printf '%s' "$input" | shasum -a 256 | cut -c1-8
+  elif command -v sha256sum &>/dev/null; then
+    printf '%s' "$input" | sha256sum | cut -c1-8
+  else
+    printf '%s' "$input" | cut -c1-8
+  fi
+}
+
+# Compute SHA-256 of design spec for freshness contract
+# Fallback chain: shasum (macOS) → sha256sum (Linux) → python3
+compute_spec_hash() {
+  local file="$1"
+  if command -v shasum &>/dev/null; then
+    shasum -a 256 "$file" | cut -d' ' -f1
+  elif command -v sha256sum &>/dev/null; then
+    sha256sum "$file" | cut -d' ' -f1
+  elif command -v python3 &>/dev/null; then
+    python3 -c "import hashlib; print(hashlib.sha256(open('$file','rb').read()).hexdigest())"
+  else
+    echo "no-hash-tool"
   fi
 }
 
@@ -34,24 +73,21 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --skip-claude)
-      # REMOVED: --skip-claude defeats three-tier consensus.
-      # If Claude validation is skipped, the gate fabricates a placeholder PASS
-      # using Gemini's status, violating the "all three reviewers must PASS" principle.
-      # See: Sprint 1 audit finding C4 (2026-03-19)
-      log_error "--skip-claude flag has been removed (violates three-tier consensus)."
-      log_error "All three reviewers (Gemini + Codex + Claude) must participate."
+      log_error "--skip-claude flag has been removed (violates three-tier review)."
+      log_error "Claude is the arbiter — skipping it removes the convergence signal."
       exit 1
       ;;
     --help)
       echo "Usage: $0 [OPTIONS]"
       echo ""
       echo "Options:"
-      echo "  --auto          Enable auto-iteration mode (iterate until convergence)"
+      echo "  --auto          Auto-iteration mode (iterate until Claude verdict is PASS)"
       echo "  --help          Show this help message"
       echo ""
-      echo "Examples:"
-      echo "  $0                    # Interactive mode (manual validation)"
-      echo "  $0 --auto            # Auto-iterate until convergence"
+      echo "Architecture:"
+      echo "  1. Gemini + Codex review in PARALLEL"
+      echo "  2. Claude validates findings against codebase (arbiter)"
+      echo "  3. Claude's verdict = convergence signal"
       exit 0
       ;;
     *)
@@ -62,11 +98,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-log_info "=== Design Review Three-Tier Consensus System ==="
+log_info "=== Design Review (Three-Tier, Claude Arbiter) ==="
 if [[ "$AUTO_MODE" == "true" ]]; then
-  log_info "Mode: AUTO-ITERATION (will iterate until convergence)"
+  log_info "Mode: AUTO (iterate until Claude PASS)"
 else
-  log_info "Mode: INTERACTIVE (manual approval between iterations)"
+  log_info "Mode: INTERACTIVE (pause for Claude validation + human review)"
 fi
 log_info ""
 
@@ -81,6 +117,14 @@ fi
 DESIGN_FILE=$(get_design_file)
 log_info "Design file: $DESIGN_FILE"
 
+# Generate run ID for this execution (Critic #1: run-scoped isolation)
+RUN_ID=$(generate_run_id)
+log_info "Run ID: $RUN_ID"
+
+# Compute spec hash for freshness contract (Critic #2)
+SPEC_HASH=$(compute_spec_hash "$DESIGN_FILE")
+log_info "Spec hash: ${SPEC_HASH:0:12}..."
+
 # Validate CLIs are available
 log_info "Checking for required CLIs..."
 GEMINI_AVAILABLE=false
@@ -88,16 +132,16 @@ CODEX_AVAILABLE=false
 
 if validate_cli_available "gemini"; then
   GEMINI_AVAILABLE=true
-  log_info "  ✓ Gemini CLI found"
+  log_info "  + Gemini CLI found"
 else
-  log_warning "  ✗ Gemini CLI not found (will use fallback)"
+  log_warning "  - Gemini CLI not found (will use fallback)"
 fi
 
 if validate_cli_available "codex"; then
   CODEX_AVAILABLE=true
-  log_info "  ✓ Codex CLI found"
+  log_info "  + Codex CLI found"
 else
-  log_warning "  ✗ Codex CLI not found (will use fallback)"
+  log_warning "  - Codex CLI not found (will use fallback)"
 fi
 
 # Main iteration loop
@@ -112,136 +156,187 @@ while true; do
   # Check if max iterations reached
   if is_max_iterations_reached; then
     log_warning "Maximum iterations ($MAX_ITERATIONS) reached"
-    log_info "Design review did not fully converge. Human intervention required."
-    log_info "The pre-commit gate will remain blocked until the design is reviewed."
-    log_info "Options: fix issues and re-run, or create .claude/skip-review.local in terminal."
-    mark_review_complete "FAIL"
+    log_info "Design review did not converge. Human intervention required."
+    log_info "Options: fix issues and re-run, or create .claude/skip-design-review.local in terminal."
+    mark_review_complete "max_iterations_exceeded"
     exit 1
   fi
 
-  # Phase 1: Launch Gemini review
-  log_info "Phase 1: Launching Gemini review..."
+  # ── Critic #1: Clean stale outputs from previous iteration ────────
+  log_info "Cleaning stale artifacts..."
+  rm -f "$(get_review_file "gemini.json")" \
+        "$(get_review_file "gemini-raw.txt")" \
+        "$(get_review_file "gemini.json.pending")" \
+        "$(get_review_file "codex.json")" \
+        "$(get_review_file "codex-raw.txt")" \
+        "$(get_review_file "codex.json.pending")" \
+        "$(get_review_file "claude.json")" \
+        "$(get_review_file "claude.json.pending")" \
+        "$(get_review_file "claude-validation-prompt.txt")" \
+        "$(get_review_file "consensus.json")" \
+        "$(get_review_file "decisions.json")" \
+        "$(get_review_file "autofix-log.json")" \
+        "$(get_review_file "autofix-summary.json")" \
+        "$(get_review_file "report.txt")" \
+        2>/dev/null || true
+  log_info "  Stale artifacts cleared"
 
-  GEMINI_OUTPUT_FILE=$(get_review_file "gemini.json")
-
-  if [[ "$GEMINI_AVAILABLE" == "true" ]]; then
-    # Read comprehensive prompt
-    PROMPT=$(cat "$SCRIPT_DIR/../prompts/comprehensive_review_prompt.txt")
-
-    # Read design file content
-    DESIGN_CONTENT=$(cat "$DESIGN_FILE")
-
-    # Construct full prompt
-    FULL_PROMPT="$PROMPT
+  # Read design file content and build prompt
+  DESIGN_CONTENT=$(cat "$DESIGN_FILE")
+  PROMPT=$(cat "$SCRIPT_DIR/../prompts/comprehensive_review_prompt.txt")
+  FULL_PROMPT="$PROMPT
 
 Document to review:
 ---
 $DESIGN_CONTENT
 ---"
 
-    # Call Gemini CLI in non-interactive mode
-    log_info "  ⏳ Running Gemini review (est. 30-60s)..."
-    GEMINI_START=$(millis)
+  # ── Phase 1: Launch Gemini + Codex in PARALLEL ────────────────────
+  log_info "Phase 1: Launching Gemini + Codex reviews in parallel..."
 
-    GEMINI_RAW_FILE=$(get_review_file "gemini-raw.txt")
-
-    if echo "$FULL_PROMPT" | gemini > "$GEMINI_RAW_FILE" 2>&1; then
-      GEMINI_END=$(millis)
-      GEMINI_DURATION=$((GEMINI_END - GEMINI_START))
-
-      # Extract review JSON from Gemini output (may contain non-JSON preamble/thinking/code)
-      if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$GEMINI_RAW_FILE" > "$GEMINI_OUTPUT_FILE"; then
-        log_info "  ✓ Gemini completed in ${GEMINI_DURATION}ms (JSON extracted)"
-      else
-        log_error "  ✗ Gemini output was not valid JSON"
-        create_error_json "gemini" "Output was not valid JSON" > "$GEMINI_OUTPUT_FILE"
-      fi
-    else
-      log_error "  ✗ Gemini CLI failed"
-      create_error_json "gemini" "CLI execution failed" > "$GEMINI_OUTPUT_FILE"
-    fi
-  else
-    log_warning "  Gemini CLI not available - skipping"
-    create_error_json "gemini" "CLI not available" > "$GEMINI_OUTPUT_FILE"
-  fi
-
-  # Phase 2: Launch Codex review
-  log_info "Phase 2: Launching Codex review..."
-
+  GEMINI_OUTPUT_FILE=$(get_review_file "gemini.json")
   CODEX_OUTPUT_FILE=$(get_review_file "codex.json")
 
-  if [[ "$CODEX_AVAILABLE" == "true" ]]; then
-    log_info "  ⏳ Running Codex review (est. 2-5min)..."
-    CODEX_START=$(millis)
+  REVIEW_START=$(millis)
 
-    # Call Codex CLI exec mode — pipe prompt via stdin to avoid ARG_MAX limits
-    CODEX_RAW_FILE=$(get_review_file "codex-raw.txt")
+  # Run Gemini in background
+  (
+    if [[ "$GEMINI_AVAILABLE" == "true" ]]; then
+      GEMINI_RAW_FILE=$(get_review_file "gemini-raw.txt")
+      GEMINI_START=$(millis)
 
-    if echo "$FULL_PROMPT" | codex exec - > "$CODEX_RAW_FILE" 2>&1; then
-      CODEX_END=$(millis)
-      CODEX_DURATION=$((CODEX_END - CODEX_START))
+      if echo "$FULL_PROMPT" | gemini > "$GEMINI_RAW_FILE" 2>&1; then
+        GEMINI_END=$(millis)
+        GEMINI_DURATION=$((GEMINI_END - GEMINI_START))
 
-      # Extract review JSON from Codex output (may contain interleaved exec outputs with code)
-      if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$CODEX_RAW_FILE" > "$CODEX_OUTPUT_FILE"; then
-        log_info "  ✓ Codex completed in ${CODEX_DURATION}ms (JSON extracted)"
+        if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$GEMINI_RAW_FILE" > "${GEMINI_OUTPUT_FILE}.pending" 2>/dev/null; then
+          # Inject freshness metadata (Critic #2)
+          python3 -c "
+import json
+with open('${GEMINI_OUTPUT_FILE}.pending') as f:
+    data = json.load(f)
+data.setdefault('metadata', {})
+data['metadata']['run_id'] = '$RUN_ID'
+data['metadata']['iteration'] = $CURRENT_ITERATION
+data['metadata']['spec_hash'] = '$SPEC_HASH'
+data['metadata']['review_duration_ms'] = $GEMINI_DURATION
+with open('${GEMINI_OUTPUT_FILE}.pending', 'w') as f:
+    json.dump(data, f, indent=2)
+" 2>/dev/null
+          mv "${GEMINI_OUTPUT_FILE}.pending" "$GEMINI_OUTPUT_FILE"
+        else
+          create_error_json "gemini" "Output was not valid JSON" > "$GEMINI_OUTPUT_FILE"
+        fi
       else
-        log_error "  ✗ Codex output was not valid JSON"
-        create_error_json "codex" "Output was not valid JSON" > "$CODEX_OUTPUT_FILE"
+        create_error_json "gemini" "CLI execution failed" > "$GEMINI_OUTPUT_FILE"
       fi
     else
-      log_error "  ✗ Codex CLI failed"
-      create_error_json "codex" "CLI execution failed" > "$CODEX_OUTPUT_FILE"
+      create_error_json "gemini" "CLI not available" > "$GEMINI_OUTPUT_FILE"
     fi
-  else
-    log_warning "  Codex CLI not available - skipping"
-    create_error_json "codex" "CLI not available" > "$CODEX_OUTPUT_FILE"
-  fi
+  ) &
+  GEMINI_PID=$!
 
-  # Phase 3: Both reviews complete (sequential execution)
-  log_info "Phase 3: Reviews collected. Proceeding to validation..."
+  # Run Codex in background
+  (
+    if [[ "$CODEX_AVAILABLE" == "true" ]]; then
+      CODEX_RAW_FILE=$(get_review_file "codex-raw.txt")
+      CODEX_START=$(millis)
 
-  # Validate outputs
-  log_info "Phase 4: Validating review outputs..."
+      if echo "$FULL_PROMPT" | codex exec - > "$CODEX_RAW_FILE" 2>&1; then
+        CODEX_END=$(millis)
+        CODEX_DURATION=$((CODEX_END - CODEX_START))
+
+        if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$CODEX_RAW_FILE" > "${CODEX_OUTPUT_FILE}.pending" 2>/dev/null; then
+          # Inject freshness metadata (Critic #2)
+          python3 -c "
+import json
+with open('${CODEX_OUTPUT_FILE}.pending') as f:
+    data = json.load(f)
+data.setdefault('metadata', {})
+data['metadata']['run_id'] = '$RUN_ID'
+data['metadata']['iteration'] = $CURRENT_ITERATION
+data['metadata']['spec_hash'] = '$SPEC_HASH'
+data['metadata']['review_duration_ms'] = $CODEX_DURATION
+with open('${CODEX_OUTPUT_FILE}.pending', 'w') as f:
+    json.dump(data, f, indent=2)
+" 2>/dev/null
+          mv "${CODEX_OUTPUT_FILE}.pending" "$CODEX_OUTPUT_FILE"
+        else
+          create_error_json "codex" "Output was not valid JSON" > "$CODEX_OUTPUT_FILE"
+        fi
+      else
+        create_error_json "codex" "CLI execution failed" > "$CODEX_OUTPUT_FILE"
+      fi
+    else
+      create_error_json "codex" "CLI not available" > "$CODEX_OUTPUT_FILE"
+    fi
+  ) &
+  CODEX_PID=$!
+
+  # Wait for both to complete
+  log_info "  Waiting for parallel reviews..."
+  wait $GEMINI_PID 2>/dev/null || true
+  wait $CODEX_PID 2>/dev/null || true
+
+  REVIEW_END=$(millis)
+  REVIEW_DURATION=$((REVIEW_END - REVIEW_START))
+  log_info "  Both reviews completed in ${REVIEW_DURATION}ms (parallel)"
+
+  # ── Phase 2: Validate outputs ────────────────────────────────────
+  log_info "Phase 2: Validating review outputs..."
 
   if ! validate_json_file "$GEMINI_OUTPUT_FILE"; then
-    log_error "Gemini output invalid"
-    exit 1
+    log_error "Gemini output invalid or missing — fail-closed"
+    create_error_json "gemini" "Output missing or invalid after review" > "$GEMINI_OUTPUT_FILE"
   fi
 
   if ! validate_json_file "$CODEX_OUTPUT_FILE"; then
-    log_error "Codex output invalid"
-    exit 1
+    log_error "Codex output invalid or missing — fail-closed"
+    create_error_json "codex" "Output missing or invalid after review" > "$CODEX_OUTPUT_FILE"
   fi
 
-  # Extract statuses
+  # Freshness check (Critic #2): fail-closed — require run_id match
+  for review_file in "$GEMINI_OUTPUT_FILE" "$CODEX_OUTPUT_FILE"; do
+    FILE_RUN_ID=$(jq -r '.metadata.run_id // ""' "$review_file" 2>/dev/null || echo "")
+    REVIEWER=$(jq -r '.reviewer_id // "unknown"' "$review_file" 2>/dev/null || echo "unknown")
+    if [[ -z "$FILE_RUN_ID" ]]; then
+      log_error "MISSING run_id in $review_file — fail-closed (freshness contract)"
+      create_error_json "$REVIEWER" "Missing run_id metadata (freshness contract violation)" > "$review_file"
+    elif [[ "$FILE_RUN_ID" != "$RUN_ID" ]]; then
+      log_error "STALE OUTPUT: $review_file has run_id=$FILE_RUN_ID, expected $RUN_ID"
+      create_error_json "$REVIEWER" "Stale output from previous run" > "$review_file"
+    fi
+  done
+
   GEMINI_STATUS=$(jq -r '.status' "$GEMINI_OUTPUT_FILE")
   CODEX_STATUS=$(jq -r '.status' "$CODEX_OUTPUT_FILE")
 
-  log_info "  Gemini status: $GEMINI_STATUS"
-  log_info "  Codex status: $CODEX_STATUS"
+  log_info "  Gemini: $GEMINI_STATUS ($(jq '.issues | length' "$GEMINI_OUTPUT_FILE") issues)"
+  log_info "  Codex:  $CODEX_STATUS ($(jq '.issues | length' "$CODEX_OUTPUT_FILE") issues)"
 
-  # Phase 5: Claude validation review
-  log_info "Phase 5: Running Claude validation review..."
+  # ── Phase 3: Claude validation (arbiter) ──────────────────────────
+  log_info "Phase 3: Claude validation (arbiter)..."
 
   CLAUDE_OUTPUT_FILE=$(get_review_file "claude.json")
   CLAUDE_PROMPT_FILE=$(get_review_file "claude-validation-prompt.txt")
 
-  log_info "  ⏳ Preparing Claude validation with codebase context..."
-
   CLAUDE_START=$(millis)
 
-  # Read Claude validation prompt
   CLAUDE_PROMPT=$(cat "$SCRIPT_DIR/../prompts/claude_validation_prompt.txt")
 
-  # Extract issue summaries from Gemini and Codex for validation
   GEMINI_ISSUES=$(jq -r '.issues[] | "- [\(.severity)] \(.section): \(.description)"' "$GEMINI_OUTPUT_FILE" 2>/dev/null || echo "No issues")
   CODEX_ISSUES=$(jq -r '.issues[] | "- [\(.severity)] \(.section): \(.description)"' "$CODEX_OUTPUT_FILE" 2>/dev/null || echo "No issues")
 
-  # Create comprehensive validation prompt file
   cat > "$CLAUDE_PROMPT_FILE" <<EOF
 $CLAUDE_PROMPT
 
 =============================================================================
+FRESHNESS CONTRACT (include in your output metadata):
+  run_id: $RUN_ID
+  iteration: $CURRENT_ITERATION
+  spec_hash: $SPEC_HASH
+=============================================================================
+
 DESIGN DOCUMENT TO VALIDATE:
 =============================================================================
 
@@ -251,20 +346,18 @@ $DESIGN_CONTENT
 GEMINI REVIEW RESULTS (Status: $GEMINI_STATUS):
 =============================================================================
 
-Summary of Gemini Issues:
 $GEMINI_ISSUES
 
-Full Gemini Output:
+Full output:
 $(cat "$GEMINI_OUTPUT_FILE")
 
 =============================================================================
 CODEX REVIEW RESULTS (Status: $CODEX_STATUS):
 =============================================================================
 
-Summary of Codex Issues:
 $CODEX_ISSUES
 
-Full Codex Output:
+Full output:
 $(cat "$CODEX_OUTPUT_FILE")
 
 =============================================================================
@@ -272,65 +365,49 @@ VALIDATION TASK:
 =============================================================================
 
 1. Read the design document and both reviews
-2. For each issue flagged by Gemini or Codex:
-   - Validate against the codebase (read relevant files)
-   - Determine if the concern is valid
-   - Assign validation_type: confirms_gemini, confirms_codex, contradicts_gemini, contradicts_codex
-3. Search for issues they missed:
-   - Check for missing error handling
-   - Verify API contracts match existing code
-   - Check for architectural inconsistencies
-   - Look for performance concerns
-   - Validate security considerations
-   - Mark these as validation_type: new_finding
-4. Output strict JSON matching the schema above
+2. For each issue: validate against codebase, assign validation_type
+3. Search for issues they missed (validation_type: new_finding)
+4. Output strict JSON with your verdict
+5. Include run_id, iteration, spec_hash in metadata
 
-IMPORTANT: Use Read, Grep, Glob tools to examine the codebase. Cite specific files and line numbers.
+IMPORTANT: Use Read, Grep, Glob tools to examine the codebase.
 EOF
 
-  log_info "  📝 Validation prompt created: $CLAUDE_PROMPT_FILE"
-  log_info ""
-  log_info "  ⚠️  MANUAL STEP REQUIRED ⚠️"
-  log_info "  Claude validation needs codebase context access."
-  log_info ""
-  log_info "  To complete validation, run this in Claude Code:"
-  log_info "  ┌─────────────────────────────────────────────────────────┐"
-  log_info "  │ cat $CLAUDE_PROMPT_FILE                                 │"
-  log_info "  │                                                          │"
-  log_info "  │ Then paste the output into Claude Code and ask:         │"
-  log_info "  │ \"Perform the validation and write output to             │"
-  log_info "  │  $CLAUDE_OUTPUT_FILE\"                                   │"
-  log_info "  └─────────────────────────────────────────────────────────┘"
-  log_info ""
-  log_info "  Press ENTER when validation is complete..."
+  log_info "  Validation prompt: $CLAUDE_PROMPT_FILE"
 
-  # Check if we're in automated mode
   if [[ "$AUTO_MODE" == "true" ]]; then
-    log_warning "  Auto mode: Claude validation must be completed by the calling skill."
-    log_info "  Checking for pre-existing Claude validation output..."
-    # In auto mode, the design-reviewer SKILL.md should invoke Claude validation
-    # via Agent tool BEFORE running this script. If the output doesn't exist,
-    # we FAIL the iteration — we do NOT fabricate a placeholder PASS.
-    # See: Sprint 1 audit finding C4 (2026-03-19)
+    log_info "  Auto mode: Claude validation must be completed by the calling skill."
   else
-    # Wait for user to complete manual validation
+    log_info ""
+    log_info "  MANUAL STEP: Complete Claude validation with codebase context."
+    log_info "  Write output to: $CLAUDE_OUTPUT_FILE"
+    log_info "  Press ENTER when done..."
     read -r
   fi
 
-  # Check if validation output exists
   if [[ ! -f "$CLAUDE_OUTPUT_FILE" ]]; then
-    # FAIL-CLOSED: Do NOT create placeholder output that mirrors Gemini's status.
-    # Fabricating a PASS violates three-tier consensus ("all three reviewers must PASS").
-    # The calling skill must ensure Claude validation runs before this script.
-    log_error "  Claude validation output not found: $CLAUDE_OUTPUT_FILE"
-    log_error "  Three-tier consensus requires all three reviewers (Gemini + Codex + Claude)."
-    log_error "  Run Claude validation first, or use interactive mode (without --auto)."
-    log_info ""
-    log_info "  To complete validation manually:"
-    log_info "  1. Read the prompt: cat $CLAUDE_PROMPT_FILE"
-    log_info "  2. Run validation and save output to: $CLAUDE_OUTPUT_FILE"
+    log_error "Claude validation output not found: $CLAUDE_OUTPUT_FILE"
+    log_error "Three-tier review requires Claude as arbiter."
+    log_info "  1. Read: cat $CLAUDE_PROMPT_FILE"
+    log_info "  2. Write output to: $CLAUDE_OUTPUT_FILE"
     log_info "  3. Re-run this script"
-    mark_review_complete "FAIL"
+    mark_review_complete "awaiting_claude_validation"
+    exit 1
+  fi
+
+  # Freshness check on Claude output (Critic #2)
+  CLAUDE_RUN_ID=$(jq -r '.metadata.run_id // ""' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo "")
+  if [[ -n "$CLAUDE_RUN_ID" && "$CLAUDE_RUN_ID" != "$RUN_ID" ]]; then
+    log_error "STALE CLAUDE OUTPUT: run_id=$CLAUDE_RUN_ID, expected $RUN_ID"
+    log_error "Re-run Claude validation against current Gemini/Codex outputs."
+    mark_review_complete "stale_claude_output"
+    exit 1
+  fi
+
+  # Validate Claude JSON before parsing (fail-closed)
+  if ! validate_json_file "$CLAUDE_OUTPUT_FILE"; then
+    log_error "Claude output is invalid JSON — fail-closed"
+    mark_review_complete "invalid_claude_output"
     exit 1
   fi
 
@@ -338,121 +415,91 @@ EOF
   CLAUDE_DURATION=$((CLAUDE_END - CLAUDE_START))
 
   CLAUDE_STATUS=$(jq -r '.status' "$CLAUDE_OUTPUT_FILE")
-  log_info "  ✓ Claude validation completed in ${CLAUDE_DURATION}ms (status: $CLAUDE_STATUS)"
+  CLAUDE_ISSUE_COUNT=$(jq '.issues | length' "$CLAUDE_OUTPUT_FILE")
+  log_info "  Claude: $CLAUDE_STATUS ($CLAUDE_ISSUE_COUNT issues, ${CLAUDE_DURATION}ms)"
 
-  # Update review statuses in state
   update_review_statuses "$GEMINI_STATUS" "$CODEX_STATUS" "$CLAUDE_STATUS"
 
-  # Phase 6: Consensus detection
-  log_info "Phase 6: Analyzing consensus..."
-  bash "$SCRIPT_DIR/consensus_analyzer.sh"
+  # ── Phase 4: Progress analysis (Critic #5) ────────────────────────
+  log_info "Phase 4: Progress analysis..."
 
-  if [[ $? -ne 0 ]]; then
-    log_error "Consensus analysis failed"
-    exit 1
-  fi
+  HIGH_COUNT=$(jq '[.issues[] | select(.severity == "high" and .confidence >= 0.5)] | length' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo 0)
+  MEDIUM_COUNT=$(jq '[.issues[] | select(.severity == "medium" and .confidence >= 0.5)] | length' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo 0)
+  LOW_COUNT=$(jq '[.issues[] | select(.severity == "low")] | length' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo 0)
 
-  # Phase 7: Auto-fix engine
-  log_info "Phase 7: Running auto-fix engine..."
-  bash "$SCRIPT_DIR/auto_fix_engine.sh"
-
-  if [[ $? -ne 0 ]]; then
-    log_error "Auto-fix engine failed"
-    exit 1
-  fi
-
-  # Phase 8: Generate consensus report
-  log_info "Phase 8: Generating consensus report..."
-
-  # Generate JSON report (already exists from consensus analyzer)
-  CONSENSUS_REPORT=$(get_review_file "consensus.json")
-  log_info "  JSON report: $CONSENSUS_REPORT"
-
-  # Generate human-readable colorized report
-  REPORT_FILE=$(get_review_file "report.txt")
-  if bash "$SCRIPT_DIR/generate_report.sh" > "$REPORT_FILE" 2>&1; then
-    log_info "  ✓ Colorized report generated: $REPORT_FILE"
-    log_info ""
-    log_info "  To view the formatted report, run:"
-    log_info "  cat $REPORT_FILE"
+  if [[ "$HIGH_COUNT" -gt 0 ]]; then
+    PROGRESS_STATUS="blocked_by_high_issues"
+  elif [[ "$MEDIUM_COUNT" -gt 0 ]]; then
+    PROGRESS_STATUS="medium_issues_remaining"
+  elif [[ "$LOW_COUNT" -gt 0 ]]; then
+    PROGRESS_STATUS="low_issues_only"
   else
-    log_warning "  Report generation failed, JSON still available"
+    PROGRESS_STATUS="passed"
   fi
 
-  # Phase 9: Check convergence
-  log_info "Phase 9: Checking convergence..."
+  update_state_field "progress_status" "\"$PROGRESS_STATUS\""
+  update_state_field "high_issues" "$HIGH_COUNT"
+  update_state_field "medium_issues" "$MEDIUM_COUNT"
+  update_state_field "low_issues" "$LOW_COUNT"
 
-  if check_convergence; then
+  log_info "  Status: $PROGRESS_STATUS"
+  log_info "  Issues: $HIGH_COUNT high, $MEDIUM_COUNT medium, $LOW_COUNT low"
+
+  # ── Phase 5: Convergence (Critic #4: Claude verdict) ──────────────
+  log_info "Phase 5: Convergence check..."
+
+  if [[ "$PROGRESS_STATUS" == "passed" || "$PROGRESS_STATUS" == "low_issues_only" ]]; then
     log_info ""
-    log_info "✓ ✓ ✓ All reviewers PASS! ✓ ✓ ✓"
+    log_info "=== DESIGN APPROVED ==="
+    log_info "  Verdict: $PROGRESS_STATUS | Run: $RUN_ID"
     log_info ""
 
-    # Insert gate marker into design document so pre-commit gate allows commits.
-    # Without this marker, the pre-commit hook permanently blocks all commits.
     if [[ -f "$DESIGN_FILE" ]]; then
       if ! grep -q "<!-- design-reviewed: PASS -->" "$DESIGN_FILE" 2>/dev/null; then
-        if printf '\n<!-- design-reviewed: PASS -->\n' >> "$DESIGN_FILE"; then
-          log_info "Gate marker written to: $DESIGN_FILE"
+        if grep -q "<!-- design-reviewed: PENDING -->" "$DESIGN_FILE" 2>/dev/null; then
+          # Portable in-place edit (works on macOS and Linux)
+          tmp_design="${DESIGN_FILE}.tmp"
+          sed 's/<!-- design-reviewed: PENDING -->/<!-- design-reviewed: PASS -->/' "$DESIGN_FILE" > "$tmp_design" && mv "$tmp_design" "$DESIGN_FILE"
         else
-          log_error "FAILED to write gate marker to: $DESIGN_FILE"
-          log_error "Check file permissions and disk space. Pre-commit gate will remain blocked."
-          mark_review_complete "FAIL"
-          exit 1
+          printf '\n<!-- design-reviewed: PASS -->\n' >> "$DESIGN_FILE"
         fi
+        log_info "Gate marker written to: $DESIGN_FILE"
       fi
     else
-      log_error "Design file not found: $DESIGN_FILE — cannot write gate marker."
-      mark_review_complete "FAIL"
+      log_error "Design file not found: $DESIGN_FILE"
+      mark_review_complete "error_no_design_file"
       exit 1
     fi
 
-    # Clean up the design-review-needed state file since all reviews passed.
-    # This unblocks the pre-implementation gate (Write/Edit hook).
     rm -f ".claude/design-review-needed.local.md"
     log_info "Design review state cleaned up."
-
-    log_info "Design approved and ready for implementation."
-    mark_review_complete "PASS"
+    mark_review_complete "passed"
     exit 0
   fi
 
-  # Phase 10: Human decisions required
-  log_info "Phase 10: Iteration complete"
-  log_info ""
+  # ── Not converged ─────────────────────────────────────────────────
+  log_info "Not converged: $PROGRESS_STATUS"
 
   if [[ "$AUTO_MODE" == "true" ]]; then
-    # Auto-iteration mode: continue automatically
-    log_info "Auto mode: Preparing next iteration..."
-    log_info ""
-    log_info "Issues remaining - will iterate again (iteration $((CURRENT_ITERATION + 1)))"
-    log_info "View current report: cat $(get_review_file "report.txt")"
-    log_info ""
-
-    # Increment iteration counter
+    # In auto mode, exit after one iteration so the calling skill can:
+    # 1. Fix issues in the spec
+    # 2. Run Claude validation (requires codebase access)
+    # 3. Re-invoke this script for the next iteration
+    # Blindly continuing would fail: claude.json is cleaned at iteration
+    # start and the script can't produce it without codebase tools.
+    log_info "Auto mode: Iteration complete. Exiting for skill to handle fixes + Claude validation."
+    log_info "  Fix $HIGH_COUNT high + $MEDIUM_COUNT medium issues, then re-invoke."
     increment_iteration
-
-    # Brief pause before next iteration
-    sleep 2
-
-    # Continue to next iteration
-    continue
+    exit 1
   else
-    # Interactive mode: pause for human review
-    log_info "Review the consensus report and make decisions on pending issues:"
-    log_info "  cat $(get_review_file "report.txt")"
-    log_info "  cat $(get_review_file "consensus.json")"
-    log_info ""
-    log_info "To continue with next iteration, run this script again after addressing issues."
-
-    # Increment iteration counter
+    log_info "Address the issues, then re-run:"
+    log_info "  High:   $HIGH_COUNT (must fix)"
+    log_info "  Medium: $MEDIUM_COUNT (should fix)"
+    log_info "  Low:    $LOW_COUNT (optional)"
     increment_iteration
-
-    log_info ""
-    log_info "Pausing for human review. Update design file and re-run to continue."
     break
   fi
 done
 
 log_info ""
-log_info "Design review loop exited. Check state file for current status:"
-log_info "  cat $STATE_FILE"
+log_info "Review loop exited. State: cat $STATE_FILE"

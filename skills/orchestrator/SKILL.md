@@ -238,6 +238,7 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Type Design Review** | review types, check invariants, type safety | `type-design-analyzer` agent (pr-review-toolkit) |
 | **Test Coverage Review** | check test quality, test gaps, edge cases | `pr-test-analyzer` agent (pr-review-toolkit) |
 | **Code Polish** | simplify code, make clearer, refine | `code-simplifier` agent (on-demand, Opus) |
+| **Docs Setup** | set up docs, audit docs, standardize docs | `busdriver:docs-setup` |
 
 Skills not listed above are discoverable via the system-prompt skill registry. The orchestrator only routes to busdriver-owned skills.
 

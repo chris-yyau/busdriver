@@ -3,6 +3,7 @@ name: OpenSSF Scorecard
 on:
   schedule:
     - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 permissions: {}
 
@@ -21,6 +22,7 @@ jobs:
       issues: read
       checks: read
       pull-requests: read
+      security-events: write
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
@@ -34,7 +36,7 @@ jobs:
         with:
           results_file: results.sarif
           results_format: sarif
-          publish_results: false
+          publish_results: true
           repo_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Upload results as artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

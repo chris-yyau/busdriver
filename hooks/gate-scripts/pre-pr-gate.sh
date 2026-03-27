@@ -166,7 +166,7 @@ PR_MARKER="$REPO_DIR/.claude/pr-review-passed.local"
 
 if [ -f "$PR_MARKER" ]; then
     PR_MARKER_CONTENT=$(cat "$PR_MARKER" 2>/dev/null || echo "")
-    if echo "$PR_MARKER_CONTENT" | grep -q "^DEGRADED"; then
+    if echo "$PR_MARKER_CONTENT" | grep -qE '^(DEGRADED|SKIPPED-NONE|BUILTIN-)'; then
         rm -f "$PR_MARKER"
     else
         # Genuine PR review pass — consume and allow
@@ -177,11 +177,20 @@ fi
 
 if [ -f "$MARKER" ]; then
     MARKER_CONTENT=$(cat "$MARKER" 2>/dev/null || echo "")
-    if ! echo "$MARKER_CONTENT" | grep -q "^DEGRADED"; then
-        # Commit review marker exists — allow PR creation
+    # Reject DEGRADED, SKIPPED-NONE, BUILTIN- markers — PR requires external CLI review
+    if echo "$MARKER_CONTENT" | grep -qE '^(DEGRADED|SKIPPED-NONE|BUILTIN-)'; then
+        : # Fall through to blocking logic — these markers don't satisfy PR gate
+    elif echo "$MARKER_CONTENT" | grep -qE '^[a-f0-9]{64}$'; then
+        # Valid SHA-256 hash from external CLI review — allow PR creation
+        # Do NOT consume — the commit gate needs it
+        exit 0
+    elif echo "$MARKER_CONTENT" | grep -qE '^PASS(-MERGE)?-[0-9]+$'; then
+        # Valid timestamped pass marker (auto-generated files, merge commits)
         # Do NOT consume — the commit gate needs it
         exit 0
     fi
+    # Unrecognized marker format — reject as invalid
+    echo "[pre-pr-gate] Marker content not recognized (expected SHA-256 hash or PASS-*): ${MARKER_CONTENT:0:30}..." >&2
 fi
 
 # ── Smart PR gate: check if all commits were per-commit reviewed ──────
@@ -209,7 +218,7 @@ if [ -f "$REVIEWED_FILE" ]; then
 fi
 
 # No valid review marker → block PR creation
-REASON="Codex review required before creating a PR.
+REASON="Code review required before creating a PR.
 
 Run /codex-reviewer to review the full branch diff (base..HEAD). The review must pass before \`gh pr create\` is allowed.
 

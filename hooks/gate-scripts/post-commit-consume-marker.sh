@@ -120,7 +120,26 @@ REPO_DIR=$(git -C "${TARGET_DIR:-.}" rev-parse --show-toplevel 2>/dev/null || ec
 # Consume the marker — commit confirmed successful
 MARKER="$REPO_DIR/.claude/codex-review-passed.local"
 if [ -f "$MARKER" ]; then
+    MARKER_CONTENT=$(cat "$MARKER" 2>/dev/null || echo "")
     rm -f "$MARKER"
+
+    # SKIPPED-NONE: not reviewed at all — exclude from reviewed-commits.local
+    if echo "$MARKER_CONTENT" | grep -q "^SKIPPED-NONE"; then
+        # Reset circuit breaker and exit — do not track as reviewed
+        rm -f "$REPO_DIR/.claude/.gate-block-count.local" 2>/dev/null || true
+        exit 0
+    fi
+
+    # BUILTIN: self-reviewed by Claude — exclude from reviewed-commits.local
+    # Rationale: The PR gate smart path (pre-pr-gate.sh) skips multi-voice
+    # PR review when all commits are in reviewed-commits.local. Builtin
+    # self-review should NOT qualify for this shortcut — the PR deep review
+    # is the real guard against self-review gaps.
+    if echo "$MARKER_CONTENT" | grep -q "^BUILTIN-"; then
+        # Reset circuit breaker and exit — do not track as reviewed
+        rm -f "$REPO_DIR/.claude/.gate-block-count.local" 2>/dev/null || true
+        exit 0
+    fi
 
     # ── Track reviewed commit SHA for smart PR gate ───────────────────
     # Append the new commit's SHA to reviewed-commits.local so the PR
@@ -134,6 +153,6 @@ if [ -f "$MARKER" ]; then
 fi
 
 # Reset circuit breaker (block counter)
-rm -f ".claude/.gate-block-count.local" 2>/dev/null || true
+rm -f "$REPO_DIR/.claude/.gate-block-count.local" 2>/dev/null || true
 
 exit 0

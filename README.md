@@ -70,18 +70,30 @@ From brainstorming and planning to domain patterns, deployment workflows, supply
 
 - **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — the host harness (required)
 
-### Optional CLIs for multi-model review
+### Review CLI (configurable)
 
-Busdriver uses external CLIs to run multi-model gate reviews. The gate review (Ralph Loop pattern) dispatches your staged code to a second model for independent review before allowing commits.
+Set `BUSDRIVER_REVIEW_CLI` to choose your review backend:
 
-| CLI | What it does | Install |
-|-----|-------------|---------|
-| **[Codex CLI](https://github.com/openai/codex)** | Pre-commit code review gate | `npm install -g @openai/codex` |
-| **[Gemini CLI](https://github.com/google-gemini/gemini-cli)** | Multi-model dispatch for audits and analysis | `npm install -g @anthropic-ai/gemini-cli` or see repo |
+| Value | Behavior |
+|-------|----------|
+| `auto` (default) | Detects: codex > gemini > built-in agent fallback |
+| `codex` | OpenAI Codex CLI (`npm install -g @openai/codex`) |
+| `gemini` | Google Gemini CLI |
+| `claude` | Claude CLI (experimental) |
+| `aider` | Aider CLI (experimental) |
+| `builtin` | Built-in code-reviewer agent (always available, less independent) |
+| `none` | Disable review gate (logs warning on every commit) |
 
-**Without Codex CLI:** The pre-commit gate fails closed — commits are blocked until you either install Codex or explicitly bypass with `touch .claude/skip-codex-review.local`. This is intentional: no reviewer = no silent pass.
+**Without any external CLI:** Auto-detection falls back to the built-in code-reviewer agent. All commits are still reviewed, but by the same model that wrote the code (less independent). Run `node scripts/doctor.js` to see your effective reviewer.
 
-**Without Gemini CLI:** The dispatch-cli skill falls back to whichever CLI is available. If neither is installed, multi-model dispatch is unavailable but the core pipeline (planning, TDD, verification, language reviewers) works normally.
+### Optional CLIs for multi-model features
+
+| CLI | Used by | Install |
+|-----|---------|---------|
+| **[Codex CLI](https://github.com/openai/codex)** | Code review gate (default), design reviewer, council | `npm install -g @openai/codex` |
+| **[Gemini CLI](https://github.com/google-gemini/gemini-cli)** | Design reviewer, council, code review (if configured) | `npm install -g @google/gemini-cli` or see repo |
+
+**Without Gemini CLI:** The design reviewer runs with Codex + Claude only (1 external voice instead of 2). The council degrades to 3-voice. Core pipeline works normally.
 
 ## Install
 

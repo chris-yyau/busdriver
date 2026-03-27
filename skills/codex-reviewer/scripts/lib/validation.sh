@@ -2,6 +2,12 @@
 # Shared validation functions for codex-reviewer scripts
 # Provides centralized error handling and validation
 
+# Source shared CLI resolution library
+_VALIDATION_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$_VALIDATION_SCRIPT_DIR/../../../.." && pwd)}"
+# shellcheck source=../../../../scripts/lib/resolve-cli.sh
+source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"
+
 # Validate we're in a git repository
 validate_git_repo() {
   if ! git rev-parse --git-dir > /dev/null 2>&1; then
@@ -19,21 +25,40 @@ validate_git_repo() {
   return 0
 }
 
-# Validate codex CLI is installed
-validate_codex_installed() {
-  if ! command -v codex &> /dev/null; then
-    echo "❌ Error: codex CLI not found" >&2
+# Validate review CLI is available (replaces validate_codex_installed)
+# Outputs the resolved CLI name on success, error message on failure
+validate_review_cli() {
+  local resolved
+  resolved=$(resolve_review_cli)
+
+  if [[ "$resolved" == missing:* ]]; then
+    local cli_name="${resolved#missing:}"
+    local hint
+    hint=$(get_cli_install_hint "$cli_name")
+    echo "❌ Error: review CLI '$cli_name' not found" >&2
     echo "" >&2
-    echo "   Expected: codex command available in PATH" >&2
-    echo "   Current PATH: $PATH" >&2
+    echo "   BUSDRIVER_REVIEW_CLI is set to '$cli_name' but it is not installed." >&2
+    echo "   Install: $hint" >&2
     echo "" >&2
-    echo "   To install codex:" >&2
-    echo "   1. Check installation instructions for your system" >&2
-    echo "   2. Verify installation: which codex" >&2
-    echo "   3. Check version: codex --version" >&2
+    echo "   Or set BUSDRIVER_REVIEW_CLI=auto to auto-detect, or =builtin for agent review." >&2
     return 1
   fi
+
+  if [[ "$resolved" == unsupported:* ]]; then
+    local cli_name="${resolved#unsupported:}"
+    echo "❌ Error: unsupported review CLI '$cli_name'" >&2
+    echo "" >&2
+    echo "   Supported values: auto, codex, gemini, claude, aider, builtin, none" >&2
+    return 1
+  fi
+
+  echo "$resolved"
   return 0
+}
+
+# Backward compatibility alias
+validate_codex_installed() {
+  validate_review_cli "$@"
 }
 
 # Validate state file exists

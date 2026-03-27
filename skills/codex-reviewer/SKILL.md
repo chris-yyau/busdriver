@@ -379,9 +379,24 @@ PASS pr-review <short-sha-of-HEAD> <timestamp>
 The pre-PR gate verifies the marker's SHA matches current HEAD. Stale markers from prior reviews are rejected.
 
 **Environment variables:**
+- `BUSDRIVER_REVIEW_CLI=auto` — choose review backend (auto/codex/gemini/claude/aider/builtin/none)
 - `CODEX_REVIEW_MODE=pr` — switches to PR deep review mode
 - `CODEX_PR_BASE=main` — override base branch (defaults to `origin/HEAD` or `main`)
 - `CODEX_PR_FAST=1` — skip multi-agent review, use fast mode only (audited in bypass-log)
+
+## Builtin Fallback (Exit Code 3)
+
+When `run-review-loop.sh` exits with code 3, no external review CLI is available and the builtin fallback was triggered. Handle as follows:
+
+1. Read the prompt path from `.claude/builtin-review-prompt-path.local`
+2. Read the review prompt from that path
+3. Dispatch the `code-reviewer` agent via the Agent tool with the prompt as context. **The agent prompt MUST include:**
+   - **Read-only mode:** "Do NOT modify any files. Report only. Do not use the Fix-First pass. Do not use Write or Edit tools."
+   - **JSON output format:** "Output your review as a JSON array of issues: `[{\"severity\": \"CRITICAL|HIGH|MEDIUM|LOW\", \"file\": \"path\", \"line\": 0, \"description\": \"...\"}]`. If no issues found, output: `[]`"
+4. Parse the agent's JSON output for CRITICAL/HIGH/MEDIUM issues
+5. If no blocking issues: write the marker via `bash skills/codex-reviewer/scripts/write-review-marker.sh` (NOT via Write tool — the pre-implementation gate blocks Write to marker files)
+6. If CRITICAL/HIGH/MEDIUM issues: report FAIL with issues, fix and re-run
+7. Clean up: remove the temp prompt file and the handoff path file
 
 ## Key Principles
 

@@ -301,10 +301,18 @@ if [ -f "$MARKER" ]; then
     MARKER_CONTENT=$(cat "$MARKER" 2>/dev/null || echo "")
     if echo "$MARKER_CONTENT" | grep -q "^DEGRADED"; then
         rm -f "$MARKER"
-        echo '{"decision":"block","reason":"Codex review ran in DEGRADED mode (codex CLI not installed). No actual code review was performed. Install codex CLI or create .claude/skip-codex-review.local to bypass."}' >&2
+        echo '{"decision":"block","reason":"Code review ran in DEGRADED mode (no review CLI installed). No actual code review was performed. Install a review CLI or create .claude/skip-codex-review.local to bypass."}' >&2
         # Do NOT exit 0 — fall through to blocking logic below
+    elif echo "$MARKER_CONTENT" | grep -q "^SKIPPED-NONE"; then
+        # BUSDRIVER_REVIEW_CLI=none — user explicitly opted out of review.
+        # Accept unconditionally. See design spec §4 for risk analysis.
+        exit 0
+    elif echo "$MARKER_CONTENT" | grep -q "^BUILTIN-"; then
+        # Built-in agent review — accept for commit gate.
+        # Post-commit hook excludes from reviewed-commits.local (requires PR deep review).
+        exit 0
     else
-        # Genuine review pass — approve but DO NOT consume the marker.
+        # Genuine external review pass — approve but DO NOT consume the marker.
         # Consumption is deferred to PostToolUse (post-commit-consume-marker.sh)
         # which verifies the commit actually succeeded before deleting.
         #
@@ -334,7 +342,7 @@ If you believe the gate is stuck, the user can create .claude/skip-codex-review.
 fi
 
 # No valid review marker → block commit
-REASON="Codex review required before committing.
+REASON="Code review required before committing.
 
 Run /codex-reviewer to review your staged changes. The review must pass before git commit is allowed.
 

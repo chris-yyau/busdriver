@@ -30,20 +30,6 @@ RESOLVED_CLI=$(validate_review_cli 2>/dev/null) || {
   exit 1
 }
 
-# Handle 'none' mode — immediate pass with warning
-if [ "$RESOLVED_CLI" = "none" ]; then
-  echo "⚠️  BUSDRIVER_REVIEW_CLI=none — review gate disabled" >&2
-  echo "   Commits will pass without code review." >&2
-  echo "" >&2
-  mkdir -p .claude
-  echo "SKIPPED-NONE-$(date +%s)" > ".claude/codex-review-passed.local"
-  printf '{"ts":"%s","event":"review-skipped-none","gate":"pre-commit"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
-  clear_iteration_history
-  rm -f "$STATE_FILE" 2>/dev/null
-  exit 0
-fi
-
 echo "   Review CLI: $RESOLVED_CLI"
 
 validate_state_file "$STATE_FILE" || exit 1
@@ -74,6 +60,20 @@ if [ "$REVIEW_MODE" = "pr" ]; then
     exit 1
   fi
 else
+  # Commit mode: handle 'none' (must be after PR mode guard above)
+  if [ "$RESOLVED_CLI" = "none" ]; then
+    echo "⚠️  BUSDRIVER_REVIEW_CLI=none — review gate disabled" >&2
+    echo "   Commits will pass without code review." >&2
+    echo "" >&2
+    mkdir -p .claude
+    echo "SKIPPED-NONE-$(date +%s)" > ".claude/codex-review-passed.local"
+    printf '{"ts":"%s","event":"review-skipped-none","gate":"pre-commit"}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
+    clear_iteration_history
+    rm -f "$STATE_FILE" 2>/dev/null
+    exit 0
+  fi
+
   # Commit mode: check for staged changes
   # Detect merge in progress — merge resolutions have all files staged
   # as part of the merge state, making git diff --cached appear empty

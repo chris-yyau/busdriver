@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 sessions/
 *.tmp
+.worktrees/
 
 # Local gate state (transient, session-scoped)
 .claude/*.local

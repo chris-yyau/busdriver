@@ -66,6 +66,23 @@ Architect, planner, TDD guide, security reviewer, 8 language-specific reviewers,
 
 From brainstorming and planning to domain patterns, deployment workflows, supply chain management, and AI/LLM pipeline optimization. See `skills/` for the full inventory.
 
+## Requirements
+
+- **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — the host harness (required)
+
+### Optional CLIs for multi-model review
+
+Busdriver uses external CLIs to run multi-model gate reviews. The gate review (Ralph Loop pattern) dispatches your staged code to a second model for independent review before allowing commits.
+
+| CLI | What it does | Install |
+|-----|-------------|---------|
+| **[Codex CLI](https://github.com/openai/codex)** | Pre-commit code review gate | `npm install -g @openai/codex` |
+| **[Gemini CLI](https://github.com/google-gemini/gemini-cli)** | Multi-model dispatch for audits and analysis | `npm install -g @anthropic-ai/gemini-cli` or see repo |
+
+**Without Codex CLI:** The pre-commit gate fails closed — commits are blocked until you either install Codex or explicitly bypass with `touch .claude/skip-codex-review.local`. This is intentional: no reviewer = no silent pass.
+
+**Without Gemini CLI:** The dispatch-cli skill falls back to whichever CLI is available. If neither is installed, multi-model dispatch is unavailable but the core pipeline (planning, TDD, verification, language reviewers) works normally.
+
 ## Install
 
 ```bash

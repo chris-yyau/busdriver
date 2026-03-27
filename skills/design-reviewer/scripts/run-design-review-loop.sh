@@ -65,6 +65,7 @@ compute_spec_hash() {
 
 # Parse command line arguments
 AUTO_MODE=false
+CLAUDE_ONLY=false
 while [[ $# -gt 0 ]]; do
   case $1 in
     --auto)
@@ -77,11 +78,16 @@ while [[ $# -gt 0 ]]; do
       log_error "Claude is the arbiter — skipping it removes the convergence signal."
       exit 1
       ;;
+    --claude-only)
+      CLAUDE_ONLY=true
+      shift
+      ;;
     --help)
       echo "Usage: $0 [OPTIONS]"
       echo ""
       echo "Options:"
       echo "  --auto          Auto-iteration mode (iterate until Claude verdict is PASS)"
+      echo "  --claude-only   Skip Gemini+Codex, only run Phase 3-5 (Claude validation + convergence)"
       echo "  --help          Show this help message"
       echo ""
       echo "Architecture:"
@@ -117,31 +123,53 @@ fi
 DESIGN_FILE=$(get_design_file)
 log_info "Design file: $DESIGN_FILE"
 
-# Generate run ID for this execution (Critic #1: run-scoped isolation)
-RUN_ID=$(generate_run_id)
-log_info "Run ID: $RUN_ID"
-
 # Compute spec hash for freshness contract (Critic #2)
 SPEC_HASH=$(compute_spec_hash "$DESIGN_FILE")
 log_info "Spec hash: ${SPEC_HASH:0:12}..."
 
-# Validate CLIs are available
-log_info "Checking for required CLIs..."
-GEMINI_AVAILABLE=false
-CODEX_AVAILABLE=false
-
-if validate_cli_available "gemini"; then
-  GEMINI_AVAILABLE=true
-  log_info "  + Gemini CLI found"
+if [[ "$CLAUDE_ONLY" == "true" ]]; then
+  # --claude-only: recover run_id from existing Codex/Gemini outputs
+  CODEX_FILE=$(get_review_file "codex.json")
+  GEMINI_FILE=$(get_review_file "gemini.json")
+  RUN_ID=""
+  if [[ -f "$CODEX_FILE" ]]; then
+    RUN_ID=$(jq -r '.metadata.run_id // ""' "$CODEX_FILE" 2>/dev/null || echo "")
+  fi
+  if [[ -z "$RUN_ID" && -f "$GEMINI_FILE" ]]; then
+    RUN_ID=$(jq -r '.metadata.run_id // ""' "$GEMINI_FILE" 2>/dev/null || echo "")
+  fi
+  if [[ -z "$RUN_ID" ]]; then
+    log_error "--claude-only requires existing Gemini/Codex outputs with run_id."
+    log_error "Run without --claude-only first to generate them."
+    exit 1
+  fi
+  log_info "Mode: CLAUDE-ONLY (Phase 3-5 only)"
+  log_info "Recovered run ID: $RUN_ID"
+  GEMINI_AVAILABLE=false
+  CODEX_AVAILABLE=false
 else
-  log_warning "  - Gemini CLI not found (will use fallback)"
-fi
+  # Normal mode: generate fresh run ID
+  RUN_ID=$(generate_run_id)
+  log_info "Run ID: $RUN_ID"
 
-if validate_cli_available "codex"; then
-  CODEX_AVAILABLE=true
-  log_info "  + Codex CLI found"
-else
-  log_warning "  - Codex CLI not found (will use fallback)"
+  # Validate CLIs are available
+  log_info "Checking for required CLIs..."
+  GEMINI_AVAILABLE=false
+  CODEX_AVAILABLE=false
+
+  if validate_cli_available "gemini"; then
+    GEMINI_AVAILABLE=true
+    log_info "  + Gemini CLI found"
+  else
+    log_warning "  - Gemini CLI not found (will use fallback)"
+  fi
+
+  if validate_cli_available "codex"; then
+    CODEX_AVAILABLE=true
+    log_info "  + Codex CLI found"
+  else
+    log_warning "  - Codex CLI not found (will use fallback)"
+  fi
 fi
 
 # Main iteration loop
@@ -161,6 +189,18 @@ while true; do
     mark_review_complete "max_iterations_exceeded"
     exit 1
   fi
+
+  if [[ "$CLAUDE_ONLY" == "true" ]]; then
+    # --claude-only: skip cleanup and Gemini+Codex, jump straight to Phase 3
+    log_info "Claude-only mode: skipping Phase 1-2 (using existing Gemini+Codex outputs)"
+
+    GEMINI_OUTPUT_FILE=$(get_review_file "gemini.json")
+    CODEX_OUTPUT_FILE=$(get_review_file "codex.json")
+    GEMINI_STATUS=$(jq -r '.status' "$GEMINI_OUTPUT_FILE" 2>/dev/null || echo "ERROR")
+    CODEX_STATUS=$(jq -r '.status' "$CODEX_OUTPUT_FILE" 2>/dev/null || echo "ERROR")
+    DESIGN_CONTENT=$(cat "$DESIGN_FILE")
+    REVIEW_START=$(millis)
+  else
 
   # ── Critic #1: Clean stale outputs from previous iteration ────────
   log_info "Cleaning stale artifacts..."
@@ -211,6 +251,7 @@ $DESIGN_CONTENT
 
         if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$GEMINI_RAW_FILE" > "${GEMINI_OUTPUT_FILE}.pending" 2>/dev/null; then
           # Inject freshness metadata (Critic #2)
+          # || true: don't let injection failure kill subshell under set -e
           python3 -c "
 import json
 with open('${GEMINI_OUTPUT_FILE}.pending') as f:
@@ -222,7 +263,7 @@ data['metadata']['spec_hash'] = '$SPEC_HASH'
 data['metadata']['review_duration_ms'] = $GEMINI_DURATION
 with open('${GEMINI_OUTPUT_FILE}.pending', 'w') as f:
     json.dump(data, f, indent=2)
-" 2>/dev/null
+" 2>/dev/null || true
           mv "${GEMINI_OUTPUT_FILE}.pending" "$GEMINI_OUTPUT_FILE"
         else
           create_error_json "gemini" "Output was not valid JSON" > "$GEMINI_OUTPUT_FILE"
@@ -248,6 +289,7 @@ with open('${GEMINI_OUTPUT_FILE}.pending', 'w') as f:
 
         if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$CODEX_RAW_FILE" > "${CODEX_OUTPUT_FILE}.pending" 2>/dev/null; then
           # Inject freshness metadata (Critic #2)
+          # || true: don't let injection failure kill subshell under set -e
           python3 -c "
 import json
 with open('${CODEX_OUTPUT_FILE}.pending') as f:
@@ -259,7 +301,7 @@ data['metadata']['spec_hash'] = '$SPEC_HASH'
 data['metadata']['review_duration_ms'] = $CODEX_DURATION
 with open('${CODEX_OUTPUT_FILE}.pending', 'w') as f:
     json.dump(data, f, indent=2)
-" 2>/dev/null
+" 2>/dev/null || true
           mv "${CODEX_OUTPUT_FILE}.pending" "$CODEX_OUTPUT_FILE"
         else
           create_error_json "codex" "Output was not valid JSON" > "$CODEX_OUTPUT_FILE"
@@ -295,13 +337,23 @@ with open('${CODEX_OUTPUT_FILE}.pending', 'w') as f:
     create_error_json "codex" "Output missing or invalid after review" > "$CODEX_OUTPUT_FILE"
   fi
 
-  # Freshness check (Critic #2): fail-closed — require run_id match
+  # Freshness check (Critic #2): validate or inject run_id
   for review_file in "$GEMINI_OUTPUT_FILE" "$CODEX_OUTPUT_FILE"; do
     FILE_RUN_ID=$(jq -r '.metadata.run_id // ""' "$review_file" 2>/dev/null || echo "")
     REVIEWER=$(jq -r '.reviewer_id // "unknown"' "$review_file" 2>/dev/null || echo "unknown")
+    FILE_STATUS=$(jq -r '.status // ""' "$review_file" 2>/dev/null || echo "")
     if [[ -z "$FILE_RUN_ID" ]]; then
-      log_error "MISSING run_id in $review_file — fail-closed (freshness contract)"
-      create_error_json "$REVIEWER" "Missing run_id metadata (freshness contract violation)" > "$review_file"
+      # Missing run_id: try to inject it via jq (fallback if python3 injection failed)
+      if jq --arg rid "$RUN_ID" --argjson iter "$CURRENT_ITERATION" --arg hash "$SPEC_HASH" \
+        '.metadata.run_id = $rid | .metadata.iteration = $iter | .metadata.spec_hash = $hash' \
+        "$review_file" > "${review_file}.tmp" 2>/dev/null; then
+        mv "${review_file}.tmp" "$review_file"
+        log_warning "Injected missing run_id into $review_file via jq fallback"
+      else
+        rm -f "${review_file}.tmp"
+        log_error "MISSING run_id in $review_file and jq injection failed — fail-closed"
+        create_error_json "$REVIEWER" "Missing run_id metadata (freshness contract violation)" > "$review_file"
+      fi
     elif [[ "$FILE_RUN_ID" != "$RUN_ID" ]]; then
       log_error "STALE OUTPUT: $review_file has run_id=$FILE_RUN_ID, expected $RUN_ID"
       create_error_json "$REVIEWER" "Stale output from previous run" > "$review_file"
@@ -313,6 +365,8 @@ with open('${CODEX_OUTPUT_FILE}.pending', 'w') as f:
 
   log_info "  Gemini: $GEMINI_STATUS ($(jq '.issues | length' "$GEMINI_OUTPUT_FILE") issues)"
   log_info "  Codex:  $CODEX_STATUS ($(jq '.issues | length' "$CODEX_OUTPUT_FILE") issues)"
+
+  fi  # end of CLAUDE_ONLY guard (Phase 1-2 skipped in claude-only mode)
 
   # ── Phase 3: Claude validation (arbiter) ──────────────────────────
   log_info "Phase 3: Claude validation (arbiter)..."

@@ -147,6 +147,8 @@ Busdriver learns from its mistakes:
 Built on the shoulders of:
 - **[Superpowers](https://github.com/obra/superpowers)** by Jesse Vincent — the pipeline backbone
 - **[Everything Claude Code](https://github.com/affaan-m/everything-claude-code)** by Affaan Mustafa — domain tools, hooks, and agents
+- **[gstack](https://github.com/garrytan/gstack)** by Garry Tan — supplement patterns for security audit, QA, anti-sycophancy, and design quality
+- **[Ralphinho RFC Pipeline](https://github.com/humanplane)** — multi-agent DAG execution and multi-model gate review patterns
 
 ## Contributing
 

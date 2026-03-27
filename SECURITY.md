@@ -4,7 +4,7 @@
 
 If you discover a security vulnerability in busdriver, please report it responsibly.
 
-**Email:** security@diveanddev.com
+**Email:** chris@diveanddev.com
 
 **Response timeline:**
 - **48 hours** — acknowledgment of your report

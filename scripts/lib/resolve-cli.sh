@@ -129,6 +129,8 @@ if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = "--json" ]; then
   # Sanitize strings for JSON (strip quotes, backslashes, newlines)
   _json_safe() { tr -d '"\\\n' | head -1; }
 
+  configured=$(echo "$configured" | _json_safe)
+  resolved=$(echo "$resolved" | _json_safe)
   version=$(echo "$version" | _json_safe)
 
   # Report availability for all supported CLIs

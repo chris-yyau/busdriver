@@ -188,9 +188,10 @@ if [ -f "$MARKER" ]; then
         # Valid timestamped pass marker (auto-generated files, merge commits)
         # Do NOT consume — the commit gate needs it
         exit 0
+    else
+        # Unrecognized marker format — reject as invalid
+        echo "[pre-pr-gate] Marker content not recognized (expected SHA-256 hash or PASS-*): ${MARKER_CONTENT:0:30}..." >&2
     fi
-    # Unrecognized marker format — reject as invalid
-    echo "[pre-pr-gate] Marker content not recognized (expected SHA-256 hash or PASS-*): ${MARKER_CONTENT:0:30}..." >&2
 fi
 
 # ── Smart PR gate: check if all commits were per-commit reviewed ──────

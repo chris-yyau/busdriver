@@ -307,7 +307,7 @@ REVIEW_OUTPUT=$(execute_review "$RESOLVED_CLI" "$FINAL_PROMPT" "$REVIEW_TIMEOUT"
 REVIEW_EXIT=$?
 set -e
 
-if [ "$REVIEW_EXIT" -eq 3 ]; then
+if [ "$RESOLVED_CLI" = "builtin" ] && [ "$REVIEW_EXIT" -eq 3 ] && [ "$REVIEW_OUTPUT" = "BUILTIN_FALLBACK" ]; then
   # Builtin fallback — write prompt to temp file for SKILL agent dispatch
   BUILTIN_PROMPT_FILE=$(mktemp -t busdriver-review-XXXXXX)
   chmod 600 "$BUILTIN_PROMPT_FILE"

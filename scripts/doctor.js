@@ -65,7 +65,7 @@ function checkReviewCli() {
 
   try {
     const resolveScript = path.join(__dirname, 'lib', 'resolve-cli.sh');
-    resolved = execFileSync('bash', ['-c', `source "${resolveScript}" && resolve_review_cli`], {
+    resolved = execFileSync('bash', ['-c', 'source "$1" && resolve_review_cli', '_', resolveScript], {
       encoding: 'utf8',
       env: { ...process.env },
       timeout: 5000,
@@ -146,6 +146,8 @@ function main() {
       targets: options.targets,
     });
     const hasIssues = report.summary.errorCount > 0 || report.summary.warningCount > 0;
+
+    report.reviewGate = checkReviewCli();
 
     if (options.json) {
       console.log(JSON.stringify(report, null, 2));

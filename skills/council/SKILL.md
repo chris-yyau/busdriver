@@ -70,23 +70,21 @@ Agent(
 Before dispatching, check CLI availability and find the dispatch script:
 
 ```bash
-HAS_GEMINI=$(which gemini &>/dev/null && echo yes || echo no)
-HAS_CODEX=$(which codex &>/dev/null && echo yes || echo no)
+# Source shared CLI library and dispatch in a single Bash invocation
+source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/resolve-cli.sh"
+HAS_GEMINI=$(is_cli_available gemini && echo yes || echo no)
+HAS_CODEX=$(is_cli_available codex && echo yes || echo no)
 DISPATCH="${CLAUDE_PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
-```
-
-Then dispatch available CLIs in a **single Bash call** with both as background processes. This is critical — if Gemini and Codex are separate parallel Bash tool calls, one failing cancels the other. A single call with `&` and `wait` keeps them independent:
-
-```bash
-DISPATCH="${CLAUDE_PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
-[ "$(which gemini &>/dev/null && echo yes || echo no)" = "yes" ] && "$DISPATCH" \
+[ "$HAS_GEMINI" = "yes" ] && "$DISPATCH" \
   --cli gemini --timeout 300 \
   --prompt "<Pragmatist prompt>" &
-[ "$(which codex &>/dev/null && echo yes || echo no)" = "yes" ] && "$DISPATCH" \
+[ "$HAS_CODEX" = "yes" ] && "$DISPATCH" \
   --cli codex --timeout 300 \
   --prompt "<Critic prompt>" &
 wait
 ```
+
+This is a **single Bash call** with both as background processes. This is critical — if Gemini and Codex are separate parallel Bash tool calls, one failing cancels the other. A single call with `&` and `wait` keeps them independent.
 
 **Prompt template** for Gemini/Codex (same structure as Skeptic but with their role/lens):
 

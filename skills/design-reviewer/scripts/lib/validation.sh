@@ -66,6 +66,8 @@ extract_json_from_markdown() {
 }
 
 # Validate CLI is available
+# DEPRECATED: Use is_cli_available() from scripts/lib/resolve-cli.sh instead.
+# Kept as backward-compatible wrapper.
 validate_cli_available() {
   local cli_name="$1"
   if ! command -v "$cli_name" &> /dev/null; then

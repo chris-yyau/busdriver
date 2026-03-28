@@ -18,6 +18,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/validation.sh"
+
+# Source shared CLI resolution library
+_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
+# shellcheck source=../../../scripts/lib/resolve-cli.sh
+source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"
 source "$SCRIPT_DIR/lib/state_management.sh"
 
 # Ensure output directory exists (namespaced per design doc)
@@ -157,14 +162,14 @@ else
   GEMINI_AVAILABLE=false
   CODEX_AVAILABLE=false
 
-  if validate_cli_available "gemini"; then
+  if is_cli_available gemini; then
     GEMINI_AVAILABLE=true
     log_info "  + Gemini CLI found"
   else
     log_warning "  - Gemini CLI not found (will use fallback)"
   fi
 
-  if validate_cli_available "codex"; then
+  if is_cli_available codex; then
     CODEX_AVAILABLE=true
     log_info "  + Codex CLI found"
   else

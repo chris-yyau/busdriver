@@ -54,6 +54,52 @@ function statusLabel(status) {
   return status.toUpperCase();
 }
 
+function checkReviewCli() {
+  const { execFileSync } = require('child_process');
+  const path = require('path');
+  const configured = process.env.BUSDRIVER_REVIEW_CLI || 'auto';
+  let resolved = 'unknown';
+  let version = '';
+  let status = 'ok';
+  let message = '';
+
+  try {
+    const resolveScript = path.join(__dirname, 'lib', 'resolve-cli.sh');
+    resolved = execFileSync('bash', ['-c', 'source "$1" && resolve_review_cli', '_', resolveScript], {
+      encoding: 'utf8',
+      env: { ...process.env },
+      timeout: 5000,
+    }).trim();
+  } catch {
+    resolved = 'error';
+  }
+
+  if (resolved === 'none') {
+    status = 'warning';
+    message = 'review gate disabled, commits pass without review';
+  } else if (resolved === 'builtin') {
+    message = 'commits will use built-in Claude review (less independent than external CLI)';
+  } else if (resolved.startsWith('missing:')) {
+    status = 'error';
+    message = `CLI '${resolved.slice(8)}' not found - install it or set BUSDRIVER_REVIEW_CLI=auto`;
+  } else if (resolved === 'error') {
+    status = 'error';
+    message = 'could not resolve review CLI';
+  } else {
+    try {
+      version = execFileSync(resolved, ['--version'], {
+        encoding: 'utf8',
+        timeout: 5000,
+      }).trim().split('\n')[0];
+    } catch {
+      version = 'unknown';
+    }
+    message = `commits will require ${resolved} review`;
+  }
+
+  return { configured, resolved, version, status, message };
+}
+
 function printHuman(report) {
   if (report.results.length === 0) {
     console.log('No ECC install-state files found for the current home/project context.');
@@ -77,6 +123,13 @@ function printHuman(report) {
   }
 
   console.log(`\nSummary: checked=${report.summary.checkedCount}, ok=${report.summary.okCount}, warnings=${report.summary.warningCount}, errors=${report.summary.errorCount}`);
+
+  const cli = report.reviewGate || {};
+  console.log('\nReview Gate:');
+  console.log(`  BUSDRIVER_REVIEW_CLI: ${cli.configured || 'unknown'}`);
+  const versionStr = cli.version ? ` (${cli.version})` : '';
+  console.log(`  Resolved CLI: ${cli.resolved || 'unknown'}${versionStr}`);
+  console.log(`  Status: ${statusLabel(cli.status || 'unknown')} - ${cli.message || 'not checked'}`);
 }
 
 function main() {
@@ -93,6 +146,8 @@ function main() {
       targets: options.targets,
     });
     const hasIssues = report.summary.errorCount > 0 || report.summary.warningCount > 0;
+
+    report.reviewGate = checkReviewCli();
 
     if (options.json) {
       console.log(JSON.stringify(report, null, 2));

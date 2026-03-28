@@ -23,22 +23,14 @@ REVIEW_MODE="${CODEX_REVIEW_MODE:-commit}"
 echo "🔍 Validating prerequisites..."
 validate_git_repo || exit 1
 
-# Fail-closed when codex CLI is not installed.
-# Previously (F7 fix) this wrote a DEGRADED marker that silently passed
-# the pre-commit gate — a governance theater bypass. Now it fails closed:
-# no codex CLI = no review = no commit, unless user explicitly bypasses.
-if ! validate_codex_installed 2>/dev/null; then
-  echo "❌ codex CLI not found — code review cannot run" >&2
-  echo "" >&2
-  echo "   Without codex, automated code review is not possible." >&2
-  echo "   Options:" >&2
-  echo "     1. Install codex:  npm install -g @openai/codex" >&2
-  echo "     2. Explicit bypass: touch .claude/skip-codex-review.local" >&2
-  echo "        (single-use — consumed after one commit)" >&2
-  echo "" >&2
+# Resolve review CLI (fail-closed on missing/unsupported binary)
+RESOLVED_CLI=$(validate_review_cli 2>/dev/null) || {
+  validate_review_cli >&2
   rm -f "$STATE_FILE" 2>/dev/null
   exit 1
-fi
+}
+
+echo "   Review CLI: $RESOLVED_CLI"
 
 validate_state_file "$STATE_FILE" || exit 1
 
@@ -50,6 +42,17 @@ if [ -f "$STATE_FILE" ]; then
 fi
 
 if [ "$REVIEW_MODE" = "pr" ]; then
+  # PR mode guard: reject none/builtin — PR review requires external CLI
+  if [ "$RESOLVED_CLI" = "builtin" ] || [ "$RESOLVED_CLI" = "none" ]; then
+    echo "❌ Error: PR review requires an external review CLI" >&2
+    echo "" >&2
+    echo "   BUSDRIVER_REVIEW_CLI=$RESOLVED_CLI is not supported in PR mode." >&2
+    echo "   PR deep review needs an independent external reviewer." >&2
+    echo "   Set BUSDRIVER_REVIEW_CLI=auto or install codex/gemini." >&2
+    rm -f "$STATE_FILE" 2>/dev/null
+    exit 1
+  fi
+
   # PR mode: check for branch diff against base
   PR_BASE_BRANCH="${CODEX_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo "main")}"
   if git diff --quiet "${PR_BASE_BRANCH}...HEAD" 2>/dev/null; then
@@ -57,6 +60,20 @@ if [ "$REVIEW_MODE" = "pr" ]; then
     exit 1
   fi
 else
+  # Commit mode: handle 'none' (must be after PR mode guard above)
+  if [ "$RESOLVED_CLI" = "none" ]; then
+    echo "⚠️  BUSDRIVER_REVIEW_CLI=none — review gate disabled" >&2
+    echo "   Commits will pass without code review." >&2
+    echo "" >&2
+    mkdir -p .claude
+    echo "SKIPPED-NONE-$(date +%s)" > ".claude/codex-review-passed.local"
+    printf '{"ts":"%s","event":"review-skipped-none","gate":"pre-commit"}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
+    clear_iteration_history
+    rm -f "$STATE_FILE" 2>/dev/null
+    exit 0
+  fi
+
   # Commit mode: check for staged changes
   # Detect merge in progress — merge resolutions have all files staged
   # as part of the merge state, making git diff --cached appear empty
@@ -280,29 +297,39 @@ FINAL_PROMPT="${PROMPT/\{\{PREV_CHANGELOG\}\}/$PREV_CHANGELOG}"
 FINAL_PROMPT="${FINAL_PROMPT/\{\{STAGED_DIFF\}\}/$STAGED_DIFF}"
 FINAL_PROMPT="${FINAL_PROMPT/\{\{ITERATION_HISTORY\}\}/$ITER_HISTORY}"
 
-# Run codex review
-echo "🔬 Running codex review (loop attempt $ITERATION/$MAX_ITER)..."
+# Run review via resolved CLI
+echo "🔬 Running $RESOLVED_CLI review (loop attempt $ITERATION/$MAX_ITER)..."
 echo ""
 
-# Execute codex review
-# Uses global reasoning mode for deep analysis
-# Prompt includes CRITICAL_INSTRUCTION to force JSON at end
 REVIEW_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-1200}"  # 20 minutes default, configurable via env var
 set +e
-REVIEW_OUTPUT=$(timeout "$REVIEW_TIMEOUT" codex review "$FINAL_PROMPT" 2>&1)
+REVIEW_OUTPUT=$(execute_review "$RESOLVED_CLI" "$FINAL_PROMPT" "$REVIEW_TIMEOUT")
 REVIEW_EXIT=$?
 set -e
-if [ "$REVIEW_EXIT" -eq 124 ]; then
-  echo "❌ Error: codex review timed out after ${REVIEW_TIMEOUT}s" >&2
+
+if [ "$RESOLVED_CLI" = "builtin" ] && [ "$REVIEW_EXIT" -eq 3 ] && [ "$REVIEW_OUTPUT" = "BUILTIN_FALLBACK" ]; then
+  # Builtin fallback — write prompt to temp file for SKILL agent dispatch
+  BUILTIN_PROMPT_FILE=$(mktemp -t busdriver-review-XXXXXX)
+  chmod 600 "$BUILTIN_PROMPT_FILE"
+  printf '%s' "$FINAL_PROMPT" > "$BUILTIN_PROMPT_FILE"
+  mkdir -p .claude
+  echo "$BUILTIN_PROMPT_FILE" > ".claude/builtin-review-prompt-path.local"
+  echo "ℹ️  No external review CLI available — using built-in agent review" >&2
+  echo "   Prompt saved to $BUILTIN_PROMPT_FILE" >&2
+  echo "   The codex-reviewer skill will dispatch the code-reviewer agent." >&2
+  clear_iteration_history
+  rm -f "$STATE_FILE" 2>/dev/null
+  exit 3
+elif [ "$REVIEW_EXIT" -eq 124 ]; then
+  echo "❌ Error: $RESOLVED_CLI review timed out after ${REVIEW_TIMEOUT}s" >&2
   echo "" >&2
   echo "   The review took too long. This usually means the diff is too complex." >&2
   echo "   Try splitting into smaller commits." >&2
   echo "" >&2
-  # Run suggest-split to help with splitting
   bash "$SCRIPT_DIR/suggest-split.sh" >&2
   exit 124
 elif [ "$REVIEW_EXIT" -ne 0 ]; then
-  echo "❌ Error: codex review failed (exit code $REVIEW_EXIT)" >&2
+  echo "❌ Error: $RESOLVED_CLI review failed (exit code $REVIEW_EXIT)" >&2
   echo "" >&2
   echo "   Output:" >&2
   echo "$REVIEW_OUTPUT" >&2
@@ -315,9 +342,9 @@ echo ""
 # Parse result
 echo "📊 Parsing results..."
 echo ""
-echo "   Debug: Saving raw codex output..."
+echo "   Debug: Saving raw $RESOLVED_CLI output..."
 echo "$REVIEW_OUTPUT" > /tmp/codex-raw-output.txt
-echo "   Saved to: /tmp/codex-raw-output.txt"
+echo "   Saved to: /tmp/codex-raw-output.txt (CLI: $RESOLVED_CLI)"
 echo ""
 
 # Extract JSON from output using shared robust parser

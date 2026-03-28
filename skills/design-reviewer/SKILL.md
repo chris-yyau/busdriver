@@ -56,12 +56,26 @@ Three-tier model with Claude as arbiter:
 
 | Component | Focus | Typical Time |
 |-----------|-------|--------------|
-| Gemini | Comprehensive (all aspects) | 1-5min |
-| Codex | Comprehensive (all aspects) | 1-5min |
-| Gemini + Codex total | Parallel execution | 1-5min (wall clock) |
+| Reviewer 1 | Comprehensive (all aspects) | 1-5min |
+| Reviewer 2 | Comprehensive (all aspects) | 1-5min |
+| Reviewer 1 + 2 | Parallel execution | 1-5min (wall clock) |
 | Claude | Arbiter + codebase validation | 2-5min |
 
 **Completion criteria:** Claude's verdict has no HIGH or MEDIUM severity issues with confidence >= 0.5
+
+## Configuration
+
+Reviewer CLIs are configurable via `.claude/busdriver.json`:
+
+| Role | Config key | Default |
+|------|-----------|---------|
+| Reviewer 1 | `design-reviewer.reviewer_1` | gemini |
+| Reviewer 2 | `design-reviewer.reviewer_2` | codex |
+| Arbiter | `design-reviewer.arbiter` | claude |
+
+If both reviewers resolve to the same CLI, the system runs single-reviewer mode (one execution, output copied to both paths, logged as degradation).
+
+See README for full per-role routing documentation.
 
 ## Workflow
 

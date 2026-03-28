@@ -48,7 +48,7 @@ validate_review_cli() {
     local cli_name="${resolved#unsupported:}"
     echo "❌ Error: unsupported review CLI '$cli_name'" >&2
     echo "" >&2
-    echo "   Supported values: auto, codex, gemini, claude, aider, builtin, none" >&2
+    echo "   Supported values: auto, codex, gemini, droid, amp, opencode, claude, aider, builtin, none" >&2
     return 1
   fi
 

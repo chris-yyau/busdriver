@@ -7,6 +7,17 @@
 
 set -euo pipefail
 
+# Source shared CLI library for _portable_timeout and resolve functions
+_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
+if [[ -f "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh" ]]; then
+  source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"
+fi
+
+# Fallback if resolve-cli.sh not found
+if ! type _portable_timeout &>/dev/null; then
+  _portable_timeout() { timeout "$@"; }
+fi
+
 LOG_DIR="$HOME/.claude/homunculus"
 LOG_FILE="$LOG_DIR/dispatch-log.jsonl"
 
@@ -30,7 +41,7 @@ while [[ $# -gt 0 ]]; do
 dispatch.sh — Dispatch tasks to Codex or Gemini CLI
 
 FLAGS:
-  --cli     codex|gemini|both|auto  (default: auto)
+  --cli     codex|gemini|droid|amp|opencode|both|all|auto  (default: auto)
   --mode    readonly|auto           (default: readonly)
   --timeout seconds                 (default: 300)
   --model   model override          (optional)
@@ -63,15 +74,23 @@ printf '%s' "$PROMPT" > "$PROMPT_FILE"
 trap 'rm -f "$PROMPT_FILE"' EXIT
 
 # ── CLI detection ──────────────────────────────
-has_codex() { command -v codex &>/dev/null; }
-has_gemini() { command -v gemini &>/dev/null; }
+_has_cli() {
+  if type is_cli_available &>/dev/null; then
+    is_cli_available "$1"
+  else
+    command -v "$1" &>/dev/null
+  fi
+}
 
 if [[ "$CLI" == "auto" ]]; then
-    if has_codex; then CLI="codex"
-    elif has_gemini; then CLI="gemini"
-    else echo "Error: Neither codex nor gemini found." >&2; exit 1; fi
-elif [[ "$CLI" != "codex" && "$CLI" != "gemini" && "$CLI" != "both" ]]; then
-    echo "Error: Invalid --cli value '$CLI'. Must be codex|gemini|both|auto." >&2; exit 1
+    if _has_cli codex; then CLI="codex"
+    elif _has_cli gemini; then CLI="gemini"
+    elif _has_cli droid; then CLI="droid"
+    elif _has_cli amp; then CLI="amp"
+    elif _has_cli opencode; then CLI="opencode"
+    else echo "Error: No supported CLI found (tried codex, gemini, droid, amp, opencode)." >&2; exit 1; fi
+elif [[ "$CLI" != "codex" && "$CLI" != "gemini" && "$CLI" != "droid" && "$CLI" != "amp" && "$CLI" != "opencode" && "$CLI" != "both" && "$CLI" != "all" ]]; then
+    echo "Error: Invalid --cli value '$CLI'. Must be codex|gemini|droid|amp|opencode|both|all|auto." >&2; exit 1
 fi
 
 # Validate mode
@@ -84,18 +103,33 @@ fi
 
 # Validate availability — "both" mode degrades gracefully (F31 fix)
 if [[ "$CLI" == "both" ]]; then
-    if ! has_codex && ! has_gemini; then
+    if ! _has_cli codex && ! _has_cli gemini; then
         echo "Error: Neither codex nor gemini found." >&2; exit 1
-    elif ! has_codex; then
+    elif ! _has_cli codex; then
         echo "Warning: codex not found, falling back to gemini only." >&2
         CLI="gemini"
-    elif ! has_gemini; then
+    elif ! _has_cli gemini; then
         echo "Warning: gemini not found, falling back to codex only." >&2
         CLI="codex"
     fi
 else
-    [[ "$CLI" == "codex" ]] && ! has_codex && { echo "Error: codex not found." >&2; exit 1; }
-    [[ "$CLI" == "gemini" ]] && ! has_gemini && { echo "Error: gemini not found." >&2; exit 1; }
+    [[ "$CLI" == "codex" ]] && ! _has_cli codex && { echo "Error: codex not found." >&2; exit 1; }
+    [[ "$CLI" == "gemini" ]] && ! _has_cli gemini && { echo "Error: gemini not found." >&2; exit 1; }
+    [[ "$CLI" == "droid" ]] && ! _has_cli droid && { echo "Error: droid not found." >&2; exit 1; }
+    [[ "$CLI" == "amp" ]] && ! _has_cli amp && { echo "Error: amp not found." >&2; exit 1; }
+    [[ "$CLI" == "opencode" ]] && ! _has_cli opencode && { echo "Error: opencode not found." >&2; exit 1; }
+fi
+
+# Handle --cli all: discover top 3 available CLIs
+if [[ "$CLI" == "all" ]]; then
+    ALL_CLIS=()
+    for c in codex gemini droid amp opencode; do
+        _has_cli "$c" && ALL_CLIS+=("$c")
+        [[ ${#ALL_CLIS[@]} -ge 3 ]] && break
+    done
+    if [[ ${#ALL_CLIS[@]} -eq 0 ]]; then
+        echo "Error: No CLIs found for --cli all." >&2; exit 1
+    fi
 fi
 
 # ── Helpers ────────────────────────────────────
@@ -122,20 +156,38 @@ dispatch_one() {
     case "$name" in
         codex)
             if [[ "$MODE" == "auto" ]]; then
-                timeout "$TIMEOUT" codex exec --full-auto ${MODEL:+-m "$MODEL"} - \
+                _portable_timeout "$TIMEOUT" codex exec --full-auto ${MODEL:+-m "$MODEL"} - \
                     < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             else
-                timeout "$TIMEOUT" codex exec -s read-only ${MODEL:+-m "$MODEL"} - \
+                _portable_timeout "$TIMEOUT" codex exec -s read-only ${MODEL:+-m "$MODEL"} - \
                     < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             fi ;;
         gemini)
             if [[ "$MODE" == "auto" ]]; then
-                timeout "$TIMEOUT" gemini -y ${MODEL:+-m "$MODEL"} \
+                _portable_timeout "$TIMEOUT" gemini -y ${MODEL:+-m "$MODEL"} \
                     < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             else
-                timeout "$TIMEOUT" gemini ${MODEL:+-m "$MODEL"} \
+                _portable_timeout "$TIMEOUT" gemini ${MODEL:+-m "$MODEL"} \
                     < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             fi ;;
+        droid)
+            if [[ "$MODE" == "auto" ]]; then
+                _portable_timeout "$TIMEOUT" droid exec --auto low \
+                    < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
+            else
+                _portable_timeout "$TIMEOUT" droid exec \
+                    < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
+            fi ;;
+        amp)
+            local amp_tmp
+            amp_tmp=$(mktemp "${TMPDIR:-/tmp}/dispatch-amp-XXXXXX")
+            cp "$PROMPT_FILE" "$amp_tmp"
+            _portable_timeout "$TIMEOUT" amp review --instructions "$amp_tmp" \
+                > "$outfile" 2>&1 || exit_code=$?
+            rm -f "$amp_tmp" ;;
+        opencode)
+            _portable_timeout "$TIMEOUT" opencode \
+                < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;
     esac
 
     local duration=$(( $(date +%s) - start ))
@@ -198,6 +250,37 @@ if [[ "$CLI" == "both" ]]; then
 
     # Exit with failure if either dispatch failed
     [[ "$CS" == "error" || "$CS" == "timeout" || "$GS" == "error" || "$GS" == "timeout" ]] && exit 1
+
+elif [[ "$CLI" == "all" ]]; then
+    echo "Dispatching to ${#ALL_CLIS[@]} CLIs: ${ALL_CLIS[*]} (${MODE}, ${TIMEOUT}s timeout)..." >&2
+
+    ALL_OUTS=()
+    for c in "${ALL_CLIS[@]}"; do
+        outfile="${OUT_DIR}/dispatch-${c}-${STAMP}.txt"
+        ALL_OUTS+=("$outfile")
+        dispatch_one "$c" "$outfile" &
+    done
+    wait
+
+    any_failed=false
+    idx=0
+    for c in "${ALL_CLIS[@]}"; do
+        outfile="${ALL_OUTS[$idx]}"
+        META=$(read_meta "${outfile}.meta"); rm -f "${outfile}.meta"
+        STATUS=$(echo "$META" | cut -d'|' -f1); DURATION=$(echo "$META" | cut -d'|' -f2)
+        echo "═══════════════════════════════════════════════════════"
+        echo "  $(echo "$c" | tr '[:lower:]' '[:upper:]')  (${STATUS}, ${DURATION}s)"
+        echo "═══════════════════════════════════════════════════════"
+        [[ -f "$outfile" ]] && cat "$outfile" || echo "(no output)"
+        echo ""
+        log_event "$c" "$STATUS" "$DURATION" "$outfile"
+        [[ "$STATUS" == "error" || "$STATUS" == "timeout" ]] && any_failed=true
+        idx=$((idx + 1))
+    done
+
+    echo "" >&2
+    echo "Saved outputs to ${OUT_DIR}/dispatch-*-${STAMP}.txt" >&2
+    [[ "$any_failed" == "true" ]] && exit 1
 
 else
     OUTFILE="${OUT_DIR}/dispatch-${CLI}-${STAMP}.txt"

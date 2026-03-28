@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "defaults": {
+    "primary": "auto",
+    "fallback": "builtin"
+  },
+  "routes": {
+    "codex-reviewer.reviewer": ["codex"],
+    "design-reviewer.reviewer_1": ["gemini", "droid"],
+    "design-reviewer.reviewer_2": ["codex", "amp"],
+    "council.pragmatist": ["gemini", "droid"],
+    "council.critic": ["codex", "amp"]
+  }
+}

@@ -76,9 +76,12 @@ Set `BUSDRIVER_REVIEW_CLI` to choose your review backend:
 
 | Value | Behavior |
 |-------|----------|
-| `auto` (default) | Detects: codex > gemini > built-in agent fallback |
+| `auto` (default) | Detects: codex > gemini > droid > amp > opencode > built-in agent fallback |
 | `codex` | OpenAI Codex CLI (`npm install -g @openai/codex`) |
 | `gemini` | Google Gemini CLI |
+| `droid` | Droid CLI |
+| `amp` | Amp CLI |
+| `opencode` | OpenCode CLI |
 | `claude` | Claude CLI (experimental) |
 | `aider` | Aider CLI (experimental) |
 | `builtin` | Built-in code-reviewer agent (always available, less independent) |
@@ -86,14 +89,50 @@ Set `BUSDRIVER_REVIEW_CLI` to choose your review backend:
 
 **Without any external CLI:** Auto-detection falls back to the built-in code-reviewer agent. All commits are still reviewed, but by the same model that wrote the code (less independent). Run `node scripts/doctor.js` to see your effective reviewer.
 
+### Per-role routing (optional)
+
+By default, all features share the same CLI. For per-role control, create `.claude/busdriver.json`:
+
+```json
+{
+  "version": 1,
+  "defaults": { "primary": "auto", "fallback": "builtin" },
+  "routes": {
+    "design-reviewer.reviewer_1": ["gemini", "droid"],
+    "design-reviewer.reviewer_2": ["codex", "amp"],
+    "council.pragmatist": ["gemini", "droid"],
+    "council.critic": ["codex", "amp"]
+  }
+}
+```
+
+Each route is an array: first element is primary, second is fallback. Roles not listed inherit from `defaults`. User-level defaults go in `~/.claude/busdriver.json`.
+
+**Precedence:** env var > project config > user config > defaults > auto-detect
+
+| Feature | Role | Config key | Default |
+|---------|------|-----------|---------|
+| Code review | Reviewer | `codex-reviewer.reviewer` | auto |
+| Design review | Reviewer 1 | `design-reviewer.reviewer_1` | gemini |
+| Design review | Reviewer 2 | `design-reviewer.reviewer_2` | codex |
+| Council | Pragmatist | `council.pragmatist` | gemini |
+| Council | Critic | `council.critic` | codex |
+
+Council architect, skeptic, and design-review arbiter are not configurable (they use Claude's Agent tool).
+
+Run `node scripts/doctor.js` to see your effective CLI for each role.
+
 ### Optional CLIs for multi-model features
 
 | CLI | Used by | Install |
 |-----|---------|---------|
 | **[Codex CLI](https://github.com/openai/codex)** | Code review gate (default), design reviewer, council | `npm install -g @openai/codex` |
-| **[Gemini CLI](https://github.com/google-gemini/gemini-cli)** | Design reviewer, council, code review (if configured) | `npm install -g @google/gemini-cli` or see repo |
+| **[Gemini CLI](https://github.com/google-gemini/gemini-cli)** | Design reviewer, council, code review | `npm install -g @google/gemini-cli` or see repo |
+| **[Droid](https://droid.dev)** | Any configurable role | See https://droid.dev |
+| **[Amp](https://ampcode.com)** | Any configurable role | See https://ampcode.com |
+| **[OpenCode](https://github.com/opencode-ai/opencode)** | Any configurable role | `go install github.com/opencode-ai/opencode@latest` |
 
-**Without Gemini CLI:** The design reviewer runs with Codex + Claude only (1 external voice instead of 2). The council degrades to 3-voice. Core pipeline works normally.
+**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. The design reviewer and council degrade gracefully — with only one external CLI, the design reviewer runs single-reviewer mode; with none, those features require manual review. Core commit pipeline always works.
 
 ## Install
 

@@ -157,24 +157,25 @@ else
   RUN_ID=$(generate_run_id)
   log_info "Run ID: $RUN_ID"
 
-  # Validate CLIs are available
-  log_info "Checking for required CLIs..."
+  # Resolve CLIs from config
+  log_info "Resolving reviewer CLIs..."
+  REVIEWER_1_CLI=$(resolve_role_cli "design-reviewer.reviewer_1")
+  REVIEWER_2_CLI=$(resolve_role_cli "design-reviewer.reviewer_2")
+  log_info "  Reviewer 1: $REVIEWER_1_CLI"
+  log_info "  Reviewer 2: $REVIEWER_2_CLI"
+
+  # Duplicate detection (council-validated decision 4c)
+  DUPLICATE_MODE=false
+  if [[ "$REVIEWER_1_CLI" == "$REVIEWER_2_CLI" && "$REVIEWER_1_CLI" != "none" && "$REVIEWER_1_CLI" != "builtin" && ! "$REVIEWER_1_CLI" =~ ^missing: ]]; then
+    DUPLICATE_MODE=true
+    log_warning "  Degraded: both reviewers resolved to $REVIEWER_1_CLI (single-reviewer mode)"
+  fi
+
+  # Set availability flags for backward compat with rest of script
   GEMINI_AVAILABLE=false
   CODEX_AVAILABLE=false
-
-  if is_cli_available gemini; then
-    GEMINI_AVAILABLE=true
-    log_info "  + Gemini CLI found"
-  else
-    log_warning "  - Gemini CLI not found (will use fallback)"
-  fi
-
-  if is_cli_available codex; then
-    CODEX_AVAILABLE=true
-    log_info "  + Codex CLI found"
-  else
-    log_warning "  - Codex CLI not found (will use fallback)"
-  fi
+  [[ "$REVIEWER_1_CLI" != "none" && "$REVIEWER_1_CLI" != "builtin" && ! "$REVIEWER_1_CLI" =~ ^missing: ]] && GEMINI_AVAILABLE=true
+  [[ "$REVIEWER_2_CLI" != "none" && "$REVIEWER_2_CLI" != "builtin" && ! "$REVIEWER_2_CLI" =~ ^missing: && "$DUPLICATE_MODE" == "false" ]] && CODEX_AVAILABLE=true
 fi
 
 # Main iteration loop
@@ -250,7 +251,7 @@ $DESIGN_CONTENT
       GEMINI_RAW_FILE=$(get_review_file "gemini-raw.txt")
       GEMINI_START=$(millis)
 
-      if echo "$FULL_PROMPT" | gemini > "$GEMINI_RAW_FILE" 2>&1; then
+      if execute_review "$REVIEWER_1_CLI" "$FULL_PROMPT" > "$GEMINI_RAW_FILE" 2>&1; then
         GEMINI_END=$(millis)
         GEMINI_DURATION=$((GEMINI_END - GEMINI_START))
 
@@ -288,7 +289,7 @@ with open('${GEMINI_OUTPUT_FILE}.pending', 'w') as f:
       CODEX_RAW_FILE=$(get_review_file "codex-raw.txt")
       CODEX_START=$(millis)
 
-      if echo "$FULL_PROMPT" | codex exec - > "$CODEX_RAW_FILE" 2>&1; then
+      if execute_review "$REVIEWER_2_CLI" "$FULL_PROMPT" > "$CODEX_RAW_FILE" 2>&1; then
         CODEX_END=$(millis)
         CODEX_DURATION=$((CODEX_END - CODEX_START))
 

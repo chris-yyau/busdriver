@@ -98,6 +98,12 @@ CHANGELOG FROM PREVIOUS TASK:
 BRANCH CHANGES TO REVIEW:
 {{STAGED_DIFF}}
 
+{{SAST_PRECHECK}}
+
+{{SMART_CONTEXT}}
+
+{{DOCS_CONTEXT}}
+
 {{ITERATION_HISTORY}}
 
 Check for:
@@ -106,6 +112,7 @@ Check for:
 - Performance: N+1 queries, unnecessary re-renders, memory leaks, blocking operations
 - Maintainability: code duplication, unclear naming, missing error handling
 - Cross-commit issues: inconsistent changes across files, partial refactors, broken dependencies
+- Doc/code mismatches: if documentation references changed code, verify docs still match behavior
 - Property testing gap: if changes touch parsers, validators, serializers, auth, or financial logic — flag as LOW severity if no property-based tests exist (Hypothesis, fast-check, testing/quick). Advisory only, not blocking.
 
 <CONVERGENCE_RULES>
@@ -157,6 +164,12 @@ CHANGELOG FROM PREVIOUS TASK:
 STAGED CHANGES TO REVIEW:
 {{STAGED_DIFF}}
 
+{{SAST_PRECHECK}}
+
+{{SMART_CONTEXT}}
+
+{{DOCS_CONTEXT}}
+
 {{ITERATION_HISTORY}}
 
 Check for:
@@ -164,6 +177,7 @@ Check for:
 - Bugs: null/undefined errors, race conditions, off-by-one errors, infinite loops
 - Performance: N+1 queries, unnecessary re-renders, memory leaks, blocking operations
 - Maintainability: code duplication, unclear naming, missing error handling
+- Doc/code mismatches: if documentation references changed code, verify docs still match behavior
 - Property testing gap: if changes touch parsers, validators, serializers, auth, or financial logic — flag as LOW severity if no property-based tests exist (Hypothesis, fast-check, testing/quick). Advisory only, not blocking.
 
 <CONVERGENCE_RULES>

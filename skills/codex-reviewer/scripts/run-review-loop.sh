@@ -158,6 +158,16 @@ PROMPT=$(sed -n '/^---$/,/^---$/!p' "$STATE_FILE" | sed '1d')
 # shellcheck source=lib/exclude-generated.sh
 source "$SCRIPT_DIR/lib/exclude-generated.sh"
 
+# Source SAST, smart context, docs context, and markdown checker
+# shellcheck source=lib/sast-runner.sh
+source "$SCRIPT_DIR/lib/sast-runner.sh"
+# shellcheck source=lib/smart-context.sh
+source "$SCRIPT_DIR/lib/smart-context.sh"
+# shellcheck source=lib/docs-context.sh
+source "$SCRIPT_DIR/lib/docs-context.sh"
+# shellcheck source=lib/markdown-checker.sh
+source "$SCRIPT_DIR/lib/markdown-checker.sh"
+
 # Capture diff for scope control (excluding auto-generated files)
 if [ "$REVIEW_MODE" = "pr" ]; then
   echo "📋 Capturing branch diff (${PR_BASE_BRANCH}...HEAD)..."
@@ -286,6 +296,24 @@ else
   fi
 fi
 
+# Run SAST scan on changed files (deterministic, runs before LLM)
+echo ""
+echo "🔒 Running static analysis..."
+SAST_FINDINGS=$(run_sast_scan "$FILTERED_FILES" "$STAGED_DIFF")
+SAST_COUNT=$(echo "$SAST_FINDINGS" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+
+# Run markdown checks if .md files are staged
+MARKDOWN_FINDINGS=$(run_markdown_checks "$FILTERED_FILES")
+MD_COUNT=$(echo "$MARKDOWN_FINDINGS" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+
+# Collect smart context (callers, importers of changed code)
+echo ""
+echo "🔎 Collecting cross-file context..."
+SMART_CONTEXT_OUTPUT=$(collect_smart_context "$STAGED_DIFF" "$FILTERED_FILES")
+
+# Collect docs context (doc files referencing changed code + extracted symbols)
+DOCS_CONTEXT_OUTPUT=$(collect_docs_context "$FILTERED_FILES" "$STAGED_DIFF")
+
 # Load previous changelog for context continuity
 PREV_CHANGELOG=$("$SCRIPT_DIR/load_changelog.sh" 2>/dev/null || echo "")
 
@@ -296,6 +324,34 @@ ITER_HISTORY=$(load_iteration_history)
 FINAL_PROMPT="${PROMPT/\{\{PREV_CHANGELOG\}\}/$PREV_CHANGELOG}"
 FINAL_PROMPT="${FINAL_PROMPT/\{\{STAGED_DIFF\}\}/$STAGED_DIFF}"
 FINAL_PROMPT="${FINAL_PROMPT/\{\{ITERATION_HISTORY\}\}/$ITER_HISTORY}"
+
+# Inject SAST pre-check results
+SAST_PRECHECK_TEXT=""
+if [ "$SAST_COUNT" -gt 0 ]; then
+  SAST_PRECHECK_TEXT="## SAST Pre-Check Results (deterministic — these are confirmed findings)
+The following issues were found by static analysis tools. These are NOT hallucinations — they are real findings from automated scanners. Include them in your output as-is.
+$(echo "$SAST_FINDINGS" | python3 -c "
+import sys, json
+for f in json.load(sys.stdin):
+    print(f'- [{f[\"severity\"].upper()}] {f[\"file\"]}:{f[\"line\"]} — {f[\"description\"]}')
+")"
+fi
+FINAL_PROMPT="${FINAL_PROMPT/\{\{SAST_PRECHECK\}\}/$SAST_PRECHECK_TEXT}"
+
+# Budget cap for enrichment context (prevent prompt bloat)
+MAX_ENRICHMENT_LINES="${CODEX_MAX_ENRICHMENT_LINES:-100}"
+if [ -n "$SMART_CONTEXT_OUTPUT" ]; then
+  SMART_CONTEXT_OUTPUT=$(echo "$SMART_CONTEXT_OUTPUT" | head -n "$MAX_ENRICHMENT_LINES")
+fi
+if [ -n "$DOCS_CONTEXT_OUTPUT" ]; then
+  DOCS_CONTEXT_OUTPUT=$(echo "$DOCS_CONTEXT_OUTPUT" | head -n "$MAX_ENRICHMENT_LINES")
+fi
+
+# Inject smart context
+FINAL_PROMPT="${FINAL_PROMPT/\{\{SMART_CONTEXT\}\}/$SMART_CONTEXT_OUTPUT}"
+
+# Inject docs context
+FINAL_PROMPT="${FINAL_PROMPT/\{\{DOCS_CONTEXT\}\}/$DOCS_CONTEXT_OUTPUT}"
 
 # Run review via resolved CLI
 echo "🔬 Running $RESOLVED_CLI review (loop attempt $ITERATION/$MAX_ITER)..."
@@ -389,9 +445,23 @@ validate_json "$JSON_OUTPUT" || exit 1
 REVIEW_STATUS=$(echo "$JSON_OUTPUT" | jq -r '.status')
 ISSUE_COUNT=$(echo "$JSON_OUTPUT" | jq -r '.issues | length')
 
-echo "   Status: $REVIEW_STATUS"
-echo "   Issues found: $ISSUE_COUNT"
+echo "   LLM status: $REVIEW_STATUS"
+echo "   LLM issues found: $ISSUE_COUNT"
 echo ""
+
+# Merge SAST + markdown + LLM findings
+MERGER="$SCRIPT_DIR/lib/merge-findings.py"
+if [ -f "$MERGER" ] && { [ "$SAST_COUNT" -gt 0 ] || [ "$MD_COUNT" -gt 0 ]; }; then
+  echo "📊 Merging SAST + markdown + LLM findings..."
+  MERGED_OUTPUT=$(python3 "$MERGER" "$SAST_FINDINGS" "$MARKDOWN_FINDINGS" "$JSON_OUTPUT" 2>/dev/null) || MERGED_OUTPUT=""
+  if [ -n "$MERGED_OUTPUT" ]; then
+    JSON_OUTPUT="$MERGED_OUTPUT"
+    REVIEW_STATUS=$(echo "$JSON_OUTPUT" | jq -r '.status')
+    ISSUE_COUNT=$(echo "$JSON_OUTPUT" | jq -r '.issues | length')
+    echo "   Merged status: $REVIEW_STATUS ($ISSUE_COUNT total issues)"
+    echo ""
+  fi
+fi
 
 # Check for completion promise
 if [ "$COMPLETION_PROMISE" != "null" ] && [ -n "$COMPLETION_PROMISE" ]; then

@@ -292,7 +292,7 @@ If FAIL → fix and re-run (same auto-continue loop as commit mode).
 ### Step 2: Multi-Agent Deep Review
 
 <EXTREMELY-IMPORTANT>
-YOU MUST WAIT FOR ALL 5 AGENTS TO RETURN BEFORE PROCEEDING TO STEP 3.
+YOU MUST WAIT FOR ALL 6 AGENTS TO RETURN BEFORE PROCEEDING TO STEP 3.
 
 DO NOT:
 - Write the PR marker after only some agents complete
@@ -303,7 +303,7 @@ DO NOT:
 If an agent is slow, WAIT. If it times out after 10 minutes, mark it as timed-out and proceed with the remaining results. But never proceed while agents are still "running" or "in progress".
 </EXTREMELY-IMPORTANT>
 
-After codex CLI passes, dispatch **5 parallel review agents** using the Agent tool. Each reviews the full `base..HEAD` diff from a different lens. Launch all 5 in a **single message** for concurrency.
+After codex CLI passes, dispatch **6 parallel review agents** using the Agent tool. Each reviews the full `base..HEAD` diff from a different lens. Launch all 6 in a **single message** for concurrency.
 
 | Agent | Lens | Focus |
 |-------|------|-------|
@@ -312,6 +312,7 @@ After codex CLI passes, dispatch **5 parallel review agents** using the Agent to
 | 3 | **History** | Run `git log --oneline base..HEAD` and `git blame` on changed files. Flag: reverted changes, contradictory commits, partial refactors |
 | 4 | **Cross-commit** | Inconsistent naming across commits, partial migrations, orphaned imports, incomplete renames |
 | 5 | **Security** | Hardcoded secrets, injection, auth bypass, error messages leaking internals, unsafe dependencies |
+| 6 | **Docs-consistency** | README, SKILL.md, docs/ accuracy vs changed code. Flag: stale examples, wrong function signatures, missing new features |
 
 **Agent prompt template** (adapt per lens):
 ```
@@ -331,6 +332,15 @@ Rules:
 - Confidence 0-100: 0=guess, 50=plausible, 80=likely real, 100=certain
 - Do NOT report issues already caught by linters/type checkers
 - Maximum 5 issues per agent
+```
+
+**Agent 6 (Docs-consistency) additional instructions:**
+```
+Also review documentation files (.md) in the diff. For each changed code file:
+1. Search for README.md, docs/, and SKILL.md files that reference the changed code
+2. Flag mismatches: wrong function names, stale examples, missing documentation for new features
+3. Check if removed functions are still documented
+4. Verify code examples in docs match the actual implementation
 ```
 
 ### Step 3: Score and Filter
@@ -365,8 +375,8 @@ Wait for all agents. Only apply quorum AFTER agents have timed out (10 min), nev
 | Failure | Handling |
 |---------|----------|
 | Agent times out (>10 min) | Mark as timed-out. Proceed with returned results only after ALL agents are either returned or timed-out |
-| ≥3 agents returned | **3-of-5 quorum** — valid review. Evaluate findings from returned agents |
-| <3 agents returned | `inconclusive` — fail-closed, do not write marker |
+| ≥4 agents returned | **4-of-6 quorum** — valid review. Evaluate findings from returned agents |
+| <4 agents returned | `inconclusive` — fail-closed, do not write marker |
 | All agents timeout | Fail-closed. Fall back to codex CLI result only (degrade to fast mode) |
 | Codex CLI unavailable | Multi-agent review only (skip Step 1). Marker still written if deep review passes |
 
@@ -397,6 +407,60 @@ When `run-review-loop.sh` exits with code 3, no external review CLI is available
 5. If no blocking issues: write the marker via `bash "${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/write-review-marker.sh"` (NOT via Write tool — the pre-implementation gate blocks Write to marker files)
 6. If CRITICAL/HIGH/MEDIUM issues: report FAIL with issues, fix and re-run
 7. Clean up: remove the temp prompt file and the handoff path file
+
+## Enhanced Review Features
+
+### SAST Integration (Deterministic)
+
+The review loop automatically runs available static analysis tools before the LLM review:
+
+| Tool | What it catches | Install |
+|------|----------------|---------|
+| **Semgrep** | Security vulnerabilities, code patterns | `pip install semgrep` |
+| **ShellCheck** | Shell script bugs, quoting issues | `brew install shellcheck` |
+| **TruffleHog** | Leaked secrets and credentials | `brew install trufflehog` |
+
+SAST findings are deterministic (not LLM-generated) and merge with LLM findings in the final output. Missing tools are skipped gracefully.
+
+**Environment variables:**
+- `CODEX_SKIP_SAST=1` — skip all SAST scanning
+- `CODEX_SAST_TIMEOUT=30` — per-tool timeout in seconds (default: 30)
+
+### Smart Context (Cross-File)
+
+The review loop automatically collects cross-file context:
+- Extracts function names from changed hunks
+- Finds callers of changed functions across the repo
+- Traces importers of changed files
+- Injects this context into the review prompt
+
+This enables the LLM to catch broken contracts, renamed parameters, and cross-file bugs.
+
+**Environment variables:**
+- `CODEX_SKIP_CONTEXT=1` — skip smart context collection
+- `CODEX_MAX_CONTEXT_LINES=50` — max context lines per function
+- `CODEX_MAX_FUNCTIONS=10` — max functions to trace
+
+### Docs Consistency
+
+The review loop checks for doc/code mismatches:
+- Finds README/docs files that reference changed code
+- Injects relevant doc snippets into the review prompt
+- LLM flags stale docs, wrong examples, missing documentation
+- PR deep review includes a dedicated docs-consistency agent (6th agent)
+
+**Environment variables:**
+- `CODEX_SKIP_DOCS_CONTEXT=1` — skip docs context collection
+
+### Markdown Validation
+
+When `.md` files are staged, the review loop runs:
+- **markdownlint** (if installed) — lint violations
+- **URL validation** (opt-in) — broken links
+
+**Environment variables:**
+- `CODEX_SKIP_MARKDOWN=1` — skip markdown checks
+- `CODEX_CHECK_URLS=1` — enable URL validation (disabled by default — slow)
 
 ## Key Principles
 

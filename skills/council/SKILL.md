@@ -95,7 +95,7 @@ This is a **single Bash call** with both as background processes. This is critic
 
 **IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing both Gemini and Codex as background processes) in the **same message** so all three voices run concurrently. Do NOT use separate Bash tool calls for Gemini and Codex — one failing will cancel the other.
 
-**Degradation:** The Fresh Claude (Agent tool) is always available, so the council always has at least 2 voices (Architect + Skeptic). If a configured CLI is missing or its role resolves to `none`/`missing:<cli>` → that voice is skipped (3-voice council). If both external CLIs are unavailable → 2-voice council. Note the composition in the report.
+**Degradation:** The Fresh Claude (Agent tool) is always available, so the council always has at least 2 voices (Architect + Skeptic). If a configured CLI resolves to `none`, `builtin`, or `missing:<cli>` → that voice is skipped (3-voice council). If both external CLIs are unavailable → 2-voice council. Note the composition in the report.
 
 ### Step 5: Read Output and Synthesize
 

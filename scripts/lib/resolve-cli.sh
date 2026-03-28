@@ -118,7 +118,7 @@ try:
             sys.exit(0)
     if data is not None:
         print(data)
-except (KeyError, IndexError, TypeError):
+except (KeyError, IndexError, TypeError, ValueError):
     pass
 except (json.JSONDecodeError, OSError) as e:
     print('busdriver: config parse error: ' + str(e), file=sys.stderr)
@@ -249,6 +249,15 @@ resolve_role_cli() {
       fi
     fi
   done
+
+  # Step 4b: Legacy per-role defaults (backward compat when no config exists)
+  case "$role_key" in
+    design-reviewer.reviewer_1) is_cli_available gemini && echo "gemini" && return ;;
+    design-reviewer.reviewer_2) is_cli_available codex && echo "codex" && return ;;
+    design-reviewer.arbiter)    echo "builtin" && return ;;  # arbiter is always Claude
+    council.pragmatist)         is_cli_available gemini && echo "gemini" && return ;;
+    council.critic)             is_cli_available codex && echo "codex" && return ;;
+  esac
 
   # Step 5: Auto-detect
   for cli in codex gemini droid amp opencode; do

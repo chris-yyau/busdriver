@@ -161,10 +161,8 @@ else
   log_info "Resolving reviewer CLIs..."
   REVIEWER_1_CLI=$(resolve_role_cli "design-reviewer.reviewer_1")
   REVIEWER_2_CLI=$(resolve_role_cli "design-reviewer.reviewer_2")
-  ARBITER_CLI=$(resolve_role_cli "design-reviewer.arbiter")
   log_info "  Reviewer 1: $REVIEWER_1_CLI"
   log_info "  Reviewer 2: $REVIEWER_2_CLI"
-  log_info "  Arbiter: $ARBITER_CLI"
 
   # Duplicate detection (council-validated decision 4c)
   DUPLICATE_MODE=false
@@ -176,8 +174,8 @@ else
   # Set availability flags for backward compat with rest of script
   GEMINI_AVAILABLE=false
   CODEX_AVAILABLE=false
-  [[ "$REVIEWER_1_CLI" != "none" && ! "$REVIEWER_1_CLI" =~ ^missing: ]] && GEMINI_AVAILABLE=true
-  [[ "$REVIEWER_2_CLI" != "none" && ! "$REVIEWER_2_CLI" =~ ^missing: && "$DUPLICATE_MODE" == "false" ]] && CODEX_AVAILABLE=true
+  [[ "$REVIEWER_1_CLI" != "none" && "$REVIEWER_1_CLI" != "builtin" && ! "$REVIEWER_1_CLI" =~ ^missing: ]] && GEMINI_AVAILABLE=true
+  [[ "$REVIEWER_2_CLI" != "none" && "$REVIEWER_2_CLI" != "builtin" && ! "$REVIEWER_2_CLI" =~ ^missing: && "$DUPLICATE_MODE" == "false" ]] && CODEX_AVAILABLE=true
 fi
 
 # Main iteration loop

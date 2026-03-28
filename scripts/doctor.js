@@ -109,7 +109,6 @@ function checkRoleRouting() {
     { key: 'codex-reviewer.reviewer', label: 'Code Review', configurable: true },
     { key: 'design-reviewer.reviewer_1', label: 'Design Reviewer 1', configurable: true },
     { key: 'design-reviewer.reviewer_2', label: 'Design Reviewer 2', configurable: true },
-    { key: 'design-reviewer.arbiter', label: 'Design Arbiter', configurable: true },
     { key: 'council.pragmatist', label: 'Council Pragmatist', configurable: true },
     { key: 'council.critic', label: 'Council Critic', configurable: true },
     { key: 'council.architect', label: 'Council Architect', configurable: false },

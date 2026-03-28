@@ -19,7 +19,7 @@ Convene four advisors — the in-context Claude plus three fresh agents — for 
 
 | Voice | Method | Role | Lens | Configurable |
 |---|---|---|---|---|
-| Claude (you) | In-context | Architect | Correctness, maintainability, long-term implications | No (Agent tool) |
+| Claude (you) | In-context | Architect | Correctness, maintainability, long-term implications | No (in-context) |
 | Fresh Claude | Agent tool (clean memory) | Skeptic | Challenge assumptions, question premises, propose simplest alternative | No (Agent tool) |
 | Configurable | dispatch-cli | Pragmatist | Shipping speed, simplicity, user impact, practical tradeoffs | Yes: `council.pragmatist` (default: gemini) |
 | Configurable | dispatch-cli | Critic | Edge cases, risks, failure modes, what could go wrong | Yes: `council.critic` (default: codex) |
@@ -79,9 +79,9 @@ CRITIC_CLI=$(resolve_role_cli "council.critic")
 DISPATCH="${CLAUDE_PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
 
 # Dispatch available voices
-[[ "$PRAGMATIST_CLI" != "none" && ! "$PRAGMATIST_CLI" =~ ^missing: ]] && \
+[[ "$PRAGMATIST_CLI" != "none" && "$PRAGMATIST_CLI" != "builtin" && ! "$PRAGMATIST_CLI" =~ ^missing: ]] && \
   "$DISPATCH" --cli "$PRAGMATIST_CLI" --timeout 300 --prompt "<Pragmatist prompt>" &
-[[ "$CRITIC_CLI" != "none" && ! "$CRITIC_CLI" =~ ^missing: ]] && \
+[[ "$CRITIC_CLI" != "none" && "$CRITIC_CLI" != "builtin" && ! "$CRITIC_CLI" =~ ^missing: ]] && \
   "$DISPATCH" --cli "$CRITIC_CLI" --timeout 300 --prompt "<Critic prompt>" &
 wait
 ```

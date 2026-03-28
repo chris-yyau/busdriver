@@ -73,18 +73,41 @@ _read_config_value() {
       jq -r "$jq_query // empty" "$config_path" 2>/dev/null || return 1
       ;;
     python3)
-      # Convert jq query to positional args for safe key-path traversal
-      local _py_args
-      _py_args=$(echo "$jq_query" | sed 's/^\.//' | sed 's/\["/\n/g; s/"\]//g; s/\[//g; s/\]//g' | tr '\n' ' ')
-      # shellcheck disable=SC2086
       python3 -c "
-import json, sys
+import json, sys, re
+
+def parse_jq_path(query):
+    query = query.lstrip('.')
+    parts = []
+    while query:
+        if query.startswith('[\"'):
+            end = query.index('\"]')
+            parts.append(query[2:end])
+            query = query[end+2:]
+        elif query.startswith('['):
+            end = query.index(']')
+            parts.append(query[1:end])
+            query = query[end+1:]
+        elif query.startswith('.'):
+            query = query[1:]
+        else:
+            dot = query.find('.')
+            bracket = query.find('[')
+            if dot == -1 and bracket == -1:
+                parts.append(query)
+                break
+            elif bracket != -1 and (dot == -1 or bracket < dot):
+                parts.append(query[:bracket])
+                query = query[bracket:]
+            else:
+                parts.append(query[:dot])
+                query = query[dot:]
+    return parts
+
 try:
     with open(sys.argv[1]) as f:
         data = json.load(f)
-    for k in sys.argv[2:]:
-        if not k:
-            continue
+    for k in parse_jq_path(sys.argv[2]):
         if isinstance(data, list):
             data = data[int(k)]
         elif isinstance(data, dict):
@@ -95,9 +118,12 @@ try:
             sys.exit(0)
     if data is not None:
         print(data)
-except (KeyError, IndexError, TypeError, ValueError):
+except (KeyError, IndexError, TypeError):
     pass
-" "$config_path" $_py_args 2>/dev/null || return 1
+except (json.JSONDecodeError, OSError) as e:
+    print('busdriver: config parse error: ' + str(e), file=sys.stderr)
+    sys.exit(1)
+" "$config_path" "$jq_query" 2>/dev/null || return 1
       ;;
     none)
       return 0
@@ -176,7 +202,7 @@ resolve_role_cli() {
   local project_config _git_root
   _git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
   project_config="${_git_root:+$_git_root/.claude/busdriver.json}"
-  project_config="${project_config:=/dev/null}"
+  [[ -z "$project_config" ]] && project_config=""  # empty _git_root → skip
   if [[ -f "$project_config" ]]; then
     local ver
     ver=$(_read_config_value "$project_config" '.version')

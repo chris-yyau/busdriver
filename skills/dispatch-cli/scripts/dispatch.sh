@@ -13,6 +13,11 @@ if [[ -f "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh" ]]; then
   source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"
 fi
 
+# Fallback if resolve-cli.sh not found
+if ! type _portable_timeout &>/dev/null; then
+  _portable_timeout() { timeout "$@"; }
+fi
+
 LOG_DIR="$HOME/.claude/homunculus"
 LOG_FILE="$LOG_DIR/dispatch-log.jsonl"
 
@@ -80,7 +85,10 @@ _has_cli() {
 if [[ "$CLI" == "auto" ]]; then
     if _has_cli codex; then CLI="codex"
     elif _has_cli gemini; then CLI="gemini"
-    else echo "Error: Neither codex nor gemini found." >&2; exit 1; fi
+    elif _has_cli droid; then CLI="droid"
+    elif _has_cli amp; then CLI="amp"
+    elif _has_cli opencode; then CLI="opencode"
+    else echo "Error: No supported CLI found (tried codex, gemini, droid, amp, opencode)." >&2; exit 1; fi
 elif [[ "$CLI" != "codex" && "$CLI" != "gemini" && "$CLI" != "droid" && "$CLI" != "amp" && "$CLI" != "opencode" && "$CLI" != "both" && "$CLI" != "all" ]]; then
     echo "Error: Invalid --cli value '$CLI'. Must be codex|gemini|droid|amp|opencode|both|all|auto." >&2; exit 1
 fi
@@ -107,6 +115,9 @@ if [[ "$CLI" == "both" ]]; then
 else
     [[ "$CLI" == "codex" ]] && ! _has_cli codex && { echo "Error: codex not found." >&2; exit 1; }
     [[ "$CLI" == "gemini" ]] && ! _has_cli gemini && { echo "Error: gemini not found." >&2; exit 1; }
+    [[ "$CLI" == "droid" ]] && ! _has_cli droid && { echo "Error: droid not found." >&2; exit 1; }
+    [[ "$CLI" == "amp" ]] && ! _has_cli amp && { echo "Error: amp not found." >&2; exit 1; }
+    [[ "$CLI" == "opencode" ]] && ! _has_cli opencode && { echo "Error: opencode not found." >&2; exit 1; }
 fi
 
 # Handle --cli all: discover top 3 available CLIs

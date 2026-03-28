@@ -24,7 +24,7 @@ DO NOT rationalize skipping review. These thoughts are violations:
 - "The diff is too small to matter"
 
 EVERY commit MUST:
-1. Run `run-review-loop.sh` as a BLOCKING bash call (timeout=1860000)
+1. Run `run-review-loop.sh` as a BLOCKING bash call (timeout=1260000)
 2. Wait for the result — NEVER run in background
 3. If FAIL: fix issues silently, re-run — do NOT ask user between iterations
 4. If PASS: proceed to tests and commit
@@ -132,7 +132,7 @@ git commit -m "Message"
 
 **CRITICAL RULES:**
 - **NO background tasks** - run blocking, wait for result
-- **NO polling/sleep loops** - just use timeout=1860000
+- **NO polling/sleep loops** - just use timeout=1260000
 - **NO user interaction** between iterations - fix silently
 - **NO verbose progress** - don't narrate each step
 - **ONLY talk to user when:** PASS, max iterations, or error
@@ -277,7 +277,7 @@ git commit -m "Message"                                             # Commit
 
 ## PR Review Mode (Deep — Multi-Voice)
 
-When the pre-PR gate blocks `gh pr create`, run the deep review. This combines the codex CLI pass with a 5-agent multi-voice review for cross-commit depth.
+When the pre-PR gate blocks `gh pr create`, run the deep review. This combines the codex CLI pass with a 6-agent multi-voice review for cross-commit depth.
 
 ### Step 1: Codex CLI Pass (fast)
 
@@ -292,7 +292,7 @@ If FAIL → fix and re-run (same auto-continue loop as commit mode).
 ### Step 2: Multi-Agent Deep Review
 
 <EXTREMELY-IMPORTANT>
-YOU MUST WAIT FOR ALL 5 AGENTS TO RETURN BEFORE PROCEEDING TO STEP 3.
+YOU MUST WAIT FOR ALL 6 AGENTS TO RETURN BEFORE PROCEEDING TO STEP 3.
 
 DO NOT:
 - Write the PR marker after only some agents complete
@@ -303,7 +303,7 @@ DO NOT:
 If an agent is slow, WAIT. If it times out after 10 minutes, mark it as timed-out and proceed with the remaining results. But never proceed while agents are still "running" or "in progress".
 </EXTREMELY-IMPORTANT>
 
-After codex CLI passes, dispatch **5 parallel review agents** using the Agent tool. Each reviews the full `base..HEAD` diff from a different lens. Launch all 5 in a **single message** for concurrency.
+After codex CLI passes, dispatch **6 parallel review agents** using the Agent tool. Each reviews the full `base..HEAD` diff from a different lens. Launch all 6 in a **single message** for concurrency.
 
 | Agent | Lens | Focus |
 |-------|------|-------|
@@ -312,6 +312,7 @@ After codex CLI passes, dispatch **5 parallel review agents** using the Agent to
 | 3 | **History** | Run `git log --oneline base..HEAD` and `git blame` on changed files. Flag: reverted changes, contradictory commits, partial refactors |
 | 4 | **Cross-commit** | Inconsistent naming across commits, partial migrations, orphaned imports, incomplete renames |
 | 5 | **Security** | Hardcoded secrets, injection, auth bypass, error messages leaking internals, unsafe dependencies |
+| 6 | **Docs-consistency** | README, SKILL.md, docs/ accuracy vs changed code. Flag: stale examples, wrong function signatures, missing new features |
 
 **Agent prompt template** (adapt per lens):
 ```
@@ -333,9 +334,18 @@ Rules:
 - Maximum 5 issues per agent
 ```
 
+**Agent 6 (Docs-consistency) additional instructions:**
+```text
+Also review documentation files (.md) in the diff. For each changed code file:
+1. Search for README.md, docs/, and SKILL.md files that reference the changed code
+2. Flag mismatches: wrong function names, stale examples, missing documentation for new features
+3. Check if removed functions are still documented
+4. Verify code examples in docs match the actual implementation
+```
+
 ### Step 3: Score and Filter
 
-After all 5 agents return:
+After all 6 agents return:
 
 1. **Collect** all findings into one list
 2. **Deduplicate** — same file + same line + similar description = keep highest confidence
@@ -365,8 +375,8 @@ Wait for all agents. Only apply quorum AFTER agents have timed out (10 min), nev
 | Failure | Handling |
 |---------|----------|
 | Agent times out (>10 min) | Mark as timed-out. Proceed with returned results only after ALL agents are either returned or timed-out |
-| ≥3 agents returned | **3-of-5 quorum** — valid review. Evaluate findings from returned agents |
-| <3 agents returned | `inconclusive` — fail-closed, do not write marker |
+| ≥4 agents returned | **4-of-6 quorum** — valid review. Evaluate findings from returned agents |
+| <4 agents returned | `inconclusive` — fail-closed, do not write marker |
 | All agents timeout | Fail-closed. Fall back to codex CLI result only (degrade to fast mode) |
 | Codex CLI unavailable | Multi-agent review only (skip Step 1). Marker still written if deep review passes |
 
@@ -398,12 +408,66 @@ When `run-review-loop.sh` exits with code 3, no external review CLI is available
 6. If CRITICAL/HIGH/MEDIUM issues: report FAIL with issues, fix and re-run
 7. Clean up: remove the temp prompt file and the handoff path file
 
+## Enhanced Review Features
+
+### SAST Integration (Deterministic)
+
+The review loop automatically runs available static analysis tools before the LLM review:
+
+| Tool | What it catches | Install |
+|------|----------------|---------|
+| **Semgrep** | Security vulnerabilities, code patterns | `pip install semgrep` |
+| **ShellCheck** | Shell script bugs, quoting issues | `brew install shellcheck` |
+| **TruffleHog** | Leaked secrets and credentials | `brew install trufflehog` |
+
+SAST findings are deterministic (not LLM-generated) and merge with LLM findings in the final output. Missing tools are skipped gracefully.
+
+**Environment variables:**
+- `CODEX_SKIP_SAST=1` — skip all SAST scanning
+- `CODEX_SAST_TIMEOUT=30` — per-tool timeout in seconds (default: 30)
+
+### Smart Context (Cross-File)
+
+The review loop automatically collects cross-file context:
+- Extracts function names from changed hunks
+- Finds callers of changed functions across the repo
+- Traces importers of changed files
+- Injects this context into the review prompt
+
+This enables the LLM to catch broken contracts, renamed parameters, and cross-file bugs.
+
+**Environment variables:**
+- `CODEX_SKIP_CONTEXT=1` — skip smart context collection
+- `CODEX_MAX_CONTEXT_LINES=50` — max context lines per function
+- `CODEX_MAX_FUNCTIONS=10` — max functions to trace
+
+### Docs Consistency
+
+The review loop checks for doc/code mismatches:
+- Finds README/docs files that reference changed code
+- Injects relevant doc snippets into the review prompt
+- LLM flags stale docs, wrong examples, missing documentation
+- PR deep review includes a dedicated docs-consistency agent (6th agent)
+
+**Environment variables:**
+- `CODEX_SKIP_DOCS_CONTEXT=1` — skip docs context collection
+
+### Markdown Validation
+
+When `.md` files are staged, the review loop runs:
+- **markdownlint** (if installed) — lint violations
+- **URL validation** (opt-in) — broken links
+
+**Environment variables:**
+- `CODEX_SKIP_MARKDOWN=1` — skip markdown checks
+- `CODEX_CHECK_URLS=1` — enable URL validation (disabled by default — slow)
+
 ## Key Principles
 
 1. **Review before commit** - No exceptions
 2. **Silent auto-continue** - Fix and re-review without talking to user
 3. **Max iterations safety** - Stop at 10, ask user
-4. **Blocking execution** - Run with timeout=1860000, NEVER use background
+4. **Blocking execution** - Run with timeout=1260000, NEVER use background
 5. **Structured output** - Parse JSON for status and issues
 6. **Test after pass** - Run test suite before committing
 7. **Split large commits** - If >800 weighted lines (override: `CODEX_MAX_WEIGHTED_LINES`), split into logical commits FIRST. PR mode skips size check.

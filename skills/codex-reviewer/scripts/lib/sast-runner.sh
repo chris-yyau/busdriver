@@ -21,14 +21,32 @@ _sast_has_trufflehog() { command -v trufflehog &>/dev/null; }
 # Portable timeout (reuse from resolve-cli.sh if available)
 _sast_timeout() {
   local duration="$1"; shift
+  # Validate duration is numeric to prevent injection
+  case "$duration" in
+    ''|*[!0-9]*) duration=30 ;;
+  esac
   if command -v timeout &>/dev/null; then
     timeout "$duration" "$@"
   elif command -v gtimeout &>/dev/null; then
     gtimeout "$duration" "$@"
   else
-    # Perl fallback for macOS
-    perl -e "alarm $duration; exec @ARGV" -- "$@"
+    # Perl fallback for macOS — pass duration safely as argument
+    perl -e 'alarm shift @ARGV; exec @ARGV' "$duration" "$@"
   fi
+}
+
+# Merge two JSON arrays — shared helper to avoid copy-paste
+_sast_merge_json() {
+  printf '%s\n%s' "$1" "$2" | python3 -c "
+import sys, json
+arrays = []
+for line in sys.stdin:
+    line = line.strip()
+    if line:
+        try: arrays.extend(json.loads(line))
+        except (json.JSONDecodeError, ValueError): pass
+print(json.dumps(arrays))
+"
 }
 
 # Run Semgrep on changed files
@@ -203,16 +221,7 @@ run_sast_scan() {
     echo "   SAST: running semgrep..." >&2
     local semgrep_findings
     semgrep_findings=$(_sast_run_semgrep "$files_list")
-    all_findings=$(printf '%s\n%s' "$all_findings" "$semgrep_findings" | python3 -c "
-import sys, json
-arrays = []
-for line in sys.stdin:
-    line = line.strip()
-    if line:
-        try: arrays.extend(json.loads(line))
-        except: pass
-print(json.dumps(arrays))
-")
+    all_findings=$(_sast_merge_json "$all_findings" "$semgrep_findings")
     tool_count=$((tool_count + 1))
   fi
 
@@ -220,16 +229,7 @@ print(json.dumps(arrays))
     echo "   SAST: running shellcheck..." >&2
     local sc_findings
     sc_findings=$(_sast_run_shellcheck "$files_list")
-    all_findings=$(printf '%s\n%s' "$all_findings" "$sc_findings" | python3 -c "
-import sys, json
-arrays = []
-for line in sys.stdin:
-    line = line.strip()
-    if line:
-        try: arrays.extend(json.loads(line))
-        except: pass
-print(json.dumps(arrays))
-")
+    all_findings=$(_sast_merge_json "$all_findings" "$sc_findings")
     tool_count=$((tool_count + 1))
   fi
 
@@ -237,16 +237,7 @@ print(json.dumps(arrays))
     echo "   SAST: running trufflehog..." >&2
     local th_findings
     th_findings=$(_sast_run_trufflehog "$files_list")
-    all_findings=$(printf '%s\n%s' "$all_findings" "$th_findings" | python3 -c "
-import sys, json
-arrays = []
-for line in sys.stdin:
-    line = line.strip()
-    if line:
-        try: arrays.extend(json.loads(line))
-        except: pass
-print(json.dumps(arrays))
-")
+    all_findings=$(_sast_merge_json "$all_findings" "$th_findings")
     tool_count=$((tool_count + 1))
   fi
 

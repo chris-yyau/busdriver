@@ -11,6 +11,11 @@
 
 set -euo pipefail
 
+# Escape regex metacharacters for safe grep -E interpolation
+_docs_escape_regex() {
+  printf '%s' "$1" | sed 's/[.+*?^${}()|[\]\\]/\\&/g'
+}
+
 # Find doc files that mention a changed file or its functions
 _find_referencing_docs() {
   local search_term="$1"
@@ -18,11 +23,14 @@ _find_referencing_docs() {
   local repo_root
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
 
+  local escaped_term
+  escaped_term=$(_docs_escape_regex "$search_term")
+
   grep -rln --include='*.md' \
     --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=vendor \
     --exclude-dir='.claude' \
-    -E "\b${search_term}\b" "$repo_root" 2>/dev/null | \
-    grep -v 'CHANGELOG\|changelog\|node_modules\|\.claude/' | \
+    -F "$search_term" "$repo_root" 2>/dev/null | \
+    grep -vE 'CHANGELOG|changelog|node_modules|\.claude/' | \
     head -n "$max_snippets" || true
 }
 
@@ -32,7 +40,7 @@ _extract_doc_section() {
   local search_term="$2"
 
   local line_nums
-  line_nums=$(grep -n "\b${search_term}\b" "$doc_file" 2>/dev/null | head -3 | cut -d: -f1)
+  line_nums=$(grep -nF "$search_term" "$doc_file" 2>/dev/null | head -3 | cut -d: -f1) || true
   [ -z "$line_nums" ] && return
 
   while IFS= read -r line_num; do
@@ -96,10 +104,11 @@ collect_docs_context() {
       local section
       section=$(_extract_doc_section "$doc_file" "$term")
       if [ -n "$section" ]; then
+        # Use a fence that the excerpt cannot close (~~~~ instead of ```)
         context+="### \`${doc_file}\` mentions \`${term}\`
-\`\`\`
+~~~~
 $section
-\`\`\`
+~~~~
 
 "
         found=$((found + 1))

@@ -7,7 +7,7 @@
 # Environment:
 #   CODEX_SKIP_MARKDOWN=1       — skip all markdown checks
 #   CODEX_CHECK_URLS=1          — enable URL validation (disabled by default — slow)
-#   CODEX_MARKDOWN_TIMEOUT=10   — per-URL timeout in seconds (default: 5)
+#   CODEX_MARKDOWN_TIMEOUT=5    — per-URL timeout in seconds (default: 5)
 
 set -euo pipefail
 
@@ -68,51 +68,97 @@ _md_check_urls() {
   local files_list="$1"
   local timeout_sec="${CODEX_MARKDOWN_TIMEOUT:-5}"
 
+  # Validate timeout_sec is numeric to prevent injection
+  case "$timeout_sec" in
+    ''|*[!0-9]*) timeout_sec=5 ;;
+  esac
+
   local md_files
   md_files=$(echo "$files_list" | grep -E '\.md$' || true)
   [ -z "$md_files" ] && { echo "[]"; return; }
 
+  # Extract URLs with file path and line numbers
   local all_urls=""
   while IFS= read -r f; do
     [ -f "$f" ] || continue
-    local urls
-    urls=$(grep -oE '\]\(https?://[^[:space:]]*\)' "$f" 2>/dev/null | sed 's/^](//;s/)$//' || true)
-    if [ -n "$urls" ]; then
-      while IFS= read -r url; do
-        all_urls+="$f|$url"$'\n'
-      done <<< "$urls"
+    # Use grep -n for line numbers, then extract URLs with python for robustness
+    local file_urls
+    file_urls=$(grep -nE '\]\(https?://' "$f" 2>/dev/null || true)
+    if [ -n "$file_urls" ]; then
+      echo "$file_urls" | while IFS= read -r match_line; do
+        local line_num="${match_line%%:*}"
+        local line_content="${match_line#*:}"
+        # Extract URLs from this line using python for balanced parens
+        echo "$line_content" | python3 -c "
+import sys, re
+for line in sys.stdin:
+    for m in re.finditer(r'\]\((https?://[^\s)]+(?:\([^\s)]*\))*[^\s)]*)\)', line):
+        print('$f|$line_num|' + m.group(1))
+" 2>/dev/null || true
+      done
     fi
   done <<< "$md_files"
+
+  # Collect into variable (subshell workaround)
+  all_urls=$(
+    while IFS= read -r f; do
+      [ -f "$f" ] || continue
+      grep -nE '\]\(https?://' "$f" 2>/dev/null | while IFS=: read -r line_num line_content; do
+        echo "$line_content" | python3 -c "
+import sys, re
+for line in sys.stdin:
+    for m in re.finditer(r'\]\((https?://[^\s)]+(?:\([^\s)]*\))*[^\s)]*)\)', line):
+        print('$f|$line_num|' + m.group(1))
+" 2>/dev/null || true
+      done
+    done <<< "$md_files"
+  )
 
   [ -z "$all_urls" ] && { echo "[]"; return; }
 
   echo "$all_urls" | head -20 | python3 -c "
 import sys, json, urllib.request, urllib.error, ssl
+timeout_sec = int(sys.argv[1]) if len(sys.argv) > 1 else 5
 ctx = ssl.create_default_context()
 findings = []
 for line in sys.stdin:
     line = line.strip()
     if not line or '|' not in line:
         continue
-    file_path, url = line.split('|', 1)
+    parts = line.split('|', 2)
+    if len(parts) < 3:
+        continue
+    file_path, line_num, url = parts[0], parts[1], parts[2]
+    try:
+        line_num = int(line_num)
+    except ValueError:
+        line_num = 0
     try:
         req = urllib.request.Request(url, method='HEAD', headers={'User-Agent': 'Mozilla/5.0 link-checker'})
-        urllib.request.urlopen(req, timeout=$timeout_sec, context=ctx)
+        urllib.request.urlopen(req, timeout=timeout_sec, context=ctx)
     except urllib.error.HTTPError as e:
         if e.code >= 400:
             findings.append({
                 'file': file_path,
-                'line': 0,
+                'line': line_num,
                 'severity': 'low',
                 'category': 'maintainability',
                 'description': f'[url-check] Broken link ({e.code}): {url}',
                 'suggestion': 'Update or remove the broken URL',
                 'source': 'lint:url-check'
             })
-    except Exception:
-        pass
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        findings.append({
+            'file': file_path,
+            'line': line_num,
+            'severity': 'low',
+            'category': 'maintainability',
+            'description': f'[url-check] Unreachable link: {url} ({type(e).__name__})',
+            'suggestion': 'Verify the URL is correct and accessible',
+            'source': 'lint:url-check'
+        })
 print(json.dumps(findings))
-" 2>/dev/null || echo "[]"
+" "$timeout_sec" 2>/dev/null || echo "[]"
 }
 
 # Main entry point
@@ -144,7 +190,7 @@ for line in sys.stdin:
     line = line.strip()
     if line:
         try: arrays.extend(json.loads(line))
-        except: pass
+        except (json.JSONDecodeError, ValueError): pass
 print(json.dumps(arrays))
 ")
   fi
@@ -160,7 +206,7 @@ for line in sys.stdin:
     line = line.strip()
     if line:
         try: arrays.extend(json.loads(line))
-        except: pass
+        except (json.JSONDecodeError, ValueError): pass
 print(json.dumps(arrays))
 ")
   fi

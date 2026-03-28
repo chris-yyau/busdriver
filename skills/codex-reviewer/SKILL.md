@@ -277,7 +277,7 @@ git commit -m "Message"                                             # Commit
 
 ## PR Review Mode (Deep — Multi-Voice)
 
-When the pre-PR gate blocks `gh pr create`, run the deep review. This combines the codex CLI pass with a 5-agent multi-voice review for cross-commit depth.
+When the pre-PR gate blocks `gh pr create`, run the deep review. This combines the codex CLI pass with a 6-agent multi-voice review for cross-commit depth.
 
 ### Step 1: Codex CLI Pass (fast)
 
@@ -335,7 +335,7 @@ Rules:
 ```
 
 **Agent 6 (Docs-consistency) additional instructions:**
-```
+```text
 Also review documentation files (.md) in the diff. For each changed code file:
 1. Search for README.md, docs/, and SKILL.md files that reference the changed code
 2. Flag mismatches: wrong function names, stale examples, missing documentation for new features

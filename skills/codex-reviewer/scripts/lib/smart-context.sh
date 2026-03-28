@@ -12,6 +12,11 @@
 
 set -euo pipefail
 
+# Escape regex metacharacters for safe grep -E interpolation
+_ctx_escape_regex() {
+  printf '%s' "$1" | sed 's/[.+*?^${}()|[\]\\]/\\&/g'
+}
+
 # Extract function/method names from diff hunks
 # Parses both added lines AND @@ hunk headers (which contain enclosing function context)
 _extract_changed_functions() {
@@ -19,12 +24,12 @@ _extract_changed_functions() {
   echo "$diff" | python3 -c "
 import sys, re
 
-# Patterns for function/method declarations
+# Patterns for function/method declarations (anchored to avoid false positives)
 decl_patterns = [
-    # JavaScript/TypeScript
+    # JavaScript/TypeScript: named function declarations
     r'(?:export\s+)?(?:async\s+)?function\s+(\w+)',
+    # JavaScript/TypeScript: const/let/var arrow or function expressions
     r'(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(',
-    r'(\w+)\s*\(.*\)\s*\{',
     # Python
     r'def\s+(\w+)\s*\(',
     r'class\s+(\w+)',
@@ -39,7 +44,9 @@ decl_patterns = [
 hunk_pattern = r'^@@ .+ @@\s*(.*)'
 skip = {'if', 'for', 'while', 'switch', 'case', 'return', 'else', 'elif',
         'var', 'let', 'const', 'def', 'func', 'fn', 'pub', 'export',
-        'true', 'false', 'null', 'undefined', 'new', 'this', 'self'}
+        'true', 'false', 'null', 'undefined', 'new', 'this', 'self',
+        'forEach', 'catch', 'then', 'map', 'filter', 'reduce', 'try',
+        'finally', 'with', 'except', 'async', 'await', 'yield'}
 names = set()
 for line in sys.stdin:
     # Parse @@ hunk headers for enclosing function context
@@ -74,12 +81,15 @@ _find_callers() {
   local repo_root
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
 
-  # Use grep to find call sites (exclude test/spec files and common vendor dirs)
-  grep -rn --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' \
+  local escaped_name
+  escaped_name=$(_ctx_escape_regex "$func_name")
+
+  # Use grep -w for portable word boundary matching
+  grep -rwn --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' \
     --include='*.py' --include='*.go' --include='*.rs' --include='*.sh' \
     --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=vendor \
     --exclude-dir='__pycache__' --exclude-dir='.claude' \
-    -E "\b${func_name}\b" "$repo_root" 2>/dev/null | \
+    "$func_name" "$repo_root" 2>/dev/null | \
     grep -vE '(/|^)(test_|_test\.|\.test\.|\.spec\.|tests/|spec/)' | \
     head -n "$max_lines" || true
 }
@@ -95,12 +105,15 @@ _find_importers() {
   local module_name
   module_name=$(basename "$changed_file" | sed 's/\.[^.]*$//')
 
+  local escaped_module
+  escaped_module=$(_ctx_escape_regex "$module_name")
+
   # Search for import/require statements referencing this module
   grep -rn --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' \
     --include='*.py' --include='*.go' --include='*.rs' \
     --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=vendor \
     --exclude-dir='__pycache__' --exclude-dir='.claude' \
-    -E "(import.*['\"].*${module_name}['\"]|require\(['\"].*${module_name}['\"]|from\s+.*${module_name}\s+import)" "$repo_root" 2>/dev/null | \
+    -E "(import.*['\"].*${escaped_module}['\"]|require\(['\"].*${escaped_module}['\"]|from\s+.*${escaped_module}\s+import)" "$repo_root" 2>/dev/null | \
     head -n "$max_lines" || true
 }
 
@@ -121,37 +134,40 @@ collect_smart_context() {
   # Extract changed function names
   local functions
   functions=$(_extract_changed_functions "$diff")
-  [ -z "$functions" ] && return
 
-  local func_count
-  func_count=$(echo "$functions" | wc -l | tr -d ' ')
-  echo "   Context: found $func_count changed function(s), tracing callers..." >&2
-
-  # Limit to top N functions
-  functions=$(echo "$functions" | head -n "$max_functions")
+  # Even without function names, still trace importers of changed files
+  local func_count=0
+  if [ -n "$functions" ]; then
+    func_count=$(echo "$functions" | wc -l | tr -d ' ')
+    echo "   Context: found $func_count changed function(s), tracing callers..." >&2
+    # Limit to top N functions
+    functions=$(echo "$functions" | head -n "$max_functions")
+  fi
 
   local context=""
   local traced=0
 
   # For each function, find callers
-  while IFS= read -r func_name; do
-    [ -z "$func_name" ] && continue
-    local callers
-    callers=$(_find_callers "$func_name")
-    if [ -n "$callers" ]; then
-      local caller_count
-      caller_count=$(echo "$callers" | wc -l | tr -d ' ')
-      context+="### Callers of \`${func_name}\` ($caller_count call sites)
+  if [ -n "$functions" ]; then
+    while IFS= read -r func_name; do
+      [ -z "$func_name" ] && continue
+      local callers
+      callers=$(_find_callers "$func_name")
+      if [ -n "$callers" ]; then
+        local caller_count
+        caller_count=$(echo "$callers" | wc -l | tr -d ' ')
+        context+="### Callers of \`${func_name}\` ($caller_count call sites)
 \`\`\`
 $callers
 \`\`\`
 
 "
-      traced=$((traced + 1))
-    fi
-  done <<< "$functions"
+        traced=$((traced + 1))
+      fi
+    done <<< "$functions"
+  fi
 
-  # For each changed file, find importers
+  # For each changed file, find importers (runs even without function names)
   local import_context=""
   while IFS= read -r changed_file; do
     [ -z "$changed_file" ] && continue

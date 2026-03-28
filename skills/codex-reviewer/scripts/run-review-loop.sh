@@ -453,13 +453,18 @@ echo ""
 MERGER="$SCRIPT_DIR/lib/merge-findings.py"
 if [ -f "$MERGER" ] && { [ "$SAST_COUNT" -gt 0 ] || [ "$MD_COUNT" -gt 0 ]; }; then
   echo "📊 Merging SAST + markdown + LLM findings..."
-  MERGED_OUTPUT=$(python3 "$MERGER" "$SAST_FINDINGS" "$MARKDOWN_FINDINGS" "$JSON_OUTPUT" 2>/dev/null) || MERGED_OUTPUT=""
+  # Use stdin instead of argv to avoid ARG_MAX limits on large SAST output
+  MERGED_OUTPUT=$(printf '%s\n%s\n%s\n' "$SAST_FINDINGS" "$MARKDOWN_FINDINGS" "$JSON_OUTPUT" | python3 "$MERGER" 2>/dev/null) || MERGED_OUTPUT=""
   if [ -n "$MERGED_OUTPUT" ]; then
     JSON_OUTPUT="$MERGED_OUTPUT"
     REVIEW_STATUS=$(echo "$JSON_OUTPUT" | jq -r '.status')
     ISSUE_COUNT=$(echo "$JSON_OUTPUT" | jq -r '.issues | length')
     echo "   Merged status: $REVIEW_STATUS ($ISSUE_COUNT total issues)"
     echo ""
+  else
+    # Merger failed — fail-closed, don't silently pass
+    echo "⚠️  Findings merger failed — fail-closed" >&2
+    REVIEW_STATUS="FAIL"
   fi
 fi
 

@@ -24,7 +24,7 @@ DO NOT rationalize skipping review. These thoughts are violations:
 - "The diff is too small to matter"
 
 EVERY commit MUST:
-1. Run `run-review-loop.sh` as a BLOCKING bash call (timeout=1860000)
+1. Run `run-review-loop.sh` as a BLOCKING bash call (timeout=1260000)
 2. Wait for the result — NEVER run in background
 3. If FAIL: fix issues silently, re-run — do NOT ask user between iterations
 4. If PASS: proceed to tests and commit
@@ -132,7 +132,7 @@ git commit -m "Message"
 
 **CRITICAL RULES:**
 - **NO background tasks** - run blocking, wait for result
-- **NO polling/sleep loops** - just use timeout=1860000
+- **NO polling/sleep loops** - just use timeout=1260000
 - **NO user interaction** between iterations - fix silently
 - **NO verbose progress** - don't narrate each step
 - **ONLY talk to user when:** PASS, max iterations, or error
@@ -345,7 +345,7 @@ Also review documentation files (.md) in the diff. For each changed code file:
 
 ### Step 3: Score and Filter
 
-After all 5 agents return:
+After all 6 agents return:
 
 1. **Collect** all findings into one list
 2. **Deduplicate** — same file + same line + similar description = keep highest confidence
@@ -467,7 +467,7 @@ When `.md` files are staged, the review loop runs:
 1. **Review before commit** - No exceptions
 2. **Silent auto-continue** - Fix and re-review without talking to user
 3. **Max iterations safety** - Stop at 10, ask user
-4. **Blocking execution** - Run with timeout=1860000, NEVER use background
+4. **Blocking execution** - Run with timeout=1260000, NEVER use background
 5. **Structured output** - Parse JSON for status and issues
 6. **Test after pass** - Run test suite before committing
 7. **Split large commits** - If >800 weighted lines (override: `CODEX_MAX_WEIGHTED_LINES`), split into logical commits FIRST. PR mode skips size check.

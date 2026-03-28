@@ -139,7 +139,7 @@ _sast_run_trufflehog() {
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
 
   while IFS= read -r f; do
-    [ -z "$f" ] || [ ! -f "$repo_root/$f" ] && continue
+    { [ -z "$f" ] || [ ! -f "$repo_root/$f" ]; } && continue
     local dir
     dir=$(dirname "$f")
     mkdir -p "$tmpdir/$dir"
@@ -147,18 +147,18 @@ _sast_run_trufflehog() {
   done <<< "$files_list"
 
   local raw_output
-  export _TRUFFLEHOG_TMPDIR="$tmpdir"
-  raw_output=$(_sast_timeout "$timeout_sec" trufflehog filesystem --json --no-update "$tmpdir" 2>/dev/null) || { unset _TRUFFLEHOG_TMPDIR; rm -rf "$tmpdir"; echo "[]"; return; }
-  unset _TRUFFLEHOG_TMPDIR
+  raw_output=$(_sast_timeout "$timeout_sec" trufflehog filesystem --json --no-update "$tmpdir" 2>/dev/null) || { rm -rf "$tmpdir"; echo "[]"; return; }
+
+  local saved_tmpdir="$tmpdir"
   rm -rf "$tmpdir"
 
   [ -z "$raw_output" ] && { echo "[]"; return; }
 
   # TruffleHog outputs one JSON object per line (JSONL)
-  _TRUFFLEHOG_TMPDIR="$tmpdir" echo "$raw_output" | python3 -c "
-import sys, json, os
+  echo "$raw_output" | python3 -c "
+import sys, json
 findings = []
-tmpdir_prefix = os.environ.get('_TRUFFLEHOG_TMPDIR', '')
+tmpdir_prefix = sys.argv[1] if len(sys.argv) > 1 else ''
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -180,7 +180,7 @@ for line in sys.stdin:
         'source': 'sast:trufflehog'
     })
 print(json.dumps(findings))
-" 2>/dev/null || echo "[]"
+" "$saved_tmpdir" 2>/dev/null || echo "[]"
 }
 
 # Main entry point: run all available SAST tools

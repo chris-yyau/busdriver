@@ -299,7 +299,7 @@ fi
 # Run SAST scan on changed files (deterministic, runs before LLM)
 echo ""
 echo "🔒 Running static analysis..."
-SAST_FINDINGS=$(run_sast_scan "$FILTERED_FILES" "$STAGED_DIFF")
+SAST_FINDINGS=$(run_sast_scan "$FILTERED_FILES")
 SAST_COUNT=$(echo "$SAST_FINDINGS" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
 
 # Run markdown checks if .md files are staged

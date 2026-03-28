@@ -76,7 +76,7 @@ _md_check_urls() {
   while IFS= read -r f; do
     [ -f "$f" ] || continue
     local urls
-    urls=$(grep -oE '\]\(https?://[^)]+\)' "$f" 2>/dev/null | sed 's/\](//;s/)$//' || true)
+    urls=$(grep -oE '\]\(https?://[^[:space:]]*\)' "$f" 2>/dev/null | sed 's/^](//;s/)$//' || true)
     if [ -n "$urls" ]; then
       while IFS= read -r url; do
         all_urls+="$f|$url"$'\n'

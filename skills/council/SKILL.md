@@ -17,12 +17,14 @@ Convene four advisors — the in-context Claude plus three fresh agents — for 
 
 ## Roles (Fixed)
 
-| Voice | Method | Role | Lens |
-|---|---|---|---|
-| Claude (you) | In-context | Architect | Correctness, maintainability, long-term implications |
-| Fresh Claude | Agent tool (clean memory) | Skeptic | Challenge assumptions, question premises, propose simplest alternative |
-| Gemini | dispatch-cli | Pragmatist | Shipping speed, simplicity, user impact, practical tradeoffs |
-| Codex | dispatch-cli | Critic | Edge cases, risks, failure modes, what could go wrong |
+| Voice | Method | Role | Lens | Configurable |
+|---|---|---|---|---|
+| Claude (you) | In-context | Architect | Correctness, maintainability, long-term implications | No (Agent tool) |
+| Fresh Claude | Agent tool (clean memory) | Skeptic | Challenge assumptions, question premises, propose simplest alternative | No (Agent tool) |
+| Configurable | dispatch-cli | Pragmatist | Shipping speed, simplicity, user impact, practical tradeoffs | Yes: `council.pragmatist` (default: gemini) |
+| Configurable | dispatch-cli | Critic | Edge cases, risks, failure modes, what could go wrong | Yes: `council.critic` (default: codex) |
+
+**CLI routing:** Pragmatist and Critic CLIs are resolved from `.claude/busdriver.json` via `resolve_role_cli()`. Changing the CLI only changes which binary receives the prompt — the role framing (Pragmatist lens, Critic lens) is always the same. See README for per-role routing docs.
 
 The Fresh Claude Skeptic has **zero conversation context** — it receives only the question and optional code snippets. Its unique value is immunity to conversational drift: it sees what the anchored council has stopped noticing. If the question itself is wrong or the answer is simpler than the council thinks, the Skeptic says so.
 
@@ -70,17 +72,17 @@ Agent(
 Before dispatching, check CLI availability and find the dispatch script:
 
 ```bash
-# Source shared CLI library and dispatch in a single Bash invocation
+# Source shared CLI library and resolve roles from config
 source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/resolve-cli.sh"
-HAS_GEMINI=$(is_cli_available gemini && echo yes || echo no)
-HAS_CODEX=$(is_cli_available codex && echo yes || echo no)
+PRAGMATIST_CLI=$(resolve_role_cli "council.pragmatist")
+CRITIC_CLI=$(resolve_role_cli "council.critic")
 DISPATCH="${CLAUDE_PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
-[ "$HAS_GEMINI" = "yes" ] && "$DISPATCH" \
-  --cli gemini --timeout 300 \
-  --prompt "<Pragmatist prompt>" &
-[ "$HAS_CODEX" = "yes" ] && "$DISPATCH" \
-  --cli codex --timeout 300 \
-  --prompt "<Critic prompt>" &
+
+# Dispatch available voices
+[[ "$PRAGMATIST_CLI" != "none" && ! "$PRAGMATIST_CLI" =~ ^missing: ]] && \
+  "$DISPATCH" --cli "$PRAGMATIST_CLI" --timeout 300 --prompt "<Pragmatist prompt>" &
+[[ "$CRITIC_CLI" != "none" && ! "$CRITIC_CLI" =~ ^missing: ]] && \
+  "$DISPATCH" --cli "$CRITIC_CLI" --timeout 300 --prompt "<Critic prompt>" &
 wait
 ```
 
@@ -93,7 +95,7 @@ This is a **single Bash call** with both as background processes. This is critic
 
 **IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing both Gemini and Codex as background processes) in the **same message** so all three voices run concurrently. Do NOT use separate Bash tool calls for Gemini and Codex — one failing will cancel the other.
 
-**Degradation:** The Fresh Claude (Agent tool) is always available, so the council always has at least 2 voices (Architect + Skeptic). If one CLI is missing → 3-voice council. If both are missing → 2-voice council. Note the composition in the report.
+**Degradation:** The Fresh Claude (Agent tool) is always available, so the council always has at least 2 voices (Architect + Skeptic). If a configured CLI is missing or its role resolves to `none`/`missing:<cli>` → that voice is skipped (3-voice council). If both external CLIs are unavailable → 2-voice council. Note the composition in the report.
 
 ### Step 5: Read Output and Synthesize
 

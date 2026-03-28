@@ -34,9 +34,11 @@ Send any task to Codex or Gemini CLI as an autonomous agent. Unlike `codex-revie
 |-----------|-----|-----------|
 | Code audit, bug hunting | `codex` | Deep code reasoning, tool use |
 | Architecture analysis | `gemini` | Broad strategic thinking |
-| High-stakes decisions | `both` | Consensus from two perspectives |
-| Code changes, refactoring | `codex` | Better at precise edits |
-| Research, synthesis | `gemini` | Good at connecting patterns |
+| Fast autonomous agent | `droid` | Lightweight, fast execution |
+| Code review focus | `amp` | Review-oriented analysis |
+| Go-native projects | `opencode` | Go ecosystem integration |
+| High-stakes decisions | `both` | Codex + Gemini consensus |
+| Maximum coverage | `all` | Top 3 available CLIs in parallel |
 | Quick analysis (either) | `auto` | Uses whichever is available |
 
 ## Execution Modes
@@ -145,7 +147,7 @@ Do not change any external interfaces. Gate behavior must remain identical.
 **Script flags:**
 | Flag | Values | Default |
 |------|--------|---------|
-| `--cli` | `codex`, `gemini`, `both`, `auto` | `auto` |
+| `--cli` | `codex`, `gemini`, `droid`, `amp`, `opencode`, `both`, `all`, `auto` | `auto` |
 | `--mode` | `readonly`, `auto` | `readonly` |
 | `--timeout` | seconds | `300` |
 | `--model` | model name | CLI default |

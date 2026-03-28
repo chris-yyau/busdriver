@@ -124,12 +124,12 @@ function printHuman(report) {
 
   console.log(`\nSummary: checked=${report.summary.checkedCount}, ok=${report.summary.okCount}, warnings=${report.summary.warningCount}, errors=${report.summary.errorCount}`);
 
-  const cli = checkReviewCli();
+  const cli = report.reviewGate || {};
   console.log('\nReview Gate:');
-  console.log(`  BUSDRIVER_REVIEW_CLI: ${cli.configured}`);
+  console.log(`  BUSDRIVER_REVIEW_CLI: ${cli.configured || 'unknown'}`);
   const versionStr = cli.version ? ` (${cli.version})` : '';
-  console.log(`  Resolved CLI: ${cli.resolved}${versionStr}`);
-  console.log(`  Status: ${statusLabel(cli.status)} - ${cli.message}`);
+  console.log(`  Resolved CLI: ${cli.resolved || 'unknown'}${versionStr}`);
+  console.log(`  Status: ${statusLabel(cli.status || 'unknown')} - ${cli.message || 'not checked'}`);
 }
 
 function main() {

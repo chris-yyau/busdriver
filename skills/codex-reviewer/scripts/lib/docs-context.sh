@@ -90,6 +90,7 @@ collect_docs_context() {
 
   local context=""
   local found=0
+  local found_docs=0
 
   while IFS= read -r term; do
     [ -z "$term" ] && continue
@@ -104,6 +105,16 @@ collect_docs_context() {
       local section
       section=$(_extract_doc_section "$doc_file" "$term")
       if [ -n "$section" ]; then
+        if [ "$found_docs" -eq 0 ]; then
+          context+="## Documentation Cross-Reference (verify accuracy of each claim)
+The following doc files reference the changed code. For each snippet:
+1. Identify every factual claim (counts, names, behavior descriptions)
+2. Cross-reference each claim against the actual code in the diff
+3. Flag any stale counts, wrong function names, or mismatched examples
+
+"
+          found_docs=1
+        fi
         # Use a fence that the excerpt cannot close (~~~~ instead of ```)
         context+="### \`${doc_file}\` mentions \`${term}\`
 ~~~~
@@ -118,12 +129,9 @@ $section
 
   if [ "$found" -gt 0 ]; then
     echo "   Docs: found $found doc reference(s) to changed code" >&2
-    echo "## Documentation References (auto-collected)"
-    echo ""
-    echo "The following documentation mentions code that was changed."
-    echo "Verify these docs still accurately describe the current behavior."
-    echo ""
     echo "$context"
+    echo ""
+    echo "## End of Documentation Context"
   fi
 }
 

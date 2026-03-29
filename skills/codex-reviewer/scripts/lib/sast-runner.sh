@@ -44,7 +44,8 @@ for line in sys.stdin:
     line = line.strip()
     if line:
         try: arrays.extend(json.loads(line))
-        except (json.JSONDecodeError, ValueError): pass
+        except (json.JSONDecodeError, ValueError):
+            print('WARNING: Failed to parse SAST output line (malformed JSON)', file=sys.stderr)
 print(json.dumps(arrays))
 "
 }

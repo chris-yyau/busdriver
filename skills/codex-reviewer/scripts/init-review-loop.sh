@@ -111,7 +111,7 @@ Check for:
 - Bugs: null/undefined errors, race conditions, off-by-one errors, infinite loops
 - Performance: N+1 queries, unnecessary re-renders, memory leaks, blocking operations
 - Maintainability: code duplication, unclear naming, missing error handling
-- Shell portability: flag every use of `local` outside a function (not at top-level). Check `shasum` vs `sha256sum` portability. Check `\b` in grep (not portable — use `-w` instead). Check `mktemp -t` (macOS-only — use `mktemp "${TMPDIR:-/tmp}/prefix-XXXXXX"`)
+- Shell portability: flag every use of `local` outside a function (not at top-level). Check `shasum` vs `sha256sum` portability. Check `\b` in grep (not portable — use `-w` instead). Check `mktemp -t` (behaves differently on macOS vs GNU — use `mktemp "${TMPDIR:-/tmp}/prefix-XXXXXX"` for portability)
 - Path/CWD safety: for every file write operation, verify the path uses `$REPO_DIR` or an absolute path, not a bare relative path like `.claude/...`. Scripts invoked from subdirectories will write to the wrong location with relative paths
 - Stale file cleanup ordering: if a script has an early-exit path (e.g., config-disabled check), verify that stale result/temp file cleanup runs BEFORE the early exit, not after
 - Timeout and fail-open: if a timeout or error causes an early exit, verify the exit path does not silently skip scanning (fail-open). Timeouts should emit degraded warnings, not silent passes
@@ -182,7 +182,7 @@ Check for:
 - Bugs: null/undefined errors, race conditions, off-by-one errors, infinite loops
 - Performance: N+1 queries, unnecessary re-renders, memory leaks, blocking operations
 - Maintainability: code duplication, unclear naming, missing error handling
-- Shell portability: flag every use of `local` outside a function (not at top-level). Check `shasum` vs `sha256sum` portability. Check `\b` in grep (not portable — use `-w` instead). Check `mktemp -t` (macOS-only — use `mktemp "${TMPDIR:-/tmp}/prefix-XXXXXX"`)
+- Shell portability: flag every use of `local` outside a function (not at top-level). Check `shasum` vs `sha256sum` portability. Check `\b` in grep (not portable — use `-w` instead). Check `mktemp -t` (behaves differently on macOS vs GNU — use `mktemp "${TMPDIR:-/tmp}/prefix-XXXXXX"` for portability)
 - Path/CWD safety: for every file write operation, verify the path uses `$REPO_DIR` or an absolute path, not a bare relative path like `.claude/...`. Scripts invoked from subdirectories will write to the wrong location with relative paths
 - Stale file cleanup ordering: if a script has an early-exit path (e.g., config-disabled check), verify that stale result/temp file cleanup runs BEFORE the early exit, not after
 - Timeout and fail-open: if a timeout or error causes an early exit, verify the exit path does not silently skip scanning (fail-open). Timeouts should emit degraded warnings, not silent passes

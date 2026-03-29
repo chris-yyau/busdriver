@@ -36,7 +36,7 @@ git add src/processor.sh
 OUTPUT=$(collect_docs_context "src/processor.sh" "$(git diff --cached)")
 
 # Verify the output contains structured verification instructions
-if echo "$OUTPUT" | grep -qi "verify.*claim\|cross-reference\|check.*accuracy"; then
+if echo "$OUTPUT" | grep -Eqi "verify.*claim|cross-reference|check.*accuracy"; then
   ok "Docs context includes verification instructions"
 else
   fail "Docs context missing verification instructions"

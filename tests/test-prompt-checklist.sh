@@ -8,10 +8,10 @@ failed=0
 fail() { echo "FAIL: $1"; failed=$((failed + 1)); }
 ok()   { echo "OK:   $1"; passed=$((passed + 1)); }
 
-# Split the file at the 'else' between PR and commit heredocs
-# PR prompt is in the first cat block, commit prompt is in the second
-PR_PROMPT=$(sed -n '/^if \[ "\$REVIEW_MODE" = "pr" \]/,/^else$/p' "$INIT_SCRIPT")
-COMMIT_PROMPT=$(sed -n '/^else$/,/^fi$/p' "$INIT_SCRIPT")
+# Extract the two heredoc blocks (PR prompt and commit prompt)
+# Block 1 = PR prompt (first <<'EOF' to first EOF), Block 2 = commit prompt
+PR_PROMPT=$(awk 'BEGIN{b=0} /<<'\''EOF'\''/{b++; next} /^EOF$/{b++; next} b==1' "$INIT_SCRIPT")
+COMMIT_PROMPT=$(awk 'BEGIN{b=0} /<<'\''EOF'\''/{b++; next} /^EOF$/{b++; next} b==3' "$INIT_SCRIPT")
 
 # Shell-specific checks must be in BOTH commit and PR prompts
 CHECKS=(

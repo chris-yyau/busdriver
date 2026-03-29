@@ -105,9 +105,13 @@ _sast_run_shellcheck() {
   # Configurable extra ShellCheck checks (env var override)
   # Curated list targeting audit gap categories: portability, set-e interaction, quoting
   local enable_rules="${CODEX_SHELLCHECK_ENABLE:-check-extra-masked-returns,check-set-e-suppressed,quote-safe-variables,require-double-brackets}"
-  # Validate: only allow alphanumeric, comma, hyphen (prevent injection)
+  # Validate: only allow alphanumeric, comma, hyphen, underscore (prevent injection)
   case "$enable_rules" in
-    *[!a-zA-Z0-9,_-]*) echo "⚠️  CODEX_SHELLCHECK_ENABLE contains invalid characters, using default" >&2
+    ''|,*|*,,*|*,)
+      echo "⚠️  CODEX_SHELLCHECK_ENABLE is empty or malformed, using default" >&2
+      enable_rules="check-extra-masked-returns,check-set-e-suppressed,quote-safe-variables,require-double-brackets" ;;
+    *[!a-zA-Z0-9,_-]*)
+      echo "⚠️  CODEX_SHELLCHECK_ENABLE contains invalid characters, using default" >&2
       enable_rules="check-extra-masked-returns,check-set-e-suppressed,quote-safe-variables,require-double-brackets" ;;
   esac
 

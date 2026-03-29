@@ -20,6 +20,9 @@ _docs_escape_regex() {
 _find_referencing_docs() {
   local search_term="$1"
   local max_snippets="${CODEX_MAX_DOC_SNIPPETS:-5}"
+  case "$max_snippets" in
+    ''|*[!0-9]*) max_snippets=5 ;;
+  esac
   local repo_root
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
 

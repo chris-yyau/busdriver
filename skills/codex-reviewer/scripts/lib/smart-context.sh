@@ -78,6 +78,9 @@ for n in sorted(names):
 _find_callers() {
   local func_name="$1"
   local max_lines="${CODEX_MAX_CONTEXT_LINES:-50}"
+  case "$max_lines" in
+    ''|*[!0-9]*) max_lines=50 ;;
+  esac
   local repo_root
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
 
@@ -98,6 +101,9 @@ _find_callers() {
 _find_importers() {
   local changed_file="$1"
   local max_lines="${CODEX_MAX_CONTEXT_LINES:-50}"
+  case "$max_lines" in
+    ''|*[!0-9]*) max_lines=50 ;;
+  esac
   local repo_root
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
 
@@ -124,6 +130,9 @@ collect_smart_context() {
   local diff="$1"
   local files_list="$2"
   local max_functions="${CODEX_MAX_FUNCTIONS:-10}"
+  case "$max_functions" in
+    ''|*[!0-9]*) max_functions=10 ;;
+  esac
 
   if [ "${CODEX_SKIP_CONTEXT:-0}" = "1" ]; then
     return

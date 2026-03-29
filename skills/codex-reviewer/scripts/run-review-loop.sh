@@ -340,6 +340,9 @@ FINAL_PROMPT="${FINAL_PROMPT/\{\{SAST_PRECHECK\}\}/$SAST_PRECHECK_TEXT}"
 
 # Budget cap for enrichment context (prevent prompt bloat)
 MAX_ENRICHMENT_LINES="${CODEX_MAX_ENRICHMENT_LINES:-100}"
+case "$MAX_ENRICHMENT_LINES" in
+  ''|*[!0-9]*) echo "⚠️  CODEX_MAX_ENRICHMENT_LINES='$MAX_ENRICHMENT_LINES' is not numeric, using default 100" >&2; MAX_ENRICHMENT_LINES=100 ;;
+esac
 if [ -n "$SMART_CONTEXT_OUTPUT" ]; then
   SMART_CONTEXT_OUTPUT=$(echo "$SMART_CONTEXT_OUTPUT" | head -n "$MAX_ENRICHMENT_LINES")
 fi

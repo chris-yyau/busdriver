@@ -425,6 +425,7 @@ SAST findings are deterministic (not LLM-generated) and merge with LLM findings 
 **Environment variables:**
 - `CODEX_SKIP_SAST=1` — skip all SAST scanning
 - `CODEX_SAST_TIMEOUT=30` — per-tool timeout in seconds (default: 30)
+- `CODEX_SHELLCHECK_ENABLE=check-extra-masked-returns,check-set-e-suppressed,quote-safe-variables,require-double-brackets` — ShellCheck optional checks to enable (default: curated list targeting audit gaps). Set to `all` to enable everything, or narrow to specific checks
 
 ### Smart Context (Cross-File)
 
@@ -438,8 +439,8 @@ This enables the LLM to catch broken contracts, renamed parameters, and cross-fi
 
 **Environment variables:**
 - `CODEX_SKIP_CONTEXT=1` — skip smart context collection
-- `CODEX_MAX_CONTEXT_LINES=50` — max context lines per function
-- `CODEX_MAX_FUNCTIONS=10` — max functions to trace
+- `CODEX_MAX_CONTEXT_LINES=50` — max context lines per function (validated numeric)
+- `CODEX_MAX_FUNCTIONS=10` — max functions to trace (validated numeric)
 
 ### Docs Consistency
 
@@ -451,6 +452,8 @@ The review loop checks for doc/code mismatches:
 
 **Environment variables:**
 - `CODEX_SKIP_DOCS_CONTEXT=1` — skip docs context collection
+- `CODEX_MAX_DOC_SNIPPETS=5` — max doc file snippets to include (validated numeric)
+- `CODEX_MAX_ENRICHMENT_LINES=100` — max lines of smart-context and docs-context injected into prompt (validated numeric)
 
 ### Markdown Validation
 
@@ -474,6 +477,7 @@ When `.md` files are staged, the review loop runs:
 8. **Staged-only scope** - Reviews only `git diff --cached`, not unstaged/untracked files
 9. **Iteration memory** - Previous findings are injected into the next pass to prevent re-reporting
 10. **Convergence cap** - Max 3 new issues per iteration to ensure the loop converges
+11. **Shell-aware review** - Prompt includes targeted checklists for shell scripting (portability, CWD safety, cleanup ordering, timeout fail-open, boolean normalization) and documentation accuracy (factual claims cross-referenced against code), added based on empirical coverage audit (19% baseline vs paid tools)
 
 ## Convergence System
 

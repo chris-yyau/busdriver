@@ -44,7 +44,8 @@ for line in sys.stdin:
     line = line.strip()
     if line:
         try: arrays.extend(json.loads(line))
-        except (json.JSONDecodeError, ValueError): pass
+        except (json.JSONDecodeError, ValueError):
+            print('WARNING: Failed to parse SAST output line (malformed JSON)', file=sys.stderr)
 print(json.dumps(arrays))
 "
 }
@@ -101,13 +102,28 @@ _sast_run_shellcheck() {
   sh_files=$(echo "$files_list" | grep -E '\.(sh|bash)$' || true)
   [ -z "$sh_files" ] && { echo "[]"; return; }
 
+  # Configurable extra ShellCheck checks (env var override)
+  # Curated list targeting audit gap categories: portability, set-e interaction, quoting
+  local enable_rules="${CODEX_SHELLCHECK_ENABLE:-check-extra-masked-returns,check-set-e-suppressed,quote-safe-variables,require-double-brackets}"
+  # Validate: only allow alphanumeric, comma, hyphen, underscore (prevent injection)
+  case "$enable_rules" in
+    ''|,*|*,,*|*,)
+      echo "⚠️  CODEX_SHELLCHECK_ENABLE is empty or malformed, using default" >&2
+      enable_rules="check-extra-masked-returns,check-set-e-suppressed,quote-safe-variables,require-double-brackets" ;;
+    *[!a-zA-Z0-9,_-]*)
+      echo "⚠️  CODEX_SHELLCHECK_ENABLE contains invalid characters, using default" >&2
+      enable_rules="check-extra-masked-returns,check-set-e-suppressed,quote-safe-variables,require-double-brackets" ;;
+  esac
+
   # Run ShellCheck with JSON output on each file
   local all_findings="["
   local first=true
   while IFS= read -r f; do
     [ -f "$f" ] || continue
     local file_output
-    file_output=$(_sast_timeout "$timeout_sec" shellcheck -f json "$f" 2>/dev/null) || true
+    file_output=$(_sast_timeout "$timeout_sec" shellcheck \
+      --enable="$enable_rules" \
+      -f json "$f" 2>/dev/null) || true
     if [ -n "$file_output" ] && [ "$file_output" != "[]" ]; then
       if [ "$first" = true ]; then
         first=false

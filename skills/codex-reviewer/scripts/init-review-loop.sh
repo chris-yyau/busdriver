@@ -111,8 +111,13 @@ Check for:
 - Bugs: null/undefined errors, race conditions, off-by-one errors, infinite loops
 - Performance: N+1 queries, unnecessary re-renders, memory leaks, blocking operations
 - Maintainability: code duplication, unclear naming, missing error handling
+- Shell portability: flag every use of `local` outside a function (not at top-level). Check `shasum` vs `sha256sum` portability. Check `\b` in grep (not portable — use `-w` instead). Check `mktemp -t` (behaves differently on macOS vs GNU — use `mktemp "${TMPDIR:-/tmp}/prefix-XXXXXX"` for portability)
+- Path/CWD safety: for every file write operation, verify the path uses `$REPO_DIR` or an absolute path, not a bare relative path like `.claude/...`. Scripts invoked from subdirectories will write to the wrong location with relative paths
+- Stale file cleanup ordering: if a script has an early-exit path (e.g., config-disabled check), verify that stale result/temp file cleanup runs BEFORE the early exit, not after
+- Timeout and fail-open: if a timeout or error causes an early exit, verify the exit path does not silently skip scanning (fail-open). Timeouts should emit degraded warnings, not silent passes
+- Boolean normalization: if code checks `= "true"` or `= "false"`, verify it handles variant forms (True/TRUE/yes/on/1 and False/FALSE/no/off/0) or documents that only exact strings are accepted
+- Doc/code accuracy: for every factual claim in .md files (counts, function names, behavior descriptions, examples), verify the claim matches the actual code. Flag stale counts (e.g., "16 skills" when the list has 18), wrong function signatures in examples, and stale example output that doesn't match actual output format
 - Cross-commit issues: inconsistent changes across files, partial refactors, broken dependencies
-- Doc/code mismatches: if documentation references changed code, verify docs still match behavior
 - Property testing gap: if changes touch parsers, validators, serializers, auth, or financial logic — flag as LOW severity if no property-based tests exist (Hypothesis, fast-check, testing/quick). Advisory only, not blocking.
 
 <CONVERGENCE_RULES>
@@ -177,7 +182,13 @@ Check for:
 - Bugs: null/undefined errors, race conditions, off-by-one errors, infinite loops
 - Performance: N+1 queries, unnecessary re-renders, memory leaks, blocking operations
 - Maintainability: code duplication, unclear naming, missing error handling
-- Doc/code mismatches: if documentation references changed code, verify docs still match behavior
+- Shell portability: flag every use of `local` outside a function (not at top-level). Check `shasum` vs `sha256sum` portability. Check `\b` in grep (not portable — use `-w` instead). Check `mktemp -t` (behaves differently on macOS vs GNU — use `mktemp "${TMPDIR:-/tmp}/prefix-XXXXXX"` for portability)
+- Path/CWD safety: for every file write operation, verify the path uses `$REPO_DIR` or an absolute path, not a bare relative path like `.claude/...`. Scripts invoked from subdirectories will write to the wrong location with relative paths
+- Stale file cleanup ordering: if a script has an early-exit path (e.g., config-disabled check), verify that stale result/temp file cleanup runs BEFORE the early exit, not after
+- Timeout and fail-open: if a timeout or error causes an early exit, verify the exit path does not silently skip scanning (fail-open). Timeouts should emit degraded warnings, not silent passes
+- Boolean normalization: if code checks `= "true"` or `= "false"`, verify it handles variant forms (True/TRUE/yes/on/1 and False/FALSE/no/off/0) or documents that only exact strings are accepted
+- Doc/code accuracy: for every factual claim in .md files (counts, function names, behavior descriptions, examples), verify the claim matches the actual code. Flag stale counts (e.g., "16 skills" when the list has 18), wrong function signatures in examples, and stale example output that doesn't match actual output format
+- Cross-commit issues: inconsistent changes across files, partial refactors, broken dependencies
 - Property testing gap: if changes touch parsers, validators, serializers, auth, or financial logic — flag as LOW severity if no property-based tests exist (Hypothesis, fast-check, testing/quick). Advisory only, not blocking.
 
 <CONVERGENCE_RULES>

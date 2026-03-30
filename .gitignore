@@ -12,3 +12,8 @@ sessions/
 .claude/bypass-log.jsonl
 .claude/.gate-block-count.local
 .claude/.impl-gate-block-count.local
+
+# Internal planning docs and review artifacts
+docs/reviews/
+docs/superpowers/plans/
+docs/superpowers/specs/

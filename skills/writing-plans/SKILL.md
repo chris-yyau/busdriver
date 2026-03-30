@@ -103,45 +103,50 @@ git commit -m "feat: add specific feature"
 ```
 ````
 
+## No Placeholders
+
+Every step must contain the actual content an engineer needs. These are **plan failures** — never write them:
+- "TBD", "TODO", "implement later", "fill in details"
+- "Add appropriate error handling" / "add validation" / "handle edge cases"
+- "Write tests for the above" (without actual test code)
+- "Similar to Task N" (repeat the code — the engineer may be reading tasks out of order)
+- Steps that describe what to do without showing how (code blocks required for code steps)
+- References to types, functions, or methods not defined in any task
+
 ## Remember
 - Exact file paths always
-- Complete code in plan (not "add validation")
+- Complete code in every step — if a step changes code, show the code
 - Exact commands with expected output
-- Reference relevant skills with @ syntax
 - DRY, YAGNI, TDD, frequent commits
 
-## Plan Review Loop
+## Self-Review
 
-After writing the complete plan:
+After writing the complete plan, look at the spec with fresh eyes and check the plan against it. This is a checklist you run yourself — not a subagent dispatch.
 
-1. Dispatch a single plan-document-reviewer subagent (see plan-document-reviewer-prompt.md) with precisely crafted review context — never your session history. This keeps the reviewer focused on the plan, not your thought process.
-   - Provide: path to the plan document, path to spec document
-2. If ❌ Issues Found: fix the issues, re-dispatch reviewer for the whole plan
-3. If ✅ Approved: proceed to auto-execution
+**1. Spec coverage:** Skim each section/requirement in the spec. Can you point to a task that implements it? List any gaps.
 
-**Review loop guidance:**
-- Same agent that wrote the plan fixes it (preserves context)
-- If loop exceeds 3 iterations, surface to human for guidance
-- Reviewers are advisory — explain disagreements if you believe feedback is incorrect
+**2. Placeholder scan:** Search your plan for red flags — any of the patterns from the "No Placeholders" section above. Fix them.
 
-## Auto-Execution
+**3. Type consistency:** Do the types, method signatures, and property names you used in later tasks match what you defined in earlier tasks? A function called `clearLayers()` in Task 3 but `clearFullLayers()` in Task 7 is a bug.
 
-After saving the plan and the plan review loop passes, proceed automatically through the remaining pipeline phases. Do NOT pause to ask the user which execution mode to use — execute immediately.
+If you find issues, fix them inline. No need to re-review — just fix and move on. If you find a spec requirement with no task, add the task.
 
-**Announce:** "Plan complete and saved to `<path>`. Auto-executing: design review → worktree → implementation."
+## Execution Handoff
 
-**Sequence:**
+After saving the plan, offer execution choice:
 
-1. **Design Review** — INVOKE `busdriver:design-reviewer` to review and approve the plan document. The design review gate (hook-enforced) blocks all implementation code until this passes. If design review rejects, fix issues and re-submit — do not proceed until it passes.
-2. **Worktree Setup** — INVOKE `busdriver:using-git-worktrees` to create an isolated workspace. If worktree creation fails or baseline tests fail, stop and report.
-3. **Execute** — INVOKE `busdriver:subagent-driven-development` to implement the plan task-by-task with fresh subagents and two-stage review.
-4. **Verify** — `busdriver:verification-before-completion` runs as part of the execution discipline.
-5. **Finish** — `busdriver:finishing-a-development-branch` presents integration options (merge/PR/keep/discard).
+**"Plan complete and saved to `docs/superpowers/plans/<filename>.md`. Two execution options:**
 
-**Stop conditions — halt auto-execution and report to user when:**
-- Design review rejects the plan after 3 fix attempts
-- Worktree baseline tests fail
-- A task blocker requires human input (missing dependency, unclear requirement)
-- Verification fails after implementation
+**1. Subagent-Driven (recommended)** - I dispatch a fresh subagent per task, review between tasks, fast iteration
 
-**Override:** If the user explicitly asks to choose execution mode or pause between phases, respect that. Auto-execution is the default, not a mandate.
+**2. Inline Execution** - Execute tasks in this session using executing-plans, batch execution with checkpoints
+
+**Which approach?"**
+
+**If Subagent-Driven chosen:**
+- **REQUIRED SUB-SKILL:** Use superpowers:subagent-driven-development
+- Fresh subagent per task + two-stage review
+
+**If Inline Execution chosen:**
+- **REQUIRED SUB-SKILL:** Use superpowers:executing-plans
+- Batch execution with checkpoints for review

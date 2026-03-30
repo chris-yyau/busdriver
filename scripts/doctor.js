@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+const os = require('os');
 const { buildDoctorReport } = require('./lib/install-lifecycle');
 const { SUPPORTED_INSTALL_TARGETS } = require('./lib/install-manifests');
 
@@ -54,82 +55,6 @@ function statusLabel(status) {
   return status.toUpperCase();
 }
 
-function checkReviewCli() {
-  const { execFileSync } = require('child_process');
-  const path = require('path');
-  const configured = process.env.BUSDRIVER_REVIEW_CLI || 'auto';
-  let resolved = 'unknown';
-  let version = '';
-  let status = 'ok';
-  let message = '';
-
-  try {
-    const resolveScript = path.join(__dirname, 'lib', 'resolve-cli.sh');
-    resolved = execFileSync('bash', ['-c', 'source "$1" && resolve_review_cli', '_', resolveScript], {
-      encoding: 'utf8',
-      env: { ...process.env },
-      timeout: 5000,
-    }).trim();
-  } catch {
-    resolved = 'error';
-  }
-
-  if (resolved === 'none') {
-    status = 'warning';
-    message = 'review gate disabled, commits pass without review';
-  } else if (resolved === 'builtin') {
-    message = 'commits will use built-in Claude review (less independent than external CLI)';
-  } else if (resolved.startsWith('missing:')) {
-    status = 'error';
-    message = `CLI '${resolved.slice(8)}' not found - install it or set BUSDRIVER_REVIEW_CLI=auto`;
-  } else if (resolved === 'error') {
-    status = 'error';
-    message = 'could not resolve review CLI';
-  } else {
-    try {
-      version = execFileSync(resolved, ['--version'], {
-        encoding: 'utf8',
-        timeout: 5000,
-      }).trim().split('\n')[0];
-    } catch {
-      version = 'unknown';
-    }
-    message = `commits will require ${resolved} review`;
-  }
-
-  return { configured, resolved, version, status, message };
-}
-
-function checkRoleRouting() {
-  const { execFileSync } = require('child_process');
-  const path = require('path');
-  const resolveScript = path.join(__dirname, 'lib', 'resolve-cli.sh');
-
-  const roles = [
-    { key: 'codex-reviewer.reviewer', label: 'Code Review', configurable: true },
-    { key: 'design-reviewer.reviewer_1', label: 'Design Reviewer 1', configurable: true },
-    { key: 'design-reviewer.reviewer_2', label: 'Design Reviewer 2', configurable: true },
-    { key: 'council.pragmatist', label: 'Council Pragmatist', configurable: true },
-    { key: 'council.critic', label: 'Council Critic', configurable: true },
-    { key: 'council.architect', label: 'Council Architect', configurable: false },
-    { key: 'council.skeptic', label: 'Council Skeptic', configurable: false },
-  ];
-
-  return roles.map(role => {
-    let resolved = role.configurable ? 'unknown' : 'claude (Agent tool)';
-    if (role.configurable) {
-      try {
-        resolved = execFileSync('bash', [
-          '-c', 'source "$1" && resolve_role_cli "$2"', '_', resolveScript, role.key
-        ], { encoding: 'utf8', env: { ...process.env }, timeout: 5000 }).trim();
-      } catch {
-        resolved = 'error';
-      }
-    }
-    return { ...role, resolved };
-  });
-}
-
 function printHuman(report) {
   if (report.results.length === 0) {
     console.log('No ECC install-state files found for the current home/project context.');
@@ -153,22 +78,6 @@ function printHuman(report) {
   }
 
   console.log(`\nSummary: checked=${report.summary.checkedCount}, ok=${report.summary.okCount}, warnings=${report.summary.warningCount}, errors=${report.summary.errorCount}`);
-
-  const cli = report.reviewGate || {};
-  console.log('\nReview Gate:');
-  console.log(`  BUSDRIVER_REVIEW_CLI: ${cli.configured || 'unknown'}`);
-  const versionStr = cli.version ? ` (${cli.version})` : '';
-  console.log(`  Resolved CLI: ${cli.resolved || 'unknown'}${versionStr}`);
-  console.log(`  Status: ${statusLabel(cli.status || 'unknown')} - ${cli.message || 'not checked'}`);
-
-  const routing = report.roleRouting || [];
-  if (routing.length > 0) {
-    console.log('\nPer-Role Routing:');
-    for (const role of routing) {
-      const tag = role.configurable ? '' : ' (fixed)';
-      console.log(`  ${role.label}: ${role.resolved}${tag}`);
-    }
-  }
 }
 
 function main() {
@@ -180,14 +89,11 @@ function main() {
 
     const report = buildDoctorReport({
       repoRoot: require('path').join(__dirname, '..'),
-      homeDir: process.env.HOME,
+      homeDir: process.env.HOME || os.homedir(),
       projectRoot: process.cwd(),
       targets: options.targets,
     });
     const hasIssues = report.summary.errorCount > 0 || report.summary.warningCount > 0;
-
-    report.reviewGate = checkReviewCli();
-    report.roleRouting = checkRoleRouting();
 
     if (options.json) {
       console.log(JSON.stringify(report, null, 2));

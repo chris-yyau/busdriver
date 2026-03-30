@@ -22,56 +22,42 @@ Every project goes through this process. A todo list, a single-function utility,
 You MUST create a task for each of these items and complete them in order:
 
 1. **Explore project context** — check files, docs, recent commits
-2. **Detect mode** — assess whether this is a **strategic decision** (choosing between architectures, defining product direction, greenfield design) or a **build task** (adding a feature to an existing system, fixing behavior, extending a pattern). Strategic mode challenges premises harder; build mode collaborates more directly.
-3. **Offer visual companion** (if topic will involve visual questions) — this is its own message, not combined with a clarifying question. See the Visual Companion section below.
-4. **Challenge the premise** — before asking detailed questions, push back on the problem framing itself:
-   - *"What's the status quo? How is this solved today?"*
-   - *"What specifically isn't working about the current approach?"*
-   - *"What's the narrowest wedge of this problem we could solve first?"*
-   - *"What assumption are we making that might be wrong?"*
-   - In strategic mode, spend 2-3 questions here. In build mode, one question is enough if the framing is clear.
-5. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
-6. **Propose 2-3 approaches** — with trade-offs, **effort estimates** (small/medium/large with rough scope), and your recommendation
-7. **Present design** — in sections scaled to their complexity, get user approval after each section
-8. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
-9. **Spec review loop** — dispatch spec-document-reviewer subagent with precisely crafted review context (never your session history); fix issues and re-dispatch until approved (max 3 iterations, then surface to human)
-10. **User reviews written spec** — ask user to review the spec file before proceeding
-11. **Transition to implementation** — invoke writing-plans skill to create implementation plan
+2. **Offer visual companion** (if topic will involve visual questions) — this is its own message, not combined with a clarifying question. See the Visual Companion section below.
+3. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
+4. **Propose 2-3 approaches** — with trade-offs and your recommendation
+5. **Present design** — in sections scaled to their complexity, get user approval after each section
+6. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
+7. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
+8. **User reviews written spec** — ask user to review the spec file before proceeding
+9. **Transition to implementation** — invoke writing-plans skill to create implementation plan
 
 ## Process Flow
 
 ```dot
 digraph brainstorming {
     "Explore project context" [shape=box];
-    "Detect mode\n(strategic vs build)" [shape=box];
     "Visual questions ahead?" [shape=diamond];
     "Offer Visual Companion\n(own message, no other content)" [shape=box];
-    "Challenge the premise" [shape=box];
     "Ask clarifying questions" [shape=box];
-    "Propose 2-3 approaches\n(with effort estimates)" [shape=box];
+    "Propose 2-3 approaches" [shape=box];
     "Present design sections" [shape=box];
     "User approves design?" [shape=diamond];
     "Write design doc" [shape=box];
-    "Spec review loop" [shape=box];
-    "Spec review passed?" [shape=diamond];
+    "Spec self-review\n(fix inline)" [shape=box];
     "User reviews spec?" [shape=diamond];
     "Invoke writing-plans skill" [shape=doublecircle];
 
-    "Explore project context" -> "Detect mode\n(strategic vs build)";
-    "Detect mode\n(strategic vs build)" -> "Visual questions ahead?";
+    "Explore project context" -> "Visual questions ahead?";
     "Visual questions ahead?" -> "Offer Visual Companion\n(own message, no other content)" [label="yes"];
-    "Visual questions ahead?" -> "Challenge the premise" [label="no"];
-    "Offer Visual Companion\n(own message, no other content)" -> "Challenge the premise";
-    "Challenge the premise" -> "Ask clarifying questions";
-    "Ask clarifying questions" -> "Propose 2-3 approaches\n(with effort estimates)";
-    "Propose 2-3 approaches\n(with effort estimates)" -> "Present design sections";
+    "Visual questions ahead?" -> "Ask clarifying questions" [label="no"];
+    "Offer Visual Companion\n(own message, no other content)" -> "Ask clarifying questions";
+    "Ask clarifying questions" -> "Propose 2-3 approaches";
+    "Propose 2-3 approaches" -> "Present design sections";
     "Present design sections" -> "User approves design?";
     "User approves design?" -> "Present design sections" [label="no, revise"];
     "User approves design?" -> "Write design doc" [label="yes"];
-    "Write design doc" -> "Spec review loop";
-    "Spec review loop" -> "Spec review passed?";
-    "Spec review passed?" -> "Spec review loop" [label="issues found,\nfix and re-dispatch"];
-    "Spec review passed?" -> "User reviews spec?" [label="approved"];
+    "Write design doc" -> "Spec self-review\n(fix inline)";
+    "Spec self-review\n(fix inline)" -> "User reviews spec?";
     "User reviews spec?" -> "Write design doc" [label="changes requested"];
     "User reviews spec?" -> "Invoke writing-plans skill" [label="approved"];
 }
@@ -91,20 +77,9 @@ digraph brainstorming {
 - Only one question per message - if a topic needs more exploration, break it into multiple questions
 - Focus on understanding: purpose, constraints, success criteria
 
-**Challenging the premise:**
-
-- Before diving into details, push back on the problem statement itself
-- Ask what the status quo is and why it's insufficient
-- Identify the narrowest wedge — the smallest version that would deliver value
-- Surface assumptions that might be wrong
-- In strategic mode (greenfield, architecture choices), spend 2-3 questions here
-- In build mode (extending existing code), one question is enough if the framing is solid
-- This step prevents building the wrong thing — the most expensive debugging is debugging the requirements
-
 **Exploring approaches:**
 
 - Propose 2-3 different approaches with trade-offs
-- **Include effort estimates** for each approach: small (hours), medium (1-2 days), large (3+ days)
 - Present options conversationally with your recommendation and reasoning
 - Lead with your recommended option and explain why
 
@@ -138,12 +113,15 @@ digraph brainstorming {
 - Use elements-of-style:writing-clearly-and-concisely skill if available
 - Commit the design document to git
 
-**Spec Review Loop:**
-After writing the spec document:
+**Spec Self-Review:**
+After writing the spec document, look at it with fresh eyes:
 
-1. Dispatch spec-document-reviewer subagent (see spec-document-reviewer-prompt.md)
-2. If Issues Found: fix, re-dispatch, repeat until Approved
-3. If loop exceeds 3 iterations, surface to human for guidance
+1. **Placeholder scan:** Any "TBD", "TODO", incomplete sections, or vague requirements? Fix them.
+2. **Internal consistency:** Do any sections contradict each other? Does the architecture match the feature descriptions?
+3. **Scope check:** Is this focused enough for a single implementation plan, or does it need decomposition?
+4. **Ambiguity check:** Could any requirement be interpreted two different ways? If so, pick one and make it explicit.
+
+Fix any issues inline. No need to re-review — just fix and move on.
 
 **User Review Gate:**
 After the spec review loop passes, ask the user to review the written spec before proceeding:
@@ -159,14 +137,12 @@ Wait for the user's response. If they request changes, make them and re-run the 
 
 ## Key Principles
 
-- **Challenge before clarify** - Push back on the problem framing before asking detailed questions
 - **One question at a time** - Don't overwhelm with multiple questions
 - **Multiple choice preferred** - Easier to answer than open-ended when possible
 - **YAGNI ruthlessly** - Remove unnecessary features from all designs
-- **Explore alternatives** - Always propose 2-3 approaches with effort estimates before settling
+- **Explore alternatives** - Always propose 2-3 approaches before settling
 - **Incremental validation** - Present design, get approval before moving on
 - **Be flexible** - Go back and clarify when something doesn't make sense
-- **Match intensity to mode** - Strategic decisions get harder scrutiny; build tasks get collaborative support
 
 ## Visual Companion
 

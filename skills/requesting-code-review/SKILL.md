@@ -41,9 +41,8 @@ Use Task tool with superpowers:code-reviewer type, fill template at `code-review
 - `{DESCRIPTION}` - Brief summary
 
 **3. Act on feedback:**
-- Trivial issues (unused imports, console.log) are auto-fixed by the reviewer — check the diff
 - Fix Critical issues immediately
-- Fix Important issues before proceeding (prioritize by fix time estimate — do all ~5 min fixes first)
+- Fix Important issues before proceeding
 - Note Minor issues for later
 - Push back if reviewer is wrong (with reasoning)
 

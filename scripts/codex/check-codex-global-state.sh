@@ -11,7 +11,7 @@ CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CONFIG_FILE="$CODEX_HOME/config.toml"
 AGENTS_FILE="$CODEX_HOME/AGENTS.md"
 PROMPTS_DIR="$CODEX_HOME/prompts"
-SKILLS_DIR="$CODEX_HOME/skills"
+SKILLS_DIR="${AGENTS_HOME:-$HOME/.agents}/skills"
 HOOKS_DIR_EXPECT="${ECC_GLOBAL_HOOKS_DIR:-$CODEX_HOME/git-hooks}"
 
 failures=0
@@ -89,7 +89,13 @@ fi
 if [[ -f "$CONFIG_FILE" ]]; then
   check_config_pattern '^multi_agent\s*=\s*true' "multi_agent is enabled"
   check_config_absent '^\s*collab\s*=' "deprecated collab flag is absent"
-  check_config_pattern '^persistent_instructions\s*=' "persistent_instructions is configured"
+  # persistent_instructions is recommended but optional; warn instead of fail
+  # so users who rely on AGENTS.md alone are not blocked (#967).
+  if rg -n '^[[:space:]]*persistent_instructions\s*=' "$CONFIG_FILE" >/dev/null 2>&1; then
+    ok "persistent_instructions is configured"
+  else
+    warn "persistent_instructions is not set (recommended but optional)"
+  fi
   check_config_pattern '^\[profiles\.strict\]' "profiles.strict exists"
   check_config_pattern '^\[profiles\.yolo\]' "profiles.yolo exists"
 
@@ -97,7 +103,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
     'mcp_servers.github' \
     'mcp_servers.memory' \
     'mcp_servers.sequential-thinking' \
-    'mcp_servers.context7-mcp'
+    'mcp_servers.context7'
   do
     if rg -n "^\[$section\]" "$CONFIG_FILE" >/dev/null 2>&1; then
       ok "MCP section [$section] exists"
@@ -106,10 +112,25 @@ if [[ -f "$CONFIG_FILE" ]]; then
     fi
   done
 
+  has_context7_legacy=0
+  has_context7_current=0
+
   if rg -n '^\[mcp_servers\.context7\]' "$CONFIG_FILE" >/dev/null 2>&1; then
-    warn "Duplicate [mcp_servers.context7] exists (context7-mcp is preferred)"
+    has_context7_legacy=1
+  fi
+
+  if rg -n '^\[mcp_servers\.context7-mcp\]' "$CONFIG_FILE" >/dev/null 2>&1; then
+    has_context7_current=1
+  fi
+
+  if [[ "$has_context7_legacy" -eq 1 || "$has_context7_current" -eq 1 ]]; then
+    ok "MCP section [mcp_servers.context7] or [mcp_servers.context7-mcp] exists"
   else
-    ok "No duplicate [mcp_servers.context7] section"
+    fail "MCP section [mcp_servers.context7] or [mcp_servers.context7-mcp] missing"
+  fi
+
+  if [[ "$has_context7_legacy" -eq 1 && "$has_context7_current" -eq 1 ]]; then
+    warn "Both [mcp_servers.context7] and [mcp_servers.context7-mcp] exist; prefer one name"
   fi
 fi
 
@@ -144,12 +165,12 @@ if [[ -d "$SKILLS_DIR" ]]; then
   done
 
   if [[ "$missing_skills" -eq 0 ]]; then
-    ok "All 16 ECC Codex skills are present"
+    ok "All 16 ECC skills are present in $SKILLS_DIR"
   else
-    fail "$missing_skills required skills are missing"
+    warn "$missing_skills ECC skills missing from $SKILLS_DIR (install via ECC installer or npx skills)"
   fi
 else
-  fail "Skills directory missing ($SKILLS_DIR)"
+  warn "Skills directory missing ($SKILLS_DIR) — install via ECC installer or npx skills"
 fi
 
 if [[ -f "$PROMPTS_DIR/ecc-prompts-manifest.txt" ]]; then

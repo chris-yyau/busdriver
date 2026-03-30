@@ -4,7 +4,6 @@ set -euo pipefail
 # Sync Everything Claude Code (ECC) assets into a local Codex CLI setup.
 # - Backs up ~/.codex config and AGENTS.md
 # - Merges ECC AGENTS.md into existing AGENTS.md (marker-based, preserves user content)
-# - Syncs Codex-ready skills from .agents/skills
 # - Generates prompt files from commands/*.md
 # - Generates Codex QA wrappers and optional language rule-pack prompts
 # - Installs global git safety hooks (pre-commit and pre-push)
@@ -28,8 +27,6 @@ CONFIG_FILE="$CODEX_HOME/config.toml"
 AGENTS_FILE="$CODEX_HOME/AGENTS.md"
 AGENTS_ROOT_SRC="$REPO_ROOT/AGENTS.md"
 AGENTS_CODEX_SUPP_SRC="$REPO_ROOT/.codex/AGENTS.md"
-SKILLS_SRC="$REPO_ROOT/.agents/skills"
-SKILLS_DEST="$CODEX_HOME/skills"
 PROMPTS_SRC="$REPO_ROOT/commands"
 PROMPTS_DEST="$CODEX_HOME/prompts"
 HOOKS_INSTALLER="$REPO_ROOT/scripts/codex/install-global-git-hooks.sh"
@@ -133,7 +130,6 @@ MCP_MERGE_SCRIPT="$REPO_ROOT/scripts/codex/merge-mcp-config.js"
 
 require_path "$REPO_ROOT/AGENTS.md" "ECC AGENTS.md"
 require_path "$AGENTS_CODEX_SUPP_SRC" "ECC Codex AGENTS supplement"
-require_path "$SKILLS_SRC" "ECC skills directory"
 require_path "$PROMPTS_SRC" "ECC commands directory"
 require_path "$HOOKS_INSTALLER" "ECC global git hooks installer"
 require_path "$SANITY_CHECKER" "ECC global sanity checker"
@@ -235,17 +231,9 @@ else
   fi
 fi
 
-log "Syncing ECC Codex skills"
-run_or_echo mkdir -p "$SKILLS_DEST"
-skills_count=0
-for skill_dir in "$SKILLS_SRC"/*; do
-  [[ -d "$skill_dir" ]] || continue
-  skill_name="$(basename "$skill_dir")"
-  dest="$SKILLS_DEST/$skill_name"
-  run_or_echo rm -rf "$dest"
-  run_or_echo cp -R "$skill_dir" "$dest"
-  skills_count=$((skills_count + 1))
-done
+# Skills are NOT synced here — Codex CLI reads directly from
+# ~/.agents/skills/ (installed by ECC installer / npx skills).
+# Copying into ~/.codex/skills/ was unnecessary.
 
 log "Generating prompt files from ECC commands"
 run_or_echo mkdir -p "$PROMPTS_DEST"
@@ -472,21 +460,32 @@ fi
 
 log "Installing global git safety hooks"
 if [[ "$MODE" == "dry-run" ]]; then
-  "$HOOKS_INSTALLER" --dry-run
+  HOME="$HOME" \
+  CODEX_HOME="$CODEX_HOME" \
+  AGENTS_HOME="${AGENTS_HOME:-$HOME/.agents}" \
+  ECC_GLOBAL_HOOKS_DIR="${ECC_GLOBAL_HOOKS_DIR:-$CODEX_HOME/git-hooks}" \
+    "$HOOKS_INSTALLER" --dry-run
 else
-  "$HOOKS_INSTALLER"
+  HOME="$HOME" \
+  CODEX_HOME="$CODEX_HOME" \
+  AGENTS_HOME="${AGENTS_HOME:-$HOME/.agents}" \
+  ECC_GLOBAL_HOOKS_DIR="${ECC_GLOBAL_HOOKS_DIR:-$CODEX_HOME/git-hooks}" \
+    "$HOOKS_INSTALLER"
 fi
 
 log "Running global regression sanity check"
 if [[ "$MODE" == "dry-run" ]]; then
   printf '[dry-run] %s\n' "$SANITY_CHECKER"
 else
-  "$SANITY_CHECKER"
+  HOME="$HOME" \
+  CODEX_HOME="$CODEX_HOME" \
+  AGENTS_HOME="${AGENTS_HOME:-$HOME/.agents}" \
+  ECC_GLOBAL_HOOKS_DIR="${ECC_GLOBAL_HOOKS_DIR:-$CODEX_HOME/git-hooks}" \
+    "$SANITY_CHECKER"
 fi
 
 log "Sync complete"
 log "Backup saved at: $BACKUP_DIR"
-log "Skills synced: $skills_count"
 log "Prompts generated: $((prompt_count + extension_count)) (commands: $prompt_count, extensions: $extension_count)"
 
 if [[ "$MODE" == "apply" ]]; then

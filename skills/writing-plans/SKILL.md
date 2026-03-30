@@ -131,22 +131,24 @@ After writing the complete plan, look at the spec with fresh eyes and check the 
 
 If you find issues, fix them inline. No need to re-review — just fix and move on. If you find a spec requirement with no task, add the task.
 
-## Execution Handoff
+## Auto-Execution
 
-After saving the plan, offer execution choice:
+After saving the plan and self-review passes, proceed automatically through the remaining pipeline phases. Do NOT pause to ask the user which execution mode to use — execute immediately.
 
-**"Plan complete and saved to `docs/superpowers/plans/<filename>.md`. Two execution options:**
+**Announce:** "Plan complete and saved to `<path>`. Auto-executing: design review → worktree → implementation."
 
-**1. Subagent-Driven (recommended)** - I dispatch a fresh subagent per task, review between tasks, fast iteration
+**Sequence:**
 
-**2. Inline Execution** - Execute tasks in this session using executing-plans, batch execution with checkpoints
+1. **Design Review** — INVOKE `busdriver:design-reviewer` to review and approve the plan document. The design review gate (hook-enforced) blocks all implementation code until this passes. If design review rejects, fix issues and re-submit — do not proceed until it passes.
+2. **Worktree Setup** — INVOKE `busdriver:using-git-worktrees` to create an isolated workspace. If worktree creation fails or baseline tests fail, stop and report.
+3. **Execute** — INVOKE `busdriver:subagent-driven-development` for independent tasks, or `busdriver:executing-plans` for dependent tasks requiring sequential execution with review checkpoints.
+4. **Verify** — INVOKE `busdriver:verification-loop` (build + lint + tests), then `busdriver:verification-before-completion` to confirm no claims without evidence.
+5. **Finish** — `busdriver:finishing-a-development-branch` presents integration options (merge/PR/keep/discard).
 
-**Which approach?"**
+**Stop conditions — halt auto-execution and report to user when:**
+- Design review rejects the plan after 3 fix attempts
+- Worktree baseline tests fail
+- A task blocker requires human input (missing dependency, unclear requirement)
+- Verification fails after implementation
 
-**If Subagent-Driven chosen:**
-- **REQUIRED SUB-SKILL:** Use superpowers:subagent-driven-development
-- Fresh subagent per task + two-stage review
-
-**If Inline Execution chosen:**
-- **REQUIRED SUB-SKILL:** Use superpowers:executing-plans
-- Batch execution with checkpoints for review
+**Override:** If the user explicitly asks to choose execution mode or pause between phases, respect that. Auto-execution is the default, not a mandate.

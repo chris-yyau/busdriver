@@ -2870,6 +2870,48 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/orchestration-status.js"
+    },
+    {
+      "path": "agents/performance-optimizer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/performance-optimizer.md"
+    },
+    {
+      "path": "skills/git-workflow/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/git-workflow/SKILL.md"
+    },
+    {
+      "path": "skills/token-budget-advisor/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/token-budget-advisor/SKILL.md"
+    },
+    {
+      "path": "skills/repo-scan/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/repo-scan/SKILL.md"
+    },
+    {
+      "path": "skills/ck/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/ck/SKILL.md"
+    },
+    {
+      "path": "scripts/ci/check-unicode-safety.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/check-unicode-safety.js"
+    },
+    {
+      "path": "scripts/hooks/pre-bash-commit-quality.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/pre-bash-commit-quality.js"
     }
   ]
 }

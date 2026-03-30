@@ -63,19 +63,30 @@ Three-tier model with Claude as arbiter:
 
 **Completion criteria:** Claude's verdict has no HIGH or MEDIUM severity issues with confidence >= 0.5
 
+**Escape hatch:** If the review loop does not converge, the user can create `.claude/skip-design-review.local` in their terminal to bypass the gate (single-use, 30s self-bypass detection — see orchestrator SKILL.md for protocol).
+
 ## Configuration
 
-Reviewer CLIs are configurable via `.claude/busdriver.json`:
+Reviewer CLIs are configurable via `.claude/busdriver.json` using the `routes` object:
 
-| Role | Config key | Default |
+```json
+{
+  "routes": {
+    "design-reviewer.reviewer_1": ["gemini"],
+    "design-reviewer.reviewer_2": ["codex"]
+  }
+}
+```
+
+| Role | Route key | Default |
 |------|-----------|---------|
 | Reviewer 1 | `design-reviewer.reviewer_1` | gemini |
 | Reviewer 2 | `design-reviewer.reviewer_2` | codex |
-| Arbiter | `design-reviewer.arbiter` | claude |
+| Arbiter | (hardcoded) | claude (not configurable — Claude is always the arbiter) |
 
 If both reviewers resolve to the same CLI, the system runs single-reviewer mode (one execution, output copied to both paths, logged as degradation).
 
-See README for full per-role routing documentation.
+See `.claude/busdriver.json` for per-role routing configuration.
 
 ## Workflow
 
@@ -108,6 +119,7 @@ digraph review {
 
 ```bash
 cd /path/to/project
+# CLAUDE_PLUGIN_ROOT is set by the plugin loader at session start
 bash "${CLAUDE_PLUGIN_ROOT}/skills/design-reviewer/scripts/init-design-review.sh" docs/plans/PLAN.md
 ```
 

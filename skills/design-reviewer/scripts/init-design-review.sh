@@ -34,10 +34,13 @@ if ! validate_file_not_empty "$DESIGN_FILE"; then
 fi
 
 # Check for existing active review
-# check_existing_review uses return codes 0/1/2 as state, not error indicators
+# check_existing_review return codes: 0=stale (clean up), 1=active (block), 2=no review (skip)
+EXISTING=0
 check_existing_review || EXISTING=$?
-EXISTING=${EXISTING:-0}
-if [[ $EXISTING -eq 0 ]]; then
+if [[ $EXISTING -eq 2 ]]; then
+  # No active review — nothing to clean up, proceed to init
+  :
+elif [[ $EXISTING -eq 0 ]]; then
   STALE_SLUG=$(cat ".claude/current-design-review.local" 2>/dev/null)
   log_info "Cleaning up stale review: $STALE_SLUG (never completed an iteration)"
   cleanup_stale_review

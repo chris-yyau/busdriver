@@ -176,6 +176,8 @@ else
   CODEX_AVAILABLE=false
   [[ "$REVIEWER_1_CLI" != "none" && "$REVIEWER_1_CLI" != "builtin" && ! "$REVIEWER_1_CLI" =~ ^missing: ]] && GEMINI_AVAILABLE=true
   [[ "$REVIEWER_2_CLI" != "none" && "$REVIEWER_2_CLI" != "builtin" && ! "$REVIEWER_2_CLI" =~ ^missing: && "$DUPLICATE_MODE" == "false" ]] && CODEX_AVAILABLE=true
+
+  # Duplicate mode: after single reviewer runs, its output will be copied to both paths (see post-wait block below)
 fi
 
 # Main iteration loop
@@ -257,11 +259,15 @@ $DESIGN_CONTENT
 
         if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$GEMINI_RAW_FILE" > "${GEMINI_OUTPUT_FILE}.pending" 2>/dev/null; then
           # Inject freshness metadata (Critic #2)
+          # Validates JSON has expected structure before injecting
           # || true: don't let injection failure kill subshell under set -e
           python3 -c "
-import json
+import json, sys
 with open('${GEMINI_OUTPUT_FILE}.pending') as f:
     data = json.load(f)
+if not isinstance(data, dict) or 'status' not in data:
+    print('Skipping metadata injection: unexpected JSON structure', file=sys.stderr)
+    sys.exit(0)
 data.setdefault('metadata', {})
 data['metadata']['run_id'] = '$RUN_ID'
 data['metadata']['iteration'] = $CURRENT_ITERATION
@@ -295,11 +301,15 @@ with open('${GEMINI_OUTPUT_FILE}.pending', 'w') as f:
 
         if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$CODEX_RAW_FILE" > "${CODEX_OUTPUT_FILE}.pending" 2>/dev/null; then
           # Inject freshness metadata (Critic #2)
+          # Validates JSON has expected structure before injecting
           # || true: don't let injection failure kill subshell under set -e
           python3 -c "
-import json
+import json, sys
 with open('${CODEX_OUTPUT_FILE}.pending') as f:
     data = json.load(f)
+if not isinstance(data, dict) or 'status' not in data:
+    print('Skipping metadata injection: unexpected JSON structure', file=sys.stderr)
+    sys.exit(0)
 data.setdefault('metadata', {})
 data['metadata']['run_id'] = '$RUN_ID'
 data['metadata']['iteration'] = $CURRENT_ITERATION
@@ -329,6 +339,14 @@ with open('${CODEX_OUTPUT_FILE}.pending', 'w') as f:
   REVIEW_END=$(millis)
   REVIEW_DURATION=$((REVIEW_END - REVIEW_START))
   log_info "  Both reviews completed in ${REVIEW_DURATION}ms (parallel)"
+
+  # Duplicate mode: copy single reviewer's output to both paths
+  if [[ "$DUPLICATE_MODE" == "true" ]]; then
+    if [[ -f "$GEMINI_OUTPUT_FILE" ]] && validate_json_file "$GEMINI_OUTPUT_FILE" 2>/dev/null; then
+      cp "$GEMINI_OUTPUT_FILE" "$CODEX_OUTPUT_FILE"
+      log_info "  Duplicate mode: copied reviewer 1 output to reviewer 2 path"
+    fi
+  fi
 
   # ── Phase 2: Validate outputs ────────────────────────────────────
   log_info "Phase 2: Validating review outputs..."

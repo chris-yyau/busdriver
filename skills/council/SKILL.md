@@ -63,7 +63,7 @@ Launch all three agents in parallel. Use a **single message with multiple tool c
 Agent(
   description="Council Skeptic",
   prompt="You are the Skeptic on a council of four AI advisors. [QUESTION + CONTEXT]. Your role is Skeptic — you have NO prior context about this conversation. Focus on: challenging assumptions, questioning whether the problem is framed correctly, and proposing the simplest possible alternative. If the question itself is wrong or the answer is simpler than expected, say so. Give your perspective as: 1. Position (1-2 sentences) 2. Reasoning (3 points) 3. Risk 4. Surprise. Under 300 words. Be opinionated, no hedging.",
-  model="opus"
+  model="opus"  # Uses the "opus" alias — valid Agent tool enum value for highest-reasoning model
 )
 ```
 
@@ -81,6 +81,8 @@ DISPATCH="${CLAUDE_PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
 # Dispatch available voices
 [[ "$PRAGMATIST_CLI" != "none" && "$PRAGMATIST_CLI" != "builtin" && ! "$PRAGMATIST_CLI" =~ ^missing: ]] && \
   "$DISPATCH" --cli "$PRAGMATIST_CLI" --timeout 300 --prompt "<Pragmatist prompt>" &
+# NOTE: For large prompts (with extensive context), pass via stdin to avoid ARG_MAX limits:
+#   echo "$PROMPT" | "$DISPATCH" --cli "$CLI" --timeout 300
 [[ "$CRITIC_CLI" != "none" && "$CRITIC_CLI" != "builtin" && ! "$CRITIC_CLI" =~ ^missing: ]] && \
   "$DISPATCH" --cli "$CRITIC_CLI" --timeout 300 --prompt "<Critic prompt>" &
 wait
@@ -95,11 +97,11 @@ This is a **single Bash call** with both as background processes. This is critic
 
 **IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing both Gemini and Codex as background processes) in the **same message** so all three voices run concurrently. Do NOT use separate Bash tool calls for Gemini and Codex — one failing will cancel the other.
 
-**Degradation:** The Fresh Claude (Agent tool) is always available, so the council always has at least 2 voices (Architect + Skeptic). If a configured CLI resolves to `none`, `builtin`, or `missing:<cli>` → that voice is skipped (3-voice council). If both external CLIs are unavailable → 2-voice council. Note the composition in the report.
+**Degradation:** The Fresh Claude (Agent tool) is normally always available. If the Skeptic agent call fails (e.g., rate limit, timeout), the council degrades to available voices and logs the degradation inline in the report. If a configured CLI resolves to `none`, `builtin`, or `missing:<cli>` → that voice is skipped. Minimum viable council is 1 voice (Architect alone). Note the composition in the report.
 
 ### Step 5: Read Output and Synthesize
 
-Read the Fresh Claude output from the Agent tool result. Read the Gemini/Codex output from `/tmp/dispatch-{cli}-*.txt`.
+Read the Fresh Claude output from the Agent tool result. Read the Gemini/Codex output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`).
 
 <CRITICAL>
 SYNTHESIZER BIAS GUARDRAILS
@@ -157,7 +159,7 @@ If the user asks for another round ("ask them again", "what would they say to th
 3. Add the user's follow-up question
 4. Frame for Gemini/Codex: "The council previously said [positions]. The user now asks: [follow-up]. Respond to the other advisors' positions AND the new question."
 5. Frame for Skeptic: "[Original question]. Follow-up: [new question]." — NO prior positions, NO council output.
-5. Synthesize again with the same guardrails
+6. Synthesize again with the same guardrails
 
 No file persistence needed — prior output is in the conversation context.
 
@@ -206,7 +208,7 @@ last_validated: "{YYYY-MM-DD}"
 **How to apply:** {when this lesson should inform future decisions}
 ```
 
-Then add a one-line pointer to `NOTES.md`.
+Then add a one-line pointer to `~/.claude/notes/NOTES.md`.
 
 **Keep it tight** — the entire memory file should be <150 words. If you can't compress the lesson to that, it's probably not a single lesson.
 

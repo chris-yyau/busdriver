@@ -23,7 +23,7 @@ Analyze mistakes, corrections, and lessons from the current conversation and sav
 ## When NOT to Use
 
 - For analyzing tool-use observation logs → handled automatically by ECC v2 observer
-- For saving user preferences or project context → use auto-memory directly
+- For saving user preferences or project context → use auto-memory directly (the persistent memory system in `~/.claude/projects/*/memory/`)
 - For inferred behavioral patterns → handled automatically by ECC v2 observer (instincts)
 
 ## Process
@@ -45,8 +45,8 @@ For each lesson, draft a feedback memory with:
 ### Step 2: Check for Duplicates
 
 Before presenting to the user, check existing memories for overlap:
-- Read `~/.claude/notes/NOTES.md` index
-- If a similar lesson exists, UPDATE the existing memory instead of creating a duplicate
+- Read `~/.claude/notes/NOTES.md` index. If `NOTES.md` does not exist, skip the duplicate check (Step 4 will create it).
+- If a similar lesson exists, overwrite the existing file in-place with updated content and update the NOTES.md index entry if the description changed
 - If the new lesson contradicts an existing memory, flag it to the user
 
 ### Step 3: Present for Confirmation
@@ -74,7 +74,7 @@ For each approved lesson, write a memory file:
 name: [slug]
 description: [one-line — specific enough to judge relevance in future conversations]
 type: feedback
-last_validated: "{YYYY-MM-DD}"
+last_validated: YYYY-MM-DD
 ---
 
 [Rule statement]
@@ -85,7 +85,12 @@ last_validated: "{YYYY-MM-DD}"
 
 **Path:** `~/.claude/notes/lesson-reflect-{YYYY-MM-DD}-{slug}.md`
 
-Then add a one-line pointer to `NOTES.md`.
+> **Naming convention:** The `reflect` prefix distinguishes session reflections from other lesson types (`lesson-review-` for code reviews, `lesson-council-` for council sessions).
+
+Then add a one-line pointer to `~/.claude/notes/NOTES.md` (if the file doesn't exist, create it with a `# Notes` header and a `## Reflections` section) using this format:
+```
+- [Title](./filename.md) — one-line description
+```
 
 ### Step 5: Report
 
@@ -114,4 +119,7 @@ Show the user:
 ## Related Commands
 
 - `/instinct-status` — view active instincts with confidence scores
+
+### Shell Utilities
+
 - `ls ~/.claude/notes/` — see all saved notes

@@ -24,7 +24,7 @@ Before running detection, verify the repo has testable application code.
 
 **Exclude from source file count:** `node_modules/`, `vendor/`, `.git/`, `dist/`, `build/`, generated files.
 
-**If neither condition is met**, stop and report:
+**If NEITHER condition is met** (no config file AND no source files), stop and report:
 > "This repo has no testable application code. Test infrastructure is not applicable. Consider shellcheck for shell scripts or JSON schema validation for config files."
 
 ## Phase 1: Detection
@@ -87,7 +87,7 @@ After detecting the language, inspect dependency declarations for framework-spec
 |------------|-----------|----------------------|
 | `github.com/gin-gonic/gin` | Gin | httptest + gin test context |
 | `github.com/go-chi/chi` | Chi | httptest + chi router |
-| `net/http` (stdlib) | Stdlib | httptest handler tests |
+| `net/http` imports in `.go` source files (not in `go.mod` — stdlib packages don't appear there) | Stdlib | httptest handler tests |
 | None matched | Generic | Table-driven function tests |
 
 **Rust** (check `[dependencies]` in `Cargo.toml`):
@@ -102,6 +102,7 @@ After detecting the language, inspect dependency declarations for framework-spec
 
 | Signal | Framework | Template test approach |
 |--------|-----------|----------------------|
+| `import Testing` in source files (Xcode 16+ / Swift 6) | Swift Testing | `@Test` functions, `#expect` assertions (note: Phase 2/3 templates use XCTest as fallback until Swift Testing templates are added) |
 | SwiftUI imports + `*.xcodeproj` dir | SwiftUI app | ViewInspector, `@Observable` state tests |
 | `Package.swift` (library) | Swift package | XCTest module tests |
 | Vapor in dependencies | Vapor | `XCTVapor` request tests |
@@ -185,16 +186,17 @@ export default defineConfig({
 #### Python
 
 1. Determine installation method:
+   - `uv.lock` present -> add `pytest` and `pytest-cov` to dev dependencies, run `uv sync --dev` or `uv pip install -e ".[dev]"`
    - `pyproject.toml` with PEP 621 `[project]` section -> add `pytest` and `pytest-cov` to `[project.optional-dependencies]` dev group, run `pip install -e ".[dev]"`
    - `pyproject.toml` with Poetry (`[tool.poetry]`), PDM, or other non-PEP-621 format -> fall back to `requirements-dev.txt` approach
    - No `pyproject.toml` -> create `requirements-dev.txt` with `pytest` and `pytest-cov`, run `pip install -r requirements-dev.txt`
-2. If `$VIRTUAL_ENV` is unset, warn: "No virtual environment detected. Consider `python -m venv .venv` first." Proceed anyway.
+2. If `$VIRTUAL_ENV` is unset and no `uv.lock`, warn: "No virtual environment detected. Consider `python -m venv .venv` first." Proceed anyway.
 3. Add pytest config to `pyproject.toml` (create or append):
 
 ```toml
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov --cov-report=xml --cov-report=term"
+addopts = "--cov=<package> --cov-report=xml --cov-report=term"  # Replace <package> with actual package name (e.g., src, app)
 ```
 
 4. Create `tests/` directory with `__init__.py` and `conftest.py`
@@ -350,7 +352,7 @@ Comments explain: import conventions, test structure, mocking approach, and wher
 |----------|-------------------|------------------|
 | TypeScript/JS | `__tests__/_template.test.ts` | Underscore sorts first |
 | Python | `tests/test_template.py` | Follows pytest `test_` convention |
-| Go | `example_test.go` (root package) | Go convention for examples |
+| Go | `template_test.go` (root package) | Matches template naming in other languages (`example_test.go` is reserved for godoc examples) |
 | Rust | `tests/template.rs` | Integration test in `tests/` |
 | Swift | `Tests/AppTests/TemplateTests.swift` | XCTest naming convention |
 
@@ -371,7 +373,7 @@ Comments explain: import conventions, test structure, mocking approach, and wher
  * Coverage: npm run test:coverage
  *
  * For full TDD workflow, use `busdriver:tdd` to generate tests for specific modules.
- * For more patterns, see `busdriver:coding-standards`.
+ * For more patterns, see `busdriver:tdd`.
  */
 import { describe, it, expect } from 'vitest'
 import request from 'supertest'
@@ -636,7 +638,6 @@ func TestYourFunction_EdgeCases(t *testing.T) {
 fn test_happy_path() {
     // let result = your_function("valid input");
     // assert_eq!(result, expected);
-    assert!(true, "Replace with real test");
 }
 
 // Error case: verify error handling
@@ -644,7 +645,6 @@ fn test_happy_path() {
 fn test_error_case() {
     // let result = your_function("");
     // assert!(result.is_err());
-    assert!(true, "Replace with real test");
 }
 ```
 

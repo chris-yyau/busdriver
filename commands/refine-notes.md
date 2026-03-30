@@ -21,11 +21,11 @@ Present the report summarizing:
 - **Stale notes**: Past type-specific TTLs (re-validate or archive)
 - **Missing metadata**: Notes without frontmatter or last_validated dates
 
-If issues found, propose fixes and wait for user approval before proceeding.
+If issues found, propose fixes and wait for user approval before proceeding. If the health report is clean, summarize the result to the user and proceed to Phase 2.
 
 ## Phase 2: Thematic Analysis
 
-Read `~/.claude/notes/NOTES.md` and identify thematic groups under `## Council Lessons`.
+Read `~/.claude/notes/NOTES.md` and identify thematic groups across all sections (e.g., `## Council Lessons`, `## Behavioral Rules`, etc.). If no thematic sections are found, report that no groupable notes exist and skip to Phase 3.
 
 For each thematic group:
 1. Count the lessons in the group
@@ -33,11 +33,7 @@ For each thematic group:
 3. Read 2-3 representative lessons to assess whether the group's summary accurately captures the principles
 4. Groups marked "distributed across rule files above" (e.g., Engineering Principles) are already handled — skip distillation proposals for these
 
-**Existing distilled rule files:**
-- `gates-and-auditing.md` — Gate & Enforcement Design + Audit Methodology
-- `routing-and-architecture.md` — Routing & Architecture + architectural Engineering Principles
-- `upstream-and-trust.md` — Fork/Patch/Upstream + Trust/Instinct Boundaries
-- `review-tooling.md` — Review & Tool Selection + review-relevant Engineering Principles
+**Existing distilled rule files:** Scan `~/.claude/rules/common/` at runtime and list all `.md` files as candidate distilled rule files. Do not rely on a hardcoded list — files may be added, renamed, or removed between sessions.
 
 ## Phase 3: Upgrade Proposals
 
@@ -54,9 +50,9 @@ Present proposals and wait for user approval.
 
 For approved proposals:
 1. Create or update rule files in `~/.claude/rules/common/`
-2. Create skills if approved (via `busdriver:writing-skills`)
+2. If a skill is approved, propose it as a follow-up task for the user to run separately via `busdriver:writing-skills` (that skill mandates a full TDD workflow that cannot run inline here)
 3. Archive consumed notes: `mkdir -p ~/.claude/notes/archive/ && mv ~/.claude/notes/<file> ~/.claude/notes/archive/`
-4. Update NOTES.md to remove archived entries and add any new references
+4. Update NOTES.md: remove archived note entries. If a thematic group was distilled into a rule file, update the group's summary line (e.g., "distributed across rule files above") — do NOT add rule-file links to the index (prune-notes only tracks `./note.md` references)
 5. Each rule file includes a provenance header linking back to NOTES.md sections
 
 ## Principles

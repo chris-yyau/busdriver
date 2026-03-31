@@ -15,6 +15,11 @@
 # Env var: BUSDRIVER_REVIEW_CLI
 # Values: auto (default) | codex | gemini | droid | amp | opencode | claude | aider | builtin | none
 
+# ── Pinned CLI versions ──────────────────────────────────────────
+# Pin external CLI versions to prevent breakages from upstream updates.
+# Bump deliberately after testing. See: lesson-council-2026-03-31-pin-dont-delegate-cli-compat.md
+BUSDRIVER_CODEX_PINNED_VERSION="0.117.0"
+
 # ── Low-level utilities (used by all three systems) ──────────────
 
 is_cli_available() {
@@ -29,6 +34,33 @@ get_cli_version() {
   else
     echo "not-installed"
   fi
+}
+
+# Check if installed CLI version matches pinned version.
+# Returns 0 if match or no pin defined, 1 if mismatch.
+# Emits warning to stderr on mismatch (non-blocking by default).
+check_cli_version_pin() {
+  local cli_name="$1"
+  local pinned=""
+  case "$cli_name" in
+    codex) pinned="$BUSDRIVER_CODEX_PINNED_VERSION" ;;
+    *) return 0 ;;  # no pin defined for other CLIs
+  esac
+  [ -z "$pinned" ] && return 0
+
+  local installed
+  installed=$(get_cli_version "$cli_name" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  if [ -z "$installed" ]; then
+    echo "⚠️  Could not detect $cli_name version (pinned: $pinned)" >&2
+    return 0  # fail-open on detection failure
+  fi
+  if [ "$installed" != "$pinned" ]; then
+    echo "⚠️  $cli_name version mismatch: installed=$installed, pinned=$pinned" >&2
+    echo "   Update BUSDRIVER_CODEX_PINNED_VERSION in resolve-cli.sh after testing new version." >&2
+    echo "   To suppress: export BUSDRIVER_SKIP_VERSION_CHECK=1" >&2
+    return 1
+  fi
+  return 0
 }
 
 get_cli_install_hint() {
@@ -286,6 +318,11 @@ execute_review() {
   # `none` is NOT handled here — caller intercepts before calling execute_review.
   # All CLIs receive prompts via stdin to avoid ARG_MAX limits on large diffs.
   # Use printf instead of echo for binary-safe output.
+  # Version pin check (warn-only, does not block reviews)
+  if [ "${BUSDRIVER_SKIP_VERSION_CHECK:-0}" != "1" ]; then
+    check_cli_version_pin "$cli" || true
+  fi
+
   case "$cli" in
     codex)   printf '%s' "$prompt" | _portable_timeout "$duration" codex review - 2>&1 ;;
     gemini)  printf '%s' "$prompt" | _portable_timeout "$duration" gemini 2>&1 ;;

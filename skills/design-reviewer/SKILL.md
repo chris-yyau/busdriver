@@ -334,10 +334,10 @@ When presenting findings to the user, filter by confidence tier:
 
 | Confidence | Display |
 |------------|---------|
-| 0.7-1.0 | Show normally in main report |
-| 0.5-0.7 | Show with caveat: "*Medium confidence — verify this is actually an issue*" |
-| 0.3-0.5 | Suppress from main report. Include in appendix section: "Low-confidence findings (may be false positives)" |
-| 0.0-0.3 | Suppress entirely unless severity is HIGH |
+| 0.7 to 1.0 | Show normally in main report |
+| 0.5 to <0.7 | Show with caveat: "*Medium confidence — verify this is actually an issue*" |
+| 0.3 to <0.5 | Suppress from main report. Include in appendix section: "Low-confidence findings (may be false positives)" |
+| 0.0 to <0.3 | Suppress entirely unless severity is `high` |
 
 **Important:** Low-confidence findings are suppressed from the user-facing report only. They remain in the JSON artifacts (`gemini.json`, `codex.json`, `claude.json`) for auditability. Never delete findings from stored outputs.
 
@@ -349,7 +349,7 @@ Write to `~/.claude/notes/lesson-review-cal-{YYYY-MM-DD}-{slug}.md`. If the path
 
 ```markdown
 ---
-name: review-cal-{slug}
+name: review-cal-{actual-slug}
 description: Design reviewer underconfident on {pattern} — was {original_confidence}, should be {corrected_confidence}
 type: feedback
 last_validated: "{YYYY-MM-DD}"
@@ -365,6 +365,8 @@ After writing the file, add a one-line pointer to `~/.claude/notes/NOTES.md` usi
 ```
 - [Review calibration: {slug}](./lesson-review-cal-{YYYY-MM-DD}-{actual-slug}.md) — {pattern} confidence corrected {old} → {new}
 ```
+
+**Solicitation:** When the design review report includes an appendix of low-confidence findings, end the report with: "**Calibration check:** Were any of the appendix findings above actually real issues? If so, I'll log the corrected confidence for future reviews."
 
 This bridges design review findings into the instinct/lesson system, compounding review quality over time.
 

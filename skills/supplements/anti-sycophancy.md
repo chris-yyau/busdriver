@@ -1,7 +1,7 @@
 ---
 name: anti-sycophancy
 description: Anti-sycophancy rules for brainstorming (discovery phase) and council (deliberation) — prevents unchallenged assumptions and false consensus
-targets: busdriver:brainstorming, council skill
+targets: busdriver:brainstorming, council
 type: supplement
 source: gstack /office-hours
 added: 2026-03-23
@@ -41,7 +41,7 @@ When loaded alongside the `council` skill, apply these rules at each stage:
 
 **Dispatch-time rules** (included in prompts sent to each voice):
 
-1. **No diplomatic hedging.** Never say "there are many ways to think about this" — pick one and defend it. Never say "you might want to consider" — say "this is wrong because" or "this works because."
+1. **No diplomatic hedging.** Never say "there are many ways to think about this" — pick one and defend it. Never say "you might want to consider" — say "this is wrong because <reason>" or "this works because <reason>."
 
 2. **Every voice takes a position.** For yes/no decisions, each voice must state whether the proposal will work or won't, not that it "could" work. For open-ended questions (ideas, recommendations), each voice must commit to a specific recommendation rather than listing options without ranking. Accompany every position with the specific evidence that would change it.
 

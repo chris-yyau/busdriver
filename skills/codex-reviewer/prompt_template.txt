@@ -1,38 +1,72 @@
-Review the uncommitted changes in this repository for bugs, security issues, performance problems, and maintainability.
+Review the following code diff for bugs, security issues, performance problems, and maintainability.
 
-CHANGELOG FROM PREVIOUS TASK:
+{{SAST_PRECHECK}}
+
+<diff>
+{{STAGED_DIFF}}
+</diff>
+
+<cross_file_context>
+{{SMART_CONTEXT}}
+</cross_file_context>
+
+<docs_context>
+{{DOCS_CONTEXT}}
+</docs_context>
+
+<changelog>
 {{PREV_CHANGELOG}}
+</changelog>
 
-Use this changelog to ensure consistency with recent changes and patterns.
+<iteration_history>
+{{ITERATION_HISTORY}}
+</iteration_history>
 
-CRITICAL OUTPUT REQUIREMENT: Your FINAL response MUST be ONLY valid JSON. No markdown code blocks, no commentary, no additional text before or after. Output raw JSON only.
+<output_contract>
+You MUST output a single JSON object conforming to this schema. No markdown, no commentary, no text before or after.
 
-Example format if issues found:
+Schema:
 {
-  "status": "FAIL",
+  "status": "PASS" or "FAIL",
   "issues": [
     {
-      "file": "src/example.ts",
+      "file": "path/to/file.ext",
       "line": 42,
-      "severity": "high",
-      "category": "security",
-      "description": "SQL injection vulnerability",
-      "suggestion": "Use parameterized queries"
+      "severity": "high" | "medium" | "low",
+      "category": "security" | "bug" | "performance" | "maintainability",
+      "description": "Clear description referencing the actual code",
+      "suggestion": "Concrete fix with code example when possible",
+      "confidence": 85
     }
   ]
 }
 
-Example format if no issues:
-{
-  "status": "PASS",
-  "issues": []
-}
+Field rules:
+- status: "FAIL" if ANY high or medium severity issue exists. "PASS" otherwise.
+- file: relative path from repo root. Must match a file in the diff.
+- line: integer line number. Use 0 only for file-level issues.
+- severity: "high" = bugs, security vulns, data loss. "medium" = perf, error handling. "low" = style, naming.
+- category: exactly one of "security", "bug", "performance", "maintainability".
+- description: specific, referencing the actual code. Not generic advice.
+- suggestion: concrete fix. Not "consider fixing" — show what to change.
+- confidence: integer 0-100. How certain this is a real issue, not a false positive. Required.
+</output_contract>
 
-Rules:
-- status must be exactly "PASS" or "FAIL" (string)
-- severity must be exactly "high", "medium", or "low" (string)
-- category must be exactly "security", "bug", "performance", or "maintainability" (string)
-- line must be a number
-- Status FAIL if any high/medium severity issues exist
-- Status PASS if zero issues or only low severity issues
-- Output ONLY the JSON object, nothing else - no explanations, no markdown, no additional text
+<grounding_rules>
+- Only report issues in the CHANGED code shown in the diff. Do not report pre-existing issues.
+- Every finding must reference a specific file and line from the diff.
+- Do not report issues that linters or type checkers would catch (formatting, unused imports).
+- Do not re-report issues from the iteration_history that have already been fixed.
+- Maximum 10 issues per review. Prioritize by severity, then confidence.
+- If all previous issues are fixed and no new issues found, return {"status": "PASS", "issues": []}.
+- When reviewing shell scripts, check: unquoted variables, missing error handling, unsafe temp files, portability issues, cleanup ordering.
+- When reviewing documentation, verify: factual claims match code, examples are correct, no stale references.
+- When reviewing CI/CD workflows (.github/workflows/*.yml, .gitlab-ci.yml):
+  - Flag `paths` + `paths-ignore` on the same trigger (GitHub Actions ignores one silently).
+  - Flag `${{ }}` expressions inside `run:` blocks — use `env:` intermediary to prevent expression injection.
+  - Flag `curl | sh`, `curl | sudo sh`, or `wget | sh` patterns — supply chain risk. Pin to a commit SHA or use a versioned action.
+  - Flag unpinned `pip install`, `npm install -g`, or `gem install` without version pins in CI steps.
+  - Flag action `uses:` references without SHA pins (e.g., `actions/checkout@v4` instead of `actions/checkout@<sha>`).
+  - Flag missing top-level `permissions: {}` — workflows should use least-privilege with job-level permissions.
+  - Flag conditional skip logic (`grep -q` / `if [ -f ... ]`) that can be bypassed by non-functional references or empty files.
+</grounding_rules>

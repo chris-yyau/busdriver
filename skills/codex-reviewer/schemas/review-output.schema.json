@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Codex-reviewer output schema. All review CLIs must produce output conforming to this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "issues"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["PASS", "FAIL"],
+      "description": "PASS if zero issues or only low severity. FAIL if any high or medium severity issues."
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "line", "severity", "category", "description", "suggestion"],
+        "properties": {
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Relative file path from repository root."
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Line number where the issue occurs. Use 0 only for file-level issues."
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["high", "medium", "low"],
+            "description": "high: bugs, security vulnerabilities, data loss risks. medium: performance issues, error handling gaps. low: style, naming, minor maintainability."
+          },
+          "category": {
+            "type": "string",
+            "enum": ["security", "bug", "performance", "maintainability"],
+            "description": "Primary category of the issue."
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Clear, specific description of the issue. Reference the actual code."
+          },
+          "suggestion": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Concrete fix suggestion with code example when possible."
+          },
+          "confidence": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "How confident you are this is a real issue (0-100). Omit if uncertain."
+          },
+          "source": {
+            "type": "string",
+            "description": "Origin of the finding. Set automatically by SAST tools, not by the LLM reviewer."
+          }
+        }
+      }
+    }
+  }
+}

@@ -90,63 +90,81 @@ started_at: "TIMESTAMP_PLACEHOLDER"
 last_result: null
 ---
 
-You are a code reviewer. Review the following FULL BRANCH DIFF (base..HEAD). This is an aggregate review of all changes on this branch before PR creation.
-
-CHANGELOG FROM PREVIOUS TASK:
-{{PREV_CHANGELOG}}
-
-BRANCH CHANGES TO REVIEW:
-{{STAGED_DIFF}}
+Review the following FULL BRANCH DIFF (base..HEAD) for bugs, security issues, performance problems, and maintainability.
 
 {{SAST_PRECHECK}}
 
+<diff>
+{{STAGED_DIFF}}
+</diff>
+
+<cross_file_context>
 {{SMART_CONTEXT}}
+</cross_file_context>
 
+<docs_context>
 {{DOCS_CONTEXT}}
+</docs_context>
 
+<changelog>
+{{PREV_CHANGELOG}}
+</changelog>
+
+<iteration_history>
 {{ITERATION_HISTORY}}
+</iteration_history>
 
-Check for:
-- Security: dangerous functions (eval, exec), SQL injection, XSS, command injection, path traversal, SSRF
-- Bugs: null/undefined errors, race conditions, off-by-one errors, infinite loops
-- Performance: N+1 queries, unnecessary re-renders, memory leaks, blocking operations
-- Maintainability: code duplication, unclear naming, missing error handling
-- Shell portability: flag every use of `local` outside a function (not at top-level). Check `shasum` vs `sha256sum` portability. Check `\b` in grep (not portable — use `-w` instead). Check `mktemp -t` (behaves differently on macOS vs GNU — use `mktemp "${TMPDIR:-/tmp}/prefix-XXXXXX"` for portability)
-- Path/CWD safety: for every file write operation, verify the path uses `$REPO_DIR` or an absolute path, not a bare relative path like `.claude/...`. Scripts invoked from subdirectories will write to the wrong location with relative paths
-- Stale file cleanup ordering: if a script has an early-exit path (e.g., config-disabled check), verify that stale result/temp file cleanup runs BEFORE the early exit, not after
-- Timeout and fail-open: if a timeout or error causes an early exit, verify the exit path does not silently skip scanning (fail-open). Timeouts should emit degraded warnings, not silent passes
-- Boolean normalization: if code checks `= "true"` or `= "false"`, verify it handles variant forms (True/TRUE/yes/on/1 and False/FALSE/no/off/0) or documents that only exact strings are accepted
-- Doc/code accuracy: for every factual claim in .md files (counts, function names, behavior descriptions, examples), verify the claim matches the actual code. Flag stale counts (e.g., "16 skills" when the list has 18), wrong function signatures in examples, and stale example output that doesn't match actual output format
-- Cross-commit issues: inconsistent changes across files, partial refactors, broken dependencies
-- Property testing gap: if changes touch parsers, validators, serializers, auth, or financial logic — flag as LOW severity if no property-based tests exist (Hypothesis, fast-check, testing/quick). Advisory only, not blocking.
+<output_contract>
+You MUST output a single JSON object conforming to this schema. No markdown, no commentary, no text before or after.
 
-<CONVERGENCE_RULES>
-- Do NOT re-report issues from previous iterations that have been fixed
-- Focus on verifying fixes from previous iterations first
-- Only report NEW issues not seen in any previous iteration
-- If all previous issues are fixed and no new issues found, return PASS
-- Maximum 3 new issues per iteration to ensure convergence
-- Only report issues present in the BRANCH CHANGES above
-</CONVERGENCE_RULES>
+Schema:
+{
+  "status": "PASS" or "FAIL",
+  "issues": [
+    {
+      "file": "path/to/file.ext",
+      "line": 42,
+      "severity": "high" | "medium" | "low",
+      "category": "security" | "bug" | "performance" | "maintainability",
+      "description": "Clear description referencing the actual code",
+      "suggestion": "Concrete fix with code example when possible",
+      "confidence": 85
+    }
+  ]
+}
 
-<CRITICAL_INSTRUCTION>
-After your analysis, you MUST execute this final step:
+Field rules:
+- status: "FAIL" if ANY high or medium severity issue exists. "PASS" otherwise.
+- file: relative path from repo root. Must match a file in the diff.
+- line: integer line number. Use 0 only for file-level issues.
+- severity: "high" = bugs, security vulns, data loss. "medium" = perf, error handling. "low" = style, naming.
+- category: exactly one of "security", "bug", "performance", "maintainability".
+- description: specific, referencing the actual code. Not generic advice.
+- suggestion: concrete fix. Not "consider fixing" — show what to change.
+- confidence: integer 0-100. How certain this is a real issue, not a false positive. Required.
+</output_contract>
 
-Step 1: Think through the issues (optional)
-Step 2: OUTPUT EXACTLY THIS FORMAT:
-
-If issues found:
-{"status":"FAIL","issues":[{"file":"path","line":N,"severity":"high|medium|low","category":"security|bug|performance|maintainability","description":"...","suggestion":"..."}]}
-
-If no issues:
-{"status":"PASS","issues":[]}
-
-Rules:
-- Status "FAIL" = any high/medium severity issues
-- Status "PASS" = zero issues OR only low severity
-- The JSON must be the absolute LAST line of your response
-- No text after the JSON closing brace
-</CRITICAL_INSTRUCTION>
+<grounding_rules>
+- Only report issues in the CHANGED code shown in the diff. Do not report pre-existing issues.
+- Every finding must reference a specific file and line from the diff.
+- Do not report issues that linters or type checkers would catch (formatting, unused imports).
+- Do not re-report issues from the iteration_history that have already been fixed.
+- Maximum 10 issues per review. Prioritize by severity, then confidence.
+- If all previous issues are fixed and no new issues found, return {"status": "PASS", "issues": []}.
+- Maximum 3 new issues per iteration to ensure convergence.
+- When reviewing shell scripts, check: unquoted variables, missing error handling, unsafe temp files, local outside functions, shasum vs sha256sum portability, mktemp -t portability, CWD/path safety, cleanup ordering before early exits, timeout fail-open, boolean normalization.
+- When reviewing documentation, verify: factual claims match code, examples are correct, counts match reality, no stale references.
+- When reviewing cross-commit changes, check: inconsistent naming, partial refactors, broken dependencies.
+- When reviewing CI/CD workflows (.github/workflows/*.yml, .gitlab-ci.yml):
+  - Flag `paths` + `paths-ignore` on the same trigger (GitHub Actions ignores one silently).
+  - Flag `${{ }}` expressions inside `run:` blocks — use `env:` intermediary to prevent expression injection.
+  - Flag `curl | sh`, `curl | sudo sh`, or `wget | sh` patterns — supply chain risk. Pin to a commit SHA or use a versioned action.
+  - Flag unpinned `pip install`, `npm install -g`, or `gem install` without version pins in CI steps.
+  - Flag action `uses:` references without SHA pins (e.g., `actions/checkout@v4` instead of `actions/checkout@<sha>`).
+  - Flag missing top-level `permissions: {}` — workflows should use least-privilege with job-level permissions.
+  - Flag conditional skip logic (`grep -q` / `if [ -f ... ]`) that can be bypassed by non-functional references or empty files.
+- Property testing gap: if changes touch parsers, validators, serializers, auth, or financial logic — flag as LOW if no property-based tests exist. Advisory only.
+</grounding_rules>
 EOF
 else
 cat > .claude/codex-review-state.md <<'EOF'
@@ -161,63 +179,80 @@ started_at: "TIMESTAMP_PLACEHOLDER"
 last_result: null
 ---
 
-You are a code reviewer. Review ONLY the following staged changes (git diff --cached output). Do NOT review unstaged or untracked files.
-
-CHANGELOG FROM PREVIOUS TASK:
-{{PREV_CHANGELOG}}
-
-STAGED CHANGES TO REVIEW:
-{{STAGED_DIFF}}
+Review the following staged changes (git diff --cached) for bugs, security issues, performance problems, and maintainability. Do NOT review unstaged or untracked files.
 
 {{SAST_PRECHECK}}
 
+<diff>
+{{STAGED_DIFF}}
+</diff>
+
+<cross_file_context>
 {{SMART_CONTEXT}}
+</cross_file_context>
 
+<docs_context>
 {{DOCS_CONTEXT}}
+</docs_context>
 
+<changelog>
+{{PREV_CHANGELOG}}
+</changelog>
+
+<iteration_history>
 {{ITERATION_HISTORY}}
+</iteration_history>
 
-Check for:
-- Security: dangerous functions (eval, exec), SQL injection, XSS, command injection, path traversal, SSRF
-- Bugs: null/undefined errors, race conditions, off-by-one errors, infinite loops
-- Performance: N+1 queries, unnecessary re-renders, memory leaks, blocking operations
-- Maintainability: code duplication, unclear naming, missing error handling
-- Shell portability: flag every use of `local` outside a function (not at top-level). Check `shasum` vs `sha256sum` portability. Check `\b` in grep (not portable — use `-w` instead). Check `mktemp -t` (behaves differently on macOS vs GNU — use `mktemp "${TMPDIR:-/tmp}/prefix-XXXXXX"` for portability)
-- Path/CWD safety: for every file write operation, verify the path uses `$REPO_DIR` or an absolute path, not a bare relative path like `.claude/...`. Scripts invoked from subdirectories will write to the wrong location with relative paths
-- Stale file cleanup ordering: if a script has an early-exit path (e.g., config-disabled check), verify that stale result/temp file cleanup runs BEFORE the early exit, not after
-- Timeout and fail-open: if a timeout or error causes an early exit, verify the exit path does not silently skip scanning (fail-open). Timeouts should emit degraded warnings, not silent passes
-- Boolean normalization: if code checks `= "true"` or `= "false"`, verify it handles variant forms (True/TRUE/yes/on/1 and False/FALSE/no/off/0) or documents that only exact strings are accepted
-- Doc/code accuracy: for every factual claim in .md files (counts, function names, behavior descriptions, examples), verify the claim matches the actual code. Flag stale counts (e.g., "16 skills" when the list has 18), wrong function signatures in examples, and stale example output that doesn't match actual output format
-- Cross-commit issues: inconsistent changes across files, partial refactors, broken dependencies
-- Property testing gap: if changes touch parsers, validators, serializers, auth, or financial logic — flag as LOW severity if no property-based tests exist (Hypothesis, fast-check, testing/quick). Advisory only, not blocking.
+<output_contract>
+You MUST output a single JSON object conforming to this schema. No markdown, no commentary, no text before or after.
 
-<CONVERGENCE_RULES>
-- Do NOT re-report issues from previous iterations that have been fixed
-- Focus on verifying fixes from previous iterations first
-- Only report NEW issues not seen in any previous iteration
-- If all previous issues are fixed and no new issues found, return PASS
-- Maximum 3 new issues per iteration to ensure convergence
-- Only report issues present in the STAGED CHANGES above
-</CONVERGENCE_RULES>
+Schema:
+{
+  "status": "PASS" or "FAIL",
+  "issues": [
+    {
+      "file": "path/to/file.ext",
+      "line": 42,
+      "severity": "high" | "medium" | "low",
+      "category": "security" | "bug" | "performance" | "maintainability",
+      "description": "Clear description referencing the actual code",
+      "suggestion": "Concrete fix with code example when possible",
+      "confidence": 85
+    }
+  ]
+}
 
-<CRITICAL_INSTRUCTION>
-After your analysis, you MUST execute this final step:
+Field rules:
+- status: "FAIL" if ANY high or medium severity issue exists. "PASS" otherwise.
+- file: relative path from repo root. Must match a file in the diff.
+- line: integer line number. Use 0 only for file-level issues.
+- severity: "high" = bugs, security vulns, data loss. "medium" = perf, error handling. "low" = style, naming.
+- category: exactly one of "security", "bug", "performance", "maintainability".
+- description: specific, referencing the actual code. Not generic advice.
+- suggestion: concrete fix. Not "consider fixing" — show what to change.
+- confidence: integer 0-100. How certain this is a real issue, not a false positive. Required.
+</output_contract>
 
-Step 1: Think through the issues (optional)
-Step 2: OUTPUT EXACTLY THIS FORMAT:
-
-If issues found:
-{"status":"FAIL","issues":[{"file":"path","line":N,"severity":"high|medium|low","category":"security|bug|performance|maintainability","description":"...","suggestion":"..."}]}
-
-If no issues:
-{"status":"PASS","issues":[]}
-
-Rules:
-- Status "FAIL" = any high/medium severity issues
-- Status "PASS" = zero issues OR only low severity
-- The JSON must be the absolute LAST line of your response
-- No text after the JSON closing brace
-</CRITICAL_INSTRUCTION>
+<grounding_rules>
+- Only report issues in the CHANGED code shown in the diff. Do not report pre-existing issues.
+- Every finding must reference a specific file and line from the diff.
+- Do not report issues that linters or type checkers would catch (formatting, unused imports).
+- Do not re-report issues from the iteration_history that have already been fixed.
+- Maximum 10 issues per review. Prioritize by severity, then confidence.
+- If all previous issues are fixed and no new issues found, return {"status": "PASS", "issues": []}.
+- Maximum 3 new issues per iteration to ensure convergence.
+- When reviewing shell scripts, check: unquoted variables, missing error handling, unsafe temp files, local outside functions, shasum vs sha256sum portability, mktemp -t portability, CWD/path safety, cleanup ordering before early exits, timeout fail-open, boolean normalization.
+- When reviewing documentation, verify: factual claims match code, examples are correct, counts match reality, no stale references.
+- When reviewing CI/CD workflows (.github/workflows/*.yml, .gitlab-ci.yml):
+  - Flag `paths` + `paths-ignore` on the same trigger (GitHub Actions ignores one silently).
+  - Flag `${{ }}` expressions inside `run:` blocks — use `env:` intermediary to prevent expression injection.
+  - Flag `curl | sh`, `curl | sudo sh`, or `wget | sh` patterns — supply chain risk. Pin to a commit SHA or use a versioned action.
+  - Flag unpinned `pip install`, `npm install -g`, or `gem install` without version pins in CI steps.
+  - Flag action `uses:` references without SHA pins (e.g., `actions/checkout@v4` instead of `actions/checkout@<sha>`).
+  - Flag missing top-level `permissions: {}` — workflows should use least-privilege with job-level permissions.
+  - Flag conditional skip logic (`grep -q` / `if [ -f ... ]`) that can be bypassed by non-functional references or empty files.
+- Property testing gap: if changes touch parsers, validators, serializers, auth, or financial logic — flag as LOW if no property-based tests exist. Advisory only.
+</grounding_rules>
 EOF
 fi
 

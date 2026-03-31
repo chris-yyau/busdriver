@@ -422,6 +422,11 @@ set -e
 # If Python extraction failed, try parsing narrative output
 if [ -z "$JSON_OUTPUT" ]; then
   echo "   No JSON found, attempting to parse narrative output..." >&2
+  # Telemetry: track how often the narrative fallback is triggered
+  mkdir -p .claude
+  printf '{"ts":"%s","event":"narrative-fallback-triggered","cli":"%s","iteration":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RESOLVED_CLI" "$ITERATION" \
+    >> ".claude/bypass-log.jsonl" 2>/dev/null || true
   set +e
   JSON_OUTPUT=$(echo "$REVIEW_OUTPUT" | python3 "$SCRIPT_DIR/lib/parse-narrative.py" 2>&1)
   PARSE_EXIT=$?
@@ -441,8 +446,9 @@ if [ -z "$JSON_OUTPUT" ]; then
   echo "   ✓ Successfully parsed narrative to JSON" >&2
 fi
 
-# Validate JSON
+# Validate JSON syntax and schema structure
 validate_json "$JSON_OUTPUT" || exit 1
+validate_review_schema "$JSON_OUTPUT"
 
 # Extract status
 REVIEW_STATUS=$(echo "$JSON_OUTPUT" | jq -r '.status')

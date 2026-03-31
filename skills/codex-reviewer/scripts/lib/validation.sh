@@ -100,6 +100,61 @@ validate_json() {
   return 0
 }
 
+# Validate review JSON conforms to expected schema structure
+# Checks required fields and enum values; logs violations but does not block
+# (fail-open on schema mismatch to avoid breaking existing CLIs)
+validate_review_schema() {
+  local json="$1"
+
+  echo "$json" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    errors = []
+    if 'status' not in d:
+        errors.append('missing status field')
+    elif d['status'] not in ('PASS', 'FAIL'):
+        errors.append(f'status must be PASS or FAIL, got: {d[\"status\"]}')
+    if 'issues' not in d:
+        errors.append('missing issues field')
+    elif not isinstance(d['issues'], list):
+        errors.append('issues must be an array')
+    else:
+        for i, issue in enumerate(d['issues']):
+            if not isinstance(issue, dict):
+                errors.append(f'issues[{i}] is not an object')
+                continue
+            for field in ('file', 'severity', 'category', 'description'):
+                if field not in issue:
+                    errors.append(f'issues[{i}] missing {field}')
+            sev = issue.get('severity', '')
+            if sev and sev not in ('high', 'medium', 'low'):
+                errors.append(f'issues[{i}] invalid severity: {sev}')
+            cat = issue.get('category', '')
+            if cat and cat not in ('security', 'bug', 'performance', 'maintainability'):
+                errors.append(f'issues[{i}] invalid category: {cat}')
+    if errors:
+        for e in errors:
+            print(f'schema-warn: {e}', file=sys.stderr)
+        sys.exit(1)
+except Exception as e:
+    print(f'schema-warn: validation error: {e}', file=sys.stderr)
+    sys.exit(1)
+" 2>&1
+
+  local exit_code=$?
+  if [ $exit_code -ne 0 ]; then
+    echo "   ⚠️  Review output has schema violations (non-blocking)" >&2
+    # Log to telemetry for tracking
+    mkdir -p .claude
+    printf '{"ts":"%s","event":"schema-violation","cli":"%s"}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${RESOLVED_CLI:-unknown}" \
+      >> ".claude/bypass-log.jsonl" 2>/dev/null || true
+  fi
+  # Always return 0 — schema validation is advisory, not blocking
+  return 0
+}
+
 # Extract YAML value from frontmatter
 # Usage: get_yaml_value "key" "file.md"
 get_yaml_value() {

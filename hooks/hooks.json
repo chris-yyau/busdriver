@@ -6,16 +6,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/check-plugin-updates.sh\"",
-            "timeout": 3
-          }
-        ],
-        "description": "Check for upstream updates; emit update-alert for user after task completes"
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/load-orchestrator.sh\"",
             "timeout": 10
           }
@@ -378,16 +368,6 @@
       }
     ],
     "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/auto-push-config.sh\"",
-            "timeout": 30
-          }
-        ],
-        "description": "Commit auto-generated pipeline state to remote"
-      },
       {
         "matcher": "*",
         "hooks": [

@@ -408,15 +408,26 @@ echo ""
 
 # Extract JSON from output using shared robust parser
 # Handles reasoning mode, interleaved exec outputs, unmatched braces in code
-# Resolve extractor — prefer plugin location, fall back to legacy
-if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/skills/design-reviewer/scripts/lib/extract_review_json.py" ]; then
-    EXTRACTOR="${CLAUDE_PLUGIN_ROOT}/skills/design-reviewer/scripts/lib/extract_review_json.py"
-else
-    EXTRACTOR="$HOME/.claude/skills/design-reviewer/scripts/lib/extract_review_json.py"
-fi
+# Resolve extractor — prefer plugin location, fall back to marketplace, then legacy
+EXTRACTOR=""
+for _candidate in \
+    "${CLAUDE_PLUGIN_ROOT:-}/skills/design-reviewer/scripts/lib/extract_review_json.py" \
+    "$HOME/.claude/plugins/marketplaces/busdriver/skills/design-reviewer/scripts/lib/extract_review_json.py" \
+    "$HOME/.claude/skills/design-reviewer/scripts/lib/extract_review_json.py"; do
+    if [ -f "$_candidate" ]; then
+        EXTRACTOR="$_candidate"
+        break
+    fi
+done
 set +e
-JSON_OUTPUT=$(echo "$REVIEW_OUTPUT" | python3 "$EXTRACTOR" -)
-EXTRACT_EXIT=$?
+if [ -n "$EXTRACTOR" ]; then
+    JSON_OUTPUT=$(echo "$REVIEW_OUTPUT" | python3 "$EXTRACTOR" -)
+    EXTRACT_EXIT=$?
+else
+    echo "   ⚠️  JSON extractor not found, falling back to narrative parser" >&2
+    JSON_OUTPUT=""
+    EXTRACT_EXIT=1
+fi
 set -e
 
 # If Python extraction failed, try parsing narrative output

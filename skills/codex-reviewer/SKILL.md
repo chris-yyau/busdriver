@@ -289,6 +289,50 @@ CODEX_REVIEW_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/r
 
 If FAIL → fix and re-run (same auto-continue loop as commit mode).
 
+### Step 1.5: Scope Drift Detection (Advisory)
+
+Before launching the expensive multi-agent review, check whether the branch stayed aligned with its stated intent. This is **advisory only** — it flags deviations but never blocks.
+
+**Step 1.5a: Find the plan.** Use Glob to search for intent documents: `docs/superpowers/plans/*.md`, `docs/superpowers/specs/*.md`, `docs/plans/*.md`, and top-level `PLAN.md`/`DESIGN.md`/`ARCHITECTURE.md`. Skim each candidate to find the one most relevant to this branch (matching branch name, feature description, or commit subject). If no intent document exists or none is clearly relevant, skip scope drift detection silently.
+
+**Step 1.5b: Gather intent and changes.** Read the matched plan file. Also read `TODOS.md` (if it exists), commit messages, and PR description. Gather the actual diff. Use the three-dot merge-base form to match how the PR review compares changes:
+```bash
+PR_BASE=${CODEX_PR_BASE:-}
+[ -z "$PR_BASE" ] && PR_BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
+[ -z "$PR_BASE" ] && PR_BASE=main
+MERGE_BASE=$(git merge-base "origin/${PR_BASE}" HEAD)
+git log --oneline "${MERGE_BASE}..HEAD"
+git diff "${MERGE_BASE}..HEAD" --stat
+gh pr view --json body -q .body 2>/dev/null || true
+```
+
+**Step 1.5c: Compare and flag two categories:**
+
+**1. Scope creep** — files changed that are unrelated to the plan:
+- For each changed file, check if it (or its parent directory) is mentioned anywhere in the plan
+- Exempt: `.claude/`, `CLAUDE.md`, `docs/`, config files, and test files accompanying planned changes
+- Frame as: "These files were changed but aren't mentioned in the plan: [list]. Intentional?"
+
+**2. Missing requirements** — plan items with no corresponding changes:
+- Read the intent document and extract all file paths mentioned (in task sections, file listings, code blocks, or inline references)
+- Check which of those file paths appear in the diff
+- Frame as: "These planned files have no matching changes in the diff: [list]. Deferred or forgotten?"
+
+**Output format:**
+```
+## Scope Drift Check (advisory)
+
+### Unplanned changes
+- `path/to/file.ts` — not referenced in plan (explain or trim)
+
+### Missing from plan
+- Task 3 (auth middleware) — `src/middleware/auth.ts` not in diff
+
+### Verdict: [CLEAN | DRIFT DETECTED]
+```
+
+**Important:** This is "explain or trim" framing, not "you violated scope." Legitimate opportunistic fixes are fine. The value is surfacing the gap so the developer can consciously decide, not punishing agility.
+
 ### Step 2: Multi-Agent Deep Review
 
 <EXTREMELY-IMPORTANT>

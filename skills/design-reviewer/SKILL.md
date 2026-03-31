@@ -328,6 +328,46 @@ rm -rf docs/reviews/<slug>/
 | 0.3-0.5 | Uncertain | Weak evidence, needs clarification |
 | 0.0-0.3 | Speculative | No strong evidence, just a concern |
 
+### Display Rules
+
+When presenting findings to the user, filter by confidence tier:
+
+| Confidence | Display |
+|------------|---------|
+| 0.7-1.0 | Show normally in main report |
+| 0.5-0.7 | Show with caveat: "*Medium confidence — verify this is actually an issue*" |
+| 0.3-0.5 | Suppress from main report. Include in appendix section: "Low-confidence findings (may be false positives)" |
+| 0.0-0.3 | Suppress entirely unless severity is HIGH |
+
+**Important:** Low-confidence findings are suppressed from the user-facing report only. They remain in the JSON artifacts (`gemini.json`, `codex.json`, `claude.json`) for auditability. Never delete findings from stored outputs.
+
+### Calibration-to-Instinct Bridge
+
+When the user confirms a low-confidence finding (0.3-0.5) was a real issue, this is a calibration event — the reviewer's initial confidence was too low. Log the corrected pattern so future reviews catch it with higher confidence:
+
+Write to `~/.claude/notes/lesson-review-cal-{YYYY-MM-DD}-{slug}.md`. If the path already exists, append `-2`, `-3`, etc. to the slug before writing, and use the same suffixed filename in the NOTES.md pointer below.
+
+```markdown
+---
+name: review-cal-{slug}
+description: Design reviewer underconfident on {pattern} — was {original_confidence}, should be {corrected_confidence}
+type: feedback
+last_validated: "{YYYY-MM-DD}"
+---
+
+**Pattern:** {what the finding was about}
+**Original confidence:** {0.X} | **Correct confidence:** {0.X+0.2 or higher}
+**Why underconfident:** {why the reviewer didn't see stronger evidence}
+**How to apply:** When reviewing {similar patterns}, start at confidence {corrected} instead of {original}
+```
+
+After writing the file, add a one-line pointer to `~/.claude/notes/NOTES.md` using the actual filename written (including any `-2`, `-3` suffix):
+```
+- [Review calibration: {slug}](./lesson-review-cal-{YYYY-MM-DD}-{actual-slug}.md) — {pattern} confidence corrected {old} → {new}
+```
+
+This bridges design review findings into the instinct/lesson system, compounding review quality over time.
+
 ## Version History
 
 **v3 (current, 2026-03-27):** Claude-as-arbiter model. Parallel Gemini+Codex. Run-scoped isolation. Freshness contracts. Atomic writes. Explicit progress model. Deleted broken Jaccard consensus, auto-fix engine, and report generator.

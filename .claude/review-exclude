@@ -1,0 +1,8 @@
+# Files excluded from codex review (gitignore-style patterns)
+# These are passed as git pathspec exclusions to git diff
+
+# Upstream ECC rules — documentation/guidelines, not code
+rules/**/*.md
+
+# Upstream sources manifest — mechanical JSON tracking
+.upstream-sources.json

@@ -136,6 +136,12 @@
       "upstream_path": "agents/loop-operator.md"
     },
     {
+      "path": "agents/performance-optimizer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/performance-optimizer.md"
+    },
+    {
       "path": "agents/plan-code-reviewer.md",
       "source": "superpowers",
       "status": "custom",
@@ -629,6 +635,579 @@
       "status": "local"
     },
     {
+      "path": "rules/README.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/README.md"
+    },
+    {
+      "path": "rules/common/agents.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/common/agents.md"
+    },
+    {
+      "path": "rules/common/code-review.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/common/code-review.md"
+    },
+    {
+      "path": "rules/common/coding-style.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/common/coding-style.md"
+    },
+    {
+      "path": "rules/common/development-workflow.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/common/development-workflow.md"
+    },
+    {
+      "path": "rules/common/git-workflow.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/common/git-workflow.md"
+    },
+    {
+      "path": "rules/common/hooks.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/common/hooks.md"
+    },
+    {
+      "path": "rules/common/investigate-before-acting.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "rules/common/patterns.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/common/patterns.md"
+    },
+    {
+      "path": "rules/common/performance.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/common/performance.md"
+    },
+    {
+      "path": "rules/common/security.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/common/security.md"
+    },
+    {
+      "path": "rules/common/testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/common/testing.md"
+    },
+    {
+      "path": "rules/common/validate-before-building.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "rules/cpp/coding-style.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/cpp/coding-style.md"
+    },
+    {
+      "path": "rules/cpp/hooks.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/cpp/hooks.md"
+    },
+    {
+      "path": "rules/cpp/patterns.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/cpp/patterns.md"
+    },
+    {
+      "path": "rules/cpp/security.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/cpp/security.md"
+    },
+    {
+      "path": "rules/cpp/testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/cpp/testing.md"
+    },
+    {
+      "path": "rules/csharp/coding-style.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/csharp/coding-style.md"
+    },
+    {
+      "path": "rules/csharp/hooks.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/csharp/hooks.md"
+    },
+    {
+      "path": "rules/csharp/patterns.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/csharp/patterns.md"
+    },
+    {
+      "path": "rules/csharp/security.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/csharp/security.md"
+    },
+    {
+      "path": "rules/csharp/testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/csharp/testing.md"
+    },
+    {
+      "path": "rules/golang/coding-style.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/golang/coding-style.md"
+    },
+    {
+      "path": "rules/golang/hooks.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/golang/hooks.md"
+    },
+    {
+      "path": "rules/golang/patterns.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/golang/patterns.md"
+    },
+    {
+      "path": "rules/golang/security.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/golang/security.md"
+    },
+    {
+      "path": "rules/golang/testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/golang/testing.md"
+    },
+    {
+      "path": "rules/install.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "rules/java/coding-style.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/java/coding-style.md"
+    },
+    {
+      "path": "rules/java/hooks.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/java/hooks.md"
+    },
+    {
+      "path": "rules/java/patterns.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/java/patterns.md"
+    },
+    {
+      "path": "rules/java/security.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/java/security.md"
+    },
+    {
+      "path": "rules/java/testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/java/testing.md"
+    },
+    {
+      "path": "rules/kotlin/coding-style.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/kotlin/coding-style.md"
+    },
+    {
+      "path": "rules/kotlin/hooks.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/kotlin/hooks.md"
+    },
+    {
+      "path": "rules/kotlin/patterns.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/kotlin/patterns.md"
+    },
+    {
+      "path": "rules/kotlin/security.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/kotlin/security.md"
+    },
+    {
+      "path": "rules/kotlin/testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/kotlin/testing.md"
+    },
+    {
+      "path": "rules/perl/coding-style.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/perl/coding-style.md"
+    },
+    {
+      "path": "rules/perl/hooks.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/perl/hooks.md"
+    },
+    {
+      "path": "rules/perl/patterns.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/perl/patterns.md"
+    },
+    {
+      "path": "rules/perl/security.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/perl/security.md"
+    },
+    {
+      "path": "rules/perl/testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/perl/testing.md"
+    },
+    {
+      "path": "rules/php/coding-style.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/php/coding-style.md"
+    },
+    {
+      "path": "rules/php/hooks.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/php/hooks.md"
+    },
+    {
+      "path": "rules/php/patterns.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/php/patterns.md"
+    },
+    {
+      "path": "rules/php/security.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/php/security.md"
+    },
+    {
+      "path": "rules/php/testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/php/testing.md"
+    },
+    {
+      "path": "rules/python/coding-style.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/python/coding-style.md"
+    },
+    {
+      "path": "rules/python/hooks.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/python/hooks.md"
+    },
+    {
+      "path": "rules/python/patterns.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/python/patterns.md"
+    },
+    {
+      "path": "rules/python/security.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/python/security.md"
+    },
+    {
+      "path": "rules/python/testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/python/testing.md"
+    },
+    {
+      "path": "rules/rust/coding-style.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/rust/coding-style.md"
+    },
+    {
+      "path": "rules/rust/hooks.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/rust/hooks.md"
+    },
+    {
+      "path": "rules/rust/patterns.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/rust/patterns.md"
+    },
+    {
+      "path": "rules/rust/security.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/rust/security.md"
+    },
+    {
+      "path": "rules/rust/testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/rust/testing.md"
+    },
+    {
+      "path": "rules/swift/coding-style.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/swift/coding-style.md"
+    },
+    {
+      "path": "rules/swift/hooks.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/swift/hooks.md"
+    },
+    {
+      "path": "rules/swift/patterns.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/swift/patterns.md"
+    },
+    {
+      "path": "rules/swift/security.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/swift/security.md"
+    },
+    {
+      "path": "rules/swift/testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/swift/testing.md"
+    },
+    {
+      "path": "rules/typescript/coding-style.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/typescript/coding-style.md"
+    },
+    {
+      "path": "rules/typescript/hooks.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/typescript/hooks.md"
+    },
+    {
+      "path": "rules/typescript/patterns.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/typescript/patterns.md"
+    },
+    {
+      "path": "rules/typescript/security.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/typescript/security.md"
+    },
+    {
+      "path": "rules/typescript/testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/typescript/testing.md"
+    },
+    {
+      "path": "rules/zh/README.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/zh/README.md"
+    },
+    {
+      "path": "rules/zh/agents.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/zh/agents.md"
+    },
+    {
+      "path": "rules/zh/code-review.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/zh/code-review.md"
+    },
+    {
+      "path": "rules/zh/coding-style.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/zh/coding-style.md"
+    },
+    {
+      "path": "rules/zh/development-workflow.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/zh/development-workflow.md"
+    },
+    {
+      "path": "rules/zh/git-workflow.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/zh/git-workflow.md"
+    },
+    {
+      "path": "rules/zh/hooks.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/zh/hooks.md"
+    },
+    {
+      "path": "rules/zh/patterns.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/zh/patterns.md"
+    },
+    {
+      "path": "rules/zh/performance.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/zh/performance.md"
+    },
+    {
+      "path": "rules/zh/security.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/zh/security.md"
+    },
+    {
+      "path": "rules/zh/testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/zh/testing.md"
+    },
+    {
+      "path": "scripts/ci/catalog.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/catalog.js"
+    },
+    {
+      "path": "scripts/ci/check-unicode-safety.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/check-unicode-safety.js"
+    },
+    {
+      "path": "scripts/ci/validate-agents.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/validate-agents.js"
+    },
+    {
+      "path": "scripts/ci/validate-commands.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/validate-commands.js"
+    },
+    {
+      "path": "scripts/ci/validate-hooks.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/validate-hooks.js"
+    },
+    {
+      "path": "scripts/ci/validate-install-manifests.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/validate-install-manifests.js"
+    },
+    {
+      "path": "scripts/ci/validate-no-personal-paths.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/validate-no-personal-paths.js"
+    },
+    {
+      "path": "scripts/ci/validate-rules.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/validate-rules.js"
+    },
+    {
+      "path": "scripts/ci/validate-skills.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/validate-skills.js"
+    },
+    {
+      "path": "scripts/claw.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/claw.js"
+    },
+    {
+      "path": "scripts/codex/check-codex-global-state.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/codex/check-codex-global-state.sh"
+    },
+    {
+      "path": "scripts/codex/install-global-git-hooks.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/codex/install-global-git-hooks.sh"
+    },
+    {
+      "path": "scripts/codex/merge-mcp-config.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/codex/merge-mcp-config.js"
+    },
+    {
+      "path": "scripts/doctor.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/doctor.js"
+    },
+    {
+      "path": "scripts/ecc.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ecc.js"
+    },
+    {
+      "path": "scripts/harness-audit.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/harness-audit.js"
+    },
+    {
       "path": "scripts/hooks/auto-tmux-dev.js",
       "source": "ecc",
       "status": "sync",
@@ -657,6 +1236,12 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/hooks/cost-tracker.js"
+    },
+    {
+      "path": "scripts/hooks/desktop-notify.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/desktop-notify.js"
     },
     {
       "path": "scripts/hooks/doc-file-warning.js",
@@ -723,6 +1308,12 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/hooks/post-edit-typecheck.js"
+    },
+    {
+      "path": "scripts/hooks/pre-bash-commit-quality.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/pre-bash-commit-quality.js"
     },
     {
       "path": "scripts/hooks/pre-bash-dev-server-block.js",
@@ -797,9 +1388,16 @@
       "upstream_path": "scripts/hooks/suggest-compact.js"
     },
     {
-      "path": "scripts/prune-notes.py",
-      "source": "local",
-      "status": "local"
+      "path": "scripts/install-apply.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/install-apply.js"
+    },
+    {
+      "path": "scripts/install-plan.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/install-plan.js"
     },
     {
       "path": "scripts/lib/agent-compress.js",
@@ -1102,6 +1700,95 @@
       "upstream_path": "scripts/lib/utils.js"
     },
     {
+      "path": "scripts/list-installed.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/list-installed.js"
+    },
+    {
+      "path": "scripts/orchestrate-codex-worker.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/orchestrate-codex-worker.sh"
+    },
+    {
+      "path": "scripts/orchestrate-worktrees.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/orchestrate-worktrees.js"
+    },
+    {
+      "path": "scripts/orchestration-status.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/orchestration-status.js"
+    },
+    {
+      "path": "scripts/prune-notes.py",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "scripts/release.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/release.sh"
+    },
+    {
+      "path": "scripts/repair.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/repair.js"
+    },
+    {
+      "path": "scripts/session-inspect.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/session-inspect.js"
+    },
+    {
+      "path": "scripts/sessions-cli.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/sessions-cli.js"
+    },
+    {
+      "path": "scripts/setup-package-manager.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/setup-package-manager.js"
+    },
+    {
+      "path": "scripts/skill-create-output.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/skill-create-output.js"
+    },
+    {
+      "path": "scripts/skills-health.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/skills-health.js"
+    },
+    {
+      "path": "scripts/status.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/status.js"
+    },
+    {
+      "path": "scripts/sync-ecc-to-codex.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/sync-ecc-to-codex.sh"
+    },
+    {
+      "path": "scripts/uninstall.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/uninstall.js"
+    },
+    {
       "path": "skills/agent-eval/SKILL.md",
       "source": "ecc",
       "status": "custom",
@@ -1180,6 +1867,54 @@
       "upstream_path": "skills/blueprint/SKILL.md"
     },
     {
+      "path": "skills/brainstorming/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/brainstorming/SKILL.md"
+    },
+    {
+      "path": "skills/brainstorming/scripts/frame-template.html",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/brainstorming/scripts/frame-template.html"
+    },
+    {
+      "path": "skills/brainstorming/scripts/helper.js",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/brainstorming/scripts/helper.js"
+    },
+    {
+      "path": "skills/brainstorming/scripts/server.cjs",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/brainstorming/scripts/server.cjs"
+    },
+    {
+      "path": "skills/brainstorming/scripts/start-server.sh",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/brainstorming/scripts/start-server.sh"
+    },
+    {
+      "path": "skills/brainstorming/scripts/stop-server.sh",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/brainstorming/scripts/stop-server.sh"
+    },
+    {
+      "path": "skills/brainstorming/spec-document-reviewer-prompt.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/brainstorming/spec-document-reviewer-prompt.md"
+    },
+    {
+      "path": "skills/brainstorming/visual-companion.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/brainstorming/visual-companion.md"
+    },
+    {
       "path": "skills/browser-qa/SKILL.md",
       "source": "ecc",
       "status": "sync",
@@ -1198,10 +1933,21 @@
       "upstream_path": "skills/canary-watch/SKILL.md"
     },
     {
+      "path": "skills/canary/SKILL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
       "path": "skills/carrier-relationship-management/SKILL.md",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "skills/carrier-relationship-management/SKILL.md"
+    },
+    {
+      "path": "skills/ck/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/ck/SKILL.md"
     },
     {
       "path": "skills/claude-api/SKILL.md",
@@ -1232,6 +1978,101 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "skills/codebase-onboarding/SKILL.md"
+    },
+    {
+      "path": "skills/codex-reviewer/SKILL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/prompt_template.txt",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/references/advanced-features.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/references/advanced-usage.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/references/examples.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/references/legacy-approach.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/references/script-reference.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/references/troubleshooting.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/references/workflow-details.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/execute_review.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/init-review-loop.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/lib/exclude-generated.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/lib/iteration-history.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/lib/parse-narrative.py",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/lib/validation.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/load_changelog.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/run-review-loop.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/save_changelog.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/codex-reviewer/scripts/suggest-split.sh",
+      "source": "local",
+      "status": "local"
     },
     {
       "path": "skills/coding-standards/SKILL.md",
@@ -1360,6 +2201,11 @@
       "upstream_path": "skills/cost-aware-llm-pipeline/SKILL.md"
     },
     {
+      "path": "skills/council/SKILL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
       "path": "skills/cpp-coding-standards/SKILL.md",
       "source": "ecc",
       "status": "sync",
@@ -1408,10 +2254,101 @@
       "upstream_path": "skills/deployment-patterns/SKILL.md"
     },
     {
+      "path": "skills/design-reviewer/SKILL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/config/default_config.json",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/prompts/claude_validation_prompt.txt",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/prompts/comprehensive_review_prompt.txt",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/auto_fix_engine.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/consensus_analyzer.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/generate_report.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/init-design-review.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/lib/confidence_scoring.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/lib/extract_review_json.py",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/lib/semantic_similarity.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/lib/state_management.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/lib/validation.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/run-design-review-loop.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/design-reviewer/scripts/run_design_review.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
       "path": "skills/design-system/SKILL.md",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "skills/design-system/SKILL.md"
+    },
+    {
+      "path": "skills/dispatch-cli/SKILL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/dispatch-cli/scripts/dispatch.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/dispatching-parallel-agents/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/dispatching-parallel-agents/SKILL.md"
     },
     {
       "path": "skills/django-patterns/SKILL.md",
@@ -1486,10 +2423,22 @@
       "upstream_path": "skills/exa-search/SKILL.md"
     },
     {
+      "path": "skills/executing-plans/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/executing-plans/SKILL.md"
+    },
+    {
       "path": "skills/fal-ai-media/SKILL.md",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "skills/fal-ai-media/SKILL.md"
+    },
+    {
+      "path": "skills/finishing-a-development-branch/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/finishing-a-development-branch/SKILL.md"
     },
     {
       "path": "skills/flutter-dart-code-review/SKILL.md",
@@ -1520,6 +2469,12 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "skills/frontend-slides/STYLE_PRESETS.md"
+    },
+    {
+      "path": "skills/git-workflow/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/git-workflow/SKILL.md"
     },
     {
       "path": "skills/golang-patterns/SKILL.md",
@@ -1672,6 +2627,26 @@
       "upstream_path": "skills/nuxt4-patterns/SKILL.md"
     },
     {
+      "path": "skills/orchestrator/INSTALL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/orchestrator/README.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/orchestrator/SKILL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/orchestrator/domain-supplements.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
       "path": "skills/perl-patterns/SKILL.md",
       "source": "ecc",
       "status": "sync",
@@ -1756,10 +2731,39 @@
       "upstream_path": "skills/ralphinho-rfc-pipeline/SKILL.md"
     },
     {
+      "path": "skills/receiving-code-review/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/receiving-code-review/SKILL.md"
+    },
+    {
+      "path": "skills/reflect/SKILL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
       "path": "skills/regex-vs-llm-structured-text/SKILL.md",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "skills/regex-vs-llm-structured-text/SKILL.md"
+    },
+    {
+      "path": "skills/repo-scan/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/repo-scan/SKILL.md"
+    },
+    {
+      "path": "skills/requesting-code-review/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/requesting-code-review/SKILL.md"
+    },
+    {
+      "path": "skills/requesting-code-review/code-reviewer.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/requesting-code-review/code-reviewer.md"
     },
     {
       "path": "skills/returns-reverse-logistics/SKILL.md",
@@ -2020,6 +3024,85 @@
       "upstream_path": "skills/strategic-compact/suggest-compact.sh"
     },
     {
+      "path": "skills/subagent-driven-development/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/subagent-driven-development/SKILL.md"
+    },
+    {
+      "path": "skills/subagent-driven-development/code-quality-reviewer-prompt.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/subagent-driven-development/code-quality-reviewer-prompt.md"
+    },
+    {
+      "path": "skills/subagent-driven-development/implementer-prompt.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/subagent-driven-development/implementer-prompt.md"
+    },
+    {
+      "path": "skills/subagent-driven-development/spec-reviewer-prompt.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/subagent-driven-development/spec-reviewer-prompt.md"
+    },
+    {
+      "path": "skills/supplements/MANIFEST.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/anti-sycophancy.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/confidence-gated-findings.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/design-anti-slop.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/diff-aware-qa.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/directory-freeze.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/llm-security-audit.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/nutrient-api-terms.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/skill-supply-chain.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/spec-review-convergence.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/three-layer-knowledge.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
       "path": "skills/swift-actor-persistence/SKILL.md",
       "source": "ecc",
       "status": "sync",
@@ -2044,6 +3127,72 @@
       "upstream_path": "skills/swiftui-patterns/SKILL.md"
     },
     {
+      "path": "skills/systematic-debugging/CREATION-LOG.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/CREATION-LOG.md"
+    },
+    {
+      "path": "skills/systematic-debugging/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/SKILL.md"
+    },
+    {
+      "path": "skills/systematic-debugging/condition-based-waiting-example.ts",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/condition-based-waiting-example.ts"
+    },
+    {
+      "path": "skills/systematic-debugging/condition-based-waiting.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/condition-based-waiting.md"
+    },
+    {
+      "path": "skills/systematic-debugging/defense-in-depth.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/defense-in-depth.md"
+    },
+    {
+      "path": "skills/systematic-debugging/find-polluter.sh",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/find-polluter.sh"
+    },
+    {
+      "path": "skills/systematic-debugging/root-cause-tracing.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/root-cause-tracing.md"
+    },
+    {
+      "path": "skills/systematic-debugging/test-academic.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/test-academic.md"
+    },
+    {
+      "path": "skills/systematic-debugging/test-pressure-1.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/test-pressure-1.md"
+    },
+    {
+      "path": "skills/systematic-debugging/test-pressure-2.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/test-pressure-2.md"
+    },
+    {
+      "path": "skills/systematic-debugging/test-pressure-3.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/systematic-debugging/test-pressure-3.md"
+    },
+    {
       "path": "skills/tdd-workflow/SKILL.md",
       "source": "ecc",
       "status": "sync",
@@ -2054,6 +3203,36 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "skills/team-builder/SKILL.md"
+    },
+    {
+      "path": "skills/test-driven-development/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/test-driven-development/SKILL.md"
+    },
+    {
+      "path": "skills/test-driven-development/testing-anti-patterns.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/test-driven-development/testing-anti-patterns.md"
+    },
+    {
+      "path": "skills/token-budget-advisor/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/token-budget-advisor/SKILL.md"
+    },
+    {
+      "path": "skills/using-git-worktrees/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/using-git-worktrees/SKILL.md"
+    },
+    {
+      "path": "skills/verification-before-completion/SKILL.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/verification-before-completion/SKILL.md"
     },
     {
       "path": "skills/verification-loop/SKILL.md",
@@ -2152,380 +3331,6 @@
       "upstream_path": "skills/visa-doc-translate/SKILL.md"
     },
     {
-      "path": "skills/x-api/SKILL.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "skills/x-api/SKILL.md"
-    },
-    {
-      "path": "skills/codex-reviewer/SKILL.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/prompt_template.txt",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/references/advanced-features.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/references/advanced-usage.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/references/examples.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/references/legacy-approach.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/references/script-reference.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/references/troubleshooting.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/references/workflow-details.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/scripts/execute_review.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/scripts/init-review-loop.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/scripts/lib/exclude-generated.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/scripts/lib/iteration-history.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/scripts/lib/parse-narrative.py",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/scripts/lib/validation.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/scripts/load_changelog.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/scripts/run-review-loop.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/scripts/save_changelog.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/codex-reviewer/scripts/suggest-split.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/SKILL.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/config/default_config.json",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/prompts/claude_validation_prompt.txt",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/prompts/comprehensive_review_prompt.txt",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/scripts/auto_fix_engine.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/scripts/consensus_analyzer.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/scripts/generate_report.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/scripts/init-design-review.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/scripts/lib/confidence_scoring.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/scripts/lib/extract_review_json.py",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/scripts/lib/semantic_similarity.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/scripts/lib/state_management.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/scripts/lib/validation.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/scripts/run-design-review-loop.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/scripts/run_design_review.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/brainstorming/SKILL.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/brainstorming/SKILL.md"
-    },
-    {
-      "path": "skills/brainstorming/scripts/frame-template.html",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/brainstorming/scripts/frame-template.html"
-    },
-    {
-      "path": "skills/brainstorming/scripts/helper.js",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/brainstorming/scripts/helper.js"
-    },
-    {
-      "path": "skills/brainstorming/scripts/server.cjs",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/brainstorming/scripts/server.cjs"
-    },
-    {
-      "path": "skills/brainstorming/scripts/start-server.sh",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/brainstorming/scripts/start-server.sh"
-    },
-    {
-      "path": "skills/brainstorming/scripts/stop-server.sh",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/brainstorming/scripts/stop-server.sh"
-    },
-    {
-      "path": "skills/brainstorming/spec-document-reviewer-prompt.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/brainstorming/spec-document-reviewer-prompt.md"
-    },
-    {
-      "path": "skills/brainstorming/visual-companion.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/brainstorming/visual-companion.md"
-    },
-    {
-      "path": "skills/dispatching-parallel-agents/SKILL.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/dispatching-parallel-agents/SKILL.md"
-    },
-    {
-      "path": "skills/executing-plans/SKILL.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/executing-plans/SKILL.md"
-    },
-    {
-      "path": "skills/finishing-a-development-branch/SKILL.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/finishing-a-development-branch/SKILL.md"
-    },
-    {
-      "path": "skills/receiving-code-review/SKILL.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/receiving-code-review/SKILL.md"
-    },
-    {
-      "path": "skills/requesting-code-review/SKILL.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/requesting-code-review/SKILL.md"
-    },
-    {
-      "path": "skills/requesting-code-review/code-reviewer.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/requesting-code-review/code-reviewer.md"
-    },
-    {
-      "path": "skills/subagent-driven-development/SKILL.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/subagent-driven-development/SKILL.md"
-    },
-    {
-      "path": "skills/subagent-driven-development/code-quality-reviewer-prompt.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/subagent-driven-development/code-quality-reviewer-prompt.md"
-    },
-    {
-      "path": "skills/subagent-driven-development/implementer-prompt.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/subagent-driven-development/implementer-prompt.md"
-    },
-    {
-      "path": "skills/subagent-driven-development/spec-reviewer-prompt.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/subagent-driven-development/spec-reviewer-prompt.md"
-    },
-    {
-      "path": "skills/systematic-debugging/CREATION-LOG.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/systematic-debugging/CREATION-LOG.md"
-    },
-    {
-      "path": "skills/systematic-debugging/SKILL.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/systematic-debugging/SKILL.md"
-    },
-    {
-      "path": "skills/systematic-debugging/condition-based-waiting-example.ts",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/systematic-debugging/condition-based-waiting-example.ts"
-    },
-    {
-      "path": "skills/systematic-debugging/condition-based-waiting.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/systematic-debugging/condition-based-waiting.md"
-    },
-    {
-      "path": "skills/systematic-debugging/defense-in-depth.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/systematic-debugging/defense-in-depth.md"
-    },
-    {
-      "path": "skills/systematic-debugging/find-polluter.sh",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/systematic-debugging/find-polluter.sh"
-    },
-    {
-      "path": "skills/systematic-debugging/root-cause-tracing.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/systematic-debugging/root-cause-tracing.md"
-    },
-    {
-      "path": "skills/systematic-debugging/test-academic.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/systematic-debugging/test-academic.md"
-    },
-    {
-      "path": "skills/systematic-debugging/test-pressure-1.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/systematic-debugging/test-pressure-1.md"
-    },
-    {
-      "path": "skills/systematic-debugging/test-pressure-2.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/systematic-debugging/test-pressure-2.md"
-    },
-    {
-      "path": "skills/systematic-debugging/test-pressure-3.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/systematic-debugging/test-pressure-3.md"
-    },
-    {
-      "path": "skills/test-driven-development/SKILL.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/test-driven-development/SKILL.md"
-    },
-    {
-      "path": "skills/test-driven-development/testing-anti-patterns.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/test-driven-development/testing-anti-patterns.md"
-    },
-    {
-      "path": "skills/using-git-worktrees/SKILL.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/using-git-worktrees/SKILL.md"
-    },
-    {
-      "path": "skills/verification-before-completion/SKILL.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/verification-before-completion/SKILL.md"
-    },
-    {
       "path": "skills/writing-plans/SKILL.md",
       "source": "superpowers",
       "status": "custom",
@@ -2580,338 +3385,10 @@
       "upstream_path": "skills/writing-skills/testing-skills-with-subagents.md"
     },
     {
-      "path": "skills/supplements/MANIFEST.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/supplements/anti-sycophancy.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/supplements/confidence-gated-findings.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/supplements/design-anti-slop.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/supplements/diff-aware-qa.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/supplements/directory-freeze.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/supplements/llm-security-audit.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/supplements/nutrient-api-terms.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/supplements/skill-supply-chain.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/supplements/spec-review-convergence.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/supplements/three-layer-knowledge.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/canary/SKILL.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/council/SKILL.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/dispatch-cli/SKILL.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/dispatch-cli/scripts/dispatch.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/orchestrator/INSTALL.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/orchestrator/README.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/orchestrator/SKILL.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/orchestrator/domain-supplements.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/reflect/SKILL.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "scripts/sync-ecc-to-codex.sh",
+      "path": "skills/x-api/SKILL.md",
       "source": "ecc",
       "status": "sync",
-      "upstream_path": "scripts/sync-ecc-to-codex.sh"
-    },
-    {
-      "path": "scripts/install-apply.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/install-apply.js"
-    },
-    {
-      "path": "scripts/install-plan.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/install-plan.js"
-    },
-    {
-      "path": "scripts/setup-package-manager.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/setup-package-manager.js"
-    },
-    {
-      "path": "scripts/ecc.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/ecc.js"
-    },
-    {
-      "path": "scripts/skills-health.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/skills-health.js"
-    },
-    {
-      "path": "scripts/ci/catalog.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/ci/catalog.js"
-    },
-    {
-      "path": "scripts/ci/validate-install-manifests.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/ci/validate-install-manifests.js"
-    },
-    {
-      "path": "scripts/ci/validate-rules.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/ci/validate-rules.js"
-    },
-    {
-      "path": "scripts/ci/validate-skills.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/ci/validate-skills.js"
-    },
-    {
-      "path": "scripts/ci/validate-no-personal-paths.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/ci/validate-no-personal-paths.js"
-    },
-    {
-      "path": "scripts/ci/validate-commands.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/ci/validate-commands.js"
-    },
-    {
-      "path": "scripts/ci/validate-hooks.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/ci/validate-hooks.js"
-    },
-    {
-      "path": "scripts/ci/validate-agents.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/ci/validate-agents.js"
-    },
-    {
-      "path": "scripts/sessions-cli.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/sessions-cli.js"
-    },
-    {
-      "path": "scripts/session-inspect.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/session-inspect.js"
-    },
-    {
-      "path": "scripts/repair.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/repair.js"
-    },
-    {
-      "path": "scripts/codex/merge-mcp-config.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/codex/merge-mcp-config.js"
-    },
-    {
-      "path": "scripts/codex/install-global-git-hooks.sh",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/codex/install-global-git-hooks.sh"
-    },
-    {
-      "path": "scripts/codex/check-codex-global-state.sh",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/codex/check-codex-global-state.sh"
-    },
-    {
-      "path": "scripts/orchestrate-worktrees.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/orchestrate-worktrees.js"
-    },
-    {
-      "path": "scripts/list-installed.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/list-installed.js"
-    },
-    {
-      "path": "scripts/skill-create-output.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/skill-create-output.js"
-    },
-    {
-      "path": "scripts/hooks/desktop-notify.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/desktop-notify.js"
-    },
-    {
-      "path": "scripts/status.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/status.js"
-    },
-    {
-      "path": "scripts/claw.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/claw.js"
-    },
-    {
-      "path": "scripts/release.sh",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/release.sh"
-    },
-    {
-      "path": "scripts/harness-audit.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/harness-audit.js"
-    },
-    {
-      "path": "scripts/doctor.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/doctor.js"
-    },
-    {
-      "path": "scripts/orchestrate-codex-worker.sh",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/orchestrate-codex-worker.sh"
-    },
-    {
-      "path": "scripts/uninstall.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/uninstall.js"
-    },
-    {
-      "path": "scripts/orchestration-status.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/orchestration-status.js"
-    },
-    {
-      "path": "agents/performance-optimizer.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "agents/performance-optimizer.md"
-    },
-    {
-      "path": "skills/git-workflow/SKILL.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "skills/git-workflow/SKILL.md"
-    },
-    {
-      "path": "skills/token-budget-advisor/SKILL.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "skills/token-budget-advisor/SKILL.md"
-    },
-    {
-      "path": "skills/repo-scan/SKILL.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "skills/repo-scan/SKILL.md"
-    },
-    {
-      "path": "skills/ck/SKILL.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "skills/ck/SKILL.md"
-    },
-    {
-      "path": "scripts/ci/check-unicode-safety.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/ci/check-unicode-safety.js"
-    },
-    {
-      "path": "scripts/hooks/pre-bash-commit-quality.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/pre-bash-commit-quality.js"
+      "upstream_path": "skills/x-api/SKILL.md"
     }
   ]
 }

@@ -766,11 +766,6 @@
       "upstream_path": "rules/common/hooks.md"
     },
     {
-      "path": "rules/common/investigate-before-acting.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
       "path": "rules/common/patterns.md",
       "source": "ecc",
       "status": "sync",
@@ -793,11 +788,6 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "rules/common/testing.md"
-    },
-    {
-      "path": "rules/common/validate-before-building.md",
-      "source": "local",
-      "status": "local"
     },
     {
       "path": "rules/cpp/coding-style.md",

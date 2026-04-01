@@ -235,7 +235,22 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Media Generation** | generate image/video/audio | `fal-ai-media` |
 | **Video Production** | edit video, analyze, transcribe | `videodb` / `video-editing` / `fal-ai-media` |
 | **Presentations** | create slides, convert PPT | `frontend-slides` |
-| **Agent Architecture** | agent loops, multi-agent DAGs | `autonomous-loops` / `continuous-agent-loop` / `enterprise-agent-ops` / `agent-harness-construction` / `agentic-engineering` / `santa-method`. Agents: `harness-optimizer`, `loop-operator` |
+| **Agent Architecture** | agent loops, multi-agent DAGs | `autonomous-loops` / `continuous-agent-loop` / `enterprise-agent-ops` / `agent-harness-construction` / `agentic-engineering` / `santa-method` / `autonomous-agent-harness`. Agents: `harness-optimizer`, `loop-operator` |
+| **GAN Harness** | build app iteratively, gen+eval loop | `gan-style-harness` / `/gan-design` / `/gan-build`. Agents: `gan-planner`, `gan-generator`, `gan-evaluator` |
+| **Open-Sourcing** | open source this, make public | `opensource-pipeline`. Agents: `opensource-forker`, `opensource-sanitizer`, `opensource-packager` |
+| **Healthcare** | EMR, clinical, PHI, CDSS | `healthcare-emr-patterns` / `healthcare-cdss-patterns` / `healthcare-phi-compliance` / `healthcare-eval-harness`. Agent: `healthcare-reviewer` |
+| **Lead Intelligence** | find leads, outreach, prospects | `lead-intelligence` |
+| **PRP Workflow** | PRD, plan, implement, commit, PR | `/prp-prd` / `/prp-plan` / `/prp-implement` / `/prp-commit` / `/prp-pr` |
+| **Remotion Video** | create video with React, Remotion | `remotion-video-creation` |
+| **Agent Payments** | x402, agent wallet, pay for API | `agent-payment-x402` |
+| **Hexagonal Arch** | ports & adapters, domain boundaries | `hexagonal-architecture` |
+| **Dual Review** | adversarial review, two reviewers | `/santa-loop` command |
+| **UI Demo Recording** | record demo, walkthrough video | `ui-demo` |
+| **Billing Ops** | subscriptions, refunds, Stripe | `customer-billing-ops` |
+| **Google Workspace** | Drive, Docs, Sheets, Slides | `google-workspace-ops` |
+| **Project Flow** | GitHub+Linear triage, backlog | `project-flow-ops` |
+| **Workspace Audit** | audit setup, discover capabilities | `workspace-surface-audit` |
+| **Laravel Plugins** | find Laravel packages | `laravel-plugin-discovery` |
 | **Error Handling Review** | check error handling, silent failures, catch blocks | `silent-failure-hunter` agent (pr-review-toolkit) |
 | **Type Design Review** | review types, check invariants, type safety | `type-design-analyzer` agent (pr-review-toolkit) |
 | **Test Coverage Review** | check test quality, test gaps, edge cases | `pr-test-analyzer` agent (pr-review-toolkit) |
@@ -274,7 +289,7 @@ Available in any pipeline phase:
 **Never act on `<update-alert>` during an active user task.** Note silently, present as recommendation after task completes. Background agent completions at unpredictable times contaminate context.
 </STRONG-GUIDANCE>
 
-**When user says "update plugins" or "sync ecc":** Follow the 10-step workflow in the `<update-alert>` message with ultrathink reasoning. Do NOT treat generic replies ("yes", "ok") as approval — only explicit update commands trigger this workflow.
+**When user says "update plugins" or "sync ecc":** Follow the 3-phase workflow in the `<update-alert>` message with ultrathink reasoning. Phase A (audit) is MANDATORY before any changes — present audit report and wait for user approval. NEVER auto-sync blindly. Do NOT treat generic replies ("yes", "ok") as approval — only explicit update commands trigger this workflow.
 
 ## Automatic Behaviors (Hooks)
 

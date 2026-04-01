@@ -636,9 +636,8 @@
     },
     {
       "path": "rules/README.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "rules/README.md"
+      "source": "local",
+      "status": "local"
     },
     {
       "path": "rules/common/agents.md",

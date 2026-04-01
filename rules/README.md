@@ -18,7 +18,11 @@ rules/
 ├── python/          # Python specific
 ├── golang/          # Go specific
 ├── swift/           # Swift specific
-└── php/             # PHP specific
+├── php/             # PHP specific
+├── java/            # Java/Spring Boot specific
+├── kotlin/          # Kotlin/Android/KMP specific
+├── cpp/             # C++ specific
+└── perl/            # Perl specific
 ```
 
 - **common/** contains universal principles — no language-specific code examples.
@@ -35,9 +39,13 @@ rules/
 ./install.sh golang
 ./install.sh swift
 ./install.sh php
+./install.sh java
+./install.sh kotlin
+./install.sh cpp
+./install.sh perl
 
 # Install multiple languages at once
-./install.sh typescript python
+./install.sh typescript python golang
 ```
 
 ### Option 2: Manual Installation

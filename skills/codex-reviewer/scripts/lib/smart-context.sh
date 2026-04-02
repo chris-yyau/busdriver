@@ -84,10 +84,7 @@ _find_callers() {
   local repo_root
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
 
-  local escaped_name
-  escaped_name=$(_ctx_escape_regex "$func_name")
-
-  # Use grep -w for portable word boundary matching
+  # Use grep -w for portable word boundary matching (no regex escaping needed)
   grep -rwn --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' \
     --include='*.py' --include='*.go' --include='*.rs' --include='*.sh' \
     --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=vendor \
@@ -204,6 +201,7 @@ $importers
     [ -n "$context" ] && echo "$context"
     [ -n "$import_context" ] && echo "$import_context"
   fi
+  return 0
 }
 
 # If run directly (not sourced)

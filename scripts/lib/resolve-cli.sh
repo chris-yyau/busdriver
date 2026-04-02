@@ -287,7 +287,7 @@ execute_review() {
   # All CLIs receive prompts via stdin to avoid ARG_MAX limits on large diffs.
   # Use printf instead of echo for binary-safe output.
   case "$cli" in
-    codex)   printf '%s' "$prompt" | _portable_timeout "$duration" codex review - 2>&1 ;;
+    codex)   printf '%s' "$prompt" | _portable_timeout "$duration" codex exec -s read-only - 2>&1 ;;
     gemini)  printf '%s' "$prompt" | _portable_timeout "$duration" gemini 2>&1 ;;
     claude)  printf '%s' "$prompt" | _portable_timeout "$duration" claude -p --output-format text 2>&1 ;;
     aider)   local _tmp; _tmp=$(mktemp -t busdriver-aider-XXXXXX)

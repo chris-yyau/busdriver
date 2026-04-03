@@ -309,10 +309,10 @@ MD_COUNT=$(echo "$MARKDOWN_FINDINGS" | python3 -c "import sys,json; print(len(js
 # Collect smart context (callers, importers of changed code)
 echo ""
 echo "🔎 Collecting cross-file context..."
-SMART_CONTEXT_OUTPUT=$(collect_smart_context "$STAGED_DIFF" "$FILTERED_FILES")
+SMART_CONTEXT_OUTPUT=$(collect_smart_context "$STAGED_DIFF" "$FILTERED_FILES" || true)
 
 # Collect docs context (doc files referencing changed code + extracted symbols)
-DOCS_CONTEXT_OUTPUT=$(collect_docs_context "$FILTERED_FILES" "$STAGED_DIFF")
+DOCS_CONTEXT_OUTPUT=$(collect_docs_context "$FILTERED_FILES" "$STAGED_DIFF" || true)
 
 # Load previous changelog for context continuity
 PREV_CHANGELOG=$("$SCRIPT_DIR/load_changelog.sh" 2>/dev/null || echo "")

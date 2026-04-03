@@ -89,6 +89,7 @@ _find_callers() {
     --include='*.py' --include='*.go' --include='*.rs' --include='*.sh' \
     --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=vendor \
     --exclude-dir='__pycache__' --exclude-dir='.claude' \
+    --exclude-dir='.next' --exclude-dir=dist --exclude-dir=build --exclude-dir=out \
     "$func_name" "$repo_root" 2>/dev/null | \
     grep -vE '(/|^)(test_|_test\.|\.test\.|\.spec\.|tests/|spec/)' | \
     head -n "$max_lines" || true
@@ -116,6 +117,7 @@ _find_importers() {
     --include='*.py' --include='*.go' --include='*.rs' \
     --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=vendor \
     --exclude-dir='__pycache__' --exclude-dir='.claude' \
+    --exclude-dir='.next' --exclude-dir=dist --exclude-dir=build --exclude-dir=out \
     -E "(import.*['\"].*${escaped_module}['\"]|require\(['\"].*${escaped_module}['\"]|from\s+.*${escaped_module}\s+import)" "$repo_root" 2>/dev/null | \
     head -n "$max_lines" || true
 }

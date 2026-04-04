@@ -30,8 +30,27 @@ _sast_timeout() {
   elif command -v gtimeout &>/dev/null; then
     gtimeout "$duration" "$@"
   else
-    # Perl fallback for macOS — pass duration safely as argument
-    perl -e 'alarm shift @ARGV; exec @ARGV' "$duration" "$@"
+    # Perl fallback for macOS — fork + alarm (exec alone loses the alarm handler)
+    perl -e '
+      use POSIX ":sys_wait_h";
+      our $pid = fork();
+      if (!defined $pid) { die "fork failed: $!"; }
+      if ($pid == 0) { alarm 0; exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
+      $SIG{ALRM} = sub {
+        if ($pid) {
+          kill "TERM", $pid;
+          # Give child 2s to exit, then KILL to prevent stray processes
+          for (1..4) { last if waitpid($pid, WNOHANG) > 0; select(undef,undef,undef,0.5); }
+          kill "KILL", $pid if waitpid($pid, WNOHANG) == 0;
+        }
+        exit 124;
+      };
+      alarm $ARGV[0];
+      waitpid($pid, 0);
+      alarm 0;
+      if ($? & 127) { exit(128 + ($? & 127)); }
+      exit($? >> 8);
+    ' "$duration" "$@"
   fi
 }
 

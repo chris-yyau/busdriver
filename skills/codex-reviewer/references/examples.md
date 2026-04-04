@@ -102,15 +102,14 @@ supabase functions deploy my-function
 
 ### Creating a Wrapper Function
 
-Create a wrapper function that ensures consistent automation parameters:
+Run the review as a **blocking** call (never in background):
 
 ```python
-def run_codex_review(iteration_num):
+def run_codex_review():
     return Bash(
-        command="bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/execute_review.sh",
-        description=f"Run Codex review iteration {iteration_num}",
-        run_in_background=True,  # Always included
-        timeout=600000
+        command="bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh",
+        description="Run Codex review (blocking gate)",
+        timeout=1260000  # 21 min timeout
     )
 ```
 
@@ -119,58 +118,28 @@ def run_codex_review(iteration_num):
 **Scenario:** Refactored authentication system, expecting multiple review cycles
 
 ```bash
-# Initialize counter
-echo "1" > /tmp/codex-iteration.txt
+CODEX_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
 
-# --- ITERATION 1 ---
-ITERATION=$(cat /tmp/codex-iteration.txt)  # 1
-codex review "Review the uncommitted changes..."
-# Result: FAIL - 12 issues (6 high, 6 medium)
+# Initialize state-based review loop (max 10 iterations)
+bash "$CODEX_SCRIPTS/init-review-loop.sh" --force 10
 
-# Fix issues
-[Fix SQL injection, add input validation, fix error handling]
-git add -A
-echo "$((ITERATION + 1))" > /tmp/codex-iteration.txt  # 2
+# Each call does ONE review pass:
+#   Exit 0 = PASS → proceed to commit
+#   Exit 1 = FAIL → fix issues, stage, call again
+#   Exit 2 = TOO_LARGE → split into smaller commits
+set -e  # Ensure failed review blocks commit
+bash "$CODEX_SCRIPTS/run-review-loop.sh"
+# If we reach here, review PASSED
 
-# --- DO NOT STOP HERE ---
-# --- DO NOT ASK PERMISSION ---
-# --- AUTOMATICALLY CONTINUE ---
-
-# --- ITERATION 2 ---
-ITERATION=$(cat /tmp/codex-iteration.txt)  # 2
-codex review "Review the uncommitted changes..."
-# Result: FAIL - 5 issues (2 high, 3 medium)
-
-# Fix remaining issues
-[Fix authentication bypass, add rate limiting, improve logging]
-git add -A
-echo "$((ITERATION + 1))" > /tmp/codex-iteration.txt  # 3
-
-# --- CONTINUE AGAIN ---
-
-# --- ITERATION 3 ---
-ITERATION=$(cat /tmp/codex-iteration.txt)  # 3
-codex review "Review the uncommitted changes..."
-# Result: PASS
-
-# NOW proceed to tests
 npm test
-# Result: PASS
-
-# Clean up counter
-rm /tmp/codex-iteration.txt
-
-# NOW can commit
-git commit -m "Refactor authentication system
-
-Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
+git commit -m "Refactor authentication system"
 ```
 
 **Key points:**
-- Loop continued automatically through 3 iterations
-- No permission asked between cycles
-- Iteration counter tracked progress
-- Only stopped at PASS
+- Each `run-review-loop.sh` call does one review pass and exits
+- The caller (Claude or script) handles fix→re-stage→re-run
+- State tracked in `.claude/codex-review-state.md` with iteration history
+- Cleans up state file on PASS; preserves on max iterations for inspection
 
 ## Example 2: Reaching Max Iterations
 

@@ -94,11 +94,10 @@ git -C "$REPO_DIR" rev-parse --is-inside-work-tree &>/dev/null || exit 0
 # ── Skip overrides (shared with commit gate) ──────────────────────────
 if [ -f ".claude/skip-codex-review.local" ]; then
     FILE_AGE=999
-    if stat -f %m ".claude/skip-codex-review.local" &>/dev/null; then
-        FILE_AGE=$(( $(date +%s) - $(stat -f %m ".claude/skip-codex-review.local") ))
-    elif stat -c %Y ".claude/skip-codex-review.local" &>/dev/null; then
-        FILE_AGE=$(( $(date +%s) - $(stat -c %Y ".claude/skip-codex-review.local") ))
-    fi
+    _MTIME=$(stat -f %m ".claude/skip-codex-review.local" 2>/dev/null) \
+        || _MTIME=$(stat -c %Y ".claude/skip-codex-review.local" 2>/dev/null) \
+        || _MTIME=""
+    [ -n "$_MTIME" ] && FILE_AGE=$(( $(date +%s) - _MTIME ))
     if [ "$FILE_AGE" -lt 30 ]; then
         rm -f ".claude/skip-codex-review.local"
         block_emit "BLOCKED: skip-codex-review.local was created moments ago (likely self-bypass). Run /codex-reviewer instead."

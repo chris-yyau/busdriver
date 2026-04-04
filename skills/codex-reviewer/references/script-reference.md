@@ -53,42 +53,27 @@ bash scripts/run-review-loop.sh
 
 **Behavior:**
 1. Reads current state from `.claude/codex-review-state.md`
-2. Loads previous changelog (if available)
-3. Runs codex review with full prompt
-4. Parses JSON result
-5. Updates state file
-6. Returns JSON result
+2. Runs SAST tools (semgrep, shellcheck, trufflehog) if available
+3. Collects smart context (callers, importers, docs references)
+4. Runs codex review with enriched prompt
+5. Parses result and updates state file
+6. Outputs human-readable progress logs to stdout
 
 **Output:**
-- JSON with `status` ("PASS" or "FAIL") and `issues` array
-- Updates `.claude/codex-review-state.md` with results
-- Removes state file on PASS (keeps changelog intact)
+- Human-readable progress and review results to stdout
+- Updates `.claude/codex-review-state.md` with iteration results
+- Removes state file on PASS; preserves on failure for inspection
 
 **Exit codes:**
-- 0: Review passed or completed iteration
-- 1: State file missing or codex command failed
-- 2: Max iterations reached
+- 0: Review passed
+- 1: Review failed, state missing, or max iterations reached
+- 2: Diff too large — split into smaller commits
+- 3: Builtin fallback triggered (no external CLI available)
+- 124: Codex review timed out
 
-### execute_review.sh (Legacy)
+### execute_review.sh (Removed)
 
-**Purpose:** Legacy review execution for backward compatibility.
-
-**Usage:**
-```bash
-bash scripts/execute_review.sh
-```
-
-**Requirements:**
-- `/tmp/codex-iteration.txt` with current iteration number
-- Staged git changes
-
-**Behavior:**
-1. Reads iteration from `/tmp/codex-iteration.txt`
-2. Loads previous changelog (if available)
-3. Runs codex review
-4. Returns JSON result
-
-**Note:** This script doesn't auto-increment or manage state. Use `run-review-loop.sh` for modern approach.
+This legacy script has been removed. Use `run-review-loop.sh` for all review workflows.
 
 ## Helper Scripts
 

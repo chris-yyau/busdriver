@@ -54,8 +54,8 @@ All gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects 
 ### Codex Reviewer (Pre-Commit + Pre-PR)
 **Trigger:** `git commit` OR `gh pr create` in Bash
 **Pre-commit (fast — 1 voice):** Blocks until `/codex-reviewer` passes → writes `.claude/codex-review-passed.local` marker. Consumed after successful commit via PostToolUse. DEGRADED markers rejected. **Design-reviewed bypass:** If ALL staged files are design-reviewed specs (`.md` in `plans/`/`specs/` or basename PLAN/DESIGN/ARCHITECTURE, each with `<!-- design-reviewed: PASS -->`), Gate 2 auto-passes — codex review is redundant after 3-tier design review.
-**Pre-PR (deep — multi-voice):** Blocks `gh pr create` until codex review passes. Runs codex CLI pass THEN 6 parallel review agents (guidelines, bugs, history, cross-commit, security, docs-consistency) with confidence scoring. Blocks on CRITICAL/HIGH at 80+ confidence. Accepts `.claude/pr-review-passed.local` (with HEAD SHA verification). Also passes if all `base..HEAD` commits were per-commit reviewed (tracked in `reviewed-commits.local`). 4-of-6 agent quorum required; <4 agents = fail-closed. `CODEX_PR_FAST=1` skips multi-agent (audited).
-**CLI:** `BUSDRIVER_REVIEW_CLI` selects the review backend (auto/codex/gemini/droid/amp/opencode/claude/aider/builtin/none). Per-role routing via `.claude/busdriver.json` — see README for config format.
+**Pre-PR (deep — multi-voice):** Blocks `gh pr create` until codex review passes. Runs codex CLI pass THEN 6 parallel review agents (guidelines, bugs, history, cross-commit, security, docs-consistency) with confidence scoring. Blocks on CRITICAL/HIGH at 80+ confidence. Accepts `.claude/pr-review-passed.local` (rejects DEGRADED/SKIPPED/BUILTIN markers). Also passes if all `base..HEAD` commits were per-commit reviewed (tracked in `reviewed-commits.local`). 4-of-6 agent quorum required; <4 agents = fail-closed. `CODEX_PR_FAST=1` skips multi-agent (audited).
+**CLI:** `BUSDRIVER_REVIEW_CLI` selects the review backend (auto/codex/gemini/droid/amp/opencode/claude/aider/builtin/none). Per-role routing via `.claude/busdriver.json` — see README for config format. Codex backend uses the official codex-plugin-cc app-server protocol when installed (stable JSON-RPC), with direct CLI fallback.
 **Skip:** `.claude/skip-codex-review.local` (single-use, 30s self-bypass detection) or `SKIP_CODEX_REVIEW=1`
 **Escalation:** 10 consecutive blocks → warn user about escape hatch. `git push` intentionally NOT gated.
 
@@ -217,6 +217,8 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Multi-Service** | monorepo, microservices | `busdriver:dispatching-parallel-agents` + `/pm2` |
 | **Multi-Session Planning** | plan big project | `busdriver:blueprint` |
 | **Multi-Agent** | agent pipeline, parallel teams | `/orchestrate` / `/devfleet` / `claude-devfleet` / `dmux-workflows` / `team-builder` |
+| **Codex Review** | adversarial review, challenge design | `/codex:adversarial-review` command (official plugin) |
+| **Codex Rescue** | delegate task to Codex | `/codex:rescue` command (official plugin) |
 | **External CLI** | send to codex/gemini/droid/amp/opencode | `dispatch-cli` skill |
 | **Multi-Model** | multi-model planning | `/multi-plan`, `/multi-backend`, `/multi-frontend`, `/multi-execute`, `/multi-workflow` |
 | **Council** | perspectives, group wisdom, tradeoffs | `council` skill (4-voice: Architect + Skeptic + Pragmatist + Critic) |

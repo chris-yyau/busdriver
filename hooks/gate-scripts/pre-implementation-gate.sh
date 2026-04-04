@@ -139,11 +139,10 @@ if [ -f ".claude/skip-design-review.local" ]; then
     # Reject skip files created within the last 30 seconds — likely Claude self-bypass.
     # A human-created skip file (via terminal) will typically be older.
     FILE_AGE=999
-    if stat -f %m ".claude/skip-design-review.local" &>/dev/null; then
-        FILE_AGE=$(( $(date +%s) - $(stat -f %m ".claude/skip-design-review.local") ))
-    elif stat -c %Y ".claude/skip-design-review.local" &>/dev/null; then
-        FILE_AGE=$(( $(date +%s) - $(stat -c %Y ".claude/skip-design-review.local") ))
-    fi
+    _MTIME=$(stat -f %m ".claude/skip-design-review.local" 2>/dev/null) \
+        || _MTIME=$(stat -c %Y ".claude/skip-design-review.local" 2>/dev/null) \
+        || _MTIME=""
+    [ -n "$_MTIME" ] && FILE_AGE=$(( $(date +%s) - _MTIME ))
     if [ "$FILE_AGE" -lt 30 ]; then
         # Likely self-bypass — reject and warn
         rm -f ".claude/skip-design-review.local"

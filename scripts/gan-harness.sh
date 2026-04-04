@@ -61,11 +61,16 @@ phase()  { echo -e "\n${PURPLE}════════════════�
 extract_score() {
   # Extract the TOTAL weighted score from a feedback file
   local file="$1"
-  # Look for **TOTAL** or **X.X/10** pattern
-  grep -oP '(?<=\*\*TOTAL\*\*.*\*\*)[0-9]+\.[0-9]+' "$file" 2>/dev/null \
-    || grep -oP '(?<=TOTAL.*\|.*\| \*\*)[0-9]+\.[0-9]+' "$file" 2>/dev/null \
-    || grep -oP 'Verdict:.*([0-9]+\.[0-9]+)' "$file" 2>/dev/null | grep -oP '[0-9]+\.[0-9]+' \
-    || echo "0.0"
+  local result
+  # POSIX-compatible score extraction (grep -P not available on macOS)
+  # Note: sed -n exits 0 even with no match, so we test output non-emptiness
+  result=$(sed -n 's/.*\*\*TOTAL\*\*[^*]*\*\*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$file" 2>/dev/null | head -1)
+  [ -n "$result" ] && { echo "$result"; return; }
+  result=$(sed -n 's/.*TOTAL.*|.*| \*\*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$file" 2>/dev/null | head -1)
+  [ -n "$result" ] && { echo "$result"; return; }
+  result=$(sed -n 's/.*Verdict:.*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$file" 2>/dev/null | head -1)
+  [ -n "$result" ] && { echo "$result"; return; }
+  echo "0.0"
 }
 
 score_passes() {

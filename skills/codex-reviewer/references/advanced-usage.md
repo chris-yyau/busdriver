@@ -26,7 +26,7 @@ After successful commits, the skill can save changelog information:
 
 **Loading previous changelog:**
 
-The `execute_review.sh` script automatically loads changelog from the previous task (if available) and injects it into the review prompt. This provides context about recent changes.
+The `run-review-loop.sh` script automatically loads changelog from the previous task (if available) and injects it into the review prompt. This provides context about recent changes.
 
 **Error handling:**
 - If directory creation fails → warning shown, workflow continues
@@ -204,30 +204,14 @@ set -e
 
 echo "Running codex review..."
 
-# Initialize iteration counter
-echo "1" > /tmp/codex-iteration.txt
+CODEX_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
 
-# Run review loop
-MAX_ITER=3
-for i in $(seq 1 $MAX_ITER); do
-    RESULT=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/execute_review.sh)
-    STATUS=$(echo "$RESULT" | jq -r '.status')
+# Initialize (--force in case a prior loop is active)
+bash "$CODEX_SCRIPTS/init-review-loop.sh" --force 3
 
-    if [ "$STATUS" = "PASS" ]; then
-        rm /tmp/codex-iteration.txt
-        exit 0
-    fi
-
-    # Show issues
-    echo "$RESULT" | jq -r '.issues[] | "[\(.severity)] \(.file):\(.line) - \(.description)"'
-
-    # In pre-commit hook, we can't auto-fix, so fail
-    if [ $i -eq $MAX_ITER ]; then
-        echo "Review failed after $MAX_ITER iterations"
-        rm /tmp/codex-iteration.txt
-        exit 1
-    fi
-done
+# run-review-loop.sh exits 0 on PASS, non-zero on FAIL
+# With set -e, a failing review exits the hook automatically
+bash "$CODEX_SCRIPTS/run-review-loop.sh"
 ```
 
 ### Integration with Task Management
@@ -327,8 +311,9 @@ for repo in repo1 repo2 repo3; do
     cd $repo
     echo "Reviewing $repo..."
 
-    echo "1" > /tmp/codex-iteration.txt
-    bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/execute_review.sh
+    CODEX_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
+    bash "$CODEX_SCRIPTS/init-review-loop.sh" 3
+    bash "$CODEX_SCRIPTS/run-review-loop.sh"
 
     if [ $? -eq 0 ]; then
         echo "✅ $repo passed review"
@@ -409,7 +394,7 @@ git rev-parse HEAD > .last-review-commit
 Add debugging to review scripts:
 
 ```bash
-# In execute_review.sh
+# In run-review-loop.sh
 set -x  # Enable debug mode
 
 # Log all variables

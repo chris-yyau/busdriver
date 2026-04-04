@@ -73,7 +73,12 @@ REVIEW_MODE="${CODEX_REVIEW_MODE:-commit}"
 
 # Detect base branch for PR mode
 if [ "$REVIEW_MODE" = "pr" ]; then
-  PR_BASE_BRANCH="${CODEX_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo "main")}"
+  PR_BASE_BRANCH="${CODEX_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}"
+  # Auto-prefix origin/ if user provided a branch name without remote prefix
+  # (e.g. CODEX_PR_BASE=main → origin/main, CODEX_PR_BASE=feature/foo → origin/feature/foo)
+  if [[ -n "${CODEX_PR_BASE:-}" && "$PR_BASE_BRANCH" != origin/* ]]; then
+    PR_BASE_BRANCH="origin/${PR_BASE_BRANCH}"
+  fi
 fi
 
 # Create state file with YAML frontmatter

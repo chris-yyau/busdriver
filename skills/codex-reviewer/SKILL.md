@@ -308,9 +308,11 @@ Before launching the expensive multi-agent review, check whether the branch stay
 **Step 1.5b: Gather intent and changes.** Read the matched plan file. Also read `TODOS.md` (if it exists), commit messages, and PR description. Gather the actual diff by computing the merge-base explicitly:
 ```bash
 PR_BASE=${CODEX_PR_BASE:-}
-[ -z "$PR_BASE" ] && PR_BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
-[ -z "$PR_BASE" ] && PR_BASE=main
-MERGE_BASE=$(git merge-base "origin/${PR_BASE}" HEAD)
+[ -z "$PR_BASE" ] && PR_BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||')
+[ -z "$PR_BASE" ] && PR_BASE=origin/main
+# Auto-prefix origin/ if bare branch name provided
+[[ -n "${CODEX_PR_BASE:-}" && "$PR_BASE" != origin/* ]] && PR_BASE="origin/${PR_BASE}"
+MERGE_BASE=$(git merge-base "${PR_BASE}" HEAD)
 git log --oneline "${MERGE_BASE}..HEAD"
 git diff "${MERGE_BASE}..HEAD" --stat
 gh pr view --json body -q .body 2>/dev/null || true
@@ -419,7 +421,9 @@ After all 6 agents return:
 
 **Write the marker** (the script does NOT write it in PR mode — you must):
 ```bash
-MERGE_BASE=$(git merge-base "origin/${PR_BASE:-main}" HEAD)
+PR_BASE=${CODEX_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}
+[[ -n "${CODEX_PR_BASE:-}" && "$PR_BASE" != origin/* ]] && PR_BASE="origin/${PR_BASE}"
+MERGE_BASE=$(git merge-base "${PR_BASE}" HEAD)
 DIFF_OUTPUT=$(git diff "${MERGE_BASE}...HEAD" 2>/dev/null)
 if [ -n "$DIFF_OUTPUT" ]; then
   DIFF_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
@@ -451,7 +455,7 @@ The pre-PR gate accepts markers that are 64-hex SHA-256 hashes or `PASS-<epoch>`
 **Environment variables:**
 - `BUSDRIVER_REVIEW_CLI=auto` — choose review backend (auto/codex/gemini/droid/amp/opencode/claude/aider/builtin/none). Per-role routing: `.claude/busdriver.json`
 - `CODEX_REVIEW_MODE=pr` — switches to PR deep review mode
-- `CODEX_PR_BASE=main` — override base branch (defaults to `origin/HEAD` or `main`)
+- `CODEX_PR_BASE=main` — override base branch (auto-prefixed to `origin/<branch>` if no `origin/` prefix; defaults to `origin/HEAD` or `origin/main`)
 - `CODEX_PR_FAST=1` — skip multi-agent review, use fast mode only (audited in bypass-log)
 
 ## Builtin Fallback (Exit Code 3)

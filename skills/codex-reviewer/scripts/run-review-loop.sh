@@ -54,7 +54,12 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   fi
 
   # PR mode: check for branch diff against base
-  PR_BASE_BRANCH="${CODEX_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo "main")}"
+  PR_BASE_BRANCH="${CODEX_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}"
+  # Auto-prefix origin/ if user provided a branch name without remote prefix
+  # (e.g. CODEX_PR_BASE=main → origin/main, CODEX_PR_BASE=feature/foo → origin/feature/foo)
+  if [[ -n "${CODEX_PR_BASE:-}" && "$PR_BASE_BRANCH" != origin/* ]]; then
+    PR_BASE_BRANCH="origin/${PR_BASE_BRANCH}"
+  fi
   if git diff --quiet "${PR_BASE_BRANCH}...HEAD" 2>/dev/null; then
     echo "❌ No changes between ${PR_BASE_BRANCH} and HEAD" >&2
     exit 1

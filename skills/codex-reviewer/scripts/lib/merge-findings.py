@@ -41,6 +41,13 @@ def deduplicate(findings: list[dict]) -> list[dict]:
     return seen
 
 
+def _is_deterministic_blocker(finding: dict) -> bool:
+    """Check if a finding is from a deterministic source (SAST/lint) at blocking severity."""
+    severity = finding.get("severity", "")
+    source = finding.get("source", "")
+    return severity in ("high", "medium") and (source.startswith("sast:") or source.startswith("lint:"))
+
+
 def determine_status(findings: list[dict]) -> str:
     """FAIL if any blocking finding exists.
 
@@ -59,12 +66,9 @@ def determine_status(findings: list[dict]) -> str:
     blocking_severities = {"high", "medium"} if iteration <= 2 else {"high"}
 
     for f in findings:
-        severity = f.get("severity", "")
-        source = f.get("source", "")
-        # SAST/lint findings always block at high/medium regardless of iteration
-        if severity in ("high", "medium") and (source.startswith("sast:") or source.startswith("lint:")):
+        if _is_deterministic_blocker(f):
             return "FAIL"
-        if severity not in blocking_severities:
+        if f.get("severity", "") not in blocking_severities:
             continue
         # Normalize confidence: accept both 0-1 and 0-100 scales
         confidence = f.get("confidence")

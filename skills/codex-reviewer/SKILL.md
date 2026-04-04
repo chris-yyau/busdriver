@@ -451,7 +451,7 @@ The pre-PR gate accepts markers that are 64-hex SHA-256 hashes or `PASS-<epoch>`
 **Environment variables:**
 - `BUSDRIVER_REVIEW_CLI=auto` — choose review backend (auto/codex/gemini/droid/amp/opencode/claude/aider/builtin/none). Per-role routing: `.claude/busdriver.json`
 - `CODEX_REVIEW_MODE=pr` — switches to PR deep review mode
-- `CODEX_PR_BASE=main` — override base branch (defaults to `origin/HEAD` or `main`)
+- `CODEX_PR_BASE=main` — override base branch (auto-prefixed to `origin/main`; defaults to `origin/HEAD` or `origin/main`)
 - `CODEX_PR_FAST=1` — skip multi-agent review, use fast mode only (audited in bypass-log)
 
 ## Builtin Fallback (Exit Code 3)

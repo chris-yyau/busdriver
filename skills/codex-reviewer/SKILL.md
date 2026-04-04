@@ -35,6 +35,16 @@ EVERY commit MUST:
 
 Enforce automated code quality gates before committing or deploying code. Review code for bugs, security issues, performance problems, and maintainability using OpenAI Codex CLI.
 
+## Codex Protocol
+
+This skill uses the official **codex-plugin-cc** app-server protocol when installed (preferred), falling back to direct `codex exec` CLI invocation. The app-server protocol communicates via JSON-RPC, avoiding the stdin piping issues that cause CLI hangs.
+
+**Complementary commands** (from the official codex plugin — use directly, not through this skill):
+- `/codex:adversarial-review` — Steerable challenge review targeting design choices and risk areas
+- `/codex:rescue` — Delegate investigation/fix tasks to Codex in background
+- `/codex:review` — On-demand read-only Codex review (outside the gate pipeline)
+- `/codex:status`, `/codex:result`, `/codex:cancel` — Manage background Codex jobs
+
 ## When to Use
 
 **BLOCKING REQUIREMENT:** Invoke this skill BEFORE:
@@ -409,8 +419,14 @@ After all 6 agents return:
 
 **Write the marker** (the script does NOT write it in PR mode — you must):
 ```bash
-mkdir -p .claude && echo "PASS pr-review $(git rev-parse --short HEAD) $(date +%s)" > .claude/pr-review-passed.local
+MERGE_BASE=$(git merge-base "origin/${PR_BASE:-main}" HEAD)
+DIFF_OUTPUT=$(git diff "${MERGE_BASE}...HEAD" 2>/dev/null)
+if [ -n "$DIFF_OUTPUT" ]; then
+  DIFF_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+  mkdir -p .claude && echo "$DIFF_HASH" > .claude/pr-review-passed.local
+fi
 ```
+The marker must be a SHA-256 hash (64 hex chars) or a timestamped pass (`PASS-<epoch>`). The gate rejects `DEGRADED`, `SKIPPED-NONE`, and `BUILTIN-` prefixed markers for PR review.
 
 ### Degraded States
 
@@ -426,11 +442,11 @@ Wait for all agents. Only apply quorum AFTER agents have timed out (10 min), nev
 
 ### Marker Encoding
 
-PR markers include diff hash for staleness detection:
+PR markers contain a SHA-256 hash of the `base...HEAD` diff for staleness detection:
 ```
-PASS pr-review <short-sha-of-HEAD> <timestamp>
+<64-hex-char-sha256-hash>
 ```
-The pre-PR gate verifies the marker's SHA matches current HEAD. Stale markers from prior reviews are rejected.
+The pre-PR gate accepts markers that are 64-hex SHA-256 hashes or `PASS-<epoch>` timestamps. It rejects `DEGRADED`, `SKIPPED-NONE`, and `BUILTIN-` prefixed markers.
 
 **Environment variables:**
 - `BUSDRIVER_REVIEW_CLI=auto` — choose review backend (auto/codex/gemini/droid/amp/opencode/claude/aider/builtin/none). Per-role routing: `.claude/busdriver.json`
@@ -495,7 +511,7 @@ The review loop checks for doc/code mismatches:
 - PR deep review includes a dedicated docs-consistency agent (6th agent)
 
 **Environment variables:**
-- `CODEX_SKIP_DOCS_CONTEXT=1` — skip docs context collection
+- `CODEX_DOCS_CONTEXT=1` — enable docs context collection (default: off)
 - `CODEX_MAX_DOC_SNIPPETS=5` — max doc file snippets to include (validated numeric)
 - `CODEX_MAX_ENRICHMENT_LINES=100` — max lines of smart-context and docs-context injected into prompt (validated numeric)
 
@@ -546,7 +562,7 @@ Load these references as needed:
 - **`references/workflow-details.md`** - Detailed iteration examples, automation patterns
 - **`references/advanced-features.md`** - Changelog system, completion promises, Ralph Loop details
 - **`references/script-reference.md`** - Complete script documentation and integration patterns
-- **`references/legacy-approach.md`** - Manual counter method (backward compatibility)
+- **`references/legacy-approach.md`** - Legacy counter method (deprecated — use state-based approach)
 - **`references/troubleshooting.md`** - Common issues and solutions
 - **`references/examples.md`** - Violation examples and best practices
 - **`references/advanced-usage.md`** - CI/CD integration, custom prompts, multi-repo workflows

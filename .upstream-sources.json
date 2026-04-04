@@ -675,17 +675,7 @@
       "upstream_path": "commands/write-plan.md"
     },
     {
-      "path": "hooks/gate-scripts/auto-push-config.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
       "path": "hooks/gate-scripts/check-design-document.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "hooks/gate-scripts/check-plugin-updates.sh",
       "source": "local",
       "status": "local"
     },
@@ -2425,37 +2415,12 @@
       "status": "local"
     },
     {
-      "path": "skills/design-reviewer/scripts/auto_fix_engine.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/scripts/consensus_analyzer.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/scripts/generate_report.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
       "path": "skills/design-reviewer/scripts/init-design-review.sh",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/design-reviewer/scripts/lib/confidence_scoring.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
       "path": "skills/design-reviewer/scripts/lib/extract_review_json.py",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/scripts/lib/semantic_similarity.sh",
       "source": "local",
       "status": "local"
     },
@@ -2471,11 +2436,6 @@
     },
     {
       "path": "skills/design-reviewer/scripts/run-design-review-loop.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "skills/design-reviewer/scripts/run_design_review.sh",
       "source": "local",
       "status": "local"
     },

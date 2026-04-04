@@ -81,23 +81,16 @@ git add -A  # Stage all changes
 
 ### Issue: Getting "Do you want to proceed?" prompt during review loop
 
-**Root cause:** Missing `run_in_background=true` in Bash tool calls
+**Root cause:** Review must run as a **blocking** call, not in background.
 
 **Solution:**
 
-1. Verify all Bash calls use run_in_background=true:
+1. Run the review as a blocking call with a long timeout:
    ```python
-   # CORRECT - automated
+   # CORRECT - blocking gate
    Bash(
-     command="bash execute_review.sh",
-     run_in_background=true,  # This prevents prompts
-     timeout=600000
-   )
-
-   # WRONG - will prompt
-   Bash(
-     command="bash execute_review.sh",
-     timeout=600000
+     command="bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh",
+     timeout=1260000  # 21 min timeout
    )
    ```
 
@@ -105,30 +98,33 @@ git add -A  # Stage all changes
    - Ensure dangerous commands approval is disabled for trusted directories
    - Check ~/.claude/config.json for approval policies
 
-### Issue: Iteration counter commands asking for approval
+### Issue: Review loop says "Active review loop already exists"
 
-**Solution:** These are simple file writes and shouldn't need approval. If they do:
-1. Use run_in_background=false for simple commands (< 2 seconds)
-2. Only use run_in_background=true for long-running commands like codex review
-3. Check if your shell has aliases that make commands interactive
+**Solution:** Use `--force` flag to re-initialize:
+```bash
+CODEX_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
+bash "$CODEX_SCRIPTS/init-review-loop.sh" --force 10
+bash "$CODEX_SCRIPTS/run-review-loop.sh"
+```
 
 ### Issue: Automation works for first iteration, then prompts on second
 
-**Solution:** This means run_in_background=true wasn't used consistently. Every review call in the loop must use it:
+**Solution:** Each `run-review-loop.sh` call does one review pass. The caller handles the fix→re-stage→re-run cycle:
 ```python
-# Iteration 1: run_in_background=true ✓
-# Iteration 2: run_in_background=true ✓  <- Must be here too!
-# Iteration 3: run_in_background=true ✓  <- And here!
+# Each call does ONE pass — caller re-runs on FAIL
+Bash(
+    command="bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh",
+    timeout=1260000  # blocking, NOT background
+)
 ```
 
-**Best Practice:** Create a wrapper function that always includes the flag:
+**Best Practice:** Run the review as a blocking call (never in background):
 ```python
-def run_codex_review(iteration_num):
+def run_codex_review():
     return Bash(
-        command="bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/execute_review.sh",
-        description=f"Run Codex review iteration {iteration_num}",
-        run_in_background=True,  # Always included
-        timeout=600000
+        command="bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh",
+        description="Run Codex review (blocking gate)",
+        timeout=1260000  # 21 min timeout
     )
 ```
 

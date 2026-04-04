@@ -2,7 +2,8 @@
 # Iteration history management for codex review convergence
 # Tracks issues found across iterations so the LLM can converge
 
-ITERATION_HISTORY_FILE="/tmp/codex-iteration-history.jsonl"
+# Store iteration history alongside review state in .claude/ (safe from /tmp symlink attacks)
+ITERATION_HISTORY_FILE=".claude/codex-iteration-history.local.jsonl"
 
 # Append current iteration's issues to history
 # Usage: append_iteration_history <iteration_number> <json_output>
@@ -37,7 +38,7 @@ load_iteration_history() {
   python3 -c "
 import sys, json
 
-lines = open('$ITERATION_HISTORY_FILE').read().strip().split('\n')
+lines = open(sys.argv[1]).read().strip().split('\n')
 if not lines or lines == ['']:
     sys.exit(0)
 
@@ -65,7 +66,40 @@ for line in lines:
         print('')
     except:
         continue
-" 2>/dev/null
+" "$ITERATION_HISTORY_FILE" 2>/dev/null
+}
+
+# Shared Python snippet for fingerprinting blocking issues
+# Used by both compute_issue_fingerprint and is_stalled
+_FINGERPRINT_PY='
+import sys, json, hashlib
+issues = json.load(sys.stdin)
+if isinstance(issues, dict):
+    issues = issues.get("issues", [])
+blocking = sorted(
+    f"{i[\"file\"]}:{i[\"severity\"]}:{i.get(\"description\", \"\")[:50]}"
+    for i in issues
+    if i.get("severity") in ("high", "medium")
+)
+print(hashlib.md5("|".join(blocking).encode()).hexdigest() if blocking else "empty")
+'
+
+# Compute a fingerprint of the current blocking issue set
+# Used for stall detection: if fingerprint matches previous iteration, loop is stuck
+compute_issue_fingerprint() {
+  local json_output="$1"
+  echo "$json_output" | python3 -c "$_FINGERPRINT_PY" 2>/dev/null || echo "unknown"
+}
+
+# Check if current issue set matches the previous iteration (stall detection)
+# Returns 0 (true) if stalled, 1 (false) if progressing
+is_stalled() {
+  local current_fingerprint="$1"
+  [ ! -f "$ITERATION_HISTORY_FILE" ] && return 1
+  local prev_fingerprint
+  # Extract issues array from the last JSONL entry, then fingerprint
+  prev_fingerprint=$(tail -1 "$ITERATION_HISTORY_FILE" 2>/dev/null | python3 -c "$_FINGERPRINT_PY" 2>/dev/null) || return 1
+  [ "$current_fingerprint" = "$prev_fingerprint" ]
 }
 
 # Clear iteration history (called on PASS or init)

@@ -111,7 +111,7 @@ if [ "$MARKER_ACTION" = "BLOCK_MARKER" ]; then
     block_emit "BLOCKED: Cannot write to gate marker file ($MARKER_TARGET) directly.
 Gate markers are written by review infrastructure after a genuine review pass.
 Writing them manually forges compliance. Run /codex-reviewer or /design-reviewer instead.
-If you need to skip review, ask the user to create .claude/skip-codex-review.local in their terminal."
+If you need to skip review, ask the user to run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/.claude/skip-codex-review.local"
     exit 0
 fi
 
@@ -139,11 +139,10 @@ if [ -f ".claude/skip-design-review.local" ]; then
     # Reject skip files created within the last 30 seconds — likely Claude self-bypass.
     # A human-created skip file (via terminal) will typically be older.
     FILE_AGE=999
-    if stat -f %m ".claude/skip-design-review.local" &>/dev/null; then
-        FILE_AGE=$(( $(date +%s) - $(stat -f %m ".claude/skip-design-review.local") ))
-    elif stat -c %Y ".claude/skip-design-review.local" &>/dev/null; then
-        FILE_AGE=$(( $(date +%s) - $(stat -c %Y ".claude/skip-design-review.local") ))
-    fi
+    _MTIME=$(stat -f %m ".claude/skip-design-review.local" 2>/dev/null) \
+        || _MTIME=$(stat -c %Y ".claude/skip-design-review.local" 2>/dev/null) \
+        || _MTIME=""
+    [ -n "$_MTIME" ] && FILE_AGE=$(( $(date +%s) - _MTIME ))
     if [ "$FILE_AGE" -lt 30 ]; then
         # Likely self-bypass — reject and warn
         rm -f ".claude/skip-design-review.local"

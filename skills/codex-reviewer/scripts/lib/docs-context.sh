@@ -6,7 +6,7 @@
 # Output: Formatted doc snippets on stdout for prompt injection.
 #
 # Environment:
-#   CODEX_SKIP_DOCS_CONTEXT=1   — skip docs context collection
+#   CODEX_DOCS_CONTEXT=1        — enable docs context collection (default: off)
 #   CODEX_MAX_DOC_SNIPPETS=5    — max doc snippets to include (default: 5)
 
 set -euo pipefail
@@ -62,7 +62,10 @@ collect_docs_context() {
   local files_list="$1"
   local diff_content="${2:-}"
 
-  if [ "${CODEX_SKIP_DOCS_CONTEXT:-0}" = "1" ]; then
+  # Docs context is opt-in: set CODEX_DOCS_CONTEXT=1 to enable.
+  # Default off because doc-heavy repos (shell scripts with co-located .md) generate
+  # 40+ references that bias the reviewer toward doc-consistency over code bugs.
+  if [ "${CODEX_DOCS_CONTEXT:-0}" != "1" ]; then
     return
   fi
 

@@ -276,9 +276,18 @@ else
   elif [ "$((ADDITION_LINES + DELETION_LINES))" -gt "$MAX_TOTAL_LINES_CEILING" ]; then
     TOO_LARGE=true
     TOO_LARGE_REASON="total changed lines ($((ADDITION_LINES + DELETION_LINES))) > $MAX_TOTAL_LINES_CEILING ceiling"
-  elif [ "$STAGED_FILE_COUNT" -gt "$MAX_STAGED_FILES" ]; then
-    TOO_LARGE=true
-    TOO_LARGE_REASON="file count ($STAGED_FILE_COUNT) > $MAX_STAGED_FILES"
+  else
+    # Count only files with additions for file threshold — deletion-only files
+    # have near-zero review complexity and shouldn't trigger splitting
+    FILES_WITH_ADDITIONS=0
+    while IFS=$'\t' read -r added _removed _file; do
+      [ "$added" = "-" ] && added=0
+      [ "$added" -gt 0 ] 2>/dev/null && FILES_WITH_ADDITIONS=$((FILES_WITH_ADDITIONS + 1))
+    done < <(git diff --cached --numstat -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null)
+    if [ "$FILES_WITH_ADDITIONS" -gt "$MAX_STAGED_FILES" ]; then
+      TOO_LARGE=true
+      TOO_LARGE_REASON="files with additions ($FILES_WITH_ADDITIONS) > $MAX_STAGED_FILES (total: $STAGED_FILE_COUNT)"
+    fi
   fi
   if [ "$TOO_LARGE" = true ]; then
     echo ""
@@ -299,7 +308,62 @@ fi
 # Run SAST scan on changed files (deterministic, runs before LLM)
 echo ""
 echo "🔒 Running static analysis..."
-SAST_FINDINGS=$(run_sast_scan "$FILTERED_FILES")
+SAST_FINDINGS_RAW=$(run_sast_scan "$FILTERED_FILES")
+
+# Filter SAST findings to only lines within diff hunks (± 3 line margin).
+# Pre-existing findings in untouched lines are noise, not signal.
+# Uses git diff --unified=0 to get exact hunk ranges.
+DIFF_FOR_FILTER=""
+if [ "$REVIEW_MODE" = "pr" ]; then
+  DIFF_FOR_FILTER=$(git diff --unified=0 "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
+else
+  DIFF_FOR_FILTER=$(git diff --cached --unified=0 -- :/ "${REVIEW_EXCLUDE_ARGS[@]}" 2>/dev/null || true)
+fi
+SAST_FINDINGS=$(printf '%s\n---DIFF---\n%s' "$SAST_FINDINGS_RAW" "$DIFF_FOR_FILTER" | python3 -c "
+import sys, json, re
+
+content = sys.stdin.read()
+parts = content.split('---DIFF---\n', 1)
+findings_raw = parts[0].strip()
+diff_text = parts[1] if len(parts) > 1 else ''
+
+try:
+    findings = json.loads(findings_raw)
+except (json.JSONDecodeError, ValueError):
+    print('[]'); sys.exit(0)
+
+if not findings or not diff_text:
+    print(json.dumps(findings)); sys.exit(0)
+
+# Parse diff hunks: extract (file, start, end) ranges
+HUNK_MARGIN = 3
+hunks = {}  # file -> list of (start, end) tuples
+current_file = None
+for line in diff_text.split('\n'):
+    if line.startswith('+++ b/'):
+        current_file = line[6:]
+    elif line.startswith('@@') and current_file:
+        # Parse @@ -old +new,count @@ format
+        m = re.search(r'\+(\d+)(?:,(\d+))?', line)
+        if m:
+            start = int(m.group(1))
+            count = int(m.group(2)) if m.group(2) else 1
+            end = start + max(count - 1, 0)
+            hunks.setdefault(current_file, []).append((start - HUNK_MARGIN, end + HUNK_MARGIN))
+
+# Filter: keep findings whose file+line falls within a hunk range
+filtered = []
+for f in findings:
+    fpath = f.get('file', '')
+    fline = f.get('line', 0)
+    if fpath not in hunks:
+        continue  # file not in diff at all
+    # Preserve file-level findings (line 0) — e.g. trufflehog secrets
+    if fline == 0 or any(start <= fline <= end for start, end in hunks[fpath]):
+        filtered.append(f)
+
+print(json.dumps(filtered))
+" 2>/dev/null) || SAST_FINDINGS="$SAST_FINDINGS_RAW"
 SAST_COUNT=$(echo "$SAST_FINDINGS" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
 
 # Run markdown checks if .md files are staged
@@ -402,8 +466,9 @@ echo ""
 echo "📊 Parsing results..."
 echo ""
 echo "   Debug: Saving raw $RESOLVED_CLI output..."
-echo "$REVIEW_OUTPUT" > /tmp/codex-raw-output.txt
-echo "   Saved to: /tmp/codex-raw-output.txt (CLI: $RESOLVED_CLI)"
+_RAW_OUTPUT_FILE="${TMPDIR:-/tmp}/codex-raw-output.txt"
+echo "$REVIEW_OUTPUT" > "$_RAW_OUTPUT_FILE"
+echo "   Saved to: $_RAW_OUTPUT_FILE (CLI: $RESOLVED_CLI)"
 echo ""
 
 # Extract JSON from output using shared robust parser
@@ -474,7 +539,8 @@ MERGER="$SCRIPT_DIR/lib/merge-findings.py"
 if [ -f "$MERGER" ] && { [ "$SAST_COUNT" -gt 0 ] || [ "$MD_COUNT" -gt 0 ]; }; then
   echo "📊 Merging SAST + markdown + LLM findings..."
   # Use stdin instead of argv to avoid ARG_MAX limits on large SAST output
-  MERGED_OUTPUT=$(printf '%s\n%s\n%s\n' "$SAST_FINDINGS" "$MARKDOWN_FINDINGS" "$JSON_OUTPUT" | python3 "$MERGER" 2>/dev/null) || MERGED_OUTPUT=""
+  # Pass iteration number so merge-findings can relax severity rules after iteration 2
+  MERGED_OUTPUT=$(printf '%s\n%s\n%s\n' "$SAST_FINDINGS" "$MARKDOWN_FINDINGS" "$JSON_OUTPUT" | CODEX_ITERATION="$ITERATION" python3 "$MERGER" 2>/dev/null) || MERGED_OUTPUT=""
   if [ -n "$MERGED_OUTPUT" ]; then
     JSON_OUTPUT="$MERGED_OUTPUT"
     REVIEW_STATUS=$(echo "$JSON_OUTPUT" | jq -r '.status')
@@ -498,7 +564,7 @@ if [ "$COMPLETION_PROMISE" != "null" ] && [ -n "$COMPLETION_PROMISE" ]; then
     clear_iteration_history
     echo "🧹 Cleaning up temporary files..."
     rm -f "$STATE_FILE" 2>/dev/null
-    rm -f /tmp/codex-iteration.txt 2>/dev/null
+    rm -f "${_RAW_OUTPUT_FILE:-}" 2>/dev/null
 
     echo "🎉 Review loop completed successfully!"
     exit 0
@@ -527,10 +593,10 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
     # PR mode: marker writing depends on whether deep review is enabled.
     # CODEX_PR_FAST=1 skips multi-agent review — write marker immediately.
     # Otherwise, the SKILL.md multi-agent deep review (Step 2) must run after
-    # this script passes. The marker is written by Claude after the 5-agent
+    # this script passes. The marker is written by Claude after the 6-agent
     # review completes. Writing it here would short-circuit the deep review.
     if [ "${CODEX_PR_FAST:-0}" = "1" ]; then
-      git diff "${PR_BASE_BRANCH}...HEAD" 2>/dev/null | shasum -a 256 | cut -d' ' -f1 > ".claude/pr-review-passed.local"
+      git diff "${PR_BASE_BRANCH}...HEAD" 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > ".claude/pr-review-passed.local"
       mkdir -p .claude
       printf '{"ts":"%s","event":"pr-fast-bypass","gate":"pre-pr"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
       echo "   ⚠️  CODEX_PR_FAST=1 — skipped multi-agent deep review (logged)"
@@ -539,15 +605,15 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
     fi
   else
     # Commit mode: write commit marker for pre-commit gate
-    git diff --cached 2>/dev/null | shasum -a 256 | cut -d' ' -f1 > ".claude/codex-review-passed.local"
+    git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > ".claude/codex-review-passed.local"
   fi
 
   # Clean up temporary files
   echo "🧹 Cleaning up temporary files..."
   rm -f "$STATE_FILE" 2>/dev/null
-  rm -f /tmp/codex-iteration.txt 2>/dev/null
+  rm -f "${_RAW_OUTPUT_FILE:-}" 2>/dev/null
   echo "   ✓ Removed state file"
-  echo "   ✓ Removed iteration counter"
+  echo "   ✓ Cleaned up temp files"
   echo "   ✓ Cleared iteration history"
   echo ""
 
@@ -558,6 +624,26 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
   echo ""
   exit 0
 else
+  # Stall detection: if blocking issue set is identical to previous iteration,
+  # the loop is stuck and further iterations won't help (Critic P-1 fix).
+  # Does NOT auto-pass — reports stall and exits non-zero for caller to decide.
+  CURRENT_FINGERPRINT=$(compute_issue_fingerprint "$JSON_OUTPUT")
+  if is_stalled "$CURRENT_FINGERPRINT"; then
+    echo "⚠️  STALL DETECTED - Same blocking issues as previous iteration"
+    echo "   The review loop is not converging. Remaining issues may be false positives"
+    echo "   or require manual judgment."
+    echo ""
+    echo "Stalled issues:"
+    echo "$JSON_OUTPUT" | jq -r '.issues[] | "  [\(.severity)] \(.file):\(.line) - \(.description)"'
+    echo ""
+    echo "Options:"
+    echo "   1. Fix the issues above and re-run"
+    echo "   2. Create .claude/skip-codex-review.local to bypass (manual only)"
+    echo ""
+    rm -f "${_RAW_OUTPUT_FILE:-}" 2>/dev/null
+    exit 1
+  fi
+
   echo "❌ FAIL - Issues found that need fixing"
   echo ""
 
@@ -573,5 +659,6 @@ else
   echo "   3. Run review again: bash scripts/run-review-loop.sh"
   echo "   4. Loop continues automatically until PASS"
   echo ""
+  rm -f "${_RAW_OUTPUT_FILE:-}" 2>/dev/null
   exit 1
 fi

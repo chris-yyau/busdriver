@@ -57,8 +57,10 @@ Field rules:
 - Every finding must reference a specific file and line from the diff.
 - Do not report issues that linters or type checkers would catch (formatting, unused imports).
 - Do not re-report issues from the iteration_history that have already been fixed.
-- Maximum 10 issues per review. Prioritize by severity, then confidence.
-- If all previous issues are fixed and no new issues found, return {"status": "PASS", "issues": []}.
+- For issues from previous iterations where the code was NOT changed: only re-report if severity is HIGH. MEDIUM issues at unchanged locations should be downgraded to LOW after 2 iterations.
+- Maximum 3 NEW issues per iteration (not counting issues from iteration_history). Prioritize by severity, then confidence.
+- Only report findings with confidence >= 70. Suppress uncertain findings.
+- If all previous issues are fixed and no new high-confidence issues found, return {"status": "PASS", "issues": []}.
 - When reviewing shell scripts, check: unquoted variables, missing error handling, unsafe temp files, portability issues, cleanup ordering.
 - When reviewing documentation, verify: factual claims match code, examples are correct, no stale references.
 - When reviewing CI/CD workflows (.github/workflows/*.yml, .gitlab-ci.yml):

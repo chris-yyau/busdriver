@@ -421,7 +421,9 @@ After all 6 agents return:
 
 **Write the marker** (the script does NOT write it in PR mode — you must):
 ```bash
-MERGE_BASE=$(git merge-base "origin/${PR_BASE:-main}" HEAD)
+PR_BASE=${CODEX_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}
+[[ -n "${CODEX_PR_BASE:-}" && "$PR_BASE" != origin/* ]] && PR_BASE="origin/${PR_BASE}"
+MERGE_BASE=$(git merge-base "${PR_BASE}" HEAD)
 DIFF_OUTPUT=$(git diff "${MERGE_BASE}...HEAD" 2>/dev/null)
 if [ -n "$DIFF_OUTPUT" ]; then
   DIFF_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)

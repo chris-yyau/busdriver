@@ -261,7 +261,8 @@ MAX_ITERATIONS = 3
 MAX_ITERATIONS = 15
 
 # Check iteration
-iteration = int(open('/tmp/codex-iteration.txt').read().strip())
+# Iteration is tracked in .claude/codex-review-state.md by run-review-loop.sh
+iteration = 1  # placeholder — actual iteration managed by state file
 if iteration > MAX_ITERATIONS:
     # Handle max iterations
     pass
@@ -415,7 +416,8 @@ Keep history of all review iterations:
 mkdir -p .codex-review-logs
 
 # Save each iteration
-ITERATION=$(cat /tmp/codex-iteration.txt)
+# Iteration number from state file (managed by run-review-loop.sh)
+ITERATION=$(grep '^iteration:' .claude/codex-review-state.md 2>/dev/null | awk '{print $2}' || echo "1")
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 LOG_FILE=".codex-review-logs/iteration-${ITERATION}-${TIMESTAMP}.json"
 

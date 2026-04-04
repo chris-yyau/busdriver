@@ -69,20 +69,26 @@ for line in lines:
 " "$ITERATION_HISTORY_FILE" 2>/dev/null
 }
 
-# Compute a fingerprint of the current blocking issue set (file+severity, sorted)
+# Shared Python snippet for fingerprinting blocking issues
+# Used by both compute_issue_fingerprint and is_stalled
+_FINGERPRINT_PY='
+import sys, json, hashlib
+issues = json.load(sys.stdin)
+if isinstance(issues, dict):
+    issues = issues.get("issues", [])
+blocking = sorted(
+    f"{i[\"file\"]}:{i[\"severity\"]}:{i.get(\"description\", \"\")[:50]}"
+    for i in issues
+    if i.get("severity") in ("high", "medium")
+)
+print(hashlib.md5("|".join(blocking).encode()).hexdigest() if blocking else "empty")
+'
+
+# Compute a fingerprint of the current blocking issue set
 # Used for stall detection: if fingerprint matches previous iteration, loop is stuck
 compute_issue_fingerprint() {
   local json_output="$1"
-  echo "$json_output" | python3 -c "
-import sys, json, hashlib
-data = json.load(sys.stdin)
-blocking = sorted(
-    f'{i[\"file\"]}:{i[\"severity\"]}:{i.get(\"description\", \"\")[:50]}'
-    for i in data.get('issues', [])
-    if i.get('severity') in ('high', 'medium')
-)
-print(hashlib.md5('|'.join(blocking).encode()).hexdigest() if blocking else 'empty')
-" 2>/dev/null || echo "unknown"
+  echo "$json_output" | python3 -c "$_FINGERPRINT_PY" 2>/dev/null || echo "unknown"
 }
 
 # Check if current issue set matches the previous iteration (stall detection)
@@ -91,16 +97,8 @@ is_stalled() {
   local current_fingerprint="$1"
   [ ! -f "$ITERATION_HISTORY_FILE" ] && return 1
   local prev_fingerprint
-  prev_fingerprint=$(tail -1 "$ITERATION_HISTORY_FILE" 2>/dev/null | python3 -c "
-import sys, json, hashlib
-entry = json.loads(sys.stdin.readline())
-blocking = sorted(
-    f'{i[\"file\"]}:{i[\"severity\"]}:{i.get(\"description\", \"\")[:50]}'
-    for i in entry.get('issues', [])
-    if i.get('severity') in ('high', 'medium')
-)
-print(hashlib.md5('|'.join(blocking).encode()).hexdigest() if blocking else 'empty')
-" 2>/dev/null) || return 1
+  # Extract issues array from the last JSONL entry, then fingerprint
+  prev_fingerprint=$(tail -1 "$ITERATION_HISTORY_FILE" 2>/dev/null | python3 -c "$_FINGERPRINT_PY" 2>/dev/null) || return 1
   [ "$current_fingerprint" = "$prev_fingerprint" ]
 }
 

@@ -68,7 +68,7 @@ extract_score() {
   [ -n "$result" ] && { echo "$result"; return; }
   result=$(sed -n 's/.*TOTAL.*|.*| \*\*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$file" 2>/dev/null | head -1)
   [ -n "$result" ] && { echo "$result"; return; }
-  result=$(sed -n 's/.*Verdict:.*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$file" 2>/dev/null | head -1)
+  result=$(sed -n 's/.*Verdict:[^0-9]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$file" 2>/dev/null | head -1)
   [ -n "$result" ] && { echo "$result"; return; }
   echo "0.0"
 }

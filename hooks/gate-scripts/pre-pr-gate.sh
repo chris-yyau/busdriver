@@ -224,5 +224,6 @@ Run /codex-reviewer to review the full branch diff (base..HEAD). The review must
 
 This gate ensures aggregate changes are reviewed before PR creation — individual commit reviews may have missed cross-commit issues, and worktree/external commits may have bypassed the per-commit gate entirely.
 
-IMPORTANT: Do NOT create .claude/skip-codex-review.local yourself. That is a user-only escape hatch. You MUST run the codex reviewer instead."
+IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run the codex reviewer instead.
+If the user wants to skip: touch $REPO_DIR/.claude/skip-codex-review.local"
 block_emit "$REASON"

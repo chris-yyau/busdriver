@@ -304,7 +304,7 @@ _execute_codex() {
 
   _resolve_codex_companion
 
-  if [[ "$_CODEX_COMPANION" != "none" ]]; then
+  if [[ "$_CODEX_COMPANION" != "none" ]] && command -v node &>/dev/null; then
     # Use official plugin's app-server protocol (stable, no stdin hang).
     # Pipe via stdin to avoid ARG_MAX limits on large diffs — the companion
     # reads piped stdin when no positional prompt is provided.

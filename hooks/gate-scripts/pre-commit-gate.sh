@@ -337,7 +337,7 @@ if [ "$BLOCK_COUNT" -ge 10 ]; then
     ESCAPE_HINT="
 
 WARNING: This gate has blocked $BLOCK_COUNT consecutive commits this session.
-If you believe the gate is stuck, the user can create .claude/skip-codex-review.local in their terminal to bypass."
+If you believe the gate is stuck, the user can run: touch $REPO_DIR/.claude/skip-codex-review.local"
 fi
 
 # No valid review marker → block commit
@@ -345,5 +345,6 @@ REASON="Code review required before committing.
 
 Run /codex-reviewer to review your staged changes. The review must pass before git commit is allowed.
 
-IMPORTANT: Do NOT create .claude/skip-codex-review.local yourself. That is a user-only escape hatch. You MUST run the codex reviewer instead.${ESCAPE_HINT}"
+IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run the codex reviewer instead.
+If the user wants to skip: touch $REPO_DIR/.claude/skip-codex-review.local${ESCAPE_HINT}"
 block_emit "$REASON"

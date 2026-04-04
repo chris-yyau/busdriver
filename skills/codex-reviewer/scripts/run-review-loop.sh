@@ -342,6 +342,7 @@ current_file = None
 for line in diff_text.split('\n'):
     if line.startswith('+++ b/'):
         current_file = line[6:]
+        hunks.setdefault(current_file, [])  # register file even if no @@ hunks (binary)
     elif line.startswith('@@') and current_file:
         # Parse @@ -old +new,count @@ format
         m = re.search(r'\+(\d+)(?:,(\d+))?', line)
@@ -357,9 +358,14 @@ for f in findings:
     fpath = f.get('file', '')
     fline = f.get('line', 0)
     if fpath not in hunks:
-        continue  # file not in diff at all
-    # Preserve file-level findings (line 0) — e.g. trufflehog secrets
-    if fline == 0 or any(start <= fline <= end for start, end in hunks[fpath]):
+        # File mentioned in findings but not in diff at all — drop
+        # BUT: if file appears in diff as binary (no @@ hunks), keep all findings
+        continue
+    if not hunks[fpath]:
+        # Binary diff or no hunks parsed — keep all findings for this file
+        filtered.append(f)
+    elif fline == 0 or any(start <= fline <= end for start, end in hunks[fpath]):
+        # Preserve file-level findings (line 0) — e.g. trufflehog secrets
         filtered.append(f)
 
 print(json.dumps(filtered))
@@ -466,7 +472,7 @@ echo ""
 echo "📊 Parsing results..."
 echo ""
 echo "   Debug: Saving raw $RESOLVED_CLI output..."
-_RAW_OUTPUT_FILE="${TMPDIR:-/tmp}/codex-raw-output.txt"
+_RAW_OUTPUT_FILE=$(mktemp "${TMPDIR:-/tmp}/codex-raw-output.XXXXXX")
 echo "$REVIEW_OUTPUT" > "$_RAW_OUTPUT_FILE"
 echo "   Saved to: $_RAW_OUTPUT_FILE (CLI: $RESOLVED_CLI)"
 echo ""
@@ -638,7 +644,7 @@ else
     echo ""
     echo "Options:"
     echo "   1. Fix the issues above and re-run"
-    echo "   2. Create .claude/skip-codex-review.local to bypass (manual only)"
+    echo "   2. Run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/.claude/skip-codex-review.local"
     echo ""
     rm -f "${_RAW_OUTPUT_FILE:-}" 2>/dev/null
     exit 1

@@ -442,11 +442,11 @@ Wait for all agents. Only apply quorum AFTER agents have timed out (10 min), nev
 
 ### Marker Encoding
 
-PR markers include diff hash for staleness detection:
+PR markers contain a SHA-256 hash of the `base...HEAD` diff for staleness detection:
 ```
-PASS pr-review <short-sha-of-HEAD> <timestamp>
+<64-hex-char-sha256-hash>
 ```
-The pre-PR gate verifies the marker's SHA matches current HEAD. Stale markers from prior reviews are rejected.
+The pre-PR gate accepts markers that are 64-hex SHA-256 hashes or `PASS-<epoch>` timestamps. It rejects `DEGRADED`, `SKIPPED-NONE`, and `BUILTIN-` prefixed markers.
 
 **Environment variables:**
 - `BUSDRIVER_REVIEW_CLI=auto` — choose review backend (auto/codex/gemini/droid/amp/opencode/claude/aider/builtin/none). Per-role routing: `.claude/busdriver.json`
@@ -511,7 +511,7 @@ The review loop checks for doc/code mismatches:
 - PR deep review includes a dedicated docs-consistency agent (6th agent)
 
 **Environment variables:**
-- `CODEX_SKIP_DOCS_CONTEXT=1` — skip docs context collection
+- `CODEX_DOCS_CONTEXT=1` — enable docs context collection (default: off)
 - `CODEX_MAX_DOC_SNIPPETS=5` — max doc file snippets to include (validated numeric)
 - `CODEX_MAX_ENRICHMENT_LINES=100` — max lines of smart-context and docs-context injected into prompt (validated numeric)
 

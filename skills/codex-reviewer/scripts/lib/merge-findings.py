@@ -52,7 +52,10 @@ def determine_status(findings: list[dict]) -> str:
       Note: this is a server-side override of the prompt contract, which tells
       the LLM to FAIL on any medium. The LLM still reports them; the gate relaxes.
     """
-    iteration = int(os.environ.get("CODEX_ITERATION", "1"))
+    try:
+        iteration = int(os.environ.get("CODEX_ITERATION", "1"))
+    except (TypeError, ValueError):
+        iteration = 1
     blocking_severities = {"high", "medium"} if iteration <= 2 else {"high"}
 
     for f in findings:

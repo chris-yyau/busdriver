@@ -85,18 +85,16 @@ supabase functions deploy my-function
 **You violated the workflow. Fix it:**
 
 1. `git reset --soft HEAD~1` (uncommit, keep changes)
-2. **Initialize counter:** `echo "1" > /tmp/codex-iteration.txt`
-3. Run Codex review loop
+2. Initialize review: `bash $CODEX_SCRIPTS/init-review-loop.sh --force 10`
+3. Run review: `bash $CODEX_SCRIPTS/run-review-loop.sh`
 4. Fix issues and iterate until PASS
-5. Clean up counter: `rm /tmp/codex-iteration.txt`
-6. Commit again
+5. Commit again
 
 **If already pushed:**
 1. Locally: `git reset --soft HEAD~1`
-2. Initialize counter: `echo "1" > /tmp/codex-iteration.txt`
-3. Run review loop, fix issues
-4. Clean up counter: `rm /tmp/codex-iteration.txt`
-5. Force push: `git push --force-with-lease`
+2. Initialize and run review loop
+3. Fix issues and iterate until PASS
+4. Force push: `git push --force-with-lease`
 
 ## Automation Best Practices
 
@@ -149,8 +147,8 @@ git commit -m "Refactor authentication system"
 # ... iterations 1-9 ...
 
 # --- ITERATION 10 ---
-ITERATION=$(cat /tmp/codex-iteration.txt)  # 10
-codex review "Review the uncommitted changes..."
+# run-review-loop.sh tracks iteration internally
+bash "$CODEX_SCRIPTS/run-review-loop.sh"
 # Result: FAIL - 3 issues (1 high, 2 medium)
 
 # Max iterations reached - ASK USER

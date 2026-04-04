@@ -111,7 +111,7 @@ if [ "$MARKER_ACTION" = "BLOCK_MARKER" ]; then
     block_emit "BLOCKED: Cannot write to gate marker file ($MARKER_TARGET) directly.
 Gate markers are written by review infrastructure after a genuine review pass.
 Writing them manually forges compliance. Run /codex-reviewer or /design-reviewer instead.
-If you need to skip review, ask the user to create .claude/skip-codex-review.local in their terminal."
+If you need to skip review, ask the user to run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/.claude/skip-codex-review.local"
     exit 0
 fi
 

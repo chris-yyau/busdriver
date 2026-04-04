@@ -24,7 +24,7 @@
 
 | File | Targets | Trigger | Source | Added |
 |------|---------|---------|--------|-------|
-| `design-anti-slop.md` | `document-skills:frontend-design`, `busdriver:frontend-patterns` | "avoid AI slop", "make it unique" | gstack /design-consultation | 2026-03-24 |
+| `design-anti-slop.md` | `document-skills:frontend-design`, `busdriver:frontend-patterns`, `ui-ux-pro-max` | "avoid AI slop", "make it unique", "don't make it generic" | gstack /design-consultation | 2026-03-24 |
 | `directory-freeze.md` | `busdriver:systematic-debugging` | "freeze", "lock this dir" | gstack /freeze | 2026-03-24 |
 
 ## Rejected (Council Decision)

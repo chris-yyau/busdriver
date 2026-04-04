@@ -114,7 +114,7 @@ DO NOT skip phases after your entry point. The ONLY exception is small specific 
 </STRONG-GUIDANCE>
 
 ### Phase 1: Discovery → `busdriver:brainstorming`
-Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design, domain patterns, `busdriver:frontend-patterns` + `busdriver:design-system` for UI/UX, `busdriver:api-design` for API boundaries. Design Reviewer triggers when design doc is written. Consider `council` if 2+ viable approaches.
+Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design, domain patterns. For UI/UX: `frontend-design` (Impeccable core) + `ui-ux-pro-max` (design intelligence) + `busdriver:design-system` (token audit); load `.impeccable.md` if present. For code patterns: `busdriver:frontend-patterns`. For API boundaries: `busdriver:api-design`. Design Reviewer triggers when design doc is written. Consider `council` if 2+ viable approaches.
 **NEXT:** Phase 2 only. INVOKE `busdriver:writing-plans`. Do NOT start coding. After Phase 2 completes, auto-execution carries through Phases 3–6 without user pause.
 
 ### Phase 2: Planning → `busdriver:writing-plans`
@@ -178,7 +178,7 @@ Domain skills are **additive** — load all that match. **Full catalog:** `${CLA
 | Python | `*.py` | `python-patterns`, `python-testing`, `python-reviewer` agent |
 | Django | `manage.py` | `django-patterns`, `django-security`, `django-tdd` |
 | Spring Boot | `pom.xml` | `springboot-patterns`, `springboot-security`, `springboot-tdd` |
-| Frontend | `*.tsx`, `*.jsx` | `frontend-patterns`, `coding-standards`, `typescript-reviewer` agent |
+| Frontend | `*.tsx`, `*.jsx` | `frontend-patterns`, `coding-standards`, `typescript-reviewer` agent, `frontend-design` + `ui-ux-pro-max` for design |
 | Bun | `bun.lock`, `bunfig.toml` | `bun-runtime` |
 | Backend | API routes | `backend-patterns`, `coding-standards` |
 | C++ | `*.cpp`, `CMakeLists.txt` | `cpp-coding-standards`, `cpp-testing` |
@@ -202,7 +202,9 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 |------|-----------------|----------|
 | **Refactoring** | cleanup, dead code | `refactor-cleaner` agent |
 | **Authentication** | login, signup, OAuth | `security-review` |
-| **UI/UX Design** | design, UI review, make it look better | `busdriver:frontend-patterns` + `busdriver:design-system` |
+| **UI/UX Design** | design, UI review, make it look better, styling | `frontend-design` + `ui-ux-pro-max` + `busdriver:design-system`. Load `.impeccable.md` if present |
+| **Design Setup** | impeccable, design context, brand setup | `/teach-impeccable` (one-time → `.impeccable.md`) |
+| **Design Refinement** | polish, critique, audit UI, animate, make bolder/quieter | Impeccable commands: `/polish`, `/critique`, `/audit`, `/normalize`, `/harden`, `/distill`, `/clarify`, `/colorize`, `/bolder`, `/quieter`, `/delight`, `/animate`, `/overdrive`, `/arrange`, `/extract`, `/typeset`, `/adapt`, `/optimize`, `/onboard` |
 | **Skill Creation** | create/edit skill | `busdriver:writing-skills` |
 | **API Design** | REST endpoints, API versioning | `busdriver:api-design` |
 | **E2E Testing** | browser testing, e2e | `/e2e` command + `e2e-testing` skill |

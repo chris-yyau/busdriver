@@ -330,7 +330,7 @@ diff_text = parts[1] if len(parts) > 1 else ''
 try:
     findings = json.loads(findings_raw)
 except (json.JSONDecodeError, ValueError):
-    print('[]'); sys.exit(0)
+    sys.exit(1)  # fail so shell fallback preserves raw findings
 
 if not findings or not diff_text:
     print(json.dumps(findings)); sys.exit(0)
@@ -542,7 +542,9 @@ echo ""
 
 # Merge SAST + markdown + LLM findings
 MERGER="$SCRIPT_DIR/lib/merge-findings.py"
-if [ -f "$MERGER" ] && { [ "$SAST_COUNT" -gt 0 ] || [ "$MD_COUNT" -gt 0 ]; }; then
+# Always run merger: it handles iteration-aware severity relaxation (after iteration 2,
+# only HIGH blocks) even when there are no SAST/markdown findings to merge.
+if [ -f "$MERGER" ]; then
   echo "📊 Merging SAST + markdown + LLM findings..."
   # Use stdin instead of argv to avoid ARG_MAX limits on large SAST output
   # Pass iteration number so merge-findings can relax severity rules after iteration 2

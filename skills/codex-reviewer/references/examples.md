@@ -84,26 +84,34 @@ supabase functions deploy my-function
 
 **You violated the workflow. Fix it:**
 
-1. `git reset --soft HEAD~1` (uncommit, keep changes)
-2. Initialize review: `bash $CODEX_SCRIPTS/init-review-loop.sh --force 10`
-3. Run review: `bash $CODEX_SCRIPTS/run-review-loop.sh`
-4. Fix issues and iterate until PASS
-5. Commit again
+```bash
+CODEX_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
+git reset --soft HEAD~1
+bash "$CODEX_SCRIPTS/init-review-loop.sh" --force 10
+bash "$CODEX_SCRIPTS/run-review-loop.sh"
+# Fix issues, re-stage, re-run until PASS, then commit again
+```
 
 **If already pushed:**
-1. Locally: `git reset --soft HEAD~1`
-2. Initialize and run review loop
-3. Fix issues and iterate until PASS
-4. Force push: `git push --force-with-lease`
+```bash
+CODEX_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
+git reset --soft HEAD~1
+bash "$CODEX_SCRIPTS/init-review-loop.sh" --force 10
+bash "$CODEX_SCRIPTS/run-review-loop.sh"
+# Fix issues, re-stage, re-run until PASS
+git push --force-with-lease
+```
 
 ## Automation Best Practices
 
 ### Creating a Wrapper Function
 
-Run the review as a **blocking** call (never in background):
+Run the review as a **blocking** call (never in background).
+**Prerequisite:** `init-review-loop.sh` must have been called first to create `.claude/codex-review-state.md`.
 
 ```python
 def run_codex_review():
+    # Requires prior: bash init-review-loop.sh --force 10
     return Bash(
         command="bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh",
         description="Run Codex review (blocking gate)",

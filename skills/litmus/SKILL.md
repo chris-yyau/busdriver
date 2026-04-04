@@ -285,23 +285,19 @@ npm test                                                            # Tests
 git commit -m "Message"                                             # Commit
 ```
 
-## PR Review Mode
+## PR Review Mode (Deep — Multi-Voice)
 
-When the pre-PR gate blocks `gh pr create`, you **must** run the PR review before retrying.
+When the pre-PR gate blocks `gh pr create`, run the full deep review. This combines the codex CLI pass with a 6-agent multi-voice review for cross-commit depth.
 
-### Quick Path (CLI-only — auto-triggered by gate)
+### Fast Path (CLI-only, no agents)
 
-When the gate blocks, it tells you to run this single command:
+Only when the user explicitly asks to skip the deep review:
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --auto-pr-review
 ```
-This initializes, runs the CLI review on the full base..HEAD diff, and writes the PR marker on PASS. After this, retry `gh pr create`.
+This runs CLI review only and writes the marker on PASS. **Does NOT dispatch the 6-agent review.**
 
-### Deep Path (CLI + 6-Agent Multi-Voice)
-
-For thorough cross-commit review, run the full pipeline instead:
-
-#### Step 1: Codex CLI Pass (fast)
+### Step 1: Codex CLI Pass (fast)
 
 ```bash
 # Initialize and run in PR mode

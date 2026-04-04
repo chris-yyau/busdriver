@@ -218,22 +218,17 @@ if [ -f "$REVIEWED_FILE" ]; then
 fi
 
 # No valid review marker → block PR creation
-# Determine litmus scripts path for the block message
-LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT:-}/skills/litmus/scripts"
-if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]] && [[ -f "$LITMUS_SCRIPTS/run-review-loop.sh" ]]; then
-    AUTO_CMD="bash \"$LITMUS_SCRIPTS/run-review-loop.sh\" --auto-pr-review"
-else
-    AUTO_CMD="/litmus (in PR mode: LITMUS_MODE=pr)"
-fi
-
 REASON="Code review required before creating a PR.
 
-Run this command to auto-review and write the PR marker:
-  $AUTO_CMD
+Follow the PR Review Mode in the litmus SKILL.md:
+  1. Run the CLI pass: LITMUS_MODE=pr bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh\" && LITMUS_MODE=pr bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh\"
+  2. Dispatch 6 parallel review agents (Guidelines, Bugs, History, Cross-commit, Security, Docs-consistency)
+  3. Score and filter findings (confidence >= 80)
+  4. If no CRITICAL/HIGH: bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker
+  5. Retry gh pr create
 
-This runs the litmus CLI review on the full base..HEAD diff. If it passes, the marker is written and you can retry \`gh pr create\`.
-
-For the full deep review (CLI + 6-agent multi-voice), use /litmus manually instead.
+For CLI-only fast review (skips 6-agent deep review):
+  bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh\" --auto-pr-review
 
 IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run the reviewer instead.
 If the user wants to skip: touch $REPO_DIR/.claude/skip-litmus.local"

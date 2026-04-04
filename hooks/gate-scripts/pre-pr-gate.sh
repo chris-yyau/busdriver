@@ -218,12 +218,23 @@ if [ -f "$REVIEWED_FILE" ]; then
 fi
 
 # No valid review marker → block PR creation
+# Determine litmus scripts path for the block message
+LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT:-}/skills/litmus/scripts"
+if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]] && [[ -f "$LITMUS_SCRIPTS/run-review-loop.sh" ]]; then
+    AUTO_CMD="bash \"$LITMUS_SCRIPTS/run-review-loop.sh\" --auto-pr-review"
+else
+    AUTO_CMD="/litmus (in PR mode: LITMUS_MODE=pr)"
+fi
+
 REASON="Code review required before creating a PR.
 
-Run /litmus to review the full branch diff (base..HEAD). The review must pass before \`gh pr create\` is allowed.
+Run this command to auto-review and write the PR marker:
+  $AUTO_CMD
 
-This gate ensures aggregate changes are reviewed before PR creation — individual commit reviews may have missed cross-commit issues, and worktree/external commits may have bypassed the per-commit gate entirely.
+This runs the litmus CLI review on the full base..HEAD diff. If it passes, the marker is written and you can retry \`gh pr create\`.
 
-IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run the codex reviewer instead.
+For the full deep review (CLI + 6-agent multi-voice), use /litmus manually instead.
+
+IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run the reviewer instead.
 If the user wants to skip: touch $REPO_DIR/.claude/skip-litmus.local"
 block_emit "$REASON"

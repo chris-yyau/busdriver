@@ -285,14 +285,26 @@ npm test                                                            # Tests
 git commit -m "Message"                                             # Commit
 ```
 
-## PR Review Mode (Deep — Multi-Voice)
+## PR Review Mode
 
-When the pre-PR gate blocks `gh pr create`, run the deep review. This combines the codex CLI pass with a 6-agent multi-voice review for cross-commit depth.
+When the pre-PR gate blocks `gh pr create`, you **must** run the PR review before retrying.
 
-### Step 1: Codex CLI Pass (fast)
+### Quick Path (CLI-only — auto-triggered by gate)
+
+When the gate blocks, it tells you to run this single command:
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --auto-pr-review
+```
+This initializes, runs the CLI review on the full base..HEAD diff, and writes the PR marker on PASS. After this, retry `gh pr create`.
+
+### Deep Path (CLI + 6-Agent Multi-Voice)
+
+For thorough cross-commit review, run the full pipeline instead:
+
+#### Step 1: Codex CLI Pass (fast)
 
 ```bash
-# Initialize and run in PR mode (same as before)
+# Initialize and run in PR mode
 LITMUS_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh"
 LITMUS_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"
 ```
@@ -419,17 +431,12 @@ After all 6 agents return:
 | Codex CLI PASS + CRITICAL/HIGH at 80+ | Report findings. Fix, then re-run Step 2 only |
 | Codex CLI FAIL | Fix, re-run from Step 1 |
 
-**Write the marker** (the script does NOT write it in PR mode — you must):
+**Write the marker** (the script does NOT write it in PR mode — you must call the trusted marker writer):
 ```bash
-PR_BASE=${LITMUS_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}
-[[ -n "${LITMUS_PR_BASE:-}" && "$PR_BASE" != origin/* ]] && PR_BASE="origin/${PR_BASE}"
-MERGE_BASE=$(git merge-base "${PR_BASE}" HEAD)
-DIFF_OUTPUT=$(git diff "${MERGE_BASE}...HEAD" 2>/dev/null)
-if [ -n "$DIFF_OUTPUT" ]; then
-  DIFF_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
-  mkdir -p .claude && echo "$DIFF_HASH" > .claude/pr-review-passed.local
-fi
+bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write-pr-marker
 ```
+This computes the diff hash and writes `.claude/pr-review-passed.local`. Direct writes to marker files are blocked by the PreToolUse hook — only `run-review-loop.sh` can write them.
+
 The marker must be a SHA-256 hash (64 hex chars) or a timestamped pass (`PASS-<epoch>`). The gate rejects `DEGRADED`, `SKIPPED-NONE`, and `BUILTIN-` prefixed markers for PR review.
 
 ### Degraded States

@@ -2,7 +2,7 @@
 # resolve-cli.sh — Plugin-wide shared CLI library
 #
 # Single source of truth for CLI availability and resolution.
-# Sourced by codex-reviewer, design-reviewer, and council.
+# Sourced by litmus, design-reviewer, and council.
 #
 # Usage (sourced):
 #   source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/resolve-cli.sh"
@@ -271,7 +271,7 @@ resolve_role_cli() {
 # ── Review CLI resolution: resolve to ONE cli based on env var ──
 
 resolve_review_cli() {
-  resolve_role_cli "codex-reviewer.reviewer"
+  resolve_role_cli "litmus.reviewer"
 }
 
 # ── Codex invocation: app-server (preferred) → CLI fallback ────

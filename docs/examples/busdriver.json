@@ -5,7 +5,7 @@
     "fallback": "builtin"
   },
   "routes": {
-    "codex-reviewer.reviewer": ["codex"],
+    "litmus.reviewer": ["codex"],
     "design-reviewer.reviewer_1": ["gemini", "droid"],
     "design-reviewer.reviewer_2": ["codex", "amp"],
     "council.pragmatist": ["gemini", "droid"],

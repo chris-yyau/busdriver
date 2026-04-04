@@ -1,6 +1,6 @@
-# Codex Reviewer Scripts Reference
+# Litmus Scripts Reference
 
-Detailed documentation for all scripts in the codex-reviewer skill.
+Detailed documentation for all scripts in the litmus skill.
 
 ## Core Scripts
 
@@ -30,7 +30,7 @@ bash scripts/init-review-loop.sh 10 "REVIEW PASSED"
 ```
 
 **Output:**
-- Creates `.claude/codex-review-state.md` with YAML frontmatter
+- Creates `.claude/litmus-state.md` with YAML frontmatter
 - Displays initialization summary
 - Shows next steps
 
@@ -48,11 +48,11 @@ bash scripts/run-review-loop.sh
 ```
 
 **Requirements:**
-- `.claude/codex-review-state.md` must exist (run `init-review-loop.sh` first)
+- `.claude/litmus-state.md` must exist (run `init-review-loop.sh` first)
 - Staged git changes (run `git add -A`)
 
 **Behavior:**
-1. Reads current state from `.claude/codex-review-state.md`
+1. Reads current state from `.claude/litmus-state.md`
 2. Runs SAST tools (semgrep, shellcheck, trufflehog) if available
 3. Collects smart context (callers, importers, docs references)
 4. Runs codex review with enriched prompt
@@ -61,7 +61,7 @@ bash scripts/run-review-loop.sh
 
 **Output:**
 - Human-readable progress and review results to stdout
-- Updates `.claude/codex-review-state.md` with iteration results
+- Updates `.claude/litmus-state.md` with iteration results
 - Removes state file on PASS; preserves on failure for inspection
 
 **Exit codes:**
@@ -93,7 +93,7 @@ bash scripts/save_changelog.sh
 **Behavior:**
 1. Collects commit info (SHA, message, changed files)
 2. Gets iteration count from state file or counter
-3. Saves to `~/.claude/projects/{project}/codex-context/task-history.jsonl`
+3. Saves to `~/.claude/projects/{project}/litmus-context/task-history.jsonl`
 4. Updates `last-task.json` for quick access
 
 **Output:**
@@ -115,7 +115,7 @@ bash scripts/save_changelog.sh
 bash scripts/load_changelog.sh [limit]
 
 # Or with environment variable
-CODEX_CHANGELOG_LIMIT=5 bash scripts/load_changelog.sh
+LITMUS_CHANGELOG_LIMIT=5 bash scripts/load_changelog.sh
 ```
 
 **Arguments:**
@@ -190,10 +190,10 @@ result = json.loads(output['output'])
 set -e
 
 # Initialize
-bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/init-review-loop.sh 3
+bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh 3
 
 # Run review
-RESULT=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh)
+RESULT=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh)
 STATUS=$(echo "$RESULT" | jq -r '.status')
 
 if [ "$STATUS" != "PASS" ]; then
@@ -211,18 +211,18 @@ echo "✅ Codex review passed"
 - name: Review Code
   run: |
     cd $GITHUB_WORKSPACE
-    bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/init-review-loop.sh 5
-    bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh
+    bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh 5
+    bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh
 ```
 
 ## Environment Variables
 
-- `CODEX_CHANGELOG_LIMIT` - Number of changelog entries to load (default: 3)
+- `LITMUS_CHANGELOG_LIMIT` - Number of changelog entries to load (default: 3)
 - `CURRENT_TASK_ID` - Task ID for changelog tracking (optional)
 
 ## File Locations
 
-- **State file:** `.claude/codex-review-state.md` (in project root)
-- **Changelog:** `~/.claude/projects/{project}/codex-context/`
-- **Legacy counter:** `/tmp/codex-iteration.txt` (deprecated)
-- **Prompt template:** `${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/prompt_template.txt`
+- **State file:** `.claude/litmus-state.md` (in project root)
+- **Changelog:** `~/.claude/projects/{project}/litmus-context/`
+- **Legacy counter:** `/tmp/litmus-iteration.txt` (deprecated)
+- **Prompt template:** `${CLAUDE_PLUGIN_ROOT}/skills/litmus/prompt_template.txt`

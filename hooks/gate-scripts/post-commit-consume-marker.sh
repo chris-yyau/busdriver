@@ -118,7 +118,7 @@ TARGET_DIR=$(echo "$PARSE_RESULT" | sed -n '2p')
 REPO_DIR=$(git -C "${TARGET_DIR:-.}" rev-parse --show-toplevel 2>/dev/null || echo "${TARGET_DIR:-.}")
 
 # Consume the marker — commit confirmed successful
-MARKER="$REPO_DIR/.claude/codex-review-passed.local"
+MARKER="$REPO_DIR/.claude/litmus-passed.local"
 if [ -f "$MARKER" ]; then
     MARKER_CONTENT=$(cat "$MARKER" 2>/dev/null || echo "")
     rm -f "$MARKER"

@@ -65,9 +65,9 @@ try:
         inp = json.loads(inp)
 
     MARKER_FILES = [
-        "codex-review-passed.local",
+        "litmus-passed.local",
         "pr-review-passed.local",
-        "skip-codex-review.local",
+        "skip-litmus.local",
         "skip-design-review.local",
         "reviewed-commits.local",
         "design-review-needed.local",
@@ -110,15 +110,15 @@ MARKER_TARGET="${MARKER_CHECK#*|}"
 if [ "$MARKER_ACTION" = "BLOCK_MARKER" ]; then
     block_emit "BLOCKED: Cannot write to gate marker file ($MARKER_TARGET) directly.
 Gate markers are written by review infrastructure after a genuine review pass.
-Writing them manually forges compliance. Run /codex-reviewer or /design-reviewer instead.
-If you need to skip review, ask the user to run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/.claude/skip-codex-review.local"
+Writing them manually forges compliance. Run /litmus or /design-reviewer instead.
+If you need to skip review, ask the user to run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/.claude/skip-litmus.local"
     exit 0
 fi
 
 if [ "$MARKER_ACTION" = "BLOCK_MARKER_SCRIPT" ]; then
     block_emit "BLOCKED: Cannot call $MARKER_TARGET directly.
 This script is internal to the review loop and should only be invoked by run-review-loop.sh after a genuine review pass.
-Run /codex-reviewer instead."
+Run /litmus instead."
     exit 0
 fi
 
@@ -169,7 +169,7 @@ fi
 # NOTE: Python block uses single-quoted shell string to avoid bash 3.2
 # quote-matching issues with $(...)  — all Python strings use double quotes.
 # F7 fix: Strip fd-to-fd redirects (2>&1, >&2) before file-redirect detection.
-# F8 fix: Allow review infrastructure scripts (design-reviewer, codex-reviewer)
+# F8 fix: Allow review infrastructure scripts (design-reviewer, litmus)
 # to run even when design docs are unreviewed — prevents circular dependency.
 PARSED=$(printf '%s' "$INPUT" | python3 -c '
 import sys, json, re
@@ -210,7 +210,7 @@ try:
         # (not explicit file-mod patterns like rm/cp/mv). This prevents
         # compound command bypass: "bash reviewer.sh && rm -rf src" still
         # blocked because rm triggers has_explicit_mod.
-        if is_mod and not has_explicit_mod and re.search(r"(?:^|[\s;|&])(?:ba)?sh\s+\S*(?:design-reviewer|codex-reviewer)/(?:scripts|config)/", cmd):
+        if is_mod and not has_explicit_mod and re.search(r"(?:^|[\s;|&])(?:ba)?sh\s+\S*(?:design-reviewer|litmus)/(?:scripts|config)/", cmd):
             print("SAFE|")
         elif is_mod:
             # F9 fix: Allow rm/mkdir targeting only .claude/ infrastructure.

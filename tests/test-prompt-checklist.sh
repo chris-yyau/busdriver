@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-INIT_SCRIPT="$SCRIPT_DIR/skills/codex-reviewer/scripts/init-review-loop.sh"
+INIT_SCRIPT="$SCRIPT_DIR/skills/litmus/scripts/init-review-loop.sh"
 
 passed=0
 failed=0

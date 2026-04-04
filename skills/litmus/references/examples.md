@@ -1,4 +1,4 @@
-# Codex Reviewer Examples
+# Litmus Examples
 
 This document contains detailed workflow examples referenced from SKILL.md.
 
@@ -85,19 +85,19 @@ supabase functions deploy my-function
 **You violated the workflow. Fix it:**
 
 ```bash
-CODEX_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
+LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 git reset --soft HEAD~1
-bash "$CODEX_SCRIPTS/init-review-loop.sh" --force 10
-bash "$CODEX_SCRIPTS/run-review-loop.sh"
+bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
+bash "$LITMUS_SCRIPTS/run-review-loop.sh"
 # Fix issues, re-stage, re-run until PASS, then commit again
 ```
 
 **If already pushed:**
 ```bash
-CODEX_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
+LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 git reset --soft HEAD~1
-bash "$CODEX_SCRIPTS/init-review-loop.sh" --force 10
-bash "$CODEX_SCRIPTS/run-review-loop.sh"
+bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
+bash "$LITMUS_SCRIPTS/run-review-loop.sh"
 # Fix issues, re-stage, re-run until PASS
 git push --force-with-lease
 ```
@@ -107,13 +107,13 @@ git push --force-with-lease
 ### Creating a Wrapper Function
 
 Run the review as a **blocking** call (never in background).
-**Prerequisite:** `init-review-loop.sh` must have been called first to create `.claude/codex-review-state.md`.
+**Prerequisite:** `init-review-loop.sh` must have been called first to create `.claude/litmus-state.md`.
 
 ```python
-def run_codex_review():
+def run_litmus():
     # Requires prior: bash init-review-loop.sh --force 10
     return Bash(
-        command="bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh",
+        command="bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
         description="Run Codex review (blocking gate)",
         timeout=1260000  # 21 min timeout
     )
@@ -124,17 +124,17 @@ def run_codex_review():
 **Scenario:** Refactored authentication system, expecting multiple review cycles
 
 ```bash
-CODEX_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
+LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 
 # Initialize state-based review loop (max 10 iterations)
-bash "$CODEX_SCRIPTS/init-review-loop.sh" --force 10
+bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
 
 # Each call does ONE review pass:
 #   Exit 0 = PASS → proceed to commit
 #   Exit 1 = FAIL → fix issues, stage, call again
 #   Exit 2 = TOO_LARGE → split into smaller commits
 set -e  # Ensure failed review blocks commit
-bash "$CODEX_SCRIPTS/run-review-loop.sh"
+bash "$LITMUS_SCRIPTS/run-review-loop.sh"
 # If we reach here, review PASSED
 
 npm test
@@ -144,7 +144,7 @@ git commit -m "Refactor authentication system"
 **Key points:**
 - Each `run-review-loop.sh` call does one review pass and exits
 - The caller (Claude or script) handles fix→re-stage→re-run
-- State tracked in `.claude/codex-review-state.md` with iteration history
+- State tracked in `.claude/litmus-state.md` with iteration history
 - Cleans up state file on PASS; preserves on max iterations for inspection
 
 ## Example 2: Reaching Max Iterations
@@ -156,7 +156,7 @@ git commit -m "Refactor authentication system"
 
 # --- ITERATION 10 ---
 # run-review-loop.sh tracks iteration internally
-bash "$CODEX_SCRIPTS/run-review-loop.sh"
+bash "$LITMUS_SCRIPTS/run-review-loop.sh"
 # Result: FAIL - 3 issues (1 high, 2 medium)
 
 # Max iterations reached - ASK USER

@@ -1,15 +1,15 @@
 ---
-name: codex-reviewer
+name: litmus
 description: >
   Use before git commits, deployments, or PR creation. Trigger when about to:
   commit code, push changes, deploy to production, create pull requests, or
   finalize any code changes. Required before all code deployment actions.
 ---
 
-# Codex Reviewer
+# Litmus
 
 <EXTREMELY-IMPORTANT>
-YOU MUST RUN THE CODEX REVIEW LOOP BEFORE EVERY COMMIT. NO EXCEPTIONS.
+YOU MUST RUN THE LITMUS REVIEW LOOP BEFORE EVERY COMMIT. NO EXCEPTIONS.
 
 This is a BLOCKING, MANDATORY gate. Code CANNOT be committed without a PASS from the review loop.
 
@@ -35,7 +35,7 @@ EVERY commit MUST:
 
 Enforce automated code quality gates before committing or deploying code. Review code for bugs, security issues, performance problems, and maintainability using OpenAI Codex CLI.
 
-## Codex Protocol
+## Review Protocol
 
 This skill uses the official **codex-plugin-cc** app-server protocol when installed (preferred), falling back to direct `codex exec` CLI invocation. The app-server protocol communicates via JSON-RPC, avoiding the stdin piping issues that cause CLI hangs.
 
@@ -74,7 +74,7 @@ These thoughts mean you're about to violate the requirement:
 | "This is just a typo fix" | Typos can break functionality. Review everything. |
 | "I'll fix it in the next commit" | Then review the next commit. No exceptions. |
 
-**All of these mean: STOP. Run codex review. No exceptions.**
+**All of these mean: STOP. Run litmus review. No exceptions.**
 
 ## Core Workflow
 
@@ -97,17 +97,17 @@ Use this only if pre-commit hooks aren't available:
 
 **1. Set script path:**
 ```bash
-CODEX_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
+LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 ```
 
-**2. Initialize:** `bash $CODEX_SCRIPTS/init-review-loop.sh`
+**2. Initialize:** `bash $LITMUS_SCRIPTS/init-review-loop.sh`
    (Defaults to 10 max iterations)
 
 **3. Run Review (BLOCKING - wait for result):**
 ```bash
 # Run as BLOCKING call - just wait for the result
 Bash(
-    command='bash "${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh"',
+    command='bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
     timeout=1260000  # 21 min timeout (inner codex review timeout is 20 min)
 )
 ```
@@ -158,8 +158,8 @@ When the review script exits with code **2** (TOO LARGE) or **124** (TIMEOUT), t
 3. Group files into logical commits (same module/feature together, using the suggestions as a starting point)
 4. For each group:
    a. `git add <files in group>`
-   b. `bash $CODEX_SCRIPTS/init-review-loop.sh`
-   c. `bash $CODEX_SCRIPTS/run-review-loop.sh` (review loop for this group)
+   b. `bash $LITMUS_SCRIPTS/init-review-loop.sh`
+   c. `bash $LITMUS_SCRIPTS/run-review-loop.sh` (review loop for this group)
    d. Fix issues if FAIL, re-run until PASS
    e. `git commit -m '<descriptive message for this group>'`
 5. Repeat until all files are committed
@@ -170,7 +170,7 @@ When the review script exits with code **2** (TOO LARGE) or **124** (TIMEOUT), t
 - Better git history with meaningful commit messages
 - Prevents crashes from oversized prompts
 
-**Thresholds (commit mode only — PR mode skips size check):** Weighted lines use additions at 1x + deletions at 0.25x (deleted code needs minimal review). Triggers: >800 weighted lines (>2000 for single-file) OR >2000 total raw lines OR >8 staged files. Override with `CODEX_MAX_WEIGHTED_LINES` and `CODEX_MAX_STAGED_FILES` env vars.
+**Thresholds (commit mode only — PR mode skips size check):** Weighted lines use additions at 1x + deletions at 0.25x (deleted code needs minimal review). Triggers: >800 weighted lines (>2000 for single-file) OR >2000 total raw lines OR >8 staged files. Override with `LITMUS_MAX_WEIGHTED_LINES` and `LITMUS_MAX_STAGED_FILES` env vars.
 
 **Example:**
 ```
@@ -184,14 +184,14 @@ Claude: "Group 3: src/utils/ (4 files, 290 lines)"
 Claude: "All groups committed successfully."
 ```
 
-**State persists in:** `.claude/codex-review-state.md`
+**State persists in:** `.claude/litmus-state.md`
 
 ## Example: Silent Auto-Continue
 
 ```
-Claude: "Running codex review for commit 1 (database schema)..."
+Claude: "Running litmus review for commit 1 (database schema)..."
 [Runs 3 iterations silently - user sees nothing]
-Claude: "✅ Codex review PASSED after 3 iterations. Committing..."
+Claude: "✅ Litmus review PASSED after 3 iterations. Committing..."
 git commit -m "feat: Add notification database schema"
 ```
 
@@ -218,7 +218,7 @@ If you are about to set `run_in_background=True` for the review loop, STOP. This
 ```bash
 # ✅ CORRECT - blocking, silent
 Bash(
-    command='bash "${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh"',
+    command='bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
     timeout=1260000  # 21 min timeout (inner codex review timeout is 20 min)
 )
 # Parse exit code: 0=PASS, 1=FAIL (fix and re-run), 2=TOO_LARGE (split), 124=TIMEOUT (split)
@@ -251,9 +251,9 @@ git reset --soft HEAD~1
 git commit -m "Your message"  # Hooks will enforce review
 
 # If using manual approach:
-CODEX_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
-bash $CODEX_SCRIPTS/init-review-loop.sh 10
-bash $CODEX_SCRIPTS/run-review-loop.sh
+LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
+bash $LITMUS_SCRIPTS/init-review-loop.sh 10
+bash $LITMUS_SCRIPTS/run-review-loop.sh
 # Fix issues, iterate until PASS, then commit again
 ```
 
@@ -277,7 +277,7 @@ git push                # Push after review passes
 **Manual approach (if no hooks):**
 ```bash
 git add -A                                                          # Stage changes
-CODEX="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
+LITMUS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 bash $CODEX/init-review-loop.sh 10                                  # Initialize
 bash $CODEX/run-review-loop.sh                                      # Review (auto-loops)
 # Fix if FAIL, run again until PASS
@@ -293,8 +293,8 @@ When the pre-PR gate blocks `gh pr create`, run the deep review. This combines t
 
 ```bash
 # Initialize and run in PR mode (same as before)
-CODEX_REVIEW_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/init-review-loop.sh"
-CODEX_REVIEW_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh"
+LITMUS_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh"
+LITMUS_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"
 ```
 
 If FAIL → fix and re-run (same auto-continue loop as commit mode).
@@ -307,11 +307,11 @@ Before launching the expensive multi-agent review, check whether the branch stay
 
 **Step 1.5b: Gather intent and changes.** Read the matched plan file. Also read `TODOS.md` (if it exists), commit messages, and PR description. Gather the actual diff by computing the merge-base explicitly:
 ```bash
-PR_BASE=${CODEX_PR_BASE:-}
+PR_BASE=${LITMUS_PR_BASE:-}
 [ -z "$PR_BASE" ] && PR_BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||')
 [ -z "$PR_BASE" ] && PR_BASE=origin/main
 # Auto-prefix origin/ if bare branch name provided
-[[ -n "${CODEX_PR_BASE:-}" && "$PR_BASE" != origin/* ]] && PR_BASE="origin/${PR_BASE}"
+[[ -n "${LITMUS_PR_BASE:-}" && "$PR_BASE" != origin/* ]] && PR_BASE="origin/${PR_BASE}"
 MERGE_BASE=$(git merge-base "${PR_BASE}" HEAD)
 git log --oneline "${MERGE_BASE}..HEAD"
 git diff "${MERGE_BASE}..HEAD" --stat
@@ -421,8 +421,8 @@ After all 6 agents return:
 
 **Write the marker** (the script does NOT write it in PR mode — you must):
 ```bash
-PR_BASE=${CODEX_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}
-[[ -n "${CODEX_PR_BASE:-}" && "$PR_BASE" != origin/* ]] && PR_BASE="origin/${PR_BASE}"
+PR_BASE=${LITMUS_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}
+[[ -n "${LITMUS_PR_BASE:-}" && "$PR_BASE" != origin/* ]] && PR_BASE="origin/${PR_BASE}"
 MERGE_BASE=$(git merge-base "${PR_BASE}" HEAD)
 DIFF_OUTPUT=$(git diff "${MERGE_BASE}...HEAD" 2>/dev/null)
 if [ -n "$DIFF_OUTPUT" ]; then
@@ -454,9 +454,9 @@ The pre-PR gate accepts markers that are 64-hex SHA-256 hashes or `PASS-<epoch>`
 
 **Environment variables:**
 - `BUSDRIVER_REVIEW_CLI=auto` — choose review backend (auto/codex/gemini/droid/amp/opencode/claude/aider/builtin/none). Per-role routing: `.claude/busdriver.json`
-- `CODEX_REVIEW_MODE=pr` — switches to PR deep review mode
-- `CODEX_PR_BASE=main` — override base branch (auto-prefixed to `origin/<branch>` if no `origin/` prefix; defaults to `origin/HEAD` or `origin/main`)
-- `CODEX_PR_FAST=1` — skip multi-agent review, use fast mode only (audited in bypass-log)
+- `LITMUS_MODE=pr` — switches to PR deep review mode
+- `LITMUS_PR_BASE=main` — override base branch (auto-prefixed to `origin/<branch>` if no `origin/` prefix; defaults to `origin/HEAD` or `origin/main`)
+- `LITMUS_PR_FAST=1` — skip multi-agent review, use fast mode only (audited in bypass-log)
 
 ## Builtin Fallback (Exit Code 3)
 
@@ -468,7 +468,7 @@ When `run-review-loop.sh` exits with code 3, no external review CLI is available
    - **Read-only mode:** "Do NOT modify any files. Report only. Do not use the Fix-First pass. Do not use Write or Edit tools."
    - **JSON output format:** "Output your review as a JSON array of issues: `[{\"severity\": \"CRITICAL|HIGH|MEDIUM|LOW\", \"file\": \"path\", \"line\": 0, \"description\": \"...\"}]`. If no issues found, output: `[]`"
 4. Parse the agent's JSON output for CRITICAL/HIGH/MEDIUM issues
-5. If no blocking issues: write the marker via `bash "${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/write-review-marker.sh"` (NOT via Write tool — the pre-implementation gate blocks Write to marker files)
+5. If no blocking issues: write the marker via `bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/write-review-marker.sh"` (NOT via Write tool — the pre-implementation gate blocks Write to marker files)
 6. If CRITICAL/HIGH/MEDIUM issues: report FAIL with issues, fix and re-run
 7. Clean up: remove the temp prompt file and the handoff path file
 
@@ -487,9 +487,9 @@ The review loop automatically runs available static analysis tools before the LL
 SAST findings are deterministic (not LLM-generated) and merge with LLM findings in the final output. Missing tools are skipped gracefully.
 
 **Environment variables:**
-- `CODEX_SKIP_SAST=1` — skip all SAST scanning
-- `CODEX_SAST_TIMEOUT=30` — per-tool timeout in seconds (default: 30)
-- `CODEX_SHELLCHECK_ENABLE=check-extra-masked-returns,check-set-e-suppressed,quote-safe-variables,require-double-brackets` — ShellCheck optional checks to enable (default: curated list targeting audit gaps). Set to `all` to enable everything, or narrow to specific checks
+- `LITMUS_SKIP_SAST=1` — skip all SAST scanning
+- `LITMUS_SAST_TIMEOUT=30` — per-tool timeout in seconds (default: 30)
+- `LITMUS_SHELLCHECK_ENABLE=check-extra-masked-returns,check-set-e-suppressed,quote-safe-variables,require-double-brackets` — ShellCheck optional checks to enable (default: curated list targeting audit gaps). Set to `all` to enable everything, or narrow to specific checks
 
 ### Smart Context (Cross-File)
 
@@ -502,9 +502,9 @@ The review loop automatically collects cross-file context:
 This enables the LLM to catch broken contracts, renamed parameters, and cross-file bugs.
 
 **Environment variables:**
-- `CODEX_SKIP_CONTEXT=1` — skip smart context collection
-- `CODEX_MAX_CONTEXT_LINES=50` — max context lines per function (validated numeric)
-- `CODEX_MAX_FUNCTIONS=10` — max functions to trace (validated numeric)
+- `LITMUS_SKIP_CONTEXT=1` — skip smart context collection
+- `LITMUS_MAX_CONTEXT_LINES=50` — max context lines per function (validated numeric)
+- `LITMUS_MAX_FUNCTIONS=10` — max functions to trace (validated numeric)
 
 ### Docs Consistency
 
@@ -515,9 +515,9 @@ The review loop checks for doc/code mismatches:
 - PR deep review includes a dedicated docs-consistency agent (6th agent)
 
 **Environment variables:**
-- `CODEX_DOCS_CONTEXT=1` — enable docs context collection (default: off)
-- `CODEX_MAX_DOC_SNIPPETS=5` — max doc file snippets to include (validated numeric)
-- `CODEX_MAX_ENRICHMENT_LINES=100` — max lines of smart-context and docs-context injected into prompt (validated numeric)
+- `LITMUS_DOCS_CONTEXT=1` — enable docs context collection (default: off)
+- `LITMUS_MAX_DOC_SNIPPETS=5` — max doc file snippets to include (validated numeric)
+- `LITMUS_MAX_ENRICHMENT_LINES=100` — max lines of smart-context and docs-context injected into prompt (validated numeric)
 
 ### Markdown Validation
 
@@ -526,8 +526,8 @@ When `.md` files are staged, the review loop runs:
 - **URL validation** (opt-in) — broken links
 
 **Environment variables:**
-- `CODEX_SKIP_MARKDOWN=1` — skip markdown checks
-- `CODEX_CHECK_URLS=1` — enable URL validation (disabled by default — slow)
+- `LITMUS_SKIP_MARKDOWN=1` — skip markdown checks
+- `LITMUS_CHECK_URLS=1` — enable URL validation (disabled by default — slow)
 
 ## Key Principles
 
@@ -537,7 +537,7 @@ When `.md` files are staged, the review loop runs:
 4. **Blocking execution** - Run with timeout=1260000, NEVER use background
 5. **Structured output** - Parse JSON for status and issues
 6. **Test after pass** - Run test suite before committing
-7. **Split large commits** - If >800 weighted lines (override: `CODEX_MAX_WEIGHTED_LINES`), split into logical commits FIRST. PR mode skips size check.
+7. **Split large commits** - If >800 weighted lines (override: `LITMUS_MAX_WEIGHTED_LINES`), split into logical commits FIRST. PR mode skips size check.
 8. **Staged-only scope** - Reviews only `git diff --cached`, not unstaged/untracked files
 9. **Iteration memory** - Previous findings are injected into the next pass to prevent re-reporting
 10. **Convergence cap** - Max 3 new issues per iteration to ensure the loop converges
@@ -549,7 +549,7 @@ The review loop uses three mechanisms to ensure convergence:
 
 **Scope control:** The prompt includes the staged diff (`git diff --cached`) explicitly, so the LLM reviews exactly what will be committed — not unstaged work or untracked files.
 
-**Iteration history:** After each FAIL, the issues found are saved to `/tmp/codex-iteration-history.jsonl`. On the next iteration, this history is injected into the prompt so the LLM knows what was already reported and can focus on verifying fixes.
+**Iteration history:** After each FAIL, the issues found are saved to `/tmp/litmus-iteration-history.jsonl`. On the next iteration, this history is injected into the prompt so the LLM knows what was already reported and can focus on verifying fixes.
 
 **Convergence rules in prompt:**
 - Do NOT re-report fixed issues from previous iterations

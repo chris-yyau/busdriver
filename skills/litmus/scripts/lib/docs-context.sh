@@ -6,8 +6,8 @@
 # Output: Formatted doc snippets on stdout for prompt injection.
 #
 # Environment:
-#   CODEX_DOCS_CONTEXT=1        — enable docs context collection (default: off)
-#   CODEX_MAX_DOC_SNIPPETS=5    — max doc snippets to include (default: 5)
+#   LITMUS_DOCS_CONTEXT=1        — enable docs context collection (default: off)
+#   LITMUS_MAX_DOC_SNIPPETS=5    — max doc snippets to include (default: 5)
 
 set -euo pipefail
 
@@ -19,7 +19,7 @@ _docs_escape_regex() {
 # Find doc files that mention a changed file or its functions
 _find_referencing_docs() {
   local search_term="$1"
-  local max_snippets="${CODEX_MAX_DOC_SNIPPETS:-5}"
+  local max_snippets="${LITMUS_MAX_DOC_SNIPPETS:-5}"
   case "$max_snippets" in
     ''|*[!0-9]*) max_snippets=5 ;;
   esac
@@ -62,10 +62,10 @@ collect_docs_context() {
   local files_list="$1"
   local diff_content="${2:-}"
 
-  # Docs context is opt-in: set CODEX_DOCS_CONTEXT=1 to enable.
+  # Docs context is opt-in: set LITMUS_DOCS_CONTEXT=1 to enable.
   # Default off because doc-heavy repos (shell scripts with co-located .md) generate
   # 40+ references that bias the reviewer toward doc-consistency over code bugs.
-  if [ "${CODEX_DOCS_CONTEXT:-0}" != "1" ]; then
+  if [ "${LITMUS_DOCS_CONTEXT:-0}" != "1" ]; then
     return
   fi
 

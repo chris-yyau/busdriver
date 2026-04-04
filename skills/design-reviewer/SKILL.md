@@ -48,7 +48,7 @@ Three-tier model with Claude as arbiter:
 - Major refactoring plans or structural decisions
 
 **Don't use for:**
-- Code review (use codex-reviewer instead)
+- Code review (use litmus instead)
 - Documentation review (not technical decisions)
 - Already-implemented features (too late)
 

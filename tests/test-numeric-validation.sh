@@ -18,10 +18,10 @@ check_guard() {
   fi
 }
 
-check_guard "skills/codex-reviewer/scripts/run-review-loop.sh" "CODEX_MAX_ENRICHMENT_LINES"
-check_guard "skills/codex-reviewer/scripts/lib/docs-context.sh" "CODEX_MAX_DOC_SNIPPETS"
-check_guard "skills/codex-reviewer/scripts/lib/smart-context.sh" "CODEX_MAX_CONTEXT_LINES"
-check_guard "skills/codex-reviewer/scripts/lib/smart-context.sh" "CODEX_MAX_FUNCTIONS"
+check_guard "skills/litmus/scripts/run-review-loop.sh" "LITMUS_MAX_ENRICHMENT_LINES"
+check_guard "skills/litmus/scripts/lib/docs-context.sh" "LITMUS_MAX_DOC_SNIPPETS"
+check_guard "skills/litmus/scripts/lib/smart-context.sh" "LITMUS_MAX_CONTEXT_LINES"
+check_guard "skills/litmus/scripts/lib/smart-context.sh" "LITMUS_MAX_FUNCTIONS"
 
 echo ""
 echo "Results: $passed passed, $failed failed"

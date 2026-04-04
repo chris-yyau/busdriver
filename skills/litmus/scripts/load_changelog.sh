@@ -12,7 +12,7 @@ SKILL_DIR="$(dirname "$SCRIPT_DIR")"
 source "$SCRIPT_DIR/lib/validation.sh"
 
 # Get number of entries to load (default: 3)
-LIMIT="${CODEX_CHANGELOG_LIMIT:-3}"
+LIMIT="${LITMUS_CHANGELOG_LIMIT:-3}"
 
 # Validate we're in a git repository
 if ! git rev-parse --git-dir > /dev/null 2>&1; then
@@ -30,7 +30,7 @@ fi
 
 # Get normalized project path
 PROJECT_PATH=$(get_normalized_project_path)
-HISTORY_FILE="$HOME/.claude/projects/$PROJECT_PATH/codex-context/task-history.jsonl"
+HISTORY_FILE="$HOME/.claude/projects/$PROJECT_PATH/litmus-context/task-history.jsonl"
 
 # If history file doesn't exist, return empty string
 if [ ! -f "$HISTORY_FILE" ]; then

@@ -1,6 +1,6 @@
-# Codex Reviewer Troubleshooting
+# Litmus Troubleshooting
 
-Common issues and solutions when using the codex-reviewer skill.
+Common issues and solutions when using the litmus skill.
 
 ## General Issues
 
@@ -89,7 +89,7 @@ git add -A  # Stage all changes
    ```python
    # CORRECT - blocking gate
    Bash(
-     command="bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh",
+     command="bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
      timeout=1260000  # 21 min timeout
    )
    ```
@@ -102,9 +102,9 @@ git add -A  # Stage all changes
 
 **Solution:** Use `--force` flag to re-initialize:
 ```bash
-CODEX_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts"
-bash "$CODEX_SCRIPTS/init-review-loop.sh" --force 10
-bash "$CODEX_SCRIPTS/run-review-loop.sh"
+LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
+bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
+bash "$LITMUS_SCRIPTS/run-review-loop.sh"
 ```
 
 ### Issue: Automation works for first iteration, then prompts on second
@@ -113,16 +113,16 @@ bash "$CODEX_SCRIPTS/run-review-loop.sh"
 ```python
 # Each call does ONE pass — caller re-runs on FAIL
 Bash(
-    command="bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh",
+    command="bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
     timeout=1260000  # blocking, NOT background
 )
 ```
 
 **Best Practice:** Run the review as a blocking call (never in background):
 ```python
-def run_codex_review():
+def run_litmus():
     return Bash(
-        command="bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh",
+        command="bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
         description="Run Codex review (blocking gate)",
         timeout=1260000  # 21 min timeout
     )

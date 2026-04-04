@@ -8,7 +8,7 @@ sessions/
 # Local gate state (transient, session-scoped)
 .claude/*.local
 .claude/*.local.*
-.claude/codex-review-state.md
+.claude/litmus-state.md
 .claude/bypass-log.jsonl
 .claude/.gate-block-count.local
 .claude/.impl-gate-block-count.local

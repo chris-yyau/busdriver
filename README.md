@@ -22,7 +22,7 @@ Busdriver enforces a 6-phase development pipeline and gates every commit and PR 
 | **3. Worktree** | Create isolated git worktree, verify baseline tests pass |
 | **4. Execution** | TDD (red/green/refactor), code review, language-specific patterns |
 | **5. Verification** | Build + lint + tests, security scan, specialist review agents |
-| **6. Finishing** | Commit (codex-reviewed), PR or merge, worktree cleanup |
+| **6. Finishing** | Commit (litmus-reviewed), PR or merge, worktree cleanup |
 
 Small, specific tasks (bug fix, typo, config tweak) skip straight to Phase 4. Everything else goes through the full pipeline.
 
@@ -112,7 +112,7 @@ Each route is an array: first element is primary, second is fallback. Roles not 
 
 | Feature | Role | Config key | Default |
 |---------|------|-----------|---------|
-| Code review | Reviewer | `codex-reviewer.reviewer` | auto |
+| Code review | Reviewer | `litmus.reviewer` | auto |
 | Design review | Reviewer 1 | `design-reviewer.reviewer_1` | gemini |
 | Design review | Reviewer 2 | `design-reviewer.reviewer_2` | codex |
 | Council | Pragmatist | `council.pragmatist` | gemini |
@@ -189,13 +189,13 @@ Gates have escape hatches for when you need them:
 
 ```bash
 # Skip codex review (single-use, 30s self-bypass detection)
-touch .claude/skip-codex-review.local
+touch .claude/skip-litmus.local
 
 # Skip design review (single-use, 30s self-bypass detection)
 touch .claude/skip-design-review.local
 
 # Environment variable bypass
-export SKIP_CODEX_REVIEW=1
+export SKIP_LITMUS=1
 export SKIP_DESIGN_REVIEW=1
 ```
 

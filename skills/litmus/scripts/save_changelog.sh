@@ -43,7 +43,7 @@ DELETED=$(echo "$STATS" | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' 2>/dev/
 DIFF_SUMMARY=$(echo "$COMMIT_MSG" | head -1 | cut -c1-200)
 
 # Get review iterations from state file (if exists)
-STATE_FILE=".claude/codex-review-state.md"
+STATE_FILE=".claude/litmus-state.md"
 ITERATIONS=0
 if [ -f "$STATE_FILE" ]; then
   # Extract iteration value from YAML frontmatter
@@ -89,7 +89,7 @@ ENTRY=$(jq -cn \
 
 # Get normalized project path for storage location
 PROJECT_PATH=$(get_normalized_project_path)
-CONTEXT_DIR="$HOME/.claude/projects/$PROJECT_PATH/codex-context"
+CONTEXT_DIR="$HOME/.claude/projects/$PROJECT_PATH/litmus-context"
 
 # Ensure directory exists
 mkdir -p "$CONTEXT_DIR" 2>/dev/null || {

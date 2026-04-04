@@ -1,6 +1,6 @@
 #!/bin/bash
 # Validation helpers for design-reviewer
-# Borrowed from codex-reviewer pattern
+# Borrowed from litmus pattern
 
 set -euo pipefail
 

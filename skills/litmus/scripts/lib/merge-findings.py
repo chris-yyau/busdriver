@@ -54,13 +54,13 @@ def determine_status(findings: list[dict]) -> str:
     Blocking rules:
     - SAST/lint findings (source starts with 'sast:' or 'lint:') always block.
     - LLM findings block if confidence >= 70% (normalized).
-    - After iteration 2 (env CODEX_ITERATION >= 3), only HIGH LLM findings block.
+    - After iteration 2 (env LITMUS_ITERATION >= 3), only HIGH LLM findings block.
       MEDIUM LLM findings become advisory (still reported, not blocking).
       Note: this is a server-side override of the prompt contract, which tells
       the LLM to FAIL on any medium. The LLM still reports them; the gate relaxes.
     """
     try:
-        iteration = int(os.environ.get("CODEX_ITERATION", "1"))
+        iteration = int(os.environ.get("LITMUS_ITERATION", "1"))
     except (TypeError, ValueError):
         iteration = 1
     blocking_severities = {"high", "medium"} if iteration <= 2 else {"high"}

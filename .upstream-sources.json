@@ -2115,97 +2115,97 @@
       "upstream_path": "skills/codebase-onboarding/SKILL.md"
     },
     {
-      "path": "skills/codex-reviewer/SKILL.md",
+      "path": "skills/litmus/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/prompt_template.txt",
+      "path": "skills/litmus/prompt_template.txt",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/references/advanced-features.md",
+      "path": "skills/litmus/references/advanced-features.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/references/advanced-usage.md",
+      "path": "skills/litmus/references/advanced-usage.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/references/examples.md",
+      "path": "skills/litmus/references/examples.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/references/legacy-approach.md",
+      "path": "skills/litmus/references/legacy-approach.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/references/script-reference.md",
+      "path": "skills/litmus/references/script-reference.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/references/troubleshooting.md",
+      "path": "skills/litmus/references/troubleshooting.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/references/workflow-details.md",
+      "path": "skills/litmus/references/workflow-details.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/scripts/execute_review.sh",
+      "path": "skills/litmus/scripts/execute_review.sh",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/scripts/init-review-loop.sh",
+      "path": "skills/litmus/scripts/init-review-loop.sh",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/scripts/lib/exclude-generated.sh",
+      "path": "skills/litmus/scripts/lib/exclude-generated.sh",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/scripts/lib/iteration-history.sh",
+      "path": "skills/litmus/scripts/lib/iteration-history.sh",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/scripts/lib/parse-narrative.py",
+      "path": "skills/litmus/scripts/lib/parse-narrative.py",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/scripts/lib/validation.sh",
+      "path": "skills/litmus/scripts/lib/validation.sh",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/scripts/load_changelog.sh",
+      "path": "skills/litmus/scripts/load_changelog.sh",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/scripts/run-review-loop.sh",
+      "path": "skills/litmus/scripts/run-review-loop.sh",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/scripts/save_changelog.sh",
+      "path": "skills/litmus/scripts/save_changelog.sh",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/codex-reviewer/scripts/suggest-split.sh",
+      "path": "skills/litmus/scripts/suggest-split.sh",
       "source": "local",
       "status": "local"
     },

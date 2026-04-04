@@ -1,4 +1,4 @@
-# Codex Reviewer Workflow Details
+# Litmus Workflow Details
 
 Detailed iteration examples and workflow patterns referenced from SKILL.md.
 
@@ -27,7 +27,7 @@ Detailed iteration examples and workflow patterns referenced from SKILL.md.
 
 ```bash
 # Initialize
-echo "1" > /tmp/codex-iteration.txt
+echo "1" > /tmp/litmus-iteration.txt
 git add -A
 
 # Iteration 1
@@ -37,7 +37,7 @@ codex review "Review uncommitted changes..."
 # Fix issue
 [Fix SQL injection by using parameterized query]
 git add -A
-echo "2" > /tmp/codex-iteration.txt
+echo "2" > /tmp/litmus-iteration.txt
 
 # Iteration 2 - AUTOMATIC, NO PERMISSION
 codex review "Review uncommitted changes..."
@@ -46,7 +46,7 @@ codex review "Review uncommitted changes..."
 # Proceed to tests and commit
 npm test
 git commit -m "Fix authentication"
-rm /tmp/codex-iteration.txt
+rm /tmp/litmus-iteration.txt
 ```
 
 **Key point:** Loop continued automatically from iteration 1 to 2 without asking permission.
@@ -55,7 +55,7 @@ rm /tmp/codex-iteration.txt
 
 ```bash
 # Initialize
-echo "1" > /tmp/codex-iteration.txt
+echo "1" > /tmp/litmus-iteration.txt
 git add -A
 
 # --- ITERATION 1 ---
@@ -65,7 +65,7 @@ codex review "Review uncommitted changes..."
 # Fix high severity issues
 [Fix XSS, SQL injection, auth bypass, missing validation]
 git add -A
-echo "2" > /tmp/codex-iteration.txt
+echo "2" > /tmp/litmus-iteration.txt
 
 # --- ITERATION 2 - AUTOMATIC ---
 codex review "Review uncommitted changes..."
@@ -74,7 +74,7 @@ codex review "Review uncommitted changes..."
 # Fix remaining high and some medium issues
 [Fix race condition, add error handling, improve logging]
 git add -A
-echo "3" > /tmp/codex-iteration.txt
+echo "3" > /tmp/litmus-iteration.txt
 
 # --- ITERATION 3 - AUTOMATIC ---
 codex review "Review uncommitted changes..."
@@ -83,7 +83,7 @@ codex review "Review uncommitted changes..."
 # Fix last medium issues
 [Add input sanitization, improve error messages]
 git add -A
-echo "4" > /tmp/codex-iteration.txt
+echo "4" > /tmp/litmus-iteration.txt
 
 # --- ITERATION 4 - AUTOMATIC ---
 codex review "Review uncommitted changes..."
@@ -92,7 +92,7 @@ codex review "Review uncommitted changes..."
 # Proceed to tests and commit
 npm test
 git commit -m "Refactor authentication system"
-rm /tmp/codex-iteration.txt
+rm /tmp/litmus-iteration.txt
 ```
 
 **Key points:**
@@ -107,7 +107,7 @@ rm /tmp/codex-iteration.txt
 # ... iterations 1-9 ...
 
 # --- ITERATION 10 ---
-ITERATION=$(cat /tmp/codex-iteration.txt)  # 10
+ITERATION=$(cat /tmp/litmus-iteration.txt)  # 10
 codex review "Review uncommitted changes..."
 # Result: FAIL - 3 issues (1 high, 2 medium)
 
@@ -162,9 +162,9 @@ Review → FAIL → Fix → ... (10 iterations) → Max reached → Ask user
 ### Creating a Wrapper Function
 
 ```python
-def run_codex_review(iteration_num):
+def run_litmus(iteration_num):
     return Bash(
-        command="bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/run-review-loop.sh",
+        command="bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
         description=f"Run Codex review iteration {iteration_num}",
         run_in_background=True,  # Always included
         timeout=600000
@@ -219,7 +219,7 @@ bash scripts/save_changelog.sh
 
 ### State File Format
 
-`.claude/codex-review-state.md` contains:
+`.claude/litmus-state.md` contains:
 
 ```markdown
 ---

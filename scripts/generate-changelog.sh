@@ -81,7 +81,7 @@ generate_section() {
     else
       others="${others}- ${line}\n"
     fi
-  done < <(git log "$range" --pretty=format:'%s' --no-merges 2>/dev/null)
+  done < <(git log "$range" --pretty=format:'%s' --no-merges 2>/dev/null || true)
 
   # Only output if there are commits
   local has_content=0
@@ -110,7 +110,7 @@ if [[ "$FULL" -eq 1 ]]; then
   # Generate for all tags
   output="# Changelog\n\nAll notable changes to this project.\n\n"
 
-  TAGS=($(get_tags))
+  mapfile -t TAGS < <(get_tags)
 
   # Unreleased section (latest tag to HEAD)
   if [[ ${#TAGS[@]} -gt 0 ]]; then

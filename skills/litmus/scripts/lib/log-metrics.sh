@@ -36,8 +36,9 @@ log_review_metrics() {
   commit_sha=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
   branch_name=$(git branch --show-current 2>/dev/null || echo "unknown")
 
-  # Diff size (lines changed)
+  # Diff size (lines changed) — pipe chain is intentional, fallback to 0 on any failure
   local diff_lines
+  # shellcheck disable=SC2312
   if [[ "$mode" == "pr" ]]; then
     diff_lines=$(git diff "${LITMUS_PR_BASE:-origin/main}...HEAD" --stat 2>/dev/null | tail -1 | grep -oE '[0-9]+ insertion|[0-9]+ deletion' | grep -oE '[0-9]+' | paste -sd+ - | bc 2>/dev/null || echo 0)
   else

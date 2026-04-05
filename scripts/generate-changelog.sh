@@ -165,5 +165,6 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   printf '%b' "$output"
 else
   printf '%b' "$output" > "$CHANGELOG_FILE"
-  echo "Generated $CHANGELOG_FILE ($(wc -l < "$CHANGELOG_FILE" | tr -d ' ') lines)"
+  LINE_COUNT=$(wc -l < "$CHANGELOG_FILE" | tr -d ' ')
+  echo "Generated $CHANGELOG_FILE ($LINE_COUNT lines)"
 fi

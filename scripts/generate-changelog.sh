@@ -106,6 +106,7 @@ generate_section() {
 # Build the changelog content
 output=""
 
+# shellcheck disable=SC2312  # date/wc subshells won't mask meaningful return values
 if [[ "$FULL" -eq 1 ]]; then
   # Generate for all tags
   output="# Changelog\n\nAll notable changes to this project.\n\n"

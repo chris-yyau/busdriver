@@ -201,6 +201,17 @@ export SKIP_DESIGN_REVIEW=1
 
 Skip files are single-use (consumed after one bypass) and logged to `.claude/bypass-log.jsonl`. Files created within 30 seconds are rejected — this prevents Claude from creating skip files itself to bypass gates.
 
+## Utility scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/release.sh VERSION` | Bump version across manifests, generate changelog, tag, and push |
+| `scripts/bump-version.sh VERSION` | Config-driven version bump with drift detection and repo audit |
+| `scripts/generate-changelog.sh` | Generate CHANGELOG.md from conventional commits (`--full`, `--dry-run`) |
+| `scripts/post-ship-doc-check.sh` | Check for stale docs after code changes (6 heuristic rules) |
+| `scripts/litmus-metrics-report.sh` | Dashboard for litmus review outcomes (pass rate, severity, trends) |
+| `node scripts/doctor.js` | Diagnose CLI availability and effective reviewer configuration |
+
 ## Learning system
 
 Busdriver learns from its mistakes:

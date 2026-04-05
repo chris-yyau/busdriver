@@ -270,35 +270,22 @@ if iteration > MAX_ITERATIONS:
 
 ### Iteration Metrics
 
-Track review metrics across iterations:
+Review metrics are now **automatically persisted** by `lib/log-metrics.sh`. Every review
+outcome is appended to `.claude/review-metrics.jsonl` with status, issues, severity
+breakdown, iteration count, commit context, and diff size.
 
-```python
-import json
-from datetime import datetime
+```bash
+# View dashboard (pass rate, severity distribution, avg iterations)
+bash scripts/litmus-metrics-report.sh
 
-metrics = {
-    'iterations': [],
-    'total_issues': 0,
-    'time_started': datetime.now().isoformat()
-}
+# View last 10 reviews
+bash scripts/litmus-metrics-report.sh --recent 10
 
-for iteration in range(1, 11):
-    result = run_litmus(iteration)
-
-    metrics['iterations'].append({
-        'iteration': iteration,
-        'status': result['status'],
-        'issue_count': len(result['issues']),
-        'timestamp': datetime.now().isoformat()
-    })
-
-    if result['status'] == 'PASS':
-        break
-
-# Save metrics
-with open('.litmus-metrics.json', 'w') as f:
-    json.dump(metrics, f, indent=2)
+# Export raw JSONL for custom analysis
+bash scripts/litmus-metrics-report.sh --raw | jq -s '...'
 ```
+
+Override the metrics file location with `LITMUS_METRICS_FILE=path`.
 
 ## Multi-Repository Workflows
 

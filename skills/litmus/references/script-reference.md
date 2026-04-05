@@ -132,6 +132,20 @@ LITMUS_CHANGELOG_LIMIT=5 bash scripts/load_changelog.sh
 
 ## Utility Scripts
 
+### lib/log-metrics.sh
+
+**Purpose:** Persistent review metrics logging.
+
+**Functions:**
+
+**`log_review_metrics(status, issue_count, iteration, mode, cli, json_output)`**
+- Appends one JSON line to `.claude/review-metrics.jsonl`
+- Captures: status, issues, severity breakdown, commit SHA, branch, diff size
+- Called automatically by `run-review-loop.sh` after merge-findings
+
+**Configuration:**
+- `LITMUS_METRICS_FILE` — override output path (default: `.claude/review-metrics.jsonl`)
+
 ### lib/validation.sh
 
 **Purpose:** Shared validation utilities for scripts.

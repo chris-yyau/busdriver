@@ -32,7 +32,7 @@ Small, specific tasks (bug fix, typo, config tweak) skip straight to Phase 4. Ev
 |------|---------|---------------|
 | **Codex Reviewer** | `git commit` | Blocks commit until code review passes |
 | **Codex Reviewer (deep)** | `gh pr create` | Blocks PR until 6 parallel review agents pass (4-of-6 quorum) |
-| **Design Reviewer** | Plan/design doc written | Blocks implementation code while plans are unreviewed |
+| **Blueprint Review** | Plan/design doc written | Blocks implementation code while plans are unreviewed |
 | **Pre-implementation** | `Write`/`Edit` of code files | Blocks file writes while design docs lack `<!-- design-reviewed: PASS -->` |
 | **Freeze/Guard** | Debugging session active | Restricts edits to investigation scope only |
 
@@ -98,8 +98,8 @@ By default, all features share the same CLI. For per-role control, create `.clau
   "version": 1,
   "defaults": { "primary": "auto", "fallback": "builtin" },
   "routes": {
-    "design-reviewer.reviewer_1": ["gemini", "droid"],
-    "design-reviewer.reviewer_2": ["codex", "amp"],
+    "blueprint-review.reviewer_1": ["gemini", "droid"],
+    "blueprint-review.reviewer_2": ["codex", "amp"],
     "roundtable.pragmatist": ["gemini", "droid"],
     "roundtable.critic": ["codex", "amp"]
   }
@@ -113,8 +113,8 @@ Each route is an array: first element is primary, second is fallback. Roles not 
 | Feature | Role | Config key | Default |
 |---------|------|-----------|---------|
 | Code review | Reviewer | `litmus.reviewer` | auto |
-| Design review | Reviewer 1 | `design-reviewer.reviewer_1` | gemini |
-| Design review | Reviewer 2 | `design-reviewer.reviewer_2` | codex |
+| Blueprint review | Reviewer 1 | `blueprint-review.reviewer_1` | gemini |
+| Blueprint review | Reviewer 2 | `blueprint-review.reviewer_2` | codex |
 | Roundtable | Pragmatist | `roundtable.pragmatist` | gemini |
 | Roundtable | Critic | `roundtable.critic` | codex |
 
@@ -126,13 +126,13 @@ Run `node scripts/doctor.js` to see your effective CLI for each role.
 
 | CLI | Used by | Install |
 |-----|---------|---------|
-| **[Codex CLI](https://github.com/openai/codex)** | Code review gate (default), design reviewer, roundtable | `npm install -g @openai/codex` |
-| **[Gemini CLI](https://github.com/google-gemini/gemini-cli)** | Design reviewer, roundtable, code review | `npm install -g @google/gemini-cli` or see repo |
+| **[Codex CLI](https://github.com/openai/codex)** | Code review gate (default), blueprint review, roundtable | `npm install -g @openai/codex` |
+| **[Gemini CLI](https://github.com/google-gemini/gemini-cli)** | Blueprint review, roundtable, code review | `npm install -g @google/gemini-cli` or see repo |
 | **[Droid](https://droid.dev)** | Any configurable role | See https://droid.dev |
 | **[Amp](https://ampcode.com)** | Any configurable role | See https://ampcode.com |
 | **[OpenCode](https://github.com/opencode-ai/opencode)** | Any configurable role | `go install github.com/opencode-ai/opencode@latest` |
 
-**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. The design reviewer and roundtable degrade gracefully — with only one external CLI, the design reviewer runs single-reviewer mode; with none, those features require manual review. Core commit pipeline always works.
+**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. The blueprint review and roundtable degrade gracefully — with only one external CLI, the blueprint review runs single-reviewer mode; with none, those features require manual review. Core commit pipeline always works.
 
 ## Install
 
@@ -154,7 +154,7 @@ Claude Code                        Busdriver Plugin
   User task ──► Orchestrator routes to pipeline phase
                     │
                     ├─► Phase 1-2: brainstorming / writing-plans
-                    │     └─► Design Reviewer gates plan docs
+                    │     └─► Blueprint Review gates plan docs
                     │
                     ├─► Phase 3: git worktree isolation
                     │

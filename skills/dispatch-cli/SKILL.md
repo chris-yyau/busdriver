@@ -6,12 +6,12 @@ description: >
   or any self-contained task. Triggers: "send to codex/gemini", "dispatch to",
   "have codex/gemini do", "external agent", "second opinion", general audits,
   or when a task would benefit from independent external execution.
-  NOT for gate-specific reviews (use litmus or design-reviewer for those).
+  NOT for gate-specific reviews (use litmus or blueprint-review for those).
 ---
 
 # Dispatch CLI
 
-Send any task to Codex or Gemini CLI as an autonomous agent. Unlike `litmus` and `design-reviewer` (which are gate-bound), this skill dispatches **any** work — audits, analysis, code changes, research, refactoring — without pipeline restrictions.
+Send any task to Codex or Gemini CLI as an autonomous agent. Unlike `litmus` and `blueprint-review` (which are gate-bound), this skill dispatches **any** work — audits, analysis, code changes, research, refactoring — without pipeline restrictions.
 
 ## When to Use
 
@@ -25,7 +25,7 @@ Send any task to Codex or Gemini CLI as an autonomous agent. Unlike `litmus` and
 ## When NOT to Use
 
 - Pre-commit code review → use `litmus` (gate-enforced)
-- Design/plan doc review → use `design-reviewer` (gate-enforced)
+- Design/plan doc review → use `blueprint-review` (gate-enforced)
 - Tasks requiring Claude Code's specific tools (MCP, web search, etc.)
 
 ## CLI Selection

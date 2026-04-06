@@ -1,9 +1,13 @@
 ---
-name: design-reviewer
-description: Use after writing implementation plans, architecture documents, or design specs, before implementation begins. Required for validating strategic and technical soundness.
+name: blueprint-review
+description: >
+  Use after writing implementation plans, architecture documents, or design specs,
+  before implementation begins. Required for validating strategic and technical soundness.
+  Trigger on "design review", "review plan", "review design", "blueprint review",
+  "design-reviewer", or when design docs are flagged by the PostToolUse hook.
 ---
 
-# Design Reviewer (Three-Tier, Claude Arbiter)
+# Blueprint Review (Three-Tier, Claude Arbiter)
 
 AI-powered design review using Gemini + Codex (parallel) with Claude as the arbiter.
 
@@ -72,16 +76,16 @@ Reviewer CLIs are configurable via `.claude/busdriver.json` using the `routes` o
 ```json
 {
   "routes": {
-    "design-reviewer.reviewer_1": ["gemini"],
-    "design-reviewer.reviewer_2": ["codex"]
+    "blueprint-review.reviewer_1": ["gemini"],
+    "blueprint-review.reviewer_2": ["codex"]
   }
 }
 ```
 
 | Role | Route key | Default |
 |------|-----------|---------|
-| Reviewer 1 | `design-reviewer.reviewer_1` | gemini |
-| Reviewer 2 | `design-reviewer.reviewer_2` | codex |
+| Reviewer 1 | `blueprint-review.reviewer_1` | gemini |
+| Reviewer 2 | `blueprint-review.reviewer_2` | codex |
 | Arbiter | (hardcoded) | claude (not configurable — Claude is always the arbiter) |
 
 If both reviewers resolve to the same CLI, the system runs single-reviewer mode (one execution, output copied to both paths, logged as degradation).
@@ -120,7 +124,7 @@ digraph review {
 ```bash
 cd /path/to/project
 # CLAUDE_PLUGIN_ROOT is set by the plugin loader at session start
-bash "${CLAUDE_PLUGIN_ROOT}/skills/design-reviewer/scripts/init-design-review.sh" docs/plans/PLAN.md
+bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/init-design-review.sh" docs/plans/PLAN.md
 ```
 
 **Creates state file** (`docs/reviews/<slug>/state.md`) tracking:
@@ -131,7 +135,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/design-reviewer/scripts/init-design-review.sh
 ### 2. Run Review Loop
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/skills/design-reviewer/scripts/run-design-review-loop.sh"
+bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/run-design-review-loop.sh"
 ```
 
 **Automated workflow:**
@@ -151,7 +155,7 @@ Update your design document based on Claude's findings, then re-run:
 vim docs/plans/PLAN.md
 
 # Run next iteration
-bash "${CLAUDE_PLUGIN_ROOT}/skills/design-reviewer/scripts/run-design-review-loop.sh"
+bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/run-design-review-loop.sh"
 ```
 
 **Iteration continues until:**
@@ -350,7 +354,7 @@ Write to `~/.claude/notes/lesson-review-cal-{YYYY-MM-DD}-{slug}.md`. If the path
 ```markdown
 ---
 name: review-cal-{actual-slug}
-description: Design reviewer underconfident on {pattern} — was {original_confidence}, should be {corrected_confidence}
+description: Blueprint review underconfident on {pattern} — was {original_confidence}, should be {corrected_confidence}
 type: feedback
 last_validated: "{YYYY-MM-DD}"
 ---

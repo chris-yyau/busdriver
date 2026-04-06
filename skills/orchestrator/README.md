@@ -6,14 +6,14 @@ Routes tasks to the appropriate busdriver skill, agent, or command.
 
 - **Pipeline enforcement** — phases 1-6 (brainstorming → finishing)
 - **Domain detection** — loads language/framework patterns automatically
-- **Gate enforcement** — litmus, design-reviewer, pre-implementation
+- **Gate enforcement** — litmus, blueprint-review, pre-implementation
 - **Agent dispatch** — 29 specialized agents (reviewers, build resolvers, etc.)
 
 ## How It Routes
 
 ### 1. Mandatory Gates (Hook-Enforced)
 - **Codex Reviewer** — code review before commit/PR
-- **Design Reviewer** — plan review before implementation
+- **Blueprint Review** — plan review before implementation
 - **Pre-implementation** — blocks impl code while design docs unreviewed
 
 ### 2. Pipeline Phases

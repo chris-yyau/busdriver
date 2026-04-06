@@ -1,7 +1,7 @@
 ---
 name: spec-review-convergence
 description: Independent subagent spec review with bounded iterations and convergence guard — prevents infinite planning loops
-targets: busdriver:brainstorming, design-reviewer skill
+targets: busdriver:brainstorming, blueprint-review skill
 type: supplement
 source: gstack /office-hours
 added: 2026-03-24
@@ -9,7 +9,7 @@ added: 2026-03-24
 
 # Spec Review Loop with Convergence
 
-> Load alongside `busdriver:brainstorming` (Step 7) and `design-reviewer` skill.
+> Load alongside `busdriver:brainstorming` (Step 7) and `blueprint-review` skill.
 
 ## Process
 

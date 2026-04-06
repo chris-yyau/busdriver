@@ -234,7 +234,7 @@ if [ -f "$DESIGN_STATE" ]; then
     done <<< "$DESIGN_LINES"
 
     if [ -n "$UNREVIEWED" ]; then
-        REASON=$(printf "Design review required before committing.\n\nUnreviewed documents:\n%b\nRun /design-reviewer to review these documents, then try committing again.\n\nIMPORTANT: Do NOT create .claude/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the design reviewer instead." "$UNREVIEWED")
+        REASON=$(printf "Design review required before committing.\n\nUnreviewed documents:\n%b\nRun /blueprint-review to review these documents, then try committing again.\n\nIMPORTANT: Do NOT create .claude/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the blueprint review instead." "$UNREVIEWED")
         block_emit "$REASON"
         exit 0
     else
@@ -260,9 +260,9 @@ fi
 
 # ── Design-reviewed bypass: skip codex gate for spec-only commits ────────
 # When ALL staged files are design-reviewed specs (plans/specs .md with PASS
-# marker), codex review is redundant — the 3-tier design reviewer (Gemini +
+# marker), codex review is redundant — the 3-tier blueprint review (Gemini +
 # Codex + Claude) already covered them. Skip Gate 2 to avoid wrong ordering
-# where litmus runs on specs before design-reviewer.
+# where litmus runs on specs before blueprint-review.
 ALL_DESIGN_REVIEWED=true
 HAS_STAGED=false
 while IFS= read -r staged_file; do

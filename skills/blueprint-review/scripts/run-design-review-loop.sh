@@ -159,8 +159,8 @@ else
 
   # Resolve CLIs from config
   log_info "Resolving reviewer CLIs..."
-  REVIEWER_1_CLI=$(resolve_role_cli "design-reviewer.reviewer_1")
-  REVIEWER_2_CLI=$(resolve_role_cli "design-reviewer.reviewer_2")
+  REVIEWER_1_CLI=$(resolve_role_cli "blueprint-review.reviewer_1")
+  REVIEWER_2_CLI=$(resolve_role_cli "blueprint-review.reviewer_2")
   log_info "  Reviewer 1: $REVIEWER_1_CLI"
   log_info "  Reviewer 2: $REVIEWER_2_CLI"
 

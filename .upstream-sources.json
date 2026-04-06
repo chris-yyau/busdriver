@@ -2395,47 +2395,47 @@
       "upstream_path": "skills/deployment-patterns/SKILL.md"
     },
     {
-      "path": "skills/design-reviewer/SKILL.md",
+      "path": "skills/blueprint-review/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/design-reviewer/config/default_config.json",
+      "path": "skills/blueprint-review/config/default_config.json",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/design-reviewer/prompts/claude_validation_prompt.txt",
+      "path": "skills/blueprint-review/prompts/claude_validation_prompt.txt",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/design-reviewer/prompts/comprehensive_review_prompt.txt",
+      "path": "skills/blueprint-review/prompts/comprehensive_review_prompt.txt",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/design-reviewer/scripts/init-design-review.sh",
+      "path": "skills/blueprint-review/scripts/init-design-review.sh",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/design-reviewer/scripts/lib/extract_review_json.py",
+      "path": "skills/blueprint-review/scripts/lib/extract_review_json.py",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/design-reviewer/scripts/lib/state_management.sh",
+      "path": "skills/blueprint-review/scripts/lib/state_management.sh",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/design-reviewer/scripts/lib/validation.sh",
+      "path": "skills/blueprint-review/scripts/lib/validation.sh",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/design-reviewer/scripts/run-design-review-loop.sh",
+      "path": "skills/blueprint-review/scripts/run-design-review-loop.sh",
       "source": "local",
       "status": "local"
     },

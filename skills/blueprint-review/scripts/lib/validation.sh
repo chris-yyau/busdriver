@@ -1,5 +1,5 @@
 #!/bin/bash
-# Validation helpers for design-reviewer
+# Validation helpers for blueprint-review
 # Borrowed from litmus pattern
 
 set -euo pipefail

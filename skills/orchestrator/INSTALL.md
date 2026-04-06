@@ -9,7 +9,7 @@ The orchestrator skill replaces `using-superpowers` as the master router for all
 Ensure you have:
 1. Superpowers plugin installed
 2. Everything Claude Code plugin installed
-3. Codex-reviewer and design-reviewer skills in `~/.claude/skills/`
+3. Litmus and blueprint-review skills in `~/.claude/skills/`
 
 ## Installation Steps
 

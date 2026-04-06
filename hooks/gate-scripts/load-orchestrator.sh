@@ -24,7 +24,7 @@ if ! command -v python3 &>/dev/null; then
     # so we must emit the warning as raw hookSpecificOutput JSON using printf.
     # Note: gate hooks fail-CLOSED (block via printf) when python3 is missing,
     # so gates are NOT silently disabled — they block ALL gated actions.
-    printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"## CRITICAL: python3 not found\\n\\nAll review gates (litmus, design-reviewer, pre-implementation, pre-commit) will BLOCK every gated action because gate hooks fail-CLOSED without python3. Gates cannot parse tool input to determine if the action is actually a commit — so they block everything as a precaution.\\n\\n**Install python3 immediately to restore normal gate operation.** Until then, use `.claude/skip-litmus.local` or `.claude/skip-design-review.local` to bypass individual blocked actions."}}\n'
+    printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"## CRITICAL: python3 not found\\n\\nAll review gates (litmus, blueprint-review, pre-implementation, pre-commit) will BLOCK every gated action because gate hooks fail-CLOSED without python3. Gates cannot parse tool input to determine if the action is actually a commit — so they block everything as a precaution.\\n\\n**Install python3 immediately to restore normal gate operation.** Until then, use `.claude/skip-litmus.local` or `.claude/skip-design-review.local` to bypass individual blocked actions."}}\n'
     exit 0
 fi
 if ! command -v jq &>/dev/null; then
@@ -116,12 +116,12 @@ elif is_stale:
     files = ", ".join(os.path.basename(f) for f in unreviewed)
     print(f"WARNING: Stale design review pending ({age_str} old, from previous session).")
     print(f"Unreviewed: {files}")
-    print(f"Run /design-reviewer to complete review, or create .claude/skip-design-review.local to bypass.")
+    print(f"Run /blueprint-review to complete review, or create .claude/skip-design-review.local to bypass.")
 else:
     # Fresh entries still pending — warn but don't expire
     files = ", ".join(os.path.basename(f) for f in unreviewed)
     print(f"Active design review pending: {files}")
-    print(f"Run /design-reviewer before writing implementation code.")
+    print(f"Run /blueprint-review before writing implementation code.")
 DESIGN_CLEANUP_EOF
 )
 fi

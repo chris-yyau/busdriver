@@ -2,7 +2,7 @@
 # resolve-cli.sh — Plugin-wide shared CLI library
 #
 # Single source of truth for CLI availability and resolution.
-# Sourced by litmus, design-reviewer, and roundtable.
+# Sourced by litmus, blueprint-review, and roundtable.
 #
 # Usage (sourced):
 #   source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/resolve-cli.sh"
@@ -252,9 +252,9 @@ resolve_role_cli() {
 
   # Step 4b: Legacy per-role defaults (backward compat when no config exists)
   case "$role_key" in
-    design-reviewer.reviewer_1) is_cli_available gemini && echo "gemini" && return ;;
-    design-reviewer.reviewer_2) is_cli_available codex && echo "codex" && return ;;
-    design-reviewer.arbiter)    echo "builtin" && return ;;  # arbiter is always Claude
+    blueprint-review.reviewer_1) is_cli_available gemini && echo "gemini" && return ;;
+    blueprint-review.reviewer_2) is_cli_available codex && echo "codex" && return ;;
+    blueprint-review.arbiter)    echo "builtin" && return ;;  # arbiter is always Claude
     roundtable.pragmatist)      is_cli_available gemini && echo "gemini" && return ;;
     roundtable.critic)          is_cli_available codex && echo "codex" && return ;;
   esac

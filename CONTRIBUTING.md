@@ -33,7 +33,7 @@ busdriver/
 │   ├── verification-loop/     # Phase 5: verification
 │   ├── finishing-a-dev-branch/# Phase 6: finishing
 │   ├── litmus/        # Pre-commit/PR code review
-│   ├── design-reviewer/       # Plan/design doc review
+│   ├── blueprint-review/       # Plan/design doc review
 │   ├── golang-patterns/       # Language: Go patterns
 │   ├── python-patterns/       # Language: Python patterns
 │   └── ...                    # 134 more skills
@@ -73,7 +73,7 @@ Skills span four layers, all living flat under `skills/`:
 
 1. **Pipeline** — Process skills (brainstorming, planning, TDD, verification, worktrees)
 2. **Domain** — Language/framework patterns, specialized agents, build resolvers
-3. **Gates** — Hook-enforced reviews (litmus, design-reviewer, pre-implementation)
+3. **Gates** — Hook-enforced reviews (litmus, blueprint-review, pre-implementation)
 4. **Workflow** — Orchestrator, roundtable, reflection, and routing tools
 
 ## Commit Messages

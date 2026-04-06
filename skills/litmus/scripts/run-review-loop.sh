@@ -532,9 +532,9 @@ echo ""
 # Resolve extractor — prefer plugin location, fall back to marketplace, then legacy
 EXTRACTOR=""
 for _candidate in \
-    "${CLAUDE_PLUGIN_ROOT:-}/skills/design-reviewer/scripts/lib/extract_review_json.py" \
-    "$HOME/.claude/plugins/marketplaces/busdriver/skills/design-reviewer/scripts/lib/extract_review_json.py" \
-    "$HOME/.claude/skills/design-reviewer/scripts/lib/extract_review_json.py"; do
+    "${CLAUDE_PLUGIN_ROOT:-}/skills/blueprint-review/scripts/lib/extract_review_json.py" \
+    "$HOME/.claude/plugins/marketplaces/busdriver/skills/blueprint-review/scripts/lib/extract_review_json.py" \
+    "$HOME/.claude/skills/blueprint-review/scripts/lib/extract_review_json.py"; do
     if [ -f "$_candidate" ]; then
         EXTRACTOR="$_candidate"
         break

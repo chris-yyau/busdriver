@@ -1,7 +1,7 @@
 ---
 name: orchestrator
 description: >
-  Use when starting any task, routing to skills, about to commit or deploy, writing new features or fixing bugs, after writing plans or design docs, debugging, doing code review, or uncertain which skill applies. Use when there is even a 1% chance a skill might apply — this is the single routing authority for superpowers, everything-claude-code, litmus, and design-reviewer.
+  Use when starting any task, routing to skills, about to commit or deploy, writing new features or fixing bugs, after writing plans or design docs, debugging, doing code review, or uncertain which skill applies. Use when there is even a 1% chance a skill might apply — this is the single routing authority for superpowers, everything-claude-code, litmus, and blueprint-review.
 ---
 
 # Master Orchestrator
@@ -59,7 +59,7 @@ All gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects 
 **Skip:** `.claude/skip-litmus.local` (single-use, 30s self-bypass detection) or `SKIP_LITMUS=1`
 **Escalation:** 10 consecutive blocks → warn user about escape hatch. `git push` intentionally NOT gated.
 
-### Design Reviewer (Pre-Commit + Pre-Implementation)
+### Blueprint Review (Pre-Commit + Pre-Implementation)
 **Trigger:** Write/Edit of PLAN.md, DESIGN.md, ARCHITECTURE.md, or `docs/plans/*-design.md`
 **Detection:** PostToolUse flags files in `.claude/design-review-needed.local.md`
 **Pre-implementation:** Blocks Write/Edit/Bash(file-modifying) while unreviewed design docs exist.
@@ -68,7 +68,7 @@ All gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects 
 **Staleness:** Persists across sessions. SessionStart validates entries, warns about stale ones, but does NOT auto-expire.
 
 <CRITICAL>
-To review design/plan documents, you MUST invoke the `design-reviewer` SKILL (via Skill tool).
+To review design/plan documents, you MUST invoke the `blueprint-review` SKILL (via Skill tool).
 Do NOT use `code-reviewer` agent — it cannot write the `<!-- design-reviewed: PASS -->` marker.
 </CRITICAL>
 
@@ -114,11 +114,11 @@ DO NOT skip phases after your entry point. The ONLY exception is small specific 
 </STRONG-GUIDANCE>
 
 ### Phase 1: Discovery → `busdriver:brainstorming`
-Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design, domain patterns. For UI/UX: `frontend-design` (Impeccable core) + `ui-ux-pro-max` (design intelligence) + `busdriver:design-system` (token audit); load `.impeccable.md` if present. For code patterns: `busdriver:frontend-patterns`. For API boundaries: `busdriver:api-design`. Design Reviewer triggers when design doc is written. Consider `roundtable` if 2+ viable approaches.
+Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design, domain patterns. For UI/UX: `frontend-design` (Impeccable core) + `ui-ux-pro-max` (design intelligence) + `busdriver:design-system` (token audit); load `.impeccable.md` if present. For code patterns: `busdriver:frontend-patterns`. For API boundaries: `busdriver:api-design`. Blueprint Review triggers when design doc is written. Consider `roundtable` if 2+ viable approaches.
 **NEXT:** Phase 2 only. INVOKE `busdriver:writing-plans`. Do NOT start coding. After Phase 2 completes, auto-execution carries through Phases 3–6 without user pause.
 
 ### Phase 2: Planning → `busdriver:writing-plans`
-Produces TDD tasks with file paths, commands, expected output. Saves to `docs/plans/`. Design Reviewer triggers on plan doc. Consider `roundtable` for unfamiliar tech or security-sensitive flows.
+Produces TDD tasks with file paths, commands, expected output. Saves to `docs/plans/`. Blueprint Review triggers on plan doc. Consider `roundtable` for unfamiliar tech or security-sensitive flows.
 **AUTO-EXECUTION:** After plan review passes, writing-plans auto-continues: design-review → worktree → subagent-driven-development → verification → finishing. No user pause between phases 2–6. Stop conditions: design review rejects (3 attempts), baseline test failure, task blocker requiring human input.
 
 ### Phase 3: Worktree → `busdriver:using-git-worktrees`
@@ -337,7 +337,7 @@ After Phase 2 plan review passes, Phases 3–6 execute automatically via subagen
 
 ### Gates (Hook-Enforced, Cannot Bypass)
 - Codex Reviewer → before `git commit` and `gh pr create`
-- Design Reviewer → after plan/design docs, blocks impl + commit
+- Blueprint Review → after plan/design docs, blocks impl + commit
 - Pre-implementation → blocks file writes while design unreviewed
 - Freeze/Guard → restricts edits to investigation scope during debugging
 

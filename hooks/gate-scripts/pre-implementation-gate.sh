@@ -6,7 +6,7 @@
 # implementation files AND file-modifying Bash commands until design review
 # completes.
 #
-# Without this hook, Claude writes the plan, ignores the "run /design-reviewer"
+# Without this hook, Claude writes the plan, ignores the "run /blueprint-review"
 # warning, and starts writing implementation code — the design review gate only
 # fires at commit time, which is too late.
 #
@@ -110,7 +110,7 @@ MARKER_TARGET="${MARKER_CHECK#*|}"
 if [ "$MARKER_ACTION" = "BLOCK_MARKER" ]; then
     block_emit "BLOCKED: Cannot write to gate marker file ($MARKER_TARGET) directly.
 Gate markers are written by review infrastructure after a genuine review pass.
-Writing them manually forges compliance. Run /litmus or /design-reviewer instead.
+Writing them manually forges compliance. Run /litmus or /blueprint-review instead.
 If you need to skip review, ask the user to run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/.claude/skip-litmus.local"
     exit 0
 fi
@@ -148,7 +148,7 @@ if [ -f ".claude/skip-design-review.local" ]; then
         rm -f ".claude/skip-design-review.local"
         REASON="BLOCKED: skip-design-review.local was created moments ago (likely self-bypass).
 
-Do NOT create .claude/skip-design-review.local yourself. Run /design-reviewer instead.
+Do NOT create .claude/skip-design-review.local yourself. Run /blueprint-review instead.
 If the user wants to skip, they should create the file manually in their terminal."
         block_emit "$REASON"
         exit 0
@@ -169,7 +169,7 @@ fi
 # NOTE: Python block uses single-quoted shell string to avoid bash 3.2
 # quote-matching issues with $(...)  — all Python strings use double quotes.
 # F7 fix: Strip fd-to-fd redirects (2>&1, >&2) before file-redirect detection.
-# F8 fix: Allow review infrastructure scripts (design-reviewer, litmus)
+# F8 fix: Allow review infrastructure scripts (blueprint-review, litmus)
 # to run even when design docs are unreviewed — prevents circular dependency.
 PARSED=$(printf '%s' "$INPUT" | python3 -c '
 import sys, json, re
@@ -210,7 +210,7 @@ try:
         # (not explicit file-mod patterns like rm/cp/mv). This prevents
         # compound command bypass: "bash reviewer.sh && rm -rf src" still
         # blocked because rm triggers has_explicit_mod.
-        if is_mod and not has_explicit_mod and re.search(r"(?:^|[\s;|&])(?:ba)?sh\s+\S*(?:design-reviewer|litmus)/(?:scripts|config)/", cmd):
+        if is_mod and not has_explicit_mod and re.search(r"(?:^|[\s;|&])(?:ba)?sh\s+\S*(?:blueprint-review|litmus)/(?:scripts|config)/", cmd):
             print("SAFE|")
         elif is_mod:
             # F9 fix: Allow rm/mkdir targeting only .claude/ infrastructure.
@@ -245,7 +245,7 @@ if [ "$TOOL_TYPE" = "WRITE_EDIT" ]; then
 
     # Allow writing to these paths (review infrastructure, not implementation):
     #   - Design/plan docs themselves (writing/editing the plan is fine)
-    #   - Review output files (design-reviewer generates these)
+    #   - Review output files (blueprint-review generates these)
     #   - .claude/ config files
     #   - docs/reviews/ (review artifacts)
     #   - CLAUDE.md, NOTES.md, *.local* files
@@ -294,7 +294,7 @@ fi
 
 # ── Circuit breaker: detect repeated blocking ──────────────────────────
 # Mirrors pre-commit-gate.sh: warns after 10 blocks so user knows to
-# either run /design-reviewer or create skip-design-review.local manually.
+# either run /blueprint-review or create skip-design-review.local manually.
 BLOCK_COUNTER=".claude/.impl-gate-block-count.local"
 BLOCK_COUNT=0
 if [ -f "$BLOCK_COUNTER" ]; then
@@ -313,8 +313,8 @@ fi
 
 # ── Block: unreviewed design docs exist ────────────────────────────────
 if [ "$TOOL_TYPE" = "BASH_MOD" ]; then
-    REASON=$(printf "Design review must complete before modifying files via Bash.\n\nDetected file-modifying Bash command while design docs are unreviewed:\n%b\nRun /design-reviewer to review these documents first.\n\nIMPORTANT: Do NOT create .claude/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the design reviewer instead.%s" "$UNREVIEWED" "$ESCAPE_HINT")
+    REASON=$(printf "Design review must complete before modifying files via Bash.\n\nDetected file-modifying Bash command while design docs are unreviewed:\n%b\nRun /blueprint-review to review these documents first.\n\nIMPORTANT: Do NOT create .claude/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the blueprint review instead.%s" "$UNREVIEWED" "$ESCAPE_HINT")
 else
-    REASON=$(printf "Design review must complete before writing implementation code.\n\nUnreviewed design documents:\n%b\nRun /design-reviewer to review these documents first.\n\nIMPORTANT: Do NOT create .claude/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the design reviewer instead.%s" "$UNREVIEWED" "$ESCAPE_HINT")
+    REASON=$(printf "Design review must complete before writing implementation code.\n\nUnreviewed design documents:\n%b\nRun /blueprint-review to review these documents first.\n\nIMPORTANT: Do NOT create .claude/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the blueprint review instead.%s" "$UNREVIEWED" "$ESCAPE_HINT")
 fi
 block_emit "$REASON"

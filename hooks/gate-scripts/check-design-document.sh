@@ -70,7 +70,7 @@ if [ -z "$FILE_PATH" ]; then
 fi
 
 # Exclude review output files (design-review-*.md, design-review-*.json, etc.)
-# These are produced by /design-reviewer itself — flagging them creates a loop
+# These are produced by /blueprint-review itself — flagging them creates a loop
 if echo "$FILE_PATH" | grep -qiE '(reviews/|review-needed|review-state|review-gemini|review-codex|review-claude|review-consensus|review-autofix|review-decisions)'; then
   exit 0
 fi
@@ -108,7 +108,7 @@ if [ "$IS_DESIGN" = true ]; then
   # - Write/Bash on PREVIOUSLY REVIEWED file: flag but PRESERVE PASS marker.
   #   Rewrites of already-reviewed files (e.g. applying review findings) should not
   #   reset review status. "Previously reviewed" = git committed version has PASS.
-  # - Edit: Only flag if PASS marker is ABSENT (design-reviewer adds it via Edit)
+  # - Edit: Only flag if PASS marker is ABSENT (blueprint-review adds it via Edit)
   NEEDS_FLAG=false
   if [ "$TOOL_NAME" = "Write" ] || [ "$TOOL_NAME" = "Bash" ]; then
     NEEDS_FLAG=true
@@ -130,7 +130,7 @@ if [ "$IS_DESIGN" = true ]; then
       fi
     fi
   else
-    # Edit — trust the marker (design-reviewer adds it legitimately via Edit)
+    # Edit — trust the marker (blueprint-review adds it legitimately via Edit)
     if ! grep -q "<!-- design-reviewed: PASS -->" "$FILE_PATH" 2>/dev/null; then
       NEEDS_FLAG=true
     fi
@@ -160,7 +160,7 @@ EOF
     fi
 
     echo "Design document written: $BASENAME"
-    echo "REQUIRED: Invoke /design-reviewer skill (Skill tool) before committing."
+    echo "REQUIRED: Invoke /blueprint-review skill (Skill tool) before committing."
     echo "Do NOT use code-reviewer agent — it cannot mark design docs as reviewed."
   fi
 fi

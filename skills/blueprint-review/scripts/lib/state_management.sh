@@ -1,5 +1,5 @@
 #!/bin/bash
-# State management for design-reviewer
+# State management for blueprint-review
 # Uses YAML frontmatter pattern from litmus
 
 set -euo pipefail

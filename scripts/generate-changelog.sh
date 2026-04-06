@@ -43,20 +43,12 @@ generate_section() {
   local title="$2"
   local date="$3"
 
-  local features fixes refactors docs chores perfs others
-  features=""
-  fixes=""
-  refactors=""
-  docs=""
-  chores=""
-  perfs=""
-  others=""
+  local -a features=() fixes=() refactors=() docs=() chores=() perfs=() others=()
 
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
 
     # Parse conventional commit: type(scope): description
-    # Extract type and rest, handling optional (scope)
     local type scope desc entry
     type=$(echo "$line" | sed -nE 's/^([a-z]+)(\([^)]*\))?!?: .+$/\1/p' || true)
     scope=$(echo "$line" | sed -nE 's/^[a-z]+\(([^)]*)\)!?: .+$/\1/p' || true)
@@ -70,53 +62,62 @@ generate_section() {
       fi
 
       case "$type" in
-        feat)     features="${features}${entry}\n" ;;
-        fix)      fixes="${fixes}${entry}\n" ;;
-        refactor) refactors="${refactors}${entry}\n" ;;
-        docs)     docs="${docs}${entry}\n" ;;
-        perf)     perfs="${perfs}${entry}\n" ;;
-        chore|ci|build|test) chores="${chores}${entry}\n" ;;
-        *)        others="${others}${entry}\n" ;;
+        feat)     features+=("$entry") ;;
+        fix)      fixes+=("$entry") ;;
+        refactor) refactors+=("$entry") ;;
+        docs)     docs+=("$entry") ;;
+        perf)     perfs+=("$entry") ;;
+        chore|ci|build|test) chores+=("$entry") ;;
+        *)        others+=("$entry") ;;
       esac
     else
-      others="${others}- ${line}\n"
+      others+=("- ${line}")
     fi
   done < <(git log "$range" --pretty=format:'%s' --no-merges 2>/dev/null || true)
 
   # Only output if there are commits
-  local has_content=0
-  if [[ -n "$features$fixes$refactors$docs$perfs$chores$others" ]]; then has_content=1; fi
-
-  if [[ "$has_content" -eq 0 ]]; then
+  local total=$(( ${#features[@]} + ${#fixes[@]} + ${#refactors[@]} + ${#docs[@]} + ${#perfs[@]} + ${#chores[@]} + ${#others[@]} ))
+  if [[ "$total" -eq 0 ]]; then
     return
   fi
 
   echo "## ${title} (${date})"
   echo ""
 
-  if [[ -n "$features" ]];  then echo "### Features";     echo ""; printf '%b' "$features";  echo ""; fi
-  if [[ -n "$fixes" ]];     then echo "### Bug Fixes";     echo ""; printf '%b' "$fixes";     echo ""; fi
-  if [[ -n "$refactors" ]]; then echo "### Refactoring";   echo ""; printf '%b' "$refactors"; echo ""; fi
-  if [[ -n "$perfs" ]];     then echo "### Performance";   echo ""; printf '%b' "$perfs";     echo ""; fi
-  if [[ -n "$docs" ]];      then echo "### Documentation"; echo ""; printf '%b' "$docs";      echo ""; fi
-  if [[ -n "$chores" ]];    then echo "### Maintenance";   echo ""; printf '%b' "$chores";    echo ""; fi
-  if [[ -n "$others" ]];    then echo "### Other";         echo ""; printf '%b' "$others";    echo ""; fi
+  # Helper to print a section — uses printf '%s\n' which does NOT interpret backslashes
+  _print_section() {
+    local heading="$1"; shift
+    if [[ $# -gt 0 ]]; then
+      echo "### ${heading}"
+      echo ""
+      printf '%s\n' "$@"
+      echo ""
+    fi
+  }
+
+  if [[ ${#features[@]} -gt 0 ]];  then _print_section "Features"     "${features[@]}"; fi
+  if [[ ${#fixes[@]} -gt 0 ]];     then _print_section "Bug Fixes"    "${fixes[@]}"; fi
+  if [[ ${#refactors[@]} -gt 0 ]]; then _print_section "Refactoring"  "${refactors[@]}"; fi
+  if [[ ${#perfs[@]} -gt 0 ]];     then _print_section "Performance"  "${perfs[@]}"; fi
+  if [[ ${#docs[@]} -gt 0 ]];      then _print_section "Documentation" "${docs[@]}"; fi
+  if [[ ${#chores[@]} -gt 0 ]];    then _print_section "Maintenance"  "${chores[@]}"; fi
+  if [[ ${#others[@]} -gt 0 ]];    then _print_section "Other"        "${others[@]}"; fi
 }
 
 # Build the changelog content
+NL=$'\n'
 output=""
 
-# shellcheck disable=SC2312  # date/wc subshells won't mask meaningful return values
 if [[ "$FULL" -eq 1 ]]; then
   # Generate for all tags
-  output="# Changelog\n\nAll notable changes to this project.\n\n"
+  output="# Changelog${NL}${NL}All notable changes to this project.${NL}${NL}"
 
   mapfile -t TAGS < <(get_tags)
 
   # Unreleased section (latest tag to HEAD)
   if [[ ${#TAGS[@]} -gt 0 ]]; then
     UNRELEASED=$(generate_section "${TAGS[0]}..HEAD" "Unreleased" "$(date +%Y-%m-%d)")
-    if [[ -n "$UNRELEASED" ]]; then output="${output}${UNRELEASED}\n\n"; fi
+    if [[ -n "$UNRELEASED" ]]; then output="${output}${UNRELEASED}${NL}${NL}"; fi
   fi
 
   # Each tag pair
@@ -125,7 +126,7 @@ if [[ "$FULL" -eq 1 ]]; then
     PREV_TAG="${TAGS[$((i+1))]}"
     TAG_DATE=$(git log -1 --format='%cs' "$TAG" 2>/dev/null || echo "unknown")
     SECTION=$(generate_section "${PREV_TAG}..${TAG}" "${TAG}" "$TAG_DATE")
-    if [[ -n "$SECTION" ]]; then output="${output}${SECTION}\n\n"; fi
+    if [[ -n "$SECTION" ]]; then output="${output}${SECTION}${NL}${NL}"; fi
   done
 
   # First tag (from beginning)
@@ -133,12 +134,12 @@ if [[ "$FULL" -eq 1 ]]; then
     FIRST_TAG="${TAGS[${#TAGS[@]}-1]}"
     TAG_DATE=$(git log -1 --format='%cs' "$FIRST_TAG" 2>/dev/null || echo "unknown")
     SECTION=$(generate_section "$FIRST_TAG" "$FIRST_TAG" "$TAG_DATE")
-    if [[ -n "$SECTION" ]]; then output="${output}${SECTION}\n"; fi
+    if [[ -n "$SECTION" ]]; then output="${output}${SECTION}${NL}"; fi
   fi
 
 elif [[ -n "$RANGE" ]]; then
   # Specific range
-  output="# Changelog\n\n"
+  output="# Changelog${NL}${NL}"
   SECTION=$(generate_section "$RANGE" "$RANGE" "$(date +%Y-%m-%d)")
   output="${output}${SECTION}"
 
@@ -150,7 +151,7 @@ else
     exit 1
   fi
 
-  output="# Changelog\n\n"
+  output="# Changelog${NL}${NL}"
   SECTION=$(generate_section "${LAST_TAG}..HEAD" "Unreleased" "$(date +%Y-%m-%d)")
   if [[ -n "$SECTION" ]]; then
     output="${output}${SECTION}"
@@ -160,11 +161,11 @@ else
   fi
 fi
 
-# Output
+# Output — uses %s to avoid interpreting backslashes in commit messages
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  printf '%b' "$output"
+  printf '%s' "$output"
 else
-  printf '%b' "$output" > "$CHANGELOG_FILE"
+  printf '%s' "$output" > "$CHANGELOG_FILE"
   LINE_COUNT=$(wc -l < "$CHANGELOG_FILE" | tr -d ' ')
   echo "Generated $CHANGELOG_FILE ($LINE_COUNT lines)"
 fi

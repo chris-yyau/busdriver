@@ -15,8 +15,8 @@ set -euo pipefail
 RANGE=""
 QUIET=0
 
-for arg in "$@"; do
-  case "$arg" in
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     --quiet|-q) QUIET=1 ;;
     --help|-h)
       echo "Usage: post-ship-doc-check.sh [RANGE | --since-commit SHA] [--quiet]"
@@ -26,8 +26,9 @@ for arg in "$@"; do
       shift
       RANGE="${1:-HEAD~1}..HEAD"
       ;;
-    *) RANGE="$arg" ;;
+    *) RANGE="$1" ;;
   esac
+  shift
 done
 
 # Default range: last tag to HEAD
@@ -52,12 +53,15 @@ NOTES=()
 
 # --- Rule 1: SKILL.md freshness ---
 # If any file under skills/<name>/scripts/ changed, check skills/<name>/SKILL.md
+SEEN_SKILLS=""
 while IFS= read -r file; do
   if [[ "$file" =~ ^skills/([^/]+)/scripts/ ]]; then
     skill_name="${BASH_REMATCH[1]}"
+    # Deduplicate: only flag each skill once
+    if echo "$SEEN_SKILLS" | grep -q "^${skill_name}$" 2>/dev/null; then continue; fi
+    SEEN_SKILLS="${SEEN_SKILLS}${skill_name}\n"
     skill_md="skills/${skill_name}/SKILL.md"
     if [[ -f "$skill_md" ]]; then
-      # Check if SKILL.md was also changed
       if ! echo "$CHANGED_FILES" | grep -q "^${skill_md}$"; then
         STALE_DOCS+=("$skill_md")
         NOTES+=("Script changes in skills/${skill_name}/scripts/ without SKILL.md update")

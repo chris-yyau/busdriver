@@ -39,9 +39,9 @@ echo "Litmus Review Metrics"
 echo "====================="
 echo ""
 
-# Pass/fail rates
-PASS_COUNT=$(jq -r 'select(.status == "PASS")' "$METRICS_FILE" | grep -c '"status"' || echo 0)
-FAIL_COUNT=$(jq -r 'select(.status == "FAIL")' "$METRICS_FILE" | grep -c '"status"' || echo 0)
+# Pass/fail rates — use jq -s for reliable counting
+PASS_COUNT=$(jq -s '[.[] | select(.status == "PASS")] | length' "$METRICS_FILE" 2>/dev/null || echo 0)
+FAIL_COUNT=$(jq -s '[.[] | select(.status == "FAIL")] | length' "$METRICS_FILE" 2>/dev/null || echo 0)
 
 echo "Total reviews: $TOTAL"
 echo "  PASS: $PASS_COUNT"
@@ -53,8 +53,8 @@ fi
 echo ""
 
 # Mode breakdown
-COMMIT_COUNT=$(grep -c '"mode":"commit"' "$METRICS_FILE" || echo 0)
-PR_COUNT=$(grep -c '"mode":"pr"' "$METRICS_FILE" || echo 0)
+COMMIT_COUNT=$(jq -s '[.[] | select(.mode == "commit")] | length' "$METRICS_FILE" 2>/dev/null || echo 0)
+PR_COUNT=$(jq -s '[.[] | select(.mode == "pr")] | length' "$METRICS_FILE" 2>/dev/null || echo 0)
 echo "By mode:"
 echo "  Commit reviews: $COMMIT_COUNT"
 echo "  PR reviews: $PR_COUNT"

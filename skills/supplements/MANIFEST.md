@@ -19,6 +19,7 @@
 | `three-layer-knowledge.md` | `busdriver:brainstorming`, `busdriver:writing-plans` | gstack shared | 2026-03-24 |
 | `spec-review-convergence.md` | `busdriver:brainstorming`, `design-reviewer` skill | gstack /office-hours | 2026-03-24 |
 | `nutrient-api-terms.md` | `busdriver:nutrient-document-processing` | fork-edit migration (council 2026-03-24) | 2026-03-24 |
+| `context-degradation-tiers.md` | `busdriver:context-budget`, `busdriver:strategic-compact`, `busdriver:dispatching-parallel-agents`, `busdriver:subagent-driven-development` | GSD references/context-budget.md (adapted) | 2026-04-06 |
 
 ## Opt-In Supplements
 

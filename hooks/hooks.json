@@ -30,6 +30,17 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/careful-guard.sh\"",
+            "timeout": 3
+          }
+        ],
+        "description": "[GUARD] Warn before destructive commands (rm -rf, force-push, DROP TABLE, git reset --hard)"
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/pre-commit-gate.sh\"",
             "timeout": 10
           }

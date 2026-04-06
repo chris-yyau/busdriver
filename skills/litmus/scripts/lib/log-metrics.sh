@@ -24,12 +24,12 @@ log_review_metrics() {
 
   mkdir -p "$(dirname "$METRICS_FILE")"
 
-  # Extract severity breakdown — match both upper and lowercase (litmus uses lowercase internally)
+  # Extract severity breakdown — litmus schema uses lowercase: high/medium/low (no critical)
   local sev_critical sev_high sev_medium sev_low
-  sev_critical=$(echo "$json_output" | jq '[.issues[]? | select(.severity == "CRITICAL" or .severity == "critical")] | length' 2>/dev/null || echo 0)
-  sev_high=$(echo "$json_output" | jq '[.issues[]? | select(.severity == "HIGH" or .severity == "high")] | length' 2>/dev/null || echo 0)
-  sev_medium=$(echo "$json_output" | jq '[.issues[]? | select(.severity == "MEDIUM" or .severity == "medium")] | length' 2>/dev/null || echo 0)
-  sev_low=$(echo "$json_output" | jq '[.issues[]? | select(.severity == "LOW" or .severity == "low")] | length' 2>/dev/null || echo 0)
+  sev_critical=0
+  sev_high=$(echo "$json_output" | jq '[.issues[]? | select(.severity == "high")] | length' 2>/dev/null || echo 0)
+  sev_medium=$(echo "$json_output" | jq '[.issues[]? | select(.severity == "medium")] | length' 2>/dev/null || echo 0)
+  sev_low=$(echo "$json_output" | jq '[.issues[]? | select(.severity == "low")] | length' 2>/dev/null || echo 0)
 
   # Get commit context
   local commit_sha branch_name

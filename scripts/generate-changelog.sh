@@ -114,23 +114,25 @@ if [[ "$FULL" -eq 1 ]]; then
 
   mapfile -t TAGS < <(get_tags)
 
-  # Unreleased section (latest tag to HEAD)
-  if [[ ${#TAGS[@]} -gt 0 ]]; then
+  if [[ ${#TAGS[@]} -eq 0 ]]; then
+    # No version tags yet: treat the whole history as Unreleased
+    SECTION=$(generate_section "HEAD" "Unreleased" "$(date +%Y-%m-%d)")
+    if [[ -n "$SECTION" ]]; then output="${output}${SECTION}${NL}"; fi
+  else
+    # Unreleased section (latest tag to HEAD)
     UNRELEASED=$(generate_section "${TAGS[0]}..HEAD" "Unreleased" "$(date +%Y-%m-%d)")
     if [[ -n "$UNRELEASED" ]]; then output="${output}${UNRELEASED}${NL}${NL}"; fi
-  fi
 
-  # Each tag pair
-  for ((i=0; i<${#TAGS[@]}-1; i++)); do
-    TAG="${TAGS[$i]}"
-    PREV_TAG="${TAGS[$((i+1))]}"
-    TAG_DATE=$(git log -1 --format='%cs' "$TAG" 2>/dev/null || echo "unknown")
-    SECTION=$(generate_section "${PREV_TAG}..${TAG}" "${TAG}" "$TAG_DATE")
-    if [[ -n "$SECTION" ]]; then output="${output}${SECTION}${NL}${NL}"; fi
-  done
+    # Each tag pair
+    for ((i=0; i<${#TAGS[@]}-1; i++)); do
+      TAG="${TAGS[$i]}"
+      PREV_TAG="${TAGS[$((i+1))]}"
+      TAG_DATE=$(git log -1 --format='%cs' "$TAG" 2>/dev/null || echo "unknown")
+      SECTION=$(generate_section "${PREV_TAG}..${TAG}" "${TAG}" "$TAG_DATE")
+      if [[ -n "$SECTION" ]]; then output="${output}${SECTION}${NL}${NL}"; fi
+    done
 
-  # First tag (from beginning)
-  if [[ ${#TAGS[@]} -gt 0 ]]; then
+    # First tag (from beginning)
     FIRST_TAG="${TAGS[${#TAGS[@]}-1]}"
     TAG_DATE=$(git log -1 --format='%cs' "$FIRST_TAG" 2>/dev/null || echo "unknown")
     SECTION=$(generate_section "$FIRST_TAG" "$FIRST_TAG" "$TAG_DATE")

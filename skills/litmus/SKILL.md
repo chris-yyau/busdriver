@@ -526,7 +526,7 @@ The review loop checks for doc/code mismatches:
 
 Every litmus review automatically logs its outcome to `.claude/review-metrics.jsonl`:
 
-- Status (PASS/FAIL), issue count, severity breakdown (critical/high/medium/low)
+- Status (PASS/FAIL), issue count, severity breakdown (`high`/`medium`/`low`)
 - Iteration number, review CLI used, review mode (commit/pr)
 - Commit SHA, branch name, diff size
 

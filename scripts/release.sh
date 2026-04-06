@@ -74,6 +74,21 @@ update_version "$PLUGIN_JSON" "s|\"version\": *\"[^\"]*\"|\"version\": \"$VERSIO
 update_version "$MARKETPLACE_JSON" "0,/\"version\": *\"[^\"]*\"/s|\"version\": *\"[^\"]*\"|\"version\": \"$VERSION\"|"
 update_version "$OPENCODE_PACKAGE_JSON" "s|\"version\": *\"[^\"]*\"|\"version\": \"$VERSION\"|"
 
+# Generate changelog before committing
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -f "$SCRIPT_DIR/generate-changelog.sh" ]]; then
+  echo "Generating CHANGELOG.md..."
+  bash "$SCRIPT_DIR/generate-changelog.sh" --full
+  git add CHANGELOG.md
+fi
+
+# Run doc sync check (advisory)
+if [[ -f "$SCRIPT_DIR/post-ship-doc-check.sh" ]]; then
+  echo ""
+  bash "$SCRIPT_DIR/post-ship-doc-check.sh" || true
+  echo ""
+fi
+
 # Stage, commit, tag, and push
 git add "$ROOT_PACKAGE_JSON" "$PLUGIN_JSON" "$MARKETPLACE_JSON" "$OPENCODE_PACKAGE_JSON"
 git commit -m "chore: bump plugin version to $VERSION"

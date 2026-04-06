@@ -167,8 +167,25 @@ if [ -f "$PR_MARKER" ]; then
     PR_MARKER_CONTENT=$(cat "$PR_MARKER" 2>/dev/null || echo "")
     if echo "$PR_MARKER_CONTENT" | grep -qE '^(DEGRADED|SKIPPED-NONE|BUILTIN-)'; then
         rm -f "$PR_MARKER"
+    elif echo "$PR_MARKER_CONTENT" | grep -qE '^[a-f0-9]{64}$'; then
+        # SHA-256 hash — verify it matches current base..HEAD diff to prevent stale markers
+        # Must match the writer's hashing: printf '%s' "$DIFF" | sha256sum (no trailing newline)
+        # Respect LITMUS_PR_BASE to match the marker writer's base branch
+        PR_BASE="${LITMUS_PR_BASE:-$(git -C "$REPO_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}"
+        [[ -n "${LITMUS_PR_BASE:-}" && "$PR_BASE" != origin/* ]] && PR_BASE="origin/${PR_BASE}"
+        DIFF_OUTPUT=$(git -C "$REPO_DIR" diff "${PR_BASE}...HEAD" 2>/dev/null || true)
+        CURRENT_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+        if [ "$PR_MARKER_CONTENT" = "$CURRENT_HASH" ]; then
+            # Hash matches current diff — consume and allow
+            rm -f "$PR_MARKER"
+            exit 0
+        else
+            # Stale marker from a different branch or older diff — reject
+            echo "[pre-pr-gate] PR review marker hash mismatch (stale marker from different branch/diff). Re-run litmus PR review." >&2
+            rm -f "$PR_MARKER"
+        fi
     else
-        # Genuine PR review pass — consume and allow
+        # Genuine PR review pass (non-hash format) — consume and allow
         rm -f "$PR_MARKER"
         exit 0
     fi

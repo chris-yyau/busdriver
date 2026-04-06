@@ -5,8 +5,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKILL_DIR="$(dirname "$SCRIPT_DIR")"
 STATE_FILE=".claude/litmus-state.md"
+
+# Load metrics persistence
+# shellcheck source=lib/log-metrics.sh
+source "$SCRIPT_DIR/lib/log-metrics.sh"
 
 # --write-pr-marker: Post-deep-review marker writer.
 # Called by Claude after the 6-agent deep review completes in PR mode.
@@ -608,6 +611,9 @@ if [ -f "$MERGER" ]; then
     REVIEW_STATUS="FAIL"
   fi
 fi
+
+# Log metrics for persistent trend analysis
+log_review_metrics "$REVIEW_STATUS" "$ISSUE_COUNT" "$ITERATION" "$REVIEW_MODE" "$RESOLVED_CLI" "$JSON_OUTPUT"
 
 # Check for completion promise
 if [ "$COMPLETION_PROMISE" != "null" ] && [ -n "$COMPLETION_PROMISE" ]; then

@@ -522,6 +522,30 @@ The review loop checks for doc/code mismatches:
 - `LITMUS_MAX_DOC_SNIPPETS=5` — max doc file snippets to include (validated numeric)
 - `LITMUS_MAX_ENRICHMENT_LINES=100` — max lines of smart-context and docs-context injected into prompt (validated numeric)
 
+### Metrics Persistence
+
+Every litmus review automatically logs its outcome to `.claude/review-metrics.jsonl`:
+
+- Status (PASS/FAIL), issue count, severity breakdown (`high`/`medium`/`low`)
+- Iteration number, review CLI used, review mode (commit/pr)
+- Commit SHA, branch name, diff size
+
+**Report dashboard:** `bash scripts/litmus-metrics-report.sh`
+
+```bash
+# View recent reviews
+bash scripts/litmus-metrics-report.sh --recent 10
+
+# Full dashboard (pass rate, severity distribution, avg iterations)
+bash scripts/litmus-metrics-report.sh
+
+# Raw JSONL data
+bash scripts/litmus-metrics-report.sh --raw
+```
+
+**Environment variables:**
+- `LITMUS_METRICS_FILE=path` — override metrics file location (default: `.claude/review-metrics.jsonl`)
+
 ### Markdown Validation
 
 When `.md` files are staged, the review loop runs:

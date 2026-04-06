@@ -141,9 +141,12 @@ if [[ "$FULL" -eq 1 ]]; then
 
 elif [[ -n "$RANGE" ]]; then
   # Specific range
-  output="# Changelog${NL}${NL}"
   SECTION=$(generate_section "$RANGE" "$RANGE" "$(date +%Y-%m-%d)")
-  output="${output}${SECTION}"
+  if [[ -z "$SECTION" ]]; then
+    echo "No commits in range ${RANGE}."
+    exit 0
+  fi
+  output="# Changelog${NL}${NL}${SECTION}"
 
 else
   # Default: last tag to HEAD

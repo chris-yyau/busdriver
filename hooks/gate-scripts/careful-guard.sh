@@ -30,6 +30,7 @@ CMD_LOWER=$(printf '%s' "$CMD" | tr '[:upper:]' '[:lower:]')
 if printf '%s' "$CMD" | grep -qE 'rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|--recursive\s+)' 2>/dev/null; then
   SAFE_ONLY=true
   RM_ARGS=$(printf '%s' "$CMD" | sed -E 's/.*rm[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*//;s/--recursive[[:space:]]*//')
+  set -f  # disable glob expansion on unquoted vars
   for target in $RM_ARGS; do
     case "$target" in
       */node_modules|node_modules|*/\.next|\.next|*/dist|dist|*/__pycache__|__pycache__|*/\.cache|\.cache|*/build|build|*/\.turbo|\.turbo|*/coverage|coverage|*/target|target)
@@ -42,6 +43,7 @@ if printf '%s' "$CMD" | grep -qE 'rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|--recursive\s+)'
         ;;
     esac
   done
+  set +f  # restore glob expansion
   if [[ "$SAFE_ONLY" == true ]]; then
     echo '{}'
     exit 0
@@ -66,8 +68,8 @@ if [[ -z "$WARN" ]] && printf '%s' "$CMD_LOWER" | grep -qE '\btruncate\b' 2>/dev
   WARN="Destructive: SQL TRUNCATE detected. This deletes all rows from a table."
 fi
 
-# git push --force / git push -f
-if [[ -z "$WARN" ]] && printf '%s' "$CMD" | grep -qE 'git\s+push\s+.*(-f\b|--force)' 2>/dev/null; then
+# git push --force / git push -f (but NOT --force-with-lease which is the safe alternative)
+if [[ -z "$WARN" ]] && printf '%s' "$CMD" | grep -qE 'git\s+push\s+.*(-f\b|--force\b)' 2>/dev/null && ! printf '%s' "$CMD" | grep -qE '--force-with-lease' 2>/dev/null; then
   WARN="Destructive: git force-push rewrites remote history."
 fi
 
@@ -76,8 +78,8 @@ if [[ -z "$WARN" ]] && printf '%s' "$CMD" | grep -qE 'git\s+reset\s+--hard' 2>/d
   WARN="Destructive: git reset --hard discards all uncommitted changes."
 fi
 
-# git checkout . / git restore .
-if [[ -z "$WARN" ]] && printf '%s' "$CMD" | grep -qE 'git\s+(checkout|restore)\s+\.' 2>/dev/null; then
+# git checkout . / git restore . (standalone . only, not .gitignore etc)
+if [[ -z "$WARN" ]] && printf '%s' "$CMD" | grep -qE 'git\s+(checkout|restore)\s+\.(\s|$)' 2>/dev/null; then
   WARN="Destructive: discards all uncommitted changes in the working tree."
 fi
 

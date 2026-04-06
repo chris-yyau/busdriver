@@ -1,4 +1,4 @@
-# Codex Reviewer Advanced Features
+# Litmus Advanced Features
 
 This document contains optional advanced features referenced from SKILL.md.
 
@@ -9,7 +9,7 @@ This document contains optional advanced features referenced from SKILL.md.
 ### How It Works
 
 - After each commit, optionally run `bash scripts/save_changelog.sh`
-- Saves commit info, changed files, review iterations to `~/.claude/projects/{project}/codex-context/`
+- Saves commit info, changed files, review iterations to `~/.claude/projects/{project}/litmus-context/`
 - Next review automatically loads last 3 changelog entries for context
 - Helps reviewer understand recent changes and avoid redundant issues
 
@@ -25,14 +25,14 @@ This document contains optional advanced features referenced from SKILL.md.
 
 ```bash
 # Load more history (default: 3)
-export CODEX_CHANGELOG_LIMIT=5
+export LITMUS_CHANGELOG_LIMIT=5
 bash scripts/run-review-loop.sh
 ```
 
 ### Storage Location
 
 ```
-~/.claude/projects/{normalized-project-path}/codex-context/
+~/.claude/projects/{normalized-project-path}/litmus-context/
 ├── task-history.jsonl      # Append-only log of all tasks
 └── last-task.json           # Most recent task (quick access)
 ```
@@ -80,7 +80,7 @@ bash scripts/init-review-loop.sh 10 "ALL ISSUES RESOLVED"
 
 ## State-Based Approach Details
 
-The new state-based approach uses `.claude/codex-review-state.md` with YAML frontmatter to track:
+The new state-based approach uses `.claude/litmus-state.md` with YAML frontmatter to track:
 
 - **active**: Whether review loop is active
 - **iteration**: Current iteration number

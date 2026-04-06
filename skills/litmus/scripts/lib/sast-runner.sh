@@ -6,8 +6,8 @@
 # Output: JSON array on stdout — [{file, line, severity, category, description, suggestion, source}]
 #
 # Environment:
-#   CODEX_SKIP_SAST=1     — skip all SAST scanning
-#   CODEX_SAST_TIMEOUT=30 — per-tool timeout in seconds (default: 30)
+#   LITMUS_SKIP_SAST=1     — skip all SAST scanning
+#   LITMUS_SAST_TIMEOUT=30 — per-tool timeout in seconds (default: 30)
 
 set -euo pipefail
 
@@ -30,8 +30,27 @@ _sast_timeout() {
   elif command -v gtimeout &>/dev/null; then
     gtimeout "$duration" "$@"
   else
-    # Perl fallback for macOS — pass duration safely as argument
-    perl -e 'alarm shift @ARGV; exec @ARGV' "$duration" "$@"
+    # Perl fallback for macOS — fork + alarm (exec alone loses the alarm handler)
+    perl -e '
+      use POSIX ":sys_wait_h";
+      our $pid = fork();
+      if (!defined $pid) { die "fork failed: $!"; }
+      if ($pid == 0) { alarm 0; exec @ARGV[1..$#ARGV]; die "exec failed: $!"; }
+      $SIG{ALRM} = sub {
+        if ($pid) {
+          kill "TERM", $pid;
+          # Give child 2s to exit, then KILL to prevent stray processes
+          for (1..4) { last if waitpid($pid, WNOHANG) > 0; select(undef,undef,undef,0.5); }
+          kill "KILL", $pid if waitpid($pid, WNOHANG) == 0;
+        }
+        exit 124;
+      };
+      alarm $ARGV[0];
+      waitpid($pid, 0);
+      alarm 0;
+      if ($? & 127) { exit(128 + ($? & 127)); }
+      exit($? >> 8);
+    ' "$duration" "$@"
   fi
 }
 
@@ -53,7 +72,7 @@ print(json.dumps(arrays))
 # Run Semgrep on changed files
 _sast_run_semgrep() {
   local files_list="$1"
-  local timeout_sec="${CODEX_SAST_TIMEOUT:-30}"
+  local timeout_sec="${LITMUS_SAST_TIMEOUT:-30}"
 
   # Filter to file types Semgrep supports
   local semgrep_files
@@ -95,7 +114,7 @@ print(json.dumps(findings))
 # Run ShellCheck on changed shell scripts
 _sast_run_shellcheck() {
   local files_list="$1"
-  local timeout_sec="${CODEX_SAST_TIMEOUT:-30}"
+  local timeout_sec="${LITMUS_SAST_TIMEOUT:-30}"
 
   # Filter to shell scripts
   local sh_files
@@ -104,14 +123,14 @@ _sast_run_shellcheck() {
 
   # Configurable extra ShellCheck checks (env var override)
   # Curated list targeting audit gap categories: portability, set-e interaction, quoting
-  local enable_rules="${CODEX_SHELLCHECK_ENABLE:-check-extra-masked-returns,check-set-e-suppressed,quote-safe-variables,require-double-brackets}"
+  local enable_rules="${LITMUS_SHELLCHECK_ENABLE:-check-extra-masked-returns,check-set-e-suppressed,quote-safe-variables,require-double-brackets}"
   # Validate: only allow alphanumeric, comma, hyphen, underscore (prevent injection)
   case "$enable_rules" in
     ''|,*|*,,*|*,)
-      echo "⚠️  CODEX_SHELLCHECK_ENABLE is empty or malformed, using default" >&2
+      echo "⚠️  LITMUS_SHELLCHECK_ENABLE is empty or malformed, using default" >&2
       enable_rules="check-extra-masked-returns,check-set-e-suppressed,quote-safe-variables,require-double-brackets" ;;
     *[!a-zA-Z0-9,_-]*)
-      echo "⚠️  CODEX_SHELLCHECK_ENABLE contains invalid characters, using default" >&2
+      echo "⚠️  LITMUS_SHELLCHECK_ENABLE contains invalid characters, using default" >&2
       enable_rules="check-extra-masked-returns,check-set-e-suppressed,quote-safe-variables,require-double-brackets" ;;
   esac
 
@@ -162,7 +181,7 @@ print(json.dumps(findings))
 # Run TruffleHog on staged files for secrets
 _sast_run_trufflehog() {
   local files_list="$1"
-  local timeout_sec="${CODEX_SAST_TIMEOUT:-30}"
+  local timeout_sec="${LITMUS_SAST_TIMEOUT:-30}"
 
   [ -z "$files_list" ] && { echo "[]"; return; }
 
@@ -224,7 +243,7 @@ run_sast_scan() {
   local files_list="$1"
 
   # Skip if disabled
-  if [ "${CODEX_SKIP_SAST:-0}" = "1" ]; then
+  if [ "${LITMUS_SKIP_SAST:-0}" = "1" ]; then
     echo "[]"
     return
   fi

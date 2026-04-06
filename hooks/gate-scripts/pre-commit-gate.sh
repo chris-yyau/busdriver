@@ -6,13 +6,13 @@
 #   Gate 2: Codex review  — blocks if no review-passed marker for current staged changes
 #
 # Fail-CLOSED: errors block commits (user preference: stuck > skipped review)
-# Skip: .claude/skip-codex-review.local or SKIP_CODEX_REVIEW=1
+# Skip: .claude/skip-litmus.local or SKIP_LITMUS=1
 
 set -euo pipefail
 # Fail-CLOSED: errors block commits rather than silently approving.
 # User preference: "a stuck session is better than a skipped review."
-# Escape hatch: .claude/skip-codex-review.local or SKIP_CODEX_REVIEW=1
-trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-commit gate error — blocking as precaution. If stuck, create .claude/skip-codex-review.local in your terminal.\"}\n"; exit 0' ERR
+# Escape hatch: .claude/skip-litmus.local or SKIP_LITMUS=1
+trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-commit gate error — blocking as precaution. If stuck, create .claude/skip-litmus.local in your terminal.\"}\n"; exit 0' ERR
 
 # ── Block emission helper (F6 fix) ────────────────────────────────────
 # Uses jq when available, falls back to printf when jq is missing.
@@ -32,7 +32,7 @@ block_emit() {
 # If missing, block — fail-closed principle. The || true on the python3
 # call below would otherwise silently allow ALL commits.
 if ! command -v python3 &>/dev/null; then
-    block_emit "CRITICAL: python3 not found. All review gates require python3 for JSON parsing and command detection. Install python3 to restore gate enforcement. Escape hatch: .claude/skip-codex-review.local"
+    block_emit "CRITICAL: python3 not found. All review gates require python3 for JSON parsing and command detection. Install python3 to restore gate enforcement. Escape hatch: .claude/skip-litmus.local"
     exit 0
 fi
 
@@ -53,7 +53,7 @@ esac
 
 # Parse tool name and command, verify git commit, and extract target directory
 # from `cd <dir> &&` prefix or `git -C <dir>` flag.
-# Fix: marker written by codex-reviewer in target repo was invisible to gate
+# Fix: marker written by litmus in target repo was invisible to gate
 # when committing to repos outside the session CWD (worktrees, temp clones).
 PARSE_RESULT=$(printf '%s' "$HOOK_DATA" | python3 -c "
 import sys, json, re
@@ -113,7 +113,7 @@ TARGET_DIR=$(echo "$PARSE_RESULT" | sed -n '2p')
 
 # Fail-closed: parser error after fast pre-filter matched → block as precaution
 if [ "$IS_GIT_COMMIT" = "error" ]; then
-    block_emit "Pre-commit gate: failed to parse tool input for command matching git commit pattern. Blocking as precaution (fail-closed). If stuck, create .claude/skip-codex-review.local in your terminal."
+    block_emit "Pre-commit gate: failed to parse tool input for command matching git commit pattern. Blocking as precaution (fail-closed). If stuck, create .claude/skip-litmus.local in your terminal."
     exit 0
 fi
 
@@ -190,28 +190,27 @@ fi
 # ─────────────────────────────────────────────────────────────────────────
 
 # Skip overrides
-if [ -f ".claude/skip-codex-review.local" ]; then
+if [ -f ".claude/skip-litmus.local" ]; then
     # Reject skip files created within the last 30 seconds — likely Claude self-bypass.
     # A human-created skip file (via terminal) will typically be older.
     FILE_AGE=999
-    if stat -f %m ".claude/skip-codex-review.local" &>/dev/null; then
-        FILE_AGE=$(( $(date +%s) - $(stat -f %m ".claude/skip-codex-review.local") ))
-    elif stat -c %Y ".claude/skip-codex-review.local" &>/dev/null; then
-        FILE_AGE=$(( $(date +%s) - $(stat -c %Y ".claude/skip-codex-review.local") ))
-    fi
+    _MTIME=$(stat -f %m ".claude/skip-litmus.local" 2>/dev/null) \
+        || _MTIME=$(stat -c %Y ".claude/skip-litmus.local" 2>/dev/null) \
+        || _MTIME=""
+    [ -n "$_MTIME" ] && FILE_AGE=$(( $(date +%s) - _MTIME ))
     if [ "$FILE_AGE" -lt 30 ]; then
         # Likely self-bypass — reject and warn
-        rm -f ".claude/skip-codex-review.local"
-        REASON="BLOCKED: skip-codex-review.local was created moments ago (likely self-bypass).
+        rm -f ".claude/skip-litmus.local"
+        REASON="BLOCKED: skip-litmus.local was created moments ago (likely self-bypass).
 
-Do NOT create .claude/skip-codex-review.local yourself. Run /codex-reviewer instead.
+Do NOT create .claude/skip-litmus.local yourself. Run /litmus instead.
 If the user wants to skip, they should create the file manually in their terminal."
         block_emit "$REASON"
         exit 0
     fi
     # Single-use: consume the skip file after allowing one commit.
     # This prevents stale skip files from permanently disabling review gates.
-    rm -f ".claude/skip-codex-review.local"
+    rm -f ".claude/skip-litmus.local"
     rm -f ".claude/.gate-block-count.local" 2>/dev/null || true  # Reset circuit breaker
     # ── Bypass telemetry ──────────────────────────────────────────────
     # Log skip-file consumption so there's an auditable record of bypasses.
@@ -219,7 +218,7 @@ If the user wants to skip, they should create the file manually in their termina
     printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
     exit 0
 fi
-[ "${SKIP_CODEX_REVIEW:-0}" = "1" ] && exit 0
+[ "${SKIP_LITMUS:-0}" = "1" ] && exit 0
 
 # ── Gate 1: Design review ────────────────────────────────────────────────
 DESIGN_STATE=".claude/design-review-needed.local.md"
@@ -263,7 +262,7 @@ fi
 # When ALL staged files are design-reviewed specs (plans/specs .md with PASS
 # marker), codex review is redundant — the 3-tier design reviewer (Gemini +
 # Codex + Claude) already covered them. Skip Gate 2 to avoid wrong ordering
-# where codex-reviewer runs on specs before design-reviewer.
+# where litmus runs on specs before design-reviewer.
 ALL_DESIGN_REVIEWED=true
 HAS_STAGED=false
 while IFS= read -r staged_file; do
@@ -293,7 +292,7 @@ if [ "$HAS_STAGED" = true ] && [ "$ALL_DESIGN_REVIEWED" = true ]; then
 fi
 
 # ── Gate 2: Codex review ─────────────────────────────────────────────────
-MARKER="$REPO_DIR/.claude/codex-review-passed.local"
+MARKER="$REPO_DIR/.claude/litmus-passed.local"
 if [ -f "$MARKER" ]; then
     # Marker exists — verify it represents an actual review, not degraded mode.
     # DEGRADED markers (written when codex CLI is missing) must NOT pass the gate.
@@ -301,7 +300,7 @@ if [ -f "$MARKER" ]; then
     MARKER_CONTENT=$(cat "$MARKER" 2>/dev/null || echo "")
     if echo "$MARKER_CONTENT" | grep -q "^DEGRADED"; then
         rm -f "$MARKER"
-        echo '{"decision":"block","reason":"Code review ran in DEGRADED mode (no review CLI installed). No actual code review was performed. Install a review CLI or create .claude/skip-codex-review.local to bypass."}' >&2
+        echo '{"decision":"block","reason":"Code review ran in DEGRADED mode (no review CLI installed). No actual code review was performed. Install a review CLI or create .claude/skip-litmus.local to bypass."}' >&2
         # Do NOT exit 0 — fall through to blocking logic below
     elif echo "$MARKER_CONTENT" | grep -q "^SKIPPED-NONE"; then
         # BUSDRIVER_REVIEW_CLI=none — user explicitly opted out of review.
@@ -338,13 +337,14 @@ if [ "$BLOCK_COUNT" -ge 10 ]; then
     ESCAPE_HINT="
 
 WARNING: This gate has blocked $BLOCK_COUNT consecutive commits this session.
-If you believe the gate is stuck, the user can create .claude/skip-codex-review.local in their terminal to bypass."
+If you believe the gate is stuck, the user can run: touch $REPO_DIR/.claude/skip-litmus.local"
 fi
 
 # No valid review marker → block commit
 REASON="Code review required before committing.
 
-Run /codex-reviewer to review your staged changes. The review must pass before git commit is allowed.
+Run /litmus to review your staged changes. The review must pass before git commit is allowed.
 
-IMPORTANT: Do NOT create .claude/skip-codex-review.local yourself. That is a user-only escape hatch. You MUST run the codex reviewer instead.${ESCAPE_HINT}"
+IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run the codex reviewer instead.
+If the user wants to skip: touch $REPO_DIR/.claude/skip-litmus.local${ESCAPE_HINT}"
 block_emit "$REASON"

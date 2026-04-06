@@ -61,7 +61,7 @@ Test with:
 # Should route to busdriver:brainstorming
 "Let's build a new feature"
 
-# Should trigger codex-reviewer
+# Should trigger litmus
 "I'm ready to commit these changes"
 
 # Should route to golang-patterns

@@ -43,6 +43,13 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Standards: `busdriver:coding-standards`
 - Review: `typescript-reviewer` agent (type safety, async correctness, Node/web security, idiomatic patterns)
 - Design: `busdriver:design-system` (generate/audit design tokens)
+- **UI/UX Design** (load when design/styling work detected):
+  - Intelligence: `ui-ux-pro-max` (50 styles, 21 palettes, 50 font pairings, 20 charts)
+  - Implementation: `frontend-design` (Impeccable core — production-grade UI with anti-slop patterns, 7 reference files: typography, color, spatial, motion, interaction, responsive, UX writing)
+  - Context: `.impeccable.md` if present (created via `/teach-impeccable`)
+  - Refinement: `/polish`, `/critique`, `/audit`, `/normalize`, `/harden`, `/distill`, `/clarify`
+  - Enhancement: `/colorize`, `/bolder`, `/quieter`, `/delight`, `/animate`, `/overdrive`
+  - Structure: `/arrange`, `/extract`, `/typeset`, `/adapt`, `/optimize`, `/onboard`
 - **Next.js-specific** (detect: `next.config.*`, `app/` with `layout.tsx`/`page.tsx`, RSC patterns):
   - Turbopack: `busdriver:nextjs-turbopack` (Next.js 16+ incremental bundling, FS caching, when to use Turbopack vs webpack)
 - **Bun** (detect: `bun.lock`, `bun.lockb`, `bunfig.toml`, Bun imports):

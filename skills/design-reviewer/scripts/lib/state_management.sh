@@ -1,6 +1,6 @@
 #!/bin/bash
 # State management for design-reviewer
-# Uses YAML frontmatter pattern from codex-reviewer
+# Uses YAML frontmatter pattern from litmus
 
 set -euo pipefail
 

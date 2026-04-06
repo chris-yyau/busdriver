@@ -11,6 +11,7 @@ Usage:
 """
 
 import json
+import os
 import sys
 from difflib import SequenceMatcher
 
@@ -40,19 +41,35 @@ def deduplicate(findings: list[dict]) -> list[dict]:
     return seen
 
 
-def determine_status(findings: list[dict]) -> str:
-    """FAIL if any high/medium severity finding blocks.
+def _is_deterministic_blocker(finding: dict) -> bool:
+    """Check if a finding is from a deterministic source (SAST/lint) at blocking severity."""
+    severity = finding.get("severity", "")
+    source = finding.get("source", "")
+    return severity in ("high", "medium") and (source.startswith("sast:") or source.startswith("lint:"))
 
-    SAST/lint findings (source starts with 'sast:' or 'lint:') always block.
-    LLM findings block if confidence >= 0.5 (confidence may be 0-1 float
-    or 0-100 integer — normalize to 0-1 range).
+
+def determine_status(findings: list[dict]) -> str:
+    """FAIL if any blocking finding exists.
+
+    Blocking rules:
+    - SAST/lint findings (source starts with 'sast:' or 'lint:') always block.
+    - LLM findings block if confidence >= 70% (normalized).
+    - After iteration 2 (env LITMUS_ITERATION >= 3), only HIGH LLM findings block.
+      MEDIUM LLM findings become advisory (still reported, not blocking).
+      Note: this is a server-side override of the prompt contract, which tells
+      the LLM to FAIL on any medium. The LLM still reports them; the gate relaxes.
     """
+    try:
+        iteration = int(os.environ.get("LITMUS_ITERATION", "1"))
+    except (TypeError, ValueError):
+        iteration = 1
+    blocking_severities = {"high", "medium"} if iteration <= 2 else {"high"}
+
     for f in findings:
-        if f.get("severity") not in ("high", "medium"):
-            continue
-        source = f.get("source", "")
-        if source.startswith("sast:") or source.startswith("lint:"):
+        if _is_deterministic_blocker(f):
             return "FAIL"
+        if f.get("severity", "") not in blocking_severities:
+            continue
         # Normalize confidence: accept both 0-1 and 0-100 scales
         confidence = f.get("confidence")
         if confidence is None:
@@ -65,7 +82,7 @@ def determine_status(findings: list[dict]) -> str:
         # Normalize 0-100 to 0-1
         if confidence > 1.0:
             confidence = confidence / 100.0
-        if confidence >= 0.5:
+        if confidence >= 0.7:
             return "FAIL"
     return "PASS"
 

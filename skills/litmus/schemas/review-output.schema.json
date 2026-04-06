@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Codex-reviewer output schema. All review CLIs must produce output conforming to this schema.",
+  "description": "Litmus output schema. All review CLIs must produce output conforming to this schema.",
   "type": "object",
   "additionalProperties": false,
   "required": ["status", "issues"],

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Initialize codex review loop state file
+# Initialize litmus review loop state file
 # Follows Ralph Loop pattern for robust state management
 
 set -euo pipefail
@@ -31,7 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/iteration-history.sh"
 
 # Guard: prevent re-init while a review loop is active
-STATE_FILE=".claude/codex-review-state.md"
+STATE_FILE=".claude/litmus-state.md"
 if [ "$FORCE" != "true" ] && [ -f "$STATE_FILE" ]; then
     # Source validation library for get_yaml_value
     # shellcheck source=lib/validation.sh
@@ -69,16 +69,21 @@ mkdir -p .claude
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # Determine review mode (commit vs PR)
-REVIEW_MODE="${CODEX_REVIEW_MODE:-commit}"
+REVIEW_MODE="${LITMUS_MODE:-commit}"
 
 # Detect base branch for PR mode
 if [ "$REVIEW_MODE" = "pr" ]; then
-  PR_BASE_BRANCH="${CODEX_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo "main")}"
+  PR_BASE_BRANCH="${LITMUS_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}"
+  # Auto-prefix origin/ if user provided a branch name without remote prefix
+  # (e.g. LITMUS_PR_BASE=main → origin/main, LITMUS_PR_BASE=feature/foo → origin/feature/foo)
+  if [[ -n "${LITMUS_PR_BASE:-}" && "$PR_BASE_BRANCH" != origin/* ]]; then
+    PR_BASE_BRANCH="origin/${PR_BASE_BRANCH}"
+  fi
 fi
 
 # Create state file with YAML frontmatter
 if [ "$REVIEW_MODE" = "pr" ]; then
-cat > .claude/codex-review-state.md <<'EOF'
+cat > .claude/litmus-state.md <<'EOF'
 ---
 active: true
 iteration: 1
@@ -167,7 +172,7 @@ Field rules:
 </grounding_rules>
 EOF
 else
-cat > .claude/codex-review-state.md <<'EOF'
+cat > .claude/litmus-state.md <<'EOF'
 ---
 active: true
 iteration: 1
@@ -257,15 +262,15 @@ EOF
 fi
 
 # Replace placeholders
-sed -i.tmp "s/MAX_ITERATIONS_PLACEHOLDER/$MAX_ITERATIONS/" .claude/codex-review-state.md
-sed -i.tmp "s/COMPLETION_PROMISE_PLACEHOLDER/$COMPLETION_PROMISE/" .claude/codex-review-state.md
-sed -i.tmp "s/TIMESTAMP_PLACEHOLDER/$TIMESTAMP/" .claude/codex-review-state.md
-rm -f .claude/codex-review-state.md.tmp
+sed -i.tmp "s/MAX_ITERATIONS_PLACEHOLDER/$MAX_ITERATIONS/" .claude/litmus-state.md
+sed -i.tmp "s/COMPLETION_PROMISE_PLACEHOLDER/$COMPLETION_PROMISE/" .claude/litmus-state.md
+sed -i.tmp "s/TIMESTAMP_PLACEHOLDER/$TIMESTAMP/" .claude/litmus-state.md
+rm -f .claude/litmus-state.md.tmp
 
 # Success message
 echo "✅ Review loop initialized"
 echo ""
-echo "   State file: .claude/codex-review-state.md"
+echo "   State file: .claude/litmus-state.md"
 echo "   Max iterations: $MAX_ITERATIONS"
 if [ "$COMPLETION_PROMISE" != "null" ]; then
     echo "   Completion promise: $COMPLETION_PROMISE"

@@ -6,7 +6,7 @@ Routes tasks to the appropriate busdriver skill, agent, or command.
 
 - **Pipeline enforcement** — phases 1-6 (brainstorming → finishing)
 - **Domain detection** — loads language/framework patterns automatically
-- **Gate enforcement** — codex-reviewer, design-reviewer, pre-implementation
+- **Gate enforcement** — litmus, design-reviewer, pre-implementation
 - **Agent dispatch** — 29 specialized agents (reviewers, build resolvers, etc.)
 
 ## How It Routes

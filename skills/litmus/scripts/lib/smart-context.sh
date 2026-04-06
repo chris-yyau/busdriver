@@ -6,9 +6,9 @@
 # Output: Formatted context string on stdout for prompt injection.
 #
 # Environment:
-#   CODEX_SKIP_CONTEXT=1      — skip smart context collection
-#   CODEX_MAX_CONTEXT_LINES=50 — max context lines per function (default: 50)
-#   CODEX_MAX_FUNCTIONS=10     — max functions to trace (default: 10)
+#   LITMUS_SKIP_CONTEXT=1      — skip smart context collection
+#   LITMUS_MAX_CONTEXT_LINES=50 — max context lines per function (default: 50)
+#   LITMUS_MAX_FUNCTIONS=10     — max functions to trace (default: 10)
 
 set -euo pipefail
 
@@ -77,21 +77,19 @@ for n in sorted(names):
 # Find callers of a function across the repo
 _find_callers() {
   local func_name="$1"
-  local max_lines="${CODEX_MAX_CONTEXT_LINES:-50}"
+  local max_lines="${LITMUS_MAX_CONTEXT_LINES:-50}"
   case "$max_lines" in
     ''|*[!0-9]*) max_lines=50 ;;
   esac
   local repo_root
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
 
-  local escaped_name
-  escaped_name=$(_ctx_escape_regex "$func_name")
-
-  # Use grep -w for portable word boundary matching
+  # Use grep -w for portable word boundary matching (no regex escaping needed)
   grep -rwn --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' \
     --include='*.py' --include='*.go' --include='*.rs' --include='*.sh' \
     --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=vendor \
     --exclude-dir='__pycache__' --exclude-dir='.claude' \
+    --exclude-dir='.next' --exclude-dir=dist --exclude-dir=build --exclude-dir=out \
     "$func_name" "$repo_root" 2>/dev/null | \
     grep -vE '(/|^)(test_|_test\.|\.test\.|\.spec\.|tests/|spec/)' | \
     head -n "$max_lines" || true
@@ -100,7 +98,7 @@ _find_callers() {
 # Find files that import/require changed files
 _find_importers() {
   local changed_file="$1"
-  local max_lines="${CODEX_MAX_CONTEXT_LINES:-50}"
+  local max_lines="${LITMUS_MAX_CONTEXT_LINES:-50}"
   case "$max_lines" in
     ''|*[!0-9]*) max_lines=50 ;;
   esac
@@ -119,6 +117,7 @@ _find_importers() {
     --include='*.py' --include='*.go' --include='*.rs' \
     --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=vendor \
     --exclude-dir='__pycache__' --exclude-dir='.claude' \
+    --exclude-dir='.next' --exclude-dir=dist --exclude-dir=build --exclude-dir=out \
     -E "(import.*['\"].*${escaped_module}['\"]|require\(['\"].*${escaped_module}['\"]|from\s+.*${escaped_module}\s+import)" "$repo_root" 2>/dev/null | \
     head -n "$max_lines" || true
 }
@@ -129,12 +128,12 @@ _find_importers() {
 collect_smart_context() {
   local diff="$1"
   local files_list="$2"
-  local max_functions="${CODEX_MAX_FUNCTIONS:-10}"
+  local max_functions="${LITMUS_MAX_FUNCTIONS:-10}"
   case "$max_functions" in
     ''|*[!0-9]*) max_functions=10 ;;
   esac
 
-  if [ "${CODEX_SKIP_CONTEXT:-0}" = "1" ]; then
+  if [ "${LITMUS_SKIP_CONTEXT:-0}" = "1" ]; then
     return
   fi
 
@@ -204,6 +203,7 @@ $importers
     [ -n "$context" ] && echo "$context"
     [ -n "$import_context" ] && echo "$import_context"
   fi
+  return 0
 }
 
 # If run directly (not sourced)

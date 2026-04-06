@@ -2,7 +2,7 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-source "$SCRIPT_DIR/skills/codex-reviewer/scripts/lib/docs-context.sh"
+source "$SCRIPT_DIR/skills/litmus/scripts/lib/docs-context.sh"
 
 passed=0
 failed=0

@@ -1,4 +1,4 @@
-# Codex Reviewer Advanced Usage
+# Litmus Advanced Usage
 
 Optional features and advanced integration patterns.
 
@@ -11,7 +11,7 @@ The changelog system provides continuity across review sessions by tracking comp
 After successful commits, the skill can save changelog information:
 
 **Storage location:**
-- Location: `~/.claude/projects/-{project-path}/codex-context/`
+- Location: `~/.claude/projects/-{project-path}/litmus-context/`
 - Files created:
   - `task-history.jsonl` - Append-only log of all completed tasks
   - `last-task.json` - Most recent task (for quick access)
@@ -26,7 +26,7 @@ After successful commits, the skill can save changelog information:
 
 **Loading previous changelog:**
 
-The `execute_review.sh` script automatically loads changelog from the previous task (if available) and injects it into the review prompt. This provides context about recent changes.
+The `run-review-loop.sh` script automatically loads changelog from the previous task (if available) and injects it into the review prompt. This provides context about recent changes.
 
 **Error handling:**
 - If directory creation fails → warning shown, workflow continues
@@ -41,7 +41,7 @@ The `execute_review.sh` script automatically loads changelog from the previous t
 bash scripts/save_changelog.sh
 
 # Or with explicit paths
-bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/save_changelog.sh
+bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/save_changelog.sh
 ```
 
 **Load previous changelog:**
@@ -50,7 +50,7 @@ bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/save_changelog.sh
 PREV_CHANGELOG=$(bash scripts/load_changelog.sh 2>/dev/null || echo "")
 
 # Load more entries
-CODEX_CHANGELOG_LIMIT=5 bash scripts/load_changelog.sh
+LITMUS_CHANGELOG_LIMIT=5 bash scripts/load_changelog.sh
 ```
 
 ### When to Use Changelog
@@ -204,30 +204,14 @@ set -e
 
 echo "Running codex review..."
 
-# Initialize iteration counter
-echo "1" > /tmp/codex-iteration.txt
+LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 
-# Run review loop
-MAX_ITER=3
-for i in $(seq 1 $MAX_ITER); do
-    RESULT=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/execute_review.sh)
-    STATUS=$(echo "$RESULT" | jq -r '.status')
+# Initialize (--force in case a prior loop is active)
+bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force 3
 
-    if [ "$STATUS" = "PASS" ]; then
-        rm /tmp/codex-iteration.txt
-        exit 0
-    fi
-
-    # Show issues
-    echo "$RESULT" | jq -r '.issues[] | "[\(.severity)] \(.file):\(.line) - \(.description)"'
-
-    # In pre-commit hook, we can't auto-fix, so fail
-    if [ $i -eq $MAX_ITER ]; then
-        echo "Review failed after $MAX_ITER iterations"
-        rm /tmp/codex-iteration.txt
-        exit 1
-    fi
-done
+# run-review-loop.sh exits 0 on PASS, non-zero on FAIL
+# With set -e, a failing review exits the hook automatically
+bash "$LITMUS_SCRIPTS/run-review-loop.sh"
 ```
 
 ### Integration with Task Management
@@ -248,7 +232,7 @@ def run_review_for_task(task_id):
     # Run review loop
     iteration = 1
     while iteration <= 10:
-        result = run_codex_review(iteration)
+        result = run_litmus(iteration)
 
         if result['status'] == 'PASS':
             # Task complete
@@ -277,7 +261,8 @@ MAX_ITERATIONS = 3
 MAX_ITERATIONS = 15
 
 # Check iteration
-iteration = int(open('/tmp/codex-iteration.txt').read().strip())
+# Iteration is tracked in .claude/litmus-state.md by run-review-loop.sh
+iteration = 1  # placeholder — actual iteration managed by state file
 if iteration > MAX_ITERATIONS:
     # Handle max iterations
     pass
@@ -298,7 +283,7 @@ metrics = {
 }
 
 for iteration in range(1, 11):
-    result = run_codex_review(iteration)
+    result = run_litmus(iteration)
 
     metrics['iterations'].append({
         'iteration': iteration,
@@ -311,7 +296,7 @@ for iteration in range(1, 11):
         break
 
 # Save metrics
-with open('.codex-metrics.json', 'w') as f:
+with open('.litmus-metrics.json', 'w') as f:
     json.dump(metrics, f, indent=2)
 ```
 
@@ -327,8 +312,9 @@ for repo in repo1 repo2 repo3; do
     cd $repo
     echo "Reviewing $repo..."
 
-    echo "1" > /tmp/codex-iteration.txt
-    bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/execute_review.sh
+    LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
+    bash "$LITMUS_SCRIPTS/init-review-loop.sh" 3
+    bash "$LITMUS_SCRIPTS/run-review-loop.sh"
 
     if [ $? -eq 0 ]; then
         echo "✅ $repo passed review"
@@ -409,7 +395,7 @@ git rev-parse HEAD > .last-review-commit
 Add debugging to review scripts:
 
 ```bash
-# In execute_review.sh
+# In run-review-loop.sh
 set -x  # Enable debug mode
 
 # Log all variables
@@ -418,7 +404,7 @@ echo "DEBUG: FINAL_PROMPT=$FINAL_PROMPT" >&2
 
 # Log codex output before parsing
 echo "DEBUG: Codex output:" >&2
-codex review "$FINAL_PROMPT" | tee /tmp/codex-debug.log
+codex review "$FINAL_PROMPT" | tee /tmp/litmus-debug.log
 ```
 
 ### Save Review History
@@ -427,12 +413,13 @@ Keep history of all review iterations:
 
 ```bash
 # Create review log directory
-mkdir -p .codex-review-logs
+mkdir -p .litmus-logs
 
 # Save each iteration
-ITERATION=$(cat /tmp/codex-iteration.txt)
+# Iteration number from state file (managed by run-review-loop.sh)
+ITERATION=$(grep '^iteration:' .claude/litmus-state.md 2>/dev/null | awk '{print $2}' || echo "1")
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-LOG_FILE=".codex-review-logs/iteration-${ITERATION}-${TIMESTAMP}.json"
+LOG_FILE=".litmus-logs/iteration-${ITERATION}-${TIMESTAMP}.json"
 
 # Run review and save
 codex review "$PROMPT" | tee "$LOG_FILE"
@@ -445,7 +432,7 @@ Identify common review issues:
 ```bash
 # Extract all issues from review logs
 jq -r '.issues[] | "\(.severity) | \(.category) | \(.description)"' \
-    .codex-review-logs/*.json | \
+    .litmus-logs/*.json | \
     sort | uniq -c | sort -rn
 
 # Output:

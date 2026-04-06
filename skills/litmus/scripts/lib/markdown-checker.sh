@@ -5,9 +5,9 @@
 # Output: JSON array of findings on stdout.
 #
 # Environment:
-#   CODEX_SKIP_MARKDOWN=1       — skip all markdown checks
-#   CODEX_CHECK_URLS=1          — enable URL validation (disabled by default — slow)
-#   CODEX_MARKDOWN_TIMEOUT=5    — per-URL timeout in seconds (default: 5)
+#   LITMUS_SKIP_MARKDOWN=1       — skip all markdown checks
+#   LITMUS_CHECK_URLS=1          — enable URL validation (disabled by default — slow)
+#   LITMUS_MARKDOWN_TIMEOUT=5    — per-URL timeout in seconds (default: 5)
 
 set -euo pipefail
 
@@ -66,7 +66,7 @@ print(json.dumps(findings))
 # Validate URLs in changed markdown files (opt-in, slow)
 _md_check_urls() {
   local files_list="$1"
-  local timeout_sec="${CODEX_MARKDOWN_TIMEOUT:-5}"
+  local timeout_sec="${LITMUS_MARKDOWN_TIMEOUT:-5}"
 
   # Validate timeout_sec is numeric to prevent injection
   case "$timeout_sec" in
@@ -165,7 +165,7 @@ print(json.dumps(findings))
 run_markdown_checks() {
   local files_list="$1"
 
-  if [ "${CODEX_SKIP_MARKDOWN:-0}" = "1" ]; then
+  if [ "${LITMUS_SKIP_MARKDOWN:-0}" = "1" ]; then
     echo "[]"
     return
   fi
@@ -195,7 +195,7 @@ print(json.dumps(arrays))
 ")
   fi
 
-  if [ "${CODEX_CHECK_URLS:-0}" = "1" ]; then
+  if [ "${LITMUS_CHECK_URLS:-0}" = "1" ]; then
     echo "   Markdown: validating URLs..." >&2
     local url_findings
     url_findings=$(_md_check_urls "$files_list")

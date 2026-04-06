@@ -1,7 +1,7 @@
 ---
 name: orchestrator
 description: >
-  Use when starting any task, routing to skills, about to commit or deploy, writing new features or fixing bugs, after writing plans or design docs, debugging, doing code review, or uncertain which skill applies. Use when there is even a 1% chance a skill might apply — this is the single routing authority for superpowers, everything-claude-code, codex-reviewer, and design-reviewer.
+  Use when starting any task, routing to skills, about to commit or deploy, writing new features or fixing bugs, after writing plans or design docs, debugging, doing code review, or uncertain which skill applies. Use when there is even a 1% chance a skill might apply — this is the single routing authority for superpowers, everything-claude-code, litmus, and design-reviewer.
 ---
 
 # Master Orchestrator
@@ -51,12 +51,12 @@ When invoking a skill or dispatching an agent, check `skills/supplements/MANIFES
 
 All gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects the tool call — Claude cannot bypass.
 
-### Codex Reviewer (Pre-Commit + Pre-PR)
+### Litmus (Pre-Commit + Pre-PR)
 **Trigger:** `git commit` OR `gh pr create` in Bash
-**Pre-commit (fast — 1 voice):** Blocks until `/codex-reviewer` passes → writes `.claude/codex-review-passed.local` marker. Consumed after successful commit via PostToolUse. DEGRADED markers rejected. **Design-reviewed bypass:** If ALL staged files are design-reviewed specs (`.md` in `plans/`/`specs/` or basename PLAN/DESIGN/ARCHITECTURE, each with `<!-- design-reviewed: PASS -->`), Gate 2 auto-passes — codex review is redundant after 3-tier design review.
-**Pre-PR (deep — multi-voice):** Blocks `gh pr create` until codex review passes. Runs codex CLI pass THEN 6 parallel review agents (guidelines, bugs, history, cross-commit, security, docs-consistency) with confidence scoring. Blocks on CRITICAL/HIGH at 80+ confidence. Accepts `.claude/pr-review-passed.local` (with HEAD SHA verification). Also passes if all `base..HEAD` commits were per-commit reviewed (tracked in `reviewed-commits.local`). 4-of-6 agent quorum required; <4 agents = fail-closed. `CODEX_PR_FAST=1` skips multi-agent (audited).
-**CLI:** `BUSDRIVER_REVIEW_CLI` selects the review backend (auto/codex/gemini/droid/amp/opencode/claude/aider/builtin/none). Per-role routing via `.claude/busdriver.json` — see README for config format.
-**Skip:** `.claude/skip-codex-review.local` (single-use, 30s self-bypass detection) or `SKIP_CODEX_REVIEW=1`
+**Pre-commit (fast — 1 voice):** Blocks until `/litmus` passes → writes `.claude/litmus-passed.local` marker. Consumed after successful commit via PostToolUse. DEGRADED markers rejected. **Design-reviewed bypass:** If ALL staged files are design-reviewed specs (`.md` in `plans/`/`specs/` or basename PLAN/DESIGN/ARCHITECTURE, each with `<!-- design-reviewed: PASS -->`), Gate 2 auto-passes — codex review is redundant after 3-tier design review.
+**Pre-PR (deep — multi-voice):** Blocks `gh pr create` until codex review passes. Runs codex CLI pass THEN 6 parallel review agents (guidelines, bugs, history, cross-commit, security, docs-consistency) with confidence scoring. Blocks on CRITICAL/HIGH at 80+ confidence. Accepts `.claude/pr-review-passed.local` (rejects DEGRADED/SKIPPED/BUILTIN markers). Also passes if all `base..HEAD` commits were per-commit reviewed (tracked in `reviewed-commits.local`). 4-of-6 agent quorum required; <4 agents = fail-closed. `LITMUS_PR_FAST=1` skips multi-agent (audited).
+**CLI:** `BUSDRIVER_REVIEW_CLI` selects the review backend (auto/codex/gemini/droid/amp/opencode/claude/aider/builtin/none). Per-role routing via `.claude/busdriver.json` — see README for config format. Codex backend uses the official codex-plugin-cc app-server protocol when installed (stable JSON-RPC), with direct CLI fallback.
+**Skip:** `.claude/skip-litmus.local` (single-use, 30s self-bypass detection) or `SKIP_LITMUS=1`
 **Escalation:** 10 consecutive blocks → warn user about escape hatch. `git push` intentionally NOT gated.
 
 ### Design Reviewer (Pre-Commit + Pre-Implementation)
@@ -81,11 +81,11 @@ Do NOT use `code-reviewer` agent — it cannot write the `<!-- design-reviewed: 
 
 ### Skip File Protocol
 
-Skip files (`.claude/skip-codex-review.local`, `.claude/skip-design-review.local`) have a 30-second self-bypass detection. Files created within 30s are rejected and deleted — this prevents Claude from creating skip files itself to bypass gates.
+Skip files (`.claude/skip-litmus.local`, `.claude/skip-design-review.local`) have a 30-second self-bypass detection. Files created within 30s are rejected and deleted — this prevents Claude from creating skip files itself to bypass gates.
 
 **When a gate blocks and the user needs to bypass:**
 1. Tell the user to create the appropriate skip file using the **full absolute path** (their terminal CWD may differ from the project):
-   - Codex gate: `touch /absolute/path/to/project/.claude/skip-codex-review.local`
+   - Codex gate: `touch /absolute/path/to/project/.claude/skip-litmus.local`
    - Design gate: `touch /absolute/path/to/project/.claude/skip-design-review.local`
 2. Wait for user confirmation
 3. **You** run `sleep 32` before attempting the gated action — never ask the user to wait
@@ -114,7 +114,7 @@ DO NOT skip phases after your entry point. The ONLY exception is small specific 
 </STRONG-GUIDANCE>
 
 ### Phase 1: Discovery → `busdriver:brainstorming`
-Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design, domain patterns, `busdriver:frontend-patterns` + `busdriver:design-system` for UI/UX, `busdriver:api-design` for API boundaries. Design Reviewer triggers when design doc is written. Consider `council` if 2+ viable approaches.
+Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design, domain patterns. For UI/UX: `frontend-design` (Impeccable core) + `ui-ux-pro-max` (design intelligence) + `busdriver:design-system` (token audit); load `.impeccable.md` if present. For code patterns: `busdriver:frontend-patterns`. For API boundaries: `busdriver:api-design`. Design Reviewer triggers when design doc is written. Consider `council` if 2+ viable approaches.
 **NEXT:** Phase 2 only. INVOKE `busdriver:writing-plans`. Do NOT start coding. After Phase 2 completes, auto-execution carries through Phases 3–6 without user pause.
 
 ### Phase 2: Planning → `busdriver:writing-plans`
@@ -178,7 +178,7 @@ Domain skills are **additive** — load all that match. **Full catalog:** `${CLA
 | Python | `*.py` | `python-patterns`, `python-testing`, `python-reviewer` agent |
 | Django | `manage.py` | `django-patterns`, `django-security`, `django-tdd` |
 | Spring Boot | `pom.xml` | `springboot-patterns`, `springboot-security`, `springboot-tdd` |
-| Frontend | `*.tsx`, `*.jsx` | `frontend-patterns`, `coding-standards`, `typescript-reviewer` agent |
+| Frontend | `*.tsx`, `*.jsx` | `frontend-patterns`, `coding-standards`, `typescript-reviewer` agent, `frontend-design` + `ui-ux-pro-max` for design |
 | Bun | `bun.lock`, `bunfig.toml` | `bun-runtime` |
 | Backend | API routes | `backend-patterns`, `coding-standards` |
 | C++ | `*.cpp`, `CMakeLists.txt` | `cpp-coding-standards`, `cpp-testing` |
@@ -202,7 +202,9 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 |------|-----------------|----------|
 | **Refactoring** | cleanup, dead code | `refactor-cleaner` agent |
 | **Authentication** | login, signup, OAuth | `security-review` |
-| **UI/UX Design** | design, UI review, make it look better | `busdriver:frontend-patterns` + `busdriver:design-system` |
+| **UI/UX Design** | design, UI review, make it look better, styling | `frontend-design` + `ui-ux-pro-max` + `busdriver:design-system`. Load `.impeccable.md` if present |
+| **Design Setup** | impeccable, design context, brand setup | `/teach-impeccable` (one-time → `.impeccable.md`) |
+| **Design Refinement** | polish, critique, audit UI, animate, make bolder/quieter | Impeccable commands: `/polish`, `/critique`, `/audit`, `/normalize`, `/harden`, `/distill`, `/clarify`, `/colorize`, `/bolder`, `/quieter`, `/delight`, `/animate`, `/overdrive`, `/arrange`, `/extract`, `/typeset`, `/adapt`, `/optimize`, `/onboard` |
 | **Skill Creation** | create/edit skill | `busdriver:writing-skills` |
 | **API Design** | REST endpoints, API versioning | `busdriver:api-design` |
 | **E2E Testing** | browser testing, e2e | `/e2e` command + `e2e-testing` skill |
@@ -217,6 +219,8 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Multi-Service** | monorepo, microservices | `busdriver:dispatching-parallel-agents` + `/pm2` |
 | **Multi-Session Planning** | plan big project | `busdriver:blueprint` |
 | **Multi-Agent** | agent pipeline, parallel teams | `/orchestrate` / `/devfleet` / `claude-devfleet` / `dmux-workflows` / `team-builder` |
+| **Codex Review** | adversarial review, challenge design | `/codex:adversarial-review` command (official plugin) |
+| **Codex Rescue** | delegate task to Codex | `/codex:rescue` command (official plugin) |
 | **External CLI** | send to codex/gemini/droid/amp/opencode | `dispatch-cli` skill |
 | **Multi-Model** | multi-model planning | `/multi-plan`, `/multi-backend`, `/multi-frontend`, `/multi-execute`, `/multi-workflow` |
 | **Council** | perspectives, group wisdom, tradeoffs | `council` skill (4-voice: Architect + Skeptic + Pragmatist + Critic) |

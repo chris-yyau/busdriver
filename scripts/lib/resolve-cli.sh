@@ -2,7 +2,7 @@
 # resolve-cli.sh — Plugin-wide shared CLI library
 #
 # Single source of truth for CLI availability and resolution.
-# Sourced by codex-reviewer, design-reviewer, and council.
+# Sourced by litmus, design-reviewer, and council.
 #
 # Usage (sourced):
 #   source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/resolve-cli.sh"
@@ -271,7 +271,50 @@ resolve_role_cli() {
 # ── Review CLI resolution: resolve to ONE cli based on env var ──
 
 resolve_review_cli() {
-  resolve_role_cli "codex-reviewer.reviewer"
+  resolve_role_cli "litmus.reviewer"
+}
+
+# ── Codex invocation: app-server (preferred) → CLI fallback ────
+# The official codex-plugin-cc uses a JSON-RPC app-server protocol that is
+# more reliable than piping to `codex exec` (which can hang on stdin).
+# We prefer the plugin's companion script when installed; fall back to
+# direct CLI invocation otherwise.
+
+_CODEX_COMPANION=""
+_resolve_codex_companion() {
+  [[ -n "$_CODEX_COMPANION" ]] && return
+  # Check common plugin cache locations
+  local base="${HOME}/.claude/plugins/cache/openai-codex/codex"
+  if [[ -d "$base" ]]; then
+    # Find the latest installed version
+    local latest
+    # sort -t. -k1,1n -k2,2n -k3,3n is portable semver sort (no GNU sort -V needed)
+    latest=$(ls -1 "$base" 2>/dev/null | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+    if [[ -n "$latest" && -f "$base/$latest/scripts/codex-companion.mjs" ]]; then
+      _CODEX_COMPANION="$base/$latest/scripts/codex-companion.mjs"
+      return
+    fi
+  fi
+  _CODEX_COMPANION="none"
+}
+
+_execute_codex() {
+  local prompt="$1"
+  local duration="${2:-1200}"
+
+  _resolve_codex_companion
+
+  if [[ "$_CODEX_COMPANION" != "none" ]] && command -v node &>/dev/null; then
+    # Use official plugin's app-server protocol (stable, no stdin hang).
+    # Pipe via stdin to avoid ARG_MAX limits on large diffs — the companion
+    # reads piped stdin when no positional prompt is provided.
+    # Omit --json to get raw review output (--json wraps in an envelope
+    # that breaks downstream extract_review_json.py parsing)
+    printf '%s' "$prompt" | _portable_timeout "$duration" node "$_CODEX_COMPANION" task 2>&1
+  else
+    # Fallback: direct CLI invocation
+    printf '%s' "$prompt" | _portable_timeout "$duration" codex exec -s read-only - 2>&1
+  fi
 }
 
 execute_review() {
@@ -284,10 +327,10 @@ execute_review() {
   #   case ${exit_code:-0} in 3) handle_builtin ;; 0) handle_pass ;; *) handle_fail ;; esac
   #
   # `none` is NOT handled here — caller intercepts before calling execute_review.
-  # All CLIs receive prompts via stdin to avoid ARG_MAX limits on large diffs.
-  # Use printf instead of echo for binary-safe output.
+  # Codex uses the app-server protocol via _execute_codex() when the official
+  # plugin is installed, falling back to direct CLI. Other CLIs use stdin piping.
   case "$cli" in
-    codex)   printf '%s' "$prompt" | _portable_timeout "$duration" codex review - 2>&1 ;;
+    codex)   _execute_codex "$prompt" "$duration" ;;
     gemini)  printf '%s' "$prompt" | _portable_timeout "$duration" gemini 2>&1 ;;
     claude)  printf '%s' "$prompt" | _portable_timeout "$duration" claude -p --output-format text 2>&1 ;;
     aider)   local _tmp; _tmp=$(mktemp -t busdriver-aider-XXXXXX)

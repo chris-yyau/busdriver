@@ -24,7 +24,7 @@ if ! command -v python3 &>/dev/null; then
     # so we must emit the warning as raw hookSpecificOutput JSON using printf.
     # Note: gate hooks fail-CLOSED (block via printf) when python3 is missing,
     # so gates are NOT silently disabled — they block ALL gated actions.
-    printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"## CRITICAL: python3 not found\\n\\nAll review gates (codex-reviewer, design-reviewer, pre-implementation, pre-commit) will BLOCK every gated action because gate hooks fail-CLOSED without python3. Gates cannot parse tool input to determine if the action is actually a commit — so they block everything as a precaution.\\n\\n**Install python3 immediately to restore normal gate operation.** Until then, use `.claude/skip-codex-review.local` or `.claude/skip-design-review.local` to bypass individual blocked actions."}}\n'
+    printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"## CRITICAL: python3 not found\\n\\nAll review gates (litmus, design-reviewer, pre-implementation, pre-commit) will BLOCK every gated action because gate hooks fail-CLOSED without python3. Gates cannot parse tool input to determine if the action is actually a commit — so they block everything as a precaution.\\n\\n**Install python3 immediately to restore normal gate operation.** Until then, use `.claude/skip-litmus.local` or `.claude/skip-design-review.local` to bypass individual blocked actions."}}\n'
     exit 0
 fi
 if ! command -v jq &>/dev/null; then

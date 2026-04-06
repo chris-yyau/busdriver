@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared validation functions for codex-reviewer scripts
+# Shared validation functions for litmus scripts
 # Provides centralized error handling and validation
 
 # Source shared CLI resolution library
@@ -63,7 +63,7 @@ validate_codex_installed() {
 
 # Validate state file exists
 validate_state_file() {
-  local state_file="${1:-.claude/codex-review-state.md}"
+  local state_file="${1:-.claude/litmus-state.md}"
 
   if [ ! -f "$state_file" ]; then
     echo "❌ Error: State file not found" >&2

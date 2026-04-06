@@ -1,4 +1,4 @@
-# Codex Reviewer Examples
+# Litmus Examples
 
 This document contains detailed workflow examples referenced from SKILL.md.
 
@@ -84,33 +84,38 @@ supabase functions deploy my-function
 
 **You violated the workflow. Fix it:**
 
-1. `git reset --soft HEAD~1` (uncommit, keep changes)
-2. **Initialize counter:** `echo "1" > /tmp/codex-iteration.txt`
-3. Run Codex review loop
-4. Fix issues and iterate until PASS
-5. Clean up counter: `rm /tmp/codex-iteration.txt`
-6. Commit again
+```bash
+LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
+git reset --soft HEAD~1
+bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
+bash "$LITMUS_SCRIPTS/run-review-loop.sh"
+# Fix issues, re-stage, re-run until PASS, then commit again
+```
 
 **If already pushed:**
-1. Locally: `git reset --soft HEAD~1`
-2. Initialize counter: `echo "1" > /tmp/codex-iteration.txt`
-3. Run review loop, fix issues
-4. Clean up counter: `rm /tmp/codex-iteration.txt`
-5. Force push: `git push --force-with-lease`
+```bash
+LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
+git reset --soft HEAD~1
+bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
+bash "$LITMUS_SCRIPTS/run-review-loop.sh"
+# Fix issues, re-stage, re-run until PASS
+git push --force-with-lease
+```
 
 ## Automation Best Practices
 
 ### Creating a Wrapper Function
 
-Create a wrapper function that ensures consistent automation parameters:
+Run the review as a **blocking** call (never in background).
+**Prerequisite:** `init-review-loop.sh` must have been called first to create `.claude/litmus-state.md`.
 
 ```python
-def run_codex_review(iteration_num):
+def run_litmus():
+    # Requires prior: bash init-review-loop.sh --force 10
     return Bash(
-        command="bash ${CLAUDE_PLUGIN_ROOT}/skills/codex-reviewer/scripts/execute_review.sh",
-        description=f"Run Codex review iteration {iteration_num}",
-        run_in_background=True,  # Always included
-        timeout=600000
+        command="bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
+        description="Run Codex review (blocking gate)",
+        timeout=1260000  # 21 min timeout
     )
 ```
 
@@ -119,58 +124,28 @@ def run_codex_review(iteration_num):
 **Scenario:** Refactored authentication system, expecting multiple review cycles
 
 ```bash
-# Initialize counter
-echo "1" > /tmp/codex-iteration.txt
+LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 
-# --- ITERATION 1 ---
-ITERATION=$(cat /tmp/codex-iteration.txt)  # 1
-codex review "Review the uncommitted changes..."
-# Result: FAIL - 12 issues (6 high, 6 medium)
+# Initialize state-based review loop (max 10 iterations)
+bash "$LITMUS_SCRIPTS/init-review-loop.sh" --force 10
 
-# Fix issues
-[Fix SQL injection, add input validation, fix error handling]
-git add -A
-echo "$((ITERATION + 1))" > /tmp/codex-iteration.txt  # 2
+# Each call does ONE review pass:
+#   Exit 0 = PASS → proceed to commit
+#   Exit 1 = FAIL → fix issues, stage, call again
+#   Exit 2 = TOO_LARGE → split into smaller commits
+set -e  # Ensure failed review blocks commit
+bash "$LITMUS_SCRIPTS/run-review-loop.sh"
+# If we reach here, review PASSED
 
-# --- DO NOT STOP HERE ---
-# --- DO NOT ASK PERMISSION ---
-# --- AUTOMATICALLY CONTINUE ---
-
-# --- ITERATION 2 ---
-ITERATION=$(cat /tmp/codex-iteration.txt)  # 2
-codex review "Review the uncommitted changes..."
-# Result: FAIL - 5 issues (2 high, 3 medium)
-
-# Fix remaining issues
-[Fix authentication bypass, add rate limiting, improve logging]
-git add -A
-echo "$((ITERATION + 1))" > /tmp/codex-iteration.txt  # 3
-
-# --- CONTINUE AGAIN ---
-
-# --- ITERATION 3 ---
-ITERATION=$(cat /tmp/codex-iteration.txt)  # 3
-codex review "Review the uncommitted changes..."
-# Result: PASS
-
-# NOW proceed to tests
 npm test
-# Result: PASS
-
-# Clean up counter
-rm /tmp/codex-iteration.txt
-
-# NOW can commit
-git commit -m "Refactor authentication system
-
-Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
+git commit -m "Refactor authentication system"
 ```
 
 **Key points:**
-- Loop continued automatically through 3 iterations
-- No permission asked between cycles
-- Iteration counter tracked progress
-- Only stopped at PASS
+- Each `run-review-loop.sh` call does one review pass and exits
+- The caller (Claude or script) handles fix→re-stage→re-run
+- State tracked in `.claude/litmus-state.md` with iteration history
+- Cleans up state file on PASS; preserves on max iterations for inspection
 
 ## Example 2: Reaching Max Iterations
 
@@ -180,8 +155,8 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
 # ... iterations 1-9 ...
 
 # --- ITERATION 10 ---
-ITERATION=$(cat /tmp/codex-iteration.txt)  # 10
-codex review "Review the uncommitted changes..."
+# run-review-loop.sh tracks iteration internally
+bash "$LITMUS_SCRIPTS/run-review-loop.sh"
 # Result: FAIL - 3 issues (1 high, 2 medium)
 
 # Max iterations reached - ASK USER

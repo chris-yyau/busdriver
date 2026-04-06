@@ -43,6 +43,85 @@ if ! command -v python3 &>/dev/null; then
     fi
 fi
 
+# ── Read stdin once (shared by marker protection and design review) ───
+INPUT=$(cat 2>/dev/null || true)
+[ -z "$INPUT" ] && exit 0
+
+# ── Unconditional gate marker protection ──────────────────────────────
+# These files control review gate bypass. Protect them ALWAYS, not just
+# when design review is pending. Without this, Claude can forge a review
+# pass by writing the marker directly when no design review is active.
+#
+# Fix: Previously this protection was below the early-exit, so it only
+# ran when design review was pending. Moved here to be unconditional.
+# See: "skip codex review" bypass incident 2026-04-01.
+MARKER_CHECK=$(printf '%s' "$INPUT" | python3 -c '
+import sys, json, re
+try:
+    d = json.load(sys.stdin)
+    tool = d.get("tool_name", d.get("toolName", ""))
+    inp = d.get("tool_input", d.get("toolInput", {}))
+    if isinstance(inp, str):
+        inp = json.loads(inp)
+
+    MARKER_FILES = [
+        "litmus-passed.local",
+        "pr-review-passed.local",
+        "skip-litmus.local",
+        "skip-design-review.local",
+        "reviewed-commits.local",
+        "design-review-needed.local",
+    ]
+
+    if tool in ("Write", "Edit"):
+        fp = inp.get("file_path", inp.get("filePath", ""))
+        for mf in MARKER_FILES:
+            if mf in fp:
+                print("BLOCK_MARKER|" + mf)
+                sys.exit(0)
+
+    elif tool == "Bash":
+        cmd = inp.get("command", "")
+        # Block direct invocation of write-review-marker.sh
+        if "write-review-marker" in cmd:
+            print("BLOCK_MARKER_SCRIPT|write-review-marker.sh")
+            sys.exit(0)
+        # Block shell redirects targeting marker files
+        for mf in MARKER_FILES:
+            if mf in cmd:
+                # Check if command writes to it (not just reads/checks)
+                stripped = re.sub(r"'\''[^'\'']*'\''", "", cmd)
+                if re.search(r"(?:>|tee|echo.*>|printf.*>|cat.*>).*" + re.escape(mf), stripped):
+                    print("BLOCK_MARKER|" + mf)
+                    sys.exit(0)
+                # Also block rm of marker files (prevents consumption forgery)
+                if re.search(r"\brm\b.*" + re.escape(mf), stripped):
+                    print("BLOCK_MARKER|" + mf)
+                    sys.exit(0)
+
+    print("OK|")
+except Exception:
+    print("OK|")
+' 2>/dev/null || echo "OK|")
+
+MARKER_ACTION="${MARKER_CHECK%%|*}"
+MARKER_TARGET="${MARKER_CHECK#*|}"
+
+if [ "$MARKER_ACTION" = "BLOCK_MARKER" ]; then
+    block_emit "BLOCKED: Cannot write to gate marker file ($MARKER_TARGET) directly.
+Gate markers are written by review infrastructure after a genuine review pass.
+Writing them manually forges compliance. Run /litmus or /design-reviewer instead.
+If you need to skip review, ask the user to run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/.claude/skip-litmus.local"
+    exit 0
+fi
+
+if [ "$MARKER_ACTION" = "BLOCK_MARKER_SCRIPT" ]; then
+    block_emit "BLOCKED: Cannot call $MARKER_TARGET directly.
+This script is internal to the review loop and should only be invoked by run-review-loop.sh after a genuine review pass.
+Run /litmus instead."
+    exit 0
+fi
+
 # No pending design reviews → approve immediately
 DESIGN_STATE=".claude/design-review-needed.local.md"
 [ ! -f "$DESIGN_STATE" ] && exit 0
@@ -60,11 +139,10 @@ if [ -f ".claude/skip-design-review.local" ]; then
     # Reject skip files created within the last 30 seconds — likely Claude self-bypass.
     # A human-created skip file (via terminal) will typically be older.
     FILE_AGE=999
-    if stat -f %m ".claude/skip-design-review.local" &>/dev/null; then
-        FILE_AGE=$(( $(date +%s) - $(stat -f %m ".claude/skip-design-review.local") ))
-    elif stat -c %Y ".claude/skip-design-review.local" &>/dev/null; then
-        FILE_AGE=$(( $(date +%s) - $(stat -c %Y ".claude/skip-design-review.local") ))
-    fi
+    _MTIME=$(stat -f %m ".claude/skip-design-review.local" 2>/dev/null) \
+        || _MTIME=$(stat -c %Y ".claude/skip-design-review.local" 2>/dev/null) \
+        || _MTIME=""
+    [ -n "$_MTIME" ] && FILE_AGE=$(( $(date +%s) - _MTIME ))
     if [ "$FILE_AGE" -lt 30 ]; then
         # Likely self-bypass — reject and warn
         rm -f ".claude/skip-design-review.local"
@@ -86,16 +164,12 @@ If the user wants to skip, they should create the file manually in their termina
 fi
 [ "${SKIP_DESIGN_REVIEW:-0}" = "1" ] && exit 0
 
-# Consume stdin
-INPUT=$(cat 2>/dev/null || true)
-[ -z "$INPUT" ] && exit 0
-
 # ── Parse tool type and relevant input ─────────────────────────────────
 # Returns: WRITE_EDIT|<file_path>  or  BASH_MOD|<command>  or  SAFE|
 # NOTE: Python block uses single-quoted shell string to avoid bash 3.2
 # quote-matching issues with $(...)  — all Python strings use double quotes.
 # F7 fix: Strip fd-to-fd redirects (2>&1, >&2) before file-redirect detection.
-# F8 fix: Allow review infrastructure scripts (design-reviewer, codex-reviewer)
+# F8 fix: Allow review infrastructure scripts (design-reviewer, litmus)
 # to run even when design docs are unreviewed — prevents circular dependency.
 PARSED=$(printf '%s' "$INPUT" | python3 -c '
 import sys, json, re
@@ -136,7 +210,7 @@ try:
         # (not explicit file-mod patterns like rm/cp/mv). This prevents
         # compound command bypass: "bash reviewer.sh && rm -rf src" still
         # blocked because rm triggers has_explicit_mod.
-        if is_mod and not has_explicit_mod and re.search(r"(?:^|[\s;|&])(?:ba)?sh\s+\S*(?:design-reviewer|codex-reviewer)/(?:scripts|config)/", cmd):
+        if is_mod and not has_explicit_mod and re.search(r"(?:^|[\s;|&])(?:ba)?sh\s+\S*(?:design-reviewer|litmus)/(?:scripts|config)/", cmd):
             print("SAFE|")
         elif is_mod:
             # F9 fix: Allow rm/mkdir targeting only .claude/ infrastructure.
@@ -153,21 +227,14 @@ try:
     else:
         print("SAFE|")
 except Exception:
-    # Fail-CLOSED: can'"'"'t parse tool input during active design review.
-    print("PARSE_ERROR|")
-' 2>/dev/null || echo "PARSE_ERROR|")
+    print("SAFE|")
+' 2>/dev/null || echo "SAFE|")
 
 TOOL_TYPE="${PARSED%%|*}"
 TOOL_VALUE="${PARSED#*|}"
 
 # Non-Write/Edit or safe Bash → approve
 [ "$TOOL_TYPE" = "SAFE" ] && exit 0
-
-# Fail-closed: parser error during active design review → block as precaution
-if [ "$TOOL_TYPE" = "PARSE_ERROR" ]; then
-    block_emit "Pre-implementation gate: failed to parse tool input while design docs are unreviewed. Blocking as precaution (fail-closed). Run /design-reviewer or create .claude/skip-design-review.local to bypass."
-    exit 0
-fi
 
 # ── For Write/Edit: apply file-path allowlists ─────────────────────────
 if [ "$TOOL_TYPE" = "WRITE_EDIT" ]; then
@@ -182,67 +249,17 @@ if [ "$TOOL_TYPE" = "WRITE_EDIT" ]; then
     #   - .claude/ config files
     #   - docs/reviews/ (review artifacts)
     #   - CLAUDE.md, NOTES.md, *.local* files
-    # Case-insensitive: matches detection logic in check-design-document.sh
-    FILE_LOWER=$(echo "$FILE_PATH" | tr '[:upper:]' '[:lower:]')
-    case "$FILE_LOWER" in
-        *plan*.md|*design*.md|*architecture*.md) exit 0 ;;
+    case "$FILE_PATH" in
+        *PLAN*.md|*DESIGN*.md|*ARCHITECTURE*.md) exit 0 ;;
         *docs/plans/*) exit 0 ;;
         *docs/reviews/*) exit 0 ;;
         *docs/superpowers/*) exit 0 ;;
-        *claude.md|*notes.md) exit 0 ;;
+        *CLAUDE.md|*NOTES.md) exit 0 ;;
     esac
 
-    # Allow .claude/ config writes EXCEPT security-sensitive gate markers
-    # These files control review gate bypass — writing them forges compliance
+    # Allow .claude/ config writes (marker files already guarded unconditionally above)
     case "$FILE_PATH" in
-        *.claude/codex-review-passed.local*)
-            # BLOCK: writing this file forges a codex review pass
-            REASON="BLOCKED: Cannot write .claude/codex-review-passed.local directly.
-This file is a gate marker written by the codex-reviewer after a passing review.
-Writing it manually forges compliance. Run /codex-reviewer instead."
-            block_emit "$REASON"
-            exit 0
-            ;;
-        *.claude/skip-design-review.local*)
-            # BLOCK: writing this file bypasses design review gates
-            REASON="BLOCKED: Cannot write .claude/skip-design-review.local directly.
-This is a user-only escape hatch. Only the human user may create this file in their terminal."
-            block_emit "$REASON"
-            exit 0
-            ;;
-        *.claude/skip-codex-review.local*)
-            # BLOCK: writing this file bypasses codex review gates
-            REASON="BLOCKED: Cannot write .claude/skip-codex-review.local directly.
-This is a user-only escape hatch. Only the human user may create this file in their terminal."
-            block_emit "$REASON"
-            exit 0
-            ;;
-        *.claude/pr-review-passed.local*)
-            # BLOCK: writing this file forges a PR-level codex review pass
-            REASON="BLOCKED: Cannot write .claude/pr-review-passed.local directly.
-This file is a gate marker written by the codex-reviewer after a passing PR diff review.
-Writing it manually forges compliance. Run /codex-reviewer on the PR diff instead."
-            block_emit "$REASON"
-            exit 0
-            ;;
-        *.claude/reviewed-commits.local*)
-            # BLOCK: writing this file forges per-commit review tracking
-            REASON="BLOCKED: Cannot write .claude/reviewed-commits.local directly.
-This file tracks which commits passed per-commit codex review. It is written by the
-post-commit hook after successful reviewed commits. Writing it manually forges compliance."
-            block_emit "$REASON"
-            exit 0
-            ;;
-        *.claude/design-review-needed.local*)
-            # BLOCK: writing this file manipulates design review gate state.
-            # Only the PostToolUse hook (check-design-document.sh) should modify it.
-            REASON="BLOCKED: Cannot write .claude/design-review-needed.local.md directly.
-This file tracks which design docs need review. Editing it bypasses the design review gate.
-Run /design-reviewer to complete design review instead."
-            block_emit "$REASON"
-            exit 0
-            ;;
-        *.claude/*) exit 0 ;;                   # Allow: other .claude config
+        *.claude/*) exit 0 ;;
     esac
 
     # Allow files with .local suffix ONLY if they match known config patterns

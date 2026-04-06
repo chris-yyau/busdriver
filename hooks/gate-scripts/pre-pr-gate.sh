@@ -6,13 +6,13 @@
 # branches, pre-existing commits from other sessions).
 #
 # Fail-CLOSED: errors block PR creation (user preference: stuck > skipped review)
-# Skip: .claude/skip-codex-review.local or SKIP_CODEX_REVIEW=1 (same as commit gate)
+# Skip: .claude/skip-litmus.local or SKIP_LITMUS=1 (same as commit gate)
 #
 # Council decision (2026-03-21): Gate `gh pr create` only, NOT `git push`.
 # Gating push kills WIP pushes and destroys credibility of the gate system.
 
 set -euo pipefail
-trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-PR gate error — blocking as precaution. If stuck, create .claude/skip-codex-review.local in your terminal.\"}\n"; exit 0' ERR
+trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-PR gate error — blocking as precaution. If stuck, create .claude/skip-litmus.local in your terminal.\"}\n"; exit 0' ERR
 
 # ── Block emission helper ─────────────────────────────────────────────
 block_emit() {
@@ -79,7 +79,7 @@ TARGET_DIR=$(echo "$PARSE_RESULT" | sed -n '2p')
 
 # Fail-closed: parser error after fast pre-filter matched → block as precaution
 if [ "$IS_GH_PR_CREATE" = "error" ]; then
-    block_emit "Pre-PR gate: failed to parse tool input for command matching gh pr create pattern. Blocking as precaution (fail-closed). If stuck, create .claude/skip-codex-review.local in your terminal."
+    block_emit "Pre-PR gate: failed to parse tool input for command matching gh pr create pattern. Blocking as precaution (fail-closed). If stuck, create .claude/skip-litmus.local in your terminal."
     exit 0
 fi
 
@@ -92,24 +92,23 @@ REPO_DIR=$(git -C "${TARGET_DIR:-.}" rev-parse --show-toplevel 2>/dev/null || ec
 git -C "$REPO_DIR" rev-parse --is-inside-work-tree &>/dev/null || exit 0
 
 # ── Skip overrides (shared with commit gate) ──────────────────────────
-if [ -f ".claude/skip-codex-review.local" ]; then
+if [ -f ".claude/skip-litmus.local" ]; then
     FILE_AGE=999
-    if stat -f %m ".claude/skip-codex-review.local" &>/dev/null; then
-        FILE_AGE=$(( $(date +%s) - $(stat -f %m ".claude/skip-codex-review.local") ))
-    elif stat -c %Y ".claude/skip-codex-review.local" &>/dev/null; then
-        FILE_AGE=$(( $(date +%s) - $(stat -c %Y ".claude/skip-codex-review.local") ))
-    fi
+    _MTIME=$(stat -f %m ".claude/skip-litmus.local" 2>/dev/null) \
+        || _MTIME=$(stat -c %Y ".claude/skip-litmus.local" 2>/dev/null) \
+        || _MTIME=""
+    [ -n "$_MTIME" ] && FILE_AGE=$(( $(date +%s) - _MTIME ))
     if [ "$FILE_AGE" -lt 30 ]; then
-        rm -f ".claude/skip-codex-review.local"
-        block_emit "BLOCKED: skip-codex-review.local was created moments ago (likely self-bypass). Run /codex-reviewer instead."
+        rm -f ".claude/skip-litmus.local"
+        block_emit "BLOCKED: skip-litmus.local was created moments ago (likely self-bypass). Run /litmus instead."
         exit 0
     fi
-    rm -f ".claude/skip-codex-review.local"
+    rm -f ".claude/skip-litmus.local"
     mkdir -p .claude
     printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-pr"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
     exit 0
 fi
-[ "${SKIP_CODEX_REVIEW:-0}" = "1" ] && exit 0
+[ "${SKIP_LITMUS:-0}" = "1" ] && exit 0
 
 # ── ~/.claude repo: auto-generated file bypass ────────────────────────
 # If all changes on this branch vs main are auto-generated files, skip review.
@@ -153,15 +152,15 @@ if [ "$REPO_ROOT" = "$HOME/.claude" ]; then
 fi
 
 # ── Check for codex review marker ─────────────────────────────────────
-# Uses the SAME marker as the commit gate (.claude/codex-review-passed.local).
+# Uses the SAME marker as the commit gate (.claude/litmus-passed.local).
 # The PR gate does NOT consume the marker — the commit gate handles that.
 # This allows: review → commit (consumes marker) → push → PR create.
 #
 # For the PR gate to pass, one of these must be true:
 #   1. A review marker exists (review done but not yet committed — unusual but valid)
 #   2. A PR-review marker exists (.claude/pr-review-passed.local) — set by running
-#      codex-reviewer specifically for the PR diff
-MARKER="$REPO_DIR/.claude/codex-review-passed.local"
+#      litmus specifically for the PR diff
+MARKER="$REPO_DIR/.claude/litmus-passed.local"
 PR_MARKER="$REPO_DIR/.claude/pr-review-passed.local"
 
 if [ -f "$PR_MARKER" ]; then
@@ -221,9 +220,16 @@ fi
 # No valid review marker → block PR creation
 REASON="Code review required before creating a PR.
 
-Run /codex-reviewer to review the full branch diff (base..HEAD). The review must pass before \`gh pr create\` is allowed.
+Follow the PR Review Mode in the litmus SKILL.md:
+  1. Run the CLI pass: LITMUS_MODE=pr bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh\" && LITMUS_MODE=pr bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh\"
+  2. Dispatch 6 parallel review agents (Guidelines, Bugs, History, Cross-commit, Security, Docs-consistency)
+  3. Score and filter findings (confidence >= 80)
+  4. If no CRITICAL/HIGH: bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker
+  5. Retry gh pr create
 
-This gate ensures aggregate changes are reviewed before PR creation — individual commit reviews may have missed cross-commit issues, and worktree/external commits may have bypassed the per-commit gate entirely.
+For CLI-only fast review (skips 6-agent deep review):
+  bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh\" --auto-pr-review
 
-IMPORTANT: Do NOT create .claude/skip-codex-review.local yourself. That is a user-only escape hatch. You MUST run the codex reviewer instead."
+IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run the reviewer instead.
+If the user wants to skip: touch $REPO_DIR/.claude/skip-litmus.local"
 block_emit "$REASON"

@@ -7,5 +7,5 @@ set -euo pipefail
 REPO_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 mkdir -p "$REPO_DIR/.claude"
 HASH=$(git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
-echo "BUILTIN-${HASH}" > "$REPO_DIR/.claude/codex-review-passed.local"
+echo "BUILTIN-${HASH}" > "$REPO_DIR/.claude/litmus-passed.local"
 echo "Review marker written (builtin)"

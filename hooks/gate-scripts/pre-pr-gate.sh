@@ -170,7 +170,9 @@ if [ -f "$PR_MARKER" ]; then
     elif echo "$PR_MARKER_CONTENT" | grep -qE '^[a-f0-9]{64}$'; then
         # SHA-256 hash — verify it matches current base..HEAD diff to prevent stale markers
         # Must match the writer's hashing: printf '%s' "$DIFF" | sha256sum (no trailing newline)
-        PR_BASE=$(git -C "$REPO_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")
+        # Respect LITMUS_PR_BASE to match the marker writer's base branch
+        PR_BASE="${LITMUS_PR_BASE:-$(git -C "$REPO_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}"
+        [[ -n "${LITMUS_PR_BASE:-}" && "$PR_BASE" != origin/* ]] && PR_BASE="origin/${PR_BASE}"
         DIFF_OUTPUT=$(git -C "$REPO_DIR" diff "${PR_BASE}...HEAD" 2>/dev/null || true)
         CURRENT_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
         if [ "$PR_MARKER_CONTENT" = "$CURRENT_HASH" ]; then

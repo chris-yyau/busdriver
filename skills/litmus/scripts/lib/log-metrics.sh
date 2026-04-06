@@ -20,7 +20,7 @@ log_review_metrics() {
   local iteration="${3:-1}"
   local mode="${4:-commit}"       # commit | pr
   local cli="${5:-unknown}"       # codex | claude | etc
-  local json_output="${6:-{}}"
+  local json_output="${6:-"{}"}"
 
   mkdir -p "$(dirname "$METRICS_FILE")"
 

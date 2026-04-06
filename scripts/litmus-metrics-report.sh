@@ -62,7 +62,7 @@ echo ""
 
 # Severity distribution (across all reviews)
 echo "Severity distribution (total across all reviews):"
-jq -s '{ critical: ([.[].severity.critical] | add // 0), high: ([.[].severity.high] | add // 0), medium: ([.[].severity.medium] | add // 0), low: ([.[].severity.low] | add // 0) }' "$METRICS_FILE" 2>/dev/null | jq -r '"  CRITICAL: \(.critical)\n  HIGH: \(.high)\n  MEDIUM: \(.medium)\n  LOW: \(.low)"'
+jq -s '{ critical: ([.[].severity.critical] | add // 0), high: ([.[].severity.high] | add // 0), medium: ([.[].severity.medium] | add // 0), low: ([.[].severity.low] | add // 0) }' "$METRICS_FILE" 2>/dev/null | jq -r '"  CRITICAL: \(.critical)\n  HIGH: \(.high)\n  MEDIUM: \(.medium)\n  LOW: \(.low)"' 2>/dev/null || echo "  (unable to parse severity data)"
 echo ""
 
 # Average iterations to pass
@@ -72,4 +72,4 @@ echo ""
 
 # Recent 5
 echo "Recent reviews:"
-tail -5 "$METRICS_FILE" | jq -r '"  [\(.ts | split("T")[0])] \(.status) | \(.mode) | issues:\(.issues) iter:\(.iteration) | \(.commit) \(.branch)"'
+tail -5 "$METRICS_FILE" | jq -r '"  [\(.ts | split("T")[0])] \(.status) | \(.mode) | issues:\(.issues) iter:\(.iteration) | \(.commit) \(.branch)"' 2>/dev/null || echo "  (unable to parse recent entries)"

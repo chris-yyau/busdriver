@@ -24,7 +24,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --since-commit)
       shift
-      RANGE="${1:-HEAD~1}..HEAD"
+      if [[ -z "${1:-}" || "$1" == -* ]]; then
+        echo "Error: --since-commit requires a SHA argument" >&2
+        exit 1
+      fi
+      RANGE="${1}..HEAD"
       ;;
     *) RANGE="$1" ;;
   esac

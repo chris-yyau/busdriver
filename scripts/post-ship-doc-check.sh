@@ -58,8 +58,8 @@ while IFS= read -r file; do
   if [[ "$file" =~ ^skills/([^/]+)/scripts/ ]]; then
     skill_name="${BASH_REMATCH[1]}"
     # Deduplicate: only flag each skill once
-    if echo "$SEEN_SKILLS" | grep -q "^${skill_name}$" 2>/dev/null; then continue; fi
-    SEEN_SKILLS="${SEEN_SKILLS}${skill_name}\n"
+    if printf '%s' "$SEEN_SKILLS" | grep -q "^${skill_name}$" 2>/dev/null; then continue; fi
+    SEEN_SKILLS="${SEEN_SKILLS}${skill_name}"$'\n'
     skill_md="skills/${skill_name}/SKILL.md"
     if [[ -f "$skill_md" ]]; then
       if ! echo "$CHANGED_FILES" | grep -q "^${skill_md}$"; then

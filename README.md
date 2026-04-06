@@ -60,7 +60,7 @@ Gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects the 
 
 ### 29 specialized agents
 
-Architect, planner, TDD guide, security reviewer, 8 language-specific reviewers, 7 build resolvers, council (4-voice multi-perspective analysis), and more. They argue with each other so you don't have to.
+Architect, planner, TDD guide, security reviewer, 8 language-specific reviewers, 7 build resolvers, roundtable (4-voice multi-perspective analysis), and more. They argue with each other so you don't have to.
 
 ### 146 skills
 
@@ -100,8 +100,8 @@ By default, all features share the same CLI. For per-role control, create `.clau
   "routes": {
     "design-reviewer.reviewer_1": ["gemini", "droid"],
     "design-reviewer.reviewer_2": ["codex", "amp"],
-    "council.pragmatist": ["gemini", "droid"],
-    "council.critic": ["codex", "amp"]
+    "roundtable.pragmatist": ["gemini", "droid"],
+    "roundtable.critic": ["codex", "amp"]
   }
 }
 ```
@@ -115,10 +115,10 @@ Each route is an array: first element is primary, second is fallback. Roles not 
 | Code review | Reviewer | `litmus.reviewer` | auto |
 | Design review | Reviewer 1 | `design-reviewer.reviewer_1` | gemini |
 | Design review | Reviewer 2 | `design-reviewer.reviewer_2` | codex |
-| Council | Pragmatist | `council.pragmatist` | gemini |
-| Council | Critic | `council.critic` | codex |
+| Roundtable | Pragmatist | `roundtable.pragmatist` | gemini |
+| Roundtable | Critic | `roundtable.critic` | codex |
 
-Council architect, skeptic, and design-review arbiter are not configurable (they use Claude's Agent tool).
+Roundtable architect, skeptic, and design-review arbiter are not configurable (they use Claude's Agent tool).
 
 Run `node scripts/doctor.js` to see your effective CLI for each role.
 
@@ -126,13 +126,13 @@ Run `node scripts/doctor.js` to see your effective CLI for each role.
 
 | CLI | Used by | Install |
 |-----|---------|---------|
-| **[Codex CLI](https://github.com/openai/codex)** | Code review gate (default), design reviewer, council | `npm install -g @openai/codex` |
-| **[Gemini CLI](https://github.com/google-gemini/gemini-cli)** | Design reviewer, council, code review | `npm install -g @google/gemini-cli` or see repo |
+| **[Codex CLI](https://github.com/openai/codex)** | Code review gate (default), design reviewer, roundtable | `npm install -g @openai/codex` |
+| **[Gemini CLI](https://github.com/google-gemini/gemini-cli)** | Design reviewer, roundtable, code review | `npm install -g @google/gemini-cli` or see repo |
 | **[Droid](https://droid.dev)** | Any configurable role | See https://droid.dev |
 | **[Amp](https://ampcode.com)** | Any configurable role | See https://ampcode.com |
 | **[OpenCode](https://github.com/opencode-ai/opencode)** | Any configurable role | `go install github.com/opencode-ai/opencode@latest` |
 
-**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. The design reviewer and council degrade gracefully — with only one external CLI, the design reviewer runs single-reviewer mode; with none, those features require manual review. Core commit pipeline always works.
+**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. The design reviewer and roundtable degrade gracefully — with only one external CLI, the design reviewer runs single-reviewer mode; with none, those features require manual review. Core commit pipeline always works.
 
 ## Install
 
@@ -217,7 +217,7 @@ Skip files are single-use (consumed after one bypass) and logged to `.claude/byp
 Busdriver learns from its mistakes:
 
 - **Instincts** — Observed patterns from sessions, promoted after human review
-- **Council** — 4-voice multi-perspective analysis (Architect + Skeptic + Pragmatist + Critic)
+- **Roundtable** — 4-voice multi-perspective analysis (Architect + Skeptic + Pragmatist + Critic)
 - **Lesson capture** — When review finds HIGH+ issues the plan missed, lessons are saved automatically
 - **Reflection** — Manual `/reflect` skill for capturing corrections and feedback
 

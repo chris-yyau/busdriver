@@ -114,11 +114,11 @@ DO NOT skip phases after your entry point. The ONLY exception is small specific 
 </STRONG-GUIDANCE>
 
 ### Phase 1: Discovery → `busdriver:brainstorming`
-Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design, domain patterns. For UI/UX: `frontend-design` (Impeccable core) + `ui-ux-pro-max` (design intelligence) + `busdriver:design-system` (token audit); load `.impeccable.md` if present. For code patterns: `busdriver:frontend-patterns`. For API boundaries: `busdriver:api-design`. Design Reviewer triggers when design doc is written. Consider `council` if 2+ viable approaches.
+Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design, domain patterns. For UI/UX: `frontend-design` (Impeccable core) + `ui-ux-pro-max` (design intelligence) + `busdriver:design-system` (token audit); load `.impeccable.md` if present. For code patterns: `busdriver:frontend-patterns`. For API boundaries: `busdriver:api-design`. Design Reviewer triggers when design doc is written. Consider `roundtable` if 2+ viable approaches.
 **NEXT:** Phase 2 only. INVOKE `busdriver:writing-plans`. Do NOT start coding. After Phase 2 completes, auto-execution carries through Phases 3–6 without user pause.
 
 ### Phase 2: Planning → `busdriver:writing-plans`
-Produces TDD tasks with file paths, commands, expected output. Saves to `docs/plans/`. Design Reviewer triggers on plan doc. Consider `council` for unfamiliar tech or security-sensitive flows.
+Produces TDD tasks with file paths, commands, expected output. Saves to `docs/plans/`. Design Reviewer triggers on plan doc. Consider `roundtable` for unfamiliar tech or security-sensitive flows.
 **AUTO-EXECUTION:** After plan review passes, writing-plans auto-continues: design-review → worktree → subagent-driven-development → verification → finishing. No user pause between phases 2–6. Stop conditions: design review rejects (3 attempts), baseline test failure, task blocker requiring human input.
 
 ### Phase 3: Worktree → `busdriver:using-git-worktrees`
@@ -161,7 +161,7 @@ Run `busdriver:verification-loop` (build + lint + tests). Django: `django-verifi
 - Type definitions/interfaces → `type-design-analyzer` agent
 - Tests added/modified → `pr-test-analyzer` agent
 
-Consider `council` if architecturally significant or results seem "too clean."
+Consider `roundtable` if architecturally significant or results seem "too clean."
 
 ### Phase 6: Finishing → `busdriver:finishing-a-development-branch`
 Handles: verify tests → present 4 options (merge/PR/keep/discard) → execute → clean up worktree.
@@ -223,7 +223,7 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Codex Rescue** | delegate task to Codex | `/codex:rescue` command (official plugin) |
 | **External CLI** | send to codex/gemini/droid/amp/opencode | `dispatch-cli` skill |
 | **Multi-Model** | multi-model planning | `/multi-plan`, `/multi-backend`, `/multi-frontend`, `/multi-execute`, `/multi-workflow` |
-| **Council** | perspectives, group wisdom, tradeoffs | `council` skill (4-voice: Architect + Skeptic + Pragmatist + Critic) |
+| **Roundtable** | perspectives, group wisdom, tradeoffs | `roundtable` skill (4-voice: Architect + Skeptic + Pragmatist + Critic) |
 | **Communication** | email triage, Slack, inbox | `chief-of-staff` agent |
 | **Documents** | .docx/.xlsx/.pptx/.pdf, OCR | `nutrient-document-processing` |
 | **Claude API/SDK** | imports anthropic/claude_agent_sdk | `claude-api` skill |
@@ -279,11 +279,11 @@ Available in any pipeline phase:
 
 ### Learning System
 
-**Trust gradient** (highest → lowest): `busdriver:reflect` (manual, user confirms) → Lesson capture (council/review delta) → `/learn`+`/learn-eval` (manual ECC patterns) → ECC v2 observer (automatic, requires `/promote`)
+**Trust gradient** (highest → lowest): `busdriver:reflect` (manual, user confirms) → Lesson capture (roundtable/review delta) → `/learn`+`/learn-eval` (manual ECC patterns) → ECC v2 observer (automatic, requires `/promote`)
 
 **ECC v2 observer** re-enabled 2026-03-21 with safety fixes. Writes to `homunculus/projects/<hash>/instincts/personal/` with `source: session-observation`. Two-tier promotion model: (1) `source: session-observation` instincts require `promoted: true` (via `/promote`) before loading — quarantine enforced. (2) `source: distill` or `source: inherited` instincts auto-load without promotion (human-curated). `load-orchestrator.sh` loads instincts with confidence ≥ 0.7, max 20, sanitized, symlinks rejected. Council decision (2026-03-19): no auto-promote for session-observation source.
 
-**Lesson capture:** Save when council/review produced a recommendation delta (insight that changed the decision). Triggers: dissent changed recommendation, 2+ voices agreed against Claude, reviewer found HIGH+ unanticipated issue. Storage: `~/.claude/notes/lesson-{council|review}-{date}-{slug}.md`. <150 words per lesson.
+**Lesson capture:** Save when roundtable/review produced a recommendation delta (insight that changed the decision). Triggers: dissent changed recommendation, 2+ voices agreed against Claude, reviewer found HIGH+ unanticipated issue. Storage: `~/.claude/notes/lesson-{roundtable|review}-{date}-{slug}.md`. <150 words per lesson.
 
 **Skills/Commands:** `busdriver:reflect` (skill), `/instinct-status`, `/promote`, `/evolve`, `/projects`, `/learn`, `/learn-eval`
 

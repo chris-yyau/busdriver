@@ -1,15 +1,15 @@
 ---
 name: anti-sycophancy
-description: Anti-sycophancy rules for brainstorming (discovery phase) and council (deliberation) — prevents unchallenged assumptions and false consensus
-targets: busdriver:brainstorming, council
+description: Anti-sycophancy rules for brainstorming (discovery phase) and roundtable (deliberation) — prevents unchallenged assumptions and false consensus
+targets: busdriver:brainstorming, roundtable
 type: supplement
 source: gstack /office-hours
 added: 2026-03-23
 ---
 
-# Anti-Sycophancy Rules for Brainstorming & Council
+# Anti-Sycophancy Rules for Brainstorming & Roundtable
 
-> Load alongside `busdriver:brainstorming` during Phase 1 (Discovery) and `council` skill during deliberation.
+> Load alongside `busdriver:brainstorming` during Phase 1 (Discovery) and `roundtable` skill during deliberation.
 
 ## Banned Phrases During Discovery
 
@@ -35,9 +35,9 @@ These phrases signal agreement before the idea has been examined. They short-cir
 
 5. **Escape hatch for impatient users.** If the user pushes back on the questioning ("just build it"), push back once: "The hard questions are the valuable part — can I ask one more?" If they push back a second time, respect it and proceed.
 
-## Council-Specific Rules
+## Roundtable-Specific Rules
 
-When loaded alongside the `council` skill, apply these rules at each stage:
+When loaded alongside the `roundtable` skill, apply these rules at each stage:
 
 **Dispatch-time rules** (included in prompts sent to each voice):
 

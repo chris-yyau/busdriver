@@ -74,7 +74,7 @@ Skills span four layers, all living flat under `skills/`:
 1. **Pipeline** — Process skills (brainstorming, planning, TDD, verification, worktrees)
 2. **Domain** — Language/framework patterns, specialized agents, build resolvers
 3. **Gates** — Hook-enforced reviews (litmus, design-reviewer, pre-implementation)
-4. **Workflow** — Orchestrator, council, reflection, and routing tools
+4. **Workflow** — Orchestrator, roundtable, reflection, and routing tools
 
 ## Commit Messages
 

@@ -85,7 +85,7 @@ last_validated: YYYY-MM-DD
 
 **Path:** `~/.claude/notes/lesson-reflect-{YYYY-MM-DD}-{slug}.md`
 
-> **Naming convention:** The `reflect` prefix distinguishes session reflections from other lesson types (`lesson-review-` for code reviews, `lesson-council-` for council sessions).
+> **Naming convention:** The `reflect` prefix distinguishes session reflections from other lesson types (`lesson-review-` for code reviews, `lesson-roundtable-` for roundtable sessions).
 
 Then add a one-line pointer to `~/.claude/notes/NOTES.md` (if the file doesn't exist, create it with a `# Notes` header and a `## Reflections` section) using this format:
 ```

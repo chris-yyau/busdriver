@@ -29,7 +29,7 @@ Detects language/framework from file extensions and loads matching patterns:
 - Go, Python, Django, Spring Boot, Frontend (React/Next.js), C++, Swift, Kotlin, Rust, Flutter, Perl, PHP/Laravel, Nuxt, Database, DevOps, AI/LLM, Video
 
 ### 4. Non-Pipeline Tasks
-Direct routes for tasks outside the pipeline: refactoring, research, council, multi-agent, content, media, etc.
+Direct routes for tasks outside the pipeline: refactoring, research, roundtable, multi-agent, content, media, etc.
 
 ## Scope
 

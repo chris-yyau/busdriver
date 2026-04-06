@@ -11,7 +11,7 @@
 
 | File | Targets | Source | Added |
 |------|---------|--------|-------|
-| `anti-sycophancy.md` | `busdriver:brainstorming`, `council` | gstack /office-hours | 2026-03-23 |
+| `anti-sycophancy.md` | `busdriver:brainstorming`, `roundtable` | gstack /office-hours | 2026-03-23 |
 | `llm-security-audit.md` | `security-reviewer` agent | gstack /cso Phase 7 | 2026-03-23 |
 | `skill-supply-chain.md` | `busdriver:security-scan` | gstack /cso Phase 8 | 2026-03-23 |
 | `diff-aware-qa.md` | `e2e-runner` agent | gstack /qa | 2026-03-23 |

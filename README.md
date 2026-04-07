@@ -58,11 +58,11 @@ Gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects the 
 | Nuxt | `nuxt4-patterns` | -- | -- | -- |
 | PyTorch | `pytorch-patterns` | -- | -- | `pytorch-build-resolver` |
 
-### 29 specialized agents
+### 48 specialized agents
 
-Architect, planner, TDD guide, security reviewer, 8 language-specific reviewers, 7 build resolvers, roundtable (4-voice multi-perspective analysis), and more. They argue with each other so you don't have to.
+Architect, planner, TDD guide, security reviewer, 9 language-specific reviewers, 8 build resolvers, roundtable (4-voice multi-perspective analysis), and more. They argue with each other so you don't have to.
 
-### 146 skills
+### 206 skills, 83 commands
 
 From brainstorming and planning to domain patterns, deployment workflows, supply chain management, and AI/LLM pipeline optimization. See `skills/` for the full inventory.
 

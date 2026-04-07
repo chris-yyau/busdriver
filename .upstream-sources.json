@@ -2148,11 +2148,6 @@
       "status": "local"
     },
     {
-      "path": "skills/litmus/scripts/execute_review.sh",
-      "source": "local",
-      "status": "local"
-    },
-    {
       "path": "skills/litmus/scripts/init-review-loop.sh",
       "source": "local",
       "status": "local"

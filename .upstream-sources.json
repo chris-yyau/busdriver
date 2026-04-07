@@ -3988,11 +3988,6 @@
       "upstream_path": "skills/connections-optimizer/SKILL.md"
     },
     {
-      "path": "skills/council/SKILL.md",
-      "status": "sync",
-      "upstream_path": "skills/council/SKILL.md"
-    },
-    {
       "path": "skills/csharp-testing/SKILL.md",
       "status": "sync",
       "upstream_path": "skills/csharp-testing/SKILL.md"

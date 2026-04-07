@@ -64,6 +64,15 @@ Domain skills are loaded as context during execution. They are **additive** — 
 **Detection:** `*.js`, `*.ts` in API routes, Express/Node.js context
 - Patterns: `busdriver:backend-patterns`
 - Standards: `busdriver:coding-standards`
+- **NestJS** (detect: `@nestjs/core`, `@Module`, `@Controller`, `@Injectable` decorators):
+  - Patterns: `busdriver:nestjs-patterns` (modules, controllers, providers, DTO validation, guards, interceptors, config)
+
+### C# / .NET
+**Detection:** `*.cs`, `*.csproj`, `*.sln`, .NET context
+- Patterns: `busdriver:dotnet-patterns` (DI, async/await, conventions, best practices)
+- Testing: `busdriver:csharp-testing` (xUnit, FluentAssertions, mocking, integration tests)
+- Review: `csharp-reviewer` agent
+- Rules: `rules/csharp/` (coding-style, patterns, security, testing, hooks)
 
 ### C++
 **Detection:** `*.cpp`, `*.h`, `*.hpp`, `CMakeLists.txt`, C++ context
@@ -118,11 +127,13 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Build issues: `busdriver:kotlin-build` command
 - Rules: `rules/kotlin/` (coding-style, patterns, security, testing, hooks)
 
-### Flutter
+### Flutter / Dart
 **Detection:** `*.dart` files, `pubspec.yaml`, Flutter imports, widget code
+- Patterns: `busdriver:dart-flutter-patterns` (null safety, immutable state, async, widget arch, BLoC, Riverpod, Provider, GoRouter, Dio, Freezed, clean arch)
 - Code review: `busdriver:flutter-dart-code-review` (library-agnostic checklist — BLoC, Riverpod, Provider, GetX, MobX, Signals)
 - Review: `flutter-reviewer` agent (see Phase 4 DISPATCH rules)
-- Build issues: `busdriver:gradle-build` command (Android/Gradle build failures)
+- Commands: `/flutter-review`, `/flutter-test`, `/flutter-build`
+- Build issues: `busdriver:gradle-build` command (Android/Gradle build failures), `dart-build-resolver` agent
 
 ### Android / Kotlin Multiplatform (KMP)
 **Detection:** `app/src/main/`, KMP config, `build.gradle.kts` with Android plugin, Compose imports
@@ -160,6 +171,22 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Understanding/indexing: `busdriver:videodb` (ingest, index, search video/audio)
 - Editing workflows: `busdriver:video-editing` (FFmpeg, Remotion, ElevenLabs, fal.ai)
 - Generation: `busdriver:fal-ai-media` (text-to-image/video/audio)
+
+### Crypto / DeFi / EVM
+**Detection:** Solidity, EVM, `ethers.js`, `web3.js`, AMM, liquidity pools, token contracts
+- AMM Security: `busdriver:defi-amm-security` (reentrancy, CEI, donation attacks, oracle manipulation, slippage)
+- Token Decimals: `busdriver:evm-token-decimals` (runtime decimal lookup, bridged-token drift, safe normalization)
+- Node.js Hashing: `busdriver:nodejs-keccak256` (Keccak-256 vs NIST SHA3 — critical for selectors, signatures, storage slots)
+- Trading Agent Security: `busdriver:llm-trading-agent-security` (prompt injection, spend limits, circuit breakers, MEV protection)
+
+### Healthcare
+**Detection:** EMR, clinical, PHI, HIPAA, HL7, FHIR context
+- EMR Patterns: `busdriver:healthcare-emr-patterns`
+- CDSS: `busdriver:healthcare-cdss-patterns`
+- PHI Compliance: `busdriver:healthcare-phi-compliance`
+- HIPAA: `busdriver:hipaa-compliance` (HIPAA-specific entrypoint for PHI handling, BAAs, breach posture)
+- Eval Harness: `busdriver:healthcare-eval-harness`
+- Review: `healthcare-reviewer` agent
 
 ### MCP Development
 **Detection:** MCP server code, `@modelcontextprotocol/sdk`, tool/resource definitions

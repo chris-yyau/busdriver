@@ -556,6 +556,24 @@ When `.md` files are staged, the review loop runs:
 - `LITMUS_SKIP_MARKDOWN=1` — skip markdown checks
 - `LITMUS_CHECK_URLS=1` — enable URL validation (disabled by default — slow)
 
+## User-Created Skip File
+
+When the user wants to bypass litmus review (e.g., upstream-only syncs with no custom code), they create `.claude/skip-litmus.local` manually in their terminal. The pre-commit gate has a **30-second timing heuristic** that rejects skip files created "moments ago" to prevent Claude from self-bypassing.
+
+**When the user says they created the skip file:**
+
+```bash
+# MANDATORY: wait 30 seconds before committing
+sleep 30
+git commit -m "..."
+```
+
+**Rules:**
+- Claude MUST NOT create the skip file itself — it will be rejected and deleted
+- Claude MUST `sleep 30` after the user confirms creation, before running `git commit`
+- The skip file is single-use — consumed after one commit
+- The bypass is logged to `.claude/bypass-log.jsonl` for audit
+
 ## Key Principles
 
 1. **Review before commit** - No exceptions

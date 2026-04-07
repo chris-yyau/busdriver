@@ -1349,18 +1349,6 @@
       "upstream_path": "scripts/hooks/governance-capture.js"
     },
     {
-      "path": "scripts/hooks/insaits-security-monitor.py",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/insaits-security-monitor.py"
-    },
-    {
-      "path": "scripts/hooks/insaits-security-wrapper.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/insaits-security-wrapper.js"
-    },
-    {
       "path": "scripts/hooks/mcp-health-check.js",
       "source": "ecc",
       "status": "sync",
@@ -2944,12 +2932,6 @@
       "upstream_path": "skills/project-flow-ops/SKILL.md"
     },
     {
-      "path": "skills/project-guidelines-example/SKILL.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "skills/project-guidelines-example/SKILL.md"
-    },
-    {
       "path": "skills/prompt-optimizer/SKILL.md",
       "source": "ecc",
       "status": "sync",
@@ -3854,6 +3836,326 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "skills/x-api/SKILL.md"
+    },
+    {
+      "path": "agents/silent-failure-hunter.md",
+      "status": "sync",
+      "upstream_path": "agents/silent-failure-hunter.md"
+    },
+    {
+      "path": "agents/conversation-analyzer.md",
+      "status": "sync",
+      "upstream_path": "agents/conversation-analyzer.md"
+    },
+    {
+      "path": "agents/code-explorer.md",
+      "status": "sync",
+      "upstream_path": "agents/code-explorer.md"
+    },
+    {
+      "path": "agents/code-simplifier.md",
+      "status": "sync",
+      "upstream_path": "agents/code-simplifier.md"
+    },
+    {
+      "path": "agents/seo-specialist.md",
+      "status": "sync",
+      "upstream_path": "agents/seo-specialist.md"
+    },
+    {
+      "path": "agents/dart-build-resolver.md",
+      "status": "sync",
+      "upstream_path": "agents/dart-build-resolver.md"
+    },
+    {
+      "path": "agents/code-architect.md",
+      "status": "sync",
+      "upstream_path": "agents/code-architect.md"
+    },
+    {
+      "path": "agents/comment-analyzer.md",
+      "status": "sync",
+      "upstream_path": "agents/comment-analyzer.md"
+    },
+    {
+      "path": "agents/csharp-reviewer.md",
+      "status": "sync",
+      "upstream_path": "agents/csharp-reviewer.md"
+    },
+    {
+      "path": "agents/pr-test-analyzer.md",
+      "status": "sync",
+      "upstream_path": "agents/pr-test-analyzer.md"
+    },
+    {
+      "path": "agents/type-design-analyzer.md",
+      "status": "sync",
+      "upstream_path": "agents/type-design-analyzer.md"
+    },
+    {
+      "path": "commands/jira.md",
+      "status": "sync",
+      "upstream_path": "commands/jira.md"
+    },
+    {
+      "path": "commands/hookify-list.md",
+      "status": "sync",
+      "upstream_path": "commands/hookify-list.md"
+    },
+    {
+      "path": "commands/flutter-review.md",
+      "status": "sync",
+      "upstream_path": "commands/flutter-review.md"
+    },
+    {
+      "path": "commands/review-pr.md",
+      "status": "sync",
+      "upstream_path": "commands/review-pr.md"
+    },
+    {
+      "path": "commands/flutter-test.md",
+      "status": "sync",
+      "upstream_path": "commands/flutter-test.md"
+    },
+    {
+      "path": "commands/agent-sort.md",
+      "status": "sync",
+      "upstream_path": "commands/agent-sort.md"
+    },
+    {
+      "path": "commands/hookify-configure.md",
+      "status": "sync",
+      "upstream_path": "commands/hookify-configure.md"
+    },
+    {
+      "path": "commands/flutter-build.md",
+      "status": "sync",
+      "upstream_path": "commands/flutter-build.md"
+    },
+    {
+      "path": "commands/hookify.md",
+      "status": "sync",
+      "upstream_path": "commands/hookify.md"
+    },
+    {
+      "path": "commands/hookify-help.md",
+      "status": "sync",
+      "upstream_path": "commands/hookify-help.md"
+    },
+    {
+      "path": "commands/feature-dev.md",
+      "status": "sync",
+      "upstream_path": "commands/feature-dev.md"
+    },
+    {
+      "path": "skills/brand-voice/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/brand-voice/SKILL.md"
+    },
+    {
+      "path": "skills/brand-voice/references/voice-profile-schema.md",
+      "status": "sync",
+      "upstream_path": "skills/brand-voice/references/voice-profile-schema.md"
+    },
+    {
+      "path": "skills/knowledge-ops/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/knowledge-ops/SKILL.md"
+    },
+    {
+      "path": "skills/agent-introspection-debugging/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/agent-introspection-debugging/SKILL.md"
+    },
+    {
+      "path": "skills/code-tour/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/code-tour/SKILL.md"
+    },
+    {
+      "path": "skills/ecc-tools-cost-audit/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/ecc-tools-cost-audit/SKILL.md"
+    },
+    {
+      "path": "skills/social-graph-ranker/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/social-graph-ranker/SKILL.md"
+    },
+    {
+      "path": "skills/email-ops/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/email-ops/SKILL.md"
+    },
+    {
+      "path": "skills/connections-optimizer/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/connections-optimizer/SKILL.md"
+    },
+    {
+      "path": "skills/council/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/council/SKILL.md"
+    },
+    {
+      "path": "skills/csharp-testing/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/csharp-testing/SKILL.md"
+    },
+    {
+      "path": "skills/api-connector-builder/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/api-connector-builder/SKILL.md"
+    },
+    {
+      "path": "skills/dashboard-builder/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/dashboard-builder/SKILL.md"
+    },
+    {
+      "path": "skills/security-bounty-hunter/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/security-bounty-hunter/SKILL.md"
+    },
+    {
+      "path": "skills/terminal-ops/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/terminal-ops/SKILL.md"
+    },
+    {
+      "path": "skills/research-ops/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/research-ops/SKILL.md"
+    },
+    {
+      "path": "skills/nodejs-keccak256/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/nodejs-keccak256/SKILL.md"
+    },
+    {
+      "path": "skills/github-ops/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/github-ops/SKILL.md"
+    },
+    {
+      "path": "skills/nestjs-patterns/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/nestjs-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/jira-integration/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/jira-integration/SKILL.md"
+    },
+    {
+      "path": "skills/hipaa-compliance/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/hipaa-compliance/SKILL.md"
+    },
+    {
+      "path": "skills/product-capability/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/product-capability/SKILL.md"
+    },
+    {
+      "path": "skills/defi-amm-security/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/defi-amm-security/SKILL.md"
+    },
+    {
+      "path": "skills/finance-billing-ops/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/finance-billing-ops/SKILL.md"
+    },
+    {
+      "path": "skills/evm-token-decimals/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/evm-token-decimals/SKILL.md"
+    },
+    {
+      "path": "skills/llm-trading-agent-security/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/llm-trading-agent-security/SKILL.md"
+    },
+    {
+      "path": "skills/manim-video/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/manim-video/SKILL.md"
+    },
+    {
+      "path": "skills/manim-video/assets/network_graph_scene.py",
+      "status": "sync",
+      "upstream_path": "skills/manim-video/assets/network_graph_scene.py"
+    },
+    {
+      "path": "skills/dart-flutter-patterns/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/dart-flutter-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/unified-notifications-ops/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/unified-notifications-ops/SKILL.md"
+    },
+    {
+      "path": "skills/frontend-design/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/frontend-design/SKILL.md"
+    },
+    {
+      "path": "skills/messages-ops/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/messages-ops/SKILL.md"
+    },
+    {
+      "path": "skills/hookify-rules/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/hookify-rules/SKILL.md"
+    },
+    {
+      "path": "skills/agent-sort/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/agent-sort/SKILL.md"
+    },
+    {
+      "path": "skills/seo/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/seo/SKILL.md"
+    },
+    {
+      "path": "skills/automation-audit-ops/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/automation-audit-ops/SKILL.md"
+    },
+    {
+      "path": "skills/dotnet-patterns/SKILL.md",
+      "status": "sync",
+      "upstream_path": "skills/dotnet-patterns/SKILL.md"
+    },
+    {
+      "path": "scripts/codex/merge-codex-config.js",
+      "status": "sync",
+      "upstream_path": "scripts/codex/merge-codex-config.js"
+    },
+    {
+      "path": "scripts/hooks/design-quality-check.js",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/design-quality-check.js"
+    },
+    {
+      "path": "scripts/lib/observer-sessions.js",
+      "status": "sync",
+      "upstream_path": "scripts/lib/observer-sessions.js"
+    },
+    {
+      "path": "scripts/lib/mcp-config.js",
+      "status": "sync",
+      "upstream_path": "scripts/lib/mcp-config.js"
+    },
+    {
+      "path": "scripts/build-opencode.js",
+      "status": "sync",
+      "upstream_path": "scripts/build-opencode.js"
     }
   ]
 }

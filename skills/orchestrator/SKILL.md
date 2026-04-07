@@ -139,7 +139,7 @@ Creates isolated workspace, verifies baseline tests pass.
 - **TDD** — `busdriver:test-driven-development`: RED → verify → GREEN → verify → REFACTOR. Every time.
 - **Verification** — `busdriver:verification-before-completion`: No claims without fresh evidence.
 - **Debugging** — `busdriver:systematic-debugging`: When stuck — root cause first, no blind fixes.
-- **Code Review** — `busdriver:requesting-code-review` after EVERY task. DISPATCH `{lang}-reviewer` agent (e.g., `typescript-reviewer`, `go-reviewer`, `python-reviewer`, `rust-reviewer`, `cpp-reviewer`, `java-reviewer`, `kotlin-reviewer`, `flutter-reviewer`). Fallback: `code-reviewer` agent. Handle feedback per `busdriver:receiving-code-review`.
+- **Code Review** — `busdriver:requesting-code-review` after EVERY task. DISPATCH `{lang}-reviewer` agent (e.g., `typescript-reviewer`, `go-reviewer`, `python-reviewer`, `rust-reviewer`, `cpp-reviewer`, `java-reviewer`, `kotlin-reviewer`, `flutter-reviewer`, `csharp-reviewer`). Fallback: `code-reviewer` agent. Handle feedback per `busdriver:receiving-code-review`.
 - **Lesson Capture** — After review finds HIGH+ issue not anticipated in plan, save to `~/.claude/notes/lesson-review-{YYYY-MM-DD}-{slug}.md` (type: feedback).
 
 #### Domain Skills During Execution
@@ -184,12 +184,16 @@ Domain skills are **additive** — load all that match. **Full catalog:** `${CLA
 | C++ | `*.cpp`, `CMakeLists.txt` | `cpp-coding-standards`, `cpp-testing` |
 | Kotlin | `*.kt`, `build.gradle.kts` | `kotlin-patterns`, `kotlin-testing`, `kotlin-coroutines-flows`, `kotlin-reviewer` agent |
 | Android/KMP | `app/src/main/` | `android-clean-architecture`, `compose-multiplatform-patterns` |
-| Flutter | `*.dart`, `pubspec.yaml` | `flutter-dart-code-review`, `flutter-reviewer` agent |
+| C#/.NET | `*.cs`, `*.csproj` | `dotnet-patterns`, `csharp-testing`, `csharp-reviewer` agent |
+| Flutter/Dart | `*.dart`, `pubspec.yaml` | `dart-flutter-patterns`, `flutter-dart-code-review`, `flutter-reviewer` agent, `dart-build-resolver` agent |
 | Rust | `*.rs`, `Cargo.toml` | `rust-patterns`, `rust-testing`, `rust-reviewer` agent |
 | Swift | `*.swift` | `swiftui-patterns`, `swift-concurrency-6-2`, `liquid-glass-design`, `foundation-models-on-device` |
+| NestJS | `@nestjs/core` | `nestjs-patterns` |
 | Database | SQL, migrations | `postgres-patterns`, `database-migrations`, `clickhouse-io`, `database-reviewer` agent |
 | DevOps | Dockerfile, CI/CD | `docker-patterns`, `deployment-patterns` |
 | AI/LLM | LLM calls, RAG, PyTorch | `cost-aware-llm-pipeline`, `iterative-retrieval`, `pytorch-patterns` |
+| Crypto/DeFi | Solidity, EVM, AMM | `defi-amm-security`, `evm-token-decimals`, `llm-trading-agent-security` |
+| Healthcare | EMR, HIPAA, PHI | `healthcare-emr-patterns`, `hipaa-compliance`, `healthcare-reviewer` agent |
 | Nuxt | `nuxt.config.*` | `nuxt4-patterns` |
 | Perl | `*.pl`, `*.pm` | `perl-patterns`, `perl-security`, `perl-testing` |
 | PHP/Laravel | `*.php`, `composer.json` | `laravel-patterns`, `laravel-security`, `laravel-tdd` |
@@ -260,6 +264,28 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Test Coverage Review** | check test quality, test gaps, edge cases | `pr-test-analyzer` agent (pr-review-toolkit) |
 | **Code Polish** | simplify code, make clearer, refine | `code-simplifier` agent (on-demand, Opus) |
 | **Docs Setup** | set up docs, audit docs, standardize docs | `busdriver:docs-setup` |
+| **SEO** | SEO audit, schema markup, search visibility | `seo` / `seo-audit` / `schema-markup` / `ai-seo` |
+| **Jira** | Jira tickets, issue tracking | `/jira` command + `jira-integration` |
+| **GitHub Ops** | GitHub issues, PRs, releases, CI status | `github-ops` |
+| **Email Ops** | email triage, drafting, send verification | `email-ops` |
+| **Messages Ops** | text messages, DMs, one-time codes | `messages-ops` |
+| **Notifications** | alert routing, dedup, inbox collapse | `unified-notifications-ops` |
+| **Network Ops** | X/LinkedIn cleanup, warm intros | `connections-optimizer` + `social-graph-ranker` |
+| **Knowledge Ops** | knowledge base, ingestion, sync | `knowledge-ops` |
+| **Research Ops** | fresh facts, comparisons, enrichment | `research-ops` |
+| **Finance/Billing Ops** | revenue, pricing, refunds, billing model | `finance-billing-ops` |
+| **Automation Audit** | audit jobs, hooks, connectors for overlap | `automation-audit-ops` |
+| **ECC Cost Audit** | PR creation burns, quota bypass, agent cost | `ecc-tools-cost-audit` |
+| **Code Tour** | CodeTour `.tour` files, onboarding walkthroughs | `code-tour` |
+| **Agent Debugging** | agent failures, self-debugging workflow | `agent-introspection-debugging` |
+| **Agent Sorting** | trim ECC install to what project needs | `/agent-sort` command + `agent-sort` |
+| **Product Capability** | PRD-to-SRS, capability plan from spec | `product-capability` |
+| **Brand Voice** | writing style profile from real posts | `brand-voice` |
+| **Manim Video** | animated explainers via Manim | `manim-video` |
+| **Security Bounty** | bounty-worthy vulnerability hunting | `security-bounty-hunter` |
+| **Dashboard** | monitoring dashboards (Grafana, SigNoz) | `dashboard-builder` |
+| **API Connector** | add API integration matching repo patterns | `api-connector-builder` |
+| **Council** | 4-voice council for ambiguous decisions | `council` |
 
 Skills not listed above are discoverable via the system-prompt skill registry. The orchestrator only routes to busdriver-owned skills.
 

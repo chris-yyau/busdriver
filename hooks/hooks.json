@@ -78,7 +78,7 @@
             "timeout": 3
           }
         ],
-        "description": "[GATE] Freeze/Guard — restrict edits to investigation scope during debugging"
+        "description": "[GATE] Freeze/Guard \u2014 restrict edits to investigation scope during debugging"
       },
       {
         "matcher": "Bash",
@@ -160,17 +160,6 @@
           }
         ],
         "description": "Check MCP server health before MCP tool execution"
-      },
-      {
-        "matcher": "Bash|Write|Edit|MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:insaits-security\" \"scripts/hooks/insaits-security-wrapper.js\" \"standard,strict\"",
-            "timeout": 15
-          }
-        ],
-        "description": "Optional InsAIts AI security monitor. Enable with ECC_ENABLE_INSAITS=1"
       },
       {
         "matcher": "Bash|Write|Edit|MultiEdit",

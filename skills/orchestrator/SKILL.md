@@ -286,7 +286,6 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Security Bounty** | bounty-worthy vulnerability hunting | `security-bounty-hunter` |
 | **Dashboard** | monitoring dashboards (Grafana, SigNoz) | `dashboard-builder` |
 | **API Connector** | add API integration matching repo patterns | `api-connector-builder` |
-| **Council** | 4-voice council for ambiguous decisions | `council` |
 | **PR Grind** | grind PR, fix CI, address PR comments, PR feedback loop | `pr-grind` |
 | **Performance Bench** | benchmark, measure performance baseline | `benchmark` |
 | **Browser QA** | visual testing, UI interaction verification | `browser-qa` |

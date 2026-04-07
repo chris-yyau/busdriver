@@ -30,7 +30,7 @@ origin: custom
 
 ## The Loop
 
-```
+```text
 ┌─────────────────────────────────────────────┐
 │  START: Resolve PR number                   │
 │  (from arg, current branch, or ask user)    │
@@ -93,11 +93,12 @@ origin: custom
 ### Step 1: Wait for CI
 
 ```bash
-# Wait for all checks to complete (timeout 10 minutes)
-gh pr checks <PR_NUMBER> --watch --fail-on-error 2>&1 || true
+# Wait for all checks to complete
+# gh pr checks --watch blocks until done; wrap with timeout if needed
+timeout 600 gh pr checks <PR_NUMBER> --watch --fail-on-error 2>&1 || true
 ```
 
-If checks are still pending after timeout, report status and ask user whether to wait longer or proceed with what's available.
+If the timeout fires before checks complete, report current status and proceed with available results. Failed checks will be caught in triage.
 
 ### Step 2: Collect Feedback
 
@@ -127,7 +128,7 @@ Classify each piece of feedback:
 | Category | Action |
 |----------|--------|
 | **CI failure — test/lint/build** | Fix it |
-| **CI failure — flaky/infra** | Note it, skip after 2 consecutive identical failures |
+| **CI failure — flaky/infra** | Note it, skip after 3 consecutive identical failures |
 | **Code review — specific fix request** | Fix it |
 | **Code review — question/clarification** | Reply with explanation, don't change code |
 | **Code review — design/scope concern** | **BAIL** — surface to user, this needs human judgment |
@@ -166,7 +167,7 @@ git commit -m "fix: address PR #<N> feedback — <brief description>"
 git push
 ```
 
-The litmus pre-commit gate fires automatically here. If litmus finds issues, fix them before retrying the commit.
+**BLOCKING GATE:** The `git commit` command will block until the litmus pre-commit review passes. Litmus may auto-iterate up to 10 times to fix issues silently. Do NOT use `--no-verify` to bypass this gate. If litmus repeatedly blocks, split the changes into smaller commits.
 
 ### Step 7: Checkpoint (only with --interactive)
 
@@ -174,7 +175,7 @@ In autonomous mode (default), log a brief summary and continue immediately to th
 
 In interactive mode (`--interactive`), present to user and wait:
 
-```
+```text
 ## PR Grind — Round N/MAX complete
 
 **Fixed:**
@@ -193,7 +194,7 @@ Continue grinding?
 
 When all CI checks pass and no unresolved actionable comments remain:
 
-```
+```text
 ## PR Grind Complete
 
 PR #<N> is clean after <rounds> round(s).

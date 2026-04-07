@@ -136,8 +136,8 @@ Creates isolated workspace, verifies baseline tests pass.
 
 #### Always-On Disciplines (No Exceptions)
 
-- **TDD** — `busdriver:test-driven-development`: RED → verify → GREEN → verify → REFACTOR. Every time.
-- **Verification** — `busdriver:verification-before-completion`: No claims without fresh evidence.
+- **TDD** — `busdriver:test-driven-development` (discipline: RED → GREEN → REFACTOR). For detailed coverage workflow: `busdriver:tdd-workflow` (ECC: 80%+ coverage, unit+integration+E2E). Every time.
+- **Verification** — `busdriver:verification-before-completion` (discipline: no claims without fresh evidence). For comprehensive checks: `busdriver:verification-loop` (build + lint + tests).
 - **Debugging** — `busdriver:systematic-debugging`: When stuck — root cause first, no blind fixes.
 - **Code Review** — `busdriver:requesting-code-review` after EVERY task. DISPATCH `{lang}-reviewer` agent (e.g., `typescript-reviewer`, `go-reviewer`, `python-reviewer`, `rust-reviewer`, `cpp-reviewer`, `java-reviewer`, `kotlin-reviewer`, `flutter-reviewer`, `csharp-reviewer`). Fallback: `code-reviewer` agent. Handle feedback per `busdriver:receiving-code-review`.
 - **Lesson Capture** — After review finds HIGH+ issue not anticipated in plan, save to `~/.claude/notes/lesson-review-{YYYY-MM-DD}-{slug}.md` (type: feedback).
@@ -151,8 +151,8 @@ DISPATCH `{lang}-build-resolver` agent if one exists. TS/JS: `build-error-resolv
 
 **DISPATCH `tdd-guide` agent** to produce test files. The discipline governs process; the agent produces tests.
 
-### Phase 5: Verification → `busdriver:verification-before-completion`
-Run `busdriver:verification-loop` (build + lint + tests). Django: `django-verification`. Spring Boot: `springboot-verification`. Also: `busdriver:security-scan` for .claude/ config.
+### Phase 5: Verification
+Run `busdriver:verification-loop` (build + lint + tests) as the comprehensive system check. Then apply `busdriver:verification-before-completion` as the final gate — no success claims without fresh evidence. These are complementary: verification-loop runs the checks, verification-before-completion enforces the discipline. Django: `django-verification`. Spring Boot: `springboot-verification`. Also: `busdriver:security-scan` for .claude/ config.
 
 **DISPATCH `security-reviewer` agent** if auth, user input, API endpoints, payments, or secrets were touched.
 
@@ -197,6 +197,7 @@ Domain skills are **additive** — load all that match. **Full catalog:** `${CLA
 | Nuxt | `nuxt.config.*` | `nuxt4-patterns` |
 | Perl | `*.pl`, `*.pm` | `perl-patterns`, `perl-security`, `perl-testing` |
 | PHP/Laravel | `*.php`, `composer.json` | `laravel-patterns`, `laravel-security`, `laravel-tdd` |
+| Supply Chain | freight, inventory, customs | `carrier-relationship-management`, `inventory-demand-planning`, `customs-trade-compliance` |
 
 ## Non-Pipeline Tasks
 
@@ -264,7 +265,7 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Test Coverage Review** | check test quality, test gaps, edge cases | `pr-test-analyzer` agent (pr-review-toolkit) |
 | **Code Polish** | simplify code, make clearer, refine | `code-simplifier` agent (on-demand, Opus) |
 | **Docs Setup** | set up docs, audit docs, standardize docs | `busdriver:docs-setup` |
-| **SEO** | SEO audit, schema markup, search visibility | `seo` / `seo-audit` / `schema-markup` / `ai-seo` |
+| **SEO** | SEO audit, schema markup, search visibility | `seo` / `seo-audit` / `schema-markup` / `ai-seo`. Agent: `seo-specialist` |
 | **Jira** | Jira tickets, issue tracking | `/jira` command + `jira-integration` |
 | **GitHub Ops** | GitHub issues, PRs, releases, CI status | `github-ops` |
 | **Email Ops** | email triage, drafting, send verification | `email-ops` |
@@ -286,6 +287,22 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Dashboard** | monitoring dashboards (Grafana, SigNoz) | `dashboard-builder` |
 | **API Connector** | add API integration matching repo patterns | `api-connector-builder` |
 | **Council** | 4-voice council for ambiguous decisions | `council` |
+| **Performance Bench** | benchmark, measure performance baseline | `benchmark` |
+| **Browser QA** | visual testing, UI interaction verification | `browser-qa` |
+| **Post-Deploy Monitor** | watch URL after deploy, canary monitor | `canary-watch` |
+| **Product Validation** | validate why before building, product check | `product-lens` |
+| **Product Naming** | name product, brand name, feature name | `product-naming` |
+| **Repo Scan** | audit files, asset scan, classify codebase | `repo-scan` |
+| **Safety Guard** | production safety, prevent destructive ops | `safety-guard` |
+| **Token Budget** | context budget advice, token usage | `token-budget-advisor` |
+| **ADRs** | architecture decision record, capture decision | `architecture-decision-records` |
+| **Agent Eval** | compare agents, agent benchmark, head-to-head | `agent-eval` |
+| **AI Regression** | AI regression testing, sandbox mode | `ai-regression-testing` |
+| **Visa Translation** | translate visa docs, immigration documents | `visa-doc-translate` |
+| **RFC Pipeline** | RFC-driven multi-agent DAG execution | `ralphinho-rfc-pipeline` |
+| **Code Quality** | plankton, auto-format, lint enforcement | `plankton-code-quality` |
+| **Plan Review** | review code against plan, step completion | `plan-code-reviewer` agent |
+| **Performance Opt** | optimize performance, profiling, bottlenecks | `performance-optimizer` agent |
 
 Skills not listed above are discoverable via the system-prompt skill registry. The orchestrator only routes to busdriver-owned skills.
 

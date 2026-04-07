@@ -191,3 +191,14 @@ Domain skills are loaded as context during execution. They are **additive** — 
 ### MCP Development
 **Detection:** MCP server code, `@modelcontextprotocol/sdk`, tool/resource definitions
 - Patterns (Node/TS only): `busdriver:mcp-server-patterns` (Node/TS SDK — tools, resources, prompts, Zod validation, stdio vs Streamable HTTP. Do NOT load for Python FastMCP projects.)
+
+### Supply Chain / Logistics
+**Detection:** Freight, shipping, carrier, warehouse, inventory, procurement, customs, tariff, demand planning, production scheduling context
+- Carrier Management: `busdriver:carrier-relationship-management` (carrier portfolios, freight negotiation, lane optimization)
+- Customs/Trade: `busdriver:customs-trade-compliance` (customs docs, tariff classification, duty calculations, trade compliance)
+- Energy Procurement: `busdriver:energy-procurement` (electricity/gas procurement, tariff optimization)
+- Inventory: `busdriver:inventory-demand-planning` (demand forecasting, safety stock, reorder points)
+- Exceptions: `busdriver:logistics-exception-management` (freight exceptions, shipment delays, damage claims)
+- Production: `busdriver:production-scheduling` (job sequencing, line balancing, capacity planning)
+- Quality: `busdriver:quality-nonconformance` (quality control, non-conformance investigation, CAPA)
+- Returns: `busdriver:returns-reverse-logistics` (returns authorization, inspection, disposition)

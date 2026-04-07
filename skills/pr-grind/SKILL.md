@@ -119,6 +119,12 @@ for i in 1 2 3 4 5; do
   echo "⏳ $PENDING checks still pending — waiting 60s (attempt $i/5)..."
   sleep 60
 done
+# Bail if checks are STILL pending after all retries
+if [ "$PENDING" -gt 0 ]; then
+  echo "❌ $PENDING checks still pending after 5 retries. Cannot proceed."
+  echo "Remaining: $(gh pr checks <PR_NUMBER> 2>&1 | grep pending)"
+  exit 1  # Bail — ask user to investigate stuck checks
+fi
 
 # Phase 3: Poll for reviewer comments that may arrive after check status flips
 # Some reviewers mark their check as "pass" then post comments async

@@ -133,7 +133,7 @@ sleep 30  # Grace period for late-arriving comments
 
 **Why 3 phases:** `--watch` handles most cases, but some reviewers (e.g., CodeRabbit) mark their check as "pass" and then post inline comments asynchronously. The grace period catches these late arrivals. Without it, you'll collect feedback, fix it, push — and then the reviewer's *real* feedback arrives on the old commit.
 
-If the timeout fires before checks complete, report which checks are still pending and ask user whether to wait or proceed.
+If checks are still pending after Phase 1 timeout AND Phase 2 retries, the loop bails with an error listing the stuck checks. The user must investigate before the grind can continue.
 
 ### Step 2: Collect Feedback
 

@@ -89,11 +89,11 @@ origin: custom
      │  (litmus gate fires here) │
      └─────────────┬─────────────┘
                    │
-     ┌─────────────▼─────────────┐
-     │  Step 7: Checkpoint       │
-     │  Show summary to user     │
-     │  (skip if --auto)         │
-     └─────────────┬─────────────┘
+     ┌─────────────▼──────────────────┐
+     │  Step 7: Checkpoint            │
+     │  (default: skip — autonomous)  │
+     │  (with --interactive: pause)   │
+     └─────────────┬────────────────┘
                    │
                    └──────▶ ROUND N+1
 ```
@@ -112,11 +112,13 @@ Automated reviewers (CodeRabbit, Greptile, Cubic, CodeScene, GitGuardian) regist
 timeout 900 gh pr checks <PR_NUMBER> --watch 2>&1 || true
 
 # Phase 2: Verify no checks are still pending (defensive — catches race conditions)
-PENDING=$(gh pr checks <PR_NUMBER> 2>&1 | grep -c "pending" || true)
-if [ "$PENDING" -gt 0 ]; then
-  echo "⏳ $PENDING checks still pending — waiting 60s..."
+# Re-poll in a loop until no pending checks remain (max 5 retries)
+for i in 1 2 3 4 5; do
+  PENDING=$(gh pr checks <PR_NUMBER> 2>&1 | grep -c "pending" || true)
+  [ "$PENDING" -eq 0 ] && break
+  echo "⏳ $PENDING checks still pending — waiting 60s (attempt $i/5)..."
   sleep 60
-fi
+done
 
 # Phase 3: Poll for reviewer comments that may arrive after check status flips
 # Some reviewers mark their check as "pass" then post comments async
@@ -135,7 +137,12 @@ Gather ALL pending issues in one pass:
 # CI check results
 gh pr checks <PR_NUMBER>
 
-# Reviewer comments (unresolved)
+# Inline review comments (REST API returns all — resolved and unresolved)
+# Note: REST cannot filter by resolution state. For unresolved-only, use GraphQL:
+#   gh api graphql -f query='{ repository(owner:"OWNER", name:"REPO") {
+#     pullRequest(number:N) { reviewThreads(first:100) { nodes {
+#       isResolved comments(first:10) { nodes { body path line author { login } } }
+#   } } } } }'
 gh api repos/{owner}/{repo}/pulls/<PR_NUMBER>/comments \
   --jq '.[] | select(.position != null) | {path: .path, line: .line, body: .body, user: .user.login}'
 

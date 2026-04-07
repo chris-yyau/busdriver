@@ -18,6 +18,15 @@ origin: custom
 
 **Announce at start:** "Grinding PR #N — will iterate until CI is green and comments are resolved."
 
+## Anti-Patterns (DO NOT)
+
+| Trap | Why it breaks the loop |
+|------|----------------------|
+| Collecting feedback while checks are still pending | You'll miss reviewer findings, fix a partial set, push, and trigger a second review cycle unnecessarily |
+| Declaring "Round complete" after push without waiting | The push triggers a new review cycle — you must wait for IT to finish before declaring done |
+| Only waiting for CI (build/lint/test), ignoring reviewer bots | CodeRabbit, Greptile, Cubic are checks too — `gh pr checks` shows them as pending |
+| Fixing pre-existing issues flagged by automated reviewers | Scope creep — only fix issues in YOUR changed code |
+
 ## Safety Rails
 
 - **Max iterations:** 5 rounds (override with `--max N`)
@@ -40,10 +49,11 @@ origin: custom
           │  ROUND N of MAX │
           └────────┬────────┘
                    │
-     ┌─────────────▼─────────────┐
-     │  Step 1: Wait for CI      │
-     │  gh pr checks --watch     │
-     └─────────────┬─────────────┘
+     ┌─────────────▼──────────────────┐
+     │  Step 1: Wait for ALL checks  │
+     │  CI + automated reviewers     │
+     │  (CodeRabbit, Greptile, etc.) │
+     └─────────────┬────────────────┘
                    │
      ┌─────────────▼─────────────┐
      │  Step 2: Collect feedback │
@@ -90,15 +100,32 @@ origin: custom
 
 ## Step Details
 
-### Step 1: Wait for CI
+### Step 1: Wait for ALL Checks + Reviewers
+
+**DO NOT skip this step. DO NOT proceed while checks are still pending.**
+
+Automated reviewers (CodeRabbit, Greptile, Cubic, CodeScene, GitGuardian) register as GitHub checks. `gh pr checks --watch` blocks until ALL of them complete — not just CI build/lint/test.
 
 ```bash
-# Wait for all checks to complete
-# gh pr checks --watch blocks until done; wrap with timeout if needed
-timeout 600 gh pr checks <PR_NUMBER> --watch --fail-on-error 2>&1 || true
+# Phase 1: Wait for all GitHub-registered checks (CI + automated reviewers)
+# --watch blocks until every check is pass/fail/skipped — including reviewer bots
+timeout 900 gh pr checks <PR_NUMBER> --watch 2>&1 || true
+
+# Phase 2: Verify no checks are still pending (defensive — catches race conditions)
+PENDING=$(gh pr checks <PR_NUMBER> 2>&1 | grep -c "pending" || true)
+if [ "$PENDING" -gt 0 ]; then
+  echo "⏳ $PENDING checks still pending — waiting 60s..."
+  sleep 60
+fi
+
+# Phase 3: Poll for reviewer comments that may arrive after check status flips
+# Some reviewers mark their check as "pass" then post comments async
+sleep 30  # Grace period for late-arriving comments
 ```
 
-If the timeout fires before checks complete, report current status and proceed with available results. Failed checks will be caught in triage.
+**Why 3 phases:** `--watch` handles most cases, but some reviewers (e.g., CodeRabbit) mark their check as "pass" and then post inline comments asynchronously. The grace period catches these late arrivals. Without it, you'll collect feedback, fix it, push — and then the reviewer's *real* feedback arrives on the old commit.
+
+If the timeout fires before checks complete, report which checks are still pending and ask user whether to wait or proceed.
 
 ### Step 2: Collect Feedback
 
@@ -129,10 +156,14 @@ Classify each piece of feedback:
 |----------|--------|
 | **CI failure — test/lint/build** | Fix it |
 | **CI failure — flaky/infra** | Note it, skip after 3 consecutive identical failures |
-| **Code review — specific fix request** | Fix it |
-| **Code review — question/clarification** | Reply with explanation, don't change code |
-| **Code review — design/scope concern** | **BAIL** — surface to user, this needs human judgment |
+| **Automated reviewer — specific fix** (CodeRabbit, Greptile, Cubic) | Fix it — treat like human review |
+| **Automated reviewer — stale/pre-existing issue** | Skip — only fix issues in YOUR changed code |
+| **Human review — specific fix request** | Fix it |
+| **Human review — question/clarification** | Reply with explanation, don't change code |
+| **Human review — design/scope concern** | **BAIL** — surface to user, this needs human judgment |
 | **Code review — nit/style** | Fix it (low effort, high goodwill) |
+
+**Important:** Automated reviewers often post on code that was already in the repo before your PR. Only fix issues in files/lines that YOUR PR changed. If a reviewer flags pre-existing code, note it but don't fix it in this PR.
 
 ### Step 4: Fix
 
@@ -192,14 +223,19 @@ Continue grinding?
 
 ## Completion
 
-When all CI checks pass and no unresolved actionable comments remain:
+**All of these must be true before declaring done:**
+1. All CI checks passing (build, lint, test)
+2. All automated reviewers completed (CodeRabbit, Greptile, Cubic, etc.)
+3. No unresolved actionable comments from any source
+4. No new comments arrived after your last push (wait for the full cycle)
 
 ```text
 ## PR Grind Complete
 
 PR #<N> is clean after <rounds> round(s).
 - CI: all checks passing
-- Comments: all addressed
+- Automated reviewers: all completed, no actionable findings
+- Human comments: all addressed
 - Ready for merge.
 ```
 

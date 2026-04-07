@@ -20,6 +20,9 @@
 | `spec-review-convergence.md` | `busdriver:brainstorming`, `blueprint-review` skill | gstack /office-hours | 2026-03-24 |
 | `nutrient-api-terms.md` | `busdriver:nutrient-document-processing` | fork-edit migration (council 2026-03-24) | 2026-03-24 |
 | `context-degradation-tiers.md` | `busdriver:context-budget`, `busdriver:strategic-compact`, `busdriver:dispatching-parallel-agents`, `busdriver:subagent-driven-development` | GSD references/context-budget.md (adapted) | 2026-04-06 |
+| `thinking-models-planning.md` | `busdriver:writing-plans`, `busdriver:brainstorming`, `busdriver:executing-plans` | GSD references/thinking-models-planning.md (adapted) | 2026-04-08 |
+| `gates-taxonomy.md` | `busdriver:orchestrator`, `busdriver:litmus`, `busdriver:blueprint-review`, `busdriver:verification-loop`, `busdriver:finishing-a-development-branch` | GSD references/gates.md (adapted) | 2026-04-08 |
+| `agent-contracts.md` | `busdriver:dispatching-parallel-agents`, `busdriver:subagent-driven-development`, `busdriver:executing-plans`, `busdriver:orchestrator` | GSD references/agent-contracts.md (adapted) | 2026-04-08 |
 
 ## Opt-In Supplements
 

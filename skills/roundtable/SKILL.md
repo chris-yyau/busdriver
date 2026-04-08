@@ -103,6 +103,13 @@ This is a **single Bash call** with both as background processes. This is critic
 
 Read the Fresh Claude output from the Agent tool result. Read the Gemini/Codex output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`).
 
+**CRITICAL: Read the ENTIRE output file, not just the first few lines.** CLI output files contain noise before the actual response:
+- **Gemini:** Dumps MCP server initialization logs (e.g., `Registering notification handlers...`, `Loading extension...`) before the response. The actual answer may be 50+ lines deep.
+- **Codex:** Echoes a header block (workdir, model, session id, the full prompt) before the response. The actual answer starts after the prompt echo ends.
+- **Both:** May duplicate output or include trailing metadata. Always scan the full file.
+
+If you read only the first ~30 lines and see noise/prompt headers, **you have NOT read the response yet.** Keep reading.
+
 <CRITICAL>
 SYNTHESIZER BIAS GUARDRAILS
 

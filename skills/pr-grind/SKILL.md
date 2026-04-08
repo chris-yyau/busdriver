@@ -31,11 +31,12 @@ origin: custom
 
 - **Max iterations:** 5 rounds (override with `--max N`)
 - **Autonomous by default:** Grinds without pausing between rounds (override with `--interactive` for human checkpoints)
-- **Bail triggers:** Stop immediately if:
+- **Bail triggers:** Stop immediately and clean up worktree if:
   - A comment is a design/scope question (not a code fix)
   - CI fails on an unrelated flaky test 3 times in a row
   - The fix would require architectural changes
   - Max iterations reached
+  - **On any bail:** always run `git worktree remove` before exiting
 
 ## The Loop
 
@@ -44,6 +45,13 @@ origin: custom
 │  START: Resolve PR number                   │
 │  (from arg, current branch, or ask user)    │
 └──────────────────┬──────────────────────────┘
+                   │
+     ┌─────────────▼──────────────────┐
+     │  Step 0: Create ephemeral      │
+     │  worktree for PR branch        │
+     │  (user can start next task     │
+     │   in main worktree)            │
+     └─────────────┬────────────────┘
                    │
           ┌────────▼────────┐
           │  ROUND N of MAX │
@@ -96,9 +104,35 @@ origin: custom
      └─────────────┬────────────────┘
                    │
                    └──────▶ ROUND N+1
+
+     ┌─────────────────────────────────┐
+     │  DONE or BAIL:                  │
+     │  Cleanup ephemeral worktree     │
+     │  git worktree remove <path>     │
+     └─────────────────────────────────┘
 ```
 
 ## Step Details
+
+### Step 0: Create Ephemeral Worktree
+
+Create an isolated worktree so the user's main workspace stays free for their next task.
+
+```bash
+# Resolve PR branch name
+PR_BRANCH=$(gh pr view <PR_NUMBER> --json headRefName -q .headRefName)
+
+# Create worktree in a predictable location
+WORKTREE_DIR="../pr-grind-${PR_NUMBER}"
+git worktree add "$WORKTREE_DIR" "$PR_BRANCH"
+
+# All subsequent steps run inside the worktree
+cd "$WORKTREE_DIR"
+```
+
+**Why a worktree:** The roundtable consensus — pr-grind is a different operational mode from the pipeline. Pre-PR phases optimize for local delivery; post-PR grind optimizes for async iteration. An ephemeral worktree gives pr-grind its own branch ownership without hijacking the main workspace or coupling to Phase 6's cleanup lifecycle.
+
+**Skip with `--no-worktree`:** If already on the PR branch (e.g., Phase 6 just created the PR and hasn't cleaned up yet), pass `--no-worktree` to skip worktree creation and work in-place.
 
 ### Step 1: Wait for ALL Checks + Reviewers
 
@@ -242,6 +276,15 @@ Continue grinding?
 3. No unresolved actionable comments from any source
 4. No new comments arrived after your last push (wait for the full cycle)
 
+**Then clean up the worktree:**
+```bash
+# Return to main worktree
+cd <original-worktree-path>
+
+# Remove the ephemeral worktree
+git worktree remove "../pr-grind-<PR_NUMBER>" --force
+```
+
 ```text
 ## PR Grind Complete
 
@@ -249,6 +292,7 @@ PR #<N> is clean after <rounds> round(s).
 - CI: all checks passing
 - Automated reviewers: all completed, no actionable findings
 - Human comments: all addressed
+- Worktree cleaned up.
 - Ready for merge.
 ```
 
@@ -259,11 +303,13 @@ PR #<N> is clean after <rounds> round(s).
 | `<PR>` | PR number or URL | Auto-detect from current branch |
 | `--max N` | Maximum iterations | 5 |
 | `--interactive` | Pause for human confirmation each round | Off (autonomous) |
+| `--no-worktree` | Skip worktree creation, work in current directory | Off (creates worktree) |
 | `--ci-only` | Only fix CI failures, ignore comments | Off |
 | `--comments-only` | Only address comments, ignore CI | Off |
 
 ## Integration
 
-- **Pairs with:** `finishing-a-development-branch` (Phase 6 creates the PR, then `/pr-grind` handles the feedback loop)
+- **Pairs with:** `finishing-a-development-branch` (Phase 6 creates the PR and cleans up its worktree, then `/pr-grind` creates its own ephemeral worktree for the feedback loop)
+- **Worktree lifecycle:** pr-grind owns its worktree from creation to cleanup — independent of the pipeline's Phase 3 worktree. The user's main workspace stays free for new work.
 - **Gate:** Litmus pre-commit hook fires on each `git commit` within the loop
 - **Agents:** May dispatch `code-reviewer`, `build-error-resolver`, or language-specific reviewers for complex fixes

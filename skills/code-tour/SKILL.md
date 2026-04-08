@@ -232,5 +232,5 @@ The tour should feel like a path, not an inventory.
 
 - `codebase-onboarding`
 - `coding-standards`
-- `council`
+- `roundtable`
 - official upstream format: `microsoft/codetour`

@@ -1,6 +1,6 @@
 ---
 name: docs-setup
-description: Standardize repo documentation (README, CONTRIBUTING, SECURITY, LICENSE, CHANGELOG) across projects. Audit existing docs against the standard format or apply templates to generate/fix missing or inconsistent docs. Use when setting up a new repo, auditing doc quality, or fixing doc drift across multiple repos. Complements ci-pipeline-setup (CI config) — this skill owns doc *content*.
+description: Standardize repo documentation (README, CONTRIBUTING, SECURITY, LICENSE, CHANGELOG) across projects. Audit existing docs against the standard format or apply templates to generate/fix missing or inconsistent docs. Use when setting up a new repo, auditing doc quality, or fixing doc drift across multiple repos. Complements repo-pipeline-setup (CI config) — this skill owns doc *content*.
 ---
 
 # Docs Setup
@@ -13,7 +13,7 @@ Standardize documentation across repos using the proven seatbelt/busdriver templ
 - Auditing existing docs for consistency across repos
 - Fixing doc drift (missing sections, wrong badges, inconsistent structure)
 - User says "set up docs", "audit docs", "fix docs", "standardize docs"
-- After `ci-pipeline-setup` completes (CI config done, now do doc content)
+- After `repo-pipeline-setup` completes (CI config done, now do doc content)
 
 ## Modes
 
@@ -353,24 +353,24 @@ If `.releaserc.json` exists but lacks `@semantic-release/git`, add it:
 
 This ensures CHANGELOG.md is committed to the repo on each release. Without `@semantic-release/git`, the changelog is generated but never persisted.
 
-## Scope Boundary with ci-pipeline-setup
+## Scope Boundary with repo-pipeline-setup
 
 | Concern | Owner | What it does |
 |---------|-------|-------------|
-| Workflow files (.github/workflows/) | ci-pipeline-setup | Generates/audits CI workflows |
-| Dependabot config | ci-pipeline-setup | Generates .github/dependabot.yml |
-| Commitlint config | ci-pipeline-setup | Generates commitlint.config.mjs |
-| package.json (minimal) | ci-pipeline-setup | Generates private package.json |
-| codecov.yml | ci-pipeline-setup | Generates coverage config |
-| SHA pin script | ci-pipeline-setup | Generates .github/scripts/check-pinned-uses.sh |
+| Workflow files (.github/workflows/) | repo-pipeline-setup | Generates/audits CI workflows |
+| Dependabot config | repo-pipeline-setup | Generates .github/dependabot.yml |
+| Commitlint config | repo-pipeline-setup | Generates commitlint.config.mjs |
+| package.json (minimal) | repo-pipeline-setup | Generates private package.json |
+| codecov.yml | repo-pipeline-setup | Generates coverage config |
+| SHA pin script | repo-pipeline-setup | Generates .github/scripts/check-pinned-uses.sh |
 | README.md content | **docs-setup** | Generates/audits doc content |
 | CONTRIBUTING.md content | **docs-setup** | Generates/audits doc content |
 | SECURITY.md content | **docs-setup** | Generates/audits doc content |
 | LICENSE content | **docs-setup** | Generates/audits license |
 | .releaserc.json (git plugin) | **docs-setup** | Ensures CHANGELOG auto-commit |
-| File existence checks | Both | ci-pipeline-setup checks existence, docs-setup checks content |
+| File existence checks | Both | repo-pipeline-setup checks existence, docs-setup checks content |
 
-Run `ci-pipeline-setup` first (CI config), then `docs-setup` (doc content). They complement each other.
+Run `repo-pipeline-setup` first (CI config), then `docs-setup` (doc content). They complement each other.
 
 ## Multi-Repo Deployment
 
@@ -387,7 +387,7 @@ done
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| Badges show "no status" | Workflow file doesn't exist yet | Run ci-pipeline-setup first to create workflows |
+| Badges show "no status" | Workflow file doesn't exist yet | Run repo-pipeline-setup first to create workflows |
 | CHANGELOG.md not auto-generated | .releaserc.json missing `@semantic-release/git` | docs-setup apply fixes this automatically |
 | Wrong repo URL in badges | Git remote changed or docs copied from another repo | docs-setup apply regenerates badges from current remote |
 | "Adding a New X" section overwritten | Section not inside `<!-- docs-setup:custom -->` markers | Move project-specific content inside markers before re-running apply |
@@ -395,7 +395,7 @@ done
 
 ## Key Decisions
 
-- **Separate from ci-pipeline-setup** — CI config is deterministic (generate exact files); doc content is judgment-heavy (templates + project-specific content). Different concerns, different update cadences
+- **Separate from repo-pipeline-setup** — CI config is deterministic (generate exact files); doc content is judgment-heavy (templates + project-specific content). Different concerns, different update cadences
 - **2 modes, not 3** — "generate" and "fix" are the same operation from the user's perspective. `audit` reports, `apply` acts. Council consensus (2026-03-27)
 - **Templates embedded in SKILL.md** — the LLM needs templates in context when generating. Separate files require extra Read calls and add friction. Accepted tradeoff: larger SKILL.md but zero-step template access
 - **Section protection via markers** — `<!-- docs-setup:custom -->` / `<!-- docs-setup:end -->` delineate machine-owned vs human-owned content. Standard sections (badges, Contributing link, Security link, License) are always overwritten. Everything between custom markers is preserved. Prevents destructive standardization (Codex council insight, 2026-03-27)

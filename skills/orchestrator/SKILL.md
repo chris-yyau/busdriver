@@ -214,7 +214,7 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **API Design** | REST endpoints, API versioning | `busdriver:api-design` |
 | **E2E Testing** | browser testing, e2e | `/e2e` command + `e2e-testing` skill |
 | **Verification** | verify, build+lint+test | `/verify` command |
-| **Repo pipeline setup** | test setup, scaffold tests, CI pipeline, Codecov, pinact, audit CI | `repo-pipeline-setup` (personal skill) |
+| **Repo pipeline setup** | test setup, scaffold tests, CI pipeline, Codecov, pinact, audit CI | `helmet` (personal skill) |
 | **Research** | search for libraries | `busdriver:search-first` |
 | **Deep Research** | research X thoroughly, cited reports | `busdriver:deep-research` (Firecrawl + Exa) |
 | **Neural Search** | semantic search, company intel | `busdriver:exa-search` |

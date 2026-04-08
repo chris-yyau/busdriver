@@ -105,7 +105,7 @@ EOF
 
 Then: Cleanup worktree (Step 5)
 
-After PR is created, mention: *"Run `/pr-grind` to iterate on CI failures and reviewer feedback."*
+After PR is created, mention: *"Run `pr-grind` to iterate on CI failures and reviewer feedback."*
 
 #### Option 3: Keep As-Is
 

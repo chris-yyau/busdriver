@@ -165,7 +165,7 @@ Consider `roundtable` if architecturally significant or results seem "too clean.
 
 ### Phase 6: Finishing → `busdriver:finishing-a-development-branch`
 Handles: verify tests → present 4 options (merge/PR/keep/discard) → execute → clean up worktree.
-**Gate:** Codex Reviewer fires automatically — fast mode at `git commit`, deep mode (multi-voice) at `gh pr create`.
+**Gate:** Litmus fires automatically — fast mode at `git commit`, deep mode (multi-voice) at `gh pr create`.
 
 ## Domain Supplements
 
@@ -379,7 +379,7 @@ After Phase 2 plan review passes, Phases 3–6 execute automatically via subagen
 - `busdriver:requesting-code-review` — after EVERY task
 
 ### Gates (Hook-Enforced, Cannot Bypass)
-- Codex Reviewer → before `git commit` and `gh pr create`
+- Litmus → before `git commit` and `gh pr create`
 - Blueprint Review → after plan/design docs, blocks impl + commit
 - Pre-implementation → blocks file writes while design unreviewed
 - Freeze/Guard → restricts edits to investigation scope during debugging

@@ -35,7 +35,7 @@
 
 | Idea | Reason | Council Date |
 |------|--------|-------------|
-| Cognitive pattern libraries | Convergent reasoning risk in 4-voice council | 2026-03-23 |
+| Cognitive pattern libraries | Convergent reasoning risk in 4-voice roundtable | 2026-03-23 |
 | Effort compression table | Cargo-cult machinery, fake rigor | 2026-03-24 |
 | Autoplan decision principles | Centralizes taste, governance bloat | 2026-03-24 |
 | Cross-project retrospective | Historical scorekeeping risk | 2026-03-24 |

@@ -30,8 +30,8 @@ Small, specific tasks (bug fix, typo, config tweak) skip straight to Phase 4. Ev
 
 | Gate | Trigger | What it blocks |
 |------|---------|---------------|
-| **Codex Reviewer** | `git commit` | Blocks commit until code review passes |
-| **Codex Reviewer (deep)** | `gh pr create` | Blocks PR until 6 parallel review agents pass (4-of-6 quorum) |
+| **Litmus** | `git commit` | Blocks commit until code review passes |
+| **Litmus (deep)** | `gh pr create` | Blocks PR until 6 parallel review agents pass (4-of-6 quorum) |
 | **Blueprint Review** | Plan/design doc written | Blocks implementation code while plans are unreviewed |
 | **Pre-implementation** | `Write`/`Edit` of code files | Blocks file writes while design docs lack `<!-- design-reviewed: PASS -->` |
 | **Freeze/Guard** | Debugging session active | Restricts edits to investigation scope only |
@@ -168,8 +168,8 @@ Claude Code                        Busdriver Plugin
                     │     └─► security-reviewer if auth/input/API touched
                     │
                     └─► Phase 6: finishing
-                          ├─► git commit ──► Codex Reviewer (fast)
-                          └─► gh pr create ──► Codex Reviewer (deep, 6 agents)
+                          ├─► git commit ──► Litmus (fast)
+                          └─► gh pr create ──► Litmus (deep, 6 agents)
 
   Gate hooks (PreToolUse):
     ├── pre-commit gate ──► blocks until codex review passes

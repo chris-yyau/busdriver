@@ -80,13 +80,17 @@ DISPATCH="${CLAUDE_PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
 
 # Dispatch available voices — capture PIDs so wait blocks on the actual processes
 PIDS=()
-[[ "$PRAGMATIST_CLI" != "none" && "$PRAGMATIST_CLI" != "builtin" && ! "$PRAGMATIST_CLI" =~ ^missing: ]] && \
-  "$DISPATCH" --cli "$PRAGMATIST_CLI" --timeout 300 --prompt "<Pragmatist prompt>" & PIDS+=($!)
+if [[ "$PRAGMATIST_CLI" != "none" && "$PRAGMATIST_CLI" != "builtin" && ! "$PRAGMATIST_CLI" =~ ^missing: ]]; then
+  "$DISPATCH" --cli "$PRAGMATIST_CLI" --timeout 300 --prompt "<Pragmatist prompt>" &
+  PIDS+=("$!")
+fi
 # NOTE: For large prompts (with extensive context), pass via stdin to avoid ARG_MAX limits:
 #   echo "$PROMPT" | "$DISPATCH" --cli "$CLI" --timeout 300
-[[ "$CRITIC_CLI" != "none" && "$CRITIC_CLI" != "builtin" && ! "$CRITIC_CLI" =~ ^missing: ]] && \
-  "$DISPATCH" --cli "$CRITIC_CLI" --timeout 300 --prompt "<Critic prompt>" & PIDS+=($!)
-wait "${PIDS[@]}"
+if [[ "$CRITIC_CLI" != "none" && "$CRITIC_CLI" != "builtin" && ! "$CRITIC_CLI" =~ ^missing: ]]; then
+  "$DISPATCH" --cli "$CRITIC_CLI" --timeout 300 --prompt "<Critic prompt>" &
+  PIDS+=("$!")
+fi
+(( ${#PIDS[@]} )) && wait "${PIDS[@]}"
 ```
 
 This is a **single Bash call** with both as background processes. This is critical — if Gemini and Codex are separate parallel Bash tool calls, one failing cancels the other. A single call with `&` and `wait` keeps them independent.

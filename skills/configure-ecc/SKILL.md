@@ -139,8 +139,7 @@ For each selected category, print the full list of skills below and ask the user
 
 | Skill | Description |
 |-------|-------------|
-| `continuous-learning-v2` | Auto-extract reusable patterns from sessions as instincts (supersedes v1) |
-| `continuous-learning-v2` | Instinct-based learning with confidence scoring, evolves into skills, agents, and optional legacy command shims |
+| `continuous-learning-v2` | Instinct-based learning with confidence scoring, evolves patterns into skills, agents, and optional legacy command shims (supersedes v1) |
 | `eval-harness` | Formal evaluation framework for eval-driven development (EDD) |
 | `iterative-retrieval` | Progressive context refinement for subagent context problem |
 | `security-review` | Security checklist: auth, input, secrets, API, payment features |

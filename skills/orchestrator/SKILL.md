@@ -53,8 +53,8 @@ All gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects 
 
 ### Litmus (Pre-Commit + Pre-PR)
 **Trigger:** `git commit` OR `gh pr create` in Bash
-**Pre-commit (fast — 1 voice):** Blocks until `/litmus` passes → writes `.claude/litmus-passed.local` marker. Consumed after successful commit via PostToolUse. DEGRADED markers rejected. **Design-reviewed bypass:** If ALL staged files are design-reviewed specs (`.md` in `plans/`/`specs/` or basename PLAN/DESIGN/ARCHITECTURE, each with `<!-- design-reviewed: PASS -->`), Gate 2 auto-passes — codex review is redundant after 3-tier design review.
-**Pre-PR (deep — multi-voice):** Blocks `gh pr create` until codex review passes. Runs codex CLI pass THEN 6 parallel review agents (guidelines, bugs, history, cross-commit, security, docs-consistency) with confidence scoring. Blocks on CRITICAL/HIGH at 80+ confidence. Accepts `.claude/pr-review-passed.local` (rejects DEGRADED/SKIPPED/BUILTIN markers). Also passes if all `base..HEAD` commits were per-commit reviewed (tracked in `reviewed-commits.local`). 4-of-6 agent quorum required; <4 agents = fail-closed. `LITMUS_PR_FAST=1` skips multi-agent (audited).
+**Pre-commit (fast — 1 voice):** Blocks until `/litmus` passes → writes `.claude/litmus-passed.local` marker. Consumed after successful commit via PostToolUse. DEGRADED markers rejected. **Design-reviewed bypass:** If ALL staged files are design-reviewed specs (`.md` in `plans/`/`specs/` or basename PLAN/DESIGN/ARCHITECTURE, each with `<!-- design-reviewed: PASS -->`), Gate 2 auto-passes — litmus review is redundant after 3-tier design review.
+**Pre-PR (deep — multi-voice):** Blocks `gh pr create` until litmus review passes. Runs codex CLI pass THEN 6 parallel review agents (guidelines, bugs, history, cross-commit, security, docs-consistency) with confidence scoring. Blocks on CRITICAL/HIGH at 80+ confidence. Accepts `.claude/pr-review-passed.local` (rejects DEGRADED/SKIPPED/BUILTIN markers). Also passes if all `base..HEAD` commits were per-commit reviewed (tracked in `reviewed-commits.local`). 4-of-6 agent quorum required; <4 agents = fail-closed. `LITMUS_PR_FAST=1` skips multi-agent (audited).
 **CLI:** `BUSDRIVER_REVIEW_CLI` selects the review backend (auto/codex/gemini/droid/amp/opencode/claude/aider/builtin/none). Per-role routing via `.claude/busdriver.json` — see README for config format. Codex backend uses the official codex-plugin-cc app-server protocol when installed (stable JSON-RPC), with direct CLI fallback.
 **Skip:** `.claude/skip-litmus.local` (single-use, 30s self-bypass detection) or `SKIP_LITMUS=1`
 **Escalation:** 10 consecutive blocks → warn user about escape hatch. `git push` intentionally NOT gated.
@@ -85,7 +85,7 @@ Skip files (`.claude/skip-litmus.local`, `.claude/skip-design-review.local`) hav
 
 **When a gate blocks and the user needs to bypass:**
 1. Tell the user to create the appropriate skip file using the **full absolute path** (their terminal CWD may differ from the project):
-   - Codex gate: `touch /absolute/path/to/project/.claude/skip-litmus.local`
+   - Litmus gate: `touch /absolute/path/to/project/.claude/skip-litmus.local`
    - Design gate: `touch /absolute/path/to/project/.claude/skip-design-review.local`
 2. Wait for user confirmation
 3. **You** run `sleep 32` before attempting the gated action — never ask the user to wait
@@ -224,7 +224,7 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Multi-Service** | monorepo, microservices | `busdriver:dispatching-parallel-agents` + `/pm2` |
 | **Multi-Session Planning** | plan big project | `busdriver:blueprint` |
 | **Multi-Agent** | agent pipeline, parallel teams | `/orchestrate` / `/devfleet` / `claude-devfleet` / `dmux-workflows` / `team-builder` |
-| **Codex Review** | adversarial review, challenge design | `/codex:adversarial-review` command (official plugin) |
+| **Codex Adversarial** | adversarial review, challenge design | `/codex:adversarial-review` command (official plugin) |
 | **Codex Rescue** | delegate task to Codex | `/codex:rescue` command (official plugin) |
 | **External CLI** | send to codex/gemini/droid/amp/opencode | `dispatch-cli` skill |
 | **Multi-Model** | multi-model planning | `/multi-plan`, `/multi-backend`, `/multi-frontend`, `/multi-execute`, `/multi-workflow` |
@@ -346,13 +346,13 @@ Available in any pipeline phase:
 |-------|------|-------------|-------------|
 | **SessionStart** | Plugin update checker | context | Checks for updates; emits `<update-alert>` for user after task completes |
 | **SessionStart** | Orchestrator loader | context | Loads this skill + staleness + instincts |
-| **PreToolUse** (Bash) | Pre-commit gate | **GATE** | Blocks `git commit` until codex + design review pass |
-| **PreToolUse** (Bash) | Pre-PR gate | **GATE** | Blocks `gh pr create` until codex review passes |
+| **PreToolUse** (Bash) | Pre-commit gate | **GATE** | Blocks `git commit` until litmus + design review pass |
+| **PreToolUse** (Bash) | Pre-PR gate | **GATE** | Blocks `gh pr create` until litmus review passes |
 | **PreToolUse** (Write\|Edit\|Bash) | Pre-implementation gate | **GATE** | Blocks impl code while design docs unreviewed |
 | **PreToolUse** (Write\|Edit) | Freeze/Guard | **GATE** | Restricts edits to investigation scope during debugging |
 | **PostToolUse** (Write\|Edit\|Bash) | Design doc detector | state | Flags design docs for review gate |
 | **PostToolUse** (Edit) | Go post-edit | formatting | gofmt/goimports/go vet on .go files |
-| **PostToolUse** (Bash) | Post-commit marker | cleanup | Consumes codex marker after successful commit |
+| **PostToolUse** (Bash) | Post-commit marker | cleanup | Consumes litmus marker after successful commit |
 | **SessionEnd** | Auto-push config | persistence | Commits auto-generated pipeline state to remote |
 
 Inherited hooks (from ECC upstream): quality-gate, cost-tracker, session persistence, post-edit format (JS/TS), suggest-compact, block-no-verify, auto-tmux-dev, config-protection, mcp-health-check, observe.sh (continuous learning). These run alongside gate hooks but do NOT enforce gates.

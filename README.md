@@ -172,7 +172,7 @@ Claude Code                        Busdriver Plugin
                           └─► gh pr create ──► Litmus (deep, 6 agents)
 
   Gate hooks (PreToolUse):
-    ├── pre-commit gate ──► blocks until codex review passes
+    ├── pre-commit gate ──► blocks until litmus review passes
     ├── pre-PR gate ──► blocks until deep review passes
     ├── pre-implementation gate ──► blocks code while plans unreviewed
     └── freeze/guard ──► restricts edits during debugging
@@ -188,7 +188,7 @@ Claude Code                        Busdriver Plugin
 Gates have escape hatches for when you need them:
 
 ```bash
-# Skip codex review (single-use, 30s self-bypass detection)
+# Skip litmus review (single-use, 30s self-bypass detection)
 touch .claude/skip-litmus.local
 
 # Skip design review (single-use, 30s self-bypass detection)

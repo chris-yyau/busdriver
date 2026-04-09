@@ -4134,37 +4134,37 @@
     },
     {
       "path": "skills/pr-grind/SKILL.md",
-      "source": null,
+      "source": "local",
       "status": "local"
     },
     {
       "path": "skills/docs-setup/SKILL.md",
-      "source": null,
+      "source": "local",
       "status": "local"
     },
     {
       "path": "skills/product-naming/SKILL.md",
-      "source": null,
+      "source": "local",
       "status": "local"
     },
     {
       "path": "skills/supplements/agent-contracts.md",
-      "source": null,
+      "source": "local",
       "status": "local"
     },
     {
       "path": "skills/supplements/context-degradation-tiers.md",
-      "source": null,
+      "source": "local",
       "status": "local"
     },
     {
       "path": "skills/supplements/gates-taxonomy.md",
-      "source": null,
+      "source": "local",
       "status": "local"
     },
     {
       "path": "skills/supplements/thinking-models-planning.md",
-      "source": null,
+      "source": "local",
       "status": "local"
     }
   ]

@@ -306,12 +306,15 @@ _execute_codex() {
   local high_from="${LITMUS_CODEX_HIGH_FROM:-3}"  # switch to high reasoning from this attempt
 
   # Validate env vars are non-negative integers
-  case "$max_retries:$retry_delay:$high_from" in
-    (*[!0-9:]*)
-      echo "busdriver: LITMUS_CODEX_RETRIES, LITMUS_CODEX_RETRY_DELAY, and LITMUS_CODEX_HIGH_FROM must be non-negative integers" >&2
-      return 1
-      ;;
-  esac
+  local _v
+  for _v in "$max_retries" "$retry_delay" "$high_from"; do
+    case "$_v" in
+      ''|*[!0-9]*)
+        echo "busdriver: LITMUS_CODEX_RETRIES, LITMUS_CODEX_RETRY_DELAY, and LITMUS_CODEX_HIGH_FROM must be non-negative integers" >&2
+        return 1
+        ;;
+    esac
+  done
 
   _resolve_codex_companion
 
@@ -366,7 +369,7 @@ _execute_codex() {
 
   # All retries exhausted — fall back to builtin
   if [ "$exit_code" -ne 0 ] && [ "$exit_code" -ne 124 ]; then
-    echo "⚠️  Codex failed after $((attempt + 1)) attempt(s) — falling back to built-in review" >&2
+    echo "⚠️  Codex failed after $attempt attempt(s) — falling back to built-in review" >&2
     echo "BUILTIN_FALLBACK"
     return 3
   fi

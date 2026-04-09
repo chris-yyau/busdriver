@@ -6,14 +6,18 @@ Rules are organized into a **common** layer plus **language-specific** directori
 ```
 rules/
 ├── common/          # Language-agnostic principles (always install)
-│   ├── coding-style.md
-│   ├── git-workflow.md
-│   ├── testing.md
-│   ├── performance.md
-│   ├── patterns.md
-│   ├── hooks.md
 │   ├── agents.md
-│   └── security.md
+│   ├── code-review.md
+│   ├── coding-style.md
+│   ├── development-workflow.md
+│   ├── git-workflow.md
+│   ├── hooks.md
+│   ├── investigate-before-acting.md
+│   ├── patterns.md
+│   ├── performance.md
+│   ├── security.md
+│   ├── testing.md
+│   └── validate-before-building.md
 ├── typescript/      # TypeScript/JavaScript specific
 ├── python/          # Python specific
 ├── golang/          # Go specific

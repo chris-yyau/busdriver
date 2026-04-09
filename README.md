@@ -62,7 +62,7 @@ Gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects the 
 
 Architect, planner, TDD guide, security reviewer, 9 language-specific reviewers, 8 build resolvers, roundtable (4-voice multi-perspective analysis), and more. They argue with each other so you don't have to.
 
-### 203 skills, 83 commands
+### 204 skills, 83 commands
 
 From brainstorming and planning to domain patterns, deployment workflows, supply chain management, and AI/LLM pipeline optimization. See `skills/` for the full inventory.
 

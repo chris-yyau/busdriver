@@ -367,7 +367,7 @@ _execute_codex() {
 
     # Only retry on transient Codex service errors (network, API, rate-limit).
     # Script bugs (unbound variable, syntax error, command not found) should not be retried.
-    if printf '%s' "$output" | grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|fetch failed|rate.limit|overloaded|capacity|50[0-9]|getaddrinfo'; then
+    if printf '%s' "$output" | grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|fetch failed|rate.limit|overloaded|capacity|5[0-9][0-9]|getaddrinfo'; then
       attempt=$((attempt + 1))
     else
       echo "⚠️  Codex failed with non-transient error (exit $exit_code) — not retrying" >&2
@@ -377,7 +377,8 @@ _execute_codex() {
 
   # All retries exhausted or non-transient error — fall back to builtin
   if [ "$exit_code" -ne 0 ] && [ "$exit_code" -ne 124 ]; then
-    echo "⚠️  Codex failed after $((attempt + 1)) attempt(s) — falling back to built-in review" >&2
+    local attempts_run=$(( attempt > max_retries ? max_retries + 1 : attempt + 1 ))
+    echo "⚠️  Codex failed after ${attempts_run} attempt(s) — falling back to built-in review" >&2
     echo "BUILTIN_FALLBACK"
     return 3
   fi

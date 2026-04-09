@@ -1,3 +1,7 @@
+---
+description: Audit the local agent harness configuration for reliability, cost, and throughput
+---
+
 # Harness Audit Command
 
 Run a deterministic repository harness audit and return a prioritized scorecard.

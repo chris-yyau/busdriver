@@ -4,6 +4,18 @@
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
     "@semantic-release/changelog",
+    ["@semantic-release/exec", {
+      "prepareCmd": "./scripts/bump-version.sh ${nextRelease.version}"
+    }],
+    ["@semantic-release/git", {
+      "assets": [
+        "package.json",
+        ".claude-plugin/plugin.json",
+        ".claude-plugin/marketplace.json",
+        "CHANGELOG.md"
+      ],
+      "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+    }],
     ["@semantic-release/github", {
       "successComment": false,
       "failTitle": false

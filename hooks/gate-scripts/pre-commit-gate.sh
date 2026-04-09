@@ -186,7 +186,7 @@ fi
 # Recommendation to Claude: Prefer separate `git add` and `git commit` calls
 # over chaining them. This allows the hook to see actual staged changes.
 #
-# Audit trail: H4 finding, Sprint 1 (2026-03-19). Council rated HIGH (accepted).
+# Audit trail: H4 finding, Sprint 1 (2026-03-19). Roundtable rated HIGH (accepted).
 # ─────────────────────────────────────────────────────────────────────────
 
 # Skip overrides
@@ -345,6 +345,6 @@ REASON="Code review required before committing.
 
 Run /litmus to review your staged changes. The review must pass before git commit is allowed.
 
-IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run the codex reviewer instead.
+IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run litmus instead.
 If the user wants to skip: touch $REPO_DIR/.claude/skip-litmus.local${ESCAPE_HINT}"
 block_emit "$REASON"

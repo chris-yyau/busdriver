@@ -287,7 +287,7 @@ echo "   Diff lines: $STAGED_DIFF_LINES (added: $ADDITION_LINES, removed: $DELET
 # PR mode skips the size check — PR diffs are inherently larger (aggregate of
 # all commits) and blocking review on the largest diffs defeats the purpose of
 # the safety net. The REVIEW_TIMEOUT (default 30min, configurable via LITMUS_TIMEOUT) handles runaway reviews.
-# Council decision 2026-03-21: per-commit and PR size checks serve different
+# Roundtable decision 2026-03-21: per-commit and PR size checks serve different
 # purposes — fix independently. PR size check was structurally broken.
 #
 # Per-commit thresholds:

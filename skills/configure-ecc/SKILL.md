@@ -139,8 +139,7 @@ For each selected category, print the full list of skills below and ask the user
 
 | Skill | Description |
 |-------|-------------|
-| `continuous-learning` | Auto-extract reusable patterns from sessions as learned skills |
-| `continuous-learning-v2` | Instinct-based learning with confidence scoring, evolves into skills, agents, and optional legacy command shims |
+| `continuous-learning-v2` | Instinct-based learning with confidence scoring, evolves patterns into skills, agents, and optional legacy command shims (supersedes v1) |
 | `eval-harness` | Formal evaluation framework for eval-driven development (EDD) |
 | `iterative-retrieval` | Progressive context refinement for subagent context problem |
 | `security-review` | Security checklist: auth, input, secrets, API, payment features |
@@ -199,7 +198,7 @@ For each selected skill, copy the entire skill directory:
 cp -r $ECC_ROOT/skills/<skill-name> $TARGET/skills/
 ```
 
-Note: `continuous-learning` and `continuous-learning-v2` have extra files (config.json, hooks, scripts) — ensure the entire directory is copied, not just SKILL.md.
+Note: `continuous-learning-v2` has extra files (config.json, hooks, scripts) — ensure the entire directory is copied, not just SKILL.md.
 
 ---
 

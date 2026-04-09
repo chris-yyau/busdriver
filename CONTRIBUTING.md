@@ -82,7 +82,7 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
 
 ```text
 feat: add kotlin coroutines skill
-fix: codex reviewer marker not consumed after commit
+fix: litmus marker not consumed after commit
 refactor: extract shared gate logic into lib
 test: add shellcheck validation for gate scripts
 docs: update language support table

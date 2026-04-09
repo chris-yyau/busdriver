@@ -31,7 +31,7 @@ if ! command -v jq &>/dev/null; then
     GATE_HEALTH_WARNINGS="${GATE_HEALTH_WARNINGS}\n**WARNING: jq not found.** Gate hooks use a printf fallback to emit block decisions — enforcement still works but JSON output may be less robust with special characters. Install jq for reliable gate output.\n\n\`brew install jq\` or \`apt-get install jq\`"
 fi
 if ! command -v codex &>/dev/null; then
-    GATE_HEALTH_WARNINGS="${GATE_HEALTH_WARNINGS}\n**WARNING: codex CLI not found.** Codex reviewer will run in DEGRADED mode (marker-only, no automated review). Install codex CLI for full code review enforcement.\n\n\`npm install -g @openai/codex\`"
+    GATE_HEALTH_WARNINGS="${GATE_HEALTH_WARNINGS}\n**WARNING: codex CLI not found.** Litmus will run in DEGRADED mode (marker-only, no automated review). Install codex CLI for full code review enforcement.\n\n\`npm install -g @openai/codex\`"
 fi
 
 # ── Design review state cleanup (F10 fix, updated F11) ────────────────────
@@ -374,7 +374,7 @@ if _hash_input:
 
 # ── Pending instinct TTL (30 days) ────────────────────────────────────
 # Auto-delete unreviewed pending instincts older than 30 days.
-# Council decision (2026-03-21): don't auto-promote, fix garbage collection.
+# Roundtable decision (2026-03-21): don't auto-promote, fix garbage collection.
 # If the pattern is real, the observer will regenerate it.
 PENDING_TTL_DAYS = 30
 PENDING_NOTIFY_THRESHOLD = 5
@@ -528,7 +528,7 @@ for d in dirs:
         # ECC observer writes instincts directly to personal/ with
         # source: session-observation. These bypass human review.
         # EXPLICIT PROMOTION REQUIRED — no time-based auto-load.
-        # Council decision (2026-03-19): 24h timer was a supply-chain
+        # Roundtable decision (2026-03-19): 24h timer was a supply-chain
         # risk — unreviewed rules auto-activated. Now requires:
         #   promoted: true  in frontmatter (set via /promote command)
         # Review pending instincts: /instinct-status

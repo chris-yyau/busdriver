@@ -182,7 +182,7 @@ set_yaml_value() {
 
   # Extract frontmatter, update value, write back
   # NOTE: Uses ENVIRON instead of -v for 'value' because awk -v interprets
-  # C escape sequences (\n, \t, \\). JSON from codex reviewer often contains
+  # C escape sequences (\n, \t, \\). JSON from litmus reviewer often contains
   # literal \n in descriptions, which awk -v converts to real newlines,
   # causing "newline in string" errors and exit code 2.
   _AWK_VALUE="$value" awk -v key="$key" '

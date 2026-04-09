@@ -30,8 +30,8 @@ Small, specific tasks (bug fix, typo, config tweak) skip straight to Phase 4. Ev
 
 | Gate | Trigger | What it blocks |
 |------|---------|---------------|
-| **Codex Reviewer** | `git commit` | Blocks commit until code review passes |
-| **Codex Reviewer (deep)** | `gh pr create` | Blocks PR until 6 parallel review agents pass (4-of-6 quorum) |
+| **Litmus** | `git commit` | Blocks commit until code review passes |
+| **Litmus (deep)** | `gh pr create` | Blocks PR until 6 parallel review agents pass (4-of-6 quorum) |
 | **Blueprint Review** | Plan/design doc written | Blocks implementation code while plans are unreviewed |
 | **Pre-implementation** | `Write`/`Edit` of code files | Blocks file writes while design docs lack `<!-- design-reviewed: PASS -->` |
 | **Freeze/Guard** | Debugging session active | Restricts edits to investigation scope only |
@@ -62,7 +62,7 @@ Gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects the 
 
 Architect, planner, TDD guide, security reviewer, 9 language-specific reviewers, 8 build resolvers, roundtable (4-voice multi-perspective analysis), and more. They argue with each other so you don't have to.
 
-### 206 skills, 83 commands
+### 203 skills, 83 commands
 
 From brainstorming and planning to domain patterns, deployment workflows, supply chain management, and AI/LLM pipeline optimization. See `skills/` for the full inventory.
 
@@ -168,11 +168,11 @@ Claude Code                        Busdriver Plugin
                     │     └─► security-reviewer if auth/input/API touched
                     │
                     └─► Phase 6: finishing
-                          ├─► git commit ──► Codex Reviewer (fast)
-                          └─► gh pr create ──► Codex Reviewer (deep, 6 agents)
+                          ├─► git commit ──► Litmus (fast)
+                          └─► gh pr create ──► Litmus (deep, 6 agents)
 
   Gate hooks (PreToolUse):
-    ├── pre-commit gate ──► blocks until codex review passes
+    ├── pre-commit gate ──► blocks until litmus review passes
     ├── pre-PR gate ──► blocks until deep review passes
     ├── pre-implementation gate ──► blocks code while plans unreviewed
     └── freeze/guard ──► restricts edits during debugging
@@ -188,7 +188,7 @@ Claude Code                        Busdriver Plugin
 Gates have escape hatches for when you need them:
 
 ```bash
-# Skip codex review (single-use, 30s self-bypass detection)
+# Skip litmus review (single-use, 30s self-bypass detection)
 touch .claude/skip-litmus.local
 
 # Skip design review (single-use, 30s self-bypass detection)

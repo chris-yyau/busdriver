@@ -12,7 +12,7 @@ Routes tasks to the appropriate busdriver skill, agent, or command.
 ## How It Routes
 
 ### 1. Mandatory Gates (Hook-Enforced)
-- **Codex Reviewer** — code review before commit/PR
+- **Litmus** — code review before commit/PR
 - **Blueprint Review** — plan review before implementation
 - **Pre-implementation** — blocks impl code while design docs unreviewed
 

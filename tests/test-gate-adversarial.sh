@@ -16,11 +16,14 @@ TOTAL=0
 run_test() {
     local name="$1" expected="$2" script="$3" input="$4"
     TOTAL=$((TOTAL + 1))
-    local output
-    output=$(printf '%s' "$input" | bash "$script" 2>/dev/null) || true
+    local output exit_code
+    output=$(printf '%s' "$input" | bash "$script" 2>/dev/null) && exit_code=0 || exit_code=$?
 
+    # Detect script crashes: non-zero exit with no structured output = broken guard
     local got="allow"
-    if echo "$output" | grep -q '"block"' 2>/dev/null; then
+    if [[ "$exit_code" -ne 0 ]] && [[ -z "$output" ]]; then
+        got="crash"
+    elif echo "$output" | grep -q '"block"' 2>/dev/null; then
         got="block"
     elif echo "$output" | grep -q '"ask"' 2>/dev/null; then
         got="ask"
@@ -43,8 +46,11 @@ FREEZE_FILE=".claude/freeze-scope.local"
 
 echo "── freeze-guard ──────────────────────────────────────────────"
 
-# Setup: create freeze scope
+# Setup: save any active freeze scope, create test scope
 mkdir -p .claude
+PREV_FREEZE=""
+[ -f "$FREEZE_FILE" ] && PREV_FREEZE=$(cat "$FREEZE_FILE")
+trap 'if [[ -n "$PREV_FREEZE" ]]; then echo "$PREV_FREEZE" > "$FREEZE_FILE"; else rm -f "$FREEZE_FILE"; fi' EXIT
 echo "src/auth" > "$FREEZE_FILE"
 
 # 1. File inside scope → allow
@@ -92,13 +98,14 @@ run_test "Read tool not gated" "allow" "$FREEZE_SCRIPT" \
 run_test "Bash tool not gated" "allow" "$FREEZE_SCRIPT" \
     '{"tool_name":"Bash","tool_input":{"command":"echo hello"}}'
 
-# 10. No freeze file → all allowed
+# 10. Path traversal via ../ should be blocked
+run_test "path traversal blocked (src/auth/../payments)" "block" "$FREEZE_SCRIPT" \
+    '{"tool_name":"Write","tool_input":{"file_path":"src/auth/../payments/stripe.js"}}'
+
+# 11. No freeze file → all allowed
 rm -f "$FREEZE_FILE"
 run_test "no freeze file → allow all" "allow" "$FREEZE_SCRIPT" \
     '{"tool_name":"Write","tool_input":{"file_path":"src/payments/stripe.js"}}'
-
-# Cleanup
-rm -f "$FREEZE_FILE"
 
 # ═══════════════════════════════════════════════════════════════════════
 # CAREFUL-GUARD TESTS

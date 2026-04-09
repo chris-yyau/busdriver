@@ -78,11 +78,14 @@ case "$FILE_LOWER" in
 esac
 
 # ── Normalize paths for comparison ───────────────────────────────────
-# Strip trailing slashes, resolve . and ..
+# Strip trailing slashes, collapse . and .. segments
 normalize() {
     local p="$1"
-    # If relative, keep relative for comparison
     p="${p%/}"
+    # Resolve . and .. via python3 if available, else basic strip
+    if command -v python3 &>/dev/null; then
+        p=$(python3 -c "import os.path; print(os.path.normpath('$p'))" 2>/dev/null || echo "$p")
+    fi
     echo "$p"
 }
 
@@ -91,9 +94,8 @@ NORM_FILE=$(normalize "$FILE_PATH")
 
 # Check if file is within allowed scope
 # Match: exact scope path OR scope path followed by / (directory boundary)
-# This prevents "src/authx" from matching scope "src/auth"
-if [[ "$NORM_FILE" == "$NORM_SCOPE" ]] || [[ "$NORM_FILE" == "$NORM_SCOPE"/* ]] \
-   || [[ "$NORM_FILE" == */"$NORM_SCOPE" ]] || [[ "$NORM_FILE" == */"$NORM_SCOPE"/* ]]; then
+# Only match at the START of the path — prevents /tmp/src/auth/ from matching scope src/auth
+if [[ "$NORM_FILE" == "$NORM_SCOPE" ]] || [[ "$NORM_FILE" == "$NORM_SCOPE"/* ]]; then
     exit 0
 fi
 

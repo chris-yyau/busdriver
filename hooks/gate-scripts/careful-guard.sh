@@ -9,12 +9,25 @@
 set -euo pipefail
 
 INPUT=$(cat)
+CMD=""
 
 # Extract the "command" field from tool_input JSON
 # Prefer Python for correct JSON parsing (handles escaped quotes, multiline commands)
+# Supports both tool_input and toolInput keys, and string payloads
 # Fall back to grep only when Python is unavailable
 if command -v python3 &>/dev/null; then
-  CMD=$(printf '%s' "$INPUT" | python3 -c 'import sys,json; print(json.loads(sys.stdin.read()).get("tool_input",{}).get("command",""))' 2>/dev/null || true)
+  CMD=$(printf '%s' "$INPUT" | python3 -c '
+import sys, json
+try:
+    d = json.loads(sys.stdin.read() or "{}")
+    inp = d.get("tool_input", d.get("toolInput", {}))
+    if isinstance(inp, str):
+        inp = json.loads(inp or "{}")
+    if isinstance(inp, dict):
+        print(inp.get("command", ""))
+except Exception:
+    pass
+' 2>/dev/null || true)
 fi
 
 # Grep fallback when Python is not available

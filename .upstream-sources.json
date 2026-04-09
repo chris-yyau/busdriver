@@ -1325,22 +1325,10 @@
       "upstream_path": "scripts/hooks/cost-tracker.js"
     },
     {
-      "path": "scripts/hooks/desktop-notify.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/desktop-notify.js"
-    },
-    {
       "path": "scripts/hooks/doc-file-warning.js",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/hooks/doc-file-warning.js"
-    },
-    {
-      "path": "scripts/hooks/evaluate-session.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/evaluate-session.js"
     },
     {
       "path": "scripts/hooks/governance-capture.js",
@@ -1361,22 +1349,10 @@
       "upstream_path": "scripts/hooks/post-bash-build-complete.js"
     },
     {
-      "path": "scripts/hooks/post-bash-command-log.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/post-bash-command-log.js"
-    },
-    {
       "path": "scripts/hooks/post-bash-pr-created.js",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/hooks/post-bash-pr-created.js"
-    },
-    {
-      "path": "scripts/hooks/post-edit-accumulator.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/post-edit-accumulator.js"
     },
     {
       "path": "scripts/hooks/post-edit-console-warn.js",
@@ -1397,18 +1373,6 @@
       "upstream_path": "scripts/hooks/post-edit-typecheck.js"
     },
     {
-      "path": "scripts/hooks/pre-bash-commit-quality.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/pre-bash-commit-quality.js"
-    },
-    {
-      "path": "scripts/hooks/pre-bash-dev-server-block.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/pre-bash-dev-server-block.js"
-    },
-    {
       "path": "scripts/hooks/pre-bash-git-push-reminder.js",
       "source": "ecc",
       "status": "sync",
@@ -1425,12 +1389,6 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/hooks/pre-compact.js"
-    },
-    {
-      "path": "scripts/hooks/pre-write-doc-warn.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/pre-write-doc-warn.js"
     },
     {
       "path": "scripts/hooks/quality-gate.js",
@@ -1463,22 +1421,10 @@
       "upstream_path": "scripts/hooks/session-end.js"
     },
     {
-      "path": "scripts/hooks/session-start-bootstrap.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/session-start-bootstrap.js"
-    },
-    {
       "path": "scripts/hooks/session-start.js",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/hooks/session-start.js"
-    },
-    {
-      "path": "scripts/hooks/stop-format-typecheck.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/stop-format-typecheck.js"
     },
     {
       "path": "scripts/hooks/suggest-compact.js",
@@ -2293,21 +2239,6 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "skills/continuous-learning-v2/scripts/test_parse_instinct.py"
-    },
-    {
-      "path": "skills/continuous-learning/SKILL.md",
-      "source": null,
-      "status": "local"
-    },
-    {
-      "path": "skills/continuous-learning/config.json",
-      "source": null,
-      "status": "local"
-    },
-    {
-      "path": "skills/continuous-learning/evaluate-session.sh",
-      "source": null,
-      "status": "local"
     },
     {
       "path": "skills/cost-aware-llm-pipeline/SKILL.md",
@@ -4181,12 +4112,6 @@
       "path": "scripts/codex/merge-codex-config.js",
       "status": "sync",
       "upstream_path": "scripts/codex/merge-codex-config.js",
-      "source": "ecc"
-    },
-    {
-      "path": "scripts/hooks/design-quality-check.js",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/design-quality-check.js",
       "source": "ecc"
     },
     {

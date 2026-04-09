@@ -19,7 +19,28 @@ trap 'exit 0' ERR
 HOOK_DATA=$(cat 2>/dev/null || true)
 [ -z "$HOOK_DATA" ] && exit 0
 
-# Fast pre-filter: skip if not a git commit via Bash tool
+# Fast pre-filter: skip if not a Bash tool call involving git
+case "$HOOK_DATA" in
+    *\"Bash\"*git*) ;;
+    *git*\"Bash\"*) ;;
+    *) exit 0 ;;
+esac
+
+# ── Rebase/amend detection: invalidate reviewed-commits on SHA change ──
+# Rebasing or amending changes commit SHAs, making the tracking file stale.
+# Only fires after confirming this is a Bash tool call (not Write/Edit with
+# "git rebase" in file content). Uses the raw Bash command text.
+case "$HOOK_DATA" in
+    *git*rebase*|*git*commit*--amend*)
+        REPO_DIR=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
+        REVIEWED_FILE="$REPO_DIR/.claude/reviewed-commits.local"
+        if [ -f "$REVIEWED_FILE" ]; then
+            rm -f "$REVIEWED_FILE"
+        fi
+        ;;
+esac
+
+# Narrow to git commit specifically (not rebase-only or other git commands)
 case "$HOOK_DATA" in
     *\"Bash\"*git*commit*) ;;
     *git*commit*\"Bash\"*) ;;
@@ -142,13 +163,16 @@ if [ -f "$MARKER" ]; then
     fi
 
     # ── Track reviewed commit SHA for smart PR gate ───────────────────
-    # Append the new commit's SHA to reviewed-commits.local so the PR
-    # gate can verify all base..HEAD commits were per-commit reviewed
+    # Append the new commit's SHA with branch context to reviewed-commits.local
+    # so the PR gate can verify all base..HEAD commits were per-commit reviewed
     # without requiring a redundant full-branch re-review.
+    # Format: "branch:sha" — branch-scoped to prevent cross-branch carry-over
+    # (e.g., a SHA reviewed on branch A shouldn't count on branch B after cherry-pick)
     COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
-    if [ -n "$COMMIT_SHA" ]; then
+    CURRENT_BRANCH=$(git -C "$REPO_DIR" symbolic-ref --short HEAD 2>/dev/null || echo "detached")
+    if [ -n "$COMMIT_SHA" ] && [ "$CURRENT_BRANCH" != "detached" ]; then
         mkdir -p "$REPO_DIR/.claude"
-        echo "$COMMIT_SHA" >> "$REPO_DIR/.claude/reviewed-commits.local"
+        echo "${CURRENT_BRANCH}:${COMMIT_SHA}" >> "$REPO_DIR/.claude/reviewed-commits.local"
     fi
 fi
 

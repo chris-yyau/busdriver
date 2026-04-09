@@ -60,9 +60,9 @@ except Exception:
     FILE_PATH="${PARSED#*|}"
 fi
 
-# Only gate Write and Edit tools
+# Only gate Write, Edit, and MultiEdit tools
 case "$TOOL_NAME" in
-    Write|Edit) ;;
+    Write|Edit|MultiEdit) ;;
     *) exit 0 ;;
 esac
 
@@ -78,11 +78,14 @@ case "$FILE_LOWER" in
 esac
 
 # ── Normalize paths for comparison ───────────────────────────────────
-# Strip trailing slashes, resolve . and ..
+# Strip trailing slashes, collapse . and .. segments
 normalize() {
     local p="$1"
-    # If relative, keep relative for comparison
     p="${p%/}"
+    # Resolve . and .. via python3 if available (stdin to avoid injection), else basic strip
+    if command -v python3 &>/dev/null; then
+        p=$(printf '%s' "$p" | python3 -c 'import sys, os.path; print(os.path.normpath(sys.stdin.read()))' 2>/dev/null || echo "$p")
+    fi
     echo "$p"
 }
 
@@ -90,8 +93,9 @@ NORM_SCOPE=$(normalize "$ALLOWED_SCOPE")
 NORM_FILE=$(normalize "$FILE_PATH")
 
 # Check if file is within allowed scope
-# Match: file starts with scope path (directory prefix match)
-if [[ "$NORM_FILE" == "$NORM_SCOPE"* ]] || [[ "$NORM_FILE" == */"$NORM_SCOPE"* ]]; then
+# Match: exact scope path OR scope path followed by / (directory boundary)
+# Only match at the START of the path — prevents /tmp/src/auth/ from matching scope src/auth
+if [[ "$NORM_FILE" == "$NORM_SCOPE" ]] || [[ "$NORM_FILE" == "$NORM_SCOPE"/* ]]; then
     exit 0
 fi
 

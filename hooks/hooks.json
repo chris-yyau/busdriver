@@ -60,7 +60,7 @@
         "description": "[GATE] Block gh pr create until codex review passes"
       },
       {
-        "matcher": "Write|Edit|Bash",
+        "matcher": "Write|Edit|MultiEdit|Bash",
         "hooks": [
           {
             "type": "command",
@@ -71,7 +71,7 @@
         "description": "[GATE] Block impl code while design docs unreviewed"
       },
       {
-        "matcher": "Write|Edit",
+        "matcher": "Write|Edit|MultiEdit",
         "hooks": [
           {
             "type": "command",

@@ -9,13 +9,30 @@
 set -euo pipefail
 
 INPUT=$(cat)
+CMD=""
 
 # Extract the "command" field from tool_input JSON
-CMD=$(printf '%s' "$INPUT" | grep -o '"command"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*:[[:space:]]*"//;s/"$//' || true)
+# Prefer Python for correct JSON parsing (handles escaped quotes, multiline commands)
+# Supports both tool_input and toolInput keys, and string payloads
+# Fall back to grep only when Python is unavailable
+if command -v python3 &>/dev/null; then
+  CMD=$(printf '%s' "$INPUT" | python3 -c '
+import sys, json
+try:
+    d = json.loads(sys.stdin.read() or "{}")
+    inp = d.get("tool_input", d.get("toolInput", {}))
+    if isinstance(inp, str):
+        inp = json.loads(inp or "{}")
+    if isinstance(inp, dict):
+        print(inp.get("command", ""))
+except Exception:
+    pass
+' 2>/dev/null || true)
+fi
 
-# Python fallback for escaped quotes in command
+# Grep fallback when Python is not available
 if [[ -z "$CMD" ]]; then
-  CMD=$(printf '%s' "$INPUT" | python3 -c 'import sys,json; print(json.loads(sys.stdin.read()).get("tool_input",{}).get("command",""))' 2>/dev/null || true)
+  CMD=$(printf '%s' "$INPUT" | grep -o '"command"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*:[[:space:]]*"//;s/"$//' || true)
 fi
 
 # No command extracted — allow
@@ -69,7 +86,7 @@ if [[ -z "$WARN" ]] && printf '%s' "$CMD_LOWER" | grep -qE '\btruncate\b' 2>/dev
 fi
 
 # git push --force / git push -f (but NOT --force-with-lease which is the safe alternative)
-if [[ -z "$WARN" ]] && printf '%s' "$CMD" | grep -qE 'git\s+push\s+.*(-f\b|--force\b)' 2>/dev/null && ! printf '%s' "$CMD" | grep -qE '--force-with-lease' 2>/dev/null; then
+if [[ -z "$WARN" ]] && printf '%s' "$CMD" | grep -qE 'git\s+push\s+.*(-f\b|--force\b)' 2>/dev/null && ! printf '%s' "$CMD" | grep -qE -- '--force-with-lease' 2>/dev/null; then
   WARN="Destructive: git force-push rewrites remote history."
 fi
 

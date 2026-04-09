@@ -22,6 +22,26 @@
       "status": "local"
     },
     {
+      "path": "CONTRIBUTING.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "SECURITY.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-03-28-test-setup.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-03-28-test-setup-design.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
       "path": "agents/architect.md",
       "source": "ecc",
       "status": "sync",
@@ -738,6 +758,16 @@
       "upstream_path": "rules/common/coding-style.md"
     },
     {
+      "path": "rules/common/investigate-before-acting.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "rules/common/validate-before-building.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
       "path": "rules/common/development-workflow.md",
       "source": "ecc",
       "status": "sync",
@@ -1137,6 +1167,16 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "rules/zh/coding-style.md"
+    },
+    {
+      "path": "rules/zh/investigate-before-acting.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "rules/zh/validate-before-building.md",
+      "source": "local",
+      "status": "local"
     },
     {
       "path": "rules/zh/development-workflow.md",
@@ -4164,6 +4204,11 @@
     },
     {
       "path": "skills/supplements/thinking-models-planning.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "tests/test-gate-adversarial.sh",
       "source": "local",
       "status": "local"
     }

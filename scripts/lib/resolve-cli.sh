@@ -301,20 +301,68 @@ _resolve_codex_companion() {
 _execute_codex() {
   local prompt="$1"
   local duration="${2:-1200}"
+  local max_retries="${LITMUS_CODEX_RETRIES:-4}"
+  local retry_delay="${LITMUS_CODEX_RETRY_DELAY:-5}"
+  local high_from="${LITMUS_CODEX_HIGH_FROM:-3}"  # switch to high reasoning from this attempt
 
   _resolve_codex_companion
 
-  if [[ "$_CODEX_COMPANION" != "none" ]] && command -v node &>/dev/null; then
-    # Use official plugin's app-server protocol (stable, no stdin hang).
-    # Pipe via stdin to avoid ARG_MAX limits on large diffs — the companion
-    # reads piped stdin when no positional prompt is provided.
-    # Omit --json to get raw review output (--json wraps in an envelope
-    # that breaks downstream extract_review_json.py parsing)
-    printf '%s' "$prompt" | _portable_timeout "$duration" node "$_CODEX_COMPANION" task 2>&1
-  else
-    # Fallback: direct CLI invocation
-    printf '%s' "$prompt" | _portable_timeout "$duration" codex exec -s read-only - 2>&1
+  local attempt=0
+  local exit_code=0
+  local output=""
+
+  while [ "$attempt" -le "$max_retries" ]; do
+    local effort_args=()
+    if [ "$attempt" -gt 0 ]; then
+      local effort_label="xhigh"
+      if [ "$attempt" -ge "$high_from" ]; then
+        effort_args=(--effort high)
+        effort_label="high"
+      fi
+      echo "⟳ Codex retry $attempt/$max_retries (reasoning: $effort_label, waiting ${retry_delay}s)..." >&2
+      sleep "$retry_delay"
+      # Exponential backoff: double delay each retry
+      retry_delay=$((retry_delay * 2))
+    fi
+
+    if [[ "$_CODEX_COMPANION" != "none" ]] && command -v node &>/dev/null; then
+      # Use official plugin's app-server protocol (stable, no stdin hang).
+      # Pipe via stdin to avoid ARG_MAX limits on large diffs — the companion
+      # reads piped stdin when no positional prompt is provided.
+      # Omit --json to get raw review output (--json wraps in an envelope
+      # that breaks downstream extract_review_json.py parsing)
+      output=$(printf '%s' "$prompt" | _portable_timeout "$duration" node "$_CODEX_COMPANION" task "${effort_args[@]}" 2>&1) || exit_code=$?
+    else
+      # Fallback: direct CLI invocation
+      local config_args=()
+      if [ ${#effort_args[@]} -gt 0 ]; then
+        config_args=(-c 'model_reasoning_effort="high"')
+      fi
+      output=$(printf '%s' "$prompt" | _portable_timeout "$duration" codex exec -s read-only "${config_args[@]}" - 2>&1) || exit_code=$?
+    fi
+
+    # Success — done
+    if [ "$exit_code" -eq 0 ]; then
+      break
+    fi
+
+    # Timeout (124) — retrying won't help, bail immediately
+    if [ "$exit_code" -eq 124 ]; then
+      break
+    fi
+
+    attempt=$((attempt + 1))
+  done
+
+  # All retries exhausted — fall back to builtin
+  if [ "$exit_code" -ne 0 ] && [ "$exit_code" -ne 124 ]; then
+    echo "⚠️  Codex failed after $max_retries retries — falling back to built-in review" >&2
+    echo "BUILTIN_FALLBACK"
+    return 3
   fi
+
+  printf '%s' "$output"
+  return "$exit_code"
 }
 
 execute_review() {

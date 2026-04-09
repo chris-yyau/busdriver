@@ -289,6 +289,7 @@ _resolve_codex_companion() {
     # Find the latest installed version
     local latest
     # sort -t. -k1,1n -k2,2n -k3,3n is portable semver sort (no GNU sort -V needed)
+    # shellcheck disable=SC2012 # ls is safe here: version dirs are numeric semver only
     latest=$(ls -1 "$base" 2>/dev/null | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
     if [[ -n "$latest" && -f "$base/$latest/scripts/codex-companion.mjs" ]]; then
       _CODEX_COMPANION="$base/$latest/scripts/codex-companion.mjs"

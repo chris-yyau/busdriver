@@ -135,6 +135,7 @@ generate_prompt_file() {
   {
     printf '# ECC Command Prompt: /%s\n\n' "$cmd_name"
     printf 'Source: %s\n\n' "$src"
+    # shellcheck disable=SC2016 # Intentional: literal backticks in output, not command substitution
     printf 'Use this prompt to run the ECC `%s` workflow.\n\n' "$cmd_name"
     awk '
       NR == 1 && $0 == "---" { fm = 1; next }
@@ -500,6 +501,7 @@ else
 fi
 
 log "Installing global git safety hooks"
+# shellcheck disable=SC2097,SC2098 # Intentional: env prefix passes current shell vars to subprocess
 if [[ "$MODE" == "dry-run" ]]; then
   HOME="$HOME" \
   CODEX_HOME="$CODEX_HOME" \
@@ -515,6 +517,7 @@ else
 fi
 
 log "Running global regression sanity check"
+# shellcheck disable=SC2097,SC2098 # Intentional: env prefix passes current shell vars to subprocess
 if [[ "$MODE" == "dry-run" ]]; then
   printf '[dry-run] %s\n' "$SANITY_CHECKER"
 else

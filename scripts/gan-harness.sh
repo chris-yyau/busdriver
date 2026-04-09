@@ -31,6 +31,7 @@ PLANNER_MODEL="${GAN_PLANNER_MODEL:-opus}"
 GENERATOR_MODEL="${GAN_GENERATOR_MODEL:-opus}"
 EVALUATOR_MODEL="${GAN_EVALUATOR_MODEL:-opus}"
 DEV_PORT="${GAN_DEV_SERVER_PORT:-3000}"
+# shellcheck disable=SC2034 # Used by sourcing scripts
 DEV_CMD="${GAN_DEV_SERVER_CMD:-npm run dev}"
 PROJECT_DIR="${GAN_PROJECT_DIR:-.}"
 SKIP_PLANNER="${GAN_SKIP_PLANNER:-false}"
@@ -75,7 +76,8 @@ score_passes() {
 }
 
 elapsed() {
-  local now=$(date +%s)
+  local now
+  now=$(date +%s)
   local diff=$((now - START_TIME))
   printf '%dh %dm %ds' $((diff/3600)) $((diff%3600/60)) $((diff%60))
 }

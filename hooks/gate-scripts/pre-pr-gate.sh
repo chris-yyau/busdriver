@@ -215,19 +215,28 @@ fi
 # reviewed-commits.local by post-commit-consume-marker.sh), skip the
 # redundant full-branch re-review. Only require PR-level review when
 # unreviewed commits exist (worktree, external tools, other sessions).
+#
+# Entries are branch-scoped ("branch:sha") to prevent cross-branch carry-over.
+# Also accepts legacy bare SHA format for backwards compatibility.
 REVIEWED_FILE="$REPO_DIR/.claude/reviewed-commits.local"
 if [ -f "$REVIEWED_FILE" ]; then
     BASE_BRANCH=$(git -C "$REPO_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo "main")
+    CURRENT_BRANCH=$(git -C "$REPO_DIR" symbolic-ref --short HEAD 2>/dev/null || echo "")
     ALL_REVIEWED=true
     while IFS= read -r commit_sha; do
         [ -z "$commit_sha" ] && continue
-        if ! grep -qF "$commit_sha" "$REVIEWED_FILE" 2>/dev/null; then
+        # Check branch-scoped entry ("branch:sha") first, then bare SHA for compat
+        if grep -qF "${CURRENT_BRANCH}:${commit_sha}" "$REVIEWED_FILE" 2>/dev/null; then
+            continue  # Reviewed on this branch
+        elif grep -qxF "$commit_sha" "$REVIEWED_FILE" 2>/dev/null; then
+            continue  # Legacy bare SHA format (backwards compat)
+        else
             ALL_REVIEWED=false
             break
         fi
     done < <(git -C "$REPO_DIR" log --format='%H' "${BASE_BRANCH}..HEAD" 2>/dev/null)
     if [ "$ALL_REVIEWED" = true ]; then
-        # All commits were per-commit reviewed — allow PR without re-review
+        # All commits were per-commit reviewed on this branch — allow PR
         # Clean up the tracking file since PR is being created
         rm -f "$REVIEWED_FILE"
         exit 0

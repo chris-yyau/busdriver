@@ -177,14 +177,32 @@ Gather ALL pending issues in one pass:
 # CI check results
 gh pr checks <PR_NUMBER>
 
-# Inline review comments (REST API returns all — resolved and unresolved)
-# Note: REST cannot filter by resolution state. For unresolved-only, use GraphQL:
-#   gh api graphql -f query='{ repository(owner:"OWNER", name:"REPO") {
-#     pullRequest(number:N) { reviewThreads(first:100) { nodes {
-#       isResolved comments(first:10) { nodes { body path line author { login } } }
-#   } } } } }'
-gh api repos/{owner}/{repo}/pulls/<PR_NUMBER>/comments \
-  --jq '.[] | select(.position != null) | {path: .path, line: .line, body: .body, user: .user.login}'
+# Inline review threads (GraphQL — skips resolved and outdated threads)
+# isResolved: reviewer manually resolved the thread
+# isOutdated: code changed since the comment was posted (GitHub auto-marks)
+gh api graphql --paginate -f query='
+  query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 100, after: $endCursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            isResolved
+            isOutdated
+            path
+            line
+            comments(first: 100) {
+              nodes { body author { login } }
+            }
+          }
+        }
+      }
+    }
+  }
+' -f owner={owner} -f repo={repo} -F pr=<PR_NUMBER> \
+  --jq '.data.repository.pullRequest.reviewThreads.nodes[]
+    | select(.isResolved == false and .isOutdated == false)
+    | {path, line, comments: [.comments.nodes[] | {body, user: .author.login}]}'
 
 # Review-level comments (approve/request changes/comment)
 gh api repos/{owner}/{repo}/pulls/<PR_NUMBER>/reviews \
@@ -205,6 +223,7 @@ Classify each piece of feedback:
 | **CI failure — flaky/infra** | Note it, skip after 3 consecutive identical failures |
 | **Automated reviewer — specific fix** (CodeRabbit, Greptile, Cubic) | Fix it — treat like human review |
 | **Automated reviewer — stale/pre-existing issue** | Skip — only fix issues in YOUR changed code |
+| **Resolved or outdated thread** | Skip — already filtered out by GraphQL (`isResolved`, `isOutdated`) |
 | **Human review — specific fix request** | Fix it |
 | **Human review — question/clarification** | Reply with explanation, don't change code |
 | **Human review — design/scope concern** | **BAIL** — surface to user, this needs human judgment |

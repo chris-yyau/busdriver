@@ -3,45 +3,101 @@
 name: Security
 
 on:
+  pull_request:
+    paths:
+      - '.github/**'
+      - 'hooks/**'
+      - 'scripts/**'
+      - '**/*.sh'
+      - '**/*.js'
+      - '**/*.mjs'
+      - '**/*.py'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '.seatbelt.yml'
+      - 'package.json'
+      - '**/package-lock.json'
+      - '**/pnpm-lock.yaml'
+      - '**/yarn.lock'
+      - '**/go.sum'
+      - '**/requirements*.txt'
+      - '**/Dockerfile'
+      - '**/*.tf'
   push:
     branches: [main]
     paths:
       - '.github/**'
+      - 'hooks/**'
+      - 'scripts/**'
       - '**/*.sh'
       - '**/*.js'
       - '**/*.mjs'
+      - '**/*.py'
       - '**/*.yml'
       - '**/*.yaml'
+      - '.seatbelt.yml'
       - 'package.json'
       - '**/package-lock.json'
-  pull_request:
-    paths:
-      - '.github/**'
-      - '**/*.sh'
-      - '**/*.js'
-      - '**/*.mjs'
-      - '**/*.yml'
-      - '**/*.yaml'
-      - 'package.json'
-      - '**/package-lock.json'
+      - '**/pnpm-lock.yaml'
+      - '**/yarn.lock'
+      - '**/go.sum'
+      - '**/requirements*.txt'
+      - '**/Dockerfile'
+      - '**/*.tf'
 
 concurrency:
   group: security-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-permissions: {}
+permissions:
+  contents: read
 
 defaults:
   run:
     shell: bash
 
 jobs:
+  gitleaks:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          GITLEAKS_VERSION="8.30.1"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: Scan for secrets
+        run: gitleaks detect --source . --verbose --exit-code 1
+
+  shellcheck-ci:
+    name: Shell script quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Lint shell scripts
+        run: find hooks/gate-scripts scripts .github/scripts -name '*.sh' -print0 | xargs -0 shellcheck
+
   trivy:
     name: Dependency CVEs
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -71,8 +127,6 @@ jobs:
     name: Code security
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -90,8 +144,6 @@ jobs:
     name: IaC misconfig
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -109,8 +161,6 @@ jobs:
     name: Actions security
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      contents: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -128,14 +178,14 @@ jobs:
 
   reports:
     if: always()
-    needs: [trivy, semgrep, checkov, zizmor]
+    needs: [gitleaks, shellcheck-ci, trivy, semgrep, checkov, zizmor]
     runs-on: ubuntu-latest
     timeout-minutes: 2
-    permissions:
-      contents: read
     steps:
       - name: Write summary
         env:
+          GITLEAKS: ${{ needs.gitleaks.result }}
+          SHELLCHECK_CI: ${{ needs.shellcheck-ci.result }}
           TRIVY: ${{ needs.trivy.result }}
           SEMGREP: ${{ needs.semgrep.result }}
           CHECKOV: ${{ needs.checkov.result }}
@@ -145,6 +195,8 @@ jobs:
             echo "## Security Backstop"
             echo "| Scanner | Result |"
             echo "|---------|--------|"
+            echo "| gitleaks | $GITLEAKS |"
+            echo "| shellcheck | $SHELLCHECK_CI |"
             echo "| trivy | $TRIVY |"
             echo "| semgrep | $SEMGREP |"
             echo "| checkov | $CHECKOV |"

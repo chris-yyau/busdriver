@@ -180,17 +180,18 @@ gh pr checks <PR_NUMBER>
 # Inline review threads (GraphQL — skips resolved and outdated threads)
 # isResolved: reviewer manually resolved the thread
 # isOutdated: code changed since the comment was posted (GitHub auto-marks)
-gh api graphql -f query='
-  query($owner: String!, $repo: String!, $pr: Int!) {
+gh api graphql --paginate -f query='
+  query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $pr) {
-        reviewThreads(first: 100) {
+        reviewThreads(first: 100, after: $endCursor) {
+          pageInfo { hasNextPage endCursor }
           nodes {
             isResolved
             isOutdated
             path
             line
-            comments(first: 10) {
+            comments(first: 100) {
               nodes { body author { login } }
             }
           }

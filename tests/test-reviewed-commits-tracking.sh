@@ -96,6 +96,15 @@ printf '%s' "$HOOK_DATA" | bash hooks/gate-scripts/post-commit-consume-marker.sh
 got=$( [ -f "$REVIEWED_FILE" ] && echo "exists" || echo "cleared" )
 assert "non-rebase command preserves file" "exists" "$got"
 
+# 10. Non-Bash tool with "git rebase" in content does NOT clear file
+mkdir -p .claude
+echo "feat/test:ccc333444555666777888999000aaabbbcccddd" > "$REVIEWED_FILE"
+HOOK_DATA='{"tool_name":"Write","tool_input":{"file_path":"docs/guide.md","content":"Run git rebase main to sync"}}'
+printf '%s' "$HOOK_DATA" | bash hooks/gate-scripts/post-commit-consume-marker.sh 2>/dev/null || true
+
+got=$( [ -f "$REVIEWED_FILE" ] && echo "exists" || echo "cleared" )
+assert "Write tool with 'git rebase' in content preserves file" "exists" "$got"
+
 # ═══════════════════════════════════════════════════════════════════════
 # RESULTS
 # ═══════════════════════════════════════════════════════════════════════

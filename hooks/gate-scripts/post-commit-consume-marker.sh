@@ -19,9 +19,17 @@ trap 'exit 0' ERR
 HOOK_DATA=$(cat 2>/dev/null || true)
 [ -z "$HOOK_DATA" ] && exit 0
 
+# Fast pre-filter: skip if not a Bash tool call involving git
+case "$HOOK_DATA" in
+    *\"Bash\"*git*) ;;
+    *git*\"Bash\"*) ;;
+    *) exit 0 ;;
+esac
+
 # ── Rebase/amend detection: invalidate reviewed-commits on SHA change ──
 # Rebasing or amending changes commit SHAs, making the tracking file stale.
-# Detect these operations and clear the file to force PR-level re-review.
+# Only fires after confirming this is a Bash tool call (not Write/Edit with
+# "git rebase" in file content). Uses the raw Bash command text.
 case "$HOOK_DATA" in
     *git*rebase*|*git*commit*--amend*)
         REPO_DIR=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
@@ -32,7 +40,7 @@ case "$HOOK_DATA" in
         ;;
 esac
 
-# Fast pre-filter: skip if not a git commit via Bash tool
+# Narrow to git commit specifically (not rebase-only or other git commands)
 case "$HOOK_DATA" in
     *\"Bash\"*git*commit*) ;;
     *git*commit*\"Bash\"*) ;;

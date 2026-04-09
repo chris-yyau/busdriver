@@ -226,7 +226,8 @@ if [ -f "$REVIEWED_FILE" ]; then
     while IFS= read -r commit_sha; do
         [ -z "$commit_sha" ] && continue
         # Check branch-scoped entry ("branch:sha") first, then bare SHA for compat
-        if grep -qF "${CURRENT_BRANCH}:${commit_sha}" "$REVIEWED_FILE" 2>/dev/null; then
+        # Use -x (exact line match) to prevent substring matches across branches
+        if grep -qxF "${CURRENT_BRANCH}:${commit_sha}" "$REVIEWED_FILE" 2>/dev/null; then
             continue  # Reviewed on this branch
         elif grep -qxF "$commit_sha" "$REVIEWED_FILE" 2>/dev/null; then
             continue  # Legacy bare SHA format (backwards compat)

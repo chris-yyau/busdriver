@@ -82,9 +82,9 @@ esac
 normalize() {
     local p="$1"
     p="${p%/}"
-    # Resolve . and .. via python3 if available, else basic strip
+    # Resolve . and .. via python3 if available (stdin to avoid injection), else basic strip
     if command -v python3 &>/dev/null; then
-        p=$(python3 -c "import os.path; print(os.path.normpath('$p'))" 2>/dev/null || echo "$p")
+        p=$(printf '%s' "$p" | python3 -c 'import sys, os.path; print(os.path.normpath(sys.stdin.read()))' 2>/dev/null || echo "$p")
     fi
     echo "$p"
 }

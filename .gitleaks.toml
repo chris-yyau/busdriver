@@ -1,0 +1,8 @@
+# Gitleaks configuration for busdriver plugin.
+# Allowlist test fixtures and documentation examples that contain fake secrets.
+
+[allowlist]
+  paths = [
+    '''tests/test-reviewed-commits-tracking\.sh''',
+    '''skills/api-design/SKILL\.md''',
+  ]

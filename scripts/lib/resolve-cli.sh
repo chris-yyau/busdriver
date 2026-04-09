@@ -344,14 +344,15 @@ _execute_codex() {
       # reads piped stdin when no positional prompt is provided.
       # Omit --json to get raw review output (--json wraps in an envelope
       # that breaks downstream extract_review_json.py parsing)
-      output=$(printf '%s' "$prompt" | _portable_timeout "$duration" node "$_CODEX_COMPANION" task "${effort_args[@]}" 2>&1) || exit_code=$?
+      # ${effort_args[@]+...} guards against "unbound variable" when array is empty under set -u (macOS bash 3.2)
+      output=$(printf '%s' "$prompt" | _portable_timeout "$duration" node "$_CODEX_COMPANION" task ${effort_args[@]+"${effort_args[@]}"} 2>&1) || exit_code=$?
     else
       # Fallback: direct CLI invocation
       local config_args=()
       if [ ${#effort_args[@]} -gt 0 ]; then
         config_args=(-c 'model_reasoning_effort="high"')
       fi
-      output=$(printf '%s' "$prompt" | _portable_timeout "$duration" codex exec -s read-only "${config_args[@]}" - 2>&1) || exit_code=$?
+      output=$(printf '%s' "$prompt" | _portable_timeout "$duration" codex exec -s read-only ${config_args[@]+"${config_args[@]}"} - 2>&1) || exit_code=$?
     fi
 
     # Success — done
@@ -364,12 +365,19 @@ _execute_codex() {
       break
     fi
 
-    attempt=$((attempt + 1))
+    # Only retry on transient Codex service errors (network, API, rate-limit).
+    # Script bugs (unbound variable, syntax error, command not found) should not be retried.
+    if printf '%s' "$output" | grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|fetch failed|rate.limit|overloaded|capacity|50[0-9]|getaddrinfo'; then
+      attempt=$((attempt + 1))
+    else
+      echo "⚠️  Codex failed with non-transient error (exit $exit_code) — not retrying" >&2
+      break
+    fi
   done
 
-  # All retries exhausted — fall back to builtin
+  # All retries exhausted or non-transient error — fall back to builtin
   if [ "$exit_code" -ne 0 ] && [ "$exit_code" -ne 124 ]; then
-    echo "⚠️  Codex failed after $attempt attempt(s) — falling back to built-in review" >&2
+    echo "⚠️  Codex failed after $((attempt + 1)) attempt(s) — falling back to built-in review" >&2
     echo "BUILTIN_FALLBACK"
     return 3
   fi

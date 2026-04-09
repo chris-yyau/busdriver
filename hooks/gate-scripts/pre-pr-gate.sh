@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # PreToolUse hook: gate `gh pr create` on codex review of full base..HEAD diff
 #
-# Blocks PR creation until codex reviewer passes on the aggregate branch diff.
+# Blocks PR creation until litmus passes on the aggregate branch diff.
 # This catches code that escaped per-commit review (worktree commits, existing
 # branches, pre-existing commits from other sessions).
 #
 # Fail-CLOSED: errors block PR creation (user preference: stuck > skipped review)
 # Skip: .claude/skip-litmus.local or SKIP_LITMUS=1 (same as commit gate)
 #
-# Council decision (2026-03-21): Gate `gh pr create` only, NOT `git push`.
+# Roundtable decision (2026-03-21): Gate `gh pr create` only, NOT `git push`.
 # Gating push kills WIP pushes and destroys credibility of the gate system.
 
 set -euo pipefail

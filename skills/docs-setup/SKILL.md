@@ -396,10 +396,10 @@ done
 ## Key Decisions
 
 - **Separate from helmet** — CI config is deterministic (generate exact files); doc content is judgment-heavy (templates + project-specific content). Different concerns, different update cadences
-- **2 modes, not 3** — "generate" and "fix" are the same operation from the user's perspective. `audit` reports, `apply` acts. Council consensus (2026-03-27)
+- **2 modes, not 3** — "generate" and "fix" are the same operation from the user's perspective. `audit` reports, `apply` acts. Roundtable consensus (2026-03-27)
 - **Templates embedded in SKILL.md** — the LLM needs templates in context when generating. Separate files require extra Read calls and add friction. Accepted tradeoff: larger SKILL.md but zero-step template access
-- **Section protection via markers** — `<!-- docs-setup:custom -->` / `<!-- docs-setup:end -->` delineate machine-owned vs human-owned content. Standard sections (badges, Contributing link, Security link, License) are always overwritten. Everything between custom markers is preserved. Prevents destructive standardization (Codex council insight, 2026-03-27)
+- **Section protection via markers** — `<!-- docs-setup:custom -->` / `<!-- docs-setup:end -->` delineate machine-owned vs human-owned content. Standard sections (badges, Contributing link, Security link, License) are always overwritten. Everything between custom markers is preserved. Prevents destructive standardization (Roundtable insight, 2026-03-27)
 - **4 badges standard** — CI, Security, License:MIT, OpenSSF Scorecard. Security badge was missing from seatbelt (3 badges) — standardized to 4
 - **30-day fix SLA standard** — seatbelt had "2 weeks", busdriver had "30 days". Standardized to 30 days (more realistic for solo dev)
 - **CHANGELOG auto-commit** — .releaserc.json must include `@semantic-release/git` plugin to persist CHANGELOG.md. busdriver was missing this. docs-setup fixes it
-- **Skip CODE_OF_CONDUCT.md and SUPPORT.md** — solo dev with <10 repos. Overhead without community contributions. Reassess at 50+ repos or first external contributor (Codex suggested these; deferred by council verdict)
+- **Skip CODE_OF_CONDUCT.md and SUPPORT.md** — solo dev with <10 repos. Overhead without community contributions. Reassess at 50+ repos or first external contributor (Codex suggested these; deferred by roundtable verdict)

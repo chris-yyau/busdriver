@@ -18,7 +18,7 @@
 | `confidence-gated-findings.md` | `security-reviewer` agent, `security-scan` skill | gstack /cso | 2026-03-24 |
 | `three-layer-knowledge.md` | `busdriver:brainstorming`, `busdriver:writing-plans` | gstack shared | 2026-03-24 |
 | `spec-review-convergence.md` | `busdriver:brainstorming`, `blueprint-review` skill | gstack /office-hours | 2026-03-24 |
-| `nutrient-api-terms.md` | `busdriver:nutrient-document-processing` | fork-edit migration (council 2026-03-24) | 2026-03-24 |
+| `nutrient-api-terms.md` | `busdriver:nutrient-document-processing` | fork-edit migration (roundtable 2026-03-24) | 2026-03-24 |
 | `context-degradation-tiers.md` | `busdriver:context-budget`, `busdriver:strategic-compact`, `busdriver:dispatching-parallel-agents`, `busdriver:subagent-driven-development` | GSD references/context-budget.md (adapted) | 2026-04-06 |
 | `thinking-models-planning.md` | `busdriver:writing-plans`, `busdriver:brainstorming`, `busdriver:executing-plans` | GSD references/thinking-models-planning.md (adapted) | 2026-04-08 |
 | `gates-taxonomy.md` | `busdriver:orchestrator`, `busdriver:litmus`, `busdriver:blueprint-review`, `busdriver:verification-loop`, `busdriver:finishing-a-development-branch` | GSD references/gates.md (adapted) | 2026-04-08 |
@@ -31,9 +31,9 @@
 | `design-anti-slop.md` | `document-skills:frontend-design`, `busdriver:frontend-patterns`, `ui-ux-pro-max` | "avoid AI slop", "make it unique", "don't make it generic" | gstack /design-consultation | 2026-03-24 |
 | `directory-freeze.md` | `busdriver:systematic-debugging` | "freeze", "lock this dir" | gstack /freeze | 2026-03-24 |
 
-## Rejected (Council Decision)
+## Rejected (Roundtable Decision)
 
-| Idea | Reason | Council Date |
+| Idea | Reason | Roundtable Date |
 |------|--------|-------------|
 | Cognitive pattern libraries | Convergent reasoning risk in 4-voice roundtable | 2026-03-23 |
 | Effort compression table | Cargo-cult machinery, fake rigor | 2026-03-24 |

@@ -71,7 +71,7 @@
         "description": "[GATE] Block impl code while design docs unreviewed"
       },
       {
-        "matcher": "Write|Edit",
+        "matcher": "Write|Edit|MultiEdit",
         "hooks": [
           {
             "type": "command",

@@ -78,17 +78,24 @@ PRAGMATIST_CLI=$(resolve_role_cli "roundtable.pragmatist")
 CRITIC_CLI=$(resolve_role_cli "roundtable.critic")
 DISPATCH="${CLAUDE_PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
 
-# Dispatch available voices
-[[ "$PRAGMATIST_CLI" != "none" && "$PRAGMATIST_CLI" != "builtin" && ! "$PRAGMATIST_CLI" =~ ^missing: ]] && \
+# Dispatch available voices — capture PIDs so wait blocks on the actual processes
+PIDS=()
+if [[ "$PRAGMATIST_CLI" != "none" && "$PRAGMATIST_CLI" != "builtin" && ! "$PRAGMATIST_CLI" =~ ^missing: ]]; then
   "$DISPATCH" --cli "$PRAGMATIST_CLI" --timeout 300 --prompt "<Pragmatist prompt>" &
+  PIDS+=("$!")
+fi
 # NOTE: For large prompts (with extensive context), pass via stdin to avoid ARG_MAX limits:
 #   echo "$PROMPT" | "$DISPATCH" --cli "$CLI" --timeout 300
-[[ "$CRITIC_CLI" != "none" && "$CRITIC_CLI" != "builtin" && ! "$CRITIC_CLI" =~ ^missing: ]] && \
+if [[ "$CRITIC_CLI" != "none" && "$CRITIC_CLI" != "builtin" && ! "$CRITIC_CLI" =~ ^missing: ]]; then
   "$DISPATCH" --cli "$CRITIC_CLI" --timeout 300 --prompt "<Critic prompt>" &
-wait
+  PIDS+=("$!")
+fi
+(( ${#PIDS[@]} )) && wait "${PIDS[@]}"
 ```
 
 This is a **single Bash call** with both as background processes. This is critical — if Gemini and Codex are separate parallel Bash tool calls, one failing cancels the other. A single call with `&` and `wait` keeps them independent.
+
+**NEVER wrap dispatches in subshells `()`**. The pattern `( cmd & ) && wait` does NOT work — the subshell exits immediately after backgrounding, so `wait` has nothing to wait for. Always background directly and capture PIDs with `$!`.
 
 **Prompt template** for Gemini/Codex (same structure as Skeptic but with their role/lens):
 

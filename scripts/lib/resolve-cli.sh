@@ -305,6 +305,14 @@ _execute_codex() {
   local retry_delay="${LITMUS_CODEX_RETRY_DELAY:-5}"
   local high_from="${LITMUS_CODEX_HIGH_FROM:-3}"  # switch to high reasoning from this attempt
 
+  # Validate env vars are non-negative integers
+  case "$max_retries:$retry_delay:$high_from" in
+    (*[!0-9:]*)
+      echo "busdriver: LITMUS_CODEX_RETRIES, LITMUS_CODEX_RETRY_DELAY, and LITMUS_CODEX_HIGH_FROM must be non-negative integers" >&2
+      return 1
+      ;;
+  esac
+
   _resolve_codex_companion
 
   local attempt=0
@@ -312,8 +320,10 @@ _execute_codex() {
   local output=""
 
   while [ "$attempt" -le "$max_retries" ]; do
+    exit_code=0
     local effort_args=()
     if [ "$attempt" -gt 0 ]; then
+      # No --effort flag = codex config default (xhigh in config.toml)
       local effort_label="xhigh"
       if [ "$attempt" -ge "$high_from" ]; then
         effort_args=(--effort high)
@@ -356,7 +366,7 @@ _execute_codex() {
 
   # All retries exhausted — fall back to builtin
   if [ "$exit_code" -ne 0 ] && [ "$exit_code" -ne 124 ]; then
-    echo "⚠️  Codex failed after $max_retries retries — falling back to built-in review" >&2
+    echo "⚠️  Codex failed after $((attempt + 1)) attempt(s) — falling back to built-in review" >&2
     echo "BUILTIN_FALLBACK"
     return 3
   fi

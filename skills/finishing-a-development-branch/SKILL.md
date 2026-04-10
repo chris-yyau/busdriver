@@ -103,14 +103,14 @@ EOF
 )"
 ```
 
-Then: Cleanup worktree (Step 5)
-
 <EXTREMELY-IMPORTANT>
-After PR is created:
-1. **DO NOT enable GitHub auto-merge.** Auto-merge races against pr-grind — the PR will merge before reviewer comments are addressed.
-2. **INVOKE `busdriver:pr-grind`** with `--no-worktree` (you're already on the PR branch). Do NOT just mention it — actually invoke the skill so feedback is addressed before the PR merges.
+After PR is created (BEFORE worktree cleanup):
+1. **DO NOT enable GitHub auto-merge before pr-grind completes.** Auto-merge races against pr-grind — the PR will merge before reviewer comments are addressed.
+2. **INVOKE `busdriver:pr-grind`** with `--no-worktree` (you're still on the PR branch). Do NOT just mention it — actually invoke the skill so feedback is addressed before the PR merges.
 3. Only after pr-grind declares the PR clean should you consider merging (manually or via auto-merge).
 </EXTREMELY-IMPORTANT>
+
+Then: Cleanup worktree (Step 5)
 
 #### Option 3: Keep As-Is
 

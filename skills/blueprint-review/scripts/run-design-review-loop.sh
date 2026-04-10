@@ -253,7 +253,11 @@ $DESIGN_CONTENT
       GEMINI_RAW_FILE=$(get_review_file "gemini-raw.txt")
       GEMINI_START=$(millis)
 
-      if execute_review "$REVIEWER_1_CLI" "$FULL_PROMPT" > "$GEMINI_RAW_FILE" 2>&1; then
+      # Capture exit code per execute_review contract (exit 3 = BUILTIN_FALLBACK)
+      REVIEWER_EXIT=0
+      execute_review "$REVIEWER_1_CLI" "$FULL_PROMPT" > "$GEMINI_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+
+      if [[ "$REVIEWER_EXIT" -eq 0 ]]; then
         GEMINI_END=$(millis)
         GEMINI_DURATION=$((GEMINI_END - GEMINI_START))
 
@@ -280,8 +284,12 @@ with open('${GEMINI_OUTPUT_FILE}.pending', 'w') as f:
         else
           create_error_json "gemini" "Output was not valid JSON" > "$GEMINI_OUTPUT_FILE"
         fi
+      elif [[ "$REVIEWER_EXIT" -eq 3 ]]; then
+        # BUILTIN_FALLBACK: CLI retry exhaustion — degraded mode, not hard error.
+        # Arbiter proceeds with fewer external voices.
+        create_error_json "gemini" "CLI unavailable (builtin fallback — retry exhaustion)" > "$GEMINI_OUTPUT_FILE"
       else
-        create_error_json "gemini" "CLI execution failed" > "$GEMINI_OUTPUT_FILE"
+        create_error_json "gemini" "CLI execution failed (exit $REVIEWER_EXIT)" > "$GEMINI_OUTPUT_FILE"
       fi
     else
       create_error_json "gemini" "CLI not available" > "$GEMINI_OUTPUT_FILE"
@@ -295,7 +303,11 @@ with open('${GEMINI_OUTPUT_FILE}.pending', 'w') as f:
       CODEX_RAW_FILE=$(get_review_file "codex-raw.txt")
       CODEX_START=$(millis)
 
-      if execute_review "$REVIEWER_2_CLI" "$FULL_PROMPT" > "$CODEX_RAW_FILE" 2>&1; then
+      # Capture exit code per execute_review contract (exit 3 = BUILTIN_FALLBACK)
+      REVIEWER_EXIT=0
+      execute_review "$REVIEWER_2_CLI" "$FULL_PROMPT" > "$CODEX_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+
+      if [[ "$REVIEWER_EXIT" -eq 0 ]]; then
         CODEX_END=$(millis)
         CODEX_DURATION=$((CODEX_END - CODEX_START))
 
@@ -322,8 +334,12 @@ with open('${CODEX_OUTPUT_FILE}.pending', 'w') as f:
         else
           create_error_json "codex" "Output was not valid JSON" > "$CODEX_OUTPUT_FILE"
         fi
+      elif [[ "$REVIEWER_EXIT" -eq 3 ]]; then
+        # BUILTIN_FALLBACK: CLI retry exhaustion — degraded mode, not hard error.
+        # Arbiter proceeds with fewer external voices.
+        create_error_json "codex" "CLI unavailable (builtin fallback — retry exhaustion)" > "$CODEX_OUTPUT_FILE"
       else
-        create_error_json "codex" "CLI execution failed" > "$CODEX_OUTPUT_FILE"
+        create_error_json "codex" "CLI execution failed (exit $REVIEWER_EXIT)" > "$CODEX_OUTPUT_FILE"
       fi
     else
       create_error_json "codex" "CLI not available" > "$CODEX_OUTPUT_FILE"

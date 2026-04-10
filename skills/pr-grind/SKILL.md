@@ -26,6 +26,7 @@ origin: custom
 | Declaring "Round complete" after push without waiting | The push triggers a new review cycle — you must wait for IT to finish before declaring done |
 | Only waiting for CI (build/lint/test), ignoring reviewer bots | CodeRabbit, Greptile, Cubic are checks too — `gh pr checks` shows them as pending |
 | Fixing pre-existing issues flagged by automated reviewers | Scope creep — only fix issues in YOUR changed code |
+| Enabling GitHub auto-merge before pr-grind completes | The PR merges as soon as CI passes — before reviewer comments are addressed |
 
 ## Safety Rails
 

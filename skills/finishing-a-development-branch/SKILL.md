@@ -105,7 +105,12 @@ EOF
 
 Then: Cleanup worktree (Step 5)
 
-After PR is created, mention: *"Run `pr-grind` to iterate on CI failures and reviewer feedback."*
+<EXTREMELY-IMPORTANT>
+After PR is created:
+1. **DO NOT enable GitHub auto-merge.** Auto-merge races against pr-grind — the PR will merge before reviewer comments are addressed.
+2. **INVOKE `busdriver:pr-grind`** with `--no-worktree` (you're already on the PR branch). Do NOT just mention it — actually invoke the skill so feedback is addressed before the PR merges.
+3. Only after pr-grind declares the PR clean should you consider merging (manually or via auto-merge).
+</EXTREMELY-IMPORTANT>
 
 #### Option 3: Keep As-Is
 
@@ -185,6 +190,7 @@ git worktree remove <worktree-path>
 - Merge without verifying tests on result
 - Delete work without confirmation
 - Force-push without explicit request
+- Enable GitHub auto-merge before pr-grind completes
 
 **Always:**
 - Verify tests before offering options

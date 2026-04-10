@@ -1,9 +1,12 @@
 #!/bin/bash
 # dispatch.sh — Dispatch tasks to Codex or Gemini CLI as autonomous agents
 #
-# Usage:
-#   dispatch.sh --cli codex|gemini|both [--mode readonly|auto] [--timeout SECS] [--model MODEL] --prompt "..."
+# Usage (prefer heredoc or stdin to avoid shell escaping bugs):
+#   dispatch.sh --cli codex <<'PROMPT'
+#   your task here
+#   PROMPT
 #   echo "task" | dispatch.sh --cli codex
+#   dispatch.sh --cli codex --prompt "simple single-line only"
 
 set -euo pipefail
 

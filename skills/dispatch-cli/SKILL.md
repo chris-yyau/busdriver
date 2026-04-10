@@ -119,30 +119,39 @@ Do not change any external interfaces. Gate behavior must remain identical.
 
 ### Step 2: Invoke the Script
 
+**Use heredocs for multi-line prompts** (safe with quotes, backticks, `$`, newlines):
 ```bash
 # Single CLI, read-only (default and safest)
 ~/.claude/skills/dispatch-cli/scripts/dispatch.sh \
   --cli codex \
-  --prompt "Your task description here"
+  --timeout 300 <<'PROMPT'
+Your task description here.
+Can contain "quotes", `backticks`, $variables safely.
+PROMPT
 
 # Both CLIs for consensus (parallel execution)
 ~/.claude/skills/dispatch-cli/scripts/dispatch.sh \
-  --cli both \
-  --prompt "Your task description here"
+  --cli both <<'PROMPT'
+Your task description here
+PROMPT
 
 # Write mode (user explicitly requested changes)
 ~/.claude/skills/dispatch-cli/scripts/dispatch.sh \
   --cli codex \
-  --mode auto \
-  --prompt "Your task description here"
+  --mode auto <<'PROMPT'
+Your task description here
+PROMPT
 
 # With model override and custom timeout
 ~/.claude/skills/dispatch-cli/scripts/dispatch.sh \
   --cli gemini \
   --model gemini-2.5-pro \
-  --timeout 600 \
-  --prompt "Your task description here"
+  --timeout 600 <<'PROMPT'
+Your task description here
+PROMPT
 ```
+
+> **Shell escaping warning:** `--prompt "..."` is only safe for simple single-line text without quotes, backticks, or `$`. For real prompts (which almost always contain these), use heredocs (`<<'DELIM'`) or pipe via stdin. The single-quoted delimiter prevents all shell expansion.
 
 **Script flags:**
 | Flag | Values | Default |
@@ -170,25 +179,33 @@ After dispatch:
 ### Pattern: Quick Analysis
 One CLI, readonly, focused question.
 ```bash
-dispatch.sh --cli codex --prompt "What does the observe-session.sh hook do? Explain its data flow."
+dispatch.sh --cli codex <<'PROMPT'
+What does the observe-session.sh hook do? Explain its data flow.
+PROMPT
 ```
 
 ### Pattern: Consensus Audit
 Both CLIs, readonly, comprehensive review.
 ```bash
-dispatch.sh --cli both --prompt "Audit the pre-commit gate for security issues and bypass vectors."
+dispatch.sh --cli both <<'PROMPT'
+Audit the pre-commit gate for security issues and bypass vectors.
+PROMPT
 ```
 
 ### Pattern: Delegated Code Change
 One CLI, auto mode, well-scoped change.
 ```bash
-dispatch.sh --cli codex --mode auto --prompt "Add input validation to dispatch.sh for the --timeout flag (must be positive integer)."
+dispatch.sh --cli codex --mode auto <<'PROMPT'
+Add input validation to dispatch.sh for the --timeout flag (must be positive integer).
+PROMPT
 ```
 
 ### Pattern: Research
 One CLI, readonly, open-ended exploration.
 ```bash
-dispatch.sh --cli gemini --prompt "Analyze the instinct learning system and suggest improvements to the confidence scoring algorithm."
+dispatch.sh --cli gemini <<'PROMPT'
+Analyze the instinct learning system and suggest improvements to the confidence scoring algorithm.
+PROMPT
 ```
 
 ## Integration

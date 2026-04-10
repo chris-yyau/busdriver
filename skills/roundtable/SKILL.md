@@ -79,15 +79,19 @@ CRITIC_CLI=$(resolve_role_cli "roundtable.critic")
 DISPATCH="${CLAUDE_PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
 
 # Dispatch available voices — capture PIDs so wait blocks on the actual processes
+# IMPORTANT: Use heredocs (<<'DELIM') NOT --prompt "..." to avoid shell escaping bugs
+# with quotes, backticks, $, and newlines in prompt text.
 PIDS=()
 if [[ "$PRAGMATIST_CLI" != "none" && "$PRAGMATIST_CLI" != "builtin" && ! "$PRAGMATIST_CLI" =~ ^missing: ]]; then
-  "$DISPATCH" --cli "$PRAGMATIST_CLI" --timeout 300 --prompt "<Pragmatist prompt>" &
+  "$DISPATCH" --cli "$PRAGMATIST_CLI" --timeout 300 <<'PRAGMATIST_PROMPT' &
+<Pragmatist prompt>
+PRAGMATIST_PROMPT
   PIDS+=("$!")
 fi
-# NOTE: For large prompts (with extensive context), pass via stdin to avoid ARG_MAX limits:
-#   echo "$PROMPT" | "$DISPATCH" --cli "$CLI" --timeout 300
 if [[ "$CRITIC_CLI" != "none" && "$CRITIC_CLI" != "builtin" && ! "$CRITIC_CLI" =~ ^missing: ]]; then
-  "$DISPATCH" --cli "$CRITIC_CLI" --timeout 300 --prompt "<Critic prompt>" &
+  "$DISPATCH" --cli "$CRITIC_CLI" --timeout 300 <<'CRITIC_PROMPT' &
+<Critic prompt>
+CRITIC_PROMPT
   PIDS+=("$!")
 fi
 (( ${#PIDS[@]} )) && wait "${PIDS[@]}"

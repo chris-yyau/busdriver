@@ -119,9 +119,9 @@ Every step must contain the actual content an engineer needs. These are **plan f
 - Exact commands with expected output
 - DRY, YAGNI, TDD, frequent commits
 
-## Self-Review
+## Plan Sanity Check
 
-After writing the complete plan, look at the spec with fresh eyes and check the plan against it. This is a checklist you run yourself — not a subagent dispatch.
+After writing the complete plan, look at the spec with fresh eyes and check the plan against it. This is a quick inline checklist you run yourself — not a subagent dispatch, and NOT a substitute for blueprint-review.
 
 **1. Spec coverage:** Skim each section/requirement in the spec. Can you point to a task that implements it? List any gaps.
 
@@ -133,7 +133,14 @@ If you find issues, fix them inline. No need to re-review — just fix and move 
 
 ## Auto-Execution
 
-After saving the plan and self-review passes, proceed automatically through the remaining pipeline phases. Do NOT pause to ask the user which execution mode to use — execute immediately.
+<EXTREMELY-IMPORTANT>
+The sanity check above is NOT the design review. You MUST still invoke `busdriver:blueprint-review` below.
+Do NOT skip blueprint-review because the sanity check found no issues — they serve completely different purposes:
+- Sanity check = you checking your own work for obvious errors (30 seconds)
+- Blueprint-review = 3 independent external reviewers (Gemini + Codex + Claude arbiter) validating the design (minutes)
+</EXTREMELY-IMPORTANT>
+
+After saving the plan and sanity check passes, proceed automatically through the remaining pipeline phases. Do NOT pause to ask the user which execution mode to use — execute immediately.
 
 **Announce:** "Plan complete and saved to `<path>`. Auto-executing: design review → worktree → implementation."
 

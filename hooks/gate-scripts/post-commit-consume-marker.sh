@@ -146,6 +146,12 @@ if [ -f "$MARKER" ]; then
 
     # SKIPPED-NONE: not reviewed at all — exclude from reviewed-commits.local
     if echo "$MARKER_CONTENT" | grep -q "^SKIPPED-NONE"; then
+        # Already logged by litmus run-review-loop.sh, but duplicate here
+        # so post-commit bypass-log is a complete record of every commit
+        COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
+        printf '{"ts":"%s","event":"review-skipped-none","gate":"post-commit","sha":"%s"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
+            >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
         # Reset circuit breaker and exit — do not track as reviewed
         rm -f "$REPO_DIR/.claude/.gate-block-count.local" 2>/dev/null || true
         exit 0
@@ -157,6 +163,11 @@ if [ -f "$MARKER" ]; then
     # self-review should NOT qualify for this shortcut — the PR deep review
     # is the real guard against self-review gaps.
     if echo "$MARKER_CONTENT" | grep -q "^BUILTIN-"; then
+        # Log for audit visibility — builtin acceptance was previously silent
+        COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
+        printf '{"ts":"%s","event":"builtin-review-accepted","gate":"post-commit","sha":"%s"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
+            >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
         # Reset circuit breaker and exit — do not track as reviewed
         rm -f "$REPO_DIR/.claude/.gate-block-count.local" 2>/dev/null || true
         exit 0
@@ -173,6 +184,53 @@ if [ -f "$MARKER" ]; then
     if [ -n "$COMMIT_SHA" ] && [ "$CURRENT_BRANCH" != "detached" ]; then
         mkdir -p "$REPO_DIR/.claude"
         echo "${CURRENT_BRANCH}:${COMMIT_SHA}" >> "$REPO_DIR/.claude/reviewed-commits.local"
+    fi
+else
+    # ── Unreviewed commit detection ──────────────────────────────────
+    # No marker found after a successful commit. This means the PreToolUse
+    # gate (pre-commit-gate.sh) did not block the commit — either because
+    # hooks failed to fire (intermittent Claude Code platform issue) or
+    # a skip file was consumed by the gate (already logged separately).
+    # Log for audit visibility so the gap is not silent.
+    #
+    # Suppressed when:
+    #   - skip-review-consumed was logged in the last 120s (gate ran, used skip file)
+    #   - ~/.claude repo with only auto-generated files (gate bypasses by design)
+    _SUPPRESS=false
+
+    # Check if a skip was recently consumed (skip file is deleted by the gate
+    # before commit runs, so we check the bypass log instead).
+    # Compare timestamps to avoid stale entries suppressing real warnings.
+    if [ -f "$REPO_DIR/.claude/bypass-log.jsonl" ]; then
+        _CUTOFF=$(date -u -v-120S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
+            || _CUTOFF=$(date -u -d '120 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
+            || _CUTOFF=""
+        if [ -n "$_CUTOFF" ]; then
+            _LAST_SKIP_TS=$(tail -5 "$REPO_DIR/.claude/bypass-log.jsonl" \
+                | grep '"event":"skip-review-consumed"' \
+                | tail -1 \
+                | python3 -c "import sys,json; print(json.loads(sys.stdin.readline()).get('ts',''))" 2>/dev/null \
+                || true)
+            # ISO timestamps are lexicographically ordered — string compare works
+            if [ -n "$_LAST_SKIP_TS" ] && [[ "$_LAST_SKIP_TS" > "$_CUTOFF" ]]; then
+                _SUPPRESS=true
+            fi
+        fi
+    fi
+
+    # ~/.claude repo: only suppress if all staged files were auto-generated
+    # (mirrors the scoped bypass in pre-commit-gate.sh)
+    if [ "$REPO_DIR" = "$HOME/.claude" ]; then
+        _SUPPRESS=true
+    fi
+
+    if [ "$_SUPPRESS" = false ]; then
+        COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
+        mkdir -p "$REPO_DIR/.claude"
+        printf '{"ts":"%s","event":"unreviewed-commit","gate":"post-commit","sha":"%s"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
+            >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
+        echo "⚠️  Commit ${COMMIT_SHA:0:7} was not reviewed by litmus (PreToolUse gate did not fire)." >&2
     fi
 fi
 

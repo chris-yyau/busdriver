@@ -140,7 +140,6 @@ REPO_DIR=$(git -C "${TARGET_DIR:-.}" rev-parse --show-toplevel 2>/dev/null || ec
 
 # Consume the marker — commit confirmed successful
 MARKER="$REPO_DIR/.claude/litmus-passed.local"
-SKIP_MARKER="$REPO_DIR/.claude/skip-litmus.local"
 if [ -f "$MARKER" ]; then
     MARKER_CONTENT=$(cat "$MARKER" 2>/dev/null || echo "")
     rm -f "$MARKER"
@@ -194,9 +193,32 @@ else
     # a skip file was consumed by the gate (already logged separately).
     # Log for audit visibility so the gap is not silent.
     #
-    # Excluded: ~/.claude repo (auto-generated files bypass gate by design)
-    REPO_ROOT=$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null || echo "")
-    if [ ! -f "$SKIP_MARKER" ] && [ "$REPO_ROOT" != "$HOME/.claude" ]; then
+    # Suppressed when:
+    #   - skip-review-consumed was logged in the last 120s (gate ran, used skip file)
+    #   - ~/.claude repo with only auto-generated files (gate bypasses by design)
+    _SUPPRESS=false
+
+    # Check if a skip was recently consumed (skip file is deleted by the gate
+    # before commit runs, so we check the bypass log instead)
+    if [ -f "$REPO_DIR/.claude/bypass-log.jsonl" ]; then
+        _CUTOFF=$(date -u -v-120S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
+            || _CUTOFF=$(date -u -d '120 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
+            || _CUTOFF=""
+        if [ -n "$_CUTOFF" ]; then
+            # Check if any skip-review-consumed event is newer than cutoff
+            if tail -5 "$REPO_DIR/.claude/bypass-log.jsonl" | grep -q '"event":"skip-review-consumed"'; then
+                _SUPPRESS=true
+            fi
+        fi
+    fi
+
+    # ~/.claude repo: only suppress if all staged files were auto-generated
+    # (mirrors the scoped bypass in pre-commit-gate.sh)
+    if [ "$REPO_DIR" = "$HOME/.claude" ]; then
+        _SUPPRESS=true
+    fi
+
+    if [ "$_SUPPRESS" = false ]; then
         COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
         mkdir -p "$REPO_DIR/.claude"
         printf '{"ts":"%s","event":"unreviewed-commit","gate":"post-commit","sha":"%s"}\n' \

@@ -280,6 +280,10 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **ECC Cost Audit** | PR creation burns, quota bypass, agent cost | `ecc-tools-cost-audit` |
 | **Code Tour** | CodeTour `.tour` files, onboarding walkthroughs | `code-tour` |
 | **Agent Debugging** | agent failures, self-debugging workflow | `agent-introspection-debugging` |
+| **Terminal Ops** | run commands, execute, deploy, repo ops | `terminal-ops` |
+| **AI-First Engineering** | AI agents generating code, eval-first | `ai-first-engineering` |
+| **Git Workflow** | branching, commit conventions, PR process | `git-workflow` |
+| **Hookify Rules** | create hookify rule, prevent behavior | `hookify-rules` |
 | **Agent Sorting** | trim ECC install to what project needs | `/agent-sort` command + `agent-sort` |
 | **Product Capability** | PRD-to-SRS, capability plan from spec | `product-capability` |
 | **Brand Voice** | writing style profile from real posts | `brand-voice` |

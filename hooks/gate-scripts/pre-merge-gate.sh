@@ -76,12 +76,9 @@ fi
 # ── Skip overrides ────────────────────────────────────────────────────
 
 # Env var override
-if [ "${SKIP_PR_GRIND:-}" = "1" ]; then
-    echo '{"decision":"approve"}' >&2 2>/dev/null || true
-    exit 0
-fi
+[ "${SKIP_PR_GRIND:-}" = "1" ] && exit 0
 
-# File-based skip (shared pattern with litmus)
+# File-based skip (anti-self-bypass pattern from pre-commit gate)
 if [ -f ".claude/skip-pr-grind.local" ]; then
     FILE_AGE=999
     _MTIME=$(stat -f %m ".claude/skip-pr-grind.local" 2>/dev/null) \
@@ -89,7 +86,19 @@ if [ -f ".claude/skip-pr-grind.local" ]; then
         || _MTIME=""
     [ -n "$_MTIME" ] && FILE_AGE=$(( $(date +%s) - _MTIME ))
 
+    # Reject skip files created within last 30 seconds — likely Claude self-bypass
+    if [ "$FILE_AGE" -lt 30 ]; then
+        rm -f ".claude/skip-pr-grind.local"
+        block_emit "BLOCKED: skip-pr-grind.local was created moments ago (likely self-bypass). Do NOT create .claude/skip-pr-grind.local yourself. Run /pr-grind instead. If the user wants to skip, they should create the file manually in their terminal."
+        exit 0
+    fi
+
     if [ "$FILE_AGE" -lt 3600 ]; then
+        # Single-use: consume after allowing one merge
+        rm -f ".claude/skip-pr-grind.local"
+        # Bypass telemetry
+        mkdir -p .claude
+        printf '{"ts":"%s","event":"skip-pr-grind-consumed","gate":"pre-merge"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
         exit 0
     else
         rm -f ".claude/skip-pr-grind.local"

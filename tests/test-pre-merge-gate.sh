@@ -74,17 +74,18 @@ run_hook_test() {
 # ── Setup ─────────────────────────────────────────────────────────────
 mkdir -p "$MARKER_DIR"
 
-# Save and restore any existing markers
+# Save and restore any existing markers (track existence, not just content)
+HAD_CLEAN=false ; HAD_SKIP=false ; HAD_PENDING=false
 PREV_CLEAN="" ; PREV_SKIP="" ; PREV_PENDING=""
-[ -f "$CLEAN_MARKER" ]   && PREV_CLEAN=$(cat "$CLEAN_MARKER")
-[ -f "$SKIP_FILE" ]      && PREV_SKIP=$(cat "$SKIP_FILE")
-[ -f "$PENDING_MARKER" ] && PREV_PENDING=$(cat "$PENDING_MARKER")
+[ -f "$CLEAN_MARKER" ]   && HAD_CLEAN=true   && PREV_CLEAN=$(cat "$CLEAN_MARKER")
+[ -f "$SKIP_FILE" ]      && HAD_SKIP=true    && PREV_SKIP=$(cat "$SKIP_FILE")
+[ -f "$PENDING_MARKER" ] && HAD_PENDING=true && PREV_PENDING=$(cat "$PENDING_MARKER")
 
 cleanup() {
     rm -f "$CLEAN_MARKER" "$SKIP_FILE" "$PENDING_MARKER"
-    [ -n "$PREV_CLEAN" ]   && echo "$PREV_CLEAN"   > "$CLEAN_MARKER"   || true
-    [ -n "$PREV_SKIP" ]    && echo "$PREV_SKIP"     > "$SKIP_FILE"     || true
-    [ -n "$PREV_PENDING" ] && echo "$PREV_PENDING"  > "$PENDING_MARKER" || true
+    [ "$HAD_CLEAN" = true ]   && printf '%s' "$PREV_CLEAN"   > "$CLEAN_MARKER"   || true
+    [ "$HAD_SKIP" = true ]    && printf '%s' "$PREV_SKIP"    > "$SKIP_FILE"      || true
+    [ "$HAD_PENDING" = true ] && printf '%s' "$PREV_PENDING" > "$PENDING_MARKER" || true
 }
 trap cleanup EXIT
 
@@ -108,8 +109,11 @@ echo "31" > "$CLEAN_MARKER"
 run_gate_test "allows gh pr merge with fresh marker" "allow" "$MERGE_INPUT"
 rm -f "$CLEAN_MARKER"
 
-# 3. Allow with skip file
+# 3. Allow with skip file (must be > 30s old to pass anti-self-bypass)
 touch "$SKIP_FILE"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
+    || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null \
+    || true
 run_gate_test "allows gh pr merge with skip file" "allow" "$MERGE_INPUT"
 rm -f "$SKIP_FILE"
 
@@ -125,11 +129,17 @@ run_gate_test "ignores non-Bash tool" "allow" \
 
 # 7. Stale marker (simulate by touching with old timestamp)
 echo "31" > "$CLEAN_MARKER"
-# Touch with timestamp 3 hours ago (macOS)
-touch -t "$(date -v-3H '+%Y%m%d%H%M.%S')" "$CLEAN_MARKER" 2>/dev/null \
-    || touch -d "3 hours ago" "$CLEAN_MARKER" 2>/dev/null \
-    || true
-run_gate_test "blocks with stale marker (>2h old)" "block" "$MERGE_INPUT"
+# Touch with timestamp 3 hours ago (macOS or GNU)
+TOUCH_OK=false
+touch -t "$(date -v-3H '+%Y%m%d%H%M.%S')" "$CLEAN_MARKER" 2>/dev/null && TOUCH_OK=true
+[ "$TOUCH_OK" = false ] && touch -d "3 hours ago" "$CLEAN_MARKER" 2>/dev/null && TOUCH_OK=true
+if [ "$TOUCH_OK" = true ]; then
+    run_gate_test "blocks with stale marker (>2h old)" "block" "$MERGE_INPUT"
+else
+    TOTAL=$((TOTAL + 1))
+    printf "  SKIP  blocks with stale marker (>2h old) — touch timestamp not supported\n"
+    PASS=$((PASS + 1))  # Don't fail the suite on platform limitation
+fi
 rm -f "$CLEAN_MARKER"
 
 # ═══════════════════════════════════════════════════════════════════════

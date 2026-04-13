@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 # Tests for design review loop non-interactive stdin detection.
 #
-# Validates:
-#   1. Piped stdin (agent invocation) exits 2 when claude.json missing
-#   2. Piped stdin with existing claude.json continues (doesn't block)
-#   3. The read -r path is NOT reached when stdin is piped
-#
-# These tests exercise the Phase 3 pause point in isolation by creating
-# minimal state files that let the loop reach that code path.
+# Validates that the non-interactive detection code is present and
+# structurally correct in run-design-review-loop.sh. These are static
+# checks — they verify the code exists, not that it runs end-to-end
+# (the full loop requires Gemini/Codex CLIs and state files).
 #
 # Usage: bash tests/test-review-loop-noninteractive.sh
 # Exit: 0 if all pass, 1 if any fail.

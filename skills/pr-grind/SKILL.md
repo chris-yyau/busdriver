@@ -296,6 +296,15 @@ Continue grinding?
 3. No unresolved actionable comments from any source
 4. No new comments arrived after your last push (wait for the full cycle)
 
+**Write the pr-grind-clean marker (REQUIRED — pre-merge gate checks this):**
+```bash
+# Signal to the pre-merge gate that this PR has been ground clean
+echo "<PR_NUMBER>" > .claude/pr-grind-clean.local
+
+# Remove the pending-grind marker if it exists
+rm -f .claude/pr-pending-grind.local
+```
+
 **Then clean up the worktree:**
 ```bash
 # Return to main worktree

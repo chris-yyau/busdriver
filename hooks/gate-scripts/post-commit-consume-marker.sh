@@ -199,14 +199,20 @@ else
     _SUPPRESS=false
 
     # Check if a skip was recently consumed (skip file is deleted by the gate
-    # before commit runs, so we check the bypass log instead)
+    # before commit runs, so we check the bypass log instead).
+    # Compare timestamps to avoid stale entries suppressing real warnings.
     if [ -f "$REPO_DIR/.claude/bypass-log.jsonl" ]; then
         _CUTOFF=$(date -u -v-120S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
             || _CUTOFF=$(date -u -d '120 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
             || _CUTOFF=""
         if [ -n "$_CUTOFF" ]; then
-            # Check if any skip-review-consumed event is newer than cutoff
-            if tail -5 "$REPO_DIR/.claude/bypass-log.jsonl" | grep -q '"event":"skip-review-consumed"'; then
+            _LAST_SKIP_TS=$(tail -5 "$REPO_DIR/.claude/bypass-log.jsonl" \
+                | grep '"event":"skip-review-consumed"' \
+                | tail -1 \
+                | python3 -c "import sys,json; print(json.loads(sys.stdin.readline()).get('ts',''))" 2>/dev/null \
+                || true)
+            # ISO timestamps are lexicographically ordered — string compare works
+            if [ -n "$_LAST_SKIP_TS" ] && [[ "$_LAST_SKIP_TS" > "$_CUTOFF" ]]; then
                 _SUPPRESS=true
             fi
         fi

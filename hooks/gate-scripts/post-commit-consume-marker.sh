@@ -140,12 +140,19 @@ REPO_DIR=$(git -C "${TARGET_DIR:-.}" rev-parse --show-toplevel 2>/dev/null || ec
 
 # Consume the marker — commit confirmed successful
 MARKER="$REPO_DIR/.claude/litmus-passed.local"
+SKIP_MARKER="$REPO_DIR/.claude/skip-litmus.local"
 if [ -f "$MARKER" ]; then
     MARKER_CONTENT=$(cat "$MARKER" 2>/dev/null || echo "")
     rm -f "$MARKER"
 
     # SKIPPED-NONE: not reviewed at all — exclude from reviewed-commits.local
     if echo "$MARKER_CONTENT" | grep -q "^SKIPPED-NONE"; then
+        # Already logged by litmus run-review-loop.sh, but duplicate here
+        # so post-commit bypass-log is a complete record of every commit
+        COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
+        printf '{"ts":"%s","event":"review-skipped-none","gate":"post-commit","sha":"%s"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
+            >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
         # Reset circuit breaker and exit — do not track as reviewed
         rm -f "$REPO_DIR/.claude/.gate-block-count.local" 2>/dev/null || true
         exit 0
@@ -157,6 +164,11 @@ if [ -f "$MARKER" ]; then
     # self-review should NOT qualify for this shortcut — the PR deep review
     # is the real guard against self-review gaps.
     if echo "$MARKER_CONTENT" | grep -q "^BUILTIN-"; then
+        # Log for audit visibility — builtin acceptance was previously silent
+        COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
+        printf '{"ts":"%s","event":"builtin-review-accepted","gate":"post-commit","sha":"%s"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
+            >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
         # Reset circuit breaker and exit — do not track as reviewed
         rm -f "$REPO_DIR/.claude/.gate-block-count.local" 2>/dev/null || true
         exit 0
@@ -173,6 +185,24 @@ if [ -f "$MARKER" ]; then
     if [ -n "$COMMIT_SHA" ] && [ "$CURRENT_BRANCH" != "detached" ]; then
         mkdir -p "$REPO_DIR/.claude"
         echo "${CURRENT_BRANCH}:${COMMIT_SHA}" >> "$REPO_DIR/.claude/reviewed-commits.local"
+    fi
+else
+    # ── Unreviewed commit detection ──────────────────────────────────
+    # No marker found after a successful commit. This means the PreToolUse
+    # gate (pre-commit-gate.sh) did not block the commit — either because
+    # hooks failed to fire (intermittent Claude Code platform issue) or
+    # a skip file was consumed by the gate (already logged separately).
+    # Log for audit visibility so the gap is not silent.
+    #
+    # Excluded: ~/.claude repo (auto-generated files bypass gate by design)
+    REPO_ROOT=$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null || echo "")
+    if [ ! -f "$SKIP_MARKER" ] && [ "$REPO_ROOT" != "$HOME/.claude" ]; then
+        COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
+        mkdir -p "$REPO_DIR/.claude"
+        printf '{"ts":"%s","event":"unreviewed-commit","gate":"post-commit","sha":"%s"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
+            >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
+        echo "⚠️  Commit ${COMMIT_SHA:0:7} was not reviewed by litmus (PreToolUse gate did not fire)." >&2
     fi
 fi
 

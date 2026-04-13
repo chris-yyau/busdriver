@@ -167,6 +167,7 @@ Consider `roundtable` if architecturally significant or results seem "too clean.
 Handles: verify tests → present 4 options (merge/PR/keep/discard) → execute → clean up worktree.
 **Gate:** Litmus fires automatically — fast mode at `git commit`, deep mode (multi-voice) at `gh pr create`.
 **Post-PR:** If Option 2 (Create PR) is chosen, `busdriver:pr-grind` is invoked automatically to address CI failures and reviewer comments before the PR merges. Do NOT enable GitHub auto-merge — it races against pr-grind.
+**Enforcement:** Two-layer pr-grind enforcement: (1) PostToolUse hook on `gh pr create` appends instruction to invoke pr-grind; (2) PreToolUse gate on `gh pr merge` blocks until pr-grind writes `.claude/pr-grind-clean.local`. Skip: `.claude/skip-pr-grind.local` or `SKIP_PR_GRIND=1`.
 
 ## Domain Supplements
 

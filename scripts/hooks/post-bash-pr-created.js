@@ -1,36 +1,118 @@
 #!/usr/bin/env node
+/**
+ * PostToolUse hook: after `gh pr create` succeeds, instruct Claude
+ * to invoke pr-grind and clear any stale pr-grind-clean marker.
+ *
+ * Output protocol:
+ *   - Returns modified JSON with instruction appended to tool_output
+ *   - Writes the PR URL to .claude/pr-pending-grind.local
+ *   - Removes stale .claude/pr-grind-clean.local (new PR invalidates old marker)
+ */
+
 'use strict';
 
-const MAX_STDIN = 1024 * 1024;
-let raw = '';
+const fs = require('fs');
+const path = require('path');
 
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', chunk => {
-  if (raw.length < MAX_STDIN) {
-    const remaining = MAX_STDIN - raw.length;
-    raw += chunk.substring(0, remaining);
-  }
-});
-
-process.stdin.on('end', () => {
+/**
+ * Core logic — called by run-with-flags.js via direct require().
+ *
+ * @param {string} rawInput - Raw JSON from stdin (PostToolUse hook data)
+ * @returns {string|object} Modified output or pass-through
+ */
+function run(rawInput) {
   try {
-    const input = JSON.parse(raw);
+    const input = JSON.parse(rawInput);
     const cmd = String(input.tool_input?.command || '');
 
-    if (/\bgh\s+pr\s+create\b/.test(cmd)) {
-      const out = String(input.tool_output?.output || '');
-      const match = out.match(/https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/);
-      if (match) {
-        const prUrl = match[0];
-        const repo = prUrl.replace(/https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/, '$1');
-        const prNum = prUrl.replace(/.+\/pull\/(\d+)/, '$1');
-        console.error(`[Hook] PR created: ${prUrl}`);
-        console.error(`[Hook] To review: gh pr review ${prNum} --repo ${repo}`);
-      }
+    if (!/\bgh\s+pr\s+create\b/.test(cmd)) {
+      return rawInput;
     }
-  } catch {
-    // ignore parse errors and pass through
-  }
 
-  process.stdout.write(raw);
-});
+    const out = String(input.tool_output?.output || '');
+    const match = out.match(/https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/);
+
+    if (!match) {
+      return rawInput;
+    }
+
+    const prUrl = match[0];
+    const prNum = prUrl.replace(/.+\/pull\/(\d+)/, '$1');
+
+    // Write pending-grind marker so we know which PR needs grinding
+    try {
+      const claudeDir = path.resolve('.claude');
+      if (fs.existsSync(claudeDir)) {
+        fs.writeFileSync(
+          path.join(claudeDir, 'pr-pending-grind.local'),
+          `${prUrl}\n`,
+          'utf8'
+        );
+        // Invalidate any stale pr-grind-clean marker from a previous PR
+        const cleanMarker = path.join(claudeDir, 'pr-grind-clean.local');
+        if (fs.existsSync(cleanMarker)) {
+          fs.unlinkSync(cleanMarker);
+        }
+      }
+    } catch {
+      // Non-fatal — marker write failure shouldn't break the hook
+    }
+
+    // Append instruction to tool output so Claude sees it
+    const instruction = [
+      '',
+      '─── PR Grind Required ───',
+      `PR #${prNum} created: ${prUrl}`,
+      '',
+      'You MUST now invoke `busdriver:pr-grind` (or `/pr-grind`) to address',
+      'reviewer feedback before merging. The pre-merge gate will BLOCK',
+      '`gh pr merge` until pr-grind declares the PR clean.',
+      '',
+      'Do NOT enable GitHub auto-merge before pr-grind completes.',
+      '─────────────────────────'
+    ].join('\n');
+
+    const modifiedOutput = out + instruction;
+
+    // Return modified JSON with the instruction appended
+    const modified = { ...input };
+    if (!modified.tool_output) {
+      modified.tool_output = {};
+    }
+    modified.tool_output = { ...modified.tool_output, output: modifiedOutput };
+
+    return {
+      stdout: JSON.stringify(modified),
+      stderr: `[Hook] PR #${prNum} created — pr-grind required before merge\n`
+    };
+  } catch {
+    return rawInput;
+  }
+}
+
+// ── stdin entry point (backwards-compatible) ────────────────────
+if (require.main === module) {
+  const MAX_STDIN = 1024 * 1024;
+  let raw = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => {
+    if (raw.length < MAX_STDIN) {
+      const remaining = MAX_STDIN - raw.length;
+      raw += chunk.substring(0, remaining);
+    }
+  });
+
+  process.stdin.on('end', () => {
+    const result = run(raw);
+    if (typeof result === 'string') {
+      process.stdout.write(result);
+    } else if (result && typeof result === 'object') {
+      if (result.stderr) {
+        process.stderr.write(result.stderr);
+      }
+      process.stdout.write(result.stdout || raw);
+    }
+  });
+}
+
+module.exports = { run };

@@ -471,6 +471,24 @@ EOF
 
   if [[ "$AUTO_MODE" == "true" ]]; then
     log_info "  Auto mode: Claude validation must be completed by the calling skill."
+  elif [[ ! -t 0 ]]; then
+    # Non-interactive (piped stdin) — agent invocation.
+    # The agent can't write claude.json while this subprocess blocks on read.
+    # Exit with code 2 so the calling skill can:
+    #   1. Read the prompt file
+    #   2. Write claude.json with codebase-grounded validation
+    #   3. Re-run with --claude-only (skips artifact cleanup + Phase 1-2)
+    log_info ""
+    log_info "  Non-interactive stdin detected (agent invocation)."
+    if [[ -f "$CLAUDE_OUTPUT_FILE" ]]; then
+      log_info "  Found existing Claude output — continuing."
+    else
+      log_info "  Claude output needed. Write to: $CLAUDE_OUTPUT_FILE"
+      log_info "  Then re-run with: --claude-only"
+      log_info "  Prompt file: $CLAUDE_PROMPT_FILE"
+      mark_review_complete "awaiting_claude_validation"
+      exit 2
+    fi
   else
     log_info ""
     log_info "  MANUAL STEP: Complete Claude validation with codebase context."
@@ -484,7 +502,7 @@ EOF
     log_error "Three-tier review requires Claude as arbiter."
     log_info "  1. Read: cat $CLAUDE_PROMPT_FILE"
     log_info "  2. Write output to: $CLAUDE_OUTPUT_FILE"
-    log_info "  3. Re-run this script"
+    log_info "  3. Re-run this script with --claude-only"
     mark_review_complete "awaiting_claude_validation"
     exit 1
   fi

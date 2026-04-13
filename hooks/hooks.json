@@ -60,6 +60,17 @@
         "description": "[GATE] Block gh pr create until codex review passes"
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/pre-merge-gate.sh\"",
+            "timeout": 5
+          }
+        ],
+        "description": "[GATE] Block gh pr merge until pr-grind declares PR clean"
+      },
+      {
         "matcher": "Write|Edit|MultiEdit|Bash",
         "hooks": [
           {

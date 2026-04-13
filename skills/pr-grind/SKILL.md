@@ -296,17 +296,20 @@ Continue grinding?
 3. No unresolved actionable comments from any source
 4. No new comments arrived after your last push (wait for the full cycle)
 
-**Write the pr-grind-clean marker (REQUIRED — pre-merge gate checks this):**
+**Write the pr-grind-clean marker (REQUIRED — pre-merge gate checks CWD's `.claude/`):**
 ```bash
-# Signal to the pre-merge gate that this PR has been ground clean
+# Signal to the pre-merge gate that this PR has been ground clean.
+# Write BEFORE worktree cleanup — merge happens from this CWD.
+mkdir -p .claude
 echo "<PR_NUMBER>" > .claude/pr-grind-clean.local
-
-# Remove the pending-grind marker if it exists
 rm -f .claude/pr-pending-grind.local
 ```
 
-**Then clean up the worktree:**
+**Merge, then clean up the worktree:**
 ```bash
+# Merge while still in worktree (gate checks .claude/ in CWD)
+gh pr merge <PR_NUMBER> --squash --delete-branch
+
 # Return to main worktree
 cd <original-worktree-path>
 

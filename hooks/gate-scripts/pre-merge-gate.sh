@@ -128,10 +128,14 @@ if [ -f ".claude/pr-grind-clean.local" ]; then
         esac
         if command -v gh &>/dev/null; then
             # gh pr checks exits 1 when any check has failed — capture output
-            # regardless of exit code. Only block if gh itself can't run.
-            CHECKS_OUTPUT=$(gh pr checks "$PR_NUM" 2>&1) || true
-            if [ -z "$CHECKS_OUTPUT" ]; then
-                block_emit "Pre-merge gate: unable to verify CI checks for PR #$PR_NUM (\`gh pr checks\` returned no output). Resolve GitHub CLI/auth/network issues and retry."
+            # and exit code separately to distinguish "check failed" from "CLI error".
+            GH_EXIT=0
+            CHECKS_OUTPUT=$(gh pr checks "$PR_NUM" 2>&1) || GH_EXIT=$?
+            # Detect CLI errors vs check failures: valid output contains tab-separated
+            # check results (pass/fail/pending). If gh errored, output is an error message
+            # without these markers.
+            if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_OUTPUT" | grep -qE "pass|fail|pending"; then
+                block_emit "Pre-merge gate: unable to verify CI checks for PR #$PR_NUM (\`gh pr checks\` failed with exit $GH_EXIT). Resolve GitHub CLI/auth/network issues and retry."
                 exit 0
             fi
             FAILED=$(printf '%s\n' "$CHECKS_OUTPUT" | grep -cE "fail" || true)

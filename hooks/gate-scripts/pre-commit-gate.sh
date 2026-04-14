@@ -290,6 +290,81 @@ if [ "$HAS_STAGED" = true ] && [ "$ALL_DESIGN_REVIEWED" = true ]; then
     exit 0  # All staged files are design-reviewed specs → codex review redundant
 fi
 
+# ── TOCTOU fallback for design-reviewed bypass ───────────────────────────
+# When `git add && git commit` is chained, PreToolUse fires before `git add`
+# executes, so `git diff --cached` is empty (HAS_STAGED=false). Extract
+# explicit file paths from the `git add` portion of the command and check
+# those files for design-reviewed markers.
+# Fail-closed: reject flags (-A, -u, -p), globs (*?[{), or any parse failure.
+if [ "$HAS_STAGED" = false ]; then
+    TOCTOU_FILES=$(printf '%s' "$HOOK_DATA" | python3 -c "
+import sys, json, re
+try:
+    d = json.load(sys.stdin)
+    inp = d.get('tool_input', d.get('toolInput', {}))
+    if isinstance(inp, str):
+        inp = json.loads(inp)
+    cmd = inp.get('command', '')
+    segments = re.split(r'&&|\|\||[;\n]', cmd)
+    files = []
+    for seg in segments:
+        seg = seg.strip()
+        if not re.match(r'git\s+add\b', seg):
+            continue
+        words = seg.split()
+        reject = False
+        args = []
+        past_sep = False
+        for w in words[2:]:
+            if w == '--':
+                past_sep = True
+                continue
+            if not past_sep and w.startswith('-'):
+                reject = True
+                break
+            if w == '.' or w.startswith('/') or '..' in w.split('/') or any(c in w for c in '*?[{'):
+                reject = True
+                break
+            args.append(w)
+        if reject or not args:
+            files = []
+            break
+        files.extend(args)
+    for f in files:
+        print(f)
+except Exception as e:
+    import sys
+    sys.stderr.write('toctou-parse-error: ' + repr(e) + '\n')
+" 2>>"${REPO_DIR}/.claude/toctou-parse.log" || true)
+
+    if [ -n "$TOCTOU_FILES" ]; then
+        TOCTOU_ALL_SPECS=true
+        TOCTOU_COUNT=0
+        while IFS= read -r toctou_file; do
+            [ -z "$toctou_file" ] && continue
+            TOCTOU_COUNT=$((TOCTOU_COUNT + 1))
+            FULL_PATH="$REPO_DIR/$toctou_file"
+            IS_SPEC=false
+            if echo "$toctou_file" | grep -qE '\.md$'; then
+                if echo "$toctou_file" | grep -qiE '(^|/)(PLAN|DESIGN|ARCHITECTURE)[^/]*\.md$' || \
+                   echo "$toctou_file" | grep -qiE '(\.claude|docs)/([^/]+/)*(plans|specs)/.*\.md$'; then
+                    if [ -f "$FULL_PATH" ] && [ ! -L "$FULL_PATH" ] && grep -q "<!-- design-reviewed: PASS -->" "$FULL_PATH" 2>/dev/null; then
+                        IS_SPEC=true
+                    fi
+                fi
+            fi
+            if [ "$IS_SPEC" = false ]; then
+                TOCTOU_ALL_SPECS=false
+                break
+            fi
+        done <<< "$TOCTOU_FILES"
+
+        if [ "$TOCTOU_ALL_SPECS" = true ] && [ "$TOCTOU_COUNT" -gt 0 ]; then
+            exit 0  # TOCTOU bypass: all git-add files are design-reviewed specs
+        fi
+    fi
+fi
+
 # ── Gate 2: Codex review ─────────────────────────────────────────────────
 MARKER="$REPO_DIR/.claude/litmus-passed.local"
 if [ -f "$MARKER" ]; then

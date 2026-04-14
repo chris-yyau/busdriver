@@ -139,11 +139,17 @@ async function main() {
     try {
       let output = hookModule.run(raw, { truncated, maxStdin: MAX_STDIN });
       if (output && typeof output.then === 'function') {
-        output = await output;
+        const HOOK_TIMEOUT_MS = 8000;
+        output = await Promise.race([
+          output,
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`hook timed out after ${HOOK_TIMEOUT_MS}ms`)), HOOK_TIMEOUT_MS)
+          ),
+        ]);
       }
       process.exit(emitHookResult(raw, output));
     } catch (runErr) {
-      process.stderr.write(`[Hook] run() error for ${hookId}: ${runErr.message}\n`);
+      process.stderr.write(`[Hook] run() error for ${hookId}: ${runErr.message} (script=${scriptPath})\n`);
       process.stdout.write(raw);
     }
     process.exit(0);

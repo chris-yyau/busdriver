@@ -99,21 +99,30 @@ trap "rm -f '$NOTES_TMP' '$INSTINCT_TMP'" EXIT
 
 MEMORY_DIR="${HOME}/.claude/notes"
 if [ -d "$MEMORY_DIR" ] && [ -n "$NOTES_TMP" ]; then
-    MEMORY_DIR_PY="$MEMORY_DIR" python3 "$HOOK_LIB_DIR/notes_staleness.py" > "$NOTES_TMP" 2>/dev/null &
-    notes_pid=$!
+    timeout 5 python3 "$HOOK_LIB_DIR/notes_staleness.py" > "$NOTES_TMP" 2>/dev/null &
+    NOTES_PID=$!
 else
-    notes_pid=""
+    NOTES_PID=""
 fi
 
 if [ -n "$INSTINCT_TMP" ]; then
-    python3 "$HOOK_LIB_DIR/load_instincts.py" > "$INSTINCT_TMP" 2>/dev/null &
-    instinct_pid=$!
+    timeout 5 python3 "$HOOK_LIB_DIR/load_instincts.py" > "$INSTINCT_TMP" 2>/dev/null &
+    INSTINCT_PID=$!
 else
-    instinct_pid=""
+    INSTINCT_PID=""
 fi
 
-[ -n "$notes_pid" ] && wait "$notes_pid" 2>/dev/null || true
-[ -n "$instinct_pid" ] && wait "$instinct_pid" 2>/dev/null || true
+# Wait for background processes — log failures but don't abort (set -e safe)
+if [ -n "$NOTES_PID" ]; then
+    if ! wait "$NOTES_PID" 2>/dev/null; then
+        echo "[load-orchestrator] notes_staleness.py failed or timed out" >&2
+    fi
+fi
+if [ -n "$INSTINCT_PID" ]; then
+    if ! wait "$INSTINCT_PID" 2>/dev/null; then
+        echo "[load-orchestrator] load_instincts.py failed or timed out" >&2
+    fi
+fi
 
 staleness_output=""
 [ -n "$NOTES_TMP" ] && [ -s "$NOTES_TMP" ] && staleness_output=$(cat "$NOTES_TMP")

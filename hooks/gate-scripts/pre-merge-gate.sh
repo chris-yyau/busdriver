@@ -118,7 +118,7 @@ if [ -f ".claude/pr-grind-clean.local" ]; then
     if [ "$MARKER_AGE" -lt 7200 ]; then
         # Marker is fresh — pr-grind completed recently.
         # But verify CI checks actually passed (don't trust marker alone).
-        PR_NUM=$(cat .claude/pr-grind-clean.local 2>/dev/null | tr -d '[:space:]')
+        PR_NUM=$(tr -d '[:space:]' < .claude/pr-grind-clean.local 2>/dev/null)
         if [ -n "$PR_NUM" ] && command -v gh &>/dev/null; then
             FAILED=$(gh pr checks "$PR_NUM" 2>&1 | grep -cE "fail" || true)
             PENDING=$(gh pr checks "$PR_NUM" 2>&1 | grep -c "pending" || true)

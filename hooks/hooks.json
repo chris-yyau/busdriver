@@ -65,7 +65,7 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/pre-merge-gate.sh\"",
-            "timeout": 5
+            "timeout": 10
           }
         ],
         "description": "[GATE] Block gh pr merge until pr-grind declares PR clean"

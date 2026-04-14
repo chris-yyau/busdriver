@@ -199,12 +199,11 @@ if [ -f ".claude/skip-litmus.local" ]; then
         || _MTIME=""
     [ -n "$_MTIME" ] && FILE_AGE=$(( $(date +%s) - _MTIME ))
     if [ "$FILE_AGE" -lt 30 ]; then
-        # Likely self-bypass — reject and warn
-        rm -f ".claude/skip-litmus.local"
-        REASON="BLOCKED: skip-litmus.local was created moments ago (likely self-bypass).
+        WAIT_SECS=$(( 30 - FILE_AGE ))
+        REASON="BLOCKED: skip-litmus.local is only ${FILE_AGE}s old (must be ≥30s to prevent self-bypass).
 
-Do NOT create .claude/skip-litmus.local yourself. Run /litmus instead.
-If the user wants to skip, they should create the file manually in their terminal."
+If the USER just created this file: wait ${WAIT_SECS} more seconds, then retry the commit.
+If YOU created this file: STOP. Do NOT create skip files yourself. Run /litmus instead."
         block_emit "$REASON"
         exit 0
     fi
@@ -346,5 +345,6 @@ REASON="Code review required before committing.
 Run /litmus to review your staged changes. The review must pass before git commit is allowed.
 
 IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run litmus instead.
-If the user wants to skip: touch $REPO_DIR/.claude/skip-litmus.local${ESCAPE_HINT}"
+If the user wants to skip: touch $REPO_DIR/.claude/skip-litmus.local
+After the user creates the skip file, WAIT 30 SECONDS before retrying the commit (the gate rejects files newer than 30s to prevent self-bypass).${ESCAPE_HINT}"
 block_emit "$REASON"

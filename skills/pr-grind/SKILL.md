@@ -27,6 +27,7 @@ origin: custom
 | Only waiting for CI (build/lint/test), ignoring reviewer bots | CodeRabbit, Greptile, Cubic are checks too — `gh pr checks` shows them as pending |
 | Fixing pre-existing issues flagged by automated reviewers | Scope creep — only fix issues in YOUR changed code |
 | Enabling GitHub auto-merge before pr-grind completes | The PR merges as soon as CI passes — before reviewer comments are addressed |
+| Declaring PR clean without verifying check results | Checks completing (pass/fail/skip) ≠ checks passing — always verify status before writing the clean marker |
 
 ## Safety Rails
 
@@ -159,6 +160,15 @@ if [ "$PENDING" -gt 0 ]; then
   echo "❌ $PENDING checks still pending after 5 retries. Cannot proceed."
   echo "Remaining: $(gh pr checks <PR_NUMBER> 2>&1 | grep pending)"
   exit 1  # Bail — ask user to investigate stuck checks
+fi
+
+# Phase 2.5: Verify all checks PASSED (not just completed)
+# Checks completing is necessary but not sufficient — they must be green.
+FAILED=$(gh pr checks <PR_NUMBER> 2>&1 | grep -cE "fail" || true)
+if [ "$FAILED" -gt 0 ]; then
+  echo "❌ $FAILED checks FAILED. Must fix before proceeding."
+  gh pr checks <PR_NUMBER> 2>&1 | grep -E "fail"
+  # Do NOT write clean marker — proceed to Step 2 to collect failures as feedback
 fi
 
 # Phase 3: Poll for reviewer comments that may arrive after check status flips
@@ -295,6 +305,17 @@ Continue grinding?
 2. All automated reviewers completed (CodeRabbit, Greptile, Cubic, etc.)
 3. No unresolved actionable comments from any source
 4. No new comments arrived after your last push (wait for the full cycle)
+
+**Verify checks are green (REQUIRED — do NOT skip):**
+```bash
+# Hard gate: verify all checks passed before writing clean marker
+FAILED=$(gh pr checks <PR_NUMBER> 2>&1 | grep -cE "fail" || true)
+if [ "$FAILED" -gt 0 ]; then
+  echo "❌ BLOCKED: $FAILED checks still failing. Cannot declare PR clean."
+  gh pr checks <PR_NUMBER> 2>&1 | grep -E "fail"
+  exit 1  # Re-enter the loop — do NOT write the marker
+fi
+```
 
 **Write the pr-grind-clean marker (REQUIRED — pre-merge gate checks CWD's `.claude/`):**
 ```bash

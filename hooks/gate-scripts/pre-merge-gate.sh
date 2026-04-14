@@ -116,7 +116,21 @@ if [ -f ".claude/pr-grind-clean.local" ]; then
     [ -n "$_MTIME" ] && MARKER_AGE=$(( $(date +%s) - _MTIME ))
 
     if [ "$MARKER_AGE" -lt 7200 ]; then
-        # Marker is fresh — pr-grind completed recently
+        # Marker is fresh — pr-grind completed recently.
+        # But verify CI checks actually passed (don't trust marker alone).
+        PR_NUM=$(cat .claude/pr-grind-clean.local 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$PR_NUM" ] && command -v gh &>/dev/null; then
+            FAILED=$(gh pr checks "$PR_NUM" 2>&1 | grep -cE "fail" || true)
+            PENDING=$(gh pr checks "$PR_NUM" 2>&1 | grep -c "pending" || true)
+            if [ "$FAILED" -gt 0 ]; then
+                block_emit "Pre-merge gate: pr-grind marker exists but $FAILED CI checks are FAILING. Fix failures before merging. Run \`/pr-grind\` to resume."
+                exit 0
+            fi
+            if [ "$PENDING" -gt 0 ]; then
+                block_emit "Pre-merge gate: pr-grind marker exists but $PENDING checks still PENDING. Wait for all checks to complete before merging."
+                exit 0
+            fi
+        fi
         exit 0
     else
         # Stale marker — remove and require fresh grind

@@ -98,15 +98,26 @@ INSTINCT_TMP=$(mktemp) || INSTINCT_TMP=""
 trap "rm -f '$NOTES_TMP' '$INSTINCT_TMP'" EXIT
 
 MEMORY_DIR="${HOME}/.claude/notes"
+# Portable timeout: macOS lacks GNU timeout; fall back to bare python3
+_run_with_timeout() {
+    if command -v timeout &>/dev/null; then
+        timeout "$@"
+    else
+        # Drop the timeout arg, run the command directly
+        shift
+        "$@"
+    fi
+}
+
 if [ -d "$MEMORY_DIR" ] && [ -n "$NOTES_TMP" ]; then
-    timeout 5 python3 "$HOOK_LIB_DIR/notes_staleness.py" > "$NOTES_TMP" 2>/dev/null &
+    MEMORY_DIR_PY="$MEMORY_DIR" _run_with_timeout 5 python3 "$HOOK_LIB_DIR/notes_staleness.py" > "$NOTES_TMP" 2>/dev/null &
     NOTES_PID=$!
 else
     NOTES_PID=""
 fi
 
 if [ -n "$INSTINCT_TMP" ]; then
-    timeout 5 python3 "$HOOK_LIB_DIR/load_instincts.py" > "$INSTINCT_TMP" 2>/dev/null &
+    _run_with_timeout 5 python3 "$HOOK_LIB_DIR/load_instincts.py" > "$INSTINCT_TMP" 2>/dev/null &
     INSTINCT_PID=$!
 else
     INSTINCT_PID=""

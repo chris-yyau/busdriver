@@ -118,10 +118,21 @@ if [ -f ".claude/pr-grind-clean.local" ]; then
     if [ "$MARKER_AGE" -lt 7200 ]; then
         # Marker is fresh — pr-grind completed recently.
         # But verify CI checks actually passed (don't trust marker alone).
-        PR_NUM=$(tr -d '[:space:]' < .claude/pr-grind-clean.local 2>/dev/null)
-        if [ -n "$PR_NUM" ] && command -v gh &>/dev/null; then
-            FAILED=$(gh pr checks "$PR_NUM" 2>&1 | grep -cE "fail" || true)
-            PENDING=$(gh pr checks "$PR_NUM" 2>&1 | grep -c "pending" || true)
+        PR_NUM=$(tr -d '[:space:]' < .claude/pr-grind-clean.local 2>/dev/null || true)
+        case "$PR_NUM" in
+            ''|*[!0-9]*)
+                rm -f ".claude/pr-grind-clean.local"
+                block_emit "Pre-merge gate: pr-grind marker is empty or corrupt. Run \`/pr-grind\` again before merging."
+                exit 0
+                ;;
+        esac
+        if command -v gh &>/dev/null; then
+            if ! CHECKS_OUTPUT=$(gh pr checks "$PR_NUM" 2>&1); then
+                block_emit "Pre-merge gate: unable to verify CI checks for PR #$PR_NUM (\`gh pr checks\` failed). Resolve GitHub CLI/auth/network issues and retry."
+                exit 0
+            fi
+            FAILED=$(printf '%s\n' "$CHECKS_OUTPUT" | grep -cE "fail" || true)
+            PENDING=$(printf '%s\n' "$CHECKS_OUTPUT" | grep -c "pending" || true)
             if [ "$FAILED" -gt 0 ]; then
                 block_emit "Pre-merge gate: pr-grind marker exists but $FAILED CI checks are FAILING. Fix failures before merging. Run \`/pr-grind\` to resume."
                 exit 0

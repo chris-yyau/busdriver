@@ -166,7 +166,7 @@ fi
 # Checks completing is necessary but not sufficient — they must be green.
 FAILED=$(gh pr checks <PR_NUMBER> 2>&1 | grep -cE "fail" || true)
 if [ "$FAILED" -gt 0 ]; then
-  echo "❌ $FAILED checks FAILED. Must fix before proceeding."
+  echo "❌ $FAILED checks FAILED. Continuing to Step 2 to collect details."
   gh pr checks <PR_NUMBER> 2>&1 | grep -E "fail"
   # Do NOT write clean marker — proceed to Step 2 to collect failures as feedback
 fi

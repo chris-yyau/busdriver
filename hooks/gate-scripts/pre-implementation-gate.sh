@@ -82,9 +82,16 @@ try:
 
     elif tool == "Bash":
         cmd = inp.get("command", "")
-        # Block direct invocation of write-review-marker.sh
+        # Block direct invocation of write-review-marker.sh UNLESS called via
+        # the canonical litmus plugin path. The script validates internally that
+        # a builtin review was actually triggered (checks handoff file existence).
+        # Without this allowlist, builtin fallback (exit 3) creates a catch-22:
+        # SKILL.md tells Claude to call the script, but the gate blocks it.
         if "write-review-marker" in cmd:
-            print("BLOCK_MARKER_SCRIPT|write-review-marker.sh")
+            if re.search(r"(?:ba)?sh\s+.*litmus/scripts/write-review-marker", cmd):
+                print("OK|")
+            else:
+                print("BLOCK_MARKER_SCRIPT|write-review-marker.sh")
             sys.exit(0)
         # Block shell redirects targeting marker files
         for mf in MARKER_FILES:

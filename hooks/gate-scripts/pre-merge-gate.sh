@@ -39,8 +39,8 @@ case "$HOOK_DATA" in
     *) exit 0 ;;
 esac
 
-# Parse tool name and command, verify gh pr merge
-IS_GH_PR_MERGE=$(printf '%s' "$HOOK_DATA" | python3 -c "
+# Parse tool name and command, verify gh pr merge, extract PR number
+MERGE_PARSE=$(printf '%s' "$HOOK_DATA" | python3 -c "
 import sys, json, re
 try:
     d = json.load(sys.stdin)
@@ -57,11 +57,23 @@ try:
         while re.match(r'^\w+=\S*\s', seg):
             seg = re.sub(r'^\w+=\S*\s+', '', seg, count=1)
         if re.match(r'gh\s+pr\s+merge\b', seg):
-            print('yes')
+            # Extract PR number (first positional arg that is numeric)
+            args = re.split(r'\s+', seg)
+            pr_num = ''
+            for a in args[3:]:  # skip 'gh', 'pr', 'merge'
+                if a.startswith('-'):
+                    break
+                if re.match(r'^\d+$', a):
+                    pr_num = a
+                    break
+            print('yes|' + pr_num)
             break
 except Exception:
-    print('error')
+    print('error|')
 " 2>/dev/null || true)
+
+IS_GH_PR_MERGE="${MERGE_PARSE%%|*}"
+MERGE_PR_NUM="${MERGE_PARSE#*|}"
 
 [ -z "$IS_GH_PR_MERGE" ] && exit 0
 
@@ -153,6 +165,33 @@ if [ -f ".claude/pr-grind-clean.local" ]; then
     else
         # Stale marker — remove and require fresh grind
         rm -f ".claude/pr-grind-clean.local"
+    fi
+fi
+
+# ── Bootstrap detection: PR modifies gate infrastructure ─────────────
+# When a PR modifies gate scripts or hook configs, the locally cached (old)
+# gate code runs and blocks the merge of its own fix — a deadlock. CI checks
+# run the NEW code from the PR branch, so they are the right authority for
+# gate-modifying PRs. If CI all passes, allow the merge with telemetry.
+if [ -n "$MERGE_PR_NUM" ] && command -v gh &>/dev/null; then
+    GATE_FILES_CHANGED=$(gh pr diff "$MERGE_PR_NUM" --name-only 2>/dev/null \
+        | grep -cE "^hooks/(gate-scripts/|hooks\.json)" || true)
+    if [ "$GATE_FILES_CHANGED" -gt 0 ]; then
+        GH_EXIT=0
+        CHECKS_OUTPUT=$(gh pr checks "$MERGE_PR_NUM" 2>&1) || GH_EXIT=$?
+        if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_OUTPUT" | grep -qE "pass|fail|pending"; then
+            : # CLI error — fall through to normal block
+        else
+            FAILED=$(printf '%s\n' "$CHECKS_OUTPUT" | grep -cE "fail" || true)
+            PENDING=$(printf '%s\n' "$CHECKS_OUTPUT" | grep -c "pending" || true)
+            if [ "$FAILED" -eq 0 ] && [ "$PENDING" -eq 0 ]; then
+                mkdir -p .claude
+                printf '{"ts":"%s","event":"bootstrap-merge","gate":"pre-merge","pr":%s,"gate_files":%s}\n' \
+                    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MERGE_PR_NUM" "$GATE_FILES_CHANGED" \
+                    >> ".claude/bypass-log.jsonl" 2>/dev/null || true
+                exit 0
+            fi
+        fi
     fi
 fi
 

@@ -5,6 +5,14 @@
 
 set -euo pipefail
 
+# ── Ensure common tool paths are available (non-login shell fallback) ─────
+# Hook commands may run in non-login shells where homebrew/nix paths are absent.
+for _dir in /opt/homebrew/bin /usr/local/bin /opt/pkg/env/active/bin; do
+    if [ -d "$_dir" ] && [[ ":$PATH:" != *":$_dir:"* ]]; then
+        export PATH="$_dir:$PATH"
+    fi
+done
+
 # ── Skip for internal observer sessions ───────────────────────────────────
 # The ECC observer spawns `claude --model haiku` subprocesses for analysis.
 # Those subprocesses trigger SessionStart hooks including this one.
@@ -80,26 +88,65 @@ $(printf '%b' "$GATE_HEALTH_WARNINGS")
 <!-- END GATE HEALTH CHECK -->"
 fi
 
-# ── Notes staleness check ─────────────────────────────────────────────────
-# Scans ~/.claude/notes/ for files with stale last_validated dates.
-# Per-type TTLs: feedback/user=365d, reference=180d, project=60d, lesson/default=365d
-# Warn at TTL, auto-archive at 2x TTL (move to notes/archive/).
-MEMORY_DIR="${HOME}/.claude/notes"
-if [ -d "$MEMORY_DIR" ]; then
-    staleness_output=$(MEMORY_DIR_PY="$MEMORY_DIR" python3 "$HOOK_LIB_DIR/notes_staleness.py" 2>/dev/null || true)
+# ── Notes staleness + Instinct loading (parallelized) ─────────────────────
+# Run both python3 scripts in parallel to reduce SessionStart latency.
+# notes_staleness.py: scans ~/.claude/notes/ for stale last_validated dates.
+# load_instincts.py: loads reflection system instincts.
+NOTES_TMP=$(mktemp) || NOTES_TMP=""
+INSTINCT_TMP=$(mktemp) || INSTINCT_TMP=""
+# shellcheck disable=SC2064 # Intentional: expand paths now, not at trap time
+trap "rm -f '$NOTES_TMP' '$INSTINCT_TMP'" EXIT
 
-    if [ -n "$staleness_output" ]; then
-        content="${content}
+MEMORY_DIR="${HOME}/.claude/notes"
+# Portable timeout: macOS lacks GNU timeout; fall back to bare python3
+_run_with_timeout() {
+    if command -v timeout &>/dev/null; then
+        timeout "$@"
+    else
+        # Drop the timeout arg, run the command directly
+        shift
+        "$@"
+    fi
+}
+
+if [ -d "$MEMORY_DIR" ] && [ -n "$NOTES_TMP" ]; then
+    MEMORY_DIR_PY="$MEMORY_DIR" _run_with_timeout 5 python3 "$HOOK_LIB_DIR/notes_staleness.py" > "$NOTES_TMP" 2>/dev/null &
+    NOTES_PID=$!
+else
+    NOTES_PID=""
+fi
+
+if [ -n "$INSTINCT_TMP" ]; then
+    _run_with_timeout 5 python3 "$HOOK_LIB_DIR/load_instincts.py" > "$INSTINCT_TMP" 2>/dev/null &
+    INSTINCT_PID=$!
+else
+    INSTINCT_PID=""
+fi
+
+# Wait for background processes — log failures but don't abort (set -e safe)
+if [ -n "$NOTES_PID" ]; then
+    if ! wait "$NOTES_PID" 2>/dev/null; then
+        echo "[load-orchestrator] notes_staleness.py failed or timed out" >&2
+    fi
+fi
+if [ -n "$INSTINCT_PID" ]; then
+    if ! wait "$INSTINCT_PID" 2>/dev/null; then
+        echo "[load-orchestrator] load_instincts.py failed or timed out" >&2
+    fi
+fi
+
+staleness_output=""
+[ -n "$NOTES_TMP" ] && [ -s "$NOTES_TMP" ] && staleness_output=$(cat "$NOTES_TMP")
+instinct_output=""
+[ -n "$INSTINCT_TMP" ] && [ -s "$INSTINCT_TMP" ] && instinct_output=$(cat "$INSTINCT_TMP")
+
+if [ -n "$staleness_output" ]; then
+    content="${content}
 
 <!-- BEGIN NOTES STALENESS -->
 ${staleness_output}
 <!-- END NOTES STALENESS -->"
-    fi
 fi
-
-# ── Instinct loading (reflection system consumer) ────────────────────────
-# Extracted to lib/load_instincts.py for testability and debugging.
-instinct_output=$(python3 "$HOOK_LIB_DIR/load_instincts.py" 2>/dev/null || true)
 
 if [ -n "$instinct_output" ]; then
     content="${content}

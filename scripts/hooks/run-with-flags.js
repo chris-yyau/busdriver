@@ -111,7 +111,7 @@ async function main() {
   }
 
   if (!fs.existsSync(scriptPath)) {
-    process.stderr.write(`[Hook] Script not found for ${hookId}: ${scriptPath}\n`);
+    process.stderr.write(`[Hook] Script not found for ${hookId}: ${scriptPath} (CLAUDE_PLUGIN_ROOT=${process.env.CLAUDE_PLUGIN_ROOT || 'NOT SET'})\n`);
     process.stdout.write(raw);
     process.exit(0);
   }
@@ -130,14 +130,17 @@ async function main() {
     try {
       hookModule = require(scriptPath);
     } catch (requireErr) {
-      process.stderr.write(`[Hook] require() failed for ${hookId}: ${requireErr.message}\n`);
+      process.stderr.write(`[Hook] require() failed for ${hookId}: ${requireErr.message} (script=${scriptPath})\n`);
       // Fall through to legacy spawnSync path
     }
   }
 
   if (hookModule && typeof hookModule.run === 'function') {
     try {
-      const output = hookModule.run(raw, { truncated, maxStdin: MAX_STDIN });
+      let output = hookModule.run(raw, { truncated, maxStdin: MAX_STDIN });
+      if (output && typeof output.then === 'function') {
+        output = await output;
+      }
       process.exit(emitHookResult(raw, output));
     } catch (runErr) {
       process.stderr.write(`[Hook] run() error for ${hookId}: ${runErr.message}\n`);
@@ -176,6 +179,9 @@ async function main() {
 }
 
 main().catch(err => {
-  process.stderr.write(`[Hook] run-with-flags error: ${err.message}\n`);
+  process.stderr.write(`[Hook] run-with-flags fatal: ${err.message} (hook=${process.argv[2] || 'unknown'}, script=${process.argv[3] || 'unknown'})\n`);
+  if (err.stack) {
+    process.stderr.write(`[Hook] stack: ${err.stack.split('\n').slice(1, 3).join(' | ')}\n`);
+  }
   process.exit(0);
 });

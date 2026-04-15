@@ -1383,10 +1383,34 @@
       "upstream_path": "scripts/hooks/cost-tracker.js"
     },
     {
+      "path": "scripts/hooks/block-no-verify.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/block-no-verify.js"
+    },
+    {
+      "path": "scripts/hooks/design-quality-check.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/design-quality-check.js"
+    },
+    {
+      "path": "scripts/hooks/desktop-notify.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/desktop-notify.js"
+    },
+    {
       "path": "scripts/hooks/doc-file-warning.js",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/hooks/doc-file-warning.js"
+    },
+    {
+      "path": "scripts/hooks/evaluate-session.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/evaluate-session.js"
     },
     {
       "path": "scripts/hooks/governance-capture.js",
@@ -1407,10 +1431,28 @@
       "upstream_path": "scripts/hooks/post-bash-build-complete.js"
     },
     {
+      "path": "scripts/hooks/plugin-hook-bootstrap.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/plugin-hook-bootstrap.js"
+    },
+    {
+      "path": "scripts/hooks/post-bash-command-log.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/post-bash-command-log.js"
+    },
+    {
       "path": "scripts/hooks/post-bash-pr-created.js",
       "source": "ecc",
       "status": "custom",
       "upstream_path": "scripts/hooks/post-bash-pr-created.js"
+    },
+    {
+      "path": "scripts/hooks/post-edit-accumulator.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/post-edit-accumulator.js"
     },
     {
       "path": "scripts/hooks/post-edit-console-warn.js",
@@ -1429,6 +1471,12 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/hooks/post-edit-typecheck.js"
+    },
+    {
+      "path": "scripts/hooks/pre-bash-dev-server-block.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/pre-bash-dev-server-block.js"
     },
     {
       "path": "scripts/hooks/pre-bash-git-push-reminder.js",
@@ -1483,6 +1531,24 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/hooks/session-start.js"
+    },
+    {
+      "path": "scripts/hooks/session-start-bootstrap.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/session-start-bootstrap.js"
+    },
+    {
+      "path": "scripts/hooks/session-activity-tracker.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/session-activity-tracker.js"
+    },
+    {
+      "path": "scripts/hooks/stop-format-typecheck.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/stop-format-typecheck.js"
     },
     {
       "path": "scripts/hooks/suggest-compact.js",

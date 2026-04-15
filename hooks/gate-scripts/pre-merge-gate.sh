@@ -196,5 +196,5 @@ if [ -n "$MERGE_PR_NUM" ] && command -v gh &>/dev/null; then
 fi
 
 # ── BLOCK: no pr-grind-clean marker found ────────────────────────────
-block_emit "Pre-merge gate: pr-grind has not declared this PR clean. FIRST wait for all CI checks to complete (\`gh pr checks <PR_NUMBER> --watch\`), THEN run \`/pr-grind\` to address reviewer feedback before merging. Do NOT skip the CI wait. Escape hatch: create .claude/skip-pr-grind.local in your terminal."
+block_emit "Pre-merge gate: pr-grind has not declared this PR clean. FIRST wait for all CI checks to complete (\`gh pr checks ${MERGE_PR_NUM:-<PR_NUMBER>} --watch\`), THEN run \`/pr-grind\` to address reviewer feedback before merging. Do NOT skip the CI wait. Escape hatch: create .claude/skip-pr-grind.local in your terminal."
 exit 0

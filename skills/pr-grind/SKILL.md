@@ -186,12 +186,17 @@ fi
 
 # Phase 2.5: Verify all checks PASSED (not just completed)
 # Checks completing is necessary but not sufficient — they must be green.
-# Advisory checks (.claude/advisory-checks) are non-blocking — still collect their
+# Advisory checks (CodeScene) are non-blocking — still collect their
 # feedback in Step 2, but their failures don't prevent proceeding.
-CHECKS_RAW=$(gh pr checks <PR_NUMBER> 2>&1)
-ADVISORY_PAT="CodeScene"
-REQUIRED=$(echo "$CHECKS_RAW" | grep -ivE "$ADVISORY_PAT" || true)
-ADVISORY_FAILED=$(echo "$CHECKS_RAW" | grep -iE "$ADVISORY_PAT" | grep -cE "fail" || true)
+GH_EXIT=0
+CHECKS_RAW=$(gh pr checks <PR_NUMBER> 2>&1) || GH_EXIT=$?
+if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_RAW" | grep -qE "pass|fail|pending"; then
+  echo "❌ gh pr checks failed (exit $GH_EXIT). Resolve CLI/auth issues."
+  exit 1
+fi
+ADVISORY_PATTERN="CodeScene"
+REQUIRED=$(echo "$CHECKS_RAW" | grep -ivE "$ADVISORY_PATTERN" || true)
+ADVISORY_FAILED=$(echo "$CHECKS_RAW" | grep -iE "$ADVISORY_PATTERN" | grep -cE "fail" || true)
 FAILED=$(echo "$REQUIRED" | grep -cE "fail" || true)
 if [ "$ADVISORY_FAILED" -gt 0 ]; then
   echo "⚠️  $ADVISORY_FAILED advisory checks failing (non-blocking). Collecting feedback in Step 2."
@@ -343,10 +348,15 @@ Continue grinding?
 **Verify checks are green (REQUIRED — do NOT skip):**
 ```bash
 # Hard gate: verify all REQUIRED checks passed before writing clean marker
-# Advisory checks (.claude/advisory-checks) don't block — note them in output
-CHECKS_RAW=$(gh pr checks <PR_NUMBER> 2>&1)
-ADVISORY_PAT="CodeScene"
-REQUIRED=$(echo "$CHECKS_RAW" | grep -ivE "$ADVISORY_PAT" || true)
+# Advisory checks (CodeScene) don't block — note them in output
+GH_EXIT=0
+CHECKS_RAW=$(gh pr checks <PR_NUMBER> 2>&1) || GH_EXIT=$?
+if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_RAW" | grep -qE "pass|fail|pending"; then
+  echo "❌ gh pr checks failed (exit $GH_EXIT). Resolve CLI/auth issues."
+  exit 1
+fi
+ADVISORY_PATTERN="CodeScene"
+REQUIRED=$(echo "$CHECKS_RAW" | grep -ivE "$ADVISORY_PATTERN" || true)
 FAILED=$(echo "$REQUIRED" | grep -cE "fail" || true)
 if [ "$FAILED" -gt 0 ]; then
   echo "❌ BLOCKED: $FAILED required checks still failing. Cannot declare PR clean."

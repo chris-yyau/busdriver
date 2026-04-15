@@ -136,6 +136,12 @@ cd "$WORKTREE_DIR"
 
 **Skip with `--no-worktree`:** If already on the PR branch (e.g., Phase 6 just created the PR and hasn't cleaned up yet), pass `--no-worktree` to skip worktree creation and work in-place.
 
+<EXTREMELY-IMPORTANT>
+YOU MUST COMPLETE STEP 1 BEFORE PROCEEDING. Do NOT skip, abbreviate, or defer CI waiting.
+The entire pr-grind workflow depends on checks being complete. If you proceed without waiting,
+you will be blocked by the pre-merge gate and waste the user's time.
+</EXTREMELY-IMPORTANT>
+
 ### Step 1: Wait for ALL Checks + Reviewers
 
 **DO NOT skip this step. DO NOT proceed while checks are still pending.**

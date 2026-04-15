@@ -1,3 +1,10 @@
+## [1.23.1](https://github.com/chris-yyau/busdriver/compare/v1.23.0...v1.23.1) (2026-04-15)
+
+
+### Bug Fixes
+
+* register 10 adopted hooks in hooks.json, fix stale path ([#42](https://github.com/chris-yyau/busdriver/issues/42)) ([6cba362](https://github.com/chris-yyau/busdriver/commit/6cba36297cc4918e8a6970751a1fc6044eba3132))
+
 # [1.23.0](https://github.com/chris-yyau/busdriver/compare/v1.22.0...v1.23.0) (2026-04-15)
 
 

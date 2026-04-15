@@ -11,7 +11,6 @@
 # Can also be registered manually in ~/.claude/settings.json.
 
 set -e
-trap 'exit 0' ERR  # fail-open: observation is best-effort, never block tool use
 
 # Hook phase from CLI argument: "pre" (PreToolUse) or "post" (PostToolUse)
 HOOK_PHASE="${1:-post}"

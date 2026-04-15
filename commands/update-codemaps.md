@@ -1,7 +1,3 @@
----
-description: Analyze codebase structure and generate token-lean architecture documentation
----
-
 # Update Codemaps
 
 Analyze the codebase structure and generate token-lean architecture documentation.

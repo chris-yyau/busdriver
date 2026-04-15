@@ -1,3 +1,10 @@
+# [1.21.0](https://github.com/chris-yyau/busdriver/compare/v1.20.16...v1.21.0) (2026-04-15)
+
+
+### Features
+
+* pr-grind merges by default, add --no-merge opt-out ([#37](https://github.com/chris-yyau/busdriver/issues/37)) ([f535dc8](https://github.com/chris-yyau/busdriver/commit/f535dc8d33a2ece938de90bbfd5cb8fade6cb54e))
+
 ## [1.20.16](https://github.com/chris-yyau/busdriver/compare/v1.20.15...v1.20.16) (2026-04-15)
 
 

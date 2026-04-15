@@ -15,8 +15,9 @@ origin: custom
 - When CI is failing on an open PR
 - When reviewer comments need addressing
 - Manually: `/pr-grind` or `/pr-grind 123` or `/pr-grind https://github.com/owner/repo/pull/123`
+- **Grind only:** `/pr-grind --no-merge` — grinds until clean but skips merge. Use when you want to review before merging.
 
-**Announce at start:** "Grinding PR #N — will iterate until CI is green and comments are resolved."
+**Announce at start:** "Grinding PR #N — will iterate until CI is green and comments are resolved, then merge." (Drop "then merge" if `--no-merge`.)
 
 ## Anti-Patterns (DO NOT)
 
@@ -26,13 +27,15 @@ origin: custom
 | Declaring "Round complete" after push without waiting | The push triggers a new review cycle — you must wait for IT to finish before declaring done |
 | Only waiting for CI (build/lint/test), ignoring reviewer bots | CodeRabbit, Greptile, Cubic are checks too — `gh pr checks` shows them as pending |
 | Fixing pre-existing issues flagged by automated reviewers | Scope creep — only fix issues in YOUR changed code |
-| Enabling GitHub auto-merge before pr-grind completes | The PR merges as soon as CI passes — before reviewer comments are addressed |
+| Enabling GitHub auto-merge before pr-grind completes | The PR merges as soon as CI passes — before reviewer comments are addressed. pr-grind merges by default after all checks pass and comments are addressed. |
+| Giving compound "grind then merge" instructions | Agent optimizes for merge as terminal goal, skipping CI wait. Just invoke `/pr-grind` — merge is the default. |
 | Declaring PR clean without verifying check results | Checks completing (pass/fail/skip) ≠ checks passing — always verify status before writing the clean marker |
 
 ## Safety Rails
 
 - **Max iterations:** 5 rounds (override with `--max N`)
 - **Autonomous by default:** Grinds without pausing between rounds (override with `--interactive` for human checkpoints)
+- **Merges by default:** After grinding clean, pr-grind merges the PR. Pass `--no-merge` to skip the merge and just declare "Ready for merge". This is NOT GitHub auto-merge — pr-grind merges *after* all checks pass and all comments are addressed, inside its own control flow.
 - **Bail triggers:** Stop immediately and clean up worktree if:
   - A comment is a design/scope question (not a code fix)
   - CI fails on an unrelated flaky test 3 times in a row
@@ -108,7 +111,18 @@ origin: custom
                    └──────▶ ROUND N+1
 
      ┌─────────────────────────────────┐
-     │  DONE or BAIL:                  │
+     │  DONE:                          │
+     │  Write clean marker             │
+     ├─────────────────────────────────┤
+     │  default → gh pr merge           │
+     │  --no-merge → "Ready for merge" │
+     ├─────────────────────────────────┤
+     │  Cleanup ephemeral worktree     │
+     │  git worktree remove <path>     │
+     └─────────────────────────────────┘
+
+     ┌─────────────────────────────────┐
+     │  BAIL:                          │
      │  Cleanup ephemeral worktree     │
      │  git worktree remove <path>     │
      └─────────────────────────────────┘
@@ -326,13 +340,13 @@ fi
 **Write the pr-grind-clean marker (REQUIRED — pre-merge gate checks CWD's `.claude/`):**
 ```bash
 # Signal to the pre-merge gate that this PR has been ground clean.
-# Write BEFORE worktree cleanup — merge happens from this CWD.
+# Write BEFORE worktree cleanup. Default: merge from this CWD. --no-merge: copy marker to main worktree.
 mkdir -p .claude
 echo "<PR_NUMBER>" > .claude/pr-grind-clean.local
 rm -f .claude/pr-pending-grind.local
 ```
 
-**Merge, then clean up the worktree:**
+**Default: merge, then clean up the worktree:**
 ```bash
 # Merge while still in worktree (gate checks .claude/ in CWD)
 gh pr merge <PR_NUMBER> --squash --delete-branch
@@ -344,6 +358,21 @@ cd <original-worktree-path>
 git worktree remove "../pr-grind-<PR_NUMBER>" --force
 ```
 
+**If `--no-merge`: write marker to original worktree, clean up, report ready:**
+```bash
+# Write marker to ORIGINAL worktree so user can merge from there
+mkdir -p <original-worktree-path>/.claude
+cp .claude/pr-grind-clean.local <original-worktree-path>/.claude/pr-grind-clean.local
+rm -f <original-worktree-path>/.claude/pr-pending-grind.local
+
+# Return to main worktree
+cd <original-worktree-path>
+
+# Remove the ephemeral worktree
+git worktree remove "../pr-grind-<PR_NUMBER>" --force
+```
+
+**Output (both modes):**
 ```text
 ## PR Grind Complete
 
@@ -352,8 +381,11 @@ PR #<N> is clean after <rounds> round(s).
 - Automated reviewers: all completed, no actionable findings
 - Human comments: all addressed
 - Worktree cleaned up.
-- Ready for merge.
 ```
+
+**Default:** append `- Merged.`
+
+**With `--no-merge`:** append `- Ready for merge.`
 
 ## Arguments
 
@@ -364,6 +396,7 @@ PR #<N> is clean after <rounds> round(s).
 | `--interactive` | Pause for human confirmation each round | Off (autonomous) |
 | `--no-worktree` | Skip worktree creation, work in current directory | Off (creates worktree) |
 | `--ci-only` | Only fix CI failures, ignore comments | Off |
+| `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
 | `--comments-only` | Only address comments, ignore CI | Off |
 
 ## Integration

@@ -64,11 +64,12 @@ function run(rawInput) {
       '─── PR Grind Required ───',
       `PR #${prNum} created: ${prUrl}`,
       '',
-      'You MUST now invoke `busdriver:pr-grind` (or `/pr-grind`) to address',
-      'reviewer feedback before merging. The pre-merge gate will BLOCK',
-      '`gh pr merge` until pr-grind declares the PR clean.',
+      'You MUST now invoke `busdriver:pr-grind` (or `/pr-grind`).',
+      'It will grind reviewer feedback and merge when clean (default behavior).',
+      'Do NOT run `gh pr merge` separately — pr-grind owns the merge.',
       '',
-      'Do NOT enable GitHub auto-merge before pr-grind completes.',
+      'Do NOT enable GitHub auto-merge or give compound "grind then merge" instructions.',
+      'Use `busdriver:pr-grind --no-merge` if you want to stop at "Ready for merge".',
       '─────────────────────────'
     ].join('\n');
 

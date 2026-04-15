@@ -240,7 +240,7 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Recurring Tasks** | run every N minutes | `/loop-start` command, `loop-operator` agent |
 | **Notes** | check notes health, refine | `/refine-notes` command |
 | **Prompt Engineering** | optimize prompt, improve prompt | `/prompt-optimize` command (advisory only) |
-| **Content** | articles, newsletters | `article-writing` / `content-engine` / `crosspost` / `x-api` |
+| **Content** | articles, newsletters, blogs | `article-writing` / `content-engine` / `crosspost` / `x-api`. **MANDATORY:** run `humanizer` skill on all written content before publishing to remove AI tone/vibe |
 | **Data Pipelines** | data collector, scheduled scraping | `data-scraper-agent` |
 | **Fundraising** | pitch deck, investor materials | `investor-materials` / `investor-outreach` / `market-research` |
 | **Media Generation** | generate image/video/audio | `fal-ai-media` |
@@ -309,6 +309,10 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Code Quality** | plankton, auto-format, lint enforcement | `plankton-code-quality` |
 | **Plan Review** | review code against plan, step completion | `plan-code-reviewer` agent |
 | **Performance Opt** | optimize performance, profiling, bottlenecks | `performance-optimizer` agent |
+| **Accessibility** | WCAG, a11y, screen reader, aria | `accessibility` skill. Agent: `a11y-architect` |
+| **Council** | tradeoff, ambiguous decision, 4-voice | `council` skill (Architect/Skeptic/Pragmatist/Critic structured deliberation) |
+| **Continuous Learning** | extract patterns, session learning | `continuous-learning` (v1 pattern extraction) / `continuous-learning-v2` (instinct-based) |
+| **Frontend Design** | design-led UI, visual direction, typography | `frontend-design` skill |
 
 Skills not listed above are discoverable via the system-prompt skill registry. The orchestrator only routes to busdriver-owned skills.
 

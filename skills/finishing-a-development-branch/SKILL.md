@@ -105,9 +105,9 @@ EOF
 
 <EXTREMELY-IMPORTANT>
 After PR is created (BEFORE worktree cleanup):
-1. **DO NOT enable GitHub auto-merge before pr-grind completes.** Auto-merge races against pr-grind — the PR will merge before reviewer comments are addressed.
-2. **INVOKE `busdriver:pr-grind`** with `--no-worktree` (you're still on the PR branch). Do NOT just mention it — actually invoke the skill so feedback is addressed before the PR merges.
-3. Only after pr-grind declares the PR clean should you consider merging (manually or via auto-merge).
+1. **DO NOT enable GitHub auto-merge.** It races against pr-grind — the PR merges before reviewer comments are addressed.
+2. **INVOKE `busdriver:pr-grind --no-worktree`** (you're still on the PR branch). pr-grind grinds until clean, then merges by default. Do NOT give separate "grind then merge" instructions — that causes agents to skip CI waiting.
+3. Do NOT attempt `gh pr merge` separately. pr-grind handles it after all checks pass and comments are addressed.
 </EXTREMELY-IMPORTANT>
 
 Then: Cleanup worktree (Step 5)
@@ -190,7 +190,8 @@ git worktree remove <worktree-path>
 - Merge without verifying tests on result
 - Delete work without confirmation
 - Force-push without explicit request
-- Enable GitHub auto-merge before pr-grind completes
+- Enable GitHub auto-merge (pr-grind merges by default after grinding clean)
+- Give compound "grind then merge" instructions (just invoke pr-grind — merge is default)
 
 **Always:**
 - Verify tests before offering options

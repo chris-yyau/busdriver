@@ -1,3 +1,10 @@
+# [1.24.0](https://github.com/chris-yyau/busdriver/compare/v1.23.1...v1.24.0) (2026-04-15)
+
+
+### Features
+
+* treat CodeScene as advisory (non-blocking) check ([#43](https://github.com/chris-yyau/busdriver/issues/43)) ([d3c5845](https://github.com/chris-yyau/busdriver/commit/d3c58456e31434c5795c7d833bad5574565ab77c))
+
 ## [1.23.1](https://github.com/chris-yyau/busdriver/compare/v1.23.0...v1.23.1) (2026-04-15)
 
 

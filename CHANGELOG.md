@@ -1,3 +1,10 @@
+# [1.22.0](https://github.com/chris-yyau/busdriver/compare/v1.21.0...v1.22.0) (2026-04-15)
+
+
+### Features
+
+* litmus agents-only PR review when commits pre-reviewed ([#39](https://github.com/chris-yyau/busdriver/issues/39)) ([5a1b96f](https://github.com/chris-yyau/busdriver/commit/5a1b96fd1621f9f7c24f2d59fb30f70ab1e4df43))
+
 # [1.21.0](https://github.com/chris-yyau/busdriver/compare/v1.20.16...v1.21.0) (2026-04-15)
 
 

@@ -241,8 +241,8 @@ if [ -f "$REVIEWED_FILE" ]; then
         # But multi-agent deep review (cross-commit analysis) is still valuable.
         # Signal agents-only mode instead of bypassing entirely.
         mkdir -p "$REPO_DIR/.claude"
-        echo "agents-only" > "$REPO_DIR/.claude/pr-commits-prereviewed.local"
-        rm -f "$REVIEWED_FILE"
+        echo "agents-only:${CURRENT_BRANCH}" > "$REPO_DIR/.claude/pr-commits-prereviewed.local"
+        # Keep REVIEWED_FILE so retries can re-derive agents-only if signal is consumed
         # Fall through to block — require agents-only PR review
     fi
 fi
@@ -250,12 +250,14 @@ fi
 # No valid review marker → block PR creation
 # Check if agents-only mode was signaled (all commits pre-reviewed)
 AGENTS_ONLY_SIGNAL="$REPO_DIR/.claude/pr-commits-prereviewed.local"
-if [ -f "$AGENTS_ONLY_SIGNAL" ]; then
+SIGNAL_BRANCH=$(git -C "$REPO_DIR" symbolic-ref --short HEAD 2>/dev/null || echo "")
+if [ -f "$AGENTS_ONLY_SIGNAL" ] && grep -qxF "agents-only:${SIGNAL_BRANCH}" "$AGENTS_ONLY_SIGNAL" 2>/dev/null; then
 REASON="All commits were pre-commit reviewed — codex CLI pass is redundant.
-Run agents-only PR review (skip Step 1, go straight to Step 2):
+Run agents-only PR review (skip Step 1; continue with Step 1.5 + Step 2):
 
-  1. SKIP the CLI pass — already reviewed per-commit
-  2. Dispatch 6 parallel review agents (Guidelines, Bugs, History, Cross-commit, Security, Docs-consistency)
+  1. SKIP the codex CLI pass (Step 1) — already reviewed per-commit
+  1.5. Run scope drift detection (Step 1.5, advisory)
+  2. Dispatch 6 parallel review agents (Step 2: Guidelines, Bugs, History, Cross-commit, Security, Docs-consistency)
   3. Score and filter findings (confidence >= 80)
   4. If no CRITICAL/HIGH: bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker
   5. Retry gh pr create

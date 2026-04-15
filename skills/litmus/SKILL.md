@@ -303,10 +303,13 @@ Before running the codex CLI pass, check if all commits were already pre-commit 
 
 ```bash
 # Check for agents-only signal (written by pre-pr-gate when all commits were pre-reviewed)
-if [ -f ".claude/pr-commits-prereviewed.local" ]; then
+# Signal is branch-scoped ("agents-only:<branch>") to prevent cross-branch contamination
+CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+if [ -f ".claude/pr-commits-prereviewed.local" ] && \
+   grep -qxF "agents-only:${CURRENT_BRANCH}" ".claude/pr-commits-prereviewed.local" 2>/dev/null; then
   echo "✅ All commits pre-commit reviewed — skipping codex CLI pass, agents-only mode."
   rm -f ".claude/pr-commits-prereviewed.local"
-  # SKIP Step 1 entirely → go straight to Step 1.5 and Step 2 (agents)
+  # SKIP Step 1 entirely → go straight to Step 1.5 (scope drift) and Step 2 (agents)
 fi
 ```
 

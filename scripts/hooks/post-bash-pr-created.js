@@ -69,6 +69,7 @@ function run(rawInput) {
       'Do NOT run `gh pr merge` separately — pr-grind owns the merge.',
       '',
       'Do NOT enable GitHub auto-merge or give compound "grind then merge" instructions.',
+      'Use `busdriver:pr-grind --no-merge` if you want to stop at "Ready for merge".',
       '─────────────────────────'
     ].join('\n');
 

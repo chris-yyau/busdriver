@@ -340,7 +340,7 @@ fi
 **Write the pr-grind-clean marker (REQUIRED — pre-merge gate checks CWD's `.claude/`):**
 ```bash
 # Signal to the pre-merge gate that this PR has been ground clean.
-# Write BEFORE worktree cleanup — merge happens from this CWD.
+# Write BEFORE worktree cleanup. Default: merge from this CWD. --no-merge: copy marker to main worktree.
 mkdir -p .claude
 echo "<PR_NUMBER>" > .claude/pr-grind-clean.local
 rm -f .claude/pr-pending-grind.local
@@ -363,6 +363,7 @@ git worktree remove "../pr-grind-<PR_NUMBER>" --force
 # Write marker to ORIGINAL worktree so user can merge from there
 mkdir -p <original-worktree-path>/.claude
 cp .claude/pr-grind-clean.local <original-worktree-path>/.claude/pr-grind-clean.local
+rm -f <original-worktree-path>/.claude/pr-pending-grind.local
 
 # Return to main worktree
 cd <original-worktree-path>

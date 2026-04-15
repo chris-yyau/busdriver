@@ -297,7 +297,34 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --auto-pr-
 ```
 This runs CLI review only and writes the marker on PASS. **Does NOT dispatch the 6-agent review.**
 
+### Step 0.5: Smart Detection — Check Pre-Commit Coverage
+
+Before running the codex CLI pass, check if all commits were already pre-commit reviewed:
+
+```bash
+# Check for agents-only signal (written by pre-pr-gate when all commits were pre-reviewed)
+# Signal is branch-scoped ("agents-only:<branch>") to prevent cross-branch contamination
+CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+if [ -f ".claude/pr-commits-prereviewed.local" ] && \
+   grep -qxF "agents-only:${CURRENT_BRANCH}" ".claude/pr-commits-prereviewed.local" 2>/dev/null; then
+  echo "✅ All commits pre-commit reviewed — skipping codex CLI pass, agents-only mode."
+  rm -f ".claude/pr-commits-prereviewed.local"
+  # SKIP Step 1 entirely → go straight to Step 1.5 (scope drift) and Step 2 (agents)
+fi
+```
+
+**Why skip codex CLI but keep agents:** Codex CLI reviews individual diffs — the same thing it already did per-commit. The 6 agents review the *full PR diff* for cross-commit issues (inconsistent naming, partial migrations, orphaned imports, security across files, docs drift). These are different types of review with unique value.
+
+| Already done per-commit | Unique to PR agents |
+|---|---|
+| Single-diff bug detection | Cross-commit consistency |
+| Per-file code quality | Naming/migration completeness |
+| Syntax/style issues | Security across file boundaries |
+| | Docs vs code drift |
+
 ### Step 1: Codex CLI Pass (fast)
+
+**Skip this step if Step 0.5 detected agents-only mode.**
 
 ```bash
 # Initialize and run in PR mode

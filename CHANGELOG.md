@@ -1,3 +1,10 @@
+# [1.23.0](https://github.com/chris-yyau/busdriver/compare/v1.22.0...v1.23.0) (2026-04-15)
+
+
+### Features
+
+* adopt 11 upstream hooks, update orchestrator routing ([#41](https://github.com/chris-yyau/busdriver/issues/41)) ([c5247d5](https://github.com/chris-yyau/busdriver/commit/c5247d5d3330964dafcf4f0d96d3afa822b8e412))
+
 # [1.22.0](https://github.com/chris-yyau/busdriver/compare/v1.21.0...v1.22.0) (2026-04-15)
 
 

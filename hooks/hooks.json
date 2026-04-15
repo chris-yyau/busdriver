@@ -97,7 +97,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx block-no-verify@1.1.2"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:bash:block-no-verify\" \"scripts/hooks/block-no-verify.js\" \"standard,strict\""
           }
         ],
         "description": "Block git hook-bypass flag to protect pre-commit hooks"
@@ -131,6 +131,16 @@
           }
         ],
         "description": "Reminder before git push to review changes"
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:bash:dev-server-block\" \"scripts/hooks/pre-bash-dev-server-block.js\" \"standard,strict\""
+          }
+        ],
+        "description": "Block unattended dev server launches outside tmux"
       },
       {
         "matcher": "Write",
@@ -319,6 +329,30 @@
         "description": "Capture governance events from tool outputs. Enable with ECC_GOVERNANCE_CAPTURE=1"
       },
       {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"post:edit:accumulator\" \"scripts/hooks/post-edit-accumulator.js\" \"standard,strict\"",
+            "async": true,
+            "timeout": 5
+          }
+        ],
+        "description": "Accumulate edited JS/TS file paths for batch format/typecheck at Stop"
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"post:edit:design-quality\" \"scripts/hooks/design-quality-check.js\" \"standard,strict\"",
+            "async": true,
+            "timeout": 5
+          }
+        ],
+        "description": "Frontend design quality hints after editing UI files"
+      },
+      {
         "matcher": "*",
         "hooks": [
           {
@@ -329,6 +363,30 @@
           }
         ],
         "description": "Capture tool use results for continuous learning"
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"post:activity-tracker\" \"scripts/hooks/session-activity-tracker.js\" \"standard,strict\"",
+            "async": true,
+            "timeout": 10
+          }
+        ],
+        "description": "Record sanitized tool activity metrics to ~/.claude/metrics/"
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"post:bash:command-log\" \"scripts/hooks/post-bash-command-log.js\" \"standard,strict\"",
+            "async": true,
+            "timeout": 5
+          }
+        ],
+        "description": "Audit log bash commands to ~/.claude/bash-commands.log"
       }
     ],
     "PostToolUseFailure": [
@@ -377,6 +435,41 @@
           }
         ],
         "description": "Track token and cost metrics per session"
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"stop:format-typecheck\" \"scripts/hooks/stop-format-typecheck.js\" \"standard,strict\"",
+            "timeout": 300
+          }
+        ],
+        "description": "Batch format + typecheck all JS/TS files edited this session"
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"stop:desktop-notify\" \"scripts/hooks/desktop-notify.js\" \"standard,strict\"",
+            "async": true,
+            "timeout": 5
+          }
+        ],
+        "description": "Native desktop notification when session ends"
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"stop:evaluate-session\" \"scripts/hooks/evaluate-session.js\" \"standard,strict\"",
+            "async": true,
+            "timeout": 30
+          }
+        ],
+        "description": "Evaluate session for extractable patterns (continuous learning)"
       }
     ],
     "SessionEnd": [

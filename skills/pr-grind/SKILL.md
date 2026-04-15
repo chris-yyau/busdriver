@@ -200,6 +200,8 @@ sleep 30  # Grace period for late-arriving comments
 
 If checks are still pending after Phase 1 timeout AND Phase 2 retries, the loop bails with an error listing the stuck checks. The user must investigate before the grind can continue.
 
+**Gate condition is `0 pending AND 0 failed` — NOT a specific check count.** After rebases, some services (CodeRabbit, cubic) may not re-register their check. Do NOT poll for "expected N checks" — only check that no pending and no failed checks remain.
+
 ### Step 2: Collect Feedback
 
 Gather ALL pending issues in one pass:

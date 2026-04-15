@@ -237,14 +237,32 @@ if [ -f "$REVIEWED_FILE" ]; then
         fi
     done < <(git -C "$REPO_DIR" log --format='%H' "${BASE_BRANCH}..HEAD" 2>/dev/null)
     if [ "$ALL_REVIEWED" = true ]; then
-        # All commits were per-commit reviewed on this branch — allow PR
-        # Clean up the tracking file since PR is being created
+        # All commits were per-commit reviewed — codex CLI is redundant.
+        # But multi-agent deep review (cross-commit analysis) is still valuable.
+        # Signal agents-only mode instead of bypassing entirely.
+        mkdir -p "$REPO_DIR/.claude"
+        echo "agents-only" > "$REPO_DIR/.claude/pr-commits-prereviewed.local"
         rm -f "$REVIEWED_FILE"
-        exit 0
+        # Fall through to block — require agents-only PR review
     fi
 fi
 
 # No valid review marker → block PR creation
+# Check if agents-only mode was signaled (all commits pre-reviewed)
+AGENTS_ONLY_SIGNAL="$REPO_DIR/.claude/pr-commits-prereviewed.local"
+if [ -f "$AGENTS_ONLY_SIGNAL" ]; then
+REASON="All commits were pre-commit reviewed — codex CLI pass is redundant.
+Run agents-only PR review (skip Step 1, go straight to Step 2):
+
+  1. SKIP the CLI pass — already reviewed per-commit
+  2. Dispatch 6 parallel review agents (Guidelines, Bugs, History, Cross-commit, Security, Docs-consistency)
+  3. Score and filter findings (confidence >= 80)
+  4. If no CRITICAL/HIGH: bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker
+  5. Retry gh pr create
+
+IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run the reviewer instead.
+If the user wants to skip: touch $REPO_DIR/.claude/skip-litmus.local"
+else
 REASON="Code review required before creating a PR.
 
 Follow the PR Review Mode in the litmus SKILL.md:
@@ -259,4 +277,5 @@ For CLI-only fast review (skips 6-agent deep review):
 
 IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run the reviewer instead.
 If the user wants to skip: touch $REPO_DIR/.claude/skip-litmus.local"
+fi
 block_emit "$REASON"

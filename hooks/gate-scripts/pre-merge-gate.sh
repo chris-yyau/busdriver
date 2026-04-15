@@ -22,6 +22,15 @@ block_emit() {
     fi
 }
 
+# ── Advisory checks ──────────────────────────────────────────────────
+# Non-blocking: feedback is still collected and addressed by pr-grind,
+# but pass/fail status does not block the merge gate.
+ADVISORY_PATTERN="CodeScene"
+
+_filter_advisory() {
+    grep -ivE "$ADVISORY_PATTERN" || true
+}
+
 # ── python3 pre-check ─────────────────────────────────────────────────
 if ! command -v python3 &>/dev/null; then
     block_emit "CRITICAL: python3 not found. Pre-merge gate requires python3 for JSON parsing. Install python3 to restore gate enforcement."
@@ -150,8 +159,9 @@ if [ -f ".claude/pr-grind-clean.local" ]; then
                 block_emit "Pre-merge gate: unable to verify CI checks for PR #$PR_NUM (\`gh pr checks\` failed with exit $GH_EXIT). Resolve GitHub CLI/auth/network issues and retry."
                 exit 0
             fi
-            FAILED=$(printf '%s\n' "$CHECKS_OUTPUT" | grep -cE "fail" || true)
-            PENDING=$(printf '%s\n' "$CHECKS_OUTPUT" | grep -c "pending" || true)
+            FILTERED=$(printf '%s\n' "$CHECKS_OUTPUT" | _filter_advisory)
+            FAILED=$(printf '%s\n' "$FILTERED" | grep -cE "fail" || true)
+            PENDING=$(printf '%s\n' "$FILTERED" | grep -c "pending" || true)
             if [ "$FAILED" -gt 0 ]; then
                 block_emit "Pre-merge gate: pr-grind marker exists but $FAILED CI checks are FAILING. Fix failures before merging. Run \`/pr-grind\` to resume."
                 exit 0
@@ -182,8 +192,9 @@ if [ -n "$MERGE_PR_NUM" ] && command -v gh &>/dev/null; then
         if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_OUTPUT" | grep -qE "pass|fail|pending"; then
             : # CLI error — fall through to normal block
         else
-            FAILED=$(printf '%s\n' "$CHECKS_OUTPUT" | grep -cE "fail" || true)
-            PENDING=$(printf '%s\n' "$CHECKS_OUTPUT" | grep -c "pending" || true)
+            FILTERED=$(printf '%s\n' "$CHECKS_OUTPUT" | _filter_advisory)
+            FAILED=$(printf '%s\n' "$FILTERED" | grep -cE "fail" || true)
+            PENDING=$(printf '%s\n' "$FILTERED" | grep -c "pending" || true)
             if [ "$FAILED" -eq 0 ] && [ "$PENDING" -eq 0 ]; then
                 mkdir -p .claude
                 printf '{"ts":"%s","event":"bootstrap-merge","gate":"pre-merge","pr":%s,"gate_files":%s}\n' \

@@ -162,6 +162,8 @@ you will be blocked by the pre-merge gate and waste the user's time.
 
 Automated reviewers (CodeRabbit, Greptile, Cubic, CodeScene, GitGuardian) register as GitHub checks. `gh pr checks --watch` blocks until ALL of them complete — not just CI build/lint/test.
 
+**Advisory checks (CodeScene):** CodeScene is non-blocking — its feedback is still collected and you MUST attempt to fix its issues, but its pass/fail status does not block the clean marker or merge gate. If a CodeScene finding requires architectural changes beyond PR scope (e.g., module-level complexity requiring file splits), note it and proceed.
+
 ```bash
 # Phase 1: Wait for all GitHub-registered checks (CI + automated reviewers)
 # --watch blocks until every check is pass/fail/skipped — including reviewer bots
@@ -184,10 +186,19 @@ fi
 
 # Phase 2.5: Verify all checks PASSED (not just completed)
 # Checks completing is necessary but not sufficient — they must be green.
-FAILED=$(gh pr checks <PR_NUMBER> 2>&1 | grep -cE "fail" || true)
+# Advisory checks (.claude/advisory-checks) are non-blocking — still collect their
+# feedback in Step 2, but their failures don't prevent proceeding.
+CHECKS_RAW=$(gh pr checks <PR_NUMBER> 2>&1)
+ADVISORY_PAT="CodeScene"
+REQUIRED=$(echo "$CHECKS_RAW" | grep -ivE "$ADVISORY_PAT" || true)
+ADVISORY_FAILED=$(echo "$CHECKS_RAW" | grep -iE "$ADVISORY_PAT" | grep -cE "fail" || true)
+FAILED=$(echo "$REQUIRED" | grep -cE "fail" || true)
+if [ "$ADVISORY_FAILED" -gt 0 ]; then
+  echo "⚠️  $ADVISORY_FAILED advisory checks failing (non-blocking). Collecting feedback in Step 2."
+fi
 if [ "$FAILED" -gt 0 ]; then
-  echo "❌ $FAILED checks FAILED. Continuing to Step 2 to collect details."
-  gh pr checks <PR_NUMBER> 2>&1 | grep -E "fail"
+  echo "❌ $FAILED required checks FAILED. Continuing to Step 2 to collect details."
+  echo "$REQUIRED" | grep -E "fail"
   # Do NOT write clean marker — proceed to Step 2 to collect failures as feedback
 fi
 
@@ -323,18 +334,23 @@ Continue grinding?
 ## Completion
 
 **All of these must be true before declaring done:**
-1. All CI checks passing (build, lint, test)
+1. All required CI checks passing (build, lint, test)
 2. All automated reviewers completed (CodeRabbit, Greptile, Cubic, etc.)
 3. No unresolved actionable comments from any source
 4. No new comments arrived after your last push (wait for the full cycle)
+5. Advisory check issues either fixed or noted as beyond PR scope (e.g., "CodeScene: module complexity requires file split — architectural change, not this PR")
 
 **Verify checks are green (REQUIRED — do NOT skip):**
 ```bash
-# Hard gate: verify all checks passed before writing clean marker
-FAILED=$(gh pr checks <PR_NUMBER> 2>&1 | grep -cE "fail" || true)
+# Hard gate: verify all REQUIRED checks passed before writing clean marker
+# Advisory checks (.claude/advisory-checks) don't block — note them in output
+CHECKS_RAW=$(gh pr checks <PR_NUMBER> 2>&1)
+ADVISORY_PAT="CodeScene"
+REQUIRED=$(echo "$CHECKS_RAW" | grep -ivE "$ADVISORY_PAT" || true)
+FAILED=$(echo "$REQUIRED" | grep -cE "fail" || true)
 if [ "$FAILED" -gt 0 ]; then
-  echo "❌ BLOCKED: $FAILED checks still failing. Cannot declare PR clean."
-  gh pr checks <PR_NUMBER> 2>&1 | grep -E "fail"
+  echo "❌ BLOCKED: $FAILED required checks still failing. Cannot declare PR clean."
+  echo "$REQUIRED" | grep -E "fail"
   exit 1  # Re-enter the loop — do NOT write the marker
 fi
 ```
@@ -379,8 +395,9 @@ git worktree remove "../pr-grind-<PR_NUMBER>" --force
 ## PR Grind Complete
 
 PR #<N> is clean after <rounds> round(s).
-- CI: all checks passing
+- CI: all required checks passing
 - Automated reviewers: all completed, no actionable findings
+- Advisory checks: [fixed | N failing — noted as beyond PR scope]
 - Human comments: all addressed
 - Worktree cleaned up.
 ```

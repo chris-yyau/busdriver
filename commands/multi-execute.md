@@ -1,7 +1,3 @@
----
-description: Multi-model collaborative execution with prototype generation and multi-model audit
----
-
 # Execute - Multi-Model Collaborative Execution
 
 Multi-model collaborative execution - Get prototype from plan → Claude refactors and implements → Multi-model audit and delivery.

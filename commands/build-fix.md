@@ -1,7 +1,3 @@
----
-description: Fix build errors incrementally with minimal diffs
----
-
 # Build and Fix
 
 Incrementally fix build and type errors with minimal, safe changes.

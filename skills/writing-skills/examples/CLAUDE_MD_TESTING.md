@@ -94,7 +94,7 @@ is at `~/.claude/skills/`.
 Browse categories: `ls ~/.claude/skills/`
 Search: `grep -r "keyword" ~/.claude/skills/ --include="SKILL.md"`
 
-Instructions: `skills/writing-skills`
+Instructions: `skills/using-skills`
 </available_skills>
 
 <important_info_about_skills>
@@ -129,7 +129,7 @@ Your workflow for every task:
 The skills library prevents you from repeating common mistakes.
 Not checking before you start is choosing to repeat those mistakes.
 
-Start here: `skills/writing-skills`
+Start here: `skills/using-skills`
 ```
 
 ## Testing Protocol

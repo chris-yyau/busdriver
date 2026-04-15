@@ -1,9 +1,7 @@
 ---
 name: using-superpowers
-description: "DEPRECATED — use busdriver:orchestrator instead. This skill is superseded by the orchestrator which provides unified routing for superpowers, ECC, litmus, and blueprint-review."
+description: Use when starting any conversation - establishes how to find and use skills, requiring Skill tool invocation before ANY response including clarifying questions
 ---
-
-> **DEPRECATED:** This skill is superseded by `busdriver:orchestrator`, which provides unified routing for superpowers pipeline, ECC domain skills, litmus review gates, and blueprint-review. Do not use this skill for routing decisions. It remains in the repo for backward compatibility with non-Claude-Code platforms (Copilot CLI, Gemini CLI) that may not have the orchestrator loaded via SessionStart hooks.
 
 <SUBAGENT-STOP>
 If you were dispatched as a subagent to execute a specific task, skip this skill.

@@ -42,6 +42,12 @@
       "status": "local"
     },
     {
+      "path": "agents/a11y-architect.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/a11y-architect.md"
+    },
+    {
       "path": "agents/architect.md",
       "source": "ecc",
       "status": "sync",
@@ -1287,6 +1293,12 @@
       "upstream_path": "scripts/ci/validate-skills.js"
     },
     {
+      "path": "scripts/ci/validate-workflow-security.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/ci/validate-workflow-security.js"
+    },
+    {
       "path": "scripts/claw.js",
       "source": "ecc",
       "status": "sync",
@@ -1327,6 +1339,12 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/gan-harness.sh"
+    },
+    {
+      "path": "scripts/gemini-adapt-agents.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/gemini-adapt-agents.js"
     },
     {
       "path": "scripts/harness-audit.js",
@@ -1391,7 +1409,7 @@
     {
       "path": "scripts/hooks/post-bash-pr-created.js",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/hooks/post-bash-pr-created.js"
     },
     {
@@ -1910,6 +1928,12 @@
       "upstream_path": "skills/agentic-engineering/SKILL.md"
     },
     {
+      "path": "skills/accessibility/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/accessibility/SKILL.md"
+    },
+    {
       "path": "skills/ai-first-engineering/SKILL.md",
       "source": "ecc",
       "status": "sync",
@@ -2185,6 +2209,12 @@
       "upstream_path": "skills/coding-standards/SKILL.md"
     },
     {
+      "path": "skills/council/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/council/SKILL.md"
+    },
+    {
       "path": "skills/compose-multiplatform-patterns/SKILL.md",
       "source": "ecc",
       "status": "sync",
@@ -2219,6 +2249,24 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "skills/continuous-agent-loop/SKILL.md"
+    },
+    {
+      "path": "skills/continuous-learning/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning/SKILL.md"
+    },
+    {
+      "path": "skills/continuous-learning/config.json",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning/config.json"
+    },
+    {
+      "path": "skills/continuous-learning/evaluate-session.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning/evaluate-session.sh"
     },
     {
       "path": "skills/continuous-learning-v2/SKILL.md",
@@ -2499,7 +2547,7 @@
     {
       "path": "skills/finishing-a-development-branch/SKILL.md",
       "source": "superpowers",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/finishing-a-development-branch/SKILL.md"
     },
     {

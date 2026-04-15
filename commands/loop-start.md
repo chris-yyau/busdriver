@@ -1,7 +1,3 @@
----
-description: Start a managed autonomous loop pattern with safety defaults
----
-
 # Loop Start Command
 
 Start a managed autonomous loop pattern with safety defaults.

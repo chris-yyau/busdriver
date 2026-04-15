@@ -1,7 +1,3 @@
----
-description: Recommend the best model tier for the current task by complexity and budget
----
-
 # Model Route Command
 
 Recommend the best model tier for the current task by complexity and budget.

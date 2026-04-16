@@ -446,6 +446,30 @@ After all 6 agents return:
    - MEDIUM/LOW at 80+ confidence → **advisory** (show but don't block)
    - Below 80 confidence → **suppress** (don't show)
 
+### Step 3.5: Weighted Quorum (Agent Availability)
+
+Not all agents are equally load-bearing. The pass/fail decision uses weighted scoring rather than a flat 4-of-6 count, so that availability hiccups in low-weight agents (Docs, History) don't block merge when the high-weight agents (Bugs, Security) returned clean.
+
+**Agent weights (total 12 points):**
+
+| Agent | Weight | Rationale |
+|-------|--------|-----------|
+| Agent 2 — **Bugs** | 3 | Direct correctness risk |
+| Agent 5 — **Security** | 3 | Direct exploit/exposure risk |
+| Agent 1 — Guidelines | 2 | Convention/consistency |
+| Agent 4 — Cross-commit | 2 | Partial-migration risk |
+| Agent 3 — History | 1 | Mostly retrospective signal |
+| Agent 6 — Docs | 1 | Docs drift, rarely blocking |
+
+**Pass rules (BOTH must hold):**
+
+1. **Score threshold:** returned-agent weight sum ≥ **7** (of 12). Timed-out or errored agents contribute 0.
+2. **Hard requirement:** neither Agent 2 (Bugs) nor Agent 5 (Security) is timed-out or errored. If either is missing, the review is inconclusive regardless of total score.
+
+**Why score + hard requirement:** The weight lets Docs+History timeouts (2 pts missing) still pass if all 4 higher-weight agents returned. The hard requirement prevents "10 out of 12 points with Security down" from being treated as a pass — Security gaps are categorically different from Docs gaps.
+
+**Calibration note:** If you observe weight drift (e.g., Docs catching real bugs consistently, or Bugs producing noise), adjust weights based on observed signal quality. Default weights reflect general-purpose code; healthcare/finance workloads should lift Security to 4 and lower Guidelines.
+
 ### Step 4: Gate Decision
 
 | Result | Action |
@@ -464,15 +488,16 @@ The marker must be a SHA-256 hash (64 hex chars) or a timestamped pass (`PASS-<e
 
 ### Degraded States
 
-Wait for all agents. Only apply quorum AFTER agents have timed out (10 min), never while they're still running.
+Wait for all agents. Only evaluate quorum AFTER agents have timed out (10 min), never while they're still running.
 
 | Failure | Handling |
 |---------|----------|
-| Agent times out (>10 min) | Mark as timed-out. Proceed with returned results only after ALL agents are either returned or timed-out |
-| ≥4 agents returned | **4-of-6 quorum** — valid review. Evaluate findings from returned agents |
-| <4 agents returned | `inconclusive` — fail-closed, do not write marker |
+| Agent times out (>10 min) | Mark as timed-out (weight contribution = 0). Proceed with returned results only after ALL agents are either returned or timed-out |
+| Weighted score ≥ 7 AND Bugs + Security both returned | **Valid review.** Evaluate findings from returned agents (apply Step 3 classification) |
+| Weighted score < 7 | `inconclusive` — fail-closed, do not write marker |
+| Bugs or Security agent timed-out/errored | `inconclusive` — fail-closed regardless of score (hard requirement) |
 | All agents timeout | Fail-closed. Fall back to codex CLI result only (degrade to fast mode) |
-| Codex CLI unavailable | Multi-agent review only (skip Step 1). Marker still written if deep review passes |
+| Codex CLI unavailable | Multi-agent review only (skip Step 1). Marker still written if deep review passes weighted quorum |
 
 ### Marker Encoding
 
@@ -503,6 +528,32 @@ When `run-review-loop.sh` exits with code 3, no external review CLI is available
 7. Clean up: remove the temp prompt file and the handoff path file
 
 ## Enhanced Review Features
+
+### Short-Circuit Gate (Commit Mode Only)
+
+Small, low-risk commits can skip the Codex CLI review when ALL conditions hold:
+
+- Weighted diff lines < `LITMUS_SHORTCIRCUIT_MAX_LINES` (default **10**)
+- SAST findings = 0 (gitleaks, semgrep, shellcheck, trufflehog all clean)
+- Markdown findings = 0
+- No changed files match the sensitive-path pattern (workflows, secrets, crypto material, lockfiles, env files, IaC)
+
+When all conditions pass, litmus emits `⚡ Short-circuit PASS`, logs the event to `.claude/review-metrics.jsonl` + `.claude/bypass-log.jsonl` (as a distinct `short-circuit-pass` event, NOT a bypass), writes the commit marker, and exits 0 without dispatching Codex.
+
+**Fail-closed:** Any condition failing falls through to normal review.
+
+**Sensitive-path pattern** (hardcoded baseline, extensible):
+- `.github/`, `.env*`, `Dockerfile*`, `docker-compose*`
+- `*.key`, `*.pem`, `*.p12`
+- Lockfiles: `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `Cargo.lock`, `go.sum`, `uv.lock`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`
+- `*.tf`, `migrations/`, `secrets/`
+
+**Environment variables:**
+- `LITMUS_SHORTCIRCUIT_DISABLED=1` — disable short-circuit entirely, always run Codex
+- `LITMUS_SHORTCIRCUIT_MAX_LINES=10` — weighted-lines threshold (override for tighter/looser gate)
+- `LITMUS_SHORTCIRCUIT_EXTRA_SENSITIVE=<regex>` — append project-specific sensitive paths (e.g., `auth/|db/|billing/`)
+
+**When to tighten:** If you see false short-circuits on important small changes, lower the threshold to 5 or add paths to the sensitive pattern. **When to disable:** Compliance environments where every commit must have LLM review regardless of size.
 
 ### SAST Integration (Deterministic)
 

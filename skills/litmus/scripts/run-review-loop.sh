@@ -426,6 +426,80 @@ SAST_COUNT=$(echo "$SAST_FINDINGS" | python3 -c "import sys,json; print(len(json
 MARKDOWN_FINDINGS=$(run_markdown_checks "$FILTERED_FILES")
 MD_COUNT=$(echo "$MARKDOWN_FINDINGS" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
 
+# ── Short-circuit gate (commit mode only) ────────────────────────────
+# Skip Codex CLI review when ALL conditions hold:
+#   - REVIEW_MODE = commit (PR mode always needs full review)
+#   - Weighted diff < LITMUS_SHORTCIRCUIT_MAX_LINES (default 10)
+#   - SAST findings = 0 (gitleaks, semgrep, shellcheck, trufflehog all clean)
+#   - Markdown findings = 0
+#   - No changed files match sensitive-path pattern
+# Fail-closed: ANY condition failing falls through to normal Codex review.
+# Disable entirely with LITMUS_SHORTCIRCUIT_DISABLED=1.
+if [ "$REVIEW_MODE" = "commit" ] && [ "${LITMUS_SHORTCIRCUIT_DISABLED:-0}" != "1" ]; then
+  SC_MAX_LINES="${LITMUS_SHORTCIRCUIT_MAX_LINES:-10}"
+  case "$SC_MAX_LINES" in
+    ''|*[!0-9]*) SC_MAX_LINES=10 ;;
+  esac
+
+  # Sensitive-path pattern: paths where even tiny changes can have outsized
+  # blast radius (workflows, secrets, crypto material, lockfiles, env files, IaC).
+  # Extensible via LITMUS_SHORTCIRCUIT_EXTRA_SENSITIVE (regex appended with |).
+  # Notes:
+  #   - \.env (bare) matches .env, .env.local, .envrc, etc.
+  #   - (^|/)secrets?/ matches relative paths (secrets/foo.yml, src/secrets/...)
+  SC_SENSITIVE_PATTERN='(^|/)(\.github/|\.env|Dockerfile|docker-compose|\.key$|\.pem$|\.p12$|package-lock\.json$|pnpm-lock\.yaml$|yarn\.lock$|Cargo\.lock$|go\.sum$|uv\.lock$|Pipfile\.lock$|Gemfile\.lock$|composer\.lock$|\.tf$|migrations?/|secrets?/)'
+  if [ -n "${LITMUS_SHORTCIRCUIT_EXTRA_SENSITIVE:-}" ]; then
+    SC_SENSITIVE_PATTERN="${SC_SENSITIVE_PATTERN}|${LITMUS_SHORTCIRCUIT_EXTRA_SENSITIVE}"
+  fi
+
+  # Fail-closed on regex errors: grep -E exit 0 = match, 1 = no match (expected),
+  # 2 = invalid regex (treat as "unable to verify" → skip short-circuit).
+  SC_HAS_SENSITIVE=""
+  SC_REGEX_OK=true
+  if [ -n "$FILTERED_FILES" ]; then
+    set +e
+    SC_HAS_SENSITIVE=$(printf '%s\n' "$FILTERED_FILES" | grep -E "$SC_SENSITIVE_PATTERN")
+    SC_GREP_EXIT=$?
+    set -e
+    if [ "$SC_GREP_EXIT" -eq 2 ]; then
+      echo "⚠️  Short-circuit: invalid regex in LITMUS_SHORTCIRCUIT_EXTRA_SENSITIVE — falling through to full review"
+      SC_REGEX_OK=false
+    fi
+  fi
+
+  if [ "$SC_REGEX_OK" = true ] \
+      && [ "$WEIGHTED_LINES" -lt "$SC_MAX_LINES" ] \
+      && [ "$SAST_COUNT" -eq 0 ] \
+      && [ "$MD_COUNT" -eq 0 ] \
+      && [ -z "$SC_HAS_SENSITIVE" ]; then
+    echo ""
+    echo "⚡ Short-circuit PASS — skipping Codex CLI review"
+    echo "   Diff: $WEIGHTED_LINES weighted lines (< $SC_MAX_LINES threshold)"
+    echo "   SAST: 0 findings | Markdown: 0 findings | Sensitive paths: none"
+    echo ""
+
+    # Log metric (same schema as normal review — cli labeled as short-circuit)
+    log_review_metrics "PASS" "0" "$ITERATION" "$REVIEW_MODE" "short-circuit" '{"status":"PASS","issues":[],"short_circuit":true}'
+
+    # Write commit marker (same format as normal PASS)
+    mkdir -p .claude
+    git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > ".claude/litmus-passed.local"
+
+    # Audit trail — distinct event, separate from skip-bypass
+    printf '{"ts":"%s","event":"short-circuit-pass","gate":"pre-commit","weighted_lines":%d}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$WEIGHTED_LINES" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
+
+    # Cleanup
+    clear_iteration_history
+    rm -f "$STATE_FILE" 2>/dev/null
+
+    echo "Next steps:"
+    echo "   1. Commit: git commit -m 'Your message'"
+    echo ""
+    exit 0
+  fi
+fi
+
 # Collect smart context (callers, importers of changed code)
 echo ""
 echo "🔎 Collecting cross-file context..."

@@ -1,3 +1,10 @@
+## [1.25.1](https://github.com/chris-yyau/busdriver/compare/v1.25.0...v1.25.1) (2026-04-16)
+
+
+### Reverts
+
+* "ci: helmet audit fixes — bypass-audit, pinact perms, scorecard shell" ([46eca0b](https://github.com/chris-yyau/busdriver/commit/46eca0ba2fe8da8f228954523c15b40a7dc7eeb0))
+
 # [1.25.0](https://github.com/chris-yyau/busdriver/compare/v1.24.0...v1.25.0) (2026-04-16)
 
 

@@ -1,3 +1,10 @@
+# [1.25.0](https://github.com/chris-yyau/busdriver/compare/v1.24.0...v1.25.0) (2026-04-16)
+
+
+### Features
+
+* litmus short-circuit gate + weighted quorum ([#44](https://github.com/chris-yyau/busdriver/issues/44)) ([570eed5](https://github.com/chris-yyau/busdriver/commit/570eed5b28a49d0546f292fbe3067fd2ed9c9155))
+
 # [1.24.0](https://github.com/chris-yyau/busdriver/compare/v1.23.1...v1.24.0) (2026-04-15)
 
 

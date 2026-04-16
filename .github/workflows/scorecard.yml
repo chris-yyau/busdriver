@@ -7,10 +7,6 @@ on:
 
 permissions: {}
 
-defaults:
-  run:
-    shell: bash
-
 jobs:
   scorecard:
     runs-on: ubuntu-latest

@@ -13,14 +13,14 @@ Unified workflow orchestrator for Claude Code. Consolidates pipeline process, do
 ## Project Structure
 
 ```
-agents/          49 agent definitions (.md) — specialized reviewers, builders, resolvers
+agents/          48 agent definitions (.md) — specialized reviewers, builders, resolvers
 commands/        Slash command entry points (.md) — user-invokable shortcuts to skills
 hooks/
   hooks.json     Hook registration manifest (PreToolUse, PostToolUse, SessionStart, Stop)
   gate-scripts/  Shell scripts that enforce review gates (fail-CLOSED by default)
-rules/           Coding rules installed to ~/.claude/rules/ (common/ + 11 language dirs + zh/)
+rules/           Coding rules installed to ~/.claude/rules/ (common/ + 12 language dirs + zh/)
 scripts/         JS/shell utilities — release, install, session management, health checks
-skills/          207 skill definitions (.md) — the bulk of the plugin's capability
+skills/          204 skill definitions (.md) — the bulk of the plugin's capability
 tests/           Shell-based gate tests (test-*.sh)
 docs/            Reference docs and examples
 ```
@@ -60,8 +60,7 @@ Version numbers are managed across three manifests (declared in `.version-bump.j
 | `release.yml` | Push to main | semantic-release with `RELEASE_TOKEN` (environment-scoped secret) |
 | `security.yml` | Schedule + PRs | Security scanning |
 | `scorecard.yml` | Schedule | OpenSSF Scorecard |
-| `pinact.yml` | Push to main (workflow changes) | Pin GitHub Actions to commit SHAs |
-| `bypass-audit.yml` | Push to main | Detect direct-push bypasses; opens `admin-bypass` issues |
+| `pinact.yml` | Schedule | Pin GitHub Actions to commit SHAs |
 
 ## Conventions
 

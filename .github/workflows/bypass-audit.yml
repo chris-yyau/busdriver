@@ -28,7 +28,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: bypass-audit-${{ github.sha }}
+  group: ${{ github.workflow }}-${{ github.sha }}
   cancel-in-progress: false
 
 defaults:
@@ -98,7 +98,8 @@ jobs:
             exit 0
           fi
           if [ "$PR_COUNT" != "0" ]; then
-            PR_NUM=$(printf '%s' "$PRS_JSON" | jq -r '.[0].number // "?"' 2>/dev/null || echo "?")
+            # Line 96 already validated PRS_JSON parses; `// "?"` handles missing .number.
+            PR_NUM=$(printf '%s' "$PRS_JSON" | jq -r '.[0].number // "?"')
             echo "No bypass — commit came from PR #$PR_NUM"
             exit 0
           fi
@@ -106,12 +107,19 @@ jobs:
           # No associated PR → direct push = bypass
           echo "::warning::Admin bypass: direct push to main by $ACTOR (commit ${COMMIT_SHA})"
 
-          # Ensure the admin-bypass label exists (idempotent; track success for log clarity)
+          # Ensure the admin-bypass label exists. Check first, then create if missing —
+          # a bare `gh label create` fails with non-zero on "already exists", which would
+          # wrongly flip LABEL_OK=0 and force the no-label fallback even though the label
+          # IS available.
           LABEL_OK=1
-          gh label create "admin-bypass" \
-            --color "d93f0b" \
-            --description "Commit bypassed required status checks" \
-            --repo "$REPO" 2>/dev/null || LABEL_OK=0
+          if gh label list --repo "$REPO" --search "admin-bypass" --limit 1 --json name --jq '.[].name' 2>/dev/null | grep -qx "admin-bypass"; then
+            : # already exists, LABEL_OK stays 1
+          elif ! gh label create "admin-bypass" \
+              --color "d93f0b" \
+              --description "Commit bypassed required status checks" \
+              --repo "$REPO" 2>/dev/null; then
+            LABEL_OK=0
+          fi
 
           # Compose issue body in a file — values from env vars, properly quoted.
           # Trap ensures cleanup even if issue creation fails and set -e aborts.
@@ -136,14 +144,21 @@ jobs:
             printf '**Action required:** Review whether this bypass was intentional. If so, document the rationale in a comment and close. If not, investigate how branch protection was circumvented.\n'
           } > "$BODY_FILE"
 
-          # Try with label first; fall back to no-label if label creation failed earlier
-          # or if labeling itself fails. Log the fallback so audit is not silent.
+          # Try with label first; fall back to no-label if labeling fails. Both branches
+          # emit explicit error annotations on failure so the audit signal isn't lost
+          # when `set -e` aborts. stderr stays on its own stream for diagnostics.
           if [ "$LABEL_OK" = "1" ]; then
-            if ! gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE" --label "admin-bypass" 2>&1; then
+            if ! gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE" --label "admin-bypass"; then
               echo "::warning::Failed to create labeled issue — retrying without label"
-              gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE"
+              if ! gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE"; then
+                echo "::error::Failed to create bypass audit issue for $COMMIT_SHA (both labeled and fallback attempts failed)"
+                exit 1
+              fi
             fi
           else
             echo "::warning::admin-bypass label unavailable — creating issue without label"
-            gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE"
+            if ! gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE"; then
+              echo "::error::Failed to create bypass audit issue for $COMMIT_SHA"
+              exit 1
+            fi
           fi

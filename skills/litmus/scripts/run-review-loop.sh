@@ -444,17 +444,31 @@ if [ "$REVIEW_MODE" = "commit" ] && [ "${LITMUS_SHORTCIRCUIT_DISABLED:-0}" != "1
   # Sensitive-path pattern: paths where even tiny changes can have outsized
   # blast radius (workflows, secrets, crypto material, lockfiles, env files, IaC).
   # Extensible via LITMUS_SHORTCIRCUIT_EXTRA_SENSITIVE (regex appended with |).
-  SC_SENSITIVE_PATTERN='(^|/)(\.github/|\.env($|\.)|Dockerfile|docker-compose|\.key$|\.pem$|\.p12$|package-lock\.json$|pnpm-lock\.yaml$|yarn\.lock$|Cargo\.lock$|go\.sum$|uv\.lock$|Pipfile\.lock$|Gemfile\.lock$|composer\.lock$|\.tf$|migrations?/|/secrets?/)'
+  # Notes:
+  #   - \.env (bare) matches .env, .env.local, .envrc, etc.
+  #   - (^|/)secrets?/ matches relative paths (secrets/foo.yml, src/secrets/...)
+  SC_SENSITIVE_PATTERN='(^|/)(\.github/|\.env|Dockerfile|docker-compose|\.key$|\.pem$|\.p12$|package-lock\.json$|pnpm-lock\.yaml$|yarn\.lock$|Cargo\.lock$|go\.sum$|uv\.lock$|Pipfile\.lock$|Gemfile\.lock$|composer\.lock$|\.tf$|migrations?/|secrets?/)'
   if [ -n "${LITMUS_SHORTCIRCUIT_EXTRA_SENSITIVE:-}" ]; then
     SC_SENSITIVE_PATTERN="${SC_SENSITIVE_PATTERN}|${LITMUS_SHORTCIRCUIT_EXTRA_SENSITIVE}"
   fi
 
+  # Fail-closed on regex errors: grep -E exit 0 = match, 1 = no match (expected),
+  # 2 = invalid regex (treat as "unable to verify" → skip short-circuit).
   SC_HAS_SENSITIVE=""
+  SC_REGEX_OK=true
   if [ -n "$FILTERED_FILES" ]; then
-    SC_HAS_SENSITIVE=$(printf '%s\n' "$FILTERED_FILES" | grep -E "$SC_SENSITIVE_PATTERN" || true)
+    set +e
+    SC_HAS_SENSITIVE=$(printf '%s\n' "$FILTERED_FILES" | grep -E "$SC_SENSITIVE_PATTERN")
+    SC_GREP_EXIT=$?
+    set -e
+    if [ "$SC_GREP_EXIT" -eq 2 ]; then
+      echo "⚠️  Short-circuit: invalid regex in LITMUS_SHORTCIRCUIT_EXTRA_SENSITIVE — falling through to full review"
+      SC_REGEX_OK=false
+    fi
   fi
 
-  if [ "$WEIGHTED_LINES" -lt "$SC_MAX_LINES" ] \
+  if [ "$SC_REGEX_OK" = true ] \
+      && [ "$WEIGHTED_LINES" -lt "$SC_MAX_LINES" ] \
       && [ "$SAST_COUNT" -eq 0 ] \
       && [ "$MD_COUNT" -eq 0 ] \
       && [ -z "$SC_HAS_SENSITIVE" ]; then

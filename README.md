@@ -31,7 +31,7 @@ Small, specific tasks (bug fix, typo, config tweak) skip straight to Phase 4. Ev
 | Gate | Trigger | What it blocks |
 |------|---------|---------------|
 | **Litmus** | `git commit` | Blocks commit until code review passes |
-| **Litmus (deep)** | `gh pr create` | Blocks PR until 6 parallel review agents pass (4-of-6 quorum) |
+| **Litmus (deep)** | `gh pr create` | Blocks PR until 6 parallel review agents pass weighted quorum (score ≥ 7/12, Bugs+Security required) |
 | **Blueprint Review** | Plan/design doc written | Blocks implementation code while plans are unreviewed |
 | **Pre-implementation** | `Write`/`Edit` of code files | Blocks file writes while design docs lack `<!-- design-reviewed: PASS -->` |
 | **Freeze/Guard** | Debugging session active | Restricts edits to investigation scope only |

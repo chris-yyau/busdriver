@@ -11,10 +11,13 @@ sessions/
 .claude/*.local.*
 .claude/litmus-state.md
 .claude/bypass-log.jsonl
+.claude/review-metrics.jsonl
+.claude/*.log
 .claude/.gate-block-count.local
 .claude/.impl-gate-block-count.local
 
 # Internal planning docs and review artifacts
 docs/reviews/
+docs/plans/
 docs/superpowers/plans/
 docs/superpowers/specs/

@@ -20,7 +20,7 @@ hooks/
   gate-scripts/  Shell scripts that enforce review gates (fail-CLOSED by default)
 rules/           Coding rules installed to ~/.claude/rules/ (common/ + 11 language dirs + zh/)
 scripts/         JS/shell utilities — release, install, session management, health checks
-skills/          207 skill definitions (.md) — the bulk of the plugin's capability
+skills/          206 skill definitions (.md) — the bulk of the plugin's capability (plus `supplements/` support dir)
 tests/           Shell-based gate tests (test-*.sh)
 docs/            Reference docs and examples
 ```

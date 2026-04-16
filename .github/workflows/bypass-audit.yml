@@ -44,7 +44,7 @@ jobs:
       pull-requests: read  # look up PR for commit SHA
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
         with:
           egress-policy: audit
 
@@ -79,17 +79,24 @@ jobs:
           fi
 
           # Look up PRs associated with this commit SHA.
-          # CRITICAL: Distinguish "API succeeded, no PR found" from "API failed".
-          # The former = bypass (alert). The latter = transient error (warn + skip,
-          # do NOT create false-positive issue).
-          if ! PRS_JSON=$(gh api "repos/$REPO/commits/$COMMIT_SHA/pulls" 2>&1); then
+          # CRITICAL: Distinguish three outcomes:
+          #   1. API succeeded, returned PR list → no bypass
+          #   2. API succeeded, returned empty list → bypass (alert)
+          #   3. API failed OR response wasn't parseable JSON → skip (do NOT alert)
+          # Keep stderr on its own stream so $PRS_JSON is pure JSON for jq — merging
+          # streams with 2>&1 lets gh deprecation/debug output corrupt JSON parsing,
+          # which would coerce PR_COUNT to 0 and create false-positive bypass issues.
+          if ! PRS_JSON=$(gh api "repos/$REPO/commits/$COMMIT_SHA/pulls" 2>/dev/null); then
             echo "::warning::gh api failed to list PRs for $COMMIT_SHA — skipping audit (cannot determine bypass status)"
-            echo "Response: $PRS_JSON"
             exit 0
           fi
 
-          # Parse once, reuse
-          PR_COUNT=$(printf '%s' "$PRS_JSON" | jq 'length' 2>/dev/null || echo "0")
+          # Parse once, reuse. If jq fails, skip rather than falling through to
+          # the bypass branch — '0' and 'parse error' must not collapse to same signal.
+          if ! PR_COUNT=$(printf '%s' "$PRS_JSON" | jq 'length' 2>/dev/null); then
+            echo "::warning::jq failed to parse PR list response — skipping audit"
+            exit 0
+          fi
           if [ "$PR_COUNT" != "0" ]; then
             PR_NUM=$(printf '%s' "$PRS_JSON" | jq -r '.[0].number // "?"' 2>/dev/null || echo "?")
             echo "No bypass — commit came from PR #$PR_NUM"

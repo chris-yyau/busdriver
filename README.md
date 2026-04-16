@@ -212,6 +212,59 @@ Skip files are single-use (consumed after one bypass) and logged to `.claude/byp
 | `scripts/litmus-metrics-report.sh` | Dashboard for litmus review outcomes (pass rate, severity, trends) |
 | `node scripts/doctor.js` | Diagnose CLI availability and effective reviewer configuration |
 
+## Observability
+
+Every gate execution writes to a persistent JSONL log per project, so you can answer questions like *"what's litmus's pass rate?"* or *"how often do I bypass and why?"* without digging through session history.
+
+| File (per project) | Who writes | What it captures |
+|--------------------|-----------|------------------|
+| `.claude/review-metrics.jsonl` | litmus | Review outcome (PASS/FAIL), issue count, severity breakdown, iteration, CLI used, mode, commit SHA, branch, diff size |
+| `.claude/bypass-log.jsonl` | litmus + busdriver gates (+ seatbelt plugin if installed) | Skip-file consumptions + selected telemetry events (see taxonomy below). **Not logged:** env-var bypasses (`SKIP_LITMUS=1`, `SKIP_PR_GRIND=1`) exit without logging — only file-based skips are audited |
+
+**Event types written to `bypass-log.jsonl`:**
+
+| Event | Source | Meaning |
+|-------|--------|---------|
+| `skip-review-consumed` | pre-commit / pre-pr / pre-implementation gate | User-created `skip-litmus.local` or `skip-design-review.local` was consumed |
+| `skip-pr-grind-consumed` | pre-merge gate | User-created `skip-pr-grind.local` was consumed |
+| `review-skipped-none` | pre-commit gate | Gate skipped because no review tool was active (BUSDRIVER_REVIEW_CLI=none) |
+| `narrative-fallback-triggered` | litmus CLI | Review CLI output was non-JSON; parsed as narrative fallback |
+| `schema-violation` | litmus schema validator | Review output didn't match expected JSON schema |
+| `short-circuit-pass` | litmus commit mode | Diff met all short-circuit criteria; Codex skipped |
+| `pr-fast-bypass` | litmus PR mode | `LITMUS_PR_FAST=1` skipped multi-agent review |
+| `bootstrap-merge` | pre-merge gate | PR merge allowed via bootstrap bypass for gate-config PRs |
+| `builtin-review-accepted` | post-commit marker consumer | Builtin-agent review (not Codex) was accepted for a commit |
+| `unreviewed-commit` | post-commit marker consumer | Commit landed without a review marker (detected post-hoc) |
+| `seatbelt-skip` | seatbelt plugin (cross-tool — not emitted by busdriver itself) | Scanner skipped via `SKIP_SEATBELT` or `SKIP_<SCANNER>` (only present if the seatbelt plugin is installed) |
+
+**Dashboard for review metrics:**
+
+```bash
+# Full dashboard — pass rate, severity distribution, avg iterations, time trends
+bash scripts/litmus-metrics-report.sh
+
+# Recent runs (last N)
+bash scripts/litmus-metrics-report.sh --recent 10
+
+# Raw JSONL for custom analysis
+bash scripts/litmus-metrics-report.sh --raw
+```
+
+**Reviewing bypasses:**
+
+```bash
+# Last 10 bypass events
+tail -10 .claude/bypass-log.jsonl | jq .
+
+# Count bypasses by event type
+jq -r '.event' .claude/bypass-log.jsonl | sort | uniq -c
+
+# Seatbelt scanner bypasses (which scanner + env var)
+jq -r 'select(.event == "seatbelt-skip") | "\(.scanner) via \(.reason) at \(.ts)"' .claude/bypass-log.jsonl
+```
+
+Use these monthly to identify drift — scanners you keep bypassing (candidates for tuning or removal), reviews that consistently FAIL on iteration 1 (candidate for preventive feedback), or persistent short-circuit patterns (might warrant raising the threshold).
+
 ## Learning system
 
 Busdriver learns from its mistakes:

@@ -214,24 +214,28 @@ Skip files are single-use (consumed after one bypass) and logged to `.claude/byp
 
 ## Observability
 
-Every gate fire-event writes to a persistent JSONL log per project, so you can answer questions like *"what's litmus's pass rate?"* or *"how often do I bypass and why?"* without digging through session history.
+Every gate execution writes to a persistent JSONL log per project, so you can answer questions like *"what's litmus's pass rate?"* or *"how often do I bypass and why?"* without digging through session history.
 
 | File (per project) | Who writes | What it captures |
 |--------------------|-----------|------------------|
 | `.claude/review-metrics.jsonl` | litmus | Review outcome (PASS/FAIL), issue count, severity breakdown, iteration, CLI used, mode, commit SHA, branch, diff size |
-| `.claude/bypass-log.jsonl` | litmus + seatbelt | All gate-skip + short-circuit events (see taxonomy below) |
+| `.claude/bypass-log.jsonl` | litmus + busdriver gates (+ seatbelt plugin if installed) | Skip-file consumptions + selected telemetry events (see taxonomy below). **Not logged:** env-var bypasses (`SKIP_LITMUS=1`, `SKIP_PR_GRIND=1`) exit without logging — only file-based skips are audited |
 
 **Event types written to `bypass-log.jsonl`:**
 
 | Event | Source | Meaning |
 |-------|--------|---------|
-| `skip-review-consumed` | pre-commit / pre-pr gate | User-created `skip-litmus.local` was consumed |
+| `skip-review-consumed` | pre-commit / pre-pr / pre-implementation gate | User-created `skip-litmus.local` or `skip-design-review.local` was consumed |
 | `skip-pr-grind-consumed` | pre-merge gate | User-created `skip-pr-grind.local` was consumed |
 | `review-skipped-none` | pre-commit gate | Gate skipped because no review tool was active (BUSDRIVER_REVIEW_CLI=none) |
 | `narrative-fallback-triggered` | litmus CLI | Review CLI output was non-JSON; parsed as narrative fallback |
+| `schema-violation` | litmus schema validator | Review output didn't match expected JSON schema |
 | `short-circuit-pass` | litmus commit mode | Diff met all short-circuit criteria; Codex skipped |
 | `pr-fast-bypass` | litmus PR mode | `LITMUS_PR_FAST=1` skipped multi-agent review |
-| `seatbelt-skip` | seatbelt scanners | Scanner skipped via `SKIP_SEATBELT` or `SKIP_<SCANNER>` |
+| `bootstrap-merge` | pre-merge gate | PR merge allowed via bootstrap bypass for gate-config PRs |
+| `builtin-review-accepted` | post-commit marker consumer | Builtin-agent review (not Codex) was accepted for a commit |
+| `unreviewed-commit` | post-commit marker consumer | Commit landed without a review marker (detected post-hoc) |
+| `seatbelt-skip` | seatbelt plugin (cross-tool — not emitted by busdriver itself) | Scanner skipped via `SKIP_SEATBELT` or `SKIP_<SCANNER>` (only present if the seatbelt plugin is installed) |
 
 **Dashboard for review metrics:**
 

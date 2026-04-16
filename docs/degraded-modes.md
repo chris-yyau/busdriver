@@ -9,7 +9,7 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 | **Anthropic API** (Claude) | Local | Can't run Claude Code | Everything stops | Retry + Codex review backend |
 | **OpenAI Codex CLI** | Local | Litmus commit review fails | Commits blocked | `BUSDRIVER_REVIEW_CLI=gemini` or `=builtin` |
 | **Gemini CLI** | Local | Roundtable + blueprint review voices down | 2-voice roundtable (Codex + Claude only) | Continue degraded, note in report |
-| **GitHub Actions** | CI | Required checks don't run | PR merge blocked | `gh pr merge N --admin`, log in bypass-audit |
+| **GitHub Actions** | CI | Required checks don't run | PR merge blocked | `gh pr merge N --admin`, then audit via helmet's `bypass-audit.yml` workflow (if deployed) or manually record the bypass reason |
 | **GitHub Apps (bots)** | CI | See per-app rows below | Varies | Detailed below |
 | CodeRabbit | CI bot | No AI line-level review | No blocker — other reviewers cover | Continue; re-review by copilot + greptile + cubic |
 | Greptile | CI bot | No codebase-aware review | Lose cross-file context signals | Copilot's cross-file awareness covers partially |
@@ -42,7 +42,7 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 
 Short version:
 - Push events work but `pull_request` events don't → GitHub event-routing glitch
-- Quota fine → admin merge + log via bypass-audit workflow
+- Quota fine → admin merge; if repo has helmet's `bypass-audit.yml` deployed, it logs the bypass automatically
 - Quota gone → switch repo to public (unlimited) or wait for monthly reset
 
 ### "Codex review CLI hanging"

@@ -164,7 +164,7 @@ For each selected category, print the full list of skills below and ask the user
 |-------|-------------|
 | `deep-research` | Multi-source deep research using firecrawl and exa MCPs with cited reports |
 | `exa-search` | Neural search via Exa MCP for web, code, company, and people research |
-| `claude-api` | Anthropic Claude API patterns: Messages, streaming, tool use, vision, batches, Agent SDK |
+| `claude-api-patterns` | Anthropic Claude API patterns: Messages, streaming, tool use, vision, batches, Agent SDK |
 
 **Category: Social & Content Distribution (2 skills)**
 
@@ -194,9 +194,32 @@ For each selected category, print the full list of skills below and ask the user
 
 ### 2d: Execute Installation
 
-For each selected skill, copy the entire skill directory:
+For each selected skill, copy the entire skill directory. Most skills come from the upstream ECC clone; a few are renamed locally in busdriver and must be copied from the plugin root instead.
+
+`CLAUDE_PLUGIN_ROOT` is an environment variable set by Claude Code when a skill runs inside a loaded plugin (so this path is busdriver's installed location). When `configure-ecc` is invoked outside busdriver (e.g., the manual-install option in Step 0), the variable is unset and the installer falls back to ECC upstream:
+
 ```bash
-cp -r $ECC_ROOT/skills/<skill-name> $TARGET/skills/
+case "$skill_name" in
+  claude-api-patterns)
+    # Renamed locally in busdriver to avoid collision with Anthropic's
+    # official `document-skills:claude-api`. ECC upstream still publishes
+    # this skill as `claude-api`.
+    if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -d "${CLAUDE_PLUGIN_ROOT}/skills/claude-api-patterns" ]; then
+      cp -r "${CLAUDE_PLUGIN_ROOT}/skills/claude-api-patterns" "$TARGET/skills/"
+    else
+      # Fallback: copy ECC's claude-api under the busdriver-renamed
+      # directory and align the frontmatter name so the skill loader sees
+      # a consistent identity.
+      echo "Note: busdriver plugin not loaded; installing ECC's claude-api under the busdriver name (claude-api-patterns)."
+      cp -r "$ECC_ROOT/skills/claude-api" "$TARGET/skills/claude-api-patterns"
+      sed -i.bak 's/^name: claude-api$/name: claude-api-patterns/' "$TARGET/skills/claude-api-patterns/SKILL.md"
+      rm -f "$TARGET/skills/claude-api-patterns/SKILL.md.bak"
+    fi
+    ;;
+  *)
+    cp -r "$ECC_ROOT/skills/$skill_name" "$TARGET/skills/"
+    ;;
+esac
 ```
 
 Note: `continuous-learning` and `continuous-learning-v2` have extra files (config.json, hooks, scripts) — ensure the entire directory is copied, not just SKILL.md.

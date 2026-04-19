@@ -278,7 +278,7 @@
     {
       "path": "commands/brainstorm.md",
       "source": "superpowers",
-      "status": "sync",
+      "status": "local",
       "upstream_path": "commands/brainstorm.md"
     },
     {
@@ -362,7 +362,7 @@
     {
       "path": "commands/execute-plan.md",
       "source": "superpowers",
-      "status": "sync",
+      "status": "local",
       "upstream_path": "commands/execute-plan.md"
     },
     {
@@ -697,7 +697,7 @@
     {
       "path": "commands/write-plan.md",
       "source": "superpowers",
-      "status": "sync",
+      "status": "local",
       "upstream_path": "commands/write-plan.md"
     },
     {
@@ -2149,9 +2149,9 @@
       "upstream_path": "skills/ck/SKILL.md"
     },
     {
-      "path": "skills/claude-api/SKILL.md",
+      "path": "skills/claude-api-patterns/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/claude-api/SKILL.md"
     },
     {
@@ -2289,7 +2289,7 @@
     {
       "path": "skills/configure-ecc/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/configure-ecc/SKILL.md"
     },
     {

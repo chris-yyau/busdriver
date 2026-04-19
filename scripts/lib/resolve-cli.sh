@@ -379,6 +379,15 @@ _execute_codex() {
   # All retries exhausted or non-transient error — fall back to builtin
   if [ "$exit_code" -ne 0 ] && [ "$exit_code" -ne 124 ]; then
     local attempts_run=$(( attempt > max_retries ? max_retries + 1 : attempt + 1 ))
+    # Surface codex's captured stderr/stdout so callers writing 2>&1 to a raw
+    # log can diagnose the failure. Without this, only the wrapper's own
+    # messages survive and the underlying cause is unrecoverable.
+    if [ -n "$output" ]; then
+      printf '%s\n%s\n%s\n' \
+        "----- codex output (exit $exit_code) -----" \
+        "$output" \
+        "----- end codex output -----" >&2
+    fi
     echo "⚠️  Codex failed after ${attempts_run} attempt(s) — falling back to built-in review" >&2
     echo "BUILTIN_FALLBACK"
     return 3

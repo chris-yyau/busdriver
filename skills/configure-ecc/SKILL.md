@@ -194,15 +194,22 @@ For each selected category, print the full list of skills below and ask the user
 
 ### 2d: Execute Installation
 
-For each selected skill, copy the entire skill directory. Most skills come from the upstream ECC clone; a few are renamed locally in busdriver and must be copied from the plugin root instead:
+For each selected skill, copy the entire skill directory. Most skills come from the upstream ECC clone; a few are renamed locally in busdriver and must be copied from the plugin root instead.
+
+`CLAUDE_PLUGIN_ROOT` is an environment variable set by Claude Code when a skill runs inside a loaded plugin (so this path is busdriver's installed location). When `configure-ecc` is invoked outside busdriver (e.g., the manual-install option in Step 0), the variable is unset and the installer falls back to ECC upstream:
 
 ```bash
 case "$skill_name" in
   claude-api-patterns)
-    # Renamed locally from ECC's `claude-api` to avoid collision with
-    # Anthropic's official `document-skills:claude-api`. Copy from the
-    # busdriver plugin root where the renamed version lives.
-    cp -r "${CLAUDE_PLUGIN_ROOT}/skills/claude-api-patterns" "$TARGET/skills/"
+    # Renamed locally in busdriver to avoid collision with Anthropic's
+    # official `document-skills:claude-api`. ECC upstream still publishes
+    # this skill as `claude-api`.
+    if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -d "${CLAUDE_PLUGIN_ROOT}/skills/claude-api-patterns" ]; then
+      cp -r "${CLAUDE_PLUGIN_ROOT}/skills/claude-api-patterns" "$TARGET/skills/"
+    else
+      echo "Note: busdriver plugin not loaded (CLAUDE_PLUGIN_ROOT unset). Installing ECC's claude-api instead of the busdriver-renamed claude-api-patterns."
+      cp -r "$ECC_ROOT/skills/claude-api" "$TARGET/skills/"
+    fi
     ;;
   *)
     cp -r "$ECC_ROOT/skills/$skill_name" "$TARGET/skills/"

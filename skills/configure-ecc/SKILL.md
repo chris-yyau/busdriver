@@ -207,8 +207,7 @@ case "$skill_name" in
     if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -d "${CLAUDE_PLUGIN_ROOT}/skills/claude-api-patterns" ]; then
       cp -r "${CLAUDE_PLUGIN_ROOT}/skills/claude-api-patterns" "$TARGET/skills/"
     else
-      echo "Note: busdriver plugin not loaded (CLAUDE_PLUGIN_ROOT unset). Installing ECC's claude-api instead of the busdriver-renamed claude-api-patterns."
-      cp -r "$ECC_ROOT/skills/claude-api" "$TARGET/skills/"
+      echo "Warning: claude-api-patterns requires the busdriver plugin (CLAUDE_PLUGIN_ROOT unset). Skipping — load busdriver as a plugin and re-run, or copy manually: cp -r <busdriver-path>/skills/claude-api-patterns \$TARGET/skills/"
     fi
     ;;
   *)

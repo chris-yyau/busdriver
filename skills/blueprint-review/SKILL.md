@@ -374,6 +374,25 @@ After writing the file, add a one-line pointer to `~/.claude/notes/NOTES.md` usi
 
 This bridges design review findings into the instinct/lesson system, compounding review quality over time.
 
+## User-Created Skip File
+
+When the user wants to bypass design review (e.g., plan already validated out-of-band, or the review is blocking legitimate exploration), they create `.claude/skip-design-review.local` manually in their terminal. The skip file is consumed by the **pre-implementation gate only** (it does not bypass the pre-commit or pre-PR gates). The gate has a **30-second timing heuristic** that rejects and deletes skip files created "moments ago" to prevent Claude from self-bypassing.
+
+**When the user says they created the skip file:**
+
+```bash
+# MANDATORY: Claude waits 32 seconds itself (safety margin over the 30s gate threshold)
+sleep 32
+# then retry the blocked action
+```
+
+**Rules:**
+- Claude MUST NOT create the skip file itself — it will be rejected and deleted
+- Claude MUST `sleep 32` itself; NEVER ask the user to wait
+- The skip file is single-use — consumed after one bypass
+- The bypass is logged to `.claude/bypass-log.jsonl` for audit
+- If the file is rejected-and-deleted due to the timing heuristic, the user must `touch` it again; Claude must then sleep 32 before the next retry
+
 ## Version History
 
 **v3 (current, 2026-03-27):** Claude-as-arbiter model. Parallel Gemini+Codex. Run-scoped isolation. Freshness contracts. Atomic writes. Explicit progress model. Deleted broken Jaccard consensus, auto-fix engine, and report generator.

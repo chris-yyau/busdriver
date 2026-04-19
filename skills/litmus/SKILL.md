@@ -636,21 +636,22 @@ When `.md` files are staged, the review loop runs:
 
 ## User-Created Skip File
 
-When the user wants to bypass litmus review (e.g., upstream-only syncs with no custom code), they create `.claude/skip-litmus.local` manually in their terminal. The pre-commit gate has a **30-second timing heuristic** that rejects skip files created "moments ago" to prevent Claude from self-bypassing.
+When the user wants to bypass litmus review (e.g., upstream-only syncs with no custom code), they create `.claude/skip-litmus.local` manually in their terminal. The pre-commit and pre-PR gates both honor this skip file and enforce a **30-second timing heuristic** that rejects skip files created "moments ago" to prevent Claude from self-bypassing. Gate-specific behavior on rejection: `pre-commit-gate.sh` preserves the file and tells the user to wait the remaining seconds; `pre-pr-gate.sh` deletes the file on rejection (requiring re-touch).
 
 **When the user says they created the skip file:**
 
 ```bash
-# MANDATORY: wait 30 seconds before committing
-sleep 30
+# MANDATORY: Claude waits 32 seconds itself (safety margin over the 30s gate threshold)
+sleep 32
 git commit -m "..."
 ```
 
 **Rules:**
 - Claude MUST NOT create the skip file itself — it will be rejected and deleted
-- Claude MUST `sleep 30` after the user confirms creation, before running `git commit`
-- The skip file is single-use — consumed after one commit
+- Claude MUST `sleep 32` itself; NEVER ask the user to wait
+- The skip file is single-use — consumed after one bypass
 - The bypass is logged to `.claude/bypass-log.jsonl` for audit
+- If the pre-PR gate rejects and deletes the file due to the timing heuristic, the user must `touch` it again; Claude must then sleep 32 before the next retry. The pre-commit gate does not delete on reject — the original file ages out and the retry succeeds after the wait.
 
 ## Key Principles
 

@@ -188,15 +188,19 @@ Claude Code                        Busdriver Plugin
 Gates have escape hatches for when you need them:
 
 ```bash
-# Skip litmus review (single-use, 30s self-bypass detection)
+# Skip litmus review — pre-commit + pre-PR (single-use, 30s self-bypass detection)
 touch .claude/skip-litmus.local
 
-# Skip design review (single-use, 30s self-bypass detection)
+# Skip design review — pre-implementation (single-use, 30s self-bypass detection)
 touch .claude/skip-design-review.local
+
+# Skip pr-grind — pre-merge (single-use, 30s self-bypass detection)
+touch .claude/skip-pr-grind.local
 
 # Environment variable bypass
 export SKIP_LITMUS=1
 export SKIP_DESIGN_REVIEW=1
+export SKIP_PR_GRIND=1
 ```
 
 Skip files are single-use (consumed after one bypass) and logged to `.claude/bypass-log.jsonl`. Files created within 30 seconds are rejected — this prevents Claude from creating skip files itself to bypass gates.

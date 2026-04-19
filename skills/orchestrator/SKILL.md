@@ -81,14 +81,15 @@ Do NOT use `code-reviewer` agent — it cannot write the `<!-- design-reviewed: 
 
 ### Skip File Protocol
 
-Skip files (`.claude/skip-litmus.local`, `.claude/skip-design-review.local`) have a 30-second self-bypass detection. Files created within 30s are rejected and deleted — this prevents Claude from creating skip files itself to bypass gates.
+Skip files (`.claude/skip-litmus.local`, `.claude/skip-design-review.local`, `.claude/skip-pr-grind.local`) have a 30-second self-bypass detection. Files created within 30s are rejected to prevent Claude from creating skip files itself to bypass gates. Most gates also delete the file on rejection (pre-PR, pre-implementation, pre-merge); `pre-commit-gate.sh` preserves it so the user's original `touch` ages out naturally.
 
 **When a gate blocks and the user needs to bypass:**
 1. Tell the user to create the appropriate skip file using the **full absolute path** (their terminal CWD may differ from the project):
-   - Litmus gate: `touch /absolute/path/to/project/.claude/skip-litmus.local`
-   - Design gate: `touch /absolute/path/to/project/.claude/skip-design-review.local`
+   - Litmus gate (pre-commit, pre-PR): `touch /absolute/path/to/project/.claude/skip-litmus.local`
+   - Design gate (pre-implementation): `touch /absolute/path/to/project/.claude/skip-design-review.local`
+   - Pre-merge gate: `touch /absolute/path/to/project/.claude/skip-pr-grind.local`
 2. Wait for user confirmation
-3. **You** run `sleep 32` before attempting the gated action — never ask the user to wait
+3. **You** run `sleep 32` before attempting the gated action — never ask the user to wait (32s = 2s safety margin over the 30s gate threshold)
 4. Then retry the blocked action
 
 Skip files are single-use (consumed after one bypass) and logged to `.claude/bypass-log.jsonl`.

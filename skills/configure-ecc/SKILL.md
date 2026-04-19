@@ -207,7 +207,13 @@ case "$skill_name" in
     if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -d "${CLAUDE_PLUGIN_ROOT}/skills/claude-api-patterns" ]; then
       cp -r "${CLAUDE_PLUGIN_ROOT}/skills/claude-api-patterns" "$TARGET/skills/"
     else
-      echo "Warning: claude-api-patterns requires the busdriver plugin (CLAUDE_PLUGIN_ROOT unset). Skipping — load busdriver as a plugin and re-run, or copy manually: cp -r <busdriver-path>/skills/claude-api-patterns \$TARGET/skills/"
+      # Fallback: copy ECC's claude-api under the busdriver-renamed
+      # directory and align the frontmatter name so the skill loader sees
+      # a consistent identity.
+      echo "Note: busdriver plugin not loaded; installing ECC's claude-api under the busdriver name (claude-api-patterns)."
+      cp -r "$ECC_ROOT/skills/claude-api" "$TARGET/skills/claude-api-patterns"
+      sed -i.bak 's/^name: claude-api$/name: claude-api-patterns/' "$TARGET/skills/claude-api-patterns/SKILL.md"
+      rm -f "$TARGET/skills/claude-api-patterns/SKILL.md.bak"
     fi
     ;;
   *)

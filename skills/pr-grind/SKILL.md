@@ -428,9 +428,30 @@ PR #<N> is clean after <rounds> round(s).
 | `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
 | `--comments-only` | Only address comments, ignore CI | Off |
 
+## User-Created Skip File
+
+When the user wants to bypass the pre-merge gate (e.g., pr-grind is stuck in a loop that can't converge, or the PR is ready-enough and the user explicitly accepts the risk), they create `.claude/skip-pr-grind.local` manually in their terminal. The pre-merge gate enforces a **30-second timing heuristic** (rejects and deletes skip files created "moments ago" to prevent Claude from self-bypassing) **and a 1-hour freshness window** — files older than 3600s are silently deleted without bypassing, so the user must create the file within ~1 hour of the merge attempt.
+
+**Path precision:** tell the user the **full absolute path** — e.g., `touch /absolute/path/to/project/.claude/skip-pr-grind.local` — because the gate checks `.claude/` relative to the `gh pr merge` command's CWD, which may differ from the user's terminal CWD.
+
+**When the user says they created the skip file:**
+
+```bash
+# MANDATORY: Claude waits 32 seconds itself (safety margin over the 30s gate threshold)
+sleep 32
+gh pr merge <PR_NUMBER> --squash --delete-branch
+```
+
+**Rules:**
+- Claude MUST NOT create the skip file itself — it will be rejected and deleted
+- Claude MUST `sleep 32` itself; NEVER ask the user to wait
+- The skip file is single-use — consumed after one bypass
+- The bypass is logged to `.claude/bypass-log.jsonl` for audit
+- If the file is rejected-and-deleted due to the timing heuristic, the user must `touch` it again; Claude must then sleep 32 before the next retry
+
 ## Integration
 
 - **Pairs with:** `finishing-a-development-branch` (Phase 6 creates the PR and cleans up its worktree, then `/pr-grind` creates its own ephemeral worktree for the feedback loop)
 - **Worktree lifecycle:** pr-grind owns its worktree from creation to cleanup — independent of the pipeline's Phase 3 worktree. The user's main workspace stays free for new work.
-- **Gate:** Litmus pre-commit hook fires on each `git commit` within the loop
+- **Gate:** Litmus pre-commit hook fires on each `git commit` within the loop; pre-merge gate fires on `gh pr merge` (skip: `.claude/skip-pr-grind.local`)
 - **Agents:** May dispatch `code-reviewer`, `build-error-resolver`, or language-specific reviewers for complex fixes

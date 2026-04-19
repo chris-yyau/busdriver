@@ -233,7 +233,7 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Roundtable** | perspectives, group wisdom, tradeoffs | `roundtable` skill (4-voice: Architect + Skeptic + Pragmatist + Critic) |
 | **Communication** | email triage, Slack, inbox | `chief-of-staff` agent |
 | **Documents** | .docx/.xlsx/.pptx/.pdf, OCR | `nutrient-document-processing` |
-| **Claude API/SDK** | imports anthropic/claude_agent_sdk | `claude-api` skill |
+| **Claude API/SDK** | imports anthropic/claude_agent_sdk | `claude-api-patterns` skill |
 | **MCP Dev** | build MCP server | `mcp-server-patterns` |
 | **Canary** | watch deploy, post-deploy check | `canary` skill |
 | **Scheduled Agents** | cron job, run on schedule | `CronCreate`/`CronList`/`CronDelete` tools |

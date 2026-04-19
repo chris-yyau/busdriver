@@ -164,7 +164,7 @@ For each selected category, print the full list of skills below and ask the user
 |-------|-------------|
 | `deep-research` | Multi-source deep research using firecrawl and exa MCPs with cited reports |
 | `exa-search` | Neural search via Exa MCP for web, code, company, and people research |
-| `claude-api` | Anthropic Claude API patterns: Messages, streaming, tool use, vision, batches, Agent SDK |
+| `claude-api-patterns` | Anthropic Claude API patterns: Messages, streaming, tool use, vision, batches, Agent SDK |
 
 **Category: Social & Content Distribution (2 skills)**
 

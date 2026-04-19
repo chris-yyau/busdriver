@@ -430,7 +430,9 @@ PR #<N> is clean after <rounds> round(s).
 
 ## User-Created Skip File
 
-When the user wants to bypass the pre-merge gate (e.g., pr-grind is stuck in a loop that can't converge, or the PR is ready-enough and the user explicitly accepts the risk), they create `.claude/skip-pr-grind.local` manually in their terminal. The pre-merge gate has a **30-second timing heuristic** that rejects and deletes skip files created "moments ago" to prevent Claude from self-bypassing.
+When the user wants to bypass the pre-merge gate (e.g., pr-grind is stuck in a loop that can't converge, or the PR is ready-enough and the user explicitly accepts the risk), they create `.claude/skip-pr-grind.local` manually in their terminal. The pre-merge gate enforces a **30-second timing heuristic** (rejects and deletes skip files created "moments ago" to prevent Claude from self-bypassing) **and a 1-hour freshness window** — files older than 3600s are silently deleted without bypassing, so the user must create the file within ~1 hour of the merge attempt.
+
+**Path precision:** tell the user the **full absolute path** — e.g., `touch /absolute/path/to/project/.claude/skip-pr-grind.local` — because the gate checks `.claude/` relative to the `gh pr merge` command's CWD, which may differ from the user's terminal CWD.
 
 **When the user says they created the skip file:**
 

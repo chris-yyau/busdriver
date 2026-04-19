@@ -638,12 +638,17 @@ When `.md` files are staged, the review loop runs:
 
 When the user wants to bypass litmus review (e.g., upstream-only syncs with no custom code), they create `.claude/skip-litmus.local` manually in their terminal. The pre-commit and pre-PR gates both honor this skip file and enforce a **30-second timing heuristic** that rejects skip files created "moments ago" to prevent Claude from self-bypassing. Gate-specific behavior on rejection: `pre-commit-gate.sh` preserves the file and tells the user to wait the remaining seconds; `pre-pr-gate.sh` deletes the file on rejection (requiring re-touch).
 
+**Path precision:** tell the user the **full absolute path** — e.g., `touch /absolute/path/to/project/.claude/skip-litmus.local` — because the gate checks `.claude/` relative to the blocked command's CWD, which may differ from the user's terminal CWD.
+
 **When the user says they created the skip file:**
 
 ```bash
 # MANDATORY: Claude waits 32 seconds itself (safety margin over the 30s gate threshold)
 sleep 32
-git commit -m "..."
+# then retry the blocked action — either:
+git commit -m "..."         # for pre-commit gate
+# OR
+gh pr create --title "..."  # for pre-PR gate
 ```
 
 **Rules:**

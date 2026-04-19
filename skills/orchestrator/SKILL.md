@@ -81,7 +81,7 @@ Do NOT use `code-reviewer` agent — it cannot write the `<!-- design-reviewed: 
 
 ### Skip File Protocol
 
-Skip files (`.claude/skip-litmus.local`, `.claude/skip-design-review.local`, `.claude/skip-pr-grind.local`) have a 30-second self-bypass detection. Files created within 30s are rejected to prevent Claude from creating skip files itself to bypass gates. Most gates also delete the file on rejection (pre-PR, pre-implementation, pre-merge); `pre-commit-gate.sh` preserves it so the user's original `touch` ages out naturally.
+Skip files (`.claude/skip-litmus.local`, `.claude/skip-design-review.local`, `.claude/skip-pr-grind.local`) have a 30-second self-bypass detection. Files created within 30s are rejected to prevent Claude from creating skip files itself to bypass gates. Most gates also delete the file on rejection (pre-PR, pre-implementation, pre-merge); `pre-commit-gate.sh` preserves it so the user's original `touch` ages out naturally. The pre-merge gate additionally enforces a 1-hour freshness window — `skip-pr-grind.local` older than 3600s is silently discarded without bypassing.
 
 **When a gate blocks and the user needs to bypass:**
 1. Tell the user to create the appropriate skip file using the **full absolute path** (their terminal CWD may differ from the project):

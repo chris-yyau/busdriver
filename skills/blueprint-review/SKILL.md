@@ -378,6 +378,8 @@ This bridges design review findings into the instinct/lesson system, compounding
 
 When the user wants to bypass design review (e.g., plan already validated out-of-band, or the review is blocking legitimate exploration), they create `.claude/skip-design-review.local` manually in their terminal. The skip file is consumed by the **pre-implementation gate only** (it does not bypass the pre-commit or pre-PR gates). The gate has a **30-second timing heuristic** that rejects and deletes skip files created "moments ago" to prevent Claude from self-bypassing.
 
+**Path precision:** tell the user the **full absolute path** — e.g., `touch /absolute/path/to/project/.claude/skip-design-review.local` — because the gate checks `.claude/` relative to the blocked command's CWD, which may differ from the user's terminal CWD.
+
 **When the user says they created the skip file:**
 
 ```bash

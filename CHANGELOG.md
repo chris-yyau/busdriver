@@ -1,3 +1,10 @@
+## [1.25.3](https://github.com/chris-yyau/busdriver/compare/v1.25.2...v1.25.3) (2026-04-19)
+
+
+### Bug Fixes
+
+* **codex:** retry on EAGAIN — concurrent companion session collisions ([#50](https://github.com/chris-yyau/busdriver/issues/50)) ([14d7b96](https://github.com/chris-yyau/busdriver/commit/14d7b9638ef713a09c041b7fc40d4387b60558e8))
+
 ## [1.25.2](https://github.com/chris-yyau/busdriver/compare/v1.25.1...v1.25.2) (2026-04-19)
 
 

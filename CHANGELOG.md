@@ -1,3 +1,10 @@
+## [1.25.2](https://github.com/chris-yyau/busdriver/compare/v1.25.1...v1.25.2) (2026-04-19)
+
+
+### Bug Fixes
+
+* **codex:** preserve codex error output on non-transient wrapper failure ([#48](https://github.com/chris-yyau/busdriver/issues/48)) ([fd43fa7](https://github.com/chris-yyau/busdriver/commit/fd43fa7d0f187bdcf0027d063219a8328206aefb))
+
 ## [1.25.1](https://github.com/chris-yyau/busdriver/compare/v1.25.0...v1.25.1) (2026-04-16)
 
 

@@ -366,9 +366,18 @@ _execute_codex() {
       break
     fi
 
-    # Only retry on transient Codex service errors (network, API, rate-limit).
-    # Script bugs (unbound variable, syntax error, command not found) should not be retried.
-    if printf '%s' "$output" | grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|fetch failed|rate.limit|overloaded|capacity|5[0-9][0-9]|getaddrinfo'; then
+    # Only retry on transient Codex service errors (network, API, rate-limit)
+    # AND on non-blocking I/O races (EAGAIN). Script bugs (unbound variable,
+    # syntax error, command not found) should not be retried.
+    #
+    # EAGAIN rationale: when multiple codex-companion sessions run in parallel,
+    # the inherited stdin fd can be in non-blocking mode, causing fs.readFileSync(0)
+    # inside the companion to throw "EAGAIN: resource temporarily unavailable, read"
+    # instead of blocking. EAGAIN literally means "try again later" — exactly the
+    # retry semantics we want. We match only the `EAGAIN` token (not the phrase
+    # "resource temporarily unavailable") to avoid false-positives on unrelated
+    # fork/thread exhaustion errors that share the same strerror text.
+    if printf '%s' "$output" | grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|5[0-9][0-9]|getaddrinfo'; then
       attempt=$((attempt + 1))
     else
       echo "⚠️  Codex failed with non-transient error (exit $exit_code) — not retrying" >&2

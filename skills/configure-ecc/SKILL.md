@@ -194,9 +194,20 @@ For each selected category, print the full list of skills below and ask the user
 
 ### 2d: Execute Installation
 
-For each selected skill, copy the entire skill directory:
+For each selected skill, copy the entire skill directory. Most skills come from the upstream ECC clone; a few are renamed locally in busdriver and must be copied from the plugin root instead:
+
 ```bash
-cp -r $ECC_ROOT/skills/<skill-name> $TARGET/skills/
+case "$skill_name" in
+  claude-api-patterns)
+    # Renamed locally from ECC's `claude-api` to avoid collision with
+    # Anthropic's official `document-skills:claude-api`. Copy from the
+    # busdriver plugin root where the renamed version lives.
+    cp -r "${CLAUDE_PLUGIN_ROOT}/skills/claude-api-patterns" "$TARGET/skills/"
+    ;;
+  *)
+    cp -r "$ECC_ROOT/skills/$skill_name" "$TARGET/skills/"
+    ;;
+esac
 ```
 
 Note: `continuous-learning` and `continuous-learning-v2` have extra files (config.json, hooks, scripts) — ensure the entire directory is copied, not just SKILL.md.

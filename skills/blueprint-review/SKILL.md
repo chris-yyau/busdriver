@@ -414,7 +414,7 @@ Monitor(command: "sleep 35 && echo READY", timeout: 45)
 ### Hard rules
 
 - **NEVER create the skip file yourself** — the gate will detect self-bypass, delete the file, and log an audit event.
-- **NEVER verify the skip file via Bash** (`test -f`, `ls`, `stat`, `cat`, `find`). Any tool call during the <30s window consumes the file. Trust the user's "done" confirmation.
+- **NEVER verify the skip file via Bash** (`test -f`, `ls`, `stat`, `cat`, `find`). The pre-implementation gate fires on every `Write`, `Edit`, `MultiEdit`, and `Bash` tool call, so any Bash verification during the <30s window consumes the file. Read/Grep/Glob are safe (the gate isn't registered on them), but they also tell you nothing useful. Trust the user's "done" confirmation.
 - **NEVER ask the user to wait** — Claude does the wait via `Monitor`.
 - **Use `Monitor(command: "sleep 35 && echo READY")`**, not `sleep 32` directly.
 - **Single-use** — the skip file is consumed after one bypass. If more writes are needed, the user must `touch` it again and Claude must wait another 35s.

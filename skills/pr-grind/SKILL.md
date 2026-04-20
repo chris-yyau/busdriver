@@ -467,7 +467,7 @@ Monitor(command: "sleep 35 && echo READY", timeout: 45)
 ### Hard rules
 
 - **NEVER create the skip file yourself** — the gate will detect self-bypass, delete the file, and log an audit event.
-- **NEVER verify the skip file via Bash** (`test -f`, `ls`, `stat`, `cat`, `find`). Any tool call during the <30s window consumes the file. Trust the user's "done" confirmation.
+- **NEVER verify the skip file via Bash** (`test -f`, `ls`, `stat`, `cat`, `find`) before retrying. Verification is pointless — the pre-merge gate only runs its skip-file check on an actual `gh pr merge` attempt, so `test -f` tells you nothing and only wastes the wait budget. Trust the user's "done" confirmation, wait ~35s, then retry `gh pr merge` directly.
 - **NEVER ask the user to wait** — Claude does the wait via `Monitor`.
 - **Use `Monitor(command: "sleep 35 && echo READY")`**, not `sleep 32` directly.
 - **Single-use** — the skip file is consumed after one bypass. Re-merging needs a new `touch`.

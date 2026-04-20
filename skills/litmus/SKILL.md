@@ -673,6 +673,7 @@ Monitor(command: "sleep 35 && echo READY", timeout: 45)
 ### Hard rules
 
 - **NEVER create the skip file yourself** — the gate will detect self-bypass and log an audit event.
+- **NEVER verify the skip file via Bash** (`test -f`, `ls`, `stat`, `cat`, `find`). Any tool call that reaches the gate while the file is <30s old consumes it. Trust the user's "done" confirmation.
 - **NEVER ask the user to wait** — Claude does the wait via `Monitor`.
 - **Use `Monitor(command: "sleep 35 && echo READY")`**, not `sleep 32` directly.
 - **Single-use** — the skip file is consumed after one successful bypass. Subsequent commits/PRs need a new `touch`.

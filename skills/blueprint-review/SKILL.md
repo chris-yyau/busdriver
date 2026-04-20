@@ -378,12 +378,12 @@ This bridges design review findings into the instinct/lesson system, compounding
 
 When the user wants to bypass design review (e.g., plan already validated out-of-band, or the review is blocking legitimate exploration), they create `.claude/skip-design-review.local` manually in their terminal. The skip file is consumed by the **pre-implementation gate only** (it does not bypass the pre-commit or pre-PR gates). The gate has a **30-second timing heuristic** that rejects and deletes skip files created "moments ago" to prevent Claude from self-bypassing.
 
-**How the gate behaves on every tool call while design review is pending:**
+**How the skip-file check behaves on every tool call the gate sees while design review is pending:**
 1. If `.claude/skip-design-review.local` exists and is **<30s old** → gate deletes it and blocks (treated as self-bypass).
 2. If the file exists and is **≥30s old** → gate deletes it (single-use) and allows the blocked action through.
-3. If no file → gate blocks with the normal "design review must complete" message.
+3. If no file → gate falls through to its normal allow/block rules (Write/Edit of implementation code → block; file-modifying Bash → block; SAFE tool uses → allow).
 
-This means **any tool call — Bash `test -f`, Bash `ls`, Bash `stat`, Edit, Write — triggers step 1 or 2**. Verification calls count. Polling counts. Reading a status file counts. If Claude fires any tool call during the <30s window, the file is destroyed and must be re-created.
+Critically, the skip-file check in steps 1–2 runs **before** tool-type discrimination — so any tool call that reaches the gate while a skip file exists will consume it, even ostensibly "harmless" Bash like `test -f`, `ls`, or `stat` on the skip file itself. Verification counts. Polling counts. If Claude fires any tool call during the <30s window, the file is destroyed and must be re-created.
 
 ### Verbatim message template (required)
 

@@ -430,24 +430,50 @@ PR #<N> is clean after <rounds> round(s).
 
 ## User-Created Skip File
 
-When the user wants to bypass the pre-merge gate (e.g., pr-grind is stuck in a loop that can't converge, or the PR is ready-enough and the user explicitly accepts the risk), they create `.claude/skip-pr-grind.local` manually in their terminal. The pre-merge gate enforces a **30-second timing heuristic** (rejects and deletes skip files created "moments ago" to prevent Claude from self-bypassing) **and a 1-hour freshness window** — files older than 3600s are silently deleted without bypassing, so the user must create the file within ~1 hour of the merge attempt.
+When the user wants to bypass the pre-merge gate (e.g., pr-grind is stuck in a loop that can't converge, or the PR is ready-enough and the user explicitly accepts the risk), they create `.claude/skip-pr-grind.local` manually in their terminal. The pre-merge gate enforces a **30-second timing heuristic** (rejects and deletes skip files created "moments ago" to prevent Claude from self-bypassing) **and a 1-hour freshness window** — files ≥3600s old are silently deleted without bypassing, so the user must create the file within 1 hour of the merge attempt.
 
-**Path precision:** tell the user the **full absolute path** — e.g., `touch /absolute/path/to/project/.claude/skip-pr-grind.local` — because the gate checks `.claude/` relative to the `gh pr merge` command's CWD, which may differ from the user's terminal CWD.
+**How the gate behaves on every `gh pr merge` attempt while pr-grind is unpassed:**
+1. If `.claude/skip-pr-grind.local` exists and is **<30s old** → gate deletes it and blocks (treated as self-bypass).
+2. If the file exists and its age is in **[30s, 3600s)** → gate deletes it (single-use) and allows the merge through.
+3. If the file exists and is **≥3600s old** → gate deletes it silently and blocks (stale — user must `touch` again).
+4. If no file → gate blocks with the normal "pr-grind must pass" message.
 
-**When the user says they created the skip file:**
+### Verbatim message template (required)
 
-```bash
-# MANDATORY: Claude waits 32 seconds itself (safety margin over the 30s gate threshold)
-sleep 32
-gh pr merge <PR_NUMBER> --squash --delete-branch
+When Claude needs a skip file, it must emit this exact message, with `<PROJECT_ROOT>` replaced by the absolute path of the current git repo root (from `git rev-parse --show-toplevel` — not the CWD of the Claude session, which may be a subdirectory or worktree):
+
+> I need a skip file to bypass the pre-merge gate. Please run this in **your terminal** (not in this session):
+>
+> ```
+> touch <PROJECT_ROOT>/.claude/skip-pr-grind.local
+> ```
+>
+> After you run it, I will wait ~35 seconds before retrying `gh pr merge`. The file is valid for up to 1 hour (the gate rejects it at exactly 3600s), so take your time but don't sit on it all day. Please reply "done" once you've run the command. Do not expect an immediate response from me — the wait is required by the gate and is not a stall.
+
+Do not give the relative path (`.claude/skip-pr-grind.local`) — the gate checks `.claude/` relative to the `gh pr merge` command's CWD, which may differ from the user's terminal CWD and from pr-grind's worktree.
+
+### After the user confirms ("done")
+
+Wait ~35 seconds, then retry `gh pr merge` directly. Do not verify the skip file with `test -f` / `ls` / `stat` first — trust the user's "done" confirmation and let the retry run the gate.
+
+```
+Monitor(command: "sleep 35 && echo READY", timeout: 45)
+# When Monitor emits READY (or completes), retry:
+#   gh pr merge <PR_NUMBER> --squash --delete-branch
 ```
 
-**Rules:**
-- Claude MUST NOT create the skip file itself — it will be rejected and deleted
-- Claude MUST `sleep 32` itself; NEVER ask the user to wait
-- The skip file is single-use — consumed after one bypass
-- The bypass is logged to `.claude/bypass-log.jsonl` for audit
-- If the file is rejected-and-deleted due to the timing heuristic, the user must `touch` it again; Claude must then sleep 32 before the next retry
+`Monitor`'s subprocess sleeps atomically and does not re-enter the PreToolUse hook. A direct `sleep 32` via Bash is blocked by the harness (long foreground sleeps are rejected).
+
+### Hard rules
+
+- **NEVER create the skip file yourself** — the gate will detect self-bypass, delete the file, and log an audit event.
+- **NEVER verify the skip file via Bash** (`test -f`, `ls`, `stat`, `cat`, `find`) before retrying. Verification is pointless — the pre-merge gate only runs its skip-file check on an actual `gh pr merge` attempt, so `test -f` tells you nothing and only wastes the wait budget. Trust the user's "done" confirmation, wait ~35s, then retry `gh pr merge` directly.
+- **NEVER ask the user to wait** — Claude does the wait via `Monitor`.
+- **Use `Monitor(command: "sleep 35 && echo READY")`**, not `sleep 32` directly.
+- **Single-use** — the skip file is consumed after one bypass. Re-merging needs a new `touch`.
+- **Freshness** — if ≥3600s elapses between `touch` and retry, the gate silently deletes without bypassing. Ask the user to `touch` again.
+- **Audit trail** — every consumption is logged to `.claude/bypass-log.jsonl`.
+- **On rejection (<30s):** file is deleted — ask the user to `touch` again and wait another 35s.
 
 ## Integration
 

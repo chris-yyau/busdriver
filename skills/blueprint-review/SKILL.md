@@ -378,22 +378,48 @@ This bridges design review findings into the instinct/lesson system, compounding
 
 When the user wants to bypass design review (e.g., plan already validated out-of-band, or the review is blocking legitimate exploration), they create `.claude/skip-design-review.local` manually in their terminal. The skip file is consumed by the **pre-implementation gate only** (it does not bypass the pre-commit or pre-PR gates). The gate has a **30-second timing heuristic** that rejects and deletes skip files created "moments ago" to prevent Claude from self-bypassing.
 
-**Path precision:** tell the user the **full absolute path** — e.g., `touch /absolute/path/to/project/.claude/skip-design-review.local` — because the gate checks `.claude/` relative to the blocked command's CWD, which may differ from the user's terminal CWD.
+**How the skip-file check behaves on every tool call the gate sees while design review is pending:**
+1. If `.claude/skip-design-review.local` exists and is **<30s old** → gate deletes it and blocks (treated as self-bypass).
+2. If the file exists and is **≥30s old** → gate deletes it (single-use) and allows the blocked action through.
+3. If no file → gate falls through to its normal allow/block rules (Write/Edit of implementation code → block; file-modifying Bash → block; SAFE tool uses → allow).
 
-**When the user says they created the skip file:**
+Critically, the skip-file check in steps 1–2 runs **before** tool-type discrimination — so any tool call that reaches the gate while a skip file exists will consume it, even ostensibly "harmless" Bash like `test -f`, `ls`, or `stat` on the skip file itself. Verification counts. Polling counts. If Claude fires any tool call during the <30s window, the file is destroyed and must be re-created.
 
-```bash
-# MANDATORY: Claude waits 32 seconds itself (safety margin over the 30s gate threshold)
-sleep 32
-# then retry the blocked action
+### Verbatim message template (required)
+
+When Claude needs a skip file, it must emit this exact message, with `<PROJECT_ROOT>` replaced by the absolute path of the current git repo root (from `git rev-parse --show-toplevel` — not the CWD of the Claude session, which may be a subdirectory):
+
+> I need a skip file to bypass the design-review gate. Please run this in **your terminal** (not in this session):
+>
+> ```
+> touch <PROJECT_ROOT>/.claude/skip-design-review.local
+> ```
+>
+> After you run it, I will wait ~35 seconds before retrying the blocked action. Please reply "done" once you've run the command. Do not expect an immediate response from me — the wait is required by the gate and is not a stall.
+
+Do not give the relative path (`.claude/skip-design-review.local`) — the gate checks `.claude/` relative to the **blocked command's CWD**, which may differ from the user's terminal CWD, and users routinely run `touch` from a different pane.
+
+### After the user confirms ("done")
+
+Wait ~35 seconds without executing any tool that touches the filesystem, then retry the originally blocked action directly.
+
+```
+Monitor(command: "sleep 35 && echo READY", timeout: 45)
+# When Monitor emits READY (or completes), retry the blocked Edit/Write/Bash.
+# Do NOT verify the skip file first — the verification itself consumes it.
 ```
 
-**Rules:**
-- Claude MUST NOT create the skip file itself — it will be rejected and deleted
-- Claude MUST `sleep 32` itself; NEVER ask the user to wait
-- The skip file is single-use — consumed after one bypass
-- The bypass is logged to `.claude/bypass-log.jsonl` for audit
-- If the file is rejected-and-deleted due to the timing heuristic, the user must `touch` it again; Claude must then sleep 32 before the next retry
+`Monitor`'s subprocess sleeps atomically and does not re-enter the PreToolUse hook, so the skip file survives the wait. A direct `sleep 35` via Bash is blocked by the harness (long foreground sleeps are rejected), and polling loops that call `stat`/`test`/`ls` will destroy the file.
+
+### Hard rules
+
+- **NEVER create the skip file yourself** — the gate will detect self-bypass, delete the file, and log an audit event.
+- **NEVER verify the skip file via Bash** (`test -f`, `ls`, `stat`, `cat`, `find`). The pre-implementation gate fires on every `Write`, `Edit`, `MultiEdit`, and `Bash` tool call, so any Bash verification during the <30s window consumes the file. Read/Grep/Glob are safe (the gate isn't registered on them), but they also tell you nothing useful. Trust the user's "done" confirmation.
+- **NEVER ask the user to wait** — Claude does the wait via `Monitor`.
+- **Use `Monitor(command: "sleep 35 && echo READY")`**, not `sleep 32` directly.
+- **Single-use** — the skip file is consumed after one bypass. If more writes are needed, the user must `touch` it again and Claude must wait another 35s.
+- **Audit trail** — every consumption is logged to `.claude/bypass-log.jsonl`.
+- **If the file gets rejected-and-deleted** (e.g., Claude fat-fingered a tool call during the window), ask the user to `touch` it again and start the wait over.
 
 ## Version History
 

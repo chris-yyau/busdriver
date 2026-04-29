@@ -4332,6 +4332,16 @@
       "status": "local"
     },
     {
+      "path": "commands/caveman.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "commands/grill-with-docs.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
       "path": "skills/grill-me/SKILL.md",
       "source": "mattpocock",
       "status": "sync",

@@ -7,7 +7,9 @@ argument-hint: [the plan or design to be grilled]
 
 Slash entry point for the `grill-with-docs` skill. The skill has `disable-model-invocation: true` because of its heavyweight side effects (writes `CONTEXT.md` and `docs/adr/*`), so this command is the primary user-facing invocation path.
 
-**Input:** `$ARGUMENTS`
+## Arguments
+
+`$ARGUMENTS`
 
 ## Delegation
 

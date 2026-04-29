@@ -7,7 +7,9 @@ argument-hint: [optional message — content to respond to in caveman mode]
 
 Slash entry point for the `caveman` skill. Activates persistent compressed-output mode.
 
-**Input:** `$ARGUMENTS`
+## Arguments
+
+`$ARGUMENTS`
 
 ## Delegation
 

@@ -81,18 +81,35 @@ Do NOT use `code-reviewer` agent — it cannot write the `<!-- design-reviewed: 
 
 ### Skip File Protocol
 
-Skip files (`.claude/skip-litmus.local`, `.claude/skip-design-review.local`, `.claude/skip-pr-grind.local`) have a 30-second self-bypass detection. Files created within 30s are rejected to prevent Claude from creating skip files itself to bypass gates. Most gates also delete the file on rejection (pre-PR, pre-implementation, pre-merge); `pre-commit-gate.sh` preserves it so the user's original `touch` ages out naturally. The pre-merge gate additionally enforces a 1-hour freshness window — `skip-pr-grind.local` older than 3600s is silently discarded without bypassing.
+Skip files (`.claude/skip-litmus.local`, `.claude/skip-design-review.local`, `.claude/skip-pr-grind.local`) have a 30-second self-bypass detection. Files created within 30s are rejected to prevent Claude from creating skip files itself. Most gates delete the file on rejection (pre-PR, pre-implementation, pre-merge); `pre-commit-gate.sh` preserves it so the user's original `touch` ages out naturally. The pre-merge gate adds a 1-hour freshness window — `skip-pr-grind.local` older than 3600s is silently discarded.
 
 **When a gate blocks and the user needs to bypass:**
-1. Tell the user to create the appropriate skip file using the **full absolute path** (their terminal CWD may differ from the project):
-   - Litmus gate (pre-commit, pre-PR): `touch /absolute/path/to/project/.claude/skip-litmus.local`
-   - Design gate (pre-implementation): `touch /absolute/path/to/project/.claude/skip-design-review.local`
-   - Pre-merge gate: `touch /absolute/path/to/project/.claude/skip-pr-grind.local`
-2. Wait for user confirmation
-3. **You** run `sleep 32` before attempting the gated action — never ask the user to wait (32s = 2s safety margin over the 30s gate threshold)
-4. Then retry the blocked action
 
-Skip files are single-use (consumed after one bypass) and logged to `.claude/bypass-log.jsonl`.
+1. **Get absolute project path first** via `git rev-parse --show-toplevel`. The user's terminal CWD may differ from your session CWD, and the gate checks `.claude/` relative to the **blocked command's CWD**. Relative paths break.
+2. **Send the user this verbatim message** (substitute `<PROJECT_ROOT>` with the absolute path and `<GATE>` with `litmus` / `design-review` / `pr-grind`):
+   > I need a skip file to bypass the `<GATE>` gate. Please run this in **your terminal** (not in this session):
+   >
+   > ```
+   > touch <PROJECT_ROOT>/.claude/skip-<GATE>.local
+   > ```
+   >
+   > After you run it, I will wait ~35 seconds before retrying. Reply "done" once you've run the command. Do not expect an immediate response from me — the wait is required by the gate and is not a stall.
+3. **After the user replies "done", wait via Monitor:**
+   ```
+   Monitor(command: "sleep 35 && echo READY", timeout: 45)
+   ```
+   Monitor's subprocess sleeps atomically and does not re-enter the PreToolUse hook, so the skip file survives the wait.
+4. **When Monitor emits READY, retry the originally blocked action directly.** Do NOT verify the skip file first — verification destroys it (gate fires before tool-type discrimination).
+5. **If the retry shows the gate's normal "review must complete" message**, the file was consumed by an earlier tool call. Ask the user to `touch` again and restart the wait.
+
+Skip files are single-use and logged to `.claude/bypass-log.jsonl`. Full protocol with failure-mode taxonomy lives in `skills/blueprint-review/SKILL.md` under "User-Created Skip File".
+
+**Hard rules:**
+- NEVER create the skip file yourself — gate detects and deletes self-bypass attempts.
+- NEVER use `sleep 32` / `sleep 35` directly via Bash — the harness rejects long foreground sleeps.
+- NEVER verify via Bash (`test -f`, `ls`, `stat`, `cat`, `find`) during the wait — any of these consume the file.
+- NEVER ask the user to wait — Claude does the wait via Monitor.
+- Read/Grep/Glob during the wait are safe (gate isn't registered on them) but tell you nothing useful — trust the user's "done".
 
 ## The Pipeline
 

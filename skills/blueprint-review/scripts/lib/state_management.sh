@@ -44,7 +44,7 @@ get_state_file() {
 # Initialize state file
 init_state_file() {
   local design_file="$1"
-  local max_iterations="${2:-5}"
+  local max_iterations="${2:-3}"
 
   # Derive slug and create namespaced directory
   local slug
@@ -78,6 +78,15 @@ progress_status: ""
 high_issues: 0
 medium_issues: 0
 low_issues: 0
+
+# Category-aware blocking counts (excludes TDD-discoverable + scope-expansion findings)
+plan_blocking_high: 0
+plan_blocking_medium: 0
+deferred_issues: 0
+
+# Trajectory of plan_blocking_high across iterations — used for early-stop check
+high_issues_history: "[]"
+early_stopped: ""
 ---
 
 # Design Review State
@@ -300,4 +309,60 @@ get_max_iterations() {
 # Get design file path
 get_design_file() {
   get_state_field "design_file"
+}
+
+# Append a plan-blocking-high count to the trajectory history (JSON array stored as YAML string).
+# Used by trajectory-aware early-stop logic to detect unconverging loops.
+append_high_history() {
+  local count="$1"
+  local current
+  current=$(get_state_field "high_issues_history")
+  if [[ -z "$current" || "$current" == '""' ]]; then
+    current="[]"
+  fi
+  local updated
+  if command -v jq &>/dev/null; then
+    updated=$(echo "$current" | jq --argjson c "$count" '. + [$c]' 2>/dev/null || echo "[$count]")
+  else
+    # Fallback: simple string concatenation (assumes well-formed input)
+    if [[ "$current" == "[]" ]]; then
+      updated="[$count]"
+    else
+      updated="${current%]}, $count]"
+    fi
+  fi
+  # Wrap in quotes so YAML parses it as a string, not a sequence
+  update_state_field "high_issues_history" "\"$updated\""
+}
+
+# Get the plan-blocking-high trajectory history as JSON array.
+get_high_history() {
+  local hist
+  hist=$(get_state_field "high_issues_history")
+  if [[ -z "$hist" || "$hist" == '""' ]]; then
+    echo "[]"
+  else
+    echo "$hist"
+  fi
+}
+
+# Trajectory check: returns 0 (no progress) if the most recent value is NOT lower
+# than the value `window` iterations ago. Returns 1 (still progressing) otherwise.
+# Requires at least window+1 entries; returns 1 if there's not enough data yet.
+check_no_progress() {
+  local history="$1"
+  local window="${2:-2}"
+  python3 -c "
+import json, sys
+try:
+    h = json.loads('''$history''')
+    if not isinstance(h, list) or len(h) < $window + 1:
+        sys.exit(1)
+    recent = h[-($window + 1):]
+    if recent[-1] < recent[0]:
+        sys.exit(1)
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+"
 }

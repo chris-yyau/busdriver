@@ -1,12 +1,26 @@
 {
+  "_comment": "Documentation of defaults. Live values: max_iterations in init-design-review.sh + state_management.sh::init_state_file; categories/patterns in run-design-review-loop.sh::Phase 4.",
   "claude_validation": {
     "max_codebase_files": 20,
     "skip_low_severity": true,
     "timeout_ms": 600000
   },
   "iteration": {
-    "max_iterations": 5,
-    "convergence_threshold": 0
+    "max_iterations": 3,
+    "convergence_threshold": 0,
+    "auto_stop_on_no_progress": true,
+    "no_progress_window": 2
+  },
+  "categorization": {
+    "tdd_discoverable_categories": [
+      "technical-accuracy",
+      "bugs",
+      "implementation",
+      "best-practices",
+      "maintainability",
+      "performance"
+    ],
+    "scope_expansion_pattern": "OUT OF SCOPE|follow-up PR|deferred to follow-up|post-merge|inherited from parent"
   },
   "reviewers": {
     "gemini": {

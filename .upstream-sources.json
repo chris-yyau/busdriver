@@ -4350,7 +4350,7 @@
     {
       "path": "skills/caveman/SKILL.md",
       "source": "mattpocock",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/productivity/caveman/SKILL.md"
     },
     {

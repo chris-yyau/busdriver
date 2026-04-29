@@ -14,12 +14,12 @@ if [[ $# -lt 1 ]]; then
   echo "" >&2
   echo "Arguments:" >&2
   echo "  design_file      Path to the design document to review" >&2
-  echo "  max_iterations   Maximum review iterations (default: 5)" >&2
+  echo "  max_iterations   Maximum review iterations (default: 3)" >&2
   exit 1
 fi
 
 DESIGN_FILE="$1"
-MAX_ITERATIONS="${2:-5}"
+MAX_ITERATIONS="${2:-3}"
 
 # Validate design file exists
 log_info "Validating design file: $DESIGN_FILE"

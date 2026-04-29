@@ -556,17 +556,72 @@ EOF
   update_review_statuses "$GEMINI_STATUS" "$CODEX_STATUS" "$CLAUDE_STATUS"
 
   # ── Phase 4: Progress analysis (Critic #5) ────────────────────────
+  # Category-aware convergence: line-level findings (test-code typos, lint, perf)
+  # belong to TDD-discovery time and shouldn't block plan review. Scope-expansion
+  # findings ("OUT OF SCOPE for this PR", "follow-up") get deferred to a
+  # follow-up-issues.md file instead of blocking convergence.
   log_info "Phase 4: Progress analysis..."
+
+  # Categories that are TDD-discoverable — first test run catches these in seconds.
+  TDD_DISCOVERABLE_CATEGORIES='["technical-accuracy","bugs","implementation","best-practices","maintainability","performance"]'
+  # Suggestion patterns that signal scope-expansion findings (defer to follow-up PR).
+  SCOPE_EXPANSION_PATTERN="OUT OF SCOPE|follow-up PR|deferred to follow-up|post-merge|inherited from parent"
+
+  # Plan-blocking counts exclude TDD-discoverable categories AND scope-expansion suggestions.
+  PLAN_BLOCKING_HIGH=$(jq --argjson tdd "$TDD_DISCOVERABLE_CATEGORIES" --arg pat "$SCOPE_EXPANSION_PATTERN" \
+    '[.issues[] | select(
+      .severity == "high"
+      and .confidence >= 0.5
+      and (.category as $c | $tdd | index($c) | not)
+      and ((.suggestion // "") | test($pat) | not)
+    )] | length' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo 0)
+
+  PLAN_BLOCKING_MEDIUM=$(jq --argjson tdd "$TDD_DISCOVERABLE_CATEGORIES" --arg pat "$SCOPE_EXPANSION_PATTERN" \
+    '[.issues[] | select(
+      .severity == "medium"
+      and .confidence >= 0.5
+      and (.category as $c | $tdd | index($c) | not)
+      and ((.suggestion // "") | test($pat) | not)
+    )] | length' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo 0)
 
   HIGH_COUNT=$(jq '[.issues[] | select(.severity == "high" and .confidence >= 0.5)] | length' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo 0)
   MEDIUM_COUNT=$(jq '[.issues[] | select(.severity == "medium" and .confidence >= 0.5)] | length' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo 0)
   LOW_COUNT=$(jq '[.issues[] | select(.severity == "low")] | length' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo 0)
 
-  if [[ "$HIGH_COUNT" -gt 0 ]]; then
+  DEFERRED_COUNT=$(( (HIGH_COUNT + MEDIUM_COUNT) - (PLAN_BLOCKING_HIGH + PLAN_BLOCKING_MEDIUM) ))
+  # Clamp to >= 0 — if the two jq groups error-default differently (one returns
+  # 0, the other returns real values), the subtraction can underflow.
+  if [[ "$DEFERRED_COUNT" -lt 0 ]]; then
+    DEFERRED_COUNT=0
+  fi
+
+  # Write deferred issues to a follow-up file so the user sees what was set aside.
+  if [[ "$DEFERRED_COUNT" -gt 0 ]]; then
+    FOLLOWUP_FILE=$(get_review_file "follow-up-issues.md")
+    {
+      printf '# Deferred Findings (TDD-discoverable + scope-expansion)\n\n'
+      printf 'These findings were not blocked at design-review time because they fall into one of two buckets:\n\n'
+      printf '1. **TDD-discoverable**: line-level concerns (test stubs, lint, perf) that the first test run catches in seconds.\n'
+      printf '2. **Scope-expansion**: legitimate findings explicitly marked as "OUT OF SCOPE for this PR" or "follow-up PR" by the arbiter.\n\n'
+      printf 'Address them during implementation (TDD) or open a follow-up issue (scope-expansion).\n\n'
+      printf -- '---\n\n'
+      jq -r --argjson tdd "$TDD_DISCOVERABLE_CATEGORIES" --arg pat "$SCOPE_EXPANSION_PATTERN" \
+        '.issues[] | select(
+          (.severity == "high" or .severity == "medium")
+          and .confidence >= 0.5
+          and ((.category as $c | $tdd | index($c)) or ((.suggestion // "") | test($pat)))
+        ) | "## [\(.severity | ascii_upcase)] \(.section)\n\n**Category:** \(.category) | **Confidence:** \(.confidence)\n\n**Description:** \(.description)\n\n**Suggestion:** \(.suggestion)\n"' \
+        "$CLAUDE_OUTPUT_FILE" 2>/dev/null
+    } > "$FOLLOWUP_FILE"
+    log_info "  Deferred $DEFERRED_COUNT issue(s) to: $FOLLOWUP_FILE"
+  fi
+
+  # Convergence based on plan-blocking counts only (Fix 1).
+  if [[ "$PLAN_BLOCKING_HIGH" -gt 0 ]]; then
     PROGRESS_STATUS="blocked_by_high_issues"
-  elif [[ "$MEDIUM_COUNT" -gt 0 ]]; then
+  elif [[ "$PLAN_BLOCKING_MEDIUM" -gt 0 ]]; then
     PROGRESS_STATUS="medium_issues_remaining"
-  elif [[ "$LOW_COUNT" -gt 0 ]]; then
+  elif [[ "$LOW_COUNT" -gt 0 || "$DEFERRED_COUNT" -gt 0 ]]; then
     PROGRESS_STATUS="low_issues_only"
   else
     PROGRESS_STATUS="passed"
@@ -576,9 +631,52 @@ EOF
   update_state_field "high_issues" "$HIGH_COUNT"
   update_state_field "medium_issues" "$MEDIUM_COUNT"
   update_state_field "low_issues" "$LOW_COUNT"
+  update_state_field "plan_blocking_high" "$PLAN_BLOCKING_HIGH"
+  update_state_field "plan_blocking_medium" "$PLAN_BLOCKING_MEDIUM"
+  update_state_field "deferred_issues" "$DEFERRED_COUNT"
+
+  # Track plan-blocking-high trajectory for early-stop check (Fix 2).
+  append_high_history "$PLAN_BLOCKING_HIGH"
+
+  # Surface Claude's validation_notes so the user sees the arbiter's reasoning (Fix 5).
+  VALIDATION_NOTES=$(jq -r '.validation_notes // ""' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo "")
+  if [[ -n "$VALIDATION_NOTES" && "$VALIDATION_NOTES" != "null" ]]; then
+    log_info ""
+    log_info "  Claude validation notes:"
+    printf '%s\n' "$VALIDATION_NOTES" | sed 's/^/    /'
+    log_info ""
+  fi
 
   log_info "  Status: $PROGRESS_STATUS"
-  log_info "  Issues: $HIGH_COUNT high, $MEDIUM_COUNT medium, $LOW_COUNT low"
+  log_info "  Issues: $HIGH_COUNT high ($PLAN_BLOCKING_HIGH plan-blocking), $MEDIUM_COUNT medium ($PLAN_BLOCKING_MEDIUM plan-blocking), $LOW_COUNT low"
+  if [[ "$DEFERRED_COUNT" -gt 0 ]]; then
+    log_info "  Deferred to TDD/follow-up: $DEFERRED_COUNT (see follow-up-issues.md)"
+  fi
+
+  # Trajectory-aware early stop (Fix 2): if plan-blocking-high didn't strictly
+  # decrease from the prior iteration, the loop is unproductive — accept current
+  # state as low_issues_only rather than grind through max_iterations.
+  #
+  # window=1 (compare iteration N to N-1) so the check fires after iteration 2
+  # under default max_iterations=3. With window=2 the check would need 3 entries
+  # and never fire under default config (loop exits at iter 3 before phase 4 runs
+  # a third time).
+  #
+  # IMPORTANT: only gate on blocked_by_high_issues. The trajectory tracks HIGH
+  # only, so a medium_issues_remaining state (HIGH=0, MEDIUM>0) would trivially
+  # satisfy "HIGH didn't decrease" and produce a false PASS while blocking
+  # MEDIUMs remain. (Surfaced by PR #55 review — copilot-pull-request-reviewer.)
+  if [[ "$PROGRESS_STATUS" == "blocked_by_high_issues" ]]; then
+    HISTORY=$(get_high_history)
+    if [[ "$CURRENT_ITERATION" -ge 2 ]] && check_no_progress "$HISTORY" 1; then
+      log_warning ""
+      log_warning "  Trajectory: plan-blocking HIGH did not decrease from prior iteration ($HISTORY)"
+      log_warning "  Auto-stop: convergence loop unproductive — accepting current state"
+      PROGRESS_STATUS="low_issues_only"
+      update_state_field "progress_status" "\"$PROGRESS_STATUS\""
+      update_state_field "early_stopped" "\"no_improvement_trajectory\""
+    fi
+  fi
 
   # ── Phase 5: Convergence (Critic #4: Claude verdict) ──────────────
   log_info "Phase 5: Convergence check..."

@@ -1,3 +1,10 @@
+# [1.26.0](https://github.com/chris-yyau/busdriver/compare/v1.25.4...v1.26.0) (2026-04-29)
+
+
+### Features
+
+* **skills:** import 4 skills from mattpocock/skills ([#56](https://github.com/chris-yyau/busdriver/issues/56)) ([4046757](https://github.com/chris-yyau/busdriver/commit/4046757194774cf968d450e6b5d8af59aee2bf6b))
+
 ## [1.25.4](https://github.com/chris-yyau/busdriver/compare/v1.25.3...v1.25.4) (2026-04-29)
 
 

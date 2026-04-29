@@ -99,17 +99,17 @@ Skip files (`.claude/skip-litmus.local`, `.claude/skip-design-review.local`, `.c
    Monitor(command: "sleep 35 && echo READY", timeout: 45)
    ```
    Monitor's subprocess sleeps atomically and does not re-enter the PreToolUse hook, so the skip file survives the wait.
-4. **When Monitor emits READY, retry the originally blocked action directly.** Do NOT verify the skip file first — verification destroys it (gate fires before tool-type discrimination).
-5. **If the retry shows the gate's normal "review must complete" message**, the file was consumed by an earlier tool call. Ask the user to `touch` again and restart the wait.
+4. **When Monitor emits READY, retry the originally blocked action directly.** Do NOT verify the skip file first, and do NOT make any other tool calls before the retry.
+5. **If the retry shows the gate's normal "review must complete" message**, the file was consumed by an earlier tool call. This is especially important for the design-review gate, where any intervening Write/Edit/Bash invocation can consume the skip file (the gate fires before tool-type discrimination). Ask the user to `touch` again and restart the wait.
 
 Skip files are single-use and logged to `.claude/bypass-log.jsonl`. Full protocol with failure-mode taxonomy lives in `skills/blueprint-review/SKILL.md` under "User-Created Skip File".
 
 **Hard rules:**
 - NEVER create the skip file yourself — gate detects and deletes self-bypass attempts.
 - NEVER use `sleep 32` / `sleep 35` directly via Bash — the harness rejects long foreground sleeps.
-- NEVER verify via Bash (`test -f`, `ls`, `stat`, `cat`, `find`) during the wait — any of these consume the file.
+- After the user creates the skip file, make NO additional tool calls except the `Monitor` wait, then immediately retry the originally blocked command.
+- NEVER verify the skip file during the wait via Bash (`test -f`, `ls`, `stat`, `cat`, `find`) — any of these consume the file for the design-review gate, and even for litmus/pr-grind it tells you nothing useful.
 - NEVER ask the user to wait — Claude does the wait via Monitor.
-- Read/Grep/Glob during the wait are safe (gate isn't registered on them) but tell you nothing useful — trust the user's "done".
 
 ## The Pipeline
 

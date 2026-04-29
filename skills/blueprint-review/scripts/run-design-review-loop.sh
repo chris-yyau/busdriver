@@ -589,6 +589,11 @@ EOF
   LOW_COUNT=$(jq '[.issues[] | select(.severity == "low")] | length' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo 0)
 
   DEFERRED_COUNT=$(( (HIGH_COUNT + MEDIUM_COUNT) - (PLAN_BLOCKING_HIGH + PLAN_BLOCKING_MEDIUM) ))
+  # Clamp to >= 0 — if the two jq groups error-default differently (one returns
+  # 0, the other returns real values), the subtraction can underflow.
+  if [[ "$DEFERRED_COUNT" -lt 0 ]]; then
+    DEFERRED_COUNT=0
+  fi
 
   # Write deferred issues to a follow-up file so the user sees what was set aside.
   if [[ "$DEFERRED_COUNT" -gt 0 ]]; then
@@ -656,7 +661,12 @@ EOF
   # under default max_iterations=3. With window=2 the check would need 3 entries
   # and never fire under default config (loop exits at iter 3 before phase 4 runs
   # a third time).
-  if [[ "$PROGRESS_STATUS" == "blocked_by_high_issues" || "$PROGRESS_STATUS" == "medium_issues_remaining" ]]; then
+  #
+  # IMPORTANT: only gate on blocked_by_high_issues. The trajectory tracks HIGH
+  # only, so a medium_issues_remaining state (HIGH=0, MEDIUM>0) would trivially
+  # satisfy "HIGH didn't decrease" and produce a false PASS while blocking
+  # MEDIUMs remain. (Surfaced by PR #55 review — copilot-pull-request-reviewer.)
+  if [[ "$PROGRESS_STATUS" == "blocked_by_high_issues" ]]; then
     HISTORY=$(get_high_history)
     if [[ "$CURRENT_ITERATION" -ge 2 ]] && check_no_progress "$HISTORY" 1; then
       log_warning ""

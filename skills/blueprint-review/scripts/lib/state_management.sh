@@ -351,7 +351,7 @@ get_high_history() {
 # Requires at least window+1 entries; returns 1 if there's not enough data yet.
 check_no_progress() {
   local history="$1"
-  local window="${2:-2}"
+  local window="${2:-1}"
   python3 -c "
 import json, sys
 try:

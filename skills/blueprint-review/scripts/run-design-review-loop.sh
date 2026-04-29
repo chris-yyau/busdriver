@@ -596,7 +596,7 @@ EOF
     {
       printf '# Deferred Findings (TDD-discoverable + scope-expansion)\n\n'
       printf 'These findings were not blocked at design-review time because they fall into one of two buckets:\n\n'
-      printf '1. **TDD-discoverable**: line-level concerns (test stubs, lint, perf) that the first `pytest` run catches in seconds.\n'
+      printf '1. **TDD-discoverable**: line-level concerns (test stubs, lint, perf) that the first test run catches in seconds.\n'
       printf '2. **Scope-expansion**: legitimate findings explicitly marked as "OUT OF SCOPE for this PR" or "follow-up PR" by the arbiter.\n\n'
       printf 'Address them during implementation (TDD) or open a follow-up issue (scope-expansion).\n\n'
       printf -- '---\n\n'
@@ -648,14 +648,19 @@ EOF
     log_info "  Deferred to TDD/follow-up: $DEFERRED_COUNT (see follow-up-issues.md)"
   fi
 
-  # Trajectory-aware early stop (Fix 2): if plan-blocking-high hasn't strictly
-  # decreased in the last 2 iterations, the loop is unproductive — accept current
+  # Trajectory-aware early stop (Fix 2): if plan-blocking-high didn't strictly
+  # decrease from the prior iteration, the loop is unproductive — accept current
   # state as low_issues_only rather than grind through max_iterations.
+  #
+  # window=1 (compare iteration N to N-1) so the check fires after iteration 2
+  # under default max_iterations=3. With window=2 the check would need 3 entries
+  # and never fire under default config (loop exits at iter 3 before phase 4 runs
+  # a third time).
   if [[ "$PROGRESS_STATUS" == "blocked_by_high_issues" || "$PROGRESS_STATUS" == "medium_issues_remaining" ]]; then
     HISTORY=$(get_high_history)
-    if [[ "$CURRENT_ITERATION" -ge 2 ]] && check_no_progress "$HISTORY" 2; then
+    if [[ "$CURRENT_ITERATION" -ge 2 ]] && check_no_progress "$HISTORY" 1; then
       log_warning ""
-      log_warning "  Trajectory: plan-blocking HIGH not decreasing over last 2 iterations ($HISTORY)"
+      log_warning "  Trajectory: plan-blocking HIGH did not decrease from prior iteration ($HISTORY)"
       log_warning "  Auto-stop: convergence loop unproductive — accepting current state"
       PROGRESS_STATUS="low_issues_only"
       update_state_field "progress_status" "\"$PROGRESS_STATUS\""

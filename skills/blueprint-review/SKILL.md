@@ -67,7 +67,7 @@ Three-tier model with Claude as arbiter:
 
 **Completion criteria:** Claude's verdict has no plan-blocking HIGH or MEDIUM issues (confidence >= 0.5). TDD-discoverable findings (test stubs, lint, perf) and scope-expansion findings ("OUT OF SCOPE", "follow-up PR") do NOT block convergence — they are deferred to `follow-up-issues.md`.
 
-**Auto-stop on no progress:** If plan-blocking HIGH count fails to strictly decrease over 2 consecutive iterations, the loop accepts the current state as `low_issues_only` rather than grinding to `max_iterations`. The early-stop signal is recorded as `early_stopped: "no_improvement_trajectory"` in the state file.
+**Auto-stop on no progress:** If plan-blocking HIGH count fails to strictly decrease from one iteration to the next, the loop accepts the current state as `low_issues_only` rather than grinding to `max_iterations`. The check fires starting at iteration 2 (when there are 2 history entries to compare). The early-stop signal is recorded as `early_stopped: "no_improvement_trajectory"` in the state file.
 
 **Default max iterations:** 3 (was 5 — empirical data showed bimodal convergence: pass at iter 1 or never converge; iterating beyond 3 wasted hours without improving outcomes).
 
@@ -208,7 +208,7 @@ Replaces binary FAIL/PASS with explicit severity breakdown. **Counts are categor
 
 **Plan-blocking vs. deferred:**
 - **Plan-blocking categories** (block convergence): `architecture`, `clarity`, `completeness`, `security`, `design`, `correctness`, and any other category not listed below.
-- **TDD-discoverable categories** (deferred to TDD): `technical-accuracy`, `bugs`, `implementation`, `best-practices`, `maintainability`, `performance`. These are line-level concerns the first `pytest` run catches in seconds — flagging them at plan-review time is noise.
+- **TDD-discoverable categories** (deferred to TDD): `technical-accuracy`, `bugs`, `implementation`, `best-practices`, `maintainability`, `performance`. These are line-level concerns the first test run catches in seconds — flagging them at plan-review time is noise.
 - **Scope-expansion findings** (deferred to follow-up): any finding whose `suggestion` field contains `OUT OF SCOPE`, `follow-up PR`, `deferred to follow-up`, `post-merge`, or `inherited from parent`. These represent legitimate concerns belonging to a different PR.
 
 Deferred findings are written to `docs/reviews/<slug>/follow-up-issues.md` so the user can address them during implementation or open a follow-up issue.

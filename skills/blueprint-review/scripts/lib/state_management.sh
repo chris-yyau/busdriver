@@ -313,6 +313,10 @@ get_design_file() {
 
 # Append a plan-blocking-high count to the trajectory history (JSON array stored as YAML string).
 # Used by trajectory-aware early-stop logic to detect unconverging loops.
+#
+# NOTE: The state field is named `high_issues_history` (not `plan_blocking_high_history`)
+# for backward compat with already-initialized state.md files. The values stored are
+# plan-blocking HIGH counts, NOT raw HIGH counts — see Phase 4 in run-design-review-loop.sh.
 append_high_history() {
   local count="$1"
   local current

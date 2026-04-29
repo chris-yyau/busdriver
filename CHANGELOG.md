@@ -1,3 +1,10 @@
+## [1.25.4](https://github.com/chris-yyau/busdriver/compare/v1.25.3...v1.25.4) (2026-04-29)
+
+
+### Bug Fixes
+
+* blueprint-review convergence + orchestrator skip-file protocol ([#55](https://github.com/chris-yyau/busdriver/issues/55)) ([7d00e6e](https://github.com/chris-yyau/busdriver/commit/7d00e6e04ed1a623dd5a20c50774aac5c84befcd))
+
 ## [1.25.3](https://github.com/chris-yyau/busdriver/compare/v1.25.2...v1.25.3) (2026-04-19)
 
 

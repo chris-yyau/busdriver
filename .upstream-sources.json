@@ -8,6 +8,11 @@
     "ecc": {
       "repo": "affaan-m/everything-claude-code",
       "ref": "main"
+    },
+    "mattpocock": {
+      "repo": "mattpocock/skills",
+      "ref": "main",
+      "license": "MIT"
     }
   },
   "files": [
@@ -4325,6 +4330,70 @@
       "path": "tests/test-gate-adversarial.sh",
       "source": "local",
       "status": "local"
+    },
+    {
+      "path": "commands/caveman.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "commands/grill-with-docs.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/grill-me/SKILL.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/productivity/grill-me/SKILL.md"
+    },
+    {
+      "path": "skills/caveman/SKILL.md",
+      "source": "mattpocock",
+      "status": "custom",
+      "upstream_path": "skills/productivity/caveman/SKILL.md"
+    },
+    {
+      "path": "skills/grill-with-docs/SKILL.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/grill-with-docs/SKILL.md"
+    },
+    {
+      "path": "skills/grill-with-docs/ADR-FORMAT.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/grill-with-docs/ADR-FORMAT.md"
+    },
+    {
+      "path": "skills/grill-with-docs/CONTEXT-FORMAT.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/grill-with-docs/CONTEXT-FORMAT.md"
+    },
+    {
+      "path": "skills/improve-codebase-architecture/SKILL.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/improve-codebase-architecture/SKILL.md"
+    },
+    {
+      "path": "skills/improve-codebase-architecture/DEEPENING.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/improve-codebase-architecture/DEEPENING.md"
+    },
+    {
+      "path": "skills/improve-codebase-architecture/INTERFACE-DESIGN.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/improve-codebase-architecture/INTERFACE-DESIGN.md"
+    },
+    {
+      "path": "skills/improve-codebase-architecture/LANGUAGE.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/improve-codebase-architecture/LANGUAGE.md"
     }
   ]
 }

@@ -9,7 +9,7 @@
     "max_iterations": 3,
     "convergence_threshold": 0,
     "auto_stop_on_no_progress": true,
-    "no_progress_window": 2
+    "no_progress_window": 1
   },
   "categorization": {
     "tdd_discoverable_categories": [

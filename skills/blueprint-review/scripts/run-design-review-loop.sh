@@ -562,7 +562,7 @@ EOF
   # follow-up-issues.md file instead of blocking convergence.
   log_info "Phase 4: Progress analysis..."
 
-  # Categories that are TDD-discoverable — first pytest run catches these in seconds.
+  # Categories that are TDD-discoverable — first test run catches these in seconds.
   TDD_DISCOVERABLE_CATEGORIES='["technical-accuracy","bugs","implementation","best-practices","maintainability","performance"]'
   # Suggestion patterns that signal scope-expansion findings (defer to follow-up PR).
   SCOPE_EXPANSION_PATTERN="OUT OF SCOPE|follow-up PR|deferred to follow-up|post-merge|inherited from parent"

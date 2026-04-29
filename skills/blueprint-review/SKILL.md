@@ -132,7 +132,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/init-design-review.s
 ```
 
 **Creates state file** (`docs/reviews/<slug>/state.md`) tracking:
-- Current iteration (1-5)
+- Current iteration (1 to max_iterations, default 3)
 - Review statuses (Gemini, Codex, Claude)
 - Progress model (high/medium/low issue counts)
 
@@ -163,8 +163,9 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/run-design-review-lo
 ```
 
 **Iteration continues until:**
-- Claude's verdict has no HIGH/MEDIUM issues (confidence >= 0.5)
-- OR max iterations reached (default: 5)
+- Claude's verdict has no plan-blocking HIGH/MEDIUM issues (confidence >= 0.5)
+- OR trajectory auto-stop fires (HIGH didn't decrease from prior iteration)
+- OR max iterations reached (default: 3)
 
 ## Architecture: Claude as Arbiter
 

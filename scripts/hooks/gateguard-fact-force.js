@@ -39,10 +39,13 @@ const MAX_CHECKED_ENTRIES = 500;
 const MAX_SESSION_KEYS = 50;
 const ROUTINE_BASH_SESSION_KEY = '__bash_session__';
 
-// Local fork — covers short-flag clusters that the upstream regex misses:
-//   git push -f / -uf  (short --force)
-//   git clean -fd / -fx (short --force with cluster)
-const DESTRUCTIVE_BASH = /\b(rm\s+-rf|git\s+reset\s+--hard|git\s+checkout\s+--|git\s+clean\s+-[a-zA-Z]*f|drop\s+table|delete\s+from|truncate|git\s+push\s+(--force(?!-with-lease)|-[a-zA-Z]*f\b)|git\s+commit\s+--amend|dd\s+if=)/i;
+// Local fork — covers short-flag clusters that the upstream regex misses,
+// including 'f' in any position within the cluster:
+//   git push  -f / -uf / -fu / -fud  (force anywhere in cluster)
+//   git clean -fd / -fx / -df        (force anywhere in cluster)
+// Pattern `-[a-zA-Z]*f[a-zA-Z]*\b` allows letters before AND after `f`,
+// closing the bypass where `\b` was required immediately after `f`.
+const DESTRUCTIVE_BASH = /\b(rm\s+-rf|git\s+reset\s+--hard|git\s+checkout\s+--|git\s+clean\s+-[a-zA-Z]*f[a-zA-Z]*\b|drop\s+table|delete\s+from|truncate|git\s+push\s+(--force(?!-with-lease)|-[a-zA-Z]*f[a-zA-Z]*\b)|git\s+commit\s+--amend|dd\s+if=)/i;
 
 // --- State management (per-session, atomic writes, bounded) ---
 

@@ -4,24 +4,27 @@ Routes tasks to the appropriate busdriver skill, agent, or command.
 
 ## What It Does
 
-- **Pipeline enforcement** — phases 1-6 (brainstorming → finishing)
+- **Pipeline enforcement** — phases 1–6 (brainstorming → finishing)
 - **Domain detection** — loads language/framework patterns automatically
-- **Gate enforcement** — litmus, blueprint-review, pre-implementation
-- **Agent dispatch** — 29 specialized agents (reviewers, build resolvers, etc.)
+- **Gate enforcement** — six hook-enforced gates (litmus pre-commit/pre-PR, blueprint-review, pre-implementation, freeze/guard, pre-merge/pr-grind)
+- **Agent dispatch** — specialized agents in `agents/` (reviewers, build resolvers, gan/opensource pipelines, etc.)
 
 ## How It Routes
 
 ### 1. Mandatory Gates (Hook-Enforced)
-- **Litmus** — code review before commit/PR
-- **Blueprint Review** — plan review before implementation
-- **Pre-implementation** — blocks impl code while design docs unreviewed
+- **Litmus (pre-commit)** — code review before `git commit`
+- **Litmus (pre-PR)** — multi-voice deep review before `gh pr create`
+- **Blueprint Review** — plan/design review (writes `<!-- design-reviewed: PASS -->`)
+- **Pre-implementation** — blocks impl while design docs unreviewed
+- **Freeze/Guard** — restricts edits to investigation scope during debugging
+- **Pre-merge (pr-grind)** — blocks `gh pr merge` until pr-grind clean
 
 ### 2. Pipeline Phases
 - **Phase 1** → `busdriver:brainstorming`
 - **Phase 2** → `busdriver:writing-plans`
 - **Phase 3** → `busdriver:using-git-worktrees`
 - **Phase 4** → execution mode + TDD + code review
-- **Phase 5** → `busdriver:verification-before-completion`
+- **Phase 5** → `busdriver:verification-loop` then `busdriver:verification-before-completion`
 - **Phase 6** → `busdriver:finishing-a-development-branch`
 
 ### 3. Domain Detection

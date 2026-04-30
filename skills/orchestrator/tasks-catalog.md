@@ -39,7 +39,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Documents** | .docx/.xlsx/.pptx/.pdf, OCR | `nutrient-document-processing` |
 | **Claude API/SDK** | imports anthropic/claude_agent_sdk | `claude-api-patterns` |
 | **MCP Dev** | build MCP server | `mcp-server-patterns` |
-| **Canary** | watch deploy, post-deploy check | `canary` / `canary-watch` |
+| **Canary** | post-deploy canary check | `canary` |
 | **Scheduled Agents** | cron job, run on schedule | `CronCreate`/`CronList`/`CronDelete` |
 | **Recurring Tasks** | run every N minutes | `/loop-start`, `loop-operator` agent |
 | **Notes** | check notes health, refine | `/refine-notes` |

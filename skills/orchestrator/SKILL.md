@@ -22,7 +22,7 @@ Three layers, one pipeline:
 2. **ECC + third-party skills** (tools) — Domain patterns + DISPATCHed agents
 3. **Gates** (enforcement) — Hook-enforced reviews that cannot be bypassed
 
-Supplements (`skills/supplements/`) provide additive context for targeted skills — see `skills/supplements/MANIFEST.md`. Loaded by Read, not by hooks.
+**Supplement Loading Protocol:** Before invoking a skill or dispatching an agent, check `skills/supplements/MANIFEST.md` for active supplements targeting that skill/agent. If a match exists, Read the supplement file and apply its content alongside the skill. Opt-in supplements require the user's trigger phrase (listed in the manifest). Supplements are not injected by hooks — this is prompt-level guidance.
 
 ## Gates (Hook-Enforced)
 

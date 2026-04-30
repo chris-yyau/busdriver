@@ -1965,7 +1965,7 @@
     {
       "path": "scripts/sync-ecc-to-codex.sh",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/sync-ecc-to-codex.sh"
     },
     {

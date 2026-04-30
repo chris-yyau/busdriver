@@ -22,20 +22,20 @@ Three layers, one pipeline:
 2. **ECC + third-party skills** (tools) — Domain patterns + DISPATCHed agents
 3. **Gates** (enforcement) — Hook-enforced reviews that cannot be bypassed
 
-Supplements (`skills/supplements/`) provide additive context for targeted skills — see `MANIFEST.md`. Loaded by Read, not by hooks.
+Supplements (`skills/supplements/`) provide additive context for targeted skills — see `skills/supplements/MANIFEST.md`. Loaded by Read, not by hooks.
 
 ## Gates (Hook-Enforced)
 
 All gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects the tool call — Claude cannot bypass.
 
-| Gate | Trigger | Skip file | Detail |
-|------|---------|-----------|--------|
+| Gate | Trigger | Skip / deactivate | Detail |
+|------|---------|-------------------|--------|
 | **Litmus (pre-commit)** | `git commit` | `.claude/skip-litmus.local` | `litmus/SKILL.md` |
-| **Litmus (pre-PR)** | `gh pr create` | `.claude/skip-litmus.local` | `litmus/SKILL.md` |
+| **Litmus (pre-PR)** | `gh pr create` (multi-voice deep review; auto-invoked after PR creation: `pr-grind` via PostToolUse) | `.claude/skip-litmus.local` | `litmus/SKILL.md` |
 | **Blueprint Review** | Write/Edit of PLAN/DESIGN/ARCHITECTURE docs | `.claude/skip-design-review.local` | `blueprint-review/SKILL.md` |
-| **Pre-implementation** | Write/Edit/Bash while design unreviewed | `.claude/skip-design-review.local` | `blueprint-review/SKILL.md` |
-| **Freeze/Guard** | `.claude/freeze-scope.local` exists | `rm freeze-scope.local` | `systematic-debugging/SKILL.md` |
-| **Pre-merge (pr-grind)** | `gh pr merge` | `.claude/skip-pr-grind.local` | `pr-grind/SKILL.md` |
+| **Pre-implementation** | Write/Edit/MultiEdit/Bash while design unreviewed | `.claude/skip-design-review.local` | `blueprint-review/SKILL.md` |
+| **Freeze/Guard** | Write/Edit/MultiEdit while `.claude/freeze-scope.local` exists | `rm .claude/freeze-scope.local` (deactivates the freeze; activate with `echo "path/to/scope" > .claude/freeze-scope.local`) | `skills/supplements/directory-freeze.md` |
+| **Pre-merge (pr-grind)** | `gh pr merge` | `.claude/skip-pr-grind.local` (must be ≥30s and ≤3600s old) | `pr-grind/SKILL.md` |
 
 `SKIP_LITMUS=1` / `SKIP_DESIGN_REVIEW=1` / `SKIP_PR_GRIND=1` work only when **exported in the parent shell before `claude` starts** — inline `SKIP_LITMUS=1 git commit` does NOT work because hooks fire before the command's env is applied.
 
@@ -61,11 +61,12 @@ When a gate blocks and the user needs to bypass:
 4. **When READY, retry the originally blocked action directly.** Do NOT verify the skip file first.
 
 **Hard rules:**
-- NEVER create the skip file yourself — gates detect and delete self-bypass attempts (30s window).
-- NEVER use `sleep 32` / `sleep 35` directly via Bash.
-- NEVER verify the skip file via Bash (`test -f`, `ls`, `stat`, `cat`, `find`) — design-review gate consumes the file on any tool call. Read/Grep/Glob are safe but tell you nothing useful.
+- NEVER create the skip file yourself — gates reject and delete skip files less than 30s old (anti-self-bypass).
+- NEVER use `sleep 32` / `sleep 35` directly via Bash — the harness rejects long foreground sleeps.
+- NEVER verify the skip file via Bash (`test -f`, `ls`, `stat`, `cat`, `find`) before retrying. The design-review gate consumes the file on any intervening tool call (it fires before tool-type discrimination). For litmus/pr-grind, Bash verification trips the <30s self-bypass detector. In all cases: don't verify — just wait and retry.
 - NEVER ask the user to wait — Claude waits via Monitor.
 - After user touches the file, make NO tool calls except Monitor before retrying.
+- If the retry still blocks, the file was consumed mid-wait — ask the user to `touch` again and restart the 35s wait.
 
 Skip files are single-use and logged to `.claude/bypass-log.jsonl`. Full failure-mode taxonomy: `skills/blueprint-review/SKILL.md` ("User-Created Skip File").
 

@@ -34,7 +34,7 @@ All gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects 
 | **Litmus (pre-PR)** | `gh pr create` (multi-voice deep review; auto-invoked after PR creation: `pr-grind` via PostToolUse) | `.claude/skip-litmus.local` | `litmus/SKILL.md` |
 | **Blueprint Review** | Write/Edit of PLAN/DESIGN/ARCHITECTURE docs | `.claude/skip-design-review.local` | `blueprint-review/SKILL.md` |
 | **Pre-implementation** | Write/Edit/MultiEdit/Bash while design unreviewed | `.claude/skip-design-review.local` | `blueprint-review/SKILL.md` |
-| **Freeze/Guard** | Write/Edit/MultiEdit while `.claude/freeze-scope.local` exists | `rm .claude/freeze-scope.local` (deactivates the freeze; activate with `echo "path/to/scope" > .claude/freeze-scope.local`) | `skills/supplements/directory-freeze.md` |
+| **Freeze/Guard** | Write/Edit/MultiEdit while `.claude/freeze-scope.local` exists | `rm .claude/freeze-scope.local` (deactivates the freeze; activate with `echo "path/to/scope" > .claude/freeze-scope.local`) | `hooks/gate-scripts/freeze-guard.sh` |
 | **Pre-merge (pr-grind)** | `gh pr merge` | `.claude/skip-pr-grind.local` (must be ≥30s and ≤3600s old) | `pr-grind/SKILL.md` |
 
 `SKIP_LITMUS=1` / `SKIP_DESIGN_REVIEW=1` / `SKIP_PR_GRIND=1` work only when **exported in the parent shell before `claude` starts** — inline `SKIP_LITMUS=1 git commit` does NOT work because hooks fire before the command's env is applied.
@@ -172,9 +172,9 @@ Never act on `<update-alert>` during an active user task. Note silently, present
 | **SessionStart** | Orchestrator loader | context | Loads this skill + staleness + instincts |
 | **PreToolUse** (Bash) | Pre-commit gate | **GATE** | Blocks `git commit` until litmus + design review pass |
 | **PreToolUse** (Bash) | Pre-PR gate | **GATE** | Blocks `gh pr create` until litmus passes |
-| **PreToolUse** (Write\|Edit\|Bash) | Pre-implementation gate | **GATE** | Blocks impl while design docs unreviewed |
+| **PreToolUse** (Write\|Edit\|MultiEdit\|Bash) | Pre-implementation gate | **GATE** | Blocks impl while design docs unreviewed |
 | **PreToolUse** (Bash) | Pre-merge gate | **GATE** | Blocks `gh pr merge` until pr-grind clean |
-| **PreToolUse** (Write\|Edit) | Freeze/Guard | **GATE** | Restricts edits to investigation scope |
+| **PreToolUse** (Write\|Edit\|MultiEdit) | Freeze/Guard | **GATE** | Restricts edits to investigation scope |
 | **PostToolUse** (Write\|Edit\|Bash) | Design doc detector | state | Flags design docs for review gate |
 | **PostToolUse** (Edit) | Go post-edit | formatting | gofmt/goimports/go vet |
 | **PostToolUse** (Bash) | Post-commit marker | cleanup | Consumes litmus marker after commit |

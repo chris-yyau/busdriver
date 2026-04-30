@@ -6,7 +6,10 @@
 # regardless of which skill the agent loaded.
 #
 # Fail-CLOSED: errors block merge (user preference: stuck > skipped grind)
-# Skip: .claude/skip-pr-grind.local or SKIP_PR_GRIND=1
+# Skip: .claude/skip-pr-grind.local (or SKIP_PR_GRIND=1 exported in parent
+#       shell before `claude` starts — inline `SKIP_PR_GRIND=1 gh pr merge`
+#       does NOT work because PreToolUse hooks fire before the command's
+#       inline env is applied)
 
 set -euo pipefail
 trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-merge gate error — blocking as precaution. If stuck, create .claude/skip-pr-grind.local in your terminal.\"}\n"; exit 0' ERR

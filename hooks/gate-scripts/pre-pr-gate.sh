@@ -6,7 +6,10 @@
 # branches, pre-existing commits from other sessions).
 #
 # Fail-CLOSED: errors block PR creation (user preference: stuck > skipped review)
-# Skip: .claude/skip-litmus.local or SKIP_LITMUS=1 (same as commit gate)
+# Skip: .claude/skip-litmus.local (or SKIP_LITMUS=1 exported in parent shell
+#       before `claude` starts — inline `SKIP_LITMUS=1 gh pr create` does NOT
+#       work because PreToolUse hooks fire before the command's inline env
+#       is applied; same caveat as pre-commit gate)
 #
 # Roundtable decision (2026-03-21): Gate `gh pr create` only, NOT `git push`.
 # Gating push kills WIP pushes and destroys credibility of the gate system.

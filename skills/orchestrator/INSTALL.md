@@ -1,163 +1,69 @@
-# Orchestrator Installation Guide
+# Orchestrator Installation
 
-## Overview
+This skill is auto-loaded into context on every SessionStart by `hooks/gate-scripts/load-orchestrator.sh`, registered via the plugin's `hooks/hooks.json`. No manual setup required when installed as part of the busdriver plugin.
 
-The orchestrator skill replaces `using-superpowers` as the master router for all Claude Code skills. It unifies routing across superpowers, everything-claude-code, and standalone review skills.
+## File Layout
 
-## Prerequisites
+```
+skills/orchestrator/
+├── SKILL.md              # Always-loaded (~3k tokens) — pipeline + gates + entry routing
+├── tasks-catalog.md      # On-demand (~3k tokens) — non-pipeline task routes
+├── domain-supplements.md # On-demand (~3k tokens) — language/framework detection
+├── README.md             # Overview
+└── INSTALL.md            # This file
+```
 
-Ensure you have:
-1. Superpowers plugin installed
-2. Everything Claude Code plugin installed
-3. Litmus and blueprint-review skills in `~/.claude/skills/`
+`SKILL.md` is injected as `additionalContext` on SessionStart. The other two files are read by Claude on demand when the active task requires their content (catalog lookup or domain detection).
 
-## Installation Steps
+## When You Add a New Skill
 
-### 1. Disable the using-superpowers SessionStart Hook
+1. **Determine the route type:**
+   - **Pipeline phase work** (planning/execution/verification of features) → no orchestrator change; the new skill is invoked from within a phase.
+   - **Domain/language pattern** (e.g., new framework patterns) → add a row to `domain-supplements.md`.
+   - **Standalone task** (refactoring, ops, content, etc.) → add a row to `tasks-catalog.md`.
+   - **Always-on discipline** (TDD, verification, code review type) → add to Phase 4 disciplines in `SKILL.md`.
 
-First, we need to prevent `using-superpowers` from loading automatically:
+2. **Add a trigger keyword and the route format:**
+   ```
+   | **<Task name>** | <comma-separated trigger words> | <skill-name-or-command> |
+   ```
+   Use `agent`/`command` suffix only when the route is not a Skill-tool invocation.
+
+3. **If the new skill provides a specialized agent** (e.g., new `{lang}-reviewer`):
+   - Add to Phase 4 DISPATCH rules in `SKILL.md`.
+   - Add to `domain-supplements.md` for that language.
+
+4. **Avoid duplicating skill descriptions.** The system-prompt skill registry already shows all skill descriptions to Claude automatically — `tasks-catalog.md` only needs to add value where the trigger → skill mapping is non-obvious or where curated multi-skill groupings beat picking single skills.
+
+## When You Modify a Gate
+
+Implementation details (TOCTOU parsing, weighted quorum, CLI backend matrix) live in the gate's own SKILL.md, not in the orchestrator. The orchestrator's "Gates" table in `SKILL.md` only needs the trigger, skip-file path, and a pointer.
+
+If you change skip-file behavior, update:
+- The gate's own SKILL.md
+- The "Emergency Gate Recovery" block in `SKILL.md` (only if user-facing protocol changes)
+- `blueprint-review/SKILL.md`'s "User-Created Skip File" section (canonical failure-mode taxonomy)
+
+## Verifying After Changes
 
 ```bash
-# Check current hooks
-cat ~/.claude/settings.json | jq '.hooks'
+# Estimate token cost of always-loaded content
+wc -c skills/orchestrator/SKILL.md
+# Target: stay under ~14KB / ~3.5k tokens
 
-# If you have a SessionStart hook for using-superpowers, remove it
-# Edit ~/.claude/settings.json and remove the SessionStart entry
+# Check that referenced skills exist
+grep -oE 'busdriver:[a-z][a-z0-9-]+' skills/orchestrator/SKILL.md | \
+  sed 's/.*busdriver://' | sort -u | while read s; do
+    [ -d "skills/$s" ] || echo "MISSING: $s"
+  done
 ```
 
-### 2. Configure Orchestrator as SessionStart Hook
+## Disabling for Diagnostic A/B
 
-Add the orchestrator skill to load on every session:
+If you want to measure whether the orchestrator earns its tokens:
+1. Comment out the `SessionStart` hook in `hooks/hooks.json` that points to `load-orchestrator.sh`.
+2. Restart Claude Code.
+3. Run varied tasks for several sessions; observe whether routing degrades.
+4. Re-enable when done.
 
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash /PATH/TO/.claude/hooks/load-orchestrator.sh",
-            "timeout": 10
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Replace `/PATH/TO/` with your actual home directory path (e.g., `/Users/yourname`).
-
-### 3. Verify Installation
-
-Start a new Claude Code session and verify:
-1. The orchestrator skill loads automatically
-2. No duplicate loading of using-superpowers
-3. Routing works correctly
-
-Test with:
-```
-# Should route to busdriver:brainstorming
-"Let's build a new feature"
-
-# Should trigger litmus
-"I'm ready to commit these changes"
-
-# Should route to golang-patterns
-"Help me with this Go code"
-```
-
-## Configuration Options
-
-### Hook Priority
-
-If you have other SessionStart hooks, ensure orchestrator runs first:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "command": "Skill",
-        "arguments": {"skill": "orchestrator"},
-        "description": "Load master orchestrator"
-      },
-      {
-        "command": "Skill",
-        "arguments": {"skill": "other-skill"},
-        "description": "Load other skill"
-      }
-    ]
-  }
-}
-```
-
-### Custom Routes
-
-To add custom routing rules, edit the orchestrator SKILL.md:
-
-1. Add to the appropriate section (gates/process/tasks/domains/utilities)
-2. Follow the existing pattern
-3. Maintain precedence order
-
-Example adding a custom gate:
-```yaml
-gates:
-  custom_gate:
-    trigger: "your trigger condition"
-    skill: your-skill-name
-    blocking: true/false
-```
-
-## Troubleshooting
-
-### Orchestrator Not Loading
-
-Check:
-1. File exists at `${CLAUDE_PLUGIN_ROOT}/skills/orchestrator/SKILL.md`
-2. SessionStart hook is configured correctly
-3. No syntax errors in settings.json
-
-### Duplicate Routing
-
-If skills are being invoked twice:
-1. Ensure using-superpowers SessionStart hook is removed
-2. Check for duplicate entries in hooks
-3. Verify orchestrator deduplication rules
-
-### Missing Skills
-
-If a skill isn't routing:
-1. Verify the skill is installed and accessible
-2. Check the skill name matches exactly
-3. Add explicit routing rule if needed
-
-## Rollback
-
-To revert to using-busdriver:
-
-```bash
-# Restore backup
-cp ~/.claude/settings.json.backup ~/.claude/settings.json
-
-# Or manually edit to restore using-superpowers hook
-```
-
-## Updates
-
-When adding new skills:
-1. Check if they overlap with existing routes
-2. Add to orchestrator routing table if unique
-3. Update deduplication rules if overlapping
-4. Test routing with example triggers
-
-## Advanced: Parallel Skill Systems
-
-To run orchestrator alongside using-superpowers (not recommended):
-
-1. Keep both hooks but add a condition
-2. Use orchestrator for primary routing
-3. Use using-superpowers for fallback only
-
-This is complex and may cause conflicts - the orchestrator is designed to fully replace using-superpowers.
+The gate hooks (litmus, blueprint-review, pre-implementation, freeze, pre-merge) are independent and remain active even if the orchestrator skill isn't loaded.

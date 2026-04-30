@@ -1234,7 +1234,7 @@
     {
       "path": "scripts/bump-version.sh",
       "source": "superpowers",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/bump-version.sh"
     },
     {
@@ -1342,7 +1342,7 @@
     {
       "path": "scripts/gan-harness.sh",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/gan-harness.sh"
     },
     {
@@ -1917,7 +1917,7 @@
     {
       "path": "scripts/release.sh",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/release.sh"
     },
     {

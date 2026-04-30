@@ -4412,6 +4412,18 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/hooks/observe-runner.js"
+    },
+    {
+      "path": "scripts/auto-update.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/auto-update.js"
+    },
+    {
+      "path": "commands/auto-update.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/auto-update.md"
     }
   ]
 }

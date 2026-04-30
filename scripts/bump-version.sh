@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2295
 #
 # bump-version.sh — bump version numbers across all declared files,
 # with drift detection and repo-wide audit for missed files.

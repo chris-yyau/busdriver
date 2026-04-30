@@ -318,6 +318,7 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Product Naming** | name product, brand name, feature name | `product-naming` |
 | **Repo Scan** | audit files, asset scan, classify codebase | `repo-scan` |
 | **Safety Guard** | production safety, prevent destructive ops | `safety-guard` |
+| **GateGuard** | force fact-gathering before edits/writes/destructive bash (importers, schemas, instruction quote) | `gateguard` skill + `scripts/hooks/gateguard-fact-force.js` hook (opt-in via hooks.json) |
 | **Token Budget** | context budget advice, token usage | `token-budget-advisor` |
 | **ADRs** | architecture decision record, capture decision | `architecture-decision-records` |
 | **Agent Eval** | compare agents, agent benchmark, head-to-head | `agent-eval` |

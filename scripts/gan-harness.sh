@@ -1,5 +1,4 @@
 #!/bin/bash
-# shellcheck disable=SC2034,SC2155
 # gan-harness.sh — GAN-Style Generator-Evaluator Harness Orchestrator
 #
 # Inspired by Anthropic's "Harness Design for Long-Running Application Development"

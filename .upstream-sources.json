@@ -2342,13 +2342,13 @@
     {
       "path": "skills/continuous-learning-v2/SKILL.md",
       "source": "ecc",
-      "status": "custom",
+      "status": "sync",
       "upstream_path": "skills/continuous-learning-v2/SKILL.md"
     },
     {
       "path": "skills/continuous-learning-v2/agents/observer-loop.sh",
       "source": "ecc",
-      "status": "custom",
+      "status": "sync",
       "upstream_path": "skills/continuous-learning-v2/agents/observer-loop.sh"
     },
     {
@@ -4394,6 +4394,24 @@
       "source": "mattpocock",
       "status": "sync",
       "upstream_path": "skills/engineering/improve-codebase-architecture/LANGUAGE.md"
+    },
+    {
+      "path": "skills/gateguard/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/gateguard/SKILL.md"
+    },
+    {
+      "path": "scripts/hooks/gateguard-fact-force.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/gateguard-fact-force.js"
+    },
+    {
+      "path": "scripts/hooks/observe-runner.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/observe-runner.js"
     }
   ]
 }

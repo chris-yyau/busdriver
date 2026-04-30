@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016,SC2097,SC2098
 set -euo pipefail
 
 # Sync Everything Claude Code (ECC) assets into a local Codex CLI setup.

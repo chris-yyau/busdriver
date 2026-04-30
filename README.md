@@ -197,7 +197,9 @@ touch .claude/skip-design-review.local
 # Skip pr-grind — pre-merge (single-use, 30s self-bypass detection)
 touch .claude/skip-pr-grind.local
 
-# Environment variable bypass
+# Environment variable bypass — must be exported in the parent shell BEFORE
+# starting `claude`. Inline `SKIP_LITMUS=1 git commit` does NOT work because
+# PreToolUse hooks fire before the command's inline env is applied.
 export SKIP_LITMUS=1
 export SKIP_DESIGN_REVIEW=1
 export SKIP_PR_GRIND=1

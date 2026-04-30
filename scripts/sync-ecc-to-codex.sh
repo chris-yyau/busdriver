@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016,SC2097,SC2098
+# Local fork — directive was previously in busdriver to suppress benign
+# upstream warnings. ECC removed it upstream (cleanup), but we need it
+# for CI. Manifest status is `custom` to reflect this divergence.
 set -euo pipefail
 
 # Sync Everything Claude Code (ECC) assets into a local Codex CLI setup.

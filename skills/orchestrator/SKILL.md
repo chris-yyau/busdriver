@@ -56,7 +56,7 @@ All gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects 
 **Pre-commit (fast — 1 voice):** Blocks until `/litmus` passes → writes `.claude/litmus-passed.local` marker. Consumed after successful commit via PostToolUse. DEGRADED markers rejected. **Design-reviewed bypass:** If ALL staged files are design-reviewed specs (`.md` in `plans/`/`specs/` or basename PLAN/DESIGN/ARCHITECTURE, each with `<!-- design-reviewed: PASS -->`), Gate 2 auto-passes — litmus review is redundant after 3-tier design review. **TOCTOU fallback:** When `git add && git commit` are chained, staged files are unavailable at hook fire time — the gate parses explicit file paths from the `git add` segment instead (flags, globs, `.`, `..`, absolute paths, and symlinks are rejected fail-closed).
 **Pre-PR (deep — multi-voice):** Blocks `gh pr create` until litmus review passes. Runs codex CLI pass THEN 6 parallel review agents (guidelines, bugs, history, cross-commit, security, docs-consistency) with confidence scoring. Blocks on CRITICAL/HIGH at 80+ confidence. Accepts `.claude/pr-review-passed.local` (rejects DEGRADED/SKIPPED/BUILTIN markers). Also passes if all `base..HEAD` commits were per-commit reviewed (tracked in `reviewed-commits.local`). Weighted quorum (12 pts total, pass ≥ 7): Bugs=3, Security=3, Guidelines=2, Cross-commit=2, History=1, Docs=1; Bugs+Security both required. `LITMUS_PR_FAST=1` skips multi-agent (audited).
 **CLI:** `BUSDRIVER_REVIEW_CLI` selects the review backend (auto/codex/gemini/droid/amp/opencode/claude/aider/builtin/none). Per-role routing via `.claude/busdriver.json` — see README for config format. Codex backend uses the official codex-plugin-cc app-server protocol when installed (stable JSON-RPC), with direct CLI fallback.
-**Skip:** `.claude/skip-litmus.local` (single-use, 30s self-bypass detection) or `SKIP_LITMUS=1`
+**Skip:** `.claude/skip-litmus.local` (single-use, 30s self-bypass detection) or `SKIP_LITMUS=1` exported in parent shell before `claude` starts (inline `SKIP_LITMUS=1 git commit` does NOT work — hooks fire before the command's env is applied)
 **Escalation:** 10 consecutive blocks → warn user about escape hatch. `git push` intentionally NOT gated.
 
 ### Blueprint Review (Pre-Commit + Pre-Implementation)
@@ -318,6 +318,7 @@ These tasks don't follow the full pipeline — they enter at a specific phase or
 | **Product Naming** | name product, brand name, feature name | `product-naming` |
 | **Repo Scan** | audit files, asset scan, classify codebase | `repo-scan` |
 | **Safety Guard** | production safety, prevent destructive ops | `safety-guard` |
+| **GateGuard** | force fact-gathering before edits/writes/destructive bash (importers, schemas, instruction quote) | `gateguard` skill + `scripts/hooks/gateguard-fact-force.js` hook (opt-in via hooks.json) |
 | **Token Budget** | context budget advice, token usage | `token-budget-advisor` |
 | **ADRs** | architecture decision record, capture decision | `architecture-decision-records` |
 | **Agent Eval** | compare agents, agent benchmark, head-to-head | `agent-eval` |

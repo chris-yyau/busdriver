@@ -49,7 +49,7 @@
     {
       "path": "agents/a11y-architect.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/a11y-architect.md"
     },
     {
@@ -1234,7 +1234,7 @@
     {
       "path": "scripts/bump-version.sh",
       "source": "superpowers",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/bump-version.sh"
     },
     {
@@ -1306,7 +1306,7 @@
     {
       "path": "scripts/claw.js",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/claw.js"
     },
     {
@@ -1342,7 +1342,7 @@
     {
       "path": "scripts/gan-harness.sh",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/gan-harness.sh"
     },
     {
@@ -1390,7 +1390,7 @@
     {
       "path": "scripts/hooks/block-no-verify.js",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/hooks/block-no-verify.js"
     },
     {
@@ -1917,7 +1917,7 @@
     {
       "path": "scripts/release.sh",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/release.sh"
     },
     {
@@ -1965,7 +1965,7 @@
     {
       "path": "scripts/sync-ecc-to-codex.sh",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/sync-ecc-to-codex.sh"
     },
     {
@@ -2342,13 +2342,13 @@
     {
       "path": "skills/continuous-learning-v2/SKILL.md",
       "source": "ecc",
-      "status": "custom",
+      "status": "sync",
       "upstream_path": "skills/continuous-learning-v2/SKILL.md"
     },
     {
       "path": "skills/continuous-learning-v2/agents/observer-loop.sh",
       "source": "ecc",
-      "status": "custom",
+      "status": "sync",
       "upstream_path": "skills/continuous-learning-v2/agents/observer-loop.sh"
     },
     {
@@ -4394,6 +4394,36 @@
       "source": "mattpocock",
       "status": "sync",
       "upstream_path": "skills/engineering/improve-codebase-architecture/LANGUAGE.md"
+    },
+    {
+      "path": "skills/gateguard/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/gateguard/SKILL.md"
+    },
+    {
+      "path": "scripts/hooks/gateguard-fact-force.js",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "scripts/hooks/gateguard-fact-force.js"
+    },
+    {
+      "path": "scripts/hooks/observe-runner.js",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "scripts/hooks/observe-runner.js"
+    },
+    {
+      "path": "scripts/auto-update.js",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "scripts/auto-update.js"
+    },
+    {
+      "path": "commands/auto-update.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/auto-update.md"
     }
   ]
 }

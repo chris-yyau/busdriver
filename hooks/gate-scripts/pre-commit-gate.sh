@@ -6,12 +6,15 @@
 #   Gate 2: Codex review  — blocks if no review-passed marker for current staged changes
 #
 # Fail-CLOSED: errors block commits (user preference: stuck > skipped review)
-# Skip: .claude/skip-litmus.local or SKIP_LITMUS=1
+# Skip: .claude/skip-litmus.local (or SKIP_LITMUS=1 exported in parent shell
+#       before `claude` starts — inline `SKIP_LITMUS=1 git commit` does NOT
+#       work because PreToolUse hooks fire before the command's inline env
+#       is applied)
 
 set -euo pipefail
 # Fail-CLOSED: errors block commits rather than silently approving.
 # User preference: "a stuck session is better than a skipped review."
-# Escape hatch: .claude/skip-litmus.local or SKIP_LITMUS=1
+# Escape hatch: .claude/skip-litmus.local (or SKIP_LITMUS=1 in parent shell).
 trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-commit gate error — blocking as precaution. If stuck, create .claude/skip-litmus.local in your terminal.\"}\n"; exit 0' ERR
 
 # ── Block emission helper (F6 fix) ────────────────────────────────────

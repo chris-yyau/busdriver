@@ -21,6 +21,27 @@ function isValidSessionName(name) {
   return typeof name === 'string' && name.length > 0 && SESSION_NAME_RE.test(name);
 }
 
+/**
+ * Resolve the `claude` binary explicitly so we can invoke it without shell
+ * mode. On POSIX, the bare name suffices. On Windows, walk PATHEXT (.CMD,
+ * .EXE, etc.) across PATH to find the real wrapper file. Falls back to the
+ * bare name if nothing is found — spawnSync will surface ENOENT cleanly.
+ */
+function resolveClaudeBinary() {
+  if (process.platform !== 'win32') return 'claude';
+  const exts = (process.env.PATHEXT || '.CMD;.EXE;.BAT;.COM').split(';').filter(Boolean);
+  const dirs = (process.env.PATH || '').split(';').filter(Boolean);
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, 'claude' + ext);
+      try {
+        if (fs.existsSync(candidate)) return candidate;
+      } catch { /* unreadable dir — keep walking */ }
+    }
+  }
+  return 'claude';
+}
+
 function getClawDir() {
   return path.join(os.homedir(), '.claude', 'claw');
 }
@@ -92,15 +113,18 @@ function askClaude(systemPrompt, history, userMessage, model) {
   args.push('-p', fullPrompt);
 
   // On Windows, the `claude` binary installed via npm is `claude.cmd`.
-  // Node's spawn() cannot resolve `.cmd` wrappers via PATH without shell: true,
-  // so this call fails with `spawn claude ENOENT` on Windows otherwise.
-  // 'claude' is a hardcoded literal here (not user input), so shell mode is safe.
-  const result = spawnSync('claude', args, {
+  // Local fork — avoid `shell: true` entirely. Upstream used shell mode on
+  // Windows so that .cmd wrappers resolve via PATH, but that funnels args
+  // through cmd.exe where user-influenced content (prompts) can shell-inject.
+  // Instead, resolve the Windows binary explicitly via PATHEXT and invoke
+  // it directly with shell: false — no metacharacter risk.
+  const claudeCmd = resolveClaudeBinary();
+
+  const result = spawnSync(claudeCmd, args, {
     encoding: 'utf8',
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, CLAUDECODE: '' },
     timeout: 300000,
-    shell: process.platform === 'win32',
   });
 
   if (result.error) {

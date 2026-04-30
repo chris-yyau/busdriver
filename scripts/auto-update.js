@@ -79,7 +79,17 @@ function deriveRepoRootFromState(state) {
     return repoRoot;
   }
 
-  throw new Error('Unable to infer ECC repo root from install-state operations');
+  // Local fork — fall back to env vars and __dirname before throwing.
+  // Upstream assumes operation.sourcePath is always set, but it's optional
+  // in install-state schema and missing on legacy records.
+  if (process.env.CLAUDE_PLUGIN_ROOT && process.env.CLAUDE_PLUGIN_ROOT.trim()) {
+    return path.resolve(process.env.CLAUDE_PLUGIN_ROOT.trim());
+  }
+  if (process.env.ECC_PLUGIN_ROOT && process.env.ECC_PLUGIN_ROOT.trim()) {
+    return path.resolve(process.env.ECC_PLUGIN_ROOT.trim());
+  }
+  // Last resort: assume this script lives at <repo>/scripts/auto-update.js
+  return path.resolve(__dirname, '..');
 }
 
 function buildInstallApplyArgs(record) {

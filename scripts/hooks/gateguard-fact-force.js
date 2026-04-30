@@ -39,7 +39,10 @@ const MAX_CHECKED_ENTRIES = 500;
 const MAX_SESSION_KEYS = 50;
 const ROUTINE_BASH_SESSION_KEY = '__bash_session__';
 
-const DESTRUCTIVE_BASH = /\b(rm\s+-rf|git\s+reset\s+--hard|git\s+checkout\s+--|git\s+clean\s+-f|drop\s+table|delete\s+from|truncate|git\s+push\s+--force(?!-with-lease)|git\s+commit\s+--amend|dd\s+if=)\b/i;
+// Local fork — covers short-flag clusters that the upstream regex misses:
+//   git push -f / -uf  (short --force)
+//   git clean -fd / -fx (short --force with cluster)
+const DESTRUCTIVE_BASH = /\b(rm\s+-rf|git\s+reset\s+--hard|git\s+checkout\s+--|git\s+clean\s+-[a-zA-Z]*f|drop\s+table|delete\s+from|truncate|git\s+push\s+(--force(?!-with-lease)|-[a-zA-Z]*f\b)|git\s+commit\s+--amend|dd\s+if=)/i;
 
 // --- State management (per-session, atomic writes, bounded) ---
 

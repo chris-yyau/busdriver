@@ -135,15 +135,26 @@ function run(raw, options = {}) {
     windowsHide: true
   });
 
+  // Local fork — observation hook is fail-open: never block the tool call,
+  // even if observe.sh errors. Upstream propagated `result.status` directly,
+  // and Claude Code interprets exit code 2 as BLOCK — so any observe.sh
+  // crash blocked all tool calls. Force exitCode to 0 and surface the real
+  // status in stderr for diagnostics.
+  const rawStatus = Number.isInteger(result.status) ? result.status : 0;
   const output = {
-    exitCode: Number.isInteger(result.status) ? result.status : 0
+    exitCode: 0
   };
 
   if (typeof result.stdout === 'string' && result.stdout.length > 0) {
     output.stdout = result.stdout;
   }
-  if (typeof result.stderr === 'string' && result.stderr.length > 0) {
-    output.stderr = result.stderr;
+  let stderrAccum = (typeof result.stderr === 'string') ? result.stderr : '';
+  if (rawStatus !== 0) {
+    stderrAccum += (stderrAccum && !stderrAccum.endsWith('\n') ? '\n' : '') +
+      `[observe-runner] observe.sh exited ${rawStatus} (non-blocking, fail-open)\n`;
+  }
+  if (stderrAccum.length > 0) {
+    output.stderr = stderrAccum;
   }
 
   if (result.error || result.signal || result.status === null) {

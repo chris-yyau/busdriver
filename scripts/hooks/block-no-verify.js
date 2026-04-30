@@ -238,7 +238,10 @@ function getCommitShortValueOption(value) {
 }
 
 function isCommitNoVerifyShortFlag(value) {
-  return value === '-n' || /^-n[a-zA-Z]/.test(value);
+  // Local fork — detect 'n' at any position in a short-flag cluster, not just first.
+  // Fixes upstream bug where `git commit -an` (a + n) bypassed the gate because
+  // the regex required n to be the first character.
+  return /^-[a-zA-Z]*n/.test(value);
 }
 
 /**

@@ -31,7 +31,7 @@ All gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects 
 | Gate | Trigger | Skip / deactivate | Detail |
 |------|---------|-------------------|--------|
 | **Litmus (pre-commit)** | `git commit` | `.claude/skip-litmus.local` | `litmus/SKILL.md` |
-| **Litmus (pre-PR)** | `gh pr create` (multi-voice deep review; auto-invoked after PR creation: `pr-grind` via PostToolUse) | `.claude/skip-litmus.local` | `litmus/SKILL.md` |
+| **Litmus (pre-PR)** | `gh pr create` (multi-voice deep review; PostToolUse appends an instruction to invoke `pr-grind` after PR creation) | `.claude/skip-litmus.local` | `litmus/SKILL.md` |
 | **Blueprint Review** | Write/Edit of PLAN/DESIGN/ARCHITECTURE docs | `.claude/skip-design-review.local` | `blueprint-review/SKILL.md` |
 | **Pre-implementation** | Write/Edit/MultiEdit/Bash while design unreviewed | `.claude/skip-design-review.local` | `blueprint-review/SKILL.md` |
 | **Freeze/Guard** | Write/Edit/MultiEdit while `.claude/freeze-scope.local` exists | `rm .claude/freeze-scope.local` (deactivates the freeze; activate with `echo "path/to/scope" > .claude/freeze-scope.local`) | `hooks/gate-scripts/freeze-guard.sh` |

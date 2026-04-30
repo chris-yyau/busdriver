@@ -44,7 +44,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Recurring Tasks** | run every N minutes | `/loop-start`, `loop-operator` agent |
 | **Notes** | check notes health, refine | `/refine-notes` |
 | **Prompt Engineering** | optimize prompt, improve prompt | `prompt-optimizer` skill or `/prompt-optimize` (advisory) |
-| **Content** | articles, newsletters, blogs | `article-writing` / `content-engine` / `crosspost` / `x-api`. **MANDATORY:** run `humanizer` skill on all written content before publishing |
+| **Content** | articles, newsletters, blogs | `article-writing` / `content-engine` / `crosspost` / `x-api`. If the personal `humanizer` skill is installed (`~/.claude/skills/humanizer/`), run it as a final pass before publishing to strip AI tone |
 | **Data Pipelines** | data collector, scheduled scraping | `data-scraper-agent` |
 | **Fundraising** | pitch deck, investor materials | `investor-materials` / `investor-outreach` / `market-research` |
 | **Media Generation** | generate image/video/audio | `fal-ai-media` |
@@ -142,7 +142,7 @@ Available in any pipeline phase:
 
 **Trust gradient** (highest → lowest): `busdriver:reflect` (manual, user confirms) → Lesson capture (roundtable/review delta) → `/learn`+`/learn-eval` (manual ECC patterns) → ECC v2 observer (automatic, requires `/promote`).
 
-**ECC v2 observer** writes to `homunculus/projects/<hash>/instincts/personal/` with `source: session-observation`. Quarantine: `session-observation` requires `/promote` before loading; `distill`/`inherited` auto-load. `load-orchestrator.sh` loads instincts with confidence ≥ 0.7, max 20.
+**ECC v2 observer** writes to `~/.claude/homunculus/projects/<hash>/instincts/personal/` with `source: session-observation`. Quarantine: `session-observation` requires `/promote` before loading; `distill`/`inherited` auto-load. `load-orchestrator.sh` loads instincts with confidence ≥ 0.7, max 20.
 
 **Lesson capture:** Save when roundtable/review produced a recommendation delta. Path: `~/.claude/notes/lesson-{roundtable|review}-{date}-{slug}.md`. <150 words.
 

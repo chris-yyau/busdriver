@@ -390,6 +390,21 @@ This bridges design review findings into the instinct/lesson system, compounding
 
 ## User-Created Skip File
 
+This section is the **canonical protocol** for all four gate skip-files in busdriver. The protocol (verbatim message template, Monitor wait pattern, hard rules) is identical across gates; only the file path, triggering command, and a few mechanical details differ. `litmus/SKILL.md` and `pr-grind/SKILL.md` both point here.
+
+### Per-gate differences
+
+| Gate | Skip file | Trigger | <30s rejection | Freshness | Tool-call fragility |
+|------|-----------|---------|----------------|-----------|---------------------|
+| **Pre-implementation (design review)** | `.claude/skip-design-review.local` | Write/Edit/MultiEdit/Bash while design unreviewed | gate deletes file | unbounded | **High** — gate fires on any of those tool calls, so any intervening Bash (incl. `test -f`/`ls`/`stat`) destroys the file |
+| **Pre-commit (litmus)** | `.claude/skip-litmus.local` | `git commit` | gate **preserves** file (ages naturally) | unbounded | Low — gate only fires on `git commit` |
+| **Pre-PR (litmus)** | `.claude/skip-litmus.local` (same file as pre-commit) | `gh pr create` | gate deletes file (re-touch required) | unbounded | Low — gate only fires on `gh pr create` |
+| **Pre-merge (pr-grind)** | `.claude/skip-pr-grind.local` | `gh pr merge` | gate deletes file | **30s..3600s** — files ≥1h old silently deleted | Low — gate only fires on `gh pr merge` |
+
+The remainder of this section (verbatim message template, Monitor wait, hard rules) applies to **all four gates** unless explicitly noted.
+
+### Design-review specifics (this skill's gate)
+
 When the user wants to bypass design review (e.g., plan already validated out-of-band, or the review is blocking legitimate exploration), they create `.claude/skip-design-review.local` manually in their terminal. The skip file is consumed by the **pre-implementation gate only** (it does not bypass the pre-commit or pre-PR gates). The gate has a **30-second timing heuristic** that rejects and deletes skip files created "moments ago" to prevent Claude from self-bypassing.
 
 **How the skip-file check behaves on every tool call the gate sees while design review is pending:**
@@ -401,17 +416,21 @@ Critically, the skip-file check in steps 1–2 runs **before** tool-type discrim
 
 ### Verbatim message template (required)
 
-When Claude needs a skip file, it must emit this exact message, with `<PROJECT_ROOT>` replaced by the absolute path of the current git repo root (from `git rev-parse --show-toplevel` — not the CWD of the Claude session, which may be a subdirectory):
+When Claude needs a skip file, it must emit this exact message, with two substitutions:
+- `<PROJECT_ROOT>` → the absolute path of the current git repo root (from `git rev-parse --show-toplevel` — not the CWD of the Claude session, which may be a subdirectory or worktree).
+- `<GATE>` → one of: `design-review`, `litmus`, `pr-grind` (matches the row in the per-gate-differences table above).
 
-> I need a skip file to bypass the design-review gate. Please run this in **your terminal** (not in this session):
+> I need a skip file to bypass the `<GATE>` gate. Please run this in **your terminal** (not in this session):
 >
 > ```
-> touch <PROJECT_ROOT>/.claude/skip-design-review.local
+> touch <PROJECT_ROOT>/.claude/skip-<GATE>.local
 > ```
 >
 > After you run it, I will wait ~35 seconds before retrying the blocked action. Please reply "done" once you've run the command. Do not expect an immediate response from me — the wait is required by the gate and is not a stall.
 
-Do not give the relative path (`.claude/skip-design-review.local`) — the gate checks `.claude/` relative to the **blocked command's CWD**, which may differ from the user's terminal CWD, and users routinely run `touch` from a different pane.
+For pr-grind, also tell the user "the file is valid for up to 1 hour" so they don't sit on it indefinitely (other gates have unbounded freshness).
+
+Do not give the relative path (`.claude/skip-<GATE>.local`) — gates check `.claude/` relative to the **blocked command's CWD**, which may differ from the user's terminal CWD, and users routinely run `touch` from a different pane.
 
 ### After the user confirms ("done")
 

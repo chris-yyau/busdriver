@@ -1,6 +1,6 @@
 ---
 name: thinking-models-execution
-description: 5 structured reasoning models for plan execution — Circle of Control, Forcing Function, First Principles, Occam's Razor, Chesterton's Fence
+description: 5 structured reasoning models for plan execution — Circle of Control, First Principles, Forcing Function, Occam's Razor, Chesterton's Fence
 targets:
   - busdriver:executing-plans
   - busdriver:subagent-driven-development

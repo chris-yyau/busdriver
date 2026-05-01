@@ -4327,6 +4327,26 @@
       "status": "local"
     },
     {
+      "path": "skills/supplements/thinking-models-debug.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/thinking-models-execution.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/thinking-models-research.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/supplements/thinking-models-verification.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
       "path": "tests/test-gate-adversarial.sh",
       "source": "local",
       "status": "local"

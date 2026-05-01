@@ -1,3 +1,10 @@
+# [1.27.0](https://github.com/chris-yyau/busdriver/compare/v1.26.0...v1.27.0) (2026-05-01)
+
+
+### Features
+
+* **supplements:** add 4 GSD thinking-models supplements ([#62](https://github.com/chris-yyau/busdriver/issues/62)) ([9454ee2](https://github.com/chris-yyau/busdriver/commit/9454ee26b7ef783b9ffbea2294886f68e9641bf0))
+
 # [1.26.0](https://github.com/chris-yyau/busdriver/compare/v1.25.4...v1.26.0) (2026-04-29)
 
 

@@ -14,7 +14,7 @@ added: 2026-05-01
 
 Structured reasoning models for research and synthesis. Apply these at decision points during evidence gathering and recommendation, not continuously. Each model counters a specific failure mode.
 
-> Load alongside `busdriver:deep-research`, `busdriver:research-ops`, or `busdriver:search-first` when evaluating contested recommendations or synthesizing conflicting findings.
+> Load alongside `busdriver:deep-research`, `busdriver:research-ops`, `busdriver:search-first`, or `busdriver:codebase-onboarding` when evaluating contested recommendations or synthesizing conflicting findings.
 
 ## Conflict Resolution
 

@@ -447,7 +447,11 @@ Monitor(command: "sleep 35 && echo READY", timeout: 45)
 ### Hard rules
 
 - **NEVER create the skip file yourself** — the gate will detect self-bypass, delete the file, and log an audit event.
-- **NEVER verify the skip file via Bash** (`test -f`, `ls`, `stat`, `cat`, `find`). The pre-implementation gate fires on every `Write`, `Edit`, `MultiEdit`, and `Bash` tool call, so any Bash verification during the <30s window consumes the file. Read/Grep/Glob are safe (the gate isn't registered on them), but they also tell you nothing useful. Trust the user's "done" confirmation.
+- **NEVER verify the skip file via Bash** (`test -f`, `ls`, `stat`, `cat`, `find`). The reasoning differs by gate, but the rule is the same in all cases:
+   - **Pre-implementation (design-review)** — verification is **destructive**. The gate fires on every Write/Edit/MultiEdit/Bash call, so any intervening Bash during the <30s self-bypass window consumes the file (the gate's skip-file age check runs before tool-type discrimination).
+   - **Pre-commit / Pre-PR (litmus) and Pre-merge (pr-grind)** — verification is **pointless** (not destructive). Those gates short-circuit unless the Bash command matches their trigger (`git commit`, `gh pr create`, `gh pr merge`), so `test -f` never reaches the skip-file logic — but it also tells you nothing useful and only wastes the wait budget.
+
+   In all cases: don't verify, trust the user's "done" confirmation, and retry the originally blocked action directly.
 - **NEVER ask the user to wait** — Claude does the wait via `Monitor`.
 - **Use `Monitor(command: "sleep 35 && echo READY")`**, not `sleep 32` directly.
 - **Single-use** — the skip file is consumed after one bypass. If more writes are needed, the user must `touch` it again and Claude must wait another 35s.

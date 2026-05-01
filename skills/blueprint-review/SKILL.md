@@ -390,7 +390,7 @@ This bridges design review findings into the instinct/lesson system, compounding
 
 ## User-Created Skip File
 
-This section is the **canonical protocol** for all four gate skip-files in busdriver. The protocol (verbatim message template, Monitor wait pattern, hard rules) is identical across gates; only the file path, triggering command, and a few mechanical details differ. `litmus/SKILL.md` and `pr-grind/SKILL.md` both point here.
+This section is the **canonical protocol** for the user-created skip files across the four busdriver gates (which use three distinct files: `skip-design-review.local`, `skip-litmus.local` shared between pre-commit and pre-PR, and `skip-pr-grind.local`). The protocol (verbatim message template, Monitor wait pattern, hard rules) is identical across gates; only the file path, triggering command, and a few mechanical details differ. `litmus/SKILL.md` and `pr-grind/SKILL.md` both point here.
 
 ### Per-gate differences
 
@@ -428,7 +428,7 @@ When Claude needs a skip file, it must emit this exact message, with two substit
 >
 > After you run it, I will wait ~35 seconds before retrying the blocked action. Please reply "done" once you've run the command. Do not expect an immediate response from me — the wait is required by the gate and is not a stall.
 
-For pr-grind, also tell the user "the file is valid for up to 1 hour" so they don't sit on it indefinitely (other gates have unbounded freshness).
+For pr-grind, also tell the user "the file must be touched within the last hour — the gate rejects ages of 3600s or more" so they don't sit on it indefinitely (other gates have unbounded freshness).
 
 Do not give the relative path (`.claude/skip-<GATE>.local`) — gates check `.claude/` relative to the **blocked command's CWD**, which may differ from the user's terminal CWD, and users routinely run `touch` from a different pane.
 

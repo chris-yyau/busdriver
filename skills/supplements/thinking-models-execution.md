@@ -27,17 +27,17 @@ Forcing Function and First Principles both push toward "do it now." Run **First 
 
 Before modifying any code not explicitly listed in the plan's file scope, ask: Is this in my Circle of Control (plan scope) or my Circle of Concern (things I notice but shouldn't fix)? If Circle of Concern, document it as a deferred item or deviation note — do NOT fix it. The job is to build what the plan says, not to improve the codebase. Scope creep from "while I'm here" fixes is the #1 cause of execution overruns.
 
-## 2. Forcing Function
-
-**Counters:** Deferring hard decisions to runtime instead of resolving them at build time.
-
-When you encounter an ambiguous requirement or unclear integration point, create a forcing function that makes the decision explicit NOW rather than hiding it behind a TODO or runtime check. Examples: use a TypeScript `never` type to force exhaustive switches, add a build-time assertion for required config values, create an interface that forces callers to handle error cases. If a decision truly cannot be made at build time, document it as a deferred decision checkpoint — do not silently defer.
-
-## 3. First Principles Thinking
+## 2. First Principles Thinking
 
 **Counters:** Copying patterns from existing code without understanding whether they fit the current task.
 
 Before copying a pattern from another file or module, decompose WHY that pattern exists: What constraint does it satisfy? Does your current task have the same constraint? If not, the pattern may be cargo cult. Build your implementation from the task's actual requirements, not from the nearest existing example. When in doubt, the plan's action steps define what to build — derive the implementation from those, not from adjacent code.
+
+## 3. Forcing Function
+
+**Counters:** Deferring hard decisions to runtime instead of resolving them at build time.
+
+When you encounter an ambiguous requirement or unclear integration point, create a forcing function that makes the decision explicit NOW rather than hiding it behind a TODO or runtime check. Examples: use a TypeScript `never` type to force exhaustive switches, add a build-time assertion for required config values, create an interface that forces callers to handle error cases. If a decision truly cannot be made at build time, document it as a deferred decision checkpoint — do not silently defer.
 
 ## 4. Occam's Razor
 

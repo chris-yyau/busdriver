@@ -636,49 +636,18 @@ When `.md` files are staged, the review loop runs:
 
 ## User-Created Skip File
 
-When the user wants to bypass litmus review (e.g., upstream-only syncs with no custom code), they create `.claude/skip-litmus.local` manually in their terminal. The pre-commit and pre-PR gates both honor this skip file and enforce a **30-second timing heuristic** that rejects skip files created "moments ago" to prevent Claude from self-bypassing. Gate-specific behavior on rejection: `pre-commit-gate.sh` preserves the file and tells the user to wait the remaining seconds; `pre-pr-gate.sh` deletes the file on rejection (requiring re-touch).
+When the user wants to bypass litmus review (e.g., upstream-only syncs with no custom code), they create `.claude/skip-litmus.local` manually in their terminal.
 
-**How the gates behave on every commit / PR-create attempt while litmus is unpassed:**
-1. If `.claude/skip-litmus.local` exists and is **<30s old** → gate blocks as likely self-bypass. `pre-commit-gate.sh` preserves the file; `pre-pr-gate.sh` deletes it.
-2. If the file exists and is **≥30s old** → gate consumes the file (single-use) and allows the action through.
-3. If no file → gate blocks with the normal "litmus must pass" message.
+**Litmus-specific behavior:**
 
-### Verbatim message template (required)
+| | Pre-commit | Pre-PR |
+|---|---|---|
+| Triggered by | `git commit` | `gh pr create` |
+| On <30s rejection | gate **preserves** the file (still ages naturally — wait the remainder of 30s and retry) | gate **deletes** the file (user must `touch` again) |
 
-When Claude needs a skip file, it must emit this exact message, with `<PROJECT_ROOT>` replaced by the absolute path of the current git repo root (from `git rev-parse --show-toplevel` — not the CWD of the Claude session, which may be a subdirectory):
+Both gates use the same skip file (`.claude/skip-litmus.local`) and both enforce a 30-second timing heuristic against self-bypass.
 
-> I need a skip file to bypass the litmus gate. Please run this in **your terminal** (not in this session):
->
-> ```
-> touch <PROJECT_ROOT>/.claude/skip-litmus.local
-> ```
->
-> After you run it, I will wait ~35 seconds before retrying the blocked commit / PR creation. Please reply "done" once you've run the command. Do not expect an immediate response from me — the wait is required by the gate and is not a stall.
-
-Do not give the relative path (`.claude/skip-litmus.local`) — the gate checks `.claude/` relative to the **blocked command's CWD**, which may differ from the user's terminal CWD, and users routinely run `touch` from a different pane.
-
-### After the user confirms ("done")
-
-Wait ~35 seconds, then retry the originally blocked action (git commit or gh pr create) directly. Do not verify the skip file with `test -f` / `ls` / `stat` first — trust the user's "done" confirmation and let the retry run the gate.
-
-```
-Monitor(command: "sleep 35 && echo READY", timeout: 45)
-# When Monitor emits READY (or completes), retry:
-#   git commit -m "..."         # for pre-commit gate
-#   gh pr create --title "..."  # for pre-PR gate
-```
-
-`Monitor`'s subprocess sleeps atomically and does not re-enter the PreToolUse hook. A direct `sleep 32` via Bash is blocked by the harness (long foreground sleeps are rejected by the shell-command gate).
-
-### Hard rules
-
-- **NEVER create the skip file yourself** — the gate will detect self-bypass and log an audit event.
-- **NEVER verify the skip file via Bash** (`test -f`, `ls`, `stat`, `cat`, `find`) before retrying. Verification is pointless — the litmus gates only run their skip-file check on the actual triggering command (`git commit` / `gh pr create`), so `test -f` tells you nothing and only wastes the wait budget. Trust the user's "done" confirmation, wait ~35s, then retry the blocked action directly.
-- **NEVER ask the user to wait** — Claude does the wait via `Monitor`.
-- **Use `Monitor(command: "sleep 35 && echo READY")`**, not `sleep 32` directly.
-- **Single-use** — the skip file is consumed after one successful bypass. Subsequent commits/PRs need a new `touch`.
-- **Audit trail** — every consumption is logged to `.claude/bypass-log.jsonl`.
-- **On rejection (<30s):** `pre-commit-gate.sh` preserves the file — wait the remainder of the 30s and retry. `pre-pr-gate.sh` deletes the file — ask the user to `touch` again and wait another 35s.
+**Full protocol** — verbatim message template (with `<GATE>` substitution), `Monitor`-based 35s wait pattern, and hard rules (NEVER create the skip file yourself, NEVER verify via Bash, etc.) — lives canonically in `skills/blueprint-review/SKILL.md` → "User-Created Skip File". The protocol is identical across all busdriver gates; only the per-gate variations in the table above differ.
 
 ## Key Principles
 

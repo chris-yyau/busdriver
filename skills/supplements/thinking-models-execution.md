@@ -13,7 +13,7 @@ added: 2026-05-01
 
 Structured reasoning models for executing a plan. Apply these at decision points during implementation, not continuously. Each model counters a specific failure mode.
 
-> Load alongside `busdriver:executing-plans` and `busdriver:subagent-driven-development` when implementing tasks from a plan.
+> Load alongside `busdriver:executing-plans`, `busdriver:subagent-driven-development`, or `busdriver:dispatching-parallel-agents` when implementing tasks from a plan.
 
 ## Conflict Resolution
 

@@ -12,7 +12,7 @@ added: 2026-05-01
 
 Structured reasoning models for investigation and root-cause analysis. Apply these at decision points during a debugging session, not continuously. Each model counters a specific failure mode.
 
-> Load alongside `busdriver:systematic-debugging` when investigating bugs, test failures, or unexpected behavior.
+> Load alongside `busdriver:systematic-debugging` or `busdriver:agent-introspection-debugging` when investigating bugs, test failures, or unexpected behavior.
 
 ## Conflict Resolution
 

@@ -249,9 +249,19 @@ gh pr view <PR_NUMBER> --comments --json comments \
 **Incremental fetching:** When `PRIOR_COMMIT_SHA != none` (round 2+), filter out threads whose latest comment is older than the prior commit timestamp:
 
 ```bash
-SINCE_TS=$(git show -s --format=%cI "$PRIOR_COMMIT_SHA")
-# Pipe the GraphQL output through:
-#   jq --arg since "$SINCE_TS" 'select(.comments[-1].createdAt > $since)'
+# Validate as 7-40 hex chars before interpolation. The value comes from
+# prior-round subagent output and could carry attacker-influenced content
+# from a review comment, so never pass it to git unsanitized.
+SINCE_TS=""
+if [ "$PRIOR_COMMIT_SHA" != "none" ] && \
+   printf '%s' "$PRIOR_COMMIT_SHA" | grep -qE '^[0-9a-f]{7,40}$'; then
+  SINCE_TS=$(git show -s --format=%cI "$PRIOR_COMMIT_SHA")
+fi
+# Then pipe the GraphQL output through (no-op when SINCE_TS is empty):
+#   jq --arg since "$SINCE_TS" 'select(
+#     ($since == "") or
+#     ((.comments | length) > 0 and .comments[-1].createdAt > $since)
+#   )'
 ```
 
 #### Step 3: Triage

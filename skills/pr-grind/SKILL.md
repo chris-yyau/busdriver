@@ -64,8 +64,15 @@ START
 LOOP for round in 1..MAX:
   │
   ├── Decide model:
-  │     --opus or --interactive → run inline (Steps 1–7 below)
-  │     default                 → dispatch pr-grinder subagent
+  │     --opus, --interactive,
+  │       --ci-only, --comments-only → run inline (Steps 1–7 below)
+  │     default                       → dispatch pr-grinder subagent
+  │
+  │   (--ci-only and --comments-only force inline because they need
+  │   Step 2's per-source branching; the subagent contract collects
+  │   all sources unconditionally and the round-isolated dispatch
+  │   doesn't carry per-flag suppression. Until those are wired into
+  │   the worker, the inline path is the honest place for them.)
   │
   ├── Dispatch (default path):
   │     Agent(subagent_type="pr-grinder", prompt=<context block>)
@@ -163,7 +170,7 @@ RESULT_BAIL_REASON: <one-line>                  (present only when status=bail)
 
 If `RESULT_STATUS` is missing or its value isn't one of the three valid options, treat as `bail` with reason "subagent output unparseable" — do not guess.
 
-### Inline Execution (`--opus` or `--interactive`)
+### Inline Execution (`--opus`, `--interactive`, `--ci-only`, or `--comments-only`)
 
 When inline, the dispatcher executes the round body itself. This is the legacy behavior — Steps 1–7 below — running in the parent Opus context.
 
@@ -421,9 +428,9 @@ PR #<N> is clean after <rounds> round(s).
 | `--opus` | Run rounds inline in parent Opus context (no Sonnet dispatch) | Off (dispatches Sonnet subagent) |
 | `--interactive` | Pause for human confirmation each round (forces inline; subagent can't pause) | Off (autonomous) |
 | `--no-worktree` | Skip worktree creation, work in current directory | Off (creates worktree) |
-| `--ci-only` | Only fix CI failures, ignore comments | Off |
+| `--ci-only` | Only fix CI failures, ignore comments. Forces inline mode (Step 2 branching not yet wired into the subagent). | Off |
 | `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
-| `--comments-only` | Only address comments, ignore CI | Off |
+| `--comments-only` | Only address comments, ignore CI. Forces inline mode (same reason as `--ci-only`). | Off |
 
 ## User-Created Skip File
 

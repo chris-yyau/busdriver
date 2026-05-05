@@ -100,6 +100,11 @@ LOOP for round in 1..MAX:
         # unreachable and the loop will grind to MAX rounds on a flaky test
         # instead of stopping early.
 
+# Loop exits naturally when round > MAX without ever seeing RESULT_STATUS=clean
+# → fail-CLOSED to BAIL, NOT to COMPLETION. The PR isn't clean; we just ran
+# out of attempts. Writing the marker here would silently merge an unfinished PR.
+ON_LOOP_EXHAUSTED → go to BAIL with reason "max iterations (<MAX>) reached without clean status"
+
 COMPLETION:
   ├── Verify checks one more time (defense in depth)
   ├── Write .claude/pr-grind-clean.local at repo root

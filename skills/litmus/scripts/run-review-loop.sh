@@ -731,7 +731,13 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
     # this script passes. The marker is written by Claude after the 6-agent
     # review completes. Writing it here would short-circuit the deep review.
     if [ "${LITMUS_PR_FAST:-0}" = "1" ]; then
-      git diff "${PR_BASE_BRANCH}...HEAD" 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > ".claude/pr-review-passed.local"
+      # Hash MUST match pre-pr-gate.sh verifier exactly. The verifier captures
+      # `git diff` via `$()` (which strips trailing newline) and feeds it via
+      # `printf '%s'` (which adds none). Piping `git diff | sha256sum` would
+      # hash DIFF+"\n" — the gate would hash DIFF — and the marker would always
+      # be rejected. Capture-then-printf to keep both sides byte-identical.
+      DIFF_OUTPUT_FAST=$(git diff "${PR_BASE_BRANCH}...HEAD" 2>/dev/null)
+      printf '%s' "$DIFF_OUTPUT_FAST" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > ".claude/pr-review-passed.local"
       mkdir -p .claude
       printf '{"ts":"%s","event":"pr-fast-bypass","gate":"pre-pr"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
       echo "   ⚠️  LITMUS_PR_FAST=1 — skipped multi-agent deep review (logged)"

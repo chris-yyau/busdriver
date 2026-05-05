@@ -15,14 +15,24 @@ origin: custom
 - When CI is failing on an open PR
 - When reviewer comments need addressing
 - Manually: `/pr-grind` or `/pr-grind 123` or `/pr-grind https://github.com/owner/repo/pull/123`
-- **Grind only:** `/pr-grind --no-merge` — grinds until clean but skips merge. Use when you want to review before merging.
 
 **Announce at start:** "Grinding PR #N — will iterate until CI is green and comments are resolved, then merge." (Drop "then merge" if `--no-merge`.)
+
+## Architecture: Dispatcher + Per-Round Worker
+
+This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh `pr-grinder` subagent on Sonnet, dispatched once per round. This:
+
+- Cuts cost ~5× by running mechanical fix work on Sonnet
+- Flattens conversation context — each round starts with O(1) tokens instead of O(N) accumulation across rounds
+- Keeps Opus available for orchestration: triage of subagent results, bail handling, merge decisions, and skip-file protocol
+
+**Override with `--opus`:** Run the loop inline in the parent Opus context (skips dispatch). Use when a PR has known nuance — multi-file architectural fixes, subtle review threads, etc.
 
 ## Anti-Patterns (DO NOT)
 
 | Trap | Why it breaks the loop |
 |------|----------------------|
+| Looping rounds inside the subagent | Subagent contract is one round per dispatch. The dispatcher owns the loop. |
 | Collecting feedback while checks are still pending | You'll miss reviewer findings, fix a partial set, push, and trigger a second review cycle unnecessarily |
 | Declaring "Round complete" after push without waiting | The push triggers a new review cycle — you must wait for IT to finish before declaring done |
 | Only waiting for CI (build/lint/test), ignoring reviewer bots | CodeRabbit, Greptile, Cubic are checks too — `gh pr checks` shows them as pending |
@@ -43,89 +53,42 @@ origin: custom
   - Max iterations reached
   - **On any bail:** always run `git worktree remove` before exiting
 
-## The Loop
+## The Dispatcher Loop
 
 ```text
-┌─────────────────────────────────────────────┐
-│  START: Resolve PR number                   │
-│  (from arg, current branch, or ask user)    │
-└──────────────────┬──────────────────────────┘
-                   │
-     ┌─────────────▼──────────────────┐
-     │  Step 0: Create ephemeral      │
-     │  worktree for PR branch        │
-     │  (user can start next task     │
-     │   in main worktree)            │
-     └─────────────┬────────────────┘
-                   │
-          ┌────────▼────────┐
-          │  ROUND N of MAX │
-          └────────┬────────┘
-                   │
-     ┌─────────────▼──────────────────┐
-     │  Step 1: Wait for ALL checks  │
-     │  CI + automated reviewers     │
-     │  (CodeRabbit, Greptile, etc.) │
-     └─────────────┬────────────────┘
-                   │
-     ┌─────────────▼─────────────┐
-     │  Step 2: Collect feedback │
-     │  - CI failures            │
-     │  - Reviewer comments      │
-     │  - Review requests        │
-     └─────────────┬─────────────┘
-                   │
-            ┌──────▼──────┐
-            │ All clean?  │──YES──▶ DONE
-            └──────┬──────┘
-                   │ NO
-     ┌─────────────▼─────────────┐
-     │  Step 3: Triage           │
-     │  - Code fixes → fix them  │
-     │  - Design questions → bail│
-     │  - Flaky tests → note     │
-     └─────────────┬─────────────┘
-                   │
-     ┌─────────────▼─────────────┐
-     │  Step 4: Fix              │
-     │  Read failing code, apply │
-     │  targeted fixes           │
-     └─────────────┬─────────────┘
-                   │
-     ┌─────────────▼─────────────┐
-     │  Step 5: Verify locally   │
-     │  Run relevant tests       │
-     └─────────────┬─────────────┘
-                   │
-     ┌─────────────▼─────────────┐
-     │  Step 6: Commit & push    │
-     │  (litmus gate fires here) │
-     └─────────────┬─────────────┘
-                   │
-     ┌─────────────▼──────────────────┐
-     │  Step 7: Checkpoint            │
-     │  (default: skip — autonomous)  │
-     │  (with --interactive: pause)   │
-     └─────────────┬────────────────┘
-                   │
-                   └──────▶ ROUND N+1
+START
+  ├── Resolve PR # (arg, current branch, or ask user)
+  ├── Step 0: Create ephemeral worktree
+  └── Initialize: PRIOR_COMMIT_SHA=none, PRIOR_ATTEMPTS=[]
 
-     ┌─────────────────────────────────┐
-     │  DONE:                          │
-     │  Write clean marker             │
-     ├─────────────────────────────────┤
-     │  default → gh pr merge           │
-     │  --no-merge → "Ready for merge" │
-     ├─────────────────────────────────┤
-     │  Cleanup ephemeral worktree     │
-     │  git worktree remove <path>     │
-     └─────────────────────────────────┘
+LOOP for round in 1..MAX:
+  │
+  ├── Decide model:
+  │     --opus or --interactive → run inline (Steps 1–7 below)
+  │     default                 → dispatch pr-grinder subagent
+  │
+  ├── Dispatch (default path):
+  │     Agent(subagent_type="pr-grinder", prompt=<context block>)
+  │     ↳ Subagent does ONE round (Steps 1–6), returns RESULT_* tags
+  │
+  ├── Parse subagent output:
+  │     RESULT_STATUS=clean       → break loop, go to COMPLETION
+  │     RESULT_STATUS=bail        → break loop, go to BAIL
+  │     RESULT_STATUS=needs_more  → update state, continue loop
+  │
+  └── Update state:
+        PRIOR_COMMIT_SHA = RESULT_COMMIT_SHA
+        PRIOR_ATTEMPTS  += "Round N: <RESULT_FIXES>"
 
-     ┌─────────────────────────────────┐
-     │  BAIL:                          │
-     │  Cleanup ephemeral worktree     │
-     │  git worktree remove <path>     │
-     └─────────────────────────────────┘
+COMPLETION:
+  ├── Verify checks one more time (defense in depth)
+  ├── Write .claude/pr-grind-clean.local at repo root
+  ├── default → gh pr merge --squash --delete-branch
+  ├── --no-merge → write marker to original-worktree repo root, report ready
+  └── Cleanup ephemeral worktree
+
+BAIL:
+  └── Cleanup ephemeral worktree, surface RESULT_BAIL_REASON to user
 ```
 
 ## Step Details
@@ -135,20 +98,55 @@ origin: custom
 Create an isolated worktree so the user's main workspace stays free for their next task.
 
 ```bash
-# Resolve PR branch name
 PR_BRANCH=$(gh pr view <PR_NUMBER> --json headRefName -q .headRefName)
-
-# Create worktree in a predictable location
 WORKTREE_DIR="../pr-grind-${PR_NUMBER}"
 git worktree add "$WORKTREE_DIR" "$PR_BRANCH"
-
-# All subsequent steps run inside the worktree
 cd "$WORKTREE_DIR"
 ```
 
-**Why a worktree:** The roundtable consensus — pr-grind is a different operational mode from the pipeline. Pre-PR phases optimize for local delivery; post-PR grind optimizes for async iteration. An ephemeral worktree gives pr-grind its own branch ownership without hijacking the main workspace or coupling to Phase 6's cleanup lifecycle.
+**Why a worktree:** pr-grind is a different operational mode from the pipeline. Pre-PR phases optimize for local delivery; post-PR grind optimizes for async iteration. An ephemeral worktree gives pr-grind its own branch ownership without hijacking the main workspace.
 
-**Skip with `--no-worktree`:** If already on the PR branch (e.g., Phase 6 just created the PR and hasn't cleaned up yet), pass `--no-worktree` to skip worktree creation and work in-place.
+**Skip with `--no-worktree`:** If already on the PR branch, pass `--no-worktree` to skip worktree creation.
+
+### Dispatch a Round (default path)
+
+Build the context block and dispatch the subagent. The block must include everything the subagent needs — it has no memory of prior rounds.
+
+```text
+Agent invocation:
+  subagent_type: pr-grinder
+  description: pr-grind round N
+  prompt: |
+    PR_NUMBER=<N>
+    OWNER=<owner>
+    REPO=<repo>
+    WORKTREE_DIR=<absolute path>
+    ROUND=<N> of <MAX>
+    PRIOR_COMMIT_SHA=<sha or "none">
+    PRIOR_ATTEMPTS:
+      - Round 1: <fix summary>
+      - Round 2: <fix summary>
+      ...
+    MODE_FLAGS=<--ci-only / --comments-only / blank>
+
+    Execute one round per agents/pr-grinder.md. Return RESULT_* tags.
+```
+
+After the subagent returns, **read its last 5 lines and parse the tags**:
+
+```
+RESULT_STATUS: clean | needs_more | bail
+RESULT_COMMIT_SHA: <sha or "none">
+RESULT_FIXES: <one-line summary>
+RESULT_REMAINING: <one-line or "none">
+RESULT_BAIL_REASON: <only when status=bail>
+```
+
+If parsing fails (subagent didn't emit tags or misformatted them), treat as `bail` with reason "subagent output unparseable" — do not guess.
+
+### Inline Execution (`--opus` or `--interactive`)
+
+When inline, the dispatcher executes the round body itself. This is the legacy behavior — Steps 1–7 below — running in the parent Opus context.
 
 <EXTREMELY-IMPORTANT>
 YOU MUST COMPLETE STEP 1 BEFORE PROCEEDING. Do NOT skip, abbreviate, or defer CI waiting.
@@ -156,38 +154,32 @@ The entire pr-grind workflow depends on checks being complete. If you proceed wi
 you will be blocked by the pre-merge gate and waste the user's time.
 </EXTREMELY-IMPORTANT>
 
-### Step 1: Wait for ALL Checks + Reviewers
+#### Step 1: Wait for ALL Checks + Reviewers
 
 **DO NOT skip this step. DO NOT proceed while checks are still pending.**
 
 Automated reviewers (CodeRabbit, Greptile, Cubic, CodeScene, GitGuardian) register as GitHub checks. `gh pr checks --watch` blocks until ALL of them complete — not just CI build/lint/test.
 
-**Advisory checks (CodeScene):** CodeScene is non-blocking — its feedback is still collected and you MUST attempt to fix its issues, but its pass/fail status does not block the clean marker or merge gate. If a CodeScene finding requires architectural changes beyond PR scope (e.g., module-level complexity requiring file splits), note it and proceed.
+**Advisory checks (CodeScene):** CodeScene is non-blocking — its feedback is still collected and you MUST attempt to fix its issues, but its pass/fail status does not block the clean marker or merge gate. If a CodeScene finding requires architectural changes beyond PR scope, note it and proceed.
 
 ```bash
 # Phase 1: Wait for all GitHub-registered checks (CI + automated reviewers)
-# --watch blocks until every check is pass/fail/skipped — including reviewer bots
 timeout 900 gh pr checks <PR_NUMBER> --watch 2>&1 || true
 
 # Phase 2: Verify no checks are still pending (defensive — catches race conditions)
-# Re-poll in a loop until no pending checks remain (max 5 retries)
 for i in 1 2 3 4 5; do
   PENDING=$(gh pr checks <PR_NUMBER> 2>&1 | grep -c "pending" || true)
   [ "$PENDING" -eq 0 ] && break
   echo "⏳ $PENDING checks still pending — waiting 60s (attempt $i/5)..."
   sleep 60
 done
-# Bail if checks are STILL pending after all retries
 if [ "$PENDING" -gt 0 ]; then
   echo "❌ $PENDING checks still pending after 5 retries. Cannot proceed."
   echo "Remaining: $(gh pr checks <PR_NUMBER> 2>&1 | grep pending)"
-  exit 1  # Bail — ask user to investigate stuck checks
+  exit 1
 fi
 
 # Phase 2.5: Verify all checks PASSED (not just completed)
-# Checks completing is necessary but not sufficient — they must be green.
-# Advisory checks (CodeScene) are non-blocking — still collect their
-# feedback in Step 2, but their failures don't prevent proceeding.
 GH_EXIT=0
 CHECKS_RAW=$(gh pr checks <PR_NUMBER> 2>&1) || GH_EXIT=$?
 if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_RAW" | grep -qE "pass|fail|pending"; then
@@ -199,26 +191,20 @@ REQUIRED=$(echo "$CHECKS_RAW" | grep -ivE "$ADVISORY_PATTERN" || true)
 ADVISORY_FAILED=$(echo "$CHECKS_RAW" | grep -iE "$ADVISORY_PATTERN" | grep -cE "fail" || true)
 FAILED=$(echo "$REQUIRED" | grep -cE "fail" || true)
 if [ "$ADVISORY_FAILED" -gt 0 ]; then
-  echo "⚠️  $ADVISORY_FAILED advisory checks failing (non-blocking). Collecting feedback in Step 2."
+  echo "⚠️  $ADVISORY_FAILED advisory checks failing (non-blocking)."
 fi
 if [ "$FAILED" -gt 0 ]; then
   echo "❌ $FAILED required checks FAILED. Continuing to Step 2 to collect details."
   echo "$REQUIRED" | grep -E "fail"
-  # Do NOT write clean marker — proceed to Step 2 to collect failures as feedback
 fi
 
-# Phase 3: Poll for reviewer comments that may arrive after check status flips
-# Some reviewers mark their check as "pass" then post comments async
-sleep 30  # Grace period for late-arriving comments
+# Phase 3: Grace period for late-arriving comments
+sleep 30
 ```
-
-**Why 3 phases:** `--watch` handles most cases, but some reviewers (e.g., CodeRabbit) mark their check as "pass" and then post inline comments asynchronously. The grace period catches these late arrivals. Without it, you'll collect feedback, fix it, push — and then the reviewer's *real* feedback arrives on the old commit.
-
-If checks are still pending after Phase 1 timeout AND Phase 2 retries, the loop bails with an error listing the stuck checks. The user must investigate before the grind can continue.
 
 **Polling/proceed gate is `0 pending` — NOT a specific check count.** Once nothing is pending, continue so Step 2 can collect any failures or review feedback. **Clean/merge-ready state is `0 pending AND 0 failed`.** After rebases, some services (CodeRabbit, cubic) may not re-register their check. Do NOT poll for "expected N checks" — only use pending vs failed state.
 
-### Step 2: Collect Feedback
+#### Step 2: Collect Feedback
 
 Gather ALL pending issues in one pass:
 
@@ -227,8 +213,6 @@ Gather ALL pending issues in one pass:
 gh pr checks <PR_NUMBER>
 
 # Inline review threads (GraphQL — skips resolved and outdated threads)
-# isResolved: reviewer manually resolved the thread
-# isOutdated: code changed since the comment was posted (GitHub auto-marks)
 gh api graphql --paginate -f query='
   query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
     repository(owner: $owner, name: $repo) {
@@ -241,7 +225,7 @@ gh api graphql --paginate -f query='
             path
             line
             comments(first: 100) {
-              nodes { body author { login } }
+              nodes { body author { login } createdAt }
             }
           }
         }
@@ -251,18 +235,26 @@ gh api graphql --paginate -f query='
 ' -f owner={owner} -f repo={repo} -F pr=<PR_NUMBER> \
   --jq '.data.repository.pullRequest.reviewThreads.nodes[]
     | select(.isResolved == false and .isOutdated == false)
-    | {path, line, comments: [.comments.nodes[] | {body, user: .author.login}]}'
+    | {path, line, comments: [.comments.nodes[] | {body, user: .author.login, createdAt}]}'
 
 # Review-level comments (approve/request changes/comment)
 gh api repos/{owner}/{repo}/pulls/<PR_NUMBER>/reviews \
   --jq '.[] | select(.state == "CHANGES_REQUESTED" or .state == "COMMENTED") | {user: .user.login, state: .state, body: .body}'
 
-# Issue comments (general PR discussion)
+# Issue comments
 gh pr view <PR_NUMBER> --comments --json comments \
   --jq '.comments[] | {author: .author.login, body: .body}'
 ```
 
-### Step 3: Triage
+**Incremental fetching:** When `PRIOR_COMMIT_SHA != none` (round 2+), filter out threads whose latest comment is older than the prior commit timestamp:
+
+```bash
+SINCE_TS=$(git show -s --format=%cI "$PRIOR_COMMIT_SHA")
+# Pipe the GraphQL output through:
+#   jq --arg since "$SINCE_TS" 'select(.comments[-1].createdAt > $since)'
+```
+
+#### Step 3: Triage
 
 Classify each piece of feedback:
 
@@ -278,9 +270,9 @@ Classify each piece of feedback:
 | **Human review — design/scope concern** | **BAIL** — surface to user, this needs human judgment |
 | **Code review — nit/style** | Fix it (low effort, high goodwill) |
 
-**Important:** Automated reviewers often post on code that was already in the repo before your PR. Only fix issues in files/lines that YOUR PR changed. If a reviewer flags pre-existing code, note it but don't fix it in this PR.
+**Important:** Automated reviewers often post on code that was already in the repo before your PR. Only fix issues in files/lines that YOUR PR changed.
 
-### Step 4: Fix
+#### Step 4: Fix
 
 For each actionable item:
 
@@ -289,37 +281,23 @@ For each actionable item:
 3. Apply the minimal fix that addresses the feedback
 4. Do NOT refactor, improve, or "while I'm here" adjacent code
 
-### Step 5: Verify Locally
+#### Step 5: Verify Locally
 
-Run the narrowest test that covers the fix:
+Run the narrowest test that covers the fix. If local tests fail, fix before pushing.
 
-```bash
-# Detect test runner and run relevant subset
-# npm test / pytest / go test / cargo test — scoped to changed files when possible
-```
-
-If local tests fail, fix before pushing. Do not push known-failing code.
-
-### Step 6: Commit & Push
+#### Step 6: Commit & Push
 
 ```bash
-# Stage only the files you changed
 git add <specific-files>
-
-# Commit with descriptive message referencing the PR
 git commit -m "fix: address PR #<N> feedback — <brief description>"
-
-# Push to the PR branch
 git push
 ```
 
-**BLOCKING GATE:** The `git commit` command will block until the litmus pre-commit review passes. Litmus may auto-iterate up to 10 times to fix issues silently. Do NOT use `--no-verify` to bypass this gate. If litmus repeatedly blocks, split the changes into smaller commits.
+**BLOCKING GATE:** The `git commit` command will block until the litmus pre-commit review passes. Litmus may auto-iterate up to 10 times to fix issues silently. Do NOT use `--no-verify` to bypass this gate. If litmus repeatedly blocks, split the changes into smaller commits or bail.
 
-### Step 7: Checkpoint (only with --interactive)
+#### Step 7: Checkpoint (only with --interactive)
 
-In autonomous mode (default), log a brief summary and continue immediately to the next round.
-
-In interactive mode (`--interactive`), present to user and wait:
+In autonomous mode (default), log a brief summary and continue immediately to the next round. In interactive mode, present to user and wait:
 
 ```text
 ## PR Grind — Round N/MAX complete
@@ -336,19 +314,18 @@ In interactive mode (`--interactive`), present to user and wait:
 Continue grinding?
 ```
 
-## Completion
+## Completion (post-loop, dispatcher only)
 
 **All of these must be true before declaring done:**
-1. All required CI checks passing (build, lint, test)
-2. All automated reviewers completed (CodeRabbit, Greptile, Cubic, etc.)
-3. No unresolved actionable comments from any source
-4. No new comments arrived after your last push (wait for the full cycle)
-5. Advisory check issues either fixed or noted as beyond PR scope (e.g., "CodeScene: module complexity requires file split — architectural change, not this PR")
+1. Subagent returned `RESULT_STATUS=clean` (or inline mode reached the same state)
+2. All required CI checks passing (build, lint, test)
+3. All automated reviewers completed (CodeRabbit, Greptile, Cubic, etc.)
+4. No unresolved actionable comments from any source
+5. No new comments arrived after your last push (wait for the full cycle)
+6. Advisory check issues either fixed or noted as beyond PR scope
 
-**Verify checks are green (REQUIRED — do NOT skip):**
+**Verify checks are green (REQUIRED — do NOT skip, even if subagent said clean):**
 ```bash
-# Hard gate: verify all REQUIRED checks passed before writing clean marker
-# Advisory checks (CodeScene) don't block — note them in output
 GH_EXIT=0
 CHECKS_RAW=$(gh pr checks <PR_NUMBER> 2>&1) || GH_EXIT=$?
 if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_RAW" | grep -qE "pass|fail|pending"; then
@@ -361,18 +338,12 @@ FAILED=$(echo "$REQUIRED" | grep -cE "fail" || true)
 if [ "$FAILED" -gt 0 ]; then
   echo "❌ BLOCKED: $FAILED required checks still failing. Cannot declare PR clean."
   echo "$REQUIRED" | grep -E "fail"
-  exit 1  # Re-enter the loop — do NOT write the marker
+  exit 1
 fi
 ```
 
 **Write the pr-grind-clean marker (REQUIRED — pre-merge gate checks `.claude/` at the REPO ROOT of the worktree the merge runs in):**
 ```bash
-# Signal to the pre-merge gate that this PR has been ground clean.
-# The gate parses any leading `cd <dir>` from the merge command, resolves the
-# git repo root for that directory (via `git -C "<dir>" rev-parse --show-toplevel`),
-# and reads <repo-root>/.claude/pr-grind-clean.local. So the marker must live
-# under the REPO ROOT, never under a subdirectory — even if you happen to be
-# in a subdirectory of the worktree when running the merge command.
 REPO_ROOT=$(git rev-parse --show-toplevel)
 mkdir -p "$REPO_ROOT/.claude"
 echo "<PR_NUMBER>" > "$REPO_ROOT/.claude/pr-grind-clean.local"
@@ -381,33 +352,18 @@ rm -f "$REPO_ROOT/.claude/pr-pending-grind.local"
 
 **Default: merge, then clean up the worktree:**
 ```bash
-# Merge from this worktree. The gate resolves the repo root from this
-# directory (or any leading `cd <dir>` in the merge command) and reads the
-# marker from <repo-root>/.claude/pr-grind-clean.local.
 gh pr merge <PR_NUMBER> --squash --delete-branch
-
-# Return to main worktree
 cd <original-worktree-path>
-
-# Remove the ephemeral worktree
 git worktree remove "../pr-grind-<PR_NUMBER>" --force
 ```
 
 **If `--no-merge`: write marker to the repo root of the worktree the user will merge from, clean up, report ready:**
 ```bash
-# Write marker to the REPO ROOT of whichever worktree the user will merge from.
-# The pre-merge gate resolves the repo root from the directory targeted by the
-# merge command (parsed from any leading `cd <dir>`), so the marker must live
-# at <merge-worktree-repo-root>/.claude/, never under a subdirectory.
 ORIGINAL_REPO_ROOT=$(git -C <original-worktree-path> rev-parse --show-toplevel)
 mkdir -p "$ORIGINAL_REPO_ROOT/.claude"
 cp .claude/pr-grind-clean.local "$ORIGINAL_REPO_ROOT/.claude/pr-grind-clean.local"
 rm -f "$ORIGINAL_REPO_ROOT/.claude/pr-pending-grind.local"
-
-# Return to main worktree
 cd <original-worktree-path>
-
-# Remove the ephemeral worktree
 git worktree remove "../pr-grind-<PR_NUMBER>" --force
 ```
 
@@ -416,6 +372,7 @@ git worktree remove "../pr-grind-<PR_NUMBER>" --force
 ## PR Grind Complete
 
 PR #<N> is clean after <rounds> round(s).
+- Model: <Sonnet (default) | Opus (--opus)>
 - CI: all required checks passing
 - Automated reviewers: all completed, no actionable findings
 - Advisory checks: [fixed | N failing — noted as beyond PR scope]
@@ -433,7 +390,8 @@ PR #<N> is clean after <rounds> round(s).
 |----------|-------------|---------|
 | `<PR>` | PR number or URL | Auto-detect from current branch |
 | `--max N` | Maximum iterations | 5 |
-| `--interactive` | Pause for human confirmation each round | Off (autonomous) |
+| `--opus` | Run rounds inline in parent Opus context (no Sonnet dispatch) | Off (dispatches Sonnet subagent) |
+| `--interactive` | Pause for human confirmation each round (forces inline; subagent can't pause) | Off (autonomous) |
 | `--no-worktree` | Skip worktree creation, work in current directory | Off (creates worktree) |
 | `--ci-only` | Only fix CI failures, ignore comments | Off |
 | `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
@@ -459,6 +417,6 @@ When emitting the verbatim message template (from the canonical protocol — see
 ## Integration
 
 - **Pairs with:** `finishing-a-development-branch` (Phase 6 creates the PR and cleans up its worktree, then `/pr-grind` creates its own ephemeral worktree for the feedback loop)
-- **Worktree lifecycle:** pr-grind owns its worktree from creation to cleanup — independent of the pipeline's Phase 3 worktree. The user's main workspace stays free for new work.
-- **Gate:** Litmus pre-commit hook fires on each `git commit` within the loop; pre-merge gate fires on `gh pr merge` (skip: `.claude/skip-pr-grind.local`)
-- **Agents:** May dispatch `code-reviewer`, `build-error-resolver`, or language-specific reviewers for complex fixes
+- **Worktree lifecycle:** pr-grind owns its worktree from creation to cleanup — independent of the pipeline's Phase 3 worktree.
+- **Gate:** Litmus pre-commit hook fires on each `git commit` within the loop (inside the subagent or inline); pre-merge gate fires on `gh pr merge` (skip: `.claude/skip-pr-grind.local`)
+- **Subagent:** `pr-grinder` (Sonnet) — receives one-round dispatch, returns RESULT_* tags. See `agents/pr-grinder.md`.

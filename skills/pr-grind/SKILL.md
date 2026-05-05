@@ -365,10 +365,12 @@ if [ "$FAILED" -gt 0 ]; then
 fi
 ```
 
-**Write the pr-grind-clean marker (REQUIRED — pre-merge gate checks CWD's `.claude/`):**
+**Write the pr-grind-clean marker (REQUIRED — pre-merge gate checks `.claude/` in the repo targeted by the merge command):**
 ```bash
 # Signal to the pre-merge gate that this PR has been ground clean.
-# Write BEFORE worktree cleanup. Default: merge from this CWD. --no-merge: copy marker to main worktree.
+# The gate parses any leading `cd <dir>` from the merge command and reads the
+# marker from <dir>/.claude/pr-grind-clean.local (falls back to CWD if no cd).
+# Write the marker into the repo where the eventual merge command will run.
 mkdir -p .claude
 echo "<PR_NUMBER>" > .claude/pr-grind-clean.local
 rm -f .claude/pr-pending-grind.local
@@ -376,7 +378,8 @@ rm -f .claude/pr-pending-grind.local
 
 **Default: merge, then clean up the worktree:**
 ```bash
-# Merge while still in worktree (gate checks .claude/ in CWD)
+# Merge from this worktree (the gate resolves .claude/ from this directory
+# because the merge command runs without a leading cd to a different repo).
 gh pr merge <PR_NUMBER> --squash --delete-branch
 
 # Return to main worktree
@@ -386,9 +389,11 @@ cd <original-worktree-path>
 git worktree remove "../pr-grind-<PR_NUMBER>" --force
 ```
 
-**If `--no-merge`: write marker to original worktree, clean up, report ready:**
+**If `--no-merge`: write marker to the worktree where the user will merge from, clean up, report ready:**
 ```bash
-# Write marker to ORIGINAL worktree so user can merge from there
+# Write marker to whichever worktree the user will run the merge from.
+# The pre-merge gate checks .claude/ in the directory targeted by the merge
+# command (parsed from any leading `cd <dir>`), so the marker must live there.
 mkdir -p <original-worktree-path>/.claude
 cp .claude/pr-grind-clean.local <original-worktree-path>/.claude/pr-grind-clean.local
 rm -f <original-worktree-path>/.claude/pr-pending-grind.local

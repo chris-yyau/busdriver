@@ -95,20 +95,21 @@ REPO_DIR=$(git -C "${TARGET_DIR:-.}" rev-parse --show-toplevel 2>/dev/null || ec
 git -C "$REPO_DIR" rev-parse --is-inside-work-tree &>/dev/null || exit 0
 
 # ── Skip overrides (shared with commit gate) ──────────────────────────
-if [ -f ".claude/skip-litmus.local" ]; then
+SKIP_FILE="$REPO_DIR/.claude/skip-litmus.local"
+if [ -f "$SKIP_FILE" ]; then
     FILE_AGE=999
-    _MTIME=$(stat -f %m ".claude/skip-litmus.local" 2>/dev/null) \
-        || _MTIME=$(stat -c %Y ".claude/skip-litmus.local" 2>/dev/null) \
+    _MTIME=$(stat -f %m "$SKIP_FILE" 2>/dev/null) \
+        || _MTIME=$(stat -c %Y "$SKIP_FILE" 2>/dev/null) \
         || _MTIME=""
     [ -n "$_MTIME" ] && FILE_AGE=$(( $(date +%s) - _MTIME ))
     if [ "$FILE_AGE" -lt 30 ]; then
-        rm -f ".claude/skip-litmus.local"
+        rm -f "$SKIP_FILE"
         block_emit "BLOCKED: skip-litmus.local was created moments ago (likely self-bypass). Run /litmus instead."
         exit 0
     fi
-    rm -f ".claude/skip-litmus.local"
-    mkdir -p .claude
-    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-pr"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
+    rm -f "$SKIP_FILE"
+    mkdir -p "$REPO_DIR/.claude"
+    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-pr"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
     exit 0
 fi
 [ "${SKIP_LITMUS:-0}" = "1" ] && exit 0

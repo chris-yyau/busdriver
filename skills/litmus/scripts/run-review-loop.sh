@@ -736,9 +736,9 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
       # `printf '%s'` (which adds none). Piping `git diff | sha256sum` would
       # hash DIFF+"\n" — the gate would hash DIFF — and the marker would always
       # be rejected. Capture-then-printf to keep both sides byte-identical.
+      mkdir -p .claude
       DIFF_OUTPUT_FAST=$(git diff "${PR_BASE_BRANCH}...HEAD" 2>/dev/null)
       printf '%s' "$DIFF_OUTPUT_FAST" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > ".claude/pr-review-passed.local"
-      mkdir -p .claude
       printf '{"ts":"%s","event":"pr-fast-bypass","gate":"pre-pr"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
       echo "   ⚠️  LITMUS_PR_FAST=1 — skipped multi-agent deep review (logged)"
     else

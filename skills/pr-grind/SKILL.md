@@ -51,7 +51,7 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
   - CI fails on an unrelated flaky test 3 times in a row
   - The fix would require architectural changes
   - Max iterations reached
-  - **On any bail:** always run `git worktree remove` before exiting
+  - **On any bail:** if Step 0 created an ephemeral worktree, `cd` back and `git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true` before exiting. Skip when `--no-worktree` was passed (no worktree to remove). The `|| true` keeps cleanup idempotent if the worktree was already removed.
 
 ## The Dispatcher Loop
 
@@ -137,25 +137,26 @@ Agent invocation:
     ROUND=<N> of <MAX>
     PRIOR_COMMIT_SHA=<sha or "none">
     PRIOR_ATTEMPTS:
-      - Round 1: <fix summary>
-      - Round 2: <fix summary>
+      - Round 1: fixes=<summary>; failures=<failed-check-names or "none">
+      - Round 2: fixes=<summary>; failures=<failed-check-names or "none">
       ...
-    MODE_FLAGS=<--ci-only / --comments-only / blank>
 
     Execute one round per agents/pr-grinder.md. Return RESULT_* tags.
 ```
 
-After the subagent returns, **read its last 5 lines and parse the tags**:
+After the subagent returns, **scan the response for lines matching `^RESULT_<NAME>: ` and extract each tag's value**. Don't rely on a fixed line count — `RESULT_BAIL_REASON` is only present on bail, so the block is 4 lines on `clean`/`needs_more` and 5 lines on `bail`. Parsing by tag prefix avoids that off-by-one. If the same tag appears multiple times (e.g., the subagent quotes a review comment that happens to contain `RESULT_STATUS:`), use the **last** occurrence — the canonical block is at the end of the response.
+
+The full tag set:
 
 ```
-RESULT_STATUS: clean | needs_more | bail
-RESULT_COMMIT_SHA: <sha or "none">
-RESULT_FIXES: <one-line summary>
-RESULT_REMAINING: <one-line or "none">
-RESULT_BAIL_REASON: <only when status=bail>
+RESULT_STATUS: clean | needs_more | bail        (always present)
+RESULT_COMMIT_SHA: <sha or "none">              (always present)
+RESULT_FIXES: <one-line summary>                (always present)
+RESULT_REMAINING: <one-line or "none">          (always present)
+RESULT_BAIL_REASON: <one-line>                  (present only when status=bail)
 ```
 
-If parsing fails (subagent didn't emit tags or misformatted them), treat as `bail` with reason "subagent output unparseable" — do not guess.
+If `RESULT_STATUS` is missing or its value isn't one of the three valid options, treat as `bail` with reason "subagent output unparseable" — do not guess.
 
 ### Inline Execution (`--opus` or `--interactive`)
 
@@ -259,23 +260,7 @@ gh pr view <PR_NUMBER> --comments --json comments \
   --jq '.comments[] | {author: .author.login, body: .body}'
 ```
 
-**Incremental fetching:** When `PRIOR_COMMIT_SHA != none` (round 2+), filter out threads whose latest comment is older than the prior commit timestamp:
-
-```bash
-# Validate as 7-40 hex chars before interpolation. The value comes from
-# prior-round subagent output and could carry attacker-influenced content
-# from a review comment, so never pass it to git unsanitized.
-SINCE_TS=""
-if [ "$PRIOR_COMMIT_SHA" != "none" ] && \
-   printf '%s' "$PRIOR_COMMIT_SHA" | grep -qE '^[0-9a-f]{7,40}$'; then
-  SINCE_TS=$(git show -s --format=%cI "$PRIOR_COMMIT_SHA")
-fi
-# Then pipe the GraphQL output through (no-op when SINCE_TS is empty):
-#   jq --arg since "$SINCE_TS" 'select(
-#     ($since == "") or
-#     ((.comments | length) > 0 and .comments[-1].createdAt > $since)
-#   )'
-```
+**On filtering:** Don't filter threads by "latest comment newer than `PRIOR_COMMIT_SHA`" — that drops unresolved threads whose latest reply happens to be old, even though they're still actionable (a reviewer can post a comment, you push a commit that *doesn't* address it, and the thread stays unresolved with an "old" timestamp). The `isResolved == false AND isOutdated == false` GraphQL filter is sufficient. Re-fetching the full unresolved set each round is cheap (single GraphQL query) and correct; the cost we cared about was conversation-context accumulation, not API traffic, and per-round subagent dispatch already solves that.
 
 #### Step 3: Triage
 
@@ -373,21 +358,36 @@ echo "<PR_NUMBER>" > "$REPO_ROOT/.claude/pr-grind-clean.local"
 rm -f "$REPO_ROOT/.claude/pr-pending-grind.local"
 ```
 
-**Default: merge, then clean up the worktree:**
+**Default: merge, then clean up the worktree (skip cleanup with `--no-worktree`):**
 ```bash
 gh pr merge <PR_NUMBER> --squash --delete-branch
-cd <original-worktree-path>
-git worktree remove "../pr-grind-<PR_NUMBER>" --force
+
+# Only return to a separate worktree and remove the ephemeral one if Step 0
+# actually created it. With --no-worktree we ran in-place — there is no
+# separate worktree to leave or remove.
+if [ "${NO_WORKTREE:-0}" != "1" ]; then
+  cd <original-worktree-path>
+  git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true
+fi
 ```
 
-**If `--no-merge`: write marker to the repo root of the worktree the user will merge from, clean up, report ready:**
+**If `--no-merge`: write marker to the repo root of the worktree the user will merge from, clean up, report ready (also `--no-worktree`-aware):**
 ```bash
-ORIGINAL_REPO_ROOT=$(git -C <original-worktree-path> rev-parse --show-toplevel)
-mkdir -p "$ORIGINAL_REPO_ROOT/.claude"
-cp .claude/pr-grind-clean.local "$ORIGINAL_REPO_ROOT/.claude/pr-grind-clean.local"
-rm -f "$ORIGINAL_REPO_ROOT/.claude/pr-pending-grind.local"
-cd <original-worktree-path>
-git worktree remove "../pr-grind-<PR_NUMBER>" --force
+# When --no-worktree, the dispatcher already runs in the user's worktree, so
+# the marker target is the same repo root we're in — no cross-worktree copy.
+if [ "${NO_WORKTREE:-0}" = "1" ]; then
+  REPO_ROOT=$(git rev-parse --show-toplevel)
+  mkdir -p "$REPO_ROOT/.claude"
+  echo "<PR_NUMBER>" > "$REPO_ROOT/.claude/pr-grind-clean.local"
+  rm -f "$REPO_ROOT/.claude/pr-pending-grind.local"
+else
+  ORIGINAL_REPO_ROOT=$(git -C <original-worktree-path> rev-parse --show-toplevel)
+  mkdir -p "$ORIGINAL_REPO_ROOT/.claude"
+  cp .claude/pr-grind-clean.local "$ORIGINAL_REPO_ROOT/.claude/pr-grind-clean.local"
+  rm -f "$ORIGINAL_REPO_ROOT/.claude/pr-pending-grind.local"
+  cd <original-worktree-path>
+  git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true
+fi
 ```
 
 **Output (both modes):**

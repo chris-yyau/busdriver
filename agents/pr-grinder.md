@@ -17,9 +17,8 @@ The dispatcher passes you a context block containing:
 - `OWNER` / `REPO` — for `gh api` calls
 - `WORKTREE_DIR` — the cwd for all your work
 - `ROUND` — current round number (e.g. "3 of 5")
-- `PRIOR_COMMIT_SHA` — last commit you pushed last round, or `none` if round 1. Use this as the timestamp filter for incremental comment fetching.
-- `PRIOR_ATTEMPTS` — bullet list of fixes already tried. Do NOT retry these exact fixes.
-- `MODE_FLAGS` — any of `--ci-only`, `--comments-only`, etc.
+- `PRIOR_COMMIT_SHA` — last commit you pushed last round, or `none` if round 1. Useful for triage (comments authored before that SHA were posted on code that's now replaced) but **not** as a fetch-time filter — see "On Re-fetching Each Round" below.
+- `PRIOR_ATTEMPTS` — per-round bullet list. Each entry has the form `Round N: fixes=<one-line summary>; failures=<comma-separated failed-check-names or "none">`. Use the `failures=` field to detect a recurring flaky check across rounds (3+ rounds → bail).
 
 ## Your Single Round
 
@@ -28,7 +27,7 @@ The dispatcher passes you a context block containing:
 Execute Steps 1–6 from `skills/pr-grind/SKILL.md` exactly once:
 
 1. **Wait for checks** (`gh pr checks --watch`, plus the 3-phase verification block)
-2. **Collect feedback** — CI failures + review threads + review-level comments + issue comments. Use `since=<PRIOR_COMMIT_SHA timestamp>` filtering on review-thread queries when `PRIOR_COMMIT_SHA != none` to get only the *delta* since your last push.
+2. **Collect feedback** — CI failures + review threads + review-level comments + issue comments. Re-fetch the full unresolved set every round; the `isResolved == false AND isOutdated == false` GraphQL filter is the correct staleness signal.
 3. **Triage** per the triage table in SKILL.md. Bail if any item is design/scope/architectural.
 4. **Fix** — minimal targeted edits at referenced lines only. No "while I'm here" cleanup.
 5. **Verify locally** — narrowest test that covers the fix.
@@ -36,40 +35,25 @@ Execute Steps 1–6 from `skills/pr-grind/SKILL.md` exactly once:
 
 You do NOT do Step 7 (checkpoint). You do NOT write the clean marker. You do NOT merge. You do NOT clean up the worktree. Those belong to the dispatcher.
 
+When you finish your round, populate `RESULT_FIXES` with what you changed AND remember to populate `RESULT_REMAINING` with the names of any failing checks you observed but didn't address (so the dispatcher can fold them into next round's `failures=` field). If you have nothing failing, set `RESULT_REMAINING: none`.
+
 ## Bail Triggers
 
 Stop the round and return `RESULT_STATUS: bail` if:
 
 - A comment is a design/scope question — surface it, don't try to answer
 - The fix would require architectural changes
-- Same flaky CI test failed 3 times across rounds (check `PRIOR_ATTEMPTS`)
+- Same flaky CI check name appears in `PRIOR_ATTEMPTS` `failures=` field for 2 prior rounds AND fails again now (3 total)
 - Litmus gate keeps blocking after 2 attempts in this round
 - `gh` CLI auth or rate-limit errors that you can't resolve
 
-## Incremental Comment Fetching
+## On Re-fetching Each Round
 
-When `PRIOR_COMMIT_SHA != none`, narrow your GraphQL query for review threads. The cheapest way is to query all unresolved threads (same as the SKILL.md template) but skip any whose latest comment timestamp is older than the commit timestamp of `PRIOR_COMMIT_SHA`:
+You re-query unresolved threads / review-level comments / issue comments every round. Don't try to optimize this with a "since prior commit timestamp" filter — an unresolved thread can stay actionable even when its latest reply is older than your prior commit (reviewer commented in round 1, you pushed something else, the thread is still unresolved with an old timestamp). The `isResolved == false AND isOutdated == false` GraphQL filter is the correct staleness signal; don't add a timestamp filter on top of it.
 
-```bash
-# Round 1: PRIOR_COMMIT_SHA is "none" — skip incremental filtering entirely.
-# Round 2+: validate as 7-40 hex chars before interpolation (the value originates
-# from prior-round subagent output, which can be influenced by review-comment
-# content via prompt injection — never pass it to git unsanitized).
-SINCE_TS=""
-if [ "$PRIOR_COMMIT_SHA" != "none" ] && \
-   printf '%s' "$PRIOR_COMMIT_SHA" | grep -qE '^[0-9a-f]{7,40}$'; then
-  SINCE_TS=$(git show -s --format=%cI "$PRIOR_COMMIT_SHA")
-fi
+Per-round subagent dispatch already solves the conversation-context blowup that motivated the original "incremental" idea. The remaining cost is one GraphQL roundtrip per round, which is negligible.
 
-# Then in your jq filter on the GraphQL response, only when SINCE_TS is set,
-# and guard against threads with empty comments arrays:
-#   jq --arg since "$SINCE_TS" '... | select(
-#     ($since == "") or
-#     ((.comments | length) > 0 and .comments[-1].createdAt > $since)
-#   )'
-```
-
-This avoids re-processing comments you already addressed. When `SINCE_TS` is empty (round 1 or invalid SHA), the jq filter passes everything through — same as the non-incremental path.
+`PRIOR_COMMIT_SHA` is still useful for *your* triage — comments authored before that SHA were posted on code that's been replaced, so you can deprioritize them if the path/line metadata makes the comment irrelevant. That's a judgment call inside Step 3, not a filter on the fetch.
 
 ## Output Format (REQUIRED)
 
@@ -113,9 +97,8 @@ WORKTREE_DIR=/Volumes/Work/Projects/busdriver/.claude/worktrees/pr-grind-64
 ROUND=3 of 5
 PRIOR_COMMIT_SHA=8947cdd
 PRIOR_ATTEMPTS:
-  - Round 1: fixed mkdir -p ordering in run-review-loop.sh
-  - Round 2: added tilde expansion to target_dir parser
-MODE_FLAGS=
+  - Round 1: fixes=mkdir -p ordering in run-review-loop.sh; failures=none
+  - Round 2: fixes=tilde expansion in target_dir parser; failures=none
 ```
 
 **Your work:** Wait for checks. Find one new CodeRabbit comment on `pre-merge-gate.sh:142` flagging an SC2015 shellcheck warning. It's a mechanical fix (replace `A && B || C` with `if A; then B; else C; fi`). Apply, verify with shellcheck locally, commit, push.
@@ -126,8 +109,9 @@ RESULT_STATUS: needs_more
 RESULT_COMMIT_SHA: a1b2c3d
 RESULT_FIXES: replace SC2015 short-circuit with if/then/else in pre-merge-gate.sh:142
 RESULT_REMAINING: none
-RESULT_BAIL_REASON:
 ```
+
+(Note: `RESULT_BAIL_REASON` is omitted entirely on non-bail status — the dispatcher parses by tag prefix, not fixed line count.)
 
 The dispatcher reads `needs_more`, dispatches round 4 with `PRIOR_COMMIT_SHA=a1b2c3d` and an updated `PRIOR_ATTEMPTS` list.
 

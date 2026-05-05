@@ -16,6 +16,10 @@ sessions/
 .claude/.gate-block-count.local
 .claude/.impl-gate-block-count.local
 
+# Claude workspace artifacts
+.claude/worktrees/
+AGENTS.md
+
 # Internal planning docs and review artifacts
 docs/reviews/
 docs/plans/

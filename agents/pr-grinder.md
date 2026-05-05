@@ -23,6 +23,8 @@ The dispatcher passes you a context block containing:
 
 ## Your Single Round
 
+**Before any step:** `cd "$WORKTREE_DIR"`. Do not assume the SDK starts you inside the worktree — it may launch you at the repo root or anywhere else, and every `git`/`gh` operation below depends on being in the right directory. If `WORKTREE_DIR` is unset or invalid, return `RESULT_STATUS: bail` with reason "WORKTREE_DIR missing or unreadable" instead of operating on the wrong tree.
+
 Execute Steps 1–6 from `skills/pr-grind/SKILL.md` exactly once:
 
 1. **Wait for checks** (`gh pr checks --watch`, plus the 3-phase verification block)

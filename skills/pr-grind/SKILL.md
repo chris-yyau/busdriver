@@ -74,7 +74,15 @@ LOOP for round in 1..MAX:
   ├── Parse subagent output:
   │     RESULT_STATUS=clean       → break loop, go to COMPLETION
   │     RESULT_STATUS=bail        → break loop, go to BAIL
-  │     RESULT_STATUS=needs_more  → update state, continue loop
+  │     RESULT_STATUS=needs_more  → validate invariant, update state, continue
+  │
+  ├── Invariant check (fail-CLOSED):
+  │     If RESULT_STATUS=needs_more AND RESULT_COMMIT_SHA=none →
+  │       treat as BAIL with reason "subagent emitted needs_more
+  │       without a commit SHA — incremental filter would be
+  │       disabled, risking duplicate fixes / premature clean".
+  │     The semantic of needs_more is "I pushed a commit; check it
+  │     and run another round." Without a SHA, the contract is broken.
   │
   └── Update state:
         PRIOR_COMMIT_SHA = RESULT_COMMIT_SHA
@@ -99,7 +107,12 @@ Create an isolated worktree so the user's main workspace stays free for their ne
 
 ```bash
 PR_BRANCH=$(gh pr view <PR_NUMBER> --json headRefName -q .headRefName)
-WORKTREE_DIR="../pr-grind-${PR_NUMBER}"
+# Resolve to an absolute path so WORKTREE_DIR can be passed to the subagent
+# unambiguously — a relative path would re-anchor against whatever CWD the
+# subagent SDK happens to start in, not the dispatcher's post-`cd` CWD.
+# Use parent-pwd composition so this works even before the worktree exists
+# (BSD realpath on macOS rejects non-existent paths).
+WORKTREE_DIR="$(cd .. && pwd -P)/pr-grind-${PR_NUMBER}"
 git worktree add "$WORKTREE_DIR" "$PR_BRANCH"
 cd "$WORKTREE_DIR"
 ```

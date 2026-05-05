@@ -1,3 +1,17 @@
+# [1.28.0](https://github.com/chris-yyau/busdriver/compare/v1.27.1...v1.28.0) (2026-05-05)
+
+
+### Features
+
+* **pr-grind:** Sonnet subagent dispatch + --opus opt-in (~5x cheaper grinds) ([#65](https://github.com/chris-yyau/busdriver/issues/65)) ([22d9966](https://github.com/chris-yyau/busdriver/commit/22d996671abdcaff05d8842db670fb54bf2e536f))
+
+## [1.27.1](https://github.com/chris-yyau/busdriver/compare/v1.27.0...v1.27.1) (2026-05-05)
+
+
+### Bug Fixes
+
+* **gates:** align hash discipline + cwd resolution across gate scripts ([#64](https://github.com/chris-yyau/busdriver/issues/64)) ([89b0bf0](https://github.com/chris-yyau/busdriver/commit/89b0bf08e776ac7a6731a1d96dcdd7847216475c))
+
 # [1.27.0](https://github.com/chris-yyau/busdriver/compare/v1.26.0...v1.27.0) (2026-05-01)
 
 

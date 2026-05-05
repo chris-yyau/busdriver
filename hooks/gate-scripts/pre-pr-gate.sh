@@ -47,7 +47,7 @@ esac
 
 # Parse tool name and command, verify gh pr create, and extract target directory
 PARSE_RESULT=$(printf '%s' "$HOOK_DATA" | python3 -c "
-import sys, json, re
+import sys, json, re, os
 try:
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
@@ -63,7 +63,11 @@ try:
         seg = seg.strip()
         cd_m = re.match(r'cd\s+(.*)', seg)
         if cd_m:
-            target_dir = cd_m.group(1).strip().strip('\042\047')
+            # Strip outer quotes, then expand ~ (shell would expand it before
+            # cd runs; the gate sees the literal command string, so we have
+            # to mimic that expansion or git -C will fail on '~/repo' literal).
+            raw = cd_m.group(1).strip().strip('\042\047')
+            target_dir = os.path.expanduser(raw)
             continue
         while re.match(r'^\w+=\S*\s', seg):
             seg = re.sub(r'^\w+=\S*\s+', '', seg, count=1)

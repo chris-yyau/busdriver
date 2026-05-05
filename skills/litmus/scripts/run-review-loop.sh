@@ -736,10 +736,17 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
       # `printf '%s'` (which adds none). Piping `git diff | sha256sum` would
       # hash DIFF+"\n" — the gate would hash DIFF — and the marker would always
       # be rejected. Capture-then-printf to keep both sides byte-identical.
-      mkdir -p .claude
+      #
+      # Marker MUST live under the repo root's .claude/ — the gate resolves
+      # REPO_DIR via `git -C "${TARGET_DIR:-.}" rev-parse --show-toplevel` and
+      # reads "$REPO_DIR/.claude/pr-review-passed.local". If litmus is run
+      # from a subdirectory and writes to "./.claude/...", the gate would
+      # never find it. Resolve repo root explicitly to make this robust.
+      REPO_TOP=$(git rev-parse --show-toplevel 2>/dev/null || echo .)
+      mkdir -p "$REPO_TOP/.claude"
       DIFF_OUTPUT_FAST=$(git diff "${PR_BASE_BRANCH}...HEAD" 2>/dev/null)
-      printf '%s' "$DIFF_OUTPUT_FAST" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > ".claude/pr-review-passed.local"
-      printf '{"ts":"%s","event":"pr-fast-bypass","gate":"pre-pr"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
+      printf '%s' "$DIFF_OUTPUT_FAST" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > "$REPO_TOP/.claude/pr-review-passed.local"
+      printf '{"ts":"%s","event":"pr-fast-bypass","gate":"pre-pr"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_TOP/.claude/bypass-log.jsonl" 2>/dev/null || true
       echo "   ⚠️  LITMUS_PR_FAST=1 — skipped multi-agent deep review (logged)"
     else
       echo "   ℹ️  Codex CLI pass complete. Multi-agent deep review pending (Step 2)."

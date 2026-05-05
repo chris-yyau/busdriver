@@ -55,7 +55,7 @@ esac
 # target_dir mirrors pre-pr-gate.sh: parse `cd <dir> && gh pr merge` so the gate
 # reads marker files from the user's intended repo, not Claude's CWD.
 MERGE_PARSE=$(printf '%s' "$HOOK_DATA" | python3 -c "
-import sys, json, re
+import sys, json, re, os
 try:
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
@@ -71,7 +71,11 @@ try:
         seg = seg.strip()
         cd_m = re.match(r'cd\s+(.*)', seg)
         if cd_m:
-            target_dir = cd_m.group(1).strip().strip('\042\047')
+            # Strip outer quotes, then expand ~ (shell would expand it before
+            # cd runs; the gate sees the literal command string, so we have
+            # to mimic that expansion or git -C will fail on '~/repo' literal).
+            raw = cd_m.group(1).strip().strip('\042\047')
+            target_dir = os.path.expanduser(raw)
             continue
         while re.match(r'^\w+=\S*\s', seg):
             seg = re.sub(r'^\w+=\S*\s+', '', seg, count=1)
@@ -205,7 +209,11 @@ fi
 # run the NEW code from the PR branch, so they are the right authority for
 # gate-modifying PRs. If CI all passes, allow the merge with telemetry.
 if [ -n "$MERGE_PR_NUM" ] && command -v gh &>/dev/null; then
-    GATE_FILES_CHANGED=$(cd "$REPO_DIR" && gh pr diff "$MERGE_PR_NUM" --name-only 2>/dev/null \
+    # Subshell groups the cd+gh chain so SC2015's A && B || C pattern doesn't
+    # apply: the `|| true` catches grep -c exiting 1 (no matches), not the
+    # cd or gh failure modes (those are intended to suppress to empty output
+    # via the inner `2>/dev/null` and absent stdout, then grep -c yields 0).
+    GATE_FILES_CHANGED=$( (cd "$REPO_DIR" && gh pr diff "$MERGE_PR_NUM" --name-only 2>/dev/null) \
         | grep -cE "^hooks/(gate-scripts/|hooks\.json)" || true)
     if [ "$GATE_FILES_CHANGED" -gt 0 ]; then
         GH_EXIT=0

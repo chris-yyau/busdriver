@@ -365,21 +365,25 @@ if [ "$FAILED" -gt 0 ]; then
 fi
 ```
 
-**Write the pr-grind-clean marker (REQUIRED — pre-merge gate checks `.claude/` in the repo targeted by the merge command):**
+**Write the pr-grind-clean marker (REQUIRED — pre-merge gate checks `.claude/` at the REPO ROOT of the worktree the merge runs in):**
 ```bash
 # Signal to the pre-merge gate that this PR has been ground clean.
-# The gate parses any leading `cd <dir>` from the merge command and reads the
-# marker from <dir>/.claude/pr-grind-clean.local (falls back to CWD if no cd).
-# Write the marker into the repo where the eventual merge command will run.
-mkdir -p .claude
-echo "<PR_NUMBER>" > .claude/pr-grind-clean.local
-rm -f .claude/pr-pending-grind.local
+# The gate parses any leading `cd <dir>` from the merge command, resolves the
+# git repo root for that directory (via `git -C "<dir>" rev-parse --show-toplevel`),
+# and reads <repo-root>/.claude/pr-grind-clean.local. So the marker must live
+# under the REPO ROOT, never under a subdirectory — even if you happen to be
+# in a subdirectory of the worktree when running the merge command.
+REPO_ROOT=$(git rev-parse --show-toplevel)
+mkdir -p "$REPO_ROOT/.claude"
+echo "<PR_NUMBER>" > "$REPO_ROOT/.claude/pr-grind-clean.local"
+rm -f "$REPO_ROOT/.claude/pr-pending-grind.local"
 ```
 
 **Default: merge, then clean up the worktree:**
 ```bash
-# Merge from this worktree (the gate resolves .claude/ from this directory
-# because the merge command runs without a leading cd to a different repo).
+# Merge from this worktree. The gate resolves the repo root from this
+# directory (or any leading `cd <dir>` in the merge command) and reads the
+# marker from <repo-root>/.claude/pr-grind-clean.local.
 gh pr merge <PR_NUMBER> --squash --delete-branch
 
 # Return to main worktree
@@ -389,14 +393,16 @@ cd <original-worktree-path>
 git worktree remove "../pr-grind-<PR_NUMBER>" --force
 ```
 
-**If `--no-merge`: write marker to the worktree where the user will merge from, clean up, report ready:**
+**If `--no-merge`: write marker to the repo root of the worktree the user will merge from, clean up, report ready:**
 ```bash
-# Write marker to whichever worktree the user will run the merge from.
-# The pre-merge gate checks .claude/ in the directory targeted by the merge
-# command (parsed from any leading `cd <dir>`), so the marker must live there.
-mkdir -p <original-worktree-path>/.claude
-cp .claude/pr-grind-clean.local <original-worktree-path>/.claude/pr-grind-clean.local
-rm -f <original-worktree-path>/.claude/pr-pending-grind.local
+# Write marker to the REPO ROOT of whichever worktree the user will merge from.
+# The pre-merge gate resolves the repo root from the directory targeted by the
+# merge command (parsed from any leading `cd <dir>`), so the marker must live
+# at <merge-worktree-repo-root>/.claude/, never under a subdirectory.
+ORIGINAL_REPO_ROOT=$(git -C <original-worktree-path> rev-parse --show-toplevel)
+mkdir -p "$ORIGINAL_REPO_ROOT/.claude"
+cp .claude/pr-grind-clean.local "$ORIGINAL_REPO_ROOT/.claude/pr-grind-clean.local"
+rm -f "$ORIGINAL_REPO_ROOT/.claude/pr-pending-grind.local"
 
 # Return to main worktree
 cd <original-worktree-path>

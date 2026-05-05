@@ -86,7 +86,12 @@ LOOP for round in 1..MAX:
   │
   └── Update state:
         PRIOR_COMMIT_SHA = RESULT_COMMIT_SHA
-        PRIOR_ATTEMPTS  += "Round N: <RESULT_FIXES>"
+        PRIOR_ATTEMPTS  += "Round N: fixes=<RESULT_FIXES>; failures=<RESULT_REMAINING>"
+        # Both fields are required — the subagent's flaky-check bail rule
+        # parses `failures=` from PRIOR_ATTEMPTS to detect a check that has
+        # failed across 3 rounds. Dropping `failures=` makes the bail
+        # unreachable and the loop will grind to MAX rounds on a flaky test
+        # instead of stopping early.
 
 COMPLETION:
   ├── Verify checks one more time (defense in depth)

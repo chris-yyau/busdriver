@@ -360,12 +360,18 @@ OWNER=<owner>
 REPO=<repo>
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
 
-# One-shot fetches (avoid redundant gh api calls per bot). Fail-CLOSED on any error.
-ALL_THREADS=$(gh api graphql -f query='
-  query($owner:String!,$repo:String!,$pr:Int!) {
+# One-shot fetches. FETCH_OK tracks any source failure; if any source failed,
+# inline_ack_for_bot fails-CLOSED to `stale` for every bot (fail-OPEN
+# regression guard — empty-default fallbacks would silently produce `none`
+# and let `clean` slip through).
+FETCH_OK=1
+# Source 2: --paginate + cursor — large PRs can exceed reviewThreads(first:100)
+ALL_THREADS=$(gh api graphql --paginate -f query='
+  query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String) {
     repository(owner:$owner,name:$repo) {
       pullRequest(number:$pr) {
-        reviewThreads(first:100) {
+        reviewThreads(first:100, after:$endCursor) {
+          pageInfo { hasNextPage endCursor }
           nodes {
             isResolved isOutdated
             comments(first:1) { nodes { author { login } } }
@@ -374,10 +380,9 @@ ALL_THREADS=$(gh api graphql -f query='
       }
     }
   }
-' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) \
-  || ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'
-ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || ALL_REVIEWS='[]'
-ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || ALL_COMMENTS='{"comments":[]}'
+' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) || FETCH_OK=0
+ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || FETCH_OK=0
+ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH_OK=0
 
 # Three-tier ack — same algorithm as worker's `ack_for_bot` in agents/pr-grinder.md
 # and dispatcher's `dispatcher_ack_for_bot` in COMPLETION below.
@@ -385,14 +390,18 @@ inline_ack_for_bot() {
   local login="$1"
   local unresolved outdated commit_id body_sha
 
+  # Fail-CLOSED on any source-fetch failure
+  if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; return; fi
+
   # (A) Source 2 thread state — unresolved+non-outdated → stale; outdated-only → effectively acked
-  unresolved=$(printf '%s' "$ALL_THREADS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.data.repository.pullRequest.reviewThreads.nodes[]
+  # jq -s slurps paginated graphql output (multiple JSON docs → single array)
+  unresolved=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
       | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
       | select(.isResolved == false and .isOutdated == false)] | length' 2>/dev/null || echo 0)
   if [ "$unresolved" -gt 0 ]; then echo "stale"; return; fi
-  outdated=$(printf '%s' "$ALL_THREADS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.data.repository.pullRequest.reviewThreads.nodes[]
+  outdated=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
       | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
       | select(.isOutdated == true)] | length' 2>/dev/null || echo 0)
   if [ "$outdated" -gt 0 ]; then echo "$HEAD_SHA"; return; fi
@@ -471,12 +480,15 @@ OWNER=<owner>
 REPO=<repo>
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
 
-# One-shot fetches — same three sources as worker's Step 6.5
-ALL_THREADS=$(gh api graphql -f query='
-  query($owner:String!,$repo:String!,$pr:Int!) {
+# One-shot fetches — same three sources as worker's Step 6.5.
+# FETCH_OK tracks failure; fail-CLOSED to `stale` on any source failure.
+FETCH_OK=1
+ALL_THREADS=$(gh api graphql --paginate -f query='
+  query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String) {
     repository(owner:$owner,name:$repo) {
       pullRequest(number:$pr) {
-        reviewThreads(first:100) {
+        reviewThreads(first:100, after:$endCursor) {
+          pageInfo { hasNextPage endCursor }
           nodes {
             isResolved isOutdated
             comments(first:1) { nodes { author { login } } }
@@ -485,23 +497,24 @@ ALL_THREADS=$(gh api graphql -f query='
       }
     }
   }
-' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) \
-  || ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'
-ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || ALL_REVIEWS='[]'
-ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || ALL_COMMENTS='{"comments":[]}'
+' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) || FETCH_OK=0
+ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || FETCH_OK=0
+ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH_OK=0
 
 # Three-tier ack — same algorithm as worker `ack_for_bot` and inline `inline_ack_for_bot`.
 dispatcher_ack_for_bot() {
   local login="$1"
   local unresolved outdated commit_id body_sha
 
-  unresolved=$(printf '%s' "$ALL_THREADS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.data.repository.pullRequest.reviewThreads.nodes[]
+  if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; return; fi
+
+  unresolved=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
       | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
       | select(.isResolved == false and .isOutdated == false)] | length' 2>/dev/null || echo 0)
   if [ "$unresolved" -gt 0 ]; then echo "stale"; return; fi
-  outdated=$(printf '%s' "$ALL_THREADS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.data.repository.pullRequest.reviewThreads.nodes[]
+  outdated=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
       | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
       | select(.isOutdated == true)] | length' 2>/dev/null || echo 0)
   if [ "$outdated" -gt 0 ]; then echo "$HEAD_SHA"; return; fi

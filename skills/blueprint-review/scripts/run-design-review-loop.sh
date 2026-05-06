@@ -34,7 +34,7 @@ millis() {
   if command -v gdate &>/dev/null; then
     gdate +%s%3N
   elif command -v python3 &>/dev/null; then
-    python3 -c "import time; print(int(time.time()*1000))"
+    python3 -c 'import time; print(int(time.time()*1000))'
   else
     echo "$(date +%s)000"
   fi
@@ -55,6 +55,10 @@ generate_run_id() {
 
 # Compute SHA-256 of design spec for freshness contract
 # Fallback chain: shasum (macOS) → sha256sum (Linux) → python3
+#
+# $file is passed via env var — NOT interpolated into the python source
+# string — so a path containing `'` or python fragments cannot escape the
+# python -c body and execute arbitrary code.
 compute_spec_hash() {
   local file="$1"
   if command -v shasum &>/dev/null; then
@@ -62,7 +66,7 @@ compute_spec_hash() {
   elif command -v sha256sum &>/dev/null; then
     sha256sum "$file" | cut -d' ' -f1
   elif command -v python3 &>/dev/null; then
-    python3 -c "import hashlib; print(hashlib.sha256(open('$file','rb').read()).hexdigest())"
+    _CSH_FILE="$file" python3 -c 'import hashlib, os; print(hashlib.sha256(open(os.environ["_CSH_FILE"], "rb").read()).hexdigest())'
   else
     echo "no-hash-tool"
   fi
@@ -278,23 +282,32 @@ $DESIGN_CONTENT
 
         if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$GEMINI_RAW_FILE" > "${GEMINI_OUTPUT_FILE}.pending" 2>/dev/null; then
           # Inject freshness metadata (Critic #2)
-          # Validates JSON has expected structure before injecting
+          # Validates JSON has expected structure before injecting.
+          # All values are passed via env vars (single-quoted python -c source
+          # string) so paths or hash strings containing `'` cannot escape into
+          # the python body.
           # || true: don't let injection failure kill subshell under set -e
-          python3 -c "
-import json, sys
-with open('${GEMINI_OUTPUT_FILE}.pending') as f:
+          _MIM_PENDING="${GEMINI_OUTPUT_FILE}.pending" \
+          _MIM_RUN_ID="$RUN_ID" \
+          _MIM_ITERATION="$CURRENT_ITERATION" \
+          _MIM_SPEC_HASH="$SPEC_HASH" \
+          _MIM_DURATION="$GEMINI_DURATION" \
+          python3 -c '
+import json, os, sys
+pending = os.environ["_MIM_PENDING"]
+with open(pending) as f:
     data = json.load(f)
-if not isinstance(data, dict) or 'status' not in data:
-    print('Skipping metadata injection: unexpected JSON structure', file=sys.stderr)
+if not isinstance(data, dict) or "status" not in data:
+    print("Skipping metadata injection: unexpected JSON structure", file=sys.stderr)
     sys.exit(0)
-data.setdefault('metadata', {})
-data['metadata']['run_id'] = '$RUN_ID'
-data['metadata']['iteration'] = $CURRENT_ITERATION
-data['metadata']['spec_hash'] = '$SPEC_HASH'
-data['metadata']['review_duration_ms'] = $GEMINI_DURATION
-with open('${GEMINI_OUTPUT_FILE}.pending', 'w') as f:
+data.setdefault("metadata", {})
+data["metadata"]["run_id"] = os.environ["_MIM_RUN_ID"]
+data["metadata"]["iteration"] = int(os.environ["_MIM_ITERATION"])
+data["metadata"]["spec_hash"] = os.environ["_MIM_SPEC_HASH"]
+data["metadata"]["review_duration_ms"] = int(os.environ["_MIM_DURATION"])
+with open(pending, "w") as f:
     json.dump(data, f, indent=2)
-" 2>/dev/null || true
+' 2>/dev/null || true
           mv "${GEMINI_OUTPUT_FILE}.pending" "$GEMINI_OUTPUT_FILE"
         else
           create_error_json "gemini" "Output was not valid JSON" > "$GEMINI_OUTPUT_FILE"
@@ -328,23 +341,32 @@ with open('${GEMINI_OUTPUT_FILE}.pending', 'w') as f:
 
         if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$CODEX_RAW_FILE" > "${CODEX_OUTPUT_FILE}.pending" 2>/dev/null; then
           # Inject freshness metadata (Critic #2)
-          # Validates JSON has expected structure before injecting
+          # Validates JSON has expected structure before injecting.
+          # All values are passed via env vars (single-quoted python -c source
+          # string) so paths or hash strings containing `'` cannot escape into
+          # the python body.
           # || true: don't let injection failure kill subshell under set -e
-          python3 -c "
-import json, sys
-with open('${CODEX_OUTPUT_FILE}.pending') as f:
+          _MIM_PENDING="${CODEX_OUTPUT_FILE}.pending" \
+          _MIM_RUN_ID="$RUN_ID" \
+          _MIM_ITERATION="$CURRENT_ITERATION" \
+          _MIM_SPEC_HASH="$SPEC_HASH" \
+          _MIM_DURATION="$CODEX_DURATION" \
+          python3 -c '
+import json, os, sys
+pending = os.environ["_MIM_PENDING"]
+with open(pending) as f:
     data = json.load(f)
-if not isinstance(data, dict) or 'status' not in data:
-    print('Skipping metadata injection: unexpected JSON structure', file=sys.stderr)
+if not isinstance(data, dict) or "status" not in data:
+    print("Skipping metadata injection: unexpected JSON structure", file=sys.stderr)
     sys.exit(0)
-data.setdefault('metadata', {})
-data['metadata']['run_id'] = '$RUN_ID'
-data['metadata']['iteration'] = $CURRENT_ITERATION
-data['metadata']['spec_hash'] = '$SPEC_HASH'
-data['metadata']['review_duration_ms'] = $CODEX_DURATION
-with open('${CODEX_OUTPUT_FILE}.pending', 'w') as f:
+data.setdefault("metadata", {})
+data["metadata"]["run_id"] = os.environ["_MIM_RUN_ID"]
+data["metadata"]["iteration"] = int(os.environ["_MIM_ITERATION"])
+data["metadata"]["spec_hash"] = os.environ["_MIM_SPEC_HASH"]
+data["metadata"]["review_duration_ms"] = int(os.environ["_MIM_DURATION"])
+with open(pending, "w") as f:
     json.dump(data, f, indent=2)
-" 2>/dev/null || true
+' 2>/dev/null || true
           mv "${CODEX_OUTPUT_FILE}.pending" "$CODEX_OUTPUT_FILE"
         else
           create_error_json "codex" "Output was not valid JSON" > "$CODEX_OUTPUT_FILE"

@@ -243,14 +243,35 @@ check_existing_review() {
 
   # F10: Time-based staleness check — a review from a previous session
   # (older than DESIGN_REVIEW_STALE_HOURS) is stale even if it has progress.
+  #
+  # last_ts and stale_hours are passed via env vars — NOT interpolated into
+  # the python source string — so a state.md value containing `'` or python
+  # fragments cannot escape the python -c body and execute arbitrary code.
   local stale_hours="${DESIGN_REVIEW_STALE_HOURS:-2}"
+  # Accept what python float() would parse: signed decimals (including the
+  # bare-leading-dot form `.5` and bare-trailing-dot form `2.`) and
+  # scientific notation. Pre-fix this validator did not exist and the value
+  # flowed straight into a python -c source string — a literal `import os; …`
+  # payload would have executed. Rejecting only "definitely-not-a-number"
+  # keeps the injection door shut without breaking unusual-but-valid configs
+  # (`+2`, `.5`, `2.`, `1e2`, etc.).
+  if ! [[ "$stale_hours" =~ ^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?$ ]]; then
+    # Bad config — return 1 = "active with progress". Caller treats this as
+    # "do not clean", which is the safe path: a misconfigured environment
+    # variable should never cause cleanup logic to clobber an in-progress
+    # review. The user sees the warning on stderr and fixes the config.
+    echo "warning: DESIGN_REVIEW_STALE_HOURS must be numeric (got: $stale_hours); skipping staleness check" >&2
+    return 1
+  fi
   if command -v python3 &>/dev/null; then
     local is_time_stale
-    is_time_stale=$(python3 -c "
+    is_time_stale=$(_CER_LAST_TS="$last_ts" _CER_STALE_HOURS="$stale_hours" python3 -c '
 from datetime import datetime, timezone, timedelta
+import os
 try:
-    ts = '$last_ts'
-    for fmt in ('%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%dT%H:%M:%S%z', '%Y-%m-%d'):
+    ts = os.environ["_CER_LAST_TS"]
+    stale_hours = float(os.environ["_CER_STALE_HOURS"])
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d"):
         try:
             dt = datetime.strptime(ts, fmt)
             if dt.tzinfo is None:
@@ -259,13 +280,13 @@ try:
         except ValueError:
             continue
     else:
-        print('FRESH')
+        print("FRESH")
         exit()
     age = datetime.now(timezone.utc) - dt
-    print('STALE' if age > timedelta(hours=$stale_hours) else 'FRESH')
+    print("STALE" if age > timedelta(hours=stale_hours) else "FRESH")
 except Exception:
-    print('FRESH')
-" 2>/dev/null || echo "FRESH")
+    print("FRESH")
+' 2>/dev/null || echo "FRESH")
     if [[ "$is_time_stale" == "STALE" ]]; then
       return 0  # Stale by time — safe to clean
     fi

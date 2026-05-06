@@ -248,10 +248,18 @@ check_existing_review() {
   # the python source — so a state.md value containing `'` or python
   # fragments cannot escape the heredoc and execute arbitrary code.
   local stale_hours="${DESIGN_REVIEW_STALE_HOURS:-2}"
-  if ! [[ "$stale_hours" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-    # Non-numeric override is malformed config, not a state issue. Keep behavior
-    # safe by treating the review as fresh (don't clean on bad config).
-    echo "warning: DESIGN_REVIEW_STALE_HOURS must be numeric (got: $stale_hours); treating as fresh" >&2
+  # Accept what python float() would parse: signed decimals and scientific
+  # notation. Pre-fix this validator did not exist and the value flowed
+  # straight into a python heredoc — a literal `import os; ...` payload
+  # would have executed. Rejecting only "definitely-not-a-number" keeps the
+  # injection door shut without breaking unusual-but-valid configs (`+2`,
+  # `1e2`, etc.).
+  if ! [[ "$stale_hours" =~ ^[+-]?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$ ]]; then
+    # Bad config — return 1 = "active with progress". Caller treats this as
+    # "do not clean", which is the safe path: a misconfigured environment
+    # variable should never cause cleanup logic to clobber an in-progress
+    # review. The user sees the warning on stderr and fixes the config.
+    echo "warning: DESIGN_REVIEW_STALE_HOURS must be numeric (got: $stale_hours); skipping staleness check" >&2
     return 1
   fi
   if command -v python3 &>/dev/null; then

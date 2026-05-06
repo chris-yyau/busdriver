@@ -34,7 +34,7 @@ millis() {
   if command -v gdate &>/dev/null; then
     gdate +%s%3N
   elif command -v python3 &>/dev/null; then
-    python3 -c "import time; print(int(time.time()*1000))"
+    python3 -c 'import time; print(int(time.time()*1000))'
   else
     echo "$(date +%s)000"
   fi

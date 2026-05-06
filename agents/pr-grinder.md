@@ -143,7 +143,7 @@ All four bots are gated identically — we read the structured `commit_id` from 
 
 **Why `/reviews`'s `commit_id` and not body parsing:** every bot that runs against the PR submits a review entry per commit it inspects, even when its visible output is just an issue comment or inline thread. The REST endpoint returns a structured `commit_id` field — robust against bot-specific markdown drift, no fragile regex on comment bodies, and works uniformly across all four bots.
 
-**Interaction with `clean` status:** if any registered bot is `stale`, you cannot return `clean` — even if every other check is green and every thread is resolved. Either return `needs_more` (let the bot catch up) or `bail` (after 3 rounds of the same bot stuck stale; see Bail Triggers). `none` is fine — it just means the bot doesn't operate on this repo and doesn't gate.
+**Interaction with `clean` status:** if any registered bot is `stale`, you cannot return `clean` — even if every other check is green and every thread is resolved. Return `needs_more` (let the dispatcher run another round so the bot can catch up). There is no stuck-bot bail; if bots never catch up, the dispatcher's `--max` iterations backstop ends the loop. `none` is fine — it just means the bot doesn't operate on this repo and doesn't gate.
 
 ### Step 3 — Triage
 

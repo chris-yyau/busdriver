@@ -85,11 +85,15 @@ LOOP for round in 1..MAX:
   │     RESULT_STATUS=needs_more  → validate invariant, update state, continue
   │
   ├── Invariant checks (fail-CLOSED — both must hold):
-  │     1. If RESULT_STATUS=needs_more AND RESULT_COMMIT_SHA=none →
+  │     1. If RESULT_STATUS=needs_more AND RESULT_COMMIT_SHA=none AND
+  │        RESULT_REVIEWER_ACKS contains no `stale` entries →
   │        BAIL with reason "subagent emitted needs_more without a commit
-  │        SHA — incremental filter would be disabled, risking duplicate
-  │        fixes / premature clean". needs_more semantic is "I pushed a
-  │        commit; check it and run another round."
+  │        SHA and without any stale ack — neither a fix nor a wait-for-
+  │        bots is justified, so the loop has no progress signal".
+  │        Legitimate `needs_more` rounds always have either a new commit
+  │        SHA (worker pushed a fix) OR at least one `stale` ack (worker
+  │        is waiting for a bot to re-review). A round with neither is
+  │        broken — re-dispatching would loop forever on no progress.
   │     2. If RESULT_STATUS=clean AND any registered bot in
   │        RESULT_REVIEWER_ACKS has value `stale` →
   │        BAIL with reason "subagent reported clean but reviewer ack

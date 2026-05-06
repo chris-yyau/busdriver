@@ -18,12 +18,20 @@ The dispatcher passes you a context block containing:
 - `WORKTREE_DIR` — the cwd for all your work
 - `ROUND` — current round number (e.g. "3 of 5")
 - `PRIOR_COMMIT_SHA` — last commit you pushed last round, or `none` if round 1. Useful for triage (comments authored before that SHA were posted on code that's now replaced) but **not** as a fetch-time filter — see "On Re-fetching Each Round" below.
-- `PRIOR_ATTEMPTS` — per-round bullet list. Each entry has the form `Round N: fixes=<one-line summary>; failures=<comma-separated failed-check-names or "none">; acks=<reviewer-ack-list>`. Use `failures=` to detect a recurring flaky check across rounds (3+ rounds → bail). Use `acks=` to detect a stuck reviewer that has been stale for 3+ rounds (also → bail; see Bail Triggers).
-- `PRIOR_REVIEWER_ACKS` — last round's ack ledger as a comma-separated list of `<login>=<value>` pairs, e.g. `greptile-apps=b4451902,coderabbitai=none,cubic-dev-ai=stale`. Values: short SHA (acked that commit), `none` (never posted on this PR), or `stale` (posted but on an older commit). On round 1, `none` for every registered bot. See "Step 2.5 — Compute Ack Ledger" below for the registry and parse rules.
+- `PRIOR_ATTEMPTS` — per-round bullet list. Each entry has the form `Round N: fixes=<one-line summary>; failures=<comma-separated failed-check-names or "none">; acks=<reviewer-ack-list>`. Use `failures=` to detect a recurring flaky check across rounds (3+ rounds → bail; see Bail Triggers). `acks=` is preserved for diagnostics and human review of the loop transcript — there is no stuck-bot bail trigger; genuinely stuck bots fall out via the dispatcher's `--max` iterations backstop.
+- `PRIOR_REVIEWER_ACKS` — last round's ack ledger as a comma-separated list of `<login>=<value>` pairs, e.g. `greptile-apps=b4451902,coderabbitai=none,cubic-dev-ai=stale`. Values: short SHA (acked that commit), `none` (never posted on this PR), or `stale` (posted but on an older commit). On round 1, `none` for every registered bot. See Step 2.5 (registry/concept) and Step 6.5 (compute) below.
 
 ## Your Single Round
 
 **Before any step:** `cd "$WORKTREE_DIR"`. Do not assume the SDK starts you inside the worktree — it may launch you at the repo root or anywhere else, and every `git`/`gh` operation below depends on being in the right directory. If `WORKTREE_DIR` is unset or invalid, return `RESULT_STATUS: bail` with reason "WORKTREE_DIR missing or unreadable" instead of operating on the wrong tree.
+
+**Initialize the default ack ledger immediately** (before any other work, including Step 0). This guarantees `RESULT_REVIEWER_ACKS` is non-empty on every early-bail path:
+
+```bash
+ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none"
+```
+
+If you bail before Step 6.5 (the real ack-ledger compute), emit this default `$ACKS` as `RESULT_REVIEWER_ACKS`. The dispatcher's invariant-2 gate (clean + any `stale` → BAIL) only fires on `clean` status, so an all-`none` early bail with `status=bail` won't accidentally trip it. Emitting the default also keeps `RESULT_REVIEWER_ACKS` non-empty, which the dispatcher's tag parser requires.
 
 ### Step 0 — Mandatory Pre-Flight Read (DO NOT SKIP)
 
@@ -118,9 +126,9 @@ gh pr view "$PR_NUMBER" --comments --json comments \
 
 The earlier guidance "the GraphQL `isResolved == false AND isOutdated == false` filter is the correct staleness signal" was wrong — it's the correct filter for **Source 2 only**. Apply each source's signal to its own source.
 
-### Step 2.5 — Compute the reviewer ack ledger
+### Step 2.5 — Reviewer ack-ledger registry (conceptual)
 
-This step closes the slow-Greptile race: a reviewer bot's GitHub check can flip green seconds before the bot actually posts its findings. Without this ledger, Step 2 runs, sees no comment, and reports `clean` — merging the PR before findings land.
+The actual ack-ledger compute happens in **Step 6.5**, AFTER any commit/push, so that the emitted ledger reflects bot acknowledgements relative to the SHA the dispatcher will gate against. This sub-step defines WHICH bots are tracked; the compute itself is post-push.
 
 **Registry of bots whose ack we gate on:**
 
@@ -131,33 +139,9 @@ This step closes the slow-Greptile race: a reviewer bot's GitHub check can flip 
 | `coderabbitai` | Free plan posts summary-only, but still submits a per-commit review entry that gives us a structured `commit_id` |
 | `copilot-pull-request-reviewer` | Posts inline threads. Threads alone are caught by Source 2, but Copilot can lag re-reviewing after a push — without a ledger entry, "no new threads on HEAD" is ambiguous between "happy" and "hasn't looked yet" |
 
-All four bots are gated identically — there's no first-class/best-effort split anymore because we read the structured `commit_id` from `gh api repos/.../pulls/<N>/reviews`, not from comment bodies. The REST API includes a `[bot]` suffix on logins (e.g. `greptile-apps[bot]`) that the GraphQL/`gh pr view` paths strip; the jq below matches both forms.
-
-**Compute per round:**
-
-```bash
-HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
-
-# Per-bot ack — emits one of: <short-sha> | none | stale
-# Reads the LAST review submission by this bot (any state — COMMENTED,
-# APPROVED, CHANGES_REQUESTED) and compares its commit_id to HEAD.
-ack_for_bot() {
-  local login="$1"
-  local commit_id
-  commit_id=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews" \
-    --jq "[.[] | select(.user.login == \"$login\" or .user.login == \"${login}[bot]\")] | last | .commit_id // empty")
-  [ -z "$commit_id" ] && { echo "none"; return; }
-  local acked="${commit_id:0:8}"
-  [ "$acked" = "$HEAD_SHA" ] && echo "$acked" || echo "stale"
-}
-
-ACKS="greptile-apps=$(ack_for_bot greptile-apps),cubic-dev-ai=$(ack_for_bot cubic-dev-ai),coderabbitai=$(ack_for_bot coderabbitai),copilot-pull-request-reviewer=$(ack_for_bot copilot-pull-request-reviewer)"
-echo "Ack ledger: $ACKS"
-```
+All four bots are gated identically — we read the structured `commit_id` from `gh api repos/.../pulls/<N>/reviews`, not from comment bodies. The REST API includes a `[bot]` suffix on logins (e.g. `greptile-apps[bot]`) that the GraphQL/`gh pr view` paths strip; the Step 6.5 jq matches both forms.
 
 **Why `/reviews`'s `commit_id` and not body parsing:** every bot that runs against the PR submits a review entry per commit it inspects, even when its visible output is just an issue comment or inline thread. The REST endpoint returns a structured `commit_id` field — robust against bot-specific markdown drift, no fragile regex on comment bodies, and works uniformly across all four bots.
-
-Emit `$ACKS` verbatim as `RESULT_REVIEWER_ACKS`. The dispatcher feeds it back as next round's `PRIOR_REVIEWER_ACKS` and uses it to gate `clean`.
 
 **Interaction with `clean` status:** if any registered bot is `stale`, you cannot return `clean` — even if every other check is green and every thread is resolved. Either return `needs_more` (let the bot catch up) or `bail` (after 3 rounds of the same bot stuck stale; see Bail Triggers). `none` is fine — it just means the bot doesn't operate on this repo and doesn't gate.
 
@@ -203,6 +187,56 @@ git push
 
 The litmus pre-commit gate WILL fire on the commit. Do NOT use `--no-verify`. If litmus blocks twice in this round, return `RESULT_STATUS: bail` with reason "litmus blocked".
 
+If you didn't change any files this round (no fixes needed — you're just waiting on bots), skip the commit and proceed to Step 6.5; HEAD will be unchanged and the ledger will reflect bot acks relative to the existing HEAD.
+
+### Step 6.5 — Compute the reviewer ack ledger (post-push)
+
+Now (and ONLY now, after any commit/push has settled) compute the ledger. Computing this BEFORE Step 6 would emit acks against pre-push HEAD — defeating the whole point.
+
+```bash
+# HEAD_SHA reflects whatever is current after Step 6 (the new commit if you
+# pushed, or the unchanged HEAD if you didn't). Either way, this is the SHA
+# the dispatcher will gate against.
+HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
+
+# Per-bot ack — emits one of: <short-sha> | none | stale
+# Reads the LAST review submission by this bot (any state — COMMENTED,
+# APPROVED, CHANGES_REQUESTED) and compares its commit_id to HEAD.
+#
+# NOTE: no --paginate. With --paginate + --jq, the filter runs per page,
+# making `last` per-page rather than across the aggregated array — the
+# captured commit_id may belong to a later page's last review by a
+# different author, or be empty. Default per_page is 30; we explicitly
+# request the max (100) and let busy PRs fall back to "treat as stale"
+# on the rare overflow rather than silently miscomparing.
+ack_for_bot() {
+  local login="$1"
+  local raw_output commit_id
+
+  # Capture both stdout and exit status. gh api can fail (auth, rate-limit,
+  # transient 5xx); without distinguishing, an empty result would look like
+  # "bot doesn't operate" — which the dispatcher treats as ack-clear and
+  # would let `clean` slip through. Treat API failure as `stale` instead
+  # (conservative — never lets the merge race past an unverified bot).
+  if ! raw_output=$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then
+    echo "stale"; return
+  fi
+
+  commit_id=$(printf '%s' "$raw_output" | jq -r \
+    --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty')
+
+  [ -z "$commit_id" ] && { echo "none"; return; }
+  local acked="${commit_id:0:8}"
+  if [ "$acked" = "$HEAD_SHA" ]; then echo "$acked"; else echo "stale"; fi
+}
+
+ACKS="greptile-apps=$(ack_for_bot greptile-apps),cubic-dev-ai=$(ack_for_bot cubic-dev-ai),coderabbitai=$(ack_for_bot coderabbitai),copilot-pull-request-reviewer=$(ack_for_bot copilot-pull-request-reviewer)"
+echo "Ack ledger: $ACKS"
+```
+
+Emit `$ACKS` verbatim as `RESULT_REVIEWER_ACKS`. The dispatcher feeds it back as next round's `PRIOR_REVIEWER_ACKS` and uses it to gate `clean`.
+
 You do NOT do Step 7 (checkpoint). You do NOT write the clean marker. You do NOT merge. You do NOT clean up the worktree. Those belong to the dispatcher.
 
 When you finish your round, populate `RESULT_FIXES` with what you changed AND populate `RESULT_REMAINING` with the names of any failing checks you observed but didn't address (so the dispatcher can fold them into next round's `failures=` field). If you have nothing failing, set `RESULT_REMAINING: none`.
@@ -214,9 +248,10 @@ Stop the round and return `RESULT_STATUS: bail` if:
 - A comment is a design/scope question — surface it, don't try to answer
 - The fix would require architectural changes
 - Same flaky CI check name appears in `PRIOR_ATTEMPTS` `failures=` field for 2 prior rounds AND fails again now (3 total)
-- Same registered bot has been `stale` in `PRIOR_ATTEMPTS` `acks=` field for 2 prior rounds AND is still `stale` now (3 total — the bot is broken or rate-limited on their end). Reason: `<bot> ack stuck stale across 3 rounds`.
 - Litmus gate keeps blocking after 2 attempts in this round
 - `gh` CLI auth or rate-limit errors that you can't resolve
+
+**No stuck-bot bail trigger.** Earlier drafts of this contract had a bail for "same bot `stale` for 3+ rounds." That trigger is incompatible with the post-push compute timing: every round that commits/pushes emits all-`stale` (bots haven't seen the new commit yet), so a healthy 3-commit sequence would spuriously bail on every registered bot. Genuinely stuck bots are caught by the dispatcher's `--max` iterations backstop instead — if bots never catch up, the loop exhausts and bails with `max iterations reached`.
 
 ## On Re-fetching Each Round
 
@@ -235,7 +270,7 @@ RESULT_STATUS: <clean | needs_more | bail>
 RESULT_COMMIT_SHA: <new SHA you pushed, or "none" if no commit>
 RESULT_FIXES: <one-line, comma-separated summary of what you changed this round>
 RESULT_REMAINING: <one-line summary of what's still pending, or "none">
-RESULT_REVIEWER_ACKS: <comma-separated login=value pairs from Step 2.5; always present>
+RESULT_REVIEWER_ACKS: <comma-separated login=value pairs from Step 6.5; always present — early-bail paths emit the all-`none` default initialized at the top of the round>
 RESULT_BAIL_REASON: <only when status=bail; one-line why>
 ```
 
@@ -271,13 +306,20 @@ OWNER=chrisyau REPO=busdriver
 WORKTREE_DIR=/Volumes/Work/Projects/busdriver/.claude/worktrees/pr-grind-64
 ROUND=3 of 5
 PRIOR_COMMIT_SHA=8947cdd
-PRIOR_REVIEWER_ACKS=greptile-apps=8947cdd,cubic-dev-ai=stale,coderabbitai=8947cdd,copilot-pull-request-reviewer=8947cdd
+PRIOR_REVIEWER_ACKS=greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
 PRIOR_ATTEMPTS:
   - Round 1: fixes=mkdir -p ordering in run-review-loop.sh; failures=none; acks=greptile-apps=stale,cubic-dev-ai=none,coderabbitai=stale,copilot-pull-request-reviewer=stale
-  - Round 2: fixes=tilde expansion in target_dir parser; failures=none; acks=greptile-apps=8947cdd,cubic-dev-ai=stale,coderabbitai=8947cdd,copilot-pull-request-reviewer=8947cdd
+  - Round 2: fixes=tilde expansion in target_dir parser; failures=none; acks=greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
 ```
 
-**Your work:** Wait for checks. Compute ack ledger — Greptile/CodeRabbit/Copilot have all acked HEAD (`8947cdd`), Cubic still stale (commented on an older commit). Find one new Cubic review-thread on `pre-merge-gate.sh:142` flagging an SC2015 shellcheck warning. Mechanical fix (replace `A && B || C` with `if A; then B; else C; fi`). Apply, verify with shellcheck locally, commit (`a1b2c3d`), push. After push, every bot's previous review is now on a stale commit relative to new HEAD — all four flip back to `stale` until they re-review next round.
+(Note: every prior round's emitted `acks=` is mostly `stale` because Step 6.5 runs immediately post-push — bots haven't had time to re-review the just-pushed commit. The dispatcher entering this round sees all bots stale.)
+
+**Your work:**
+1. Step 1: wait for all GitHub-registered checks (`gh pr checks --watch`). This blocks on **check status**, not on review submissions — a bot can flip its check green seconds before posting. By the time Step 1 returns + the 30s grace period elapses, Greptile/CodeRabbit/Copilot have typically finished posting their reviews of `8947cdd`; Cubic often hasn't yet. The ledger (Step 6.5) is the authoritative ack signal — Step 1 only gives the bots a chance to start.
+2. Step 2: fetch all four sources. Find one Cubic review-thread on `pre-merge-gate.sh:142` flagging an SC2015 shellcheck warning. Cubic posted this against an earlier SHA but it's still actionable on `8947cdd`.
+3. Step 3-5: mechanical fix (replace `A && B || C` with `if A; then B; else C; fi`), verify with shellcheck locally.
+4. Step 6: commit (`a1b2c3d`) and push.
+5. Step 6.5: compute ack ledger NOW (post-push). HEAD is `a1b2c3d`. None of the bots have had time to re-review the brand-new commit, so every entry is `stale`.
 
 **Your output (last lines):**
 ```
@@ -288,7 +330,7 @@ RESULT_REMAINING: none
 RESULT_REVIEWER_ACKS: greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
 ```
 
-`needs_more` is correct here even though you addressed everything — all four bots still need to re-review `a1b2c3d`. The dispatcher will run another round; once every bot acks `a1b2c3d` and there are no new findings, that round can return `clean`.
+`needs_more` is correct — even with no remaining findings, all four bots still need to re-review `a1b2c3d`. Round 4 will wait in Step 1 for them to catch up; if no new findings emerge, Step 6 will be a no-op, Step 6.5 will compute against unchanged HEAD `a1b2c3d`, every bot will show `a1b2c3d` (acked HEAD), and that round can return `clean`.
 
 (Note: `RESULT_BAIL_REASON` is omitted entirely on non-bail status — the dispatcher parses by tag prefix, not fixed line count.)
 

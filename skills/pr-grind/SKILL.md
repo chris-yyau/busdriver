@@ -77,7 +77,7 @@ LOOP for round in 1..MAX:
   │
   ├── Dispatch (default path):
   │     Agent(subagent_type="pr-grinder", prompt=<context block>)
-  │     ↳ Subagent does ONE round (Steps 1–6 + 2.5), returns RESULT_* tags
+  │     ↳ Subagent does ONE round (Steps 1–6.5), returns RESULT_* tags
   │
   ├── Parse subagent output:
   │     RESULT_STATUS=clean       → validate invariants, go to COMPLETION
@@ -101,11 +101,14 @@ LOOP for round in 1..MAX:
         PRIOR_COMMIT_SHA    = RESULT_COMMIT_SHA
         PRIOR_REVIEWER_ACKS = RESULT_REVIEWER_ACKS
         PRIOR_ATTEMPTS     += "Round N: fixes=<RESULT_FIXES>; failures=<RESULT_REMAINING>; acks=<RESULT_REVIEWER_ACKS>"
-        # All three fields are required:
-        #  - failures=: subagent's flaky-check bail (3+ rounds) reads this
-        #  - acks=: subagent's stuck-bot bail (3+ rounds stale) reads this
-        # Dropping either makes its bail unreachable and the loop will
-        # grind to MAX rounds instead of stopping early.
+        # failures= is required — subagent's flaky-check bail (3+ rounds)
+        # reads it. Dropping it makes that bail unreachable and the loop
+        # will grind to MAX rounds instead of stopping early on a flaky
+        # check.
+        # acks= is preserved for diagnostics / human review of the loop
+        # transcript; the worker does NOT bail on stale-ack streaks (every
+        # commit-round emits all-stale by design, so a streak is the
+        # healthy case). Genuinely stuck bots fall out via MAX iterations.
 
 # Loop exits naturally when round > MAX without ever seeing RESULT_STATUS=clean
 # → fail-CLOSED to BAIL, NOT to COMPLETION. The PR isn't clean; we just ran
@@ -181,7 +184,7 @@ RESULT_STATUS: clean | needs_more | bail              (always present)
 RESULT_COMMIT_SHA: <sha or "none">                    (always present)
 RESULT_FIXES: <one-line summary>                      (always present)
 RESULT_REMAINING: <one-line or "none">                (always present)
-RESULT_REVIEWER_ACKS: <login=value,login=value,...>   (always present; values: <short-sha> | none | stale)
+RESULT_REVIEWER_ACKS: <login=value,login=value,...>   (always present; values: <short-sha> | none | stale; early-bail paths emit the all-`none` default initialized before Step 0)
 RESULT_BAIL_REASON: <one-line>                        (present only when status=bail)
 ```
 
@@ -367,12 +370,37 @@ Continue grinding?
 6. Advisory check issues either fixed or noted as beyond PR scope
 7. **Reviewer ack ledger**: every registered bot (Greptile, Cubic, CodeRabbit, Copilot) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings.
 
-**Verify ack ledger has no stale entries (REQUIRED — invariant 2 already gated this, but recheck for late posts):**
+**Re-query the ack ledger fresh (REQUIRED — defense in depth against late posts between subagent return and merge time):**
+
+The dispatcher must re-run the same `ack_for_bot` lookup the worker used in Step 6.5, against the live `/reviews` endpoint, with HEAD recomputed against the current branch state. Just re-parsing `$RESULT_REVIEWER_ACKS` would only validate the worker's snapshot — it can't catch a bot that finished re-reviewing in the seconds between subagent return and merge.
+
+The `<PR_NUMBER>`, `<owner>`, `<repo>` placeholders below follow the same template-substitution convention as `<PR_NUMBER>` elsewhere in this Completion section — Claude substitutes the literal owner / repo / PR-number values at run time before executing the bash.
+
 ```bash
-STALE_BOTS=$(echo "$RESULT_REVIEWER_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
+PR=<PR_NUMBER>
+OWNER=<owner>
+REPO=<repo>
+HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
+
+dispatcher_ack_for_bot() {
+  local login="$1"
+  local raw_output commit_id
+  if ! raw_output=$(gh api "repos/$OWNER/$REPO/pulls/$PR/reviews?per_page=100" 2>/dev/null); then
+    echo "stale"; return  # API failure — fail-CLOSED, never let merge race past unverified bot
+  fi
+  commit_id=$(printf '%s' "$raw_output" | jq -r \
+    --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty')
+  [ -z "$commit_id" ] && { echo "none"; return; }
+  local acked="${commit_id:0:8}"
+  if [ "$acked" = "$HEAD_SHA" ]; then echo "$acked"; else echo "stale"; fi
+}
+
+FRESH_ACKS="greptile-apps=$(dispatcher_ack_for_bot greptile-apps),cubic-dev-ai=$(dispatcher_ack_for_bot cubic-dev-ai),coderabbitai=$(dispatcher_ack_for_bot coderabbitai),copilot-pull-request-reviewer=$(dispatcher_ack_for_bot copilot-pull-request-reviewer)"
+STALE_BOTS=$(echo "$FRESH_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
 if [ -n "$STALE_BOTS" ]; then
-  echo "❌ BLOCKED: registered reviewer(s) with stale ack: $STALE_BOTS"
-  echo "   Re-run the loop or wait for the bot(s) to ack HEAD."
+  echo "❌ BLOCKED: registered reviewer(s) with stale ack at merge time: $STALE_BOTS"
+  echo "   Re-run the loop or wait for the bot(s) to ack HEAD ($HEAD_SHA)."
   exit 1
 fi
 ```

@@ -215,6 +215,55 @@ RC=$?
 set -e
 assert_eq "window=0 → exit 2 (rejected as non-positive)" "2" "$RC"
 
+# ── check_existing_review: python injection is neutralized ────────────
+echo "── check_existing_review python injection guard ─────────────"
+
+# Pre-fix, '$last_ts' was bash-interpolated into a python heredoc; a value
+# containing `'; <python> ; '` would execute on trajectory-check time.
+# Post-fix, the value is passed via env var and python's strptime simply
+# rejects it. The payload uses open(...).close() as its side-effect detector
+# (not os.system) so the test stays free of dual-use attack syntax.
+CER_INJECTION_FILE="$SANDBOX/cer-injection-marker.txt"
+rm -f "$CER_INJECTION_FILE"
+
+mkdir -p "docs/reviews/test-cer"
+echo "test-cer" > .claude/current-design-review.local
+
+cat > "docs/reviews/test-cer/state.md" <<EOF
+---
+active: true
+last_review_timestamp: "'; open('${CER_INJECTION_FILE}','w').close(); '"
+---
+body
+EOF
+
+set +e
+DESIGN_REVIEW_STALE_HOURS=1 check_existing_review
+set -e
+assert_true "check_existing_review injection payload did not execute" \
+  "$([[ ! -e "$CER_INJECTION_FILE" ]] && echo true || echo false)"
+
+# Non-numeric DESIGN_REVIEW_STALE_HOURS must not reach python.
+cat > "docs/reviews/test-cer/state.md" <<'EOF'
+---
+active: true
+last_review_timestamp: "2026-05-06T12:00:00Z"
+---
+body
+EOF
+
+set +e
+STDERR=$(DESIGN_REVIEW_STALE_HOURS="2; <import>" check_existing_review 2>&1 >/dev/null)
+RC=$?
+set -e
+assert_eq "non-numeric DESIGN_REVIEW_STALE_HOURS → return 1 (treat as fresh)" "1" "$RC"
+assert_true "stderr warns about numeric DESIGN_REVIEW_STALE_HOURS" \
+  "$(echo "$STDERR" | grep -qi numeric && echo true || echo false)"
+
+# Restore the original review pointer so the summary block remains stable
+# if anyone extends the test below this point.
+echo "test-slug" > .claude/current-design-review.local
+
 # ── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "── Summary ──────────────────────────────────────────────────"

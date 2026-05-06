@@ -243,14 +243,26 @@ check_existing_review() {
 
   # F10: Time-based staleness check — a review from a previous session
   # (older than DESIGN_REVIEW_STALE_HOURS) is stale even if it has progress.
+  #
+  # last_ts and stale_hours are passed via env vars — NOT interpolated into
+  # the python source — so a state.md value containing `'` or python
+  # fragments cannot escape the heredoc and execute arbitrary code.
   local stale_hours="${DESIGN_REVIEW_STALE_HOURS:-2}"
+  if ! [[ "$stale_hours" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    # Non-numeric override is malformed config, not a state issue. Keep behavior
+    # safe by treating the review as fresh (don't clean on bad config).
+    echo "warning: DESIGN_REVIEW_STALE_HOURS must be numeric (got: $stale_hours); treating as fresh" >&2
+    return 1
+  fi
   if command -v python3 &>/dev/null; then
     local is_time_stale
-    is_time_stale=$(python3 -c "
+    is_time_stale=$(_CER_LAST_TS="$last_ts" _CER_STALE_HOURS="$stale_hours" python3 -c '
 from datetime import datetime, timezone, timedelta
+import os
 try:
-    ts = '$last_ts'
-    for fmt in ('%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%dT%H:%M:%S%z', '%Y-%m-%d'):
+    ts = os.environ["_CER_LAST_TS"]
+    stale_hours = float(os.environ["_CER_STALE_HOURS"])
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d"):
         try:
             dt = datetime.strptime(ts, fmt)
             if dt.tzinfo is None:
@@ -259,13 +271,13 @@ try:
         except ValueError:
             continue
     else:
-        print('FRESH')
+        print("FRESH")
         exit()
     age = datetime.now(timezone.utc) - dt
-    print('STALE' if age > timedelta(hours=$stale_hours) else 'FRESH')
+    print("STALE" if age > timedelta(hours=stale_hours) else "FRESH")
 except Exception:
-    print('FRESH')
-" 2>/dev/null || echo "FRESH")
+    print("FRESH")
+' 2>/dev/null || echo "FRESH")
     if [[ "$is_time_stale" == "STALE" ]]; then
       return 0  # Stale by time — safe to clean
     fi

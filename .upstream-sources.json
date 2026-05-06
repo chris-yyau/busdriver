@@ -2073,7 +2073,7 @@
     {
       "path": "skills/brainstorming/SKILL.md",
       "source": "superpowers",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/brainstorming/SKILL.md"
     },
     {
@@ -3551,6 +3551,11 @@
       "status": "local"
     },
     {
+      "path": "skills/supplements/beginner-mode.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
       "path": "skills/supplements/confidence-gated-findings.md",
       "source": "local",
       "status": "local"
@@ -4364,7 +4369,7 @@
     {
       "path": "skills/grill-me/SKILL.md",
       "source": "mattpocock",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/productivity/grill-me/SKILL.md"
     },
     {

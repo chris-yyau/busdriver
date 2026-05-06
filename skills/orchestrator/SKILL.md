@@ -22,7 +22,7 @@ Three layers, one pipeline:
 2. **ECC + third-party skills** (tools) — Domain patterns + DISPATCHed agents
 3. **Gates** (enforcement) — Hook-enforced reviews that cannot be bypassed
 
-**Supplement Loading Protocol:** Before invoking a skill or dispatching an agent, check `skills/supplements/MANIFEST.md` for active supplements targeting that skill/agent. If a match exists, Read the supplement file and apply its content alongside the skill. Opt-in supplements require the user's trigger phrase (listed in the manifest). Supplements are not injected by hooks — this is prompt-level guidance.
+**Supplement Loading Protocol:** Before invoking a skill or dispatching an agent, check `skills/supplements/MANIFEST.md` for active supplements targeting that skill/agent. If a match exists, Read the supplement file and apply its content alongside the skill. Opt-in supplements require an explicit trigger condition (a user trigger phrase OR an auto-memory signal listed in the manifest's Trigger column). Supplements are not injected by hooks — this is prompt-level guidance.
 
 ## Gates (Hook-Enforced)
 
@@ -92,7 +92,7 @@ DO NOT skip phases after your entry point. Only exception: small specific tasks 
 
 ### Phase 1: Discovery → `busdriver:brainstorming`
 
-Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design. UI/UX: `impeccable:impeccable` + `ui-ux-pro-max` + `busdriver:design-system`; load `.impeccable.md` if present. Code patterns: `busdriver:frontend-patterns`. API boundaries: `busdriver:api-design`. Consider `roundtable` if 2+ viable approaches.
+Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design. UI/UX: `impeccable:impeccable` + `ui-ux-pro-max` + `busdriver:design-system`; load `.impeccable.md` if present. Code patterns: `busdriver:frontend-patterns`. API boundaries: `busdriver:api-design`. Consider `roundtable` if 2+ viable approaches. Consider `busdriver:grill-me` if the chosen approach has stakes (auth/payments/migration/irreversible/PII/prod) or ≥3 unresolved sub-decisions or spans ≥3 subsystems — brainstorming offers this automatically at Step 5.5.
 **NEXT:** Phase 2. INVOKE `busdriver:writing-plans`. Do NOT start coding.
 
 ### Phase 2: Planning → `busdriver:writing-plans`

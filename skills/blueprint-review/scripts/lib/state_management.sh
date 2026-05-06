@@ -140,15 +140,29 @@ update_state_field() {
   # Update field in YAML frontmatter
   # NOTE: Uses ENVIRON for 'value' because awk -v interprets C escape sequences
   # (\n, \t, \\), which breaks when values contain JSON with literal backslashes.
+  #
+  # `skipping` consumes orphan continuation lines left over from a prior
+  # multi-line value (e.g. pre-fix pretty-printed JSON). It resets at the next
+  # frontmatter delimiter, key, blank line, or comment.
   _AWK_VALUE="$value" awk -v field="$field" '
     BEGIN { value = ENVIRON["_AWK_VALUE"] }
     /^---$/ {
       yaml_count++
+      skipping = 0
       print
       next
     }
     yaml_count == 1 && $0 ~ "^" field ":" {
       print field ": " value
+      skipping = 1
+      next
+    }
+    yaml_count == 1 && skipping {
+      if ($0 == "" || $0 ~ /^#/ || $0 ~ /^[a-zA-Z_][a-zA-Z0-9_]*:/) {
+        skipping = 0
+        print
+        next
+      }
       next
     }
     { print }
@@ -321,12 +335,22 @@ append_high_history() {
   local count="$1"
   local current
   current=$(get_state_field "high_issues_history")
+  # Reset to [] for empty, missing, or unparseable values. get_state_field strips
+  # quotes via gsub, so a healthy field comes back as a bare JSON array (e.g. `[1,2]`).
+  # A corrupt field may come back truncated (e.g. `[` from a multi-line value);
+  # validate before passing to jq so we recover instead of silently losing history.
   if [[ -z "$current" || "$current" == '""' ]]; then
+    current="[]"
+  elif command -v jq &>/dev/null && ! echo "$current" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    echo "warning: high_issues_history was corrupt ($current); resetting to []" >&2
     current="[]"
   fi
   local updated
   if command -v jq &>/dev/null; then
-    updated=$(echo "$current" | jq --argjson c "$count" '. + [$c]' 2>/dev/null || echo "[$count]")
+    # -c (compact) is REQUIRED — jq pretty-prints by default, which would emit
+    # a multi-line array. update_state_field is line-based and can't safely write
+    # multi-line values, so the result must be single-line.
+    updated=$(echo "$current" | jq -c --argjson c "$count" '. + [$c]' 2>/dev/null || echo "[$count]")
   else
     # Fallback: simple string concatenation (assumes well-formed input)
     if [[ "$current" == "[]" ]]; then
@@ -335,6 +359,9 @@ append_high_history() {
       updated="${current%]}, $count]"
     fi
   fi
+  # Belt-and-suspenders: collapse any stray newlines so the YAML write stays
+  # single-line even if a future change reintroduces pretty-printed input.
+  updated="${updated//$'\n'/}"
   # Wrap in quotes so YAML parses it as a string, not a sequence
   update_state_field "high_issues_history" "\"$updated\""
 }
@@ -350,9 +377,13 @@ get_high_history() {
   fi
 }
 
-# Trajectory check: returns 0 (no progress) if the most recent value is NOT lower
-# than the value `window` iterations ago. Returns 1 (still progressing) otherwise.
-# Requires at least window+1 entries; returns 1 if there's not enough data yet.
+# Trajectory check.
+# Exit codes:
+#   0 — no progress (auto-stop is safe to fire)
+#   1 — still progressing OR not enough data yet
+#   2 — corrupt history (could not parse JSON); warning emitted to stderr
+# The caller (`&& check_no_progress`) treats any non-zero as "don't auto-stop",
+# so exit 2 is fail-safe but distinguishable when looking at logs.
 check_no_progress() {
   local history="$1"
   local window="${2:-1}"
@@ -360,13 +391,14 @@ check_no_progress() {
 import json, sys
 try:
     h = json.loads('''$history''')
-    if not isinstance(h, list) or len(h) < $window + 1:
-        sys.exit(1)
-    recent = h[-($window + 1):]
-    if recent[-1] < recent[0]:
-        sys.exit(1)
-    sys.exit(0)
-except Exception:
+except (ValueError, json.JSONDecodeError) as e:
+    sys.stderr.write('warning: high_issues_history is corrupt (' + str(e) + '); skipping trajectory check\n')
+    sys.exit(2)
+if not isinstance(h, list) or len(h) < $window + 1:
     sys.exit(1)
+recent = h[-($window + 1):]
+if recent[-1] < recent[0]:
+    sys.exit(1)
+sys.exit(0)
 "
 }

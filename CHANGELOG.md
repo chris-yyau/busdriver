@@ -1,3 +1,10 @@
+# [1.29.0](https://github.com/chris-yyau/busdriver/compare/v1.28.2...v1.29.0) (2026-05-06)
+
+
+### Features
+
+* **skills:** wire grill-me into Phase 1 as optional intensifier ([#68](https://github.com/chris-yyau/busdriver/issues/68)) ([13a5949](https://github.com/chris-yyau/busdriver/commit/13a59497fea63c846b1c372c7cb25fa7119b986c))
+
 ## [1.28.2](https://github.com/chris-yyau/busdriver/compare/v1.28.1...v1.28.2) (2026-05-06)
 
 

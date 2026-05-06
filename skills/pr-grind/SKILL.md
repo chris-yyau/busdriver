@@ -344,7 +344,53 @@ git push
 
 **BLOCKING GATE:** The `git commit` command will block until the litmus pre-commit review passes. Litmus may auto-iterate up to 10 times to fix issues silently. Do NOT use `--no-verify` to bypass this gate. If litmus repeatedly blocks, split the changes into smaller commits or bail.
 
+If you didn't change any files this round (no actionable findings — only waiting for bots to re-review), skip the commit/push and proceed to Step 6.5; HEAD is unchanged and the ledger will reflect bot acks against the existing HEAD.
+
+#### Step 6.5: Compute reviewer ack ledger (post-push)
+
+After any commit/push has settled, compute the per-bot ack ledger. This closes the slow-bot race: a bot's GitHub check can flip green seconds before the bot actually posts its review. Without this gate, Step 7 would declare the round complete and the loop would exit before the bot's findings landed.
+
+This block intentionally mirrors `agents/pr-grinder.md` Step 6.5 and the dispatcher's `dispatcher_ack_for_bot` in COMPLETION below. **All three copies must stay in sync** — if one changes, update the other two.
+
+```bash
+HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
+
+ack_for_bot() {
+  local login="$1"
+  local raw_output commit_id
+  if ! raw_output=$(gh api "repos/<owner>/<repo>/pulls/<PR_NUMBER>/reviews?per_page=100" 2>/dev/null); then
+    echo "stale"; return  # API failure — fail-CLOSED, never let merge race past unverified bot
+  fi
+  commit_id=$(printf '%s' "$raw_output" | jq -r \
+    --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty')
+  [ -z "$commit_id" ] && { echo "none"; return; }
+  local acked="${commit_id:0:8}"
+  if [ "$acked" = "$HEAD_SHA" ]; then echo "$acked"; else echo "stale"; fi
+}
+
+ROUND_ACKS="greptile-apps=$(ack_for_bot greptile-apps),cubic-dev-ai=$(ack_for_bot cubic-dev-ai),coderabbitai=$(ack_for_bot coderabbitai),copilot-pull-request-reviewer=$(ack_for_bot copilot-pull-request-reviewer)"
+echo "Ack ledger: $ROUND_ACKS"
+
+STALE_BOTS=$(echo "$ROUND_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
+if [ -n "$STALE_BOTS" ]; then
+  echo "⏳ Round not complete — waiting for: $STALE_BOTS"
+  echo "   No new commit needed; loop back to Step 1 to re-wait + re-collect on next round."
+  # Skip Step 7; the autonomous loop should re-dispatch Step 1 (waits for checks)
+  # which gives the slow bot(s) more time to post their review against HEAD ($HEAD_SHA).
+  # When every bot's ack equals HEAD or is `none`, this round-end check passes and
+  # Completion runs.
+  CONTINUE_LOOP=1
+else
+  CONTINUE_LOOP=0  # Round genuinely complete — proceed to Step 7 / Completion
+fi
+```
+
+If `CONTINUE_LOOP=1`, treat this round as `needs_more` (analogous to the subagent contract): if `--max` is reached without `CONTINUE_LOOP=0`, bail with reason `max iterations (<MAX>) reached without all bots acking HEAD; latest stale: <STALE_BOTS>`.
+
 #### Step 7: Checkpoint (only with --interactive)
+
+**Gate:** Step 7 only runs when Step 6.5 set `CONTINUE_LOOP=0` (every registered bot is `<HEAD-SHA>` or `none`). When `CONTINUE_LOOP=1`, the round is in waiting-for-bots state — skip Step 7 and re-dispatch Step 1 directly (mirrors the dispatcher's "needs_more without a new SHA" handling for stale-ack rounds).
 
 In autonomous mode (default), log a brief summary and continue immediately to the next round. In interactive mode, present to user and wait:
 

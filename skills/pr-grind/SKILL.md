@@ -360,19 +360,57 @@ OWNER=<owner>
 REPO=<repo>
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
 
+# One-shot fetches (avoid redundant gh api calls per bot). Fail-CLOSED on any error.
+ALL_THREADS=$(gh api graphql -f query='
+  query($owner:String!,$repo:String!,$pr:Int!) {
+    repository(owner:$owner,name:$repo) {
+      pullRequest(number:$pr) {
+        reviewThreads(first:100) {
+          nodes {
+            isResolved isOutdated
+            comments(first:1) { nodes { author { login } } }
+          }
+        }
+      }
+    }
+  }
+' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) \
+  || ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'
+ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || ALL_REVIEWS='[]'
+ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || ALL_COMMENTS='{"comments":[]}'
+
+# Three-tier ack — same algorithm as worker's `ack_for_bot` in agents/pr-grinder.md
+# and dispatcher's `dispatcher_ack_for_bot` in COMPLETION below.
 inline_ack_for_bot() {
   local login="$1"
-  local raw_output commit_id
-  if ! raw_output=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null); then
-    echo "stale"; return  # API failure — fail-CLOSED, never let merge race past unverified bot
-  fi
-  commit_id=$(printf '%s' "$raw_output" | jq -rs \
-    --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty') \
-    || { echo "stale"; return; }  # jq failure — fail-CLOSED
-  [ -z "$commit_id" ] && { echo "none"; return; }
-  local acked="${commit_id:0:8}"
-  if [ "$acked" = "$HEAD_SHA" ]; then echo "$acked"; else echo "stale"; fi
+  local unresolved outdated commit_id body_sha
+
+  # (A) Source 2 thread state — unresolved+non-outdated → stale; outdated-only → effectively acked
+  unresolved=$(printf '%s' "$ALL_THREADS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+      | select(.isResolved == false and .isOutdated == false)] | length' 2>/dev/null || echo 0)
+  if [ "$unresolved" -gt 0 ]; then echo "stale"; return; fi
+  outdated=$(printf '%s' "$ALL_THREADS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+      | select(.isOutdated == true)] | length' 2>/dev/null || echo 0)
+  if [ "$outdated" -gt 0 ]; then echo "$HEAD_SHA"; return; fi
+
+  # (B) /reviews commit_id — explicit per-commit review submission
+  commit_id=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty' 2>/dev/null || echo "")
+  if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ]; then echo "${commit_id:0:8}"; return; fi
+
+  # (C) Issue-comment body SHA fallback (Greptile-style — single comment updated per commit)
+  body_sha=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.comments[] | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null \
+    | grep -oE 'commit/[a-f0-9]{7,40}' | sed 's|.*/||' | tail -1 | cut -c1-8)
+  if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then echo "$body_sha"; return; fi
+
+  # No HEAD-ack signal — distinguish never-posted (none) from posted-on-older (stale)
+  if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; return; fi
+  echo "stale"
 }
 
 ROUND_ACKS="greptile-apps=$(inline_ack_for_bot greptile-apps),cubic-dev-ai=$(inline_ack_for_bot cubic-dev-ai),coderabbitai=$(inline_ack_for_bot coderabbitai),copilot-pull-request-reviewer=$(inline_ack_for_bot copilot-pull-request-reviewer)"
@@ -433,19 +471,52 @@ OWNER=<owner>
 REPO=<repo>
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
 
+# One-shot fetches — same three sources as worker's Step 6.5
+ALL_THREADS=$(gh api graphql -f query='
+  query($owner:String!,$repo:String!,$pr:Int!) {
+    repository(owner:$owner,name:$repo) {
+      pullRequest(number:$pr) {
+        reviewThreads(first:100) {
+          nodes {
+            isResolved isOutdated
+            comments(first:1) { nodes { author { login } } }
+          }
+        }
+      }
+    }
+  }
+' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) \
+  || ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'
+ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || ALL_REVIEWS='[]'
+ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || ALL_COMMENTS='{"comments":[]}'
+
+# Three-tier ack — same algorithm as worker `ack_for_bot` and inline `inline_ack_for_bot`.
 dispatcher_ack_for_bot() {
   local login="$1"
-  local raw_output commit_id
-  if ! raw_output=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null); then
-    echo "stale"; return  # API failure — fail-CLOSED, never let merge race past unverified bot
-  fi
-  commit_id=$(printf '%s' "$raw_output" | jq -rs \
-    --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty') \
-    || { echo "stale"; return; }  # jq failure — fail-CLOSED
-  [ -z "$commit_id" ] && { echo "none"; return; }
-  local acked="${commit_id:0:8}"
-  if [ "$acked" = "$HEAD_SHA" ]; then echo "$acked"; else echo "stale"; fi
+  local unresolved outdated commit_id body_sha
+
+  unresolved=$(printf '%s' "$ALL_THREADS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+      | select(.isResolved == false and .isOutdated == false)] | length' 2>/dev/null || echo 0)
+  if [ "$unresolved" -gt 0 ]; then echo "stale"; return; fi
+  outdated=$(printf '%s' "$ALL_THREADS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+      | select(.isOutdated == true)] | length' 2>/dev/null || echo 0)
+  if [ "$outdated" -gt 0 ]; then echo "$HEAD_SHA"; return; fi
+
+  commit_id=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty' 2>/dev/null || echo "")
+  if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ]; then echo "${commit_id:0:8}"; return; fi
+
+  body_sha=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.comments[] | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null \
+    | grep -oE 'commit/[a-f0-9]{7,40}' | sed 's|.*/||' | tail -1 | cut -c1-8)
+  if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then echo "$body_sha"; return; fi
+
+  if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; return; fi
+  echo "stale"
 }
 
 FRESH_ACKS="greptile-apps=$(dispatcher_ack_for_bot greptile-apps),cubic-dev-ai=$(dispatcher_ack_for_bot cubic-dev-ai),coderabbitai=$(dispatcher_ack_for_bot coderabbitai),copilot-pull-request-reviewer=$(dispatcher_ack_for_bot copilot-pull-request-reviewer)"

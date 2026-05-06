@@ -199,36 +199,71 @@ Now (and ONLY now, after any commit/push has settled) compute the ledger. Comput
 # the dispatcher will gate against.
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
 
+# One-shot fetches (avoid redundant gh api calls per bot). All three are
+# fail-CLOSED: any API failure substitutes a placeholder that produces
+# `stale` for every bot — never silently lets `clean` slip through.
+ALL_THREADS=$(gh api graphql -f query='
+  query($owner:String!,$repo:String!,$pr:Int!) {
+    repository(owner:$owner,name:$repo) {
+      pullRequest(number:$pr) {
+        reviewThreads(first:100) {
+          nodes {
+            isResolved isOutdated
+            comments(first:1) { nodes { author { login } } }
+          }
+        }
+      }
+    }
+  }
+' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" 2>/dev/null) \
+  || ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'
+# --paginate so `last` runs across the aggregated array, not per page
+# (jq -rs slurps multi-page output into a single array of arrays first)
+ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews" 2>/dev/null) || ALL_REVIEWS='[]'
+ALL_COMMENTS=$(gh pr view "$PR_NUMBER" --comments --json comments 2>/dev/null) || ALL_COMMENTS='{"comments":[]}'
+
 # Per-bot ack — emits one of: <short-sha> | none | stale
-# Reads the LAST review submission by this bot (any state — COMMENTED,
-# APPROVED, CHANGES_REQUESTED) and compares its commit_id to HEAD.
-#
-# NOTE: no --paginate. With --paginate + --jq, the filter runs per page,
-# making `last` per-page rather than across the aggregated array — the
-# captured commit_id may belong to a later page's last review by a
-# different author, or be empty. Default per_page is 30; we explicitly
-# request the max (100) and let busy PRs fall back to "treat as stale"
-# on the rare overflow rather than silently miscomparing.
+# Three-tier check: (A) Source 2 thread state, (B) /reviews commit_id, (C) issue-comment body SHA
 ack_for_bot() {
   local login="$1"
-  local raw_output commit_id
+  local unresolved outdated commit_id body_sha
 
-  # Capture both stdout and exit status. gh api can fail (auth, rate-limit,
-  # transient 5xx); without distinguishing, an empty result would look like
-  # "bot doesn't operate" — which the dispatcher treats as ack-clear and
-  # would let `clean` slip through. Treat API failure as `stale` instead
-  # (conservative — never lets the merge race past an unverified bot).
-  if ! raw_output=$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" 2>/dev/null); then
-    echo "stale"; return
-  fi
+  # (A) Source 2: are there unresolved+non-outdated threads from this bot?
+  # Bots like Copilot post their findings as inline threads. If unresolved+
+  # non-outdated, those are real findings to address → stale.
+  # If only OUTDATED threads exist, the bot's prior findings were addressed
+  # by subsequent code changes → effectively acked (the bot may not bother
+  # re-reviewing for trivial cleanup commits).
+  unresolved=$(printf '%s' "$ALL_THREADS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+      | select(.isResolved == false and .isOutdated == false)] | length' 2>/dev/null || echo 0)
+  if [ "$unresolved" -gt 0 ]; then echo "stale"; return; fi
+  outdated=$(printf '%s' "$ALL_THREADS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+      | select(.isOutdated == true)] | length' 2>/dev/null || echo 0)
+  if [ "$outdated" -gt 0 ]; then echo "$HEAD_SHA"; return; fi
 
-  commit_id=$(printf '%s' "$raw_output" | jq -r \
-    --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty')
+  # (B) /reviews: did the bot explicitly submit a review on HEAD?
+  commit_id=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty' 2>/dev/null || echo "")
+  if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ]; then echo "${commit_id:0:8}"; return; fi
 
-  [ -z "$commit_id" ] && { echo "none"; return; }
-  local acked="${commit_id:0:8}"
-  if [ "$acked" = "$HEAD_SHA" ]; then echo "$acked"; else echo "stale"; fi
+  # (C) Issue-comment body SHA: bots like Greptile update a single comment with
+  # a "Last reviewed commit: [sha](.../commit/<sha>)" link instead of submitting
+  # a new /reviews entry per commit. Parse the body for the most recent commit/<sha>
+  # link and treat it as authoritative if it matches HEAD.
+  body_sha=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.comments[] | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null \
+    | grep -oE 'commit/[a-f0-9]{7,40}' | sed 's|.*/||' | tail -1 | cut -c1-8)
+  if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then echo "$body_sha"; return; fi
+
+  # No HEAD-ack signal anywhere. Did the bot post on this PR at all?
+  # If never (no /reviews entry, no body SHA reference) → bot doesn't operate here → none.
+  # Otherwise (posted on an older commit, no HEAD signal yet) → stale.
+  if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; return; fi
+  echo "stale"
 }
 
 ACKS="greptile-apps=$(ack_for_bot greptile-apps),cubic-dev-ai=$(ack_for_bot cubic-dev-ai),coderabbitai=$(ack_for_bot coderabbitai),copilot-pull-request-reviewer=$(ack_for_bot copilot-pull-request-reviewer)"

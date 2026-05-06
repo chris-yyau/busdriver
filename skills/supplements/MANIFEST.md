@@ -3,7 +3,7 @@
 > - **Supplement:** Separate file in `skills/supplements/` loaded alongside the original via orchestrator routing. Zero merge conflicts.
 > - **Opt-in:** Supplement that is NOT loaded by default — only when explicitly invoked or triggered.
 >
-> **How supplements load:** Supplements are NOT auto-loaded by hooks. When invoking a skill or dispatching an agent listed in a supplement's `targets:` frontmatter, Claude must Read the supplement file from `skills/supplements/` and apply its content alongside the targeted skill. The orchestrator's "Supplement Loading Protocol" section provides the instruction. Opt-in supplements require an explicit user trigger phrase.
+> **How supplements load:** Supplements are NOT auto-loaded by hooks. When invoking a skill or dispatching an agent listed in a supplement's `targets:` frontmatter, Claude must Read the supplement file from `skills/supplements/` and apply its content alongside the targeted skill. The orchestrator's "Supplement Loading Protocol" section provides the instruction. Opt-in supplements require an explicit trigger condition (a user trigger phrase OR an auto-memory signal listed in the manifest's Trigger column).
 >
 > **Upstream tracking:** Fork-edit state is tracked in `.upstream-sources.json` at the repo root, not in this file.
 
@@ -34,6 +34,7 @@
 |------|---------|---------|--------|-------|
 | `design-anti-slop.md` | `document-skills:frontend-design`, `busdriver:frontend-patterns`, `ui-ux-pro-max` | "avoid AI slop", "make it unique", "don't make it generic" | gstack /design-consultation | 2026-03-24 |
 | `directory-freeze.md` | `busdriver:systematic-debugging` | "freeze", "lock this dir" | gstack /freeze | 2026-03-24 |
+| `beginner-mode.md` | `busdriver:brainstorming`, `busdriver:grill-me` | "I'm new to this", "explain like I'm a beginner", "beginner mode", "what does X mean", "I don't understand X" + auto-memory user-knowledge-gap entries | in-house (grill-me integration) | 2026-05-05 |
 
 ## Rejected (Roundtable Decision)
 

@@ -344,9 +344,103 @@ git push
 
 **BLOCKING GATE:** The `git commit` command will block until the litmus pre-commit review passes. Litmus may auto-iterate up to 10 times to fix issues silently. Do NOT use `--no-verify` to bypass this gate. If litmus repeatedly blocks, split the changes into smaller commits or bail.
 
-#### Step 7: Checkpoint (only with --interactive)
+If you didn't change any files this round (no actionable findings — only waiting for bots to re-review), skip the commit/push and proceed to Step 6.5; HEAD is unchanged and the ledger will reflect bot acks against the existing HEAD.
 
-In autonomous mode (default), log a brief summary and continue immediately to the next round. In interactive mode, present to user and wait:
+#### Step 6.5: Compute reviewer ack ledger (post-push)
+
+After any commit/push has settled, compute the per-bot ack ledger. This closes the slow-bot race: a bot's GitHub check can flip green seconds before the bot actually posts its review. Without this gate, Step 7 would declare the round complete and the loop would exit before the bot's findings landed.
+
+This block intentionally mirrors `agents/pr-grinder.md` Step 6.5 (the Sonnet worker copy) and the dispatcher's `dispatcher_ack_for_bot` in COMPLETION below. **All three copies must stay in sync** — if one changes, update the other two. Function name (`inline_ack_for_bot`) and result-var name (`ROUND_ACKS`) differ from the worker/dispatcher to avoid namespace shadowing if multiple snippets ever run in the same Bash invocation.
+
+The `<PR_NUMBER>`, `<owner>`, `<repo>` placeholders below follow the same template-substitution convention used by COMPLETION — Claude substitutes the literal owner / repo / PR-number values at run time before executing the bash.
+
+```bash
+PR=<PR_NUMBER>
+OWNER=<owner>
+REPO=<repo>
+HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
+
+# One-shot fetches. FETCH_OK tracks any source failure; if any source failed,
+# inline_ack_for_bot fails-CLOSED to `stale` for every bot (fail-OPEN
+# regression guard — empty-default fallbacks would silently produce `none`
+# and let `clean` slip through).
+FETCH_OK=1
+# Source 2: --paginate + cursor — large PRs can exceed reviewThreads(first:100)
+ALL_THREADS=$(gh api graphql --paginate -f query='
+  query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String) {
+    repository(owner:$owner,name:$repo) {
+      pullRequest(number:$pr) {
+        reviewThreads(first:100, after:$endCursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            isResolved isOutdated
+            comments(first:1) { nodes { author { login } } }
+          }
+        }
+      }
+    }
+  }
+' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) || FETCH_OK=0
+ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || FETCH_OK=0
+ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH_OK=0
+
+# Three-tier ack — same algorithm as worker's `ack_for_bot` in agents/pr-grinder.md
+# and dispatcher's `dispatcher_ack_for_bot` in COMPLETION below.
+inline_ack_for_bot() {
+  local login="$1"
+  local unresolved outdated commit_id body_sha
+
+  # Fail-CLOSED on any source-fetch failure
+  if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; return; fi
+
+  # (A) Source 2 thread state — unresolved+non-outdated → stale; outdated-only → effectively acked
+  # jq -s slurps paginated graphql output (multiple JSON docs → single array)
+  unresolved=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+      | select(.isResolved == false and .isOutdated == false)] | length' 2>/dev/null || echo 0)
+  if [ "$unresolved" -gt 0 ]; then echo "stale"; return; fi
+  outdated=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+      | select(.isOutdated == true)] | length' 2>/dev/null || echo 0)
+  if [ "$outdated" -gt 0 ]; then echo "$HEAD_SHA"; return; fi
+
+  # (B) /reviews commit_id — explicit per-commit review submission
+  commit_id=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty' 2>/dev/null || echo "")
+  if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ]; then echo "${commit_id:0:8}"; return; fi
+
+  # (C) Issue-comment body SHA fallback (Greptile-style — single comment updated per commit)
+  body_sha=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.comments[] | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null \
+    | grep -oE 'commit/[a-f0-9]{7,40}' | sed 's|.*/||' | tail -1 | cut -c1-8)
+  if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then echo "$body_sha"; return; fi
+
+  # No HEAD-ack signal — distinguish never-posted (none) from posted-on-older (stale)
+  if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; return; fi
+  echo "stale"
+}
+
+ROUND_ACKS="greptile-apps=$(inline_ack_for_bot greptile-apps),cubic-dev-ai=$(inline_ack_for_bot cubic-dev-ai),coderabbitai=$(inline_ack_for_bot coderabbitai),copilot-pull-request-reviewer=$(inline_ack_for_bot copilot-pull-request-reviewer)"
+echo "Ack ledger: $ROUND_ACKS"
+
+STALE_BOTS=$(echo "$ROUND_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
+echo "STALE_BOTS: $STALE_BOTS"
+```
+
+**Acting on the result (instruction to Claude, not shell control flow):** the `STALE_BOTS` variable lives only inside the Bash invocation that runs the snippet above — it does NOT persist into a subsequent inline-loop iteration. After the snippet runs, **Claude reads the printed `Ack ledger:` and `STALE_BOTS:` lines from stdout** and decides:
+
+- **STALE_BOTS empty** → round genuinely complete; proceed to Step 7 (autonomous summary or interactive checkpoint), which will either continue to the next round or dispatch Completion depending on whether checks are green and all findings are resolved.
+- **STALE_BOTS non-empty** → round is in waiting-for-bots state; **skip Step 7 entirely** and re-dispatch Step 1 directly (analogous to the Sonnet subagent's `needs_more + RESULT_COMMIT_SHA=none + stale-acks` flow that the dispatcher's relaxed Invariant 1 permits). Increment the round counter as normal.
+
+**Interaction with `--max`:** wait-rounds DO count against `--max` (default 5). If a slow bot consistently takes longer than ~5 minutes per round and never catches up, the loop exhausts and bails with reason `max iterations (<MAX>) reached without all bots acking HEAD; latest stale: <STALE_BOTS>`. Increase `--max` if you're grinding a PR with known-slow reviewer bots, or accept the bail and re-run later.
+
+#### Step 7: Round summary / checkpoint
+
+**Gate:** Step 7 only runs when Step 6.5's `STALE_BOTS` was empty (every registered bot is `<HEAD-SHA>` or `none`). When `STALE_BOTS` is non-empty, the round is in waiting-for-bots state — skip Step 7 entirely and re-dispatch Step 1 directly (mirrors the dispatcher's relaxed Invariant 1 handling for stale-ack rounds).
+
+In autonomous mode (default), log a brief summary and continue immediately to the next round (or to Completion if every check is green and no findings remain). In interactive mode (`--interactive`), present to user and wait:
 
 ```text
 ## PR Grind — Round N/MAX complete
@@ -386,18 +480,56 @@ OWNER=<owner>
 REPO=<repo>
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
 
+# One-shot fetches — same three sources as worker's Step 6.5.
+# FETCH_OK tracks failure; fail-CLOSED to `stale` on any source failure.
+FETCH_OK=1
+ALL_THREADS=$(gh api graphql --paginate -f query='
+  query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String) {
+    repository(owner:$owner,name:$repo) {
+      pullRequest(number:$pr) {
+        reviewThreads(first:100, after:$endCursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            isResolved isOutdated
+            comments(first:1) { nodes { author { login } } }
+          }
+        }
+      }
+    }
+  }
+' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) || FETCH_OK=0
+ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || FETCH_OK=0
+ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH_OK=0
+
+# Three-tier ack — same algorithm as worker `ack_for_bot` and inline `inline_ack_for_bot`.
 dispatcher_ack_for_bot() {
   local login="$1"
-  local raw_output commit_id
-  if ! raw_output=$(gh api "repos/$OWNER/$REPO/pulls/$PR/reviews?per_page=100" 2>/dev/null); then
-    echo "stale"; return  # API failure — fail-CLOSED, never let merge race past unverified bot
-  fi
-  commit_id=$(printf '%s' "$raw_output" | jq -r \
-    --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty')
-  [ -z "$commit_id" ] && { echo "none"; return; }
-  local acked="${commit_id:0:8}"
-  if [ "$acked" = "$HEAD_SHA" ]; then echo "$acked"; else echo "stale"; fi
+  local unresolved outdated commit_id body_sha
+
+  if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; return; fi
+
+  unresolved=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+      | select(.isResolved == false and .isOutdated == false)] | length' 2>/dev/null || echo 0)
+  if [ "$unresolved" -gt 0 ]; then echo "stale"; return; fi
+  outdated=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+      | select(.isOutdated == true)] | length' 2>/dev/null || echo 0)
+  if [ "$outdated" -gt 0 ]; then echo "$HEAD_SHA"; return; fi
+
+  commit_id=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty' 2>/dev/null || echo "")
+  if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ]; then echo "${commit_id:0:8}"; return; fi
+
+  body_sha=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.comments[] | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null \
+    | grep -oE 'commit/[a-f0-9]{7,40}' | sed 's|.*/||' | tail -1 | cut -c1-8)
+  if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then echo "$body_sha"; return; fi
+
+  if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; return; fi
+  echo "stale"
 }
 
 FRESH_ACKS="greptile-apps=$(dispatcher_ack_for_bot greptile-apps),cubic-dev-ai=$(dispatcher_ack_for_bot cubic-dev-ai),coderabbitai=$(dispatcher_ack_for_bot coderabbitai),copilot-pull-request-reviewer=$(dispatcher_ack_for_bot copilot-pull-request-reviewer)"

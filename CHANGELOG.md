@@ -1,3 +1,10 @@
+## [1.28.1](https://github.com/chris-yyau/busdriver/compare/v1.28.0...v1.28.1) (2026-05-06)
+
+
+### Bug Fixes
+
+* **blueprint-review:** repair high_issues_history YAML serialization + add regression test ([#66](https://github.com/chris-yyau/busdriver/issues/66)) ([3c4e75a](https://github.com/chris-yyau/busdriver/commit/3c4e75adc0b90291723a7f033a724b374b7fa2fd))
+
 # [1.28.0](https://github.com/chris-yyau/busdriver/compare/v1.27.1...v1.28.0) (2026-05-05)
 
 

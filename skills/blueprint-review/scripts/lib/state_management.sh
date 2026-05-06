@@ -352,11 +352,19 @@ append_high_history() {
     # multi-line values, so the result must be single-line.
     updated=$(echo "$current" | jq -c --argjson c "$count" '. + [$c]' 2>/dev/null || echo "[$count]")
   else
-    # Fallback: simple string concatenation (assumes well-formed input)
+    # Fallback: simple string concatenation (jq absent on this host).
+    # Without jq we can't fully validate JSON, so apply a minimal well-formedness
+    # guard — must start with [ AND end with ] — and reset to [] otherwise.
+    # Without this, a truncated value like "[" (the corruption this PR repairs)
+    # would yield "[, $count]" via ${current%]} (no-op when no trailing ]),
+    # which is invalid JSON and gets written back to state.md.
     if [[ "$current" == "[]" ]]; then
       updated="[$count]"
-    else
+    elif [[ "$current" =~ ^\[.*\]$ ]]; then
       updated="${current%]}, $count]"
+    else
+      echo "warning: high_issues_history was corrupt ($current); resetting to []" >&2
+      updated="[$count]"
     fi
   fi
   # Belt-and-suspenders: collapse any stray newlines so the YAML write stays
@@ -391,8 +399,11 @@ get_high_history() {
 check_no_progress() {
   local history="$1"
   local window="${2:-1}"
-  if ! [[ "$window" =~ ^[0-9]+$ ]]; then
-    echo "warning: check_no_progress window must be numeric (got: $window)" >&2
+  # Reject 0 and non-numerics. window=0 would produce a degenerate slice
+  # (h[-1:] — single element compared to itself, always "no progress"),
+  # firing auto-stop on a single iteration.
+  if ! [[ "$window" =~ ^[1-9][0-9]*$ ]]; then
+    echo "warning: check_no_progress window must be a positive integer (got: $window)" >&2
     return 2
   fi
   _CNP_HISTORY="$history" _CNP_WINDOW="$window" python3 -c '

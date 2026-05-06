@@ -203,8 +203,17 @@ STDERR=$(check_no_progress "[1,2]" "1; import os" 2>&1 >/dev/null)
 RC=$?
 set -e
 assert_eq "non-numeric window → exit 2, never reaches python" "2" "$RC"
-assert_true "stderr warns about numeric window guard" \
-  "$(echo "$STDERR" | grep -qi numeric && echo true || echo false)"
+assert_true "stderr warns about positive-integer window guard" \
+  "$(echo "$STDERR" | grep -qiE 'positive|numeric' && echo true || echo false)"
+
+# window=0 must be rejected — would otherwise produce a degenerate
+# h[-1:] slice (single element compared to itself → always "no progress"),
+# firing auto-stop on a single-iteration run.
+set +e
+STDERR=$(check_no_progress "[1,2,3]" "0" 2>&1 >/dev/null)
+RC=$?
+set -e
+assert_eq "window=0 → exit 2 (rejected as non-positive)" "2" "$RC"
 
 # ── Summary ───────────────────────────────────────────────────────────
 echo ""

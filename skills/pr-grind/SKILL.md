@@ -59,7 +59,8 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
 START
   ├── Resolve PR # (arg, current branch, or ask user)
   ├── Step 0: Create ephemeral worktree
-  └── Initialize: PRIOR_COMMIT_SHA=none, PRIOR_ATTEMPTS=[]
+  └── Initialize: PRIOR_COMMIT_SHA=none, PRIOR_ATTEMPTS=[],
+                   PRIOR_REVIEWER_ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none"
 
 LOOP for round in 1..MAX:
   │
@@ -76,29 +77,42 @@ LOOP for round in 1..MAX:
   │
   ├── Dispatch (default path):
   │     Agent(subagent_type="pr-grinder", prompt=<context block>)
-  │     ↳ Subagent does ONE round (Steps 1–6), returns RESULT_* tags
+  │     ↳ Subagent does ONE round (Steps 1–6.5), returns RESULT_* tags
   │
   ├── Parse subagent output:
-  │     RESULT_STATUS=clean       → break loop, go to COMPLETION
+  │     RESULT_STATUS=clean       → validate invariants, go to COMPLETION
   │     RESULT_STATUS=bail        → break loop, go to BAIL
   │     RESULT_STATUS=needs_more  → validate invariant, update state, continue
   │
-  ├── Invariant check (fail-CLOSED):
-  │     If RESULT_STATUS=needs_more AND RESULT_COMMIT_SHA=none →
-  │       treat as BAIL with reason "subagent emitted needs_more
-  │       without a commit SHA — incremental filter would be
-  │       disabled, risking duplicate fixes / premature clean".
-  │     The semantic of needs_more is "I pushed a commit; check it
-  │     and run another round." Without a SHA, the contract is broken.
+  ├── Invariant checks (fail-CLOSED — both must hold):
+  │     1. If RESULT_STATUS=needs_more AND RESULT_COMMIT_SHA=none AND
+  │        RESULT_REVIEWER_ACKS contains no `stale` entries →
+  │        BAIL with reason "subagent emitted needs_more without a commit
+  │        SHA and without any stale ack — neither a fix nor a wait-for-
+  │        bots is justified, so the loop has no progress signal".
+  │        Legitimate `needs_more` rounds always have either a new commit
+  │        SHA (worker pushed a fix) OR at least one `stale` ack (worker
+  │        is waiting for a bot to re-review). A round with neither is
+  │        broken — re-dispatching would loop forever on no progress.
+  │     2. If RESULT_STATUS=clean AND any registered bot in
+  │        RESULT_REVIEWER_ACKS has value `stale` →
+  │        BAIL with reason "subagent reported clean but reviewer ack
+  │        ledger has stale entries: <list>". Slow-Greptile / slow-Cubic
+  │        race protection — clean cannot ship while a registered bot
+  │        hasn't acked HEAD.
   │
   └── Update state:
-        PRIOR_COMMIT_SHA = RESULT_COMMIT_SHA
-        PRIOR_ATTEMPTS  += "Round N: fixes=<RESULT_FIXES>; failures=<RESULT_REMAINING>"
-        # Both fields are required — the subagent's flaky-check bail rule
-        # parses `failures=` from PRIOR_ATTEMPTS to detect a check that has
-        # failed across 3 rounds. Dropping `failures=` makes the bail
-        # unreachable and the loop will grind to MAX rounds on a flaky test
-        # instead of stopping early.
+        PRIOR_COMMIT_SHA    = RESULT_COMMIT_SHA
+        PRIOR_REVIEWER_ACKS = RESULT_REVIEWER_ACKS
+        PRIOR_ATTEMPTS     += "Round N: fixes=<RESULT_FIXES>; failures=<RESULT_REMAINING>; acks=<RESULT_REVIEWER_ACKS>"
+        # failures= is required — subagent's flaky-check bail (3+ rounds)
+        # reads it. Dropping it makes that bail unreachable and the loop
+        # will grind to MAX rounds instead of stopping early on a flaky
+        # check.
+        # acks= is preserved for diagnostics / human review of the loop
+        # transcript; the worker does NOT bail on stale-ack streaks (every
+        # commit-round emits all-stale by design, so a streak is the
+        # healthy case). Genuinely stuck bots fall out via MAX iterations.
 
 # Loop exits naturally when round > MAX without ever seeing RESULT_STATUS=clean
 # → fail-CLOSED to BAIL, NOT to COMPLETION. The PR isn't clean; we just ran
@@ -107,6 +121,9 @@ ON_LOOP_EXHAUSTED → go to BAIL with reason "max iterations (<MAX>) reached wit
 
 COMPLETION:
   ├── Verify checks one more time (defense in depth)
+  ├── Recompute ack ledger and assert all entries are <HEAD-SHA> or `none`
+  │   (defense in depth — invariant check 2 already gated this, but the
+  │   bot may have re-posted between subagent return and merge time)
   ├── Write .claude/pr-grind-clean.local at repo root
   ├── default → gh pr merge --squash --delete-branch
   ├── --no-merge → write marker to original-worktree repo root, report ready
@@ -153,24 +170,26 @@ Agent invocation:
     WORKTREE_DIR=<absolute path>
     ROUND=<N> of <MAX>
     PRIOR_COMMIT_SHA=<sha or "none">
+    PRIOR_REVIEWER_ACKS=<login=value,login=value,...> (round 1: every registered bot = none)
     PRIOR_ATTEMPTS:
-      - Round 1: fixes=<summary>; failures=<failed-check-names or "none">
-      - Round 2: fixes=<summary>; failures=<failed-check-names or "none">
+      - Round 1: fixes=<summary>; failures=<failed-check-names or "none">; acks=<login=value,...>
+      - Round 2: fixes=<summary>; failures=<failed-check-names or "none">; acks=<login=value,...>
       ...
 
     Execute one round per agents/pr-grinder.md. Return RESULT_* tags.
 ```
 
-After the subagent returns, **scan the response for lines matching `^RESULT_<NAME>: ` and extract each tag's value**. Don't rely on a fixed line count — `RESULT_BAIL_REASON` is only present on bail, so the block is 4 lines on `clean`/`needs_more` and 5 lines on `bail`. Parsing by tag prefix avoids that off-by-one. If the same tag appears multiple times (e.g., the subagent quotes a review comment that happens to contain `RESULT_STATUS:`), use the **last** occurrence — the canonical block is at the end of the response.
+After the subagent returns, **scan the response for lines matching `^RESULT_<NAME>: ` and extract each tag's value**. Don't rely on a fixed line count — `RESULT_BAIL_REASON` is only present on bail. Parsing by tag prefix is robust to additions/omissions. If the same tag appears multiple times (e.g., the subagent quotes a review comment that happens to contain `RESULT_STATUS:`), use the **last** occurrence — the canonical block is at the end of the response.
 
 The full tag set:
 
 ```
-RESULT_STATUS: clean | needs_more | bail        (always present)
-RESULT_COMMIT_SHA: <sha or "none">              (always present)
-RESULT_FIXES: <one-line summary>                (always present)
-RESULT_REMAINING: <one-line or "none">          (always present)
-RESULT_BAIL_REASON: <one-line>                  (present only when status=bail)
+RESULT_STATUS: clean | needs_more | bail              (always present)
+RESULT_COMMIT_SHA: <sha or "none">                    (always present)
+RESULT_FIXES: <one-line summary>                      (always present)
+RESULT_REMAINING: <one-line or "none">                (always present)
+RESULT_REVIEWER_ACKS: <login=value,login=value,...>   (always present; values: <short-sha> | none | stale; early-bail paths emit the all-`none` default initialized before Step 0)
+RESULT_BAIL_REASON: <one-line>                        (present only when status=bail)
 ```
 
 If `RESULT_STATUS` is missing or its value isn't one of the three valid options, treat as `bail` with reason "subagent output unparseable" — do not guess.
@@ -277,7 +296,12 @@ gh pr view <PR_NUMBER> --comments --json comments \
   --jq '.comments[] | {author: .author.login, body: .body}'
 ```
 
-**On filtering:** Don't filter threads by "latest comment newer than `PRIOR_COMMIT_SHA`" — that drops unresolved threads whose latest reply happens to be old, even though they're still actionable (a reviewer can post a comment, you push a commit that *doesn't* address it, and the thread stays unresolved with an "old" timestamp). The `isResolved == false AND isOutdated == false` GraphQL filter is sufficient. Re-fetching the full unresolved set each round is cheap (single GraphQL query) and correct; the cost we cared about was conversation-context accumulation, not API traffic, and per-round subagent dispatch already solves that.
+**On filtering:** Don't filter by "latest comment newer than `PRIOR_COMMIT_SHA`" — that drops unresolved threads whose latest reply happens to be old, even though they're still actionable (a reviewer can post a comment, you push a commit that *doesn't* address it, and the thread stays unresolved with an "old" timestamp). Use **per-source** staleness signals, not one filter that covers all:
+- **Source 2 (inline review threads):** `isResolved == false AND isOutdated == false`
+- **Source 3 (review-level comments):** `state == CHANGES_REQUESTED` or `COMMENTED`; an explicit `APPROVED` from the same reviewer clears prior CHANGES_REQUESTED
+- **Source 4 (issue comments):** no GitHub-side flag exists. Each bot's latest comment body is canonical; older comments from same bot are superseded. **Greptile and CodeRabbit-Pro post their findings only here** — running Source 2 alone misses them. See `agents/pr-grinder.md` Step 2 for concrete bot-by-bot parsing rules.
+
+Re-fetching all four sources each round is cheap; the cost we cared about was conversation-context accumulation, not API traffic, and per-round subagent dispatch already solves that.
 
 #### Step 3: Triage
 
@@ -348,6 +372,42 @@ Continue grinding?
 4. No unresolved actionable comments from any source
 5. No new comments arrived after your last push (wait for the full cycle)
 6. Advisory check issues either fixed or noted as beyond PR scope
+7. **Reviewer ack ledger**: every registered bot (Greptile, Cubic, CodeRabbit, Copilot) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings.
+
+**Re-query the ack ledger fresh (REQUIRED — defense in depth against late posts between subagent return and merge time):**
+
+The dispatcher must re-run the same `ack_for_bot` lookup the worker used in Step 6.5, against the live `/reviews` endpoint, with HEAD recomputed against the current branch state. Just re-parsing `$RESULT_REVIEWER_ACKS` would only validate the worker's snapshot — it can't catch a bot that finished re-reviewing in the seconds between subagent return and merge.
+
+The `<PR_NUMBER>`, `<owner>`, `<repo>` placeholders below follow the same template-substitution convention as `<PR_NUMBER>` elsewhere in this Completion section — Claude substitutes the literal owner / repo / PR-number values at run time before executing the bash.
+
+```bash
+PR=<PR_NUMBER>
+OWNER=<owner>
+REPO=<repo>
+HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
+
+dispatcher_ack_for_bot() {
+  local login="$1"
+  local raw_output commit_id
+  if ! raw_output=$(gh api "repos/$OWNER/$REPO/pulls/$PR/reviews?per_page=100" 2>/dev/null); then
+    echo "stale"; return  # API failure — fail-CLOSED, never let merge race past unverified bot
+  fi
+  commit_id=$(printf '%s' "$raw_output" | jq -r \
+    --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty')
+  [ -z "$commit_id" ] && { echo "none"; return; }
+  local acked="${commit_id:0:8}"
+  if [ "$acked" = "$HEAD_SHA" ]; then echo "$acked"; else echo "stale"; fi
+}
+
+FRESH_ACKS="greptile-apps=$(dispatcher_ack_for_bot greptile-apps),cubic-dev-ai=$(dispatcher_ack_for_bot cubic-dev-ai),coderabbitai=$(dispatcher_ack_for_bot coderabbitai),copilot-pull-request-reviewer=$(dispatcher_ack_for_bot copilot-pull-request-reviewer)"
+STALE_BOTS=$(echo "$FRESH_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
+if [ -n "$STALE_BOTS" ]; then
+  echo "❌ BLOCKED: registered reviewer(s) with stale ack at merge time: $STALE_BOTS"
+  echo "   Re-run the loop or wait for the bot(s) to ack HEAD ($HEAD_SHA)."
+  exit 1
+fi
+```
 
 **Verify checks are green (REQUIRED — do NOT skip, even if subagent said clean):**
 ```bash

@@ -257,11 +257,14 @@ STDERR=$(DESIGN_REVIEW_STALE_HOURS="2; <import>" check_existing_review 2>&1 >/de
 RC=$?
 set -e
 assert_eq "non-numeric DESIGN_REVIEW_STALE_HOURS → return 1 (treat as fresh)" "1" "$RC"
-assert_true "stderr warns about numeric DESIGN_REVIEW_STALE_HOURS" \
+assert_true "stderr warns about non-numeric DESIGN_REVIEW_STALE_HOURS" \
   "$(echo "$STDERR" | grep -qi numeric && echo true || echo false)"
 
 # Restore the original review pointer so the summary block remains stable
-# if anyone extends the test below this point.
+# if anyone extends the test below this point. Also clean up the auxiliary
+# test-cer review directory so the cwd (the mktemp sandbox) doesn't leak
+# state into any later assertions added below.
+rm -rf "docs/reviews/test-cer"
 echo "test-slug" > .claude/current-design-review.local
 
 # ── Summary ───────────────────────────────────────────────────────────

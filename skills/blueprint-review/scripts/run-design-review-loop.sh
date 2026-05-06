@@ -56,8 +56,9 @@ generate_run_id() {
 # Compute SHA-256 of design spec for freshness contract
 # Fallback chain: shasum (macOS) → sha256sum (Linux) → python3
 #
-# $file is passed via env var — NOT interpolated into the python source —
-# so a path containing `'` or python fragments cannot escape the heredoc.
+# $file is passed via env var — NOT interpolated into the python source
+# string — so a path containing `'` or python fragments cannot escape the
+# python -c body and execute arbitrary code.
 compute_spec_hash() {
   local file="$1"
   if command -v shasum &>/dev/null; then
@@ -282,8 +283,9 @@ $DESIGN_CONTENT
         if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$GEMINI_RAW_FILE" > "${GEMINI_OUTPUT_FILE}.pending" 2>/dev/null; then
           # Inject freshness metadata (Critic #2)
           # Validates JSON has expected structure before injecting.
-          # All values are passed via env vars (single-quoted heredoc) so paths
-          # or hash strings containing `'` cannot escape into python source.
+          # All values are passed via env vars (single-quoted python -c source
+          # string) so paths or hash strings containing `'` cannot escape into
+          # the python body.
           # || true: don't let injection failure kill subshell under set -e
           _MIM_PENDING="${GEMINI_OUTPUT_FILE}.pending" \
           _MIM_RUN_ID="$RUN_ID" \
@@ -340,8 +342,9 @@ with open(pending, "w") as f:
         if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$CODEX_RAW_FILE" > "${CODEX_OUTPUT_FILE}.pending" 2>/dev/null; then
           # Inject freshness metadata (Critic #2)
           # Validates JSON has expected structure before injecting.
-          # All values are passed via env vars (single-quoted heredoc) so paths
-          # or hash strings containing `'` cannot escape into python source.
+          # All values are passed via env vars (single-quoted python -c source
+          # string) so paths or hash strings containing `'` cannot escape into
+          # the python body.
           # || true: don't let injection failure kill subshell under set -e
           _MIM_PENDING="${CODEX_OUTPUT_FILE}.pending" \
           _MIM_RUN_ID="$RUN_ID" \

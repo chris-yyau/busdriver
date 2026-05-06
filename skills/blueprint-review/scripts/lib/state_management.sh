@@ -245,16 +245,17 @@ check_existing_review() {
   # (older than DESIGN_REVIEW_STALE_HOURS) is stale even if it has progress.
   #
   # last_ts and stale_hours are passed via env vars — NOT interpolated into
-  # the python source — so a state.md value containing `'` or python
-  # fragments cannot escape the heredoc and execute arbitrary code.
+  # the python source string — so a state.md value containing `'` or python
+  # fragments cannot escape the python -c body and execute arbitrary code.
   local stale_hours="${DESIGN_REVIEW_STALE_HOURS:-2}"
-  # Accept what python float() would parse: signed decimals and scientific
-  # notation. Pre-fix this validator did not exist and the value flowed
-  # straight into a python heredoc — a literal `import os; ...` payload
-  # would have executed. Rejecting only "definitely-not-a-number" keeps the
-  # injection door shut without breaking unusual-but-valid configs (`+2`,
-  # `1e2`, etc.).
-  if ! [[ "$stale_hours" =~ ^[+-]?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$ ]]; then
+  # Accept what python float() would parse: signed decimals (including the
+  # bare-leading-dot form `.5` and bare-trailing-dot form `2.`) and
+  # scientific notation. Pre-fix this validator did not exist and the value
+  # flowed straight into a python -c source string — a literal `import os; …`
+  # payload would have executed. Rejecting only "definitely-not-a-number"
+  # keeps the injection door shut without breaking unusual-but-valid configs
+  # (`+2`, `.5`, `2.`, `1e2`, etc.).
+  if ! [[ "$stale_hours" =~ ^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?$ ]]; then
     # Bad config — return 1 = "active with progress". Caller treats this as
     # "do not clean", which is the safe path: a misconfigured environment
     # variable should never cause cleanup logic to clobber an in-progress

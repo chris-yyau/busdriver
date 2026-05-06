@@ -59,7 +59,18 @@ echo "predictable-content" > "$TRICKY_PATH"
 
 ACTUAL_HASH=$(_CSH_FILE="$TRICKY_PATH" python3 -c \
   'import hashlib, os; print(hashlib.sha256(open(os.environ["_CSH_FILE"], "rb").read()).hexdigest())')
-EXPECTED_HASH=$(shasum -a 256 "$TRICKY_PATH" | cut -d' ' -f1)
+# Mirror the production fallback chain (sha256sum → shasum → python) so the
+# oracle resolves on macOS (shasum) AND Linux (sha256sum); under set -euo
+# pipefail, hard-coding `shasum` would crash on Linux before the assertion
+# below ever fires.
+if command -v sha256sum &>/dev/null; then
+  EXPECTED_HASH=$(sha256sum "$TRICKY_PATH" | cut -d' ' -f1)
+elif command -v shasum &>/dev/null; then
+  EXPECTED_HASH=$(shasum -a 256 "$TRICKY_PATH" | cut -d' ' -f1)
+else
+  EXPECTED_HASH=$(_ORACLE_FILE="$TRICKY_PATH" python3 -c \
+    'import hashlib, os; print(hashlib.sha256(open(os.environ["_ORACLE_FILE"], "rb").read()).hexdigest())')
+fi
 assert_eq "python fallback handles paths with single quotes" \
   "$EXPECTED_HASH" "$ACTUAL_HASH"
 

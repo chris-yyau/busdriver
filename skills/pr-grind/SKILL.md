@@ -363,12 +363,13 @@ HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
 inline_ack_for_bot() {
   local login="$1"
   local raw_output commit_id
-  if ! raw_output=$(gh api "repos/$OWNER/$REPO/pulls/$PR/reviews?per_page=100" 2>/dev/null); then
+  if ! raw_output=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null); then
     echo "stale"; return  # API failure — fail-CLOSED, never let merge race past unverified bot
   fi
-  commit_id=$(printf '%s' "$raw_output" | jq -r \
+  commit_id=$(printf '%s' "$raw_output" | jq -rs \
     --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty')
+    '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty') \
+    || { echo "stale"; return; }  # jq failure — fail-CLOSED
   [ -z "$commit_id" ] && { echo "none"; return; }
   local acked="${commit_id:0:8}"
   if [ "$acked" = "$HEAD_SHA" ]; then echo "$acked"; else echo "stale"; fi
@@ -378,11 +379,12 @@ ROUND_ACKS="greptile-apps=$(inline_ack_for_bot greptile-apps),cubic-dev-ai=$(inl
 echo "Ack ledger: $ROUND_ACKS"
 
 STALE_BOTS=$(echo "$ROUND_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
+echo "STALE_BOTS: $STALE_BOTS"
 ```
 
-**Acting on the result (instruction to Claude, not shell control flow):** the `STALE_BOTS` variable lives only inside the Bash invocation that runs the snippet above — it does NOT persist into a subsequent inline-loop iteration. After the snippet runs, **Claude reads the printed `Ack ledger:` line and the `STALE_BOTS` value from stdout** and decides:
+**Acting on the result (instruction to Claude, not shell control flow):** the `STALE_BOTS` variable lives only inside the Bash invocation that runs the snippet above — it does NOT persist into a subsequent inline-loop iteration. After the snippet runs, **Claude reads the printed `Ack ledger:` and `STALE_BOTS:` lines from stdout** and decides:
 
-- **STALE_BOTS empty** → round genuinely complete; proceed to Step 7 (autonomous summary or interactive checkpoint), then dispatch Completion.
+- **STALE_BOTS empty** → round genuinely complete; proceed to Step 7 (autonomous summary or interactive checkpoint), which will either continue to the next round or dispatch Completion depending on whether checks are green and all findings are resolved.
 - **STALE_BOTS non-empty** → round is in waiting-for-bots state; **skip Step 7 entirely** and re-dispatch Step 1 directly (analogous to the Sonnet subagent's `needs_more + RESULT_COMMIT_SHA=none + stale-acks` flow that the dispatcher's relaxed Invariant 1 permits). Increment the round counter as normal.
 
 **Interaction with `--max`:** wait-rounds DO count against `--max` (default 5). If a slow bot consistently takes longer than ~5 minutes per round and never catches up, the loop exhausts and bails with reason `max iterations (<MAX>) reached without all bots acking HEAD; latest stale: <STALE_BOTS>`. Increase `--max` if you're grinding a PR with known-slow reviewer bots, or accept the bail and re-run later.
@@ -434,12 +436,13 @@ HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
 dispatcher_ack_for_bot() {
   local login="$1"
   local raw_output commit_id
-  if ! raw_output=$(gh api "repos/$OWNER/$REPO/pulls/$PR/reviews?per_page=100" 2>/dev/null); then
+  if ! raw_output=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null); then
     echo "stale"; return  # API failure — fail-CLOSED, never let merge race past unverified bot
   fi
-  commit_id=$(printf '%s' "$raw_output" | jq -r \
+  commit_id=$(printf '%s' "$raw_output" | jq -rs \
     --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty')
+    '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty') \
+    || { echo "stale"; return; }  # jq failure — fail-CLOSED
   [ -z "$commit_id" ] && { echo "none"; return; }
   local acked="${commit_id:0:8}"
   if [ "$acked" = "$HEAD_SHA" ]; then echo "$acked"; else echo "stale"; fi

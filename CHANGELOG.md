@@ -1,3 +1,10 @@
+## [1.28.2](https://github.com/chris-yyau/busdriver/compare/v1.28.1...v1.28.2) (2026-05-06)
+
+
+### Bug Fixes
+
+* **blueprint-review:** close shell-into-python heredoc injection in 4 sites ([#67](https://github.com/chris-yyau/busdriver/issues/67)) ([e02da10](https://github.com/chris-yyau/busdriver/commit/e02da10c6592737236777b14eb93915f358b8edc))
+
 ## [1.28.1](https://github.com/chris-yyau/busdriver/compare/v1.28.0...v1.28.1) (2026-05-06)
 
 

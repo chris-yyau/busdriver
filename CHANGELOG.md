@@ -1,3 +1,10 @@
+## [1.29.2](https://github.com/chris-yyau/busdriver/compare/v1.29.1...v1.29.2) (2026-05-06)
+
+
+### Bug Fixes
+
+* **pr-grind:** add Step 6.5 ack-ledger to inline Opus path ([#71](https://github.com/chris-yyau/busdriver/issues/71)) ([937426b](https://github.com/chris-yyau/busdriver/commit/937426b2294620e8f07dee26204183d8c02d9b21)), closes [#70](https://github.com/chris-yyau/busdriver/issues/70) [#70](https://github.com/chris-yyau/busdriver/issues/70) [#70](https://github.com/chris-yyau/busdriver/issues/70)
+
 ## [1.29.1](https://github.com/chris-yyau/busdriver/compare/v1.29.0...v1.29.1) (2026-05-06)
 
 

@@ -384,21 +384,30 @@ get_high_history() {
 #   2 — corrupt history (could not parse JSON); warning emitted to stderr
 # The caller (`&& check_no_progress`) treats any non-zero as "don't auto-stop",
 # so exit 2 is fail-safe but distinguishable when looking at logs.
+#
+# History and window are passed via environment variables — NOT interpolated
+# into the python source — so a state.md value containing `'''` or python
+# fragments cannot escape the heredoc and execute arbitrary code.
 check_no_progress() {
   local history="$1"
   local window="${2:-1}"
-  python3 -c "
-import json, sys
+  if ! [[ "$window" =~ ^[0-9]+$ ]]; then
+    echo "warning: check_no_progress window must be numeric (got: $window)" >&2
+    return 2
+  fi
+  _CNP_HISTORY="$history" _CNP_WINDOW="$window" python3 -c '
+import json, os, sys
+window = int(os.environ["_CNP_WINDOW"])
 try:
-    h = json.loads('''$history''')
+    h = json.loads(os.environ["_CNP_HISTORY"])
 except (ValueError, json.JSONDecodeError) as e:
-    sys.stderr.write('warning: high_issues_history is corrupt (' + str(e) + '); skipping trajectory check\n')
+    sys.stderr.write("warning: high_issues_history is corrupt (" + str(e) + "); skipping trajectory check\n")
     sys.exit(2)
-if not isinstance(h, list) or len(h) < $window + 1:
+if not isinstance(h, list) or len(h) < window + 1:
     sys.exit(1)
-recent = h[-($window + 1):]
+recent = h[-(window + 1):]
 if recent[-1] < recent[0]:
     sys.exit(1)
 sys.exit(0)
-"
+'
 }

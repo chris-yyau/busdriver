@@ -180,6 +180,32 @@ assert_eq "corrupt JSON → exit 2 (distinguishable from progress)" "2" "$RC"
 assert_true "warning printed to stderr on corrupt JSON" \
   "$(echo "$STDERR" | grep -qi corrupt && echo true || echo false)"
 
+# ── check_no_progress: python injection is neutralized ────────────────
+echo "── check_no_progress python injection guard ────────────────"
+
+# A historical-style state.md attack would embed python that closes the
+# triple-single-quoted heredoc. Pre-fix, this would execute arbitrary code.
+# Post-fix, the value is passed via env var and cannot escape the source.
+INJECTION_FILE="$SANDBOX/injection-marker.txt"
+rm -f "$INJECTION_FILE"
+PAYLOAD="''' + __import__('os').system('touch ${INJECTION_FILE}') + '''"
+set +e
+STDERR=$(check_no_progress "$PAYLOAD" 1 2>&1 >/dev/null)
+RC=$?
+set -e
+assert_eq "injection payload → treated as corrupt JSON (exit 2)" "2" "$RC"
+assert_true "injection did not execute (no marker file)" \
+  "$([[ ! -e "$INJECTION_FILE" ]] && echo true || echo false)"
+
+# Non-numeric window must not reach python — guard fires early.
+set +e
+STDERR=$(check_no_progress "[1,2]" "1; import os" 2>&1 >/dev/null)
+RC=$?
+set -e
+assert_eq "non-numeric window → exit 2, never reaches python" "2" "$RC"
+assert_true "stderr warns about numeric window guard" \
+  "$(echo "$STDERR" | grep -qi numeric && echo true || echo false)"
+
 # ── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "── Summary ──────────────────────────────────────────────────"

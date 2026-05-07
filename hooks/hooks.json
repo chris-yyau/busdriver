@@ -7,17 +7,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/load-orchestrator.sh\"",
-            "timeout": 10
-          }
-        ],
-        "description": "Load orchestrator skill + staleness checks + instincts"
-      },
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
             "command": "bash -lc 'input=$(cat); root=\"${CLAUDE_PLUGIN_ROOT}\"; if [ -n \"$root\" ] && [ -f \"$root/scripts/hooks/run-with-flags.js\" ]; then printf \"%s\" \"$input\" | node \"$root/scripts/hooks/run-with-flags.js\" \"session:start\" \"scripts/hooks/session-start.js\" \"minimal,standard,strict\"; exit $?; fi; printf \"%s\" \"$input\"; exit 0'",
             "timeout": 10
           }

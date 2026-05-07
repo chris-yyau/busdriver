@@ -1,3 +1,10 @@
+## [1.29.3](https://github.com/chris-yyau/busdriver/compare/v1.29.2...v1.29.3) (2026-05-07)
+
+
+### Bug Fixes
+
+* **security:** close fail-open from set -e suspension in if-condition ([#74](https://github.com/chris-yyau/busdriver/issues/74)) ([1e4dfd9](https://github.com/chris-yyau/busdriver/commit/1e4dfd9366d185830ab86bae260972693c711447)), closes [chris-yyau/helmet#27](https://github.com/chris-yyau/helmet/issues/27) [Dive-And-Dev/growth-engine#45](https://github.com/Dive-And-Dev/growth-engine/issues/45) [Dive-And-Dev/chrisyau.me#105](https://github.com/Dive-And-Dev/chrisyau.me/issues/105) [chris-yyau/helmet#28](https://github.com/chris-yyau/helmet/issues/28) [#27](https://github.com/chris-yyau/busdriver/issues/27)
+
 ## [1.29.2](https://github.com/chris-yyau/busdriver/compare/v1.29.1...v1.29.2) (2026-05-06)
 
 

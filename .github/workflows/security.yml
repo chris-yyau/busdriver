@@ -72,14 +72,30 @@ jobs:
             echo "security=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Pipe directly to grep to avoid word-splitting on filenames with spaces.
+          # Capture diff OUTSIDE the if-condition. Bash suspends `set -e` for commands
+          # used as `if` test conditions (per `man bash`), so `if git diff ... | grep` would
+          # let `git diff` failures fall through to the else branch (fail-OPEN, silent
+          # scanner skip). Capturing into a variable with `||` lets us force fail-closed.
           # Pattern is a superset of on: push: paths: globs above — PR scanning is intentionally
           # broader (pyproject.toml, uv.lock, Cargo.lock, Package.resolved added) for safety.
-          if git diff --name-only "$BASE_SHA"...HEAD | grep -qE '\.(sh|js|mjs|py|yml|yaml|tf)$|\.github/|hooks/|scripts/|\.seatbelt\.yml|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|go\.sum|requirements.*\.txt|Dockerfile|pyproject\.toml|uv\.lock|Cargo\.lock|Package\.resolved'; then
+          changed_files="$(git diff --name-only "$BASE_SHA"...HEAD)" || {
+            echo "::warning::git diff failed — running scanners (fail-closed)"
             echo "security=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "security=false" >> "$GITHUB_OUTPUT"
-          fi
+            exit 0
+          }
+          # Capture grep's exit status explicitly. Bash suspends `set -e` for commands
+          # used as `if` test conditions (per `man bash`) — same class of bug as the
+          # git diff case above. A grep exit-2 (regex error, I/O fault) would otherwise
+          # be treated as "false" → security=false → silent scanner skip (fail-OPEN).
+          # Flagged by Greptile as residual after the prior git-diff fix.
+          grep_status=0
+          grep -qE '\.(sh|js|mjs|py|yml|yaml|tf)$|\.github/|hooks/|scripts/|\.seatbelt\.yml|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|go\.sum|requirements.*\.txt|Dockerfile|pyproject\.toml|uv\.lock|Cargo\.lock|Package\.resolved' <<< "$changed_files" || grep_status=$?
+          case "$grep_status" in
+            0) echo "security=true" >> "$GITHUB_OUTPUT" ;;
+            1) echo "security=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::warning::grep failed (exit $grep_status) — running scanners (fail-closed)"
+               echo "security=true" >> "$GITHUB_OUTPUT" ;;
+          esac
 
   gitleaks:
     name: Secret scanning

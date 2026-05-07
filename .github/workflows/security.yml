@@ -4,25 +4,6 @@ name: Security
 
 on:
   pull_request:
-    paths:
-      - '.github/**'
-      - 'hooks/**'
-      - 'scripts/**'
-      - '**/*.sh'
-      - '**/*.js'
-      - '**/*.mjs'
-      - '**/*.py'
-      - '**/*.yml'
-      - '**/*.yaml'
-      - '.seatbelt.yml'
-      - 'package.json'
-      - '**/package-lock.json'
-      - '**/pnpm-lock.yaml'
-      - '**/yarn.lock'
-      - '**/go.sum'
-      - '**/requirements*.txt'
-      - '**/Dockerfile'
-      - '**/*.tf'
   push:
     branches: [main]
     paths:
@@ -57,8 +38,53 @@ defaults:
     shell: bash
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      security: ${{ steps.filter.outputs.security }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Detect security-relevant changes
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -eo pipefail
+          if [ "$EVENT_NAME" = "push" ]; then
+            echo "security=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Fail-closed: if base SHA is unavailable, treat as security-relevant (run scanners)
+          # rather than silently skipping. Errors here mean we can't determine the diff.
+          if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
+            echo "::warning::Base SHA $BASE_SHA not available locally — running scanners (fail-closed)"
+            echo "security=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Pipe directly to grep to avoid word-splitting on filenames with spaces.
+          # Pattern is a superset of on: push: paths: globs above — PR scanning is intentionally
+          # broader (pyproject.toml, uv.lock, Cargo.lock, Package.resolved added) for safety.
+          if git diff --name-only "$BASE_SHA"...HEAD | grep -qE '\.(sh|js|mjs|py|yml|yaml|tf)$|\.github/|hooks/|scripts/|\.seatbelt\.yml|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|go\.sum|requirements.*\.txt|Dockerfile|pyproject\.toml|uv\.lock|Cargo\.lock|Package\.resolved'; then
+            echo "security=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "security=false" >> "$GITHUB_OUTPUT"
+          fi
+
   gitleaks:
     name: Secret scanning
+    needs: [changes]
+    if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -81,6 +107,8 @@ jobs:
 
   shellcheck-ci:
     name: Shell script quality
+    needs: [changes]
+    if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -96,6 +124,8 @@ jobs:
 
   trivy:
     name: Dependency CVEs
+    needs: [changes]
+    if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -125,6 +155,8 @@ jobs:
 
   semgrep:
     name: Code security
+    needs: [changes]
+    if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -142,6 +174,8 @@ jobs:
 
   checkov:
     name: IaC misconfig
+    needs: [changes]
+    if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -159,6 +193,8 @@ jobs:
 
   zizmor:
     name: Actions security
+    needs: [changes]
+    if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -178,7 +214,7 @@ jobs:
 
   reports:
     if: always()
-    needs: [gitleaks, shellcheck-ci, trivy, semgrep, checkov, zizmor]
+    needs: [changes, gitleaks, shellcheck-ci, trivy, semgrep, checkov, zizmor]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

@@ -20,6 +20,7 @@ The dispatcher passes you a context block containing:
 - `PRIOR_COMMIT_SHA` — last commit you pushed last round, or `none` if round 1. Useful for triage (comments authored before that SHA were posted on code that's now replaced) but **not** as a fetch-time filter — see "On Re-fetching Each Round" below.
 - `PRIOR_ATTEMPTS` — per-round bullet list. Each entry has the form `Round N: fixes=<one-line summary>; failures=<comma-separated failed-check-names or "none">; acks=<reviewer-ack-list>`. Use `failures=` to detect a recurring flaky check across rounds (3+ rounds → bail; see Bail Triggers). `acks=` is preserved for diagnostics and human review of the loop transcript — there is no stuck-bot bail trigger; genuinely stuck bots fall out via the dispatcher's `--max` iterations backstop.
 - `PRIOR_REVIEWER_ACKS` — last round's ack ledger as a comma-separated list of `<login>=<value>` pairs, e.g. `greptile-apps=b4451902,coderabbitai=none,cubic-dev-ai=stale`. Values: short SHA (acked that commit), `none` (either never posted on this PR, OR the bot's only reviews are infra-error/rate-limit markers and it has never APPROVED — see Step 6.5's downgrade rule), or `stale` (posted a real review on an older commit and is expected to re-review HEAD). On round 1, `none` for every registered bot. See Step 2.5 (registry/concept) and Step 6.5 (compute) below.
+- `RESULT_FILE` — the absolute path the dispatcher allocated for this round's RESULT-block backup file (per the belt-and-suspenders contract under "Output Format"). Always present; the dispatcher generates a unique nonce per dispatch attempt so cross-round and cross-session leftovers can never be picked up as stale data. If the context block omits `RESULT_FILE` (older dispatcher versions), fall back to `/tmp/pr-grinder-result-${PR_NUMBER}.txt` AND `rm -f` it at the very start of your round before any other work — that wipe is what protects you from cross-round staleness in the legacy path.
 
 ## Your Single Round
 
@@ -277,6 +278,22 @@ RESULT_REMAINING: <one-line summary of what's still pending, or "none">
 RESULT_REVIEWER_ACKS: <comma-separated login=value pairs from Step 6.5; always present — early-bail paths emit the all-`none` default initialized at the top of the round>
 RESULT_BAIL_REASON: <only when status=bail; one-line why>
 ```
+
+**Belt-and-suspenders: also write the RESULT block to the dispatcher-allocated file.** Immediately before echoing the RESULT_* tags to stdout, write the same lines to the path passed in `RESULT_FILE` from the context block (the dispatcher generates a unique nonce per dispatch attempt, so this path is guaranteed not to collide with any prior round, prior session, or another concurrent grind on the same PR). This protects against stdout truncation, SDK reformatting, or upstream pollution: if the dispatcher's stdout parse fails, it falls back to reading the file. The file is the backup; stdout remains the primary channel — emit BOTH every round, in this order (write first, echo second). One extra `cat > … <<EOF` per round is the entire cost.
+
+```bash
+cat > "$RESULT_FILE" <<EOF
+RESULT_STATUS: ...
+RESULT_COMMIT_SHA: ...
+RESULT_FIXES: ...
+RESULT_REMAINING: ...
+RESULT_REVIEWER_ACKS: ...
+EOF
+```
+
+Then emit the same lines on stdout as the final lines of your response. Include `RESULT_BAIL_REASON` in both the file and stdout when (and only when) `RESULT_STATUS: bail`.
+
+If the dispatcher omitted `RESULT_FILE` (legacy dispatcher), use `/tmp/pr-grinder-result-${PR_NUMBER}.txt` AND `rm -f` it at the very start of your round before any other work — the wipe-then-write pattern keeps cross-round leftovers from being picked up as stale data. The contract sites in the SKILL.md call out the same fallback.
 
 ### When to use each status
 

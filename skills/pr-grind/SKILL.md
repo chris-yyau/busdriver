@@ -238,7 +238,9 @@ After the subagent returns, **scan the response for lines matching `^RESULT_<NAM
 | `RESULT_COMMIT_SHA` | `RESULT_HEAD_SHA` |
 | `RESULT_REVIEWER_ACKS` | `RESULT_ROUND_ACKS` |
 
-If BOTH the canonical name and its alias appear in the same response, prefer the canonical and ignore the alias silently — that's a worker bug to surface in a follow-up, not a parsing failure here.
+**Resolution order (matters):** apply alias resolution **first**, then last-occurrence-within-a-name, then validate required tags are present. If you check the bail rule below ("`RESULT_STATUS` missing → bail unparseable") before resolving aliases, a worker that emitted only `RESULT_VERDICT` would be falsely bailed and the alias rule never fires.
+
+**On dual emission:** if BOTH the canonical name and its alias appear in the same response, prefer the canonical and emit `⚠️  worker emitted both <canonical> and <alias>; using canonical — file a worker-contract bug` so the inconsistency surfaces. (Last-occurrence-wins still applies *within* a single name; canonical-vs-alias preference overrides it *across* the pair.)
 
 The full tag set:
 

@@ -231,7 +231,7 @@ ALL_COMMENTS=$(gh pr view "$PR_NUMBER" --comments --json comments 2>/dev/null) |
 # check-run instead of a /reviews entry; tier D in scripts/ack-ledger.sh
 # matches `check_runs[].app.slug == $login` and treats a passing check_run
 # whose head_sha == HEAD as a HEAD-ack.
-ALL_CHECK_RUNS=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
+ALL_CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
 
 # Per-bot ack — emits one of: <short-sha> | none | stale via the canonical
 # implementation at scripts/ack-ledger.sh. The script reads the fetched JSON

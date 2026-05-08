@@ -454,7 +454,7 @@ ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH
 # Source 5: check-runs on HEAD — bots like CodeRabbit (free plan) emit a
 # check-run instead of a /reviews entry; tier D in scripts/ack-ledger.sh
 # treats a passing check_run whose head_sha == HEAD as a HEAD-ack.
-ALL_CHECK_RUNS=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
+ALL_CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
 
 # Per-bot ack — algorithm lives in scripts/ack-ledger.sh (single source of
 # truth for this site, the worker's Step 6.5 in agents/pr-grinder.md, and the
@@ -542,7 +542,7 @@ ALL_THREADS=$(gh api graphql --paginate -f query='
 ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || FETCH_OK=0
 ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH_OK=0
 # Source 5: check-runs on HEAD — same as worker/Step 6.5 fetch above.
-ALL_CHECK_RUNS=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
+ALL_CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
 
 # Per-bot ack — same single-sourced algorithm as the worker's Step 6.5 and
 # the inline ledger block in Step 6.5 above. All three sites invoke

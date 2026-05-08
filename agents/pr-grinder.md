@@ -272,6 +272,22 @@ ack_for_bot() {
   # If never (no /reviews entry, no body SHA reference) → bot doesn't operate here → none.
   # Otherwise (posted on an older commit, no HEAD signal yet) → stale.
   if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; return; fi
+
+  # Infra-error / rate-limit downgrade — Copilot's "encountered an error and was
+  # unable to review" review object is the canonical case: GitHub leaves it
+  # frozen on the SHA where it errored, never updates commit_id on later pushes,
+  # and there's no gh-CLI surface to clear it (DELETE only works on pending
+  # reviews; requested_reviewers POST 422s for Copilot). Treating those as
+  # `stale` blocks the merge gate forever; downgrade to `none` so the loop
+  # surfaces the situation to the operator instead of looping in vain.
+  # Keep this block in lockstep with `inline_ack_for_bot` and
+  # `dispatcher_ack_for_bot` in skills/pr-grind/SKILL.md.
+  last_body=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .body // empty' 2>/dev/null || echo "")
+  if printf '%s' "$last_body" | grep -qiE 'encountered an error|rate.?limit|unable to review|try again by re-requesting'; then
+    echo "none"; return
+  fi
+
   echo "stale"
 }
 

@@ -419,6 +419,19 @@ inline_ack_for_bot() {
 
   # No HEAD-ack signal — distinguish never-posted (none) from posted-on-older (stale)
   if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; return; fi
+
+  # Infra-error / rate-limit downgrade — if the latest review body is a known
+  # "tooling failed, try again later" marker (Copilot's permanent error review
+  # frozen on an older SHA is the canonical case), treat as `none` not `stale`.
+  # The bot left a review object behind but waiting for it to ack HEAD is futile
+  # until a human re-requests review. Without this downgrade, a single rate-limit
+  # event blocks the merge gate indefinitely.
+  last_body=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .body // empty' 2>/dev/null || echo "")
+  if printf '%s' "$last_body" | grep -qiE 'encountered an error|rate.?limit|unable to review|try again by re-requesting'; then
+    echo "none"; return
+  fi
+
   echo "stale"
 }
 
@@ -529,6 +542,15 @@ dispatcher_ack_for_bot() {
   if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then echo "$body_sha"; return; fi
 
   if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; return; fi
+
+  # Infra-error / rate-limit downgrade — see inline_ack_for_bot above for the
+  # rationale. Keep this block in lockstep with the inline and worker copies.
+  last_body=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .body // empty' 2>/dev/null || echo "")
+  if printf '%s' "$last_body" | grep -qiE 'encountered an error|rate.?limit|unable to review|try again by re-requesting'; then
+    echo "none"; return
+  fi
+
   echo "stale"
 }
 

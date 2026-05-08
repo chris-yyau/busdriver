@@ -184,7 +184,7 @@ if [ "$WT_EXIT" -ne 0 ]; then
       exit 1
     fi
     NO_WORKTREE=1
-    cd "$WORKTREE_DIR"
+    cd "$WORKTREE_DIR" || { echo "❌ cd to repo root '$WORKTREE_DIR' failed — cannot proceed with in-place fallback."; exit 1; }
     # Echo the resolved path so the dispatcher can capture it deterministically
     echo "WORKTREE_DIR=$WORKTREE_DIR"
   else
@@ -194,6 +194,7 @@ if [ "$WT_EXIT" -ne 0 ]; then
   fi
 else
   cd "$WORKTREE_DIR"
+  echo "WORKTREE_DIR=$WORKTREE_DIR"
 fi
 ```
 

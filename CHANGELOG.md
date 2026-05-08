@@ -1,3 +1,10 @@
+## [1.30.2](https://github.com/chris-yyau/busdriver/compare/v1.30.1...v1.30.2) (2026-05-08)
+
+
+### Bug Fixes
+
+* **pr-grind:** auto-fallback to --no-worktree when branch already checked out ([#78](https://github.com/chris-yyau/busdriver/issues/78)) ([298477f](https://github.com/chris-yyau/busdriver/commit/298477f06e50d4a2ab749204d551c53377dbc02c))
+
 ## [1.30.1](https://github.com/chris-yyau/busdriver/compare/v1.30.0...v1.30.1) (2026-05-08)
 
 

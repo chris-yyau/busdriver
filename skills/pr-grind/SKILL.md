@@ -208,6 +208,8 @@ fi
 
 Build the context block and dispatch the subagent. The block must include everything the subagent needs — it has no memory of prior rounds.
 
+**Generate a unique `RESULT_FILE` path BEFORE dispatch** so the worker's belt-and-suspenders RESULT-block backup (per `agents/pr-grinder.md` "Output Format") is uniquely scoped to this dispatch attempt. Use `mktemp -t pr-grinder-result.XXXXXXXX` (preferred) or compose `/tmp/pr-grinder-result-${PR_NUMBER}-${ROUND}-$$-$(date +%s%N).txt`; either form prevents a stale leftover from a prior round / session / concurrent grind from being mis-parsed as the current round's output.
+
 ```text
 Agent invocation:
   subagent_type: pr-grinder
@@ -218,6 +220,7 @@ Agent invocation:
     REPO=<repo>
     WORKTREE_DIR=<absolute path>
     ROUND=<N> of <MAX>
+    RESULT_FILE=<unique tmp path generated above>
     PRIOR_COMMIT_SHA=<sha or "none">
     PRIOR_REVIEWER_ACKS=<login=value,login=value,...> (round 1: every registered bot = none)
     PRIOR_ATTEMPTS:
@@ -253,9 +256,11 @@ RESULT_REVIEWER_ACKS: <login=value,login=value,...>   (always present; values: <
 RESULT_BAIL_REASON: <one-line>                        (present only when status=bail)
 ```
 
-**Stdout-parse fallback to /tmp file:** if scanning the worker's stdout for `^RESULT_<NAME>: ` produces no `RESULT_STATUS` (after alias resolution), DO NOT immediately bail. First try reading `/tmp/pr-grinder-result-${PR_NUMBER}.txt`; if it exists and contains valid `RESULT_<NAME>: ` lines, parse from there using the same alias resolution and last-occurrence rules. The worker writes this file immediately before stdout emission per the contract in `agents/pr-grinder.md` — so the file should always be present on the round's filesystem even when stdout was truncated, reformatted by the SDK, or polluted by mid-prompt output. Only bail "subagent output unparseable" if BOTH stdout and the file fail to yield a valid `RESULT_STATUS`.
+**Stdout-parse fallback to the dispatcher-allocated `RESULT_FILE`:** if scanning the worker's stdout for `^RESULT_<NAME>: ` produces no `RESULT_STATUS` after alias resolution **OR** produces a `RESULT_STATUS` whose value isn't one of `clean`, `needs_more`, `bail`, DO NOT immediately bail. First try reading `$RESULT_FILE` (the unique path you allocated in the context block above); if it exists and yields a `RESULT_STATUS` whose value IS one of the three canonical values (after the same alias resolution and last-occurrence rules), use those tags. The worker writes this file immediately before stdout emission per the contract in `agents/pr-grinder.md`, so it should be present on the filesystem even when stdout was truncated, reformatted by the SDK, polluted by mid-prompt output, OR contained a malformed `RESULT_STATUS` value. Only bail "subagent output unparseable" if BOTH stdout and the file fail to yield a `RESULT_STATUS` with a canonical value.
 
-If `RESULT_STATUS` is missing or its value isn't one of the three valid options after BOTH stdout and the /tmp file have been tried, treat as `bail` with reason "subagent output unparseable" — do not guess.
+The fallback fires on EITHER missing OR invalid `RESULT_STATUS`. A worker that emitted `RESULT_STATUS: garbage` on stdout and `RESULT_STATUS: clean` to the file should be treated as `clean`, not bailed — stdout pollution should not override a well-formed file backup.
+
+If after both probes `RESULT_STATUS` is still missing or its value still isn't one of the three valid options, then bail "subagent output unparseable" — do not guess.
 
 ### Inline Execution (`--opus`, `--interactive`, `--ci-only`, or `--comments-only`)
 

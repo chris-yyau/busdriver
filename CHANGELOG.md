@@ -1,3 +1,10 @@
+# [1.31.0](https://github.com/chris-yyau/busdriver/compare/v1.30.2...v1.31.0) (2026-05-08)
+
+
+### Features
+
+* **pr-grind:** file-backed fallback for worker RESULT block ([#82](https://github.com/chris-yyau/busdriver/issues/82)) ([beb72f2](https://github.com/chris-yyau/busdriver/commit/beb72f2d8e45dee4427b154232a60ac5f055ab40)), closes [#80](https://github.com/chris-yyau/busdriver/issues/80)
+
 ## [1.30.2](https://github.com/chris-yyau/busdriver/compare/v1.30.1...v1.30.2) (2026-05-08)
 
 

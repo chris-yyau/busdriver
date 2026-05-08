@@ -51,7 +51,7 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
   - CI fails on an unrelated flaky test 3 times in a row
   - The fix would require architectural changes
   - Max iterations reached
-  - **On any bail:** if Step 0 created an ephemeral worktree, `cd` back and `git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true` before exiting. Skip when `--no-worktree` was passed (no worktree to remove). The `|| true` keeps cleanup idempotent if the worktree was already removed.
+  - **On any bail:** if Step 0 created an ephemeral worktree, `cd` back and `git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true` before exiting. Skip when `NO_WORKTREE=1` — i.e. either `--no-worktree` was passed OR Step 0's auto-fallback engaged because the branch was already checked out. The `|| true` keeps cleanup idempotent if the worktree was already removed.
 
 ## The Dispatcher Loop
 
@@ -159,16 +159,27 @@ WORKTREE_DIR="$(cd .. && pwd -P)/pr-grind-${PR_NUMBER}"
 # the common case when running pr-grind on the branch you just pushed),
 # fall back to in-place mode automatically — equivalent to passing
 # `--no-worktree`. This avoids a hard failure on a workflow we expect.
-WT_OUT=$(git worktree add "$WORKTREE_DIR" "$PR_BRANCH" 2>&1)
+WT_OUT=$(LANG=C LC_ALL=C git worktree add "$WORKTREE_DIR" "$PR_BRANCH" 2>&1)
 WT_EXIT=$?
 if [ "$WT_EXIT" -ne 0 ]; then
   if printf '%s' "$WT_OUT" | grep -q 'already used by worktree at'; then
     echo "ℹ️  Branch $PR_BRANCH is already checked out — falling back to in-place mode (--no-worktree)."
+    # Marker line — the dispatcher scans stdout for this exact string and
+    # MUST propagate NO_WORKTREE=1 to subsequent bash blocks (shell vars
+    # don't survive across Claude tool calls; the printed marker is the
+    # cross-block source of truth).
     echo "pr-grind-mode: no-worktree"
     WORKTREE_DIR=$(git rev-parse --show-toplevel)
-    # Leave NO_WORKTREE for the dispatcher to track (see below)
+    NO_WORKTREE=1
+    cd "$WORKTREE_DIR"
+    # Echo the resolved path so the dispatcher can capture it deterministically
+    echo "WORKTREE_DIR=$WORKTREE_DIR"
   else
-    echo "❌ git worktree add failed: $WT_OUT"
+    # Strip ANSI/VT100 escape sequences from git's stderr before echoing —
+    # locked LANG=C above forces English output but a hostile branch name
+    # or git hook could still emit color codes.
+    SAFE_WT_OUT=$(printf '%s' "$WT_OUT" | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g')
+    echo "❌ git worktree add failed: $SAFE_WT_OUT"
     exit 1
   fi
 else
@@ -178,9 +189,9 @@ fi
 
 **Why a worktree:** pr-grind is a different operational mode from the pipeline. Pre-PR phases optimize for local delivery; post-PR grind optimizes for async iteration. An ephemeral worktree gives pr-grind its own branch ownership without hijacking the main workspace.
 
-**Skip with `--no-worktree`:** If already on the PR branch, pass `--no-worktree` to skip worktree creation.
+**Skip with `--no-worktree`:** Optional explicit opt-in to in-place mode. The auto-fallback below now handles the common case (branch already checked out), so passing this flag is rarely required — use it when you want to suppress the info-level fallback message or skip the worktree-add attempt entirely.
 
-**Auto-fallback to in-place mode:** If `git worktree add` fails with `already used by worktree at`, Step 0 silently falls back and prints `pr-grind-mode: no-worktree`. **When that line appears, the dispatcher MUST treat the rest of the run as if `--no-worktree` was passed** — set `NO_WORKTREE=1` in every subsequent bash block, skip the worktree cleanup at COMPLETION and BAIL, and write `pr-grind-clean.local` to the current repo root rather than copying it across worktrees. This state has to be carried by Claude across bash invocations because shell variables don't persist; treat the printed marker as the source of truth and propagate it explicitly.
+**Auto-fallback to in-place mode:** If `git worktree add` fails with `already used by worktree at`, Step 0 silently falls back and prints two lines: `pr-grind-mode: no-worktree` and `WORKTREE_DIR=<repo-root>`. **When the `pr-grind-mode: no-worktree` line appears, the dispatcher MUST treat the rest of the run as if `--no-worktree` was passed** — set `NO_WORKTREE=1` in every subsequent bash block, skip the worktree cleanup at COMPLETION and BAIL, and write `pr-grind-clean.local` to the current repo root rather than copying it across worktrees. This state has to be carried by Claude across bash invocations because shell variables don't persist; treat the printed marker as the source of truth and propagate it explicitly. The `WORKTREE_DIR=<repo-root>` line is the resolved path the dispatcher should pass to the subagent context block.
 
 ### Dispatch a Round (default path)
 
@@ -702,7 +713,7 @@ PR #<N> is clean after <rounds> round(s).
 | `--max N` | Maximum iterations | 5 |
 | `--opus` | Run rounds inline in parent Opus context (no Sonnet dispatch) | Off (dispatches Sonnet subagent) |
 | `--interactive` | Pause for human confirmation each round (forces inline; subagent can't pause) | Off (autonomous) |
-| `--no-worktree` | Skip worktree creation, work in current directory. Auto-engages if `git worktree add` reports the branch is already checked out elsewhere — see Step 0 fallback. | Off (creates worktree) |
+| `--no-worktree` | Skip worktree creation, work in current directory. Same behavior auto-engages without the flag if `git worktree add` reports the branch is already checked out elsewhere — see Step 0 fallback. | Off (creates worktree) |
 | `--ci-only` | Only fix CI failures, ignore comments. Forces inline mode (Step 2 branching not yet wired into the subagent). | Off |
 | `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
 | `--comments-only` | Only address comments, ignore CI. Forces inline mode (same reason as `--ci-only`). | Off |

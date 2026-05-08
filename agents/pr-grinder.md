@@ -15,7 +15,7 @@ The dispatcher passes you a context block containing:
 
 - `PR_NUMBER` — the PR to work on
 - `OWNER` / `REPO` — for `gh api` calls
-- `WORKTREE_DIR` — the cwd for all your work
+- `WORKTREE_DIR` — the cwd for all your work. May be the repo root itself when the dispatcher's Step 0 auto-fallback engaged (branch was already checked out elsewhere); treat it as a normal working directory either way and do NOT attempt worktree cleanup — the dispatcher owns that.
 - `ROUND` — current round number (e.g. "3 of 5")
 - `PRIOR_COMMIT_SHA` — last commit you pushed last round, or `none` if round 1. Useful for triage (comments authored before that SHA were posted on code that's now replaced) but **not** as a fetch-time filter — see "On Re-fetching Each Round" below.
 - `PRIOR_ATTEMPTS` — per-round bullet list. Each entry has the form `Round N: fixes=<one-line summary>; failures=<comma-separated failed-check-names or "none">; acks=<reviewer-ack-list>`. Use `failures=` to detect a recurring flaky check across rounds (3+ rounds → bail; see Bail Triggers). `acks=` is preserved for diagnostics and human review of the loop transcript — there is no stuck-bot bail trigger; genuinely stuck bots fall out via the dispatcher's `--max` iterations backstop.

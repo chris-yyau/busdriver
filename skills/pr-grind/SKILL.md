@@ -439,7 +439,7 @@ ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH
 # ALL_REVIEWS / ALL_COMMENTS / HEAD_SHA from env and the bot login from $1.
 export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
-ROUND_ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai),copilot-pull-request-reviewer=$(bash "$ACK_SCRIPT" copilot-pull-request-reviewer)"
+ROUND_ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),copilot-pull-request-reviewer=$(bash "$ACK_SCRIPT" copilot-pull-request-reviewer 2>/dev/null || echo stale)"
 echo "Ack ledger: $ROUND_ACKS"
 
 STALE_BOTS=$(echo "$ROUND_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
@@ -523,7 +523,7 @@ ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH
 # scripts/ack-ledger.sh; algorithm edits live in that one file.
 export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
-FRESH_ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai),copilot-pull-request-reviewer=$(bash "$ACK_SCRIPT" copilot-pull-request-reviewer)"
+FRESH_ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),copilot-pull-request-reviewer=$(bash "$ACK_SCRIPT" copilot-pull-request-reviewer 2>/dev/null || echo stale)"
 STALE_BOTS=$(echo "$FRESH_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
 if [ -n "$STALE_BOTS" ]; then
   echo "❌ BLOCKED: registered reviewer(s) with stale ack at merge time: $STALE_BOTS"

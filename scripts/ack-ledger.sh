@@ -21,7 +21,17 @@
 #   4. Pass the bot login as $1.
 #
 # Output: exactly one of <8-char-sha> | none | stale on stdout.
-# Always exits 0; caller treats stdout as authoritative.
+# Always exits 0 on success; caller treats stdout as authoritative.
+#
+# Caller fail-CLOSED contract: wrap every invocation with
+#   `$(bash "$ACK_SCRIPT" <bot> 2>/dev/null || echo stale)`
+# so that script-resolution failures (missing path during plugin upgrade —
+# the dogfooding scenario in PR #79 — bash invocation errors, etc.) collapse
+# to `stale` instead of an empty string. Without the `|| echo stale` guard,
+# command substitution silently expands to "" on non-zero exit, the downstream
+# `awk -F= '$2=="stale"'` filter finds no match, STALE_BOTS becomes empty,
+# and the merge gate is bypassed — the exact fail-OPEN regression FETCH_OK
+# was introduced to prevent.
 
 login="$1"
 

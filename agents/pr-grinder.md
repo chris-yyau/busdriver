@@ -235,7 +235,7 @@ ALL_COMMENTS=$(gh pr view "$PR_NUMBER" --comments --json comments 2>/dev/null) |
 # block, Completion re-query block) all invoke it identically.
 export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
-ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai),copilot-pull-request-reviewer=$(bash "$ACK_SCRIPT" copilot-pull-request-reviewer)"
+ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),copilot-pull-request-reviewer=$(bash "$ACK_SCRIPT" copilot-pull-request-reviewer 2>/dev/null || echo stale)"
 echo "Ack ledger: $ACKS"
 ```
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/ack-ledger.sh — canonical per-bot ack computation for pr-grind.
 #
-# Single source of truth for the three-tier ack ledger algorithm. Replaces
+# Single source of truth for the four-tier ack ledger algorithm. Replaces
 # three previously inlined function definitions that had to be kept in
 # byte-for-byte lockstep:
 #   - agents/pr-grinder.md   Step 6.5      ack_for_bot()
@@ -12,11 +12,11 @@
 #
 # Caller responsibilities (BEFORE invoking):
 #   1. Compute HEAD_SHA via `git rev-parse HEAD | cut -c1-8`.
-#   2. Set FETCH_OK=1, then perform the three gh-API fetches that each
+#   2. Set FETCH_OK=1, then perform the four gh-API fetches that each
 #      tag FETCH_OK=0 on failure (ALL_THREADS via graphql, ALL_REVIEWS,
-#      ALL_COMMENTS). The fetch block itself stays in the markdown call
-#      sites — only the per-bot algorithm lives here.
-#   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS HEAD_SHA`
+#      ALL_COMMENTS, ALL_CHECK_RUNS). The fetch block itself stays in
+#      the markdown call sites — only the per-bot algorithm lives here.
+#   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA`
 #      so this subprocess inherits them.
 #   4. Pass the bot login as $1.
 #
@@ -70,6 +70,19 @@ body_sha=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_
   '[.comments[] | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null \
   | grep -oE 'commit/[a-f0-9]{7,40}' | sed 's|.*/||' | tail -1 | cut -c1-8)
 if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then echo "$body_sha"; exit 0; fi
+
+# (D) check-runs: did the bot register a passing check-run on HEAD? Some bots
+# (CodeRabbit free-plan, GitGuardian, etc.) emit a check-run instead of a
+# /reviews entry. The check is keyed on the head_sha of the commit, so a
+# passing check_run.head_sha == HEAD_SHA means the bot has acked HEAD.
+# jq -s slurps the paginated `gh api --paginate` stream (one JSON object per
+# page) into a single array, then `.[].check_runs[]` flattens across pages.
+# Without --paginate + slurp, busy PRs whose check-runs exceed GitHub's
+# 30-result default would silently truncate and Tier D would miss the bot's
+# HEAD check-run, mis-classifying as `none` (Greptile P2 / Cubic P2).
+check_run_head=$(printf '%s' "$ALL_CHECK_RUNS" | jq -rs --arg login "$login" \
+  '[.[].check_runs[] | select(.app.slug == $login) | select(.conclusion == "success")] | last | .head_sha // empty' 2>/dev/null || echo "")
+if [ -n "$check_run_head" ] && [ "${check_run_head:0:8}" = "$HEAD_SHA" ]; then echo "${check_run_head:0:8}"; exit 0; fi
 
 # No HEAD-ack signal anywhere. Did the bot post on this PR at all?
 # If never (no /reviews entry, no body SHA reference) → bot doesn't operate here → none.

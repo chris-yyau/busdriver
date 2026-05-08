@@ -193,7 +193,7 @@ if [ "$WT_EXIT" -ne 0 ]; then
     exit 1
   fi
 else
-  cd "$WORKTREE_DIR"
+  cd "$WORKTREE_DIR" || { echo "❌ cd to worktree '$WORKTREE_DIR' failed — cannot proceed."; exit 1; }
   echo "WORKTREE_DIR=$WORKTREE_DIR"
 fi
 ```

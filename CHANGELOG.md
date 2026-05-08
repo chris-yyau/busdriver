@@ -1,3 +1,10 @@
+# [1.32.0](https://github.com/chris-yyau/busdriver/compare/v1.31.0...v1.32.0) (2026-05-08)
+
+
+### Features
+
+* **pr-grind:** add check-runs ack tier for bots that don't post /reviews ([#83](https://github.com/chris-yyau/busdriver/issues/83)) ([77b37ba](https://github.com/chris-yyau/busdriver/commit/77b37bacfbd51fe77811d90be1a0959d1c4ce75c))
+
 # [1.31.0](https://github.com/chris-yyau/busdriver/compare/v1.30.2...v1.31.0) (2026-05-08)
 
 

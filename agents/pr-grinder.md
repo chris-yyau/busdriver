@@ -19,7 +19,7 @@ The dispatcher passes you a context block containing:
 - `ROUND` — current round number (e.g. "3 of 5")
 - `PRIOR_COMMIT_SHA` — last commit you pushed last round, or `none` if round 1. Useful for triage (comments authored before that SHA were posted on code that's now replaced) but **not** as a fetch-time filter — see "On Re-fetching Each Round" below.
 - `PRIOR_ATTEMPTS` — per-round bullet list. Each entry has the form `Round N: fixes=<one-line summary>; failures=<comma-separated failed-check-names or "none">; acks=<reviewer-ack-list>`. Use `failures=` to detect a recurring flaky check across rounds (3+ rounds → bail; see Bail Triggers). `acks=` is preserved for diagnostics and human review of the loop transcript — there is no stuck-bot bail trigger; genuinely stuck bots fall out via the dispatcher's `--max` iterations backstop.
-- `PRIOR_REVIEWER_ACKS` — last round's ack ledger as a comma-separated list of `<login>=<value>` pairs, e.g. `greptile-apps=b4451902,coderabbitai=none,cubic-dev-ai=stale`. Values: short SHA (acked that commit), `none` (never posted on this PR), or `stale` (posted but on an older commit). On round 1, `none` for every registered bot. See Step 2.5 (registry/concept) and Step 6.5 (compute) below.
+- `PRIOR_REVIEWER_ACKS` — last round's ack ledger as a comma-separated list of `<login>=<value>` pairs, e.g. `greptile-apps=b4451902,coderabbitai=none,cubic-dev-ai=stale`. Values: short SHA (acked that commit), `none` (either never posted on this PR, OR the bot's only reviews are infra-error/rate-limit markers and it has never APPROVED — see Step 6.5's downgrade rule), or `stale` (posted a real review on an older commit and is expected to re-review HEAD). On round 1, `none` for every registered bot. See Step 2.5 (registry/concept) and Step 6.5 (compute) below.
 
 ## Your Single Round
 
@@ -143,7 +143,7 @@ All four bots are gated identically — we read the structured `commit_id` from 
 
 **Why `/reviews`'s `commit_id` and not body parsing:** every bot that runs against the PR submits a review entry per commit it inspects, even when its visible output is just an issue comment or inline thread. The REST endpoint returns a structured `commit_id` field — robust against bot-specific markdown drift, no fragile regex on comment bodies, and works uniformly across all four bots.
 
-**Interaction with `clean` status:** if any registered bot is `stale`, you cannot return `clean` — even if every other check is green and every thread is resolved. Return `needs_more` (let the dispatcher run another round so the bot can catch up). There is no stuck-bot bail; if bots never catch up, the dispatcher's `--max` iterations backstop ends the loop. `none` is fine — it just means the bot doesn't operate on this repo and doesn't gate.
+**Interaction with `clean` status:** if any registered bot is `stale`, you cannot return `clean` — even if every other check is green and every thread is resolved. Return `needs_more` (let the dispatcher run another round so the bot can catch up). There is no stuck-bot bail; if bots never catch up, the dispatcher's `--max` iterations backstop ends the loop. `none` is fine — it means either the bot doesn't operate on this repo, or its only reviews are infra-error/rate-limit markers and waiting for HEAD-ack would block forever (see Step 6.5's downgrade rule). Either way `none` doesn't gate.
 
 ### Step 3 — Triage
 
@@ -230,7 +230,7 @@ ALL_COMMENTS=$(gh pr view "$PR_NUMBER" --comments --json comments 2>/dev/null) |
 # Three-tier check: (A) Source 2 thread state, (B) /reviews commit_id, (C) issue-comment body SHA
 ack_for_bot() {
   local login="$1"
-  local unresolved outdated commit_id body_sha
+  local unresolved outdated commit_id body_sha last_body ever_approved
 
   # Fail-CLOSED: any source failed → mark stale (Greptile P1 — fail-OPEN
   # regression where API failures silently became `none` and didn't gate)
@@ -280,12 +280,28 @@ ack_for_bot() {
   # reviews; requested_reviewers POST 422s for Copilot). Treating those as
   # `stale` blocks the merge gate forever; downgrade to `none` so the loop
   # surfaces the situation to the operator instead of looping in vain.
+  #
+  # Defense: only fire when the bot has NEVER submitted an APPROVED review on
+  # this PR. If the bot ever approved any commit, an error in its latest body
+  # is transient (operator should re-request) and the existing `stale` signal
+  # is correct. This also closes a potential admin-edit bypass where an
+  # attacker with write access PATCHes an APPROVED bot review's body to
+  # inject the trigger phrase — `ever_approved>0` blocks the downgrade.
+  #
+  # Note: the FETCH_OK guard at the top of this function already returns
+  # `stale` on any source-fetch failure, so this block only runs on
+  # successful fetches.
+  #
   # Keep this block in lockstep with `inline_ack_for_bot` and
   # `dispatcher_ack_for_bot` in skills/pr-grind/SKILL.md.
-  last_body=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .body // empty' 2>/dev/null || echo "")
-  if printf '%s' "$last_body" | grep -qiE 'encountered an error|rate.?limit|unable to review|try again by re-requesting'; then
-    echo "none"; return
+  ever_approved=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[] | .[] | select((.user.login == $login or .user.login == $login_bot) and .state == "APPROVED")] | length' 2>/dev/null || echo 0)
+  if [ "$ever_approved" -eq 0 ]; then
+    last_body=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+      '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .body // empty' 2>/dev/null || echo "")
+    if printf '%s' "$last_body" | grep -qiE 'encountered an error|rate.?limit|unable to review|try again by re-requesting'; then
+      echo "none"; return
+    fi
   fi
 
   echo "stale"

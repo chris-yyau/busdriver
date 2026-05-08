@@ -1,0 +1,239 @@
+name: Dependabot Auto-Merge
+
+# Approves AND enqueues auto-merge on Dependabot PRs based on update-type,
+# dependency-type, and package-ecosystem.
+#
+# Auto-approve + auto-merge enqueued (same gating, same `if:`):
+#   - patch (any ecosystem, any dependency-type)
+#   - minor (dev dependencies, indirect/transitive, OR github_actions ecosystem)
+#
+# Comment + manual review (no auto-approve, no auto-merge):
+#   - major (any)
+#   - production direct-dependency minor (non-github_actions ecosystem)
+#
+# Auto-approval is necessary because branch protection's
+# `required_approving_review_count: 1` is the most common helmet default; the
+# `gh pr merge --auto` step only enqueues, and GitHub waits for ALL branch
+# protection requirements (including reviews) before merging. The
+# `hmarr/auto-approve-action` step posts a review as `github-actions[bot]`,
+# satisfies the review requirement, and the merge fires when remaining checks
+# pass. Major + production-direct minor PRs intentionally are NOT approved —
+# they sit waiting for human review (the comment step explains why).
+#
+# Tier portability: this pattern is designed to work on GitHub Free, Pro,
+# Team, and Enterprise via two complementary mechanisms — at least ONE must be
+# in place per repo:
+#
+#   (a) `can_approve_pull_request_reviews: true` on the repo's workflow
+#       permissions (Settings → Actions → General → Workflow permissions →
+#       "Allow GitHub Actions to create and approve pull requests"). Defaults
+#       to false. Some Enterprise admins disable this at the enterprise level,
+#       which propagates down to orgs/repos and cannot be overridden lower.
+#       When (a) is allowed, the `hmarr/auto-approve-action` step posts the
+#       review and the merge step fires.
+#
+#   (b) `bypass_pull_request_allowances: { apps: ["dependabot"] }` on branch
+#       protection (Enterprise plans only on classic branch protection rules).
+#       Lets Dependabot's PRs skip the review requirement entirely.
+#
+# The merge + comment steps use `!cancelled() &&` in their `if:` so that the
+# merge enqueue still fires on repos where (a) is blocked but (b) is set —
+# the approve step shows a visible failure (intentional, not silent) and the
+# merge fires via bypass. On repos with neither (a) nor (b), Dependabot PRs
+# queue indefinitely (visible fail-stuck rather than silent fail-merge).
+#
+# Prerequisites (helmet sets these in B1b. Configure Repo Settings):
+# - allow_auto_merge: true on the repo
+# - Branch protection with required status checks (strict: true)
+# - At least ONE of (a) or (b) above
+# - `hmarr/auto-approve-action@*` in the org/repo Actions allowlist
+# - `dependabot/fetch-metadata@*` in the org/repo Actions allowlist
+#
+# Token note: Dependabot-triggered workflow runs receive a read-only
+# GITHUB_TOKEN by default. The explicit `permissions:` block below restores
+# write scope (including `pull-requests: write` for the approve step).
+# `gh pr merge --auto` only enqueues — actual merge waits for branch-protection
+# checks, so no PAT is needed.
+
+on:
+  pull_request:
+
+# Workflow-level read baseline. An empty `permissions: {}` denies all scopes —
+# including metadata — and was observed to cause `startup_failure` on every
+# Dependabot-triggered run (the harden-runner setup step needs at least the
+# metadata-read default to initialize). `contents: read` matches the canonical
+# pattern in `security.yml`. Per-job blocks below still escalate to `contents:
+# write` and `pull-requests: write` where actually required for `gh pr merge`
+# and `gh pr comment`.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  auto-merge:
+    name: Enqueue Dependabot auto-merge
+    # Use the PR object's user.login (immutable) instead of github.actor (spoofable)
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write          # required to enable auto-merge on the branch
+      pull-requests: write     # required to enqueue auto-merge + post comment
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Approve PR — patch + safe minor
+        # Posts an approving review as github-actions[bot], satisfying branch
+        # protection's required_approving_review_count so `gh pr merge --auto`
+        # below can fire. Same `if:` as the merge step (modulo !cancelled()) —
+        # we approve EXACTLY the bumps we'd auto-merge. Major + production-
+        # direct minor PRs fall through unapproved and route to the comment
+        # step instead.
+        #
+        # Failure mode: if `can_approve_pull_request_reviews: false` (default
+        # for new repos, or pinned by Enterprise policy), this step errors
+        # out. That's intentional — the next step uses `!cancelled()` so the
+        # merge enqueue still runs; on repos with Dependabot bypass on
+        # branch protection, the merge fires anyway. On repos with neither,
+        # the PR queues until a human approves.
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
+           (steps.metadata.outputs.dependency-type == 'direct:development' ||
+            steps.metadata.outputs.dependency-type == 'indirect' ||
+            steps.metadata.outputs.package-ecosystem == 'github_actions'))
+        uses: hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363 # v4.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enqueue auto-merge — patch + safe minor
+        # Auto-merge gating policy:
+        #   patch  → ALL (any ecosystem, any dependency-type)
+        #   minor  → dev/indirect/github_actions only
+        #   major  → never auto-merge (handled by next step)
+        # Production direct-dependency minor bumps are intentionally NOT
+        # auto-merged — they're the highest-risk minor category and warrant
+        # a human read of the changelog.
+        # `!cancelled()` so the enqueue runs even if the approve step failed
+        # (covers Enterprise-restricted repos that rely on Dependabot bypass
+        # instead of in-workflow approve — see workflow header).
+        if: |
+          !cancelled() && (
+            steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+            (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
+             (steps.metadata.outputs.dependency-type == 'direct:development' ||
+              steps.metadata.outputs.dependency-type == 'indirect' ||
+              steps.metadata.outputs.package-ecosystem == 'github_actions')))
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          # `gh pr merge --auto` only enqueues — actual merge waits for branch
+          # protection checks. Idempotency: Dependabot rebases re-trigger this
+          # workflow, hitting "already enabled" on the second run. Tolerate ONLY
+          # that specific string; surface every other failure (auth, rate limit,
+          # org setting off) so misconfiguration is visible instead of silently
+          # leaving PRs stuck.
+          out=$(gh pr merge --auto --squash "$PR_URL" 2>&1) || rc=$?
+          if [ "${rc:-0}" -ne 0 ]; then
+            if [[ "$out" == *"already enabled"* ]]; then
+              echo "auto-merge enqueue skipped: already enabled"
+            else
+              echo "$out" >&2
+              exit "$rc"
+            fi
+          else
+            echo "$out"
+          fi
+
+      - name: Comment — major or production-direct minor (manual review)
+        # Triggers when this PR is NOT in the safe auto-merge bucket above:
+        #   - any major bump
+        #   - minor + direct:production + non-github_actions
+        # `!cancelled()` for symmetry with the merge step — comment fires
+        # even if the approve step failed (which it shouldn't for these
+        # update types since the approve `if:` excludes them, but keep the
+        # gate explicit so the failure mode is the same shape on both
+        # branches).
+        if: |
+          !cancelled() && (
+            steps.metadata.outputs.update-type == 'version-update:semver-major' ||
+            (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
+             steps.metadata.outputs.dependency-type == 'direct:production' &&
+             steps.metadata.outputs.package-ecosystem != 'github_actions'))
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          DEPENDENCY_TYPE: ${{ steps.metadata.outputs.dependency-type }}
+          PACKAGE_ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
+          DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
+        run: |
+          set -eo pipefail
+          # Hidden HTML marker so idempotency holds across both major and
+          # production-minor variants — visible body text differs but the
+          # marker stays constant, so Dependabot rebases don't re-comment.
+          MARKER="<!-- dependabot-auto-merge: manual-review-required -->"
+
+          # Capture existing-comments fetch OUTSIDE the if-condition. Bash
+          # suspends `set -e` for commands used as `if` test conditions (per
+          # `man bash`), so `if gh ... | grep -qF` would let gh failures fall
+          # through to the else branch → post comment. Same set-e-suspension
+          # class as the security.yml `changes` detector. Here the harm is
+          # fail-noisy (duplicate comment) rather than fail-open (silent
+          # scanner skip), but the canonical pattern keeps the failure mode
+          # explicit instead of implicit.
+          existing_comments=$(gh pr view "$PR_URL" --json comments \
+              --jq '.comments[] | select(.author.login == "github-actions[bot]") | .body' 2>&1) || {
+            echo "::warning::gh pr view failed — posting comment without dedup check (fail-closed)"
+            echo "$existing_comments" >&2
+            existing_comments=""
+          }
+
+          # Capture grep's exit status explicitly. Same class of set-e
+          # suspension bug as above. Exit 0 = found, 1 = not found,
+          # 2+ = grep error (regex compile, I/O); on grep error, post the
+          # comment (better noisy than missed alert).
+          grep_status=0
+          grep -qF "$MARKER" <<< "$existing_comments" || grep_status=$?
+          case "$grep_status" in
+            0)
+              echo "already commented on this PR — skipping"
+              exit 0
+              ;;
+            1) ;;  # no prior marker found — fall through and post
+            *)
+              echo "::warning::grep failed (exit $grep_status) — posting comment (fail-closed)"
+              ;;
+          esac
+
+          if [ "$UPDATE_TYPE" = "version-update:semver-major" ]; then
+            REASON="Major version bump detected (${PACKAGE_ECOSYSTEM} / ${DEPENDENCY_NAMES})"
+          else
+            REASON="Production direct-dependency minor bump (${PACKAGE_ECOSYSTEM} / ${DEPENDENCY_NAMES})"
+          fi
+          # Build the body via printf so the run: | block contains no literal
+          # newlines mid-string. Earlier `--body "${MARKER}\n${REASON}…"` form
+          # broke Dependabot's stricter YAML parser (the second line was
+          # column-1, terminating the block scalar — Dependabot's update
+          # engine reported "/.github/workflows/dependabot-auto-merge.yml not
+          # parseable" even though GitHub Actions accepted it).
+          BODY=$(printf '%s\n\n%s\n' "$MARKER" "$REASON. Auto-merge skipped — please review changes manually before merging.")
+          gh pr comment "$PR_URL" --body "$BODY"

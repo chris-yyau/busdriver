@@ -161,24 +161,34 @@ WORKTREE_DIR="$(cd .. && pwd -P)/pr-grind-${PR_NUMBER}"
 # `--no-worktree`. This avoids a hard failure on a workflow we expect.
 WT_OUT=$(LANG=C LC_ALL=C git worktree add "$WORKTREE_DIR" "$PR_BRANCH" 2>&1)
 WT_EXIT=$?
+
+# `tr -cd '[:print:]\n\t'` strips every non-printable byte — kills CSI, OSC,
+# and any other terminal-control sequence in one pass. Portable across BSD
+# (macOS default) and GNU sed; sed's `\x1B` hex escape is GNU-only and
+# silently no-ops on macOS. Used for any output that came from git or from
+# the GitHub-API-supplied branch name.
+SAFE_BRANCH=$(printf '%s' "$PR_BRANCH" | tr -cd '[:print:]\n\t')
+
 if [ "$WT_EXIT" -ne 0 ]; then
   if printf '%s' "$WT_OUT" | grep -q 'already used by worktree at'; then
-    echo "ℹ️  Branch $PR_BRANCH is already checked out — falling back to in-place mode (--no-worktree)."
+    echo "ℹ️  Branch $SAFE_BRANCH is already checked out — falling back to in-place mode (--no-worktree)."
     # Marker line — the dispatcher scans stdout for this exact string and
     # MUST propagate NO_WORKTREE=1 to subsequent bash blocks (shell vars
     # don't survive across Claude tool calls; the printed marker is the
     # cross-block source of truth).
     echo "pr-grind-mode: no-worktree"
-    WORKTREE_DIR=$(git rev-parse --show-toplevel)
+    # Hard-fail if we can't resolve the repo root — without `set -e`, an
+    # empty WORKTREE_DIR would let `cd ""` silently fall through to $HOME.
+    if ! WORKTREE_DIR=$(git rev-parse --show-toplevel); then
+      echo "❌ git rev-parse --show-toplevel failed — cannot determine repo root for in-place fallback."
+      exit 1
+    fi
     NO_WORKTREE=1
     cd "$WORKTREE_DIR"
     # Echo the resolved path so the dispatcher can capture it deterministically
     echo "WORKTREE_DIR=$WORKTREE_DIR"
   else
-    # Strip ANSI/VT100 escape sequences from git's stderr before echoing —
-    # locked LANG=C above forces English output but a hostile branch name
-    # or git hook could still emit color codes.
-    SAFE_WT_OUT=$(printf '%s' "$WT_OUT" | sed 's/\x1B\[[0-9;]*[a-zA-Z]//g')
+    SAFE_WT_OUT=$(printf '%s' "$WT_OUT" | tr -cd '[:print:]\n\t')
     echo "❌ git worktree add failed: $SAFE_WT_OUT"
     exit 1
   fi

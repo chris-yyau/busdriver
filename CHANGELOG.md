@@ -1,3 +1,10 @@
+## [1.30.1](https://github.com/chris-yyau/busdriver/compare/v1.30.0...v1.30.1) (2026-05-08)
+
+
+### Bug Fixes
+
+* **pr-grind:** downgrade infra-error/rate-limit reviews to none in ack ledger ([#77](https://github.com/chris-yyau/busdriver/issues/77)) ([52b8685](https://github.com/chris-yyau/busdriver/commit/52b8685892b7ae8f3d26ff1a8300b1249ef29620)), closes [#CLI](https://github.com/chris-yyau/busdriver/issues/CLI)
+
 # [1.30.0](https://github.com/chris-yyau/busdriver/compare/v1.29.3...v1.30.0) (2026-05-08)
 
 

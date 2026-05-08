@@ -133,10 +133,10 @@ COMPLETION:
   ├── Write .claude/pr-grind-clean.local at repo root
   ├── default → gh pr merge --squash --delete-branch
   ├── --no-merge → write marker to original-worktree repo root, report ready
-  └── Cleanup ephemeral worktree
+  └── Cleanup ephemeral worktree (skip if NO_WORKTREE=1)
 
 BAIL:
-  └── Cleanup ephemeral worktree, surface RESULT_BAIL_REASON to user
+  └── Cleanup ephemeral worktree (skip if NO_WORKTREE=1), surface RESULT_BAIL_REASON to user
 ```
 
 ## Step Details
@@ -163,10 +163,10 @@ WT_OUT=$(LANG=C LC_ALL=C git worktree add "$WORKTREE_DIR" "$PR_BRANCH" 2>&1)
 WT_EXIT=$?
 
 # `tr -cd '[:print:]\n\t'` strips every non-printable byte — kills CSI, OSC,
-# and any other terminal-control sequence in one pass. Portable across BSD
-# (macOS default) and GNU sed; sed's `\x1B` hex escape is GNU-only and
-# silently no-ops on macOS. Used for any output that came from git or from
-# the GitHub-API-supplied branch name.
+# and any other terminal-control sequence in one pass. Used here instead of
+# sed because BSD sed (macOS default) does not support the `\x1B` hex escape;
+# `tr -cd '[:print:]\n\t'` is portable across BSD and GNU. Applied to any
+# output that came from git or from the GitHub-API-supplied branch name.
 SAFE_BRANCH=$(printf '%s' "$PR_BRANCH" | tr -cd '[:print:]\n\t')
 
 if [ "$WT_EXIT" -ne 0 ]; then
@@ -201,7 +201,7 @@ fi
 
 **Skip with `--no-worktree`:** Optional explicit opt-in to in-place mode. The auto-fallback below now handles the common case (branch already checked out), so passing this flag is rarely required — use it when you want to suppress the info-level fallback message or skip the worktree-add attempt entirely.
 
-**Auto-fallback to in-place mode:** If `git worktree add` fails with `already used by worktree at`, Step 0 silently falls back and prints two lines: `pr-grind-mode: no-worktree` and `WORKTREE_DIR=<repo-root>`. **When the `pr-grind-mode: no-worktree` line appears, the dispatcher MUST treat the rest of the run as if `--no-worktree` was passed** — set `NO_WORKTREE=1` in every subsequent bash block, skip the worktree cleanup at COMPLETION and BAIL, and write `pr-grind-clean.local` to the current repo root rather than copying it across worktrees. This state has to be carried by Claude across bash invocations because shell variables don't persist; treat the printed marker as the source of truth and propagate it explicitly. The `WORKTREE_DIR=<repo-root>` line is the resolved path the dispatcher should pass to the subagent context block.
+**Auto-fallback to in-place mode:** If `git worktree add` fails with `already used by worktree at`, Step 0 automatically falls back and prints three lines: an `ℹ️` info line naming the branch, `pr-grind-mode: no-worktree`, and `WORKTREE_DIR=<repo-root>`. **When the `pr-grind-mode: no-worktree` line appears, the dispatcher MUST treat the rest of the run as if `--no-worktree` was passed** — set `NO_WORKTREE=1` in every subsequent bash block, skip the worktree cleanup at COMPLETION and BAIL, and write `pr-grind-clean.local` to the current repo root rather than copying it across worktrees. This state has to be carried by Claude across bash invocations because shell variables don't persist; treat the printed marker as the source of truth and propagate it explicitly. The `WORKTREE_DIR=<repo-root>` line is the resolved path the dispatcher should pass to the subagent context block.
 
 ### Dispatch a Round (default path)
 

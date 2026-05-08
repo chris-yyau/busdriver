@@ -278,6 +278,20 @@ RESULT_REVIEWER_ACKS: <comma-separated login=value pairs from Step 6.5; always p
 RESULT_BAIL_REASON: <only when status=bail; one-line why>
 ```
 
+**Belt-and-suspenders: also write the RESULT block to a /tmp file.** Immediately before echoing the RESULT_* tags to stdout, write the same lines to `/tmp/pr-grinder-result-${PR_NUMBER}.txt` (overwrite any existing file from a prior round). This protects against stdout truncation, SDK reformatting, or upstream pollution: if the dispatcher's stdout parse fails, it falls back to reading the file. The file is the backup; stdout remains the primary channel — emit BOTH every round, in this order (write first, echo second). One extra `cat > … <<EOF` per round is the entire cost.
+
+```bash
+cat > "/tmp/pr-grinder-result-${PR_NUMBER}.txt" <<EOF
+RESULT_STATUS: ...
+RESULT_COMMIT_SHA: ...
+RESULT_FIXES: ...
+RESULT_REMAINING: ...
+RESULT_REVIEWER_ACKS: ...
+EOF
+```
+
+Then emit the same lines on stdout as the final lines of your response. Include `RESULT_BAIL_REASON` in both the file and stdout when (and only when) `RESULT_STATUS: bail`.
+
 ### When to use each status
 
 | Status | When |

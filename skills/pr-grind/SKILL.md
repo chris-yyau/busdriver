@@ -253,7 +253,9 @@ RESULT_REVIEWER_ACKS: <login=value,login=value,...>   (always present; values: <
 RESULT_BAIL_REASON: <one-line>                        (present only when status=bail)
 ```
 
-If `RESULT_STATUS` is missing or its value isn't one of the three valid options, treat as `bail` with reason "subagent output unparseable" — do not guess.
+**Stdout-parse fallback to /tmp file:** if scanning the worker's stdout for `^RESULT_<NAME>: ` produces no `RESULT_STATUS` (after alias resolution), DO NOT immediately bail. First try reading `/tmp/pr-grinder-result-${PR_NUMBER}.txt`; if it exists and contains valid `RESULT_<NAME>: ` lines, parse from there using the same alias resolution and last-occurrence rules. The worker writes this file immediately before stdout emission per the contract in `agents/pr-grinder.md` — so the file should always be present on the round's filesystem even when stdout was truncated, reformatted by the SDK, or polluted by mid-prompt output. Only bail "subagent output unparseable" if BOTH stdout and the file fail to yield a valid `RESULT_STATUS`.
+
+If `RESULT_STATUS` is missing or its value isn't one of the three valid options after BOTH stdout and the /tmp file have been tried, treat as `bail` with reason "subagent output unparseable" — do not guess.
 
 ### Inline Execution (`--opus`, `--interactive`, `--ci-only`, or `--comments-only`)
 

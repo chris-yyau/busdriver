@@ -95,7 +95,7 @@ LOOP for round in 1..MAX:
   │        is waiting for a bot to re-review). A round with neither is
   │        broken — re-dispatching would loop forever on no progress.
   │        Note: a bot whose review was downgraded to `none` by the
-  │        infra-error path (see `ack_for_bot`) will not appear as
+  │        infra-error path (see scripts/ack-ledger.sh) will not appear as
   │        `stale`. If that downgraded bot was the ONLY reason the worker
   │        considered the round incomplete, the worker should return
   │        `clean` (or `bail`), not `needs_more` with all-`none` acks —
@@ -399,7 +399,7 @@ If you didn't change any files this round (no actionable findings — only waiti
 
 After any commit/push has settled, compute the per-bot ack ledger. This closes the slow-bot race: a bot's GitHub check can flip green seconds before the bot actually posts its review. Without this gate, Step 7 would declare the round complete and the loop would exit before the bot's findings landed.
 
-This block intentionally mirrors `agents/pr-grinder.md` Step 6.5 (the Sonnet worker copy) and the dispatcher's `dispatcher_ack_for_bot` in COMPLETION below. **All three copies must stay in sync** — if one changes, update the other two. Function name (`inline_ack_for_bot`) and result-var name (`ROUND_ACKS`) differ from the worker/dispatcher to avoid namespace shadowing if multiple snippets ever run in the same Bash invocation.
+The per-bot algorithm itself is single-sourced at `scripts/ack-ledger.sh` and invoked identically here, in `agents/pr-grinder.md` Step 6.5 (the Sonnet worker copy), and in COMPLETION below — algorithm edits touch one file. The fetch block (`ALL_THREADS`/`ALL_REVIEWS`/`ALL_COMMENTS` and the `FETCH_OK` flag) still lives at each call site because PR/owner/repo come from caller-local context. The result-var name (`ROUND_ACKS`) differs from the worker (`ACKS`) and dispatcher (`FRESH_ACKS`) so multiple snippets can coexist in a single Bash invocation without namespace collision.
 
 The `<PR_NUMBER>`, `<owner>`, `<repo>` placeholders below follow the same template-substitution convention used by COMPLETION — Claude substitutes the literal owner / repo / PR-number values at run time before executing the bash.
 
@@ -410,7 +410,7 @@ REPO=<repo>
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
 
 # One-shot fetches. FETCH_OK tracks any source failure; if any source failed,
-# inline_ack_for_bot fails-CLOSED to `stale` for every bot (fail-OPEN
+# scripts/ack-ledger.sh fails-CLOSED to `stale` for every bot (fail-OPEN
 # regression guard — empty-default fallbacks would silently produce `none`
 # and let `clean` slip through).
 FETCH_OK=1
@@ -433,79 +433,13 @@ ALL_THREADS=$(gh api graphql --paginate -f query='
 ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || FETCH_OK=0
 ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH_OK=0
 
-# Three-tier ack — same algorithm as worker's `ack_for_bot` in agents/pr-grinder.md
-# and dispatcher's `dispatcher_ack_for_bot` in COMPLETION below.
-inline_ack_for_bot() {
-  local login="$1"
-  local unresolved outdated commit_id body_sha downgrade_pair ever_approved last_body
-
-  # Fail-CLOSED on any source-fetch failure
-  if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; return; fi
-
-  # (A) Source 2 thread state — unresolved+non-outdated → stale; outdated-only → effectively acked
-  # jq -s slurps paginated graphql output (multiple JSON docs → single array)
-  unresolved=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
-      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
-      | select(.isResolved == false and .isOutdated == false)] | length' 2>/dev/null || echo 0)
-  if [ "$unresolved" -gt 0 ]; then echo "stale"; return; fi
-  outdated=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
-      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
-      | select(.isOutdated == true)] | length' 2>/dev/null || echo 0)
-  if [ "$outdated" -gt 0 ]; then echo "$HEAD_SHA"; return; fi
-
-  # (B) /reviews commit_id — explicit per-commit review submission
-  commit_id=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty' 2>/dev/null || echo "")
-  if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ]; then echo "${commit_id:0:8}"; return; fi
-
-  # (C) Issue-comment body SHA fallback (Greptile-style — single comment updated per commit)
-  body_sha=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.comments[] | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null \
-    | grep -oE 'commit/[a-f0-9]{7,40}' | sed 's|.*/||' | tail -1 | cut -c1-8)
-  if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then echo "$body_sha"; return; fi
-
-  # No HEAD-ack signal — distinguish never-posted (none) from posted-on-older (stale)
-  if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; return; fi
-
-  # Infra-error / rate-limit downgrade — if the latest review body is a known
-  # "tooling failed, try again later" marker (Copilot's permanent error review
-  # frozen on an older SHA is the canonical case), treat as `none` not `stale`.
-  # The bot left a review object behind but waiting for it to ack HEAD is futile
-  # until a human re-requests review. Without this downgrade, a single rate-limit
-  # event blocks the merge gate indefinitely.
-  #
-  # Defense: only fire when the bot has NEVER submitted an APPROVED or DISMISSED
-  # review on this PR (`ever_approved == 0`). DISMISSED counts as "ever approved"
-  # because a dismissed approval is a historical signal the bot genuinely approved
-  # at some point. If the bot ever approved/dismissed any commit, an error in its
-  # latest body is transient and `stale` is the correct signal. The guard also
-  # prevents an admin-edit bypass where an APPROVED/DISMISSED bot review's body
-  # is PATCHed to inject the trigger phrase.
-  #
-  # Note: the FETCH_OK guard at the top of this function already returns
-  # `stale` on any source-fetch failure, so this block only runs on
-  # successful fetches.
-  #
-  # Keep this block in lockstep with `ack_for_bot` (agents/pr-grinder.md) and
-  # `dispatcher_ack_for_bot` (below in this file).
-  downgrade_pair=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[ .[] | .[] | select(.user.login == $login or .user.login == $login_bot) ]
-     | [ (map(select(.state == "APPROVED" or .state == "DISMISSED")) | length),
-         (last | .body // empty) ]' 2>/dev/null || echo '[0,""]')
-  ever_approved=$(printf '%s' "$downgrade_pair" | jq -r '.[0]' 2>/dev/null || echo 0)
-  if [ "$ever_approved" -eq 0 ]; then
-    last_body=$(printf '%s' "$downgrade_pair" | jq -r '.[1]' 2>/dev/null || echo "")
-    if printf '%s' "$last_body" | grep -qiE 'encountered an error|rate.?limit|unable to review|try again by re-requesting'; then
-      echo "none"; return
-    fi
-  fi
-
-  echo "stale"
-}
-
-ROUND_ACKS="greptile-apps=$(inline_ack_for_bot greptile-apps),cubic-dev-ai=$(inline_ack_for_bot cubic-dev-ai),coderabbitai=$(inline_ack_for_bot coderabbitai),copilot-pull-request-reviewer=$(inline_ack_for_bot copilot-pull-request-reviewer)"
+# Three-tier ack — algorithm lives in scripts/ack-ledger.sh (single source of
+# truth for this site, the worker's Step 6.5 in agents/pr-grinder.md, and the
+# dispatcher's Completion site below). The script reads FETCH_OK / ALL_THREADS /
+# ALL_REVIEWS / ALL_COMMENTS / HEAD_SHA from env and the bot login from $1.
+export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS HEAD_SHA
+ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
+ROUND_ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai),copilot-pull-request-reviewer=$(bash "$ACK_SCRIPT" copilot-pull-request-reviewer)"
 echo "Ack ledger: $ROUND_ACKS"
 
 STALE_BOTS=$(echo "$ROUND_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
@@ -549,11 +483,11 @@ Continue grinding?
 4. No unresolved actionable comments from any source
 5. No new comments arrived after your last push (wait for the full cycle)
 6. Advisory check issues either fixed or noted as beyond PR scope
-7. **Reviewer ack ledger**: every registered bot (Greptile, Cubic, CodeRabbit, Copilot) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean either "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" — both are non-gating; see `ack_for_bot`'s infra-error downgrade.)
+7. **Reviewer ack ledger**: every registered bot (Greptile, Cubic, CodeRabbit, Copilot) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean either "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" — both are non-gating; see `scripts/ack-ledger.sh`'s infra-error downgrade.)
 
 **Re-query the ack ledger fresh (REQUIRED — defense in depth against late posts between subagent return and merge time):**
 
-The dispatcher must re-run the same `ack_for_bot` lookup the worker used in Step 6.5, against the live `/reviews` endpoint, with HEAD recomputed against the current branch state. Just re-parsing `$RESULT_REVIEWER_ACKS` would only validate the worker's snapshot — it can't catch a bot that finished re-reviewing in the seconds between subagent return and merge.
+The dispatcher must re-run the same `scripts/ack-ledger.sh` lookup the worker used in Step 6.5, against the live `/reviews` endpoint, with HEAD recomputed against the current branch state. Just re-parsing `$RESULT_REVIEWER_ACKS` would only validate the worker's snapshot — it can't catch a bot that finished re-reviewing in the seconds between subagent return and merge.
 
 The `<PR_NUMBER>`, `<owner>`, `<repo>` placeholders below follow the same template-substitution convention as `<PR_NUMBER>` elsewhere in this Completion section — Claude substitutes the literal owner / repo / PR-number values at run time before executing the bash.
 
@@ -584,55 +518,12 @@ ALL_THREADS=$(gh api graphql --paginate -f query='
 ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || FETCH_OK=0
 ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH_OK=0
 
-# Three-tier ack — same algorithm as worker `ack_for_bot` and inline `inline_ack_for_bot`.
-dispatcher_ack_for_bot() {
-  local login="$1"
-  local unresolved outdated commit_id body_sha downgrade_pair ever_approved last_body
-
-  if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; return; fi
-
-  unresolved=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
-      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
-      | select(.isResolved == false and .isOutdated == false)] | length' 2>/dev/null || echo 0)
-  if [ "$unresolved" -gt 0 ]; then echo "stale"; return; fi
-  outdated=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
-      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
-      | select(.isOutdated == true)] | length' 2>/dev/null || echo 0)
-  if [ "$outdated" -gt 0 ]; then echo "$HEAD_SHA"; return; fi
-
-  commit_id=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty' 2>/dev/null || echo "")
-  if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ]; then echo "${commit_id:0:8}"; return; fi
-
-  body_sha=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.comments[] | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null \
-    | grep -oE 'commit/[a-f0-9]{7,40}' | sed 's|.*/||' | tail -1 | cut -c1-8)
-  if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then echo "$body_sha"; return; fi
-
-  if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; return; fi
-
-  # Infra-error / rate-limit downgrade — see `inline_ack_for_bot` above for the
-  # rationale, the `ever_approved` defense, and the FETCH_OK interaction.
-  # Keep this block in lockstep with `ack_for_bot` (agents/pr-grinder.md) and
-  # `inline_ack_for_bot` (above in this file).
-  downgrade_pair=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[ .[] | .[] | select(.user.login == $login or .user.login == $login_bot) ]
-     | [ (map(select(.state == "APPROVED" or .state == "DISMISSED")) | length),
-         (last | .body // empty) ]' 2>/dev/null || echo '[0,""]')
-  ever_approved=$(printf '%s' "$downgrade_pair" | jq -r '.[0]' 2>/dev/null || echo 0)
-  if [ "$ever_approved" -eq 0 ]; then
-    last_body=$(printf '%s' "$downgrade_pair" | jq -r '.[1]' 2>/dev/null || echo "")
-    if printf '%s' "$last_body" | grep -qiE 'encountered an error|rate.?limit|unable to review|try again by re-requesting'; then
-      echo "none"; return
-    fi
-  fi
-
-  echo "stale"
-}
-
-FRESH_ACKS="greptile-apps=$(dispatcher_ack_for_bot greptile-apps),cubic-dev-ai=$(dispatcher_ack_for_bot cubic-dev-ai),coderabbitai=$(dispatcher_ack_for_bot coderabbitai),copilot-pull-request-reviewer=$(dispatcher_ack_for_bot copilot-pull-request-reviewer)"
+# Three-tier ack — same single-sourced algorithm as the worker's Step 6.5 and
+# the inline ledger block in Step 6.5 above. All three sites invoke
+# scripts/ack-ledger.sh; algorithm edits live in that one file.
+export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS HEAD_SHA
+ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
+FRESH_ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai),copilot-pull-request-reviewer=$(bash "$ACK_SCRIPT" copilot-pull-request-reviewer)"
 STALE_BOTS=$(echo "$FRESH_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
 if [ -n "$STALE_BOTS" ]; then
   echo "❌ BLOCKED: registered reviewer(s) with stale ack at merge time: $STALE_BOTS"

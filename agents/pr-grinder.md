@@ -200,9 +200,10 @@ Now (and ONLY now, after any commit/push has settled) compute the ledger. Comput
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
 
 # One-shot fetches (avoid redundant gh api calls per bot). FETCH_OK tracks
-# whether ANY source failed — if so, ack_for_bot fails-CLOSED to `stale` for
-# every bot rather than silently treating the missing data as "bot doesn't
-# operate" (which would be a fail-OPEN regression, allowing premature merge).
+# whether ANY source failed — if so, scripts/ack-ledger.sh fails-CLOSED to
+# `stale` for every bot rather than silently treating the missing data as
+# "bot doesn't operate" (which would be a fail-OPEN regression, allowing
+# premature merge).
 FETCH_OK=1
 # Source 2: review threads. --paginate + cursor for PRs with >100 threads
 # (Greptile P1 — `reviewThreads(first:100)` without pagination silently
@@ -226,93 +227,15 @@ ALL_THREADS=$(gh api graphql --paginate -f query='
 ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews" 2>/dev/null) || FETCH_OK=0
 ALL_COMMENTS=$(gh pr view "$PR_NUMBER" --comments --json comments 2>/dev/null) || FETCH_OK=0
 
-# Per-bot ack — emits one of: <short-sha> | none | stale
-# Three-tier check: (A) Source 2 thread state, (B) /reviews commit_id, (C) issue-comment body SHA
-ack_for_bot() {
-  local login="$1"
-  local unresolved outdated commit_id body_sha downgrade_pair ever_approved last_body
-
-  # Fail-CLOSED: any source failed → mark stale (Greptile P1 — fail-OPEN
-  # regression where API failures silently became `none` and didn't gate)
-  if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; return; fi
-
-  # (A) Source 2: are there unresolved+non-outdated threads from this bot?
-  # Bots like Copilot post their findings as inline threads. If unresolved+
-  # non-outdated, those are real findings to address → stale.
-  # If only OUTDATED threads exist, the bot's prior findings were addressed
-  # by subsequent code changes → effectively acked (the bot may not bother
-  # re-reviewing for trivial cleanup commits).
-  # jq -s slurps paginated graphql output (multiple JSON docs → single array)
-  unresolved=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
-      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
-      | select(.isResolved == false and .isOutdated == false)] | length' 2>/dev/null || echo 0)
-  if [ "$unresolved" -gt 0 ]; then echo "stale"; return; fi
-  outdated=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
-      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
-      | select(.isOutdated == true)] | length' 2>/dev/null || echo 0)
-  if [ "$outdated" -gt 0 ]; then echo "$HEAD_SHA"; return; fi
-
-  # (B) /reviews: did the bot explicitly submit a review on HEAD?
-  commit_id=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty' 2>/dev/null || echo "")
-  if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ]; then echo "${commit_id:0:8}"; return; fi
-
-  # (C) Issue-comment body SHA: bots like Greptile update a single comment with
-  # a "Last reviewed commit: [sha](.../commit/<sha>)" link instead of submitting
-  # a new /reviews entry per commit. Parse the body for the most recent commit/<sha>
-  # link and treat it as authoritative if it matches HEAD.
-  body_sha=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.comments[] | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null \
-    | grep -oE 'commit/[a-f0-9]{7,40}' | sed 's|.*/||' | tail -1 | cut -c1-8)
-  if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then echo "$body_sha"; return; fi
-
-  # No HEAD-ack signal anywhere. Did the bot post on this PR at all?
-  # If never (no /reviews entry, no body SHA reference) → bot doesn't operate here → none.
-  # Otherwise (posted on an older commit, no HEAD signal yet) → stale.
-  if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; return; fi
-
-  # Infra-error / rate-limit downgrade — Copilot's "encountered an error and was
-  # unable to review" review object is the canonical case: GitHub leaves it
-  # frozen on the SHA where it errored, never updates commit_id on later pushes,
-  # and there's no gh-CLI surface to clear it (DELETE only works on pending
-  # reviews; requested_reviewers POST 422s for Copilot). Treating those as
-  # `stale` blocks the merge gate forever; downgrade to `none` so the loop
-  # surfaces the situation to the operator instead of looping in vain.
-  #
-  # Defense: only fire when the bot has NEVER submitted an APPROVED or DISMISSED
-  # review on this PR. DISMISSED counts as "ever approved" because a dismissed
-  # approval is a historical signal that the bot genuinely approved at some point;
-  # treating post-dismiss errors as permanent would incorrectly suppress stale.
-  # If the bot ever approved/dismissed any commit, an error in its latest body
-  # is transient (operator should re-request) and the existing `stale` signal
-  # is correct. This also closes a potential admin-edit bypass where an
-  # APPROVED/DISMISSED bot review's body is PATCHed to inject the trigger phrase
-  # — `ever_approved>0` blocks the downgrade.
-  #
-  # Note: the FETCH_OK guard at the top of this function already returns
-  # `stale` on any source-fetch failure, so this block only runs on
-  # successful fetches.
-  #
-  # Keep this block in lockstep with `inline_ack_for_bot` and
-  # `dispatcher_ack_for_bot` in skills/pr-grind/SKILL.md.
-  downgrade_pair=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[ .[] | .[] | select(.user.login == $login or .user.login == $login_bot) ]
-     | [ (map(select(.state == "APPROVED" or .state == "DISMISSED")) | length),
-         (last | .body // empty) ]' 2>/dev/null || echo '[0,""]')
-  ever_approved=$(printf '%s' "$downgrade_pair" | jq -r '.[0]' 2>/dev/null || echo 0)
-  if [ "$ever_approved" -eq 0 ]; then
-    last_body=$(printf '%s' "$downgrade_pair" | jq -r '.[1]' 2>/dev/null || echo "")
-    if printf '%s' "$last_body" | grep -qiE 'encountered an error|rate.?limit|unable to review|try again by re-requesting'; then
-      echo "none"; return
-    fi
-  fi
-
-  echo "stale"
-}
-
-ACKS="greptile-apps=$(ack_for_bot greptile-apps),cubic-dev-ai=$(ack_for_bot cubic-dev-ai),coderabbitai=$(ack_for_bot coderabbitai),copilot-pull-request-reviewer=$(ack_for_bot copilot-pull-request-reviewer)"
+# Per-bot ack — emits one of: <short-sha> | none | stale via the canonical
+# implementation at scripts/ack-ledger.sh. The script reads the fetched JSON
+# blobs from env (FETCH_OK, ALL_THREADS, ALL_REVIEWS, ALL_COMMENTS, HEAD_SHA)
+# and the bot login from $1. Algorithm edits live in that file; this site
+# and the two ledger sites in skills/pr-grind/SKILL.md (Step 6.5 inline
+# block, Completion re-query block) all invoke it identically.
+export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS HEAD_SHA
+ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
+ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai),copilot-pull-request-reviewer=$(bash "$ACK_SCRIPT" copilot-pull-request-reviewer)"
 echo "Ack ledger: $ACKS"
 ```
 

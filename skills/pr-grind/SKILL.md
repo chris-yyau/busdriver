@@ -153,13 +153,34 @@ PR_BRANCH=$(gh pr view <PR_NUMBER> --json headRefName -q .headRefName)
 # Use parent-pwd composition so this works even before the worktree exists
 # (BSD realpath on macOS rejects non-existent paths).
 WORKTREE_DIR="$(cd .. && pwd -P)/pr-grind-${PR_NUMBER}"
-git worktree add "$WORKTREE_DIR" "$PR_BRANCH"
-cd "$WORKTREE_DIR"
+
+# Attempt to create the ephemeral worktree. If the branch is already
+# checked out elsewhere (another worktree, or the dispatcher's own CWD —
+# the common case when running pr-grind on the branch you just pushed),
+# fall back to in-place mode automatically — equivalent to passing
+# `--no-worktree`. This avoids a hard failure on a workflow we expect.
+WT_OUT=$(git worktree add "$WORKTREE_DIR" "$PR_BRANCH" 2>&1)
+WT_EXIT=$?
+if [ "$WT_EXIT" -ne 0 ]; then
+  if printf '%s' "$WT_OUT" | grep -q 'already used by worktree at'; then
+    echo "ℹ️  Branch $PR_BRANCH is already checked out — falling back to in-place mode (--no-worktree)."
+    echo "pr-grind-mode: no-worktree"
+    WORKTREE_DIR=$(git rev-parse --show-toplevel)
+    # Leave NO_WORKTREE for the dispatcher to track (see below)
+  else
+    echo "❌ git worktree add failed: $WT_OUT"
+    exit 1
+  fi
+else
+  cd "$WORKTREE_DIR"
+fi
 ```
 
 **Why a worktree:** pr-grind is a different operational mode from the pipeline. Pre-PR phases optimize for local delivery; post-PR grind optimizes for async iteration. An ephemeral worktree gives pr-grind its own branch ownership without hijacking the main workspace.
 
 **Skip with `--no-worktree`:** If already on the PR branch, pass `--no-worktree` to skip worktree creation.
+
+**Auto-fallback to in-place mode:** If `git worktree add` fails with `already used by worktree at`, Step 0 silently falls back and prints `pr-grind-mode: no-worktree`. **When that line appears, the dispatcher MUST treat the rest of the run as if `--no-worktree` was passed** — set `NO_WORKTREE=1` in every subsequent bash block, skip the worktree cleanup at COMPLETION and BAIL, and write `pr-grind-clean.local` to the current repo root rather than copying it across worktrees. This state has to be carried by Claude across bash invocations because shell variables don't persist; treat the printed marker as the source of truth and propagate it explicitly.
 
 ### Dispatch a Round (default path)
 
@@ -681,7 +702,7 @@ PR #<N> is clean after <rounds> round(s).
 | `--max N` | Maximum iterations | 5 |
 | `--opus` | Run rounds inline in parent Opus context (no Sonnet dispatch) | Off (dispatches Sonnet subagent) |
 | `--interactive` | Pause for human confirmation each round (forces inline; subagent can't pause) | Off (autonomous) |
-| `--no-worktree` | Skip worktree creation, work in current directory | Off (creates worktree) |
+| `--no-worktree` | Skip worktree creation, work in current directory. Auto-engages if `git worktree add` reports the branch is already checked out elsewhere — see Step 0 fallback. | Off (creates worktree) |
 | `--ci-only` | Only fix CI failures, ignore comments. Forces inline mode (Step 2 branching not yet wired into the subagent). | Off |
 | `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
 | `--comments-only` | Only address comments, ignore CI. Forces inline mode (same reason as `--ci-only`). | Off |

@@ -394,7 +394,7 @@ ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH
 # and dispatcher's `dispatcher_ack_for_bot` in COMPLETION below.
 inline_ack_for_bot() {
   local login="$1"
-  local unresolved outdated commit_id body_sha last_body ever_approved
+  local unresolved outdated commit_id body_sha downgrade_pair ever_approved last_body
 
   # Fail-CLOSED on any source-fetch failure
   if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; return; fi
@@ -433,11 +433,13 @@ inline_ack_for_bot() {
   # until a human re-requests review. Without this downgrade, a single rate-limit
   # event blocks the merge gate indefinitely.
   #
-  # Defense: only fire when the bot has NEVER submitted an APPROVED review on
-  # this PR (`ever_approved == 0`). If the bot ever approved any commit, an
-  # error in its latest body is transient and `stale` is the correct signal.
-  # The guard also prevents an admin-edit bypass where an APPROVED bot review's
-  # body is PATCHed to inject the trigger phrase.
+  # Defense: only fire when the bot has NEVER submitted an APPROVED or DISMISSED
+  # review on this PR (`ever_approved == 0`). DISMISSED counts as "ever approved"
+  # because a dismissed approval is a historical signal the bot genuinely approved
+  # at some point. If the bot ever approved/dismissed any commit, an error in its
+  # latest body is transient and `stale` is the correct signal. The guard also
+  # prevents an admin-edit bypass where an APPROVED/DISMISSED bot review's body
+  # is PATCHed to inject the trigger phrase.
   #
   # Note: the FETCH_OK guard at the top of this function already returns
   # `stale` on any source-fetch failure, so this block only runs on
@@ -445,11 +447,13 @@ inline_ack_for_bot() {
   #
   # Keep this block in lockstep with `ack_for_bot` (agents/pr-grinder.md) and
   # `dispatcher_ack_for_bot` (below in this file).
-  ever_approved=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[] | .[] | select((.user.login == $login or .user.login == $login_bot) and .state == "APPROVED")] | length' 2>/dev/null || echo 0)
+  downgrade_pair=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[ .[] | .[] | select(.user.login == $login or .user.login == $login_bot) ]
+     | [ (map(select(.state == "APPROVED" or .state == "DISMISSED")) | length),
+         (last | .body // empty) ]' 2>/dev/null || echo '[0,""]')
+  ever_approved=$(printf '%s' "$downgrade_pair" | jq -r '.[0]' 2>/dev/null || echo 0)
   if [ "$ever_approved" -eq 0 ]; then
-    last_body=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-      '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .body // empty' 2>/dev/null || echo "")
+    last_body=$(printf '%s' "$downgrade_pair" | jq -r '.[1]' 2>/dev/null || echo "")
     if printf '%s' "$last_body" | grep -qiE 'encountered an error|rate.?limit|unable to review|try again by re-requesting'; then
       echo "none"; return
     fi
@@ -540,7 +544,7 @@ ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH
 # Three-tier ack — same algorithm as worker `ack_for_bot` and inline `inline_ack_for_bot`.
 dispatcher_ack_for_bot() {
   local login="$1"
-  local unresolved outdated commit_id body_sha last_body ever_approved
+  local unresolved outdated commit_id body_sha downgrade_pair ever_approved last_body
 
   if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; return; fi
 
@@ -570,11 +574,13 @@ dispatcher_ack_for_bot() {
   # rationale, the `ever_approved` defense, and the FETCH_OK interaction.
   # Keep this block in lockstep with `ack_for_bot` (agents/pr-grinder.md) and
   # `inline_ack_for_bot` (above in this file).
-  ever_approved=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[] | .[] | select((.user.login == $login or .user.login == $login_bot) and .state == "APPROVED")] | length' 2>/dev/null || echo 0)
+  downgrade_pair=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[ .[] | .[] | select(.user.login == $login or .user.login == $login_bot) ]
+     | [ (map(select(.state == "APPROVED" or .state == "DISMISSED")) | length),
+         (last | .body // empty) ]' 2>/dev/null || echo '[0,""]')
+  ever_approved=$(printf '%s' "$downgrade_pair" | jq -r '.[0]' 2>/dev/null || echo 0)
   if [ "$ever_approved" -eq 0 ]; then
-    last_body=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-      '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .body // empty' 2>/dev/null || echo "")
+    last_body=$(printf '%s' "$downgrade_pair" | jq -r '.[1]' 2>/dev/null || echo "")
     if printf '%s' "$last_body" | grep -qiE 'encountered an error|rate.?limit|unable to review|try again by re-requesting'; then
       echo "none"; return
     fi

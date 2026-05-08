@@ -94,6 +94,12 @@ LOOP for round in 1..MAX:
   │        SHA (worker pushed a fix) OR at least one `stale` ack (worker
   │        is waiting for a bot to re-review). A round with neither is
   │        broken — re-dispatching would loop forever on no progress.
+  │        Note: a bot whose review was downgraded to `none` by the
+  │        infra-error path (see `ack_for_bot`) will not appear as
+  │        `stale`. If that downgraded bot was the ONLY reason the worker
+  │        considered the round incomplete, the worker should return
+  │        `clean` (or `bail`), not `needs_more` with all-`none` acks —
+  │        the invariant correctly catches that misuse.
   │     2. If RESULT_STATUS=clean AND any registered bot in
   │        RESULT_REVIEWER_ACKS has value `stale` →
   │        BAIL with reason "subagent reported clean but reviewer ack
@@ -388,7 +394,7 @@ ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH
 # and dispatcher's `dispatcher_ack_for_bot` in COMPLETION below.
 inline_ack_for_bot() {
   local login="$1"
-  local unresolved outdated commit_id body_sha
+  local unresolved outdated commit_id body_sha downgrade_pair ever_approved last_body
 
   # Fail-CLOSED on any source-fetch failure
   if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; return; fi
@@ -419,6 +425,40 @@ inline_ack_for_bot() {
 
   # No HEAD-ack signal — distinguish never-posted (none) from posted-on-older (stale)
   if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; return; fi
+
+  # Infra-error / rate-limit downgrade — if the latest review body is a known
+  # "tooling failed, try again later" marker (Copilot's permanent error review
+  # frozen on an older SHA is the canonical case), treat as `none` not `stale`.
+  # The bot left a review object behind but waiting for it to ack HEAD is futile
+  # until a human re-requests review. Without this downgrade, a single rate-limit
+  # event blocks the merge gate indefinitely.
+  #
+  # Defense: only fire when the bot has NEVER submitted an APPROVED or DISMISSED
+  # review on this PR (`ever_approved == 0`). DISMISSED counts as "ever approved"
+  # because a dismissed approval is a historical signal the bot genuinely approved
+  # at some point. If the bot ever approved/dismissed any commit, an error in its
+  # latest body is transient and `stale` is the correct signal. The guard also
+  # prevents an admin-edit bypass where an APPROVED/DISMISSED bot review's body
+  # is PATCHed to inject the trigger phrase.
+  #
+  # Note: the FETCH_OK guard at the top of this function already returns
+  # `stale` on any source-fetch failure, so this block only runs on
+  # successful fetches.
+  #
+  # Keep this block in lockstep with `ack_for_bot` (agents/pr-grinder.md) and
+  # `dispatcher_ack_for_bot` (below in this file).
+  downgrade_pair=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[ .[] | .[] | select(.user.login == $login or .user.login == $login_bot) ]
+     | [ (map(select(.state == "APPROVED" or .state == "DISMISSED")) | length),
+         (last | .body // empty) ]' 2>/dev/null || echo '[0,""]')
+  ever_approved=$(printf '%s' "$downgrade_pair" | jq -r '.[0]' 2>/dev/null || echo 0)
+  if [ "$ever_approved" -eq 0 ]; then
+    last_body=$(printf '%s' "$downgrade_pair" | jq -r '.[1]' 2>/dev/null || echo "")
+    if printf '%s' "$last_body" | grep -qiE 'encountered an error|rate.?limit|unable to review|try again by re-requesting'; then
+      echo "none"; return
+    fi
+  fi
+
   echo "stale"
 }
 
@@ -466,7 +506,7 @@ Continue grinding?
 4. No unresolved actionable comments from any source
 5. No new comments arrived after your last push (wait for the full cycle)
 6. Advisory check issues either fixed or noted as beyond PR scope
-7. **Reviewer ack ledger**: every registered bot (Greptile, Cubic, CodeRabbit, Copilot) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings.
+7. **Reviewer ack ledger**: every registered bot (Greptile, Cubic, CodeRabbit, Copilot) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean either "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" — both are non-gating; see `ack_for_bot`'s infra-error downgrade.)
 
 **Re-query the ack ledger fresh (REQUIRED — defense in depth against late posts between subagent return and merge time):**
 
@@ -504,7 +544,7 @@ ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH
 # Three-tier ack — same algorithm as worker `ack_for_bot` and inline `inline_ack_for_bot`.
 dispatcher_ack_for_bot() {
   local login="$1"
-  local unresolved outdated commit_id body_sha
+  local unresolved outdated commit_id body_sha downgrade_pair ever_approved last_body
 
   if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; return; fi
 
@@ -529,6 +569,23 @@ dispatcher_ack_for_bot() {
   if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then echo "$body_sha"; return; fi
 
   if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; return; fi
+
+  # Infra-error / rate-limit downgrade — see `inline_ack_for_bot` above for the
+  # rationale, the `ever_approved` defense, and the FETCH_OK interaction.
+  # Keep this block in lockstep with `ack_for_bot` (agents/pr-grinder.md) and
+  # `inline_ack_for_bot` (above in this file).
+  downgrade_pair=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[ .[] | .[] | select(.user.login == $login or .user.login == $login_bot) ]
+     | [ (map(select(.state == "APPROVED" or .state == "DISMISSED")) | length),
+         (last | .body // empty) ]' 2>/dev/null || echo '[0,""]')
+  ever_approved=$(printf '%s' "$downgrade_pair" | jq -r '.[0]' 2>/dev/null || echo 0)
+  if [ "$ever_approved" -eq 0 ]; then
+    last_body=$(printf '%s' "$downgrade_pair" | jq -r '.[1]' 2>/dev/null || echo "")
+    if printf '%s' "$last_body" | grep -qiE 'encountered an error|rate.?limit|unable to review|try again by re-requesting'; then
+      echo "none"; return
+    fi
+  fi
+
   echo "stale"
 }
 

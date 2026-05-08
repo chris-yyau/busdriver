@@ -1,3 +1,10 @@
+# [1.30.0](https://github.com/chris-yyau/busdriver/compare/v1.29.3...v1.30.0) (2026-05-08)
+
+
+### Features
+
+* add Dependabot auto-merge workflow (tier-portable) ([#75](https://github.com/chris-yyau/busdriver/issues/75)) ([1418fea](https://github.com/chris-yyau/busdriver/commit/1418fea11dc6bcd26acee376222cf3ac4152eac7)), closes [chris-yyau/helmet#33](https://github.com/chris-yyau/helmet/issues/33)
+
 ## [1.29.3](https://github.com/chris-yyau/busdriver/compare/v1.29.2...v1.29.3) (2026-05-07)
 
 

@@ -1,3 +1,10 @@
+# [1.33.0](https://github.com/chris-yyau/busdriver/compare/v1.32.0...v1.33.0) (2026-05-09)
+
+
+### Features
+
+* **pr-grind:** split --max into --max-fix and --max-wait budgets ([#84](https://github.com/chris-yyau/busdriver/issues/84)) ([612188a](https://github.com/chris-yyau/busdriver/commit/612188a1e8951705effa777f7d2a18c7f739318f)), closes [#80](https://github.com/chris-yyau/busdriver/issues/80)
+
 # [1.32.0](https://github.com/chris-yyau/busdriver/compare/v1.31.0...v1.32.0) (2026-05-08)
 
 

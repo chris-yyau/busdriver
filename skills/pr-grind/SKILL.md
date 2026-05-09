@@ -170,6 +170,11 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │       - "design question" / "design/scope" — needs human judgment
   │       - "WORKTREE_DIR missing" / "skipped pre-flight Read" — worker setup broken
   │       - "gh CLI auth" / "rate-limit" — environmental, dispatcher can't help
+  │       - "history rewrite" / "force-push" / "amend on pushed commit" /
+  │         "filter-branch" — worker contract category=judgment; rewriting
+  │         published SHAs is operator-authorization territory, not a tooling
+  │         friction the dispatcher can bridge. See worker `Bail Triggers`
+  │         table → "Fix would require rewriting published git history".
   │       - "max-fix iterations" / "max-wait iterations" — already exhausted budgets
   │     The match list above is allowlist-style precisely so this carve-out
   │     can't widen by accident — adding new tooling-friction reasons is an

@@ -357,7 +357,7 @@ Stop the round and return `RESULT_STATUS: bail` with the appropriate `RESULT_BAI
 | Comment is a design/scope question — surface it, don't try to answer | `judgment` | No |
 | Fix would require architectural changes | `judgment` | No |
 | Same flaky CI check name appears in `PRIOR_ATTEMPTS` `failures=` field for 2 prior rounds AND fails again now (3 total) | `judgment` | No |
-| **Fix would require rewriting published git history** — commitlint `header-max-length` on an already-pushed commit, oversized commits that need splitting via interactive rebase, anything that needs `git commit --amend` on a pushed SHA, `git filter-branch`, or `git push --force(-with-lease)` | **`judgment`** | **No** |
+| Fix would require rewriting published git history — commitlint `header-max-length` on an already-pushed commit, oversized commits that need splitting via `git rebase` (interactive or otherwise), anything that needs `git commit --amend` on a pushed SHA, `git filter-branch`, or `git push --force(-with-lease)` | `judgment` | No |
 | **Litmus gate keeps blocking after 2 attempts in this round** | **`tooling`** | **Yes** |
 | `gh` CLI auth or rate-limit errors that you can't resolve | `env` | No |
 | `WORKTREE_DIR` missing or unreadable | `env` | No |

@@ -144,8 +144,13 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │       a. recovery_inline_used == 0 (cap is 1 per pr-grind invocation; reset
   │          on each invocation, never persisted across invocations)
   │       b. --no-recovery-inline was NOT passed
-  │       c. RESULT_INFLIGHT_CHANGES ∈ {staged, unstaged} — worker left
-  │          working-tree changes that may be salvageable
+  │       c. RESULT_INFLIGHT_CHANGES ∈ {staged, unstaged, both} — worker left
+  │          working-tree changes that may be salvageable. The `both` state
+  │          (worker had simultaneous staged AND unstaged changes — common
+  │          mid-fix: ran `git add` on some files, kept editing others) is
+  │          handled by the dedicated branch in the RECOVERY_INLINE block
+  │          below; excluding it here would silently defeat the dual-state
+  │          recovery the worker contract specifically builds.
   │       d. RESULT_BAIL_CATEGORY == "tooling" — explicit enum on a structured tag,
   │          NOT substring matching against free-form RESULT_BAIL_REASON. The worker
   │          contract (agents/pr-grinder.md "Output Format" + "Bail Triggers") emits
@@ -216,9 +221,22 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        cross-correlate.
   │
   │        Parse RESULT_BOT_LEDGER as comma-separated entries of shape
-  │        `<login>=<n_actionable>/<n_total>:<disposition>`. For each
-  │        entry where the corresponding RESULT_REVIEWER_ACKS value
-  │        exists AND looks like a short SHA (regex `^[0-9a-f]{7,40}$`):
+  │        `<login>=<n_actionable>/<n_total>:<disposition>`.
+  │
+  │        **Defensive count check FIRST.** The known-bot set is fixed
+  │        (5 bots: `greptile-apps`, `cubic-dev-ai`, `coderabbitai`,
+  │        `copilot-pull-request-reviewer`, `codescene-delta-analysis`).
+  │        After comma-splitting, the number of entries MUST equal 5; if
+  │        it doesn't, BAIL with reason "malformed bot ledger: expected 5
+  │        entries, got <N> — possible disposition comma corruption (the
+  │        worker contract requires dispositions to contain no commas
+  │        because they would split into phantom entries and could hide
+  │        a HEAD-acked bot's `0/0` from this gate)". This count check
+  │        is what makes "MUST NOT contain commas" enforceable instead
+  │        of a soft hope.
+  │
+  │        Then for each entry where the corresponding RESULT_REVIEWER_ACKS
+  │        value exists AND looks like a short SHA (regex `^[0-9a-f]{7,40}$`):
   │          - if n_total == 0 → BAIL with reason "worker did not
   │            enumerate findings for <bot> despite ack on
   │            <short-sha> — possible prose-review coverage gap;
@@ -323,9 +341,15 @@ RECOVERY_INLINE (Bug 2 — bounded inline takeover):
   │          mutation that the path-list match cannot catch.
   │     If RESULT_INFLIGHT_CHANGES=unstaged:
   │       a. Compare `git diff -z --name-only` set against RESULT_UNSTAGED_FILES;
-  │          divergence → BAIL as above (no diff-sha check; worker only hashes
-  │          staged content, since unstaged is what we're about to add).
-  │       b. Stage the verified set: read the path list with mapfile / while-read
+  │          divergence → BAIL "recovery-via-inline: unstaged state mismatch".
+  │       b. Verify unstaged-diff content via SHA:
+  │          LOCAL_UNSTAGED_SHA=$(git diff | sha256sum | cut -c1-64)
+  │          If LOCAL_UNSTAGED_SHA != RESULT_UNSTAGED_DIFF_SHA, BAIL with reason
+  │          "recovery-via-inline: unstaged diff content changed since worker
+  │          bail (sha mismatch)" — concurrent worktree mutation between
+  │          worker bail and dispatcher takeover would otherwise let the
+  │          dispatcher commit content the worker never saw.
+  │       c. Stage the verified set: read the path list with mapfile / while-read
   │          loop on the `|`-split tokens, then `git add -- "${PATHS[@]}"`.
   │     If RESULT_INFLIGHT_CHANGES=both:
   │       Worker had both staged AND unstaged changes (common mid-fix state:
@@ -344,14 +368,23 @@ RECOVERY_INLINE (Bug 2 — bounded inline takeover):
   │     RESULT_FIXES summary; no clear intent to recover".
   │
   ├── Commit & push (the dispatcher CAN handle litmus iteration, the worker can't):
-  │     # SECURITY: pass message via stdin, NEVER interpolate RESULT_FIXES into
-  │     # a shell-quoted -m argument. RESULT_FIXES is worker prose that can
-  │     # contain attacker-controlled content (paraphrased bot-comment text,
-  │     # quoted user input, etc.); shell-string interpolation creates a
+  │     # SECURITY: build the message with `printf %s` formatters that do NOT
+  │     # re-interpret content, then pipe to `git commit -F -` reading from
+  │     # stdin. RESULT_FIXES is worker prose that can contain attacker-
+  │     # controlled content (paraphrased bot-comment text, quoted user
+  │     # input, etc.); shell-string interpolation into a `COMMIT_BODY="..."`
+  │     # assignment OR a `git commit -m "..."` flag would create a
   │     # command-injection sink for any backtick / $(...) / closing-quote
-  │     # sequence in the summary.
-  │     COMMIT_BODY="fix: address PR #<N> feedback — <RESULT_FIXES summary> (recovery-via-inline)"
-  │     printf '%s\n' "$COMMIT_BODY" | git commit -F -
+  │     # sequence in the summary. The `printf '%s' "$VAR"` pattern below
+  │     # treats $VAR as literal data — no command substitution, no quote
+  │     # parsing, no $(...) expansion of the variable's contents.
+  │     printf 'fix: address PR #%s feedback — %s (recovery-via-inline)\n' \
+  │       "$PR_NUMBER" "$RESULT_FIXES" \
+  │       | git commit -F -
+  │     # If RESULT_FIXES happens to contain a literal newline (workers
+  │     # shouldn't emit one — RESULT_FIXES is "one-line summary" per the
+  │     # output-format contract — but defense in depth): strip it via
+  │     # `tr -d '\n'` before piping.
   │     # The pre-commit hook fires litmus. The dispatcher (Opus) can iterate
   │     # through litmus auto-corrections (up to 10 iterations per gate semantics);
   │     # the worker context can't, which is precisely the tooling friction this
@@ -502,6 +535,7 @@ RESULT_INFLIGHT_CHANGES: none | staged | unstaged | both  (always present; non-b
 RESULT_STAGED_FILES: <`|`-separated paths or "none">  (always present; pipe-delimited, NUL-safe — split on `|` and use `git add --` to prevent option-injection)
 RESULT_UNSTAGED_FILES: <`|`-separated paths or "none"> (always present; pipe-delimited)
 RESULT_STAGED_DIFF_SHA: <64-hex sha256 or "none">     (always present; verifies staged content hasn't been mutated between worker bail and dispatcher takeover)
+RESULT_UNSTAGED_DIFF_SHA: <64-hex sha256 or "none">   (always present; verifies unstaged content hasn't been mutated — applies in unstaged and both modes)
 RESULT_BAIL_REASON: <one-line free-form prose>        (present only when status=bail; for human consumption — NEVER substring-matched for control flow)
 RESULT_BAIL_CATEGORY: tooling | judgment | env | budget  (present only when status=bail; structured enum that gates recovery-via-inline eligibility)
 ```

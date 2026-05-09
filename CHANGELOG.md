@@ -1,3 +1,10 @@
+## [1.34.1](https://github.com/chris-yyau/busdriver/compare/v1.34.0...v1.34.1) (2026-05-09)
+
+
+### Bug Fixes
+
+* **pr-grind:** bail on history-rewriting fixes (judgment, not tooling) ([#87](https://github.com/chris-yyau/busdriver/issues/87)) ([cd85287](https://github.com/chris-yyau/busdriver/commit/cd85287c628ae3f0d11b5e87a0b599e73fc18c0d)), closes [#86](https://github.com/chris-yyau/busdriver/issues/86) [#86](https://github.com/chris-yyau/busdriver/issues/86)
+
 # [1.34.0](https://github.com/chris-yyau/busdriver/compare/v1.33.0...v1.34.0) (2026-05-09)
 
 

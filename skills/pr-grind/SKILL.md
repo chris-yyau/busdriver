@@ -27,7 +27,9 @@ origin: custom
 
 **Bounded-wait advisory (best-effort, capped by `--max-wait`):**
 - AI reviewer acks (Greptile, CodeRabbit, Cubic, Copilot, etc.)
-- Style/nit findings: low priority but typically fixed
+
+**Best-effort (low priority, addressed if fix budget allows — counts against `--max-fix`, not `--max-wait`):**
+- Style/nit findings: typically fixed because the effort is low
 
 **Invariant:** required status checks are the merge authority. AI reviewer acks are bounded-wait advisory signals — apps rate-limit, freeze, or fail; `--max-wait` is the backstop. On exhaustion the loop **bails to the operator** (does NOT silently merge AND does NOT wait forever). Never wait indefinitely for any single reviewer app. The infra-error downgrade in `scripts/ack-ledger.sh` (`ever_approved=0` defense) handles the specific case of a frozen review that the bot can't self-recover from; `--max-wait` is the broader safety net for slow-bot scenarios outside that pattern.
 

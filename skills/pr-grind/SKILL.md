@@ -64,13 +64,20 @@ START
   │     If `--max N` was passed:
   │       MAX_FIX  = N
   │       MAX_WAIT = N
-  │       emit "⚠️  --max is deprecated; use --max-fix and --max-wait (both set to N)"
+  │       emit "⚠️  --max is deprecated; use --max-fix and --max-wait. Note: legacy --max=N capped TOTAL rounds at N; the alias allows up to 2N rounds (N fix + N wait). For old hard ceiling, use --max-fix=N --max-wait=0."
   │     Otherwise:
   │       MAX_FIX  = --max-fix N value (default 5)
   │       MAX_WAIT = --max-wait N value (default 8)
   │     If BOTH `--max` and either `--max-fix`/`--max-wait` were passed →
   │       BAIL with reason "conflicting flags: --max cannot be combined with --max-fix or --max-wait"
   │       (the alias contract is "set both to N"; combining with explicit budgets is ambiguous).
+  │     Validate budgets after resolution:
+  │       If MAX_FIX < 0 or MAX_WAIT < 0 →
+  │         BAIL with reason "invalid budget: --max-fix and --max-wait must be non-negative integers"
+  │     # MAX_FIX=0 / MAX_WAIT=0 is intentionally permitted: setting one to 0 disables
+  │     # that round-class entirely. E.g., --max-fix=0 lets the dispatcher only poll
+  │     # for slow bots without ever pushing fixes (useful for "I just want to see the
+  │     # ack ledger settle, no edits"). Negative values are nonsensical and bail.
   └── Initialize: PRIOR_COMMIT_SHA=none, PRIOR_ATTEMPTS=[],
                    fix_round=0, wait_round=0,
                    PRIOR_REVIEWER_ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none"
@@ -121,6 +128,11 @@ LOOP (terminates when fix_round > MAX_FIX OR wait_round > MAX_WAIT):
   │        hasn't acked HEAD.
   │
   ├── Classify round and increment the appropriate counter:
+  │     # ONLY runs on RESULT_STATUS=needs_more — bail and clean rounds skip this
+  │     # block via the earlier branch in "Parse subagent output". This is
+  │     # intentional: bail terminates the loop (no future round to budget for)
+  │     # and clean ships the PR (same — no future round). Only needs_more
+  │     # rounds consume budget because only they cause another dispatch.
   │     If RESULT_COMMIT_SHA != "none" → fix_round  += 1   # worker pushed a fix
   │     If RESULT_COMMIT_SHA == "none" → wait_round += 1   # worker waiting for bots
   │     # Classification reads RESULT_COMMIT_SHA, not the alias RESULT_HEAD_SHA —
@@ -149,11 +161,24 @@ LOOP (terminates when fix_round > MAX_FIX OR wait_round > MAX_WAIT):
 # marker here would silently merge an unfinished PR.
 ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed:
   fix_round  > MAX_FIX  → BAIL with reason "max-fix iterations (<MAX_FIX>) reached without clean status"
-  wait_round > MAX_WAIT → BAIL with reason "max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD; latest stale: <STALE_BOTS from last round>"
+  wait_round > MAX_WAIT → derive STALE_AT_BAIL from PRIOR_REVIEWER_ACKS (the persisted last-round
+                          ledger updated at line 130 above): comma-separated list of bot logins
+                          whose ack value is the literal string `stale`. Then BAIL with reason
+                          "max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD;
+                          latest stale: <STALE_AT_BAIL>" (or "<none>" if no bots are stale —
+                          which would itself be diagnostic, since exhausting wait-rounds without
+                          any stale acks suggests a bug in the round-classification logic, not
+                          a slow bot).
   # If both counters happen to overflow on the same round (impossible by
   # construction — only one increments per round — but defensive), prefer
   # the fix-round message since fix-rounds represent active engineering
   # progress that the operator likely cares about more.
+  # NOTE on persistence: STALE_AT_BAIL is derived from PRIOR_REVIEWER_ACKS, NOT
+  # from Step 6.5's transient $STALE_BOTS bash variable — that variable lives
+  # only inside the bash invocation that runs the ledger snippet and does not
+  # survive into the dispatcher's bail handler. PRIOR_REVIEWER_ACKS IS persisted
+  # across rounds (updated at line 130 above on every needs_more round), so
+  # parsing its `stale` entries at bail time gives a reliable answer.
 
 COMPLETION:
   ├── Verify checks one more time (defense in depth)
@@ -514,7 +539,7 @@ echo "STALE_BOTS: $STALE_BOTS"
 In autonomous mode (default), log a brief summary and continue immediately to the next round (or to Completion if every check is green and no findings remain). In interactive mode (`--interactive`), present to user and wait:
 
 ```text
-## PR Grind — Round N/MAX complete
+## PR Grind — Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>) complete
 
 **Fixed:**
 - [ ] CI: <what failed and how you fixed it>

@@ -43,7 +43,7 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
 
 ## Safety Rails
 
-- **Max iterations:** Two independent budgets — **fix-rounds** (default 5, override with `--max-fix N`) cap how many commits the worker can push; **wait-rounds** (default 8, override with `--max-wait N`) cap how many polling rounds spent waiting for slow bots to ack HEAD. A round is classified as a *fix round* when `RESULT_COMMIT_SHA != "none"` and as a *wait round* otherwise. Bail when EITHER counter exhausts its budget (a budget of 0 means unlimited for that class). The legacy `--max N` flag is accepted as a deprecated alias that sets both budgets to N (emits a deprecation warning). The split exists because under the old unified `--max`, every wait-round consumed a fix slot — so a PR with 3 fix iterations + 4 slow-bot polls would exhaust at MAX=5 even though only 3 fixes happened.
+- **Max iterations:** Two independent budgets — **fix-rounds** (default 5, override with `--max-fix N`) cap how many commits the worker can push; **wait-rounds** (default 8, override with `--max-wait N`) cap how many polling rounds spent waiting for slow bots to ack HEAD. A round is classified as a *fix round* when `RESULT_COMMIT_SHA != "none"` and as a *wait round* otherwise. Bail when EITHER counter exhausts its budget. Both `--max-fix` and `--max-wait` must be `>= 1` — there is no "zero means unlimited" or "zero disables this class" form; if you want a larger budget, pass a larger number. The legacy `--max N` flag is accepted as a deprecated alias that sets both budgets to N (emits a deprecation warning). The split exists because under the old unified `--max`, every wait-round consumed a fix slot — so a PR with 3 fix iterations + 4 slow-bot polls would exhaust at MAX=5 even though only 3 fixes happened.
 - **Autonomous by default:** Grinds without pausing between rounds (override with `--interactive` for human checkpoints)
 - **Merges by default:** After grinding clean, pr-grind merges the PR. Pass `--no-merge` to skip the merge and just declare "Ready for merge". This is NOT GitHub auto-merge — pr-grind merges *after* all checks pass and all comments are addressed, inside its own control flow.
 - **Bail triggers:** Stop immediately and clean up worktree if:
@@ -72,14 +72,12 @@ START
   │       MAX_FIX  = --max-fix N value (default 5)
   │       MAX_WAIT = --max-wait N value (default 8)
   │     Validate budgets after resolution:
-  │       If MAX_FIX < 0 or MAX_WAIT < 0 →
-  │         BAIL with reason "invalid budget: --max-fix and --max-wait must be non-negative integers"
-  │     # MAX_FIX=0 / MAX_WAIT=0 is intentionally permitted: a budget of 0 means
-  │     # "unlimited" for that class — the guard condition `MAX_FIX > 0` prevents
-  │     # the zero-initialized counter from firing the loop termination immediately.
-  │     # This lets you set one budget to 0 to disable that class's limit entirely
-  │     # while the other budget still caps its class normally. Negative values are
-  │     # nonsensical and bail.
+  │       If MAX_FIX < 1 or MAX_WAIT < 1 →
+  │         BAIL with reason "invalid budget: --max-fix and --max-wait must be positive integers (>= 1)"
+  │     # The lower bound is 1, not 0. A grind with budget 0 has no useful
+  │     # semantics: the dispatcher would either bail before doing any work
+  │     # (if zero meant "no rounds") or run forever (if zero meant "unlimited"),
+  │     # neither of which a sensible operator wants. Reject at the boundary.
   └── Initialize: PRIOR_COMMIT_SHA=none, PRIOR_ATTEMPTS=[],
                    fix_round=0, wait_round=0,
                    round_number=0,
@@ -89,7 +87,7 @@ START
                    # in PRIOR_ATTEMPTS template strings.
                    PRIOR_REVIEWER_ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none"
 
-LOOP (terminates when (MAX_FIX > 0 AND fix_round >= MAX_FIX) OR (MAX_WAIT > 0 AND wait_round >= MAX_WAIT)):
+LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │
   ├── Decide model:
   │     --opus, --interactive,
@@ -163,15 +161,13 @@ LOOP (terminates when (MAX_FIX > 0 AND fix_round >= MAX_FIX) OR (MAX_WAIT > 0 AN
         # gets PRIOR_ATTEMPTS in its context block) see budget pressure
         # without needing the dispatcher to pass MAX_FIX/MAX_WAIT separately.
 
-# Loop exits naturally when (MAX_FIX > 0 AND fix_round >= MAX_FIX) OR
-# (MAX_WAIT > 0 AND wait_round >= MAX_WAIT), without ever seeing
-# RESULT_STATUS=clean → fail-CLOSED to BAIL, NOT to COMPLETION. The PR isn't
-# clean; we just ran out of attempts. Writing the marker here would silently
-# merge an unfinished PR. Note: a budget of 0 is treated as "unlimited" for
-# that class — it never fires the loop termination condition for that class.
+# Loop exits naturally when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT
+# without ever seeing RESULT_STATUS=clean → fail-CLOSED to BAIL, NOT to
+# COMPLETION. The PR isn't clean; we just ran out of attempts. Writing the
+# marker here would silently merge an unfinished PR.
 ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed:
-  (MAX_FIX > 0 AND fix_round >= MAX_FIX)   → BAIL with reason "max-fix iterations (<MAX_FIX>) reached without clean status"
-  (MAX_WAIT > 0 AND wait_round >= MAX_WAIT) → derive STALE_AT_BAIL from PRIOR_REVIEWER_ACKS (the persisted last-round
+  fix_round  >= MAX_FIX   → BAIL with reason "max-fix iterations (<MAX_FIX>) reached without clean status"
+  wait_round >= MAX_WAIT  → derive STALE_AT_BAIL from PRIOR_REVIEWER_ACKS (the persisted last-round
                           ledger updated in the Update state block above): comma-separated list of bot logins
                           whose ack value is the literal string `stale`. Then BAIL with reason
                           "max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD;

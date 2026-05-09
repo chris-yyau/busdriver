@@ -160,7 +160,7 @@ For each bot in the Step 2.5 registry — plus `codescene-delta-analysis` (which
 
 Sources 1 (CI checks) and 5 (check-runs) are intentionally out of scope for body triage. Source 1 returns pass/fail status, not finding text. Source 5 (`gh api .../commits/<HEAD>/check-runs`) is fetched only in Step 6.5 for ack-ledger tier D and isn't available at Step 2.6 — its `output.text` is not part of the per-bot enumeration contract. Bots that emit actionable findings only via check-runs (rare today) are caught later by Step 1's failed-check loop or by Source 4 follow-up comments those bots post; if a future bot emerges that hides findings exclusively in check-run output, hoist `ALL_CHECK_RUNS` into Step 2 first, then add Source 5 to this enumeration.
 
-Conceptually `BOT_REVIEWS[<bot>] = <combined body>`. Track `n_total` per bot — the number of distinct review/comment artifacts examined (each Source 2 thread, each Source 3 review entry, each Source 4 comment, each Source 5 check-run with non-empty output counts as 1). A bot that posted nothing at all gets `n_total = 0` and ledger entry `<bot>=0/0:none` — parallel to its `none` value in `RESULT_REVIEWER_ACKS`. **A bot that APPROVED with an empty body still gets `n_total = 1`** (the approval review entry counts) and ledger entry `<bot>=0/1:approved` — this distinguishes "bot looked, nothing to fix" from "worker didn't enumerate". The dispatcher's invariant-3 gate keys on this distinction.
+Conceptually `BOT_REVIEWS[<bot>] = <combined body>`. Track `n_total` per bot — the number of distinct review/comment artifacts examined (each Source 2 thread, each Source 3 review entry, and each Source 4 comment counts as 1; Source 5 check-runs are out of scope at this step per the paragraph above). A bot that posted nothing at all gets `n_total = 0` and ledger entry `<bot>=0/0:none` — parallel to its `none` value in `RESULT_REVIEWER_ACKS`. **A bot that APPROVED with an empty body still gets `n_total = 1`** (the approval review entry counts) and ledger entry `<bot>=0/1:approved` — this distinguishes "bot looked, nothing to fix" from "worker didn't enumerate". The dispatcher's invariant-3 gate keys on this distinction.
 
 **Why per-bot, not global:** Greptile posts ONE Source 4 comment with `<h3>Greptile Summary</h3>` followed by narrative prose — no `<details>`, no bullet-pointed "Issues" section. CodeRabbit's structured `<details>` blocks parse cleanly; Greptile's prose does not. A global "find all findings" pass that works for one format silently misses the others. The contract is: enumerate per-bot, READ each body, DECIDE per-finding — same as a human reviewer.
 
@@ -235,11 +235,12 @@ If you didn't change any files this round (no fixes needed — you're just waiti
 **The snapshot block (invoke before any bail emission from Step 4 onward):** Capture the current working-tree state so the dispatcher can decide whether to recover via inline takeover. **Snapshot BOTH staged and unstaged independently** — a worker that ran `git add` on some files and kept editing others has both states populated, and dropping one would silently strand the unstaged work after the dispatcher commits the staged set:
 
 ```bash
-# NUL-delimited paths protect against filenames containing spaces, newlines,
-# or shell metacharacters. The dispatcher MUST split RESULT_STAGED_FILES /
-# RESULT_UNSTAGED_FILES on \0 (not space) when verifying inflight match,
-# and pass paths via `git add -- <files>` (with the `--` separator) to
-# prevent option-injection from filenames that start with `-`.
+# git diff -z emits NUL-delimited paths internally; we convert to newlines
+# here for shell processing, then serialize to `|`-delimited output for the
+# RESULT_STAGED_FILES / RESULT_UNSTAGED_FILES tags. The dispatcher MUST split
+# those tags on `|` (not space or NUL) when verifying inflight match, and pass
+# paths via `git add -- <files>` (with the `--` separator) to prevent
+# option-injection from filenames that start with `-`.
 STAGED_LIST=$(git diff --cached -z --name-only | tr '\0' '\n' | sed '/^$/d')
 UNSTAGED_LIST=$(git diff -z --name-only | tr '\0' '\n' | sed '/^$/d')
 HAS_STAGED=0; HAS_UNSTAGED=0

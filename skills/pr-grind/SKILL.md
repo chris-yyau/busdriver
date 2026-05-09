@@ -67,17 +67,18 @@ START
   │     If `--max N` was passed (and neither `--max-fix` nor `--max-wait`):
   │       MAX_FIX  = N
   │       MAX_WAIT = N
-  │       emit "⚠️  --max is deprecated; use --max-fix and --max-wait. Note: legacy --max=N capped TOTAL rounds at N; the alias allows up to 2N rounds (N fix + N wait). For old hard ceiling, use --max-fix=N --max-wait=0."
+  │       emit "⚠️  --max is deprecated; use --max-fix and --max-wait. Note: legacy --max=N capped TOTAL rounds at N; the alias allows up to 2N rounds (N fix + N wait)."
   │     Otherwise:
   │       MAX_FIX  = --max-fix N value (default 5)
   │       MAX_WAIT = --max-wait N value (default 8)
   │     Validate budgets after resolution:
   │       If MAX_FIX < 0 or MAX_WAIT < 0 →
   │         BAIL with reason "invalid budget: --max-fix and --max-wait must be non-negative integers"
-  │     # MAX_FIX=0 / MAX_WAIT=0 is intentionally permitted: setting one to 0 disables
-  │     # that round-class entirely. E.g., --max-fix=0 lets the dispatcher only poll
-  │     # for slow bots without ever pushing fixes (useful for "I just want to see the
-  │     # ack ledger settle, no edits"). Negative values are nonsensical and bail.
+  │     # MAX_FIX=0 / MAX_WAIT=0 is intentionally permitted: either budget set to 0
+  │     # means the loop exits immediately (fix_round=0 >= MAX_FIX=0 fires before the
+  │     # first dispatch). Use this only when you want to prevent all rounds from running
+  │     # (e.g., dry-run validation of budget-resolution logic). Negative values are
+  │     # nonsensical and bail.
   └── Initialize: PRIOR_COMMIT_SHA=none, PRIOR_ATTEMPTS=[],
                    fix_round=0, wait_round=0,
                    PRIOR_REVIEWER_ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none"
@@ -279,8 +280,8 @@ Agent invocation:
     PRIOR_COMMIT_SHA=<sha or "none">
     PRIOR_REVIEWER_ACKS=<login=value,login=value,...> (round 1: every registered bot = none)
     PRIOR_ATTEMPTS:
-      - Round 1: fixes=<summary>; failures=<failed-check-names or "none">; acks=<login=value,...>
-      - Round 2: fixes=<summary>; failures=<failed-check-names or "none">; acks=<login=value,...>
+      - Round 1 (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): fixes=<summary>; failures=<failed-check-names or "none">; acks=<login=value,...>
+      - Round 2 (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): fixes=<summary>; failures=<failed-check-names or "none">; acks=<login=value,...>
       ...
 
     Execute one round per agents/pr-grinder.md. Return RESULT_* tags.

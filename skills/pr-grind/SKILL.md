@@ -18,6 +18,21 @@ origin: custom
 
 **Announce at start:** "Grinding PR #N — will iterate until CI is green and comments are resolved, then merge." (Drop "then merge" if `--no-merge`.)
 
+## Authority Hierarchy
+
+**Merge gate (authoritative — all must be satisfied):**
+- Required status checks: green (REQUIRED set; advisory checks like CodeScene excluded)
+- Actionable findings on YOUR PR's changed lines: addressed (fix or justified reply)
+- PR title/body: conventional commit + scope
+
+**Bounded-wait advisory (best-effort, capped by `--max-wait`):**
+- AI reviewer acks (Greptile, CodeRabbit, Cubic, Copilot, etc.)
+- Style/nit findings: low priority but typically fixed
+
+**Invariant:** required status checks are the merge authority. AI reviewer acks are bounded-wait advisory signals — apps rate-limit, freeze, or fail; `--max-wait` is the backstop. On exhaustion the loop **bails to the operator** (does NOT silently merge AND does NOT wait forever). Never wait indefinitely for any single reviewer app. The infra-error downgrade in `scripts/ack-ledger.sh` (`ever_approved=0` defense) handles the specific case of a frozen review that the bot can't self-recover from; `--max-wait` is the broader safety net for slow-bot scenarios outside that pattern.
+
+**Why:** helmet PR #35 stuck for a full session because a frozen Copilot review couldn't be classified by the v1.30 ack ledger. v1.32 added body-text downgrade + `ever_approved=0` defense; v1.33 added `--max-wait` budget. Codifying the principle prevents regression — a future "tighten the gate" PR must not reintroduce unbounded waits, must not silently merge past stale acks, and must not treat reviewer acks as co-equal with required checks.
+
 ## Architecture: Dispatcher + Per-Round Worker
 
 This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh `pr-grinder` subagent on Sonnet, dispatched once per round. This:

@@ -146,12 +146,16 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │       b. --no-recovery-inline was NOT passed
   │       c. RESULT_INFLIGHT_CHANGES ∈ {staged, unstaged} — worker left
   │          working-tree changes that may be salvageable
-  │       d. RESULT_BAIL_REASON matches a tooling-friction pattern (case-insensitive
-  │          substring match):
-  │            - "litmus blocked"
-  │            - "pre-commit gate"
-  │            - "subagent cannot invoke"
-  │            - "slash command"
+  │       d. RESULT_BAIL_CATEGORY == "tooling" — explicit enum on a structured tag,
+  │          NOT substring matching against free-form RESULT_BAIL_REASON. The worker
+  │          contract (agents/pr-grinder.md "Output Format" + "Bail Triggers") emits
+  │          RESULT_BAIL_CATEGORY ∈ {tooling, judgment, env, budget} alongside the
+  │          human-readable RESULT_BAIL_REASON; this gate keys on the enum so a
+  │          worker (or a quoted bot comment paraphrased into RESULT_BAIL_REASON)
+  │          can't trip recovery via narrative containing the substring "litmus blocked".
+  │          Currently the only worker bail trigger that emits category=tooling is
+  │          "litmus blocked twice in this round"; expanding the category requires
+  │          an explicit worker-contract change, never an emergent prose match.
   │
   │     If any condition fails → go to BAIL as today.
   │     If all conditions pass → set recovery_inline_used = 1 and go to RECOVERY_INLINE.
@@ -188,19 +192,33 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        race protection — clean cannot ship while a registered bot
   │        hasn't acked HEAD.
   │     3. Bot-ledger coverage gate (Bug 1 — prose-review enumeration):
-  │        For every bot in RESULT_REVIEWER_ACKS whose value is a
-  │        <short-sha> (acked HEAD) — i.e., the bot definitely reviewed
-  │        something on this PR — that bot MUST appear in
-  │        RESULT_BOT_LEDGER with `n_total >= 1`. A `0/0` ledger entry
-  │        for a HEAD-acked bot means the worker didn't enumerate the
-  │        bot's body; merging would risk a Greptile-style prose
-  │        coverage gap (PR with buried actionable findings the worker
-  │        silently skipped).
+  │        For every bot in the **intersection** of RESULT_REVIEWER_ACKS
+  │        and RESULT_BOT_LEDGER whose ack value is a <short-sha>
+  │        (acked HEAD) — i.e., the bot definitely reviewed something
+  │        on this PR AND has an enumeration entry — that ledger entry
+  │        MUST have `n_total >= 1`. A `0/0` ledger entry for a
+  │        HEAD-acked bot means the worker didn't enumerate the bot's
+  │        body; merging would risk a Greptile-style prose coverage gap
+  │        (PR with buried actionable findings the worker silently
+  │        skipped).
+  │
+  │        **Asymmetry: ledger and ack registry are not 1:1.** The
+  │        ledger includes `codescene-delta-analysis` (it posts findings
+  │        as Source 2 review threads) while the ack registry does not
+  │        (codescene has no /reviews entries, so its HEAD-ack signal
+  │        doesn't go through scripts/ack-ledger.sh). For ledger entries
+  │        whose login is NOT in RESULT_REVIEWER_ACKS, this invariant
+  │        does not apply — codescene is enumerated for content but its
+  │        coverage is gated through the worked-example "always include
+  │        codescene in the default ledger" rule, not through this
+  │        invariant. The intersection rule keeps Invariant 3 strictly
+  │        scoped to the four registered ack-bots that the worker can
+  │        cross-correlate.
   │
   │        Parse RESULT_BOT_LEDGER as comma-separated entries of shape
   │        `<login>=<n_actionable>/<n_total>:<disposition>`. For each
   │        entry where the corresponding RESULT_REVIEWER_ACKS value
-  │        looks like a short SHA (regex `^[0-9a-f]{7,40}$`):
+  │        exists AND looks like a short SHA (regex `^[0-9a-f]{7,40}$`):
   │          - if n_total == 0 → BAIL with reason "worker did not
   │            enumerate findings for <bot> despite ack on
   │            <short-sha> — possible prose-review coverage gap;
@@ -283,17 +301,38 @@ BAIL:
 
 RECOVERY_INLINE (Bug 2 — bounded inline takeover):
   ├── cd "$WORKTREE_DIR" (worker's working tree carries the inflight changes)
-  ├── Inspect & verify the inflight state matches what the worker reported:
+  ├── Inspect & verify the inflight state matches what the worker reported.
+  │   Path comparisons MUST use set equality on `|`-split tokens (worker emits
+  │   `|`-delimited paths to survive filenames with spaces — see worker
+  │   snapshot block). Stage updates MUST use `git add -- <files>` (with the
+  │   `--` separator) to prevent option-injection from filenames starting
+  │   with `-`. NEVER pass RESULT_STAGED_FILES / RESULT_UNSTAGED_FILES
+  │   through unquoted shell expansion.
+  │
   │     If RESULT_INFLIGHT_CHANGES=staged:
-  │       Run `git diff --cached --name-only` and confirm it returns the same
-  │       paths as RESULT_STAGED_FILES. If they diverge, BAIL with reason
-  │       "recovery-via-inline: inflight state mismatch (worker said staged
-  │       <X>, working tree shows <Y>)" — divergence means another process
-  │       touched the worktree and recovery is no longer safe.
+  │       a. Run `git diff --cached -z --name-only | tr '\0' '\n' | sort` →
+  │          local snapshot. Run `printf '%s' "$RESULT_STAGED_FILES" |
+  │          tr '|' '\n' | sort` → reported snapshot. Compare as sets.
+  │       b. If they diverge, BAIL with reason "recovery-via-inline: staged
+  │          state mismatch (worker reported <X>, working tree shows <Y>)".
+  │       c. Verify staged-diff content hasn't been mutated:
+  │          LOCAL_SHA=$(git diff --cached | sha256sum | cut -c1-64)
+  │          If LOCAL_SHA != RESULT_STAGED_DIFF_SHA, BAIL with reason
+  │          "recovery-via-inline: staged diff content changed since worker
+  │          bail (sha mismatch)" — defends against concurrent worktree
+  │          mutation that the path-list match cannot catch.
   │     If RESULT_INFLIGHT_CHANGES=unstaged:
-  │       Run `git diff --name-only` and confirm match against
-  │       RESULT_UNSTAGED_FILES; same divergence handling. Then `git add`
-  │       the listed files to stage them for commit.
+  │       a. Compare `git diff -z --name-only` set against RESULT_UNSTAGED_FILES;
+  │          divergence → BAIL as above (no diff-sha check; worker only hashes
+  │          staged content, since unstaged is what we're about to add).
+  │       b. Stage the verified set: read the path list with mapfile / while-read
+  │          loop on the `|`-split tokens, then `git add -- "${PATHS[@]}"`.
+  │     If RESULT_INFLIGHT_CHANGES=both:
+  │       Worker had both staged AND unstaged changes (common mid-fix state:
+  │       added some files, kept editing others). Verify staged set + diff-sha
+  │       per the staged branch above, verify and stage the unstaged set per
+  │       the unstaged branch above. Both must verify before commit; failure
+  │       in either set BAILs without partial-state mutation.
   │
   ├── Brief inline review of the staged diff:
   │     Run `git diff --cached` and read the change. The dispatcher (Opus)
@@ -305,7 +344,14 @@ RECOVERY_INLINE (Bug 2 — bounded inline takeover):
   │     RESULT_FIXES summary; no clear intent to recover".
   │
   ├── Commit & push (the dispatcher CAN handle litmus iteration, the worker can't):
-  │     git commit -m "fix: address PR #<N> feedback — <RESULT_FIXES summary> (recovery-via-inline)"
+  │     # SECURITY: pass message via stdin, NEVER interpolate RESULT_FIXES into
+  │     # a shell-quoted -m argument. RESULT_FIXES is worker prose that can
+  │     # contain attacker-controlled content (paraphrased bot-comment text,
+  │     # quoted user input, etc.); shell-string interpolation creates a
+  │     # command-injection sink for any backtick / $(...) / closing-quote
+  │     # sequence in the summary.
+  │     COMMIT_BODY="fix: address PR #<N> feedback — <RESULT_FIXES summary> (recovery-via-inline)"
+  │     printf '%s\n' "$COMMIT_BODY" | git commit -F -
   │     # The pre-commit hook fires litmus. The dispatcher (Opus) can iterate
   │     # through litmus auto-corrections (up to 10 iterations per gate semantics);
   │     # the worker context can't, which is precisely the tooling friction this
@@ -451,11 +497,13 @@ RESULT_COMMIT_SHA: <sha or "none">                    (always present)
 RESULT_FIXES: <one-line summary>                      (always present)
 RESULT_REMAINING: <one-line or "none">                (always present)
 RESULT_REVIEWER_ACKS: <login=value,login=value,...>   (always present; values: <short-sha> | none | stale; early-bail paths emit the all-`none` default initialized before Step 0)
-RESULT_BOT_LEDGER: <login=n_act/n_total:disp,...>     (always present; entries shape: `<login>=<n_actionable>/<n_total>:<disposition>`; early-bail paths emit the all-`0/0:none` default; gates Invariant 3 — see Dispatcher Loop)
-RESULT_INFLIGHT_CHANGES: none | staged | unstaged     (always present; non-bail rounds emit `none`; bail rounds emit the worker's snapshotted working-tree state — gates RECOVERY_INLINE eligibility)
-RESULT_STAGED_FILES: <space-separated paths>          (present only when RESULT_INFLIGHT_CHANGES=staged)
-RESULT_UNSTAGED_FILES: <space-separated paths>        (present only when RESULT_INFLIGHT_CHANGES=unstaged)
-RESULT_BAIL_REASON: <one-line>                        (present only when status=bail)
+RESULT_BOT_LEDGER: <login=n_act/n_total:disp,...>     (always present; entries shape: `<login>=<n_actionable>/<n_total>:<disposition>`; early-bail paths emit the all-`0/0:none` default; gates Invariant 3 — see Dispatcher Loop. Disposition prose MUST NOT contain commas; entries are split on `,` and a comma inside a disposition would corrupt the parse)
+RESULT_INFLIGHT_CHANGES: none | staged | unstaged | both  (always present; non-bail rounds emit `none`; bail rounds emit the worker's snapshotted working-tree state — gates RECOVERY_INLINE eligibility)
+RESULT_STAGED_FILES: <`|`-separated paths or "none">  (always present; pipe-delimited, NUL-safe — split on `|` and use `git add --` to prevent option-injection)
+RESULT_UNSTAGED_FILES: <`|`-separated paths or "none"> (always present; pipe-delimited)
+RESULT_STAGED_DIFF_SHA: <64-hex sha256 or "none">     (always present; verifies staged content hasn't been mutated between worker bail and dispatcher takeover)
+RESULT_BAIL_REASON: <one-line free-form prose>        (present only when status=bail; for human consumption — NEVER substring-matched for control flow)
+RESULT_BAIL_CATEGORY: tooling | judgment | env | budget  (present only when status=bail; structured enum that gates recovery-via-inline eligibility)
 ```
 
 **Stdout-parse fallback to the dispatcher-allocated `RESULT_FILE`:** if scanning the worker's stdout for `^RESULT_<NAME>: ` produces no `RESULT_STATUS` after alias resolution **OR** produces a `RESULT_STATUS` whose value isn't one of `clean`, `needs_more`, `bail`, DO NOT immediately bail. First try reading `$RESULT_FILE` (the unique path you allocated in the context block above); if it exists and yields a `RESULT_STATUS` whose value IS one of the three canonical values (after the same alias resolution and last-occurrence rules), use those tags. The worker writes this file immediately before stdout emission per the contract in `agents/pr-grinder.md`, so it should be present on the filesystem even when stdout was truncated, reformatted by the SDK, polluted by mid-prompt output, OR contained a malformed `RESULT_STATUS` value. Only bail "subagent output unparseable" if BOTH stdout and the file fail to yield a `RESULT_STATUS` with a canonical value.

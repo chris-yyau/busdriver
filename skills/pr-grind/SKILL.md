@@ -68,6 +68,7 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
   - A comment is a design/scope question (not a code fix)
   - CI fails on an unrelated flaky test 3 times in a row
   - The fix would require architectural changes
+  - The fix would require rewriting published git history (force-push, `git commit --amend` on a pushed SHA, `git filter-branch`, interactive rebase on pushed commits)
   - Max fix-rounds reached (worker pushed `MAX_FIX` commits without converging clean)
   - Max wait-rounds reached (slow bot(s) never acked HEAD within `MAX_WAIT` polling rounds)
   - **On any bail:** if Step 0 created an ephemeral worktree, `cd` back and `git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true` before exiting. Skip when `NO_WORKTREE=1` — i.e. either `--no-worktree` was passed OR Step 0's auto-fallback engaged because the branch was already checked out. The `|| true` keeps cleanup idempotent if the worktree was already removed.

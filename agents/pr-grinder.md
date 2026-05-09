@@ -26,13 +26,15 @@ The dispatcher passes you a context block containing:
 
 **Before any step:** `cd "$WORKTREE_DIR"`. Do not assume the SDK starts you inside the worktree — it may launch you at the repo root or anywhere else, and every `git`/`gh` operation below depends on being in the right directory. If `WORKTREE_DIR` is unset or invalid, return `RESULT_STATUS: bail` with reason "WORKTREE_DIR missing or unreadable" instead of operating on the wrong tree.
 
-**Initialize the default ack ledger immediately** (before any other work, including Step 0). This guarantees `RESULT_REVIEWER_ACKS` is non-empty on every early-bail path:
+**Initialize the default ack ledger AND default bot ledger immediately** (before any other work, including Step 0). This guarantees `RESULT_REVIEWER_ACKS` and `RESULT_BOT_LEDGER` are non-empty on every early-bail path:
 
 ```bash
 ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none"
+BOT_LEDGER="greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=0/0:none,copilot-pull-request-reviewer=0/0:none,codescene-delta-analysis=0/0:none"
+INFLIGHT_CHANGES="none"
 ```
 
-If you bail before Step 6.5 (the real ack-ledger compute), emit this default `$ACKS` as `RESULT_REVIEWER_ACKS`. The dispatcher's invariant-2 gate (clean + any `stale` → BAIL) only fires on `clean` status, so an all-`none` early bail with `status=bail` won't accidentally trip it. Emitting the default also keeps `RESULT_REVIEWER_ACKS` non-empty, which the dispatcher's tag parser requires.
+If you bail before Step 6.5 (the real ack-ledger compute) or before Step 2.6 (the per-bot enumeration), emit `$ACKS` as `RESULT_REVIEWER_ACKS` and `$BOT_LEDGER` as `RESULT_BOT_LEDGER`. The dispatcher's invariant-2 gate (clean + any `stale` → BAIL) only fires on `clean` status, so an all-`none` early bail with `status=bail` won't accidentally trip it. The dispatcher's invariant-3 gate keys on **`n_total == 0` for any HEAD-acked bot**, not on the disposition string — so the `0/0:none` shape is fine for bots that didn't post (no HEAD ack means no gate trigger), but a `0/0:<anything>` shape for a bot whose ack value is a SHA trips the gate regardless of what's after the colon. Emitting these defaults also keeps both tags non-empty, which the dispatcher's tag parser requires.
 
 ### Step 0 — Mandatory Pre-Flight Read (DO NOT SKIP)
 
@@ -146,7 +148,42 @@ All four bots are gated identically — we read the structured `commit_id` from 
 
 **Interaction with `clean` status:** if any registered bot is `stale`, you cannot return `clean` — even if every other check is green and every thread is resolved. Return `needs_more` (let the dispatcher run another round so the bot can catch up). There is no stuck-bot bail; if bots never catch up, the dispatcher's `--max-wait` iterations backstop ends the loop (wait-rounds — where you return `needs_more` with `RESULT_COMMIT_SHA=none` because no fix was needed, only patience for bots — count specifically against `--max-wait`, not `--max-fix`). `none` is fine — it means either the bot doesn't operate on this repo, or its only reviews are infra-error/rate-limit markers and waiting for HEAD-ack would block forever (see Step 6.5's downgrade rule). Either way `none` doesn't gate.
 
+### Step 2.6 — Build per-bot review map (per-bot enumeration contract)
+
+Step 2 fetched all four sources globally. Now reorganize that data **per bot** — not collected globally then classified. This is the only defense against prose-style reviews (Greptile narrative paragraphs, CodeRabbit-Pro summaries) where actionable findings live in paragraphs without `<details>` markers. Skipping this reorganization is how the original regression slipped through: the worker triaged CodeRabbit's structured findings and silently missed Greptile's buried prose recommendation on the same PR.
+
+For each bot in the Step 2.5 registry — plus `codescene-delta-analysis` (which posts findings as Source 2 review threads) — assemble its full review body by aggregating across the sources Step 2 has already fetched:
+
+- Source 2 (review threads): comment bodies where `author.login == <bot>`
+- Source 3 (review-level): review bodies where `user.login == <bot>` and `state ∈ {CHANGES_REQUESTED, COMMENTED, APPROVED}`
+- Source 4 (issue comments): issue-comment bodies where `author.login == <bot>` (most recent canonical)
+
+Sources 1 (CI checks) and 5 (check-runs) are intentionally out of scope for body triage. Source 1 returns pass/fail status, not finding text. Source 5 (`gh api .../commits/<HEAD>/check-runs`) is fetched only in Step 6.5 for ack-ledger tier D and isn't available at Step 2.6 — its `output.text` is not part of the per-bot enumeration contract. Bots that emit actionable findings only via check-runs (rare today) are caught later by Step 1's failed-check loop or by Source 4 follow-up comments those bots post; if a future bot emerges that hides findings exclusively in check-run output, hoist `ALL_CHECK_RUNS` into Step 2 first, then add Source 5 to this enumeration.
+
+Conceptually `BOT_REVIEWS[<bot>] = <combined body>`. Track `n_total` per bot — the number of distinct review/comment artifacts examined (each Source 2 thread, each Source 3 review entry, and each Source 4 comment counts as 1; Source 5 check-runs are out of scope at this step per the paragraph above). A bot that posted nothing at all gets `n_total = 0` and ledger entry `<bot>=0/0:none` — parallel to its `none` value in `RESULT_REVIEWER_ACKS`. **A bot that APPROVED with an empty body still gets `n_total = 1`** (the approval review entry counts) and ledger entry `<bot>=0/1:approved` — this distinguishes "bot looked, nothing to fix" from "worker didn't enumerate". The dispatcher's invariant-3 gate keys on this distinction.
+
+**Why per-bot, not global:** Greptile posts ONE Source 4 comment with `<h3>Greptile Summary</h3>` followed by narrative prose — no `<details>`, no bullet-pointed "Issues" section. CodeRabbit's structured `<details>` blocks parse cleanly; Greptile's prose does not. A global "find all findings" pass that works for one format silently misses the others. The contract is: enumerate per-bot, READ each body, DECIDE per-finding — same as a human reviewer.
+
+**Anti-pattern: regex parser for findings.** Do NOT try to write a "find all findings" parser per bot — vendors change templates frequently and the parser will accumulate false positives forever. The fix is procedural enumeration (this step) plus per-finding judgment (Step 3), not a grammar.
+
 ### Step 3 — Triage
+
+**Iterate per-bot using `BOT_REVIEWS` from Step 2.6.** For each bot's body, identify ALL candidate findings before applying the triage table below. A finding is actionable if it (a) names a specific file and line, OR (b) describes a behavior change in code your PR introduced, OR (c) recommends a specific code change.
+
+**Prose findings count.** Any sentence containing "should", "must", "instead", "rather than", "consider", "missing", "incorrect", "unsafe", "leak", or "race" — within the bot's body, scoped to a file mentioned in the same paragraph or section — is a candidate finding. The trigger words are heuristics for "READ this paragraph carefully", not "auto-fix": Greptile and CodeRabbit-Pro routinely bury actionable findings in narrative paragraphs.
+
+**Per-finding decision required.** Each candidate finding gets an explicit accept (fix it) or skip (with reason). "I didn't notice it" is not a valid skip reason — that's the silent-failure mode this contract exists to prevent.
+
+**Per-bot ledger output.** As you triage each bot, record a `RESULT_BOT_LEDGER` entry of the form `<login>=<n_actionable>/<n_total>:<one-line-disposition>`. Disposition values are free-form summaries but should fall into one of these shapes so the dispatcher can read them:
+
+- `approved` — bot APPROVED with no findings body (`n_actionable=0`, `n_total>=1`)
+- `no-findings` — bot reviewed/commented but no actionable findings after enumeration
+- `fixed <brief>` — worker accepted findings and applied fixes
+- `skipped <reason>` — worker enumerated but decided not to fix (e.g., pre-existing, scope creep, free-plan summary)
+- `errored` — bot's review was an infra error (rate-limit, timeout)
+- `none` — bot didn't post on this PR (`n_actionable=0`, `n_total=0`)
+
+`<n_actionable>=0` with `<n_total>=0` is reserved for "bot didn't post" — never use it for "bot posted but I didn't look", which is the bug the dispatcher's invariant-3 gate catches.
 
 Inline copy of SKILL.md triage table:
 
@@ -186,9 +223,68 @@ git commit -m "fix: address PR #$PR_NUMBER feedback — <brief>"
 git push
 ```
 
-The litmus pre-commit gate WILL fire on the commit. Do NOT use `--no-verify`. If litmus blocks twice in this round, return `RESULT_STATUS: bail` with reason "litmus blocked".
+The litmus pre-commit gate WILL fire on the commit. Do NOT use `--no-verify`. If litmus blocks twice in this round:
+
+1. **First**, invoke the snapshot block below to populate `RESULT_INFLIGHT_CHANGES` / `RESULT_STAGED_FILES` / `RESULT_UNSTAGED_FILES` / `RESULT_STAGED_DIFF_SHA` / `RESULT_UNSTAGED_DIFF_SHA` from the current working tree. These tags are what tells the dispatcher you have salvageable changes — skipping the snapshot leaves them at the `none` defaults from top-of-round and the recovery carve-out can never fire for the litmus-blocked case it was specifically built for.
+2. **Then**, return `RESULT_STATUS: bail` with reason "litmus blocked" AND `RESULT_BAIL_CATEGORY: tooling`.
+
+The dispatcher's recovery-via-inline carve-out (gated on category=`tooling` AND inflight changes existing) will then take over the commit using the snapshotted state, run the litmus iteration the subagent context can't, and push. See the "Bail Triggers" table later in this file for the full category map and the **mandatory pre-bail snapshot rule** that applies to every bail trigger from Step 4 onward.
 
 If you didn't change any files this round (no fixes needed — you're just waiting on bots), skip the commit and proceed to Step 6.5; HEAD will be unchanged and the ledger will reflect bot acks relative to the existing HEAD.
+
+**The snapshot block (invoke before any bail emission from Step 4 onward):** Capture the current working-tree state so the dispatcher can decide whether to recover via inline takeover. **Snapshot BOTH staged and unstaged independently** — a worker that ran `git add` on some files and kept editing others has both states populated, and dropping one would silently strand the unstaged work after the dispatcher commits the staged set:
+
+```bash
+# git diff -z emits NUL-delimited paths internally; we convert to newlines
+# here for shell processing, then serialize to `|`-delimited output for the
+# RESULT_STAGED_FILES / RESULT_UNSTAGED_FILES tags. The dispatcher MUST split
+# those tags on `|` (not space or NUL) when verifying inflight match, and pass
+# paths via `git add -- <files>` (with the `--` separator) to prevent
+# option-injection from filenames that start with `-`.
+STAGED_LIST=$(git diff --cached -z --name-only | tr '\0' '\n' | sed '/^$/d')
+UNSTAGED_LIST=$(git diff -z --name-only | tr '\0' '\n' | sed '/^$/d')
+HAS_STAGED=0; HAS_UNSTAGED=0
+[ -n "$STAGED_LIST" ] && HAS_STAGED=1
+[ -n "$UNSTAGED_LIST" ] && HAS_UNSTAGED=1
+
+if [ "$HAS_STAGED" -eq 1 ] && [ "$HAS_UNSTAGED" -eq 1 ]; then
+  INFLIGHT_CHANGES=both
+elif [ "$HAS_STAGED" -eq 1 ]; then
+  INFLIGHT_CHANGES=staged
+elif [ "$HAS_UNSTAGED" -eq 1 ]; then
+  INFLIGHT_CHANGES=unstaged
+else
+  INFLIGHT_CHANGES=none
+fi
+
+# Always emit `none` (not the empty string) when a list is empty.
+# Symmetric emission keeps the dispatcher parser trivial: every tag is
+# present every round, with `none` as the explicit absence sentinel.
+[ -z "$STAGED_LIST" ]   && STAGED_FILES=none   || STAGED_FILES=$(printf '%s' "$STAGED_LIST" | tr '\n' '|' | sed 's/|$//')
+[ -z "$UNSTAGED_LIST" ] && UNSTAGED_FILES=none || UNSTAGED_FILES=$(printf '%s' "$UNSTAGED_LIST" | tr '\n' '|' | sed 's/|$//')
+
+# SHA-256 of the staged AND unstaged diff content — defense-in-depth
+# against concurrent worktree mutations (hooks, editors, parallel sessions)
+# between the worker bail and dispatcher takeover. The path-list match
+# cannot catch content drift; the SHAs can. Both are emitted because the
+# dispatcher's RECOVERY_INLINE handles `unstaged` and `both` modes by
+# staging the unstaged paths — without an UNSTAGED_DIFF_SHA, those paths
+# could be content-mutated under us between snapshot and `git add`.
+if [ "$HAS_STAGED" -eq 1 ]; then
+  STAGED_DIFF_SHA=$(git diff --cached | sha256sum | cut -c1-64)
+else
+  STAGED_DIFF_SHA=none
+fi
+if [ "$HAS_UNSTAGED" -eq 1 ]; then
+  UNSTAGED_DIFF_SHA=$(git diff | sha256sum | cut -c1-64)
+else
+  UNSTAGED_DIFF_SHA=none
+fi
+```
+
+Emit these as `RESULT_INFLIGHT_CHANGES` / `RESULT_STAGED_FILES` / `RESULT_UNSTAGED_FILES` / `RESULT_STAGED_DIFF_SHA` / `RESULT_UNSTAGED_DIFF_SHA` (see Output Format). All five tags are **always present**, every round, with `none` as the explicit absence sentinel — symmetric emission means the dispatcher's stdout-parse and file-backup paths can both rely on a fixed tag set. On non-bail rounds, all five are `none` (recovery isn't applicable). On bail, the dispatcher reads these tags to decide between immediate BAIL and bounded RECOVERY_INLINE — the carve-out applies only when (a) inflight changes exist AND (b) `RESULT_BAIL_CATEGORY == tooling`, never for `judgment` / `env` / `budget` bails.
+
+**Path separator: `|` not space.** Filenames with embedded spaces would corrupt a space-separated list when the dispatcher splits for verification. The pipe character is forbidden in conventional filename hygiene and unlikely to appear; if a future repo carries a filename containing `|`, the snapshot block must be revised to use a different sentinel.
 
 ### Step 6.5 — Compute the reviewer ack ledger (post-push)
 
@@ -254,13 +350,21 @@ When you finish your round, populate `RESULT_FIXES` with what you changed AND po
 
 ## Bail Triggers
 
-Stop the round and return `RESULT_STATUS: bail` if:
+Stop the round and return `RESULT_STATUS: bail` with the appropriate `RESULT_BAIL_CATEGORY` enum value:
 
-- A comment is a design/scope question — surface it, don't try to answer
-- The fix would require architectural changes
-- Same flaky CI check name appears in `PRIOR_ATTEMPTS` `failures=` field for 2 prior rounds AND fails again now (3 total)
-- Litmus gate keeps blocking after 2 attempts in this round
-- `gh` CLI auth or rate-limit errors that you can't resolve
+| Trigger | Category | Recovery-via-inline eligible? |
+|---|---|---|
+| Comment is a design/scope question — surface it, don't try to answer | `judgment` | No |
+| Fix would require architectural changes | `judgment` | No |
+| Same flaky CI check name appears in `PRIOR_ATTEMPTS` `failures=` field for 2 prior rounds AND fails again now (3 total) | `judgment` | No |
+| **Litmus gate keeps blocking after 2 attempts in this round** | **`tooling`** | **Yes** |
+| `gh` CLI auth or rate-limit errors that you can't resolve | `env` | No |
+| `WORKTREE_DIR` missing or unreadable | `env` | No |
+| Skipped Step 0 mandatory Read of SKILL.md | `env` | No |
+
+**Mandatory pre-bail snapshot rule.** Before emitting `RESULT_STATUS: bail` from any trigger above (including the early-bail paths in Step 0 / Step 1), invoke the snapshot block from Step 6 to populate `RESULT_INFLIGHT_CHANGES` / `RESULT_STAGED_FILES` / `RESULT_UNSTAGED_FILES` / `RESULT_STAGED_DIFF_SHA` / `RESULT_UNSTAGED_DIFF_SHA`. The snapshot is cheap (two `git diff --name-only` calls + two `sha256sum` calls), runs unconditionally regardless of working-tree state (empty trees produce `none` defaults), and is the ONLY way the recovery-via-inline carve-out can fire on category=`tooling` bails. Skipping the snapshot leaves the inflight tags at their top-of-round `none` defaults and silently disables recovery — even though the worker did stage a salvageable fix.
+
+`RESULT_BAIL_CATEGORY` is the structured enum the dispatcher's recovery-via-inline gate keys on (see `skills/pr-grind/SKILL.md` Dispatcher Loop → "Recovery-via-inline eligibility"). It is the load-bearing tag — the dispatcher does NOT substring-match against `RESULT_BAIL_REASON`, which remains free-form prose for human consumption. Today only `tooling` triggers recovery; `judgment` and `env` always BAIL. The fourth enum value `budget` is **dispatcher-only** — it labels `ON_LOOP_EXHAUSTED` bails (max-fix / max-wait reached) that the dispatcher emits when its own counters overflow; the worker never produces it (the worker has no visibility into MAX_FIX/MAX_WAIT exhaustion across rounds). Listing `budget` in the enum keeps the dispatcher-side surface explicit and reserves the value against accidental worker emission. Adding new tooling-friction triggers means adding a row above with category=`tooling`, never expanding the dispatcher's match logic to scrape narrative.
 
 **No stuck-bot bail trigger.** Earlier drafts of this contract had a bail for "same bot `stale` for 3+ rounds." That trigger is incompatible with the post-push compute timing: every round that commits/pushes emits all-`stale` (bots haven't seen the new commit yet), so a healthy 3-commit sequence would spuriously bail on every registered bot. Genuinely stuck bots are caught by the dispatcher's `--max-wait` iterations backstop instead — if bots never catch up across enough wait-rounds (where the worker returns `needs_more` with `RESULT_COMMIT_SHA=none`), the loop exhausts and bails with `max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD; latest stale: <bot-list>`. (The dispatcher previously had a single unified `--max` budget that emitted `max iterations reached`; both were replaced by the dual-budget split — see `skills/pr-grind/SKILL.md` Safety Rails for the rationale.)
 
@@ -282,7 +386,14 @@ RESULT_COMMIT_SHA: <new SHA you pushed, or "none" if no commit>
 RESULT_FIXES: <one-line, comma-separated summary of what you changed this round>
 RESULT_REMAINING: <one-line summary of what's still pending, or "none">
 RESULT_REVIEWER_ACKS: <comma-separated login=value pairs from Step 6.5; always present — early-bail paths emit the all-`none` default initialized at the top of the round>
-RESULT_BAIL_REASON: <only when status=bail; one-line why>
+RESULT_BOT_LEDGER: <comma-separated login=n_actionable/n_total:disposition entries from Step 3; always present — early-bail paths emit the all-`0/0:none` default initialized at the top of the round. Disposition prose MUST NOT contain commas — the dispatcher splits on `,` to separate entries; commas inside a disposition would silently corrupt the parse and could hide a HEAD-acked bot's `0/0` entry from the invariant-3 gate. If a fix summary needs commas, replace them with `;` or use a fixed-token disposition like `fixed`>
+RESULT_INFLIGHT_CHANGES: <none | staged | unstaged | both>            (always present; non-bail rounds emit `none`)
+RESULT_STAGED_FILES: <`|`-separated paths or "none">                  (always present; pipe-delimited, NUL-safe per Step 6 snapshot block)
+RESULT_UNSTAGED_FILES: <`|`-separated paths or "none">                (always present; pipe-delimited)
+RESULT_STAGED_DIFF_SHA: <64-hex sha256 of staged diff content or "none">      (always present; defense-in-depth against concurrent worktree mutation between worker bail and dispatcher takeover)
+RESULT_UNSTAGED_DIFF_SHA: <64-hex sha256 of unstaged diff content or "none">  (always present; same defense-in-depth, applies when dispatcher stages unstaged paths in unstaged/both recovery modes)
+RESULT_BAIL_REASON: <only when status=bail; one-line free-form prose for human consumption — NOT used for control flow>
+RESULT_BAIL_CATEGORY: <only when status=bail; structured enum: tooling | judgment | env | budget — keys recovery-via-inline gate (see Bail Triggers table)>
 ```
 
 **Belt-and-suspenders: also write the RESULT block to the dispatcher-allocated file.** Immediately before echoing the RESULT_* tags to stdout, write the same lines to the path passed in `RESULT_FILE` from the context block (the dispatcher generates a unique nonce per dispatch attempt, so this path is guaranteed not to collide with any prior round, prior session, or another concurrent grind on the same PR). This protects against stdout truncation, SDK reformatting, or upstream pollution: if the dispatcher's stdout parse fails, it falls back to reading the file. The file is the backup; stdout remains the primary channel — emit BOTH every round, in this order (write first, echo second). One extra `cat > … <<EOF` per round is the entire cost.
@@ -294,8 +405,16 @@ RESULT_COMMIT_SHA: ...
 RESULT_FIXES: ...
 RESULT_REMAINING: ...
 RESULT_REVIEWER_ACKS: ...
+RESULT_BOT_LEDGER: ...
+RESULT_INFLIGHT_CHANGES: ...
+RESULT_STAGED_FILES: ...
+RESULT_UNSTAGED_FILES: ...
+RESULT_STAGED_DIFF_SHA: ...
+RESULT_UNSTAGED_DIFF_SHA: ...
 EOF
 ```
+
+All inflight tags (`RESULT_INFLIGHT_CHANGES`, `RESULT_STAGED_FILES`, `RESULT_UNSTAGED_FILES`, `RESULT_STAGED_DIFF_SHA`, `RESULT_UNSTAGED_DIFF_SHA`) are emitted **every round** with `none` as the explicit absence sentinel — symmetric emission keeps the dispatcher's stdout-parse and file-backup paths reading from a fixed tag set, and prevents the heredoc-copy-omission bug where workers writing the literal template forget the conditional fields. Append `RESULT_BAIL_REASON` and `RESULT_BAIL_CATEGORY` to BOTH file and stdout when (and only when) `RESULT_STATUS=bail`. Both file and stdout must agree.
 
 Then emit the same lines on stdout as the final lines of your response. Include `RESULT_BAIL_REASON` in both the file and stdout when (and only when) `RESULT_STATUS: bail`.
 
@@ -323,6 +442,10 @@ If the dispatcher omitted `RESULT_FILE` (legacy dispatcher), use `/tmp/pr-grinde
 | Running only Source 2 (GraphQL `reviewThreads`) and skipping Sources 3/4 | Greptile and CodeRabbit summaries land in Source 4 (issue comments). Skipping it merges PRs with un-triaged bot findings — the regression that introduced this rewrite. |
 | Treating CodeScene's "advisory" status as "ignore its findings" | The check status is non-blocking; the **review thread is not**. CodeScene posts real findings as Source 2 review threads (e.g., "Excess Number of Function Arguments") that must be triaged like any other reviewer. |
 | Skipping the Step 0 mandatory Read of SKILL.md | Edge cases (skip-file protocol, rebase races, late-arriving bot ack patterns) are documented there. The inlined bash above is necessary but not sufficient. |
+| Skipping Step 2.6 / triaging globally (across all sources) instead of per-bot | Greptile's prose findings hide between CodeRabbit's structured `<details>` blocks. Global enumeration silently misses prose; per-bot enumeration forces explicit accept/skip on each bot's body. |
+| Emitting `<bot>=0/0:<anything>` for a bot with review history | If a bot's ack is a SHA (HEAD-acked) or `stale`, `n_total` MUST be ≥1. `0/0` is reserved for "bot didn't post" — paired with `none` ack. The dispatcher's invariant-3 gate keys on `n_total == 0` for any HEAD-acked bot, regardless of disposition text — so `0/0:not-evaluated`, `0/0:didn't-look`, even `0/0:no-findings` all trip the gate identically when the bot acked HEAD. The disposition is documentary; the count is load-bearing. |
+| Writing a regex parser for "find all findings" | Vendors change templates frequently; a per-bot regex grammar accumulates false positives forever. The fix is enumeration + per-finding judgment, not a parser. |
+| Bailing without snapshotting working-tree state | Without `RESULT_INFLIGHT_CHANGES`, the dispatcher can't tell tooling-friction bails (recoverable via inline takeover) from judgment bails (must surface). Always run the snapshot block before emitting `RESULT_STATUS: bail`. |
 
 ## Worked Example
 
@@ -355,6 +478,12 @@ RESULT_COMMIT_SHA: a1b2c3d
 RESULT_FIXES: replace SC2015 short-circuit with if/then/else in pre-merge-gate.sh:142
 RESULT_REMAINING: none
 RESULT_REVIEWER_ACKS: greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
+RESULT_BOT_LEDGER: greptile-apps=0/1:approved,cubic-dev-ai=1/1:fixed SC2015 short-circuit,coderabbitai=0/0:none,copilot-pull-request-reviewer=0/1:no-findings,codescene-delta-analysis=0/0:none
+RESULT_INFLIGHT_CHANGES: none
+RESULT_STAGED_FILES: none
+RESULT_UNSTAGED_FILES: none
+RESULT_STAGED_DIFF_SHA: none
+RESULT_UNSTAGED_DIFF_SHA: none
 ```
 
 `needs_more` is correct — even with no remaining findings, all four bots still need to re-review `a1b2c3d`. Round 4 will wait in Step 1 for them to catch up; if no new findings emerge, Step 6 will be a no-op, Step 6.5 will compute against unchanged HEAD `a1b2c3d`, every bot will show `a1b2c3d` (acked HEAD), and that round can return `clean`.

@@ -283,8 +283,13 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
 # without ever seeing RESULT_STATUS=clean → fail-CLOSED to BAIL, NOT to
 # COMPLETION. The PR isn't clean; we just ran out of attempts. Writing the
 # marker here would silently merge an unfinished PR.
-ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed:
-  fix_round  >= MAX_FIX   → BAIL with reason "max-fix iterations (<MAX_FIX>) reached without clean status"
+ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
+                     Both flavors emit RESULT_BAIL_CATEGORY=budget — this is the
+                     dispatcher-only enum value documented in agents/pr-grinder.md
+                     "Bail Triggers" (workers never emit `budget`; only the dispatcher
+                     knows about MAX_FIX/MAX_WAIT exhaustion).
+  fix_round  >= MAX_FIX   → BAIL with reason "max-fix iterations (<MAX_FIX>) reached without clean status",
+                          RESULT_BAIL_CATEGORY=budget
   wait_round >= MAX_WAIT  → derive STALE_AT_BAIL from PRIOR_REVIEWER_ACKS (the persisted last-round
                           ledger updated in the Update state block above): comma-separated list of bot logins
                           whose ack value is the literal string `stale`. Then BAIL with reason
@@ -292,7 +297,7 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed:
                           latest stale: <STALE_AT_BAIL>" (or "<none>" if no bots are stale —
                           which would itself be diagnostic, since exhausting wait-rounds without
                           any stale acks suggests a bug in the round-classification logic, not
-                          a slow bot).
+                          a slow bot), RESULT_BAIL_CATEGORY=budget.
   # If both counters happen to overflow on the same round (impossible by
   # construction — only one increments per round — but defensive), prefer
   # the fix-round message since fix-rounds represent active engineering

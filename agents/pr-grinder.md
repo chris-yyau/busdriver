@@ -281,7 +281,7 @@ else
 fi
 ```
 
-Emit these as `RESULT_INFLIGHT_CHANGES` / `RESULT_STAGED_FILES` / `RESULT_UNSTAGED_FILES` / `RESULT_STAGED_DIFF_SHA` (see Output Format). All four tags are **always present**, every round, with `none` as the explicit absence sentinel — symmetric emission means the dispatcher's stdout-parse and file-backup paths can both rely on a fixed tag set. On non-bail rounds, all four are `none` (recovery isn't applicable). On bail, the dispatcher reads these tags to decide between immediate BAIL and bounded RECOVERY_INLINE — the carve-out applies only when (a) inflight changes exist AND (b) `RESULT_BAIL_CATEGORY == tooling`, never for `judgment` / `env` / `budget` bails.
+Emit these as `RESULT_INFLIGHT_CHANGES` / `RESULT_STAGED_FILES` / `RESULT_UNSTAGED_FILES` / `RESULT_STAGED_DIFF_SHA` / `RESULT_UNSTAGED_DIFF_SHA` (see Output Format). All five tags are **always present**, every round, with `none` as the explicit absence sentinel — symmetric emission means the dispatcher's stdout-parse and file-backup paths can both rely on a fixed tag set. On non-bail rounds, all five are `none` (recovery isn't applicable). On bail, the dispatcher reads these tags to decide between immediate BAIL and bounded RECOVERY_INLINE — the carve-out applies only when (a) inflight changes exist AND (b) `RESULT_BAIL_CATEGORY == tooling`, never for `judgment` / `env` / `budget` bails.
 
 **Path separator: `|` not space.** Filenames with embedded spaces would corrupt a space-separated list when the dispatcher splits for verification. The pipe character is forbidden in conventional filename hygiene and unlikely to appear; if a future repo carries a filename containing `|`, the snapshot block must be revised to use a different sentinel.
 
@@ -413,7 +413,7 @@ RESULT_UNSTAGED_DIFF_SHA: ...
 EOF
 ```
 
-All inflight tags (`RESULT_STAGED_FILES`, `RESULT_UNSTAGED_FILES`, `RESULT_STAGED_DIFF_SHA`) are emitted **every round** with `none` as the explicit absence sentinel — symmetric emission keeps the dispatcher's stdout-parse and file-backup paths reading from a fixed tag set, and prevents the heredoc-copy-omission bug where workers writing the literal template forget the conditional fields. Append `RESULT_BAIL_REASON` and `RESULT_BAIL_CATEGORY` to BOTH file and stdout when (and only when) `RESULT_STATUS=bail`. Both file and stdout must agree.
+All inflight tags (`RESULT_INFLIGHT_CHANGES`, `RESULT_STAGED_FILES`, `RESULT_UNSTAGED_FILES`, `RESULT_STAGED_DIFF_SHA`, `RESULT_UNSTAGED_DIFF_SHA`) are emitted **every round** with `none` as the explicit absence sentinel — symmetric emission keeps the dispatcher's stdout-parse and file-backup paths reading from a fixed tag set, and prevents the heredoc-copy-omission bug where workers writing the literal template forget the conditional fields. Append `RESULT_BAIL_REASON` and `RESULT_BAIL_CATEGORY` to BOTH file and stdout when (and only when) `RESULT_STATUS=bail`. Both file and stdout must agree.
 
 Then emit the same lines on stdout as the final lines of your response. Include `RESULT_BAIL_REASON` in both the file and stdout when (and only when) `RESULT_STATUS: bail`.
 

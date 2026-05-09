@@ -16,9 +16,9 @@ The dispatcher passes you a context block containing:
 - `PR_NUMBER` — the PR to work on
 - `OWNER` / `REPO` — for `gh api` calls
 - `WORKTREE_DIR` — the cwd for all your work. May be the repo root itself when the dispatcher's Step 0 auto-fallback engaged (branch was already checked out elsewhere); treat it as a normal working directory either way and do NOT attempt worktree cleanup — the dispatcher owns that.
-- `ROUND` — current round number (e.g. "3 of 5")
+- `ROUND` — current round number with dual-budget pressure breakdown (e.g. `"3 (fix=2/5, wait=1/8)"`). The parenthesized `fix=<n>/<MAX_FIX>, wait=<n>/<MAX_WAIT>` segment lets you read budget pressure for triage; do NOT depend on the legacy `"N of M"` shape — the dispatcher now emits the dual-budget form (see `skills/pr-grind/SKILL.md` Safety Rails for the split rationale).
 - `PRIOR_COMMIT_SHA` — last commit you pushed last round, or `none` if round 1. Useful for triage (comments authored before that SHA were posted on code that's now replaced) but **not** as a fetch-time filter — see "On Re-fetching Each Round" below.
-- `PRIOR_ATTEMPTS` — per-round bullet list. Each entry has the form `Round N: fixes=<one-line summary>; failures=<comma-separated failed-check-names or "none">; acks=<reviewer-ack-list>`. Use `failures=` to detect a recurring flaky check across rounds (3+ rounds → bail; see Bail Triggers). `acks=` is preserved for diagnostics and human review of the loop transcript — there is no stuck-bot bail trigger; genuinely stuck bots fall out via the dispatcher's `--max` iterations backstop.
+- `PRIOR_ATTEMPTS` — per-round bullet list. Each entry has the form `Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): fixes=<one-line summary>; failures=<comma-separated failed-check-names or "none">; acks=<reviewer-ack-list>`. The parenthesized `fix=…/MAX_FIX, wait=…/MAX_WAIT` segment surfaces dispatcher budget pressure so you can triage knowing how close the loop is to bailing on either budget. **Anchor your parsing on `failures=` and `acks=` substrings, NOT on the `Round N:` prefix** — older worker contracts assumed the prefix shape; the new parenthetical breaks anchored parsers, but substring-anchored parsers are robust. Use `failures=` to detect a recurring flaky check across rounds (3+ rounds → bail; see Bail Triggers). `acks=` is preserved for diagnostics and human review of the loop transcript — there is no stuck-bot bail trigger; genuinely stuck bots fall out via the dispatcher's `--max-wait` iterations backstop (wait-rounds, where `RESULT_COMMIT_SHA=none`, count specifically against `--max-wait`).
 - `PRIOR_REVIEWER_ACKS` — last round's ack ledger as a comma-separated list of `<login>=<value>` pairs, e.g. `greptile-apps=b4451902,coderabbitai=none,cubic-dev-ai=stale`. Values: short SHA (acked that commit), `none` (either never posted on this PR, OR the bot's only reviews are infra-error/rate-limit markers and it has never APPROVED — see Step 6.5's downgrade rule), or `stale` (posted a real review on an older commit and is expected to re-review HEAD). On round 1, `none` for every registered bot. See Step 2.5 (registry/concept) and Step 6.5 (compute) below.
 - `RESULT_FILE` — the absolute path the dispatcher allocated for this round's RESULT-block backup file (per the belt-and-suspenders contract under "Output Format"). Always present; the dispatcher generates a unique nonce per dispatch attempt so cross-round and cross-session leftovers can never be picked up as stale data. If the context block omits `RESULT_FILE` (older dispatcher versions), fall back to `/tmp/pr-grinder-result-${PR_NUMBER}.txt` AND `rm -f` it at the very start of your round before any other work — that wipe is what protects you from cross-round staleness in the legacy path.
 
@@ -144,7 +144,7 @@ All four bots are gated identically — we read the structured `commit_id` from 
 
 **Why `/reviews`'s `commit_id` and not body parsing:** every bot that runs against the PR submits a review entry per commit it inspects, even when its visible output is just an issue comment or inline thread. The REST endpoint returns a structured `commit_id` field — robust against bot-specific markdown drift, no fragile regex on comment bodies, and works uniformly across all four bots.
 
-**Interaction with `clean` status:** if any registered bot is `stale`, you cannot return `clean` — even if every other check is green and every thread is resolved. Return `needs_more` (let the dispatcher run another round so the bot can catch up). There is no stuck-bot bail; if bots never catch up, the dispatcher's `--max` iterations backstop ends the loop. `none` is fine — it means either the bot doesn't operate on this repo, or its only reviews are infra-error/rate-limit markers and waiting for HEAD-ack would block forever (see Step 6.5's downgrade rule). Either way `none` doesn't gate.
+**Interaction with `clean` status:** if any registered bot is `stale`, you cannot return `clean` — even if every other check is green and every thread is resolved. Return `needs_more` (let the dispatcher run another round so the bot can catch up). There is no stuck-bot bail; if bots never catch up, the dispatcher's `--max-wait` iterations backstop ends the loop (wait-rounds — where you return `needs_more` with `RESULT_COMMIT_SHA=none` because no fix was needed, only patience for bots — count specifically against `--max-wait`, not `--max-fix`). `none` is fine — it means either the bot doesn't operate on this repo, or its only reviews are infra-error/rate-limit markers and waiting for HEAD-ack would block forever (see Step 6.5's downgrade rule). Either way `none` doesn't gate.
 
 ### Step 3 — Triage
 
@@ -262,7 +262,7 @@ Stop the round and return `RESULT_STATUS: bail` if:
 - Litmus gate keeps blocking after 2 attempts in this round
 - `gh` CLI auth or rate-limit errors that you can't resolve
 
-**No stuck-bot bail trigger.** Earlier drafts of this contract had a bail for "same bot `stale` for 3+ rounds." That trigger is incompatible with the post-push compute timing: every round that commits/pushes emits all-`stale` (bots haven't seen the new commit yet), so a healthy 3-commit sequence would spuriously bail on every registered bot. Genuinely stuck bots are caught by the dispatcher's `--max` iterations backstop instead — if bots never catch up, the loop exhausts and bails with `max iterations reached`.
+**No stuck-bot bail trigger.** Earlier drafts of this contract had a bail for "same bot `stale` for 3+ rounds." That trigger is incompatible with the post-push compute timing: every round that commits/pushes emits all-`stale` (bots haven't seen the new commit yet), so a healthy 3-commit sequence would spuriously bail on every registered bot. Genuinely stuck bots are caught by the dispatcher's `--max-wait` iterations backstop instead — if bots never catch up across enough wait-rounds (where the worker returns `needs_more` with `RESULT_COMMIT_SHA=none`), the loop exhausts and bails with `max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD; latest stale: <bot-list>`. (The dispatcher previously had a single unified `--max` budget that emitted `max iterations reached`; both were replaced by the dual-budget split — see `skills/pr-grind/SKILL.md` Safety Rails for the rationale.)
 
 ## On Re-fetching Each Round
 
@@ -331,12 +331,12 @@ If the dispatcher omitted `RESULT_FILE` (legacy dispatcher), use `/tmp/pr-grinde
 PR_NUMBER=64
 OWNER=chrisyau REPO=busdriver
 WORKTREE_DIR=/Volumes/Work/Projects/busdriver/.claude/worktrees/pr-grind-64
-ROUND=3 of 5
+ROUND=3 (fix=2/5, wait=0/8)
 PRIOR_COMMIT_SHA=8947cdd
 PRIOR_REVIEWER_ACKS=greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
 PRIOR_ATTEMPTS:
-  - Round 1: fixes=mkdir -p ordering in run-review-loop.sh; failures=none; acks=greptile-apps=stale,cubic-dev-ai=none,coderabbitai=stale,copilot-pull-request-reviewer=stale
-  - Round 2: fixes=tilde expansion in target_dir parser; failures=none; acks=greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
+  - Round 1 (fix=1/5, wait=0/8): fixes=mkdir -p ordering in run-review-loop.sh; failures=none; acks=greptile-apps=stale,cubic-dev-ai=none,coderabbitai=stale,copilot-pull-request-reviewer=stale
+  - Round 2 (fix=2/5, wait=0/8): fixes=tilde expansion in target_dir parser; failures=none; acks=greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
 ```
 
 (Note: every prior round's emitted `acks=` is mostly `stale` because Step 6.5 runs immediately post-push — bots haven't had time to re-review the just-pushed commit. The dispatcher entering this round sees all bots stale.)

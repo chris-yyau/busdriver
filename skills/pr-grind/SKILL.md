@@ -43,14 +43,15 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
 
 ## Safety Rails
 
-- **Max iterations:** 5 rounds (override with `--max N`)
+- **Max iterations:** Two independent budgets — **fix-rounds** (default 5, override with `--max-fix N`) cap how many commits the worker can push; **wait-rounds** (default 8, override with `--max-wait N`) cap how many polling rounds spent waiting for slow bots to ack HEAD. A round is classified as a *fix round* when `RESULT_COMMIT_SHA != "none"` and as a *wait round* otherwise. Bail when EITHER counter exhausts its budget. Both `--max-fix` and `--max-wait` must be `>= 1` — there is no "zero means unlimited" or "zero disables this class" form; if you want a larger budget, pass a larger number. The legacy `--max N` flag is accepted as a deprecated alias that sets both budgets to N (emits a deprecation warning). The split exists because under the old unified `--max`, every wait-round consumed a fix slot — so a PR with 3 fix iterations + 4 slow-bot polls would exhaust at MAX=5 even though only 3 fixes happened.
 - **Autonomous by default:** Grinds without pausing between rounds (override with `--interactive` for human checkpoints)
 - **Merges by default:** After grinding clean, pr-grind merges the PR. Pass `--no-merge` to skip the merge and just declare "Ready for merge". This is NOT GitHub auto-merge — pr-grind merges *after* all checks pass and all comments are addressed, inside its own control flow.
 - **Bail triggers:** Stop immediately and clean up worktree if:
   - A comment is a design/scope question (not a code fix)
   - CI fails on an unrelated flaky test 3 times in a row
   - The fix would require architectural changes
-  - Max iterations reached
+  - Max fix-rounds reached (worker pushed `MAX_FIX` commits without converging clean)
+  - Max wait-rounds reached (slow bot(s) never acked HEAD within `MAX_WAIT` polling rounds)
   - **On any bail:** if Step 0 created an ephemeral worktree, `cd` back and `git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true` before exiting. Skip when `NO_WORKTREE=1` — i.e. either `--no-worktree` was passed OR Step 0's auto-fallback engaged because the branch was already checked out. The `|| true` keeps cleanup idempotent if the worktree was already removed.
 
 ## The Dispatcher Loop
@@ -59,10 +60,36 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
 START
   ├── Resolve PR # (arg, current branch, or ask user)
   ├── Step 0: Create ephemeral worktree
+  ├── Resolve budgets (with deprecation handling for legacy --max):
+  │     If BOTH `--max` and either `--max-fix`/`--max-wait` were passed →
+  │       BAIL with reason "conflicting flags: --max cannot be combined with --max-fix or --max-wait"
+  │       (the alias contract is "set both to N"; combining with explicit budgets is ambiguous).
+  │     If `--max N` was passed (and neither `--max-fix` nor `--max-wait`):
+  │       MAX_FIX  = N
+  │       MAX_WAIT = N
+  │       emit "⚠️  --max is deprecated; use --max-fix and --max-wait. Note: legacy --max=N capped TOTAL rounds at N; the alias allows up to 2N rounds (N fix + N wait)."
+  │     Otherwise:
+  │       MAX_FIX  = --max-fix N value (default 5)
+  │       MAX_WAIT = --max-wait N value (default 8)
+  │     Validate budgets after resolution:
+  │       If MAX_FIX < 1 or MAX_WAIT < 1 →
+  │         BAIL with reason "invalid budget: --max-fix and --max-wait must be positive integers (>= 1)"
+  │     # The lower bound is 1, not 0. A grind with budget 0 has no useful
+  │     # semantics: the dispatcher would either bail before doing any work
+  │     # (if zero meant "no rounds") or run forever (if zero meant "unlimited"),
+  │     # neither of which a sensible operator wants. Reject at the boundary.
   └── Initialize: PRIOR_COMMIT_SHA=none, PRIOR_ATTEMPTS=[],
+                   fix_round=0, wait_round=0,
+                   round_number=0,
+                   # round_number is pre-incremented at the TOP of each loop
+                   # iteration (before dispatch), so the first dispatch receives
+                   # ROUND=1, the second ROUND=2, etc. It is the N in
+                   # "ROUND=<N>" and "Round N" in PRIOR_ATTEMPTS template strings.
                    PRIOR_REVIEWER_ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none"
 
-LOOP for round in 1..MAX:
+LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
+  │
+  ├── round_number += 1   # pre-increment so ROUND=<N> is 1-indexed at dispatch time
   │
   ├── Decide model:
   │     --opus, --interactive,
@@ -107,10 +134,22 @@ LOOP for round in 1..MAX:
   │        race protection — clean cannot ship while a registered bot
   │        hasn't acked HEAD.
   │
+  ├── Classify round and increment the appropriate counter:
+  │     # ONLY runs on RESULT_STATUS=needs_more — bail and clean rounds skip this
+  │     # block via the earlier branch in "Parse subagent output". This is
+  │     # intentional: bail terminates the loop (no future round to budget for)
+  │     # and clean ships the PR (same — no future round). Only needs_more
+  │     # rounds consume budget because only they cause another dispatch.
+  │     If RESULT_COMMIT_SHA != "none" → fix_round  += 1   # worker pushed a fix
+  │     If RESULT_COMMIT_SHA == "none" → wait_round += 1   # worker waiting for bots
+  │     # Classification reads RESULT_COMMIT_SHA, not the alias RESULT_HEAD_SHA —
+  │     # the dispatcher's tag-resolution step already canonicalized aliases
+  │     # before this point (see "Resolution order" in Dispatch a Round below).
+  │
   └── Update state:
         PRIOR_COMMIT_SHA    = RESULT_COMMIT_SHA
         PRIOR_REVIEWER_ACKS = RESULT_REVIEWER_ACKS
-        PRIOR_ATTEMPTS     += "Round N: fixes=<RESULT_FIXES>; failures=<RESULT_REMAINING>; acks=<RESULT_REVIEWER_ACKS>"
+        PRIOR_ATTEMPTS     += "Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): fixes=<RESULT_FIXES>; failures=<RESULT_REMAINING>; acks=<RESULT_REVIEWER_ACKS>"
         # failures= is required — subagent's flaky-check bail (3+ rounds)
         # reads it. Dropping it makes that bail unreachable and the loop
         # will grind to MAX rounds instead of stopping early on a flaky
@@ -118,12 +157,35 @@ LOOP for round in 1..MAX:
         # acks= is preserved for diagnostics / human review of the loop
         # transcript; the worker does NOT bail on stale-ack streaks (every
         # commit-round emits all-stale by design, so a streak is the
-        # healthy case). Genuinely stuck bots fall out via MAX iterations.
+        # healthy case). Genuinely stuck bots fall out via MAX_WAIT.
+        # The fix=/wait= prefix in the round summary lets the worker (which
+        # gets PRIOR_ATTEMPTS in its context block) see budget pressure
+        # without needing the dispatcher to pass MAX_FIX/MAX_WAIT separately.
 
-# Loop exits naturally when round > MAX without ever seeing RESULT_STATUS=clean
-# → fail-CLOSED to BAIL, NOT to COMPLETION. The PR isn't clean; we just ran
-# out of attempts. Writing the marker here would silently merge an unfinished PR.
-ON_LOOP_EXHAUSTED → go to BAIL with reason "max iterations (<MAX>) reached without clean status"
+# Loop exits naturally when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT
+# without ever seeing RESULT_STATUS=clean → fail-CLOSED to BAIL, NOT to
+# COMPLETION. The PR isn't clean; we just ran out of attempts. Writing the
+# marker here would silently merge an unfinished PR.
+ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed:
+  fix_round  >= MAX_FIX   → BAIL with reason "max-fix iterations (<MAX_FIX>) reached without clean status"
+  wait_round >= MAX_WAIT  → derive STALE_AT_BAIL from PRIOR_REVIEWER_ACKS (the persisted last-round
+                          ledger updated in the Update state block above): comma-separated list of bot logins
+                          whose ack value is the literal string `stale`. Then BAIL with reason
+                          "max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD;
+                          latest stale: <STALE_AT_BAIL>" (or "<none>" if no bots are stale —
+                          which would itself be diagnostic, since exhausting wait-rounds without
+                          any stale acks suggests a bug in the round-classification logic, not
+                          a slow bot).
+  # If both counters happen to overflow on the same round (impossible by
+  # construction — only one increments per round — but defensive), prefer
+  # the fix-round message since fix-rounds represent active engineering
+  # progress that the operator likely cares about more.
+  # NOTE on persistence: STALE_AT_BAIL is derived from PRIOR_REVIEWER_ACKS, NOT
+  # from Step 6.5's transient $STALE_BOTS bash variable — that variable lives
+  # only inside the bash invocation that runs the ledger snippet and does not
+  # survive into the dispatcher's bail handler. PRIOR_REVIEWER_ACKS IS persisted
+  # across rounds (updated in the Update state block above on every needs_more round), so
+  # parsing its `stale` entries at bail time gives a reliable answer.
 
 COMPLETION:
   ├── Verify checks one more time (defense in depth)
@@ -219,13 +281,13 @@ Agent invocation:
     OWNER=<owner>
     REPO=<repo>
     WORKTREE_DIR=<absolute path>
-    ROUND=<N> of <MAX>
+    ROUND=<N> (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>)
     RESULT_FILE=<unique tmp path generated above>
     PRIOR_COMMIT_SHA=<sha or "none">
     PRIOR_REVIEWER_ACKS=<login=value,login=value,...> (round 1: every registered bot = none)
     PRIOR_ATTEMPTS:
-      - Round 1: fixes=<summary>; failures=<failed-check-names or "none">; acks=<login=value,...>
-      - Round 2: fixes=<summary>; failures=<failed-check-names or "none">; acks=<login=value,...>
+      - Round 1 (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): fixes=<summary>; failures=<failed-check-names or "none">; acks=<login=value,...>
+      - Round 2 (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): fixes=<summary>; failures=<failed-check-names or "none">; acks=<login=value,...>
       ...
 
     Execute one round per agents/pr-grinder.md. Return RESULT_* tags.
@@ -475,7 +537,7 @@ echo "STALE_BOTS: $STALE_BOTS"
 - **STALE_BOTS empty** → round genuinely complete; proceed to Step 7 (autonomous summary or interactive checkpoint), which will either continue to the next round or dispatch Completion depending on whether checks are green and all findings are resolved.
 - **STALE_BOTS non-empty** → round is in waiting-for-bots state; **skip Step 7 entirely** and re-dispatch Step 1 directly (analogous to the Sonnet subagent's `needs_more + RESULT_COMMIT_SHA=none + stale-acks` flow that the dispatcher's relaxed Invariant 1 permits). Increment the round counter as normal.
 
-**Interaction with `--max`:** wait-rounds DO count against `--max` (default 5). If a slow bot consistently takes longer than ~5 minutes per round and never catches up, the loop exhausts and bails with reason `max iterations (<MAX>) reached without all bots acking HEAD; latest stale: <STALE_BOTS>`. Increase `--max` if you're grinding a PR with known-slow reviewer bots, or accept the bail and re-run later.
+**Interaction with `--max-fix` / `--max-wait`:** wait-rounds count against `--max-wait` (default 8), NOT against `--max-fix` (default 5). The split fixed a real failure mode in the previous unified `--max` budget: every wait-round consumed a fix slot, so a PR with 3 fix iterations + 4 slow-bot polls would exhaust at `--max=5` even though only 3 fixes happened. With the dual budget, fix-budget reflects *engineering effort* and wait-budget reflects *bot latency tolerance* — orthogonal concerns. Either exhausted budget bails with a specific reason: `max-fix iterations (<MAX_FIX>) reached without clean status` (raise `--max-fix` if grinding a PR with many feedback rounds) or `max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD; latest stale: <STALE_AT_BAIL>` (raise `--max-wait` if grinding a PR with known-slow reviewer bots; `STALE_AT_BAIL` is the dispatcher-side derivation from `PRIOR_REVIEWER_ACKS` — see `ON_LOOP_EXHAUSTED` in the Dispatcher Loop above. Note: this is distinct from Step 6.5's transient `$STALE_BOTS` bash variable, which lives only inside the ledger snippet and does not survive into the bail handler). The legacy `--max N` flag is a deprecated alias that sets both budgets to N (emits a `⚠️  --max is deprecated; use --max-fix and --max-wait` warning at dispatch start) and CANNOT be combined with `--max-fix` or `--max-wait` — combining them bails with reason `conflicting flags: --max cannot be combined with --max-fix or --max-wait`.
 
 #### Step 7: Round summary / checkpoint
 
@@ -484,7 +546,7 @@ echo "STALE_BOTS: $STALE_BOTS"
 In autonomous mode (default), log a brief summary and continue immediately to the next round (or to Completion if every check is green and no findings remain). In interactive mode (`--interactive`), present to user and wait:
 
 ```text
-## PR Grind — Round N/MAX complete
+## PR Grind — Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>) complete
 
 **Fixed:**
 - [ ] CI: <what failed and how you fixed it>
@@ -638,7 +700,9 @@ PR #<N> is clean after <rounds> round(s).
 | Argument | Description | Default |
 |----------|-------------|---------|
 | `<PR>` | PR number or URL | Auto-detect from current branch |
-| `--max N` | Maximum iterations | 5 |
+| `--max-fix N` | Maximum **fix-rounds** (worker pushed a commit; `RESULT_COMMIT_SHA != "none"`) before bail. Reflects engineering iteration budget. | 5 |
+| `--max-wait N` | Maximum **wait-rounds** (worker did not push; `RESULT_COMMIT_SHA == "none"` — polling for slow bots to ack HEAD) before bail. Reflects bot-latency tolerance. | 8 |
+| `--max N` | **Deprecated alias** that sets both `--max-fix` and `--max-wait` to N. Emits a `⚠️  --max is deprecated; use --max-fix and --max-wait` warning. Cannot be combined with `--max-fix` or `--max-wait` — combining bails with `conflicting flags`. | unset |
 | `--opus` | Run rounds inline in parent Opus context (no Sonnet dispatch) | Off (dispatches Sonnet subagent) |
 | `--interactive` | Pause for human confirmation each round (forces inline; subagent can't pause) | Off (autonomous) |
 | `--no-worktree` | Skip worktree creation, work in current directory. Same behavior auto-engages without the flag if `git worktree add` reports the branch is already checked out elsewhere — see Step 0 fallback. | Off (creates worktree) |

@@ -81,13 +81,15 @@ START
   └── Initialize: PRIOR_COMMIT_SHA=none, PRIOR_ATTEMPTS=[],
                    fix_round=0, wait_round=0,
                    round_number=0,
-                   # round_number = fix_round + wait_round at any point in the
-                   # loop (incremented at the same time as fix_round or
-                   # wait_round). It is the N in "ROUND=<N>" and "Round N"
-                   # in PRIOR_ATTEMPTS template strings.
+                   # round_number is pre-incremented at the TOP of each loop
+                   # iteration (before dispatch), so the first dispatch receives
+                   # ROUND=1, the second ROUND=2, etc. It is the N in
+                   # "ROUND=<N>" and "Round N" in PRIOR_ATTEMPTS template strings.
                    PRIOR_REVIEWER_ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none"
 
 LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
+  │
+  ├── round_number += 1   # pre-increment so ROUND=<N> is 1-indexed at dispatch time
   │
   ├── Decide model:
   │     --opus, --interactive,
@@ -140,7 +142,6 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     # rounds consume budget because only they cause another dispatch.
   │     If RESULT_COMMIT_SHA != "none" → fix_round  += 1   # worker pushed a fix
   │     If RESULT_COMMIT_SHA == "none" → wait_round += 1   # worker waiting for bots
-  │     round_number += 1   # N in ROUND=<N> and "Round N" in PRIOR_ATTEMPTS
   │     # Classification reads RESULT_COMMIT_SHA, not the alias RESULT_HEAD_SHA —
   │     # the dispatcher's tag-resolution step already canonicalized aliases
   │     # before this point (see "Resolution order" in Dispatch a Round below).

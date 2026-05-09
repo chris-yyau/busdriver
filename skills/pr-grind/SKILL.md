@@ -61,16 +61,16 @@ START
   ├── Resolve PR # (arg, current branch, or ask user)
   ├── Step 0: Create ephemeral worktree
   ├── Resolve budgets (with deprecation handling for legacy --max):
-  │     If `--max N` was passed:
+  │     If BOTH `--max` and either `--max-fix`/`--max-wait` were passed →
+  │       BAIL with reason "conflicting flags: --max cannot be combined with --max-fix or --max-wait"
+  │       (the alias contract is "set both to N"; combining with explicit budgets is ambiguous).
+  │     If `--max N` was passed (and neither `--max-fix` nor `--max-wait`):
   │       MAX_FIX  = N
   │       MAX_WAIT = N
   │       emit "⚠️  --max is deprecated; use --max-fix and --max-wait. Note: legacy --max=N capped TOTAL rounds at N; the alias allows up to 2N rounds (N fix + N wait). For old hard ceiling, use --max-fix=N --max-wait=0."
   │     Otherwise:
   │       MAX_FIX  = --max-fix N value (default 5)
   │       MAX_WAIT = --max-wait N value (default 8)
-  │     If BOTH `--max` and either `--max-fix`/`--max-wait` were passed →
-  │       BAIL with reason "conflicting flags: --max cannot be combined with --max-fix or --max-wait"
-  │       (the alias contract is "set both to N"; combining with explicit budgets is ambiguous).
   │     Validate budgets after resolution:
   │       If MAX_FIX < 0 or MAX_WAIT < 0 →
   │         BAIL with reason "invalid budget: --max-fix and --max-wait must be non-negative integers"
@@ -82,7 +82,7 @@ START
                    fix_round=0, wait_round=0,
                    PRIOR_REVIEWER_ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none"
 
-LOOP (terminates when fix_round > MAX_FIX OR wait_round > MAX_WAIT):
+LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │
   ├── Decide model:
   │     --opus, --interactive,
@@ -155,13 +155,13 @@ LOOP (terminates when fix_round > MAX_FIX OR wait_round > MAX_WAIT):
         # gets PRIOR_ATTEMPTS in its context block) see budget pressure
         # without needing the dispatcher to pass MAX_FIX/MAX_WAIT separately.
 
-# Loop exits naturally when fix_round > MAX_FIX OR wait_round > MAX_WAIT
+# Loop exits naturally when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT
 # without ever seeing RESULT_STATUS=clean → fail-CLOSED to BAIL, NOT to
 # COMPLETION. The PR isn't clean; we just ran out of attempts. Writing the
 # marker here would silently merge an unfinished PR.
 ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed:
-  fix_round  > MAX_FIX  → BAIL with reason "max-fix iterations (<MAX_FIX>) reached without clean status"
-  wait_round > MAX_WAIT → derive STALE_AT_BAIL from PRIOR_REVIEWER_ACKS (the persisted last-round
+  fix_round  >= MAX_FIX  → BAIL with reason "max-fix iterations (<MAX_FIX>) reached without clean status"
+  wait_round >= MAX_WAIT → derive STALE_AT_BAIL from PRIOR_REVIEWER_ACKS (the persisted last-round
                           ledger updated in the Update state block above): comma-separated list of bot logins
                           whose ack value is the literal string `stale`. Then BAIL with reason
                           "max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD;

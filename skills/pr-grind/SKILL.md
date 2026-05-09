@@ -70,6 +70,7 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
   - Max fix-rounds reached (worker pushed `MAX_FIX` commits without converging clean)
   - Max wait-rounds reached (slow bot(s) never acked HEAD within `MAX_WAIT` polling rounds)
   - **On any bail:** if Step 0 created an ephemeral worktree, `cd` back and `git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true` before exiting. Skip when `NO_WORKTREE=1` — i.e. either `--no-worktree` was passed OR Step 0's auto-fallback engaged because the branch was already checked out. The `|| true` keeps cleanup idempotent if the worktree was already removed.
+- **Recovery-via-inline (capped at 1 per invocation):** When the worker bails for a *tooling-friction* reason (litmus blocked, pre-commit gate fired, subagent slash-command limitation) AND left inflight working-tree changes, the dispatcher takes over inline — runs the litmus iteration the subagent context can't, commits, pushes, and returns to the loop. **This is strictly for tooling friction, never for judgment friction:** design/scope questions, architectural concerns, env auth errors, and budget exhaustion all bail to the user as before. Cap is hard at 1 per pr-grind invocation — two consecutive worker bails in the same run = real bail, no matter how clean the inflight state. The cap exists so "dispatcher always rescues" can't mask a chronic worker bug over time. Override with `--no-recovery-inline` to disable entirely.
 
 ## The Dispatcher Loop
 
@@ -98,6 +99,12 @@ START
   └── Initialize: PRIOR_COMMIT_SHA=none, PRIOR_ATTEMPTS=[],
                    fix_round=0, wait_round=0,
                    round_number=0,
+                   recovery_inline_used=0,
+                   # recovery_inline_used is the cap counter for the
+                   # RECOVERY_INLINE carve-out (Bug 2). Hard cap: 1 per
+                   # pr-grind invocation. Reset on each invocation, never
+                   # persisted across invocations — two consecutive worker
+                   # bails in the same run = real bail, no second rescue.
                    # round_number is pre-incremented at the TOP of each loop
                    # iteration (before dispatch), so the first dispatch receives
                    # ROUND=1, the second ROUND=2, etc. It is the N in
@@ -125,8 +132,38 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │
   ├── Parse subagent output:
   │     RESULT_STATUS=clean       → validate invariants, go to COMPLETION
-  │     RESULT_STATUS=bail        → break loop, go to BAIL
+  │     RESULT_STATUS=bail        → check recovery-via-inline eligibility (below);
+  │                                  if eligible AND not exhausted, go to RECOVERY_INLINE;
+  │                                  otherwise break loop, go to BAIL
   │     RESULT_STATUS=needs_more  → validate invariant, update state, continue
+  │
+  ├── Recovery-via-inline eligibility (Bug 2 — bounded takeover for tooling friction):
+  │     Triggers ONLY on RESULT_STATUS=bail. Default is BAIL; recovery is the carve-out.
+  │
+  │     Eligible only when ALL of the following hold:
+  │       a. recovery_inline_used == 0 (cap is 1 per pr-grind invocation; reset
+  │          on each invocation, never persisted across invocations)
+  │       b. --no-recovery-inline was NOT passed
+  │       c. RESULT_INFLIGHT_CHANGES ∈ {staged, unstaged} — worker left
+  │          working-tree changes that may be salvageable
+  │       d. RESULT_BAIL_REASON matches a tooling-friction pattern (case-insensitive
+  │          substring match):
+  │            - "litmus blocked"
+  │            - "pre-commit gate"
+  │            - "subagent cannot invoke"
+  │            - "slash command"
+  │
+  │     If any condition fails → go to BAIL as today.
+  │     If all conditions pass → set recovery_inline_used = 1 and go to RECOVERY_INLINE.
+  │
+  │     Hard non-eligibility (these bails MUST surface to the user, never recover):
+  │       - "design question" / "design/scope" — needs human judgment
+  │       - "WORKTREE_DIR missing" / "skipped pre-flight Read" — worker setup broken
+  │       - "gh CLI auth" / "rate-limit" — environmental, dispatcher can't help
+  │       - "max-fix iterations" / "max-wait iterations" — already exhausted budgets
+  │     The match list above is allowlist-style precisely so this carve-out
+  │     can't widen by accident — adding new tooling-friction reasons is an
+  │     intentional protocol change, not an emergent behavior.
   │
   ├── Invariant checks (fail-CLOSED — both must hold):
   │     1. If RESULT_STATUS=needs_more AND RESULT_COMMIT_SHA=none AND
@@ -150,6 +187,33 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        ledger has stale entries: <list>". Slow-Greptile / slow-Cubic
   │        race protection — clean cannot ship while a registered bot
   │        hasn't acked HEAD.
+  │     3. Bot-ledger coverage gate (Bug 1 — prose-review enumeration):
+  │        For every bot in RESULT_REVIEWER_ACKS whose value is a
+  │        <short-sha> (acked HEAD) — i.e., the bot definitely reviewed
+  │        something on this PR — that bot MUST appear in
+  │        RESULT_BOT_LEDGER with `n_total >= 1`. A `0/0` ledger entry
+  │        for a HEAD-acked bot means the worker didn't enumerate the
+  │        bot's body; merging would risk a Greptile-style prose
+  │        coverage gap (PR with buried actionable findings the worker
+  │        silently skipped).
+  │
+  │        Parse RESULT_BOT_LEDGER as comma-separated entries of shape
+  │        `<login>=<n_actionable>/<n_total>:<disposition>`. For each
+  │        entry where the corresponding RESULT_REVIEWER_ACKS value
+  │        looks like a short SHA (regex `^[0-9a-f]{7,40}$`):
+  │          - if n_total == 0 → BAIL with reason "worker did not
+  │            enumerate findings for <bot> despite ack on
+  │            <short-sha> — possible prose-review coverage gap;
+  │            manual review required"
+  │          - if n_total >= 1 → pass (worker enumerated; disposition
+  │            is its decision)
+  │
+  │        `stale` and `none` ack values do NOT trigger this gate —
+  │        `stale` means bot hasn't re-reviewed yet (Invariant 2 already
+  │        gates on this for clean status); `none` means bot never posted
+  │        or only posted infra-error markers (`<bot>=0/0:none` ledger
+  │        entry is the matching shape and is fine). Only HEAD-acked bots
+  │        prove a body exists that should have been enumerated.
   │
   ├── Classify round and increment the appropriate counter:
   │     # ONLY runs on RESULT_STATUS=needs_more — bail and clean rounds skip this
@@ -216,6 +280,61 @@ COMPLETION:
 
 BAIL:
   └── Cleanup ephemeral worktree (skip if NO_WORKTREE=1), surface RESULT_BAIL_REASON to user
+
+RECOVERY_INLINE (Bug 2 — bounded inline takeover):
+  ├── cd "$WORKTREE_DIR" (worker's working tree carries the inflight changes)
+  ├── Inspect & verify the inflight state matches what the worker reported:
+  │     If RESULT_INFLIGHT_CHANGES=staged:
+  │       Run `git diff --cached --name-only` and confirm it returns the same
+  │       paths as RESULT_STAGED_FILES. If they diverge, BAIL with reason
+  │       "recovery-via-inline: inflight state mismatch (worker said staged
+  │       <X>, working tree shows <Y>)" — divergence means another process
+  │       touched the worktree and recovery is no longer safe.
+  │     If RESULT_INFLIGHT_CHANGES=unstaged:
+  │       Run `git diff --name-only` and confirm match against
+  │       RESULT_UNSTAGED_FILES; same divergence handling. Then `git add`
+  │       the listed files to stage them for commit.
+  │
+  ├── Brief inline review of the staged diff:
+  │     Run `git diff --cached` and read the change. The dispatcher (Opus)
+  │     can read the diff in conversation context — the worker bailed mid-fix,
+  │     but the diff itself may still be sound. Sanity-check that the change
+  │     addresses something in the worker's RESULT_FIXES summary; if RESULT_FIXES
+  │     was empty (worker bailed before classifying anything as fixed), that's a
+  │     red flag — BAIL with reason "recovery-via-inline: worker bailed without
+  │     RESULT_FIXES summary; no clear intent to recover".
+  │
+  ├── Commit & push (the dispatcher CAN handle litmus iteration, the worker can't):
+  │     git commit -m "fix: address PR #<N> feedback — <RESULT_FIXES summary> (recovery-via-inline)"
+  │     # The pre-commit hook fires litmus. The dispatcher (Opus) can iterate
+  │     # through litmus auto-corrections (up to 10 iterations per gate semantics);
+  │     # the worker context can't, which is precisely the tooling friction this
+  │     # carve-out exists to bridge.
+  │     git push
+  │
+  ├── On litmus FAIL after auto-iteration:
+  │     BAIL with reason "recovery-via-inline attempted but litmus rejected
+  │     worker's in-flight changes: <litmus output>". This surfaces the actual
+  │     code problem to the user — the worker's fix was wrong, not just blocked
+  │     by tooling. Do NOT retry; the recovery cap is 1.
+  │
+  ├── On commit/push success:
+  │     fix_round += 1                         # recovery counts as a fix-round (engineering work happened)
+  │     PRIOR_COMMIT_SHA   = <new SHA>
+  │     PRIOR_ATTEMPTS    += "Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>):
+  │                            fixes=<RESULT_FIXES> (recovery-via-inline);
+  │                            failures=<RESULT_REMAINING>;
+  │                            acks=<recompute fresh — bots haven't seen recovery commit yet, expect mostly stale>"
+  │     # PRIOR_REVIEWER_ACKS is recomputed fresh via scripts/ack-ledger.sh against the new HEAD —
+  │     # don't reuse the worker's pre-bail snapshot, it's now stale.
+  │     If fix_round >= MAX_FIX → fall through to ON_LOOP_EXHAUSTED (no rescue from budget exhaustion)
+  │     Else → return to top of LOOP (continue dispatching workers)
+  │
+  └── recovery_inline_used remains 1 for the rest of this invocation —
+      a second worker bail will go straight to BAIL, no matter how clean
+      its inflight state looks. The cap is the load-bearing safety rail
+      that prevents "dispatcher always rescues" from masking a chronic
+      worker bug over time.
 ```
 
 ## Step Details
@@ -332,6 +451,10 @@ RESULT_COMMIT_SHA: <sha or "none">                    (always present)
 RESULT_FIXES: <one-line summary>                      (always present)
 RESULT_REMAINING: <one-line or "none">                (always present)
 RESULT_REVIEWER_ACKS: <login=value,login=value,...>   (always present; values: <short-sha> | none | stale; early-bail paths emit the all-`none` default initialized before Step 0)
+RESULT_BOT_LEDGER: <login=n_act/n_total:disp,...>     (always present; entries shape: `<login>=<n_actionable>/<n_total>:<disposition>`; early-bail paths emit the all-`0/0:none` default; gates Invariant 3 — see Dispatcher Loop)
+RESULT_INFLIGHT_CHANGES: none | staged | unstaged     (always present; non-bail rounds emit `none`; bail rounds emit the worker's snapshotted working-tree state — gates RECOVERY_INLINE eligibility)
+RESULT_STAGED_FILES: <space-separated paths>          (present only when RESULT_INFLIGHT_CHANGES=staged)
+RESULT_UNSTAGED_FILES: <space-separated paths>        (present only when RESULT_INFLIGHT_CHANGES=unstaged)
 RESULT_BAIL_REASON: <one-line>                        (present only when status=bail)
 ```
 
@@ -726,6 +849,7 @@ PR #<N> is clean after <rounds> round(s).
 | `--ci-only` | Only fix CI failures, ignore comments. Forces inline mode (Step 2 branching not yet wired into the subagent). | Off |
 | `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
 | `--comments-only` | Only address comments, ignore CI. Forces inline mode (same reason as `--ci-only`). | Off |
+| `--no-recovery-inline` | Disable the bounded RECOVERY_INLINE carve-out (Bug 2). When passed, any worker bail goes straight to BAIL regardless of inflight state or bail reason — useful when you want the worker's bail to surface immediately for human review and don't trust the dispatcher to commit-and-push on the worker's behalf. | Off (recovery enabled, capped at 1 per invocation) |
 
 ## User-Created Skip File
 

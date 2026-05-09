@@ -57,6 +57,7 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
 | Enabling GitHub auto-merge before pr-grind completes | The PR merges as soon as CI passes — before reviewer comments are addressed. pr-grind merges by default after all checks pass and comments are addressed. |
 | Giving compound "grind then merge" instructions | Agent optimizes for merge as terminal goal, skipping CI wait. Just invoke `/pr-grind` — merge is the default. |
 | Declaring PR clean without verifying check results | Checks completing (pass/fail/skip) ≠ checks passing — always verify status before writing the clean marker |
+| Recovering inline when worker bailed because the fix would rewrite published git history | Recovery-via-inline is for *tooling friction* the worker physically can't traverse (litmus iteration without slash-command access). History-rewrite bails are *judgment friction* — the worker physically can rewrite history, but force-pushing invalidates SHAs that downstream consumers (review-thread anchors, ack ledger, claude-mem, other clones) may reference. The worker emits `RESULT_BAIL_CATEGORY: judgment` for this trigger; recovery eligibility check (d) gates on `category=tooling` precisely so this case real-bails to the operator. Do NOT widen the allowlist to include `judgment` — the carve-out boundary is the load-bearing safety rail. |
 
 ## Safety Rails
 
@@ -67,10 +68,11 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
   - A comment is a design/scope question (not a code fix)
   - CI fails on an unrelated flaky test 3 times in a row
   - The fix would require architectural changes
+  - The fix would require rewriting published git history (force-push, `git commit --amend` on a pushed SHA, `git filter-branch`, interactive rebase on pushed commits)
   - Max fix-rounds reached (worker pushed `MAX_FIX` commits without converging clean)
   - Max wait-rounds reached (slow bot(s) never acked HEAD within `MAX_WAIT` polling rounds)
   - **On any bail:** if Step 0 created an ephemeral worktree, `cd` back and `git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true` before exiting. Skip when `NO_WORKTREE=1` — i.e. either `--no-worktree` was passed OR Step 0's auto-fallback engaged because the branch was already checked out. The `|| true` keeps cleanup idempotent if the worktree was already removed.
-- **Recovery-via-inline (capped at 1 per invocation):** When the worker bails for a *tooling-friction* reason (litmus blocked, pre-commit gate fired, subagent slash-command limitation) AND left inflight working-tree changes, the dispatcher takes over inline — runs the litmus iteration the subagent context can't, commits, pushes, and returns to the loop. **This is strictly for tooling friction, never for judgment friction:** design/scope questions, architectural concerns, env auth errors, and budget exhaustion all bail to the user as before. Cap is hard at 1 per pr-grind invocation — two consecutive worker bails in the same run = real bail, no matter how clean the inflight state. The cap exists so "dispatcher always rescues" can't mask a chronic worker bug over time. Override with `--no-recovery-inline` to disable entirely.
+- **Recovery-via-inline (capped at 1 per invocation):** When the worker bails for a *tooling-friction* reason (litmus blocked, pre-commit gate fired, subagent slash-command limitation) AND left inflight working-tree changes, the dispatcher takes over inline — runs the litmus iteration the subagent context can't, commits, pushes, and returns to the loop. **This is strictly for tooling friction, never for judgment friction:** design/scope questions, architectural concerns, env auth errors, history-rewriting fixes (commitlint on a pushed commit, large-diff splits — see worker Bail Triggers), and budget exhaustion all bail to the user as before. Cap is hard at 1 per pr-grind invocation — two consecutive worker bails in the same run = real bail, no matter how clean the inflight state. The cap exists so "dispatcher always rescues" can't mask a chronic worker bug over time. Override with `--no-recovery-inline` to disable entirely.
 
 ## The Dispatcher Loop
 
@@ -169,6 +171,11 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │       - "design question" / "design/scope" — needs human judgment
   │       - "WORKTREE_DIR missing" / "skipped pre-flight Read" — worker setup broken
   │       - "gh CLI auth" / "rate-limit" — environmental, dispatcher can't help
+  │       - "history rewrite" / "force-push" / "amend on pushed commit" /
+  │         "filter-branch" — worker contract category=judgment; rewriting
+  │         published SHAs is operator-authorization territory, not a tooling
+  │         friction the dispatcher can bridge. See worker `Bail Triggers`
+  │         table → "Fix would require rewriting published git history".
   │       - "max-fix iterations" / "max-wait iterations" — already exhausted budgets
   │     The match list above is allowlist-style precisely so this carve-out
   │     can't widen by accident — adding new tooling-friction reasons is an

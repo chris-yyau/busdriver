@@ -162,7 +162,7 @@ LOOP (terminates when fix_round > MAX_FIX OR wait_round > MAX_WAIT):
 ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed:
   fix_round  > MAX_FIX  → BAIL with reason "max-fix iterations (<MAX_FIX>) reached without clean status"
   wait_round > MAX_WAIT → derive STALE_AT_BAIL from PRIOR_REVIEWER_ACKS (the persisted last-round
-                          ledger updated at line 130 above): comma-separated list of bot logins
+                          ledger updated in the Update state block above): comma-separated list of bot logins
                           whose ack value is the literal string `stale`. Then BAIL with reason
                           "max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD;
                           latest stale: <STALE_AT_BAIL>" (or "<none>" if no bots are stale —
@@ -177,7 +177,7 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed:
   # from Step 6.5's transient $STALE_BOTS bash variable — that variable lives
   # only inside the bash invocation that runs the ledger snippet and does not
   # survive into the dispatcher's bail handler. PRIOR_REVIEWER_ACKS IS persisted
-  # across rounds (updated at line 130 above on every needs_more round), so
+  # across rounds (updated in the Update state block above on every needs_more round), so
   # parsing its `stale` entries at bail time gives a reliable answer.
 
 COMPLETION:
@@ -530,7 +530,7 @@ echo "STALE_BOTS: $STALE_BOTS"
 - **STALE_BOTS empty** → round genuinely complete; proceed to Step 7 (autonomous summary or interactive checkpoint), which will either continue to the next round or dispatch Completion depending on whether checks are green and all findings are resolved.
 - **STALE_BOTS non-empty** → round is in waiting-for-bots state; **skip Step 7 entirely** and re-dispatch Step 1 directly (analogous to the Sonnet subagent's `needs_more + RESULT_COMMIT_SHA=none + stale-acks` flow that the dispatcher's relaxed Invariant 1 permits). Increment the round counter as normal.
 
-**Interaction with `--max-fix` / `--max-wait`:** wait-rounds count against `--max-wait` (default 8), NOT against `--max-fix` (default 5). The split fixed a real failure mode in the previous unified `--max` budget: every wait-round consumed a fix slot, so a PR with 3 fix iterations + 4 slow-bot polls would exhaust at `--max=5` even though only 3 fixes happened. With the dual budget, fix-budget reflects *engineering effort* and wait-budget reflects *bot latency tolerance* — orthogonal concerns. Either exhausted budget bails with a specific reason: `max-fix iterations (<MAX_FIX>) reached without clean status` (raise `--max-fix` if grinding a PR with many feedback rounds) or `max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD; latest stale: <STALE_BOTS>` (raise `--max-wait` if grinding a PR with known-slow reviewer bots). The legacy `--max N` flag is a deprecated alias that sets both budgets to N (emits a `⚠️  --max is deprecated; use --max-fix and --max-wait` warning at dispatch start) and CANNOT be combined with `--max-fix` or `--max-wait` — combining them bails with reason `conflicting flags: --max cannot be combined with --max-fix or --max-wait`.
+**Interaction with `--max-fix` / `--max-wait`:** wait-rounds count against `--max-wait` (default 8), NOT against `--max-fix` (default 5). The split fixed a real failure mode in the previous unified `--max` budget: every wait-round consumed a fix slot, so a PR with 3 fix iterations + 4 slow-bot polls would exhaust at `--max=5` even though only 3 fixes happened. With the dual budget, fix-budget reflects *engineering effort* and wait-budget reflects *bot latency tolerance* — orthogonal concerns. Either exhausted budget bails with a specific reason: `max-fix iterations (<MAX_FIX>) reached without clean status` (raise `--max-fix` if grinding a PR with many feedback rounds) or `max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD; latest stale: <STALE_AT_BAIL>` (raise `--max-wait` if grinding a PR with known-slow reviewer bots; `STALE_AT_BAIL` is the dispatcher-side derivation from `PRIOR_REVIEWER_ACKS` — see `ON_LOOP_EXHAUSTED` in the Dispatcher Loop above. Note: this is distinct from Step 6.5's transient `$STALE_BOTS` bash variable, which lives only inside the ledger snippet and does not survive into the bail handler). The legacy `--max N` flag is a deprecated alias that sets both budgets to N (emits a `⚠️  --max is deprecated; use --max-fix and --max-wait` warning at dispatch start) and CANNOT be combined with `--max-fix` or `--max-wait` — combining them bails with reason `conflicting flags: --max cannot be combined with --max-fix or --max-wait`.
 
 #### Step 7: Round summary / checkpoint
 

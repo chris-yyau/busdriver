@@ -331,12 +331,12 @@ If the dispatcher omitted `RESULT_FILE` (legacy dispatcher), use `/tmp/pr-grinde
 PR_NUMBER=64
 OWNER=chrisyau REPO=busdriver
 WORKTREE_DIR=/Volumes/Work/Projects/busdriver/.claude/worktrees/pr-grind-64
-ROUND=3 of 5
+ROUND=3 (fix=2/5, wait=0/8)
 PRIOR_COMMIT_SHA=8947cdd
 PRIOR_REVIEWER_ACKS=greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
 PRIOR_ATTEMPTS:
-  - Round 1: fixes=mkdir -p ordering in run-review-loop.sh; failures=none; acks=greptile-apps=stale,cubic-dev-ai=none,coderabbitai=stale,copilot-pull-request-reviewer=stale
-  - Round 2: fixes=tilde expansion in target_dir parser; failures=none; acks=greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
+  - Round 1 (fix=1/5, wait=0/8): fixes=mkdir -p ordering in run-review-loop.sh; failures=none; acks=greptile-apps=stale,cubic-dev-ai=none,coderabbitai=stale,copilot-pull-request-reviewer=stale
+  - Round 2 (fix=2/5, wait=0/8): fixes=tilde expansion in target_dir parser; failures=none; acks=greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
 ```
 
 (Note: every prior round's emitted `acks=` is mostly `stale` because Step 6.5 runs immediately post-push — bots haven't had time to re-review the just-pushed commit. The dispatcher entering this round sees all bots stale.)

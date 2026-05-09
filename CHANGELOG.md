@@ -1,3 +1,10 @@
+# [1.34.0](https://github.com/chris-yyau/busdriver/compare/v1.33.0...v1.34.0) (2026-05-09)
+
+
+### Features
+
+* **pr-grind:** per-bot ledger + bounded recovery-via-inline ([#86](https://github.com/chris-yyau/busdriver/issues/86)) ([f7cd168](https://github.com/chris-yyau/busdriver/commit/f7cd168c6214fe3434410f197e9ff6b4607c639d)), closes [hi#impact](https://github.com/hi/issues/impact)
+
 # [1.33.0](https://github.com/chris-yyau/busdriver/compare/v1.32.0...v1.33.0) (2026-05-09)
 
 

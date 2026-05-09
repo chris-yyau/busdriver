@@ -18,6 +18,23 @@ origin: custom
 
 **Announce at start:** "Grinding PR #N — will iterate until CI is green and comments are resolved, then merge." (Drop "then merge" if `--no-merge`.)
 
+## Authority Hierarchy
+
+**Merge gate (authoritative — all must be satisfied):**
+- Required status checks: green (REQUIRED set; advisory checks like CodeScene excluded)
+- Actionable findings on YOUR PR's changed lines: addressed (fix or justified reply)
+- PR title/body: conventional commit + scope
+
+**Bounded-wait advisory (best-effort, capped by `--max-wait`):**
+- AI reviewer acks (Greptile, CodeRabbit, Cubic, Copilot, etc.)
+
+**Best-effort (low priority, addressed if fix budget allows — counts against `--max-fix`, not `--max-wait`):**
+- Style/nit findings: typically fixed because the effort is low
+
+**Invariant:** required status checks are the merge authority. AI reviewer acks are bounded-wait advisory signals — apps rate-limit, freeze, or fail; `--max-wait` is the backstop. On exhaustion the loop **bails to the operator** (does NOT silently merge AND does NOT wait forever). Never wait indefinitely for any single reviewer app. The infra-error downgrade in `scripts/ack-ledger.sh` (`ever_approved=0` defense) handles the specific case of a frozen review that the bot can't self-recover from; `--max-wait` is the broader safety net for slow-bot scenarios outside that pattern.
+
+**Why:** helmet PR #35 stuck for a full session because a frozen Copilot review couldn't be classified by the pre-v1.30.1 ack ledger (introduced v1.29.1, PR #70). v1.30.1 added the body-text infra-error downgrade with the `ever_approved=0` admin-bypass guard (PR #77, three sub-commits); v1.31 extracted the algorithm into `scripts/ack-ledger.sh` for single-source maintenance + added a fail-CLOSED `|| echo stale` guard at the new call sites (PR #79); v1.33 added the `--max-wait` budget (PR #84). Codifying the principle prevents regression — a future "tighten the gate" PR must not reintroduce unbounded waits, must not silently merge past stale acks, and must not treat reviewer acks as co-equal with required checks.
+
 ## Architecture: Dispatcher + Per-Round Worker
 
 This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh `pr-grinder` subagent on Sonnet, dispatched once per round. This:

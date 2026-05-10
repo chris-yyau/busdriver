@@ -150,11 +150,15 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     after all the steps in this loop body have run; control does NOT
   │     transfer immediately on parse. Counter updates (next step), the
   │     recovery-via-inline check (only on bail), and Invariant checks
-  │     1-4 (on needs_more AND clean) all run BEFORE the status decides
-  │     where to jump. Without this ordering, Invariant 4 would never
-  │     fire on `clean` rounds where the worker dismissed findings
-  │     before declaring clean — exactly the failure mode the rails
-  │     exist to catch.
+  │     all run BEFORE the status decides where to jump. Invariants 1-3
+  │     run on `needs_more` and `clean` (skipped on `bail` because the
+  │     loop is terminating regardless); Invariant 4 (discipline rails)
+  │     runs on EVERY status, including `bail`, so a worker that
+  │     over-dismisses findings and then bails still trips the cap and
+  │     surfaces to the operator. Without this ordering, Invariant 4
+  │     would never fire on `clean` or `bail` rounds where the worker
+  │     dismissed findings before declaring done — exactly the failure
+  │     mode the rails exist to catch.
   │
   │     RESULT_STATUS=clean       → eventually: invariants pass, go to COMPLETION
   │     RESULT_STATUS=bail        → eventually: recovery-via-inline check;
@@ -319,10 +323,15 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        acknowledged flow (see agents/pr-grinder.md Step 3
   │        "Out-of-Scope-Acknowledged Workflow").
   │
-  │        Runs on EVERY round status, including `clean`. Accumulated
-  │        breaches block ship even when this round's classification is
-  │        clean — a worker that dismisses 5+ findings before declaring
-  │        clean must still surface to the operator.
+  │        Runs on EVERY round status, including `clean` AND `bail`
+  │        (Invariants 1-3 run on `needs_more`/`clean` only — see the
+  │        "Parse subagent output" comment above; Invariant 4 is the
+  │        explicit exception). Accumulated breaches block ship even
+  │        when this round's classification is clean, AND surface
+  │        operator-visible context when the worker over-dismisses
+  │        findings and then bails — a worker that dismisses 5+
+  │        findings must still surface to the operator regardless of
+  │        whether it ultimately declared clean or bailed.
   │
   │        Both bails are dispatcher-emitted with category=`judgment`. This
   │        widens the dispatcher emit set from `{budget}` to
@@ -920,7 +929,7 @@ Both are real findings on changed code. Neither fits the existing pre-existing-i
 
 **Round 3 (worker, inline).**
 
-```
+```text
 Round 3 triage (BOT_REVIEWS["coderabbitai"]):
 
 1. eventDate range modeling (latest-data.ts:1963)
@@ -948,7 +957,7 @@ Round 3 dismissal count: 2 (under per-round cap of 3) ✓
 
 **Worker emits:**
 
-```
+```text
 RESULT_STATUS: needs_more
 RESULT_COMMIT_SHA: 4361cc54
 RESULT_FIXES: remove /blog/* paths from 4 relatedTools blocks
@@ -965,7 +974,7 @@ RESULT_UNSTAGED_DIFF_SHA: none
 
 **Dispatcher state after Round 3:**
 
-```
+```text
 total_scope_skipped: 0 + 2 = 2  (well under cap of 5)
 total_issues_spawned: 0 + 2 = 2  (well under cap of 3)
 Invariant 4: pass (both under cap)

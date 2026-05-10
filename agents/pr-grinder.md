@@ -32,7 +32,8 @@ The dispatcher passes you a context block containing:
 ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none"
 BOT_LEDGER="greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=0/0:none,copilot-pull-request-reviewer=0/0:none,codescene-delta-analysis=0/0:none"
 INFLIGHT_CHANGES="none"
-ISSUES_SPAWNED="none"   # accumulator for out-of-scope-acknowledged spawn flow (Step 3)
+SPAWNED_ISSUES=()       # accumulator for out-of-scope-acknowledged spawn flow (Step 3);
+                        # joined to RESULT_ISSUES_SPAWNED at round end (or "none" if empty)
 ```
 
 If you bail before Step 6.5 (the real ack-ledger compute) or before Step 2.6 (the per-bot enumeration), emit `$ACKS` as `RESULT_REVIEWER_ACKS` and `$BOT_LEDGER` as `RESULT_BOT_LEDGER`. The dispatcher's invariant-2 gate (clean + any `stale` → BAIL) only fires on `clean` status, so an all-`none` early bail with `status=bail` won't accidentally trip it. The dispatcher's invariant-3 gate keys on **`n_total == 0` for any HEAD-acked bot**, not on the disposition string — so the `0/0:none` shape is fine for bots that didn't post (no HEAD ack means no gate trigger), but a `0/0:<anything>` shape for a bot whose ack value is a SHA trips the gate regardless of what's after the colon. Emitting these defaults also keeps both tags non-empty, which the dispatcher's tag parser requires.
@@ -104,7 +105,7 @@ gh api graphql --paginate -f query='
             path
             line
             comments(first: 100) {
-              nodes { body author { login } createdAt }
+              nodes { body url author { login } createdAt }
             }
           }
         }
@@ -114,7 +115,13 @@ gh api graphql --paginate -f query='
 ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" \
   --jq '.data.repository.pullRequest.reviewThreads.nodes[]
     | select(.isResolved == false and .isOutdated == false)
-    | {threadId: .id, path, line, comments: [.comments.nodes[] | {body, user: .author.login, createdAt}]}'
+    | {threadId: .id,
+       path,
+       line,
+       body: ((.comments.nodes | last).body // ""),
+       permalink: ((.comments.nodes | last).url // ""),
+       summary: (((.comments.nodes | last).body // "") | gsub("\\s+"; " ") | .[0:80]),
+       comments: [.comments.nodes[] | {body, user: .author.login, createdAt, url}]}'
 
 # Source 3: Review-level comments (CHANGES_REQUESTED / COMMENTED reviews)
 gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews" \
@@ -229,7 +236,7 @@ When a finding is real and on lines your PR changed, but the fix would either (a
 
 The reason set is closed — do NOT invent new reasons. If a finding doesn't fit, it isn't out-of-scope-acknowledged; either fix it or BAIL with `category=judgment` (design/scope concern).
 
-**Safe interpolation (READ FIRST — both paths below depend on this).** The bot's verbatim rationale is attacker-controllable text — a finding body can contain `$(...)`, backticks, embedded quotes, or `--`-prefixed strings that look like CLI flags. NEVER paste finding text directly into a `gh issue create --body "...<rationale>..."` template literal at compose time; the worker's bash interpreter will execute `$(...)` / backticks at parse time before gh ever runs. Mirror the PR #86 RECOVERY_INLINE defense: bind every attacker-controlled field to a shell variable FIRST, then pass it via `"$VAR"` (where bash's one-pass expansion treats the value as literal data) or `--body-file -` via a heredoc-fed stdin. The snippets below assume the worker iterates Step 2's Source 2 stream (the `{threadId, path, line, comments: [...]}` projection from the GraphQL query) one finding at a time, binding each JSON object to a per-finding `$finding` shell variable — that's the producer for `$THREAD_ID`, `$BOT_RATIONALE`, and `$THREAD_PERMALINK`. `$REASON` is set by the worker's classification step (one of the 6 enumerated reasons in the table above), not extracted from `$finding`. `$SUMMARY` is a sanitized one-line derivation the worker computes per finding. The audit-only block additionally needs `$RATIONALE` (worker-composed substantive reply prose, NOT the bot's verbatim text — that's why it's named differently from the spawn block's `$BOT_RATIONALE`).
+**Safe interpolation (READ FIRST — both paths below depend on this).** The bot's verbatim rationale is attacker-controllable text — a finding body can contain `$(...)`, backticks, embedded quotes, or `--`-prefixed strings that look like CLI flags. NEVER paste finding text directly into a `gh issue create --body "...<rationale>..."` template literal at compose time; the worker's bash interpreter will execute `$(...)` / backticks at parse time before gh ever runs. Mirror the PR #86 RECOVERY_INLINE defense: bind every attacker-controlled field to a shell variable FIRST, then pass it via `"$VAR"` (where bash's one-pass expansion treats the value as literal data) or `--body-file -` via a heredoc-fed stdin. The snippets below assume the worker iterates Step 2's Source 2 stream (the `{threadId, path, line, body, permalink, summary, comments: [...]}` projection from the GraphQL query — note the top-level `body`/`permalink`/`summary` derived from the LAST comment in the thread, which is the most recent bot post) one finding at a time, binding each JSON object to a per-finding `$finding` shell variable — that's the producer for `$THREAD_ID`, `$BOT_RATIONALE`, `$THREAD_PERMALINK`, and `$SUMMARY`. `$REASON` is set by the worker's classification step (one of the 6 enumerated reasons in the table above), not extracted from `$finding`. The audit-only block additionally needs `$RATIONALE` (worker-composed substantive reply prose, NOT the bot's verbatim text — that's why it's named differently from the spawn block's `$BOT_RATIONALE`).
 
 **For spawn reasons** (`schema-refactor`, `external-research`, `follow-up-deferred`, and *material* `cross-cutting-style`):
 
@@ -237,17 +244,19 @@ The reason set is closed — do NOT invent new reasons. If a finding doesn't fit
 # Bind attacker-controllable fields to shell vars FIRST. $finding is the
 # per-finding JSON object the worker iterates from Step 2's Source 2
 # stream (one node per actionable thread). The Step 2 query exposes
-# thread `id` as `threadId` per the jq projection above; extract it here
-# per-finding. SUMMARY must be a single-line, sanitized derivation of
-# the finding (strip newlines, backticks, $, ", \) — a multi-line title
-# would be silently truncated by gh, and unsanitized title text becomes
-# part of issue search/index. $REASON is the worker's classification
-# (one of the 6 enumerated reasons in the table above), not extracted
-# from $finding.
+# `threadId`, `body`, `permalink`, and `summary` at the top level of each
+# projected node — `body` is the LAST comment's body (most recent bot
+# post in the thread), `permalink` is that comment's URL, `summary` is
+# the same body whitespace-collapsed and head-truncated to 80 chars.
+# Extract them here per-finding. The trailing `tr -d` re-sanitizes
+# SUMMARY for shell-active chars not stripped by the GraphQL gsub
+# (backticks, $, ", \) — defense in depth before the value lands in a
+# `--title` flag. $REASON is the worker's classification (one of the 6
+# enumerated reasons in the table above), not extracted from $finding.
 THREAD_ID=$(jq -r '.threadId' <<<"$finding")
 BOT_RATIONALE=$(jq -r '.body' <<<"$finding")
-THREAD_PERMALINK=$(jq -r '.permalink // .url' <<<"$finding")
-SUMMARY=$(jq -r '.summary // .body | tostring' <<<"$finding" \
+THREAD_PERMALINK=$(jq -r '.permalink' <<<"$finding")
+SUMMARY=$(jq -r '.summary' <<<"$finding" \
   | tr -d '\n`$"\\' | head -c 80)
 REASON="<one of: schema-refactor | external-research | follow-up-deferred | cross-cutting-style>"
 
@@ -274,11 +283,11 @@ ISSUE_NUMBER=$(printf '%s' "$BODY" | gh issue create \
   --label "from-pr-grind,scope-deferred" \
   --json number --jq '.number' 2>/dev/null) || {
     echo "❌ gh issue create failed for thread $THREAD_ID" >&2
-    return 1
+    exit 1
 }
 [[ "$ISSUE_NUMBER" =~ ^[0-9]+$ ]] || {
     echo "❌ unexpected gh issue create output: '$ISSUE_NUMBER'" >&2
-    return 1
+    exit 1
 }
 
 # 2. Reply on the original thread, linking the spawned issue.
@@ -293,7 +302,7 @@ gh api graphql -f query='
   }
 ' -f threadId="$THREAD_ID" -f body="$REPLY_BODY" >/dev/null || {
     echo "❌ thread-reply mutation failed for $THREAD_ID" >&2
-    return 1
+    exit 1
 }
 
 # 3. Resolve the thread. The bot's stale signal clears via
@@ -307,7 +316,7 @@ gh api graphql -f query='
   }
 ' -f threadId="$THREAD_ID" >/dev/null || {
     echo "❌ resolveReviewThread failed for $THREAD_ID" >&2
-    return 1
+    exit 1
 }
 
 # 4. Track the spawned issue. Validated numeric only — empty or
@@ -343,7 +352,7 @@ gh api graphql -f query='
   }
 ' -f threadId="$THREAD_ID" -f body="$REPLY_BODY" >/dev/null || {
     echo "❌ thread-reply mutation failed for $THREAD_ID" >&2
-    return 1
+    exit 1
 }
 
 # 2. Resolve the thread.
@@ -355,7 +364,7 @@ gh api graphql -f query='
   }
 ' -f threadId="$THREAD_ID" >/dev/null || {
     echo "❌ resolveReviewThread failed for $THREAD_ID" >&2
-    return 1
+    exit 1
 }
 ```
 

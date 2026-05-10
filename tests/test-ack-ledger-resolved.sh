@@ -95,6 +95,24 @@ else
   fail "unresolved+non-outdated thread expected 'stale', got '$got'"
 fi
 
+# --- Test 4b: mixed — unresolved + resolved threads on same bot → stale ---
+# Locks in the tier-A ordering: `unresolved > 0 → stale` short-circuits
+# BEFORE `disposed > 0 → HEAD`. Without this test, a future refactor that
+# accidentally reorders the two checks (or merges them into a single
+# count) would silently pass the resolved-only / unresolved-only tests
+# above but break the merge gate by acking a bot that still has open
+# findings.
+MIXED_THREADS=$(cat <<EOF
+{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRT_1","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"greptile-apps[bot]"}}]}},{"id":"PRT_2","isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"greptile-apps[bot]"}}]}}]}}}}}
+EOF
+)
+got=$(run_ledger "$MIXED_THREADS")
+if [ "$got" = "stale" ]; then
+  ok "mixed unresolved+resolved threads → stale (unresolved-priority ordering check)"
+else
+  fail "mixed unresolved+resolved threads expected 'stale' (unresolved must take priority), got '$got'"
+fi
+
 # --- Test 5: no threads at all → none (regression check) ---
 # Bot didn't post on this PR. Falls through to the bottom and emits `none`.
 NO_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'

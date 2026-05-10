@@ -954,7 +954,7 @@ RESULT_COMMIT_SHA: 4361cc54
 RESULT_FIXES: remove /blog/* paths from 4 relatedTools blocks
 RESULT_REMAINING: none
 RESULT_REVIEWER_ACKS: greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
-RESULT_BOT_LEDGER: greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=1/4:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,copilot-pull-request-reviewer=0/1:no-findings,codescene-delta-analysis=0/0:none
+RESULT_BOT_LEDGER: greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,copilot-pull-request-reviewer=0/1:no-findings,codescene-delta-analysis=0/0:none
 RESULT_ISSUES_SPAWNED: 847,848
 RESULT_INFLIGHT_CHANGES: none
 RESULT_STAGED_FILES: none

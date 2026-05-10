@@ -1,0 +1,89 @@
+{
+  "_doc": [
+    "Canonical required-status-check registry for this repo.",
+    "",
+    "Each entry records: the literal check name as branch protection sees it,",
+    "the expected source app reporting that name, and which workflow file +",
+    "job key produces it.",
+    "",
+    "Drift between this file and:",
+    "  (a) the workflow files' job `name:` fields (or job keys when no name),",
+    "  (b) the live branch-protection `required_status_checks.contexts`,",
+    "  (c) the actual source app reporting on a recent check-run,",
+    "is what `scripts/check-required-checks.sh` flags. Catches silent breaks",
+    "where a renamed job leaves an old name in branch protection, no longer",
+    "matched by any check, blocking PRs without obvious cause.",
+    "",
+    "The same script also enforces an independent fourth surface that does",
+    "not depend on this file at all — it runs even when `required` is empty:",
+    "  (d) workflow check-name uniqueness across .github/workflows/*.yml.",
+    "Two jobs posting status checks under the same effective name (explicit",
+    "`name:` or bare job key) cause GitHub to non-deterministically pick one",
+    "reporter. Catches collisions before they ever get promoted into this lock.",
+    "",
+    "When you intentionally rename, remove, or add a required check:",
+    "  1. Update this file.",
+    "  2. Update the workflow's job `name:` (or key) to match.",
+    "  3. Update branch-protection contexts via gh api PATCH",
+    "     repos/OWNER/REPO/branches/main/protection/required_status_checks",
+    "     (PATCH not PUT — see helmet SKILL.md B4b for the idempotent pattern).",
+    "  4. Run scripts/check-required-checks.sh to confirm zero drift.",
+    "",
+    "source_app values:",
+    "  - github-actions   in-repo GitHub Actions workflow (this repo's own .yml)",
+    "  - codescene        CodeScene GitHub App",
+    "  - codecov          Codecov GitHub App",
+    "  - coderabbitai     CodeRabbit GitHub App",
+    "  - greptile         Greptile GitHub App",
+    "  - cubic            cubic GitHub App",
+    "  - github-copilot   GitHub Copilot review",
+    "  - gitguardian      GitGuardian GitHub App",
+    "",
+    "Optional `matrix_value` field: when a workflow job uses strategy.matrix,",
+    "GitHub renders each combination as `<base> (<label>)`. Express each",
+    "combination as its own lock entry with `matrix_value` holding the literal",
+    "label content (e.g. \"ubuntu-latest\" for 1-dim, \"ubuntu-latest, 18\" for",
+    "multi-dim). Surface (a) appends ` (<matrix_value>)` to the bare-key or",
+    "explicit-name match before comparing against `name`. Omit for non-matrix",
+    "jobs — see helmet SKILL.md B1c for full examples."
+  ],
+  "required": [
+    {
+      "name": "shellcheck",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/tests.yml",
+      "job": "shellcheck"
+    },
+    {
+      "name": "commitlint",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/tests.yml",
+      "job": "commitlint"
+    },
+    {
+      "name": "Actions security",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/security.yml",
+      "job": "zizmor"
+    },
+    {
+      "name": "Code security",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/security.yml",
+      "job": "semgrep"
+    },
+    {
+      "name": "Dependency CVEs",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/security.yml",
+      "job": "trivy"
+    },
+    {
+      "name": "IaC misconfig",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/security.yml",
+      "job": "checkov"
+    }
+  ],
+  "advisory": []
+}

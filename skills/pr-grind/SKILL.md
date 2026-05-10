@@ -73,6 +73,7 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
   - Max wait-rounds reached (slow bot(s) never acked HEAD within `MAX_WAIT` polling rounds)
   - **On any bail:** if Step 0 created an ephemeral worktree, `cd` back and `git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true` before exiting. Skip when `NO_WORKTREE=1` — i.e. either `--no-worktree` was passed OR Step 0's auto-fallback engaged because the branch was already checked out. The `|| true` keeps cleanup idempotent if the worktree was already removed.
 - **Recovery-via-inline (capped at 1 per invocation):** When the worker bails for a *tooling-friction* reason (litmus blocked, pre-commit gate fired, subagent slash-command limitation) AND left inflight working-tree changes, the dispatcher takes over inline — runs the litmus iteration the subagent context can't, commits, pushes, and returns to the loop. **This is strictly for tooling friction, never for judgment friction:** design/scope questions, architectural concerns, env auth errors, history-rewriting fixes (commitlint on a pushed commit, large-diff splits — see worker Bail Triggers), and budget exhaustion all bail to the user as before. Cap is hard at 1 per pr-grind invocation — two consecutive worker bails in the same run = real bail, no matter how clean the inflight state. The cap exists so "dispatcher always rescues" can't mask a chronic worker bug over time. Override with `--no-recovery-inline` to disable entirely.
+- **Out-of-scope-acknowledged discipline rails:** the worker can dismiss a finding on YOUR PR's changed lines with one of 6 enumerated reasons (`schema-refactor`, `external-research`, `follow-up-deferred`, `cross-cutting-style`, `pre-existing-on-touched-line`, `false-positive`) — see `agents/pr-grinder.md` Step 3. Three rails bound the carve-out: (a) worker per-round cap of ≤3 dismissals, self-enforced; (b) dispatcher cumulative cap of ≤5 dismissals across the whole grind (Invariant 4); (c) dispatcher cumulative cap of ≤3 follow-up issues spawned (Invariant 4). Hitting either dispatcher cap BAILs with `RESULT_BAIL_CATEGORY=judgment` regardless of round status. The default is FIX — dismissal is the carve-out. The rails exist precisely so workers can't relabel tedious-but-real findings as out-of-scope to "ship faster," leaving real bugs tracked-but-unaddressed in spawned follow-up issues.
 
 ## The Dispatcher Loop
 
@@ -111,6 +112,18 @@ START
                    # iteration (before dispatch), so the first dispatch receives
                    # ROUND=1, the second ROUND=2, etc. It is the N in
                    # "ROUND=<N>" and "Round N" in PRIOR_ATTEMPTS template strings.
+                   total_scope_skipped=0,
+                   total_issues_spawned=0,
+                   # total_scope_skipped accumulates this-round contributions
+                   # parsed out of every `scope-skipped:<reason>:<count>`
+                   # segment in RESULT_BOT_LEDGER (segments are `+`-joined
+                   # within a disposition; outer entry split is `,`).
+                   # total_issues_spawned accumulates the comma-count of
+                   # RESULT_ISSUES_SPAWNED ("none" → 0). Both gate Invariant 4
+                   # (discipline rails — cumulative caps of 5 dismissals and
+                   # 3 spawned issues per grind). Reset on each invocation,
+                   # never persisted across invocations or surfaced in
+                   # PRIOR_ATTEMPTS — the worker doesn't need to see them.
                    PRIOR_REVIEWER_ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none"
 
 LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
@@ -132,12 +145,60 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     Agent(subagent_type="pr-grinder", prompt=<context block>)
   │     ↳ Subagent does ONE round (Steps 1–6.5), returns RESULT_* tags
   │
-  ├── Parse subagent output:
-  │     RESULT_STATUS=clean       → validate invariants, go to COMPLETION
-  │     RESULT_STATUS=bail        → check recovery-via-inline eligibility (below);
+  ├── Parse subagent output (extract tags only — control flow is sequential):
+  │     The status arrows below describe each round's EVENTUAL routing
+  │     after all the steps in this loop body have run; control does NOT
+  │     transfer immediately on parse. Counter updates (next step), the
+  │     recovery-via-inline check (only on bail), and Invariant checks
+  │     all run BEFORE the status decides where to jump. Invariants 1-3
+  │     run on `needs_more` and `clean` (skipped on `bail` because the
+  │     loop is terminating regardless); Invariant 4 (discipline rails)
+  │     runs on EVERY status, including `bail`, so a worker that
+  │     over-dismisses findings and then bails still trips the cap and
+  │     surfaces to the operator. Without this ordering, Invariant 4
+  │     would never fire on `clean` or `bail` rounds where the worker
+  │     dismissed findings before declaring done — exactly the failure
+  │     mode the rails exist to catch.
+  │
+  │     RESULT_STATUS=clean       → eventually: invariants pass, go to COMPLETION
+  │     RESULT_STATUS=bail        → eventually: recovery-via-inline check;
   │                                  if eligible AND not exhausted, go to RECOVERY_INLINE;
   │                                  otherwise break loop, go to BAIL
-  │     RESULT_STATUS=needs_more  → validate invariant, update state, continue
+  │     RESULT_STATUS=needs_more  → eventually: invariants pass, classify, update state, continue
+  │
+  ├── Update discipline-rail counters (runs on EVERY status, including bail/clean):
+  │     # Out-of-scope-acknowledged accumulator. The worker may have dismissed
+  │     # findings even on rounds it ultimately bails or marks clean; those
+  │     # dismissals count toward the cumulative cap regardless of round
+  │     # status. Updating here (before the bail/recovery branch and before
+  │     # invariant checks) ensures Invariant 4 sees a fresh total.
+  │     scope_skipped_this_round = sum of every integer N matched by the
+  │                                regex `scope-skipped:[a-z-]+:(\d+)` across
+  │                                ALL bot-ledger entries this round.
+  │                                Segments inside a single disposition are
+  │                                `+`-joined; the entry split (which the
+  │                                regex match honors implicitly) is `,`.
+  │                                A disposition with no segments contributes 0.
+  │     total_scope_skipped += scope_skipped_this_round
+  │     issues_spawned_this_round = (RESULT_ISSUES_SPAWNED missing
+  │                                   OR == "none") ? 0
+  │                                  : count of comma-separated tokens.
+  │     total_issues_spawned += issues_spawned_this_round
+  │     # Missing-tag handling matters for the in-flight upgrade case: a
+  │     # worker on the old contract never emitted RESULT_ISSUES_SPAWNED,
+  │     # and the dispatcher must treat that as zero contribution rather
+  │     # than bailing "subagent output unparseable". The protocol is
+  │     # ADDITIVE — old workers operate under old semantics for the rest
+  │     # of their grind (Invariant 4 simply doesn't enforce, bounded by
+  │     # the worker's per-round cap of ≤3); new workers opt into
+  │     # Invariant 4 by emitting the new tags. Same reasoning applies to
+  │     # `scope-skipped:*:*` segments — old workers never produced them,
+  │     # so the regex match returns 0 contributions, which is correct.
+  │     # The two contributions ARE related (every spawn is also a skip
+  │     # under one of the spawn-eligible reasons), but tracked separately
+  │     # because skips and spawns have different caps (5 vs 3) and the
+  │     # worker decides per-finding whether to spawn. The dispatcher does
+  │     # not infer one from the other.
   │
   ├── Recovery-via-inline eligibility (Bug 2 — bounded takeover for tooling friction):
   │     Triggers ONLY on RESULT_STATUS=bail. Default is BAIL; recovery is the carve-out.
@@ -258,6 +319,56 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        entry is the matching shape and is fine). Only HEAD-acked bots
   │        prove a body exists that should have been enumerated.
   │
+  │     4. Discipline rails — cumulative caps for the out-of-scope-
+  │        acknowledged flow (see agents/pr-grinder.md Step 3
+  │        "Out-of-Scope-Acknowledged Workflow").
+  │
+  │        Runs on EVERY round status, including `clean` AND `bail`
+  │        (Invariants 1-3 run on `needs_more`/`clean` only — see the
+  │        "Parse subagent output" comment above; Invariant 4 is the
+  │        explicit exception). Accumulated breaches block ship even
+  │        when this round's classification is clean, AND surface
+  │        operator-visible context when the worker over-dismisses
+  │        findings and then bails — a worker that dismisses 5+
+  │        findings must still surface to the operator regardless of
+  │        whether it ultimately declared clean or bailed.
+  │
+  │        Both bails are dispatcher-emitted with category=`judgment`. This
+  │        widens the dispatcher emit set from `{budget}` to
+  │        `{budget, judgment}` — see agents/pr-grinder.md "Bail Triggers"
+  │        category enum doc.
+  │
+  │        Caps are INCLUSIVE — 5 dismissals and 3 spawned issues are
+  │        the maximum ALLOWED (worker can use the full budget); the
+  │        6th dismissal / 4th spawn is what BAILs. The conditions below
+  │        use strict-greater-than so the cap value itself remains a
+  │        legal grind state. The natural-language wording ("≤5", "≤3")
+  │        in Safety Rails / Anti-Patterns / Worked Example all reflect
+  │        this inclusive reading; the pseudocode's `>` (not `>=`) is
+  │        what makes that wording true. Earlier drafts had `>=` which
+  │        BAILed the legal 5th/3rd — fixed in review.
+  │
+  │        - If total_scope_skipped > 5 →
+  │            BAIL with reason "out-of-scope dismissal count is
+  │            <total_scope_skipped> across <round_number> rounds —
+  │            exceeds discipline rail of 5; operator review required",
+  │            RESULT_BAIL_CATEGORY=judgment.
+  │
+  │        - If total_issues_spawned > 3 →
+  │            BAIL with reason "follow-up-issue spawn count is
+  │            <total_issues_spawned> across <round_number> rounds —
+  │            exceeds discipline rail of 3; PR scope is too narrow or
+  │            worker is misclassifying", RESULT_BAIL_CATEGORY=judgment.
+  │
+  │        The thresholds are deliberate: 5 dismissals = roughly one per
+  │        round at MAX_FIX=5, well above the per-round cap of 3 the
+  │        worker self-enforces (so honest workers won't trip it); 3
+  │        spawned issues = the point at which "this PR has scope creep
+  │        worth deferring" tips into "this PR's scope is wrong, replan."
+  │        Tightening the caps without operator data risks bailing
+  │        legitimate grinds; loosening them silently allows the
+  │        relabel-as-out-of-scope failure mode the rails exist to catch.
+  │
   ├── Classify round and increment the appropriate counter:
   │     # ONLY runs on RESULT_STATUS=needs_more — bail and clean rounds skip this
   │     # block via the earlier branch in "Parse subagent output". This is
@@ -273,7 +384,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   └── Update state:
         PRIOR_COMMIT_SHA    = RESULT_COMMIT_SHA
         PRIOR_REVIEWER_ACKS = RESULT_REVIEWER_ACKS
-        PRIOR_ATTEMPTS     += "Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): fixes=<RESULT_FIXES>; failures=<RESULT_REMAINING>; acks=<RESULT_REVIEWER_ACKS>"
+        PRIOR_ATTEMPTS     += "Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): fixes=<RESULT_FIXES>; failures=<RESULT_REMAINING>; acks=<RESULT_REVIEWER_ACKS>; scope-skipped=<scope_skipped_this_round>; spawned=<issues_spawned_this_round>"
         # failures= is required — subagent's flaky-check bail (3+ rounds)
         # reads it. Dropping it makes that bail unreachable and the loop
         # will grind to MAX rounds instead of stopping early on a flaky
@@ -285,6 +396,13 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
         # The fix=/wait= prefix in the round summary lets the worker (which
         # gets PRIOR_ATTEMPTS in its context block) see budget pressure
         # without needing the dispatcher to pass MAX_FIX/MAX_WAIT separately.
+        # scope-skipped= and spawned= record this-round contributions to
+        # Invariant 4's cumulative counters — visibility for the operator
+        # reading PRIOR_ATTEMPTS at bail time. Per-thread permalinks and
+        # spawn-issue numbers live in the spawned issues themselves
+        # (filter via `gh issue list --label scope-deferred`); duplicating
+        # them in PRIOR_ATTEMPTS would balloon the worker's context block
+        # for marginal clarity.
 
 # Loop exits naturally when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT
 # without ever seeing RESULT_STATUS=clean → fail-CLOSED to BAIL, NOT to
@@ -542,7 +660,8 @@ RESULT_COMMIT_SHA: <sha or "none">                    (always present)
 RESULT_FIXES: <one-line summary>                      (always present)
 RESULT_REMAINING: <one-line or "none">                (always present)
 RESULT_REVIEWER_ACKS: <login=value,login=value,...>   (always present; values: <short-sha> | none | stale; early-bail paths emit the all-`none` default initialized before Step 0)
-RESULT_BOT_LEDGER: <login=n_act/n_total:disp,...>     (always present; entries shape: `<login>=<n_actionable>/<n_total>:<disposition>`; early-bail paths emit the all-`0/0:none` default; gates Invariant 3 — see Dispatcher Loop. Disposition prose MUST NOT contain commas; entries are split on `,` and a comma inside a disposition would corrupt the parse)
+RESULT_BOT_LEDGER: <login=n_act/n_total:disp,...>     (always present; entries shape: `<login>=<n_actionable>/<n_total>:<disposition>`; early-bail paths emit the all-`0/0:none` default; gates Invariant 3 — see Dispatcher Loop. Disposition prose MUST NOT contain commas; entries are split on `,` and a comma inside a disposition would corrupt the parse. Disposition MAY carry `+`-joined `scope-skipped:<reason>:<count>` segments — Invariant 4 sums those counts across all bots/rounds against the ≤5 cumulative cap)
+RESULT_ISSUES_SPAWNED: <issue,issue,... or "none">    (always present in the new contract; comma-separated GitHub issue numbers spawned this round via the out-of-scope-acknowledged workflow; gates Invariant 4 — cumulative count across rounds caps at 3. **Backward compatibility:** missing tag entirely → treat as "none" / zero contribution. Old-contract workers (pre-out-of-scope-flow) never emitted this tag and operate under pre-Invariant-4 semantics for the rest of their grind; new-contract workers always emit it. Do NOT bail "subagent output unparseable" on a missing RESULT_ISSUES_SPAWNED — the protocol is additive, not version-pinned.)
 RESULT_INFLIGHT_CHANGES: none | staged | unstaged | both  (always present; non-bail rounds emit `none`; bail rounds emit the worker's snapshotted working-tree state — gates RECOVERY_INLINE eligibility)
 RESULT_STAGED_FILES: <`|`-separated paths or "none">  (always present; pipe-delimited — split on `|` and use `git add --` to prevent option-injection; `|` is used because NUL bytes cannot survive in plain-text tag files)
 RESULT_UNSTAGED_FILES: <`|`-separated paths or "none"> (always present; pipe-delimited)
@@ -676,14 +795,17 @@ Classify each piece of feedback:
 | **CI failure — test/lint/build** | Fix it |
 | **CI failure — flaky/infra** | Note it, skip after 3 consecutive identical failures |
 | **Automated reviewer — specific fix** (CodeRabbit, Greptile, Cubic) | Fix it — treat like human review |
-| **Automated reviewer — stale/pre-existing issue** | Skip — only fix issues in YOUR changed code |
-| **Resolved or outdated thread** | Skip — already filtered out by GraphQL (`isResolved`, `isOutdated`) |
+| **Automated reviewer — out-of-scope-acknowledged on YOUR changed code** | Apply the workflow at `agents/pr-grinder.md` Step 3 (Out-of-Scope-Acknowledged Workflow): classify with one of 6 enumerated reasons, spawn follow-up issue (3 spawn reasons) or post audit-only reply (3 audit reasons), then resolve the thread. **DEFAULT IS FIX** — only dismiss with ≥80% confidence the fix would expand scope or require off-codebase work. Per-round cap ≤3 dismissals; cumulative caps ≤5 dismissals + ≤3 spawned issues across the grind (Invariant 4 BAILs past either) |
+| **Automated reviewer — stale/pre-existing issue in untouched code** | Skip — only fix issues in YOUR PR's changed lines (this is distinct from out-of-scope-acknowledged: this row is for findings on lines your PR did NOT touch; the row above is for findings on touched lines where the fix is out of scope) |
+| **Resolved or outdated thread** | Skip — already filtered out by GraphQL (`isResolved`, `isOutdated`); note that pr-grind's own out-of-scope flow resolves threads after dismissal, so resolved-by-operator threads also fall in this row on subsequent rounds |
 | **Human review — specific fix request** | Fix it |
 | **Human review — question/clarification** | Reply with explanation, don't change code |
 | **Human review — design/scope concern** | **BAIL** — surface to user, this needs human judgment |
 | **Code review — nit/style** | Fix it (low effort, high goodwill) |
 
 **Important:** Automated reviewers often post on code that was already in the repo before your PR. Only fix issues in files/lines that YOUR PR changed.
+
+**Inline-mode self-tracking note:** When running inline (`--opus`, `--interactive`, `--ci-only`, `--comments-only`), the dispatcher IS the worker — there is no subagent boundary to emit `RESULT_BOT_LEDGER` / `RESULT_ISSUES_SPAWNED` across. Self-track `total_scope_skipped` and `total_issues_spawned` in your conversation context across rounds, and apply the same Invariant 4 cumulative caps with strict-greater-than thresholds (`>5` dismissals OR `>3` spawned issues → BAIL with `RESULT_BAIL_CATEGORY=judgment`). Caps are INCLUSIVE — 5 dismissals and 3 spawns are the maximum allowed; the 6th dismissal / 4th spawn is what BAILs. This matches the canonical pseudocode at "Invariant checks → 4. Discipline rails" in the Dispatcher Loop above. The discipline rails are protocol invariants, not subagent-only checks; both the inline and subagent surfaces enforce identical thresholds.
 
 #### Step 4: Fix
 
@@ -793,6 +915,78 @@ In autonomous mode (default), log a brief summary and continue immediately to th
 
 Continue grinding?
 ```
+
+## Worked Example: Out-of-Scope-Acknowledged Flow
+
+Concrete walk-through of the carve-out — what the worker does, what the dispatcher sees, and how Invariant 4 interacts with it. Drawn from the failure mode that motivated this flow (jikdak PR #129, where the dispatcher had no clean way to dispose of architectural findings on touched lines and the merge stayed blocked across 7+ rounds).
+
+**Setup.** A content PR changes `client/src/lib/blog-data.ts` (one of many edits). CodeRabbit posts two findings on lines this PR touched:
+
+1. `client/src/lib/latest-data.ts:1963` — "Model `eventDate` as a date range (start + end)" → would change the shared `LatestItem` schema/interface contract.
+2. `client/src/lib/blog-data.ts:11427` — "Use report-level source links instead of homepage links" → requires off-codebase research to find each report's permalink.
+
+Both are real findings on changed code. Neither fits the existing pre-existing-issue carve-out (the lines were touched). Without out-of-scope-acknowledged, the worker would either fix them (3+ scope-creep rounds, bot finds new things on the new HEAD, grind never converges) or leave the threads unresolved (ack ledger stays `stale` forever, merge gate blocks indefinitely).
+
+**Round 3 (worker, inline).**
+
+```text
+Round 3 triage (BOT_REVIEWS["coderabbitai"]):
+
+1. eventDate range modeling (latest-data.ts:1963)
+   → Classification: out-of-scope-acknowledged
+   → Reason: schema-refactor (changes shared LatestItem contract)
+   → Spawn: yes
+   → gh issue create → spawned issue #847
+   → addPullRequestReviewThreadReply: "pr-grind: out-of-scope (schema-refactor) — tracked as #847"
+   → resolveReviewThread: thread closed
+
+2. Source link homepage→report (blog-data.ts:11427)
+   → Classification: out-of-scope-acknowledged
+   → Reason: external-research (requires off-codebase web lookup per report)
+   → Spawn: yes
+   → gh issue create → spawned issue #848
+   → addPullRequestReviewThreadReply: "pr-grind: out-of-scope (external-research) — tracked as #848"
+   → resolveReviewThread: thread closed
+
+3. /blog/* paths in relatedTools (blog-data.ts: multiple lines)
+   → Classification: fix it (specific fix in changed code; mechanical)
+   → Apply edit; commit; push.
+
+Round 3 dismissal count: 2 (under per-round cap of 3) ✓
+```
+
+**Worker emits:**
+
+```text
+RESULT_STATUS: needs_more
+RESULT_COMMIT_SHA: 4361cc54
+RESULT_FIXES: remove /blog/* paths from 4 relatedTools blocks
+RESULT_REMAINING: none
+RESULT_REVIEWER_ACKS: greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
+RESULT_BOT_LEDGER: greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,copilot-pull-request-reviewer=0/1:no-findings,codescene-delta-analysis=0/0:none
+RESULT_ISSUES_SPAWNED: 847,848
+RESULT_INFLIGHT_CHANGES: none
+RESULT_STAGED_FILES: none
+RESULT_UNSTAGED_FILES: none
+RESULT_STAGED_DIFF_SHA: none
+RESULT_UNSTAGED_DIFF_SHA: none
+```
+
+**Dispatcher state after Round 3:**
+
+```text
+total_scope_skipped: 0 + 2 = 2  (well under cap of 5)
+total_issues_spawned: 0 + 2 = 2  (well under cap of 3)
+Invariant 4: pass (both under cap)
+PRIOR_ATTEMPTS:
+  - Round 3 (fix=2/5, wait=0/8): fixes=remove /blog/* paths from 4 relatedTools blocks; failures=none; acks=greptile-apps=stale,...; scope-skipped=2; spawned=2
+```
+
+**Round 4 (next worker dispatch).** Bots re-review `4361cc54`. CodeRabbit's prior threads are now resolved (worker closed them in Round 3); `scripts/ack-ledger.sh` tier A counts the resolved threads against HEAD-ack rather than `stale` (the change in this PR). All four bots clear, grind converges to `clean`, dispatcher hits COMPLETION.
+
+**Total grind:** 4 rounds (was 7+ rounds + manual intervention before this carve-out existed). 2 dismissals consumed (under cap), 2 follow-up issues spawned (under cap). The two architectural findings live as `#847` and `#848` for separate PRs to address with proper scope.
+
+**What would BAIL.** If the worker dismisses a 6th finding across the grind (cumulative cap ≤5 inclusive — 5 allowed, 6th BAILs), Invariant 4 fires at the start of the next round with `RESULT_BAIL_CATEGORY=judgment` and reason `out-of-scope dismissal count is 6 across N rounds — exceeds discipline rail of 5; operator review required`. Operator decides whether the PR's scope is wrong (split it) or the worker is misclassifying (interactive review of the dismissals). Same shape applies to the spawn cap: 3 spawns allowed, the 4th BAILs.
 
 ## Completion (post-loop, dispatcher only)
 

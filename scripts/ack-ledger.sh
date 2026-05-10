@@ -42,20 +42,28 @@ if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; exit 0; fi
 # (A) Source 2: are there unresolved+non-outdated threads from this bot?
 # Bots like Copilot post their findings as inline threads. If unresolved+
 # non-outdated, those are real findings to address → stale.
-# If only OUTDATED threads exist, the bot's prior findings were addressed
-# by subsequent code changes → effectively acked (the bot may not bother
-# re-reviewing for trivial cleanup commits).
+# If only DISPOSED threads exist (outdated by code change OR explicitly
+# resolved by bot or operator), the bot's prior findings are no longer
+# actionable → effectively acked. Operator-resolved threads count too:
+# the pr-grind out-of-scope-acknowledged workflow (see agents/pr-grinder.md
+# Step 3) has the worker resolve threads after either spawning a follow-up
+# issue or posting an audit-only rebuttal, and that disposition must clear
+# the stale signal so the merge gate doesn't block forever on a thread the
+# operator already closed. The discipline rails that keep operators from
+# abusing this escalation live in the dispatcher (Invariant 4: cumulative
+# caps of ≤5 dismissals and ≤3 spawned issues per grind), not here — this
+# script is a thread-state classifier, not a usage gate.
 # jq -s slurps paginated graphql output (multiple JSON docs → single array)
 unresolved=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
   '[.[].data.repository.pullRequest.reviewThreads.nodes[]
     | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
     | select(.isResolved == false and .isOutdated == false)] | length' 2>/dev/null || echo 0)
 if [ "$unresolved" -gt 0 ]; then echo "stale"; exit 0; fi
-outdated=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+disposed=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
   '[.[].data.repository.pullRequest.reviewThreads.nodes[]
     | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
-    | select(.isOutdated == true)] | length' 2>/dev/null || echo 0)
-if [ "$outdated" -gt 0 ]; then echo "$HEAD_SHA"; exit 0; fi
+    | select(.isOutdated == true or .isResolved == true)] | length' 2>/dev/null || echo 0)
+if [ "$disposed" -gt 0 ]; then echo "$HEAD_SHA"; exit 0; fi
 
 # (B) /reviews: did the bot explicitly submit a review on HEAD?
 commit_id=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \

@@ -32,6 +32,8 @@ The dispatcher passes you a context block containing:
 ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none"
 BOT_LEDGER="greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=0/0:none,copilot-pull-request-reviewer=0/0:none,codescene-delta-analysis=0/0:none"
 INFLIGHT_CHANGES="none"
+SPAWNED_ISSUES=()       # accumulator for out-of-scope-acknowledged spawn flow (Step 3);
+                        # joined to RESULT_ISSUES_SPAWNED at round end (or "none" if empty)
 ```
 
 If you bail before Step 6.5 (the real ack-ledger compute) or before Step 2.6 (the per-bot enumeration), emit `$ACKS` as `RESULT_REVIEWER_ACKS` and `$BOT_LEDGER` as `RESULT_BOT_LEDGER`. The dispatcher's invariant-2 gate (clean + any `stale` → BAIL) only fires on `clean` status, so an all-`none` early bail with `status=bail` won't accidentally trip it. The dispatcher's invariant-3 gate keys on **`n_total == 0` for any HEAD-acked bot**, not on the disposition string — so the `0/0:none` shape is fine for bots that didn't post (no HEAD ack means no gate trigger), but a `0/0:<anything>` shape for a bot whose ack value is a SHA trips the gate regardless of what's after the colon. Emitting these defaults also keeps both tags non-empty, which the dispatcher's tag parser requires.
@@ -85,7 +87,11 @@ You MUST run all four queries every round. The GraphQL `reviewThreads` query alo
 # Source 1: CI check results
 gh pr checks "$PR_NUMBER"
 
-# Source 2: Inline review threads (filter: unresolved AND not outdated)
+# Source 2: Inline review threads (filter: unresolved AND not outdated).
+# `id` is REQUIRED — the out-of-scope-acknowledged workflow in Step 3 passes
+# it as `threadId` to the addPullRequestReviewThreadReply / resolveReviewThread
+# mutations. Dropping it means dismissals can't post a reply or close the
+# thread, leaving the bot stuck on `stale` forever.
 gh api graphql --paginate -f query='
   query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
     repository(owner: $owner, name: $repo) {
@@ -93,12 +99,13 @@ gh api graphql --paginate -f query='
         reviewThreads(first: 100, after: $endCursor) {
           pageInfo { hasNextPage endCursor }
           nodes {
+            id
             isResolved
             isOutdated
             path
             line
             comments(first: 100) {
-              nodes { body author { login } createdAt }
+              nodes { body url author { login } createdAt }
             }
           }
         }
@@ -108,7 +115,13 @@ gh api graphql --paginate -f query='
 ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" \
   --jq '.data.repository.pullRequest.reviewThreads.nodes[]
     | select(.isResolved == false and .isOutdated == false)
-    | {path, line, comments: [.comments.nodes[] | {body, user: .author.login, createdAt}]}'
+    | {threadId: .id,
+       path,
+       line,
+       body: ((.comments.nodes | last).body // ""),
+       permalink: ((.comments.nodes | last).url // ""),
+       summary: (((.comments.nodes | last).body // "") | gsub("\\s+"; " ") | .[0:80]),
+       comments: [.comments.nodes[] | {body, user: .author.login, createdAt, url}]}'
 
 # Source 3: Review-level comments (CHANGES_REQUESTED / COMMENTED reviews)
 gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews" \
@@ -174,6 +187,8 @@ Conceptually `BOT_REVIEWS[<bot>] = <combined body>`. Track `n_total` per bot —
 
 **Per-finding decision required.** Each candidate finding gets an explicit accept (fix it) or skip (with reason). "I didn't notice it" is not a valid skip reason — that's the silent-failure mode this contract exists to prevent.
 
+**DEFAULT IS FIX.** Out-of-scope dismissal is the carve-out, not the default. Only classify a real finding as `out-of-scope-acknowledged` (see triage row below + workflow subsection) when ≥80% confident the fix would either expand scope beyond the PR's intent or require off-codebase work. False positives must be substantively rebutted by citing the code, not assumed away. Per-round cap: ≤3 dismissals (any reason combined). If you reach 3 in this round, default-fix any remaining findings instead of dismissing more — additional dismissals consume cumulative budget that the dispatcher gates at ≤5 across the whole grind (Invariant 4 in `skills/pr-grind/SKILL.md`).
+
 **Per-bot ledger output.** As you triage each bot, record a `RESULT_BOT_LEDGER` entry of the form `<login>=<n_actionable>/<n_total>:<one-line-disposition>`. Disposition values are free-form summaries but should fall into one of these shapes so the dispatcher can read them:
 
 - `approved` — bot APPROVED with no findings body (`n_actionable=0`, `n_total>=1`)
@@ -182,6 +197,8 @@ Conceptually `BOT_REVIEWS[<bot>] = <combined body>`. Track `n_total` per bot —
 - `skipped <reason>` — worker enumerated but decided not to fix (e.g., pre-existing, scope creep, free-plan summary)
 - `errored` — bot's review was an infra error (rate-limit, timeout)
 - `none` — bot didn't post on this PR (`n_actionable=0`, `n_total=0`)
+
+For each `out-of-scope-acknowledged` dismissal you record this round, append `+scope-skipped:<reason>:<count>` segments to the bot's disposition. Multiple segments stack with `+` (NOT `,` — the outer entry separator is `,` and a comma inside a disposition would corrupt the parse). The `+` joins are bare, no surrounding whitespace; example: `coderabbitai=2/4:fixed 2+scope-skipped:schema-refactor:1+scope-skipped:external-research:1`. The dispatcher's Invariant 4 sums these counts across all bots and all rounds. **Reserved character:** `+` is now an inner separator inside dispositions — do NOT use it for any other purpose in primary disposition prose. If a fix summary needs to reference a literal plus (e.g., "fix Math.max+Math.min"), reword it (e.g., "fix Math.max and Math.min") to avoid ambiguity with the segment separator. Same shape as the prior comma-reservation rule — see the `RESULT_BOT_LEDGER` doc in Output Format.
 
 `<n_actionable>=0` with `<n_total>=0` is reserved for "bot didn't post" — never use it for "bot posted but I didn't look", which is the bug the dispatcher's invariant-3 gate catches.
 
@@ -193,7 +210,8 @@ Inline copy of SKILL.md triage table:
 | **CI failure — flaky/infra** | Note in `RESULT_REMAINING`, skip after 3 consecutive identical failures (see Bail Triggers) |
 | **Advisory check failure (CodeScene status)** | Status is non-blocking, BUT inspect its review thread (Source 2) for actionable findings and fix those |
 | **Automated reviewer — specific fix in your changed code** (Greptile/CodeRabbit-Pro/Cubic/Copilot) | Fix it — treat like human review |
-| **Automated reviewer — pre-existing issue in untouched code** | Skip — only fix issues in YOUR PR's changed lines |
+| **Automated reviewer — out-of-scope-acknowledged on YOUR changed code** | See "Out-of-Scope-Acknowledged Workflow" below — classify with one of 6 enumerated reasons; spawn follow-up issue (3 reasons) or post audit-only reply (3 reasons), then resolve the thread. Counts toward the per-round (≤3) and cumulative (≤5/≤3) discipline rails. |
+| **Automated reviewer — pre-existing issue in untouched code** | Skip — only fix issues in YOUR PR's changed lines (this is distinct from out-of-scope-acknowledged: this row is for findings on lines your PR did NOT touch; the other row is for findings on lines your PR DID touch but the fix is out of scope) |
 | **Automated reviewer — Free-plan CodeRabbit summary with no `_⚠️ Potential issue_` markers** | Skip — informational only |
 | **Resolved or outdated thread (Source 2)** | Skip — already filtered out by GraphQL flags |
 | **Human review — specific fix request** | Fix it |
@@ -202,6 +220,164 @@ Inline copy of SKILL.md triage table:
 | **Code review — nit/style on your changed code** | Fix it (low effort, high goodwill) |
 
 **Important:** Automated reviewers often post on code that was already in the repo before your PR. Only fix issues in files/lines that YOUR PR changed.
+
+#### Out-of-Scope-Acknowledged Workflow
+
+When a finding is real and on lines your PR changed, but the fix would either (a) expand scope beyond the PR's intent or (b) require off-codebase work, classify it with one of these enumerated reasons:
+
+| Reason | Means | Spawn follow-up issue? |
+|---|---|---|
+| `schema-refactor` | Would change shared types/interfaces/data contracts | **Yes** |
+| `external-research` | Requires off-codebase lookup (vendor docs, web, permalinks) | **Yes** |
+| `follow-up-deferred` | Real fix, real value, but scope-creep relative to PR intent | **Yes** |
+| `cross-cutting-style` | Style/naming preference applying repo-wide | Only if material |
+| `pre-existing-on-touched-line` | Issue predates the PR; line was just adjacent to a change | No (audit reply only) |
+| `false-positive` | Bot misread the code | No (rebuttal-only reply) |
+
+The reason set is closed — do NOT invent new reasons. If a finding doesn't fit, it isn't out-of-scope-acknowledged; either fix it or BAIL with `category=judgment` (design/scope concern).
+
+**Safe interpolation (READ FIRST — both paths below depend on this).** The bot's verbatim rationale is attacker-controllable text — a finding body can contain `$(...)`, backticks, embedded quotes, or `--`-prefixed strings that look like CLI flags. NEVER paste finding text directly into a `gh issue create --body "...<rationale>..."` template literal at compose time; the worker's bash interpreter will execute `$(...)` / backticks at parse time before gh ever runs. Mirror the PR #86 RECOVERY_INLINE defense: bind every attacker-controlled field to a shell variable FIRST, then pass it via `"$VAR"` (where bash's one-pass expansion treats the value as literal data) or `--body-file -` via a heredoc-fed stdin. The snippets below assume the worker iterates Step 2's Source 2 stream (the `{threadId, path, line, body, permalink, summary, comments: [...]}` projection from the GraphQL query — note the top-level `body`/`permalink`/`summary` derived from the LAST comment in the thread, which is the most recent bot post) one finding at a time, binding each JSON object to a per-finding `$finding` shell variable — that's the producer for `$THREAD_ID`, `$BOT_RATIONALE`, `$THREAD_PERMALINK`, and `$SUMMARY`. `$REASON` is set by the worker's classification step (one of the 6 enumerated reasons in the table above), not extracted from `$finding`. The audit-only block additionally needs `$RATIONALE` (worker-composed substantive reply prose, NOT the bot's verbatim text — that's why it's named differently from the spawn block's `$BOT_RATIONALE`).
+
+**For spawn reasons** (`schema-refactor`, `external-research`, `follow-up-deferred`, and *material* `cross-cutting-style`):
+
+```bash
+# Bind attacker-controllable fields to shell vars FIRST. $finding is the
+# per-finding JSON object the worker iterates from Step 2's Source 2
+# stream (one node per actionable thread). The Step 2 query exposes
+# `threadId`, `body`, `permalink`, and `summary` at the top level of each
+# projected node — `body` is the LAST comment's body (most recent bot
+# post in the thread), `permalink` is that comment's URL, `summary` is
+# the same body whitespace-collapsed and head-truncated to 80 chars.
+# Extract them here per-finding. The trailing `tr -d` re-sanitizes
+# SUMMARY for shell-active chars not stripped by the GraphQL gsub
+# (backticks, $, ", \) — defense in depth before the value lands in a
+# `--title` flag. $REASON is the worker's classification (one of the 6
+# enumerated reasons in the table above), not extracted from $finding.
+THREAD_ID=$(jq -r '.threadId' <<<"$finding")
+BOT_RATIONALE=$(jq -r '.body' <<<"$finding")
+THREAD_PERMALINK=$(jq -r '.permalink' <<<"$finding")
+SUMMARY=$(jq -r '.summary' <<<"$finding" \
+  | tr -d '\n`$"\\' | head -c 80)
+REASON="<one of: schema-refactor | external-research | follow-up-deferred | cross-cutting-style>"
+
+# 1. Spawn the follow-up issue. Compose the body via heredoc bound to a
+#    variable — heredoc expansion is one-pass over $VAR contents and
+#    does NOT re-evaluate $(...)/backticks inside the expanded value.
+#    Pass via --body-file - so gh reads from stdin (no second shell pass).
+#    --json number --jq .number returns the issue number directly,
+#    avoiding regex parsing of the human-formatted URL output.
+BODY=$(cat <<EOF
+Spawned from $THREAD_PERMALINK.
+
+<bot>'s rationale (verbatim):
+
+> $BOT_RATIONALE
+
+Worker classification: $REASON.
+EOF
+)
+
+ISSUE_NUMBER=$(printf '%s' "$BODY" | gh issue create \
+  --title "<bot> finding from PR #${PR_NUMBER}: ${SUMMARY}" \
+  --body-file - \
+  --label "from-pr-grind,scope-deferred" \
+  --json number --jq '.number' 2>/dev/null) || {
+    echo "❌ gh issue create failed for thread $THREAD_ID" >&2
+    exit 1
+}
+[[ "$ISSUE_NUMBER" =~ ^[0-9]+$ ]] || {
+    echo "❌ unexpected gh issue create output: '$ISSUE_NUMBER'" >&2
+    exit 1
+}
+
+# 2. Reply on the original thread, linking the spawned issue.
+#    `gh api graphql -f` treats the value as literal (no shell pass), so
+#    REPLY_BODY's content is safe even with attacker-controlled text.
+REPLY_BODY="pr-grind: out-of-scope ($REASON) — tracked as #${ISSUE_NUMBER}"
+gh api graphql -f query='
+  mutation($threadId: ID!, $body: String!) {
+    addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) {
+      comment { id }
+    }
+  }
+' -f threadId="$THREAD_ID" -f body="$REPLY_BODY" >/dev/null || {
+    echo "❌ thread-reply mutation failed for $THREAD_ID" >&2
+    exit 1
+}
+
+# 3. Resolve the thread. The bot's stale signal clears via
+#    scripts/ack-ledger.sh tier A (resolved threads count toward HEAD-ack
+#    same as outdated threads).
+gh api graphql -f query='
+  mutation($threadId: ID!) {
+    resolveReviewThread(input: {threadId: $threadId}) {
+      thread { isResolved }
+    }
+  }
+' -f threadId="$THREAD_ID" >/dev/null || {
+    echo "❌ resolveReviewThread failed for $THREAD_ID" >&2
+    exit 1
+}
+
+# 4. Track the spawned issue. Validated numeric only — empty or
+#    malformed values would corrupt RESULT_ISSUES_SPAWNED's
+#    comma-separated parse (an empty token inflates the dispatcher's
+#    Invariant-4 spawn counter and could trip the cap prematurely).
+SPAWNED_ISSUES+=("$ISSUE_NUMBER")
+```
+
+**For audit-only reasons** (`pre-existing-on-touched-line`, `false-positive`, and non-material `cross-cutting-style`):
+
+```bash
+# Bind THREAD_ID + REASON + RATIONALE per the safe-interpolation pattern
+# above. $finding is the per-finding JSON iterand from Step 2's Source 2
+# stream (same as the spawn block). RATIONALE is worker-composed text
+# (NOT the bot's verbatim — that's why it's named differently from the
+# spawn block's $BOT_RATIONALE); it must be a single line and SHOULD
+# cite specific code (false-positive especially — "I disagree" is not
+# enough; the dispatcher anti-pattern table calls this out as a misuse
+# signal). $REASON is the worker's classification.
+THREAD_ID=$(jq -r '.threadId' <<<"$finding")
+REASON="<one of: cross-cutting-style | pre-existing-on-touched-line | false-positive>"
+RATIONALE=$(printf '%s' "<one-sentence rationale citing the code or the PR's scope>" \
+  | tr -d '\n')
+
+# 1. Reply on the thread with a substantive rationale.
+REPLY_BODY="pr-grind: out-of-scope ($REASON) — $RATIONALE"
+gh api graphql -f query='
+  mutation($threadId: ID!, $body: String!) {
+    addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) {
+      comment { id }
+    }
+  }
+' -f threadId="$THREAD_ID" -f body="$REPLY_BODY" >/dev/null || {
+    echo "❌ thread-reply mutation failed for $THREAD_ID" >&2
+    exit 1
+}
+
+# 2. Resolve the thread.
+gh api graphql -f query='
+  mutation($threadId: ID!) {
+    resolveReviewThread(input: {threadId: $threadId}) {
+      thread { isResolved }
+    }
+  }
+' -f threadId="$THREAD_ID" >/dev/null || {
+    echo "❌ resolveReviewThread failed for $THREAD_ID" >&2
+    exit 1
+}
+```
+
+**For every dismissal (spawn or audit-only):**
+
+- Append `+scope-skipped:<reason>:1` to the bot's disposition in `RESULT_BOT_LEDGER`.
+- Stay under the per-round cap of 3 dismissals total. If you reach 3 in this round, fix any remaining findings instead of dismissing.
+
+At round end, emit:
+- `RESULT_BOT_LEDGER` with the augmented dispositions.
+- `RESULT_ISSUES_SPAWNED: <comma-joined SPAWNED_ISSUES or "none">`.
+
+The dispatcher's Invariant 4 reads both — it sums `scope-skipped:*:<count>` across all bots/rounds (cap ≤5) and counts `RESULT_ISSUES_SPAWNED` across all rounds (cap ≤3). Hitting either cap BAILs the grind to the operator with `RESULT_BAIL_CATEGORY=judgment`.
 
 ### Step 4 — Fix
 
@@ -367,7 +543,14 @@ Stop the round and return `RESULT_STATUS: bail` with the appropriate `RESULT_BAI
 
 **Mandatory pre-bail snapshot rule.** Before emitting `RESULT_STATUS: bail` from any trigger above (including the early-bail paths in Step 0 / Step 1), invoke the snapshot block from Step 6 to populate `RESULT_INFLIGHT_CHANGES` / `RESULT_STAGED_FILES` / `RESULT_UNSTAGED_FILES` / `RESULT_STAGED_DIFF_SHA` / `RESULT_UNSTAGED_DIFF_SHA`. The snapshot is cheap (two `git diff --name-only` calls + two `sha256sum` calls), runs unconditionally regardless of working-tree state (empty trees produce `none` defaults), and is the ONLY way the recovery-via-inline carve-out can fire on category=`tooling` bails. Skipping the snapshot leaves the inflight tags at their top-of-round `none` defaults and silently disables recovery — even though the worker did stage a salvageable fix.
 
-`RESULT_BAIL_CATEGORY` is the structured enum the dispatcher's recovery-via-inline gate keys on (see `skills/pr-grind/SKILL.md` Dispatcher Loop → "Recovery-via-inline eligibility"). It is the load-bearing tag — the dispatcher does NOT substring-match against `RESULT_BAIL_REASON`, which remains free-form prose for human consumption. Today only `tooling` triggers recovery; `judgment` and `env` always BAIL. The fourth enum value `budget` is **dispatcher-only** — it labels `ON_LOOP_EXHAUSTED` bails (max-fix / max-wait reached) that the dispatcher emits when its own counters overflow; the worker never produces it (the worker has no visibility into MAX_FIX/MAX_WAIT exhaustion across rounds). Listing `budget` in the enum keeps the dispatcher-side surface explicit and reserves the value against accidental worker emission. Adding new tooling-friction triggers means adding a row above with category=`tooling`, never expanding the dispatcher's match logic to scrape narrative.
+`RESULT_BAIL_CATEGORY` is the structured enum the dispatcher's recovery-via-inline gate keys on (see `skills/pr-grind/SKILL.md` Dispatcher Loop → "Recovery-via-inline eligibility"). It is the load-bearing tag — the dispatcher does NOT substring-match against `RESULT_BAIL_REASON`, which remains free-form prose for human consumption. Today only `tooling` triggers recovery; `judgment` and `env` always BAIL.
+
+The dispatcher emits two of the four categories itself, alongside the worker's emissions:
+
+- **`budget`** — dispatcher-only. Labels `ON_LOOP_EXHAUSTED` bails (max-fix / max-wait reached) when the dispatcher's own counters overflow. The worker has no visibility into MAX_FIX/MAX_WAIT exhaustion across rounds, so it never produces this value.
+- **`judgment`** — emitted by both worker (design/scope concerns, history-rewrite triggers, flaky-check streaks) AND dispatcher (Invariant 4 discipline-rail breaches: cumulative scope-skipped > 5 OR cumulative spawned issues > 3 — caps are INCLUSIVE, so 5 dismissals and 3 spawns are allowed, the 6th and 4th BAIL respectively. See `skills/pr-grind/SKILL.md` Dispatcher Loop → Invariant checks). Both share the category because both surface to the operator as "this needs human judgment, not an automated fix."
+
+Listing `budget` in the enum keeps the dispatcher-side surface explicit and reserves the value against accidental worker emission. Adding new tooling-friction triggers means adding a row above with category=`tooling`, never expanding the dispatcher's match logic to scrape narrative.
 
 **No stuck-bot bail trigger.** Earlier drafts of this contract had a bail for "same bot `stale` for 3+ rounds." That trigger is incompatible with the post-push compute timing: every round that commits/pushes emits all-`stale` (bots haven't seen the new commit yet), so a healthy 3-commit sequence would spuriously bail on every registered bot. Genuinely stuck bots are caught by the dispatcher's `--max-wait` iterations backstop instead — if bots never catch up across enough wait-rounds (where the worker returns `needs_more` with `RESULT_COMMIT_SHA=none`), the loop exhausts and bails with `max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD; latest stale: <bot-list>`. (The dispatcher previously had a single unified `--max` budget that emitted `max iterations reached`; both were replaced by the dual-budget split — see `skills/pr-grind/SKILL.md` Safety Rails for the rationale.)
 
@@ -389,7 +572,8 @@ RESULT_COMMIT_SHA: <new SHA you pushed, or "none" if no commit>
 RESULT_FIXES: <one-line, comma-separated summary of what you changed this round>
 RESULT_REMAINING: <one-line summary of what's still pending, or "none">
 RESULT_REVIEWER_ACKS: <comma-separated login=value pairs from Step 6.5; always present — early-bail paths emit the all-`none` default initialized at the top of the round>
-RESULT_BOT_LEDGER: <comma-separated login=n_actionable/n_total:disposition entries from Step 3; always present — early-bail paths emit the all-`0/0:none` default initialized at the top of the round. Disposition prose MUST NOT contain commas — the dispatcher splits on `,` to separate entries; commas inside a disposition would silently corrupt the parse and could hide a HEAD-acked bot's `0/0` entry from the invariant-3 gate. If a fix summary needs commas, replace them with `;` or use a fixed-token disposition like `fixed`>
+RESULT_BOT_LEDGER: <comma-separated login=n_actionable/n_total:disposition entries from Step 3; always present — early-bail paths emit the all-`0/0:none` default initialized at the top of the round. Disposition prose MUST NOT contain commas — the dispatcher splits on `,` to separate entries; commas inside a disposition would silently corrupt the parse and could hide a HEAD-acked bot's `0/0` entry from the invariant-3 gate. If a fix summary needs commas, replace them with `;` or use a fixed-token disposition like `fixed`. The disposition MAY carry one or more `scope-skipped:<reason>:<count>` segments joined to the primary disposition with bare `+` and no surrounding whitespace (e.g., `coderabbitai=2/4:fixed 2+scope-skipped:schema-refactor:1+scope-skipped:external-research:1`); `+` is the inner segment separator, `,` remains the outer entry separator, and the dispatcher's Invariant 4 sums every count across all bots and rounds. Cap is INCLUSIVE: 5 dismissals are allowed, the 6th BAILs (judgment).>
+RESULT_ISSUES_SPAWNED: <comma-separated GitHub issue numbers spawned this round via the out-of-scope-acknowledged workflow, or "none">  (always present in the new contract; the dispatcher's Invariant 4 sums these across all rounds. Cap is INCLUSIVE: 3 spawned issues are allowed, the 4th BAILs (judgment))
 RESULT_INFLIGHT_CHANGES: <none | staged | unstaged | both>            (always present; non-bail rounds emit `none`)
 RESULT_STAGED_FILES: <`|`-separated paths or "none">                  (always present; pipe-delimited, NUL-safe per Step 6 snapshot block)
 RESULT_UNSTAGED_FILES: <`|`-separated paths or "none">                (always present; pipe-delimited)
@@ -409,6 +593,7 @@ RESULT_FIXES: ...
 RESULT_REMAINING: ...
 RESULT_REVIEWER_ACKS: ...
 RESULT_BOT_LEDGER: ...
+RESULT_ISSUES_SPAWNED: ...
 RESULT_INFLIGHT_CHANGES: ...
 RESULT_STAGED_FILES: ...
 RESULT_UNSTAGED_FILES: ...
@@ -449,6 +634,7 @@ If the dispatcher omitted `RESULT_FILE` (legacy dispatcher), use `/tmp/pr-grinde
 | Emitting `<bot>=0/0:<anything>` for a bot with review history | If a bot's ack is a SHA (HEAD-acked) or `stale`, `n_total` MUST be ≥1. `0/0` is reserved for "bot didn't post" — paired with `none` ack. The dispatcher's invariant-3 gate keys on `n_total == 0` for any HEAD-acked bot, regardless of disposition text — so `0/0:not-evaluated`, `0/0:didn't-look`, even `0/0:no-findings` all trip the gate identically when the bot acked HEAD. The disposition is documentary; the count is load-bearing. |
 | Writing a regex parser for "find all findings" | Vendors change templates frequently; a per-bot regex grammar accumulates false positives forever. The fix is enumeration + per-finding judgment, not a parser. |
 | Bailing without snapshotting working-tree state | Without `RESULT_INFLIGHT_CHANGES`, the dispatcher can't tell tooling-friction bails (recoverable via inline takeover) from judgment bails (must surface). Always run the snapshot block before emitting `RESULT_STATUS: bail`. |
+| Using `out-of-scope-acknowledged` as a fix-avoidance shortcut — dismissing real findings on your changed lines because the fix would "take a few rounds" | The disposition is a carve-out, not a default. The DEFAULT IS FIX rule (≥80% confidence required to dismiss) plus the per-round cap (≤3) and dispatcher's Invariant 4 (≤5 cumulative dismissals, ≤3 spawned issues) exist precisely so workers can't relabel tedious fixes as out-of-scope to "ship faster". `false-positive` requires citing the code that proves the bot misread; `pre-existing-on-touched-line` requires the line to actually predate the PR; the four spawn reasons require a follow-up issue with the bot's verbatim rationale. Failure mode: PR ships ostensibly clean while real bugs slip past as "tracked elsewhere" but the spawned issues never get addressed. |
 | Rewriting published git history to fix CI — `git commit --amend`, `git filter-branch`, `git rebase` on pushed commits, `git push --force(-with-lease)` | Force-push and history rewrites are operator-authorization decisions, not worker decisions. Even when the rewrite is technically equivalent (e.g., shortening a commit-message header to satisfy commitlint), it invalidates SHAs that downstream consumers may already reference (review-thread anchors, ack-ledger SHA values, claude-mem observations, other clones). When CI fails on something that can't be fixed by editing tracked files and adding a NEW commit on top, BAIL with category=`judgment` per the Bail Triggers table. The `--amend → fix-up commit` substitution is almost always available; if it isn't, the operator decides whether the rewrite is acceptable. Past regression: round 2 of grinding PR #86 used `git filter-branch` to fix a commitlint header-max-length failure, force-pushing 4 SHAs even though only the latest commit had a long message — over-broad blast radius from picking the wrong tool. Prefer fix-up commits (`git commit --fixup` + later squash by the operator) when the user explicitly authorizes a rewrite later. |
 
 ## Worked Example
@@ -483,6 +669,7 @@ RESULT_FIXES: replace SC2015 short-circuit with if/then/else in pre-merge-gate.s
 RESULT_REMAINING: none
 RESULT_REVIEWER_ACKS: greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
 RESULT_BOT_LEDGER: greptile-apps=0/1:approved,cubic-dev-ai=1/1:fixed SC2015 short-circuit,coderabbitai=0/0:none,copilot-pull-request-reviewer=0/1:no-findings,codescene-delta-analysis=0/0:none
+RESULT_ISSUES_SPAWNED: none
 RESULT_INFLIGHT_CHANGES: none
 RESULT_STAGED_FILES: none
 RESULT_UNSTAGED_FILES: none

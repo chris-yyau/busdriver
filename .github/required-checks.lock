@@ -44,8 +44,15 @@
     "combination as its own lock entry with `matrix_value` holding the literal",
     "label content (e.g. \"ubuntu-latest\" for 1-dim, \"ubuntu-latest, 18\" for",
     "multi-dim). Surface (a) appends ` (<matrix_value>)` to the bare-key or",
-    "explicit-name match before comparing against `name`. Omit for non-matrix",
-    "jobs — see helmet SKILL.md B1c for full examples."
+    "explicit-name match before comparing against `name`. Surface (a) does",
+    "NOT parse the workflow's strategy block — it only verifies that `name`",
+    "equals `<base> (<matrix_value>)`, regardless of whether the job actually",
+    "uses a matrix. Omit `matrix_value` on non-matrix jobs: setting it on a",
+    "job that lacks strategy.matrix and writing a self-consistent `name` will",
+    "pass surface (a) but eventually hang PRs (branch protection ends up",
+    "requiring a context that no check posts), and the drift detector will",
+    "not surface that misuse directly. Surface (a) is the only consumer of",
+    "this field; (b)/(c)/(d) ignore it. See helmet SKILL.md B1c for full examples."
   ],
   "required": [
     {

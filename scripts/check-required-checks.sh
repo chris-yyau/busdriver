@@ -7,7 +7,10 @@
 #   (a) Lock vs workflow source:  a required check's `name:` (or job key
 #       when no name is set) was renamed in a .yml without updating the
 #       lock — branch protection still requires the old name, no check
-#       posts under that name, PRs hang.
+#       posts under that name, PRs hang. Matrix-derived names (rendered
+#       as `<base> (<label>)` by GitHub) are supported via the optional
+#       `matrix_value` lock field — see lock _doc and the matrix_value
+#       inline comment near surface (a) for details.
 #
 #   (b) Lock vs branch protection: lock was updated, branch-protection
 #       contexts weren't — server still requires an old or wrong name.
@@ -199,6 +202,15 @@ while IFS= read -r entry; do
   # job. Absent / empty / null all degrade to the original non-matrix path.
   # `// ""` collapses null and missing to the empty string so the test below
   # is a clean string-emptiness check.
+  #
+  # We do NOT parse the workflow's strategy block to verify a matrix is
+  # actually declared on this job — surface (a) is purely a name-match.
+  # That means setting matrix_value on a non-matrix job and writing a
+  # self-consistent `name` (matching `<base> (<matrix_value>)`) passes here.
+  # The misuse only manifests downstream as a hung PR (branch protection
+  # required name has no posting check). Document this in the lock _doc
+  # and SKILL.md B1c so users know to omit matrix_value on non-matrix jobs;
+  # do not rely on this surface to flag the mistake.
   matrix_value=$(echo "$entry" | jq -r '.matrix_value // ""')
 
   wf="$REPO_ROOT/$workflow"
@@ -385,6 +397,16 @@ fi
 # template; two jobs sharing the same template will be flagged because
 # their rendered names will collide for matching matrix values.
 #
+# (d) reads workflow YAML directly — it does NOT consult the lock at all,
+# and therefore does not consider the optional `matrix_value` lock field.
+# Uniqueness is checked against effective workflow names (template form
+# for matrix jobs), not against per-matrix-combination rendered names.
+# That's intentional: collisions across the rendered space already
+# manifest as collisions in template form, so checking templates catches
+# every real collision without false positives from harmless cases where
+# two matrix jobs happen to overlap on a single matrix value but diverge
+# elsewhere.
+#
 # Limitations: reusable workflows (`uses: ./...yml`) are not walked;
 # composite actions are not workflows. Both deferred until a real case
 # appears in the fleet.
@@ -568,12 +590,17 @@ else
 
   if [[ -n "$missing_on_server" ]]; then
     echo "  DRIFT: in lock but not required on server:"
-    echo "$missing_on_server" | sed 's/^/    - /'
+    # Parameter expansion replaces sed-subprocess (SC2001): prepend `    - `
+    # to the first line via the leading literal, then replace each remaining
+    # newline with `\n    - ` so every subsequent line gets the same prefix.
+    # Both call sites are inside `[[ -n "$var" ]]` guards, so the empty-input
+    # edge case is unreachable here.
+    echo "    - ${missing_on_server//$'\n'/$'\n'    - }"
     drift=1
   fi
   if [[ -n "$extra_on_server" ]]; then
     echo "  DRIFT: required on server but not in lock:"
-    echo "$extra_on_server" | sed 's/^/    - /'
+    echo "    - ${extra_on_server//$'\n'/$'\n'    - }"
     drift=1
   fi
   if [[ -z "$missing_on_server" && -z "$extra_on_server" ]]; then

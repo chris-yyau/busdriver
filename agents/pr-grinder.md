@@ -191,7 +191,7 @@ Conceptually `BOT_REVIEWS[<bot>] = <combined body>`. Track `n_total` per bot —
 - `errored` — bot's review was an infra error (rate-limit, timeout)
 - `none` — bot didn't post on this PR (`n_actionable=0`, `n_total=0`)
 
-For each `out-of-scope-acknowledged` dismissal you record this round, append `+scope-skipped:<reason>:<count>` segments to the bot's disposition. Multiple segments stack with `+` (NOT `,` — the outer entry separator is `,` and a comma inside a disposition would corrupt the parse). Example: `coderabbitai=2/4:fixed 2 + scope-skipped:schema-refactor:1+scope-skipped:external-research:1`. The dispatcher's Invariant 4 sums these counts across all bots and all rounds.
+For each `out-of-scope-acknowledged` dismissal you record this round, append `+scope-skipped:<reason>:<count>` segments to the bot's disposition. Multiple segments stack with `+` (NOT `,` — the outer entry separator is `,` and a comma inside a disposition would corrupt the parse). The `+` joins are bare, no surrounding whitespace; example: `coderabbitai=2/4:fixed 2+scope-skipped:schema-refactor:1+scope-skipped:external-research:1`. The dispatcher's Invariant 4 sums these counts across all bots and all rounds. **Reserved character:** `+` is now an inner separator inside dispositions — do NOT use it for any other purpose in primary disposition prose. If a fix summary needs to reference a literal plus (e.g., "fix Math.max+Math.min"), reword it (e.g., "fix Math.max and Math.min") to avoid ambiguity with the segment separator. Same shape as the prior comma-reservation rule — see the `RESULT_BOT_LEDGER` doc in Output Format.
 
 `<n_actionable>=0` with `<n_total>=0` is reserved for "bot didn't post" — never use it for "bot posted but I didn't look", which is the bug the dispatcher's invariant-3 gate catches.
 
@@ -229,31 +229,67 @@ When a finding is real and on lines your PR changed, but the fix would either (a
 
 The reason set is closed — do NOT invent new reasons. If a finding doesn't fit, it isn't out-of-scope-acknowledged; either fix it or BAIL with `category=judgment` (design/scope concern).
 
+**Safe interpolation (READ FIRST — both paths below depend on this).** The bot's verbatim rationale is attacker-controllable text — a finding body can contain `$(...)`, backticks, embedded quotes, or `--`-prefixed strings that look like CLI flags. NEVER paste finding text directly into a `gh issue create --body "...<rationale>..."` template literal at compose time; the worker's bash interpreter will execute `$(...)` / backticks at parse time before gh ever runs. Mirror the PR #86 RECOVERY_INLINE defense: bind every attacker-controlled field to a shell variable FIRST, then pass it via `"$VAR"` (where bash's one-pass expansion treats the value as literal data) or `--body-file -` via a heredoc-fed stdin. Both code blocks below assume `$THREAD_ID`, `$BOT_RATIONALE`, `$THREAD_PERMALINK`, `$REASON`, and `$SUMMARY` have been bound from the per-finding context — the snippets at the top of each block show the extraction.
+
 **For spawn reasons** (`schema-refactor`, `external-research`, `follow-up-deferred`, and *material* `cross-cutting-style`):
 
 ```bash
-# 1. Spawn the follow-up issue. Use --label so the operator can filter
-#    `gh issue list --label scope-deferred` and triage them in batch later.
-ISSUE_OUT=$(gh issue create \
-  --title "<bot> finding from PR #${PR_NUMBER}: <one-line summary>" \
-  --body "Spawned from <thread_permalink>.
+# Bind attacker-controllable fields to shell vars FIRST. The Step 2
+# query exposes thread `id` as `threadId` per the jq projection above;
+# extract it here per-finding. SUMMARY must be a single-line, sanitized
+# derivation of the finding (strip newlines, backticks, $, ", \) — a
+# multi-line title would be silently truncated by gh, and unsanitized
+# title text becomes part of issue search/index.
+THREAD_ID=$(jq -r '.threadId' <<<"$finding")
+BOT_RATIONALE=$(jq -r '.body' <<<"$finding")
+THREAD_PERMALINK=$(jq -r '.permalink // .url' <<<"$finding")
+SUMMARY=$(jq -r '.summary // .body | tostring' <<<"$finding" \
+  | tr -d '\n`$"\\' | head -c 80)
+
+# 1. Spawn the follow-up issue. Compose the body via heredoc bound to a
+#    variable — heredoc expansion is one-pass over $VAR contents and
+#    does NOT re-evaluate $(...)/backticks inside the expanded value.
+#    Pass via --body-file - so gh reads from stdin (no second shell pass).
+#    --json number --jq .number returns the issue number directly,
+#    avoiding regex parsing of the human-formatted URL output.
+BODY=$(cat <<EOF
+Spawned from $THREAD_PERMALINK.
 
 <bot>'s rationale (verbatim):
 
-> <quoted finding>
+> $BOT_RATIONALE
 
-Worker classification: <reason>." \
-  --label "from-pr-grind,scope-deferred")
-ISSUE_NUMBER=$(printf '%s' "$ISSUE_OUT" | grep -oE '/issues/[0-9]+$' | grep -oE '[0-9]+$')
+Worker classification: $REASON.
+EOF
+)
+
+ISSUE_NUMBER=$(printf '%s' "$BODY" | gh issue create \
+  --title "<bot> finding from PR #${PR_NUMBER}: ${SUMMARY}" \
+  --body-file - \
+  --label "from-pr-grind,scope-deferred" \
+  --json number --jq '.number' 2>/dev/null) || {
+    echo "❌ gh issue create failed for thread $THREAD_ID" >&2
+    return 1
+}
+[[ "$ISSUE_NUMBER" =~ ^[0-9]+$ ]] || {
+    echo "❌ unexpected gh issue create output: '$ISSUE_NUMBER'" >&2
+    return 1
+}
 
 # 2. Reply on the original thread, linking the spawned issue.
+#    `gh api graphql -f` treats the value as literal (no shell pass), so
+#    REPLY_BODY's content is safe even with attacker-controlled text.
+REPLY_BODY="pr-grind: out-of-scope ($REASON) — tracked as #${ISSUE_NUMBER}"
 gh api graphql -f query='
   mutation($threadId: ID!, $body: String!) {
     addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) {
       comment { id }
     }
   }
-' -f threadId="$THREAD_ID" -f body="pr-grind: out-of-scope (<reason>) — tracked as #${ISSUE_NUMBER}"
+' -f threadId="$THREAD_ID" -f body="$REPLY_BODY" >/dev/null || {
+    echo "❌ thread-reply mutation failed for $THREAD_ID" >&2
+    return 1
+}
 
 # 3. Resolve the thread. The bot's stale signal clears via
 #    scripts/ack-ledger.sh tier A (resolved threads count toward HEAD-ack
@@ -264,26 +300,41 @@ gh api graphql -f query='
       thread { isResolved }
     }
   }
-' -f threadId="$THREAD_ID"
+' -f threadId="$THREAD_ID" >/dev/null || {
+    echo "❌ resolveReviewThread failed for $THREAD_ID" >&2
+    return 1
+}
 
-# 4. Track the spawned issue. Append to a shell array; emit the
-#    comma-joined list as RESULT_ISSUES_SPAWNED at the end of the round.
+# 4. Track the spawned issue. Validated numeric only — empty or
+#    malformed values would corrupt RESULT_ISSUES_SPAWNED's
+#    comma-separated parse (an empty token inflates the dispatcher's
+#    Invariant-4 spawn counter and could trip the cap prematurely).
 SPAWNED_ISSUES+=("$ISSUE_NUMBER")
 ```
 
 **For audit-only reasons** (`pre-existing-on-touched-line`, `false-positive`, and non-material `cross-cutting-style`):
 
 ```bash
-# 1. Reply on the thread with a one-sentence substantive rationale.
-#    "false-positive" requires citing the code that proves the bot misread
-#    — "I disagree" is not enough.
+# Bind THREAD_ID + REASON + RATIONALE per the safe-interpolation pattern
+# above. RATIONALE must be a single line and SHOULD cite specific code
+# (false-positive especially — "I disagree" is not enough; the dispatcher
+# anti-pattern table calls this out as a misuse signal).
+THREAD_ID=$(jq -r '.threadId' <<<"$finding")
+RATIONALE=$(printf '%s' "<one-sentence rationale citing the code or the PR's scope>" \
+  | tr -d '\n')
+
+# 1. Reply on the thread with a substantive rationale.
+REPLY_BODY="pr-grind: out-of-scope ($REASON) — $RATIONALE"
 gh api graphql -f query='
   mutation($threadId: ID!, $body: String!) {
     addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) {
       comment { id }
     }
   }
-' -f threadId="$THREAD_ID" -f body="pr-grind: out-of-scope (<reason>) — <one-sentence rationale citing the code or the PR's scope>"
+' -f threadId="$THREAD_ID" -f body="$REPLY_BODY" >/dev/null || {
+    echo "❌ thread-reply mutation failed for $THREAD_ID" >&2
+    return 1
+}
 
 # 2. Resolve the thread.
 gh api graphql -f query='
@@ -292,7 +343,10 @@ gh api graphql -f query='
       thread { isResolved }
     }
   }
-' -f threadId="$THREAD_ID"
+' -f threadId="$THREAD_ID" >/dev/null || {
+    echo "❌ resolveReviewThread failed for $THREAD_ID" >&2
+    return 1
+}
 ```
 
 **For every dismissal (spawn or audit-only):**
@@ -475,7 +529,7 @@ Stop the round and return `RESULT_STATUS: bail` with the appropriate `RESULT_BAI
 The dispatcher emits two of the four categories itself, alongside the worker's emissions:
 
 - **`budget`** — dispatcher-only. Labels `ON_LOOP_EXHAUSTED` bails (max-fix / max-wait reached) when the dispatcher's own counters overflow. The worker has no visibility into MAX_FIX/MAX_WAIT exhaustion across rounds, so it never produces this value.
-- **`judgment`** — emitted by both worker (design/scope concerns, history-rewrite triggers, flaky-check streaks) AND dispatcher (Invariant 4 discipline-rail breaches: cumulative scope-skipped ≥ 5 OR cumulative spawned issues ≥ 3 — see `skills/pr-grind/SKILL.md` Dispatcher Loop → Invariant checks). Both share the category because both surface to the operator as "this needs human judgment, not an automated fix."
+- **`judgment`** — emitted by both worker (design/scope concerns, history-rewrite triggers, flaky-check streaks) AND dispatcher (Invariant 4 discipline-rail breaches: cumulative scope-skipped > 5 OR cumulative spawned issues > 3 — caps are INCLUSIVE, so 5 dismissals and 3 spawns are allowed, the 6th and 4th BAIL respectively. See `skills/pr-grind/SKILL.md` Dispatcher Loop → Invariant checks). Both share the category because both surface to the operator as "this needs human judgment, not an automated fix."
 
 Listing `budget` in the enum keeps the dispatcher-side surface explicit and reserves the value against accidental worker emission. Adding new tooling-friction triggers means adding a row above with category=`tooling`, never expanding the dispatcher's match logic to scrape narrative.
 
@@ -499,8 +553,8 @@ RESULT_COMMIT_SHA: <new SHA you pushed, or "none" if no commit>
 RESULT_FIXES: <one-line, comma-separated summary of what you changed this round>
 RESULT_REMAINING: <one-line summary of what's still pending, or "none">
 RESULT_REVIEWER_ACKS: <comma-separated login=value pairs from Step 6.5; always present — early-bail paths emit the all-`none` default initialized at the top of the round>
-RESULT_BOT_LEDGER: <comma-separated login=n_actionable/n_total:disposition entries from Step 3; always present — early-bail paths emit the all-`0/0:none` default initialized at the top of the round. Disposition prose MUST NOT contain commas — the dispatcher splits on `,` to separate entries; commas inside a disposition would silently corrupt the parse and could hide a HEAD-acked bot's `0/0` entry from the invariant-3 gate. If a fix summary needs commas, replace them with `;` or use a fixed-token disposition like `fixed`. The disposition MAY carry one or more `scope-skipped:<reason>:<count>` segments joined to the primary disposition with `+` (e.g., `coderabbitai=2/4:fixed 2 + scope-skipped:schema-refactor:1+scope-skipped:external-research:1`); `+` is the inner separator, `,` remains the outer separator, and the dispatcher's Invariant 4 sums every count across all bots and rounds against the ≤5 cumulative cap.>
-RESULT_ISSUES_SPAWNED: <comma-separated GitHub issue numbers spawned this round via the out-of-scope-acknowledged workflow, or "none">  (always present; the dispatcher's Invariant 4 sums these across all rounds and BAILs at cumulative ≥ 3)
+RESULT_BOT_LEDGER: <comma-separated login=n_actionable/n_total:disposition entries from Step 3; always present — early-bail paths emit the all-`0/0:none` default initialized at the top of the round. Disposition prose MUST NOT contain commas — the dispatcher splits on `,` to separate entries; commas inside a disposition would silently corrupt the parse and could hide a HEAD-acked bot's `0/0` entry from the invariant-3 gate. If a fix summary needs commas, replace them with `;` or use a fixed-token disposition like `fixed`. The disposition MAY carry one or more `scope-skipped:<reason>:<count>` segments joined to the primary disposition with bare `+` and no surrounding whitespace (e.g., `coderabbitai=2/4:fixed 2+scope-skipped:schema-refactor:1+scope-skipped:external-research:1`); `+` is the inner segment separator, `,` remains the outer entry separator, and the dispatcher's Invariant 4 sums every count across all bots and rounds. Cap is INCLUSIVE: 5 dismissals are allowed, the 6th BAILs (judgment).>
+RESULT_ISSUES_SPAWNED: <comma-separated GitHub issue numbers spawned this round via the out-of-scope-acknowledged workflow, or "none">  (always present in the new contract; the dispatcher's Invariant 4 sums these across all rounds. Cap is INCLUSIVE: 3 spawned issues are allowed, the 4th BAILs (judgment))
 RESULT_INFLIGHT_CHANGES: <none | staged | unstaged | both>            (always present; non-bail rounds emit `none`)
 RESULT_STAGED_FILES: <`|`-separated paths or "none">                  (always present; pipe-delimited, NUL-safe per Step 6 snapshot block)
 RESULT_UNSTAGED_FILES: <`|`-separated paths or "none">                (always present; pipe-delimited)

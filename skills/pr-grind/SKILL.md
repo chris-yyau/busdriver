@@ -145,12 +145,22 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     Agent(subagent_type="pr-grinder", prompt=<context block>)
   │     ↳ Subagent does ONE round (Steps 1–6.5), returns RESULT_* tags
   │
-  ├── Parse subagent output:
-  │     RESULT_STATUS=clean       → validate invariants, go to COMPLETION
-  │     RESULT_STATUS=bail        → check recovery-via-inline eligibility (below);
+  ├── Parse subagent output (extract tags only — control flow is sequential):
+  │     The status arrows below describe each round's EVENTUAL routing
+  │     after all the steps in this loop body have run; control does NOT
+  │     transfer immediately on parse. Counter updates (next step), the
+  │     recovery-via-inline check (only on bail), and Invariant checks
+  │     1-4 (on needs_more AND clean) all run BEFORE the status decides
+  │     where to jump. Without this ordering, Invariant 4 would never
+  │     fire on `clean` rounds where the worker dismissed findings
+  │     before declaring clean — exactly the failure mode the rails
+  │     exist to catch.
+  │
+  │     RESULT_STATUS=clean       → eventually: invariants pass, go to COMPLETION
+  │     RESULT_STATUS=bail        → eventually: recovery-via-inline check;
   │                                  if eligible AND not exhausted, go to RECOVERY_INLINE;
   │                                  otherwise break loop, go to BAIL
-  │     RESULT_STATUS=needs_more  → validate invariant, update state, continue
+  │     RESULT_STATUS=needs_more  → eventually: invariants pass, classify, update state, continue
   │
   ├── Update discipline-rail counters (runs on EVERY status, including bail/clean):
   │     # Out-of-scope-acknowledged accumulator. The worker may have dismissed
@@ -319,13 +329,23 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        `{budget, judgment}` — see agents/pr-grinder.md "Bail Triggers"
   │        category enum doc.
   │
-  │        - If total_scope_skipped >= 5 →
+  │        Caps are INCLUSIVE — 5 dismissals and 3 spawned issues are
+  │        the maximum ALLOWED (worker can use the full budget); the
+  │        6th dismissal / 4th spawn is what BAILs. The conditions below
+  │        use strict-greater-than so the cap value itself remains a
+  │        legal grind state. The natural-language wording ("≤5", "≤3")
+  │        in Safety Rails / Anti-Patterns / Worked Example all reflect
+  │        this inclusive reading; the pseudocode's `>` (not `>=`) is
+  │        what makes that wording true. Earlier drafts had `>=` which
+  │        BAILed the legal 5th/3rd — fixed in review.
+  │
+  │        - If total_scope_skipped > 5 →
   │            BAIL with reason "out-of-scope dismissal count is
   │            <total_scope_skipped> across <round_number> rounds —
   │            exceeds discipline rail of 5; operator review required",
   │            RESULT_BAIL_CATEGORY=judgment.
   │
-  │        - If total_issues_spawned >= 3 →
+  │        - If total_issues_spawned > 3 →
   │            BAIL with reason "follow-up-issue spawn count is
   │            <total_issues_spawned> across <round_number> rounds —
   │            exceeds discipline rail of 3; PR scope is too narrow or
@@ -934,7 +954,7 @@ RESULT_COMMIT_SHA: 4361cc54
 RESULT_FIXES: remove /blog/* paths from 4 relatedTools blocks
 RESULT_REMAINING: none
 RESULT_REVIEWER_ACKS: greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
-RESULT_BOT_LEDGER: greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=1/4:fixed relatedTools paths + scope-skipped:schema-refactor:1+scope-skipped:external-research:1,copilot-pull-request-reviewer=0/1:no-findings,codescene-delta-analysis=0/0:none
+RESULT_BOT_LEDGER: greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=1/4:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,copilot-pull-request-reviewer=0/1:no-findings,codescene-delta-analysis=0/0:none
 RESULT_ISSUES_SPAWNED: 847,848
 RESULT_INFLIGHT_CHANGES: none
 RESULT_STAGED_FILES: none
@@ -957,7 +977,7 @@ PRIOR_ATTEMPTS:
 
 **Total grind:** 4 rounds (was 7+ rounds + manual intervention before this carve-out existed). 2 dismissals consumed (under cap), 2 follow-up issues spawned (under cap). The two architectural findings live as `#847` and `#848` for separate PRs to address with proper scope.
 
-**What would BAIL.** If the worker dismisses a 6th finding across the grind (cumulative cap ≤5), Invariant 4 BAILs at the start of the next round with `RESULT_BAIL_CATEGORY=judgment` and reason `out-of-scope dismissal count is 6 across N rounds — exceeds discipline rail of 5; operator review required`. Operator decides whether the PR's scope is wrong (split it) or the worker is misclassifying (interactive review of the dismissals). Same shape applies to the spawn cap (≥3 spawned issues).
+**What would BAIL.** If the worker dismisses a 6th finding across the grind (cumulative cap ≤5 inclusive — 5 allowed, 6th BAILs), Invariant 4 fires at the start of the next round with `RESULT_BAIL_CATEGORY=judgment` and reason `out-of-scope dismissal count is 6 across N rounds — exceeds discipline rail of 5; operator review required`. Operator decides whether the PR's scope is wrong (split it) or the worker is misclassifying (interactive review of the dismissals). Same shape applies to the spawn cap: 3 spawns allowed, the 4th BAILs.
 
 ## Completion (post-loop, dispatcher only)
 

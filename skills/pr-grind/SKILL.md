@@ -796,7 +796,7 @@ Classify each piece of feedback:
 
 **Important:** Automated reviewers often post on code that was already in the repo before your PR. Only fix issues in files/lines that YOUR PR changed.
 
-**Inline-mode self-tracking note:** When running inline (`--opus`, `--interactive`, `--ci-only`, `--comments-only`), the dispatcher IS the worker — there is no subagent boundary to emit `RESULT_BOT_LEDGER` / `RESULT_ISSUES_SPAWNED` across. Self-track `total_scope_skipped` and `total_issues_spawned` in your conversation context across rounds, and apply the same Invariant 4 cumulative caps (≥5 dismissals or ≥3 spawned issues → BAIL with `RESULT_BAIL_CATEGORY=judgment`). The discipline rails are protocol invariants, not subagent-only checks.
+**Inline-mode self-tracking note:** When running inline (`--opus`, `--interactive`, `--ci-only`, `--comments-only`), the dispatcher IS the worker — there is no subagent boundary to emit `RESULT_BOT_LEDGER` / `RESULT_ISSUES_SPAWNED` across. Self-track `total_scope_skipped` and `total_issues_spawned` in your conversation context across rounds, and apply the same Invariant 4 cumulative caps with strict-greater-than thresholds (`>5` dismissals OR `>3` spawned issues → BAIL with `RESULT_BAIL_CATEGORY=judgment`). Caps are INCLUSIVE — 5 dismissals and 3 spawns are the maximum allowed; the 6th dismissal / 4th spawn is what BAILs. This matches the canonical pseudocode at "Invariant checks → 4. Discipline rails" in the Dispatcher Loop above. The discipline rails are protocol invariants, not subagent-only checks; both the inline and subagent surfaces enforce identical thresholds.
 
 #### Step 4: Fix
 

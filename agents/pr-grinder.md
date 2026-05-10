@@ -229,22 +229,27 @@ When a finding is real and on lines your PR changed, but the fix would either (a
 
 The reason set is closed — do NOT invent new reasons. If a finding doesn't fit, it isn't out-of-scope-acknowledged; either fix it or BAIL with `category=judgment` (design/scope concern).
 
-**Safe interpolation (READ FIRST — both paths below depend on this).** The bot's verbatim rationale is attacker-controllable text — a finding body can contain `$(...)`, backticks, embedded quotes, or `--`-prefixed strings that look like CLI flags. NEVER paste finding text directly into a `gh issue create --body "...<rationale>..."` template literal at compose time; the worker's bash interpreter will execute `$(...)` / backticks at parse time before gh ever runs. Mirror the PR #86 RECOVERY_INLINE defense: bind every attacker-controlled field to a shell variable FIRST, then pass it via `"$VAR"` (where bash's one-pass expansion treats the value as literal data) or `--body-file -` via a heredoc-fed stdin. Both code blocks below assume `$THREAD_ID`, `$BOT_RATIONALE`, `$THREAD_PERMALINK`, `$REASON`, and `$SUMMARY` have been bound from the per-finding context — the snippets at the top of each block show the extraction.
+**Safe interpolation (READ FIRST — both paths below depend on this).** The bot's verbatim rationale is attacker-controllable text — a finding body can contain `$(...)`, backticks, embedded quotes, or `--`-prefixed strings that look like CLI flags. NEVER paste finding text directly into a `gh issue create --body "...<rationale>..."` template literal at compose time; the worker's bash interpreter will execute `$(...)` / backticks at parse time before gh ever runs. Mirror the PR #86 RECOVERY_INLINE defense: bind every attacker-controlled field to a shell variable FIRST, then pass it via `"$VAR"` (where bash's one-pass expansion treats the value as literal data) or `--body-file -` via a heredoc-fed stdin. The snippets below assume the worker iterates Step 2's Source 2 stream (the `{threadId, path, line, comments: [...]}` projection from the GraphQL query) one finding at a time, binding each JSON object to a per-finding `$finding` shell variable — that's the producer for `$THREAD_ID`, `$BOT_RATIONALE`, and `$THREAD_PERMALINK`. `$REASON` is set by the worker's classification step (one of the 6 enumerated reasons in the table above), not extracted from `$finding`. `$SUMMARY` is a sanitized one-line derivation the worker computes per finding. The audit-only block additionally needs `$RATIONALE` (worker-composed substantive reply prose, NOT the bot's verbatim text — that's why it's named differently from the spawn block's `$BOT_RATIONALE`).
 
 **For spawn reasons** (`schema-refactor`, `external-research`, `follow-up-deferred`, and *material* `cross-cutting-style`):
 
 ```bash
-# Bind attacker-controllable fields to shell vars FIRST. The Step 2
-# query exposes thread `id` as `threadId` per the jq projection above;
-# extract it here per-finding. SUMMARY must be a single-line, sanitized
-# derivation of the finding (strip newlines, backticks, $, ", \) — a
-# multi-line title would be silently truncated by gh, and unsanitized
-# title text becomes part of issue search/index.
+# Bind attacker-controllable fields to shell vars FIRST. $finding is the
+# per-finding JSON object the worker iterates from Step 2's Source 2
+# stream (one node per actionable thread). The Step 2 query exposes
+# thread `id` as `threadId` per the jq projection above; extract it here
+# per-finding. SUMMARY must be a single-line, sanitized derivation of
+# the finding (strip newlines, backticks, $, ", \) — a multi-line title
+# would be silently truncated by gh, and unsanitized title text becomes
+# part of issue search/index. $REASON is the worker's classification
+# (one of the 6 enumerated reasons in the table above), not extracted
+# from $finding.
 THREAD_ID=$(jq -r '.threadId' <<<"$finding")
 BOT_RATIONALE=$(jq -r '.body' <<<"$finding")
 THREAD_PERMALINK=$(jq -r '.permalink // .url' <<<"$finding")
 SUMMARY=$(jq -r '.summary // .body | tostring' <<<"$finding" \
   | tr -d '\n`$"\\' | head -c 80)
+REASON="<one of: schema-refactor | external-research | follow-up-deferred | cross-cutting-style>"
 
 # 1. Spawn the follow-up issue. Compose the body via heredoc bound to a
 #    variable — heredoc expansion is one-pass over $VAR contents and
@@ -316,10 +321,15 @@ SPAWNED_ISSUES+=("$ISSUE_NUMBER")
 
 ```bash
 # Bind THREAD_ID + REASON + RATIONALE per the safe-interpolation pattern
-# above. RATIONALE must be a single line and SHOULD cite specific code
-# (false-positive especially — "I disagree" is not enough; the dispatcher
-# anti-pattern table calls this out as a misuse signal).
+# above. $finding is the per-finding JSON iterand from Step 2's Source 2
+# stream (same as the spawn block). RATIONALE is worker-composed text
+# (NOT the bot's verbatim — that's why it's named differently from the
+# spawn block's $BOT_RATIONALE); it must be a single line and SHOULD
+# cite specific code (false-positive especially — "I disagree" is not
+# enough; the dispatcher anti-pattern table calls this out as a misuse
+# signal). $REASON is the worker's classification.
 THREAD_ID=$(jq -r '.threadId' <<<"$finding")
+REASON="<one of: cross-cutting-style | pre-existing-on-touched-line | false-positive>"
 RATIONALE=$(printf '%s' "<one-sentence rationale citing the code or the PR's scope>" \
   | tr -d '\n')
 

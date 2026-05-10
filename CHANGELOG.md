@@ -1,3 +1,10 @@
+# [1.35.0](https://github.com/chris-yyau/busdriver/compare/v1.34.1...v1.35.0) (2026-05-10)
+
+
+### Features
+
+* **pr-grind:** out-of-scope-acknowledged disposition + invariant 4 ([#89](https://github.com/chris-yyau/busdriver/issues/89)) ([8b06a75](https://github.com/chris-yyau/busdriver/commit/8b06a75975e7aad774cbe152d70cdddfbbe580a1)), closes [jikdak#129-derived](https://github.com/jikdak/issues/129-derived) [#129](https://github.com/chris-yyau/busdriver/issues/129)
+
 ## [1.34.1](https://github.com/chris-yyau/busdriver/compare/v1.34.0...v1.34.1) (2026-05-09)
 
 

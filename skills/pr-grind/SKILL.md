@@ -508,13 +508,38 @@ RECOVERY_INLINE (Bug 2 — bounded inline takeover):
   │     # sequence in the summary. The `printf '%s' "$VAR"` pattern below
   │     # treats $VAR as literal data — no command substitution, no quote
   │     # parsing, no $(...) expansion of the variable's contents.
-  │     printf 'fix: address PR #%s feedback — %s (recovery-via-inline)\n' \
-  │       "$PR_NUMBER" "$RESULT_FIXES" \
-  │       | git commit -F -
-  │     # If RESULT_FIXES happens to contain a literal newline (workers
-  │     # shouldn't emit one — RESULT_FIXES is "one-line summary" per the
-  │     # output-format contract — but defense in depth): strip it via
-  │     # `tr -d '\n'` before piping.
+  │     #
+  │     # LENGTH: subject is fixed-form ("fix: address PR #<N> feedback
+  │     # (recovery-via-inline)" — ~54 chars max for any PR_NUMBER up to
+  │     # 6 digits) and the full RESULT_FIXES summary goes in the BODY,
+  │     # not the subject. An earlier template ("...feedback — %s
+  │     # (recovery-via-inline)\n" with RESULT_FIXES interpolated into
+  │     # the subject) overflowed commitlint's 100-char header-max-length
+  │     # rule whenever the worker emitted a substantive fix summary —
+  │     # surfaced empirically on PR #90: the round-2 dispatcher
+  │     # recovery commit overflowed commitlint's 100-char header limit
+  │     # and required a reset + recommit + force-with-lease push after
+  │     # operator authorization to fix. See PR #90's commit history
+  │     # for the trail. The subject/body split keeps the header safe
+  │     # regardless of summary length while preserving the full audit
+  │     # trail in the commit body.
+  │     {
+  │       printf 'fix: address PR #%s feedback (recovery-via-inline)\n' "$PR_NUMBER"
+  │       # Translate embedded newlines in RESULT_FIXES to spaces (the
+  │       # contract says "one-line summary" but workers occasionally
+  │       # emit multi-line strings); collapsing into a single body line
+  │       # with `tr '\n' ' '` (NOT `tr -d '\n'`) keeps multi-line
+  │       # summaries readable — `tr -d` would concatenate words across
+  │       # the line break ("fix A\nfix B" → "fix Afix B"). Also skip
+  │       # the body entirely when RESULT_FIXES is "none" or empty
+  │       # (defensive — shouldn't happen because the "RESULT_FIXES
+  │       # empty → BAIL" check above would have surfaced first, but a
+  │       # subject-only commit is still syntactically valid if it does).
+  │       RESULT_FIXES_CLEAN=$(printf '%s' "$RESULT_FIXES" | tr '\n' ' ')
+  │       if [ "$RESULT_FIXES_CLEAN" != "none" ] && [ -n "$RESULT_FIXES_CLEAN" ]; then
+  │         printf '\n%s\n' "$RESULT_FIXES_CLEAN"
+  │       fi
+  │     } | git commit -F -
   │     # The pre-commit hook fires litmus. The dispatcher (Opus) can iterate
   │     # through litmus auto-corrections (up to 10 iterations per gate semantics);
   │     # the worker context can't, which is precisely the tooling friction this
@@ -824,7 +849,17 @@ Run the narrowest test that covers the fix. If local tests fail, fix before push
 
 ```bash
 git add <specific-files>
-git commit -m "fix: address PR #<N> feedback — <brief description>"
+# Subject is FIXED-FORM to stay safely under commitlint's 100-char
+# header-max-length rule. The detailed summary goes in the commit BODY.
+# Same subject/body split as the worker's Step 6 template at
+# agents/pr-grinder.md and the dispatcher's RECOVERY_INLINE template
+# (Commit & push block in the dispatcher loop above) — see the LENGTH
+# comment in that block for the empirical motivation (PR #90's recovery
+# commit overflowed commitlint's 100-char header limit before the split).
+{
+  printf 'fix: address PR #%s feedback\n' "<N>"
+  printf '\n%s\n' "<brief or multi-paragraph summary of what you changed this round>"
+} | git commit -F -
 git push
 ```
 

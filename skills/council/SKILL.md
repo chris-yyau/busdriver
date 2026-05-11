@@ -118,7 +118,7 @@ This is a **single Bash call** with all three CLI dispatches as background proce
 
 **IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing Gemini + Codex + Droid as background processes) in the **same message** so all four external voices run concurrently. Do NOT use separate Bash tool calls — one failing will cancel the others.
 
-**Missing CLI handling (no fallback):** Each role maps to exactly one CLI — no fallback chain. If a configured CLI resolves to `none`, `builtin`, or `missing:<cli>`, that voice is skipped and the report notes its absence as `(unavailable)`. The remaining voices still convene. If the Skeptic Agent call fails (rate limit, timeout), same rule applies. Minimum viable council is 1 voice (Architect alone). Always note the composition in the report.
+**Missing CLI handling (no fallback):** Each role maps to exactly one CLI — no fallback chain. If a configured CLI resolves to `none`, `builtin`, or `missing:<cli>`, that voice is skipped and the report notes its absence as `(unavailable)`. The remaining voices still convene. If the Skeptic Agent call fails (rate limit, timeout), same rule applies. Typical minimum is 2 voices (Architect + Skeptic, 40% of full strength); absolute floor is 1 voice (Architect alone) if the Skeptic Agent call also fails. Always note the composition in the report.
 
 ### Step 5: Read Output and Synthesize
 
@@ -185,10 +185,10 @@ Default: **one round**. The council convenes, delivers the verdict, and dissolve
 
 If the user asks for another round ("ask them again", "what would they say to that", "follow up with the council", "another round"):
 
-1. For Gemini + Codex: include prior council positions in the dispatch prompt as context
+1. For Gemini + Codex + Droid: include prior council positions in the dispatch prompt as context
 2. **For Fresh Claude Skeptic: include ONLY the new follow-up question + original question — do NOT include prior council positions.** This is critical — the Skeptic's value comes from clean memory. If you anchor them on prior positions, they become a fifth confirming voice instead of an independent challenger.
 3. Add the user's follow-up question
-4. Frame for Gemini/Codex: "The council previously said [positions]. The user now asks: [follow-up]. Respond to the other advisors' positions AND the new question."
+4. Frame for Gemini/Codex/Droid: "The council previously said [positions]. The user now asks: [follow-up]. Respond to the other advisors' positions AND the new question."
 5. Frame for Skeptic: "[Original question]. Follow-up: [new question]." — NO prior positions, NO council output.
 6. Synthesize again with the same guardrails
 
@@ -232,7 +232,7 @@ last_validated: "{YYYY-MM-DD}"
 **Decision:** {what was being decided}
 **Initial position:** {what Claude would have done alone}
 **What changed:** {the dissent/insight that shifted the recommendation}
-**Who changed it:** {Fresh Claude Skeptic/Gemini/Codex/multiple}
+**Who changed it:** {Fresh Claude Skeptic/Gemini/Codex/Droid/multiple}
 **Final recommendation:** {what we actually decided}
 
 **Why:** {why the external perspective was better}

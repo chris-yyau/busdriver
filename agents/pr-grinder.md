@@ -416,7 +416,21 @@ Run the narrowest test that covers the fix.
 
 ```bash
 git add <specific files>
-git commit -m "fix: address PR #$PR_NUMBER feedback — <brief>"
+# Subject is FIXED-FORM ("fix: address PR #<N> feedback") to stay safely
+# under commitlint's 100-char header-max-length rule regardless of how
+# detailed the summary becomes. The actual summary of what changed goes
+# in the commit BODY, not the subject. An earlier worker template
+# (`git commit -m "fix: address PR #$PR_NUMBER feedback — <brief>"`)
+# overflowed commitlint's 100-char header-max-length rule when <brief>
+# was long; the exact threshold varies with PR-number digit count plus
+# the fixed prefix, so don't trust any specific char figure. The
+# subject/body split is the structural fix that removes the variable
+# from the header entirely. Same shape as the dispatcher's
+# recovery-via-inline template in skills/pr-grind/SKILL.md.
+{
+  printf 'fix: address PR #%s feedback\n' "$PR_NUMBER"
+  printf '\n%s\n' "<one-line OR multi-paragraph summary of what you changed this round>"
+} | git commit -F -
 git push
 ```
 

@@ -1208,11 +1208,20 @@ HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
 AUTHOR_PERM=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.author_perm // "read"')
 REQUIRED_APPROVALS=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.required_approving_review_count // 0')
 HUMAN_APPROVALS=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.human_approvals // 0')
+# Validate $PR is numeric before passing to --argjson — defense in depth so a
+# `gh pr view` failure upstream (returning empty string or "null") can't cause
+# jq to abort the log composition with "Invalid numeric literal". The audit
+# trail is load-bearing; silently dropping the entry defeats the
+# audit_workflow_present eligibility gate.
+case "$PR" in
+  ''|*[!0-9]*)
+    echo "❌ approver-gap admin escalation: invalid PR number '$PR' — aborting before bypass-log + merge"; exit 1 ;;
+esac
 mkdir -p "$REPO_ROOT/.claude"
 jq -c -n \
   --arg ts "$TS" \
   --arg event "pr-grind-admin-on-approver-gap" \
-  --arg pr "$PR" \
+  --argjson pr "$PR" \
   --arg owner "$OWNER" \
   --arg repo "$REPO" \
   --arg branch "$BRANCH" \
@@ -1221,37 +1230,38 @@ jq -c -n \
   --argjson required "$REQUIRED_APPROVALS" \
   --argjson approvals "$HUMAN_APPROVALS" \
   --arg head_sha "$HEAD_SHA" \
-  '{ts:$ts, event:$event, pr:$pr|tonumber, owner:$owner, repo:$repo, branch:$branch, author:$author, author_perm:$author_perm, required_approving_review_count:$required, human_approvals:$approvals, head_sha:$head_sha}' \
+  '{ts:$ts, event:$event, pr:$pr, owner:$owner, repo:$repo, branch:$branch, author:$author, author_perm:$author_perm, required_approving_review_count:$required, human_approvals:$approvals, head_sha:$head_sha}' \
   >> "$REPO_ROOT/.claude/bypass-log.jsonl"
 gh pr merge "$PR" --squash --delete-branch --admin
 ```
 
-**Operator-decision message template** (rendered to stdout on BAIL; `[admin]` is omitted when no audit workflow exists):
+**Operator-decision message template** (rendered to stdout on BAIL; `[admin]` is omitted when no audit workflow exists). Placeholders: `{REQUIRED_COUNT}` is the branch-protection rule's `required_approving_review_count` (from `$GAP_DECISION_JSON`); `<PR_NUMBER>` is the PR number — distinct values, distinct placeholders so the rendering layer doesn't conflate them:
 
 ```text
 pr-grind: PR is functionally clean (CI green, bots ack HEAD, threads resolved)
-but branch protection requires {N} human APPROVED review(s) the author
-cannot self-provide. Project has bypass-audit.yml — admin-merge will
+but branch protection requires {REQUIRED_COUNT} human APPROVED review(s) the
+author cannot self-provide. Project has bypass-audit.yml — admin-merge will
 auto-file an audit issue.
 
 Options:
-  [admin]        gh pr merge {N} --squash --delete-branch --admin
+  [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin
   [wait]         exit; wait for a human reviewer
-  [add-reviewer] gh pr edit {N} --add-reviewer <user>; exit
+  [add-reviewer] gh pr edit <PR_NUMBER> --add-reviewer <user>; exit
 ```
 
 When `AUDIT_WORKFLOW_PRESENT=0`, omit `[admin]` from the first/default position and prepend a stronger warning that no audit trail exists:
 
 ```text
 pr-grind: PR is functionally clean (CI green, bots ack HEAD, threads resolved)
-but branch protection requires {N} human APPROVED review(s) the author
-cannot self-provide. ⚠️  This repo has NO bypass-audit.yml — an admin-merge
-here would leave NO audit trail. Strongly consider [add-reviewer] or [wait].
+but branch protection requires {REQUIRED_COUNT} human APPROVED review(s) the
+author cannot self-provide. ⚠️  This repo has NO bypass-audit.yml — an
+admin-merge here would leave NO audit trail. Strongly consider [add-reviewer]
+or [wait].
 
 Options:
   [wait]         exit; wait for a human reviewer
-  [add-reviewer] gh pr edit {N} --add-reviewer <user>; exit
-  [admin]        gh pr merge {N} --squash --delete-branch --admin
+  [add-reviewer] gh pr edit <PR_NUMBER> --add-reviewer <user>; exit
+  [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin
                    (no audit trail — proceed only with explicit operator authorization)
 ```
 

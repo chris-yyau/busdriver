@@ -525,9 +525,17 @@ The eligibility logic lives at `scripts/copilot-auto-resolve-eligibility.sh` (si
 if [ "${COPILOT_AUTO_RESOLVE:-0}" != "1" ]; then
   : # skip Step 6.5a
 else
-  # Precondition 1 — force-push detection.
-  COPILOT_COMMIT_ID=$(printf '%s' "$ALL_REVIEWS" | jq -rs \
-    '[.[] | .[] | select(.user.login == "copilot-pull-request-reviewer" or .user.login == "copilot-pull-request-reviewer[bot]")] | last | .commit_id // empty' 2>/dev/null \
+  # Step 6.5a runs BEFORE Step 6.5 (so resolved threads get picked up by
+  # Step 6.5's tier-A → HEAD-ack flip). That means Step 6.5's $ALL_THREADS
+  # and $ALL_REVIEWS are NOT yet populated when this block runs — Step 6.5a
+  # MUST do its own targeted fetches. Both fetches are Copilot-scoped, so
+  # they're small even on large PRs and run only when the flag is on (off
+  # by default).
+
+  # Precondition 1 — force-push detection. Fetch Copilot's latest /reviews
+  # entry on this PR and get the commit_id it reviewed.
+  COPILOT_COMMIT_ID=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews" 2>/dev/null \
+    | jq -rs '[.[] | .[] | select(.user.login == "copilot-pull-request-reviewer" or .user.login == "copilot-pull-request-reviewer[bot]")] | last | .commit_id // empty' 2>/dev/null \
     || echo "")
   FORCE_PUSH_DETECTED=0
   if [ -n "$COPILOT_COMMIT_ID" ] && ! git merge-base --is-ancestor "$COPILOT_COMMIT_ID" HEAD 2>/dev/null; then
@@ -535,8 +543,24 @@ else
   fi
 
   # Precondition 2 inputs — Copilot threads + HEAD's touched-line ranges.
-  COPILOT_THREADS_JSON=$(printf '%s' "$ALL_THREADS" | jq -cs \
-    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+  # Targeted GraphQL fetch that explicitly selects `id path line` (the fields
+  # Step 6.5's ack-ledger query omits — that query only needs author login).
+  COPILOT_THREADS_JSON=$(gh api graphql --paginate -f query='
+    query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String) {
+      repository(owner:$owner,name:$repo) {
+        pullRequest(number:$pr) {
+          reviewThreads(first:100, after:$endCursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id path line isResolved isOutdated
+              comments(first:1) { nodes { author { login } } }
+            }
+          }
+        }
+      }
+    }
+  ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" 2>/dev/null \
+    | jq -cs '[.[].data.repository.pullRequest.reviewThreads.nodes[]
       | select(.comments.nodes[0].author.login == "copilot-pull-request-reviewer" or .comments.nodes[0].author.login == "copilot-pull-request-reviewer[bot]")
       | select(.isResolved == false and .isOutdated == false)
       | {threadId: .id, path: .path, line: .line}]' 2>/dev/null || echo '[]')

@@ -1,3 +1,10 @@
+## [1.35.2](https://github.com/chris-yyau/busdriver/compare/v1.35.1...v1.35.2) (2026-05-11)
+
+
+### Bug Fixes
+
+* **pr-grind:** commit-template length split + dogfooded refinements ([#91](https://github.com/chris-yyau/busdriver/issues/91)) ([6a6ad90](https://github.com/chris-yyau/busdriver/commit/6a6ad90061a5568c445d4e029f021439d842a318))
+
 ## [1.35.1](https://github.com/chris-yyau/busdriver/compare/v1.35.0...v1.35.1) (2026-05-11)
 
 

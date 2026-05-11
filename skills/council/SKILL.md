@@ -106,7 +106,7 @@ fi
 (( ${#PIDS[@]} )) && wait "${PIDS[@]}"
 ```
 
-This is a **single Bash call** with all three CLI dispatches as background processes. This is critical — if Gemini, Codex, and Amp are separate parallel Bash tool calls, one failing cancels the others. A single call with `&` and `wait` keeps them independent.
+This is a **single Bash call** with all three CLI dispatches as background processes. This is critical — if Gemini, Codex, and Droid are separate parallel Bash tool calls, one failing cancels the others. A single call with `&` and `wait` keeps them independent.
 
 **NEVER wrap dispatches in subshells `()`**. The pattern `( cmd & ) && wait` does NOT work — the subshell exits immediately after backgrounding, so `wait` has nothing to wait for. Always background directly and capture PIDs with `$!`.
 
@@ -122,7 +122,7 @@ This is a **single Bash call** with all three CLI dispatches as background proce
 
 ### Step 5: Read Output and Synthesize
 
-Read the Fresh Claude output from the Agent tool result. Read the Gemini/Codex output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`).
+Read the Fresh Claude output from the Agent tool result. Read the Gemini/Codex/Droid output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`).
 
 **CRITICAL: Read the ENTIRE output file, not just the first few lines.** CLI output files contain noise before the actual response:
 - **Gemini:** Dumps MCP server initialization logs (e.g., `Registering notification handlers...`, `Loading extension...`) before the response. The actual answer may be 50+ lines deep.

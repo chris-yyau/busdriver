@@ -134,7 +134,7 @@ Run `node scripts/doctor.js` to see your effective CLI for each role.
 | **[Amp](https://ampcode.com)** | Any configurable role | See https://ampcode.com |
 | **[OpenCode](https://github.com/opencode-ai/opencode)** | Any configurable role | `go install github.com/opencode-ai/opencode@latest` |
 
-**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. The blueprint review uses its fallback chain (gemini → droid for reviewer_1, codex → amp for reviewer_2). The council has no fallback chain — each role maps to exactly one CLI; missing CLIs mean that voice is skipped from the report. Architect (in-context Claude) and Skeptic (Agent tool) always run, so the council still convenes with at least 2 voices even if all CLIs are missing. Core commit pipeline always works.
+**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. The blueprint review uses its fallback chain (gemini → droid for reviewer_1, codex → amp for reviewer_2). The council has no fallback chain — each role maps to exactly one CLI; missing CLIs mean that voice is skipped from the report. Architect (in-context Claude) and Skeptic (Agent tool) always run, so the council convenes with at minimum 2 voices (40% of full strength) even if all 3 external CLIs are missing. Core commit pipeline always works.
 
 ## Install
 

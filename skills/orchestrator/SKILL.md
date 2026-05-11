@@ -92,7 +92,7 @@ DO NOT skip phases after your entry point. Only exception: small specific tasks 
 
 ### Phase 1: Discovery → `busdriver:brainstorming`
 
-Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design. UI/UX: `impeccable:impeccable` + `ui-ux-pro-max` + `busdriver:design-system`; load `.impeccable.md` if present. Code patterns: `busdriver:frontend-patterns`. API boundaries: `busdriver:api-design`. Consider `roundtable` if 2+ viable approaches. Consider `busdriver:grill-me` if the chosen approach has stakes (auth/payments/migration/irreversible/PII/prod) or ≥3 unresolved sub-decisions or spans ≥3 subsystems — brainstorming offers this automatically at Step 5.5.
+Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design. UI/UX: `impeccable:impeccable` + `ui-ux-pro-max` + `busdriver:design-system`; load `.impeccable.md` if present. Code patterns: `busdriver:frontend-patterns`. API boundaries: `busdriver:api-design`. Consider `council` if 2+ viable approaches. Consider `busdriver:grill-me` if the chosen approach has stakes (auth/payments/migration/irreversible/PII/prod) or ≥3 unresolved sub-decisions or spans ≥3 subsystems — brainstorming offers this automatically at Step 5.5.
 **NEXT:** Phase 2. INVOKE `busdriver:writing-plans`. Do NOT start coding.
 
 ### Phase 2: Planning → `busdriver:writing-plans`
@@ -139,7 +139,7 @@ Run `busdriver:verification-loop` (build + lint + tests). Then `busdriver:verifi
 - Type definitions/interfaces → `type-design-analyzer` agent
 - Tests added/modified → `pr-test-analyzer` agent
 
-Consider `roundtable` if architecturally significant or results seem "too clean."
+Consider `council` if architecturally significant or results seem "too clean."
 
 ### Phase 6: Finishing → `busdriver:finishing-a-development-branch`
 

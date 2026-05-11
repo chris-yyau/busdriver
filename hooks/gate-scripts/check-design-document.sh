@@ -82,7 +82,7 @@ fi
 
 # Check if file matches design document pattern:
 # 1. Basename STARTS WITH PLAN, DESIGN, or ARCHITECTURE (case-insensitive)
-#    This prevents false positives like "lesson-roundtable-reflection-design.md"
+#    This prevents false positives like "lesson-council-reflection-design.md"
 # 2. File is inside a plans/ or specs/ directory under .claude/ or docs/
 #    (covers docs/plans/, docs/superpowers/plans/, docs/superpowers/specs/, etc.)
 #

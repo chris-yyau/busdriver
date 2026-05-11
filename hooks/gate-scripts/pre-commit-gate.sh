@@ -189,7 +189,7 @@ fi
 # Recommendation to Claude: Prefer separate `git add` and `git commit` calls
 # over chaining them. This allows the hook to see actual staged changes.
 #
-# Audit trail: H4 finding, Sprint 1 (2026-03-19). Roundtable rated HIGH (accepted).
+# Audit trail: H4 finding, Sprint 1 (2026-03-19). Council rated HIGH (accepted).
 # ─────────────────────────────────────────────────────────────────────────
 
 # Skip overrides

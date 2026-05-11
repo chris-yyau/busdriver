@@ -45,7 +45,7 @@ Canonical gate types for workflow validation. Every validation checkpoint in bus
 **Recovery:** Developer chooses action; workflow resumes on selected path.
 **Examples in busdriver:**
 - litmus review finding CRITICAL issues that require human judgment
-- roundtable voices unable to reach consensus
+- council voices unable to reach consensus
 - merge conflicts during worktree cleanup
 
 ### Abort Gate
@@ -74,7 +74,7 @@ Canonical gate types for workflow validation. Every validation checkpoint in bus
 | litmus | Critical | Escalation | CRITICAL findings | Surface to developer |
 | careful-guard | Command | Abort | Destructive pattern match | Block with explanation |
 | finishing-branch | Readiness | Pre-flight | Tests pass, no uncommitted | Block with dashboard |
-| roundtable | Consensus | Escalation | Voices disagree | Present all perspectives |
+| council | Consensus | Escalation | Voices disagree | Present all perspectives |
 
 ---
 

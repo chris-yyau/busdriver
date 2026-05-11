@@ -2,7 +2,7 @@
 # resolve-cli.sh — Plugin-wide shared CLI library
 #
 # Single source of truth for CLI availability and resolution.
-# Sourced by litmus, blueprint-review, and roundtable.
+# Sourced by litmus, blueprint-review, and council.
 #
 # Usage (sourced):
 #   source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/resolve-cli.sh"
@@ -46,7 +46,7 @@ get_cli_install_hint() {
 }
 
 # ── Config file reader (jq preferred, python3 fallback) ──────
-# Usage: _read_config_value "/path/to/busdriver.json" '.routes["roundtable.critic"][0]'
+# Usage: _read_config_value "/path/to/busdriver.json" '.routes["council.critic"][0]'
 # Returns: extracted value on stdout, empty if missing/error. Exit 1 on parse error.
 
 _JSON_PARSER=""
@@ -161,7 +161,7 @@ _portable_timeout() {
 }
 
 # ── Per-role CLI resolution with config + fallback chain ─────
-# Usage: resolve_role_cli "roundtable.critic"
+# Usage: resolve_role_cli "council.critic"
 # Precedence: env var > project config > user config > defaults > auto-detect
 # Returns: CLI name, "builtin", "none", or "missing:<cli>"
 
@@ -255,8 +255,9 @@ resolve_role_cli() {
     blueprint-review.reviewer_1) is_cli_available gemini && echo "gemini" && return ;;
     blueprint-review.reviewer_2) is_cli_available codex && echo "codex" && return ;;
     blueprint-review.arbiter)    echo "builtin" && return ;;  # arbiter is always Claude
-    roundtable.pragmatist)      is_cli_available gemini && echo "gemini" && return ;;
-    roundtable.critic)          is_cli_available codex && echo "codex" && return ;;
+    council.pragmatist)         is_cli_available gemini && echo "gemini" && return ;;
+    council.critic)             is_cli_available codex && echo "codex" && return ;;
+    council.researcher)         is_cli_available droid && echo "droid" && return ;;
   esac
 
   # Step 5: Auto-detect

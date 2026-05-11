@@ -2281,9 +2281,8 @@
     },
     {
       "path": "skills/council/SKILL.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "skills/council/SKILL.md"
+      "source": "local",
+      "status": "local"
     },
     {
       "path": "skills/compose-multiplatform-patterns/SKILL.md",
@@ -2404,11 +2403,6 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "skills/cost-aware-llm-pipeline/SKILL.md"
-    },
-    {
-      "path": "skills/roundtable/SKILL.md",
-      "source": "local",
-      "status": "local"
     },
     {
       "path": "skills/cpp-coding-standards/SKILL.md",

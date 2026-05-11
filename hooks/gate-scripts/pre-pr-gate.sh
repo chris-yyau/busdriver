@@ -11,7 +11,7 @@
 #       work because PreToolUse hooks fire before the command's inline env
 #       is applied; same caveat as pre-commit gate)
 #
-# Roundtable decision (2026-03-21): Gate `gh pr create` only, NOT `git push`.
+# Council decision (2026-03-21): Gate `gh pr create` only, NOT `git push`.
 # Gating push kills WIP pushes and destroys credibility of the gate system.
 
 set -euo pipefail

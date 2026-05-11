@@ -190,4 +190,4 @@ Lead with your recommendation. Forcing the user to react to a concrete proposal 
 
 - Not brainstorming. Brainstorming is collaborative dialogue ("what do you want?"). Grill-me is adversarial interrogation ("defend each decision").
 - Not blueprint-review. Blueprint-review is a hook-enforced gate on written design docs. Grill-me is a soft intensifier inside Phase 1.
-- Not a roundtable. Roundtable convenes 4 voices on questions with multiple viable approaches. Grill-me is one voice walking the dependency tree of a single chosen approach.
+- Not a council. Council convenes 5 voices on questions with multiple viable approaches. Grill-me is one voice walking the dependency tree of a single chosen approach.

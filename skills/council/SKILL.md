@@ -1,35 +1,257 @@
 ---
 name: council
-description: Convene a four-voice council for ambiguous decisions, tradeoffs, and go/no-go calls. Use when multiple valid paths exist and you need structured disagreement before choosing.
-origin: ECC
+description: >
+  Convene a 5-voice AI council (Claude Architect + Fresh Claude Skeptic + Gemini Pragmatist + Codex Critic + Droid Researcher) for diverse perspectives.
+  Use when the user asks "what would a good group of people think/design/do",
+  wants multiple opinions, asks for "ideas", "thoughts", "suggestions", "advice",
+  "input", "feedback", "recommendations", says "council", "roundtable", "perspectives",
+  "what would others think", "group wisdom", "diverse viewpoints", "what do you all think",
+  or needs group deliberation on decisions, tradeoffs, design choices, architecture,
+  or strategy. NOT for simple tasks with clear answers — only for ambiguous problems
+  that benefit from multiple lenses.
+origin: custom
 ---
 
 # Council
 
-Convene four advisors for ambiguous decisions:
-- the in-context Claude voice
-- a Skeptic subagent
-- a Pragmatist subagent
-- a Critic subagent
+Convene five advisors — the in-context Claude plus four fresh agents — for diverse perspectives. Each gives an independent perspective, then synthesize into a compressed verdict.
 
-This is for **decision-making under ambiguity**, not code review, implementation planning, or architecture design.
+## Roles (Fixed)
 
-## When to Use
+| Voice | Method | Role | Lens | Configurable |
+|---|---|---|---|---|
+| Claude (you) | In-context | Architect | Correctness, maintainability, long-term implications | No (in-context) |
+| Fresh Claude | Agent tool (clean memory) | Skeptic | Challenge assumptions, question premises, propose simplest alternative | No (Agent tool) |
+| Configurable | dispatch-cli | Pragmatist | Shipping speed, simplicity, user impact, practical tradeoffs | Yes: `council.pragmatist` (default: gemini) |
+| Configurable | dispatch-cli | Critic | Edge cases, risks, failure modes, what could go wrong | Yes: `council.critic` (default: codex) |
+| Configurable | dispatch-cli | Researcher | Evidence, prior art, current state, factual grounding | Yes: `council.researcher` (default: droid) |
 
-Use council when:
-- a decision has multiple credible paths and no obvious winner
-- you need explicit tradeoff surfacing
-- the user asks for second opinions, dissent, or multiple perspectives
-- conversational anchoring is a real risk
-- a go / no-go call would benefit from adversarial challenge
+**CLI routing:** Pragmatist, Critic, and Researcher CLIs are resolved from `.claude/busdriver.json` via `resolve_role_cli()`. Each role maps to exactly one CLI — there are no fallback chains. If a role's configured CLI is missing, that voice is skipped and noted in the report; other voices still fire. Changing the CLI only changes which binary receives the prompt — the role framing (Pragmatist lens, Critic lens, Researcher lens) is always the same. See README for per-role routing docs.
 
-Examples:
-- monorepo vs polyrepo
-- ship now vs hold for polish
-- feature flag vs full rollout
-- simplify scope vs keep strategic breadth
+The Fresh Claude Skeptic has **zero conversation context** — it receives only the question and optional code snippets. Its unique value is immunity to conversational drift: it sees what the anchored council has stopped noticing. If the question itself is wrong or the answer is simpler than the council thinks, the Skeptic says so.
 
-## When NOT to Use
+## Process
+
+### Step 1: Extract the Question
+
+Get the question from skill args or infer from conversation context. If vague, ask ONE clarifying question before proceeding.
+
+### Step 2: Context Check
+
+If the question is **codebase-specific** (references files, architecture, specific code):
+- Gather relevant file snippets (max ~2000 tokens total)
+- Include them in the dispatch prompt under a `## Context` section
+
+If it's a **general** design/strategy question, skip this — just send the question.
+
+### Step 3: Form Your Perspective FIRST
+
+Think through your Architect position **before** seeing external responses. This prevents anchoring on their answers.
+
+Write down:
+- **Position**: 1-2 sentence clear stance
+- **Reasoning**: 3 key points
+- **Risk**: The biggest risk with your approach
+
+Hold this. You'll include it in the report after dispatch completes.
+
+### Step 4: Dispatch Fresh Claude + Gemini + Codex + Droid
+
+Launch all four external agents in parallel. Use a **single message with multiple tool calls** to maximize concurrency.
+
+**4a. Fresh Claude (Skeptic)** — via Agent tool (starts with clean memory):
+
+```
+Agent(
+  description="Council Skeptic",
+  prompt="You are the Skeptic on a council of five AI advisors. [QUESTION + CONTEXT]. Your role is Skeptic — you have NO prior context about this conversation. Focus on: challenging assumptions, questioning whether the problem is framed correctly, and proposing the simplest possible alternative. If the question itself is wrong or the answer is simpler than expected, say so. Give your perspective as: 1. Position (1-2 sentences) 2. Reasoning (3 points) 3. Risk 4. Surprise. Under 300 words. Be opinionated, no hedging.",
+  model="opus"  # Uses the "opus" alias — valid Agent tool enum value for highest-reasoning model
+)
+```
+
+**4b. Pre-check CLI availability, then dispatch:**
+
+Before dispatching, check CLI availability and find the dispatch script:
+
+```bash
+# Source shared CLI library and resolve roles from config
+source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/resolve-cli.sh"
+PRAGMATIST_CLI=$(resolve_role_cli "council.pragmatist")
+CRITIC_CLI=$(resolve_role_cli "council.critic")
+RESEARCHER_CLI=$(resolve_role_cli "council.researcher")
+DISPATCH="${CLAUDE_PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
+
+# Dispatch available voices — capture PIDs so wait blocks on the actual processes
+# IMPORTANT: Use heredocs (<<'DELIM') NOT --prompt "..." to avoid shell escaping bugs
+# with quotes, backticks, $, and newlines in prompt text.
+PIDS=()
+if [[ "$PRAGMATIST_CLI" != "none" && "$PRAGMATIST_CLI" != "builtin" && ! "$PRAGMATIST_CLI" =~ ^missing: ]]; then
+  "$DISPATCH" --cli "$PRAGMATIST_CLI" --timeout 300 <<'PRAGMATIST_PROMPT' &
+<Pragmatist prompt>
+PRAGMATIST_PROMPT
+  PIDS+=("$!")
+fi
+if [[ "$CRITIC_CLI" != "none" && "$CRITIC_CLI" != "builtin" && ! "$CRITIC_CLI" =~ ^missing: ]]; then
+  "$DISPATCH" --cli "$CRITIC_CLI" --timeout 300 <<'CRITIC_PROMPT' &
+<Critic prompt>
+CRITIC_PROMPT
+  PIDS+=("$!")
+fi
+if [[ "$RESEARCHER_CLI" != "none" && "$RESEARCHER_CLI" != "builtin" && ! "$RESEARCHER_CLI" =~ ^missing: ]]; then
+  "$DISPATCH" --cli "$RESEARCHER_CLI" --timeout 300 <<'RESEARCHER_PROMPT' &
+<Researcher prompt>
+RESEARCHER_PROMPT
+  PIDS+=("$!")
+fi
+(( ${#PIDS[@]} )) && wait "${PIDS[@]}"
+```
+
+This is a **single Bash call** with all three CLI dispatches as background processes. This is critical — if Gemini, Codex, and Amp are separate parallel Bash tool calls, one failing cancels the others. A single call with `&` and `wait` keeps them independent.
+
+**NEVER wrap dispatches in subshells `()`**. The pattern `( cmd & ) && wait` does NOT work — the subshell exits immediately after backgrounding, so `wait` has nothing to wait for. Always background directly and capture PIDs with `$!`.
+
+**Prompt template** for Gemini/Codex/Droid (same structure as Skeptic but with their role/lens):
+
+**For Gemini:** Role = "Pragmatist", Lens = "shipping speed, simplicity, user impact, practical tradeoffs"
+**For Codex:** Role = "Critic", Lens = "edge cases, risks, failure modes, what could go wrong"
+**For Droid:** Role = "Researcher", Lens = "evidence, prior art, current state — look up similar past decisions, current code state of the repo, and external evidence relevant to the question. Cite what you find. Flag claims that lack grounding."
+
+**IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing Gemini + Codex + Droid as background processes) in the **same message** so all four external voices run concurrently. Do NOT use separate Bash tool calls — one failing will cancel the others.
+
+**Missing CLI handling (no fallback):** Each role maps to exactly one CLI — no fallback chain. If a configured CLI resolves to `none`, `builtin`, or `missing:<cli>`, that voice is skipped and the report notes its absence as `(unavailable)`. The remaining voices still convene. If the Skeptic Agent call fails (rate limit, timeout), same rule applies. Minimum viable council is 1 voice (Architect alone). Always note the composition in the report.
+
+### Step 5: Read Output and Synthesize
+
+Read the Fresh Claude output from the Agent tool result. Read the Gemini/Codex output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`).
+
+**CRITICAL: Read the ENTIRE output file, not just the first few lines.** CLI output files contain noise before the actual response:
+- **Gemini:** Dumps MCP server initialization logs (e.g., `Registering notification handlers...`, `Loading extension...`) before the response. The actual answer may be 50+ lines deep.
+- **Codex:** Echoes a header block (workdir, model, session id, the full prompt) before the response. The actual answer starts after the prompt echo ends.
+- **Both:** May duplicate output or include trailing metadata. Always scan the full file.
+
+If you read only the first ~30 lines and see noise/prompt headers, **you have NOT read the response yet.** Keep reading.
+
+<CRITICAL>
+SYNTHESIZER BIAS GUARDRAILS
+
+You are both a council member AND the synthesizer. This is a conflict of interest. Rules:
+
+1. NEVER dismiss an external perspective without stating why
+2. If any voice raised a point you didn't consider, EXPLICITLY credit it
+3. The "Strongest dissent" section is MANDATORY — even if you disagree with it
+4. If two or more voices agree against you, seriously consider that you might be wrong
+5. Raw positions appear ABOVE the synthesis — the user can always check your work
+6. The Fresh Claude Skeptic's premise challenges deserve special weight — they see what you can't because of conversational anchoring
+</CRITICAL>
+
+### Step 6: Present the Report
+
+**Compressed format (always use this):**
+
+```
+## Council: [short question]
+
+**Claude (Architect):** [position in 1-2 sentences]
+[1-line key reasoning]
+
+**Fresh Claude (Skeptic):** [position in 1-2 sentences]
+[1-line key reasoning]
+
+**Gemini (Pragmatist):** [position in 1-2 sentences]
+[1-line key reasoning]
+
+**Codex (Critic):** [position in 1-2 sentences]
+[1-line key reasoning]
+
+**Droid (Researcher):** [position in 1-2 sentences]
+[1-line key reasoning + key evidence cited]
+
+### Verdict
+- **Consensus:** [where they agree]
+- **Strongest dissent:** [the most important disagreement — who said it and why]
+- **Premise check:** [did the Skeptic challenge the question itself? If so, what was the challenge?]
+- **Recommendation:** [synthesized best path forward]
+```
+
+**Self-contained rule:** When the question involves numbered items (e.g., "6 proposed fixes"), ALL references — in individual voice positions AND the verdict — MUST restate each item inline, not just by number. The user should never need to scroll up. Example: "Fix #1 (add frontend-design to routes) and skip #3 (new plugin-dev entry)" instead of "Fix #1 and skip #3". This applies to every voice's position text, not only the final synthesis.
+
+If an agent failed or timed out, note it inline: `**Gemini (Pragmatist):** (unavailable — rate limited)`
+
+Keep the entire report **scannable on a phone screen**. No ceremony. No preamble.
+
+## Multi-Round
+
+Default: **one round**. The council convenes, delivers the verdict, and dissolves.
+
+If the user asks for another round ("ask them again", "what would they say to that", "follow up with the council", "another round"):
+
+1. For Gemini + Codex: include prior council positions in the dispatch prompt as context
+2. **For Fresh Claude Skeptic: include ONLY the new follow-up question + original question — do NOT include prior council positions.** This is critical — the Skeptic's value comes from clean memory. If you anchor them on prior positions, they become a fifth confirming voice instead of an independent challenger.
+3. Add the user's follow-up question
+4. Frame for Gemini/Codex: "The council previously said [positions]. The user now asks: [follow-up]. Respond to the other advisors' positions AND the new question."
+5. Frame for Skeptic: "[Original question]. Follow-up: [new question]." — NO prior positions, NO council output.
+6. Synthesize again with the same guardrails
+
+No file persistence needed — prior output is in the conversation context.
+
+### Step 7: Auto-Save Lesson (Recommendation Delta Filter)
+
+<CRITICAL>
+This step is AUTOMATIC. Do NOT ask the user whether to save. Evaluate the criteria below immediately after presenting the verdict. If the filter triggers, save the lesson and tell the user you saved it. If it doesn't trigger, say nothing — no "want me to save?" prompts. The user should never need to remind you to do this.
+
+Note: Lesson files written to `~/.claude/notes/` are expected to be staged and committed alongside other session changes — they are part of the git-tracked notes system, not unintended side effects.
+</CRITICAL>
+
+After presenting the verdict, evaluate whether the council produced a **recommendation delta** — a case where external input changed the final recommendation from what you (Claude) would have done alone.
+
+**Capture when ANY of these are true:**
+- The strongest dissent changed the final recommendation (your initial position was overridden)
+- Two or more external voices agreed against your position
+- An external voice raised a risk/edge-case you explicitly did not consider in Step 3
+- The Skeptic challenged the premise and the challenge was valid (question was reframed)
+- A severity re-rating occurred (something you rated LOW was upgraded to HIGH, or vice versa)
+
+**Do NOT capture when:**
+- All four external voices agreed with the Architect's initial position (no delta — confirms existing knowledge)
+- Dissent was noted but the final recommendation matches the Architect's Step 3 position unchanged
+- The council was informational only (no decision was at stake)
+
+**When the filter triggers**, immediately write a memory file using the Write tool:
+
+**Path:** `~/.claude/notes/lesson-council-{YYYY-MM-DD}-{slug}.md` (if slug collides with existing file, append `-2`, `-3`, etc.)
+
+**Format:**
+```markdown
+---
+name: council-lesson-{slug}
+description: {one-line: what changed and why}
+type: feedback
+last_validated: "{YYYY-MM-DD}"
+---
+
+**Decision:** {what was being decided}
+**Initial position:** {what Claude would have done alone}
+**What changed:** {the dissent/insight that shifted the recommendation}
+**Who changed it:** {Fresh Claude Skeptic/Gemini/Codex/multiple}
+**Final recommendation:** {what we actually decided}
+
+**Why:** {why the external perspective was better}
+**How to apply:** {when this lesson should inform future decisions}
+```
+
+Then add a one-line pointer to `~/.claude/notes/NOTES.md`.
+
+**Keep it tight** — the entire memory file should be <150 words. If you can't compress the lesson to that, it's probably not a single lesson.
+
+## When NOT to Convene
+
+Do NOT fire the council for:
+- Simple factual questions
+- Clear implementation tasks ("add a button", "fix this typo")
+- Bug fixes with obvious causes
+- Tasks that need execution, not deliberation
+
+If the question doesn't benefit from multiple perspectives, say so and just answer directly. The council is for **decisions and tradeoffs**, not for tasks with clear right answers.
 
 | Instead of council | Use |
 | --- | --- |
@@ -40,164 +262,9 @@ Examples:
 | Straight factual questions | just answer directly |
 | Obvious execution tasks | just do the task |
 
-## Roles
-
-| Voice | Lens |
-| --- | --- |
-| Architect | correctness, maintainability, long-term implications |
-| Skeptic | premise challenge, simplification, assumption breaking |
-| Pragmatist | shipping speed, user impact, operational reality |
-| Critic | edge cases, downside risk, failure modes |
-
-The three external voices should be launched as fresh subagents with **only the question and relevant context**, not the full ongoing conversation. That is the anti-anchoring mechanism.
-
-## Workflow
-
-### 1. Extract the real question
-
-Reduce the decision to one explicit prompt:
-- what are we deciding?
-- what constraints matter?
-- what counts as success?
-
-If the question is vague, ask one clarifying question before convening the council.
-
-### 2. Gather only the necessary context
-
-If the decision is codebase-specific:
-- collect the relevant files, snippets, issue text, or metrics
-- keep it compact
-- include only the context needed to make the decision
-
-If the decision is strategic/general:
-- skip repo snippets unless they materially change the answer
-
-### 3. Form the Architect position first
-
-Before reading other voices, write down:
-- your initial position
-- the three strongest reasons for it
-- the main risk in your preferred path
-
-Do this first so the synthesis does not simply mirror the external voices.
-
-### 4. Launch three independent voices in parallel
-
-Each subagent gets:
-- the decision question
-- compact context if needed
-- a strict role
-- no unnecessary conversation history
-
-Prompt shape:
-
-```text
-You are the [ROLE] on a four-voice decision council.
-
-Question:
-[decision question]
-
-Context:
-[only the relevant snippets or constraints]
-
-Respond with:
-1. Position — 1-2 sentences
-2. Reasoning — 3 concise bullets
-3. Risk — biggest risk in your recommendation
-4. Surprise — one thing the other voices may miss
-
-Be direct. No hedging. Keep it under 300 words.
-```
-
-Role emphasis:
-- Skeptic: challenge framing, question assumptions, propose the simplest credible alternative
-- Pragmatist: optimize for speed, simplicity, and real-world execution
-- Critic: surface downside risk, edge cases, and reasons the plan could fail
-
-### 5. Synthesize with bias guardrails
-
-You are both a participant and the synthesizer, so use these rules:
-- do not dismiss an external view without explaining why
-- if an external voice changed your recommendation, say so explicitly
-- always include the strongest dissent, even if you reject it
-- if two voices align against your initial position, treat that as a real signal
-- keep the raw positions visible before the verdict
-
-### 6. Present a compact verdict
-
-Use this output shape:
-
-```markdown
-## Council: [short decision title]
-
-**Architect:** [1-2 sentence position]
-[1 line on why]
-
-**Skeptic:** [1-2 sentence position]
-[1 line on why]
-
-**Pragmatist:** [1-2 sentence position]
-[1 line on why]
-
-**Critic:** [1-2 sentence position]
-[1 line on why]
-
-### Verdict
-- **Consensus:** [where they align]
-- **Strongest dissent:** [most important disagreement]
-- **Premise check:** [did the Skeptic challenge the question itself?]
-- **Recommendation:** [the synthesized path]
-```
-
-Keep it scannable on a phone screen.
-
-## Persistence Rule
-
-Do **not** write ad-hoc notes to `~/.claude/notes` or other shadow paths from this skill.
-
-If the council materially changes the recommendation:
-- use `knowledge-ops` to store the lesson in the right durable location
-- or use `/save-session` if the outcome belongs in session memory
-- or update the relevant GitHub / Linear issue directly if the decision changes active execution truth
-
-Only persist a decision when it changes something real.
-
-## Multi-Round Follow-up
-
-Default is one round.
-
-If the user wants another round:
-- keep the new question focused
-- include the previous verdict only if it is necessary
-- keep the Skeptic as clean as possible to preserve anti-anchoring value
-
-## Anti-Patterns
-
-- using council for code review
-- using council when the task is just implementation work
-- feeding the subagents the entire conversation transcript
-- hiding disagreement in the final verdict
-- persisting every decision as a note regardless of importance
-
 ## Related Skills
 
-- `santa-method` — adversarial verification
-- `knowledge-ops` — persist durable decision deltas correctly
-- `search-first` — gather external reference material before the council if needed
+- `santa-method` — adversarial verification (two-reviewer convergence)
+- `knowledge-ops` — persist durable decision deltas to the right location
+- `search-first` — gather external reference material before convening
 - `architecture-decision-records` — formalize the outcome when the decision becomes long-lived system policy
-
-## Example
-
-Question:
-
-```text
-Should we ship ECC 2.0 as alpha now, or hold until the control-plane UI is more complete?
-```
-
-Likely council shape:
-- Architect pushes for structural integrity and avoiding a confused surface
-- Skeptic questions whether the UI is actually the gating factor
-- Pragmatist asks what can be shipped now without harming trust
-- Critic focuses on support burden, expectation debt, and rollout confusion
-
-The value is not unanimity. The value is making the disagreement legible before choosing.

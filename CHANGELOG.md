@@ -1,3 +1,10 @@
+## [1.35.1](https://github.com/chris-yyau/busdriver/compare/v1.35.0...v1.35.1) (2026-05-11)
+
+
+### Bug Fixes
+
+* **pr-grind:** contract tightening from PR [#89](https://github.com/chris-yyau/busdriver/issues/89) dogfooding ([#90](https://github.com/chris-yyau/busdriver/issues/90)) ([d1f3664](https://github.com/chris-yyau/busdriver/commit/d1f36648c600f5aa975bd36a689bb1ab9efbec09))
+
 # [1.35.0](https://github.com/chris-yyau/busdriver/compare/v1.34.1...v1.35.0) (2026-05-10)
 
 

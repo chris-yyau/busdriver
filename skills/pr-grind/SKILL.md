@@ -28,6 +28,10 @@ origin: custom
 **Bounded-wait advisory (best-effort, capped by `--max-wait`):**
 - AI reviewer acks (Greptile, CodeRabbit, Cubic, Copilot, etc.)
 
+**External policy gates (NOT something pr-grind can resolve — surfaces to the operator):**
+
+GitHub branch-protection settings encode org policy that pr-grind has no automated recourse for. Required `required_approving_review_count` is the canonical axis: the rules API can demand `N >= 1` human APPROVED reviews on the PR before merge, and a solo author cannot self-approve their own PR. The fix-rounds budget (`--max-fix`) and wait-rounds budget (`--max-wait`) are both irrelevant — there is nothing to fix and nothing to wait for; the gap is structural. When this is the sole remaining blocker (CI green, bots ack HEAD, threads resolved), the dispatcher BAILs with `RESULT_BAIL_CATEGORY=policy` and surfaces operator-decision options (see "Approver-Gap Detection" later in this file). pr-grind NEVER auto-bypasses org policy; the `--admin-on-approver-gap` flag is the explicit opt-in for the narrow case where the operator has admin/maintain permission AND the repo carries an audit workflow.
+
 **Best-effort (low priority, addressed if fix budget allows — counts against `--max-fix`, not `--max-wait`):**
 - Style/nit findings: typically fixed because the effort is low
 
@@ -71,6 +75,7 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
   - The fix would require rewriting published git history (force-push, `git commit --amend` on a pushed SHA, `git filter-branch`, interactive rebase on pushed commits)
   - Max fix-rounds reached (worker pushed `MAX_FIX` commits without converging clean)
   - Max wait-rounds reached (slow bot(s) never acked HEAD within `MAX_WAIT` polling rounds)
+  - External policy gap (branch protection requires `N >= 1` human APPROVED reviews the author cannot self-provide, org-level rule blocks merge, or similar non-resolvable structural blocker). Excluded from `MAX_FIX`/`MAX_WAIT` accounting — there is nothing to fix and nothing to wait for. Dispatcher emits `RESULT_BAIL_CATEGORY=policy`; the operator decides via the surfaced decision message (see "Approver-Gap Detection").
   - **On any bail:** if Step 0 created an ephemeral worktree, `cd` back and `git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true` before exiting. Skip when `NO_WORKTREE=1` — i.e. either `--no-worktree` was passed OR Step 0's auto-fallback engaged because the branch was already checked out. The `|| true` keeps cleanup idempotent if the worktree was already removed.
 - **Recovery-via-inline (capped at 1 per invocation):** When the worker bails for a *tooling-friction* reason (litmus blocked, pre-commit gate fired, subagent slash-command limitation) AND left inflight working-tree changes, the dispatcher takes over inline — runs the litmus iteration the subagent context can't, commits, pushes, and returns to the loop. **This is strictly for tooling friction, never for judgment friction:** design/scope questions, architectural concerns, env auth errors, history-rewriting fixes (commitlint on a pushed commit, large-diff splits — see worker Bail Triggers), and budget exhaustion all bail to the user as before. Cap is hard at 1 per pr-grind invocation — two consecutive worker bails in the same run = real bail, no matter how clean the inflight state. The cap exists so "dispatcher always rescues" can't mask a chronic worker bug over time. Override with `--no-recovery-inline` to disable entirely.
 - **Out-of-scope-acknowledged discipline rails:** the worker can dismiss a finding on YOUR PR's changed lines with one of 6 enumerated reasons (`schema-refactor`, `external-research`, `follow-up-deferred`, `cross-cutting-style`, `pre-existing-on-touched-line`, `false-positive`) — see `agents/pr-grinder.md` Step 3. Three rails bound the carve-out: (a) worker per-round cap of ≤3 dismissals, self-enforced; (b) dispatcher cumulative cap of ≤5 dismissals across the whole grind (Invariant 4); (c) dispatcher cumulative cap of ≤3 follow-up issues spawned (Invariant 4). Hitting either dispatcher cap BAILs with `RESULT_BAIL_CATEGORY=judgment` regardless of round status. The default is FIX — dismissal is the carve-out. The rails exist precisely so workers can't relabel tedious-but-real findings as out-of-scope to "ship faster," leaving real bugs tracked-but-unaddressed in spawned follow-up issues.
@@ -217,13 +222,17 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │       d. RESULT_BAIL_CATEGORY == "tooling" — explicit enum on a structured tag,
   │          NOT substring matching against free-form RESULT_BAIL_REASON. The worker
   │          contract (agents/pr-grinder.md "Output Format" + "Bail Triggers") emits
-  │          RESULT_BAIL_CATEGORY ∈ {tooling, judgment, env, budget} alongside the
-  │          human-readable RESULT_BAIL_REASON; this gate keys on the enum so a
+  │          RESULT_BAIL_CATEGORY ∈ {tooling, judgment, env, budget, policy} alongside
+  │          the human-readable RESULT_BAIL_REASON; this gate keys on the enum so a
   │          worker (or a quoted bot comment paraphrased into RESULT_BAIL_REASON)
   │          can't trip recovery via narrative containing the substring "litmus blocked".
   │          Currently the only worker bail trigger that emits category=tooling is
   │          "litmus blocked twice in this round"; expanding the category requires
   │          an explicit worker-contract change, never an emergent prose match.
+  │          `budget` and `policy` are dispatcher-only — listed in the enum so the
+  │          parser space is closed against accidental worker emission, but they
+  │          never satisfy this `== "tooling"` predicate, so recovery-via-inline
+  │          stays correctly gated.
   │
   │     If any condition fails → go to BAIL as today.
   │     If all conditions pass → set recovery_inline_used = 1 and go to RECOVERY_INLINE.
@@ -238,6 +247,13 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │         friction the dispatcher can bridge. See worker `Bail Triggers`
   │         table → "Fix would require rewriting published git history".
   │       - "max-fix iterations" / "max-wait iterations" — already exhausted budgets
+  │       - "branch protection policy" / "required approver gap" /
+  │         "org-policy blocker" — dispatcher category=policy; bypassing org
+  │         policy is operator-authorization territory (admin-merge), never a
+  │         tooling friction. pr-grind surfaces a decision message with
+  │         [admin]/[wait]/[add-reviewer] options. Auto-escalation requires
+  │         the explicit --admin-on-approver-gap flag AND a repo-side audit
+  │         workflow (bypass-audit.yml). See "Approver-Gap Detection" below.
   │     The match list above is allowlist-style precisely so this carve-out
   │     can't widen by accident — adding new tooling-friction reasons is an
   │     intentional protocol change, not an emergent behavior.
@@ -653,6 +669,7 @@ Agent invocation:
     WORKTREE_DIR=<absolute path>
     ROUND=<N> (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>)
     RESULT_FILE=<unique tmp path generated above>
+    COPILOT_AUTO_RESOLVE=<0|1; 1 only when --copilot-auto-resolve was passed to pr-grind>
     PRIOR_COMMIT_SHA=<sha or "none">
     PRIOR_REVIEWER_ACKS=<login=value,login=value,...> (round 1: every registered bot = none)
     PRIOR_ATTEMPTS:
@@ -693,7 +710,7 @@ RESULT_UNSTAGED_FILES: <`|`-separated paths or "none"> (always present; pipe-del
 RESULT_STAGED_DIFF_SHA: <64-hex sha256 or "none">     (always present; verifies staged content hasn't been mutated between worker bail and dispatcher takeover)
 RESULT_UNSTAGED_DIFF_SHA: <64-hex sha256 or "none">   (always present; verifies unstaged content hasn't been mutated — applies in unstaged and both modes)
 RESULT_BAIL_REASON: <one-line free-form prose>        (present only when status=bail; for human consumption — NEVER substring-matched for control flow)
-RESULT_BAIL_CATEGORY: tooling | judgment | env | budget  (present only when status=bail; structured enum that gates recovery-via-inline eligibility)
+RESULT_BAIL_CATEGORY: tooling | judgment | env | budget | policy  (present only when status=bail; structured enum that gates recovery-via-inline eligibility; `policy` is dispatcher-only — emitted when an external org-policy gate blocks merge that pr-grind cannot resolve via fix-rounds or wait-rounds, e.g. required-approver gap)
 ```
 
 **Stdout-parse fallback to the dispatcher-allocated `RESULT_FILE`:** if scanning the worker's stdout for `^RESULT_<NAME>: ` produces no `RESULT_STATUS` after alias resolution **OR** produces a `RESULT_STATUS` whose value isn't one of `clean`, `needs_more`, `bail`, DO NOT immediately bail. First try reading `$RESULT_FILE` (the unique path you allocated in the context block above); if it exists and yields a `RESULT_STATUS` whose value IS one of the three canonical values (after the same alias resolution and last-occurrence rules), use those tags. The worker writes this file immediately before stdout emission per the contract in `agents/pr-grinder.md`, so it should be present on the filesystem even when stdout was truncated, reformatted by the SDK, polluted by mid-prompt output, OR contained a malformed `RESULT_STATUS` value. Only bail "subagent output unparseable" if BOTH stdout and the file fail to yield a `RESULT_STATUS` with a canonical value.
@@ -1101,7 +1118,11 @@ if [ "$FAILED" -gt 0 ]; then
 fi
 ```
 
-**Write the pr-grind-clean marker (REQUIRED — pre-merge gate checks `.claude/` at the REPO ROOT of the worktree the merge runs in):**
+<EXTREMELY-IMPORTANT>
+YOU MUST run the marker-write below and the `gh pr merge` invocation in TWO SEPARATE Bash tool calls. Do NOT combine them with `&&`, `;`, or a single multi-line command, no matter how natural the chain looks while reading this SKILL.md. The pre-merge gate (`hooks/gate-scripts/pre-merge-gate.sh`) is a PreToolUse hook — it fires BEFORE the bash runs, sees `gh pr merge` in the command argv, looks for `.claude/pr-grind-clean.local` on disk at that moment, and blocks the entire tool call when the marker isn't there yet. If you chain them, the gate parses the merge subcommand, finds no marker (the `echo` hasn't run), and blocks the whole call — NONE of the bash executes, the marker is never created, and the operator sees a misleading "pr-grind has not declared this PR clean" error after pr-grind just finished successfully. This already happened on PR #93 (2026-05-12). Always: marker write completes → next Bash call runs the merge.
+</EXTREMELY-IMPORTANT>
+
+**Write the pr-grind-clean marker (REQUIRED — pre-merge gate checks `.claude/` at the REPO ROOT of the worktree the merge runs in). Run this as its own Bash tool call:**
 ```bash
 REPO_ROOT=$(git rev-parse --show-toplevel)
 mkdir -p "$REPO_ROOT/.claude"
@@ -1109,7 +1130,113 @@ echo "<PR_NUMBER>" > "$REPO_ROOT/.claude/pr-grind-clean.local"
 rm -f "$REPO_ROOT/.claude/pr-pending-grind.local"
 ```
 
-**Default: merge, then clean up the worktree (skip cleanup with `--no-worktree`):**
+**Approver-Gap Detection (run BEFORE the merge attempt):**
+
+After CI is green, threads are resolved, and bot acks are HEAD, GitHub may still reject the merge because branch protection demands `required_approving_review_count >= 1` human APPROVED reviews the author cannot self-provide. The dispatcher detects this structural gap up front so the operator sees a tailored decision message instead of a raw `gh pr merge` failure.
+
+**The detection is scoped narrowly:** only the `required_approving_review_count` axis qualifies, and only when CI is green AND every required status check has passed. Other branch-protection failures (failing required checks, missing required signatures, etc.) are NOT approver-gap bails — they surface via their existing paths.
+
+The detection algorithm lives at `scripts/approver-gap-detect.sh` (single source of truth, same factoring pattern as `scripts/ack-ledger.sh`). Callers compose the inputs from `gh api`, export them, and switch on the script's JSON decision:
+
+```bash
+PR=<PR_NUMBER>
+OWNER=<owner>
+REPO=<repo>
+
+BRANCH=$(gh pr view "$PR" --json baseRefName -q .baseRefName 2>/dev/null || echo "")
+AUTHOR=$(gh pr view "$PR" --json author -q .author.login 2>/dev/null || echo "")
+
+# Compose the four input JSON blobs / status flags the detection script
+# consumes (see scripts/approver-gap-detect.sh header for the contract).
+# Empty/missing inputs degrade the decision toward "surface-decision" or
+# "no-gap"; the script NEVER auto-escalates without complete inputs.
+BRANCH_RULES_JSON=""
+if [ -n "$BRANCH" ]; then
+  BRANCH_RULES_JSON=$(gh api "repos/$OWNER/$REPO/rules/branches/$BRANCH" 2>/dev/null || echo "")
+fi
+PR_REVIEWS_JSON=$(gh api "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null || echo "")
+AUTHOR_PERM_JSON=""
+if [ -n "$AUTHOR" ]; then
+  AUTHOR_PERM_JSON=$(gh api "repos/$OWNER/$REPO/collaborators/$AUTHOR/permission" 2>/dev/null || echo "")
+fi
+AUDIT_WORKFLOW_PRESENT=0
+if gh api "repos/$OWNER/$REPO/contents/.github/workflows/bypass-audit.yml" >/dev/null 2>&1; then
+  AUDIT_WORKFLOW_PRESENT=1
+fi
+# Caller asserts CI/bots clean: the Completion path runs this script only
+# after the `gh pr checks` verification + `scripts/ack-ledger.sh` re-query
+# both pass. If either fails earlier, the script is not invoked at all.
+CI_AND_BOTS_CLEAN=1
+# --admin-on-approver-gap flag from the pr-grind invocation. Off by default.
+ADMIN_FLAG_PASSED="${ADMIN_FLAG_PASSED:-0}"
+
+export BRANCH_RULES_JSON PR_REVIEWS_JSON AUTHOR_PERM_JSON \
+       AUDIT_WORKFLOW_PRESENT CI_AND_BOTS_CLEAN ADMIN_FLAG_PASSED
+
+GAP_DECISION_JSON=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/approver-gap-detect.sh" 2>/dev/null \
+  || echo '{"decision":"no-gap","reason":"script invocation failed; surface real gh error"}')
+GAP_DECISION=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.decision' 2>/dev/null || echo no-gap)
+```
+
+**Decision tree** (based on `GAP_DECISION`):
+
+- **`no-gap`** → fall through to the normal `gh pr merge` path below.
+- **`surface-decision`** → BAIL with `RESULT_BAIL_CATEGORY=policy` and surface the operator-decision message (template below). Excluded from MAX_FIX/MAX_WAIT accounting. The `audit_workflow_present` field in the JSON controls whether `[admin]` appears as the first/default option.
+- **`auto-admin-merge`** → log to `.claude/bypass-log.jsonl` and run `gh pr merge <PR> --squash --delete-branch --admin`. The script ONLY emits this when ALL eligibility gates pass: admin flag passed AND CI/bots clean (asserted by caller) AND author has admin/maintain AND `bypass-audit.yml` exists. Fail-CLOSED on any missing condition.
+
+**Bypass-log format** (append-only JSONL; gitignored under `.claude/`):
+
+```bash
+TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
+mkdir -p "$REPO_ROOT/.claude"
+jq -c -n \
+  --arg ts "$TS" \
+  --arg event "pr-grind-admin-on-approver-gap" \
+  --arg pr "$PR" \
+  --arg owner "$OWNER" \
+  --arg repo "$REPO" \
+  --arg branch "$BRANCH" \
+  --arg author "$AUTHOR" \
+  --arg author_perm "$AUTHOR_PERM" \
+  --argjson required "$REQUIRED_APPROVALS" \
+  --argjson approvals "$HUMAN_APPROVALS" \
+  --arg head_sha "$HEAD_SHA" \
+  '{ts:$ts, event:$event, pr:$pr|tonumber, owner:$owner, repo:$repo, branch:$branch, author:$author, author_perm:$author_perm, required_approving_review_count:$required, human_approvals:$approvals, head_sha:$head_sha}' \
+  >> "$REPO_ROOT/.claude/bypass-log.jsonl"
+gh pr merge "$PR" --squash --delete-branch --admin
+```
+
+**Operator-decision message template** (rendered to stdout on BAIL; `[admin]` is omitted when no audit workflow exists):
+
+```text
+pr-grind: PR is functionally clean (CI green, bots ack HEAD, threads resolved)
+but branch protection requires {N} human APPROVED review(s) the author
+cannot self-provide. Project has bypass-audit.yml — admin-merge will
+auto-file an audit issue.
+
+Options:
+  [admin]        gh pr merge {N} --squash --delete-branch --admin
+  [wait]         exit; wait for a human reviewer
+  [add-reviewer] gh pr edit {N} --add-reviewer <user>; exit
+```
+
+When `AUDIT_WORKFLOW_PRESENT=0`, omit `[admin]` from the first/default position and prepend a stronger warning that no audit trail exists:
+
+```text
+pr-grind: PR is functionally clean (CI green, bots ack HEAD, threads resolved)
+but branch protection requires {N} human APPROVED review(s) the author
+cannot self-provide. ⚠️  This repo has NO bypass-audit.yml — an admin-merge
+here would leave NO audit trail. Strongly consider [add-reviewer] or [wait].
+
+Options:
+  [wait]         exit; wait for a human reviewer
+  [add-reviewer] gh pr edit {N} --add-reviewer <user>; exit
+  [admin]        gh pr merge {N} --squash --delete-branch --admin
+                   (no audit trail — proceed only with explicit operator authorization)
+```
+
+**Default: merge, then clean up the worktree (skip cleanup with `--no-worktree`). Run this as its own Bash tool call — DO NOT prefix it with the marker-write block above; see the `<EXTREMELY-IMPORTANT>` block immediately preceding "Write the pr-grind-clean marker" for why:**
 ```bash
 gh pr merge <PR_NUMBER> --squash --delete-branch
 
@@ -1173,6 +1300,8 @@ PR #<N> is clean after <rounds> round(s).
 | `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
 | `--comments-only` | Only address comments, ignore CI. Forces inline mode (same reason as `--ci-only`). | Off |
 | `--no-recovery-inline` | Disable the bounded RECOVERY_INLINE carve-out (Bug 2). When passed, any worker bail goes straight to BAIL regardless of inflight state or bail reason — useful when you want the worker's bail to surface immediately for human review and don't trust the dispatcher to commit-and-push on the worker's behalf. | Off (recovery enabled, capped at 1 per invocation) |
+| `--admin-on-approver-gap` | Opt-in auto-escalation when the approver gap is the sole remaining merge-gate blocker. Eligibility (ALL must hold): CI green, bots ack HEAD, all threads resolved, no failing required checks; author has `admin` or `maintain` repo permission; `.github/workflows/bypass-audit.yml` exists in the repo. With all gates green, the dispatcher runs `gh pr merge <PR> --squash --delete-branch --admin` and logs the event to `.claude/bypass-log.jsonl`. **Fail-CLOSED when no audit workflow exists** — the flag is ignored without a trail and the dispatcher surfaces the operator-decision message instead. Off by default; this flag is the only way pr-grind ever bypasses required-approver count. | Off (surfaces decision message) |
+| `--copilot-auto-resolve` | Opt-in: when Copilot's HEAD ack is stale after a force-push AND every Copilot thread is anchored to lines the new HEAD touched AND the worker emitted substantive fixes for those lines, auto-resolve the threads with an `addressed in <SHA>` reply + `resolveReviewThread` mutation. Flips ack-ledger tier A to a HEAD-ack via the resolved-threads path. Disabled by default while the test fixtures stabilize; promote to default once fixtures 5-7 (see `tests/test-copilot-resolve.sh`) have a track record. | Off |
 
 ## User-Created Skip File
 

@@ -561,6 +561,7 @@ else
     }
   ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" 2>/dev/null \
     | jq -cs '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+      | select(. != null)
       | select(.comments.nodes[0].author.login == "copilot-pull-request-reviewer" or .comments.nodes[0].author.login == "copilot-pull-request-reviewer[bot]")
       | select(.isResolved == false and .isOutdated == false)
       | {threadId: .id, path: .path, line: .line}]' 2>/dev/null || echo '[]')

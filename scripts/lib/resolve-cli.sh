@@ -255,9 +255,9 @@ resolve_role_cli() {
     blueprint-review.reviewer_1) is_cli_available gemini && echo "gemini" && return ;;
     blueprint-review.reviewer_2) is_cli_available codex && echo "codex" && return ;;
     blueprint-review.arbiter)    echo "builtin" && return ;;  # arbiter is always Claude
-    council.pragmatist)         is_cli_available gemini && echo "gemini" && return ;;
-    council.critic)             is_cli_available codex && echo "codex" && return ;;
-    council.researcher)         is_cli_available droid && echo "droid" && return ;;
+    council.pragmatist)         is_cli_available gemini && echo "gemini" && return; echo "none" && return ;;
+    council.critic)             is_cli_available codex  && echo "codex"  && return; echo "none" && return ;;
+    council.researcher)         is_cli_available droid  && echo "droid"  && return; echo "none" && return ;;
   esac
 
   # Step 5: Auto-detect

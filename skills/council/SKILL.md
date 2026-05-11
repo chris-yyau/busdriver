@@ -61,7 +61,7 @@ Launch all four external agents in parallel. Use a **single message with multipl
 
 **4a. Fresh Claude (Skeptic)** — via Agent tool (starts with clean memory):
 
-```
+```text
 Agent(
   description="Council Skeptic",
   prompt="You are the Skeptic on a council of five AI advisors. [QUESTION + CONTEXT]. Your role is Skeptic — you have NO prior context about this conversation. Focus on: challenging assumptions, questioning whether the problem is framed correctly, and proposing the simplest possible alternative. If the question itself is wrong or the answer is simpler than expected, say so. Give your perspective as: 1. Position (1-2 sentences) 2. Reasoning (3 points) 3. Risk 4. Surprise. Under 300 words. Be opinionated, no hedging.",
@@ -148,7 +148,7 @@ You are both a council member AND the synthesizer. This is a conflict of interes
 
 **Compressed format (always use this):**
 
-```
+```markdown
 ## Council: [short question]
 
 **Claude (Architect):** [position in 1-2 sentences]

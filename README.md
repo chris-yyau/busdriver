@@ -109,6 +109,8 @@ By default, all features share the same CLI. For per-role control, create `.clau
 
 Each route is an array. For `blueprint-review` and `litmus`, the array is an ordered fallback chain (first element primary, later elements tried if primary is missing). For `council` roles, each array has a single element — there is no fallback chain; if the configured CLI is missing, that voice is skipped and noted in the report. Roles not listed inherit from `defaults`. User-level defaults go in `~/.claude/busdriver.json`.
 
+> **Migration note:** If your `busdriver.json` contains `roundtable.pragmatist` or `roundtable.critic` keys, rename them to `council.pragmatist` and `council.critic` respectively. Old keys are silently ignored.
+
 **Precedence:** env var > project config > user config > defaults > auto-detect
 
 | Feature | Role | Config key | Default |
@@ -134,7 +136,7 @@ Run `node scripts/doctor.js` to see your effective CLI for each role.
 | **[Amp](https://ampcode.com)** | Any configurable role | See https://ampcode.com |
 | **[OpenCode](https://github.com/opencode-ai/opencode)** | Any configurable role | `go install github.com/opencode-ai/opencode@latest` |
 
-**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. The blueprint review uses its fallback chain (gemini → droid for reviewer_1, codex → amp for reviewer_2). The council has no fallback chain — each role maps to exactly one CLI; missing CLIs mean that voice is skipped from the report. Architect (in-context Claude) and Skeptic (Agent tool) always run, so the council convenes with at minimum 2 voices (40% of full strength) even if all 3 external CLIs are missing. Core commit pipeline always works.
+**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. The blueprint review uses its fallback chain (gemini → droid for reviewer_1, codex → amp for reviewer_2). The council has no fallback chain — each role maps to exactly one CLI; missing CLIs mean that voice is skipped from the report. Architect (in-context Claude) always runs, and Skeptic (Agent tool) typically runs, so the council usually convenes with at least 2 voices (40% of full strength) even if all 3 external CLIs are missing; if Skeptic is unavailable (rate limit/timeout), it can run with Architect alone. Core commit pipeline always works.
 
 ## Install
 

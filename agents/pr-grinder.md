@@ -36,7 +36,16 @@ SPAWNED_ISSUES=()       # accumulator for out-of-scope-acknowledged spawn flow (
                         # joined to RESULT_ISSUES_SPAWNED at round end (or "none" if empty)
 ```
 
-If you bail before Step 6.5 (the real ack-ledger compute) or before Step 2.6 (the per-bot enumeration), emit `$ACKS` as `RESULT_REVIEWER_ACKS` and `$BOT_LEDGER` as `RESULT_BOT_LEDGER`. The dispatcher's invariant-2 gate (clean + any `stale` → BAIL) only fires on `clean` status, so an all-`none` early bail with `status=bail` won't accidentally trip it. The dispatcher's invariant-3 gate keys on **`n_total == 0` for any HEAD-acked bot**, not on the disposition string — so the `0/0:none` shape is fine for bots that didn't post (no HEAD ack means no gate trigger), but a `0/0:<anything>` shape for a bot whose ack value is a SHA trips the gate regardless of what's after the colon. Emitting these defaults also keeps both tags non-empty, which the dispatcher's tag parser requires.
+If you bail before Step 6.5 (the real ack-ledger compute) or before Step 2.6 (the per-bot enumeration), emit ALL of the following from the defaults block above:
+
+- `$ACKS` as `RESULT_REVIEWER_ACKS`
+- `$BOT_LEDGER` as `RESULT_BOT_LEDGER`
+- `$INFLIGHT_CHANGES` as `RESULT_INFLIGHT_CHANGES`
+- `"none"` as `RESULT_ISSUES_SPAWNED` (the spawn array `${SPAWNED_ISSUES[@]}` is empty if you haven't reached Step 3; join with `,` per the contract — an empty array joins to the empty string, which the dispatcher's parser rejects, so emit the literal `"none"` sentinel instead)
+
+All four tags are documented "always present" in the Output Format section below; the dispatcher's parser depends on each one being non-empty, and the early-bail path was the easiest place to forget that. Empirical proof: the first /pr-grind invocation against the contract (PR #89) bailed mid-Step 3 and omitted `RESULT_ISSUES_SPAWNED` entirely — the dispatcher's backward-compat ("missing → 0") caught it gracefully, but the worker contract was internally inconsistent.
+
+The dispatcher's invariant-2 gate (clean + any `stale` → BAIL) only fires on `clean` status, so an all-`none` early bail with `status=bail` won't accidentally trip it. The dispatcher's invariant-3 gate keys on **`n_total == 0` for any HEAD-acked bot**, not on the disposition string — so the `0/0:none` shape is fine for bots that didn't post (no HEAD ack means no gate trigger), but a `0/0:<anything>` shape for a bot whose ack value is a SHA trips the gate regardless of what's after the colon. Emitting these defaults also keeps all four tags non-empty, which the dispatcher's tag parser requires.
 
 ### Step 0 — Mandatory Pre-Flight Read (DO NOT SKIP)
 
@@ -189,16 +198,26 @@ Conceptually `BOT_REVIEWS[<bot>] = <combined body>`. Track `n_total` per bot —
 
 **DEFAULT IS FIX.** Out-of-scope dismissal is the carve-out, not the default. Only classify a real finding as `out-of-scope-acknowledged` (see triage row below + workflow subsection) when ≥80% confident the fix would either expand scope beyond the PR's intent or require off-codebase work. False positives must be substantively rebutted by citing the code, not assumed away. Per-round cap: ≤3 dismissals (any reason combined). If you reach 3 in this round, default-fix any remaining findings instead of dismissing more — additional dismissals consume cumulative budget that the dispatcher gates at ≤5 across the whole grind (Invariant 4 in `skills/pr-grind/SKILL.md`).
 
-**Per-bot ledger output.** As you triage each bot, record a `RESULT_BOT_LEDGER` entry of the form `<login>=<n_actionable>/<n_total>:<one-line-disposition>`. Disposition values are free-form summaries but should fall into one of these shapes so the dispatcher can read them:
+**Per-bot ledger output.** As you triage each bot, record a `RESULT_BOT_LEDGER` entry of the form `<login>=<n_actionable>/<n_total>:<one-line-disposition>`.
+
+**`n_actionable` is the count of findings that received an explicit per-finding decision** — either a fix OR a skip-with-reason (including out-of-scope-acknowledged dismissals, which add `+scope-skipped:<reason>:<count>` segments to the disposition). It is NOT the count of fixes only. The "Per-finding decision required" rule above means every actionable finding the worker identified MUST show up in `n_actionable`; any actionable finding without a decision is the silent-failure mode the contract exists to prevent.
+
+**`n_total` is the count of distinct review/comment artifacts examined** (each Source 2 thread, each Source 3 review entry, and each Source 4 comment counts as 1 — see the "Track `n_total` per bot" paragraph in Step 2.6 for the full definition).
+
+Worked example: a bot posts 4 artifacts where the worker fixes 1 finding, dismisses 2 via out-of-scope-acknowledged, and the 4th is a non-actionable summary review entry. Ledger: `<bot>=3/4:fixed <brief>+scope-skipped:<reason>:1+scope-skipped:<reason>:1` — three findings received decisions (1 fix + 2 dismissals), four artifacts examined. A bot whose 2 findings were both fixed cleanly with no non-actionable artifacts: `<bot>=2/2:fixed <brief>`.
+
+Disposition values are free-form summaries but should fall into one of these shapes so the dispatcher can read them:
 
 - `approved` — bot APPROVED with no findings body (`n_actionable=0`, `n_total>=1`)
 - `no-findings` — bot reviewed/commented but no actionable findings after enumeration
 - `fixed <brief>` — worker accepted findings and applied fixes
-- `skipped <reason>` — worker enumerated but decided not to fix (e.g., pre-existing, scope creep, free-plan summary)
+- `skipped <reason>` — worker enumerated but decided not to fix (e.g., pre-existing, free-plan summary). Use this for non-out-of-scope skips; out-of-scope dismissals append `+scope-skipped:<reason>:<count>` segments to whatever primary disposition applies (e.g., `fixed <brief>+scope-skipped:schema-refactor:1`)
 - `errored` — bot's review was an infra error (rate-limit, timeout)
 - `none` — bot didn't post on this PR (`n_actionable=0`, `n_total=0`)
 
-For each `out-of-scope-acknowledged` dismissal you record this round, append `+scope-skipped:<reason>:<count>` segments to the bot's disposition. Multiple segments stack with `+` (NOT `,` — the outer entry separator is `,` and a comma inside a disposition would corrupt the parse). The `+` joins are bare, no surrounding whitespace; example: `coderabbitai=2/4:fixed 2+scope-skipped:schema-refactor:1+scope-skipped:external-research:1`. The dispatcher's Invariant 4 sums these counts across all bots and all rounds. **Reserved character:** `+` is now an inner separator inside dispositions — do NOT use it for any other purpose in primary disposition prose. If a fix summary needs to reference a literal plus (e.g., "fix Math.max+Math.min"), reword it (e.g., "fix Math.max and Math.min") to avoid ambiguity with the segment separator. Same shape as the prior comma-reservation rule — see the `RESULT_BOT_LEDGER` doc in Output Format.
+For each `out-of-scope-acknowledged` dismissal you record this round, append `+scope-skipped:<reason>:<count>` segments to the bot's disposition. Multiple segments stack with `+` (NOT `,` — the outer entry separator is `,` and a comma inside a disposition would corrupt the parse). The `+` joins are bare, no surrounding whitespace; example: `coderabbitai=2/4:fixed 2+scope-skipped:schema-refactor:1+scope-skipped:external-research:1`. The dispatcher's Invariant 4 sums these counts across all bots and all rounds.
+
+**Reserved string: `+scope-skipped:` (not bare `+`).** The dispatcher's Invariant 4 regex is `scope-skipped:[a-z-]+:(\d+)`, anchored to the literal `scope-skipped:` prefix. Bare `+` in primary disposition prose cannot false-match — only a `+` immediately followed by `scope-skipped:<reason>:<digits>` does. So a disposition like `fixed jq paths+invariant 4+mixed test` is functionally safe (no `+scope-skipped:` substring). That said, prefer `;` or "and" as primary-prose joiners — they're unambiguous for a reader scanning for scope-skipped segments. **Earlier drafts forbade `+` entirely as a disposition character; that was over-broad and got violated on the first /pr-grind dispatch against this contract.** Only the marker substring `+scope-skipped:<reason>:<digits>` is the dispatcher-visible enforcement boundary; primary prose is free.
 
 `<n_actionable>=0` with `<n_total>=0` is reserved for "bot didn't post" — never use it for "bot posted but I didn't look", which is the bug the dispatcher's invariant-3 gate catches.
 

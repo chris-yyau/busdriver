@@ -36,14 +36,16 @@ SPAWNED_ISSUES=()       # accumulator for out-of-scope-acknowledged spawn flow (
                         # joined to RESULT_ISSUES_SPAWNED at round end (or "none" if empty)
 ```
 
-If you bail before Step 6.5 (the real ack-ledger compute) or before Step 2.6 (the per-bot enumeration), emit ALL of the following from the defaults block above:
+If you bail before Step 6.5 (the real ack-ledger compute) or before Step 2.6 (the per-bot enumeration), emit these four defaults from the block above:
 
 - `$ACKS` as `RESULT_REVIEWER_ACKS`
 - `$BOT_LEDGER` as `RESULT_BOT_LEDGER`
 - `$INFLIGHT_CHANGES` as `RESULT_INFLIGHT_CHANGES`
 - `"none"` as `RESULT_ISSUES_SPAWNED` (the spawn array `${SPAWNED_ISSUES[@]}` is empty if you haven't reached Step 3; join with `,` per the contract — an empty array joins to the empty string, which the dispatcher's parser rejects, so emit the literal `"none"` sentinel instead)
 
-All four tags are documented "always present" in the Output Format section below; the dispatcher's parser depends on each one being non-empty, and the early-bail path was the easiest place to forget that. Empirical proof: the first /pr-grind invocation against the contract (PR #89) bailed mid-Step 3 and omitted `RESULT_ISSUES_SPAWNED` entirely — the dispatcher's backward-compat ("missing → 0") caught it gracefully, but the worker contract was internally inconsistent.
+The remaining four "always present" inflight tags — `RESULT_STAGED_FILES`, `RESULT_UNSTAGED_FILES`, `RESULT_STAGED_DIFF_SHA`, `RESULT_UNSTAGED_DIFF_SHA` — are NOT in this defaults list because they're populated by the separate **mandatory pre-bail snapshot rule** (see "Bail Triggers" section below, "Mandatory pre-bail snapshot rule" paragraph). That rule requires invoking Step 6's snapshot block before emitting any bail (including these early-bail paths); the snapshot runs unconditionally and produces `none` defaults for empty working trees. So the full bail emission is: these four defaults from the init block PLUS the five inflight tags from the snapshot block — nine emissions total, but produced by two distinct mechanisms.
+
+All eight tags ("`-INFLIGHT_CHANGES` is shared between the init default and the snapshot output; the snapshot block overwrites it) are documented "always present" in the Output Format section below; the dispatcher's parser depends on each one being non-empty, and the early-bail path was the easiest place to forget that. Empirical proof: the first /pr-grind invocation against the contract (PR #89) bailed mid-Step 3 and omitted `RESULT_ISSUES_SPAWNED` entirely — the dispatcher's backward-compat ("missing → 0") caught it gracefully, but the worker contract was internally inconsistent.
 
 The dispatcher's invariant-2 gate (clean + any `stale` → BAIL) only fires on `clean` status, so an all-`none` early bail with `status=bail` won't accidentally trip it. The dispatcher's invariant-3 gate keys on **`n_total == 0` for any HEAD-acked bot**, not on the disposition string — so the `0/0:none` shape is fine for bots that didn't post (no HEAD ack means no gate trigger), but a `0/0:<anything>` shape for a bot whose ack value is a SHA trips the gate regardless of what's after the colon. Emitting these defaults also keeps all four tags non-empty, which the dispatcher's tag parser requires.
 

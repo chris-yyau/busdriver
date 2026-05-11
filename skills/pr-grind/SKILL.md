@@ -1168,6 +1168,13 @@ fi
 # both pass. If either fails earlier, the script is not invoked at all.
 CI_AND_BOTS_CLEAN=1
 # --admin-on-approver-gap flag from the pr-grind invocation. Off by default.
+# Flag-to-env translation contract: the dispatcher's outer argument-parsing
+# stage (the same stage that resolves --max-fix / --max-wait / --opus) MUST
+# export ADMIN_FLAG_PASSED=1 iff `--admin-on-approver-gap` was passed to
+# pr-grind, otherwise leave it unset (default 0). Same shape as the
+# COPILOT_AUTO_RESOLVE env var documented in "Dispatch a Round" — both new
+# flags follow the existing pattern of explicit env-var passthrough into
+# the subprocess that consumes them (the script here, the worker there).
 ADMIN_FLAG_PASSED="${ADMIN_FLAG_PASSED:-0}"
 
 export BRANCH_RULES_JSON PR_REVIEWS_JSON AUTHOR_PERM_JSON \
@@ -1187,8 +1194,20 @@ GAP_DECISION=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.decision' 2>/dev/null 
 **Bypass-log format** (append-only JSONL; gitignored under `.claude/`):
 
 ```bash
+# Self-contained: re-derive every value the bypass-log needs rather than
+# relying on caller-scope state. Three fields live ONLY inside the script's
+# emitted JSON (.author_perm, .required_approving_review_count,
+# .human_approvals — see scripts/approver-gap-detect.sh "Output"); extract
+# them from $GAP_DECISION_JSON before composing the log line. $REPO_ROOT is
+# recomputed locally because the marker-write block above runs as its own
+# Bash tool call (see the EXTREMELY-IMPORTANT block before the marker-write
+# subsection) and its variables don't survive into a subsequent call.
+REPO_ROOT=$(git rev-parse --show-toplevel)
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
+AUTHOR_PERM=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.author_perm // "read"')
+REQUIRED_APPROVALS=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.required_approving_review_count // 0')
+HUMAN_APPROVALS=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.human_approvals // 0')
 mkdir -p "$REPO_ROOT/.claude"
 jq -c -n \
   --arg ts "$TS" \

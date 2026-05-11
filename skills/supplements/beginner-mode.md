@@ -95,4 +95,4 @@ If a term comes up that's outside the captured knowledge gaps, default to NOT gl
 
 - **brainstorming**: glossing applies to clarifying questions, approach descriptions, and design-section presentations. Step 5.5 (offer grill) and Step 6 (write design doc) are not affected.
 - **grill-me**: glossing applies to recommended-answer blocks, option tables, and option descriptions. The closing sentinel block (Key Decisions) is NOT itself glossed — it's a clean artifact.
-- **roundtable**: out of scope; if added later, register `roundtable` as a target.
+- **council**: out of scope; if added later, register `council` as a target.

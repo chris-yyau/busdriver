@@ -33,8 +33,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Codex Rescue** | delegate task to Codex | `/codex:rescue` (official plugin) |
 | **External CLI** | send to codex/gemini/droid/amp/opencode | `dispatch-cli` |
 | **Multi-Model** | multi-model planning | `/multi-plan`, `/multi-backend`, `/multi-frontend`, `/multi-execute`, `/multi-workflow` |
-| **Roundtable** | perspectives, group wisdom, tradeoffs | `roundtable` (4-voice: Architect + Skeptic + Pragmatist + Critic) |
-| **Council** | tradeoff, ambiguous decision, structured deliberation | `council` |
+| **Council** | perspectives, group wisdom, tradeoffs, ambiguous decision, structured deliberation | `council` (5-voice: Architect + Skeptic + Pragmatist + Critic + Researcher) |
 | **Communication** | email triage, Slack, inbox | `chief-of-staff` agent |
 | **Documents** | .docx/.xlsx/.pptx/.pdf, OCR | `nutrient-document-processing` |
 | **Claude API/SDK** | imports anthropic/claude_agent_sdk | `claude-api-patterns` |
@@ -140,10 +139,10 @@ Available in any pipeline phase:
 
 ## Learning System
 
-**Trust gradient** (highest → lowest): `busdriver:reflect` (manual, user confirms) → Lesson capture (roundtable/review delta) → `/learn`+`/learn-eval` (manual ECC patterns) → ECC v2 observer (automatic, requires `/promote`).
+**Trust gradient** (highest → lowest): `busdriver:reflect` (manual, user confirms) → Lesson capture (council/review delta) → `/learn`+`/learn-eval` (manual ECC patterns) → ECC v2 observer (automatic, requires `/promote`).
 
 **ECC v2 observer** writes to `~/.claude/homunculus/projects/<hash>/instincts/personal/` with `source: session-observation`. Quarantine: `session-observation` requires `/promote` before loading; `distill`/`inherited` auto-load. `load-orchestrator.sh` loads instincts with confidence ≥ 0.7, max 20.
 
-**Lesson capture:** Save when roundtable/review produced a recommendation delta. Path: `~/.claude/notes/lesson-{roundtable|review}-{date}-{slug}.md`. <150 words.
+**Lesson capture:** Save when council/review produced a recommendation delta. Path: `~/.claude/notes/lesson-{council|review}-{date}-{slug}.md`. <150 words.
 
 **Skills/Commands:** `busdriver:reflect`, `/instinct-status`, `/promote`, `/evolve`, `/projects`, `/learn`, `/learn-eval`.

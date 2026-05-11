@@ -8,7 +8,8 @@
     "litmus.reviewer": ["codex"],
     "blueprint-review.reviewer_1": ["gemini", "droid"],
     "blueprint-review.reviewer_2": ["codex", "amp"],
-    "roundtable.pragmatist": ["gemini", "droid"],
-    "roundtable.critic": ["codex", "amp"]
+    "council.pragmatist": ["gemini"],
+    "council.critic": ["codex"],
+    "council.researcher": ["droid"]
   }
 }

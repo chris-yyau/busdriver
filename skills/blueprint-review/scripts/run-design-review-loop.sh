@@ -1,7 +1,7 @@
 #!/bin/bash
 # Three-tier design review: Gemini + Codex (parallel) → Claude arbiter
 #
-# Architecture (post-A++ roundtable fix, 2026-03-27):
+# Architecture (post-A++ council fix, 2026-03-27):
 #   - Gemini + Codex run in parallel as independent reviewers
 #   - Claude validates their findings against the codebase (arbiter)
 #   - Claude's verdict is the sole convergence signal
@@ -168,7 +168,7 @@ else
   log_info "  Reviewer 1: $REVIEWER_1_CLI"
   log_info "  Reviewer 2: $REVIEWER_2_CLI"
 
-  # Duplicate detection (roundtable-validated decision 4c)
+  # Duplicate detection (council-validated decision 4c)
   DUPLICATE_MODE=false
   if [[ "$REVIEWER_1_CLI" == "$REVIEWER_2_CLI" && "$REVIEWER_1_CLI" != "none" && "$REVIEWER_1_CLI" != "builtin" && ! "$REVIEWER_1_CLI" =~ ^missing: ]]; then
     DUPLICATE_MODE=true

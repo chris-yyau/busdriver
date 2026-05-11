@@ -11,14 +11,14 @@
 
 | File | Targets | Source | Added |
 |------|---------|--------|-------|
-| `anti-sycophancy.md` | `busdriver:brainstorming`, `roundtable` | gstack /office-hours | 2026-03-23 |
+| `anti-sycophancy.md` | `busdriver:brainstorming`, `council` | gstack /office-hours | 2026-03-23 |
 | `llm-security-audit.md` | `security-reviewer` agent | gstack /cso Phase 7 | 2026-03-23 |
 | `skill-supply-chain.md` | `busdriver:security-scan` | gstack /cso Phase 8 | 2026-03-23 |
 | `diff-aware-qa.md` | `e2e-runner` agent | gstack /qa | 2026-03-23 |
 | `confidence-gated-findings.md` | `security-reviewer` agent, `security-scan` skill | gstack /cso | 2026-03-24 |
 | `three-layer-knowledge.md` | `busdriver:brainstorming`, `busdriver:writing-plans` | gstack shared | 2026-03-24 |
 | `spec-review-convergence.md` | `busdriver:brainstorming`, `blueprint-review` skill | gstack /office-hours | 2026-03-24 |
-| `nutrient-api-terms.md` | `busdriver:nutrient-document-processing` | fork-edit migration (roundtable 2026-03-24) | 2026-03-24 |
+| `nutrient-api-terms.md` | `busdriver:nutrient-document-processing` | fork-edit migration (council 2026-03-24) | 2026-03-24 |
 | `context-degradation-tiers.md` | `busdriver:context-budget`, `busdriver:strategic-compact`, `busdriver:dispatching-parallel-agents`, `busdriver:subagent-driven-development` | GSD references/context-budget.md (adapted) | 2026-04-06 |
 | `thinking-models-planning.md` | `busdriver:writing-plans`, `busdriver:brainstorming`, `busdriver:executing-plans` | GSD references/thinking-models-planning.md (adapted) | 2026-04-08 |
 | `gates-taxonomy.md` | `busdriver:orchestrator`, `busdriver:litmus`, `busdriver:blueprint-review`, `busdriver:verification-loop`, `busdriver:finishing-a-development-branch` | GSD references/gates.md (adapted) | 2026-04-08 |
@@ -36,11 +36,11 @@
 | `directory-freeze.md` | `busdriver:systematic-debugging` | "freeze", "lock this dir" | gstack /freeze | 2026-03-24 |
 | `beginner-mode.md` | `busdriver:brainstorming`, `busdriver:grill-me` | "I'm new to this", "explain like I'm a beginner", "beginner mode", "what does X mean", "I don't understand X" + auto-memory user-knowledge-gap entries | in-house (grill-me integration) | 2026-05-05 |
 
-## Rejected (Roundtable Decision)
+## Rejected (Council Decision)
 
-| Idea | Reason | Roundtable Date |
+| Idea | Reason | Council Date |
 |------|--------|-------------|
-| Cognitive pattern libraries | Convergent reasoning risk in 4-voice roundtable | 2026-03-23 |
+| Cognitive pattern libraries | Convergent reasoning risk in 4-voice council | 2026-03-23 (pre-Researcher) |
 | Effort compression table | Cargo-cult machinery, fake rigor | 2026-03-24 |
 | Autoplan decision principles | Centralizes taste, governance bloat | 2026-03-24 |
 | Cross-project retrospective | Historical scorekeeping risk | 2026-03-24 |

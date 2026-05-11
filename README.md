@@ -60,7 +60,7 @@ Gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects the 
 
 ### 49 specialized agents
 
-Architect, planner, TDD guide, security reviewer, 9 language-specific reviewers, 8 build resolvers, roundtable (4-voice multi-perspective analysis), and more. They argue with each other so you don't have to.
+Architect, planner, TDD guide, security reviewer, 9 language-specific reviewers, 8 build resolvers, council (5-voice multi-perspective analysis), and more. They argue with each other so you don't have to.
 
 ### 206 skills, 80 commands
 
@@ -100,13 +100,16 @@ By default, all features share the same CLI. For per-role control, create `.clau
   "routes": {
     "blueprint-review.reviewer_1": ["gemini", "droid"],
     "blueprint-review.reviewer_2": ["codex", "amp"],
-    "roundtable.pragmatist": ["gemini", "droid"],
-    "roundtable.critic": ["codex", "amp"]
+    "council.pragmatist": ["gemini"],
+    "council.critic": ["codex"],
+    "council.researcher": ["droid"]
   }
 }
 ```
 
-Each route is an array: first element is primary, second is fallback. Roles not listed inherit from `defaults`. User-level defaults go in `~/.claude/busdriver.json`.
+Each route is an array. For `blueprint-review` and `litmus`, the array is an ordered fallback chain (first element primary, later elements tried if primary is missing). For `council` roles, each array has a single element — there is no fallback chain; if the configured CLI is missing, that voice is skipped and noted in the report. Roles not listed inherit from `defaults`. User-level defaults go in `~/.claude/busdriver.json`.
+
+> **Migration note:** If your `busdriver.json` contains `roundtable.pragmatist` or `roundtable.critic` keys, rename them to `council.pragmatist` and `council.critic` respectively. Old keys are silently ignored.
 
 **Precedence:** env var > project config > user config > defaults > auto-detect
 
@@ -115,10 +118,11 @@ Each route is an array: first element is primary, second is fallback. Roles not 
 | Code review | Reviewer | `litmus.reviewer` | auto |
 | Blueprint review | Reviewer 1 | `blueprint-review.reviewer_1` | gemini |
 | Blueprint review | Reviewer 2 | `blueprint-review.reviewer_2` | codex |
-| Roundtable | Pragmatist | `roundtable.pragmatist` | gemini |
-| Roundtable | Critic | `roundtable.critic` | codex |
+| Council | Pragmatist | `council.pragmatist` | gemini |
+| Council | Critic | `council.critic` | codex |
+| Council | Researcher | `council.researcher` | droid |
 
-Roundtable architect, skeptic, and design-review arbiter are not configurable (they use Claude's Agent tool).
+Council architect, skeptic, and design-review arbiter are not configurable (they use Claude's Agent tool).
 
 Run `node scripts/doctor.js` to see your effective CLI for each role.
 
@@ -126,13 +130,13 @@ Run `node scripts/doctor.js` to see your effective CLI for each role.
 
 | CLI | Used by | Install |
 |-----|---------|---------|
-| **[Codex CLI](https://github.com/openai/codex)** | Code review gate (default), blueprint review, roundtable | `npm install -g @openai/codex` |
-| **[Gemini CLI](https://github.com/google-gemini/gemini-cli)** | Blueprint review, roundtable, code review | `npm install -g @google/gemini-cli` or see repo |
-| **[Droid](https://droid.dev)** | Any configurable role | See https://droid.dev |
+| **[Codex CLI](https://github.com/openai/codex)** | Code review gate (default), blueprint review, council | `npm install -g @openai/codex` |
+| **[Gemini CLI](https://github.com/google-gemini/gemini-cli)** | Blueprint review, council, code review | `npm install -g @google/gemini-cli` or see repo |
+| **[Droid](https://droid.dev)** | Council Researcher (default), any configurable role | See https://droid.dev |
 | **[Amp](https://ampcode.com)** | Any configurable role | See https://ampcode.com |
 | **[OpenCode](https://github.com/opencode-ai/opencode)** | Any configurable role | `go install github.com/opencode-ai/opencode@latest` |
 
-**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. The blueprint review and roundtable degrade gracefully — with only one external CLI, the blueprint review runs single-reviewer mode; with none, those features require manual review. Core commit pipeline always works.
+**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. The blueprint review uses its fallback chain (gemini → droid for reviewer_1, codex → amp for reviewer_2). The council has no fallback chain — each role maps to exactly one CLI; missing CLIs mean that voice is skipped from the report. Architect (in-context Claude) always runs, and Skeptic (Agent tool) typically runs, so the council usually convenes with at least 2 voices (40% of full strength) even if all 3 external CLIs are missing; if Skeptic is unavailable (rate limit/timeout), it can run with Architect alone. Core commit pipeline always works.
 
 ## Install
 
@@ -276,7 +280,7 @@ Use these monthly to identify drift — scanners you keep bypassing (candidates 
 Busdriver learns from its mistakes:
 
 - **Instincts** — Observed patterns from sessions, promoted after human review
-- **Roundtable** — 4-voice multi-perspective analysis (Architect + Skeptic + Pragmatist + Critic)
+- **Council** — 5-voice multi-perspective analysis (Architect + Skeptic + Pragmatist + Critic + Researcher; defaults to Gemini + Codex + Droid)
 - **Lesson capture** — When review finds HIGH+ issues the plan missed, lessons are saved automatically
 - **Reflection** — Manual `/reflect` skill for capturing corrections and feedback
 

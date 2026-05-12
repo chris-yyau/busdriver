@@ -45,7 +45,7 @@ while [[ $# -gt 0 ]]; do
     --result-file) RESULT_FILE="${2:?--result-file requires a value}"; shift 2 ;;
     --model)       MODEL="${2:?--model requires a value}";             shift 2 ;;
     --effort)      EFFORT="${2:?--effort requires a value}";           shift 2 ;;
-    --)            shift; PROMPT="${1:-}"; break ;;
+    --)            shift; PROMPT="$*"; break ;;
     -h|--help)     sed -n '2,/^$/p' "$0" >&2; exit 0 ;;
     *)             echo "[codex-goal-dispatch] unknown arg: $1 (prompt must be after --)" >&2; exit 64 ;;
   esac
@@ -103,7 +103,7 @@ fi
 # where --output-schema enforcement could be weakened or bypassed via -c overrides.
 if ! jq -e '
   (.summary | type == "string") and
-  (.self_assessed_status | type == "string") and
+  (.self_assessed_status as $s | $s == "complete" or $s == "in_progress" or $s == "blocked") and
   (.committed | type == "boolean")
 ' "$RESULT_FILE" >/dev/null 2>&1; then
   echo "[codex-goal-dispatch] result JSON failed type check. See $RESULT_FILE" >&2

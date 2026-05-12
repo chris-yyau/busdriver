@@ -84,7 +84,7 @@ The prompt must instruct Codex on three non-obvious points:
 
 Prompt template (first iter):
 
-```
+```text
 You are working under a goal-shaped spec. Make progress toward the objective.
 
 SPEC:
@@ -137,7 +137,12 @@ ALL_GREEN=true
 while IFS= read -r v_json; do
   v_name=$(jq -r '.name' <<<"$v_json")
   v_cmd=$( jq -r '.cmd'  <<<"$v_json")
-  if bash -c "$v_cmd" > "$RUN_DIR/iter-${ITER_N}-verifier-${v_name}.out" 2>&1; then
+  # Sanitize v_name before use in a filesystem path — verifier names come from
+  # user spec JSON; a value like `../../etc/passwd` or one with shell
+  # metacharacters would write the output file outside $RUN_DIR. Strip to
+  # `[A-Za-z0-9._-]`; keep original v_name for the human-readable log line.
+  v_safe=$(printf '%s' "$v_name" | tr -cs 'A-Za-z0-9._-' '_')
+  if bash -c "$v_cmd" > "$RUN_DIR/iter-${ITER_N}-verifier-${v_safe}.out" 2>&1; then
     echo "$v_name PASS" >> "$RUN_DIR/iter-${ITER_N}-verifier-results.txt"
   else
     echo "$v_name FAIL" >> "$RUN_DIR/iter-${ITER_N}-verifier-results.txt"
@@ -148,12 +153,68 @@ done < <(jq -c '.verifiable_end_state.verifiers[]' "$RUN_DIR/spec.json")
 
 **Note on `bash -c "$v_cmd"`:** verifier commands are arbitrary shell from the user's spec. This is by design (verifiers must be flexible) but means specs from untrusted sources (issues, templates, AI suggestions) can run anything. Treat specs as you would `git clone && make` — review before running.
 
-### 7. Decide
+### 7. Scope enforcement (post-iter sanity — runs BEFORE the Decide step)
+
+Verify Codex stayed within scope. Use Python's stdlib `fnmatch` (no extra deps) for glob matching with proper `**` semantics. **This MUST run before Step 8's "Decide" — exiting non-zero here bails Hard rule 6 regardless of verifier results.**
+
+```bash
+git diff --name-only "${PRE_HEAD}..HEAD" > "$RUN_DIR/iter-${ITER_N}-touched.txt"
+
+python3 - "$RUN_DIR/spec.json" "$RUN_DIR/iter-${ITER_N}-touched.txt" <<'PY'
+import sys, json, fnmatch
+spec_path, touched_path = sys.argv[1], sys.argv[2]
+with open(spec_path) as f: spec = json.load(f)
+with open(touched_path) as f: files = [l.strip() for l in f if l.strip()]
+if not files:
+    print("no files touched this iter"); sys.exit(0)
+
+inc = spec.get("scope", {}).get("include")
+exc = spec.get("scope", {}).get("exclude", [])
+if not inc:
+    # Loud warning, then default to "**" so the loop doesn't block silently
+    # when the user forgot scope. Hard rule 6 still applies at this layer
+    # only when scope is explicit.
+    print("[scope] WARNING: spec has no scope.include — allowing all paths", file=sys.stderr)
+    inc = ["**"]
+
+# Warn on bare `*` in a directory position — fnmatch treats `*` as match-anything
+# including `/`, so `src/*.ts` silently matches `src/sub/dir/x.ts`. `**` is the
+# explicit "any depth" form; a bare `*` in a directory position is usually a mistake.
+for p in inc:
+    if '/' in p and '*' in p and '**' not in p:
+        print(f"[scope] WARNING: pattern '{p}' uses bare `*` which crosses directory "
+              f"boundaries in fnmatch (matches any depth). Use `**` to be explicit, "
+              f"or a literal path to restrict depth.", file=sys.stderr)
+
+def matches_any(path, patterns):
+    # fnmatch.fnmatchcase (NOT fnmatch.fnmatch — which normcases on macOS)
+    # gives deterministic case-sensitive matching across platforms.
+    # `*` and `**` are both treated as match-anything (including '/'), so
+    # `src/auth/**` correctly matches `src/auth/sub/x.ts` but NOT
+    # `src/authentication/x.ts` because the literal `/` boundary intervenes.
+    for p in patterns:
+        if fnmatch.fnmatchcase(path, p): return True
+    return False
+
+bad = [f for f in files if not matches_any(f, inc) or matches_any(f, exc)]
+if bad:
+    print("OUT_OF_SCOPE:", *bad, sep="\n")
+    sys.exit(1)
+print("scope check OK")
+PY
+# Exit code 1 → bail (Hard rule 6). Exit 0 → continue to Step 8.
+```
+
+Even if Codex were steered (e.g., by prompt injection from verifier output) to modify a file outside scope, this check catches it before Step 8 can declare the iter done.
+
+### 8. Decide
+
+Only run after Step 7 exits 0 (scope clean):
 
 - **All verifiers green** → declare done. Read Codex's `summary` field, sanity-check `git diff <start-sha>..HEAD --stat`, report.
 - **Some red, iters remain** → read ONLY the failing verifier outputs (last ~30 lines). Build a steering prompt with **fenced output** to prevent prompt injection from verifier text:
 
-  ```
+  ```text
   Continue toward the objective stated in the spec below.
 
   SPEC (replayed for fresh context):
@@ -173,49 +234,6 @@ done < <(jq -c '.verifiable_end_state.verifiers[]' "$RUN_DIR/spec.json")
 
   Then dispatch the next iter with `ITER_N=$((ITER_N+1))` and a fresh `--result-file`.
 - **Red after max_iters** → report failure with last verifier outputs + suggest the user move to TUI `/goal` for longer autonomy, or refine the spec.
-
-### 8. Scope enforcement (post-iter sanity)
-
-After each iter, before deciding, **verify Codex stayed within scope**. Use Python's stdlib `fnmatch` (no extra deps) for glob matching with proper `**` semantics:
-
-```bash
-git diff --name-only "${PRE_HEAD}..HEAD" > "$RUN_DIR/iter-${ITER_N}-touched.txt"
-
-python3 - "$RUN_DIR/spec.json" "$RUN_DIR/iter-${ITER_N}-touched.txt" <<'PY'
-import sys, json, fnmatch, os
-spec_path, touched_path = sys.argv[1], sys.argv[2]
-with open(spec_path) as f: spec = json.load(f)
-with open(touched_path) as f: files = [l.strip() for l in f if l.strip()]
-if not files:
-    print("no files touched this iter"); sys.exit(0)
-
-inc = spec.get("scope", {}).get("include")
-exc = spec.get("scope", {}).get("exclude", [])
-if not inc:
-    # Loud warning, then default to "**" so the loop doesn't block silently
-    # when the user forgot scope. Hard rule 6 still applies at this layer
-    # only when scope is explicit.
-    print("[scope] WARNING: spec has no scope.include — allowing all paths", file=sys.stderr)
-    inc = ["**"]
-
-def matches_any(path, patterns):
-    # fnmatch.fnmatchcase (NOT fnmatch.fnmatch — which normcases on macOS)
-    # gives deterministic case-sensitive matching across platforms.
-    # `*` and `**` are both treated as match-anything (including '/'), so
-    # `src/auth/**` correctly matches `src/auth/sub/x.ts` but NOT
-    # `src/authentication/x.ts` because the literal `/` boundary intervenes.
-    for p in patterns:
-        if fnmatch.fnmatchcase(path, p): return True
-    return False
-
-bad = [f for f in files if not matches_any(f, inc) or matches_any(f, exc)]
-if bad:
-    print("OUT_OF_SCOPE:", *bad, sep="\n")
-    sys.exit(1)
-print("scope check OK")
-PY
-# Exit code 1 → bail (Hard rule 6). Exit 0 → continue.
-```
 
 This is the structural defense against prompt injection from verifier output: even if Codex were steered to modify a file outside scope, the post-iter check catches it before the next iter compounds the damage. The check uses **only Python stdlib** (`json` + `fnmatch`) — no PyYAML or other third-party deps.
 

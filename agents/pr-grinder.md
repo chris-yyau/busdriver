@@ -566,7 +566,8 @@ else
       | select(.isResolved == false and .isOutdated == false)
       | {threadId: .id, path: .path, line: .line}]' 2>/dev/null || echo '[]')
 
-  MERGE_BASE=$(git merge-base HEAD "$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName)" 2>/dev/null || echo "")
+  BASE_REF_OID=$(gh pr view "$PR_NUMBER" --json baseRefOid -q .baseRefOid 2>/dev/null || echo "")
+  MERGE_BASE=$(git merge-base HEAD "$BASE_REF_OID" 2>/dev/null || echo "")
   HEAD_TOUCHED_LINES_JSON='[]'
   if [ -n "$MERGE_BASE" ]; then
     # Parse `git diff -U0` hunk headers (`@@ -a,b +c,d @@`); emit {path,start,end}

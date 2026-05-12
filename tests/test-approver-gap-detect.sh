@@ -65,12 +65,16 @@ run_case() {
     # Inputs come from env exported by the caller before invoking us.
     TOTAL=$((TOTAL + 1))
 
-    local out decision audit_present audit_eligible
-    out=$(bash "$SCRIPT" 2>/dev/null) || {
+    local out err decision audit_present audit_eligible
+    err="$(mktemp)"
+    out=$(bash "$SCRIPT" 2>"$err") || {
         printf "  FAIL  %s (script exited non-zero)\n" "$name"
+        printf "        stderr: %s\n" "$(cat "$err")"
+        rm -f "$err"
         FAIL=$((FAIL + 1))
         return
     }
+    rm -f "$err"
     decision=$(printf '%s' "$out" | jq -r '.decision' 2>/dev/null || echo "")
     audit_present=$(printf '%s' "$out" | jq -r '.audit_workflow_present' 2>/dev/null || echo "")
     audit_eligible=$(printf '%s' "$out" | jq -r '.audit_eligible' 2>/dev/null || echo "")

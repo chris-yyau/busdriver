@@ -1152,7 +1152,8 @@ AUTHOR=$(gh pr view "$PR" --json author -q .author.login 2>/dev/null || echo "")
 # "no-gap"; the script NEVER auto-escalates without complete inputs.
 BRANCH_RULES_JSON=""
 if [ -n "$BRANCH" ]; then
-  BRANCH_RULES_JSON=$(gh api "repos/$OWNER/$REPO/rules/branches/$BRANCH" 2>/dev/null || echo "")
+  BRANCH_ENCODED=$(printf '%s' "$BRANCH" | jq -sRr @uri)
+  BRANCH_RULES_JSON=$(gh api "repos/$OWNER/$REPO/rules/branches/$BRANCH_ENCODED" 2>/dev/null || echo "")
 fi
 PR_REVIEWS_JSON=$(gh api "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null || echo "")
 AUTHOR_PERM_JSON=""
@@ -1231,7 +1232,7 @@ jq -c -n \
   --argjson approvals "$HUMAN_APPROVALS" \
   --arg head_sha "$HEAD_SHA" \
   '{ts:$ts, event:$event, pr:$pr, owner:$owner, repo:$repo, branch:$branch, author:$author, author_perm:$author_perm, required_approving_review_count:$required, human_approvals:$approvals, head_sha:$head_sha}' \
-  >> "$REPO_ROOT/.claude/bypass-log.jsonl"
+  >> "$REPO_ROOT/.claude/bypass-log.jsonl" || { echo "❌ failed to append bypass-log entry; aborting admin merge"; exit 1; }
 gh pr merge "$PR" --squash --delete-branch --admin
 ```
 
@@ -1240,9 +1241,11 @@ gh pr merge "$PR" --squash --delete-branch --admin
 ```text
 pr-grind: PR is functionally clean (CI green, bots ack HEAD, threads resolved)
 but branch protection requires {REQUIRED_COUNT} human APPROVED review(s) the
-author cannot self-provide. Project has bypass-audit.yml — admin-merge will
-be logged to .claude/bypass-log.jsonl (bypass-audit.yml audits direct pushes
-only; it does not detect gh pr merge --admin).
+author cannot self-provide. Project has bypass-audit.yml — note: the [admin]
+command below runs outside pr-grind and writes NO entry to
+.claude/bypass-log.jsonl. For a logged merge, re-invoke with
+--admin-on-approver-gap instead (bypass-audit.yml audits direct pushes only;
+it does not detect gh pr merge --admin regardless of path).
 
 Options:
   [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin
@@ -1268,14 +1271,17 @@ Options:
 
 **Default: merge, then clean up the worktree (skip cleanup with `--no-worktree`). Run this as its own Bash tool call — DO NOT prefix it with the marker-write block above; see the `<EXTREMELY-IMPORTANT>` block immediately preceding "Write the pr-grind-clean marker" for why:**
 ```bash
-gh pr merge <PR_NUMBER> --squash --delete-branch
-
-# Only return to a separate worktree and remove the ephemeral one if Step 0
-# actually created it. With --no-worktree we ran in-place — there is no
-# separate worktree to leave or remove.
-if [ "${NO_WORKTREE:-0}" != "1" ]; then
-  cd <original-worktree-path>
-  git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true
+if gh pr merge <PR_NUMBER> --squash --delete-branch; then
+  # Only return to a separate worktree and remove the ephemeral one if Step 0
+  # actually created it. With --no-worktree we ran in-place — there is no
+  # separate worktree to leave or remove.
+  if [ "${NO_WORKTREE:-0}" != "1" ]; then
+    cd <original-worktree-path>
+    git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true
+  fi
+else
+  echo "❌ Merge failed; preserving worktree for inspection."
+  exit 1
 fi
 ```
 

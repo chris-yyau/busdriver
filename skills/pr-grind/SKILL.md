@@ -610,16 +610,23 @@ RECOVERY_INLINE (Bug 2 — bounded inline takeover):
   │     # the bad commit local-only, so the operator's amend path stays
   │     # purely local (no force-push). Skip silently when commitlint
   │     # isn't locally invokable.
-  │     BASE_BRANCH=$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName 2>/dev/null || echo "main")
+  │     # Lint ONLY the just-committed recovery commit (HEAD~1..HEAD),
+  │     # NOT the full PR range. The recovery commit is the only one we
+  │     # just produced; older pushed commits in the range are outside
+  │     # this pre-flight's scope (force-push territory). Also avoids the
+  │     # base-branch lookup, which would default to "main" on `gh pr
+  │     # view` failure and lint the wrong range when the PR's actual
+  │     # base is a release branch or stacked PR — see Cubic findings on
+  │     # PR #98 for the empirical motivation.
   │     if command -v npx >/dev/null 2>&1 && npx --no-install commitlint --version >/dev/null 2>&1; then
-  │       if ! npx --no-install commitlint --from "origin/${BASE_BRANCH}" --to HEAD; then
+  │       if ! npx --no-install commitlint --from HEAD~1 --to HEAD; then
   │         # The recovery commit itself violates commitlint — surface to
   │         # operator. The bad commit is local-only; recovery cap
-  │         # (`recovery_inline_used_this_round`) stays consumed for this
+  │         # (recovery_inline_used_this_round) stays consumed for this
   │         # round (no second rescue inside the same round), but resets
   │         # at the top of the next loop iteration.
-  │         echo "❌ recovery-via-inline: commitlint failed locally on commits origin/${BASE_BRANCH}..HEAD — bailing BEFORE push"
-  │         BAIL with reason "recovery-via-inline attempted but commitlint rejected the dispatcher's recovery commit. Local amend required (no force-push needed; commit hasn't been pushed). Inspect worker RESULT_FIXES prose for an oversized body line; consider reducing the prose or splitting into multiple paragraphs."
+  │         echo "❌ recovery-via-inline: commitlint failed locally on the recovery commit (HEAD~1..HEAD) — bailing BEFORE push"
+  │         BAIL with reason "recovery-via-inline attempted but commitlint rejected the dispatcher's recovery commit (HEAD~1..HEAD). Local amend required (no force-push needed; commit hasn't been pushed). Inspect worker RESULT_FIXES prose for an oversized body line; consider reducing the prose or splitting into multiple paragraphs."
   │       fi
   │     fi
   │     git push

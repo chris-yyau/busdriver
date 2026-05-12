@@ -463,17 +463,29 @@ git add <specific files>
 # is both slow (~10–30 s) and a quiet "yes" to an unrequested side
 # effect on the operator's machine.
 COMMITLINT_BAIL=0
-BASE_BRANCH=$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName 2>/dev/null || echo "main")
+# Lint ONLY the just-committed commit (HEAD~1..HEAD), NOT the full PR
+# range origin/<base>..HEAD. Two reasons (both flagged by Cubic on PR
+# #98):
+#   1. Range scope. Older pushed commits in the full range are out of
+#      this pre-flight's scope — they require force-push to fix, which
+#      is operator-authorization territory. CI's commitlint job catches
+#      them on every push. Linting just HEAD~1..HEAD keeps the bail
+#      reason honest: "local commit failed, operator can amend without
+#      force-push" is only true when we KNOW the failing commit is the
+#      new local one.
+#   2. No base-branch lookup needed. `gh pr view ... --json baseRefName`
+#      can fail (auth, rate-limit, transient network). Defaulting to
+#      "main" on failure lints the wrong range whenever the PR's actual
+#      base is something else (release branch, stacked PR, etc.).
+#      HEAD~1..HEAD has no such dependency.
 if command -v npx >/dev/null 2>&1 && npx --no-install commitlint --version >/dev/null 2>&1; then
-  if ! npx --no-install commitlint --from "origin/${BASE_BRANCH}" --to HEAD; then
-    # Commitlint failed on the just-committed range. The bad commit is
-    # LOCAL ONLY (we haven't pushed yet). Set a deferred-bail flag so
-    # we fall through to the mandatory pre-bail snapshot block (which
-    # populates RESULT_INFLIGHT_CHANGES, RESULT_STAGED_FILES, etc.
-    # with their `none` defaults — the changes are already committed,
-    # not inflight) AND emit the structured RESULT envelope. The
-    # operator-facing reason string points at the local amend path,
-    # NOT a force-push (the commit hasn't reached the remote yet).
+  if ! npx --no-install commitlint --from HEAD~1 --to HEAD; then
+    # The just-committed commit violates commitlint. It is LOCAL ONLY
+    # (we haven't pushed yet). Set a deferred-bail flag so we fall
+    # through to the mandatory pre-bail snapshot block AND emit the
+    # structured RESULT envelope. The operator-facing reason string
+    # points at the local amend path, NOT a force-push (the commit
+    # hasn't reached the remote yet).
     #
     # CRITICAL: do NOT `exit 1` here. The mandatory pre-bail snapshot
     # rule (see Bail Triggers → "Mandatory pre-bail snapshot rule"
@@ -482,41 +494,27 @@ if command -v npx >/dev/null 2>&1 && npx --no-install commitlint --version >/dev
     # sees a complete RESULT_* tag set. A hard `exit 1` would skip
     # both the snapshot AND the RESULT emission, leaving the
     # dispatcher's parser unable to read the bail at all.
-    echo "❌ commitlint failed locally on commits origin/${BASE_BRANCH}..HEAD — will bail BEFORE push"
+    echo "❌ commitlint failed locally on the just-committed commit (HEAD~1..HEAD) — will bail BEFORE push"
     echo "   Fix: amend the offending commit locally (no force-push needed; commit hasn't been pushed)."
     COMMITLINT_BAIL=1
   fi
 else
-  # commitlint not locally invokable — skip the pre-flight. CI's
-  # commitlint job will still catch issues, but at higher latency (the
-  # bad commit lands on the remote first, requiring force-push to fix).
+  # commitlint not locally invokable — skip the pre-flight with an
+  # informational message. CI's commitlint job will still catch issues,
+  # but at higher latency (the bad commit lands on the remote first,
+  # requiring force-push to fix).
   echo "ℹ️  Skipping local commitlint pre-flight — @commitlint/cli not installed locally."
 fi
 
-# Branch on the deferred-bail flag. If set, fall through to the snapshot
-# block + RESULT emission per the mandatory pre-bail snapshot rule. If
-# not set, push as normal.
+# Branch on the deferred-bail flag. If set, run the snapshot block + emit
+# the RESULT envelope to BOTH $RESULT_FILE and stdout (per the Output
+# Format contract), then exit 0. The dispatcher's parser will see a
+# complete tag set and route to BAIL with category=judgment. If not set,
+# push as normal.
 if [ "$COMMITLINT_BAIL" = "1" ]; then
-  # WORKER DIRECTIVE — execute the following steps verbatim. This is NOT
-  # a no-op; the `: # placeholder` that was here is replaced with an
-  # explicit instruction sequence the worker must follow:
-  #
-  # 1. Run the mandatory pre-bail snapshot block (defined later in this
-  #    Step 6 under "The snapshot block"). It produces `none` defaults for
-  #    all five inflight tags — correct here because the bad commit is
-  #    already in the local index, not the working tree.
-  #
-  # 2. Emit the following RESULT tags (to RESULT_FILE AND stdout):
-  #      RESULT_STATUS: bail
-  #      RESULT_BAIL_CATEGORY: judgment
-  #      RESULT_BAIL_REASON: local commitlint check failed on commits origin/<base>..HEAD before push; bad commit is local-only, operator can amend without force-push
-  #    Plus all other required RESULT_* tags per the Output Format section.
-  #
-  # 3. Do NOT push. Do NOT proceed to Step 6.5. Return immediately.
-  #
-  # NOTE: RESULT_BAIL_CATEGORY is `judgment`, not `tooling` — the commit
-  # message is wrong and must be fixed by the operator (local amend), not
-  # rescued by the dispatcher's recovery-via-inline carve-out.
+  # Step 1: mandatory pre-bail snapshot (produces `none` defaults for
+  # all five inflight tags — correct because the bad commit is already
+  # in the local index, not the working tree).
   STAGED_LIST=$(git diff --cached -z --name-only | tr '\0' '\n' | sed '/^$/d')
   UNSTAGED_LIST=$(git diff -z --name-only | tr '\0' '\n' | sed '/^$/d')
   HAS_STAGED=0; HAS_UNSTAGED=0
@@ -530,7 +528,38 @@ if [ "$COMMITLINT_BAIL" = "1" ]; then
   [ -z "$UNSTAGED_LIST" ] && UNSTAGED_FILES=none || UNSTAGED_FILES=$(printf '%s' "$UNSTAGED_LIST" | tr '\n' '|' | sed 's/|$//')
   if [ "$HAS_STAGED" -eq 1 ]; then STAGED_DIFF_SHA=$(git diff --cached | sha256sum | cut -c1-64); else STAGED_DIFF_SHA=none; fi
   if [ "$HAS_UNSTAGED" -eq 1 ]; then UNSTAGED_DIFF_SHA=$(git diff | sha256sum | cut -c1-64); else UNSTAGED_DIFF_SHA=none; fi
-  # (Emit full RESULT block with status=bail, bail_category=judgment here)
+
+  # Step 2: emit RESULT envelope to RESULT_FILE AND stdout. ACKS,
+  # BOT_LEDGER, ISSUES_SPAWNED come from top-of-round initialization
+  # (the worker's preamble defaults); they're still `none`/`0/0:none`
+  # because Step 6.5 (real ack-ledger compute) hasn't run yet — bail
+  # before push means bail before ledger.
+  RESULT_BLOCK=$(cat <<RESULT_BLOCK_EOF
+RESULT_STATUS: bail
+RESULT_COMMIT_SHA: $(git rev-parse HEAD)
+RESULT_FIXES: none — local commitlint pre-flight rejected the just-committed message
+RESULT_REMAINING: commit message violates commitlint; needs local amend before push
+RESULT_REVIEWER_ACKS: ${ACKS:-greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none}
+RESULT_BOT_LEDGER: ${BOT_LEDGER:-greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=0/0:none,copilot-pull-request-reviewer=0/0:none,codescene-delta-analysis=0/0:none}
+RESULT_ISSUES_SPAWNED: ${ISSUES_SPAWNED:-none}
+RESULT_INFLIGHT_CHANGES: $INFLIGHT_CHANGES
+RESULT_STAGED_FILES: $STAGED_FILES
+RESULT_UNSTAGED_FILES: $UNSTAGED_FILES
+RESULT_STAGED_DIFF_SHA: $STAGED_DIFF_SHA
+RESULT_UNSTAGED_DIFF_SHA: $UNSTAGED_DIFF_SHA
+RESULT_BAIL_REASON: local commitlint check rejected the just-committed commit (HEAD~1..HEAD) before push; bad commit is local-only, operator can amend without force-push
+RESULT_BAIL_CATEGORY: judgment
+RESULT_BLOCK_EOF
+)
+  printf '%s\n' "$RESULT_BLOCK" > "$RESULT_FILE"
+  printf '%s\n' "$RESULT_BLOCK"
+
+  # Step 3: terminate the round. Do NOT push. Do NOT proceed to Step
+  # 6.5. RESULT_BAIL_CATEGORY=judgment (not tooling) means the
+  # dispatcher's recovery-via-inline carve-out will NOT rescue this —
+  # the commit message is wrong and must be fixed by the operator
+  # (local amend).
+  exit 0
 else
   git push
 fi

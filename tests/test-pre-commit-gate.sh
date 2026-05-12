@@ -112,10 +112,23 @@ run_amend_test "blocks plain git commit without marker" \
     "block" "git commit -m 'msg'" "1"
 
 # 4. Flag-order robustness: --amend after -m still hits the bypass.
-#    The python3 parser scans all words in the segment for `--amend`,
-#    not just the immediately-after-commit position.
+#    The python3 parser scans the option portion (tokens before any --
+#    pathspec separator) for the --amend flag, so positions like
+#    `-m 'msg' --amend` (--amend after -m) all hit.
 run_amend_test "allows --amend regardless of flag order (-m before --amend)" \
     "allow" "git commit -m 'rewritten msg' --amend" "0"
+
+# 5. Pathspec scoping: --amend after `--` is a FILENAME, not a flag.
+#    The parser must scope detection to option_words (before --) only.
+#    Without this scoping, `git commit --allow-empty -- --amend` would
+#    falsely set IS_AMEND=1 and could trigger the bypass on a commit
+#    that doesn't have --amend semantics. With staged_setup=0 (empty
+#    staged) the bypass would auto-pass; we expect block because the
+#    correctly-scoped parser sets IS_AMEND=0, falling through to the
+#    marker check which blocks (no marker). This locks in the Copilot
+#    finding on PR #98 (commit e2ac6f4).
+run_amend_test "blocks git commit ... -- --amend (pathspec, not flag)" \
+    "block" "git commit --allow-empty -- --amend" "0"
 
 # ── Results ───────────────────────────────────────────────────────────
 

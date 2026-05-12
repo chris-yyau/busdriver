@@ -1,3 +1,10 @@
+# [1.38.0](https://github.com/chris-yyau/busdriver/compare/v1.37.0...v1.38.0) (2026-05-12)
+
+
+### Features
+
+* **codex-goal:** verifier-led codex handover loop ([#99](https://github.com/chris-yyau/busdriver/issues/99)) ([f1bd1c6](https://github.com/chris-yyau/busdriver/commit/f1bd1c6b3a1fbf7fa6600bfdddcd19b0eb102216))
+
 # [1.37.0](https://github.com/chris-yyau/busdriver/compare/v1.36.0...v1.37.0) (2026-05-12)
 
 

@@ -17,7 +17,7 @@
 # Usage: bash tests/test-approver-gap-detect.sh
 # Exit: 0 if all pass, 1 if any fail.
 
-set -uo pipefail
+set -euo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 SCRIPT="scripts/approver-gap-detect.sh"
@@ -37,7 +37,11 @@ RULES_NONE='[]'
 REVIEWS_EMPTY='[]'
 
 # Pull request reviews — one human APPROVED review.
-REVIEWS_HUMAN_APPROVED='[{"state":"APPROVED","user":{"login":"alice","type":"User"}}]'
+REVIEWS_HUMAN_APPROVED='[{"state":"APPROVED","submitted_at":"2026-01-01T10:00:00Z","user":{"login":"alice","type":"User"}}]'
+
+# Pull request reviews — reviewer APPROVED then later requested changes (dismissed approval).
+# The latest state is CHANGES_REQUESTED → should NOT count as an active approval.
+REVIEWS_DISMISSED_APPROVAL='[{"state":"APPROVED","submitted_at":"2026-01-01T10:00:00Z","user":{"login":"alice","type":"User"}},{"state":"CHANGES_REQUESTED","submitted_at":"2026-01-01T11:00:00Z","user":{"login":"alice","type":"User"}}]'
 
 # Pull request reviews — bot APPROVED (should NOT count).
 REVIEWS_BOT_APPROVED='[{"state":"APPROVED","user":{"login":"copilot-pull-request-reviewer[bot]","type":"Bot"}}]'
@@ -195,6 +199,16 @@ export AUDIT_WORKFLOW_PRESENT="1"
 export CI_AND_BOTS_CLEAN="0"
 export ADMIN_FLAG_PASSED="1"
 run_case "10. --admin flag + CI/bots NOT asserted clean → surface-decision (gap is not sole blocker)" \
+    "surface-decision" "1" "0"
+
+# 11. Reviewer APPROVED then CHANGES_REQUESTED — dismissed approval must NOT count
+export BRANCH_RULES_JSON="$RULES_REQUIRE_1"
+export PR_REVIEWS_JSON="$REVIEWS_DISMISSED_APPROVAL"
+export AUTHOR_PERM_JSON="$AUTHOR_ADMIN"
+export AUDIT_WORKFLOW_PRESENT="1"
+export CI_AND_BOTS_CLEAN="1"
+export ADMIN_FLAG_PASSED="0"
+run_case "11. reviewer APPROVED then CHANGES_REQUESTED → dismissed approval does NOT satisfy" \
     "surface-decision" "1" "0"
 
 # ── Results ──────────────────────────────────────────────────────────────

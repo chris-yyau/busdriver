@@ -17,7 +17,7 @@
 # Usage: bash tests/test-copilot-resolve.sh
 # Exit: 0 if all pass, 1 if any fail.
 
-set -uo pipefail
+set -euo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 SCRIPT="scripts/copilot-auto-resolve-eligibility.sh"

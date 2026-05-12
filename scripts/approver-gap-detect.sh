@@ -121,10 +121,14 @@ case "$REQUIRED_APPROVALS" in ''|*[!0-9]*) REQUIRED_APPROVALS=0 ;; esac
 
 HUMAN_APPROVALS=$(safe_jq 0 "${PR_REVIEWS_JSON:-}" \
     '[.[]
-      | select(.state == "APPROVED")
       | select((.user.type // "User") == "User")
       | select((.user.login // "") | endswith("[bot]") | not)
-      | .user.login] | unique | length')
+      | {login: (.user.login // ""), submitted_at: (.submitted_at // ""), state: (.state // "")}]
+     | sort_by(.login, .submitted_at)
+     | group_by(.login)
+     | map(last)
+     | map(select(.state == "APPROVED"))
+     | length')
 case "$HUMAN_APPROVALS" in ''|*[!0-9]*) HUMAN_APPROVALS=0 ;; esac
 
 AUTHOR_PERM=$(safe_jq "read" "${AUTHOR_PERM_JSON:-}" '.permission // "read"')

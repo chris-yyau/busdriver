@@ -1241,7 +1241,8 @@ gh pr merge "$PR" --squash --delete-branch --admin
 pr-grind: PR is functionally clean (CI green, bots ack HEAD, threads resolved)
 but branch protection requires {REQUIRED_COUNT} human APPROVED review(s) the
 author cannot self-provide. Project has bypass-audit.yml — admin-merge will
-auto-file an audit issue.
+be logged to .claude/bypass-log.jsonl (bypass-audit.yml audits direct pushes
+only; it does not detect gh pr merge --admin).
 
 Options:
   [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin

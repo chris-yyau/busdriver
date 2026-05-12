@@ -90,7 +90,7 @@ emit() {
     exit 0
 }
 
-# ── Precondition 3 (cheap, check first): fixes happened this round ──────
+# ── Precondition 3 (checked first — cheapest guard): fixes happened this round ──
 
 FIXES_OK=0
 if [ -n "${RESULT_FIXES:-}" ] \
@@ -102,13 +102,13 @@ if [ "$FIXES_OK" -eq 0 ]; then
     emit "skip" "no fix pushed this round; nothing to claim 'addressed in <SHA>'" 0 0 0
 fi
 
-# ── Precondition 1: force-push detected since Copilot's last review ─────
+# ── Precondition 1 (checked second): force-push detected since Copilot's last review ─
 
 if [ "${FORCE_PUSH_DETECTED:-0}" != "1" ]; then
     emit "skip" "no force-push detected; Copilot will auto-re-review on linear push" 0 0 1
 fi
 
-# ── Precondition 2: every Copilot thread anchored to HEAD-touched lines ─
+# ── Precondition 2 (checked third): every Copilot thread anchored to HEAD-touched lines ─
 
 THREAD_COUNT=$(printf '%s' "${COPILOT_THREADS_JSON:-[]}" | jq -r 'length' 2>/dev/null || echo 0)
 case "$THREAD_COUNT" in ''|*[!0-9]*) THREAD_COUNT=0 ;; esac
@@ -119,24 +119,23 @@ fi
 
 # Walk every thread; verify <path>:<line> falls inside one of HEAD's hunks.
 # fail-CLOSED: if ANY thread fails the anchor check, skip the entire batch.
-ALL_ANCHORED=1
-for i in $(seq 0 $((THREAD_COUNT - 1))); do
-    t_path=$(printf '%s' "$COPILOT_THREADS_JSON" | jq -r ".[$i].path" 2>/dev/null)
-    t_line=$(printf '%s' "$COPILOT_THREADS_JSON" | jq -r ".[$i].line // 0" 2>/dev/null)
-    case "$t_line" in ''|*[!0-9]*) t_line=0 ;; esac
-
-    # Does any HEAD_TOUCHED_LINES_JSON entry match path + line ∈ [start,end]?
-    match=$(printf '%s' "${HEAD_TOUCHED_LINES_JSON:-[]}" | jq -r \
-        --arg p "$t_path" \
-        --argjson l "$t_line" \
-        '[.[] | select(.path == $p) | select(.start <= $l and $l <= .end)] | length' \
-        2>/dev/null || echo 0)
-    case "$match" in ''|*[!0-9]*) match=0 ;; esac
-    if [ "$match" -lt 1 ]; then
-        ALL_ANCHORED=0
-        break
-    fi
-done
+# Single jq call — avoids O(N) subprocess forks of the per-iteration loop.
+# -n: use null as the input (the data is passed via --argjson, not stdin).
+# Without -n, jq blocks on stdin, receives EOF, emits nothing, and the
+# downstream integer comparison silently fails-OPEN to "resolve". Defense
+# in depth: validate the output is exactly "0" or "1" before the integer
+# test so any future jq breakage produces a deterministic skip instead of
+# a fail-OPEN to resolve.
+ALL_ANCHORED=$(jq -nr \
+    --argjson threads "${COPILOT_THREADS_JSON}" \
+    --argjson hunks "${HEAD_TOUCHED_LINES_JSON:-[]}" \
+    '($threads | length > 0) and
+     ($threads | all(
+         . as $t |
+         ($hunks | any(.path == $t.path and .start <= ($t.line // 0) and ($t.line // 0) <= .end))
+     )) | if . then "1" else "0" end' \
+    2>/dev/null || echo "0")
+case "$ALL_ANCHORED" in 0|1) ;; *) ALL_ANCHORED=0 ;; esac
 
 if [ "$ALL_ANCHORED" -eq 0 ]; then
     emit "skip" "at least one Copilot thread anchored to a line HEAD did not touch" \

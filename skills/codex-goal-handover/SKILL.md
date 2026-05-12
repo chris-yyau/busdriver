@@ -1,0 +1,201 @@
+---
+name: codex-goal-handover
+description: Iteratively delegate a goal-shaped task to Codex via `codex exec` with verifier-led stop signal. Use when the task has explicit pass/fail verifier commands (tests, lint, typecheck) AND the result needs to return to this Claude Code session for review. Cheaper than inline implementation; safer than headless Ralph loops. Foreground only — for true fire-and-forget runs, point user to the Codex TUI `/goal` command.
+---
+
+# Codex Goal Handover
+
+<EXTREMELY-IMPORTANT>
+This loop is **verifier-led, not Claude-led**. Declarative verifier commands in the spec are the authoritative stop signal. Claude judges only when verifiers cannot decide. **Claude NEVER writes code inside this loop** — if steering requires code edits, abort and route the task to inline Claude Code work or `/codex:rescue`.
+</EXTREMELY-IMPORTANT>
+
+## When to invoke
+
+Pick this skill when ALL of the following are true:
+
+1. Task is substantive (more than a one-line edit)
+2. The user can state pass/fail conditions as shell commands (`pnpm test`, `pnpm lint`, `tsc --noEmit`, `cargo test`, etc.)
+3. The result must come back to this CC session for follow-up review
+4. The task is bounded — fits in ≤ 5 iterations typical, ≤ 8 in extreme cases
+
+Pick something else when:
+
+- **No clean verifier commands** ("refactor for readability", "investigate why X is slow") → use `/codex:rescue` (one-shot, no verifiers needed)
+- **Hours-long, want manual pause/resume** ("rewrite the whole module overnight") → tell user to open a separate terminal, run `codex`, and use `/goal` directly (zero CC cost, native budget guard)
+- **Quick inline work** (single-file edit you can do in 1–3 turns) → just do it in CC
+
+## Inputs: the spec
+
+The user provides a spec, either as a path to `.yaml` / `.yml` / `.md`, or inline text. Required structure:
+
+```yaml
+objective: One sentence describing the goal.
+scope:
+  include: [src/auth/**, tests/auth/**]
+  exclude: [src/legacy/**]
+constraints:
+  - Preserve existing public API
+  - Do not add new dependencies
+verifiable_end_state:
+  description: All auth tests pass, lint clean, types clean.
+  verifiers:
+    - { name: tests,     cmd: "pnpm test --silent" }
+    - { name: lint,      cmd: "pnpm lint" }
+    - { name: typecheck, cmd: "pnpm tsc --noEmit" }
+max_iters: 5   # optional; defaults to 5; hard cap 8
+```
+
+If the user provides an inline description without verifiers, **ask once for verifier commands**, or redirect to `/codex:rescue` if the user can't supply any. **Do not invent verifiers** — wrong verifiers cause silent premature exit or runaway iteration.
+
+## Workflow
+
+### 1. Validate the spec
+
+- Parse the YAML/Markdown
+- Confirm `verifiable_end_state.verifiers` is non-empty
+- Run each verifier ONCE before the loop starts (sanity check that commands execute, capture initial state)
+- If all verifiers already pass before any Codex work, tell the user and stop
+
+### 2. Initialize the run
+
+```bash
+RUN_DIR="scripts/codex/.runs/$(date +%Y%m%d-%H%M%S)-codex-goal"
+mkdir -p "$RUN_DIR"
+# Copy/render the spec into the run dir for traceability
+cp <user-spec-file> "$RUN_DIR/spec.yaml"  # or write inline spec to spec.yaml
+```
+
+### 3. Build the first-iter prompt
+
+The prompt must instruct Codex on three non-obvious points:
+
+1. **Codex does NOT decide completion.** Verifiers do. `self_assessed_status: "complete"` in the response is advisory — the helper runs the verifier commands separately.
+2. **Codex MUST commit at the end of the iteration.** Use a conventional-commit message describing what changed. Set `committed: true` and `commit_sha` accordingly.
+3. **Response must conform to the enforced JSON schema.** The schema requires `summary`, `self_assessed_status`, `committed`. Optional: `blocker`, `files_changed`, `commit_sha`.
+
+Prompt template (first iter):
+
+```
+You are working under a goal-shaped spec. Make progress toward the objective.
+
+SPEC:
+<paste full spec>
+
+Rules for this iteration:
+- Do NOT self-certify completion. The harness runs the declared verifier commands AFTER this iteration ends. Your `self_assessed_status` is advisory only.
+- Stay strictly within `scope.include` and avoid `scope.exclude`.
+- At the end of the iteration, commit your changes with a conventional commit message.
+- Return a final response that conforms to the enforced JSON schema (summary, self_assessed_status, committed, optional blocker/files_changed/commit_sha).
+```
+
+### 4. Dispatch via the helper
+
+```bash
+# First iter:
+./scripts/codex/codex-goal-dispatch.sh --first --run-dir "$RUN_DIR" -- "$PROMPT"
+
+# Subsequent iters:
+./scripts/codex/codex-goal-dispatch.sh --resume --run-dir "$RUN_DIR" -- "$STEERING_PROMPT"
+```
+
+The helper prints the path to `iter-N-result.json` (schema-enforced). Read that file with `jq`.
+
+### 5. Verify the commit (cheap, no LLM tokens)
+
+```bash
+PRE_HEAD=$(cat "$RUN_DIR/iter-$N-pre-head.txt")
+POST_HEAD=$(git rev-parse HEAD)
+if [[ "$PRE_HEAD" == "$POST_HEAD" ]]; then
+  # Codex didn't commit — treat as warning, do not auto-fix on the user's behalf
+  # If this happens twice in a row, bail.
+fi
+```
+
+### 6. Run the verifiers (cheap, no LLM tokens)
+
+```bash
+ALL_GREEN=true
+for v in $(yq -r '.verifiable_end_state.verifiers[].name' "$RUN_DIR/spec.yaml"); do
+  CMD=$(yq -r ".verifiable_end_state.verifiers[] | select(.name == \"$v\") | .cmd" "$RUN_DIR/spec.yaml")
+  if bash -c "$CMD" > "$RUN_DIR/iter-$N-verifier-$v.out" 2>&1; then
+    echo "$v PASS" >> "$RUN_DIR/iter-$N-verifier-results.txt"
+  else
+    echo "$v FAIL" >> "$RUN_DIR/iter-$N-verifier-results.txt"
+    ALL_GREEN=false
+  fi
+done
+```
+
+### 7. Decide
+
+- **All verifiers green** → declare done. Read Codex's `summary` field for the changelog. Run ONE final pass: `git diff <start-sha>..HEAD --stat` + open key files Claude wants to sanity-check. Report to user.
+- **Some red, iters remain** → read ONLY the failing verifier outputs (`iter-$N-verifier-<failing>.out`, last ~30 lines). Build a minimal steering prompt:
+  ```
+  The 'tests' verifier failed:
+  <last 30 lines of failure output>
+
+  The 'lint' verifier failed:
+  <last 30 lines of failure output>
+
+  Continue toward the objective. Fix the failing verifiers. Stay within scope.
+  Do not touch files in scope.exclude. Commit your changes at the end of this iteration.
+  ```
+  Loop back to Step 4 with `--resume`.
+- **Red after max_iters** → report failure with last verifier outputs + suggest the user move to TUI `/goal` for longer autonomy, or refine the spec.
+
+## Hard rules
+
+1. **Claude never writes code in the loop.** If steering requires code judgment beyond reading verifier output, abort with: "This task needs code-level judgment — switching to inline work or `/codex:rescue` is the right move."
+2. **Per-iter commit checkpoint mandatory.** If `git rev-parse HEAD` is unchanged after an iter, log a warning. If two iters in a row don't commit, bail.
+3. **Verifiers are the authority.** Codex's `self_assessed_status: complete` does NOT stop the loop unless verifiers also pass. Verifier failure trumps Codex's self-report.
+4. **Bounded.** `max_iters` defaults to 5; hard cap is 8. Warn if user requests higher. (Defaults bumped from 3/5 per Droid's research: Codex docs describe long-running sessions with many passes; Ralph Loop production runs routinely use 20+ iters. Tight caps risk consuming progress headroom on a single bad iter.)
+5. **Foreground only.** No `--bg` mode. For fire-and-forget runs, redirect to the Codex TUI.
+
+## When to bail out mid-loop
+
+- User provided no verifiers → before the loop starts, redirect to `/codex:rescue` or ask for verifiers
+- Codex didn't commit in iter N → log warning; if iter N+1 also doesn't commit, bail
+- Same verifier fails twice with substantively identical output → not making progress, bail
+- Claude finds itself wanting to use `Edit`/`Write` tools on the project → bail (Hard rule 1)
+- Verifier commands themselves error before the loop ("pnpm not found") → fix the spec, don't proceed
+
+## Cost expectation (CC quota)
+
+- Spec validation + dispatch prompt:   ~500–1k tokens
+- Per iter judgment (verifier reads only on RED): ~1–3k tokens
+- Final review + report:                ~2–5k tokens
+- **Total typical (2–3 iters, mostly green):** ~5–12k CC tokens (~3-5% of inline cost)
+- **Total worst case (5 iters, mostly red):**   ~20–35k CC tokens (~8-12% of inline cost)
+
+This is significantly cheaper than a naive "Claude reads full git diff each iter" design — because verifier commands are run by the shell, not the LLM.
+
+## Related
+
+- `/codex:rescue` (OpenAI plugin) — one-shot delegation, no verifiers needed. Use when the task can't be cleanly tested.
+- `codex` TUI + `/goal` — native Ralph Loop with budget guard, pause/resume controls. Zero CC cost, no round-trip to CC.
+- `busdriver:council` — same orchestrator topology (Claude orchestrates external voices, judges between turns).
+
+## Why this design (provenance)
+
+Validated 2026-05-13 via `busdriver:council` (5 voices total). Lesson stored at `~/.claude/notes/lesson-council-2026-05-13-codex-goal-design.md`. Key refinements vs. naive Claude-in-the-loop:
+
+1. **Verifier-led, not Claude-led** (Codex Critic): declarative shell commands are the authority, not Claude reading diffs.
+2. **Per-iter commit checkpoint mandatory** (Gemini Pragmatist + Skeptic, independent): protects against mid-loop CC quota exhaustion.
+3. **Claude as judge/steer only, never code-writer** (Codex Critic): prevents the failure mode where Claude becomes the worker and Codex becomes an expensive patch generator.
+4. **max_iters defaults bumped to 5/8** (Droid Researcher): cited OpenAI's official "Iterate on difficult problems" docs and Geoffrey Huntley's Ralph Loop production data — tight caps consume progress headroom on a single bad iter.
+
+External validation (Droid Researcher, 2026-05-13):
+
+- **OpenAI Codex docs prescribe this exact design:** [developers.openai.com/codex/use-cases/iterate-on-difficult-problems](https://developers.openai.com/codex/use-cases/iterate-on-difficult-problems) — *"Give Codex an evaluation system, such as scripts and reviewable artifacts, so it can keep improving a hard task until the scores are good enough."*
+- **AutoGen discussion #7593** (N=134 experiments, Apr 2026): 92% failure rate on tasks agents claim to support; 35% of failures are hallucinated outputs. Direct empirical backing for rejecting self-graded loops.
+- **Self-Challenging Agents** (Zhou et al., NeurIPS 2025): code tests as external verifiers doubled LLaMA-3.1-8B performance on tool-use benchmarks vs. no verification.
+- **SICA** (Robeyns et al., 2025): keeping only self-edits that pass external benchmark metrics yielded 17–53% improvement.
+- **Reflexion** (Shinn et al., 2023): "models can hallucinate bad reflections and reinforce them" — explicit failure mode for self-graded loops.
+- **Geoffrey Huntley's Ralph Loop pattern** (formalized in `@pageai/ralph-loop`): fresh context per iter + strict validation per task + git commits as checkpoints. PageAI explicitly identifies Anthropic's "Ralph Wiggum" Claude Code plugin as **bad practice** for skipping strict validation and reusing context. Our design mirrors the working variant.
+
+## Future refinements (v2, not implemented)
+
+Deferred from Droid's research:
+
+- **Score-threshold stopping rule** (per OpenAI Codex docs): instead of binary pass/fail per verifier, allow numeric scores (test pass rate, lint count, type-error count) and stop when threshold met OR no improvement for N iters. Requires verifiers that emit a parseable score.
+- **`resume_mode: fresh | continue` option:** Ralph Loop's published principle is **fresh context per iter** (each `codex exec` starts clean, gets only the spec + last steering prompt). Current design uses `codex exec resume --last` (preserved context). Tradeoff: fresh = no context bloat / error reinforcement; resumed = faster ramp, less prompt re-shipping. Add as spec field with default = `continue` to preserve current behavior.

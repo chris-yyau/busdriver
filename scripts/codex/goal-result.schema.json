@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CodexGoalIterationReport",
+  "description": "Codex's self-report for one iteration of the verifier-led goal loop. NOTE: self_assessed_status is advisory only — the loop's authoritative decision is made by declarative verifier commands (helper-run) plus Claude's review. Schema enforces shape so the helper can parse, not truth.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "self_assessed_status", "committed"],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "One-paragraph summary of what was done this iteration."
+    },
+    "self_assessed_status": {
+      "type": "string",
+      "enum": ["complete", "in_progress", "blocked"],
+      "description": "Codex's self-assessment. 'complete' = Codex believes verifiable_end_state is met. 'in_progress' = work done, more iters expected. 'blocked' = cannot proceed without external input. Authoritative status comes from verifiers, not this field."
+    },
+    "blocker": {
+      "type": ["string", "null"],
+      "description": "If status != 'complete': what is preventing further progress this iteration. null when status='complete'."
+    },
+    "files_changed": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Paths of files modified this iteration."
+    },
+    "committed": {
+      "type": "boolean",
+      "description": "Whether Codex committed the changes this iteration. Helper verifies via git log — discrepancy = warning."
+    },
+    "commit_sha": {
+      "type": ["string", "null"],
+      "description": "Short SHA of the iteration's commit. null if committed=false."
+    }
+  }
+}

@@ -1,3 +1,10 @@
+# [1.37.0](https://github.com/chris-yyau/busdriver/compare/v1.36.0...v1.37.0) (2026-05-12)
+
+
+### Features
+
+* **pr-grind:** approver-gap + Copilot auto-resolve + policy bail + marker-merge race fix ([#94](https://github.com/chris-yyau/busdriver/issues/94)) ([e4f2695](https://github.com/chris-yyau/busdriver/commit/e4f26953d676c657f413fca6bf9e8491d33512e1)), closes [#93](https://github.com/chris-yyau/busdriver/issues/93)
+
 # [1.36.0](https://github.com/chris-yyau/busdriver/compare/v1.35.2...v1.36.0) (2026-05-11)
 
 

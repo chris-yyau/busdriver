@@ -432,6 +432,60 @@ git add <specific files>
   printf 'fix: address PR #%s feedback\n' "$PR_NUMBER"
   printf '\n%s\n' "<one-line OR multi-paragraph summary of what you changed this round>"
 } | git commit -F -
+
+# Pre-push commitlint pre-flight (belt-and-suspenders local check).
+#
+# Why: CI runs commitlint on the BASE..HEAD range and fails the build on
+# subject/body violations. If a violating commit lands on the remote, the
+# only fix is `git commit --amend` + force-push — a published-history
+# rewrite that needs operator authorization (see Bail Triggers row
+# "Local commitlint check fails on commits BASE..HEAD before push"
+# below). Running commitlint locally BEFORE the push catches the
+# violation while the bad commit is still local-only, so a fix-up amend
+# stays purely local.
+#
+# Empirical motivation: PR #96 round 1 worker emitted a 169-char commit
+# body line that violated commitlint's footer-max-line-length (100 chars
+# default in @commitlint/config-conventional). CI caught it post-push;
+# round 2 bailed with category=judgment and required force-push under
+# operator authorization. A pre-push check would have caught the
+# violation at commit time, before the push, with a local amend
+# available as the fix path.
+#
+# Best-effort: skip silently if `@commitlint/cli` isn't locally
+# resolvable (e.g., project doesn't have it in devDependencies and
+# `npx --no-install` returns non-zero). CI's commitlint job remains the
+# authoritative gate; this is a fast-feedback pre-flight, not a hard
+# block. The `--no-install` flag is critical — without it, npx would
+# attempt to install commitlint over the network on every push, which
+# is both slow (~10–30 s) and a quiet "yes" to an unrequested side
+# effect on the operator's machine.
+BASE_BRANCH=$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName 2>/dev/null || echo "main")
+if command -v npx >/dev/null 2>&1 && npx --no-install commitlint --version >/dev/null 2>&1; then
+  if ! npx --no-install commitlint --from "origin/${BASE_BRANCH}" --to HEAD; then
+    # Commitlint failed on the just-committed range. The bad commit is
+    # LOCAL ONLY (we haven't pushed yet) — invoke the snapshot block (so
+    # the dispatcher sees zero inflight changes, since the changes are
+    # already committed) and bail with category=judgment. The reason
+    # string must point the operator at the local amend path, NOT a
+    # force-push (the commit hasn't reached the remote yet).
+    echo "❌ commitlint failed locally on commits origin/${BASE_BRANCH}..HEAD — bailing BEFORE push"
+    echo "   Fix: amend the offending commit locally (no force-push needed; commit hasn't been pushed)."
+    # Snapshot still runs even though there are no inflight changes —
+    # `none` is the explicit default and the dispatcher's parser
+    # depends on every inflight tag being present every round.
+    # ... continue to the mandatory pre-bail snapshot + RESULT_STATUS: bail
+    # ... with RESULT_BAIL_CATEGORY: judgment.
+    # See the snapshot block immediately below this Commit & push block.
+    exit 1
+  fi
+else
+  # commitlint not locally invokable — skip the pre-flight. CI's
+  # commitlint job will still catch issues, but at higher latency (the
+  # bad commit lands on the remote first, requiring force-push to fix).
+  echo "ℹ️  Skipping local commitlint pre-flight — @commitlint/cli not installed locally."
+fi
+
 git push
 ```
 
@@ -696,6 +750,7 @@ Stop the round and return `RESULT_STATUS: bail` with the appropriate `RESULT_BAI
 | Fix would require architectural changes | `judgment` | No |
 | Same flaky CI check name appears in `PRIOR_ATTEMPTS` `failures=` field for 2 prior rounds AND fails again now (3 total) | `judgment` | No |
 | Fix would require rewriting published git history — commitlint `header-max-length` on an already-pushed commit, oversized commits that need splitting via `git rebase` (interactive or otherwise), anything that needs `git commit --amend` on a pushed SHA, `git filter-branch`, or `git push --force(-with-lease)` | `judgment` | No |
+| **Local commitlint check fails on commits BASE..HEAD before push** (Step 6 pre-push pre-flight catches subject/body violations while the bad commit is still local-only — the operator can amend locally without force-pushing a published SHA) | **`judgment`** | No |
 | **Litmus gate keeps blocking after 2 attempts in this round** | **`tooling`** | **Yes** |
 | `gh` CLI auth or rate-limit errors that you can't resolve | `env` | No |
 | `WORKTREE_DIR` missing or unreadable | `env` | No |

@@ -101,18 +101,38 @@ try:
                 c_m = re.search(r'-C\s+(\S+)', seg)
                 if c_m:
                     target_dir = c_m.group(1).strip('\042\047')
+                # Detect --amend anywhere in the segment. Flag ordering
+                # varies: amend after subcommand, amend after -m, amend
+                # after --no-pager, etc. — any token equal to --amend in
+                # the segment word list counts. The check is permissive;
+                # false positives are not a safety concern because the
+                # bash-side amend bypass ALSO requires an empty staged
+                # diff (git diff --cached --quiet returns true), and a
+                # non-amend commit will always have staged changes if it
+                # is going to commit anything.
+                #
+                # Note: the comments above intentionally use NO backticks
+                # because bash interprets backticks inside double-quoted
+                # python3 -c arguments as command substitution. A literal
+                # backtick-git-commit inside a comment would cause bash
+                # to actually invoke that command and substitute its
+                # output, corrupting the python source.
+                is_amend = '--amend' in words
                 print('yes')
                 print(target_dir)
+                print('1' if is_amend else '0')
                 break
 except Exception:
     # Fail-CLOSED: fast pre-filter matched git commit pattern but parser
     # failed. Print sentinel so bash can block rather than silently approve.
     print('error')
     print('')
+    print('')
 " 2>/dev/null || true)
 
-IS_GIT_COMMIT=$(echo "$PARSE_RESULT" | head -1)
+IS_GIT_COMMIT=$(echo "$PARSE_RESULT" | sed -n '1p')
 TARGET_DIR=$(echo "$PARSE_RESULT" | sed -n '2p')
+IS_AMEND=$(echo "$PARSE_RESULT" | sed -n '3p')
 
 # Fail-closed: parser error after fast pre-filter matched → block as precaution
 if [ "$IS_GIT_COMMIT" = "error" ]; then
@@ -127,6 +147,40 @@ REPO_DIR=$(git -C "${TARGET_DIR:-.}" rev-parse --show-toplevel 2>/dev/null || ec
 
 # Not in a git repo → approve
 git -C "$REPO_DIR" rev-parse --is-inside-work-tree &>/dev/null || exit 0
+
+# ── --amend with no staged changes auto-pass ──────────────────────────
+# A `git commit --amend` with no staged changes is a commit-message-only
+# rewrite — the resulting commit has the same tree as HEAD, which already
+# passed review to land. There's nothing new to review; allow.
+#
+# Empirical motivation: PR #96 grind hit commitlint footer-max-line-length
+# on a pushed commit body. The fix required force-push amend. Litmus
+# refused to run on empty staged diff ("No uncommitted changes detected"),
+# but this gate still required litmus pass — deadlock. The user had to
+# create `.claude/skip-litmus.local` manually. This auto-pass eliminates
+# the skip-file dance for commit-message-only amends.
+#
+# Safety: same invariant as the merge-commit auto-pass below — empty
+# `git diff --cached` against HEAD means the commit introduces no new
+# content vs. an already-reviewed HEAD, so no new review is needed.
+# Amends WITH staged changes still go through the normal review gates
+# (staged content IS new and must be reviewed). The narrow precondition
+# `IS_AMEND=1 AND git diff --cached --quiet` is what keeps this bypass
+# tight.
+#
+# Soft-spot: `git commit --amend <file>` (path-arg form) stages the
+# file internally AFTER this hook fires, so `git diff --cached --quiet`
+# returns true and we auto-pass without reviewing the staged change.
+# This is the same soft-spot as `git commit -a` and chained
+# `git add && git commit` (see "ACCEPTED RISK" block below). Not a new
+# class of risk — the existing risk model accepts it.
+if [ "$IS_AMEND" = "1" ]; then
+    if git -C "$REPO_DIR" diff --cached --quiet 2>/dev/null; then
+        # --amend with empty staged diff → commit-message-only rewrite
+        # No new content to review; allow.
+        exit 0
+    fi
+fi
 
 # ── ~/.claude repo: scoped auto-generated file bypass ──────────────────────
 # Skip review gates ONLY when ALL staged files are auto-generated artifacts.

@@ -45,10 +45,40 @@ Send any task to Codex or Gemini CLI as an autonomous agent. Unlike `litmus` and
 
 | Mode | What happens | When to use |
 |------|-------------|-------------|
-| `readonly` (default) | Sandbox — cannot modify files | Analysis, audit, review |
+| `readonly` (default) | Sandbox — cannot modify files* | Analysis, audit, review |
 | `auto` | Full auto-approve — can make changes | Refactoring, code generation |
 
+\* Strength varies by CLI — see [Per-CLI sandboxing strength](#per-cli-sandboxing-strength) below. Droid in particular lacks a strict sandbox.
+
 **Safety**: ALWAYS default to `readonly`. Only use `auto` when the user explicitly requests file changes.
+
+### Per-CLI sandboxing strength
+
+| CLI | Readonly mechanism | Strict sandbox? |
+|-----|-------------------|-----------------|
+| codex | `-s read-only` | ✅ yes (kernel-enforced sandbox) |
+| gemini | absence of `-y` | ✅ yes (interactive confirm on writes) |
+| droid | `--auto medium` (permission tier) | ⚠️  **no** — see below |
+| amp, opencode | default behavior | per-CLI; check docs |
+
+**Droid caveat:** droid has no strict readonly mode. Its `--auto low|medium|high` are permission tiers that control whether it prompts on permission checks (without any flag, droid bails on first read under stdin redirection). Tier semantics from `droid exec --help`:
+
+| Tier | Capabilities |
+|------|--------------|
+| `low` | File writes in non-system dirs only (no installs, no git, no network) |
+| `medium` | + package installs, trusted-host curl/wget, local git (commit/checkout/pull) |
+| `high` | + git push --force, curl/wget to arbitrary hosts, secrets, prod deploys |
+
+**Dispatch tier mapping** (override per-call with the `DROID_AUTO_LEVEL` env var):
+
+| Dispatch mode | Droid tier | Rationale |
+|---------------|-----------|-----------|
+| `readonly` | `--auto medium` | General reads; bump to `high` for research with web fetches |
+| `auto` | `--auto high` | User opted into changes; covers codegen/research/network ops |
+
+**Empirical note:** council Researcher prompts (web fetches, API lookups) reliably require `--auto high`. `medium` bails with "Re-run with --auto high." If you observe this, either invoke with `--mode auto`, or export `DROID_AUTO_LEVEL=high` for the dispatch.
+
+For strict read-only guarantees, dispatch to `codex` or `gemini` instead. (Litmus/santa/blueprint-review backends use the tighter `--auto low` via `scripts/lib/resolve-cli.sh::execute_review` — review prompts emit JSON verdicts and never need writes/installs/network.)
 
 ## How to Dispatch
 

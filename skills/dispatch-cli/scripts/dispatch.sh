@@ -174,13 +174,28 @@ dispatch_one() {
                     < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             fi ;;
         droid)
-            if [[ "$MODE" == "auto" ]]; then
-                _portable_timeout "$TIMEOUT" droid exec --auto low \
-                    < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
+            # Droid has no strict readonly mode — its --auto tier controls whether it
+            # prompts on permission checks. Without a flag, droid bails on first read
+            # (fatal under stdin redirection). Tier semantics from `droid exec --help`:
+            #   low    = file writes in non-system dirs only
+            #   medium = + package installs, trusted-host curl/wget, local git (commit/checkout/pull)
+            #   high   = + git push --force, curl|bash, secrets, prod deploys
+            # Dispatch mode mapping (override per-call with DROID_AUTO_LEVEL=low|medium|high):
+            #   readonly → medium  (general reads; bump to high for research with web fetches)
+            #   auto     → high    (user opted into changes; covers codegen/research/network ops)
+            # Empirical note: council Researcher prompts (web fetches, API lookups) reliably
+            # require --auto high; medium bails. See skills/dispatch-cli/SKILL.md "Per-CLI
+            # sandboxing strength" for the droid caveat.
+            local _droid_level
+            if [[ -n "${DROID_AUTO_LEVEL:-}" ]]; then
+                _droid_level="$DROID_AUTO_LEVEL"
+            elif [[ "$MODE" == "auto" ]]; then
+                _droid_level="high"
             else
-                _portable_timeout "$TIMEOUT" droid exec \
-                    < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
-            fi ;;
+                _droid_level="medium"
+            fi
+            _portable_timeout "$TIMEOUT" droid exec --auto "$_droid_level" \
+                < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;
         amp)
             local amp_tmp
             amp_tmp=$(mktemp "${TMPDIR:-/tmp}/dispatch-amp-XXXXXX")

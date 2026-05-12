@@ -454,11 +454,11 @@ git add <specific files>
 # >100 chars trips the rule; what matters is the catch-locally /
 # fix-locally property the pre-flight buys.
 #
-# Best-effort: skip silently if `@commitlint/cli` isn't locally
-# resolvable (e.g., project doesn't have it in devDependencies and
-# `npx --no-install` returns non-zero). CI's commitlint job remains the
-# authoritative gate; this is a fast-feedback pre-flight, not a hard
-# block. The `--no-install` flag is critical — without it, npx would
+# Best-effort: skip with an informational message if `@commitlint/cli`
+# isn't locally resolvable (e.g., project doesn't have it in
+# devDependencies and `npx --no-install` returns non-zero). CI's
+# commitlint job remains the authoritative gate; this is a fast-feedback
+# pre-flight, not a hard block. The `--no-install` flag is critical — without it, npx would
 # attempt to install commitlint over the network on every push, which
 # is both slow (~10–30 s) and a quiet "yes" to an unrequested side
 # effect on the operator's machine.
@@ -497,17 +497,40 @@ fi
 # block + RESULT emission per the mandatory pre-bail snapshot rule. If
 # not set, push as normal.
 if [ "$COMMITLINT_BAIL" = "1" ]; then
-  # ... invoke the snapshot block from later in this Step 6 (it produces
-  # `none` defaults for empty working trees, which is correct here — the
-  # bad commit is already in the local index, not the working tree) AND
-  # emit:
-  #   RESULT_STATUS: bail
-  #   RESULT_BAIL_CATEGORY: judgment
-  #   RESULT_BAIL_REASON: local commitlint check failed on commits origin/<base>..HEAD before push; bad commit is local-only, operator can amend without force-push
-  # Do NOT push. Do NOT proceed to Step 6.5.
-  : # placeholder — actual snapshot + emission happens via the same
-    # path the litmus-blocked-twice bail uses (see "Mandatory pre-bail
-    # snapshot rule" in Bail Triggers below).
+  # WORKER DIRECTIVE — execute the following steps verbatim. This is NOT
+  # a no-op; the `: # placeholder` that was here is replaced with an
+  # explicit instruction sequence the worker must follow:
+  #
+  # 1. Run the mandatory pre-bail snapshot block (defined later in this
+  #    Step 6 under "The snapshot block"). It produces `none` defaults for
+  #    all five inflight tags — correct here because the bad commit is
+  #    already in the local index, not the working tree.
+  #
+  # 2. Emit the following RESULT tags (to RESULT_FILE AND stdout):
+  #      RESULT_STATUS: bail
+  #      RESULT_BAIL_CATEGORY: judgment
+  #      RESULT_BAIL_REASON: local commitlint check failed on commits origin/<base>..HEAD before push; bad commit is local-only, operator can amend without force-push
+  #    Plus all other required RESULT_* tags per the Output Format section.
+  #
+  # 3. Do NOT push. Do NOT proceed to Step 6.5. Return immediately.
+  #
+  # NOTE: RESULT_BAIL_CATEGORY is `judgment`, not `tooling` — the commit
+  # message is wrong and must be fixed by the operator (local amend), not
+  # rescued by the dispatcher's recovery-via-inline carve-out.
+  STAGED_LIST=$(git diff --cached -z --name-only | tr '\0' '\n' | sed '/^$/d')
+  UNSTAGED_LIST=$(git diff -z --name-only | tr '\0' '\n' | sed '/^$/d')
+  HAS_STAGED=0; HAS_UNSTAGED=0
+  [ -n "$STAGED_LIST" ] && HAS_STAGED=1
+  [ -n "$UNSTAGED_LIST" ] && HAS_UNSTAGED=1
+  if [ "$HAS_STAGED" -eq 1 ] && [ "$HAS_UNSTAGED" -eq 1 ]; then INFLIGHT_CHANGES=both
+  elif [ "$HAS_STAGED" -eq 1 ]; then INFLIGHT_CHANGES=staged
+  elif [ "$HAS_UNSTAGED" -eq 1 ]; then INFLIGHT_CHANGES=unstaged
+  else INFLIGHT_CHANGES=none; fi
+  [ -z "$STAGED_LIST" ]   && STAGED_FILES=none   || STAGED_FILES=$(printf '%s' "$STAGED_LIST" | tr '\n' '|' | sed 's/|$//')
+  [ -z "$UNSTAGED_LIST" ] && UNSTAGED_FILES=none || UNSTAGED_FILES=$(printf '%s' "$UNSTAGED_LIST" | tr '\n' '|' | sed 's/|$//')
+  if [ "$HAS_STAGED" -eq 1 ]; then STAGED_DIFF_SHA=$(git diff --cached | sha256sum | cut -c1-64); else STAGED_DIFF_SHA=none; fi
+  if [ "$HAS_UNSTAGED" -eq 1 ]; then UNSTAGED_DIFF_SHA=$(git diff | sha256sum | cut -c1-64); else UNSTAGED_DIFF_SHA=none; fi
+  # (Emit full RESULT block with status=bail, bail_category=judgment here)
 else
   git push
 fi

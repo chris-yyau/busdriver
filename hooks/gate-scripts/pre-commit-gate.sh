@@ -101,15 +101,12 @@ try:
                 c_m = re.search(r'-C\s+(\S+)', seg)
                 if c_m:
                     target_dir = c_m.group(1).strip('\042\047')
-                # Detect --amend anywhere in the segment. Flag ordering
-                # varies: amend after subcommand, amend after -m, amend
-                # after --no-pager, etc. — any token equal to --amend in
-                # the segment word list counts. The check is permissive;
-                # false positives are not a safety concern because the
-                # bash-side amend bypass ALSO requires an empty staged
-                # diff (git diff --cached --quiet returns true), and a
-                # non-amend commit will always have staged changes if it
-                # is going to commit anything.
+                # Detect --amend in the option portion of the segment only
+                # (tokens before the first -- pathspec separator). Scanning
+                # the full word list would match --amend appearing as a
+                # pathspec argument (e.g. `git commit --allow-empty --
+                # --amend`), producing a false positive that triggers the
+                # bash-side amend bypass unintentionally.
                 #
                 # Note: the comments above intentionally use NO backticks
                 # because bash interprets backticks inside double-quoted
@@ -117,7 +114,8 @@ try:
                 # backtick-git-commit inside a comment would cause bash
                 # to actually invoke that command and substitute its
                 # output, corrupting the python source.
-                is_amend = '--amend' in words
+                option_words = words[:words.index('--')] if '--' in words else words
+                is_amend = '--amend' in option_words
                 print('yes')
                 print(target_dir)
                 print('1' if is_amend else '0')
@@ -244,6 +242,13 @@ fi
 # over chaining them. This allows the hook to see actual staged changes.
 #
 # Audit trail: H4 finding, Sprint 1 (2026-03-19). Council rated HIGH (accepted).
+#
+# Related soft-spot: `git commit --amend <file>` (path-arg form) — the
+# file is staged internally AFTER this hook fires, so `git diff --cached
+# --quiet` returns true and the amend bypass allows the commit without
+# reviewing the new content. Same class of risk as chained `git add &&
+# git commit`. Not a new risk category — explicitly noted here so future
+# maintainers recognize it as an examined gap, not an oversight.
 # ─────────────────────────────────────────────────────────────────────────
 
 # Skip overrides

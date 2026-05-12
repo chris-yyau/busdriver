@@ -444,13 +444,15 @@ git add <specific files>
 # violation while the bad commit is still local-only, so a fix-up amend
 # stays purely local.
 #
-# Empirical motivation: PR #96 round 1 worker emitted a 169-char commit
-# body line that violated commitlint's footer-max-line-length (100 chars
-# default in @commitlint/config-conventional). CI caught it post-push;
-# round 2 bailed with category=judgment and required force-push under
-# operator authorization. A pre-push check would have caught the
-# violation at commit time, before the push, with a local amend
-# available as the fix path.
+# Empirical motivation: PR #96 round 1 worker emitted a commit body
+# line exceeding commitlint's footer-max-line-length (100 chars default
+# in @commitlint/config-conventional). CI caught it post-push; round 2
+# bailed with category=judgment and required force-push under operator
+# authorization. A pre-push check would have caught the violation at
+# commit time, before the push, with a local amend available as the
+# fix path. The precise char count isn't load-bearing here — any line
+# >100 chars trips the rule; what matters is the catch-locally /
+# fix-locally property the pre-flight buys.
 #
 # Best-effort: skip silently if `@commitlint/cli` isn't locally
 # resolvable (e.g., project doesn't have it in devDependencies and
@@ -460,24 +462,29 @@ git add <specific files>
 # attempt to install commitlint over the network on every push, which
 # is both slow (~10–30 s) and a quiet "yes" to an unrequested side
 # effect on the operator's machine.
+COMMITLINT_BAIL=0
 BASE_BRANCH=$(gh pr view "$PR_NUMBER" --json baseRefName -q .baseRefName 2>/dev/null || echo "main")
 if command -v npx >/dev/null 2>&1 && npx --no-install commitlint --version >/dev/null 2>&1; then
   if ! npx --no-install commitlint --from "origin/${BASE_BRANCH}" --to HEAD; then
     # Commitlint failed on the just-committed range. The bad commit is
-    # LOCAL ONLY (we haven't pushed yet) — invoke the snapshot block (so
-    # the dispatcher sees zero inflight changes, since the changes are
-    # already committed) and bail with category=judgment. The reason
-    # string must point the operator at the local amend path, NOT a
-    # force-push (the commit hasn't reached the remote yet).
-    echo "❌ commitlint failed locally on commits origin/${BASE_BRANCH}..HEAD — bailing BEFORE push"
+    # LOCAL ONLY (we haven't pushed yet). Set a deferred-bail flag so
+    # we fall through to the mandatory pre-bail snapshot block (which
+    # populates RESULT_INFLIGHT_CHANGES, RESULT_STAGED_FILES, etc.
+    # with their `none` defaults — the changes are already committed,
+    # not inflight) AND emit the structured RESULT envelope. The
+    # operator-facing reason string points at the local amend path,
+    # NOT a force-push (the commit hasn't reached the remote yet).
+    #
+    # CRITICAL: do NOT `exit 1` here. The mandatory pre-bail snapshot
+    # rule (see Bail Triggers → "Mandatory pre-bail snapshot rule"
+    # below) requires every bail from Step 4 onward to invoke the
+    # snapshot block before terminating, so the dispatcher always
+    # sees a complete RESULT_* tag set. A hard `exit 1` would skip
+    # both the snapshot AND the RESULT emission, leaving the
+    # dispatcher's parser unable to read the bail at all.
+    echo "❌ commitlint failed locally on commits origin/${BASE_BRANCH}..HEAD — will bail BEFORE push"
     echo "   Fix: amend the offending commit locally (no force-push needed; commit hasn't been pushed)."
-    # Snapshot still runs even though there are no inflight changes —
-    # `none` is the explicit default and the dispatcher's parser
-    # depends on every inflight tag being present every round.
-    # ... continue to the mandatory pre-bail snapshot + RESULT_STATUS: bail
-    # ... with RESULT_BAIL_CATEGORY: judgment.
-    # See the snapshot block immediately below this Commit & push block.
-    exit 1
+    COMMITLINT_BAIL=1
   fi
 else
   # commitlint not locally invokable — skip the pre-flight. CI's
@@ -486,7 +493,24 @@ else
   echo "ℹ️  Skipping local commitlint pre-flight — @commitlint/cli not installed locally."
 fi
 
-git push
+# Branch on the deferred-bail flag. If set, fall through to the snapshot
+# block + RESULT emission per the mandatory pre-bail snapshot rule. If
+# not set, push as normal.
+if [ "$COMMITLINT_BAIL" = "1" ]; then
+  # ... invoke the snapshot block from later in this Step 6 (it produces
+  # `none` defaults for empty working trees, which is correct here — the
+  # bad commit is already in the local index, not the working tree) AND
+  # emit:
+  #   RESULT_STATUS: bail
+  #   RESULT_BAIL_CATEGORY: judgment
+  #   RESULT_BAIL_REASON: local commitlint check failed on commits origin/<base>..HEAD before push; bad commit is local-only, operator can amend without force-push
+  # Do NOT push. Do NOT proceed to Step 6.5.
+  : # placeholder — actual snapshot + emission happens via the same
+    # path the litmus-blocked-twice bail uses (see "Mandatory pre-bail
+    # snapshot rule" in Bail Triggers below).
+else
+  git push
+fi
 ```
 
 The litmus pre-commit gate WILL fire on the commit. Do NOT use `--no-verify`. If litmus blocks twice in this round:

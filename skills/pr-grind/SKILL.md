@@ -1182,8 +1182,8 @@ export BRANCH_RULES_JSON PR_REVIEWS_JSON AUTHOR_PERM_JSON \
        AUDIT_WORKFLOW_PRESENT CI_AND_BOTS_CLEAN ADMIN_FLAG_PASSED
 
 GAP_DECISION_JSON=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/approver-gap-detect.sh" 2>/dev/null \
-  || echo '{"decision":"no-gap","reason":"script invocation failed; surface real gh error"}')
-GAP_DECISION=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.decision' 2>/dev/null || echo no-gap)
+  || echo '{"decision":"surface-decision","reason":"approver-gap detector failed; require operator decision"}')
+GAP_DECISION=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.decision' 2>/dev/null || echo surface-decision)
 ```
 
 **Decision tree** (based on `GAP_DECISION`):

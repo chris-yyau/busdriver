@@ -182,20 +182,30 @@ After each iter, before deciding, **verify Codex stayed within scope**. Use Pyth
 git diff --name-only "${PRE_HEAD}..HEAD" > "$RUN_DIR/iter-${ITER_N}-touched.txt"
 
 python3 - "$RUN_DIR/spec.json" "$RUN_DIR/iter-${ITER_N}-touched.txt" <<'PY'
-import sys, json, fnmatch
-spec = json.load(open(sys.argv[1]))
-files = [l.strip() for l in open(sys.argv[2]) if l.strip()]
-inc = spec.get("scope", {}).get("include", ["**"])
+import sys, json, fnmatch, os
+spec_path, touched_path = sys.argv[1], sys.argv[2]
+with open(spec_path) as f: spec = json.load(f)
+with open(touched_path) as f: files = [l.strip() for l in f if l.strip()]
+if not files:
+    print("no files touched this iter"); sys.exit(0)
+
+inc = spec.get("scope", {}).get("include")
 exc = spec.get("scope", {}).get("exclude", [])
+if not inc:
+    # Loud warning, then default to "**" so the loop doesn't block silently
+    # when the user forgot scope. Hard rule 6 still applies at this layer
+    # only when scope is explicit.
+    print("[scope] WARNING: spec has no scope.include — allowing all paths", file=sys.stderr)
+    inc = ["**"]
 
 def matches_any(path, patterns):
-    # fnmatch.fnmatch treats `**` like `*`; expand `**` semantics manually.
+    # fnmatch.fnmatchcase (NOT fnmatch.fnmatch — which normcases on macOS)
+    # gives deterministic case-sensitive matching across platforms.
+    # `*` and `**` are both treated as match-anything (including '/'), so
+    # `src/auth/**` correctly matches `src/auth/sub/x.ts` but NOT
+    # `src/authentication/x.ts` because the literal `/` boundary intervenes.
     for p in patterns:
-        # `dir/**` means anything under dir; normalize to `dir/*` for fnmatch
-        # then also match the dir itself.
-        if fnmatch.fnmatch(path, p): return True
-        if p.endswith("/**") and (fnmatch.fnmatch(path, p[:-3]) or path.startswith(p[:-3])):
-            return True
+        if fnmatch.fnmatchcase(path, p): return True
     return False
 
 bad = [f for f in files if not matches_any(f, inc) or matches_any(f, exc)]

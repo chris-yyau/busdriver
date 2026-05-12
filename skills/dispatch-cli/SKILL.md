@@ -45,7 +45,7 @@ Send any task to Codex or Gemini CLI as an autonomous agent. Unlike `litmus` and
 
 | Mode | What happens | When to use |
 |------|-------------|-------------|
-| `readonly` (default) | Sandbox — cannot modify files* | Analysis, audit, review |
+| `readonly` (default) | Read-only intent* | Analysis, audit, review |
 | `auto` | Full auto-approve — can make changes | Refactoring, code generation |
 
 \* Strength varies by CLI — see [Per-CLI sandboxing strength](#per-cli-sandboxing-strength) below. Droid in particular lacks a strict sandbox.
@@ -77,6 +77,8 @@ Send any task to Codex or Gemini CLI as an autonomous agent. Unlike `litmus` and
 | `auto` | `--auto high` | User opted into changes; covers codegen/research/network ops |
 
 **Empirical note:** council Researcher prompts (web fetches, API lookups) reliably require `--auto high`. `medium` bails with "Re-run with --auto high." If you observe this, either invoke with `--mode auto`, or export `DROID_AUTO_LEVEL=high` for the dispatch.
+
+> **Warning:** `DROID_AUTO_LEVEL` bypasses the mode-level default and applies to ALL dispatches in the current shell environment. A globally-exported `DROID_AUTO_LEVEL=high` will escalate `readonly` dispatches to `--auto high` (git push --force, curl|bash, secrets). Set it per-command or unset it after use. The dispatch script validates that only `low`, `medium`, or `high` are accepted values.
 
 For strict read-only guarantees, dispatch to `codex` or `gemini` instead. (Litmus/santa/blueprint-review backends use the tighter `--auto low` via `scripts/lib/resolve-cli.sh::execute_review` — review prompts emit JSON verdicts and never need writes/installs/network.)
 

@@ -188,7 +188,10 @@ dispatch_one() {
             # sandboxing strength" for the droid caveat.
             local _droid_level
             if [[ -n "${DROID_AUTO_LEVEL:-}" ]]; then
-                _droid_level="$DROID_AUTO_LEVEL"
+                case "$DROID_AUTO_LEVEL" in
+                    low|medium|high) _droid_level="$DROID_AUTO_LEVEL" ;;
+                    *) echo "Error: DROID_AUTO_LEVEL='$DROID_AUTO_LEVEL' is invalid. Must be low, medium, or high." >&2; exit 1 ;;
+                esac
             elif [[ "$MODE" == "auto" ]]; then
                 _droid_level="high"
             else

@@ -429,8 +429,8 @@ execute_review() {
              local _rc=$?; rm -f "$_tmp"; return $_rc ;;
     # Review path: --auto low (file-write tier only, no installs/git/network)
     # is sufficient — reviews emit JSON verdicts and never need to mutate the
-    # repo or fetch. Tighter than dispatch.sh:176-187 by design: this is the
-    # litmus/santa/blueprint-review backend, where read-only intent is hard.
+    # repo or fetch. Tighter than dispatch_one()'s droid case by design: this
+    # is the litmus/santa/blueprint-review backend, where read-only intent is hard.
     droid)   printf '%s' "$prompt" | _portable_timeout "$duration" droid exec --auto low 2>&1 ;;
     amp)     local _tmp; _tmp=$(mktemp -t busdriver-amp-XXXXXX)
              printf '%s' "$prompt" > "$_tmp"

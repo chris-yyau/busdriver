@@ -104,9 +104,9 @@ try:
                 # Detect --amend in the option portion of the segment only
                 # (tokens before the first -- pathspec separator). Scanning
                 # the full word list would match --amend appearing as a
-                # pathspec argument (e.g. `git commit --allow-empty --
-                # --amend`), producing a false positive that triggers the
-                # bash-side amend bypass unintentionally.
+                # pathspec argument (e.g. git commit --allow-empty -- --amend
+                # treats --amend as a filename), producing a false positive
+                # that triggers the bash-side amend bypass unintentionally.
                 #
                 # Note: the comments above intentionally use NO backticks
                 # because bash interprets backticks inside double-quoted

@@ -26,24 +26,32 @@ Pick something else when:
 
 ## Inputs: the spec
 
-The user provides a spec, either as a path to `.json` (preferred — parseable with `jq` alone) or `.yaml` / `.yml` (requires `python3` for YAML→JSON conversion), or inline text. Required structure (shown in YAML for readability; JSON works the same):
+The user provides a spec as a path to `.json` (or inline JSON text — the skill writes it to disk). YAML is intentionally not supported in v1: `PyYAML` is not in Python's stdlib and the marginal ergonomic gain doesn't justify the silent dep. Required JSON structure (commentary uses pseudo-YAML for readability; verifier commands shown are illustrative — **substitute your project's actual verifier commands**: `npm test`, `cargo test`, `pytest`, `go test ./...`, `make check`, etc.):
 
-```yaml
-objective: One sentence describing the goal.
-scope:
-  include: [src/auth/**, tests/auth/**]
-  exclude: [src/legacy/**]
-constraints:
-  - Preserve existing public API
-  - Do not add new dependencies
-verifiable_end_state:
-  description: All auth tests pass, lint clean, types clean.
-  verifiers:
-    - { name: tests,     cmd: "pnpm test --silent" }
-    - { name: lint,      cmd: "pnpm lint" }
-    - { name: typecheck, cmd: "pnpm tsc --noEmit" }
-max_iters: 5   # optional; defaults to 5; hard cap 8
+```json
+{
+  "objective": "One sentence describing the goal.",
+  "scope": {
+    "include": ["src/auth/**", "tests/auth/**"],
+    "exclude": ["src/legacy/**"]
+  },
+  "constraints": [
+    "Preserve existing public API",
+    "Do not add new dependencies"
+  ],
+  "verifiable_end_state": {
+    "description": "All auth tests pass, lint clean, types clean.",
+    "verifiers": [
+      { "name": "tests",     "cmd": "pnpm test --silent" },
+      { "name": "lint",      "cmd": "pnpm lint" },
+      { "name": "typecheck", "cmd": "pnpm tsc --noEmit" }
+    ]
+  },
+  "max_iters": 5
+}
 ```
+
+`max_iters` defaults to 5; hard cap 8.
 
 If the user provides an inline description without verifiers, **ask once for verifier commands**, or redirect to `/codex:rescue` if the user can't supply any. **Do not invent verifiers** — wrong verifiers cause silent premature exit or runaway iteration.
 
@@ -51,7 +59,7 @@ If the user provides an inline description without verifiers, **ask once for ver
 
 ### 1. Validate the spec
 
-- Parse the YAML/Markdown
+- Parse the spec (JSON)
 - Confirm `verifiable_end_state.verifiers` is non-empty
 - Run each verifier ONCE before the loop starts (sanity check that commands execute, capture initial state)
 - If all verifiers already pass before any Codex work, tell the user and stop
@@ -61,8 +69,9 @@ If the user provides an inline description without verifiers, **ask once for ver
 ```bash
 RUN_DIR="scripts/codex/.runs/$(date +%Y%m%d-%H%M%S)-codex-goal"
 mkdir -p "$RUN_DIR"
-# Copy/render the spec into the run dir for traceability
-cp <user-spec-file> "$RUN_DIR/spec.yaml"  # or write inline spec to spec.yaml
+cp <user-spec-file> "$RUN_DIR/spec.json"   # or write inline spec to spec.json
+# Sanity-validate it parses as JSON
+jq -e . "$RUN_DIR/spec.json" >/dev/null || { echo "spec is not valid JSON" >&2; exit 64; }
 ```
 
 ### 3. Build the first-iter prompt
@@ -106,10 +115,14 @@ The helper prints the result file path (schema-enforced). Read it with `jq`.
 
 ```bash
 PRE_HEAD=$(cat "${RESULT_FILE}.pre-head.txt")
+if [[ "$PRE_HEAD" == "no-git" ]]; then
+  # Not a git repo — Hard rule 2 (per-iter commit) cannot be enforced. Bail.
+  echo "[codex-goal] not a git repo; aborting (Hard rule 2 requires git)" >&2
+  exit 1
+fi
 POST_HEAD=$(git rev-parse HEAD)
 if [[ "$PRE_HEAD" == "$POST_HEAD" ]]; then
-  # Codex didn't commit — treat as warning, do not auto-fix on the user's behalf.
-  # If this happens twice in a row, bail.
+  # Codex didn't commit — warn. If this happens twice in a row, bail.
 fi
 # Detect multi-commit iters (Codex made >1 commit this turn):
 COMMITS_THIS_ITER=$(git rev-list "${PRE_HEAD}..HEAD")
@@ -117,23 +130,20 @@ COMMITS_THIS_ITER=$(git rev-list "${PRE_HEAD}..HEAD")
 
 ### 6. Run the verifiers (cheap, no LLM tokens)
 
-The spec can be JSON or YAML. Parse with `jq` directly for JSON; convert YAML via Python's stdlib (universal on macOS/Linux) — no `yq` dependency:
+Use `jq -c` to emit one JSON object per verifier (handles names/commands with embedded newlines, tabs, or quotes safely — TSV delimitation would mis-split):
 
 ```bash
-# If spec is YAML, convert once at the start of the run:
-python3 -c 'import sys,yaml,json; json.dump(yaml.safe_load(open(sys.argv[1])), sys.stdout)' \
-  "$RUN_DIR/spec.yaml" > "$RUN_DIR/spec.json"
-
-# Read verifiers via jq, run each:
 ALL_GREEN=true
-while IFS=$'\t' read -r v_name v_cmd; do
+while IFS= read -r v_json; do
+  v_name=$(jq -r '.name' <<<"$v_json")
+  v_cmd=$( jq -r '.cmd'  <<<"$v_json")
   if bash -c "$v_cmd" > "$RUN_DIR/iter-${ITER_N}-verifier-${v_name}.out" 2>&1; then
     echo "$v_name PASS" >> "$RUN_DIR/iter-${ITER_N}-verifier-results.txt"
   else
     echo "$v_name FAIL" >> "$RUN_DIR/iter-${ITER_N}-verifier-results.txt"
     ALL_GREEN=false
   fi
-done < <(jq -r '.verifiable_end_state.verifiers[] | "\(.name)\t\(.cmd)"' "$RUN_DIR/spec.json")
+done < <(jq -c '.verifiable_end_state.verifiers[]' "$RUN_DIR/spec.json")
 ```
 
 **Note on `bash -c "$v_cmd"`:** verifier commands are arbitrary shell from the user's spec. This is by design (verifiers must be flexible) but means specs from untrusted sources (issues, templates, AI suggestions) can run anything. Treat specs as you would `git clone && make` — review before running.
@@ -166,15 +176,38 @@ done < <(jq -r '.verifiable_end_state.verifiers[] | "\(.name)\t\(.cmd)"' "$RUN_D
 
 ### 8. Scope enforcement (post-iter sanity)
 
-After each iter, before deciding, **verify Codex stayed within scope**:
+After each iter, before deciding, **verify Codex stayed within scope**. Use Python's stdlib `fnmatch` (no extra deps) for glob matching with proper `**` semantics:
 
 ```bash
-TOUCHED_FILES=$(git diff --name-only "${PRE_HEAD}..HEAD")
-# Check $TOUCHED_FILES against spec's scope.include / scope.exclude globs.
-# If anything is out-of-scope, bail (Hard rule 6 — don't auto-fix; flag to user).
+git diff --name-only "${PRE_HEAD}..HEAD" > "$RUN_DIR/iter-${ITER_N}-touched.txt"
+
+python3 - "$RUN_DIR/spec.json" "$RUN_DIR/iter-${ITER_N}-touched.txt" <<'PY'
+import sys, json, fnmatch
+spec = json.load(open(sys.argv[1]))
+files = [l.strip() for l in open(sys.argv[2]) if l.strip()]
+inc = spec.get("scope", {}).get("include", ["**"])
+exc = spec.get("scope", {}).get("exclude", [])
+
+def matches_any(path, patterns):
+    # fnmatch.fnmatch treats `**` like `*`; expand `**` semantics manually.
+    for p in patterns:
+        # `dir/**` means anything under dir; normalize to `dir/*` for fnmatch
+        # then also match the dir itself.
+        if fnmatch.fnmatch(path, p): return True
+        if p.endswith("/**") and (fnmatch.fnmatch(path, p[:-3]) or path.startswith(p[:-3])):
+            return True
+    return False
+
+bad = [f for f in files if not matches_any(f, inc) or matches_any(f, exc)]
+if bad:
+    print("OUT_OF_SCOPE:", *bad, sep="\n")
+    sys.exit(1)
+print("scope check OK")
+PY
+# Exit code 1 → bail (Hard rule 6). Exit 0 → continue.
 ```
 
-This is the structural defense against prompt injection from verifier output: even if Codex were steered to modify a file outside scope, the post-iter check catches it before the next iter compounds the damage.
+This is the structural defense against prompt injection from verifier output: even if Codex were steered to modify a file outside scope, the post-iter check catches it before the next iter compounds the damage. The check uses **only Python stdlib** (`json` + `fnmatch`) — no PyYAML or other third-party deps.
 
 ## Hard rules
 
@@ -197,10 +230,10 @@ This is the structural defense against prompt injection from verifier output: ev
 
 ## Dependencies
 
-- `codex` CLI (≥ 0.130.0 recommended — earlier versions may not support all `codex exec` flags used here)
+- `codex` CLI ≥ 0.130.0 (older versions may not support `codex exec --output-schema`; the helper does not preflight the version — `codex exec` will return "unknown flag" on incompatible versions)
 - `jq` (helper schema check + skill JSON-spec parsing)
-- `python3` with stdlib `yaml` module (only needed for YAML specs — JSON specs need jq alone)
-- `git` (commit detection)
+- `python3` (stdlib only — used by Step 8 scope check via `fnmatch`; no third-party deps like PyYAML required)
+- `git` (commit detection — Hard rule 2 cannot be enforced outside a git repo)
 
 ## Cost expectation (CC quota)
 

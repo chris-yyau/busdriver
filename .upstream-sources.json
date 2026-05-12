@@ -4444,5 +4444,97 @@
       "status": "sync",
       "upstream_path": "commands/auto-update.md"
     }
+  ],
+  "rejected": [
+    {
+      "source": "ecc",
+      "path": "skills/hermes-imports",
+      "reason": "Hermes operator workflow -> ECC skill converter; busdriver doesn't run Hermes",
+      "date": "2026-05-12"
+    },
+    {
+      "source": "ecc",
+      "path": "ecc2/**",
+      "reason": "Rust port of ECC; busdriver is Markdown+shell only",
+      "date": "2026-05-12"
+    },
+    {
+      "source": "ecc",
+      "path": "ecc_dashboard.py",
+      "reason": "ECC distribution dashboard, not a pipeline component",
+      "date": "2026-05-12"
+    },
+    {
+      "source": "ecc",
+      "path": "contexts/**",
+      "reason": "ECC contexts system (dev/research/review modes); busdriver uses orchestrator phases instead",
+      "date": "2026-05-12"
+    },
+    {
+      "source": "ecc",
+      "path": "manifests/**",
+      "reason": "ECC install profiles system; busdriver is a single plugin with no install variants",
+      "date": "2026-05-12"
+    },
+    {
+      "source": "ecc",
+      "path": "mcp-configs/**",
+      "reason": "MCP server templates; users configure their own .mcp.json",
+      "date": "2026-05-12"
+    },
+    {
+      "source": "ecc",
+      "path": "legacy-command-shims/**",
+      "reason": "ECC backward-compat layer for old command names; busdriver has its own command surface",
+      "date": "2026-05-12"
+    },
+    {
+      "source": "ecc",
+      "path": "plugins/**",
+      "reason": "ECC sub-plugins distribution; out of scope for busdriver",
+      "date": "2026-05-12"
+    },
+    {
+      "source": "ecc",
+      "path": "research/**",
+      "reason": "ECC's internal research notes; not user-facing tooling",
+      "date": "2026-05-12"
+    },
+    {
+      "source": "ecc",
+      "path": "src/**",
+      "reason": "ECC source for its own runtime; busdriver is a Claude Code plugin, not its own runtime",
+      "date": "2026-05-12"
+    },
+    {
+      "source": "ecc",
+      "path": "schemas/**",
+      "reason": "ECC's internal schema definitions; busdriver doesn't expose schemas",
+      "date": "2026-05-12"
+    },
+    {
+      "source": "ecc",
+      "path": "assets/**",
+      "reason": "ECC marketing/distribution assets; not a pipeline component",
+      "date": "2026-05-12"
+    },
+    {
+      "source": "ecc",
+      "path": "the-longform-guide.md",
+      "reason": "ECC marketing-style guide; busdriver uses CLAUDE.md + per-skill SKILL.md docs",
+      "date": "2026-05-12"
+    },
+    {
+      "source": "ecc",
+      "path": "the-security-guide.md",
+      "reason": "ECC marketing-style guide; busdriver has SECURITY.md",
+      "date": "2026-05-12"
+    },
+    {
+      "source": "ecc",
+      "path": "the-shortform-guide.md",
+      "reason": "ECC marketing-style guide; busdriver uses README.md",
+      "date": "2026-05-12"
+    }
   ]
 }

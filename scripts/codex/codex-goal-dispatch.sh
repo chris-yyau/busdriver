@@ -40,11 +40,20 @@ MODEL=""
 EFFORT=""
 PROMPT=""
 
+# Explicit value check (NOT ${2:?...}) so missing-value errors exit with the
+# documented bad-usage code 64 rather than Bash's parameter-expansion default (1).
+require_value() {
+  if [[ -z "${2:-}" ]]; then
+    echo "[codex-goal-dispatch] $1 requires a value" >&2
+    exit 64
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --result-file) RESULT_FILE="${2:?--result-file requires a value}"; shift 2 ;;
-    --model)       MODEL="${2:?--model requires a value}";             shift 2 ;;
-    --effort)      EFFORT="${2:?--effort requires a value}";           shift 2 ;;
+    --result-file) require_value "$1" "${2:-}"; RESULT_FILE="$2"; shift 2 ;;
+    --model)       require_value "$1" "${2:-}"; MODEL="$2";       shift 2 ;;
+    --effort)      require_value "$1" "${2:-}"; EFFORT="$2";      shift 2 ;;
     --)            shift; PROMPT="$*"; break ;;
     -h|--help)     sed -n '2,/^$/p' "$0" >&2; exit 0 ;;
     *)             echo "[codex-goal-dispatch] unknown arg: $1 (prompt must be after --)" >&2; exit 64 ;;

@@ -104,6 +104,26 @@ START
   │     # semantics: the dispatcher would either bail before doing any work
   │     # (if zero meant "no rounds") or run forever (if zero meant "unlimited"),
   │     # neither of which a sensible operator wants. Reject at the boundary.
+  ├── Resolve flag-to-state translations (consumed by downstream bash blocks):
+  │     ADMIN_FLAG_PASSED       = 1 if `--admin-on-approver-gap` was passed, else 0
+  │     COPILOT_AUTO_RESOLVE    = 1 if `--copilot-auto-resolve`    was passed, else 0
+  │     NO_RECOVERY_INLINE      = 1 if `--no-recovery-inline`      was passed, else 0
+  │     NO_WORKTREE             = 1 if `--no-worktree`             was passed, else 0
+  │     # These are NOT exported as shell env vars — bash exports do NOT survive
+  │     # across Claude Bash tool calls (each tool call gets a fresh shell). The
+  │     # dispatcher (Claude) MUST remember each flag's resolved value in
+  │     # conversation context and template-substitute the literal 0/1 into every
+  │     # downstream Bash block that needs it. Concretely:
+  │     #   - Completion's approver-gap caller block emits
+  │     #     `ADMIN_FLAG_PASSED=<0|1 from above>` (literal value, NOT
+  │     #     `${ADMIN_FLAG_PASSED:-0}` which always resolves to 0 in a fresh shell).
+  │     #   - Dispatch a Round's context block emits
+  │     #     `COPILOT_AUTO_RESOLVE=<0|1 from above>` to the worker prompt.
+  │     #   - Step 0's auto-fallback and BAIL/COMPLETION cleanup branches read
+  │     #     NO_WORKTREE from this state, NOT from `${NO_WORKTREE:-0}` env-fallback.
+  │     # Same substitution convention as `<PR_NUMBER>` / `<owner>` / `<repo>`
+  │     # template values used throughout this SKILL.md — Claude substitutes the
+  │     # literal value at run time before executing the bash.
   └── Initialize: PRIOR_COMMIT_SHA=none, PRIOR_ATTEMPTS=[],
                    fix_round=0, wait_round=0,
                    round_number=0,
@@ -1169,14 +1189,14 @@ fi
 # both pass. If either fails earlier, the script is not invoked at all.
 CI_AND_BOTS_CLEAN=1
 # --admin-on-approver-gap flag from the pr-grind invocation. Off by default.
-# Flag-to-env translation contract: the dispatcher's outer argument-parsing
-# stage (the same stage that resolves --max-fix / --max-wait / --opus) MUST
-# export ADMIN_FLAG_PASSED=1 iff `--admin-on-approver-gap` was passed to
-# pr-grind, otherwise leave it unset (default 0). Same shape as the
-# COPILOT_AUTO_RESOLVE env var documented in "Dispatch a Round" — both new
-# flags follow the existing pattern of explicit env-var passthrough into
-# the subprocess that consumes them (the script here, the worker there).
-ADMIN_FLAG_PASSED="${ADMIN_FLAG_PASSED:-0}"
+# Template-substituted by the dispatcher (Claude) at run time — the literal
+# 0 or 1 is written into the script before bash sees it. See "Resolve
+# flag-to-state translations" in START for the producer site. The reason
+# this is NOT `${ADMIN_FLAG_PASSED:-0}` is that bash exports do not survive
+# across Claude Bash tool calls (each call gets a fresh shell), so the
+# fallback would always resolve to 0 regardless of what the operator
+# passed — silently neutralizing --admin-on-approver-gap.
+ADMIN_FLAG_PASSED=<0|1 — see "Resolve flag-to-state translations" in START>
 
 export BRANCH_RULES_JSON PR_REVIEWS_JSON AUTHOR_PERM_JSON \
        AUDIT_WORKFLOW_PRESENT CI_AND_BOTS_CLEAN ADMIN_FLAG_PASSED

@@ -73,12 +73,12 @@ Send any task to Codex or Gemini CLI as an autonomous agent. Unlike `litmus` and
 
 | Dispatch mode | Droid tier | Rationale |
 |---------------|-----------|-----------|
-| `readonly` | `--auto medium` | General reads; bump to `high` for research with web fetches |
+| `readonly` | `--auto medium` | General reads; override to `high` via `DROID_AUTO_LEVEL` for web fetches |
 | `auto` | `--auto high` | User opted into changes; covers codegen/research/network ops |
 
 **Empirical note:** council Researcher prompts (web fetches, API lookups) reliably require `--auto high`. `medium` bails with "Re-run with --auto high." If you observe this, either invoke with `--mode auto`, or export `DROID_AUTO_LEVEL=high` for the dispatch.
 
-> **Warning:** `DROID_AUTO_LEVEL` bypasses the mode-level default and applies to ALL dispatches in the current shell environment. A globally-exported `DROID_AUTO_LEVEL=high` will escalate `readonly` dispatches to `--auto high` (git push --force, curl|bash, secrets). Set it per-command or unset it after use. The dispatch script validates that only `low`, `medium`, or `high` are accepted values.
+> **Security Warning:** `DROID_AUTO_LEVEL` bypasses the mode-level default and applies to ALL dispatches in the current shell environment. A globally-exported `DROID_AUTO_LEVEL=high` will escalate even `readonly` dispatches to `--auto high`, enabling potentially destructive operations (git push --force, curl|bash, secrets access). Always set it per-command or unset immediately after use. The dispatch script validates that only `low`, `medium`, or `high` are accepted values.
 
 For strict read-only guarantees, dispatch to `codex` or `gemini` instead. (Litmus/santa/blueprint-review backends use the tighter `--auto low` via `scripts/lib/resolve-cli.sh::execute_review` — review prompts emit JSON verdicts and never need writes/installs/network.)
 

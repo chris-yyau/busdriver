@@ -1291,11 +1291,18 @@ Options:
 
 **Default: merge, then clean up the worktree (skip cleanup with `--no-worktree`). Run this as its own Bash tool call — DO NOT prefix it with the marker-write block above; see the `<EXTREMELY-IMPORTANT>` block immediately preceding "Write the pr-grind-clean marker" for why:**
 ```bash
+# NO_WORKTREE template-substituted by the dispatcher at run time — the
+# literal 0 or 1 from "Resolve flag-to-state translations" in START is
+# written here before bash executes. Do NOT use `${NO_WORKTREE:-0}`:
+# bash exports do not survive across Claude Bash tool calls, so the
+# fallback always resolves to 0 and the cleanup branch always runs
+# (wrong when Step 0's auto-fallback engaged or --no-worktree was passed).
+NO_WORKTREE=<0|1 — see "Resolve flag-to-state translations" in START>
 if gh pr merge <PR_NUMBER> --squash --delete-branch; then
   # Only return to a separate worktree and remove the ephemeral one if Step 0
   # actually created it. With --no-worktree we ran in-place — there is no
   # separate worktree to leave or remove.
-  if [ "${NO_WORKTREE:-0}" != "1" ]; then
+  if [ "$NO_WORKTREE" != "1" ]; then
     cd <original-worktree-path>
     git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true
   fi
@@ -1307,9 +1314,13 @@ fi
 
 **If `--no-merge`: write marker to the repo root of the worktree the user will merge from, clean up, report ready (also `--no-worktree`-aware):**
 ```bash
+# NO_WORKTREE template-substituted same as Default-merge block above —
+# `${NO_WORKTREE:-0}` would silently default to 0 across Bash tool calls
+# and the wrong cleanup branch would fire.
+NO_WORKTREE=<0|1 — see "Resolve flag-to-state translations" in START>
 # When --no-worktree, the dispatcher already runs in the user's worktree, so
 # the marker target is the same repo root we're in — no cross-worktree copy.
-if [ "${NO_WORKTREE:-0}" = "1" ]; then
+if [ "$NO_WORKTREE" = "1" ]; then
   REPO_ROOT=$(git rev-parse --show-toplevel)
   mkdir -p "$REPO_ROOT/.claude"
   echo "<PR_NUMBER>" > "$REPO_ROOT/.claude/pr-grind-clean.local"

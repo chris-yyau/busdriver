@@ -1,5 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "CodexGoalIterationReport",
   "description": "Codex's self-report for one iteration of the verifier-led goal loop. NOTE: self_assessed_status is advisory only — the loop's authoritative decision is made by declarative verifier commands (helper-run) plus Claude's review. Schema enforces shape so the helper can parse, not truth.",
   "type": "object",

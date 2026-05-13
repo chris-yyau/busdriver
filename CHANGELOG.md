@@ -1,3 +1,10 @@
+# [1.39.0](https://github.com/chris-yyau/busdriver/compare/v1.38.0...v1.39.0) (2026-05-13)
+
+
+### Features
+
+* **pr-grind:** per-round litmus cap, pre-push commitlint, amend bypass ([#98](https://github.com/chris-yyau/busdriver/issues/98)) ([3efb937](https://github.com/chris-yyau/busdriver/commit/3efb937ad7ec2fe4b23a65a52553ec7b6f311b31)), closes [#94](https://github.com/chris-yyau/busdriver/issues/94) [#96](https://github.com/chris-yyau/busdriver/issues/96) [#94](https://github.com/chris-yyau/busdriver/issues/94) [#96](https://github.com/chris-yyau/busdriver/issues/96) [#96](https://github.com/chris-yyau/busdriver/issues/96)
+
 # [1.38.0](https://github.com/chris-yyau/busdriver/compare/v1.37.0...v1.38.0) (2026-05-12)
 
 

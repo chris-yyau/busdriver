@@ -82,7 +82,7 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
 
 ## CWD Reset Across Bash Calls
 
-**The Claude Code Bash tool does not reliably preserve CWD across tool calls.** Every bash block in this SKILL.md that touches the worktree MUST start with `cd "$WORKTREE_DIR"` (template-substituted to the literal absolute path resolved in Step 0). CWD inheritance can break on intervening Edit/Write/Read calls (verified empirically — interleaving non-Bash tool calls between Bash blocks can reset CWD to the session launch directory), subagent dispatches (each starts in whatever CWD the SDK chose, NOT necessarily the worktree), session boundaries (`/save-session` + `/resume-session` does not preserve CWD), and dispatcher↔worker handoffs (recovery-via-inline takeover starts in the dispatcher's session, not the worker's). Even when CWD happens to carry over between two back-to-back Bash calls, relying on it is fragile because the next intervening tool call breaks the chain silently. The failure mode is silent state corruption — commits land in the wrong repo, `gh` queries the wrong PR, file-writes land in the wrong location — not a loud error, which is the most expensive class of bug.
+**The Claude Code Bash tool does not reliably preserve CWD across tool calls.** Every NEW bash block added to this SKILL.md that touches the worktree MUST start with `cd "$WORKTREE_DIR"` (template-substituted to the literal absolute path resolved in Step 0). CWD inheritance can break on intervening Edit/Write/Read calls (verified empirically — interleaving non-Bash tool calls between Bash blocks can reset CWD to the session launch directory), subagent dispatches (each starts in whatever CWD the SDK chose, NOT necessarily the worktree), session boundaries (`/save-session` + `/resume-session` does not preserve CWD), and dispatcher↔worker handoffs (recovery-via-inline takeover starts in the dispatcher's session, not the worker's). Even when CWD happens to carry over between two back-to-back Bash calls, relying on it is fragile because the next intervening tool call breaks the chain silently. The failure mode is silent state corruption — commits land in the wrong repo, `gh` queries the wrong PR, file-writes land in the wrong location — not a loud error, which is the most expensive class of bug.
 
 **Shell state — environment variables, aliases, functions, shell options — does NOT persist across Bash tool calls.** `export FOO=1` in one block does NOT survive into the next, even back-to-back. See "Resolve flag-to-state translations" in START for the template-substitution convention this SKILL.md uses for boolean flags (`ADMIN_FLAG_PASSED`, `COPILOT_AUTO_RESOLVE`, `NO_WORKTREE`) — Claude template-substitutes the literal 0/1 into each block before the bash executes.
 
@@ -1352,6 +1352,7 @@ it does not detect gh pr merge --admin regardless of path).
 
 Options:
   [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin
+                   # verify: gh pr view <PR_NUMBER> --json state -q .state
   [wait]         exit; wait for a human reviewer
   [add-reviewer] gh pr edit <PR_NUMBER> --add-reviewer <user>; exit
 ```
@@ -1370,6 +1371,7 @@ Options:
   [add-reviewer] gh pr edit <PR_NUMBER> --add-reviewer <user>; exit
   [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin
                    (no audit trail — proceed only with explicit operator authorization)
+                   # verify: gh pr view <PR_NUMBER> --json state -q .state
 ```
 
 **Default: merge, then clean up the worktree (skip cleanup with `--no-worktree`). Run this as its own Bash tool call — DO NOT prefix it with the marker-write block above; see the `<EXTREMELY-IMPORTANT>` block immediately preceding "Write the pr-grind-clean marker" for why:**

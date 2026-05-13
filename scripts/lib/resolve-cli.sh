@@ -427,7 +427,11 @@ execute_review() {
              printf '%s' "$prompt" > "$_tmp"
              _portable_timeout "$duration" aider --message-file "$_tmp" --no-auto-commits 2>&1
              local _rc=$?; rm -f "$_tmp"; return $_rc ;;
-    droid)   printf '%s' "$prompt" | _portable_timeout "$duration" droid exec 2>&1 ;;
+    # Review path: --auto low (file-write tier only, no installs/git/network)
+    # is sufficient — reviews emit JSON verdicts and never need to mutate the
+    # repo or fetch. Tighter than dispatch_one()'s droid case by design: this
+    # is the litmus/santa/blueprint-review backend, where read-only intent is hard.
+    droid)   printf '%s' "$prompt" | _portable_timeout "$duration" droid exec --auto low 2>&1 ;;
     amp)     local _tmp; _tmp=$(mktemp -t busdriver-amp-XXXXXX)
              printf '%s' "$prompt" > "$_tmp"
              _portable_timeout "$duration" amp review --instructions "$_tmp" 2>&1

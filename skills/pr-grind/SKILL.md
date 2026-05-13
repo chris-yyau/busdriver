@@ -1336,7 +1336,7 @@ gh pr merge "$PR" --squash --delete-branch --admin || true
 # absorbs: (1) the worktree-checkout conflict above makes `gh pr merge`
 # exit non-zero even though the remote merge succeeded — the next `gh pr
 # view` may briefly still see state=OPEN; (2) transient post-merge
-# replication lag in the gh API. The retry is idempotent (read-only poll).
+# replication lag in the GitHub API (queried via gh). The retry is idempotent (read-only poll).
 MERGE_STATE=""
 for attempt in 1 2 3; do
   MERGE_STATE=$(gh pr view "$PR" --json state -q .state 2>/dev/null || echo "")
@@ -1363,11 +1363,12 @@ it does not detect gh pr merge --admin regardless of path).
 Options:
   [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin
                    # verify: gh pr view <PR_NUMBER> --json state -q .state
-                   # (retry up to 3x with 2s backoff — gh can briefly return
-                   #  state=OPEN due to post-merge replication lag, and
-                   #  `gh pr merge --delete-branch` can exit non-zero on a
-                   #  worktree-checkout conflict even after the remote merge
-                   #  succeeded; trust the API state, not the merge exit code)
+                   # (retry up to 3x with 2s backoff — the GitHub API (queried
+                   #  via gh) can briefly return state=OPEN due to post-merge
+                   #  replication lag, and `gh pr merge --delete-branch` can
+                   #  exit non-zero on a worktree-checkout conflict even after
+                   #  the remote merge succeeded; trust the API state, not the
+                   #  merge exit code)
   [wait]         exit; wait for a human reviewer
   [add-reviewer] gh pr edit <PR_NUMBER> --add-reviewer <user>; exit
 ```
@@ -1387,11 +1388,12 @@ Options:
   [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin
                    (no audit trail — proceed only with explicit operator authorization)
                    # verify: gh pr view <PR_NUMBER> --json state -q .state
-                   # (retry up to 3x with 2s backoff — gh can briefly return
-                   #  state=OPEN due to post-merge replication lag, and
-                   #  `gh pr merge --delete-branch` can exit non-zero on a
-                   #  worktree-checkout conflict even after the remote merge
-                   #  succeeded; trust the API state, not the merge exit code)
+                   # (retry up to 3x with 2s backoff — the GitHub API (queried
+                   #  via gh) can briefly return state=OPEN due to post-merge
+                   #  replication lag, and `gh pr merge --delete-branch` can
+                   #  exit non-zero on a worktree-checkout conflict even after
+                   #  the remote merge succeeded; trust the API state, not the
+                   #  merge exit code)
 ```
 
 **Default: merge, then clean up the worktree (skip cleanup with `--no-worktree`). Run this as its own Bash tool call — DO NOT prefix it with the marker-write block above; see the `<EXTREMELY-IMPORTANT>` block immediately preceding "Write the pr-grind-clean marker" for why:**
@@ -1418,7 +1420,7 @@ gh pr merge <PR_NUMBER> --squash --delete-branch || true
 # absorbs: (1) the worktree-checkout conflict above makes `gh pr merge`
 # exit non-zero even though the remote merge succeeded — the next `gh pr
 # view` may briefly still see state=OPEN; (2) transient post-merge
-# replication lag in the gh API. The retry is idempotent (read-only poll).
+# replication lag in the GitHub API (queried via gh). The retry is idempotent (read-only poll).
 MERGE_STATE=""
 for attempt in 1 2 3; do
   MERGE_STATE=$(gh pr view <PR_NUMBER> --json state -q .state 2>/dev/null || echo "")

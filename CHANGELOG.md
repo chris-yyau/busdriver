@@ -1,3 +1,10 @@
+## [1.39.1](https://github.com/chris-yyau/busdriver/compare/v1.39.0...v1.39.1) (2026-05-13)
+
+
+### Bug Fixes
+
+* **dispatch-cli:** per-mode droid --auto tiers + DROID_AUTO_LEVEL override ([#97](https://github.com/chris-yyau/busdriver/issues/97)) ([a436445](https://github.com/chris-yyau/busdriver/commit/a436445d5747a81ce0b27b8e377c1d48d25b9959))
+
 # [1.39.0](https://github.com/chris-yyau/busdriver/compare/v1.38.0...v1.39.0) (2026-05-13)
 
 

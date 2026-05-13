@@ -1332,9 +1332,19 @@ gh pr merge "$PR" --squash --delete-branch --admin || true
 # "main is already used by worktree at ...") even after the remote merge
 # succeeded. Trust `gh pr view --json state` instead. See the
 # default-merge block below for the full failure-mode walkthrough.
-MERGE_STATE=$(gh pr view "$PR" --json state -q .state 2>/dev/null || echo "")
+# Retry up to 3 times with 2s backoff. Two real failure modes the retry
+# absorbs: (1) the worktree-checkout conflict above makes `gh pr merge`
+# exit non-zero even though the remote merge succeeded — the next `gh pr
+# view` may briefly still see state=OPEN; (2) transient post-merge
+# replication lag in the GitHub API (queried via gh). The retry is idempotent (read-only poll).
+MERGE_STATE=""
+for attempt in 1 2 3; do
+  MERGE_STATE=$(gh pr view "$PR" --json state -q .state 2>/dev/null || echo "")
+  [ "$MERGE_STATE" = "MERGED" ] && break
+  [ "$attempt" -lt 3 ] && sleep 2
+done
 if [ "$MERGE_STATE" != "MERGED" ]; then
-  echo "❌ approver-gap admin merge: PR #$PR not merged (state=$MERGE_STATE); bypass-log entry was written but merge did not land."
+  echo "❌ approver-gap admin merge: PR #$PR not merged after 3 attempts (state=$MERGE_STATE); bypass-log entry was written but merge did not land."
   exit 1
 fi
 ```
@@ -1353,6 +1363,12 @@ it does not detect gh pr merge --admin regardless of path).
 Options:
   [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin
                    # verify: gh pr view <PR_NUMBER> --json state -q .state
+                   # (retry up to 3x with 2s backoff — the GitHub API (queried
+                   #  via gh) can briefly return state=OPEN due to post-merge
+                   #  replication lag, and `gh pr merge --delete-branch` can
+                   #  exit non-zero on a worktree-checkout conflict even after
+                   #  the remote merge succeeded; trust the API state, not the
+                   #  merge exit code)
   [wait]         exit; wait for a human reviewer
   [add-reviewer] gh pr edit <PR_NUMBER> --add-reviewer <user>; exit
 ```
@@ -1372,6 +1388,12 @@ Options:
   [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin
                    (no audit trail — proceed only with explicit operator authorization)
                    # verify: gh pr view <PR_NUMBER> --json state -q .state
+                   # (retry up to 3x with 2s backoff — the GitHub API (queried
+                   #  via gh) can briefly return state=OPEN due to post-merge
+                   #  replication lag, and `gh pr merge --delete-branch` can
+                   #  exit non-zero on a worktree-checkout conflict even after
+                   #  the remote merge succeeded; trust the API state, not the
+                   #  merge exit code)
 ```
 
 **Default: merge, then clean up the worktree (skip cleanup with `--no-worktree`). Run this as its own Bash tool call — DO NOT prefix it with the marker-write block above; see the `<EXTREMELY-IMPORTANT>` block immediately preceding "Write the pr-grind-clean marker" for why:**
@@ -1394,9 +1416,19 @@ gh pr merge <PR_NUMBER> --squash --delete-branch || true
 # (no-op — PR is already merged) or bail with stale state. The merge
 # state on GitHub is the authoritative source. Empirical: surfaced
 # during PR #98's grind (2026-05-13).
-MERGE_STATE=$(gh pr view <PR_NUMBER> --json state -q .state 2>/dev/null || echo "")
+# Retry up to 3 times with 2s backoff. Two real failure modes the retry
+# absorbs: (1) the worktree-checkout conflict above makes `gh pr merge`
+# exit non-zero even though the remote merge succeeded — the next `gh pr
+# view` may briefly still see state=OPEN; (2) transient post-merge
+# replication lag in the GitHub API (queried via gh). The retry is idempotent (read-only poll).
+MERGE_STATE=""
+for attempt in 1 2 3; do
+  MERGE_STATE=$(gh pr view <PR_NUMBER> --json state -q .state 2>/dev/null || echo "")
+  [ "$MERGE_STATE" = "MERGED" ] && break
+  [ "$attempt" -lt 3 ] && sleep 2
+done
 if [ "$MERGE_STATE" != "MERGED" ]; then
-  echo "❌ PR #<PR_NUMBER> not merged (state=$MERGE_STATE); preserving worktree for inspection."
+  echo "❌ PR #<PR_NUMBER> not merged after 3 attempts (state=$MERGE_STATE); preserving worktree for inspection."
   exit 1
 fi
 # Only return to a separate worktree and remove the ephemeral one if Step 0

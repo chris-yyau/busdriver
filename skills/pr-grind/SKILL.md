@@ -80,6 +80,14 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
 - **Recovery-via-inline (capped at 1 per fix-round):** When the worker bails for a *tooling-friction* reason (litmus blocked, pre-commit gate fired, subagent slash-command limitation) AND left inflight working-tree changes, the dispatcher takes over inline — runs the litmus iteration the subagent context can't, commits, pushes, and returns to the loop. **This is strictly for tooling friction, never for judgment friction:** design/scope questions, architectural concerns, env auth errors, history-rewriting fixes (commitlint on a pushed commit, large-diff splits — see worker Bail Triggers), and budget exhaustion all bail to the user as before. Cap is 1 per **fix-round** (not per-invocation) — within a single round, two consecutive worker bails = real bail (no matter how clean the inflight state); but the cap RESETS at the top of each new round, because the subagent SDK litmus limitation is a permanent physical constraint of the worker context (it cannot invoke slash-commands like `/litmus`), not a chronic worker bug that one-per-invocation gating would help detect. The cap exists so "dispatcher always rescues" can't mask a chronic worker bug WITHIN a single round; across rounds, each fresh worker dispatch deserves its own one-shot recovery budget. Override with `--no-recovery-inline` to disable entirely.
 - **Out-of-scope-acknowledged discipline rails:** the worker can dismiss a finding on YOUR PR's changed lines with one of 6 enumerated reasons (`schema-refactor`, `external-research`, `follow-up-deferred`, `cross-cutting-style`, `pre-existing-on-touched-line`, `false-positive`) — see `agents/pr-grinder.md` Step 3. Three rails bound the carve-out: (a) worker per-round cap of ≤3 dismissals, self-enforced; (b) dispatcher cumulative cap of ≤5 dismissals across the whole grind (Invariant 4); (c) dispatcher cumulative cap of ≤3 follow-up issues spawned (Invariant 4). Hitting either dispatcher cap BAILs with `RESULT_BAIL_CATEGORY=judgment` regardless of round status. The default is FIX — dismissal is the carve-out. The rails exist precisely so workers can't relabel tedious-but-real findings as out-of-scope to "ship faster," leaving real bugs tracked-but-unaddressed in spawned follow-up issues.
 
+## CWD Reset Across Bash Calls
+
+**The Claude Code Bash tool does not reliably preserve CWD across tool calls.** Every bash block in this SKILL.md that touches the worktree MUST start with `cd "$WORKTREE_DIR"` (template-substituted to the literal absolute path resolved in Step 0). CWD inheritance can break on intervening Edit/Write/Read calls (verified empirically — interleaving non-Bash tool calls between Bash blocks can reset CWD to the session launch directory), subagent dispatches (each starts in whatever CWD the SDK chose, NOT necessarily the worktree), session boundaries (`/save-session` + `/resume-session` does not preserve CWD), and dispatcher↔worker handoffs (recovery-via-inline takeover starts in the dispatcher's session, not the worker's). Even when CWD happens to carry over between two back-to-back Bash calls, relying on it is fragile because the next intervening tool call breaks the chain silently. The failure mode is silent state corruption — commits land in the wrong repo, `gh` queries the wrong PR, file-writes land in the wrong location — not a loud error, which is the most expensive class of bug.
+
+**Shell state — environment variables, aliases, functions, shell options — does NOT persist across Bash tool calls.** `export FOO=1` in one block does NOT survive into the next, even back-to-back. See "Resolve flag-to-state translations" in START for the template-substitution convention this SKILL.md uses for boolean flags (`ADMIN_FLAG_PASSED`, `COPILOT_AUTO_RESOLVE`, `NO_WORKTREE`) — Claude template-substitutes the literal 0/1 into each block before the bash executes.
+
+**The rule (forward-looking):** every NEW bash tool call added to this SKILL.md that calls `git`, `gh`, or touches a worktree-relative path opens with `cd "$WORKTREE_DIR"`. The rule applies at Bash-tool-call boundaries, not to every embedded code-fence within a larger template. Pre-existing bash blocks in this SKILL.md predate this rule and rely on context-level CWD established by their parent dispatcher flow; they are not retroactively required to update.
+
 ## The Dispatcher Loop
 
 ```text
@@ -108,6 +116,10 @@ START
   │     ADMIN_FLAG_PASSED       = 1 if `--admin-on-approver-gap` was passed, else 0
   │     COPILOT_AUTO_RESOLVE    = 1 if `--copilot-auto-resolve`    was passed, else 0
   │     NO_RECOVERY_INLINE      = 1 if `--no-recovery-inline`      was passed, else 0
+  │                               (narrative-only — checked in the recovery-eligibility
+  │                                gate prose at "Recovery-via-inline eligibility" below;
+  │                                no bash consumer site needs template substitution, so
+  │                                this flag is tracked in conversation context only)
   │     NO_WORKTREE             = 1 if `--no-worktree`             was passed, else 0
   │     # These are NOT exported as shell env vars — bash exports do NOT survive
   │     # across Claude Bash tool calls (each tool call gets a fresh shell). The
@@ -1314,7 +1326,17 @@ jq -c -n \
   --arg head_sha "$HEAD_SHA" \
   '{ts:$ts, event:$event, pr:$pr, owner:$owner, repo:$repo, branch:$branch, author:$author, author_perm:$author_perm, required_approving_review_count:$required, human_approvals:$approvals, head_sha:$head_sha}' \
   >> "$REPO_ROOT/.claude/bypass-log.jsonl" || { echo "❌ failed to append bypass-log entry; aborting admin merge"; exit 1; }
-gh pr merge "$PR" --squash --delete-branch --admin
+gh pr merge "$PR" --squash --delete-branch --admin || true
+# Verify via authoritative source — `gh pr merge --delete-branch` can
+# exit non-zero on a post-merge local worktree-checkout conflict (e.g.,
+# "main is already used by worktree at ...") even after the remote merge
+# succeeded. Trust `gh pr view --json state` instead. See the
+# default-merge block below for the full failure-mode walkthrough.
+MERGE_STATE=$(gh pr view "$PR" --json state -q .state 2>/dev/null || echo "")
+if [ "$MERGE_STATE" != "MERGED" ]; then
+  echo "❌ approver-gap admin merge: PR #$PR not merged (state=$MERGE_STATE); bypass-log entry was written but merge did not land."
+  exit 1
+fi
 ```
 
 **Operator-decision message template** (rendered to stdout on BAIL; `[admin]` is omitted when no audit workflow exists). Placeholders: `{REQUIRED_COUNT}` is the branch-protection rule's `required_approving_review_count` (from `$GAP_DECISION_JSON`); `<PR_NUMBER>` is the PR number — distinct values, distinct placeholders so the rendering layer doesn't conflate them:
@@ -1359,17 +1381,28 @@ Options:
 # fallback always resolves to 0 and the cleanup branch always runs
 # (wrong when Step 0's auto-fallback engaged or --no-worktree was passed).
 NO_WORKTREE=<0|1 — see "Resolve flag-to-state translations" in START>
-if gh pr merge <PR_NUMBER> --squash --delete-branch; then
-  # Only return to a separate worktree and remove the ephemeral one if Step 0
-  # actually created it. With --no-worktree we ran in-place — there is no
-  # separate worktree to leave or remove.
-  if [ "$NO_WORKTREE" != "1" ]; then
-    cd <original-worktree-path>
-    git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true
-  fi
-else
-  echo "❌ Merge failed; preserving worktree for inspection."
+gh pr merge <PR_NUMBER> --squash --delete-branch || true
+# Verify via authoritative source — `gh pr merge` exit code is unreliable
+# when --delete-branch hits a post-merge worktree-checkout conflict (the
+# remote merge has already SUCCEEDED, but gh tries to update the local
+# main-branch checkout and fails when main is checked out in another
+# worktree). The "main is already used by worktree at ..." error makes gh
+# exit non-zero AFTER the remote PR is already merged. Trusting the exit
+# code would make the dispatcher think the merge failed and either retry
+# (no-op — PR is already merged) or bail with stale state. The merge
+# state on GitHub is the authoritative source. Empirical: surfaced
+# during PR #98's grind (2026-05-13).
+MERGE_STATE=$(gh pr view <PR_NUMBER> --json state -q .state 2>/dev/null || echo "")
+if [ "$MERGE_STATE" != "MERGED" ]; then
+  echo "❌ PR #<PR_NUMBER> not merged (state=$MERGE_STATE); preserving worktree for inspection."
   exit 1
+fi
+# Only return to a separate worktree and remove the ephemeral one if Step 0
+# actually created it. With --no-worktree we ran in-place — there is no
+# separate worktree to leave or remove.
+if [ "$NO_WORKTREE" != "1" ]; then
+  cd <original-worktree-path>
+  git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true
 fi
 ```
 

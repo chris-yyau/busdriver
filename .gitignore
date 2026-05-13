@@ -24,7 +24,6 @@ AGENTS.md
 docs/reviews/
 docs/plans/
 docs/superpowers/plans/
-docs/superpowers/specs/
 
 # codex-goal-handover run artifacts (per-iter logs, verifier outputs, result JSONs)
 scripts/codex/.runs/

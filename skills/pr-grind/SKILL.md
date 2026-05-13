@@ -77,7 +77,7 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
   - Max wait-rounds reached (slow bot(s) never acked HEAD within `MAX_WAIT` polling rounds)
   - External policy gap (branch protection requires `N >= 1` human APPROVED reviews the author cannot self-provide, org-level rule blocks merge, or similar non-resolvable structural blocker). Excluded from `MAX_FIX`/`MAX_WAIT` accounting — there is nothing to fix and nothing to wait for. Dispatcher emits `RESULT_BAIL_CATEGORY=policy`; the operator decides via the surfaced decision message (see "Approver-Gap Detection").
   - **On any bail:** if Step 0 created an ephemeral worktree, `cd` back and `git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true` before exiting. Skip when `NO_WORKTREE=1` — i.e. either `--no-worktree` was passed OR Step 0's auto-fallback engaged because the branch was already checked out. The `|| true` keeps cleanup idempotent if the worktree was already removed.
-- **Recovery-via-inline (capped at 1 per invocation):** When the worker bails for a *tooling-friction* reason (litmus blocked, pre-commit gate fired, subagent slash-command limitation) AND left inflight working-tree changes, the dispatcher takes over inline — runs the litmus iteration the subagent context can't, commits, pushes, and returns to the loop. **This is strictly for tooling friction, never for judgment friction:** design/scope questions, architectural concerns, env auth errors, history-rewriting fixes (commitlint on a pushed commit, large-diff splits — see worker Bail Triggers), and budget exhaustion all bail to the user as before. Cap is hard at 1 per pr-grind invocation — two consecutive worker bails in the same run = real bail, no matter how clean the inflight state. The cap exists so "dispatcher always rescues" can't mask a chronic worker bug over time. Override with `--no-recovery-inline` to disable entirely.
+- **Recovery-via-inline (capped at 1 per fix-round):** When the worker bails for a *tooling-friction* reason (litmus blocked, pre-commit gate fired, subagent slash-command limitation) AND left inflight working-tree changes, the dispatcher takes over inline — runs the litmus iteration the subagent context can't, commits, pushes, and returns to the loop. **This is strictly for tooling friction, never for judgment friction:** design/scope questions, architectural concerns, env auth errors, history-rewriting fixes (commitlint on a pushed commit, large-diff splits — see worker Bail Triggers), and budget exhaustion all bail to the user as before. Cap is 1 per **fix-round** (not per-invocation) — within a single round, two consecutive worker bails = real bail (no matter how clean the inflight state); but the cap RESETS at the top of each new round, because the subagent SDK litmus limitation is a permanent physical constraint of the worker context (it cannot invoke slash-commands like `/litmus`), not a chronic worker bug that one-per-invocation gating would help detect. The cap exists so "dispatcher always rescues" can't mask a chronic worker bug WITHIN a single round; across rounds, each fresh worker dispatch deserves its own one-shot recovery budget. Override with `--no-recovery-inline` to disable entirely.
 - **Out-of-scope-acknowledged discipline rails:** the worker can dismiss a finding on YOUR PR's changed lines with one of 6 enumerated reasons (`schema-refactor`, `external-research`, `follow-up-deferred`, `cross-cutting-style`, `pre-existing-on-touched-line`, `false-positive`) — see `agents/pr-grinder.md` Step 3. Three rails bound the carve-out: (a) worker per-round cap of ≤3 dismissals, self-enforced; (b) dispatcher cumulative cap of ≤5 dismissals across the whole grind (Invariant 4); (c) dispatcher cumulative cap of ≤3 follow-up issues spawned (Invariant 4). Hitting either dispatcher cap BAILs with `RESULT_BAIL_CATEGORY=judgment` regardless of round status. The default is FIX — dismissal is the carve-out. The rails exist precisely so workers can't relabel tedious-but-real findings as out-of-scope to "ship faster," leaving real bugs tracked-but-unaddressed in spawned follow-up issues.
 
 ## The Dispatcher Loop
@@ -127,12 +127,25 @@ START
   └── Initialize: PRIOR_COMMIT_SHA=none, PRIOR_ATTEMPTS=[],
                    fix_round=0, wait_round=0,
                    round_number=0,
-                   recovery_inline_used=0,
-                   # recovery_inline_used is the cap counter for the
-                   # RECOVERY_INLINE carve-out (Bug 2). Hard cap: 1 per
-                   # pr-grind invocation. Reset on each invocation, never
-                   # persisted across invocations — two consecutive worker
-                   # bails in the same run = real bail, no second rescue.
+                   recovery_inline_used_this_round=0,
+                   # recovery_inline_used_this_round is the cap counter for
+                   # the RECOVERY_INLINE carve-out (Bug 2). Hard cap: 1 per
+                   # FIX-ROUND (not per-invocation). Reset to 0 at the top
+                   # of every loop iteration alongside `round_number += 1`
+                   # so a subsequent round's worker bail is eligible for
+                   # recovery even after a prior round already used its
+                   # carve-out. Within a single round, two consecutive
+                   # worker bails = real bail (no second rescue inside the
+                   # same round); across rounds, each fresh worker dispatch
+                   # gets its own one-shot budget. The cap exists to catch
+                   # a worker bug that bails every retry WITHIN a single
+                   # round — not to mask the subagent SDK's permanent
+                   # inability to invoke slash-commands like `/litmus`,
+                   # which is what makes recovery-via-inline necessary in
+                   # the first place. Earlier drafts used a per-invocation
+                   # cap which caused the second fix-round to bail with no
+                   # recovery option (see PR #94 grind, rounds 2–6 inline
+                   # escape after first cap-exhaustion).
                    # round_number is pre-incremented at the TOP of each loop
                    # iteration (before dispatch), so the first dispatch receives
                    # ROUND=1, the second ROUND=2, etc. It is the N in
@@ -153,7 +166,8 @@ START
 
 LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │
-  ├── round_number += 1   # pre-increment so ROUND=<N> is 1-indexed at dispatch time
+  ├── round_number += 1                  # pre-increment so ROUND=<N> is 1-indexed at dispatch time
+  ├── recovery_inline_used_this_round = 0  # reset per-round cap counter (see Initialize block above)
   │
   ├── Decide model:
   │     --opus, --interactive,
@@ -229,8 +243,13 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     Triggers ONLY on RESULT_STATUS=bail. Default is BAIL; recovery is the carve-out.
   │
   │     Eligible only when ALL of the following hold:
-  │       a. recovery_inline_used == 0 (cap is 1 per pr-grind invocation; reset
-  │          on each invocation, never persisted across invocations)
+  │       a. recovery_inline_used_this_round == 0 (cap is 1 per FIX-ROUND;
+  │          reset to 0 at the top of every loop iteration so a subsequent
+  │          round's worker bail is eligible for recovery even after a
+  │          prior round already used its carve-out. See Initialize block
+  │          above for the rationale — the SDK litmus limitation is a
+  │          permanent physical constraint, not a worker bug, so per-round
+  │          reset is correct.)
   │       b. --no-recovery-inline was NOT passed
   │       c. RESULT_INFLIGHT_CHANGES ∈ {staged, unstaged, both} — worker left
   │          working-tree changes that may be salvageable. The `both` state
@@ -255,7 +274,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │          stays correctly gated.
   │
   │     If any condition fails → go to BAIL as today.
-  │     If all conditions pass → set recovery_inline_used = 1 and go to RECOVERY_INLINE.
+  │     If all conditions pass → set recovery_inline_used_this_round = 1 and go to RECOVERY_INLINE.
   │
   │     Hard non-eligibility (these bails MUST surface to the user, never recover):
   │       - "design question" / "design/scope" — needs human judgment
@@ -580,6 +599,36 @@ RECOVERY_INLINE (Bug 2 — bounded inline takeover):
   │     # through litmus auto-corrections (up to 10 iterations per gate semantics);
   │     # the worker context can't, which is precisely the tooling friction this
   │     # carve-out exists to bridge.
+  │     #
+  │     # Pre-push commitlint pre-flight (same shape as worker Step 6).
+  │     # The dispatcher's recovery-commit body is composed from
+  │     # RESULT_FIXES_CLEAN (worker prose, single line after tr) and is
+  │     # naturally short — header is fixed-form, body is one line — but
+  │     # we still run commitlint defensively because (a) RESULT_FIXES
+  │     # can occasionally be long enough to trip footer-max-line-length
+  │     # (100 chars default), and (b) catching the violation here keeps
+  │     # the bad commit local-only, so the operator's amend path stays
+  │     # purely local (no force-push). Skip silently when commitlint
+  │     # isn't locally invokable.
+  │     # Lint ONLY the just-committed recovery commit (HEAD~1..HEAD),
+  │     # NOT the full PR range. The recovery commit is the only one we
+  │     # just produced; older pushed commits in the range are outside
+  │     # this pre-flight's scope (force-push territory). Also avoids the
+  │     # base-branch lookup, which would default to "main" on `gh pr
+  │     # view` failure and lint the wrong range when the PR's actual
+  │     # base is a release branch or stacked PR — see Cubic findings on
+  │     # PR #98 for the empirical motivation.
+  │     if command -v npx >/dev/null 2>&1 && npx --no-install commitlint --version >/dev/null 2>&1; then
+  │       if ! npx --no-install commitlint --from HEAD~1 --to HEAD; then
+  │         # The recovery commit itself violates commitlint — surface to
+  │         # operator. The bad commit is local-only; recovery cap
+  │         # (recovery_inline_used_this_round) stays consumed for this
+  │         # round (no second rescue inside the same round), but resets
+  │         # at the top of the next loop iteration.
+  │         echo "❌ recovery-via-inline: commitlint failed locally on the recovery commit (HEAD~1..HEAD) — bailing BEFORE push"
+  │         BAIL with reason "recovery-via-inline attempted but commitlint rejected the dispatcher's recovery commit (HEAD~1..HEAD). Local amend required (no force-push needed; commit hasn't been pushed). Inspect worker RESULT_FIXES prose for an oversized body line; consider reducing the prose or splitting into multiple paragraphs."
+  │       fi
+  │     fi
   │     git push
   │
   ├── On litmus FAIL after auto-iteration:
@@ -600,11 +649,17 @@ RECOVERY_INLINE (Bug 2 — bounded inline takeover):
   │     If fix_round >= MAX_FIX → fall through to ON_LOOP_EXHAUSTED (no rescue from budget exhaustion)
   │     Else → return to top of LOOP (continue dispatching workers)
   │
-  └── recovery_inline_used remains 1 for the rest of this invocation —
-      a second worker bail will go straight to BAIL, no matter how clean
-      its inflight state looks. The cap is the load-bearing safety rail
-      that prevents "dispatcher always rescues" from masking a chronic
-      worker bug over time.
+  └── recovery_inline_used_this_round remains 1 for the rest of THIS
+      round — a second worker bail within the same round will go straight
+      to BAIL, no matter how clean its inflight state looks. The flag
+      RESETS to 0 at the top of the next loop iteration (see the
+      `recovery_inline_used_this_round = 0` reset alongside
+      `round_number += 1` above), so the next round's worker bail is
+      eligible for recovery again. The within-round cap is the
+      load-bearing safety rail that prevents "dispatcher always rescues"
+      from masking a chronic worker bug within a single round; the
+      across-round reset reflects that the SDK litmus limitation is a
+      permanent physical constraint, not a recurring worker bug.
 ```
 
 ## Step Details
@@ -1372,7 +1427,7 @@ PR #<N> is clean after <rounds> round(s).
 | `--ci-only` | Only fix CI failures, ignore comments. Forces inline mode (Step 2 branching not yet wired into the subagent). | Off |
 | `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
 | `--comments-only` | Only address comments, ignore CI. Forces inline mode (same reason as `--ci-only`). | Off |
-| `--no-recovery-inline` | Disable the bounded RECOVERY_INLINE carve-out (Bug 2). When passed, any worker bail goes straight to BAIL regardless of inflight state or bail reason — useful when you want the worker's bail to surface immediately for human review and don't trust the dispatcher to commit-and-push on the worker's behalf. | Off (recovery enabled, capped at 1 per invocation) |
+| `--no-recovery-inline` | Disable the bounded RECOVERY_INLINE carve-out (Bug 2). When passed, any worker bail goes straight to BAIL regardless of inflight state or bail reason — useful when you want the worker's bail to surface immediately for human review and don't trust the dispatcher to commit-and-push on the worker's behalf. | Off (recovery enabled, capped at 1 per fix-round; resets at the top of each loop iteration — see Initialize block under START) |
 | `--admin-on-approver-gap` | Opt-in auto-escalation when the approver gap is the sole remaining merge-gate blocker. Eligibility (ALL must hold): CI green, bots ack HEAD, all threads resolved, no failing required checks; author has `admin` or `maintain` repo permission; `.github/workflows/bypass-audit.yml` exists in the repo. With all gates green, the dispatcher runs `gh pr merge <PR> --squash --delete-branch --admin` and logs the event to `.claude/bypass-log.jsonl`. **Fail-CLOSED when no audit workflow exists** — the flag is ignored without a trail and the dispatcher surfaces the operator-decision message instead. Off by default; this flag is the only way pr-grind ever bypasses required-approver count. | Off (surfaces decision message) |
 | `--copilot-auto-resolve` | Opt-in: when Copilot's HEAD ack is stale after a force-push AND every Copilot thread is anchored to lines the new HEAD touched AND the worker emitted substantive fixes for those lines, auto-resolve the threads with an `addressed in <SHA>` reply + `resolveReviewThread` mutation. Flips ack-ledger tier A to a HEAD-ack via the resolved-threads path. Disabled by default while the test fixtures stabilize; promote to default once fixtures 5-7 (see `tests/test-copilot-resolve.sh`) have a track record. | Off |
 

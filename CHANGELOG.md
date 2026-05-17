@@ -1,3 +1,10 @@
+# [1.40.0](https://github.com/chris-yyau/busdriver/compare/v1.39.2...v1.40.0) (2026-05-17)
+
+
+### Features
+
+* **pr-grind:** Phase 0 helpers + Phase 1 terminal_status docs ([#102](https://github.com/chris-yyau/busdriver/issues/102)) ([8a3f046](https://github.com/chris-yyau/busdriver/commit/8a3f046c21eba4951114cdf637c8a7c54653d0d1))
+
 ## [1.39.2](https://github.com/chris-yyau/busdriver/compare/v1.39.1...v1.39.2) (2026-05-17)
 
 

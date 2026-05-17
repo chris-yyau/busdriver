@@ -215,11 +215,23 @@ HOOKS_AFTER=$(find .git/hooks -type f ! -name "*.sample" 2>/dev/null | sort)
 # Compare against baseline captured before the first iter (Step 5 pre-iter read)
 # If HOOKS_BEFORE was captured at loop start, diff it:
 if [[ -v HOOKS_BEFORE ]]; then
+  # Check 1: new hook files added
   NEW_HOOKS=$(comm -13 <(echo "$HOOKS_BEFORE") <(echo "$HOOKS_AFTER") 2>/dev/null || true)
   if [[ -n "$NEW_HOOKS" ]]; then
     echo "[codex-goal-dispatch] BAIL: new hook files detected in .git/hooks/ — possible hook injection:" >&2
     echo "$NEW_HOOKS" >&2
     exit 1
+  fi
+  # Check 2: existing hook files modified (comm -13 only catches new filenames; compare
+  # content checksums to detect overwrites of pre-existing hooks)
+  if [[ -v HOOKS_CHECKSUMS_BEFORE ]]; then
+    HOOKS_CHECKSUMS_AFTER=$(find .git/hooks -type f ! -name "*.sample" -exec sha256sum {} \; 2>/dev/null | sort || true)
+    MODIFIED_HOOKS=$(comm -13 <(echo "$HOOKS_CHECKSUMS_BEFORE") <(echo "$HOOKS_CHECKSUMS_AFTER") 2>/dev/null | awk '{print $2}' || true)
+    if [[ -n "$MODIFIED_HOOKS" ]]; then
+      echo "[codex-goal-dispatch] BAIL: existing hook files modified in .git/hooks/ — possible hook content injection:" >&2
+      echo "$MODIFIED_HOOKS" >&2
+      exit 1
+    fi
   fi
 fi
 ```
@@ -228,9 +240,10 @@ Capture the baseline before the first dispatch (add once at loop start, before S
 
 ```bash
 HOOKS_BEFORE=$(find .git/hooks -type f ! -name "*.sample" 2>/dev/null | sort)
+HOOKS_CHECKSUMS_BEFORE=$(find .git/hooks -type f ! -name "*.sample" -exec sha256sum {} \; 2>/dev/null | sort || true)
 ```
 
-If your loop does not yet capture `HOOKS_BEFORE`, the check degrades gracefully (no diff is possible) — but the recommendation is to always capture it so new hooks injected mid-run are caught before they can execute.
+If your loop does not yet capture `HOOKS_BEFORE`, the check degrades gracefully (no diff is possible) — but the recommendation is to always capture it so new hooks injected mid-run are caught before they can execute. Capturing `HOOKS_CHECKSUMS_BEFORE` alongside `HOOKS_BEFORE` also enables content-modification detection for pre-existing hooks.
 
 ### 8. Decide
 

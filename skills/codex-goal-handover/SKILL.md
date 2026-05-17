@@ -237,10 +237,30 @@ Only run after Step 7 exits 0 (scope clean):
 
 This is the structural defense against prompt injection from verifier output: even if Codex were steered to modify a file outside scope, the post-iter check catches it before the next iter compounds the damage. The check uses **only Python stdlib** (`json` + `fnmatch`) — no PyYAML or other third-party deps.
 
+## Litmus considerations (busdriver pre-commit gate)
+
+Codex's commits during a handover do **not** fire busdriver's litmus pre-commit gate. The gate is wired via Claude Code's `PreToolUse` hook on the `Bash` tool, which only intercepts direct Bash tool calls made by Claude. Codex commits inside its sandbox subprocess; the harness never sees those `git commit` invocations.
+
+This is an additive limitation, not a hidden bypass:
+
+- **The verifier-led loop is itself a quality gate** — declarative shell commands (tests, lint, typecheck) must pass before the loop declares done, which is stronger than litmus's static review for well-specified scopes.
+- **Spec scope is the primary safety rail** — `scope.include`/`scope.exclude` plus the post-iter scope check (Step 7) constrain the surface area in a way litmus cannot.
+
+When you want litmus coverage on the handover's output:
+
+1. **Run retroactive PR-mode litmus before opening the PR.** After the handover converges, dispatch:
+   ```bash
+   LITMUS_MODE=pr LITMUS_PR_BASE=main bash skills/litmus/scripts/init-review-loop.sh --force 10
+   LITMUS_MODE=pr LITMUS_PR_BASE=main bash skills/litmus/scripts/run-review-loop.sh
+   ```
+   Reviews the aggregate branch diff in one pass (equivalent coverage to per-commit, less wall-clock).
+2. **Iterate on findings as you would on any litmus FAIL.** A follow-up `chore(scripts): litmus cleanup` commit is a fine pattern when codex's output trips stylistic findings (SC2292, SC2312, etc.).
+3. **Spec the verifier set tightly.** Tests + shellcheck + typecheck verifiers in `verifiable_end_state.verifiers` catch most issues litmus would catch, and they run during the loop instead of after.
+
 ## Hard rules
 
 1. **Claude never writes code in the loop.** If steering requires code judgment beyond reading verifier output, abort with: "This task needs code-level judgment — switching to inline work or `/codex:rescue` is the right move."
-2. **Per-iter commit checkpoint mandatory.** If `git rev-parse HEAD` is unchanged after an iter, log a warning. If two iters in a row don't commit, bail.
+2. **Per-iter commit checkpoint mandatory.** If `git rev-parse HEAD` is unchanged after an iter, log a warning. If two iters in a row don't commit, bail. (Requires `sandbox_workspace_write.allow_git_writes=true`, which `scripts/codex/codex-goal-dispatch.sh` sets automatically — without it, codex cannot write inside `.git/` and every iter blocks on `index.lock`.)
 3. **Verifiers are the authority.** Codex's `self_assessed_status: complete` does NOT stop the loop unless verifiers also pass. Verifier failure trumps Codex's self-report.
 4. **Bounded.** `max_iters` defaults to 5; hard cap is 8. Warn if user requests higher. (Defaults bumped from 3/5 per Droid's research: Codex docs describe long-running sessions with many passes; Ralph Loop production runs routinely use 20+ iters. Tight caps risk consuming progress headroom on a single bad iter.)
 5. **Foreground only.** No `--bg` mode. For fire-and-forget runs, redirect to the Codex TUI.

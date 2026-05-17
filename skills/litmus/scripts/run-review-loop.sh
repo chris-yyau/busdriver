@@ -7,6 +7,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_FILE=".claude/litmus-state.md"
 
+# write_terminal_status: persist terminal_status field to $STATE_FILE before exit-1.
+# Backward-compatible — interactive /litmus callers see no behavior change.
+# Pre-condition: $STATE_FILE is set. If the file or its parent dir is missing
+# (early-exit / setup-error paths), create them before writing.
+write_terminal_status() {
+    local status="$1"
+    case "$status" in
+        review_findings|stall|max_iterations|infra_failure|setup_error) ;;
+        *) printf 'write_terminal_status: invalid %s\n' "$status" >&2; return 1 ;;
+    esac
+    mkdir -p "$(dirname "$STATE_FILE")"
+    [ -f "$STATE_FILE" ] || touch "$STATE_FILE"
+    if grep -q '^terminal_status:' "$STATE_FILE"; then
+        # Portable in-place edit (works on macOS BSD sed and GNU sed)
+        local tmp="${STATE_FILE}.tmp.$$"
+        sed -E "s/^terminal_status:.*/terminal_status: \"${status}\"/" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+    else
+        printf 'terminal_status: "%s"\n' "$status" >> "$STATE_FILE"
+    fi
+}
+
 # Load metrics persistence
 # shellcheck source=lib/log-metrics.sh
 source "$SCRIPT_DIR/lib/log-metrics.sh"
@@ -21,11 +42,13 @@ if [[ "${1:-}" == "--write-pr-marker" ]]; then
   [[ -n "${LITMUS_PR_BASE:-}" && "$PR_BASE" != origin/* ]] && PR_BASE="origin/${PR_BASE}"
   MERGE_BASE=$(git merge-base "${PR_BASE}" HEAD 2>/dev/null) || {
     echo "❌ Cannot compute merge-base between ${PR_BASE} and HEAD" >&2
+    write_terminal_status setup_error
     exit 1
   }
   DIFF_OUTPUT=$(git diff "${MERGE_BASE}...HEAD" 2>/dev/null)
   if [[ -z "$DIFF_OUTPUT" ]]; then
     echo "❌ No diff between ${PR_BASE} and HEAD — nothing to mark" >&2
+    write_terminal_status setup_error
     exit 1
   fi
   DIFF_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
@@ -47,6 +70,7 @@ if [[ "${1:-}" == "--auto-pr-review" ]]; then
   echo ""
   bash "$SCRIPT_DIR/init-review-loop.sh" --force || {
     echo "❌ Failed to initialize PR review" >&2
+    write_terminal_status setup_error
     exit 1
   }
   # Re-exec as normal review (picks up PR mode from state file + LITMUS_PR_FAST=1)
@@ -66,18 +90,19 @@ REVIEW_MODE="${LITMUS_MODE:-commit}"
 
 # Validate prerequisites
 echo "🔍 Validating prerequisites..."
-validate_git_repo || exit 1
+validate_git_repo || { write_terminal_status setup_error; exit 1; }
 
 # Resolve review CLI (fail-closed on missing/unsupported binary)
 RESOLVED_CLI=$(validate_review_cli 2>/dev/null) || {
   validate_review_cli >&2
+  write_terminal_status setup_error
   rm -f "$STATE_FILE" 2>/dev/null
   exit 1
 }
 
 echo "   Review CLI: $RESOLVED_CLI"
 
-validate_state_file "$STATE_FILE" || exit 1
+validate_state_file "$STATE_FILE" || { write_terminal_status setup_error; exit 1; }
 
 # Check for changes based on review mode
 # Also read review_mode from state file if set (overrides env var)
@@ -94,6 +119,7 @@ if [ "$REVIEW_MODE" = "pr" ]; then
     echo "   BUSDRIVER_REVIEW_CLI=$RESOLVED_CLI is not supported in PR mode." >&2
     echo "   PR deep review needs an independent external reviewer." >&2
     echo "   Set BUSDRIVER_REVIEW_CLI=auto or install codex/gemini." >&2
+    write_terminal_status setup_error
     rm -f "$STATE_FILE" 2>/dev/null
     exit 1
   fi
@@ -107,6 +133,7 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   fi
   if git diff --quiet "${PR_BASE_BRANCH}...HEAD" 2>/dev/null; then
     echo "❌ No changes between ${PR_BASE_BRANCH} and HEAD" >&2
+    write_terminal_status setup_error
     exit 1
   fi
 else
@@ -146,9 +173,11 @@ else
     if git diff --cached --quiet 2>/dev/null; then
       if ! has_uncommitted_changes; then
         error_no_changes
+        write_terminal_status setup_error
         exit 1
       fi
       echo "⚠️  No staged changes found. Stage files first: git add <files>" >&2
+      write_terminal_status setup_error
       exit 1
     fi
   fi
@@ -167,6 +196,7 @@ COMPLETION_PROMISE=$(get_yaml_value "completion_promise" "$STATE_FILE")
 # Validate state values
 if [ -z "$ITERATION" ] || [ -z "$MAX_ITER" ]; then
   echo "❌ Error: Invalid state file - missing iteration or max_iterations" >&2
+  write_terminal_status setup_error
   exit 1
 fi
 
@@ -197,6 +227,7 @@ if [ "$ITERATION" -gt "$MAX_ITER" ]; then
   echo "" >&2
   echo "   See references/troubleshooting.md for guidance" >&2
   set_yaml_value "active" "false" "$STATE_FILE"
+  write_terminal_status max_iterations
   exit 1
 fi
 
@@ -262,6 +293,7 @@ if [ -z "$STAGED_DIFF" ]; then
   fi
   echo "❌ No staged changes to review" >&2
   echo "   Stage your changes first: git add <files>" >&2
+  write_terminal_status setup_error
   exit 1
 fi
 STAGED_FILE_COUNT=$(echo "$FILTERED_FILES" | wc -l | tr -d ' ')
@@ -580,12 +612,14 @@ elif [ "$REVIEW_EXIT" -eq 124 ]; then
   echo "   Try splitting into smaller commits." >&2
   echo "" >&2
   bash "$SCRIPT_DIR/suggest-split.sh" >&2
+  write_terminal_status infra_failure
   exit 124
 elif [ "$REVIEW_EXIT" -ne 0 ]; then
   echo "❌ Error: $RESOLVED_CLI review failed (exit code $REVIEW_EXIT)" >&2
   echo "" >&2
   echo "   Output:" >&2
   echo "$REVIEW_OUTPUT" >&2
+  write_terminal_status infra_failure
   exit 1
 fi
 
@@ -646,6 +680,7 @@ if [ -z "$JSON_OUTPUT" ]; then
     echo "$REVIEW_OUTPUT" >&2
     echo "" >&2
     echo "   See references/troubleshooting.md for handling narrative output" >&2
+    write_terminal_status infra_failure
     exit 1
   fi
 
@@ -653,8 +688,8 @@ if [ -z "$JSON_OUTPUT" ]; then
 fi
 
 # Validate JSON syntax and schema structure
-validate_json "$JSON_OUTPUT" || exit 1
-validate_review_schema "$JSON_OUTPUT"
+validate_json "$JSON_OUTPUT" || { write_terminal_status infra_failure; exit 1; }
+validate_review_schema "$JSON_OUTPUT" || { write_terminal_status infra_failure; exit 1; }
 
 # Extract status
 REVIEW_STATUS=$(echo "$JSON_OUTPUT" | jq -r '.status')
@@ -789,6 +824,7 @@ else
     echo "   2. Run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/.claude/skip-litmus.local"
     echo ""
     rm -f "${_RAW_OUTPUT_FILE:-}" 2>/dev/null
+    write_terminal_status stall
     exit 1
   fi
 
@@ -808,5 +844,6 @@ else
   echo "   4. Loop continues automatically until PASS"
   echo ""
   rm -f "${_RAW_OUTPUT_FILE:-}" 2>/dev/null
+  write_terminal_status review_findings
   exit 1
 fi

@@ -1251,6 +1251,7 @@ case "$MERGE_STATE_STATUS" in
     # detection blocks handle their specific cases.
     ;;
 esac
+echo "MERGE_STATE_STATUS=$MERGE_STATE_STATUS"
 ```
 
 **Decision tree** (based on `MERGE_STATE_STATUS`):
@@ -1259,7 +1260,9 @@ esac
 - **`BEHIND`** → BAIL with `RESULT_BAIL_CATEGORY=policy` and surface the operator-decision message (template below). Excluded from MAX_FIX/MAX_WAIT accounting — nothing to fix, nothing to wait for.
 - **`BLOCKED` / `DIRTY` / other** → fall through; handled by approver-gap or failing-checks paths.
 
-**Operator-decision message template** (rendered to stdout on BAIL when `MERGE_STATE_STATUS=BEHIND`):
+**Operator-decision message template** (rendered to stdout on BAIL when `MERGE_STATE_STATUS=BEHIND`). Two variants keyed on `AUDIT_WORKFLOW_PRESENT` — same conditional framing as the approver-gap path:
+
+**When `AUDIT_WORKFLOW_PRESENT=1`:**
 
 ```text
 pr-grind: PR is functionally clean (CI green, bots ack HEAD, threads resolved)
@@ -1283,12 +1286,46 @@ Options:
   [admin]         gh pr merge <PR_NUMBER> --squash --delete-branch --admin
                     # admin-merge bypasses the up-to-date requirement.
                     # Defensible when the PR is small + conflict-free and
-                    # the base advance was unrelated (e.g., the schema fix
-                    # that landed in #103 didn't touch any Phase 0 paths).
-                    # Runs outside pr-grind and writes NO entry to
-                    # .claude/bypass-log.jsonl. Same audit posture as the
-                    # approver-gap [admin] command path.
+                    # the base advance was unrelated. Runs outside pr-grind
+                    # and writes NO entry to .claude/bypass-log.jsonl. Same
+                    # audit posture as the approver-gap [admin] command path.
+                    # verify: gh pr view <PR_NUMBER> --json state -q .state
+                    # (retry up to 3x with 2s backoff — `gh pr merge
+                    #  --delete-branch` can exit non-zero on a worktree-
+                    #  checkout conflict even after the remote merge succeeded;
+                    #  trust the API state, not the merge exit code)
   [wait]          exit; manually update later
+```
+
+**When `AUDIT_WORKFLOW_PRESENT=0`**, demote `[admin]` to last position and prepend a no-audit-trail warning (consistent with the approver-gap path):
+
+```text
+pr-grind: PR is functionally clean (CI green, bots ack HEAD, threads resolved)
+but base branch (<base>) has advanced since the PR branched. Branch protection
+requires the head branch to be up-to-date with the base before merge.
+⚠️  This repo has NO bypass-audit.yml — an admin-merge here would leave NO
+audit trail. Strongly consider [update-merge] or [update-rebase].
+
+Options:
+  [update-merge]  gh pr update-branch <PR_NUMBER>
+                    # creates a merge commit bringing base into the PR branch.
+                    # No force-push; ack-ledger SHAs stay valid. Triggers a
+                    # CI re-run + bot re-review on the new merge commit;
+                    # plan for 1-2 additional wait-rounds. Cleanest correctness
+                    # path when bots tolerate merge commits.
+  [update-rebase] gh pr update-branch <PR_NUMBER> --rebase
+                    # rebases PR onto base. Force-push, rewrites published
+                    # SHAs, invalidates ack-ledger entries (all bots stale).
+                    # Triggers full re-review cycle. Cleaner history but
+                    # reignites grind — 3-5 rounds likely. Pick when bot
+                    # configurations dislike merge commits OR when the PR
+                    # history matters for downstream reviewers.
+  [wait]          exit; manually update later
+  [admin]         gh pr merge <PR_NUMBER> --squash --delete-branch --admin
+                    (no audit trail — proceed only with explicit operator authorization)
+                    # verify: gh pr view <PR_NUMBER> --json state -q .state
+                    # (retry up to 3x with 2s backoff — trust the API state,
+                    #  not the merge exit code)
 ```
 
 After the operator picks `[update-merge]` or `[update-rebase]`, pr-grind should be re-invoked on the same PR — the new HEAD will trigger fresh bot reviews and (probably) a short wait-round sequence to convergence. After `[admin]`, the PR is merged; pr-grind exits clean.

@@ -34,7 +34,7 @@ write_terminal_status() {
             count == 2 && /^---$/ { print val; inserted=1 }
             { print }
             END { exit (inserted ? 0 : 1) }
-        ' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE" && _inserted=1
+        ' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE" && _inserted=1 || true
         if [[ "$_inserted" -eq 0 ]]; then
             { printf -- '---\nterminal_status: "%s"\n---\n' "$status"; cat "$STATE_FILE"; } > "$tmp" \
                 && mv "$tmp" "$STATE_FILE"

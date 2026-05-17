@@ -1223,6 +1223,113 @@ echo "<PR_NUMBER>" > "$REPO_ROOT/.claude/pr-grind-clean.local"
 rm -f "$REPO_ROOT/.claude/pr-pending-grind.local"
 ```
 
+**Branch-Currency Detection (run BEFORE approver-gap):**
+
+After CI is green and bots ack HEAD, GitHub may still reject the merge because branch protection requires the head branch to be up-to-date with the base. This is a different structural gap from approver-count: it surfaces as `mergeStateStatus=BEHIND` and the raw failure is `Pull request is not mergeable: the head branch is not up to date with the base branch`. Detect it up front so the operator sees a tailored decision message instead of a raw `gh pr merge` failure.
+
+**The detection is scoped narrowly:** only `mergeStateStatus=BEHIND` qualifies. Other mergeStateStatus values (`BLOCKED`, `DIRTY`, `UNSTABLE`, `UNKNOWN`) surface via their existing paths (approver-gap detection, failing-required-checks, merge-conflict, etc.). Branch-currency is the specific case where the PR is functionally ready BUT lags behind base; the fix is "incorporate base into the PR branch," which has three legitimate paths.
+
+```bash
+PR=<PR_NUMBER>
+MERGE_STATE_STATUS=$(gh pr view "$PR" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null || echo "")
+case "$MERGE_STATE_STATUS" in
+  BEHIND)
+    # Surface decision with three operator options below; do NOT auto-pick.
+    # Excluded from MAX_FIX/MAX_WAIT accounting — nothing to fix, nothing to wait for.
+    # pr-grind BAILs with RESULT_BAIL_CATEGORY=policy (same enum as approver-gap;
+    # `policy` covers all dispatcher-emitted structural-blocker bails).
+    ;;
+  CLEAN|UNSTABLE|HAS_HOOKS|"")
+    # Pass through — proceed to Approver-Gap Detection below.
+    # UNSTABLE = advisory check failing (e.g., CodeScene); not branch-currency.
+    # Empty (mergeStateStatus query failed) = degrade-to-attempt; the merge
+    # will surface its own error if base-currency is actually the blocker.
+    ;;
+  *)
+    # BLOCKED / DIRTY / etc. — surface via existing approver-gap or
+    # failing-checks paths. Do not BAIL here; let the downstream
+    # detection blocks handle their specific cases.
+    ;;
+esac
+echo "MERGE_STATE_STATUS=$MERGE_STATE_STATUS"
+```
+
+**Decision tree** (based on `MERGE_STATE_STATUS`):
+
+- **`CLEAN` / `UNSTABLE` / `HAS_HOOKS` / empty** → fall through to Approver-Gap Detection below.
+- **`BEHIND`** → BAIL with `RESULT_BAIL_CATEGORY=policy` and surface the operator-decision message (template below). Excluded from MAX_FIX/MAX_WAIT accounting — nothing to fix, nothing to wait for.
+- **`BLOCKED` / `DIRTY` / other** → fall through; handled by approver-gap or failing-checks paths.
+
+**Operator-decision message template** (rendered to stdout on BAIL when `MERGE_STATE_STATUS=BEHIND`). Two variants keyed on `AUDIT_WORKFLOW_PRESENT` — same conditional framing as the approver-gap path:
+
+**When `AUDIT_WORKFLOW_PRESENT=1`:**
+
+```text
+pr-grind: PR is functionally clean (CI green, bots ack HEAD, threads resolved)
+but base branch (<base>) has advanced since the PR branched. Branch protection
+requires the head branch to be up-to-date with the base before merge.
+
+Options:
+  [update-merge]  gh pr update-branch <PR_NUMBER>
+                    # creates a merge commit bringing base into the PR branch.
+                    # No force-push; ack-ledger SHAs stay valid. Triggers a
+                    # CI re-run + bot re-review on the new merge commit;
+                    # plan for 1-2 additional wait-rounds. Cleanest correctness
+                    # path when bots tolerate merge commits.
+  [update-rebase] gh pr update-branch <PR_NUMBER> --rebase
+                    # rebases PR onto base. Force-push, rewrites published
+                    # SHAs, invalidates ack-ledger entries (all bots stale).
+                    # Triggers full re-review cycle. Cleaner history but
+                    # reignites grind — 3-5 rounds likely. Pick when bot
+                    # configurations dislike merge commits OR when the PR
+                    # history matters for downstream reviewers.
+  [admin]         gh pr merge <PR_NUMBER> --squash --delete-branch --admin
+                    # admin-merge bypasses the up-to-date requirement.
+                    # Defensible when the PR is small + conflict-free and
+                    # the base advance was unrelated. Runs outside pr-grind
+                    # and writes NO entry to .claude/bypass-log.jsonl. Same
+                    # audit posture as the approver-gap [admin] command path.
+                    # verify: gh pr view <PR_NUMBER> --json state -q .state
+                    # (retry up to 3x with 2s backoff — `gh pr merge
+                    #  --delete-branch` can exit non-zero on a worktree-
+                    #  checkout conflict even after the remote merge succeeded;
+                    #  trust the API state, not the merge exit code)
+  [wait]          exit; manually update later
+```
+
+**When `AUDIT_WORKFLOW_PRESENT=0`**, demote `[admin]` to last position and prepend a no-audit-trail warning (consistent with the approver-gap path):
+
+```text
+pr-grind: PR is functionally clean (CI green, bots ack HEAD, threads resolved)
+but base branch (<base>) has advanced since the PR branched. Branch protection
+requires the head branch to be up-to-date with the base before merge.
+⚠️  This repo has NO bypass-audit.yml — an admin-merge here would leave NO
+audit trail. Strongly consider [update-merge] or [update-rebase].
+
+Options:
+  [update-merge]  gh pr update-branch <PR_NUMBER>
+                    # creates a merge commit bringing base into the PR branch.
+                    # No force-push; ack-ledger SHAs stay valid. Triggers a
+                    # CI re-run + bot re-review on the new merge commit;
+                    # plan for 1-2 additional wait-rounds. Cleanest correctness
+                    # path when bots tolerate merge commits.
+  [update-rebase] gh pr update-branch <PR_NUMBER> --rebase
+                    # rebases PR onto base. Force-push, rewrites published
+                    # SHAs, invalidates ack-ledger entries (all bots stale).
+                    # Triggers full re-review cycle. Cleaner history but
+                    # reignites grind — 3-5 rounds likely. Pick when bot
+                    # configurations dislike merge commits OR when the PR
+                    # history matters for downstream reviewers.
+  [wait]          exit; manually update later
+  [admin]         gh pr merge <PR_NUMBER> --squash --delete-branch --admin
+                    (no audit trail — proceed only with explicit operator authorization)
+                    # verify: gh pr view <PR_NUMBER> --json state -q .state
+                    # (retry up to 3x with 2s backoff — trust the API state,
+                    #  not the merge exit code)
+```
+
+After the operator picks `[update-merge]` or `[update-rebase]`, pr-grind should be re-invoked on the same PR — the new HEAD will trigger fresh bot reviews and (probably) a short wait-round sequence to convergence. After `[admin]`, the PR is merged; pr-grind exits clean.
+
 **Approver-Gap Detection (run BEFORE the merge attempt):**
 
 After CI is green, threads are resolved, and bot acks are HEAD, GitHub may still reject the merge because branch protection demands `required_approving_review_count >= 1` human APPROVED reviews the author cannot self-provide. The dispatcher detects this structural gap up front so the operator sees a tailored decision message instead of a raw `gh pr merge` failure.
@@ -1395,6 +1502,14 @@ Options:
                    #  the remote merge succeeded; trust the API state, not the
                    #  merge exit code)
 ```
+
+<EXTREMELY-IMPORTANT>
+**DO NOT use `gh pr merge` exit code as merge authority.** The retry block below MUST be run as-written; do NOT simplify it to `if gh pr merge ...; then ... else "Merge failed" fi` — that drift makes the dispatcher misread a SUCCESSFUL remote merge as a failure. The failure mode is post-merge local-cleanup: `gh pr merge --delete-branch` runs `git fetch && git checkout <base>` locally after the API merge, and on a multi-worktree setup where the base branch is already checked out elsewhere, that local step exits non-zero with `fatal: 'main' is already used by worktree at ...` AFTER the remote PR is already merged. Trusting the exit code makes pr-grind print "preserving worktree for inspection" while the PR is in fact merged on GitHub — a misleading state that leads operators to re-attempt the merge (failing with "PR already merged"), think the first attempt failed, and waste a session debugging a non-bug.
+
+**Confirmed recurrences:** PR #98 (2026-05-13) — the original failure that motivated the retry block. PR #102 (2026-05-18) — recurred *despite* the comment-buried explanation because the prose was easy to skim past while writing dispatcher code. This headline callout is the current attempt to make the contract unmissable; do not soften it back into a comment.
+
+**The contract:** `gh pr merge ... || true` (do not fail on non-zero exit) → `gh pr view --json state` with 3-attempt 2s-backoff retry as the authoritative source. Use the block below verbatim.
+</EXTREMELY-IMPORTANT>
 
 **Default: merge, then clean up the worktree (skip cleanup with `--no-worktree`). Run this as its own Bash tool call — DO NOT prefix it with the marker-write block above; see the `<EXTREMELY-IMPORTANT>` block immediately preceding "Write the pr-grind-clean marker" for why:**
 ```bash

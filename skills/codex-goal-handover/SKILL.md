@@ -207,6 +207,50 @@ PY
 
 Even if Codex were steered (e.g., by prompt injection from verifier output) to modify a file outside scope, this check catches it before Step 8 can declare the iter done.
 
+**Post-iter `.git/hooks/` integrity check.** `allow_git_writes=true` grants Codex write access to the entire `.git/` directory, including `.git/hooks/`. A misbehaving or steered Codex session could write a malicious hook that executes at outer-process privilege level on the next `git` invocation. The scope check above audits working-tree paths only (`git diff --name-only`) and does not see `.git/hooks/` mutations. Run this check immediately after the scope check and before Step 8:
+
+```bash
+# Collect all hook files present after this iter
+HOOKS_AFTER=$(find .git/hooks -type f ! -name "*.sample" 2>/dev/null | sort)
+# Compare against baseline captured before the first iter (Step 5 pre-iter read)
+# If HOOKS_BEFORE was captured at loop start, diff it:
+if [[ -v HOOKS_BEFORE ]]; then
+  # Check 1: new hook files added
+  NEW_HOOKS=$(comm -13 <(echo "$HOOKS_BEFORE") <(echo "$HOOKS_AFTER") 2>/dev/null || true)
+  if [[ -n "$NEW_HOOKS" ]]; then
+    echo "[codex-goal-dispatch] BAIL: new hook files detected in .git/hooks/ — possible hook injection:" >&2
+    echo "$NEW_HOOKS" >&2
+    exit 1
+  fi
+  # Check 2: existing hook files modified (comm -13 only catches new filenames; compare
+  # content checksums to detect overwrites of pre-existing hooks)
+  if [[ -v HOOKS_CHECKSUMS_BEFORE ]]; then
+    HOOKS_CHECKSUMS_AFTER=$(find .git/hooks -type f ! -name "*.sample" -exec sha256sum {} \; 2>/dev/null | sort) || {
+      echo "[codex-goal-dispatch] BAIL: checksum generation failed — cannot verify hook integrity" >&2
+      exit 1
+    }
+    MODIFIED_HOOKS=$(comm -13 <(echo "$HOOKS_CHECKSUMS_BEFORE") <(echo "$HOOKS_CHECKSUMS_AFTER") 2>/dev/null | awk '{print $2}') || true
+    if [[ -n "$MODIFIED_HOOKS" ]]; then
+      echo "[codex-goal-dispatch] BAIL: existing hook files modified in .git/hooks/ — possible hook content injection:" >&2
+      echo "$MODIFIED_HOOKS" >&2
+      exit 1
+    fi
+  fi
+fi
+```
+
+Capture the baseline before the first dispatch (add once at loop start, before Step 6):
+
+```bash
+HOOKS_BEFORE=$(find .git/hooks -type f ! -name "*.sample" 2>/dev/null | sort)
+HOOKS_CHECKSUMS_BEFORE=$(find .git/hooks -type f ! -name "*.sample" -exec sha256sum {} \; 2>/dev/null | sort) || {
+  echo "[codex-goal-dispatch] WARN: baseline checksum generation failed — hook content-modification detection will not run" >&2
+  unset HOOKS_CHECKSUMS_BEFORE
+}
+```
+
+If your loop does not yet capture `HOOKS_BEFORE`, the check degrades gracefully (no diff is possible) — but the recommendation is to always capture it so new hooks injected mid-run are caught before they can execute. Capturing `HOOKS_CHECKSUMS_BEFORE` alongside `HOOKS_BEFORE` also enables content-modification detection for pre-existing hooks.
+
 ### 8. Decide
 
 Only run after Step 7 exits 0 (scope clean):
@@ -237,10 +281,30 @@ Only run after Step 7 exits 0 (scope clean):
 
 This is the structural defense against prompt injection from verifier output: even if Codex were steered to modify a file outside scope, the post-iter check catches it before the next iter compounds the damage. The check uses **only Python stdlib** (`json` + `fnmatch`) — no PyYAML or other third-party deps.
 
+## Litmus considerations (busdriver pre-commit gate)
+
+Codex's commits during a handover do **not** fire busdriver's litmus pre-commit gate. The gate is wired via Claude Code's `PreToolUse` hook on the `Bash` tool, which only intercepts direct Bash tool calls made by Claude. Codex commits inside its sandbox subprocess; the harness never sees those `git commit` invocations.
+
+This is an additive limitation, not a hidden bypass:
+
+- **The verifier-led loop is itself a quality gate** — declarative shell commands (tests, lint, typecheck) must pass before the loop declares done, which is stronger than litmus's static review for well-specified scopes.
+- **Spec scope is the primary safety rail** — `scope.include`/`scope.exclude` plus the post-iter scope check (Step 7) constrain the surface area in a way litmus cannot.
+
+When you want litmus coverage on the handover's output:
+
+1. **Run retroactive PR-mode litmus before opening the PR.** After the handover converges, dispatch:
+   ```bash
+   LITMUS_MODE=pr LITMUS_PR_BASE=<your-default-branch> bash skills/litmus/scripts/init-review-loop.sh --force 10
+   LITMUS_MODE=pr LITMUS_PR_BASE=<your-default-branch> bash skills/litmus/scripts/run-review-loop.sh
+   ```
+   Reviews the aggregate branch diff in one pass (equivalent coverage to per-commit, less wall-clock).
+2. **Iterate on findings as you would on any litmus FAIL.** A follow-up `chore(scripts): litmus cleanup` commit is a fine pattern when codex's output trips stylistic findings (SC2292, SC2312, etc.).
+3. **Spec the verifier set tightly.** Tests + shellcheck + typecheck verifiers in `verifiable_end_state.verifiers` catch most issues litmus would catch, and they run during the loop instead of after.
+
 ## Hard rules
 
 1. **Claude never writes code in the loop.** If steering requires code judgment beyond reading verifier output, abort with: "This task needs code-level judgment — switching to inline work or `/codex:rescue` is the right move."
-2. **Per-iter commit checkpoint mandatory.** If `git rev-parse HEAD` is unchanged after an iter, log a warning. If two iters in a row don't commit, bail.
+2. **Per-iter commit checkpoint mandatory.** If `git rev-parse HEAD` is unchanged after an iter, log a warning. If two iters in a row don't commit, bail. (Requires `sandbox_workspace_write.allow_git_writes=true`, which `scripts/codex/codex-goal-dispatch.sh` sets automatically — without it, codex cannot write inside `.git/` and every iter blocks on `index.lock`.)
 3. **Verifiers are the authority.** Codex's `self_assessed_status: complete` does NOT stop the loop unless verifiers also pass. Verifier failure trumps Codex's self-report.
 4. **Bounded.** `max_iters` defaults to 5; hard cap is 8. Warn if user requests higher. (Defaults bumped from 3/5 per Droid's research: Codex docs describe long-running sessions with many passes; Ralph Loop production runs routinely use 20+ iters. Tight caps risk consuming progress headroom on a single bad iter.)
 5. **Foreground only.** No `--bg` mode. For fire-and-forget runs, redirect to the Codex TUI.

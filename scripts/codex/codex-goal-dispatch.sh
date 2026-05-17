@@ -92,7 +92,19 @@ SCHEMA="$SCRIPT_DIR/goal-result.schema.json"
 git rev-parse HEAD 2>/dev/null > "$PRE_HEAD_FILE" || echo "no-git" > "$PRE_HEAD_FILE"
 
 # Build codex exec invocation. Fresh session every call (no resume).
-CODEX_ARGS=(exec --sandbox workspace-write --output-schema "$SCHEMA" -o "$RESULT_FILE")
+# `-c sandbox_workspace_write.allow_git_writes=true` opens up `.git/` writes
+# inside the workspace-write sandbox. The skill's Hard Rule 2 ("per-iter commit
+# checkpoint mandatory") cannot be satisfied otherwise — codex returns
+# `status=blocked` with `Operation not permitted creating .git/index.lock`
+# every iter, forcing the dispatcher to commit on codex's behalf and
+# defeating the verifier-led loop. The risk surface (codex doing destructive
+# git operations like push --force or reset --hard) is bounded by the spec's
+# scope.include/exclude and the schema-enforced response contract; codex is
+# steered toward `git add <named-files> && git commit -m "<plan-message>"`
+# per task, not arbitrary git surgery. Empirically validated 2026-05-18 on
+# the pr-grind inversion Phase 0 handover where this defaulted-off behavior
+# blocked codex's commits and required manual recovery.
+CODEX_ARGS=(exec --sandbox workspace-write -c sandbox_workspace_write.allow_git_writes=true --output-schema "$SCHEMA" -o "$RESULT_FILE")
 [[ -n "$MODEL" ]] && CODEX_ARGS+=(--model "$MODEL")
 # Pass effort as a separate -c key=value (no embedded quotes) so even if EFFORT
 # ever bypasses the allowlist it cannot expand into additional TOML keys.

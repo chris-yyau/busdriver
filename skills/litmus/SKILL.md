@@ -239,6 +239,23 @@ JSON format: `{"status": "PASS"|"FAIL", "issues": [{file, line, severity, catego
 - **PASS:** No issues or only low-severity
 - **FAIL:** One or more high/medium severity issues
 
+## Terminal status (machine-readable, additive contract)
+
+In addition to the exit-code contract, `run-review-loop.sh` writes a
+`terminal_status` field to `.claude/litmus-state.md` immediately before any
+`exit 1` path. Values:
+
+| terminal_status   | Meaning                                                       |
+|-------------------|---------------------------------------------------------------|
+| `review_findings` | Reviewer produced actionable issues (FAIL path)               |
+| `stall`           | Same blocking issues two iterations in a row                  |
+| `max_iterations`  | Inner iteration cap reached                                   |
+| `infra_failure`   | CLI crash, JSON validation failure, timeout, stderr error    |
+| `setup_error`     | Env validation / state-file load failed before main loop     |
+
+Automated callers SHOULD prefer this field over stdout marker-matching.
+Interactive `/litmus` users see no behavior change.
+
 ## Violation Recovery
 
 **If already committed without review:**

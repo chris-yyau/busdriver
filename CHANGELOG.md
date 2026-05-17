@@ -1,3 +1,10 @@
+## [1.39.2](https://github.com/chris-yyau/busdriver/compare/v1.39.1...v1.39.2) (2026-05-17)
+
+
+### Bug Fixes
+
+* **codex:** require all properties in goal-result schema for OpenAI strict mode ([#103](https://github.com/chris-yyau/busdriver/issues/103)) ([e657742](https://github.com/chris-yyau/busdriver/commit/e657742651e61d0686e7663980dbd45f00a5d3ea))
+
 ## [1.39.1](https://github.com/chris-yyau/busdriver/compare/v1.39.0...v1.39.1) (2026-05-13)
 
 

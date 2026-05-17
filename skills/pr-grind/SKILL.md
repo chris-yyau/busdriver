@@ -1253,6 +1253,12 @@ case "$MERGE_STATE_STATUS" in
 esac
 ```
 
+**Decision tree** (based on `MERGE_STATE_STATUS`):
+
+- **`CLEAN` / `UNSTABLE` / `HAS_HOOKS` / empty** → fall through to Approver-Gap Detection below.
+- **`BEHIND`** → BAIL with `RESULT_BAIL_CATEGORY=policy` and surface the operator-decision message (template below). Excluded from MAX_FIX/MAX_WAIT accounting — nothing to fix, nothing to wait for.
+- **`BLOCKED` / `DIRTY` / other** → fall through; handled by approver-gap or failing-checks paths.
+
 **Operator-decision message template** (rendered to stdout on BAIL when `MERGE_STATE_STATUS=BEHIND`):
 
 ```text
@@ -1279,9 +1285,9 @@ Options:
                     # Defensible when the PR is small + conflict-free and
                     # the base advance was unrelated (e.g., the schema fix
                     # that landed in #103 didn't touch any Phase 0 paths).
-                    # Logs to .claude/bypass-log.jsonl if bypass-audit.yml
-                    # exists; absence prepends a stronger warning. Same
-                    # audit posture as the approver-gap admin path.
+                    # Runs outside pr-grind and writes NO entry to
+                    # .claude/bypass-log.jsonl. Same audit posture as the
+                    # approver-gap [admin] command path.
   [wait]          exit; manually update later
 ```
 

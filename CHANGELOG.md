@@ -1,3 +1,10 @@
+## [1.40.1](https://github.com/chris-yyau/busdriver/compare/v1.40.0...v1.40.1) (2026-05-17)
+
+
+### Bug Fixes
+
+* **codex-goal-handover:** allow git writes in sandbox + document litmus bypass ([#106](https://github.com/chris-yyau/busdriver/issues/106)) ([67ae05c](https://github.com/chris-yyau/busdriver/commit/67ae05cca1675b3b256f8eaff1cdd5cc026dc679)), closes [#108](https://github.com/chris-yyau/busdriver/issues/108) [#108](https://github.com/chris-yyau/busdriver/issues/108)
+
 # [1.40.0](https://github.com/chris-yyau/busdriver/compare/v1.39.2...v1.40.0) (2026-05-17)
 
 

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+case "$*" in
+    *repo*view*nameWithOwner*)  echo 'owner/repo' ;;
+    *graphql*)                   echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+    *api*pulls*reviews*)         echo '[]' ;;
+    *pr*view*--comments*)        echo '{"comments":[]}' ;;
+    *api*check-runs*)            echo '{"check_runs":[]}' ;;
+    *pr*view*headRefOid*)        echo 'abcdef1234567890' ;;
+    *)                           echo '{}' ;;
+esac

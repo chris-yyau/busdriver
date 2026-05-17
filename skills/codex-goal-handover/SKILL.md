@@ -207,6 +207,31 @@ PY
 
 Even if Codex were steered (e.g., by prompt injection from verifier output) to modify a file outside scope, this check catches it before Step 8 can declare the iter done.
 
+**Post-iter `.git/hooks/` integrity check.** `allow_git_writes=true` grants Codex write access to the entire `.git/` directory, including `.git/hooks/`. A misbehaving or steered Codex session could write a malicious hook that executes at outer-process privilege level on the next `git` invocation. The scope check above audits working-tree paths only (`git diff --name-only`) and does not see `.git/hooks/` mutations. Run this check immediately after the scope check and before Step 8:
+
+```bash
+# Collect all hook files present after this iter
+HOOKS_AFTER=$(find .git/hooks -type f ! -name "*.sample" 2>/dev/null | sort)
+# Compare against baseline captured before the first iter (Step 5 pre-iter read)
+# If HOOKS_BEFORE was captured at loop start, diff it:
+if [[ -n "${HOOKS_BEFORE:-}" ]]; then
+  NEW_HOOKS=$(comm -13 <(echo "$HOOKS_BEFORE") <(echo "$HOOKS_AFTER") 2>/dev/null || true)
+  if [[ -n "$NEW_HOOKS" ]]; then
+    echo "[codex-goal-dispatch] BAIL: new hook files detected in .git/hooks/ — possible hook injection:" >&2
+    echo "$NEW_HOOKS" >&2
+    exit 1
+  fi
+fi
+```
+
+Capture the baseline before the first dispatch (add once at loop start, before Step 6):
+
+```bash
+HOOKS_BEFORE=$(find .git/hooks -type f ! -name "*.sample" 2>/dev/null | sort)
+```
+
+If your loop does not yet capture `HOOKS_BEFORE`, the check degrades gracefully (no diff is possible) — but the recommendation is to always capture it so new hooks injected mid-run are caught before they can execute.
+
 ### 8. Decide
 
 Only run after Step 7 exits 0 (scope clean):
@@ -250,8 +275,8 @@ When you want litmus coverage on the handover's output:
 
 1. **Run retroactive PR-mode litmus before opening the PR.** After the handover converges, dispatch:
    ```bash
-   LITMUS_MODE=pr LITMUS_PR_BASE=main bash skills/litmus/scripts/init-review-loop.sh --force 10
-   LITMUS_MODE=pr LITMUS_PR_BASE=main bash skills/litmus/scripts/run-review-loop.sh
+   LITMUS_MODE=pr LITMUS_PR_BASE=<your-default-branch> bash skills/litmus/scripts/init-review-loop.sh --force 10
+   LITMUS_MODE=pr LITMUS_PR_BASE=<your-default-branch> bash skills/litmus/scripts/run-review-loop.sh
    ```
    Reviews the aggregate branch diff in one pass (equivalent coverage to per-commit, less wall-clock).
 2. **Iterate on findings as you would on any litmus FAIL.** A follow-up `chore(scripts): litmus cleanup` commit is a fine pattern when codex's output trips stylistic findings (SC2292, SC2312, etc.).

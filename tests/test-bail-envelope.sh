@@ -5,8 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HELPER="$REPO_ROOT/scripts/lib/bail-envelope.sh"
 
-# Test 1: emit_bail prints single-line JSON + exits 1
-output=$(bash -c "source '$HELPER'; emit_bail 'judgment' 'litmus stall'" 2>&1 || true)
+# Test 1: emit_bail prints single-line JSON + exits non-zero
+set +e
+output=$(bash -c "source '$HELPER'; emit_bail 'judgment' 'litmus stall'" 2>&1)
+status=$?
+set -e
+[[ "$status" -ne 0 ]] || { echo "FAIL t1: emit_bail exited 0"; exit 1; }
 echo "$output" | jq -e '.bail_category == "judgment" and .bail_reason == "litmus stall"' >/dev/null \
     || { echo "FAIL t1: $output"; exit 1; }
 
@@ -32,8 +36,9 @@ output=$(printf 'noise line\n{"bail_category":"budget","bail_reason":"loop"}\nmo
 echo "$output" | jq -e '.bail_category == "budget"' >/dev/null \
     || { echo "FAIL t4: $output"; exit 1; }
 
-# Test 5: reason with embedded quotes JSON-safe-encoded
+# Test 5: reason with embedded quotes JSON-safe-encoded; verify exact round-trip
 output=$(bash -c "source '$HELPER'; emit_bail 'judgment' 'msg with \"quotes\" inside'" 2>&1 || true)
-echo "$output" | jq -e '.bail_reason' >/dev/null || { echo "FAIL t5: not JSON-safe"; exit 1; }
+echo "$output" | jq -e '.bail_reason == "msg with \"quotes\" inside"' >/dev/null \
+    || { echo "FAIL t5: quoted reason mismatch or not JSON-safe: $output"; exit 1; }
 
 echo "All bail-envelope tests passed"

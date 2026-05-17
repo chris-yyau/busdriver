@@ -16,6 +16,15 @@ _NEW_PATH = re.compile(r"^\+\+\+ b/(.+)$")
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
+def _hunk_range(match, path):
+    """Return a {path, start, end} dict for a hunk, or None for zero-length hunks."""
+    start = int(match.group(1))
+    length = int(match.group(2)) if match.group(2) else 1
+    if length <= 0:
+        return None
+    return {"path": path, "start": start, "end": start + length - 1}
+
+
 def parse(lines):
     result = []
     current = None
@@ -27,15 +36,9 @@ def parse(lines):
             continue
         m = _HUNK.match(line)
         if m and current:
-            start = int(m.group(1))
-            length = int(m.group(2)) if m.group(2) else 1
-            if length <= 0:
-                continue
-            result.append({
-                "path": current,
-                "start": start,
-                "end": start + length - 1,
-            })
+            entry = _hunk_range(m, current)
+            if entry is not None:
+                result.append(entry)
     return result
 
 

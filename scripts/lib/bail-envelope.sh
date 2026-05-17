@@ -20,8 +20,6 @@
 # DO NOT chain `child | source ...; parse_bail_envelope` — `source` in a
 # pipeline runs in a subshell and the function isn't defined in the parent.
 
-set -u
-
 emit_bail() {
     local category="${1:-}"
     local reason="${2:-}"
@@ -34,6 +32,11 @@ emit_bail() {
 }
 
 parse_bail_envelope() {
+    # Match any line containing "bail_category" (not anchored to line-start
+    # so key-insertion order from different jq invocations doesn't matter).
+    # Then validate the matched line is well-formed JSON with both required
+    # fields before returning it; malformed or partial envelopes are dropped.
     # shellcheck disable=SC2312  # empty output is success-equivalent (no envelope found)
-    grep -E '^\{"bail_category":' | tail -n 1 || true
+    grep -E '"bail_category"' | tail -n 1 | \
+        jq -ce 'select(type == "object" and has("bail_category") and has("bail_reason"))' 2>/dev/null || true
 }

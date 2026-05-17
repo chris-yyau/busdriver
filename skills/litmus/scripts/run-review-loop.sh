@@ -19,12 +19,22 @@ write_terminal_status() {
     esac
     mkdir -p "$(dirname "$STATE_FILE")"
     [[ -f "$STATE_FILE" ]] || touch "$STATE_FILE"
+    local tmp="${STATE_FILE}.tmp.$$"
     if grep -q '^terminal_status:' "$STATE_FILE"; then
-        # Portable in-place edit (works on macOS BSD sed and GNU sed)
-        local tmp="${STATE_FILE}.tmp.$$"
+        # Update existing field in-place (works on macOS BSD sed and GNU sed)
         sed -E "s/^terminal_status:.*/terminal_status: \"${status}\"/" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+    elif grep -q '^---$' "$STATE_FILE"; then
+        # Insert before the closing --- so frontmatter readers (get_yaml_value)
+        # can parse the field. Uses the second occurrence of ^---$ as the insert point.
+        awk -v val="terminal_status: \"${status}\"" '
+            /^---$/ { count++ }
+            count == 2 && /^---$/ { print val }
+            { print }
+        ' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
     else
-        printf 'terminal_status: "%s"\n' "$status" >> "$STATE_FILE"
+        # No frontmatter — wrap the file content in frontmatter and add field.
+        { printf -- '---\nterminal_status: "%s"\n---\n' "$status"; cat "$STATE_FILE"; } > "$tmp" \
+            && mv "$tmp" "$STATE_FILE"
     fi
 }
 
@@ -96,7 +106,6 @@ validate_git_repo || { write_terminal_status setup_error; exit 1; }
 RESOLVED_CLI=$(validate_review_cli 2>/dev/null) || {
   validate_review_cli >&2
   write_terminal_status setup_error
-  rm -f "$STATE_FILE" 2>/dev/null
   exit 1
 }
 
@@ -120,7 +129,6 @@ if [ "$REVIEW_MODE" = "pr" ]; then
     echo "   PR deep review needs an independent external reviewer." >&2
     echo "   Set BUSDRIVER_REVIEW_CLI=auto or install codex/gemini." >&2
     write_terminal_status setup_error
-    rm -f "$STATE_FILE" 2>/dev/null
     exit 1
   fi
 

@@ -46,8 +46,13 @@ _fetch_pr_state() {
     owner="${nwo%/*}"
     name="${nwo#*/}"
 
+    # Use temporary locals so a gh failure does not clobber the parent-shell
+    # exported vars with empty strings (documented contract: "remaining vars
+    # stay at their pre-call values" on failure).
+    local _tmp
+
     # shellcheck disable=SC2016  # gh GraphQL needs literal $var refs, not shell expansion
-    ALL_THREADS=$(gh api graphql --paginate \
+    _tmp=$(gh api graphql --paginate \
         -F number="$pr_number" -F owner="$owner" -F name="$name" \
         -f query='query($number:Int!,$owner:String!,$name:String!,$endCursor:String){
             repository(owner:$owner,name:$name){
@@ -59,16 +64,28 @@ _fetch_pr_state() {
                 }
               }
             }
-          }' 2>/dev/null) || FETCH_OK=0
+          }' 2>/dev/null) && ALL_THREADS="$_tmp" || FETCH_OK=0
 
-    ALL_REVIEWS=$(gh api --paginate "repos/$owner/$name/pulls/$pr_number/reviews" 2>/dev/null) || FETCH_OK=0
-    ALL_COMMENTS=$(gh pr view "$pr_number" --comments --json comments 2>/dev/null) || FETCH_OK=0
-    # shellcheck disable=SC2312  # pipe with `cut`; failure mode handled by post-check below
-    HEAD_SHA=$(gh pr view "$pr_number" --json headRefOid -q '.headRefOid' 2>/dev/null | cut -c1-8) || FETCH_OK=0
+    _tmp=$(gh api --paginate "repos/$owner/$name/pulls/$pr_number/reviews" 2>/dev/null) \
+        && ALL_REVIEWS="$_tmp" || FETCH_OK=0
+    _tmp=$(gh pr view "$pr_number" --comments --json comments 2>/dev/null) \
+        && ALL_COMMENTS="$_tmp" || FETCH_OK=0
 
-    if [[ -n "$HEAD_SHA" ]]; then
-        ALL_CHECK_RUNS=$(gh api --paginate "repos/$owner/$name/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
+    # HEAD_SHA pipeline: cut always exits 0, so pipefail cannot catch gh failure
+    # here. Capture into a temp var and treat empty output as failure.
+    local _sha
+    _sha=$(gh pr view "$pr_number" --json headRefOid -q '.headRefOid' 2>/dev/null | cut -c1-8) || true
+    if [[ -n "$_sha" ]]; then
+        HEAD_SHA="$_sha"
+        _tmp=$(gh api --paginate "repos/$owner/$name/commits/$HEAD_SHA/check-runs" 2>/dev/null) \
+            && ALL_CHECK_RUNS="$_tmp" || FETCH_OK=0
+    else
+        FETCH_OK=0  # gh pr view --json headRefOid failed or returned empty
     fi
+
+    # Export so child processes (e.g. scripts/ack-ledger.sh run as bash child)
+    # can read these without the caller needing a separate export step.
+    export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA
 
     return 0
 }

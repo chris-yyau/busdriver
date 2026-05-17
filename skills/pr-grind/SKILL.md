@@ -1223,6 +1223,70 @@ echo "<PR_NUMBER>" > "$REPO_ROOT/.claude/pr-grind-clean.local"
 rm -f "$REPO_ROOT/.claude/pr-pending-grind.local"
 ```
 
+**Branch-Currency Detection (run BEFORE approver-gap):**
+
+After CI is green and bots ack HEAD, GitHub may still reject the merge because branch protection requires the head branch to be up-to-date with the base. This is a different structural gap from approver-count: it surfaces as `mergeStateStatus=BEHIND` and the raw failure is `Pull request is not mergeable: the head branch is not up to date with the base branch`. Detect it up front so the operator sees a tailored decision message instead of a raw `gh pr merge` failure.
+
+**The detection is scoped narrowly:** only `mergeStateStatus=BEHIND` qualifies. Other mergeStateStatus values (`BLOCKED`, `DIRTY`, `UNSTABLE`, `UNKNOWN`) surface via their existing paths (approver-gap detection, failing-required-checks, merge-conflict, etc.). Branch-currency is the specific case where the PR is functionally ready BUT lags behind base; the fix is "incorporate base into the PR branch," which has three legitimate paths.
+
+```bash
+PR=<PR_NUMBER>
+MERGE_STATE_STATUS=$(gh pr view "$PR" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null || echo "")
+case "$MERGE_STATE_STATUS" in
+  BEHIND)
+    # Surface decision with three operator options below; do NOT auto-pick.
+    # Excluded from MAX_FIX/MAX_WAIT accounting — nothing to fix, nothing to wait for.
+    # pr-grind BAILs with RESULT_BAIL_CATEGORY=policy (same enum as approver-gap;
+    # `policy` covers all dispatcher-emitted structural-blocker bails).
+    ;;
+  CLEAN|UNSTABLE|HAS_HOOKS|"")
+    # Pass through — proceed to Approver-Gap Detection below.
+    # UNSTABLE = advisory check failing (e.g., CodeScene); not branch-currency.
+    # Empty (mergeStateStatus query failed) = degrade-to-attempt; the merge
+    # will surface its own error if base-currency is actually the blocker.
+    ;;
+  *)
+    # BLOCKED / DIRTY / etc. — surface via existing approver-gap or
+    # failing-checks paths. Do not BAIL here; let the downstream
+    # detection blocks handle their specific cases.
+    ;;
+esac
+```
+
+**Operator-decision message template** (rendered to stdout on BAIL when `MERGE_STATE_STATUS=BEHIND`):
+
+```text
+pr-grind: PR is functionally clean (CI green, bots ack HEAD, threads resolved)
+but base branch (<base>) has advanced since the PR branched. Branch protection
+requires the head branch to be up-to-date with the base before merge.
+
+Options:
+  [update-merge]  gh pr update-branch <PR_NUMBER>
+                    # creates a merge commit bringing base into the PR branch.
+                    # No force-push; ack-ledger SHAs stay valid. Triggers a
+                    # CI re-run + bot re-review on the new merge commit;
+                    # plan for 1-2 additional wait-rounds. Cleanest correctness
+                    # path when bots tolerate merge commits.
+  [update-rebase] gh pr update-branch <PR_NUMBER> --rebase
+                    # rebases PR onto base. Force-push, rewrites published
+                    # SHAs, invalidates ack-ledger entries (all bots stale).
+                    # Triggers full re-review cycle. Cleaner history but
+                    # reignites grind — 3-5 rounds likely. Pick when bot
+                    # configurations dislike merge commits OR when the PR
+                    # history matters for downstream reviewers.
+  [admin]         gh pr merge <PR_NUMBER> --squash --delete-branch --admin
+                    # admin-merge bypasses the up-to-date requirement.
+                    # Defensible when the PR is small + conflict-free and
+                    # the base advance was unrelated (e.g., the schema fix
+                    # that landed in #103 didn't touch any Phase 0 paths).
+                    # Logs to .claude/bypass-log.jsonl if bypass-audit.yml
+                    # exists; absence prepends a stronger warning. Same
+                    # audit posture as the approver-gap admin path.
+  [wait]          exit; manually update later
+```
+
+After the operator picks `[update-merge]` or `[update-rebase]`, pr-grind should be re-invoked on the same PR — the new HEAD will trigger fresh bot reviews and (probably) a short wait-round sequence to convergence. After `[admin]`, the PR is merged; pr-grind exits clean.
+
 **Approver-Gap Detection (run BEFORE the merge attempt):**
 
 After CI is green, threads are resolved, and bot acks are HEAD, GitHub may still reject the merge because branch protection demands `required_approving_review_count >= 1` human APPROVED reviews the author cannot self-provide. The dispatcher detects this structural gap up front so the operator sees a tailored decision message instead of a raw `gh pr merge` failure.

@@ -214,7 +214,7 @@ Even if Codex were steered (e.g., by prompt injection from verifier output) to m
 HOOKS_AFTER=$(find .git/hooks -type f ! -name "*.sample" 2>/dev/null | sort)
 # Compare against baseline captured before the first iter (Step 5 pre-iter read)
 # If HOOKS_BEFORE was captured at loop start, diff it:
-if [[ -n "${HOOKS_BEFORE:-}" ]]; then
+if [[ -v HOOKS_BEFORE ]]; then
   NEW_HOOKS=$(comm -13 <(echo "$HOOKS_BEFORE") <(echo "$HOOKS_AFTER") 2>/dev/null || true)
   if [[ -n "$NEW_HOOKS" ]]; then
     echo "[codex-goal-dispatch] BAIL: new hook files detected in .git/hooks/ — possible hook injection:" >&2

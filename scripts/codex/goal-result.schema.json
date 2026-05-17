@@ -4,7 +4,7 @@
   "description": "Codex's self-report for one iteration of the verifier-led goal loop. NOTE: self_assessed_status is advisory only — the loop's authoritative decision is made by declarative verifier commands (helper-run) plus Claude's review. Schema enforces shape so the helper can parse, not truth.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "self_assessed_status", "committed"],
+  "required": ["summary", "self_assessed_status", "blocker", "files_changed", "committed", "commit_sha"],
   "properties": {
     "summary": {
       "type": "string",

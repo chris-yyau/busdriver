@@ -36,13 +36,17 @@ _fetch_pr_state() {
     local pr_number="${1:-}"
     if [[ -z "$pr_number" ]]; then
         FETCH_OK=0
+        # Export immediately so child processes always see FETCH_OK even on
+        # early-return paths (Cubic P2: export must not be deferred to
+        # success-only path at end of function).
+        export FETCH_OK
         return 0
     fi
 
     FETCH_OK=1
 
     local nwo owner name
-    nwo=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null) || { FETCH_OK=0; return 0; }
+    nwo=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null) || { FETCH_OK=0; export FETCH_OK; return 0; }
     owner="${nwo%/*}"
     name="${nwo#*/}"
 

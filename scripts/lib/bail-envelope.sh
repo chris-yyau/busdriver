@@ -37,6 +37,10 @@ parse_bail_envelope() {
     # Then validate the matched line is well-formed JSON with both required
     # fields before returning it; malformed or partial envelopes are dropped.
     # shellcheck disable=SC2312  # empty output is success-equivalent (no envelope found)
-    grep -E '"bail_category"' | tail -n 1 | \
-        jq -ce 'select(type == "object" and has("bail_category") and has("bail_reason"))' 2>/dev/null || true
+    # Validate EACH candidate line through jq before taking the last match; this
+    # prevents a later malformed/non-envelope line (e.g. a log line containing
+    # "bail_category" as a substring) from hiding a valid earlier envelope.
+    grep -E '"bail_category"' | \
+        jq -Rce 'fromjson? | select(type == "object" and has("bail_category") and has("bail_reason"))' 2>/dev/null | \
+        tail -n 1 || true
 }

@@ -26,11 +26,19 @@ write_terminal_status() {
     elif grep -q '^---$' "$STATE_FILE"; then
         # Insert before the closing --- so frontmatter readers (get_yaml_value)
         # can parse the field. Uses the second occurrence of ^---$ as the insert point.
+        # If count never reaches 2 (unclosed/single---- frontmatter from a prior crash),
+        # fall back to the else-branch wrapping so the field is never silently dropped.
+        local _inserted=0
         awk -v val="terminal_status: \"${status}\"" '
             /^---$/ { count++ }
-            count == 2 && /^---$/ { print val }
+            count == 2 && /^---$/ { print val; inserted=1 }
             { print }
-        ' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+            END { exit (inserted ? 0 : 1) }
+        ' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE" && _inserted=1
+        if [[ "$_inserted" -eq 0 ]]; then
+            { printf -- '---\nterminal_status: "%s"\n---\n' "$status"; cat "$STATE_FILE"; } > "$tmp" \
+                && mv "$tmp" "$STATE_FILE"
+        fi
     else
         # No frontmatter — wrap the file content in frontmatter and add field.
         { printf -- '---\nterminal_status: "%s"\n---\n' "$status"; cat "$STATE_FILE"; } > "$tmp" \

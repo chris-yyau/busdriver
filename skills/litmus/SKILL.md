@@ -243,7 +243,7 @@ JSON format: `{"status": "PASS"|"FAIL", "issues": [{file, line, severity, catego
 
 In addition to the exit-code contract, `run-review-loop.sh` writes a
 `terminal_status` field to `.claude/litmus-state.md` immediately before any
-`exit 1` path. Values:
+non-zero exit (including `exit 1` and `exit 124`). Values:
 
 | terminal_status   | Meaning                                                       |
 |-------------------|---------------------------------------------------------------|

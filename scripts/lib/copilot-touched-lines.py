@@ -35,7 +35,12 @@ def parse(lines):
             current = m.group(1)
             continue
         m = _HUNK.match(line)
-        if m and current and (entry := _hunk_range(m, current)) is not None:
+        if not m:
+            continue
+        if not current:
+            continue
+        entry = _hunk_range(m, current)
+        if entry is not None:
             result.append(entry)
     return result
 

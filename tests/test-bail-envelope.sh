@@ -25,7 +25,11 @@ echo "$parent_test" | jq -e '.bail_category == "env" and .bail_reason == "networ
     || { echo "FAIL t2: $parent_test"; exit 1; }
 
 # Test 3: invalid category rejected (tooling removed by inversion)
-invalid_output=$(bash -c "source '$HELPER'; emit_bail 'tooling' 'recovery'" 2>&1 || true)
+set +e
+invalid_output=$(bash -c "source '$HELPER'; emit_bail 'tooling' 'recovery'" 2>&1)
+invalid_status=$?
+set -e
+[[ "$invalid_status" -ne 0 ]] || { echo "FAIL t3: emit_bail exited 0 for invalid category"; exit 1; }
 if printf '%s\n' "$invalid_output" | grep -q "invalid bail_category"; then :; else
     echo "FAIL t3: bogus 'tooling' should be rejected"; exit 1
 fi

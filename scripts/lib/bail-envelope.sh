@@ -34,5 +34,6 @@ emit_bail() {
 }
 
 parse_bail_envelope() {
-    grep -E '^\{"bail_category":' | tail -n 1
+    # shellcheck disable=SC2312  # empty output is success-equivalent (no envelope found)
+    grep -E '^\{"bail_category":' | tail -n 1 || true
 }

@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2034  # ALL_THREADS/ALL_REVIEWS/ALL_CHECK_RUNS exported to parent via `source`
 # scripts/fetch-pr-state.sh — sourced helper; populates parent-shell env vars.
 #
 # CRITICAL: source this file (`. fetch-pr-state.sh <pr_number>`); do NOT execute
@@ -32,7 +34,7 @@
 
 _fetch_pr_state() {
     local pr_number="${1:-}"
-    if [ -z "$pr_number" ]; then
+    if [[ -z "$pr_number" ]]; then
         FETCH_OK=0
         return 0
     fi
@@ -44,6 +46,7 @@ _fetch_pr_state() {
     owner="${nwo%/*}"
     name="${nwo#*/}"
 
+    # shellcheck disable=SC2016  # gh GraphQL needs literal $var refs, not shell expansion
     ALL_THREADS=$(gh api graphql --paginate \
         -F number="$pr_number" -F owner="$owner" -F name="$name" \
         -f query='query($number:Int!,$owner:String!,$name:String!,$endCursor:String){
@@ -60,9 +63,10 @@ _fetch_pr_state() {
 
     ALL_REVIEWS=$(gh api --paginate "repos/$owner/$name/pulls/$pr_number/reviews" 2>/dev/null) || FETCH_OK=0
     ALL_COMMENTS=$(gh pr view "$pr_number" --comments --json comments 2>/dev/null) || FETCH_OK=0
+    # shellcheck disable=SC2312  # pipe with `cut`; failure mode handled by post-check below
     HEAD_SHA=$(gh pr view "$pr_number" --json headRefOid -q '.headRefOid' 2>/dev/null | cut -c1-8) || FETCH_OK=0
 
-    if [ -n "$HEAD_SHA" ]; then
+    if [[ -n "$HEAD_SHA" ]]; then
         ALL_CHECK_RUNS=$(gh api --paginate "repos/$owner/$name/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
     fi
 

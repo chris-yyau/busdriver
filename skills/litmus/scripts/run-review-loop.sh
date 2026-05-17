@@ -18,7 +18,7 @@ write_terminal_status() {
         *) printf 'write_terminal_status: invalid %s\n' "$status" >&2; return 1 ;;
     esac
     mkdir -p "$(dirname "$STATE_FILE")"
-    [ -f "$STATE_FILE" ] || touch "$STATE_FILE"
+    [[ -f "$STATE_FILE" ]] || touch "$STATE_FILE"
     if grep -q '^terminal_status:' "$STATE_FILE"; then
         # Portable in-place edit (works on macOS BSD sed and GNU sed)
         local tmp="${STATE_FILE}.tmp.$$"

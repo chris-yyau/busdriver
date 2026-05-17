@@ -18,6 +18,7 @@ cp -r "$REPO_ROOT"/scripts/lib/* scripts/lib/ 2>/dev/null || true
 # Fixture 1: malformed state.md → setup_error path
 echo "malformed" > .claude/litmus-state.md
 bash skills/litmus/scripts/run-review-loop.sh 2>/dev/null || true
+# shellcheck disable=SC2312  # $(cat ...) only invoked on FAIL branch for diagnostic
 grep -q '^terminal_status:.*"setup_error"' .claude/litmus-state.md \
     || { echo "FAIL: setup_error not written ($(cat .claude/litmus-state.md))"; exit 1; }
 

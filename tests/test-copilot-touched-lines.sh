@@ -20,11 +20,11 @@ out=$(printf 'diff --git a/dir/foo bar.txt b/dir/foo bar.txt\n+++ b/dir/foo bar.
 echo "$out" | jq -e '.[0].path == "dir/foo bar.txt"' >/dev/null || { echo "FAIL t4 (spaces): $out"; exit 1; }
 
 # t5: empty in → []
-[ "$(printf '' | python3 "$PARSER")" = "[]" ] || { echo "FAIL t5"; exit 1; }
+[[ "$(printf '' | python3 "$PARSER")" = "[]" ]] || { echo "FAIL t5"; exit 1; }
 
 # t6: malformed survives
 out=$(printf 'random\n@@ malformed @@\n' | python3 "$PARSER")
-[ "$out" = "[]" ] || { echo "FAIL t6: $out"; exit 1; }
+[[ "$out" = "[]" ]] || { echo "FAIL t6: $out"; exit 1; }
 
 # t7: multi-file with mixed
 out=$(printf 'diff --git a/a.txt b/a.txt\n+++ b/a.txt\n@@ -1 +1,2 @@\ndiff --git a/c.txt b/c.txt\n+++ b/c.txt\n@@ -5 +5,3 @@\n' | python3 "$PARSER")

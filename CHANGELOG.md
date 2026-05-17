@@ -1,3 +1,10 @@
+## [1.40.2](https://github.com/chris-yyau/busdriver/compare/v1.40.1...v1.40.2) (2026-05-17)
+
+
+### Bug Fixes
+
+* **pr-grind:** merge-cleanup drift-resistance + branch-currency detection ([#107](https://github.com/chris-yyau/busdriver/issues/107)) ([8fb39e7](https://github.com/chris-yyau/busdriver/commit/8fb39e7963d8b5e2ce8e89c0f25e0d8f1f6a7213)), closes [#102](https://github.com/chris-yyau/busdriver/issues/102) [#98](https://github.com/chris-yyau/busdriver/issues/98) [#102](https://github.com/chris-yyau/busdriver/issues/102) [#103](https://github.com/chris-yyau/busdriver/issues/103)
+
 ## [1.40.1](https://github.com/chris-yyau/busdriver/compare/v1.40.0...v1.40.1) (2026-05-17)
 
 

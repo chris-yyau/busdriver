@@ -113,15 +113,15 @@ if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; exit 0; fi
 #
 # Note: the FETCH_OK guard at the top already returns `stale` on any
 # source-fetch failure, so this block only runs on successful fetches.
-downgrade_data=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-  '[ .[] | .[] | select(.user.login == $login or .user.login == $login_bot) ]
-   | [ (map(select(.state == "APPROVED" or .state == "DISMISSED" or .state == "CHANGES_REQUESTED")) | length),
-       (last | .body // empty),
-       (last | .state // empty) ]' 2>/dev/null || echo '[0,"",""]')
-ever_approved=$(printf '%s' "$downgrade_data" | jq -r '.[0]' 2>/dev/null || echo 0)
+{ read -r ever_approved; read -r last_body; read -r last_state; } < <(
+  printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[ .[] | .[] | select(.user.login == $login or .user.login == $login_bot) ]
+     | ( (map(select(.state == "APPROVED" or .state == "DISMISSED" or .state == "CHANGES_REQUESTED")) | length),
+         (last | .body // ""),
+         (last | .state // "") )' 2>/dev/null \
+  || printf '0\n\n\n'
+)
 if [ "$ever_approved" -eq 0 ]; then
-  last_body=$(printf '%s' "$downgrade_data" | jq -r '.[1]' 2>/dev/null || echo "")
-  last_state=$(printf '%s' "$downgrade_data" | jq -r '.[2]' 2>/dev/null || echo "")
   # Case 1: infra-error / rate-limit — Copilot's "encountered an error and
   # was unable to review" review object is the canonical case. GitHub leaves
   # it frozen on the SHA where it errored, never updates commit_id on later

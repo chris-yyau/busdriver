@@ -378,7 +378,22 @@ test_g_inline_subagent_parity() {
     assert_json "$first_json" '.status == "success"' &&
         assert_json "$dispatcher_json" '.status == "success"'
 }
-test_h_litmus_stall() { todo "test_h"; }
+test_h_litmus_stall() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    litmus_mode=stall
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_h expected dispatcher bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment" and (.bail_reason | contains("litmus exit 1 (stall)"))'
+}
 test_i_litmus_max_iter() { todo "test_i"; }
 test_j_litmus_infra_fail() { todo "test_j"; }
 test_k_push_failure() { todo "test_k"; }

@@ -611,7 +611,31 @@ test_q_routing_unrecognized() {
 
     reveal_dispatcher_bug "test_q unrecognized RESULT_STATUS should bail before commit; got exit=$dispatcher_exit json=$dispatcher_json"
 }
-test_r_marker_validation() { todo "test_r"; }
+test_r_marker_validation() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
+    local skipped_json skipped_exit
+
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+    litmus_mode=skipped
+    run_dispatcher_capture
+    skipped_json="$dispatcher_json"
+    skipped_exit="$dispatcher_exit"
+    rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"
+
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+    litmus_mode=nonhex
+    run_dispatcher_capture
+
+    [ "$skipped_exit" -eq 1 ] &&
+        assert_json "$skipped_json" \
+            '.bail_category == "judgment" and (.bail_reason | contains("external review marker rejected"))' &&
+        [ "$dispatcher_exit" -eq 1 ] &&
+        assert_json "$dispatcher_json" \
+            '.bail_category == "judgment" and (.bail_reason | contains("not a valid 64-char SHA-256"))'
+}
 test_s_bail_envelope_roundtrip() { todo "test_s"; }
 test_t_terminal_status_preferred() { todo "test_t"; }
 

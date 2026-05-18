@@ -118,7 +118,7 @@ if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; exit 0; fi
     '[ .[] | .[] | select(.user.login == $login or .user.login == $login_bot) ]
      | ( (map(select(.state == "APPROVED" or .state == "DISMISSED" or .state == "CHANGES_REQUESTED")) | length),
          (last | .state // ""),
-         (last | .body // "") )' 2>/dev/null \
+         (last | .body // "" | gsub("\n"; " ")) )' 2>/dev/null \
   || printf '0\n\n\n'
 )
 if [ "$ever_approved" -eq 0 ]; then
@@ -134,20 +134,27 @@ if [ "$ever_approved" -eq 0 ]; then
     echo "none"; exit 0
   fi
   # Case 2: one-and-done COMMENTED — bot reviewed a prior commit with a
-  # non-actionable summary (state=COMMENTED, not APPROVED/CHANGES_REQUESTED),
-  # then never re-fired despite HEAD advancing. Canonical Copilot pattern:
-  # it posts a PR-overview summary on the initial commit and doesn't auto-
-  # trigger on later non-force pushes; the re-request API 422s so the
-  # operator has no recourse. By the time we reach this block we know:
+  # non-actionable PR-overview summary (state=COMMENTED, not APPROVED/
+  # CHANGES_REQUESTED), then never re-fired despite HEAD advancing. Canonical
+  # Copilot pattern: it posts a PR-overview summary on the initial commit and
+  # doesn't auto-trigger on later non-force pushes; the re-request API 422s
+  # so the operator has no recourse. By the time we reach this block we know:
   # (1) FETCH_OK=1, (2) no unresolved threads from this bot (Tier A would
   # have returned `stale` at the top), (3) `commit_id` is non-empty AND its
   # 8-char prefix != HEAD_SHA (Tier B would have returned the SHA otherwise),
   # (4) ever_approved==0 AND no prior CHANGES_REQUESTED (the guard above
   # now includes CHANGES_REQUESTED so a [CHANGES_REQUESTED, COMMENTED]
-  # history correctly stays `stale`). If the bot's only review is a
-  # non-actionable summary on a stale commit, treat it as "doesn't gate"
-  # — same semantic as the infra-error case.
-  if [ "$last_state" = "COMMENTED" ]; then
+  # history correctly stays `stale`).
+  #
+  # Positive-signal guard: only downgrade when the body contains a PR-overview
+  # marker ("## PR Overview", "## Pull request overview", or "PR overview
+  # summary"). This prevents any bot that uses COMMENTED state for substantive
+  # findings (i.e., a bot that neither uses CHANGES_REQUESTED nor posts inline
+  # threads) from being silently bypassed — without this guard, any such bot
+  # posting actionable content in a COMMENTED-only review would be incorrectly
+  # downgraded to `none` once HEAD advances past the reviewed commit.
+  if [ "$last_state" = "COMMENTED" ] && \
+     printf '%s' "$last_body" | grep -qiE '## (PR|Pull request) overview|PR overview summary'; then
     echo "none"; exit 0
   fi
 fi

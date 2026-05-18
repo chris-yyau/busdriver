@@ -199,7 +199,9 @@ fi
 # a real CHANGES_REQUESTED finding was filed on commit A, then a non-actionable
 # COMMENTED review landed on commit B. Without CHANGES_REQUESTED in the
 # ever_approved filter, Case 2 would downgrade to `none`. With the fix, it stays `stale`.
-CR_THEN_COMMENTED=$(printf '[{"user":{"login":"greptile-apps[bot]"},"state":"CHANGES_REQUESTED","commit_id":"%s","body":"Finding body only — no inline threads."},{"user":{"login":"greptile-apps[bot]"},"state":"COMMENTED","commit_id":"%s","body":"PR overview summary."}]' "$STALE_COMMIT" "$STALE_COMMIT")
+# Two distinct commit IDs model the cross-commit sequence the test name describes.
+STALE_COMMIT_B="oldc0mm2"
+CR_THEN_COMMENTED=$(printf '[{"user":{"login":"greptile-apps[bot]"},"state":"CHANGES_REQUESTED","commit_id":"%s","body":"Finding body only — no inline threads."},{"user":{"login":"greptile-apps[bot]"},"state":"COMMENTED","commit_id":"%s","body":"PR overview summary."}]' "$STALE_COMMIT" "$STALE_COMMIT_B")
 got=$(run_ledger_reviews "$CR_THEN_COMMENTED")
 if [ "$got" = "stale" ]; then
   ok "[CHANGES_REQUESTED(A), COMMENTED(B)] history → stale (closed gap)"

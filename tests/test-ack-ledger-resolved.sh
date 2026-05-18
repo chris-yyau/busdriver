@@ -168,7 +168,7 @@ fi
 # Validates that read ordering (ever_approved, last_state, last_body) is correct so a
 # multi-line body does not corrupt last_state. A single-line body (Test 7) would pass
 # even with the old wrong ordering; this test catches a regression to body-before-state.
-COMMENTED_MULTILINE=$(printf '[{"user":{"login":"greptile-apps[bot]"},"state":"COMMENTED","commit_id":"%s","body":"## PR Overview\n\nThis PR adds a new downgrade case.\n\nDetails follow."}]' "$STALE_COMMIT")
+COMMENTED_MULTILINE=$(printf '[{"user":{"login":"greptile-apps[bot]"},"state":"COMMENTED","commit_id":"%s","body":"## PR Overview\\n\\nThis PR adds a new downgrade case.\\n\\nDetails follow."}]' "$STALE_COMMIT")
 got=$(run_ledger_reviews "$COMMENTED_MULTILINE")
 if [ "$got" = "none" ]; then
   ok "COMMENTED stale commit multi-line body → none (read ordering robust)"

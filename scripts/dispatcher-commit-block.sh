@@ -316,6 +316,7 @@ if [ "${COPILOT_AUTO_RESOLVE:-0}" = "1" ]; then
     owner="${nwo%/*}"
     name="${nwo#*/}"
 
+    # shellcheck disable=SC2016
     COPILOT_FETCH=$(gh api graphql \
         -F number="$PR_NUMBER" -F owner="$owner" -F name="$name" \
         -f query='query($number:Int!,$owner:String!,$name:String!){
@@ -367,9 +368,11 @@ if [ "${COPILOT_AUTO_RESOLVE:-0}" = "1" ]; then
         while IFS= read -r thread; do
             tid=$(printf '%s' "$thread" | jq -r '.threadId') || \
                 emit_bail "judgment" "Copilot thread id extraction failed"
+            # shellcheck disable=SC2016
             gh api graphql -F threadId="$tid" -F body="Addressed in $NEW_COMMIT_SHA" \
                 -f query='mutation($threadId:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId,body:$body}){comment{id}}}' >/dev/null || \
                 emit_bail "judgment" "Copilot thread reply failed"
+            # shellcheck disable=SC2016
             gh api graphql -F threadId="$tid" \
                 -f query='mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id}}}' >/dev/null || \
                 emit_bail "judgment" "Copilot thread resolve failed"
@@ -378,6 +381,7 @@ if [ "${COPILOT_AUTO_RESOLVE:-0}" = "1" ]; then
 fi
 
 # --- Step 12: Post-push GitHub state synthesis ---
+# shellcheck disable=SC1090
 if ! . "$FETCH_PR_STATE_SCRIPT" "$PR_NUMBER"; then
     emit_bail "judgment" "post-push GitHub-state helper failed"
 fi

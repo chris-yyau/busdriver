@@ -21,7 +21,7 @@ The dispatcher passes you a context block containing:
 - `PRIOR_ATTEMPTS` — per-round bullet list. Each entry has the form `Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): fixes=<one-line summary>; failures=<comma-separated failed-check-names or "none">; acks=<reviewer-ack-list>`. The parenthesized `fix=…/MAX_FIX, wait=…/MAX_WAIT` segment surfaces dispatcher budget pressure so you can triage knowing how close the loop is to bailing on either budget. **Anchor your parsing on `failures=` and `acks=` substrings, NOT on the `Round N:` prefix** — older worker contracts assumed the prefix shape; the new parenthetical breaks anchored parsers, but substring-anchored parsers are robust. Use `failures=` to detect a recurring flaky check across rounds (3+ rounds → bail; see Bail Triggers). `acks=` is preserved for diagnostics and human review of the loop transcript — there is no stuck-bot bail trigger; genuinely stuck bots fall out via the dispatcher's `--max-wait` iterations backstop (wait-rounds, where `RESULT_COMMIT_SHA=none`, count specifically against `--max-wait`).
 - `PRIOR_REVIEWER_ACKS` — last round's ack ledger as a comma-separated list of `<login>=<value>` pairs, e.g. `greptile-apps=b4451902,coderabbitai=none,cubic-dev-ai=stale`. Values: short SHA (acked that commit), `none` (either never posted on this PR, OR the bot's only reviews are infra-error/rate-limit markers and it has never APPROVED — see Step 6.5's downgrade rule), or `stale` (posted a real review on an older commit and is expected to re-review HEAD). On round 1, `none` for every registered bot. See Step 2.5 (registry/concept) and Step 6.5 (compute) below.
 - `RESULT_FILE` — the absolute path the dispatcher allocated for this round's RESULT-block backup file (per the belt-and-suspenders contract under "Output Format"). Always present; the dispatcher generates a unique nonce per dispatch attempt so cross-round and cross-session leftovers can never be picked up as stale data. If the context block omits `RESULT_FILE` (older dispatcher versions), fall back to `/tmp/pr-grinder-result-${PR_NUMBER}.txt` AND `rm -f` it at the very start of your round before any other work — that wipe is what protects you from cross-round staleness in the legacy path.
-- `COPILOT_AUTO_RESOLVE` — `1` when the operator passed `--copilot-auto-resolve` to pr-grind, otherwise `0` or omitted (treat omitted as `0`). When `1`, run Step 6.5a (Copilot stale-thread auto-resolve) per the three-precondition contract. When `0` or omitted, skip Step 6.5a entirely. The flag is off by default; see `skills/pr-grind/SKILL.md` Arguments table for the rationale (test fixtures 5–7 stabilization).
+- `COPILOT_AUTO_RESOLVE` — dispatcher-owned flag for the relocated Copilot stale-thread auto-resolve flow. The worker no longer composes the eligibility call; see Step 6.5a.
 
 ## Your Single Round
 
@@ -420,131 +420,9 @@ The complete RESULT block format is documented in the "Output Format" section be
 
 If you didn't change any files this round (no fixes needed — you're just waiting on bots), skip the commit and proceed to Step 6.5; HEAD will be unchanged and the ledger will reflect bot acks relative to the existing HEAD.
 
-### Step 6.5a — Copilot stale-thread auto-resolve (force-push special case)
+### Step 6.5a — Copilot stale-thread auto-resolve (RELOCATED to dispatcher)
 
-**Gate: only runs when `--copilot-auto-resolve` was passed to the dispatcher.** The flag is off by default. Skip this entire step on default invocations.
-
-**The problem this addresses.** Copilot, unlike CodeRabbit and Greptile, does NOT auto-re-review on force-push. When the worker force-pushes (e.g., Phase 3's `--admin-on-approver-gap` doesn't apply, but the operator did authorize a history rewrite via the worker's separate path — or any other path that lands a new HEAD without a fresh review trigger), Copilot's threads stay anchored to the old SHA and the ack-ledger reports `stale` indefinitely. The dispatcher's `--max-wait` budget then exhausts on a bot that will never re-review, and the operator has to manually resolve each thread.
-
-**The fix this implements.** When all three preconditions hold for THIS round's HEAD, post a per-thread `addressed in <SHA>` reply and call `resolveReviewThread`. The ack-ledger's tier A (resolved-threads → HEAD-ack) flips Copilot's entry from `stale` to the current HEAD SHA in Step 6.5's next run, the dispatcher's invariant 2 passes, and the loop converges.
-
-**Three preconditions (ALL must hold, fail-CLOSED on uncertainty):**
-
-1. **Force-push detected since Copilot's last review.** Compare the HEAD SHA at Copilot's `commit_id` (latest `/reviews` entry) against the current branch's history. If `git merge-base --is-ancestor <copilot_commit_id> HEAD` returns non-zero (the old SHA isn't reachable from HEAD), there was a force-push that rewrote the SHA Copilot reviewed. If it returns zero (the old SHA IS reachable), then this is a regular linear push — DO NOT auto-resolve; Copilot is just slow.
-
-2. **Every Copilot thread is anchored to a line HEAD touched.** For each unresolved+non-outdated Copilot thread (`comments.nodes[0].author.login == "copilot-pull-request-reviewer"` from Step 2's Source 2 GraphQL), check that `<path>:<line>` appears in `git diff <merge_base>..HEAD -U0` AND that `<line>` falls inside one of HEAD's hunks for `<path>`. If even ONE Copilot thread is anchored to a line HEAD didn't touch, DO NOT auto-resolve — that thread is on stable code Copilot reviewed and your fix didn't move; resolving it without bot ack would silently suppress audit value.
-
-3. **The worker actually fixed those lines this round.** `$RESULT_FIXES` must be non-empty AND `$RESULT_COMMIT_SHA` must be a real SHA (not `none`). A round that didn't push anything cannot claim "addressed in <SHA>".
-
-**Implementation:**
-
-The eligibility logic lives at `scripts/copilot-auto-resolve-eligibility.sh` (single source of truth, same factoring pattern as `scripts/ack-ledger.sh` and `scripts/approver-gap-detect.sh`). The worker composes the inputs and switches on the script's JSON decision:
-
-```bash
-# Gate: skip entirely if --copilot-auto-resolve was not passed.
-# The dispatcher exposes the flag via COPILOT_AUTO_RESOLVE=1 in the context
-# block; absent means default (off).
-if [ "${COPILOT_AUTO_RESOLVE:-0}" != "1" ]; then
-  : # skip Step 6.5a
-else
-  # Step 6.5a runs BEFORE Step 6.5 (so resolved threads get picked up by
-  # Step 6.5's tier-A → HEAD-ack flip). That means Step 6.5's $ALL_THREADS
-  # and $ALL_REVIEWS are NOT yet populated when this block runs — Step 6.5a
-  # MUST do its own targeted fetches. Both fetches are Copilot-scoped, so
-  # they're small even on large PRs and run only when the flag is on (off
-  # by default).
-
-  # Precondition 1 — force-push detection. Fetch Copilot's latest /reviews
-  # entry on this PR and get the commit_id it reviewed.
-  COPILOT_COMMIT_ID=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews" 2>/dev/null \
-    | jq -rs '[.[] | .[] | select(.user.login == "copilot-pull-request-reviewer" or .user.login == "copilot-pull-request-reviewer[bot]")] | last | .commit_id // empty' 2>/dev/null \
-    || echo "")
-  FORCE_PUSH_DETECTED=0
-  if [ -n "$COPILOT_COMMIT_ID" ] && ! git merge-base --is-ancestor "$COPILOT_COMMIT_ID" HEAD 2>/dev/null; then
-    FORCE_PUSH_DETECTED=1
-  fi
-
-  # Precondition 2 inputs — Copilot threads + HEAD's touched-line ranges.
-  # Targeted GraphQL fetch that explicitly selects `id path line` (the fields
-  # Step 6.5's ack-ledger query omits — that query only needs author login).
-  COPILOT_THREADS_JSON=$(gh api graphql --paginate -f query='
-    query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String) {
-      repository(owner:$owner,name:$repo) {
-        pullRequest(number:$pr) {
-          reviewThreads(first:100, after:$endCursor) {
-            pageInfo { hasNextPage endCursor }
-            nodes {
-              id path line isResolved isOutdated
-              comments(first:1) { nodes { author { login } } }
-            }
-          }
-        }
-      }
-    }
-  ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" 2>/dev/null \
-    | jq -cs '[.[].data.repository.pullRequest.reviewThreads.nodes[]
-      | select(. != null)
-      | select(.comments.nodes[0].author.login == "copilot-pull-request-reviewer" or .comments.nodes[0].author.login == "copilot-pull-request-reviewer[bot]")
-      | select(.isResolved == false and .isOutdated == false)
-      | {threadId: .id, path: .path, line: .line}]' 2>/dev/null || echo '[]')
-
-  BASE_REF_OID=$(gh pr view "$PR_NUMBER" --json baseRefOid -q .baseRefOid 2>/dev/null || echo "")
-  MERGE_BASE=$(git merge-base HEAD "$BASE_REF_OID" 2>/dev/null || echo "")
-  HEAD_TOUCHED_LINES_JSON='[]'
-  if [ -n "$MERGE_BASE" ]; then
-    # Parse `git diff -U0` hunk headers (`@@ -a,b +c,d @@`); emit {path,start,end}
-    # per hunk. `d` defaults to 1 when absent (`+c` form). Skip pure deletions
-    # (`d == 0`) — bot threads on deleted lines are already outdated by Source 2.
-    HEAD_TOUCHED_LINES_JSON=$(git diff "$MERGE_BASE"..HEAD -U0 2>/dev/null \
-      | awk '/^diff --git/{split($0,a," "); path=substr(a[4],3)}
-             /^@@/{
-                 match($0,/\+([0-9]+),?([0-9]*)/,m);
-                 start=m[1]+0;
-                 len=(m[2]==""?1:m[2]+0);
-                 if(len>0) printf "{\"path\":\"%s\",\"start\":%d,\"end\":%d}\n", path, start, start+len-1
-             }' \
-      | jq -cs '.' 2>/dev/null || echo '[]')
-  fi
-
-  # Invoke the eligibility script. Inputs are env-driven (same shape as
-  # scripts/ack-ledger.sh and scripts/approver-gap-detect.sh).
-  export RESULT_FIXES RESULT_COMMIT_SHA FORCE_PUSH_DETECTED \
-         COPILOT_THREADS_JSON HEAD_TOUCHED_LINES_JSON
-
-  ELIG_JSON=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/copilot-auto-resolve-eligibility.sh" 2>/dev/null \
-    || echo '{"decision":"skip","reason":"eligibility script invocation failed"}')
-  ELIG_DECISION=$(printf '%s' "$ELIG_JSON" | jq -r '.decision' 2>/dev/null || echo skip)
-  ELIG_THREAD_COUNT=$(printf '%s' "$ELIG_JSON" | jq -r '.thread_count' 2>/dev/null || echo 0)
-
-  if [ "$ELIG_DECISION" = "resolve" ]; then
-    HEAD_FULL=$(git rev-parse HEAD)
-    for i in $(seq 0 $((ELIG_THREAD_COUNT - 1))); do
-      T_ID=$(printf '%s' "$COPILOT_THREADS_JSON" | jq -r ".[$i].threadId" 2>/dev/null)
-      REPLY="addressed in $HEAD_FULL: pr-grind force-push re-applied fix; Copilot does not auto-re-review on force-push (see scripts/ack-ledger.sh tier A)."
-      gh api graphql -f query='
-        mutation($threadId: ID!, $body: String!) {
-          addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) {
-            comment { id }
-          }
-        }
-      ' -f threadId="$T_ID" -f body="$REPLY" >/dev/null \
-        && gh api graphql -f query='
-          mutation($threadId: ID!) {
-            resolveReviewThread(input: {threadId: $threadId}) { thread { isResolved } }
-          }
-        ' -f threadId="$T_ID" >/dev/null \
-        && echo "Step 6.5a: resolved Copilot thread $T_ID with addressed-in-$HEAD_FULL reply" \
-        || echo "Step 6.5a: ⚠️  failed to resolve thread $T_ID; ack-ledger will retry next round"
-    done
-  else
-    echo "Step 6.5a: $(printf '%s' "$ELIG_JSON" | jq -r '.reason')"
-  fi
-fi
-```
-
-**Anti-pattern: do NOT widen this carve-out to other bots.** CodeRabbit and Greptile auto-re-review on force-push — auto-resolving their threads without their ack would short-circuit their actual second-opinion value. Copilot's special-case is justified specifically because Copilot does NOT auto-re-review, and the three preconditions above are what bound the carve-out. Any future bot added to this special-case path must be empirically verified to NOT auto-re-review AND have the same fail-CLOSED preconditions applied.
-
-After Step 6.5a runs, the resolved threads will be picked up by Step 6.5's `scripts/ack-ledger.sh` tier A on its first call — Copilot's entry flips from `stale` to `$HEAD_SHA` and the loop converges normally.
+This step was moved to the dispatcher under the commit-ownership inversion. See `skills/pr-grind/SKILL.md` "Dispatcher commit/state-synthesis block" → `scripts/dispatcher-commit-block.sh` Step 11. The worker no longer composes the Copilot eligibility call.
 
 ### Step 6.5 — Compute the reviewer ack ledger (post-push)
 

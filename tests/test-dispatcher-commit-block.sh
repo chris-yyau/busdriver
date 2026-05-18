@@ -349,7 +349,35 @@ test_f_adversarial_result_fixes() {
     message=$(git -C "$sandbox" log -1 --format=%B)
     printf '%s\n' "$message" | grep -Fq '$(git commit -m pwned)'
 }
-test_g_inline_subagent_parity() { todo "test_g"; }
+test_g_inline_subagent_parity() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json first_json first_exit
+    local no_worktree pre_dispatch_baseline
+
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+    run_dispatcher_capture
+    first_json="$dispatcher_json"
+    first_exit="$dispatcher_exit"
+    rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"
+
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+    no_worktree=1
+    pre_dispatch_baseline='[]'
+    run_dispatcher_capture
+
+    [ "$first_exit" -eq 0 ] || {
+        echo "test_g subagent-style invocation failed: $first_json"
+        return 1
+    }
+    [ "$dispatcher_exit" -eq 0 ] || {
+        echo "test_g inline-style invocation failed: $dispatcher_output"
+        return 1
+    }
+    assert_json "$first_json" '.status == "success"' &&
+        assert_json "$dispatcher_json" '.status == "success"'
+}
 test_h_litmus_stall() { todo "test_h"; }
 test_i_litmus_max_iter() { todo "test_i"; }
 test_j_litmus_infra_fail() { todo "test_j"; }

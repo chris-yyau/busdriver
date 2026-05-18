@@ -96,7 +96,8 @@ fi
 # wait-rounds (needs_more + clean index).
 emit_success_no_commit() {
     jq -nc --arg acks "$1" \
-        '{status:"success", result_commit_sha:"none", result_reviewer_acks:$acks}'
+        '{status:"success", result_commit_sha:"none", result_reviewer_acks:$acks}' || \
+        emit_bail "env" "dispatcher-commit-block: emit_success_no_commit jq call failed (jq binary missing or OOM)"
     exit 0
 }
 

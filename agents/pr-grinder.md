@@ -1,6 +1,6 @@
 ---
 name: pr-grinder
-description: Runs ONE round of post-PR feedback resolution — waits for checks, collects reviewer comments, applies minimal fixes, commits and pushes. Returns a structured result. Use when dispatched from the pr-grind skill, never invoked directly by the user.
+description: Runs ONE round of post-PR feedback resolution — waits for checks, collects reviewer comments, applies minimal fixes, stages changes, and emits a structured result. Commit/push is dispatcher-owned. Use when dispatched from the pr-grind skill, never invoked directly by the user.
 tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
 model: sonnet
 ---
@@ -418,11 +418,11 @@ After applying fixes (Steps 4-5):
 
 The complete RESULT block format is documented in the "Output Format" section below. If you find yourself wanting to commit (e.g., to "checkpoint progress"), STOP — the inversion exists specifically to keep commit work out of the worker.
 
-If you didn't change any files this round (no fixes needed — you're just waiting on bots), skip the commit and proceed to Step 6.5; HEAD will be unchanged and the ledger will reflect bot acks relative to the existing HEAD.
+If you didn't change any files this round (no fixes needed — you're just waiting on bots), skip `git add` and proceed directly to Step 6.5; HEAD will be unchanged and the ledger will reflect bot acks relative to the existing HEAD.
 
 ### Step 6.5a — Copilot stale-thread auto-resolve (RELOCATED to dispatcher)
 
-This step was moved to the dispatcher under the commit-ownership inversion. See `skills/pr-grind/SKILL.md` "Dispatcher commit/state-synthesis block" → `scripts/dispatcher-commit-block.sh` Step 11. The worker no longer composes the Copilot eligibility call.
+This step was moved to the dispatcher under the commit-ownership inversion (Phase 3 deliverable — not yet implemented). The worker no longer composes the Copilot eligibility call; the dispatcher will own it once the dispatcher commit/state-synthesis block lands.
 
 ### Step 6.5 — Ack-ledger fetch + per-bot invoke (advisory under inversion)
 
@@ -434,12 +434,13 @@ post-push fetch — see `skills/pr-grind/SKILL.md` dispatcher commit block. The
 worker computes Step 6.5 unconditionally for transport simplicity, but the
 non-clean values are advisory and may differ from the dispatcher's final value.
 
-Now (and ONLY now, after any commit/push has settled) compute the ledger. Computing this BEFORE Step 6 would emit acks against pre-push HEAD — defeating the whole point.
+Now (and ONLY now, after Step 6's `git add`) compute the ledger. On fix/wait paths the dispatcher will push after receiving the RESULT block, so this ack-ledger value is advisory (see authority note above); on clean paths it is authoritative.
 
 ```bash
-# HEAD_SHA reflects whatever is current after Step 6 (the new commit if you
-# pushed, or the unchanged HEAD if you didn't). Either way, this is the SHA
-# the dispatcher will gate against.
+# HEAD_SHA reflects current HEAD after Step 6's git add (the worker does not
+# commit or push — HEAD is unchanged from before this round). The dispatcher
+# will gate against the HEAD it creates post-push; this value is advisory on
+# fix/wait paths and authoritative on the clean path.
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
 
 # One-shot fetches (avoid redundant gh api calls per bot). FETCH_OK tracks
@@ -504,7 +505,6 @@ Stop the round and return `RESULT_STATUS: bail` with the appropriate `RESULT_BAI
 | Fix would require architectural changes | `judgment` | No |
 | Same flaky CI check name appears in `PRIOR_ATTEMPTS` `failures=` field for 2 prior rounds AND fails again now (3 total) | `judgment` | No |
 | Fix would require rewriting published git history — commitlint `header-max-length` on an already-pushed commit, oversized commits that need splitting via `git rebase` (interactive or otherwise), anything that needs `git commit --amend` on a pushed SHA, `git filter-branch`, or `git push --force(-with-lease)` | `judgment` | No |
-| **Local commitlint check fails on commits BASE..HEAD before push** (Step 6 pre-push pre-flight catches subject/body violations while the bad commit is still local-only — the operator can amend locally without force-pushing a published SHA) | **`judgment`** | No |
 | `gh` CLI auth or rate-limit errors that you can't resolve | `env` | No |
 | `WORKTREE_DIR` missing or unreadable | `env` | No |
 | Skipped Step 0 mandatory Read of SKILL.md | `env` | No |
@@ -521,7 +521,7 @@ The dispatcher emits three categories itself, alongside the worker's emissions:
 
 Listing `budget` and `policy` in the enum keeps the dispatcher-side surface explicit and reserves both values against accidental worker emission. Adding new bail triggers means adding a row above with an explicit category, never expanding the dispatcher's match logic to scrape narrative.
 
-**No stuck-bot bail trigger.** Earlier drafts of this contract had a bail for "same bot `stale` for 3+ rounds." That trigger is incompatible with the post-push compute timing: every round that commits/pushes emits all-`stale` (bots haven't seen the new commit yet), so a healthy 3-commit sequence would spuriously bail on every registered bot. Genuinely stuck bots are caught by the dispatcher's `--max-wait` iterations backstop instead — if bots never catch up across enough wait-rounds (where the worker returns `needs_more` with `RESULT_COMMIT_SHA=none`), the loop exhausts and bails with `max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD; latest stale: <bot-list>`. (The dispatcher previously had a single unified `--max` budget that emitted `max iterations reached`; both were replaced by the dual-budget split — see `skills/pr-grind/SKILL.md` Safety Rails for the rationale.)
+**No stuck-bot bail trigger.** Earlier drafts of this contract had a bail for "same bot `stale` for 3+ rounds." That trigger is incompatible with the commit timing: every fix round emits all-`stale` (the dispatcher commits/pushes after receiving the RESULT block, so bots haven't seen the new commit yet when Step 6.5 runs), so a healthy 3-fix sequence would spuriously bail on every registered bot. Genuinely stuck bots are caught by the dispatcher's `--max-wait` iterations backstop instead — if bots never catch up across enough wait-rounds (where the worker returns `needs_more` with `RESULT_COMMIT_SHA=none`), the loop exhausts and bails with `max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD; latest stale: <bot-list>`. (The dispatcher previously had a single unified `--max` budget that emitted `max iterations reached`; both were replaced by the dual-budget split — see `skills/pr-grind/SKILL.md` Safety Rails for the rationale.)
 
 ## On Re-fetching Each Round
 
@@ -537,7 +537,7 @@ The last lines of your final response MUST be machine-parseable tags. The dispat
 
 ```
 RESULT_STATUS: <clean | needs_more | bail>
-RESULT_COMMIT_SHA: <new SHA you pushed, or "none" if no commit>
+RESULT_COMMIT_SHA: <"none" — workers under the inversion always emit "none" here; the dispatcher fills in the actual commit SHA post-push>
 RESULT_FIXES: <one-line, comma-separated summary of what you changed this round>
 RESULT_REMAINING: <one-line summary of what's still pending, or "none">
 RESULT_REVIEWER_ACKS: <comma-separated login=value pairs from Step 6.5; always present — early-bail paths emit the all-`none` default initialized at the top of the round. Advisory on fix/wait paths (dispatcher overwrites); authoritative on clean path.>
@@ -571,8 +571,8 @@ If the dispatcher omitted `RESULT_FILE` (legacy dispatcher), use `/tmp/pr-grinde
 
 | Status | When |
 |---|---|
-| `clean` | All of: (1) zero failed required checks; (2) zero unresolved actionable comments across all four sources AFTER your push settled; (3) every registered bot in `RESULT_REVIEWER_ACKS` is either `<HEAD-short-SHA>` or `none` (no `stale` values). Verified by re-reading `gh pr checks` and recomputing the ack ledger. |
-| `needs_more` | You pushed a commit that should fix things, but either (a) checks haven't re-run yet, or (b) one or more registered bots are still `stale` in the ack ledger. Dispatcher should dispatch another round. |
+| `clean` | All of: (1) zero failed required checks; (2) zero unresolved actionable comments across all four sources; (3) every registered bot in `RESULT_REVIEWER_ACKS` is either `<HEAD-short-SHA>` or `none` (no `stale` values). Verified by re-reading `gh pr checks` and recomputing the ack ledger. Under the inversion, `RESULT_COMMIT_SHA=none` is correct here — the dispatcher will commit the staged changes and then gate on the ack ledger. |
+| `needs_more` | You staged fixes this round (`RESULT_COMMIT_SHA=none`) and the dispatcher will commit/push, OR you have no new fixes but registered bots are still `stale` in the ack ledger (wait round). Dispatcher should dispatch another round. |
 | `bail` | One of the bail triggers fired. Dispatcher surfaces to user and stops. |
 
 ## Anti-Patterns (DO NOT)
@@ -616,13 +616,13 @@ PRIOR_ATTEMPTS:
 1. Step 1: wait for all GitHub-registered checks (`gh pr checks --watch`). This blocks on **check status**, not on review submissions — a bot can flip its check green seconds before posting. By the time Step 1 returns + the 30s grace period elapses, Greptile/CodeRabbit/Copilot have typically finished posting their reviews of `8947cdd`; Cubic often hasn't yet. The ledger (Step 6.5) is the authoritative ack signal — Step 1 only gives the bots a chance to start.
 2. Step 2: fetch all four sources. Find one Cubic review-thread on `pre-merge-gate.sh:142` flagging an SC2015 shellcheck warning. Cubic posted this against an earlier SHA but it's still actionable on `8947cdd`.
 3. Step 3-5: mechanical fix (replace `A && B || C` with `if A; then B; else C; fi`), verify with shellcheck locally.
-4. Step 6: commit (`a1b2c3d`) and push.
-5. Step 6.5: compute ack ledger NOW (post-push). HEAD is `a1b2c3d`. None of the bots have had time to re-review the brand-new commit, so every entry is `stale`.
+4. Step 6: `git add pre-merge-gate.sh` — stage the fix. Do NOT commit or push; the dispatcher owns that under the inversion.
+5. Step 6.5: compute ack ledger NOW (after Step 6 staging). HEAD is still `8947cdd` (unchanged by the worker). The dispatcher will commit/push after receiving the RESULT block; bot ack values here are advisory on this fix path.
 
 **Your output (last lines):**
 ```
 RESULT_STATUS: needs_more
-RESULT_COMMIT_SHA: a1b2c3d
+RESULT_COMMIT_SHA: none
 RESULT_FIXES: replace SC2015 short-circuit with if/then/else in pre-merge-gate.sh:142
 RESULT_REMAINING: none
 RESULT_REVIEWER_ACKS: greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
@@ -630,11 +630,11 @@ RESULT_BOT_LEDGER: greptile-apps=0/1:approved,cubic-dev-ai=1/1:fixed SC2015 shor
 RESULT_ISSUES_SPAWNED: none
 ```
 
-`needs_more` is correct — even with no remaining findings, all four bots still need to re-review `a1b2c3d`. Round 4 will wait in Step 1 for them to catch up; if no new findings emerge, Step 6 will be a no-op, Step 6.5 will compute against unchanged HEAD `a1b2c3d`, every bot will show `a1b2c3d` (acked HEAD), and that round can return `clean`.
+`needs_more` is correct — the worker staged the fix but the dispatcher hasn't committed or pushed yet. `RESULT_COMMIT_SHA=none` means "no worker-side commit" (the dispatcher will create one). The dispatcher commits/pushes the staged changes, then dispatches round 4. Once bots re-review the new commit and show no new findings, round 4 can return `clean`.
 
 (Note: `RESULT_BAIL_REASON` is omitted entirely on non-bail status — the dispatcher parses by tag prefix, not fixed line count.)
 
-The dispatcher reads `needs_more`, dispatches round 4 with `PRIOR_COMMIT_SHA=a1b2c3d` and an updated `PRIOR_ATTEMPTS` list.
+The dispatcher reads `needs_more`, commits the staged changes, pushes, then dispatches round 4 with the new commit SHA as `PRIOR_COMMIT_SHA` and an updated `PRIOR_ATTEMPTS` list.
 
 ---
 

@@ -80,6 +80,47 @@ if [ "${NO_WORKTREE:-0}" = "1" ]; then
     fi
 fi
 
+# --- Routing: RESULT_STATUS validation + non-fix-round shortcuts ---
+# Known Residual #4 — the script is the single defensive entry point.
+# SKILL.md routes only fix-rounds (needs_more + staged) here, but the
+# script must self-validate: bail on unknown statuses, pass-through on
+# clean (worker acks authoritative, no recompute), refresh acks only on
+# wait-rounds (needs_more + clean index).
+emit_success_no_commit() {
+    jq -nc --arg acks "$1" \
+        '{status:"success", result_commit_sha:"none", result_reviewer_acks:$acks}'
+    exit 0
+}
+
+case "$RESULT_STATUS" in
+    clean)
+        emit_success_no_commit "${RESULT_REVIEWER_ACKS:-greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none}"
+        ;;
+    needs_more)
+        if git diff --cached --quiet 2>/dev/null; then
+            # shellcheck disable=SC1090
+            if ! . "$FETCH_PR_STATE_SCRIPT" "$PR_NUMBER" 2>/dev/null \
+                || [[ "${FETCH_OK:-0}" != "1" ]]; then
+                emit_bail "judgment" "wait-round: post-push GitHub-state fetch failed; cannot refresh acks"
+            fi
+            wait_bots=(greptile-apps cubic-dev-ai coderabbitai copilot-pull-request-reviewer)
+            export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA
+            wait_entries=()
+            for bot in "${wait_bots[@]}"; do
+                ack=$(bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")
+                wait_entries+=("${bot}=${ack}")
+            done
+            emit_success_no_commit "$(IFS=,; echo "${wait_entries[*]}")"
+        fi
+        ;;
+    bail)
+        emit_bail "judgment" "worker bail status routed through commit-block; SKILL.md should route bail directly"
+        ;;
+    *)
+        emit_bail "judgment" "unrecognized RESULT_STATUS=${RESULT_STATUS}"
+        ;;
+esac
+
 # Run dir for per-invocation artifacts (litmus output capture, etc.).
 RUN_DIR=$(mktemp -d -t dispatcher-XXXXXX) || \
     emit_bail "env" "dispatcher-commit-block: mktemp failed"

@@ -595,7 +595,22 @@ test_p_pre_dispatch_baseline() {
     echo "$result" | jq -e '.bail_category == "judgment" and (.bail_reason | contains("clean index"))' >/dev/null
 }
 
-test_q_routing_unrecognized() { todo "test_q"; }
+test_q_routing_unrecognized() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    run_dispatcher_capture unexpected_status "add test coverage"
+
+    if printf '%s\n' "$dispatcher_json" | jq -e \
+        '.bail_category == "judgment"
+         and (.bail_reason | contains("unrecognized RESULT_STATUS=unexpected_status"))' >/dev/null; then
+        return 0
+    fi
+
+    reveal_dispatcher_bug "test_q unrecognized RESULT_STATUS should bail before commit; got exit=$dispatcher_exit json=$dispatcher_json"
+}
 test_r_marker_validation() { todo "test_r"; }
 test_s_bail_envelope_roundtrip() { todo "test_s"; }
 test_t_terminal_status_preferred() { todo "test_t"; }

@@ -1,3 +1,10 @@
+## [1.41.1](https://github.com/chris-yyau/busdriver/compare/v1.41.0...v1.41.1) (2026-05-18)
+
+
+### Bug Fixes
+
+* **ack-ledger:** downgrade one-and-done COMMENTED bot to none ([#112](https://github.com/chris-yyau/busdriver/issues/112)) ([7499091](https://github.com/chris-yyau/busdriver/commit/7499091aca6e2a1e0888d811db33907dfb8620c4))
+
 # [1.41.0](https://github.com/chris-yyau/busdriver/compare/v1.40.2...v1.41.0) (2026-05-18)
 
 

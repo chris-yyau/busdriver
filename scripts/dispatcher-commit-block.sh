@@ -192,6 +192,82 @@ if [ "$MARKER_CONTENT" != "$EXPECTED_HASH" ]; then
     emit_bail "judgment" "marker/staged-diff hash mismatch (marker=$MARKER_CONTENT vs computed=$EXPECTED_HASH); marker may be stale or the staged diff was mutated post-PASS"
 fi
 
+# --- Step 6: Commit message composition + commit-type derivation ---
+POST_LITMUS_DIFF_SHA=$(git diff --cached | hash_stdin) || \
+    emit_bail "env" "failed to hash post-litmus staged diff for commit message"
+POST_LITMUS_PATHS=$(git diff --cached --name-only | sort) || \
+    emit_bail "env" "failed to list post-litmus staged paths"
+
+# Derive commit type from RESULT_FIXES without adding a protocol tag.
+RESULT_COMMIT_TYPE="fix"
+case "$RESULT_FIXES" in
+    *"add test"*|*"add tests"*|*"test coverage"*)     RESULT_COMMIT_TYPE="test" ;;
+    *"update doc"*|*"docs"*|*"comment"*|*"README"*)   RESULT_COMMIT_TYPE="docs" ;;
+    *"refactor"*|*"rename"*|*"extract"*|*"simplify"*) RESULT_COMMIT_TYPE="refactor" ;;
+    *"perf"*|*"performance"*|*"optimization"*)        RESULT_COMMIT_TYPE="perf" ;;
+    *"chore"*|*"bump"*|*"upgrade"*|*"version"*)       RESULT_COMMIT_TYPE="chore" ;;
+esac
+
+set +e
+{
+    printf '%s: address PR #%s feedback\n' "$RESULT_COMMIT_TYPE" "$PR_NUMBER"
+    printf '\n%s\n' "$RESULT_FIXES"
+    if [ "$POST_LITMUS_DIFF_SHA" != "$PRE_LITMUS_DIFF_SHA" ]; then
+        added_paths=$(comm -13 \
+            <(printf '%s\n' "$PRE_LITMUS_PATHS") \
+            <(printf '%s\n' "$POST_LITMUS_PATHS") \
+            | tr '\n' ' ' \
+            | sed 's/ $//')
+        printf '\nLitmus-Auto-Fix: %s\n' "${added_paths:-content-only-edits}"
+    fi
+} | git commit -F -
+GIT_COMMIT_EXIT=$?
+set -e
+
+if [ "$GIT_COMMIT_EXIT" != "0" ]; then
+    emit_bail "judgment" "git commit failed (exit $GIT_COMMIT_EXIT)"
+fi
+
+# --- Step 7: Pre-commit gate + post-commit hook ---
+# The repository hooks run as part of `git commit`; the post-commit hook consumes
+# the litmus marker after the pre-commit gate accepts it.
+
+# --- Step 8: Local commitlint pre-flight with missing-binary policy ---
+if command -v npx >/dev/null 2>&1 && npx --no-install commitlint --version >/dev/null 2>&1; then
+    if ! git log -1 --format=%B | npx --no-install commitlint; then
+        emit_bail "judgment" "commitlint pre-flight failed on HEAD; amend locally and re-grind"
+    fi
+else
+    if [ "${BUSDRIVER_ALLOW_NO_COMMITLINT:-0}" != "1" ]; then
+        emit_bail "env" "local commitlint unavailable; install as devDep or set BUSDRIVER_ALLOW_NO_COMMITLINT=1 to proceed"
+    fi
+fi
+
+# --- Step 9: Pre-push SHA synthesis ---
+NEW_COMMIT_SHA=$(git rev-parse HEAD) || \
+    emit_bail "env" "failed to resolve HEAD after dispatcher commit"
+RESULT_COMMIT_SHA="$NEW_COMMIT_SHA"
+
+# --- Step 10: Checked push ---
+set +e
+push_output=$(git push 2>&1)
+push_exit=$?
+set -e
+
+if [ "$push_exit" != "0" ]; then
+    case "$push_output" in
+        *Authentication*|*"could not resolve"*|*network*|*timeout*)
+            emit_bail "env" "git push auth/network: $(printf '%s\n' "$push_output" | tail -n 3)"
+            ;;
+        *non-fast-forward*|*rejected*|*history*)
+            emit_bail "judgment" "git push non-fast-forward; local commit preserved"
+            ;;
+        *)
+            emit_bail "judgment" "git push failed: $(printf '%s\n' "$push_output" | tail -n 3)"
+            ;;
+    esac
+fi
+
 # Placeholder success envelope. Task 3.10 replaces this with post-push state
 # synthesis and authoritative ack-ledger output.
 jq -nc \

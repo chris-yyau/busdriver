@@ -426,7 +426,28 @@ test_j_litmus_infra_fail() {
     assert_json "$dispatcher_json" \
         '.bail_category == "judgment" and (.bail_reason | contains("litmus exit 1 (infra_failure)"))'
 }
-test_k_push_failure() { todo "test_k"; }
+test_k_push_failure() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json before_sha after_sha
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    before_sha=$(git -C "$sandbox" rev-parse HEAD)
+    git -C "$sandbox" remote set-url origin "$sandbox/missing-remote.git"
+    run_dispatcher_capture
+    after_sha=$(git -C "$sandbox" rev-parse HEAD)
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_k expected dispatcher bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    [ "$after_sha" != "$before_sha" ] || {
+        echo "test_k expected local commit to be preserved after push failure"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment" and (.bail_reason | contains("git push failed"))'
+}
 test_l_fix_round_classifier() { todo "test_l"; }
 test_m_wait_round_classifier() { todo "test_m"; }
 test_n_clean_path_acks() { todo "test_n"; }

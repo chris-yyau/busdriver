@@ -37,7 +37,7 @@ For any non-trivial handover, save the spec to a file and hand the user a short
 1. Write the spec to `.claude/codex-goal-<slug>.md.local` (gitignored via the
    `.claude/*.local` pattern; stays out of version control).
 2. Hand the user a short `/goal` like:
-   ```
+   ```text
    Follow the instructions in .claude/codex-goal-<slug>.md.local.
 
    Branch: <expected branch>. Hard scope: EDIT ONLY <path>. STOP after <task N>.
@@ -303,7 +303,7 @@ Only run after Step 7 exits 0 (scope clean):
   ```
 
   Then dispatch the next iter with `ITER_N=$((ITER_N+1))` and a fresh `--result-file`.
-- **Red after max_iters** → report failure with last verifier outputs + suggest the user move to TUI `/goal` for longer autonomy (use the file-pointer pattern from "TUI `/goal` handoff" above if the spec is >~3 KB), or refine the spec.
+- **Red after max_iters** → report failure with last verifier outputs + suggest the user move to TUI `/goal` for longer autonomy (use the file-pointer pattern from "TUI `/goal` handoff: long-spec pattern" above if the spec is >~3 KB), or refine the spec.
 
 This is the structural defense against prompt injection from verifier output: even if Codex were steered to modify a file outside scope, the post-iter check catches it before the next iter compounds the damage. The check uses **only Python stdlib** (`json` + `fnmatch`) — no PyYAML or other third-party deps.
 
@@ -366,7 +366,7 @@ This is significantly cheaper than a naive "Claude reads full git diff each iter
 ## Related
 
 - `/codex:rescue` (OpenAI plugin) — one-shot delegation, no verifiers needed. Use when the task can't be cleanly tested.
-- `codex` TUI + `/goal` — native Ralph Loop with budget guard, pause/resume controls. Zero CC cost, no round-trip to CC. **Note:** `/goal` enforces a 4000-char input limit; long specs need the file-pointer pattern documented in "TUI `/goal` handoff" above.
+- `codex` TUI + `/goal` — native Ralph Loop with budget guard, pause/resume controls. Zero CC cost, no round-trip to CC. **Note:** `/goal` enforces a 4000-char input limit; long specs need the file-pointer pattern documented in "TUI `/goal` handoff: long-spec pattern" above.
 - `busdriver:council` — same orchestrator topology (Claude orchestrates external voices, judges between turns).
 
 ## Why this design (provenance)

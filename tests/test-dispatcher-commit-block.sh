@@ -448,7 +448,21 @@ test_k_push_failure() {
     assert_json "$dispatcher_json" \
         '.bail_category == "judgment" and (.bail_reason | contains("git push failed"))'
 }
-test_l_fix_round_classifier() { todo "test_l"; }
+test_l_fix_round_classifier() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json head_sha
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    run_dispatcher_capture
+    head_sha=$(git -C "$sandbox" rev-parse HEAD)
+
+    printf '%s\n' "$dispatcher_json" | jq -e \
+        --arg sha "$head_sha" '.status == "success" and .result_commit_sha == $sha' >/dev/null || {
+            echo "test_l expected fix-round success envelope with HEAD sha; output=$dispatcher_output"
+            return 1
+        }
+}
 test_m_wait_round_classifier() { todo "test_m"; }
 test_n_clean_path_acks() { todo "test_n"; }
 test_o_copilot_env_invocation() { todo "test_o"; }

@@ -113,12 +113,12 @@ if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; exit 0; fi
 #
 # Note: the FETCH_OK guard at the top already returns `stale` on any
 # source-fetch failure, so this block only runs on successful fetches.
-{ read -r ever_approved; read -r last_body; read -r last_state; } < <(
+{ read -r ever_approved; read -r last_state; read -r last_body; } < <(
   printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
     '[ .[] | .[] | select(.user.login == $login or .user.login == $login_bot) ]
      | ( (map(select(.state == "APPROVED" or .state == "DISMISSED" or .state == "CHANGES_REQUESTED")) | length),
-         (last | .body // ""),
-         (last | .state // "") )' 2>/dev/null \
+         (last | .state // ""),
+         (last | .body // "") )' 2>/dev/null \
   || printf '0\n\n\n'
 )
 if [ "$ever_approved" -eq 0 ]; then

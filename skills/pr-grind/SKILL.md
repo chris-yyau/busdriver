@@ -238,6 +238,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │       PR_NUMBER="$PR_NUMBER" \
   │       RESULT_STATUS="$RESULT_STATUS" \
   │       RESULT_FIXES="$RESULT_FIXES" \
+  │       RESULT_REVIEWER_ACKS="${RESULT_REVIEWER_ACKS:-}" \
   │       COPILOT_AUTO_RESOLVE="${COPILOT_AUTO_RESOLVE:-0}" \
   │       NO_WORKTREE="${NO_WORKTREE:-0}" \
   │       PRE_DISPATCH_BASELINE="${PRE_DISPATCH_BASELINE:-[]}" \

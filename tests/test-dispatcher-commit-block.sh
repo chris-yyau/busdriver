@@ -6,13 +6,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/dispatcher-commit-block.sh"
 
-todo() {
-    echo "TODO: $1 not implemented"
-    return 1
-}
-
-reveal_dispatcher_bug() {
-    echo "[reveals dispatcher bug] $1"
+fail_test() {
+    echo "FAIL: $1"
     return 1
 }
 
@@ -481,7 +476,7 @@ test_m_wait_round_classifier() {
         return 0
     fi
 
-    reveal_dispatcher_bug "test_m wait-round no-staged path should return result_commit_sha=none with refreshed acks; got exit=$dispatcher_exit json=$dispatcher_json"
+    fail_test "test_m wait-round no-staged path should return result_commit_sha=none with refreshed acks; got exit=$dispatcher_exit json=$dispatcher_json"
 }
 test_n_clean_path_acks() {
     local sandbox plugin_root shimdir remote original_dir initial_sha
@@ -503,7 +498,7 @@ test_n_clean_path_acks() {
         return 0
     fi
 
-    reveal_dispatcher_bug "test_n clean path should inherit worker RESULT_REVIEWER_ACKS without committing/recomputing; got exit=$dispatcher_exit json=$dispatcher_json"
+    fail_test "test_n clean path should inherit worker RESULT_REVIEWER_ACKS without committing/recomputing; got exit=$dispatcher_exit json=$dispatcher_json"
 }
 test_o_copilot_env_invocation() {
     local sandbox plugin_root shimdir remote original_dir initial_sha
@@ -609,7 +604,7 @@ test_q_routing_unrecognized() {
         return 0
     fi
 
-    reveal_dispatcher_bug "test_q unrecognized RESULT_STATUS should bail before commit; got exit=$dispatcher_exit json=$dispatcher_json"
+    fail_test "test_q unrecognized RESULT_STATUS should bail before commit; got exit=$dispatcher_exit json=$dispatcher_json"
 }
 test_r_marker_validation() {
     local sandbox plugin_root shimdir remote original_dir initial_sha

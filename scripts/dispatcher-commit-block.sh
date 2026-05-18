@@ -14,6 +14,10 @@
 #   NO_WORKTREE             - "1" inline / no-worktree mode
 #   PRE_DISPATCH_BASELINE   - JSON array of paths staged before worker dispatch
 #   BUSDRIVER_ALLOW_NO_COMMITLINT - "1" allows missing local commitlint
+#   RESULT_REVIEWER_ACKS    - worker-computed ack ledger; passed through on
+#                             clean-path (no recompute); required for the
+#                             defensive clean-round routing path to return
+#                             correct acks rather than the all-"none" fallback
 #
 # Outputs (stdout):
 #   Exactly one structured JSON line, either:
@@ -38,7 +42,7 @@ emit_bootstrap_bail() {
 # CLAUDE_PLUGIN_ROOT, because the missing-env contract itself is testable.
 for var in WORKTREE_DIR CLAUDE_PLUGIN_ROOT PR_NUMBER RESULT_STATUS RESULT_FIXES; do
     if [ -z "${!var:-}" ]; then
-        emit_bootstrap_bail "judgment" "dispatcher-commit-block: missing required env var $var"
+        emit_bootstrap_bail "env" "dispatcher-commit-block: missing required env var $var"
     fi
 done
 
@@ -59,7 +63,11 @@ LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 LITMUS_STATE_FILE=".claude/litmus-state.md"
 
 cd "$WORKTREE_DIR" || \
-    emit_bail "judgment" "dispatcher-commit-block: cd to WORKTREE_DIR ($WORKTREE_DIR) failed"
+    emit_bail "env" "dispatcher-commit-block: cd to WORKTREE_DIR ($WORKTREE_DIR) failed"
+
+# Single authoritative list of bots whose ack-ledger entries the dispatcher gates on.
+# Referenced by both the wait-round path and the post-push synthesis (Step 12).
+REGISTERED_ACK_BOTS=(greptile-apps cubic-dev-ai coderabbitai copilot-pull-request-reviewer)
 
 # Pre-dispatch baseline guard (NO_WORKTREE mode only).
 # Parent dispatcher must ensure `git diff --cached --quiet` before worker
@@ -94,19 +102,30 @@ emit_success_no_commit() {
 
 case "$RESULT_STATUS" in
     clean)
+        # Guard #2 from SKILL.md: clean + staged changes → BAIL judgment
+        # ("orphaned staged changes on clean round"). A worker that declared
+        # clean while leaving staged files would silently drop those changes
+        # if we proceeded to merge without committing them.
+        if ! git diff --cached --quiet 2>/dev/null; then
+            emit_bail "judgment" "worker declared clean but staged changes exist (orphaned staged changes on clean round); dispatcher cannot merge with uncommitted work"
+        fi
         emit_success_no_commit "${RESULT_REVIEWER_ACKS:-greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none}"
         ;;
     needs_more)
-        if git diff --cached --quiet 2>/dev/null; then
+        _cached_exit=0
+        git diff --cached --quiet 2>/dev/null || _cached_exit=$?
+        if [ "$_cached_exit" -gt 1 ]; then
+            emit_bail "env" "git diff --cached failed (exit $_cached_exit); cannot determine staged-index state"
+        fi
+        if [ "$_cached_exit" -eq 0 ]; then
             # shellcheck disable=SC1090
             if ! . "$FETCH_PR_STATE_SCRIPT" "$PR_NUMBER" 2>/dev/null \
                 || [[ "${FETCH_OK:-0}" != "1" ]]; then
                 emit_bail "judgment" "wait-round: post-push GitHub-state fetch failed; cannot refresh acks"
             fi
-            wait_bots=(greptile-apps cubic-dev-ai coderabbitai copilot-pull-request-reviewer)
             export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA
             wait_entries=()
-            for bot in "${wait_bots[@]}"; do
+            for bot in "${REGISTERED_ACK_BOTS[@]}"; do
                 ack=$(bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")
                 wait_entries+=("${bot}=${ack}")
             done
@@ -138,7 +157,7 @@ PRE_LITMUS_PATHS=$(git diff --cached --name-only | sort) || \
     emit_bail "env" "failed to list pre-litmus staged paths"
 
 # --- Step 3: Initialize litmus loop ---
-bash "$LITMUS_SCRIPTS/init-review-loop.sh" || \
+bash "$LITMUS_SCRIPTS/init-review-loop.sh" >/dev/null 2>&1 || \
     emit_bail "judgment" "litmus init-review-loop.sh failed"
 
 # --- Step 4: Invoke litmus (capture stdout + exit code) ---
@@ -243,7 +262,7 @@ POST_LITMUS_PATHS=$(git diff --cached --name-only | sort) || \
 RESULT_COMMIT_TYPE="fix"
 case "$RESULT_FIXES" in
     *"add test"*|*"test coverage"*)                   RESULT_COMMIT_TYPE="test" ;;
-    *"update doc"*|*"docs"*|*"comment"*|*"README"*)   RESULT_COMMIT_TYPE="docs" ;;
+    *"update doc"*|*" docs"*|*"update README"*|*"add README"*)  RESULT_COMMIT_TYPE="docs" ;;
     *"refactor"*|*"rename"*|*"extract"*|*"simplify"*) RESULT_COMMIT_TYPE="refactor" ;;
     *"perf"*|*"optimization"*)                        RESULT_COMMIT_TYPE="perf" ;;
     *"chore"*|*"bump"*|*"upgrade"*|*"version"*)       RESULT_COMMIT_TYPE="chore" ;;
@@ -261,7 +280,7 @@ set +e
             | sed 's/ $//')
         printf '\nLitmus-Auto-Fix: %s\n' "${added_paths:-content-only-edits}"
     fi
-} | git commit -F -
+} | git commit -F - >/dev/null 2>&1
 GIT_COMMIT_EXIT=$?
 set -e
 
@@ -285,7 +304,7 @@ else
 fi
 
 # --- Step 9: Pre-push SHA synthesis ---
-NEW_COMMIT_SHA=$(git rev-parse HEAD) || \
+NEW_COMMIT_SHA=$(git rev-parse HEAD | cut -c1-8) || \
     emit_bail "env" "failed to resolve HEAD after dispatcher commit"
 RESULT_COMMIT_SHA="$NEW_COMMIT_SHA"
 
@@ -390,7 +409,6 @@ if [ "${FETCH_OK:-0}" != "1" ]; then
     emit_bail "judgment" "post-push GitHub-state fetch failed; ack ledger cannot be computed"
 fi
 
-REGISTERED_ACK_BOTS=(greptile-apps cubic-dev-ai coderabbitai copilot-pull-request-reviewer)
 export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA
 
 reviewer_ack_entries=()
@@ -403,4 +421,5 @@ RESULT_REVIEWER_ACKS=$(IFS=,; echo "${reviewer_ack_entries[*]}")
 jq -nc \
     --arg sha "$RESULT_COMMIT_SHA" \
     --arg acks "$RESULT_REVIEWER_ACKS" \
-    '{status:"success", result_commit_sha:$sha, result_reviewer_acks:$acks}'
+    '{status:"success", result_commit_sha:$sha, result_reviewer_acks:$acks}' || \
+    emit_bail "env" "dispatcher-commit-block: final success-envelope jq call failed (jq binary missing or OOM)"

@@ -657,10 +657,6 @@ RESULT_REMAINING: <one-line summary of what's still pending, or "none">
 RESULT_REVIEWER_ACKS: <comma-separated login=value pairs from Step 6.5; always present — early-bail paths emit the all-`none` default initialized at the top of the round>
 RESULT_BOT_LEDGER: <comma-separated login=n_actionable/n_total:disposition entries from Step 3; always present — early-bail paths emit the all-`0/0:none` default initialized at the top of the round. Disposition prose MUST NOT contain commas — the dispatcher splits on `,` to separate entries; commas inside a disposition would silently corrupt the parse and could hide a HEAD-acked bot's `0/0` entry from the invariant-3 gate. If a fix summary needs commas, replace them with `;` or use a fixed-token disposition like `fixed`. The disposition MAY carry one or more `scope-skipped:<reason>:<count>` segments joined to the primary disposition with bare `+` and no surrounding whitespace (e.g., `coderabbitai=2/4:fixed 2+scope-skipped:schema-refactor:1+scope-skipped:external-research:1`); `+` is the inner segment separator, `,` remains the outer entry separator, and the dispatcher's Invariant 4 sums every count across all bots and rounds. Cap is INCLUSIVE: 5 dismissals are allowed, the 6th BAILs (judgment).>
 RESULT_ISSUES_SPAWNED: <comma-separated GitHub issue numbers spawned this round via the out-of-scope-acknowledged workflow, or "none">  (always present in the new contract; the dispatcher's Invariant 4 sums these across all rounds. Cap is INCLUSIVE: 3 spawned issues are allowed, the 4th BAILs (judgment))
-RESULT_STAGED_FILES: <`|`-separated paths or "none">                  (always present; pipe-delimited)
-RESULT_UNSTAGED_FILES: <`|`-separated paths or "none">                (always present; pipe-delimited)
-RESULT_STAGED_DIFF_SHA: <64-hex sha256 of staged diff content or "none">      (always present; defense-in-depth against concurrent worktree mutation between worker bail and dispatcher takeover)
-RESULT_UNSTAGED_DIFF_SHA: <64-hex sha256 of unstaged diff content or "none">  (always present; same defense-in-depth, applies when dispatcher stages unstaged paths in unstaged/both recovery modes)
 RESULT_BAIL_REASON: <only when status=bail; one-line free-form prose for human consumption — NOT used for control flow>
 RESULT_BAIL_CATEGORY: <only when status=bail; structured enum: judgment | env | budget | policy. Worker emits judgment/env; budget and policy are dispatcher-emitted only (see "The dispatcher emits three categories" prose above for the dispatcher-emit rationale).>
 ```
@@ -676,10 +672,6 @@ RESULT_REMAINING: ...
 RESULT_REVIEWER_ACKS: ...
 RESULT_BOT_LEDGER: ...
 RESULT_ISSUES_SPAWNED: ...
-RESULT_STAGED_FILES: ...
-RESULT_UNSTAGED_FILES: ...
-RESULT_STAGED_DIFF_SHA: ...
-RESULT_UNSTAGED_DIFF_SHA: ...
 EOF
 ```
 
@@ -750,10 +742,6 @@ RESULT_REMAINING: none
 RESULT_REVIEWER_ACKS: greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
 RESULT_BOT_LEDGER: greptile-apps=0/1:approved,cubic-dev-ai=1/1:fixed SC2015 short-circuit,coderabbitai=0/0:none,copilot-pull-request-reviewer=0/1:no-findings,codescene-delta-analysis=0/0:none
 RESULT_ISSUES_SPAWNED: none
-RESULT_STAGED_FILES: none
-RESULT_UNSTAGED_FILES: none
-RESULT_STAGED_DIFF_SHA: none
-RESULT_UNSTAGED_DIFF_SHA: none
 ```
 
 `needs_more` is correct — even with no remaining findings, all four bots still need to re-review `a1b2c3d`. Round 4 will wait in Step 1 for them to catch up; if no new findings emerge, Step 6 will be a no-op, Step 6.5 will compute against unchanged HEAD `a1b2c3d`, every bot will show `a1b2c3d` (acked HEAD), and that round can return `clean`.

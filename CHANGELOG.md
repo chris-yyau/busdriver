@@ -1,3 +1,10 @@
+# [1.41.0](https://github.com/chris-yyau/busdriver/compare/v1.40.2...v1.41.0) (2026-05-18)
+
+
+### Features
+
+* **pr-grind:** commit-ownership inversion — Phase 2-6 + routing fix ([#111](https://github.com/chris-yyau/busdriver/issues/111)) ([153bb6b](https://github.com/chris-yyau/busdriver/commit/153bb6bfcac23fc1bf2dd38a24c4aee594e5bca2)), closes [#4](https://github.com/chris-yyau/busdriver/issues/4) [#1](https://github.com/chris-yyau/busdriver/issues/1) [#2](https://github.com/chris-yyau/busdriver/issues/2)
+
 ## [1.40.2](https://github.com/chris-yyau/busdriver/compare/v1.40.1...v1.40.2) (2026-05-17)
 
 

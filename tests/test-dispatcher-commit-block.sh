@@ -241,7 +241,22 @@ EOF
         return 1
     }
 }
-test_b_litmus_fail_to_pass() { todo "test_b"; }
+test_b_litmus_fail_to_pass() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    litmus_mode=review_findings
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_b expected dispatcher bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment" and (.bail_reason | contains("review_findings"))'
+}
 test_c_marker_consumed() { todo "test_c"; }
 test_d_commitlint_bails() { todo "test_d"; }
 test_e_autofix_trailer_inplace() { todo "test_e"; }

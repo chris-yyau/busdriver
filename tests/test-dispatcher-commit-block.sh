@@ -636,7 +636,26 @@ test_r_marker_validation() {
         assert_json "$dispatcher_json" \
             '.bail_category == "judgment" and (.bail_reason | contains("not a valid 64-char SHA-256"))'
 }
-test_s_bail_envelope_roundtrip() { todo "test_s"; }
+test_s_bail_envelope_roundtrip() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode bail_json empty_json
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    litmus_mode=review_findings
+    run_dispatcher_capture
+
+    # shellcheck source=/dev/null
+    . "$REPO_ROOT/scripts/lib/bail-envelope.sh"
+    bail_json=$(printf '%s\n' "$dispatcher_output" | parse_bail_envelope)
+    empty_json=$(printf '%s\n' 'no envelope here' | parse_bail_envelope)
+
+    [ "$dispatcher_exit" -eq 1 ] &&
+        [ "$bail_json" = "$dispatcher_json" ] &&
+        [ -z "$empty_json" ] &&
+        assert_json "$bail_json" \
+            '.bail_category == "judgment" and (.bail_reason | contains("review_findings"))'
+}
 test_t_terminal_status_preferred() { todo "test_t"; }
 
 failed=0

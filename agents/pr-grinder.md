@@ -152,7 +152,7 @@ The earlier guidance "the GraphQL `isResolved == false AND isOutdated == false` 
 
 ### Step 2.5 — Reviewer ack-ledger registry (conceptual)
 
-The actual ack-ledger compute happens in **Step 6.5**, AFTER any commit/push, so that the emitted ledger reflects bot acknowledgements relative to the SHA the dispatcher will gate against. This sub-step defines WHICH bots are tracked; the compute itself is post-push.
+The actual ack-ledger compute happens in **Step 6.5**, AFTER Step 6's `git add`, so that the emitted ledger reflects bot acknowledgements relative to the current HEAD. This sub-step defines WHICH bots are tracked; the compute itself runs after staging (the worker never commits or pushes — the dispatcher owns that).
 
 **Registry of bots whose ack we gate on:**
 
@@ -563,7 +563,7 @@ EOF
 
 Append `RESULT_BAIL_REASON` and `RESULT_BAIL_CATEGORY` to BOTH file and stdout when (and only when) `RESULT_STATUS=bail`. Both file and stdout must agree.
 
-Then emit the same lines on stdout as the final lines of your response. Include `RESULT_BAIL_REASON` in both the file and stdout when (and only when) `RESULT_STATUS: bail`.
+Then emit the same lines on stdout as the final lines of your response. Include both `RESULT_BAIL_REASON` and `RESULT_BAIL_CATEGORY` in both the file and stdout when (and only when) `RESULT_STATUS: bail`.
 
 If the dispatcher omitted `RESULT_FILE` (legacy dispatcher), use `/tmp/pr-grinder-result-${PR_NUMBER}.txt` AND `rm -f` it at the very start of your round before any other work — the wipe-then-write pattern keeps cross-round leftovers from being picked up as stale data. The contract sites in the SKILL.md call out the same fallback.
 
@@ -571,7 +571,7 @@ If the dispatcher omitted `RESULT_FILE` (legacy dispatcher), use `/tmp/pr-grinde
 
 | Status | When |
 |---|---|
-| `clean` | All of: (1) zero failed required checks; (2) zero unresolved actionable comments across all four sources; (3) every registered bot in `RESULT_REVIEWER_ACKS` is either `<HEAD-short-SHA>` or `none` (no `stale` values). Verified by re-reading `gh pr checks` and recomputing the ack ledger. Under the inversion, `RESULT_COMMIT_SHA=none` is correct here — the dispatcher will commit the staged changes and then gate on the ack ledger. |
+| `clean` | All of: (1) zero failed required checks; (2) zero unresolved actionable comments across all four sources; (3) every registered bot in `RESULT_REVIEWER_ACKS` is either `<HEAD-short-SHA>` or `none` (no `stale` values). Verified by re-reading `gh pr checks` and recomputing the ack ledger. Under the inversion, `RESULT_COMMIT_SHA=none` is correct here — there are no staged changes on a clean round; the dispatcher gates on the ack ledger and merges. |
 | `needs_more` | You staged fixes this round (`RESULT_COMMIT_SHA=none`) and the dispatcher will commit/push, OR you have no new fixes but registered bots are still `stale` in the ack ledger (wait round). Dispatcher should dispatch another round. |
 | `bail` | One of the bail triggers fired. Dispatcher surfaces to user and stops. |
 

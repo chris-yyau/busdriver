@@ -344,93 +344,142 @@ if [ "$push_exit" != "0" ]; then
 fi
 
 # --- Step 11: Copilot stale-thread auto-resolve ---
+# Post-push: failures here must NOT bail — the commit is already on the remote.
+# Any error skips Copilot resolve with a stderr warning and continues to Step 12.
 if [ "${COPILOT_AUTO_RESOLVE:-0}" = "1" ]; then
-    nwo=$(gh repo view --json nameWithOwner -q '.nameWithOwner') || \
-        emit_bail "judgment" "Copilot auto-resolve: gh repo view failed"
-    owner="${nwo%/*}"
-    name="${nwo#*/}"
+    _copilot_ok=1
+    nwo=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null) || {
+        printf 'warning: Copilot auto-resolve: gh repo view failed; skipping Copilot resolve\n' >&2
+        _copilot_ok=0
+    }
 
-    # shellcheck disable=SC2016
-    COPILOT_FETCH=$(gh api graphql \
-        -F number="$PR_NUMBER" -F owner="$owner" -F name="$name" \
-        -f query='query($number:Int!,$owner:String!,$name:String!){
-            repository(owner:$owner,name:$name){
-              pullRequest(number:$number){
-                baseRefOid
-                reviews(first:100){nodes{author{login} commit{oid}}}
-                reviewThreads(first:100){nodes{id isResolved isOutdated path line comments(first:1){nodes{author{login}}}}}
-              }
-            }
-          }' 2>/dev/null) || emit_bail "judgment" "Copilot GraphQL fetch failed"
+    if [ "$_copilot_ok" = "1" ]; then
+        owner="${nwo%/*}"
+        name="${nwo#*/}"
 
-    COPILOT_COMMIT_ID=$(printf '%s' "$COPILOT_FETCH" | jq -r '
-        [.data.repository.pullRequest.reviews.nodes[]
-         | select(.author.login == "copilot-pull-request-reviewer"
-               or .author.login == "copilot-pull-request-reviewer[bot]")]
-        | last | .commit.oid // empty') || \
-        emit_bail "judgment" "Copilot review commit extraction failed"
-
-    if [ -n "$COPILOT_COMMIT_ID" ] && ! git merge-base --is-ancestor "$COPILOT_COMMIT_ID" HEAD 2>/dev/null; then
-        FORCE_PUSH_DETECTED=1
-    else
-        FORCE_PUSH_DETECTED=0
-    fi
-    export FORCE_PUSH_DETECTED RESULT_FIXES RESULT_COMMIT_SHA
-
-    COPILOT_THREADS_JSON=$(printf '%s' "$COPILOT_FETCH" | jq -c '
-        [.data.repository.pullRequest.reviewThreads.nodes[]
-         | select(.comments.nodes[0].author.login == "copilot-pull-request-reviewer"
-               or .comments.nodes[0].author.login == "copilot-pull-request-reviewer[bot]")
-         | select(.isResolved == false and .isOutdated == false)
-         | {threadId: .id, path: .path, line: .line}]') || \
-        emit_bail "judgment" "Copilot thread extraction failed"
-    export COPILOT_THREADS_JSON
-
-    BASE_OID=$(printf '%s' "$COPILOT_FETCH" | jq -r '.data.repository.pullRequest.baseRefOid // empty') || \
-        emit_bail "judgment" "Copilot base OID extraction failed"
-    if [ -z "$BASE_OID" ]; then
-        emit_bail "judgment" "Copilot base OID missing from GraphQL response"
+        # shellcheck disable=SC2016
+        COPILOT_FETCH=$(gh api graphql \
+            -F number="$PR_NUMBER" -F owner="$owner" -F name="$name" \
+            -f query='query($number:Int!,$owner:String!,$name:String!){
+                repository(owner:$owner,name:$name){
+                  pullRequest(number:$number){
+                    baseRefOid
+                    reviews(first:100){nodes{author{login} commit{oid}}}
+                    reviewThreads(first:100){nodes{id isResolved isOutdated path line comments(first:1){nodes{author{login}}}}}
+                  }
+                }
+              }' 2>/dev/null) || {
+            printf 'warning: Copilot GraphQL fetch failed; skipping Copilot resolve\n' >&2
+            _copilot_ok=0
+        }
     fi
 
-    HEAD_TOUCHED_LINES_JSON=$(git diff "$BASE_OID..HEAD" -U0 2>/dev/null | python3 "$HUNK_PARSER") || \
-        emit_bail "judgment" "Copilot touched-line parsing failed"
-    export HEAD_TOUCHED_LINES_JSON
+    if [ "$_copilot_ok" = "1" ]; then
+        COPILOT_COMMIT_ID=$(printf '%s' "$COPILOT_FETCH" | jq -r '
+            [.data.repository.pullRequest.reviews.nodes[]
+             | select(.author.login == "copilot-pull-request-reviewer"
+                   or .author.login == "copilot-pull-request-reviewer[bot]")]
+            | last | .commit.oid // empty' 2>/dev/null) || {
+            printf 'warning: Copilot review commit extraction failed; skipping Copilot resolve\n' >&2
+            _copilot_ok=0
+        }
+    fi
 
-    ELIG_JSON=$(bash "$COPILOT_ELIG_SCRIPT") || \
-        emit_bail "judgment" "Copilot eligibility helper failed"
-    if [ "$(printf '%s' "$ELIG_JSON" | jq -r '.decision')" = "resolve" ]; then
-        while IFS= read -r thread; do
-            tid=$(printf '%s' "$thread" | jq -r '.threadId') || \
-                emit_bail "judgment" "Copilot thread id extraction failed"
-            # shellcheck disable=SC2016
-            gh api graphql -F threadId="$tid" -F body="Addressed in $NEW_COMMIT_SHA" \
-                -f query='mutation($threadId:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId,body:$body}){comment{id}}}' >/dev/null || \
-                emit_bail "judgment" "Copilot thread reply failed"
-            # shellcheck disable=SC2016
-            gh api graphql -F threadId="$tid" \
-                -f query='mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id}}}' >/dev/null || \
-                emit_bail "judgment" "Copilot thread resolve failed"
-        done < <(printf '%s' "$COPILOT_THREADS_JSON" | jq -c '.[]')
+    if [ "$_copilot_ok" = "1" ]; then
+        if [ -n "$COPILOT_COMMIT_ID" ] && ! git merge-base --is-ancestor "$COPILOT_COMMIT_ID" HEAD 2>/dev/null; then
+            FORCE_PUSH_DETECTED=1
+        else
+            FORCE_PUSH_DETECTED=0
+        fi
+        export FORCE_PUSH_DETECTED RESULT_FIXES RESULT_COMMIT_SHA
+
+        COPILOT_THREADS_JSON=$(printf '%s' "$COPILOT_FETCH" | jq -c '
+            [.data.repository.pullRequest.reviewThreads.nodes[]
+             | select(.comments.nodes[0].author.login == "copilot-pull-request-reviewer"
+                   or .comments.nodes[0].author.login == "copilot-pull-request-reviewer[bot]")
+             | select(.isResolved == false and .isOutdated == false)
+             | {threadId: .id, path: .path, line: .line}]' 2>/dev/null) || {
+            printf 'warning: Copilot thread extraction failed; skipping Copilot resolve\n' >&2
+            _copilot_ok=0
+        }
+    fi
+
+    if [ "$_copilot_ok" = "1" ]; then
+        export COPILOT_THREADS_JSON
+
+        BASE_OID=$(printf '%s' "$COPILOT_FETCH" | jq -r '.data.repository.pullRequest.baseRefOid // empty' 2>/dev/null) || {
+            printf 'warning: Copilot base OID extraction failed; skipping Copilot resolve\n' >&2
+            _copilot_ok=0
+        }
+        if [ "$_copilot_ok" = "1" ] && [ -z "$BASE_OID" ]; then
+            printf 'warning: Copilot base OID missing from GraphQL response; skipping Copilot resolve\n' >&2
+            _copilot_ok=0
+        fi
+    fi
+
+    if [ "$_copilot_ok" = "1" ]; then
+        HEAD_TOUCHED_LINES_JSON=$(git diff "$BASE_OID..HEAD" -U0 2>/dev/null | python3 "$HUNK_PARSER" 2>/dev/null) || {
+            printf 'warning: Copilot touched-line parsing failed; skipping Copilot resolve\n' >&2
+            _copilot_ok=0
+        }
+        export HEAD_TOUCHED_LINES_JSON
+
+        ELIG_JSON=$(bash "$COPILOT_ELIG_SCRIPT" 2>/dev/null) || {
+            printf 'warning: Copilot eligibility helper failed; skipping Copilot resolve\n' >&2
+            _copilot_ok=0
+        }
+    fi
+
+    if [ "$_copilot_ok" = "1" ]; then
+        if [ "$(printf '%s' "$ELIG_JSON" | jq -r '.decision' 2>/dev/null)" = "resolve" ]; then
+            while IFS= read -r thread; do
+                tid=$(printf '%s' "$thread" | jq -r '.threadId' 2>/dev/null) || {
+                    printf 'warning: Copilot thread id extraction failed; skipping thread\n' >&2
+                    continue
+                }
+                # shellcheck disable=SC2016
+                gh api graphql -F threadId="$tid" -F body="Addressed in $NEW_COMMIT_SHA" \
+                    -f query='mutation($threadId:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId,body:$body}){comment{id}}}' >/dev/null 2>&1 || \
+                    printf 'warning: Copilot thread reply failed for %s; continuing\n' "$tid" >&2
+                # shellcheck disable=SC2016
+                gh api graphql -F threadId="$tid" \
+                    -f query='mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id}}}' >/dev/null 2>&1 || \
+                    printf 'warning: Copilot thread resolve failed for %s; continuing\n' "$tid" >&2
+            done < <(printf '%s' "$COPILOT_THREADS_JSON" | jq -c '.[]')
+        fi
     fi
 fi
 
 # --- Step 12: Post-push GitHub state synthesis ---
+# Post-push: the commit is already on the remote. Failures here must NOT bail —
+# doing so would emit a bail envelope after a successful push, breaking the
+# "exactly one JSON line" invariant. Instead, degrade gracefully to all-stale
+# acks and emit a success envelope. The dispatcher's next round will recompute.
+_fetch_ok=0
 # shellcheck disable=SC1090
-if ! . "$FETCH_PR_STATE_SCRIPT" "$PR_NUMBER"; then
-    emit_bail "judgment" "post-push GitHub-state helper failed"
+if . "$FETCH_PR_STATE_SCRIPT" "$PR_NUMBER" 2>/dev/null; then
+    if [ "${FETCH_OK:-0}" = "1" ]; then
+        _fetch_ok=1
+    else
+        printf 'warning: post-push GitHub-state fetch completed but FETCH_OK!=1; degrading to stale acks\n' >&2
+    fi
+else
+    printf 'warning: post-push GitHub-state helper failed; degrading to stale acks\n' >&2
 fi
-
-if [ "${FETCH_OK:-0}" != "1" ]; then
-    emit_bail "judgment" "post-push GitHub-state fetch failed; ack ledger cannot be computed"
-fi
-
-export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA
 
 reviewer_ack_entries=()
-for bot in "${REGISTERED_ACK_BOTS[@]}"; do
-    ack=$(bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")
-    reviewer_ack_entries+=("${bot}=${ack}")
-done
+if [ "$_fetch_ok" = "1" ]; then
+    export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA
+    for bot in "${REGISTERED_ACK_BOTS[@]}"; do
+        ack=$(bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")
+        reviewer_ack_entries+=("${bot}=${ack}")
+    done
+else
+    # Degrade to all-stale: the dispatcher will retry ack computation next round.
+    for bot in "${REGISTERED_ACK_BOTS[@]}"; do
+        reviewer_ack_entries+=("${bot}=stale")
+    done
+fi
 RESULT_REVIEWER_ACKS=$(IFS=,; echo "${reviewer_ack_entries[*]}")
 
 jq -nc \

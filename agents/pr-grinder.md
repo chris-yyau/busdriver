@@ -424,7 +424,15 @@ If you didn't change any files this round (no fixes needed — you're just waiti
 
 This step was moved to the dispatcher under the commit-ownership inversion. See `skills/pr-grind/SKILL.md` "Dispatcher commit/state-synthesis block" → `scripts/dispatcher-commit-block.sh` Step 11. The worker no longer composes the Copilot eligibility call.
 
-### Step 6.5 — Compute the reviewer ack ledger (post-push)
+### Step 6.5 — Ack-ledger fetch + per-bot invoke (advisory under inversion)
+
+**Authority note (post-inversion):** the worker's ack-ledger output is
+**authoritative only for the clean-round path** (worker emits `RESULT_STATUS=clean`
+with no staged changes, headed straight to merge). On fix-round and wait-round
+paths the dispatcher overwrites `RESULT_REVIEWER_ACKS` via its own Step 12
+post-push fetch — see `skills/pr-grind/SKILL.md` dispatcher commit block. The
+worker computes Step 6.5 unconditionally for transport simplicity, but the
+non-clean values are advisory and may differ from the dispatcher's final value.
 
 Now (and ONLY now, after any commit/push has settled) compute the ledger. Computing this BEFORE Step 6 would emit acks against pre-push HEAD — defeating the whole point.
 
@@ -532,7 +540,7 @@ RESULT_STATUS: <clean | needs_more | bail>
 RESULT_COMMIT_SHA: <new SHA you pushed, or "none" if no commit>
 RESULT_FIXES: <one-line, comma-separated summary of what you changed this round>
 RESULT_REMAINING: <one-line summary of what's still pending, or "none">
-RESULT_REVIEWER_ACKS: <comma-separated login=value pairs from Step 6.5; always present — early-bail paths emit the all-`none` default initialized at the top of the round>
+RESULT_REVIEWER_ACKS: <comma-separated login=value pairs from Step 6.5; always present — early-bail paths emit the all-`none` default initialized at the top of the round. Advisory on fix/wait paths (dispatcher overwrites); authoritative on clean path.>
 RESULT_BOT_LEDGER: <comma-separated login=n_actionable/n_total:disposition entries from Step 3; always present — early-bail paths emit the all-`0/0:none` default initialized at the top of the round. Disposition prose MUST NOT contain commas — the dispatcher splits on `,` to separate entries; commas inside a disposition would silently corrupt the parse and could hide a HEAD-acked bot's `0/0` entry from the invariant-3 gate. If a fix summary needs commas, replace them with `;` or use a fixed-token disposition like `fixed`. The disposition MAY carry one or more `scope-skipped:<reason>:<count>` segments joined to the primary disposition with bare `+` and no surrounding whitespace (e.g., `coderabbitai=2/4:fixed 2+scope-skipped:schema-refactor:1+scope-skipped:external-research:1`); `+` is the inner segment separator, `,` remains the outer entry separator, and the dispatcher's Invariant 4 sums every count across all bots and rounds. Cap is INCLUSIVE: 5 dismissals are allowed, the 6th BAILs (judgment).>
 RESULT_ISSUES_SPAWNED: <comma-separated GitHub issue numbers spawned this round via the out-of-scope-acknowledged workflow, or "none">  (always present in the new contract; the dispatcher's Invariant 4 sums these across all rounds. Cap is INCLUSIVE: 3 spawned issues are allowed, the 4th BAILs (judgment))
 RESULT_BAIL_REASON: <only when status=bail; one-line free-form prose for human consumption — NOT used for control flow>

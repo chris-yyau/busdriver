@@ -505,7 +505,72 @@ test_n_clean_path_acks() {
 
     reveal_dispatcher_bug "test_n clean path should inherit worker RESULT_REVIEWER_ACKS without committing/recomputing; got exit=$dispatcher_exit json=$dispatcher_json"
 }
-test_o_copilot_env_invocation() { todo "test_o"; }
+test_o_copilot_env_invocation() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json copilot_auto_resolve
+    local copilot_fetch_json gh_event_log
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    gh_event_log="$sandbox/gh-events.log"
+    copilot_fetch_json=$(jq -nc \
+        --arg base "$initial_sha" \
+        --arg stale "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" \
+        '{
+            data: {repository: {pullRequest: {
+                baseRefOid: $base,
+                reviews: {nodes: [{author: {login: "copilot-pull-request-reviewer"}, commit: {oid: $stale}}]},
+                reviewThreads: {nodes: [{
+                    id: "thread1",
+                    isResolved: false,
+                    isOutdated: false,
+                    path: "file.txt",
+                    line: 1,
+                    comments: {nodes: [{author: {login: "copilot-pull-request-reviewer"}}]}
+                }]}
+            }}}
+        }')
+    cat > "$shimdir/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${GH_EVENT_LOG:-/dev/null}"
+
+if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then
+    printf 'owner/repo\n'
+    exit 0
+fi
+
+if [ "${1:-}" = "api" ] && [ "${2:-}" = "graphql" ]; then
+    args="$*"
+    case "$args" in
+        *addPullRequestReviewThreadReply*)
+            printf '{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"comment1"}}}}\n'
+            ;;
+        *resolveReviewThread*)
+            printf '{"data":{"resolveReviewThread":{"thread":{"id":"thread1"}}}}\n'
+            ;;
+        *)
+            printf '%s\n' "$COPILOT_FETCH_JSON"
+            ;;
+    esac
+    exit 0
+fi
+
+printf 'unexpected gh call: %s\n' "$*" >&2
+exit 1
+EOF
+    chmod +x "$shimdir/gh"
+
+    copilot_auto_resolve=1
+    run_dispatcher_capture
+
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_o dispatcher output: $dispatcher_output"
+        return 1
+    }
+    grep -q 'addPullRequestReviewThreadReply' "$gh_event_log" &&
+        grep -q 'resolveReviewThread' "$gh_event_log"
+}
 
 test_p_pre_dispatch_baseline() {
     local sandbox

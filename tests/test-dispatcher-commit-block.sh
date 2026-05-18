@@ -213,10 +213,15 @@ run_dispatcher() {
 }
 
 # t1: missing required env -> bail with env (not judgment; missing vars are env failures).
+# Also assert exit code == 1 (bail envelope contract; 0 is success envelope only).
+t1_exit=0
 # shellcheck disable=SC2310  # || true is the intentional exit-code capture pattern
 result=$(WORKTREE_DIR="" CLAUDE_PLUGIN_ROOT="" PR_NUMBER="" RESULT_STATUS="" RESULT_FIXES="" run_dispatcher || true)
-echo "$result" | jq -e '.bail_category == "env"' >/dev/null \
-    || { echo "FAIL t1: $result"; exit 1; }
+# shellcheck disable=SC2310
+WORKTREE_DIR="" CLAUDE_PLUGIN_ROOT="" PR_NUMBER="" RESULT_STATUS="" RESULT_FIXES="" \
+    bash "$SCRIPT" >/dev/null 2>&1 || t1_exit=$?
+{ echo "$result" | jq -e '.bail_category == "env"' >/dev/null && [ "$t1_exit" -eq 1 ]; } \
+    || { echo "FAIL t1: exit=$t1_exit result=$result"; exit 1; }
 
 test_a_litmus_before_commit() {
     local sandbox plugin_root shimdir remote original_dir initial_sha
@@ -512,6 +517,31 @@ test_n_clean_path_acks() {
     fi
 
     fail_test "test_n clean path should inherit worker RESULT_REVIEWER_ACKS without committing/recomputing; got exit=$dispatcher_exit json=$dispatcher_json"
+}
+test_n2_clean_path_missing_acks_bails() {
+    # Negative: clean + RESULT_REVIEWER_ACKS absent -> dispatcher must bail (judgment),
+    # not silently synthesise all-"none" defaults and declare success.
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    git -C "$sandbox" commit --no-gpg-sign -qm "consume staged fixture"
+    git -C "$sandbox" push -q
+
+    # Invoke clean path WITHOUT setting result_reviewer_acks (variable unset so
+    # run_dispatcher_capture omits the env var entirely — simulates worker that
+    # emitted RESULT_STATUS=clean but omitted RESULT_REVIEWER_ACKS).
+    unset result_reviewer_acks
+    run_dispatcher_capture clean "none"
+
+    if [ "$dispatcher_exit" -eq 1 ] && \
+        printf '%s\n' "$dispatcher_json" | jq -e \
+            '.bail_category == "judgment" and (.bail_reason | contains("RESULT_REVIEWER_ACKS"))' >/dev/null; then
+        return 0
+    fi
+
+    fail_test "test_n2 clean path with missing RESULT_REVIEWER_ACKS should bail judgment; got exit=$dispatcher_exit json=$dispatcher_json"
 }
 test_o_copilot_env_invocation() {
     local sandbox plugin_root shimdir remote original_dir initial_sha

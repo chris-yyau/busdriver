@@ -191,6 +191,7 @@ run_dispatcher_capture() {
     if [ -n "${copilot_fetch_json+x}" ]; then env_args+=("COPILOT_FETCH_JSON=$copilot_fetch_json"); fi
     if [ -n "${gh_event_log+x}" ]; then env_args+=("GH_EVENT_LOG=$gh_event_log"); fi
     if [ -n "${dispatcher_event_log+x}" ]; then env_args+=("DISPATCHER_EVENT_LOG=$dispatcher_event_log"); fi
+    if [ -n "${result_reviewer_acks+x}" ]; then env_args+=("RESULT_REVIEWER_ACKS=$result_reviewer_acks"); fi
 
     set +e
     dispatcher_output=$(env "${env_args[@]}" bash "$SCRIPT" 2>&1)
@@ -482,7 +483,28 @@ test_m_wait_round_classifier() {
 
     reveal_dispatcher_bug "test_m wait-round no-staged path should return result_commit_sha=none with refreshed acks; got exit=$dispatcher_exit json=$dispatcher_json"
 }
-test_n_clean_path_acks() { todo "test_n"; }
+test_n_clean_path_acks() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json before_sha after_sha
+    local result_reviewer_acks
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    git -C "$sandbox" commit --no-gpg-sign -qm "consume staged fixture"
+    git -C "$sandbox" push -q
+    before_sha=$(git -C "$sandbox" rev-parse HEAD)
+    result_reviewer_acks='greptile-apps=abc12345,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none'
+    run_dispatcher_capture clean "none"
+    after_sha=$(git -C "$sandbox" rev-parse HEAD)
+
+    if printf '%s\n' "$dispatcher_json" | jq -e \
+        --arg acks "$result_reviewer_acks" '.status == "success" and .result_reviewer_acks == $acks' >/dev/null &&
+        [ "$after_sha" = "$before_sha" ]; then
+        return 0
+    fi
+
+    reveal_dispatcher_bug "test_n clean path should inherit worker RESULT_REVIEWER_ACKS without committing/recomputing; got exit=$dispatcher_exit json=$dispatcher_json"
+}
 test_o_copilot_env_invocation() { todo "test_o"; }
 
 test_p_pre_dispatch_baseline() {

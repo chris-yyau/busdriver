@@ -21,7 +21,7 @@ The dispatcher passes you a context block containing:
 - `PRIOR_ATTEMPTS` — per-round bullet list. Each entry has the form `Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): fixes=<one-line summary>; failures=<comma-separated failed-check-names or "none">; acks=<reviewer-ack-list>`. The parenthesized `fix=…/MAX_FIX, wait=…/MAX_WAIT` segment surfaces dispatcher budget pressure so you can triage knowing how close the loop is to bailing on either budget. **Anchor your parsing on `failures=` and `acks=` substrings, NOT on the `Round N:` prefix** — older worker contracts assumed the prefix shape; the new parenthetical breaks anchored parsers, but substring-anchored parsers are robust. Use `failures=` to detect a recurring flaky check across rounds (3+ rounds → bail; see Bail Triggers). `acks=` is preserved for diagnostics and human review of the loop transcript — there is no stuck-bot bail trigger; genuinely stuck bots fall out via the dispatcher's `--max-wait` iterations backstop (wait-rounds, where `RESULT_COMMIT_SHA=none`, count specifically against `--max-wait`).
 - `PRIOR_REVIEWER_ACKS` — last round's ack ledger as a comma-separated list of `<login>=<value>` pairs, e.g. `greptile-apps=b4451902,coderabbitai=none,cubic-dev-ai=stale`. Values: short SHA (acked that commit), `none` (either never posted on this PR, OR the bot's only reviews are infra-error/rate-limit markers and it has never APPROVED — see Step 6.5's downgrade rule), or `stale` (posted a real review on an older commit and is expected to re-review HEAD). On round 1, `none` for every registered bot. See Step 2.5 (registry/concept) and Step 6.5 (compute) below.
 - `RESULT_FILE` — the absolute path the dispatcher allocated for this round's RESULT-block backup file (per the belt-and-suspenders contract under "Output Format"). Always present; the dispatcher generates a unique nonce per dispatch attempt so cross-round and cross-session leftovers can never be picked up as stale data. If the context block omits `RESULT_FILE` (older dispatcher versions), fall back to `/tmp/pr-grinder-result-${PR_NUMBER}.txt` AND `rm -f` it at the very start of your round before any other work — that wipe is what protects you from cross-round staleness in the legacy path.
-- `COPILOT_AUTO_RESOLVE` — `1` when the operator passed `--copilot-auto-resolve` to pr-grind, otherwise `0` or omitted (treat omitted as `0`). When `1`, run Step 6.5a (Copilot stale-thread auto-resolve) per the three-precondition contract. When `0` or omitted, skip Step 6.5a entirely. The flag is off by default; see `skills/pr-grind/SKILL.md` Arguments table for the rationale (test fixtures 5–7 stabilization).
+- `COPILOT_AUTO_RESOLVE` — dispatcher-owned flag for the relocated Copilot stale-thread auto-resolve flow. The worker no longer composes the eligibility call; see Step 6.5a.
 
 ## Your Single Round
 
@@ -34,7 +34,6 @@ The dispatcher passes you a context block containing:
 ```bash
 ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none"
 BOT_LEDGER="greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=0/0:none,copilot-pull-request-reviewer=0/0:none,codescene-delta-analysis=0/0:none"
-INFLIGHT_CHANGES="none"
 SPAWNED_ISSUES=()       # accumulator for out-of-scope-acknowledged spawn flow (Step 3);
                         # joined to RESULT_ISSUES_SPAWNED at round end (or "none" if empty)
 ```
@@ -43,14 +42,9 @@ If you bail before Step 6.5 (the real ack-ledger compute) or before Step 2.6 (th
 
 - `$ACKS` as `RESULT_REVIEWER_ACKS`
 - `$BOT_LEDGER` as `RESULT_BOT_LEDGER`
-- `$INFLIGHT_CHANGES` as `RESULT_INFLIGHT_CHANGES`
-- `RESULT_ISSUES_SPAWNED` — emission is conditional on whether Step 3 has populated `SPAWNED_ISSUES`. On bails BEFORE Step 3 (the only place `SPAWNED_ISSUES` gets appended) the array is empty; emit the literal `"none"` sentinel (an empty `,`-join produces the empty string, which the dispatcher's parser rejects). On bails AFTER Step 3 (e.g., a tooling bail from Step 6 after one or more out-of-scope-acknowledged dismissals have already been recorded), emit the comma-joined array per the round-end contract — dropping it to `"none"` here would lose the spawned-issue numbers that Invariant 4's cumulative counter depends on. Concretely: `if [ ${#SPAWNED_ISSUES[@]} -eq 0 ]; then ISSUES_SPAWNED=none; else IFS=,; ISSUES_SPAWNED="${SPAWNED_ISSUES[*]}"; unset IFS; fi`.
+- `RESULT_ISSUES_SPAWNED` — emission is conditional on whether Step 3 has populated `SPAWNED_ISSUES`. On bails BEFORE Step 3 (the only place `SPAWNED_ISSUES` gets appended) the array is empty; emit the literal `"none"` sentinel (an empty `,`-join produces the empty string, which the dispatcher's parser rejects). On bails AFTER Step 3 (e.g., after one or more out-of-scope-acknowledged dismissals have already been recorded), emit the comma-joined array per the round-end contract — dropping it to `"none"` here would lose the spawned-issue numbers that Invariant 4's cumulative counter depends on. Concretely: `if [ ${#SPAWNED_ISSUES[@]} -eq 0 ]; then ISSUES_SPAWNED=none; else IFS=,; ISSUES_SPAWNED="${SPAWNED_ISSUES[*]}"; unset IFS; fi`.
 
-The remaining four "always present" inflight tags — `RESULT_STAGED_FILES`, `RESULT_UNSTAGED_FILES`, `RESULT_STAGED_DIFF_SHA`, `RESULT_UNSTAGED_DIFF_SHA` — are NOT in this defaults list because they're populated by the separate **mandatory pre-bail snapshot rule** (see "Bail Triggers" section below, "Mandatory pre-bail snapshot rule" paragraph). That rule requires invoking Step 6's snapshot block before emitting any bail (including these early-bail paths); the snapshot runs unconditionally and produces `none` defaults for empty working trees. So the full bail emission is: these four defaults from the init block PLUS the five inflight tags from the snapshot block — nine emissions total, but produced by two distinct mechanisms.
-
-All eight tags (`RESULT_INFLIGHT_CHANGES` is shared between the init default and the snapshot output; the snapshot block overwrites it) are documented "always present" in the Output Format section below; the dispatcher's parser depends on each one being non-empty, and the early-bail path was the easiest place to forget that. Empirical proof: the first /pr-grind invocation against the contract (PR #89) bailed mid-Step 3 and omitted `RESULT_ISSUES_SPAWNED` entirely — the dispatcher's backward-compat ("missing → 0") caught it gracefully, but the worker contract was internally inconsistent.
-
-The dispatcher's invariant-2 gate (clean + any `stale` → BAIL) only fires on `clean` status, so an all-`none` early bail with `status=bail` won't accidentally trip it. The dispatcher's invariant-3 gate keys on **`n_total == 0` for any HEAD-acked bot**, not on the disposition string — so the `0/0:none` shape is fine for bots that didn't post (no HEAD ack means no gate trigger), but a `0/0:<anything>` shape for a bot whose ack value is a SHA trips the gate regardless of what's after the colon. Emitting these defaults also keeps all four tags non-empty, which the dispatcher's tag parser requires.
+The dispatcher's invariant-2 gate (clean + any `stale` → BAIL) only fires on `clean` status, so an all-`none` early bail with `status=bail` won't accidentally trip it. The dispatcher's invariant-3 gate keys on **`n_total == 0` for any HEAD-acked bot**, not on the disposition string — so the `0/0:none` shape is fine for bots that didn't post (no HEAD ack means no gate trigger), but a `0/0:<anything>` shape for a bot whose ack value is a SHA trips the gate regardless of what's after the colon. Emitting these defaults also keeps the default tags non-empty, which the dispatcher's tag parser requires.
 
 ### Step 0 — Mandatory Pre-Flight Read (DO NOT SKIP)
 
@@ -415,348 +409,30 @@ For each actionable item:
 
 Run the narrowest test that covers the fix.
 
-### Step 6 — Commit & push
+### Step 6 — Stage changes and emit RESULT
 
-```bash
-git add <specific files>
-# Subject is FIXED-FORM ("fix: address PR #<N> feedback") to stay safely
-# under commitlint's 100-char header-max-length rule regardless of how
-# detailed the summary becomes. The actual summary of what changed goes
-# in the commit BODY, not the subject. An earlier worker template
-# (`git commit -m "fix: address PR #$PR_NUMBER feedback — <brief>"`)
-# overflowed commitlint's 100-char header-max-length rule when <brief>
-# was long; the exact threshold varies with PR-number digit count plus
-# the fixed prefix, so don't trust any specific char figure. The
-# subject/body split is the structural fix that removes the variable
-# from the header entirely. Same shape as the dispatcher's
-# recovery-via-inline template in skills/pr-grind/SKILL.md.
-{
-  printf 'fix: address PR #%s feedback\n' "$PR_NUMBER"
-  printf '\n%s\n' "<one-line OR multi-paragraph summary of what you changed this round>"
-} | git commit -F -
+After applying fixes (Steps 4-5):
 
-# Pre-push commitlint pre-flight (belt-and-suspenders local check).
-#
-# Why: CI runs commitlint on the BASE..HEAD range and fails the build on
-# subject/body violations. If a violating commit lands on the remote, the
-# only fix is `git commit --amend` + force-push — a published-history
-# rewrite that needs operator authorization (see Bail Triggers row
-# "Local commitlint check fails on commits BASE..HEAD before push"
-# below). Running commitlint locally BEFORE the push catches the
-# violation while the bad commit is still local-only, so a fix-up amend
-# stays purely local.
-#
-# Empirical motivation: PR #96 round 1 worker emitted a commit body
-# line exceeding commitlint's footer-max-line-length (100 chars default
-# in @commitlint/config-conventional). CI caught it post-push; round 2
-# bailed with category=judgment and required force-push under operator
-# authorization. A pre-push check would have caught the violation at
-# commit time, before the push, with a local amend available as the
-# fix path. The precise char count isn't load-bearing here — any line
-# >100 chars trips the rule; what matters is the catch-locally /
-# fix-locally property the pre-flight buys.
-#
-# Best-effort: skip with an informational message if `@commitlint/cli`
-# isn't locally resolvable (e.g., project doesn't have it in
-# devDependencies and `npx --no-install` returns non-zero). CI's
-# commitlint job remains the authoritative gate; this is a fast-feedback
-# pre-flight, not a hard block. The `--no-install` flag is critical — without it, npx would
-# attempt to install commitlint over the network on every push, which
-# is both slow (~10–30 s) and a quiet "yes" to an unrequested side
-# effect on the operator's machine.
-COMMITLINT_BAIL=0
-# Lint ONLY the just-committed commit (HEAD~1..HEAD), NOT the full PR
-# range origin/<base>..HEAD. Two reasons (both flagged by Cubic on PR
-# #98):
-#   1. Range scope. Older pushed commits in the full range are out of
-#      this pre-flight's scope — they require force-push to fix, which
-#      is operator-authorization territory. CI's commitlint job catches
-#      them on every push. Linting just HEAD~1..HEAD keeps the bail
-#      reason honest: "local commit failed, operator can amend without
-#      force-push" is only true when we KNOW the failing commit is the
-#      new local one.
-#   2. No base-branch lookup needed. `gh pr view ... --json baseRefName`
-#      can fail (auth, rate-limit, transient network). Defaulting to
-#      "main" on failure lints the wrong range whenever the PR's actual
-#      base is something else (release branch, stacked PR, etc.).
-#      HEAD~1..HEAD has no such dependency.
-if command -v npx >/dev/null 2>&1 && npx --no-install commitlint --version >/dev/null 2>&1; then
-  if ! npx --no-install commitlint --from HEAD~1 --to HEAD; then
-    # The just-committed commit violates commitlint. It is LOCAL ONLY
-    # (we haven't pushed yet). Set a deferred-bail flag so we fall
-    # through to the mandatory pre-bail snapshot block AND emit the
-    # structured RESULT envelope. The operator-facing reason string
-    # points at the local amend path, NOT a force-push (the commit
-    # hasn't reached the remote yet).
-    #
-    # CRITICAL: do NOT `exit 1` here. The mandatory pre-bail snapshot
-    # rule (see Bail Triggers → "Mandatory pre-bail snapshot rule"
-    # below) requires every bail from Step 4 onward to invoke the
-    # snapshot block before terminating, so the dispatcher always
-    # sees a complete RESULT_* tag set. A hard `exit 1` would skip
-    # both the snapshot AND the RESULT emission, leaving the
-    # dispatcher's parser unable to read the bail at all.
-    echo "❌ commitlint failed locally on the just-committed commit (HEAD~1..HEAD) — will bail BEFORE push"
-    echo "   Fix: amend the offending commit locally (no force-push needed; commit hasn't been pushed)."
-    COMMITLINT_BAIL=1
-  fi
-else
-  # commitlint not locally invokable — skip the pre-flight with an
-  # informational message. CI's commitlint job will still catch issues,
-  # but at higher latency (the bad commit lands on the remote first,
-  # requiring force-push to fix).
-  echo "ℹ️  Skipping local commitlint pre-flight — @commitlint/cli not installed locally."
-fi
+1. `git add` the modified files (worktree-relative paths).
+2. Emit a `RESULT_*` block describing the round. **Do NOT call `git commit`.** **Do NOT call `git push`.** **Do NOT invoke litmus.** **Do NOT compose a commit message.** The dispatcher owns commit, push, litmus, and commit-message composition under the commit-ownership inversion.
 
-# Branch on the deferred-bail flag. If set, run the snapshot block + emit
-# the RESULT envelope to BOTH $RESULT_FILE and stdout (per the Output
-# Format contract), then exit 0. The dispatcher's parser will see a
-# complete tag set and route to BAIL with category=judgment. If not set,
-# push as normal.
-if [ "$COMMITLINT_BAIL" = "1" ]; then
-  # Step 1: mandatory pre-bail snapshot (produces `none` defaults for
-  # all five inflight tags — correct because the bad commit is already
-  # in the local index, not the working tree).
-  STAGED_LIST=$(git diff --cached -z --name-only | tr '\0' '\n' | sed '/^$/d')
-  UNSTAGED_LIST=$(git diff -z --name-only | tr '\0' '\n' | sed '/^$/d')
-  HAS_STAGED=0; HAS_UNSTAGED=0
-  [ -n "$STAGED_LIST" ] && HAS_STAGED=1
-  [ -n "$UNSTAGED_LIST" ] && HAS_UNSTAGED=1
-  if [ "$HAS_STAGED" -eq 1 ] && [ "$HAS_UNSTAGED" -eq 1 ]; then INFLIGHT_CHANGES=both
-  elif [ "$HAS_STAGED" -eq 1 ]; then INFLIGHT_CHANGES=staged
-  elif [ "$HAS_UNSTAGED" -eq 1 ]; then INFLIGHT_CHANGES=unstaged
-  else INFLIGHT_CHANGES=none; fi
-  [ -z "$STAGED_LIST" ]   && STAGED_FILES=none   || STAGED_FILES=$(printf '%s' "$STAGED_LIST" | tr '\n' '|' | sed 's/|$//')
-  [ -z "$UNSTAGED_LIST" ] && UNSTAGED_FILES=none || UNSTAGED_FILES=$(printf '%s' "$UNSTAGED_LIST" | tr '\n' '|' | sed 's/|$//')
-  if [ "$HAS_STAGED" -eq 1 ]; then STAGED_DIFF_SHA=$(git diff --cached | sha256sum | cut -c1-64); else STAGED_DIFF_SHA=none; fi
-  if [ "$HAS_UNSTAGED" -eq 1 ]; then UNSTAGED_DIFF_SHA=$(git diff | sha256sum | cut -c1-64); else UNSTAGED_DIFF_SHA=none; fi
-
-  # Step 2: emit RESULT envelope to RESULT_FILE AND stdout. ACKS,
-  # BOT_LEDGER, ISSUES_SPAWNED come from top-of-round initialization
-  # (the worker's preamble defaults); they're still `none`/`0/0:none`
-  # because Step 6.5 (real ack-ledger compute) hasn't run yet — bail
-  # before push means bail before ledger.
-  RESULT_BLOCK=$(cat <<RESULT_BLOCK_EOF
-RESULT_STATUS: bail
-RESULT_COMMIT_SHA: $(git rev-parse HEAD)
-RESULT_FIXES: none — local commitlint pre-flight rejected the just-committed message
-RESULT_REMAINING: commit message violates commitlint; needs local amend before push
-RESULT_REVIEWER_ACKS: ${ACKS:-greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none}
-RESULT_BOT_LEDGER: ${BOT_LEDGER:-greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=0/0:none,copilot-pull-request-reviewer=0/0:none,codescene-delta-analysis=0/0:none}
-RESULT_ISSUES_SPAWNED: ${ISSUES_SPAWNED:-none}
-RESULT_INFLIGHT_CHANGES: $INFLIGHT_CHANGES
-RESULT_STAGED_FILES: $STAGED_FILES
-RESULT_UNSTAGED_FILES: $UNSTAGED_FILES
-RESULT_STAGED_DIFF_SHA: $STAGED_DIFF_SHA
-RESULT_UNSTAGED_DIFF_SHA: $UNSTAGED_DIFF_SHA
-RESULT_BAIL_REASON: local commitlint check rejected the just-committed commit (HEAD~1..HEAD) before push; bad commit is local-only, operator can amend without force-push
-RESULT_BAIL_CATEGORY: judgment
-RESULT_BLOCK_EOF
-)
-  printf '%s\n' "$RESULT_BLOCK" > "$RESULT_FILE"
-  printf '%s\n' "$RESULT_BLOCK"
-
-  # Step 3: terminate the round. Do NOT push. Do NOT proceed to Step
-  # 6.5. RESULT_BAIL_CATEGORY=judgment (not tooling) means the
-  # dispatcher's recovery-via-inline carve-out will NOT rescue this —
-  # the commit message is wrong and must be fixed by the operator
-  # (local amend).
-  exit 0
-else
-  git push
-fi
-```
-
-The litmus pre-commit gate WILL fire on the commit. Do NOT use `--no-verify`. If litmus blocks twice in this round:
-
-1. **First**, invoke the snapshot block below to populate `RESULT_INFLIGHT_CHANGES` / `RESULT_STAGED_FILES` / `RESULT_UNSTAGED_FILES` / `RESULT_STAGED_DIFF_SHA` / `RESULT_UNSTAGED_DIFF_SHA` from the current working tree. These tags are what tells the dispatcher you have salvageable changes — skipping the snapshot leaves them at the `none` defaults from top-of-round and the recovery carve-out can never fire for the litmus-blocked case it was specifically built for.
-2. **Then**, return `RESULT_STATUS: bail` with reason "litmus blocked" AND `RESULT_BAIL_CATEGORY: tooling`.
-
-The dispatcher's recovery-via-inline carve-out (gated on category=`tooling` AND inflight changes existing) will then take over the commit using the snapshotted state, run the litmus iteration the subagent context can't, and push. See the "Bail Triggers" table later in this file for the full category map and the **mandatory pre-bail snapshot rule** that applies to every bail trigger from Step 4 onward.
+The complete RESULT block format is documented in the "Output Format" section below. If you find yourself wanting to commit (e.g., to "checkpoint progress"), STOP — the inversion exists specifically to keep commit work out of the worker.
 
 If you didn't change any files this round (no fixes needed — you're just waiting on bots), skip the commit and proceed to Step 6.5; HEAD will be unchanged and the ledger will reflect bot acks relative to the existing HEAD.
 
-**The snapshot block (invoke before any bail emission from Step 4 onward):** Capture the current working-tree state so the dispatcher can decide whether to recover via inline takeover. **Snapshot BOTH staged and unstaged independently** — a worker that ran `git add` on some files and kept editing others has both states populated, and dropping one would silently strand the unstaged work after the dispatcher commits the staged set:
+### Step 6.5a — Copilot stale-thread auto-resolve (RELOCATED to dispatcher)
 
-```bash
-# git diff -z emits NUL-delimited paths internally; we convert to newlines
-# here for shell processing, then serialize to `|`-delimited output for the
-# RESULT_STAGED_FILES / RESULT_UNSTAGED_FILES tags. The dispatcher MUST split
-# those tags on `|` (not space or NUL) when verifying inflight match, and pass
-# paths via `git add -- <files>` (with the `--` separator) to prevent
-# option-injection from filenames that start with `-`.
-STAGED_LIST=$(git diff --cached -z --name-only | tr '\0' '\n' | sed '/^$/d')
-UNSTAGED_LIST=$(git diff -z --name-only | tr '\0' '\n' | sed '/^$/d')
-HAS_STAGED=0; HAS_UNSTAGED=0
-[ -n "$STAGED_LIST" ] && HAS_STAGED=1
-[ -n "$UNSTAGED_LIST" ] && HAS_UNSTAGED=1
+This step was moved to the dispatcher under the commit-ownership inversion. See `skills/pr-grind/SKILL.md` "Dispatcher commit/state-synthesis block" → `scripts/dispatcher-commit-block.sh` Step 11. The worker no longer composes the Copilot eligibility call.
 
-if [ "$HAS_STAGED" -eq 1 ] && [ "$HAS_UNSTAGED" -eq 1 ]; then
-  INFLIGHT_CHANGES=both
-elif [ "$HAS_STAGED" -eq 1 ]; then
-  INFLIGHT_CHANGES=staged
-elif [ "$HAS_UNSTAGED" -eq 1 ]; then
-  INFLIGHT_CHANGES=unstaged
-else
-  INFLIGHT_CHANGES=none
-fi
+### Step 6.5 — Ack-ledger fetch + per-bot invoke (advisory under inversion)
 
-# Always emit `none` (not the empty string) when a list is empty.
-# Symmetric emission keeps the dispatcher parser trivial: every tag is
-# present every round, with `none` as the explicit absence sentinel.
-[ -z "$STAGED_LIST" ]   && STAGED_FILES=none   || STAGED_FILES=$(printf '%s' "$STAGED_LIST" | tr '\n' '|' | sed 's/|$//')
-[ -z "$UNSTAGED_LIST" ] && UNSTAGED_FILES=none || UNSTAGED_FILES=$(printf '%s' "$UNSTAGED_LIST" | tr '\n' '|' | sed 's/|$//')
-
-# SHA-256 of the staged AND unstaged diff content — defense-in-depth
-# against concurrent worktree mutations (hooks, editors, parallel sessions)
-# between the worker bail and dispatcher takeover. The path-list match
-# cannot catch content drift; the SHAs can. Both are emitted because the
-# dispatcher's RECOVERY_INLINE handles `unstaged` and `both` modes by
-# staging the unstaged paths — without an UNSTAGED_DIFF_SHA, those paths
-# could be content-mutated under us between snapshot and `git add`.
-if [ "$HAS_STAGED" -eq 1 ]; then
-  STAGED_DIFF_SHA=$(git diff --cached | sha256sum | cut -c1-64)
-else
-  STAGED_DIFF_SHA=none
-fi
-if [ "$HAS_UNSTAGED" -eq 1 ]; then
-  UNSTAGED_DIFF_SHA=$(git diff | sha256sum | cut -c1-64)
-else
-  UNSTAGED_DIFF_SHA=none
-fi
-```
-
-Emit these as `RESULT_INFLIGHT_CHANGES` / `RESULT_STAGED_FILES` / `RESULT_UNSTAGED_FILES` / `RESULT_STAGED_DIFF_SHA` / `RESULT_UNSTAGED_DIFF_SHA` (see Output Format). All five tags are **always present**, every round, with `none` as the explicit absence sentinel — symmetric emission means the dispatcher's stdout-parse and file-backup paths can both rely on a fixed tag set. On non-bail rounds, all five are `none` (recovery isn't applicable). On bail, the dispatcher reads these tags to decide between immediate BAIL and bounded RECOVERY_INLINE — the carve-out applies only when (a) inflight changes exist AND (b) `RESULT_BAIL_CATEGORY == tooling`, never for `judgment` / `env` / `budget` / `policy` bails.
-
-**Path separator: `|` not space.** Filenames with embedded spaces would corrupt a space-separated list when the dispatcher splits for verification. The pipe character is forbidden in conventional filename hygiene and unlikely to appear; if a future repo carries a filename containing `|`, the snapshot block must be revised to use a different sentinel.
-
-### Step 6.5a — Copilot stale-thread auto-resolve (force-push special case)
-
-**Gate: only runs when `--copilot-auto-resolve` was passed to the dispatcher.** The flag is off by default. Skip this entire step on default invocations.
-
-**The problem this addresses.** Copilot, unlike CodeRabbit and Greptile, does NOT auto-re-review on force-push. When the worker force-pushes (e.g., Phase 3's `--admin-on-approver-gap` doesn't apply, but the operator did authorize a history rewrite via the worker's separate path — or any other path that lands a new HEAD without a fresh review trigger), Copilot's threads stay anchored to the old SHA and the ack-ledger reports `stale` indefinitely. The dispatcher's `--max-wait` budget then exhausts on a bot that will never re-review, and the operator has to manually resolve each thread.
-
-**The fix this implements.** When all three preconditions hold for THIS round's HEAD, post a per-thread `addressed in <SHA>` reply and call `resolveReviewThread`. The ack-ledger's tier A (resolved-threads → HEAD-ack) flips Copilot's entry from `stale` to the current HEAD SHA in Step 6.5's next run, the dispatcher's invariant 2 passes, and the loop converges.
-
-**Three preconditions (ALL must hold, fail-CLOSED on uncertainty):**
-
-1. **Force-push detected since Copilot's last review.** Compare the HEAD SHA at Copilot's `commit_id` (latest `/reviews` entry) against the current branch's history. If `git merge-base --is-ancestor <copilot_commit_id> HEAD` returns non-zero (the old SHA isn't reachable from HEAD), there was a force-push that rewrote the SHA Copilot reviewed. If it returns zero (the old SHA IS reachable), then this is a regular linear push — DO NOT auto-resolve; Copilot is just slow.
-
-2. **Every Copilot thread is anchored to a line HEAD touched.** For each unresolved+non-outdated Copilot thread (`comments.nodes[0].author.login == "copilot-pull-request-reviewer"` from Step 2's Source 2 GraphQL), check that `<path>:<line>` appears in `git diff <merge_base>..HEAD -U0` AND that `<line>` falls inside one of HEAD's hunks for `<path>`. If even ONE Copilot thread is anchored to a line HEAD didn't touch, DO NOT auto-resolve — that thread is on stable code Copilot reviewed and your fix didn't move; resolving it without bot ack would silently suppress audit value.
-
-3. **The worker actually fixed those lines this round.** `$RESULT_FIXES` must be non-empty AND `$RESULT_COMMIT_SHA` must be a real SHA (not `none`). A round that didn't push anything cannot claim "addressed in <SHA>".
-
-**Implementation:**
-
-The eligibility logic lives at `scripts/copilot-auto-resolve-eligibility.sh` (single source of truth, same factoring pattern as `scripts/ack-ledger.sh` and `scripts/approver-gap-detect.sh`). The worker composes the inputs and switches on the script's JSON decision:
-
-```bash
-# Gate: skip entirely if --copilot-auto-resolve was not passed.
-# The dispatcher exposes the flag via COPILOT_AUTO_RESOLVE=1 in the context
-# block; absent means default (off).
-if [ "${COPILOT_AUTO_RESOLVE:-0}" != "1" ]; then
-  : # skip Step 6.5a
-else
-  # Step 6.5a runs BEFORE Step 6.5 (so resolved threads get picked up by
-  # Step 6.5's tier-A → HEAD-ack flip). That means Step 6.5's $ALL_THREADS
-  # and $ALL_REVIEWS are NOT yet populated when this block runs — Step 6.5a
-  # MUST do its own targeted fetches. Both fetches are Copilot-scoped, so
-  # they're small even on large PRs and run only when the flag is on (off
-  # by default).
-
-  # Precondition 1 — force-push detection. Fetch Copilot's latest /reviews
-  # entry on this PR and get the commit_id it reviewed.
-  COPILOT_COMMIT_ID=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews" 2>/dev/null \
-    | jq -rs '[.[] | .[] | select(.user.login == "copilot-pull-request-reviewer" or .user.login == "copilot-pull-request-reviewer[bot]")] | last | .commit_id // empty' 2>/dev/null \
-    || echo "")
-  FORCE_PUSH_DETECTED=0
-  if [ -n "$COPILOT_COMMIT_ID" ] && ! git merge-base --is-ancestor "$COPILOT_COMMIT_ID" HEAD 2>/dev/null; then
-    FORCE_PUSH_DETECTED=1
-  fi
-
-  # Precondition 2 inputs — Copilot threads + HEAD's touched-line ranges.
-  # Targeted GraphQL fetch that explicitly selects `id path line` (the fields
-  # Step 6.5's ack-ledger query omits — that query only needs author login).
-  COPILOT_THREADS_JSON=$(gh api graphql --paginate -f query='
-    query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String) {
-      repository(owner:$owner,name:$repo) {
-        pullRequest(number:$pr) {
-          reviewThreads(first:100, after:$endCursor) {
-            pageInfo { hasNextPage endCursor }
-            nodes {
-              id path line isResolved isOutdated
-              comments(first:1) { nodes { author { login } } }
-            }
-          }
-        }
-      }
-    }
-  ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" 2>/dev/null \
-    | jq -cs '[.[].data.repository.pullRequest.reviewThreads.nodes[]
-      | select(. != null)
-      | select(.comments.nodes[0].author.login == "copilot-pull-request-reviewer" or .comments.nodes[0].author.login == "copilot-pull-request-reviewer[bot]")
-      | select(.isResolved == false and .isOutdated == false)
-      | {threadId: .id, path: .path, line: .line}]' 2>/dev/null || echo '[]')
-
-  BASE_REF_OID=$(gh pr view "$PR_NUMBER" --json baseRefOid -q .baseRefOid 2>/dev/null || echo "")
-  MERGE_BASE=$(git merge-base HEAD "$BASE_REF_OID" 2>/dev/null || echo "")
-  HEAD_TOUCHED_LINES_JSON='[]'
-  if [ -n "$MERGE_BASE" ]; then
-    # Parse `git diff -U0` hunk headers (`@@ -a,b +c,d @@`); emit {path,start,end}
-    # per hunk. `d` defaults to 1 when absent (`+c` form). Skip pure deletions
-    # (`d == 0`) — bot threads on deleted lines are already outdated by Source 2.
-    HEAD_TOUCHED_LINES_JSON=$(git diff "$MERGE_BASE"..HEAD -U0 2>/dev/null \
-      | awk '/^diff --git/{split($0,a," "); path=substr(a[4],3)}
-             /^@@/{
-                 match($0,/\+([0-9]+),?([0-9]*)/,m);
-                 start=m[1]+0;
-                 len=(m[2]==""?1:m[2]+0);
-                 if(len>0) printf "{\"path\":\"%s\",\"start\":%d,\"end\":%d}\n", path, start, start+len-1
-             }' \
-      | jq -cs '.' 2>/dev/null || echo '[]')
-  fi
-
-  # Invoke the eligibility script. Inputs are env-driven (same shape as
-  # scripts/ack-ledger.sh and scripts/approver-gap-detect.sh).
-  export RESULT_FIXES RESULT_COMMIT_SHA FORCE_PUSH_DETECTED \
-         COPILOT_THREADS_JSON HEAD_TOUCHED_LINES_JSON
-
-  ELIG_JSON=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/copilot-auto-resolve-eligibility.sh" 2>/dev/null \
-    || echo '{"decision":"skip","reason":"eligibility script invocation failed"}')
-  ELIG_DECISION=$(printf '%s' "$ELIG_JSON" | jq -r '.decision' 2>/dev/null || echo skip)
-  ELIG_THREAD_COUNT=$(printf '%s' "$ELIG_JSON" | jq -r '.thread_count' 2>/dev/null || echo 0)
-
-  if [ "$ELIG_DECISION" = "resolve" ]; then
-    HEAD_FULL=$(git rev-parse HEAD)
-    for i in $(seq 0 $((ELIG_THREAD_COUNT - 1))); do
-      T_ID=$(printf '%s' "$COPILOT_THREADS_JSON" | jq -r ".[$i].threadId" 2>/dev/null)
-      REPLY="addressed in $HEAD_FULL: pr-grind force-push re-applied fix; Copilot does not auto-re-review on force-push (see scripts/ack-ledger.sh tier A)."
-      gh api graphql -f query='
-        mutation($threadId: ID!, $body: String!) {
-          addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) {
-            comment { id }
-          }
-        }
-      ' -f threadId="$T_ID" -f body="$REPLY" >/dev/null \
-        && gh api graphql -f query='
-          mutation($threadId: ID!) {
-            resolveReviewThread(input: {threadId: $threadId}) { thread { isResolved } }
-          }
-        ' -f threadId="$T_ID" >/dev/null \
-        && echo "Step 6.5a: resolved Copilot thread $T_ID with addressed-in-$HEAD_FULL reply" \
-        || echo "Step 6.5a: ⚠️  failed to resolve thread $T_ID; ack-ledger will retry next round"
-    done
-  else
-    echo "Step 6.5a: $(printf '%s' "$ELIG_JSON" | jq -r '.reason')"
-  fi
-fi
-```
-
-**Anti-pattern: do NOT widen this carve-out to other bots.** CodeRabbit and Greptile auto-re-review on force-push — auto-resolving their threads without their ack would short-circuit their actual second-opinion value. Copilot's special-case is justified specifically because Copilot does NOT auto-re-review, and the three preconditions above are what bound the carve-out. Any future bot added to this special-case path must be empirically verified to NOT auto-re-review AND have the same fail-CLOSED preconditions applied.
-
-After Step 6.5a runs, the resolved threads will be picked up by Step 6.5's `scripts/ack-ledger.sh` tier A on its first call — Copilot's entry flips from `stale` to `$HEAD_SHA` and the loop converges normally.
-
-### Step 6.5 — Compute the reviewer ack ledger (post-push)
+**Authority note (post-inversion):** the worker's ack-ledger output is
+**authoritative only for the clean-round path** (worker emits `RESULT_STATUS=clean`
+with no staged changes, headed straight to merge). On fix-round and wait-round
+paths the dispatcher overwrites `RESULT_REVIEWER_ACKS` via its own Step 12
+post-push fetch — see `skills/pr-grind/SKILL.md` dispatcher commit block. The
+worker computes Step 6.5 unconditionally for transport simplicity, but the
+non-clean values are advisory and may differ from the dispatcher's final value.
 
 Now (and ONLY now, after any commit/push has settled) compute the ledger. Computing this BEFORE Step 6 would emit acks against pre-push HEAD — defeating the whole point.
 
@@ -829,26 +505,21 @@ Stop the round and return `RESULT_STATUS: bail` with the appropriate `RESULT_BAI
 | Same flaky CI check name appears in `PRIOR_ATTEMPTS` `failures=` field for 2 prior rounds AND fails again now (3 total) | `judgment` | No |
 | Fix would require rewriting published git history — commitlint `header-max-length` on an already-pushed commit, oversized commits that need splitting via `git rebase` (interactive or otherwise), anything that needs `git commit --amend` on a pushed SHA, `git filter-branch`, or `git push --force(-with-lease)` | `judgment` | No |
 | **Local commitlint check fails on commits BASE..HEAD before push** (Step 6 pre-push pre-flight catches subject/body violations while the bad commit is still local-only — the operator can amend locally without force-pushing a published SHA) | **`judgment`** | No |
-| **Litmus gate keeps blocking after 2 attempts in this round** | **`tooling`** | **Yes** |
 | `gh` CLI auth or rate-limit errors that you can't resolve | `env` | No |
 | `WORKTREE_DIR` missing or unreadable | `env` | No |
 | Skipped Step 0 mandatory Read of SKILL.md | `env` | No |
 
-**Why history-rewrite bails are `judgment`, not `tooling`.** The worker physically *can* invoke `git commit --amend` or `git filter-branch` and force-push — there's no tool-friction wall to bridge — but doing so destroys SHAs that downstream consumers (other clones, the PR's review-thread anchors, ack-ledger entries, claude-mem observations) may already reference. That's a blast-radius decision the operator owns, not a recovery scenario the dispatcher can rescue. Categorizing as `judgment` keeps the carve-out narrow (tooling friction only) and forces the operator to choose between a fix-up commit, a manual rewrite, or scoping the fix differently. The trigger is named broadly ("rewriting published git history") rather than enumerating individual git verbs because the test isn't *which command* — it's *whether the action would invalidate any commit SHA already on the remote*. New commits added on top are always fine; anything that re-hashes an existing commit is not.
+**Why history-rewrite bails are `judgment`.** The worker physically *can* invoke `git commit --amend` or `git filter-branch` and force-push, but doing so destroys SHAs that downstream consumers (other clones, the PR's review-thread anchors, ack-ledger entries, claude-mem observations) may already reference. That's a blast-radius decision the operator owns. Categorizing as `judgment` forces the operator to choose between a fix-up commit, a manual rewrite, or scoping the fix differently. The trigger is named broadly ("rewriting published git history") rather than enumerating individual git verbs because the test isn't *which command* — it's *whether the action would invalidate any commit SHA already on the remote*. New commits added on top are always fine; anything that re-hashes an existing commit is not.
 
-**Mandatory pre-bail snapshot rule.** Before emitting `RESULT_STATUS: bail` from any trigger above, invoke the snapshot block from Step 6 to populate `RESULT_INFLIGHT_CHANGES` / `RESULT_STAGED_FILES` / `RESULT_UNSTAGED_FILES` / `RESULT_STAGED_DIFF_SHA` / `RESULT_UNSTAGED_DIFF_SHA`. The snapshot is cheap (two `git diff --name-only` calls + two `sha256sum` calls), runs unconditionally regardless of working-tree state (empty trees produce `none` defaults), and is the ONLY way the recovery-via-inline carve-out can fire on category=`tooling` bails. Skipping the snapshot leaves the inflight tags at their top-of-round `none` defaults and silently disables recovery — even though the worker did stage a salvageable fix.
+`RESULT_BAIL_CATEGORY` is the structured enum for bail routing. It is the load-bearing tag — the dispatcher does NOT substring-match against `RESULT_BAIL_REASON`, which remains free-form prose for human consumption. `judgment`, `env`, `budget`, and `policy` always BAIL.
 
-**Carve-out: WORKTREE_DIR-invalid early bail.** The one trigger that MUST skip the snapshot is the `category=env` bail for "WORKTREE_DIR missing or unreadable" (top of "Your Single Round"). The snapshot's `git diff` calls require a valid working tree; invoking them from an unset/invalid CWD would operate on the wrong tree, which is the precise safety rule the WORKTREE_DIR check exists to enforce. On that single bail path, emit the five inflight tags at their top-of-round defaults (`RESULT_INFLIGHT_CHANGES=none`, the four file/SHA tags = `none`) and skip the snapshot block — but the early-bail defaults rule from the preamble above (the four-bullet list covering `RESULT_REVIEWER_ACKS`, `RESULT_BOT_LEDGER`, `RESULT_INFLIGHT_CHANGES`, `RESULT_ISSUES_SPAWNED`) still applies: those init-block defaults MUST be emitted on this path too, since they don't depend on a valid working tree. Every other bail trigger (from Step 0's "skipped pre-flight Read" onward) runs after `cd "$WORKTREE_DIR"` has succeeded and MUST snapshot.
-
-`RESULT_BAIL_CATEGORY` is the structured enum the dispatcher's recovery-via-inline gate keys on (see `skills/pr-grind/SKILL.md` Dispatcher Loop → "Recovery-via-inline eligibility"). It is the load-bearing tag — the dispatcher does NOT substring-match against `RESULT_BAIL_REASON`, which remains free-form prose for human consumption. Today only `tooling` triggers recovery; `judgment`, `env`, `budget`, and `policy` always BAIL.
-
-The dispatcher emits three of the five categories itself, alongside the worker's emissions:
+The dispatcher emits three categories itself, alongside the worker's emissions:
 
 - **`budget`** — dispatcher-only. Labels `ON_LOOP_EXHAUSTED` bails (max-fix / max-wait reached) when the dispatcher's own counters overflow. The worker has no visibility into MAX_FIX/MAX_WAIT exhaustion across rounds, so it never produces this value.
 - **`judgment`** — emitted by both worker (design/scope concerns, history-rewrite triggers, flaky-check streaks) AND dispatcher (Invariant 4 discipline-rail breaches: cumulative scope-skipped > 5 OR cumulative spawned issues > 3 — caps are INCLUSIVE, so 5 dismissals and 3 spawns are allowed, the 6th and 4th BAIL respectively. See `skills/pr-grind/SKILL.md` Dispatcher Loop → Invariant checks). Both share the category because both surface to the operator as "this needs human judgment, not an automated fix."
 - **`policy`** — dispatcher-only. Labels bails where an external policy (branch protection requiring `N >= 1` human APPROVED reviews the author cannot self-provide, org-level rule, or similar non-resolvable structural blocker) is the sole remaining merge-gate signal after CI, threads, and bot acks are all clean. The worker has no visibility into branch-protection rules or repo-side audit workflows, so it never produces this value. Excluded from MAX_FIX/MAX_WAIT accounting — there's nothing to fix and nothing to wait for; the gap is structural. pr-grind NEVER auto-bypasses org policy on this category; the `--admin-on-approver-gap` opt-in is the narrow exception (see `skills/pr-grind/SKILL.md` "Approver-Gap Detection"), and even that requires a repo-side audit workflow to leave a trail.
 
-Listing `budget` and `policy` in the enum keeps the dispatcher-side surface explicit and reserves both values against accidental worker emission. Adding new tooling-friction triggers means adding a row above with category=`tooling`, never expanding the dispatcher's match logic to scrape narrative.
+Listing `budget` and `policy` in the enum keeps the dispatcher-side surface explicit and reserves both values against accidental worker emission. Adding new bail triggers means adding a row above with an explicit category, never expanding the dispatcher's match logic to scrape narrative.
 
 **No stuck-bot bail trigger.** Earlier drafts of this contract had a bail for "same bot `stale` for 3+ rounds." That trigger is incompatible with the post-push compute timing: every round that commits/pushes emits all-`stale` (bots haven't seen the new commit yet), so a healthy 3-commit sequence would spuriously bail on every registered bot. Genuinely stuck bots are caught by the dispatcher's `--max-wait` iterations backstop instead — if bots never catch up across enough wait-rounds (where the worker returns `needs_more` with `RESULT_COMMIT_SHA=none`), the loop exhausts and bails with `max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD; latest stale: <bot-list>`. (The dispatcher previously had a single unified `--max` budget that emitted `max iterations reached`; both were replaced by the dual-budget split — see `skills/pr-grind/SKILL.md` Safety Rails for the rationale.)
 
@@ -869,16 +540,11 @@ RESULT_STATUS: <clean | needs_more | bail>
 RESULT_COMMIT_SHA: <new SHA you pushed, or "none" if no commit>
 RESULT_FIXES: <one-line, comma-separated summary of what you changed this round>
 RESULT_REMAINING: <one-line summary of what's still pending, or "none">
-RESULT_REVIEWER_ACKS: <comma-separated login=value pairs from Step 6.5; always present — early-bail paths emit the all-`none` default initialized at the top of the round>
+RESULT_REVIEWER_ACKS: <comma-separated login=value pairs from Step 6.5; always present — early-bail paths emit the all-`none` default initialized at the top of the round. Advisory on fix/wait paths (dispatcher overwrites); authoritative on clean path.>
 RESULT_BOT_LEDGER: <comma-separated login=n_actionable/n_total:disposition entries from Step 3; always present — early-bail paths emit the all-`0/0:none` default initialized at the top of the round. Disposition prose MUST NOT contain commas — the dispatcher splits on `,` to separate entries; commas inside a disposition would silently corrupt the parse and could hide a HEAD-acked bot's `0/0` entry from the invariant-3 gate. If a fix summary needs commas, replace them with `;` or use a fixed-token disposition like `fixed`. The disposition MAY carry one or more `scope-skipped:<reason>:<count>` segments joined to the primary disposition with bare `+` and no surrounding whitespace (e.g., `coderabbitai=2/4:fixed 2+scope-skipped:schema-refactor:1+scope-skipped:external-research:1`); `+` is the inner segment separator, `,` remains the outer entry separator, and the dispatcher's Invariant 4 sums every count across all bots and rounds. Cap is INCLUSIVE: 5 dismissals are allowed, the 6th BAILs (judgment).>
 RESULT_ISSUES_SPAWNED: <comma-separated GitHub issue numbers spawned this round via the out-of-scope-acknowledged workflow, or "none">  (always present in the new contract; the dispatcher's Invariant 4 sums these across all rounds. Cap is INCLUSIVE: 3 spawned issues are allowed, the 4th BAILs (judgment))
-RESULT_INFLIGHT_CHANGES: <none | staged | unstaged | both>            (always present; non-bail rounds emit `none`)
-RESULT_STAGED_FILES: <`|`-separated paths or "none">                  (always present; pipe-delimited, NUL-safe per Step 6 snapshot block)
-RESULT_UNSTAGED_FILES: <`|`-separated paths or "none">                (always present; pipe-delimited)
-RESULT_STAGED_DIFF_SHA: <64-hex sha256 of staged diff content or "none">      (always present; defense-in-depth against concurrent worktree mutation between worker bail and dispatcher takeover)
-RESULT_UNSTAGED_DIFF_SHA: <64-hex sha256 of unstaged diff content or "none">  (always present; same defense-in-depth, applies when dispatcher stages unstaged paths in unstaged/both recovery modes)
 RESULT_BAIL_REASON: <only when status=bail; one-line free-form prose for human consumption — NOT used for control flow>
-RESULT_BAIL_CATEGORY: <only when status=bail; structured enum: tooling | judgment | env | budget | policy — keys recovery-via-inline gate (see Bail Triggers table). Worker emits tooling/judgment/env; budget and policy are dispatcher-emitted only (see "The dispatcher emits three of the five categories" prose above for the dispatcher-emit rationale).>
+RESULT_BAIL_CATEGORY: <only when status=bail; structured enum: judgment | env | budget | policy. Worker emits judgment/env; budget and policy are dispatcher-emitted only (see "The dispatcher emits three categories" prose above for the dispatcher-emit rationale).>
 ```
 
 **Belt-and-suspenders: also write the RESULT block to the dispatcher-allocated file.** Immediately before echoing the RESULT_* tags to stdout, write the same lines to the path passed in `RESULT_FILE` from the context block (the dispatcher generates a unique nonce per dispatch attempt, so this path is guaranteed not to collide with any prior round, prior session, or another concurrent grind on the same PR). This protects against stdout truncation, SDK reformatting, or upstream pollution: if the dispatcher's stdout parse fails, it falls back to reading the file. The file is the backup; stdout remains the primary channel — emit BOTH every round, in this order (write first, echo second). One extra `cat > … <<EOF` per round is the entire cost.
@@ -892,15 +558,10 @@ RESULT_REMAINING: ...
 RESULT_REVIEWER_ACKS: ...
 RESULT_BOT_LEDGER: ...
 RESULT_ISSUES_SPAWNED: ...
-RESULT_INFLIGHT_CHANGES: ...
-RESULT_STAGED_FILES: ...
-RESULT_UNSTAGED_FILES: ...
-RESULT_STAGED_DIFF_SHA: ...
-RESULT_UNSTAGED_DIFF_SHA: ...
 EOF
 ```
 
-All inflight tags (`RESULT_INFLIGHT_CHANGES`, `RESULT_STAGED_FILES`, `RESULT_UNSTAGED_FILES`, `RESULT_STAGED_DIFF_SHA`, `RESULT_UNSTAGED_DIFF_SHA`) are emitted **every round** with `none` as the explicit absence sentinel — symmetric emission keeps the dispatcher's stdout-parse and file-backup paths reading from a fixed tag set, and prevents the heredoc-copy-omission bug where workers writing the literal template forget the conditional fields. Append `RESULT_BAIL_REASON` and `RESULT_BAIL_CATEGORY` to BOTH file and stdout when (and only when) `RESULT_STATUS=bail`. Both file and stdout must agree.
+Append `RESULT_BAIL_REASON` and `RESULT_BAIL_CATEGORY` to BOTH file and stdout when (and only when) `RESULT_STATUS=bail`. Both file and stdout must agree.
 
 Then emit the same lines on stdout as the final lines of your response. Include `RESULT_BAIL_REASON` in both the file and stdout when (and only when) `RESULT_STATUS: bail`.
 
@@ -931,7 +592,6 @@ If the dispatcher omitted `RESULT_FILE` (legacy dispatcher), use `/tmp/pr-grinde
 | Skipping Step 2.6 / triaging globally (across all sources) instead of per-bot | Greptile's prose findings hide between CodeRabbit's structured `<details>` blocks. Global enumeration silently misses prose; per-bot enumeration forces explicit accept/skip on each bot's body. |
 | Emitting `<bot>=0/0:<anything>` for a bot with review history | If a bot's ack is a SHA (HEAD-acked) or `stale`, `n_total` MUST be ≥1. `0/0` is reserved for "bot didn't post" — paired with `none` ack. The dispatcher's invariant-3 gate keys on `n_total == 0` for any HEAD-acked bot, regardless of disposition text — so `0/0:not-evaluated`, `0/0:didn't-look`, even `0/0:no-findings` all trip the gate identically when the bot acked HEAD. The disposition is documentary; the count is load-bearing. |
 | Writing a regex parser for "find all findings" | Vendors change templates frequently; a per-bot regex grammar accumulates false positives forever. The fix is enumeration + per-finding judgment, not a parser. |
-| Bailing without snapshotting working-tree state | Without `RESULT_INFLIGHT_CHANGES`, the dispatcher can't tell tooling-friction bails (recoverable via inline takeover) from judgment bails (must surface). Always run the snapshot block before emitting `RESULT_STATUS: bail`. |
 | Using `out-of-scope-acknowledged` as a fix-avoidance shortcut — dismissing real findings on your changed lines because the fix would "take a few rounds" | The disposition is a carve-out, not a default. The DEFAULT IS FIX rule (≥80% confidence required to dismiss) plus the per-round cap (≤3) and dispatcher's Invariant 4 (≤5 cumulative dismissals, ≤3 spawned issues) exist precisely so workers can't relabel tedious fixes as out-of-scope to "ship faster". `false-positive` requires citing the code that proves the bot misread; `pre-existing-on-touched-line` requires the line to actually predate the PR; the four spawn reasons require a follow-up issue with the bot's verbatim rationale. Failure mode: PR ships ostensibly clean while real bugs slip past as "tracked elsewhere" but the spawned issues never get addressed. |
 | Rewriting published git history to fix CI — `git commit --amend`, `git filter-branch`, `git rebase` on pushed commits, `git push --force(-with-lease)` | Force-push and history rewrites are operator-authorization decisions, not worker decisions. Even when the rewrite is technically equivalent (e.g., shortening a commit-message header to satisfy commitlint), it invalidates SHAs that downstream consumers may already reference (review-thread anchors, ack-ledger SHA values, claude-mem observations, other clones). When CI fails on something that can't be fixed by editing tracked files and adding a NEW commit on top, BAIL with category=`judgment` per the Bail Triggers table. The `--amend → fix-up commit` substitution is almost always available; if it isn't, the operator decides whether the rewrite is acceptable. Past regression: round 2 of grinding PR #86 used `git filter-branch` to fix a commitlint header-max-length failure, force-pushing 4 SHAs even though only the latest commit had a long message — over-broad blast radius from picking the wrong tool. Prefer fix-up commits (`git commit --fixup` + later squash by the operator) when the user explicitly authorizes a rewrite later. |
 
@@ -968,11 +628,6 @@ RESULT_REMAINING: none
 RESULT_REVIEWER_ACKS: greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
 RESULT_BOT_LEDGER: greptile-apps=0/1:approved,cubic-dev-ai=1/1:fixed SC2015 short-circuit,coderabbitai=0/0:none,copilot-pull-request-reviewer=0/1:no-findings,codescene-delta-analysis=0/0:none
 RESULT_ISSUES_SPAWNED: none
-RESULT_INFLIGHT_CHANGES: none
-RESULT_STAGED_FILES: none
-RESULT_UNSTAGED_FILES: none
-RESULT_STAGED_DIFF_SHA: none
-RESULT_UNSTAGED_DIFF_SHA: none
 ```
 
 `needs_more` is correct — even with no remaining findings, all four bots still need to re-review `a1b2c3d`. Round 4 will wait in Step 1 for them to catch up; if no new findings emerge, Step 6 will be a no-op, Step 6.5 will compute against unchanged HEAD `a1b2c3d`, every bot will show `a1b2c3d` (acked HEAD), and that round can return `clean`.

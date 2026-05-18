@@ -61,11 +61,10 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
 | Enabling GitHub auto-merge before pr-grind completes | The PR merges as soon as CI passes — before reviewer comments are addressed. pr-grind merges by default after all checks pass and comments are addressed. |
 | Giving compound "grind then merge" instructions | Agent optimizes for merge as terminal goal, skipping CI wait. Just invoke `/pr-grind` — merge is the default. |
 | Declaring PR clean without verifying check results | Checks completing (pass/fail/skip) ≠ checks passing — always verify status before writing the clean marker |
-| Recovering inline when worker bailed because the fix would rewrite published git history | Recovery-via-inline is for *tooling friction* the worker physically can't traverse (litmus iteration without slash-command access). History-rewrite bails are *judgment friction* — the worker physically can rewrite history, but force-pushing invalidates SHAs that downstream consumers (review-thread anchors, ack ledger, claude-mem, other clones) may reference. The worker emits `RESULT_BAIL_CATEGORY: judgment` for this trigger; recovery eligibility check (d) gates on `category=tooling` precisely so this case real-bails to the operator. Do NOT widen the allowlist to include `judgment` — the carve-out boundary is the load-bearing safety rail. |
 
 ## Safety Rails
 
-- **Max iterations:** Two independent budgets — **fix-rounds** (default 5, override with `--max-fix N`) cap how many commits the worker can push; **wait-rounds** (default 8, override with `--max-wait N`) cap how many polling rounds spent waiting for slow bots to ack HEAD. A round is classified as a *fix round* when `RESULT_COMMIT_SHA != "none"` and as a *wait round* otherwise. Bail when EITHER counter exhausts its budget. Both `--max-fix` and `--max-wait` must be `>= 1` — there is no "zero means unlimited" or "zero disables this class" form; if you want a larger budget, pass a larger number. The legacy `--max N` flag is accepted as a deprecated alias that sets both budgets to N (emits a deprecation warning). The split exists because under the old unified `--max`, every wait-round consumed a fix slot — so a PR with 3 fix iterations + 4 slow-bot polls would exhaust at MAX=5 even though only 3 fixes happened.
+- **Max iterations:** Two independent budgets — **fix-rounds** (default 5, override with `--max-fix N`) cap how many dispatcher-owned fix commits can be pushed; **wait-rounds** (default 8, override with `--max-wait N`) cap how many polling rounds spent waiting for slow bots to ack HEAD. A round is classified as a *fix round* when `RESULT_COMMIT_SHA != "none"` and as a *wait round* otherwise. Bail when EITHER counter exhausts its budget. Both `--max-fix` and `--max-wait` must be `>= 1` — there is no "zero means unlimited" or "zero disables this class" form; if you want a larger budget, pass a larger number. The legacy `--max N` flag is accepted as a deprecated alias that sets both budgets to N (emits a deprecation warning). The split exists because under the old unified `--max`, every wait-round consumed a fix slot — so a PR with 3 fix iterations + 4 slow-bot polls would exhaust at MAX=5 even though only 3 fixes happened.
 - **Autonomous by default:** Grinds without pausing between rounds (override with `--interactive` for human checkpoints)
 - **Merges by default:** After grinding clean, pr-grind merges the PR. Pass `--no-merge` to skip the merge and just declare "Ready for merge". This is NOT GitHub auto-merge — pr-grind merges *after* all checks pass and all comments are addressed, inside its own control flow.
 - **Bail triggers:** Stop immediately and clean up worktree if:
@@ -73,16 +72,15 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
   - CI fails on an unrelated flaky test 3 times in a row
   - The fix would require architectural changes
   - The fix would require rewriting published git history (force-push, `git commit --amend` on a pushed SHA, `git filter-branch`, interactive rebase on pushed commits)
-  - Max fix-rounds reached (worker pushed `MAX_FIX` commits without converging clean)
+  - Max fix-rounds reached (dispatcher pushed `MAX_FIX` fix commits without converging clean)
   - Max wait-rounds reached (slow bot(s) never acked HEAD within `MAX_WAIT` polling rounds)
   - External policy gap (branch protection requires `N >= 1` human APPROVED reviews the author cannot self-provide, org-level rule blocks merge, or similar non-resolvable structural blocker). Excluded from `MAX_FIX`/`MAX_WAIT` accounting — there is nothing to fix and nothing to wait for. Dispatcher emits `RESULT_BAIL_CATEGORY=policy`; the operator decides via the surfaced decision message (see "Approver-Gap Detection").
   - **On any bail:** if Step 0 created an ephemeral worktree, `cd` back and `git worktree remove "../pr-grind-<PR_NUMBER>" --force 2>/dev/null || true` before exiting. Skip when `NO_WORKTREE=1` — i.e. either `--no-worktree` was passed OR Step 0's auto-fallback engaged because the branch was already checked out. The `|| true` keeps cleanup idempotent if the worktree was already removed.
-- **Recovery-via-inline (capped at 1 per fix-round):** When the worker bails for a *tooling-friction* reason (litmus blocked, pre-commit gate fired, subagent slash-command limitation) AND left inflight working-tree changes, the dispatcher takes over inline — runs the litmus iteration the subagent context can't, commits, pushes, and returns to the loop. **This is strictly for tooling friction, never for judgment friction:** design/scope questions, architectural concerns, env auth errors, history-rewriting fixes (commitlint on a pushed commit, large-diff splits — see worker Bail Triggers), and budget exhaustion all bail to the user as before. Cap is 1 per **fix-round** (not per-invocation) — within a single round, two consecutive worker bails = real bail (no matter how clean the inflight state); but the cap RESETS at the top of each new round, because the subagent SDK litmus limitation is a permanent physical constraint of the worker context (it cannot invoke slash-commands like `/litmus`), not a chronic worker bug that one-per-invocation gating would help detect. The cap exists so "dispatcher always rescues" can't mask a chronic worker bug WITHIN a single round; across rounds, each fresh worker dispatch deserves its own one-shot recovery budget. Override with `--no-recovery-inline` to disable entirely.
 - **Out-of-scope-acknowledged discipline rails:** the worker can dismiss a finding on YOUR PR's changed lines with one of 6 enumerated reasons (`schema-refactor`, `external-research`, `follow-up-deferred`, `cross-cutting-style`, `pre-existing-on-touched-line`, `false-positive`) — see `agents/pr-grinder.md` Step 3. Three rails bound the carve-out: (a) worker per-round cap of ≤3 dismissals, self-enforced; (b) dispatcher cumulative cap of ≤5 dismissals across the whole grind (Invariant 4); (c) dispatcher cumulative cap of ≤3 follow-up issues spawned (Invariant 4). Hitting either dispatcher cap BAILs with `RESULT_BAIL_CATEGORY=judgment` regardless of round status. The default is FIX — dismissal is the carve-out. The rails exist precisely so workers can't relabel tedious-but-real findings as out-of-scope to "ship faster," leaving real bugs tracked-but-unaddressed in spawned follow-up issues.
 
 ## CWD Reset Across Bash Calls
 
-**The Claude Code Bash tool does not reliably preserve CWD across tool calls.** Every NEW bash block added to this SKILL.md that touches the worktree MUST start with `cd "$WORKTREE_DIR"` (template-substituted to the literal absolute path resolved in Step 0). CWD inheritance can break on intervening Edit/Write/Read calls (verified empirically — interleaving non-Bash tool calls between Bash blocks can reset CWD to the session launch directory), subagent dispatches (each starts in whatever CWD the SDK chose, NOT necessarily the worktree), session boundaries (`/save-session` + `/resume-session` does not preserve CWD), and dispatcher↔worker handoffs (recovery-via-inline takeover starts in the dispatcher's session, not the worker's). Even when CWD happens to carry over between two back-to-back Bash calls, relying on it is fragile because the next intervening tool call breaks the chain silently. The failure mode is silent state corruption — commits land in the wrong repo, `gh` queries the wrong PR, file-writes land in the wrong location — not a loud error, which is the most expensive class of bug.
+**The Claude Code Bash tool does not reliably preserve CWD across tool calls.** Every NEW bash block added to this SKILL.md that touches the worktree MUST start with `cd "$WORKTREE_DIR"` (template-substituted to the literal absolute path resolved in Step 0). CWD inheritance can break on intervening Edit/Write/Read calls (verified empirically — interleaving non-Bash tool calls between Bash blocks can reset CWD to the session launch directory), subagent dispatches (each starts in whatever CWD the SDK chose, NOT necessarily the worktree), session boundaries (`/save-session` + `/resume-session` does not preserve CWD), and dispatcher↔worker handoffs (the dispatcher-owned commit block runs as its own fresh Bash process). Even when CWD happens to carry over between two back-to-back Bash calls, relying on it is fragile because the next intervening tool call breaks the chain silently. The failure mode is silent state corruption — commits land in the wrong repo, `gh` queries the wrong PR, file-writes land in the wrong location — not a loud error, which is the most expensive class of bug.
 
 **Shell state — environment variables, aliases, functions, shell options — does NOT persist across Bash tool calls.** `export FOO=1` in one block does NOT survive into the next, even back-to-back. See "Resolve flag-to-state translations" in START for the template-substitution convention this SKILL.md uses for boolean flags (`ADMIN_FLAG_PASSED`, `COPILOT_AUTO_RESOLVE`, `NO_WORKTREE`) — Claude template-substitutes the literal 0/1 into each block before the bash executes.
 
@@ -115,11 +113,6 @@ START
   ├── Resolve flag-to-state translations (consumed by downstream bash blocks):
   │     ADMIN_FLAG_PASSED       = 1 if `--admin-on-approver-gap` was passed, else 0
   │     COPILOT_AUTO_RESOLVE    = 1 if `--copilot-auto-resolve`    was passed, else 0
-  │     NO_RECOVERY_INLINE      = 1 if `--no-recovery-inline`      was passed, else 0
-  │                               (narrative-only — checked in the recovery-eligibility
-  │                                gate prose at "Recovery-via-inline eligibility" below;
-  │                                no bash consumer site needs template substitution, so
-  │                                this flag is tracked in conversation context only)
   │     NO_WORKTREE             = 1 if `--no-worktree`             was passed, else 0
   │     # These are NOT exported as shell env vars — bash exports do NOT survive
   │     # across Claude Bash tool calls (each tool call gets a fresh shell). The
@@ -139,25 +132,6 @@ START
   └── Initialize: PRIOR_COMMIT_SHA=none, PRIOR_ATTEMPTS=[],
                    fix_round=0, wait_round=0,
                    round_number=0,
-                   recovery_inline_used_this_round=0,
-                   # recovery_inline_used_this_round is the cap counter for
-                   # the RECOVERY_INLINE carve-out (Bug 2). Hard cap: 1 per
-                   # FIX-ROUND (not per-invocation). Reset to 0 at the top
-                   # of every loop iteration alongside `round_number += 1`
-                   # so a subsequent round's worker bail is eligible for
-                   # recovery even after a prior round already used its
-                   # carve-out. Within a single round, two consecutive
-                   # worker bails = real bail (no second rescue inside the
-                   # same round); across rounds, each fresh worker dispatch
-                   # gets its own one-shot budget. The cap exists to catch
-                   # a worker bug that bails every retry WITHIN a single
-                   # round — not to mask the subagent SDK's permanent
-                   # inability to invoke slash-commands like `/litmus`,
-                   # which is what makes recovery-via-inline necessary in
-                   # the first place. Earlier drafts used a per-invocation
-                   # cap which caused the second fix-round to bail with no
-                   # recovery option (see PR #94 grind, rounds 2–6 inline
-                   # escape after first cap-exhaustion).
                    # round_number is pre-incremented at the TOP of each loop
                    # iteration (before dispatch), so the first dispatch receives
                    # ROUND=1, the second ROUND=2, etc. It is the N in
@@ -179,7 +153,6 @@ START
 LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │
   ├── round_number += 1                  # pre-increment so ROUND=<N> is 1-indexed at dispatch time
-  ├── recovery_inline_used_this_round = 0  # reset per-round cap counter (see Initialize block above)
   │
   ├── Decide model:
   │     --opus, --interactive,
@@ -197,25 +170,14 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     ↳ Subagent does ONE round (Steps 1–6.5), returns RESULT_* tags
   │
   ├── Parse subagent output (extract tags only — control flow is sequential):
-  │     The status arrows below describe each round's EVENTUAL routing
-  │     after all the steps in this loop body have run; control does NOT
-  │     transfer immediately on parse. Counter updates (next step), the
-  │     recovery-via-inline check (only on bail), and Invariant checks
-  │     all run BEFORE the status decides where to jump. Invariants 1-3
-  │     run on `needs_more` and `clean` (skipped on `bail` because the
-  │     loop is terminating regardless); Invariant 4 (discipline rails)
-  │     runs on EVERY status, including `bail`, so a worker that
-  │     over-dismisses findings and then bails still trips the cap and
-  │     surfaces to the operator. Without this ordering, Invariant 4
-  │     would never fire on `clean` or `bail` rounds where the worker
-  │     dismissed findings before declaring done — exactly the failure
-  │     mode the rails exist to catch.
+  │     The worker owns triage and staging only. The dispatcher owns commit
+  │     composition, litmus, commitlint, push, Copilot auto-resolve, and
+  │     post-push ack synthesis through `scripts/dispatcher-commit-block.sh`.
+  │     Invariants still run before any terminal clean/continue decision.
   │
   │     RESULT_STATUS=clean       → eventually: invariants pass, go to COMPLETION
-  │     RESULT_STATUS=bail        → eventually: recovery-via-inline check;
-  │                                  if eligible AND not exhausted, go to RECOVERY_INLINE;
-  │                                  otherwise break loop, go to BAIL
-  │     RESULT_STATUS=needs_more  → eventually: invariants pass, classify, update state, continue
+  │     RESULT_STATUS=bail        → break loop, go to BAIL
+  │     RESULT_STATUS=needs_more  → route as fix-round or wait-round below
   │
   ├── Update discipline-rail counters (runs on EVERY status, including bail/clean):
   │     # Out-of-scope-acknowledged accumulator. The worker may have dismissed
@@ -251,63 +213,43 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     # worker decides per-finding whether to spawn. The dispatcher does
   │     # not infer one from the other.
   │
-  ├── Recovery-via-inline eligibility (Bug 2 — bounded takeover for tooling friction):
-  │     Triggers ONLY on RESULT_STATUS=bail. Default is BAIL; recovery is the carve-out.
+  ├── Dispatcher commit/state-synthesis block (post-inversion):
+  │     Evaluate guards first:
+  │       1. RESULT_STATUS=needs_more AND staged changes AND RESULT_FIXES empty
+  │          → BAIL judgment ("inconsistent worker state").
+  │       2. RESULT_STATUS=clean AND staged changes
+  │          → BAIL judgment ("orphaned staged changes on clean round").
   │
-  │     Eligible only when ALL of the following hold:
-  │       a. recovery_inline_used_this_round == 0 (cap is 1 per FIX-ROUND;
-  │          reset to 0 at the top of every loop iteration so a subsequent
-  │          round's worker bail is eligible for recovery even after a
-  │          prior round already used its carve-out. See Initialize block
-  │          above for the rationale — the SDK litmus limitation is a
-  │          permanent physical constraint, not a worker bug, so per-round
-  │          reset is correct.)
-  │       b. --no-recovery-inline was NOT passed
-  │       c. RESULT_INFLIGHT_CHANGES ∈ {staged, unstaged, both} — worker left
-  │          working-tree changes that may be salvageable. The `both` state
-  │          (worker had simultaneous staged AND unstaged changes — common
-  │          mid-fix: ran `git add` on some files, kept editing others) is
-  │          handled by the dedicated branch in the RECOVERY_INLINE block
-  │          below; excluding it here would silently defeat the dual-state
-  │          recovery the worker contract specifically builds.
-  │       d. RESULT_BAIL_CATEGORY == "tooling" — explicit enum on a structured tag,
-  │          NOT substring matching against free-form RESULT_BAIL_REASON. The worker
-  │          contract (agents/pr-grinder.md "Output Format" + "Bail Triggers") emits
-  │          RESULT_BAIL_CATEGORY ∈ {tooling, judgment, env, budget, policy} alongside
-  │          the human-readable RESULT_BAIL_REASON; this gate keys on the enum so a
-  │          worker (or a quoted bot comment paraphrased into RESULT_BAIL_REASON)
-  │          can't trip recovery via narrative containing the substring "litmus blocked".
-  │          Currently the only worker bail trigger that emits category=tooling is
-  │          "litmus blocked twice in this round"; expanding the category requires
-  │          an explicit worker-contract change, never an emergent prose match.
-  │          `budget` and `policy` are dispatcher-only — listed in the enum so the
-  │          parser space is closed against accidental worker emission, but they
-  │          never satisfy this `== "tooling"` predicate, so recovery-via-inline
-  │          stays correctly gated.
+  │     Routing:
+  │       - RESULT_STATUS=needs_more + staged changes + RESULT_FIXES populated
+  │         → Fix-round: invoke `scripts/dispatcher-commit-block.sh`.
+  │       - RESULT_STATUS=needs_more + no staged changes
+  │         → Wait-round: skip commit-block, refresh ack ledger only.
+  │       - RESULT_STATUS=clean + no staged changes
+  │         → Merge path; worker-emitted acks are authoritative for clean path.
+  │       - RESULT_STATUS=bail
+  │         → BAIL.
+  │       - Any other RESULT_STATUS
+  │         → BAIL judgment with reason `unrecognized RESULT_STATUS=<value>`.
   │
-  │     If any condition fails → go to BAIL as today.
-  │     If all conditions pass → set recovery_inline_used_this_round = 1 and go to RECOVERY_INLINE.
+  │     Fix-round delegation:
+  │       WORKTREE_DIR="$WORKTREE_DIR" \
+  │       CLAUDE_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT" \
+  │       PR_NUMBER="$PR_NUMBER" \
+  │       RESULT_STATUS="$RESULT_STATUS" \
+  │       RESULT_FIXES="$RESULT_FIXES" \
+  │       RESULT_REVIEWER_ACKS="${RESULT_REVIEWER_ACKS:-}" \
+  │       COPILOT_AUTO_RESOLVE="${COPILOT_AUTO_RESOLVE:-0}" \
+  │       NO_WORKTREE="${NO_WORKTREE:-0}" \
+  │       PRE_DISPATCH_BASELINE="${PRE_DISPATCH_BASELINE:-[]}" \
+  │       BUSDRIVER_ALLOW_NO_COMMITLINT="${BUSDRIVER_ALLOW_NO_COMMITLINT:-0}" \
+  │       bash "$CLAUDE_PLUGIN_ROOT/scripts/dispatcher-commit-block.sh"
   │
-  │     Hard non-eligibility (these bails MUST surface to the user, never recover):
-  │       - "design question" / "design/scope" — needs human judgment
-  │       - "WORKTREE_DIR missing" / "skipped pre-flight Read" — worker setup broken
-  │       - "gh CLI auth" / "rate-limit" — environmental, dispatcher can't help
-  │       - "history rewrite" / "force-push" / "amend on pushed commit" /
-  │         "filter-branch" — worker contract category=judgment; rewriting
-  │         published SHAs is operator-authorization territory, not a tooling
-  │         friction the dispatcher can bridge. See worker `Bail Triggers`
-  │         table → "Fix would require rewriting published git history".
-  │       - "max-fix iterations" / "max-wait iterations" — already exhausted budgets
-  │       - "branch protection policy" / "required approver gap" /
-  │         "org-policy blocker" — dispatcher category=policy; bypassing org
-  │         policy is operator-authorization territory (admin-merge), never a
-  │         tooling friction. pr-grind surfaces a decision message with
-  │         [admin]/[wait]/[add-reviewer] options. Auto-escalation requires
-  │         the explicit --admin-on-approver-gap flag AND a repo-side audit
-  │         workflow (bypass-audit.yml). See "Approver-Gap Detection" below.
-  │     The match list above is allowlist-style precisely so this carve-out
-  │     can't widen by accident — adding new tooling-friction reasons is an
-  │     intentional protocol change, not an emergent behavior.
+  │     Parse the last stdout line as exactly one JSON envelope:
+  │       - Success: set RESULT_COMMIT_SHA and RESULT_REVIEWER_ACKS from
+  │         `result_commit_sha` / `result_reviewer_acks`.
+  │       - Bail: set RESULT_BAIL_CATEGORY / RESULT_BAIL_REASON from
+  │         `bail_category` / `bail_reason`, then go to BAIL.
   │
   ├── Invariant checks (fail-CLOSED — both must hold):
   │     1. If RESULT_STATUS=needs_more AND RESULT_COMMIT_SHA=none AND
@@ -316,7 +258,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        SHA and without any stale ack — neither a fix nor a wait-for-
   │        bots is justified, so the loop has no progress signal".
   │        Legitimate `needs_more` rounds always have either a new commit
-  │        SHA (worker pushed a fix) OR at least one `stale` ack (worker
+  │        SHA (dispatcher pushed a fix) OR at least one `stale` ack (worker
   │        is waiting for a bot to re-review). A round with neither is
   │        broken — re-dispatching would loop forever on no progress.
   │        Note: a bot whose review was downgraded to `none` by the
@@ -442,7 +384,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     # intentional: bail terminates the loop (no future round to budget for)
   │     # and clean ships the PR (same — no future round). Only needs_more
   │     # rounds consume budget because only they cause another dispatch.
-  │     If RESULT_COMMIT_SHA != "none" → fix_round  += 1   # worker pushed a fix
+  │     If RESULT_COMMIT_SHA != "none" → fix_round  += 1   # dispatcher pushed a fix
   │     If RESULT_COMMIT_SHA == "none" → wait_round += 1   # worker waiting for bots
   │     # Classification reads RESULT_COMMIT_SHA, not the alias RESULT_HEAD_SHA —
   │     # the dispatcher's tag-resolution step already canonicalized aliases
@@ -513,165 +455,6 @@ COMPLETION:
 
 BAIL:
   └── Cleanup ephemeral worktree (skip if NO_WORKTREE=1), surface RESULT_BAIL_REASON to user
-
-RECOVERY_INLINE (Bug 2 — bounded inline takeover):
-  ├── cd "$WORKTREE_DIR" (worker's working tree carries the inflight changes)
-  ├── Inspect & verify the inflight state matches what the worker reported.
-  │   Path comparisons MUST use set equality on `|`-split tokens (worker emits
-  │   `|`-delimited paths to survive filenames with spaces — see worker
-  │   snapshot block). Stage updates MUST use `git add -- <files>` (with the
-  │   `--` separator) to prevent option-injection from filenames starting
-  │   with `-`. NEVER pass RESULT_STAGED_FILES / RESULT_UNSTAGED_FILES
-  │   through unquoted shell expansion.
-  │
-  │     If RESULT_INFLIGHT_CHANGES=staged:
-  │       a. Run `git diff --cached -z --name-only | tr '\0' '\n' | sort` →
-  │          local snapshot. Run `printf '%s' "$RESULT_STAGED_FILES" |
-  │          tr '|' '\n' | sort` → reported snapshot. Compare as sets.
-  │       b. If they diverge, BAIL with reason "recovery-via-inline: staged
-  │          state mismatch (worker reported <X>, working tree shows <Y>)".
-  │       c. Verify staged-diff content hasn't been mutated:
-  │          LOCAL_SHA=$(git diff --cached | sha256sum | cut -c1-64)
-  │          If LOCAL_SHA != RESULT_STAGED_DIFF_SHA, BAIL with reason
-  │          "recovery-via-inline: staged diff content changed since worker
-  │          bail (sha mismatch)" — defends against concurrent worktree
-  │          mutation that the path-list match cannot catch.
-  │     If RESULT_INFLIGHT_CHANGES=unstaged:
-  │       a. Compare `git diff -z --name-only` set against RESULT_UNSTAGED_FILES;
-  │          divergence → BAIL "recovery-via-inline: unstaged state mismatch".
-  │       b. Verify unstaged-diff content via SHA:
-  │          LOCAL_UNSTAGED_SHA=$(git diff | sha256sum | cut -c1-64)
-  │          If LOCAL_UNSTAGED_SHA != RESULT_UNSTAGED_DIFF_SHA, BAIL with reason
-  │          "recovery-via-inline: unstaged diff content changed since worker
-  │          bail (sha mismatch)" — concurrent worktree mutation between
-  │          worker bail and dispatcher takeover would otherwise let the
-  │          dispatcher commit content the worker never saw.
-  │       c. Stage the verified set: read the path list with mapfile / while-read
-  │          loop on the `|`-split tokens, then `git add -- "${PATHS[@]}"`.
-  │     If RESULT_INFLIGHT_CHANGES=both:
-  │       Worker had both staged AND unstaged changes (common mid-fix state:
-  │       added some files, kept editing others). Verify staged set + diff-sha
-  │       per the staged branch above, verify and stage the unstaged set per
-  │       the unstaged branch above. Both must verify before commit; failure
-  │       in either set BAILs without partial-state mutation.
-  │
-  ├── Brief inline review of the staged diff:
-  │     Run `git diff --cached` and read the change. The dispatcher (Opus)
-  │     can read the diff in conversation context — the worker bailed mid-fix,
-  │     but the diff itself may still be sound. Sanity-check that the change
-  │     addresses something in the worker's RESULT_FIXES summary; if RESULT_FIXES
-  │     was empty (worker bailed before classifying anything as fixed), that's a
-  │     red flag — BAIL with reason "recovery-via-inline: worker bailed without
-  │     RESULT_FIXES summary; no clear intent to recover".
-  │
-  ├── Commit & push (the dispatcher CAN handle litmus iteration, the worker can't):
-  │     # SECURITY: build the message with `printf %s` formatters that do NOT
-  │     # re-interpret content, then pipe to `git commit -F -` reading from
-  │     # stdin. RESULT_FIXES is worker prose that can contain attacker-
-  │     # controlled content (paraphrased bot-comment text, quoted user
-  │     # input, etc.); shell-string interpolation into a `COMMIT_BODY="..."`
-  │     # assignment OR a `git commit -m "..."` flag would create a
-  │     # command-injection sink for any backtick / $(...) / closing-quote
-  │     # sequence in the summary. The `printf '%s' "$VAR"` pattern below
-  │     # treats $VAR as literal data — no command substitution, no quote
-  │     # parsing, no $(...) expansion of the variable's contents.
-  │     #
-  │     # LENGTH: subject is fixed-form ("fix: address PR #<N> feedback
-  │     # (recovery-via-inline)" — ~54 chars max for any PR_NUMBER up to
-  │     # 6 digits) and the full RESULT_FIXES summary goes in the BODY,
-  │     # not the subject. An earlier template ("...feedback — %s
-  │     # (recovery-via-inline)\n" with RESULT_FIXES interpolated into
-  │     # the subject) overflowed commitlint's 100-char header-max-length
-  │     # rule whenever the worker emitted a substantive fix summary —
-  │     # surfaced empirically on PR #90: the round-2 dispatcher
-  │     # recovery commit overflowed commitlint's 100-char header limit
-  │     # and required a reset + recommit + force-with-lease push after
-  │     # operator authorization to fix. See PR #90's commit history
-  │     # for the trail. The subject/body split keeps the header safe
-  │     # regardless of summary length while preserving the full audit
-  │     # trail in the commit body.
-  │     {
-  │       printf 'fix: address PR #%s feedback (recovery-via-inline)\n' "$PR_NUMBER"
-  │       # Translate embedded newlines in RESULT_FIXES to spaces (the
-  │       # contract says "one-line summary" but workers occasionally
-  │       # emit multi-line strings); collapsing into a single body line
-  │       # with `tr '\n' ' '` (NOT `tr -d '\n'`) keeps multi-line
-  │       # summaries readable — `tr -d` would concatenate words across
-  │       # the line break ("fix A\nfix B" → "fix Afix B"). Also skip
-  │       # the body entirely when RESULT_FIXES is "none" or empty
-  │       # (defensive — shouldn't happen because the "RESULT_FIXES
-  │       # empty → BAIL" check above would have surfaced first, but a
-  │       # subject-only commit is still syntactically valid if it does).
-  │       RESULT_FIXES_CLEAN=$(printf '%s' "$RESULT_FIXES" | tr '\n' ' ')
-  │       if [ "$RESULT_FIXES_CLEAN" != "none" ] && [ -n "$RESULT_FIXES_CLEAN" ]; then
-  │         printf '\n%s\n' "$RESULT_FIXES_CLEAN"
-  │       fi
-  │     } | git commit -F -
-  │     # The pre-commit hook fires litmus. The dispatcher (Opus) can iterate
-  │     # through litmus auto-corrections (up to 10 iterations per gate semantics);
-  │     # the worker context can't, which is precisely the tooling friction this
-  │     # carve-out exists to bridge.
-  │     #
-  │     # Pre-push commitlint pre-flight (same shape as worker Step 6).
-  │     # The dispatcher's recovery-commit body is composed from
-  │     # RESULT_FIXES_CLEAN (worker prose, single line after tr) and is
-  │     # naturally short — header is fixed-form, body is one line — but
-  │     # we still run commitlint defensively because (a) RESULT_FIXES
-  │     # can occasionally be long enough to trip footer-max-line-length
-  │     # (100 chars default), and (b) catching the violation here keeps
-  │     # the bad commit local-only, so the operator's amend path stays
-  │     # purely local (no force-push). Skip silently when commitlint
-  │     # isn't locally invokable.
-  │     # Lint ONLY the just-committed recovery commit (HEAD~1..HEAD),
-  │     # NOT the full PR range. The recovery commit is the only one we
-  │     # just produced; older pushed commits in the range are outside
-  │     # this pre-flight's scope (force-push territory). Also avoids the
-  │     # base-branch lookup, which would default to "main" on `gh pr
-  │     # view` failure and lint the wrong range when the PR's actual
-  │     # base is a release branch or stacked PR — see Cubic findings on
-  │     # PR #98 for the empirical motivation.
-  │     if command -v npx >/dev/null 2>&1 && npx --no-install commitlint --version >/dev/null 2>&1; then
-  │       if ! npx --no-install commitlint --from HEAD~1 --to HEAD; then
-  │         # The recovery commit itself violates commitlint — surface to
-  │         # operator. The bad commit is local-only; recovery cap
-  │         # (recovery_inline_used_this_round) stays consumed for this
-  │         # round (no second rescue inside the same round), but resets
-  │         # at the top of the next loop iteration.
-  │         echo "❌ recovery-via-inline: commitlint failed locally on the recovery commit (HEAD~1..HEAD) — bailing BEFORE push"
-  │         BAIL with reason "recovery-via-inline attempted but commitlint rejected the dispatcher's recovery commit (HEAD~1..HEAD). Local amend required (no force-push needed; commit hasn't been pushed). Inspect worker RESULT_FIXES prose for an oversized body line; consider reducing the prose or splitting into multiple paragraphs."
-  │       fi
-  │     fi
-  │     git push
-  │
-  ├── On litmus FAIL after auto-iteration:
-  │     BAIL with reason "recovery-via-inline attempted but litmus rejected
-  │     worker's in-flight changes: <litmus output>". This surfaces the actual
-  │     code problem to the user — the worker's fix was wrong, not just blocked
-  │     by tooling. Do NOT retry; the recovery cap is 1.
-  │
-  ├── On commit/push success:
-  │     fix_round += 1                         # recovery counts as a fix-round (engineering work happened)
-  │     PRIOR_COMMIT_SHA   = <new SHA>
-  │     PRIOR_ATTEMPTS    += "Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>):
-  │                            fixes=<RESULT_FIXES> (recovery-via-inline);
-  │                            failures=<RESULT_REMAINING>;
-  │                            acks=<recompute fresh — bots haven't seen recovery commit yet, expect mostly stale>"
-  │     # PRIOR_REVIEWER_ACKS is recomputed fresh via scripts/ack-ledger.sh against the new HEAD —
-  │     # don't reuse the worker's pre-bail snapshot, it's now stale.
-  │     If fix_round >= MAX_FIX → fall through to ON_LOOP_EXHAUSTED (no rescue from budget exhaustion)
-  │     Else → return to top of LOOP (continue dispatching workers)
-  │
-  └── recovery_inline_used_this_round remains 1 for the rest of THIS
-      round — a second worker bail within the same round will go straight
-      to BAIL, no matter how clean its inflight state looks. The flag
-      RESETS to 0 at the top of the next loop iteration (see the
-      `recovery_inline_used_this_round = 0` reset alongside
-      `round_number += 1` above), so the next round's worker bail is
-      eligible for recovery again. The within-round cap is the
-      load-bearing safety rail that prevents "dispatcher always rescues"
-      from masking a chronic worker bug within a single round; the
-      across-round reset reflects that the SDK litmus limitation is a
-      permanent physical constraint, not a recurring worker bug.
 ```
 
 ## Step Details
@@ -785,20 +568,35 @@ The full tag set:
 
 ```
 RESULT_STATUS: clean | needs_more | bail              (always present)
-RESULT_COMMIT_SHA: <sha or "none">                    (always present)
+RESULT_COMMIT_SHA: <sha or "none">                    (always present; dispatcher-synthesized on fix-round and wait-round paths; worker-advisory on clean path)
 RESULT_FIXES: <one-line summary>                      (always present)
 RESULT_REMAINING: <one-line or "none">                (always present)
-RESULT_REVIEWER_ACKS: <login=value,login=value,...>   (always present; values: <short-sha> | none | stale; early-bail paths emit the all-`none` default initialized before Step 0)
+RESULT_REVIEWER_ACKS: <login=value,login=value,...>   (always present; dispatcher-synthesized on fix-round and wait-round paths; worker-advisory on clean path; values: <short-sha> | none | stale; early-bail paths emit the all-`none` default initialized before Step 0)
 RESULT_BOT_LEDGER: <login=n_act/n_total:disp,...>     (always present; entries shape: `<login>=<n_actionable>/<n_total>:<disposition>`; early-bail paths emit the all-`0/0:none` default; gates Invariant 3 — see Dispatcher Loop. Disposition prose MUST NOT contain commas; entries are split on `,` and a comma inside a disposition would corrupt the parse. Disposition MAY carry `+`-joined `scope-skipped:<reason>:<count>` segments — Invariant 4 sums those counts across all bots/rounds against the ≤5 cumulative cap)
 RESULT_ISSUES_SPAWNED: <issue,issue,... or "none">    (always present in the new contract; comma-separated GitHub issue numbers spawned this round via the out-of-scope-acknowledged workflow; gates Invariant 4 — cumulative count across rounds caps at 3. **Backward compatibility:** missing tag entirely → treat as "none" / zero contribution. Old-contract workers (pre-out-of-scope-flow) never emitted this tag and operate under pre-Invariant-4 semantics for the rest of their grind; new-contract workers always emit it. Do NOT bail "subagent output unparseable" on a missing RESULT_ISSUES_SPAWNED — the protocol is additive, not version-pinned.)
-RESULT_INFLIGHT_CHANGES: none | staged | unstaged | both  (always present; non-bail rounds emit `none`; bail rounds emit the worker's snapshotted working-tree state — gates RECOVERY_INLINE eligibility)
-RESULT_STAGED_FILES: <`|`-separated paths or "none">  (always present; pipe-delimited — split on `|` and use `git add --` to prevent option-injection; `|` is used because NUL bytes cannot survive in plain-text tag files)
-RESULT_UNSTAGED_FILES: <`|`-separated paths or "none"> (always present; pipe-delimited)
-RESULT_STAGED_DIFF_SHA: <64-hex sha256 or "none">     (always present; verifies staged content hasn't been mutated between worker bail and dispatcher takeover)
-RESULT_UNSTAGED_DIFF_SHA: <64-hex sha256 or "none">   (always present; verifies unstaged content hasn't been mutated — applies in unstaged and both modes)
 RESULT_BAIL_REASON: <one-line free-form prose>        (present only when status=bail; for human consumption — NEVER substring-matched for control flow)
-RESULT_BAIL_CATEGORY: tooling | judgment | env | budget | policy  (present only when status=bail; structured enum that gates recovery-via-inline eligibility; `policy` is dispatcher-only — emitted when an external org-policy gate blocks merge that pr-grind cannot resolve via fix-rounds or wait-rounds, e.g. required-approver gap)
+RESULT_BAIL_CATEGORY: judgment | env | budget | policy  (present only when status=bail; `budget` and `policy` are dispatcher-only — emitted when the loop exhausts or when an external org-policy gate blocks merge that pr-grind cannot resolve via fix-rounds or wait-rounds, e.g. required-approver gap)
 ```
+
+### Dispatcher commit-block contract (`scripts/dispatcher-commit-block.sh`)
+
+Inputs (env vars, required):
+- `WORKTREE_DIR`, `CLAUDE_PLUGIN_ROOT`, `PR_NUMBER`, `RESULT_STATUS`, `RESULT_FIXES`.
+
+Inputs (env vars, optional; default 0/empty):
+- `COPILOT_AUTO_RESOLVE` - `1` enables Copilot resolve.
+- `NO_WORKTREE` - `1` enables the pre-dispatch baseline check for inline/no-worktree mode.
+- `PRE_DISPATCH_BASELINE` - JSON array of paths staged before worker dispatch; required when `NO_WORKTREE=1`.
+- `BUSDRIVER_ALLOW_NO_COMMITLINT` - `1` allows a missing local commitlint binary.
+
+Outputs (stdout, exactly one JSON object on the last line):
+- Success: `{"status":"success","result_commit_sha":"<sha>","result_reviewer_acks":"login=value,..."}`
+- Bail: `{"bail_category":"judgment|env|budget|policy","bail_reason":"<string>"}`
+
+Exit code:
+- `0` on success envelope.
+- `1` on bail envelope.
+- `2` on internal-error precondition failures.
 
 **Stdout-parse fallback to the dispatcher-allocated `RESULT_FILE`:** if scanning the worker's stdout for `^RESULT_<NAME>: ` produces no `RESULT_STATUS` after alias resolution **OR** produces a `RESULT_STATUS` whose value isn't one of `clean`, `needs_more`, `bail`, DO NOT immediately bail. First try reading `$RESULT_FILE` (the unique path you allocated in the context block above); if it exists and yields a `RESULT_STATUS` whose value IS one of the three canonical values (after the same alias resolution and last-occurrence rules), use those tags. The worker writes this file immediately before stdout emission per the contract in `agents/pr-grinder.md`, so it should be present on the filesystem even when stdout was truncated, reformatted by the SDK, polluted by mid-prompt output, OR contained a malformed `RESULT_STATUS` value. Only bail "subagent output unparseable" if BOTH stdout and the file fail to yield a `RESULT_STATUS` with a canonical value.
 
@@ -808,7 +606,7 @@ If after both probes `RESULT_STATUS` is still missing or its value still isn't o
 
 ### Inline Execution (`--opus`, `--interactive`, `--ci-only`, or `--comments-only`)
 
-When inline, the dispatcher executes the round body itself. This is the legacy behavior — Steps 1–7 below — running in the parent Opus context.
+When inline, the dispatcher executes the round triage/fix/stage body itself in the parent Opus context. Commit, litmus, push, Copilot auto-resolve, and post-push ack synthesis still go through `scripts/dispatcher-commit-block.sh`, exactly like subagent mode.
 
 <EXTREMELY-IMPORTANT>
 YOU MUST COMPLETE STEP 1 BEFORE PROCEEDING. Do NOT skip, abbreviate, or defer CI waiting.
@@ -949,27 +747,11 @@ For each actionable item:
 
 Run the narrowest test that covers the fix. If local tests fail, fix before pushing.
 
-#### Step 6: Commit & Push
+#### Step 6: Stage Intent; Dispatcher Commits
 
-```bash
-git add <specific-files>
-# Subject is FIXED-FORM to stay safely under commitlint's 100-char
-# header-max-length rule. The detailed summary goes in the commit BODY.
-# Same subject/body split as the worker's Step 6 template at
-# agents/pr-grinder.md and the dispatcher's RECOVERY_INLINE template
-# (Commit & push block in the dispatcher loop above) — see the LENGTH
-# comment in that block for the empirical motivation (PR #90's recovery
-# commit overflowed commitlint's 100-char header limit before the split).
-{
-  printf 'fix: address PR #%s feedback\n' "<N>"
-  printf '\n%s\n' "<brief or multi-paragraph summary of what you changed this round>"
-} | git commit -F -
-git push
-```
+Stage only the files changed by this round and record the fix summary in `RESULT_FIXES`. Do not run `git commit`, `git push`, litmus, commitlint, or Copilot auto-resolve from the inline body. The dispatcher commit/state-synthesis block invokes `scripts/dispatcher-commit-block.sh` with `NO_WORKTREE=1`; that script enforces the clean-index pre-condition, runs litmus, commits, pushes, and returns the authoritative `RESULT_COMMIT_SHA` / `RESULT_REVIEWER_ACKS` envelope.
 
-**BLOCKING GATE:** The `git commit` command will block until the litmus pre-commit review passes. Litmus may auto-iterate up to 10 times to fix issues silently. Do NOT use `--no-verify` to bypass this gate. If litmus repeatedly blocks, split the changes into smaller commits or bail.
-
-If you didn't change any files this round (no actionable findings — only waiting for bots to re-review), skip the commit/push and proceed to Step 6.5; HEAD is unchanged and the ledger will reflect bot acks against the existing HEAD.
+If you didn't change any files this round (no actionable findings — only waiting for bots to re-review), skip the commit-block and proceed to Step 6.5; HEAD is unchanged and the ledger will reflect bot acks against the existing HEAD.
 
 #### Step 6.5: Compute reviewer ack ledger (post-push)
 
@@ -1104,11 +886,6 @@ RESULT_REMAINING: none
 RESULT_REVIEWER_ACKS: greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
 RESULT_BOT_LEDGER: greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,copilot-pull-request-reviewer=0/1:no-findings,codescene-delta-analysis=0/0:none
 RESULT_ISSUES_SPAWNED: 847,848
-RESULT_INFLIGHT_CHANGES: none
-RESULT_STAGED_FILES: none
-RESULT_UNSTAGED_FILES: none
-RESULT_STAGED_DIFF_SHA: none
-RESULT_UNSTAGED_DIFF_SHA: none
 ```
 
 **Dispatcher state after Round 3:**
@@ -1600,7 +1377,7 @@ PR #<N> is clean after <rounds> round(s).
 | Argument | Description | Default |
 |----------|-------------|---------|
 | `<PR>` | PR number or URL | Auto-detect from current branch |
-| `--max-fix N` | Maximum **fix-rounds** (worker pushed a commit; `RESULT_COMMIT_SHA != "none"`) before bail. Reflects engineering iteration budget. | 5 |
+| `--max-fix N` | Maximum **fix-rounds** (dispatcher pushed a commit; `RESULT_COMMIT_SHA != "none"`) before bail. Reflects engineering iteration budget. | 5 |
 | `--max-wait N` | Maximum **wait-rounds** (worker did not push; `RESULT_COMMIT_SHA == "none"` — polling for slow bots to ack HEAD) before bail. Reflects bot-latency tolerance. | 8 |
 | `--max N` | **Deprecated alias** that sets both `--max-fix` and `--max-wait` to N. Emits a `⚠️  --max is deprecated; use --max-fix and --max-wait` warning. Cannot be combined with `--max-fix` or `--max-wait` — combining bails with `conflicting flags`. | unset |
 | `--opus` | Run rounds inline in parent Opus context (no Sonnet dispatch) | Off (dispatches Sonnet subagent) |
@@ -1609,7 +1386,6 @@ PR #<N> is clean after <rounds> round(s).
 | `--ci-only` | Only fix CI failures, ignore comments. Forces inline mode (Step 2 branching not yet wired into the subagent). | Off |
 | `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
 | `--comments-only` | Only address comments, ignore CI. Forces inline mode (same reason as `--ci-only`). | Off |
-| `--no-recovery-inline` | Disable the bounded RECOVERY_INLINE carve-out (Bug 2). When passed, any worker bail goes straight to BAIL regardless of inflight state or bail reason — useful when you want the worker's bail to surface immediately for human review and don't trust the dispatcher to commit-and-push on the worker's behalf. | Off (recovery enabled, capped at 1 per fix-round; resets at the top of each loop iteration — see Initialize block under START) |
 | `--admin-on-approver-gap` | Opt-in auto-escalation when the approver gap is the sole remaining merge-gate blocker. Eligibility (ALL must hold): CI green, bots ack HEAD, all threads resolved, no failing required checks; author has `admin` or `maintain` repo permission; `.github/workflows/bypass-audit.yml` exists in the repo. With all gates green, the dispatcher runs `gh pr merge <PR> --squash --delete-branch --admin` and logs the event to `.claude/bypass-log.jsonl`. **Fail-CLOSED when no audit workflow exists** — the flag is ignored without a trail and the dispatcher surfaces the operator-decision message instead. Off by default; this flag is the only way pr-grind ever bypasses required-approver count. | Off (surfaces decision message) |
 | `--copilot-auto-resolve` | Opt-in: when Copilot's HEAD ack is stale after a force-push AND every Copilot thread is anchored to lines the new HEAD touched AND the worker emitted substantive fixes for those lines, auto-resolve the threads with an `addressed in <SHA>` reply + `resolveReviewThread` mutation. Flips ack-ledger tier A to a HEAD-ack via the resolved-threads path. Disabled by default while the test fixtures stabilize; promote to default once fixtures 5-7 (see `tests/test-copilot-resolve.sh`) have a track record. | Off |
 
@@ -1634,5 +1410,5 @@ When emitting the verbatim message template (from the canonical protocol — see
 
 - **Pairs with:** `finishing-a-development-branch` (Phase 6 creates the PR and cleans up its worktree, then `/pr-grind` creates its own ephemeral worktree for the feedback loop)
 - **Worktree lifecycle:** pr-grind owns its worktree from creation to cleanup — independent of the pipeline's Phase 3 worktree.
-- **Gate:** Litmus pre-commit hook fires on each `git commit` within the loop (inside the subagent or inline); pre-merge gate fires on `gh pr merge` (skip: `.claude/skip-pr-grind.local`)
+- **Gate:** Litmus runs inside the dispatcher-owned commit block before each fix commit; pre-merge gate fires on `gh pr merge` (skip: `.claude/skip-pr-grind.local`)
 - **Subagent:** `pr-grinder` (Sonnet) — receives one-round dispatch, returns RESULT_* tags. See `agents/pr-grinder.md`.

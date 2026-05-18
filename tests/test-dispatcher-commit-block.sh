@@ -280,7 +280,36 @@ EOF
         return 1
     }
 }
-test_d_commitlint_bails() { todo "test_d"; }
+test_d_commitlint_bails() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json allow_no_commitlint
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    cat > "$shimdir/npx" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "--no-install" ] && [ "$2" = "commitlint" ] && [ "${3:-}" = "--version" ]; then
+    printf 'commitlint 0.0.0-test\n'
+    exit 0
+fi
+if [ "$1" = "--no-install" ] && [ "$2" = "commitlint" ]; then
+    printf 'commitlint fixture failure\n' >&2
+    exit 1
+fi
+exit 127
+EOF
+    chmod +x "$shimdir/npx"
+
+    allow_no_commitlint=0
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_d expected dispatcher bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment" and (.bail_reason | contains("commitlint pre-flight failed"))'
+}
 test_e_autofix_trailer_inplace() { todo "test_e"; }
 test_f_adversarial_result_fixes() { todo "test_f"; }
 test_g_inline_subagent_parity() { todo "test_g"; }

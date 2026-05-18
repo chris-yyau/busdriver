@@ -257,7 +257,29 @@ test_b_litmus_fail_to_pass() {
     assert_json "$dispatcher_json" \
         '.bail_category == "judgment" and (.bail_reason | contains("review_findings"))'
 }
-test_c_marker_consumed() { todo "test_c"; }
+test_c_marker_consumed() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    cat > "$sandbox/.git/hooks/post-commit" <<'EOF'
+#!/usr/bin/env bash
+rm -f .claude/litmus-passed.local
+EOF
+    chmod +x "$sandbox/.git/hooks/post-commit"
+
+    run_dispatcher_capture
+
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_c dispatcher output: $dispatcher_output"
+        return 1
+    }
+    [ ! -f "$sandbox/.claude/litmus-passed.local" ] || {
+        echo "test_c expected post-commit hook to consume litmus marker"
+        return 1
+    }
+}
 test_d_commitlint_bails() { todo "test_d"; }
 test_e_autofix_trailer_inplace() { todo "test_e"; }
 test_f_adversarial_result_fixes() { todo "test_f"; }

@@ -21,8 +21,34 @@ Pick this skill when ALL of the following are true:
 Pick something else when:
 
 - **No clean verifier commands** ("refactor for readability", "investigate why X is slow") → use `/codex:rescue` (one-shot, no verifiers needed)
-- **Hours-long, want manual pause/resume** ("rewrite the whole module overnight") → tell user to open a separate terminal, run `codex`, and use `/goal` directly (zero CC cost, native budget guard)
+- **Hours-long, want manual pause/resume** ("rewrite the whole module overnight") → tell user to open a separate terminal, run `codex`, and use `/goal` directly (zero CC cost, native budget guard). For specs >~3 KB, see "TUI `/goal` handoff: long-spec pattern" below.
 - **Quick inline work** (single-file edit you can do in 1–3 turns) → just do it in CC
+
+## TUI `/goal` handoff: long-spec pattern
+
+When routing the user to the Codex TUI `/goal` command (see the bailouts in
+"When to invoke" above and "Related" below), note that **`/goal` enforces a
+4000-character input limit**. Codex rejects longer prompts with
+`Goal objective is too long: N characters. Limit: 4,000`.
+
+For any non-trivial handover, save the spec to a file and hand the user a short
+`/goal` invocation that points at it:
+
+1. Write the spec to `.claude/codex-goal-<slug>.md.local` (gitignored via the
+   `.claude/*.local` pattern; stays out of version control).
+2. Hand the user a short `/goal` like:
+   ```
+   Follow the instructions in .claude/codex-goal-<slug>.md.local.
+
+   Branch: <expected branch>. Hard scope: EDIT ONLY <path>. STOP after <task N>.
+   Report total commits, tests passing, and any blockers.
+   ```
+
+The short invocation stays well under 4 KB regardless of spec size; the file
+carries the full instructions. This is codex's own recommendation — its error
+message says "Put longer instructions in a file and refer to that file in the
+goal." Use it any time the prompt would exceed ~3 KB or when the spec benefits
+from being reviewable / version-able.
 
 ## Inputs: the spec
 
@@ -277,7 +303,7 @@ Only run after Step 7 exits 0 (scope clean):
   ```
 
   Then dispatch the next iter with `ITER_N=$((ITER_N+1))` and a fresh `--result-file`.
-- **Red after max_iters** → report failure with last verifier outputs + suggest the user move to TUI `/goal` for longer autonomy, or refine the spec.
+- **Red after max_iters** → report failure with last verifier outputs + suggest the user move to TUI `/goal` for longer autonomy (use the file-pointer pattern from "TUI `/goal` handoff" above if the spec is >~3 KB), or refine the spec.
 
 This is the structural defense against prompt injection from verifier output: even if Codex were steered to modify a file outside scope, the post-iter check catches it before the next iter compounds the damage. The check uses **only Python stdlib** (`json` + `fnmatch`) — no PyYAML or other third-party deps.
 
@@ -340,7 +366,7 @@ This is significantly cheaper than a naive "Claude reads full git diff each iter
 ## Related
 
 - `/codex:rescue` (OpenAI plugin) — one-shot delegation, no verifiers needed. Use when the task can't be cleanly tested.
-- `codex` TUI + `/goal` — native Ralph Loop with budget guard, pause/resume controls. Zero CC cost, no round-trip to CC.
+- `codex` TUI + `/goal` — native Ralph Loop with budget guard, pause/resume controls. Zero CC cost, no round-trip to CC. **Note:** `/goal` enforces a 4000-char input limit; long specs need the file-pointer pattern documented in "TUI `/goal` handoff" above.
 - `busdriver:council` — same orchestrator topology (Claude orchestrates external voices, judges between turns).
 
 ## Why this design (provenance)

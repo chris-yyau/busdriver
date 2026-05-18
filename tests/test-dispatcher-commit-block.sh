@@ -463,7 +463,25 @@ test_l_fix_round_classifier() {
             return 1
         }
 }
-test_m_wait_round_classifier() { todo "test_m"; }
+test_m_wait_round_classifier() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    git -C "$sandbox" commit --no-gpg-sign -qm "consume staged fixture"
+    git -C "$sandbox" push -q
+    run_dispatcher_capture needs_more "none"
+
+    if printf '%s\n' "$dispatcher_json" | jq -e \
+        '.status == "success"
+         and .result_commit_sha == "none"
+         and (.result_reviewer_acks | contains("greptile-apps=none"))' >/dev/null; then
+        return 0
+    fi
+
+    reveal_dispatcher_bug "test_m wait-round no-staged path should return result_commit_sha=none with refreshed acks; got exit=$dispatcher_exit json=$dispatcher_json"
+}
 test_n_clean_path_acks() { todo "test_n"; }
 test_o_copilot_env_invocation() { todo "test_o"; }
 

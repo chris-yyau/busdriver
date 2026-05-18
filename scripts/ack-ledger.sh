@@ -97,33 +97,50 @@ if [ -n "$check_run_head" ] && [ "${check_run_head:0:8}" = "$HEAD_SHA" ]; then e
 # Otherwise (posted on an older commit, no HEAD signal yet) → stale.
 if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; exit 0; fi
 
-# Infra-error / rate-limit downgrade — Copilot's "encountered an error and was
-# unable to review" review object is the canonical case: GitHub leaves it
-# frozen on the SHA where it errored, never updates commit_id on later pushes,
-# and there's no gh-CLI surface to clear it (DELETE only works on pending
-# reviews; requested_reviewers POST 422s for Copilot). Treating those as
-# `stale` blocks the merge gate forever; downgrade to `none` so the loop
-# surfaces the situation to the operator instead of looping in vain.
-#
-# Defense: only fire when the bot has NEVER submitted an APPROVED or DISMISSED
-# review on this PR. DISMISSED counts as "ever approved" because a dismissed
-# approval is a historical signal that the bot genuinely approved at some point;
-# treating post-dismiss errors as permanent would incorrectly suppress stale.
-# If the bot ever approved/dismissed any commit, an error in its latest body
-# is transient (operator should re-request) and the existing `stale` signal
-# is correct. This also closes a potential admin-edit body-injection attack on
-# APPROVED/DISMISSED reviews — `ever_approved>0` blocks the downgrade.
+# Two-case downgrade — both gated by `ever_approved == 0` so a bot that has
+# ever approved (or had an approval dismissed) is never silently bypassed.
+# DISMISSED counts as "ever approved" because a dismissed approval is still
+# a historical signal the bot genuinely approved at some point. The shared
+# `ever_approved>0` guard also closes a potential admin-edit body-injection
+# attack on APPROVED/DISMISSED review bodies.
 #
 # Note: the FETCH_OK guard at the top already returns `stale` on any
 # source-fetch failure, so this block only runs on successful fetches.
-downgrade_pair=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+downgrade_data=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
   '[ .[] | .[] | select(.user.login == $login or .user.login == $login_bot) ]
    | [ (map(select(.state == "APPROVED" or .state == "DISMISSED")) | length),
-       (last | .body // empty) ]' 2>/dev/null || echo '[0,""]')
-ever_approved=$(printf '%s' "$downgrade_pair" | jq -r '.[0]' 2>/dev/null || echo 0)
+       (last | .body // empty),
+       (last | .state // empty) ]' 2>/dev/null || echo '[0,"",""]')
+ever_approved=$(printf '%s' "$downgrade_data" | jq -r '.[0]' 2>/dev/null || echo 0)
 if [ "$ever_approved" -eq 0 ]; then
-  last_body=$(printf '%s' "$downgrade_pair" | jq -r '.[1]' 2>/dev/null || echo "")
+  last_body=$(printf '%s' "$downgrade_data" | jq -r '.[1]' 2>/dev/null || echo "")
+  last_state=$(printf '%s' "$downgrade_data" | jq -r '.[2]' 2>/dev/null || echo "")
+  # Case 1: infra-error / rate-limit — Copilot's "encountered an error and
+  # was unable to review" review object is the canonical case. GitHub leaves
+  # it frozen on the SHA where it errored, never updates commit_id on later
+  # pushes, and there's no gh-CLI surface to clear it (DELETE only works on
+  # pending reviews; requested_reviewers POST 422s for Copilot). Treating
+  # those as `stale` blocks the merge gate forever; downgrade to `none` so
+  # the loop surfaces the situation to the operator instead of looping in
+  # vain.
   if printf '%s' "$last_body" | grep -qiE 'encountered an error|rate.?limit|unable to review|try again by re-requesting'; then
+    echo "none"; exit 0
+  fi
+  # Case 2: one-and-done COMMENTED — bot reviewed a prior commit with a
+  # non-actionable summary (state=COMMENTED, not APPROVED/CHANGES_REQUESTED),
+  # then never re-fired despite HEAD advancing. Canonical Copilot pattern:
+  # it posts a PR-overview summary on the initial commit and doesn't auto-
+  # trigger on later non-force pushes; the re-request API 422s so the
+  # operator has no recourse. By the time we reach this block we know:
+  # (1) FETCH_OK=1, (2) no unresolved threads from this bot (Tier A would
+  # have returned `stale` at the top), (3) `commit_id` is non-empty AND its
+  # 8-char prefix != HEAD_SHA (Tier B would have returned the SHA otherwise),
+  # and (4) ever_approved==0. If the bot's only review is a non-actionable
+  # summary on a stale commit, treat it as "doesn't gate" — same semantic
+  # as the infra-error case. A bot that actually found something would emit
+  # CHANGES_REQUESTED or post inline threads (caught by Tier A), so this
+  # carve-out doesn't suppress real findings.
+  if [ "$last_state" = "COMMENTED" ]; then
     echo "none"; exit 0
   fi
 fi

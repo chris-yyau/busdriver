@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # tests/test-dispatcher-commit-block.sh - scaffolding + helpers.
 # Full scenario tests are added across later implementation phases.
+#
+# shellcheck disable=SC2329  # all test_* functions invoked dynamically via declare -F
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -137,6 +139,16 @@ EOF
 }
 
 make_dispatcher_fixture() {
+    # Self-checking contract: all callers must declare these names with `local`
+    # before invoking this function. Without `local`, the variables would silently
+    # leak into the parent shell and corrupt subsequent tests.
+    : "${sandbox?make_dispatcher_fixture caller must declare: local sandbox}"
+    : "${plugin_root?make_dispatcher_fixture caller must declare: local plugin_root}"
+    : "${shimdir?make_dispatcher_fixture caller must declare: local shimdir}"
+    : "${remote?make_dispatcher_fixture caller must declare: local remote}"
+    : "${original_dir?make_dispatcher_fixture caller must declare: local original_dir}"
+    : "${initial_sha?make_dispatcher_fixture caller must declare: local initial_sha}"
+
     original_dir="$PWD"
     sandbox=$(mktemp -d)
     plugin_root=$(mktemp -d)
@@ -200,9 +212,10 @@ run_dispatcher() {
     "$SCRIPT" 2>&1 | tail -n 1
 }
 
-# t1: missing required env -> bail with judgment.
-result=$(WORKTREE_DIR= CLAUDE_PLUGIN_ROOT= PR_NUMBER= RESULT_STATUS= RESULT_FIXES= run_dispatcher || true)
-echo "$result" | jq -e '.bail_category == "judgment"' >/dev/null \
+# t1: missing required env -> bail with env (not judgment; missing vars are env failures).
+# shellcheck disable=SC2310  # || true is the intentional exit-code capture pattern
+result=$(WORKTREE_DIR="" CLAUDE_PLUGIN_ROOT="" PR_NUMBER="" RESULT_STATUS="" RESULT_FIXES="" run_dispatcher || true)
+echo "$result" | jq -e '.bail_category == "env"' >/dev/null \
     || { echo "FAIL t1: $result"; exit 1; }
 
 test_a_litmus_before_commit() {

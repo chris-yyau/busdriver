@@ -25,7 +25,7 @@
 #   - Bail:    {"bail_category":"judgment|env|budget|policy","bail_reason":"<string>"}
 #
 # Exit code:
-#   0 on success envelope; 1 on bail envelope; 2 on internal failure.
+#   0 on success envelope; 1 on bail envelope.
 
 set -uo pipefail
 
@@ -109,7 +109,14 @@ case "$RESULT_STATUS" in
         if ! git diff --cached --quiet 2>/dev/null; then
             emit_bail "judgment" "worker declared clean but staged changes exist (orphaned staged changes on clean round); dispatcher cannot merge with uncommitted work"
         fi
-        emit_success_no_commit "${RESULT_REVIEWER_ACKS:-greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none}"
+        # Fail-closed: require the worker to provide acks on the clean path.
+        # Synthesising all-"none" defaults here would bypass stale-ack
+        # protection — a worker that omitted RESULT_REVIEWER_ACKS while
+        # declaring clean would appear to have no stale bots.
+        if [ -z "${RESULT_REVIEWER_ACKS:-}" ]; then
+            emit_bail "judgment" "RESULT_STATUS=clean requires RESULT_REVIEWER_ACKS from worker; worker omitted the tag"
+        fi
+        emit_success_no_commit "$RESULT_REVIEWER_ACKS"
         ;;
     needs_more)
         _cached_exit=0
@@ -117,11 +124,21 @@ case "$RESULT_STATUS" in
         if [ "$_cached_exit" -gt 1 ]; then
             emit_bail "env" "git diff --cached failed (exit $_cached_exit); cannot determine staged-index state"
         fi
+        if [ "$_cached_exit" -ne 0 ]; then
+            # Guard #1 from SKILL.md: needs_more + staged + RESULT_FIXES empty
+            # → BAIL judgment ("inconsistent worker state"). The "none" sentinel
+            # is the documented absence marker; treat it and whitespace-only as
+            # empty rather than later committing a body with literal text "none".
+            _fixes_stripped=$(printf '%s' "${RESULT_FIXES:-}" | tr -d '[:space:]')
+            if [ "$_fixes_stripped" = "none" ] || [ -z "$_fixes_stripped" ]; then
+                emit_bail "judgment" "needs_more with staged changes but RESULT_FIXES is empty or 'none' (inconsistent worker state)"
+            fi
+        fi
         if [ "$_cached_exit" -eq 0 ]; then
             # shellcheck disable=SC1090
             if ! . "$FETCH_PR_STATE_SCRIPT" "$PR_NUMBER" 2>/dev/null \
                 || [[ "${FETCH_OK:-0}" != "1" ]]; then
-                emit_bail "judgment" "wait-round: post-push GitHub-state fetch failed; cannot refresh acks"
+                emit_bail "env" "wait-round: post-push GitHub-state fetch failed; cannot refresh acks"
             fi
             export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA
             wait_entries=()
@@ -258,15 +275,12 @@ POST_LITMUS_DIFF_SHA=$(git diff --cached | hash_stdin) || \
 POST_LITMUS_PATHS=$(git diff --cached --name-only | sort) || \
     emit_bail "env" "failed to list post-litmus staged paths"
 
-# Derive commit type from RESULT_FIXES without adding a protocol tag.
+# All dispatcher-owned PR-feedback commits use type "fix": every commit in this
+# path is by definition addressing review feedback on the PR, which is fix
+# semantics. Inferring type from free-form RESULT_FIXES prose via unanchored
+# substring patterns produces a high rate of mislabeled commits (e.g.,
+# "fix the comment-parsing bug" → "docs"; "fix version comparison" → "chore").
 RESULT_COMMIT_TYPE="fix"
-case "$RESULT_FIXES" in
-    *"add test"*|*"test coverage"*)                   RESULT_COMMIT_TYPE="test" ;;
-    *"update doc"*|*" docs"*|*"update README"*|*"add README"*)  RESULT_COMMIT_TYPE="docs" ;;
-    *"refactor"*|*"rename"*|*"extract"*|*"simplify"*) RESULT_COMMIT_TYPE="refactor" ;;
-    *"perf"*|*"optimization"*)                        RESULT_COMMIT_TYPE="perf" ;;
-    *"chore"*|*"bump"*|*"upgrade"*|*"version"*)       RESULT_COMMIT_TYPE="chore" ;;
-esac
 
 set +e
 {
@@ -304,7 +318,7 @@ else
 fi
 
 # --- Step 9: Pre-push SHA synthesis ---
-NEW_COMMIT_SHA=$(git rev-parse HEAD | cut -c1-8) || \
+NEW_COMMIT_SHA=$(git rev-parse HEAD) || \
     emit_bail "env" "failed to resolve HEAD after dispatcher commit"
 RESULT_COMMIT_SHA="$NEW_COMMIT_SHA"
 

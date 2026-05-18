@@ -139,6 +139,71 @@ else
   fail "FETCH_OK=0 expected 'stale', got '$got'"
 fi
 
+# --- Tests for Case 2 (one-and-done COMMENTED downgrade) ---
+# These tests exercise the downgrade block (no threads, stale commit_id),
+# which requires a non-empty ALL_REVIEWS fixture. The run_ledger helper
+# uses EMPTY_REVIEWS, so we use a separate helper here.
+STALE_COMMIT="oldcommit"
+run_ledger_reviews() {
+  # $1 = ALL_REVIEWS json
+  FETCH_OK=1 \
+  ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' \
+  ALL_REVIEWS="$1" \
+  ALL_COMMENTS='{"comments":[]}' \
+  ALL_CHECK_RUNS='{"check_runs":[]}' \
+  HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" greptile-apps 2>/dev/null
+}
+
+# --- Test 7: COMMENTED on stale commit, ever_approved==0 → none (new Case 2 behavior) ---
+COMMENTED_REVIEWS=$(printf '[{"user":{"login":"greptile-apps[bot]"},"state":"COMMENTED","commit_id":"%s","body":"PR overview summary."}]' "$STALE_COMMIT")
+got=$(run_ledger_reviews "$COMMENTED_REVIEWS")
+if [ "$got" = "none" ]; then
+  ok "COMMENTED stale commit ever_approved=0 → none (Case 2 new behavior)"
+else
+  fail "COMMENTED stale commit ever_approved=0 expected 'none', got '$got'"
+fi
+
+# --- Test 8: COMMENTED on stale commit with prior APPROVED → stale (guard holds) ---
+COMMENTED_WITH_APPROVAL=$(printf '[{"user":{"login":"greptile-apps[bot]"},"state":"APPROVED","commit_id":"%s","body":"LGTM"},{"user":{"login":"greptile-apps[bot]"},"state":"COMMENTED","commit_id":"%s","body":"PR overview summary."}]' "$STALE_COMMIT" "$STALE_COMMIT")
+got=$(run_ledger_reviews "$COMMENTED_WITH_APPROVAL")
+if [ "$got" = "stale" ]; then
+  ok "COMMENTED after prior APPROVED → stale (ever_approved guard)"
+else
+  fail "COMMENTED after prior APPROVED expected 'stale', got '$got'"
+fi
+
+# --- Test 9: CHANGES_REQUESTED on stale commit → stale (must not be downgraded) ---
+CR_REVIEWS=$(printf '[{"user":{"login":"greptile-apps[bot]"},"state":"CHANGES_REQUESTED","commit_id":"%s","body":"Please fix this issue."}]' "$STALE_COMMIT")
+got=$(run_ledger_reviews "$CR_REVIEWS")
+if [ "$got" = "stale" ]; then
+  ok "CHANGES_REQUESTED stale commit → stale (must not downgrade)"
+else
+  fail "CHANGES_REQUESTED stale commit expected 'stale', got '$got'"
+fi
+
+# --- Test 10: [CHANGES_REQUESTED(A), COMMENTED(B)] history → stale (the closed gap) ---
+# This is the precise scenario Greptile/Copilot/Cubic flagged: a history where
+# a real CHANGES_REQUESTED finding was filed on commit A, then a non-actionable
+# COMMENTED review landed on commit B. Without CHANGES_REQUESTED in the
+# ever_approved filter, Case 2 would downgrade to `none`. With the fix, it stays `stale`.
+CR_THEN_COMMENTED=$(printf '[{"user":{"login":"greptile-apps[bot]"},"state":"CHANGES_REQUESTED","commit_id":"%s","body":"Finding body only — no inline threads."},{"user":{"login":"greptile-apps[bot]"},"state":"COMMENTED","commit_id":"%s","body":"PR overview summary."}]' "$STALE_COMMIT" "$STALE_COMMIT")
+got=$(run_ledger_reviews "$CR_THEN_COMMENTED")
+if [ "$got" = "stale" ]; then
+  ok "[CHANGES_REQUESTED(A), COMMENTED(B)] history → stale (closed gap)"
+else
+  fail "[CHANGES_REQUESTED(A), COMMENTED(B)] history expected 'stale', got '$got'"
+fi
+
+# --- Test 11: COMMENTED on stale commit with prior DISMISSED → stale (guard holds) ---
+COMMENTED_WITH_DISMISSED=$(printf '[{"user":{"login":"greptile-apps[bot]"},"state":"DISMISSED","commit_id":"%s","body":"Previously approved"},{"user":{"login":"greptile-apps[bot]"},"state":"COMMENTED","commit_id":"%s","body":"PR overview."}]' "$STALE_COMMIT" "$STALE_COMMIT")
+got=$(run_ledger_reviews "$COMMENTED_WITH_DISMISSED")
+if [ "$got" = "stale" ]; then
+  ok "COMMENTED after prior DISMISSED → stale (ever_approved guard)"
+else
+  fail "COMMENTED after prior DISMISSED expected 'stale', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

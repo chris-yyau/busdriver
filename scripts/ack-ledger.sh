@@ -98,17 +98,24 @@ if [ -n "$check_run_head" ] && [ "${check_run_head:0:8}" = "$HEAD_SHA" ]; then e
 if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; exit 0; fi
 
 # Two-case downgrade — both gated by `ever_approved == 0` so a bot that has
-# ever approved (or had an approval dismissed) is never silently bypassed.
+# ever approved, had an approval dismissed, or previously requested changes
+# is never silently bypassed.
 # DISMISSED counts as "ever approved" because a dismissed approval is still
-# a historical signal the bot genuinely approved at some point. The shared
-# `ever_approved>0` guard also closes a potential admin-edit body-injection
-# attack on APPROVED/DISMISSED review bodies.
+# a historical signal the bot genuinely approved at some point.
+# CHANGES_REQUESTED counts because a bot that raised findings in a review
+# body (not as inline threads) must preserve its `stale` signal even if a
+# later COMMENTED review on a stale commit would otherwise trigger Case 2.
+# Without CHANGES_REQUESTED in this set, the history pattern
+# [CHANGES_REQUESTED(commit A), COMMENTED(commit B)] leaves ever_approved==0
+# and last_state=="COMMENTED" — Case 2 would downgrade to `none` and silently
+# discard the prior request for changes. The shared `ever_approved>0` guard
+# also closes a potential admin-edit body-injection attack on review bodies.
 #
 # Note: the FETCH_OK guard at the top already returns `stale` on any
 # source-fetch failure, so this block only runs on successful fetches.
 downgrade_data=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
   '[ .[] | .[] | select(.user.login == $login or .user.login == $login_bot) ]
-   | [ (map(select(.state == "APPROVED" or .state == "DISMISSED")) | length),
+   | [ (map(select(.state == "APPROVED" or .state == "DISMISSED" or .state == "CHANGES_REQUESTED")) | length),
        (last | .body // empty),
        (last | .state // empty) ]' 2>/dev/null || echo '[0,"",""]')
 ever_approved=$(printf '%s' "$downgrade_data" | jq -r '.[0]' 2>/dev/null || echo 0)
@@ -135,11 +142,11 @@ if [ "$ever_approved" -eq 0 ]; then
   # (1) FETCH_OK=1, (2) no unresolved threads from this bot (Tier A would
   # have returned `stale` at the top), (3) `commit_id` is non-empty AND its
   # 8-char prefix != HEAD_SHA (Tier B would have returned the SHA otherwise),
-  # and (4) ever_approved==0. If the bot's only review is a non-actionable
-  # summary on a stale commit, treat it as "doesn't gate" — same semantic
-  # as the infra-error case. A bot that actually found something would emit
-  # CHANGES_REQUESTED or post inline threads (caught by Tier A), so this
-  # carve-out doesn't suppress real findings.
+  # (4) ever_approved==0 AND no prior CHANGES_REQUESTED (the guard above
+  # now includes CHANGES_REQUESTED so a [CHANGES_REQUESTED, COMMENTED]
+  # history correctly stays `stale`). If the bot's only review is a
+  # non-actionable summary on a stale commit, treat it as "doesn't gate"
+  # — same semantic as the infra-error case.
   if [ "$last_state" = "COMMENTED" ]; then
     echo "none"; exit 0
   fi

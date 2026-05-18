@@ -410,7 +410,22 @@ test_i_litmus_max_iter() {
     assert_json "$dispatcher_json" \
         '.bail_category == "judgment" and (.bail_reason | contains("litmus exit 1 (max_iterations)"))'
 }
-test_j_litmus_infra_fail() { todo "test_j"; }
+test_j_litmus_infra_fail() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    litmus_mode=infra_failure
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_j expected dispatcher bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment" and (.bail_reason | contains("litmus exit 1 (infra_failure)"))'
+}
 test_k_push_failure() { todo "test_k"; }
 test_l_fix_round_classifier() { todo "test_l"; }
 test_m_wait_round_classifier() { todo "test_m"; }

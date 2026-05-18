@@ -201,10 +201,10 @@ POST_LITMUS_PATHS=$(git diff --cached --name-only | sort) || \
 # Derive commit type from RESULT_FIXES without adding a protocol tag.
 RESULT_COMMIT_TYPE="fix"
 case "$RESULT_FIXES" in
-    *"add test"*|*"add tests"*|*"test coverage"*)     RESULT_COMMIT_TYPE="test" ;;
+    *"add test"*|*"test coverage"*)                   RESULT_COMMIT_TYPE="test" ;;
     *"update doc"*|*"docs"*|*"comment"*|*"README"*)   RESULT_COMMIT_TYPE="docs" ;;
     *"refactor"*|*"rename"*|*"extract"*|*"simplify"*) RESULT_COMMIT_TYPE="refactor" ;;
-    *"perf"*|*"performance"*|*"optimization"*)        RESULT_COMMIT_TYPE="perf" ;;
+    *"perf"*|*"optimization"*)                        RESULT_COMMIT_TYPE="perf" ;;
     *"chore"*|*"bump"*|*"upgrade"*|*"version"*)       RESULT_COMMIT_TYPE="chore" ;;
 esac
 

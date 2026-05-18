@@ -310,7 +310,22 @@ EOF
     assert_json "$dispatcher_json" \
         '.bail_category == "judgment" and (.bail_reason | contains("commitlint pre-flight failed"))'
 }
-test_e_autofix_trailer_inplace() { todo "test_e"; }
+test_e_autofix_trailer_inplace() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode message
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    litmus_mode=autofix_inplace
+    run_dispatcher_capture
+
+    assert_json "$dispatcher_json" '.status == "success"' || {
+        echo "test_e dispatcher output: $dispatcher_output"
+        return 1
+    }
+    message=$(git -C "$sandbox" log -1 --format=%B)
+    printf '%s\n' "$message" | grep -q 'Litmus-Auto-Fix: content-only-edits'
+}
 test_f_adversarial_result_fixes() { todo "test_f"; }
 test_g_inline_subagent_parity() { todo "test_g"; }
 test_h_litmus_stall() { todo "test_h"; }

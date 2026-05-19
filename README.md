@@ -201,6 +201,10 @@ touch .claude/skip-design-review.local
 # Skip pr-grind — pre-merge (DEFERRED consumption: file is preserved if
 # `gh pr merge` fails, --auto queues, or output is ambiguous; consumed only
 # on confirmed merge success. 30s self-bypass detection still applies.)
+# Note: use an EXPLICIT PR number (`gh pr merge 42`) — the auto-detect
+# path `gh pr merge` with no PR records `merge_pr=unknown` and confirmation
+# refuses to consume the bypass token (the audit log will show
+# `skip-pr-grind-released-mismatch` instead of `-consumed`).
 touch .claude/skip-pr-grind.local
 
 # Environment variable bypass — must be exported in the parent shell BEFORE
@@ -244,7 +248,7 @@ Every gate execution writes to a persistent JSONL log per project, so you can an
 | `skip-pr-grind-released-auto-queued` | post-merge cleanup hook (PostToolUse) | `gh pr merge --auto` enabled auto-merge but the PR was not actually merged yet (CI still pending). Skip file is preserved so a future explicit merge can re-grab it |
 | `skip-pr-grind-released-ambiguous` | post-merge cleanup hook (PostToolUse) | Tool output matched neither success nor failure pattern; fail-safe: skip file preserved |
 | `skip-pr-grind-released-tampered` | post-merge cleanup hook (PostToolUse) | The skip file disappeared, its mtime changed between claim and confirm, or it was younger than 30s at confirmation. Anti-self-bypass re-applied at consumption; skip file preserved (or absent, in the deleted case) |
-| `skip-pr-grind-released-mismatch` | post-merge cleanup hook (PostToolUse) | The PR number parsed from the bash command did not match the PR number recorded in the pending claim. Skip file preserved |
+| `skip-pr-grind-released-mismatch` | post-merge cleanup hook (PostToolUse) | The PR number parsed from the bash command did not match the PR number recorded in the pending claim, OR either side could not be concretely identified (the auto-detect path where `gh pr merge` runs without an explicit PR number records `merge_pr=unknown` and is refused at confirmation time to prevent cross-PR token reuse via branch-switching between claim and confirm). Skip file preserved |
 | `skip-pr-grind-released-malformed` | post-merge cleanup hook (PostToolUse) | Pending claim file failed structural validation (non-numeric mtime, malformed PR number). Skip file preserved |
 | `merge-bypass-stale-cleanup` | post-merge cleanup hook (PostToolUse) | A pending claim older than 5 minutes was force-cleaned via an unrelated Bash call (session crash recovery). Skip file preserved |
 | `review-skipped-none` | pre-commit gate | Gate skipped because no review tool was active (BUSDRIVER_REVIEW_CLI=none) |

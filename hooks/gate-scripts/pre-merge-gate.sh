@@ -68,12 +68,17 @@ try:
     segments = re.split(r'&&|\|\||[;\n|]', cmd)
     target_dir = ''
     pr_num = ''
-    # Count every 'gh pr merge' invocation across segments. The gate only
-    # authorizes ONE merge per Bash call — chained invocations like
-    # 'gh pr merge X && gh pr merge Y' bypass per-PR gating because both
-    # downstream merges run under a single PreToolUse pass that only ever
-    # examined the first.
-    merge_count = 0
+    # Count every 'gh pr merge' invocation in the WHOLE command string, not
+    # just per-segment. Shell-quote-unaware segment splitting misses
+    # wrappers like \`bash -c \"gh pr merge X && gh pr merge Y\"\`, \`sh -c\`,
+    # \`eval\`, \`\$(...)\`, and \`(...)\` subshells — all of which split into
+    # at most one segment matching gh-pr-merge, defeating the multi-merge
+    # guard. The substring-count approach catches every occurrence
+    # regardless of how it's wrapped.
+    merge_count = len(re.findall(r'\bgh\s+pr\s+merge\b', cmd))
+
+    # Walk segments to find target_dir (for cd-prefix support) and the
+    # first PR number — only meaningful when merge_count == 1.
     for seg in segments:
         seg = seg.strip()
         cd_m = re.match(r'cd\s+(.*)', seg)
@@ -86,19 +91,20 @@ try:
             continue
         while re.match(r'^\w+=\S*\s', seg):
             seg = re.sub(r'^\w+=\S*\s+', '', seg, count=1)
-        if re.match(r'gh\s+pr\s+merge\b', seg):
-            merge_count += 1
-            if merge_count == 1:
-                # Capture the FIRST merge's PR number for downstream gating.
-                # Additional merges in the same call will fail the
-                # multi-merge guard below; their PR numbers are never honored.
-                args = re.split(r'\s+', seg)
-                for a in args[3:]:  # skip 'gh', 'pr', 'merge'
-                    if a.startswith('-'):
-                        break
-                    if re.match(r'^\d+$', a):
-                        pr_num = a
-                        break
+        if re.match(r'gh\s+pr\s+merge\b', seg) and not pr_num:
+            # Capture the FIRST top-level merge's PR number. If the actual
+            # merge command is wrapped (bash -c, eval, etc.), pr_num may
+            # remain empty — the multi-merge guard below blocks on count,
+            # and even if count is 1 a wrapped merge will be gated on
+            # \`unknown\` PR (downstream PostToolUse refuses consumption
+            # on unknown-PR claims).
+            args = re.split(r'\s+', seg)
+            for a in args[3:]:  # skip 'gh', 'pr', 'merge'
+                if a.startswith('-'):
+                    break
+                if re.match(r'^\d+$', a):
+                    pr_num = a
+                    break
     if merge_count >= 1:
         # Use newline separator: target_dir may contain '|' on weird paths
         print('yes' if merge_count == 1 else 'multi')

@@ -164,9 +164,12 @@ esac
 
 if [ "$_CLAIM_MALFORMED" = "true" ]; then
     rm -f "$PENDING_FILE"
-    # Suppress claimed_at in the log_event for this branch (override to
-    # 'unknown') so a crafted claimed_at can't escape the JSONL framing.
+    # Suppress every unvalidated field that would flow into the JSONL log.
+    # Either field can carry an attacker payload; resetting both to
+    # 'unknown' guarantees the malformed-event log line cannot be used to
+    # inject JSON keys or break the framing of the bypass-log.jsonl.
     CLAIMED_AT="unknown"
+    CLAIMED_MERGE_PR="unknown"
     log_event "skip-pr-grind-released-malformed" "pending-file-failed-structural-validation"
     exit 0
 fi

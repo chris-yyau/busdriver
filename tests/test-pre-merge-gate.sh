@@ -103,6 +103,8 @@ MERGE_INPUT='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"gh p
 NON_MERGE_INPUT='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"npm install"}}'
 MERGE_WITH_CD='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"cd /tmp/repo && gh pr merge 42 --squash --delete-branch"}}'
 MULTI_MERGE_INPUT='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"gh pr merge 42 --squash && gh pr merge 99 --squash"}}'
+WRAPPED_BASH_C='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"bash -c \"gh pr merge 42 --squash && gh pr merge 99 --squash\""}}'
+WRAPPED_SUBSHELL='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"(gh pr merge 42 --squash; gh pr merge 99 --squash)"}}'
 
 echo "── pre-merge-gate ──────────────────────────────────────────"
 
@@ -187,6 +189,17 @@ rm -f "$CLEAN_MARKER"
 #     gh pr merge invocation, regardless of marker/skip state.
 echo "42" > "$CLEAN_MARKER"  # marker WOULD authorize PR 42, but multi-merge blocks anyway
 run_gate_test "blocks chained gh pr merge (multi-merge guard)" "block" "$MULTI_MERGE_INPUT"
+rm -f "$CLEAN_MARKER"
+
+# 7d. Multi-merge guard MUST also catch wrapper bypasses (bash -c, sh -c,
+#     eval, subshell). Substring-count over the whole cmd, not per-segment.
+echo "42" > "$CLEAN_MARKER"
+run_gate_test "blocks bash -c wrapped chained merges" "block" "$WRAPPED_BASH_C"
+rm -f "$CLEAN_MARKER"
+
+# 7e. Subshell-wrapped chained merges.
+echo "42" > "$CLEAN_MARKER"
+run_gate_test "blocks (...)-subshell chained merges" "block" "$WRAPPED_SUBSHELL"
 rm -f "$CLEAN_MARKER"
 
 # 7a. Bug A: marker for PR X must NOT authorize merging PR Y. Marker holds
@@ -495,6 +508,39 @@ else
     printf "  FAIL  unknown-PR case: skip exists=%s pending exists=%s\n" \
         "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
         "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B15a. Log-injection defense via merge_pr (round-3 fix): if a forged
+#       pending file contains a malformed merge_pr (non-numeric/non-unknown)
+#       with embedded JSON-fragment text, the malformed branch must also
+#       suppress merge_pr in the log (mirroring the claimed_at fix).
+touch "$SKIP_FILE"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
+    || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
+printf 'skip_mtime=%s\nmerge_pr=42","event":"INJECTED-VIA-PR\nclaimed_at=%s\n' \
+    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$BYPASS_PENDING"
+printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  log-injection in merge_pr → released-malformed, skip preserved\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  merge_pr injection: skip=%s pending=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+LAST_LOG=$(tail -1 .claude/bypass-log.jsonl 2>/dev/null || true)
+TOTAL=$((TOTAL + 1))
+if printf '%s' "$LAST_LOG" | grep -q 'released-malformed' \
+    && ! printf '%s' "$LAST_LOG" | grep -q '"event":"INJECTED-VIA-PR"'; then
+    printf "  PASS  log line preserves framing on merge_pr injection\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  merge_pr injection escaped into log: %s\n" "$LAST_LOG"
     FAIL=$((FAIL + 1))
 fi
 rm -f "$SKIP_FILE" "$BYPASS_PENDING"

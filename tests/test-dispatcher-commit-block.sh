@@ -714,10 +714,11 @@ test_t_terminal_status_preferred() {
 }
 test_u_no_orphaned_commit_on_env_bail() {
     # Regression for #114: when commitlint is missing AND
-    # BUSDRIVER_ALLOW_NO_COMMITLINT is unset, the env-bail MUST fire BEFORE
-    # `git commit`. The pre-fix order (commit then validate) left an
-    # orphaned local commit when this path bailed; a subsequent retry with
-    # the bypass set would see no staged changes and take the wait-round
+    # BUSDRIVER_ALLOW_NO_COMMITLINT is not set to "1" (the harness passes "0"
+    # in this test, matching the dispatcher's `!= "1"` predicate), the env-bail
+    # MUST fire BEFORE `git commit`. The pre-fix order (commit then validate)
+    # left an orphaned local commit when this path bailed; a subsequent retry
+    # with the bypass set would see no staged changes and take the wait-round
     # path, missing the orphaned commit entirely.
     local sandbox plugin_root shimdir remote original_dir initial_sha
     local dispatcher_output dispatcher_exit dispatcher_json allow_no_commitlint

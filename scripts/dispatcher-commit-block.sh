@@ -298,11 +298,13 @@ COMMIT_MSG=$({
 })
 
 # --- Step 8: Local commitlint pre-flight (BEFORE commit; fail-CLOSED before
-# any state mutation). Validates the composed message bytes. If this bails,
-# no commit has happened — the staged index is preserved for the operator's
-# next attempt. Closes #114 (orphaned-local-commit-on-env-bail bug).
+# any state mutation). Validates the composed message with a trailing newline
+# restored so commitlint sees the same byte stream `git commit -F -` would
+# normalize to (command substitution above strips trailing newlines). If this
+# bails, no commit has happened — the staged index is preserved for the
+# operator's next attempt. Closes #114 (orphaned-local-commit-on-env-bail bug).
 if command -v npx >/dev/null 2>&1 && npx --no-install commitlint --version >/dev/null 2>&1; then
-    if ! printf '%s' "$COMMIT_MSG" | npx --no-install commitlint; then
+    if ! printf '%s\n' "$COMMIT_MSG" | npx --no-install commitlint; then
         emit_bail "judgment" "commitlint pre-flight failed on composed message; staged index preserved, fix RESULT_FIXES content and re-grind"
     fi
 else

@@ -50,10 +50,11 @@ grep -q 'terminal_status:.*"setup_error"' .claude/litmus-state.md \
 create_mock_gemini() {
     local bindir="$1"
     mkdir -p "$bindir"
-    # IMPORTANT: emit JSON on a SINGLE line. The merger (merge-findings.py)
-    # reads inputs line-by-line — multi-line pretty-printed JSON would be
-    # split across lines and each line attempted as separate JSON, silently
-    # dropping the verdict.
+    # Emit JSON on a SINGLE line. The merger now handles multi-line input
+    # too (json.JSONDecoder.raw_decode landed in the same PR as this fixture),
+    # but keeping the mock compact matches the historical single-line CLI
+    # contract and keeps the fixture's failure modes obvious — if the merger
+    # ever regresses to per-line parsing, this fixture still works.
     cat > "$bindir/gemini" <<'MOCK_EOF'
 #!/usr/bin/env bash
 # Mock gemini for litmus integration testing.

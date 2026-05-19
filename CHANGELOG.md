@@ -1,3 +1,10 @@
+## [1.41.2](https://github.com/chris-yyau/busdriver/compare/v1.41.1...v1.41.2) (2026-05-19)
+
+
+### Bug Fixes
+
+* **dispatch-cli:** default council/dispatch droid tier to high ([#116](https://github.com/chris-yyau/busdriver/issues/116)) ([656ed36](https://github.com/chris-yyau/busdriver/commit/656ed36578f4532069833930261cba78ec2d2c66)), closes [#97](https://github.com/chris-yyau/busdriver/issues/97) [#97](https://github.com/chris-yyau/busdriver/issues/97)
+
 ## [1.41.1](https://github.com/chris-yyau/busdriver/compare/v1.41.0...v1.41.1) (2026-05-18)
 
 

@@ -238,7 +238,7 @@ Even if Codex were steered (e.g., by prompt injection from verifier output) to m
 ```bash
 # Collect all hook files present after this iter
 HOOKS_AFTER=$(find .git/hooks -type f ! -name "*.sample" 2>/dev/null | sort)
-# Compare against baseline captured before the first iter (Step 5 pre-iter read)
+# Compare against the baseline captured at loop start (see "Capture the baseline before the first dispatch" block below)
 # If HOOKS_BEFORE was captured at loop start, diff it:
 if [[ -v HOOKS_BEFORE ]]; then
   # Check 1: new hook files added

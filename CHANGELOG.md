@@ -1,3 +1,10 @@
+## [1.41.3](https://github.com/chris-yyau/busdriver/compare/v1.41.2...v1.41.3) (2026-05-19)
+
+
+### Bug Fixes
+
+* **pr-grind:** commitlint pre-flight before commit (closes [#114](https://github.com/chris-yyau/busdriver/issues/114)) ([#115](https://github.com/chris-yyau/busdriver/issues/115)) ([dc4eaa7](https://github.com/chris-yyau/busdriver/commit/dc4eaa72af1c369204f917b31c4a69f92ce03c27)), closes [#113](https://github.com/chris-yyau/busdriver/issues/113)
+
 ## [1.41.2](https://github.com/chris-yyau/busdriver/compare/v1.41.1...v1.41.2) (2026-05-19)
 
 

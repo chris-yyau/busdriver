@@ -1399,10 +1399,11 @@ When the user wants to bypass the pre-merge gate (e.g., pr-grind stuck in a loop
 - Trigger: `gh pr merge`
 - On <30s rejection: gate **deletes** the file (user must `touch` again).
 - **Freshness window: 30s..3600s.** The gate silently deletes files ≥1h old without bypassing — the user has up to 1 hour between `touch` and the merge retry.
+- **Deferred consumption** (unique to pre-merge — added to fix the consume-on-gate-pass-but-API-fail bug surfaced during PR #115's dogfood): the PreToolUse gate writes a pending claim to `.claude/.merge-bypass-pending.local` and leaves the skip file alone. The PostToolUse hook `post-merge-confirm-bypass.sh` consumes the skip file ONLY when `gh pr merge` confirms success. On merge failure (`X Pull request is not mergeable`, conflicts, branch protection), `--auto` queued-but-not-yet-merged, ambiguous output, mtime tamper, or PR-number mismatch between the claim and the executed command, the skip file is preserved so the operator can retry without a re-touch. Audit events all log to `.claude/bypass-log.jsonl` — see README event taxonomy.
 
 When emitting the verbatim message template (from the canonical protocol — see below), tell the user "the file must be touched within the last hour — the gate rejects ages of 3600s or more" so they don't sit on it indefinitely. Otherwise the protocol is identical to other gates: 35s `Monitor` wait, no Bash verification, NEVER create the skip file yourself, etc.
 
-**Stale-file recovery (pr-grind only):** If `gh pr merge` blocks after the user has already run `touch` and Claude has waited the 35s, the skip file may have expired (≥3600s since `touch`). The gate silently deletes stale files without bypassing — there's no "stale" message. Ask the user to `touch` again and restart the 35s wait.
+**Stale-file recovery (pr-grind only):** If `gh pr merge` blocks after the user has already run `touch` and Claude has waited the 35s, the skip file may have expired (≥3600s since `touch`). The gate silently deletes stale files without bypassing — there's no "stale" message. Ask the user to `touch` again and restart the 35s wait. Note that with deferred consumption, a failed merge no longer requires a re-touch unless the file actually aged past 3600s.
 
 **Full protocol** — verbatim message template (with `<GATE>` substitution), `Monitor`-based 35s wait pattern, and hard rules — lives canonically in `skills/blueprint-review/SKILL.md` → "User-Created Skip File". The protocol is identical across all busdriver gates; only the pre-merge specifics in the bullets above differ.
 

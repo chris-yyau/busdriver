@@ -289,7 +289,9 @@ rm -f "$SKIP_FILE" "$BYPASS_PENDING"
 touch "$SKIP_FILE"
 touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
     || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
-printf 'skip_mtime=0\nmerge_pr=42\nclaimed_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
+    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     > "$BYPASS_PENDING"
 AMBIG_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 42 --squash"},"tool_output":{"output":"some unfamiliar output that matches neither pattern"}}'
 printf '%s' "$AMBIG_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
@@ -299,6 +301,193 @@ if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
     PASS=$((PASS + 1))
 else
     printf "  FAIL  ambiguous: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B6. Tamper detection: skip file mtime changed between claim and confirm.
+#     Pending file records the OLD mtime; current file has a NEWER mtime.
+#     Should refuse to consume + preserve skip (release-tampered).
+touch "$SKIP_FILE"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
+    || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
+ORIGINAL_MTIME=$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)
+printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
+    "$ORIGINAL_MTIME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$BYPASS_PENDING"
+# Simulate tamper: re-touch skip file to update its mtime (claim's mtime now stale)
+touch "$SKIP_FILE"
+printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  tamper detected (skip mtime changed) → released, skip preserved\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  tamper detection: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B7. Tamper detection: skip file deleted between claim and confirm.
+#     Pending file claims an mtime but the skip file is gone. Should release
+#     pending (nothing left to consume).
+printf 'skip_mtime=12345\nmerge_pr=42\nclaimed_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$BYPASS_PENDING"
+# No skip file — pre-existing or post-gate deletion
+printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ ! -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  skip file missing → released-tampered (nothing to consume)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  missing-skip case: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B8. Tamper detection: skip file is too young (<30s) at confirm time.
+#     Re-applies the anti-self-bypass check at consumption — defense
+#     against a Claude self-touch between claim and confirm.
+touch "$SKIP_FILE"  # fresh mtime → age = 0s
+printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
+    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$BYPASS_PENDING"
+printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  skip <30s at confirm → released-tampered, skip preserved\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  young-skip case: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B9. Cross-PR mismatch: claim is for PR 42 but bash cmd is gh pr merge 99.
+#     Should release pending without consuming skip (released-mismatch).
+touch "$SKIP_FILE"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
+    || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
+printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
+    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$BYPASS_PENDING"
+MISMATCH_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 99 --squash"},"tool_output":{"output":"✓ Squashed and merged pull request #99","exit_code":0}}'
+printf '%s' "$MISMATCH_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  claim/cmd PR mismatch → released-mismatch, skip preserved\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  PR mismatch: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B10. Auto-merge enabled (gh pr merge --auto) → PR not actually merged yet.
+#      Should release pending and preserve skip so retry doesn't need a
+#      re-touch when the real merge eventually fires (or fails).
+touch "$SKIP_FILE"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
+    || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
+printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
+    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$BYPASS_PENDING"
+AUTO_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 42 --squash --auto"},"tool_output":{"output":"✓ Pull request #42 will be automatically merged via squash when all requirements are met","exit_code":0}}'
+printf '%s' "$AUTO_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  --auto enable → released-auto-queued, skip preserved\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  --auto case: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B11. Malformed pending file (non-numeric mtime / corrupt content) →
+#      released-malformed without consuming the skip file.
+touch "$SKIP_FILE"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
+    || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
+printf 'skip_mtime=not-a-number\nmerge_pr=DROP TABLE users;\nclaimed_at=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$BYPASS_PENDING"
+printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  malformed pending → released-malformed, skip preserved\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  malformed case: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B12. Stale-cleanup ordering: a >5min-old pending claim must NOT be
+#      cleaned up when the current Bash call IS gh pr merge — the merge
+#      processing must take priority. (Cleanup is for crash-recovery on
+#      unrelated bash calls only.)
+touch "$SKIP_FILE"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
+    || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
+printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
+    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$BYPASS_PENDING"
+# Make pending file >5min old (10 min)
+touch -t "$(date -v-10M '+%Y%m%d%H%M.%S')" "$BYPASS_PENDING" 2>/dev/null \
+    || touch -d "10 minutes ago" "$BYPASS_PENDING" 2>/dev/null || true
+# Run hook with gh pr merge → cleanup must NOT fire here; the success path
+# must process the merge normally (skip + pending consumed).
+printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ ! -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  stale pending on gh-pr-merge call → merge processed (not cleaned)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  stale ordering: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B13. Stale-cleanup correctness: a >5min-old pending claim IS cleaned up
+#      when the current Bash call is unrelated (not gh pr merge). Skip
+#      file is preserved (cleanup only releases the claim, not the skip).
+touch "$SKIP_FILE"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
+    || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
+printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
+    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$BYPASS_PENDING"
+touch -t "$(date -v-10M '+%Y%m%d%H%M.%S')" "$BYPASS_PENDING" 2>/dev/null \
+    || touch -d "10 minutes ago" "$BYPASS_PENDING" 2>/dev/null || true
+UNRELATED_BASH='{"tool_name":"Bash","tool_input":{"command":"ls -la"},"tool_output":{"output":"total 8\n","exit_code":0}}'
+printf '%s' "$UNRELATED_BASH" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  stale pending on unrelated bash → force-cleaned, skip preserved\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  stale cleanup: skip exists=%s pending exists=%s\n" \
         "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
         "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
     FAIL=$((FAIL + 1))

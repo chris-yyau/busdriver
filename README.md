@@ -236,11 +236,15 @@ Every gate execution writes to a persistent JSONL log per project, so you can an
 | Event | Source | Meaning |
 |-------|--------|---------|
 | `skip-review-consumed` | pre-commit / pre-pr / pre-implementation gate | User-created `skip-litmus.local` or `skip-design-review.local` was consumed |
-| `skip-pr-grind-claimed` | pre-merge gate (PreToolUse) | User-created `skip-pr-grind.local` was approved for one `gh pr merge`; a `.merge-bypass-pending.local` claim was written |
-| `skip-pr-grind-consumed` | post-merge gate (PostToolUse) | `gh pr merge` confirmed-succeeded; the claim was honored and the skip file was deleted |
-| `skip-pr-grind-released` | post-merge gate (PostToolUse) | `gh pr merge` failed; the claim was discarded and the skip file was preserved for retry |
-| `skip-pr-grind-released-ambiguous` | post-merge gate (PostToolUse) | Tool output matched neither success nor failure pattern; fail-safe: skip file preserved |
-| `merge-bypass-stale-cleanup` | post-merge gate (PostToolUse) | A pending claim older than 5 minutes was force-cleaned (session crash recovery) |
+| `skip-pr-grind-claimed` | pre-merge gate (PreToolUse) | User-created `skip-pr-grind.local` was approved for one `gh pr merge`; a `.merge-bypass-pending.local` claim was written. (Cutover note: prior to v1.41.x, the consumed event was logged here with `gate:"pre-merge"`; from v1.41.x onward `skip-pr-grind-consumed` is logged at PostToolUse with `gate:"post-merge"`.) |
+| `skip-pr-grind-consumed` | post-merge cleanup hook (PostToolUse) | `gh pr merge` confirmed-succeeded (matched explicit `Squashed and merged` / `Merged pull request` patterns AND tamper checks passed) — the claim was honored and the skip file was deleted |
+| `skip-pr-grind-released` | post-merge cleanup hook (PostToolUse) | `gh pr merge` failed; the claim was discarded and the skip file was preserved for retry |
+| `skip-pr-grind-released-auto-queued` | post-merge cleanup hook (PostToolUse) | `gh pr merge --auto` enabled auto-merge but the PR was not actually merged yet (CI still pending). Skip file is preserved so a future explicit merge can re-grab it |
+| `skip-pr-grind-released-ambiguous` | post-merge cleanup hook (PostToolUse) | Tool output matched neither success nor failure pattern; fail-safe: skip file preserved |
+| `skip-pr-grind-released-tampered` | post-merge cleanup hook (PostToolUse) | The skip file disappeared, its mtime changed between claim and confirm, or it was younger than 30s at confirmation. Anti-self-bypass re-applied at consumption; skip file preserved (or absent, in the deleted case) |
+| `skip-pr-grind-released-mismatch` | post-merge cleanup hook (PostToolUse) | The PR number parsed from the bash command did not match the PR number recorded in the pending claim. Skip file preserved |
+| `skip-pr-grind-released-malformed` | post-merge cleanup hook (PostToolUse) | Pending claim file failed structural validation (non-numeric mtime, malformed PR number). Skip file preserved |
+| `merge-bypass-stale-cleanup` | post-merge cleanup hook (PostToolUse) | A pending claim older than 5 minutes was force-cleaned via an unrelated Bash call (session crash recovery). Skip file preserved |
 | `review-skipped-none` | pre-commit gate | Gate skipped because no review tool was active (BUSDRIVER_REVIEW_CLI=none) |
 | `narrative-fallback-triggered` | litmus CLI | Review CLI output was non-JSON; parsed as narrative fallback |
 | `schema-violation` | litmus schema validator | Review output didn't match expected JSON schema |

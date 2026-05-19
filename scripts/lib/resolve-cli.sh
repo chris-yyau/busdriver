@@ -427,21 +427,11 @@ execute_review() {
              printf '%s' "$prompt" > "$_tmp"
              _portable_timeout "$duration" aider --message-file "$_tmp" --no-auto-commits 2>&1
              local _rc=$?; rm -f "$_tmp"; return $_rc ;;
-    # Review path: --auto high. Reviews emit JSON verdicts and don't need write
-    # perms, but lower tiers (low/medium) reliably bail in practice — droid's
-    # internal probes (config, network, git status) exceed the tighter sandbox
-    # and fail before the reviewer can produce a verdict. Override per-call via
-    # DROID_AUTO_LEVEL=low|medium|high to mirror dispatch.sh's behavior.
-    droid)   local _droid_level
-             if [[ -n "${DROID_AUTO_LEVEL:-}" ]]; then
-               case "$DROID_AUTO_LEVEL" in
-                 low|medium|high) _droid_level="$DROID_AUTO_LEVEL" ;;
-                 *) echo "Error: DROID_AUTO_LEVEL='$DROID_AUTO_LEVEL' is invalid. Must be low, medium, or high." >&2; return 1 ;;
-               esac
-             else
-               _droid_level="high"
-             fi
-             printf '%s' "$prompt" | _portable_timeout "$duration" droid exec --auto "$_droid_level" 2>&1 ;;
+    # Review path: --auto low (file-write tier only, no installs/git/network)
+    # is sufficient — reviews emit JSON verdicts and never need to mutate the
+    # repo or fetch. Tighter than dispatch_one()'s droid case by design: this
+    # is the litmus/santa/blueprint-review backend, where read-only intent is hard.
+    droid)   printf '%s' "$prompt" | _portable_timeout "$duration" droid exec --auto low 2>&1 ;;
     amp)     local _tmp; _tmp=$(mktemp -t busdriver-amp-XXXXXX)
              printf '%s' "$prompt" > "$_tmp"
              _portable_timeout "$duration" amp review --instructions "$_tmp" 2>&1

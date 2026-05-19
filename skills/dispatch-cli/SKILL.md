@@ -73,14 +73,14 @@ Send any task to Codex or Gemini CLI as an autonomous agent. Unlike `litmus` and
 
 | Dispatch mode | Droid tier | Rationale |
 |---------------|-----------|-----------|
-| `readonly` | `--auto high` | Lower tiers bail unpredictably; tighten with `DROID_AUTO_LEVEL=low\|medium` if needed |
+| `readonly` | `--auto high` | Council Researcher reliably needs `high` for web fetches; `medium` bails. Tighten via `DROID_AUTO_LEVEL=low\|medium` if your dispatch doesn't need web access |
 | `auto` | `--auto high` | User opted into changes; covers codegen/research/network ops |
 
-**Empirical note:** council Researcher prompts (web fetches, API lookups) reliably require `--auto high`; `medium` bails with "Re-run with --auto high." Review backends (litmus/santa/blueprint-review) historically used `--auto low` on the theory that JSON-emitting reviewers don't need writes, but in practice the review path failed repeatedly at the tighter tier — droid's internal probes (config, network, git status) trip the lower sandboxes. Default is now `high` everywhere.
+**Empirical note:** council Researcher prompts (web fetches, API lookups) reliably require `--auto high`; `medium` bails with "Re-run with --auto high." Defaulting both dispatch modes to `high` removes the need to set `DROID_AUTO_LEVEL=high` per-call for council runs.
 
-**Supersedes PR #97:** that change set `execute_review` to `--auto low` based on a one-shot empirical check on droid 0.122.0. Subsequent real-world use (council Researcher + blueprint-review reviewers routed to droid) showed the tighter tier bails too often to be useful. This change accepts the security trade-off (droid now has access to git push, curl|bash, secrets) in exchange for a working review path. If you need strict read-only guarantees, route the role to `codex` (kernel-enforced sandbox) or `gemini` (interactive confirm) instead of `droid` — set this in `.claude/busdriver.json` via `routes["litmus.reviewer"]`/`routes["blueprint-review.reviewer_1"]`/`routes["blueprint-review.reviewer_2"]`/`routes["council.researcher"]`.
+> **Security Warning:** `DROID_AUTO_LEVEL` overrides the dispatch default and applies to ALL `dispatch.sh` invocations in the current shell environment. A globally-exported `DROID_AUTO_LEVEL=high` (now the default if unset) keeps dispatches at the relaxed tier. `--auto high` enables potentially destructive operations (git push --force, curl|bash, secrets access). For stricter isolation, set `DROID_AUTO_LEVEL=low` or `medium` per-command and unset immediately after use. The dispatch script validates that only `low`, `medium`, or `high` are accepted values.
 
-> **Security Warning:** `DROID_AUTO_LEVEL` overrides the default and applies to ALL dispatches in the current shell environment — including the review backends (`execute_review`). A globally-exported `DROID_AUTO_LEVEL=high` (now the default if unset) keeps all paths at the relaxed tier. `--auto high` enables potentially destructive operations (git push --force, curl|bash, secrets access). For stricter isolation, set `DROID_AUTO_LEVEL=low` or `medium` per-command and unset immediately after use — but expect droid to bail in the review path. For hard read-only guarantees, dispatch to `codex` or `gemini` instead. The dispatch and review scripts both validate that only `low`, `medium`, or `high` are accepted values.
+For strict read-only guarantees, dispatch to `codex` or `gemini` instead. (Litmus/santa/blueprint-review backends use the tighter `--auto low` via `scripts/lib/resolve-cli.sh::execute_review` — review prompts emit JSON verdicts and never need writes/installs/network. `DROID_AUTO_LEVEL` does NOT apply to that path.)
 
 ## How to Dispatch
 

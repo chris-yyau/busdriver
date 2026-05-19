@@ -225,7 +225,8 @@ if [ -f "$MARKER_FILE" ]; then
             # Auto-detect merge (no explicit PR number): cannot confirm the
             # marker authorizes THIS PR. Fail-closed — require the operator
             # to supply an explicit PR number so the per-PR check can run.
-            rm -f "$MARKER_FILE"
+            # Preserve the marker so the operator can retry with explicit PR
+            # number without needing a fresh grind.
             block_emit "Pre-merge gate: pr-grind-clean marker is for PR #$PR_NUM but the merge command did not include an explicit PR number. Supply the PR number explicitly (e.g. \`gh pr merge $PR_NUM --squash\`) so the per-PR marker check can authorize this merge."
             exit 0
         fi

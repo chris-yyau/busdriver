@@ -87,6 +87,10 @@ try:
     target_dir = ''
     for seg in re.split(r'&&|\|\||[;\n|]', cmd):
         seg = seg.strip()
+        # Stop before the merge segment: a trailing cd after gh pr merge
+        # must not redirect PENDING_FILE/SKIP_FILE to the wrong repository.
+        if re.match(r'gh\s+pr\s+merge\b', seg):
+            break
         cd_m = re.match(r'cd\s+(.*)', seg)
         if cd_m:
             raw = cd_m.group(1).strip().strip('\042\047')

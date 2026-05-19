@@ -66,7 +66,7 @@ cd "$WORKTREE_DIR" || \
     emit_bail "env" "dispatcher-commit-block: cd to WORKTREE_DIR ($WORKTREE_DIR) failed"
 
 # Single authoritative list of bots whose ack-ledger entries the dispatcher gates on.
-# Referenced by both the wait-round path and the post-push synthesis (Step 12).
+# Referenced by both the wait-round path and the post-push synthesis (Step 13).
 REGISTERED_ACK_BOTS=(greptile-apps cubic-dev-ai coderabbitai copilot-pull-request-reviewer)
 
 # Pre-dispatch baseline guard (NO_WORKTREE mode only).
@@ -283,8 +283,8 @@ POST_LITMUS_PATHS=$(git diff --cached --name-only | sort) || \
 # "fix the comment-parsing bug" → "docs"; "fix version comparison" → "chore").
 RESULT_COMMIT_TYPE="fix"
 
-set +e
-{
+# --- Step 7: Compose the commit message ---
+COMMIT_MSG=$({
     printf '%s: address PR #%s feedback\n' "$RESULT_COMMIT_TYPE" "$PR_NUMBER"
     printf '\n%s\n' "$RESULT_FIXES"
     if [ "$POST_LITMUS_DIFF_SHA" != "$PRE_LITMUS_DIFF_SHA" ]; then
@@ -295,22 +295,17 @@ set +e
             | sed 's/ $//')
         printf '\nLitmus-Auto-Fix: %s\n' "${added_paths:-content-only-edits}"
     fi
-} | git commit -F - >/dev/null 2>&1
-GIT_COMMIT_EXIT=$?
-set -e
+})
 
-if [ "$GIT_COMMIT_EXIT" != "0" ]; then
-    emit_bail "judgment" "git commit failed (exit $GIT_COMMIT_EXIT)"
-fi
-
-# --- Step 7: Pre-commit gate + post-commit hook ---
-# The repository hooks run as part of `git commit`; the post-commit hook consumes
-# the litmus marker after the pre-commit gate accepts it.
-
-# --- Step 8: Local commitlint pre-flight with missing-binary policy ---
+# --- Step 8: Local commitlint pre-flight (BEFORE commit; fail-CLOSED before
+# any state mutation). Validates the composed message with a trailing newline
+# restored so commitlint sees the same byte stream `git commit -F -` would
+# normalize to (command substitution above strips trailing newlines). If this
+# bails, no commit has happened — the staged index is preserved for the
+# operator's next attempt. Closes #114 (orphaned-local-commit-on-env-bail bug).
 if command -v npx >/dev/null 2>&1 && npx --no-install commitlint --version >/dev/null 2>&1; then
-    if ! git log -1 --format=%B | npx --no-install commitlint; then
-        emit_bail "judgment" "commitlint pre-flight failed on HEAD; amend locally and re-grind"
+    if ! printf '%s\n' "$COMMIT_MSG" | npx --no-install commitlint; then
+        emit_bail "judgment" "commitlint pre-flight failed on composed message; staged index preserved, fix RESULT_FIXES content and re-grind"
     fi
 else
     if [ "${BUSDRIVER_ALLOW_NO_COMMITLINT:-0}" != "1" ]; then
@@ -318,12 +313,25 @@ else
     fi
 fi
 
-# --- Step 9: Pre-push SHA synthesis ---
+# --- Step 9: Commit (only after pre-flight passes) ---
+# The repository hooks (pre-commit gate, post-commit) run as part of
+# `git commit`; the post-commit hook consumes the litmus marker after the
+# pre-commit gate accepts it.
+set +e
+printf '%s' "$COMMIT_MSG" | git commit -F - >/dev/null 2>&1
+GIT_COMMIT_EXIT=$?
+set -e
+
+if [ "$GIT_COMMIT_EXIT" != "0" ]; then
+    emit_bail "judgment" "git commit failed (exit $GIT_COMMIT_EXIT)"
+fi
+
+# --- Step 10: Pre-push SHA synthesis ---
 NEW_COMMIT_SHA=$(git rev-parse HEAD) || \
     emit_bail "env" "failed to resolve HEAD after dispatcher commit"
 RESULT_COMMIT_SHA="$NEW_COMMIT_SHA"
 
-# --- Step 10: Checked push ---
+# --- Step 11: Checked push ---
 set +e
 push_output=$(git push 2>&1)
 push_exit=$?
@@ -343,9 +351,9 @@ if [ "$push_exit" != "0" ]; then
     esac
 fi
 
-# --- Step 11: Copilot stale-thread auto-resolve ---
+# --- Step 12: Copilot stale-thread auto-resolve ---
 # Post-push: failures here must NOT bail — the commit is already on the remote.
-# Any error skips Copilot resolve with a stderr warning and continues to Step 12.
+# Any error skips Copilot resolve with a stderr warning and continues to Step 13.
 if [ "${COPILOT_AUTO_RESOLVE:-0}" = "1" ]; then
     _copilot_ok=1
     nwo=$(gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null) || {
@@ -450,7 +458,7 @@ if [ "${COPILOT_AUTO_RESOLVE:-0}" = "1" ]; then
     fi
 fi
 
-# --- Step 12: Post-push GitHub state synthesis ---
+# --- Step 13: Post-push GitHub state synthesis ---
 # Post-push: the commit is already on the remote. Failures here must NOT bail —
 # doing so would emit a bail envelope after a successful push, breaking the
 # "exactly one JSON line" invariant. Instead, degrade gracefully to all-stale

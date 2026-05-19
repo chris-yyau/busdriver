@@ -712,6 +712,50 @@ test_t_terminal_status_preferred() {
          and (.bail_reason | contains("litmus exit 1 (stall)"))
          and (.bail_reason | contains("max_iterations") | not)'
 }
+test_u_no_orphaned_commit_on_env_bail() {
+    # Regression for #114: when commitlint is missing AND
+    # BUSDRIVER_ALLOW_NO_COMMITLINT is not set to "1" (the harness passes "0"
+    # in this test, matching the dispatcher's `!= "1"` predicate), the env-bail
+    # MUST fire BEFORE `git commit`. The pre-fix order (commit then validate)
+    # left an orphaned local commit when this path bailed; a subsequent retry
+    # with the bypass set would see no staged changes and take the wait-round
+    # path, missing the orphaned commit entirely.
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json allow_no_commitlint
+    local post_bail_head
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    # Simulate "commitlint binary unavailable": npx exists on PATH but
+    # `npx --no-install commitlint --version` exits non-zero — the dispatcher
+    # treats this as the unavailable branch and gates on BUSDRIVER_ALLOW_NO_COMMITLINT.
+    cat > "$shimdir/npx" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    chmod +x "$shimdir/npx"
+
+    allow_no_commitlint=0
+    run_dispatcher_capture
+
+    [ "$dispatcher_exit" -eq 1 ] || {
+        echo "test_u expected dispatcher bail, exit=$dispatcher_exit output=$dispatcher_output"
+        return 1
+    }
+    assert_json "$dispatcher_json" \
+        '.bail_category == "env"
+         and (.bail_reason | contains("commitlint unavailable"))' || {
+        echo "test_u dispatcher_json: $dispatcher_json"
+        return 1
+    }
+
+    # The regression assertion: HEAD must equal initial_sha — no orphaned commit.
+    post_bail_head=$(git -C "$sandbox" rev-parse HEAD)
+    [ "$post_bail_head" = "$initial_sha" ] || {
+        echo "test_u expected HEAD unchanged after env-bail; initial=$initial_sha post=$post_bail_head"
+        return 1
+    }
+}
 
 failed=0
 for t in $(declare -F | awk '/test_/{print $3}' | sort); do

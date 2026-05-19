@@ -422,14 +422,14 @@ If you didn't change any files this round (no fixes needed — you're just waiti
 
 ### Step 6.5a — Copilot stale-thread auto-resolve (RELOCATED to dispatcher)
 
-This step was moved to the dispatcher under the commit-ownership inversion. See `skills/pr-grind/SKILL.md` "Dispatcher commit/state-synthesis block" → `scripts/dispatcher-commit-block.sh` Step 11. The worker no longer composes the Copilot eligibility call.
+This step was moved to the dispatcher under the commit-ownership inversion. See `skills/pr-grind/SKILL.md` "Dispatcher commit/state-synthesis block" → `scripts/dispatcher-commit-block.sh` Step 12. The worker no longer composes the Copilot eligibility call.
 
 ### Step 6.5 — Ack-ledger fetch + per-bot invoke (advisory under inversion)
 
 **Authority note (post-inversion):** the worker's ack-ledger output is
 **authoritative only for the clean-round path** (worker emits `RESULT_STATUS=clean`
 with no staged changes, headed straight to merge). On fix-round and wait-round
-paths the dispatcher overwrites `RESULT_REVIEWER_ACKS` via its own Step 12
+paths the dispatcher overwrites `RESULT_REVIEWER_ACKS` via its own Step 13
 post-push fetch — see `skills/pr-grind/SKILL.md` dispatcher commit block. The
 worker computes Step 6.5 unconditionally for transport simplicity, but the
 non-clean values are advisory and may differ from the dispatcher's final value.

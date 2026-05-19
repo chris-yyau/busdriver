@@ -65,20 +65,49 @@ case "$HOOK_DATA" in
     *) exit 0 ;;
 esac
 
-# Resolve repo root (handle worktrees + subdir cd).
-REPO_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+# Determine whether this Bash call is the gh pr merge we may have claimed
+# against, and extract the target directory (mirrors pre-merge-gate.sh's
+# cd-prefix resolution so REPO_DIR is anchored to the operator's intended
+# repo, not the hook process CWD — which diverges when the command is
+# `cd <dir> && gh pr merge ...`). The narrower test must run before
+# stale-cleanup so that a slow operator (>5 min between claim and merge)
+# doesn't lose merge processing to opportunistic cleanup.
+_PRE_PARSE=$(printf '%s' "$HOOK_DATA" | python3 -c "
+import sys, json, re, os
+try:
+    d = json.load(sys.stdin)
+    tool = d.get('tool_name', d.get('toolName', ''))
+    if tool != 'Bash':
+        print('false'); print(''); sys.exit(0)
+    inp = d.get('tool_input', d.get('toolInput', {}))
+    if isinstance(inp, str):
+        inp = json.loads(inp)
+    cmd = inp.get('command', '')
+    is_merge = bool(re.search(r'\bgh\s+pr\s+merge\b', cmd))
+    target_dir = ''
+    for seg in re.split(r'&&|\|\||[;\n|]', cmd):
+        seg = seg.strip()
+        cd_m = re.match(r'cd\s+(.*)', seg)
+        if cd_m:
+            raw = cd_m.group(1).strip().strip('\042\047')
+            target_dir = os.path.expanduser(raw)
+    print('true' if is_merge else 'false')
+    print(target_dir)
+except Exception:
+    print('false'); print('')
+" 2>/dev/null || true)
+is_gh_pr_merge=$(printf '%s' "$_PRE_PARSE" | sed -n '1p')
+_TARGET_DIR=$(printf '%s' "$_PRE_PARSE" | sed -n '2p')
+[ -z "$is_gh_pr_merge" ] && is_gh_pr_merge=false
+
+# Resolve repo root: use the cd-prefix target dir from the command when
+# present (mirrors pre-merge-gate.sh), fall back to hook-process git root.
+REPO_DIR=$(git -C "${_TARGET_DIR:-.}" rev-parse --show-toplevel 2>/dev/null \
+    || git rev-parse --show-toplevel 2>/dev/null \
+    || pwd)
 PENDING_FILE="$REPO_DIR/.claude/.merge-bypass-pending.local"
 SKIP_FILE="$REPO_DIR/.claude/skip-pr-grind.local"
 LOG_FILE="$REPO_DIR/.claude/bypass-log.jsonl"
-
-# Determine whether this Bash call is the gh pr merge we may have claimed
-# against. The narrower test must run before stale-cleanup so that a slow
-# operator (>5 min between claim and merge) doesn't lose merge processing
-# to opportunistic cleanup.
-is_gh_pr_merge=false
-case "$HOOK_DATA" in
-    *gh*pr*merge*) is_gh_pr_merge=true ;;
-esac
 
 mkdir -p "$REPO_DIR/.claude" 2>/dev/null || true
 
@@ -202,7 +231,7 @@ try:
             for a in args[3:]:  # skip 'gh', 'pr', 'merge'
                 if a.startswith('-'):
                     break
-                if re.match(r'^\d+\$', a):
+                if re.match(r'^\d+$', a):
                     pr_num = a
                     break
             break

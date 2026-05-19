@@ -177,9 +177,12 @@ if [ -f "$SKIP_FILE" ]; then
         # operator does not need to re-touch it. This closes the
         # consume-on-gate-pass-but-command-fail gap.
         mkdir -p "$REPO_DIR/.claude"
-        printf 'skip_mtime=%s\nmerge_pr=%s\nclaimed_at=%s\n' \
+        if ! printf 'skip_mtime=%s\nmerge_pr=%s\nclaimed_at=%s\n' \
             "${_MTIME:-0}" "${MERGE_PR_NUM:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            > "$REPO_DIR/.claude/.merge-bypass-pending.local" 2>/dev/null || true
+            > "$REPO_DIR/.claude/.merge-bypass-pending.local" 2>/dev/null; then
+            block_emit "Pre-merge gate: failed to write bypass-pending claim to $REPO_DIR/.claude/.merge-bypass-pending.local. Cannot proceed safely (PostToolUse hook cannot confirm consumption). Check filesystem permissions."
+            exit 0
+        fi
         # Pre-claim telemetry (final consumption logged by PostToolUse hook)
         printf '{"ts":"%s","event":"skip-pr-grind-claimed","gate":"pre-merge","pr":"%s"}\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${MERGE_PR_NUM:-unknown}" \
@@ -218,7 +221,15 @@ if [ -f "$MARKER_FILE" ]; then
         # to unlock the merge of any other open PR. Treat the mismatch as
         # stale-for-this-merge: delete and require a fresh grind for the
         # actual PR being merged.
-        if [ -n "${MERGE_PR_NUM:-}" ] && [ "$PR_NUM" != "$MERGE_PR_NUM" ]; then
+        if [ -z "${MERGE_PR_NUM:-}" ]; then
+            # Auto-detect merge (no explicit PR number): cannot confirm the
+            # marker authorizes THIS PR. Fail-closed — require the operator
+            # to supply an explicit PR number so the per-PR check can run.
+            rm -f "$MARKER_FILE"
+            block_emit "Pre-merge gate: pr-grind-clean marker is for PR #$PR_NUM but the merge command did not include an explicit PR number. Supply the PR number explicitly (e.g. \`gh pr merge $PR_NUM --squash\`) so the per-PR marker check can authorize this merge."
+            exit 0
+        fi
+        if [ "$PR_NUM" != "$MERGE_PR_NUM" ]; then
             rm -f "$MARKER_FILE"
             block_emit "Pre-merge gate: pr-grind-clean marker is for PR #$PR_NUM but the merge targets PR #$MERGE_PR_NUM. Marker removed (per-PR, cannot cross-authorize). Run \`/pr-grind\` for PR #$MERGE_PR_NUM before merging."
             exit 0

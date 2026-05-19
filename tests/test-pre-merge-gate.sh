@@ -522,6 +522,7 @@ touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
 printf 'skip_mtime=%s\nmerge_pr=42","event":"INJECTED-VIA-PR\nclaimed_at=%s\n' \
     "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$BYPASS_PENDING"
+LOG_LINES_BEFORE_B15A=$(wc -l < .claude/bypass-log.jsonl 2>/dev/null || echo 0)
 printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
 TOTAL=$((TOTAL + 1))
 if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
@@ -533,14 +534,17 @@ else
         "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
     FAIL=$((FAIL + 1))
 fi
+LOG_LINES_AFTER_B15A=$(wc -l < .claude/bypass-log.jsonl 2>/dev/null || echo 0)
 LAST_LOG=$(tail -1 .claude/bypass-log.jsonl 2>/dev/null || true)
 TOTAL=$((TOTAL + 1))
-if printf '%s' "$LAST_LOG" | grep -q 'released-malformed' \
+if [ "$LOG_LINES_AFTER_B15A" -gt "$LOG_LINES_BEFORE_B15A" ] \
+    && printf '%s' "$LAST_LOG" | grep -q 'released-malformed' \
     && ! printf '%s' "$LAST_LOG" | grep -q '"event":"INJECTED-VIA-PR"'; then
     printf "  PASS  log line preserves framing on merge_pr injection\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  merge_pr injection escaped into log: %s\n" "$LAST_LOG"
+    printf "  FAIL  merge_pr injection escaped into log (lines before=%s after=%s): %s\n" \
+        "$LOG_LINES_BEFORE_B15A" "$LOG_LINES_AFTER_B15A" "$LAST_LOG"
     FAIL=$((FAIL + 1))
 fi
 rm -f "$SKIP_FILE" "$BYPASS_PENDING"
@@ -553,6 +557,7 @@ touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
 printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=2026-05-20T02:00:00Z","event":"INJECTED\n' \
     "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
     > "$BYPASS_PENDING"
+LOG_LINES_BEFORE_B15=$(wc -l < .claude/bypass-log.jsonl 2>/dev/null || echo 0)
 printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
 TOTAL=$((TOTAL + 1))
 if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
@@ -565,16 +570,19 @@ else
     FAIL=$((FAIL + 1))
 fi
 # Verify the bypass-log line for this injection attempt does NOT contain
-# the injected fragment in a JSON-key position. Look at the last log line
-# written by this hook for the malformed event.
+# the injected fragment in a JSON-key position. Assert a new line was
+# appended first, then validate the last line content.
+LOG_LINES_AFTER_B15=$(wc -l < .claude/bypass-log.jsonl 2>/dev/null || echo 0)
 LAST_LOG=$(tail -1 .claude/bypass-log.jsonl 2>/dev/null || true)
 TOTAL=$((TOTAL + 1))
-if printf '%s' "$LAST_LOG" | grep -q 'released-malformed' \
+if [ "$LOG_LINES_AFTER_B15" -gt "$LOG_LINES_BEFORE_B15" ] \
+    && printf '%s' "$LAST_LOG" | grep -q 'released-malformed' \
     && ! printf '%s' "$LAST_LOG" | grep -q '"event":"INJECTED"'; then
     printf "  PASS  log line preserves JSONL framing (no injected event key)\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  log injection detected: %s\n" "$LAST_LOG"
+    printf "  FAIL  log injection detected (lines before=%s after=%s): %s\n" \
+        "$LOG_LINES_BEFORE_B15" "$LOG_LINES_AFTER_B15" "$LAST_LOG"
     FAIL=$((FAIL + 1))
 fi
 rm -f "$SKIP_FILE" "$BYPASS_PENDING"

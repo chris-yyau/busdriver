@@ -180,22 +180,19 @@ dispatch_one() {
             #   low    = file writes in non-system dirs only
             #   medium = + package installs, trusted-host curl/wget, local git (commit/checkout/pull)
             #   high   = + git push --force, curl|bash, secrets, prod deploys
-            # Dispatch mode mapping (override per-call with DROID_AUTO_LEVEL=low|medium|high):
-            #   readonly → medium  (general reads; bump to high for research with web fetches)
-            #   auto     → high    (user opted into changes; covers codegen/research/network ops)
-            # Empirical note: council Researcher prompts (web fetches, API lookups) reliably
-            # require --auto high; medium bails. See skills/dispatch-cli/SKILL.md "Per-CLI
-            # sandboxing strength" for the droid caveat.
+            # Default: high for both modes. Lower tiers reliably bail in practice —
+            # council Researcher prompts (web fetches, API lookups) need high, and
+            # medium/low fail unpredictably even on read-only-shaped work. Override
+            # per-call with DROID_AUTO_LEVEL=low|medium|high if a caller needs to
+            # tighten the sandbox.
             local _droid_level
             if [[ -n "${DROID_AUTO_LEVEL:-}" ]]; then
                 case "$DROID_AUTO_LEVEL" in
                     low|medium|high) _droid_level="$DROID_AUTO_LEVEL" ;;
                     *) echo "Error: DROID_AUTO_LEVEL='$DROID_AUTO_LEVEL' is invalid. Must be low, medium, or high." >&2; exit 1 ;;
                 esac
-            elif [[ "$MODE" == "auto" ]]; then
-                _droid_level="high"
             else
-                _droid_level="medium"
+                _droid_level="high"
             fi
             _portable_timeout "$TIMEOUT" droid exec --auto "$_droid_level" \
                 < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;

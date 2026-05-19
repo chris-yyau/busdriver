@@ -200,11 +200,15 @@ touch .claude/skip-design-review.local
 
 # Skip pr-grind — pre-merge (DEFERRED consumption: file is preserved if
 # `gh pr merge` fails, --auto queues, or output is ambiguous; consumed only
-# on confirmed merge success. 30s self-bypass detection still applies.)
+# on confirmed merge success. The 1h expiry is anchored to the original
+# touch (the 3600s clock does NOT reset on a failed-merge release). 30s
+# self-bypass detection still applies.)
 # Note: use an EXPLICIT PR number (`gh pr merge 42`) — the auto-detect
-# path `gh pr merge` with no PR records `merge_pr=unknown` and confirmation
-# refuses to consume the bypass token (the audit log will show
-# `skip-pr-grind-released-mismatch` instead of `-consumed`).
+# path `gh pr merge` with no PR records `merge_pr=unknown`. The merge
+# still proceeds (the gate already authorized it), but confirmation
+# refuses to consume the bypass token: the audit log will show
+# `skip-pr-grind-released-mismatch` instead of `-consumed`, and the skip
+# file remains valid until 1h after the original touch.
 touch .claude/skip-pr-grind.local
 
 # Environment variable bypass — must be exported in the parent shell BEFORE

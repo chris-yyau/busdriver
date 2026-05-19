@@ -135,18 +135,38 @@ CLAIMED_AT=$(grep -E '^claimed_at=' "$PENDING_FILE" 2>/dev/null | head -1 | cut 
 CLAIMED_MERGE_PR=$(grep -E '^merge_pr=' "$PENDING_FILE" 2>/dev/null | head -1 | cut -d= -f2- || echo "")
 CLAIMED_SKIP_MTIME=$(grep -E '^skip_mtime=' "$PENDING_FILE" 2>/dev/null | head -1 | cut -d= -f2- || echo "")
 
-# Validate claim structure before trusting any of it (defense against a
-# pending file written by someone other than pre-merge-gate.sh).
+# Validate claim structure before trusting any of it. The bypass log is the
+# user's only audit trail; if we let unvalidated fields flow into JSONL we
+# enable log-injection attacks via a forged pending file. Validate every
+# field that gets logged.
 _CLAIM_MALFORMED=false
+
+# skip_mtime: required, numeric only.
 case "$CLAIMED_SKIP_MTIME" in
     ''|*[!0-9]*) _CLAIM_MALFORMED=true ;;
 esac
+
+# merge_pr: numeric, or the literal "unknown" sentinel (auto-detect path).
 case "$CLAIMED_MERGE_PR" in
     ''|unknown) : ;;
     *[!0-9]*) _CLAIM_MALFORMED=true ;;
 esac
+
+# claimed_at: strict ISO-8601 UTC, exactly as pre-merge-gate.sh produces via
+# `date -u +%Y-%m-%dT%H:%M:%SZ`. Anything else (control chars, JSON
+# fragments, attempted log-injection payloads) is rejected. Note: we
+# deliberately DO NOT log the claimed_at value when releasing-malformed,
+# because the malformed value is exactly what an attacker would inject.
+case "$CLAIMED_AT" in
+    [0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z) : ;;
+    *) _CLAIM_MALFORMED=true ;;
+esac
+
 if [ "$_CLAIM_MALFORMED" = "true" ]; then
     rm -f "$PENDING_FILE"
+    # Suppress claimed_at in the log_event for this branch (override to
+    # 'unknown') so a crafted claimed_at can't escape the JSONL framing.
+    CLAIMED_AT="unknown"
     log_event "skip-pr-grind-released-malformed" "pending-file-failed-structural-validation"
     exit 0
 fi
@@ -309,15 +329,21 @@ case "$PARSE_STATUS" in
             exit 0
         fi
 
-        # PR equality: only enforce when both sides are concretely known.
-        # When the claim was filed without an explicit PR number (e.g., gh
-        # pr merge with auto-detect — MERGE_PR_NUM unknown), or when the
-        # current cmd also omitted it, we cannot prove a mismatch and we
-        # accept. When both are present and disagree, we refuse.
-        if [ -n "$PARSE_PR" ] \
-            && [ -n "$CLAIMED_MERGE_PR" ] \
-            && [ "$CLAIMED_MERGE_PR" != "unknown" ] \
-            && [ "$PARSE_PR" != "$CLAIMED_MERGE_PR" ]; then
+        # PR equality: require BOTH sides to be concretely known and equal.
+        # If either side is missing or unknown, we cannot prove the consumed
+        # bypass authorizes the merged PR — preserve the skip file rather
+        # than risk a cross-PR token reuse via the auto-detect path
+        # (`gh pr merge` with no explicit number relies on the current
+        # branch to pick a PR, and that branch can change between gate and
+        # confirm without the gate noticing).
+        if [ -z "$PARSE_PR" ] \
+            || [ -z "$CLAIMED_MERGE_PR" ] \
+            || [ "$CLAIMED_MERGE_PR" = "unknown" ]; then
+            release_claim_preserving_skip "skip-pr-grind-released-mismatch" \
+                "pr-not-explicitly-known-on-claim-or-cmd-side"
+            exit 0
+        fi
+        if [ "$PARSE_PR" != "$CLAIMED_MERGE_PR" ]; then
             release_claim_preserving_skip "skip-pr-grind-released-mismatch" \
                 "claimed-pr-${CLAIMED_MERGE_PR}-but-cmd-merged-pr-${PARSE_PR}"
             exit 0

@@ -67,6 +67,13 @@ try:
     cmd = inp.get('command', '')
     segments = re.split(r'&&|\|\||[;\n|]', cmd)
     target_dir = ''
+    pr_num = ''
+    # Count every 'gh pr merge' invocation across segments. The gate only
+    # authorizes ONE merge per Bash call — chained invocations like
+    # 'gh pr merge X && gh pr merge Y' bypass per-PR gating because both
+    # downstream merges run under a single PreToolUse pass that only ever
+    # examined the first.
+    merge_count = 0
     for seg in segments:
         seg = seg.strip()
         cd_m = re.match(r'cd\s+(.*)', seg)
@@ -80,31 +87,48 @@ try:
         while re.match(r'^\w+=\S*\s', seg):
             seg = re.sub(r'^\w+=\S*\s+', '', seg, count=1)
         if re.match(r'gh\s+pr\s+merge\b', seg):
-            # Extract PR number (first positional arg that is numeric)
-            args = re.split(r'\s+', seg)
-            pr_num = ''
-            for a in args[3:]:  # skip 'gh', 'pr', 'merge'
-                if a.startswith('-'):
-                    break
-                if re.match(r'^\d+$', a):
-                    pr_num = a
-                    break
-            # Use newline separator: target_dir may contain '|' on weird paths
-            print('yes')
-            print(pr_num)
-            print(target_dir)
-            break
+            merge_count += 1
+            if merge_count == 1:
+                # Capture the FIRST merge's PR number for downstream gating.
+                # Additional merges in the same call will fail the
+                # multi-merge guard below; their PR numbers are never honored.
+                args = re.split(r'\s+', seg)
+                for a in args[3:]:  # skip 'gh', 'pr', 'merge'
+                    if a.startswith('-'):
+                        break
+                    if re.match(r'^\d+$', a):
+                        pr_num = a
+                        break
+    if merge_count >= 1:
+        # Use newline separator: target_dir may contain '|' on weird paths
+        print('yes' if merge_count == 1 else 'multi')
+        print(pr_num)
+        print(target_dir)
+        print(merge_count)
 except Exception:
     print('error')
     print('')
     print('')
+    print('0')
 " 2>/dev/null || true)
 
 IS_GH_PR_MERGE=$(echo "$MERGE_PARSE" | sed -n '1p')
 MERGE_PR_NUM=$(echo "$MERGE_PARSE" | sed -n '2p')
 TARGET_DIR=$(echo "$MERGE_PARSE" | sed -n '3p')
+MERGE_COUNT=$(echo "$MERGE_PARSE" | sed -n '4p')
 
 [ -z "$IS_GH_PR_MERGE" ] && exit 0
+
+# Multi-merge guard: refuse a Bash call that chains more than one
+# 'gh pr merge' invocation. The gate authorizes a single merge per call;
+# chained merges defeat per-PR gating, the cross-PR marker mismatch check,
+# and the deferred-consumption claim flow (claim is filed for one PR but
+# the second merge runs unauthorized). Block at PreToolUse and ask the
+# operator to run them one-at-a-time so each goes through its own gate.
+if [ "$IS_GH_PR_MERGE" = "multi" ]; then
+    block_emit "Pre-merge gate: command chains ${MERGE_COUNT:-multiple} \`gh pr merge\` invocations in one Bash call. Only one merge per call is authorized — chained merges bypass per-PR gating and the deferred-consumption claim flow. Run each merge in its own Bash call so each goes through PreToolUse separately."
+    exit 0
+fi
 
 # Fail-closed: parser error after fast pre-filter matched → block as precaution
 if [ "$IS_GH_PR_MERGE" = "error" ]; then

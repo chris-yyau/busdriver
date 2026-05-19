@@ -198,7 +198,9 @@ touch .claude/skip-litmus.local
 # Skip design review — pre-implementation (single-use, 30s self-bypass detection)
 touch .claude/skip-design-review.local
 
-# Skip pr-grind — pre-merge (single-use, 30s self-bypass detection)
+# Skip pr-grind — pre-merge (DEFERRED consumption: file is preserved if
+# `gh pr merge` fails, --auto queues, or output is ambiguous; consumed only
+# on confirmed merge success. 30s self-bypass detection still applies.)
 touch .claude/skip-pr-grind.local
 
 # Environment variable bypass — must be exported in the parent shell BEFORE
@@ -209,7 +211,7 @@ export SKIP_DESIGN_REVIEW=1
 export SKIP_PR_GRIND=1
 ```
 
-Skip files are single-use (consumed after one bypass) and logged to `.claude/bypass-log.jsonl`. Files created within 30 seconds are rejected — this prevents Claude from creating skip files itself to bypass gates.
+Skip files for litmus and design-review are single-use (consumed after one bypass). `skip-pr-grind.local` uses deferred consumption — it is preserved when `gh pr merge` fails, `--auto` queues without merging, or output is ambiguous, and is consumed only on confirmed merge success. All bypasses log to `.claude/bypass-log.jsonl`. Files created within 30 seconds are rejected — this prevents Claude from creating skip files itself to bypass gates.
 
 ## Utility scripts
 

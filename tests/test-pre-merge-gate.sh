@@ -102,6 +102,7 @@ rm -f "$CLEAN_MARKER" "$SKIP_FILE" "$PENDING_MARKER" "$BYPASS_PENDING"
 MERGE_INPUT='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"gh pr merge 31 --squash"}}'
 NON_MERGE_INPUT='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"npm install"}}'
 MERGE_WITH_CD='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"cd /tmp/repo && gh pr merge 42 --squash --delete-branch"}}'
+MULTI_MERGE_INPUT='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"gh pr merge 42 --squash && gh pr merge 99 --squash"}}'
 
 echo "── pre-merge-gate ──────────────────────────────────────────"
 
@@ -180,6 +181,12 @@ else
     printf "  SKIP  blocks with stale marker (>2h old) — touch timestamp not supported\n"
     PASS=$((PASS + 1))  # Don't fail the suite on platform limitation
 fi
+rm -f "$CLEAN_MARKER"
+
+# 7c. Multi-merge guard: refuse Bash commands chaining more than one
+#     gh pr merge invocation, regardless of marker/skip state.
+echo "42" > "$CLEAN_MARKER"  # marker WOULD authorize PR 42, but multi-merge blocks anyway
+run_gate_test "blocks chained gh pr merge (multi-merge guard)" "block" "$MULTI_MERGE_INPUT"
 rm -f "$CLEAN_MARKER"
 
 # 7a. Bug A: marker for PR X must NOT authorize merging PR Y. Marker holds
@@ -464,6 +471,64 @@ else
     printf "  FAIL  stale ordering: skip exists=%s pending exists=%s\n" \
         "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
         "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B14. Stricter PR equality: claim with merge_pr=unknown must NOT
+#      authorize consumption even on a success-pattern merge. The
+#      auto-detect path is rejected to prevent cross-PR token reuse via
+#      branch-switching between claim and confirm.
+touch "$SKIP_FILE"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
+    || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
+printf 'skip_mtime=%s\nmerge_pr=unknown\nclaimed_at=%s\n' \
+    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$BYPASS_PENDING"
+printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  unknown-PR claim + success → released-mismatch, skip preserved\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  unknown-PR case: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B15. Log-injection defense: claimed_at containing JSON-fragment text
+#      must be rejected as malformed (preserves bypass-log.jsonl integrity).
+touch "$SKIP_FILE"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
+    || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
+printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=2026-05-20T02:00:00Z","event":"INJECTED\n' \
+    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    > "$BYPASS_PENDING"
+printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  log-injection in claimed_at → released-malformed, skip preserved\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  log-injection case: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+# Verify the bypass-log line for this injection attempt does NOT contain
+# the injected fragment in a JSON-key position. Look at the last log line
+# written by this hook for the malformed event.
+LAST_LOG=$(tail -1 .claude/bypass-log.jsonl 2>/dev/null || true)
+TOTAL=$((TOTAL + 1))
+if printf '%s' "$LAST_LOG" | grep -q 'released-malformed' \
+    && ! printf '%s' "$LAST_LOG" | grep -q '"event":"INJECTED"'; then
+    printf "  PASS  log line preserves JSONL framing (no injected event key)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  log injection detected: %s\n" "$LAST_LOG"
     FAIL=$((FAIL + 1))
 fi
 rm -f "$SKIP_FILE" "$BYPASS_PENDING"

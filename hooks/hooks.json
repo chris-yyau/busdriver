@@ -258,6 +258,17 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/post-merge-confirm-bypass.sh\"",
+            "timeout": 5
+          }
+        ],
+        "description": "[CLEANUP] Confirm or release pre-merge skip-pr-grind bypass after gh pr merge"
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"post:bash:pr-created\" \"scripts/hooks/post-bash-pr-created.js\" \"standard,strict\""
           }
         ],

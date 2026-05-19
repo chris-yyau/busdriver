@@ -236,7 +236,11 @@ Every gate execution writes to a persistent JSONL log per project, so you can an
 | Event | Source | Meaning |
 |-------|--------|---------|
 | `skip-review-consumed` | pre-commit / pre-pr / pre-implementation gate | User-created `skip-litmus.local` or `skip-design-review.local` was consumed |
-| `skip-pr-grind-consumed` | pre-merge gate | User-created `skip-pr-grind.local` was consumed |
+| `skip-pr-grind-claimed` | pre-merge gate (PreToolUse) | User-created `skip-pr-grind.local` was approved for one `gh pr merge`; a `.merge-bypass-pending.local` claim was written |
+| `skip-pr-grind-consumed` | post-merge gate (PostToolUse) | `gh pr merge` confirmed-succeeded; the claim was honored and the skip file was deleted |
+| `skip-pr-grind-released` | post-merge gate (PostToolUse) | `gh pr merge` failed; the claim was discarded and the skip file was preserved for retry |
+| `skip-pr-grind-released-ambiguous` | post-merge gate (PostToolUse) | Tool output matched neither success nor failure pattern; fail-safe: skip file preserved |
+| `merge-bypass-stale-cleanup` | post-merge gate (PostToolUse) | A pending claim older than 5 minutes was force-cleaned (session crash recovery) |
 | `review-skipped-none` | pre-commit gate | Gate skipped because no review tool was active (BUSDRIVER_REVIEW_CLI=none) |
 | `narrative-fallback-triggered` | litmus CLI | Review CLI output was non-JSON; parsed as narrative fallback |
 | `schema-violation` | litmus schema validator | Review output didn't match expected JSON schema |

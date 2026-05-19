@@ -139,11 +139,21 @@ if [ -f "$SKIP_FILE" ]; then
     fi
 
     if [ "$FILE_AGE" -lt 3600 ]; then
-        # Single-use: consume after allowing one merge
-        rm -f "$SKIP_FILE"
-        # Bypass telemetry
+        # Deferred consumption: the skip file is NOT deleted here. We write a
+        # "pending bypass" claim that the PostToolUse hook
+        # (post-merge-confirm-bypass.sh) consumes only after gh pr merge
+        # actually succeeds. If the merge fails downstream (e.g. GitHub
+        # branch-protection refusal), the skip file remains valid so the
+        # operator does not need to re-touch it. This closes the
+        # consume-on-gate-pass-but-command-fail gap.
         mkdir -p "$REPO_DIR/.claude"
-        printf '{"ts":"%s","event":"skip-pr-grind-consumed","gate":"pre-merge"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
+        printf 'skip_mtime=%s\nmerge_pr=%s\nclaimed_at=%s\n' \
+            "${_MTIME:-0}" "${MERGE_PR_NUM:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            > "$REPO_DIR/.claude/.merge-bypass-pending.local" 2>/dev/null || true
+        # Pre-claim telemetry (final consumption logged by PostToolUse hook)
+        printf '{"ts":"%s","event":"skip-pr-grind-claimed","gate":"pre-merge","pr":"%s"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${MERGE_PR_NUM:-unknown}" \
+            >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
         exit 0
     else
         rm -f "$SKIP_FILE"
@@ -172,6 +182,17 @@ if [ -f "$MARKER_FILE" ]; then
                 exit 0
                 ;;
         esac
+        # Marker is per-PR (pr-grind writes PR_NUM to the marker on clean
+        # convergence). Refuse to authorize merging PR X based on a marker
+        # written for PR Y — that allows a fresh-but-unrelated grind on one PR
+        # to unlock the merge of any other open PR. Treat the mismatch as
+        # stale-for-this-merge: delete and require a fresh grind for the
+        # actual PR being merged.
+        if [ -n "${MERGE_PR_NUM:-}" ] && [ "$PR_NUM" != "$MERGE_PR_NUM" ]; then
+            rm -f "$MARKER_FILE"
+            block_emit "Pre-merge gate: pr-grind-clean marker is for PR #$PR_NUM but the merge targets PR #$MERGE_PR_NUM. Marker removed (per-PR, cannot cross-authorize). Run \`/pr-grind\` for PR #$MERGE_PR_NUM before merging."
+            exit 0
+        fi
         if command -v gh &>/dev/null; then
             # gh pr checks exits 1 when any check has failed — capture output
             # and exit code separately to distinguish "check failed" from "CLI error".

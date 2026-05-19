@@ -21,11 +21,13 @@ FAIL=0
 TOTAL=0
 
 GATE_SCRIPT="hooks/gate-scripts/pre-merge-gate.sh"
+POST_HOOK_SCRIPT="hooks/gate-scripts/post-merge-confirm-bypass.sh"
 HOOK_SCRIPT="scripts/hooks/post-bash-pr-created.js"
 MARKER_DIR=".claude"
 CLEAN_MARKER="$MARKER_DIR/pr-grind-clean.local"
 SKIP_FILE="$MARKER_DIR/skip-pr-grind.local"
 PENDING_MARKER="$MARKER_DIR/pr-pending-grind.local"
+BYPASS_PENDING="$MARKER_DIR/.merge-bypass-pending.local"
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -75,22 +77,24 @@ run_hook_test() {
 mkdir -p "$MARKER_DIR"
 
 # Save and restore any existing markers (track existence, not just content)
-HAD_CLEAN=false ; HAD_SKIP=false ; HAD_PENDING=false
-PREV_CLEAN="" ; PREV_SKIP="" ; PREV_PENDING=""
-[ -f "$CLEAN_MARKER" ]   && HAD_CLEAN=true   && PREV_CLEAN=$(cat "$CLEAN_MARKER")
-[ -f "$SKIP_FILE" ]      && HAD_SKIP=true    && PREV_SKIP=$(cat "$SKIP_FILE")
-[ -f "$PENDING_MARKER" ] && HAD_PENDING=true && PREV_PENDING=$(cat "$PENDING_MARKER")
+HAD_CLEAN=false ; HAD_SKIP=false ; HAD_PENDING=false ; HAD_BYPASS=false
+PREV_CLEAN="" ; PREV_SKIP="" ; PREV_PENDING="" ; PREV_BYPASS=""
+[ -f "$CLEAN_MARKER" ]    && HAD_CLEAN=true    && PREV_CLEAN=$(cat "$CLEAN_MARKER")
+[ -f "$SKIP_FILE" ]       && HAD_SKIP=true     && PREV_SKIP=$(cat "$SKIP_FILE")
+[ -f "$PENDING_MARKER" ]  && HAD_PENDING=true  && PREV_PENDING=$(cat "$PENDING_MARKER")
+[ -f "$BYPASS_PENDING" ]  && HAD_BYPASS=true   && PREV_BYPASS=$(cat "$BYPASS_PENDING")
 
 cleanup() {
-    rm -f "$CLEAN_MARKER" "$SKIP_FILE" "$PENDING_MARKER"
+    rm -f "$CLEAN_MARKER" "$SKIP_FILE" "$PENDING_MARKER" "$BYPASS_PENDING"
     [ "$HAD_CLEAN" = true ]   && printf '%s' "$PREV_CLEAN"   > "$CLEAN_MARKER"   || true
     [ "$HAD_SKIP" = true ]    && printf '%s' "$PREV_SKIP"    > "$SKIP_FILE"      || true
     [ "$HAD_PENDING" = true ] && printf '%s' "$PREV_PENDING" > "$PENDING_MARKER" || true
+    [ "$HAD_BYPASS" = true ]  && printf '%s' "$PREV_BYPASS"  > "$BYPASS_PENDING" || true
 }
 trap cleanup EXIT
 
 # Start clean
-rm -f "$CLEAN_MARKER" "$SKIP_FILE" "$PENDING_MARKER"
+rm -f "$CLEAN_MARKER" "$SKIP_FILE" "$PENDING_MARKER" "$BYPASS_PENDING"
 
 # ═══════════════════════════════════════════════════════════════════════
 # PRE-MERGE GATE TESTS
@@ -109,13 +113,49 @@ echo "31" > "$CLEAN_MARKER"
 run_gate_test "allows gh pr merge with fresh marker" "allow" "$MERGE_INPUT"
 rm -f "$CLEAN_MARKER"
 
-# 3. Allow with skip file (must be > 30s old to pass anti-self-bypass)
+# 3. Allow with skip file (must be > 30s old to pass anti-self-bypass).
+#    Bug B deferred-consumption: gate should ALSO leave skip file in place
+#    and write .merge-bypass-pending.local so PostToolUse can consume only on
+#    confirmed merge-success.
 touch "$SKIP_FILE"
 touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
     || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null \
     || true
+rm -f "$BYPASS_PENDING"
 run_gate_test "allows gh pr merge with skip file" "allow" "$MERGE_INPUT"
-rm -f "$SKIP_FILE"
+
+# 3a. Deferred-consumption: skip file MUST still exist after gate-pass
+TOTAL=$((TOTAL + 1))
+if [ -f "$SKIP_FILE" ]; then
+    printf "  PASS  defers skip-pr-grind.local consumption (still exists post-gate)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  defers skip-pr-grind.local consumption (skip file was deleted)\n"
+    FAIL=$((FAIL + 1))
+fi
+
+# 3b. Deferred-consumption: pending claim MUST be written
+TOTAL=$((TOTAL + 1))
+if [ -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  writes .merge-bypass-pending.local on gate-pass\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  writes .merge-bypass-pending.local on gate-pass\n"
+    FAIL=$((FAIL + 1))
+fi
+
+# 3c. Pending claim records the merge PR number for audit
+TOTAL=$((TOTAL + 1))
+if [ -f "$BYPASS_PENDING" ] && grep -q '^merge_pr=31$' "$BYPASS_PENDING" 2>/dev/null; then
+    printf "  PASS  pending claim records merge_pr=31\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  pending claim records merge_pr=31 (content: %s)\n" \
+        "$(cat "$BYPASS_PENDING" 2>/dev/null || echo MISSING)"
+    FAIL=$((FAIL + 1))
+fi
+
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
 
 # 4. Ignore non-merge commands
 run_gate_test "ignores non-merge commands" "allow" "$NON_MERGE_INPUT"
@@ -141,6 +181,129 @@ else
     PASS=$((PASS + 1))  # Don't fail the suite on platform limitation
 fi
 rm -f "$CLEAN_MARKER"
+
+# 7a. Bug A: marker for PR X must NOT authorize merging PR Y. Marker holds
+#     a different PR number than the one being merged → gate blocks.
+echo "99" > "$CLEAN_MARKER"
+run_gate_test "blocks when marker PR != merge PR (cross-PR mismatch)" "block" "$MERGE_INPUT"
+rm -f "$CLEAN_MARKER"
+
+# 7b. Bug A: when the mismatch fires, the stale marker is removed so the
+#     next attempt does not silently re-authorize.
+echo "99" > "$CLEAN_MARKER"
+printf '%s' "$MERGE_INPUT" | bash "$GATE_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ ! -f "$CLEAN_MARKER" ]; then
+    printf "  PASS  removes mismatched pr-grind-clean marker (no silent re-auth)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  removes mismatched pr-grind-clean marker\n"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$CLEAN_MARKER"
+
+# ═══════════════════════════════════════════════════════════════════════
+# POST-MERGE BYPASS CONFIRMATION HOOK TESTS (Bug B)
+# ═══════════════════════════════════════════════════════════════════════
+echo ""
+echo "── post-merge-confirm-bypass ──────────────────────────────"
+
+# B1. Success path: merge succeeded → consume skip file + clear pending.
+touch "$SKIP_FILE"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
+    || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
+printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
+    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$BYPASS_PENDING"
+SUCCESS_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 42 --squash --delete-branch"},"tool_output":{"output":"✓ Squashed and merged pull request #42","exit_code":0}}'
+printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ ! -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  success → skip + pending consumed\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  success path: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B2. Failure path: merge failed → leave skip file, clear pending.
+touch "$SKIP_FILE"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
+    || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
+printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
+    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$BYPASS_PENDING"
+FAIL_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 42 --squash --delete-branch"},"tool_output":{"output":"X Pull request is not mergeable: the head branch is not up to date with the base branch.","exit_code":1}}'
+printf '%s' "$FAIL_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  failure → skip preserved, pending released\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  failure path: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B3. No pending claim → hook is a no-op (does not touch skip file).
+touch "$SKIP_FILE"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
+    || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
+printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ -f "$SKIP_FILE" ]; then
+    printf "  PASS  no pending claim → skip file untouched\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  no pending claim → skip file was incorrectly deleted\n"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B4. Non-merge bash call does not touch pending claim.
+touch "$SKIP_FILE"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
+    || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
+printf 'skip_mtime=0\nmerge_pr=42\nclaimed_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$BYPASS_PENDING"
+NON_MERGE_BASH='{"tool_name":"Bash","tool_input":{"command":"gh pr view 42"},"tool_output":{"output":"PR title\n","exit_code":0}}'
+printf '%s' "$NON_MERGE_BASH" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ -f "$SKIP_FILE" ] && [ -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  non-merge bash leaves pending claim intact\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  non-merge bash touched pending claim or skip file\n"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
+
+# B5. Ambiguous output (no clear success/failure signal) → fail-safe: leave skip.
+touch "$SKIP_FILE"
+touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
+    || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
+printf 'skip_mtime=0\nmerge_pr=42\nclaimed_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$BYPASS_PENDING"
+AMBIG_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 42 --squash"},"tool_output":{"output":"some unfamiliar output that matches neither pattern"}}'
+printf '%s' "$AMBIG_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
+TOTAL=$((TOTAL + 1))
+if [ -f "$SKIP_FILE" ] && [ ! -f "$BYPASS_PENDING" ]; then
+    printf "  PASS  ambiguous → fail-safe (skip preserved, pending released)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  ambiguous: skip exists=%s pending exists=%s\n" \
+        "$([ -f "$SKIP_FILE" ] && echo yes || echo no)" \
+        "$([ -f "$BYPASS_PENDING" ] && echo yes || echo no)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$SKIP_FILE" "$BYPASS_PENDING"
 
 # ═══════════════════════════════════════════════════════════════════════
 # POST-PR-CREATED HOOK TESTS

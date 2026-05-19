@@ -87,6 +87,48 @@ def determine_status(findings: list[dict]) -> str:
     return "PASS"
 
 
+def _ingest(parsed: object, sink: list[dict]) -> None:
+    """Pull issues out of a parsed JSON value into the findings sink."""
+    if isinstance(parsed, list):
+        sink.extend(parsed)
+    elif isinstance(parsed, dict) and "issues" in parsed:
+        sink.extend(parsed["issues"])
+
+
+def _parse_concatenated_json(text: str) -> tuple[list[object], int]:
+    """Parse whitespace-separated JSON values from a single text buffer.
+
+    Returns (parsed_values, parse_errors). Handles both single-line-per-value
+    input (the historical contract from `printf '%s\\n%s\\n%s\\n' ...`) AND
+    pretty-printed multi-line JSON (which the extractor at
+    skills/blueprint-review/scripts/lib/extract_review_json.py always emits
+    via `json.dumps(result, indent=2)`). Without this, multi-line LLM
+    verdicts silently get dropped from the merge — exactly the failure mode
+    that left litmus relying solely on SAST in production until
+    issue #105's fixture exposed it.
+    """
+    decoder = json.JSONDecoder()
+    parsed_values: list[object] = []
+    parse_errors = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        while i < n and text[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        try:
+            obj, i = decoder.raw_decode(text, i)
+            parsed_values.append(obj)
+        except json.JSONDecodeError:
+            parse_errors += 1
+            # Skip to the next whitespace boundary so a single malformed
+            # chunk does not poison the rest of the input.
+            while i < n and not text[i].isspace():
+                i += 1
+    return parsed_values, parse_errors
+
+
 def main() -> None:
     all_findings: list[dict] = []
     parse_errors = 0
@@ -96,29 +138,16 @@ def main() -> None:
         for arg in sys.argv[1:]:
             total_inputs += 1
             try:
-                parsed = json.loads(arg)
-                if isinstance(parsed, list):
-                    all_findings.extend(parsed)
-                elif isinstance(parsed, dict) and "issues" in parsed:
-                    all_findings.extend(parsed["issues"])
+                _ingest(json.loads(arg), all_findings)
             except (json.JSONDecodeError, ValueError):
                 parse_errors += 1
                 continue
     else:
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
-            total_inputs += 1
-            try:
-                parsed = json.loads(line)
-                if isinstance(parsed, list):
-                    all_findings.extend(parsed)
-                elif isinstance(parsed, dict) and "issues" in parsed:
-                    all_findings.extend(parsed["issues"])
-            except (json.JSONDecodeError, ValueError):
-                parse_errors += 1
-                continue
+        text = sys.stdin.read()
+        parsed_values, parse_errors = _parse_concatenated_json(text)
+        for obj in parsed_values:
+            _ingest(obj, all_findings)
+        total_inputs = len(parsed_values) + parse_errors
 
     # If ALL inputs failed to parse, fail-closed (not silent PASS)
     if total_inputs > 0 and parse_errors == total_inputs:

@@ -69,15 +69,25 @@ for line in lines:
 " "$ITERATION_HISTORY_FILE" 2>/dev/null
 }
 
-# Shared Python snippet for fingerprinting blocking issues
-# Used by both compute_issue_fingerprint and is_stalled
+# Shared Python snippet for fingerprinting blocking issues.
+# Used by both compute_issue_fingerprint and is_stalled.
+#
+# IMPORTANT: this heredoc is single-quoted in bash, so the body is passed to
+# python3 verbatim — no shell escape processing. That means we CANNOT use the
+# `f"{i[\"file\"]}..."` style (the `\"` inside a single-quoted bash heredoc
+# survives as a literal backslash + quote, which Python rejects as a syntax
+# error inside an f-string expression). String concatenation lets Python use
+# its own double-quote literals without any escape gymnastics. This bug
+# previously left both compute_issue_fingerprint and is_stalled silently
+# returning "unknown" / empty, so stall detection never fired — issue #105's
+# mock-CLI harness exposed it.
 _FINGERPRINT_PY='
 import sys, json, hashlib
 issues = json.load(sys.stdin)
 if isinstance(issues, dict):
     issues = issues.get("issues", [])
 blocking = sorted(
-    f"{i[\"file\"]}:{i[\"severity\"]}:{i.get(\"description\", \"\")[:50]}"
+    i["file"] + ":" + i["severity"] + ":" + (i.get("description", "") or "")[:50]
     for i in issues
     if i.get("severity") in ("high", "medium")
 )

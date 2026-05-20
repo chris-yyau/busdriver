@@ -15,6 +15,11 @@
 # Env var: BUSDRIVER_REVIEW_CLI
 # Values: auto (default) | codex | gemini | droid | amp | opencode | claude | aider | builtin | none
 
+# Intentional pipeline patterns throughout: ls | sort | tail for semver
+# ordering, tr | head for JSON sanitisation, etc. — masked return values
+# from the inner command are not load-bearing here.
+# shellcheck disable=SC2312
+
 # ── Low-level utilities (used by all three systems) ──────────────
 
 is_cli_available() {
@@ -324,13 +329,13 @@ _execute_codex() {
   local exit_code=0
   local output=""
 
-  while [ "$attempt" -le "$max_retries" ]; do
+  while [[ "$attempt" -le "$max_retries" ]]; do
     exit_code=0
     local effort_args=()
-    if [ "$attempt" -gt 0 ]; then
+    if [[ "$attempt" -gt 0 ]]; then
       # No --effort flag = codex config default (xhigh in config.toml)
       local effort_label="xhigh"
-      if [ "$attempt" -ge "$high_from" ]; then
+      if [[ "$attempt" -ge "$high_from" ]]; then
         effort_args=(--effort high)
         effort_label="high"
       fi
@@ -351,19 +356,19 @@ _execute_codex() {
     else
       # Fallback: direct CLI invocation
       local config_args=()
-      if [ ${#effort_args[@]} -gt 0 ]; then
+      if [[ ${#effort_args[@]} -gt 0 ]]; then
         config_args=(-c 'model_reasoning_effort="high"')
       fi
       output=$(printf '%s' "$prompt" | _portable_timeout "$duration" codex exec -s read-only ${config_args[@]+"${config_args[@]}"} - 2>&1) || exit_code=$?
     fi
 
     # Success — done
-    if [ "$exit_code" -eq 0 ]; then
+    if [[ "$exit_code" -eq 0 ]]; then
       break
     fi
 
     # Timeout (124) — retrying won't help, bail immediately
-    if [ "$exit_code" -eq 124 ]; then
+    if [[ "$exit_code" -eq 124 ]]; then
       break
     fi
 
@@ -387,12 +392,12 @@ _execute_codex() {
   done
 
   # All retries exhausted or non-transient error — fall back to builtin
-  if [ "$exit_code" -ne 0 ] && [ "$exit_code" -ne 124 ]; then
+  if [[ "$exit_code" -ne 0 ]] && [[ "$exit_code" -ne 124 ]]; then
     local attempts_run=$(( attempt > max_retries ? max_retries + 1 : attempt + 1 ))
     # Surface codex's captured stderr/stdout so callers writing 2>&1 to a raw
     # log can diagnose the failure. Without this, only the wrapper's own
     # messages survive and the underlying cause is unrecoverable.
-    if [ -n "$output" ]; then
+    if [[ -n "$output" ]]; then
       printf '%s\n%s\n%s\n' \
         "----- codex output (exit $exit_code) -----" \
         "$output" \
@@ -426,7 +431,7 @@ execute_review() {
     aider)   local _tmp; _tmp=$(mktemp -t busdriver-aider-XXXXXX)
              printf '%s' "$prompt" > "$_tmp"
              _portable_timeout "$duration" aider --message-file "$_tmp" --no-auto-commits 2>&1
-             local _rc=$?; rm -f "$_tmp"; return $_rc ;;
+             local _rc=$?; rm -f "$_tmp"; return "$_rc" ;;
     # Review path: --auto low (file-write tier only, no installs/git/network)
     # is sufficient — reviews emit JSON verdicts and never need to mutate the
     # repo or fetch. Tighter than dispatch_one()'s droid case by design: this
@@ -435,7 +440,7 @@ execute_review() {
     amp)     local _tmp; _tmp=$(mktemp -t busdriver-amp-XXXXXX)
              printf '%s' "$prompt" > "$_tmp"
              _portable_timeout "$duration" amp review --instructions "$_tmp" 2>&1
-             local _rc=$?; rm -f "$_tmp"; return $_rc ;;
+             local _rc=$?; rm -f "$_tmp"; return "$_rc" ;;
     opencode) printf '%s' "$prompt" | _portable_timeout "$duration" opencode 2>&1 ;;
     builtin) echo "BUILTIN_FALLBACK"; return 3 ;;
     *)       echo "Unsupported CLI: $cli" >&2; return 1 ;;
@@ -444,7 +449,7 @@ execute_review() {
 
 # ── Machine-readable interface (--json) ─────────────────────────
 # Guard: only runs when executed directly, not when sourced
-if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = "--json" ]; then
+if [[ "${BASH_SOURCE[0]}" = "$0" ]] && [[ "${1:-}" = "--json" ]]; then
   configured="${BUSDRIVER_REVIEW_CLI:-auto}"
   resolved=$(resolve_review_cli)
   version=""

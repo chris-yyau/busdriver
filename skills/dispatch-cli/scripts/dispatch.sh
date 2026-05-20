@@ -8,6 +8,13 @@
 #   echo "task" | dispatch.sh --cli codex
 #   dispatch.sh --cli codex --prompt "simple single-line only"
 
+# `_has_cli` is intentionally used inside `if`/`!`/`||`/`&&` conditions as
+# the canonical "is this CLI installed" check. SC2310's "set -e disabled in
+# conditional" advisory is the wrong remediation here — the conditional IS
+# the point of the helper. Likewise SC2312 fires on intentional pipeline
+# patterns where the inner command's exit code is not load-bearing.
+# shellcheck disable=SC2310,SC2312
+
 set -euo pipefail
 
 # Source shared CLI library for _portable_timeout and resolve functions

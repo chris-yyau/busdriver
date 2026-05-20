@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Merge findings from SAST, markdown checker, and LLM review.
 
-Reads JSON arrays from stdin (one per line) or as arguments.
+Reads concatenated JSON values from stdin (single-line or pretty-printed)
+or as command-line arguments.
 Deduplicates by file + line + description similarity.
 Outputs merged JSON with proper status determination.
 

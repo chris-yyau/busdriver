@@ -87,7 +87,7 @@ issues = json.load(sys.stdin)
 if isinstance(issues, dict):
     issues = issues.get("issues", [])
 blocking = sorted(
-    i["file"] + ":" + i["severity"] + ":" + (i.get("description", "") or "")[:50]
+    str(i.get("file", "")) + ":" + str(i.get("severity", "")) + ":" + str(i.get("description", "") or "")[:50]
     for i in issues
     if i.get("severity") in ("high", "medium")
 )

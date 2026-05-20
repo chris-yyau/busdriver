@@ -69,9 +69,13 @@ MOCK_EOF
 
 # Set up an isolated sandbox per fixture. Sets SANDBOX2 / BINDIR2 for the
 # caller; teardown_fixture2_sandbox cleans up.
+# SANDBOX2 and BINDIR2 are also registered with the EXIT trap so unexpected
+# failures between setup and teardown (set -e exits, missing cp targets, etc.)
+# do not leak temp directories.
 setup_fixture2_sandbox() {
     SANDBOX2=$(mktemp -d)
     BINDIR2=$(mktemp -d)
+    trap 'rm -rf "$SANDBOX" "${SANDBOX2:-}" "${BINDIR2:-}"' EXIT
     cd "$SANDBOX2"
     git init -q
     git config user.email "test@test.com"

@@ -464,6 +464,32 @@ BAIL:
 Create an isolated worktree so the user's main workspace stays free for their next task.
 
 ```bash
+# Base-branch guard — PR #122 (2026-05-20) was opened against a closed-PR
+# branch (`fix/issue-105-fixture-2` instead of `main`), pr-grind merged
+# "successfully", but the merge landed on the wrong base and main was
+# untouched. The state=MERGED API response made the misdetection insidious.
+# Refuse to grind a PR whose base is not one of the canonical trunks unless
+# the operator explicitly opted in (stacked-PR workflows, long-lived feature
+# integration branches).
+BASE_BRANCH=$(gh pr view <PR_NUMBER> --json baseRefName -q .baseRefName 2>/dev/null || echo "")
+case "$BASE_BRANCH" in
+  main|master|develop) ;;  # canonical trunks — proceed
+  "")
+    echo "❌ Could not resolve baseRefName for PR <PR_NUMBER>. Check 'gh pr view <PR_NUMBER>' and network/auth."
+    exit 1
+    ;;
+  *)
+    if [ "${PR_GRIND_ALLOW_NON_MAIN_BASE:-0}" != "1" ]; then
+      echo "❌ PR <PR_NUMBER> targets '$BASE_BRANCH', not a canonical trunk (main/master/develop)."
+      echo "   This is the failure mode that caused PR #122 to merge to a closed-PR branch."
+      echo "   If this is intentional (stacked PR, long-lived feature branch), re-run with"
+      echo "   PR_GRIND_ALLOW_NON_MAIN_BASE=1 exported in the parent shell before launching claude."
+      exit 1
+    fi
+    echo "⚠️  PR <PR_NUMBER> targets '$BASE_BRANCH' (non-canonical) — proceeding because PR_GRIND_ALLOW_NON_MAIN_BASE=1."
+    ;;
+esac
+
 PR_BRANCH=$(gh pr view <PR_NUMBER> --json headRefName -q .headRefName)
 # Resolve to an absolute path so WORKTREE_DIR can be passed to the subagent
 # unambiguously — a relative path would re-anchor against whatever CWD the

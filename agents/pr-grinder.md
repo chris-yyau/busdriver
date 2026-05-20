@@ -203,7 +203,15 @@ Conceptually `BOT_REVIEWS[<bot>] = <combined body>`. Track `n_total` per bot —
 
 **`n_total` is the count of distinct review/comment artifacts examined** (each Source 2 thread, each Source 3 review entry, and each Source 4 comment counts as 1 — see the "Track `n_total` per bot" paragraph in Step 2.6 for the full definition).
 
-Worked example: a bot posts 4 artifacts where the worker fixes 1 finding, dismisses 2 via out-of-scope-acknowledged (each for a different reason), and the 4th is a non-actionable summary review entry. Ledger: `<bot>=3/4:fixed <brief>+scope-skipped:<reason-1>:1+scope-skipped:<reason-2>:1` — three findings received decisions (1 fix + 2 dismissals), four artifacts examined. The two dismissals here use distinct placeholder tokens (`<reason-1>`, `<reason-2>`) because they're for different reasons; two dismissals that share the same reason would coalesce into a single `+scope-skipped:<reason>:2` segment instead. A bot whose 2 findings were both fixed cleanly with no non-actionable artifacts: `<bot>=2/2:fixed <brief>`.
+**Different units — `n_actionable` may exceed `n_total`.** Findings and artifacts are not the same dimension: one artifact may contain multiple actionable findings (e.g., a Source 4 issue comment that lists three distinct bugs the worker decides on individually). The `<n_actionable>/<n_total>` notation is NOT a "subset of" fraction — it's two independent counts with different units. The dispatcher's Invariant 3 only requires `n_total >= 1` for HEAD-acked bots; it does NOT enforce `n_actionable <= n_total`. If you see `2/1:fixed both` in a ledger and it looks wrong at first glance, it isn't — one artifact, two findings, both got decisions.
+
+Worked examples:
+
+1. **Findings spread across artifacts.** A bot posts 4 artifacts: the worker fixes 1 finding, dismisses 2 via out-of-scope-acknowledged (each for a different reason), and the 4th is a non-actionable summary review entry. Ledger: `<bot>=3/4:fixed <brief>+scope-skipped:<reason-1>:1+scope-skipped:<reason-2>:1` — three findings received decisions (1 fix + 2 dismissals), four artifacts examined. The two dismissals here use distinct placeholder tokens (`<reason-1>`, `<reason-2>`) because they're for different reasons; two dismissals that share the same reason would coalesce into a single `+scope-skipped:<reason>:2` segment instead.
+
+2. **Multiple findings in one artifact (where the inequality flips).** A bot posts 1 artifact (a single Source 4 issue comment) that lists 2 distinct findings; the worker fixes both. Ledger: `<bot>=2/1:fixed both findings` — `n_actionable=2` (two findings, both decided) and `n_total=1` (one artifact). This is the "different units" case in action; it is correct, not a typo. The dispatcher accepts it.
+
+3. **One finding per artifact, clean fix.** A bot whose 2 findings sit in 2 separate artifacts and were both fixed cleanly: `<bot>=2/2:fixed <brief>`.
 
 Disposition values are free-form summaries but should fall into one of these shapes so the dispatcher can read them:
 

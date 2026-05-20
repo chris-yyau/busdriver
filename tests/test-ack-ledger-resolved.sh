@@ -45,6 +45,15 @@ EMPTY_CHECK_RUNS='{"check_runs":[]}'
 # Common HEAD_SHA. ack-ledger.sh emits this on tier A.2 escalation.
 HEAD_SHA="abc12345"
 
+# Shared fixtures for the Case 3 tests below. Defined once here so all six
+# tests share a single source of truth — future shape changes (new fields,
+# adjusted body text) only need updating in one place.
+STALE_CUBIC_REVIEW='[{"user":{"login":"cubic-dev-ai[bot]"},"state":"COMMENTED","commit_id":"oldcommit","body":"No issues found"}]'
+ACTIONABLE_COMMENTED_REVIEW='[{"user":{"login":"cubic-dev-ai[bot]"},"state":"COMMENTED","commit_id":"oldcommit","body":"Please fix the validation logic in line 47."}]'
+CHANGES_REQUESTED_REVIEW='[{"user":{"login":"cubic-dev-ai[bot]"},"state":"CHANGES_REQUESTED","commit_id":"oldcommit","body":"Please fix the validation logic."}]'
+SKIPPED_HEAD_CHECK_RUN='{"check_runs":[{"app":{"slug":"cubic-dev-ai"},"conclusion":"skipped","head_sha":"abc12345"}]}'
+SKIPPED_STALE_CHECK_RUN='{"check_runs":[{"app":{"slug":"cubic-dev-ai"},"conclusion":"skipped","head_sha":"oldcommit"}]}'
+
 run_ledger() {
   # $1 = ALL_THREADS json
   FETCH_OK=1 \
@@ -153,6 +162,32 @@ run_ledger_reviews() {
   ALL_CHECK_RUNS='{"check_runs":[]}' \
   HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" greptile-apps 2>/dev/null
+}
+
+# Helper for check-run-driven tests (Tier D / downgrade Case 3). Parametrizes
+# ALL_CHECK_RUNS and optionally ALL_REVIEWS so tests can construct the
+# canonical cubic shape: stale /reviews entry + skipped check-run on HEAD.
+# The reviews parameter defaults to '[]' for back-compat with tests that only
+# exercise the check-run path (e.g., Tier D priority where Tier D exits at
+# line 93 before reaching line 98).
+mk_check_runs_json() {
+  # $1 = JSON array literal of check_runs entries
+  # Example: '[{"app":{"slug":"cubic-dev-ai"},"conclusion":"skipped","head_sha":"abc12345"}]'
+  printf '{"check_runs":%s}\n' "$1"
+}
+
+run_ledger_check_runs() {
+  # $1 = login to query
+  # $2 = ALL_CHECK_RUNS json (the wrapped {"check_runs":[...]} form)
+  # $3 = ALL_REVIEWS json (optional; defaults to '[]')
+  local reviews="${3:-[]}"
+  FETCH_OK=1 \
+  ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' \
+  ALL_REVIEWS="$reviews" \
+  ALL_COMMENTS='{"comments":[]}' \
+  ALL_CHECK_RUNS="$2" \
+  HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$1" 2>/dev/null
 }
 
 # --- Test 7: COMMENTED on stale commit, ever_approved==0 → none (new Case 2 behavior) ---

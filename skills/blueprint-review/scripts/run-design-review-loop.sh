@@ -14,6 +14,11 @@
 #   4. Claude verdict as first-class convergence (no consensus.json dependency)
 #   5. Explicit progress model (severity breakdown, not binary FAIL/PASS)
 
+# Intentional pipeline patterns throughout (jq | jq, cat | python3, etc.)
+# where the inner command's exit code is not load-bearing — SC2312 here
+# would force noisy refactors with no real signal gain.
+# shellcheck disable=SC2312
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -386,8 +391,8 @@ with open(pending, "w") as f:
 
   # Wait for both to complete
   log_info "  Waiting for parallel reviews..."
-  wait $GEMINI_PID 2>/dev/null || true
-  wait $CODEX_PID 2>/dev/null || true
+  wait "$GEMINI_PID" 2>/dev/null || true
+  wait "$CODEX_PID" 2>/dev/null || true
 
   REVIEW_END=$(millis)
   REVIEW_DURATION=$((REVIEW_END - REVIEW_START))
@@ -418,7 +423,6 @@ with open(pending, "w") as f:
   for review_file in "$GEMINI_OUTPUT_FILE" "$CODEX_OUTPUT_FILE"; do
     FILE_RUN_ID=$(jq -r '.metadata.run_id // ""' "$review_file" 2>/dev/null || echo "")
     REVIEWER=$(jq -r '.reviewer_id // "unknown"' "$review_file" 2>/dev/null || echo "unknown")
-    FILE_STATUS=$(jq -r '.status // ""' "$review_file" 2>/dev/null || echo "")
     if [[ -z "$FILE_RUN_ID" ]]; then
       # Missing run_id: try to inject it via jq (fallback if python3 injection failed)
       if jq --arg rid "$RUN_ID" --argjson iter "$CURRENT_ITERATION" --arg hash "$SPEC_HASH" \

@@ -2,6 +2,12 @@
 # State management for blueprint-review
 # Uses YAML frontmatter pattern from litmus
 
+# Intentional pipeline patterns: command-substitution-in-pipeline is used
+# throughout for log/yaml inspection where the inner command's exit code
+# is not load-bearing. Disabling SC2312 keeps the noise out of CI without
+# masking real signal (we still want SC2155, SC2034, etc.).
+# shellcheck disable=SC2312
+
 set -euo pipefail
 
 # Derive a slug from the design file name for namespacing review outputs
@@ -10,7 +16,10 @@ get_review_slug() {
   local design_file="$1"
   local base
   base=$(basename "$design_file" .md)
-  # Strip leading date prefix (YYYY-MM-DD-)
+  # Strip leading date prefix (YYYY-MM-DD-). Uses sed because bash parameter
+  # expansion patterns can't express bounded-count quantifiers cleanly without
+  # extglob and an over-broad glob; sed regex is more legible here.
+  # shellcheck disable=SC2001
   echo "$base" | sed 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}-//'
 }
 
@@ -104,7 +113,8 @@ EOF
 # Read YAML frontmatter field
 get_state_field() {
   local field="$1"
-  local state_file=$(get_state_file)
+  local state_file
+  state_file=$(get_state_file)
 
   if [[ ! -f "$state_file" ]]; then
     echo ""
@@ -127,7 +137,8 @@ get_state_field() {
 update_state_field() {
   local field="$1"
   local value="$2"
-  local state_file=$(get_state_file)
+  local state_file
+  state_file=$(get_state_file)
 
   if [[ ! -f "$state_file" ]]; then
     echo "Error: State file not found: $state_file" >&2
@@ -173,7 +184,8 @@ update_state_field() {
 
 # Increment iteration counter
 increment_iteration() {
-  local current=$(get_state_field "iteration")
+  local current
+  current=$(get_state_field "iteration")
   local next=$((current + 1))
   update_state_field "iteration" "$next"
   update_state_field "last_review_timestamp" "\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\""
@@ -181,8 +193,9 @@ increment_iteration() {
 
 # Check if max iterations reached
 is_max_iterations_reached() {
-  local current=$(get_state_field "iteration")
-  local max=$(get_state_field "max_iterations")
+  local current max
+  current=$(get_state_field "iteration")
+  max=$(get_state_field "max_iterations")
 
   [[ $current -ge $max ]]
 }
@@ -201,7 +214,8 @@ update_review_statuses() {
 # Check convergence — Claude is the arbiter (Critic #4)
 # PASS = progress_status is "passed" or "low_issues_only"
 check_convergence() {
-  local progress=$(get_state_field "progress_status")
+  local progress
+  progress=$(get_state_field "progress_status")
   [[ "$progress" == "passed" || "$progress" == "low_issues_only" ]]
 }
 
@@ -326,7 +340,8 @@ mark_review_complete() {
 # Append to state file body
 append_to_state() {
   local content="$1"
-  local state_file=$(get_state_file)
+  local state_file
+  state_file=$(get_state_file)
 
   echo -e "\n$content" >> "$state_file"
 }

@@ -12,6 +12,10 @@
 # Usage: bash tests/test-blueprint-review-loop-injection.sh
 # Exit:  0 if all pass, 1 if any fail.
 
+# Test harness uses pipelines (e.g. `[[ ! -e "$f" ]] && echo true || echo false`)
+# where the inner exit code is intentionally not propagated — disable SC2312.
+# shellcheck disable=SC2312
+
 set -euo pipefail
 
 PASS=0

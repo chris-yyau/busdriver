@@ -1,3 +1,10 @@
+## [1.41.4](https://github.com/chris-yyau/busdriver/compare/v1.41.3...v1.41.4) (2026-05-20)
+
+
+### Bug Fixes
+
+* **pre-merge-gate:** per-PR marker check + deferred bypass consumption ([#117](https://github.com/chris-yyau/busdriver/issues/117)) ([216ef19](https://github.com/chris-yyau/busdriver/commit/216ef193fa3253253b9b1891401054a94e77b825)), closes [HI#confidence](https://github.com/HI/issues/confidence) [#pr-merge](https://github.com/chris-yyau/busdriver/issues/pr-merge) [HI#severity](https://github.com/HI/issues/severity) [HI#confidence](https://github.com/HI/issues/confidence) [#pr-merge](https://github.com/chris-yyau/busdriver/issues/pr-merge)
+
 ## [1.41.3](https://github.com/chris-yyau/busdriver/compare/v1.41.2...v1.41.3) (2026-05-19)
 
 

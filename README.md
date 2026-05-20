@@ -198,7 +198,17 @@ touch .claude/skip-litmus.local
 # Skip design review — pre-implementation (single-use, 30s self-bypass detection)
 touch .claude/skip-design-review.local
 
-# Skip pr-grind — pre-merge (single-use, 30s self-bypass detection)
+# Skip pr-grind — pre-merge (DEFERRED consumption: file is preserved if
+# `gh pr merge` fails, --auto queues, or output is ambiguous; consumed only
+# on confirmed merge success. The 1h expiry is anchored to the original
+# touch (the 3600s clock does NOT reset on a failed-merge release). 30s
+# self-bypass detection still applies.)
+# Note: use an EXPLICIT PR number (`gh pr merge 42`) — the auto-detect
+# path `gh pr merge` with no PR records `merge_pr=unknown`. The merge
+# still proceeds (the gate already authorized it), but confirmation
+# refuses to consume the bypass token: the audit log will show
+# `skip-pr-grind-released-mismatch` instead of `-consumed`, and the skip
+# file remains valid until 1h after the original touch.
 touch .claude/skip-pr-grind.local
 
 # Environment variable bypass — must be exported in the parent shell BEFORE
@@ -209,7 +219,7 @@ export SKIP_DESIGN_REVIEW=1
 export SKIP_PR_GRIND=1
 ```
 
-Skip files are single-use (consumed after one bypass) and logged to `.claude/bypass-log.jsonl`. Files created within 30 seconds are rejected — this prevents Claude from creating skip files itself to bypass gates.
+Skip files for litmus and design-review are single-use (consumed after one bypass). `skip-pr-grind.local` uses deferred consumption — it is preserved when `gh pr merge` fails, `--auto` queues without merging, or output is ambiguous, and is consumed only on confirmed merge success. All bypasses log to `.claude/bypass-log.jsonl`. Files created within 30 seconds are rejected — this prevents Claude from creating skip files itself to bypass gates.
 
 ## Utility scripts
 
@@ -236,7 +246,15 @@ Every gate execution writes to a persistent JSONL log per project, so you can an
 | Event | Source | Meaning |
 |-------|--------|---------|
 | `skip-review-consumed` | pre-commit / pre-pr / pre-implementation gate | User-created `skip-litmus.local` or `skip-design-review.local` was consumed |
-| `skip-pr-grind-consumed` | pre-merge gate | User-created `skip-pr-grind.local` was consumed |
+| `skip-pr-grind-claimed` | pre-merge gate (PreToolUse) | User-created `skip-pr-grind.local` was approved for one `gh pr merge`; a `.merge-bypass-pending.local` claim was written. (Cutover note: prior to v1.41.x, the consumed event was logged here with `gate:"pre-merge"`; from v1.41.x onward `skip-pr-grind-consumed` is logged at PostToolUse with `gate:"post-merge"`.) |
+| `skip-pr-grind-consumed` | post-merge cleanup hook (PostToolUse) | `gh pr merge` confirmed-succeeded (matched explicit `Squashed and merged` / `Merged pull request` patterns AND tamper checks passed) — the claim was honored and the skip file was deleted |
+| `skip-pr-grind-released` | post-merge cleanup hook (PostToolUse) | `gh pr merge` failed; the claim was discarded and the skip file was preserved for retry |
+| `skip-pr-grind-released-auto-queued` | post-merge cleanup hook (PostToolUse) | `gh pr merge --auto` enabled auto-merge but the PR was not actually merged yet (CI still pending). Skip file is preserved so a future explicit merge can re-grab it |
+| `skip-pr-grind-released-ambiguous` | post-merge cleanup hook (PostToolUse) | Tool output matched neither success nor failure pattern; fail-safe: skip file preserved |
+| `skip-pr-grind-released-tampered` | post-merge cleanup hook (PostToolUse) | The skip file disappeared, its mtime changed between claim and confirm, or it was younger than 30s at confirmation. Anti-self-bypass re-applied at consumption; skip file preserved (or absent, in the deleted case) |
+| `skip-pr-grind-released-mismatch` | post-merge cleanup hook (PostToolUse) | The PR number parsed from the bash command did not match the PR number recorded in the pending claim, OR either side could not be concretely identified (the auto-detect path where `gh pr merge` runs without an explicit PR number records `merge_pr=unknown` and is refused at confirmation time to prevent cross-PR token reuse via branch-switching between claim and confirm). Skip file preserved |
+| `skip-pr-grind-released-malformed` | post-merge cleanup hook (PostToolUse) | Pending claim file failed structural validation (non-numeric mtime, malformed PR number). Skip file preserved |
+| `merge-bypass-stale-cleanup` | post-merge cleanup hook (PostToolUse) | A pending claim older than 5 minutes was force-cleaned via an unrelated Bash call (session crash recovery). Skip file preserved |
 | `review-skipped-none` | pre-commit gate | Gate skipped because no review tool was active (BUSDRIVER_REVIEW_CLI=none) |
 | `narrative-fallback-triggered` | litmus CLI | Review CLI output was non-JSON; parsed as narrative fallback |
 | `schema-violation` | litmus schema validator | Review output didn't match expected JSON schema |

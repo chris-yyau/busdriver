@@ -30,7 +30,7 @@ get_review_dir() {
   echo "docs/reviews"
 }
 
-# Get a review output file path (e.g. get_review_file "gemini.json")
+# Get a review output file path (e.g. get_review_file "agy.json")
 get_review_file() {
   local name="$1"
   echo "$(get_review_dir)/$name"
@@ -69,7 +69,7 @@ status: "IN_PROGRESS"
 last_review_timestamp: ""
 
 # Review results
-gemini_status: ""
+agy_status: ""
 codex_status: ""
 claude_status: ""
 
@@ -189,11 +189,11 @@ is_max_iterations_reached() {
 
 # Update review statuses
 update_review_statuses() {
-  local gemini_status="$1"
+  local agy_status="$1"
   local codex_status="$2"
   local claude_status="$3"
 
-  update_state_field "gemini_status" "\"$gemini_status\""
+  update_state_field "agy_status" "\"$agy_status\""
   update_state_field "codex_status" "\"$codex_status\""
   update_state_field "claude_status" "\"$claude_status\""
 }

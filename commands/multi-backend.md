@@ -11,7 +11,7 @@ Backend-focused workflow (Research → Ideation → Plan → Execute → Optimiz
 ## Context
 
 - Backend task: $ARGUMENTS
-- Codex-led, Gemini for auxiliary reference
+- Codex-led, Agy for auxiliary reference
 - Applicable: API design, algorithm implementation, database optimization, business logic
 
 ## Your Role
@@ -20,7 +20,7 @@ You are the **Backend Orchestrator**, coordinating multi-model collaboration for
 
 **Collaborative Models**:
 - **Codex** – Backend logic, algorithms (**Backend authority, trustworthy**)
-- **Gemini** – Frontend perspective (**Backend opinions for reference only**)
+- **Agy** – Frontend perspective (**Backend opinions for reference only**)
 - **Claude (self)** – Orchestration, planning, execution, delivery
 
 ---
@@ -153,6 +153,6 @@ Integrate review feedback, execute optimization after user confirmation.
 ## Key Rules
 
 1. **Codex backend opinions are trustworthy**
-2. **Gemini backend opinions for reference only**
+2. **Agy backend opinions for reference only**
 3. External models have **zero filesystem write access**
 4. Claude handles all code writes and file operations

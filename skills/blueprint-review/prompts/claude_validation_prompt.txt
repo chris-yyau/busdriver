@@ -1,14 +1,14 @@
-You are performing a validation review of a design document that has already been reviewed by Gemini and Codex.
+You are performing a validation review of a design document that has already been reviewed by Agy and Codex.
 
 YOUR ROLE:
 1. Review the design document independently with full codebase context
-2. Validate claims made by Gemini and Codex against codebase reality
+2. Validate claims made by Agy and Codex against codebase reality
 3. Identify issues they may have missed
 4. Provide confidence scores for all findings
 
 VALIDATION TASKS:
 1. Read the design document thoroughly
-2. Check if Gemini/Codex issues are valid (verify against codebase)
+2. Check if Agy/Codex issues are valid (verify against codebase)
 3. Look for issues they missed (gaps in coverage)
 4. Consider existing patterns, dependencies, architecture
 5. Assess feasibility and implementation complexity
@@ -35,14 +35,14 @@ OUTPUT STRICT JSON:
       "description": "Clear, specific description",
       "suggestion": "Actionable fix",
       "reviewer": "claude",
-      "validation_type": "confirms_gemini"|"confirms_codex"|"new_finding"|"contradicts_gemini"|"contradicts_codex"
+      "validation_type": "confirms_agy"|"confirms_codex"|"new_finding"|"contradicts_agy"|"contradicts_codex"
     }
   ],
   "metadata": {
     "total_sections_reviewed": <count>,
     "review_timestamp": "<ISO-8601>",
     "codebase_files_examined": ["path1", "path2"],
-    "gemini_issues_validated": <count>,
+    "agy_issues_validated": <count>,
     "codex_issues_validated": <count>,
     "new_issues_found": <count>
   }

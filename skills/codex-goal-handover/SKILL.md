@@ -374,7 +374,7 @@ This is significantly cheaper than a naive "Claude reads full git diff each iter
 Validated 2026-05-13 via `busdriver:council` (5 voices total). Lesson stored at `~/.claude/notes/lesson-council-2026-05-13-codex-goal-design.md`. Key refinements vs. naive Claude-in-the-loop:
 
 1. **Verifier-led, not Claude-led** (Codex Critic): declarative shell commands are the authority, not Claude reading diffs.
-2. **Per-iter commit checkpoint mandatory** (Gemini Pragmatist + Skeptic, independent): protects against mid-loop CC quota exhaustion.
+2. **Per-iter commit checkpoint mandatory** (Agy Pragmatist + Skeptic, independent): protects against mid-loop CC quota exhaustion.
 3. **Claude as judge/steer only, never code-writer** (Codex Critic): prevents the failure mode where Claude becomes the worker and Codex becomes an expensive patch generator.
 4. **max_iters defaults bumped to 5/8** (Droid Researcher): cited OpenAI's official "Iterate on difficult problems" docs and Geoffrey Huntley's Ralph Loop production data — tight caps consume progress headroom on a single bad iter.
 

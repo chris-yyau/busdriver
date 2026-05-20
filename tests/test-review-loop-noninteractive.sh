@@ -4,7 +4,7 @@
 # Validates that the non-interactive detection code is present and
 # structurally correct in run-design-review-loop.sh. These are static
 # checks — they verify the code exists, not that it runs end-to-end
-# (the full loop requires Gemini/Codex CLIs and state files).
+# (the full loop requires Agy/Codex CLIs and state files).
 #
 # Usage: bash tests/test-review-loop-noninteractive.sh
 # Exit: 0 if all pass, 1 if any fail.
@@ -20,7 +20,7 @@ REVIEW_SCRIPT="skills/blueprint-review/scripts/run-design-review-loop.sh"
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
-# We can't easily run the full review loop (needs Gemini/Codex CLIs, etc.)
+# We can't easily run the full review loop (needs Agy/Codex CLIs, etc.)
 # Instead, test the non-interactive detection logic in isolation.
 
 echo "── review-loop non-interactive detection ────────────────────"

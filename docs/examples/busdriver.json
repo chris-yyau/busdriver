@@ -6,9 +6,9 @@
   },
   "routes": {
     "litmus.reviewer": ["codex"],
-    "blueprint-review.reviewer_1": ["gemini", "droid"],
+    "blueprint-review.reviewer_1": ["agy", "droid"],
     "blueprint-review.reviewer_2": ["codex", "amp"],
-    "council.pragmatist": ["gemini"],
+    "council.pragmatist": ["agy"],
     "council.critic": ["codex"],
     "council.researcher": ["droid"]
   }

@@ -28,3 +28,6 @@ docs/superpowers/specs/
 
 # codex-goal-handover run artifacts (per-iter logs, verifier outputs, result JSONs)
 scripts/codex/.runs/
+
+# Antigravity (agy) CLI per-project state (project-id symlinks back to ~/.gemini/config/)
+.antigravitycli/

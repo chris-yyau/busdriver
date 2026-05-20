@@ -137,7 +137,7 @@ If you find issues, fix them inline. No need to re-review — just fix and move 
 The sanity check above is NOT the design review. You MUST still invoke `busdriver:blueprint-review` below.
 Do NOT skip blueprint-review because the sanity check found no issues — they serve completely different purposes:
 - Sanity check = you checking your own work for obvious errors (30 seconds)
-- Blueprint-review = 3 independent external reviewers (Gemini + Codex + Claude arbiter) validating the design (minutes)
+- Blueprint-review = 3 independent external reviewers (Agy + Codex + Claude arbiter) validating the design (minutes)
 </EXTREMELY-IMPORTANT>
 
 After saving the plan and sanity check passes, proceed automatically through the remaining pipeline phases. Do NOT pause to ask the user which execution mode to use — execute immediately.

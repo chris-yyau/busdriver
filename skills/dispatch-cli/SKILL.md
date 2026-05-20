@@ -1,17 +1,17 @@
 ---
 name: dispatch-cli
 description: >
-  Dispatch any task to Codex CLI or Gemini CLI as an autonomous agent.
+  Dispatch any task to Codex CLI or Antigravity (agy) CLI as an autonomous agent.
   Use when needing an external AI to perform analysis, audit, review, code changes,
-  or any self-contained task. Triggers: "send to codex/gemini", "dispatch to",
-  "have codex/gemini do", "external agent", "second opinion", general audits,
+  or any self-contained task. Triggers: "send to codex/agy", "dispatch to",
+  "have codex/agy do", "external agent", "second opinion", general audits,
   or when a task would benefit from independent external execution.
   NOT for gate-specific reviews (use litmus or blueprint-review for those).
 ---
 
 # Dispatch CLI
 
-Send any task to Codex or Gemini CLI as an autonomous agent. Unlike `litmus` and `blueprint-review` (which are gate-bound), this skill dispatches **any** work — audits, analysis, code changes, research, refactoring — without pipeline restrictions.
+Send any task to Codex or Antigravity (`agy`) CLI as an autonomous agent. Unlike `litmus` and `blueprint-review` (which are gate-bound), this skill dispatches **any** work — audits, analysis, code changes, research, refactoring — without pipeline restrictions.
 
 ## When to Use
 
@@ -33,11 +33,11 @@ Send any task to Codex or Gemini CLI as an autonomous agent. Unlike `litmus` and
 | Task Type | CLI | Rationale |
 |-----------|-----|-----------|
 | Code audit, bug hunting | `codex` | Deep code reasoning, tool use |
-| Architecture analysis | `gemini` | Broad strategic thinking |
+| Architecture analysis | `agy` | Broad strategic thinking |
 | Fast autonomous agent | `droid` | Lightweight, fast execution |
 | Code review focus | `amp` | Review-oriented analysis |
 | Go-native projects | `opencode` | Go ecosystem integration |
-| High-stakes decisions | `both` | Codex + Gemini consensus |
+| High-stakes decisions | `both` | Codex + Agy consensus |
 | Maximum coverage | `all` | Top 3 available CLIs in parallel |
 | Quick analysis (either) | `auto` | Uses whichever is available |
 
@@ -57,7 +57,7 @@ Send any task to Codex or Gemini CLI as an autonomous agent. Unlike `litmus` and
 | CLI | Readonly mechanism | Strict sandbox? |
 |-----|-------------------|-----------------|
 | codex | `-s read-only` | ✅ yes (kernel-enforced sandbox) |
-| gemini | absence of `-y` | ✅ yes (interactive confirm on writes) |
+| agy | `--sandbox` (omit `--dangerously-skip-permissions`) | ✅ yes (terminal-restricted sandbox) |
 | droid | `--auto high` (permission tier) | ⚠️  **no** — see below |
 | amp, opencode | default behavior | per-CLI; check docs |
 
@@ -80,7 +80,7 @@ Send any task to Codex or Gemini CLI as an autonomous agent. Unlike `litmus` and
 
 > **Security Warning:** `DROID_AUTO_LEVEL` overrides the dispatch default and applies to ALL `dispatch.sh` invocations in the current shell environment. A globally-exported `DROID_AUTO_LEVEL=high` (now the default if unset) keeps dispatches at the relaxed tier. `--auto high` enables potentially destructive operations (git push --force, curl|bash, secrets access). For stricter isolation, set `DROID_AUTO_LEVEL=low` or `medium` per-command and unset immediately after use. The dispatch script validates that only `low`, `medium`, or `high` are accepted values.
 
-For strict read-only guarantees, dispatch to `codex` or `gemini` instead. (Litmus/santa/blueprint-review backends use the tighter `--auto low` via `scripts/lib/resolve-cli.sh::execute_review` — review prompts emit JSON verdicts and never need writes/installs/network. `DROID_AUTO_LEVEL` does NOT apply to that path.)
+For strict read-only guarantees, dispatch to `codex` or `agy` instead. (Litmus/santa/blueprint-review backends use the tighter `--auto low` via `scripts/lib/resolve-cli.sh::execute_review` — review prompts emit JSON verdicts and never need writes/installs/network. `DROID_AUTO_LEVEL` does NOT apply to that path.)
 
 ## How to Dispatch
 
@@ -176,7 +176,7 @@ PROMPT
 
 # With model override and custom timeout
 ~/.claude/skills/dispatch-cli/scripts/dispatch.sh \
-  --cli gemini \
+  --cli agy \
   --model gemini-2.5-pro \
   --timeout 600 <<'PROMPT'
 Your task description here
@@ -188,7 +188,7 @@ PROMPT
 **Script flags:**
 | Flag | Values | Default |
 |------|--------|---------|
-| `--cli` | `codex`, `gemini`, `droid`, `amp`, `opencode`, `both`, `all`, `auto` | `auto` |
+| `--cli` | `codex`, `agy`, `droid`, `amp`, `opencode`, `both`, `all`, `auto` | `auto` |
 | `--mode` | `readonly`, `auto` | `readonly` |
 | `--timeout` | seconds | `300` |
 | `--model` | model name | CLI default |
@@ -197,7 +197,7 @@ PROMPT
 ### Step 3: Process the Output
 
 - **Single CLI**: Output prints to stdout. Read it and summarize key findings.
-- **Both CLIs**: Output shows labeled sections for each. Synthesize a consensus view — where they agree is high confidence, where they disagree warrants investigation.
+- **Both CLIs**: Output shows labeled sections for each (Codex + Agy). Synthesize a consensus view — where they agree is high confidence, where they disagree warrants investigation.
 - **Raw output saved** to `/tmp/dispatch-{cli}-{timestamp}.txt` for reference.
 
 After dispatch:
@@ -235,7 +235,7 @@ PROMPT
 ### Pattern: Research
 One CLI, readonly, open-ended exploration.
 ```bash
-dispatch.sh --cli gemini <<'PROMPT'
+dispatch.sh --cli agy <<'PROMPT'
 Analyze the instinct learning system and suggest improvements to the confidence scoring algorithm.
 PROMPT
 ```
@@ -260,7 +260,7 @@ Dispatch events log to `~/.claude/homunculus/dispatch-log.jsonl` for auditing.
 | Empty output | Script notes "(no output)" — may need a better prompt |
 
 If a dispatch fails, check:
-1. Is the CLI installed? (`which codex`, `which gemini`)
+1. Is the CLI installed? (`which codex`, `which agy`)
 2. Is the prompt clear enough?
 3. Does the timeout need extending for complex tasks?
 4. Try the other CLI as fallback

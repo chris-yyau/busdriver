@@ -1,7 +1,7 @@
 ---
 name: council
 description: >
-  Convene a 5-voice AI council (Claude Architect + Fresh Claude Skeptic + Gemini Pragmatist + Codex Critic + Droid Researcher) for diverse perspectives.
+  Convene a 5-voice AI council (Claude Architect + Fresh Claude Skeptic + Agy Pragmatist + Codex Critic + Droid Researcher) for diverse perspectives.
   Use when the user asks "what would a good group of people think/design/do",
   wants multiple opinions, asks for "ideas", "thoughts", "suggestions", "advice",
   "input", "feedback", "recommendations", says "council", "roundtable", "perspectives",
@@ -22,7 +22,7 @@ Convene five advisors — the in-context Claude plus four fresh agents — for d
 |---|---|---|---|---|
 | Claude (you) | In-context | Architect | Correctness, maintainability, long-term implications | No (in-context) |
 | Fresh Claude | Agent tool (clean memory) | Skeptic | Challenge assumptions, question premises, propose simplest alternative | No (Agent tool) |
-| Configurable | dispatch-cli | Pragmatist | Shipping speed, simplicity, user impact, practical tradeoffs | Yes: `council.pragmatist` (default: gemini) |
+| Configurable | dispatch-cli | Pragmatist | Shipping speed, simplicity, user impact, practical tradeoffs | Yes: `council.pragmatist` (default: agy) |
 | Configurable | dispatch-cli | Critic | Edge cases, risks, failure modes, what could go wrong | Yes: `council.critic` (default: codex) |
 | Configurable | dispatch-cli | Researcher | Evidence, prior art, current state, factual grounding | Yes: `council.researcher` (default: droid) |
 
@@ -55,7 +55,7 @@ Write down:
 
 Hold this. You'll include it in the report after dispatch completes.
 
-### Step 4: Dispatch Fresh Claude + Gemini + Codex + Droid
+### Step 4: Dispatch Fresh Claude + Agy + Codex + Droid
 
 Launch all four external agents in parallel. Use a **single message with multiple tool calls** to maximize concurrency.
 
@@ -106,26 +106,26 @@ fi
 (( ${#PIDS[@]} )) && wait "${PIDS[@]}"
 ```
 
-This is a **single Bash call** with all three CLI dispatches as background processes. This is critical — if Gemini, Codex, and Droid are separate parallel Bash tool calls, one failing cancels the others. A single call with `&` and `wait` keeps them independent.
+This is a **single Bash call** with all three CLI dispatches as background processes. This is critical — if Agy, Codex, and Droid are separate parallel Bash tool calls, one failing cancels the others. A single call with `&` and `wait` keeps them independent.
 
 **NEVER wrap dispatches in subshells `()`**. The pattern `( cmd & ) && wait` does NOT work — the subshell exits immediately after backgrounding, so `wait` has nothing to wait for. Always background directly and capture PIDs with `$!`.
 
-**Prompt template** for Gemini/Codex/Droid (same structure as Skeptic but with their role/lens):
+**Prompt template** for Agy/Codex/Droid (same structure as Skeptic but with their role/lens):
 
-**For Gemini:** Role = "Pragmatist", Lens = "shipping speed, simplicity, user impact, practical tradeoffs"
+**For Agy:** Role = "Pragmatist", Lens = "shipping speed, simplicity, user impact, practical tradeoffs"
 **For Codex:** Role = "Critic", Lens = "edge cases, risks, failure modes, what could go wrong"
 **For Droid:** Role = "Researcher", Lens = "evidence, prior art, current state — look up similar past decisions, current code state of the repo, and external evidence relevant to the question. Cite what you find. Flag claims that lack grounding."
 
-**IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing Gemini + Codex + Droid as background processes) in the **same message** so all four external voices run concurrently. Do NOT use separate Bash tool calls — one failing will cancel the others.
+**IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing Agy + Codex + Droid as background processes) in the **same message** so all four external voices run concurrently. Do NOT use separate Bash tool calls — one failing will cancel the others.
 
 **Missing CLI handling (no fallback):** Each role maps to exactly one CLI — no fallback chain. If a configured CLI resolves to `none`, `builtin`, or `missing:<cli>`, that voice is skipped and the report notes its absence as `(unavailable)`. The remaining voices still convene. If the Skeptic Agent call fails (rate limit, timeout), same rule applies. Typical minimum is 2 voices (Architect + Skeptic, 40% of full strength); absolute floor is 1 voice (Architect alone) if the Skeptic Agent call also fails. Always note the composition in the report.
 
 ### Step 5: Read Output and Synthesize
 
-Read the Fresh Claude output from the Agent tool result. Read the Gemini/Codex/Droid output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`).
+Read the Fresh Claude output from the Agent tool result. Read the Agy/Codex/Droid output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`).
 
 **CRITICAL: Read the ENTIRE output file, not just the first few lines.** CLI output files contain noise before the actual response:
-- **Gemini:** Dumps MCP server initialization logs (e.g., `Registering notification handlers...`, `Loading extension...`) before the response. The actual answer may be 50+ lines deep.
+- **Agy:** Dumps MCP server initialization logs (e.g., `Registering notification handlers...`, `Loading extension...`) before the response. The actual answer may be 50+ lines deep.
 - **Codex:** Echoes a header block (workdir, model, session id, the full prompt) before the response. The actual answer starts after the prompt echo ends.
 - **Both:** May duplicate output or include trailing metadata. Always scan the full file.
 
@@ -157,7 +157,7 @@ You are both a council member AND the synthesizer. This is a conflict of interes
 **Fresh Claude (Skeptic):** [position in 1-2 sentences]
 [1-line key reasoning]
 
-**Gemini (Pragmatist):** [position in 1-2 sentences]
+**Agy (Pragmatist):** [position in 1-2 sentences]
 [1-line key reasoning]
 
 **Codex (Critic):** [position in 1-2 sentences]
@@ -175,7 +175,7 @@ You are both a council member AND the synthesizer. This is a conflict of interes
 
 **Self-contained rule:** When the question involves numbered items (e.g., "6 proposed fixes"), ALL references — in individual voice positions AND the verdict — MUST restate each item inline, not just by number. The user should never need to scroll up. Example: "Fix #1 (add frontend-design to routes) and skip #3 (new plugin-dev entry)" instead of "Fix #1 and skip #3". This applies to every voice's position text, not only the final synthesis.
 
-If an agent failed or timed out, note it inline: `**Gemini (Pragmatist):** (unavailable — rate limited)`
+If an agent failed or timed out, note it inline: `**Agy (Pragmatist):** (unavailable — rate limited)`
 
 Keep the entire report **scannable on a phone screen**. No ceremony. No preamble.
 
@@ -185,10 +185,10 @@ Default: **one round**. The council convenes, delivers the verdict, and dissolve
 
 If the user asks for another round ("ask them again", "what would they say to that", "follow up with the council", "another round"):
 
-1. For Gemini + Codex + Droid: include prior council positions in the dispatch prompt as context
+1. For Agy + Codex + Droid: include prior council positions in the dispatch prompt as context
 2. **For Fresh Claude Skeptic: include ONLY the new follow-up question + original question — do NOT include prior council positions.** This is critical — the Skeptic's value comes from clean memory. If you anchor them on prior positions, they become a fifth confirming voice instead of an independent challenger.
 3. Add the user's follow-up question
-4. Frame for Gemini/Codex/Droid: "The council previously said [positions]. The user now asks: [follow-up]. Respond to the other advisors' positions AND the new question."
+4. Frame for Agy/Codex/Droid: "The council previously said [positions]. The user now asks: [follow-up]. Respond to the other advisors' positions AND the new question."
 5. Frame for Skeptic: "[Original question]. Follow-up: [new question]." — NO prior positions, NO council output.
 6. Synthesize again with the same guardrails
 
@@ -232,7 +232,7 @@ last_validated: "{YYYY-MM-DD}"
 **Decision:** {what was being decided}
 **Initial position:** {what Claude would have done alone}
 **What changed:** {the dissent/insight that shifted the recommendation}
-**Who changed it:** {Fresh Claude Skeptic/Gemini/Codex/Droid/multiple}
+**Who changed it:** {Fresh Claude Skeptic/Agy/Codex/Droid/multiple}
 **Final recommendation:** {what we actually decided}
 
 **Why:** {why the external perspective was better}

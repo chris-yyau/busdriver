@@ -71,7 +71,7 @@ fi
 
 # Exclude review output files (design-review-*.md, design-review-*.json, etc.)
 # These are produced by /blueprint-review itself — flagging them creates a loop
-if echo "$FILE_PATH" | grep -qiE '(reviews/|review-needed|review-state|review-gemini|review-codex|review-claude|review-consensus|review-autofix|review-decisions)'; then
+if echo "$FILE_PATH" | grep -qiE '(reviews/|review-needed|review-state|review-agy|review-codex|review-claude|review-consensus|review-autofix|review-decisions)'; then
   exit 0
 fi
 

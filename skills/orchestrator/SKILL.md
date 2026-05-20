@@ -68,7 +68,7 @@ When a gate blocks and the user needs to bypass:
 - After user touches the file, make NO tool calls except Monitor before retrying.
 - If the retry still blocks, the file was consumed mid-wait — ask the user to `touch` again and restart the 35s wait.
 
-Skip files are single-use and logged to `.claude/bypass-log.jsonl`. Full failure-mode taxonomy: `skills/blueprint-review/SKILL.md` ("User-Created Skip File").
+Skip files for litmus and design-review are single-use. `skip-pr-grind.local` uses deferred consumption (preserved on merge failure / `--auto` queue / ambiguous output; consumed only on confirmed `gh pr merge` success). All bypasses logged to `.claude/bypass-log.jsonl`. Full failure-mode taxonomy: `skills/blueprint-review/SKILL.md` ("User-Created Skip File").
 
 ## The Pipeline
 

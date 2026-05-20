@@ -12,6 +12,11 @@
 # Usage: bash tests/test-blueprint-review-loop-injection.sh
 # Exit:  0 if all pass, 1 if any fail.
 
+# Test harness uses command substitutions with pipelines and conditional lists
+# (e.g. `$(sha256sum "$f" | cut -d' ' -f1)`, `$([[ ! -e "$f" ]] && echo true || echo false)`)
+# where the inner exit code is intentionally not propagated — disable SC2312.
+# shellcheck disable=SC2312
+
 set -euo pipefail
 
 PASS=0

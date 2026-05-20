@@ -14,6 +14,12 @@
 #   4. Claude verdict as first-class convergence (no consensus.json dependency)
 #   5. Explicit progress model (severity breakdown, not binary FAIL/PASS)
 
+# Intentional pipeline patterns throughout (printf | shasum | cut,
+# shasum | cut, jq -r '.issues[] | ...', etc.) where the inner command's
+# exit code is not load-bearing — SC2312 here would force noisy refactors
+# with no real signal gain.
+# shellcheck disable=SC2312
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -386,8 +392,8 @@ with open(pending, "w") as f:
 
   # Wait for both to complete
   log_info "  Waiting for parallel reviews..."
-  wait $AGY_PID 2>/dev/null || true
-  wait $CODEX_PID 2>/dev/null || true
+  wait "$AGY_PID" 2>/dev/null || true
+  wait "$CODEX_PID" 2>/dev/null || true
 
   REVIEW_END=$(millis)
   REVIEW_DURATION=$((REVIEW_END - REVIEW_START))

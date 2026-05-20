@@ -399,7 +399,11 @@ This section is the **canonical protocol** for the user-created skip files acros
 | **Pre-implementation (design review)** | `.claude/skip-design-review.local` | Write/Edit/MultiEdit/Bash while design unreviewed | gate deletes file | unbounded | **High** — gate fires on any of those tool calls, so any intervening Bash (incl. `test -f`/`ls`/`stat`) destroys the file |
 | **Pre-commit (litmus)** | `.claude/skip-litmus.local` | `git commit` | gate **preserves** file (ages naturally) | unbounded | Low — gate only fires on `git commit` |
 | **Pre-PR (litmus)** | `.claude/skip-litmus.local` (same file as pre-commit) | `gh pr create` | gate deletes file (re-touch required) | unbounded | Low — gate only fires on `gh pr create` |
-| **Pre-merge (pr-grind)** | `.claude/skip-pr-grind.local` | `gh pr merge` | gate deletes file | **30s..3600s** — files ≥1h old silently deleted | Low — gate only fires on `gh pr merge` |
+| **Pre-merge (pr-grind)** \* | `.claude/skip-pr-grind.local` | `gh pr merge` | gate deletes file | **30s..3600s** — files ≥1h old silently deleted | Low — gate only fires on `gh pr merge` |
+
+\* The `<30s rejection` cell behaves as documented (eager delete). The **gate-pass (≥30s) path** is what differs: deletion is **deferred to PostToolUse confirmation** so a failed `gh pr merge` does NOT consume the bypass token. See the deferred-consumption note immediately below.
+
+> **Pre-merge uses deferred consumption** (unique among the four gates). The PreToolUse gate records the claim in `.claude/.merge-bypass-pending.local` and leaves the skip file alone. The PostToolUse hook (`post-merge-confirm-bypass.sh`) deletes the skip file only on confirmed `gh pr merge` success. On merge failure, `--auto` queued-but-not-yet-merged, ambiguous output, tampered mtime, or cross-PR mismatch, the skip file is preserved so the operator can retry without a re-touch. See README "Event types written to bypass-log.jsonl" for the full event taxonomy (`skip-pr-grind-claimed`, `-consumed`, `-released`, `-released-auto-queued`, `-released-ambiguous`, `-released-tampered`, `-released-mismatch`, `-released-malformed`).
 
 The remainder of this section (verbatim message template, Monitor wait, hard rules) applies to **all four gates** unless explicitly noted.
 

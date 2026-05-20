@@ -67,6 +67,18 @@ try:
     cmd = inp.get('command', '')
     segments = re.split(r'&&|\|\||[;\n|]', cmd)
     target_dir = ''
+    pr_num = ''
+    # Count every 'gh pr merge' invocation in the WHOLE command string, not
+    # just per-segment. Shell-quote-unaware segment splitting misses
+    # wrappers like \`bash -c \"gh pr merge X && gh pr merge Y\"\`, \`sh -c\`,
+    # \`eval\`, \`\$(...)\`, and \`(...)\` subshells — all of which split into
+    # at most one segment matching gh-pr-merge, defeating the multi-merge
+    # guard. The substring-count approach catches every occurrence
+    # regardless of how it's wrapped.
+    merge_count = len(re.findall(r'\bgh\s+pr\s+merge\b', cmd))
+
+    # Walk segments to find target_dir (for cd-prefix support) and the
+    # first PR number — only meaningful when merge_count == 1.
     for seg in segments:
         seg = seg.strip()
         cd_m = re.match(r'cd\s+(.*)', seg)
@@ -79,32 +91,50 @@ try:
             continue
         while re.match(r'^\w+=\S*\s', seg):
             seg = re.sub(r'^\w+=\S*\s+', '', seg, count=1)
-        if re.match(r'gh\s+pr\s+merge\b', seg):
-            # Extract PR number (first positional arg that is numeric)
+        if re.match(r'gh\s+pr\s+merge\b', seg) and not pr_num:
+            # Capture the FIRST top-level merge's PR number. If the actual
+            # merge command is wrapped (bash -c, eval, etc.), pr_num may
+            # remain empty — the multi-merge guard below blocks on count,
+            # and even if count is 1 a wrapped merge will be gated on
+            # \`unknown\` PR (downstream PostToolUse refuses consumption
+            # on unknown-PR claims).
             args = re.split(r'\s+', seg)
-            pr_num = ''
             for a in args[3:]:  # skip 'gh', 'pr', 'merge'
                 if a.startswith('-'):
                     break
                 if re.match(r'^\d+$', a):
                     pr_num = a
                     break
-            # Use newline separator: target_dir may contain '|' on weird paths
-            print('yes')
-            print(pr_num)
-            print(target_dir)
-            break
+    if merge_count >= 1:
+        # Use newline separator: target_dir may contain '|' on weird paths
+        print('yes' if merge_count == 1 else 'multi')
+        print(pr_num)
+        print(target_dir)
+        print(merge_count)
 except Exception:
     print('error')
     print('')
     print('')
+    print('0')
 " 2>/dev/null || true)
 
 IS_GH_PR_MERGE=$(echo "$MERGE_PARSE" | sed -n '1p')
 MERGE_PR_NUM=$(echo "$MERGE_PARSE" | sed -n '2p')
 TARGET_DIR=$(echo "$MERGE_PARSE" | sed -n '3p')
+MERGE_COUNT=$(echo "$MERGE_PARSE" | sed -n '4p')
 
 [ -z "$IS_GH_PR_MERGE" ] && exit 0
+
+# Multi-merge guard: refuse a Bash call that chains more than one
+# 'gh pr merge' invocation. The gate authorizes a single merge per call;
+# chained merges defeat per-PR gating, the cross-PR marker mismatch check,
+# and the deferred-consumption claim flow (claim is filed for one PR but
+# the second merge runs unauthorized). Block at PreToolUse and ask the
+# operator to run them one-at-a-time so each goes through its own gate.
+if [ "$IS_GH_PR_MERGE" = "multi" ]; then
+    block_emit "Pre-merge gate: command chains ${MERGE_COUNT:-multiple} \`gh pr merge\` invocations in one Bash call. Only one merge per call is authorized — chained merges bypass per-PR gating and the deferred-consumption claim flow. Run each merge in its own Bash call so each goes through PreToolUse separately."
+    exit 0
+fi
 
 # Fail-closed: parser error after fast pre-filter matched → block as precaution
 if [ "$IS_GH_PR_MERGE" = "error" ]; then
@@ -139,11 +169,24 @@ if [ -f "$SKIP_FILE" ]; then
     fi
 
     if [ "$FILE_AGE" -lt 3600 ]; then
-        # Single-use: consume after allowing one merge
-        rm -f "$SKIP_FILE"
-        # Bypass telemetry
+        # Deferred consumption: the skip file is NOT deleted here. We write a
+        # "pending bypass" claim that the PostToolUse hook
+        # (post-merge-confirm-bypass.sh) consumes only after gh pr merge
+        # actually succeeds. If the merge fails downstream (e.g. GitHub
+        # branch-protection refusal), the skip file remains valid so the
+        # operator does not need to re-touch it. This closes the
+        # consume-on-gate-pass-but-command-fail gap.
         mkdir -p "$REPO_DIR/.claude"
-        printf '{"ts":"%s","event":"skip-pr-grind-consumed","gate":"pre-merge"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
+        if ! printf 'skip_mtime=%s\nmerge_pr=%s\nclaimed_at=%s\n' \
+            "${_MTIME:-0}" "${MERGE_PR_NUM:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            > "$REPO_DIR/.claude/.merge-bypass-pending.local" 2>/dev/null; then
+            block_emit "Pre-merge gate: failed to write bypass-pending claim to $REPO_DIR/.claude/.merge-bypass-pending.local. Cannot proceed safely (PostToolUse hook cannot confirm consumption). Check filesystem permissions."
+            exit 0
+        fi
+        # Pre-claim telemetry (final consumption logged by PostToolUse hook)
+        printf '{"ts":"%s","event":"skip-pr-grind-claimed","gate":"pre-merge","pr":"%s"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${MERGE_PR_NUM:-unknown}" \
+            >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
         exit 0
     else
         rm -f "$SKIP_FILE"
@@ -172,6 +215,26 @@ if [ -f "$MARKER_FILE" ]; then
                 exit 0
                 ;;
         esac
+        # Marker is per-PR (pr-grind writes PR_NUM to the marker on clean
+        # convergence). Refuse to authorize merging PR X based on a marker
+        # written for PR Y — that allows a fresh-but-unrelated grind on one PR
+        # to unlock the merge of any other open PR. Treat the mismatch as
+        # stale-for-this-merge: delete and require a fresh grind for the
+        # actual PR being merged.
+        if [ -z "${MERGE_PR_NUM:-}" ]; then
+            # Auto-detect merge (no explicit PR number): cannot confirm the
+            # marker authorizes THIS PR. Fail-closed — require the operator
+            # to supply an explicit PR number so the per-PR check can run.
+            # Preserve the marker so the operator can retry with explicit PR
+            # number without needing a fresh grind.
+            block_emit "Pre-merge gate: pr-grind-clean marker is for PR #$PR_NUM but the merge command did not include an explicit PR number. Supply the PR number explicitly (e.g. \`gh pr merge $PR_NUM --squash\`) so the per-PR marker check can authorize this merge."
+            exit 0
+        fi
+        if [ "$PR_NUM" != "$MERGE_PR_NUM" ]; then
+            rm -f "$MARKER_FILE"
+            block_emit "Pre-merge gate: pr-grind-clean marker is for PR #$PR_NUM but the merge targets PR #$MERGE_PR_NUM. Marker removed (per-PR, cannot cross-authorize). Run \`/pr-grind\` for PR #$MERGE_PR_NUM before merging."
+            exit 0
+        fi
         if command -v gh &>/dev/null; then
             # gh pr checks exits 1 when any check has failed — capture output
             # and exit code separately to distinguish "check failed" from "CLI error".

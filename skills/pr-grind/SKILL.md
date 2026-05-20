@@ -486,7 +486,7 @@ BASE_BRANCH=$(gh pr view <PR_NUMBER> --json baseRefName -q '.baseRefName // empt
 # to remove full ANSI escape sequences (ESC + printable tail like `[0m`)
 # before tr strips any remaining control bytes; tr alone only removes the
 # ESC byte (0x1B) and leaves the printable remnants attached to the value.
-BASE_BRANCH=$(printf '%s' "$BASE_BRANCH" | sed 's/\x1B\[[0-9;]*[A-Za-z]//g' | tr -d '[:space:][:cntrl:]')
+BASE_BRANCH=$(printf '%s' "$BASE_BRANCH" | sed $'s/\033\\[[0-9;]*[A-Za-z]//g' | tr -d '[:space:][:cntrl:]')
 
 if [ -f ".claude/skip-baseref-check.local" ] || [ "${PR_GRIND_ALLOW_NON_MAIN_BASE:-0}" = "1" ]; then
   BASEREF_BYPASS=1

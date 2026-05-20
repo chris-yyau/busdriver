@@ -481,13 +481,12 @@ Create an isolated worktree so the user's main workspace stays free for their ne
 # Capture stderr so auth/network errors are surfaced in the bail message
 # instead of being swallowed by `2>/dev/null`.
 BASE_BRANCH_ERR=$(mktemp)
-BASE_BRANCH=$(gh pr view <PR_NUMBER> --json baseRefName -q .baseRefName 2>"$BASE_BRANCH_ERR" || true)
-# Normalize: gh `-q .field` outputs the literal string `null` when the
-# field is missing; strip CR/whitespace/control chars defensively (TTY
-# wrappers can inject ANSI). An empty result OR a literal "null" both
-# mean "could not resolve".
-BASE_BRANCH=$(printf '%s' "$BASE_BRANCH" | tr -d '[:space:][:cntrl:]')
-[ "$BASE_BRANCH" = "null" ] && BASE_BRANCH=""
+BASE_BRANCH=$(gh pr view <PR_NUMBER> --json baseRefName -q '.baseRefName // empty' 2>"$BASE_BRANCH_ERR" || true)
+# Normalize: strip CR/whitespace/control chars defensively. Use sed first
+# to remove full ANSI escape sequences (ESC + printable tail like `[0m`)
+# before tr strips any remaining control bytes; tr alone only removes the
+# ESC byte (0x1B) and leaves the printable remnants attached to the value.
+BASE_BRANCH=$(printf '%s' "$BASE_BRANCH" | sed 's/\x1B\[[0-9;]*[A-Za-z]//g' | tr -d '[:space:][:cntrl:]')
 
 if [ -f ".claude/skip-baseref-check.local" ] || [ "${PR_GRIND_ALLOW_NON_MAIN_BASE:-0}" = "1" ]; then
   BASEREF_BYPASS=1
@@ -495,6 +494,10 @@ else
   BASEREF_BYPASS=0
 fi
 
+# CRITICAL: if the case block below exits non-zero, the dispatcher MUST treat
+# this as a hard BAIL — surface the error to the user and HALT pr-grind. Do
+# NOT proceed to the worktree creation below or any subsequent step. This is
+# the same exit-1 contract used by the worktree-add failure path further down.
 case "$BASE_BRANCH" in
   main|master|develop) ;;  # canonical trunks — proceed
   "")
@@ -522,11 +525,6 @@ case "$BASE_BRANCH" in
     ;;
 esac
 rm -f "$BASE_BRANCH_ERR"
-
-# CRITICAL: if the case block above exits non-zero, the dispatcher MUST treat
-# this as a hard BAIL — surface the error to the user and HALT pr-grind. Do
-# NOT proceed to the worktree creation below or any subsequent step. This is
-# the same exit-1 contract used by the worktree-add failure path further down.
 
 PR_BRANCH=$(gh pr view <PR_NUMBER> --json headRefName -q .headRefName)
 # Resolve to an absolute path so WORKTREE_DIR can be passed to the subagent

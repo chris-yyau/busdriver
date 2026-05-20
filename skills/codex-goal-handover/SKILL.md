@@ -105,8 +105,8 @@ jq -e . "$RUN_DIR/spec.json" >/dev/null || { echo "spec is not valid JSON" >&2; 
 The prompt must instruct Codex on three non-obvious points:
 
 1. **Codex does NOT decide completion.** Verifiers do. `self_assessed_status: "complete"` in the response is advisory — the helper runs the verifier commands separately.
-2. **Codex MUST commit at the end of the iteration.** Use a conventional-commit message describing what changed. Set `committed: true` and `commit_sha` accordingly.
-3. **Response must conform to the enforced JSON schema.** The schema requires `summary`, `self_assessed_status`, `committed`. Optional: `blocker`, `files_changed`, `commit_sha`.
+2. **Codex DESCRIBES the commit; the dispatcher EXECUTES it.** Codex must NOT run `git commit` itself. Instead, it returns `files_changed` + `intended_commit_message` (a conventional-commit message). The dispatcher runs `git add` + `git commit` from outside Codex's sandbox after the iteration returns. This is the architectural fix for protected mounts (e.g., `/Volumes/*` with `com.apple.provenance` xattrs on macOS) where Codex's seatbelt sandbox blocks `.git/index.lock` creation regardless of `allow_git_writes`.
+3. **Response must conform to the enforced JSON schema.** The schema requires `summary`, `self_assessed_status`, `blocker`, `files_changed`, `intended_commit_message`. The dispatcher injects `committed` + `commit_sha` after committing, so callers reading those fields still work.
 
 Prompt template (first iter):
 
@@ -119,8 +119,8 @@ SPEC:
 Rules for this iteration:
 - Do NOT self-certify completion. The harness runs the declared verifier commands AFTER this iteration ends. Your `self_assessed_status` is advisory only.
 - Stay strictly within `scope.include` and avoid `scope.exclude`.
-- At the end of the iteration, commit your changes with a conventional commit message.
-- Return a final response that conforms to the enforced JSON schema (summary, self_assessed_status, committed, optional blocker/files_changed/commit_sha).
+- Do NOT run `git commit` yourself — your sandbox may not have write access to `.git/`. Instead, populate `files_changed` (paths of every file you modified, relative to repo root) and `intended_commit_message` (the conventional-commit message you want used). The dispatcher will run `git add <files_changed>` + `git commit -m "<intended_commit_message>"` on your behalf after this iteration returns.
+- Return a final response that conforms to the enforced JSON schema (summary, self_assessed_status, blocker, files_changed, intended_commit_message). Set `intended_commit_message` to null only if you made no file changes this iteration.
 ```
 
 ### 4. Dispatch via the helper
@@ -139,6 +139,8 @@ The helper prints the result file path (schema-enforced). Read it with `jq`.
 
 ### 5. Verify the commit (cheap, no LLM tokens)
 
+The dispatcher executes the commit using `intended_commit_message` + `files_changed` from codex's response, then injects `committed` + `commit_sha` back into the result file. The caller validates the outcome:
+
 ```bash
 PRE_HEAD=$(cat "${RESULT_FILE}.pre-head.txt")
 if [[ "$PRE_HEAD" == "no-git" ]]; then
@@ -148,9 +150,17 @@ if [[ "$PRE_HEAD" == "no-git" ]]; then
 fi
 POST_HEAD=$(git rev-parse HEAD)
 if [[ "$PRE_HEAD" == "$POST_HEAD" ]]; then
-  # Codex didn't commit — warn. If this happens twice in a row, bail.
+  # No commit landed this iter. Could be:
+  #   - Codex set intended_commit_message=null (no work done)
+  #   - Codex declared files_changed but the working tree was empty (already
+  #     committed elsewhere, or codex's edits were no-ops)
+  #   - Dispatcher's git add/commit failed (see ${RESULT_FILE}.codex.log)
+  # Read result.committed (dispatcher's authoritative value) to disambiguate.
+  COMMITTED=$(jq -r '.committed' "$RESULT_FILE")
+  echo "[codex-goal] iter $ITER_N: no new commit (committed=$COMMITTED, status=$(jq -r '.self_assessed_status' "$RESULT_FILE"))"
 fi
-# Detect multi-commit iters (Codex made >1 commit this turn):
+# Detect multi-commit iters (rare — codex shouldn't request multiple commits per iter
+# under the new contract, but defense in depth):
 COMMITS_THIS_ITER=$(git rev-list "${PRE_HEAD}..HEAD")
 ```
 
@@ -233,7 +243,7 @@ PY
 
 Even if Codex were steered (e.g., by prompt injection from verifier output) to modify a file outside scope, this check catches it before Step 8 can declare the iter done.
 
-**Post-iter `.git/hooks/` integrity check.** `allow_git_writes=true` grants Codex write access to the entire `.git/` directory, including `.git/hooks/`. A misbehaving or steered Codex session could write a malicious hook that executes at outer-process privilege level on the next `git` invocation. The scope check above audits working-tree paths only (`git diff --name-only`) and does not see `.git/hooks/` mutations. Run this check immediately after the scope check and before Step 8:
+**Post-iter `.git/hooks/` integrity check.** The current dispatcher does NOT set `sandbox_workspace_write.allow_git_writes=true` — Codex's sandbox cannot write to `.git/` at all, which structurally prevents `.git/hooks/` injection. This check is therefore defense in depth against (a) a future regression that re-enables that flag, or (b) an environment where Codex's sandbox happens to grant `.git/` write access regardless of the dispatcher's flags. A misbehaving or steered Codex session could otherwise write a malicious hook that executes at outer-process privilege level on the next `git` invocation. The scope check above audits working-tree paths only (`git diff --name-only`) and does not see `.git/hooks/` mutations. Run this check immediately after the scope check and before Step 8:
 
 ```bash
 # Collect all hook files present after this iter
@@ -299,7 +309,7 @@ Only run after Step 7 exits 0 (scope clean):
   ---END VERIFIER OUTPUT---
 
   Fix the failing verifiers. Stay within scope.include; do not touch scope.exclude.
-  Commit your changes at the end of this iteration.
+  Do NOT run `git commit` yourself — populate `files_changed` + `intended_commit_message` and the dispatcher will commit on your behalf (same contract as iter 1).
   ```
 
   Then dispatch the next iter with `ITER_N=$((ITER_N+1))` and a fresh `--result-file`.
@@ -309,7 +319,7 @@ This is the structural defense against prompt injection from verifier output: ev
 
 ## Litmus considerations (busdriver pre-commit gate)
 
-Codex's commits during a handover do **not** fire busdriver's litmus pre-commit gate. The gate is wired via Claude Code's `PreToolUse` hook on the `Bash` tool, which only intercepts direct Bash tool calls made by Claude. Codex commits inside its sandbox subprocess; the harness never sees those `git commit` invocations.
+Handover commits do **not** fire busdriver's litmus pre-commit gate. The gate is wired via Claude Code's `PreToolUse` hook on the `Bash` tool, which only intercepts direct Bash tool calls made by Claude. The dispatcher (`scripts/codex/codex-goal-dispatch.sh`) runs `git commit` inside its shell subprocess — Claude's Bash tool sees only the dispatcher invocation, not the inner `git commit`, so the litmus gate's pattern match misses it. (Same behavior as the prior architecture where Codex committed inside its own sandbox subprocess; only the subprocess identity changed.)
 
 This is an additive limitation, not a hidden bypass:
 
@@ -330,7 +340,7 @@ When you want litmus coverage on the handover's output:
 ## Hard rules
 
 1. **Claude never writes code in the loop.** If steering requires code judgment beyond reading verifier output, abort with: "This task needs code-level judgment — switching to inline work or `/codex:rescue` is the right move."
-2. **Per-iter commit checkpoint mandatory.** If `git rev-parse HEAD` is unchanged after an iter, log a warning. If two iters in a row don't commit, bail. (Requires `sandbox_workspace_write.allow_git_writes=true`, which `scripts/codex/codex-goal-dispatch.sh` sets automatically — without it, codex cannot write inside `.git/` and every iter blocks on `index.lock`.)
+2. **Per-iter commit checkpoint mandatory.** If `git rev-parse HEAD` is unchanged after an iter, log a warning. If two iters in a row don't commit, bail. (The dispatcher — not Codex — executes the commit, using `intended_commit_message` + `files_changed` from Codex's response. This removes the prior dependency on `sandbox_workspace_write.allow_git_writes=true`, which proved insufficient on protected mounts where Codex's seatbelt + macOS Endpoint Security still block `.git/index.lock` creation regardless of the flag. See the dispatcher's commit logic in `scripts/codex/codex-goal-dispatch.sh` for details.)
 3. **Verifiers are the authority.** Codex's `self_assessed_status: complete` does NOT stop the loop unless verifiers also pass. Verifier failure trumps Codex's self-report.
 4. **Bounded.** `max_iters` defaults to 5; hard cap is 8. Warn if user requests higher. (Defaults bumped from 3/5 per Droid's research: Codex docs describe long-running sessions with many passes; Ralph Loop production runs routinely use 20+ iters. Tight caps risk consuming progress headroom on a single bad iter.)
 5. **Foreground only.** No `--bg` mode. For fire-and-forget runs, redirect to the Codex TUI.
@@ -352,6 +362,29 @@ When you want litmus coverage on the handover's output:
 - `jq` (helper schema check + skill JSON-spec parsing)
 - `python3` (stdlib only — used by Step 7 scope check via `fnmatch`; no third-party deps like PyYAML required)
 - `git` (commit detection — Hard rule 2 cannot be enforced outside a git repo)
+- `bash` ≥ 3.2 (macOS-default version works; no bash 4+ features required)
+
+### Environment variables (advanced)
+
+- `BUSDRIVER_REVIEW_CLI` — codex CLI alternative (handled by resolver, not dispatcher)
+- `BUSDRIVER_CODEX_ALLOW_DIRTY_TREE=1` — bypass the clean-tree precondition at dispatcher entry. Default: dispatcher refuses to start (exit 4) if the working tree has any modified/staged/untracked-non-gitignored files. Override only when you have a deliberate reason to invoke codex against a dirty tree (e.g., scripted test fixtures that pre-stage helpers).
+- `BUSDRIVER_CODEX_ALLOW_UNCLAIMED=1` — bypass the out-of-scope detection (exit 3). Default: dispatcher fails closed if codex modified files not in `files_changed`. Override only when your caller explicitly inspects the `unclaimed_changes` array in the result file and decides how to proceed.
+- `BUSDRIVER_CODEX_FAIL_ON_IGNORED=1` — paranoid mode: fail closed (exit 6) on ANY gitignored modification by codex. Default is informative-only (gitignored writes by build tools / `.env` updates / caches are routine; failing every run would be too restrictive). Enable for security-sensitive contexts where local-config tampering is in the threat model.
+
+### Dispatcher exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0    | Codex returned schema-valid response, commit (if any) succeeded |
+| 1    | Codex exited non-zero |
+| 2    | Result file missing or schema-invalid |
+| 3    | Out-of-scope detection: codex modified files outside `files_changed` (`BUSDRIVER_CODEX_ALLOW_UNCLAIMED=1` to skip) |
+| 4    | Working tree was dirty at dispatcher entry (`BUSDRIVER_CODEX_ALLOW_DIRTY_TREE=1` to skip) |
+| 5    | Staging failed for one or more declared files — partial commit avoided |
+| 6    | Codex modified gitignored files (paranoid mode only — `BUSDRIVER_CODEX_FAIL_ON_IGNORED=1`) |
+| 64   | Bad usage / invalid arg value |
+| 66   | Required file (schema) not found |
+| 127  | Required CLI not installed |
 
 ## Cost expectation (CC quota)
 

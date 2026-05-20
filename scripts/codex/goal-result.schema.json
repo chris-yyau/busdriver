@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "CodexGoalIterationReport",
-  "description": "Codex's self-report for one iteration of the verifier-led goal loop. NOTE: self_assessed_status is advisory only — the loop's authoritative decision is made by declarative verifier commands (helper-run) plus Claude's review. Schema enforces shape so the helper can parse, not truth.",
+  "description": "Codex's self-report for one iteration of the verifier-led goal loop. NOTE: self_assessed_status is advisory only — the loop's authoritative decision is made by declarative verifier commands (helper-run) plus Claude's review. The dispatcher (not Codex) executes the iteration's git commit using intended_commit_message + files_changed, so the workflow works on any mount/sandbox where Codex's seatbelt profile may block .git/ writes (e.g., /Volumes/* mounts with com.apple.provenance xattrs on macOS).",
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "self_assessed_status", "blocker", "files_changed", "committed", "commit_sha"],
+  "required": ["summary", "self_assessed_status", "blocker", "files_changed", "intended_commit_message"],
   "properties": {
     "summary": {
       "type": "string",
@@ -22,15 +22,11 @@
     "files_changed": {
       "type": "array",
       "items": { "type": "string" },
-      "description": "Paths of files modified this iteration."
+      "description": "Paths of files you modified this iteration (relative to repo root). The dispatcher uses this list to `git add` your work, so be accurate — only files in this list will be staged and committed."
     },
-    "committed": {
-      "type": "boolean",
-      "description": "Whether Codex committed the changes this iteration. Helper verifies via git log — discrepancy = warning."
-    },
-    "commit_sha": {
+    "intended_commit_message": {
       "type": ["string", "null"],
-      "description": "Short SHA of the iteration's commit. null if committed=false."
+      "description": "Conventional-commit message you want the dispatcher to use for this iteration's commit. The dispatcher runs `git add <files_changed>` + `git commit -m \"<intended_commit_message>\"` on your behalf, OUTSIDE your sandbox. DO NOT run git commit yourself — your sandbox may not have write access to .git/ on protected mounts. Set to null when no files were changed this iteration (no commit needed)."
     }
   }
 }

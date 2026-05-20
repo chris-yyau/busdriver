@@ -1,3 +1,10 @@
+## [1.41.5](https://github.com/chris-yyau/busdriver/compare/v1.41.4...v1.41.5) (2026-05-20)
+
+
+### Bug Fixes
+
+* **pr-grind:** bail Step 0 when baseRefName not in {main,master,develop} ([#127](https://github.com/chris-yyau/busdriver/issues/127)) ([a093505](https://github.com/chris-yyau/busdriver/commit/a0935058308ab536053a0f8d9fbad7f661058567)), closes [#122](https://github.com/chris-yyau/busdriver/issues/122) [HI#severity](https://github.com/HI/issues/severity)
+
 ## [1.41.4](https://github.com/chris-yyau/busdriver/compare/v1.41.3...v1.41.4) (2026-05-20)
 
 

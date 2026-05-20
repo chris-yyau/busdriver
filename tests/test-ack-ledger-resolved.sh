@@ -253,6 +253,155 @@ else
   fail "COMMENTED after prior DISMISSED expected 'stale', got '$got'"
 fi
 
+# --- Test 12: skipped check-run on HEAD + stale COMMENTED review with non-actionable body → none (Case 3 positive case) ---
+# Canonical cubic-dev-ai merge-commit scenario from PR #129: bot reviewed
+# pre-merge commit with a "No issues found" COMMENTED body AND posted a
+# check-run with conclusion=skipped on the merge commit. Without Case 3,
+# the downgrade block falls through to `echo stale`. With Case 3 (and its
+# non-actionable-body positive-signal guard), the skipped-on-HEAD check-run
+# downgrades to `none` so invariant 2 doesn't deadlock.
+got=$(run_ledger_check_runs cubic-dev-ai "$SKIPPED_HEAD_CHECK_RUN" "$STALE_CUBIC_REVIEW")
+if [ "$got" = "none" ]; then
+  ok "skipped on HEAD + stale 'No issues found' COMMENTED → none (Case 3 positive case)"
+else
+  fail "skipped on HEAD + stale 'No issues found' COMMENTED expected 'none', got '$got'"
+fi
+
+# --- Test 13: skipped check-run on STALE commit + stale 'No issues found' review → stale (head-sha guard) ---
+# Pins the `${check_run_skipped:0:8} = $HEAD_SHA` guard inside Case 3.
+# Without the guard, ANY skipped check-run from the bot would fire Case 3 and
+# silently downgrade to `none`. With the guard, only HEAD-anchored skipped
+# check-runs downgrade.
+got=$(run_ledger_check_runs cubic-dev-ai "$SKIPPED_STALE_CHECK_RUN" "$STALE_CUBIC_REVIEW")
+if [ "$got" = "stale" ]; then
+  ok "skipped on stale commit + stale review → stale (head-sha guard pins Case 3 to HEAD)"
+else
+  fail "skipped on stale commit + stale review expected 'stale', got '$got'"
+fi
+
+# --- Test 14: success + skipped both on HEAD → HEAD_SHA (Tier D priority over Case 3) ---
+# Tier D's success-check-run-on-HEAD short-circuits at line 93 before the
+# downgrade block runs. Without this test, swapping the order of Tier D and
+# the downgrade block (or moving Case 3 before Tier D) would silently downgrade
+# a successful bot to `none`. No reviews fixture is needed because Tier D
+# exits at line 93 before reaching line 98.
+SUCCESS_AND_SKIPPED_HEAD=$(mk_check_runs_json "[{\"app\":{\"slug\":\"cubic-dev-ai\"},\"conclusion\":\"success\",\"head_sha\":\"${HEAD_SHA}\"},{\"app\":{\"slug\":\"cubic-dev-ai\"},\"conclusion\":\"skipped\",\"head_sha\":\"${HEAD_SHA}\"}]")
+got=$(run_ledger_check_runs cubic-dev-ai "$SUCCESS_AND_SKIPPED_HEAD")
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "success + skipped both on HEAD → HEAD_SHA (Tier D priority over Case 3)"
+else
+  fail "success + skipped both on HEAD expected '$HEAD_SHA', got '$got'"
+fi
+
+# --- Test 15: success-stale + skipped-HEAD + stale 'No issues found' review → none (robustness fixture) ---
+# Robustness fixture inspired by busdriver PR #129 (2026-05-21). The live
+# /commits/$HEAD_SHA/check-runs fetch may not return stale-anchored entries,
+# so this is a "what if both arrive in the same payload" test rather than
+# an exact production reproduction. Test 12 already covers the canonical
+# minimal-fixture case; Test 15 adds pagination-resilience coverage.
+SUCCESS_STALE_SKIPPED_HEAD=$(mk_check_runs_json "[{\"app\":{\"slug\":\"cubic-dev-ai\"},\"conclusion\":\"success\",\"head_sha\":\"oldcommit\"},{\"app\":{\"slug\":\"cubic-dev-ai\"},\"conclusion\":\"skipped\",\"head_sha\":\"${HEAD_SHA}\"}]")
+got=$(run_ledger_check_runs cubic-dev-ai "$SUCCESS_STALE_SKIPPED_HEAD" "$STALE_CUBIC_REVIEW")
+if [ "$got" = "none" ]; then
+  ok "success-stale + skipped-HEAD + stale review → none (robustness fixture inspired by PR #129)"
+else
+  fail "success-stale + skipped-HEAD + stale review expected 'none', got '$got'"
+fi
+
+# --- Test 16: [CHANGES_REQUESTED on prior + skipped on HEAD] → stale (ever_approved guard preserved) ---
+# Codex's blueprint-review iteration 1 finding: Case 3 must NOT downgrade a
+# bot with a prior CHANGES_REQUESTED review even if it later posts a skipped
+# check-run on HEAD. The ever_approved==0 outer guard at scripts/ack-ledger.sh:124
+# enforces this — CHANGES_REQUESTED counts toward ever_approved (see lines
+# 105-112). Without the guard (e.g., if Case 3 was placed at line 94 instead
+# of inside the downgrade block), this test would fail with `got 'none'`,
+# silently discarding the bot's prior actionable finding.
+got=$(run_ledger_check_runs cubic-dev-ai "$SKIPPED_HEAD_CHECK_RUN" "$CHANGES_REQUESTED_REVIEW")
+if [ "$got" = "stale" ]; then
+  ok "[CHANGES_REQUESTED + skipped-HEAD] → stale (ever_approved==0 guard preserved)"
+else
+  fail "[CHANGES_REQUESTED + skipped-HEAD] expected 'stale', got '$got'"
+fi
+
+# --- Test 17: actionable COMMENTED body + skipped-HEAD → stale (positive-signal guard) ---
+# Codex's blueprint-review iteration 2 finding: Case 3 must NOT downgrade a
+# bot whose last review body contains actionable content even if ever_approved
+# is 0. Mirrors Case 2's PR-overview positive-signal guard. The fixture body
+# "Please fix the validation logic in line 47." does NOT match the
+# non-actionable regex (no issues found / no concerns / all good / looks good
+# / lgtm / nothing to add|report), so Case 3 does NOT fire and the script
+# falls through to `echo stale`.
+got=$(run_ledger_check_runs cubic-dev-ai "$SKIPPED_HEAD_CHECK_RUN" "$ACTIONABLE_COMMENTED_REVIEW")
+if [ "$got" = "stale" ]; then
+  ok "actionable COMMENTED body + skipped-HEAD → stale (positive-signal guard prevents bypass)"
+else
+  fail "actionable COMMENTED body + skipped-HEAD expected 'stale', got '$got'"
+fi
+
+# --- Test 18: body_sha-only bot (no /reviews) + skipped-HEAD → stale (last_state==COMMENTED guard) ---
+# Codex's blueprint-review iteration 4 finding: a hypothetical bot with NO
+# /reviews entry but a stale body_sha (issue-comment body referencing an
+# older commit SHA) + a skipped check-run on HEAD would reach the downgrade
+# block with empty last_body. Without the `last_state == "COMMENTED"` guard,
+# Case 3 would fire on the empty body and silently downgrade actionable
+# issue-comment findings to `none`. With the guard, last_state is empty
+# (no /reviews) → Case 3 doesn't fire → falls through to `echo stale`.
+# Fixture note: body_sha must be a valid hex SHA (parser regex is commit/[a-f0-9]{7,40})
+# and != HEAD_SHA 'abc12345' so it reaches the downgrade block (not the line-98 short-circuit).
+BODY_SHA_ONLY_COMMENTS='{"comments":[{"author":{"login":"hypothetical-bot[bot]"},"body":"Reviewed at commit/deadbeef — found actionable issues."}]}'
+SKIPPED_HEAD_OTHER_BOT='{"check_runs":[{"app":{"slug":"hypothetical-bot"},"conclusion":"skipped","head_sha":"abc12345"}]}'
+got=$(FETCH_OK=1 \
+  ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' \
+  ALL_REVIEWS='[]' \
+  ALL_COMMENTS="$BODY_SHA_ONLY_COMMENTS" \
+  ALL_CHECK_RUNS="$SKIPPED_HEAD_OTHER_BOT" \
+  HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" hypothetical-bot 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "body_sha-only bot (no /reviews) + skipped-HEAD → stale (last_state==COMMENTED guard prevents bypass)"
+else
+  fail "body_sha-only bot + skipped-HEAD expected 'stale', got '$got'"
+fi
+
+# --- Test 19: skipped-HEAD followed by skipped-stale in same payload → none (jq HEAD-filter resilience) ---
+# Codex's blueprint-review iteration 4 finding: a `last | .head_sha` jq
+# pattern would pick the LAST entry from the filtered array; if pagination
+# orders the skipped-stale entry after the skipped-HEAD entry, `last` picks
+# the stale one and the head_sha != HEAD check fails (Case 3 falls through
+# to stale, wrong outcome). The fix filters HEAD inside the jq predicate,
+# making the query pagination-order resilient. This test exercises that
+# fix by putting skipped-HEAD first and skipped-stale second.
+ORDERED_SKIPPED_HEAD_THEN_STALE=$(mk_check_runs_json "[{\"app\":{\"slug\":\"cubic-dev-ai\"},\"conclusion\":\"skipped\",\"head_sha\":\"${HEAD_SHA}\"},{\"app\":{\"slug\":\"cubic-dev-ai\"},\"conclusion\":\"skipped\",\"head_sha\":\"oldcommit\"}]")
+got=$(run_ledger_check_runs cubic-dev-ai "$ORDERED_SKIPPED_HEAD_THEN_STALE" "$STALE_CUBIC_REVIEW")
+if [ "$got" = "none" ]; then
+  ok "skipped-HEAD before skipped-stale → none (jq HEAD-filter is pagination-order resilient)"
+else
+  fail "skipped-HEAD before skipped-stale expected 'none', got '$got'"
+fi
+
+# --- Test 20: stale COMMENTED no-findings /reviews + actionable body_sha comment + skipped-HEAD → stale (body_sha empty guard) ---
+# Codex's blueprint-review iteration 6 finding: a bot with BOTH a stale
+# non-actionable COMMENTED /reviews entry AND a stale issue-comment whose
+# body contains a hex SHA (body_sha non-empty) and actionable text plus a
+# skipped check-run on HEAD reaches the downgrade block with all three
+# pre-body_sha predicates passing (skipped-HEAD ✓, last_state=COMMENTED ✓,
+# last_body non-actionable ✓). Without the `[ -z "$body_sha" ]` guard,
+# Case 3 fires and silently discards actionable issue-comment content.
+# With the guard, body_sha is non-empty → Case 3 doesn't fire → falls
+# through to `echo stale`.
+ACTIONABLE_BODY_SHA_COMMENTS='{"comments":[{"author":{"login":"cubic-dev-ai[bot]"},"body":"Reviewed at commit/deadbeef — found a bug at line 47."}]}'
+got=$(FETCH_OK=1 \
+  ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' \
+  ALL_REVIEWS="$STALE_CUBIC_REVIEW" \
+  ALL_COMMENTS="$ACTIONABLE_BODY_SHA_COMMENTS" \
+  ALL_CHECK_RUNS="$SKIPPED_HEAD_CHECK_RUN" \
+  HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "stale COMMENTED no-findings + body_sha comment + skipped-HEAD → stale (body_sha empty guard prevents bypass)"
+else
+  fail "stale COMMENTED no-findings + body_sha comment + skipped-HEAD expected 'stale', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

@@ -323,9 +323,14 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │
   │        `stale` and `none` ack values do NOT trigger this gate —
   │        `stale` means bot hasn't re-reviewed yet (Invariant 2 already
-  │        gates on this for clean status); `none` means bot never posted
-  │        or only posted infra-error markers (`<bot>=0/0:none` ledger
-  │        entry is the matching shape and is fine). Only HEAD-acked bots
+  │        gates on this for clean status); `none` means bot never posted,
+  │        or only posted infra-error markers, or acknowledged HEAD via a
+  │        check-run with conclusion=skipped and non-actionable body. The
+  │        matching ledger shapes are `<bot>=0/0:none` for bots that posted
+  │        nothing, OR `<bot>=0/N:no-findings` for bots whose N>=1 artifacts
+  │        were Case-1/2/3 downgraded with zero actionable findings (per
+  │        the n_actionable/n_total contract at pr-grinder.md:200). Only
+  │        HEAD-acked bots
   │        prove a body exists that should have been enumerated.
   │
   │     4. Discipline rails — cumulative caps for the out-of-scope-
@@ -975,11 +980,11 @@ PRIOR_ATTEMPTS:
 4. No unresolved actionable comments from any source
 5. No new comments arrived after your last push (wait for the full cycle)
 6. Advisory check issues either fixed or noted as beyond PR scope
-7. **Reviewer ack ledger**: every registered bot (Greptile, Cubic, CodeRabbit, Copilot) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean either "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" — both are non-gating; see `scripts/ack-ledger.sh`'s infra-error downgrade.)
+7. **Reviewer ack ledger**: every registered bot (Greptile, Cubic, CodeRabbit, Copilot) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all three are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 1, 2, and 3.)
 
 **Re-query the ack ledger fresh (REQUIRED — defense in depth against late posts between subagent return and merge time):**
 
-The dispatcher must re-run the same `scripts/ack-ledger.sh` lookup the worker used in Step 6.5, against the live `/reviews` endpoint, with HEAD recomputed against the current branch state. Just re-parsing `$RESULT_REVIEWER_ACKS` would only validate the worker's snapshot — it can't catch a bot that finished re-reviewing in the seconds between subagent return and merge.
+The dispatcher must re-run the same `scripts/ack-ledger.sh` lookup the worker used in Step 6.5, against all live ack-ledger sources (review threads, `/reviews`, issue comments, and check-runs), with HEAD recomputed against the current branch state. Just re-parsing `$RESULT_REVIEWER_ACKS` would only validate the worker's snapshot — it can't catch a bot that finished re-reviewing in the seconds between subagent return and merge.
 
 The `<PR_NUMBER>`, `<owner>`, `<repo>` placeholders below follow the same template-substitution convention as `<PR_NUMBER>` elsewhere in this Completion section — Claude substitutes the literal owner / repo / PR-number values at run time before executing the bash.
 
@@ -1115,6 +1120,13 @@ Options:
                     # CI re-run + bot re-review on the new merge commit;
                     # plan for 1-2 additional wait-rounds. Cleanest correctness
                     # path when bots tolerate merge commits.
+                    # Note on cubic-dev-ai: cubic skips reviewing merge commits
+                    # (check-run conclusion=skipped). Ack-ledger Case 3 maps
+                    # that to `none` so [update-merge] still converges, but
+                    # cubic will appear as `none` rather than HEAD-acked in
+                    # the final ledger. If a positive cubic HEAD-ack matters
+                    # (e.g., for audit), use [update-rebase] instead — it
+                    # forces a fresh review at the cost of 3-5 wait-rounds.
   [update-rebase] gh pr update-branch <PR_NUMBER> --rebase
                     # rebases PR onto base. Force-push, rewrites published
                     # SHAs, invalidates ack-ledger entries (all bots stale).
@@ -1152,6 +1164,13 @@ Options:
                     # CI re-run + bot re-review on the new merge commit;
                     # plan for 1-2 additional wait-rounds. Cleanest correctness
                     # path when bots tolerate merge commits.
+                    # Note on cubic-dev-ai: cubic skips reviewing merge commits
+                    # (check-run conclusion=skipped). Ack-ledger Case 3 maps
+                    # that to `none` so [update-merge] still converges, but
+                    # cubic will appear as `none` rather than HEAD-acked in
+                    # the final ledger. If a positive cubic HEAD-ack matters
+                    # (e.g., for audit), use [update-rebase] instead — it
+                    # forces a fresh review at the cost of 3-5 wait-rounds.
   [update-rebase] gh pr update-branch <PR_NUMBER> --rebase
                     # rebases PR onto base. Force-push, rewrites published
                     # SHAs, invalidates ack-ledger entries (all bots stale).

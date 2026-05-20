@@ -81,11 +81,19 @@ setup_fixture2_sandbox() {
     git config user.email "test@test.com"
     git config user.name "Test"
     git config commit.gpgsign false
-    mkdir -p .claude skills/litmus/scripts/lib scripts/lib
+    mkdir -p .claude skills/litmus/scripts/lib skills/blueprint-review/scripts/lib scripts/lib
     cp "$SCRIPT" skills/litmus/scripts/run-review-loop.sh
     cp "$REPO_ROOT/skills/litmus/scripts/init-review-loop.sh" skills/litmus/scripts/init-review-loop.sh
     cp -r "$REPO_ROOT"/skills/litmus/scripts/lib/* skills/litmus/scripts/lib/ 2>/dev/null || true
     cp -r "$REPO_ROOT"/scripts/lib/* scripts/lib/ 2>/dev/null || true
+    # Issue #120: copy the JSON extractor into the sandbox so the EXTRACTOR
+    # candidate loop in run-review-loop.sh finds extract_review_json.py via
+    # CLAUDE_PLUGIN_ROOT instead of falling through to
+    # $HOME/.claude/plugins/marketplaces/busdriver/... which would make the
+    # test non-hermetic (passes on dev host, may fall back to
+    # parse-narrative.py on clean machines and silently produce PASS).
+    cp "$REPO_ROOT/skills/blueprint-review/scripts/lib/extract_review_json.py" \
+        skills/blueprint-review/scripts/lib/extract_review_json.py
     # Initial commit so `git diff --cached` has a base; then stage a
     # target file whose diff the script "reviews".
     echo "base" > seed.txt
@@ -108,6 +116,7 @@ teardown_fixture2_sandbox() {
 run_fixture2_review_loop() {
     PATH="$BINDIR2:$PATH" \
     BUSDRIVER_REVIEW_CLI=agy \
+    CLAUDE_PLUGIN_ROOT="$SANDBOX2" \
     LITMUS_SKIP_SAST=1 \
     LITMUS_SKIP_CONTEXT=1 \
     LITMUS_SKIP_MARKDOWN=1 \

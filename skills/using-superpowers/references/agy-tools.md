@@ -16,11 +16,11 @@ Skills use Claude Code tool names. When you encounter these in a skill, use your
 | `Skill` tool (invoke a skill) | `activate_skill` |
 | `WebSearch` | `google_web_search` |
 | `WebFetch` | `web_fetch` |
-| `Task` tool (dispatch subagent) | No equivalent — agy does not support subagents |
+| `Task` tool (dispatch subagent) | Agy supports dynamic subagents — see "Subagent support" below |
 
-## No subagent support
+## Subagent support
 
-Agy has no equivalent to Claude Code's `Task` tool. Skills that rely on subagent dispatch (`subagent-driven-development`, `dispatching-parallel-agents`) will fall back to single-session execution via `executing-plans`.
+Agy supports subagents — Google's I/O 2026 launch announcement called out that Antigravity CLI preserves Gemini CLI's Agent Skills, Hooks, and Subagents (Gemini CLI's "Extensions" were rebranded as "Antigravity plugins" rather than carried over under the same name). The official agy tool name for dispatching subagents is not documented here; consult your installed `agy` version's help for the exact invocation. Skills that rely on subagent dispatch (`subagent-driven-development`, `dispatching-parallel-agents`) should work; verify behavior against your agy version.
 
 ## Additional agy tools
 
@@ -29,7 +29,7 @@ These tools are available in agy but have no Claude Code equivalent:
 | Tool | Purpose |
 |------|---------|
 | `list_directory` | List files and subdirectories |
-| `save_memory` | Persist facts to AGENTS.md across sessions |
+| `save_memory` | Persist facts to `GEMINI.md` across sessions (note: `AGENTS.md` is a separate cross-tool rules file, not the `save_memory` target; verify against your installed `agy` version — newer Gemini CLI lineage releases introduced an experimental memory manager subagent as an alternative) |
 | `ask_user` | Request structured input from the user |
 | `tracker_create_task` | Rich task management (create, update, list, visualize) |
 | `enter_plan_mode` / `exit_plan_mode` | Switch to read-only research mode before making changes |

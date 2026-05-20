@@ -257,6 +257,10 @@ resolve_role_cli() {
     if [[ -n "$default_primary" ]]; then
       if [[ "$default_primary" == "auto" ]]; then
         break
+      elif [[ "$default_primary" == "gemini" ]]; then
+        # Reject deprecated CLI in defaults path — same hard-cutover as Step 1
+        echo "busdriver: defaults.primary=gemini is deprecated; use 'agy' (antigravity) instead" >&2
+        echo "unsupported:gemini" && return
       elif [[ "$default_primary" == "none" || "$default_primary" == "builtin" ]]; then
         echo "$default_primary" && return
       elif is_cli_available "$default_primary"; then
@@ -265,7 +269,11 @@ resolve_role_cli() {
       local default_fallback
       default_fallback=$(_read_config_value "$cfg" '.defaults.fallback')
       if [[ -n "$default_fallback" && "$default_fallback" != "auto" ]]; then
-        if [[ "$default_fallback" == "none" || "$default_fallback" == "builtin" ]]; then
+        if [[ "$default_fallback" == "gemini" ]]; then
+          # Reject deprecated CLI in defaults path — same hard-cutover as Step 1
+          echo "busdriver: defaults.fallback=gemini is deprecated; use 'agy' (antigravity) instead" >&2
+          echo "unsupported:gemini" && return
+        elif [[ "$default_fallback" == "none" || "$default_fallback" == "builtin" ]]; then
           echo "$default_fallback" && return
         elif is_cli_available "$default_fallback"; then
           echo "$default_fallback" && return

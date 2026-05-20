@@ -23,7 +23,7 @@
     "scope_expansion_pattern": "OUT OF SCOPE|follow-up PR|deferred to follow-up|post-merge|inherited from parent"
   },
   "reviewers": {
-    "gemini": {
+    "agy": {
       "enabled": true,
       "timeout_ms": 600000
     },

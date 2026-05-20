@@ -135,7 +135,7 @@ if [ "$REVIEW_MODE" = "pr" ]; then
     echo "" >&2
     echo "   BUSDRIVER_REVIEW_CLI=$RESOLVED_CLI is not supported in PR mode." >&2
     echo "   PR deep review needs an independent external reviewer." >&2
-    echo "   Set BUSDRIVER_REVIEW_CLI=auto or install codex/gemini." >&2
+    echo "   Set BUSDRIVER_REVIEW_CLI=auto or install codex/agy." >&2
     write_terminal_status setup_error
     exit 1
   fi

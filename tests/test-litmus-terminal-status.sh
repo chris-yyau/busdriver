@@ -39,15 +39,14 @@ grep -q 'terminal_status:.*"setup_error"' .claude/litmus-state.md \
 # ────────────────────────────────────────────────────────────
 # Fixture 2 helpers — mock-CLI harness for litmus integration tests.
 # ────────────────────────────────────────────────────────────
-# Strategy: drop a fake `gemini` script into a temp dir, prepend it to
-# PATH, and set BUSDRIVER_REVIEW_CLI=gemini. The mock reads stdin (the
-# prompt — discarded) and prints a deterministic JSON FAIL verdict so
-# every iteration produces the same issue fingerprint. SAST, smart
-# context, docs context, and markdown checks are all disabled to keep
-# the fixture hermetic and fast.
+# Strategy: drop a fake `agy` script into a temp dir, prepend it to
+# PATH, and set BUSDRIVER_REVIEW_CLI=agy. The mock ignores its argv
+# prompt and prints a deterministic JSON FAIL verdict so every iteration
+# produces the same issue fingerprint. SAST, smart context, docs context,
+# and markdown checks are all disabled to keep the fixture hermetic and fast.
 
 # Build the mock CLI. Each invocation prints the same JSON FAIL verdict.
-create_mock_gemini() {
+create_mock_agy() {
     local bindir="$1"
     mkdir -p "$bindir"
     # Emit JSON on a SINGLE line. The merger now handles multi-line input
@@ -55,16 +54,17 @@ create_mock_gemini() {
     # but keeping the mock compact matches the historical single-line CLI
     # contract and keeps the fixture's failure modes obvious — if the merger
     # ever regresses to per-line parsing, this fixture still works.
-    cat > "$bindir/gemini" <<'MOCK_EOF'
+    cat > "$bindir/agy" <<'MOCK_EOF'
 #!/usr/bin/env bash
-# Mock gemini for litmus integration testing.
-# Drains stdin so upstream printf does not SIGPIPE, then emits a fixed
-# single-line JSON FAIL verdict. Output identity across calls is what
-# trips compute_issue_fingerprint → is_stalled.
+# Mock agy for litmus integration testing.
+# Drains stdin (the prompt piped to `agy --print /dev/stdin`) so the
+# upstream printf does not SIGPIPE, then emits a fixed single-line JSON
+# FAIL verdict. Output identity across calls is what trips
+# compute_issue_fingerprint → is_stalled.
 cat > /dev/null
 printf '%s\n' '{"status":"FAIL","issues":[{"file":"test_target.txt","line":1,"severity":"high","category":"bug","description":"deterministic stall-test issue (fixture-driven, no LLM)","suggestion":"no-op for test","confidence":95}]}'
 MOCK_EOF
-    chmod +x "$bindir/gemini"
+    chmod +x "$bindir/agy"
 }
 
 # Set up an isolated sandbox per fixture. Sets SANDBOX2 / BINDIR2 for the
@@ -93,7 +93,7 @@ setup_fixture2_sandbox() {
     git commit -q -m "seed"
     echo "test content" > test_target.txt
     git add test_target.txt
-    create_mock_gemini "$BINDIR2"
+    create_mock_agy "$BINDIR2"
 }
 
 teardown_fixture2_sandbox() {
@@ -107,7 +107,7 @@ teardown_fixture2_sandbox() {
 # the merge step is the mock LLM verdict.
 run_fixture2_review_loop() {
     PATH="$BINDIR2:$PATH" \
-    BUSDRIVER_REVIEW_CLI=gemini \
+    BUSDRIVER_REVIEW_CLI=agy \
     LITMUS_SKIP_SAST=1 \
     LITMUS_SKIP_CONTEXT=1 \
     LITMUS_SKIP_MARKDOWN=1 \

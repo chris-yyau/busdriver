@@ -13,7 +13,7 @@
 #   bash resolve-cli.sh --json
 #
 # Env var: BUSDRIVER_REVIEW_CLI
-# Values: auto (default) | codex | gemini | droid | amp | opencode | claude | aider | builtin | none
+# Values: auto (default) | codex | agy | droid | amp | opencode | claude | aider | builtin | none
 
 # ── Low-level utilities (used by all three systems) ──────────────
 
@@ -35,7 +35,7 @@ get_cli_install_hint() {
   local cli="$1"
   case "$cli" in
     codex)  echo "npm install -g @openai/codex" ;;
-    gemini) echo "See https://github.com/google-gemini/gemini-cli" ;;
+    agy)    echo "See https://antigravity.google/docs/cli/" ;;
     claude) echo "See https://docs.anthropic.com/en/docs/claude-code" ;;
     aider)  echo "pip install aider-chat" ;;
     droid)  echo "See https://droid.dev" ;;
@@ -168,11 +168,20 @@ _portable_timeout() {
 _resolve_from_route_array() {
   local config_path="$1" role_key="$2"
   local i=0 cli
+  local warned_deprecated_gemini=0
   while true; do
     cli=$(_read_config_value "$config_path" ".routes[\"$role_key\"][$i]")
     [[ -z "$cli" ]] && break
-    if [[ "$cli" == "auto" ]]; then
-      for auto_cli in codex gemini droid amp opencode; do
+    if [[ "$cli" == "gemini" ]]; then
+      # Skip deprecated entries — config arrays support fallback, so the user's
+      # ["gemini", "droid"] route gracefully degrades to droid instead of failing.
+      # Warn once per call so a stale config gets visible feedback without spam.
+      if [[ "$warned_deprecated_gemini" -eq 0 ]]; then
+        echo "busdriver: config route '$role_key' references deprecated 'gemini'; use 'agy' (antigravity) instead — skipping" >&2
+        warned_deprecated_gemini=1
+      fi
+    elif [[ "$cli" == "auto" ]]; then
+      for auto_cli in codex agy droid amp opencode; do
         is_cli_available "$auto_cli" && echo "$auto_cli" && return 0
       done
     elif [[ "$cli" == "none" || "$cli" == "builtin" ]]; then
@@ -191,6 +200,16 @@ resolve_role_cli() {
 
   # Step 1: Env var override (hard-fail if unavailable)
   if [[ -n "$env_cli" && "$env_cli" != "auto" ]]; then
+    # Reject deprecated CLI names — this is the hard-cutover migration point
+    # (gemini → agy). A stale BUSDRIVER_REVIEW_CLI=gemini from before the
+    # migration would otherwise resolve to "gemini" (if the binary is still
+    # installed) and crash downstream with a cryptic "Unsupported CLI: gemini".
+    # Surfacing it here gives the user a clear migration pointer.
+    if [[ "$env_cli" == "gemini" ]]; then
+      echo "busdriver: BUSDRIVER_REVIEW_CLI=gemini is deprecated; use 'agy' (antigravity) instead" >&2
+      echo "unsupported:gemini"
+      return
+    fi
     if [[ "$env_cli" == "none" || "$env_cli" == "builtin" ]]; then
       echo "$env_cli" && return
     fi
@@ -252,16 +271,16 @@ resolve_role_cli() {
 
   # Step 4b: Legacy per-role defaults (backward compat when no config exists)
   case "$role_key" in
-    blueprint-review.reviewer_1) is_cli_available gemini && echo "gemini" && return ;;
+    blueprint-review.reviewer_1) is_cli_available agy && echo "agy" && return ;;
     blueprint-review.reviewer_2) is_cli_available codex && echo "codex" && return ;;
     blueprint-review.arbiter)    echo "builtin" && return ;;  # arbiter is always Claude
-    council.pragmatist)         is_cli_available gemini && echo "gemini" && return; echo "none" && return ;;
+    council.pragmatist)         is_cli_available agy && echo "agy" && return; echo "none" && return ;;
     council.critic)             is_cli_available codex  && echo "codex"  && return; echo "none" && return ;;
     council.researcher)         is_cli_available droid  && echo "droid"  && return; echo "none" && return ;;
   esac
 
   # Step 5: Auto-detect
-  for cli in codex gemini droid amp opencode; do
+  for cli in codex agy droid amp opencode; do
     is_cli_available "$cli" && echo "$cli" && return
   done
 
@@ -421,7 +440,14 @@ execute_review() {
   # plugin is installed, falling back to direct CLI. Other CLIs use stdin piping.
   case "$cli" in
     codex)   _execute_codex "$prompt" "$duration" ;;
-    gemini)  printf '%s' "$prompt" | _portable_timeout "$duration" gemini 2>&1 ;;
+    # agy normally takes the prompt as an argv arg (and would be ARG_MAX-limited),
+    # but `agy --print /dev/stdin` makes it read the prompt from fd 0 — so we pipe
+    # and bypass the ~1MB argv limit for big review diffs. --sandbox restricts
+    # terminal capabilities (matching dispatch.sh's readonly mode) — review prompts
+    # emit JSON verdicts and never need to mutate the repo or fetch. Align
+    # --print-timeout with our outer duration so agy's internal 5m default doesn't
+    # abort before _portable_timeout does.
+    agy)     printf '%s' "$prompt" | _portable_timeout "$duration" agy --sandbox --print-timeout "${duration}s" --print /dev/stdin 2>&1 ;;
     claude)  printf '%s' "$prompt" | _portable_timeout "$duration" claude -p --output-format text 2>&1 ;;
     aider)   local _tmp; _tmp=$(mktemp -t busdriver-aider-XXXXXX)
              printf '%s' "$prompt" > "$_tmp"
@@ -449,7 +475,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = "--json" ]; then
   resolved=$(resolve_review_cli)
   version=""
   case "$resolved" in
-    codex|gemini|droid|amp|opencode|claude|aider) version=$(get_cli_version "$resolved") ;;
+    codex|agy|droid|amp|opencode|claude|aider) version=$(get_cli_version "$resolved") ;;
     builtin|none|missing:*|unsupported:*) version="n/a" ;;
   esac
 
@@ -462,7 +488,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = "--json" ]; then
 
   # Report availability for all supported CLIs
   clis_json=""
-  for cli in codex gemini droid amp opencode claude aider; do
+  for cli in codex agy droid amp opencode claude aider; do
     avail=$(is_cli_available "$cli" && echo true || echo false)
     ver=$(get_cli_version "$cli" | _json_safe)
     clis_json="${clis_json}\"${cli}\":{\"available\":${avail},\"version\":\"${ver}\"},"

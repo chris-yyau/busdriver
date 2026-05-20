@@ -32,7 +32,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Codex Adversarial** | adversarial review, challenge design | `/codex:adversarial-review` (official plugin) |
 | **Codex Rescue** | delegate task to Codex | `/codex:rescue` (official plugin) |
 | **Codex Goal Loop** | iterative Codex handover with declarative pass/fail verifiers (tests/lint/typecheck), result returns to CC. Foreground only — for fire-and-forget use TUI `codex` + `/goal` | `/busdriver:codex-goal` (verifier-led; skill `codex-goal-handover`) |
-| **External CLI** | send to codex/gemini/droid/amp/opencode | `dispatch-cli` |
+| **External CLI** | send to codex/agy/droid/amp/opencode | `dispatch-cli` |
 | **Multi-Model** | multi-model planning | `/multi-plan`, `/multi-backend`, `/multi-frontend`, `/multi-execute`, `/multi-workflow` |
 | **Council** | perspectives, group wisdom, tradeoffs, ambiguous decision, structured deliberation | `council` (5-voice: Architect + Skeptic + Pragmatist + Critic + Researcher) |
 | **Communication** | email triage, Slack, inbox | `chief-of-staff` agent |

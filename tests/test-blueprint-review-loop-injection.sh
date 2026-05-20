@@ -4,7 +4,7 @@
 # Three sites in the loop script previously interpolated bash variables
 # directly into python source:
 #   1. compute_spec_hash python fallback — `$file` path
-#   2. Gemini metadata-injection heredoc — RUN_ID/SPEC_HASH/ITERATION/DURATION
+#   2. Agy metadata-injection heredoc — RUN_ID/SPEC_HASH/ITERATION/DURATION
 #   3. Codex metadata-injection heredoc — same shape, different variables
 # All three now pass values via env vars and use single-quoted python sources.
 # These tests exercise each pattern in isolation against malicious payloads.
@@ -88,7 +88,7 @@ assert_true "compute_spec_hash injection payload did not execute" \
   "$([[ ! -e "$LOOP_INJECTION_FILE" ]] && echo true || echo false)"
 
 # ── Metadata injection heredoc: env-var path is injection-safe ────────
-echo "── metadata-injection heredoc (Gemini/Codex shared) ─────────"
+echo "── metadata-injection heredoc (Agy/Codex shared) ─────────"
 
 # Build a pending JSON file and run the same env-var-based metadata-injection
 # command that lives inside the loop. The payload is a malicious RUN_ID that,

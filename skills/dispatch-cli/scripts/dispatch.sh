@@ -1,5 +1,5 @@
 #!/bin/bash
-# dispatch.sh — Dispatch tasks to Codex or Gemini CLI as autonomous agents
+# dispatch.sh — Dispatch tasks to Codex or Antigravity (agy) CLI as autonomous agents
 #
 # Usage (prefer heredoc or stdin to avoid shell escaping bugs):
 #   dispatch.sh --cli codex <<'PROMPT'
@@ -41,10 +41,10 @@ while [[ $# -gt 0 ]]; do
         --prompt)  PROMPT="$2";  shift 2 ;;
         -h|--help)
             cat <<'USAGE'
-dispatch.sh — Dispatch tasks to Codex or Gemini CLI
+dispatch.sh — Dispatch tasks to Codex or Antigravity (agy) CLI
 
 FLAGS:
-  --cli     codex|gemini|droid|amp|opencode|both|all|auto  (default: auto)
+  --cli     codex|agy|droid|amp|opencode|both|all|auto  (default: auto)
   --mode    readonly|auto           (default: readonly)
   --timeout seconds                 (default: 300)
   --model   model override          (optional)
@@ -87,13 +87,13 @@ _has_cli() {
 
 if [[ "$CLI" == "auto" ]]; then
     if _has_cli codex; then CLI="codex"
-    elif _has_cli gemini; then CLI="gemini"
+    elif _has_cli agy; then CLI="agy"
     elif _has_cli droid; then CLI="droid"
     elif _has_cli amp; then CLI="amp"
     elif _has_cli opencode; then CLI="opencode"
-    else echo "Error: No supported CLI found (tried codex, gemini, droid, amp, opencode)." >&2; exit 1; fi
-elif [[ "$CLI" != "codex" && "$CLI" != "gemini" && "$CLI" != "droid" && "$CLI" != "amp" && "$CLI" != "opencode" && "$CLI" != "both" && "$CLI" != "all" ]]; then
-    echo "Error: Invalid --cli value '$CLI'. Must be codex|gemini|droid|amp|opencode|both|all|auto." >&2; exit 1
+    else echo "Error: No supported CLI found (tried codex, agy, droid, amp, opencode)." >&2; exit 1; fi
+elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "droid" && "$CLI" != "amp" && "$CLI" != "opencode" && "$CLI" != "both" && "$CLI" != "all" ]]; then
+    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|droid|amp|opencode|both|all|auto." >&2; exit 1
 fi
 
 # Validate mode
@@ -106,18 +106,18 @@ fi
 
 # Validate availability — "both" mode degrades gracefully (F31 fix)
 if [[ "$CLI" == "both" ]]; then
-    if ! _has_cli codex && ! _has_cli gemini; then
-        echo "Error: Neither codex nor gemini found." >&2; exit 1
+    if ! _has_cli codex && ! _has_cli agy; then
+        echo "Error: Neither codex nor agy found." >&2; exit 1
     elif ! _has_cli codex; then
-        echo "Warning: codex not found, falling back to gemini only." >&2
-        CLI="gemini"
-    elif ! _has_cli gemini; then
-        echo "Warning: gemini not found, falling back to codex only." >&2
+        echo "Warning: codex not found, falling back to agy only." >&2
+        CLI="agy"
+    elif ! _has_cli agy; then
+        echo "Warning: agy not found, falling back to codex only." >&2
         CLI="codex"
     fi
 else
     [[ "$CLI" == "codex" ]] && ! _has_cli codex && { echo "Error: codex not found." >&2; exit 1; }
-    [[ "$CLI" == "gemini" ]] && ! _has_cli gemini && { echo "Error: gemini not found." >&2; exit 1; }
+    [[ "$CLI" == "agy" ]] && ! _has_cli agy && { echo "Error: agy not found." >&2; exit 1; }
     [[ "$CLI" == "droid" ]] && ! _has_cli droid && { echo "Error: droid not found." >&2; exit 1; }
     [[ "$CLI" == "amp" ]] && ! _has_cli amp && { echo "Error: amp not found." >&2; exit 1; }
     [[ "$CLI" == "opencode" ]] && ! _has_cli opencode && { echo "Error: opencode not found." >&2; exit 1; }
@@ -126,7 +126,7 @@ fi
 # Handle --cli all: discover top 3 available CLIs
 if [[ "$CLI" == "all" ]]; then
     ALL_CLIS=()
-    for c in codex gemini droid amp opencode; do
+    for c in codex agy droid amp opencode; do
         _has_cli "$c" && ALL_CLIS+=("$c")
         [[ ${#ALL_CLIS[@]} -ge 3 ]] && break
     done
@@ -165,13 +165,26 @@ dispatch_one() {
                 _portable_timeout "$TIMEOUT" codex exec -s read-only ${MODEL:+-m "$MODEL"} - \
                     < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             fi ;;
-        gemini)
+        agy)
+            # `agy --print /dev/stdin` reads the prompt from fd 0, which bypasses the
+            # ARG_MAX (~1 MB) limit that would clamp argv-passed prompts. --print-timeout
+            # is aligned with our outer timeout so agy's internal 5m default doesn't
+            # abort before _portable_timeout does.
+            # NOTE: agy v1.0.0 has no `--model` flag (only `--add-dir`, `--sandbox`,
+            # `--print`, `--print-timeout`, `--dangerously-skip-permissions`, etc.).
+            # Forwarding $MODEL would crash with "flags provided but not defined: -model".
+            # Model selection is implicit in the active conversation/config.
+            if [[ -n "$MODEL" ]]; then
+                echo "Warning: --model is not supported by agy v1.0.0 — ignoring '$MODEL'" >&2
+            fi
             if [[ "$MODE" == "auto" ]]; then
-                _portable_timeout "$TIMEOUT" gemini -y ${MODEL:+-m "$MODEL"} \
-                    < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
+                _portable_timeout "$TIMEOUT" agy --dangerously-skip-permissions \
+                    --print-timeout "${TIMEOUT}s" \
+                    --print /dev/stdin < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             else
-                _portable_timeout "$TIMEOUT" gemini ${MODEL:+-m "$MODEL"} \
-                    < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
+                _portable_timeout "$TIMEOUT" agy --sandbox \
+                    --print-timeout "${TIMEOUT}s" \
+                    --print /dev/stdin < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             fi ;;
         droid)
             # Droid has no strict readonly mode — its --auto tier controls whether it
@@ -234,20 +247,20 @@ OUT_DIR="${TMPDIR:-/tmp}"
 
 if [[ "$CLI" == "both" ]]; then
     CODEX_OUT="${OUT_DIR}/dispatch-codex-${STAMP}.txt"
-    GEMINI_OUT="${OUT_DIR}/dispatch-gemini-${STAMP}.txt"
+    AGY_OUT="${OUT_DIR}/dispatch-agy-${STAMP}.txt"
 
-    echo "Dispatching to Codex + Gemini in parallel (${MODE}, ${TIMEOUT}s timeout)..." >&2
+    echo "Dispatching to Codex + Agy in parallel (${MODE}, ${TIMEOUT}s timeout)..." >&2
 
-    dispatch_one "codex"  "$CODEX_OUT" &
-    dispatch_one "gemini" "$GEMINI_OUT" &
-    wait
+    dispatch_one "codex" "$CODEX_OUT" &
+    dispatch_one "agy"   "$AGY_OUT" &
+    wait || true  # allow meta parsing even if a background job exits non-zero
 
     # Read results
-    CMETA=$(read_meta "${CODEX_OUT}.meta");  rm -f "${CODEX_OUT}.meta"
-    GMETA=$(read_meta "${GEMINI_OUT}.meta"); rm -f "${GEMINI_OUT}.meta"
+    CMETA=$(read_meta "${CODEX_OUT}.meta"); rm -f "${CODEX_OUT}.meta"
+    AMETA=$(read_meta "${AGY_OUT}.meta");   rm -f "${AGY_OUT}.meta"
 
     CS=$(echo "$CMETA" | cut -d'|' -f1); CD=$(echo "$CMETA" | cut -d'|' -f2)
-    GS=$(echo "$GMETA" | cut -d'|' -f1); GD=$(echo "$GMETA" | cut -d'|' -f2)
+    AS=$(echo "$AMETA" | cut -d'|' -f1); AD=$(echo "$AMETA" | cut -d'|' -f2)
 
     # Print both outputs
     echo "═══════════════════════════════════════════════════════"
@@ -256,18 +269,18 @@ if [[ "$CLI" == "both" ]]; then
     [[ -f "$CODEX_OUT" ]] && cat "$CODEX_OUT" || echo "(no output)"
     echo ""
     echo "═══════════════════════════════════════════════════════"
-    echo "  GEMINI  (${GS}, ${GD}s)"
+    echo "  AGY  (${AS}, ${AD}s)"
     echo "═══════════════════════════════════════════════════════"
-    [[ -f "$GEMINI_OUT" ]] && cat "$GEMINI_OUT" || echo "(no output)"
+    [[ -f "$AGY_OUT" ]] && cat "$AGY_OUT" || echo "(no output)"
 
-    log_event "codex"  "$CS" "$CD" "$CODEX_OUT"
-    log_event "gemini" "$GS" "$GD" "$GEMINI_OUT"
+    log_event "codex" "$CS" "$CD" "$CODEX_OUT"
+    log_event "agy"   "$AS" "$AD" "$AGY_OUT"
 
     echo "" >&2
-    echo "Saved: codex → ${CODEX_OUT}  |  gemini → ${GEMINI_OUT}" >&2
+    echo "Saved: codex → ${CODEX_OUT}  |  agy → ${AGY_OUT}" >&2
 
     # Exit with failure if either dispatch failed
-    [[ "$CS" == "error" || "$CS" == "timeout" || "$GS" == "error" || "$GS" == "timeout" ]] && exit 1
+    [[ "$CS" == "error" || "$CS" == "timeout" || "$AS" == "error" || "$AS" == "timeout" ]] && exit 1
 
 elif [[ "$CLI" == "all" ]]; then
     echo "Dispatching to ${#ALL_CLIS[@]} CLIs: ${ALL_CLIS[*]} (${MODE}, ${TIMEOUT}s timeout)..." >&2
@@ -278,7 +291,7 @@ elif [[ "$CLI" == "all" ]]; then
         ALL_OUTS+=("$outfile")
         dispatch_one "$c" "$outfile" &
     done
-    wait
+    wait || true  # allow meta parsing even if a background job exits non-zero
 
     any_failed=false
     idx=0

@@ -14,9 +14,10 @@
 #   4. Claude verdict as first-class convergence (no consensus.json dependency)
 #   5. Explicit progress model (severity breakdown, not binary FAIL/PASS)
 
-# Intentional pipeline patterns throughout (jq | jq, cat | python3, etc.)
-# where the inner command's exit code is not load-bearing — SC2312 here
-# would force noisy refactors with no real signal gain.
+# Intentional pipeline patterns throughout (printf | shasum | cut,
+# shasum | cut, jq -r '.issues[] | ...', etc.) where the inner command's
+# exit code is not load-bearing — SC2312 here would force noisy refactors
+# with no real signal gain.
 # shellcheck disable=SC2312
 
 set -euo pipefail

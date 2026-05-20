@@ -174,10 +174,9 @@ PROMPT
 Your task description here
 PROMPT
 
-# With model override and custom timeout
+# With custom timeout (agy v1.0.0 does not support --model)
 ~/.claude/skills/dispatch-cli/scripts/dispatch.sh \
   --cli agy \
-  --model gemini-2.5-pro \
   --timeout 600 <<'PROMPT'
 Your task description here
 PROMPT

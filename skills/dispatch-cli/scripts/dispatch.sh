@@ -253,7 +253,7 @@ if [[ "$CLI" == "both" ]]; then
 
     dispatch_one "codex" "$CODEX_OUT" &
     dispatch_one "agy"   "$AGY_OUT" &
-    wait
+    wait || true  # allow meta parsing even if a background job exits non-zero
 
     # Read results
     CMETA=$(read_meta "${CODEX_OUT}.meta"); rm -f "${CODEX_OUT}.meta"
@@ -291,7 +291,7 @@ elif [[ "$CLI" == "all" ]]; then
         ALL_OUTS+=("$outfile")
         dispatch_one "$c" "$outfile" &
     done
-    wait
+    wait || true  # allow meta parsing even if a background job exits non-zero
 
     any_failed=false
     idx=0

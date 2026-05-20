@@ -76,9 +76,9 @@ Set `BUSDRIVER_REVIEW_CLI` to choose your review backend:
 
 | Value | Behavior |
 |-------|----------|
-| `auto` (default) | Detects: codex > gemini > droid > amp > opencode > built-in agent fallback |
+| `auto` (default) | Detects: codex > agy > droid > amp > opencode > built-in agent fallback |
 | `codex` | OpenAI Codex CLI (`npm install -g @openai/codex`) |
-| `gemini` | Google Gemini CLI |
+| `agy` | Google Antigravity (`agy`) CLI — successor to the Gemini CLI |
 | `droid` | Droid CLI |
 | `amp` | Amp CLI |
 | `opencode` | OpenCode CLI |
@@ -98,9 +98,9 @@ By default, all features share the same CLI. For per-role control, create `.clau
   "version": 1,
   "defaults": { "primary": "auto", "fallback": "builtin" },
   "routes": {
-    "blueprint-review.reviewer_1": ["gemini", "droid"],
+    "blueprint-review.reviewer_1": ["agy", "droid"],
     "blueprint-review.reviewer_2": ["codex", "amp"],
-    "council.pragmatist": ["gemini"],
+    "council.pragmatist": ["agy"],
     "council.critic": ["codex"],
     "council.researcher": ["droid"]
   }
@@ -116,9 +116,9 @@ Each route is an array. For `blueprint-review` and `litmus`, the array is an ord
 | Feature | Role | Config key | Default |
 |---------|------|-----------|---------|
 | Code review | Reviewer | `litmus.reviewer` | auto |
-| Blueprint review | Reviewer 1 | `blueprint-review.reviewer_1` | gemini |
+| Blueprint review | Reviewer 1 | `blueprint-review.reviewer_1` | agy |
 | Blueprint review | Reviewer 2 | `blueprint-review.reviewer_2` | codex |
-| Council | Pragmatist | `council.pragmatist` | gemini |
+| Council | Pragmatist | `council.pragmatist` | agy |
 | Council | Critic | `council.critic` | codex |
 | Council | Researcher | `council.researcher` | droid |
 
@@ -131,12 +131,12 @@ Run `node scripts/doctor.js` to see your effective CLI for each role.
 | CLI | Used by | Install |
 |-----|---------|---------|
 | **[Codex CLI](https://github.com/openai/codex)** | Code review gate (default), blueprint review, council | `npm install -g @openai/codex` |
-| **[Gemini CLI](https://github.com/google-gemini/gemini-cli)** | Blueprint review, council, code review | `npm install -g @google/gemini-cli` or see repo |
+| **[Antigravity (agy) CLI](https://antigravity.google/docs/cli/)** | Blueprint review, council, code review | See https://antigravity.google/docs/cli/ |
 | **[Droid](https://droid.dev)** | Council Researcher (default), any configurable role | See https://droid.dev |
 | **[Amp](https://ampcode.com)** | Any configurable role | See https://ampcode.com |
 | **[OpenCode](https://github.com/opencode-ai/opencode)** | Any configurable role | `go install github.com/opencode-ai/opencode@latest` |
 
-**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. The blueprint review uses its fallback chain (gemini → droid for reviewer_1, codex → amp for reviewer_2). The council has no fallback chain — each role maps to exactly one CLI; missing CLIs mean that voice is skipped from the report. Architect (in-context Claude) always runs, and Skeptic (Agent tool) typically runs, so the council usually convenes with at least 2 voices (40% of full strength) even if all 3 external CLIs are missing; if Skeptic is unavailable (rate limit/timeout), it can run with Architect alone. Core commit pipeline always works.
+**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. The blueprint review uses its fallback chain (agy → droid for reviewer_1, codex → amp for reviewer_2). The council has no fallback chain — each role maps to exactly one CLI; missing CLIs mean that voice is skipped from the report. Architect (in-context Claude) always runs, and Skeptic (Agent tool) typically runs, so the council usually convenes with at least 2 voices (40% of full strength) even if all 3 external CLIs are missing; if Skeptic is unavailable (rate limit/timeout), it can run with Architect alone. Core commit pipeline always works.
 
 ## Install
 
@@ -298,7 +298,7 @@ Use these monthly to identify drift — scanners you keep bypassing (candidates 
 Busdriver learns from its mistakes:
 
 - **Instincts** — Observed patterns from sessions, promoted after human review
-- **Council** — 5-voice multi-perspective analysis (Architect + Skeptic + Pragmatist + Critic + Researcher; defaults to Gemini + Codex + Droid)
+- **Council** — 5-voice multi-perspective analysis (Architect + Skeptic + Pragmatist + Critic + Researcher; defaults to Agy + Codex + Droid)
 - **Lesson capture** — When review finds HIGH+ issues the plan missed, lessons are saved automatically
 - **Reflection** — Manual `/reflect` skill for capturing corrections and feedback
 

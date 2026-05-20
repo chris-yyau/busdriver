@@ -9,36 +9,36 @@ description: >
 
 # Blueprint Review (Three-Tier, Claude Arbiter)
 
-AI-powered design review using Gemini + Codex (parallel) with Claude as the arbiter.
+AI-powered design review using Agy + Codex (parallel) with Claude as the arbiter.
 
 <EXTREMELY-IMPORTANT>
 YOU MUST WAIT FOR ALL THREE REVIEWERS BEFORE MARKING PASS.
 
-This is the rule Claude violated on class-roll (2026-03-10): Claude did its own validation, decided PASS with "only low-severity items," and stamped `<!-- design-reviewed: PASS -->` while Gemini and Codex were still running in background. This is NEVER acceptable.
+This is the rule Claude violated on class-roll (2026-03-10): Claude did its own validation, decided PASS with "only low-severity items," and stamped `<!-- design-reviewed: PASS -->` while Agy and Codex were still running in background. This is NEVER acceptable.
 
 DO NOT rationalize skipping reviewers. These thoughts are violations:
 - "Claude validation already PASSED with low-severity items"
-- "Gemini and Codex are still running, I'll build consensus with what we have"
+- "Agy and Codex are still running, I'll build consensus with what we have"
 - "The Claude review is most authoritative since it has codebase context"
 - "Two out of three passed, that's probably good enough"
 - "I can do my own review instead of waiting for the script"
 
 EVERY design review MUST:
 1. Run `run-design-review-loop.sh` as a BLOCKING bash call
-2. Wait for ALL THREE reviewer outputs (gemini.json, codex.json, claude.json)
-3. Claude validates Gemini/Codex findings against the codebase
+2. Wait for ALL THREE reviewer outputs (agy.json, codex.json, claude.json)
+3. Claude validates Agy/Codex findings against the codebase
 4. Mark PASS ONLY when Claude's verdict has no HIGH/MEDIUM issues (confidence >= 0.5)
 </EXTREMELY-IMPORTANT>
 
 ## Overview
 
 Three-tier model with Claude as arbiter:
-1. **Gemini + Codex**: Run in parallel as independent comprehensive reviewers
+1. **Agy + Codex**: Run in parallel as independent comprehensive reviewers
 2. **Claude**: Validates their findings against the codebase (arbiter)
 3. **Claude's verdict**: The sole convergence signal
 
 **Key features:**
-- Parallel execution (Gemini + Codex run simultaneously)
+- Parallel execution (Agy + Codex run simultaneously)
 - Run-scoped artifact isolation (stale outputs cleaned per iteration)
 - Hard freshness contract (run_id + spec_hash in every output)
 - Atomic writes (.pending → rename on success)
@@ -80,7 +80,7 @@ Reviewer CLIs are configurable via `.claude/busdriver.json` using the `routes` o
 ```json
 {
   "routes": {
-    "blueprint-review.reviewer_1": ["gemini"],
+    "blueprint-review.reviewer_1": ["agy"],
     "blueprint-review.reviewer_2": ["codex"]
   }
 }
@@ -88,7 +88,7 @@ Reviewer CLIs are configurable via `.claude/busdriver.json` using the `routes` o
 
 | Role | Route key | Default |
 |------|-----------|---------|
-| Reviewer 1 | `blueprint-review.reviewer_1` | gemini |
+| Reviewer 1 | `blueprint-review.reviewer_1` | agy |
 | Reviewer 2 | `blueprint-review.reviewer_2` | codex |
 | Arbiter | (hardcoded) | claude (not configurable — Claude is always the arbiter) |
 
@@ -104,7 +104,7 @@ digraph review {
     node [shape=box, style=rounded];
 
     init [label="1. Initialize\nbash init-design-review.sh"];
-    parallel [label="2. Gemini + Codex\n(parallel)"];
+    parallel [label="2. Agy + Codex\n(parallel)"];
     claude [label="3. Claude Arbiter\n(codebase context)"];
     progress [label="4. Progress Analysis\n(severity breakdown)"];
     converged [label="No HIGH/MEDIUM?" shape=diamond];
@@ -133,7 +133,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/init-design-review.s
 
 **Creates state file** (`docs/reviews/<slug>/state.md`) tracking:
 - Current iteration (1 to max_iterations, default 3)
-- Review statuses (Gemini, Codex, Claude)
+- Review statuses (Agy, Codex, Claude)
 - Progress model (high/medium/low issue counts)
 
 ### 2. Run Review Loop
@@ -144,7 +144,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/run-design-review-lo
 
 **Automated workflow:**
 1. **Clean stale artifacts** from previous iteration
-2. **Run Gemini + Codex in parallel** (background processes, `wait` for both)
+2. **Run Agy + Codex in parallel** (background processes, `wait` for both)
 3. **Validate outputs** (JSON integrity + freshness contract)
 4. **Claude validation** with codebase access (manual step or pre-existing output)
 5. **Progress analysis** (severity breakdown from Claude's verdict)
@@ -175,7 +175,7 @@ The original system used Jaccard keyword similarity to match issues across revie
 It achieved **0% match rate** across 5 iterations because reviewers use different naming conventions.
 Claude's manual cross-referencing was doing all the real consensus work.
 
-**New model:** Claude IS the consensus mechanism. Gemini and Codex provide independent perspectives;
+**New model:** Claude IS the consensus mechanism. Agy and Codex provide independent perspectives;
 Claude validates them against the codebase and renders a verdict.
 
 ### Freshness Contract
@@ -221,15 +221,15 @@ Progress is visible across iterations: "iter1: 4 plan-blocking high → iter2: 3
 **Claude's unique role as arbiter:**
 
 - Full codebase context (can read existing code)
-- Validates Gemini/Codex claims against reality
+- Validates Agy/Codex claims against reality
 - Identifies gaps in their coverage
 - Renders the final verdict
 
 **Validation types:**
-- `confirms_gemini`: Agrees with Gemini finding
+- `confirms_agy`: Agrees with Agy finding
 - `confirms_codex`: Agrees with Codex finding
 - `new_finding`: Found issue they missed
-- `contradicts_gemini`: Disagrees with Gemini
+- `contradicts_agy`: Disagrees with Agy
 - `contradicts_codex`: Disagrees with Codex
 
 ## Output Format
@@ -239,7 +239,7 @@ Progress is visible across iterations: "iter1: 4 plan-blocking high → iter2: 3
 ```json
 {
   "status": "PASS"|"FAIL",
-  "reviewer_id": "gemini|codex|claude",
+  "reviewer_id": "agy|codex|claude",
   "review_duration_ms": 0,
   "issues": [
     {
@@ -249,7 +249,7 @@ Progress is visible across iterations: "iter1: 4 plan-blocking high → iter2: 3
       "category": "clarity|completeness|architecture|...",
       "description": "Clear, specific description",
       "suggestion": "Actionable fix",
-      "reviewer": "gemini|codex|claude"
+      "reviewer": "agy|codex|claude"
     }
   ],
   "metadata": {
@@ -292,10 +292,10 @@ Reviewer outputs MUST be validated before Claude arbitration. Malformed or error
 
 ## Troubleshooting
 
-**Issue: Gemini or Codex CLI not found**
+**Issue: Agy or Codex CLI not found**
 
 ```bash
-which gemini
+which agy
 which codex
 ```
 
@@ -325,7 +325,7 @@ Each design file gets its own review directory: `docs/reviews/<slug>/`
 Active review tracked by pointer file: `.claude/current-design-review.local`
 
 - `docs/reviews/<slug>/state.md` - YAML frontmatter tracking iteration + progress
-- `docs/reviews/<slug>/gemini.json` - Gemini review output (with freshness metadata)
+- `docs/reviews/<slug>/agy.json` - Agy review output (with freshness metadata)
 - `docs/reviews/<slug>/codex.json` - Codex review output (with freshness metadata)
 - `docs/reviews/<slug>/claude.json` - Claude arbiter output (with freshness metadata)
 - `docs/reviews/<slug>/claude-validation-prompt.txt` - Generated prompt for Claude
@@ -357,7 +357,7 @@ When presenting findings to the user, filter by confidence tier:
 | 0.3 to <0.5 | Suppress from main report. Include in appendix section: "Low-confidence findings (may be false positives)" |
 | 0.0 to <0.3 | Suppress entirely unless severity is `high` |
 
-**Important:** Low-confidence findings are suppressed from the user-facing report only. They remain in the JSON artifacts (`gemini.json`, `codex.json`, `claude.json`) for auditability. Never delete findings from stored outputs.
+**Important:** Low-confidence findings are suppressed from the user-facing report only. They remain in the JSON artifacts (`agy.json`, `codex.json`, `claude.json`) for auditability. Never delete findings from stored outputs.
 
 ### Calibration-to-Instinct Bridge
 
@@ -466,8 +466,8 @@ Monitor(command: "sleep 35 && echo READY", timeout: 45)
 
 **v3.1 (current, 2026-04-29):** Category-aware convergence. Plan-blocking vs. TDD-discoverable category split. Scope-expansion findings auto-deferred to `follow-up-issues.md`. Trajectory-aware early-stop after 2 iterations of no improvement. Default `max_iterations` reduced from 5 to 3 (empirical: bimodal convergence — pass at iter 1 or never converge). Claude `validation_notes` surfaced in user output.
 
-**v3 (2026-03-27):** Claude-as-arbiter model. Parallel Gemini+Codex. Run-scoped isolation. Freshness contracts. Atomic writes. Explicit progress model. Deleted broken Jaccard consensus, auto-fix engine, and report generator.
+**v3 (2026-03-27):** Claude-as-arbiter model. Parallel Agy+Codex. Run-scoped isolation. Freshness contracts. Atomic writes. Explicit progress model. Deleted broken Jaccard consensus, auto-fix engine, and report generator.
 
 **v2:** Three-tier with Jaccard consensus + auto-fix. Achieved 0% consensus match rate. Claude's manual cross-referencing did all real work.
 
-**v1:** Gemini (strategic) + Codex (technical) with manual triage.
+**v1:** Agy (strategic) + Codex (technical) with manual triage.

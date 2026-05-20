@@ -10,7 +10,7 @@ $ARGUMENTS
 
 - **Language Protocol**: Use **English** when interacting with tools/models, communicate with user in their language
 - **Code Sovereignty**: External models have **zero filesystem write access**, all modifications by Claude
-- **Dirty Prototype Refactoring**: Treat Codex/Gemini Unified Diff as "dirty prototype", must refactor to production-grade code
+- **Dirty Prototype Refactoring**: Treat Codex/Agy Unified Diff as "dirty prototype", must refactor to production-grade code
 - **Stop-Loss Mechanism**: Do not proceed to next phase until current phase output is validated
 - **Prerequisite**: Only execute after user explicitly replies "Y" to `/ccg:plan` output (if missing, must confirm first)
 
@@ -23,7 +23,7 @@ $ARGUMENTS
 ```
 # Resume session call (recommended) - Implementation Prototype
 Bash({
-  command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend <codex|gemini> {{GEMINI_MODEL_FLAG}}resume <SESSION_ID> - \"$PWD\" <<'EOF'
+  command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend <codex|agy> {{AGY_MODEL_FLAG}}resume <SESSION_ID> - \"$PWD\" <<'EOF'
 ROLE_FILE: <role prompt path>
 <TASK>
 Requirement: <task description>
@@ -38,7 +38,7 @@ EOF",
 
 # New session call - Implementation Prototype
 Bash({
-  command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend <codex|gemini> {{GEMINI_MODEL_FLAG}}- \"$PWD\" <<'EOF'
+  command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend <codex|agy> {{AGY_MODEL_FLAG}}- \"$PWD\" <<'EOF'
 ROLE_FILE: <role prompt path>
 <TASK>
 Requirement: <task description>
@@ -56,7 +56,7 @@ EOF",
 
 ```
 Bash({
-  command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend <codex|gemini> {{GEMINI_MODEL_FLAG}}resume <SESSION_ID> - \"$PWD\" <<'EOF'
+  command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend <codex|agy> {{AGY_MODEL_FLAG}}resume <SESSION_ID> - \"$PWD\" <<'EOF'
 ROLE_FILE: <role prompt path>
 <TASK>
 Scope: Audit the final code changes.
@@ -78,14 +78,14 @@ EOF",
 ```
 
 **Model Parameter Notes**:
-- `{{GEMINI_MODEL_FLAG}}`: When using `--backend gemini`, replace with `--gemini-model gemini-3-pro-preview` (note trailing space); use empty string for codex
+- `{{AGY_MODEL_FLAG}}`: When using `--backend agy`, replace with `--agy-model gemini-3-pro-preview` (note trailing space); use empty string for codex
 
 **Role Prompts**:
 
-| Phase | Codex | Gemini |
+| Phase | Codex | Agy |
 |-------|-------|--------|
-| Implementation | `~/.claude/.ccg/prompts/codex/architect.md` | `~/.claude/.ccg/prompts/gemini/frontend.md` |
-| Review | `~/.claude/.ccg/prompts/codex/reviewer.md` | `~/.claude/.ccg/prompts/gemini/reviewer.md` |
+| Implementation | `~/.claude/.ccg/prompts/codex/architect.md` | `~/.claude/.ccg/prompts/agy/frontend.md` |
+| Review | `~/.claude/.ccg/prompts/codex/reviewer.md` | `~/.claude/.ccg/prompts/agy/reviewer.md` |
 
 **Session Reuse**: If `/ccg:plan` provided SESSION_ID, use `resume <SESSION_ID>` to reuse context.
 
@@ -126,9 +126,9 @@ TaskOutput({ task_id: "<task_id>", block: true, timeout: 600000 })
 
    | Task Type | Detection | Route |
    |-----------|-----------|-------|
-   | **Frontend** | Pages, components, UI, styles, layout | Gemini |
+   | **Frontend** | Pages, components, UI, styles, layout | Agy |
    | **Backend** | API, interfaces, database, logic, algorithms | Codex |
-   | **Fullstack** | Contains both frontend and backend | Codex ∥ Gemini parallel |
+   | **Fullstack** | Contains both frontend and backend | Codex ∥ Agy parallel |
 
 ---
 
@@ -171,16 +171,16 @@ mcp__ace-tool__search_context({
 
 **Route Based on Task Type**:
 
-#### Route A: Frontend/UI/Styles → Gemini
+#### Route A: Frontend/UI/Styles → Agy
 
 **Limit**: Context < 32k tokens
 
-1. Call Gemini (use `~/.claude/.ccg/prompts/gemini/frontend.md`)
+1. Call Agy (use `~/.claude/.ccg/prompts/agy/frontend.md`)
 2. Input: Plan content + retrieved context + target files
 3. OUTPUT: `Unified Diff Patch ONLY. Strictly prohibit any actual modifications.`
-4. **Gemini is frontend design authority, its CSS/React/Vue prototype is the final visual baseline**
-5. **WARNING**: Ignore Gemini's backend logic suggestions
-6. If plan contains `GEMINI_SESSION`: prefer `resume <GEMINI_SESSION>`
+4. **Agy is frontend design authority, its CSS/React/Vue prototype is the final visual baseline**
+5. **WARNING**: Ignore Agy's backend logic suggestions
+6. If plan contains `AGY_SESSION`: prefer `resume <AGY_SESSION>`
 
 #### Route B: Backend/Logic/Algorithms → Codex
 
@@ -193,7 +193,7 @@ mcp__ace-tool__search_context({
 #### Route C: Fullstack → Parallel Calls
 
 1. **Parallel Calls** (`run_in_background: true`):
-   - Gemini: Handle frontend part
+   - Agy: Handle frontend part
    - Codex: Handle backend part
 2. Wait for both models' complete results with `TaskOutput`
 3. Each uses corresponding `SESSION_ID` from plan for `resume` (create new session if missing)
@@ -208,7 +208,7 @@ mcp__ace-tool__search_context({
 
 **Claude as Code Sovereign executes the following steps**:
 
-1. **Read Diff**: Parse Unified Diff Patch returned by Codex/Gemini
+1. **Read Diff**: Parse Unified Diff Patch returned by Codex/Agy
 
 2. **Mental Sandbox**:
    - Simulate applying Diff to target files
@@ -242,15 +242,15 @@ mcp__ace-tool__search_context({
 
 #### 5.1 Automatic Audit
 
-**After changes take effect, MUST immediately parallel call** Codex and Gemini for Code Review:
+**After changes take effect, MUST immediately parallel call** Codex and Agy for Code Review:
 
 1. **Codex Review** (`run_in_background: true`):
    - ROLE_FILE: `~/.claude/.ccg/prompts/codex/reviewer.md`
    - Input: Changed Diff + target files
    - Focus: Security, performance, error handling, logic correctness
 
-2. **Gemini Review** (`run_in_background: true`):
-   - ROLE_FILE: `~/.claude/.ccg/prompts/gemini/reviewer.md`
+2. **Agy Review** (`run_in_background: true`):
+   - ROLE_FILE: `~/.claude/.ccg/prompts/agy/reviewer.md`
    - Input: Changed Diff + target files
    - Focus: Accessibility, design consistency, user experience
 
@@ -258,8 +258,8 @@ Wait for both models' complete review results with `TaskOutput`. Prefer reusing 
 
 #### 5.2 Integrate and Fix
 
-1. Synthesize Codex + Gemini review feedback
-2. Weigh by trust rules: Backend follows Codex, Frontend follows Gemini
+1. Synthesize Codex + Agy review feedback
+2. Weigh by trust rules: Backend follows Codex, Frontend follows Agy
 3. Execute necessary fixes
 4. Repeat Phase 5.1 as needed (until risk is acceptable)
 
@@ -277,7 +277,7 @@ After audit passes, report to user:
 
 ### Audit Results
 - Codex: <Passed/Found N issues>
-- Gemini: <Passed/Found N issues>
+- Agy: <Passed/Found N issues>
 
 ### Recommendations
 1. [ ] <Suggested test steps>
@@ -289,8 +289,8 @@ After audit passes, report to user:
 ## Key Rules
 
 1. **Code Sovereignty** – All file modifications by Claude, external models have zero write access
-2. **Dirty Prototype Refactoring** – Codex/Gemini output treated as draft, must refactor
-3. **Trust Rules** – Backend follows Codex, Frontend follows Gemini
+2. **Dirty Prototype Refactoring** – Codex/Agy output treated as draft, must refactor
+3. **Trust Rules** – Backend follows Codex, Frontend follows Agy
 4. **Minimal Changes** – Only modify necessary code, no side effects
 5. **Mandatory Audit** – Must perform multi-model Code Review after changes
 

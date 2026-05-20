@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract review JSON from raw CLI output (Gemini, Codex, etc.).
+"""Extract review JSON from raw CLI output (Agy, Codex, etc.).
 
 The raw output from these CLIs often contains:
 - Non-JSON preamble (config warnings, session info, loading messages)

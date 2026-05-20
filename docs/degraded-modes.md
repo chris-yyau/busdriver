@@ -7,8 +7,8 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 | Service | Layer | If down | Impact | Fallback |
 |---------|-------|---------|--------|----------|
 | **Anthropic API** (Claude) | Local | Can't run Claude Code | Everything stops | Retry + Codex review backend |
-| **OpenAI Codex CLI** | Local | Litmus commit review fails; Council Critic voice down | Commits blocked; council loses Critic (4-voice: Architect + Skeptic + Pragmatist + Researcher) | `BUSDRIVER_REVIEW_CLI=gemini` or `=builtin`; council continues degraded, note in report |
-| **Gemini CLI** | Local | Council Pragmatist voice down; blueprint reviewer_1 falls back to droid | Council loses Pragmatist (4-voice: Architect + Skeptic + Critic + Researcher) | Continue degraded, note in report |
+| **OpenAI Codex CLI** | Local | Litmus commit review fails; Council Critic voice down | Commits blocked; council loses Critic (4-voice: Architect + Skeptic + Pragmatist + Researcher) | `BUSDRIVER_REVIEW_CLI=agy` or `=builtin`; council continues degraded, note in report |
+| **Antigravity (agy) CLI** | Local | Council Pragmatist voice down; blueprint reviewer_1 falls back to droid | Council loses Pragmatist (4-voice: Architect + Skeptic + Critic + Researcher) | Continue degraded, note in report |
 | **Droid CLI** | Local | Council Researcher voice down | Council loses Researcher (4-voice: Architect + Skeptic + Pragmatist + Critic) | Continue degraded, note in report |
 | **GitHub Actions** | CI | Required checks don't run | PR merge blocked | `gh pr merge N --admin`, then audit via helmet's `bypass-audit.yml` workflow (if deployed) or manually record the bypass reason |
 | **GitHub Apps (bots)** | CI | See per-app rows below | Varies | Detailed below |
@@ -50,7 +50,7 @@ Short version:
 
 1. `ps aux | grep codex` — is it actually running or deadlocked
 2. `kill` the process if hung
-3. Set `BUSDRIVER_REVIEW_CLI=gemini` for this session, or `=builtin` for agent-based fallback
+3. Set `BUSDRIVER_REVIEW_CLI=agy` for this session, or `=builtin` for agent-based fallback
 4. If quota exhausted → `LITMUS_PR_FAST=1` to skip multi-agent review (logged to bypass-log)
 
 ## What NOT to do on degraded state

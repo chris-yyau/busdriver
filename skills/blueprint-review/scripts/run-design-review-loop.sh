@@ -1,8 +1,8 @@
 #!/bin/bash
-# Three-tier design review: Gemini + Codex (parallel) → Claude arbiter
+# Three-tier design review: Agy + Codex (parallel) → Claude arbiter
 #
 # Architecture (post-A++ council fix, 2026-03-27):
-#   - Gemini + Codex run in parallel as independent reviewers
+#   - Agy + Codex run in parallel as independent reviewers
 #   - Claude validates their findings against the codebase (arbiter)
 #   - Claude's verdict is the sole convergence signal
 #   - No Jaccard consensus, no auto-fix engine, no mechanical convergence
@@ -102,11 +102,11 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "Options:"
       echo "  --auto          Auto-iteration mode (iterate until Claude verdict is PASS)"
-      echo "  --claude-only   Skip Gemini+Codex, only run Phase 3-5 (Claude validation + convergence)"
+      echo "  --claude-only   Skip Agy+Codex, only run Phase 3-5 (Claude validation + convergence)"
       echo "  --help          Show this help message"
       echo ""
       echo "Architecture:"
-      echo "  1. Gemini + Codex review in PARALLEL"
+      echo "  1. Agy + Codex review in PARALLEL"
       echo "  2. Claude validates findings against codebase (arbiter)"
       echo "  3. Claude's verdict = convergence signal"
       exit 0
@@ -143,24 +143,24 @@ SPEC_HASH=$(compute_spec_hash "$DESIGN_FILE")
 log_info "Spec hash: ${SPEC_HASH:0:12}..."
 
 if [[ "$CLAUDE_ONLY" == "true" ]]; then
-  # --claude-only: recover run_id from existing Codex/Gemini outputs
+  # --claude-only: recover run_id from existing Codex/Agy outputs
   CODEX_FILE=$(get_review_file "codex.json")
-  GEMINI_FILE=$(get_review_file "gemini.json")
+  AGY_FILE=$(get_review_file "agy.json")
   RUN_ID=""
   if [[ -f "$CODEX_FILE" ]]; then
     RUN_ID=$(jq -r '.metadata.run_id // ""' "$CODEX_FILE" 2>/dev/null || echo "")
   fi
-  if [[ -z "$RUN_ID" && -f "$GEMINI_FILE" ]]; then
-    RUN_ID=$(jq -r '.metadata.run_id // ""' "$GEMINI_FILE" 2>/dev/null || echo "")
+  if [[ -z "$RUN_ID" && -f "$AGY_FILE" ]]; then
+    RUN_ID=$(jq -r '.metadata.run_id // ""' "$AGY_FILE" 2>/dev/null || echo "")
   fi
   if [[ -z "$RUN_ID" ]]; then
-    log_error "--claude-only requires existing Gemini/Codex outputs with run_id."
+    log_error "--claude-only requires existing Agy/Codex outputs with run_id."
     log_error "Run without --claude-only first to generate them."
     exit 1
   fi
   log_info "Mode: CLAUDE-ONLY (Phase 3-5 only)"
   log_info "Recovered run ID: $RUN_ID"
-  GEMINI_AVAILABLE=false
+  AGY_AVAILABLE=false
   CODEX_AVAILABLE=false
 else
   # Normal mode: generate fresh run ID
@@ -182,9 +182,9 @@ else
   fi
 
   # Set availability flags for backward compat with rest of script
-  GEMINI_AVAILABLE=false
+  AGY_AVAILABLE=false
   CODEX_AVAILABLE=false
-  [[ "$REVIEWER_1_CLI" != "none" && "$REVIEWER_1_CLI" != "builtin" && ! "$REVIEWER_1_CLI" =~ ^missing: ]] && GEMINI_AVAILABLE=true
+  [[ "$REVIEWER_1_CLI" != "none" && "$REVIEWER_1_CLI" != "builtin" && ! "$REVIEWER_1_CLI" =~ ^missing: ]] && AGY_AVAILABLE=true
   [[ "$REVIEWER_2_CLI" != "none" && "$REVIEWER_2_CLI" != "builtin" && ! "$REVIEWER_2_CLI" =~ ^missing: && "$DUPLICATE_MODE" == "false" ]] && CODEX_AVAILABLE=true
 
   # Duplicate mode: after single reviewer runs, its output will be copied to both paths (see post-wait block below)
@@ -209,12 +209,12 @@ while true; do
   fi
 
   if [[ "$CLAUDE_ONLY" == "true" ]]; then
-    # --claude-only: skip cleanup and Gemini+Codex, jump straight to Phase 3
-    log_info "Claude-only mode: skipping Phase 1-2 (using existing Gemini+Codex outputs)"
+    # --claude-only: skip cleanup and Agy+Codex, jump straight to Phase 3
+    log_info "Claude-only mode: skipping Phase 1-2 (using existing Agy+Codex outputs)"
 
-    GEMINI_OUTPUT_FILE=$(get_review_file "gemini.json")
+    AGY_OUTPUT_FILE=$(get_review_file "agy.json")
     CODEX_OUTPUT_FILE=$(get_review_file "codex.json")
-    GEMINI_STATUS=$(jq -r '.status' "$GEMINI_OUTPUT_FILE" 2>/dev/null || echo "ERROR")
+    AGY_STATUS=$(jq -r '.status' "$AGY_OUTPUT_FILE" 2>/dev/null || echo "ERROR")
     CODEX_STATUS=$(jq -r '.status' "$CODEX_OUTPUT_FILE" 2>/dev/null || echo "ERROR")
     DESIGN_CONTENT=$(cat "$DESIGN_FILE")
     REVIEW_START=$(millis)
@@ -235,9 +235,9 @@ while true; do
   fi
 
   log_info "Cleaning stale artifacts..."
-  rm -f "$(get_review_file "gemini.json")" \
-        "$(get_review_file "gemini-raw.txt")" \
-        "$(get_review_file "gemini.json.pending")" \
+  rm -f "$(get_review_file "agy.json")" \
+        "$(get_review_file "agy-raw.txt")" \
+        "$(get_review_file "agy.json.pending")" \
         "$(get_review_file "codex.json")" \
         "$(get_review_file "codex-raw.txt")" \
         "$(get_review_file "codex.json.pending")" \
@@ -264,40 +264,40 @@ Document to review:
 $DESIGN_CONTENT
 ---"
 
-  # ── Phase 1: Launch Gemini + Codex in PARALLEL ────────────────────
-  log_info "Phase 1: Launching Gemini + Codex reviews in parallel..."
+  # ── Phase 1: Launch Agy + Codex in PARALLEL ────────────────────
+  log_info "Phase 1: Launching Agy + Codex reviews in parallel..."
 
-  GEMINI_OUTPUT_FILE=$(get_review_file "gemini.json")
+  AGY_OUTPUT_FILE=$(get_review_file "agy.json")
   CODEX_OUTPUT_FILE=$(get_review_file "codex.json")
 
   REVIEW_START=$(millis)
 
-  # Run Gemini in background
+  # Run Agy (reviewer 1) in background
   (
-    if [[ "$GEMINI_AVAILABLE" == "true" ]]; then
-      GEMINI_RAW_FILE=$(get_review_file "gemini-raw.txt")
-      GEMINI_START=$(millis)
+    if [[ "$AGY_AVAILABLE" == "true" ]]; then
+      AGY_RAW_FILE=$(get_review_file "agy-raw.txt")
+      AGY_START=$(millis)
 
       # Capture exit code per execute_review contract (exit 3 = BUILTIN_FALLBACK)
       REVIEWER_EXIT=0
-      execute_review "$REVIEWER_1_CLI" "$FULL_PROMPT" > "$GEMINI_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+      execute_review "$REVIEWER_1_CLI" "$FULL_PROMPT" > "$AGY_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
 
       if [[ "$REVIEWER_EXIT" -eq 0 ]]; then
-        GEMINI_END=$(millis)
-        GEMINI_DURATION=$((GEMINI_END - GEMINI_START))
+        AGY_END=$(millis)
+        AGY_DURATION=$((AGY_END - AGY_START))
 
-        if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$GEMINI_RAW_FILE" > "${GEMINI_OUTPUT_FILE}.pending" 2>/dev/null; then
+        if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$AGY_RAW_FILE" > "${AGY_OUTPUT_FILE}.pending" 2>/dev/null; then
           # Inject freshness metadata (Critic #2)
           # Validates JSON has expected structure before injecting.
           # All values are passed via env vars (single-quoted python -c source
           # string) so paths or hash strings containing `'` cannot escape into
           # the python body.
           # || true: don't let injection failure kill subshell under set -e
-          _MIM_PENDING="${GEMINI_OUTPUT_FILE}.pending" \
+          _MIM_PENDING="${AGY_OUTPUT_FILE}.pending" \
           _MIM_RUN_ID="$RUN_ID" \
           _MIM_ITERATION="$CURRENT_ITERATION" \
           _MIM_SPEC_HASH="$SPEC_HASH" \
-          _MIM_DURATION="$GEMINI_DURATION" \
+          _MIM_DURATION="$AGY_DURATION" \
           python3 -c '
 import json, os, sys
 pending = os.environ["_MIM_PENDING"]
@@ -314,22 +314,22 @@ data["metadata"]["review_duration_ms"] = int(os.environ["_MIM_DURATION"])
 with open(pending, "w") as f:
     json.dump(data, f, indent=2)
 ' 2>/dev/null || true
-          mv "${GEMINI_OUTPUT_FILE}.pending" "$GEMINI_OUTPUT_FILE"
+          mv "${AGY_OUTPUT_FILE}.pending" "$AGY_OUTPUT_FILE"
         else
-          create_error_json "gemini" "Output was not valid JSON" > "$GEMINI_OUTPUT_FILE"
+          create_error_json "agy" "Output was not valid JSON" > "$AGY_OUTPUT_FILE"
         fi
       elif [[ "$REVIEWER_EXIT" -eq 3 ]]; then
         # BUILTIN_FALLBACK: CLI retry exhaustion — degraded mode, not hard error.
         # Arbiter proceeds with fewer external voices.
-        create_error_json "gemini" "CLI unavailable (builtin fallback — retry exhaustion)" > "$GEMINI_OUTPUT_FILE"
+        create_error_json "agy" "CLI unavailable (builtin fallback — retry exhaustion)" > "$AGY_OUTPUT_FILE"
       else
-        create_error_json "gemini" "CLI execution failed (exit $REVIEWER_EXIT)" > "$GEMINI_OUTPUT_FILE"
+        create_error_json "agy" "CLI execution failed (exit $REVIEWER_EXIT)" > "$AGY_OUTPUT_FILE"
       fi
     else
-      create_error_json "gemini" "CLI not available" > "$GEMINI_OUTPUT_FILE"
+      create_error_json "agy" "CLI not available" > "$AGY_OUTPUT_FILE"
     fi
   ) &
-  GEMINI_PID=$!
+  AGY_PID=$!
 
   # Run Codex in background
   (
@@ -392,7 +392,7 @@ with open(pending, "w") as f:
 
   # Wait for both to complete
   log_info "  Waiting for parallel reviews..."
-  wait "$GEMINI_PID" 2>/dev/null || true
+  wait "$AGY_PID" 2>/dev/null || true
   wait "$CODEX_PID" 2>/dev/null || true
 
   REVIEW_END=$(millis)
@@ -401,8 +401,8 @@ with open(pending, "w") as f:
 
   # Duplicate mode: copy single reviewer's output to both paths
   if [[ "$DUPLICATE_MODE" == "true" ]]; then
-    if [[ -f "$GEMINI_OUTPUT_FILE" ]] && validate_json_file "$GEMINI_OUTPUT_FILE" 2>/dev/null; then
-      cp "$GEMINI_OUTPUT_FILE" "$CODEX_OUTPUT_FILE"
+    if [[ -f "$AGY_OUTPUT_FILE" ]] && validate_json_file "$AGY_OUTPUT_FILE" 2>/dev/null; then
+      cp "$AGY_OUTPUT_FILE" "$CODEX_OUTPUT_FILE"
       log_info "  Duplicate mode: copied reviewer 1 output to reviewer 2 path"
     fi
   fi
@@ -410,9 +410,9 @@ with open(pending, "w") as f:
   # ── Phase 2: Validate outputs ────────────────────────────────────
   log_info "Phase 2: Validating review outputs..."
 
-  if ! validate_json_file "$GEMINI_OUTPUT_FILE"; then
-    log_error "Gemini output invalid or missing — fail-closed"
-    create_error_json "gemini" "Output missing or invalid after review" > "$GEMINI_OUTPUT_FILE"
+  if ! validate_json_file "$AGY_OUTPUT_FILE"; then
+    log_error "Agy output invalid or missing — fail-closed"
+    create_error_json "agy" "Output missing or invalid after review" > "$AGY_OUTPUT_FILE"
   fi
 
   if ! validate_json_file "$CODEX_OUTPUT_FILE"; then
@@ -421,7 +421,7 @@ with open(pending, "w") as f:
   fi
 
   # Freshness check (Critic #2): validate or inject run_id
-  for review_file in "$GEMINI_OUTPUT_FILE" "$CODEX_OUTPUT_FILE"; do
+  for review_file in "$AGY_OUTPUT_FILE" "$CODEX_OUTPUT_FILE"; do
     FILE_RUN_ID=$(jq -r '.metadata.run_id // ""' "$review_file" 2>/dev/null || echo "")
     REVIEWER=$(jq -r '.reviewer_id // "unknown"' "$review_file" 2>/dev/null || echo "unknown")
     if [[ -z "$FILE_RUN_ID" ]]; then
@@ -442,10 +442,10 @@ with open(pending, "w") as f:
     fi
   done
 
-  GEMINI_STATUS=$(jq -r '.status' "$GEMINI_OUTPUT_FILE")
+  AGY_STATUS=$(jq -r '.status' "$AGY_OUTPUT_FILE")
   CODEX_STATUS=$(jq -r '.status' "$CODEX_OUTPUT_FILE")
 
-  log_info "  Gemini: $GEMINI_STATUS ($(jq '.issues | length' "$GEMINI_OUTPUT_FILE") issues)"
+  log_info "  Agy:    $AGY_STATUS ($(jq '.issues | length' "$AGY_OUTPUT_FILE") issues)"
   log_info "  Codex:  $CODEX_STATUS ($(jq '.issues | length' "$CODEX_OUTPUT_FILE") issues)"
 
   fi  # end of CLAUDE_ONLY guard (Phase 1-2 skipped in claude-only mode)
@@ -460,7 +460,7 @@ with open(pending, "w") as f:
 
   CLAUDE_PROMPT=$(cat "$SCRIPT_DIR/../prompts/claude_validation_prompt.txt")
 
-  GEMINI_ISSUES=$(jq -r '.issues[] | "- [\(.severity)] \(.section): \(.description)"' "$GEMINI_OUTPUT_FILE" 2>/dev/null || echo "No issues")
+  AGY_ISSUES=$(jq -r '.issues[] | "- [\(.severity)] \(.section): \(.description)"' "$AGY_OUTPUT_FILE" 2>/dev/null || echo "No issues")
   CODEX_ISSUES=$(jq -r '.issues[] | "- [\(.severity)] \(.section): \(.description)"' "$CODEX_OUTPUT_FILE" 2>/dev/null || echo "No issues")
 
   cat > "$CLAUDE_PROMPT_FILE" <<EOF
@@ -479,13 +479,13 @@ DESIGN DOCUMENT TO VALIDATE:
 $DESIGN_CONTENT
 
 =============================================================================
-GEMINI REVIEW RESULTS (Status: $GEMINI_STATUS):
+AGY REVIEW RESULTS (Status: $AGY_STATUS):
 =============================================================================
 
-$GEMINI_ISSUES
+$AGY_ISSUES
 
 Full output:
-$(cat "$GEMINI_OUTPUT_FILE")
+$(cat "$AGY_OUTPUT_FILE")
 
 =============================================================================
 CODEX REVIEW RESULTS (Status: $CODEX_STATUS):
@@ -560,7 +560,7 @@ EOF
       log_info "  Claude output from different run but spec_hash matches — accepting"
     else
       log_error "STALE CLAUDE OUTPUT: run_id=$CLAUDE_RUN_ID, expected $RUN_ID (spec_hash mismatch)"
-      log_error "Re-run Claude validation against current Gemini/Codex outputs."
+      log_error "Re-run Claude validation against current Agy/Codex outputs."
       mark_review_complete "stale_claude_output"
       exit 1
     fi
@@ -580,7 +580,7 @@ EOF
   CLAUDE_ISSUE_COUNT=$(jq '.issues | length' "$CLAUDE_OUTPUT_FILE")
   log_info "  Claude: $CLAUDE_STATUS ($CLAUDE_ISSUE_COUNT issues, ${CLAUDE_DURATION}ms)"
 
-  update_review_statuses "$GEMINI_STATUS" "$CODEX_STATUS" "$CLAUDE_STATUS"
+  update_review_statuses "$AGY_STATUS" "$CODEX_STATUS" "$CLAUDE_STATUS"
 
   # ── Phase 4: Progress analysis (Critic #5) ────────────────────────
   # Category-aware convergence: line-level findings (test-code typos, lint, perf)

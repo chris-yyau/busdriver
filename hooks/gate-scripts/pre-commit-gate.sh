@@ -45,7 +45,7 @@ HOOK_DATA=$(cat 2>/dev/null || true)
 
 # Fast pre-filter: skip if hook data doesn't look like it could contain a git commit.
 # NOTE: We require "Bash" tool_name to avoid false positives when prompt text piped
-# to other tools (gemini, codex) contains "git commit" as prose.
+# to other tools (agy, codex) contains "git commit" as prose.
 # Uses *git*commit* (not *git commit*) to also match `git -C <dir> commit`.
 # The Python parser handles precision — this pre-filter just rejects obvious non-matches.
 case "$HOOK_DATA" in
@@ -321,7 +321,7 @@ fi
 
 # ── Design-reviewed bypass: skip codex gate for spec-only commits ────────
 # When ALL staged files are design-reviewed specs (plans/specs .md with PASS
-# marker), codex review is redundant — the 3-tier blueprint review (Gemini +
+# marker), codex review is redundant — the 3-tier blueprint review (Agy +
 # Codex + Claude) already covered them. Skip Gate 2 to avoid wrong ordering
 # where litmus runs on specs before blueprint-review.
 ALL_DESIGN_REVIEWED=true

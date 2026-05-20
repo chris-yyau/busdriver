@@ -75,7 +75,7 @@ MOCK_EOF
 setup_fixture2_sandbox() {
     SANDBOX2=$(mktemp -d)
     BINDIR2=$(mktemp -d)
-    trap 'rm -rf "$SANDBOX" "${SANDBOX2:-}" "${BINDIR2:-}"' EXIT
+    trap 'rm -rf "$SANDBOX"; [[ -n "${SANDBOX2:-}" ]] && rm -rf "$SANDBOX2"; [[ -n "${BINDIR2:-}" ]] && rm -rf "$BINDIR2"' EXIT
     cd "$SANDBOX2"
     git init -q
     git config user.email "test@test.com"

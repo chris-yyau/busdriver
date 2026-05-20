@@ -182,7 +182,8 @@ dispatch_one() {
             # Forwarding $MODEL would crash with "flags provided but not defined: -model".
             # Model selection is implicit in the active conversation/config.
             if [[ -n "$MODEL" ]]; then
-                echo "Warning: --model is not supported by agy v1.0.0 — ignoring '$MODEL'" >&2
+                echo "Error: --model is not supported by agy v1.0.0 (model selection is implicit in the active agy config). Remove --model or use --cli codex to pin a specific model." >&2
+                exit 1
             fi
             if [[ "$MODE" == "auto" ]]; then
                 _portable_timeout "$TIMEOUT" agy --dangerously-skip-permissions \

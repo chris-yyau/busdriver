@@ -123,9 +123,15 @@ def _parse_concatenated_json(text: str) -> tuple[list[object], int]:
             parsed_values.append(obj)
         except json.JSONDecodeError:
             parse_errors += 1
-            # Skip to the next whitespace boundary so a single malformed
-            # chunk does not poison the rest of the input.
-            while i < n and not text[i].isspace():
+            # Advance past the current malformed token to the next position
+            # where a valid JSON value could plausibly begin (after whitespace,
+            # at a `{`, `[`, `"`, digit, or sign character). The previous
+            # first-whitespace stop left embedded-space garbage (e.g.
+            # `{"bad": content}`) to be retried word-by-word, inflating
+            # parse_errors and the total_inputs diagnostic counter.
+            # Fail-closed and valid-JSON-preservation behaviors are unchanged.
+            i += 1  # guarantee progress past the current char
+            while i < n and not (text[i].isspace() or text[i] in ('{', '[', '"', '-') or text[i].isdigit()):
                 i += 1
     return parsed_values, parse_errors
 

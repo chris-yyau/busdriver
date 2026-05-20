@@ -464,6 +464,68 @@ BAIL:
 Create an isolated worktree so the user's main workspace stays free for their next task.
 
 ```bash
+# Base-branch guard — refuse to grind a PR whose base is not one of the
+# canonical trunks unless the operator explicitly opted in (stacked-PR
+# workflows, long-lived feature integration branches). A non-trunk base
+# can cause pr-grind to merge "successfully" into a closed-PR branch
+# while leaving main untouched — a silent failure (state=MERGED still
+# returned by the GitHub API) that costs a recovery cycle to detect.
+#
+# Two escape hatches (matching the busdriver gate convention):
+#   1. File:    .claude/skip-baseref-check.local (touched in the user's terminal)
+#   2. Env var: PR_GRIND_ALLOW_NON_MAIN_BASE=1 (exported in the PARENT shell
+#              BEFORE launching claude — inline `PR_GRIND_ALLOW_NON_MAIN_BASE=1
+#              claude` does NOT work because hooks fire before inline env applies,
+#              same caveat as SKIP_LITMUS).
+#
+# Capture stderr so auth/network errors are surfaced in the bail message
+# instead of being swallowed by `2>/dev/null`.
+BASE_BRANCH_ERR=$(mktemp)
+BASE_BRANCH=$(gh pr view <PR_NUMBER> --json baseRefName -q '.baseRefName // empty' 2>"$BASE_BRANCH_ERR" || true)
+# Normalize: strip CR/whitespace/control chars defensively. Use sed first
+# to remove full ANSI escape sequences (ESC + printable tail like `[0m`)
+# before tr strips any remaining control bytes; tr alone only removes the
+# ESC byte (0x1B) and leaves the printable remnants attached to the value.
+BASE_BRANCH=$(printf '%s' "$BASE_BRANCH" | sed $'s/\033\\[[0-9;]*[A-Za-z]//g' | tr -d '[:space:][:cntrl:]')
+
+if [ -f ".claude/skip-baseref-check.local" ] || [ "${PR_GRIND_ALLOW_NON_MAIN_BASE:-0}" = "1" ]; then
+  BASEREF_BYPASS=1
+else
+  BASEREF_BYPASS=0
+fi
+
+# CRITICAL: if the case block below exits non-zero, the dispatcher MUST treat
+# this as a hard BAIL — surface the error to the user and HALT pr-grind. Do
+# NOT proceed to the worktree creation below or any subsequent step. This is
+# the same exit-1 contract used by the worktree-add failure path further down.
+case "$BASE_BRANCH" in
+  main|master|develop) ;;  # canonical trunks — proceed
+  "")
+    echo "❌ Could not resolve baseRefName for PR <PR_NUMBER>."
+    if [ -s "$BASE_BRANCH_ERR" ]; then
+      echo "   gh stderr: $(tr -d '\r' < "$BASE_BRANCH_ERR" | head -c 400)"
+    fi
+    echo "   Check 'gh pr view <PR_NUMBER>' and network/auth."
+    rm -f "$BASE_BRANCH_ERR"
+    exit 1
+    ;;
+  *)
+    if [ "$BASEREF_BYPASS" != "1" ]; then
+      echo "❌ PR <PR_NUMBER> targets '$BASE_BRANCH', not a canonical trunk (main/master/develop)."
+      echo "   Merging into a non-trunk branch can land the PR on a closed or stale base"
+      echo "   while still returning state=MERGED — a silent failure mode (precedent: PR #122)."
+      echo "   If this is intentional (stacked PR, long-lived feature branch), either:"
+      echo "     - In your terminal: touch .claude/skip-baseref-check.local"
+      echo "     - Or in the PARENT shell BEFORE launching claude: export PR_GRIND_ALLOW_NON_MAIN_BASE=1"
+      echo "       (inline 'PR_GRIND_ALLOW_NON_MAIN_BASE=1 claude' does NOT work — same rule as SKIP_LITMUS)"
+      rm -f "$BASE_BRANCH_ERR"
+      exit 1
+    fi
+    echo "⚠️  PR <PR_NUMBER> targets '$BASE_BRANCH' (non-canonical) — proceeding via baseref bypass."
+    ;;
+esac
+rm -f "$BASE_BRANCH_ERR"
+
 PR_BRANCH=$(gh pr view <PR_NUMBER> --json headRefName -q .headRefName)
 # Resolve to an absolute path so WORKTREE_DIR can be passed to the subagent
 # unambiguously — a relative path would re-anchor against whatever CWD the

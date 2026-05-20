@@ -86,10 +86,11 @@ setup_fixture2_sandbox() {
     cp "$REPO_ROOT/skills/litmus/scripts/init-review-loop.sh" skills/litmus/scripts/init-review-loop.sh
     cp -r "$REPO_ROOT"/skills/litmus/scripts/lib/* skills/litmus/scripts/lib/ 2>/dev/null || true
     cp -r "$REPO_ROOT"/scripts/lib/* scripts/lib/ 2>/dev/null || true
-    # Issue #120: copy the JSON extractor into the sandbox so the lookup at
-    # run-review-loop.sh:659 finds it via CLAUDE_PLUGIN_ROOT instead of
-    # falling through to $HOME/.claude/plugins/marketplaces/busdriver/... which
-    # would make the test non-hermetic (passes on dev host, may fall back to
+    # Issue #120: copy the JSON extractor into the sandbox so the EXTRACTOR
+    # candidate loop in run-review-loop.sh finds extract_review_json.py via
+    # CLAUDE_PLUGIN_ROOT instead of falling through to
+    # $HOME/.claude/plugins/marketplaces/busdriver/... which would make the
+    # test non-hermetic (passes on dev host, may fall back to
     # parse-narrative.py on clean machines and silently produce PASS).
     cp "$REPO_ROOT/skills/blueprint-review/scripts/lib/extract_review_json.py" \
         skills/blueprint-review/scripts/lib/extract_review_json.py

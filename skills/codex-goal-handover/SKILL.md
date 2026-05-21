@@ -261,7 +261,18 @@ if [[ -n "${HOOKS_BEFORE+x}" ]]; then  # bash 3.2 compatible (no `-v`)
   # Check 2: existing hook files modified (comm -13 only catches new filenames; compare
   # content checksums to detect overwrites of pre-existing hooks)
   if [[ -n "${HOOKS_CHECKSUMS_BEFORE+x}" ]]; then  # bash 3.2 compatible (no `-v`)
-    HOOKS_CHECKSUMS_AFTER=$(find .git/hooks -type f ! -name "*.sample" -exec sha256sum {} \; 2>/dev/null | sort) || {
+    # Portable hash command: prefer sha256sum (Linux/coreutils), fall back to
+    # shasum -a 256 (macOS built-in). sha256sum is not available on macOS by
+    # default without installing coreutils via Homebrew.
+    if command -v sha256sum >/dev/null 2>&1; then HASH_CMD="sha256sum"
+    elif command -v shasum >/dev/null 2>&1; then HASH_CMD="shasum -a 256"
+    else HASH_CMD=""
+    fi
+    if [[ -z "$HASH_CMD" ]]; then
+      echo "[codex-goal-dispatch] BAIL: neither sha256sum nor shasum available — cannot verify hook integrity" >&2
+      exit 1
+    fi
+    HOOKS_CHECKSUMS_AFTER=$(find .git/hooks -type f ! -name "*.sample" -exec $HASH_CMD {} \; 2>/dev/null | sort) || {
       echo "[codex-goal-dispatch] BAIL: checksum generation failed — cannot verify hook integrity" >&2
       exit 1
     }
@@ -279,10 +290,20 @@ Capture the baseline before the first dispatch (add once at loop start, before S
 
 ```bash
 HOOKS_BEFORE=$(find .git/hooks -type f ! -name "*.sample" 2>/dev/null | sort)
-HOOKS_CHECKSUMS_BEFORE=$(find .git/hooks -type f ! -name "*.sample" -exec sha256sum {} \; 2>/dev/null | sort) || {
-  echo "[codex-goal-dispatch] WARN: baseline checksum generation failed — hook content-modification detection will not run" >&2
-  unset HOOKS_CHECKSUMS_BEFORE
-}
+# Portable hash command: prefer sha256sum (Linux/coreutils), fall back to
+# shasum -a 256 (macOS built-in, available without coreutils).
+if command -v sha256sum >/dev/null 2>&1; then HASH_CMD="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then HASH_CMD="shasum -a 256"
+else HASH_CMD=""
+fi
+if [[ -n "$HASH_CMD" ]]; then
+  HOOKS_CHECKSUMS_BEFORE=$(find .git/hooks -type f ! -name "*.sample" -exec $HASH_CMD {} \; 2>/dev/null | sort) || {
+    echo "[codex-goal-dispatch] WARN: baseline checksum generation failed — hook content-modification detection will not run" >&2
+    unset HOOKS_CHECKSUMS_BEFORE
+  }
+else
+  echo "[codex-goal-dispatch] WARN: neither sha256sum nor shasum available — hook content-modification detection will not run" >&2
+fi
 ```
 
 If your loop does not yet capture `HOOKS_BEFORE`, the check degrades gracefully (no diff is possible) — but the recommendation is to always capture it so new hooks injected mid-run are caught before they can execute. Capturing `HOOKS_CHECKSUMS_BEFORE` alongside `HOOKS_BEFORE` also enables content-modification detection for pre-existing hooks.

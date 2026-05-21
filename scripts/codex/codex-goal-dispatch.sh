@@ -189,6 +189,44 @@ _pre_dirty_idx_of() {
   return 1
 }
 
+# Snapshot pre-codex ignored paths (parallel array, same pattern as PRE_DIRTY).
+# Used after codex returns to distinguish genuinely new/modified gitignored files
+# from ones that pre-existed (e.g., build artifacts, .env files already present
+# before the run). Without this baseline the BUSDRIVER_CODEX_FAIL_ON_IGNORED=1
+# check false-fires on any repo that already has ignored artifacts.
+declare -a PRE_IGNORED_PATHS=()
+declare -a PRE_IGNORED_HASH_VALUES=()
+# Use `git ls-files -o -i --exclude-standard -z` (NOT `git status --ignored`)
+# to enumerate individual gitignored FILES rather than directory-collapsed
+# records. `git status --ignored` emits `!! dir/` for entire ignored
+# directories — `git hash-object dir/` then returns MISSING both pre and
+# post, so a file modified inside a pre-existing ignored directory hashes
+# MISSING both times and the diff silently no-ops (false-open under
+# BUSDRIVER_CODEX_FAIL_ON_IGNORED=1). `ls-files -o -i` walks into the
+# directories and produces per-file paths the hash check can actually
+# distinguish.
+while IFS= read -r -d '' p; do
+  [[ -z "$p" ]] && continue
+  h=$(git -C "$REPO_ROOT" hash-object -- "$p" 2>/dev/null || echo "MISSING")
+  PRE_IGNORED_PATHS+=("$p")
+  PRE_IGNORED_HASH_VALUES+=("$h")
+done < <(git -C "$REPO_ROOT" ls-files -o -i --exclude-standard -z 2>/dev/null || true)
+
+# Helper: linear-search PRE_IGNORED_PATHS for an exact match of $1.
+# Returns 0+index on found; 1 on miss (same pattern as _pre_dirty_idx_of).
+_pre_ignored_idx_of() {
+  local target="$1"
+  local k
+  if [[ "${#PRE_IGNORED_PATHS[@]}" -eq 0 ]]; then return 1; fi
+  for k in "${!PRE_IGNORED_PATHS[@]}"; do
+    if [[ "${PRE_IGNORED_PATHS[$k]}" == "$target" ]]; then
+      echo "$k"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Build codex exec invocation. Fresh session every call (no resume).
 # NOTE: `-c sandbox_workspace_write.allow_git_writes=true` is INTENTIONALLY
 # omitted. Empirical evidence (2026-05-21, /Volumes/Work mount with
@@ -221,7 +259,9 @@ fi
 if ! jq -e '
   (.summary | type == "string") and
   (.self_assessed_status as $s | $s == "complete" or $s == "in_progress" or $s == "blocked") and
+  ((.blocker | type == "string") or .blocker == null) and
   (.files_changed | type == "array") and
+  ([.files_changed[] | type == "string"] | all) and
   ((.intended_commit_message | type == "string") or .intended_commit_message == null)
 ' "$RESULT_FILE" >/dev/null 2>&1; then
   echo "[codex-goal-dispatch] result JSON failed type check. See $RESULT_FILE" >&2
@@ -281,9 +321,15 @@ if [[ -n "$INTENDED_MSG" ]]; then
     case "$f" in
       *$'\t'*|*$'\n'*) echo "[codex-goal-dispatch] WARN: skipping path with control char (TAB/NEWLINE): $f" >&2; continue ;;
     esac
-    # Skip absolute paths and parent-dir traversal — codex spec is relative paths only
+    # Skip absolute paths and parent-dir traversal — codex spec is relative paths only.
+    # The traversal check matches only actual `..` path components (not filenames
+    # that merely contain consecutive dots like `foo..bar.txt`).
     [[ "$f" = /* ]] && { echo "[codex-goal-dispatch] WARN: skipping absolute path $f" >&2; continue; }
-    [[ "$f" = *..* ]] && { echo "[codex-goal-dispatch] WARN: skipping path with .. : $f" >&2; continue; }
+    case "$f" in
+      ".."|../*|*/../*|*/..)
+        echo "[codex-goal-dispatch] WARN: skipping path traversal component in $f" >&2
+        continue ;;
+    esac
     # Skip pathspec-magic prefixes — codex must declare ordinary file paths, not
     # globs or git pathspec sugar. `--literal-pathspecs` below disables magic at
     # the git layer, but rejecting these early surfaces the violation in the log.
@@ -523,35 +569,36 @@ fi
 # Use `git status --ignored --porcelain=v1 -z` to surface gitignored entries.
 # Information-only (not fail-closed): legitimate verifier-input files may be
 # gitignored. Logged + injected into result for caller awareness.
+#
+# Only report files that are NEW or CONTENT-CHANGED relative to the pre-codex
+# PRE_IGNORED_PATHS/PRE_IGNORED_HASH_VALUES baseline. Pre-existing ignored files
+# (build artifacts, .env files) that codex did not touch are excluded — without
+# this baseline filter BUSDRIVER_CODEX_FAIL_ON_IGNORED=1 false-fires on any repo
+# that already has gitignored artifacts before the run.
 IGNORED_CHANGES=()
-while IFS= read -r -d '' rec; do
-  [[ -z "$rec" ]] && continue
-  # Porcelain v1 status code for ignored: "!!". 3-char prefix: "!! "
-  prefix="${rec:0:3}"
-  if [[ "$prefix" == "!! " ]]; then
-    p="${rec:3}"
-    [[ -n "$p" ]] && IGNORED_CHANGES+=("$p")
+while IFS= read -r -d '' p; do
+  [[ -z "$p" ]] && continue
+  # Same `ls-files -o -i --exclude-standard -z` walk as the pre-baseline
+  # above — emits individual gitignored files, never directory-collapsed
+  # records. Symmetry matters: a mismatch between pre and post enumeration
+  # would silently no-op the diff check the same way `git status --ignored`
+  # did before.
+  # Check if this path existed in the pre-codex ignored baseline. Use the
+  # `if ... ; then` form (NOT `pre_idx=$(...) || true`) so the function's
+  # exit code drives control flow without disabling errexit via `||` —
+  # avoids SC2310 (the `||` form silently demotes the function's set-e).
+  if pre_idx=$(_pre_ignored_idx_of "$p" 2>/dev/null); then
+    # Path was already ignored before codex ran — only add if content changed.
+    pre_hash="${PRE_IGNORED_HASH_VALUES[$pre_idx]:-MISSING}"
+    post_hash=$(git -C "$REPO_ROOT" hash-object -- "$p" 2>/dev/null || echo "MISSING")
+    [[ "$pre_hash" == "$post_hash" ]] && continue
   fi
-done < <(git -C "$REPO_ROOT" status --ignored --porcelain=v1 -z 2>/dev/null || true)
+  IGNORED_CHANGES+=("$p")
+done < <(git -C "$REPO_ROOT" ls-files -o -i --exclude-standard -z 2>/dev/null || true)
 
 if [[ "${#IGNORED_CHANGES[@]}" -gt 0 ]]; then
   echo "[codex-goal-dispatch] NOTE: gitignored files present (codex may have written to them; not committed; verifiers may see them):" >&2
   printf '  %s\n' "${IGNORED_CHANGES[@]}" >&2
-fi
-
-# Paranoid-mode fail-closed on ignored modifications. Default is informative-
-# only because gitignored writes are routine for build tools / .env updates /
-# cache files. Override for security-sensitive contexts (e.g., when codex is
-# editing code that interacts with secrets, or when local-config tampering
-# is part of the threat model): BUSDRIVER_CODEX_FAIL_ON_IGNORED=1 makes any
-# gitignored modification fatal.
-if [[ "${#IGNORED_CHANGES[@]}" -gt 0 && "${BUSDRIVER_CODEX_FAIL_ON_IGNORED:-}" == "1" ]]; then
-  echo "[codex-goal-dispatch] FAIL: ${#IGNORED_CHANGES[@]} gitignored file(s) modified by codex (BUSDRIVER_CODEX_FAIL_ON_IGNORED=1 paranoid mode active). See ignored_changes in $RESULT_FILE." >&2
-  # Failure exits do NOT echo $RESULT_FILE on stdout — the caller passed
-  # --result-file PATH and already knows it. Other failure exits (1, 2, 4, 5)
-  # follow the same convention. stdout-on-fail can mask the non-zero exit
-  # code from callers that capture stdout via $(...).
-  exit 6
 fi
 
 # Inject committed + commit_sha + unclaimed_changes + ignored_changes into
@@ -579,6 +626,24 @@ if jq --argjson committed "$COMMITTED" --arg sha "$COMMIT_SHA" \
 else
   rm -f "$TMP_RESULT"
   echo "[codex-goal-dispatch] WARN: failed to inject committed/commit_sha/unclaimed_changes/ignored_changes; result file unchanged" >&2
+fi
+
+# Paranoid-mode fail-closed on ignored modifications. Placed AFTER the injection
+# block so that `ignored_changes` in $RESULT_FILE is populated before exit 6 fires
+# — a caller that catches exit 6 and reads the result file to audit what codex
+# touched will find the field already present. (Exit 3 follows the same pattern.)
+# Default is informative-only because gitignored writes are routine for build
+# tools / .env updates / cache files. Override for security-sensitive contexts
+# (e.g., when codex is editing code that interacts with secrets, or when
+# local-config tampering is part of the threat model):
+# BUSDRIVER_CODEX_FAIL_ON_IGNORED=1 makes any NEW gitignored modification fatal.
+if [[ "${#IGNORED_CHANGES[@]}" -gt 0 && "${BUSDRIVER_CODEX_FAIL_ON_IGNORED:-}" == "1" ]]; then
+  echo "[codex-goal-dispatch] FAIL: ${#IGNORED_CHANGES[@]} gitignored file(s) modified by codex (BUSDRIVER_CODEX_FAIL_ON_IGNORED=1 paranoid mode active). See ignored_changes in $RESULT_FILE." >&2
+  # Failure exits do NOT echo $RESULT_FILE on stdout — the caller passed
+  # --result-file PATH and already knows it. Other failure exits (1, 2, 3, 4, 5)
+  # follow the same convention. stdout-on-fail can mask the non-zero exit
+  # code from callers that capture stdout via $(...).
+  exit 6
 fi
 
 # Fail-closed on unclaimed out-of-scope changes. Reasoning: the documented

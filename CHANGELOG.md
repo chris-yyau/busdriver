@@ -1,3 +1,10 @@
+# [1.43.0](https://github.com/chris-yyau/busdriver/compare/v1.42.0...v1.43.0) (2026-05-21)
+
+
+### Features
+
+* **council:** droid fallback + strip opencode/amp/claude/aider CLI surface ([#134](https://github.com/chris-yyau/busdriver/issues/134)) ([41d31ef](https://github.com/chris-yyau/busdriver/commit/41d31ef0686e809f2b6443251ba04efd9435a0e4))
+
 # [1.42.0](https://github.com/chris-yyau/busdriver/compare/v1.41.6...v1.42.0) (2026-05-21)
 
 

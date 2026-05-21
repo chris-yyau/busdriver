@@ -85,19 +85,27 @@ DISPATCH="${CLAUDE_PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
 # IMPORTANT: Use heredocs (<<'DELIM') NOT --prompt "..." to avoid shell escaping bugs
 # with quotes, backticks, $, and newlines in prompt text.
 PIDS=()
-if [[ "$PRAGMATIST_CLI" != "none" && "$PRAGMATIST_CLI" != "builtin" && ! "$PRAGMATIST_CLI" =~ ^missing: ]]; then
-  "$DISPATCH" --cli "$PRAGMATIST_CLI" --timeout 300 <<'PRAGMATIST_PROMPT' &
+if [[ "$PRAGMATIST_CLI" != "none" && "$PRAGMATIST_CLI" != "builtin" && ! "$PRAGMATIST_CLI" =~ ^(missing|unsupported): ]]; then
+  # DROID_AUTO_LEVEL=low: if Pragmatist falls back to droid (per the route
+  # array's droid fallback), constrain the agent to file-write tier only.
+  # Pragmatist is a synthesis role — no need for installs, network fetches,
+  # or git ops. Has no effect when PRAGMATIST_CLI=agy (env var is ignored
+  # by non-droid CLIs). If droid fails at low tier, the voice drops cleanly
+  # rather than running at the default 'high' privilege.
+  DROID_AUTO_LEVEL=low "$DISPATCH" --cli "$PRAGMATIST_CLI" --timeout 300 <<'PRAGMATIST_PROMPT' &
 <Pragmatist prompt>
 PRAGMATIST_PROMPT
   PIDS+=("$!")
 fi
-if [[ "$CRITIC_CLI" != "none" && "$CRITIC_CLI" != "builtin" && ! "$CRITIC_CLI" =~ ^missing: ]]; then
-  "$DISPATCH" --cli "$CRITIC_CLI" --timeout 300 <<'CRITIC_PROMPT' &
+if [[ "$CRITIC_CLI" != "none" && "$CRITIC_CLI" != "builtin" && ! "$CRITIC_CLI" =~ ^(missing|unsupported): ]]; then
+  # DROID_AUTO_LEVEL=low: same reasoning as Pragmatist above — Critic is a
+  # synthesis role; if it falls back to droid, file-write tier is sufficient.
+  DROID_AUTO_LEVEL=low "$DISPATCH" --cli "$CRITIC_CLI" --timeout 300 <<'CRITIC_PROMPT' &
 <Critic prompt>
 CRITIC_PROMPT
   PIDS+=("$!")
 fi
-if [[ "$RESEARCHER_CLI" != "none" && "$RESEARCHER_CLI" != "builtin" && ! "$RESEARCHER_CLI" =~ ^missing: ]]; then
+if [[ "$RESEARCHER_CLI" != "none" && "$RESEARCHER_CLI" != "builtin" && ! "$RESEARCHER_CLI" =~ ^(missing|unsupported): ]]; then
   "$DISPATCH" --cli "$RESEARCHER_CLI" --timeout 300 <<'RESEARCHER_PROMPT' &
 <Researcher prompt>
 RESEARCHER_PROMPT
@@ -118,7 +126,7 @@ This is a **single Bash call** with all three CLI dispatches as background proce
 
 **IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing Agy + Codex + Droid as background processes) in the **same message** so all four external voices run concurrently. Do NOT use separate Bash tool calls — one failing will cancel the others.
 
-**Missing CLI handling:** Each role's route array is walked left-to-right; the first available CLI wins. If every CLI in the chain resolves to `none`, `builtin`, or `missing:<cli>`, that voice is skipped and the report notes its absence as `(unavailable)`. The remaining voices still convene. If the Skeptic Agent call fails (rate limit, timeout), same rule applies. Typical minimum is 2 voices (Architect + Skeptic, 40% of full strength); absolute floor is 1 voice (Architect alone) if the Skeptic Agent call also fails. Always note the composition in the report — and when a fallback fires (e.g., Droid serving as Pragmatist because Agy was missing), note that explicitly so the report doesn't misattribute the lens.
+**Missing CLI handling:** Each role's route array is walked left-to-right; the first available CLI wins. If every CLI in the chain resolves to `none`, `builtin`, `missing:<cli>`, or `unsupported:<cli>` (the last fires when a stale config references a removed backend like opencode/amp/claude/aider — migration warning goes to stderr), that voice is skipped and the report notes its absence as `(unavailable)`. The remaining voices still convene. If the Skeptic Agent call fails (rate limit, timeout), same rule applies. Typical minimum is 2 voices (Architect + Skeptic, 40% of full strength); absolute floor is 1 voice (Architect alone) if the Skeptic Agent call also fails. Always note the composition in the report — and when a fallback fires (e.g., Droid serving as Pragmatist because Agy was missing), note that explicitly so the report doesn't misattribute the lens.
 
 ### Step 5: Read Output and Synthesize
 

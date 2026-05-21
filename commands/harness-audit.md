@@ -39,7 +39,7 @@ The script audits the current working directory by default and auto-detects whet
 
 Return:
 
-1. `overall_score` out of `max_score` (70 for `repo`; smaller for scoped audits)
+1. `overall_score` out of `max_score` (68 for `repo`; smaller for scoped audits)
 2. Category scores and concrete findings
 3. Failed checks with exact file paths
 4. Top 3 actions from the deterministic output (`top_actions`)
@@ -55,16 +55,19 @@ Return:
 ## Example Result
 
 ```text
-Harness Audit (repo): 66/70
-- Tool Coverage: 10/10 (10/10 pts)
-- Context Efficiency: 9/10 (9/10 pts)
-- Quality Gates: 10/10 (10/10 pts)
+Harness Audit (repo): NN/MM    # scoring varies with rubric version + repo state
+- Tool Coverage: <points>/<max>
+- Context Efficiency: <points>/<max>
+- Quality Gates: <points>/<max>
+...
 
 Top 3 Actions:
-1) [Security Guardrails] Add prompt/tool preflight security guards in hooks/hooks.json. (hooks/hooks.json)
-2) [Tool Coverage] Improve command coverage in commands/. (commands/)
-3) [Eval Coverage] Increase automated test coverage across scripts/hooks/lib. (tests/)
+1) [Category] <description>. (<path>)
+2) [Category] <description>. (<path>)
+3) [Category] <description>. (<path>)
 ```
+
+Run the script for current numbers and the actual top actions for your branch — example shape only, not a prediction.
 
 ## Arguments
 

@@ -176,7 +176,7 @@ else
 
   # Duplicate detection (council-validated decision 4c)
   DUPLICATE_MODE=false
-  if [[ "$REVIEWER_1_CLI" == "$REVIEWER_2_CLI" && "$REVIEWER_1_CLI" != "none" && "$REVIEWER_1_CLI" != "builtin" && ! "$REVIEWER_1_CLI" =~ ^missing: ]]; then
+  if [[ "$REVIEWER_1_CLI" == "$REVIEWER_2_CLI" && "$REVIEWER_1_CLI" != "none" && "$REVIEWER_1_CLI" != "builtin" && ! "$REVIEWER_1_CLI" =~ ^(missing|unsupported): ]]; then
     DUPLICATE_MODE=true
     log_warning "  Degraded: both reviewers resolved to $REVIEWER_1_CLI (single-reviewer mode)"
   fi
@@ -184,8 +184,8 @@ else
   # Set availability flags for backward compat with rest of script
   AGY_AVAILABLE=false
   CODEX_AVAILABLE=false
-  [[ "$REVIEWER_1_CLI" != "none" && "$REVIEWER_1_CLI" != "builtin" && ! "$REVIEWER_1_CLI" =~ ^missing: ]] && AGY_AVAILABLE=true
-  [[ "$REVIEWER_2_CLI" != "none" && "$REVIEWER_2_CLI" != "builtin" && ! "$REVIEWER_2_CLI" =~ ^missing: && "$DUPLICATE_MODE" == "false" ]] && CODEX_AVAILABLE=true
+  [[ "$REVIEWER_1_CLI" != "none" && "$REVIEWER_1_CLI" != "builtin" && ! "$REVIEWER_1_CLI" =~ ^(missing|unsupported): ]] && AGY_AVAILABLE=true
+  [[ "$REVIEWER_2_CLI" != "none" && "$REVIEWER_2_CLI" != "builtin" && ! "$REVIEWER_2_CLI" =~ ^(missing|unsupported): && "$DUPLICATE_MODE" == "false" ]] && CODEX_AVAILABLE=true
 
   # Duplicate mode: after single reviewer runs, its output will be copied to both paths (see post-wait block below)
 fi

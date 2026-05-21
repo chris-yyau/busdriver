@@ -1,3 +1,10 @@
+## [1.41.6](https://github.com/chris-yyau/busdriver/compare/v1.41.5...v1.41.6) (2026-05-21)
+
+
+### Bug Fixes
+
+* **codex-goal-handover:** dispatcher commits, not codex ([#131](https://github.com/chris-yyau/busdriver/issues/131)) ([ddd370a](https://github.com/chris-yyau/busdriver/commit/ddd370aaad21f0fde3087643dfd56425b9bc5b8e))
+
 ## [1.41.5](https://github.com/chris-yyau/busdriver/compare/v1.41.4...v1.41.5) (2026-05-20)
 
 

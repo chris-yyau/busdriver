@@ -94,10 +94,12 @@ if [ -n "$check_run_head" ] && [ "${check_run_head:0:8}" = "$HEAD_SHA" ]; then e
 
 # No HEAD-ack signal anywhere. Did the bot post on this PR at all?
 # If never (no /reviews entry, no body SHA reference) → bot doesn't operate here → none.
-# Otherwise (posted on an older commit, no HEAD signal yet) → stale.
+# Otherwise (posted on an older commit, no HEAD signal yet) → stale, subject to
+# the three-case downgrade block below (Cases 1/2/3 may downgrade to `none`
+# when ever_approved==0 and a specific positive signal matches).
 if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; exit 0; fi
 
-# Two-case downgrade — both gated by `ever_approved == 0` so a bot that has
+# Three-case downgrade — all gated by `ever_approved == 0` so a bot that has
 # ever approved, had an approval dismissed, or previously requested changes
 # is never silently bypassed.
 # DISMISSED counts as "ever approved" because a dismissed approval is still
@@ -155,6 +157,61 @@ if [ "$ever_approved" -eq 0 ]; then
   # downgraded to `none` once HEAD advances past the reviewed commit.
   if [ "$last_state" = "COMMENTED" ] && \
      printf '%s' "$last_body" | grep -qiE '## (PR|Pull request) overview|PR overview summary'; then
+    echo "none"; exit 0
+  fi
+  # Case 3: check-run skipped on HEAD + COMMENTED state + non-actionable body
+  # — bot saw HEAD via a check-run but its conclusion is `skipped`. Canonical
+  # case: cubic-dev-ai on merge commits. After `gh pr update-branch` creates
+  # a merge commit, cubic emits a check-run with conclusion=skipped on the
+  # merge commit's SHA while its only `success` check-run stays anchored to
+  # the pre-merge commit. Tier D above (which requires conclusion=success)
+  # doesn't match HEAD, the downgrade block runs, and without this case it
+  # falls through to `echo stale` (cubic posts a "No issues found" COMMENTED
+  # review body that matches neither Case 1's error patterns nor Case 2's
+  # PR-overview regex), deadlocking invariant 2 indefinitely.
+  #
+  # Four-predicate guard:
+  # (a) Same ever_approved==0 outer guard as Cases 1 and 2 — a bot with prior
+  #     APPROVED / DISMISSED / CHANGES_REQUESTED never reaches this block, so
+  #     the [CHANGES_REQUESTED, skipped-HEAD] history correctly stays `stale`.
+  # (b) last_state == COMMENTED — implies the bot has at least one /reviews
+  #     entry whose body we can inspect. Rules out body_sha-only bots (e.g.,
+  #     a hypothetical Greptile variant that posts findings as issue-comment
+  #     bodies with body-SHA-reference links but no /reviews entries). For
+  #     such bots `last_state` is empty and `last_body` is empty — without
+  #     this guard, Case 3 would fire on the empty body and silently
+  #     downgrade actionable issue-comment findings to `none`. Mirrors
+  #     Case 2 which already requires COMMENTED state.
+  # (c) body_sha is empty — rules out bots whose actionable content lives in
+  #     issue-comment bodies referenced via body-SHA links, including mixed
+  #     shapes where a non-actionable /reviews body coexists with actionable
+  #     issue-comment content.
+  # (d) Positive-signal body guard — only downgrade when last review body is
+  #     empty OR matches a known non-actionable pattern. Without (d), a bot
+  #     with an actionable COMMENTED finding ("please fix line 47") plus a
+  #     later skipped-HEAD check-run would silently downgrade to `none`,
+  #     discarding the actionable signal. Mirrors Case 2's PR-overview guard
+  #     for the same risk shape.
+  #
+  # The skipped-check-run jq query filters by HEAD inside the predicate (not
+  # `last | head_sha` then bash-side check). This is pagination-order
+  # resilient: if the slurped check-runs array contains both a HEAD-skipped
+  # entry and a stale-skipped entry in any order, the predicate still matches
+  # the HEAD entry. The bash-side check becomes a count > 0 test.
+  #
+  # Mapping to `none` (not HEAD_SHA) preserves the semantic distinction:
+  # "bot acknowledged HEAD via check-run but declined to review" is not the
+  # same as "bot approved HEAD". Same precedent as Case 1.
+  #
+  # Reachability: bots with zero review history (no /reviews entry, no body
+  # SHA reference) exit via line 98 with `none` before reaching this block.
+  # Case 3 only applies to bots that have at least one prior /reviews entry
+  # in COMMENTED state.
+  check_run_skipped_head_count=$(printf '%s' "$ALL_CHECK_RUNS" | jq -rs --arg login "$login" --arg head8 "$HEAD_SHA" \
+    '[.[].check_runs[] | select(.app.slug == $login) | select(.conclusion == "skipped") | select((.head_sha[0:8]) == $head8)] | length' 2>/dev/null || echo 0)
+  if [ "$check_run_skipped_head_count" -gt 0 ] && [ "$last_state" = "COMMENTED" ] && [ -z "$body_sha" ] && \
+     { [ -z "$last_body" ] || \
+       printf '%s' "$last_body" | grep -qiE '^[[:space:]]*(no issues? found|no concerns|all good|looks good|lgtm|nothing to (add|report))\.?[[:space:]]*$'; }; then
     echo "none"; exit 0
   fi
 fi

@@ -261,7 +261,7 @@ update_selective_install_repo_version "$SELECTIVE_INSTALL_ARCHITECTURE_DOC"
 # Verify the bumped release surface is still internally consistent before
 # writing a release commit, tag, or push.
 echo "Verifying npm pack payload..."
-node tests/plugin-manifest.test.js
+npm pack --dry-run
 
 # Stage, commit, tag, and push
 git add "$ROOT_PACKAGE_JSON" "$PACKAGE_LOCK_JSON" "$ROOT_AGENTS_MD" "$TR_AGENTS_MD" "$ZH_CN_AGENTS_MD" "$AGENT_YAML" "$VERSION_FILE" "$PLUGIN_JSON" "$MARKETPLACE_JSON" "$CODEX_MARKETPLACE_JSON" "$CODEX_PLUGIN_JSON" "$README_FILE" "$ROOT_ZH_CN_README_FILE" "$TR_README_FILE" "$PT_BR_README_FILE" "$ZH_CN_README_FILE" "$SELECTIVE_INSTALL_ARCHITECTURE_DOC"

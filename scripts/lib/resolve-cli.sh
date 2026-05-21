@@ -13,7 +13,7 @@
 #   bash resolve-cli.sh --json
 #
 # Env var: BUSDRIVER_REVIEW_CLI
-# Values: auto (default) | codex | agy | droid | amp | opencode | claude | aider | builtin | none
+# Values: auto (default) | codex | agy | droid | builtin | none
 
 # Intentional pipeline patterns throughout: ls | sort | tail for semver
 # ordering, tr | head for JSON sanitisation, etc. — masked return values
@@ -41,11 +41,7 @@ get_cli_install_hint() {
   case "$cli" in
     codex)  echo "npm install -g @openai/codex" ;;
     agy)    echo "See https://antigravity.google/docs/cli/" ;;
-    claude) echo "See https://docs.anthropic.com/en/docs/claude-code" ;;
-    aider)  echo "pip install aider-chat" ;;
     droid)  echo "See https://droid.dev" ;;
-    amp)    echo "See https://ampcode.com" ;;
-    opencode) echo "go install github.com/opencode-ai/opencode@latest" ;;
     *)      echo "Install '$cli' and ensure it is in your PATH" ;;
   esac
 }
@@ -174,6 +170,7 @@ _resolve_from_route_array() {
   local config_path="$1" role_key="$2"
   local i=0 cli
   local warned_deprecated_gemini=0
+  local warned_deprecated_removed=0
   while true; do
     cli=$(_read_config_value "$config_path" ".routes[\"$role_key\"][$i]")
     [[ -z "$cli" ]] && break
@@ -185,8 +182,18 @@ _resolve_from_route_array() {
         echo "busdriver: config route '$role_key' references deprecated 'gemini'; use 'agy' (antigravity) instead — skipping" >&2
         warned_deprecated_gemini=1
       fi
+    elif [[ "$cli" == "amp" || "$cli" == "opencode" || "$cli" == "claude" || "$cli" == "aider" ]]; then
+      # Removed in the 2026-05-21 dispatch-surface cleanup. Without this skip,
+      # a stale ["codex", "amp", "droid"] route would resolve to amp if the
+      # binary is still on PATH, then execute_review fails with "Unsupported
+      # CLI" because the dispatch case was deleted. Treat as missing so the
+      # route walker continues to the next entry.
+      if [[ "$warned_deprecated_removed" -eq 0 ]]; then
+        echo "busdriver: config route '$role_key' references unsupported '$cli'; use 'codex', 'agy', or 'droid' instead — skipping" >&2
+        warned_deprecated_removed=1
+      fi
     elif [[ "$cli" == "auto" ]]; then
-      for auto_cli in codex agy droid amp opencode; do
+      for auto_cli in codex agy droid; do
         is_cli_available "$auto_cli" && echo "$auto_cli" && return 0
       done
     elif [[ "$cli" == "none" || "$cli" == "builtin" ]]; then
@@ -215,6 +222,12 @@ resolve_role_cli() {
       echo "unsupported:gemini"
       return
     fi
+    case "$env_cli" in
+      amp|opencode|claude|aider)
+        echo "busdriver: BUSDRIVER_REVIEW_CLI=$env_cli is no longer supported; use 'codex', 'agy', or 'droid' instead" >&2
+        echo "unsupported:$env_cli"
+        return ;;
+    esac
     if [[ "$env_cli" == "none" || "$env_cli" == "builtin" ]]; then
       echo "$env_cli" && return
     fi
@@ -287,13 +300,18 @@ resolve_role_cli() {
     blueprint-review.reviewer_1) is_cli_available agy && echo "agy" && return ;;
     blueprint-review.reviewer_2) is_cli_available codex && echo "codex" && return ;;
     blueprint-review.arbiter)    echo "builtin" && return ;;  # arbiter is always Claude
-    council.pragmatist)         is_cli_available agy && echo "agy" && return; echo "none" && return ;;
-    council.critic)             is_cli_available codex  && echo "codex"  && return; echo "none" && return ;;
-    council.researcher)         is_cli_available droid  && echo "droid"  && return; echo "none" && return ;;
+    council.pragmatist)         is_cli_available agy   && echo "agy"   && return
+                                is_cli_available droid && echo "droid" && return
+                                echo "none" && return ;;
+    council.critic)             is_cli_available codex && echo "codex" && return
+                                is_cli_available droid && echo "droid" && return
+                                echo "none" && return ;;
+    council.researcher)         is_cli_available droid && echo "droid" && return
+                                echo "none" && return ;;
   esac
 
   # Step 5: Auto-detect
-  for cli in codex agy droid amp opencode; do
+  for cli in codex agy droid; do
     is_cli_available "$cli" && echo "$cli" && return
   done
 
@@ -461,21 +479,11 @@ execute_review() {
     # --print-timeout with our outer duration so agy's internal 5m default doesn't
     # abort before _portable_timeout does.
     agy)     printf '%s' "$prompt" | _portable_timeout "$duration" agy --sandbox --print-timeout "${duration}s" --print /dev/stdin 2>&1 ;;
-    claude)  printf '%s' "$prompt" | _portable_timeout "$duration" claude -p --output-format text 2>&1 ;;
-    aider)   local _tmp; _tmp=$(mktemp -t busdriver-aider-XXXXXX)
-             printf '%s' "$prompt" > "$_tmp"
-             _portable_timeout "$duration" aider --message-file "$_tmp" --no-auto-commits 2>&1
-             local _rc=$?; rm -f "$_tmp"; return "$_rc" ;;
     # Review path: --auto low (file-write tier only, no installs/git/network)
     # is sufficient — reviews emit JSON verdicts and never need to mutate the
     # repo or fetch. Tighter than dispatch_one()'s droid case by design: this
     # is the litmus/santa/blueprint-review backend, where read-only intent is hard.
     droid)   printf '%s' "$prompt" | _portable_timeout "$duration" droid exec --auto low 2>&1 ;;
-    amp)     local _tmp; _tmp=$(mktemp -t busdriver-amp-XXXXXX)
-             printf '%s' "$prompt" > "$_tmp"
-             _portable_timeout "$duration" amp review --instructions "$_tmp" 2>&1
-             local _rc=$?; rm -f "$_tmp"; return "$_rc" ;;
-    opencode) printf '%s' "$prompt" | _portable_timeout "$duration" opencode 2>&1 ;;
     builtin) echo "BUILTIN_FALLBACK"; return 3 ;;
     *)       echo "Unsupported CLI: $cli" >&2; return 1 ;;
   esac
@@ -488,7 +496,7 @@ if [[ "${BASH_SOURCE[0]}" = "$0" ]] && [[ "${1:-}" = "--json" ]]; then
   resolved=$(resolve_review_cli)
   version=""
   case "$resolved" in
-    codex|agy|droid|amp|opencode|claude|aider) version=$(get_cli_version "$resolved") ;;
+    codex|agy|droid) version=$(get_cli_version "$resolved") ;;
     builtin|none|missing:*|unsupported:*) version="n/a" ;;
   esac
 
@@ -501,7 +509,7 @@ if [[ "${BASH_SOURCE[0]}" = "$0" ]] && [[ "${1:-}" = "--json" ]]; then
 
   # Report availability for all supported CLIs
   clis_json=""
-  for cli in codex agy droid amp opencode claude aider; do
+  for cli in codex agy droid; do
     avail=$(is_cli_available "$cli" && echo true || echo false)
     ver=$(get_cli_version "$cli" | _json_safe)
     clis_json="${clis_json}\"${cli}\":{\"available\":${avail},\"version\":\"${ver}\"},"

@@ -35,8 +35,6 @@ Send any task to Codex or Antigravity (`agy`) CLI as an autonomous agent. Unlike
 | Code audit, bug hunting | `codex` | Deep code reasoning, tool use |
 | Architecture analysis | `agy` | Broad strategic thinking |
 | Fast autonomous agent | `droid` | Lightweight, fast execution |
-| Code review focus | `amp` | Review-oriented analysis |
-| Go-native projects | `opencode` | Go ecosystem integration |
 | High-stakes decisions | `both` | Codex + Agy consensus |
 | Maximum coverage | `all` | Top 3 available CLIs in parallel |
 | Quick analysis (either) | `auto` | Uses whichever is available |
@@ -59,7 +57,6 @@ Send any task to Codex or Antigravity (`agy`) CLI as an autonomous agent. Unlike
 | codex | `-s read-only` | ✅ yes (kernel-enforced sandbox) |
 | agy | `--sandbox` (omit `--dangerously-skip-permissions`) | ✅ yes (terminal-restricted sandbox) |
 | droid | `--auto high` (permission tier) | ⚠️  **no** — see below |
-| amp, opencode | default behavior | per-CLI; check docs |
 
 **Droid caveat:** droid has no strict readonly mode. Its `--auto low|medium|high` are permission tiers that control whether it prompts on permission checks (without any flag, droid bails on first read under stdin redirection). Tier semantics from `droid exec --help`:
 
@@ -187,7 +184,7 @@ PROMPT
 **Script flags:**
 | Flag | Values | Default |
 |------|--------|---------|
-| `--cli` | `codex`, `agy`, `droid`, `amp`, `opencode`, `both`, `all`, `auto` | `auto` |
+| `--cli` | `codex`, `agy`, `droid`, `both`, `all`, `auto` | `auto` |
 | `--mode` | `readonly`, `auto` | `readonly` |
 | `--timeout` | seconds | `300` |
 | `--model` | model name | CLI default |

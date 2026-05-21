@@ -525,7 +525,7 @@ PR markers contain a SHA-256 hash of the `base...HEAD` diff for staleness detect
 The pre-PR gate accepts markers that are 64-hex SHA-256 hashes or `PASS-<epoch>` timestamps. It rejects `DEGRADED`, `SKIPPED-NONE`, and `BUILTIN-` prefixed markers.
 
 **Environment variables:**
-- `BUSDRIVER_REVIEW_CLI=auto` — choose review backend (auto/codex/agy/droid/amp/opencode/claude/aider/builtin/none). Per-role routing: `.claude/busdriver.json`
+- `BUSDRIVER_REVIEW_CLI=auto` — choose review backend (auto/codex/agy/droid/builtin/none). Per-role routing: `.claude/busdriver.json`
 - `LITMUS_MODE=pr` — switches to PR deep review mode
 - `LITMUS_PR_BASE=main` — override base branch (auto-prefixed to `origin/<branch>` if no `origin/` prefix; defaults to `origin/HEAD` or `origin/main`)
 - `LITMUS_PR_FAST=1` — skip multi-agent review, use fast mode only (audited in bypass-log)

@@ -1658,12 +1658,6 @@
       "upstream_path": "scripts/lib/install-targets/helpers.js"
     },
     {
-      "path": "scripts/lib/install-targets/opencode-home.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/lib/install-targets/opencode-home.js"
-    },
-    {
       "path": "scripts/lib/install-targets/registry.js",
       "source": "ecc",
       "status": "sync",
@@ -4285,12 +4279,6 @@
       "source": "ecc"
     },
     {
-      "path": "scripts/build-opencode.js",
-      "status": "sync",
-      "upstream_path": "scripts/build-opencode.js",
-      "source": "ecc"
-    },
-    {
       "path": "skills/pr-grind/SKILL.md",
       "source": "local",
       "status": "local"
@@ -4535,6 +4523,18 @@
       "upstream_path": "the-shortform-guide.md",
       "reason": "ECC marketing-style guide; busdriver uses README.md",
       "date": "2026-05-12"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "scripts/lib/install-targets/opencode-home.js",
+      "reason": "opencode CLI dispatch and install-target removed; busdriver targets Claude Code only",
+      "date": "2026-05-21"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "scripts/build-opencode.js",
+      "reason": "opencode CLI dispatch and install-target removed; busdriver targets Claude Code only",
+      "date": "2026-05-21"
     }
   ]
 }

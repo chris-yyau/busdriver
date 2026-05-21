@@ -15,7 +15,6 @@ const TARGETS = [
   'commands',
   'agents',
   'docs',
-  '.opencode/commands',
 ];
 
 const BLOCK_PATTERNS = [

@@ -76,14 +76,10 @@ Set `BUSDRIVER_REVIEW_CLI` to choose your review backend:
 
 | Value | Behavior |
 |-------|----------|
-| `auto` (default) | Detects: codex > agy > droid > amp > opencode > built-in agent fallback |
+| `auto` (default) | Detects: codex > agy > droid > built-in agent fallback |
 | `codex` | OpenAI Codex CLI (`npm install -g @openai/codex`) |
 | `agy` | Google Antigravity (`agy`) CLI — successor to the Gemini CLI |
 | `droid` | Droid CLI |
-| `amp` | Amp CLI |
-| `opencode` | OpenCode CLI |
-| `claude` | Claude CLI (experimental) |
-| `aider` | Aider CLI (experimental) |
 | `builtin` | Built-in code-reviewer agent (always available, less independent) |
 | `none` | Disable review gate (logs warning on every commit) |
 
@@ -99,15 +95,15 @@ By default, all features share the same CLI. For per-role control, create `.clau
   "defaults": { "primary": "auto", "fallback": "builtin" },
   "routes": {
     "blueprint-review.reviewer_1": ["agy", "droid"],
-    "blueprint-review.reviewer_2": ["codex", "amp"],
-    "council.pragmatist": ["agy"],
-    "council.critic": ["codex"],
+    "blueprint-review.reviewer_2": ["codex", "droid"],
+    "council.pragmatist": ["agy", "droid"],
+    "council.critic": ["codex", "droid"],
     "council.researcher": ["droid"]
   }
 }
 ```
 
-Each route is an array. For `blueprint-review` and `litmus`, the array is an ordered fallback chain (first element primary, later elements tried if primary is missing). For `council` roles, each array has a single element — there is no fallback chain; if the configured CLI is missing, that voice is skipped and noted in the report. Roles not listed inherit from `defaults`. User-level defaults go in `~/.claude/busdriver.json`.
+Each route is an array — an ordered fallback chain (first element primary, later elements tried if primary is missing). Applies uniformly across `blueprint-review`, `litmus`, and `council` roles. For council, fallback preserves availability but dilutes role identity (e.g., Droid filling in as Pragmatist is no longer "Agy's strategic lens") — accept the trade-off when resilience matters more than signal purity, or use a single-element array (`["agy"]`) to keep the lens pure and let the voice drop when missing. Roles not listed inherit from `defaults`. User-level defaults go in `~/.claude/busdriver.json`.
 
 > **Migration note:** If your `busdriver.json` contains `roundtable.pragmatist` or `roundtable.critic` keys, rename them to `council.pragmatist` and `council.critic` respectively. Old keys are silently ignored.
 
@@ -132,11 +128,9 @@ Run `node scripts/doctor.js` to see your effective CLI for each role.
 |-----|---------|---------|
 | **[Codex CLI](https://github.com/openai/codex)** | Code review gate (default), blueprint review, council | `npm install -g @openai/codex` |
 | **[Antigravity (agy) CLI](https://antigravity.google/docs/cli/)** | Blueprint review, council, code review | See https://antigravity.google/docs/cli/ |
-| **[Droid](https://droid.dev)** | Council Researcher (default), any configurable role | See https://droid.dev |
-| **[Amp](https://ampcode.com)** | Any configurable role | See https://ampcode.com |
-| **[OpenCode](https://github.com/opencode-ai/opencode)** | Any configurable role | `go install github.com/opencode-ai/opencode@latest` |
+| **[Droid](https://droid.dev)** | Council Researcher (default), pragmatist/critic fallback, any configurable role | See https://droid.dev |
 
-**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. The blueprint review uses its fallback chain (agy → droid for reviewer_1, codex → amp for reviewer_2). The council has no fallback chain — each role maps to exactly one CLI; missing CLIs mean that voice is skipped from the report. Architect (in-context Claude) always runs, and Skeptic (Agent tool) typically runs, so the council usually convenes with at least 2 voices (40% of full strength) even if all 3 external CLIs are missing; if Skeptic is unavailable (rate limit/timeout), it can run with Architect alone. Core commit pipeline always works.
+**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. The blueprint review uses its fallback chain (agy → droid for reviewer_1, codex → droid for reviewer_2). The council follows the same pattern (agy → droid for pragmatist, codex → droid for critic); if every CLI in a role's chain is missing, that voice is skipped from the report. Architect (in-context Claude) always runs, and Skeptic (Agent tool) typically runs, so the council usually convenes with at least 2 voices (40% of full strength) even if all external CLIs are missing; if Skeptic is unavailable (rate limit/timeout), it can run with Architect alone. Core commit pipeline always works.
 
 ## Install
 

@@ -51,7 +51,7 @@ while [[ $# -gt 0 ]]; do
 dispatch.sh — Dispatch tasks to Codex or Antigravity (agy) CLI
 
 FLAGS:
-  --cli     codex|agy|droid|amp|opencode|both|all|auto  (default: auto)
+  --cli     codex|agy|droid|both|all|auto  (default: auto)
   --mode    readonly|auto           (default: readonly)
   --timeout seconds                 (default: 300)
   --model   model override          (optional)
@@ -96,11 +96,9 @@ if [[ "$CLI" == "auto" ]]; then
     if _has_cli codex; then CLI="codex"
     elif _has_cli agy; then CLI="agy"
     elif _has_cli droid; then CLI="droid"
-    elif _has_cli amp; then CLI="amp"
-    elif _has_cli opencode; then CLI="opencode"
-    else echo "Error: No supported CLI found (tried codex, agy, droid, amp, opencode)." >&2; exit 1; fi
-elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "droid" && "$CLI" != "amp" && "$CLI" != "opencode" && "$CLI" != "both" && "$CLI" != "all" ]]; then
-    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|droid|amp|opencode|both|all|auto." >&2; exit 1
+    else echo "Error: No supported CLI found (tried codex, agy, droid)." >&2; exit 1; fi
+elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "droid" && "$CLI" != "both" && "$CLI" != "all" ]]; then
+    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|droid|both|all|auto." >&2; exit 1
 fi
 
 # Validate mode
@@ -126,14 +124,12 @@ else
     [[ "$CLI" == "codex" ]] && ! _has_cli codex && { echo "Error: codex not found." >&2; exit 1; }
     [[ "$CLI" == "agy" ]] && ! _has_cli agy && { echo "Error: agy not found." >&2; exit 1; }
     [[ "$CLI" == "droid" ]] && ! _has_cli droid && { echo "Error: droid not found." >&2; exit 1; }
-    [[ "$CLI" == "amp" ]] && ! _has_cli amp && { echo "Error: amp not found." >&2; exit 1; }
-    [[ "$CLI" == "opencode" ]] && ! _has_cli opencode && { echo "Error: opencode not found." >&2; exit 1; }
 fi
 
 # Handle --cli all: discover top 3 available CLIs
 if [[ "$CLI" == "all" ]]; then
     ALL_CLIS=()
-    for c in codex agy droid amp opencode; do
+    for c in codex agy droid; do
         _has_cli "$c" && ALL_CLIS+=("$c")
         [[ ${#ALL_CLIS[@]} -ge 3 ]] && break
     done
@@ -216,16 +212,6 @@ dispatch_one() {
                 _droid_level="high"
             fi
             _portable_timeout "$TIMEOUT" droid exec --auto "$_droid_level" \
-                < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;
-        amp)
-            local amp_tmp
-            amp_tmp=$(mktemp "${TMPDIR:-/tmp}/dispatch-amp-XXXXXX")
-            cp "$PROMPT_FILE" "$amp_tmp"
-            _portable_timeout "$TIMEOUT" amp review --instructions "$amp_tmp" \
-                > "$outfile" 2>&1 || exit_code=$?
-            rm -f "$amp_tmp" ;;
-        opencode)
-            _portable_timeout "$TIMEOUT" opencode \
                 < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;
     esac
 

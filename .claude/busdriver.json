@@ -1,0 +1,8 @@
+{
+  "routes": {
+    "blueprint-review.reviewer_1": ["agy", "droid"],
+    "blueprint-review.reviewer_2": ["codex", "droid"],
+    "council.pragmatist": ["agy", "droid"],
+    "council.critic": ["codex", "droid"]
+  }
+}

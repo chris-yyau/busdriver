@@ -13,7 +13,7 @@
 #   bash resolve-cli.sh --json
 #
 # Env var: BUSDRIVER_REVIEW_CLI
-# Values: auto (default) | codex | agy | droid | amp | opencode | claude | aider | builtin | none
+# Values: auto (default) | codex | agy | droid | builtin | none
 
 # Intentional pipeline patterns throughout: ls | sort | tail for semver
 # ordering, tr | head for JSON sanitisation, etc. — masked return values
@@ -41,11 +41,7 @@ get_cli_install_hint() {
   case "$cli" in
     codex)  echo "npm install -g @openai/codex" ;;
     agy)    echo "See https://antigravity.google/docs/cli/" ;;
-    claude) echo "See https://docs.anthropic.com/en/docs/claude-code" ;;
-    aider)  echo "pip install aider-chat" ;;
     droid)  echo "See https://droid.dev" ;;
-    amp)    echo "See https://ampcode.com" ;;
-    opencode) echo "go install github.com/opencode-ai/opencode@latest" ;;
     *)      echo "Install '$cli' and ensure it is in your PATH" ;;
   esac
 }
@@ -174,6 +170,9 @@ _resolve_from_route_array() {
   local config_path="$1" role_key="$2"
   local i=0 cli
   local warned_deprecated_gemini=0
+  local warned_deprecated_removed=0
+  local last_rejected=""
+  local saw_other_entry=0  # any non-rejected, non-resolving entry (missing binary, "auto" fallthrough, etc.)
   while true; do
     cli=$(_read_config_value "$config_path" ".routes[\"$role_key\"][$i]")
     [[ -z "$cli" ]] && break
@@ -185,17 +184,43 @@ _resolve_from_route_array() {
         echo "busdriver: config route '$role_key' references deprecated 'gemini'; use 'agy' (antigravity) instead — skipping" >&2
         warned_deprecated_gemini=1
       fi
+      last_rejected="gemini"
+    elif [[ "$cli" == "amp" || "$cli" == "opencode" || "$cli" == "claude" || "$cli" == "aider" ]]; then
+      # Removed in the 2026-05-21 dispatch-surface cleanup. Without this skip,
+      # a stale ["codex", "amp", "droid"] route would resolve to amp if the
+      # binary is still on PATH, then execute_review fails with "Unsupported
+      # CLI" because the dispatch case was deleted. Treat as missing so the
+      # route walker continues to the next entry.
+      if [[ "$warned_deprecated_removed" -eq 0 ]]; then
+        echo "busdriver: config route '$role_key' references unsupported '$cli'; use 'codex', 'agy', or 'droid' instead — skipping" >&2
+        warned_deprecated_removed=1
+        last_rejected="$cli"
+      fi
     elif [[ "$cli" == "auto" ]]; then
-      for auto_cli in codex agy droid amp opencode; do
+      for auto_cli in codex agy droid; do
         is_cli_available "$auto_cli" && echo "$auto_cli" && return 0
       done
+      saw_other_entry=1  # auto fell through — entry wasn't a removed CLI
     elif [[ "$cli" == "none" || "$cli" == "builtin" ]]; then
       echo "$cli" && return 0
     elif is_cli_available "$cli"; then
       echo "$cli" && return 0
+    else
+      saw_other_entry=1  # named CLI that just isn't installed (e.g., codex missing)
     fi
     i=$((i + 1))
   done
+  # Route exhausted without resolution. Only emit the hard unsupported sentinel
+  # if every entry was a rejected (deprecated/removed) CLI — e.g., a pure stale
+  # ["amp"] or ["gemini", "opencode"] route. If the route mixed rejected entries
+  # with missing-binary ones (e.g., ["amp", "codex"] with codex not installed),
+  # fall through to legacy defaults instead — the user clearly wanted something
+  # working, and a missing codex shouldn't bake in unsupported:amp as the
+  # answer just because amp came first in the array.
+  if [[ -n "$last_rejected" && "$saw_other_entry" -eq 0 ]]; then
+    echo "unsupported:$last_rejected"
+    return 0
+  fi
   return 1
 }
 
@@ -215,6 +240,12 @@ resolve_role_cli() {
       echo "unsupported:gemini"
       return
     fi
+    case "$env_cli" in
+      amp|opencode|claude|aider)
+        echo "busdriver: BUSDRIVER_REVIEW_CLI=$env_cli is no longer supported; use 'codex', 'agy', or 'droid' instead" >&2
+        echo "unsupported:$env_cli"
+        return ;;
+    esac
     if [[ "$env_cli" == "none" || "$env_cli" == "builtin" ]]; then
       echo "$env_cli" && return
     fi
@@ -250,8 +281,16 @@ resolve_role_cli() {
   fi
 
   # Step 4: Defaults from project config, then user config
+  #
+  # Per-cfg "all rejected" tracking (mirrors _resolve_from_route_array): when
+  # every entry in this cfg's defaults chain is a removed CLI (amp/opencode/
+  # claude/aider) and none resolved, emit the unsupported sentinel so the
+  # user's stale-but-explicit defaults aren't silently overridden by legacy
+  # defaults / auto-detect. Mixed chains (some rejected + some missing-binary)
+  # fall through normally — the user clearly intended a working reviewer.
   for cfg in "$project_config" "$user_config"; do
     [[ ! -f "$cfg" ]] && continue
+    local cfg_last_rejected="" cfg_saw_other=0
     local default_primary
     default_primary=$(_read_config_value "$cfg" '.defaults.primary')
     if [[ -n "$default_primary" ]]; then
@@ -261,24 +300,57 @@ resolve_role_cli() {
         # Reject deprecated CLI in defaults path — same hard-cutover as Step 1
         echo "busdriver: defaults.primary=gemini is deprecated; use 'agy' (antigravity) instead" >&2
         echo "unsupported:gemini" && return
+      elif [[ "$default_primary" == "amp" || "$default_primary" == "opencode" || "$default_primary" == "claude" || "$default_primary" == "aider" ]]; then
+        # Removed CLI in defaults.primary — warn and let execution fall through
+        # to defaults.fallback below. Track for the all-rejected check.
+        echo "busdriver: defaults.primary=$default_primary is no longer supported; use 'codex', 'agy', or 'droid' instead — trying defaults.fallback" >&2
+        cfg_last_rejected="$default_primary"
       elif [[ "$default_primary" == "none" || "$default_primary" == "builtin" ]]; then
         echo "$default_primary" && return
       elif is_cli_available "$default_primary"; then
         echo "$default_primary" && return
+      else
+        cfg_saw_other=1  # named CLI not installed — valid intent, just unavailable
       fi
-      local default_fallback
-      default_fallback=$(_read_config_value "$cfg" '.defaults.fallback')
-      if [[ -n "$default_fallback" && "$default_fallback" != "auto" ]]; then
-        if [[ "$default_fallback" == "gemini" ]]; then
-          # Reject deprecated CLI in defaults path — same hard-cutover as Step 1
-          echo "busdriver: defaults.fallback=gemini is deprecated; use 'agy' (antigravity) instead" >&2
-          echo "unsupported:gemini" && return
-        elif [[ "$default_fallback" == "none" || "$default_fallback" == "builtin" ]]; then
-          echo "$default_fallback" && return
-        elif is_cli_available "$default_fallback"; then
-          echo "$default_fallback" && return
-        fi
+    fi
+    # Fallback evaluation runs whether or not defaults.primary was set —
+    # a config like {"defaults":{"fallback":"droid"}} (no primary) must
+    # still honor the explicit fallback. Pre-fix this block was nested
+    # inside `if -n primary`, which silently ignored fallback-only configs.
+    local default_fallback
+    default_fallback=$(_read_config_value "$cfg" '.defaults.fallback')
+    if [[ "$default_fallback" == "auto" ]]; then
+      # Explicit "auto" fallback — run auto-detect inline and return, bypassing
+      # Step 4b legacy per-role defaults. "break" would fall into Step 4b first,
+      # defeating the user's intent to let auto-detect handle resolution.
+      for cli in codex agy droid; do
+        is_cli_available "$cli" && echo "$cli" && return 0
+      done
+      echo "builtin" && return 0
+    fi
+    if [[ -n "$default_fallback" ]]; then
+      if [[ "$default_fallback" == "gemini" ]]; then
+        # Reject deprecated CLI in defaults path — same hard-cutover as Step 1
+        echo "busdriver: defaults.fallback=gemini is deprecated; use 'agy' (antigravity) instead" >&2
+        echo "unsupported:gemini" && return
+      elif [[ "$default_fallback" == "amp" || "$default_fallback" == "opencode" || "$default_fallback" == "claude" || "$default_fallback" == "aider" ]]; then
+        # Removed CLI in defaults.fallback — warn and continue.
+        echo "busdriver: defaults.fallback=$default_fallback is no longer supported; use 'codex', 'agy', or 'droid' instead" >&2
+        cfg_last_rejected="$default_fallback"
+      elif [[ "$default_fallback" == "none" || "$default_fallback" == "builtin" ]]; then
+        echo "$default_fallback" && return
+      elif is_cli_available "$default_fallback"; then
+        echo "$default_fallback" && return
+      else
+        cfg_saw_other=1
       fi
+    fi
+    # All-rejected detection: this cfg's defaults chain contained only
+    # removed CLIs and nothing else. Emit unsupported so the user's
+    # explicit (if stale) intent isn't silently bypassed.
+    if [[ -n "$cfg_last_rejected" && "$cfg_saw_other" -eq 0 ]]; then
+      echo "unsupported:$cfg_last_rejected"
+      return 0
     fi
   done
 
@@ -287,13 +359,25 @@ resolve_role_cli() {
     blueprint-review.reviewer_1) is_cli_available agy && echo "agy" && return ;;
     blueprint-review.reviewer_2) is_cli_available codex && echo "codex" && return ;;
     blueprint-review.arbiter)    echo "builtin" && return ;;  # arbiter is always Claude
-    council.pragmatist)         is_cli_available agy && echo "agy" && return; echo "none" && return ;;
-    council.critic)             is_cli_available codex  && echo "codex"  && return; echo "none" && return ;;
-    council.researcher)         is_cli_available droid  && echo "droid"  && return; echo "none" && return ;;
+    # Trade-off: when agy/codex are unavailable, these roles fall back to
+    # droid. Droid runs at DROID_AUTO_LEVEL=low when invoked from council's
+    # pragmatist/critic templates (file-write tier only, no installs/network/
+    # git push). This is wider than "voice skipped" but the user opted into
+    # this by adopting the droid-fallback default. Override by configuring
+    # `"council.pragmatist": ["agy", "none"]` in .claude/busdriver.json to
+    # keep the lens pure and let the voice drop when agy is missing.
+    council.pragmatist)         is_cli_available agy   && echo "agy"   && return
+                                is_cli_available droid && echo "droid" && return
+                                echo "none" && return ;;
+    council.critic)             is_cli_available codex && echo "codex" && return
+                                is_cli_available droid && echo "droid" && return
+                                echo "none" && return ;;
+    council.researcher)         is_cli_available droid && echo "droid" && return
+                                echo "none" && return ;;
   esac
 
   # Step 5: Auto-detect
-  for cli in codex agy droid amp opencode; do
+  for cli in codex agy droid; do
     is_cli_available "$cli" && echo "$cli" && return
   done
 
@@ -461,22 +545,27 @@ execute_review() {
     # --print-timeout with our outer duration so agy's internal 5m default doesn't
     # abort before _portable_timeout does.
     agy)     printf '%s' "$prompt" | _portable_timeout "$duration" agy --sandbox --print-timeout "${duration}s" --print /dev/stdin 2>&1 ;;
-    claude)  printf '%s' "$prompt" | _portable_timeout "$duration" claude -p --output-format text 2>&1 ;;
-    aider)   local _tmp; _tmp=$(mktemp -t busdriver-aider-XXXXXX)
-             printf '%s' "$prompt" > "$_tmp"
-             _portable_timeout "$duration" aider --message-file "$_tmp" --no-auto-commits 2>&1
-             local _rc=$?; rm -f "$_tmp"; return "$_rc" ;;
     # Review path: --auto low (file-write tier only, no installs/git/network)
     # is sufficient — reviews emit JSON verdicts and never need to mutate the
     # repo or fetch. Tighter than dispatch_one()'s droid case by design: this
     # is the litmus/santa/blueprint-review backend, where read-only intent is hard.
     droid)   printf '%s' "$prompt" | _portable_timeout "$duration" droid exec --auto low 2>&1 ;;
-    amp)     local _tmp; _tmp=$(mktemp -t busdriver-amp-XXXXXX)
-             printf '%s' "$prompt" > "$_tmp"
-             _portable_timeout "$duration" amp review --instructions "$_tmp" 2>&1
-             local _rc=$?; rm -f "$_tmp"; return "$_rc" ;;
-    opencode) printf '%s' "$prompt" | _portable_timeout "$duration" opencode 2>&1 ;;
     builtin) echo "BUILTIN_FALLBACK"; return 3 ;;
+    unsupported:*)
+             # CLI was rejected upstream (deprecated/removed). Migration warning
+             # was already emitted to stderr by resolve_role_cli; surface the
+             # cause cleanly here instead of falling through to the wildcard
+             # "Unsupported CLI: unsupported:amp" garbage.
+             local _removed="${cli#unsupported:}"
+             echo "busdriver: review CLI '$_removed' is no longer supported; use codex, agy, or droid" >&2
+             return 1 ;;
+    missing:*)
+             # CLI is configured but not installed. Same surface-clean intent as
+             # unsupported:* above — let the caller see a recognizable failure
+             # mode rather than a garbled wildcard match.
+             local _absent="${cli#missing:}"
+             echo "busdriver: review CLI '$_absent' is configured but not installed" >&2
+             return 1 ;;
     *)       echo "Unsupported CLI: $cli" >&2; return 1 ;;
   esac
 }
@@ -488,7 +577,7 @@ if [[ "${BASH_SOURCE[0]}" = "$0" ]] && [[ "${1:-}" = "--json" ]]; then
   resolved=$(resolve_review_cli)
   version=""
   case "$resolved" in
-    codex|agy|droid|amp|opencode|claude|aider) version=$(get_cli_version "$resolved") ;;
+    codex|agy|droid) version=$(get_cli_version "$resolved") ;;
     builtin|none|missing:*|unsupported:*) version="n/a" ;;
   esac
 
@@ -501,7 +590,7 @@ if [[ "${BASH_SOURCE[0]}" = "$0" ]] && [[ "${1:-}" = "--json" ]]; then
 
   # Report availability for all supported CLIs
   clis_json=""
-  for cli in codex agy droid amp opencode claude aider; do
+  for cli in codex agy droid; do
     avail=$(is_cli_available "$cli" && echo true || echo false)
     ver=$(get_cli_version "$cli" | _json_safe)
     clis_json="${clis_json}\"${cli}\":{\"available\":${avail},\"version\":\"${ver}\"},"

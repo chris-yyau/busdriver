@@ -1,17 +1,17 @@
 ---
 name: dispatch-cli
 description: >
-  Dispatch any task to Codex CLI or Antigravity (agy) CLI as an autonomous agent.
+  Dispatch any task to Codex, Antigravity (agy), or Droid CLI as an autonomous agent.
   Use when needing an external AI to perform analysis, audit, review, code changes,
-  or any self-contained task. Triggers: "send to codex/agy", "dispatch to",
-  "have codex/agy do", "external agent", "second opinion", general audits,
+  or any self-contained task. Triggers: "send to codex/agy/droid", "dispatch to",
+  "have codex/agy/droid do", "external agent", "second opinion", general audits,
   or when a task would benefit from independent external execution.
   NOT for gate-specific reviews (use litmus or blueprint-review for those).
 ---
 
 # Dispatch CLI
 
-Send any task to Codex or Antigravity (`agy`) CLI as an autonomous agent. Unlike `litmus` and `blueprint-review` (which are gate-bound), this skill dispatches **any** work — audits, analysis, code changes, research, refactoring — without pipeline restrictions.
+Send any task to Codex, Antigravity (`agy`), or Droid CLI as an autonomous agent. Unlike `litmus` and `blueprint-review` (which are gate-bound), this skill dispatches **any** work — audits, analysis, code changes, research, refactoring — without pipeline restrictions.
 
 ## When to Use
 
@@ -35,8 +35,6 @@ Send any task to Codex or Antigravity (`agy`) CLI as an autonomous agent. Unlike
 | Code audit, bug hunting | `codex` | Deep code reasoning, tool use |
 | Architecture analysis | `agy` | Broad strategic thinking |
 | Fast autonomous agent | `droid` | Lightweight, fast execution |
-| Code review focus | `amp` | Review-oriented analysis |
-| Go-native projects | `opencode` | Go ecosystem integration |
 | High-stakes decisions | `both` | Codex + Agy consensus |
 | Maximum coverage | `all` | Top 3 available CLIs in parallel |
 | Quick analysis (either) | `auto` | Uses whichever is available |
@@ -59,7 +57,6 @@ Send any task to Codex or Antigravity (`agy`) CLI as an autonomous agent. Unlike
 | codex | `-s read-only` | ✅ yes (kernel-enforced sandbox) |
 | agy | `--sandbox` (omit `--dangerously-skip-permissions`) | ✅ yes (terminal-restricted sandbox) |
 | droid | `--auto high` (permission tier) | ⚠️  **no** — see below |
-| amp, opencode | default behavior | per-CLI; check docs |
 
 **Droid caveat:** droid has no strict readonly mode. Its `--auto low|medium|high` are permission tiers that control whether it prompts on permission checks (without any flag, droid bails on first read under stdin redirection). Tier semantics from `droid exec --help`:
 
@@ -187,7 +184,7 @@ PROMPT
 **Script flags:**
 | Flag | Values | Default |
 |------|--------|---------|
-| `--cli` | `codex`, `agy`, `droid`, `amp`, `opencode`, `both`, `all`, `auto` | `auto` |
+| `--cli` | `codex`, `agy`, `droid`, `both`, `all`, `auto` | `auto` |
 | `--mode` | `readonly`, `auto` | `readonly` |
 | `--timeout` | seconds | `300` |
 | `--model` | model name | CLI default |

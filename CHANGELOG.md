@@ -1,3 +1,10 @@
+# [1.42.0](https://github.com/chris-yyau/busdriver/compare/v1.41.6...v1.42.0) (2026-05-21)
+
+
+### Features
+
+* **ack-ledger:** case 3 for check-run conclusion=skipped on head ([#130](https://github.com/chris-yyau/busdriver/issues/130)) ([952ad95](https://github.com/chris-yyau/busdriver/commit/952ad95295ec15885e5de4574d654b87a608fd06))
+
 ## [1.41.6](https://github.com/chris-yyau/busdriver/compare/v1.41.5...v1.41.6) (2026-05-21)
 
 

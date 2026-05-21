@@ -1,5 +1,5 @@
 #!/bin/bash
-# dispatch.sh — Dispatch tasks to Codex or Antigravity (agy) CLI as autonomous agents
+# dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), or Droid CLI as autonomous agents
 #
 # Usage (prefer heredoc or stdin to avoid shell escaping bugs):
 #   dispatch.sh --cli codex <<'PROMPT'
@@ -48,7 +48,7 @@ while [[ $# -gt 0 ]]; do
         --prompt)  PROMPT="$2";  shift 2 ;;
         -h|--help)
             cat <<'USAGE'
-dispatch.sh — Dispatch tasks to Codex or Antigravity (agy) CLI
+dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), or Droid CLI
 
 FLAGS:
   --cli     codex|agy|droid|both|all|auto  (default: auto)

@@ -213,7 +213,6 @@ function findPluginInstall(rootDir) {
 
 function getRepoChecks(rootDir) {
   const packageJson = JSON.parse(readText(rootDir, 'package.json'));
-  const commandPrimary = safeRead(rootDir, 'commands/harness-audit.md').trim();
   const hooksJson = safeRead(rootDir, 'hooks/hooks.json');
 
   return [

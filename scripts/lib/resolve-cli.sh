@@ -194,8 +194,8 @@ _resolve_from_route_array() {
       if [[ "$warned_deprecated_removed" -eq 0 ]]; then
         echo "busdriver: config route '$role_key' references unsupported '$cli'; use 'codex', 'agy', or 'droid' instead — skipping" >&2
         warned_deprecated_removed=1
+        last_rejected="$cli"
       fi
-      last_rejected="$cli"
     elif [[ "$cli" == "auto" ]]; then
       for auto_cli in codex agy droid; do
         is_cli_available "$auto_cli" && echo "$auto_cli" && return 0
@@ -320,12 +320,13 @@ resolve_role_cli() {
     local default_fallback
     default_fallback=$(_read_config_value "$cfg" '.defaults.fallback')
     if [[ "$default_fallback" == "auto" ]]; then
-      # Explicit "auto" fallback — defer to Step 5 auto-detect. Break out
-      # of the cfg loop entirely (mirrors the defaults.primary=auto break
-      # above): the user said "let auto-detect handle it," so a
-      # lower-precedence user config shouldn't override that intent with
-      # none/builtin/missing-binary. Also bypasses the all-rejected check.
-      break
+      # Explicit "auto" fallback — run auto-detect inline and return, bypassing
+      # Step 4b legacy per-role defaults. "break" would fall into Step 4b first,
+      # defeating the user's intent to let auto-detect handle resolution.
+      for cli in codex agy droid; do
+        is_cli_available "$cli" && echo "$cli" && return 0
+      done
+      echo "builtin" && return 0
     fi
     if [[ -n "$default_fallback" ]]; then
       if [[ "$default_fallback" == "gemini" ]]; then

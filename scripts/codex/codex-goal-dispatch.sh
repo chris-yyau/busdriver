@@ -436,6 +436,16 @@ if [[ -n "$INTENDED_MSG" ]]; then
       # failure so the caller bails this iter rather than committing partial
       # work that downstream verifiers can't reproduce.
       echo "[codex-goal-dispatch] FAIL: git add failed for one or more declared files; see $LOG_FILE" >&2
+      # Inject before exit so a caller that catches exit 5 and reads the
+      # result file sees the four dispatcher-injected fields (same pattern
+      # as exit 3 and exit 6). committed=false, commit_sha=null, empty arrays.
+      TMP_RESULT_E5=$(mktemp)
+      if jq '. + {committed: false, commit_sha: null, unclaimed_changes: [], ignored_changes: []}' \
+            "$RESULT_FILE" > "$TMP_RESULT_E5" 2>/dev/null; then
+        mv "$TMP_RESULT_E5" "$RESULT_FILE"
+      else
+        rm -f "$TMP_RESULT_E5"
+      fi
       exit 5
     fi
     # Commit, passing the same pathspecs so the commit is scoped to exactly
@@ -464,6 +474,16 @@ if [[ -n "$INTENDED_MSG" ]]; then
       if ! git -C "$REPO_ROOT" diff --cached --quiet -- "${STAGE_FILES[@]}" 2>/dev/null; then
         echo "[codex-goal-dispatch] FAIL: git commit failed but staged changes remain; resetting index so the next iter's preconditions report cleanly; see $LOG_FILE" >&2
         git -C "$REPO_ROOT" reset -- "${STAGE_FILES[@]}" >>"$LOG_FILE" 2>&1 || true
+        # Inject before exit so a caller that catches exit 5 and reads the
+        # result file sees the four dispatcher-injected fields (same pattern
+        # as exit 3 and exit 6). committed=false, commit_sha=null, empty arrays.
+        TMP_RESULT_E5=$(mktemp)
+        if jq '. + {committed: false, commit_sha: null, unclaimed_changes: [], ignored_changes: []}' \
+              "$RESULT_FILE" > "$TMP_RESULT_E5" 2>/dev/null; then
+          mv "$TMP_RESULT_E5" "$RESULT_FILE"
+        else
+          rm -f "$TMP_RESULT_E5"
+        fi
         exit 5
       fi
       echo "[codex-goal-dispatch] git commit produced no commit (empty stage — codex's edits were no-ops); see $LOG_FILE" >&2
@@ -505,24 +525,41 @@ for p in "${STAGE_FILES[@]:-}"; do
   [[ -n "$p" ]] && CLAIMED_NL+="${p}"$'\n'
 done
 
-# Collect all currently-dirty paths into a deduplicated newline-separated list.
-POST_DIRTY_PATHS=""
+# Collect all currently-dirty paths into a deduplicated parallel array.
+# Parallel-array storage matches the PRE_DIRTY approach: any single-byte
+# delimiter (including newline) is POSIX-legal in a filename. Storing paths
+# in a newline-joined string and iterating with `read -r` or `awk` splits
+# paths containing literal newlines into phantom records, potentially
+# generating false unclaimed entries (exit-3 false positive) or silently
+# suppressing real ones (exit-3 false negative). Parallel arrays preserve
+# each path verbatim as a single shell value, regardless of internal bytes.
+declare -a POST_DIRTY_PATHS=()
+# Track seen paths for deduplication (a path can appear in multiple git
+# output categories — modified AND staged, for example). We use a linear
+# scan via the helper below; pre-dirty trees are small in practice (clean-
+# tree precondition makes this list typically empty or a handful of files).
+_post_dirty_seen() {
+  local target="$1" k
+  for k in "${!POST_DIRTY_PATHS[@]}"; do
+    [[ "${POST_DIRTY_PATHS[$k]}" == "$target" ]] && return 0
+  done
+  return 1
+}
 while IFS= read -r -d '' p; do
-  [[ -n "$p" ]] && POST_DIRTY_PATHS+="${p}"$'\n'
+  [[ -n "$p" ]] && ! _post_dirty_seen "$p" && POST_DIRTY_PATHS+=("$p")
 done < <(git -C "$REPO_ROOT" diff -z --name-only HEAD 2>/dev/null || true)
 while IFS= read -r -d '' p; do
-  [[ -n "$p" ]] && POST_DIRTY_PATHS+="${p}"$'\n'
+  [[ -n "$p" ]] && ! _post_dirty_seen "$p" && POST_DIRTY_PATHS+=("$p")
 done < <(git -C "$REPO_ROOT" ls-files -z --others --exclude-standard 2>/dev/null || true)
 while IFS= read -r -d '' p; do
-  [[ -n "$p" ]] && POST_DIRTY_PATHS+="${p}"$'\n'
+  [[ -n "$p" ]] && ! _post_dirty_seen "$p" && POST_DIRTY_PATHS+=("$p")
 done < <(git -C "$REPO_ROOT" diff -z --cached --name-only HEAD 2>/dev/null || true)
-# Deduplicate (a path could appear in multiple categories — e.g., both
-# modified and staged with different changes). `|| true` silences SC2312.
-POST_DIRTY_PATHS=$(printf '%s' "$POST_DIRTY_PATHS" | awk 'NF && !seen[$0]++' || true)
 
 # Compute UNCLAIMED via content-hash comparison + claimed-file subtraction.
 UNCLAIMED_LIST=""
-while IFS= read -r p; do
+# Guard: bash 3.2 + set -u crashes on empty-array expansion. Branch on length.
+if [[ "${#POST_DIRTY_PATHS[@]}" -gt 0 ]]; then
+for p in "${POST_DIRTY_PATHS[@]}"; do
   [[ -z "$p" ]] && continue
   # Skip claimed-and-committed paths.
   if printf '%s' "$CLAIMED_NL" | grep -qFx -- "$p"; then continue; fi
@@ -547,7 +584,8 @@ while IFS= read -r p; do
     # Path wasn't dirty pre-codex → codex created/modified it.
     UNCLAIMED_LIST+="${p}"$'\n'
   fi
-done <<< "$POST_DIRTY_PATHS"
+done
+fi
 
 # Convert to array for downstream use (bash 3 compatible: newline-delimited
 # read into array).

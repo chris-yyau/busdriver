@@ -250,7 +250,7 @@ Even if Codex were steered (e.g., by prompt injection from verifier output) to m
 HOOKS_AFTER=$(find .git/hooks -type f ! -name "*.sample" 2>/dev/null | sort)
 # Compare against the baseline captured at loop start (see "Capture the baseline before the first dispatch" block below)
 # If HOOKS_BEFORE was captured at loop start, diff it:
-if [[ -v HOOKS_BEFORE ]]; then
+if [[ -n "${HOOKS_BEFORE+x}" ]]; then  # bash 3.2 compatible (no `-v`)
   # Check 1: new hook files added
   NEW_HOOKS=$(comm -13 <(echo "$HOOKS_BEFORE") <(echo "$HOOKS_AFTER") 2>/dev/null || true)
   if [[ -n "$NEW_HOOKS" ]]; then
@@ -260,7 +260,7 @@ if [[ -v HOOKS_BEFORE ]]; then
   fi
   # Check 2: existing hook files modified (comm -13 only catches new filenames; compare
   # content checksums to detect overwrites of pre-existing hooks)
-  if [[ -v HOOKS_CHECKSUMS_BEFORE ]]; then
+  if [[ -n "${HOOKS_CHECKSUMS_BEFORE+x}" ]]; then  # bash 3.2 compatible (no `-v`)
     HOOKS_CHECKSUMS_AFTER=$(find .git/hooks -type f ! -name "*.sample" -exec sha256sum {} \; 2>/dev/null | sort) || {
       echo "[codex-goal-dispatch] BAIL: checksum generation failed — cannot verify hook integrity" >&2
       exit 1

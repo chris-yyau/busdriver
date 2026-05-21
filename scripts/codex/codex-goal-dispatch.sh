@@ -131,25 +131,34 @@ fi
 # dirty file outside its declared scope — without hashing, presence-only
 # tracking would suppress the change as "already dirty."
 #
-# Format: PRE_DIRTY_HASHES is newline-separated "<hash>\t<path>" entries.
-# bash 3.2 compatible (no associative arrays, no mapfile). For untracked
+# Storage: TWO PARALLEL bash 3.2 arrays indexed by position. The earlier
+# implementation used a tab-delimited "<hash>TAB<path>" string and
+# `awk -F'\t' '$2==p'` lookups; a path containing a literal TAB (rare but
+# POSIX-legal) collapsed $2 to only the substring before the second tab, so
+# the lookup falsely missed the baseline entry. Any single-byte delimiter
+# has the same hazard (NUL bytes also can't be held in a bash string),
+# so parallel arrays — paths preserved verbatim per element, no
+# flattening — are the only structurally-safe storage. For untracked
 # files we hash the working-tree content; for modified tracked files we
 # also hash working-tree content (NOT the index) since that's what the
 # verifiers will see.
-PRE_DIRTY_HASHES=""
+declare -a PRE_DIRTY_PATHS=()
+declare -a PRE_DIRTY_HASH_VALUES=()
 # Modified tracked files (working tree vs HEAD). -z + read -r -d '' for safe
 # NUL-delimited parsing. `|| true` silences SC2312 (process substitution
 # masks return code) — failure here just means an empty list, not fatal.
 while IFS= read -r -d '' p; do
   [[ -z "$p" ]] && continue
   h=$(git -C "$REPO_ROOT" hash-object -- "$p" 2>/dev/null || echo "MISSING")
-  PRE_DIRTY_HASHES+="${h}"$'\t'"${p}"$'\n'
+  PRE_DIRTY_PATHS+=("$p")
+  PRE_DIRTY_HASH_VALUES+=("$h")
 done < <(git -C "$REPO_ROOT" diff -z --name-only HEAD 2>/dev/null || true)
 # Untracked files (not gitignored).
 while IFS= read -r -d '' p; do
   [[ -z "$p" ]] && continue
   h=$(git -C "$REPO_ROOT" hash-object -- "$p" 2>/dev/null || echo "MISSING")
-  PRE_DIRTY_HASHES+="${h}"$'\t'"${p}"$'\n'
+  PRE_DIRTY_PATHS+=("$p")
+  PRE_DIRTY_HASH_VALUES+=("$h")
 done < <(git -C "$REPO_ROOT" ls-files -z --others --exclude-standard 2>/dev/null || true)
 # Staged but not committed (index vs HEAD) — pre-existing staged changes
 # shouldn't be flagged as codex's work. Hash from the index, not working tree.
@@ -157,8 +166,28 @@ while IFS= read -r -d '' p; do
   [[ -z "$p" ]] && continue
   h=$(git -C "$REPO_ROOT" ls-files --stage -- "$p" 2>/dev/null | awk '{print $2}')
   [[ -z "$h" ]] && h="MISSING"
-  PRE_DIRTY_HASHES+="${h}"$'\t'"${p}"$'\n'
+  PRE_DIRTY_PATHS+=("$p")
+  PRE_DIRTY_HASH_VALUES+=("$h")
 done < <(git -C "$REPO_ROOT" diff -z --cached --name-only HEAD 2>/dev/null || true)
+
+# Helper: linear-search PRE_DIRTY_PATHS for an exact match of $1. Emits the
+# matching index on stdout and returns 0 on found; returns 1 on miss
+# (stdout silent). Bash 3.2 lacks associative arrays so we cannot do O(1)
+# lookups; pre-dirty trees are tiny in practice (typically zero entries
+# under the clean-tree precondition, a handful at most under
+# BUSDRIVER_CODEX_ALLOW_DIRTY_TREE=1), so linear scan is fine.
+_pre_dirty_idx_of() {
+  local target="$1"
+  local k
+  if [[ "${#PRE_DIRTY_PATHS[@]}" -eq 0 ]]; then return 1; fi
+  for k in "${!PRE_DIRTY_PATHS[@]}"; do
+    if [[ "${PRE_DIRTY_PATHS[$k]}" == "$target" ]]; then
+      echo "$k"
+      return 0
+    fi
+  done
+  return 1
+}
 
 # Build codex exec invocation. Fresh session every call (no resume).
 # NOTE: `-c sandbox_workspace_write.allow_git_writes=true` is INTENTIONALLY
@@ -213,10 +242,45 @@ if [[ -n "$INTENDED_MSG" ]]; then
   # files outside its scope (the calling skill's scope-check at Step 7 will
   # also catch this; this is defense in depth).
   declare -a STAGE_FILES=()
-  # `|| true` on the jq call avoids SC2312 (process substitution masks return code).
-  # `?` already makes jq tolerant of missing files_changed; the `|| true` is paranoia.
-  while IFS= read -r f; do
+  # Per-element iteration (NOT delimiter-based read). NUL-as-delimiter
+  # collides with NUL-as-content: a schema-valid value like
+  # "safe.txt\u0000bad.txt" would be re-split into two shell records,
+  # smuggling an extra path past the declared files_changed contract.
+  # Iterating by array index keeps each element a single shell value
+  # regardless of its internal byte content. Per-element decoding is also
+  # the ONLY layer where we can reject NUL-containing paths — once a
+  # path transits bash's `$(...)` command substitution the NUL byte is
+  # silently stripped, potentially stitching the pre-NUL and post-NUL
+  # halves into a third never-declared path (e.g. "a\u0000b" →
+  # bash sees "ab"). We detect NUL via `jq -c` on each element (which
+  # encodes NUL as the literal 6-char `\u0000` escape in the JSON
+  # output) and reject pre-decode.
+  FILES_COUNT=$(jq -r '(.files_changed // []) | length' "$RESULT_FILE" 2>/dev/null || echo 0)
+  i=0
+  while [[ $i -lt $FILES_COUNT ]]; do
+    # JSON-encoded form: NUL surfaces as literal `\u0000` (6 ASCII
+    # chars) which a bash glob can match before bash ever sees the decoded
+    # value. Single-quote the pattern so the backslash is literal.
+    f_json=$(jq -c ".files_changed[$i] // null" "$RESULT_FILE" 2>/dev/null || echo "null")
+    case "$f_json" in
+      *'\u0000'*)
+        echo "[codex-goal-dispatch] WARN: skipping files_changed[$i] — contains NUL byte (bash would silently strip it, potentially smuggling a third path): $f_json" >&2
+        i=$((i+1)); continue ;;
+    esac
+    f=$(jq -r ".files_changed[$i] // empty" "$RESULT_FILE" 2>/dev/null || true)
+    i=$((i+1))
     [[ -z "$f" ]] && continue
+    # Reject paths containing control chars (TAB or NEWLINE). The parallel-
+    # array PRE_DIRTY storage handles them correctly now, but downstream git
+    # output (`git diff -z`, `git status -z`) and the surrounding shell
+    # ecosystem still misbehave on paths with embedded control chars.
+    # Legitimate codex workspace paths essentially never contain them, so
+    # rejecting here is a cheap safety net. NUL is implicit — bash variables
+    # can't hold NUL, so a NUL-containing path is already truncated by the
+    # time we see it (the `\u0000` JSON-encoded check above catches it).
+    case "$f" in
+      *$'\t'*|*$'\n'*) echo "[codex-goal-dispatch] WARN: skipping path with control char (TAB/NEWLINE): $f" >&2; continue ;;
+    esac
     # Skip absolute paths and parent-dir traversal — codex spec is relative paths only
     [[ "$f" = /* ]] && { echo "[codex-goal-dispatch] WARN: skipping absolute path $f" >&2; continue; }
     [[ "$f" = *..* ]] && { echo "[codex-goal-dispatch] WARN: skipping path with .. : $f" >&2; continue; }
@@ -232,7 +296,7 @@ if [[ -n "$INTENDED_MSG" ]]; then
       .|..|*\**|*\?*|*\[*) echo "[codex-goal-dispatch] WARN: skipping glob-like path $f" >&2; continue ;;
     esac
     STAGE_FILES+=("$f")
-  done < <(jq -r '.files_changed[]?' "$RESULT_FILE" 2>/dev/null || true)
+  done
 
   # Reject directory paths in a second pass. Directories pass all the
   # filename-shape filters above but git treats them recursively even with
@@ -248,28 +312,40 @@ if [[ -n "$INTENDED_MSG" ]]; then
   #  (c) git ls-files <path>/ catches paths that are tracked directories in
   #      the index (covers untracked content under tracked dirs too)
   declare -a FILTERED_STAGE_FILES=()
-  for f in "${STAGE_FILES[@]}"; do
-    if [[ -d "$REPO_ROOT/$f" ]]; then
-      echo "[codex-goal-dispatch] WARN: skipping directory path $f (exists as directory on disk)" >&2
-      continue
-    fi
-    # Check git's view: was $f a directory in HEAD, or does anything under
-    # $f/ exist in the index? Either case = directory pathspec → reject.
-    tree_kind=$(git -C "$REPO_ROOT" ls-tree HEAD -- "$f" 2>/dev/null | awk '{print $2; exit}' || true)
-    if [[ "$tree_kind" == "tree" ]]; then
-      echo "[codex-goal-dispatch] WARN: skipping path $f (HEAD tracks it as a directory)" >&2
-      continue
-    fi
-    # Trailing slash query: `git ls-files -- foo/` matches files under foo/.
-    # If non-empty, foo is a directory in the index. `|| true` silences SC2312.
-    under_index=$(git -C "$REPO_ROOT" ls-files -- "$f/" 2>/dev/null | head -1 || true)
-    if [[ -n "$under_index" ]]; then
-      echo "[codex-goal-dispatch] WARN: skipping path $f (index has files under $f/)" >&2
-      continue
-    fi
-    FILTERED_STAGE_FILES+=("$f")
-  done
-  STAGE_FILES=("${FILTERED_STAGE_FILES[@]}")
+  # Guard the filter loop: under bash 3.2 + `set -u`, expanding "${arr[@]}" of
+  # an empty array crashes with 'unbound variable'. STAGE_FILES is empty when
+  # codex returns files_changed:[] (schema-valid) or when every declared path
+  # failed the upstream filename-shape filter.
+  if [[ "${#STAGE_FILES[@]}" -gt 0 ]]; then
+    for f in "${STAGE_FILES[@]}"; do
+      if [[ -d "$REPO_ROOT/$f" ]]; then
+        echo "[codex-goal-dispatch] WARN: skipping directory path $f (exists as directory on disk)" >&2
+        continue
+      fi
+      # Check git's view: was $f a directory in HEAD, or does anything under
+      # $f/ exist in the index? Either case = directory pathspec → reject.
+      tree_kind=$(git -C "$REPO_ROOT" ls-tree HEAD -- "$f" 2>/dev/null | awk '{print $2; exit}' || true)
+      if [[ "$tree_kind" == "tree" ]]; then
+        echo "[codex-goal-dispatch] WARN: skipping path $f (HEAD tracks it as a directory)" >&2
+        continue
+      fi
+      # Trailing slash query: `git ls-files -- foo/` matches files under foo/.
+      # If non-empty, foo is a directory in the index. `|| true` silences SC2312.
+      under_index=$(git -C "$REPO_ROOT" ls-files -- "$f/" 2>/dev/null | head -1 || true)
+      if [[ -n "$under_index" ]]; then
+        echo "[codex-goal-dispatch] WARN: skipping path $f (index has files under $f/)" >&2
+        continue
+      fi
+      FILTERED_STAGE_FILES+=("$f")
+    done
+  fi
+  # Same crash hazard on the rebind: empty-array expansion under set -u in
+  # bash 3.2 dies. Branch on length and reset explicitly.
+  if [[ "${#FILTERED_STAGE_FILES[@]}" -gt 0 ]]; then
+    STAGE_FILES=("${FILTERED_STAGE_FILES[@]}")
+  else
+    STAGE_FILES=()
+  fi
 
   # Defense in depth (only meaningful when BUSDRIVER_CODEX_ALLOW_DIRTY_TREE=1
   # bypassed the clean-tree precondition): reject paths that were already
@@ -277,14 +353,28 @@ if [[ -n "$INTENDED_MSG" ]]; then
   # changes with codex's into the iter commit. Detection alone isn't enough
   # — we must refuse to commit them.
   declare -a FILTERED_STAGE_FILES_2=()
-  for f in "${STAGE_FILES[@]}"; do
-    if printf '%s' "$PRE_DIRTY_HASHES" | grep -qF $'\t'"${f}"; then
-      echo "[codex-goal-dispatch] WARN: skipping path '$f' — was already dirty before codex ran; staging would commit pre-existing changes (set BUSDRIVER_CODEX_ALLOW_DIRTY_TREE=0 to require clean tree)" >&2
-      continue
-    fi
-    FILTERED_STAGE_FILES_2+=("$f")
-  done
-  STAGE_FILES=("${FILTERED_STAGE_FILES_2[@]}")
+  # Guard for empty STAGE_FILES (bash 3.2 + set -u empty-array crash hazard).
+  if [[ "${#STAGE_FILES[@]}" -gt 0 ]]; then
+    for f in "${STAGE_FILES[@]}"; do
+      # Path-exact membership via the parallel-array helper. The earlier
+      # `awk -F'\t' '$2==p'` lookup on a tab-delimited "<hash>TAB<path>"
+      # baseline was wrong for paths containing a TAB (POSIX-legal, rare):
+      # awk's $2 truncated at the second tab, missing the entry and silently
+      # failing to skip pre-existing dirt. With parallel arrays the path is
+      # preserved verbatim per element and the comparison is exact
+      # regardless of internal bytes.
+      if _pre_dirty_idx_of "$f" >/dev/null; then
+        echo "[codex-goal-dispatch] WARN: skipping path '$f' — was already dirty before codex ran; staging would commit pre-existing changes (unset BUSDRIVER_CODEX_ALLOW_DIRTY_TREE to enforce the clean-tree precondition on the next run)" >&2
+        continue
+      fi
+      FILTERED_STAGE_FILES_2+=("$f")
+    done
+  fi
+  if [[ "${#FILTERED_STAGE_FILES_2[@]}" -gt 0 ]]; then
+    STAGE_FILES=("${FILTERED_STAGE_FILES_2[@]}")
+  else
+    STAGE_FILES=()
+  fi
 
   if [[ "${#STAGE_FILES[@]}" -gt 0 ]]; then
     # Stage declared files. `--literal-pathspecs` disables ALL pathspec magic
@@ -316,9 +406,21 @@ if [[ -n "$INTENDED_MSG" ]]; then
       COMMIT_SHA=$(git -C "$REPO_ROOT" rev-parse --short HEAD)
       COMMITTED=true
     else
-      # Empty staging area (nothing to commit) is the most common cause —
-      # not necessarily an error. Caller decides via post-iter git rev-parse.
-      echo "[codex-goal-dispatch] git commit produced no commit (likely empty stage); see $LOG_FILE" >&2
+      # `git commit` exits non-zero for two unrelated reasons:
+      #   1. Empty stage (codex's add was a no-op) — benign, not a failure
+      #   2. Real failure (gpg.signingkey misconfig, core.hooksPath bypassing
+      #      --no-verify, disk full, etc.) — MUST NOT silently swallow, or the
+      #      index stays staged and the next iter's clean-tree precondition
+      #      reports exit 4 with no breadcrumb back to the half-completed iter
+      # Distinguish via the post-attempt cached diff: any remaining staged
+      # changes for our paths mean the commit really failed. Reset to leave a
+      # clean tree for the next iter and exit 5.
+      if ! git -C "$REPO_ROOT" diff --cached --quiet -- "${STAGE_FILES[@]}" 2>/dev/null; then
+        echo "[codex-goal-dispatch] FAIL: git commit failed but staged changes remain; resetting index so the next iter's preconditions report cleanly; see $LOG_FILE" >&2
+        git -C "$REPO_ROOT" reset -- "${STAGE_FILES[@]}" >>"$LOG_FILE" 2>&1 || true
+        exit 5
+      fi
+      echo "[codex-goal-dispatch] git commit produced no commit (empty stage — codex's edits were no-ops); see $LOG_FILE" >&2
     fi
   fi
 else
@@ -335,19 +437,21 @@ fi
 # outcomes. Surface this gap so the caller's logic can detect + decide.
 #
 # Method: collect all currently-dirty paths (modified, untracked, staged).
-# For each, compute its current content hash. Compare against PRE_DIRTY_HASHES
-# baseline: if hash differs OR path is new, codex modified it. Then subtract
-# STAGE_FILES (already committed by us) to find leftover post-commit dirt.
-# Anything remaining = codex touched files outside its declared list.
+# For each, compute its current content hash. Look up the path in the
+# parallel PRE_DIRTY_PATHS / PRE_DIRTY_HASH_VALUES arrays (via
+# _pre_dirty_idx_of). If found, compare hashes — a mismatch means codex
+# modified an undeclared pre-existing-dirty file. If not found, the file
+# is new since the pre-codex snapshot — also unclaimed. Then subtract
+# STAGE_FILES (already committed by us) to leave only out-of-scope dirt.
 #
 # Hash comparison (vs presence-only) closes the security gap where codex
 # modifies a pre-existing dirty file outside its scope — the path is in
 # PRE_DIRTY, but the hash changed. Without hashing, presence-only matching
 # would suppress the change as "already dirty" and miss the violation.
 #
-# bash 3.2 compatible: newline-separated strings + grep -F for lookups, no
-# associative arrays or mapfile. `|| true` on every command in process
-# substitution silences SC2312.
+# bash 3.2 compatible: parallel arrays + linear search (no associative
+# arrays, no mapfile). `|| true` on every command in process substitution
+# silences SC2312.
 
 # Build claimed-paths string (newline-separated, for grep -F lookups).
 CLAIMED_NL=""
@@ -381,17 +485,21 @@ while IFS= read -r p; do
   # Find pre-baseline hash for this path. Take the FIRST match (covers index
   # and worktree variants of the same path; either presence in pre-baseline
   # means the file was already dirty in some form).
-  pre_entry=$(printf '%s' "$PRE_DIRTY_HASHES" | grep -F $'\t'"${p}" | head -1 || true)
-  if [[ -z "$pre_entry" ]]; then
-    # Path wasn't dirty pre-codex → codex created/modified it.
-    UNCLAIMED_LIST+="${p}"$'\n'
-  else
+  # Path-exact lookup via the parallel-array helper. The earlier
+  # `awk -F'\t' '$2==path'` truncated TAB-containing paths at the second
+  # tab and false-flagged unchanged pre-existing dirt as unclaimed. With
+  # parallel arrays the path is preserved verbatim and the hash comparison
+  # uses the matching index directly.
+  if pre_idx=$(_pre_dirty_idx_of "$p"); then
     # Path was dirty pre-codex. Compare hashes to detect further modification.
-    pre_hash="${pre_entry%%$'\t'*}"
+    pre_hash="${PRE_DIRTY_HASH_VALUES[$pre_idx]}"
     if [[ "$pre_hash" != "$current_hash" ]]; then
       # Content changed between pre and post → codex modified it.
       UNCLAIMED_LIST+="${p}"$'\n'
     fi
+  else
+    # Path wasn't dirty pre-codex → codex created/modified it.
+    UNCLAIMED_LIST+="${p}"$'\n'
   fi
 done <<< "$POST_DIRTY_PATHS"
 
@@ -439,7 +547,10 @@ fi
 # gitignored modification fatal.
 if [[ "${#IGNORED_CHANGES[@]}" -gt 0 && "${BUSDRIVER_CODEX_FAIL_ON_IGNORED:-}" == "1" ]]; then
   echo "[codex-goal-dispatch] FAIL: ${#IGNORED_CHANGES[@]} gitignored file(s) modified by codex (BUSDRIVER_CODEX_FAIL_ON_IGNORED=1 paranoid mode active). See ignored_changes in $RESULT_FILE." >&2
-  echo "$RESULT_FILE"
+  # Failure exits do NOT echo $RESULT_FILE on stdout — the caller passed
+  # --result-file PATH and already knows it. Other failure exits (1, 2, 4, 5)
+  # follow the same convention. stdout-on-fail can mask the non-zero exit
+  # code from callers that capture stdout via $(...).
   exit 6
 fi
 
@@ -482,7 +593,7 @@ fi
 # skills/codex-goal-handover/SKILL.md.
 if [[ "${#UNCLAIMED_CHANGES[@]}" -gt 0 && "${BUSDRIVER_CODEX_ALLOW_UNCLAIMED:-}" != "1" ]]; then
   echo "[codex-goal-dispatch] FAIL: ${#UNCLAIMED_CHANGES[@]} out-of-scope file(s) modified by codex. See unclaimed_changes in $RESULT_FILE. Override with BUSDRIVER_CODEX_ALLOW_UNCLAIMED=1 if intentional." >&2
-  echo "$RESULT_FILE"
+  # Failure exits do NOT echo $RESULT_FILE on stdout — see exit 6 comment.
   exit 3
 fi
 

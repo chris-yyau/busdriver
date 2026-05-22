@@ -33,6 +33,47 @@
 # and the merge gate is bypassed — the exact fail-OPEN regression FETCH_OK
 # was introduced to prevent.
 
+# Self-resolver (dogfood-friendly): when invoked from inside a busdriver source
+# checkout, re-exec the working-tree copy of this script instead of running
+# whatever the caller resolved (typically `$CLAUDE_PLUGIN_ROOT/scripts/ack-
+# ledger.sh` from the plugin cache). This eliminates the asymmetry where an
+# in-flight ack-ledger fix in the working tree coexists with the stale cached
+# plugin version on the same workstation — the failure mode behind the PR #77
+# and PR #139 dogfood incidents (see project memory pr-grind-cubic-skips-
+# merge-commits).
+#
+# Detection is a no-op (continue with the calling script's body) when ANY of:
+#   (a) BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 (operator escape hatch)
+#   (b) CWD is not in a git repo (`git rev-parse --show-toplevel` fails)
+#   (c) git remote origin URL doesn't end in `busdriver(\.git)?$`
+#   (d) working-tree `scripts/ack-ledger.sh` doesn't exist (defensive)
+#   (e) self-path already IS the working-tree path (recursion guard)
+#
+# Fail-CLOSED on any unexpected error: the if-chain only fires when every
+# predicate succeeds, so partial detection failures (e.g., git installed but
+# CWD outside any repo) fall through to the calling script's logic. `exec`
+# preserves "$@" and exported env vars (FETCH_OK, ALL_THREADS, ALL_REVIEWS,
+# ALL_COMMENTS, ALL_CHECK_RUNS, HEAD_SHA) automatically.
+#
+# Why detection runs at script top: the resolver is a permanent forward-fix.
+# Once shipped in vN.M, all vN.M+ caches carry the resolver, so any future
+# ack-ledger dogfood (modifying this file in the busdriver source repo and
+# running pr-grind on the fix's PR) auto-routes to the working-tree copy
+# without operator intervention. The CURRENT dogfood session that ships the
+# resolver itself still needs the operator override (working-tree-path
+# substitution in the dispatcher COMPLETION block) — by design; the resolver
+# can only fix incidents that occur AFTER it lands.
+if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
+   _self_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) && \
+   _git_root=$(git rev-parse --show-toplevel 2>/dev/null) && \
+   _remote=$(git -C "$_git_root" remote get-url origin 2>/dev/null) && \
+   printf '%s' "$_remote" | grep -qE '[/:]busdriver(\.git)?$' && \
+   [ -f "$_git_root/scripts/ack-ledger.sh" ] && \
+   [ "$_self_dir" != "$_git_root/scripts" ]; then
+  exec bash "$_git_root/scripts/ack-ledger.sh" "$@"
+fi
+unset _self_dir _git_root _remote
+
 login="$1"
 
 # Fail-CLOSED: any source-fetch failure → mark stale (Greptile P1 — fail-OPEN

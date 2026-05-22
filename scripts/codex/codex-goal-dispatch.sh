@@ -189,13 +189,22 @@ _pre_dirty_idx_of() {
   return 1
 }
 
-# Snapshot pre-codex ignored paths (parallel array, same pattern as PRE_DIRTY).
-# Used after codex returns to distinguish genuinely new/modified gitignored files
-# from ones that pre-existed (e.g., build artifacts, .env files already present
-# before the run). Without this baseline the BUSDRIVER_CODEX_FAIL_ON_IGNORED=1
-# check false-fires on any repo that already has ignored artifacts.
-declare -a PRE_IGNORED_PATHS=()
-declare -a PRE_IGNORED_HASH_VALUES=()
+# Snapshot pre-codex gitignored files. Unlike PRE_DIRTY (bounded to ~0 entries
+# by the clean-tree precondition), gitignored trees are unbounded —
+# node_modules, build artifacts, etc. can run into thousands. The previous
+# implementation used parallel bash arrays + a linear-scan helper, giving
+# O(N×M) lookup cost when the post-codex detector walked the same enumeration
+# (issue #133, cubic finding from PR #131). Replacement: a tempfile baseline
+# of `encoded_path<TAB>hash` rows, joined against the post-codex enumeration
+# via awk's O(1) associative array — O(N+M) total lookup cost.
+#
+# Per-file hashing is preserved (rather than batched via `git hash-object
+# --stdin-paths`) because the batched form aborts on the first unreadable
+# file and then `paste` would silently misalign subsequent path/hash pairs;
+# per-file lets us substitute "MISSING" on read failure and keep the rest of
+# the snapshot intact. The O(N) hash-subprocess cost was always present and
+# is not the bottleneck cubic flagged — the O(N×M) lookup was.
+#
 # Use `git ls-files -o -i --exclude-standard -z` (NOT `git status --ignored`)
 # to enumerate individual gitignored FILES rather than directory-collapsed
 # records. `git status --ignored` emits `!! dir/` for entire ignored
@@ -205,27 +214,55 @@ declare -a PRE_IGNORED_HASH_VALUES=()
 # BUSDRIVER_CODEX_FAIL_ON_IGNORED=1). `ls-files -o -i` walks into the
 # directories and produces per-file paths the hash check can actually
 # distinguish.
-while IFS= read -r -d '' p; do
-  [[ -z "$p" ]] && continue
-  h=$(git -C "$REPO_ROOT" hash-object -- "$p" 2>/dev/null || echo "MISSING")
-  PRE_IGNORED_PATHS+=("$p")
-  PRE_IGNORED_HASH_VALUES+=("$h")
-done < <(git -C "$REPO_ROOT" ls-files -o -i --exclude-standard -z 2>/dev/null || true)
-
-# Helper: linear-search PRE_IGNORED_PATHS for an exact match of $1.
-# Returns 0+index on found; 1 on miss (same pattern as _pre_dirty_idx_of).
-_pre_ignored_idx_of() {
-  local target="$1"
-  local k
-  if [[ "${#PRE_IGNORED_PATHS[@]}" -eq 0 ]]; then return 1; fi
-  for k in "${!PRE_IGNORED_PATHS[@]}"; do
-    if [[ "${PRE_IGNORED_PATHS[$k]}" == "$target" ]]; then
-      echo "$k"
-      return 0
-    fi
-  done
-  return 1
+#
+# TSV-safe path encoding: gitignored paths can in principle contain tab or
+# newline characters (POSIX-legal, though exotic), which would corrupt the
+# TSV column structure if stored verbatim. Encode at the bash layer with
+# parameter expansion (no subprocess) — `\` → `\\`, TAB → `\t`, LF → `\n`.
+# Decode by replacing `\\` with a placeholder first to avoid re-decoding
+# the escape sequences inside literal-backslash strings. Encoding is
+# applied identically pre and post so the join key is stable.
+_encode_ignored_path() {
+  local s="$1"
+  s=${s//\\/\\\\}
+  s=${s//$'\t'/\\t}
+  s=${s//$'\n'/\\n}
+  printf '%s' "$s"
 }
+
+_decode_ignored_path() {
+  local s="$1"
+  # Use a unit-separator byte (0x1f) as the placeholder for `\\` while
+  # decoding the other escapes, then restore. 0x1f cannot legally appear
+  # in either an encoded TSV row (escapes only emit ASCII letters) or in
+  # the path-name octets we round-trip (it survives, but the placeholder
+  # is gone by the time we return).
+  s=${s//\\\\/$'\x1f'}
+  s=${s//\\t/$'\t'}
+  s=${s//\\n/$'\n'}
+  s=${s//$'\x1f'/\\}
+  printf '%s' "$s"
+}
+
+_emit_ignored_tsv() {
+  local p h enc
+  while IFS= read -r -d '' p; do
+    [[ -z "$p" ]] && continue
+    h=$(git -C "$REPO_ROOT" hash-object -- "$p" 2>/dev/null || echo "MISSING")
+    enc=$(_encode_ignored_path "$p")
+    printf '%s\t%s\n' "$enc" "$h"
+  done < <(git -C "$REPO_ROOT" ls-files -o -i --exclude-standard -z 2>/dev/null || true)
+}
+
+PRE_IGNORED_BASELINE=$(mktemp)
+POST_IGNORED_TSV=""
+# The EXIT trap covers both ignored-file tempfiles. POST_IGNORED_TSV is created
+# later (post-codex); declaring it empty here lets the trap reference it safely
+# under `set -u` even if the script exits before the post-detection block runs
+# (e.g., codex failure exits 1/2). `${VAR:-}` keeps `set -u` happy and
+# `rm -f --` is a no-op on the empty string when not yet assigned.
+trap 'rm -f -- "${PRE_IGNORED_BASELINE:-}" "${POST_IGNORED_TSV:-}"' EXIT
+_emit_ignored_tsv > "$PRE_IGNORED_BASELINE"
 
 # Build codex exec invocation. Fresh session every call (no resume).
 # NOTE: `-c sandbox_workspace_write.allow_git_writes=true` is INTENTIONALLY
@@ -614,25 +651,49 @@ fi
 # this baseline filter BUSDRIVER_CODEX_FAIL_ON_IGNORED=1 false-fires on any repo
 # that already has gitignored artifacts before the run.
 IGNORED_CHANGES=()
-while IFS= read -r -d '' p; do
-  [[ -z "$p" ]] && continue
-  # Same `ls-files -o -i --exclude-standard -z` walk as the pre-baseline
-  # above — emits individual gitignored files, never directory-collapsed
-  # records. Symmetry matters: a mismatch between pre and post enumeration
-  # would silently no-op the diff check the same way `git status --ignored`
-  # did before.
-  # Check if this path existed in the pre-codex ignored baseline. Use the
-  # `if ... ; then` form (NOT `pre_idx=$(...) || true`) so the function's
-  # exit code drives control flow without disabling errexit via `||` —
-  # avoids SC2310 (the `||` form silently demotes the function's set-e).
-  if pre_idx=$(_pre_ignored_idx_of "$p" 2>/dev/null); then
-    # Path was already ignored before codex ran — only add if content changed.
-    pre_hash="${PRE_IGNORED_HASH_VALUES[$pre_idx]:-MISSING}"
-    post_hash=$(git -C "$REPO_ROOT" hash-object -- "$p" 2>/dev/null || echo "MISSING")
-    [[ "$pre_hash" == "$post_hash" ]] && continue
+POST_IGNORED_TSV=$(mktemp)
+_emit_ignored_tsv > "$POST_IGNORED_TSV"
+if [[ -s "$POST_IGNORED_TSV" ]]; then
+  # Collect encoded paths that are NEW (no pre-entry) or MODIFIED (hash
+  # differs), then decode each back to the original byte sequence before
+  # appending to IGNORED_CHANGES. The encoding scheme is reversible.
+  ENCODED_CHANGES=()
+  if [[ -s "$PRE_IGNORED_BASELINE" ]]; then
+    # awk joins post-rows against the pre-baseline using an O(1) hash map.
+    # NR==FNR is only safe when the baseline file is non-empty (an empty
+    # first file would cause the action to consume the second file's
+    # records and silently swallow every change), so the empty case below
+    # is handled separately. `|| true` on the awk substitution suppresses
+    # SC2312 (masked return) — awk's exit code on the join is not
+    # actionable here; a malformed baseline would have failed `_emit` already.
+    while IFS= read -r enc; do
+      [[ -z "$enc" ]] && continue
+      ENCODED_CHANGES+=("$enc")
+    done < <(awk -F'\t' '
+      NR==FNR { pre[$1] = $2; next }
+      { if (!($1 in pre) || pre[$1] != $2) print $1 }
+    ' "$PRE_IGNORED_BASELINE" "$POST_IGNORED_TSV" || true)
+  else
+    # No pre-baseline → every post entry is new.
+    while IFS=$'\t' read -r enc _; do
+      [[ -z "$enc" ]] && continue
+      ENCODED_CHANGES+=("$enc")
+    done < "$POST_IGNORED_TSV"
   fi
-  IGNORED_CHANGES+=("$p")
-done < <(git -C "$REPO_ROOT" ls-files -o -i --exclude-standard -z 2>/dev/null || true)
+  # Bash 3.2-safe iteration: `${ARR[@]+"${ARR[@]}"}` expands to nothing if the
+  # array is empty (otherwise to the elements), avoiding `unbound variable`
+  # under `set -u` when no changes were detected — the common case for repos
+  # with stable ignored artifacts.
+  for enc in ${ENCODED_CHANGES[@]+"${ENCODED_CHANGES[@]}"}; do
+    IGNORED_CHANGES+=("$(_decode_ignored_path "$enc")")
+  done
+fi
+# POST_IGNORED_TSV cleanup is also handled by the EXIT trap; the inline
+# `rm -f` here releases the temp eagerly once we're done with it. The trap
+# remains in place as the fallback if anything between mktemp and here
+# exits unexpectedly.
+rm -f -- "$POST_IGNORED_TSV"
+POST_IGNORED_TSV=""
 
 if [[ "${#IGNORED_CHANGES[@]}" -gt 0 ]]; then
   echo "[codex-goal-dispatch] NOTE: gitignored files present (codex may have written to them; not committed; verifiers may see them):" >&2

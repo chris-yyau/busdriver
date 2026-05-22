@@ -187,11 +187,24 @@ if [ "$ever_approved" -eq 0 ]; then
   #     shapes where a non-actionable /reviews body coexists with actionable
   #     issue-comment content.
   # (d) Positive-signal body guard — only downgrade when last review body is
-  #     empty OR matches a known non-actionable pattern. Without (d), a bot
-  #     with an actionable COMMENTED finding ("please fix line 47") plus a
-  #     later skipped-HEAD check-run would silently downgrade to `none`,
+  #     empty OR CONTAINS a known non-actionable phrase as a substring. Without
+  #     (d), a bot with an actionable COMMENTED finding ("please fix line 47")
+  #     plus a later skipped-HEAD check-run would silently downgrade to `none`,
   #     discarding the actionable signal. Mirrors Case 2's PR-overview guard
   #     for the same risk shape.
+  #
+  #     Substring match (not anchored `^...$`) is required to handle real-world
+  #     bot bodies that wrap the phrase in markdown and footers. Canonical
+  #     example (cubic-dev-ai, observed PR #137): `**No issues found** across
+  #     1 file\n\n<sub>[Re-trigger cubic](...)</sub>\n\n<!-- cubic:* -->`.
+  #     Newlines are normalized to spaces on line 123 before this regex runs.
+  #
+  #     Accepted false-negative: a body like "no issues found but please fix X"
+  #     would match the substring and downgrade to `none`, discarding the
+  #     actionable "but" clause. We accept this because guards (a)/(b)/(c)
+  #     above (ever_approved==0, COMMENTED state, no body_sha) make accidental
+  #     matches on actionable-finding bodies rare in practice, and Tier A's
+  #     unresolved-thread check above catches the inline-comment variant.
   #
   # The skipped-check-run jq query filters by HEAD inside the predicate (not
   # `last | head_sha` then bash-side check). This is pagination-order
@@ -211,7 +224,7 @@ if [ "$ever_approved" -eq 0 ]; then
     '[.[].check_runs[] | select(.app.slug == $login) | select(.conclusion == "skipped") | select((.head_sha[0:8]) == $head8)] | length' 2>/dev/null || echo 0)
   if [ "$check_run_skipped_head_count" -gt 0 ] && [ "$last_state" = "COMMENTED" ] && [ -z "$body_sha" ] && \
      { [ -z "$last_body" ] || \
-       printf '%s' "$last_body" | grep -qiE '^[[:space:]]*(no issues? found|no concerns|all good|looks good|lgtm|nothing to (add|report))\.?[[:space:]]*$'; }; then
+       printf '%s' "$last_body" | grep -qiE '(no issues? found|no concerns|all good|looks good|lgtm|nothing to (add|report)\b)'; }; then
     echo "none"; exit 0
   fi
 fi

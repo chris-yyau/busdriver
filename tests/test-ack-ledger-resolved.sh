@@ -419,6 +419,23 @@ else
   fail "cubic markdown body expected 'none', got '$got'"
 fi
 
+# --- Test 22: actionable body containing 'lgtm' substring → none (accepted false-negative pin) ---
+# Pins the documented false-negative trade-off from scripts/ack-ledger.sh:200-207.
+# Substring match means a body like "lgtm but ... critical race at line 50" matches
+# the non-actionable phrase set even though the body is actionable. We accept this
+# because guards (a)/(b)/(c) (ever_approved==0, COMMENTED, body_sha empty) AND the
+# skipped-HEAD check-run requirement make accidental matches rare in practice, and
+# Tier A's unresolved-thread check catches the inline-comment variant. Pinning this
+# behavior in a test forces any future regex-tightening or guard-weakening change
+# to engage with the trade-off explicitly rather than silently shifting it.
+LGTM_BUT_ACTIONABLE_REVIEW='[{"user":{"login":"cubic-dev-ai[bot]"},"state":"COMMENTED","commit_id":"oldcommit","body":"lgtm but there is a critical race condition at line 50 that needs a fix before merge"}]'
+got=$(run_ledger_check_runs cubic-dev-ai "$SKIPPED_HEAD_CHECK_RUN" "$LGTM_BUT_ACTIONABLE_REVIEW")
+if [ "$got" = "none" ]; then
+  ok "actionable body containing 'lgtm' substring → none (accepted false-negative, contract pin)"
+else
+  fail "actionable body containing 'lgtm' substring expected 'none' (accepted false-negative), got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

@@ -82,7 +82,7 @@ if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
    _self_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) && \
    _git_root=$(git rev-parse --show-toplevel 2>/dev/null) && \
    _remote=$(git -C "$_git_root" remote get-url origin 2>/dev/null) && \
-   printf '%s' "$_remote" | grep -qE 'github\.com[:/]chris-yyau/busdriver(\.git)?$' && \
+   printf '%s' "$_remote" | grep -qE '(^|[@/])github\.com[:/]chris-yyau/busdriver(\.git)?$' && \
    [ -d "$_git_root/scripts" ] && \
    [ -f "$_git_root/scripts/ack-ledger.sh" ] && \
    ! [ "$_self_dir" -ef "$_git_root/scripts" ]; then

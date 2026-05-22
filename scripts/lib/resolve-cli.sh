@@ -521,29 +521,49 @@ _execute_codex() {
     # Droid escalation (narrow): only on transient-error exhaustion (rate-limit,
     # network, 5xx). Non-transient codex failures (script bugs, malformed prompt)
     # would likely break droid too — go straight to builtin in that case.
-    # Disable with LITMUS_CODEX_DROID_FALLBACK=0 to preserve old behavior.
+    #
+    # Three opt-outs honored:
+    #   1. LITMUS_CODEX_DROID_FALLBACK_DISABLED=1 — matches opt-out convention
+    #      (LITMUS_SHORTCIRCUIT_DISABLED, LITMUS_SKIP_*).
+    #   2. LITMUS_CODEX_DROID_FALLBACK=0 — earlier name used in pre-merge drafts
+    #      of this feature, kept as an alias to avoid silently re-enabling droid
+    #      for anyone who adopted that env var.
+    #   3. BUSDRIVER_REVIEW_CLI=codex — explicit codex pin. Treat as "user wants
+    #      only codex, fall through to builtin if codex fails" — matches the
+    #      semantics implied by pinning a single backend.
+    local _droid_disabled="${LITMUS_CODEX_DROID_FALLBACK_DISABLED:-0}"
+    [[ "${LITMUS_CODEX_DROID_FALLBACK:-1}" == "0" ]] && _droid_disabled=1
+    [[ "${BUSDRIVER_REVIEW_CLI:-auto}" == "codex" ]] && _droid_disabled=1
     if [[ "$last_was_transient" -eq 1 ]] && \
-       [[ "${LITMUS_CODEX_DROID_FALLBACK:-1}" == "1" ]] && \
+       [[ "$_droid_disabled" != "1" ]] && \
        is_cli_available droid; then
       echo "⚠️  Codex exhausted ${attempts_run} attempt(s) on transient errors — escalating to droid" >&2
-      local droid_out droid_exit=0
-      # No --auto flag = droid default read-only mode (no file writes, no shell mutations).
-      # Matches the security posture of the codex `-s read-only` path this is escalating from.
+      local droid_out='' droid_exit=0
+      # Bare `droid exec` (default read-only mode, Create/Edit blocked) matches
+      # execute_review's posture and the codex `-s read-only` posture this is
+      # escalating from. See execute_review droid case for PR #97 historical context.
       droid_out=$(printf '%s' "$prompt" | _portable_timeout "$duration" droid exec 2>&1) || droid_exit=$?
 
-      # Telemetry: log every escalation regardless of outcome so the user can
-      # see how often codex pushes work to droid in the wild.
-      if [[ -d ".claude" ]]; then
+      # Telemetry: log every escalation regardless of outcome. Resolve .claude
+      # against the git root, not cwd — hooks fire from whatever subdir the
+      # user ran `git commit` in, so a cwd-relative check would silently drop
+      # events for any non-root invocation.
+      local _git_root=""
+      _git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+      if [[ -n "$_git_root" && -d "$_git_root/.claude" ]]; then
         printf '{"ts":"%s","event":"codex-droid-fallback","codex_exit":%d,"droid_exit":%d,"codex_attempts":%d}\n' \
           "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$exit_code" "$droid_exit" "$attempts_run" \
-          >> ".claude/bypass-log.jsonl" 2>/dev/null || true
+          >> "$_git_root/.claude/bypass-log.jsonl" 2>/dev/null || true
       fi
 
-      if [[ "$droid_exit" -eq 0 ]]; then
+      # Require both clean exit AND non-empty output — droid killed by signal
+      # can exit 0 with empty stdout, which would surface as a successful but
+      # blank review verdict downstream.
+      if [[ "$droid_exit" -eq 0 ]] && [[ -n "$droid_out" ]]; then
         printf '%s' "$droid_out"
         return 0
       fi
-      echo "⚠️  Droid also failed (exit $droid_exit) — falling back to built-in review" >&2
+      echo "⚠️  Droid escalation failed (exit $droid_exit, output_bytes=${#droid_out}) — falling back to built-in review" >&2
     fi
 
     echo "⚠️  Codex failed after ${attempts_run} attempt(s) — falling back to built-in review" >&2
@@ -577,10 +597,15 @@ execute_review() {
     # --print-timeout with our outer duration so agy's internal 5m default doesn't
     # abort before _portable_timeout does.
     agy)     printf '%s' "$prompt" | _portable_timeout "$duration" agy --sandbox --print-timeout "${duration}s" --print /dev/stdin 2>&1 ;;
-    # Review path: no --auto flag = droid default read-only mode. Reviews emit
-    # JSON verdicts and never need to mutate the repo or fetch. Tighter than
-    # dispatch_one()'s droid case by design: this is the litmus/santa/blueprint-review
-    # backend, where read-only intent is hard. Matches codex `-s read-only` posture.
+    # Review path: bare `droid exec` (default read-only mode) is the tightest
+    # posture that works for stdin-piped review. Create/Edit are blocked at this
+    # tier (verified via `droid exec --list-tools` on v0.131.0+); reviews emit
+    # JSON verdicts and never need to mutate the repo.
+    # NOTE: PR #97 (May 2026) used `--auto low` because earlier droid versions
+    # failed on first read under stdin pipe ("Exec ended early: insufficient
+    # permission"). Empirically verified fixed on v0.131.0. If a future droid
+    # release regresses this, restore `--auto low` (accepts file-write tier as
+    # the cost of stdin-pipe working).
     droid)   printf '%s' "$prompt" | _portable_timeout "$duration" droid exec 2>&1 ;;
     builtin) echo "BUILTIN_FALLBACK"; return 3 ;;
     unsupported:*)

@@ -77,7 +77,7 @@ Send any task to Codex, Antigravity (`agy`), or Droid CLI as an autonomous agent
 
 > **Security Warning:** `DROID_AUTO_LEVEL` overrides the dispatch default and applies to ALL `dispatch.sh` invocations in the current shell environment. A globally-exported `DROID_AUTO_LEVEL=high` (now the default if unset) keeps dispatches at the relaxed tier. `--auto high` enables potentially destructive operations (git push --force, curl|bash, secrets access). For stricter isolation, set `DROID_AUTO_LEVEL=low` or `medium` per-command and unset immediately after use. The dispatch script validates that only `low`, `medium`, or `high` are accepted values.
 
-For strict read-only guarantees, dispatch to `codex` or `agy` instead. (Litmus/santa/blueprint-review backends use the tighter `--auto low` via `scripts/lib/resolve-cli.sh::execute_review` — review prompts emit JSON verdicts and never need writes/installs/network. `DROID_AUTO_LEVEL` does NOT apply to that path.)
+For strict read-only guarantees, dispatch to `codex` or `agy` instead. (Litmus/santa/blueprint-review backends use bare `droid exec` — default read-only mode with Create/Edit blocked — via `scripts/lib/resolve-cli.sh::execute_review`. Empirically verified on droid v0.131.0+; earlier versions per PR #97 required `--auto low` because bare `droid exec` bailed on stdin pipe. `DROID_AUTO_LEVEL` does NOT apply to that path.)
 
 ## How to Dispatch
 

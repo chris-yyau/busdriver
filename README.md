@@ -251,6 +251,7 @@ Every gate execution writes to a persistent JSONL log per project, so you can an
 | `merge-bypass-stale-cleanup` | post-merge cleanup hook (PostToolUse) | A pending claim older than 5 minutes was force-cleaned via an unrelated Bash call (session crash recovery). Skip file preserved |
 | `review-skipped-none` | pre-commit gate | Gate skipped because no review tool was active (BUSDRIVER_REVIEW_CLI=none) |
 | `narrative-fallback-triggered` | litmus CLI | Review CLI output was non-JSON; parsed as narrative fallback |
+| `codex-droid-fallback` | litmus CLI (`resolve-cli.sh _execute_codex`) | Codex exhausted retries on transient errors (rate-limit / network / 5xx); escalated to `droid exec` (default read-only mode) before falling back to builtin. Logged on every escalation regardless of droid outcome. Disable with `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` |
 | `schema-violation` | litmus schema validator | Review output didn't match expected JSON schema |
 | `short-circuit-pass` | litmus commit mode | Diff met all short-circuit criteria; Codex skipped |
 | `pr-fast-bypass` | litmus PR mode | `LITMUS_PR_FAST=1` skipped multi-agent review |

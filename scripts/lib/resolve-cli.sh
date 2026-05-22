@@ -533,7 +533,7 @@ _execute_codex() {
     #      semantics implied by pinning a single backend.
     local _droid_disabled="${LITMUS_CODEX_DROID_FALLBACK_DISABLED:-0}"
     # Widen to accept common truthy shell boolean conventions (1/true/yes/on).
-    [[ "$_droid_disabled" =~ ^(1|true|yes|on)$ ]] && _droid_disabled=1 || true
+    if [[ "$_droid_disabled" =~ ^(1|true|yes|on)$ ]]; then _droid_disabled=1; fi
     [[ "${LITMUS_CODEX_DROID_FALLBACK:-1}" =~ ^(0|false|no|off)$ ]] && _droid_disabled=1
     [[ "${BUSDRIVER_REVIEW_CLI:-auto}" == "codex" ]] && _droid_disabled=1
     if [[ "$last_was_transient" -eq 1 ]] && \
@@ -546,22 +546,26 @@ _execute_codex() {
       # escalating from. See execute_review droid case for PR #97 historical context.
       droid_out=$(printf '%s' "$prompt" | _portable_timeout "$duration" droid exec 2>&1) || droid_exit=$?
 
-      # Telemetry: log every escalation regardless of outcome. Resolve .claude
+      # Require both clean exit AND non-empty output — droid killed by signal
+      # can exit 0 with empty stdout, which would surface as a successful but
+      # blank review verdict downstream.
+      local _droid_ok=0
+      [[ "$droid_exit" -eq 0 ]] && [[ -n "$droid_out" ]] && _droid_ok=1
+
+      # Telemetry: log every escalation regardless of outcome, with droid_ok
+      # reflecting the actual success/failure determination. Resolve .claude
       # against the git root, not cwd — hooks fire from whatever subdir the
       # user ran `git commit` in, so a cwd-relative check would silently drop
       # events for any non-root invocation.
       local _git_root=""
       _git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
       if [[ -n "$_git_root" && -d "$_git_root/.claude" ]]; then
-        printf '{"ts":"%s","event":"codex-droid-fallback","codex_exit":%d,"droid_exit":%d,"codex_attempts":%d}\n' \
-          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$exit_code" "$droid_exit" "$attempts_run" \
+        printf '{"ts":"%s","event":"codex-droid-fallback","codex_exit":%d,"droid_exit":%d,"droid_ok":%d,"codex_attempts":%d}\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$exit_code" "$droid_exit" "$_droid_ok" "$attempts_run" \
           >> "$_git_root/.claude/bypass-log.jsonl" 2>/dev/null || true
       fi
 
-      # Require both clean exit AND non-empty output — droid killed by signal
-      # can exit 0 with empty stdout, which would surface as a successful but
-      # blank review verdict downstream.
-      if [[ "$droid_exit" -eq 0 ]] && [[ -n "$droid_out" ]]; then
+      if [[ "$_droid_ok" -eq 1 ]]; then
         printf '%s' "$droid_out"
         return 0
       fi

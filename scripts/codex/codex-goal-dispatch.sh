@@ -671,16 +671,18 @@ if [[ -s "$POST_IGNORED_TSV" ]]; then
     # NR==FNR is only safe when the baseline file is non-empty (an empty
     # first file would cause the action to consume the second file's
     # records and silently swallow every change), so the empty case below
-    # is handled separately. `|| true` on the awk substitution suppresses
-    # SC2312 (masked return) — awk's exit code on the join is not
-    # actionable here; a malformed baseline would have failed `_emit` already.
+    # is handled separately. `|| { ... }` on the awk substitution suppresses
+    # SC2312 (masked return) while still emitting a WARNING on awk failure so
+    # a malformed TSV row / OOM / missing file produces a visible log entry
+    # rather than a silent false-negative on ignored-file detection.
     while IFS= read -r enc; do
       [[ -z "$enc" ]] && continue
       ENCODED_CHANGES+=("$enc")
     done < <(awk -F'\t' '
       NR==FNR { pre[$1] = $2; next }
       { if (!($1 in pre) || pre[$1] != $2) print $1 }
-    ' "$PRE_IGNORED_BASELINE" "$POST_IGNORED_TSV" || true)
+    ' "$PRE_IGNORED_BASELINE" "$POST_IGNORED_TSV" \
+      || { echo "[codex-goal-dispatch] WARNING: awk join failed, ignoring ignored-file diff" >&2; true; })
   else
     # No pre-baseline → every post entry is new.
     while IFS=$'\t' read -r enc _; do

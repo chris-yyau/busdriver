@@ -1,3 +1,10 @@
+## [1.43.1](https://github.com/chris-yyau/busdriver/compare/v1.43.0...v1.43.1) (2026-05-22)
+
+
+### Performance Improvements
+
+* **codex-goal-dispatch:** replace O(N×M) linear scan with awk join ([#133](https://github.com/chris-yyau/busdriver/issues/133)) ([#137](https://github.com/chris-yyau/busdriver/issues/137)) ([62e1706](https://github.com/chris-yyau/busdriver/commit/62e170605faf7b33211e7053e09776dde623b2cd)), closes [#131](https://github.com/chris-yyau/busdriver/issues/131)
+
 # [1.43.0](https://github.com/chris-yyau/busdriver/compare/v1.42.0...v1.43.0) (2026-05-21)
 
 

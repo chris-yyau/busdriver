@@ -7,7 +7,7 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 | Service | Layer | If down | Impact | Fallback |
 |---------|-------|---------|--------|----------|
 | **Anthropic API** (Claude) | Local | Can't run Claude Code | Everything stops | Retry + Codex review backend |
-| **OpenAI Codex CLI** | Local | Litmus commit review fails; Council Critic voice down | Commits blocked; council loses Critic (4-voice: Architect + Skeptic + Pragmatist + Researcher) | `BUSDRIVER_REVIEW_CLI=agy` or `=builtin`; council continues degraded, note in report |
+| **OpenAI Codex CLI** | Local | Litmus commit review fails; Council Critic voice down | Commits blocked; council loses Critic (4-voice: Architect + Skeptic + Pragmatist + Researcher) | **Auto-escalates to `droid exec`** (default read-only mode) on transient errors (rate-limit / network / 5xx) before falling back to builtin — disable with `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1`. Or set `BUSDRIVER_REVIEW_CLI=agy` / `=builtin`; council continues degraded, note in report |
 | **Antigravity (agy) CLI** | Local | Council Pragmatist voice down; blueprint reviewer_1 falls back to droid | Council loses Pragmatist (4-voice: Architect + Skeptic + Critic + Researcher) | Continue degraded, note in report |
 | **Droid CLI** | Local | Council Researcher voice down | Council loses Researcher (4-voice: Architect + Skeptic + Pragmatist + Critic) | Continue degraded, note in report |
 | **GitHub Actions** | CI | Required checks don't run | PR merge blocked | `gh pr merge N --admin`, then audit via helmet's `bypass-audit.yml` workflow (if deployed) or manually record the bypass reason |

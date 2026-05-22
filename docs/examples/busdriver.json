@@ -5,7 +5,7 @@
     "fallback": "builtin"
   },
   "routes": {
-    "litmus.reviewer": ["codex"],
+    "litmus.reviewer": ["codex", "droid"],
     "blueprint-review.reviewer_1": ["agy", "droid"],
     "blueprint-review.reviewer_2": ["codex", "droid"],
     "council.pragmatist": ["agy", "droid"],

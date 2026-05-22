@@ -37,7 +37,7 @@ Enforce automated code quality gates before committing or deploying code. Review
 
 ## Review Protocol
 
-This skill uses the official **codex-plugin-cc** app-server protocol when installed (preferred), falling back to direct `codex exec` CLI invocation. The app-server protocol communicates via JSON-RPC, avoiding the stdin piping issues that cause CLI hangs.
+This skill uses the official **codex-plugin-cc** app-server protocol when installed (preferred), falling back to direct `codex exec` CLI invocation. The app-server protocol communicates via JSON-RPC, avoiding the stdin piping issues that cause CLI hangs. When codex exhausts retries on transient errors (rate-limit, network, 5xx), the review escalates to `droid exec` (default read-only mode) before falling back to the builtin Claude agent — see `LITMUS_CODEX_DROID_FALLBACK_DISABLED` below.
 
 **Complementary commands** (from the official codex plugin — use directly, not through this skill):
 - `/codex:adversarial-review` — Steerable challenge review targeting design choices and risk areas
@@ -529,10 +529,11 @@ The pre-PR gate accepts markers that are 64-hex SHA-256 hashes or `PASS-<epoch>`
 - `LITMUS_MODE=pr` — switches to PR deep review mode
 - `LITMUS_PR_BASE=main` — override base branch (auto-prefixed to `origin/<branch>` if no `origin/` prefix; defaults to `origin/HEAD` or `origin/main`)
 - `LITMUS_PR_FAST=1` — skip multi-agent review, use fast mode only (audited in bypass-log)
+- `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` — opt out of the runtime droid escalation. By default (unset or `0`), when codex exhausts retries on transient errors (rate-limit, network, 5xx), the review escalates to `droid exec` (default read-only mode — Create/Edit blocked) before falling back to the builtin Claude agent. The legacy name `LITMUS_CODEX_DROID_FALLBACK=0` is also honored. Escalations are logged to `.claude/bypass-log.jsonl` as `codex-droid-fallback` events. **Note:** this flag only governs the runtime fallback inside `_execute_codex`; install-time routes in `.claude/busdriver.json` control which CLIs are tried for a role, but do not by themselves suppress this runtime escalation once codex is running. Use `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` (or `BUSDRIVER_REVIEW_CLI=codex`) when codex-only runtime behavior is required.
 
 ## Builtin Fallback (Exit Code 3)
 
-When `run-review-loop.sh` exits with code 3, no external review CLI is available and the builtin fallback was triggered. Handle as follows:
+When `run-review-loop.sh` exits with code 3, external review paths were exhausted for this run — e.g., no CLI is available, codex failed (transient or non-transient), and any applicable droid escalation was disabled, unavailable, or also failed. Handle as follows:
 
 1. Read the prompt path from `.claude/builtin-review-prompt-path.local`
 2. Read the review prompt from that path

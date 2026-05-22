@@ -231,17 +231,23 @@ _encode_ignored_path() {
 }
 
 _decode_ignored_path() {
+  # Writes the decoded path to the global DECODED_PATH variable. Using a
+  # global (not stdout via `printf` + caller's `$(...)`) is deliberate:
+  # command substitution strips trailing newlines, which would silently
+  # corrupt the encoding's claim to round-trip paths ending in `\n`.
+  #
+  # 0x1f placeholder caveat: a path containing a literal 0x1f byte would
+  # decode incorrectly (the final substitution rewrites every 0x1f to
+  # `\`). POSIX permits 0x1f in filenames in principle, but no real
+  # filesystem produces such names and the dispatcher's other path
+  # filters (in the staging-validation block) reject control characters
+  # anyway. Documented as a known limitation rather than worked around.
   local s="$1"
-  # Use a unit-separator byte (0x1f) as the placeholder for `\\` while
-  # decoding the other escapes, then restore. 0x1f cannot legally appear
-  # in either an encoded TSV row (escapes only emit ASCII letters) or in
-  # the path-name octets we round-trip (it survives, but the placeholder
-  # is gone by the time we return).
   s=${s//\\\\/$'\x1f'}
   s=${s//\\t/$'\t'}
   s=${s//\\n/$'\n'}
   s=${s//$'\x1f'/\\}
-  printf '%s' "$s"
+  DECODED_PATH="$s"
 }
 
 _emit_ignored_tsv() {
@@ -685,8 +691,10 @@ if [[ -s "$POST_IGNORED_TSV" ]]; then
   # array is empty (otherwise to the elements), avoiding `unbound variable`
   # under `set -u` when no changes were detected — the common case for repos
   # with stable ignored artifacts.
+  DECODED_PATH=""
   for enc in ${ENCODED_CHANGES[@]+"${ENCODED_CHANGES[@]}"}; do
-    IGNORED_CHANGES+=("$(_decode_ignored_path "$enc")")
+    _decode_ignored_path "$enc"
+    IGNORED_CHANGES+=("$DECODED_PATH")
   done
 fi
 # POST_IGNORED_TSV cleanup is also handled by the EXIT trap; the inline
@@ -716,7 +724,13 @@ if [[ "${#UNCLAIMED_CHANGES[@]}" -gt 0 ]]; then
 fi
 IGNORED_JSON='[]'
 if [[ "${#IGNORED_CHANGES[@]}" -gt 0 ]]; then
-  IGNORED_JSON=$(printf '%s\n' "${IGNORED_CHANGES[@]}" | jq -R . | jq -s . 2>/dev/null || echo '[]')
+  # Use NUL-delimited records so paths containing literal newline bytes
+  # survive serialization intact. The newline-delimited `jq -R . | jq -s`
+  # pipeline used elsewhere splits LF-containing paths into multiple JSON
+  # entries — fine for UNCLAIMED_CHANGES (sourced from `git diff -z` and
+  # already filtered upstream) but unsafe here, since the encoded/decoded
+  # path round-trip explicitly supports LF in gitignored names.
+  IGNORED_JSON=$(printf '%s\0' "${IGNORED_CHANGES[@]}" | jq -Rs 'split("\u0000") | map(select(length > 0))' 2>/dev/null || echo '[]')
 fi
 if jq --argjson committed "$COMMITTED" --arg sha "$COMMIT_SHA" \
       --argjson unclaimed "$UNCLAIMED_JSON" --argjson ignored "$IGNORED_JSON" \

@@ -1,3 +1,10 @@
+# [1.44.0](https://github.com/chris-yyau/busdriver/compare/v1.43.2...v1.44.0) (2026-05-22)
+
+
+### Features
+
+* **ack-ledger:** self-resolver re-execs working-tree copy from busdriver source repo ([#140](https://github.com/chris-yyau/busdriver/issues/140)) ([b6780a3](https://github.com/chris-yyau/busdriver/commit/b6780a37dc57fef8a9669c948f9038db9280374b))
+
 ## [1.43.2](https://github.com/chris-yyau/busdriver/compare/v1.43.1...v1.43.2) (2026-05-22)
 
 

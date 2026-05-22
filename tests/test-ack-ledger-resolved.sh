@@ -460,48 +460,39 @@ fi
 # attempt to detect-and-redirect; the script's body runs against the invocation
 # path the caller supplied. Verifies (a) the env var actually disables the
 # resolver (b) the rest of the script still produces correct output.
-got=$(BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 \
+#
+# Observable design: we inject a sentinel into COPIED_ACK (replacing every
+# `echo "none"` with `echo "__COPIED_NONE__"`) so that a run that stays inside
+# the copy emits the sentinel, while a successful exec back to the working-tree
+# script emits plain "none". Test 24 expects the sentinel (redirect was
+# suppressed); Test 25 expects "none" (redirect fired, working-tree ran).
+COPIED_ACK=$(mktemp -t test-resolver-ack-ledger.XXXXXX)
+# Trap ensures cleanup on early exit (set -euo pipefail can abort before rm -f).
+# shellcheck disable=SC2064
+trap "rm -f '$COPIED_ACK'" EXIT
+sed 's/echo "none"/echo "__COPIED_NONE__"/g' "$ACK_SCRIPT" > "$COPIED_ACK"
+chmod +x "$COPIED_ACK"
+
+got=$(cd "$SCRIPT_DIR" && BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 \
   FETCH_OK=1 \
   ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' \
   ALL_REVIEWS='[]' \
   ALL_COMMENTS='{"comments":[]}' \
   ALL_CHECK_RUNS='{"check_runs":[]}' \
   HEAD_SHA="$HEAD_SHA" \
-  bash "$ACK_SCRIPT" greptile-apps 2>/dev/null)
-if [ "$got" = "none" ]; then
-  ok "BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 → no redirect, body runs (got 'none')"
+  bash "$COPIED_ACK" greptile-apps 2>/dev/null)
+if [ "$got" = "__COPIED_NONE__" ]; then
+  ok "BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 → no redirect, copied body runs (sentinel present)"
 else
-  fail "BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 expected 'none', got '$got'"
+  fail "BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 expected '__COPIED_NONE__', got '$got'"
 fi
 
 # --- Test 25: self-resolver redirect preserves correctness from external path ---
-# Simulates the dogfood scenario: a copy of ack-ledger.sh lives outside the
-# busdriver source-repo working tree (analogous to the plugin cache at
-# ~/.claude/plugins/cache/busdriver/busdriver/<VERSION>/scripts/ack-ledger.sh),
-# and is invoked from inside the busdriver source repo. The resolver should
-# detect the asymmetry (self-path NOT inode-equal to working-tree scripts/)
-# and `exec` the working-tree copy. Since the copy IS a byte-for-byte
-# duplicate of the working-tree script, the exec produces the same output it
-# would have produced inline — but it now runs the working-tree code, not
-# the copy.
-#
-# Verification scope and limitation: the copy is invoked with all four
-# sources as no-op fixtures (empty threads, empty reviews, empty comments,
-# empty check-runs) so the only path that can produce `none` is the
-# empty-commit_id/empty-body_sha early-return inside the working-tree script
-# (located after Tier D, before the downgrade block — see ack-ledger.sh).
-# Because the copy is byte-identical, this test verifies the redirect
-# mechanism doesn't break correctness, NOT that the redirect physically
-# happened. The recursion-guard regression (which WOULD break visibly:
-# infinite exec loop) is implicitly tested by the 23 existing tests, all of
-# which invoke the working-tree script directly and would hang the suite on
-# resolver-recursion. A stronger redirect-fired-or-not test would require
-# injecting a sentinel into the working-tree script (e.g., marker env-var
-# echo behind a debug flag) so a non-firing redirect produces different
-# output — deferred as future tightening.
-COPIED_ACK=$(mktemp -t test-resolver-ack-ledger.XXXXXX)
-cp "$ACK_SCRIPT" "$COPIED_ACK"
-chmod +x "$COPIED_ACK"
+# Simulates the dogfood scenario: COPIED_ACK (with sentinel) lives outside the
+# busdriver working tree. When invoked from inside the busdriver source repo
+# WITHOUT the disable flag, the resolver detects the inode asymmetry and execs
+# the working-tree script — which emits plain "none", not the sentinel. The
+# sentinel's absence proves the redirect fired and the working-tree code ran.
 got=$(cd "$SCRIPT_DIR" && FETCH_OK=1 \
   ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' \
   ALL_REVIEWS='[]' \
@@ -510,10 +501,11 @@ got=$(cd "$SCRIPT_DIR" && FETCH_OK=1 \
   HEAD_SHA="$HEAD_SHA" \
   bash "$COPIED_ACK" greptile-apps 2>/dev/null)
 rm -f "$COPIED_ACK"
+trap - EXIT
 if [ "$got" = "none" ]; then
-  ok "self-resolver redirect from external path preserves correctness (byte-identical copy)"
+  ok "self-resolver redirect from external path fires and working-tree script runs (no sentinel)"
 else
-  fail "self-resolver redirect from external path expected 'none', got '$got'"
+  fail "self-resolver redirect expected 'none' (working-tree ran), got '$got'"
 fi
 
 echo ""

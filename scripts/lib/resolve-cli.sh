@@ -532,7 +532,9 @@ _execute_codex() {
     #      only codex, fall through to builtin if codex fails" — matches the
     #      semantics implied by pinning a single backend.
     local _droid_disabled="${LITMUS_CODEX_DROID_FALLBACK_DISABLED:-0}"
-    [[ "${LITMUS_CODEX_DROID_FALLBACK:-1}" == "0" ]] && _droid_disabled=1
+    # Widen to accept common truthy shell boolean conventions (1/true/yes/on).
+    [[ "$_droid_disabled" =~ ^(1|true|yes|on)$ ]] && _droid_disabled=1 || true
+    [[ "${LITMUS_CODEX_DROID_FALLBACK:-1}" =~ ^(0|false|no|off)$ ]] && _droid_disabled=1
     [[ "${BUSDRIVER_REVIEW_CLI:-auto}" == "codex" ]] && _droid_disabled=1
     if [[ "$last_was_transient" -eq 1 ]] && \
        [[ "$_droid_disabled" != "1" ]] && \

@@ -402,6 +402,23 @@ else
   fail "stale COMMENTED no-findings + body_sha comment + skipped-HEAD expected 'stale', got '$got'"
 fi
 
+# --- Test 21: cubic's actual default markdown body (issue #138) → none (substring match) ---
+# Reproducer captured from PR #137 (2026-05-22). Cubic's real "No issues found"
+# review body is markdown-wrapped with a re-trigger link footer and HTML
+# attribution comments — not the bare "No issues found" string that Test 12
+# uses. The Case 3 body regex was originally anchored (^...$) and missed this
+# shape, leaving cubic stale on every [update-merge] PR.
+# Newlines in `body` are normalized to spaces by the jq `gsub("\n"; " ")` on
+# ack-ledger.sh:123 before the regex runs, so the fixture inlines the
+# multi-block body the same way.
+CUBIC_MARKDOWN_REVIEW='[{"user":{"login":"cubic-dev-ai[bot]"},"state":"COMMENTED","commit_id":"oldcommit","body":"**No issues found** across 1 file\n\n<sub>[Re-trigger cubic](https://www.cubic.dev/action/re-review/pr/x/y/137)</sub>\n\n<!-- cubic:review-post:abc123 -->\n\n<!-- cubic:attribution IMPORTANT: -->"}]'
+got=$(run_ledger_check_runs cubic-dev-ai "$SKIPPED_HEAD_CHECK_RUN" "$CUBIC_MARKDOWN_REVIEW")
+if [ "$got" = "none" ]; then
+  ok "cubic markdown body (**No issues found** + footer + comments) → none (issue #138)"
+else
+  fail "cubic markdown body expected 'none', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

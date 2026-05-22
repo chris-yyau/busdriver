@@ -497,7 +497,10 @@ function getCostEfficiencyChecks(rootDir) {
 }
 
 function getRepoChecks(rootDir) {
-  const packageJson = JSON.parse(readText(rootDir, 'package.json'));
+  const packageJson = safeParseJson(safeRead(rootDir, 'package.json'));
+  if (!packageJson) {
+    throw new Error('package.json is missing or invalid');
+  }
   const hooksJson = safeRead(rootDir, 'hooks/hooks.json');
 
   return [

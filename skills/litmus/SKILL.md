@@ -529,6 +529,7 @@ The pre-PR gate accepts markers that are 64-hex SHA-256 hashes or `PASS-<epoch>`
 - `LITMUS_MODE=pr` — switches to PR deep review mode
 - `LITMUS_PR_BASE=main` — override base branch (auto-prefixed to `origin/<branch>` if no `origin/` prefix; defaults to `origin/HEAD` or `origin/main`)
 - `LITMUS_PR_FAST=1` — skip multi-agent review, use fast mode only (audited in bypass-log)
+- `LITMUS_CODEX_DROID_FALLBACK=1` — when codex exhausts retries on transient errors (rate-limit, network, 5xx), escalate to `droid exec` (default read-only mode) before falling back to the builtin Claude agent. Default on. Set to `0` to skip the runtime escalation. Escalations are logged to `.claude/bypass-log.jsonl` as `codex-droid-fallback` events. **Note:** this flag only governs the runtime fallback inside `_execute_codex` — it does NOT override install-time routes in `.claude/busdriver.json`. To exclude droid entirely from a compliance environment, also drop `droid` from the `litmus.reviewer` route (or set `BUSDRIVER_REVIEW_CLI=codex` to pin the backend).
 
 ## Builtin Fallback (Exit Code 3)
 

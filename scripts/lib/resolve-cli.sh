@@ -439,6 +439,7 @@ _execute_codex() {
   local attempt=0
   local exit_code=0
   local output=""
+  local last_was_transient=0  # narrows droid fallback to rate-limit/network exhaustion
 
   while [[ "$attempt" -le "$max_retries" ]]; do
     exit_code=0
@@ -495,8 +496,10 @@ _execute_codex() {
     # "resource temporarily unavailable") to avoid false-positives on unrelated
     # fork/thread exhaustion errors that share the same strerror text.
     if printf '%s' "$output" | grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|5[0-9][0-9]|getaddrinfo'; then
+      last_was_transient=1
       attempt=$((attempt + 1))
     else
+      last_was_transient=0
       echo "⚠️  Codex failed with non-transient error (exit $exit_code) — not retrying" >&2
       break
     fi
@@ -514,6 +517,35 @@ _execute_codex() {
         "$output" \
         "----- end codex output -----" >&2
     fi
+
+    # Droid escalation (narrow): only on transient-error exhaustion (rate-limit,
+    # network, 5xx). Non-transient codex failures (script bugs, malformed prompt)
+    # would likely break droid too — go straight to builtin in that case.
+    # Disable with LITMUS_CODEX_DROID_FALLBACK=0 to preserve old behavior.
+    if [[ "$last_was_transient" -eq 1 ]] && \
+       [[ "${LITMUS_CODEX_DROID_FALLBACK:-1}" == "1" ]] && \
+       is_cli_available droid; then
+      echo "⚠️  Codex exhausted ${attempts_run} attempt(s) on transient errors — escalating to droid" >&2
+      local droid_out droid_exit=0
+      # No --auto flag = droid default read-only mode (no file writes, no shell mutations).
+      # Matches the security posture of the codex `-s read-only` path this is escalating from.
+      droid_out=$(printf '%s' "$prompt" | _portable_timeout "$duration" droid exec 2>&1) || droid_exit=$?
+
+      # Telemetry: log every escalation regardless of outcome so the user can
+      # see how often codex pushes work to droid in the wild.
+      if [[ -d ".claude" ]]; then
+        printf '{"ts":"%s","event":"codex-droid-fallback","codex_exit":%d,"droid_exit":%d,"codex_attempts":%d}\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$exit_code" "$droid_exit" "$attempts_run" \
+          >> ".claude/bypass-log.jsonl" 2>/dev/null || true
+      fi
+
+      if [[ "$droid_exit" -eq 0 ]]; then
+        printf '%s' "$droid_out"
+        return 0
+      fi
+      echo "⚠️  Droid also failed (exit $droid_exit) — falling back to built-in review" >&2
+    fi
+
     echo "⚠️  Codex failed after ${attempts_run} attempt(s) — falling back to built-in review" >&2
     echo "BUILTIN_FALLBACK"
     return 3
@@ -545,11 +577,11 @@ execute_review() {
     # --print-timeout with our outer duration so agy's internal 5m default doesn't
     # abort before _portable_timeout does.
     agy)     printf '%s' "$prompt" | _portable_timeout "$duration" agy --sandbox --print-timeout "${duration}s" --print /dev/stdin 2>&1 ;;
-    # Review path: --auto low (file-write tier only, no installs/git/network)
-    # is sufficient — reviews emit JSON verdicts and never need to mutate the
-    # repo or fetch. Tighter than dispatch_one()'s droid case by design: this
-    # is the litmus/santa/blueprint-review backend, where read-only intent is hard.
-    droid)   printf '%s' "$prompt" | _portable_timeout "$duration" droid exec --auto low 2>&1 ;;
+    # Review path: no --auto flag = droid default read-only mode. Reviews emit
+    # JSON verdicts and never need to mutate the repo or fetch. Tighter than
+    # dispatch_one()'s droid case by design: this is the litmus/santa/blueprint-review
+    # backend, where read-only intent is hard. Matches codex `-s read-only` posture.
+    droid)   printf '%s' "$prompt" | _portable_timeout "$duration" droid exec 2>&1 ;;
     builtin) echo "BUILTIN_FALLBACK"; return 3 ;;
     unsupported:*)
              # CLI was rejected upstream (deprecated/removed). Migration warning

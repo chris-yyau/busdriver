@@ -1,3 +1,10 @@
+## [1.43.2](https://github.com/chris-yyau/busdriver/compare/v1.43.1...v1.43.2) (2026-05-22)
+
+
+### Bug Fixes
+
+* **ack-ledger:** relax case 3 body regex to substring match ([#138](https://github.com/chris-yyau/busdriver/issues/138)) ([#139](https://github.com/chris-yyau/busdriver/issues/139)) ([ad18ad8](https://github.com/chris-yyau/busdriver/commit/ad18ad8188a792708d197b512239676b60ec2d92)), closes [#137](https://github.com/chris-yyau/busdriver/issues/137)
+
 ## [1.43.1](https://github.com/chris-yyau/busdriver/compare/v1.43.0...v1.43.1) (2026-05-22)
 
 

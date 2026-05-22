@@ -646,10 +646,11 @@ fi
 # gitignored. Logged + injected into result for caller awareness.
 #
 # Only report files that are NEW or CONTENT-CHANGED relative to the pre-codex
-# PRE_IGNORED_PATHS/PRE_IGNORED_HASH_VALUES baseline. Pre-existing ignored files
-# (build artifacts, .env files) that codex did not touch are excluded — without
-# this baseline filter BUSDRIVER_CODEX_FAIL_ON_IGNORED=1 false-fires on any repo
-# that already has gitignored artifacts before the run.
+# PRE_IGNORED_BASELINE (TSV of encoded_path<TAB>hash rows, populated above).
+# Pre-existing ignored files (build artifacts, .env files) that codex did not
+# touch are excluded — without this baseline filter
+# BUSDRIVER_CODEX_FAIL_ON_IGNORED=1 false-fires on any repo that already has
+# gitignored artifacts before the run.
 IGNORED_CHANGES=()
 POST_IGNORED_TSV=$(mktemp)
 _emit_ignored_tsv > "$POST_IGNORED_TSV"

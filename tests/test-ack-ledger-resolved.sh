@@ -346,7 +346,10 @@ fi
 # issue-comment findings to `none`. With the guard, last_state is empty
 # (no /reviews) → Case 3 doesn't fire → falls through to `echo stale`.
 # Fixture note: body_sha must be a valid hex SHA (parser regex is commit/[a-f0-9]{7,40})
-# and != HEAD_SHA 'abc12345' so it reaches the downgrade block (not the line-98 short-circuit).
+# and != HEAD_SHA 'abc12345' so it reaches the downgrade block (not the
+# empty-commit_id/empty-body_sha early-return that lives between Tier D and
+# the downgrade block — the absolute line shifts when resolver/comment blocks
+# are added; cite the semantic anchor instead of a brittle line number).
 BODY_SHA_ONLY_COMMENTS='{"comments":[{"author":{"login":"hypothetical-bot[bot]"},"body":"Reviewed at commit/deadbeef — found actionable issues."}]}'
 SKIPPED_HEAD_OTHER_BOT='{"check_runs":[{"app":{"slug":"hypothetical-bot"},"conclusion":"skipped","head_sha":"abc12345"}]}'
 got=$(FETCH_OK=1 \
@@ -451,7 +454,7 @@ else
   fail "body containing 'nothing to address' expected 'stale' (\\b boundary), got '$got'"
 fi
 
-# --- Test 26: self-resolver escape hatch (BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1) ---
+# --- Test 24: self-resolver escape hatch (BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1) ---
 # Pins the operator escape-hatch contract for the self-resolver block at the
 # top of scripts/ack-ledger.sh. When the env var is set, the resolver does NOT
 # attempt to detect-and-redirect; the script's body runs against the invocation
@@ -471,26 +474,31 @@ else
   fail "BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 expected 'none', got '$got'"
 fi
 
-# --- Test 27: self-resolver redirects from non-working-tree path ---
+# --- Test 25: self-resolver redirect preserves correctness from external path ---
 # Simulates the dogfood scenario: a copy of ack-ledger.sh lives outside the
 # busdriver source-repo working tree (analogous to the plugin cache at
 # ~/.claude/plugins/cache/busdriver/busdriver/<VERSION>/scripts/ack-ledger.sh),
 # and is invoked from inside the busdriver source repo. The resolver should
-# detect the asymmetry (`$_self_dir != $_git_root/scripts`) and `exec` the
-# working-tree copy. Since the copy IS a byte-for-byte duplicate of the
-# working-tree script, the exec produces the same output it would have
-# produced inline — but it now runs the working-tree code, not the copy.
+# detect the asymmetry (self-path NOT inode-equal to working-tree scripts/)
+# and `exec` the working-tree copy. Since the copy IS a byte-for-byte
+# duplicate of the working-tree script, the exec produces the same output it
+# would have produced inline — but it now runs the working-tree code, not
+# the copy.
 #
-# Verification strategy: the copy is invoked with all four sources as no-op
-# fixtures (empty threads, empty reviews, empty comments, empty check-runs)
-# so the only path that can produce `none` is the line-100 early-return
-# inside the working-tree script. If the resolver fails to redirect, the
-# copy at /tmp/... still runs the same line-100 logic — so this test
-# verifies the redirect mechanism doesn't break correctness, NOT that the
-# redirect happened. The recursion-guard regression (which WOULD break:
-# infinite exec loop) is implicitly tested by the existing 25 tests, all
-# of which invoke the working-tree script directly and would hang on
-# resolver-recursion.
+# Verification scope and limitation: the copy is invoked with all four
+# sources as no-op fixtures (empty threads, empty reviews, empty comments,
+# empty check-runs) so the only path that can produce `none` is the
+# empty-commit_id/empty-body_sha early-return inside the working-tree script
+# (located after Tier D, before the downgrade block — see ack-ledger.sh).
+# Because the copy is byte-identical, this test verifies the redirect
+# mechanism doesn't break correctness, NOT that the redirect physically
+# happened. The recursion-guard regression (which WOULD break visibly:
+# infinite exec loop) is implicitly tested by the 23 existing tests, all of
+# which invoke the working-tree script directly and would hang the suite on
+# resolver-recursion. A stronger redirect-fired-or-not test would require
+# injecting a sentinel into the working-tree script (e.g., marker env-var
+# echo behind a debug flag) so a non-firing redirect produces different
+# output — deferred as future tightening.
 COPIED_ACK=$(mktemp -t test-resolver-ack-ledger.XXXXXX)
 cp "$ACK_SCRIPT" "$COPIED_ACK"
 chmod +x "$COPIED_ACK"
@@ -503,7 +511,7 @@ got=$(cd "$SCRIPT_DIR" && FETCH_OK=1 \
   bash "$COPIED_ACK" greptile-apps 2>/dev/null)
 rm -f "$COPIED_ACK"
 if [ "$got" = "none" ]; then
-  ok "self-resolver redirects from external path (got correct result via exec)"
+  ok "self-resolver redirect from external path preserves correctness (byte-identical copy)"
 else
   fail "self-resolver redirect from external path expected 'none', got '$got'"
 fi

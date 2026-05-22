@@ -38,16 +38,25 @@
 # whatever the caller resolved (typically `$CLAUDE_PLUGIN_ROOT/scripts/ack-
 # ledger.sh` from the plugin cache). This eliminates the asymmetry where an
 # in-flight ack-ledger fix in the working tree coexists with the stale cached
-# plugin version on the same workstation — the failure mode behind the PR #77
-# and PR #139 dogfood incidents (see project memory pr-grind-cubic-skips-
-# merge-commits).
+# plugin version on the same workstation — the failure mode behind the PR #79
+# (script extraction) and PR #139 (Case 3 regex anchoring) dogfood incidents
+# (see project memory pr-grind-cubic-skips-merge-commits).
 #
 # Detection is a no-op (continue with the calling script's body) when ANY of:
 #   (a) BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 (operator escape hatch)
 #   (b) CWD is not in a git repo (`git rev-parse --show-toplevel` fails)
 #   (c) git remote origin URL doesn't end in `busdriver(\.git)?$`
 #   (d) working-tree `scripts/ack-ledger.sh` doesn't exist (defensive)
-#   (e) self-path already IS the working-tree path (recursion guard)
+#   (e) self-path already references the working-tree path via the `-ef`
+#       inode-equality test (recursion guard — handles symlinked checkouts
+#       where the logical paths differ but resolve to the same directory)
+#
+# CWD-routing semantics: detection is based on git's CWD-resolved toplevel,
+# not the script's BASH_SOURCE-resolved location. If a user has multiple
+# busdriver checkouts and runs the cached script from CWD inside checkout A
+# while wanting to test the cached version's behavior, the resolver will
+# route to checkout A's working tree (NOT the cache). Set BUSDRIVER_DISABLE_
+# ACK_SELF_RESOLVE=1 in the parent shell to force cache execution.
 #
 # Fail-CLOSED on any unexpected error: the if-chain only fires when every
 # predicate succeeds, so partial detection failures (e.g., git installed but
@@ -69,7 +78,8 @@ if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
    _remote=$(git -C "$_git_root" remote get-url origin 2>/dev/null) && \
    printf '%s' "$_remote" | grep -qE '[/:]busdriver(\.git)?$' && \
    [ -f "$_git_root/scripts/ack-ledger.sh" ] && \
-   [ "$_self_dir" != "$_git_root/scripts" ]; then
+   [ -d "$_git_root/scripts" ] && \
+   ! [ "$_self_dir" -ef "$_git_root/scripts" ]; then
   exec bash "$_git_root/scripts/ack-ledger.sh" "$@"
 fi
 unset _self_dir _git_root _remote

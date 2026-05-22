@@ -33,6 +33,63 @@
 # and the merge gate is bypassed — the exact fail-OPEN regression FETCH_OK
 # was introduced to prevent.
 
+# Self-resolver (dogfood-friendly): when invoked from inside a busdriver source
+# checkout, re-exec the working-tree copy of this script instead of running
+# whatever the caller resolved (typically `$CLAUDE_PLUGIN_ROOT/scripts/ack-
+# ledger.sh` from the plugin cache). This eliminates the asymmetry where an
+# in-flight ack-ledger fix in the working tree coexists with the stale cached
+# plugin version on the same workstation — the failure mode behind the PR #79
+# (script extraction) and PR #139 (Case 3 regex anchoring) dogfood incidents
+# (see project memory pr-grind-cubic-skips-merge-commits).
+#
+# Detection is a no-op (continue with the calling script's body) when ANY of:
+#   (a) BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 (operator escape hatch)
+#   (b) CWD is not in a git repo (`git rev-parse --show-toplevel` fails)
+#   (c) git remote origin URL doesn't end in `busdriver(\.git)?$`
+#   (d) working-tree `scripts/ack-ledger.sh` doesn't exist (defensive)
+#   (e) self-path already references the working-tree path via the `-ef`
+#       inode-equality test (recursion guard — handles symlinked checkouts
+#       where the logical paths differ but resolve to the same directory)
+#
+# CWD-routing semantics: detection is based on git's CWD-resolved toplevel,
+# not the script's BASH_SOURCE-resolved location. If a user has multiple
+# busdriver checkouts and runs the cached script from CWD inside checkout A
+# while wanting to test the cached version's behavior, the resolver will
+# route to checkout A's working tree (NOT the cache). Set BUSDRIVER_DISABLE_
+# ACK_SELF_RESOLVE=1 in the parent shell to force cache execution.
+#
+# Graceful degradation on detection failure: the if-chain only fires when
+# every predicate succeeds, so partial detection failures (e.g., git
+# installed but CWD outside any repo) silently fall through to the calling
+# script's body. The merge gate's overall fail-CLOSED posture (which lives
+# in the FETCH_OK guard below and the dispatcher's `|| echo stale` wrapper
+# at every call site) is preserved — the resolver layer is path-routing
+# only, not gate logic. An operator cannot directly observe whether the
+# resolver fired vs no-op'd; set BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 if
+# you need to force the caller's intended path. `exec` preserves "$@" and
+# exported env vars (FETCH_OK, ALL_THREADS, ALL_REVIEWS, ALL_COMMENTS,
+# ALL_CHECK_RUNS, HEAD_SHA) automatically across the process replacement.
+#
+# Why detection runs at script top: the resolver is a permanent forward-fix.
+# Once shipped in vN.M, all vN.M+ caches carry the resolver, so any future
+# ack-ledger dogfood (modifying this file in the busdriver source repo and
+# running pr-grind on the fix's PR) auto-routes to the working-tree copy
+# without operator intervention. The CURRENT dogfood session that ships the
+# resolver itself still needs the operator override (working-tree-path
+# substitution in the dispatcher COMPLETION block) — by design; the resolver
+# can only fix incidents that occur AFTER it lands.
+if [ "${BUSDRIVER_DISABLE_ACK_SELF_RESOLVE:-0}" != "1" ] && \
+   _self_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) && \
+   _git_root=$(git rev-parse --show-toplevel 2>/dev/null) && \
+   _remote=$(git -C "$_git_root" remote get-url origin 2>/dev/null) && \
+   printf '%s' "$_remote" | grep -qE '(^|[@/])github\.com[:/]chris-yyau/busdriver(\.git)?$' && \
+   [ -d "$_git_root/scripts" ] && \
+   [ -f "$_git_root/scripts/ack-ledger.sh" ] && \
+   ! [ "$_self_dir" -ef "$_git_root/scripts" ]; then
+  exec bash "$_git_root/scripts/ack-ledger.sh" "$@"
+fi
+unset _self_dir _git_root _remote
+
 login="$1"
 
 # Fail-CLOSED: any source-fetch failure → mark stale (Greptile P1 — fail-OPEN
@@ -197,7 +254,10 @@ if [ "$ever_approved" -eq 0 ]; then
   #     bot bodies that wrap the phrase in markdown and footers. Canonical
   #     example (cubic-dev-ai, observed PR #137): `**No issues found** across
   #     1 file\n\n<sub>[Re-trigger cubic](...)</sub>\n\n<!-- cubic:* -->`.
-  #     Newlines are normalized to spaces on line 123 before this regex runs.
+  #     Newlines are normalized to spaces by the `gsub("\n"; " ")` in the
+  #     read block above (where `last_body` is assigned) before this regex
+  #     runs. Semantic anchor — absolute line shifts when resolver/comment
+  #     blocks are added.
   #
   #     Accepted false-negative: a body like "no issues found but please fix X"
   #     would match the substring and downgrade to `none`, discarding the
@@ -217,9 +277,12 @@ if [ "$ever_approved" -eq 0 ]; then
   # same as "bot approved HEAD". Same precedent as Case 1.
   #
   # Reachability: bots with zero review history (no /reviews entry, no body
-  # SHA reference) exit via line 98 with `none` before reaching this block.
+  # SHA reference) exit via the empty-commit_id/empty-body_sha early-return
+  # between Tier D and this downgrade block with `none` before reaching here.
   # Case 3 only applies to bots that have at least one prior /reviews entry
-  # in COMMENTED state.
+  # in COMMENTED state. Citing the semantic anchor instead of an absolute
+  # line number — the line shifts when resolver/comment blocks are added
+  # (same brittle-line-number trap fixed in Tests 18 and 25's docstrings).
   check_run_skipped_head_count=$(printf '%s' "$ALL_CHECK_RUNS" | jq -rs --arg login "$login" --arg head8 "$HEAD_SHA" \
     '[.[].check_runs[] | select(.app.slug == $login) | select(.conclusion == "skipped") | select((.head_sha[0:8]) == $head8)] | length' 2>/dev/null || echo 0)
   if [ "$check_run_skipped_head_count" -gt 0 ] && [ "$last_state" = "COMMENTED" ] && [ -z "$body_sha" ] && \

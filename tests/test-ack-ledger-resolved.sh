@@ -346,7 +346,10 @@ fi
 # issue-comment findings to `none`. With the guard, last_state is empty
 # (no /reviews) → Case 3 doesn't fire → falls through to `echo stale`.
 # Fixture note: body_sha must be a valid hex SHA (parser regex is commit/[a-f0-9]{7,40})
-# and != HEAD_SHA 'abc12345' so it reaches the downgrade block (not the line-98 short-circuit).
+# and != HEAD_SHA 'abc12345' so it reaches the downgrade block (not the
+# empty-commit_id/empty-body_sha early-return that lives between Tier D and
+# the downgrade block — the absolute line shifts when resolver/comment blocks
+# are added; cite the semantic anchor instead of a brittle line number).
 BODY_SHA_ONLY_COMMENTS='{"comments":[{"author":{"login":"hypothetical-bot[bot]"},"body":"Reviewed at commit/deadbeef — found actionable issues."}]}'
 SKIPPED_HEAD_OTHER_BOT='{"check_runs":[{"app":{"slug":"hypothetical-bot"},"conclusion":"skipped","head_sha":"abc12345"}]}'
 got=$(FETCH_OK=1 \
@@ -449,6 +452,60 @@ if [ "$got" = "stale" ]; then
   ok "body containing 'nothing to address' (mid-word 'add') → stale (\\b boundary prevents partial match)"
 else
   fail "body containing 'nothing to address' expected 'stale' (\\b boundary), got '$got'"
+fi
+
+# --- Test 24: self-resolver escape hatch (BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1) ---
+# Pins the operator escape-hatch contract for the self-resolver block at the
+# top of scripts/ack-ledger.sh. When the env var is set, the resolver does NOT
+# attempt to detect-and-redirect; the script's body runs against the invocation
+# path the caller supplied. Verifies (a) the env var actually disables the
+# resolver (b) the rest of the script still produces correct output.
+#
+# Observable design: we inject a sentinel into COPIED_ACK (replacing every
+# `echo "none"` with `echo "__COPIED_NONE__"`) so that a run that stays inside
+# the copy emits the sentinel, while a successful exec back to the working-tree
+# script emits plain "none". Test 24 expects the sentinel (redirect was
+# suppressed); Test 25 expects "none" (redirect fired, working-tree ran).
+COPIED_ACK=$(mktemp -t test-resolver-ack-ledger.XXXXXX)
+# Trap ensures cleanup on early exit (set -euo pipefail can abort before rm -f).
+# shellcheck disable=SC2064
+trap "rm -f '$COPIED_ACK'" EXIT
+sed 's/echo "none"/echo "__COPIED_NONE__"/g' "$ACK_SCRIPT" > "$COPIED_ACK"
+chmod +x "$COPIED_ACK"
+
+got=$(cd "$SCRIPT_DIR" && BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 \
+  FETCH_OK=1 \
+  ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' \
+  ALL_REVIEWS='[]' \
+  ALL_COMMENTS='{"comments":[]}' \
+  ALL_CHECK_RUNS='{"check_runs":[]}' \
+  HEAD_SHA="$HEAD_SHA" \
+  bash "$COPIED_ACK" greptile-apps 2>/dev/null)
+if [ "$got" = "__COPIED_NONE__" ]; then
+  ok "BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 → no redirect, copied body runs (sentinel present)"
+else
+  fail "BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 expected '__COPIED_NONE__', got '$got'"
+fi
+
+# --- Test 25: self-resolver redirect preserves correctness from external path ---
+# Simulates the dogfood scenario: COPIED_ACK (with sentinel) lives outside the
+# busdriver working tree. When invoked from inside the busdriver source repo
+# WITHOUT the disable flag, the resolver detects the inode asymmetry and execs
+# the working-tree script — which emits plain "none", not the sentinel. The
+# sentinel's absence proves the redirect fired and the working-tree code ran.
+got=$(cd "$SCRIPT_DIR" && FETCH_OK=1 \
+  ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' \
+  ALL_REVIEWS='[]' \
+  ALL_COMMENTS='{"comments":[]}' \
+  ALL_CHECK_RUNS='{"check_runs":[]}' \
+  HEAD_SHA="$HEAD_SHA" \
+  bash "$COPIED_ACK" greptile-apps 2>/dev/null)
+rm -f "$COPIED_ACK"
+trap - EXIT
+if [ "$got" = "none" ]; then
+  ok "self-resolver redirect from external path fires and working-tree script runs (no sentinel)"
+else
+  fail "self-resolver redirect expected 'none' (working-tree ran), got '$got'"
 fi
 
 echo ""

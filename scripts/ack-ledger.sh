@@ -58,11 +58,17 @@
 # route to checkout A's working tree (NOT the cache). Set BUSDRIVER_DISABLE_
 # ACK_SELF_RESOLVE=1 in the parent shell to force cache execution.
 #
-# Fail-CLOSED on any unexpected error: the if-chain only fires when every
-# predicate succeeds, so partial detection failures (e.g., git installed but
-# CWD outside any repo) fall through to the calling script's logic. `exec`
-# preserves "$@" and exported env vars (FETCH_OK, ALL_THREADS, ALL_REVIEWS,
-# ALL_COMMENTS, ALL_CHECK_RUNS, HEAD_SHA) automatically.
+# Graceful degradation on detection failure: the if-chain only fires when
+# every predicate succeeds, so partial detection failures (e.g., git
+# installed but CWD outside any repo) silently fall through to the calling
+# script's body. The merge gate's overall fail-CLOSED posture (which lives
+# in the FETCH_OK guard below and the dispatcher's `|| echo stale` wrapper
+# at every call site) is preserved — the resolver layer is path-routing
+# only, not gate logic. An operator cannot directly observe whether the
+# resolver fired vs no-op'd; set BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 if
+# you need to force the caller's intended path. `exec` preserves "$@" and
+# exported env vars (FETCH_OK, ALL_THREADS, ALL_REVIEWS, ALL_COMMENTS,
+# ALL_CHECK_RUNS, HEAD_SHA) automatically across the process replacement.
 #
 # Why detection runs at script top: the resolver is a permanent forward-fix.
 # Once shipped in vN.M, all vN.M+ caches carry the resolver, so any future
@@ -248,7 +254,10 @@ if [ "$ever_approved" -eq 0 ]; then
   #     bot bodies that wrap the phrase in markdown and footers. Canonical
   #     example (cubic-dev-ai, observed PR #137): `**No issues found** across
   #     1 file\n\n<sub>[Re-trigger cubic](...)</sub>\n\n<!-- cubic:* -->`.
-  #     Newlines are normalized to spaces on line 123 before this regex runs.
+  #     Newlines are normalized to spaces by the `gsub("\n"; " ")` in the
+  #     read block above (where `last_body` is assigned) before this regex
+  #     runs. Semantic anchor — absolute line shifts when resolver/comment
+  #     blocks are added.
   #
   #     Accepted false-negative: a body like "no issues found but please fix X"
   #     would match the substring and downgrade to `none`, discarding the
@@ -268,9 +277,12 @@ if [ "$ever_approved" -eq 0 ]; then
   # same as "bot approved HEAD". Same precedent as Case 1.
   #
   # Reachability: bots with zero review history (no /reviews entry, no body
-  # SHA reference) exit via line 98 with `none` before reaching this block.
+  # SHA reference) exit via the empty-commit_id/empty-body_sha early-return
+  # between Tier D and this downgrade block with `none` before reaching here.
   # Case 3 only applies to bots that have at least one prior /reviews entry
-  # in COMMENTED state.
+  # in COMMENTED state. Citing the semantic anchor instead of an absolute
+  # line number — the line shifts when resolver/comment blocks are added
+  # (same brittle-line-number trap fixed in Tests 18 and 25's docstrings).
   check_run_skipped_head_count=$(printf '%s' "$ALL_CHECK_RUNS" | jq -rs --arg login "$login" --arg head8 "$HEAD_SHA" \
     '[.[].check_runs[] | select(.app.slug == $login) | select(.conclusion == "skipped") | select((.head_sha[0:8]) == $head8)] | length' 2>/dev/null || echo 0)
   if [ "$check_run_skipped_head_count" -gt 0 ] && [ "$last_state" = "COMMENTED" ] && [ -z "$body_sha" ] && \

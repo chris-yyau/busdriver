@@ -211,10 +211,7 @@ function findPluginInstall(rootDir) {
   return candidates.find(candidate => fs.existsSync(candidate)) || null;
 }
 
-function getRepoChecks(rootDir) {
-  const packageJson = JSON.parse(readText(rootDir, 'package.json'));
-  const hooksJson = safeRead(rootDir, 'hooks/hooks.json');
-
+function getToolCoverageChecks(rootDir) {
   return [
     {
       id: 'tool-hooks-config',
@@ -256,6 +253,11 @@ function getRepoChecks(rootDir) {
       pass: countFiles(rootDir, 'skills', 'SKILL.md') >= 20,
       fix: 'Add missing skill directories with SKILL.md definitions.',
     },
+  ];
+}
+
+function getContextEfficiencyChecks(rootDir) {
+  return [
     {
       id: 'context-strategic-compact',
       category: 'Context Efficiency',
@@ -296,6 +298,11 @@ function getRepoChecks(rootDir) {
       pass: fileExists(rootDir, 'docs/token-optimization.md'),
       fix: 'Add docs/token-optimization.md with concrete context-cost controls.',
     },
+  ];
+}
+
+function getQualityGatesChecks(rootDir, packageJson) {
+  return [
     {
       id: 'quality-test-runner',
       category: 'Quality Gates',
@@ -336,6 +343,11 @@ function getRepoChecks(rootDir) {
       pass: fileExists(rootDir, 'scripts/doctor.js'),
       fix: 'Add scripts/doctor.js for install-state integrity checks.',
     },
+  ];
+}
+
+function getMemoryPersistenceChecks(rootDir) {
+  return [
     {
       id: 'memory-hooks-dir',
       category: 'Memory Persistence',
@@ -366,6 +378,11 @@ function getRepoChecks(rootDir) {
       pass: fileExists(rootDir, 'skills/continuous-learning-v2/SKILL.md'),
       fix: 'Add skills/continuous-learning-v2/SKILL.md for memory evolution flow.',
     },
+  ];
+}
+
+function getEvalCoverageChecks(rootDir) {
+  return [
     {
       id: 'eval-skill',
       category: 'Eval Coverage',
@@ -396,6 +413,11 @@ function getRepoChecks(rootDir) {
       pass: countFiles(rootDir, 'tests', '.test.js') >= 10,
       fix: 'Increase automated test coverage across scripts/hooks/lib.',
     },
+  ];
+}
+
+function getSecurityGuardrailsChecks(rootDir, hooksJson) {
+  return [
     {
       id: 'security-review-skill',
       category: 'Security Guardrails',
@@ -436,6 +458,11 @@ function getRepoChecks(rootDir) {
       pass: fileExists(rootDir, 'commands/security-scan.md'),
       fix: 'Add commands/security-scan.md with scan and remediation workflow.',
     },
+  ];
+}
+
+function getCostEfficiencyChecks(rootDir) {
+  return [
     {
       id: 'cost-skill',
       category: 'Cost Efficiency',
@@ -466,6 +493,21 @@ function getRepoChecks(rootDir) {
       pass: fileExists(rootDir, 'commands/model-route.md'),
       fix: 'Add commands/model-route.md and route policies for cheap-default execution.',
     },
+  ];
+}
+
+function getRepoChecks(rootDir) {
+  const packageJson = JSON.parse(readText(rootDir, 'package.json'));
+  const hooksJson = safeRead(rootDir, 'hooks/hooks.json');
+
+  return [
+    ...getToolCoverageChecks(rootDir),
+    ...getContextEfficiencyChecks(rootDir),
+    ...getQualityGatesChecks(rootDir, packageJson),
+    ...getMemoryPersistenceChecks(rootDir),
+    ...getEvalCoverageChecks(rootDir),
+    ...getSecurityGuardrailsChecks(rootDir, hooksJson),
+    ...getCostEfficiencyChecks(rootDir),
   ];
 }
 

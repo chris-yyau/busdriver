@@ -436,6 +436,21 @@ else
   fail "actionable body containing 'lgtm' substring expected 'none' (accepted false-negative), got '$got'"
 fi
 
+# --- Test 23: mid-word partial match prevented by \b boundary on (add|report) ---
+# Copilot flagged on PR #139 that the unanchored regex `nothing to (add|report)`
+# can match inside `nothing to address` because `add` is a prefix of `address`.
+# The fix appends `\b` after the capture group so `add` and `report` must be
+# followed by a non-word character (whitespace, punctuation, end of string).
+# This test pins the new behavior: a body containing "nothing to address but..."
+# does NOT trigger Case 3 downgrade — the actionable finding stays `stale`.
+NOTHING_TO_ADDRESS_REVIEW='[{"user":{"login":"cubic-dev-ai[bot]"},"state":"COMMENTED","commit_id":"oldcommit","body":"this PR has nothing to address yet for that file but please fix line 47 first"}]'
+got=$(run_ledger_check_runs cubic-dev-ai "$SKIPPED_HEAD_CHECK_RUN" "$NOTHING_TO_ADDRESS_REVIEW")
+if [ "$got" = "stale" ]; then
+  ok "body containing 'nothing to address' (mid-word 'add') → stale (\\b boundary prevents partial match)"
+else
+  fail "body containing 'nothing to address' expected 'stale' (\\b boundary), got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

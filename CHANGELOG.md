@@ -1,3 +1,10 @@
+# [1.45.0](https://github.com/chris-yyau/busdriver/compare/v1.44.0...v1.45.0) (2026-05-22)
+
+
+### Features
+
+* **litmus:** escalate to droid before builtin on codex rate-limit ([#141](https://github.com/chris-yyau/busdriver/issues/141)) ([586364e](https://github.com/chris-yyau/busdriver/commit/586364ef9a264ba127c6892cb81962e42130d959)), closes [#97](https://github.com/chris-yyau/busdriver/issues/97)
+
 # [1.44.0](https://github.com/chris-yyau/busdriver/compare/v1.43.2...v1.44.0) (2026-05-22)
 
 

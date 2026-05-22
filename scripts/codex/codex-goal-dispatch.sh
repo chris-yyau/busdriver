@@ -239,9 +239,10 @@ _decode_ignored_path() {
   # 0x1f placeholder caveat: a path containing a literal 0x1f byte would
   # decode incorrectly (the final substitution rewrites every 0x1f to
   # `\`). POSIX permits 0x1f in filenames in principle, but no real
-  # filesystem produces such names and the dispatcher's other path
-  # filters (in the staging-validation block) reject control characters
-  # anyway. Documented as a known limitation rather than worked around.
+  # filesystem produces such names. This code path has no upstream
+  # control-character filter — `git ls-files -o -i -z` emits whatever
+  # bytes the filesystem reports — so the limitation is real but
+  # accepted as a known trade-off rather than worked around.
   local s="$1"
   s=${s//\\\\/$'\x1f'}
   s=${s//\\t/$'\t'}
@@ -687,15 +688,17 @@ if [[ -s "$POST_IGNORED_TSV" ]]; then
       ENCODED_CHANGES+=("$enc")
     done < "$POST_IGNORED_TSV"
   fi
-  # Bash 3.2-safe iteration: `${ARR[@]+"${ARR[@]}"}` expands to nothing if the
-  # array is empty (otherwise to the elements), avoiding `unbound variable`
-  # under `set -u` when no changes were detected — the common case for repos
-  # with stable ignored artifacts.
+  # Bash 3.2 + `set -u`: an empty array reference via `"${ARR[@]}"` errors
+  # with `unbound variable`, so guard the loop with an explicit length
+  # check rather than rely on `${ARR[@]+...}` parameter-expansion tricks
+  # (which work but obscure intent and have repeatedly confused reviewers).
   DECODED_PATH=""
-  for enc in ${ENCODED_CHANGES[@]+"${ENCODED_CHANGES[@]}"}; do
-    _decode_ignored_path "$enc"
-    IGNORED_CHANGES+=("$DECODED_PATH")
-  done
+  if [[ "${#ENCODED_CHANGES[@]}" -gt 0 ]]; then
+    for enc in "${ENCODED_CHANGES[@]}"; do
+      _decode_ignored_path "$enc"
+      IGNORED_CHANGES+=("$DECODED_PATH")
+    done
+  fi
 fi
 # POST_IGNORED_TSV cleanup is also handled by the EXIT trap; the inline
 # `rm -f` here releases the temp eagerly once we're done with it. The trap

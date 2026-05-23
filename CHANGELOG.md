@@ -1,3 +1,10 @@
+# [1.47.0](https://github.com/chris-yyau/busdriver/compare/v1.46.0...v1.47.0) (2026-05-23)
+
+
+### Features
+
+* **skills:** auto-route to codex on stalls + verifier-shaped plans ([#143](https://github.com/chris-yyau/busdriver/issues/143)) ([2082d0d](https://github.com/chris-yyau/busdriver/commit/2082d0d12506981802bc459862e5dcc8ae2317cc))
+
 # [1.46.0](https://github.com/chris-yyau/busdriver/compare/v1.45.0...v1.46.0) (2026-05-23)
 
 

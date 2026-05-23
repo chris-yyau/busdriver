@@ -640,9 +640,13 @@ if [ -n "$MAIN_REPO_ROOT_FOR_OPTIN" ] && [ -d "$MAIN_REPO_ROOT_FOR_OPTIN/.claude
       # would let an opt-in file created mid-invocation pass the gate.
       OPTIN_AGE_AT_START=$((INVOCATION_START_EPOCH - OPTIN_MTIME))
       if [ "$OPTIN_AGE_AT_START" -ge 30 ]; then
-        printf '%s\n' "$OPTIN_MTIME" > "$SOLO_OPTIN_SNAPSHOT" \
-          && chmod 600 "$SOLO_OPTIN_SNAPSHOT" 2>/dev/null \
-          && echo "ℹ️  pr-grind-auto-admin-solo.local snapshotted (age-at-invocation=${OPTIN_AGE_AT_START}s, PR #${PR_NUMBER}) — solo-admin auto-detect armed for this run."
+        if printf '%s\n' "$OPTIN_MTIME" > "$SOLO_OPTIN_SNAPSHOT"; then
+          chmod 600 "$SOLO_OPTIN_SNAPSHOT" 2>/dev/null
+          echo "ℹ️  pr-grind-auto-admin-solo.local snapshotted (age-at-invocation=${OPTIN_AGE_AT_START}s, PR #${PR_NUMBER}) — solo-admin auto-detect armed for this run."
+        else
+          echo "⚠️  snapshot write failed for $SOLO_OPTIN_SNAPSHOT (disk full or permission denied?) — solo-admin auto-detect will NOT fire this run." >&2
+          rm -f "$SOLO_OPTIN_SNAPSHOT"
+        fi
       else
         echo "⚠️  pr-grind-auto-admin-solo.local exists but was too fresh at pr-grind invocation start (age=${OPTIN_AGE_AT_START}s, required ≥30s) — solo-admin auto-detect will NOT fire this run. If you just touched the file, wait 30s and rerun pr-grind." >&2
       fi
@@ -1266,6 +1270,13 @@ The detection algorithm lives at `scripts/approver-gap-detect.sh` (single source
 
 ```bash
 PR=<PR_NUMBER>
+# Mirror $PR into $PR_NUMBER as a shell variable so the OPTIN_SNAPSHOT path
+# below can use `${PR_NUMBER}` consistently with Step 0's writer template.
+# Without this, `${PR_NUMBER}` expands to empty in this fresh shell (each
+# Bash tool call has fresh shell state) and the detector looks for
+# `.pr-grind-solo-opt-in-snapshot-.local`, silently disabling solo-admin
+# auto-detect even when Step 0 wrote the correct per-PR snapshot.
+PR_NUMBER="$PR"
 OWNER=<owner>
 REPO=<repo>
 # WORKTREE_DIR is propagated from Step 0 (see "WORKTREE_DIR=$WORKTREE_DIR"
@@ -1323,7 +1334,7 @@ ADMIN_FLAG_PASSED=<0|1 — see "Resolve flag-to-state translations" in START>
 # script treats as "unknown" and refuses to auto-escalate.
 #
 # Anti-self-bypass: opt-in fires ONLY when the Step 0 snapshot file
-# `.claude/.pr-grind-solo-opt-in-snapshot-${PR}.local` exists AND its
+# `.claude/.pr-grind-solo-opt-in-snapshot-${PR_NUMBER}.local` exists AND its
 # recorded mtime matches the opt-in file's current mtime. Step 0 writes
 # the snapshot only when the opt-in file was already ≥30s old at pr-grind
 # invocation start (NOT at Completion time — a slow pr-grind run can
@@ -1360,7 +1371,10 @@ SOLO_ADMIN_OPT_IN=0
 if [ -n "$MAIN_REPO_ROOT_FOR_OPTIN" ]; then
   OPTIN_FILE="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/pr-grind-auto-admin-solo.local"
   # Per-PR snapshot path — must match Step 0's snapshot writer exactly.
-  OPTIN_SNAPSHOT="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/.pr-grind-solo-opt-in-snapshot-${PR}.local"
+  # Step 0 uses ${PR_NUMBER} as the template placeholder; use the same name
+  # here so a future change that treats these as actual shell variables rather
+  # than dispatcher-substituted literals cannot silently diverge the two paths.
+  OPTIN_SNAPSHOT="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/.pr-grind-solo-opt-in-snapshot-${PR_NUMBER}.local"
   if [ -f "$OPTIN_FILE" ] && [ -f "$OPTIN_SNAPSHOT" ]; then
     CURRENT_MTIME=$(stat -c %Y "$OPTIN_FILE" 2>/dev/null || stat -f %m "$OPTIN_FILE" 2>/dev/null || echo 0)
     SNAPSHOT_MTIME=$(head -n1 "$OPTIN_SNAPSHOT" 2>/dev/null | tr -dc '0-9')
@@ -1380,7 +1394,7 @@ if [ -n "$MAIN_REPO_ROOT_FOR_OPTIN" ]; then
     # this is defense-in-depth, not a security boundary.
     SNAPSHOT_FILE_MTIME=$(stat -c %Y "$OPTIN_SNAPSHOT" 2>/dev/null || stat -f %m "$OPTIN_SNAPSHOT" 2>/dev/null || echo 0)
     case "$CURRENT_MTIME" in ''|*[!0-9]*) CURRENT_MTIME=0 ;; esac
-    case "$SNAPSHOT_MTIME" in ''|*[!0-9]*) SNAPSHOT_MTIME=0 ;; esac
+    case "$SNAPSHOT_MTIME" in '') SNAPSHOT_MTIME=0 ;; esac
     case "$SNAPSHOT_FILE_MTIME" in ''|*[!0-9]*) SNAPSHOT_FILE_MTIME=0 ;; esac
     SNAPSHOT_VS_OPTIN_DIFF=$((SNAPSHOT_FILE_MTIME - CURRENT_MTIME))
     if [ "$SNAPSHOT_MTIME" -gt 0 ] \
@@ -1430,20 +1444,22 @@ if [ "$SOLO_ADMIN_OPT_IN" = "1" ]; then
     COLLABORATORS_JSON="[]"
   fi
   rm -f "$COLLABORATORS_TMP"
-  HUMAN_ADMIN_COUNT=$(printf '%s' "$COLLABORATORS_JSON" \
+  # Parse count and first login in a single jq pass — avoids filtering
+  # COLLABORATORS_JSON twice with identical predicates, eliminating a second
+  # jq-failure window that could leave SOLE_APPROVER_LOGIN empty and
+  # silently prevent auto-merge even when the structural check should pass.
+  APPROVERS_RESULT=$(printf '%s' "$COLLABORATORS_JSON" \
     | jq -r '[.[]
         | select((.type // "User") == "User"
                  and ((.login // "") | endswith("[bot]") | not)
                  and ((.permissions.push // false) == true))
-        | .login] | length' 2>/dev/null || echo 0)
+        | .login]
+      | { count: length, first: (.[0] // "") }
+      | "\(.count) \(.first)"' 2>/dev/null || echo "0 ")
+  HUMAN_ADMIN_COUNT="${APPROVERS_RESULT%% *}"
+  SOLE_APPROVER_LOGIN="${APPROVERS_RESULT#* }"
   case "$HUMAN_ADMIN_COUNT" in ''|*[!0-9]*) HUMAN_ADMIN_COUNT=0 ;; esac
   if [ "$HUMAN_ADMIN_COUNT" = "1" ] && [ -n "$AUTHOR" ]; then
-    SOLE_APPROVER_LOGIN=$(printf '%s' "$COLLABORATORS_JSON" \
-      | jq -r '[.[]
-          | select((.type // "User") == "User"
-                   and ((.login // "") | endswith("[bot]") | not)
-                   and ((.permissions.push // false) == true))
-          | .login] | .[0] // ""' 2>/dev/null || echo "")
     if [ "$SOLE_APPROVER_LOGIN" = "$AUTHOR" ]; then
       AUTHOR_IS_SOLE_ADMIN=1
     fi

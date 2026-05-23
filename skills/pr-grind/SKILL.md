@@ -469,6 +469,14 @@ BAIL:
 Create an isolated worktree so the user's main workspace stays free for their next task.
 
 ```bash
+# Capture pr-grind invocation start time BEFORE any other operation. The
+# solo-admin opt-in freshness check (snapshot writer near the end of this
+# block) anchors against this timestamp, not NOW_EPOCH at snapshot time —
+# otherwise a slow `gh pr view` / `git worktree add` could push elapsed
+# time past 30s and let an opt-in file created mid-invocation satisfy the
+# anti-self-bypass gate it's supposed to defeat.
+INVOCATION_START_EPOCH=$(date +%s)
+
 # Base-branch guard — refuse to grind a PR whose base is not one of the
 # canonical trunks unless the operator explicitly opted in (stacked-PR
 # workflows, long-lived feature integration branches). A non-trunk base
@@ -580,6 +588,70 @@ if [ "$WT_EXIT" -ne 0 ]; then
 else
   cd "$WORKTREE_DIR" || { echo "❌ cd to worktree '$WORKTREE_DIR' failed — cannot proceed."; exit 1; }
   echo "WORKTREE_DIR=$WORKTREE_DIR"
+fi
+
+# Snapshot the solo-admin opt-in file at pr-grind INVOCATION TIME, so the
+# anti-self-bypass freshness check anchors to "≥30s old at invocation start"
+# rather than "at Completion time". A pr-grind run can last minutes; without
+# this snapshot, an autonomous agent could `touch` the file at the start of
+# a slow run and have it satisfy the 30s threshold by the time the Completion
+# merge block runs. The snapshot lives in the MAIN repo's .claude/ (not the
+# worktree's), because the operator's opt-in file is in the main repo and
+# .claude/*.local is gitignored / not copied into ephemeral worktrees.
+# `git rev-parse --git-common-dir` returns the SHARED .git/ across worktrees,
+# whose parent is the main repo root.
+#
+# Per-PR snapshot path: includes ${PR_NUMBER} so two concurrent pr-grind
+# runs on DIFFERENT PRs cannot race on a single shared snapshot file. A
+# same-PR concurrent run is a degenerate case (operator running pr-grind
+# twice on the same PR simultaneously) and accepts last-writer-wins.
+# Snapshot is written 0600 to prevent other local users from reading the
+# mtime token (defense in depth — the threat model already assumes
+# attacker has same-user write access, in which case this is marginal).
+# Step 0 has already `cd`-ed into the worktree at this point (or, in
+# --no-worktree mode, into the repo root). A bare `git rev-parse` here
+# would work but is CWD-sensitive; `git -C "$WORKTREE_DIR"` is explicit
+# and matches the symmetric Completion-side resolver. Two-step resolve +
+# absolute-path check defends against `dirname ""` returning "." on a
+# failed rev-parse, which would otherwise leak the CWD path through.
+MAIN_REPO_ROOT_FOR_OPTIN=""
+GIT_COMMON_DIR=$(git -C "$WORKTREE_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+if [ -n "$GIT_COMMON_DIR" ]; then
+  CANDIDATE=$(dirname "$GIT_COMMON_DIR")
+  case "$CANDIDATE" in
+    /*) MAIN_REPO_ROOT_FOR_OPTIN="$CANDIDATE" ;;
+    *)  : ;;
+  esac
+fi
+if [ -n "$MAIN_REPO_ROOT_FOR_OPTIN" ] && [ -d "$MAIN_REPO_ROOT_FOR_OPTIN/.claude" ]; then
+  SOLO_OPTIN_FILE="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/pr-grind-auto-admin-solo.local"
+  SOLO_OPTIN_SNAPSHOT="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/.pr-grind-solo-opt-in-snapshot-${PR_NUMBER}.local"
+  # Always clear any prior per-PR snapshot — fresh run, fresh truth.
+  rm -f "$SOLO_OPTIN_SNAPSHOT"
+  if [ -f "$SOLO_OPTIN_FILE" ]; then
+    OPTIN_MTIME=$(stat -c %Y "$SOLO_OPTIN_FILE" 2>/dev/null || stat -f %m "$SOLO_OPTIN_FILE" 2>/dev/null || echo 0)
+    case "$OPTIN_MTIME" in ''|*[!0-9]*) OPTIN_MTIME=0 ;; esac
+    if [ "$OPTIN_MTIME" -eq 0 ]; then
+      echo "⚠️  stat failed on $SOLO_OPTIN_FILE — cannot verify age, solo-admin auto-detect will NOT fire this run." >&2
+    else
+      # Anchor freshness check against INVOCATION_START_EPOCH (captured at
+      # the very top of Step 0), NOT a fresh `date +%s` here. Otherwise
+      # earlier Step 0 work (gh pr view, git worktree add) that takes ≥30s
+      # would let an opt-in file created mid-invocation pass the gate.
+      OPTIN_AGE_AT_START=$((INVOCATION_START_EPOCH - OPTIN_MTIME))
+      if [ "$OPTIN_AGE_AT_START" -ge 30 ]; then
+        if printf '%s\n' "$OPTIN_MTIME" > "$SOLO_OPTIN_SNAPSHOT"; then
+          chmod 600 "$SOLO_OPTIN_SNAPSHOT" 2>/dev/null
+          echo "ℹ️  pr-grind-auto-admin-solo.local snapshotted (age-at-invocation=${OPTIN_AGE_AT_START}s, PR #${PR_NUMBER}) — solo-admin auto-detect armed for this run."
+        else
+          echo "⚠️  snapshot write failed for $SOLO_OPTIN_SNAPSHOT (disk full or permission denied?) — solo-admin auto-detect will NOT fire this run." >&2
+          rm -f "$SOLO_OPTIN_SNAPSHOT"
+        fi
+      else
+        echo "⚠️  pr-grind-auto-admin-solo.local exists but was too fresh at pr-grind invocation start (age=${OPTIN_AGE_AT_START}s, required ≥30s) — solo-admin auto-detect will NOT fire this run. If you just touched the file, wait 30s and rerun pr-grind." >&2
+      fi
+    fi
+  fi
 fi
 ```
 
@@ -1198,16 +1270,32 @@ The detection algorithm lives at `scripts/approver-gap-detect.sh` (single source
 
 ```bash
 PR=<PR_NUMBER>
+# Mirror $PR into $PR_NUMBER as a shell variable so the OPTIN_SNAPSHOT path
+# below can use `${PR_NUMBER}` consistently with Step 0's writer template.
+# Without this, `${PR_NUMBER}` expands to empty in this fresh shell (each
+# Bash tool call has fresh shell state) and the detector looks for
+# `.pr-grind-solo-opt-in-snapshot-.local`, silently disabling solo-admin
+# auto-detect even when Step 0 wrote the correct per-PR snapshot.
+PR_NUMBER="$PR"
 OWNER=<owner>
 REPO=<repo>
+# WORKTREE_DIR is propagated from Step 0 (see "WORKTREE_DIR=$WORKTREE_DIR"
+# marker line). Required here because the solo-admin opt-in resolution below
+# uses `git -C "$WORKTREE_DIR"` to derive MAIN_REPO_ROOT_FOR_OPTIN — a plain
+# `git rev-parse` is CWD-sensitive, and CWD does not reliably persist across
+# Claude Bash tool calls (see EXTREMELY-IMPORTANT block near top). If CWD has
+# drifted to another repo checkout when Completion runs, a bare `git rev-parse`
+# could read another repo's opt-in/snapshot for the same PR number, enabling
+# unintended auto-merge or silently missing the target repo's valid opt-in.
+WORKTREE_DIR=<absolute path from Step 0>
 
 BRANCH=$(gh pr view "$PR" --json baseRefName -q .baseRefName 2>/dev/null || echo "")
 AUTHOR=$(gh pr view "$PR" --json author -q .author.login 2>/dev/null || echo "")
 
-# Compose the four input JSON blobs / status flags the detection script
-# consumes (see scripts/approver-gap-detect.sh header for the contract).
-# Empty/missing inputs degrade the decision toward "surface-decision" or
-# "no-gap"; the script NEVER auto-escalates without complete inputs.
+# Compose the input JSON blobs / status flags the detection script consumes
+# (see scripts/approver-gap-detect.sh header for the contract). Empty/missing
+# inputs degrade the decision toward "surface-decision" or "no-gap"; the
+# script NEVER auto-escalates without complete inputs.
 BRANCH_RULES_JSON=""
 if [ -n "$BRANCH" ]; then
   BRANCH_ENCODED=$(printf '%s' "$BRANCH" | jq -sRr @uri)
@@ -1236,37 +1324,259 @@ CI_AND_BOTS_CLEAN=1
 # passed — silently neutralizing --admin-on-approver-gap.
 ADMIN_FLAG_PASSED=<0|1 — see "Resolve flag-to-state translations" in START>
 
+# Solo-admin auto-detect (per-repo opt-in). The .local file is the operator's
+# durable consent for this repo — when present AND the structural sole-admin
+# check still holds, the detector treats it as equivalent to passing
+# --admin-on-approver-gap, but logs with a distinct event for forensics. The
+# count is computed via gh api so the script can verify the assumption is
+# STILL TRUE at merge time (a contractor added since the opt-in invalidates
+# it). Fail-CLOSED: any gh failure leaves HUMAN_ADMIN_COUNT=0, which the
+# script treats as "unknown" and refuses to auto-escalate.
+#
+# Anti-self-bypass: opt-in fires ONLY when the Step 0 snapshot file
+# `.claude/.pr-grind-solo-opt-in-snapshot-${PR_NUMBER}.local` exists AND its
+# recorded mtime matches the opt-in file's current mtime. Step 0 writes
+# the snapshot only when the opt-in file was already ≥30s old at pr-grind
+# invocation start (NOT at Completion time — a slow pr-grind run can
+# easily exceed 30s, so checking at Completion would defeat the freshness
+# gate). A mid-run touch/replace produces a snapshot/current-mtime
+# mismatch → opt-in invalidated. The snapshot path is per-PR so concurrent
+# pr-grind runs on different PRs don't collide on shared state. Both the
+# opt-in file and the snapshot live in the MAIN repo's .claude/ (not the
+# ephemeral worktree's). See Step 0's snapshot writer for the producer side.
+# Resolve MAIN_REPO_ROOT via `git -C "$WORKTREE_DIR"` (NOT bare `git rev-parse`)
+# to anchor against the dispatcher's known worktree path rather than current
+# CWD. CWD drift between Bash tool calls would otherwise let this block read
+# another repo's opt-in/snapshot for the same PR number. WORKTREE_DIR
+# correctly resolves to the main-repo .git/ via --git-common-dir in both
+# worktree mode (linked worktree → shared .git/) and --no-worktree mode
+# (WORKTREE_DIR == main repo, --git-common-dir → .git/).
+#
+# Two-step resolve so a failed `git -C` doesn't pass `dirname ""` ⇒ "."
+# silently through the non-empty check below and reintroduce the wrong-repo
+# read this whole resolver exists to prevent. Require an absolute path
+# (leading slash) before accepting MAIN_REPO_ROOT_FOR_OPTIN.
+MAIN_REPO_ROOT_FOR_OPTIN=""
+if [ -n "$WORKTREE_DIR" ]; then
+  GIT_COMMON_DIR=$(git -C "$WORKTREE_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  if [ -n "$GIT_COMMON_DIR" ]; then
+    CANDIDATE=$(dirname "$GIT_COMMON_DIR")
+    case "$CANDIDATE" in
+      /*) MAIN_REPO_ROOT_FOR_OPTIN="$CANDIDATE" ;;
+      *)  : ;;   # reject anything not absolute (defends against dirname returning ".")
+    esac
+  fi
+fi
+SOLO_ADMIN_OPT_IN=0
+if [ -n "$MAIN_REPO_ROOT_FOR_OPTIN" ]; then
+  OPTIN_FILE="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/pr-grind-auto-admin-solo.local"
+  # Per-PR snapshot path — must match Step 0's snapshot writer exactly.
+  # Step 0 uses ${PR_NUMBER} as the template placeholder; use the same name
+  # here so a future change that treats these as actual shell variables rather
+  # than dispatcher-substituted literals cannot silently diverge the two paths.
+  OPTIN_SNAPSHOT="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/.pr-grind-solo-opt-in-snapshot-${PR_NUMBER}.local"
+  if [ -f "$OPTIN_FILE" ] && [ -f "$OPTIN_SNAPSHOT" ]; then
+    CURRENT_MTIME=$(stat -c %Y "$OPTIN_FILE" 2>/dev/null || stat -f %m "$OPTIN_FILE" 2>/dev/null || echo 0)
+    SNAPSHOT_MTIME=$(head -n1 "$OPTIN_SNAPSHOT" 2>/dev/null | tr -dc '0-9')
+    # Snapshot FILE mtime (filesystem) — must be ≥30s AFTER opt-in mtime.
+    # Defends against the naive forge where an autonomous run creates both
+    # files with the same fresh mtime: opt-in.mtime == snapshot-content,
+    # which would otherwise pass the content-match check below. By
+    # requiring `snapshot.fs_mtime - opt-in.mtime >= 30`, a same-NOW forge
+    # has diff=0 and fails. Step 0's legitimate write produces
+    # diff >= 30 (Step 0 only snapshots opt-in files already ≥30s old,
+    # and the snapshot is written ~now relative to the opt-in mtime).
+    # NOTE: `touch -t` backdating of the opt-in file by a sophisticated
+    # attacker still bypasses this — defeating that requires file
+    # birth-time (btime) checks which aren't portable across macOS/Linux.
+    # The threat model already assumes attacker has same-user write access
+    # in which case `gh pr merge --admin` is directly accessible too;
+    # this is defense-in-depth, not a security boundary.
+    SNAPSHOT_FILE_MTIME=$(stat -c %Y "$OPTIN_SNAPSHOT" 2>/dev/null || stat -f %m "$OPTIN_SNAPSHOT" 2>/dev/null || echo 0)
+    case "$CURRENT_MTIME" in ''|*[!0-9]*) CURRENT_MTIME=0 ;; esac
+    case "$SNAPSHOT_MTIME" in '') SNAPSHOT_MTIME=0 ;; esac
+    case "$SNAPSHOT_FILE_MTIME" in ''|*[!0-9]*) SNAPSHOT_FILE_MTIME=0 ;; esac
+    SNAPSHOT_VS_OPTIN_DIFF=$((SNAPSHOT_FILE_MTIME - CURRENT_MTIME))
+    if [ "$SNAPSHOT_MTIME" -gt 0 ] \
+       && [ "$CURRENT_MTIME" = "$SNAPSHOT_MTIME" ] \
+       && [ "$SNAPSHOT_VS_OPTIN_DIFF" -ge 30 ]; then
+      SOLO_ADMIN_OPT_IN=1
+    fi
+  fi
+fi
+HUMAN_ADMIN_COUNT=0
+AUTHOR_IS_SOLE_ADMIN=0
+if [ "$SOLO_ADMIN_OPT_IN" = "1" ]; then
+  # Only spend the API call(s) when the opt-in file exists — no point
+  # paginating collaborators on every pr-grind run.
+  #
+  # Count humans with PR-APPROVAL capability, not just admins. Anyone with
+  # write/maintain/admin permission (i.e., `permissions.push == true`) can
+  # submit an APPROVED review under default branch protection. Filtering
+  # only `permission=admin` would let the solo-admin trigger fire even when
+  # another human collaborator with maintain/write could approve, which
+  # contradicts the "no other human can approve" promise. Query all
+  # collaborators (no permission filter) and select those whose
+  # `permissions.push` is true.
+  #
+  # Variable kept as HUMAN_ADMIN_COUNT for backward-compat with
+  # approver-gap-detect.sh's input contract; the semantic is now "count of
+  # humans with PR-approval capability". The script doc + log field
+  # `human_admin_count` carries the same semantic.
+  # `gh api --paginate` emits one JSON array per page (e.g.
+  # `[page1]\n[page2]`), NOT a single merged array. Need to slurp all
+  # pages and concatenate into one array; without this, downstream
+  # `jq '.[]'` consumers below would only iterate the first page on
+  # repos with >30 collaborators and the numeric guard would normalize
+  # the resulting multi-line "0\n1" to 0.
+  #
+  # Capture to a tmpfile + check gh's exit code BEFORE jq. A naive
+  # `gh ... | jq -s 'add // []'` pipeline without pipefail (which we
+  # cannot enable globally inside a larger SKILL.md template) would let
+  # jq succeed over PARTIAL pages when gh fails on a later page (rate
+  # limit, transient network) — yielding an incomplete collaborator list
+  # that could miss a write-capable human on an unfetched page and
+  # wrongly satisfy HUMAN_ADMIN_COUNT=1. Fail-CLOSED on any gh failure.
+  COLLABORATORS_TMP=$(mktemp -t pr-grind-collab.XXXXXXXX)
+  if gh api "repos/$OWNER/$REPO/collaborators?affiliation=all" --paginate >"$COLLABORATORS_TMP" 2>/dev/null; then
+    COLLABORATORS_JSON=$(jq -s 'add // []' "$COLLABORATORS_TMP" 2>/dev/null || echo "[]")
+  else
+    COLLABORATORS_JSON="[]"
+  fi
+  rm -f "$COLLABORATORS_TMP"
+  # Parse count and first login in a single jq pass — avoids filtering
+  # COLLABORATORS_JSON twice with identical predicates, eliminating a second
+  # jq-failure window that could leave SOLE_APPROVER_LOGIN empty and
+  # silently prevent auto-merge even when the structural check should pass.
+  APPROVERS_RESULT=$(printf '%s' "$COLLABORATORS_JSON" \
+    | jq -r '[.[]
+        | select((.type // "User") == "User"
+                 and ((.login // "") | endswith("[bot]") | not)
+                 and ((.permissions.push // false) == true))
+        | .login]
+      | { count: length, first: (.[0] // "") }
+      | "\(.count) \(.first)"' 2>/dev/null || echo "0 ")
+  HUMAN_ADMIN_COUNT="${APPROVERS_RESULT%% *}"
+  SOLE_APPROVER_LOGIN="${APPROVERS_RESULT#* }"
+  case "$HUMAN_ADMIN_COUNT" in ''|*[!0-9]*) HUMAN_ADMIN_COUNT=0 ;; esac
+  if [ "$HUMAN_ADMIN_COUNT" = "1" ] && [ -n "$AUTHOR" ]; then
+    if [ "$SOLE_APPROVER_LOGIN" = "$AUTHOR" ]; then
+      AUTHOR_IS_SOLE_ADMIN=1
+    fi
+  fi
+fi
+
 export BRANCH_RULES_JSON PR_REVIEWS_JSON AUTHOR_PERM_JSON \
-       AUDIT_WORKFLOW_PRESENT CI_AND_BOTS_CLEAN ADMIN_FLAG_PASSED
+       AUDIT_WORKFLOW_PRESENT CI_AND_BOTS_CLEAN ADMIN_FLAG_PASSED \
+       SOLO_ADMIN_OPT_IN HUMAN_ADMIN_COUNT AUTHOR_IS_SOLE_ADMIN
 
 GAP_DECISION_JSON=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/approver-gap-detect.sh" 2>/dev/null \
-  || echo '{"decision":"surface-decision","reason":"approver-gap detector failed; require operator decision"}')
+  || echo '{"decision":"surface-decision","trigger":"none","reason":"approver-gap detector failed; require operator decision"}')
 GAP_DECISION=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.decision' 2>/dev/null || echo surface-decision)
+GAP_TRIGGER=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.trigger // "none"' 2>/dev/null || echo none)
 ```
 
 **Decision tree** (based on `GAP_DECISION`):
 
 - **`no-gap`** → fall through to the normal `gh pr merge` path below.
 - **`surface-decision`** → BAIL with `RESULT_BAIL_CATEGORY=policy` and surface the operator-decision message (template below). Excluded from MAX_FIX/MAX_WAIT accounting. The `audit_workflow_present` field in the JSON controls whether `[admin]` appears as the first/default option.
-- **`auto-admin-merge`** → log to `.claude/bypass-log.jsonl` and run `gh pr merge <PR> --squash --delete-branch --admin`. The script ONLY emits this when ALL eligibility gates pass: admin flag passed AND CI/bots clean (asserted by caller) AND author has admin/maintain AND `bypass-audit.yml` exists. Fail-CLOSED on any missing condition.
+- **`auto-admin-merge`** → log to `.claude/bypass-log.jsonl` and run `gh pr merge <PR> --squash --delete-branch --admin`. Two triggers can reach this decision: `trigger=flag` (operator passed `--admin-on-approver-gap` per-invocation) or `trigger=solo-admin-auto` (operator placed `.claude/pr-grind-auto-admin-solo.local` AND remains the sole human admin — see the "Solo-admin auto-detect" composer above). Both require the baseline gates: CI/bots clean (asserted by caller) AND author has admin/maintain AND `bypass-audit.yml` exists. Fail-CLOSED on any missing condition. The caller selects the bypass-log `event` value from `GAP_TRIGGER` so explicit vs. structural bypasses are distinguishable in forensics.
 
 **Bypass-log format** (append-only JSONL; gitignored under `.claude/`):
 
 ```bash
-# Self-contained: re-derive every value the bypass-log needs rather than
-# relying on caller-scope state. Three fields live ONLY inside the script's
-# emitted JSON (.author_perm, .required_approving_review_count,
-# .human_approvals — see scripts/approver-gap-detect.sh "Output"); extract
-# them from $GAP_DECISION_JSON before composing the log line. $REPO_ROOT is
-# recomputed locally because the marker-write block above runs as its own
-# Bash tool call (see the EXTREMELY-IMPORTANT block before the marker-write
-# subsection) and its variables don't survive into a subsequent call.
+# Same-call-scope contract: this block executes INSIDE the auto-admin-merge
+# branch of the approver-gap detection bash call above, so PR / OWNER /
+# REPO / BRANCH / AUTHOR / GAP_DECISION_JSON are all in scope from that
+# parent block. Defense-in-depth re-derivations below cover the
+# single-call-shared-shell case:
+#   - PR / OWNER / REPO: re-template-substituted by the dispatcher (Claude)
+#     so the values match the parent block's substitutions even if the
+#     dispatcher chooses to split this into its own Bash tool call.
+#   - BRANCH / AUTHOR: re-derived via `gh -R "$OWNER/$REPO"` (NOT bare
+#     `gh pr view`, which resolves the repo from CWD — in a CWD-drift
+#     scenario it could record a different repo's PR with the same number
+#     while the audit log says this OWNER/REPO).
+#   - REPO_ROOT: recomputed locally because the marker-write block above
+#     runs as its own Bash tool call (see the EXTREMELY-IMPORTANT block
+#     before the marker-write subsection) and its variables don't survive
+#     into a subsequent call.
+# Three fields live ONLY inside the script's emitted JSON (.author_perm,
+# .required_approving_review_count, .human_approvals — see
+# scripts/approver-gap-detect.sh "Output"); extract them from
+# $GAP_DECISION_JSON before composing the log line. $GAP_DECISION_JSON
+# itself is NOT re-derivable here; it must remain in shell scope from the
+# parent approver-gap detection call. If the dispatcher splits this into
+# a separate Bash call and $GAP_DECISION_JSON is empty, the authorization
+# gate below aborts (see next paragraph) — the merge does NOT run.
+#
+# Fail-CLOSED on missing/malformed $GAP_DECISION_JSON: this block is the
+# `auto-admin-merge` branch, and that branch is only legal if the detector
+# emitted `decision=auto-admin-merge` AND `trigger in {flag,solo-admin-auto}`.
+# Treating either as missing/unverifiable as a license to proceed would
+# convert the authorization input into a fail-OPEN trust boundary —
+# wrong even though the merge command runs next. Verify the detector
+# decision is in scope and consistent before logging + merging.
+PR=<PR_NUMBER>
+OWNER=<owner>
+REPO=<repo>
+# Preserve any already-in-scope BRANCH / AUTHOR from the parent
+# approver-gap detection call. Only re-derive (via `gh -R "$OWNER/$REPO"`
+# to avoid CWD-based repo inference) if they're empty AND the gh call
+# succeeds — a transient gh failure must NOT overwrite a known-good value
+# with empty string, which would weaken the bypass-log audit trail.
+if [ -z "${BRANCH:-}" ]; then
+  GH_BRANCH=$(gh -R "$OWNER/$REPO" pr view "$PR" --json baseRefName -q .baseRefName 2>/dev/null)
+  [ -n "$GH_BRANCH" ] && BRANCH="$GH_BRANCH"
+fi
+if [ -z "${AUTHOR:-}" ]; then
+  GH_AUTHOR=$(gh -R "$OWNER/$REPO" pr view "$PR" --json author -q .author.login 2>/dev/null)
+  [ -n "$GH_AUTHOR" ] && AUTHOR="$GH_AUTHOR"
+fi
 REPO_ROOT=$(git rev-parse --show-toplevel)
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
-AUTHOR_PERM=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.author_perm // "read"')
-REQUIRED_APPROVALS=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.required_approving_review_count // 0')
-HUMAN_APPROVALS=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.human_approvals // 0')
+
+# Fail-CLOSED authorization gate. $GAP_DECISION_JSON must be in scope from
+# the parent approver-gap detection call AND contain a valid auto-admin-merge
+# decision with a known trigger. Empty / malformed / wrong-decision / unknown-
+# trigger inputs ABORT before the merge — the bypass-log entry and `gh pr
+# merge --admin` only run on a verified authorization.
+if [ -z "${GAP_DECISION_JSON:-}" ]; then
+  echo "❌ approver-gap auto-admin: GAP_DECISION_JSON empty (split-call broke same-call-scope contract) — aborting before bypass-log + merge"; exit 1
+fi
+GAP_DECISION_FOR_MERGE=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.decision // "missing"' 2>/dev/null || echo "parse-error")
+GAP_TRIGGER_FOR_MERGE=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.trigger // "missing"' 2>/dev/null || echo "parse-error")
+if [ "$GAP_DECISION_FOR_MERGE" != "auto-admin-merge" ]; then
+  echo "❌ approver-gap auto-admin: detector decision is '$GAP_DECISION_FOR_MERGE', not 'auto-admin-merge' — aborting before bypass-log + merge"; exit 1
+fi
+case "$GAP_TRIGGER_FOR_MERGE" in
+  flag|solo-admin-auto) ;;
+  *) echo "❌ approver-gap auto-admin: detector trigger is '$GAP_TRIGGER_FOR_MERGE', not 'flag' or 'solo-admin-auto' — aborting before bypass-log + merge"; exit 1 ;;
+esac
+
+# After the authorization gate, the remaining jq reads are pulling forensic
+# metadata from a known-valid JSON object — defaults via `// X` are
+# appropriate here (those fields may legitimately be missing if the detector
+# is upgraded incrementally; the merge is already authorized).
+AUTHOR_PERM=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.author_perm // "read"' 2>/dev/null || echo "read")
+REQUIRED_APPROVALS=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.required_approving_review_count // 0' 2>/dev/null || echo 0)
+case "$REQUIRED_APPROVALS" in ''|*[!0-9]*) REQUIRED_APPROVALS=0 ;; esac
+HUMAN_APPROVALS=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.human_approvals // 0' 2>/dev/null || echo 0)
+case "$HUMAN_APPROVALS" in ''|*[!0-9]*) HUMAN_APPROVALS=0 ;; esac
+# Trigger-derived fields: forensics depends on knowing WHY the bypass fired.
+# `event` distinguishes explicit-flag from structural sole-admin in audits;
+# human_admin_count records the structural assumption at decision time so a
+# later audit can detect if the repo's admin roster changed post-merge.
+# LOG_TRIGGER is the already-validated value from the authorization gate.
+LOG_TRIGGER="$GAP_TRIGGER_FOR_MERGE"
+LOG_HUMAN_ADMIN_COUNT=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.human_admin_count // 0' 2>/dev/null || echo 0)
+case "$LOG_HUMAN_ADMIN_COUNT" in ''|*[!0-9]*) LOG_HUMAN_ADMIN_COUNT=0 ;; esac
+case "$LOG_TRIGGER" in
+  solo-admin-auto) LOG_EVENT="pr-grind-admin-on-approver-gap-solo-admin-auto" ;;
+  flag)            LOG_EVENT="pr-grind-admin-on-approver-gap" ;;
+  *)               LOG_EVENT="pr-grind-admin-on-approver-gap" ;;
+esac
 # Validate $PR is numeric before passing to --argjson — defense in depth so a
 # `gh pr view` failure upstream (returning empty string or "null") can't cause
 # jq to abort the log composition with "Invalid numeric literal". The audit
@@ -1279,7 +1589,8 @@ esac
 mkdir -p "$REPO_ROOT/.claude"
 jq -c -n \
   --arg ts "$TS" \
-  --arg event "pr-grind-admin-on-approver-gap" \
+  --arg event "$LOG_EVENT" \
+  --arg trigger "$LOG_TRIGGER" \
   --argjson pr "$PR" \
   --arg owner "$OWNER" \
   --arg repo "$REPO" \
@@ -1288,8 +1599,9 @@ jq -c -n \
   --arg author_perm "$AUTHOR_PERM" \
   --argjson required "$REQUIRED_APPROVALS" \
   --argjson approvals "$HUMAN_APPROVALS" \
+  --argjson human_admin_count "$LOG_HUMAN_ADMIN_COUNT" \
   --arg head_sha "$HEAD_SHA" \
-  '{ts:$ts, event:$event, pr:$pr, owner:$owner, repo:$repo, branch:$branch, author:$author, author_perm:$author_perm, required_approving_review_count:$required, human_approvals:$approvals, head_sha:$head_sha}' \
+  '{ts:$ts, event:$event, trigger:$trigger, pr:$pr, owner:$owner, repo:$repo, branch:$branch, author:$author, author_perm:$author_perm, required_approving_review_count:$required, human_approvals:$approvals, human_admin_count:$human_admin_count, head_sha:$head_sha}' \
   >> "$REPO_ROOT/.claude/bypass-log.jsonl" || { echo "❌ failed to append bypass-log entry; aborting admin merge"; exit 1; }
 gh pr merge "$PR" --squash --delete-branch --admin || true
 # Verify via authoritative source — `gh pr merge --delete-branch` can
@@ -1467,7 +1779,7 @@ PR #<N> is clean after <rounds> round(s).
 | `--ci-only` | Only fix CI failures, ignore comments. Forces inline mode (Step 2 branching not yet wired into the subagent). | Off |
 | `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
 | `--comments-only` | Only address comments, ignore CI. Forces inline mode (same reason as `--ci-only`). | Off |
-| `--admin-on-approver-gap` | Opt-in auto-escalation when the approver gap is the sole remaining merge-gate blocker. Eligibility (ALL must hold): CI green, bots ack HEAD, all threads resolved, no failing required checks; author has `admin` or `maintain` repo permission; `.github/workflows/bypass-audit.yml` exists in the repo. With all gates green, the dispatcher runs `gh pr merge <PR> --squash --delete-branch --admin` and logs the event to `.claude/bypass-log.jsonl`. **Fail-CLOSED when no audit workflow exists** — the flag is ignored without a trail and the dispatcher surfaces the operator-decision message instead. Off by default; this flag is the only way pr-grind ever bypasses required-approver count. | Off (surfaces decision message) |
+| `--admin-on-approver-gap` | Opt-in auto-escalation when the approver gap is the sole remaining merge-gate blocker. Eligibility (ALL must hold): CI green, bots ack HEAD, all threads resolved, no failing required checks; author has `admin` or `maintain` repo permission; `.github/workflows/bypass-audit.yml` exists in the repo. With all gates green, the dispatcher runs `gh pr merge <PR> --squash --delete-branch --admin` and logs the event to `.claude/bypass-log.jsonl` (`event: pr-grind-admin-on-approver-gap`). **Fail-CLOSED when no audit workflow exists** — the flag is ignored without a trail and the dispatcher surfaces the operator-decision message instead. Off by default. **Alternative — per-repo opt-in:** for repos where the operator is structurally the sole human with PR-approval capability (no other humans with write/maintain/admin could ever approve), drop `.claude/pr-grind-auto-admin-solo.local` once (gitignored, same pattern as `skip-litmus.local`) and pr-grind treats the flag as implicit. The same eligibility gates apply, plus a live structural check that `HUMAN_ADMIN_COUNT==1` (counting humans with `permissions.push==true` — write/maintain/admin) and the author is that one approval-capable human. The opt-in self-revokes if a second approval-capable human appears — a contractor with write permission alone is enough to invalidate it. **Anti-self-bypass (snapshot-anchored, three conditions):** the opt-in file must be at least 30s old AT pr-grind INVOCATION START (Step 0), not at Completion. Step 0 snapshots the file's mtime to a per-PR snapshot at `.claude/.pr-grind-solo-opt-in-snapshot-<PR>.local` (written 0600) only when the file is already ≥30s old; Completion auto-fires only when (1) the per-PR snapshot exists, (2) its recorded mtime equals the opt-in file's current mtime, AND (3) the snapshot file's own filesystem mtime is ≥30s after the opt-in file's mtime (defeats a same-NOW forge where an attacker creates both files in one action with identical mtimes). A mid-run touch (no snapshot) or mid-run replacement (mismatch) both invalidate the opt-in for the current run. The per-PR scoping prevents concurrent pr-grind runs on different PRs from racing on shared state. Snapshot and opt-in file both live in the MAIN repo's `.claude/`, not the ephemeral worktree. The audit-log event is distinct: `pr-grind-admin-on-approver-gap-solo-admin-auto` with `trigger: "solo-admin-auto"` and `human_admin_count` recorded (variable name preserved for backward compat; semantic is now "humans with PR-approval capability"). | Off (surfaces decision message) |
 | `--copilot-auto-resolve` | Opt-in: when Copilot's HEAD ack is stale after a force-push AND every Copilot thread is anchored to lines the new HEAD touched AND the worker emitted substantive fixes for those lines, auto-resolve the threads with an `addressed in <SHA>` reply + `resolveReviewThread` mutation. Flips ack-ledger tier A to a HEAD-ack via the resolved-threads path. Disabled by default while the test fixtures stabilize; promote to default once fixtures 5-7 (see `tests/test-copilot-resolve.sh`) have a track record. | Off |
 
 ## User-Created Skip File

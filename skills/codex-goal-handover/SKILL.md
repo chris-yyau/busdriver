@@ -18,7 +18,7 @@ Pick this skill when ALL of the following are true:
 3. The result must come back to this CC session for follow-up review
 4. The task is bounded — fits in ≤ 5 iterations typical, ≤ 8 in extreme cases
 
-**Also auto-invoked by `busdriver:writing-plans` Outcome 1:** when a plan emits a `.claude/codex-goal-<slug>.json.local` spec, orchestrator Phase 4 routes here automatically. See `writing-plans/SKILL.md` → "Codex Handoff Eligibility" for the upstream contract; this skill is responsible for cleanup of the emitted spec (see Step 9 below).
+**Also auto-invoked by `busdriver:writing-plans` Outcome 1:** when a plan emits a `.claude/codex-goal-<slug>.json.local` spec, orchestrator Phase 4 routes here automatically. See `busdriver:writing-plans` → "Codex Handoff Eligibility" for the upstream contract. Spec-file cleanup is the caller's responsibility (writing-plans Step 3); see Step 9 below.
 
 Pick something else when:
 
@@ -340,43 +340,9 @@ Only run after Step 7 exits 0 (scope clean):
 
 This is the structural defense against prompt injection from verifier output: even if Codex were steered to modify a file outside scope, the post-iter check catches it before the next iter compounds the damage. The check uses **only Python stdlib** (`json` + `fnmatch`) — no PyYAML or other third-party deps.
 
-### 9. Cleanup on terminal state (contract — implementation pending)
+### 9. Cleanup of writing-plans-emitted specs
 
-**Contract:** When the loop reaches any terminal state (verifiers green, bailed via any Hard rule, max_iters exhausted, `set -e` exit), the dispatcher MUST delete the original spec file **if and only if** it was passed via the `.claude/codex-goal-<slug>.json.local` contract (the writing-plans Outcome 1 path used by orchestrator Phase 4 routing). Without this cleanup, stale specs from completed runs continue to trigger orchestrator routing on subsequent plan invocations.
-
-**Required semantics:**
-
-1. **Capture the original path in Step 2** as `ORIG_SPEC_PATH="$1"` *before* the `cp` to `$RUN_DIR/spec.json`. The variable name is part of the contract — Step 9 references this exact name.
-2. **Install a `trap` on EXIT** at the top of dispatch (Step 4) so cleanup fires on all paths: normal completion, Hard-rule bails, `set -e` exits. A sequential cleanup block after Step 8 would be skipped by `set -e` on every non-zero exit.
-3. **Use `realpath` direct-parent equality, not bash glob.** Bash `[[ "$path" == .claude/codex-goal-*.json.local ]]` is unsafe: `*` matches `/`, so `.claude/codex-goal-../../etc/passwd.json.local` passes the guard. Resolve both `$ORIG_SPEC_PATH` and `.claude/` to absolute paths via plain `realpath` (NOT `-m`; BSD/macOS `realpath` does not support `-m`, and the spec file exists at cleanup time so `-m`'s missing-OK behavior is unnecessary). Verify the resolved file's *direct parent* equals the resolved `.claude/` (so `.claude/archive/foo.json.local` is correctly rejected), then apply a basename glob.
-4. **Specs passed via other paths** (user-supplied JSON, ad-hoc invocations not matching the writing-plans contract) are NOT cleaned up — the caller owns their own files. Detected by the basename glob.
-
-**Non-normative implementation sketch** (for dispatcher authors — `scripts/codex/codex-goal-dispatch.sh` MUST implement equivalent semantics, not necessarily this exact code). Portability note: the busdriver target is macOS-default bash 3.2 + BSD `realpath` (no GNU `-m` flag). The sketch resolves only existing files (the spec exists by definition at cleanup time), then checks the *direct parent* equals `.claude/` (not a subdirectory):
-
-```bash
-# Step 2: capture before any copy
-ORIG_SPEC_PATH="$1"
-
-# Step 4: install trap before first dispatch
-cleanup_orig_spec() {
-  [ -z "${ORIG_SPEC_PATH:-}" ] && return 0
-  [ -e "$ORIG_SPEC_PATH" ] || return 0
-  local resolved claude_dir parent basename
-  resolved=$(realpath "$ORIG_SPEC_PATH" 2>/dev/null) || return 0
-  claude_dir=$(realpath ".claude" 2>/dev/null) || return 0
-  parent=${resolved%/*}
-  basename=${resolved##*/}
-  # Containment: resolved file's direct parent must be the repo .claude/ (no subdirs)
-  [ "$parent" = "$claude_dir" ] || return 0
-  # Basename gate: only the writing-plans contract shape
-  case "$basename" in
-    codex-goal-*.json.local) rm -f -- "$ORIG_SPEC_PATH" ;;
-  esac
-}
-trap cleanup_orig_spec EXIT
-```
-
-**Until this contract is implemented in `scripts/codex/codex-goal-dispatch.sh`,** the caller (writing-plans Outcome 1, via orchestrator Phase 4) MUST perform its own cleanup post-handover by deleting the emitted `.claude/codex-goal-<slug>.json.local` file. This is a known gap — track via the `$SPEC_PATH` / `ORIG_SPEC_PATH` contract above.
+When invoked via the writing-plans Outcome 1 contract (auto-emitted `.claude/codex-goal-<slug>.json.local`), **the caller — not this skill — owns cleanup.** writing-plans Step 3 deletes the spec file after this skill returns. The dispatcher does not currently auto-clean; a future enhancement may add EXIT-trap-based cleanup but is not in scope today. Specs passed via other paths (user-supplied JSON, ad-hoc invocations) are always caller-owned.
 
 ## Litmus considerations (busdriver pre-commit gate)
 

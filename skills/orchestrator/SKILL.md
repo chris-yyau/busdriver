@@ -110,7 +110,7 @@ Creates isolated workspace, verifies baseline tests pass.
 **Choose one mode:**
 | Signal | INVOKE |
 |---|---|
-| Plan emitted `.claude/codex-goal-*.json.local` spec (writing-plans Outcome 1 only — `.md.local` is Outcome 2 / TUI handoff, no routing) | `busdriver:codex-goal-handover` — verifier-led delegation; saves CC tokens. The skill is responsible for deleting the spec file after consumption to prevent stale-spec mis-routing. |
+| Plan emitted `.claude/codex-goal-*.json.local` spec (writing-plans Outcome 1 only — `.md.local` is Outcome 2 / TUI handoff, no routing) | `busdriver:codex-goal-handover` — verifier-led delegation; saves CC tokens. Cleanup is the emitter's responsibility (writing-plans Step 3 deletes the spec post-handover). |
 | Want human review between batches | `busdriver:executing-plans` |
 | Independent tasks, want speed | `busdriver:subagent-driven-development` |
 | Multiple independent problems | `busdriver:dispatching-parallel-agents` |

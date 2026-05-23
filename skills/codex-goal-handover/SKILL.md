@@ -338,6 +338,19 @@ Only run after Step 7 exits 0 (scope clean):
 
 This is the structural defense against prompt injection from verifier output: even if Codex were steered to modify a file outside scope, the post-iter check catches it before the next iter compounds the damage. The check uses **only Python stdlib** (`json` + `fnmatch`) — no PyYAML or other third-party deps.
 
+### 9. Cleanup on terminal state
+
+When the loop reaches a terminal state (verifiers green → done, OR bailed via any Hard rule, OR max_iters exhausted), delete the spec file **if** the caller passed it via `.claude/codex-goal-<slug>.json.local` (the writing-plans Outcome 1 contract — see `writing-plans/SKILL.md` → "Codex Handoff Eligibility"):
+
+```bash
+# Only delete the specific path the caller passed — never glob-wide
+if [[ "$SPEC_PATH" == .claude/codex-goal-*.json.local ]]; then
+  rm -f "$SPEC_PATH"
+fi
+```
+
+This prevents stale specs from triggering misroutes in orchestrator Phase 4 on the next plan run. Specs passed via other paths (user-supplied JSON files, ad-hoc invocations) are NOT cleaned up — the caller owns their own files.
+
 ## Litmus considerations (busdriver pre-commit gate)
 
 Handover commits do **not** fire busdriver's litmus pre-commit gate. The gate is wired via Claude Code's `PreToolUse` hook on the `Bash` tool, which only intercepts direct Bash tool calls made by Claude. The dispatcher (`scripts/codex/codex-goal-dispatch.sh`) runs `git commit` inside its shell subprocess — Claude's Bash tool sees only the dispatcher invocation, not the inner `git commit`, so the litmus gate's pattern match misses it. (Same behavior as the prior architecture where Codex committed inside its own sandbox subprocess; only the subprocess identity changed.)

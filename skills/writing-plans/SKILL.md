@@ -137,8 +137,8 @@ After sanity check passes, evaluate whether this plan should hand off to codex i
 
 | Plan shape | Outcome | Emits |
 |---|---|---|
-| Small + verifier-shaped + bounded (≤8 iters' worth of work) | **In-CC handover** via `codex-goal-handover` skill | `.claude/codex-goal-<slug>.json` |
-| Verifier-shaped but too large (>8 iters, hours-long, or plan markdown >~3KB) | **TUI handoff** — user pastes `/goal` invocation into codex TUI | `.claude/codex-goal-<slug>.md.local` + chat instructions |
+| Small + verifier-shaped + bounded (≤8 iters' worth of work) AND result must return to CC | **In-CC handover** via `busdriver:codex-goal-handover` | `.claude/codex-goal-<slug>.json.local` |
+| Verifier-shaped but too large (>8 iters, hours-long, or plan markdown >~3KB) OR result need not return to CC | **TUI handoff** — user pastes `/goal` invocation into codex TUI | `.claude/codex-goal-<slug>.md.local` + chat instructions |
 | Not verifier-shaped (judgment-heavy, ambiguous verifiers, needs Claude's eyes per step) | **No action** — continue to default executor | Nothing |
 
 **Eligibility criteria — ALL must hold for either handoff:**
@@ -146,8 +146,9 @@ After sanity check passes, evaluate whether this plan should hand off to codex i
 2. **Clean verifier commands** — pass/fail expressible as shell commands (tests, lint, typecheck) at plan level
 3. **Claude doesn't need to read code between steps** — the loop is verifier-led, not Claude-judged
 4. **Scope is bounded** — does not require Claude's intermediate judgment
+5. **Result returns to CC for follow-up** — distinguishes Outcome 1 (in-CC, codex finishes and Claude reviews) from Outcome 2 (TUI handoff, user takes over entirely). If the work is fire-and-forget overnight, route to Outcome 2 regardless of size.
 
-If ANY criterion fails → Outcome 3 (default executor). When in doubt, prefer Outcome 3 — codex-goal's hard cap is 8 iters, and a marginal-fit plan wastes the cost savings.
+If ANY of criteria 1–4 fails → Outcome 3 (default executor). When in doubt, prefer Outcome 3 — codex-goal's hard cap is 8 iters, and a marginal-fit plan wastes the cost savings.
 
 **Size decision (handover vs TUI):** Estimate iter count as ≈ one logical commit per task. Rough rubric:
 - ≤8 tasks of 1–2 file changes each → Outcome 1 (in-CC handover)
@@ -157,7 +158,7 @@ This is judgment, not pattern matching — give it 30 seconds of thought, don't 
 
 ### Outcome 1: Emit in-CC handover spec
 
-Write `.claude/codex-goal-<plan-slug>.json` matching the shape in `codex-goal-handover/SKILL.md` → "Inputs: the spec":
+Write `.claude/codex-goal-<plan-slug>.json.local` (the `.local` suffix is mandatory — it matches the `.claude/*.local` gitignore rule and prevents the spec from being committed by accident) matching the shape in `busdriver:codex-goal-handover` → "Inputs: the spec":
 
 ```json
 {
@@ -181,7 +182,11 @@ Write `.claude/codex-goal-<plan-slug>.json` matching the shape in `codex-goal-ha
 }
 ```
 
-Then in Auto-Execution below, **skip the default Execute step** — orchestrator Phase 4 routes to `codex-goal-handover` based on the spec file's presence.
+**`max_iters` derivation (the `5` above is a placeholder — compute the actual value):** estimate one iter per task in the plan, add 1 buffer, clamp to 8. A 3-task plan emits `max_iters: 4`; a 7-task plan emits `max_iters: 8`. The default of 5 (in codex-goal-handover/SKILL.md) is appropriate only for plans of ~4 tasks — hardcoding it for any plan size starves larger plans. JSON does not support comments, so the emitter must substitute a real integer in `[1, 8]` before writing the file (codex-goal-handover validates with `jq -e`).
+
+**Slug derivation:** strip plan name to `[A-Za-z0-9._-]` before substitution (matches the `v_safe` pattern in codex-goal-handover Step 6) — guards against path-traversal slugs like `../../etc/passwd` if plan titles ever come from less-trusted sources.
+
+Then in Auto-Execution below, **skip the default Execute step** — orchestrator Phase 4 routes to `busdriver:codex-goal-handover` based on the spec file's presence. Cleanup: codex-goal-handover should delete the spec file at end of execution to prevent stale-spec mis-routing on the next plan.
 
 ### Outcome 2: Emit TUI handoff materials and halt
 
@@ -196,7 +201,7 @@ Open a separate terminal, run `codex`, then paste:
   Hard scope: edit only paths in scope.include. Stop after all verifiers green.
   Report total commits, tests passing, and any blockers.
 
-This stays under the 4KB `/goal` input limit and runs entirely outside Claude Code (zero CC tokens). Resume this session when codex finishes or hits a blocker.
+This stays under the 4000-character `/goal` input limit and runs entirely outside Claude Code (zero CC tokens). Resume this session when codex finishes or hits a blocker.
 ```
 
 The halt is intentional — it overrides the default "auto-run Phases 3–6" because TUI handoff means the user is taking over execution outside CC.
@@ -218,7 +223,7 @@ After saving the plan and sanity check passes, proceed automatically through the
 
 1. **Design Review** — INVOKE `busdriver:blueprint-review` to review and approve the plan document. The design review gate (hook-enforced) blocks all implementation code until this passes. If design review rejects, fix issues and re-submit — do not proceed until it passes.
 2. **Worktree Setup** — INVOKE `busdriver:using-git-worktrees` to create an isolated workspace. If worktree creation fails or baseline tests fail, stop and report.
-3. **Execute** — If Codex Handoff Eligibility emitted `.claude/codex-goal-<slug>.json` (Outcome 1), INVOKE `busdriver:codex-goal-handover` with that spec instead. Otherwise INVOKE `busdriver:subagent-driven-development` for independent tasks, or `busdriver:executing-plans` for dependent tasks requiring sequential execution with review checkpoints. (Outcome 2 already halted auto-execution before reaching this step.)
+3. **Execute** — If Codex Handoff Eligibility emitted `.claude/codex-goal-<slug>.json.local` (Outcome 1), INVOKE `busdriver:codex-goal-handover` with that spec instead. Otherwise INVOKE `busdriver:subagent-driven-development` for independent tasks, or `busdriver:executing-plans` for dependent tasks requiring sequential execution with review checkpoints. (Outcome 2 already halted auto-execution before reaching this step.)
 4. **Verify** — INVOKE `busdriver:verification-loop` (build + lint + tests), then `busdriver:verification-before-completion` to confirm no claims without evidence.
 5. **Finish** — `busdriver:finishing-a-development-branch` presents integration options (merge/PR/keep/discard).
 

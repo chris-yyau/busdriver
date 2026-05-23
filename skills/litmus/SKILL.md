@@ -270,7 +270,7 @@ When `terminal_status` indicates Claude could not converge — **not** when code
 
 **Protocol on `stall` / `max_iterations`:**
 
-1. Read the failing issues from `.claude/litmus-state.md` and the iteration history (`/tmp/litmus-iteration-history.jsonl`)
+1. Read the failing issues from `.claude/litmus-state.md` and the iteration history (`.claude/litmus-iteration-history.local.jsonl`)
 2. Dispatch `/codex:rescue` with: the issues, the staged diff (`git diff --cached`), and prior iteration history as context
 3. Apply codex's recommended fix
 4. Re-run `run-review-loop.sh` **exactly once** — confirm PASS or surface to user

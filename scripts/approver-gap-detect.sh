@@ -55,18 +55,25 @@
 #      mechanism (gitignored, same .local pattern as skip-litmus.local) that
 #      lets pr-grind treat --admin-on-approver-gap as implicit when the
 #      operator is structurally the sole human admin. Off by default.
-#   8. Set HUMAN_ADMIN_COUNT — count of NON-BOT collaborators with admin
-#      permission, computed by the caller via
-#        gh api "repos/<owner>/<repo>/collaborators?permission=admin&affiliation=all" --paginate \
-#          | jq '[.[] | select((.type // "User")=="User" and (.login | endswith("[bot]") | not))] | length'
-#      Used together with AUTHOR_IS_SOLE_ADMIN as the structural check that
-#      "I am the sole human admin" is still true at merge time. If the count
-#      ever drifts > 1 (e.g., a contractor was added), the solo-admin branch
-#      stops firing — the opt-in file revokes itself when the assumption
-#      breaks. Default "0" (unknown).
-#   9. Set AUTHOR_IS_SOLE_ADMIN — "1" when the caller verified the PR author
-#      is the only human admin (HUMAN_ADMIN_COUNT==1 AND that admin is the
-#      author). Default "0".
+#   8. Set HUMAN_ADMIN_COUNT — count of NON-BOT collaborators with
+#      PR-APPROVAL capability (anyone with write/maintain/admin perm —
+#      `permissions.push == true`), computed by the caller via
+#        gh api "repos/<owner>/<repo>/collaborators?affiliation=all" --paginate \
+#          | jq '[.[] | select((.type // "User")=="User"
+#                              and ((.login // "") | endswith("[bot]") | not)
+#                              and ((.permissions.push // false) == true))] | length'
+#      The variable name is kept for backward compatibility with the
+#      script's input contract, but the SEMANTIC is "count of humans who
+#      can submit an APPROVED PR review under default branch protection"
+#      — not just admins. Filtering only `permission=admin` would let the
+#      solo-admin trigger fire even when another human with maintain/write
+#      could approve, contradicting the "no other human can approve"
+#      property. Used together with AUTHOR_IS_SOLE_ADMIN as the structural
+#      check; if the count ever drifts > 1 (contractor added), the opt-in
+#      self-revokes. Default "0" (unknown).
+#   9. Set AUTHOR_IS_SOLE_ADMIN — "1" when the caller verified the PR
+#      author is the only human with PR-approval capability
+#      (HUMAN_ADMIN_COUNT==1 AND that one human is the author). Default "0".
 #  10. `export BRANCH_RULES_JSON PR_REVIEWS_JSON AUTHOR_PERM_JSON \
 #       AUDIT_WORKFLOW_PRESENT CI_AND_BOTS_CLEAN ADMIN_FLAG_PASSED \
 #       SOLO_ADMIN_OPT_IN HUMAN_ADMIN_COUNT AUTHOR_IS_SOLE_ADMIN`

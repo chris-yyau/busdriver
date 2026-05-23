@@ -1364,9 +1364,28 @@ if [ -n "$MAIN_REPO_ROOT_FOR_OPTIN" ]; then
   if [ -f "$OPTIN_FILE" ] && [ -f "$OPTIN_SNAPSHOT" ]; then
     CURRENT_MTIME=$(stat -c %Y "$OPTIN_FILE" 2>/dev/null || stat -f %m "$OPTIN_FILE" 2>/dev/null || echo 0)
     SNAPSHOT_MTIME=$(head -n1 "$OPTIN_SNAPSHOT" 2>/dev/null | tr -dc '0-9')
+    # Snapshot FILE mtime (filesystem) — must be ≥30s AFTER opt-in mtime.
+    # Defends against the naive forge where an autonomous run creates both
+    # files with the same fresh mtime: opt-in.mtime == snapshot-content,
+    # which would otherwise pass the content-match check below. By
+    # requiring `snapshot.fs_mtime - opt-in.mtime >= 30`, a same-NOW forge
+    # has diff=0 and fails. Step 0's legitimate write produces
+    # diff >= 30 (Step 0 only snapshots opt-in files already ≥30s old,
+    # and the snapshot is written ~now relative to the opt-in mtime).
+    # NOTE: `touch -t` backdating of the opt-in file by a sophisticated
+    # attacker still bypasses this — defeating that requires file
+    # birth-time (btime) checks which aren't portable across macOS/Linux.
+    # The threat model already assumes attacker has same-user write access
+    # in which case `gh pr merge --admin` is directly accessible too;
+    # this is defense-in-depth, not a security boundary.
+    SNAPSHOT_FILE_MTIME=$(stat -c %Y "$OPTIN_SNAPSHOT" 2>/dev/null || stat -f %m "$OPTIN_SNAPSHOT" 2>/dev/null || echo 0)
     case "$CURRENT_MTIME" in ''|*[!0-9]*) CURRENT_MTIME=0 ;; esac
     case "$SNAPSHOT_MTIME" in ''|*[!0-9]*) SNAPSHOT_MTIME=0 ;; esac
-    if [ "$SNAPSHOT_MTIME" -gt 0 ] && [ "$CURRENT_MTIME" = "$SNAPSHOT_MTIME" ]; then
+    case "$SNAPSHOT_FILE_MTIME" in ''|*[!0-9]*) SNAPSHOT_FILE_MTIME=0 ;; esac
+    SNAPSHOT_VS_OPTIN_DIFF=$((SNAPSHOT_FILE_MTIME - CURRENT_MTIME))
+    if [ "$SNAPSHOT_MTIME" -gt 0 ] \
+       && [ "$CURRENT_MTIME" = "$SNAPSHOT_MTIME" ] \
+       && [ "$SNAPSHOT_VS_OPTIN_DIFF" -ge 30 ]; then
       SOLO_ADMIN_OPT_IN=1
     fi
   fi
@@ -1376,14 +1395,45 @@ AUTHOR_IS_SOLE_ADMIN=0
 if [ "$SOLO_ADMIN_OPT_IN" = "1" ]; then
   # Only spend the API call(s) when the opt-in file exists — no point
   # paginating collaborators on every pr-grind run.
-  ADMIN_LOGINS_JSON=$(gh api "repos/$OWNER/$REPO/collaborators?permission=admin&affiliation=all" --paginate 2>/dev/null || echo "[]")
-  HUMAN_ADMIN_COUNT=$(printf '%s' "$ADMIN_LOGINS_JSON" \
-    | jq -r '[.[] | select((.type // "User")=="User" and ((.login // "") | endswith("[bot]") | not)) | .login] | length' 2>/dev/null || echo 0)
+  #
+  # Count humans with PR-APPROVAL capability, not just admins. Anyone with
+  # write/maintain/admin permission (i.e., `permissions.push == true`) can
+  # submit an APPROVED review under default branch protection. Filtering
+  # only `permission=admin` would let the solo-admin trigger fire even when
+  # another human collaborator with maintain/write could approve, which
+  # contradicts the "no other human can approve" promise. Query all
+  # collaborators (no permission filter) and select those whose
+  # `permissions.push` is true.
+  #
+  # Variable kept as HUMAN_ADMIN_COUNT for backward-compat with
+  # approver-gap-detect.sh's input contract; the semantic is now "count of
+  # humans with PR-approval capability". The script doc + log field
+  # `human_admin_count` carries the same semantic.
+  # `gh api --paginate` emits one JSON array per page (e.g.
+  # `[page1]\n[page2]`), NOT a single merged array. Pipe through
+  # `jq -s 'add // []'` to slurp all pages and concatenate into one array;
+  # without this, downstream `jq '.[]'` consumers below would only iterate
+  # the first page on repos with >30 collaborators, and the numeric guard
+  # would normalize the resulting multi-line "0\n1" to 0, silently
+  # disabling solo-admin auto-detect even when the PR author is the only
+  # write-capable human.
+  COLLABORATORS_JSON=$(gh api "repos/$OWNER/$REPO/collaborators?affiliation=all" --paginate 2>/dev/null \
+    | jq -s 'add // []' 2>/dev/null || echo "[]")
+  HUMAN_ADMIN_COUNT=$(printf '%s' "$COLLABORATORS_JSON" \
+    | jq -r '[.[]
+        | select((.type // "User") == "User"
+                 and ((.login // "") | endswith("[bot]") | not)
+                 and ((.permissions.push // false) == true))
+        | .login] | length' 2>/dev/null || echo 0)
   case "$HUMAN_ADMIN_COUNT" in ''|*[!0-9]*) HUMAN_ADMIN_COUNT=0 ;; esac
   if [ "$HUMAN_ADMIN_COUNT" = "1" ] && [ -n "$AUTHOR" ]; then
-    SOLE_ADMIN_LOGIN=$(printf '%s' "$ADMIN_LOGINS_JSON" \
-      | jq -r '[.[] | select((.type // "User")=="User" and ((.login // "") | endswith("[bot]") | not)) | .login] | .[0] // ""' 2>/dev/null || echo "")
-    if [ "$SOLE_ADMIN_LOGIN" = "$AUTHOR" ]; then
+    SOLE_APPROVER_LOGIN=$(printf '%s' "$COLLABORATORS_JSON" \
+      | jq -r '[.[]
+          | select((.type // "User") == "User"
+                   and ((.login // "") | endswith("[bot]") | not)
+                   and ((.permissions.push // false) == true))
+          | .login] | .[0] // ""' 2>/dev/null || echo "")
+    if [ "$SOLE_APPROVER_LOGIN" = "$AUTHOR" ]; then
       AUTHOR_IS_SOLE_ADMIN=1
     fi
   fi

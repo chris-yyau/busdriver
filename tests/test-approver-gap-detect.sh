@@ -270,6 +270,37 @@ export AUTHOR_IS_SOLE_ADMIN="1"
 run_case "14. solo-admin opt-in absent + sole admin → surface-decision (no consent, no auto)" \
     "surface-decision" "1" "0" "none"
 
+# 15. Solo-admin opt-in present + HUMAN_ADMIN_COUNT=0 (gh API failure / empty)
+#     → surface-decision with distinct reason. Without the explicit count=0
+#     diagnostic, this would fall through to the generic "approver gap" reason
+#     and the operator couldn't tell the opt-in was even seen.
+export BRANCH_RULES_JSON="$RULES_REQUIRE_1"
+export PR_REVIEWS_JSON="$REVIEWS_EMPTY"
+export AUTHOR_PERM_JSON="$AUTHOR_ADMIN"
+export AUDIT_WORKFLOW_PRESENT="1"
+export CI_AND_BOTS_CLEAN="1"
+export ADMIN_FLAG_PASSED="0"
+export SOLO_ADMIN_OPT_IN="1"
+export HUMAN_ADMIN_COUNT="0"
+export AUTHOR_IS_SOLE_ADMIN="0"
+run_case "15. solo-admin opt-in + HUMAN_ADMIN_COUNT=0 (API failure) → surface-decision (distinct diagnostic)" \
+    "surface-decision" "1" "0" "none"
+
+# 16. Solo-admin opt-in + sole admin confirmed, but baseline gates fail
+#     (CI not clean). Distinct diagnostic so operator knows the opt-in was
+#     seen + structurally valid but a baseline condition blocked auto-merge.
+export BRANCH_RULES_JSON="$RULES_REQUIRE_1"
+export PR_REVIEWS_JSON="$REVIEWS_EMPTY"
+export AUTHOR_PERM_JSON="$AUTHOR_ADMIN"
+export AUDIT_WORKFLOW_PRESENT="1"
+export CI_AND_BOTS_CLEAN="0"
+export ADMIN_FLAG_PASSED="0"
+export SOLO_ADMIN_OPT_IN="1"
+export HUMAN_ADMIN_COUNT="1"
+export AUTHOR_IS_SOLE_ADMIN="1"
+run_case "16. solo-admin opt-in + sole admin + CI not clean → surface-decision (baseline gate fail)" \
+    "surface-decision" "1" "0" "none"
+
 # Clean up — don't leak solo-admin env into any later additions.
 unset SOLO_ADMIN_OPT_IN HUMAN_ADMIN_COUNT AUTHOR_IS_SOLE_ADMIN
 

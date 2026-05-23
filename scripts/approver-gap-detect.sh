@@ -36,12 +36,25 @@
 #      caller should NOT treat the script's decision as a policy bail.
 #   6. Set ADMIN_FLAG_PASSED — "1" when --admin-on-approver-gap was passed
 #      to pr-grind, else "0".
-#   7. Set SOLO_ADMIN_OPT_IN — "1" when the caller observed
-#        $REPO_ROOT/.claude/pr-grind-auto-admin-solo.local
-#      else "0". This is the per-repo operator-consent file (gitignored,
-#      same pattern as skip-litmus.local) that lets pr-grind treat
-#      --admin-on-approver-gap as implicit when the operator is structurally
-#      the sole human admin. Off by default.
+#   7. Set SOLO_ADMIN_OPT_IN — "1" only when ALL of the following hold;
+#      the caller (skills/pr-grind/SKILL.md) is responsible for performing
+#      these checks before setting the flag:
+#        (a) The opt-in file exists at
+#            <MAIN_REPO_ROOT>/.claude/pr-grind-auto-admin-solo.local
+#            (MAIN repo, NOT the worktree — resolve via
+#             `dirname "$(git rev-parse --path-format=absolute --git-common-dir)"`
+#             so worktree-mode pr-grind sees the operator's actual opt-in).
+#        (b) A snapshot file exists at
+#            <MAIN_REPO_ROOT>/.claude/.pr-grind-solo-opt-in-snapshot-<PR>.local
+#            written by pr-grind Step 0 ONLY when the opt-in file was already
+#            ≥30s old at invocation start (anti-self-bypass — prevents a
+#            mid-session touch from being honored on a slow pr-grind run).
+#        (c) The snapshot's recorded mtime equals the opt-in file's current
+#            mtime (a mid-run replacement also invalidates the opt-in).
+#      Set "0" if any condition fails. This is the per-repo operator-consent
+#      mechanism (gitignored, same .local pattern as skip-litmus.local) that
+#      lets pr-grind treat --admin-on-approver-gap as implicit when the
+#      operator is structurally the sole human admin. Off by default.
 #   8. Set HUMAN_ADMIN_COUNT — count of NON-BOT collaborators with admin
 #      permission, computed by the caller via
 #        gh api "repos/<owner>/<repo>/collaborators?permission=admin&affiliation=all" --paginate \
@@ -257,10 +270,19 @@ elif [ "$ADMIN_FLAG_INT" -eq 1 ] && [ "$CI_AND_BOTS_CLEAN_INT" -eq 0 ]; then
     emit_decision "surface-decision" "admin flag passed but caller did not assert CI/bots clean" 0 "none"
 fi
 
-# Solo-admin opt-in present but assumption broke (e.g., contractor added).
-# Distinct reason helps the operator diagnose why auto-detect didn't fire.
-if [ "$SOLO_OPT_IN_INT" -eq 1 ] && [ "$AUTHOR_IS_SOLE_INT" -eq 0 ]; then
-    emit_decision "surface-decision" "solo-admin opt-in present but author is not sole human admin (count=$HUMAN_ADMIN_COUNT_INT) — opt-in self-revokes" 0 "none"
+# Solo-admin opt-in present but the structural check or baseline gates
+# couldn't satisfy auto-escalation. Distinct reasons help the operator
+# diagnose why auto-detect didn't fire — without these, the operator sees
+# only the generic "approver gap; awaiting operator decision" message and
+# has no signal that the opt-in file was seen at all.
+if [ "$SOLO_OPT_IN_INT" -eq 1 ]; then
+    if [ "$HUMAN_ADMIN_COUNT_INT" -eq 0 ]; then
+        emit_decision "surface-decision" "solo-admin opt-in present but human admin count is 0 (gh API failed or returned empty) — refusing to auto-escalate" 0 "none"
+    elif [ "$AUTHOR_IS_SOLE_INT" -eq 0 ] || [ "$HUMAN_ADMIN_COUNT_INT" -ne 1 ]; then
+        emit_decision "surface-decision" "solo-admin opt-in present but structural check failed (count=$HUMAN_ADMIN_COUNT_INT, author_is_sole=$AUTHOR_IS_SOLE_INT) — opt-in self-revokes" 0 "none"
+    elif [ "$BASELINE_OK" -eq 0 ]; then
+        emit_decision "surface-decision" "solo-admin opt-in present and sole-admin confirmed, but baseline gates not satisfied (CI/bots clean, admin/maintain perm, bypass-audit.yml all required)" 0 "none"
+    fi
 fi
 
 emit_decision "surface-decision" "approver gap; awaiting operator decision" 0 "none"

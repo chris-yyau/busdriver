@@ -592,22 +592,35 @@ fi
 # .claude/*.local is gitignored / not copied into ephemeral worktrees.
 # `git rev-parse --git-common-dir` returns the SHARED .git/ across worktrees,
 # whose parent is the main repo root.
+#
+# Per-PR snapshot path: includes ${PR_NUMBER} so two concurrent pr-grind
+# runs on DIFFERENT PRs cannot race on a single shared snapshot file. A
+# same-PR concurrent run is a degenerate case (operator running pr-grind
+# twice on the same PR simultaneously) and accepts last-writer-wins.
+# Snapshot is written 0600 to prevent other local users from reading the
+# mtime token (defense in depth — the threat model already assumes
+# attacker has same-user write access, in which case this is marginal).
 MAIN_REPO_ROOT_FOR_OPTIN=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null)
 if [ -n "$MAIN_REPO_ROOT_FOR_OPTIN" ] && [ -d "$MAIN_REPO_ROOT_FOR_OPTIN/.claude" ]; then
   SOLO_OPTIN_FILE="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/pr-grind-auto-admin-solo.local"
-  SOLO_OPTIN_SNAPSHOT="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/.pr-grind-solo-opt-in-snapshot.local"
-  # Always clear any prior snapshot — fresh run, fresh truth.
+  SOLO_OPTIN_SNAPSHOT="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/.pr-grind-solo-opt-in-snapshot-${PR_NUMBER}.local"
+  # Always clear any prior per-PR snapshot — fresh run, fresh truth.
   rm -f "$SOLO_OPTIN_SNAPSHOT"
   if [ -f "$SOLO_OPTIN_FILE" ]; then
     OPTIN_MTIME=$(stat -c %Y "$SOLO_OPTIN_FILE" 2>/dev/null || stat -f %m "$SOLO_OPTIN_FILE" 2>/dev/null || echo 0)
     case "$OPTIN_MTIME" in ''|*[!0-9]*) OPTIN_MTIME=0 ;; esac
-    NOW_EPOCH=$(date +%s)
-    OPTIN_AGE=$((NOW_EPOCH - OPTIN_MTIME))
-    if [ "$OPTIN_MTIME" -gt 0 ] && [ "$OPTIN_AGE" -ge 30 ]; then
-      printf '%s\n' "$OPTIN_MTIME" > "$SOLO_OPTIN_SNAPSHOT"
-      echo "ℹ️  pr-grind-auto-admin-solo.local snapshotted (age=${OPTIN_AGE}s) — solo-admin auto-detect armed for this run."
+    if [ "$OPTIN_MTIME" -eq 0 ]; then
+      echo "⚠️  stat failed on $SOLO_OPTIN_FILE — cannot verify age, solo-admin auto-detect will NOT fire this run." >&2
     else
-      echo "⚠️  pr-grind-auto-admin-solo.local exists but is too fresh (age=${OPTIN_AGE}s, required ≥30s) — solo-admin auto-detect will NOT fire this run. If you just touched the file, wait 30s and rerun pr-grind." >&2
+      NOW_EPOCH=$(date +%s)
+      OPTIN_AGE=$((NOW_EPOCH - OPTIN_MTIME))
+      if [ "$OPTIN_AGE" -ge 30 ]; then
+        printf '%s\n' "$OPTIN_MTIME" > "$SOLO_OPTIN_SNAPSHOT" \
+          && chmod 600 "$SOLO_OPTIN_SNAPSHOT" 2>/dev/null \
+          && echo "ℹ️  pr-grind-auto-admin-solo.local snapshotted (age=${OPTIN_AGE}s, PR #${PR_NUMBER}) — solo-admin auto-detect armed for this run."
+      else
+        echo "⚠️  pr-grind-auto-admin-solo.local exists but is too fresh (age=${OPTIN_AGE}s, required ≥30s) — solo-admin auto-detect will NOT fire this run. If you just touched the file, wait 30s and rerun pr-grind." >&2
+      fi
     fi
   fi
 fi
@@ -1276,20 +1289,22 @@ ADMIN_FLAG_PASSED=<0|1 — see "Resolve flag-to-state translations" in START>
 # script treats as "unknown" and refuses to auto-escalate.
 #
 # Anti-self-bypass: opt-in fires ONLY when the Step 0 snapshot file
-# `.claude/.pr-grind-solo-opt-in-snapshot.local` exists AND its recorded
-# mtime matches the opt-in file's current mtime. Step 0 writes the snapshot
-# only when the opt-in file was already ≥30s old at pr-grind invocation
-# start (NOT at Completion time — a slow pr-grind run can easily exceed 30s,
-# so checking at Completion would defeat the freshness gate). A mid-run
-# touch/replace produces a snapshot/current-mtime mismatch → opt-in
-# invalidated. Both the opt-in file and the snapshot live in the MAIN
-# repo's .claude/ (not the ephemeral worktree's). See Step 0's snapshot
-# writer for the producer side.
+# `.claude/.pr-grind-solo-opt-in-snapshot-${PR}.local` exists AND its
+# recorded mtime matches the opt-in file's current mtime. Step 0 writes
+# the snapshot only when the opt-in file was already ≥30s old at pr-grind
+# invocation start (NOT at Completion time — a slow pr-grind run can
+# easily exceed 30s, so checking at Completion would defeat the freshness
+# gate). A mid-run touch/replace produces a snapshot/current-mtime
+# mismatch → opt-in invalidated. The snapshot path is per-PR so concurrent
+# pr-grind runs on different PRs don't collide on shared state. Both the
+# opt-in file and the snapshot live in the MAIN repo's .claude/ (not the
+# ephemeral worktree's). See Step 0's snapshot writer for the producer side.
 MAIN_REPO_ROOT_FOR_OPTIN=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null)
 SOLO_ADMIN_OPT_IN=0
 if [ -n "$MAIN_REPO_ROOT_FOR_OPTIN" ]; then
   OPTIN_FILE="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/pr-grind-auto-admin-solo.local"
-  OPTIN_SNAPSHOT="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/.pr-grind-solo-opt-in-snapshot.local"
+  # Per-PR snapshot path — must match Step 0's snapshot writer exactly.
+  OPTIN_SNAPSHOT="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/.pr-grind-solo-opt-in-snapshot-${PR}.local"
   if [ -f "$OPTIN_FILE" ] && [ -f "$OPTIN_SNAPSHOT" ]; then
     CURRENT_MTIME=$(stat -c %Y "$OPTIN_FILE" 2>/dev/null || stat -f %m "$OPTIN_FILE" 2>/dev/null || echo 0)
     SNAPSHOT_MTIME=$(head -n1 "$OPTIN_SNAPSHOT" 2>/dev/null | tr -dc '0-9')
@@ -1564,7 +1579,7 @@ PR #<N> is clean after <rounds> round(s).
 | `--ci-only` | Only fix CI failures, ignore comments. Forces inline mode (Step 2 branching not yet wired into the subagent). | Off |
 | `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
 | `--comments-only` | Only address comments, ignore CI. Forces inline mode (same reason as `--ci-only`). | Off |
-| `--admin-on-approver-gap` | Opt-in auto-escalation when the approver gap is the sole remaining merge-gate blocker. Eligibility (ALL must hold): CI green, bots ack HEAD, all threads resolved, no failing required checks; author has `admin` or `maintain` repo permission; `.github/workflows/bypass-audit.yml` exists in the repo. With all gates green, the dispatcher runs `gh pr merge <PR> --squash --delete-branch --admin` and logs the event to `.claude/bypass-log.jsonl` (`event: pr-grind-admin-on-approver-gap`). **Fail-CLOSED when no audit workflow exists** — the flag is ignored without a trail and the dispatcher surfaces the operator-decision message instead. Off by default. **Alternative — per-repo opt-in:** for repos where the operator is structurally the sole human admin (no other humans could ever approve), drop `.claude/pr-grind-auto-admin-solo.local` once (gitignored, same pattern as `skip-litmus.local`) and pr-grind treats the flag as implicit. The same eligibility gates apply, plus a live structural check that `HUMAN_ADMIN_COUNT==1` and the author is that one admin — the opt-in self-revokes if a contractor is later added. **Anti-self-bypass (snapshot-anchored):** the opt-in file must be at least 30s old AT pr-grind INVOCATION START (Step 0), not at Completion. Step 0 snapshots the file's mtime to `.claude/.pr-grind-solo-opt-in-snapshot.local` only when the file is already ≥30s old; Completion auto-fires only when the snapshot exists AND its mtime matches the current file's mtime. A mid-run touch (no snapshot) or mid-run replacement (mismatch) both invalidate the opt-in for the current run. This prevents an autonomous agent from touching the file at the start of a slow pr-grind run and having it satisfy the 30s threshold by the time Completion runs. Snapshot and opt-in file both live in the MAIN repo's `.claude/`, not the ephemeral worktree. The audit-log event is distinct: `pr-grind-admin-on-approver-gap-solo-admin-auto` with `trigger: "solo-admin-auto"` and `human_admin_count` recorded. | Off (surfaces decision message) |
+| `--admin-on-approver-gap` | Opt-in auto-escalation when the approver gap is the sole remaining merge-gate blocker. Eligibility (ALL must hold): CI green, bots ack HEAD, all threads resolved, no failing required checks; author has `admin` or `maintain` repo permission; `.github/workflows/bypass-audit.yml` exists in the repo. With all gates green, the dispatcher runs `gh pr merge <PR> --squash --delete-branch --admin` and logs the event to `.claude/bypass-log.jsonl` (`event: pr-grind-admin-on-approver-gap`). **Fail-CLOSED when no audit workflow exists** — the flag is ignored without a trail and the dispatcher surfaces the operator-decision message instead. Off by default. **Alternative — per-repo opt-in:** for repos where the operator is structurally the sole human admin (no other humans could ever approve), drop `.claude/pr-grind-auto-admin-solo.local` once (gitignored, same pattern as `skip-litmus.local`) and pr-grind treats the flag as implicit. The same eligibility gates apply, plus a live structural check that `HUMAN_ADMIN_COUNT==1` and the author is that one admin — the opt-in self-revokes if a contractor is later added. **Anti-self-bypass (snapshot-anchored):** the opt-in file must be at least 30s old AT pr-grind INVOCATION START (Step 0), not at Completion. Step 0 snapshots the file's mtime to a per-PR snapshot at `.claude/.pr-grind-solo-opt-in-snapshot-<PR>.local` (written 0600) only when the file is already ≥30s old; Completion auto-fires only when the snapshot exists AND its mtime matches the current file's mtime. A mid-run touch (no snapshot) or mid-run replacement (mismatch) both invalidate the opt-in for the current run. The per-PR scoping prevents concurrent pr-grind runs on different PRs from racing on shared state. This prevents an autonomous agent from touching the file at the start of a slow pr-grind run and having it satisfy the 30s threshold by the time Completion runs. Snapshot and opt-in file both live in the MAIN repo's `.claude/`, not the ephemeral worktree. The audit-log event is distinct: `pr-grind-admin-on-approver-gap-solo-admin-auto` with `trigger: "solo-admin-auto"` and `human_admin_count` recorded. | Off (surfaces decision message) |
 | `--copilot-auto-resolve` | Opt-in: when Copilot's HEAD ack is stale after a force-push AND every Copilot thread is anchored to lines the new HEAD touched AND the worker emitted substantive fixes for those lines, auto-resolve the threads with an `addressed in <SHA>` reply + `resolveReviewThread` mutation. Flips ack-ledger tier A to a HEAD-ack via the resolved-threads path. Disabled by default while the test fixtures stabilize; promote to default once fixtures 5-7 (see `tests/test-copilot-resolve.sh`) have a track record. | Off |
 
 ## User-Created Skip File

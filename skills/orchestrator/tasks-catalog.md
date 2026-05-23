@@ -69,7 +69,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Error Handling Review** | check error handling, silent failures, catch blocks | `silent-failure-hunter` agent |
 | **Type Design Review** | review types, check invariants, type safety | `type-design-analyzer` agent |
 | **Test Coverage Review** | check test quality, test gaps, edge cases | `pr-test-analyzer` agent |
-| **Code Polish** | simplify code, make clearer, refine | `code-simplifier` agent (on-demand, Opus) |
+| **Code Polish** | simplify code, make clearer, refine | `code-simplifier` agent |
 | **Code Architecture Improvement** | deepen design, find architectural opportunities | `improve-codebase-architecture` |
 | **Docs Setup** | set up docs, audit docs, standardize docs | `busdriver:docs-setup` |
 | **SEO** | SEO audit, schema markup, search visibility | `seo` / `seo-audit` / `schema-markup` / `ai-seo`. Agent: `seo-specialist` |

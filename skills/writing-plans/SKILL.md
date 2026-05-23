@@ -131,6 +131,113 @@ After writing the complete plan, look at the spec with fresh eyes and check the 
 
 If you find issues, fix them inline. No need to re-review — just fix and move on. If you find a spec requirement with no task, add the task.
 
+## Codex Handoff Eligibility
+
+After sanity check passes, evaluate whether this plan should hand off to codex instead of running implementation in this CC session. The goal is token savings — codex does the implementation work, Claude does only spec-emit + final review.
+
+**Mandatory pre-flight (run FIRST, before deciding outcome):** delete `.claude/codex-goal-*.json.local` files older than 2 hours.
+
+```bash
+# Pre-flight: remove orphaned specs ONLY (mtime > 2h ago). macOS/BSD find compatible.
+# Guard against .claude not existing yet (fresh worktree / new repo) — find would otherwise exit non-zero.
+[ -d .claude ] && find .claude -maxdepth 1 -name 'codex-goal-*.json.local' -type f -mmin +120 -delete 2>/dev/null || true
+```
+
+This is a **best-effort** mitigation for orphaned specs from prior interrupted Step 3 executions. **Known limitations of the time-based filter (intentional tradeoff):**
+
+- **Plans started within 2 hours of an interrupted Step 3** — the stale spec persists and can mis-route orchestrator Phase 4. User can manually clean with `rm -f .claude/codex-goal-*.json.local` between plans.
+- **Handovers running longer than 2 hours** — the live spec could be deleted by another session's pre-flight mid-handover. In practice an 8-iter handover finishes in well under 2 hours; if you have a known long-running case, disable the pre-flight for that session.
+
+Stronger guarantees (lockfile-based ownership, session-ID sentinels in the JSON, orchestrator-side content validation) are deferred — the residual window is narrow enough for solo-dev use and the additional complexity has its own failure modes. Document and accept; revisit if real stale-routing incidents occur.
+
+Three outcomes for the eligibility decision:
+
+| Plan shape | Outcome | Emits |
+|---|---|---|
+| Small + verifier-shaped + bounded (≤8 iters' worth of work) AND result must return to CC | **In-CC handover** via `busdriver:codex-goal-handover` | `.claude/codex-goal-<slug>.json.local` |
+| Verifier-shaped but too large (>8 iters, hours-long, or plan markdown >~3KB) OR result need not return to CC | **TUI handoff** — user pastes `/goal` invocation into codex TUI | `.claude/codex-goal-<slug>.md.local` + chat instructions |
+| Not verifier-shaped (judgment-heavy, ambiguous verifiers, needs Claude's eyes per step) | **No action** — continue to default executor | Nothing |
+
+**Eligibility criteria — criteria 1–4 must ALL hold for any codex handoff; criterion 5 distinguishes Outcome 1 from Outcome 2:**
+1. **Substantive task** — not a one-line edit; meaningful scope to delegate
+2. **Clean verifier commands** — pass/fail expressible as shell commands (tests, lint, typecheck) at plan level
+3. **Claude doesn't need to read code between steps** — the loop is verifier-led, not Claude-judged
+4. **Scope is bounded** — does not require Claude's intermediate judgment
+5. **Result returns to CC for follow-up** — if yes → Outcome 1 (in-CC, codex finishes and Claude reviews); if no (fire-and-forget overnight) → Outcome 2 (TUI handoff, user takes over entirely), regardless of size.
+
+If ANY of criteria 1–4 fails → Outcome 3 (default executor). When in doubt, prefer Outcome 3 — codex-goal's hard cap is 8 iters, and a marginal-fit plan wastes the cost savings.
+
+**Size decision (handover vs TUI):** Estimate iter count as ≈ one logical commit per task. Rough rubric:
+- ≤8 tasks of 1–2 file changes each → Outcome 1 (in-CC handover)
+- >8 tasks, OR any task clearly multi-hour, OR plan markdown >~3KB → Outcome 2 (TUI handoff)
+
+This is judgment, not pattern matching — give it 30 seconds of thought, don't algorithmify it.
+
+### Outcome 1: Defer spec emission to Step 3 (in-CC handover)
+
+When this outcome is selected, **note the decision in conversation context for use in Step 3 below** — do NOT emit the spec file here, and do NOT create any on-disk artifact. Spec emission happens in Step 3 of Auto-Execution — *after* Design Review and Worktree Setup. This ordering matters: if either earlier phase halts (Design Review rejects, baseline tests fail), no stale `.claude/codex-goal-<slug>.json.local` is left behind to mis-route orchestrator Phase 4 on a subsequent plan run.
+
+In Step 3, when invoking `busdriver:codex-goal-handover`, write `.claude/codex-goal-<plan-slug>.json.local` (the `.local` suffix is mandatory — it matches the `.claude/*.local` gitignore rule and prevents the spec from being committed by accident) matching the shape in `busdriver:codex-goal-handover` → "Inputs: the spec":
+
+```json
+{
+  "objective": "<one sentence from plan Goal>",
+  "scope": {
+    "include": ["<globs derived from Files: sections>"],
+    "exclude": []
+  },
+  "constraints": [
+    "<plan-level constraints — TDD, no new deps, preserve API, etc.>"
+  ],
+  "verifiable_end_state": {
+    "description": "<plan's done-when condition>",
+    "verifiers": [
+      { "name": "tests", "cmd": "<project test command>" },
+      { "name": "lint",  "cmd": "<project lint command>" },
+      { "name": "typecheck", "cmd": "<typecheck if applicable>" }
+    ]
+  },
+  "max_iters": 5
+}
+```
+
+**`max_iters` derivation (the `5` above is a placeholder — compute the actual value):** estimate one iter per task in the plan, add 1 buffer, clamp to `[5, 8]` — i.e. `max(5, tasks + 1)` capped at 8. A 1-task plan still emits `max_iters: 5` (codex-goal-handover's documented default); a 7-task plan emits `max_iters: 8`. Never undershoot the documented default — small plans can have unexpected iter spread, and the floor of 5 matches codex-goal-handover Hard rule 4. JSON does not support comments, so the emitter must substitute a real integer in `[5, 8]` before writing the file (codex-goal-handover validates with `jq -e`).
+
+**Slug derivation:** compute the spec path ONCE as a **literal string**, and use that literal at the emit, invocation, and cleanup sites. Do NOT rely on shell variable persistence — Claude Code's Bash tool spawns a fresh shell per invocation, so a `SPEC_PATH=...` set in one Bash call does not survive to the next. Either chain emit + invoke-prep + cleanup in conversation memory (record the literal path string), or substitute the resolved literal into every command directly.
+
+Sanitize the plan title to `[A-Za-z0-9_-]` (note: `.` is excluded — the codex-goal-handover Step 6 `v_safe` pattern allows `.` because verifier names benefit from dotted forms, but slugs do NOT, and allowing `.` lets `..` traversal sequences survive sanitization). Reject empty slugs after stripping.
+
+Example one-shot derivation (run in a single Bash call to compute the literal path; record the *result* — not the variable — for use in subsequent Bash calls):
+```bash
+SLUG=$(printf '%s' "$PLAN_TITLE" | tr -cd 'A-Za-z0-9_-')
+[ -n "$SLUG" ] || { echo "empty slug after sanitization — abort"; exit 1; }
+printf 'SPEC_PATH=%s\n' ".claude/codex-goal-${SLUG}.json.local"
+# Capture the printed literal — e.g., `.claude/codex-goal-refactor-auth.json.local`.
+# Use the literal in every subsequent command, NOT a $SPEC_PATH reference across Bash calls.
+```
+
+The strict whitelist alone is sufficient — no runtime `realpath` validation needed (which would fail on macOS/BSD for not-yet-existing paths anyway).
+
+Then in Auto-Execution below, **skip the default Execute step** — orchestrator Phase 4 routes to `busdriver:codex-goal-handover` based on the spec file's presence. **Cleanup is the caller's responsibility** (writing-plans Step 3 does the `rm -f`); the dispatcher does not currently auto-clean. The pre-flight at the top of this section handles the residual window where an interruption between emit and cleanup leaves a stale spec.
+
+### Outcome 2: Emit TUI handoff materials and halt
+
+Write `.claude/codex-goal-<plan-slug>.md.local` containing the full plan spec rewritten in codex-goal terms (objective, scope, verifiers, constraints, max_iters — same JSON shape, embedded in markdown for human readability). Then **halt auto-execution** and print to chat:
+
+```
+Plan exceeds codex-goal-handover bounds (>8 iters / hours-long).
+Open a separate terminal, run `codex`, then paste:
+
+  Follow the instructions in .claude/codex-goal-<slug>.md.local.
+
+  Hard scope: edit only paths in scope.include. Stop after all verifiers green.
+  Report total commits, tests passing, and any blockers.
+
+This stays under the 4000-character `/goal` input limit and runs entirely outside Claude Code (zero CC tokens). Resume this session when codex finishes or hits a blocker.
+```
+
+The halt is intentional — it overrides the default "auto-run Phases 3–6" because TUI handoff means the user is taking over execution outside CC.
+
 ## Auto-Execution
 
 <EXTREMELY-IMPORTANT>
@@ -148,7 +255,7 @@ After saving the plan and sanity check passes, proceed automatically through the
 
 1. **Design Review** — INVOKE `busdriver:blueprint-review` to review and approve the plan document. The design review gate (hook-enforced) blocks all implementation code until this passes. If design review rejects, fix issues and re-submit — do not proceed until it passes.
 2. **Worktree Setup** — INVOKE `busdriver:using-git-worktrees` to create an isolated workspace. If worktree creation fails or baseline tests fail, stop and report.
-3. **Execute** — INVOKE `busdriver:subagent-driven-development` for independent tasks, or `busdriver:executing-plans` for dependent tasks requiring sequential execution with review checkpoints.
+3. **Execute** — If Codex Handoff Eligibility selected Outcome 1: derive the literal spec path per the Slug derivation rule (record it in conversation context — e.g., `.claude/codex-goal-refactor-auth.json.local`), **emit the spec file at that literal path now** (deferred from the Eligibility step — see Outcome 1 for the JSON template), then INVOKE `busdriver:codex-goal-handover` with that literal path. **Cleanup on every exit path:** after handover returns (green, bailed, or max-iters) AND on any error path before reaching that point (handover throws, session interrupted), delete the spec by passing the literal path to `rm -f` (e.g., `rm -f .claude/codex-goal-refactor-auth.json.local`). Treat this as an always-runs finalizer — if you bail out of Step 3 for any reason, do the rm before reporting to the user. Do NOT rely on a `$SPEC_PATH` shell variable across Bash tool calls (each call spawns a fresh shell; the variable will be empty). Otherwise INVOKE `busdriver:subagent-driven-development` for independent tasks, or `busdriver:executing-plans` for dependent tasks requiring sequential execution with review checkpoints. (Outcome 2 already halted auto-execution before reaching this step.)
 4. **Verify** — INVOKE `busdriver:verification-loop` (build + lint + tests), then `busdriver:verification-before-completion` to confirm no claims without evidence.
 5. **Finish** — `busdriver:finishing-a-development-branch` presents integration options (merge/PR/keep/discard).
 
@@ -157,5 +264,6 @@ After saving the plan and sanity check passes, proceed automatically through the
 - Worktree baseline tests fail
 - A task blocker requires human input (missing dependency, unclear requirement)
 - Verification fails after implementation
+- **Codex Handoff Outcome 2 (TUI handoff)** — by design; user takes over in codex TUI
 
 **Override:** If the user explicitly asks to choose execution mode or pause between phases, respect that. Auto-execution is the default, not a mandate.

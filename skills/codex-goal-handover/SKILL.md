@@ -18,6 +18,8 @@ Pick this skill when ALL of the following are true:
 3. The result must come back to this CC session for follow-up review
 4. The task is bounded — fits in ≤ 5 iterations typical, ≤ 8 in extreme cases
 
+**Also auto-invoked by `busdriver:writing-plans` Outcome 1:** when a plan emits a `.claude/codex-goal-<slug>.json.local` spec, orchestrator Phase 4 routes here automatically. See `busdriver:writing-plans` → "Codex Handoff Eligibility" for the upstream contract. Spec-file cleanup is the caller's responsibility (writing-plans Step 3); see Step 9 below.
+
 Pick something else when:
 
 - **No clean verifier commands** ("refactor for readability", "investigate why X is slow") → use `/codex:rescue` (one-shot, no verifiers needed)
@@ -337,6 +339,10 @@ Only run after Step 7 exits 0 (scope clean):
 - **Red after max_iters** → report failure with last verifier outputs + suggest the user move to TUI `/goal` for longer autonomy (use the file-pointer pattern from "TUI `/goal` handoff: long-spec pattern" above if the spec is >~3 KB), or refine the spec.
 
 This is the structural defense against prompt injection from verifier output: even if Codex were steered to modify a file outside scope, the post-iter check catches it before the next iter compounds the damage. The check uses **only Python stdlib** (`json` + `fnmatch`) — no PyYAML or other third-party deps.
+
+### 9. Cleanup of writing-plans-emitted specs
+
+When invoked via the writing-plans Outcome 1 contract (auto-emitted `.claude/codex-goal-<slug>.json.local`), **the caller — not this skill — owns cleanup.** writing-plans Step 3 deletes the spec file after this skill returns, but only on graceful exits (handover returns green, bailed, or max-iters). The pre-flight orphaned-spec cleanup in writing-plans (which removes specs older than 2 hours before each run) is the reliable mitigation for unclean exits such as session interruptions, quota exhaustion, or tool-call termination — those do not trigger the caller's finalizer. The dispatcher does not currently auto-clean; EXIT-trap-based cleanup is not in scope. Specs passed via other paths (user-supplied JSON, ad-hoc invocations) are always caller-owned.
 
 ## Litmus considerations (busdriver pre-commit gate)
 

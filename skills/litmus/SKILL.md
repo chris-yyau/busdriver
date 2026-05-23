@@ -442,17 +442,20 @@ If an agent is slow, WAIT. If it times out after 10 minutes, mark it as timed-ou
 
 After codex CLI passes, dispatch **6 parallel review agents** using the Agent tool. Each reviews the full `base..HEAD` diff from a different lens. Launch all 6 in a **single message** for concurrency.
 
-| Agent | Lens | Focus |
-|-------|------|-------|
-| 1 | **Guidelines** | CLAUDE.md compliance, project conventions, naming consistency |
-| 2 | **Bugs** | Logic errors, off-by-one, null/undefined, race conditions (changes only, not full codebase) |
-| 3 | **History** | Run `git log --oneline base..HEAD` and `git blame` on changed files. Flag: reverted changes, contradictory commits, partial refactors |
-| 4 | **Cross-commit** | Inconsistent naming across commits, partial migrations, orphaned imports, incomplete renames |
-| 5 | **Security** | Hardcoded secrets, injection, auth bypass, error messages leaking internals, unsafe dependencies |
-| 6 | **Docs-consistency** | README, SKILL.md, docs/ accuracy vs changed code. Flag: stale examples, wrong function signatures, missing new features |
+**Pass the listed `model` parameter to each Agent dispatch.** High-weight agents (Bugs, Security, Cross-commit) need Opus reasoning for kill-switch reliability; lower-weight agents (Guidelines, History, Docs) are pattern-matching tasks where Sonnet is the cost/quality sweet spot. Without explicit `model:` on the Agent call, dispatches inherit the parent's model (typically Opus) and inflate cost ~3×.
 
-**Agent prompt template** (adapt per lens):
+| Agent | Lens | Model | Focus |
+|-------|------|-------|-------|
+| 1 | **Guidelines** | sonnet | CLAUDE.md compliance, project conventions, naming consistency |
+| 2 | **Bugs** | opus | Logic errors, off-by-one, null/undefined, race conditions (changes only, not full codebase) |
+| 3 | **History** | sonnet | Run `git log --oneline base..HEAD` and `git blame` on changed files. Flag: reverted changes, contradictory commits, partial refactors |
+| 4 | **Cross-commit** | opus | Inconsistent naming across commits, partial migrations, orphaned imports, incomplete renames |
+| 5 | **Security** | opus | Hardcoded secrets, injection, auth bypass, error messages leaking internals, unsafe dependencies |
+| 6 | **Docs-consistency** | sonnet | README, SKILL.md, docs/ accuracy vs changed code. Flag: stale examples, wrong function signatures, missing new features |
+
+**Agent prompt template** (adapt per lens, set `model:` per the table above):
 ```
+model: [MODEL]  # e.g. opus / sonnet — per the dispatch table above
 Review this PR diff for [LENS]. The diff is from base..HEAD.
 
 ## Diff

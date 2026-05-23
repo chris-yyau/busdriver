@@ -110,6 +110,7 @@ Creates isolated workspace, verifies baseline tests pass.
 **Choose one mode:**
 | Signal | INVOKE |
 |---|---|
+| Plan has co-located `.claude/codex-goal-*.json` spec (writing-plans Codex Handoff Outcome 1) | `busdriver:codex-goal-handover` — verifier-led delegation; saves CC tokens |
 | Want human review between batches | `busdriver:executing-plans` |
 | Independent tasks, want speed | `busdriver:subagent-driven-development` |
 | Multiple independent problems | `busdriver:dispatching-parallel-agents` |

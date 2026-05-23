@@ -131,6 +131,76 @@ After writing the complete plan, look at the spec with fresh eyes and check the 
 
 If you find issues, fix them inline. No need to re-review — just fix and move on. If you find a spec requirement with no task, add the task.
 
+## Codex Handoff Eligibility
+
+After sanity check passes, evaluate whether this plan should hand off to codex instead of running implementation in this CC session. The goal is token savings — codex does the implementation work, Claude does only spec-emit + final review. Three outcomes:
+
+| Plan shape | Outcome | Emits |
+|---|---|---|
+| Small + verifier-shaped + bounded (≤8 iters' worth of work) | **In-CC handover** via `codex-goal-handover` skill | `.claude/codex-goal-<slug>.json` |
+| Verifier-shaped but too large (>8 iters, hours-long, or plan markdown >~3KB) | **TUI handoff** — user pastes `/goal` invocation into codex TUI | `.claude/codex-goal-<slug>.md.local` + chat instructions |
+| Not verifier-shaped (judgment-heavy, ambiguous verifiers, needs Claude's eyes per step) | **No action** — continue to default executor | Nothing |
+
+**Eligibility criteria — ALL must hold for either handoff:**
+1. **Substantive task** — not a one-line edit; meaningful scope to delegate
+2. **Clean verifier commands** — pass/fail expressible as shell commands (tests, lint, typecheck) at plan level
+3. **Claude doesn't need to read code between steps** — the loop is verifier-led, not Claude-judged
+4. **Scope is bounded** — does not require Claude's intermediate judgment
+
+If ANY criterion fails → Outcome 3 (default executor). When in doubt, prefer Outcome 3 — codex-goal's hard cap is 8 iters, and a marginal-fit plan wastes the cost savings.
+
+**Size decision (handover vs TUI):** Estimate iter count as ≈ one logical commit per task. Rough rubric:
+- ≤8 tasks of 1–2 file changes each → Outcome 1 (in-CC handover)
+- >8 tasks, OR any task clearly multi-hour, OR plan markdown >~3KB → Outcome 2 (TUI handoff)
+
+This is judgment, not pattern matching — give it 30 seconds of thought, don't algorithmify it.
+
+### Outcome 1: Emit in-CC handover spec
+
+Write `.claude/codex-goal-<plan-slug>.json` matching the shape in `codex-goal-handover/SKILL.md` → "Inputs: the spec":
+
+```json
+{
+  "objective": "<one sentence from plan Goal>",
+  "scope": {
+    "include": ["<globs derived from Files: sections>"],
+    "exclude": []
+  },
+  "constraints": [
+    "<plan-level constraints — TDD, no new deps, preserve API, etc.>"
+  ],
+  "verifiable_end_state": {
+    "description": "<plan's done-when condition>",
+    "verifiers": [
+      { "name": "tests", "cmd": "<project test command>" },
+      { "name": "lint",  "cmd": "<project lint command>" },
+      { "name": "typecheck", "cmd": "<typecheck if applicable>" }
+    ]
+  },
+  "max_iters": 5
+}
+```
+
+Then in Auto-Execution below, **skip the default Execute step** — orchestrator Phase 4 routes to `codex-goal-handover` based on the spec file's presence.
+
+### Outcome 2: Emit TUI handoff materials and halt
+
+Write `.claude/codex-goal-<plan-slug>.md.local` containing the full plan spec rewritten in codex-goal terms (objective, scope, verifiers, constraints, max_iters — same JSON shape, embedded in markdown for human readability). Then **halt auto-execution** and print to chat:
+
+```
+Plan exceeds codex-goal-handover bounds (>8 iters / hours-long).
+Open a separate terminal, run `codex`, then paste:
+
+  Follow the instructions in .claude/codex-goal-<slug>.md.local.
+
+  Hard scope: edit only paths in scope.include. Stop after all verifiers green.
+  Report total commits, tests passing, and any blockers.
+
+This stays under the 4KB `/goal` input limit and runs entirely outside Claude Code (zero CC tokens). Resume this session when codex finishes or hits a blocker.
+```
+
+The halt is intentional — it overrides the default "auto-run Phases 3–6" because TUI handoff means the user is taking over execution outside CC.
+
 ## Auto-Execution
 
 <EXTREMELY-IMPORTANT>
@@ -148,7 +218,7 @@ After saving the plan and sanity check passes, proceed automatically through the
 
 1. **Design Review** — INVOKE `busdriver:blueprint-review` to review and approve the plan document. The design review gate (hook-enforced) blocks all implementation code until this passes. If design review rejects, fix issues and re-submit — do not proceed until it passes.
 2. **Worktree Setup** — INVOKE `busdriver:using-git-worktrees` to create an isolated workspace. If worktree creation fails or baseline tests fail, stop and report.
-3. **Execute** — INVOKE `busdriver:subagent-driven-development` for independent tasks, or `busdriver:executing-plans` for dependent tasks requiring sequential execution with review checkpoints.
+3. **Execute** — If Codex Handoff Eligibility emitted `.claude/codex-goal-<slug>.json` (Outcome 1), INVOKE `busdriver:codex-goal-handover` with that spec instead. Otherwise INVOKE `busdriver:subagent-driven-development` for independent tasks, or `busdriver:executing-plans` for dependent tasks requiring sequential execution with review checkpoints. (Outcome 2 already halted auto-execution before reaching this step.)
 4. **Verify** — INVOKE `busdriver:verification-loop` (build + lint + tests), then `busdriver:verification-before-completion` to confirm no claims without evidence.
 5. **Finish** — `busdriver:finishing-a-development-branch` presents integration options (merge/PR/keep/discard).
 
@@ -157,5 +227,6 @@ After saving the plan and sanity check passes, proceed automatically through the
 - Worktree baseline tests fail
 - A task blocker requires human input (missing dependency, unclear requirement)
 - Verification fails after implementation
+- **Codex Handoff Outcome 2 (TUI handoff)** — by design; user takes over in codex TUI
 
 **Override:** If the user explicitly asks to choose execution mode or pause between phases, respect that. Auto-execution is the default, not a mandate.

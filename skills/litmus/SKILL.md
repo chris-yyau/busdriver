@@ -121,8 +121,8 @@ Bash(
   - Just fix → stage → re-run in a tight loop
 - **TOO LARGE (exit 2)** → Auto-split into smaller commits (see below)
 - **TIMEOUT (exit 124)** → Split into smaller commits and retry each group
-- **Max iterations (10)** → Stop, show summary, ask user
-- **Only talk to user when:** PASS, max iterations, or codex quota error
+- **Max iterations (10)** → see "Auto-Escalation on Logical Failure" — dispatch `/codex:rescue` once before surfacing to user
+- **Only talk to user when:** PASS, codex quota error, or post-rescue still failing
 
 **5. Run Tests & Commit:** Only after review passes, tests pass
 ```bash
@@ -145,7 +145,7 @@ git commit -m "Message"
 - **NO polling/sleep loops** - just use timeout=1260000
 - **NO user interaction** between iterations - fix silently
 - **NO verbose progress** - don't narrate each step
-- **ONLY talk to user when:** PASS, max iterations, or error
+- **ONLY talk to user when:** PASS, error, or post-rescue still failing (see "Auto-Escalation on Logical Failure" — stall/max-iterations auto-dispatch `/codex:rescue` first)
 
 ## Auto-Split on Large Diffs
 
@@ -255,6 +255,34 @@ failure exits (`exit 1` and `exit 124`); `exit 2` (TOO_LARGE) does not set it. V
 
 Automated callers SHOULD prefer this field over stdout marker-matching.
 Interactive `/litmus` users see no behavior change.
+
+## Auto-Escalation on Logical Failure (codex-rescue)
+
+When `terminal_status` indicates Claude could not converge — **not** when codex itself crashed — auto-dispatch `/codex:rescue` for a fresh diagnostic pass BEFORE surfacing to the user. This is distinct from the runtime `codex → droid → builtin` chain (which handles *transient* codex errors); this handles *logical* failure where review succeeded but Claude can't act on the findings.
+
+| `terminal_status` | Auto-dispatch `/codex:rescue`? | Rationale |
+|---|---|---|
+| `stall` | **Yes — once** | Same blocking issues two iters in a row = Claude is stuck. Highest-ROI moment for a second opinion. |
+| `max_iterations` | **Yes — once** | 10 iters burned. Rescue is cheaper than dropping back to the user. |
+| `infra_failure` | No | Already covered by codex→droid→builtin runtime escalation. |
+| `setup_error` | No — surface to user | Not a code problem. |
+| `review_findings` (normal FAIL) | No — let the auto-continue loop fix it | Rescuing routine FAILs burns codex tokens on lint-tier work. |
+
+**Protocol on `stall` / `max_iterations`:**
+
+1. Read the failing issues from `.claude/litmus-state.md` and the iteration history (`/tmp/litmus-iteration-history.jsonl`)
+2. Dispatch `/codex:rescue` with: the issues, the staged diff (`git diff --cached`), and prior iteration history as context
+3. Apply codex's recommended fix
+4. Re-run `run-review-loop.sh` **exactly once** — confirm PASS or surface to user
+5. **Hard cap: one rescue dispatch per litmus session.** No rescue-then-rescue loops. If the post-rescue run still fails, surface to user with both the original findings and codex's diagnosis.
+
+**Anti-patterns:**
+- Auto-rescuing on every FAIL — defeats the cost-savings goal; the auto-continue loop already handles routine fixes cheaply
+- Rescue-then-rescue chains — caps the cost ceiling at one rescue, no recursion
+- Dispatching rescue when codex itself was the failure (`infra_failure`) — that path is already handled by the droid/builtin escalation
+
+**Environment variables:**
+- `LITMUS_AUTO_RESCUE_DISABLED=1` — opt out of the logical-failure escalation (e.g., when the user wants to see the stall/max-iter result directly without rescue overhead)
 
 ## Violation Recovery
 

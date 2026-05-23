@@ -61,7 +61,7 @@
     {
       "path": "agents/build-error-resolver.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/build-error-resolver.md"
     },
     {
@@ -79,7 +79,7 @@
     {
       "path": "agents/cpp-build-resolver.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/cpp-build-resolver.md"
     },
     {
@@ -139,7 +139,7 @@
     {
       "path": "agents/go-build-resolver.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/go-build-resolver.md"
     },
     {
@@ -163,7 +163,7 @@
     {
       "path": "agents/java-build-resolver.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/java-build-resolver.md"
     },
     {
@@ -175,7 +175,7 @@
     {
       "path": "agents/kotlin-build-resolver.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/kotlin-build-resolver.md"
     },
     {
@@ -235,19 +235,19 @@
     {
       "path": "agents/pytorch-build-resolver.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/pytorch-build-resolver.md"
     },
     {
       "path": "agents/refactor-cleaner.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/refactor-cleaner.md"
     },
     {
       "path": "agents/rust-build-resolver.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/rust-build-resolver.md"
     },
     {
@@ -259,7 +259,7 @@
     {
       "path": "agents/security-reviewer.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/security-reviewer.md"
     },
     {
@@ -3914,7 +3914,7 @@
     },
     {
       "path": "agents/silent-failure-hunter.md",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/silent-failure-hunter.md",
       "source": "ecc"
     },
@@ -3944,7 +3944,7 @@
     },
     {
       "path": "agents/dart-build-resolver.md",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/dart-build-resolver.md",
       "source": "ecc"
     },
@@ -3956,7 +3956,7 @@
     },
     {
       "path": "agents/comment-analyzer.md",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/comment-analyzer.md",
       "source": "ecc"
     },
@@ -3974,7 +3974,7 @@
     },
     {
       "path": "agents/type-design-analyzer.md",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/type-design-analyzer.md",
       "source": "ecc"
     },

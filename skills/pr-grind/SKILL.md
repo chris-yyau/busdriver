@@ -1469,26 +1469,93 @@ GAP_TRIGGER=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.trigger // "none"' 2>/d
 **Bypass-log format** (append-only JSONL; gitignored under `.claude/`):
 
 ```bash
-# Self-contained: re-derive every value the bypass-log needs rather than
-# relying on caller-scope state. Three fields live ONLY inside the script's
-# emitted JSON (.author_perm, .required_approving_review_count,
-# .human_approvals — see scripts/approver-gap-detect.sh "Output"); extract
-# them from $GAP_DECISION_JSON before composing the log line. $REPO_ROOT is
-# recomputed locally because the marker-write block above runs as its own
-# Bash tool call (see the EXTREMELY-IMPORTANT block before the marker-write
-# subsection) and its variables don't survive into a subsequent call.
+# Same-call-scope contract: this block executes INSIDE the auto-admin-merge
+# branch of the approver-gap detection bash call above, so PR / OWNER /
+# REPO / BRANCH / AUTHOR / GAP_DECISION_JSON are all in scope from that
+# parent block. Defense-in-depth re-derivations below cover the
+# single-call-shared-shell case:
+#   - PR / OWNER / REPO: re-template-substituted by the dispatcher (Claude)
+#     so the values match the parent block's substitutions even if the
+#     dispatcher chooses to split this into its own Bash tool call.
+#   - BRANCH / AUTHOR: re-derived via `gh -R "$OWNER/$REPO"` (NOT bare
+#     `gh pr view`, which resolves the repo from CWD — in a CWD-drift
+#     scenario it could record a different repo's PR with the same number
+#     while the audit log says this OWNER/REPO).
+#   - REPO_ROOT: recomputed locally because the marker-write block above
+#     runs as its own Bash tool call (see the EXTREMELY-IMPORTANT block
+#     before the marker-write subsection) and its variables don't survive
+#     into a subsequent call.
+# Three fields live ONLY inside the script's emitted JSON (.author_perm,
+# .required_approving_review_count, .human_approvals — see
+# scripts/approver-gap-detect.sh "Output"); extract them from
+# $GAP_DECISION_JSON before composing the log line. $GAP_DECISION_JSON
+# itself is NOT re-derivable here; it must remain in shell scope from the
+# parent approver-gap detection call. If the dispatcher splits this into
+# a separate Bash call and $GAP_DECISION_JSON is empty, the authorization
+# gate below aborts (see next paragraph) — the merge does NOT run.
+#
+# Fail-CLOSED on missing/malformed $GAP_DECISION_JSON: this block is the
+# `auto-admin-merge` branch, and that branch is only legal if the detector
+# emitted `decision=auto-admin-merge` AND `trigger in {flag,solo-admin-auto}`.
+# Treating either as missing/unverifiable as a license to proceed would
+# convert the authorization input into a fail-OPEN trust boundary —
+# wrong even though the merge command runs next. Verify the detector
+# decision is in scope and consistent before logging + merging.
+PR=<PR_NUMBER>
+OWNER=<owner>
+REPO=<repo>
+# Preserve any already-in-scope BRANCH / AUTHOR from the parent
+# approver-gap detection call. Only re-derive (via `gh -R "$OWNER/$REPO"`
+# to avoid CWD-based repo inference) if they're empty AND the gh call
+# succeeds — a transient gh failure must NOT overwrite a known-good value
+# with empty string, which would weaken the bypass-log audit trail.
+if [ -z "${BRANCH:-}" ]; then
+  GH_BRANCH=$(gh -R "$OWNER/$REPO" pr view "$PR" --json baseRefName -q .baseRefName 2>/dev/null)
+  [ -n "$GH_BRANCH" ] && BRANCH="$GH_BRANCH"
+fi
+if [ -z "${AUTHOR:-}" ]; then
+  GH_AUTHOR=$(gh -R "$OWNER/$REPO" pr view "$PR" --json author -q .author.login 2>/dev/null)
+  [ -n "$GH_AUTHOR" ] && AUTHOR="$GH_AUTHOR"
+fi
 REPO_ROOT=$(git rev-parse --show-toplevel)
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
-AUTHOR_PERM=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.author_perm // "read"')
-REQUIRED_APPROVALS=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.required_approving_review_count // 0')
-HUMAN_APPROVALS=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.human_approvals // 0')
+
+# Fail-CLOSED authorization gate. $GAP_DECISION_JSON must be in scope from
+# the parent approver-gap detection call AND contain a valid auto-admin-merge
+# decision with a known trigger. Empty / malformed / wrong-decision / unknown-
+# trigger inputs ABORT before the merge — the bypass-log entry and `gh pr
+# merge --admin` only run on a verified authorization.
+if [ -z "${GAP_DECISION_JSON:-}" ]; then
+  echo "❌ approver-gap auto-admin: GAP_DECISION_JSON empty (split-call broke same-call-scope contract) — aborting before bypass-log + merge"; exit 1
+fi
+GAP_DECISION_FOR_MERGE=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.decision // "missing"' 2>/dev/null || echo "parse-error")
+GAP_TRIGGER_FOR_MERGE=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.trigger // "missing"' 2>/dev/null || echo "parse-error")
+if [ "$GAP_DECISION_FOR_MERGE" != "auto-admin-merge" ]; then
+  echo "❌ approver-gap auto-admin: detector decision is '$GAP_DECISION_FOR_MERGE', not 'auto-admin-merge' — aborting before bypass-log + merge"; exit 1
+fi
+case "$GAP_TRIGGER_FOR_MERGE" in
+  flag|solo-admin-auto) ;;
+  *) echo "❌ approver-gap auto-admin: detector trigger is '$GAP_TRIGGER_FOR_MERGE', not 'flag' or 'solo-admin-auto' — aborting before bypass-log + merge"; exit 1 ;;
+esac
+
+# After the authorization gate, the remaining jq reads are pulling forensic
+# metadata from a known-valid JSON object — defaults via `// X` are
+# appropriate here (those fields may legitimately be missing if the detector
+# is upgraded incrementally; the merge is already authorized).
+AUTHOR_PERM=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.author_perm // "read"' 2>/dev/null || echo "read")
+REQUIRED_APPROVALS=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.required_approving_review_count // 0' 2>/dev/null || echo 0)
+case "$REQUIRED_APPROVALS" in ''|*[!0-9]*) REQUIRED_APPROVALS=0 ;; esac
+HUMAN_APPROVALS=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.human_approvals // 0' 2>/dev/null || echo 0)
+case "$HUMAN_APPROVALS" in ''|*[!0-9]*) HUMAN_APPROVALS=0 ;; esac
 # Trigger-derived fields: forensics depends on knowing WHY the bypass fired.
 # `event` distinguishes explicit-flag from structural sole-admin in audits;
 # human_admin_count records the structural assumption at decision time so a
 # later audit can detect if the repo's admin roster changed post-merge.
-LOG_TRIGGER=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.trigger // "none"')
-LOG_HUMAN_ADMIN_COUNT=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.human_admin_count // 0')
+# LOG_TRIGGER is the already-validated value from the authorization gate.
+LOG_TRIGGER="$GAP_TRIGGER_FOR_MERGE"
+LOG_HUMAN_ADMIN_COUNT=$(printf '%s' "$GAP_DECISION_JSON" | jq -r '.human_admin_count // 0' 2>/dev/null || echo 0)
+case "$LOG_HUMAN_ADMIN_COUNT" in ''|*[!0-9]*) LOG_HUMAN_ADMIN_COUNT=0 ;; esac
 case "$LOG_TRIGGER" in
   solo-admin-auto) LOG_EVENT="pr-grind-admin-on-approver-gap-solo-admin-auto" ;;
   flag)            LOG_EVENT="pr-grind-admin-on-approver-gap" ;;

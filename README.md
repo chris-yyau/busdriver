@@ -214,11 +214,14 @@ export SKIP_PR_GRIND=1
 
 # Per-repo opt-in (NOT a skip-file — operator-consent file): treat
 # `--admin-on-approver-gap` as implicit for pr-grind when you are
-# structurally the sole human admin of this repo. The merge still runs
-# through pr-grind's full eligibility check (CI green, bots ack, author
-# admin/maintain, bypass-audit.yml present) AND a live check that
-# HUMAN_ADMIN_COUNT==1 AND you are that admin. The opt-in self-revokes
-# if a contractor is later added. Logged with a distinct event.
+# structurally the sole approval-capable human on this repo (i.e., the
+# only non-bot collaborator with write/maintain/admin — `permissions.push
+# == true`). The merge still runs through pr-grind's full eligibility
+# check (CI green, bots ack, author admin/maintain, bypass-audit.yml
+# present) AND a live check that HUMAN_ADMIN_COUNT==1 AND you are that
+# sole approval-capable human. The opt-in self-revokes if a second
+# approval-capable human appears — a contractor with write permission
+# alone is enough to invalidate it. Logged with a distinct event.
 touch .claude/pr-grind-auto-admin-solo.local
 ```
 

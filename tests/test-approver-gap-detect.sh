@@ -127,14 +127,19 @@ run_case "2. solo-author + NO audit workflow + no flag → surface-decision ([ad
     "surface-decision" "0" "0"
 
 # 3. Same as #1 with --admin-on-approver-gap flag → auto-admin-merge
+# Explicitly zero solo-admin vars so an inherited environment can't make
+# the detector prefer trigger=solo-admin-auto over the flag path.
 export BRANCH_RULES_JSON="$RULES_REQUIRE_1"
 export PR_REVIEWS_JSON="$REVIEWS_EMPTY"
 export AUTHOR_PERM_JSON="$AUTHOR_ADMIN"
 export AUDIT_WORKFLOW_PRESENT="1"
 export CI_AND_BOTS_CLEAN="1"
 export ADMIN_FLAG_PASSED="1"
-run_case "3. solo-author + audit workflow + --admin-on-approver-gap → auto-admin-merge" \
-    "auto-admin-merge" "1" "1"
+export SOLO_ADMIN_OPT_IN="0"
+export HUMAN_ADMIN_COUNT="0"
+export AUTHOR_IS_SOLE_ADMIN="0"
+run_case "3. solo-author + audit workflow + --admin-on-approver-gap → auto-admin-merge (trigger=flag)" \
+    "auto-admin-merge" "1" "1" "flag"
 
 # 4. PR has 1 human APPROVED review → no-gap
 export BRANCH_RULES_JSON="$RULES_REQUIRE_1"
@@ -192,14 +197,19 @@ run_case "8. --admin flag + author=write (not admin/maintain) → fail-CLOSED to
     "surface-decision" "1" "0"
 
 # 9. --admin-on-approver-gap WITH author.permission=maintain → auto-admin-merge
+# Explicitly zero solo-admin vars so an inherited environment can't tip
+# the detector into trigger=solo-admin-auto.
 export BRANCH_RULES_JSON="$RULES_REQUIRE_1"
 export PR_REVIEWS_JSON="$REVIEWS_EMPTY"
 export AUTHOR_PERM_JSON="$AUTHOR_MAINTAIN"
 export AUDIT_WORKFLOW_PRESENT="1"
 export CI_AND_BOTS_CLEAN="1"
 export ADMIN_FLAG_PASSED="1"
-run_case "9. --admin flag + author=maintain → auto-admin-merge (maintain is eligible)" \
-    "auto-admin-merge" "1" "1"
+export SOLO_ADMIN_OPT_IN="0"
+export HUMAN_ADMIN_COUNT="0"
+export AUTHOR_IS_SOLE_ADMIN="0"
+run_case "9. --admin flag + author=maintain → auto-admin-merge (maintain is eligible, trigger=flag)" \
+    "auto-admin-merge" "1" "1" "flag"
 
 # 10. --admin-on-approver-gap WITHOUT caller asserting CI/bots clean → surface
 export BRANCH_RULES_JSON="$RULES_REQUIRE_1"

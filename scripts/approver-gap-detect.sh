@@ -38,23 +38,38 @@
 #      to pr-grind, else "0".
 #   7. Set SOLO_ADMIN_OPT_IN — "1" only when ALL of the following hold;
 #      the caller (skills/pr-grind/SKILL.md) is responsible for performing
-#      these checks before setting the flag:
+#      these checks before setting the flag. Set "0" if any condition fails.
 #        (a) The opt-in file exists at
 #            <MAIN_REPO_ROOT>/.claude/pr-grind-auto-admin-solo.local
 #            (MAIN repo, NOT the worktree — resolve via
-#             `dirname "$(git rev-parse --path-format=absolute --git-common-dir)"`
+#             `dirname "$(git -C <WORKTREE_DIR> rev-parse --path-format=absolute --git-common-dir)"`
 #             so worktree-mode pr-grind sees the operator's actual opt-in).
 #        (b) A snapshot file exists at
 #            <MAIN_REPO_ROOT>/.claude/.pr-grind-solo-opt-in-snapshot-<PR>.local
 #            written by pr-grind Step 0 ONLY when the opt-in file was already
-#            ≥30s old at invocation start (anti-self-bypass — prevents a
-#            mid-session touch from being honored on a slow pr-grind run).
-#        (c) The snapshot's recorded mtime equals the opt-in file's current
-#            mtime (a mid-run replacement also invalidates the opt-in).
-#      Set "0" if any condition fails. This is the per-repo operator-consent
-#      mechanism (gitignored, same .local pattern as skip-litmus.local) that
-#      lets pr-grind treat --admin-on-approver-gap as implicit when the
-#      operator is structurally the sole human admin. Off by default.
+#            ≥30s old at INVOCATION_START_EPOCH (Step 0's captured-once
+#            timestamp from the very first line of the block, NOT a fresh
+#            `date +%s` at snapshot time — slow earlier ops in Step 0 could
+#            otherwise push elapsed time past 30s and let a mid-invocation
+#            touch satisfy the gate it's meant to defeat).
+#        (c) The snapshot's recorded mtime (content) equals the opt-in
+#            file's current mtime — a mid-run replacement invalidates.
+#        (d) The snapshot file's own filesystem mtime is ≥30s AFTER the
+#            opt-in file's mtime (`snapshot.fs_mtime - opt-in.mtime >= 30`).
+#            Defeats the same-NOW forge where an attacker creates both
+#            files in one action with identical mtimes (which would
+#            otherwise pass condition (c) trivially). Step 0's legitimate
+#            write produces diff >= 30 by definition (it only snapshots
+#            opt-in files already >= 30s old). `touch -t` backdating by a
+#            sophisticated attacker can still bypass this — documented as
+#            defense-in-depth, not a security boundary; threat model
+#            already assumes attacker has same-user write access, in
+#            which case `gh pr merge --admin` is directly accessible.
+#      This is the per-repo operator-consent mechanism (gitignored, same
+#      .local pattern as skip-litmus.local) that lets pr-grind treat
+#      --admin-on-approver-gap as implicit when the operator is
+#      structurally the sole human with PR-approval capability. Off by
+#      default.
 #   8. Set HUMAN_ADMIN_COUNT — count of NON-BOT collaborators with
 #      PR-APPROVAL capability (anyone with write/maintain/admin perm —
 #      `permissions.push == true`). The caller MUST use the fail-CLOSED

@@ -241,7 +241,7 @@
     {
       "path": "agents/refactor-cleaner.md",
       "source": "ecc",
-      "status": "custom",
+      "status": "sync",
       "upstream_path": "agents/refactor-cleaner.md"
     },
     {

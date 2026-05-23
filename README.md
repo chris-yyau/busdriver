@@ -211,9 +211,20 @@ touch .claude/skip-pr-grind.local
 export SKIP_LITMUS=1
 export SKIP_DESIGN_REVIEW=1
 export SKIP_PR_GRIND=1
+
+# Per-repo opt-in (NOT a skip-file — operator-consent file): treat
+# `--admin-on-approver-gap` as implicit for pr-grind when you are
+# structurally the sole human admin of this repo. The merge still runs
+# through pr-grind's full eligibility check (CI green, bots ack, author
+# admin/maintain, bypass-audit.yml present) AND a live check that
+# HUMAN_ADMIN_COUNT==1 AND you are that admin. The opt-in self-revokes
+# if a contractor is later added. Logged with a distinct event.
+touch .claude/pr-grind-auto-admin-solo.local
 ```
 
 Skip files for litmus and design-review are single-use (consumed after one bypass). `skip-pr-grind.local` uses deferred consumption — it is preserved when `gh pr merge` fails, `--auto` queues without merging, or output is ambiguous, and is consumed only on confirmed merge success. All bypasses log to `.claude/bypass-log.jsonl`. Files created within 30 seconds are rejected — this prevents Claude from creating skip files itself to bypass gates.
+
+The `pr-grind-auto-admin-solo.local` file is **not** a skip-file: it doesn't bypass any gate. It only changes pr-grind's behavior when the approver-gap detector would otherwise surface the operator-decision dialog — and only when the structural sole-admin assumption still holds at merge time. The file is durable (no single-use semantics) but **the 30s anti-self-bypass window still applies, anchored at pr-grind invocation start**: pr-grind's Step 0 writes a snapshot of the file's mtime to `.claude/.pr-grind-solo-opt-in-snapshot.local` ONLY when the opt-in file is already ≥30s old at that moment; the Completion auto-merge fires only when the snapshot exists AND its mtime still matches the live file. A mid-run touch (no snapshot) or mid-run replacement (mtime mismatch) invalidates the opt-in for that run. This defeats the "touch at start of a slow pr-grind run, exceed 30s by Completion time" attack that a flat-at-Completion check would allow. Opt in once via terminal, wait 30s, and any future pr-grind invocation honors it.
 
 ## Utility scripts
 
@@ -249,6 +260,8 @@ Every gate execution writes to a persistent JSONL log per project, so you can an
 | `skip-pr-grind-released-mismatch` | post-merge cleanup hook (PostToolUse) | The PR number parsed from the bash command did not match the PR number recorded in the pending claim, OR either side could not be concretely identified (the auto-detect path where `gh pr merge` runs without an explicit PR number records `merge_pr=unknown` and is refused at confirmation time to prevent cross-PR token reuse via branch-switching between claim and confirm). Skip file preserved |
 | `skip-pr-grind-released-malformed` | post-merge cleanup hook (PostToolUse) | Pending claim file failed structural validation (non-numeric mtime, malformed PR number). Skip file preserved |
 | `merge-bypass-stale-cleanup` | post-merge cleanup hook (PostToolUse) | A pending claim older than 5 minutes was force-cleaned via an unrelated Bash call (session crash recovery). Skip file preserved |
+| `pr-grind-admin-on-approver-gap` | pr-grind skill (Completion) | Operator passed `--admin-on-approver-gap` to pr-grind and all eligibility gates (CI green, bots ack, author admin/maintain, `bypass-audit.yml` present) held. `gh pr merge --squash --delete-branch --admin` was run; entry captures PR, branch, author, perm, required-approver count, human approvals at decision time, and head SHA |
+| `pr-grind-admin-on-approver-gap-solo-admin-auto` | pr-grind skill (Completion) | Same merge as `pr-grind-admin-on-approver-gap`, but triggered by the per-repo `.claude/pr-grind-auto-admin-solo.local` opt-in file plus a live structural check that `HUMAN_ADMIN_COUNT==1` and the author is that sole admin. Entry additionally records `human_admin_count` so a later audit can detect if the repo's admin roster changed post-merge |
 | `review-skipped-none` | pre-commit gate | Gate skipped because no review tool was active (BUSDRIVER_REVIEW_CLI=none) |
 | `narrative-fallback-triggered` | litmus CLI | Review CLI output was non-JSON; parsed as narrative fallback |
 | `codex-droid-fallback` | litmus CLI (`resolve-cli.sh _execute_codex`) | Codex exhausted retries on transient errors (rate-limit / network / 5xx); escalated to `droid exec` (default read-only mode) before falling back to builtin. Logged on every escalation regardless of droid outcome. Disable with `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` |

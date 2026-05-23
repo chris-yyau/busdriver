@@ -62,10 +62,11 @@ run_case() {
     local expected_decision="$2"
     local expected_audit_present="$3"
     local expected_audit_eligible="$4"
+    local expected_trigger="${5:-}"  # optional; empty = skip trigger check
     # Inputs come from env exported by the caller before invoking us.
     TOTAL=$((TOTAL + 1))
 
-    local out err decision audit_present audit_eligible
+    local out err decision audit_present audit_eligible trigger
     err="$(mktemp)"
     out=$(bash "$SCRIPT" 2>"$err") || {
         printf "  FAIL  %s (script exited non-zero)\n" "$name"
@@ -78,18 +79,23 @@ run_case() {
     decision=$(printf '%s' "$out" | jq -r '.decision' 2>/dev/null || echo "")
     audit_present=$(printf '%s' "$out" | jq -r '.audit_workflow_present' 2>/dev/null || echo "")
     audit_eligible=$(printf '%s' "$out" | jq -r '.audit_eligible' 2>/dev/null || echo "")
+    trigger=$(printf '%s' "$out" | jq -r '.trigger' 2>/dev/null || echo "")
 
-    if [ "$decision" = "$expected_decision" ] \
-       && [ "$audit_present" = "$expected_audit_present" ] \
-       && [ "$audit_eligible" = "$expected_audit_eligible" ]; then
+    local ok=1
+    [ "$decision" = "$expected_decision" ] || ok=0
+    [ "$audit_present" = "$expected_audit_present" ] || ok=0
+    [ "$audit_eligible" = "$expected_audit_eligible" ] || ok=0
+    if [ -n "$expected_trigger" ] && [ "$trigger" != "$expected_trigger" ]; then ok=0; fi
+
+    if [ "$ok" = "1" ]; then
         printf "  PASS  %s\n" "$name"
         PASS=$((PASS + 1))
     else
         printf "  FAIL  %s\n" "$name"
-        printf "        expected: decision=%s audit_present=%s audit_eligible=%s\n" \
-            "$expected_decision" "$expected_audit_present" "$expected_audit_eligible"
-        printf "        got:      decision=%s audit_present=%s audit_eligible=%s\n" \
-            "$decision" "$audit_present" "$audit_eligible"
+        printf "        expected: decision=%s audit_present=%s audit_eligible=%s trigger=%s\n" \
+            "$expected_decision" "$expected_audit_present" "$expected_audit_eligible" "${expected_trigger:-<any>}"
+        printf "        got:      decision=%s audit_present=%s audit_eligible=%s trigger=%s\n" \
+            "$decision" "$audit_present" "$audit_eligible" "$trigger"
         printf "        full out: %s\n" "$out"
         FAIL=$((FAIL + 1))
     fi
@@ -214,6 +220,58 @@ export CI_AND_BOTS_CLEAN="1"
 export ADMIN_FLAG_PASSED="0"
 run_case "11. reviewer APPROVED then CHANGES_REQUESTED → dismissed approval does NOT satisfy" \
     "surface-decision" "1" "0"
+
+# ── Solo-admin auto-detect (per-repo opt-in via .local file) ─────────────
+
+echo ""
+echo "── approver-gap-detect (solo-admin auto-detect) ────────────"
+
+# 12. Solo-admin opt-in + sole human admin + all baseline gates → auto-admin-merge
+#     trigger=solo-admin-auto (NOT "flag", since the flag wasn't passed).
+#     This is the jikdak case: operator dropped pr-grind-auto-admin-solo.local
+#     in the repo, structural sole-admin still holds → no surface dialog.
+export BRANCH_RULES_JSON="$RULES_REQUIRE_1"
+export PR_REVIEWS_JSON="$REVIEWS_EMPTY"
+export AUTHOR_PERM_JSON="$AUTHOR_ADMIN"
+export AUDIT_WORKFLOW_PRESENT="1"
+export CI_AND_BOTS_CLEAN="1"
+export ADMIN_FLAG_PASSED="0"
+export SOLO_ADMIN_OPT_IN="1"
+export HUMAN_ADMIN_COUNT="1"
+export AUTHOR_IS_SOLE_ADMIN="1"
+run_case "12. solo-admin opt-in + sole admin + all gates → auto-admin-merge (trigger=solo-admin-auto)" \
+    "auto-admin-merge" "1" "1" "solo-admin-auto"
+
+# 13. Solo-admin opt-in present but a contractor was added (HUMAN_ADMIN_COUNT=2)
+#     → assumption broken → surface-decision (self-revoking opt-in).
+export BRANCH_RULES_JSON="$RULES_REQUIRE_1"
+export PR_REVIEWS_JSON="$REVIEWS_EMPTY"
+export AUTHOR_PERM_JSON="$AUTHOR_ADMIN"
+export AUDIT_WORKFLOW_PRESENT="1"
+export CI_AND_BOTS_CLEAN="1"
+export ADMIN_FLAG_PASSED="0"
+export SOLO_ADMIN_OPT_IN="1"
+export HUMAN_ADMIN_COUNT="2"
+export AUTHOR_IS_SOLE_ADMIN="0"
+run_case "13. solo-admin opt-in + 2 human admins → surface-decision (opt-in self-revokes)" \
+    "surface-decision" "1" "0" "none"
+
+# 14. Solo-admin opt-in ABSENT + sole admin condition still true → surface-decision
+#     (no consent — no behavior change for repos that didn't opt in).
+export BRANCH_RULES_JSON="$RULES_REQUIRE_1"
+export PR_REVIEWS_JSON="$REVIEWS_EMPTY"
+export AUTHOR_PERM_JSON="$AUTHOR_ADMIN"
+export AUDIT_WORKFLOW_PRESENT="1"
+export CI_AND_BOTS_CLEAN="1"
+export ADMIN_FLAG_PASSED="0"
+export SOLO_ADMIN_OPT_IN="0"
+export HUMAN_ADMIN_COUNT="1"
+export AUTHOR_IS_SOLE_ADMIN="1"
+run_case "14. solo-admin opt-in absent + sole admin → surface-decision (no consent, no auto)" \
+    "surface-decision" "1" "0" "none"
+
+# Clean up — don't leak solo-admin env into any later additions.
+unset SOLO_ADMIN_OPT_IN HUMAN_ADMIN_COUNT AUTHOR_IS_SOLE_ADMIN
 
 # ── Results ──────────────────────────────────────────────────────────────
 echo ""

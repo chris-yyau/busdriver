@@ -38,6 +38,8 @@ Six gates enforced by PreToolUse hooks. All fail-CLOSED (block on error). Escape
 | **Careful guard** | `careful-guard.sh` | Destructive Bash commands (rm -rf, git reset --hard, etc.) | Confirmation prompt |
 | **Freeze guard** | `freeze-guard.sh` | Write/Edit outside scoped directory during debugging | Remove `.claude/freeze-scope.local` |
 
+**Related per-repo operator-consent file (NOT a gate, but lives alongside them):** `.claude/pr-grind-auto-admin-solo.local` (gitignored). When present AND the operator is structurally the sole human admin of the repo, pr-grind's approver-gap detector treats `--admin-on-approver-gap` as implicit — `gh pr merge --admin` runs without surfacing the operator-decision dialog. Same baseline gates as the flag (CI green, bots ack, author admin/maintain, `bypass-audit.yml` present). The opt-in self-revokes if a second human admin appears (assumption broken). **Anti-self-bypass (snapshot-anchored):** Step 0 of pr-grind snapshots the file's mtime to `.claude/.pr-grind-solo-opt-in-snapshot.local` only when the file is already ≥30s old at invocation start; Completion fires auto-merge only if snapshot exists AND its mtime matches the current file's mtime. Defeats the "touch at start of slow run, satisfy 30s by Completion" attack. Mid-run touch or replacement invalidates. Logged to `.claude/bypass-log.jsonl` with `event: pr-grind-admin-on-approver-gap-solo-admin-auto` for forensics. See `skills/pr-grind/SKILL.md` flag table.
+
 ## Version Sync
 
 Version numbers are managed across three manifests (declared in `.version-bump.json`):

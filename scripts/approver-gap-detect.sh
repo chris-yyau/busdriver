@@ -36,18 +36,41 @@
 #      caller should NOT treat the script's decision as a policy bail.
 #   6. Set ADMIN_FLAG_PASSED — "1" when --admin-on-approver-gap was passed
 #      to pr-grind, else "0".
-#   7. `export BRANCH_RULES_JSON PR_REVIEWS_JSON AUTHOR_PERM_JSON \
-#       AUDIT_WORKFLOW_PRESENT CI_AND_BOTS_CLEAN ADMIN_FLAG_PASSED`
+#   7. Set SOLO_ADMIN_OPT_IN — "1" when the caller observed
+#        $REPO_ROOT/.claude/pr-grind-auto-admin-solo.local
+#      else "0". This is the per-repo operator-consent file (gitignored,
+#      same pattern as skip-litmus.local) that lets pr-grind treat
+#      --admin-on-approver-gap as implicit when the operator is structurally
+#      the sole human admin. Off by default.
+#   8. Set HUMAN_ADMIN_COUNT — count of NON-BOT collaborators with admin
+#      permission, computed by the caller via
+#        gh api "repos/<owner>/<repo>/collaborators?permission=admin&affiliation=all" --paginate \
+#          | jq '[.[] | select((.type // "User")=="User" and (.login | endswith("[bot]") | not))] | length'
+#      Used together with AUTHOR_IS_SOLE_ADMIN as the structural check that
+#      "I am the sole human admin" is still true at merge time. If the count
+#      ever drifts > 1 (e.g., a contractor was added), the solo-admin branch
+#      stops firing — the opt-in file revokes itself when the assumption
+#      breaks. Default "0" (unknown).
+#   9. Set AUTHOR_IS_SOLE_ADMIN — "1" when the caller verified the PR author
+#      is the only human admin (HUMAN_ADMIN_COUNT==1 AND that admin is the
+#      author). Default "0".
+#  10. `export BRANCH_RULES_JSON PR_REVIEWS_JSON AUTHOR_PERM_JSON \
+#       AUDIT_WORKFLOW_PRESENT CI_AND_BOTS_CLEAN ADMIN_FLAG_PASSED \
+#       SOLO_ADMIN_OPT_IN HUMAN_ADMIN_COUNT AUTHOR_IS_SOLE_ADMIN`
 #      so this subprocess inherits them.
 #
 # Output (always one JSON line, always exit 0 on success):
 #   {
 #     "decision": "no-gap" | "surface-decision" | "auto-admin-merge",
+#     "trigger": "flag" | "solo-admin-auto" | "none",
 #     "required_approving_review_count": <int>,
 #     "human_approvals": <int>,
 #     "author_perm": "admin" | "maintain" | "write" | "triage" | "read",
 #     "audit_workflow_present": 0 | 1,
 #     "admin_flag_passed": 0 | 1,
+#     "solo_admin_opt_in": 0 | 1,
+#     "human_admin_count": <int>,
+#     "author_is_sole_admin": 0 | 1,
 #     "audit_eligible": 0 | 1,
 #     "reason": "<short human-readable reason>"
 #   }
@@ -61,19 +84,34 @@
 #                            [admin] appears as the first/default option.
 #   - "auto-admin-merge"   → caller logs to .claude/bypass-log.jsonl and runs
 #                            `gh pr merge <PR> --squash --delete-branch --admin`.
-#                            ONLY emitted when ALL eligibility gates pass:
-#                              admin_flag_passed=1
-#                              CI_AND_BOTS_CLEAN=1
-#                              required_approving_review_count >= 1
-#                              human_approvals < required_approving_review_count
-#                              author_perm ∈ {admin, maintain}
-#                              audit_workflow_present=1
+#                            ONLY emitted when ALL eligibility gates pass.
+#                            Two triggers can reach this decision:
+#                            (a) trigger=flag:
+#                                  admin_flag_passed=1
+#                                  CI_AND_BOTS_CLEAN=1
+#                                  required_approving_review_count >= 1
+#                                  human_approvals < required_approving_review_count
+#                                  author_perm ∈ {admin, maintain}
+#                                  audit_workflow_present=1
+#                            (b) trigger=solo-admin-auto:
+#                                  solo_admin_opt_in=1
+#                                  author_is_sole_admin=1
+#                                  human_admin_count=1
+#                                  CI_AND_BOTS_CLEAN=1
+#                                  required_approving_review_count >= 1
+#                                  human_approvals < required_approving_review_count
+#                                  author_perm ∈ {admin, maintain}
+#                                  audit_workflow_present=1
+#                            Caller switches the bypass-log "event" field on
+#                            the trigger value:
+#                              flag             → pr-grind-admin-on-approver-gap
+#                              solo-admin-auto  → pr-grind-admin-on-approver-gap-solo-admin-auto
 #
 # Fail-CLOSED principle: any input missing or unparseable degrades the
 # decision toward "surface-decision" (or "no-gap" when the rules are
 # missing entirely — caller's existing gh pr merge will then surface the
-# real error). The script NEVER emits "auto-admin-merge" without all six
-# inputs being present and consistent.
+# real error). The script NEVER emits "auto-admin-merge" without all
+# eligibility inputs for the chosen trigger being present and consistent.
 
 set -u
 
@@ -90,23 +128,31 @@ safe_jq() {
 
 # Emit the JSON decision and exit 0.
 emit_decision() {
-    local decision="$1" reason="$2" audit_eligible="$3"
+    local decision="$1" reason="$2" audit_eligible="$3" trigger="${4:-none}"
     jq -c -n \
         --arg decision "$decision" \
+        --arg trigger "$trigger" \
         --arg reason "$reason" \
         --arg author_perm "$AUTHOR_PERM" \
         --argjson required "$REQUIRED_APPROVALS" \
         --argjson human_approvals "$HUMAN_APPROVALS" \
         --argjson audit_workflow_present "$AUDIT_PRESENT_INT" \
         --argjson admin_flag_passed "$ADMIN_FLAG_INT" \
+        --argjson solo_admin_opt_in "$SOLO_OPT_IN_INT" \
+        --argjson human_admin_count "$HUMAN_ADMIN_COUNT_INT" \
+        --argjson author_is_sole_admin "$AUTHOR_IS_SOLE_INT" \
         --argjson audit_eligible "$audit_eligible" \
         '{
             decision: $decision,
+            trigger: $trigger,
             required_approving_review_count: $required,
             human_approvals: $human_approvals,
             author_perm: $author_perm,
             audit_workflow_present: $audit_workflow_present,
             admin_flag_passed: $admin_flag_passed,
+            solo_admin_opt_in: $solo_admin_opt_in,
+            human_admin_count: $human_admin_count,
+            author_is_sole_admin: $author_is_sole_admin,
             audit_eligible: $audit_eligible,
             reason: $reason
         }'
@@ -142,16 +188,29 @@ if [ "${ADMIN_FLAG_PASSED:-0}" = "1" ]; then ADMIN_FLAG_INT=1; fi
 CI_AND_BOTS_CLEAN_INT=0
 if [ "${CI_AND_BOTS_CLEAN:-0}" = "1" ]; then CI_AND_BOTS_CLEAN_INT=1; fi
 
+SOLO_OPT_IN_INT=0
+if [ "${SOLO_ADMIN_OPT_IN:-0}" = "1" ]; then SOLO_OPT_IN_INT=1; fi
+
+# HUMAN_ADMIN_COUNT defaults to 0 (unknown). When the caller didn't compute
+# it, the solo-admin branch can't fire — falls through to existing logic.
+HUMAN_ADMIN_COUNT_INT="${HUMAN_ADMIN_COUNT:-0}"
+case "$HUMAN_ADMIN_COUNT_INT" in ''|*[!0-9]*) HUMAN_ADMIN_COUNT_INT=0 ;; esac
+
+AUTHOR_IS_SOLE_INT=0
+if [ "${AUTHOR_IS_SOLE_ADMIN:-0}" = "1" ]; then AUTHOR_IS_SOLE_INT=1; fi
+
 # ── Decision logic ───────────────────────────────────────────────────────
 
 # No protection rule, or PR already has enough approvals → no gap, normal merge.
 if [ "$REQUIRED_APPROVALS" -lt 1 ] || [ "$HUMAN_APPROVALS" -ge "$REQUIRED_APPROVALS" ]; then
-    emit_decision "no-gap" "approver count satisfied or no rule" 0
+    emit_decision "no-gap" "approver count satisfied or no rule" 0 "none"
 fi
 
 # Approver gap exists. Now decide whether the caller can auto-escalate.
-# Required for auto-admin-merge:
-#   - --admin-on-approver-gap was passed (operator opted in)
+# Two triggers can produce auto-admin-merge:
+#   (a) explicit --admin-on-approver-gap flag (operator consent per-invocation)
+#   (b) solo-admin opt-in file + structural sole-admin check (per-repo consent)
+# Both require the same baseline gates:
 #   - CI/bots are already verified clean (gap is sole blocker — caller asserts)
 #   - Author has admin or maintain permission (others can't run --admin)
 #   - Audit workflow exists (we never bypass without an audit trail)
@@ -162,12 +221,28 @@ case "$AUTHOR_PERM" in
     *) PERM_OK=0 ;;
 esac
 
-if [ "$ADMIN_FLAG_INT" -eq 1 ] \
-   && [ "$CI_AND_BOTS_CLEAN_INT" -eq 1 ] \
+BASELINE_OK=0
+if [ "$CI_AND_BOTS_CLEAN_INT" -eq 1 ] \
    && [ "$PERM_OK" -eq 1 ] \
    && [ "$AUDIT_PRESENT_INT" -eq 1 ]; then
+    BASELINE_OK=1
+fi
+
+# Trigger (b): solo-admin auto-detect. Checked first so an operator who has
+# BOTH the opt-in file AND passes --admin-on-approver-gap still gets the
+# solo-admin attribution (more specific reason in the audit log).
+if [ "$BASELINE_OK" -eq 1 ] \
+   && [ "$SOLO_OPT_IN_INT" -eq 1 ] \
+   && [ "$AUTHOR_IS_SOLE_INT" -eq 1 ] \
+   && [ "$HUMAN_ADMIN_COUNT_INT" -eq 1 ]; then
     AUDIT_ELIGIBLE=1
-    emit_decision "auto-admin-merge" "all eligibility gates passed" "$AUDIT_ELIGIBLE"
+    emit_decision "auto-admin-merge" "solo-admin opt-in + sole human admin confirmed" "$AUDIT_ELIGIBLE" "solo-admin-auto"
+fi
+
+# Trigger (a): explicit flag.
+if [ "$BASELINE_OK" -eq 1 ] && [ "$ADMIN_FLAG_INT" -eq 1 ]; then
+    AUDIT_ELIGIBLE=1
+    emit_decision "auto-admin-merge" "all eligibility gates passed" "$AUDIT_ELIGIBLE" "flag"
 fi
 
 # Gap exists but auto-escalation is not eligible. Surface the decision
@@ -175,11 +250,17 @@ fi
 # workflow exists (caller renders the right template based on
 # audit_workflow_present).
 if [ "$ADMIN_FLAG_INT" -eq 1 ] && [ "$AUDIT_PRESENT_INT" -eq 0 ]; then
-    emit_decision "surface-decision" "admin flag passed but no audit workflow — fail-CLOSED" 0
+    emit_decision "surface-decision" "admin flag passed but no audit workflow — fail-CLOSED" 0 "none"
 elif [ "$ADMIN_FLAG_INT" -eq 1 ] && [ "$PERM_OK" -eq 0 ]; then
-    emit_decision "surface-decision" "admin flag passed but author lacks admin/maintain" 0
+    emit_decision "surface-decision" "admin flag passed but author lacks admin/maintain" 0 "none"
 elif [ "$ADMIN_FLAG_INT" -eq 1 ] && [ "$CI_AND_BOTS_CLEAN_INT" -eq 0 ]; then
-    emit_decision "surface-decision" "admin flag passed but caller did not assert CI/bots clean" 0
+    emit_decision "surface-decision" "admin flag passed but caller did not assert CI/bots clean" 0 "none"
 fi
 
-emit_decision "surface-decision" "approver gap; awaiting operator decision" 0
+# Solo-admin opt-in present but assumption broke (e.g., contractor added).
+# Distinct reason helps the operator diagnose why auto-detect didn't fire.
+if [ "$SOLO_OPT_IN_INT" -eq 1 ] && [ "$AUTHOR_IS_SOLE_INT" -eq 0 ]; then
+    emit_decision "surface-decision" "solo-admin opt-in present but author is not sole human admin (count=$HUMAN_ADMIN_COUNT_INT) — opt-in self-revokes" 0 "none"
+fi
+
+emit_decision "surface-decision" "approver gap; awaiting operator decision" 0 "none"

@@ -57,11 +57,23 @@
 #      operator is structurally the sole human admin. Off by default.
 #   8. Set HUMAN_ADMIN_COUNT — count of NON-BOT collaborators with
 #      PR-APPROVAL capability (anyone with write/maintain/admin perm —
-#      `permissions.push == true`), computed by the caller via
-#        gh api "repos/<owner>/<repo>/collaborators?affiliation=all" --paginate \
-#          | jq '[.[] | select((.type // "User")=="User"
+#      `permissions.push == true`). The caller MUST use the fail-CLOSED
+#      tmpfile pattern below; piping `gh api --paginate` directly into
+#      `jq -s 'add // []'` without pipefail can succeed over PARTIAL
+#      pages when gh fails on a later page (rate limit, transient
+#      network), yielding an incomplete collaborator list that misses a
+#      write-capable human on an unfetched page:
+#        COLLAB_TMP=$(mktemp -t pr-grind-collab.XXXXXXXX)
+#        if gh api "repos/<owner>/<repo>/collaborators?affiliation=all" --paginate >"$COLLAB_TMP" 2>/dev/null; then
+#          COLLABORATORS_JSON=$(jq -s 'add // []' "$COLLAB_TMP" 2>/dev/null || echo "[]")
+#        else
+#          COLLABORATORS_JSON="[]"
+#        fi
+#        rm -f "$COLLAB_TMP"
+#        HUMAN_ADMIN_COUNT=$(printf '%s' "$COLLABORATORS_JSON" \
+#          | jq '[.[] | select((.type // "User") == "User"
 #                              and ((.login // "") | endswith("[bot]") | not)
-#                              and ((.permissions.push // false) == true))] | length'
+#                              and ((.permissions.push // false) == true))] | length')
 #      The variable name is kept for backward compatibility with the
 #      script's input contract, but the SEMANTIC is "count of humans who
 #      can submit an APPROVED PR review under default branch protection"

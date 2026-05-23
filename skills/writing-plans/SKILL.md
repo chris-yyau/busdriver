@@ -158,12 +158,12 @@ Three outcomes for the eligibility decision:
 | Verifier-shaped but too large (>8 iters, hours-long, or plan markdown >~3KB) OR result need not return to CC | **TUI handoff** — user pastes `/goal` invocation into codex TUI | `.claude/codex-goal-<slug>.md.local` + chat instructions |
 | Not verifier-shaped (judgment-heavy, ambiguous verifiers, needs Claude's eyes per step) | **No action** — continue to default executor | Nothing |
 
-**Eligibility criteria — ALL must hold for either handoff:**
+**Eligibility criteria — criteria 1–4 must ALL hold for any codex handoff; criterion 5 distinguishes Outcome 1 from Outcome 2:**
 1. **Substantive task** — not a one-line edit; meaningful scope to delegate
 2. **Clean verifier commands** — pass/fail expressible as shell commands (tests, lint, typecheck) at plan level
 3. **Claude doesn't need to read code between steps** — the loop is verifier-led, not Claude-judged
 4. **Scope is bounded** — does not require Claude's intermediate judgment
-5. **Result returns to CC for follow-up** — distinguishes Outcome 1 (in-CC, codex finishes and Claude reviews) from Outcome 2 (TUI handoff, user takes over entirely). If the work is fire-and-forget overnight, route to Outcome 2 regardless of size.
+5. **Result returns to CC for follow-up** — if yes → Outcome 1 (in-CC, codex finishes and Claude reviews); if no (fire-and-forget overnight) → Outcome 2 (TUI handoff, user takes over entirely), regardless of size.
 
 If ANY of criteria 1–4 fails → Outcome 3 (default executor). When in doubt, prefer Outcome 3 — codex-goal's hard cap is 8 iters, and a marginal-fit plan wastes the cost savings.
 

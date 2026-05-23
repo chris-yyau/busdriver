@@ -342,7 +342,7 @@ This is the structural defense against prompt injection from verifier output: ev
 
 ### 9. Cleanup of writing-plans-emitted specs
 
-When invoked via the writing-plans Outcome 1 contract (auto-emitted `.claude/codex-goal-<slug>.json.local`), **the caller — not this skill — owns cleanup.** writing-plans Step 3 deletes the spec file after this skill returns. The dispatcher does not currently auto-clean; a future enhancement may add EXIT-trap-based cleanup but is not in scope today. Specs passed via other paths (user-supplied JSON, ad-hoc invocations) are always caller-owned.
+When invoked via the writing-plans Outcome 1 contract (auto-emitted `.claude/codex-goal-<slug>.json.local`), **the caller — not this skill — owns cleanup.** writing-plans Step 3 deletes the spec file after this skill returns, but only on graceful exits (handover returns green, bailed, or max-iters). The pre-flight orphaned-spec cleanup in writing-plans (which removes specs older than 2 hours before each run) is the reliable mitigation for unclean exits such as session interruptions, quota exhaustion, or tool-call termination — those do not trigger the caller's finalizer. The dispatcher does not currently auto-clean; EXIT-trap-based cleanup is not in scope. Specs passed via other paths (user-supplied JSON, ad-hoc invocations) are always caller-owned.
 
 ## Litmus considerations (busdriver pre-commit gate)
 

@@ -270,6 +270,7 @@ When `terminal_status` indicates Claude could not converge — **not** when code
 
 **Protocol on `stall` / `max_iterations`:**
 
+0. **Opt-out guard:** if `LITMUS_AUTO_RESCUE_DISABLED=1` is set in the environment, skip steps 1–4 entirely and surface directly to the user with the stall/max-iter result. Do not dispatch rescue.
 1. Read the failing issues from `.claude/litmus-state.md` and the iteration history (`.claude/litmus-iteration-history.local.jsonl`)
 2. Dispatch the `codex:codex-rescue` subagent via the **Agent tool** (NOT the `/codex:rescue` slash command — slash commands require user input; NOT `Skill(codex:rescue)` either — that re-enters the slash command and can hang). The codex plugin exposes rescue as an agent for programmatic dispatch. Pass: the issues, the staged diff (`git diff --cached`), and prior iteration history as context in the agent prompt.
 3. Apply codex's recommended fix

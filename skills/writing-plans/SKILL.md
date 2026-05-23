@@ -156,9 +156,11 @@ If ANY of criteria 1–4 fails → Outcome 3 (default executor). When in doubt, 
 
 This is judgment, not pattern matching — give it 30 seconds of thought, don't algorithmify it.
 
-### Outcome 1: Emit in-CC handover spec
+### Outcome 1: Defer spec emission to Step 3 (in-CC handover)
 
-Write `.claude/codex-goal-<plan-slug>.json.local` (the `.local` suffix is mandatory — it matches the `.claude/*.local` gitignore rule and prevents the spec from being committed by accident) matching the shape in `busdriver:codex-goal-handover` → "Inputs: the spec":
+When this outcome is selected, **record the decision** (e.g., set a local routing flag) but do NOT emit the spec file here. Spec emission happens in Step 3 of Auto-Execution below — *after* Design Review and Worktree Setup. This ordering matters: if either earlier phase halts (Design Review rejects, baseline tests fail), no stale `.claude/codex-goal-<slug>.json.local` is left behind to mis-route orchestrator Phase 4 on a subsequent plan run.
+
+In Step 3, when invoking `busdriver:codex-goal-handover`, write `.claude/codex-goal-<plan-slug>.json.local` (the `.local` suffix is mandatory — it matches the `.claude/*.local` gitignore rule and prevents the spec from being committed by accident) matching the shape in `busdriver:codex-goal-handover` → "Inputs: the spec":
 
 ```json
 {
@@ -182,11 +184,11 @@ Write `.claude/codex-goal-<plan-slug>.json.local` (the `.local` suffix is mandat
 }
 ```
 
-**`max_iters` derivation (the `5` above is a placeholder — compute the actual value):** estimate one iter per task in the plan, add 1 buffer, clamp to 8. A 3-task plan emits `max_iters: 4`; a 7-task plan emits `max_iters: 8`. The default of 5 (in codex-goal-handover/SKILL.md) is appropriate only for plans of ~4 tasks — hardcoding it for any plan size starves larger plans. JSON does not support comments, so the emitter must substitute a real integer in `[1, 8]` before writing the file (codex-goal-handover validates with `jq -e`).
+**`max_iters` derivation (the `5` above is a placeholder — compute the actual value):** estimate one iter per task in the plan, add 1 buffer, clamp to `[5, 8]` — i.e. `max(5, tasks + 1)` capped at 8. A 1-task plan still emits `max_iters: 5` (codex-goal-handover's documented default); a 7-task plan emits `max_iters: 8`. Never undershoot the documented default — small plans can have unexpected iter spread, and the floor of 5 matches codex-goal-handover Hard rule 4. JSON does not support comments, so the emitter must substitute a real integer in `[5, 8]` before writing the file (codex-goal-handover validates with `jq -e`).
 
-**Slug derivation:** strip plan name to `[A-Za-z0-9._-]` before substitution (matches the `v_safe` pattern in codex-goal-handover Step 6) — guards against path-traversal slugs like `../../etc/passwd` if plan titles ever come from less-trusted sources.
+**Slug derivation:** strip plan name to `[A-Za-z0-9_-]` (note: `.` is excluded — the codex-goal-handover Step 6 `v_safe` pattern allows `.` because verifier names benefit from dotted forms, but slugs do NOT, and allowing `.` lets `..` traversal sequences survive sanitization). The resulting slug interpolates safely into `.claude/codex-goal-<slug>.json.local`. Reject empty slugs after stripping. The strict whitelist alone is sufficient — no runtime `realpath` validation needed, which would fail on macOS/BSD for not-yet-existing paths anyway.
 
-Then in Auto-Execution below, **skip the default Execute step** — orchestrator Phase 4 routes to `busdriver:codex-goal-handover` based on the spec file's presence. Cleanup: codex-goal-handover should delete the spec file at end of execution to prevent stale-spec mis-routing on the next plan.
+Then in Auto-Execution below, **skip the default Execute step** — orchestrator Phase 4 routes to `busdriver:codex-goal-handover` based on the spec file's presence. **Cleanup contract:** codex-goal-handover Step 9 owns spec-file cleanup on terminal state, but until the dispatcher implements the `ORIG_SPEC_PATH` + `trap EXIT` semantics described there, the orchestrator/writing-plans caller MUST delete the emitted `.claude/codex-goal-<slug>.json.local` post-handover to prevent stale-spec mis-routing.
 
 ### Outcome 2: Emit TUI handoff materials and halt
 
@@ -223,7 +225,7 @@ After saving the plan and sanity check passes, proceed automatically through the
 
 1. **Design Review** — INVOKE `busdriver:blueprint-review` to review and approve the plan document. The design review gate (hook-enforced) blocks all implementation code until this passes. If design review rejects, fix issues and re-submit — do not proceed until it passes.
 2. **Worktree Setup** — INVOKE `busdriver:using-git-worktrees` to create an isolated workspace. If worktree creation fails or baseline tests fail, stop and report.
-3. **Execute** — If Codex Handoff Eligibility emitted `.claude/codex-goal-<slug>.json.local` (Outcome 1), INVOKE `busdriver:codex-goal-handover` with that spec instead. Otherwise INVOKE `busdriver:subagent-driven-development` for independent tasks, or `busdriver:executing-plans` for dependent tasks requiring sequential execution with review checkpoints. (Outcome 2 already halted auto-execution before reaching this step.)
+3. **Execute** — If Codex Handoff Eligibility selected Outcome 1, **emit `.claude/codex-goal-<slug>.json.local` now** (deferred from the Eligibility step — see Outcome 1 for the JSON template), then INVOKE `busdriver:codex-goal-handover` with that spec. **After codex-goal-handover returns** (regardless of outcome — green, bailed, or max-iters), delete the spec file: `rm -f .claude/codex-goal-<slug>.json.local`. This is the caller-side cleanup pending the dispatcher's Step 9 implementation (see `busdriver:codex-goal-handover` Step 9). Otherwise INVOKE `busdriver:subagent-driven-development` for independent tasks, or `busdriver:executing-plans` for dependent tasks requiring sequential execution with review checkpoints. (Outcome 2 already halted auto-execution before reaching this step.)
 4. **Verify** — INVOKE `busdriver:verification-loop` (build + lint + tests), then `busdriver:verification-before-completion` to confirm no claims without evidence.
 5. **Finish** — `busdriver:finishing-a-development-branch` presents integration options (merge/PR/keep/discard).
 

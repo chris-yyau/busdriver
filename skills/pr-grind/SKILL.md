@@ -469,6 +469,14 @@ BAIL:
 Create an isolated worktree so the user's main workspace stays free for their next task.
 
 ```bash
+# Capture pr-grind invocation start time BEFORE any other operation. The
+# solo-admin opt-in freshness check (snapshot writer near the end of this
+# block) anchors against this timestamp, not NOW_EPOCH at snapshot time —
+# otherwise a slow `gh pr view` / `git worktree add` could push elapsed
+# time past 30s and let an opt-in file created mid-invocation satisfy the
+# anti-self-bypass gate it's supposed to defeat.
+INVOCATION_START_EPOCH=$(date +%s)
+
 # Base-branch guard — refuse to grind a PR whose base is not one of the
 # canonical trunks unless the operator explicitly opted in (stacked-PR
 # workflows, long-lived feature integration branches). A non-trunk base
@@ -600,7 +608,21 @@ fi
 # Snapshot is written 0600 to prevent other local users from reading the
 # mtime token (defense in depth — the threat model already assumes
 # attacker has same-user write access, in which case this is marginal).
-MAIN_REPO_ROOT_FOR_OPTIN=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null)
+# Step 0 has already `cd`-ed into the worktree at this point (or, in
+# --no-worktree mode, into the repo root). A bare `git rev-parse` here
+# would work but is CWD-sensitive; `git -C "$WORKTREE_DIR"` is explicit
+# and matches the symmetric Completion-side resolver. Two-step resolve +
+# absolute-path check defends against `dirname ""` returning "." on a
+# failed rev-parse, which would otherwise leak the CWD path through.
+MAIN_REPO_ROOT_FOR_OPTIN=""
+GIT_COMMON_DIR=$(git -C "$WORKTREE_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+if [ -n "$GIT_COMMON_DIR" ]; then
+  CANDIDATE=$(dirname "$GIT_COMMON_DIR")
+  case "$CANDIDATE" in
+    /*) MAIN_REPO_ROOT_FOR_OPTIN="$CANDIDATE" ;;
+    *)  : ;;
+  esac
+fi
 if [ -n "$MAIN_REPO_ROOT_FOR_OPTIN" ] && [ -d "$MAIN_REPO_ROOT_FOR_OPTIN/.claude" ]; then
   SOLO_OPTIN_FILE="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/pr-grind-auto-admin-solo.local"
   SOLO_OPTIN_SNAPSHOT="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/.pr-grind-solo-opt-in-snapshot-${PR_NUMBER}.local"
@@ -612,14 +634,17 @@ if [ -n "$MAIN_REPO_ROOT_FOR_OPTIN" ] && [ -d "$MAIN_REPO_ROOT_FOR_OPTIN/.claude
     if [ "$OPTIN_MTIME" -eq 0 ]; then
       echo "⚠️  stat failed on $SOLO_OPTIN_FILE — cannot verify age, solo-admin auto-detect will NOT fire this run." >&2
     else
-      NOW_EPOCH=$(date +%s)
-      OPTIN_AGE=$((NOW_EPOCH - OPTIN_MTIME))
-      if [ "$OPTIN_AGE" -ge 30 ]; then
+      # Anchor freshness check against INVOCATION_START_EPOCH (captured at
+      # the very top of Step 0), NOT a fresh `date +%s` here. Otherwise
+      # earlier Step 0 work (gh pr view, git worktree add) that takes ≥30s
+      # would let an opt-in file created mid-invocation pass the gate.
+      OPTIN_AGE_AT_START=$((INVOCATION_START_EPOCH - OPTIN_MTIME))
+      if [ "$OPTIN_AGE_AT_START" -ge 30 ]; then
         printf '%s\n' "$OPTIN_MTIME" > "$SOLO_OPTIN_SNAPSHOT" \
           && chmod 600 "$SOLO_OPTIN_SNAPSHOT" 2>/dev/null \
-          && echo "ℹ️  pr-grind-auto-admin-solo.local snapshotted (age=${OPTIN_AGE}s, PR #${PR_NUMBER}) — solo-admin auto-detect armed for this run."
+          && echo "ℹ️  pr-grind-auto-admin-solo.local snapshotted (age-at-invocation=${OPTIN_AGE_AT_START}s, PR #${PR_NUMBER}) — solo-admin auto-detect armed for this run."
       else
-        echo "⚠️  pr-grind-auto-admin-solo.local exists but is too fresh (age=${OPTIN_AGE}s, required ≥30s) — solo-admin auto-detect will NOT fire this run. If you just touched the file, wait 30s and rerun pr-grind." >&2
+        echo "⚠️  pr-grind-auto-admin-solo.local exists but was too fresh at pr-grind invocation start (age=${OPTIN_AGE_AT_START}s, required ≥30s) — solo-admin auto-detect will NOT fire this run. If you just touched the file, wait 30s and rerun pr-grind." >&2
       fi
     fi
   fi
@@ -1243,6 +1268,15 @@ The detection algorithm lives at `scripts/approver-gap-detect.sh` (single source
 PR=<PR_NUMBER>
 OWNER=<owner>
 REPO=<repo>
+# WORKTREE_DIR is propagated from Step 0 (see "WORKTREE_DIR=$WORKTREE_DIR"
+# marker line). Required here because the solo-admin opt-in resolution below
+# uses `git -C "$WORKTREE_DIR"` to derive MAIN_REPO_ROOT_FOR_OPTIN — a plain
+# `git rev-parse` is CWD-sensitive, and CWD does not reliably persist across
+# Claude Bash tool calls (see EXTREMELY-IMPORTANT block near top). If CWD has
+# drifted to another repo checkout when Completion runs, a bare `git rev-parse`
+# could read another repo's opt-in/snapshot for the same PR number, enabling
+# unintended auto-merge or silently missing the target repo's valid opt-in.
+WORKTREE_DIR=<absolute path from Step 0>
 
 BRANCH=$(gh pr view "$PR" --json baseRefName -q .baseRefName 2>/dev/null || echo "")
 AUTHOR=$(gh pr view "$PR" --json author -q .author.login 2>/dev/null || echo "")
@@ -1299,7 +1333,29 @@ ADMIN_FLAG_PASSED=<0|1 — see "Resolve flag-to-state translations" in START>
 # pr-grind runs on different PRs don't collide on shared state. Both the
 # opt-in file and the snapshot live in the MAIN repo's .claude/ (not the
 # ephemeral worktree's). See Step 0's snapshot writer for the producer side.
-MAIN_REPO_ROOT_FOR_OPTIN=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null)
+# Resolve MAIN_REPO_ROOT via `git -C "$WORKTREE_DIR"` (NOT bare `git rev-parse`)
+# to anchor against the dispatcher's known worktree path rather than current
+# CWD. CWD drift between Bash tool calls would otherwise let this block read
+# another repo's opt-in/snapshot for the same PR number. WORKTREE_DIR
+# correctly resolves to the main-repo .git/ via --git-common-dir in both
+# worktree mode (linked worktree → shared .git/) and --no-worktree mode
+# (WORKTREE_DIR == main repo, --git-common-dir → .git/).
+#
+# Two-step resolve so a failed `git -C` doesn't pass `dirname ""` ⇒ "."
+# silently through the non-empty check below and reintroduce the wrong-repo
+# read this whole resolver exists to prevent. Require an absolute path
+# (leading slash) before accepting MAIN_REPO_ROOT_FOR_OPTIN.
+MAIN_REPO_ROOT_FOR_OPTIN=""
+if [ -n "$WORKTREE_DIR" ]; then
+  GIT_COMMON_DIR=$(git -C "$WORKTREE_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  if [ -n "$GIT_COMMON_DIR" ]; then
+    CANDIDATE=$(dirname "$GIT_COMMON_DIR")
+    case "$CANDIDATE" in
+      /*) MAIN_REPO_ROOT_FOR_OPTIN="$CANDIDATE" ;;
+      *)  : ;;   # reject anything not absolute (defends against dirname returning ".")
+    esac
+  fi
+fi
 SOLO_ADMIN_OPT_IN=0
 if [ -n "$MAIN_REPO_ROOT_FOR_OPTIN" ]; then
   OPTIN_FILE="$MAIN_REPO_ROOT_FOR_OPTIN/.claude/pr-grind-auto-admin-solo.local"

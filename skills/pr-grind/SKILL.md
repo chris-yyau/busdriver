@@ -1410,15 +1410,26 @@ if [ "$SOLO_ADMIN_OPT_IN" = "1" ]; then
   # humans with PR-approval capability". The script doc + log field
   # `human_admin_count` carries the same semantic.
   # `gh api --paginate` emits one JSON array per page (e.g.
-  # `[page1]\n[page2]`), NOT a single merged array. Pipe through
-  # `jq -s 'add // []'` to slurp all pages and concatenate into one array;
-  # without this, downstream `jq '.[]'` consumers below would only iterate
-  # the first page on repos with >30 collaborators, and the numeric guard
-  # would normalize the resulting multi-line "0\n1" to 0, silently
-  # disabling solo-admin auto-detect even when the PR author is the only
-  # write-capable human.
-  COLLABORATORS_JSON=$(gh api "repos/$OWNER/$REPO/collaborators?affiliation=all" --paginate 2>/dev/null \
-    | jq -s 'add // []' 2>/dev/null || echo "[]")
+  # `[page1]\n[page2]`), NOT a single merged array. Need to slurp all
+  # pages and concatenate into one array; without this, downstream
+  # `jq '.[]'` consumers below would only iterate the first page on
+  # repos with >30 collaborators and the numeric guard would normalize
+  # the resulting multi-line "0\n1" to 0.
+  #
+  # Capture to a tmpfile + check gh's exit code BEFORE jq. A naive
+  # `gh ... | jq -s 'add // []'` pipeline without pipefail (which we
+  # cannot enable globally inside a larger SKILL.md template) would let
+  # jq succeed over PARTIAL pages when gh fails on a later page (rate
+  # limit, transient network) — yielding an incomplete collaborator list
+  # that could miss a write-capable human on an unfetched page and
+  # wrongly satisfy HUMAN_ADMIN_COUNT=1. Fail-CLOSED on any gh failure.
+  COLLABORATORS_TMP=$(mktemp -t pr-grind-collab.XXXXXXXX)
+  if gh api "repos/$OWNER/$REPO/collaborators?affiliation=all" --paginate >"$COLLABORATORS_TMP" 2>/dev/null; then
+    COLLABORATORS_JSON=$(jq -s 'add // []' "$COLLABORATORS_TMP" 2>/dev/null || echo "[]")
+  else
+    COLLABORATORS_JSON="[]"
+  fi
+  rm -f "$COLLABORATORS_TMP"
   HUMAN_ADMIN_COUNT=$(printf '%s' "$COLLABORATORS_JSON" \
     | jq -r '[.[]
         | select((.type // "User") == "User"

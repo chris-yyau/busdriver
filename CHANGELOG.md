@@ -1,3 +1,10 @@
+# [1.46.0](https://github.com/chris-yyau/busdriver/compare/v1.45.0...v1.46.0) (2026-05-23)
+
+
+### Features
+
+* **pr-grind:** solo-admin auto-detect for implicit --admin-on-approver-gap ([#142](https://github.com/chris-yyau/busdriver/issues/142)) ([db23f71](https://github.com/chris-yyau/busdriver/commit/db23f716033d070df1e235743481b9f8a8e0388e)), closes [HI#severity](https://github.com/HI/issues/severity)
+
 # [1.45.0](https://github.com/chris-yyau/busdriver/compare/v1.44.0...v1.45.0) (2026-05-22)
 
 

@@ -453,8 +453,9 @@ After codex CLI passes, dispatch **6 parallel review agents** using the Agent to
 | 5 | **Security** | opus | Hardcoded secrets, injection, auth bypass, error messages leaking internals, unsafe dependencies |
 | 6 | **Docs-consistency** | sonnet | README, SKILL.md, docs/ accuracy vs changed code. Flag: stale examples, wrong function signatures, missing new features |
 
-**Agent prompt template** (adapt per lens):
+**Agent prompt template** (adapt per lens, set `model:` per the table above):
 ```
+model: [MODEL]  # e.g. opus / sonnet — per the dispatch table above
 Review this PR diff for [LENS]. The diff is from base..HEAD.
 
 ## Diff

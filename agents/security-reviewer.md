@@ -67,11 +67,11 @@ For each **newly added** dependency (not pre-existing in the lockfile):
 
 | Check | Severity | How to detect |
 |-------|----------|---------------|
-| Typo-squat — Levenshtein ≤ 2 from a popular package | CRITICAL | Compare name to top-1000 for the registry (e.g., `lodahs` vs `lodash`, `requestz` vs `requests`, `expresss` vs `express`) |
+| Typo-squat — Levenshtein ≤ 2 from a popular package | CRITICAL | Compare name to top-1000 for the registry. Distance-1: `requestz` vs `requests`, `expresss` vs `express`, `lodsh` vs `lodash`. Distance-2: `lodahs` vs `lodash` (transposition counts as 2 under pure Levenshtein) |
 | Install-time code — `postinstall`/`preinstall`/`install` script declared | HIGH | `npm view <pkg> scripts`; PyPI setup.py `cmdclass`; Cargo `build.rs` |
-| Abandonment — last release > 18 months ago | HIGH | npm: `npm view <pkg> time --json` then read `time[<latest-version>]` (NOT `time.modified` — that's the metadata-edit timestamp, not the release date); PyPI: `pypi.org/pypi/<pkg>/json` → `releases[<latest>][0].upload_time`; crates.io: `/api/v1/crates/<pkg>` → `versions[0].updated_at` |
+| Abandonment — last release > 18 months ago | HIGH | npm: `npm view <pkg> time --json` then read `time[<latest-version>]` (use the version-specific entry; `time.modified` is the package-level last-publish across any version and `time.created` is the first-ever publish, so neither is reliable for "latest version's release date"); PyPI: `pypi.org/pypi/<pkg>/json` → `urls[0].upload_time_iso_8601`; crates.io: `/api/v1/crates/<pkg>` → `versions[0].created_at` |
 | Maintainer change in last 90 days | MEDIUM | `npm view <pkg> maintainers` + compare against prior maintainer set |
-| Fresh package — first publish < 30 days AND weekly downloads < 1000 | MEDIUM | Registry stats |
+| Fresh publish OR low downloads — first publish < 30 days, **or** weekly downloads < 1000 for a package older than 30 days | MEDIUM | Registry stats. Treat as two independent signals — typo-squats can pump downloads above 1000 within days before takedown, so requiring both AND-style would miss high-velocity attacks |
 
 **Scope rules:** Only flag NEW additions to the lockfile, not version bumps of pre-existing deps. Internal monorepo packages (declared in the repo's workspace config) are exempt because they're first-party. **Do NOT** blanket-exempt scoped packages by organization prefix — third-party scoped packages (`@some-vendor/*`) are exactly the takeover/install-script risk this section catches; only exempt scopes that the workspace config marks as internal.
 

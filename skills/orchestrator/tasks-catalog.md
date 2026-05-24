@@ -19,7 +19,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **API Design** | REST endpoints, API versioning | `busdriver:api-design` |
 | **E2E Testing** | browser testing, e2e | `/e2e` command + `e2e-testing` skill |
 | **Verification** | verify, build+lint+test | `/verify` command |
-| **Repo pipeline setup** | test setup, scaffold tests, CI pipeline, Codecov, pinact | `helmet` (personal skill) |
+| **Repo pipeline setup** | test setup, scaffold tests, CI pipeline, Codecov, pinact, generate/refresh CLAUDE.md, code intelligence, codegraph, code graph, structural search | `helmet` (personal skill — Phase A tests / B CI / C CLAUDE.md / D CodeGraph) |
 | **Research** | search for libraries | `busdriver:search-first` |
 | **Deep Research** | research X thoroughly, cited reports | `busdriver:deep-research` (Firecrawl + Exa) |
 | **Neural Search** | semantic search, company intel | `busdriver:exa-search` |

@@ -67,9 +67,9 @@ Three-tier model with Claude as arbiter:
 
 **Completion criteria:** Claude's verdict has no plan-blocking HIGH or MEDIUM issues (confidence >= 0.5). TDD-discoverable findings (test stubs, lint, perf) and scope-expansion findings ("OUT OF SCOPE", "follow-up PR") do NOT block convergence — they are deferred to `follow-up-issues.md`.
 
-**Auto-stop on no progress:** If plan-blocking HIGH count fails to strictly decrease from one iteration to the next, the loop accepts the current state as `low_issues_only` rather than grinding to `max_iterations`. The check fires starting at iteration 2 (when there are 2 history entries to compare). The early-stop signal is recorded as `early_stopped: "no_improvement_trajectory"` in the state file.
+**Auto-stop on no progress:** Trajectory checks fire starting at iteration 2 for both blocking states. If `plan_blocking_high` fails to strictly decrease while state is `blocked_by_high_issues`, OR if `plan_blocking_medium` fails to strictly decrease while state is `medium_issues_remaining`, the loop accepts the current state as `low_issues_only` rather than grinding to `max_iterations`. The early-stop signal is recorded as `early_stopped: "no_improvement_trajectory"` in the state file. Both `high_issues_history` and `medium_issues_history` track per-iteration counts.
 
-**Default max iterations:** 3 (was 5 — empirical data showed bimodal convergence: pass at iter 1 or never converge; iterating beyond 3 wasted hours without improving outcomes).
+**Default max iterations:** 5. (Briefly lowered to 3 after the v3.1 cascades-11-12 incident; raised back to 5 once MEDIUM-trajectory protection landed in v3.2 — see Version History. The trajectory early-stops are the real circuit breakers; max-iter is just a final cap.)
 
 **Escape hatch:** If the review loop does not converge, the user can create `.claude/skip-design-review.local` in their terminal to bypass the gate (single-use, 30s self-bypass detection — see orchestrator SKILL.md for protocol).
 
@@ -132,7 +132,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/init-design-review.s
 ```
 
 **Creates state file** (`docs/reviews/<slug>/state.md`) tracking:
-- Current iteration (1 to max_iterations, default 3)
+- Current iteration (1 to max_iterations, default 5)
 - Review statuses (Agy, Codex, Claude)
 - Progress model (high/medium/low issue counts)
 
@@ -164,8 +164,8 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/run-design-review-lo
 
 **Iteration continues until:**
 - Claude's verdict has no plan-blocking HIGH/MEDIUM issues (confidence >= 0.5)
-- OR trajectory auto-stop fires (HIGH didn't decrease from prior iteration)
-- OR max iterations reached (default: 3)
+- OR trajectory auto-stop fires (plan-blocking HIGH or MEDIUM didn't decrease from prior iteration, for whichever severity is currently blocking)
+- OR max iterations reached (default: 5)
 
 ## Architecture: Claude as Arbiter
 
@@ -214,7 +214,7 @@ Replaces binary FAIL/PASS with explicit severity breakdown. **Counts are categor
 
 Deferred findings are written to `docs/reviews/<slug>/follow-up-issues.md` so the user can address them during implementation or open a follow-up issue.
 
-Progress is visible across iterations: "iter1: 4 plan-blocking high → iter2: 3 → iter3: 1, auto-stop". The `high_issues_history` field in `state.md` tracks the trajectory.
+Progress is visible across iterations: "iter1: 4 plan-blocking high → iter2: 3 → iter3: 1, auto-stop". The `high_issues_history` and `medium_issues_history` fields in `state.md` track per-iteration trajectories for each severity.
 
 ## Claude Validation
 
@@ -307,12 +307,12 @@ Claude needs codebase access for validation. In auto mode, the calling skill mus
 
 **Issue: Iteration loop doesn't converge**
 
-- Check progress in state file: `cat docs/reviews/<slug>/state.md` — look at `high_issues_history` for the trajectory.
-- If trajectory is flat or oscillating, the auto-stop will fire after iteration 2 and accept current state as `low_issues_only`.
+- Check progress in state file: `cat docs/reviews/<slug>/state.md` — look at `high_issues_history` and `medium_issues_history` for the trajectories.
+- If the trajectory for the currently-blocking severity is flat or oscillating, the auto-stop fires after iteration 2 and accepts current state as `low_issues_only`.
 - If `early_stopped: "no_improvement_trajectory"` appears in state, the loop exited early because adding detail to the plan was creating new findings (asymptote chasing).
 - Check `follow-up-issues.md` — many findings may have been deferred there, leaving fewer plan-blocking issues than the raw HIGH/MEDIUM totals suggest.
 - If stuck despite all that, break design into smaller pieces.
-- Max iterations (default: 3) prevents infinite loops.
+- Max iterations (default: 5) prevents infinite loops.
 
 **Issue: Stale output detected**
 
@@ -464,7 +464,9 @@ Monitor(command: "sleep 35 && echo READY", timeout: 45)
 
 ## Version History
 
-**v3.1 (current, 2026-04-29):** Category-aware convergence. Plan-blocking vs. TDD-discoverable category split. Scope-expansion findings auto-deferred to `follow-up-issues.md`. Trajectory-aware early-stop after 2 iterations of no improvement. Default `max_iterations` reduced from 5 to 3 (empirical: bimodal convergence — pass at iter 1 or never converge). Claude `validation_notes` surfaced in user output.
+**v3.2 (current, 2026-05-25):** MEDIUM-trajectory tracking + early-stop. Added `medium_issues_history` field and a parallel trajectory check that fires when `progress_status == medium_issues_remaining`. Previously the trajectory check only watched HIGH, leaving MEDIUM-only states with no circuit breaker — they always ground to `max_iterations` (observed in growth-engine task-13-content-audit, iter 3/3, history `[2,0]` with 3 unresolved MEDIUMs). Default `max_iterations` raised 3 → 5 now that both severities have trajectory protection; the v3.1 bimodal-convergence hypothesis didn't account for slow MEDIUM convergence with HIGH already resolved.
+
+**v3.1 (2026-04-29):** Category-aware convergence. Plan-blocking vs. TDD-discoverable category split. Scope-expansion findings auto-deferred to `follow-up-issues.md`. Trajectory-aware early-stop after 2 iterations of no improvement (HIGH only). Default `max_iterations` reduced from 5 to 3 (later reverted in v3.2). Claude `validation_notes` surfaced in user output.
 
 **v3 (2026-03-27):** Claude-as-arbiter model. Parallel Agy+Codex. Run-scoped isolation. Freshness contracts. Atomic writes. Explicit progress model. Deleted broken Jaccard consensus, auto-fix engine, and report generator.
 

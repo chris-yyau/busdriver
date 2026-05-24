@@ -267,6 +267,102 @@ assert_true "stderr warns about non-numeric DESIGN_REVIEW_STALE_HOURS" \
 rm -rf "docs/reviews/test-cer"
 echo "test-slug" > .claude/current-design-review.local
 
+# ── append_medium_history: single-line invariant (v3.2) ───────────────
+echo "── append_medium_history single-line invariant ──────────────"
+
+# Intermediate variables (instead of inline command-substitution in assert
+# calls) avoid the extra-masked-returns warning under litmus's opt-in rule
+# set. Functional equivalent of the inline pattern used in the high block.
+
+write_state <<'EOF'
+---
+active: true
+high_issues_history: "[]"
+medium_issues_history: "[]"
+early_stopped: ""
+---
+body
+EOF
+
+append_medium_history 3
+MED_FIELD=$(read_field_raw medium_issues_history)
+assert_eq "first medium append produces single-line JSON-as-string" \
+  'medium_issues_history: "[3]"' "$MED_FIELD"
+ORPHANS=$(count_orphan_lines)
+assert_eq "no orphan lines after first medium append" "0" "$ORPHANS"
+
+append_medium_history 2
+append_medium_history 1
+MED_FIELD=$(read_field_raw medium_issues_history)
+assert_eq "medium history accumulates" \
+  'medium_issues_history: "[3,2,1]"' "$MED_FIELD"
+
+# Verify HIGH history is unaffected by MEDIUM writes (no cross-contamination).
+HI_FIELD=$(read_field_raw high_issues_history)
+assert_eq "high_issues_history untouched by append_medium_history" \
+  'high_issues_history: "[]"' "$HI_FIELD"
+
+# get_medium_history mirrors get_high_history: empty/missing → "[]".
+MED_HIST=$(get_medium_history)
+assert_eq "get_medium_history returns current array" "[3,2,1]" "$MED_HIST"
+
+# Backward-compat: state files written before v3.2 lack the field entirely.
+# get_medium_history must return "[]" instead of dying or leaking other state.
+write_state <<'EOF'
+---
+active: true
+high_issues_history: "[1,2]"
+early_stopped: ""
+---
+body
+EOF
+MED_HIST=$(get_medium_history)
+assert_eq "get_medium_history on pre-v3.2 state returns []" "[]" "$MED_HIST"
+
+# Critical: append_medium_history on pre-v3.2 state must inject the missing
+# field, NOT silently no-op. Otherwise mid-flight upgrades never activate the
+# new trajectory check. (Flagged by litmus PR #149 review — medium-severity.)
+append_medium_history 4
+MED_FIELD=$(read_field_raw medium_issues_history)
+assert_eq "append_medium_history inserts field on pre-v3.2 state" \
+  'medium_issues_history: "[4]"' "$MED_FIELD"
+append_medium_history 3
+MED_FIELD=$(read_field_raw medium_issues_history)
+assert_eq "append_medium_history accumulates after insertion" \
+  'medium_issues_history: "[4,3]"' "$MED_FIELD"
+ES_FIELD=$(read_field_raw early_stopped)
+assert_eq "early_stopped field still present after insertion" \
+  'early_stopped: ""' "$ES_FIELD"
+
+# ── init_state_file populates medium_issues_history (v3.2) ────────────
+echo "── init_state_file emits medium_issues_history ──────────────"
+
+rm -rf "docs/reviews/init-test" .claude/current-design-review.local
+mkdir -p "docs/plans"
+cat > "docs/plans/2026-05-25-init-test.md" <<'EOF'
+# Test plan
+EOF
+INIT_STATE_FILE=$(init_state_file "docs/plans/2026-05-25-init-test.md" 5)
+INIT_EXISTS=false
+[[ -f "$INIT_STATE_FILE" ]] && INIT_EXISTS=true
+assert_true "init_state_file created state file" "$INIT_EXISTS"
+
+INIT_HAS_MED=false
+grep -q '^medium_issues_history: "\[\]"' "$INIT_STATE_FILE" && INIT_HAS_MED=true
+assert_true "init state.md contains medium_issues_history: \"[]\"" "$INIT_HAS_MED"
+
+INIT_HAS_HI=false
+grep -q '^high_issues_history: "\[\]"' "$INIT_STATE_FILE" && INIT_HAS_HI=true
+assert_true "init state.md contains high_issues_history: \"[]\"" "$INIT_HAS_HI"
+
+INIT_MAX_ITER=false
+grep -q '^max_iterations: 5$' "$INIT_STATE_FILE" && INIT_MAX_ITER=true
+assert_true "init state.md respects max_iterations argument" "$INIT_MAX_ITER"
+
+# Restore the sandbox pointer for any future test additions.
+rm -rf "docs/reviews/init-test" "docs/plans"
+echo "test-slug" > .claude/current-design-review.local
+
 # ── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "── Summary ──────────────────────────────────────────────────"

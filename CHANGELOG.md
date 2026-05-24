@@ -1,3 +1,17 @@
+# [1.49.0](https://github.com/chris-yyau/busdriver/compare/v1.48.0...v1.49.0) (2026-05-24)
+
+
+### Features
+
+* **blueprint-review:** medium-trajectory early-stop + raise max_iter 3→5 ([#149](https://github.com/chris-yyau/busdriver/issues/149)) ([2513579](https://github.com/chris-yyau/busdriver/commit/25135799c664eda7f7ad3c968a93b0a7dd9dbd70)), closes [HI#only](https://github.com/HI/issues/only) [#55](https://github.com/chris-yyau/busdriver/issues/55)
+
+# [1.48.0](https://github.com/chris-yyau/busdriver/compare/v1.47.0...v1.48.0) (2026-05-24)
+
+
+### Features
+
+* add package provenance audit to security-reviewer ([#148](https://github.com/chris-yyau/busdriver/issues/148)) ([a7ad7b6](https://github.com/chris-yyau/busdriver/commit/a7ad7b67d5e8f706046aa1fad1999fef6aa94871))
+
 # [1.47.0](https://github.com/chris-yyau/busdriver/compare/v1.46.0...v1.47.0) (2026-05-23)
 
 

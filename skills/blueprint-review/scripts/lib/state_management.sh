@@ -53,7 +53,7 @@ get_state_file() {
 # Initialize state file
 init_state_file() {
   local design_file="$1"
-  local max_iterations="${2:-3}"
+  local max_iterations="${2:-5}"
 
   # Derive slug and create namespaced directory
   local slug
@@ -95,6 +95,9 @@ deferred_issues: 0
 
 # Trajectory of plan_blocking_high across iterations — used for early-stop check
 high_issues_history: "[]"
+# Trajectory of plan_blocking_medium across iterations — used for early-stop check
+# when state is medium_issues_remaining (HIGH already resolved but MEDIUMs persist)
+medium_issues_history: "[]"
 early_stopped: ""
 ---
 
@@ -421,6 +424,76 @@ get_high_history() {
   fi
 }
 
+# Ensure medium_issues_history field exists in the YAML frontmatter.
+# Required because update_state_field cannot insert missing keys — it only
+# rewrites lines that already match `^field:`. State files written before
+# v3.2 lack this field; without insertion, append_medium_history would
+# silently no-op on mid-flight pre-upgrade reviews and the MEDIUM trajectory
+# early-stop would never activate. Inserted before `early_stopped:` (a
+# sibling that has existed in every state.md version).
+_ensure_medium_history_field() {
+  local state_file
+  state_file=$(get_state_file)
+  if [[ ! -f "$state_file" ]]; then
+    return 0
+  fi
+  if grep -q '^medium_issues_history:' "$state_file"; then
+    return 0
+  fi
+  local temp_file="${state_file}.tmp"
+  awk '
+    /^---$/ { yaml_count++ }
+    yaml_count == 1 && !inserted && /^early_stopped:/ {
+      print "medium_issues_history: \"[]\""
+      inserted = 1
+    }
+    { print }
+  ' "$state_file" > "$temp_file"
+  mv "$temp_file" "$state_file"
+}
+
+# Append a plan-blocking-medium count to the trajectory history (JSON array stored as YAML string).
+# Used by trajectory-aware early-stop logic when HIGH is resolved but MEDIUMs persist
+# (progress_status == medium_issues_remaining). Mirrors append_high_history.
+append_medium_history() {
+  local count="$1"
+  _ensure_medium_history_field
+  local current
+  current=$(get_state_field "medium_issues_history")
+  if [[ -z "$current" || "$current" == '""' ]]; then
+    current="[]"
+  elif command -v jq &>/dev/null && ! echo "$current" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    echo "warning: medium_issues_history was corrupt ($current); resetting to []" >&2
+    current="[]"
+  fi
+  local updated
+  if command -v jq &>/dev/null; then
+    updated=$(echo "$current" | jq -c --argjson c "$count" '. + [$c]' 2>/dev/null || echo "[$count]")
+  else
+    if [[ "$current" == "[]" ]]; then
+      updated="[$count]"
+    elif [[ "$current" =~ ^\[.*\]$ ]]; then
+      updated="${current%]}, $count]"
+    else
+      echo "warning: medium_issues_history was corrupt ($current); resetting to []" >&2
+      updated="[$count]"
+    fi
+  fi
+  updated="${updated//$'\n'/}"
+  update_state_field "medium_issues_history" "\"$updated\""
+}
+
+# Get the plan-blocking-medium trajectory history as JSON array.
+get_medium_history() {
+  local hist
+  hist=$(get_state_field "medium_issues_history")
+  if [[ -z "$hist" || "$hist" == '""' ]]; then
+    echo "[]"
+  else
+    echo "$hist"
+  fi
+}
+
 # Trajectory check.
 # Exit codes:
 #   0 — no progress (auto-stop is safe to fire)
@@ -448,7 +521,7 @@ window = int(os.environ["_CNP_WINDOW"])
 try:
     h = json.loads(os.environ["_CNP_HISTORY"])
 except (ValueError, json.JSONDecodeError) as e:
-    sys.stderr.write("warning: high_issues_history is corrupt (" + str(e) + "); skipping trajectory check\n")
+    sys.stderr.write("warning: issues_history is corrupt (" + str(e) + "); skipping trajectory check\n")
     sys.exit(2)
 if not isinstance(h, list) or len(h) < window + 1:
     sys.exit(1)

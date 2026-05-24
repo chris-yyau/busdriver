@@ -644,6 +644,9 @@ EOF
   fi
 
   # Convergence based on plan-blocking counts only (Fix 1).
+  # Capture the persisted progress_status BEFORE recomputing so the medium
+  # history reset (below) can detect a state re-entry transition.
+  PREV_PROGRESS_STATUS=$(get_state_field "progress_status")
   if [[ "$PLAN_BLOCKING_HIGH" -gt 0 ]]; then
     PROGRESS_STATUS="blocked_by_high_issues"
   elif [[ "$PLAN_BLOCKING_MEDIUM" -gt 0 ]]; then
@@ -664,6 +667,23 @@ EOF
 
   # Track plan-blocking-high trajectory for early-stop check (Fix 2).
   append_high_history "$PLAN_BLOCKING_HIGH"
+  # Track plan-blocking-medium trajectory ONLY when MEDIUM is the current
+  # blocker. Pushing during iterations where HIGH was still the blocker would
+  # inflate the history with stale counts and falsely satisfy check_no_progress
+  # on the first medium_issues_remaining iteration — the user hadn't focused
+  # on MEDIUMs yet, so seeing the same MEDIUM count isn't a "no progress"
+  # signal. Trajectory comparison only begins once medium_issues_remaining
+  # has held for ≥2 iterations.
+  if [[ "$PROGRESS_STATUS" == "medium_issues_remaining" ]]; then
+    # On re-entry (medium → blocked_by_high → medium), stale pre-HIGH entries
+    # would cause check_no_progress to fire immediately on the first re-entered
+    # MEDIUM iteration. Reset the history at the transition boundary so only
+    # the current MEDIUM stint's trajectory is evaluated.
+    if [[ "$PREV_PROGRESS_STATUS" != "medium_issues_remaining" ]]; then
+      update_state_field "medium_issues_history" "\"[]\""
+    fi
+    append_medium_history "$PLAN_BLOCKING_MEDIUM"
+  fi
 
   # Surface Claude's validation_notes so the user sees the arbiter's reasoning (Fix 5).
   VALIDATION_NOTES=$(jq -r '.validation_notes // ""' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo "")
@@ -685,9 +705,8 @@ EOF
   # state as low_issues_only rather than grind through max_iterations.
   #
   # window=1 (compare iteration N to N-1) so the check fires after iteration 2
-  # under default max_iterations=3. With window=2 the check would need 3 entries
-  # and never fire under default config (loop exits at iter 3 before phase 4 runs
-  # a third time).
+  # under default max_iterations=5. With window=2 the check would need 3 entries
+  # before firing, giving the loop one extra grinding iteration with no payoff.
   #
   # IMPORTANT: only gate on blocked_by_high_issues. The trajectory tracks HIGH
   # only, so a medium_issues_remaining state (HIGH=0, MEDIUM>0) would trivially
@@ -698,6 +717,23 @@ EOF
     if [[ "$CURRENT_ITERATION" -ge 2 ]] && check_no_progress "$HISTORY" 1; then
       log_warning ""
       log_warning "  Trajectory: plan-blocking HIGH did not decrease from prior iteration ($HISTORY)"
+      log_warning "  Auto-stop: convergence loop unproductive — accepting current state"
+      PROGRESS_STATUS="low_issues_only"
+      update_state_field "progress_status" "\"$PROGRESS_STATUS\""
+      update_state_field "early_stopped" "\"no_improvement_trajectory\""
+    fi
+  fi
+
+  # Parallel trajectory check for medium_issues_remaining state. HIGH is already
+  # resolved (PLAN_BLOCKING_HIGH==0) but MEDIUMs persist — without this, the loop
+  # has no circuit breaker for stuck MEDIUM convergence and grinds to max_iter
+  # (empirically observed in growth-engine task-13-content-audit, iter 3/3 with
+  # high_issues_history=[2,0] and 3 MEDIUMs unresolved).
+  if [[ "$PROGRESS_STATUS" == "medium_issues_remaining" ]]; then
+    MEDIUM_HISTORY=$(get_medium_history)
+    if [[ "$CURRENT_ITERATION" -ge 2 ]] && check_no_progress "$MEDIUM_HISTORY" 1; then
+      log_warning ""
+      log_warning "  Trajectory: plan-blocking MEDIUM did not decrease from prior iteration ($MEDIUM_HISTORY)"
       log_warning "  Auto-stop: convergence loop unproductive — accepting current state"
       PROGRESS_STATUS="low_issues_only"
       update_state_field "progress_status" "\"$PROGRESS_STATUS\""

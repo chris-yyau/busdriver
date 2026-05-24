@@ -644,6 +644,9 @@ EOF
   fi
 
   # Convergence based on plan-blocking counts only (Fix 1).
+  # Capture the persisted progress_status BEFORE recomputing so the medium
+  # history reset (below) can detect a state re-entry transition.
+  PREV_PROGRESS_STATUS=$(get_state_field "progress_status")
   if [[ "$PLAN_BLOCKING_HIGH" -gt 0 ]]; then
     PROGRESS_STATUS="blocked_by_high_issues"
   elif [[ "$PLAN_BLOCKING_MEDIUM" -gt 0 ]]; then
@@ -672,6 +675,13 @@ EOF
   # signal. Trajectory comparison only begins once medium_issues_remaining
   # has held for ≥2 iterations.
   if [[ "$PROGRESS_STATUS" == "medium_issues_remaining" ]]; then
+    # On re-entry (medium → blocked_by_high → medium), stale pre-HIGH entries
+    # would cause check_no_progress to fire immediately on the first re-entered
+    # MEDIUM iteration. Reset the history at the transition boundary so only
+    # the current MEDIUM stint's trajectory is evaluated.
+    if [[ "$PREV_PROGRESS_STATUS" != "medium_issues_remaining" ]]; then
+      update_state_field "medium_issues_history" "\"[]\""
+    fi
     append_medium_history "$PLAN_BLOCKING_MEDIUM"
   fi
 

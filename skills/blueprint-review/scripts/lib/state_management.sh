@@ -521,7 +521,7 @@ window = int(os.environ["_CNP_WINDOW"])
 try:
     h = json.loads(os.environ["_CNP_HISTORY"])
 except (ValueError, json.JSONDecodeError) as e:
-    sys.stderr.write("warning: high_issues_history is corrupt (" + str(e) + "); skipping trajectory check\n")
+    sys.stderr.write("warning: issues_history is corrupt (" + str(e) + "); skipping trajectory check\n")
     sys.exit(2)
 if not isinstance(h, list) or len(h) < window + 1:
     sys.exit(1)

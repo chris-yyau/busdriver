@@ -227,6 +227,13 @@ _resolve_from_route_array() {
 resolve_role_cli() {
   local role_key="$1"
   local env_cli="${BUSDRIVER_REVIEW_CLI:-}"
+  # All function-scoped locals declared ONCE up front. Re-declaring `local`
+  # for the same name within a function leaks `name=value` to stdout under
+  # zsh (silent under bash). This file is sourced; macOS callers run zsh by
+  # default, so any re-declaration corrupts the single-line return contract.
+  # Never reintroduce `local` inside the if-blocks or for-loop below.
+  local ver default_primary default_fallback project_config user_config
+  local _git_root cfg cfg_last_rejected cfg_saw_other
 
   # Step 1: Env var override (hard-fail if unavailable)
   if [[ -n "$env_cli" && "$env_cli" != "auto" ]]; then
@@ -254,12 +261,10 @@ resolve_role_cli() {
   fi
 
   # Step 2: Project config routes
-  local project_config _git_root
   _git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
   project_config="${_git_root:+$_git_root/.claude/busdriver.json}"
   [[ -z "$project_config" ]] && project_config=""  # empty _git_root → skip
   if [[ -f "$project_config" ]]; then
-    local ver
     ver=$(_read_config_value "$project_config" '.version')
     if [[ -n "$ver" && "$ver" != "1" ]]; then
       echo "busdriver: ignoring $project_config (version $ver != 1)" >&2
@@ -269,9 +274,8 @@ resolve_role_cli() {
   fi
 
   # Step 3: User config routes
-  local user_config="$HOME/.claude/busdriver.json"
+  user_config="$HOME/.claude/busdriver.json"
   if [[ -f "$user_config" ]]; then
-    local ver
     ver=$(_read_config_value "$user_config" '.version')
     if [[ -n "$ver" && "$ver" != "1" ]]; then
       echo "busdriver: ignoring $user_config (version $ver != 1)" >&2
@@ -290,8 +294,8 @@ resolve_role_cli() {
   # fall through normally — the user clearly intended a working reviewer.
   for cfg in "$project_config" "$user_config"; do
     [[ ! -f "$cfg" ]] && continue
-    local cfg_last_rejected="" cfg_saw_other=0
-    local default_primary
+    cfg_last_rejected=""
+    cfg_saw_other=0
     default_primary=$(_read_config_value "$cfg" '.defaults.primary')
     if [[ -n "$default_primary" ]]; then
       if [[ "$default_primary" == "auto" ]]; then
@@ -317,7 +321,6 @@ resolve_role_cli() {
     # a config like {"defaults":{"fallback":"droid"}} (no primary) must
     # still honor the explicit fallback. Pre-fix this block was nested
     # inside `if -n primary`, which silently ignored fallback-only configs.
-    local default_fallback
     default_fallback=$(_read_config_value "$cfg" '.defaults.fallback')
     if [[ "$default_fallback" == "auto" ]]; then
       # Explicit "auto" fallback — run auto-detect inline and return, bypassing

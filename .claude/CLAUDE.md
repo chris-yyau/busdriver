@@ -18,7 +18,7 @@ commands/        Slash command entry points (.md) — user-invokable shortcuts t
 hooks/
   hooks.json     Hook registration manifest (PreToolUse, PostToolUse, SessionStart, Stop)
   gate-scripts/  Shell scripts that enforce review gates (fail-CLOSED by default)
-rules/           Coding rules installed to ~/.claude/rules/ (common/ + 11 language dirs + zh/)
+rules/           Coding rules installed to ~/.claude/rules/ (common/ + 11 language dirs)
 scripts/         JS/shell utilities — release, install, session management, health checks
 skills/          206 skill definitions (.md) — the bulk of the plugin's capability (plus `supplements/` support dir)
 tests/           Shell-based gate tests (test-*.sh)

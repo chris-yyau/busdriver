@@ -28,12 +28,14 @@ validate_git_repo() {
 # Validate review CLI is available (replaces validate_codex_installed)
 # Outputs the resolved CLI name on success, error message on failure
 validate_review_cli() {
-  local resolved
+  # All locals declared once. Re-declaring `local` for the same name within
+  # a function leaks `name=value` to stdout under zsh (silent under bash).
+  # See scripts/lib/resolve-cli.sh resolve_role_cli for the same pattern fix.
+  local resolved cli_name hint
   resolved=$(resolve_review_cli)
 
   if [[ "$resolved" == missing:* ]]; then
-    local cli_name="${resolved#missing:}"
-    local hint
+    cli_name="${resolved#missing:}"
     hint=$(get_cli_install_hint "$cli_name")
     echo "❌ Error: review CLI '$cli_name' not found" >&2
     echo "" >&2
@@ -45,7 +47,7 @@ validate_review_cli() {
   fi
 
   if [[ "$resolved" == unsupported:* ]]; then
-    local cli_name="${resolved#unsupported:}"
+    cli_name="${resolved#unsupported:}"
     echo "❌ Error: unsupported review CLI '$cli_name'" >&2
     echo "" >&2
     echo "   Supported values: auto, codex, agy, droid, builtin, none" >&2

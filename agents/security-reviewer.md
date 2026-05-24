@@ -15,7 +15,7 @@ You are an expert security specialist focused on identifying and remediating vul
 2. **Secrets Detection** — Find hardcoded API keys, passwords, tokens
 3. **Input Validation** — Ensure all user inputs are properly sanitized
 4. **Authentication/Authorization** — Verify proper access controls
-5. **Dependency Security** — Check for vulnerable npm packages
+5. **Dependency Security** — Check for vulnerable, abandoned, typo-squatted, or recently-transferred packages
 6. **Security Best Practices** — Enforce secure coding patterns
 
 ## Analysis Commands
@@ -58,6 +58,24 @@ Flag these patterns immediately:
 | Balance check without lock | CRITICAL | Use `FOR UPDATE` in transaction |
 | No rate limiting | HIGH | Add `express-rate-limit` |
 | Logging passwords/secrets | MEDIUM | Sanitize log output |
+
+### 4. Package Provenance Audit
+
+**Trigger:** PR diff modifies dependency manifests or lockfiles — `package.json`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `requirements.txt`, `pyproject.toml`, `poetry.lock`, `Pipfile.lock`, `uv.lock`, `Cargo.toml`, `Cargo.lock`, `go.mod`, `go.sum`. Lockfile-only diffs count — new transitive deps still need audit.
+
+For each **newly added** dependency (not pre-existing in the lockfile):
+
+| Check | Severity | How to detect |
+|-------|----------|---------------|
+| Typo-squat — Levenshtein ≤ 2 from a popular package | CRITICAL | Compare name to top-1000 for the registry (e.g., `lodahs` vs `lodash`, `requestz` vs `requests`, `expresss` vs `express`) |
+| Install-time code — `postinstall`/`preinstall`/`install` script declared | HIGH | `npm view <pkg> scripts`; PyPI setup.py `cmdclass`; Cargo `build.rs` |
+| Abandonment — last release > 18 months ago | HIGH | npm: `npm view <pkg> time --json` then read `time[<latest-version>]` (NOT `time.modified` — that's the metadata-edit timestamp, not the release date); PyPI: `pypi.org/pypi/<pkg>/json` → `releases[<latest>][0].upload_time`; crates.io: `/api/v1/crates/<pkg>` → `versions[0].updated_at` |
+| Maintainer change in last 90 days | MEDIUM | `npm view <pkg> maintainers` + compare against prior maintainer set |
+| Fresh package — first publish < 30 days AND weekly downloads < 1000 | MEDIUM | Registry stats |
+
+**Scope rules:** Only flag NEW additions to the lockfile, not version bumps of pre-existing deps. Internal monorepo packages (declared in the repo's workspace config) are exempt because they're first-party. **Do NOT** blanket-exempt scoped packages by organization prefix — third-party scoped packages (`@some-vendor/*`) are exactly the takeover/install-script risk this section catches; only exempt scopes that the workspace config marks as internal.
+
+**Why this matters:** `npm audit` catches published CVEs only. Typo-squat, ownership transfer, and install-script malware land BEFORE CVE assignment. Sonatype 2025: 454k+ malicious packages catalogued across major open-source registries.
 
 ## Key Principles
 

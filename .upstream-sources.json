@@ -1158,25 +1158,25 @@
     {
       "path": "rules/zh/README.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "rules/zh/README.md"
     },
     {
       "path": "rules/zh/agents.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "rules/zh/agents.md"
     },
     {
       "path": "rules/zh/code-review.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "rules/zh/code-review.md"
     },
     {
       "path": "rules/zh/coding-style.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "rules/zh/coding-style.md"
     },
     {
@@ -1192,43 +1192,43 @@
     {
       "path": "rules/zh/development-workflow.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "rules/zh/development-workflow.md"
     },
     {
       "path": "rules/zh/git-workflow.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "rules/zh/git-workflow.md"
     },
     {
       "path": "rules/zh/hooks.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "rules/zh/hooks.md"
     },
     {
       "path": "rules/zh/patterns.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "rules/zh/patterns.md"
     },
     {
       "path": "rules/zh/performance.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "rules/zh/performance.md"
     },
     {
       "path": "rules/zh/security.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "rules/zh/security.md"
     },
     {
       "path": "rules/zh/testing.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "rules/zh/testing.md"
     },
     {

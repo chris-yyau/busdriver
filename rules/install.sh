@@ -19,7 +19,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
-ALL_LANGS=(typescript python golang swift php java kotlin cpp perl rust csharp zh)
+ALL_LANGS=(typescript python golang swift php java kotlin cpp perl rust csharp)
 
 install_dir() {
   local name="$1"

@@ -6,7 +6,7 @@
     "timeout_ms": 600000
   },
   "iteration": {
-    "max_iterations": 3,
+    "max_iterations": 5,
     "convergence_threshold": 0,
     "auto_stop_on_no_progress": true,
     "no_progress_window": 1

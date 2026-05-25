@@ -7,9 +7,8 @@ on:
 
 permissions: {}
 
-defaults:
-  run:
-    shell: bash
+# scorecard-action publish verification rejects top-level env or defaults
+# https://github.com/ossf/scorecard-action#workflow-restrictions
 
 jobs:
   scorecard:

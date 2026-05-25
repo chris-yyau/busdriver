@@ -1,3 +1,10 @@
+## [1.49.1](https://github.com/chris-yyau/busdriver/compare/v1.49.0...v1.49.1) (2026-05-25)
+
+
+### Bug Fixes
+
+* **scorecard:** remove top-level defaults block to unblock publish ([#151](https://github.com/chris-yyau/busdriver/issues/151)) ([a51328d](https://github.com/chris-yyau/busdriver/commit/a51328dbe05e248784c7d6d504798c5308d12122)), closes [#45](https://github.com/chris-yyau/busdriver/issues/45)
+
 # [1.49.0](https://github.com/chris-yyau/busdriver/compare/v1.48.0...v1.49.0) (2026-05-24)
 
 

@@ -42,7 +42,7 @@ Get an API key at [exa.ai](https://exa.ai).
 
 Neural web search. Returns titles, URLs, and content highlights.
 
-```
+```text
 web_search_exa(query: "...", numResults: 5)
 ```
 
@@ -57,7 +57,7 @@ web_search_exa(query: "...", numResults: 5)
 
 Read full page content as clean markdown. Use after `web_search_exa` when highlights are insufficient.
 
-```
+```text
 web_fetch_exa(urls: ["https://example.com/page"], maxCharacters: 3000)
 ```
 
@@ -69,28 +69,28 @@ web_fetch_exa(urls: ["https://example.com/page"], maxCharacters: 3000)
 ## Usage Patterns
 
 ### Code Research
-```
+```text
 web_search_exa(query: "Rust error handling patterns Result type with examples", numResults: 5)
 ```
 
 ### Research Papers / Technical Deep-Dive
-```
+```text
 web_search_exa(query: "research paper on WebAssembly component model adoption 2026", numResults: 5)
 web_fetch_exa(urls: ["<top-2-URLs>"], maxCharacters: 5000)
 ```
 
 ### Company Research
-```
+```text
 web_search_exa(query: "category:company Vercel funding valuation 2026", numResults: 3)
 ```
 
 ### People Lookup
-```
+```text
 web_search_exa(query: "category:people AI safety researchers at Anthropic", numResults: 5)
 ```
 
 ### Deep Fetch After Search
-```
+```text
 results = web_search_exa(query: "...", numResults: 5)
 # Pick the 2-3 most promising URLs
 web_fetch_exa(urls: [results[0].url, results[1].url], maxCharacters: 4000)
@@ -99,7 +99,7 @@ web_fetch_exa(urls: [results[0].url, results[1].url], maxCharacters: 4000)
 ## Tips
 
 - Use natural-language queries — Exa's neural model rewards semantic richness over keywords
-- Use `category:company` or `category:people` in the query string to narrow entity searches
+- Prefix `category:company` or `category:people` at the start of your query to activate Exa's entity filter (e.g. `"category:company Vercel funding 2026"`)
 - Default `numResults: 10` is often too many — start with 3-5 to save quota
 - Batch URLs in a single `web_fetch_exa` call rather than one-at-a-time
 - Lower `maxCharacters` (1500-2000) for snippets, higher (5000+) for full-page comprehension

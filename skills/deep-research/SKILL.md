@@ -52,17 +52,17 @@ Break the topic into 3-5 research sub-questions. Example:
 For EACH sub-question, route to the right tool:
 
 **General/news/broad queries — use Tavily (free):**
-```
+```text
 tavily_search(query: "<sub-question>", max_results: 8, time_range: "year")
 ```
 
 **Technical/code/research papers — use Exa (free):**
-```
+```text
 web_search_exa(query: "<sub-question described as ideal page>", numResults: 8)
 ```
 
 **Entity queries (companies, people) — use Exa with category:**
-```
+```text
 web_search_exa(query: "category:company <company name> funding 2026", numResults: 5)
 ```
 
@@ -79,21 +79,21 @@ web_search_exa(query: "category:company <company name> funding 2026", numResults
 For the most promising URLs, fetch full content. Try free tools first; spend Firecrawl credit only on fallback.
 
 **Primary (free) — batch URLs in one call:**
-```
+```text
 web_fetch_exa(urls: ["<url1>", "<url2>"], maxCharacters: 5000)
 ```
 or
-```
+```text
 tavily_extract(urls: ["<url1>", "<url2>"], extract_depth: "basic")
 ```
 
 **LinkedIn / protected / tables / embedded content:**
-```
+```text
 tavily_extract(urls: ["<url>"], extract_depth: "advanced")
 ```
 
 **Fallback (paid) — only if both above return empty/garbage on JS-heavy SPAs:**
-```
+```text
 firecrawl_scrape(url: "<url>")
 ```
 

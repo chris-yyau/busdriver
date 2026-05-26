@@ -31,7 +31,7 @@ Get an API key at [tavily.com](https://tavily.com) if self-hosting.
 
 General web search with optional time/domain/depth filters.
 
-```
+```text
 tavily_search(query: "latest LLM benchmarks 2026", max_results: 5)
 ```
 
@@ -51,7 +51,7 @@ tavily_search(query: "latest LLM benchmarks 2026", max_results: 5)
 
 Read full page content as markdown or text.
 
-```
+```text
 tavily_extract(urls: ["https://example.com/page"], extract_depth: "basic")
 ```
 
@@ -66,7 +66,7 @@ tavily_extract(urls: ["https://example.com/page"], extract_depth: "basic")
 
 Crawl a site starting from a root URL.
 
-```
+```text
 tavily_crawl(url: "https://docs.example.com", max_depth: 2, limit: 30)
 ```
 
@@ -84,7 +84,7 @@ tavily_crawl(url: "https://docs.example.com", max_depth: 2, limit: 30)
 
 Discover URL structure without extracting content (cheaper than crawl).
 
-```
+```text
 tavily_map(url: "https://docs.example.com", max_depth: 2)
 ```
 
@@ -94,7 +94,7 @@ Same depth/breadth/domain/path controls as `tavily_crawl`. Returns URL list only
 
 Server-side multi-source research with synthesis. Rate-limited to 20 req/min.
 
-```
+```text
 tavily_research(input: "comprehensive overview of CRDT-based collaborative editing in 2026", model: "auto")
 ```
 
@@ -108,27 +108,27 @@ tavily_research(input: "comprehensive overview of CRDT-based collaborative editi
 ## Usage Patterns
 
 ### Quick News Lookup
-```
+```text
 tavily_search(query: "OpenAI o3 release news", time_range: "week", max_results: 5)
 ```
 
 ### Domain-Scoped Search
-```
+```text
 tavily_search(query: "RFC 9114 HTTP/3 priority", include_domains: ["ietf.org", "rfc-editor.org"], max_results: 3)
 ```
 
 ### Quick Page Read
-```
+```text
 tavily_extract(urls: ["https://example.com/article"], extract_depth: "basic")
 ```
 
 ### Site Crawl for Docs Ingestion
-```
+```text
 tavily_crawl(url: "https://docs.example.com", max_depth: 2, limit: 50, select_paths: ["/api/.*"])
 ```
 
 ### URL Discovery Before Targeted Fetch
-```
+```text
 urls = tavily_map(url: "https://blog.example.com", max_depth: 2, limit: 100)
 # Filter to URLs of interest, then extract
 tavily_extract(urls: filtered_urls)

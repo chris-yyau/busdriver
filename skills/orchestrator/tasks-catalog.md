@@ -21,8 +21,9 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Verification** | verify, build+lint+test | `/verify` command |
 | **Repo pipeline setup** | test setup, scaffold tests, CI pipeline, Codecov, pinact, generate/refresh CLAUDE.md, code intelligence, codegraph, code graph, structural search | `helmet` (personal skill — Phase A tests / B CI / C CLAUDE.md / D CodeGraph) |
 | **Research** | search for libraries | `busdriver:search-first` |
-| **Deep Research** | research X thoroughly, cited reports | `busdriver:deep-research` (Firecrawl + Exa) |
-| **Neural Search** | semantic search, company intel | `busdriver:exa-search` |
+| **Deep Research** | research X thoroughly, cited reports | `busdriver:deep-research` (Tavily + Exa primary; Firecrawl reserved as paid fallback) |
+| **Web Search (general)** | news, current events, broad lookups, page extract, site crawl | `busdriver:tavily-search` (free tier ~1k/mo) |
+| **Neural Search** | code/papers, company intel, people lookup, technical content | `busdriver:exa-search` (free tier ~1k/mo) |
 | **Rules Distillation** | distill rules from skills | `/rules-distill` command |
 | **UI State Debugging** | buttons cancel each other, UI state bugs | `busdriver:click-path-audit` |
 | **Skill Auditing** | audit skills, check quality | `skill-stocktake` (quality) or `skill-comply` (compliance) |
@@ -131,7 +132,7 @@ Available in any pipeline phase:
 | Category | Route(s) |
 |----------|----------|
 | **Context/Session** | `/save-session`, `/resume-session`, `/aside`, `/sessions`, `strategic-compact`, `context-budget` |
-| **Web Research** | `deep-research` (Firecrawl + Exa), `exa-search` (neural search) |
+| **Web Research** | `tavily-search` (general/news, free), `exa-search` (neural for code/papers/entities, free), `deep-research` (multi-source synthesis orchestrating Tavily + Exa; Firecrawl reserved as paid fallback) |
 | **Browser Automation** | `agent-browser` CLI, Playwright MCP, Chrome DevTools MCP |
 | **Project Setup** | `/setup-pm`, `configure-ecc`, `codebase-onboarding` |
 | **Docs Lookup** | `docs-lookup` agent or `/docs` (Context7 MCP) |

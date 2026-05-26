@@ -361,6 +361,15 @@ resolve_role_cli() {
   case "$role_key" in
     blueprint-review.reviewer_1) is_cli_available agy && echo "agy" && return ;;
     blueprint-review.reviewer_2) is_cli_available codex && echo "codex" && return ;;
+    # reviewer_3 (grok) added 2026-05-26: adds xAI lineage to blueprint-review,
+    # mirroring the council Researcher promotion. Falls back to "none" (voice
+    # skipped, arbitration proceeds with whatever reviewers returned) when
+    # grok is unavailable. Unlike reviewer_1/_2 which can fall through to the
+    # Step 5 auto-detect cascade (codex > agy > droid) — and silently
+    # duplicate a higher reviewer slot — reviewer_3 explicitly returns "none"
+    # so a missing grok skips the voice rather than introducing a duplicate.
+    blueprint-review.reviewer_3) is_cli_available grok && echo "grok" && return
+                                 echo "none" && return ;;
     blueprint-review.arbiter)    echo "builtin" && return ;;  # arbiter is always Claude
     # Trade-off: when agy/codex are unavailable, these roles fall back to
     # droid. Droid runs at DROID_AUTO_LEVEL=low when invoked from council's
@@ -625,6 +634,36 @@ execute_review() {
     # release regresses this, restore `--auto low` (accepts file-write tier as
     # the cost of stdin-pipe working).
     droid)   printf '%s' "$prompt" | _portable_timeout "$duration" droid exec 2>&1 ;;
+    # Grok (xAI Grok Build) added 2026-05-26 for blueprint-review reviewer_3.
+    #
+    # SAFETY MODEL (must match dispatch.sh's grok case — single source of truth
+    # for the threat model lives there; this is the mirrored summary):
+    #   * --sandbox readonly blocks project-root writes (verified empirically).
+    #     Does NOT block shell exec, /tmp writes, or network.
+    #   * End-to-end safety requires "always approve" DISABLED in the grok
+    #     user-config (per-machine setting via `grok` `/permissions`).
+    #     With that, writes/shell denied in headless; without it, grok auto-
+    #     approves arbitrary tool use including the bash tool.
+    #   * Threat surface here: blueprint-review feeds design-document content
+    #     into this path. A prompt-injected design doc on a host where grok
+    #     user-config is permissive could get shell/write actions auto-
+    #     approved. This is the same residual risk class as dispatch.sh's
+    #     grok path and is documented in skills/dispatch-cli/scripts/dispatch.sh.
+    #   * No --always-approve / --disallowed-tools / --deny flags passed:
+    #     empirically they are no-ops in headless mode (false safety).
+    #
+    # The stderr warning below is captured by run-design-review-loop.sh into
+    # the per-reviewer raw file (e.g. grok-raw.txt). It will not surface to
+    # the operator in real time the way dispatch.sh's stderr does, but it
+    # remains in the audit trail.
+    #
+    # --max-turns 150: grok counts every internal message; review prompts
+    # often consume 50-100 turns; 150 is the safety margin (max_turns_exceeded
+    # is destructive — whole output discarded — so err generous, not tight).
+    # --prompt-file /dev/stdin: bypasses argv length limits (mirrors agy's
+    # --print pattern).
+    grok)    echo "Note: grok blueprint-review dispatch — safety relies on user-config 'always approve' being DISABLED. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
+             printf '%s' "$prompt" | _portable_timeout "$duration" grok --prompt-file /dev/stdin --max-turns 150 --sandbox readonly 2>&1 ;;
     builtin) echo "BUILTIN_FALLBACK"; return 3 ;;
     unsupported:*)
              # CLI was rejected upstream (deprecated/removed). Migration warning

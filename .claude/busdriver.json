@@ -3,6 +3,7 @@
     "litmus.reviewer": ["codex", "droid"],
     "blueprint-review.reviewer_1": ["agy", "droid"],
     "blueprint-review.reviewer_2": ["codex", "droid"],
+    "blueprint-review.reviewer_3": ["grok", "none"],
     "council.pragmatist": ["agy", "droid"],
     "council.critic": ["codex", "droid"],
     "council.researcher": ["grok", "droid"]

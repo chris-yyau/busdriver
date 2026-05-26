@@ -80,6 +80,7 @@ last_review_timestamp: ""
 # Review results
 agy_status: ""
 codex_status: ""
+grok_status: ""
 claude_status: ""
 
 # Progress model (replaces binary FAIL/PASS)
@@ -208,10 +209,16 @@ update_review_statuses() {
   local agy_status="$1"
   local codex_status="$2"
   local claude_status="$3"
+  # grok_status added 2026-05-26 as 4th positional arg for blueprint-review
+  # reviewer_3. Default empty (state field not written) for backward compat
+  # with callers that haven't migrated; the loop passes "unavailable" when
+  # grok is not configured/installed.
+  local grok_status="${4:-}"
 
   update_state_field "agy_status" "\"$agy_status\""
   update_state_field "codex_status" "\"$codex_status\""
   update_state_field "claude_status" "\"$claude_status\""
+  [[ -n "$grok_status" ]] && update_state_field "grok_status" "\"$grok_status\""
 }
 
 # Check convergence — Claude is the arbiter (Critic #4)

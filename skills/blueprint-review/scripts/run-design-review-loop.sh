@@ -143,9 +143,10 @@ SPEC_HASH=$(compute_spec_hash "$DESIGN_FILE")
 log_info "Spec hash: ${SPEC_HASH:0:12}..."
 
 if [[ "$CLAUDE_ONLY" == "true" ]]; then
-  # --claude-only: recover run_id from existing Codex/Agy outputs
+  # --claude-only: recover run_id from existing Codex/Agy/Grok outputs
   CODEX_FILE=$(get_review_file "codex.json")
   AGY_FILE=$(get_review_file "agy.json")
+  GROK_FILE=$(get_review_file "grok.json")
   RUN_ID=""
   if [[ -f "$CODEX_FILE" ]]; then
     RUN_ID=$(jq -r '.metadata.run_id // ""' "$CODEX_FILE" 2>/dev/null || echo "")
@@ -153,8 +154,11 @@ if [[ "$CLAUDE_ONLY" == "true" ]]; then
   if [[ -z "$RUN_ID" && -f "$AGY_FILE" ]]; then
     RUN_ID=$(jq -r '.metadata.run_id // ""' "$AGY_FILE" 2>/dev/null || echo "")
   fi
+  if [[ -z "$RUN_ID" && -f "$GROK_FILE" ]]; then
+    RUN_ID=$(jq -r '.metadata.run_id // ""' "$GROK_FILE" 2>/dev/null || echo "")
+  fi
   if [[ -z "$RUN_ID" ]]; then
-    log_error "--claude-only requires existing Agy/Codex outputs with run_id."
+    log_error "--claude-only requires existing Agy/Codex/Grok outputs with run_id."
     log_error "Run without --claude-only first to generate them."
     exit 1
   fi
@@ -162,6 +166,7 @@ if [[ "$CLAUDE_ONLY" == "true" ]]; then
   log_info "Recovered run ID: $RUN_ID"
   AGY_AVAILABLE=false
   CODEX_AVAILABLE=false
+  GROK_AVAILABLE=false
 else
   # Normal mode: generate fresh run ID
   RUN_ID=$(generate_run_id)
@@ -171,21 +176,36 @@ else
   log_info "Resolving reviewer CLIs..."
   REVIEWER_1_CLI=$(resolve_role_cli "blueprint-review.reviewer_1")
   REVIEWER_2_CLI=$(resolve_role_cli "blueprint-review.reviewer_2")
+  REVIEWER_3_CLI=$(resolve_role_cli "blueprint-review.reviewer_3")
   log_info "  Reviewer 1: $REVIEWER_1_CLI"
   log_info "  Reviewer 2: $REVIEWER_2_CLI"
+  log_info "  Reviewer 3: $REVIEWER_3_CLI"
 
-  # Duplicate detection (council-validated decision 4c)
+  # Duplicate detection (council-validated decision 4c). For 3 reviewers the
+  # simple rule is: if reviewer_2 collides with reviewer_1, run single-reviewer
+  # mode (the existing pattern); if reviewer_3 collides with either, we just
+  # skip reviewer_3 (one less voice, arbitration proceeds). This avoids
+  # combinatorial 3-way duplicate-output copying for an edge case.
   DUPLICATE_MODE=false
   if [[ "$REVIEWER_1_CLI" == "$REVIEWER_2_CLI" && "$REVIEWER_1_CLI" != "none" && "$REVIEWER_1_CLI" != "builtin" && ! "$REVIEWER_1_CLI" =~ ^(missing|unsupported): ]]; then
     DUPLICATE_MODE=true
-    log_warning "  Degraded: both reviewers resolved to $REVIEWER_1_CLI (single-reviewer mode)"
+    log_warning "  Degraded: reviewer_1 and reviewer_2 resolved to $REVIEWER_1_CLI (single-reviewer mode for that pair)"
+  fi
+  REVIEWER_3_DUPLICATE=false
+  if [[ "$REVIEWER_3_CLI" != "none" && "$REVIEWER_3_CLI" != "builtin" && ! "$REVIEWER_3_CLI" =~ ^(missing|unsupported): ]]; then
+    if [[ "$REVIEWER_3_CLI" == "$REVIEWER_1_CLI" || "$REVIEWER_3_CLI" == "$REVIEWER_2_CLI" ]]; then
+      REVIEWER_3_DUPLICATE=true
+      log_warning "  Degraded: reviewer_3 ($REVIEWER_3_CLI) duplicates a higher slot — voice skipped"
+    fi
   fi
 
   # Set availability flags for backward compat with rest of script
   AGY_AVAILABLE=false
   CODEX_AVAILABLE=false
+  GROK_AVAILABLE=false
   [[ "$REVIEWER_1_CLI" != "none" && "$REVIEWER_1_CLI" != "builtin" && ! "$REVIEWER_1_CLI" =~ ^(missing|unsupported): ]] && AGY_AVAILABLE=true
   [[ "$REVIEWER_2_CLI" != "none" && "$REVIEWER_2_CLI" != "builtin" && ! "$REVIEWER_2_CLI" =~ ^(missing|unsupported): && "$DUPLICATE_MODE" == "false" ]] && CODEX_AVAILABLE=true
+  [[ "$REVIEWER_3_CLI" != "none" && "$REVIEWER_3_CLI" != "builtin" && ! "$REVIEWER_3_CLI" =~ ^(missing|unsupported): && "$REVIEWER_3_DUPLICATE" == "false" ]] && GROK_AVAILABLE=true
 
   # Duplicate mode: after single reviewer runs, its output will be copied to both paths (see post-wait block below)
 fi
@@ -209,13 +229,23 @@ while true; do
   fi
 
   if [[ "$CLAUDE_ONLY" == "true" ]]; then
-    # --claude-only: skip cleanup and Agy+Codex, jump straight to Phase 3
-    log_info "Claude-only mode: skipping Phase 1-2 (using existing Agy+Codex outputs)"
+    # --claude-only: skip cleanup and Agy+Codex+Grok, jump straight to Phase 3
+    log_info "Claude-only mode: skipping Phase 1-2 (using existing Agy+Codex+Grok outputs)"
 
     AGY_OUTPUT_FILE=$(get_review_file "agy.json")
     CODEX_OUTPUT_FILE=$(get_review_file "codex.json")
+    GROK_OUTPUT_FILE=$(get_review_file "grok.json")
     AGY_STATUS=$(jq -r '.status' "$AGY_OUTPUT_FILE" 2>/dev/null || echo "ERROR")
     CODEX_STATUS=$(jq -r '.status' "$CODEX_OUTPUT_FILE" 2>/dev/null || echo "ERROR")
+    # Grok may be absent if a previous run didn't have grok available; treat
+    # a missing file as ERROR status so the arbiter sees "no signal" rather
+    # than crashing on a missing jq target.
+    if [[ -f "$GROK_OUTPUT_FILE" ]]; then
+      GROK_STATUS=$(jq -r '.status' "$GROK_OUTPUT_FILE" 2>/dev/null || echo "ERROR")
+    else
+      create_error_json "grok" "CLI not available (claude-only mode; no prior grok output)" > "$GROK_OUTPUT_FILE"
+      GROK_STATUS="ERROR"
+    fi
     DESIGN_CONTENT=$(cat "$DESIGN_FILE")
     REVIEW_START=$(millis)
   else
@@ -241,6 +271,9 @@ while true; do
         "$(get_review_file "codex.json")" \
         "$(get_review_file "codex-raw.txt")" \
         "$(get_review_file "codex.json.pending")" \
+        "$(get_review_file "grok.json")" \
+        "$(get_review_file "grok-raw.txt")" \
+        "$(get_review_file "grok.json.pending")" \
         "$(get_review_file "claude.json.pending")" \
         "$(get_review_file "claude-validation-prompt.txt")" \
         "$(get_review_file "consensus.json")" \
@@ -264,11 +297,25 @@ Document to review:
 $DESIGN_CONTENT
 ---"
 
-  # ── Phase 1: Launch Agy + Codex in PARALLEL ────────────────────
-  log_info "Phase 1: Launching Agy + Codex reviews in parallel..."
+  # Pre-execution safety warning whenever grok will be invoked, regardless
+  # of which reviewer slot it landed in. Gate checks ALL three reviewer
+  # CLIs because a route override or BUSDRIVER_REVIEW_CLI could put grok
+  # into reviewer_1 or reviewer_2 (not just reviewer_3). Printed BEFORE
+  # the subshell stderr redirect so the operator sees it in real time —
+  # the warning inside execute_review's grok case is captured into the
+  # per-reviewer raw file and only visible if the file is inspected.
+  # Suppressible via BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1.
+  if [[ "${BUSDRIVER_GROK_QUIET_SANDBOX_WARN:-0}" != "1" ]] && \
+     [[ "$REVIEWER_1_CLI" == "grok" || "$REVIEWER_2_CLI" == "grok" || "$REVIEWER_3_CLI" == "grok" ]]; then
+    log_warning "  grok dispatch in blueprint-review: --sandbox readonly blocks project writes only; shell exec / /tmp writes NOT blocked. Safety also requires 'always approve' DISABLED in grok user-config. Design-document content flows through this path — review the dispatch.sh grok-case comment for the full threat model. Set BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 to suppress."
+  fi
+
+  # ── Phase 1: Launch Agy + Codex + Grok in PARALLEL ────────────
+  log_info "Phase 1: Launching Agy + Codex + Grok reviews in parallel..."
 
   AGY_OUTPUT_FILE=$(get_review_file "agy.json")
   CODEX_OUTPUT_FILE=$(get_review_file "codex.json")
+  GROK_OUTPUT_FILE=$(get_review_file "grok.json")
 
   REVIEW_START=$(millis)
 
@@ -390,10 +437,66 @@ with open(pending, "w") as f:
   ) &
   CODEX_PID=$!
 
-  # Wait for both to complete
+  # Run Grok (reviewer 3) in background — clone of the Codex block above with
+  # s/CODEX/GROK/g and s/codex/grok/g. Mirrors execute_review contract,
+  # JSON-extraction, metadata injection, and error handling. Added 2026-05-26
+  # to extend voice-lineage diversity into design review (xAI Grok backend).
+  (
+    if [[ "$GROK_AVAILABLE" == "true" ]]; then
+      GROK_RAW_FILE=$(get_review_file "grok-raw.txt")
+      GROK_START=$(millis)
+
+      REVIEWER_EXIT=0
+      execute_review "$REVIEWER_3_CLI" "$FULL_PROMPT" > "$GROK_RAW_FILE" 2>&1 || REVIEWER_EXIT=$?
+
+      if [[ "$REVIEWER_EXIT" -eq 0 ]]; then
+        GROK_END=$(millis)
+        GROK_DURATION=$((GROK_END - GROK_START))
+
+        if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$GROK_RAW_FILE" > "${GROK_OUTPUT_FILE}.pending" 2>/dev/null; then
+          _MIM_PENDING="${GROK_OUTPUT_FILE}.pending" \
+          _MIM_RUN_ID="$RUN_ID" \
+          _MIM_ITERATION="$CURRENT_ITERATION" \
+          _MIM_SPEC_HASH="$SPEC_HASH" \
+          _MIM_DURATION="$GROK_DURATION" \
+          python3 -c '
+import json, os, sys
+pending = os.environ["_MIM_PENDING"]
+with open(pending) as f:
+    data = json.load(f)
+if not isinstance(data, dict) or "status" not in data:
+    print("Skipping metadata injection: unexpected JSON structure", file=sys.stderr)
+    sys.exit(0)
+data.setdefault("metadata", {})
+data["metadata"]["run_id"] = os.environ["_MIM_RUN_ID"]
+data["metadata"]["iteration"] = int(os.environ["_MIM_ITERATION"])
+data["metadata"]["spec_hash"] = os.environ["_MIM_SPEC_HASH"]
+data["metadata"]["review_duration_ms"] = int(os.environ["_MIM_DURATION"])
+with open(pending, "w") as f:
+    json.dump(data, f, indent=2)
+' 2>/dev/null || true
+          mv "${GROK_OUTPUT_FILE}.pending" "$GROK_OUTPUT_FILE"
+        else
+          create_error_json "grok" "Output was not valid JSON" > "$GROK_OUTPUT_FILE"
+        fi
+      elif [[ "$REVIEWER_EXIT" -eq 3 ]]; then
+        # BUILTIN_FALLBACK: CLI retry exhaustion — degraded mode, not hard error.
+        # Arbiter proceeds with fewer external voices.
+        create_error_json "grok" "CLI unavailable (builtin fallback — retry exhaustion)" > "$GROK_OUTPUT_FILE"
+      else
+        create_error_json "grok" "CLI execution failed (exit $REVIEWER_EXIT)" > "$GROK_OUTPUT_FILE"
+      fi
+    else
+      create_error_json "grok" "CLI not available" > "$GROK_OUTPUT_FILE"
+    fi
+  ) &
+  GROK_PID=$!
+
+  # Wait for all three to complete
   log_info "  Waiting for parallel reviews..."
   wait "$AGY_PID" 2>/dev/null || true
   wait "$CODEX_PID" 2>/dev/null || true
+  wait "$GROK_PID" 2>/dev/null || true
 
   REVIEW_END=$(millis)
   REVIEW_DURATION=$((REVIEW_END - REVIEW_START))
@@ -420,8 +523,13 @@ with open(pending, "w") as f:
     create_error_json "codex" "Output missing or invalid after review" > "$CODEX_OUTPUT_FILE"
   fi
 
+  if ! validate_json_file "$GROK_OUTPUT_FILE"; then
+    log_error "Grok output invalid or missing — fail-closed"
+    create_error_json "grok" "Output missing or invalid after review" > "$GROK_OUTPUT_FILE"
+  fi
+
   # Freshness check (Critic #2): validate or inject run_id
-  for review_file in "$AGY_OUTPUT_FILE" "$CODEX_OUTPUT_FILE"; do
+  for review_file in "$AGY_OUTPUT_FILE" "$CODEX_OUTPUT_FILE" "$GROK_OUTPUT_FILE"; do
     FILE_RUN_ID=$(jq -r '.metadata.run_id // ""' "$review_file" 2>/dev/null || echo "")
     REVIEWER=$(jq -r '.reviewer_id // "unknown"' "$review_file" 2>/dev/null || echo "unknown")
     if [[ -z "$FILE_RUN_ID" ]]; then
@@ -444,9 +552,11 @@ with open(pending, "w") as f:
 
   AGY_STATUS=$(jq -r '.status' "$AGY_OUTPUT_FILE")
   CODEX_STATUS=$(jq -r '.status' "$CODEX_OUTPUT_FILE")
+  GROK_STATUS=$(jq -r '.status' "$GROK_OUTPUT_FILE")
 
   log_info "  Agy:    $AGY_STATUS ($(jq '.issues | length' "$AGY_OUTPUT_FILE") issues)"
   log_info "  Codex:  $CODEX_STATUS ($(jq '.issues | length' "$CODEX_OUTPUT_FILE") issues)"
+  log_info "  Grok:   $GROK_STATUS ($(jq '.issues | length' "$GROK_OUTPUT_FILE") issues)"
 
   fi  # end of CLAUDE_ONLY guard (Phase 1-2 skipped in claude-only mode)
 
@@ -462,6 +572,7 @@ with open(pending, "w") as f:
 
   AGY_ISSUES=$(jq -r '.issues[] | "- [\(.severity)] \(.section): \(.description)"' "$AGY_OUTPUT_FILE" 2>/dev/null || echo "No issues")
   CODEX_ISSUES=$(jq -r '.issues[] | "- [\(.severity)] \(.section): \(.description)"' "$CODEX_OUTPUT_FILE" 2>/dev/null || echo "No issues")
+  GROK_ISSUES=$(jq -r '.issues[] | "- [\(.severity)] \(.section): \(.description)"' "$GROK_OUTPUT_FILE" 2>/dev/null || echo "No issues")
 
   cat > "$CLAUDE_PROMPT_FILE" <<EOF
 $CLAUDE_PROMPT
@@ -497,14 +608,27 @@ Full output:
 $(cat "$CODEX_OUTPUT_FILE")
 
 =============================================================================
+GROK REVIEW RESULTS (Status: $GROK_STATUS):
+=============================================================================
+
+$GROK_ISSUES
+
+Full output:
+$(cat "$GROK_OUTPUT_FILE")
+
+=============================================================================
 VALIDATION TASK:
 =============================================================================
 
-1. Read the design document and both reviews
+1. Read the design document and all three reviews (Agy, Codex, Grok)
 2. For each issue: validate against codebase, assign validation_type
 3. Search for issues they missed (validation_type: new_finding)
 4. Output strict JSON with your verdict
 5. Include run_id, iteration, spec_hash in metadata
+
+Note: if any reviewer slot was unavailable (CLI not installed or failed),
+its output will contain an error field — treat such slots as "no signal"
+rather than "PASS". Arbitration proceeds with the reviewers that returned.
 
 IMPORTANT: Use Read, Grep, Glob tools to examine the codebase.
 EOF
@@ -580,7 +704,7 @@ EOF
   CLAUDE_ISSUE_COUNT=$(jq '.issues | length' "$CLAUDE_OUTPUT_FILE")
   log_info "  Claude: $CLAUDE_STATUS ($CLAUDE_ISSUE_COUNT issues, ${CLAUDE_DURATION}ms)"
 
-  update_review_statuses "$AGY_STATUS" "$CODEX_STATUS" "$CLAUDE_STATUS"
+  update_review_statuses "$AGY_STATUS" "$CODEX_STATUS" "$CLAUDE_STATUS" "$GROK_STATUS"
 
   # ── Phase 4: Progress analysis (Critic #5) ────────────────────────
   # Category-aware convergence: line-level findings (test-code typos, lint, perf)

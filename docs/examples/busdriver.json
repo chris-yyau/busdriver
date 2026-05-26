@@ -10,6 +10,7 @@
     "blueprint-review.reviewer_2": ["codex", "droid"],
     "council.pragmatist": ["agy", "droid"],
     "council.critic": ["codex", "droid"],
-    "council.researcher": ["grok", "droid"]
+    "council.researcher": ["grok", "droid"],
+    "blueprint-review.reviewer_3": ["grok", "droid"]
   }
 }

@@ -81,20 +81,20 @@ Reviewer CLIs are configurable via `.claude/busdriver.json` using the `routes` o
 ```json
 {
   "routes": {
-    "blueprint-review.reviewer_1": ["agy"],
-    "blueprint-review.reviewer_2": ["codex"],
-    "blueprint-review.reviewer_3": ["grok", "none"]
+    "blueprint-review.reviewer_1": ["agy", "droid"],
+    "blueprint-review.reviewer_2": ["codex", "droid"],
+    "blueprint-review.reviewer_3": ["grok", "droid"]
   }
 }
 ```
 
-The `"none"` terminator on `reviewer_3` is intentional: if grok is not installed, it makes the slot resolve to "voice skipped" instead of falling through to user defaults or the auto-detect cascade (which would silently duplicate reviewer_1 or reviewer_2). The reviewer_1/_2 entries omit `"none"` because their auto-detect fallback to a different supported CLI is the historical "best-effort" behavior.
+All three reviewer slots walk to `droid` as a universal fallback, mirroring the council pattern (pragmatist/critic/researcher all fall to droid). The blueprint-specific risk that two reviewers might both land on droid simultaneously (e.g., agy and grok both missing) is handled by the loop's duplicate detection: reviewer_1 and reviewer_2 collisions enter DUPLICATE_MODE (single-reviewer mode, output copied), and reviewer_3 collisions with either higher slot trigger REVIEWER_3_DUPLICATE which skips the voice.
 
 | Role | Route key | Default |
 |------|-----------|---------|
 | Reviewer 1 | `blueprint-review.reviewer_1` | agy |
 | Reviewer 2 | `blueprint-review.reviewer_2` | codex |
-| Reviewer 3 | `blueprint-review.reviewer_3` | grok (added 2026-05-26; "none" if grok not installed — voice skipped, arbitration proceeds) |
+| Reviewer 3 | `blueprint-review.reviewer_3` | grok (added 2026-05-26; falls back to droid if grok not installed, matching reviewer_1/_2 pattern) |
 | Arbiter | (hardcoded) | claude (not configurable — Claude is always the arbiter) |
 
 If reviewer_1 and reviewer_2 resolve to the same CLI, the system runs single-reviewer mode for that pair (one execution, output copied to both paths, logged as degradation). If reviewer_3 collides with reviewer_1 or reviewer_2, the reviewer_3 voice is skipped entirely (no duplicate copy — arbitration proceeds with two voices) to avoid combinatorial 3-way copying for an edge case.

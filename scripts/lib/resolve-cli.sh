@@ -372,13 +372,15 @@ resolve_role_cli() {
     blueprint-review.reviewer_1) is_cli_available agy && echo "agy" && return ;;
     blueprint-review.reviewer_2) is_cli_available codex && echo "codex" && return ;;
     # reviewer_3 (grok) added 2026-05-26: adds xAI lineage to blueprint-review,
-    # mirroring the council Researcher promotion. Falls back to "none" (voice
-    # skipped, arbitration proceeds with whatever reviewers returned) when
-    # grok is unavailable. Unlike reviewer_1/_2 which can fall through to the
-    # Step 5 auto-detect cascade (codex > agy > droid) — and silently
-    # duplicate a higher reviewer slot — reviewer_3 explicitly returns "none"
-    # so a missing grok skips the voice rather than introducing a duplicate.
-    blueprint-review.reviewer_3) is_cli_available grok && echo "grok" && return
+    # mirroring the council Researcher promotion. Walks grok → droid → none
+    # to match council.researcher and the existing reviewer_1/_2 droid-fallback
+    # pattern (all three reviewer slots fall to droid when their primary is
+    # missing). Duplicate-droid risk (e.g., both reviewer_1 and reviewer_3
+    # landing on droid when agy and grok are both missing) is handled by the
+    # loop's REVIEWER_3_DUPLICATE check, which skips reviewer_3 when it
+    # collides with a higher slot.
+    blueprint-review.reviewer_3) is_cli_available grok  && echo "grok"  && return
+                                 is_cli_available droid && echo "droid" && return
                                  echo "none" && return ;;
     blueprint-review.arbiter)    echo "builtin" && return ;;  # arbiter is always Claude
     # Trade-off: when agy/codex are unavailable, these roles fall back to

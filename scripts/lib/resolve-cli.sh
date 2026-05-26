@@ -375,7 +375,16 @@ resolve_role_cli() {
     council.critic)             is_cli_available codex && echo "codex" && return
                                 is_cli_available droid && echo "droid" && return
                                 echo "none" && return ;;
-    council.researcher)         is_cli_available droid && echo "droid" && return
+    # Grok was promoted to primary on 2026-05-26: xAI lineage adds the only
+    # consistent non-Anthropic/non-OpenAI/non-Gemini voice to council Researcher,
+    # and demonstrated Researcher-role competencies (file reads, cited external
+    # evidence, self-flagging ungrounded claims) match Droid's. Droid stays as
+    # fallback so users without grok installed get identical behavior to
+    # pre-2026-05-26. This reverses PR #134's "Researcher stays single-CLI"
+    # decision — that PR pruned unused backends (opencode/amp/claude/aider) and
+    # Grok hadn't shipped yet.
+    council.researcher)         is_cli_available grok  && echo "grok"  && return
+                                is_cli_available droid && echo "droid" && return
                                 echo "none" && return ;;
   esac
 

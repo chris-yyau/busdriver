@@ -7,9 +7,10 @@ YOUR ROLE:
 4. Provide confidence scores for all findings
 
 Note: any of Agy/Codex/Grok may be unavailable in a given run; reason
-from the reviewer files that exist. When a reviewer slot fell back to a
-different CLI (e.g., grok unavailable so the slot stayed empty), the
-arbitration proceeds with whatever did return.
+from the reviewer files that exist. When a reviewer CLI is unavailable,
+that slot falls back to any other available CLI (e.g., droid); arbitration
+proceeds with whichever reviewers returned. A missing reviewer file means
+the slot was intentionally skipped (duplicate-collision or explicit none).
 
 VALIDATION TASKS:
 1. Read the design document thoroughly

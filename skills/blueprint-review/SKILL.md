@@ -25,7 +25,7 @@ DO NOT rationalize skipping reviewers. These thoughts are violations:
 
 EVERY design review MUST:
 1. Run `run-design-review-loop.sh` as a BLOCKING bash call
-2. Wait for ALL reviewer outputs (agy.json, codex.json, grok.json when grok is available, plus claude.json from the arbiter)
+2. Wait for ALL reviewer outputs (agy.json, codex.json, grok.json, plus claude.json from the arbiter) — grok.json is always written by the loop, even when grok was unavailable (it contains an error-status JSON in that case)
 3. Claude validates Agy/Codex/Grok findings against the codebase
 4. Mark PASS ONLY when Claude's verdict has no HIGH/MEDIUM issues (confidence >= 0.5)
 </EXTREMELY-IMPORTANT>
@@ -255,7 +255,7 @@ Progress is visible across iterations: "iter1: 4 plan-blocking high → iter2: 3
       "category": "clarity|completeness|architecture|...",
       "description": "Clear, specific description",
       "suggestion": "Actionable fix",
-      "reviewer": "agy|codex|claude"
+      "reviewer": "agy|codex|grok|claude"
     }
   ],
   "metadata": {
@@ -333,7 +333,7 @@ Active review tracked by pointer file: `.claude/current-design-review.local`
 - `docs/reviews/<slug>/state.md` - YAML frontmatter tracking iteration + progress
 - `docs/reviews/<slug>/agy.json` - Agy review output (with freshness metadata)
 - `docs/reviews/<slug>/codex.json` - Codex review output (with freshness metadata)
-- `docs/reviews/<slug>/grok.json` - Grok review output (with freshness metadata; absent when grok unavailable)
+- `docs/reviews/<slug>/grok.json` - Reviewer_3 output (with freshness metadata; absent only when reviewer_3 is intentionally skipped, e.g., duplicate-collision skip or explicit `none`; present with error-status JSON when grok is unavailable)
 - `docs/reviews/<slug>/claude.json` - Claude arbiter output (with freshness metadata)
 - `docs/reviews/<slug>/claude-validation-prompt.txt` - Generated prompt for Claude
 

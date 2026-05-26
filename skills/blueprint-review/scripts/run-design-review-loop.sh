@@ -244,17 +244,20 @@ while true; do
     AGY_OUTPUT_FILE=$(get_review_file "agy.json")
     CODEX_OUTPUT_FILE=$(get_review_file "codex.json")
     GROK_OUTPUT_FILE=$(get_review_file "grok.json")
+    # Synthesize "no signal" error artifacts for any missing reviewer files so
+    # downstream prompt-build cats always have a valid JSON target. Without
+    # this, a missing agy.json or codex.json causes `cat "$AGY_OUTPUT_FILE"`
+    # to feed an empty section to Claude, silently dropping that reviewer's
+    # voice from arbitration. All three slots get the same treatment.
+    [[ -f "$AGY_OUTPUT_FILE" ]] || \
+      create_error_json "agy" "CLI not available (claude-only mode; no prior agy output)" > "$AGY_OUTPUT_FILE"
+    [[ -f "$CODEX_OUTPUT_FILE" ]] || \
+      create_error_json "codex" "CLI not available (claude-only mode; no prior codex output)" > "$CODEX_OUTPUT_FILE"
+    [[ -f "$GROK_OUTPUT_FILE" ]] || \
+      create_error_json "grok" "CLI not available (claude-only mode; no prior grok output)" > "$GROK_OUTPUT_FILE"
     AGY_STATUS=$(jq -r '.status' "$AGY_OUTPUT_FILE" 2>/dev/null || echo "ERROR")
     CODEX_STATUS=$(jq -r '.status' "$CODEX_OUTPUT_FILE" 2>/dev/null || echo "ERROR")
-    # Grok may be absent if a previous run didn't have grok available; treat
-    # a missing file as ERROR status so the arbiter sees "no signal" rather
-    # than crashing on a missing jq target.
-    if [[ -f "$GROK_OUTPUT_FILE" ]]; then
-      GROK_STATUS=$(jq -r '.status' "$GROK_OUTPUT_FILE" 2>/dev/null || echo "ERROR")
-    else
-      create_error_json "grok" "CLI not available (claude-only mode; no prior grok output)" > "$GROK_OUTPUT_FILE"
-      GROK_STATUS="ERROR"
-    fi
+    GROK_STATUS=$(jq -r '.status' "$GROK_OUTPUT_FILE" 2>/dev/null || echo "ERROR")
     DESIGN_CONTENT=$(cat "$DESIGN_FILE")
     REVIEW_START=$(millis)
   else

@@ -1,3 +1,10 @@
+# [1.50.0](https://github.com/chris-yyau/busdriver/compare/v1.49.1...v1.50.0) (2026-05-26)
+
+
+### Features
+
+* **grok:** add as 3rd external voice in council and blueprint-review ([#152](https://github.com/chris-yyau/busdriver/issues/152)) ([f0b1fce](https://github.com/chris-yyau/busdriver/commit/f0b1fcee4d7d61a73017a544fb80deb8b4f773a1))
+
 ## [1.49.1](https://github.com/chris-yyau/busdriver/compare/v1.49.0...v1.49.1) (2026-05-25)
 
 

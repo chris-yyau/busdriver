@@ -664,6 +664,140 @@ fi
 rm -f "$CLEAN_MARKER" "$PENDING_MARKER"
 
 # ═══════════════════════════════════════════════════════════════════════
+# REQUIRED-CHECKS ALLOWLIST TESTS
+# ═══════════════════════════════════════════════════════════════════════
+# Exercises _relevant_check_counts directly with synthetic gh pr checks
+# text + synthetic .github/required-checks.lock files in tmpdirs. The
+# helper drives both fail-counting sites in the gate, so unit-testing it
+# covers the marker-path and bootstrap paths equivalently.
+echo ""
+echo "── required-checks allowlist ───────────────────────────────"
+
+# Source just the helper function (sidesteps the gate's main flow, which
+# would exit on empty stdin). sed extracts `_relevant_check_counts() { ... }`,
+# eval defines it in this shell. `source <(...)` would be cleaner but
+# fails silently on macOS's stock bash 3.2; eval works everywhere.
+HELPER_SRC=$(sed -n '/^_relevant_check_counts() {$/,/^}$/p' "$GATE_SCRIPT")
+# shellcheck disable=SC2034  # Referenced by _relevant_check_counts via eval'd body.
+ADVISORY_PATTERN="CodeScene"
+eval "$HELPER_SRC"
+
+# Synthetic CI output mirrors gh pr checks text: tab-separated columns,
+# first column = check name. Same shape regardless of pass/fail mix.
+SYNTH_CHECKS=$(printf 'shellcheck\tpass\t5s\thttps://x\ncommitlint\tfail\t3s\thttps://x\nCodeScene\tfail\t10s\thttps://x\nbuild\tpending\t1m\thttps://x\n')
+
+# R1. Lock present + required[] includes only "shellcheck" → commitlint fail
+#     is NOT counted (not in required), build pending NOT counted, CodeScene
+#     fail NOT counted. Expected: 0 fail, 0 pending, mode=required.
+REPO_R1=$(mktemp -d)
+mkdir -p "$REPO_R1/.github"
+printf '%s' '{"required":[{"name":"shellcheck"}]}' > "$REPO_R1/.github/required-checks.lock"
+OUT=$(printf '%s' "$SYNTH_CHECKS" | _relevant_check_counts "$REPO_R1")
+TOTAL=$((TOTAL + 1))
+if [ "$OUT" = "0 0 required" ]; then
+    printf "  PASS  allowlist filters out non-required failures\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  allowlist non-required filter (got '%s', want '0 0 required')\n" "$OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$REPO_R1"
+
+# R2. Lock present + required[] includes "commitlint" → commitlint fail
+#     IS counted. Expected: 1 fail, 0 pending, mode=required.
+REPO_R2=$(mktemp -d)
+mkdir -p "$REPO_R2/.github"
+printf '%s' '{"required":[{"name":"commitlint"}]}' > "$REPO_R2/.github/required-checks.lock"
+OUT=$(printf '%s' "$SYNTH_CHECKS" | _relevant_check_counts "$REPO_R2")
+TOTAL=$((TOTAL + 1))
+if [ "$OUT" = "1 0 required" ]; then
+    printf "  PASS  allowlist counts required failures\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  allowlist counts required failures (got '%s', want '1 0 required')\n" "$OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$REPO_R2"
+
+# R3. Lock present + required[] includes "build" (pending) → 0 fail, 1 pending.
+REPO_R3=$(mktemp -d)
+mkdir -p "$REPO_R3/.github"
+printf '%s' '{"required":[{"name":"build"}]}' > "$REPO_R3/.github/required-checks.lock"
+OUT=$(printf '%s' "$SYNTH_CHECKS" | _relevant_check_counts "$REPO_R3")
+TOTAL=$((TOTAL + 1))
+if [ "$OUT" = "0 1 required" ]; then
+    printf "  PASS  allowlist counts required pending checks\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  allowlist required pending (got '%s', want '0 1 required')\n" "$OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$REPO_R3"
+
+# R4. Lock missing → fallback to ADVISORY_PATTERN filter. CodeScene fail
+#     is dropped, commitlint fail counted, build pending counted.
+#     Expected: 1 fail, 1 pending, mode=all.
+REPO_R4=$(mktemp -d)
+OUT=$(printf '%s' "$SYNTH_CHECKS" | _relevant_check_counts "$REPO_R4")
+TOTAL=$((TOTAL + 1))
+if [ "$OUT" = "1 1 all" ]; then
+    printf "  PASS  no lock file → ADVISORY_PATTERN fallback\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  no-lock fallback (got '%s', want '1 1 all')\n" "$OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$REPO_R4"
+
+# R5. Malformed lock (invalid JSON) → fallback to ADVISORY_PATTERN.
+REPO_R5=$(mktemp -d)
+mkdir -p "$REPO_R5/.github"
+printf '%s' 'not valid json{' > "$REPO_R5/.github/required-checks.lock"
+OUT=$(printf '%s' "$SYNTH_CHECKS" | _relevant_check_counts "$REPO_R5")
+TOTAL=$((TOTAL + 1))
+if [ "$OUT" = "1 1 all" ]; then
+    printf "  PASS  malformed lock → ADVISORY_PATTERN fallback\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  malformed-lock fallback (got '%s', want '1 1 all')\n" "$OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$REPO_R5"
+
+# R6. Empty required[] → fallback (no allowlist means "no opinion", not
+#     "allow everything"). Same as R4 expectation.
+REPO_R6=$(mktemp -d)
+mkdir -p "$REPO_R6/.github"
+printf '%s' '{"required":[]}' > "$REPO_R6/.github/required-checks.lock"
+OUT=$(printf '%s' "$SYNTH_CHECKS" | _relevant_check_counts "$REPO_R6")
+TOTAL=$((TOTAL + 1))
+if [ "$OUT" = "1 1 all" ]; then
+    printf "  PASS  empty required[] → ADVISORY_PATTERN fallback\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  empty-required fallback (got '%s', want '1 1 all')\n" "$OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$REPO_R6"
+
+# R7. Lock has multi-word check name ("Actions security") → exact-match
+#     against first tab-separated column handles spaces correctly.
+REPO_R7=$(mktemp -d)
+mkdir -p "$REPO_R7/.github"
+printf '%s' '{"required":[{"name":"Actions security"}]}' > "$REPO_R7/.github/required-checks.lock"
+MULTI_CHECKS=$(printf 'Actions security\tfail\t8s\thttps://x\nshellcheck\tpass\t5s\thttps://x\n')
+OUT=$(printf '%s' "$MULTI_CHECKS" | _relevant_check_counts "$REPO_R7")
+TOTAL=$((TOTAL + 1))
+if [ "$OUT" = "1 0 required" ]; then
+    printf "  PASS  allowlist matches multi-word check names\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  multi-word match (got '%s', want '1 0 required')\n" "$OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$REPO_R7"
+
+# ═══════════════════════════════════════════════════════════════════════
 # RESULTS
 # ═══════════════════════════════════════════════════════════════════════
 echo ""

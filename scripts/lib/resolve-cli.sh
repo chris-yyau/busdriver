@@ -13,7 +13,7 @@
 #   bash resolve-cli.sh --json
 #
 # Env var: BUSDRIVER_REVIEW_CLI
-# Values: auto (default) | codex | agy | droid | builtin | none
+# Values: auto (default) | codex | agy | droid | grok | builtin | none
 
 # Intentional pipeline patterns throughout: ls | sort | tail for semver
 # ordering, tr | head for JSON sanitisation, etc. — masked return values
@@ -42,6 +42,7 @@ get_cli_install_hint() {
     codex)  echo "npm install -g @openai/codex" ;;
     agy)    echo "See https://antigravity.google/docs/cli/" ;;
     droid)  echo "See https://droid.dev" ;;
+    grok)   echo "See xAI Grok Build documentation (https://x.ai)" ;;
     *)      echo "Install '$cli' and ensure it is in your PATH" ;;
   esac
 }
@@ -192,11 +193,17 @@ _resolve_from_route_array() {
       # CLI" because the dispatch case was deleted. Treat as missing so the
       # route walker continues to the next entry.
       if [[ "$warned_deprecated_removed" -eq 0 ]]; then
-        echo "busdriver: config route '$role_key' references unsupported '$cli'; use 'codex', 'agy', or 'droid' instead — skipping" >&2
+        echo "busdriver: config route '$role_key' references unsupported '$cli'; use 'codex', 'agy', 'droid', or 'grok' instead — skipping" >&2
         warned_deprecated_removed=1
         last_rejected="$cli"
       fi
     elif [[ "$cli" == "auto" ]]; then
+      # grok is INTENTIONALLY excluded from the auto-detect cascade: its
+      # safety model (--sandbox readonly + user-config "always approve"
+      # disabled) is documented but not enforceable from code, so silently
+      # picking grok via auto would extend its exposure surface to contexts
+      # whose threat model wasn't reviewed. Grok must be explicitly named
+      # (BUSDRIVER_REVIEW_CLI=grok, route array entry, or per-role default).
       for auto_cli in codex agy droid; do
         is_cli_available "$auto_cli" && echo "$auto_cli" && return 0
       done
@@ -249,7 +256,7 @@ resolve_role_cli() {
     fi
     case "$env_cli" in
       amp|opencode|claude|aider)
-        echo "busdriver: BUSDRIVER_REVIEW_CLI=$env_cli is no longer supported; use 'codex', 'agy', or 'droid' instead" >&2
+        echo "busdriver: BUSDRIVER_REVIEW_CLI=$env_cli is no longer supported; use 'codex', 'agy', 'droid', or 'grok' instead" >&2
         echo "unsupported:$env_cli"
         return ;;
     esac
@@ -307,7 +314,7 @@ resolve_role_cli() {
       elif [[ "$default_primary" == "amp" || "$default_primary" == "opencode" || "$default_primary" == "claude" || "$default_primary" == "aider" ]]; then
         # Removed CLI in defaults.primary — warn and let execution fall through
         # to defaults.fallback below. Track for the all-rejected check.
-        echo "busdriver: defaults.primary=$default_primary is no longer supported; use 'codex', 'agy', or 'droid' instead — trying defaults.fallback" >&2
+        echo "busdriver: defaults.primary=$default_primary is no longer supported; use 'codex', 'agy', 'droid', or 'grok' instead — trying defaults.fallback" >&2
         cfg_last_rejected="$default_primary"
       elif [[ "$default_primary" == "none" || "$default_primary" == "builtin" ]]; then
         echo "$default_primary" && return
@@ -326,6 +333,9 @@ resolve_role_cli() {
       # Explicit "auto" fallback — run auto-detect inline and return, bypassing
       # Step 4b legacy per-role defaults. "break" would fall into Step 4b first,
       # defeating the user's intent to let auto-detect handle resolution.
+      # grok intentionally excluded — see Step 1 (config route "auto") for
+      # the rationale: grok's safety model is documented but unenforceable
+      # from code, so it must be explicitly named to opt in.
       for cli in codex agy droid; do
         is_cli_available "$cli" && echo "$cli" && return 0
       done
@@ -338,7 +348,7 @@ resolve_role_cli() {
         echo "unsupported:gemini" && return
       elif [[ "$default_fallback" == "amp" || "$default_fallback" == "opencode" || "$default_fallback" == "claude" || "$default_fallback" == "aider" ]]; then
         # Removed CLI in defaults.fallback — warn and continue.
-        echo "busdriver: defaults.fallback=$default_fallback is no longer supported; use 'codex', 'agy', or 'droid' instead" >&2
+        echo "busdriver: defaults.fallback=$default_fallback is no longer supported; use 'codex', 'agy', 'droid', or 'grok' instead" >&2
         cfg_last_rejected="$default_fallback"
       elif [[ "$default_fallback" == "none" || "$default_fallback" == "builtin" ]]; then
         echo "$default_fallback" && return
@@ -397,7 +407,12 @@ resolve_role_cli() {
                                 echo "none" && return ;;
   esac
 
-  # Step 5: Auto-detect
+  # Step 5: Auto-detect — grok intentionally excluded. Its safety model
+  # (--sandbox readonly + user-config "always approve" disabled) is
+  # documented but not enforceable from code, so it must be explicitly
+  # named via BUSDRIVER_REVIEW_CLI / route arrays / per-role defaults to
+  # opt in. Auto-picking grok would extend its exposure surface to contexts
+  # whose threat model wasn't reviewed.
   for cli in codex agy droid; do
     is_cli_available "$cli" && echo "$cli" && return
   done
@@ -671,7 +686,7 @@ execute_review() {
              # cause cleanly here instead of falling through to the wildcard
              # "Unsupported CLI: unsupported:amp" garbage.
              local _removed="${cli#unsupported:}"
-             echo "busdriver: review CLI '$_removed' is no longer supported; use codex, agy, or droid" >&2
+             echo "busdriver: review CLI '$_removed' is no longer supported; use codex, agy, droid, or grok" >&2
              return 1 ;;
     missing:*)
              # CLI is configured but not installed. Same surface-clean intent as
@@ -691,7 +706,7 @@ if [[ "${BASH_SOURCE[0]}" = "$0" ]] && [[ "${1:-}" = "--json" ]]; then
   resolved=$(resolve_review_cli)
   version=""
   case "$resolved" in
-    codex|agy|droid) version=$(get_cli_version "$resolved") ;;
+    codex|agy|droid|grok) version=$(get_cli_version "$resolved") ;;
     builtin|none|missing:*|unsupported:*) version="n/a" ;;
   esac
 
@@ -704,7 +719,11 @@ if [[ "${BASH_SOURCE[0]}" = "$0" ]] && [[ "${1:-}" = "--json" ]]; then
 
   # Report availability for all supported CLIs
   clis_json=""
-  for cli in codex agy droid; do
+  # grok included here for accurate availability metadata (not auto-detect);
+  # downstream consumers inspecting `clis[resolved]` get an entry when the
+  # resolved CLI is grok (e.g., via explicit BUSDRIVER_REVIEW_CLI=grok or
+  # blueprint-review.reviewer_3 route).
+  for cli in codex agy droid grok; do
     avail=$(is_cli_available "$cli" && echo true || echo false)
     ver=$(get_cli_version "$cli" | _json_safe)
     clis_json="${clis_json}\"${cli}\":{\"available\":${avail},\"version\":\"${ver}\"},"

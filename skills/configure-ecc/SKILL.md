@@ -158,12 +158,13 @@ For each selected category, print the full list of skills below and ask the user
 | `investor-materials` | Pitch decks, one-pagers, investor memos, and financial models |
 | `investor-outreach` | Personalized investor cold emails, warm intros, and follow-ups |
 
-**Category: Research & APIs (3 skills)**
+**Category: Research & APIs (4 skills)**
 
 | Skill | Description |
 |-------|-------------|
-| `deep-research` | Multi-source deep research using firecrawl and exa MCPs with cited reports |
-| `exa-search` | Neural search via Exa MCP for web, code, company, and people research |
+| `deep-research` | Multi-source deep research using Tavily + Exa MCPs (free tier) with cited reports; Firecrawl reserved as paid fallback |
+| `tavily-search` | General web search, news, page extract, and site crawl via Tavily MCP (free tier ~1k/mo); tier-1 default for general lookups |
+| `exa-search` | Neural search via Exa MCP for code, papers, company, and people research (free tier ~1k/mo) |
 | `claude-api-patterns` | Anthropic Claude API patterns: Messages, streaming, tool use, vision, batches, Agent SDK |
 
 **Category: Social & Content Distribution (2 skills)**
@@ -291,7 +292,7 @@ Some skills reference others. Verify these dependencies:
 - `python-testing` may reference `python-patterns`
 - `golang-testing` may reference `golang-patterns`
 - `crosspost` references `content-engine` and `x-api`
-- `deep-research` references `exa-search` (complementary MCP tools)
+- `deep-research` references `tavily-search` and `exa-search` (complementary MCP tools — Tavily for general/news, Exa for technical/entity queries)
 - `fal-ai-media` references `videodb` (complementary media skill)
 - `x-api` references `content-engine` and `crosspost`
 - Language-specific rules reference `common/` counterparts

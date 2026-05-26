@@ -20,10 +20,11 @@ Agent-powered lead intelligence pipeline that finds, scores, and reaches high-va
 ## Tool Requirements
 
 ### Required
-- **Exa MCP** — Deep web search for people, companies, and signals (`web_search_exa`)
+- **Exa MCP** — Neural search for people and companies via `category:people` / `category:company` (`web_search_exa`)
 - **X API** — Follower/following graph, mutual analysis, recent activity (`X_BEARER_TOKEN`, plus write-context credentials such as `X_CONSUMER_KEY`, `X_CONSUMER_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET`)
 
 ### Optional (enhance results)
+- **Tavily MCP** — Broader signal discovery for news mentions and general web context (`tavily_search`); free tier ~1k/mo
 - **LinkedIn** — Direct API if available, otherwise browser control for search, profile inspection, and drafting
 - **Apollo/Clay API** — For enrichment cross-reference if user has access
 - **GitHub MCP** — For developer-centric lead qualification

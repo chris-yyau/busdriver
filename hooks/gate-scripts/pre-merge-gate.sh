@@ -91,7 +91,7 @@ lines = [ln for ln in lines if "\t" in ln]
 if required is not None:
     kept = [ln for ln in lines if ln.split("\t", 1)[0].strip() in required]
 else:
-    kept = [ln for ln in lines if not advisory_pat.search(ln)]
+    kept = [ln for ln in lines if not advisory_pat.search(ln.split("\t", 1)[0])]
 failed = sum(1 for ln in kept if _status(ln) in ("fail", "failure"))
 pending = sum(1 for ln in kept if _status(ln) in ("pending", "queued", "in_progress", "expected"))
 # Emit kept count too — the bootstrap-merge path needs positive evidence
@@ -316,24 +316,34 @@ if [ -f "$MARKER_FILE" ]; then
                 exit 0
             fi
             COUNTS=$(printf '%s\n' "$CHECKS_OUTPUT" | _relevant_check_counts "$REPO_DIR")
-            read -r FAILED PENDING MODE _KEPT <<<"$COUNTS"
+            read -r FAILED PENDING MODE KEPT <<<"$COUNTS"
             # Fail-CLOSED: an empty/malformed helper output (python crash,
             # missing fields) would leave MODE unset and let `${FAILED:-0}`
             # default to 0 → gate passes silently. Block instead.
-            if [ -z "${MODE:-}" ] || [ -z "${FAILED:-}" ] || [ -z "${PENDING:-}" ]; then
+            if [[ -z "${MODE:-}" || -z "${FAILED:-}" || -z "${PENDING:-}" || -z "${KEPT:-}" ]]; then
                 block_emit "Pre-merge gate: CI-check parser produced unexpected output (got '$COUNTS'). Blocking as precaution (fail-closed)."
                 exit 0
             fi
-            if [ "$MODE" = "required" ]; then
+            if [[ "$MODE" = "required" ]]; then
                 CHECK_DESC="required CI checks (per .github/required-checks.lock)"
             else
                 CHECK_DESC="CI checks"
             fi
-            if [ "${FAILED:-0}" -gt 0 ]; then
+            # Mirror the bootstrap-path KEPT > 0 guard for ALL modes. "0 FAILED
+            # + 0 PENDING" alone is insufficient evidence — in required mode the
+            # lock could list checks that never ran (cancelled/skipped), in
+            # fallback mode every line could be filtered as advisory leaving no
+            # real signal. Either way, "no failures because nothing relevant
+            # appeared" is a fail-open we explicitly close here.
+            if [[ "${KEPT:-0}" -eq 0 ]]; then
+                block_emit "Pre-merge gate: pr-grind marker exists but 0 relevant $CHECK_DESC appeared in \`gh pr checks\` output — they may have been cancelled, skipped, or never triggered. Blocking as precaution (fail-closed)."
+                exit 0
+            fi
+            if [[ "${FAILED:-0}" -gt 0 ]]; then
                 block_emit "Pre-merge gate: pr-grind marker exists but $FAILED $CHECK_DESC are FAILING. Fix failures before merging. Run \`/pr-grind\` to resume."
                 exit 0
             fi
-            if [ "${PENDING:-0}" -gt 0 ]; then
+            if [[ "${PENDING:-0}" -gt 0 ]]; then
                 block_emit "Pre-merge gate: pr-grind marker exists but $PENDING $CHECK_DESC still PENDING. Wait for all checks to complete before merging."
                 exit 0
             fi

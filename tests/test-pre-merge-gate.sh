@@ -826,13 +826,13 @@ else
 fi
 rm -rf "$REPO_R7B"
 
-# R7. Lock has multi-word check name ("Actions security") → exact-match
-#     against first tab-separated column handles spaces correctly.
-REPO_R7=$(mktemp -d)
-mkdir -p "$REPO_R7/.github"
-printf '%s' '{"required":[{"name":"Actions security"}]}' > "$REPO_R7/.github/required-checks.lock"
+# R7c. Lock has multi-word check name ("Actions security") → exact-match
+#      against first tab-separated column handles spaces correctly.
+REPO_R7C=$(mktemp -d)
+mkdir -p "$REPO_R7C/.github"
+printf '%s' '{"required":[{"name":"Actions security"}]}' > "$REPO_R7C/.github/required-checks.lock"
 MULTI_CHECKS=$(printf 'Actions security\tfail\t8s\thttps://x\nshellcheck\tpass\t5s\thttps://x\n')
-OUT=$(printf '%s' "$MULTI_CHECKS" | _relevant_check_counts "$REPO_R7")
+OUT=$(printf '%s' "$MULTI_CHECKS" | _relevant_check_counts "$REPO_R7C")
 TOTAL=$((TOTAL + 1))
 if [[ "$OUT" = "1 0 required 1" ]]; then
     printf "  PASS  allowlist matches multi-word check names\n"
@@ -841,7 +841,7 @@ else
     printf "  FAIL  multi-word match (got '%s', want '1 0 required 1')\n" "$OUT"
     FAIL=$((FAIL + 1))
 fi
-rm -rf "$REPO_R7"
+rm -rf "$REPO_R7C"
 
 # R8. Empty stdin → kept count is 0. Bootstrap path uses this to refuse a
 #     bootstrap-merge when no relevant checks ran at all (defends against

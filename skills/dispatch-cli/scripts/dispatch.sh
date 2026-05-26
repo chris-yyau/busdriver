@@ -226,21 +226,21 @@ dispatch_one() {
             _portable_timeout "$TIMEOUT" droid exec --auto "$_droid_level" \
                 < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;
         grok)
-            # Grok-build (xAI) has no separate readonly mode — sandboxing comes from
-            # --sandbox profiles or --disallowed-tools enums. v1 uses identical flags
-            # for readonly/auto, accepting that the Researcher role's prompt is
-            # naturally non-mutating. Refine later if a write-capable role uses grok.
+            # Flags actually passed (see invocation at the end of this case):
+            #   --prompt-file /dev/stdin: feeds the prompt via fd 0, bypassing
+            #     argv length limits and shell escaping. Matches the heredoc
+            #     pattern callers use elsewhere in this script.
+            #   --max-turns 150: grok counts every internal message (tool calls,
+            #     planning steps, web fetches) toward the budget, not user-
+            #     assistant exchanges. Real Researcher prompts consume 50-100
+            #     messages; 150 is the safety margin. `max_turns_exceeded` is
+            #     DESTRUCTIVE (whole output discarded), so err generous.
+            #   --sandbox readonly: see SAFETY MODEL block below.
             #
-            # --max-turns 150: grok counts every internal message (tool calls, planning
-            #   steps, web fetches) toward the budget, not user-assistant exchanges.
-            #   Real Researcher prompts consume 50-100 messages; 150 is the safety
-            #   margin. `max_turns_exceeded` is DESTRUCTIVE (whole output discarded),
-            #   so err generous, not tight.
-            # --always-approve: headless cannot answer permission prompts; without
-            #   this grok stalls on first tool use.
-            # --prompt-file /dev/stdin: feeds the prompt via fd 0, bypassing argv
-            #   length limits and shell escaping. Matches the heredoc pattern callers
-            #   use elsewhere in this script.
+            # Flags deliberately NOT passed (--always-approve, --disallowed-tools,
+            # --deny): documented in the SAFETY MODEL block below — empirically
+            # they are no-ops in headless mode, so passing them would either
+            # mislead or provide false-sense-of-security.
             #
             # NOTE: grok-build (the only available model) rejects --reasoning-effort
             # and --effort with a 400 from the responses API, so neither MODEL nor

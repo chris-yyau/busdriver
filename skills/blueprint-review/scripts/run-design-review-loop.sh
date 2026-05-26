@@ -193,9 +193,18 @@ else
   fi
   REVIEWER_3_DUPLICATE=false
   if [[ "$REVIEWER_3_CLI" != "none" && "$REVIEWER_3_CLI" != "builtin" && ! "$REVIEWER_3_CLI" =~ ^(missing|unsupported): ]]; then
+    # Note: collision check compares RESOLVED PRIMARIES, not the effective
+    # running set. Edge case: if reviewer_1==reviewer_2==reviewer_3==droid,
+    # DUPLICATE_MODE skips reviewer_2 and REVIEWER_3_DUPLICATE skips
+    # reviewer_3, leaving only reviewer_1's single droid run. This is the
+    # conservative behavior (avoid running near-identical CLI+prompt twice
+    # under different role labels) — a fresh droid run would likely produce
+    # near-identical JSON output. If non-deterministic LLM voice multiplication
+    # ever becomes desired here, lift this restriction and let DUPLICATE_MODE-
+    # skipped slots be backfilled by reviewer_3.
     if [[ "$REVIEWER_3_CLI" == "$REVIEWER_1_CLI" || "$REVIEWER_3_CLI" == "$REVIEWER_2_CLI" ]]; then
       REVIEWER_3_DUPLICATE=true
-      log_warning "  Degraded: reviewer_3 ($REVIEWER_3_CLI) duplicates a higher slot — voice skipped"
+      log_warning "  Degraded: reviewer_3 ($REVIEWER_3_CLI) duplicates a higher slot — voice skipped (see code comment for the DUPLICATE_MODE+reviewer_3 edge case)"
     fi
   fi
 

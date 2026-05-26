@@ -33,7 +33,7 @@ EVERY design review MUST:
 ## Overview
 
 Three-tier model with Claude as arbiter:
-1. **Agy + Codex + Grok**: Run in parallel as independent comprehensive reviewers (Grok added 2026-05-26 to extend voice-lineage diversity into design review; falls back to "voice skipped" if grok is unavailable, mirroring the existing reviewer_1/_2 pattern)
+1. **Agy + Codex + Grok**: Run in parallel as independent comprehensive reviewers (Grok added 2026-05-26 to extend voice-lineage diversity into design review; falls back to Droid if grok is unavailable, matching the existing reviewer_1/_2 droid-fallback pattern across all three slots)
 2. **Claude**: Validates their findings against the codebase (arbiter)
 3. **Claude's verdict**: The sole convergence signal
 
@@ -245,6 +245,7 @@ Progress is visible across iterations: "iter1: 4 plan-blocking high → iter2: 3
 {
   "status": "PASS"|"FAIL",
   "reviewer_id": "agy|codex|grok|claude",
+  "reviewer": "agy|codex|grok|claude",
   "review_duration_ms": 0,
   "issues": [
     {

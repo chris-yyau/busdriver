@@ -81,13 +81,24 @@ def _status(line):
     return parts[1].strip().lower() if len(parts) > 1 else ""
 
 lines = [ln.rstrip("\n") for ln in sys.stdin if ln.strip()]
+# Discard lines without a tab — gh error messages ("no checks reported on
+# this branch", auth errors that slipped past the pass|fail|pending
+# pre-filter) come through stdin without the tab-separated structure of a
+# real check row. Counting them in `kept` would let an error message look
+# like a passing check, inflating KEPT and re-opening the bootstrap
+# fail-open this commit is closing.
+lines = [ln for ln in lines if "\t" in ln]
 if required is not None:
-    kept = [ln for ln in lines if (ln.split("\t", 1)[0].strip() if ln else "") in required]
+    kept = [ln for ln in lines if ln.split("\t", 1)[0].strip() in required]
 else:
     kept = [ln for ln in lines if not advisory_pat.search(ln)]
 failed = sum(1 for ln in kept if _status(ln) in ("fail", "failure"))
 pending = sum(1 for ln in kept if _status(ln) in ("pending", "queued", "in_progress", "expected"))
-print(f"{failed} {pending} {mode}")
+# Emit kept count too — the bootstrap-merge path needs positive evidence
+# that checks actually ran (kept > 0), not just absence of failures.
+# Otherwise a PR with zero CI configured would satisfy "0 fail + 0 pending"
+# and the gate would silently allow a bootstrap merge with no validation.
+print(f"{failed} {pending} {mode} {len(kept)}")
 ' "$repo_dir" "$ADVISORY_PATTERN"
 }
 
@@ -305,7 +316,7 @@ if [ -f "$MARKER_FILE" ]; then
                 exit 0
             fi
             COUNTS=$(printf '%s\n' "$CHECKS_OUTPUT" | _relevant_check_counts "$REPO_DIR")
-            read -r FAILED PENDING MODE <<<"$COUNTS"
+            read -r FAILED PENDING MODE _KEPT <<<"$COUNTS"
             # Fail-CLOSED: an empty/malformed helper output (python crash,
             # missing fields) would leave MODE unset and let `${FAILED:-0}`
             # default to 0 → gate passes silently. Block instead.
@@ -353,13 +364,16 @@ if [ -n "$MERGE_PR_NUM" ] && command -v gh &>/dev/null; then
             : # CLI error — fall through to normal block
         else
             COUNTS=$(printf '%s\n' "$CHECKS_OUTPUT" | _relevant_check_counts "$REPO_DIR")
-            read -r FAILED PENDING MODE <<<"$COUNTS"
+            read -r FAILED PENDING MODE KEPT <<<"$COUNTS"
             # Fail-CLOSED on empty/malformed helper output (see comment at
-            # the marker-path site). Bootstrap path additionally falls
-            # through to the normal block when in doubt.
-            if [ -z "${MODE:-}" ] || [ -z "${FAILED:-}" ] || [ -z "${PENDING:-}" ]; then
+            # the marker-path site). Bootstrap path additionally requires
+            # KEPT > 0 — "no failures, no pendings" is necessary but not
+            # sufficient. Without positive evidence that any relevant check
+            # actually ran, a PR with zero CI could silently bootstrap-merge
+            # gate-script changes through this branch.
+            if [ -z "${MODE:-}" ] || [ -z "${FAILED:-}" ] || [ -z "${PENDING:-}" ] || [ -z "${KEPT:-}" ]; then
                 : # fall through to the BLOCK below
-            elif [ "${FAILED:-0}" -eq 0 ] && [ "${PENDING:-0}" -eq 0 ]; then
+            elif [[ "${FAILED:-0}" -eq 0 && "${PENDING:-0}" -eq 0 && "${KEPT:-0}" -gt 0 ]]; then
                 mkdir -p "$REPO_DIR/.claude"
                 printf '{"ts":"%s","event":"bootstrap-merge","gate":"pre-merge","pr":%s,"gate_files":%s}\n' \
                     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MERGE_PR_NUM" "$GATE_FILES_CHANGED" \

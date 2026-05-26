@@ -703,11 +703,11 @@ mkdir -p "$REPO_R1/.github"
 printf '%s' '{"required":[{"name":"shellcheck"}]}' > "$REPO_R1/.github/required-checks.lock"
 OUT=$(printf '%s' "$SYNTH_CHECKS" | _relevant_check_counts "$REPO_R1")
 TOTAL=$((TOTAL + 1))
-if [ "$OUT" = "0 0 required" ]; then
+if [[ "$OUT" = "0 0 required 1" ]]; then
     printf "  PASS  allowlist filters out non-required failures\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  allowlist non-required filter (got '%s', want '0 0 required')\n" "$OUT"
+    printf "  FAIL  allowlist non-required filter (got '%s', want '0 0 required 1')\n" "$OUT"
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$REPO_R1"
@@ -719,11 +719,11 @@ mkdir -p "$REPO_R2/.github"
 printf '%s' '{"required":[{"name":"commitlint"}]}' > "$REPO_R2/.github/required-checks.lock"
 OUT=$(printf '%s' "$SYNTH_CHECKS" | _relevant_check_counts "$REPO_R2")
 TOTAL=$((TOTAL + 1))
-if [ "$OUT" = "1 0 required" ]; then
+if [[ "$OUT" = "1 0 required 1" ]]; then
     printf "  PASS  allowlist counts required failures\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  allowlist counts required failures (got '%s', want '1 0 required')\n" "$OUT"
+    printf "  FAIL  allowlist counts required failures (got '%s', want '1 0 required 1')\n" "$OUT"
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$REPO_R2"
@@ -734,11 +734,11 @@ mkdir -p "$REPO_R3/.github"
 printf '%s' '{"required":[{"name":"build"}]}' > "$REPO_R3/.github/required-checks.lock"
 OUT=$(printf '%s' "$SYNTH_CHECKS" | _relevant_check_counts "$REPO_R3")
 TOTAL=$((TOTAL + 1))
-if [ "$OUT" = "0 1 required" ]; then
+if [[ "$OUT" = "0 1 required 1" ]]; then
     printf "  PASS  allowlist counts required pending checks\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  allowlist required pending (got '%s', want '0 1 required')\n" "$OUT"
+    printf "  FAIL  allowlist required pending (got '%s', want '0 1 required 1')\n" "$OUT"
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$REPO_R3"
@@ -749,11 +749,11 @@ rm -rf "$REPO_R3"
 REPO_R4=$(mktemp -d)
 OUT=$(printf '%s' "$SYNTH_CHECKS" | _relevant_check_counts "$REPO_R4")
 TOTAL=$((TOTAL + 1))
-if [ "$OUT" = "1 1 all" ]; then
+if [[ "$OUT" = "1 1 all 3" ]]; then
     printf "  PASS  no lock file → ADVISORY_PATTERN fallback\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  no-lock fallback (got '%s', want '1 1 all')\n" "$OUT"
+    printf "  FAIL  no-lock fallback (got '%s', want '1 1 all 3')\n" "$OUT"
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$REPO_R4"
@@ -764,11 +764,11 @@ mkdir -p "$REPO_R5/.github"
 printf '%s' 'not valid json{' > "$REPO_R5/.github/required-checks.lock"
 OUT=$(printf '%s' "$SYNTH_CHECKS" | _relevant_check_counts "$REPO_R5")
 TOTAL=$((TOTAL + 1))
-if [ "$OUT" = "1 1 all" ]; then
+if [[ "$OUT" = "1 1 all 3" ]]; then
     printf "  PASS  malformed lock → ADVISORY_PATTERN fallback\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  malformed-lock fallback (got '%s', want '1 1 all')\n" "$OUT"
+    printf "  FAIL  malformed-lock fallback (got '%s', want '1 1 all 3')\n" "$OUT"
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$REPO_R5"
@@ -780,11 +780,11 @@ mkdir -p "$REPO_R6/.github"
 printf '%s' '{"required":[]}' > "$REPO_R6/.github/required-checks.lock"
 OUT=$(printf '%s' "$SYNTH_CHECKS" | _relevant_check_counts "$REPO_R6")
 TOTAL=$((TOTAL + 1))
-if [ "$OUT" = "1 1 all" ]; then
+if [[ "$OUT" = "1 1 all 3" ]]; then
     printf "  PASS  empty required[] → ADVISORY_PATTERN fallback\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  empty-required fallback (got '%s', want '1 1 all')\n" "$OUT"
+    printf "  FAIL  empty-required fallback (got '%s', want '1 1 all 3')\n" "$OUT"
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$REPO_R6"
@@ -799,11 +799,11 @@ mkdir -p "$REPO_R7A/.github"
 printf '%s' '{"required":[{"name":"  shellcheck  "}]}' > "$REPO_R7A/.github/required-checks.lock"
 OUT=$(printf 'shellcheck\tfail\t5s\thttps://x\n' | _relevant_check_counts "$REPO_R7A")
 TOTAL=$((TOTAL + 1))
-if [ "$OUT" = "1 0 required" ]; then
+if [[ "$OUT" = "1 0 required 1" ]]; then
     printf "  PASS  required[] names with padding strip-match\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  whitespace-padded name match (got '%s', want '1 0 required')\n" "$OUT"
+    printf "  FAIL  whitespace-padded name match (got '%s', want '1 0 required 1')\n" "$OUT"
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$REPO_R7A"
@@ -817,11 +817,11 @@ printf '%s' '{"required":[{"name":"shellcheck"}]}' > "$REPO_R7B/.github/required
 URL_TRAP=$(printf 'shellcheck\tpass\t5s\thttps://github.com/owner/repo/actions/runs/12345/job/fail-handler\n')
 OUT=$(printf '%s' "$URL_TRAP" | _relevant_check_counts "$REPO_R7B")
 TOTAL=$((TOTAL + 1))
-if [ "$OUT" = "0 0 required" ]; then
+if [[ "$OUT" = "0 0 required 1" ]]; then
     printf "  PASS  status column parsing ignores 'fail' in URL column\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  URL substring false-positive (got '%s', want '0 0 required')\n" "$OUT"
+    printf "  FAIL  URL substring false-positive (got '%s', want '0 0 required 1')\n" "$OUT"
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$REPO_R7B"
@@ -834,14 +834,31 @@ printf '%s' '{"required":[{"name":"Actions security"}]}' > "$REPO_R7/.github/req
 MULTI_CHECKS=$(printf 'Actions security\tfail\t8s\thttps://x\nshellcheck\tpass\t5s\thttps://x\n')
 OUT=$(printf '%s' "$MULTI_CHECKS" | _relevant_check_counts "$REPO_R7")
 TOTAL=$((TOTAL + 1))
-if [ "$OUT" = "1 0 required" ]; then
+if [[ "$OUT" = "1 0 required 1" ]]; then
     printf "  PASS  allowlist matches multi-word check names\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  multi-word match (got '%s', want '1 0 required')\n" "$OUT"
+    printf "  FAIL  multi-word match (got '%s', want '1 0 required 1')\n" "$OUT"
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$REPO_R7"
+
+# R8. Empty stdin → kept count is 0. Bootstrap path uses this to refuse a
+#     bootstrap-merge when no relevant checks ran at all (defends against
+#     a gate-modifying PR that also disables CI).
+REPO_R8=$(mktemp -d)
+mkdir -p "$REPO_R8/.github"
+printf '%s' '{"required":[{"name":"shellcheck"}]}' > "$REPO_R8/.github/required-checks.lock"
+OUT=$(printf '' | _relevant_check_counts "$REPO_R8")
+TOTAL=$((TOTAL + 1))
+if [[ "$OUT" = "0 0 required 0" ]]; then
+    printf "  PASS  empty stdin → kept=0 (bootstrap fail-safe signal)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  empty-stdin kept count (got '%s', want '0 0 required 0')\n" "$OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$REPO_R8"
 
 # ═══════════════════════════════════════════════════════════════════════
 # RESULTS

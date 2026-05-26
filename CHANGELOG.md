@@ -1,3 +1,10 @@
+# [1.51.0](https://github.com/chris-yyau/busdriver/compare/v1.50.0...v1.51.0) (2026-05-26)
+
+
+### Features
+
+* **research:** tavily+exa primary, reserve firecrawl as paid fallback ([#153](https://github.com/chris-yyau/busdriver/issues/153)) ([8b4411e](https://github.com/chris-yyau/busdriver/commit/8b4411ec53cc6229045a3f80449ec7441280df80))
+
 # [1.50.0](https://github.com/chris-yyau/busdriver/compare/v1.49.1...v1.50.0) (2026-05-26)
 
 

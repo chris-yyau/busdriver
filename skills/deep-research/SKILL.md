@@ -66,12 +66,7 @@ web_search_exa(query: "<sub-question described as ideal page>", numResults: 8)
 web_search_exa(query: "category:company <company name> funding 2026", numResults: 5)
 ```
 
-**Only fall back to Firecrawl when:**
-- Both Tavily and Exa missed obvious sources
-- You need crawl coverage Tavily can't reach
-```
-firecrawl_search(query: "<sub-question>", limit: 8)
-```
+**Firecrawl is NOT used for search.** Reserve Firecrawl for Step 4 (deep-read) on JS-heavy SPAs where free extract tools fail.
 
 **Search strategy:**
 - Use 2-3 different keyword variations per sub-question

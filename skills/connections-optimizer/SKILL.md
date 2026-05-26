@@ -43,7 +43,7 @@ If the user does not specify a mode, use `default`.
 - `x-api` for X graph inspection and recent activity
 - `lead-intelligence` for target discovery and warm-path ranking
 - `social-graph-ranker` when the user wants bridge value scored independently of the broader lead workflow
-- Exa / deep research for person and company enrichment
+- Tavily / Exa / deep-research for person and company enrichment (Tavily for broad signals, Exa for `category:company`/`category:people` queries)
 - `brand-voice` before drafting outbound
 
 ### Fallbacks

@@ -1,25 +1,30 @@
 ---
 name: exa-search
-description: Neural search via Exa MCP for web, code, and company research. Use when the user needs web search, code examples, company intel, people lookup, or AI-powered deep research with Exa's neural search engine.
+description: Neural search via Exa MCP for technical content, code, company intel, and people lookups. Use when the user needs code examples, API docs, research papers, company research, or professional profiles — Exa's neural ranking beats general web search for these. For general web/news lookups, prefer tavily-search.
 origin: ECC
 ---
 
 # Exa Search
 
-Neural search for web content, code, companies, and people via the Exa MCP server.
+Neural search optimized for technical content, code, and structured entity research (companies, people). Free tier covers ~1,000 requests/month.
 
 ## When to Activate
 
-- User needs current web information or news
-- Searching for code examples, API docs, or technical references
-- Researching companies, competitors, or market players
-- Finding professional profiles or people in a domain
-- Running background research for any development task
-- User says "search for", "look up", "find", or "what's the latest on"
+- Code examples, API references, technical docs
+- Research papers, academic content, technical deep-dives
+- Company research (`category:company`)
+- People lookups, professional profiles (`category:people`)
+- Anything where neural relevance ranking beats keyword search
+
+**Not the right tool for:** general news, broad current-events lookups, simple factual queries — use `tavily-search` instead (also free tier, broader coverage).
 
 ## MCP Requirement
 
-Exa MCP server must be configured. Add to `~/.claude.json`:
+Two setup paths — pick whichever fits your harness:
+
+**Option A (recommended): claude.ai-managed Exa MCP.** No API key on disk, no `~/.claude.json` edit. Add via `/mcp` UI or claude.ai integrations panel. Tool names appear as `mcp__claude_ai_Exa__web_search_exa` and `mcp__claude_ai_Exa__web_fetch_exa`.
+
+**Option B: self-hosted via `exa-mcp-server`.** Add to `~/.claude.json`:
 
 ```json
 "exa-web-search": {
@@ -30,74 +35,78 @@ Exa MCP server must be configured. Add to `~/.claude.json`:
 ```
 
 Get an API key at [exa.ai](https://exa.ai).
-This repo's current Exa setup documents the tool surface exposed here: `web_search_exa` and `get_code_context_exa`.
-If your Exa server exposes additional tools, verify their exact names before depending on them in docs or prompts.
 
 ## Core Tools
 
 ### web_search_exa
-General web search for current information, news, or facts.
 
-```
-web_search_exa(query: "latest AI developments 2026", numResults: 5)
-```
+Neural web search. Returns titles, URLs, and content highlights.
 
-**Parameters:**
+```text
+web_search_exa(query: "...", numResults: 5)
+```
 
 | Param | Type | Default | Notes |
 |-------|------|---------|-------|
-| `query` | string | required | Search query |
-| `numResults` | number | 8 | Number of results |
-| `type` | string | `auto` | Search mode |
-| `livecrawl` | string | `fallback` | Prefer live crawling when needed |
-| `category` | string | none | Optional focus such as `company` or `research paper` |
+| `query` | string | required | Natural-language description of the ideal page. Use `category:company` or `category:people` to focus entity searches. |
+| `numResults` | number | 10 | Number of results to return |
 
-### get_code_context_exa
-Find code examples and documentation from GitHub, Stack Overflow, and docs sites.
+**Query tip:** describe the ideal page, not keywords. `"blog post comparing React and Vue performance"` beats `"React vs Vue"`.
 
+### web_fetch_exa
+
+Read full page content as clean markdown. Use after `web_search_exa` when highlights are insufficient.
+
+```text
+web_fetch_exa(urls: ["https://example.com/page"], maxCharacters: 3000)
 ```
-get_code_context_exa(query: "Python asyncio patterns", tokensNum: 3000)
-```
-
-**Parameters:**
 
 | Param | Type | Default | Notes |
 |-------|------|---------|-------|
-| `query` | string | required | Code or API search query |
-| `tokensNum` | number | 5000 | Content tokens (1000-50000) |
+| `urls` | array | required | URLs to read. Batch multiple URLs in one call. |
+| `maxCharacters` | number | 3000 | Max chars to extract per page |
 
 ## Usage Patterns
 
-### Quick Lookup
-```
-web_search_exa(query: "Node.js 22 new features", numResults: 3)
-```
-
 ### Code Research
-```
-get_code_context_exa(query: "Rust error handling patterns Result type", tokensNum: 3000)
-```
-
-### Company or People Research
-```
-web_search_exa(query: "Vercel funding valuation 2026", numResults: 3, category: "company")
-web_search_exa(query: "site:linkedin.com/in AI safety researchers Anthropic", numResults: 5)
+```text
+web_search_exa(query: "Rust error handling patterns Result type with examples", numResults: 5)
 ```
 
-### Technical Deep Dive
+### Research Papers / Technical Deep-Dive
+```text
+web_search_exa(query: "research paper on WebAssembly component model adoption 2026", numResults: 5)
+web_fetch_exa(urls: ["<top-2-URLs>"], maxCharacters: 5000)
 ```
-web_search_exa(query: "WebAssembly component model status and adoption", numResults: 5)
-get_code_context_exa(query: "WebAssembly component model examples", tokensNum: 4000)
+
+### Company Research
+```text
+web_search_exa(query: "category:company Vercel funding valuation 2026", numResults: 3)
+```
+
+### People Lookup
+```text
+web_search_exa(query: "category:people AI safety researchers at Anthropic", numResults: 5)
+```
+
+### Deep Fetch After Search
+```text
+results = web_search_exa(query: "...", numResults: 5)
+# Pick the 2-3 most promising URLs
+web_fetch_exa(urls: [results[0].url, results[1].url], maxCharacters: 4000)
 ```
 
 ## Tips
 
-- Use `web_search_exa` for current information, company lookups, and broad discovery
-- Use search operators like `site:`, quoted phrases, and `intitle:` to narrow results
-- Lower `tokensNum` (1000-2000) for focused code snippets, higher (5000+) for comprehensive context
-- Use `get_code_context_exa` when you need API usage or code examples rather than general web pages
+- Use natural-language queries — Exa's neural model rewards semantic richness over keywords
+- Prefix `category:company` or `category:people` at the start of your query to activate Exa's entity filter (e.g. `"category:company Vercel funding 2026"`)
+- Default `numResults: 10` is often too many — start with 3-5 to save quota
+- Batch URLs in a single `web_fetch_exa` call rather than one-at-a-time
+- Lower `maxCharacters` (1500-2000) for snippets, higher (5000+) for full-page comprehension
+- Out of 1k/month free? Fall back to `tavily-search` for queries where neural ranking isn't critical
 
 ## Related Skills
 
-- `deep-research` — Full research workflow using firecrawl + exa together
-- `market-research` — Business-oriented research with decision frameworks
+- `tavily-search` — general web/news lookups (also free tier; preferred for non-technical content)
+- `deep-research` — full multi-source research workflow that orchestrates Tavily + Exa
+- `market-research` — business-oriented research with decision frameworks

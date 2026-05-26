@@ -12,10 +12,11 @@ This is the operator wrapper around the repo's research stack. It is not a repla
 
 ## Skill Stack
 
-Pull these ECC-native skills into the workflow when relevant:
+Pull these skills into the workflow when relevant. **Default to free tools (Tavily, Exa); reserve Firecrawl for credit-spend fallback inside `deep-research` only.**
 
-- `exa-search` for fast current-web discovery
-- `deep-research` for multi-source synthesis with citations
+- `tavily-search` for general web, news, broad queries, and page extraction (free tier)
+- `exa-search` for neural-ranked technical content, code, papers, and `category:company`/`category:people` entity lookups (free tier)
+- `deep-research` for multi-source synthesis with citations — orchestrates Tavily + Exa, falls back to Firecrawl only when needed
 - `market-research` when the end result should be a recommendation or ranked decision
 - `lead-intelligence` when the task is people/company targeting instead of generic research
 - `knowledge-ops` when the result should be stored in durable context afterward
@@ -60,10 +61,20 @@ Choose the right lane before searching:
 
 ### 3. Take the lightest useful evidence path first
 
-- use `exa-search` for fast discovery
-- escalate to `deep-research` when synthesis or multiple sources matter
-- use `market-research` when the outcome should end in a recommendation
-- hand off to `lead-intelligence` when the real ask is target ranking or warm-path discovery
+Route by ask shape (free tools first; escalate to credit-spend only when justified):
+
+| Ask shape | Route to | Why |
+|-----------|----------|-----|
+| Quick fact, news, current event | `tavily-search` (`tavily_search`) | Broad coverage, free, fast |
+| Code, API docs, research papers, technical deep-dives | `exa-search` (`web_search_exa`) | Neural ranking shines on technical content |
+| Company intel, people lookups | `exa-search` with `category:company` / `category:people` | Purpose-built entity filters |
+| Page fetch from a known URL | `web_fetch_exa` or `tavily_extract` | Both free; pick by which surfaced the URL |
+| Site-wide crawl, URL discovery | `tavily_crawl` / `tavily_map` | Free, covers most needs |
+| Multi-source comparison or decision memo | `deep-research` | Orchestrates Tavily + Exa with planning + citations |
+| Recommendation / ranked decision | `market-research` | Decision frameworks layered on research |
+| Target ranking, warm-path discovery | `lead-intelligence` | Specialized for people/company targeting |
+
+**Firecrawl (paid) reserved for:** JS-heavy SPAs where both `web_fetch_exa` and `tavily_extract` return empty/garbage. Only `deep-research` should reach for it, and only after the free tier failed on the specific URL.
 
 ### 4. Report with explicit evidence boundaries
 

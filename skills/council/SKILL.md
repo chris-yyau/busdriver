@@ -1,7 +1,7 @@
 ---
 name: council
 description: >
-  Convene a 5-voice AI council (Claude Architect + Fresh Claude Skeptic + Agy Pragmatist + Codex Critic + Droid Researcher) for diverse perspectives.
+  Convene a 5-voice AI council (Claude Architect + Fresh Claude Skeptic + Agy Pragmatist + Codex Critic + Grok Researcher) for diverse perspectives.
   Use when the user asks "what would a good group of people think/design/do",
   wants multiple opinions, asks for "ideas", "thoughts", "suggestions", "advice",
   "input", "feedback", "recommendations", says "council", "roundtable", "perspectives",
@@ -24,7 +24,7 @@ Convene five advisors — the in-context Claude plus four fresh agents — for d
 | Fresh Claude | Agent tool (clean memory) | Skeptic | Challenge assumptions, question premises, propose simplest alternative | No (Agent tool) |
 | Configurable | dispatch-cli | Pragmatist | Shipping speed, simplicity, user impact, practical tradeoffs | Yes: `council.pragmatist` (default: agy) |
 | Configurable | dispatch-cli | Critic | Edge cases, risks, failure modes, what could go wrong | Yes: `council.critic` (default: codex) |
-| Configurable | dispatch-cli | Researcher | Evidence, prior art, current state, factual grounding | Yes: `council.researcher` (default: droid) |
+| Configurable | dispatch-cli | Researcher | Evidence, prior art, current state, factual grounding | Yes: `council.researcher` (default: grok, fallback: droid) |
 
 **CLI routing:** Pragmatist, Critic, and Researcher CLIs are resolved from `.claude/busdriver.json` via `resolve_role_cli()`. Each role accepts a route array — the resolver walks it left-to-right and returns the first available CLI (e.g., `"council.pragmatist": ["agy", "droid"]` falls back to Droid if Agy is missing). If every CLI in the chain is missing, that voice is skipped and noted in the report; other voices still fire. Changing the CLI only changes which binary receives the prompt — the role framing (Pragmatist lens, Critic lens, Researcher lens) is always the same. **Trade-off to know:** fallback preserves availability but dilutes role identity — Droid filling in as Pragmatist is no longer "Agy's strategic lens." Accept this when resilience matters more than signal purity. See README for per-role routing docs.
 
@@ -55,7 +55,7 @@ Write down:
 
 Hold this. You'll include it in the report after dispatch completes.
 
-### Step 4: Dispatch Fresh Claude + Agy + Codex + Droid
+### Step 4: Dispatch Fresh Claude + Agy + Codex + Grok
 
 Launch all four external agents in parallel. Use a **single message with multiple tool calls** to maximize concurrency.
 
@@ -114,23 +114,23 @@ fi
 (( ${#PIDS[@]} )) && wait "${PIDS[@]}"
 ```
 
-This is a **single Bash call** with all three CLI dispatches as background processes. This is critical — if Agy, Codex, and Droid are separate parallel Bash tool calls, one failing cancels the others. A single call with `&` and `wait` keeps them independent.
+This is a **single Bash call** with all three CLI dispatches as background processes. This is critical — if Agy, Codex, and Grok are separate parallel Bash tool calls, one failing cancels the others. A single call with `&` and `wait` keeps them independent.
 
 **NEVER wrap dispatches in subshells `()`**. The pattern `( cmd & ) && wait` does NOT work — the subshell exits immediately after backgrounding, so `wait` has nothing to wait for. Always background directly and capture PIDs with `$!`.
 
-**Prompt template** for Agy/Codex/Droid (same structure as Skeptic but with their role/lens):
+**Prompt template** for Agy/Codex/Grok (same structure as Skeptic but with their role/lens). When the resolver falls back to Droid in any slot, the same role/lens text is sent — these labels track the *default primary* CLI per role.
 
 **For Agy:** Role = "Pragmatist", Lens = "shipping speed, simplicity, user impact, practical tradeoffs"
 **For Codex:** Role = "Critic", Lens = "edge cases, risks, failure modes, what could go wrong"
-**For Droid:** Role = "Researcher", Lens = "evidence, prior art, current state — look up similar past decisions, current code state of the repo, and external evidence relevant to the question. Cite what you find. Flag claims that lack grounding."
+**For Grok:** Role = "Researcher", Lens = "evidence, prior art, current state — look up similar past decisions, current code state of the repo, and external evidence relevant to the question. Cite what you find. Flag claims that lack grounding."
 
-**IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing Agy + Codex + Droid as background processes) in the **same message** so all four external voices run concurrently. Do NOT use separate Bash tool calls — one failing will cancel the others.
+**IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing Agy + Codex + Grok as background processes) in the **same message** so all four external voices run concurrently. Do NOT use separate Bash tool calls — one failing will cancel the others.
 
 **Missing CLI handling:** Each role's route array is walked left-to-right; the first available CLI wins. If every CLI in the chain resolves to `none`, `builtin`, `missing:<cli>`, or `unsupported:<cli>` (the last fires when a stale config references a removed backend like opencode/amp/claude/aider — migration warning goes to stderr), that voice is skipped and the report notes its absence as `(unavailable)`. The remaining voices still convene. If the Skeptic Agent call fails (rate limit, timeout), same rule applies. Typical minimum is 2 voices (Architect + Skeptic, 40% of full strength); absolute floor is 1 voice (Architect alone) if the Skeptic Agent call also fails. Always note the composition in the report — and when a fallback fires (e.g., Droid serving as Pragmatist because Agy was missing), note that explicitly so the report doesn't misattribute the lens.
 
 ### Step 5: Read Output and Synthesize
 
-Read the Fresh Claude output from the Agent tool result. Read the Agy/Codex/Droid output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`).
+Read the Fresh Claude output from the Agent tool result. Read the Agy/Codex/Grok output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`). When the resolver falls back to Droid in the Researcher slot (grok unavailable), the output filename is `dispatch-droid-*.txt` and the report should attribute "Droid (Researcher, fallback)" rather than "Grok (Researcher)".
 
 **CRITICAL: Read the ENTIRE output file, not just the first few lines.** CLI output files contain noise before the actual response:
 - **Agy:** Dumps MCP server initialization logs (e.g., `Registering notification handlers...`, `Loading extension...`) before the response. The actual answer may be 50+ lines deep.
@@ -171,8 +171,9 @@ You are both a council member AND the synthesizer. This is a conflict of interes
 **Codex (Critic):** [position in 1-2 sentences]
 [1-line key reasoning]
 
-**Droid (Researcher):** [position in 1-2 sentences]
+**Grok (Researcher):** [position in 1-2 sentences]
 [1-line key reasoning + key evidence cited]
+(If grok was unavailable and Droid handled the slot, use **Droid (Researcher, fallback):** instead.)
 
 ### Verdict
 - **Consensus:** [where they agree]
@@ -193,10 +194,10 @@ Default: **one round**. The council convenes, delivers the verdict, and dissolve
 
 If the user asks for another round ("ask them again", "what would they say to that", "follow up with the council", "another round"):
 
-1. For Agy + Codex + Droid: include prior council positions in the dispatch prompt as context
+1. For Agy + Codex + Grok: include prior council positions in the dispatch prompt as context
 2. **For Fresh Claude Skeptic: include ONLY the new follow-up question + original question — do NOT include prior council positions.** This is critical — the Skeptic's value comes from clean memory. If you anchor them on prior positions, they become a fifth confirming voice instead of an independent challenger.
 3. Add the user's follow-up question
-4. Frame for Agy/Codex/Droid: "The council previously said [positions]. The user now asks: [follow-up]. Respond to the other advisors' positions AND the new question."
+4. Frame for Agy/Codex/Grok: "The council previously said [positions]. The user now asks: [follow-up]. Respond to the other advisors' positions AND the new question."
 5. Frame for Skeptic: "[Original question]. Follow-up: [new question]." — NO prior positions, NO council output.
 6. Synthesize again with the same guardrails
 
@@ -240,7 +241,7 @@ last_validated: "{YYYY-MM-DD}"
 **Decision:** {what was being decided}
 **Initial position:** {what Claude would have done alone}
 **What changed:** {the dissent/insight that shifted the recommendation}
-**Who changed it:** {Fresh Claude Skeptic/Agy/Codex/Droid/multiple}
+**Who changed it:** {Fresh Claude Skeptic/Agy/Codex/Grok/Droid/multiple}
 **Final recommendation:** {what we actually decided}
 
 **Why:** {why the external perspective was better}

@@ -17,7 +17,7 @@ Rate your confidence (0.0-1.0) for each issue based on:
 CRITICAL: Output STRICT JSON format:
 {
   "status": "PASS"|"FAIL",
-  "reviewer_id": "<agy|codex>",
+  "reviewer_id": "<agy|codex|grok>",
   "review_duration_ms": <milliseconds>,
   "issues": [
     {
@@ -27,7 +27,7 @@ CRITICAL: Output STRICT JSON format:
       "category": "clarity|completeness|architecture|feasibility|technical-accuracy|implementation|bugs|performance|best-practices|maintainability",
       "description": "Clear, specific description of the issue",
       "suggestion": "Concrete, actionable fix with examples if applicable",
-      "reviewer": "<agy|codex>"
+      "reviewer": "<agy|codex|grok>"
     }
   ],
   "metadata": {

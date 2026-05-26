@@ -9,7 +9,7 @@ description: >
 
 # Blueprint Review (Three-Tier, Claude Arbiter)
 
-AI-powered design review using Agy + Codex (parallel) with Claude as the arbiter.
+AI-powered design review using Agy + Codex + Grok (parallel) with Claude as the arbiter.
 
 <EXTREMELY-IMPORTANT>
 YOU MUST WAIT FOR ALL THREE REVIEWERS BEFORE MARKING PASS.
@@ -25,20 +25,20 @@ DO NOT rationalize skipping reviewers. These thoughts are violations:
 
 EVERY design review MUST:
 1. Run `run-design-review-loop.sh` as a BLOCKING bash call
-2. Wait for ALL THREE reviewer outputs (agy.json, codex.json, claude.json)
-3. Claude validates Agy/Codex findings against the codebase
+2. Wait for ALL reviewer outputs (agy.json, codex.json, grok.json, plus claude.json from the arbiter) — grok.json is always written by the loop, even when grok was unavailable (it contains an error-status JSON in that case)
+3. Claude validates Agy/Codex/Grok findings against the codebase
 4. Mark PASS ONLY when Claude's verdict has no HIGH/MEDIUM issues (confidence >= 0.5)
 </EXTREMELY-IMPORTANT>
 
 ## Overview
 
 Three-tier model with Claude as arbiter:
-1. **Agy + Codex**: Run in parallel as independent comprehensive reviewers
+1. **Agy + Codex + Grok**: Run in parallel as independent comprehensive reviewers (Grok added 2026-05-26 to extend voice-lineage diversity into design review; falls back to Droid if grok is unavailable, matching the existing reviewer_1/_2 droid-fallback pattern across all three slots)
 2. **Claude**: Validates their findings against the codebase (arbiter)
 3. **Claude's verdict**: The sole convergence signal
 
 **Key features:**
-- Parallel execution (Agy + Codex run simultaneously)
+- Parallel execution (Agy + Codex + Grok run simultaneously)
 - Run-scoped artifact isolation (stale outputs cleaned per iteration)
 - Hard freshness contract (run_id + spec_hash in every output)
 - Atomic writes (.pending → rename on success)
@@ -62,7 +62,8 @@ Three-tier model with Claude as arbiter:
 |-----------|-------|--------------|
 | Reviewer 1 | Comprehensive (all aspects) | 1-5min |
 | Reviewer 2 | Comprehensive (all aspects) | 1-5min |
-| Reviewer 1 + 2 | Parallel execution | 1-5min (wall clock) |
+| Reviewer 3 | Comprehensive (all aspects) | 1-5min |
+| Reviewer 1 + 2 + 3 | Parallel execution | 1-5min (wall clock) |
 | Claude | Arbiter + codebase validation | 2-5min |
 
 **Completion criteria:** Claude's verdict has no plan-blocking HIGH or MEDIUM issues (confidence >= 0.5). TDD-discoverable findings (test stubs, lint, perf) and scope-expansion findings ("OUT OF SCOPE", "follow-up PR") do NOT block convergence — they are deferred to `follow-up-issues.md`.
@@ -80,19 +81,23 @@ Reviewer CLIs are configurable via `.claude/busdriver.json` using the `routes` o
 ```json
 {
   "routes": {
-    "blueprint-review.reviewer_1": ["agy"],
-    "blueprint-review.reviewer_2": ["codex"]
+    "blueprint-review.reviewer_1": ["agy", "droid"],
+    "blueprint-review.reviewer_2": ["codex", "droid"],
+    "blueprint-review.reviewer_3": ["grok", "droid"]
   }
 }
 ```
+
+All three reviewer slots walk to `droid` as a universal fallback, mirroring the council pattern (pragmatist/critic/researcher all fall to droid). The blueprint-specific risk that two reviewers might both land on droid simultaneously (e.g., agy and grok both missing) is handled by the loop's duplicate detection: reviewer_1 and reviewer_2 collisions enter DUPLICATE_MODE (single-reviewer mode, output copied), and reviewer_3 collisions with either higher slot trigger REVIEWER_3_DUPLICATE which skips the voice.
 
 | Role | Route key | Default |
 |------|-----------|---------|
 | Reviewer 1 | `blueprint-review.reviewer_1` | agy |
 | Reviewer 2 | `blueprint-review.reviewer_2` | codex |
+| Reviewer 3 | `blueprint-review.reviewer_3` | grok (added 2026-05-26; falls back to droid if grok not installed, matching reviewer_1/_2 pattern) |
 | Arbiter | (hardcoded) | claude (not configurable — Claude is always the arbiter) |
 
-If both reviewers resolve to the same CLI, the system runs single-reviewer mode (one execution, output copied to both paths, logged as degradation).
+If reviewer_1 and reviewer_2 resolve to the same CLI, the system runs single-reviewer mode for that pair (one execution, output copied to both paths, logged as degradation). If reviewer_3 collides with reviewer_1 or reviewer_2, the reviewer_3 voice is skipped entirely (no duplicate copy — arbitration proceeds with two voices) to avoid combinatorial 3-way copying for an edge case.
 
 See `.claude/busdriver.json` for per-role routing configuration.
 
@@ -104,7 +109,7 @@ digraph review {
     node [shape=box, style=rounded];
 
     init [label="1. Initialize\nbash init-design-review.sh"];
-    parallel [label="2. Agy + Codex\n(parallel)"];
+    parallel [label="2. Agy + Codex + Grok\n(parallel)"];
     claude [label="3. Claude Arbiter\n(codebase context)"];
     progress [label="4. Progress Analysis\n(severity breakdown)"];
     converged [label="No HIGH/MEDIUM?" shape=diamond];
@@ -144,7 +149,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/run-design-review-lo
 
 **Automated workflow:**
 1. **Clean stale artifacts** from previous iteration
-2. **Run Agy + Codex in parallel** (background processes, `wait` for both)
+2. **Run Agy + Codex + Grok in parallel** (background processes, `wait` for all)
 3. **Validate outputs** (JSON integrity + freshness contract)
 4. **Claude validation** with codebase access (manual step or pre-existing output)
 5. **Progress analysis** (severity breakdown from Claude's verdict)
@@ -239,7 +244,8 @@ Progress is visible across iterations: "iter1: 4 plan-blocking high → iter2: 3
 ```json
 {
   "status": "PASS"|"FAIL",
-  "reviewer_id": "agy|codex|claude",
+  "reviewer_id": "agy|codex|grok|claude",
+  "reviewer": "agy|codex|grok|claude",
   "review_duration_ms": 0,
   "issues": [
     {
@@ -249,7 +255,7 @@ Progress is visible across iterations: "iter1: 4 plan-blocking high → iter2: 3
       "category": "clarity|completeness|architecture|...",
       "description": "Clear, specific description",
       "suggestion": "Actionable fix",
-      "reviewer": "agy|codex|claude"
+      "reviewer": "agy|codex|grok|claude"
     }
   ],
   "metadata": {
@@ -327,6 +333,7 @@ Active review tracked by pointer file: `.claude/current-design-review.local`
 - `docs/reviews/<slug>/state.md` - YAML frontmatter tracking iteration + progress
 - `docs/reviews/<slug>/agy.json` - Agy review output (with freshness metadata)
 - `docs/reviews/<slug>/codex.json` - Codex review output (with freshness metadata)
+- `docs/reviews/<slug>/grok.json` - Reviewer_3 output (with freshness metadata; absent only when reviewer_3 is intentionally skipped, e.g., duplicate-collision skip or explicit `none`; present with error-status JSON when grok is unavailable)
 - `docs/reviews/<slug>/claude.json` - Claude arbiter output (with freshness metadata)
 - `docs/reviews/<slug>/claude-validation-prompt.txt` - Generated prompt for Claude
 
@@ -357,7 +364,7 @@ When presenting findings to the user, filter by confidence tier:
 | 0.3 to <0.5 | Suppress from main report. Include in appendix section: "Low-confidence findings (may be false positives)" |
 | 0.0 to <0.3 | Suppress entirely unless severity is `high` |
 
-**Important:** Low-confidence findings are suppressed from the user-facing report only. They remain in the JSON artifacts (`agy.json`, `codex.json`, `claude.json`) for auditability. Never delete findings from stored outputs.
+**Important:** Low-confidence findings are suppressed from the user-facing report only. They remain in the JSON artifacts (`agy.json`, `codex.json`, `grok.json`, `claude.json`) for auditability. Never delete findings from stored outputs.
 
 ### Calibration-to-Instinct Bridge
 

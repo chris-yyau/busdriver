@@ -80,6 +80,7 @@ last_review_timestamp: ""
 # Review results
 agy_status: ""
 codex_status: ""
+grok_status: ""
 claude_status: ""
 
 # Progress model (replaces binary FAIL/PASS)
@@ -203,15 +204,50 @@ is_max_iterations_reached() {
   [[ $current -ge $max ]]
 }
 
+# Ensure grok_status field exists in the YAML frontmatter.
+# Required because update_state_field cannot insert missing keys — it only
+# rewrites lines that already match `^field:`. State files written before
+# grok was added as reviewer_3 (2026-05-26) lack this field; without
+# insertion, update_review_statuses would silently no-op on grok_status
+# for any resumed review started before the upgrade. Inserted before
+# `claude_status:` which has existed in every state.md version.
+_ensure_grok_status_field() {
+  local state_file
+  state_file=$(get_state_file)
+  if [[ ! -f "$state_file" ]]; then
+    return 0
+  fi
+  if grep -q '^grok_status:' "$state_file"; then
+    return 0
+  fi
+  local temp_file="${state_file}.tmp"
+  awk '
+    /^---$/ { yaml_count++ }
+    yaml_count == 1 && !inserted && /^claude_status:/ {
+      print "grok_status: \"\""
+      inserted = 1
+    }
+    { print }
+  ' "$state_file" > "$temp_file"
+  mv "$temp_file" "$state_file"
+}
+
 # Update review statuses
 update_review_statuses() {
   local agy_status="$1"
   local codex_status="$2"
   local claude_status="$3"
+  # grok_status added 2026-05-26 as 4th positional arg for blueprint-review
+  # reviewer_3. Default empty (state field not written) for backward compat
+  # with callers that haven't migrated; the loop passes "unavailable" when
+  # grok is not configured/installed.
+  local grok_status="${4:-}"
 
+  _ensure_grok_status_field
   update_state_field "agy_status" "\"$agy_status\""
   update_state_field "codex_status" "\"$codex_status\""
   update_state_field "claude_status" "\"$claude_status\""
+  [[ -n "$grok_status" ]] && update_state_field "grok_status" "\"$grok_status\""
 }
 
 # Check convergence — Claude is the arbiter (Critic #4)

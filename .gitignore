@@ -32,3 +32,6 @@ scripts/codex/.runs/
 
 # Antigravity (agy) CLI per-project state (project-id symlinks back to ~/.gemini/config/)
 .antigravitycli/
+
+# CodeGraph tree-sitter index artifacts (regeneratable, per-repo)
+.codegraph/

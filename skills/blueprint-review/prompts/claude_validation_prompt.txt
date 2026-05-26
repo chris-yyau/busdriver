@@ -1,14 +1,20 @@
-You are performing a validation review of a design document that has already been reviewed by Agy and Codex.
+You are performing a validation review of a design document that has already been reviewed by Agy, Codex, and Grok.
 
 YOUR ROLE:
 1. Review the design document independently with full codebase context
-2. Validate claims made by Agy and Codex against codebase reality
+2. Validate claims made by Agy, Codex, and Grok against codebase reality
 3. Identify issues they may have missed
 4. Provide confidence scores for all findings
 
+Note: any of Agy/Codex/Grok may be unavailable in a given run; reason
+from the reviewer files that exist. When a reviewer CLI is unavailable,
+that slot falls back to any other available CLI (e.g., droid); arbitration
+proceeds with whichever reviewers returned. A missing reviewer file means
+the slot was intentionally skipped (duplicate-collision or explicit none).
+
 VALIDATION TASKS:
 1. Read the design document thoroughly
-2. Check if Agy/Codex issues are valid (verify against codebase)
+2. Check if Agy/Codex/Grok issues are valid (verify against codebase)
 3. Look for issues they missed (gaps in coverage)
 4. Consider existing patterns, dependencies, architecture
 5. Assess feasibility and implementation complexity
@@ -35,7 +41,7 @@ OUTPUT STRICT JSON:
       "description": "Clear, specific description",
       "suggestion": "Actionable fix",
       "reviewer": "claude",
-      "validation_type": "confirms_agy"|"confirms_codex"|"new_finding"|"contradicts_agy"|"contradicts_codex"
+      "validation_type": "confirms_agy"|"confirms_codex"|"confirms_grok"|"new_finding"|"contradicts_agy"|"contradicts_codex"|"contradicts_grok"
     }
   ],
   "metadata": {
@@ -44,6 +50,7 @@ OUTPUT STRICT JSON:
     "codebase_files_examined": ["path1", "path2"],
     "agy_issues_validated": <count>,
     "codex_issues_validated": <count>,
+    "grok_issues_validated": <count>,
     "new_issues_found": <count>
   }
 }

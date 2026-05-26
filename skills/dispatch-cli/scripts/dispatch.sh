@@ -1,5 +1,5 @@
 #!/bin/bash
-# dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), or Droid CLI as autonomous agents
+# dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, or Grok CLI as autonomous agents
 #
 # Usage (prefer heredoc or stdin to avoid shell escaping bugs):
 #   dispatch.sh --cli codex <<'PROMPT'
@@ -48,10 +48,10 @@ while [[ $# -gt 0 ]]; do
         --prompt)  PROMPT="$2";  shift 2 ;;
         -h|--help)
             cat <<'USAGE'
-dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), or Droid CLI
+dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, or Grok CLI
 
 FLAGS:
-  --cli     codex|agy|droid|both|all|auto  (default: auto)
+  --cli     codex|agy|droid|grok|both|all|auto  (default: auto)
   --mode    readonly|auto           (default: readonly)
   --timeout seconds                 (default: 300)
   --model   model override          (optional)
@@ -96,9 +96,15 @@ if [[ "$CLI" == "auto" ]]; then
     if _has_cli codex; then CLI="codex"
     elif _has_cli agy; then CLI="agy"
     elif _has_cli droid; then CLI="droid"
-    else echo "Error: No supported CLI found (tried codex, agy, droid)." >&2; exit 1; fi
-elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "droid" && "$CLI" != "both" && "$CLI" != "all" ]]; then
-    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|droid|both|all|auto." >&2; exit 1
+    # grok is intentionally excluded from --cli auto. Its safety model
+    # (--sandbox readonly + user-config "always approve" disabled) is documented
+    # but not enforceable from code, so silently selecting grok via auto would
+    # extend its exposure to contexts whose threat model wasn't reviewed.
+    # Use --cli grok explicitly (or set BUSDRIVER_REVIEW_CLI=grok) to opt in.
+    # This mirrors the resolve-cli.sh auto-detect exclusion.
+    else echo "Error: No supported CLI found (tried codex, agy, droid). grok is excluded from auto-selection; use --cli grok to opt in explicitly." >&2; exit 1; fi
+elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "droid" && "$CLI" != "grok" && "$CLI" != "both" && "$CLI" != "all" ]]; then
+    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|droid|grok|both|all|auto." >&2; exit 1
 fi
 
 # Validate mode
@@ -124,14 +130,21 @@ else
     [[ "$CLI" == "codex" ]] && ! _has_cli codex && { echo "Error: codex not found." >&2; exit 1; }
     [[ "$CLI" == "agy" ]] && ! _has_cli agy && { echo "Error: agy not found." >&2; exit 1; }
     [[ "$CLI" == "droid" ]] && ! _has_cli droid && { echo "Error: droid not found." >&2; exit 1; }
+    [[ "$CLI" == "grok" ]] && ! _has_cli grok && { echo "Error: grok not found." >&2; exit 1; }
 fi
 
-# Handle --cli all: discover top 3 available CLIs
+# Handle --cli all: discover all available supported CLIs (cap raised from
+# 3 to 4 when grok joined; a host with codex+agy+droid+grok would otherwise
+# never reach grok despite the user requesting all CLIs). When MODE=auto,
+# grok is excluded — the grok adapter rejects auto mode at dispatch_one
+# time, and including it here would kill the entire batch mid-stream after
+# the other CLIs had already launched in parallel.
 if [[ "$CLI" == "all" ]]; then
     ALL_CLIS=()
-    for c in codex agy droid; do
+    for c in codex agy droid grok; do
+        [[ "$c" == "grok" && "$MODE" == "auto" ]] && continue
         _has_cli "$c" && ALL_CLIS+=("$c")
-        [[ ${#ALL_CLIS[@]} -ge 3 ]] && break
+        [[ ${#ALL_CLIS[@]} -ge 4 ]] && break
     done
     if [[ ${#ALL_CLIS[@]} -eq 0 ]]; then
         echo "Error: No CLIs found for --cli all." >&2; exit 1
@@ -213,9 +226,99 @@ dispatch_one() {
             fi
             _portable_timeout "$TIMEOUT" droid exec --auto "$_droid_level" \
                 < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;
+        grok)
+            # Flags actually passed (see invocation at the end of this case):
+            #   --prompt-file /dev/stdin: feeds the prompt via fd 0, bypassing
+            #     argv length limits and shell escaping. Matches the heredoc
+            #     pattern callers use elsewhere in this script.
+            #   --max-turns 150: grok counts every internal message (tool calls,
+            #     planning steps, web fetches) toward the budget, not user-
+            #     assistant exchanges. Real Researcher prompts consume 50-100
+            #     messages; 150 is the safety margin. `max_turns_exceeded` is
+            #     DESTRUCTIVE (whole output discarded), so err generous.
+            #   --sandbox readonly: see SAFETY MODEL block below.
+            #
+            # Flags deliberately NOT passed (--always-approve, --disallowed-tools,
+            # --deny): documented in the SAFETY MODEL block below — empirically
+            # they are no-ops in headless mode, so passing them would either
+            # mislead or provide false-sense-of-security.
+            #
+            # NOTE: grok-build (the only available model) rejects --reasoning-effort
+            # and --effort with a 400 from the responses API, so neither MODEL nor
+            # effort tiers are forwarded here.
+            if [[ -n "$MODEL" ]]; then
+                echo "Error: --model is not supported by grok-build (single model; rejects --model flag). Remove --model or use --cli codex to pin a specific model." >&2
+                exit 1
+            fi
+            # SAFETY MODEL (end-to-end, empirically verified 2026-05-26):
+            #
+            # Safety relies on BOTH the dispatcher code AND the user's grok
+            # configuration — neither alone is sufficient.
+            #
+            # 1. DISPATCHER CONTROLS (committed in this script):
+            #   * --sandbox readonly: blocks file writes inside the project
+            #     root (emits `IO Error: Operation not permitted` for `write`
+            #     tool calls). Does NOT by itself block shell exec, writes
+            #     outside the project root, or network access.
+            #   * --mode auto rejected at dispatcher level (see gate below)
+            #     to restrict grok to read-shaped workloads only.
+            #   * --always-approve / --disallowed-tools / --deny deliberately
+            #     NOT passed — empirically they're no-ops in headless mode
+            #     (grok's flag-level permission system is advisory, not
+            #     enforcing). False-sense-of-security flags.
+            #
+            # 2. USER-CONFIG REQUIREMENT (not committed; per-machine setting):
+            #   * grok must have "always approve" DISABLED in its user config
+            #     (via `grok` interactive `/permissions` setting or
+            #     ~/.grok/config). When disabled, grok defaults to denying
+            #     tool use in non-interactive mode (no user to confirm =
+            #     fail-safe). Verified 2026-05-26: with this config, writes
+            #     to /tmp and shell exec BOTH BLOCKED while web search and
+            #     file reads continue working.
+            #   * If a user reinstates "always approve" in their grok config,
+            #     the dispatcher silently degrades to the permissive headless
+            #     behavior. The runtime warning below points at this
+            #     assumption so degradation is visible.
+            #
+            # ENFORCEMENT GATE: even with the user-config requirement met, we
+            # reject --mode auto for grok. A write-capable role could still
+            # request reads that look harmless; defense-in-depth means
+            # write-capable workloads route to codex/agy/droid where the
+            # write-permission model is better understood.
+            if [[ "$MODE" == "auto" ]]; then
+                echo "Error: grok adapter does not support --mode auto (sandbox is partial; shell exec and writes outside project root are not blocked). Use --mode readonly or pick another CLI." >&2
+                exit 1
+            fi
+            # Runtime visibility: print a per-dispatch warning that documents
+            # the end-to-end safety dependency (dispatcher + user-config). The
+            # dispatcher's primary in-codebase caller (council Researcher)
+            # does not consume stderr, so the warning surfaces to the user
+            # and not into the council report. Suppressible once the user
+            # has confirmed their grok config disables "always approve":
+            # export BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1.
+            if [[ "${BUSDRIVER_GROK_QUIET_SANDBOX_WARN:-0}" != "1" ]]; then
+                echo "Warning: grok safety = --sandbox readonly (dispatcher) + 'always approve' DISABLED in grok user-config (verify via grok /permissions). If always-approve is enabled in your grok config, shell exec and writes outside project root are NOT blocked. Set BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 to suppress once verified." >&2
+            fi
+            _portable_timeout "$TIMEOUT" grok \
+                --prompt-file /dev/stdin \
+                --max-turns 150 \
+                --sandbox readonly \
+                < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;
     esac
 
     local duration=$(( $(date +%s) - start ))
+
+    # NOTE: stderr-noise filtering was removed 2026-05-26 after litmus review.
+    # The filter (originally catching grok's "Skipping MCP tool" /
+    # "qualified name contains" / claude-mem `CLAUDE_MEM_RUNTIME` runtime
+    # mismatch lines) risked hiding real tool-failure diagnostics that the
+    # caller might need to see — e.g., a Researcher run that failed to retrieve
+    # prior observations should leave the failure visible in the transcript,
+    # not be silently cleaned. Council Researcher transcripts may therefore
+    # contain interspersed ISO-timestamped ERROR lines from grok's stderr —
+    # accept the cosmetic cost in exchange for diagnostic fidelity. If the root
+    # cause (claude-mem MCP worker/server-beta runtime mismatch) is fixed
+    # upstream, the noise disappears at its source.
 
     # Clean ANSI
     if [[ -f "$outfile" ]]; then

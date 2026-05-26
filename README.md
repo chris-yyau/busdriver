@@ -98,7 +98,7 @@ By default, all features share the same CLI. For per-role control, create `.clau
     "blueprint-review.reviewer_2": ["codex", "droid"],
     "council.pragmatist": ["agy", "droid"],
     "council.critic": ["codex", "droid"],
-    "council.researcher": ["droid"]
+    "council.researcher": ["grok", "droid"]
   }
 }
 ```
@@ -116,7 +116,7 @@ Each route is an array — an ordered fallback chain (first element primary, lat
 | Blueprint review | Reviewer 2 | `blueprint-review.reviewer_2` | codex |
 | Council | Pragmatist | `council.pragmatist` | agy |
 | Council | Critic | `council.critic` | codex |
-| Council | Researcher | `council.researcher` | droid |
+| Council | Researcher | `council.researcher` | grok (fallback: droid) |
 
 Council architect, skeptic, and design-review arbiter are not configurable (they use Claude's Agent tool).
 
@@ -128,9 +128,10 @@ Run `node scripts/doctor.js` to see your effective CLI for each role.
 |-----|---------|---------|
 | **[Codex CLI](https://github.com/openai/codex)** | Code review gate (default), blueprint review, council | `npm install -g @openai/codex` |
 | **[Antigravity (agy) CLI](https://antigravity.google/docs/cli/)** | Blueprint review, council, code review | See https://antigravity.google/docs/cli/ |
-| **[Droid](https://droid.dev)** | Council Researcher (default), pragmatist/critic fallback, any configurable role | See https://droid.dev |
+| **Grok CLI (xAI Grok Build)** | Council Researcher (default) | See xAI Grok Build documentation for install |
+| **[Droid](https://droid.dev)** | Council Researcher fallback, pragmatist/critic fallback, any configurable role | See https://droid.dev |
 
-**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. Blueprint-review's *legacy defaults* (no `busdriver.json` present) try `agy` for reviewer_1 and `codex` for reviewer_2 first; if those are missing, the resolver falls through to Step 5 auto-detect (codex > agy > droid), so droid CAN serve as a final fallback even without a `busdriver.json`. The example config above adds explicit `droid` fallback in the route array — that's the faster path (avoids the auto-detect loop) and the recommended pattern. The council's *legacy defaults* DO chain explicitly to droid for pragmatist/critic (`agy → droid`, `codex → droid`); this trade-off is documented in `skills/council/SKILL.md` and can be opted out of with `["agy", "none"]` route arrays. Researcher always tries droid only. Architect (in-context Claude) always runs, and Skeptic (Agent tool) typically runs, so the council usually convenes with at least 2 voices (40% of full strength) even if all external CLIs are missing; if Skeptic is unavailable (rate limit/timeout), it can run with Architect alone. Core commit pipeline always works.
+**Without external CLIs:** The code review gate falls back to the built-in code-reviewer agent. Blueprint-review's *legacy defaults* (no `busdriver.json` present) try `agy` for reviewer_1 and `codex` for reviewer_2 first; if those are missing, the resolver falls through to Step 5 auto-detect (codex > agy > droid), so droid CAN serve as a final fallback even without a `busdriver.json`. The example config above adds explicit `droid` fallback in the route array — that's the faster path (avoids the auto-detect loop) and the recommended pattern. The council's *legacy defaults* DO chain explicitly to droid for pragmatist/critic (`agy → droid`, `codex → droid`); this trade-off is documented in `skills/council/SKILL.md` and can be opted out of with `["agy", "none"]` route arrays. Researcher tries grok first, then droid as fallback. Architect (in-context Claude) always runs, and Skeptic (Agent tool) typically runs, so the council usually convenes with at least 2 voices (40% of full strength) even if all external CLIs are missing; if Skeptic is unavailable (rate limit/timeout), it can run with Architect alone. Core commit pipeline always works.
 
 ## Install
 
@@ -309,7 +310,7 @@ Use these monthly to identify drift — scanners you keep bypassing (candidates 
 Busdriver learns from its mistakes:
 
 - **Instincts** — Observed patterns from sessions, promoted after human review
-- **Council** — 5-voice multi-perspective analysis (Architect + Skeptic + Pragmatist + Critic + Researcher; defaults to Agy + Codex + Droid)
+- **Council** — 5-voice multi-perspective analysis (Architect + Skeptic + Pragmatist + Critic + Researcher; defaults to Agy + Codex + Grok, with Droid as universal fallback)
 - **Lesson capture** — When review finds HIGH+ issues the plan missed, lessons are saved automatically
 - **Reflection** — Manual `/reflect` skill for capturing corrections and feedback
 

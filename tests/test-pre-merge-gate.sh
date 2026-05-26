@@ -9,6 +9,8 @@
 #   5. Pre-merge gate rejects stale markers (>2h)
 #   6. Post-PR-created hook appends pr-grind instruction
 #   7. Post-PR-created hook passes through non-PR commands
+#   8. _relevant_check_counts honors .github/required-checks.lock allowlist
+#      with ADVISORY_PATTERN fallback (R1-R7)
 #
 # Usage: bash tests/test-pre-merge-gate.sh
 # Exit: 0 if all pass, 1 if any fail.
@@ -678,6 +680,13 @@ echo "── required-checks allowlist ─────────────�
 # eval defines it in this shell. `source <(...)` would be cleaner but
 # fails silently on macOS's stock bash 3.2; eval works everywhere.
 HELPER_SRC=$(sed -n '/^_relevant_check_counts() {$/,/^}$/p' "$GATE_SCRIPT")
+# Guard: if the sed pattern stops matching (function renamed, brace re-indented),
+# eval'ing an empty string silently leaves the helper undefined and every R-test
+# below fails with opaque "got '' want X" diffs. Surface the real cause instead.
+if [ -z "$HELPER_SRC" ]; then
+    printf "  FATAL  could not extract _relevant_check_counts from %s\n" "$GATE_SCRIPT" >&2
+    exit 1
+fi
 # shellcheck disable=SC2034  # Referenced by _relevant_check_counts via eval'd body.
 ADVISORY_PATTERN="CodeScene"
 eval "$HELPER_SRC"
@@ -779,6 +788,43 @@ else
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$REPO_R6"
+
+# R7a. Whitespace-padded names in required[] still match. Lock files
+#      written by hand or pasted from CI logs can carry stray spaces;
+#      without normalization the allowlist silently misses the real
+#      failure → fail-open. (Regression test for the .strip() inside
+#      the python helper.)
+REPO_R7A=$(mktemp -d)
+mkdir -p "$REPO_R7A/.github"
+printf '%s' '{"required":[{"name":"  shellcheck  "}]}' > "$REPO_R7A/.github/required-checks.lock"
+OUT=$(printf 'shellcheck\tfail\t5s\thttps://x\n' | _relevant_check_counts "$REPO_R7A")
+TOTAL=$((TOTAL + 1))
+if [ "$OUT" = "1 0 required" ]; then
+    printf "  PASS  required[] names with padding strip-match\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  whitespace-padded name match (got '%s', want '1 0 required')\n" "$OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$REPO_R7A"
+
+# R7b. Status column parsing — a passing check whose URL contains "fail"
+#      (e.g. /actions/runs/.../fail-handler) must NOT be miscounted as
+#      failed. Pre-fix the helper substring-scanned the whole line.
+REPO_R7B=$(mktemp -d)
+mkdir -p "$REPO_R7B/.github"
+printf '%s' '{"required":[{"name":"shellcheck"}]}' > "$REPO_R7B/.github/required-checks.lock"
+URL_TRAP=$(printf 'shellcheck\tpass\t5s\thttps://github.com/owner/repo/actions/runs/12345/job/fail-handler\n')
+OUT=$(printf '%s' "$URL_TRAP" | _relevant_check_counts "$REPO_R7B")
+TOTAL=$((TOTAL + 1))
+if [ "$OUT" = "0 0 required" ]; then
+    printf "  PASS  status column parsing ignores 'fail' in URL column\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  URL substring false-positive (got '%s', want '0 0 required')\n" "$OUT"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$REPO_R7B"
 
 # R7. Lock has multi-word check name ("Actions security") → exact-match
 #     against first tab-separated column handles spaces correctly.

@@ -57,6 +57,12 @@ if os.path.isfile(lock):
         with open(lock) as f:
             d = json.load(f)
         names = [r.get("name", "") for r in d.get("required", []) if r.get("name")]
+        # Normalize whitespace — lock files written by hand or by upstream
+        # tooling can have stray padding; gh pr checks emits the name in
+        # the first tab-separated column with no leading/trailing space.
+        # Without normalization, " shellcheck" in required[] would silently
+        # miss the real shellcheck failure and let the merge through.
+        names = [n.strip() for n in names if n.strip()]
         if names:
             required = set(names)
     except Exception:
@@ -64,16 +70,23 @@ if os.path.isfile(lock):
 
 advisory_pat = re.compile(adv_pat_src, re.I)
 mode = "required" if required is not None else "all"
+
+def _status(line):
+    # gh pr checks emits TAB-separated columns: name, status, elapsed, link.
+    # Status-column parsing (not whole-line substring) is mandatory:
+    # `re.search("fail", whole_line)` matches the URL column too, so a
+    # passing check whose URL or name contains "fail" was being miscounted
+    # as a failure.
+    parts = line.split("\t")
+    return parts[1].strip().lower() if len(parts) > 1 else ""
+
 lines = [ln.rstrip("\n") for ln in sys.stdin if ln.strip()]
 if required is not None:
-    # Allowlist mode: keep only checks whose first tab-separated column
-    # (the check name as `gh pr checks` prints it) is in required[].
     kept = [ln for ln in lines if (ln.split("\t", 1)[0].strip() if ln else "") in required]
 else:
-    # Fallback: drop checks whose lines match ADVISORY_PATTERN.
     kept = [ln for ln in lines if not advisory_pat.search(ln)]
-failed = sum(1 for ln in kept if re.search(r"fail", ln, re.I))
-pending = sum(1 for ln in kept if "pending" in ln.lower())
+failed = sum(1 for ln in kept if _status(ln) in ("fail", "failure"))
+pending = sum(1 for ln in kept if _status(ln) in ("pending", "queued", "in_progress", "expected"))
 print(f"{failed} {pending} {mode}")
 ' "$repo_dir" "$ADVISORY_PATTERN"
 }
@@ -293,6 +306,13 @@ if [ -f "$MARKER_FILE" ]; then
             fi
             COUNTS=$(printf '%s\n' "$CHECKS_OUTPUT" | _relevant_check_counts "$REPO_DIR")
             read -r FAILED PENDING MODE <<<"$COUNTS"
+            # Fail-CLOSED: an empty/malformed helper output (python crash,
+            # missing fields) would leave MODE unset and let `${FAILED:-0}`
+            # default to 0 → gate passes silently. Block instead.
+            if [ -z "${MODE:-}" ] || [ -z "${FAILED:-}" ] || [ -z "${PENDING:-}" ]; then
+                block_emit "Pre-merge gate: CI-check parser produced unexpected output (got '$COUNTS'). Blocking as precaution (fail-closed)."
+                exit 0
+            fi
             if [ "$MODE" = "required" ]; then
                 CHECK_DESC="required CI checks (per .github/required-checks.lock)"
             else
@@ -333,8 +353,13 @@ if [ -n "$MERGE_PR_NUM" ] && command -v gh &>/dev/null; then
             : # CLI error — fall through to normal block
         else
             COUNTS=$(printf '%s\n' "$CHECKS_OUTPUT" | _relevant_check_counts "$REPO_DIR")
-            read -r FAILED PENDING _MODE <<<"$COUNTS"
-            if [ "${FAILED:-0}" -eq 0 ] && [ "${PENDING:-0}" -eq 0 ]; then
+            read -r FAILED PENDING MODE <<<"$COUNTS"
+            # Fail-CLOSED on empty/malformed helper output (see comment at
+            # the marker-path site). Bootstrap path additionally falls
+            # through to the normal block when in doubt.
+            if [ -z "${MODE:-}" ] || [ -z "${FAILED:-}" ] || [ -z "${PENDING:-}" ]; then
+                : # fall through to the BLOCK below
+            elif [ "${FAILED:-0}" -eq 0 ] && [ "${PENDING:-0}" -eq 0 ]; then
                 mkdir -p "$REPO_DIR/.claude"
                 printf '{"ts":"%s","event":"bootstrap-merge","gate":"pre-merge","pr":%s,"gate_files":%s}\n' \
                     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MERGE_PR_NUM" "$GATE_FILES_CHANGED" \

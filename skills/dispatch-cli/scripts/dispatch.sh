@@ -96,12 +96,13 @@ if [[ "$CLI" == "auto" ]]; then
     if _has_cli codex; then CLI="codex"
     elif _has_cli agy; then CLI="agy"
     elif _has_cli droid; then CLI="droid"
-    # grok is only auto-selected when MODE=readonly (the grok adapter rejects
-    # MODE=auto). Skip it during MODE=auto auto-selection so a grok-only host
-    # gets a clear "no supported CLI" error instead of being silently selected
-    # and then bailing at dispatch_one with the mode-gate error.
-    elif _has_cli grok && [[ "$MODE" != "auto" ]]; then CLI="grok"
-    else echo "Error: No supported CLI found for --mode $MODE (tried codex, agy, droid, grok; grok is readonly-only)." >&2; exit 1; fi
+    # grok is intentionally excluded from --cli auto. Its safety model
+    # (--sandbox readonly + user-config "always approve" disabled) is documented
+    # but not enforceable from code, so silently selecting grok via auto would
+    # extend its exposure to contexts whose threat model wasn't reviewed.
+    # Use --cli grok explicitly (or set BUSDRIVER_REVIEW_CLI=grok) to opt in.
+    # This mirrors the resolve-cli.sh auto-detect exclusion.
+    else echo "Error: No supported CLI found (tried codex, agy, droid). grok is excluded from auto-selection; use --cli grok to opt in explicitly." >&2; exit 1; fi
 elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "droid" && "$CLI" != "grok" && "$CLI" != "both" && "$CLI" != "all" ]]; then
     echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|droid|grok|both|all|auto." >&2; exit 1
 fi

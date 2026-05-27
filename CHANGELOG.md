@@ -1,3 +1,10 @@
+## [1.53.2](https://github.com/chris-yyau/busdriver/compare/v1.53.1...v1.53.2) (2026-05-27)
+
+
+### Bug Fixes
+
+* **ack-ledger:** add tier e for legacy commit-statuses api (coderabbit free-tier) ([#161](https://github.com/chris-yyau/busdriver/issues/161)) ([4a7cc8d](https://github.com/chris-yyau/busdriver/commit/4a7cc8d10280f8e9c65eb83da817e027d257a7c2)), closes [HI#confidence](https://github.com/HI/issues/confidence)
+
 ## [1.53.1](https://github.com/chris-yyau/busdriver/compare/v1.53.0...v1.53.1) (2026-05-27)
 
 

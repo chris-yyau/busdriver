@@ -481,6 +481,30 @@ _execute_codex() {
 
   _resolve_codex_companion
 
+  # Pre-buffer the prompt to a file so the companion path can read via
+  # --prompt-file instead of fd 0. The companion's stdin reader
+  # (lib/fs.mjs readStdinIfPiped → fs.readFileSync(0, ...)) throws
+  # "EAGAIN: resource temporarily unavailable, read" when fd 0 has
+  # O_NONBLOCK set — a stable condition under Claude Code's Bash tool that
+  # retry+backoff cannot clear (the fd flag does not change between
+  # attempts). --prompt-file reads via fs.readFileSync(absolutePath) and
+  # is unaffected. The direct codex CLI fallback further down still uses
+  # stdin; that path only fires when the companion plugin is uninstalled,
+  # and codex exec lacks an equivalent file-input flag at present.
+  local _prompt_file=""
+  if [[ "$_CODEX_COMPANION" != "none" ]] && command -v node &>/dev/null; then
+    _prompt_file=$(mktemp -t codex-prompt 2>/dev/null) || _prompt_file=$(mktemp 2>/dev/null) || _prompt_file=""
+    if [[ -z "$_prompt_file" || ! -f "$_prompt_file" ]]; then
+      echo "busdriver: failed to create temp file for codex prompt" >&2
+      return 1
+    fi
+    if ! printf '%s' "$prompt" > "$_prompt_file"; then
+      rm -f "$_prompt_file"
+      echo "busdriver: failed to write codex prompt to temp file" >&2
+      return 1
+    fi
+  fi
+
   local attempt=0
   local exit_code=0
   local output=""
@@ -503,13 +527,13 @@ _execute_codex() {
     fi
 
     if [[ "$_CODEX_COMPANION" != "none" ]] && command -v node &>/dev/null; then
-      # Use official plugin's app-server protocol (stable, no stdin hang).
-      # Pipe via stdin to avoid ARG_MAX limits on large diffs — the companion
-      # reads piped stdin when no positional prompt is provided.
-      # Omit --json to get raw review output (--json wraps in an envelope
-      # that breaks downstream extract_review_json.py parsing)
-      # ${effort_args[@]+...} guards against "unbound variable" when array is empty under set -u (macOS bash 3.2)
-      output=$(printf '%s' "$prompt" | _portable_timeout "$duration" node "$_CODEX_COMPANION" task ${effort_args[@]+"${effort_args[@]}"} 2>&1) || exit_code=$?
+      # Use official plugin's app-server protocol via --prompt-file — see the
+      # pre-loop comment for the EAGAIN background. Omit --json to get raw
+      # review output (--json wraps in an envelope that breaks downstream
+      # extract_review_json.py parsing).
+      # ${effort_args[@]+...} guards against "unbound variable" when array is
+      # empty under set -u (macOS bash 3.2).
+      output=$(_portable_timeout "$duration" node "$_CODEX_COMPANION" task --prompt-file "$_prompt_file" ${effort_args[@]+"${effort_args[@]}"} 2>&1) || exit_code=$?
     else
       # Fallback: direct CLI invocation
       local config_args=()
@@ -533,13 +557,15 @@ _execute_codex() {
     # AND on non-blocking I/O races (EAGAIN). Script bugs (unbound variable,
     # syntax error, command not found) should not be retried.
     #
-    # EAGAIN rationale: when multiple codex-companion sessions run in parallel,
-    # the inherited stdin fd can be in non-blocking mode, causing fs.readFileSync(0)
-    # inside the companion to throw "EAGAIN: resource temporarily unavailable, read"
-    # instead of blocking. EAGAIN literally means "try again later" — exactly the
-    # retry semantics we want. We match only the `EAGAIN` token (not the phrase
-    # "resource temporarily unavailable") to avoid false-positives on unrelated
-    # fork/thread exhaustion errors that share the same strerror text.
+    # EAGAIN history: the primary historical trigger was the codex-companion
+    # reading stdin via fs.readFileSync(0) under Claude Code's Bash tool,
+    # where fd 0 has O_NONBLOCK set. That path is now bypassed by writing the
+    # prompt to a temp file and passing --prompt-file (see pre-loop block).
+    # EAGAIN remains in the retry regex as defense-in-depth in case a future
+    # codex version or codepath regresses. We match only the `EAGAIN` token
+    # (not the phrase "resource temporarily unavailable") to avoid false-
+    # positives on unrelated fork/thread exhaustion errors that share the
+    # same strerror text.
     if printf '%s' "$output" | grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|5[0-9][0-9]|getaddrinfo'; then
       last_was_transient=1
       attempt=$((attempt + 1))
@@ -611,17 +637,20 @@ _execute_codex() {
       fi
 
       if [[ "$_droid_ok" -eq 1 ]]; then
+        [[ -n "$_prompt_file" ]] && rm -f "$_prompt_file"
         printf '%s' "$droid_out"
         return 0
       fi
       echo "⚠️  Droid escalation failed (exit $droid_exit, output_bytes=${#droid_out}) — falling back to built-in review" >&2
     fi
 
+    [[ -n "$_prompt_file" ]] && rm -f "$_prompt_file"
     echo "⚠️  Codex failed after ${attempts_run} attempt(s) — falling back to built-in review" >&2
     echo "BUILTIN_FALLBACK"
     return 3
   fi
 
+  [[ -n "$_prompt_file" ]] && rm -f "$_prompt_file"
   printf '%s' "$output"
   return "$exit_code"
 }

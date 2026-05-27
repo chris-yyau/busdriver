@@ -176,6 +176,22 @@ Grill-me is idempotent. Re-running it on a design that already has a Key Decisio
 
 If the design has changed since the last grill (hash mismatch detected in Pre-Flight Step 1), the policy is **deterministic** — declare a fresh grill and re-walk all branches. The user is informed but not asked to choose. Rationale: "only the new branches" would require section-coverage analysis to know which prior decisions still apply, which is too much machinery for this feature. If the user wants to override, they can either (a) say "grill it again from scratch" before Pre-Flight runs (Pre-Flight Step 4 honors this) or (b) manually edit the Key Decisions block to reflect what's still valid before re-invoking.
 
+## Classify Each Branch Before Grilling
+
+For each decision branch in the design tree, classify it first. Use this exact table (mirrors `skills/brainstorming/SKILL.md`'s "Exploring approaches — classify, then propose"; reversibility × confidence determines the route):
+
+| Case | Action |
+|---|---|
+| **Reversible implementation detail** (any confidence) | Do NOT add to grill queue. State your decision in the closing block's Rationale field. Reversibility absorbs confidence risk — cost-to-undo is low, so even a 30% confident pick is fine if documented. User can override if they object. |
+| **Product / risk-appetite decision** (any confidence) | Grill normally (Recommended-Answer-First Style below). This is what the user owns. |
+| **Low-reversibility branch** (schema / concurrency / security), **confidence <50%** | Invoke `busdriver:council` if available; otherwise propose a small spike. Do NOT force a blind pick. Resume grill with the verdict or spike result folded in. |
+| **Low-reversibility branch, confidence 50–70%** | Propose a small spike (read code, docs lookup) before grilling. Resume grill with findings folded in. |
+| **Low-reversibility branch, confidence ≥70%** | State your recommended default in the closing block's Rationale field with risk flags (data integrity, migration burden, security, etc.). Surface to the user as a single recommended pick (override-allowed), NOT as a multi-option grill question. |
+
+**Precedence for mixed-type branches:** A branch can match multiple rows (e.g., "which auth provider" is both a product preference AND a low-reversibility security decision). Resolve the technical-risk row FIRST (council/spike/recommend-default per its confidence band), THEN grill the user on the surviving product axis. The low-reversibility rows override the product row when schema/concurrency/security dimensions are present.
+
+Only branches that survive classification (the "Product / risk-appetite" row, OR the surviving product axis of a mixed-type branch) proceed to the question procedure below.
+
 ## Recommended-Answer-First Style
 
 For every question:

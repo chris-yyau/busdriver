@@ -31,7 +31,7 @@ You MUST create a task for each of these items and complete them in order:
    - **Step 1.5 (Beginner-mode load, conditional)** — at the start of brainstorming, before Step 2, check auto-memory for `user`-type knowledge-gap entries AND check the user's recent messages for trigger phrases ("I'm new", "explain like a beginner", "what does X mean", etc.). If either fires, load `skills/supplements/beginner-mode.md` and apply it through the rest of brainstorming AND any sub-skills it invokes (e.g. grill-me at Step 5.5). See the `## Beginner-Mode Loading` section below for the full activation protocol.
 2. **Offer visual companion** (if topic will involve visual questions) — this is its own message, not combined with a clarifying question. See the Visual Companion section below.
 3. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
-4. **Propose 2-3 approaches** — with trade-offs and your recommendation
+4. **Classify decisions, then propose approaches** — classify each decision (reversibility × confidence; see "Exploring approaches" below); decide reversible/high-confidence ones yourself, surface only user-facing picks as 2-3 options with trade-offs and your recommendation
 5. **Present design** — in sections scaled to their complexity, get user approval after each section
    - **Step 5.5 (Optional Grill, intensifier)** — after design is approved at Step 5 but before Step 6 writes the doc, evaluate signal triggers and offer the user a grill if any fire. See "Step 5.5: Optional Grill" section below.
 6. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`. **Do NOT commit yet** — commit happens at Step 8b after the hash is finalized. If a `<!-- GRILL-DECISIONS-BEGIN -->...<!-- GRILL-DECISIONS-END -->` block exists in the conversation, paste the **entire block** (including all four HTML comments — two boundary sentinels `<!-- GRILL-DECISIONS-BEGIN -->` and `<!-- GRILL-DECISIONS-END -->`, plus two metadata comments `<!-- design-hash: ... -->` and `<!-- grill-status: ... -->`) verbatim into the design doc as the "Key Decisions" section, following the block placement contract in `skills/grill-me/SKILL.md`'s Direct-on-disk Sub-case B (blank line before BEGIN, BEGIN on its own line, trailing newline after END). **Leave the `design-hash` line as `sha256:PENDING`** — hash finalization happens at Step 8b (after user review) so any post-paste edits don't leave the stored hash stale.
@@ -48,6 +48,7 @@ digraph brainstorming {
     "Visual questions ahead?" [shape=diamond];
     "Offer Visual Companion\n(own message, no other content)" [shape=box];
     "Ask clarifying questions" [shape=box];
+    "Classify decisions" [shape=box];
     "Propose 2-3 approaches" [shape=box];
     "Present design sections" [shape=box];
     "User approves design?" [shape=diamond];
@@ -62,7 +63,9 @@ digraph brainstorming {
     "Visual questions ahead?" -> "Offer Visual Companion\n(own message, no other content)" [label="yes"];
     "Visual questions ahead?" -> "Ask clarifying questions" [label="no"];
     "Offer Visual Companion\n(own message, no other content)" -> "Ask clarifying questions";
-    "Ask clarifying questions" -> "Propose 2-3 approaches";
+    "Ask clarifying questions" -> "Classify decisions";
+    "Classify decisions" -> "Propose 2-3 approaches" [label="user-facing"];
+    "Classify decisions" -> "Present design sections" [label="decided internally"];
     "Propose 2-3 approaches" -> "Present design sections";
     "Present design sections" -> "User approves design?";
     "User approves design?" -> "Present design sections" [label="no, revise"];
@@ -92,7 +95,25 @@ digraph brainstorming {
 - Only one question per message - if a topic needs more exploration, break it into multiple questions
 - Focus on understanding: purpose, constraints, success criteria
 
-**Exploring approaches:**
+**Exploring approaches — classify, then propose:**
+
+This phase has two steps. First classify each decision; then propose options *only* for the ones that survive as user-facing picks.
+
+**Step 1 — Classify each decision** (use this exact table; reversibility × confidence determines the route):
+
+| Case | Action |
+|---|---|
+| **Reversible implementation detail** (any confidence) | Decide yourself. State your pick in the proposal as "decided: X, because Y". Reversibility absorbs confidence risk — cost-to-undo is low, so even a 30% confident pick is fine if documented. Do NOT forward as a user-facing question. |
+| **Product / risk-appetite decision** (any confidence) | Surface to user as a recommendation-first pick. This is what the user owns. |
+| **Low-reversibility decision** (schema / concurrency / security), **confidence <50%** | Invoke `busdriver:council` if available; otherwise propose a small spike (read code, docs lookup). Do NOT force a blind pick. |
+| **Low-reversibility decision, confidence 50–70%** | Propose a small spike before deciding. |
+| **Low-reversibility decision, confidence ≥70%** | Recommend ONE default with rationale. Flag the risk dimensions (data integrity, migration burden, security, etc.) so the user can veto if their risk appetite differs. Do NOT enumerate raw options — recommend, then accept override. |
+
+**Precedence for mixed-type decisions:** A single decision can match multiple rows (e.g., "which auth provider" is both a product preference AND a low-reversibility security decision). Resolve the technical-risk row FIRST (council/spike/recommend-default per its confidence band), THEN surface the surviving product axis to the user. The low-reversibility rows override the product row when schema/concurrency/security dimensions are present.
+
+User's job: product intent + risk appetite. Your job: reversible technical details + default architecture patterns + recommended-default high-confidence picks on low-reversibility decisions.
+
+**Step 2 — Propose options for the surviving user-facing decisions:**
 
 - Propose 2-3 different approaches with trade-offs
 - Present options conversationally with your recommendation and reasoning

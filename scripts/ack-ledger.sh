@@ -169,10 +169,13 @@ if [ -n "$check_run_head" ] && [ "${check_run_head:0:8}" = "$HEAD_SHA" ]; then e
 # (status IDs are monotonically increasing). The id tiebreaker matters because
 # GitHub timestamps are second-resolution — two statuses posted in the same
 # second would otherwise rely on stable-sort input order, which `gh api
-# --paginate` does not guarantee. A bot mid-review (latest=`pending`) returns
-# empty here; downstream fall-through depends on the bot's /reviews history
-# (a statuses-only bot lands on the `none` path at the empty-commit_id check;
-# a bot with prior /reviews falls through to the downgrade block).
+# --paginate` does not guarantee. A bot whose latest state is `success` exits
+# here with HEAD-ack. A bot whose latest state is non-empty non-success
+# (`pending`/`failure`/`error`) exits here with `stale` (live signal must
+# gate the merge). Only when there's no matching status entry at all (the
+# bot has a mapped context but `last | .state` returns empty) does Tier E
+# fall through to the next checks; whether the script then lands on `none`
+# or `stale` depends on the bot's /reviews history.
 #
 # `.[]?` (with the safe-iteration operator) on the outer slurped array tolerates
 # pages whose top-level is null/missing (defensive against any future

@@ -36,7 +36,8 @@ ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}
 ALL_REVIEWS='[]'
 ALL_COMMENTS='{"comments":[]}'
 ALL_CHECK_RUNS='{"check_runs":[]}'
-export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA
+ALL_STATUSES='[]'
+export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
 return 0
 EOF
 

@@ -4,9 +4,9 @@ Common issues and solutions when using the litmus skill.
 
 ## General Issues
 
-### Issue: "stdin is not a terminal" error
+### Issue: "stdin is not a terminal" error or EAGAIN on fd 0
 
-**Solution:** Codex doesn't accept piped input. The skill automatically handles uncommitted changes, so no manual diff piping is needed.
+**Solution:** The skill passes the prompt via a temp file (`--prompt-file <path>`) rather than stdin. This sidesteps an EAGAIN race in the codex-companion's `fs.readFileSync(0, ...)` when fd 0 has `O_NONBLOCK` set (a stable condition under Claude Code's Bash tool, not cleared by retries). The skill handles staged changes automatically — no manual diff piping is needed.
 
 ### Issue: Codex CLI not found
 

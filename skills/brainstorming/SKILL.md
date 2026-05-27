@@ -31,7 +31,7 @@ You MUST create a task for each of these items and complete them in order:
    - **Step 1.5 (Beginner-mode load, conditional)** — at the start of brainstorming, before Step 2, check auto-memory for `user`-type knowledge-gap entries AND check the user's recent messages for trigger phrases ("I'm new", "explain like a beginner", "what does X mean", etc.). If either fires, load `skills/supplements/beginner-mode.md` and apply it through the rest of brainstorming AND any sub-skills it invokes (e.g. grill-me at Step 5.5). See the `## Beginner-Mode Loading` section below for the full activation protocol.
 2. **Offer visual companion** (if topic will involve visual questions) — this is its own message, not combined with a clarifying question. See the Visual Companion section below.
 3. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
-4. **Classify decisions, then propose approaches** — classify each decision (reversibility × confidence; see "Exploring approaches" below); decide reversible/high-confidence ones yourself, surface only user-facing picks as 2-3 options with trade-offs and your recommendation
+4. **Classify decisions, then propose approaches** — classify each decision (reversibility × confidence; see "Exploring approaches" below); decide reversible implementation details yourself (any confidence) and recommend defaults for high-confidence low-reversibility decisions; surface only user-facing picks as 2-3 options with trade-offs and your recommendation
 5. **Present design** — in sections scaled to their complexity, get user approval after each section
    - **Step 5.5 (Optional Grill, intensifier)** — after design is approved at Step 5 but before Step 6 writes the doc, evaluate signal triggers and offer the user a grill if any fire. See "Step 5.5: Optional Grill" section below.
 6. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`. **Do NOT commit yet** — commit happens at Step 8b after the hash is finalized. If a `<!-- GRILL-DECISIONS-BEGIN -->...<!-- GRILL-DECISIONS-END -->` block exists in the conversation, paste the **entire block** (including all four HTML comments — two boundary sentinels `<!-- GRILL-DECISIONS-BEGIN -->` and `<!-- GRILL-DECISIONS-END -->`, plus two metadata comments `<!-- design-hash: ... -->` and `<!-- grill-status: ... -->`) verbatim into the design doc as the "Key Decisions" section, following the block placement contract in `skills/grill-me/SKILL.md`'s Direct-on-disk Sub-case B (blank line before BEGIN, BEGIN on its own line, trailing newline after END). **Leave the `design-hash` line as `sha256:PENDING`** — hash finalization happens at Step 8b (after user review) so any post-paste edits don't leave the stored hash stale.
@@ -64,8 +64,8 @@ digraph brainstorming {
     "Visual questions ahead?" -> "Ask clarifying questions" [label="no"];
     "Offer Visual Companion\n(own message, no other content)" -> "Ask clarifying questions";
     "Ask clarifying questions" -> "Classify decisions";
-    "Classify decisions" -> "Propose 2-3 approaches" [label="user-facing"];
-    "Classify decisions" -> "Present design sections" [label="decided internally"];
+    "Classify decisions" -> "Propose 2-3 approaches" [label="user-facing picks remain"];
+    "Classify decisions" -> "Present design sections" [label="all decided internally"];
     "Propose 2-3 approaches" -> "Present design sections";
     "Present design sections" -> "User approves design?";
     "User approves design?" -> "Present design sections" [label="no, revise"];

@@ -25,13 +25,81 @@ block_emit() {
     fi
 }
 
-# ── Advisory checks ──────────────────────────────────────────────────
-# Non-blocking: feedback is still collected and addressed by pr-grind,
-# but pass/fail status does not block the merge gate.
+# ── Required-checks allowlist (with advisory-pattern fallback) ───────
+# When <repo>/.github/required-checks.lock exists and declares
+# `required[].name`, only failures of those checks block this gate.
+# This is the helmet drift-detector's source-of-truth registry and
+# matches what GitHub branch protection actually enforces — advisory
+# failures still get surfaced through pr-grind feedback but do not
+# block merge. Without this filter the gate was strictly stronger
+# than branch protection itself, blocking on checks GitHub would
+# happily ignore (e.g. commitlint failures on commits the squash
+# would discard).
+#
+# Fallback (no lock file or empty `required[]`): strip names matching
+# ADVISORY_PATTERN, then count FAIL/PENDING on the remainder. This
+# preserves pre-fix behavior for repos that haven't adopted the lock.
 ADVISORY_PATTERN="CodeScene"
 
-_filter_advisory() {
-    grep -ivE "$ADVISORY_PATTERN" || true
+_relevant_check_counts() {
+    # Reads `gh pr checks` text on stdin; emits "<failed> <pending> <mode>"
+    # where mode is "required" (allowlist applied) or "all" (fallback).
+    local repo_dir="$1"
+    # shellcheck disable=SC2016  # Single quotes intentional — python script body, no shell expansion.
+    python3 -c '
+import sys, os, json, re
+repo_dir = sys.argv[1]
+adv_pat_src = sys.argv[2]
+lock = os.path.join(repo_dir, ".github", "required-checks.lock")
+required = None
+if os.path.isfile(lock):
+    try:
+        with open(lock) as f:
+            d = json.load(f)
+        names = [r.get("name", "") for r in d.get("required", []) if r.get("name")]
+        # Normalize whitespace — lock files written by hand or by upstream
+        # tooling can have stray padding; gh pr checks emits the name in
+        # the first tab-separated column with no leading/trailing space.
+        # Without normalization, " shellcheck" in required[] would silently
+        # miss the real shellcheck failure and let the merge through.
+        names = [n.strip() for n in names if n.strip()]
+        if names:
+            required = set(names)
+    except Exception:
+        required = None
+
+advisory_pat = re.compile(adv_pat_src, re.I)
+mode = "required" if required is not None else "all"
+
+def _status(line):
+    # gh pr checks emits TAB-separated columns: name, status, elapsed, link.
+    # Status-column parsing (not whole-line substring) is mandatory:
+    # `re.search("fail", whole_line)` matches the URL column too, so a
+    # passing check whose URL or name contains "fail" was being miscounted
+    # as a failure.
+    parts = line.split("\t")
+    return parts[1].strip().lower() if len(parts) > 1 else ""
+
+lines = [ln.rstrip("\n") for ln in sys.stdin if ln.strip()]
+# Discard lines without a tab — gh error messages ("no checks reported on
+# this branch", auth errors that slipped past the pass|fail|pending
+# pre-filter) come through stdin without the tab-separated structure of a
+# real check row. Counting them in `kept` would let an error message look
+# like a passing check, inflating KEPT and re-opening the bootstrap
+# fail-open this commit is closing.
+lines = [ln for ln in lines if "\t" in ln]
+if required is not None:
+    kept = [ln for ln in lines if ln.split("\t", 1)[0].strip() in required]
+else:
+    kept = [ln for ln in lines if not advisory_pat.search(ln.split("\t", 1)[0])]
+failed = sum(1 for ln in kept if _status(ln) in ("fail", "failure"))
+pending = sum(1 for ln in kept if _status(ln) in ("pending", "queued", "in_progress", "expected"))
+# Emit kept count too — the bootstrap-merge path needs positive evidence
+# that checks actually ran (kept > 0), not just absence of failures.
+# Otherwise a PR with zero CI configured would satisfy "0 fail + 0 pending"
+# and the gate would silently allow a bootstrap merge with no validation.
+print(f"{failed} {pending} {mode} {len(kept)}")
+' "$repo_dir" "$ADVISORY_PATTERN"
 }
 
 # ── python3 pre-check ─────────────────────────────────────────────────
@@ -247,15 +315,36 @@ if [ -f "$MARKER_FILE" ]; then
                 block_emit "Pre-merge gate: unable to verify CI checks for PR #$PR_NUM (\`gh pr checks\` failed with exit $GH_EXIT). Resolve GitHub CLI/auth/network issues and retry."
                 exit 0
             fi
-            FILTERED=$(printf '%s\n' "$CHECKS_OUTPUT" | _filter_advisory)
-            FAILED=$(printf '%s\n' "$FILTERED" | grep -cE "fail" || true)
-            PENDING=$(printf '%s\n' "$FILTERED" | grep -c "pending" || true)
-            if [ "$FAILED" -gt 0 ]; then
-                block_emit "Pre-merge gate: pr-grind marker exists but $FAILED CI checks are FAILING. Fix failures before merging. Run \`/pr-grind\` to resume."
+            COUNTS=$(printf '%s\n' "$CHECKS_OUTPUT" | _relevant_check_counts "$REPO_DIR")
+            read -r FAILED PENDING MODE KEPT <<<"$COUNTS"
+            # Fail-CLOSED: an empty/malformed helper output (python crash,
+            # missing fields) would leave MODE unset and let `${FAILED:-0}`
+            # default to 0 → gate passes silently. Block instead.
+            if [[ -z "${MODE:-}" || -z "${FAILED:-}" || -z "${PENDING:-}" || -z "${KEPT:-}" ]]; then
+                block_emit "Pre-merge gate: CI-check parser produced unexpected output (got '$COUNTS'). Blocking as precaution (fail-closed)."
                 exit 0
             fi
-            if [ "$PENDING" -gt 0 ]; then
-                block_emit "Pre-merge gate: pr-grind marker exists but $PENDING checks still PENDING. Wait for all checks to complete before merging."
+            if [[ "$MODE" = "required" ]]; then
+                CHECK_DESC="required CI checks (per .github/required-checks.lock)"
+            else
+                CHECK_DESC="CI checks"
+            fi
+            # Mirror the bootstrap-path KEPT > 0 guard for ALL modes. "0 FAILED
+            # + 0 PENDING" alone is insufficient evidence — in required mode the
+            # lock could list checks that never ran (cancelled/skipped), in
+            # fallback mode every line could be filtered as advisory leaving no
+            # real signal. Either way, "no failures because nothing relevant
+            # appeared" is a fail-open we explicitly close here.
+            if [[ "${KEPT:-0}" -eq 0 ]]; then
+                block_emit "Pre-merge gate: pr-grind marker exists but 0 relevant $CHECK_DESC appeared in \`gh pr checks\` output — they may have been cancelled, skipped, or never triggered. Blocking as precaution (fail-closed)."
+                exit 0
+            fi
+            if [[ "${FAILED:-0}" -gt 0 ]]; then
+                block_emit "Pre-merge gate: pr-grind marker exists but $FAILED $CHECK_DESC are FAILING. Fix failures before merging. Run \`/pr-grind\` to resume."
+                exit 0
+            fi
+            if [[ "${PENDING:-0}" -gt 0 ]]; then
+                block_emit "Pre-merge gate: pr-grind marker exists but $PENDING $CHECK_DESC still PENDING. Wait for all checks to complete before merging."
                 exit 0
             fi
         fi
@@ -284,10 +373,17 @@ if [ -n "$MERGE_PR_NUM" ] && command -v gh &>/dev/null; then
         if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_OUTPUT" | grep -qE "pass|fail|pending"; then
             : # CLI error — fall through to normal block
         else
-            FILTERED=$(printf '%s\n' "$CHECKS_OUTPUT" | _filter_advisory)
-            FAILED=$(printf '%s\n' "$FILTERED" | grep -cE "fail" || true)
-            PENDING=$(printf '%s\n' "$FILTERED" | grep -c "pending" || true)
-            if [ "$FAILED" -eq 0 ] && [ "$PENDING" -eq 0 ]; then
+            COUNTS=$(printf '%s\n' "$CHECKS_OUTPUT" | _relevant_check_counts "$REPO_DIR")
+            read -r FAILED PENDING MODE KEPT <<<"$COUNTS"
+            # Fail-CLOSED on empty/malformed helper output (see comment at
+            # the marker-path site). Bootstrap path additionally requires
+            # KEPT > 0 — "no failures, no pendings" is necessary but not
+            # sufficient. Without positive evidence that any relevant check
+            # actually ran, a PR with zero CI could silently bootstrap-merge
+            # gate-script changes through this branch.
+            if [ -z "${MODE:-}" ] || [ -z "${FAILED:-}" ] || [ -z "${PENDING:-}" ] || [ -z "${KEPT:-}" ]; then
+                : # fall through to the BLOCK below
+            elif [[ "${FAILED:-0}" -eq 0 && "${PENDING:-0}" -eq 0 && "${KEPT:-0}" -gt 0 ]]; then
                 mkdir -p "$REPO_DIR/.claude"
                 printf '{"ts":"%s","event":"bootstrap-merge","gate":"pre-merge","pr":%s,"gate_files":%s}\n' \
                     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MERGE_PR_NUM" "$GATE_FILES_CHANGED" \

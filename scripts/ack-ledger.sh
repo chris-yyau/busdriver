@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/ack-ledger.sh — canonical per-bot ack computation for pr-grind.
 #
-# Single source of truth for the four-tier ack ledger algorithm. Replaces
+# Single source of truth for the five-tier ack ledger algorithm. Replaces
 # three previously inlined function definitions that had to be kept in
 # byte-for-byte lockstep:
 #   - agents/pr-grinder.md   Step 6.5      ack_for_bot()
@@ -164,22 +164,47 @@ if [ -n "$check_run_head" ] && [ "${check_run_head:0:8}" = "$HEAD_SHA" ]; then e
 # (the fetch URL is /commits/$HEAD_SHA/statuses), so a success state IS a
 # HEAD-ack — no separate SHA comparison needed.
 #
-# Latest-by-timestamp wins: bots emit a `pending` then `success` sequence
-# during review; `sort_by(.created_at) | last` picks the terminal state.
-# A bot mid-review (latest=`pending`) returns empty → falls through to the
-# downgrade block (likely emerging as `stale` until the success status lands).
+# Latest-wins selection: bots emit `pending → success` (or `pending → failure`)
+# during review. Primary sort key is `created_at`; secondary key is `id`
+# (status IDs are monotonically increasing). The id tiebreaker matters because
+# GitHub timestamps are second-resolution — two statuses posted in the same
+# second would otherwise rely on stable-sort input order, which `gh api
+# --paginate` does not guarantee. A bot mid-review (latest=`pending`) returns
+# empty here; downstream fall-through depends on the bot's /reviews history
+# (a statuses-only bot lands on the `none` path at the empty-commit_id check;
+# a bot with prior /reviews falls through to the downgrade block).
+#
+# `.[]?` (with the safe-iteration operator) on the outer slurped array tolerates
+# pages whose top-level is null/missing (defensive against any future
+# `gh api --paginate` shape drift); the inner `.[]?` skips empty/non-array
+# pages. The pattern matches Tier D's defensive style.
+#
+# Add bots that post via commit-statuses (no check-run registered) to the
+# case below. The default arm (`*) status_context=""`) plus the `-n` guard
+# makes any unmapped login a no-op — safe-by-default for additions.
 #
 # Empty input guard: in-flight upgrades where a caller hasn't been updated
 # to fetch ALL_STATUSES export an empty string. The `-n` check makes Tier E
 # a no-op in that case, preserving pre-Tier-E semantics for unupgraded callers.
+status_context=""
 case "$login" in
   coderabbitai) status_context="CodeRabbit" ;;
-  *) status_context="" ;;
 esac
-if [ -n "$status_context" ] && [ -n "$ALL_STATUSES" ]; then
+if [[ -n "$status_context" && -n "$ALL_STATUSES" ]]; then
   status_state=$(printf '%s' "$ALL_STATUSES" | jq -rs --arg ctx "$status_context" \
-    '[.[] | .[]? | select(.context == $ctx)] | sort_by(.created_at) | last | .state // empty' 2>/dev/null || echo "")
-  if [ "$status_state" = "success" ]; then echo "$HEAD_SHA"; exit 0; fi
+    '[.[]? | .[]? | select(.context == $ctx)] | sort_by(.created_at, .id) | last | .state // empty' 2>/dev/null || echo "")
+  if [[ "$status_state" == "success" ]]; then echo "${HEAD_SHA:0:8}"; exit 0; fi
+  # Non-success states (pending, failure, error) mean the bot HAS signaled
+  # something about HEAD — it's either mid-review or actively flagging.
+  # Without this branch, a statuses-only bot in pending/failure state would
+  # fall through to the empty-commit_id `none` early-return below and the
+  # gate would silently treat the live signal as "bot doesn't operate here".
+  # Emit `stale` so the merge gate correctly blocks. A bot WITH /reviews
+  # history that's also in pending state still falls through to the
+  # downgrade block (which handles the existing one-and-done semantics) —
+  # the explicit `-n` check on $status_state means an empty/missing status
+  # context for a different bot doesn't trip this branch.
+  if [[ -n "$status_state" ]]; then echo "stale"; exit 0; fi
 fi
 
 # No HEAD-ack signal anywhere. Did the bot post on this PR at all?

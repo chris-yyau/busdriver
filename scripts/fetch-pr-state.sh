@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# shellcheck disable=SC2034  # ALL_THREADS/ALL_REVIEWS/ALL_CHECK_RUNS exported to parent via `source`
+# shellcheck disable=SC2034  # ALL_THREADS/ALL_REVIEWS/ALL_CHECK_RUNS/ALL_STATUSES exported to parent via `source`
 # scripts/fetch-pr-state.sh — sourced helper; populates parent-shell env vars.
 #
 # CRITICAL: source this file (`. fetch-pr-state.sh <pr_number>`); do NOT execute
@@ -13,10 +13,11 @@
 #
 # Variables set in parent shell on success:
 #   FETCH_OK=1
-#   ALL_THREADS, ALL_REVIEWS, ALL_COMMENTS, ALL_CHECK_RUNS  (JSON blobs;
-#                                                            shapes match
-#                                                            scripts/ack-ledger.sh
-#                                                            jq selectors)
+#   ALL_THREADS, ALL_REVIEWS, ALL_COMMENTS, ALL_CHECK_RUNS, ALL_STATUSES
+#                                                          (JSON blobs;
+#                                                           shapes match
+#                                                           scripts/ack-ledger.sh
+#                                                           jq selectors)
 #   HEAD_SHA  (8-char prefix of HEAD)
 #
 # Shapes (mirrored from agents/pr-grinder.md Step 6.5 fetch block):
@@ -26,6 +27,10 @@
 #                    (object {comments: [{author:{login}, body}, ...]})
 #   ALL_CHECK_RUNS : output of `gh api --paginate repos/.../commits/{sha}/check-runs`
 #                    (stream of pages, each {check_runs: [{app:{slug}, conclusion, head_sha}, ...]})
+#   ALL_STATUSES   : output of `gh api --paginate repos/.../commits/{sha}/statuses`
+#                    (stream of pages, each an array of {context, state, created_at, ...});
+#                    consumed by Tier E for legacy commit-statuses bots (CodeRabbit
+#                    free-tier on private repos)
 #   ALL_THREADS    : output of `gh api graphql --paginate` reviewThreads query
 #                    (stream of pages, each {data:{...reviewThreads:{nodes:[...]}}})
 #
@@ -83,13 +88,15 @@ _fetch_pr_state() {
         HEAD_SHA="$_sha"
         _tmp=$(gh api --paginate "repos/$owner/$name/commits/$HEAD_SHA/check-runs" 2>/dev/null) \
             && ALL_CHECK_RUNS="$_tmp" || FETCH_OK=0
+        _tmp=$(gh api --paginate "repos/$owner/$name/commits/$HEAD_SHA/statuses" 2>/dev/null) \
+            && ALL_STATUSES="$_tmp" || FETCH_OK=0
     else
         FETCH_OK=0  # gh pr view --json headRefOid failed or returned empty
     fi
 
     # Export so child processes (e.g. scripts/ack-ledger.sh run as bash child)
     # can read these without the caller needing a separate export step.
-    export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA
+    export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
 
     return 0
 }

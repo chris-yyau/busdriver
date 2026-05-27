@@ -1,3 +1,10 @@
+## [1.51.1](https://github.com/chris-yyau/busdriver/compare/v1.51.0...v1.51.1) (2026-05-27)
+
+
+### Bug Fixes
+
+* **pre-merge-gate:** only block on failures of required checks ([#155](https://github.com/chris-yyau/busdriver/issues/155)) ([19ff9e2](https://github.com/chris-yyau/busdriver/commit/19ff9e26ceae60a321a159541e5712107196210a)), closes [#154](https://github.com/chris-yyau/busdriver/issues/154)
+
 # [1.51.0](https://github.com/chris-yyau/busdriver/compare/v1.50.0...v1.51.0) (2026-05-26)
 
 

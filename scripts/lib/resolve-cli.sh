@@ -457,8 +457,15 @@ _resolve_codex_companion() {
 _execute_codex() {
   local prompt="$1"
   local duration="${2:-1200}"
-  local max_retries="${LITMUS_CODEX_RETRIES:-4}"
-  local retry_delay="${LITMUS_CODEX_RETRY_DELAY:-5}"
+  # Defaults sized for codex rate-limit windows. Backoff sequence at the
+  # defaults below is 30, 60, 120, 240, 480 seconds — ~15.5 min total wait
+  # before exhausting and escalating to droid. From retry 2 onward (t≥90s),
+  # the sequence clears OpenAI's per-minute (60s) window; by retry 4 (t≥450s)
+  # it also clears the per-5min (300s) window. Sustained outages (>15 min)
+  # still fall through to droid as the external-voice safety net.
+  # Override via env vars for faster bail or longer patience.
+  local max_retries="${LITMUS_CODEX_RETRIES:-5}"
+  local retry_delay="${LITMUS_CODEX_RETRY_DELAY:-30}"
   local high_from="${LITMUS_CODEX_HIGH_FROM:-3}"  # switch to high reasoning from this attempt
 
   # Validate env vars are non-negative integers

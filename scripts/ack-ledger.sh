@@ -12,12 +12,18 @@
 #
 # Caller responsibilities (BEFORE invoking):
 #   1. Compute HEAD_SHA via `git rev-parse HEAD | cut -c1-8`.
-#   2. Set FETCH_OK=1, then perform the four gh-API fetches that each
+#   2. Set FETCH_OK=1, then perform the five gh-API fetches that each
 #      tag FETCH_OK=0 on failure (ALL_THREADS via graphql, ALL_REVIEWS,
-#      ALL_COMMENTS, ALL_CHECK_RUNS). The fetch block itself stays in
-#      the markdown call sites — only the per-bot algorithm lives here.
-#   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA`
-#      so this subprocess inherits them.
+#      ALL_COMMENTS, ALL_CHECK_RUNS, ALL_STATUSES). The fetch block itself
+#      stays in the markdown call sites — only the per-bot algorithm lives
+#      here. ALL_STATUSES is the legacy commit-statuses API consumed by
+#      Tier E (CodeRabbit free-tier on private repos).
+#   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA`
+#      so this subprocess inherits them. A caller that hasn't been upgraded
+#      to fetch ALL_STATUSES will export empty for that var — Tier E sees
+#      the empty input, skips silently, and the script falls through to
+#      pre-Tier-E semantics. Backward-compat is additive (same pattern as
+#      RESULT_ISSUES_SPAWNED on the worker contract).
 #   4. Pass the bot login as $1.
 #
 # Output: exactly one of <8-char-sha> | none | stale on stdout.
@@ -148,6 +154,33 @@ if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then echo "$body_sha"; e
 check_run_head=$(printf '%s' "$ALL_CHECK_RUNS" | jq -rs --arg login "$login" \
   '[.[].check_runs[] | select(.app.slug == $login) | select(.conclusion == "success")] | last | .head_sha // empty' 2>/dev/null || echo "")
 if [ -n "$check_run_head" ] && [ "${check_run_head:0:8}" = "$HEAD_SHA" ]; then echo "${check_run_head:0:8}"; exit 0; fi
+
+# (E) /commits/{sha}/statuses: bots using the legacy commit-statuses API.
+# CodeRabbit free-tier on private repos posts here instead of registering a
+# check-run, so Tier D's app.slug match misses them entirely (the previous
+# failure mode that forced admin-merge on PR #160). The login → status-context
+# mapping is explicit because context strings are vendor-defined and don't
+# follow a derivable slug convention. Statuses are inherently for HEAD_SHA
+# (the fetch URL is /commits/$HEAD_SHA/statuses), so a success state IS a
+# HEAD-ack — no separate SHA comparison needed.
+#
+# Latest-by-timestamp wins: bots emit a `pending` then `success` sequence
+# during review; `sort_by(.created_at) | last` picks the terminal state.
+# A bot mid-review (latest=`pending`) returns empty → falls through to the
+# downgrade block (likely emerging as `stale` until the success status lands).
+#
+# Empty input guard: in-flight upgrades where a caller hasn't been updated
+# to fetch ALL_STATUSES export an empty string. The `-n` check makes Tier E
+# a no-op in that case, preserving pre-Tier-E semantics for unupgraded callers.
+case "$login" in
+  coderabbitai) status_context="CodeRabbit" ;;
+  *) status_context="" ;;
+esac
+if [ -n "$status_context" ] && [ -n "$ALL_STATUSES" ]; then
+  status_state=$(printf '%s' "$ALL_STATUSES" | jq -rs --arg ctx "$status_context" \
+    '[.[] | .[]? | select(.context == $ctx)] | sort_by(.created_at) | last | .state // empty' 2>/dev/null || echo "")
+  if [ "$status_state" = "success" ]; then echo "$HEAD_SHA"; exit 0; fi
+fi
 
 # No HEAD-ack signal anywhere. Did the bot post on this PR at all?
 # If never (no /reviews entry, no body SHA reference) → bot doesn't operate here → none.

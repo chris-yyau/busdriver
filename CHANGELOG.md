@@ -1,3 +1,10 @@
+# [1.53.0](https://github.com/chris-yyau/busdriver/compare/v1.52.0...v1.53.0) (2026-05-27)
+
+
+### Features
+
+* **grill-me:** keyword-triggered re-ask of self-decided reversible picks ([#158](https://github.com/chris-yyau/busdriver/issues/158)) ([55465d2](https://github.com/chris-yyau/busdriver/commit/55465d2a17d36bb88516d9a4ae7b49bb1bc0be4a)), closes [#157](https://github.com/chris-yyau/busdriver/issues/157)
+
 # [1.52.0](https://github.com/chris-yyau/busdriver/compare/v1.51.1...v1.52.0) (2026-05-27)
 
 

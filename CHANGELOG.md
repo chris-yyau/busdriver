@@ -1,3 +1,10 @@
+## [1.53.1](https://github.com/chris-yyau/busdriver/compare/v1.53.0...v1.53.1) (2026-05-27)
+
+
+### Bug Fixes
+
+* **litmus:** bump codex retry defaults to absorb rate-limit windows ([#160](https://github.com/chris-yyau/busdriver/issues/160)) ([6c2b9f0](https://github.com/chris-yyau/busdriver/commit/6c2b9f0d09cb3740a5dfd5036f36a4d6991ff500))
+
 # [1.53.0](https://github.com/chris-yyau/busdriver/compare/v1.52.0...v1.53.0) (2026-05-27)
 
 

@@ -1,3 +1,10 @@
+# [1.52.0](https://github.com/chris-yyau/busdriver/compare/v1.51.1...v1.52.0) (2026-05-27)
+
+
+### Features
+
+* **spec-protocol:** classify-before-asking in brainstorming + grill-me ([#156](https://github.com/chris-yyau/busdriver/issues/156)) ([2a3a30e](https://github.com/chris-yyau/busdriver/commit/2a3a30e3567c06c58f8c6225eab9a42c886c1836))
+
 ## [1.51.1](https://github.com/chris-yyau/busdriver/compare/v1.51.0...v1.51.1) (2026-05-27)
 
 

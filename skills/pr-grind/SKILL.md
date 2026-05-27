@@ -929,17 +929,23 @@ ALL_THREADS=$(gh api graphql --paginate -f query='
 ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) || FETCH_OK=0
 ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || FETCH_OK=0
 ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH_OK=0
-# Source 5: check-runs on HEAD — bots like CodeRabbit (free plan) emit a
-# check-run instead of a /reviews entry; tier D in scripts/ack-ledger.sh
-# treats a passing check_run whose head_sha == HEAD as a HEAD-ack.
+# Source 5: check-runs on HEAD — bots like Cubic emit a check-run instead of
+# a /reviews entry; tier D in scripts/ack-ledger.sh treats a passing check_run
+# whose head_sha == HEAD as a HEAD-ack. (CodeRabbit uses a separate Source 6
+# below — its private-repo signal lives in the legacy commit-statuses API.)
 ALL_CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
+# Source 6: commit statuses on HEAD — CodeRabbit on private repos uses the
+# legacy commit-statuses API (no check-run registered). Tier E in
+# scripts/ack-ledger.sh maps the bot login to a context string and treats a
+# latest-by-timestamp `state=success` as a HEAD-ack.
+ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses" 2>/dev/null) || FETCH_OK=0
 
 # Per-bot ack — algorithm lives in scripts/ack-ledger.sh (single source of
 # truth for this site, the worker's Step 6.5 in agents/pr-grinder.md, and the
 # dispatcher's Completion site below). The script reads FETCH_OK / ALL_THREADS /
-# ALL_REVIEWS / ALL_COMMENTS / ALL_CHECK_RUNS / HEAD_SHA from env and the bot
-# login from $1.
-export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA
+# ALL_REVIEWS / ALL_COMMENTS / ALL_CHECK_RUNS / ALL_STATUSES / HEAD_SHA from
+# env and the bot login from $1.
+export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
 ROUND_ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),copilot-pull-request-reviewer=$(bash "$ACK_SCRIPT" copilot-pull-request-reviewer 2>/dev/null || echo stale)"
 echo "Ack ledger: $ROUND_ACKS"
@@ -1052,11 +1058,11 @@ PRIOR_ATTEMPTS:
 4. No unresolved actionable comments from any source
 5. No new comments arrived after your last push (wait for the full cycle)
 6. Advisory check issues either fixed or noted as beyond PR scope
-7. **Reviewer ack ledger**: every registered bot (Greptile, Cubic, CodeRabbit, Copilot) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all three are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 1, 2, and 3.)
+7. **Reviewer ack ledger**: every registered bot (Greptile, Cubic, CodeRabbit, Copilot) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot only posted a non-actionable PR-overview summary on an older commit" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all four are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 1, 2, and 3. Note: Tier E (commit-statuses API) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.)
 
 **Re-query the ack ledger fresh (REQUIRED — defense in depth against late posts between subagent return and merge time):**
 
-The dispatcher must re-run the same `scripts/ack-ledger.sh` lookup the worker used in Step 6.5, against all live ack-ledger sources (review threads, `/reviews`, issue comments, and check-runs), with HEAD recomputed against the current branch state. Just re-parsing `$RESULT_REVIEWER_ACKS` would only validate the worker's snapshot — it can't catch a bot that finished re-reviewing in the seconds between subagent return and merge.
+The dispatcher must re-run the same `scripts/ack-ledger.sh` lookup the worker used in Step 6.5, against all live ack-ledger sources (review threads, `/reviews`, issue comments, check-runs, and commit statuses), with HEAD recomputed against the current branch state. Just re-parsing `$RESULT_REVIEWER_ACKS` would only validate the worker's snapshot — it can't catch a bot that finished re-reviewing in the seconds between subagent return and merge.
 
 The `<PR_NUMBER>`, `<owner>`, `<repo>` placeholders below follow the same template-substitution convention as `<PR_NUMBER>` elsewhere in this Completion section — Claude substitutes the literal owner / repo / PR-number values at run time before executing the bash.
 
@@ -1087,12 +1093,17 @@ ALL_THREADS=$(gh api graphql --paginate -f query='
 ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || FETCH_OK=0
 ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH_OK=0
 # Source 5: check-runs on HEAD — same as worker/Step 6.5 fetch above.
+# (Despite "same four sources" wording elsewhere — that count refers to
+# findings sources; ack-ledger reads six sources: 1-4 above plus check-runs
+# and commit statuses.)
 ALL_CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
+# Source 6: commit statuses on HEAD — same as worker/Step 6.5 fetch above.
+ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses" 2>/dev/null) || FETCH_OK=0
 
 # Per-bot ack — same single-sourced algorithm as the worker's Step 6.5 and
 # the inline ledger block in Step 6.5 above. All three sites invoke
 # scripts/ack-ledger.sh; algorithm edits live in that one file.
-export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA
+export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
 FRESH_ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),copilot-pull-request-reviewer=$(bash "$ACK_SCRIPT" copilot-pull-request-reviewer 2>/dev/null || echo stale)"
 STALE_BOTS=$(echo "$FRESH_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')

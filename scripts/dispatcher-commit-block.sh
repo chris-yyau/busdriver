@@ -141,7 +141,7 @@ case "$RESULT_STATUS" in
                 || [[ "${FETCH_OK:-0}" != "1" ]]; then
                 emit_bail "env" "wait-round: post-push GitHub-state fetch failed; cannot refresh acks"
             fi
-            export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA
+            export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
             wait_entries=()
             for bot in "${REGISTERED_ACK_BOTS[@]}"; do
                 ack=$(bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")
@@ -477,7 +477,7 @@ fi
 
 reviewer_ack_entries=()
 if [ "$_fetch_ok" = "1" ]; then
-    export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA
+    export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
     for bot in "${REGISTERED_ACK_BOTS[@]}"; do
         ack=$(bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")
         reviewer_ack_entries+=("${bot}=${ack}")

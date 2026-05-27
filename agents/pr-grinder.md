@@ -482,15 +482,20 @@ ALL_COMMENTS=$(gh pr view "$PR_NUMBER" --comments --json comments 2>/dev/null) |
 # matches `check_runs[].app.slug == $login` and treats a passing check_run
 # whose head_sha == HEAD as a HEAD-ack.
 ALL_CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
+# Source 6: commit statuses on HEAD — bots like CodeRabbit on private repos
+# use the legacy commit-statuses API (no check-run registered). Tier E in
+# scripts/ack-ledger.sh maps the bot login to a context string and treats a
+# latest-by-timestamp `state=success` as a HEAD-ack.
+ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses" 2>/dev/null) || FETCH_OK=0
 
 # Per-bot ack — emits one of: <short-sha> | none | stale via the canonical
 # implementation at scripts/ack-ledger.sh. The script reads the fetched JSON
 # blobs from env (FETCH_OK, ALL_THREADS, ALL_REVIEWS, ALL_COMMENTS,
-# ALL_CHECK_RUNS, HEAD_SHA) and the bot login from $1. Algorithm edits
-# live in that file; this site and the two ledger sites in
+# ALL_CHECK_RUNS, ALL_STATUSES, HEAD_SHA) and the bot login from $1. Algorithm
+# edits live in that file; this site and the two ledger sites in
 # skills/pr-grind/SKILL.md (Step 6.5 inline block, Completion re-query
 # block) all invoke it identically.
-export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA
+export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
 ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),copilot-pull-request-reviewer=$(bash "$ACK_SCRIPT" copilot-pull-request-reviewer 2>/dev/null || echo stale)"
 echo "Ack ledger: $ACKS"

@@ -1,3 +1,10 @@
+## [1.53.3](https://github.com/chris-yyau/busdriver/compare/v1.53.2...v1.53.3) (2026-05-28)
+
+
+### Bug Fixes
+
+* **litmus:** bypass codex-companion stdin EAGAIN via --prompt-file ([#162](https://github.com/chris-yyau/busdriver/issues/162)) ([2484aa6](https://github.com/chris-yyau/busdriver/commit/2484aa63703b2b373591a2c677024b3c2bca7c3a))
+
 ## [1.53.2](https://github.com/chris-yyau/busdriver/compare/v1.53.1...v1.53.2) (2026-05-27)
 
 

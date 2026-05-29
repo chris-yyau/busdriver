@@ -141,6 +141,7 @@ Rules:
 - Confidence 0-100: 0=guess, 50=plausible, 80=likely real, 100=certain
 - Do NOT report issues already caught by linters/type checkers
 - Maximum 5 issues per agent
+- Severity calibration: CRITICAL/HIGH are reserved for correctness, security, data-loss, or interface-breaking risks. Documentation gaps, missing/weak docstrings or comments, naming and style nits, and "function is long but correct" observations MUST be rated MEDIUM at most — they are advisory and never block a PR. Do not inflate a cosmetic finding to CRITICAL/HIGH because confidence is high; severity reflects *impact*, not certainty.
 ```
 
 **Agent 6 (Docs-consistency) additional instructions:**
@@ -159,7 +160,8 @@ After all 6 agents return:
 1. **Collect** all findings into one list
 2. **Deduplicate** — same file + same line + similar description = keep highest confidence
 3. **Filter** — only surface findings with confidence ≥ 80
-4. **Classify**:
+4. **Normalize severity (backstop):** before classifying, downgrade any finding whose substance is purely documentation/comments, naming or style, or function length to **MEDIUM**, regardless of the rating the agent assigned. These categories are advisory and never block. This catches an agent that over-rated a cosmetic issue as CRITICAL/HIGH.
+5. **Classify**:
    - CRITICAL/HIGH at 80+ confidence → **FAIL** (do not write marker)
    - MEDIUM/LOW at 80+ confidence → **advisory** (show but don't block)
    - Below 80 confidence → **suppress** (don't show)

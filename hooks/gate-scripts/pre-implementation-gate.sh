@@ -115,9 +115,22 @@ MARKER_ACTION="${MARKER_CHECK%%|*}"
 MARKER_TARGET="${MARKER_CHECK#*|}"
 
 if [ "$MARKER_ACTION" = "BLOCK_MARKER" ]; then
+    # Breadcrumb back to the legitimate writer. A Claude that went off-script
+    # (direct redirect instead of the trusted wrapper) lands here; without a
+    # pointer to the real command it tends to reach for the skip file instead.
+    WRITER_HINT=""
+    case "$MARKER_TARGET" in
+        pr-review-passed.local)
+            WRITER_HINT="
+To write this marker correctly: finish the PR deep review, then run the trusted wrapper (it computes the diff hash and writes the marker — direct writes stay blocked by design):
+  bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker" ;;
+        litmus-passed.local)
+            WRITER_HINT="
+This marker is written automatically when the /litmus commit review passes — re-run the review loop to completion instead of writing it by hand." ;;
+    esac
     block_emit "BLOCKED: Cannot write to gate marker file ($MARKER_TARGET) directly.
 Gate markers are written by review infrastructure after a genuine review pass.
-Writing them manually forges compliance. Run /litmus or /blueprint-review instead.
+Writing them manually forges compliance. Run /litmus or /blueprint-review instead.${WRITER_HINT}
 If you need to skip review, ask the user to run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/.claude/skip-litmus.local"
     exit 0
 fi

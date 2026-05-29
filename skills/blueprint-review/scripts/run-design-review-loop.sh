@@ -46,6 +46,39 @@ millis() {
   fi
 }
 
+# Blueprint runtime droid fallback: rescue a failed reviewer slot once via droid.
+# Blueprint caps droid at ONE voice (all 3 reviewers share one prompt, so two
+# droids would be near-duplicate signal). On a valid PASS/FAIL verdict, writes
+# droid's extracted JSON with droid attribution + the round's freshness stamp.
+# run_id is injected HERE: the freshness loop only fills a MISSING run_id and
+# would otherwise treat a droid-supplied run_id as STALE and discard the rescue.
+# Returns 0 on success (caller then stops — one droid voice).
+_bp_droid_rescue() {
+  local slot="$1" out="$2" raw droid_exit=0
+  raw=$(get_review_file "${slot}-droid-raw.txt")
+  log_warning "  ${slot} failed at runtime → retrying once via droid"
+  execute_review "droid" "$FULL_PROMPT" > "$raw" 2>&1 || droid_exit=$?
+  if [[ "$droid_exit" -ne 0 ]]; then
+    log_warning "  droid rescue ${slot}: exit $droid_exit — keeping error entry"; return 1
+  fi
+  if ! python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$raw" > "${out}.pending" 2>/dev/null; then
+    rm -f "${out}.pending"; log_warning "  droid rescue ${slot}: invalid JSON — keeping error entry"; return 1
+  fi
+  if ! jq -e '(.status=="PASS" or .status=="FAIL") and (.issues|type=="array")' "${out}.pending" >/dev/null 2>&1; then
+    rm -f "${out}.pending"; log_warning "  droid rescue ${slot}: no usable verdict — keeping error entry"; return 1
+  fi
+  if jq --arg from "$slot" --arg rid "$RUN_ID" --argjson iter "${CURRENT_ITERATION:-1}" --arg hash "$SPEC_HASH" \
+       '.reviewer_id="droid" | .reviewer="droid" | (.issues = ((.issues // []) | map(.reviewer="droid")))
+        | .metadata.runtime_escalated_from=$from | .metadata.run_id=$rid
+        | .metadata.iteration=$iter | .metadata.spec_hash=$hash' \
+       "${out}.pending" > "${out}.tagged" 2>/dev/null; then
+    mv "${out}.tagged" "$out"; rm -f "${out}.pending"
+    log_info "  ${slot}→droid rescue succeeded"; return 0
+  fi
+  rm -f "${out}.pending" "${out}.tagged"
+  log_warning "  droid rescue ${slot}: retag failed — keeping error entry"; return 1
+}
+
 # Generate a short run ID for artifact isolation
 generate_run_id() {
   local input
@@ -331,6 +364,12 @@ $DESIGN_CONTENT
 
   REVIEW_START=$(millis)
 
+  # Blueprint caps droid at one voice, so disable codex's internal _execute_codex
+  # droid fallback during Phase 1 — the single post-run rescue below owns the one
+  # droid slot (codex could otherwise become a hidden second droid). Codex's own
+  # transient retries still run. Covers codex in ANY reviewer slot.
+  export LITMUS_CODEX_DROID_FALLBACK_DISABLED=1
+
   # Run Agy (reviewer 1) in background
   (
     if [[ "$AGY_AVAILABLE" == "true" ]]; then
@@ -513,6 +552,33 @@ with open(pending, "w") as f:
   REVIEW_END=$(millis)
   REVIEW_DURATION=$((REVIEW_END - REVIEW_START))
   log_info "  Both reviews completed in ${REVIEW_DURATION}ms (parallel)"
+
+  # ── Runtime droid fallback (capped at one voice) ─────────────────
+  # All 3 reviewers share one prompt, so two droids = duplicate signal. Escalate
+  # the FIRST failed reviewer (status not PASS/FAIL) to droid and STOP. Single
+  # sequential process → no lock needed. Runs BEFORE the dup-copy so a rescued
+  # reviewer_1 propagates to reviewer_2's path. Skipped entirely if droid is
+  # ALREADY a voice via a resolve-time availability fallback in any slot —
+  # otherwise a runtime rescue would produce a second droid-authored file.
+  if is_cli_available droid \
+     && [[ "$REVIEWER_1_CLI" != "droid" && "$REVIEWER_2_CLI" != "droid" && "$REVIEWER_3_CLI" != "droid" ]]; then
+    for _slot in agy codex grok; do
+      case "$_slot" in
+        agy)   _so="$AGY_OUTPUT_FILE";   _av="$AGY_AVAILABLE" ;;
+        codex) _so="$CODEX_OUTPUT_FILE"; _av="$CODEX_AVAILABLE" ;;
+        grok)  _so="$GROK_OUTPUT_FILE";  _av="$GROK_AVAILABLE" ;;
+      esac
+      [[ "$_av" == "true" ]] || continue
+      _st=$(jq -r '.status // "MISSING"' "$_so" 2>/dev/null || echo MISSING)
+      [[ "$_st" == "PASS" || "$_st" == "FAIL" ]] && continue   # ran fine — not a runtime failure
+      # First failed reviewer only: ONE droid attempt, then stop regardless of
+      # outcome. A failed/slow droid must not trigger more long rescue waits
+      # (execute_review's timeout is 1200s) — and the cap is one droid voice.
+      # shellcheck disable=SC2310  # rescue handles its own errors; || true ignores its rc
+      _bp_droid_rescue "$_slot" "$_so" || true
+      break
+    done
+  fi
 
   # Duplicate mode: copy single reviewer's output to both paths
   if [[ "$DUPLICATE_MODE" == "true" ]]; then

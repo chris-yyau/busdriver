@@ -306,6 +306,42 @@ dispatch_one() {
                 < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;
     esac
 
+    # ── Runtime droid fallback (per-voice, single-CLI dispatch only) ──
+    # If this voice's CLI failed (timeout 124 or error) and droid is installed,
+    # retry once via droid. Council voices fall back INDEPENDENTLY — distinct
+    # role prompts → distinct perspectives, so no cross-voice cap (unlike
+    # blueprint). SKIPPED for --cli all/both, which COMPARE CLIs on one prompt:
+    # a failure there is signal, and two droids would duplicate the comparison.
+    # `type` guard: a missing resolve-cli.sh (fallback mode) skips escalation.
+    local escalated=0
+    if [[ "$CLI" != "all" && "$CLI" != "both" ]] \
+       && type should_escalate_to_droid &>/dev/null \
+       && should_escalate_to_droid "$name" "$exit_code" "$outfile"; then
+        echo "⟳ ${name} failed (exit ${exit_code}) — falling back to droid (read-only)" >&2
+        # Bare `droid exec` (read-only — Create/Edit blocked) via stdin PIPE, the
+        # same posture as the failed read-only primaries: NO permission widening.
+        # Pipe (not fd0-redirect) is required for bare droid to read its prompt
+        # without bailing — matches execute_review's proven pattern.
+        local _esc_exit=0
+        printf '%s' "$PROMPT" | _portable_timeout "$TIMEOUT" droid exec > "${outfile}.droid" 2>&1 || _esc_exit=$?
+        if [[ "$_esc_exit" -eq 0 && -s "${outfile}.droid" ]]; then
+            {
+                echo "[busdriver: ${name} failed at runtime (exit ${exit_code}); response below is from droid (read-only runtime fallback)]"
+                echo ""
+                cat "${outfile}.droid"
+            } > "$outfile"
+            rm -f "${outfile}.droid"
+            exit_code=0
+            escalated=1
+        else
+            rm -f "${outfile}.droid"
+            # If the primary only "passed" (exit 0) by producing EMPTY output and
+            # the rescue also failed, mark failure now — don't report false success.
+            [[ "$exit_code" -eq 0 ]] && exit_code=1
+            echo "⟳ droid fallback for ${name} also failed (exit ${_esc_exit}) — voice drops" >&2
+        fi
+    fi
+
     local duration=$(( $(date +%s) - start ))
 
     # NOTE: stderr-noise filtering was removed 2026-05-26 after litmus review.
@@ -329,6 +365,7 @@ dispatch_one() {
     local status="success"
     [[ $exit_code -eq 124 ]] && status="timeout"
     [[ $exit_code -ne 0 && $exit_code -ne 124 ]] && status="error"
+    [[ "$escalated" -eq 1 ]] && status="droid-fallback"
 
     echo "${status}|${duration}|${exit_code}" > "$meta"
 }

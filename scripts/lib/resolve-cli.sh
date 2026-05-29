@@ -162,6 +162,24 @@ _portable_timeout() {
   fi
 }
 
+# ── Runtime droid fallback predicate ────────────────────────────
+# Should a FAILED primary CLI fall back to droid at runtime? Shared by the
+# council (dispatch.sh — per-voice, no cap) and blueprint-review
+# (run-design-review-loop.sh — capped at one voice). This is the RUNTIME
+# fallback (a voice ran but failed), distinct from the resolve-time
+# availability fallback (a binary is missing) handled by the route arrays below.
+# Args: primary_cli exit_code output_file
+# Returns 0 (escalate) iff: primary != droid AND droid installed AND
+#   (exit_code != 0 [includes 124 timeout] OR output_file empty/missing).
+should_escalate_to_droid() {
+  local primary_cli="$1" exit_code="$2" output_file="$3"
+  [[ "$primary_cli" == "droid" ]] && return 1
+  is_cli_available droid || return 1
+  [[ "$exit_code" -ne 0 ]] && return 0
+  [[ ! -s "$output_file" ]] && return 0
+  return 1
+}
+
 # ── Per-role CLI resolution with config + fallback chain ─────
 # Usage: resolve_role_cli "council.critic"
 # Precedence: env var > project config > user config > defaults > auto-detect

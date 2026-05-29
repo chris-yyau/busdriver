@@ -27,6 +27,7 @@
 | `thinking-models-execution.md` | `busdriver:executing-plans`, `busdriver:subagent-driven-development`, `busdriver:dispatching-parallel-agents` | GSD references/thinking-models-execution.md (adapted) | 2026-05-01 |
 | `thinking-models-research.md` | `busdriver:deep-research`, `busdriver:research-ops`, `busdriver:search-first`, `busdriver:codebase-onboarding` | GSD references/thinking-models-research.md (adapted) | 2026-05-01 |
 | `thinking-models-verification.md` | `busdriver:verification-loop`, `busdriver:verification-before-completion`, `busdriver:blueprint-review` | GSD references/thinking-models-verification.md (adapted) | 2026-05-01 |
+| `worktree-git-stash.md` | `busdriver:using-git-worktrees`, `busdriver:parallel-execution-optimizer`, `busdriver:claude-devfleet`, `busdriver:dispatching-parallel-agents` | get-shit-done #3542 (adapted) | 2026-05-29 |
 
 ## Opt-In Supplements
 

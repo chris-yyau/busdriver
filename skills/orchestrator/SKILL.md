@@ -45,30 +45,14 @@ To review design/plan documents, INVOKE `blueprint-review` skill (via Skill tool
 
 ## Emergency Gate Recovery
 
-When a gate blocks and the user needs to bypass:
-
-1. **Get absolute project path:** `git rev-parse --show-toplevel`. Skip files use absolute paths because the gate checks `.claude/` relative to the **blocked command's CWD**.
-2. **Send the user this verbatim message** (substitute `<PROJECT_ROOT>` and `<GATE>` for `litmus` / `design-review` / `pr-grind`):
-   > I need a skip file to bypass the `<GATE>` gate. Please run this in **your terminal** (not in this session):
-   >
-   > `touch <PROJECT_ROOT>/.claude/skip-<GATE>.local`
-   >
-   > After you run it, I will wait ~35 seconds before retrying. Reply "done" once you've run the command.
-3. **After "done", wait via Monitor** — the harness rejects long foreground sleeps:
-   ```
-   Monitor(command: "sleep 35 && echo READY", timeout: 45)
-   ```
-4. **When READY, retry the originally blocked action directly.** Do NOT verify the skip file first.
-
-**Hard rules:**
-- NEVER create the skip file yourself — gates reject and delete skip files less than 30s old (anti-self-bypass).
-- NEVER use `sleep 32` / `sleep 35` directly via Bash — the harness rejects long foreground sleeps.
-- NEVER verify the skip file via Bash (`test -f`, `ls`, `stat`, `cat`, `find`) before retrying. The design-review gate consumes the file on any intervening tool call (it fires before tool-type discrimination). For litmus/pr-grind, Bash verification trips the <30s self-bypass detector. In all cases: don't verify — just wait and retry.
+When a gate blocks and the user needs to bypass, follow the full procedure in `references/gate-recovery.md` (in this skill's directory). **Hard rules — never violate:**
+- NEVER create the skip file yourself — gates reject/delete skip files <30s old (anti-self-bypass). The user must `touch <PROJECT_ROOT>/.claude/skip-<GATE>.local` in their own terminal.
+- NEVER `sleep` directly via Bash — wait via `Monitor(command: "sleep 35 && echo READY", timeout: 45)`.
+- NEVER verify the skip file (`test -f`/`ls`/`stat`/`cat`/`find`) before retrying — it gets consumed on any intervening tool call. Just wait and retry the blocked action directly.
 - NEVER ask the user to wait — Claude waits via Monitor.
-- After user touches the file, make NO tool calls except Monitor before retrying.
-- If the retry still blocks, the file was consumed mid-wait — ask the user to `touch` again and restart the 35s wait.
+- After the user confirms "done", make NO tool calls except `Monitor` before retrying — any intervening call consumes the skip file. If the retry still blocks, the file was consumed mid-wait; ask the user to `touch` it again and restart the wait.
 
-Skip files for litmus and design-review are single-use. `skip-pr-grind.local` uses deferred consumption (preserved on merge failure / `--auto` queue / ambiguous output; consumed only on confirmed `gh pr merge` success). All bypasses logged to `.claude/bypass-log.jsonl`. Full failure-mode taxonomy: `skills/blueprint-review/SKILL.md` ("User-Created Skip File").
+All bypasses logged to `.claude/bypass-log.jsonl`. Full procedure + failure-mode taxonomy: `references/gate-recovery.md`.
 
 ## The Pipeline
 
@@ -167,21 +151,7 @@ Never act on `<update-alert>` during an active user task. Note silently, present
 
 ## Automatic Behaviors (Hooks)
 
-| Phase | Hook | Enforcement | What It Does |
-|-------|------|-------------|-------------|
-| **SessionStart** | Plugin update checker | context | Emits `<update-alert>` after task completes |
-| **SessionStart** | Orchestrator loader | context | Loads this skill + staleness + instincts |
-| **PreToolUse** (Bash) | Pre-commit gate | **GATE** | Blocks `git commit` until litmus + design review pass |
-| **PreToolUse** (Bash) | Pre-PR gate | **GATE** | Blocks `gh pr create` until litmus passes |
-| **PreToolUse** (Write\|Edit\|MultiEdit\|Bash) | Pre-implementation gate | **GATE** | Blocks impl while design docs unreviewed |
-| **PreToolUse** (Bash) | Pre-merge gate | **GATE** | Blocks `gh pr merge` until pr-grind clean |
-| **PreToolUse** (Write\|Edit\|MultiEdit) | Freeze/Guard | **GATE** | Restricts edits to investigation scope |
-| **PostToolUse** (Write\|Edit\|Bash) | Design doc detector | state | Flags design docs for review gate |
-| **PostToolUse** (Edit) | Go post-edit | formatting | gofmt/goimports/go vet |
-| **PostToolUse** (Bash) | Post-commit marker | cleanup | Consumes litmus marker after commit |
-| **SessionEnd** | Auto-push config | persistence | Commits pipeline state to remote |
-
-Inherited hooks (ECC upstream): quality-gate, cost-tracker, session persistence, post-edit format (JS/TS), suggest-compact, block-no-verify, auto-tmux-dev, config-protection, mcp-health-check, observe.sh.
+Gates (pre-commit, pre-PR, pre-implementation, pre-merge, freeze) + formatting + state-tracking + persistence run automatically via PreToolUse/PostToolUse/SessionStart/SessionEnd hooks. Full table of every hook and what it does: `references/hooks-reference.md` (in this skill's directory).
 
 ## Resolution
 

@@ -3,6 +3,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
+const { toCursorAgentRelativePath } = require('./cursor-agent-names');
 const { LEGACY_INSTALL_TARGETS, parseInstallArgs } = require('./install/request');
 const {
   SUPPORTED_INSTALL_TARGETS,
@@ -13,6 +14,7 @@ const {
 const { getInstallTargetAdapter } = require('./install-targets/registry');
 
 const LANGUAGE_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
+const CLAUDE_ECC_NAMESPACE = 'ecc';
 const EXCLUDED_GENERATED_SOURCE_SUFFIXES = [
   '/ecc-install-state.json',
   '/ecc/install-state.json',
@@ -154,7 +156,13 @@ function addRecursiveCopyOperations(operations, options) {
   for (const relativeFile of relativeFiles) {
     const sourceRelativePath = path.join(options.sourceRelativeDir, relativeFile);
     const sourcePath = path.join(options.sourceRoot, sourceRelativePath);
-    const destinationPath = path.join(options.destinationDir, relativeFile);
+    const destinationRelativePath = typeof options.destinationRelativePathTransform === 'function'
+      ? options.destinationRelativePathTransform(relativeFile, sourceRelativePath)
+      : relativeFile;
+    if (!destinationRelativePath) {
+      continue;
+    }
+    const destinationPath = path.join(options.destinationDir, destinationRelativePath);
     operations.push(buildCopyFileOperation({
       moduleId: options.moduleId,
       sourcePath,
@@ -257,7 +265,7 @@ function isDirectoryNonEmpty(dirPath) {
 function planClaudeLegacyInstall(context) {
   const adapter = getInstallTargetAdapter('claude');
   const targetRoot = adapter.resolveRoot({ homeDir: context.homeDir });
-  const rulesDir = context.claudeRulesDir || path.join(targetRoot, 'rules');
+  const rulesDir = context.claudeRulesDir || path.join(targetRoot, 'rules', CLAUDE_ECC_NAMESPACE);
   const installStatePath = adapter.getInstallStatePath({ homeDir: context.homeDir });
   const operations = [];
   const warnings = [];
@@ -351,6 +359,7 @@ function planCursorLegacyInstall(context) {
     sourceRoot: context.sourceRoot,
     sourceRelativeDir: path.join('.cursor', 'agents'),
     destinationDir: path.join(targetRoot, 'agents'),
+    destinationRelativePathTransform: toCursorAgentRelativePath,
   });
   addRecursiveCopyOperations(operations, {
     moduleId: 'legacy-cursor-install',
@@ -546,6 +555,12 @@ function createLegacyCompatInstallPlan(options = {}) {
   const sourceRoot = options.sourceRoot || getSourceRoot();
   const projectRoot = options.projectRoot || process.cwd();
   const target = options.target || 'claude';
+  const includeComponentIds = Array.isArray(options.includeComponentIds)
+    ? [...options.includeComponentIds]
+    : [];
+  const excludeComponentIds = Array.isArray(options.excludeComponentIds)
+    ? [...options.excludeComponentIds]
+    : [];
 
   validateLegacyTarget(target);
 
@@ -562,14 +577,14 @@ function createLegacyCompatInstallPlan(options = {}) {
     target,
     profileId: null,
     moduleIds: selection.moduleIds,
-    includeComponentIds: [],
-    excludeComponentIds: [],
+    includeComponentIds,
+    excludeComponentIds,
     legacyLanguages: selection.legacyLanguages,
     legacyMode: true,
     requestProfileId: null,
     requestModuleIds: [],
-    requestIncludeComponentIds: [],
-    requestExcludeComponentIds: [],
+    requestIncludeComponentIds: includeComponentIds,
+    requestExcludeComponentIds: excludeComponentIds,
     mode: 'legacy-compat',
   });
 }

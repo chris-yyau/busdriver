@@ -4,7 +4,7 @@ const path = require('path');
 const { getInstallTargetAdapter, planInstallTargetScaffold } = require('./install-targets/registry');
 
 const DEFAULT_REPO_ROOT = path.join(__dirname, '../..');
-const SUPPORTED_INSTALL_TARGETS = ['claude', 'cursor', 'antigravity', 'codex', 'gemini', 'codebuddy'];
+const SUPPORTED_INSTALL_TARGETS = ['claude', 'claude-project', 'cursor', 'antigravity', 'codex', 'gemini', 'opencode', 'codebuddy', 'joycode', 'qwen', 'zed'];
 const COMPONENT_FAMILY_PREFIXES = {
   baseline: 'baseline:',
   language: 'lang:',
@@ -12,9 +12,40 @@ const COMPONENT_FAMILY_PREFIXES = {
   capability: 'capability:',
   agent: 'agent:',
   skill: 'skill:',
+  locale: 'locale:',
 };
+const SUPPORTED_LOCALES = Object.freeze(['ja', 'zh-CN', 'ko-KR', 'pt-BR', 'ru', 'tr', 'vi-VN', 'zh-TW', 'de-DE']);
+const LOCALE_ALIAS_TO_COMPONENT_ID = Object.freeze({
+  'ja': 'locale:ja',
+  'ja-JP': 'locale:ja',
+  'zh-CN': 'locale:zh-cn',
+  'zh': 'locale:zh-cn',
+  'ko-KR': 'locale:ko-kr',
+  'ko': 'locale:ko-kr',
+  'pt-BR': 'locale:pt-br',
+  'pt': 'locale:pt-br',
+  'ru': 'locale:ru',
+  'tr': 'locale:tr',
+  'vi-VN': 'locale:vi-vn',
+  'vi': 'locale:vi-vn',
+  'zh-TW': 'locale:zh-tw',
+  'de-DE': 'locale:de-de',
+  'de': 'locale:de-de',
+});
+
+function listSupportedLocales() {
+  return [...SUPPORTED_LOCALES];
+}
 const LEGACY_COMPAT_BASE_MODULE_IDS_BY_TARGET = Object.freeze({
   claude: [
+    'rules-core',
+    'agents-core',
+    'commands-core',
+    'hooks-runtime',
+    'platform-configs',
+    'workflow-quality',
+  ],
+  'claude-project': [
     'rules-core',
     'agents-core',
     'commands-core',
@@ -35,19 +66,31 @@ const LEGACY_COMPAT_BASE_MODULE_IDS_BY_TARGET = Object.freeze({
     'agents-core',
     'commands-core',
   ],
+  zed: [
+    'rules-core',
+    'agents-core',
+    'commands-core',
+    'platform-configs',
+    'workflow-quality',
+  ],
 });
 const LEGACY_LANGUAGE_ALIAS_TO_CANONICAL = Object.freeze({
   c: 'c',
   cpp: 'cpp',
   csharp: 'csharp',
+  fsharp: 'fsharp',
   go: 'go',
   golang: 'go',
+  arkts: 'arkts',
+  harmonyos: 'arkts',
   java: 'java',
   javascript: 'typescript',
   kotlin: 'java',
   perl: 'perl',
   php: 'php',
   python: 'python',
+  rails: 'ruby',
+  ruby: 'ruby',
   rust: 'rust',
   swift: 'swift',
   typescript: 'typescript',
@@ -56,11 +99,14 @@ const LEGACY_LANGUAGE_EXTRA_MODULE_IDS = Object.freeze({
   c: ['framework-language'],
   cpp: ['framework-language'],
   csharp: ['framework-language'],
+  fsharp: ['framework-language'],
   go: ['framework-language'],
+  arkts: ['framework-language'],
   java: ['framework-language'],
   perl: [],
   php: [],
   python: ['framework-language'],
+  ruby: ['framework-language', 'security'],
   rust: ['framework-language'],
   swift: [],
   typescript: ['framework-language'],
@@ -76,6 +122,56 @@ function readJson(filePath, label) {
 
 function dedupeStrings(values) {
   return [...new Set((Array.isArray(values) ? values : []).map(value => String(value).trim()).filter(Boolean))];
+}
+
+function listSkillDirectoryIds(repoRoot) {
+  const skillsRoot = path.join(repoRoot, 'skills');
+  if (!fs.existsSync(skillsRoot) || !fs.statSync(skillsRoot).isDirectory()) {
+    return [];
+  }
+
+  return fs.readdirSync(skillsRoot, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => entry.name)
+    .sort();
+}
+
+function addSyntheticSkillComponents({ repoRoot, modules, components }) {
+  const moduleIds = new Set(modules.map(module => module.id));
+  const componentIds = new Set(components.map(component => component.id));
+
+  for (const skillId of listSkillDirectoryIds(repoRoot)) {
+    const componentId = `skill:${skillId}`;
+    if (componentIds.has(componentId)) {
+      continue;
+    }
+
+    const moduleId = `skill-${skillId}`;
+    if (!moduleIds.has(moduleId)) {
+      modules.push({
+        id: moduleId,
+        kind: 'skills',
+        description: `Single-skill install surface for ${skillId}.`,
+        paths: [`skills/${skillId}`],
+        targets: SUPPORTED_INSTALL_TARGETS.slice(),
+        dependencies: [],
+        defaultInstall: false,
+        cost: 'light',
+        stability: 'stable',
+        synthetic: true,
+      });
+      moduleIds.add(moduleId);
+    }
+
+    components.push({
+      id: componentId,
+      family: 'skill',
+      description: `Install only the ${skillId} skill directory.`,
+      modules: [moduleId],
+      synthetic: true,
+    });
+    componentIds.add(componentId);
+  }
 }
 
 function readOptionalStringOption(options, key) {
@@ -164,11 +260,13 @@ function loadInstallManifests(options = {}) {
   const componentsData = fs.existsSync(componentsPath)
     ? readJson(componentsPath, 'install-components.json')
     : { version: null, components: [] };
-  const modules = Array.isArray(modulesData.modules) ? modulesData.modules : [];
+  const modules = Array.isArray(modulesData.modules) ? modulesData.modules.slice() : [];
   const profiles = profilesData && typeof profilesData.profiles === 'object'
     ? profilesData.profiles
     : {};
-  const components = Array.isArray(componentsData.components) ? componentsData.components : [];
+  const components = Array.isArray(componentsData.components) ? componentsData.components.slice() : [];
+
+  addSyntheticSkillComponents({ repoRoot, modules, components });
 
   for (const module of modules) {
     readModuleTargetsOrThrow(module);
@@ -540,11 +638,14 @@ function resolveInstallPlan(options = {}) {
 module.exports = {
   DEFAULT_REPO_ROOT,
   SUPPORTED_INSTALL_TARGETS,
+  SUPPORTED_LOCALES,
+  LOCALE_ALIAS_TO_COMPONENT_ID,
   getManifestPaths,
   loadInstallManifests,
   getInstallComponent,
   listInstallComponents,
   listLegacyCompatibilityLanguages,
+  listSupportedLocales,
   listInstallModules,
   listInstallProfiles,
   resolveInstallPlan,

@@ -25,6 +25,11 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const {
+  extractCommandSubstitutions,
+  extractSubshellGroups,
+  extractBraceGroups
+} = require('../lib/shell-substitution');
 
 // Session state — scoped per session to avoid cross-session races.
 const STATE_DIR = process.env.GATEGUARD_STATE_DIR || path.join(process.env.HOME || process.env.USERPROFILE || '/tmp', '.gateguard');
@@ -38,16 +43,400 @@ const READ_HEARTBEAT_MS = 60 * 1000;
 const MAX_CHECKED_ENTRIES = 500;
 const MAX_SESSION_KEYS = 50;
 const ROUTINE_BASH_SESSION_KEY = '__bash_session__';
+const EDIT_WRITE_HOOK_ID = 'pre:edit-write:gateguard-fact-force';
+const BASH_HOOK_ID = 'pre:bash:gateguard-fact-force';
+const ECC_DISABLE_VALUES = new Set(['0', 'false', 'off', 'disabled', 'disable']);
 
-// Local fork — covers short-flag clusters that the upstream regex misses,
-// including 'f' in any position within the cluster:
-//   git push  -f / -uf / -fu / -fud  (force anywhere in cluster)
-//   git clean -fd / -fx / -df        (force anywhere in cluster)
-// Pattern `-[a-zA-Z]*f[a-zA-Z]*\b` allows letters before AND after `f`,
-// closing the bypass where `\b` was required immediately after `f`.
-const DESTRUCTIVE_BASH = /\b(rm\s+-rf|git\s+reset\s+--hard|git\s+checkout\s+--|git\s+clean\s+-[a-zA-Z]*f[a-zA-Z]*\b|drop\s+table|delete\s+from|truncate|git\s+push\s+(--force(?!-with-lease)|-[a-zA-Z]*f[a-zA-Z]*\b)|git\s+commit\s+--amend|dd\s+if=)/i;
+// SQL-keyword + dd patterns stay as a single regex — they are stable
+// phrases without shell-flag ordering concerns. Quoted strings are
+// stripped before this regex runs so a commit message mentioning
+// "drop table" no longer triggers a false positive.
+const DESTRUCTIVE_SQL_DD = /\b(drop\s+table|delete\s+from|truncate|dd\s+if=)\b/i;
+
+/**
+ * Strip the contents of single- and double-quoted strings so phrases
+ * mentioned inside a commit message or echoed argument do not trigger
+ * the destructive detector. Command substitutions are scanned separately
+ * before this runs because they execute even inside double quotes.
+ *
+ * @param {string} input
+ * @returns {string}
+ */
+function stripQuotedStrings(input) {
+  return input
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""');
+}
+
+/**
+ * Promote subshell delimiters to top-level segment separators so the
+ * destructive check applies inside `$(...)` and backtick subshells.
+ * Without this, `echo y | $(rm -rf /tmp)` and ``echo y | `rm -rf /tmp` ``
+ * slip past the segment splitter because the destructive command lives
+ * inside a sub-expression. Run iteratively to handle a layer of nesting.
+ *
+ * @param {string} input
+ * @returns {string}
+ */
+function explodeSubshells(input) {
+  let out = input;
+  for (let i = 0; i < 4; i += 1) {
+    const before = out;
+    out = out.replace(/\$\(([^()`]*)\)/g, ';$1;');
+    out = out.replace(/`([^`]*)`/g, ';$1;');
+    if (out === before) break;
+  }
+  return out;
+}
+
+/**
+ * Split a command line into top-level segments at unquoted shell
+ * separators (`;`, `|`, `&`, `&&`, `||`) and across subshells
+ * (`$(...)` / backticks). Quoted strings are stripped first so
+ * separators inside quotes are not split on. Per-segment comments
+ * are also stripped.
+ *
+ * @param {string} input
+ * @returns {string[]}
+ */
+function splitCommandSegments(input) {
+  const stripped = explodeSubshells(stripQuotedStrings(input));
+  return stripped
+    .split(/[;|&]+/)
+    .map(segment => segment.replace(/(^|\s)#.*/, '$1').trim())
+    .filter(Boolean);
+}
+
+/**
+ * Tokenize a single command segment by whitespace. Quoted strings
+ * are already collapsed to empty quotes by `stripQuotedStrings`, so
+ * naive whitespace splitting is sufficient.
+ *
+ * @param {string} segment
+ * @returns {string[]}
+ */
+function tokenize(segment) {
+  return segment.split(/\s+/).filter(Boolean);
+}
+
+
+/**
+ * Tokenize a short allowlisted shell command while preserving quoted
+ * arguments. This is intentionally smaller than a full shell parser: the
+ * caller rejects shell control characters before invoking it, so this only
+ * needs to keep spaces inside quotes together for read-only git commands.
+ *
+ * @param {string} input
+ * @returns {string[] | null}
+ */
+function tokenizeAllowlistedShellWords(input) {
+  const tokens = [];
+  let current = '';
+  let quote = null;
+  let escaped = false;
+
+  for (const char of String(input || '')) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = '';
+      }
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (escaped) current += '\\';
+  if (quote) return null;
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+/**
+ * Strip a leading path and trailing `.exe` from a command token so
+ * `/usr/bin/git`, `git.exe`, and `GIT` all normalize to `git`.
+ *
+ * @param {string} token
+ * @returns {string}
+ */
+function commandBasename(token) {
+  if (!token) return '';
+  return token.replace(/^.*[\\/]/, '').replace(/\.exe$/i, '').toLowerCase();
+}
+
+/**
+ * Detect `rm` invocations that recursively force-delete files. Handles
+ * combined (`-rf`, `-fr`, `-Rf`) and split (`-r -f`) flag forms.
+ *
+ * @param {string[]} tokens
+ * @returns {boolean}
+ */
+function isDestructiveRm(tokens) {
+  if (tokens.length === 0 || commandBasename(tokens[0]) !== 'rm') return false;
+  let hasR = false;
+  let hasF = false;
+  for (const t of tokens.slice(1)) {
+    if (t === '--recursive') {
+      hasR = true;
+      continue;
+    }
+    if (t === '--force') {
+      hasF = true;
+      continue;
+    }
+    if (!t.startsWith('-') || t.startsWith('--')) continue;
+    const body = t.slice(1);
+    if (/[rR]/.test(body)) hasR = true;
+    if (/f/.test(body)) hasF = true;
+  }
+  return hasR && hasF;
+}
+
+/**
+ * Locate the git subcommand within a token list, skipping over git's
+ * global options like `-c key=value`, `-C <path>`, `--git-dir=...`,
+ * `--work-tree=...`, `--namespace=...`, `--super-prefix=...`.
+ *
+ * @param {string[]} tokens
+ * @returns {{ command: string, rest: string[] } | null}
+ */
+function findGitSubcommand(tokens) {
+  if (tokens.length === 0 || commandBasename(tokens[0]) !== 'git') return null;
+  const valueConsumingShort = new Set(['-c', '-C']);
+  const valueConsumingLong = new Set(['--git-dir', '--work-tree', '--namespace', '--super-prefix']);
+  let i = 1;
+  while (i < tokens.length) {
+    const t = tokens[i];
+    if (valueConsumingShort.has(t) || valueConsumingLong.has(t)) {
+      i += 2;
+      continue;
+    }
+    if (t.startsWith('--git-dir=') || t.startsWith('--work-tree=') || t.startsWith('--namespace=') || t.startsWith('--super-prefix=')) {
+      i += 1;
+      continue;
+    }
+    if (t.startsWith('-')) {
+      // Unknown global option — skip without consuming a value.
+      i += 1;
+      continue;
+    }
+    return { command: t.toLowerCase(), rest: tokens.slice(i + 1) };
+  }
+  return null;
+}
+
+/**
+ * Detect destructive `git` invocations: `reset --hard`, `checkout --`,
+ * `clean -f...`, `push --force` (but not `--force-with-lease`),
+ * `commit --amend`, `rm -rf`.
+ *
+ * @param {string[]} tokens
+ * @returns {boolean}
+ */
+function isDestructiveGit(tokens) {
+  const sub = findGitSubcommand(tokens);
+  if (!sub) return false;
+  const { command, rest } = sub;
+
+  if (command === 'reset') {
+    return rest.includes('--hard');
+  }
+
+  if (command === 'checkout') {
+    return rest.includes('--');
+  }
+
+  if (command === 'clean') {
+    // `git clean -f`, `-fd`, `-fdx`, `-df`, `--force`
+    return rest.some(t => {
+      if (t === '--force') return true;
+      if (!t.startsWith('-') || t.startsWith('--')) return false;
+      return t.slice(1).includes('f');
+    });
+  }
+
+  if (command === 'push') {
+    // Only `--force-with-lease` qualifies as a safety-checked force.
+    // `--force-if-includes` is a no-op when used WITHOUT
+    // `--force-with-lease` (per git-scm.com/docs/git-push), and when
+    // combined with a bare `--force` the bare force is still in effect.
+    // So `--force --force-if-includes` must be treated as destructive.
+    //
+    // A `+` refspec prefix (e.g. `git push origin +main`,
+    // `+refs/heads/main:refs/heads/main`) also forces a non-fast-forward
+    // update of that ref and is destructive on its own.
+    let withLease = false;
+    let bareForce = false;
+    let plusRefspecForce = false;
+    for (const t of rest) {
+      if (t === '--force-with-lease' || t.startsWith('--force-with-lease=')) {
+        withLease = true;
+        continue;
+      }
+      if (t === '--force' || t.startsWith('--force=')) {
+        bareForce = true;
+        continue;
+      }
+      if (t.startsWith('-') && !t.startsWith('--') && t.slice(1).includes('f')) {
+        bareForce = true;
+        continue;
+      }
+      // Refspec prefix: `+<src>[:<dst>]`. Match tokens like `+main`,
+      // `+refs/heads/main`, `+HEAD:branch`, `+:branch`. Exclude bare
+      // `+` and numeric-only `+123` which are not refspecs.
+      if (t.startsWith('+') && t.length > 1 && /^\+(?:[a-zA-Z_/.:]|HEAD)/.test(t)) {
+        plusRefspecForce = true;
+      }
+    }
+    return bareForce || (plusRefspecForce && !withLease);
+  }
+
+  if (command === 'commit') {
+    return rest.includes('--amend');
+  }
+
+  if (command === 'rm') {
+    // `git rm -r` / `-rf` / `-r -f` — destructive within the index too.
+    let hasR = false;
+    for (const t of rest) {
+      if (!t.startsWith('-') || t.startsWith('--')) continue;
+      if (/[rR]/.test(t.slice(1))) hasR = true;
+    }
+    return hasR;
+  }
+
+  if (command === 'switch') {
+    // `git switch` can discard local working-tree changes in three forms:
+    //   --discard-changes           explicit discard
+    //   --force / -f                ignore conflicts and overwrite
+    //   -C <branch>                 force-create (overwrites existing branch)
+    return rest.some(t => {
+      if (t === '--discard-changes' || t === '--force') return true;
+      if (!t.startsWith('-') || t.startsWith('--')) return false;
+      // Short combined form: -f, -fC, -Cf, -C
+      const body = t.slice(1);
+      return /[fC]/.test(body);
+    });
+  }
+
+  return false;
+}
+
+/**
+ * Decide whether a bash command line contains a destructive action
+ * the fact-forcing gate should challenge. Combines SQL-keyword
+ * detection (regex on quote-stripped input) with per-segment shell
+ * tokenization for shell commands.
+ *
+ * @param {string} command
+ * @returns {boolean}
+ */
+/**
+ * Walk every executable body reachable from a raw command line and
+ * return them as a flat list. Bodies that bash will execute live in
+ * three different syntactic constructs, each handled by a sibling
+ * extractor in `scripts/lib/shell-substitution.js`:
+ *   - `$(...)` and backticks via `extractCommandSubstitutions`
+ *   - plain `(...)` subshells   via `extractSubshellGroups`
+ *   - `{ ...; }` brace groups   via `extractBraceGroups`
+ *
+ * Each extractor recurses into its own syntax. The BFS here adds
+ * cross-syntax discovery — e.g. a `(...)` inside a `$(...)` body, or
+ * a `{ ...; }` inside a `(...)` body — by feeding every harvested
+ * body back through all three extractors. A `seen` set bounds the
+ * cost to O(unique bodies).
+ *
+ * @param {string} raw
+ * @returns {string[]}
+ */
+function collectExecutableBodies(raw) {
+  const bodies = [raw];
+  const queue = [raw];
+  const seen = new Set();
+
+  while (queue.length) {
+    const current = queue.shift();
+    if (seen.has(current)) continue;
+    seen.add(current);
+
+    for (const body of extractCommandSubstitutions(current)) {
+      if (seen.has(body)) continue;
+      bodies.push(body);
+      queue.push(body);
+    }
+    for (const body of extractSubshellGroups(current)) {
+      if (seen.has(body)) continue;
+      bodies.push(body);
+      queue.push(body);
+    }
+    for (const body of extractBraceGroups(current)) {
+      if (seen.has(body)) continue;
+      bodies.push(body);
+      queue.push(body);
+    }
+  }
+
+  return bodies;
+}
+
+function isDestructiveBash(command) {
+  // The SQL/dd phrases live in command bodies, not as flag-bearing
+  // arguments, so we still match them by regex — but on the input
+  // after quoting AND subshell delimiters are normalized so phrases
+  // inside `$(...)` or backticks are also caught.
+  const raw = String(command || '');
+  const flattened = explodeSubshells(stripQuotedStrings(raw));
+  if (DESTRUCTIVE_SQL_DD.test(flattened)) return true;
+
+  const segments = collectExecutableBodies(raw).flatMap(splitCommandSegments);
+  for (const segment of segments) {
+    if (DESTRUCTIVE_SQL_DD.test(stripQuotedStrings(segment))) return true;
+    const tokens = tokenize(segment);
+    if (isDestructiveRm(tokens)) return true;
+    if (isDestructiveGit(tokens)) return true;
+  }
+  return false;
+}
 
 // --- State management (per-session, atomic writes, bounded) ---
+
+function normalizeEnvValue(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isGateGuardDisabled() {
+  if (normalizeEnvValue(process.env.GATEGUARD_DISABLED) === '1') {
+    return true;
+  }
+
+  return ECC_DISABLE_VALUES.has(normalizeEnvValue(process.env.ECC_GATEGUARD));
+}
 
 function sanitizeSessionKey(value) {
   const raw = String(value || '').trim();
@@ -177,6 +566,7 @@ function saveState(state) {
       }
     }
     tmpFile = null;
+    return true;
   } catch (_) {
     if (tmpFile) {
       try {
@@ -185,6 +575,7 @@ function saveState(state) {
         /* ignore */
       }
     }
+    return false;
   }
 }
 
@@ -192,8 +583,9 @@ function markChecked(key) {
   const state = loadState();
   if (!state.checked.includes(key)) {
     state.checked.push(key);
-    saveState(state);
+    return saveState(state);
   }
+  return true;
 }
 
 function isChecked(key) {
@@ -259,8 +651,16 @@ function isReadOnlyGitIntrospection(command) {
     return false;
   }
 
-  const tokens = trimmed.split(/\s+/);
-  if (tokens[0] !== 'git' || tokens.length < 2) {
+  const segments = splitCommandSegments(trimmed);
+  if (segments.length !== 1) {
+    return false;
+  }
+
+  const tokens = tokenizeAllowlistedShellWords(trimmed);
+  if (!tokens) {
+    return false;
+  }
+  if (commandBasename(tokens[0]) !== 'git' || tokens.length < 2) {
     return false;
   }
 
@@ -280,7 +680,7 @@ function isReadOnlyGitIntrospection(command) {
   }
 
   if (subcommand === 'show') {
-    return args.length === 1 && !args[0].startsWith('--') && /^[a-zA-Z0-9._:/-]+$/.test(args[0]);
+    return args.length === 1 && !args[0].startsWith('--') && /^[a-zA-Z0-9._:/ -]+$/.test(args[0]);
   }
 
   if (subcommand === 'branch') {
@@ -355,17 +755,50 @@ function routineBashMsg() {
   ].join('\n');
 }
 
+function withRecoveryHint(message, hookIds = [EDIT_WRITE_HOOK_ID]) {
+  const disableTargets = hookIds.map(hookId => `\`${hookId}\``).join(' or ');
+  return [
+    message,
+    '',
+    `Recovery: if GateGuard is blocking setup or repair work, run this session with \`ECC_GATEGUARD=off\` or add ${disableTargets} to \`ECC_DISABLED_HOOKS\`.`
+  ].join('\n');
+}
+
+function isSubagentInvocation(data) {
+  if (!data || typeof data !== 'object') {
+    return false;
+  }
+
+  const candidates = [
+    data.agent_id,
+    data.agentId,
+    data.parent_tool_use_id,
+    data.parentToolUseId
+  ];
+
+  return candidates.some(candidate => typeof candidate === 'string' && candidate.trim());
+}
+
 // --- Deny helper ---
 
-function denyResult(reason) {
+function denyResult(reason, options = {}) {
+  const includeRecoveryHint = options.includeRecoveryHint !== false;
+  const hookIds = Array.isArray(options.hookIds) && options.hookIds.length > 0 ? options.hookIds : [EDIT_WRITE_HOOK_ID];
   return {
     stdout: JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: reason
+        permissionDecisionReason: includeRecoveryHint ? withRecoveryHint(reason, hookIds) : reason
       }
     }),
+    exitCode: 0
+  };
+}
+
+function allowWithStateWarning() {
+  return {
+    stderr: '[Fact-Forcing Gate] GateGuard state could not be persisted; allowing this operation to avoid a permanent retry loop. Check GATEGUARD_STATE_DIR or filesystem permissions.',
     exitCode: 0
   };
 }
@@ -379,6 +812,11 @@ function run(rawInput) {
   } catch (_) {
     return rawInput; // allow on parse error
   }
+
+  if (isGateGuardDisabled()) {
+    return rawInput;
+  }
+
   activeStateFile = null;
   getStateFile(data);
 
@@ -387,6 +825,7 @@ function run(rawInput) {
   // Normalize: case-insensitive matching via lookup map
   const TOOL_MAP = { edit: 'Edit', write: 'Write', multiedit: 'MultiEdit', bash: 'Bash' };
   const toolName = TOOL_MAP[rawToolName.toLowerCase()] || rawToolName;
+  const inSubagent = isSubagentInvocation(data);
 
   if (toolName === 'Edit' || toolName === 'Write') {
     const filePath = toolInput.file_path || '';
@@ -394,8 +833,14 @@ function run(rawInput) {
       return rawInput; // allow
     }
 
+    if (inSubagent) {
+      return rawInput; // parent session already passed the first-touch file gate
+    }
+
     if (!isChecked(filePath)) {
-      markChecked(filePath);
+      if (!markChecked(filePath)) {
+        return allowWithStateWarning();
+      }
       return denyResult(toolName === 'Edit' ? editGateMsg(filePath) : writeGateMsg(filePath));
     }
 
@@ -403,11 +848,17 @@ function run(rawInput) {
   }
 
   if (toolName === 'MultiEdit') {
+    if (inSubagent) {
+      return rawInput; // parent session already passed the first-touch file gate
+    }
+
     const edits = toolInput.edits || [];
     for (const edit of edits) {
       const filePath = edit.file_path || '';
       if (filePath && !isClaudeSettingsPath(filePath) && !isChecked(filePath)) {
-        markChecked(filePath);
+        if (!markChecked(filePath)) {
+          return allowWithStateWarning();
+        }
         return denyResult(editGateMsg(filePath));
       }
     }
@@ -420,19 +871,23 @@ function run(rawInput) {
       return rawInput;
     }
 
-    if (DESTRUCTIVE_BASH.test(command)) {
+    if (isDestructiveBash(command)) {
       // Gate destructive commands on first attempt; allow retry after facts presented
       const key = '__destructive__' + crypto.createHash('sha256').update(command).digest('hex').slice(0, 16);
       if (!isChecked(key)) {
-        markChecked(key);
-        return denyResult(destructiveBashMsg());
+        if (!markChecked(key)) {
+          return allowWithStateWarning();
+        }
+        return denyResult(destructiveBashMsg(), { includeRecoveryHint: false });
       }
       return rawInput; // allow retry after facts presented
     }
 
     if (!isChecked(ROUTINE_BASH_SESSION_KEY)) {
-      markChecked(ROUTINE_BASH_SESSION_KEY);
-      return denyResult(routineBashMsg());
+      if (!markChecked(ROUTINE_BASH_SESSION_KEY)) {
+        return allowWithStateWarning();
+      }
+      return denyResult(routineBashMsg(), { hookIds: [BASH_HOOK_ID] });
     }
 
     return rawInput; // allow

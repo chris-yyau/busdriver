@@ -18,14 +18,31 @@ const path = require('path');
 const {
   getTempDir,
   writeFile,
-  log
+  readStdinJson,
+  log,
+  output
 } = require('../lib/utils');
+
+async function resolveSessionId() {
+  // Claude Code passes hook input via stdin JSON; session_id is the
+  // canonical field. Fall back to the legacy env var, then 'default'.
+  try {
+    const input = await readStdinJson({ timeoutMs: 1000 });
+    if (input && typeof input.session_id === 'string' && input.session_id) {
+      return input.session_id;
+    }
+  } catch {
+    /* fall through to env */
+  }
+  return process.env.CLAUDE_SESSION_ID || 'default';
+}
 
 async function main() {
   // Track tool call count (increment in a temp file)
-  // Use a session-specific counter file based on session ID from environment
-  // or parent PID as fallback
-  const sessionId = (process.env.CLAUDE_SESSION_ID || 'default').replace(/[^a-zA-Z0-9_-]/g, '') || 'default';
+  // Use a session-specific counter file based on session ID from stdin JSON,
+  // legacy env var, or 'default' as fallback.
+  const rawSessionId = await resolveSessionId();
+  const sessionId = rawSessionId.replace(/[^a-zA-Z0-9_-]/g, '') || 'default';
   const counterFile = path.join(getTempDir(), `claude-tool-count-${sessionId}`);
   const rawThreshold = parseInt(process.env.COMPACT_THRESHOLD || '50', 10);
   const threshold = Number.isFinite(rawThreshold) && rawThreshold > 0 && rawThreshold <= 10000
@@ -61,14 +78,25 @@ async function main() {
     writeFile(counterFile, String(count));
   }
 
-  // Suggest compact after threshold tool calls
+  // Suggest compact after threshold tool calls.
+  //
+  // log() writes to stderr (debug log). Per the Claude Code hooks guide,
+  // non-blocking PreToolUse stderr (exit 0) is only written to the debug log;
+  // it does not reach the model. To inject a user-facing suggestion without
+  // blocking the tool call, emit structured JSON to stdout with
+  // hookSpecificOutput.additionalContext — the documented mechanism for
+  // PreToolUse hooks to add context to the next model turn.
   if (count === threshold) {
-    log(`[StrategicCompact] ${threshold} tool calls reached - consider /compact if transitioning phases`);
+    const msg = `[StrategicCompact] ${threshold} tool calls reached - consider /compact if transitioning phases`;
+    log(msg);
+    output({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: msg } });
   }
 
   // Suggest at regular intervals after threshold (every 25 calls from threshold)
   if (count > threshold && (count - threshold) % 25 === 0) {
-    log(`[StrategicCompact] ${count} tool calls - good checkpoint for /compact if context is stale`);
+    const msg = `[StrategicCompact] ${count} tool calls - good checkpoint for /compact if context is stale`;
+    log(msg);
+    output({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: msg } });
   }
 
   process.exit(0);

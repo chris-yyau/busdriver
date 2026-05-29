@@ -124,6 +124,36 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Project Memory** | per-project persistent memory | `ck` |
 | **OpenClaw Persona** | AI Agent persona forge | `openclaw-persona-forge` |
 | **Plan Stress-Test** | grill the plan, hostile interview | `grill-me` (general) / `grill-with-docs` (docs-grounded) |
+| **Issue Triage** | triage issues, prioritize backlog, label issues | `triage` (state-machine triage) |
+| **Bug Diagnosis (HITL)** | diagnose bug, root-cause loop, reproduce failure | `diagnose` (6-phase HITL) — complements `systematic-debugging` |
+| **Prototyping** | throwaway prototype, spike, logic vs UI split | `prototype` |
+| **PRD / Issue Breakdown** | synthesize PRD, vertical-slice issue breakdown | `to-prd` / `to-issues` |
+| **Session Handoff** | hand off work, continuity doc for next agent | `handoff` |
+| **Skill Authoring** | scaffold a new skill, SKILL.md template | `write-a-skill` (complements `writing-skills`) |
+| **Repo Onboarding Setup** | issue tracker + triage labels + domain glossary scaffold | `setup-matt-pocock-skills` |
+| **Pre-commit Setup** | husky, lint-staged, pre-commit hooks | `setup-pre-commit` |
+| **Git Guardrails** | block dangerous git ops, git safety layer | `git-guardrails-claude-code` |
+| **Scientific Research** | PubMed, USPTO patents, genomics (gget), literature review, scholar eval | `scientific-db-pubmed-database` / `scientific-db-uspto-database` / `scientific-pkg-gget` / `scientific-thinking-literature-review` / `scientific-thinking-scholar-evaluation` |
+| **Prediction Markets / ITO** | prediction market oracle/risk, ITO trade baskets, market intel | `prediction-market-oracle-research` / `prediction-market-risk-review` / `ito-trade-planner` / `ito-basket-compare` / `ito-market-intelligence` / `ito-data-atlas-agent` |
+| **Agent Architecture Audit** | audit agent design, agent architecture review | `agent-architecture-audit` |
+| **Agentic OS** | solo-dev agentic operating-system patterns | `agentic-os` |
+| **Parallel Execution / Orchestration** | optimize parallel fan-out, plan→orchestrate bridge | `parallel-execution-optimizer` / `plan-orchestrate` |
+| **Decision Ledger** | recursive decision logging, search/optimization trace | `recursive-decision-ledger` |
+| **Error Handling Patterns** | language-agnostic error-handling design | `error-handling` |
+| **Flox Environments** | Nix/Flox reproducible dev environments | `flox-environments` |
+| **Performance-Critical Systems** | low-latency, HFT, throughput tuning, micro-bench loop | `latency-critical-systems` / `data-throughput-accelerator` / `benchmark-optimization-loop` |
+| **Production Readiness Audit** | app production readiness, pre-launch checks | `production-audit` |
+| **Cost Tracking** | local usage/cost tracking, spend log | `cost-tracking` + `/cost-report` |
+| **Marketing Campaign** | plan/run marketing campaign | `marketing-campaign` + `/marketing-campaign`. Agent: `marketing-agent` |
+| **Frontend A11y / Design Direction** | frontend a11y patterns, design direction, make UI feel better | `frontend-a11y` / `frontend-design-direction` / `make-interfaces-feel-better` |
+| **iOS Icon Generation** | generate iOS app icons | `ios-icon-gen` |
+| **Windows Desktop E2E** | E2E test Windows desktop apps | `windows-desktop-e2e` |
+| **tinystruct** | tinystruct Java framework patterns | `tinystruct-patterns` |
+| **Blender Motion** | inspect Blender motion/animation state | `blender-motion-state-inspection` |
+| **HarmonyOS** | HarmonyOS app build errors | `harmonyos-app-resolver` agent |
+| **Self-hosting (uncloud)** | uncloud deployment/self-hosting | `uncloud` |
+| **Hermes Imports** | Hermes import management/resolution | `hermes-imports` |
+| **Project Init** | initialize new project scaffold | `/project-init` |
 
 ## Cross-Cutting Utilities
 

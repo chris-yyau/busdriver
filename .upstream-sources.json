@@ -5313,6 +5313,54 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/lib/shell-substitution.js"
+    },
+    {
+      "path": "scripts/hooks/pretooluse-visible-output.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/hooks/pretooluse-visible-output.js"
+    },
+    {
+      "path": "scripts/lib/cursor-agent-names.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/cursor-agent-names.js"
+    },
+    {
+      "path": "scripts/lib/install-targets/claude-project.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install-targets/claude-project.js"
+    },
+    {
+      "path": "scripts/lib/install-targets/joycode-project.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install-targets/joycode-project.js"
+    },
+    {
+      "path": "scripts/lib/install-targets/opencode-home.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install-targets/opencode-home.js"
+    },
+    {
+      "path": "scripts/lib/install-targets/qwen-home.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install-targets/qwen-home.js"
+    },
+    {
+      "path": "scripts/lib/install-targets/zed-project.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/install-targets/zed-project.js"
+    },
+    {
+      "path": "scripts/lib/session-bridge.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/session-bridge.js"
     }
   ],
   "rejected": [

@@ -1288,7 +1288,7 @@
     {
       "path": "scripts/harness-audit.js",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/harness-audit.js"
     },
     {
@@ -4873,7 +4873,7 @@
     {
       "path": "skills/frontend-slides/scripts/export-pdf.sh",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/frontend-slides/scripts/export-pdf.sh"
     },
     {
@@ -5361,6 +5361,11 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/lib/session-bridge.js"
+    },
+    {
+      "path": "skills/orchestrator/tasks-catalog.md",
+      "source": "local",
+      "status": "local"
     }
   ],
   "rejected": [

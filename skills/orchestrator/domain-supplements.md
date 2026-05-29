@@ -108,6 +108,7 @@ Domain skills are loaded as context during execution. They are **additive** — 
 
 ### F#
 **Detection:** `*.fs`, `*.fsproj`, `*.fsx`, F# context
+- Patterns: no F#-specific skill yet — fall back to `busdriver:dotnet-patterns` for shared .NET idioms (DI, async/await)
 - Testing: `busdriver:fsharp-testing` (Expecto, FsCheck, property-based testing)
 - Review: `fsharp-reviewer` agent (see Phase 4 DISPATCH rules)
 

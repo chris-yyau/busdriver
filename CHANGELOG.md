@@ -1,3 +1,10 @@
+# [1.54.0](https://github.com/chris-yyau/busdriver/compare/v1.53.3...v1.54.0) (2026-05-29)
+
+
+### Features
+
+* add runtime droid fallback for failed council and blueprint voices ([#164](https://github.com/chris-yyau/busdriver/issues/164)) ([f617127](https://github.com/chris-yyau/busdriver/commit/f617127a3547dca737759d28c6d7ac6c04f80f7d))
+
 ## [1.53.3](https://github.com/chris-yyau/busdriver/compare/v1.53.2...v1.53.3) (2026-05-28)
 
 

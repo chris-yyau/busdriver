@@ -390,6 +390,7 @@ When you want litmus coverage on the handover's output:
 - `python3` (stdlib only — used by Step 7 scope check via `fnmatch`; no third-party deps like PyYAML required)
 - `git` (commit detection — Hard rule 2 cannot be enforced outside a git repo)
 - `bash` ≥ 3.2 (macOS-default version works; no bash 4+ features required)
+- `CLAUDE_PLUGIN_ROOT` — set automatically by Claude Code to the plugin's install directory and exported into the Bash environment. The dispatcher invocation (Step 4) and the retroactive litmus commands (Litmus considerations) resolve through it, so those commands only work when the skill runs as part of the installed busdriver plugin — not when a snippet is copy-pasted into a bare shell where the variable is unset.
 
 ### Environment variables (advanced)
 

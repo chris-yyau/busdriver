@@ -95,7 +95,7 @@ If the user provides an inline description without verifiers, **ask once for ver
 ### 2. Initialize the run
 
 ```bash
-RUN_DIR="scripts/codex/.runs/$(date +%Y%m%d-%H%M%S)-codex-goal"
+RUN_DIR="${TMPDIR:-/tmp}/codex-goal-runs/$(date +%Y%m%d-%H%M%S)-codex-goal"
 mkdir -p "$RUN_DIR"
 cp <user-spec-file> "$RUN_DIR/spec.json"   # or write inline spec to spec.json
 # Sanity-validate it parses as JSON
@@ -132,7 +132,7 @@ Rules for this iteration:
 # The skill replays the spec + steering on each iter; codex itself doesn't resume.
 ITER_N=1   # incremented by Claude across iters
 RESULT_FILE="$RUN_DIR/iter-${ITER_N}-result.json"
-./scripts/codex/codex-goal-dispatch.sh --result-file "$RESULT_FILE" -- "$PROMPT"
+"${CLAUDE_PLUGIN_ROOT}/scripts/codex/codex-goal-dispatch.sh" --result-file "$RESULT_FILE" -- "$PROMPT"
 ```
 
 The helper prints the result file path (schema-enforced). Read it with `jq`.
@@ -357,8 +357,8 @@ When you want litmus coverage on the handover's output:
 
 1. **Run retroactive PR-mode litmus before opening the PR.** After the handover converges, dispatch:
    ```bash
-   LITMUS_MODE=pr LITMUS_PR_BASE=<your-default-branch> bash skills/litmus/scripts/init-review-loop.sh --force 10
-   LITMUS_MODE=pr LITMUS_PR_BASE=<your-default-branch> bash skills/litmus/scripts/run-review-loop.sh
+   LITMUS_MODE=pr LITMUS_PR_BASE=<your-default-branch> bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" --force 10
+   LITMUS_MODE=pr LITMUS_PR_BASE=<your-default-branch> bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"
    ```
    Reviews the aggregate branch diff in one pass (equivalent coverage to per-commit, less wall-clock).
 2. **Iterate on findings as you would on any litmus FAIL.** A follow-up `chore(scripts): litmus cleanup` commit is a fine pattern when codex's output trips stylistic findings (SC2292, SC2312, etc.).

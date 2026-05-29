@@ -1,3 +1,7 @@
+---
+description: Create a multi-model implementation plan without modifying production code.
+---
+
 # Plan - Multi-Model Collaborative Planning
 
 Multi-model collaborative planning - Context retrieval + Dual-model analysis → Generate step-by-step implementation plan.
@@ -9,7 +13,7 @@ $ARGUMENTS
 ## Core Protocols
 
 - **Language Protocol**: Use **English** when interacting with tools/models, communicate with user in their language
-- **Mandatory Parallel**: Codex/Agy calls MUST use `run_in_background: true` (including single model calls, to avoid blocking main thread)
+- **Mandatory Parallel**: Codex/Gemini calls MUST use `run_in_background: true` (including single model calls, to avoid blocking main thread)
 - **Code Sovereignty**: External models have **zero filesystem write access**, all modifications by Claude
 - **Stop-Loss Mechanism**: Do not proceed to next phase until current phase output is validated
 - **Planning Only**: This command allows reading context and writing to `.claude/plan/*` plan files, but **NEVER modify production code**
@@ -22,7 +26,7 @@ $ARGUMENTS
 
 ```
 Bash({
-  command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend <codex|agy> {{AGY_MODEL_FLAG}}- \"$PWD\" <<'EOF'
+  command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend <codex|gemini> {{GEMINI_MODEL_FLAG}}- \"$PWD\" <<'EOF'
 ROLE_FILE: <role prompt path>
 <TASK>
 Requirement: <enhanced requirement>
@@ -37,14 +41,14 @@ EOF",
 ```
 
 **Model Parameter Notes**:
-- `{{AGY_MODEL_FLAG}}`: When using `--backend agy`, replace with `--agy-model gemini-3-pro-preview` (note trailing space); use empty string for codex
+- `{{GEMINI_MODEL_FLAG}}`: When using `--backend gemini`, replace with `--gemini-model gemini-3-pro-preview` (note trailing space); use empty string for codex
 
 **Role Prompts**:
 
-| Phase | Codex | Agy |
+| Phase | Codex | Gemini |
 |-------|-------|--------|
-| Analysis | `~/.claude/.ccg/prompts/codex/analyzer.md` | `~/.claude/.ccg/prompts/agy/analyzer.md` |
-| Planning | `~/.claude/.ccg/prompts/codex/architect.md` | `~/.claude/.ccg/prompts/agy/architect.md` |
+| Analysis | `~/.claude/.ccg/prompts/codex/analyzer.md` | `~/.claude/.ccg/prompts/gemini/analyzer.md` |
+| Planning | `~/.claude/.ccg/prompts/codex/architect.md` | `~/.claude/.ccg/prompts/gemini/architect.md` |
 
 **Session Reuse**: Each call returns `SESSION_ID: xxx` (typically output by wrapper), **MUST save** for subsequent `/ccg:execute` use.
 
@@ -122,7 +126,7 @@ mcp__ace-tool__search_context({
 
 #### 2.1 Distribute Inputs
 
-**Parallel call** Codex and Agy (`run_in_background: true`):
+**Parallel call** Codex and Gemini (`run_in_background: true`):
 
 Distribute **original requirement** (without preset opinions) to both models:
 
@@ -131,12 +135,12 @@ Distribute **original requirement** (without preset opinions) to both models:
    - Focus: Technical feasibility, architecture impact, performance considerations, potential risks
    - OUTPUT: Multi-perspective solutions + pros/cons analysis
 
-2. **Agy Frontend Analysis**:
-   - ROLE_FILE: `~/.claude/.ccg/prompts/agy/analyzer.md`
+2. **Gemini Frontend Analysis**:
+   - ROLE_FILE: `~/.claude/.ccg/prompts/gemini/analyzer.md`
    - Focus: UI/UX impact, user experience, visual design
    - OUTPUT: Multi-perspective solutions + pros/cons analysis
 
-Wait for both models' complete results with `TaskOutput`. **Save SESSION_ID** (`CODEX_SESSION` and `AGY_SESSION`).
+Wait for both models' complete results with `TaskOutput`. **Save SESSION_ID** (`CODEX_SESSION` and `GEMINI_SESSION`).
 
 #### 2.2 Cross-Validation
 
@@ -144,7 +148,7 @@ Integrate perspectives and iterate for optimization:
 
 1. **Identify consensus** (strong signal)
 2. **Identify divergence** (needs weighing)
-3. **Complementary strengths**: Backend logic follows Codex, Frontend design follows Agy
+3. **Complementary strengths**: Backend logic follows Codex, Frontend design follows Gemini
 4. **Logical reasoning**: Eliminate logical gaps in solutions
 
 #### 2.3 (Optional but Recommended) Dual-Model Plan Draft
@@ -155,8 +159,8 @@ To reduce risk of omissions in Claude's synthesized plan, can parallel have both
    - ROLE_FILE: `~/.claude/.ccg/prompts/codex/architect.md`
    - OUTPUT: Step-by-step plan + pseudo-code (focus: data flow/edge cases/error handling/test strategy)
 
-2. **Agy Plan Draft** (Frontend authority):
-   - ROLE_FILE: `~/.claude/.ccg/prompts/agy/architect.md`
+2. **Gemini Plan Draft** (Frontend authority):
+   - ROLE_FILE: `~/.claude/.ccg/prompts/gemini/architect.md`
    - OUTPUT: Step-by-step plan + pseudo-code (focus: information architecture/interaction/accessibility/visual consistency)
 
 Wait for both models' complete results with `TaskOutput`, record key differences in their suggestions.
@@ -169,12 +173,12 @@ Synthesize both analyses, generate **Step-by-step Implementation Plan**:
 ## Implementation Plan: <Task Name>
 
 ### Task Type
-- [ ] Frontend (→ Agy)
+- [ ] Frontend (→ Gemini)
 - [ ] Backend (→ Codex)
 - [ ] Fullstack (→ Parallel)
 
 ### Technical Solution
-<Optimal solution synthesized from Codex + Agy analysis>
+<Optimal solution synthesized from Codex + Gemini analysis>
 
 ### Implementation Steps
 1. <Step 1> - Expected deliverable
@@ -192,7 +196,7 @@ Synthesize both analyses, generate **Step-by-step Implementation Plan**:
 
 ### SESSION_ID (for /ccg:execute use)
 - CODEX_SESSION: <session_id>
-- AGY_SESSION: <session_id>
+- GEMINI_SESSION: <session_id>
 ```
 
 ### Phase 2 End: Plan Delivery (Not Execution)
@@ -263,6 +267,6 @@ After user approves, **manually** execute:
 
 1. **Plan only, no implementation** – This command does not execute any code changes
 2. **No Y/N prompts** – Only present plan, let user decide next steps
-3. **Trust Rules** – Backend follows Codex, Frontend follows Agy
+3. **Trust Rules** – Backend follows Codex, Frontend follows Gemini
 4. External models have **zero filesystem write access**
-5. **SESSION_ID Handoff** – Plan must include `CODEX_SESSION` / `AGY_SESSION` at end (for `/ccg:execute resume <SESSION_ID>` use)
+5. **SESSION_ID Handoff** – Plan must include `CODEX_SESSION` / `GEMINI_SESSION` at end (for `/ccg:execute resume <SESSION_ID>` use)

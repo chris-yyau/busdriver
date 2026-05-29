@@ -1156,30 +1156,6 @@
       "upstream_path": "rules/typescript/testing.md"
     },
     {
-      "path": "rules/zh/README.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "rules/zh/README.md"
-    },
-    {
-      "path": "rules/zh/agents.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "rules/zh/agents.md"
-    },
-    {
-      "path": "rules/zh/code-review.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "rules/zh/code-review.md"
-    },
-    {
-      "path": "rules/zh/coding-style.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "rules/zh/coding-style.md"
-    },
-    {
       "path": "rules/zh/investigate-before-acting.md",
       "source": "local",
       "status": "local"
@@ -1188,48 +1164,6 @@
       "path": "rules/zh/validate-before-building.md",
       "source": "local",
       "status": "local"
-    },
-    {
-      "path": "rules/zh/development-workflow.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "rules/zh/development-workflow.md"
-    },
-    {
-      "path": "rules/zh/git-workflow.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "rules/zh/git-workflow.md"
-    },
-    {
-      "path": "rules/zh/hooks.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "rules/zh/hooks.md"
-    },
-    {
-      "path": "rules/zh/patterns.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "rules/zh/patterns.md"
-    },
-    {
-      "path": "rules/zh/performance.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "rules/zh/performance.md"
-    },
-    {
-      "path": "rules/zh/security.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "rules/zh/security.md"
-    },
-    {
-      "path": "rules/zh/testing.md",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "rules/zh/testing.md"
     },
     {
       "path": "scripts/bump-version.sh",
@@ -4431,6 +4365,954 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "commands/auto-update.md"
+    },
+    {
+      "path": "agents/swift-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/swift-reviewer.md"
+    },
+    {
+      "path": "agents/network-troubleshooter.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/network-troubleshooter.md"
+    },
+    {
+      "path": "agents/django-build-resolver.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/django-build-resolver.md"
+    },
+    {
+      "path": "agents/mle-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/mle-reviewer.md"
+    },
+    {
+      "path": "agents/harmonyos-app-resolver.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/harmonyos-app-resolver.md"
+    },
+    {
+      "path": "agents/django-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/django-reviewer.md"
+    },
+    {
+      "path": "agents/react-build-resolver.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/react-build-resolver.md"
+    },
+    {
+      "path": "agents/fsharp-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/fsharp-reviewer.md"
+    },
+    {
+      "path": "agents/fastapi-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/fastapi-reviewer.md"
+    },
+    {
+      "path": "agents/homelab-architect.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/homelab-architect.md"
+    },
+    {
+      "path": "agents/network-config-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/network-config-reviewer.md"
+    },
+    {
+      "path": "agents/swift-build-resolver.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/swift-build-resolver.md"
+    },
+    {
+      "path": "agents/react-reviewer.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/react-reviewer.md"
+    },
+    {
+      "path": "agents/marketing-agent.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/marketing-agent.md"
+    },
+    {
+      "path": "agents/network-architect.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "agents/network-architect.md"
+    },
+    {
+      "path": "commands/react-review.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/react-review.md"
+    },
+    {
+      "path": "commands/cost-report.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/cost-report.md"
+    },
+    {
+      "path": "commands/marketing-campaign.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/marketing-campaign.md"
+    },
+    {
+      "path": "commands/react-build.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/react-build.md"
+    },
+    {
+      "path": "commands/project-init.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/project-init.md"
+    },
+    {
+      "path": "commands/react-test.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/react-test.md"
+    },
+    {
+      "path": "commands/fastapi-review.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "commands/fastapi-review.md"
+    },
+    {
+      "path": "skills/frontend-design-direction/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/frontend-design-direction/SKILL.md"
+    },
+    {
+      "path": "skills/react-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/react-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/recursive-decision-ledger/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/recursive-decision-ledger/SKILL.md"
+    },
+    {
+      "path": "skills/network-interface-health/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/network-interface-health/SKILL.md"
+    },
+    {
+      "path": "skills/frontend-a11y/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/frontend-a11y/SKILL.md"
+    },
+    {
+      "path": "skills/ui-to-vue/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/ui-to-vue/SKILL.md"
+    },
+    {
+      "path": "skills/ito-basket-compare/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/ito-basket-compare/SKILL.md"
+    },
+    {
+      "path": "skills/homelab-vlan-segmentation/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/homelab-vlan-segmentation/SKILL.md"
+    },
+    {
+      "path": "skills/error-handling/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/error-handling/SKILL.md"
+    },
+    {
+      "path": "skills/prisma-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/prisma-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/homelab-network-readiness/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/homelab-network-readiness/SKILL.md"
+    },
+    {
+      "path": "skills/redis-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/redis-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/production-audit/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/production-audit/SKILL.md"
+    },
+    {
+      "path": "skills/agent-architecture-audit/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/agent-architecture-audit/SKILL.md"
+    },
+    {
+      "path": "skills/react-performance/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/react-performance/SKILL.md"
+    },
+    {
+      "path": "skills/ito-market-intelligence/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/ito-market-intelligence/SKILL.md"
+    },
+    {
+      "path": "skills/flox-environments/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/flox-environments/SKILL.md"
+    },
+    {
+      "path": "skills/mle-workflow/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/mle-workflow/SKILL.md"
+    },
+    {
+      "path": "skills/plan-orchestrate/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/plan-orchestrate/SKILL.md"
+    },
+    {
+      "path": "skills/marketing-campaign/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/marketing-campaign/SKILL.md"
+    },
+    {
+      "path": "skills/tinystruct-patterns/references/routing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/tinystruct-patterns/references/routing.md"
+    },
+    {
+      "path": "skills/tinystruct-patterns/references/architecture.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/tinystruct-patterns/references/architecture.md"
+    },
+    {
+      "path": "skills/tinystruct-patterns/references/testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/tinystruct-patterns/references/testing.md"
+    },
+    {
+      "path": "skills/tinystruct-patterns/references/system-usage.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/tinystruct-patterns/references/system-usage.md"
+    },
+    {
+      "path": "skills/tinystruct-patterns/references/data-handling.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/tinystruct-patterns/references/data-handling.md"
+    },
+    {
+      "path": "skills/tinystruct-patterns/references/database.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/tinystruct-patterns/references/database.md"
+    },
+    {
+      "path": "skills/tinystruct-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/tinystruct-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/motion-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/motion-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/prediction-market-risk-review/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/prediction-market-risk-review/SKILL.md"
+    },
+    {
+      "path": "skills/latency-critical-systems/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/latency-critical-systems/SKILL.md"
+    },
+    {
+      "path": "skills/prediction-market-oracle-research/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/prediction-market-oracle-research/SKILL.md"
+    },
+    {
+      "path": "skills/benchmark-optimization-loop/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/benchmark-optimization-loop/SKILL.md"
+    },
+    {
+      "path": "skills/network-config-validation/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/network-config-validation/SKILL.md"
+    },
+    {
+      "path": "skills/windows-desktop-e2e/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/windows-desktop-e2e/SKILL.md"
+    },
+    {
+      "path": "skills/quarkus-tdd/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/quarkus-tdd/SKILL.md"
+    },
+    {
+      "path": "skills/cost-tracking/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/cost-tracking/SKILL.md"
+    },
+    {
+      "path": "skills/django-celery/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/django-celery/SKILL.md"
+    },
+    {
+      "path": "skills/quarkus-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/quarkus-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/motion-advanced/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/motion-advanced/SKILL.md"
+    },
+    {
+      "path": "skills/blender-motion-state-inspection/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/blender-motion-state-inspection/SKILL.md"
+    },
+    {
+      "path": "skills/netmiko-ssh-automation/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/netmiko-ssh-automation/SKILL.md"
+    },
+    {
+      "path": "skills/quarkus-verification/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/quarkus-verification/SKILL.md"
+    },
+    {
+      "path": "skills/scientific-pkg-gget/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/scientific-pkg-gget/SKILL.md"
+    },
+    {
+      "path": "skills/fastapi-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/fastapi-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/make-interfaces-feel-better/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/make-interfaces-feel-better/SKILL.md"
+    },
+    {
+      "path": "skills/quarkus-security/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/quarkus-security/SKILL.md"
+    },
+    {
+      "path": "skills/hermes-imports/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/hermes-imports/SKILL.md"
+    },
+    {
+      "path": "skills/network-bgp-diagnostics/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/network-bgp-diagnostics/SKILL.md"
+    },
+    {
+      "path": "skills/skill-comply/tests/test_runner.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-comply/tests/test_runner.py"
+    },
+    {
+      "path": "skills/recsys-pipeline-architect/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/recsys-pipeline-architect/SKILL.md"
+    },
+    {
+      "path": "skills/ito-data-atlas-agent/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/ito-data-atlas-agent/SKILL.md"
+    },
+    {
+      "path": "skills/cisco-ios-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/cisco-ios-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/ios-icon-gen/scripts/iconify_gen.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/ios-icon-gen/scripts/iconify_gen.sh"
+    },
+    {
+      "path": "skills/ios-icon-gen/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/ios-icon-gen/SKILL.md"
+    },
+    {
+      "path": "skills/scientific-db-uspto-database/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/scientific-db-uspto-database/SKILL.md"
+    },
+    {
+      "path": "skills/homelab-network-setup/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/homelab-network-setup/SKILL.md"
+    },
+    {
+      "path": "skills/parallel-execution-optimizer/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/parallel-execution-optimizer/SKILL.md"
+    },
+    {
+      "path": "skills/continuous-learning-v2/scripts/migrate-homunculus.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning-v2/scripts/migrate-homunculus.sh"
+    },
+    {
+      "path": "skills/continuous-learning-v2/scripts/lib/homunculus-dir.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/continuous-learning-v2/scripts/lib/homunculus-dir.sh"
+    },
+    {
+      "path": "skills/motion-foundations/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/motion-foundations/SKILL.md"
+    },
+    {
+      "path": "skills/frontend-slides/animation-patterns.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/frontend-slides/animation-patterns.md"
+    },
+    {
+      "path": "skills/frontend-slides/html-template.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/frontend-slides/html-template.md"
+    },
+    {
+      "path": "skills/frontend-slides/scripts/export-pdf.sh",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/frontend-slides/scripts/export-pdf.sh"
+    },
+    {
+      "path": "skills/frontend-slides/scripts/extract-pptx.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/frontend-slides/scripts/extract-pptx.py"
+    },
+    {
+      "path": "skills/react-testing/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/react-testing/SKILL.md"
+    },
+    {
+      "path": "skills/uncloud/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/uncloud/SKILL.md"
+    },
+    {
+      "path": "skills/motion-ui/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/motion-ui/SKILL.md"
+    },
+    {
+      "path": "skills/vite-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/vite-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/agentic-os/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/agentic-os/SKILL.md"
+    },
+    {
+      "path": "skills/ito-trade-planner/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/ito-trade-planner/SKILL.md"
+    },
+    {
+      "path": "skills/angular-developer/references/angular-aria.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/angular-aria.md"
+    },
+    {
+      "path": "skills/angular-developer/references/defining-providers.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/defining-providers.md"
+    },
+    {
+      "path": "skills/angular-developer/references/mcp.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/mcp.md"
+    },
+    {
+      "path": "skills/angular-developer/references/inputs.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/inputs.md"
+    },
+    {
+      "path": "skills/angular-developer/references/cli.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/cli.md"
+    },
+    {
+      "path": "skills/angular-developer/references/linked-signal.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/linked-signal.md"
+    },
+    {
+      "path": "skills/angular-developer/references/e2e-testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/e2e-testing.md"
+    },
+    {
+      "path": "skills/angular-developer/references/tailwind-css.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/tailwind-css.md"
+    },
+    {
+      "path": "skills/angular-developer/references/outputs.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/outputs.md"
+    },
+    {
+      "path": "skills/angular-developer/references/di-fundamentals.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/di-fundamentals.md"
+    },
+    {
+      "path": "skills/angular-developer/references/components.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/components.md"
+    },
+    {
+      "path": "skills/angular-developer/references/creating-services.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/creating-services.md"
+    },
+    {
+      "path": "skills/angular-developer/references/navigate-to-routes.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/navigate-to-routes.md"
+    },
+    {
+      "path": "skills/angular-developer/references/router-lifecycle.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/router-lifecycle.md"
+    },
+    {
+      "path": "skills/angular-developer/references/data-resolvers.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/data-resolvers.md"
+    },
+    {
+      "path": "skills/angular-developer/references/component-harnesses.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/component-harnesses.md"
+    },
+    {
+      "path": "skills/angular-developer/references/reactive-forms.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/reactive-forms.md"
+    },
+    {
+      "path": "skills/angular-developer/references/rendering-strategies.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/rendering-strategies.md"
+    },
+    {
+      "path": "skills/angular-developer/references/signals-overview.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/signals-overview.md"
+    },
+    {
+      "path": "skills/angular-developer/references/angular-animations.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/angular-animations.md"
+    },
+    {
+      "path": "skills/angular-developer/references/define-routes.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/define-routes.md"
+    },
+    {
+      "path": "skills/angular-developer/references/effects.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/effects.md"
+    },
+    {
+      "path": "skills/angular-developer/references/template-driven-forms.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/template-driven-forms.md"
+    },
+    {
+      "path": "skills/angular-developer/references/route-animations.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/route-animations.md"
+    },
+    {
+      "path": "skills/angular-developer/references/host-elements.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/host-elements.md"
+    },
+    {
+      "path": "skills/angular-developer/references/signal-forms.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/signal-forms.md"
+    },
+    {
+      "path": "skills/angular-developer/references/router-testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/router-testing.md"
+    },
+    {
+      "path": "skills/angular-developer/references/resource.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/resource.md"
+    },
+    {
+      "path": "skills/angular-developer/references/show-routes-with-outlets.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/show-routes-with-outlets.md"
+    },
+    {
+      "path": "skills/angular-developer/references/loading-strategies.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/loading-strategies.md"
+    },
+    {
+      "path": "skills/angular-developer/references/route-guards.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/route-guards.md"
+    },
+    {
+      "path": "skills/angular-developer/references/component-styling.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/component-styling.md"
+    },
+    {
+      "path": "skills/angular-developer/references/injection-context.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/injection-context.md"
+    },
+    {
+      "path": "skills/angular-developer/references/testing-fundamentals.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/testing-fundamentals.md"
+    },
+    {
+      "path": "skills/angular-developer/references/hierarchical-injectors.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/references/hierarchical-injectors.md"
+    },
+    {
+      "path": "skills/angular-developer/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/angular-developer/SKILL.md"
+    },
+    {
+      "path": "skills/fsharp-testing/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/fsharp-testing/SKILL.md"
+    },
+    {
+      "path": "skills/scientific-thinking-scholar-evaluation/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/scientific-thinking-scholar-evaluation/SKILL.md"
+    },
+    {
+      "path": "skills/mysql-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/mysql-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/homelab-wireguard-vpn/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/homelab-wireguard-vpn/SKILL.md"
+    },
+    {
+      "path": "skills/scientific-thinking-literature-review/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/scientific-thinking-literature-review/SKILL.md"
+    },
+    {
+      "path": "skills/homelab-pihole-dns/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/homelab-pihole-dns/SKILL.md"
+    },
+    {
+      "path": "skills/data-throughput-accelerator/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/data-throughput-accelerator/SKILL.md"
+    },
+    {
+      "path": "skills/scientific-db-pubmed-database/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/scientific-db-pubmed-database/SKILL.md"
+    },
+    {
+      "path": "skills/setup-pre-commit/SKILL.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/misc/setup-pre-commit/SKILL.md"
+    },
+    {
+      "path": "skills/git-guardrails-claude-code/scripts/block-dangerous-git.sh",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/misc/git-guardrails-claude-code/scripts/block-dangerous-git.sh"
+    },
+    {
+      "path": "skills/git-guardrails-claude-code/SKILL.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/misc/git-guardrails-claude-code/SKILL.md"
+    },
+    {
+      "path": "skills/setup-matt-pocock-skills/issue-tracker-gitlab.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/setup-matt-pocock-skills/issue-tracker-gitlab.md"
+    },
+    {
+      "path": "skills/setup-matt-pocock-skills/domain.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/setup-matt-pocock-skills/domain.md"
+    },
+    {
+      "path": "skills/setup-matt-pocock-skills/triage-labels.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/setup-matt-pocock-skills/triage-labels.md"
+    },
+    {
+      "path": "skills/setup-matt-pocock-skills/SKILL.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/setup-matt-pocock-skills/SKILL.md"
+    },
+    {
+      "path": "skills/setup-matt-pocock-skills/issue-tracker-github.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/setup-matt-pocock-skills/issue-tracker-github.md"
+    },
+    {
+      "path": "skills/setup-matt-pocock-skills/issue-tracker-local.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/setup-matt-pocock-skills/issue-tracker-local.md"
+    },
+    {
+      "path": "skills/triage/OUT-OF-SCOPE.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/triage/OUT-OF-SCOPE.md"
+    },
+    {
+      "path": "skills/triage/SKILL.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/triage/SKILL.md"
+    },
+    {
+      "path": "skills/triage/AGENT-BRIEF.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/triage/AGENT-BRIEF.md"
+    },
+    {
+      "path": "skills/prototype/SKILL.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/prototype/SKILL.md"
+    },
+    {
+      "path": "skills/prototype/LOGIC.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/prototype/LOGIC.md"
+    },
+    {
+      "path": "skills/prototype/UI.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/prototype/UI.md"
+    },
+    {
+      "path": "skills/diagnose/scripts/hitl-loop.template.sh",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/diagnose/scripts/hitl-loop.template.sh"
+    },
+    {
+      "path": "skills/diagnose/SKILL.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/diagnose/SKILL.md"
+    },
+    {
+      "path": "skills/to-issues/SKILL.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/to-issues/SKILL.md"
+    },
+    {
+      "path": "skills/to-prd/SKILL.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/to-prd/SKILL.md"
+    },
+    {
+      "path": "skills/handoff/SKILL.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/productivity/handoff/SKILL.md"
+    },
+    {
+      "path": "skills/write-a-skill/SKILL.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/productivity/write-a-skill/SKILL.md"
+    },
+    {
+      "path": "scripts/lib/shell-substitution.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/shell-substitution.js"
     }
   ],
   "rejected": [

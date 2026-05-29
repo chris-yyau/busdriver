@@ -1,12 +1,16 @@
 ---
 name: deep-research
-description: Multi-source deep research using Tavily and Exa MCPs (free tier), with Firecrawl reserved as a paid fallback. Searches the web, synthesizes findings, and delivers cited reports with source attribution. Use when the user wants thorough research on any topic with evidence and citations.
+description: Multi-source deep research using firecrawl and exa MCPs. Searches the web, synthesizes findings, and delivers cited reports with source attribution. Use when the user wants thorough research on any topic with evidence and citations.
 origin: ECC
 ---
 
 # Deep Research
 
-Produce thorough, cited research reports from multiple web sources. Primary tools are Tavily and Exa (both free-tier); Firecrawl is reserved as a paid fallback for JS-heavy SPAs where the free tools return empty.
+> **Drift-prone skill.** Firecrawl/Exa MCP tool names, quotas, and result
+> shapes change. Verify the configured MCP tools and current API docs before
+> promising coverage or quoting live source counts.
+
+Produce thorough, cited research reports from multiple web sources using firecrawl and exa MCP tools.
 
 ## When to Activate
 
@@ -18,14 +22,11 @@ Produce thorough, cited research reports from multiple web sources. Primary tool
 
 ## MCP Requirements
 
-**Tier 1 — Free, use first:**
-- **tavily** — `tavily_search`, `tavily_extract`, `tavily_crawl`, `tavily_map`. See `tavily-search` skill for details. Best for general/news/broad queries and page extraction.
-- **exa** — `web_search_exa`, `web_fetch_exa`. See `exa-search` skill for details. Best for code, technical content, research papers, and `category:company`/`category:people` entity queries.
+At least one of:
+- **firecrawl** — `firecrawl_search`, `firecrawl_scrape`, `firecrawl_crawl`
+- **exa** — `web_search_exa`, `web_search_advanced_exa`, `crawling_exa`
 
-**Tier 2 — Paid fallback, use only when needed:**
-- **firecrawl** — `firecrawl_search`, `firecrawl_scrape`, `firecrawl_crawl`. Reserve for: (a) JS-heavy SPAs where `web_fetch_exa` and `tavily_extract` both return empty/garbage, (b) extremely complex crawls where Tavily's crawl can't reach the content. Every call spends credit.
-
-Both Tier-1 tools together give best free coverage. Configure in `~/.claude.json` or via claude.ai-managed MCP integrations.
+Both together give the best coverage. Configure in `~/.claude.json` or `~/.codex/config.toml`.
 
 ## Workflow
 
@@ -49,52 +50,37 @@ Break the topic into 3-5 research sub-questions. Example:
 
 ### Step 3: Execute Multi-Source Search
 
-For EACH sub-question, route to the right tool:
+For EACH sub-question, search using available MCP tools:
 
-**General/news/broad queries — use Tavily (free):**
-```text
-tavily_search(query: "<sub-question>", max_results: 8, time_range: "year")
+**With firecrawl:**
+```
+firecrawl_search(query: "<sub-question keywords>", limit: 8)
 ```
 
-**Technical/code/research papers — use Exa (free):**
-```text
-web_search_exa(query: "<sub-question described as ideal page>", numResults: 8)
+**With exa:**
 ```
-
-**Entity queries (companies, people) — use Exa with category:**
-```text
-web_search_exa(query: "category:company <company name> funding 2026", numResults: 5)
+web_search_exa(query: "<sub-question keywords>", numResults: 8)
+web_search_advanced_exa(query: "<keywords>", numResults: 5, startPublishedDate: "2025-01-01")
 ```
-
-**Firecrawl is NOT used for search.** Reserve Firecrawl for Step 4 (deep-read) on JS-heavy SPAs where free extract tools fail.
 
 **Search strategy:**
 - Use 2-3 different keyword variations per sub-question
-- Mix Tavily (broad) and Exa (deep/technical) for the same sub-question
+- Mix general and news-focused queries
 - Aim for 15-30 unique sources total
 - Prioritize: academic, official, reputable news > blogs > forums
 
 ### Step 4: Deep-Read Key Sources
 
-For the most promising URLs, fetch full content. Try free tools first; spend Firecrawl credit only on fallback.
+For the most promising URLs, fetch full content:
 
-**Primary (free) — batch URLs in one call:**
-```text
-web_fetch_exa(urls: ["<url1>", "<url2>"], maxCharacters: 5000)
+**With firecrawl:**
 ```
-or
-```text
-tavily_extract(urls: ["<url1>", "<url2>"], extract_depth: "basic")
-```
-
-**LinkedIn / protected / tables / embedded content:**
-```text
-tavily_extract(urls: ["<url>"], extract_depth: "advanced")
-```
-
-**Fallback (paid) — only if both above return empty/garbage on JS-heavy SPAs:**
-```text
 firecrawl_scrape(url: "<url>")
+```
+
+**With exa:**
+```
+crawling_exa(url: "<url>", tokensNum: 5000)
 ```
 
 Read 3-5 key sources in full for depth. Do not rely only on search snippets.

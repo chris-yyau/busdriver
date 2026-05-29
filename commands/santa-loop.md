@@ -75,7 +75,7 @@ Launch an Agent (subagent_type: `code-reviewer`, model: `opus`) with the full ru
 First, detect which CLIs are available:
 ```bash
 command -v codex >/dev/null 2>&1 && echo "codex" || true
-command -v agy >/dev/null 2>&1 && echo "agy" || true
+command -v gemini >/dev/null 2>&1 && echo "gemini" || true
 ```
 
 Build the reviewer prompt (identical rubric + instructions as Reviewer A) and write it to a unique temp file:
@@ -94,15 +94,13 @@ codex exec --sandbox read-only -m gpt-5.4 -C "$(pwd)" - < "$PROMPT_FILE"
 rm -f "$PROMPT_FILE"
 ```
 
-**Antigravity (agy) CLI** (if installed and codex is not)
+**Gemini CLI** (if installed and codex is not)
 ```bash
-# `--print /dev/stdin` reads the prompt from fd 0 (bypasses ARG_MAX on large prompts).
-# agy v1.0.0 has no `--model` flag; selected model comes from the active agy config.
-agy --sandbox --print /dev/stdin < "$PROMPT_FILE"
+gemini -p "$(cat "$PROMPT_FILE")" -m gemini-2.5-pro
 rm -f "$PROMPT_FILE"
 ```
 
-**Claude Agent fallback** (only if neither `codex` nor `agy` is installed)
+**Claude Agent fallback** (only if neither `codex` nor `gemini` is installed)
 Launch a second Claude Agent (subagent_type: `code-reviewer`, model: `opus`). Log a warning that both reviewers share the same model family — true model diversity was not achieved but context isolation is still enforced.
 
 In all cases, the reviewer must return the same structured JSON verdict as Reviewer A.
@@ -168,7 +166,7 @@ Result:     [PUSHED / ESCALATED TO USER]
 ## Notes
 
 - Reviewer A (Claude Opus) always runs — guarantees at least one strong reviewer regardless of tooling.
-- Model diversity is the goal for Reviewer B. GPT-5.4 or Gemini 2.5 Pro (via agy) gives true independence — different training data, different biases, different blind spots. The Claude-only fallback still provides value via context isolation but loses model diversity.
+- Model diversity is the goal for Reviewer B. GPT-5.4 or Gemini 2.5 Pro gives true independence — different training data, different biases, different blind spots. The Claude-only fallback still provides value via context isolation but loses model diversity.
 - Strongest available models are used: Opus for Reviewer A, GPT-5.4 or Gemini 2.5 Pro for Reviewer B.
 - External reviewers run with `--sandbox read-only` (Codex) to prevent repo mutation during review.
 - Fresh reviewers each round prevents anchoring bias from prior findings.

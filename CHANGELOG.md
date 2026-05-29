@@ -1,3 +1,10 @@
+## [1.54.2](https://github.com/chris-yyau/busdriver/compare/v1.54.1...v1.54.2) (2026-05-29)
+
+
+### Bug Fixes
+
+* **litmus:** point forge-block at trusted writer + cap cosmetic pr findings ([#167](https://github.com/chris-yyau/busdriver/issues/167)) ([dafabc9](https://github.com/chris-yyau/busdriver/commit/dafabc9dc2f12eebf50bcaa813075ded2694e4c5))
+
 ## [1.54.1](https://github.com/chris-yyau/busdriver/compare/v1.54.0...v1.54.1) (2026-05-29)
 
 

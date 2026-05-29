@@ -66,20 +66,6 @@ fi
 # Read orchestrator content
 content=$(cat "$SKILL_FILE" 2>&1 || echo "Error: orchestrator SKILL.md not found at ${SKILL_FILE}")
 
-# ── Lean mode (opt-in) ────────────────────────────────────────────────────
-# BUSDRIVER_ORCHESTRATOR_LEAN=1 injects a minimal router pointer instead of the
-# full skill body (~3KB less context/session). A/B vehicle for measuring the
-# routing-quality tradeoff before any permanent trim. Default (unset): full skill.
-if [ "${BUSDRIVER_ORCHESTRATOR_LEAN:-}" = "1" ]; then
-    content="# Master Orchestrator (lean mode)
-
-Feature work follows the 6-phase pipeline — do NOT use EnterPlanMode for it. INVOKE \`busdriver:brainstorming\` (Phase 1, vague idea) or \`busdriver:writing-plans\` (Phase 2, clear requirements); Phases 3–6 auto-execute after plan review passes.
-
-Gates are hook-enforced and CANNOT be bypassed by Claude: pre-commit (litmus), pre-PR (litmus deep), pre-implementation (design review), pre-merge (pr-grind), freeze. Skip only via \`.claude/skip-*.local\` files the user creates in their own terminal.
-
-**Full routing, gates table, phase detail, domain detection, and emergency gate recovery:** Read \`${SKILL_FILE}\` now if the task is non-trivial or you are unsure which skill applies."
-fi
-
 # Append design review cleanup message if any
 if [ -n "$DESIGN_CLEANUP_MSG" ]; then
     content="${content}

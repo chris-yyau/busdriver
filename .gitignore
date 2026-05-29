@@ -28,6 +28,8 @@ docs/superpowers/specs/
 .local-archive/
 
 # codex-goal-handover run artifacts (per-iter logs, verifier outputs, result JSONs)
+# New runs go to ${TMPDIR:-/tmp}/codex-goal-runs/ (see codex-goal-handover SKILL.md);
+# this entry still covers legacy artifacts written under the old in-repo path.
 scripts/codex/.runs/
 
 # Antigravity (agy) CLI per-project state (project-id symlinks back to ~/.gemini/config/)

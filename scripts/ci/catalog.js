@@ -21,6 +21,8 @@ const AGENTS_PATH = path.join(ROOT, 'AGENTS.md');
 const README_ZH_CN_PATH = path.join(ROOT, 'README.zh-CN.md');
 const DOCS_ZH_CN_README_PATH = path.join(ROOT, 'docs', 'zh-CN', 'README.md');
 const DOCS_ZH_CN_AGENTS_PATH = path.join(ROOT, 'docs', 'zh-CN', 'AGENTS.md');
+const PLUGIN_JSON_PATH = path.join(ROOT, '.claude-plugin', 'plugin.json');
+const MARKETPLACE_JSON_PATH = path.join(ROOT, '.claude-plugin', 'marketplace.json');
 const WRITE_MODE = process.argv.includes('--write');
 
 const OUTPUT_MODE = process.argv.includes('--md')
@@ -99,9 +101,34 @@ function parseReadmeExpectations(readmeContent) {
     { category: 'commands', mode: 'exact', expected: Number(quickStartMatch[3]), source: 'README.md quick-start summary' }
   );
 
+  const releaseNoteMatch = readmeContent.match(
+    /actual OSS surface:\s+(\d+)\s+agents,\s+(\d+)\s+skills,\s+and\s+(\d+)\s+legacy command shims/i
+  );
+  if (!releaseNoteMatch) {
+    throw new Error('README.md is missing the rc.1 release-note catalog summary');
+  }
+
+  expectations.push(
+    { category: 'agents', mode: 'exact', expected: Number(releaseNoteMatch[1]), source: 'README.md rc.1 release-note summary' },
+    { category: 'skills', mode: 'exact', expected: Number(releaseNoteMatch[2]), source: 'README.md rc.1 release-note summary' },
+    { category: 'commands', mode: 'exact', expected: Number(releaseNoteMatch[3]), source: 'README.md rc.1 release-note summary' }
+  );
+
+  const projectTreeAgentsMatch = readmeContent.match(/^\|\s*--\s*agents\/\s*#\s*(\d+)\s+specialized subagents for delegation\s*$/im);
+  if (!projectTreeAgentsMatch) {
+    throw new Error('README.md project tree is missing the agents count');
+  }
+
+  expectations.push({
+    category: 'agents',
+    mode: 'exact',
+    expected: Number(projectTreeAgentsMatch[1]),
+    source: 'README.md project tree (agents)'
+  });
+
   const tablePatterns = [
     { category: 'agents', regex: /\|\s*(?:\*\*)?Agents(?:\*\*)?\s*\|\s*(?:(?:PASS:|\u2705)\s*)?(\d+)\s+agents\s*\|/i, source: 'README.md comparison table' },
-    { category: 'commands', regex: /\|\s*(?:\*\*)?Commands(?:\*\*)?\s*\|\s*(?:(?:PASS:|\u2705)\s*)?(\d+)\s+commands\s*\|/i, source: 'README.md comparison table' },
+    { category: 'commands', regex: /\|\s*(?:\*\*)?Commands(?:\*\*)?\s*\|\s*(?:(?:PASS:|\u2705)\s*)?(\d+)\s+commands(?:\s*\([^)]*\))?\s*\|/i, source: 'README.md comparison table' },
     { category: 'skills', regex: /\|\s*(?:\*\*)?Skills(?:\*\*)?\s*\|\s*(?:(?:PASS:|\u2705)\s*)?(\d+)\s+skills\s*\|/i, source: 'README.md comparison table' }
   ];
 
@@ -122,17 +149,17 @@ function parseReadmeExpectations(readmeContent) {
   const parityPatterns = [
     {
       category: 'agents',
-      regex: /^\|\s*(?:\*\*)?Agents(?:\*\*)?\s*\|\s*(\d+)\s*\|\s*Shared\s*\(AGENTS\.md\)\s*\|\s*Shared\s*\(AGENTS\.md\)\s*\|\s*12\s*\|$/im,
+      regex: /^\|\s*(?:\*\*)?Agents(?:\*\*)?\s*\|\s*(\d+)\s*\|\s*Shared\s*\(AGENTS\.md\)\s*\|\s*Shared\s*\(AGENTS\.md\)\s*\|\s*12\s*\|(?:\s*N\/A\s*\|)?$/im,
       source: 'README.md parity table'
     },
     {
       category: 'commands',
-      regex: /^\|\s*(?:\*\*)?Commands(?:\*\*)?\s*\|\s*(\d+)\s*\|\s*Shared\s*\|\s*Instruction-based\s*\|\s*31\s*\|$/im,
+      regex: /^\|\s*(?:\*\*)?Commands(?:\*\*)?\s*\|\s*(\d+)\s*\|\s*Shared\s*\|\s*Instruction-based\s*\|\s*\d+\s*\|(?:\s*\d+\s+prompts\s*\|)?$/im,
       source: 'README.md parity table'
     },
     {
       category: 'skills',
-      regex: /^\|\s*(?:\*\*)?Skills(?:\*\*)?\s*\|\s*(\d+)\s*\|\s*Shared\s*\|\s*10\s*\(native format\)\s*\|\s*37\s*\|$/im,
+      regex: /^\|\s*(?:\*\*)?Skills(?:\*\*)?\s*\|\s*(\d+)\s*\|\s*Shared\s*\|\s*10\s*\(native format\)\s*\|\s*37\s*\|(?:\s*Via instructions\s*\|)?$/im,
       source: 'README.md parity table'
     }
   ];
@@ -209,7 +236,7 @@ function parseZhDocsReadmeExpectations(readmeContent) {
     },
     {
       category: 'commands',
-      regex: /^\|\s*(?:\*\*)?命令(?:\*\*)?\s*\|\s*(\d+)\s*\|\s*共享\s*\|\s*基于指令\s*\|\s*31\s*\|$/im,
+      regex: /^\|\s*(?:\*\*)?命令(?:\*\*)?\s*\|\s*(\d+)\s*\|\s*共享\s*\|\s*基于指令\s*\|\s*\d+\s*\|$/im,
       source: 'docs/zh-CN/README.md parity table'
     },
     {
@@ -346,6 +373,31 @@ function parseZhAgentsDocExpectations(agentsContent) {
   return expectations;
 }
 
+function parseCatalogDescriptionExpectations(content, source, getDescription) {
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    throw new Error(`${source} is not valid JSON: ${error.message}`);
+  }
+
+  const description = getDescription(parsed);
+  if (typeof description !== 'string') {
+    throw new Error(`${source} is missing the catalog count description`);
+  }
+
+  const match = description.match(/(\d+)\s+agents,\s+(\d+)\s+skills,\s+(\d+)\s+legacy command shims?/i);
+  if (!match) {
+    throw new Error(`${source} is missing the catalog count description`);
+  }
+
+  return [
+    { category: 'agents', mode: 'exact', expected: Number(match[1]), source },
+    { category: 'skills', mode: 'exact', expected: Number(match[2]), source },
+    { category: 'commands', mode: 'exact', expected: Number(match[3]), source },
+  ];
+}
+
 function evaluateExpectations(catalog, expectations) {
   return expectations.map(expectation => {
     const actual = catalog[expectation.category].count;
@@ -378,6 +430,19 @@ function syncEnglishReadme(content, catalog) {
   );
   nextContent = replaceOrThrow(
     nextContent,
+    /(actual OSS surface:\s+)(\d+)(\s+agents,\s+)(\d+)(\s+skills,\s+and\s+)(\d+)(\s+legacy command shims)/i,
+    (_, prefix, __, agentsSuffix, ___, skillsSuffix, ____, commandsSuffix) =>
+      `${prefix}${catalog.agents.count}${agentsSuffix}${catalog.skills.count}${skillsSuffix}${catalog.commands.count}${commandsSuffix}`,
+    'README.md rc.1 release-note summary'
+  );
+  nextContent = replaceOrThrow(
+    nextContent,
+    /^(\|\s*--\s*agents\/\s*#\s*)(\d+)(\s+specialized subagents for delegation\s*)$/im,
+    (_, prefix, __, suffix) => `${prefix}${catalog.agents.count}${suffix}`,
+    'README.md project tree (agents)'
+  );
+  nextContent = replaceOrThrow(
+    nextContent,
     /(\|\s*(?:\*\*)?Agents(?:\*\*)?\s*\|\s*(?:(?:PASS:|\u2705)\s*)?)(\d+)(\s+agents\s*\|)/i,
     (_, prefix, __, suffix) => `${prefix}${catalog.agents.count}${suffix}`,
     'README.md comparison table (agents)'
@@ -396,19 +461,19 @@ function syncEnglishReadme(content, catalog) {
   );
   nextContent = replaceOrThrow(
     nextContent,
-    /^(\|\s*(?:\*\*)?Agents(?:\*\*)?\s*\|\s*)(\d+)(\s*\|\s*Shared\s*\(AGENTS\.md\)\s*\|\s*Shared\s*\(AGENTS\.md\)\s*\|\s*12\s*\|)$/im,
+    /^(\|\s*(?:\*\*)?Agents(?:\*\*)?\s*\|\s*)(\d+)(\s*\|\s*Shared\s*\(AGENTS\.md\)\s*\|\s*Shared\s*\(AGENTS\.md\)\s*\|\s*12\s*\|(?:\s*N\/A\s*\|)?)$/im,
     (_, prefix, __, suffix) => `${prefix}${catalog.agents.count}${suffix}`,
     'README.md parity table (agents)'
   );
   nextContent = replaceOrThrow(
     nextContent,
-    /^(\|\s*(?:\*\*)?Commands(?:\*\*)?\s*\|\s*)(\d+)(\s*\|\s*Shared\s*\|\s*Instruction-based\s*\|\s*31\s*\|)$/im,
+    /^(\|\s*(?:\*\*)?Commands(?:\*\*)?\s*\|\s*)(\d+)(\s*\|\s*Shared\s*\|\s*Instruction-based\s*\|\s*\d+\s*\|(?:\s*\d+\s+prompts\s*\|)?)$/im,
     (_, prefix, __, suffix) => `${prefix}${catalog.commands.count}${suffix}`,
     'README.md parity table (commands)'
   );
   nextContent = replaceOrThrow(
     nextContent,
-    /^(\|\s*(?:\*\*)?Skills(?:\*\*)?\s*\|\s*)(\d+)(\s*\|\s*Shared\s*\|\s*10\s*\(native format\)\s*\|\s*37\s*\|)$/im,
+    /^(\|\s*(?:\*\*)?Skills(?:\*\*)?\s*\|\s*)(\d+)(\s*\|\s*Shared\s*\|\s*10\s*\(native format\)\s*\|\s*37\s*\|(?:\s*Via instructions\s*\|)?)$/im,
     (_, prefix, __, suffix) => `${prefix}${catalog.skills.count}${suffix}`,
     'README.md parity table (skills)'
   );
@@ -494,7 +559,7 @@ function syncZhDocsReadme(content, catalog) {
   );
   nextContent = replaceOrThrow(
     nextContent,
-    /^(\|\s*(?:\*\*)?命令(?:\*\*)?\s*\|\s*)(\d+)(\s*\|\s*共享\s*\|\s*基于指令\s*\|\s*31\s*\|)$/im,
+    /^(\|\s*(?:\*\*)?命令(?:\*\*)?\s*\|\s*)(\d+)(\s*\|\s*共享\s*\|\s*基于指令\s*\|\s*\d+\s*\|)$/im,
     (_, prefix, __, suffix) => `${prefix}${catalog.commands.count}${suffix}`,
     'docs/zh-CN/README.md parity table (commands)'
   );
@@ -540,6 +605,31 @@ function syncZhAgents(content, catalog) {
   return nextContent;
 }
 
+function syncCatalogDescription(content, catalog, source, getDescription, setDescription) {
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    throw new Error(`${source} is not valid JSON: ${error.message}`);
+  }
+
+  const description = getDescription(parsed);
+  if (typeof description !== 'string') {
+    throw new Error(`${source} is missing the catalog count description`);
+  }
+
+  const nextDescription = replaceOrThrow(
+    description,
+    /(\d+)(\s+agents,\s+)(\d+)(\s+skills,\s+)(\d+)(\s+legacy command shims?)/i,
+    (_, __, agentsSuffix, ___, skillsSuffix, ____, commandsSuffix) =>
+      `${catalog.agents.count}${agentsSuffix}${catalog.skills.count}${skillsSuffix}${catalog.commands.count}${commandsSuffix}`,
+    source
+  );
+
+  setDescription(parsed, nextDescription);
+  return `${JSON.stringify(parsed, null, 2)}\n`;
+}
+
 function createDocumentSpecs(paths = {}) {
   const {
     readmePath = README_PATH,
@@ -547,6 +637,8 @@ function createDocumentSpecs(paths = {}) {
     zhRootReadmePath = README_ZH_CN_PATH,
     zhDocsReadmePath = DOCS_ZH_CN_README_PATH,
     zhDocsAgentsPath = DOCS_ZH_CN_AGENTS_PATH,
+    pluginJsonPath = PLUGIN_JSON_PATH,
+    marketplaceJsonPath = MARKETPLACE_JSON_PATH,
   } = paths;
 
   return [
@@ -575,6 +667,36 @@ function createDocumentSpecs(paths = {}) {
       parseExpectations: parseZhAgentsDocExpectations,
       syncContent: syncZhAgents,
     },
+    {
+      filePath: pluginJsonPath,
+      parseExpectations: content => parseCatalogDescriptionExpectations(
+        content,
+        '.claude-plugin/plugin.json description',
+        parsed => parsed.description
+      ),
+      syncContent: (content, catalog) => syncCatalogDescription(
+        content,
+        catalog,
+        '.claude-plugin/plugin.json description',
+        parsed => parsed.description,
+        (parsed, description) => { parsed.description = description; }
+      ),
+    },
+    {
+      filePath: marketplaceJsonPath,
+      parseExpectations: content => parseCatalogDescriptionExpectations(
+        content,
+        '.claude-plugin/marketplace.json plugin description',
+        parsed => parsed.plugins?.[0]?.description
+      ),
+      syncContent: (content, catalog) => syncCatalogDescription(
+        content,
+        catalog,
+        '.claude-plugin/marketplace.json plugin description',
+        parsed => parsed.plugins?.[0]?.description,
+        (parsed, description) => { parsed.plugins[0].description = description; }
+      ),
+    },
   ];
 }
 
@@ -585,6 +707,8 @@ function createDocumentSpecsForRoot(root) {
     zhRootReadmePath: path.join(root, 'README.zh-CN.md'),
     zhDocsReadmePath: path.join(root, 'docs', 'zh-CN', 'README.md'),
     zhDocsAgentsPath: path.join(root, 'docs', 'zh-CN', 'AGENTS.md'),
+    pluginJsonPath: path.join(root, '.claude-plugin', 'plugin.json'),
+    marketplaceJsonPath: path.join(root, '.claude-plugin', 'marketplace.json'),
   });
 }
 
@@ -689,11 +813,13 @@ module.exports = {
   formatExpectation,
   main,
   parseAgentsDocExpectations,
+  parseCatalogDescriptionExpectations,
   parseReadmeExpectations,
   parseZhAgentsDocExpectations,
   parseZhDocsReadmeExpectations,
   parseZhRootReadmeExpectations,
   runCatalogCheck,
+  syncCatalogDescription,
   syncEnglishAgents,
   syncEnglishReadme,
   syncZhAgents,

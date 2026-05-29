@@ -13,14 +13,14 @@ Unified workflow orchestrator for Claude Code. Consolidates pipeline process, do
 ## Project Structure
 
 ```
-agents/          49 agent definitions (.md) — specialized reviewers, builders, resolvers
+agents/          65 agent definitions (.md) — specialized reviewers, builders, resolvers
 commands/        Slash command entry points (.md) — user-invokable shortcuts to skills
 hooks/
   hooks.json     Hook registration manifest (PreToolUse, PostToolUse, SessionStart, Stop)
   gate-scripts/  Shell scripts that enforce review gates (fail-CLOSED by default)
 rules/           Coding rules installed to ~/.claude/rules/ (common/ + 11 language dirs)
 scripts/         JS/shell utilities — release, install, session management, health checks
-skills/          206 skill definitions (.md) — the bulk of the plugin's capability (plus `supplements/` support dir)
+skills/          287 skill definitions (.md) — the bulk of the plugin's capability (plus `supplements/` support dir)
 tests/           Shell-based gate tests (test-*.sh)
 docs/            Reference docs and examples
 ```

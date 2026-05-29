@@ -16,6 +16,10 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Patterns: `busdriver:python-patterns`
 - Testing: `busdriver:python-testing`
 - Review: `python-reviewer` agent (see Phase 4 DISPATCH rules)
+- **FastAPI** (detect: `fastapi` imports, `APIRouter`, `@app.get`/`@app.post`, Pydantic models):
+  - Patterns: `busdriver:fastapi-patterns` (routers, dependency injection, Pydantic, async, middleware)
+  - Review: `fastapi-reviewer` agent (see Phase 4 DISPATCH rules)
+  - Commands: `/fastapi-review`
 
 ### Django
 **Detection:** `manage.py`, `settings.py`, Django context
@@ -23,6 +27,9 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Security: `busdriver:django-security`
 - Testing: `busdriver:django-tdd`
 - Verification: `busdriver:django-verification`
+- Async tasks: `busdriver:django-celery` (Celery task queues, workers, beat scheduling, retries)
+- Review: `django-reviewer` agent (see Phase 4 DISPATCH rules)
+- Build issues: `django-build-resolver` agent
 
 ### Spring Boot / Java
 **Detection:** `pom.xml`, `@SpringBootApplication`, Spring context
@@ -34,7 +41,16 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Standards: `busdriver:java-coding-standards`
 - Verification: `busdriver:springboot-verification`
 - Review: `java-reviewer` agent (see Phase 4 DISPATCH rules)
-- Build issues: `java-build-resolver` agent
+- Build issues: `java-build-resolver` agent (auto-detects Spring Boot vs Quarkus)
+
+### Quarkus
+**Detection:** `quarkus` in `pom.xml`/`build.gradle`, `quarkus-bom`, `application.properties` with `quarkus.*`, Quarkus imports
+- Patterns: `busdriver:quarkus-patterns`
+- Security: `busdriver:quarkus-security`
+- Testing: `busdriver:quarkus-tdd`
+- Verification: `busdriver:quarkus-verification`
+- Review: `java-reviewer` agent (see Phase 4 DISPATCH rules)
+- Build issues: `java-build-resolver` agent (Quarkus augmentation, native image, CDI errors)
 
 ### Frontend (React / Next.js / TypeScript)
 **Detection:** `*.tsx`, `*.jsx`, `*.ts`, React components, Next.js, TypeScript
@@ -42,6 +58,16 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Patterns: `busdriver:frontend-patterns`
 - Standards: `busdriver:coding-standards`
 - Review: `typescript-reviewer` agent (type safety, async correctness, Node/web security, idiomatic patterns)
+- **React-specific** (detect: `react` imports, hooks, components):
+  - Patterns: `busdriver:react-patterns` (composition, hooks, state, effects)
+  - Performance: `busdriver:react-performance` (memoization, re-render reduction, bundle)
+  - Testing: `busdriver:react-testing` (React Testing Library, hooks, async)
+  - Animation: `busdriver:motion-foundations`, `busdriver:motion-patterns`, `busdriver:motion-ui`, `busdriver:motion-advanced`
+  - Review: `react-reviewer` agent (see Phase 4 DISPATCH rules)
+  - Build issues: `react-build-resolver` agent
+  - Commands: `/react-review`, `/react-test`, `/react-build`
+- **Vite** (detect: `vite.config.*`, Vite imports): `busdriver:vite-patterns`
+- **Vue migration** (React→Vue work): `busdriver:ui-to-vue`
 - Design: `busdriver:design-system` (generate/audit design tokens)
 - **UI/UX Design** (load when design/styling work detected):
   - Intelligence: `ui-ux-pro-max` (50 styles, 21 palettes, 50 font pairings, 20 charts)
@@ -54,6 +80,12 @@ Domain skills are loaded as context during execution. They are **additive** — 
   - Turbopack: `busdriver:nextjs-turbopack` (Next.js 16+ incremental bundling, FS caching, when to use Turbopack vs webpack)
 - **Bun** (detect: `bun.lock`, `bun.lockb`, `bunfig.toml`, Bun imports):
   - Runtime: `busdriver:bun-runtime` (Bun as runtime, package manager, bundler, test runner; migration from Node)
+
+### Angular
+**Detection:** `angular.json`, `@angular/*` imports, `*.component.ts`, Angular CLI projects
+- Developer guide: `busdriver:angular-developer` (signals, standalone components, reactive forms, SSR, routing, testing, a11y — comprehensive 36-file family)
+- Rules: `rules/typescript/` (Angular is TypeScript-based)
+- Review: `typescript-reviewer` agent
 
 ### Nuxt
 **Detection:** `nuxt.config.*`, `.nuxt/` directory, `useFetch`, `useAsyncData`, Nuxt imports
@@ -74,6 +106,12 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Review: `csharp-reviewer` agent
 - Rules: `rules/csharp/` (coding-style, patterns, security, testing, hooks)
 
+### F#
+**Detection:** `*.fs`, `*.fsproj`, `*.fsx`, F# context
+- Patterns: no F#-specific skill yet — fall back to `busdriver:dotnet-patterns` for shared .NET idioms (DI, async/await)
+- Testing: `busdriver:fsharp-testing` (Expecto, FsCheck, property-based testing)
+- Review: `fsharp-reviewer` agent (see Phase 4 DISPATCH rules)
+
 ### C++
 **Detection:** `*.cpp`, `*.h`, `*.hpp`, `CMakeLists.txt`, C++ context
 - Rules: `rules/cpp/` (coding-style, patterns, security, testing, hooks)
@@ -91,12 +129,16 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Testing/DI: `busdriver:swift-protocol-di-testing`
 - On-device AI: `busdriver:foundation-models-on-device` (Apple FoundationModels framework)
 - iOS 26 UI: `busdriver:liquid-glass-design` (Liquid Glass design system)
-- Review: `code-reviewer` agent (no Swift-specific reviewer yet)
+- Review: `swift-reviewer` agent (see Phase 4 DISPATCH rules)
+- Build issues: `swift-build-resolver` agent
 
 ### Database
 **Detection:** SQL, migrations, schema changes, database operations
 - PostgreSQL: `busdriver:postgres-patterns`
+- MySQL: `busdriver:mysql-patterns`
 - ClickHouse: `busdriver:clickhouse-io`
+- Redis: `busdriver:redis-patterns` (caching, data structures, pub/sub, persistence)
+- Prisma ORM: `busdriver:prisma-patterns` (schema, migrations, type-safe queries, relations)
 - Migrations: `busdriver:database-migrations`
 - **DISPATCH `database-reviewer` agent** via Agent tool when writing SQL queries, creating migrations, designing schemas, or modifying database operations. This is NOT optional for database work — the agent catches query performance issues, missing indexes, RLS gaps, and schema design problems.
 
@@ -150,6 +192,14 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Review: `rust-reviewer` agent (see Phase 4 DISPATCH rules)
 - Build issues: `busdriver:rust-build` command
 
+### Networking / Homelab
+**Detection:** Cisco IOS configs, BGP, VLAN, network device configs, `netmiko`, homelab/VPN setup, network troubleshooting
+- Cisco IOS: `busdriver:cisco-ios-patterns` (read-only diagnostics, config patterns)
+- SSH automation: `busdriver:netmiko-ssh-automation` (⚠️ read-only first; config changes require explicit operator approval)
+- Diagnostics: `busdriver:network-bgp-diagnostics`, `busdriver:network-config-validation`, `busdriver:network-interface-health`
+- Homelab: `busdriver:homelab-network-setup`, `busdriver:homelab-network-readiness`, `busdriver:homelab-vlan-segmentation`, `busdriver:homelab-pihole-dns`, `busdriver:homelab-wireguard-vpn`
+- Agents: `network-architect`, `network-config-reviewer`, `network-troubleshooter`, `homelab-architect`
+
 ### Infrastructure / DevOps
 **Detection:** Dockerfile, docker-compose.yml, CI/CD pipelines, deployment configs, Kubernetes
 - Docker: `busdriver:docker-patterns`
@@ -165,6 +215,11 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - **PyTorch** (detect: `torch` imports, training loops, CUDA usage):
   - Patterns: `busdriver:pytorch-patterns` (training pipelines, model architectures, data loading)
   - Build issues: `pytorch-build-resolver` agent (tensor shape, CUDA, gradient, DataLoader, mixed precision errors)
+- **ML Engineering** (detect: training pipelines, feature stores, model serving, MLOps):
+  - Workflow: `busdriver:mle-workflow` (end-to-end ML engineering: data, training, eval, deployment)
+  - RecSys: `busdriver:recsys-pipeline-architect` (recommendation system pipelines)
+  - Review: `mle-reviewer` agent (see Phase 4 DISPATCH rules)
+- **Performance-critical** (latency budgets, HFT, throughput): `busdriver:latency-critical-systems`, `busdriver:data-throughput-accelerator`, `busdriver:benchmark-optimization-loop`
 
 ### Video & Media
 **Detection:** Video files, FFmpeg commands, Remotion imports, video editing context

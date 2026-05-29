@@ -119,11 +119,11 @@ Creates isolated workspace, verifies baseline tests pass.
 - **TDD** — `busdriver:test-driven-development` (RED → GREEN → REFACTOR). Detailed coverage: `busdriver:tdd-workflow`.
 - **Verification** — `busdriver:verification-before-completion` (no claims without fresh evidence).
 - **Debugging** — `busdriver:systematic-debugging` when stuck — root cause first.
-- **Code Review** — `busdriver:requesting-code-review` after EVERY task. DISPATCH `{lang}-reviewer` agent (`typescript-reviewer`, `go-reviewer`, `python-reviewer`, `rust-reviewer`, `cpp-reviewer`, `java-reviewer`, `kotlin-reviewer`, `flutter-reviewer`, `csharp-reviewer`). Fallback: `code-reviewer`. Handle feedback per `busdriver:receiving-code-review`.
+- **Code Review** — `busdriver:requesting-code-review` after EVERY task. DISPATCH `{lang}-reviewer` agent (`typescript-reviewer`, `go-reviewer`, `python-reviewer`, `rust-reviewer`, `cpp-reviewer`, `java-reviewer`, `kotlin-reviewer`, `flutter-reviewer`, `csharp-reviewer`, `swift-reviewer`, `react-reviewer`, `django-reviewer`, `fastapi-reviewer`, `fsharp-reviewer`, `mle-reviewer`). Fallback: `code-reviewer`. Handle feedback per `busdriver:receiving-code-review`.
 - **Lesson Capture** — After review finds HIGH+ issue not anticipated in plan, save to `~/.claude/notes/lesson-review-{YYYY-MM-DD}-{slug}.md`.
 
 **When build fails — DISPATCH immediately, don't debug manually first:**
-DISPATCH `{lang}-build-resolver` agent if one exists. TS/JS: `build-error-resolver`. PyTorch: `pytorch-build-resolver`. No resolver: use `busdriver:systematic-debugging`.
+DISPATCH `{lang}-build-resolver` agent if one exists. TS/JS: `build-error-resolver`. PyTorch: `pytorch-build-resolver`. Swift: `swift-build-resolver`. React: `react-build-resolver`. Django: `django-build-resolver`. Java/Quarkus/Spring: `java-build-resolver`. HarmonyOS: `harmonyos-app-resolver`. No resolver: use `busdriver:systematic-debugging`.
 
 **DISPATCH `tdd-guide` agent** to produce test files. The discipline governs process; the agent produces tests.
 

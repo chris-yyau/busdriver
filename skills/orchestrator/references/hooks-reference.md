@@ -5,13 +5,13 @@
 | Phase | Hook | Enforcement | What It Does |
 |-------|------|-------------|-------------|
 | **SessionStart** | Plugin update checker | context | Emits `<update-alert>` after task completes |
-| **SessionStart** | Orchestrator loader | context | Loads this skill + staleness + instincts |
+| **SessionStart** | Orchestrator loader | context | Loads this skill (or a minimal pointer when `BUSDRIVER_ORCHESTRATOR_LEAN=1`) + staleness + instincts |
 | **PreToolUse** (Bash) | Pre-commit gate | **GATE** | Blocks `git commit` until litmus + design review pass |
 | **PreToolUse** (Bash) | Pre-PR gate | **GATE** | Blocks `gh pr create` until litmus passes |
-| **PreToolUse** (Write\|Edit\|MultiEdit\|Bash) | Pre-implementation gate | **GATE** | Blocks impl while design docs unreviewed |
+| **PreToolUse** (Write\|Edit\|MultiEdit\|Bash) | Pre-implementation gate (Blueprint Review) | **GATE** | Blocks impl while design/plan docs are unreviewed — enforces the Blueprint Review gate |
 | **PreToolUse** (Bash) | Pre-merge gate | **GATE** | Blocks `gh pr merge` until pr-grind clean |
 | **PreToolUse** (Write\|Edit\|MultiEdit) | Freeze/Guard | **GATE** | Restricts edits to investigation scope |
-| **PostToolUse** (Write\|Edit\|Bash) | Design doc detector | state | Flags design docs for review gate |
+| **PostToolUse** (Write\|Edit\|Bash) | Design doc detector | state | Flags design/plan docs that trigger the Blueprint Review gate above (review via `blueprint-review`) |
 | **PostToolUse** (Edit) | Go post-edit | formatting | gofmt/goimports/go vet |
 | **PostToolUse** (Bash) | Post-commit marker | cleanup | Consumes litmus marker after commit |
 | **SessionEnd** | Auto-push config | persistence | Commits pipeline state to remote |

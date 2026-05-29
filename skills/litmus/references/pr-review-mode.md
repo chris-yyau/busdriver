@@ -4,7 +4,7 @@
 
 When the pre-PR gate blocks `gh pr create`, run the full deep review. This combines the codex CLI pass with a 6-agent multi-voice review for cross-commit depth.
 
-### Fast Path (CLI-only, no agents)
+## Fast Path (CLI-only, no agents)
 
 Only when the user explicitly asks to skip the deep review:
 ```bash
@@ -12,7 +12,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --auto-pr-
 ```
 This runs CLI review only and writes the marker on PASS. **Does NOT dispatch the 6-agent review.**
 
-### Step 0.5: Smart Detection — Check Pre-Commit Coverage
+## Step 0.5: Smart Detection — Check Pre-Commit Coverage
 
 Before running the codex CLI pass, check if all commits were already pre-commit reviewed:
 
@@ -37,7 +37,7 @@ fi
 | Syntax/style issues | Security across file boundaries |
 | | Docs vs code drift |
 
-### Step 1: Codex CLI Pass (fast)
+## Step 1: Codex CLI Pass (fast)
 
 **Skip this step if Step 0.5 detected agents-only mode.**
 
@@ -49,7 +49,7 @@ LITMUS_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop
 
 If FAIL → fix and re-run (same auto-continue loop as commit mode).
 
-### Step 1.5: Scope Drift Detection (Advisory)
+## Step 1.5: Scope Drift Detection (Advisory)
 
 Before launching the expensive multi-agent review, check whether the branch stayed aligned with its stated intent. This is **advisory only** — it flags deviations but never blocks.
 
@@ -81,7 +81,7 @@ gh pr view --json body -q .body 2>/dev/null || true
 - Frame as: "These planned files have no matching changes in the diff: [list]. Deferred or forgotten?"
 
 **Output format:**
-```
+```text
 ## Scope Drift Check (advisory)
 
 ### Unplanned changes
@@ -95,7 +95,7 @@ gh pr view --json body -q .body 2>/dev/null || true
 
 **Important:** This is "explain or trim" framing, not "you violated scope." Legitimate opportunistic fixes are fine. The value is surfacing the gap so the developer can consciously decide, not punishing agility.
 
-### Step 2: Multi-Agent Deep Review
+## Step 2: Multi-Agent Deep Review
 
 <EXTREMELY-IMPORTANT>
 YOU MUST WAIT FOR ALL 6 AGENTS TO RETURN BEFORE PROCEEDING TO STEP 3.
@@ -123,7 +123,7 @@ After codex CLI passes, dispatch **6 parallel review agents** using the Agent to
 | 6 | **Docs-consistency** | sonnet | README, SKILL.md, docs/ accuracy vs changed code. Flag: stale examples, wrong function signatures, missing new features |
 
 **Agent prompt template** (adapt per lens, set `model:` per the table above):
-```
+```text
 model: [MODEL]  # e.g. opus / sonnet — per the dispatch table above
 Review this PR diff for [LENS]. The diff is from base..HEAD.
 
@@ -152,7 +152,7 @@ Also review documentation files (.md) in the diff. For each changed code file:
 4. Verify code examples in docs match the actual implementation
 ```
 
-### Step 3: Score and Filter
+## Step 3: Score and Filter
 
 After all 6 agents return:
 
@@ -164,7 +164,7 @@ After all 6 agents return:
    - MEDIUM/LOW at 80+ confidence → **advisory** (show but don't block)
    - Below 80 confidence → **suppress** (don't show)
 
-### Step 3.5: Weighted Quorum (Agent Availability)
+## Step 3.5: Weighted Quorum (Agent Availability)
 
 Not all agents are equally load-bearing. The pass/fail decision uses weighted scoring rather than a flat 4-of-6 count, so that availability hiccups in low-weight agents (Docs, History) don't block merge when the high-weight agents (Bugs, Security) returned clean.
 
@@ -188,7 +188,7 @@ Not all agents are equally load-bearing. The pass/fail decision uses weighted sc
 
 **Calibration note:** If you observe weight drift (e.g., Docs catching real bugs consistently, or Bugs producing noise), adjust weights based on observed signal quality. Default weights reflect general-purpose code; healthcare/finance workloads should lift Security to 4 and lower Guidelines.
 
-### Step 4: Gate Decision
+## Step 4: Gate Decision
 
 | Result | Action |
 |--------|--------|
@@ -204,7 +204,7 @@ This computes the diff hash and writes `.claude/pr-review-passed.local`. Direct 
 
 The marker must be a SHA-256 hash (64 hex chars) or a timestamped pass (`PASS-<epoch>`). The gate rejects `DEGRADED`, `SKIPPED-NONE`, and `BUILTIN-` prefixed markers for PR review.
 
-### Degraded States
+## Degraded States
 
 Wait for all agents. Only evaluate quorum AFTER agents have timed out (10 min), never while they're still running.
 
@@ -217,10 +217,10 @@ Wait for all agents. Only evaluate quorum AFTER agents have timed out (10 min), 
 | All agents timeout | Fail-closed. Fall back to codex CLI result only (degrade to fast mode) |
 | Codex CLI unavailable | Multi-agent review only (skip Step 1). Marker still written if deep review passes weighted quorum |
 
-### Marker Encoding
+## Marker Encoding
 
 PR markers contain a SHA-256 hash of the `base...HEAD` diff for staleness detection:
-```
+```text
 <64-hex-char-sha256-hash>
 ```
 The pre-PR gate accepts markers that are 64-hex SHA-256 hashes or `PASS-<epoch>` timestamps. It rejects `DEGRADED`, `SKIPPED-NONE`, and `BUILTIN-` prefixed markers.

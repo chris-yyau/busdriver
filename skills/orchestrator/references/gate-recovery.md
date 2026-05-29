@@ -12,7 +12,7 @@ When a gate blocks and the user needs to bypass:
    >
    > After you run it, I will wait ~35 seconds before retrying. Reply "done" once you've run the command.
 3. **After "done", wait via Monitor** — the harness rejects long foreground sleeps:
-   ```
+   ```text
    Monitor(command: "sleep 35 && echo READY", timeout: 45)
    ```
 4. **When READY, retry the originally blocked action directly.** Do NOT verify the skip file first.

@@ -41,7 +41,7 @@ Implementation details (TOCTOU parsing, weighted quorum, CLI backend matrix) liv
 
 If you change skip-file behavior, update:
 - The gate's own SKILL.md
-- The "Emergency Gate Recovery" block in `SKILL.md` (only if user-facing protocol changes)
+- `references/gate-recovery.md` (the full Emergency Gate Recovery procedure) AND the condensed hard-rules stub in `SKILL.md` — keep both in sync (only if user-facing protocol changes)
 - `blueprint-review/SKILL.md`'s "User-Created Skip File" section (canonical failure-mode taxonomy)
 
 ## Verifying After Changes

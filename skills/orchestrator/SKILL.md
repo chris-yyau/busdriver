@@ -50,6 +50,7 @@ When a gate blocks and the user needs to bypass, follow the full procedure in `r
 - NEVER `sleep` directly via Bash — wait via `Monitor(command: "sleep 35 && echo READY", timeout: 45)`.
 - NEVER verify the skip file (`test -f`/`ls`/`stat`/`cat`/`find`) before retrying — it gets consumed on any intervening tool call. Just wait and retry the blocked action directly.
 - NEVER ask the user to wait — Claude waits via Monitor.
+- After the user confirms "done", make NO tool calls except `Monitor` before retrying — any intervening call consumes the skip file. If the retry still blocks, the file was consumed mid-wait; ask the user to `touch` it again and restart the wait.
 
 All bypasses logged to `.claude/bypass-log.jsonl`. Full procedure + failure-mode taxonomy: `references/gate-recovery.md`.
 

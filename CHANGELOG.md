@@ -1,3 +1,10 @@
+## [1.54.1](https://github.com/chris-yyau/busdriver/compare/v1.54.0...v1.54.1) (2026-05-29)
+
+
+### Performance Improvements
+
+* reduce per-session context via progressive disclosure ([#165](https://github.com/chris-yyau/busdriver/issues/165)) ([abefb75](https://github.com/chris-yyau/busdriver/commit/abefb759f25886cc3d8175f7de22428931eecb4b)), closes [#3542](https://github.com/chris-yyau/busdriver/issues/3542)
+
 # [1.54.0](https://github.com/chris-yyau/busdriver/compare/v1.53.3...v1.54.0) (2026-05-29)
 
 

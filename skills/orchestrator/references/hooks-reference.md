@@ -5,7 +5,7 @@
 | Phase | Hook | Enforcement | What It Does |
 |-------|------|-------------|-------------|
 | **SessionStart** | Plugin update checker | context | Emits `<update-alert>` after task completes |
-| **SessionStart** | Orchestrator loader | context | Loads this skill (or a minimal pointer when `BUSDRIVER_ORCHESTRATOR_LEAN=1`) + staleness + instincts |
+| **SessionStart** | Orchestrator loader | context | Loads this skill + staleness + instincts |
 | **PreToolUse** (Bash) | Pre-commit gate | **GATE** | Blocks `git commit` until litmus + design review pass |
 | **PreToolUse** (Bash) | Pre-PR gate | **GATE** | Blocks `gh pr create` until litmus passes |
 | **PreToolUse** (Write\|Edit\|MultiEdit\|Bash) | Pre-implementation gate (Blueprint Review) | **GATE** | Blocks impl while design/plan docs are unreviewed — enforces the Blueprint Review gate |

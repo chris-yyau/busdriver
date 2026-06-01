@@ -42,6 +42,25 @@ function isNonEmptyStringArray(value) {
 }
 
 /**
+ * Decode a single shell-escaped character from a `node -e "..."` command.
+ * Called by String.replace() in a single left-to-right pass so each backslash
+ * escape is consumed exactly once (avoids the double-unescaping that a chain of
+ * separate .replace() calls would cause — CodeQL js/double-escaping).
+ * Only the four escapes the original validator handled are decoded; any other
+ * backslash sequence is left verbatim so valid regex/string escapes in the
+ * hook's inline JS are preserved.
+ * @param {string} _ - Full match (unused)
+ * @param {string} ch - The character after the backslash
+ * @returns {string} Decoded character or original backslash sequence
+ */
+function decodeShellEscapeChar(_, ch) {
+  if (ch === 'n') return '\n';
+  if (ch === 't') return '\t';
+  if (ch === '"') return '"';
+  return '\\';
+}
+
+/**
  * Validate a single hook entry has required fields and valid inline JS
  * @param {object} hook - Hook object with type and command fields
  * @param {string} label - Label for error messages (e.g., "PreToolUse[0].hooks[1]")
@@ -76,22 +95,9 @@ function validateHookEntry(hook, label) {
       const nodeEMatch = hook.command.match(/^node -e "((?:[^"\\]|\\.)*)"(?:\s|$)/s);
       if (nodeEMatch) {
         try {
-          // Decode the shell-escaped inline JS in a SINGLE left-to-right pass so
-          // each backslash escape is consumed exactly once. A chain of separate
-          // .replace() calls double-unescapes (e.g. "\\n" -> "\n" -> newline),
-          // which both corrupts the parsed source and trips CodeQL
-          // js/double-escaping. The character class restricts decoding to the
-          // four escapes the original chain handled (\\, \", \n, \t); any other
-          // backslash sequence (\s, \/, \u…) is left verbatim so valid regex and
-          // string escapes in the hook's JS are preserved.
-          const decoded = nodeEMatch[1].replace(/\\([\\"nt])/g, (_, ch) => {
-            switch (ch) {
-              case 'n': return '\n';
-              case 't': return '\t';
-              case '"': return '"';
-              default: return '\\';
-            }
-          });
+          // Single-pass decode via decodeShellEscapeChar — see that helper for
+          // the rationale (avoids double-unescaping / CodeQL js/double-escaping).
+          const decoded = nodeEMatch[1].replace(/\\([\\"nt])/g, decodeShellEscapeChar);
           new vm.Script(decoded);
         } catch (syntaxErr) {
           console.error(`ERROR: ${label} has invalid inline JS: ${syntaxErr.message}`);

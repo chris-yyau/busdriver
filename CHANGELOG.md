@@ -1,3 +1,10 @@
+## [1.54.4](https://github.com/chris-yyau/busdriver/compare/v1.54.3...v1.54.4) (2026-06-01)
+
+
+### Bug Fixes
+
+* **security:** resolve codeql code-scanning alerts (double-escape, dom-xss, incomplete-escape) ([#169](https://github.com/chris-yyau/busdriver/issues/169)) ([6d8ff9f](https://github.com/chris-yyau/busdriver/commit/6d8ff9ff141a7f2720acebcef9f5d6dee9dce0aa)), closes [js/xss-throu#dom](https://github.com/js/xss-throu/issues/dom)
+
 ## [1.54.3](https://github.com/chris-yyau/busdriver/compare/v1.54.2...v1.54.3) (2026-05-29)
 
 

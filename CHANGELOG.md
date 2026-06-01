@@ -1,3 +1,10 @@
+## [1.54.3](https://github.com/chris-yyau/busdriver/compare/v1.54.2...v1.54.3) (2026-05-29)
+
+
+### Bug Fixes
+
+* **codex-goal:** resolve plugin scripts via CLAUDE_PLUGIN_ROOT in consumer repos ([#168](https://github.com/chris-yyau/busdriver/issues/168)) ([6dc09b1](https://github.com/chris-yyau/busdriver/commit/6dc09b1e94ce9576906a156fe6a5ed2ca2f189f1))
+
 ## [1.54.2](https://github.com/chris-yyau/busdriver/compare/v1.54.1...v1.54.2) (2026-05-29)
 
 

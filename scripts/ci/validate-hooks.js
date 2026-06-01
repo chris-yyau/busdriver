@@ -76,7 +76,23 @@ function validateHookEntry(hook, label) {
       const nodeEMatch = hook.command.match(/^node -e "((?:[^"\\]|\\.)*)"(?:\s|$)/s);
       if (nodeEMatch) {
         try {
-          new vm.Script(nodeEMatch[1].replace(/\\\\/g, '\\').replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\t/g, '\t'));
+          // Decode the shell-escaped inline JS in a SINGLE left-to-right pass so
+          // each backslash escape is consumed exactly once. A chain of separate
+          // .replace() calls double-unescapes (e.g. "\\n" -> "\n" -> newline),
+          // which both corrupts the parsed source and trips CodeQL
+          // js/double-escaping. The character class restricts decoding to the
+          // four escapes the original chain handled (\\, \", \n, \t); any other
+          // backslash sequence (\s, \/, \u…) is left verbatim so valid regex and
+          // string escapes in the hook's JS are preserved.
+          const decoded = nodeEMatch[1].replace(/\\([\\"nt])/g, (_, ch) => {
+            switch (ch) {
+              case 'n': return '\n';
+              case 't': return '\t';
+              case '"': return '"';
+              default: return '\\';
+            }
+          });
+          new vm.Script(decoded);
         } catch (syntaxErr) {
           console.error(`ERROR: ${label} has invalid inline JS: ${syntaxErr.message}`);
           hasErrors = true;

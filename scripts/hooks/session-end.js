@@ -296,7 +296,14 @@ function buildSummarySection(summary) {
   // Tasks (from user messages — collapse newlines and escape backticks to prevent markdown breaks)
   section += '### Tasks\n';
   for (const msg of summary.userMessages) {
-    section += `- ${msg.replace(/\n/g, ' ').replace(/`/g, '\\`')}\n`;
+    // Escape the backslash (the escape char itself) BEFORE escaping backticks,
+    // otherwise a trailing "\" in the input could neutralize our "\`" escape
+    // (CodeQL js/incomplete-sanitization). Collapse newlines last.
+    const safeMsg = msg
+      .replace(/\\/g, '\\\\')
+      .replace(/`/g, '\\`')
+      .replace(/\n/g, ' ');
+    section += `- ${safeMsg}\n`;
   }
   section += '\n';
 

@@ -32,6 +32,18 @@
     }
   }
 
+  // Render the selection indicator without ever interpreting dynamic text as
+  // HTML. `selectedText` can derive from page DOM (a choice label), so we set
+  // it via textContent on a dedicated element rather than innerHTML — this
+  // closes the DOM-XSS sink (CodeQL js/xss-through-dom).
+  function renderIndicator(indicator, selectedText) {
+    indicator.textContent = '';
+    const span = document.createElement('span');
+    span.className = 'selected-text';
+    span.textContent = selectedText;
+    indicator.append(span, ' — return to terminal to continue');
+  }
+
   // Capture clicks on choice elements
   document.addEventListener('click', (e) => {
     const target = e.target.closest('[data-choice]');
@@ -54,9 +66,9 @@
         indicator.textContent = 'Click an option above, then return to the terminal';
       } else if (selected.length === 1) {
         const label = selected[0].querySelector('h3, .content h3, .card-body h3')?.textContent?.trim() || selected[0].dataset.choice;
-        indicator.innerHTML = '<span class="selected-text">' + label + ' selected</span> — return to terminal to continue';
+        renderIndicator(indicator, label + ' selected');
       } else {
-        indicator.innerHTML = '<span class="selected-text">' + selected.length + ' selected</span> — return to terminal to continue';
+        renderIndicator(indicator, selected.length + ' selected');
       }
     }, 0);
   });

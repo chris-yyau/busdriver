@@ -21,7 +21,7 @@ origin: custom
 ## Authority Hierarchy
 
 **Merge gate (authoritative — all must be satisfied):**
-- Required status checks: green (REQUIRED set; advisory checks like CodeScene excluded)
+- Required status checks: green — per `.github/required-checks.lock` `required[]` when present (allowlist mode: only those names block); otherwise all checks except `ADVISORY_PATTERN`/CodeScene (advisory-fallback mode). The lock is the single source of truth for both the pre-merge gate and pr-grind, computed by `scripts/relevant-check-status.sh`.
 - Actionable findings on YOUR PR's changed lines: addressed (fix or justified reply)
 - PR title/body: conventional commit + scope
 
@@ -762,39 +762,58 @@ Automated reviewers (CodeRabbit, Greptile, Cubic, CodeScene, GitGuardian) regist
 **Advisory checks (CodeScene):** CodeScene is non-blocking — its feedback is still collected and you MUST attempt to fix its issues, but its pass/fail status does not block the clean marker or merge gate. If a CodeScene finding requires architectural changes beyond PR scope, note it and proceed.
 
 ```bash
-# Phase 1: Wait for all GitHub-registered checks (CI + automated reviewers)
+# Phase 1: Wait for all GitHub-registered checks (CI + automated reviewers).
+# NOTE: --watch has no allowlist knob, so it waits for the FULL GitHub check
+# set; lock-aware filtering applies to the DECISION below (Phase 2/2.5), not
+# this wait. A perpetually-pending NON-required check can delay this up to the
+# timeout — a known minor latency caveat, not a correctness issue.
 timeout 900 gh pr checks <PR_NUMBER> --watch 2>&1 || true
 
-# Phase 2: Verify no checks are still pending (defensive — catches race conditions)
+# Lock-aware check filter — single source of truth across this skill, the
+# pre-merge gate, and the pr-grinder worker (scripts/relevant-check-status.sh,
+# issue #154). Pass the repo-ROOT DIR so it can read .github/required-checks.lock
+# — NOT the repo name (a bare name resolves the lock at ./name/.github/... and
+# silently falls back to mode=all). It emits "<failed> <pending> <mode> <kept>"
+# on line 1 (read consumes only line 1) and the failing rows on lines 2..N.
+# Fail-CLOSED: any error → conservative blocking "1 0 all 0".
+REPO_DIR=$(git rev-parse --show-toplevel)
+RCS="${CLAUDE_PLUGIN_ROOT}/scripts/relevant-check-status.sh"
+
+# Phase 2: Verify no REQUIRED checks are still pending (lock-aware; defensive).
 for i in 1 2 3 4 5; do
-  PENDING=$(gh pr checks <PR_NUMBER> 2>&1 | grep -c "pending" || true)
-  [ "$PENDING" -eq 0 ] && break
-  echo "⏳ $PENDING checks still pending — waiting 60s (attempt $i/5)..."
+  COUNTS=$(gh pr checks <PR_NUMBER> 2>&1 | bash "$RCS" "$REPO_DIR" 2>/dev/null || printf '1 0 all 0\n')
+  read -r _F PENDING _M _K <<<"$COUNTS"
+  [ "${PENDING:-1}" -eq 0 ] && break
+  echo "⏳ $PENDING required checks still pending — waiting 60s (attempt $i/5)..."
   sleep 60
 done
-if [ "$PENDING" -gt 0 ]; then
-  echo "❌ $PENDING checks still pending after 5 retries. Cannot proceed."
-  echo "Remaining: $(gh pr checks <PR_NUMBER> 2>&1 | grep pending)"
+if [ "${PENDING:-1}" -gt 0 ]; then
+  echo "❌ $PENDING required checks still pending after 5 retries. Cannot proceed."
   exit 1
 fi
 
-# Phase 2.5: Verify all checks PASSED (not just completed)
+# Phase 2.5: Verify all REQUIRED checks PASSED (not just completed).
 GH_EXIT=0
 CHECKS_RAW=$(gh pr checks <PR_NUMBER> 2>&1) || GH_EXIT=$?
 if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_RAW" | grep -qE "pass|fail|pending"; then
   echo "❌ gh pr checks failed (exit $GH_EXIT). Resolve CLI/auth issues."
   exit 1
 fi
-ADVISORY_PATTERN="CodeScene"
-REQUIRED=$(echo "$CHECKS_RAW" | grep -ivE "$ADVISORY_PATTERN" || true)
-ADVISORY_FAILED=$(echo "$CHECKS_RAW" | grep -iE "$ADVISORY_PATTERN" | grep -cE "fail" || true)
-FAILED=$(echo "$REQUIRED" | grep -cE "fail" || true)
+COUNTS=$(printf '%s\n' "$CHECKS_RAW" | bash "$RCS" "$REPO_DIR" 2>/dev/null || printf '1 0 all 0\n')
+read -r FAILED PENDING MODE KEPT <<<"$COUNTS"
+# Guard (mirror the gate): empty/garbled output → treat as blocking.
+if [ -z "${MODE:-}" ] || [ -z "${FAILED:-}" ] || [ -z "${KEPT:-}" ]; then FAILED=1; fi
+# No relevant-check evidence (KEPT=0 — e.g. a required check never posted) must
+# NOT read as clean; mirror the gate's KEPT>0 bootstrap guard.
+if [ "${KEPT:-0}" -eq 0 ]; then FAILED=1; fi
+# Advisory (cosmetic, mode-independent FYI): CodeScene failing is non-blocking.
+ADVISORY_FAILED=$(printf '%s\n' "$CHECKS_RAW" | grep -iE "CodeScene" | grep -cE "fail" || true)
 if [ "$ADVISORY_FAILED" -gt 0 ]; then
   echo "⚠️  $ADVISORY_FAILED advisory checks failing (non-blocking)."
 fi
-if [ "$FAILED" -gt 0 ]; then
+if [ "${FAILED:-1}" -gt 0 ]; then
   echo "❌ $FAILED required checks FAILED. Continuing to Step 2 to collect details."
-  echo "$REQUIRED" | grep -E "fail"
+  printf '%s\n' "$COUNTS" | tail -n +2
 fi
 
 # Phase 3: Grace period for late-arriving comments
@@ -1122,12 +1141,20 @@ if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_RAW" | grep -qE "pass|fail|p
   echo "❌ gh pr checks failed (exit $GH_EXIT). Resolve CLI/auth issues."
   exit 1
 fi
-ADVISORY_PATTERN="CodeScene"
-REQUIRED=$(echo "$CHECKS_RAW" | grep -ivE "$ADVISORY_PATTERN" || true)
-FAILED=$(echo "$REQUIRED" | grep -cE "fail" || true)
-if [ "$FAILED" -gt 0 ]; then
-  echo "❌ BLOCKED: $FAILED required checks still failing. Cannot declare PR clean."
-  echo "$REQUIRED" | grep -E "fail"
+# Lock-aware filter — scripts/relevant-check-status.sh (issue #154). Pass the
+# repo-ROOT DIR (reads .github/required-checks.lock), NOT the repo name.
+# Fail-CLOSED: any error → conservative blocking "1 0 all 0".
+REPO_DIR=$(git rev-parse --show-toplevel)
+COUNTS=$(printf '%s\n' "$CHECKS_RAW" | bash "${CLAUDE_PLUGIN_ROOT}/scripts/relevant-check-status.sh" "$REPO_DIR" 2>/dev/null || printf '1 0 all 0\n')
+read -r FAILED PENDING MODE KEPT <<<"$COUNTS"
+# Guards (mirror the gate): empty/garbled output → blocking; and green requires
+# no failures AND nothing pending AND at least one relevant check ran. KEPT=0 in
+# required mode means a required check never posted (no evidence) — the gate's
+# KEPT>0 bootstrap guard refuses that, so the clean marker must too.
+if [ -z "${MODE:-}" ] || [ -z "${FAILED:-}" ] || [ -z "${KEPT:-}" ]; then FAILED=1; fi
+if [ "${FAILED:-1}" -gt 0 ] || [ "${PENDING:-1}" -gt 0 ] || [ "${KEPT:-0}" -eq 0 ]; then
+  echo "❌ BLOCKED: cannot declare PR clean (failed=${FAILED} pending=${PENDING} kept=${KEPT} mode=${MODE})."
+  printf '%s\n' "$COUNTS" | tail -n +2
   exit 1
 fi
 ```

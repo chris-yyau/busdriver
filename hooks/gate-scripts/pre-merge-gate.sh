@@ -42,64 +42,18 @@ block_emit() {
 ADVISORY_PATTERN="CodeScene"
 
 _relevant_check_counts() {
-    # Reads `gh pr checks` text on stdin; emits "<failed> <pending> <mode>"
-    # where mode is "required" (allowlist applied) or "all" (fallback).
-    local repo_dir="$1"
-    # shellcheck disable=SC2016  # Single quotes intentional — python script body, no shell expansion.
-    python3 -c '
-import sys, os, json, re
-repo_dir = sys.argv[1]
-adv_pat_src = sys.argv[2]
-lock = os.path.join(repo_dir, ".github", "required-checks.lock")
-required = None
-if os.path.isfile(lock):
-    try:
-        with open(lock) as f:
-            d = json.load(f)
-        names = [r.get("name", "") for r in d.get("required", []) if r.get("name")]
-        # Normalize whitespace — lock files written by hand or by upstream
-        # tooling can have stray padding; gh pr checks emits the name in
-        # the first tab-separated column with no leading/trailing space.
-        # Without normalization, " shellcheck" in required[] would silently
-        # miss the real shellcheck failure and let the merge through.
-        names = [n.strip() for n in names if n.strip()]
-        if names:
-            required = set(names)
-    except Exception:
-        required = None
-
-advisory_pat = re.compile(adv_pat_src, re.I)
-mode = "required" if required is not None else "all"
-
-def _status(line):
-    # gh pr checks emits TAB-separated columns: name, status, elapsed, link.
-    # Status-column parsing (not whole-line substring) is mandatory:
-    # `re.search("fail", whole_line)` matches the URL column too, so a
-    # passing check whose URL or name contains "fail" was being miscounted
-    # as a failure.
-    parts = line.split("\t")
-    return parts[1].strip().lower() if len(parts) > 1 else ""
-
-lines = [ln.rstrip("\n") for ln in sys.stdin if ln.strip()]
-# Discard lines without a tab — gh error messages ("no checks reported on
-# this branch", auth errors that slipped past the pass|fail|pending
-# pre-filter) come through stdin without the tab-separated structure of a
-# real check row. Counting them in `kept` would let an error message look
-# like a passing check, inflating KEPT and re-opening the bootstrap
-# fail-open this commit is closing.
-lines = [ln for ln in lines if "\t" in ln]
-if required is not None:
-    kept = [ln for ln in lines if ln.split("\t", 1)[0].strip() in required]
-else:
-    kept = [ln for ln in lines if not advisory_pat.search(ln.split("\t", 1)[0])]
-failed = sum(1 for ln in kept if _status(ln) in ("fail", "failure"))
-pending = sum(1 for ln in kept if _status(ln) in ("pending", "queued", "in_progress", "expected"))
-# Emit kept count too — the bootstrap-merge path needs positive evidence
-# that checks actually ran (kept > 0), not just absence of failures.
-# Otherwise a PR with zero CI configured would satisfy "0 fail + 0 pending"
-# and the gate would silently allow a bootstrap merge with no validation.
-print(f"{failed} {pending} {mode} {len(kept)}")
-' "$repo_dir" "$ADVISORY_PATTERN"
+    # filter logic: see scripts/relevant-check-status.sh (single source of truth
+    # across this gate, skills/pr-grind/SKILL.md, and agents/pr-grinder.md —
+    # issue #154). Reads `gh pr checks` text on stdin; the helper emits
+    # "<failed> <pending> <mode> <kept>" on line 1 (mode ∈ required|all) and may
+    # append the failing rows on lines 2..N — the gate's `read -r FAILED PENDING
+    # MODE KEPT <<<"$COUNTS"` consumes only line 1, so the rows are ignored here.
+    # Fail-CLOSED: the helper always exits 0 with the conservative blocking line
+    # "1 0 all 0" on any internal error; this wrapper adds a second guard.
+    local repo_dir="$1" _hd
+    _hd=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)
+    bash "$_hd/../../scripts/relevant-check-status.sh" "$repo_dir" "$ADVISORY_PATTERN" 2>/dev/null \
+        || printf '1 0 all 0\n'
 }
 
 # ── python3 pre-check ─────────────────────────────────────────────────

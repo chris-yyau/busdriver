@@ -55,37 +55,53 @@ Before Step 1, run `Read skills/pr-grind/SKILL.md` once. The full Step 1–6 pro
 Inline copy of SKILL.md Step 1 — execute verbatim:
 
 ```bash
-# Phase 1: Wait for all GitHub-registered checks (CI + automated reviewers)
+# Phase 1: Wait for all GitHub-registered checks (CI + automated reviewers).
+# --watch waits for the FULL check set (no allowlist knob); lock-aware
+# filtering applies to the DECISION below, not this wait.
 timeout 900 gh pr checks "$PR_NUMBER" --watch 2>&1 || true
 
-# Phase 2: Verify no checks are still pending (defensive — catches race conditions)
+# Lock-aware check filter — single source of truth (scripts/relevant-check-status.sh,
+# issue #154). Pass the repo-ROOT DIR (reads .github/required-checks.lock), NOT
+# the repo name. Emits "<failed> <pending> <mode> <kept>" on line 1 + failing
+# rows on lines 2..N. Fail-CLOSED: any error → conservative blocking "1 0 all 0".
+REPO_DIR="${WORKTREE_DIR:-$(git rev-parse --show-toplevel)}"
+RCS="${CLAUDE_PLUGIN_ROOT}/scripts/relevant-check-status.sh"
+
+# Phase 2: Verify no REQUIRED checks are still pending (lock-aware; defensive).
 for i in 1 2 3 4 5; do
-  PENDING=$(gh pr checks "$PR_NUMBER" 2>&1 | grep -c "pending" || true)
-  [ "$PENDING" -eq 0 ] && break
-  echo "⏳ $PENDING checks still pending — waiting 60s (attempt $i/5)..."
+  COUNTS=$(gh pr checks "$PR_NUMBER" 2>&1 | bash "$RCS" "$REPO_DIR" 2>/dev/null || printf '1 0 all 0\n')
+  read -r _F PENDING _M _K <<<"$COUNTS"
+  [ "${PENDING:-1}" -eq 0 ] && break
+  echo "⏳ $PENDING required checks still pending — waiting 60s (attempt $i/5)..."
   sleep 60
 done
-if [ "$PENDING" -gt 0 ]; then
-  echo "❌ $PENDING checks still pending after 5 retries. Cannot proceed."
+if [ "${PENDING:-1}" -gt 0 ]; then
+  echo "❌ $PENDING required checks still pending after 5 retries. Cannot proceed."
   exit 1
 fi
 
-# Phase 2.5: Verify all checks PASSED (advisory checks like CodeScene are non-blocking)
+# Phase 2.5: Verify all REQUIRED checks PASSED (advisory checks like CodeScene are non-blocking).
 GH_EXIT=0
 CHECKS_RAW=$(gh pr checks "$PR_NUMBER" 2>&1) || GH_EXIT=$?
 if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_RAW" | grep -qE "pass|fail|pending"; then
   echo "❌ gh pr checks failed (exit $GH_EXIT)."; exit 1
 fi
-ADVISORY_PATTERN="CodeScene"
-REQUIRED=$(echo "$CHECKS_RAW" | grep -ivE "$ADVISORY_PATTERN" || true)
-ADVISORY_FAILED=$(echo "$CHECKS_RAW" | grep -iE "$ADVISORY_PATTERN" | grep -cE "fail" || true)
-FAILED=$(echo "$REQUIRED" | grep -cE "fail" || true)
+COUNTS=$(printf '%s\n' "$CHECKS_RAW" | bash "$RCS" "$REPO_DIR" 2>/dev/null || printf '1 0 all 0\n')
+read -r FAILED PENDING MODE KEPT <<<"$COUNTS"
+if [ -z "${MODE:-}" ] || [ -z "${FAILED:-}" ] || [ -z "${KEPT:-}" ]; then FAILED=1; fi
+# No relevant-check evidence (KEPT=0 — e.g. a required check never posted) must
+# NOT read as clean; mirror the gate's KEPT>0 bootstrap guard. (PENDING is
+# already gated by the Phase 2 loop above, which exits non-zero if any remain.)
+if [ "${KEPT:-0}" -eq 0 ]; then FAILED=1; fi
+FAILED_ROWS=$(printf '%s\n' "$COUNTS" | tail -n +2)   # helper lines 2..N: failing rows
+# Advisory (cosmetic, mode-independent): CodeScene failing is non-blocking.
+ADVISORY_FAILED=$(printf '%s\n' "$CHECKS_RAW" | grep -iE "CodeScene" | grep -cE "fail" || true)
 
 # Phase 3: Grace period for late-arriving comments (some bots flip check to pass, then post)
 sleep 30
 ```
 
-If `$FAILED -gt 0`, the failures are real CI breakage — fold their job names into `RESULT_REMAINING` and continue to Step 2 to collect details. If `$ADVISORY_FAILED -gt 0`, note it but proceed; CodeScene's pass/fail status is non-blocking, but its **review threads still must be triaged in Step 2** (advisory ≠ ignored — see triage table).
+If `$FAILED -gt 0`, the failures are real CI breakage — fold the failing job names (from `$FAILED_ROWS`, the helper's lines 2..N) into `RESULT_REMAINING` and continue to Step 2 to collect details. If `$ADVISORY_FAILED -gt 0`, note it but proceed; CodeScene's pass/fail status is non-blocking, but its **review threads still must be triaged in Step 2** (advisory ≠ ignored — see triage table).
 
 ### Step 2 — Collect feedback from ALL FOUR sources (do not skip any)
 

@@ -117,3 +117,49 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: npx commitlint --from "$BASE_SHA" --to "$HEAD_SHA"
+
+  coverage:
+    needs: shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      # --- JavaScript (vitest -> coverage/lcov.info) ---
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npx vitest run --coverage
+      # --- Python (pytest-cov, federated per-suite XML) ---
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install pyyaml==6.0.3 pytest==9.0.3 pytest-cov==7.1.0
+      - name: Coverage — skill-comply
+        run: |
+          cd skills/skill-comply
+          pytest -q --cov=scripts --cov-report=xml:"$GITHUB_WORKSPACE/coverage-skill-comply.xml"
+      - name: Coverage — continuous-learning-v2
+        run: |
+          pytest -q skills/continuous-learning-v2/scripts/test_parse_instinct.py \
+            --cov=skills/continuous-learning-v2/scripts \
+            --cov-report=xml:coverage-clv2.xml
+      # Token is passed only to this step (never job-level env, so checked-out
+      # PR code in earlier steps cannot read it). continue-on-error keeps CI green
+      # if the secret is absent (e.g. fork PRs, which get no secrets on public repos).
+      - name: Upload to Codecov
+        continue-on-error: true
+        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5.5.3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/lcov.info,./coverage-skill-comply.xml,./coverage-clv2.xml

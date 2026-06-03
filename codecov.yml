@@ -3,8 +3,8 @@ coverage:
     project: off          # No global coverage vanity metrics
     patch:
       default:
-        target: 80%       # New code must have 80% coverage
-        threshold: 5%
+        target: 80%       # New-code coverage target
+        threshold: 5%     # tolerance: patches down to 75% still pass (avoids flaky fails on tiny patches)
 comment:
   layout: "condensed_header, diff, flags, components"
   behavior: default

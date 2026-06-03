@@ -157,10 +157,12 @@ jobs:
             --cov=skills/continuous-learning-v2/scripts \
             --cov-report=xml:coverage-clv2.xml
       # Token is passed only to this step (never job-level env, so checked-out
-      # PR code in earlier steps cannot read it). continue-on-error keeps CI green
-      # if the secret is absent (e.g. fork PRs, which get no secrets on public repos).
+      # PR code in earlier steps cannot read it). continue-on-error is scoped to
+      # fork PRs only — forks get no secrets on public repos, so the upload can't
+      # authenticate there; on same-repo pushes/PRs a real upload failure still
+      # surfaces (the job is advisory, so it won't block merge, but it stays visible).
       - name: Upload to Codecov
-        continue-on-error: true
+        continue-on-error: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork }}
         uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5.5.3
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

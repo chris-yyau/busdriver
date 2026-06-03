@@ -1144,10 +1144,13 @@ fi
 REPO_DIR=$(git rev-parse --show-toplevel)
 COUNTS=$(printf '%s\n' "$CHECKS_RAW" | bash "${CLAUDE_PLUGIN_ROOT}/scripts/relevant-check-status.sh" "$REPO_DIR" 2>/dev/null || printf '1 0 all 0\n')
 read -r FAILED PENDING MODE KEPT <<<"$COUNTS"
-# Guard (mirror the gate): empty/garbled output → treat as blocking.
+# Guards (mirror the gate): empty/garbled output → blocking; and green requires
+# no failures AND nothing pending AND at least one relevant check ran. KEPT=0 in
+# required mode means a required check never posted (no evidence) — the gate's
+# KEPT>0 bootstrap guard refuses that, so the clean marker must too.
 if [ -z "${MODE:-}" ] || [ -z "${FAILED:-}" ] || [ -z "${KEPT:-}" ]; then FAILED=1; fi
-if [ "${FAILED:-1}" -gt 0 ]; then
-  echo "❌ BLOCKED: $FAILED required checks still failing. Cannot declare PR clean."
+if [ "${FAILED:-1}" -gt 0 ] || [ "${PENDING:-1}" -gt 0 ] || [ "${KEPT:-0}" -eq 0 ]; then
+  echo "❌ BLOCKED: cannot declare PR clean (failed=${FAILED} pending=${PENDING} kept=${KEPT} mode=${MODE})."
   printf '%s\n' "$COUNTS" | tail -n +2
   exit 1
 fi

@@ -89,6 +89,10 @@ fi
 COUNTS=$(printf '%s\n' "$CHECKS_RAW" | bash "$RCS" "$REPO_DIR" 2>/dev/null || printf '1 0 all 0\n')
 read -r FAILED PENDING MODE KEPT <<<"$COUNTS"
 if [ -z "${MODE:-}" ] || [ -z "${FAILED:-}" ] || [ -z "${KEPT:-}" ]; then FAILED=1; fi
+# No relevant-check evidence (KEPT=0 — e.g. a required check never posted) must
+# NOT read as clean; mirror the gate's KEPT>0 bootstrap guard. (PENDING is
+# already gated by the Phase 2 loop above, which exits non-zero if any remain.)
+if [ "${KEPT:-0}" -eq 0 ]; then FAILED=1; fi
 FAILED_ROWS=$(printf '%s\n' "$COUNTS" | tail -n +2)   # helper lines 2..N: failing rows
 # Advisory (cosmetic, mode-independent): CodeScene failing is non-blocking.
 ADVISORY_FAILED=$(printf '%s\n' "$CHECKS_RAW" | grep -iE "CodeScene" | grep -cE "fail" || true)

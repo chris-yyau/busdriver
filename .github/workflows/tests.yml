@@ -140,10 +140,12 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npx vitest run --coverage
       # --- Python (pytest-cov, federated per-suite XML) ---
+      # No `cache: pip` — there is no requirements.txt in the repo, and setup-python's
+      # pip cache errors out ("No file matched **/requirements.txt") when none exists.
+      # Only three small wheels are installed, so caching would save nothing anyway.
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
-          cache: pip
       - run: pip install pyyaml==6.0.3 pytest==9.0.3 pytest-cov==7.1.0
       - name: Coverage — skill-comply
         run: |

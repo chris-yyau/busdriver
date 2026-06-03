@@ -61,7 +61,7 @@ Version numbers are managed across three manifests (declared in `.version-bump.j
 
 | Workflow | Trigger | What it does |
 |----------|---------|-------------|
-| `tests.yml` | Push to main, PRs | ShellCheck linting, commitlint, version drift check, SBOM + Trivy (vuln + license); `coverage` job runs vitest + pytest and uploads to Codecov (gated on `CODECOV_TOKEN` secret) |
+| `tests.yml` | Push to main, PRs | ShellCheck linting, commitlint, version drift check, SBOM + Trivy (vuln + license); `coverage` job runs vitest + pytest and uploads to Codecov (upload step uses `continue-on-error`, so CI stays green when the `CODECOV_TOKEN` secret is absent, e.g. fork PRs) |
 | `release.yml` | Push to main | semantic-release with `RELEASE_TOKEN` (environment-scoped secret) |
 | `security.yml` | Schedule + PRs | Security scanning |
 | `scorecard.yml` | Schedule | OpenSSF Scorecard |

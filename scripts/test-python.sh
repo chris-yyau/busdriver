@@ -10,8 +10,10 @@
 #
 # Add new Python test suites to the SUITES list as they appear.
 #
-# Usage: scripts/test-python.sh        (run all suites)
-#        COVERAGE=1 scripts/test-python.sh   (emit coverage.xml per suite)
+# Usage: scripts/test-python.sh   (run all suites)
+#
+# Coverage is produced in CI (see the `coverage` job in .github/workflows/tests.yml),
+# not by this script — locally this is a pass/fail runner only.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -40,8 +42,9 @@ run_suite "skill-comply" \
   bash -c "cd skills/skill-comply && uv run --quiet pytest -q"
 
 # Standalone test file with no project config; deps supplied ad hoc.
+# Pins kept in sync with the CI coverage job in .github/workflows/tests.yml.
 run_suite "continuous-learning-v2" \
-  uv run --quiet --with pytest --with pyyaml \
+  uv run --quiet --with 'pytest==9.0.3' --with 'pyyaml==6.0.3' \
     pytest skills/continuous-learning-v2/scripts/test_parse_instinct.py -q
 
 exit "$fail"

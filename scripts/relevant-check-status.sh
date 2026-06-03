@@ -76,9 +76,17 @@ unset _self_dir _git_root _remote
 
 REPO_DIR="${1:-.}"
 
-# Advisory pattern: $2 > env > default; empty resets to default (empty regex
-# would match every row → kept=0 → spurious bootstrap block).
-ADVISORY_PATTERN="${2:-${RELEVANT_CHECK_ADVISORY_PATTERN:-CodeScene}}"
+# Advisory pattern: $2 > env > default. Use argument-count check so an
+# explicitly empty $2 is treated as "provided" (not fallen through to the env
+# fallback). Empty still resets to "CodeScene" — an empty regex would match
+# every row → kept=0 → spurious bootstrap block.
+if [ "$#" -ge 2 ]; then
+  ADVISORY_PATTERN="$2"
+elif [ -n "${RELEVANT_CHECK_ADVISORY_PATTERN+x}" ]; then
+  ADVISORY_PATTERN="$RELEVANT_CHECK_ADVISORY_PATTERN"
+else
+  ADVISORY_PATTERN="CodeScene"
+fi
 [ -z "$ADVISORY_PATTERN" ] && ADVISORY_PATTERN="CodeScene"
 
 # Conservative blocking line for every failure path. failed=1 ⇒ block;
@@ -124,7 +132,7 @@ if required is not None:
     kept = [ln for ln in lines if ln.split("\t", 1)[0].strip() in required]
 else:
     kept = [ln for ln in lines if not advisory_pat.search(ln.split("\t", 1)[0])]
-failed_rows = [ln for ln in kept if _status(ln) in ("fail", "failure")]
+failed_rows = [ln for ln in kept if _status(ln) in ("fail", "failure", "cancel", "cancelled")]
 pending = sum(1 for ln in kept if _status(ln) in ("pending", "queued", "in_progress", "expected"))
 # line 1: counts (4 fields, identical to the original). lines 2..N: failing rows.
 print(f"{len(failed_rows)} {pending} {mode} {len(kept)}")

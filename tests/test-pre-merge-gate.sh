@@ -687,16 +687,21 @@ echo "── required-checks allowlist ─────────────�
 export BUSDRIVER_DISABLE_RELEVANT_CHECK_SELF_RESOLVE=1  # test the working copy deterministically
 HELPER="$(cd "$(dirname "$GATE_SCRIPT")" && pwd -P)/../../scripts/relevant-check-status.sh"
 TOTAL=$((TOTAL + 1))
-if [ -f "$HELPER" ] && grep -q 'relevant-check-status.sh' "$GATE_SCRIPT" && ! grep -q 'import sys, os, json, re' "$GATE_SCRIPT"; then
+if [ -f "$HELPER" ] && grep -vE '^\s*#' "$GATE_SCRIPT" | grep -q 'relevant-check-status\.sh' && ! grep -q 'import sys, os, json, re' "$GATE_SCRIPT"; then
     printf "  PASS  gate wired to relevant-check-status.sh (inline python removed)\n"
     PASS=$((PASS + 1))
 else
     printf "  FAIL  gate not wired to helper, or inline python still present\n"
     FAIL=$((FAIL + 1))
 fi
-# Local wrapper mirrors the gate's invocation; `head -n1` keeps only the count
-# line (the helper also appends failing rows on lines 2..N, which the gate's
-# `read <<<` ignores).
+# Local wrapper mirrors the gate's _relevant_check_counts() invocation: it calls
+# $HELPER (the same script the gate delegates to) with the same args the gate
+# passes. `head -n1` keeps only the count line (the helper appends failing rows
+# on lines 2..N, which the gate's `read <<<` ignores).
+# Note: sourcing the full gate script to call its wrapper is not feasible here
+# because the gate's main body runs at source time. Since _relevant_check_counts
+# in the gate is a thin wrapper that just calls $HELPER, calling $HELPER directly
+# is equivalent and avoids side-effects.
 _relevant_check_counts() { bash "$HELPER" "$1" "CodeScene" 2>/dev/null | head -n1; }
 
 # Synthetic CI output mirrors gh pr checks text: tab-separated columns,

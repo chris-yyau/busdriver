@@ -104,6 +104,16 @@ D=$(mktemp -d "$TMPROOT/c10b.XXXX")
 assert_line1 "10b empty pattern resets to CodeScene" "1 0 all 1" "$D" \
   "$(printf 'CodeScene\tpass\t1s\tx\nfoo\tfail\t1s\tx\n')" ""
 
+# 10c: cancelled required check counts as a failure (not silently passed through)
+D=$(mktemp -d "$TMPROOT/c10c.XXXX"); mklock "$D" '{"required":[{"name":"ci"}]}'
+assert_line1 "10c cancelled required check counted as failure" "1 0 required 1" "$D" \
+  "$(printf 'ci\tcancelled\t0\thttps://x\n')"
+
+# 10d: cancel (shortened form) also counts as failure
+D=$(mktemp -d "$TMPROOT/c10d.XXXX"); mklock "$D" '{"required":[{"name":"ci"}]}'
+assert_line1 "10d cancel status counted as failure" "1 0 required 1" "$D" \
+  "$(printf 'ci\tcancel\t0\thttps://x\n')"
+
 # 11: row emission — failing case emits verbatim rows on lines 2..N; no-fail case does not
 D=$(mktemp -d "$TMPROOT/c11.XXXX"); mklock "$D" '{"required":[{"name":"commitlint"}]}'
 rows=$(printf '%s\n' "$SYNTH" | bash "$SCRIPT" "$D" 2>/dev/null | tail -n +2)
@@ -124,12 +134,18 @@ fi
 echo ""
 echo "== call-site wiring (issue #154) =="
 
-# Each call site must invoke the helper and must NOT retain the old advisory-only
-# DECISION grep (`grep -ivE "$ADVISORY_PATTERN"`). A retained cosmetic CodeScene
-# grep is allowed and intentionally NOT matched here.
+# Each call site must invoke the helper (not just mention it in a comment) and
+# must NOT retain the old advisory-only DECISION grep
+# (`grep -ivE "$ADVISORY_PATTERN"`). A retained cosmetic CodeScene grep is
+# allowed and intentionally NOT matched here.
+# Non-comment invocation: any line that is not a pure comment line (i.e. does
+# not start with optional whitespace + '#') and contains 'relevant-check-status.sh'.
+# This catches both direct `bash "$RCS"` style (where the path is assigned to a
+# variable on a non-comment line) and inline `bash "...relevant-check-status.sh"`
+# style, while rejecting files that only mention the helper in comments.
 assert_wired() {
   local label="$1" file="$2"
-  if grep -q 'relevant-check-status.sh' "$file" \
+  if grep -vE '^\s*#' "$file" | grep -q 'relevant-check-status\.sh' \
      && ! grep -qF 'grep -ivE "$ADVISORY_PATTERN"' "$file"; then
     echo "  ok   $label wired to helper (old decision grep removed)"; PASS=$((PASS+1))
   else

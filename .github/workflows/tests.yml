@@ -158,11 +158,12 @@ jobs:
             --cov-report=xml:coverage-clv2.xml
       # Token is passed only to this step (never job-level env, so checked-out
       # PR code in earlier steps cannot read it). continue-on-error is scoped to
-      # fork PRs only — forks get no secrets on public repos, so the upload can't
-      # authenticate there; on same-repo pushes/PRs a real upload failure still
-      # surfaces (the job is advisory, so it won't block merge, but it stays visible).
+      # the two cases that legitimately lack the secret: fork PRs and Dependabot
+      # PRs (both run without repo secrets on a public repo, so the upload can't
+      # authenticate). On same-repo pushes/PRs a real upload failure still surfaces
+      # (the job is advisory, so it won't block merge, but it stays visible).
       - name: Upload to Codecov
-        continue-on-error: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork }}
+        continue-on-error: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) || github.actor == 'dependabot[bot]' }}
         uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5.5.3
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

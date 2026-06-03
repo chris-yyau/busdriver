@@ -37,6 +37,11 @@ jobs:
         run: sudo apt-get install -y shellcheck
       - name: Lint gate scripts
         run: shellcheck --severity=warning hooks/gate-scripts/*.sh
+      - name: Lint shared gate helper
+        # scripts/relevant-check-status.sh is the canonical lock-aware check
+        # filter sourced by the pre-merge gate + pr-grind (issue #154); lint it
+        # as a required check (not via the soft scripts/hooks pass below).
+        run: shellcheck --severity=warning scripts/relevant-check-status.sh
       - name: Lint hook scripts (shell only)
         run: |
           find scripts/hooks -name '*.sh' -print0 | xargs -0 shellcheck --severity=warning || true

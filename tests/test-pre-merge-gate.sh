@@ -9,8 +9,10 @@
 #   5. Pre-merge gate rejects stale markers (>2h)
 #   6. Post-PR-created hook appends pr-grind instruction
 #   7. Post-PR-created hook passes through non-PR commands
-#   8. _relevant_check_counts honors .github/required-checks.lock allowlist
-#      with ADVISORY_PATTERN fallback (R1-R7)
+#   8. Gate is wired to scripts/relevant-check-status.sh (issue #154) and the
+#      lock-aware allowlist + ADVISORY_PATTERN fallback behaves correctly when
+#      driven through the gate-relative helper path (R1-R8 integration). Filter
+#      edge-case units live in tests/test-relevant-check-status.sh.
 #
 # Usage: bash tests/test-pre-merge-gate.sh
 # Exit: 0 if all pass, 1 if any fail.
@@ -675,21 +677,27 @@ rm -f "$CLEAN_MARKER" "$PENDING_MARKER"
 echo ""
 echo "── required-checks allowlist ───────────────────────────────"
 
-# Source just the helper function (sidesteps the gate's main flow, which
-# would exit on empty stdin). sed extracts `_relevant_check_counts() { ... }`,
-# eval defines it in this shell. `source <(...)` would be cleaner but
-# fails silently on macOS's stock bash 3.2; eval works everywhere.
-HELPER_SRC=$(sed -n '/^_relevant_check_counts() {$/,/^}$/p' "$GATE_SCRIPT")
-# Guard: if the sed pattern stops matching (function renamed, brace re-indented),
-# eval'ing an empty string silently leaves the helper undefined and every R-test
-# below fails with opaque "got '' want X" diffs. Surface the real cause instead.
-if [ -z "$HELPER_SRC" ]; then
-    printf "  FATAL  could not extract _relevant_check_counts from %s\n" "$GATE_SCRIPT" >&2
-    exit 1
+# The filter logic now lives in scripts/relevant-check-status.sh (issue #154);
+# its full edge-case unit coverage is in tests/test-relevant-check-status.sh.
+# Here we drive it through the SAME gate-relative path the gate's wrapper uses,
+# so R1-R8 double as gate↔helper integration tests (path resolution + argument
+# passing + line-1 parse). No more sed/eval of the gate's function body — that
+# body is now a thin wrapper, and eval'ing it here would mis-resolve
+# ${BASH_SOURCE[0]} to this test file instead of the gate.
+export BUSDRIVER_DISABLE_RELEVANT_CHECK_SELF_RESOLVE=1  # test the working copy deterministically
+HELPER="$(cd "$(dirname "$GATE_SCRIPT")" && pwd -P)/../../scripts/relevant-check-status.sh"
+TOTAL=$((TOTAL + 1))
+if [ -f "$HELPER" ] && grep -q 'relevant-check-status.sh' "$GATE_SCRIPT" && ! grep -q 'import sys, os, json, re' "$GATE_SCRIPT"; then
+    printf "  PASS  gate wired to relevant-check-status.sh (inline python removed)\n"
+    PASS=$((PASS + 1))
+else
+    printf "  FAIL  gate not wired to helper, or inline python still present\n"
+    FAIL=$((FAIL + 1))
 fi
-# shellcheck disable=SC2034  # Referenced by _relevant_check_counts via eval'd body.
-ADVISORY_PATTERN="CodeScene"
-eval "$HELPER_SRC"
+# Local wrapper mirrors the gate's invocation; `head -n1` keeps only the count
+# line (the helper also appends failing rows on lines 2..N, which the gate's
+# `read <<<` ignores).
+_relevant_check_counts() { bash "$HELPER" "$1" "CodeScene" 2>/dev/null | head -n1; }
 
 # Synthetic CI output mirrors gh pr checks text: tab-separated columns,
 # first column = check name. Same shape regardless of pass/fail mix.

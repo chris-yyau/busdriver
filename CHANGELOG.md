@@ -1,3 +1,10 @@
+## [1.54.5](https://github.com/chris-yyau/busdriver/compare/v1.54.4...v1.54.5) (2026-06-03)
+
+
+### Bug Fixes
+
+* **pr-grind:** unify check-status filter via shared relevant-check-status.sh ([#173](https://github.com/chris-yyau/busdriver/issues/173)) ([59425bb](https://github.com/chris-yyau/busdriver/commit/59425bb9d69f88a8446f142bda56709ef412dd8c)), closes [#155](https://github.com/chris-yyau/busdriver/issues/155) [#154](https://github.com/chris-yyau/busdriver/issues/154)
+
 ## [1.54.4](https://github.com/chris-yyau/busdriver/compare/v1.54.3...v1.54.4) (2026-06-01)
 
 

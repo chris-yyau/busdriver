@@ -6,8 +6,9 @@ Unified workflow orchestrator for Claude Code. Consolidates pipeline process, do
 
 - **Language:** Shell (gate scripts, hooks), JavaScript (utility scripts), Markdown (skills, agents, rules, commands)
 - **Runtime:** Claude Code plugin system — no build step, no compiled output
-- **Package manager:** npm (devDependencies only — `ajv` for JSON schema validation)
+- **Package manager:** npm (devDependencies only — `ajv` for JSON schema validation; `vitest` + `@vitest/coverage-v8` for JS tests)
 - **Linting:** ShellCheck for `hooks/gate-scripts/*.sh` and `scripts/hooks/*.sh`
+- **Testing:** vitest for JS (`__tests__/`, v8 coverage), pytest for Python (federated per-skill via `uv`, run with `scripts/test-python.sh`), plus shell gate-tests in `tests/`
 - **Commit format:** Conventional Commits enforced by commitlint (`@commitlint/config-conventional`)
 
 ## Project Structure
@@ -20,7 +21,9 @@ hooks/
   gate-scripts/  Shell scripts that enforce review gates (fail-CLOSED by default)
 rules/           Coding rules installed to ~/.claude/rules/ (common/ + 11 language dirs)
 scripts/         JS/shell utilities — release, install, session management, health checks
+__tests__/       JS unit tests (vitest) — smoke + gold-standard template
 skills/          287 skill definitions (.md) — the bulk of the plugin's capability (plus `supplements/` support dir)
+                 Python tests live per-skill (e.g. skills/skill-comply/tests/, skills/continuous-learning-v2/scripts/)
 tests/           Shell-based gate tests (test-*.sh)
 docs/            Reference docs and examples
 ```
@@ -58,7 +61,7 @@ Version numbers are managed across three manifests (declared in `.version-bump.j
 
 | Workflow | Trigger | What it does |
 |----------|---------|-------------|
-| `tests.yml` | Push to main, PRs | ShellCheck linting, commitlint, version drift check, SBOM + Trivy (vuln + license) |
+| `tests.yml` | Push to main, PRs | ShellCheck linting, commitlint, version drift check, SBOM + Trivy (vuln + license); `coverage` job runs vitest + pytest and uploads to Codecov (upload step uses `continue-on-error`, so CI stays green when the `CODECOV_TOKEN` secret is absent, e.g. fork PRs) |
 | `release.yml` | Push to main | semantic-release with `RELEASE_TOKEN` (environment-scoped secret) |
 | `security.yml` | Schedule + PRs | Security scanning |
 | `scorecard.yml` | Schedule | OpenSSF Scorecard |
@@ -73,5 +76,5 @@ Version numbers are managed across three manifests (declared in `.version-bump.j
 - **Gate scripts read stdin** — hooks receive JSON via stdin, emit JSON decisions to stdout.
 - **Fail-CLOSED philosophy** — all review gates block on error. "A stuck session is better than a skipped review."
 - **`.local` files are gitignored** — escape hatches (skip-litmus, freeze-scope, design-review-needed) use `.local` suffix to stay out of version control.
-- **No test framework** — tests are standalone shell scripts in `tests/` run directly. No jest, vitest, or mocha.
-- **Private repo** — no external collaborators on PRs. Local tooling preferred over remote CI for development workflow.
+- **Three test suites** — (1) vitest for JS (`__tests__/`, `npm test` / `npm run test:coverage`); (2) pytest for Python, organized **federated per-skill** (each island owns its imports — skill-comply is a self-contained `uv` project; a single root `pytest`/`pyproject.toml` would break its `pythonpath`), run via `scripts/test-python.sh`; (3) shell gate-tests in `tests/test-*.sh` run directly. New JS tests go in `__tests__/`; new Python tests go beside the skill they cover.
+- **Public repo** — `chris-yyau/busdriver` is public; you are the sole admin (only approval-capable human — forkers who open PRs are not). Merges are gated by required status checks + sole-admin access. **Solo-admin auto-escalation is enabled** (`.claude/pr-grind-auto-admin-solo.local`, gitignored): armed but currently inert because `main` has no required-approval rule, so there is no approver gap to bridge. It self-revokes if a second approval-capable human is ever added. Local tooling still preferred over remote CI for development workflow.

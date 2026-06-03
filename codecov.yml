@@ -1,0 +1,23 @@
+coverage:
+  status:
+    project: off          # No global coverage vanity metrics
+    patch:
+      default:
+        target: 80%       # New-code coverage target
+        threshold: 5%     # tolerance: patches down to 75% still pass (avoids flaky fails on tiny patches)
+comment:
+  layout: "condensed_header, diff, flags, components"
+  behavior: default
+  require_changes: true
+
+# Coverage is produced by two ecosystems:
+#   - JS  (vitest v8)        -> coverage/lcov.info
+#   - Python (pytest-cov)    -> per-suite coverage XML (federated, see scripts/test-python.sh)
+flags:
+  javascript:
+    paths:
+      - scripts/
+  python:
+    paths:
+      - skills/skill-comply/scripts/
+      - skills/continuous-learning-v2/scripts/

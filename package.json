@@ -3,7 +3,13 @@
   "version": "1.54.4",
   "name": "busdriver",
   "description": "Unified workflow orchestrator for Claude Code",
+  "scripts": {
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
   "devDependencies": {
-    "ajv": "^8.20.0"
+    "@vitest/coverage-v8": "^4.1.8",
+    "ajv": "^8.20.0",
+    "vitest": "^4.1.8"
   }
 }

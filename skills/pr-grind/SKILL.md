@@ -803,6 +803,9 @@ COUNTS=$(printf '%s\n' "$CHECKS_RAW" | bash "$RCS" "$REPO_DIR" 2>/dev/null || pr
 read -r FAILED PENDING MODE KEPT <<<"$COUNTS"
 # Guard (mirror the gate): empty/garbled output → treat as blocking.
 if [ -z "${MODE:-}" ] || [ -z "${FAILED:-}" ] || [ -z "${KEPT:-}" ]; then FAILED=1; fi
+# No relevant-check evidence (KEPT=0 — e.g. a required check never posted) must
+# NOT read as clean; mirror the gate's KEPT>0 bootstrap guard.
+if [ "${KEPT:-0}" -eq 0 ]; then FAILED=1; fi
 # Advisory (cosmetic, mode-independent FYI): CodeScene failing is non-blocking.
 ADVISORY_FAILED=$(printf '%s\n' "$CHECKS_RAW" | grep -iE "CodeScene" | grep -cE "fail" || true)
 if [ "$ADVISORY_FAILED" -gt 0 ]; then

@@ -130,7 +130,7 @@ echo "== call-site wiring (issue #154) =="
 assert_wired() {
   local label="$1" file="$2"
   if grep -q 'relevant-check-status.sh' "$file" \
-     && ! grep -q 'grep -ivE "\$ADVISORY_PATTERN"' "$file"; then
+     && ! grep -qF 'grep -ivE "$ADVISORY_PATTERN"' "$file"; then
     echo "  ok   $label wired to helper (old decision grep removed)"; PASS=$((PASS+1))
   else
     echo "  FAIL $label not wired / old decision grep remains"; FAIL=$((FAIL+1))

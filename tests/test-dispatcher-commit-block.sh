@@ -25,9 +25,7 @@ write_default_plugin_root() {
 
     ln -s "$REPO_ROOT/scripts/lib/bail-envelope.sh" "$plugin_root/scripts/lib/bail-envelope.sh"
     ln -s "$REPO_ROOT/scripts/lib/staged-diff-hash.sh" "$plugin_root/scripts/lib/staged-diff-hash.sh"
-    ln -s "$REPO_ROOT/scripts/lib/copilot-touched-lines.py" "$plugin_root/scripts/lib/copilot-touched-lines.py"
     ln -s "$REPO_ROOT/scripts/ack-ledger.sh" "$plugin_root/scripts/ack-ledger.sh"
-    ln -s "$REPO_ROOT/scripts/copilot-auto-resolve-eligibility.sh" "$plugin_root/scripts/copilot-auto-resolve-eligibility.sh"
 
     cat > "$plugin_root/scripts/fetch-pr-state.sh" <<'EOF'
 FETCH_OK=1
@@ -195,8 +193,6 @@ run_dispatcher_capture() {
     if [ -n "${litmus_mode+x}" ]; then env_args+=("LITMUS_MODE=$litmus_mode"); fi
     if [ -n "${no_worktree+x}" ]; then env_args+=("NO_WORKTREE=$no_worktree"); fi
     if [ -n "${pre_dispatch_baseline+x}" ]; then env_args+=("PRE_DISPATCH_BASELINE=$pre_dispatch_baseline"); fi
-    if [ -n "${copilot_auto_resolve+x}" ]; then env_args+=("COPILOT_AUTO_RESOLVE=$copilot_auto_resolve"); fi
-    if [ -n "${copilot_fetch_json+x}" ]; then env_args+=("COPILOT_FETCH_JSON=$copilot_fetch_json"); fi
     if [ -n "${gh_event_log+x}" ]; then env_args+=("GH_EVENT_LOG=$gh_event_log"); fi
     if [ -n "${dispatcher_event_log+x}" ]; then env_args+=("DISPATCHER_EVENT_LOG=$dispatcher_event_log"); fi
     if [ -n "${result_reviewer_acks+x}" ]; then env_args+=("RESULT_REVIEWER_ACKS=$result_reviewer_acks"); fi
@@ -507,7 +503,7 @@ test_n_clean_path_acks() {
     git -C "$sandbox" commit --no-gpg-sign -qm "consume staged fixture"
     git -C "$sandbox" push -q
     before_sha=$(git -C "$sandbox" rev-parse HEAD)
-    result_reviewer_acks='greptile-apps=abc12345,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none'
+    result_reviewer_acks='greptile-apps=abc12345,cubic-dev-ai=none,coderabbitai=none'
     run_dispatcher_capture clean "none"
     after_sha=$(git -C "$sandbox" rev-parse HEAD)
 
@@ -544,73 +540,6 @@ test_n2_clean_path_missing_acks_bails() {
 
     fail_test "test_n2 clean path with missing RESULT_REVIEWER_ACKS should bail judgment; got exit=$dispatcher_exit json=$dispatcher_json"
 }
-test_o_copilot_env_invocation() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
-    local dispatcher_output dispatcher_exit dispatcher_json copilot_auto_resolve
-    local copilot_fetch_json gh_event_log
-    make_dispatcher_fixture
-    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
-
-    gh_event_log="$sandbox/gh-events.log"
-    copilot_fetch_json=$(jq -nc \
-        --arg base "$initial_sha" \
-        --arg stale "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" \
-        '{
-            data: {repository: {pullRequest: {
-                baseRefOid: $base,
-                reviews: {nodes: [{author: {login: "copilot-pull-request-reviewer"}, commit: {oid: $stale}}]},
-                reviewThreads: {nodes: [{
-                    id: "thread1",
-                    isResolved: false,
-                    isOutdated: false,
-                    path: "file.txt",
-                    line: 1,
-                    comments: {nodes: [{author: {login: "copilot-pull-request-reviewer"}}]}
-                }]}
-            }}}
-        }')
-    cat > "$shimdir/gh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$*" >> "${GH_EVENT_LOG:-/dev/null}"
-
-if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then
-    printf 'owner/repo\n'
-    exit 0
-fi
-
-if [ "${1:-}" = "api" ] && [ "${2:-}" = "graphql" ]; then
-    args="$*"
-    case "$args" in
-        *addPullRequestReviewThreadReply*)
-            printf '{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"comment1"}}}}\n'
-            ;;
-        *resolveReviewThread*)
-            printf '{"data":{"resolveReviewThread":{"thread":{"id":"thread1"}}}}\n'
-            ;;
-        *)
-            printf '%s\n' "$COPILOT_FETCH_JSON"
-            ;;
-    esac
-    exit 0
-fi
-
-printf 'unexpected gh call: %s\n' "$*" >&2
-exit 1
-EOF
-    chmod +x "$shimdir/gh"
-
-    copilot_auto_resolve=1
-    run_dispatcher_capture
-
-    assert_json "$dispatcher_json" '.status == "success"' || {
-        echo "test_o dispatcher output: $dispatcher_output"
-        return 1
-    }
-    grep -q 'addPullRequestReviewThreadReply' "$gh_event_log" &&
-        grep -q 'resolveReviewThread' "$gh_event_log"
-}
-
 test_p_pre_dispatch_baseline() {
     local sandbox
     local original_dir

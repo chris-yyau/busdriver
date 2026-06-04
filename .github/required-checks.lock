@@ -36,7 +36,6 @@
     "  - coderabbitai     CodeRabbit GitHub App",
     "  - greptile         Greptile GitHub App",
     "  - cubic            cubic GitHub App",
-    "  - github-copilot   GitHub Copilot review",
     "  - gitguardian      GitGuardian GitHub App",
     "",
     "Optional `matrix_value` field: when a workflow job uses strategy.matrix,",

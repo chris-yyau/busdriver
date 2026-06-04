@@ -12,10 +12,9 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 | **Droid CLI** | Local | Council Researcher voice down | Council loses Researcher (4-voice: Architect + Skeptic + Pragmatist + Critic) | Continue degraded, note in report |
 | **GitHub Actions** | CI | Required checks don't run | PR merge blocked | `gh pr merge N --admin`, then audit via helmet's `bypass-audit.yml` workflow (if deployed) or manually record the bypass reason |
 | **GitHub Apps (bots)** | CI | See per-app rows below | Varies | Detailed below |
-| CodeRabbit | CI bot | No AI line-level review | No blocker — other reviewers cover | Continue; re-review by copilot + greptile + cubic |
-| Greptile | CI bot | No codebase-aware review | Lose cross-file context signals | Copilot's cross-file awareness covers partially |
-| Cubic | CI bot | No additional AI review | Low impact — 4 other reviewers | Continue |
-| Copilot code review | CI bot | No GitHub-native review | Continue with other bots | |
+| CodeRabbit | CI bot | No AI line-level review | No blocker — other reviewers cover | Continue; re-review by greptile + cubic |
+| Greptile | CI bot | No codebase-aware review | Lose cross-file context signals | Other AI reviewers cover partially |
+| Cubic | CI bot | No additional AI review | Low impact — 3 other reviewers | Continue |
 | CodeScene | CI bot | No code-health delta | Advisory only — never blocks merge | Continue; check manually if concerned |
 | GitGuardian | CI bot | No secrets scan | gitleaks local hook is the primary | Ensure gitleaks passed locally |
 | Codecov | CI bot | No coverage diff | Advisory only | Continue; coverage unmeasured on this PR |

@@ -26,7 +26,7 @@ origin: custom
 - PR title/body: conventional commit + scope
 
 **Bounded-wait advisory (best-effort, capped by `--max-wait`):**
-- AI reviewer acks (Greptile, CodeRabbit, Cubic, Copilot, etc.)
+- AI reviewer acks (Greptile, CodeRabbit, Cubic, etc.)
 
 **External policy gates (NOT something pr-grind can resolve — surfaces to the operator):**
 
@@ -82,7 +82,7 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
 
 **The Claude Code Bash tool does not reliably preserve CWD across tool calls.** Every NEW bash block added to this SKILL.md that touches the worktree MUST start with `cd "$WORKTREE_DIR"` (template-substituted to the literal absolute path resolved in Step 0). CWD inheritance can break on intervening Edit/Write/Read calls (verified empirically — interleaving non-Bash tool calls between Bash blocks can reset CWD to the session launch directory), subagent dispatches (each starts in whatever CWD the SDK chose, NOT necessarily the worktree), session boundaries (`/save-session` + `/resume-session` does not preserve CWD), and dispatcher↔worker handoffs (the dispatcher-owned commit block runs as its own fresh Bash process). Even when CWD happens to carry over between two back-to-back Bash calls, relying on it is fragile because the next intervening tool call breaks the chain silently. The failure mode is silent state corruption — commits land in the wrong repo, `gh` queries the wrong PR, file-writes land in the wrong location — not a loud error, which is the most expensive class of bug.
 
-**Shell state — environment variables, aliases, functions, shell options — does NOT persist across Bash tool calls.** `export FOO=1` in one block does NOT survive into the next, even back-to-back. See "Resolve flag-to-state translations" in START for the template-substitution convention this SKILL.md uses for boolean flags (`ADMIN_FLAG_PASSED`, `COPILOT_AUTO_RESOLVE`, `NO_WORKTREE`) — Claude template-substitutes the literal 0/1 into each block before the bash executes.
+**Shell state — environment variables, aliases, functions, shell options — does NOT persist across Bash tool calls.** `export FOO=1` in one block does NOT survive into the next, even back-to-back. See "Resolve flag-to-state translations" in START for the template-substitution convention this SKILL.md uses for boolean flags (`ADMIN_FLAG_PASSED`, `NO_WORKTREE`) — Claude template-substitutes the literal 0/1 into each block before the bash executes.
 
 **The rule (forward-looking):** every NEW bash tool call added to this SKILL.md that calls `git`, `gh`, or touches a worktree-relative path opens with `cd "$WORKTREE_DIR"`. The rule applies at Bash-tool-call boundaries, not to every embedded code-fence within a larger template. Pre-existing bash blocks in this SKILL.md predate this rule and rely on context-level CWD established by their parent dispatcher flow; they are not retroactively required to update.
 
@@ -112,7 +112,6 @@ START
   │     # neither of which a sensible operator wants. Reject at the boundary.
   ├── Resolve flag-to-state translations (consumed by downstream bash blocks):
   │     ADMIN_FLAG_PASSED       = 1 if `--admin-on-approver-gap` was passed, else 0
-  │     COPILOT_AUTO_RESOLVE    = 1 if `--copilot-auto-resolve`    was passed, else 0
   │     NO_WORKTREE             = 1 if `--no-worktree`             was passed, else 0
   │     # These are NOT exported as shell env vars — bash exports do NOT survive
   │     # across Claude Bash tool calls (each tool call gets a fresh shell). The
@@ -122,8 +121,6 @@ START
   │     #   - Completion's approver-gap caller block emits
   │     #     `ADMIN_FLAG_PASSED=<0|1 from above>` (literal value, NOT
   │     #     `${ADMIN_FLAG_PASSED:-0}` which always resolves to 0 in a fresh shell).
-  │     #   - Dispatch a Round's context block emits
-  │     #     `COPILOT_AUTO_RESOLVE=<0|1 from above>` to the worker prompt.
   │     #   - Step 0's auto-fallback and BAIL/COMPLETION cleanup branches read
   │     #     NO_WORKTREE from this state, NOT from `${NO_WORKTREE:-0}` env-fallback.
   │     # Same substitution convention as `<PR_NUMBER>` / `<owner>` / `<repo>`
@@ -148,7 +145,7 @@ START
                    # 3 spawned issues per grind). Reset on each invocation,
                    # never persisted across invocations or surfaced in
                    # PRIOR_ATTEMPTS — the worker doesn't need to see them.
-                   PRIOR_REVIEWER_ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none"
+                   PRIOR_REVIEWER_ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none"
 
 LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │
@@ -171,7 +168,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │
   ├── Parse subagent output (extract tags only — control flow is sequential):
   │     The worker owns triage and staging only. The dispatcher owns commit
-  │     composition, litmus, commitlint, push, Copilot auto-resolve, and
+  │     composition, litmus, commitlint, push, and
   │     post-push ack synthesis through `scripts/dispatcher-commit-block.sh`.
   │     Invariants still run before any terminal clean/continue decision.
   │
@@ -239,7 +236,6 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │       RESULT_STATUS="$RESULT_STATUS" \
   │       RESULT_FIXES="$RESULT_FIXES" \
   │       RESULT_REVIEWER_ACKS="${RESULT_REVIEWER_ACKS:-}" \
-  │       COPILOT_AUTO_RESOLVE="${COPILOT_AUTO_RESOLVE:-0}" \
   │       NO_WORKTREE="${NO_WORKTREE:-0}" \
   │       PRE_DISPATCH_BASELINE="${PRE_DISPATCH_BASELINE:-[]}" \
   │       BUSDRIVER_ALLOW_NO_COMMITLINT="${BUSDRIVER_ALLOW_NO_COMMITLINT:-0}" \
@@ -294,17 +290,17 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        coverage is gated through the worked-example "always include
   │        codescene in the default ledger" rule, not through this
   │        invariant. The intersection rule keeps Invariant 3 strictly
-  │        scoped to the four registered ack-bots that the worker can
+  │        scoped to the three registered ack-bots that the worker can
   │        cross-correlate.
   │
   │        Parse RESULT_BOT_LEDGER as comma-separated entries of shape
   │        `<login>=<n_actionable>/<n_total>:<disposition>`.
   │
   │        **Defensive count check FIRST.** The known-bot set is fixed
-  │        (5 bots: `greptile-apps`, `cubic-dev-ai`, `coderabbitai`,
-  │        `copilot-pull-request-reviewer`, `codescene-delta-analysis`).
-  │        After comma-splitting, the number of entries MUST equal 5; if
-  │        it doesn't, BAIL with reason "malformed bot ledger: expected 5
+  │        (4 bots: `greptile-apps`, `cubic-dev-ai`, `coderabbitai`,
+  │        `codescene-delta-analysis`).
+  │        After comma-splitting, the number of entries MUST equal 4; if
+  │        it doesn't, BAIL with reason "malformed bot ledger: expected 4
   │        entries, got <N> — possible disposition comma corruption (the
   │        worker contract requires dispositions to contain no commas
   │        because they would split into phantom entries and could hide
@@ -678,7 +674,6 @@ Agent invocation:
     WORKTREE_DIR=<absolute path>
     ROUND=<N> (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>)
     RESULT_FILE=<unique tmp path generated above>
-    COPILOT_AUTO_RESOLVE=<0|1; 1 only when --copilot-auto-resolve was passed to pr-grind>
     PRIOR_COMMIT_SHA=<sha or "none">
     PRIOR_REVIEWER_ACKS=<login=value,login=value,...> (round 1: every registered bot = none)
     PRIOR_ATTEMPTS:
@@ -723,7 +718,6 @@ Inputs (env vars, required):
 - `WORKTREE_DIR`, `CLAUDE_PLUGIN_ROOT`, `PR_NUMBER`, `RESULT_STATUS`, `RESULT_FIXES`.
 
 Inputs (env vars, optional; default 0/empty):
-- `COPILOT_AUTO_RESOLVE` - `1` enables Copilot resolve.
 - `NO_WORKTREE` - `1` enables the pre-dispatch baseline check for inline/no-worktree mode.
 - `PRE_DISPATCH_BASELINE` - JSON array of paths staged before worker dispatch; required when `NO_WORKTREE=1`.
 - `BUSDRIVER_ALLOW_NO_COMMITLINT` - `1` allows a missing local commitlint binary.
@@ -745,7 +739,7 @@ If after both probes `RESULT_STATUS` is still missing or its value still isn't o
 
 ### Inline Execution (`--opus`, `--interactive`, `--ci-only`, or `--comments-only`)
 
-When inline, the dispatcher executes the round triage/fix/stage body itself in the parent Opus context. Commit, litmus, push, Copilot auto-resolve, and post-push ack synthesis still go through `scripts/dispatcher-commit-block.sh`, exactly like subagent mode.
+When inline, the dispatcher executes the round triage/fix/stage body itself in the parent Opus context. Commit, litmus, push, and post-push ack synthesis still go through `scripts/dispatcher-commit-block.sh`, exactly like subagent mode.
 
 <EXTREMELY-IMPORTANT>
 YOU MUST COMPLETE STEP 1 BEFORE PROCEEDING. Do NOT skip, abbreviate, or defer CI waiting.
@@ -907,7 +901,7 @@ Run the narrowest test that covers the fix. If local tests fail, fix before push
 
 #### Step 6: Stage Intent; Dispatcher Commits
 
-Stage only the files changed by this round and record the fix summary in `RESULT_FIXES`. Do not run `git commit`, `git push`, litmus, commitlint, or Copilot auto-resolve from the inline body. The dispatcher commit/state-synthesis block invokes `scripts/dispatcher-commit-block.sh` with `NO_WORKTREE=1`; that script enforces the clean-index pre-condition, runs litmus, commits, pushes, and returns the authoritative `RESULT_COMMIT_SHA` / `RESULT_REVIEWER_ACKS` envelope.
+Stage only the files changed by this round and record the fix summary in `RESULT_FIXES`. Do not run `git commit`, `git push`, litmus, or commitlint from the inline body. The dispatcher commit/state-synthesis block invokes `scripts/dispatcher-commit-block.sh` with `NO_WORKTREE=1`; that script enforces the clean-index pre-condition, runs litmus, commits, pushes, and returns the authoritative `RESULT_COMMIT_SHA` / `RESULT_REVIEWER_ACKS` envelope.
 
 If you didn't change any files this round (no actionable findings — only waiting for bots to re-review), skip the commit-block and proceed to Step 6.5; HEAD is unchanged and the ledger will reflect bot acks against the existing HEAD.
 
@@ -966,7 +960,7 @@ ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses"
 # env and the bot login from $1.
 export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
-ROUND_ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),copilot-pull-request-reviewer=$(bash "$ACK_SCRIPT" copilot-pull-request-reviewer 2>/dev/null || echo stale)"
+ROUND_ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale)"
 echo "Ack ledger: $ROUND_ACKS"
 
 STALE_BOTS=$(echo "$ROUND_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
@@ -1047,8 +1041,8 @@ RESULT_STATUS: needs_more
 RESULT_COMMIT_SHA: 4361cc54
 RESULT_FIXES: remove /blog/* paths from 4 relatedTools blocks
 RESULT_REMAINING: none
-RESULT_REVIEWER_ACKS: greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
-RESULT_BOT_LEDGER: greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,copilot-pull-request-reviewer=0/1:no-findings,codescene-delta-analysis=0/0:none
+RESULT_REVIEWER_ACKS: greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale
+RESULT_BOT_LEDGER: greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,codescene-delta-analysis=0/0:none
 RESULT_ISSUES_SPAWNED: 847,848
 ```
 
@@ -1062,7 +1056,7 @@ PRIOR_ATTEMPTS:
   - Round 3 (fix=2/5, wait=0/8): fixes=remove /blog/* paths from 4 relatedTools blocks; failures=none; acks=greptile-apps=stale,...; scope-skipped=2; spawned=2
 ```
 
-**Round 4 (next worker dispatch).** Bots re-review `4361cc54`. CodeRabbit's prior threads are now resolved (worker closed them in Round 3); `scripts/ack-ledger.sh` tier A counts the resolved threads against HEAD-ack rather than `stale` (the change in this PR). All four bots clear, grind converges to `clean`, dispatcher hits COMPLETION.
+**Round 4 (next worker dispatch).** Bots re-review `4361cc54`. CodeRabbit's prior threads are now resolved (worker closed them in Round 3); `scripts/ack-ledger.sh` tier A counts the resolved threads against HEAD-ack rather than `stale` (the change in this PR). All three bots clear, grind converges to `clean`, dispatcher hits COMPLETION.
 
 **Total grind:** 4 rounds (was 7+ rounds + manual intervention before this carve-out existed). 2 dismissals consumed (under cap), 2 follow-up issues spawned (under cap). The two architectural findings live as `#847` and `#848` for separate PRs to address with proper scope.
 
@@ -1077,7 +1071,7 @@ PRIOR_ATTEMPTS:
 4. No unresolved actionable comments from any source
 5. No new comments arrived after your last push (wait for the full cycle)
 6. Advisory check issues either fixed or noted as beyond PR scope
-7. **Reviewer ack ledger**: every registered bot (Greptile, Cubic, CodeRabbit, Copilot) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot only posted a non-actionable PR-overview summary on an older commit" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all four are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 1, 2, and 3. Note: Tier E (commit-statuses API) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.)
+7. **Reviewer ack ledger**: every registered bot (Greptile, Cubic, CodeRabbit) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot only posted a non-actionable PR-overview summary on an older commit" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all four are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 1, 2, and 3. Note: Tier E (commit-statuses API) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.)
 
 **Re-query the ack ledger fresh (REQUIRED — defense in depth against late posts between subagent return and merge time):**
 
@@ -1124,7 +1118,7 @@ ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses"
 # scripts/ack-ledger.sh; algorithm edits live in that one file.
 export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
-FRESH_ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),copilot-pull-request-reviewer=$(bash "$ACK_SCRIPT" copilot-pull-request-reviewer 2>/dev/null || echo stale)"
+FRESH_ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale)"
 STALE_BOTS=$(echo "$FRESH_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
 if [ -n "$STALE_BOTS" ]; then
   echo "❌ BLOCKED: registered reviewer(s) with stale ack at merge time: $STALE_BOTS"
@@ -1818,7 +1812,6 @@ PR #<N> is clean after <rounds> round(s).
 | `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
 | `--comments-only` | Only address comments, ignore CI. Forces inline mode (same reason as `--ci-only`). | Off |
 | `--admin-on-approver-gap` | Opt-in auto-escalation when the approver gap is the sole remaining merge-gate blocker. Eligibility (ALL must hold): CI green, bots ack HEAD, all threads resolved, no failing required checks; author has `admin` or `maintain` repo permission; `.github/workflows/bypass-audit.yml` exists in the repo. With all gates green, the dispatcher runs `gh pr merge <PR> --squash --delete-branch --admin` and logs the event to `.claude/bypass-log.jsonl` (`event: pr-grind-admin-on-approver-gap`). **Fail-CLOSED when no audit workflow exists** — the flag is ignored without a trail and the dispatcher surfaces the operator-decision message instead. Off by default. **Alternative — per-repo opt-in:** for repos where the operator is structurally the sole human with PR-approval capability (no other humans with write/maintain/admin could ever approve), drop `.claude/pr-grind-auto-admin-solo.local` once (gitignored, same pattern as `skip-litmus.local`) and pr-grind treats the flag as implicit. The same eligibility gates apply, plus a live structural check that `HUMAN_ADMIN_COUNT==1` (counting humans with `permissions.push==true` — write/maintain/admin) and the author is that one approval-capable human. The opt-in self-revokes if a second approval-capable human appears — a contractor with write permission alone is enough to invalidate it. **Anti-self-bypass (snapshot-anchored, three conditions):** the opt-in file must be at least 30s old AT pr-grind INVOCATION START (Step 0), not at Completion. Step 0 snapshots the file's mtime to a per-PR snapshot at `.claude/.pr-grind-solo-opt-in-snapshot-<PR>.local` (written 0600) only when the file is already ≥30s old; Completion auto-fires only when (1) the per-PR snapshot exists, (2) its recorded mtime equals the opt-in file's current mtime, AND (3) the snapshot file's own filesystem mtime is ≥30s after the opt-in file's mtime (defeats a same-NOW forge where an attacker creates both files in one action with identical mtimes). A mid-run touch (no snapshot) or mid-run replacement (mismatch) both invalidate the opt-in for the current run. The per-PR scoping prevents concurrent pr-grind runs on different PRs from racing on shared state. Snapshot and opt-in file both live in the MAIN repo's `.claude/`, not the ephemeral worktree. The audit-log event is distinct: `pr-grind-admin-on-approver-gap-solo-admin-auto` with `trigger: "solo-admin-auto"` and `human_admin_count` recorded (variable name preserved for backward compat; semantic is now "humans with PR-approval capability"). | Off (surfaces decision message) |
-| `--copilot-auto-resolve` | Opt-in: when Copilot's HEAD ack is stale after a force-push AND every Copilot thread is anchored to lines the new HEAD touched AND the worker emitted substantive fixes for those lines, auto-resolve the threads with an `addressed in <SHA>` reply + `resolveReviewThread` mutation. Flips ack-ledger tier A to a HEAD-ack via the resolved-threads path. Disabled by default while the test fixtures stabilize; promote to default once fixtures 5-7 (see `tests/test-copilot-resolve.sh`) have a track record. | Off |
 
 ## User-Created Skip File
 

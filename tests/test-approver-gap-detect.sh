@@ -44,7 +44,7 @@ REVIEWS_HUMAN_APPROVED='[{"state":"APPROVED","submitted_at":"2026-01-01T10:00:00
 REVIEWS_DISMISSED_APPROVAL='[{"state":"APPROVED","submitted_at":"2026-01-01T10:00:00Z","user":{"login":"alice","type":"User"}},{"state":"CHANGES_REQUESTED","submitted_at":"2026-01-01T11:00:00Z","user":{"login":"alice","type":"User"}}]'
 
 # Pull request reviews — bot APPROVED (should NOT count).
-REVIEWS_BOT_APPROVED='[{"state":"APPROVED","user":{"login":"copilot-pull-request-reviewer[bot]","type":"Bot"}}]'
+REVIEWS_BOT_APPROVED='[{"state":"APPROVED","user":{"login":"coderabbitai[bot]","type":"Bot"}}]'
 
 # Author permission — admin (eligible for --admin).
 AUTHOR_ADMIN='{"permission":"admin"}'

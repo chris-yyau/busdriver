@@ -26,13 +26,13 @@ if [ ! -x "$ACK_SCRIPT" ] && [ ! -f "$ACK_SCRIPT" ]; then
 fi
 
 # Common harness: one-page paginated graphql output containing a single
-# thread node. The bot author appears as `greptile-apps[bot]` (the REST
+# thread node. The bot author appears as `cursor[bot]` (the REST
 # `[bot]` suffix); the script's jq filter accepts both bare login and
 # `[bot]`-suffixed forms.
 mk_threads_json() {
   # $1 = isResolved, $2 = isOutdated
   cat <<EOF
-{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRT_1","isResolved":$1,"isOutdated":$2,"comments":{"nodes":[{"author":{"login":"greptile-apps[bot]"}}]}}]}}}}}
+{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRT_1","isResolved":$1,"isOutdated":$2,"comments":{"nodes":[{"author":{"login":"cursor[bot]"}}]}}]}}}}}
 EOF
 }
 
@@ -62,7 +62,7 @@ run_ledger() {
   ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" \
   HEAD_SHA="$HEAD_SHA" \
-  bash "$ACK_SCRIPT" greptile-apps 2>/dev/null
+  bash "$ACK_SCRIPT" cursor 2>/dev/null
 }
 
 # --- Test 1: resolved + non-outdated thread → HEAD_SHA ---
@@ -112,7 +112,7 @@ fi
 # above but break the merge gate by acking a bot that still has open
 # findings.
 MIXED_THREADS=$(cat <<EOF
-{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRT_1","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"greptile-apps[bot]"}}]}},{"id":"PRT_2","isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"greptile-apps[bot]"}}]}}]}}}}}
+{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRT_1","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"cursor[bot]"}}]}},{"id":"PRT_2","isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"cursor[bot]"}}]}}]}}}}}
 EOF
 )
 got=$(run_ledger "$MIXED_THREADS")
@@ -141,7 +141,7 @@ got=$(FETCH_OK=0 \
   ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" \
   HEAD_SHA="$HEAD_SHA" \
-  bash "$ACK_SCRIPT" greptile-apps 2>/dev/null)
+  bash "$ACK_SCRIPT" cursor 2>/dev/null)
 if [ "$got" = "stale" ]; then
   ok "FETCH_OK=0 → stale (fail-CLOSED regression check)"
 else
@@ -161,7 +161,7 @@ run_ledger_reviews() {
   ALL_COMMENTS='{"comments":[]}' \
   ALL_CHECK_RUNS='{"check_runs":[]}' \
   HEAD_SHA="$HEAD_SHA" \
-  bash "$ACK_SCRIPT" greptile-apps 2>/dev/null
+  bash "$ACK_SCRIPT" cursor 2>/dev/null
 }
 
 # Helper for check-run-driven tests (Tier D / downgrade Case 3). Parametrizes
@@ -191,7 +191,7 @@ run_ledger_check_runs() {
 }
 
 # --- Test 7: COMMENTED on stale commit, ever_approved==0 → none (new Case 2 behavior) ---
-COMMENTED_REVIEWS=$(printf '[{"user":{"login":"greptile-apps[bot]"},"state":"COMMENTED","commit_id":"%s","body":"PR overview summary."}]' "$STALE_COMMIT")
+COMMENTED_REVIEWS=$(printf '[{"user":{"login":"cursor[bot]"},"state":"COMMENTED","commit_id":"%s","body":"PR overview summary."}]' "$STALE_COMMIT")
 got=$(run_ledger_reviews "$COMMENTED_REVIEWS")
 if [ "$got" = "none" ]; then
   ok "COMMENTED stale commit ever_approved=0 → none (Case 2 new behavior)"
@@ -203,7 +203,7 @@ fi
 # Validates that read ordering (ever_approved, last_state, last_body) is correct so a
 # multi-line body does not corrupt last_state. A single-line body (Test 7) would pass
 # even with the old wrong ordering; this test catches a regression to body-before-state.
-COMMENTED_MULTILINE=$(printf '[{"user":{"login":"greptile-apps[bot]"},"state":"COMMENTED","commit_id":"%s","body":"## PR Overview\\n\\nThis PR adds a new downgrade case.\\n\\nDetails follow."}]' "$STALE_COMMIT")
+COMMENTED_MULTILINE=$(printf '[{"user":{"login":"cursor[bot]"},"state":"COMMENTED","commit_id":"%s","body":"## PR Overview\\n\\nThis PR adds a new downgrade case.\\n\\nDetails follow."}]' "$STALE_COMMIT")
 got=$(run_ledger_reviews "$COMMENTED_MULTILINE")
 if [ "$got" = "none" ]; then
   ok "COMMENTED stale commit multi-line body → none (read ordering robust)"
@@ -212,7 +212,7 @@ else
 fi
 
 # --- Test 8: COMMENTED on stale commit with prior APPROVED → stale (guard holds) ---
-COMMENTED_WITH_APPROVAL=$(printf '[{"user":{"login":"greptile-apps[bot]"},"state":"APPROVED","commit_id":"%s","body":"LGTM"},{"user":{"login":"greptile-apps[bot]"},"state":"COMMENTED","commit_id":"%s","body":"PR overview summary."}]' "$STALE_COMMIT" "$STALE_COMMIT")
+COMMENTED_WITH_APPROVAL=$(printf '[{"user":{"login":"cursor[bot]"},"state":"APPROVED","commit_id":"%s","body":"LGTM"},{"user":{"login":"cursor[bot]"},"state":"COMMENTED","commit_id":"%s","body":"PR overview summary."}]' "$STALE_COMMIT" "$STALE_COMMIT")
 got=$(run_ledger_reviews "$COMMENTED_WITH_APPROVAL")
 if [ "$got" = "stale" ]; then
   ok "COMMENTED after prior APPROVED → stale (ever_approved guard)"
@@ -221,7 +221,7 @@ else
 fi
 
 # --- Test 9: CHANGES_REQUESTED on stale commit → stale (must not be downgraded) ---
-CR_REVIEWS=$(printf '[{"user":{"login":"greptile-apps[bot]"},"state":"CHANGES_REQUESTED","commit_id":"%s","body":"Please fix this issue."}]' "$STALE_COMMIT")
+CR_REVIEWS=$(printf '[{"user":{"login":"cursor[bot]"},"state":"CHANGES_REQUESTED","commit_id":"%s","body":"Please fix this issue."}]' "$STALE_COMMIT")
 got=$(run_ledger_reviews "$CR_REVIEWS")
 if [ "$got" = "stale" ]; then
   ok "CHANGES_REQUESTED stale commit → stale (must not downgrade)"
@@ -236,7 +236,7 @@ fi
 # ever_approved filter, Case 2 would downgrade to `none`. With the fix, it stays `stale`.
 # Two distinct commit IDs model the cross-commit sequence the test name describes.
 STALE_COMMIT_B="oldc0mm2"
-CR_THEN_COMMENTED=$(printf '[{"user":{"login":"greptile-apps[bot]"},"state":"CHANGES_REQUESTED","commit_id":"%s","body":"Finding body only — no inline threads."},{"user":{"login":"greptile-apps[bot]"},"state":"COMMENTED","commit_id":"%s","body":"PR overview summary."}]' "$STALE_COMMIT" "$STALE_COMMIT_B")
+CR_THEN_COMMENTED=$(printf '[{"user":{"login":"cursor[bot]"},"state":"CHANGES_REQUESTED","commit_id":"%s","body":"Finding body only — no inline threads."},{"user":{"login":"cursor[bot]"},"state":"COMMENTED","commit_id":"%s","body":"PR overview summary."}]' "$STALE_COMMIT" "$STALE_COMMIT_B")
 got=$(run_ledger_reviews "$CR_THEN_COMMENTED")
 if [ "$got" = "stale" ]; then
   ok "[CHANGES_REQUESTED(A), COMMENTED(B)] history → stale (closed gap)"
@@ -245,7 +245,7 @@ else
 fi
 
 # --- Test 11: COMMENTED on stale commit with prior DISMISSED → stale (guard holds) ---
-COMMENTED_WITH_DISMISSED=$(printf '[{"user":{"login":"greptile-apps[bot]"},"state":"DISMISSED","commit_id":"%s","body":"Previously approved"},{"user":{"login":"greptile-apps[bot]"},"state":"COMMENTED","commit_id":"%s","body":"PR overview."}]' "$STALE_COMMIT" "$STALE_COMMIT")
+COMMENTED_WITH_DISMISSED=$(printf '[{"user":{"login":"cursor[bot]"},"state":"DISMISSED","commit_id":"%s","body":"Previously approved"},{"user":{"login":"cursor[bot]"},"state":"COMMENTED","commit_id":"%s","body":"PR overview."}]' "$STALE_COMMIT" "$STALE_COMMIT")
 got=$(run_ledger_reviews "$COMMENTED_WITH_DISMISSED")
 if [ "$got" = "stale" ]; then
   ok "COMMENTED after prior DISMISSED → stale (ever_approved guard)"
@@ -480,7 +480,7 @@ got=$(cd "$SCRIPT_DIR" && BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 \
   ALL_COMMENTS='{"comments":[]}' \
   ALL_CHECK_RUNS='{"check_runs":[]}' \
   HEAD_SHA="$HEAD_SHA" \
-  bash "$COPIED_ACK" greptile-apps 2>/dev/null)
+  bash "$COPIED_ACK" cursor 2>/dev/null)
 if [ "$got" = "__COPIED_NONE__" ]; then
   ok "BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 → no redirect, copied body runs (sentinel present)"
 else
@@ -499,7 +499,7 @@ got=$(cd "$SCRIPT_DIR" && FETCH_OK=1 \
   ALL_COMMENTS='{"comments":[]}' \
   ALL_CHECK_RUNS='{"check_runs":[]}' \
   HEAD_SHA="$HEAD_SHA" \
-  bash "$COPIED_ACK" greptile-apps 2>/dev/null)
+  bash "$COPIED_ACK" cursor 2>/dev/null)
 rm -f "$COPIED_ACK"
 trap - EXIT
 if [ "$got" = "none" ]; then

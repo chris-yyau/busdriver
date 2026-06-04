@@ -19,7 +19,7 @@ The dispatcher passes you a context block containing:
 - `ROUND` — current round number with dual-budget pressure breakdown (e.g. `"3 (fix=2/5, wait=1/8)"`). The parenthesized `fix=<n>/<MAX_FIX>, wait=<n>/<MAX_WAIT>` segment lets you read budget pressure for triage; do NOT depend on the legacy `"N of M"` shape — the dispatcher now emits the dual-budget form (see `skills/pr-grind/SKILL.md` Safety Rails for the split rationale).
 - `PRIOR_COMMIT_SHA` — last commit you pushed last round, or `none` if round 1. Useful for triage (comments authored before that SHA were posted on code that's now replaced) but **not** as a fetch-time filter — see "On Re-fetching Each Round" below.
 - `PRIOR_ATTEMPTS` — per-round bullet list. Each entry has the form `Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): fixes=<one-line summary>; failures=<comma-separated failed-check-names or "none">; acks=<reviewer-ack-list>`. The parenthesized `fix=…/MAX_FIX, wait=…/MAX_WAIT` segment surfaces dispatcher budget pressure so you can triage knowing how close the loop is to bailing on either budget. **Anchor your parsing on `failures=` and `acks=` substrings, NOT on the `Round N:` prefix** — older worker contracts assumed the prefix shape; the new parenthetical breaks anchored parsers, but substring-anchored parsers are robust. Use `failures=` to detect a recurring flaky check across rounds (3+ rounds → bail; see Bail Triggers). `acks=` is preserved for diagnostics and human review of the loop transcript — there is no stuck-bot bail trigger; genuinely stuck bots fall out via the dispatcher's `--max-wait` iterations backstop (wait-rounds, where `RESULT_COMMIT_SHA=none`, count specifically against `--max-wait`).
-- `PRIOR_REVIEWER_ACKS` — last round's ack ledger as a comma-separated list of `<login>=<value>` pairs, e.g. `greptile-apps=b4451902,coderabbitai=none,cubic-dev-ai=stale`. Values: short SHA (acked that commit), `none` (either never posted on this PR, OR the bot's only reviews are infra-error/rate-limit markers and it has never APPROVED, OR the bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body — see Step 6.5's downgrade rule), or `stale` (posted a real review on an older commit and is expected to re-review HEAD). On round 1, `none` for every registered bot. See Step 2.5 (registry/concept) and Step 6.5 (compute) below.
+- `PRIOR_REVIEWER_ACKS` — last round's ack ledger as a comma-separated list of `<login>=<value>` pairs, e.g. `cursor=b4451902,coderabbitai=none,cubic-dev-ai=stale`. Values: short SHA (acked that commit), `none` (either never posted on this PR, OR the bot's only reviews are infra-error/rate-limit markers and it has never APPROVED, OR the bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body — see Step 6.5's downgrade rule), or `stale` (posted a real review on an older commit and is expected to re-review HEAD). On round 1, `none` for every registered bot. See Step 2.5 (registry/concept) and Step 6.5 (compute) below.
 - `RESULT_FILE` — the absolute path the dispatcher allocated for this round's RESULT-block backup file (per the belt-and-suspenders contract under "Output Format"). Always present; the dispatcher generates a unique nonce per dispatch attempt so cross-round and cross-session leftovers can never be picked up as stale data. If the context block omits `RESULT_FILE` (older dispatcher versions), fall back to `/tmp/pr-grinder-result-${PR_NUMBER}.txt` AND `rm -f` it at the very start of your round before any other work — that wipe is what protects you from cross-round staleness in the legacy path.
 
 ## Your Single Round
@@ -31,8 +31,8 @@ The dispatcher passes you a context block containing:
 **Initialize the default ack ledger AND default bot ledger immediately** (before any other work, including Step 0). This guarantees `RESULT_REVIEWER_ACKS` and `RESULT_BOT_LEDGER` are non-empty on every early-bail path:
 
 ```bash
-ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none"
-BOT_LEDGER="greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=0/0:none,codescene-delta-analysis=0/0:none"
+ACKS="cursor=none,cubic-dev-ai=none,coderabbitai=none"
+BOT_LEDGER="cursor=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=0/0:none,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none"
 SPAWNED_ISSUES=()       # accumulator for out-of-scope-acknowledged spawn flow (Step 3);
                         # joined to RESULT_ISSUES_SPAWNED at round end (or "none" if empty)
 ```
@@ -104,7 +104,7 @@ If `$FAILED -gt 0`, the failures are real CI breakage — fold the failing job n
 
 ### Step 2 — Collect feedback from ALL FOUR sources (do not skip any)
 
-You MUST run all four queries every round. The GraphQL `reviewThreads` query alone misses bot summaries (Greptile, CodeRabbit) that post as issue comments. Skipping any source is the most common silent-failure mode of this skill.
+You MUST run all four queries every round. The GraphQL `reviewThreads` query alone misses bot summaries (CodeRabbit) that post as issue comments. Skipping any source is the most common silent-failure mode of this skill.
 
 ```bash
 # Source 1: CI check results
@@ -150,7 +150,7 @@ gh api graphql --paginate -f query='
 gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews" \
   --jq '.[] | select(.state == "CHANGES_REQUESTED" or .state == "COMMENTED") | {user: .user.login, state: .state, body: .body}'
 
-# Source 4: Issue comments (where Greptile + CodeRabbit summaries land)
+# Source 4: Issue comments (where CodeRabbit summaries land)
 gh pr view "$PR_NUMBER" --comments --json comments \
   --jq '.comments[] | {author: .author.login, body: .body}'
 ```
@@ -161,7 +161,7 @@ gh pr view "$PR_NUMBER" --comments --json comments \
 |---|---|
 | Source 2 (inline threads) | `isResolved == false AND isOutdated == false` |
 | Source 3 (review-level) | `state` of `CHANGES_REQUESTED` or `COMMENTED`; reviewer's explicit `state == APPROVED` clears prior CHANGES_REQUESTED |
-| Source 4 (issue comments) | No GitHub-side flag. Each bot's latest comment body is canonical; older comments from same bot are superseded. Look for explicit findings sections (e.g., Greptile's `<h3>Greptile Summary</h3>` + numbered issue blocks; CodeRabbit's `_⚠️ Potential issue_` markers). Free-plan CodeRabbit posts a summary-only comment with no actionable findings — skip after confirming no `_⚠️ Potential issue_` markers. |
+| Source 4 (issue comments) | No GitHub-side flag. Each bot's latest comment body is canonical; older comments from same bot are superseded. Look for explicit findings sections (e.g., CodeRabbit's `_⚠️ Potential issue_` markers). Free-plan CodeRabbit posts a summary-only comment with no actionable findings — skip after confirming no `_⚠️ Potential issue_` markers. |
 
 The earlier guidance "the GraphQL `isResolved == false AND isOutdated == false` filter is the correct staleness signal" was wrong — it's the correct filter for **Source 2 only**. Apply each source's signal to its own source.
 
@@ -173,21 +173,23 @@ The actual ack-ledger compute happens in **Step 6.5**, AFTER any commit/push, so
 
 | Login (gh pr view form) | Notes |
 |---|---|
-| `greptile-apps` | Slow async poster — primary motivator for the ledger |
-| `cubic-dev-ai` | Often slower than Greptile |
-| `coderabbitai` | Free plan posts summary-only, but still submits a per-commit review entry that gives us a structured `commit_id` |
+| `cursor` | Cursor Bugbot — acks HEAD via its `Cursor Bugbot` **success check-run** (Tier D); inline findings post as review threads (Tier A) |
+| `cubic-dev-ai` | Slow async poster — often the last to re-review HEAD; primary motivator for the ledger |
+| `coderabbitai` | Free plan posts summary-only, but still emits a structured per-commit HEAD-ack signal (a `/reviews` entry, and on private repos a commit-status) |
 
-All three bots are gated identically — we read the structured `commit_id` from `gh api repos/.../pulls/<N>/reviews`, not from comment bodies. The REST API includes a `[bot]` suffix on logins (e.g. `greptile-apps[bot]`) that the GraphQL/`gh pr view` paths strip; the Step 6.5 jq matches both forms.
+All three bots are gated through the same canonical algorithm in `scripts/ack-ledger.sh` (tiers A–E: inline threads, `/reviews` `commit_id`, issue-comment body SHA, check-runs, commit-statuses) — not bespoke per-bot body parsing. The REST API includes a `[bot]` suffix on logins (e.g. `cursor[bot]`) that the GraphQL/`gh pr view` paths strip; the Step 6.5 jq matches both forms.
 
-**Why `/reviews`'s `commit_id` and not body parsing:** every bot that runs against the PR submits a review entry per commit it inspects, even when its visible output is just an issue comment or inline thread. The REST endpoint returns a structured `commit_id` field — robust against bot-specific markdown drift, no fragile regex on comment bodies, and works uniformly across all three bots.
+**Why structured ack signals and not body parsing:** each gated bot exposes a structured per-commit signal — a `/reviews` `commit_id`, a check-run keyed on `head_sha`, or a commit-status — even when its visible output is just an issue comment or inline thread. `ack-ledger.sh` keys on those structured fields: robust against bot-specific markdown drift, no fragile regex on comment bodies, and uniform across the registered bots.
+
+**Codex (`chatgpt-codex-connector`) is intentionally NOT in this gated registry.** It reviews on pr-open and every push, but when it has no findings its only signal is a 👍 **reaction** on the PR body (per OpenAI's GitHub integration: "If Codex has suggestions, it will comment; otherwise it will react with 👍"). There is no `/reviews` entry, check-run, or commit-status for `ack-ledger.sh` to read as a HEAD-ack, so gating on it would deadlock the merge on every clean terminal push (the ledger reads the bare 👍 as `none`/`stale`, never a SHA). Its actionable findings post as inline review threads (collected bot-agnostically by Source 2), and its `### 💡 Codex Review` body is enumerated per-bot in Step 2.6 alongside CodeScene — so it is fully triaged, just not gated: it appears in `RESULT_BOT_LEDGER` but never in `RESULT_REVIEWER_ACKS`. Do not add it to `REGISTERED_ACK_BOTS` without first giving `ack-ledger.sh` a reaction-aware tier.
 
 **Interaction with `clean` status:** if any registered bot is `stale`, you cannot return `clean` — even if every other check is green and every thread is resolved. Return `needs_more` (let the dispatcher run another round so the bot can catch up). There is no stuck-bot bail; if bots never catch up, the dispatcher's `--max-wait` iterations backstop ends the loop (wait-rounds — where you return `needs_more` with `RESULT_COMMIT_SHA=none` because no fix was needed, only patience for bots — count specifically against `--max-wait`, not `--max-fix`). `none` is fine — it means either the bot doesn't operate on this repo, or its only reviews are infra-error/rate-limit markers and waiting for HEAD-ack would block forever, or the bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits — see Step 6.5's downgrade rule). All three cases are non-gating.
 
 ### Step 2.6 — Build per-bot review map (per-bot enumeration contract)
 
-Step 2 fetched all four sources globally. Now reorganize that data **per bot** — not collected globally then classified. This is the only defense against prose-style reviews (Greptile narrative paragraphs, CodeRabbit-Pro summaries) where actionable findings live in paragraphs without `<details>` markers. Skipping this reorganization is how the original regression slipped through: the worker triaged CodeRabbit's structured findings and silently missed Greptile's buried prose recommendation on the same PR.
+Step 2 fetched all four sources globally. Now reorganize that data **per bot** — not collected globally then classified. This is the only defense against prose-style reviews (Codex review summaries, CodeRabbit-Pro summaries) where actionable findings live in paragraphs without `<details>` markers. Skipping this reorganization is how the original regression slipped through: the worker triaged CodeRabbit's structured findings and silently missed a reviewer's buried prose recommendation on the same PR.
 
-For each bot in the Step 2.5 registry — plus `codescene-delta-analysis` (which posts findings as Source 2 review threads) — assemble its full review body by aggregating across the sources Step 2 has already fetched:
+For each bot in the Step 2.5 registry — plus `codescene-delta-analysis` (Source 2 review threads) and `chatgpt-codex-connector` (the *collected, non-gated* Codex reviewer — see the registry note above; enumerated here so its `### 💡 Codex Review` body is triaged even though it is excluded from the ack gate) — assemble its full review body by aggregating across the sources Step 2 has already fetched:
 
 - Source 2 (review threads): comment bodies where `author.login == <bot>`
 - Source 3 (review-level): review bodies where `user.login == <bot>` and `state ∈ {CHANGES_REQUESTED, COMMENTED, APPROVED}`
@@ -197,7 +199,7 @@ Sources 1 (CI checks) and 5 (check-runs) are intentionally out of scope for body
 
 Conceptually `BOT_REVIEWS[<bot>] = <combined body>`. Track `n_total` per bot — the number of distinct review/comment artifacts examined (each Source 2 thread, each Source 3 review entry, and each Source 4 comment counts as 1; Source 5 check-runs are out of scope at this step per the paragraph above). A bot that posted nothing at all gets `n_total = 0` and ledger entry `<bot>=0/0:none` — parallel to its `none` value in `RESULT_REVIEWER_ACKS`. **A bot that APPROVED with an empty body still gets `n_total = 1`** (the approval review entry counts) and ledger entry `<bot>=0/1:approved` — this distinguishes "bot looked, nothing to fix" from "worker didn't enumerate". The dispatcher's invariant-3 gate keys on this distinction.
 
-**Why per-bot, not global:** Greptile posts ONE Source 4 comment with `<h3>Greptile Summary</h3>` followed by narrative prose — no `<details>`, no bullet-pointed "Issues" section. CodeRabbit's structured `<details>` blocks parse cleanly; Greptile's prose does not. A global "find all findings" pass that works for one format silently misses the others. The contract is: enumerate per-bot, READ each body, DECIDE per-finding — same as a human reviewer.
+**Why per-bot, not global:** a prose-style reviewer can post a single narrative summary — no `<details>`, no bullet-pointed "Issues" section — with findings buried in paragraphs (Codex's `### 💡 Codex Review` body is shaped this way). CodeRabbit's structured `<details>` blocks parse cleanly; narrative prose does not. A global "find all findings" pass that works for one format silently misses the others. The contract is: enumerate per-bot, READ each body, DECIDE per-finding — same as a human reviewer.
 
 **Anti-pattern: regex parser for findings.** Do NOT try to write a "find all findings" parser per bot — vendors change templates frequently and the parser will accumulate false positives forever. The fix is procedural enumeration (this step) plus per-finding judgment (Step 3), not a grammar.
 
@@ -205,7 +207,7 @@ Conceptually `BOT_REVIEWS[<bot>] = <combined body>`. Track `n_total` per bot —
 
 **Iterate per-bot using `BOT_REVIEWS` from Step 2.6.** For each bot's body, identify ALL candidate findings before applying the triage table below. A finding is actionable if it (a) names a specific file and line, OR (b) describes a behavior change in code your PR introduced, OR (c) recommends a specific code change.
 
-**Prose findings count.** Any sentence containing "should", "must", "instead", "rather than", "consider", "missing", "incorrect", "unsafe", "leak", or "race" — within the bot's body, scoped to a file mentioned in the same paragraph or section — is a candidate finding. The trigger words are heuristics for "READ this paragraph carefully", not "auto-fix": Greptile and CodeRabbit-Pro routinely bury actionable findings in narrative paragraphs.
+**Prose findings count.** Any sentence containing "should", "must", "instead", "rather than", "consider", "missing", "incorrect", "unsafe", "leak", or "race" — within the bot's body, scoped to a file mentioned in the same paragraph or section — is a candidate finding. The trigger words are heuristics for "READ this paragraph carefully", not "auto-fix": Codex and CodeRabbit-Pro routinely bury actionable findings in narrative paragraphs.
 
 **Per-finding decision required.** Each candidate finding gets an explicit accept (fix it) or skip (with reason). "I didn't notice it" is not a valid skip reason — that's the silent-failure mode this contract exists to prevent.
 
@@ -249,7 +251,7 @@ Inline copy of SKILL.md triage table:
 | **CI failure — test/lint/build** | Fix it |
 | **CI failure — flaky/infra** | Note in `RESULT_REMAINING`, skip after 3 consecutive identical failures (see Bail Triggers) |
 | **Advisory check failure (CodeScene status)** | Status is non-blocking, BUT inspect its review thread (Source 2) for actionable findings and fix those |
-| **Automated reviewer — specific fix in your changed code** (Greptile/CodeRabbit-Pro/Cubic) | Fix it — treat like human review |
+| **Automated reviewer — specific fix in your changed code** (Cursor/Codex/CodeRabbit-Pro/Cubic) | Fix it — treat like human review |
 | **Automated reviewer — out-of-scope-acknowledged on YOUR changed code** | See "Out-of-Scope-Acknowledged Workflow" below — classify with one of 6 enumerated reasons; spawn follow-up issue (3 reasons) or post audit-only reply (3 reasons), then resolve the thread. Counts toward the per-round (≤3) and cumulative (≤5/≤3) discipline rails. |
 | **Automated reviewer — pre-existing issue in untouched code** | Skip — only fix issues in YOUR PR's changed lines (this is distinct from out-of-scope-acknowledged: this row is for findings on lines your PR did NOT touch; the other row is for findings on lines your PR DID touch but the fix is out of scope) |
 | **Automated reviewer — Free-plan CodeRabbit summary with no `_⚠️ Potential issue_` markers** | Skip — informational only |
@@ -507,7 +509,7 @@ ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses"
 # block) all invoke it identically.
 export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
-ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale)"
+ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale)"
 echo "Ack ledger: $ACKS"
 ```
 
@@ -609,10 +611,10 @@ If the dispatcher omitted `RESULT_FILE` (legacy dispatcher), use `/tmp/pr-grinde
 | Fixing pre-existing issues flagged by automated reviewers | Only fix issues in YOUR PR's changed lines. |
 | Skipping the 3-phase check verification in Step 1 | The pre-merge gate will block on stuck-pending checks. |
 | `--no-verify` to bypass litmus | Litmus is the meaningful review. Bail instead. |
-| Running only Source 2 (GraphQL `reviewThreads`) and skipping Sources 3/4 | Greptile and CodeRabbit summaries land in Source 4 (issue comments). Skipping it merges PRs with un-triaged bot findings — the regression that introduced this rewrite. |
+| Running only Source 2 (GraphQL `reviewThreads`) and skipping Sources 3/4 | CodeRabbit summaries land in Source 4 (issue comments) and Codex summaries in Source 3 (review bodies). Skipping them merges PRs with un-triaged bot findings — the regression that introduced this rewrite. |
 | Treating CodeScene's "advisory" status as "ignore its findings" | The check status is non-blocking; the **review thread is not**. CodeScene posts real findings as Source 2 review threads (e.g., "Excess Number of Function Arguments") that must be triaged like any other reviewer. |
 | Skipping the Step 0 mandatory Read of SKILL.md | Edge cases (skip-file protocol, rebase races, late-arriving bot ack patterns) are documented there. The inlined bash above is necessary but not sufficient. |
-| Skipping Step 2.6 / triaging globally (across all sources) instead of per-bot | Greptile's prose findings hide between CodeRabbit's structured `<details>` blocks. Global enumeration silently misses prose; per-bot enumeration forces explicit accept/skip on each bot's body. |
+| Skipping Step 2.6 / triaging globally (across all sources) instead of per-bot | Codex's prose findings hide between CodeRabbit's structured `<details>` blocks. Global enumeration silently misses prose; per-bot enumeration forces explicit accept/skip on each bot's body. |
 | Emitting `<bot>=0/0:<anything>` for a bot with review history | If a bot's ack is a SHA (HEAD-acked) or `stale`, `n_total` MUST be ≥1. `0/0` is reserved for "bot didn't post" — paired with `none` ack. The dispatcher's invariant-3 gate keys on `n_total == 0` for any HEAD-acked bot, regardless of disposition text — so `0/0:not-evaluated`, `0/0:didn't-look`, even `0/0:no-findings` all trip the gate identically when the bot acked HEAD. The disposition is documentary; the count is load-bearing. |
 | Writing a regex parser for "find all findings" | Vendors change templates frequently; a per-bot regex grammar accumulates false positives forever. The fix is enumeration + per-finding judgment, not a parser. |
 | Using `out-of-scope-acknowledged` as a fix-avoidance shortcut — dismissing real findings on your changed lines because the fix would "take a few rounds" | The disposition is a carve-out, not a default. The DEFAULT IS FIX rule (≥80% confidence required to dismiss) plus the per-round cap (≤3) and dispatcher's Invariant 4 (≤5 cumulative dismissals, ≤3 spawned issues) exist precisely so workers can't relabel tedious fixes as out-of-scope to "ship faster". `false-positive` requires citing the code that proves the bot misread; `pre-existing-on-touched-line` requires the line to actually predate the PR; the four spawn reasons require a follow-up issue with the bot's verbatim rationale. Failure mode: PR ships ostensibly clean while real bugs slip past as "tracked elsewhere" but the spawned issues never get addressed. |
@@ -627,16 +629,16 @@ OWNER=chrisyau REPO=busdriver
 WORKTREE_DIR=/Volumes/Work/Projects/busdriver/.claude/worktrees/pr-grind-64
 ROUND=3 (fix=2/5, wait=0/8)
 PRIOR_COMMIT_SHA=8947cdd
-PRIOR_REVIEWER_ACKS=greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale
+PRIOR_REVIEWER_ACKS=cursor=stale,cubic-dev-ai=stale,coderabbitai=stale
 PRIOR_ATTEMPTS:
-  - Round 1 (fix=1/5, wait=0/8): fixes=mkdir -p ordering in run-review-loop.sh; failures=none; acks=greptile-apps=stale,cubic-dev-ai=none,coderabbitai=stale
-  - Round 2 (fix=2/5, wait=0/8): fixes=tilde expansion in target_dir parser; failures=none; acks=greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale
+  - Round 1 (fix=1/5, wait=0/8): fixes=mkdir -p ordering in run-review-loop.sh; failures=none; acks=cursor=stale,cubic-dev-ai=none,coderabbitai=stale
+  - Round 2 (fix=2/5, wait=0/8): fixes=tilde expansion in target_dir parser; failures=none; acks=cursor=stale,cubic-dev-ai=stale,coderabbitai=stale
 ```
 
 (Note: every prior round's emitted `acks=` is mostly `stale` because Step 6.5 runs immediately post-push — bots haven't had time to re-review the just-pushed commit. The dispatcher entering this round sees all bots stale.)
 
 **Your work:**
-1. Step 1: wait for all GitHub-registered checks (`gh pr checks --watch`). This blocks on **check status**, not on review submissions — a bot can flip its check green seconds before posting. By the time Step 1 returns + the 30s grace period elapses, Greptile/CodeRabbit have typically finished posting their reviews of `8947cdd`; Cubic often hasn't yet. The ledger (Step 6.5) is the authoritative ack signal — Step 1 only gives the bots a chance to start.
+1. Step 1: wait for all GitHub-registered checks (`gh pr checks --watch`). This blocks on **check status**, not on review submissions — a bot can flip its check green seconds before posting. By the time Step 1 returns + the 30s grace period elapses, Cursor/CodeRabbit have typically finished posting their reviews of `8947cdd`; Cubic often hasn't yet. The ledger (Step 6.5) is the authoritative ack signal — Step 1 only gives the bots a chance to start.
 2. Step 2: fetch all four sources. Find one Cubic review-thread on `pre-merge-gate.sh:142` flagging an SC2015 shellcheck warning. Cubic posted this against an earlier SHA but it's still actionable on `8947cdd`.
 3. Step 3-5: mechanical fix (replace `A && B || C` with `if A; then B; else C; fi`), verify with shellcheck locally.
 4. Step 6: commit (`a1b2c3d`) and push.
@@ -648,8 +650,8 @@ RESULT_STATUS: needs_more
 RESULT_COMMIT_SHA: a1b2c3d
 RESULT_FIXES: replace SC2015 short-circuit with if/then/else in pre-merge-gate.sh:142
 RESULT_REMAINING: none
-RESULT_REVIEWER_ACKS: greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale
-RESULT_BOT_LEDGER: greptile-apps=0/1:approved,cubic-dev-ai=1/1:fixed SC2015 short-circuit,coderabbitai=0/0:none,codescene-delta-analysis=0/0:none
+RESULT_REVIEWER_ACKS: cursor=stale,cubic-dev-ai=stale,coderabbitai=stale
+RESULT_BOT_LEDGER: cursor=0/1:approved,cubic-dev-ai=1/1:fixed SC2015 short-circuit,coderabbitai=0/0:none,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
 RESULT_ISSUES_SPAWNED: none
 ```
 

@@ -487,7 +487,7 @@ test_m_wait_round_classifier() {
     if printf '%s\n' "$dispatcher_json" | jq -e \
         '.status == "success"
          and .result_commit_sha == "none"
-         and (.result_reviewer_acks | contains("greptile-apps=none"))' >/dev/null; then
+         and (.result_reviewer_acks | contains("cursor=none"))' >/dev/null; then
         return 0
     fi
 
@@ -503,7 +503,7 @@ test_n_clean_path_acks() {
     git -C "$sandbox" commit --no-gpg-sign -qm "consume staged fixture"
     git -C "$sandbox" push -q
     before_sha=$(git -C "$sandbox" rev-parse HEAD)
-    result_reviewer_acks='greptile-apps=abc12345,cubic-dev-ai=none,coderabbitai=none'
+    result_reviewer_acks='cursor=abc12345,cubic-dev-ai=none,coderabbitai=none'
     run_dispatcher_capture clean "none"
     after_sha=$(git -C "$sandbox" rev-parse HEAD)
 

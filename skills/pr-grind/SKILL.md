@@ -26,7 +26,7 @@ origin: custom
 - PR title/body: conventional commit + scope
 
 **Bounded-wait advisory (best-effort, capped by `--max-wait`):**
-- AI reviewer acks (Greptile, CodeRabbit, Cubic, etc.)
+- AI reviewer acks (Cursor, CodeRabbit, Cubic, etc.)
 
 **External policy gates (NOT something pr-grind can resolve — surfaces to the operator):**
 
@@ -56,7 +56,7 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
 | Looping rounds inside the subagent | Subagent contract is one round per dispatch. The dispatcher owns the loop. |
 | Collecting feedback while checks are still pending | You'll miss reviewer findings, fix a partial set, push, and trigger a second review cycle unnecessarily |
 | Declaring "Round complete" after push without waiting | The push triggers a new review cycle — you must wait for IT to finish before declaring done |
-| Only waiting for CI (build/lint/test), ignoring reviewer bots | CodeRabbit, Greptile, Cubic are checks too — `gh pr checks` shows them as pending |
+| Only waiting for CI (build/lint/test), ignoring reviewer bots | CodeRabbit, Cursor, Cubic are checks too — `gh pr checks` shows them as pending |
 | Fixing pre-existing issues flagged by automated reviewers | Scope creep — only fix issues in YOUR changed code |
 | Enabling GitHub auto-merge before pr-grind completes | The PR merges as soon as CI passes — before reviewer comments are addressed. pr-grind merges by default after all checks pass and comments are addressed. |
 | Giving compound "grind then merge" instructions | Agent optimizes for merge as terminal goal, skipping CI wait. Just invoke `/pr-grind` — merge is the default. |
@@ -145,7 +145,7 @@ START
                    # 3 spawned issues per grind). Reset on each invocation,
                    # never persisted across invocations or surfaced in
                    # PRIOR_ATTEMPTS — the worker doesn't need to see them.
-                   PRIOR_REVIEWER_ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none"
+                   PRIOR_REVIEWER_ACKS="cursor=none,cubic-dev-ai=none,coderabbitai=none"
 
 LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │
@@ -266,7 +266,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     2. If RESULT_STATUS=clean AND any registered bot in
   │        RESULT_REVIEWER_ACKS has value `stale` →
   │        BAIL with reason "subagent reported clean but reviewer ack
-  │        ledger has stale entries: <list>". Slow-Greptile / slow-Cubic
+  │        ledger has stale entries: <list>". Slow-Cursor / slow-Cubic
   │        race protection — clean cannot ship while a registered bot
   │        hasn't acked HEAD.
   │     3. Bot-ledger coverage gate (Bug 1 — prose-review enumeration):
@@ -276,7 +276,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        on this PR AND has an enumeration entry — that ledger entry
   │        MUST have `n_total >= 1`. A `0/0` ledger entry for a
   │        HEAD-acked bot means the worker didn't enumerate the bot's
-  │        body; merging would risk a Greptile-style prose coverage gap
+  │        body; merging would risk a Codex-style prose coverage gap
   │        (PR with buried actionable findings the worker silently
   │        skipped).
   │
@@ -286,9 +286,10 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        (codescene has no /reviews entries, so its HEAD-ack signal
   │        doesn't go through scripts/ack-ledger.sh). For ledger entries
   │        whose login is NOT in RESULT_REVIEWER_ACKS, this invariant
-  │        does not apply — codescene is enumerated for content but its
-  │        coverage is gated through the worked-example "always include
-  │        codescene in the default ledger" rule, not through this
+  │        does not apply — codescene and chatgpt-codex-connector are
+  │        enumerated for content but their coverage is gated through the
+  │        worked-example "always include codescene and
+  │        chatgpt-codex-connector in the default ledger" rule, not through this
   │        invariant. The intersection rule keeps Invariant 3 strictly
   │        scoped to the three registered ack-bots that the worker can
   │        cross-correlate.
@@ -297,10 +298,10 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        `<login>=<n_actionable>/<n_total>:<disposition>`.
   │
   │        **Defensive count check FIRST.** The known-bot set is fixed
-  │        (4 bots: `greptile-apps`, `cubic-dev-ai`, `coderabbitai`,
-  │        `codescene-delta-analysis`).
-  │        After comma-splitting, the number of entries MUST equal 4; if
-  │        it doesn't, BAIL with reason "malformed bot ledger: expected 4
+  │        (5 bots: `cursor`, `cubic-dev-ai`, `coderabbitai`,
+  │        `codescene-delta-analysis`, `chatgpt-codex-connector`).
+  │        After comma-splitting, the number of entries MUST equal 5; if
+  │        it doesn't, BAIL with reason "malformed bot ledger: expected 5
   │        entries, got <N> — possible disposition comma corruption (the
   │        worker contract requires dispositions to contain no commas
   │        because they would split into phantom entries and could hide
@@ -751,7 +752,7 @@ you will be blocked by the pre-merge gate and waste the user's time.
 
 **DO NOT skip this step. DO NOT proceed while checks are still pending.**
 
-Automated reviewers (CodeRabbit, Greptile, Cubic, CodeScene, GitGuardian) register as GitHub checks. `gh pr checks --watch` blocks until ALL of them complete — not just CI build/lint/test.
+Automated reviewers (CodeRabbit, Cursor, Cubic, CodeScene, GitGuardian) register as GitHub checks. `gh pr checks --watch` blocks until ALL of them complete — not just CI build/lint/test.
 
 **Advisory checks (CodeScene):** CodeScene is non-blocking — its feedback is still collected and you MUST attempt to fix its issues, but its pass/fail status does not block the clean marker or merge gate. If a CodeScene finding requires architectural changes beyond PR scope, note it and proceed.
 
@@ -861,7 +862,7 @@ gh pr view <PR_NUMBER> --comments --json comments \
 **On filtering:** Don't filter by "latest comment newer than `PRIOR_COMMIT_SHA`" — that drops unresolved threads whose latest reply happens to be old, even though they're still actionable (a reviewer can post a comment, you push a commit that *doesn't* address it, and the thread stays unresolved with an "old" timestamp). Use **per-source** staleness signals, not one filter that covers all:
 - **Source 2 (inline review threads):** `isResolved == false AND isOutdated == false`
 - **Source 3 (review-level comments):** `state == CHANGES_REQUESTED` or `COMMENTED`; an explicit `APPROVED` from the same reviewer clears prior CHANGES_REQUESTED
-- **Source 4 (issue comments):** no GitHub-side flag exists. Each bot's latest comment body is canonical; older comments from same bot are superseded. **Greptile and CodeRabbit-Pro post their findings only here** — running Source 2 alone misses them. See `agents/pr-grinder.md` Step 2 for concrete bot-by-bot parsing rules.
+- **Source 4 (issue comments):** no GitHub-side flag exists. Each bot's latest comment body is canonical; older comments from same bot are superseded. **CodeRabbit-Pro posts its findings only here** — running Source 2 alone misses them. See `agents/pr-grinder.md` Step 2 for concrete bot-by-bot parsing rules.
 
 Re-fetching all four sources each round is cheap; the cost we cared about was conversation-context accumulation, not API traffic, and per-round subagent dispatch already solves that.
 
@@ -873,7 +874,7 @@ Classify each piece of feedback:
 |----------|--------|
 | **CI failure — test/lint/build** | Fix it |
 | **CI failure — flaky/infra** | Note it, skip after 3 consecutive identical failures |
-| **Automated reviewer — specific fix** (CodeRabbit, Greptile, Cubic) | Fix it — treat like human review |
+| **Automated reviewer — specific fix** (CodeRabbit, Cursor, Cubic) | Fix it — treat like human review |
 | **Automated reviewer — out-of-scope-acknowledged on YOUR changed code** | Apply the workflow at `agents/pr-grinder.md` Step 3 (Out-of-Scope-Acknowledged Workflow): classify with one of 6 enumerated reasons, spawn follow-up issue (3 spawn reasons) or post audit-only reply (3 audit reasons), then resolve the thread. **DEFAULT IS FIX** — only dismiss with ≥80% confidence the fix would expand scope or require off-codebase work. Per-round cap ≤3 dismissals; cumulative caps ≤5 dismissals + ≤3 spawned issues across the grind (Invariant 4 BAILs past either) |
 | **Automated reviewer — stale/pre-existing issue in untouched code** | Skip — only fix issues in YOUR PR's changed lines (this is distinct from out-of-scope-acknowledged: this row is for findings on lines your PR did NOT touch; the row above is for findings on touched lines where the fix is out of scope) |
 | **Resolved or outdated thread** | Skip — already filtered out by GraphQL (`isResolved`, `isOutdated`); note that pr-grind's own out-of-scope flow resolves threads after dismissal, so resolved-by-operator threads also fall in this row on subsequent rounds |
@@ -960,7 +961,7 @@ ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses"
 # env and the bot login from $1.
 export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
-ROUND_ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale)"
+ROUND_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale)"
 echo "Ack ledger: $ROUND_ACKS"
 
 STALE_BOTS=$(echo "$ROUND_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
@@ -1041,8 +1042,8 @@ RESULT_STATUS: needs_more
 RESULT_COMMIT_SHA: 4361cc54
 RESULT_FIXES: remove /blog/* paths from 4 relatedTools blocks
 RESULT_REMAINING: none
-RESULT_REVIEWER_ACKS: greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale
-RESULT_BOT_LEDGER: greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,codescene-delta-analysis=0/0:none
+RESULT_REVIEWER_ACKS: cursor=stale,cubic-dev-ai=stale,coderabbitai=stale
+RESULT_BOT_LEDGER: cursor=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
 RESULT_ISSUES_SPAWNED: 847,848
 ```
 
@@ -1053,7 +1054,7 @@ total_scope_skipped: 0 + 2 = 2  (well under cap of 5)
 total_issues_spawned: 0 + 2 = 2  (well under cap of 3)
 Invariant 4: pass (both under cap)
 PRIOR_ATTEMPTS:
-  - Round 3 (fix=2/5, wait=0/8): fixes=remove /blog/* paths from 4 relatedTools blocks; failures=none; acks=greptile-apps=stale,...; scope-skipped=2; spawned=2
+  - Round 3 (fix=2/5, wait=0/8): fixes=remove /blog/* paths from 4 relatedTools blocks; failures=none; acks=cursor=stale,...; scope-skipped=2; spawned=2
 ```
 
 **Round 4 (next worker dispatch).** Bots re-review `4361cc54`. CodeRabbit's prior threads are now resolved (worker closed them in Round 3); `scripts/ack-ledger.sh` tier A counts the resolved threads against HEAD-ack rather than `stale` (the change in this PR). All three bots clear, grind converges to `clean`, dispatcher hits COMPLETION.
@@ -1067,11 +1068,11 @@ PRIOR_ATTEMPTS:
 **All of these must be true before declaring done:**
 1. Subagent returned `RESULT_STATUS=clean` (or inline mode reached the same state)
 2. All required CI checks passing (build, lint, test)
-3. All automated reviewers completed (CodeRabbit, Greptile, Cubic, etc.)
+3. All automated reviewers completed (CodeRabbit, Cursor, Cubic, etc.). Codex (`chatgpt-codex-connector`) is collected-only — it has no GitHub check, so its completion is not gated here; its findings are triaged via Step 2.6 enumeration, not waited on as a check.
 4. No unresolved actionable comments from any source
 5. No new comments arrived after your last push (wait for the full cycle)
 6. Advisory check issues either fixed or noted as beyond PR scope
-7. **Reviewer ack ledger**: every registered bot (Greptile, Cubic, CodeRabbit) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot only posted a non-actionable PR-overview summary on an older commit" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all four cases are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 1, 2, and 3. Note: Tier E (commit-statuses API) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.)
+7. **Reviewer ack ledger**: every registered bot (Cursor, Cubic, CodeRabbit) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot only posted a non-actionable PR-overview summary on an older commit" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all four cases are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 1, 2, and 3. Note: Tier E (commit-statuses API) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.)
 
 **Re-query the ack ledger fresh (REQUIRED — defense in depth against late posts between subagent return and merge time):**
 
@@ -1118,7 +1119,7 @@ ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses"
 # scripts/ack-ledger.sh; algorithm edits live in that one file.
 export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
-FRESH_ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale)"
+FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale)"
 STALE_BOTS=$(echo "$FRESH_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
 if [ -n "$STALE_BOTS" ]; then
   echo "❌ BLOCKED: registered reviewer(s) with stale ack at merge time: $STALE_BOTS"

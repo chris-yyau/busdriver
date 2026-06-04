@@ -110,21 +110,25 @@ jobs:
           # Dedup: a commit SHA needs at most ONE audit issue, ever. A manual "Re-run
           # jobs" or the same SHA re-pushed would otherwise open duplicate issues —
           # concurrency is SHA-keyed (stops PARALLEL dupes) but not sequential re-runs.
-          # Skip if any existing issue — open OR closed (closed means a human already
-          # triaged this bypass) — is for this commit.
-          # Two-stage match: the server-side search narrows by the 7-char SHA in the
-          # title (cheap, tiny result set); jq then confirms the FULL 40-char SHA in the
-          # body, which makes it collision-proof — two distinct bypass commits could
-          # share a 7-char title prefix, but the full SHA in the body distinguishes them.
+          # Skip only if a PRIOR AUDIT issue — open OR closed (closed means a human
+          # already triaged this bypass) — already records this commit. The match is
+          # constrained three ways so it cannot be gamed or mis-fire:
+          #   1. server-side search narrows by the 7-char SHA in the title (cheap);
+          #   2. jq confirms the FULL 40-char SHA in the body (collision-proof — a
+          #      shared 7-char prefix cannot false-match);
+          #   3. ONLY issues authored by github-actions[bot] count — so a hand-created
+          #      decoy issue (anyone with issues:write, incl. the bypasser who knows
+          #      their own SHA in advance) cannot suppress a genuine audit.
           # The SHA is passed to jq via --arg (never interpolated into the jq program),
           # matching this file's gh|jq idiom and the "no direct interpolation" rule above.
-          # On any gh/jq error EXISTING is empty and we fall through to create the issue:
-          # for an audit trail a possible duplicate is safer than a missed bypass.
+          # `.body // ""` guards a null body. On any gh/jq error EXISTING is empty and we
+          # fall through to create: for an audit trail a possible duplicate is safer than
+          # a missed bypass.
           SHA_SHORT=$(printf '%s' "$COMMIT_SHA" | cut -c1-7)
           EXISTING=$(gh issue list --repo "$REPO" --state all \
             --search "Admin Bypass $SHA_SHORT in:title" \
-            --json number,body 2>/dev/null \
-            | jq -r --arg sha "$COMMIT_SHA" '[.[] | select(.body | contains($sha))][0].number' 2>/dev/null || true)
+            --json number,body,author 2>/dev/null \
+            | jq -r --arg sha "$COMMIT_SHA" '[.[] | select(.author.login == "github-actions[bot]") | select((.body // "") | contains($sha))][0].number' 2>/dev/null || true)
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
             echo "Audit issue #$EXISTING already exists for commit $COMMIT_SHA — skipping duplicate"
             exit 0

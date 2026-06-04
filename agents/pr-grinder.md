@@ -21,7 +21,6 @@ The dispatcher passes you a context block containing:
 - `PRIOR_ATTEMPTS` — per-round bullet list. Each entry has the form `Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): fixes=<one-line summary>; failures=<comma-separated failed-check-names or "none">; acks=<reviewer-ack-list>`. The parenthesized `fix=…/MAX_FIX, wait=…/MAX_WAIT` segment surfaces dispatcher budget pressure so you can triage knowing how close the loop is to bailing on either budget. **Anchor your parsing on `failures=` and `acks=` substrings, NOT on the `Round N:` prefix** — older worker contracts assumed the prefix shape; the new parenthetical breaks anchored parsers, but substring-anchored parsers are robust. Use `failures=` to detect a recurring flaky check across rounds (3+ rounds → bail; see Bail Triggers). `acks=` is preserved for diagnostics and human review of the loop transcript — there is no stuck-bot bail trigger; genuinely stuck bots fall out via the dispatcher's `--max-wait` iterations backstop (wait-rounds, where `RESULT_COMMIT_SHA=none`, count specifically against `--max-wait`).
 - `PRIOR_REVIEWER_ACKS` — last round's ack ledger as a comma-separated list of `<login>=<value>` pairs, e.g. `greptile-apps=b4451902,coderabbitai=none,cubic-dev-ai=stale`. Values: short SHA (acked that commit), `none` (either never posted on this PR, OR the bot's only reviews are infra-error/rate-limit markers and it has never APPROVED, OR the bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body — see Step 6.5's downgrade rule), or `stale` (posted a real review on an older commit and is expected to re-review HEAD). On round 1, `none` for every registered bot. See Step 2.5 (registry/concept) and Step 6.5 (compute) below.
 - `RESULT_FILE` — the absolute path the dispatcher allocated for this round's RESULT-block backup file (per the belt-and-suspenders contract under "Output Format"). Always present; the dispatcher generates a unique nonce per dispatch attempt so cross-round and cross-session leftovers can never be picked up as stale data. If the context block omits `RESULT_FILE` (older dispatcher versions), fall back to `/tmp/pr-grinder-result-${PR_NUMBER}.txt` AND `rm -f` it at the very start of your round before any other work — that wipe is what protects you from cross-round staleness in the legacy path.
-- `COPILOT_AUTO_RESOLVE` — dispatcher-owned flag for the relocated Copilot stale-thread auto-resolve flow. The worker no longer composes the eligibility call; see Step 6.5a.
 
 ## Your Single Round
 
@@ -32,8 +31,8 @@ The dispatcher passes you a context block containing:
 **Initialize the default ack ledger AND default bot ledger immediately** (before any other work, including Step 0). This guarantees `RESULT_REVIEWER_ACKS` and `RESULT_BOT_LEDGER` are non-empty on every early-bail path:
 
 ```bash
-ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none,copilot-pull-request-reviewer=none"
-BOT_LEDGER="greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=0/0:none,copilot-pull-request-reviewer=0/0:none,codescene-delta-analysis=0/0:none"
+ACKS="greptile-apps=none,cubic-dev-ai=none,coderabbitai=none"
+BOT_LEDGER="greptile-apps=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=0/0:none,codescene-delta-analysis=0/0:none"
 SPAWNED_ISSUES=()       # accumulator for out-of-scope-acknowledged spawn flow (Step 3);
                         # joined to RESULT_ISSUES_SPAWNED at round end (or "none" if empty)
 ```
@@ -177,11 +176,10 @@ The actual ack-ledger compute happens in **Step 6.5**, AFTER any commit/push, so
 | `greptile-apps` | Slow async poster — primary motivator for the ledger |
 | `cubic-dev-ai` | Often slower than Greptile |
 | `coderabbitai` | Free plan posts summary-only, but still submits a per-commit review entry that gives us a structured `commit_id` |
-| `copilot-pull-request-reviewer` | Posts inline threads. Threads alone are caught by Source 2, but Copilot can lag re-reviewing after a push — without a ledger entry, "no new threads on HEAD" is ambiguous between "happy" and "hasn't looked yet" |
 
-All four bots are gated identically — we read the structured `commit_id` from `gh api repos/.../pulls/<N>/reviews`, not from comment bodies. The REST API includes a `[bot]` suffix on logins (e.g. `greptile-apps[bot]`) that the GraphQL/`gh pr view` paths strip; the Step 6.5 jq matches both forms.
+All three bots are gated identically — we read the structured `commit_id` from `gh api repos/.../pulls/<N>/reviews`, not from comment bodies. The REST API includes a `[bot]` suffix on logins (e.g. `greptile-apps[bot]`) that the GraphQL/`gh pr view` paths strip; the Step 6.5 jq matches both forms.
 
-**Why `/reviews`'s `commit_id` and not body parsing:** every bot that runs against the PR submits a review entry per commit it inspects, even when its visible output is just an issue comment or inline thread. The REST endpoint returns a structured `commit_id` field — robust against bot-specific markdown drift, no fragile regex on comment bodies, and works uniformly across all four bots.
+**Why `/reviews`'s `commit_id` and not body parsing:** every bot that runs against the PR submits a review entry per commit it inspects, even when its visible output is just an issue comment or inline thread. The REST endpoint returns a structured `commit_id` field — robust against bot-specific markdown drift, no fragile regex on comment bodies, and works uniformly across all three bots.
 
 **Interaction with `clean` status:** if any registered bot is `stale`, you cannot return `clean` — even if every other check is green and every thread is resolved. Return `needs_more` (let the dispatcher run another round so the bot can catch up). There is no stuck-bot bail; if bots never catch up, the dispatcher's `--max-wait` iterations backstop ends the loop (wait-rounds — where you return `needs_more` with `RESULT_COMMIT_SHA=none` because no fix was needed, only patience for bots — count specifically against `--max-wait`, not `--max-fix`). `none` is fine — it means either the bot doesn't operate on this repo, or its only reviews are infra-error/rate-limit markers and waiting for HEAD-ack would block forever, or the bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits — see Step 6.5's downgrade rule). All three cases are non-gating.
 
@@ -251,7 +249,7 @@ Inline copy of SKILL.md triage table:
 | **CI failure — test/lint/build** | Fix it |
 | **CI failure — flaky/infra** | Note in `RESULT_REMAINING`, skip after 3 consecutive identical failures (see Bail Triggers) |
 | **Advisory check failure (CodeScene status)** | Status is non-blocking, BUT inspect its review thread (Source 2) for actionable findings and fix those |
-| **Automated reviewer — specific fix in your changed code** (Greptile/CodeRabbit-Pro/Cubic/Copilot) | Fix it — treat like human review |
+| **Automated reviewer — specific fix in your changed code** (Greptile/CodeRabbit-Pro/Cubic) | Fix it — treat like human review |
 | **Automated reviewer — out-of-scope-acknowledged on YOUR changed code** | See "Out-of-Scope-Acknowledged Workflow" below — classify with one of 6 enumerated reasons; spawn follow-up issue (3 reasons) or post audit-only reply (3 reasons), then resolve the thread. Counts toward the per-round (≤3) and cumulative (≤5/≤3) discipline rails. |
 | **Automated reviewer — pre-existing issue in untouched code** | Skip — only fix issues in YOUR PR's changed lines (this is distinct from out-of-scope-acknowledged: this row is for findings on lines your PR did NOT touch; the other row is for findings on lines your PR DID touch but the fix is out of scope) |
 | **Automated reviewer — Free-plan CodeRabbit summary with no `_⚠️ Potential issue_` markers** | Skip — informational only |
@@ -444,16 +442,12 @@ The complete RESULT block format is documented in the "Output Format" section be
 
 If you didn't change any files this round (no fixes needed — you're just waiting on bots), skip the commit and proceed to Step 6.5; HEAD will be unchanged and the ledger will reflect bot acks relative to the existing HEAD.
 
-### Step 6.5a — Copilot stale-thread auto-resolve (RELOCATED to dispatcher)
-
-This step was moved to the dispatcher under the commit-ownership inversion. See `skills/pr-grind/SKILL.md` "Dispatcher commit/state-synthesis block" → `scripts/dispatcher-commit-block.sh` Step 12. The worker no longer composes the Copilot eligibility call.
-
 ### Step 6.5 — Ack-ledger fetch + per-bot invoke (advisory under inversion)
 
 **Authority note (post-inversion):** the worker's ack-ledger output is
 **authoritative only for the clean-round path** (worker emits `RESULT_STATUS=clean`
 with no staged changes, headed straight to merge). On fix-round and wait-round
-paths the dispatcher overwrites `RESULT_REVIEWER_ACKS` via its own Step 13
+paths the dispatcher overwrites `RESULT_REVIEWER_ACKS` via its own Step 12
 post-push fetch — see `skills/pr-grind/SKILL.md` dispatcher commit block. The
 worker computes Step 6.5 unconditionally for transport simplicity, but the
 non-clean values are advisory and may differ from the dispatcher's final value.
@@ -513,7 +507,7 @@ ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses"
 # block) all invoke it identically.
 export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
-ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),copilot-pull-request-reviewer=$(bash "$ACK_SCRIPT" copilot-pull-request-reviewer 2>/dev/null || echo stale)"
+ACKS="greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale)"
 echo "Ack ledger: $ACKS"
 ```
 
@@ -633,16 +627,16 @@ OWNER=chrisyau REPO=busdriver
 WORKTREE_DIR=/Volumes/Work/Projects/busdriver/.claude/worktrees/pr-grind-64
 ROUND=3 (fix=2/5, wait=0/8)
 PRIOR_COMMIT_SHA=8947cdd
-PRIOR_REVIEWER_ACKS=greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
+PRIOR_REVIEWER_ACKS=greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale
 PRIOR_ATTEMPTS:
-  - Round 1 (fix=1/5, wait=0/8): fixes=mkdir -p ordering in run-review-loop.sh; failures=none; acks=greptile-apps=stale,cubic-dev-ai=none,coderabbitai=stale,copilot-pull-request-reviewer=stale
-  - Round 2 (fix=2/5, wait=0/8): fixes=tilde expansion in target_dir parser; failures=none; acks=greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
+  - Round 1 (fix=1/5, wait=0/8): fixes=mkdir -p ordering in run-review-loop.sh; failures=none; acks=greptile-apps=stale,cubic-dev-ai=none,coderabbitai=stale
+  - Round 2 (fix=2/5, wait=0/8): fixes=tilde expansion in target_dir parser; failures=none; acks=greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale
 ```
 
 (Note: every prior round's emitted `acks=` is mostly `stale` because Step 6.5 runs immediately post-push — bots haven't had time to re-review the just-pushed commit. The dispatcher entering this round sees all bots stale.)
 
 **Your work:**
-1. Step 1: wait for all GitHub-registered checks (`gh pr checks --watch`). This blocks on **check status**, not on review submissions — a bot can flip its check green seconds before posting. By the time Step 1 returns + the 30s grace period elapses, Greptile/CodeRabbit/Copilot have typically finished posting their reviews of `8947cdd`; Cubic often hasn't yet. The ledger (Step 6.5) is the authoritative ack signal — Step 1 only gives the bots a chance to start.
+1. Step 1: wait for all GitHub-registered checks (`gh pr checks --watch`). This blocks on **check status**, not on review submissions — a bot can flip its check green seconds before posting. By the time Step 1 returns + the 30s grace period elapses, Greptile/CodeRabbit have typically finished posting their reviews of `8947cdd`; Cubic often hasn't yet. The ledger (Step 6.5) is the authoritative ack signal — Step 1 only gives the bots a chance to start.
 2. Step 2: fetch all four sources. Find one Cubic review-thread on `pre-merge-gate.sh:142` flagging an SC2015 shellcheck warning. Cubic posted this against an earlier SHA but it's still actionable on `8947cdd`.
 3. Step 3-5: mechanical fix (replace `A && B || C` with `if A; then B; else C; fi`), verify with shellcheck locally.
 4. Step 6: commit (`a1b2c3d`) and push.
@@ -654,12 +648,12 @@ RESULT_STATUS: needs_more
 RESULT_COMMIT_SHA: a1b2c3d
 RESULT_FIXES: replace SC2015 short-circuit with if/then/else in pre-merge-gate.sh:142
 RESULT_REMAINING: none
-RESULT_REVIEWER_ACKS: greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale,copilot-pull-request-reviewer=stale
-RESULT_BOT_LEDGER: greptile-apps=0/1:approved,cubic-dev-ai=1/1:fixed SC2015 short-circuit,coderabbitai=0/0:none,copilot-pull-request-reviewer=0/1:no-findings,codescene-delta-analysis=0/0:none
+RESULT_REVIEWER_ACKS: greptile-apps=stale,cubic-dev-ai=stale,coderabbitai=stale
+RESULT_BOT_LEDGER: greptile-apps=0/1:approved,cubic-dev-ai=1/1:fixed SC2015 short-circuit,coderabbitai=0/0:none,codescene-delta-analysis=0/0:none
 RESULT_ISSUES_SPAWNED: none
 ```
 
-`needs_more` is correct — even with no remaining findings, all four bots still need to re-review `a1b2c3d`. Round 4 will wait in Step 1 for them to catch up; if no new findings emerge, Step 6 will be a no-op, Step 6.5 will compute against unchanged HEAD `a1b2c3d`, every bot will show `a1b2c3d` (acked HEAD), and that round can return `clean`.
+`needs_more` is correct — even with no remaining findings, all three bots still need to re-review `a1b2c3d`. Round 4 will wait in Step 1 for them to catch up; if no new findings emerge, Step 6 will be a no-op, Step 6.5 will compute against unchanged HEAD `a1b2c3d`, every bot will show `a1b2c3d` (acked HEAD), and that round can return `clean`.
 
 (Note: `RESULT_BAIL_REASON` is omitted entirely on non-bail status — the dispatcher parses by tag prefix, not fixed line count.)
 

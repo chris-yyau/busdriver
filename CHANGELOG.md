@@ -1,3 +1,10 @@
+## [1.54.6](https://github.com/chris-yyau/busdriver/compare/v1.54.5...v1.54.6) (2026-06-04)
+
+
+### Bug Fixes
+
+* **ci:** dedup admin-bypass audit issues by commit sha ([#177](https://github.com/chris-yyau/busdriver/issues/177)) ([868b5f2](https://github.com/chris-yyau/busdriver/commit/868b5f27c6666c4fb288373be6f60e984bd46459)), closes [Dive-And-Dev/diveanddev.com#30](https://github.com/Dive-And-Dev/diveanddev.com/issues/30)
+
 ## [1.54.5](https://github.com/chris-yyau/busdriver/compare/v1.54.4...v1.54.5) (2026-06-03)
 
 

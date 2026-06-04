@@ -508,6 +508,69 @@ else
   fail "self-resolver redirect expected 'none' (working-tree ran), got '$got'"
 fi
 
+# ---------------------------------------------------------------------------
+# Tier exposure (ACK_EMIT_TIER=1) — ADR 0001
+# Verifies the opt-in ":<tier>" suffix on HEAD-acks, that the default output is
+# unchanged, and that none/stale are never suffixed.
+# ---------------------------------------------------------------------------
+
+# Tier D: success check-run on HEAD. Default → bare SHA; ACK_EMIT_TIER=1 → SHA:D.
+TIER_D_CHECK_RUNS='{"check_runs":[{"app":{"slug":"cursor"},"conclusion":"success","head_sha":"abc12345ef"}]}'
+got=$(FETCH_OK=1 ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' \
+  ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" ALL_CHECK_RUNS="$TIER_D_CHECK_RUNS" \
+  ALL_STATUSES='[]' HEAD_SHA="$HEAD_SHA" bash "$ACK_SCRIPT" cursor 2>/dev/null)
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "tier D check-run ack, default mode → bare SHA (got $got)"
+else
+  fail "tier D default mode expected '$HEAD_SHA', got '$got'"
+fi
+got=$(ACK_EMIT_TIER=1 FETCH_OK=1 ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' \
+  ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" ALL_CHECK_RUNS="$TIER_D_CHECK_RUNS" \
+  ALL_STATUSES='[]' HEAD_SHA="$HEAD_SHA" bash "$ACK_SCRIPT" cursor 2>/dev/null)
+if [ "$got" = "${HEAD_SHA}:D" ]; then
+  ok "tier D check-run ack, ACK_EMIT_TIER=1 → '${HEAD_SHA}:D' (got $got)"
+else
+  fail "tier D ACK_EMIT_TIER=1 expected '${HEAD_SHA}:D', got '$got'"
+fi
+
+# Tier A: disposed (resolved) thread → ACK_EMIT_TIER=1 → SHA:A.
+got=$(ACK_EMIT_TIER=1 run_ledger "$(mk_threads_json true false)")
+if [ "$got" = "${HEAD_SHA}:A" ]; then
+  ok "tier A disposed thread, ACK_EMIT_TIER=1 → '${HEAD_SHA}:A' (got $got)"
+else
+  fail "tier A ACK_EMIT_TIER=1 expected '${HEAD_SHA}:A', got '$got'"
+fi
+
+# Tier E: success commit-status (coderabbitai). ACK_EMIT_TIER=1 → SHA:E.
+TIER_E_STATUSES='[{"context":"CodeRabbit","state":"success","created_at":"2026-06-04T20:05:00Z","id":2}]'
+got=$(ACK_EMIT_TIER=1 FETCH_OK=1 ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' \
+  ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" \
+  ALL_STATUSES="$TIER_E_STATUSES" HEAD_SHA="$HEAD_SHA" bash "$ACK_SCRIPT" coderabbitai 2>/dev/null)
+if [ "$got" = "${HEAD_SHA}:E" ]; then
+  ok "tier E commit-status ack, ACK_EMIT_TIER=1 → '${HEAD_SHA}:E' (got $got)"
+else
+  fail "tier E ACK_EMIT_TIER=1 expected '${HEAD_SHA}:E', got '$got'"
+fi
+
+# none is never suffixed even with ACK_EMIT_TIER=1 (no signal anywhere → none).
+got=$(ACK_EMIT_TIER=1 FETCH_OK=1 ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' \
+  ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" \
+  ALL_STATUSES='[]' HEAD_SHA="$HEAD_SHA" bash "$ACK_SCRIPT" cursor 2>/dev/null)
+if [ "$got" = "none" ]; then
+  ok "none never suffixed under ACK_EMIT_TIER=1 (got $got)"
+else
+  fail "none under ACK_EMIT_TIER=1 expected 'none', got '$got'"
+fi
+
+# stale is never suffixed even with ACK_EMIT_TIER=1 (FETCH_OK=0).
+got=$(ACK_EMIT_TIER=1 FETCH_OK=0 ALL_THREADS='' ALL_REVIEWS='' ALL_COMMENTS='' \
+  ALL_CHECK_RUNS='' ALL_STATUSES='' HEAD_SHA="$HEAD_SHA" bash "$ACK_SCRIPT" cursor 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "stale never suffixed under ACK_EMIT_TIER=1 (got $got)"
+else
+  fail "stale under ACK_EMIT_TIER=1 expected 'stale', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

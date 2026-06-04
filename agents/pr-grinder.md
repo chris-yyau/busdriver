@@ -32,6 +32,7 @@ The dispatcher passes you a context block containing:
 
 ```bash
 ACKS="cursor=none,cubic-dev-ai=none,coderabbitai=none"
+ACK_TIERS="cursor=none,cubic-dev-ai=none,coderabbitai=none"
 BOT_LEDGER="cursor=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=0/0:none,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none"
 SPAWNED_ISSUES=()       # accumulator for out-of-scope-acknowledged spawn flow (Step 3);
                         # joined to RESULT_ISSUES_SPAWNED at round end (or "none" if empty)
@@ -40,6 +41,7 @@ SPAWNED_ISSUES=()       # accumulator for out-of-scope-acknowledged spawn flow (
 If you bail before Step 6.5 (the real ack-ledger compute) or before Step 2.6 (the per-bot enumeration), emit these defaults from the block above:
 
 - `$ACKS` as `RESULT_REVIEWER_ACKS`
+- `$ACK_TIERS` as `RESULT_ACK_TIERS`
 - `$BOT_LEDGER` as `RESULT_BOT_LEDGER`
 - `RESULT_ISSUES_SPAWNED` — emission is conditional on whether Step 3 has populated `SPAWNED_ISSUES`. On bails BEFORE Step 3 (the only place `SPAWNED_ISSUES` gets appended) the array is empty; emit the literal `"none"` sentinel (an empty `,`-join produces the empty string, which the dispatcher's parser rejects). On bails AFTER Step 3 (e.g., after one or more out-of-scope-acknowledged dismissals have already been recorded), emit the comma-joined array per the round-end contract — dropping it to `"none"` here would lose the spawned-issue numbers that Invariant 4's cumulative counter depends on. Concretely: `if [ ${#SPAWNED_ISSUES[@]} -eq 0 ]; then ISSUES_SPAWNED=none; else IFS=,; ISSUES_SPAWNED="${SPAWNED_ISSUES[*]}"; unset IFS; fi`.
 
@@ -198,6 +200,8 @@ For each bot in the Step 2.5 registry — plus `codescene-delta-analysis` (Sourc
 Sources 1 (CI checks) and 5 (check-runs) are intentionally out of scope for body triage. Source 1 returns pass/fail status, not finding text. Source 5 (`gh api .../commits/<HEAD>/check-runs`) is fetched only in Step 6.5 for ack-ledger tier D and isn't available at Step 2.6 — its `output.text` is not part of the per-bot enumeration contract. Bots that emit actionable findings only via check-runs (rare today) are caught later by Step 1's failed-check loop or by Source 4 follow-up comments those bots post; if a future bot emerges that hides findings exclusively in check-run output, hoist `ALL_CHECK_RUNS` into Step 2 first, then add Source 5 to this enumeration.
 
 Conceptually `BOT_REVIEWS[<bot>] = <combined body>`. Track `n_total` per bot — the number of distinct review/comment artifacts examined (each Source 2 thread, each Source 3 review entry, and each Source 4 comment counts as 1; Source 5 check-runs are out of scope at this step per the paragraph above). A bot that posted nothing at all gets `n_total = 0` and ledger entry `<bot>=0/0:none` — parallel to its `none` value in `RESULT_REVIEWER_ACKS`. **A bot that APPROVED with an empty body still gets `n_total = 1`** (the approval review entry counts) and ledger entry `<bot>=0/1:approved` — this distinguishes "bot looked, nothing to fix" from "worker didn't enumerate". The dispatcher's invariant-3 gate keys on this distinction.
+
+**Bodyless check-run/status acks (e.g., Cursor Bugbot on a clean run):** a bot that signals a clean review ONLY via a Source 5 check-run (ack-ledger Tier D) or a commit-status (Tier E), with no Source 2/3/4 artifact, correctly enumerates as `<bot>=0/0:none` here — do NOT invent an artifact or rewrite the entry. Step 6.5 records the ack TIER (`RESULT_ACK_TIERS`), and the dispatcher's Invariant 3 exempts a HEAD-acked bot with `n_total==0` from the coverage gate precisely when its tier is D or E. By ack-ledger's tier order (A→E, first hit wins), reaching D/E already proves the bot has zero live Source-2 inline threads, so the exemption cannot mask an inline finding. No worker-side reconciliation is needed — the tier signal is authoritative.
 
 **Why per-bot, not global:** a prose-style reviewer can post a single narrative summary — no `<details>`, no bullet-pointed "Issues" section — with findings buried in paragraphs (Codex's `### 💡 Codex Review` body is shaped this way). CodeRabbit's structured `<details>` blocks parse cleanly; narrative prose does not. A global "find all findings" pass that works for one format silently misses the others. The contract is: enumerate per-bot, READ each body, DECIDE per-finding — same as a human reviewer.
 
@@ -509,11 +513,24 @@ ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses"
 # block) all invoke it identically.
 export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
-ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale)"
+# Call ack-ledger ONCE per bot with ACK_EMIT_TIER=1 → "<sha>:<tier>" on a
+# HEAD-ack, bare "none"/"stale" otherwise. Derive BOTH the plain ack ledger
+# (RESULT_REVIEWER_ACKS — strip ":<tier>", unchanged contract) and the parallel
+# tier map (RESULT_ACK_TIERS) from the same call. The dispatcher's Invariant 3
+# reads the tier map to exempt a HEAD-acked bot with n_total==0 when its tier is
+# D (check-run) or E (commit-status) — a bodyless structured ack with nothing to
+# enumerate. Fail-CLOSED to `stale` on any error.
+_at() { ACK_EMIT_TIER=1 bash "$ACK_SCRIPT" "$1" 2>/dev/null || echo stale; }
+_ackpart() { printf '%s' "${1%%:*}"; }                                    # token before ":"
+_tierpart() { case "$1" in *:*) printf '%s' "${1##*:}" ;; *) printf 'none' ;; esac; }  # after ":", else "none"
+_cur=$(_at cursor); _cub=$(_at cubic-dev-ai); _cod=$(_at coderabbitai)
+ACKS="cursor=$(_ackpart "$_cur"),cubic-dev-ai=$(_ackpart "$_cub"),coderabbitai=$(_ackpart "$_cod")"
+ACK_TIERS="cursor=$(_tierpart "$_cur"),cubic-dev-ai=$(_tierpart "$_cub"),coderabbitai=$(_tierpart "$_cod")"
 echo "Ack ledger: $ACKS"
+echo "Ack tiers: $ACK_TIERS"
 ```
 
-Emit `$ACKS` verbatim as `RESULT_REVIEWER_ACKS`. The dispatcher feeds it back as next round's `PRIOR_REVIEWER_ACKS` and uses it to gate `clean`.
+Emit `$ACKS` verbatim as `RESULT_REVIEWER_ACKS` and `$ACK_TIERS` verbatim as `RESULT_ACK_TIERS`. The dispatcher feeds `$ACKS` back as next round's `PRIOR_REVIEWER_ACKS` and uses it to gate `clean`; it reads `$ACK_TIERS` only at invariant-check time (Invariant 3's bodyless-ack exemption) and does not echo it back to the next round.
 
 You do NOT do Step 7 (checkpoint). You do NOT write the clean marker. You do NOT merge. You do NOT clean up the worktree. Those belong to the dispatcher.
 
@@ -566,6 +583,7 @@ RESULT_COMMIT_SHA: <new SHA you pushed, or "none" if no commit>
 RESULT_FIXES: <one-line, comma-separated summary of what you changed this round>
 RESULT_REMAINING: <one-line summary of what's still pending, or "none">
 RESULT_REVIEWER_ACKS: <comma-separated login=value pairs from Step 6.5; always present — early-bail paths emit the all-`none` default initialized at the top of the round. Advisory on fix/wait paths (dispatcher overwrites); authoritative on clean path.>
+RESULT_ACK_TIERS: <comma-separated login=tier pairs from Step 6.5; same registered bots as RESULT_REVIEWER_ACKS; tier ∈ {A,B,C,D,E,none} where the letter is the ack-ledger tier that produced a HEAD-ack (D=check-run, E=commit-status are the bodyless structured tiers) and `none` means not-a-HEAD-ack (the bot is none/stale). Always present; early-bail paths emit the all-`none` default. The dispatcher's Invariant 3 reads this ONLY to exempt a HEAD-acked bot with n_total==0 when its tier is D or E. Additive/backward-compatible: a dispatcher that doesn't read it ignores it; a missing tag makes Invariant 3 fall back to its strict (no-exemption) behavior.>
 RESULT_BOT_LEDGER: <comma-separated login=n_actionable/n_total:disposition entries from Step 3; always present — early-bail paths emit the all-`0/0:none` default initialized at the top of the round. Disposition prose MUST NOT contain commas — the dispatcher splits on `,` to separate entries; commas inside a disposition would silently corrupt the parse and could hide a HEAD-acked bot's `0/0` entry from the invariant-3 gate. If a fix summary needs commas, replace them with `;` or use a fixed-token disposition like `fixed`. The disposition MAY carry one or more `scope-skipped:<reason>:<count>` segments joined to the primary disposition with bare `+` and no surrounding whitespace (e.g., `coderabbitai=2/4:fixed 2+scope-skipped:schema-refactor:1+scope-skipped:external-research:1`); `+` is the inner segment separator, `,` remains the outer entry separator, and the dispatcher's Invariant 4 sums every count across all bots and rounds. Cap is INCLUSIVE: 5 dismissals are allowed, the 6th BAILs (judgment).>
 RESULT_ISSUES_SPAWNED: <comma-separated GitHub issue numbers spawned this round via the out-of-scope-acknowledged workflow, or "none">  (always present in the new contract; the dispatcher's Invariant 4 sums these across all rounds. Cap is INCLUSIVE: 3 spawned issues are allowed, the 4th BAILs (judgment))
 RESULT_BAIL_REASON: <only when status=bail; one-line free-form prose for human consumption — NOT used for control flow>
@@ -581,6 +599,7 @@ RESULT_COMMIT_SHA: ...
 RESULT_FIXES: ...
 RESULT_REMAINING: ...
 RESULT_REVIEWER_ACKS: ...
+RESULT_ACK_TIERS: ...
 RESULT_BOT_LEDGER: ...
 RESULT_ISSUES_SPAWNED: ...
 EOF
@@ -611,7 +630,7 @@ If the dispatcher omitted `RESULT_FILE` (legacy dispatcher), use `/tmp/pr-grinde
 | Fixing pre-existing issues flagged by automated reviewers | Only fix issues in YOUR PR's changed lines. |
 | Skipping the 3-phase check verification in Step 1 | The pre-merge gate will block on stuck-pending checks. |
 | `--no-verify` to bypass litmus | Litmus is the meaningful review. Bail instead. |
-| Running only Source 2 (GraphQL `reviewThreads`) and skipping Sources 3/4 | CodeRabbit summaries land in Source 4 (issue comments) and Codex summaries in Source 3 (review bodies). Skipping them merges PRs with un-triaged bot findings — the regression that introduced this rewrite. |
+| Running only Source 2 (GraphQL `reviewThreads`) and skipping Sources 3/4 | CodeRabbit summaries land in Source 4 (issue comments); Codex findings span Source 2 (inline review threads) and Source 3 (the `### 💡 Codex Review` body posted as a COMMENTED review entry). Skipping Sources 3/4 merges PRs with un-triaged bot findings — the regression that introduced this rewrite. |
 | Treating CodeScene's "advisory" status as "ignore its findings" | The check status is non-blocking; the **review thread is not**. CodeScene posts real findings as Source 2 review threads (e.g., "Excess Number of Function Arguments") that must be triaged like any other reviewer. |
 | Skipping the Step 0 mandatory Read of SKILL.md | Edge cases (skip-file protocol, rebase races, late-arriving bot ack patterns) are documented there. The inlined bash above is necessary but not sufficient. |
 | Skipping Step 2.6 / triaging globally (across all sources) instead of per-bot | Codex's prose findings hide between CodeRabbit's structured `<details>` blocks. Global enumeration silently misses prose; per-bot enumeration forces explicit accept/skip on each bot's body. |
@@ -651,6 +670,7 @@ RESULT_COMMIT_SHA: a1b2c3d
 RESULT_FIXES: replace SC2015 short-circuit with if/then/else in pre-merge-gate.sh:142
 RESULT_REMAINING: none
 RESULT_REVIEWER_ACKS: cursor=stale,cubic-dev-ai=stale,coderabbitai=stale
+RESULT_ACK_TIERS: cursor=none,cubic-dev-ai=none,coderabbitai=none
 RESULT_BOT_LEDGER: cursor=0/1:approved,cubic-dev-ai=1/1:fixed SC2015 short-circuit,coderabbitai=0/0:none,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
 RESULT_ISSUES_SPAWNED: none
 ```

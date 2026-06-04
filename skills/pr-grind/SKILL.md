@@ -243,7 +243,18 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │
   │     Parse the last stdout line as exactly one JSON envelope:
   │       - Success: set RESULT_COMMIT_SHA and RESULT_REVIEWER_ACKS from
-  │         `result_commit_sha` / `result_reviewer_acks`.
+  │         `result_commit_sha` / `result_reviewer_acks`. ALSO reset
+  │         RESULT_ACK_TIERS to the all-`none` default
+  │         (`cursor=none,cubic-dev-ai=none,coderabbitai=none`) — the
+  │         commit-block synthesizes post-push acks but NOT tiers, so the
+  │         worker's RESULT_ACK_TIERS is a PRE-overwrite snapshot that must
+  │         not be paired with these post-push acks (Invariant 3 Issue: a
+  │         fast bodyless ack on the new HEAD would otherwise apply a stale
+  │         tier). Resetting to `none` makes Invariant 3 fail-CLOSED (grant
+  │         no bodyless-ack exemption) for any HEAD-acked bot on a fix round
+  │         — identical to the strict pre-ADR-0001 behavior. The exemption is
+  │         meaningful only on clean/wait rounds, where RESULT_REVIEWER_ACKS
+  │         and RESULT_ACK_TIERS both come from the SAME worker Step 6.5 pass.
   │       - Bail: set RESULT_BAIL_CATEGORY / RESULT_BAIL_REASON from
   │         `bail_category` / `bail_reason`, then go to BAIL.
   │
@@ -311,10 +322,34 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │
   │        Then for each entry where the corresponding RESULT_REVIEWER_ACKS
   │        value exists AND looks like a short SHA (regex `^[0-9a-f]{7,40}$`):
-  │          - if n_total == 0 → BAIL with reason "worker did not
-  │            enumerate findings for <bot> despite ack on
-  │            <short-sha> — possible prose-review coverage gap;
-  │            manual review required"
+  │          - if n_total == 0:
+  │              **Bodyless-ack exemption (ADR 0001).** Look up the bot's
+  │              tier in RESULT_ACK_TIERS (worker tag; parse as
+  │              comma-separated `<login>=<tier>`, tier ∈ {A,B,C,D,E,none}).
+  │                - if tier is `D` or `E` → PASS. The HEAD-ack came from a
+  │                  bodyless structured signal (D=check-run, E=commit-status)
+  │                  with no enumerable Source 2/3/4 body — e.g., Cursor
+  │                  Bugbot on a clean run. By ack-ledger's tier order (A→E,
+  │                  first hit wins), reaching D/E proves the bot has zero
+  │                  live Source-2 inline threads, so this exemption cannot
+  │                  mask an inline finding. See agents/pr-grinder.md Step 2.6
+  │                  "Bodyless check-run/status acks".
+  │                - otherwise (tier A/B/C, tier `none`, RESULT_ACK_TIERS
+  │                  missing, OR the bot's tier missing/unknown —
+  │                  **fail-CLOSED**) → BAIL with reason "worker did not
+  │                  enumerate findings for <bot> despite ack on <short-sha>
+  │                  (tier <tier-or-?>) — possible prose-review coverage gap;
+  │                  manual review required".
+  │                  A body-bearing tier (A/B/C) with n_total==0 is a genuine
+  │                  enumeration gap; a missing tier map means the worker
+  │                  predates the RESULT_ACK_TIERS contract; and tier `none`
+  │                  on a HEAD-acked bot occurs on FIX ROUNDS, where the
+  │                  dispatcher reset RESULT_ACK_TIERS to all-`none` after
+  │                  overwriting acks with the commit-block's post-push
+  │                  synthesis (which computes no tiers) — see the Success
+  │                  branch of the fix-round envelope parsing above. In every
+  │                  one of these cases the strict pre-ADR-0001 behavior
+  │                  (always bail) is the safe default.
   │          - if n_total >= 1 → pass (worker enumerated; disposition
   │            is its decision)
   │
@@ -707,6 +742,7 @@ RESULT_COMMIT_SHA: <sha or "none">                    (always present; dispatche
 RESULT_FIXES: <one-line summary>                      (always present)
 RESULT_REMAINING: <one-line or "none">                (always present)
 RESULT_REVIEWER_ACKS: <login=value,login=value,...>   (always present; dispatcher-synthesized on fix-round and wait-round paths; worker-advisory on clean path; values: <short-sha> | none | stale; early-bail paths emit the all-`none` default initialized before Step 0)
+RESULT_ACK_TIERS: <login=tier,login=tier,...>         (worker tag, additive/backward-compatible; tier ∈ {A,B,C,D,E,none} = the ack-ledger tier that produced each bot's HEAD-ack, or `none` when the bot is not HEAD-acked. Invariant 3 reads it ONLY to exempt a HEAD-acked bot with n_total==0 when its tier is D (check-run) or E (commit-status) — bodyless structured acks, see ADR 0001. MISSING TAG (old-contract worker) → Invariant 3 falls back to its strict pre-ADR-0001 behavior (n_total==0 on a HEAD-ack always bails); do NOT bail "subagent output unparseable" on a missing RESULT_ACK_TIERS — additive, not version-pinned.)
 RESULT_BOT_LEDGER: <login=n_act/n_total:disp,...>     (always present; entries shape: `<login>=<n_actionable>/<n_total>:<disposition>`; early-bail paths emit the all-`0/0:none` default; gates Invariant 3 — see Dispatcher Loop. n_actionable and n_total are different units — findings (decided per-finding) vs artifacts (review/comment entries examined); a single artifact can contain multiple findings, so n_actionable > n_total (e.g., `<bot>=2/1:fixed both`) is legitimate, not a typo. Invariant 3 only requires n_total >= 1 for HEAD-acked bots; it does NOT enforce n_actionable <= n_total. See `agents/pr-grinder.md` Step 3 worked examples. Disposition prose MUST NOT contain commas; entries are split on `,` and a comma inside a disposition would corrupt the parse. Disposition MAY carry `+`-joined `scope-skipped:<reason>:<count>` segments — Invariant 4 sums those counts across all bots/rounds against the ≤5 cumulative cap)
 RESULT_ISSUES_SPAWNED: <issue,issue,... or "none">    (always present in the new contract; comma-separated GitHub issue numbers spawned this round via the out-of-scope-acknowledged workflow; gates Invariant 4 — cumulative count across rounds caps at 3. Backward compatibility: missing tag entirely → treat as "none" / zero contribution. Old-contract workers (pre-out-of-scope-flow) never emitted this tag and operate under pre-Invariant-4 semantics for the rest of their grind; new-contract workers always emit it. Do NOT bail "subagent output unparseable" on a missing RESULT_ISSUES_SPAWNED — the protocol is additive, not version-pinned.)
 RESULT_BAIL_REASON: <one-line free-form prose>        (present only when status=bail; for human consumption — NEVER substring-matched for control flow)
@@ -874,7 +910,7 @@ Classify each piece of feedback:
 |----------|--------|
 | **CI failure — test/lint/build** | Fix it |
 | **CI failure — flaky/infra** | Note it, skip after 3 consecutive identical failures |
-| **Automated reviewer — specific fix** (CodeRabbit, Cursor, Cubic) | Fix it — treat like human review |
+| **Automated reviewer — specific fix** (CodeRabbit, Cursor, Cubic, Codex) | Fix it — treat like human review |
 | **Automated reviewer — out-of-scope-acknowledged on YOUR changed code** | Apply the workflow at `agents/pr-grinder.md` Step 3 (Out-of-Scope-Acknowledged Workflow): classify with one of 6 enumerated reasons, spawn follow-up issue (3 spawn reasons) or post audit-only reply (3 audit reasons), then resolve the thread. **DEFAULT IS FIX** — only dismiss with ≥80% confidence the fix would expand scope or require off-codebase work. Per-round cap ≤3 dismissals; cumulative caps ≤5 dismissals + ≤3 spawned issues across the grind (Invariant 4 BAILs past either) |
 | **Automated reviewer — stale/pre-existing issue in untouched code** | Skip — only fix issues in YOUR PR's changed lines (this is distinct from out-of-scope-acknowledged: this row is for findings on lines your PR did NOT touch; the row above is for findings on touched lines where the fix is out of scope) |
 | **Resolved or outdated thread** | Skip — already filtered out by GraphQL (`isResolved`, `isOutdated`); note that pr-grind's own out-of-scope flow resolves threads after dismissal, so resolved-by-operator threads also fall in this row on subsequent rounds |
@@ -961,8 +997,18 @@ ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses"
 # env and the bot login from $1.
 export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
-ROUND_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale)"
+# One call per bot with ACK_EMIT_TIER=1 → "<sha>:<tier>" on a HEAD-ack, bare
+# none/stale otherwise. Derive the plain ack ledger (strip ":<tier>") AND the
+# tier map. Inline mode runs the same tier-aware Invariant 3 the subagent path
+# does (ADR 0001), so it needs the tiers here just as the worker emits them.
+_at() { ACK_EMIT_TIER=1 bash "$ACK_SCRIPT" "$1" 2>/dev/null || echo stale; }
+_ackpart() { printf '%s' "${1%%:*}"; }
+_tierpart() { case "$1" in *:*) printf '%s' "${1##*:}" ;; *) printf 'none' ;; esac; }
+_cur=$(_at cursor); _cub=$(_at cubic-dev-ai); _cod=$(_at coderabbitai)
+ROUND_ACKS="cursor=$(_ackpart "$_cur"),cubic-dev-ai=$(_ackpart "$_cub"),coderabbitai=$(_ackpart "$_cod")"
+ROUND_ACK_TIERS="cursor=$(_tierpart "$_cur"),cubic-dev-ai=$(_tierpart "$_cub"),coderabbitai=$(_tierpart "$_cod")"
 echo "Ack ledger: $ROUND_ACKS"
+echo "Ack tiers: $ROUND_ACK_TIERS"
 
 STALE_BOTS=$(echo "$ROUND_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
 echo "STALE_BOTS: $STALE_BOTS"
@@ -1043,6 +1089,7 @@ RESULT_COMMIT_SHA: 4361cc54
 RESULT_FIXES: remove /blog/* paths from 4 relatedTools blocks
 RESULT_REMAINING: none
 RESULT_REVIEWER_ACKS: cursor=stale,cubic-dev-ai=stale,coderabbitai=stale
+RESULT_ACK_TIERS: cursor=none,cubic-dev-ai=none,coderabbitai=none
 RESULT_BOT_LEDGER: cursor=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
 RESULT_ISSUES_SPAWNED: 847,848
 ```

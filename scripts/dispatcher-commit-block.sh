@@ -17,6 +17,12 @@
 #                             clean-path (no recompute); required for the
 #                             defensive clean-round routing path to return
 #                             correct acks rather than the all-"none" fallback
+#   RESULT_ACK_TIERS        - worker-computed ack-tier map (ADR 0001); passed
+#                             through VERBATIM on the clean path so a valid D/E
+#                             bodyless-ack exemption survives. Defaults to
+#                             all-"none" (fail-CLOSED) when absent. The
+#                             wait-round path ignores it and emits all-"none"
+#                             because it refreshes acks (stale tier snapshot).
 #
 # Outputs (stdout):
 #   Exactly one structured JSON line, either:
@@ -92,8 +98,18 @@ fi
 # clean (worker acks authoritative, no recompute), refresh acks only on
 # wait-rounds (needs_more + clean index).
 emit_success_no_commit() {
-    jq -nc --arg acks "$1" \
-        '{status:"success", result_commit_sha:"none", result_reviewer_acks:$acks}' || \
+    # $1 = acks ledger, $2 = ack-tier map (callers pass it explicitly — see below).
+    # The CLEAN pass-through caller passes the worker's RESULT_ACK_TIERS verbatim
+    # so a valid bodyless-ack exemption (cursor=D / coderabbitai=E) survives to
+    # the dispatcher's Invariant 3. The WAIT-ROUND caller passes the all-`none`
+    # default because it REFRESHES acks via the ack-ledger and the worker's tier
+    # snapshot would be stale against those refreshed acks (fail-CLOSED). Erasing
+    # tiers on the clean path would fail-closed-bail Invariant 3 on a legitimate
+    # bodyless ack — the regression this split fixes. See ADR 0001.
+    local _acks="$1"
+    local _tiers="$2"
+    jq -nc --arg acks "$_acks" --arg tiers "$_tiers" \
+        '{status:"success", result_commit_sha:"none", result_reviewer_acks:$acks, result_ack_tiers:$tiers}' || \
         emit_bail "env" "dispatcher-commit-block: emit_success_no_commit jq call failed (jq binary missing or OOM)"
     exit 0
 }
@@ -114,7 +130,11 @@ case "$RESULT_STATUS" in
         if [ -z "${RESULT_REVIEWER_ACKS:-}" ]; then
             emit_bail "judgment" "RESULT_STATUS=clean requires RESULT_REVIEWER_ACKS from worker; worker omitted the tag"
         fi
-        emit_success_no_commit "$RESULT_REVIEWER_ACKS"
+        # Clean pass-through: preserve the worker's RESULT_ACK_TIERS (acks are
+        # the worker's, never refreshed here, so the tier map is consistent with
+        # them — a valid D/E exemption must survive). Fall back to all-`none`
+        # only when the worker omitted the tag (fail-CLOSED, pre-ADR-0001 strict).
+        emit_success_no_commit "$RESULT_REVIEWER_ACKS" "${RESULT_ACK_TIERS:-cursor=none,cubic-dev-ai=none,coderabbitai=none}"
         ;;
     needs_more)
         _cached_exit=0
@@ -144,7 +164,10 @@ case "$RESULT_STATUS" in
                 ack=$(bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")
                 wait_entries+=("${bot}=${ack}")
             done
-            emit_success_no_commit "$(IFS=,; echo "${wait_entries[*]}")"
+            # Wait-round: acks are REFRESHED via the ack-ledger above, so the
+            # worker's tier snapshot is stale against them — pass all-`none`
+            # (fail-CLOSED; Invariant 3 grants no exemption on wait-rounds).
+            emit_success_no_commit "$(IFS=,; echo "${wait_entries[*]}")" "cursor=none,cubic-dev-ai=none,coderabbitai=none"
         fi
         ;;
     bail)
@@ -380,8 +403,13 @@ else
 fi
 RESULT_REVIEWER_ACKS=$(IFS=,; echo "${reviewer_ack_entries[*]}")
 
+# Uniform contract: every success envelope carries result_ack_tiers. The
+# fix-round path emits all-`none` because these acks are the post-push synthesis
+# (the worker's tier snapshot is pre-commit and stale against them) — Invariant 3
+# fail-CLOSED grants no bodyless-ack exemption on a fix round. See ADR 0001.
 jq -nc \
     --arg sha "$RESULT_COMMIT_SHA" \
     --arg acks "$RESULT_REVIEWER_ACKS" \
-    '{status:"success", result_commit_sha:$sha, result_reviewer_acks:$acks}' || \
+    --arg tiers "cursor=none,cubic-dev-ai=none,coderabbitai=none" \
+    '{status:"success", result_commit_sha:$sha, result_reviewer_acks:$acks, result_ack_tiers:$tiers}' || \
     emit_bail "env" "dispatcher-commit-block: final success-envelope jq call failed (jq binary missing or OOM)"

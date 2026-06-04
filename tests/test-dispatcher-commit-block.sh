@@ -196,6 +196,7 @@ run_dispatcher_capture() {
     if [ -n "${gh_event_log+x}" ]; then env_args+=("GH_EVENT_LOG=$gh_event_log"); fi
     if [ -n "${dispatcher_event_log+x}" ]; then env_args+=("DISPATCHER_EVENT_LOG=$dispatcher_event_log"); fi
     if [ -n "${result_reviewer_acks+x}" ]; then env_args+=("RESULT_REVIEWER_ACKS=$result_reviewer_acks"); fi
+    if [ -n "${result_ack_tiers+x}" ]; then env_args+=("RESULT_ACK_TIERS=$result_ack_tiers"); fi
 
     set +e
     dispatcher_output=$(env "${env_args[@]}" bash "$SCRIPT" 2>&1)
@@ -487,11 +488,12 @@ test_m_wait_round_classifier() {
     if printf '%s\n' "$dispatcher_json" | jq -e \
         '.status == "success"
          and .result_commit_sha == "none"
-         and (.result_reviewer_acks | contains("cursor=none"))' >/dev/null; then
+         and (.result_reviewer_acks | contains("cursor=none"))
+         and (.result_ack_tiers | contains("cursor=none"))' >/dev/null; then
         return 0
     fi
 
-    fail_test "test_m wait-round no-staged path should return result_commit_sha=none with refreshed acks; got exit=$dispatcher_exit json=$dispatcher_json"
+    fail_test "test_m wait-round no-staged path should return result_commit_sha=none with refreshed acks and all-none tiers; got exit=$dispatcher_exit json=$dispatcher_json"
 }
 test_n_clean_path_acks() {
     local sandbox plugin_root shimdir remote original_dir initial_sha
@@ -539,6 +541,35 @@ test_n2_clean_path_missing_acks_bails() {
     fi
 
     fail_test "test_n2 clean path with missing RESULT_REVIEWER_ACKS should bail judgment; got exit=$dispatcher_exit json=$dispatcher_json"
+}
+test_o_clean_path_preserves_tiers() {
+    # ADR 0001 regression: the clean pass-through must PRESERVE the worker's
+    # RESULT_ACK_TIERS verbatim so a bodyless D/E ack survives to Invariant 3 —
+    # it must NOT erase the tiers to all-`none` (the bug that fail-closed-bailed
+    # a legitimate clean cursor=<sha> tier=D ack). The wait-round path resets;
+    # the clean pass-through does not.
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json before_sha after_sha
+    local result_reviewer_acks result_ack_tiers
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+
+    git -C "$sandbox" commit --no-gpg-sign -qm "consume staged fixture"
+    git -C "$sandbox" push -q
+    before_sha=$(git -C "$sandbox" rev-parse HEAD)
+    result_reviewer_acks='cursor=abc12345,cubic-dev-ai=none,coderabbitai=none'
+    result_ack_tiers='cursor=D,cubic-dev-ai=none,coderabbitai=none'
+    run_dispatcher_capture clean "none"
+    after_sha=$(git -C "$sandbox" rev-parse HEAD)
+
+    if printf '%s\n' "$dispatcher_json" | jq -e \
+        '.status == "success"
+         and (.result_ack_tiers | contains("cursor=D"))' >/dev/null &&
+        [ "$after_sha" = "$before_sha" ]; then
+        return 0
+    fi
+
+    fail_test "test_o clean path must preserve worker RESULT_ACK_TIERS (cursor=D), not erase to none; got exit=$dispatcher_exit json=$dispatcher_json"
 }
 test_p_pre_dispatch_baseline() {
     local sandbox

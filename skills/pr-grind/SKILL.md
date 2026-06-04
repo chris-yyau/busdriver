@@ -236,25 +236,27 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │       RESULT_STATUS="$RESULT_STATUS" \
   │       RESULT_FIXES="$RESULT_FIXES" \
   │       RESULT_REVIEWER_ACKS="${RESULT_REVIEWER_ACKS:-}" \
+  │       RESULT_ACK_TIERS="${RESULT_ACK_TIERS:-}" \
   │       NO_WORKTREE="${NO_WORKTREE:-0}" \
   │       PRE_DISPATCH_BASELINE="${PRE_DISPATCH_BASELINE:-[]}" \
   │       BUSDRIVER_ALLOW_NO_COMMITLINT="${BUSDRIVER_ALLOW_NO_COMMITLINT:-0}" \
   │       bash "$CLAUDE_PLUGIN_ROOT/scripts/dispatcher-commit-block.sh"
   │
   │     Parse the last stdout line as exactly one JSON envelope:
-  │       - Success: set RESULT_COMMIT_SHA and RESULT_REVIEWER_ACKS from
-  │         `result_commit_sha` / `result_reviewer_acks`. ALSO reset
-  │         RESULT_ACK_TIERS to the all-`none` default
-  │         (`cursor=none,cubic-dev-ai=none,coderabbitai=none`) — the
-  │         commit-block synthesizes post-push acks but NOT tiers, so the
-  │         worker's RESULT_ACK_TIERS is a PRE-overwrite snapshot that must
-  │         not be paired with these post-push acks (Invariant 3 Issue: a
-  │         fast bodyless ack on the new HEAD would otherwise apply a stale
-  │         tier). Resetting to `none` makes Invariant 3 fail-CLOSED (grant
-  │         no bodyless-ack exemption) for any HEAD-acked bot on a fix round
-  │         — identical to the strict pre-ADR-0001 behavior. The exemption is
-  │         meaningful only on clean/wait rounds, where RESULT_REVIEWER_ACKS
-  │         and RESULT_ACK_TIERS both come from the SAME worker Step 6.5 pass.
+  │       - Success: set RESULT_COMMIT_SHA, RESULT_REVIEWER_ACKS, AND
+  │         RESULT_ACK_TIERS from `result_commit_sha` / `result_reviewer_acks` /
+  │         `result_ack_tiers`. Every success envelope carries all three (see
+  │         the commit-block contract). The commit-block emits `result_ack_tiers`
+  │         all-`none` on fix-rounds (post-push synthesis — the worker's
+  │         pre-commit tier snapshot is stale against these acks) and on
+  │         wait-rounds (refreshed acks), but emits the WORKER's tiers verbatim
+  │         on the clean pass-through (acks NOT refreshed, so tiers stay
+  │         consistent with them). Net effect for Invariant 3's bodyless-ack
+  │         exemption: fail-CLOSED on fix/wait rounds (every tier is `none` → no
+  │         exemption, identical to strict pre-ADR-0001 behavior) and live only
+  │         on the clean path (tier D/E → exempt). Backward-compat: if
+  │         `result_ack_tiers` is absent (legacy commit-block), reset
+  │         RESULT_ACK_TIERS to the all-`none` default (fail-CLOSED).
   │       - Bail: set RESULT_BAIL_CATEGORY / RESULT_BAIL_REASON from
   │         `bail_category` / `bail_reason`, then go to BAIL.
   │
@@ -760,7 +762,9 @@ Inputs (env vars, optional; default 0/empty):
 - `BUSDRIVER_ALLOW_NO_COMMITLINT` - `1` allows a missing local commitlint binary.
 
 Outputs (stdout, exactly one JSON object on the last line):
-- Success: `{"status":"success","result_commit_sha":"<sha>","result_reviewer_acks":"login=value,..."}`
+- Success (fix-round): `{"status":"success","result_commit_sha":"<sha>","result_reviewer_acks":"login=value,..."}`
+- Success (wait-round): `{"status":"success","result_commit_sha":"none","result_reviewer_acks":"login=value,...","result_ack_tiers":"cursor=none,cubic-dev-ai=none,coderabbitai=none"}` — `result_ack_tiers` is all-`none` because the wait-round path REFRESHES acks via the ack-ledger, so the worker's tier snapshot would be stale against them; the dispatcher resets RESULT_ACK_TIERS (fail-CLOSED).
+- Success (clean pass-through): `{"status":"success","result_commit_sha":"none","result_reviewer_acks":"login=value,...","result_ack_tiers":"<worker RESULT_ACK_TIERS verbatim>"}` — the clean path does NOT refresh acks (it passes the worker's acks through), so it ALSO passes the worker's `RESULT_ACK_TIERS` through verbatim, preserving a valid D/E bodyless-ack exemption. Falls back to all-`none` only if the caller omitted `RESULT_ACK_TIERS` (fail-CLOSED).
 - Bail: `{"bail_category":"judgment|env|budget|policy","bail_reason":"<string>"}`
 
 Exit code:

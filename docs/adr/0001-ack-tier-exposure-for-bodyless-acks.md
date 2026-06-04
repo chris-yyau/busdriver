@@ -62,17 +62,22 @@ exchange for deleting the fragile Guard B re-derivation.
 - New opt-in env var on `ack-ledger.sh`; new `RESULT_ACK_TIERS` worker tag.
 - Invariant 3 becomes tier-aware; backward-compatible (missing tier → bail).
 - Inline execution path computes tiers the same way as the subagent path.
-- **Fix-round consistency (fail-CLOSED):** on a fix round the dispatcher
-  overwrites `RESULT_REVIEWER_ACKS` with the commit-block's post-push synthesis,
-  which does NOT compute tiers. To avoid pairing a fresh post-push ack with the
-  worker's stale pre-commit tier snapshot, the dispatcher resets
-  `RESULT_ACK_TIERS` to all-`none` on the success branch of the commit-block
-  envelope parse. Invariant 3 then grants no bodyless-ack exemption on fix rounds
-  (strict pre-ADR-0001 behavior). The exemption fires only on clean/wait rounds,
-  where acks and tiers both come from the same worker Step 6.5 pass. This keeps
-  the commit-block contract unchanged (no tier synthesis there) at the cost of a
-  rare, benign fail-closed bail if a bot bodyless-acks the new HEAD before the
-  next round — strictly safer than applying a stale tier.
+- **Same-pass consistency (the core invariant):** `result_ack_tiers` is ALWAYS
+  computed from the same ack-ledger pass as `result_reviewer_acks`, so the two
+  can never desync. The commit-block computes both freshly from one
+  `ACK_EMIT_TIER=1` pass on the fix-round post-push synthesis AND the wait-round
+  refresh; the clean pass-through carries the worker's acks and tiers through
+  verbatim (one worker Step 6.5 pass). Because they are same-pass, the
+  dispatcher uses `RESULT_ACK_TIERS` directly with no reset and no fail-closed
+  crutch, and Invariant 3's bodyless-ack exemption fires correctly on every path
+  — including a fix/wait round where, e.g., cursor's check-run registers before
+  slower bots (cursor=<sha> tier=D exempts; the others stay stale and keep the
+  round in `needs_more`). An earlier draft reset tiers to all-`none` on fix/wait
+  rounds (fail-CLOSED) to dodge a desync; computing tiers in the same pass as the
+  acks removes the desync at the source, so the conservative reset is no longer
+  needed. `emit_success_no_commit` takes the tier map as an explicit second
+  argument so the clean and wait-round callers pass different (but each
+  internally-consistent) values.
 
 ## Revisit trigger
 If a bot emerges that posts actionable findings ONLY via a check-run/status

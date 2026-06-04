@@ -160,14 +160,28 @@ case "$RESULT_STATUS" in
             fi
             export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
             wait_entries=()
+            tier_entries=()
             for bot in "${REGISTERED_ACK_BOTS[@]}"; do
-                ack=$(bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")
+                # ACK_EMIT_TIER=1: HEAD-ack returns "<sha>:<tier>"; none/stale unchanged.
+                # Compute tiers from the SAME ack-ledger pass as the acks so they are
+                # consistent — a Tier-D cursor ack is immediately paired with tier=D,
+                # allowing Invariant 3's bodyless-ack exemption on wait-rounds where
+                # cursor has no Source-2/3/4 body to enumerate (cursor=0/0:none ledger).
+                raw=$(ACK_EMIT_TIER=1 bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")
+                ack="${raw%%:*}"
+                case "$raw" in
+                    *:*) tier="${raw##*:}" ;;
+                    *)   tier="none"       ;;
+                esac
                 wait_entries+=("${bot}=${ack}")
+                tier_entries+=("${bot}=${tier}")
             done
-            # Wait-round: acks are REFRESHED via the ack-ledger above, so the
-            # worker's tier snapshot is stale against them — pass all-`none`
-            # (fail-CLOSED; Invariant 3 grants no exemption on wait-rounds).
-            emit_success_no_commit "$(IFS=,; echo "${wait_entries[*]}")" "cursor=none,cubic-dev-ai=none,coderabbitai=none"
+            # Wait-round: acks and tiers are both FRESHLY computed from the same
+            # ack-ledger pass, so they are mutually consistent. Pass the fresh
+            # tiers so Invariant 3's D/E bodyless-ack exemption can fire on
+            # wait-rounds (e.g. cursor acks via check-run while other bots are
+            # still stale). The worker's old tier snapshot is discarded.
+            emit_success_no_commit "$(IFS=,; echo "${wait_entries[*]}")" "$(IFS=,; echo "${tier_entries[*]}")"
         fi
         ;;
     bail)
@@ -389,27 +403,42 @@ else
 fi
 
 reviewer_ack_entries=()
+tier_entries=()
 if [ "$_fetch_ok" = "1" ]; then
     export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
     for bot in "${REGISTERED_ACK_BOTS[@]}"; do
-        ack=$(bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")
+        # ACK_EMIT_TIER=1: HEAD-ack returns "<sha>:<tier>"; none/stale unchanged.
+        # Compute acks AND tiers from the SAME ack-ledger pass so they are mutually
+        # consistent (the core ADR 0001 invariant). A bot that bodyless-acks the
+        # post-push HEAD (e.g. cursor's check-run registers fast) is paired with
+        # its real D/E tier, so Invariant 3's exemption fires correctly instead of
+        # fail-closed-bailing — no stale-snapshot pairing is possible.
+        raw=$(ACK_EMIT_TIER=1 bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")
+        ack="${raw%%:*}"
+        case "$raw" in
+            *:*) tier="${raw##*:}" ;;
+            *)   tier="none"       ;;
+        esac
         reviewer_ack_entries+=("${bot}=${ack}")
+        tier_entries+=("${bot}=${tier}")
     done
 else
-    # Degrade to all-stale: the dispatcher will retry ack computation next round.
+    # Degrade to all-stale acks + all-none tiers: the dispatcher retries next round.
     for bot in "${REGISTERED_ACK_BOTS[@]}"; do
         reviewer_ack_entries+=("${bot}=stale")
+        tier_entries+=("${bot}=none")
     done
 fi
 RESULT_REVIEWER_ACKS=$(IFS=,; echo "${reviewer_ack_entries[*]}")
+RESULT_ACK_TIERS_OUT=$(IFS=,; echo "${tier_entries[*]}")
 
-# Uniform contract: every success envelope carries result_ack_tiers. The
-# fix-round path emits all-`none` because these acks are the post-push synthesis
-# (the worker's tier snapshot is pre-commit and stale against them) — Invariant 3
-# fail-CLOSED grants no bodyless-ack exemption on a fix round. See ADR 0001.
+# Uniform contract: every success envelope carries result_ack_tiers, computed
+# from the SAME post-push ack-ledger pass as result_reviewer_acks so the two are
+# mutually consistent (ADR 0001). Invariant 3's bodyless-ack exemption fires iff
+# a registered bot acked the post-push HEAD via tier D/E with n_total==0.
 jq -nc \
     --arg sha "$RESULT_COMMIT_SHA" \
     --arg acks "$RESULT_REVIEWER_ACKS" \
-    --arg tiers "cursor=none,cubic-dev-ai=none,coderabbitai=none" \
+    --arg tiers "$RESULT_ACK_TIERS_OUT" \
     '{status:"success", result_commit_sha:$sha, result_reviewer_acks:$acks, result_ack_tiers:$tiers}' || \
     emit_bail "env" "dispatcher-commit-block: final success-envelope jq call failed (jq binary missing or OOM)"

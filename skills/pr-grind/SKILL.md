@@ -245,18 +245,21 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     Parse the last stdout line as exactly one JSON envelope:
   │       - Success: set RESULT_COMMIT_SHA, RESULT_REVIEWER_ACKS, AND
   │         RESULT_ACK_TIERS from `result_commit_sha` / `result_reviewer_acks` /
-  │         `result_ack_tiers`. Every success envelope carries all three (see
-  │         the commit-block contract). The commit-block emits `result_ack_tiers`
-  │         all-`none` on fix-rounds (post-push synthesis — the worker's
-  │         pre-commit tier snapshot is stale against these acks) and on
-  │         wait-rounds (refreshed acks), but emits the WORKER's tiers verbatim
-  │         on the clean pass-through (acks NOT refreshed, so tiers stay
-  │         consistent with them). Net effect for Invariant 3's bodyless-ack
-  │         exemption: fail-CLOSED on fix/wait rounds (every tier is `none` → no
-  │         exemption, identical to strict pre-ADR-0001 behavior) and live only
-  │         on the clean path (tier D/E → exempt). Backward-compat: if
-  │         `result_ack_tiers` is absent (legacy commit-block), reset
-  │         RESULT_ACK_TIERS to the all-`none` default (fail-CLOSED).
+  │         `result_ack_tiers`. Every success envelope carries all three, and
+  │         result_ack_tiers is ALWAYS computed from the SAME ack-ledger pass as
+  │         result_reviewer_acks (ADR 0001 core invariant): fix-rounds and
+  │         wait-rounds compute both freshly from the post-push / refresh
+  │         ACK_EMIT_TIER=1 pass; the clean pass-through carries the worker's
+  │         acks and tiers verbatim (one worker Step 6.5 pass). Because the two
+  │         are same-pass, the dispatcher uses RESULT_ACK_TIERS directly — no
+  │         reset, no fail-closed crutch. Invariant 3's bodyless-ack exemption
+  │         then fires iff a registered bot acked the CURRENT HEAD via tier D
+  │         (check-run) or E (commit-status) with n_total==0 — including on a
+  │         fix/wait round where, e.g., cursor's check-run registers before
+  │         slower bots (cursor=<sha> tier=D exempts; the others stay stale).
+  │         Backward-compat: if `result_ack_tiers` is absent (legacy
+  │         commit-block), reset RESULT_ACK_TIERS to the all-`none` default
+  │         (fail-CLOSED — strict pre-ADR-0001 behavior).
   │       - Bail: set RESULT_BAIL_CATEGORY / RESULT_BAIL_REASON from
   │         `bail_category` / `bail_reason`, then go to BAIL.
   │
@@ -343,15 +346,17 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │                  (tier <tier-or-?>) — possible prose-review coverage gap;
   │                  manual review required".
   │                  A body-bearing tier (A/B/C) with n_total==0 is a genuine
-  │                  enumeration gap; a missing tier map means the worker
-  │                  predates the RESULT_ACK_TIERS contract; and tier `none`
-  │                  on a HEAD-acked bot occurs on FIX ROUNDS, where the
-  │                  dispatcher reset RESULT_ACK_TIERS to all-`none` after
-  │                  overwriting acks with the commit-block's post-push
-  │                  synthesis (which computes no tiers) — see the Success
-  │                  branch of the fix-round envelope parsing above. In every
-  │                  one of these cases the strict pre-ADR-0001 behavior
-  │                  (always bail) is the safe default.
+  │                  enumeration gap. Tier `none` (or a missing tier map) on a
+  │                  HEAD-acked bot should NOT happen under same-pass computation
+  │                  — acks and tiers always come from one ack-ledger pass, so a
+  │                  HEAD-sha ack is always paired with a D/E (or A/B/C) tier. It
+  │                  can only arise from a legacy commit-block that emits no
+  │                  `result_ack_tiers` (dispatcher defaults to all-`none`) or a
+  │                  degraded post-push fetch (all-`stale` acks + all-`none`
+  │                  tiers — but then the ack is `stale`, not a HEAD-sha, so this
+  │                  branch isn't reached). In every one of these cases the
+  │                  strict pre-ADR-0001 behavior (always bail) is the safe
+  │                  default.
   │          - if n_total >= 1 → pass (worker enumerated; disposition
   │            is its decision)
   │
@@ -762,9 +767,10 @@ Inputs (env vars, optional; default 0/empty):
 - `BUSDRIVER_ALLOW_NO_COMMITLINT` - `1` allows a missing local commitlint binary.
 
 Outputs (stdout, exactly one JSON object on the last line):
-- Success (fix-round): `{"status":"success","result_commit_sha":"<sha>","result_reviewer_acks":"login=value,..."}`
-- Success (wait-round): `{"status":"success","result_commit_sha":"none","result_reviewer_acks":"login=value,...","result_ack_tiers":"cursor=none,cubic-dev-ai=none,coderabbitai=none"}` — `result_ack_tiers` is all-`none` because the wait-round path REFRESHES acks via the ack-ledger, so the worker's tier snapshot would be stale against them; the dispatcher resets RESULT_ACK_TIERS (fail-CLOSED).
-- Success (clean pass-through): `{"status":"success","result_commit_sha":"none","result_reviewer_acks":"login=value,...","result_ack_tiers":"<worker RESULT_ACK_TIERS verbatim>"}` — the clean path does NOT refresh acks (it passes the worker's acks through), so it ALSO passes the worker's `RESULT_ACK_TIERS` through verbatim, preserving a valid D/E bodyless-ack exemption. Falls back to all-`none` only if the caller omitted `RESULT_ACK_TIERS` (fail-CLOSED).
+Every success envelope carries `result_ack_tiers`, ALWAYS computed from the same ack-ledger pass as `result_reviewer_acks` (ADR 0001 core invariant — they are never desynced):
+- Success (fix-round): `{"status":"success","result_commit_sha":"<sha>","result_reviewer_acks":"login=value,...","result_ack_tiers":"login=tier,..."}` — post-push synthesis computes acks AND tiers from one `ACK_EMIT_TIER=1` pass over the new HEAD. Degrades to all-`stale` acks + all-`none` tiers if the post-push GitHub-state fetch fails.
+- Success (wait-round): `{"status":"success","result_commit_sha":"none","result_reviewer_acks":"login=value,...","result_ack_tiers":"login=tier,..."}` — refreshes acks AND tiers from one `ACK_EMIT_TIER=1` pass, so a bot that bodyless-acks HEAD (e.g. cursor=<sha> tier=D) is exemptible even while slower bots stay stale.
+- Success (clean pass-through): `{"status":"success","result_commit_sha":"none","result_reviewer_acks":"login=value,...","result_ack_tiers":"<worker RESULT_ACK_TIERS verbatim>"}` — passes the worker's acks AND tiers through unchanged (one worker Step 6.5 pass). Falls back to all-`none` tiers only if the caller omitted `RESULT_ACK_TIERS` (fail-CLOSED).
 - Bail: `{"bail_category":"judgment|env|budget|policy","bail_reason":"<string>"}`
 
 Exit code:

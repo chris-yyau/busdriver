@@ -1,3 +1,10 @@
+# [1.56.0](https://github.com/chris-yyau/busdriver/compare/v1.55.0...v1.56.0) (2026-06-05)
+
+
+### Features
+
+* **ci:** adopt canonical no-dedup bypass-audit standard ([#181](https://github.com/chris-yyau/busdriver/issues/181)) ([ba03bec](https://github.com/chris-yyau/busdriver/commit/ba03becff3c34130bdd24b5cc2a7d9bb8404ceac))
+
 # [1.55.0](https://github.com/chris-yyau/busdriver/compare/v1.54.6...v1.55.0) (2026-06-05)
 
 

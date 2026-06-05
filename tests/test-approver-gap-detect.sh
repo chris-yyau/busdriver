@@ -55,6 +55,12 @@ AUTHOR_MAINTAIN='{"permission":"maintain"}'
 # Author permission — write (NOT eligible for --admin escalation).
 AUTHOR_WRITE='{"permission":"write"}'
 
+# Classic branch protection (PARENT /branches/<b>/protection) requiring 1 review.
+CLASSIC_REQUIRE_1='{"required_pull_request_reviews":{"required_approving_review_count":1}}'
+
+# Classic branch protection present but with NO required-review block (checks-only).
+CLASSIC_NONE='{}'
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 run_case() {
@@ -311,8 +317,55 @@ export AUTHOR_IS_SOLE_ADMIN="1"
 run_case "16. solo-admin opt-in + sole admin + CI not clean → surface-decision (baseline gate fail)" \
     "surface-decision" "1" "0" "none"
 
-# Clean up — don't leak solo-admin env into any later additions.
-unset SOLO_ADMIN_OPT_IN HUMAN_ADMIN_COUNT AUTHOR_IS_SOLE_ADMIN
+# ── Classic branch protection (rulesets-only blind spot) ─────────────────
+
+echo ""
+echo "── approver-gap-detect (classic branch protection) ─────────"
+
+# 17. Review enforced via CLASSIC protection only (NO ruleset). The prior
+#     rulesets-only read returned REQUIRED_APPROVALS=0 → false "no-gap"; with
+#     max(ruleset, classic) the gap is now seen. + --admin flag → auto-admin-merge.
+export BRANCH_RULES_JSON="$RULES_NONE"
+export CLASSIC_PROTECTION_JSON="$CLASSIC_REQUIRE_1"
+export PR_REVIEWS_JSON="$REVIEWS_EMPTY"
+export AUTHOR_PERM_JSON="$AUTHOR_ADMIN"
+export AUDIT_WORKFLOW_PRESENT="1"
+export CI_AND_BOTS_CLEAN="1"
+export ADMIN_FLAG_PASSED="1"
+export SOLO_ADMIN_OPT_IN="0"
+export HUMAN_ADMIN_COUNT="0"
+export AUTHOR_IS_SOLE_ADMIN="0"
+run_case "17. classic protection only (no ruleset) + --admin flag → auto-admin-merge (gap now detected)" \
+    "auto-admin-merge" "1" "1" "flag"
+
+# 18. Classic protection only, no flag → surface-decision (gap detected, no auto-escalate).
+export BRANCH_RULES_JSON="$RULES_NONE"
+export CLASSIC_PROTECTION_JSON="$CLASSIC_REQUIRE_1"
+export PR_REVIEWS_JSON="$REVIEWS_EMPTY"
+export AUTHOR_PERM_JSON="$AUTHOR_ADMIN"
+export AUDIT_WORKFLOW_PRESENT="1"
+export CI_AND_BOTS_CLEAN="1"
+export ADMIN_FLAG_PASSED="0"
+export SOLO_ADMIN_OPT_IN="0"
+export HUMAN_ADMIN_COUNT="0"
+export AUTHOR_IS_SOLE_ADMIN="0"
+run_case "18. classic protection only (no ruleset) + no flag → surface-decision (gap detected)" \
+    "surface-decision" "1" "0" "none"
+
+# 19. Phantom-guard: no ruleset AND classic present but no required-review block
+#     (checks-only repo) → no-gap. The empty classic object must NOT manufacture a gap.
+export BRANCH_RULES_JSON="$RULES_NONE"
+export CLASSIC_PROTECTION_JSON="$CLASSIC_NONE"
+export PR_REVIEWS_JSON="$REVIEWS_EMPTY"
+export AUTHOR_PERM_JSON="$AUTHOR_ADMIN"
+export AUDIT_WORKFLOW_PRESENT="1"
+export CI_AND_BOTS_CLEAN="1"
+export ADMIN_FLAG_PASSED="0"
+run_case "19. no ruleset + classic with no required-review block → no-gap (checks-only repo)" \
+    "no-gap" "1" "0"
+
+# Clean up — don't leak solo-admin / classic env into any later additions.
+unset SOLO_ADMIN_OPT_IN HUMAN_ADMIN_COUNT AUTHOR_IS_SOLE_ADMIN CLASSIC_PROTECTION_JSON
 
 # ── Results ──────────────────────────────────────────────────────────────
 echo ""

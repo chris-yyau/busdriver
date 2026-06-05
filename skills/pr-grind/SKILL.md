@@ -1387,9 +1387,17 @@ AUTHOR=$(gh pr view "$PR" --json author -q .author.login 2>/dev/null || echo "")
 # inputs degrade the decision toward "surface-decision" or "no-gap"; the
 # script NEVER auto-escalates without complete inputs.
 BRANCH_RULES_JSON=""
+CLASSIC_PROTECTION_JSON=""
 if [ -n "$BRANCH" ]; then
   BRANCH_ENCODED=$(printf '%s' "$BRANCH" | jq -sRr @uri)
   BRANCH_RULES_JSON=$(gh api "repos/$OWNER/$REPO/rules/branches/$BRANCH_ENCODED" 2>/dev/null || echo "")
+  # Classic branch protection — the detector reads the required-review count from
+  # BOTH rulesets AND classic protection (max), because a repo can enforce the
+  # approver requirement via either mechanism. MUST be the PARENT endpoint
+  # /branches/<b>/protection: its .required_pull_request_reviews is ground truth,
+  # whereas the /required_pull_request_reviews SUB-endpoint phantom-reports
+  # count=1 even when unenforced (would manufacture a false approver gap).
+  CLASSIC_PROTECTION_JSON=$(gh api "repos/$OWNER/$REPO/branches/$BRANCH_ENCODED/protection" 2>/dev/null || echo "")
 fi
 PR_REVIEWS_JSON=$(gh api "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null || echo "")
 AUTHOR_PERM_JSON=""
@@ -1556,7 +1564,7 @@ if [ "$SOLO_ADMIN_OPT_IN" = "1" ]; then
   fi
 fi
 
-export BRANCH_RULES_JSON PR_REVIEWS_JSON AUTHOR_PERM_JSON \
+export BRANCH_RULES_JSON CLASSIC_PROTECTION_JSON PR_REVIEWS_JSON AUTHOR_PERM_JSON \
        AUDIT_WORKFLOW_PRESENT CI_AND_BOTS_CLEAN ADMIN_FLAG_PASSED \
        SOLO_ADMIN_OPT_IN HUMAN_ADMIN_COUNT AUTHOR_IS_SOLE_ADMIN
 

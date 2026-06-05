@@ -29,6 +29,18 @@
 # Output: exactly one of <8-char-sha> | none | stale on stdout.
 # Always exits 0 on success; caller treats stdout as authoritative.
 #
+# Tier exposure (opt-in via ACK_EMIT_TIER=1): when set, a HEAD-ack SHA is
+# suffixed ":<tier>" where <tier> is the letter A–E of the tier that produced
+# the ack (A=disposed inline threads, B=/reviews on HEAD, C=issue-comment body
+# SHA, D=check-run success, E=commit-status success). `none`/`stale` are NEVER
+# suffixed. Default (env unset) output is byte-for-byte unchanged, so existing
+# callers that compare the value to HEAD_SHA or to `stale` are unaffected. The
+# dispatcher's Invariant 3 uses tiers D/E (bodyless structured acks) to exempt a
+# HEAD-acked bot from the n_total>=1 coverage gate — see ADR 0001 and
+# skills/pr-grind/SKILL.md. Soundness: tier order is A→E, returning at the first
+# HEAD-ack, and Tier A returns `stale`/Tier-A-ack on any Source-2 thread, so
+# reaching D/E proves zero live Source-2 inline threads.
+#
 # Caller fail-CLOSED contract: wrap every invocation with
 #   `$(bash "$ACK_SCRIPT" <bot> 2>/dev/null || echo stale)`
 # so that script-resolution failures (missing path during plugin upgrade —
@@ -98,6 +110,18 @@ unset _self_dir _git_root _remote
 
 login="$1"
 
+# Emit a HEAD-ack: bare SHA by default, or "<sha>:<tier>" when ACK_EMIT_TIER=1.
+# $1 = 8-char SHA, $2 = tier letter (A–E). Centralizes the suffix so all five
+# HEAD-ack exit points stay consistent. Default output is byte-identical to the
+# pre-tier contract; only opt-in callers see the suffix.
+emit_head_ack() {
+  if [ "${ACK_EMIT_TIER:-0}" = "1" ]; then
+    printf '%s:%s\n' "$1" "$2"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
 # Fail-CLOSED: any source-fetch failure → mark stale (Greptile P1 — fail-OPEN
 # regression where API failures silently became `none` and didn't gate)
 if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; exit 0; fi
@@ -126,12 +150,12 @@ disposed=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_
   '[.[].data.repository.pullRequest.reviewThreads.nodes[]
     | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
     | select(.isOutdated == true or .isResolved == true)] | length' 2>/dev/null || echo 0)
-if [ "$disposed" -gt 0 ]; then echo "$HEAD_SHA"; exit 0; fi
+if [ "$disposed" -gt 0 ]; then emit_head_ack "$HEAD_SHA" A; exit 0; fi
 
 # (B) /reviews: did the bot explicitly submit a review on HEAD?
 commit_id=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
   '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty' 2>/dev/null || echo "")
-if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ]; then echo "${commit_id:0:8}"; exit 0; fi
+if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ]; then emit_head_ack "${commit_id:0:8}" B; exit 0; fi
 
 # (C) Issue-comment body SHA: bots like Greptile update a single comment with
 # a "Last reviewed commit: [sha](.../commit/<sha>)" link instead of submitting
@@ -140,7 +164,7 @@ if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ]; then echo "${com
 body_sha=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
   '[.comments[] | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null \
   | grep -oE 'commit/[a-f0-9]{7,40}' | sed 's|.*/||' | tail -1 | cut -c1-8)
-if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then echo "$body_sha"; exit 0; fi
+if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then emit_head_ack "$body_sha" C; exit 0; fi
 
 # (D) check-runs: did the bot register a passing check-run on HEAD? Some bots
 # (CodeRabbit free-plan, GitGuardian, etc.) emit a check-run instead of a
@@ -153,7 +177,7 @@ if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then echo "$body_sha"; e
 # HEAD check-run, mis-classifying as `none` (Greptile P2 / Cubic P2).
 check_run_head=$(printf '%s' "$ALL_CHECK_RUNS" | jq -rs --arg login "$login" \
   '[.[].check_runs[] | select(.app.slug == $login) | select(.conclusion == "success")] | last | .head_sha // empty' 2>/dev/null || echo "")
-if [ -n "$check_run_head" ] && [ "${check_run_head:0:8}" = "$HEAD_SHA" ]; then echo "${check_run_head:0:8}"; exit 0; fi
+if [ -n "$check_run_head" ] && [ "${check_run_head:0:8}" = "$HEAD_SHA" ]; then emit_head_ack "${check_run_head:0:8}" D; exit 0; fi
 
 # (E) /commits/{sha}/statuses: bots using the legacy commit-statuses API.
 # CodeRabbit free-tier on private repos posts here instead of registering a
@@ -196,7 +220,7 @@ esac
 if [[ -n "$status_context" && -n "$ALL_STATUSES" ]]; then
   status_state=$(printf '%s' "$ALL_STATUSES" | jq -rs --arg ctx "$status_context" \
     '[.[]? | .[]? | select(.context == $ctx)] | sort_by(.created_at, .id) | last | .state // empty' 2>/dev/null || echo "")
-  if [[ "$status_state" == "success" ]]; then echo "${HEAD_SHA:0:8}"; exit 0; fi
+  if [[ "$status_state" == "success" ]]; then emit_head_ack "${HEAD_SHA:0:8}" E; exit 0; fi
   # Non-success states (pending, failure, error) mean the bot HAS signaled
   # something about HEAD — it's either mid-review or actively flagging.
   # Without this branch, a statuses-only bot in pending/failure state would

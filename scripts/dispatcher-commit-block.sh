@@ -17,6 +17,12 @@
 #                             clean-path (no recompute); required for the
 #                             defensive clean-round routing path to return
 #                             correct acks rather than the all-"none" fallback
+#   RESULT_ACK_TIERS        - worker-computed ack-tier map (ADR 0001); passed
+#                             through VERBATIM on the clean path so a valid D/E
+#                             bodyless-ack exemption survives. Defaults to
+#                             all-"none" (fail-CLOSED) when absent. The
+#                             wait-round path ignores it and emits all-"none"
+#                             because it refreshes acks (stale tier snapshot).
 #
 # Outputs (stdout):
 #   Exactly one structured JSON line, either:
@@ -64,7 +70,7 @@ cd "$WORKTREE_DIR" || \
 
 # Single authoritative list of bots whose ack-ledger entries the dispatcher gates on.
 # Referenced by both the wait-round path and the post-push synthesis (Step 12).
-REGISTERED_ACK_BOTS=(greptile-apps cubic-dev-ai coderabbitai)
+REGISTERED_ACK_BOTS=(cursor cubic-dev-ai coderabbitai)
 
 # Pre-dispatch baseline guard (NO_WORKTREE mode only).
 # Parent dispatcher must ensure `git diff --cached --quiet` before worker
@@ -92,8 +98,18 @@ fi
 # clean (worker acks authoritative, no recompute), refresh acks only on
 # wait-rounds (needs_more + clean index).
 emit_success_no_commit() {
-    jq -nc --arg acks "$1" \
-        '{status:"success", result_commit_sha:"none", result_reviewer_acks:$acks}' || \
+    # $1 = acks ledger, $2 = ack-tier map (callers pass it explicitly — see below).
+    # The CLEAN pass-through caller passes the worker's RESULT_ACK_TIERS verbatim
+    # so a valid bodyless-ack exemption (cursor=D / coderabbitai=E) survives to
+    # the dispatcher's Invariant 3. The WAIT-ROUND caller passes the all-`none`
+    # default because it REFRESHES acks via the ack-ledger and the worker's tier
+    # snapshot would be stale against those refreshed acks (fail-CLOSED). Erasing
+    # tiers on the clean path would fail-closed-bail Invariant 3 on a legitimate
+    # bodyless ack — the regression this split fixes. See ADR 0001.
+    local _acks="$1"
+    local _tiers="$2"
+    jq -nc --arg acks "$_acks" --arg tiers "$_tiers" \
+        '{status:"success", result_commit_sha:"none", result_reviewer_acks:$acks, result_ack_tiers:$tiers}' || \
         emit_bail "env" "dispatcher-commit-block: emit_success_no_commit jq call failed (jq binary missing or OOM)"
     exit 0
 }
@@ -114,7 +130,11 @@ case "$RESULT_STATUS" in
         if [ -z "${RESULT_REVIEWER_ACKS:-}" ]; then
             emit_bail "judgment" "RESULT_STATUS=clean requires RESULT_REVIEWER_ACKS from worker; worker omitted the tag"
         fi
-        emit_success_no_commit "$RESULT_REVIEWER_ACKS"
+        # Clean pass-through: preserve the worker's RESULT_ACK_TIERS (acks are
+        # the worker's, never refreshed here, so the tier map is consistent with
+        # them — a valid D/E exemption must survive). Fall back to all-`none`
+        # only when the worker omitted the tag (fail-CLOSED, pre-ADR-0001 strict).
+        emit_success_no_commit "$RESULT_REVIEWER_ACKS" "${RESULT_ACK_TIERS:-cursor=none,cubic-dev-ai=none,coderabbitai=none}"
         ;;
     needs_more)
         _cached_exit=0
@@ -140,11 +160,28 @@ case "$RESULT_STATUS" in
             fi
             export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
             wait_entries=()
+            tier_entries=()
             for bot in "${REGISTERED_ACK_BOTS[@]}"; do
-                ack=$(bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")
+                # ACK_EMIT_TIER=1: HEAD-ack returns "<sha>:<tier>"; none/stale unchanged.
+                # Compute tiers from the SAME ack-ledger pass as the acks so they are
+                # consistent — a Tier-D cursor ack is immediately paired with tier=D,
+                # allowing Invariant 3's bodyless-ack exemption on wait-rounds where
+                # cursor has no Source-2/3/4 body to enumerate (cursor=0/0:none ledger).
+                raw=$(ACK_EMIT_TIER=1 bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")
+                ack="${raw%%:*}"
+                case "$raw" in
+                    *:*) tier="${raw##*:}" ;;
+                    *)   tier="none"       ;;
+                esac
                 wait_entries+=("${bot}=${ack}")
+                tier_entries+=("${bot}=${tier}")
             done
-            emit_success_no_commit "$(IFS=,; echo "${wait_entries[*]}")"
+            # Wait-round: acks and tiers are both FRESHLY computed from the same
+            # ack-ledger pass, so they are mutually consistent. Pass the fresh
+            # tiers so Invariant 3's D/E bodyless-ack exemption can fire on
+            # wait-rounds (e.g. cursor acks via check-run while other bots are
+            # still stale). The worker's old tier snapshot is discarded.
+            emit_success_no_commit "$(IFS=,; echo "${wait_entries[*]}")" "$(IFS=,; echo "${tier_entries[*]}")"
         fi
         ;;
     bail)
@@ -366,22 +403,42 @@ else
 fi
 
 reviewer_ack_entries=()
+tier_entries=()
 if [ "$_fetch_ok" = "1" ]; then
     export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
     for bot in "${REGISTERED_ACK_BOTS[@]}"; do
-        ack=$(bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")
+        # ACK_EMIT_TIER=1: HEAD-ack returns "<sha>:<tier>"; none/stale unchanged.
+        # Compute acks AND tiers from the SAME ack-ledger pass so they are mutually
+        # consistent (the core ADR 0001 invariant). A bot that bodyless-acks the
+        # post-push HEAD (e.g. cursor's check-run registers fast) is paired with
+        # its real D/E tier, so Invariant 3's exemption fires correctly instead of
+        # fail-closed-bailing — no stale-snapshot pairing is possible.
+        raw=$(ACK_EMIT_TIER=1 bash "$ACK_SCRIPT" "$bot" 2>/dev/null || echo "stale")
+        ack="${raw%%:*}"
+        case "$raw" in
+            *:*) tier="${raw##*:}" ;;
+            *)   tier="none"       ;;
+        esac
         reviewer_ack_entries+=("${bot}=${ack}")
+        tier_entries+=("${bot}=${tier}")
     done
 else
-    # Degrade to all-stale: the dispatcher will retry ack computation next round.
+    # Degrade to all-stale acks + all-none tiers: the dispatcher retries next round.
     for bot in "${REGISTERED_ACK_BOTS[@]}"; do
         reviewer_ack_entries+=("${bot}=stale")
+        tier_entries+=("${bot}=none")
     done
 fi
 RESULT_REVIEWER_ACKS=$(IFS=,; echo "${reviewer_ack_entries[*]}")
+RESULT_ACK_TIERS_OUT=$(IFS=,; echo "${tier_entries[*]}")
 
+# Uniform contract: every success envelope carries result_ack_tiers, computed
+# from the SAME post-push ack-ledger pass as result_reviewer_acks so the two are
+# mutually consistent (ADR 0001). Invariant 3's bodyless-ack exemption fires iff
+# a registered bot acked the post-push HEAD via tier D/E with n_total==0.
 jq -nc \
     --arg sha "$RESULT_COMMIT_SHA" \
     --arg acks "$RESULT_REVIEWER_ACKS" \
-    '{status:"success", result_commit_sha:$sha, result_reviewer_acks:$acks}' || \
+    --arg tiers "$RESULT_ACK_TIERS_OUT" \
+    '{status:"success", result_commit_sha:$sha, result_reviewer_acks:$acks, result_ack_tiers:$tiers}' || \
     emit_bail "env" "dispatcher-commit-block: final success-envelope jq call failed (jq binary missing or OOM)"

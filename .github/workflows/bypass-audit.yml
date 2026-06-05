@@ -183,7 +183,12 @@ jobs:
             printf '| **Workflow run** | [%s](https://github.com/%s/actions/runs/%s) |\n' "$RUN_ID" "$REPO" "$RUN_ID"
             printf '| **Time (UTC)** | `%s` |\n\n' "$NOW"
             printf '**Commit message (first 3 lines):**\n\n'
-            printf '```\n%s\n```\n\n' "$MSG_PREVIEW"
+            # Render as an INDENTED code block (4-space prefix), NOT a ``` fence:
+            # the commit message is attacker-controlled, and a ``` inside it would
+            # break out of a fenced block and inject Markdown. Strip CR first so an
+            # embedded carriage return can't produce an unindented line either.
+            printf '%s\n' "$MSG_PREVIEW" | tr -d '\r' | sed 's/^/    /'
+            printf '\n'
             printf '**Action required:** Review whether this bypass was intentional. If so, document the rationale in a comment and close. If not, investigate how branch protection was circumvented.\n'
           } > "$BODY_FILE"
 

@@ -18,6 +18,14 @@
 #   1. Set BRANCH_RULES_JSON — output of
 #        gh api "repos/<owner>/<repo>/rules/branches/<branch>"
 #      (empty string OK when the endpoint failed or returned nothing).
+#   1b. Set CLASSIC_PROTECTION_JSON — output of the PARENT classic-protection
+#       endpoint gh api "repos/<owner>/<repo>/branches/<branch>/protection"
+#       (empty OK). The detector takes max(ruleset, classic) required-approval
+#       count, so a repo enforcing review via CLASSIC branch protection with no
+#       ruleset is still detected (reading rulesets alone returned 0 → false
+#       "no-gap"). MUST be the PARENT endpoint — the
+#       /required_pull_request_reviews SUB-endpoint phantom-reports count=1 even
+#       when unenforced, which would manufacture a false gap on an unprotected repo.
 #   2. Set PR_REVIEWS_JSON — output of
 #        gh api "repos/<owner>/<repo>/pulls/<pr>/reviews"
 #      Used to count human APPROVED reviews. Empty OK; the script treats
@@ -101,7 +109,7 @@
 #   9. Set AUTHOR_IS_SOLE_ADMIN — "1" when the caller verified the PR
 #      author is the only human with PR-approval capability
 #      (HUMAN_ADMIN_COUNT==1 AND that one human is the author). Default "0".
-#  10. `export BRANCH_RULES_JSON PR_REVIEWS_JSON AUTHOR_PERM_JSON \
+#  10. `export BRANCH_RULES_JSON CLASSIC_PROTECTION_JSON PR_REVIEWS_JSON AUTHOR_PERM_JSON \
 #       AUDIT_WORKFLOW_PRESENT CI_AND_BOTS_CLEAN ADMIN_FLAG_PASSED \
 #       SOLO_ADMIN_OPT_IN HUMAN_ADMIN_COUNT AUTHOR_IS_SOLE_ADMIN`
 #      so this subprocess inherits them.
@@ -208,9 +216,24 @@ emit_decision() {
 
 # ── Parse inputs ─────────────────────────────────────────────────────────
 
-REQUIRED_APPROVALS=$(safe_jq 0 "${BRANCH_RULES_JSON:-}" \
+# Required-approval count comes from EITHER protection mechanism — take the max.
+# Rulesets API (BRANCH_RULES_JSON) AND classic branch protection
+# (CLASSIC_PROTECTION_JSON, the PARENT /branches/<b>/protection endpoint). A repo
+# may enforce review via either; reading only rulesets (the prior behavior) is
+# BLIND to classic protection, returning 0 and a false "no-gap". The caller MUST
+# pass the PARENT protection endpoint, NOT the /required_pull_request_reviews
+# SUB-endpoint (which phantom-reports count=1 even when unenforced → false gap).
+RULESET_APPROVALS=$(safe_jq 0 "${BRANCH_RULES_JSON:-}" \
     '[.[] | select(.type=="pull_request") | .parameters.required_approving_review_count] | max // 0')
-case "$REQUIRED_APPROVALS" in ''|*[!0-9]*) REQUIRED_APPROVALS=0 ;; esac
+case "$RULESET_APPROVALS" in ''|*[!0-9]*) RULESET_APPROVALS=0 ;; esac
+CLASSIC_APPROVALS=$(safe_jq 0 "${CLASSIC_PROTECTION_JSON:-}" \
+    '.required_pull_request_reviews.required_approving_review_count // 0')
+case "$CLASSIC_APPROVALS" in ''|*[!0-9]*) CLASSIC_APPROVALS=0 ;; esac
+if [ "$CLASSIC_APPROVALS" -gt "$RULESET_APPROVALS" ]; then
+    REQUIRED_APPROVALS="$CLASSIC_APPROVALS"
+else
+    REQUIRED_APPROVALS="$RULESET_APPROVALS"
+fi
 
 HUMAN_APPROVALS=$(safe_jq 0 "${PR_REVIEWS_JSON:-}" \
     '[.[]

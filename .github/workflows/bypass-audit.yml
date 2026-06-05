@@ -1,6 +1,6 @@
 name: Admin Bypass Audit
 
-# helmet-pipeline: v1.21.1
+# helmet-pipeline: v1.21.2
 #
 # Detects commits on main that bypassed the required-status-checks gate — i.e.,
 # direct pushes with no associated PR — and opens a GitHub Issue labeled
@@ -63,8 +63,10 @@ name: Admin Bypass Audit
 #   the actual push; USER-OWNED repos have no equivalent fallback, so it stays a
 #   silent gap there.
 #
-# SECURITY: All user-controlled inputs (commit message, actor name) are passed
-# via env: block and quoted in shell. Never interpolate github.event.* directly
+# SECURITY: User-controlled inputs are never interpolated into run: commands.
+# The actor name is passed via the env: block and quoted in shell; the commit
+# list and messages are read from $GITHUB_EVENT_PATH with jq (file data, not a
+# shell-expanded ${{ }} expression). Never interpolate github.event.* directly
 # into run: commands.
 
 on:
@@ -103,7 +105,6 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           HEAD_SHA: ${{ github.sha }}
-          COMMITS_JSON: ${{ toJSON(github.event.commits) }}
         run: |
           # GitHub runs `shell: bash` steps with `-eo pipefail` (see defaults above),
           # so a pipe whose reader closes early (e.g. `head`) would SIGPIPE its
@@ -128,9 +129,29 @@ jobs:
           # Audit every commit added by this push, not just HEAD. A multi-commit
           # direct push whose HEAD happens to be PR-associated (e.g. a re-pushed
           # already-merged commit) would otherwise hide earlier unaudited commits.
-          # Source: github.event.commits (the push payload's commit list, capped by
-          # GitHub at 2048). Fall back to HEAD_SHA if the payload carries no list.
-          mapfile -t ALL_SHAS < <(printf '%s' "$COMMITS_JSON" | jq -r '.[].id // empty' 2>/dev/null)
+          # Source: the push payload's commit list (capped by GitHub at 2048), read
+          # from $GITHUB_EVENT_PATH — the event JSON already on disk. We deliberately
+          # do NOT pass `toJSON(github.event.commits)` through an env var: with up to
+          # 2048 commits (each carrying message + file lists + URLs) the serialized
+          # array can exceed the runner's env/ARG_MAX limit (~2 MB), making the step
+          # fail to exec BEFORE any audit logic runs — silently suppressing the very
+          # bypass this workflow exists to catch. jq reads the file as data (never
+          # interpolated into the shell).
+          #
+          # Fail-closed on an INDETERMINATE payload — unreadable, not valid JSON,
+          # or `.commits` missing / not an array. Silently degrading to a HEAD-only
+          # audit could miss earlier commits in a multi-commit direct push, so we
+          # take the same fail-on-indeterminate stance used for the per-commit PR
+          # lookups below. jq's `error()` makes the whole command exit non-zero on a
+          # non-array `.commits`, which the `if !` catches (a bare `.commits[]` would
+          # instead emit nothing on stderr→/dev/null and look like an empty list). A
+          # valid but EMPTY array is NOT indeterminate (e.g. a non-commit push) — jq
+          # exits 0 with no output, so ALL_SHAS ends up empty and falls back to HEAD.
+          if ! COMMIT_IDS=$(jq -r 'if (.commits|type)=="array" then (.commits[].id // empty) else error("commits not an array") end' "$GITHUB_EVENT_PATH" 2>/dev/null); then
+            echo "::error::Could not read a valid .commits array from \$GITHUB_EVENT_PATH — bypass status indeterminate; failing the run."
+            exit 1
+          fi
+          mapfile -t ALL_SHAS < <(printf '%s' "$COMMIT_IDS")
           if [ "${#ALL_SHAS[@]}" -eq 0 ]; then
             ALL_SHAS=("$HEAD_SHA")
           fi
@@ -202,7 +223,7 @@ jobs:
             # Markdown TABLE CELL: strip backtick (octal 140) / CR / LF / pipe,
             # truncate, then wrap in inline code so no Markdown (links/emphasis/HTML)
             # parses inside the cell.
-            MSG=$(printf '%s' "$COMMITS_JSON" | jq -r --arg s "$COMMIT_SHA" '(.[] | select(.id==$s) | .message) // ""' 2>/dev/null || echo "")
+            MSG=$(jq -r --arg s "$COMMIT_SHA" '(.commits[] | select(.id==$s) | .message) // ""' "$GITHUB_EVENT_PATH" 2>/dev/null || echo "")
             FIRST_LINE=${MSG%%$'\n'*}
             SUBJECT=$(printf '%s' "$FIRST_LINE" | tr -d '\140\r\n|' | cut -c1-100)
             BYPASS_ROWS="${BYPASS_ROWS}| [\`${SHORT_SHA}\`](https://github.com/${REPO}/commit/${COMMIT_SHA}) | \`${SUBJECT}\` |"$'\n'

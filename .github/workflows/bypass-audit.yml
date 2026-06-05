@@ -55,6 +55,13 @@ name: Admin Bypass Audit
 #   MUTABLE, so even an author filter is insider-editable) and short-SHA-collision
 #   -prone. A manual workflow re-run is rare and a duplicate issue is harmless —
 #   far better than a suppression/collision vector.
+# - The merged-PR check relies on GitHub's commit->PR association, which marks a SHA
+#   as belonging to a merged PR even for the ORIGINAL commits of a SQUASH-merged PR
+#   (those never landed on main — only the squash commit did). A human who direct-
+#   pushes one of those exact original SHAs is therefore not flagged here. Accepted
+#   residual of the association API: for ORG-OWNED repos the org audit log records
+#   the actual push; USER-OWNED repos have no equivalent fallback, so it stays a
+#   silent gap there.
 #
 # SECURITY: All user-controlled inputs (commit message, actor name) are passed
 # via env: block and quoted in shell. Never interpolate github.event.* directly

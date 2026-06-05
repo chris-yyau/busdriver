@@ -533,6 +533,25 @@ else
   fail "tier D ACK_EMIT_TIER=1 expected '${HEAD_SHA}:D', got '$got'"
 fi
 
+# Tier D negative: a `neutral` check-run on HEAD must NOT be read as a HEAD-ack.
+# Cursor Bugbot emits conclusion=success only when it finds no bugs; when it
+# DOES find issues the `Cursor Bugbot` check is conclusion=neutral (the default)
+# and the findings post as inline review threads (Tier A). Tier D's
+# `select(.conclusion == "success")` filter must exclude neutral, so a
+# neutral-only signal falls through to `none` (non-gating; the real block in
+# that case is the unresolved Source 2 thread, not the ledger). This pins the
+# gate-integrity property: a future change that loosened Tier D to match
+# neutral would let a PR merge past live Cursor findings — this test fails first.
+TIER_D_NEUTRAL_CHECK_RUNS='{"check_runs":[{"app":{"slug":"cursor"},"conclusion":"neutral","head_sha":"abc12345ef"}]}'
+got=$(FETCH_OK=1 ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' \
+  ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" ALL_CHECK_RUNS="$TIER_D_NEUTRAL_CHECK_RUNS" \
+  ALL_STATUSES='[]' HEAD_SHA="$HEAD_SHA" bash "$ACK_SCRIPT" cursor 2>/dev/null)
+if [ "$got" = "none" ]; then
+  ok "tier D neutral (bugs-found) check-run → none, NOT a false HEAD-ack (got $got)"
+else
+  fail "tier D neutral check-run expected 'none' (must not equal HEAD_SHA '$HEAD_SHA'), got '$got'"
+fi
+
 # Tier A: disposed (resolved) thread → ACK_EMIT_TIER=1 → SHA:A.
 got=$(ACK_EMIT_TIER=1 run_ledger "$(mk_threads_json true false)")
 if [ "$got" = "${HEAD_SHA}:A" ]; then

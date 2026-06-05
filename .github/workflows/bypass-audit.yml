@@ -21,7 +21,9 @@ name: Admin Bypass Audit
 # branch-protection bypasses is GitHub's ORGANIZATION AUDIT LOG, not this workflow.
 # Every override is recorded server-side as a `protected_branch.policy_override`
 # event (real actor, token, before/after SHAs), immune to CI-skip markers and
-# unforgeable because it sits OUTSIDE the repo at GitHub's API boundary. Query it:
+# unforgeable because it sits OUTSIDE the repo at GitHub's API boundary. Query it
+# (audit-log API needs GitHub Enterprise Cloud; otherwise use the org audit-log
+# UI / export):
 #   gh api '/orgs/<ORG>/audit-log?phrase=action:protected_branch.policy_override'
 # (User-owned repos have no org audit log and no equivalent server-side bypass
 # record, so for them this push-time workflow is the primary signal.) Either way
@@ -75,7 +77,7 @@ jobs:
   # Push-time audit: immediate detection of a direct push to main with no PR.
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 10
     permissions:
       contents: read       # required by /commits/{sha}/pulls on PRIVATE repos (public repos work without it)
       issues: write        # create audit issues
@@ -95,9 +97,12 @@ jobs:
           HEAD_SHA: ${{ github.sha }}
           COMMITS_JSON: ${{ toJSON(github.event.commits) }}
         run: |
-          # NOTE: `set -e` only (NOT `set -euo pipefail`). `pipefail` would make the
-          # per-commit `printf ... | head -3` early-exit pipe SIGPIPE-fail its
-          # upstream process, aborting the job mid-audit.
+          # GitHub runs `shell: bash` steps with `-eo pipefail` (see defaults above),
+          # so a pipe whose reader closes early (e.g. `head`) would SIGPIPE its
+          # still-writing upstream and fail the step. Every pipe below is pipefail-
+          # safe: readers consume their full input, and first-line extraction uses
+          # bash parameter expansion rather than `head`. `set -e` here is belt-and-
+          # braces (the wrapper already sets it).
           set -e
 
           # Skip automated actors ONLY (bots run via GITHUB_TOKEN, semantic-release,
@@ -112,35 +117,39 @@ jobs:
             exit 0
           fi
 
-          # Audit EVERY commit added by this push, not just HEAD. A multi-commit
+          # Audit every commit added by this push, not just HEAD. A multi-commit
           # direct push whose HEAD happens to be PR-associated (e.g. a re-pushed
           # already-merged commit) would otherwise hide earlier unaudited commits.
-          # Source: github.event.commits (the push payload's commit list). GitHub
-          # caps this array at 20; for a push larger than that the remainder is an
-          # accepted residual — the org audit log (org repos) records every commit.
-          # Fallback to HEAD_SHA if the payload carries no commit list (edge cases).
-          mapfile -t SHAS < <(printf '%s' "$COMMITS_JSON" | jq -r '.[].id // empty' 2>/dev/null)
-          if [ "${#SHAS[@]}" -eq 0 ]; then
-            SHAS=("$HEAD_SHA")
+          # Source: github.event.commits (the push payload's commit list, capped by
+          # GitHub at 2048). Fall back to HEAD_SHA if the payload carries no list.
+          mapfile -t ALL_SHAS < <(printf '%s' "$COMMITS_JSON" | jq -r '.[].id // empty' 2>/dev/null)
+          if [ "${#ALL_SHAS[@]}" -eq 0 ]; then
+            ALL_SHAS=("$HEAD_SHA")
           fi
-          echo "Auditing ${#SHAS[@]} commit(s) added by this push."
-
-          # Ensure the admin-bypass label exists ONCE (idempotent). `gh label create`
-          # exits non-zero when the label ALREADY exists, so treat "created" OR
-          # "already present" as OK; only a genuine absence sets LABEL_OK=0.
-          LABEL_OK=1
-          gh label create "admin-bypass" \
-            --color "d93f0b" \
-            --description "Commit bypassed required status checks" \
-            --repo "$REPO" 2>/dev/null \
-            || gh api "repos/$REPO/labels/admin-bypass" --jq '.name' 2>/dev/null | grep -qx "admin-bypass" \
-            || LABEL_OK=0
-
-          # AUDIT_FAILED accumulates indeterminate lookups / un-filed issues across
-          # the loop so a single bad commit fails the whole run (durable red-X)
-          # WITHOUT skipping the remaining commits.
+          # Bound the per-run PR-lookup work: each commit costs ONE cheap read call
+          # (bypasses are summarized into a SINGLE issue below, so there is no
+          # per-commit issue-creation rate-limit pressure). If the push exceeds
+          # MAX_AUDIT, audit the first MAX_AUDIT AND fail the run (durable red-X) so
+          # the unaudited remainder is never silently passed — investigate it
+          # manually. MAX_AUDIT is well above any realistic push so a legitimate
+          # large merge does not trip it.
           AUDIT_FAILED=0
+          MAX_AUDIT=256
+          SHAS=("${ALL_SHAS[@]:0:$MAX_AUDIT}")
+          if [ "${#ALL_SHAS[@]}" -gt "$MAX_AUDIT" ]; then
+            echo "::error::Push has ${#ALL_SHAS[@]} commits (> $MAX_AUDIT) — audited the first $MAX_AUDIT and failing the run; review the remainder manually."
+            AUDIT_FAILED=1
+          fi
+          echo "Auditing ${#SHAS[@]} of ${#ALL_SHAS[@]} commit(s) added by this push."
 
+          # Collect bypassing commits into ONE summary issue (filed after the loop)
+          # rather than an issue per commit: a multi-commit bypass would otherwise
+          # fire N issue-create calls and hit GitHub's content-creation secondary
+          # rate limit, and one issue is easier to triage. AUDIT_FAILED (set above)
+          # also accumulates per-commit indeterminate lookups so a single bad commit
+          # fails the whole run WITHOUT skipping the rest.
+          BYPASS_ROWS=""
+          BYPASS_COUNT=0
           for COMMIT_SHA in "${SHAS[@]}"; do
             # Look up PRs associated with this commit SHA.
             # CRITICAL: Distinguish "API succeeded, no PR found" (= bypass) from
@@ -151,7 +160,7 @@ jobs:
             PRS_ERR=$(mktemp)
             if ! PRS_JSON=$(gh api "repos/$REPO/commits/$COMMIT_SHA/pulls" 2>"$PRS_ERR"); then
               echo "::error::gh api failed to list PRs for $COMMIT_SHA — bypass status indeterminate; failing the run."
-              echo "Response: $(tr -d '\r' < "$PRS_ERR" | head -c 500)"
+              echo "Response: $(head -c 500 "$PRS_ERR" | tr -d '\r')"
               rm -f "$PRS_ERR"
               AUDIT_FAILED=1
               continue
@@ -172,35 +181,50 @@ jobs:
               continue
             fi
 
-            # No associated PR → direct push = bypass
+            # No associated PR → direct push = bypass. Accumulate a table row;
+            # file ONE summary issue after the loop.
             echo "::warning::Admin bypass: direct push to main by $ACTOR (commit ${COMMIT_SHA})"
-
             SHORT_SHA=$(printf '%s' "$COMMIT_SHA" | cut -c1-7)
-            # Per-commit message from the push payload (attacker-controlled; rendered
-            # safely below). Empty if absent (e.g. the HEAD_SHA fallback path).
-            COMMIT_MSG=$(printf '%s' "$COMMITS_JSON" | jq -r --arg s "$COMMIT_SHA" '(.[] | select(.id==$s) | .message) // ""' 2>/dev/null || echo "")
-            MSG_PREVIEW=$(printf '%s' "$COMMIT_MSG" | head -3)
-            NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            # First line of the commit message (attacker-controlled). Sanitize for a
+            # Markdown TABLE CELL: strip backtick (octal 140) / CR / LF / pipe,
+            # truncate, then wrap in inline code so no Markdown (links/emphasis/HTML)
+            # parses inside the cell.
+            MSG=$(printf '%s' "$COMMITS_JSON" | jq -r --arg s "$COMMIT_SHA" '(.[] | select(.id==$s) | .message) // ""' 2>/dev/null || echo "")
+            FIRST_LINE=${MSG%%$'\n'*}
+            SUBJECT=$(printf '%s' "$FIRST_LINE" | tr -d '\140\r\n|' | cut -c1-100)
+            BYPASS_ROWS="${BYPASS_ROWS}| [\`${SHORT_SHA}\`](https://github.com/${REPO}/commit/${COMMIT_SHA}) | \`${SUBJECT}\` |"$'\n'
+            BYPASS_COUNT=$((BYPASS_COUNT + 1))
+          done
 
+          # File ONE summary issue if any bypass was detected.
+          if [ "$BYPASS_COUNT" -gt 0 ]; then
+            # Ensure the admin-bypass label exists (idempotent). `gh label create`
+            # exits non-zero when it ALREADY exists; treat "created" OR "already
+            # present" as OK, only a genuine absence sets LABEL_OK=0.
+            LABEL_OK=1
+            gh label create "admin-bypass" \
+              --color "d93f0b" \
+              --description "Commit bypassed required status checks" \
+              --repo "$REPO" 2>/dev/null \
+              || gh api "repos/$REPO/labels/admin-bypass" --jq '.name' 2>/dev/null | grep -qx "admin-bypass" \
+              || LABEL_OK=0
+
+            NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            TITLE="Admin Bypass: ${BYPASS_COUNT} direct-push commit(s) by @$ACTOR"
             BODY_FILE=$(mktemp)
-            TITLE="Admin Bypass: ${SHORT_SHA} by @$ACTOR"
             {
               printf '%s\n\n' "**Direct Push Bypass Detected**"
-              printf '%s\n\n' "This commit was pushed directly to \`main\` without a pull request, bypassing required status checks and review policy."
+              printf 'The following %s commit(s) were pushed directly to `main` by @%s without an associated pull request, bypassing required status checks and review policy.\n\n' "$BYPASS_COUNT" "$ACTOR"
+              printf '| Commit | Subject |\n'
+              printf '|--------|---------|\n'
+              printf '%s' "$BYPASS_ROWS"
+              printf '\n'
               printf '| Field | Value |\n'
               printf '|-------|-------|\n'
-              printf '| **Commit** | [\`%s\`](https://github.com/%s/commit/%s) |\n' "$COMMIT_SHA" "$REPO" "$COMMIT_SHA"
-              printf '| **Actor** | @%s |\n' "$ACTOR"
+              printf '| **Pushed by** | @%s |\n' "$ACTOR"
               printf '| **Workflow run** | [%s](https://github.com/%s/actions/runs/%s) |\n' "$RUN_ID" "$REPO" "$RUN_ID"
               printf '| **Time (UTC)** | `%s` |\n\n' "$NOW"
-              printf '**Commit message (first 3 lines):**\n\n'
-              # Render as an INDENTED code block (4-space prefix), NOT a ``` fence:
-              # the commit message is attacker-controlled, and a ``` inside it would
-              # break out of a fenced block and inject Markdown. Strip CR first so an
-              # embedded carriage return can't produce an unindented line either.
-              printf '%s\n' "$MSG_PREVIEW" | tr -d '\r' | sed 's/^/    /'
-              printf '\n'
-              printf '**Action required:** Review whether this bypass was intentional. If so, document the rationale in a comment and close. If not, investigate how branch protection was circumvented.\n'
+              printf '**Action required:** Review whether these pushes were intentional. If so, document the rationale and close. If not, investigate how branch protection was circumvented.\n'
             } > "$BODY_FILE"
 
             # Try with label first; fall back to no-label. If even the unlabeled
@@ -209,15 +233,15 @@ jobs:
               if ! gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE" --label "admin-bypass" 2>&1; then
                 echo "::warning::Failed to create labeled issue — retrying without label"
                 gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE" \
-                  || { echo "::error::Failed to create audit issue for $COMMIT_SHA"; AUDIT_FAILED=1; }
+                  || { echo "::error::Failed to create the admin-bypass summary issue"; AUDIT_FAILED=1; }
               fi
             else
               echo "::warning::admin-bypass label unavailable — creating issue without label"
               gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE" \
-                || { echo "::error::Failed to create audit issue for $COMMIT_SHA"; AUDIT_FAILED=1; }
+                || { echo "::error::Failed to create the admin-bypass summary issue"; AUDIT_FAILED=1; }
             fi
             rm -f "$BODY_FILE"
-          done
+          fi
 
           if [ "$AUDIT_FAILED" = "1" ]; then
             echo "::error::One or more pushed commits could not be audited or filed — failing the run."

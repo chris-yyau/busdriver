@@ -168,17 +168,22 @@ jobs:
             fi
             rm -f "$PRS_ERR"
 
-            # A 200-OK-but-unexpected body (not a JSON array) is INDETERMINATE, not
-            # "zero PRs" — `jq -e` errors on a non-array, so flag rather than
+            # Count ONLY PRs actually MERGED into main. `/commits/{sha}/pulls` also
+            # returns PRs that merely CONTAIN the commit (open PRs, PRs targeting
+            # other branches), so a direct-pushed commit that also lives on an
+            # unmerged branch would otherwise read as "no bypass". A real merge has
+            # `merged_at != null` AND `base.ref == "main"` (this workflow only runs
+            # on pushes to main). A 200-OK-but-unexpected body (not a JSON array) is
+            # INDETERMINATE — `jq -e` errors on a non-array, so flag rather than
             # silently misclassify.
-            if ! PR_COUNT=$(printf '%s' "$PRS_JSON" | jq -e 'if type=="array" then length else error("not an array") end' 2>/dev/null); then
+            if ! MERGED_PRS=$(printf '%s' "$PRS_JSON" | jq -e 'if type=="array" then [.[] | select(.merged_at != null and .base.ref == "main")] else error("not an array") end' 2>/dev/null); then
               echo "::error::Unexpected PR-list response for $COMMIT_SHA — indeterminate; failing the run."
               AUDIT_FAILED=1
               continue
             fi
-            if [ "$PR_COUNT" != "0" ]; then
-              PR_NUM=$(printf '%s' "$PRS_JSON" | jq -r '.[0].number // "?"' 2>/dev/null || echo "?")
-              echo "No bypass — $COMMIT_SHA came from PR #$PR_NUM"
+            if [ "$(printf '%s' "$MERGED_PRS" | jq 'length' 2>/dev/null || echo 0)" != "0" ]; then
+              PR_NUM=$(printf '%s' "$MERGED_PRS" | jq -r '.[0].number // "?"' 2>/dev/null || echo "?")
+              echo "No bypass — $COMMIT_SHA merged into main via PR #$PR_NUM"
               continue
             fi
 

@@ -21,9 +21,10 @@ name: Admin Bypass Audit
 # branch-protection bypasses is GitHub's ORGANIZATION AUDIT LOG, not this workflow.
 # Every override is recorded server-side as a `protected_branch.policy_override`
 # event (real actor, token, before/after SHAs), immune to CI-skip markers and
-# unforgeable because it sits OUTSIDE the repo at GitHub's API boundary. Query it
-# (audit-log API needs GitHub Enterprise Cloud; otherwise use the org audit-log
-# UI / export):
+# unforgeable because it sits OUTSIDE the repo at GitHub's API boundary. It is the
+# authoritative record of the bypass in the organization audit log (audit-log API
+# access requires GitHub Enterprise Cloud; otherwise use the org audit-log export).
+# Example query:
 #   gh api '/orgs/<ORG>/audit-log?phrase=action:protected_branch.policy_override'
 # (User-owned repos have no org audit log and no equivalent server-side bypass
 # record, so for them this push-time workflow is the primary signal.) Either way

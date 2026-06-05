@@ -1,3 +1,10 @@
+# [1.55.0](https://github.com/chris-yyau/busdriver/compare/v1.54.6...v1.55.0) (2026-06-05)
+
+
+### Features
+
+* **pr-grind:** swap greptile to cursor in ack registry, add codex as collected reviewer ([#179](https://github.com/chris-yyau/busdriver/issues/179)) ([639654c](https://github.com/chris-yyau/busdriver/commit/639654c5083a2dfac691daf395886175f54c7d6e))
+
 ## [1.54.6](https://github.com/chris-yyau/busdriver/compare/v1.54.5...v1.54.6) (2026-06-04)
 
 

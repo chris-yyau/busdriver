@@ -1,3 +1,10 @@
+## [1.56.1](https://github.com/chris-yyau/busdriver/compare/v1.56.0...v1.56.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **pr-grind:** approver-gap detector reads classic branch protection too ([#182](https://github.com/chris-yyau/busdriver/issues/182)) ([9e510d7](https://github.com/chris-yyau/busdriver/commit/9e510d7df56e30cdbb7509092e0101765869548e))
+
 # [1.56.0](https://github.com/chris-yyau/busdriver/compare/v1.55.0...v1.56.0) (2026-06-05)
 
 

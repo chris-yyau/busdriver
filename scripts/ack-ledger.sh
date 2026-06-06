@@ -168,7 +168,14 @@ if [ "$disposed" -gt 0 ] && [ "$login" != "chatgpt-codex-connector" ]; then emit
 # (B) /reviews: did the bot explicitly submit a review on HEAD?
 commit_id=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
   '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty' 2>/dev/null || echo "")
-if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ]; then emit_head_ack "${commit_id:0:8}" B; exit 0; fi
+# Codex exception (same family as Tier A's disposed branch): a Codex /reviews
+# entry is ALWAYS a COMMENTED findings post — Codex reacts with 👍 when it has
+# NO suggestions and only opens a review when it DOES (per OpenAI's integration).
+# Treating that as a clean HEAD-ack would merge past untriaged findings, so Codex
+# is excluded here and falls through to the downgrade block → `stale` (block
+# until the worker triages and Codex re-reviews clean). Codex's only positive ack
+# is the Tier F 👍. `commit_id` is still computed above for that downgrade block.
+if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ] && [ "$login" != "chatgpt-codex-connector" ]; then emit_head_ack "${commit_id:0:8}" B; exit 0; fi
 
 # (C) Issue-comment body SHA: bots like Greptile update a single comment with
 # a "Last reviewed commit: [sha](.../commit/<sha>)" link instead of submitting
@@ -261,11 +268,13 @@ fi
 # Scope: codex-only AND guarded on non-empty ALL_REACTIONS, so Tier F is a
 # strict no-op for every other login AND for callers not yet upgraded to fetch
 # reactions (same additive/backward-compat pattern as Tier E's ALL_STATUSES).
-# Codex's FINDINGS path is NOT handled here — those post as inline threads
-# (Tier A) and a COMMENTED /reviews entry whose commit_id is HEAD (Tier B),
-# both of which ack/stale before control reaches Tier F. Tier F resolves only
-# (a) the reaction-only clean case → HEAD-ack, and (b) the still-reviewing /
-# stale-👍 case → stale (so the gate waits, bounded by the loop's --max-wait).
+# Codex's FINDINGS path is NOT acked here — those post as inline threads
+# (Tier A.1 unresolved → stale) and/or a COMMENTED /reviews entry (Codex is
+# excluded from Tier B's clean-ack, so it falls through to the downgrade block →
+# stale). Both BLOCK the merge until the worker triages and Codex re-reviews
+# clean. Tier F resolves only (a) the reaction-only clean case → HEAD-ack, and
+# (b) the still-reviewing / stale-👍 case → stale (gate waits, bounded by
+# --max-wait). Codex's ONLY positive ack, anywhere, is a fresh 👍 (Tier F).
 #
 # ALL_REACTIONS is `gh api --paginate`'d, so it may be a STREAM of arrays (one
 # per page) — `jq -rs '[.[]? | .[]? ...]'` slurps + double-flattens to a single

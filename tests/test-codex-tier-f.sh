@@ -136,19 +136,36 @@ else
   fail "fresh 👍 + unresolved thread expected 'stale', got '$got'"
 fi
 
-# --- Test 8: findings COMMENTED /reviews on HEAD → HEAD_SHA via Tier B ---
-# Codex's FINDINGS path is SHA-keyed (commit_id == HEAD) and acks through the
-# existing Tier B, not Tier F. ACK_EMIT_TIER must report B, not F.
+# --- Test 8: Codex findings COMMENTED /reviews on HEAD → stale (excluded from Tier B) ---
+# A Codex /reviews entry is ALWAYS a findings post (Codex 👍s when clean), so it
+# must NOT be a clean HEAD-ack — Codex is excluded from Tier B and falls through
+# to the downgrade block → stale, so the worker triages. No reaction in the
+# fixture, isolating the Tier-B-exclusion → downgrade → stale path (not the
+# eyes-override).
 CODEX_REVIEW_HEAD='[{"user":{"login":"chatgpt-codex-connector[bot]"},"state":"COMMENTED","commit_id":"abc12345ef","body":"### 💡 Codex Review"}]'
-got=$(FETCH_OK=1 ACK_EMIT_TIER=1 \
+got=$(FETCH_OK=1 \
   ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$CODEX_REVIEW_HEAD" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS="$(mk_reaction 'eyes' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
-if [ "$got" = "${HEAD_SHA}:B" ]; then
-  ok "findings COMMENTED /reviews on HEAD → '${HEAD_SHA}:B' (Tier B, not F)"
+if [ "$got" = "stale" ]; then
+  ok "Codex COMMENTED /reviews on HEAD → stale (excluded from Tier B; findings need triage)"
 else
-  fail "findings on HEAD expected '${HEAD_SHA}:B', got '$got'"
+  fail "Codex COMMENTED /reviews on HEAD expected 'stale', got '$got'"
+fi
+
+# --- Test 8b: registered bot COMMENTED /reviews on HEAD → HEAD_SHA via Tier B (no regression) ---
+# The Tier-B exclusion is Codex-only; cursor's /reviews entry on HEAD still acks.
+CURSOR_REVIEW_HEAD='[{"user":{"login":"cursor[bot]"},"state":"COMMENTED","commit_id":"abc12345ef","body":"reviewed"}]'
+got=$(FETCH_OK=1 ACK_EMIT_TIER=1 \
+  ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$CURSOR_REVIEW_HEAD" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" cursor 2>/dev/null)
+if [ "$got" = "${HEAD_SHA}:B" ]; then
+  ok "registered bot COMMENTED /reviews on HEAD → '${HEAD_SHA}:B' (Tier B exclusion is Codex-only)"
+else
+  fail "cursor COMMENTED /reviews on HEAD expected '${HEAD_SHA}:B', got '$got'"
 fi
 
 # --- Test 9: fresh-looking 👍 but HEAD_COMMITTED_DATE empty → stale ---

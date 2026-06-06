@@ -19,11 +19,13 @@ Empirical signal shape (verified on `Dive-And-Dev/chrisyau.me`):
   `/reviews`, no comment. The `+1.created_at` (16:24:36Z) postdates HEAD's
   commit time (16:12:23Z) by ~12 min.
 - **Findings** (PR #140): a `/reviews` COMMENTED entry with `commit_id` + inline
-  threads carrying P1/P2/P3 badges — already SHA-keyed, already acked by Tiers
-  A/B. A 👍 lands later, once the findings are resolved.
+  threads carrying P1/P2/P3 badges. A 👍 lands later, once the findings are
+  resolved. (These must BLOCK until triaged — see Decision 2; a Codex review is
+  always a findings post, never a clean ack.)
 
-So only the *clean* path is un-acked by existing tiers, and the only available
-anchor is the reaction timestamp vs HEAD's commit time.
+So only the *clean* path needs a new positive-ack signal (the 👍 reaction); the
+findings path must resolve to `stale`. The only available clean anchor is the
+reaction timestamp vs HEAD's commit time.
 
 ## Decision
 1. **Tier F in `ack-ledger.sh`** (the prescribed single source): for
@@ -43,11 +45,14 @@ anchor is the reaction timestamp vs HEAD's commit time.
    committer.date to operation time on commit/amend/rebase/cherry-pick, so a
    rebased or cherry-picked HEAD reads as fresh and a pre-existing 👍 reads as
    stale — the realistic "old commit becomes HEAD" cases are handled.
-2. **Tier A excludes Codex from the disposed-thread→ack branch.** A resolved/
-   outdated Codex thread from an older commit must NOT ack a new HEAD (it would
-   let a clean merge race ahead of Codex's re-review). Codex falls through to
-   Tier F's reaction-freshness check instead. Its *unresolved* threads still
-   block via Tier A.1 (login-agnostic), so live findings are never masked.
+2. **Codex is excluded from both "clean-ack" tiers — Tier A's disposed-thread
+   branch and Tier B's `/reviews` branch.** A Codex review is *always* a findings
+   post (it 👍s when clean), so neither a resolved/outdated thread from an older
+   commit nor a COMMENTED `/reviews` entry may ack it — both would let a clean
+   merge race ahead of, or merge past, Codex findings. Codex falls through to
+   `stale` and its only positive ack is Tier F's fresh 👍. Its *unresolved*
+   threads still block via Tier A.1 (login-agnostic), so live findings are never
+   masked, and a findings `/reviews` entry blocks via the downgrade fall-through.
 3. **Track Codex in a dedicated `RESULT_CODEX_ACK` field, NOT in the three-bot
    `RESULT_REVIEWER_ACKS` string.** A `stale` value blocks `clean` exactly like a
    stale registered bot (worker returns `needs_more`; the dispatcher COMPLETION

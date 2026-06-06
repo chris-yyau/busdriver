@@ -758,6 +758,7 @@ RESULT_FIXES: <one-line summary>                      (always present)
 RESULT_REMAINING: <one-line or "none">                (always present)
 RESULT_REVIEWER_ACKS: <login=value,login=value,...>   (always present; dispatcher-synthesized on fix-round and wait-round paths; worker-advisory on clean path; values: <short-sha> | none | stale; early-bail paths emit the all-`none` default initialized before Step 0)
 RESULT_ACK_TIERS: <login=tier,login=tier,...>         (worker tag, additive/backward-compatible; tier ∈ {A,B,C,D,E,none} = the ack-ledger tier that produced each bot's HEAD-ack, or `none` when the bot is not HEAD-acked. Invariant 3 reads it ONLY to exempt a HEAD-acked bot with n_total==0 when its tier is D (check-run) or E (commit-status) — bodyless structured acks, see ADR 0001. MISSING TAG (old-contract worker) → Invariant 3 falls back to its strict pre-ADR-0001 behavior (n_total==0 on a HEAD-ack always bails); do NOT bail "subagent output unparseable" on a missing RESULT_ACK_TIERS — additive, not version-pinned.)
+RESULT_CODEX_ACK: <short-sha | stale | none>          (Codex's Tier-F reaction ack; gated like a registered bot but tracked SEPARATELY from RESULT_REVIEWER_ACKS because its clean signal is a timestamp-keyed 👍 (Tier F), not a SHA-keyed structured ack. `stale` blocks `clean` AND counts as a legitimate wait-round in the no-progress invariant (Invariant 1 — a Codex-only wait-round must not be misread as no-progress); `<short-sha>` = acked HEAD; `none` = not on this PR, non-gating. Additive/backward-compatible: MISSING TAG (old-contract worker) → treat as empty (`!= stale`), so Invariant 1 falls back to its registered-bot-only behavior. Do NOT bail "subagent output unparseable" on a missing RESULT_CODEX_ACK — additive, not version-pinned.)
 RESULT_BOT_LEDGER: <login=n_act/n_total:disp,...>     (always present; entries shape: `<login>=<n_actionable>/<n_total>:<disposition>`; early-bail paths emit the all-`0/0:none` default; gates Invariant 3 — see Dispatcher Loop. n_actionable and n_total are different units — findings (decided per-finding) vs artifacts (review/comment entries examined); a single artifact can contain multiple findings, so n_actionable > n_total (e.g., `<bot>=2/1:fixed both`) is legitimate, not a typo. Invariant 3 only requires n_total >= 1 for HEAD-acked bots; it does NOT enforce n_actionable <= n_total. See `agents/pr-grinder.md` Step 3 worked examples. Disposition prose MUST NOT contain commas; entries are split on `,` and a comma inside a disposition would corrupt the parse. Disposition MAY carry `+`-joined `scope-skipped:<reason>:<count>` segments — Invariant 4 sums those counts across all bots/rounds against the ≤5 cumulative cap)
 RESULT_ISSUES_SPAWNED: <issue,issue,... or "none">    (always present in the new contract; comma-separated GitHub issue numbers spawned this round via the out-of-scope-acknowledged workflow; gates Invariant 4 — cumulative count across rounds caps at 3. Backward compatibility: missing tag entirely → treat as "none" / zero contribution. Old-contract workers (pre-out-of-scope-flow) never emitted this tag and operate under pre-Invariant-4 semantics for the rest of their grind; new-contract workers always emit it. Do NOT bail "subagent output unparseable" on a missing RESULT_ISSUES_SPAWNED — the protocol is additive, not version-pinned.)
 RESULT_BAIL_REASON: <one-line free-form prose>        (present only when status=bail; for human consumption — NEVER substring-matched for control flow)
@@ -1121,6 +1122,7 @@ RESULT_FIXES: remove /blog/* paths from 4 relatedTools blocks
 RESULT_REMAINING: none
 RESULT_REVIEWER_ACKS: cursor=stale,cubic-dev-ai=stale,coderabbitai=stale
 RESULT_ACK_TIERS: cursor=none,cubic-dev-ai=none,coderabbitai=none
+RESULT_CODEX_ACK: stale
 RESULT_BOT_LEDGER: cursor=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
 RESULT_ISSUES_SPAWNED: 847,848
 ```
@@ -1222,8 +1224,27 @@ CODEX_GRACE="${PR_GRIND_CODEX_GRACE_SECS:-20}"
 if [ "$CODEX_DONE" = "none" ] && [ "${CODEX_GRACE}" -gt 0 ] 2>/dev/null; then
   echo "ℹ️  Codex shows no engagement on HEAD; ${CODEX_GRACE}s first-engagement grace re-poll…"
   sleep "$CODEX_GRACE"
+  # Refresh ALL Codex-relevant sources, not just reactions: during the grace
+  # Codex may post FINDINGS (inline threads → Tier A, or a /reviews entry whose
+  # commit_id is HEAD → Tier B), not only a clean 👍. Refreshing reactions alone
+  # would leave ack-ledger reading the stale pre-sleep threads/reviews and miss
+  # findings that arrived in the window — passing the gate with untriaged Codex
+  # findings. (Tiers C/D/E don't apply to Codex, so their snapshots can stand.)
   ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/reactions" 2>/dev/null) || FETCH_OK=0
-  export ALL_REACTIONS FETCH_OK
+  ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || FETCH_OK=0
+  ALL_THREADS=$(gh api graphql --paginate -f query='
+    query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String) {
+      repository(owner:$owner,name:$repo) {
+        pullRequest(number:$pr) {
+          reviewThreads(first:100, after:$endCursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes { isResolved isOutdated comments(first:1) { nodes { author { login } } } }
+          }
+        }
+      }
+    }
+  ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) || FETCH_OK=0
+  export ALL_REACTIONS ALL_REVIEWS ALL_THREADS FETCH_OK
   CODEX_REGRACE=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo stale)
   # Re-fold only if Codex engaged during the grace (now `stale` or a fresh SHA);
   # SHA → still passes, `stale` → blocks below. SHAs/stale/none are sed-safe.

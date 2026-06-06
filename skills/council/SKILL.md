@@ -122,7 +122,7 @@ This is a **single Bash call** with all three CLI dispatches as background proce
 
 **For Agy:** Role = "Pragmatist", Lens = "shipping speed, simplicity, user impact, practical tradeoffs"
 **For Codex:** Role = "Critic", Lens = "edge cases, risks, failure modes, what could go wrong"
-**For Grok:** Role = "Researcher", Lens = "evidence, prior art, current state — look up similar past decisions, current code state of the repo, and external evidence relevant to the question. Cite what you find. Flag claims that lack grounding."
+**For Grok:** Role = "Researcher", Lens = "evidence, prior art, current state — look up similar past decisions, current code state of the repo, and external evidence relevant to the question. Provide links, quotes, and sources — NOT conclusions stated as settled fact. Your factual/empirical claims are treated as UNVERIFIED by default until checked against local evidence, so for each load-bearing claim name the cheap local check (command / file / grep) that would confirm or refute it. Cite what you find; flag claims that lack grounding."
 
 **IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing Agy + Codex + Grok as background processes) in the **same message** so all four external voices run concurrently. Do NOT use separate Bash tool calls — one failing will cancel the others.
 
@@ -150,6 +150,8 @@ You are both a council member AND the synthesizer. This is a conflict of interes
 4. If two or more voices agree against you, seriously consider that you might be wrong
 5. Raw positions appear ABOVE the synthesis — the user can always check your work
 6. The Fresh Claude Skeptic's premise challenges deserve special weight — they see what you can't because of conversational anchoring
+7. **Researcher claims are UNVERIFIED by default (taint by source-class, not self-report).** A factual/empirical claim or citation from the Researcher (Grok/Droid) may NOT justify a **hard** recommendation on its own. To promote it, verify it IN THIS REPORT against pasted local evidence — a grep/Read/run output, the cited source text, or user-provided data — OR route it to a fresh clean-memory verifier (a second Skeptic-style Agent call). If you cannot cheaply verify a load-bearing Researcher claim, mark it `[unverified]` and downgrade any recommendation that rests on it to **exploratory**. Rule 1's "state why" does NOT satisfy this — for a Researcher fact, paste the evidence or mark it unverified. (Both documented Researcher failures — a fabricated quantitative claim and real-but-off-task citations — happened while the narrated "flag claims that lack grounding" guidance was already present; narration alone is insufficient.)
+8. **Settling check (mandatory).** Every **hard** recommendation in the Verdict must name a settling check — the cheapest concrete local command / file / test / data whose result would confirm or refute it, plus the expected disconfirming outcome. If no cheap local check can be named, the item ships as **exploratory**, not a hard recommendation. Run the check in-turn when it is cheap and local; do NOT force a "command" onto questions that have none (strategy/naming/product) — for those, the honest settling check is the evidence or experiment that would decide, and absent that they stay exploratory.
 </CRITICAL>
 
 ### Step 6: Present the Report
@@ -179,7 +181,9 @@ You are both a council member AND the synthesizer. This is a conflict of interes
 - **Consensus:** [where they agree]
 - **Strongest dissent:** [the most important disagreement — who said it and why]
 - **Premise check:** [did the Skeptic challenge the question itself? If so, what was the challenge?]
-- **Recommendation:** [synthesized best path forward]
+- **Recommendation:** [synthesized best path forward — mark each item **hard** or **exploratory**]
+- **Settling check:** [for each HARD recommendation, the cheapest concrete local check (command/file/test/data) + its expected disconfirming result. None nameable → the item is exploratory, not hard.]
+- **Researcher claims:** [list any factual/empirical Researcher claim you relied on, each tagged `verified` (with the pasted/cited evidence) or `[unverified]`. An `[unverified]` claim may not justify a hard recommendation — per Synthesizer Guardrail 7.]
 ```
 
 **Self-contained rule:** When the question involves numbered items (e.g., "6 proposed fixes"), ALL references — in individual voice positions AND the verdict — MUST restate each item inline, not just by number. The user should never need to scroll up. Example: "Fix #1 (add frontend-design to routes) and skip #3 (new plugin-dev entry)" instead of "Fix #1 and skip #3". This applies to every voice's position text, not only the final synthesis.

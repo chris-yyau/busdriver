@@ -265,14 +265,22 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │
   ├── Invariant checks (fail-CLOSED — both must hold):
   │     1. If RESULT_STATUS=needs_more AND RESULT_COMMIT_SHA=none AND
-  │        RESULT_REVIEWER_ACKS contains no `stale` entries →
+  │        RESULT_REVIEWER_ACKS contains no `stale` entries AND
+  │        RESULT_CODEX_ACK is not `stale` →
   │        BAIL with reason "subagent emitted needs_more without a commit
   │        SHA and without any stale ack — neither a fix nor a wait-for-
   │        bots is justified, so the loop has no progress signal".
   │        Legitimate `needs_more` rounds always have either a new commit
-  │        SHA (dispatcher pushed a fix) OR at least one `stale` ack (worker
-  │        is waiting for a bot to re-review). A round with neither is
-  │        broken — re-dispatching would loop forever on no progress.
+  │        SHA (dispatcher pushed a fix) OR at least one `stale` ack — a
+  │        registered bot in RESULT_REVIEWER_ACKS, OR Codex via
+  │        RESULT_CODEX_ACK=stale (Codex is gated but tracked outside
+  │        RESULT_REVIEWER_ACKS, so a Codex-only wait-round — all three
+  │        registered bots acked HEAD but Codex is still reviewing — is
+  │        legitimate and must NOT be misread as no-progress). A round with
+  │        none of these is broken — re-dispatching would loop forever on no
+  │        progress. (Backward-compat: a worker that omits RESULT_CODEX_ACK
+  │        leaves it empty, which is `!= stale`, so the check reduces to its
+  │        prior registered-bot-only behavior.)
   │        Note: a bot whose review was downgraded to `none` by the
   │        infra-error path (see scripts/ack-ledger.sh) will not appear as
   │        `stale`. If that downgraded bot was the ONLY reason the worker
@@ -999,13 +1007,18 @@ ALL_CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-r
 # scripts/ack-ledger.sh maps the bot login to a context string and treats a
 # latest-by-timestamp `state=success` as a HEAD-ack.
 ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses" 2>/dev/null) || FETCH_OK=0
+# Source 7: issue-level reactions + HEAD commit time — Codex's clean signal is
+# a 👍 reaction (Tier F), not a SHA-keyed ack. --paginate so Codex's reaction
+# isn't missed behind >30 human PR-body reactions (Tier F slurps the stream).
+ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/reactions" 2>/dev/null) || FETCH_OK=0
+HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null) || FETCH_OK=0
 
 # Per-bot ack — algorithm lives in scripts/ack-ledger.sh (single source of
 # truth for this site, the worker's Step 6.5 in agents/pr-grinder.md, and the
 # dispatcher's Completion site below). The script reads FETCH_OK / ALL_THREADS /
-# ALL_REVIEWS / ALL_COMMENTS / ALL_CHECK_RUNS / ALL_STATUSES / HEAD_SHA from
-# env and the bot login from $1.
-export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
+# ALL_REVIEWS / ALL_COMMENTS / ALL_CHECK_RUNS / ALL_STATUSES / ALL_REACTIONS /
+# HEAD_COMMITTED_DATE / HEAD_SHA from env and the bot login from $1.
+export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
 # One call per bot with ACK_EMIT_TIER=1 → "<sha>:<tier>" on a HEAD-ack, bare
 # none/stale otherwise. Derive the plain ack ledger (strip ":<tier>") AND the
@@ -1019,8 +1032,16 @@ ROUND_ACKS="cursor=$(_ackpart "$_cur"),cubic-dev-ai=$(_ackpart "$_cub"),coderabb
 ROUND_ACK_TIERS="cursor=$(_tierpart "$_cur"),cubic-dev-ai=$(_tierpart "$_cub"),coderabbitai=$(_tierpart "$_cod")"
 echo "Ack ledger: $ROUND_ACKS"
 echo "Ack tiers: $ROUND_ACK_TIERS"
+# Codex — gated separately via Tier F (👍 reaction). Tracked in its own var,
+# NOT folded into ROUND_ACKS (the three SHA-keyed bots, which Invariant 3
+# intersects). A stale Codex blocks `clean` exactly like a stale registered bot.
+ROUND_CODEX_ACK=$(_ackpart "$(_at chatgpt-codex-connector)")
+echo "Codex ack: $ROUND_CODEX_ACK"
 
-STALE_BOTS=$(echo "$ROUND_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
+# Compute STALE_BOTS over the registered three PLUS Codex (appended only for
+# this throwaway staleness scan — ROUND_ACKS itself stays the three-bot
+# contract). A stale entry from either source blocks `clean`.
+STALE_BOTS=$(echo "$ROUND_ACKS,chatgpt-codex-connector=$ROUND_CODEX_ACK" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
 echo "STALE_BOTS: $STALE_BOTS"
 ```
 
@@ -1125,11 +1146,11 @@ PRIOR_ATTEMPTS:
 **All of these must be true before declaring done:**
 1. Subagent returned `RESULT_STATUS=clean` (or inline mode reached the same state)
 2. All required CI checks passing (build, lint, test)
-3. All automated reviewers completed (CodeRabbit, Cursor, Cubic, etc.). Codex (`chatgpt-codex-connector`) is collected-only — it has no GitHub check, so its completion is not gated here; its findings are triaged via Step 2.6 enumeration, not waited on as a check.
+3. All automated reviewers completed (CodeRabbit, Cursor, Cubic, etc.). Codex (`chatgpt-codex-connector`) has no GitHub check, but it IS waited on via `ack-ledger.sh` Tier F: its 👍 reaction (clean) or findings on HEAD (Tiers A/B) must ack the current HEAD, surfaced as `RESULT_CODEX_ACK` and re-checked in the COMPLETION gate's `FRESH_ACKS` scan. A `stale` Codex blocks completion just like a stale registered bot; its findings are additionally triaged via Step 2.6 enumeration.
 4. No unresolved actionable comments from any source
 5. No new comments arrived after your last push (wait for the full cycle)
 6. Advisory check issues either fixed or noted as beyond PR scope
-7. **Reviewer ack ledger**: every registered bot (Cursor, Cubic, CodeRabbit) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot only posted a non-actionable PR-overview summary on an older commit" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all four cases are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 1, 2, and 3. Note: Tier E (commit-statuses API) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.)
+7. **Reviewer ack ledger**: every registered bot (Cursor, Cubic, CodeRabbit) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot only posted a non-actionable PR-overview summary on an older commit" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all four cases are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 1, 2, and 3. Note: Tier E (commit-statuses API) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.) Codex is gated too, but tracked in its own `RESULT_CODEX_ACK` field (Tier F 👍 reaction), not in `RESULT_REVIEWER_ACKS` — a `stale` Codex blocks completion identically; `none` (never reacted/reviewed on this PR) is non-gating.
 
 **Re-query the ack ledger fresh (REQUIRED — defense in depth against late posts between subagent return and merge time):**
 
@@ -1170,17 +1191,49 @@ ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH
 ALL_CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
 # Source 6: commit statuses on HEAD — same as worker/Step 6.5 fetch above.
 ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses" 2>/dev/null) || FETCH_OK=0
+# Source 7: issue-level reactions + HEAD commit time for Codex's Tier-F gate
+# (👍 reaction). --paginate so Codex's reaction isn't missed behind >30 human
+# PR-body reactions (Tier F slurps the page stream).
+ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/reactions" 2>/dev/null) || FETCH_OK=0
+HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null) || FETCH_OK=0
 
 # Per-bot ack — same single-sourced algorithm as the worker's Step 6.5 and
 # the inline ledger block in Step 6.5 above. All three sites invoke
 # scripts/ack-ledger.sh; algorithm edits live in that one file.
-export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
+export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
-FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale)"
+# Codex (chatgpt-codex-connector) is appended as a fourth gated reviewer here:
+# its Tier-F 👍 reaction is the authoritative clean signal, and a `stale` value
+# (still reviewing, or hasn't re-acked HEAD after the last push) must block the
+# merge exactly like a stale registered bot. It is NOT in RESULT_REVIEWER_ACKS
+# (the three SHA-keyed bots feeding Invariant 3) — only in this final gate scan.
+FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),chatgpt-codex-connector=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo stale)"
+# Codex first-engagement grace. If Codex resolved to `none` — zero reaction/
+# review on the PR — it may simply not have posted its initial 👀 on a just-
+# pushed HEAD yet; without this a Codex-ONLY repo (no registered bots forcing
+# wait-rounds) could merge in the gap before Codex starts. Give it ONE bounded
+# re-poll. This rarely fires: COMPLETION is reached only after the loop has
+# converged, by which point an active Codex has long since engaged (ack is a
+# SHA/stale, not `none`) — so on repos where Codex runs there is no wait here.
+# Set PR_GRIND_CODEX_GRACE_SECS=0 on repos that do not use Codex to skip the
+# one-time wait. Bounded by design; never an unbounded hang.
+CODEX_DONE=$(printf '%s' "$FRESH_ACKS" | tr ',' '\n' | awk -F= '$1=="chatgpt-codex-connector"{print $2}')
+CODEX_GRACE="${PR_GRIND_CODEX_GRACE_SECS:-20}"
+if [ "$CODEX_DONE" = "none" ] && [ "${CODEX_GRACE}" -gt 0 ] 2>/dev/null; then
+  echo "ℹ️  Codex shows no engagement on HEAD; ${CODEX_GRACE}s first-engagement grace re-poll…"
+  sleep "$CODEX_GRACE"
+  ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/reactions" 2>/dev/null) || FETCH_OK=0
+  export ALL_REACTIONS FETCH_OK
+  CODEX_REGRACE=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo stale)
+  # Re-fold only if Codex engaged during the grace (now `stale` or a fresh SHA);
+  # SHA → still passes, `stale` → blocks below. SHAs/stale/none are sed-safe.
+  [ "$CODEX_REGRACE" != "none" ] && FRESH_ACKS=$(printf '%s' "$FRESH_ACKS" | sed "s/chatgpt-codex-connector=none/chatgpt-codex-connector=${CODEX_REGRACE}/")
+fi
 STALE_BOTS=$(echo "$FRESH_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
 if [ -n "$STALE_BOTS" ]; then
-  echo "❌ BLOCKED: registered reviewer(s) with stale ack at merge time: $STALE_BOTS"
+  echo "❌ BLOCKED: AI reviewer(s) with stale ack at merge time: $STALE_BOTS"
   echo "   Re-run the loop or wait for the bot(s) to ack HEAD ($HEAD_SHA)."
+  echo "   (chatgpt-codex-connector stale = Codex still reviewing / no 👍 newer than HEAD.)"
   exit 1
 fi
 ```

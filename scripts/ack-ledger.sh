@@ -12,13 +12,17 @@
 #
 # Caller responsibilities (BEFORE invoking):
 #   1. Compute HEAD_SHA via `git rev-parse HEAD | cut -c1-8`.
-#   2. Set FETCH_OK=1, then perform the five gh-API fetches that each
-#      tag FETCH_OK=0 on failure (ALL_THREADS via graphql, ALL_REVIEWS,
-#      ALL_COMMENTS, ALL_CHECK_RUNS, ALL_STATUSES). The fetch block itself
-#      stays in the markdown call sites — only the per-bot algorithm lives
-#      here. ALL_STATUSES is the legacy commit-statuses API consumed by
-#      Tier E (CodeRabbit free-tier on private repos).
-#   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA`
+#   2. Set FETCH_OK=1, then perform the gh-API fetches that each tag
+#      FETCH_OK=0 on failure (ALL_THREADS via graphql, ALL_REVIEWS,
+#      ALL_COMMENTS, ALL_CHECK_RUNS, ALL_STATUSES, ALL_REACTIONS, and
+#      HEAD_COMMITTED_DATE). The fetch block itself stays in the markdown call
+#      sites — only the per-bot algorithm lives here. ALL_STATUSES is the
+#      legacy commit-statuses API consumed by Tier E (CodeRabbit free-tier on
+#      private repos). ALL_REACTIONS (issue-level reactions JSON array) and
+#      HEAD_COMMITTED_DATE (HEAD's `commit.committer.date`, UTC ISO-8601) feed
+#      Tier F — the Codex-only reaction tier; both are empty for callers that
+#      haven't been upgraded to fetch them, and Tier F no-ops in that case.
+#   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_SHA`
 #      so this subprocess inherits them. A caller that hasn't been upgraded
 #      to fetch ALL_STATUSES will export empty for that var — Tier E sees
 #      the empty input, skips silently, and the script falls through to
@@ -30,9 +34,10 @@
 # Always exits 0 on success; caller treats stdout as authoritative.
 #
 # Tier exposure (opt-in via ACK_EMIT_TIER=1): when set, a HEAD-ack SHA is
-# suffixed ":<tier>" where <tier> is the letter A–E of the tier that produced
+# suffixed ":<tier>" where <tier> is the letter A–F of the tier that produced
 # the ack (A=disposed inline threads, B=/reviews on HEAD, C=issue-comment body
-# SHA, D=check-run success, E=commit-status success). `none`/`stale` are NEVER
+# SHA, D=check-run success, E=commit-status success, F=Codex 👍 reaction newer
+# than HEAD's commit). `none`/`stale` are NEVER
 # suffixed. Default (env unset) output is byte-for-byte unchanged, so existing
 # callers that compare the value to HEAD_SHA or to `stale` are unaffected. The
 # dispatcher's Invariant 3 uses tiers D/E (bodyless structured acks) to exempt a
@@ -86,7 +91,8 @@
 # resolver fired vs no-op'd; set BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 if
 # you need to force the caller's intended path. `exec` preserves "$@" and
 # exported env vars (FETCH_OK, ALL_THREADS, ALL_REVIEWS, ALL_COMMENTS,
-# ALL_CHECK_RUNS, HEAD_SHA) automatically across the process replacement.
+# ALL_CHECK_RUNS, ALL_STATUSES, ALL_REACTIONS, HEAD_COMMITTED_DATE, HEAD_SHA)
+# automatically across the process replacement.
 #
 # Why detection runs at script top: the resolver is a permanent forward-fix.
 # Once shipped in vN.M, all vN.M+ caches carry the resolver, so any future
@@ -150,7 +156,14 @@ disposed=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_
   '[.[].data.repository.pullRequest.reviewThreads.nodes[]
     | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
     | select(.isOutdated == true or .isResolved == true)] | length' 2>/dev/null || echo 0)
-if [ "$disposed" -gt 0 ]; then emit_head_ack "$HEAD_SHA" A; exit 0; fi
+# Codex exception: its freshness is reaction-based (Tier F), so a DISPOSED
+# thread from an older commit must NOT ack it on a new HEAD — a resolved/
+# outdated Codex finding from commit A would otherwise satisfy the gate on a
+# pushed commit B before Codex has re-reviewed B (clean-merge race). Codex
+# falls through to Tier F, which gates on a 👍 newer than HEAD. Its UNRESOLVED
+# threads still block via Tier A.1 above (login-agnostic), so live findings are
+# never masked by this exception.
+if [ "$disposed" -gt 0 ] && [ "$login" != "chatgpt-codex-connector" ]; then emit_head_ack "$HEAD_SHA" A; exit 0; fi
 
 # (B) /reviews: did the bot explicitly submit a review on HEAD?
 commit_id=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
@@ -232,6 +245,76 @@ if [[ -n "$status_context" && -n "$ALL_STATUSES" ]]; then
   # the explicit `-n` check on $status_state means an empty/missing status
   # context for a different bot doesn't trip this branch.
   if [[ -n "$status_state" ]]; then echo "stale"; exit 0; fi
+fi
+
+# (F) Reactions (Codex only): chatgpt-codex-connector has no SHA-keyed signal
+# for a CLEAN review — when it finishes with no findings it removes its 👀
+# (eyes) reaction and adds a 👍 (+1) reaction on the PR body; it posts NO
+# /reviews APPROVED entry, no check-run, and no commit-status (verified on
+# Dive-And-Dev/chrisyau.me PR #142 clean-path and PR #140 findings-path).
+# Tiers A–E therefore cannot ack it on the clean path. Tier F reads the 👍 as
+# a HEAD-ack when its created_at postdates HEAD's commit time, so the merge
+# gate can WAIT for Codex without the deadlock the registry note in
+# agents/pr-grinder.md warned about (a bare 👍 would otherwise read as
+# none/stale forever, blocking every clean terminal push).
+#
+# Scope: codex-only AND guarded on non-empty ALL_REACTIONS, so Tier F is a
+# strict no-op for every other login AND for callers not yet upgraded to fetch
+# reactions (same additive/backward-compat pattern as Tier E's ALL_STATUSES).
+# Codex's FINDINGS path is NOT handled here — those post as inline threads
+# (Tier A) and a COMMENTED /reviews entry whose commit_id is HEAD (Tier B),
+# both of which ack/stale before control reaches Tier F. Tier F resolves only
+# (a) the reaction-only clean case → HEAD-ack, and (b) the still-reviewing /
+# stale-👍 case → stale (so the gate waits, bounded by the loop's --max-wait).
+#
+# ALL_REACTIONS is `gh api --paginate`'d, so it may be a STREAM of arrays (one
+# per page) — `jq -rs '[.[]? | .[]? ...]'` slurps + double-flattens to a single
+# stream of reaction objects (same pattern Tier B uses for ALL_REVIEWS). A
+# single non-paginated array still works: slurp wraps it, the double `.[]?`
+# unwraps it. Pagination matters because a popular PR can have >30 PR-body
+# reactions and Codex's 👍 could land on page 2 — without --paginate Tier F
+# would miss it and mis-classify Codex as `none` (non-gating).
+#
+# Timestamp soundness: reaction created_at and commit committer.date are both
+# UTC ISO-8601 ("…Z", fixed-width), so lexical `>` equals chronological `>`.
+# HEAD_COMMITTED_DATE is the *committer* date, NOT the author date: git resets
+# committer.date to operation time on commit/amend/rebase/cherry-pick, so a
+# rebased or cherry-picked commit that becomes HEAD is correctly "fresh" and a
+# pre-existing 👍 reads as stale. The one residual the timestamp can't catch is
+# a DELIBERATELY backdated commit (`git commit --date` / GIT_COMMITTER_DATE set
+# to the past) reused under an old 👍 — covered in practice by the eyes-override
+# below (Codex re-adds 👀 on every HEAD advance) plus the registered bots' own
+# post-push staleness, which keeps the COMPLETION gate blocked in that window.
+# pr-grind's own fix commits are never backdated, so the loop is unaffected.
+if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_REACTIONS" ]; then
+  # Eyes-override (timestamp-independent): a CURRENT 👀 reaction means Codex is
+  # actively (re-)reviewing HEAD → stale, regardless of any 👍 (which may be a
+  # leftover from a prior commit). Codex re-adds 👀 whenever HEAD advances, so
+  # this is the robust guard for the re-review race and the backdated-commit
+  # residual — neither depends on commit timestamps.
+  codex_eyes=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot) | select(.content == "eyes")] | length' 2>/dev/null || echo 0)
+  if [ "${codex_eyes:-0}" -gt 0 ]; then echo "stale"; exit 0; fi
+  # Clean ack: latest 👍 strictly newer than HEAD's commit time.
+  codex_plus1=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot) | select(.content == "+1")] | last | .created_at // empty' 2>/dev/null || echo "")
+  if [ -n "$codex_plus1" ] && [ -n "$HEAD_COMMITTED_DATE" ] && [[ "$codex_plus1" > "$HEAD_COMMITTED_DATE" ]]; then
+    emit_head_ack "$HEAD_SHA" F; exit 0
+  fi
+  # Engaged (a 👍 from before the last push, or any other Codex reaction) but no
+  # fresh clean ack → block as `stale` so the gate waits for Codex to re-review
+  # HEAD. Without this, a reaction-only Codex (no /reviews entry, so commit_id
+  # is empty) would fall through to the `none` early-return below and the gate
+  # would race ahead of an in-flight Codex review.
+  codex_reacted=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot)] | length' 2>/dev/null || echo 0)
+  if [ "${codex_reacted:-0}" -gt 0 ]; then echo "stale"; exit 0; fi
+  # No Codex reaction at all → fall through to `none` (non-gating). This is a
+  # pure classifier reporting the instantaneous state; the first-engagement race
+  # (Codex active on the repo but not yet showing its initial 👀) is a TIMING
+  # concern closed at the loop level — the COMPLETION gate's bounded grace
+  # re-poll in skills/pr-grind/SKILL.md, plus the worker's Step 1 check-wait —
+  # not here.
 fi
 
 # No HEAD-ack signal anywhere. Did the bot post on this PR at all?

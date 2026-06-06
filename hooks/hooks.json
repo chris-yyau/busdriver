@@ -378,6 +378,17 @@
         "description": "Record sanitized tool activity metrics to ~/.claude/metrics/"
       },
       {
+        "matcher": "mcp__plugin_claude-mem_mcp-search__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags-shell.sh\" \"post:memory-recall-reminder\" \"scripts/hooks/post-memory-recall-reminder.sh\" \"standard,strict\"",
+            "timeout": 10
+          }
+        ],
+        "description": "[REMINDER] Verify-before-assert nudge after claude-mem recall (stale-by-default LEAD, not ground truth)"
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {

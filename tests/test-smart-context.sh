@@ -57,11 +57,18 @@ fi
 # line cap). Each line carries a declaration. Pre-fix: extracts names.
 BIG_DIFF=$( { echo '@@ -1,1 +1,20000 @@'; \
   seq 1 18000 | awk '{print "+function genFn" $1 "(){ return " $1 "; }"}'; } )
+start=$SECONDS
 OUT2=$(_extract_changed_functions "$BIG_DIFF")
+elapsed=$((SECONDS - start))
 if [ -z "$OUT2" ]; then
   ok "Oversized diff (>256 KiB) skips extraction (fail-open, empty)"
 else
   fail "Oversized diff still extracted functions (first: $(echo "$OUT2" | head -1))"
+fi
+if [ "$elapsed" -lt 20 ]; then
+  ok "Oversized-diff extraction returns promptly (${elapsed}s)"
+else
+  fail "Oversized-diff extraction took too long (${elapsed}s)"
 fi
 
 # ── Case 3: a normal diff still extracts (happy path preserved) ───────────

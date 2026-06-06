@@ -9,8 +9,9 @@
 #   LITMUS_SKIP_CONTEXT=1      — skip smart context collection
 #   LITMUS_MAX_CONTEXT_LINES=50 — max context lines per function (default: 50)
 #   LITMUS_MAX_FUNCTIONS=10     — max functions to trace (default: 10)
-#   LITMUS_MAX_CONTEXT_DIFF_BYTES=262144 — skip extraction when the diff exceeds
-#                                this many bytes (default: 256 KiB)
+#   LITMUS_MAX_CONTEXT_DIFF_BYTES=262144 — skip enrichment (extraction + caller/
+#                                importer grep) when the diff exceeds this many
+#                                bytes (default: 256 KiB)
 #   LITMUS_MAX_CONTEXT_LINE_BYTES=4000   — skip extraction when any diff line is
 #                                longer than this (default: 4000 — minified/data
 #                                lines trigger pathological regex backtracking)

@@ -422,6 +422,9 @@ This enables the LLM to catch broken contracts, renamed parameters, and cross-fi
 - `LITMUS_SKIP_CONTEXT=1` — skip smart context collection
 - `LITMUS_MAX_CONTEXT_LINES=50` — max context lines per function (validated numeric)
 - `LITMUS_MAX_FUNCTIONS=10` — max functions to trace (validated numeric)
+- `LITMUS_MAX_CONTEXT_DIFF_BYTES=262144` — skip enrichment (extraction + caller/importer grep) when the diff exceeds this many bytes (default: 256 KiB). Guards against the regex extractor stalling on huge single-file data diffs (minified JSON, NDJSON, lockfiles)
+- `LITMUS_MAX_CONTEXT_LINE_BYTES=4000` — skip enrichment when any diff line is longer than this (default: 4000; long minified/data lines trigger pathological regex backtracking)
+- `LITMUS_CONTEXT_TIMEOUT=15` — per-operation timeout (s) for extraction and caller/importer grep; fails open to empty context (default: 15)
 
 ### Docs Consistency
 

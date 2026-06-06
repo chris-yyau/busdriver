@@ -363,6 +363,124 @@ assert_true "init state.md respects max_iterations argument" "$INIT_MAX_ITER"
 rm -rf "docs/reviews/init-test" "docs/plans"
 echo "test-slug" > .claude/current-design-review.local
 
+# ── Coverage provenance: lib helpers ──────────────────────────────────
+echo "── coverage provenance helpers ──────────────────────────────"
+
+# Operate on the existing test-slug state (pointer stays test-slug) so
+# read_field_raw / count_orphan_lines target the same file the helpers write.
+write_state <<'EOF'
+---
+active: true
+medium_issues_history: "[]"
+early_stopped: ""
+---
+body
+EOF
+_ensure_coverage_fields
+
+update_coverage_slot 1 agy agy true ok
+update_coverage_slot 2 codex codex true ok
+update_coverage_slot 3 grok droid false resolve-droid-fallback
+recompute_coverage_status
+assert_eq "two fulfilled + one droid-fallback → DEGRADED" "DEGRADED" "$(get_state_field coverage_status)"
+assert_eq "fulfilled_lens_count = 2" "2" "$(get_state_field fulfilled_lens_count)"
+assert_eq "reviewer_3 reason persisted" "resolve-droid-fallback" "$(get_state_field reviewer_3_reason)"
+
+update_coverage_slot 3 grok grok true ok
+recompute_coverage_status
+assert_eq "all three fulfilled → FULL" "FULL" "$(get_state_field coverage_status)"
+assert_eq "fulfilled_lens_count = 3" "3" "$(get_state_field fulfilled_lens_count)"
+
+append_coverage_history 2
+append_coverage_history 3
+assert_eq "coverage_history single-line accumulates" \
+  'coverage_history: "[2,3]"' "$(read_field_raw coverage_history)"
+assert_eq "coverage history adds no orphan lines" "0" "$(count_orphan_lines)"
+
+append_coverage_trend cov-slug 2
+append_coverage_trend cov-slug 3
+TREND_LINES=$(wc -l < .claude/blueprint-coverage-trend.local | tr -d ' ')
+assert_eq "trend appends one JSONL line per call" "2" "$TREND_LINES"
+TREND_LAST_OK=false
+tail -n1 .claude/blueprint-coverage-trend.local | grep -q '"fulfilled_lens_count":3' && TREND_LAST_OK=true
+assert_true "trend JSONL carries fulfilled_lens_count" "$TREND_LAST_OK"
+
+rm -f ".claude/blueprint-coverage-trend.local"
+
+# ── Coverage provenance: _ensure_coverage_fields migration ────────────
+echo "── coverage migration on legacy state.md ────────────────────"
+
+write_state <<'EOF'
+---
+active: true
+medium_issues_history: "[]"
+early_stopped: ""
+---
+body
+EOF
+COV_BEFORE=$(grep -c '^coverage_status:' "$STATE_FILE" || true)
+assert_eq "legacy state.md lacks coverage block" "0" "$COV_BEFORE"
+_ensure_coverage_fields
+_ensure_coverage_fields  # idempotent
+COV_AFTER=$(grep -c '^coverage_status:' "$STATE_FILE" || true)
+assert_eq "migration inserts coverage block once (idempotent)" "1" "$COV_AFTER"
+COV_R3=$(grep -c '^reviewer_3_reason:' "$STATE_FILE" || true)
+assert_eq "migration inserts full per-slot block" "1" "$COV_R3"
+assert_true "early_stopped still present after migration" \
+  "$([[ "$(read_field_raw early_stopped)" == 'early_stopped: ""' ]] && echo true || echo false)"
+
+# ── Coverage provenance: derive_coverage fulfillment logic ────────────
+echo "── derive_coverage fulfillment logic ────────────────────────"
+
+# derive_coverage lives in run-design-review-loop.sh (not the state lib). Extract
+# its coverage functions + source the resolver to test the fulfillment rules —
+# especially the empty-issues=PASS=fulfilled regression (the iter-1 review HIGH).
+RESOLVE_LIB="$REPO_ROOT/scripts/lib/resolve-cli.sh"
+LOOP="$REPO_ROOT/skills/blueprint-review/scripts/run-design-review-loop.sh"
+COVFNS="$SANDBOX/covfns.sh"
+awk '/^# ── Coverage provenance helpers/{p=1} /^# Main iteration loop/{p=0} p' "$LOOP" > "$COVFNS"
+# shellcheck source=/dev/null
+source "$RESOLVE_LIB"
+# shellcheck source=/dev/null
+source "$COVFNS"
+
+init_state_file "docs/plans/DERIVE.md" >/dev/null
+export RUN_ID="RID1"
+AGY_OUTPUT_FILE="$(get_review_dir)/agy.json"
+CODEX_OUTPUT_FILE="$(get_review_dir)/codex.json"
+GROK_OUTPUT_FILE="$(get_review_dir)/grok.json"
+
+update_coverage_slot 1 agy agy "" ok
+update_coverage_slot 2 codex codex "" ok
+update_coverage_slot 3 grok droid "" resolve-droid-fallback
+printf '%s' '{"status":"PASS","issues":[],"metadata":{"run_id":"RID1"}}' > "$AGY_OUTPUT_FILE"
+printf '%s' '{"status":"FAIL","issues":[{"severity":"high"}],"metadata":{"run_id":"RID1"}}' > "$CODEX_OUTPUT_FILE"
+printf '%s' '{"status":"PASS","issues":[],"metadata":{"run_id":"RID1"}}' > "$GROK_OUTPUT_FILE"
+derive_coverage
+assert_eq "empty issues + PASS → FULFILLED (regression guard)" "true" "$(get_state_field reviewer_1_fulfilled)"
+assert_eq "reviewer_1 reason ok" "ok" "$(get_state_field reviewer_1_reason)"
+assert_eq "droid-fallback slot → not fulfilled" "false" "$(get_state_field reviewer_3_fulfilled)"
+assert_eq "droid-fallback reason preserved" "resolve-droid-fallback" "$(get_state_field reviewer_3_reason)"
+assert_eq "derive → DEGRADED" "DEGRADED" "$(get_state_field coverage_status)"
+
+update_coverage_slot 1 agy agy "" ok
+update_coverage_slot 3 grok grok "" ok
+printf '%s' '{"status":"PASS","issues":[],"metadata":{"run_id":"OLD"}}' > "$AGY_OUTPUT_FILE"
+rm -f "$CODEX_OUTPUT_FILE"
+printf '%s' '{"status":"ERROR","issues":[]}' > "$GROK_OUTPUT_FILE"
+derive_coverage
+assert_eq "stale run_id → stale" "stale" "$(get_state_field reviewer_1_reason)"
+assert_eq "missing file → missing-output" "missing-output" "$(get_state_field reviewer_2_reason)"
+assert_eq "ERROR status → runtime-failed" "runtime-failed" "$(get_state_field reviewer_3_reason)"
+assert_eq "all unfulfilled → 0/3" "0" "$(get_state_field fulfilled_lens_count)"
+
+COV_STATUS_BEFORE=$(get_state_field coverage_status)
+BLUEPRINT_COVERAGE_PROVENANCE=0 derive_coverage
+assert_eq "flag off → derive_coverage is a no-op" "$COV_STATUS_BEFORE" "$(get_state_field coverage_status)"
+
+rm -rf "docs/reviews/derive" "docs/plans"
+echo "test-slug" > .claude/current-design-review.local
+
 # ── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "── Summary ──────────────────────────────────────────────────"

@@ -52,6 +52,54 @@ elif [[ $EXISTING -eq 1 ]]; then
   exit 1
 fi
 
+# ── Chronic coverage degradation advisory ───────────────────────────
+# Reads the cross-review trend (.claude/blueprint-coverage-trend.local, JSONL).
+# If the last BLUEPRINT_COVERAGE_MIN_STREAK (default 3) completed reviews were ALL
+# degraded (fulfilled_lens_count < 3), surface a loud advisory. NON-blocking
+# (state still initializes, exit 0). Informational only — no script gates on it.
+# Auto-clears when a later run records FULL coverage, or via BLUEPRINT_ACK_DEGRADED=1.
+_chronic_coverage_check() {
+  case "${BLUEPRINT_COVERAGE_PROVENANCE:-1}" in 0|false|no|off) return 0 ;; esac
+  local trend=".claude/blueprint-coverage-trend.local"
+  local advisory=".claude/blueprint-coverage-degraded.local"
+  local streak="${BLUEPRINT_COVERAGE_MIN_STREAK:-3}"
+  case "$streak" in ''|*[!0-9]*) streak=3 ;; esac
+  [[ -f "$trend" ]] || return 0
+
+  if [[ "${BLUEPRINT_ACK_DEGRADED:-0}" == "1" ]]; then
+    rm -f "$advisory"
+    return 0
+  fi
+
+  # Most recent run FULL → auto-clear any standing advisory.
+  local last_count
+  last_count=$(tail -n 1 "$trend" | sed -n 's/.*"fulfilled_lens_count":\([0-9]*\).*/\1/p')
+  if [[ "$last_count" == "3" ]]; then
+    rm -f "$advisory"
+    return 0
+  fi
+
+  local total
+  total=$(grep -c . "$trend" 2>/dev/null || echo 0)
+  [[ "$total" -ge "$streak" ]] || return 0
+
+  local degraded=0 c
+  while IFS= read -r c; do
+    [[ -n "$c" && "$c" -lt 3 ]] && degraded=$((degraded + 1))
+  done < <(tail -n "$streak" "$trend" | sed -n 's/.*"fulfilled_lens_count":\([0-9]*\).*/\1/p')
+
+  if [[ "$degraded" -ge "$streak" ]]; then
+    log_warning ""
+    log_warning "⚠️  CHRONIC COVERAGE DEGRADATION: the last $streak design reviews ran with <3 reviewers."
+    log_warning "    A degraded or fallen-back backend has been silently reducing review coverage."
+    log_warning "    Fix your reviewer CLIs (check: which agy codex grok), or set BLUEPRINT_ACK_DEGRADED=1 to dismiss."
+    log_warning ""
+    printf 'chronic coverage degradation: last %s reviews <3 reviewers (init %s)\n' \
+      "$streak" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$advisory"
+  fi
+}
+_chronic_coverage_check
+
 # Initialize state file
 log_info "Initializing design review state"
 STATE_FILE=$(init_state_file "$DESIGN_FILE" "$MAX_ITERATIONS")

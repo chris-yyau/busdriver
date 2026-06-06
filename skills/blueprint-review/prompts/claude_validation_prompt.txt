@@ -11,6 +11,10 @@ from the reviewer files that exist. When a reviewer CLI is unavailable,
 that slot falls back to any other available CLI (e.g., droid); arbitration
 proceeds with whichever reviewers returned. A missing reviewer file means
 the slot was intentionally skipped (duplicate-collision or explicit none).
+If a `## Coverage` section is present and marks a reviewer slot UNFULFILLED
+(fell back to droid, collapsed to a duplicate, returned empty, or errored),
+treat that slot as ABSENT coverage — do not count it as independent agreement
+or confirmation.
 
 VALIDATION TASKS:
 1. Read the design document thoroughly

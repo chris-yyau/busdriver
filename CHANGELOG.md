@@ -1,3 +1,10 @@
+# [1.57.0](https://github.com/chris-yyau/busdriver/compare/v1.56.2...v1.57.0) (2026-06-06)
+
+
+### Features
+
+* harness epistemic-honesty (verify reflex + coverage provenance + council settling-checks) ([#184](https://github.com/chris-yyau/busdriver/issues/184)) ([4b8ad29](https://github.com/chris-yyau/busdriver/commit/4b8ad29f62c92361cd4a27d152b776803f9a07a0))
+
 ## [1.56.2](https://github.com/chris-yyau/busdriver/compare/v1.56.1...v1.56.2) (2026-06-06)
 
 

@@ -1,3 +1,10 @@
+## [1.56.2](https://github.com/chris-yyau/busdriver/compare/v1.56.1...v1.56.2) (2026-06-06)
+
+
+### Bug Fixes
+
+* **litmus:** guard smart-context against large/long-line diff hang ([#183](https://github.com/chris-yyau/busdriver/issues/183)) ([7e86ed4](https://github.com/chris-yyau/busdriver/commit/7e86ed48a4f4758e41731d3fd9fd9471050cdac9))
+
 ## [1.56.1](https://github.com/chris-yyau/busdriver/compare/v1.56.0...v1.56.1) (2026-06-05)
 
 

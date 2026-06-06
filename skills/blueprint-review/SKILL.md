@@ -343,6 +343,22 @@ Active review tracked by pointer file: `.claude/current-design-review.local`
 rm -rf docs/reviews/<slug>/
 ```
 
+## Coverage Provenance
+
+Records WHICH reviewer slots actually ran vs silently fell back, so a degraded run is never counted as "3 reviewers ran". See `docs/plans/DESIGN-blueprint-review-coverage-provenance.md`.
+
+**Per-review state** (`state.md` frontmatter): `coverage_status` (FULL|DEGRADED), `fulfilled_lens_count` (0–3), and per slot `reviewer_N_requested` / `reviewer_N_actual` / `reviewer_N_fulfilled` / `reviewer_N_reason`; `coverage_history` tracks the fulfilled count per iteration. A slot is FULFILLED only if it produced a valid PASS/FAIL with a matching `run_id` and did not fall back to droid / collapse to a duplicate / return empty / error. (An empty `issues` array with `status: PASS` is a clean review → fulfilled — fulfillment keys on execution status, never on issue count.)
+
+**Surfaced, never silent:** the arbiter prompt receives a `## Coverage` section (UNFULFILLED slots must not be counted as independent agreement); on convergence a `COVERAGE: FULL|DEGRADED N/3` line is logged and a durable `<!-- design-review-coverage: ... -->` marker is upserted into the reviewed doc next to `design-reviewed: PASS`.
+
+**Cross-review trend:** each completed review appends one JSONL line to `.claude/blueprint-coverage-trend.local` (gitignored). At init, if the last `BLUEPRINT_COVERAGE_MIN_STREAK` (default 3) reviews were all DEGRADED, a loud but **non-blocking** advisory fires and `.claude/blueprint-coverage-degraded.local` is written — auto-cleared on a later FULL run or via `BLUEPRINT_ACK_DEGRADED=1`.
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `BLUEPRINT_COVERAGE_PROVENANCE` | `1` | `0`/`false` disables all coverage tracking (existing flow unchanged) |
+| `BLUEPRINT_COVERAGE_MIN_STREAK` | `3` | consecutive DEGRADED reviews before the chronic advisory |
+| `BLUEPRINT_ACK_DEGRADED` | — | `1` dismisses the chronic advisory |
+
 ## Confidence Scoring Guidelines
 
 | Range | Meaning | Criteria |

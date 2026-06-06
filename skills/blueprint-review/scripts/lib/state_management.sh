@@ -99,6 +99,23 @@ high_issues_history: "[]"
 # Trajectory of plan_blocking_medium across iterations — used for early-stop check
 # when state is medium_issues_remaining (HIGH already resolved but MEDIUMs persist)
 medium_issues_history: "[]"
+
+# Coverage provenance (reviewer fulfillment honesty — see DESIGN-blueprint-review-coverage-provenance)
+coverage_status: ""
+fulfilled_lens_count: 0
+reviewer_1_requested: ""
+reviewer_1_actual: ""
+reviewer_1_fulfilled: ""
+reviewer_1_reason: ""
+reviewer_2_requested: ""
+reviewer_2_actual: ""
+reviewer_2_fulfilled: ""
+reviewer_2_reason: ""
+reviewer_3_requested: ""
+reviewer_3_actual: ""
+reviewer_3_fulfilled: ""
+reviewer_3_reason: ""
+coverage_history: "[]"
 early_stopped: ""
 ---
 
@@ -527,6 +544,131 @@ get_medium_history() {
     echo "[]"
   else
     echo "$hist"
+  fi
+}
+
+# ── Coverage provenance (reviewer fulfillment honesty) ──────────
+# Lazily insert the coverage block into a (possibly legacy) state.md.
+# Idempotent; sentinel = coverage_status. Mirrors _ensure_medium_history_field.
+_ensure_coverage_fields() {
+  local state_file
+  state_file=$(get_state_file)
+  if [[ ! -f "$state_file" ]]; then
+    return 0
+  fi
+  if grep -q '^coverage_status:' "$state_file"; then
+    return 0
+  fi
+  local temp_file="${state_file}.tmp"
+  awk '
+    /^---$/ { yaml_count++ }
+    yaml_count == 1 && !inserted && /^early_stopped:/ {
+      print "coverage_status: \"\""
+      print "fulfilled_lens_count: 0"
+      print "reviewer_1_requested: \"\""
+      print "reviewer_1_actual: \"\""
+      print "reviewer_1_fulfilled: \"\""
+      print "reviewer_1_reason: \"\""
+      print "reviewer_2_requested: \"\""
+      print "reviewer_2_actual: \"\""
+      print "reviewer_2_fulfilled: \"\""
+      print "reviewer_2_reason: \"\""
+      print "reviewer_3_requested: \"\""
+      print "reviewer_3_actual: \"\""
+      print "reviewer_3_fulfilled: \"\""
+      print "reviewer_3_reason: \"\""
+      print "coverage_history: \"[]\""
+      inserted = 1
+    }
+    { print }
+  ' "$state_file" > "$temp_file"
+  mv "$temp_file" "$state_file"
+}
+
+# update_coverage_slot <n> <requested> <actual> <fulfilled> <reason>
+# Persist one reviewer slot's provenance. At dispatch time only requested/actual/
+# resolve-reason are known (fulfilled left ""); the derivation step calls again
+# with the finalized fulfilled/reason.
+update_coverage_slot() {
+  local n="$1" requested="$2" actual="$3" fulfilled="$4" reason="$5"
+  _ensure_coverage_fields
+  update_state_field "reviewer_${n}_requested" "\"$requested\""
+  update_state_field "reviewer_${n}_actual" "\"$actual\""
+  update_state_field "reviewer_${n}_fulfilled" "\"$fulfilled\""
+  update_state_field "reviewer_${n}_reason" "\"$reason\""
+}
+
+# Recompute fulfilled_lens_count + coverage_status from the three fulfilled fields.
+recompute_coverage_status() {
+  _ensure_coverage_fields
+  local n count=0 f
+  for n in 1 2 3; do
+    f=$(get_state_field "reviewer_${n}_fulfilled")
+    [[ "$f" == "true" ]] && count=$((count + 1))
+  done
+  update_state_field "fulfilled_lens_count" "$count"
+  if [[ "$count" -eq 3 ]]; then
+    update_state_field "coverage_status" "\"FULL\""
+  else
+    update_state_field "coverage_status" "\"DEGRADED\""
+  fi
+}
+
+# append_coverage_history <count> — per-ITERATION fulfilled_lens_count within this
+# review (mirrors append_medium_history serialization discipline). Cross-review
+# history is the trend file (append_coverage_trend), NOT this field.
+append_coverage_history() {
+  local count="$1"
+  _ensure_coverage_fields
+  local current
+  current=$(get_state_field "coverage_history")
+  if [[ -z "$current" || "$current" == '""' ]]; then
+    current="[]"
+  elif command -v jq &>/dev/null && ! echo "$current" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    echo "warning: coverage_history was corrupt ($current); resetting to []" >&2
+    current="[]"
+  fi
+  local updated
+  if command -v jq &>/dev/null; then
+    updated=$(echo "$current" | jq -c --argjson c "$count" '. + [$c]' 2>/dev/null || echo "[$count]")
+  else
+    if [[ "$current" == "[]" ]]; then
+      updated="[$count]"
+    elif [[ "$current" =~ ^\[.*\]$ ]]; then
+      updated="${current%]}, $count]"
+    else
+      echo "warning: coverage_history was corrupt ($current); resetting to []" >&2
+      updated="[$count]"
+    fi
+  fi
+  updated="${updated//$'\n'/}"
+  update_state_field "coverage_history" "\"$updated\""
+}
+
+# append_coverage_trend <slug> <fulfilled_lens_count>
+# ONE JSONL line per COMPLETED review → .claude/blueprint-coverage-trend.local
+# (gitignored). Cross-review history for the chronic-degradation check.
+append_coverage_trend() {
+  local slug="$1" count="$2"
+  local trend_file=".claude/blueprint-coverage-trend.local"
+  mkdir -p .claude
+  local ts
+  ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  # Build the JSONL line with python3 so a slug containing quotes/backslashes/
+  # newlines cannot corrupt the trend file. Values passed via env (not argv) to
+  # avoid any shell-quoting concerns. count is coerced to int (default 0).
+  if ! _CT_TS="$ts" _CT_SLUG="$slug" _CT_COUNT="$count" python3 -c '
+import json, os
+print(json.dumps({
+    "ts": os.environ["_CT_TS"],
+    "slug": os.environ["_CT_SLUG"],
+    "fulfilled_lens_count": int(os.environ.get("_CT_COUNT") or 0),
+}, separators=(",", ":")))
+' >> "$trend_file" 2>/dev/null; then
+    # Fallback if python3 is unavailable: strip characters that would break JSONL.
+    local safe_slug
+    safe_slug=$(printf '%s' "$slug" | tr -d '"\\\n\r')
+    printf '{"ts":"%s","slug":"%s","fulfilled_lens_count":%s}\n' "$ts" "$safe_slug" "$count" >> "$trend_file"
   fi
 }
 

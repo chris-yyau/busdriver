@@ -252,6 +252,108 @@ else
   # Duplicate mode: after single reviewer runs, its output will be copied to both paths (see post-wait block below)
 fi
 
+# ── Coverage provenance helpers (flag: BLUEPRINT_COVERAGE_PROVENANCE, default on) ──
+# See docs/plans/DESIGN-blueprint-review-coverage-provenance.md. Records WHICH
+# reviewer slots actually ran (vs fell back to droid / collapsed to a duplicate /
+# errored) so a degraded run is never silently counted as "3 reviewers ran".
+_coverage_enabled() {
+  case "${BLUEPRINT_COVERAGE_PROVENANCE:-1}" in
+    0|false|no|off) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+_coverage_role_for_slot() { case "$1" in 1) echo "blueprint-review.reviewer_1" ;; 2) echo "blueprint-review.reviewer_2" ;; 3) echo "blueprint-review.reviewer_3" ;; esac; }
+_coverage_file_for_slot() { case "$1" in 1) echo "$AGY_OUTPUT_FILE" ;; 2) echo "$CODEX_OUTPUT_FILE" ;; 3) echo "$GROK_OUTPUT_FILE" ;; esac; }
+
+# persist_dispatch_provenance: NON-claude-only. Capture requested/actual/resolve-
+# reason per slot (incl. DUPLICATE override) so --claude-only derivation can read
+# them from state without the runtime shell vars. fulfilled finalized in derive_coverage.
+persist_dispatch_provenance() {
+  _coverage_enabled || return 0
+  local n role req act rreason
+  for n in 1 2 3; do
+    role=$(_coverage_role_for_slot "$n")
+    IFS=$'\t' read -r req act rreason < <(describe_role_resolution "$role")
+    [[ "$n" == "2" && "${DUPLICATE_MODE:-false}" == "true" ]] && rreason="duplicate"
+    [[ "$n" == "3" && "${REVIEWER_3_DUPLICATE:-false}" == "true" ]] && rreason="duplicate"
+    update_coverage_slot "$n" "$req" "$act" "" "$rreason"
+  done
+}
+
+# derive_coverage: BOTH modes. Finalize fulfilled+reason per slot from the reviewer
+# JSON (status / run_id / runtime_escalated_from) + persisted resolve-reason, using
+# the precedence order. Then recompute coverage_status + append per-iteration history.
+derive_coverage() {
+  _coverage_enabled || return 0
+  _ensure_coverage_fields
+  local n file req act rreason jstatus rid esc haserr final fulfilled
+  for n in 1 2 3; do
+    file=$(_coverage_file_for_slot "$n")
+    req=$(get_state_field "reviewer_${n}_requested")
+    act=$(get_state_field "reviewer_${n}_actual")
+    rreason=$(get_state_field "reviewer_${n}_reason")
+    # Persisted resolve-time reason wins first: a slot intentionally skipped or
+    # degraded at dispatch (duplicate / explicit-none / missing-cli / unsupported-cli
+    # / builtin / resolve-droid-fallback) keeps that reason regardless of any
+    # synthesized ERROR-stub artifact written for it in --claude-only mode.
+    if [[ -n "$rreason" && "$rreason" != "ok" ]]; then
+      final="$rreason"
+    elif [[ -z "$file" || ! -s "$file" ]]; then
+      final="missing-output"
+    elif ! jq -e . "$file" >/dev/null 2>&1; then
+      final="invalid-json"
+    else
+      jstatus=$(jq -r '.status // "ERROR"' "$file" 2>/dev/null)
+      rid=$(jq -r '.metadata.run_id // ""' "$file" 2>/dev/null)
+      esc=$(jq -r '.metadata.runtime_escalated_from // ""' "$file" 2>/dev/null)
+      haserr=$(jq -r 'has("error")' "$file" 2>/dev/null)
+      if [[ "$jstatus" == "ERROR" || "$haserr" == "true" ]]; then
+        final="runtime-failed"
+      elif [[ -n "${RUN_ID:-}" && "$rid" != "$RUN_ID" ]]; then
+        # A PASS/FAIL artifact whose run_id is missing or doesn't match the
+        # current run is not fresh coverage (freshness contract) — never fulfilled.
+        final="stale"
+      elif [[ -n "$esc" && "$esc" != "null" ]]; then
+        final="runtime-droid-rescue"
+      elif [[ "$jstatus" == "PASS" || "$jstatus" == "FAIL" ]]; then
+        final="ok"
+      else
+        final="runtime-failed"
+      fi
+    fi
+    fulfilled="false"; [[ "$final" == "ok" ]] && fulfilled="true"
+    update_coverage_slot "$n" "$req" "$act" "$fulfilled" "$final"
+  done
+  recompute_coverage_status
+  append_coverage_history "$(get_state_field fulfilled_lens_count)"
+}
+
+# record_coverage_finalize: at terminal sites. Once-guarded. Emits the COVERAGE
+# summary line + appends ONE cross-review trend entry. The durable doc-marker is
+# written separately at the PASS-marker site (co-located with the verdict marker).
+record_coverage_finalize() {
+  _coverage_enabled || return 0
+  [[ "${COVERAGE_FINALIZED:-0}" == "1" ]] && return 0
+  COVERAGE_FINALIZED=1
+  local cstatus ccount detail n r slug
+  cstatus=$(get_state_field "coverage_status")
+  ccount=$(get_state_field "fulfilled_lens_count")
+  [[ -z "$cstatus" ]] && return 0
+  detail=""
+  for n in 1 2 3; do
+    r=$(get_state_field "reviewer_${n}_reason")
+    [[ -n "$r" && "$r" != "ok" ]] && detail="${detail:+$detail }reviewer_${n}=${r}"
+  done
+  if [[ "$cstatus" == "DEGRADED" ]]; then
+    log_warning "  COVERAGE: DEGRADED — ${ccount}/3 lenses (${detail})"
+  else
+    log_info "  COVERAGE: FULL — ${ccount}/3 lenses"
+  fi
+  append_to_state "COVERAGE: ${cstatus} ${ccount}/3 ${detail}"
+  slug=$(get_review_slug "$DESIGN_FILE")
+  append_coverage_trend "$slug" "$ccount"
+}
+
 # Main iteration loop
 while true; do
   CURRENT_ITERATION=$(get_current_iteration)
@@ -266,6 +368,7 @@ while true; do
     log_warning "Maximum iterations ($MAX_ITERATIONS) reached"
     log_info "Design review did not converge. Human intervention required."
     log_info "Options: fix issues and re-run, or create .claude/skip-design-review.local in terminal."
+    record_coverage_finalize
     mark_review_complete "max_iterations_exceeded"
     exit 1
   fi
@@ -636,7 +739,12 @@ with open(pending, "w") as f:
   log_info "  Codex:  $CODEX_STATUS ($(jq '.issues | length' "$CODEX_OUTPUT_FILE") issues)"
   log_info "  Grok:   $GROK_STATUS ($(jq '.issues | length' "$GROK_OUTPUT_FILE") issues)"
 
+  # Coverage provenance: capture which slots actually ran (non-claude-only only)
+  persist_dispatch_provenance
   fi  # end of CLAUDE_ONLY guard (Phase 1-2 skipped in claude-only mode)
+
+  # Coverage provenance: finalize fulfilled/reason from this iteration's outputs (both modes)
+  derive_coverage
 
   # ── Phase 3: Claude validation (arbiter) ──────────────────────────
   log_info "Phase 3: Claude validation (arbiter)..."
@@ -648,12 +756,26 @@ with open(pending, "w") as f:
 
   CLAUDE_PROMPT=$(cat "$SCRIPT_DIR/../prompts/claude_validation_prompt.txt")
 
+  # Coverage provenance section for the arbiter (empty when flag off)
+  COVERAGE_SECTION=""
+  if _coverage_enabled; then
+    _cs_status=$(get_state_field "coverage_status")
+    _cs_count=$(get_state_field "fulfilled_lens_count")
+    COVERAGE_SECTION="## Coverage (reviewer provenance for THIS run)"$'\n'
+    for _cs_n in 1 2 3; do
+      COVERAGE_SECTION+="reviewer_${_cs_n}: requested=$(get_state_field "reviewer_${_cs_n}_requested") actual=$(get_state_field "reviewer_${_cs_n}_actual") fulfilled=$(get_state_field "reviewer_${_cs_n}_fulfilled") reason=$(get_state_field "reviewer_${_cs_n}_reason")"$'\n'
+    done
+    COVERAGE_SECTION+="Coverage: ${_cs_status} (${_cs_count}/3 fulfilled). Treat UNFULFILLED slots as ABSENT coverage: do NOT weight a duplicate/fallback/errored slot as independent agreement."
+  fi
+
   AGY_ISSUES=$(jq -r '.issues[] | "- [\(.severity)] \(.section): \(.description)"' "$AGY_OUTPUT_FILE" 2>/dev/null || echo "No issues")
   CODEX_ISSUES=$(jq -r '.issues[] | "- [\(.severity)] \(.section): \(.description)"' "$CODEX_OUTPUT_FILE" 2>/dev/null || echo "No issues")
   GROK_ISSUES=$(jq -r '.issues[] | "- [\(.severity)] \(.section): \(.description)"' "$GROK_OUTPUT_FILE" 2>/dev/null || echo "No issues")
 
   cat > "$CLAUDE_PROMPT_FILE" <<EOF
 $CLAUDE_PROMPT
+
+$COVERAGE_SECTION
 
 =============================================================================
 FRESHNESS CONTRACT (include in your output metadata):
@@ -968,6 +1090,26 @@ EOF
       mark_review_complete "error_no_design_file"
       exit 1
     fi
+
+    # Coverage provenance: durable marker (idempotent upsert, co-located with the
+    # PASS marker so the verdict and its coverage travel together) + finalize.
+    if _coverage_enabled && [[ -f "$DESIGN_FILE" ]]; then
+      _cov_status=$(get_state_field "coverage_status")
+      _cov_count=$(get_state_field "fulfilled_lens_count")
+      _cov_detail=""
+      for _cn in 1 2 3; do
+        _cr=$(get_state_field "reviewer_${_cn}_reason")
+        [[ -n "$_cr" && "$_cr" != "ok" ]] && _cov_detail="${_cov_detail:+$_cov_detail }reviewer_${_cn}=${_cr}"
+      done
+      _cov_marker="<!-- design-review-coverage: ${_cov_status:-UNKNOWN} ${_cov_count}/3 ${_cov_detail} -->"
+      if grep -q "<!-- design-review-coverage:" "$DESIGN_FILE" 2>/dev/null; then
+        _cov_tmp="${DESIGN_FILE}.covtmp"
+        sed "s|<!-- design-review-coverage:.*-->|${_cov_marker}|" "$DESIGN_FILE" > "$_cov_tmp" && mv "$_cov_tmp" "$DESIGN_FILE"
+      else
+        printf '%s\n' "$_cov_marker" >> "$DESIGN_FILE"
+      fi
+    fi
+    record_coverage_finalize
 
     rm -f ".claude/design-review-needed.local.md"
     log_info "Design review state cleaned up."

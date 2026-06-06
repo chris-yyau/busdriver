@@ -447,6 +447,60 @@ resolve_review_cli() {
   resolve_role_cli "litmus.reviewer"
 }
 
+# ── Coverage provenance (read-only; does NOT alter resolve_role_cli) ──
+# describe_role_resolution <role_key>
+# Emits ONE tab-separated line: "<requested>\t<actual>\t<resolution_reason>"
+# requested = intended primary (env override, else first non-deprecated route
+#   entry, else defaults.primary, else "auto"); actual = resolve_role_cli output.
+# reason ∈ ok | resolve-droid-fallback | builtin | missing-cli | unsupported-cli | explicit-none
+# Used only by blueprint-review coverage tracking. resolve_role_cli's single-token
+# stdout contract is untouched. zsh-safe: all locals declared ONCE up front
+# (re-declaring `local` for a name leaks name=value to stdout under zsh).
+describe_role_resolution() {
+  local role_key="$1"
+  local env_cli requested actual reason _git_root project_config user_config cfg i cli
+  env_cli="${BUSDRIVER_REVIEW_CLI:-}"
+  requested=""
+
+  if [[ -n "$env_cli" && "$env_cli" != "auto" ]]; then
+    requested="$env_cli"
+  else
+    _git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    project_config="${_git_root:+$_git_root/.claude/busdriver.json}"
+    user_config="$HOME/.claude/busdriver.json"
+    for cfg in "$project_config" "$user_config"; do
+      [[ -z "$cfg" || ! -f "$cfg" ]] && continue
+      i=0
+      while true; do
+        cli=$(_read_config_value "$cfg" ".routes[\"$role_key\"][$i]")
+        [[ -z "$cli" ]] && break
+        case "$cli" in
+          gemini|amp|opencode|claude|aider) i=$((i + 1)); continue ;;
+        esac
+        requested="$cli"; break
+      done
+      [[ -n "$requested" ]] && break
+      cli=$(_read_config_value "$cfg" ".defaults.primary")
+      if [[ -n "$cli" ]]; then requested="$cli"; break; fi
+    done
+    [[ -z "$requested" ]] && requested="auto"
+  fi
+
+  actual=$(resolve_role_cli "$role_key")
+
+  case "$actual" in
+    none)           reason="explicit-none" ;;
+    builtin)        reason="builtin" ;;
+    missing:*)      reason="missing-cli" ;;
+    unsupported:*)  reason="unsupported-cli" ;;
+    droid)
+      if [[ "$requested" == "droid" ]]; then reason="ok"; else reason="resolve-droid-fallback"; fi ;;
+    *)              reason="ok" ;;
+  esac
+
+  printf '%s\t%s\t%s\n' "$requested" "$actual" "$reason"
+}
+
 # ── Codex invocation: app-server (preferred) → CLI fallback ────
 # The official codex-plugin-cc uses a JSON-RPC app-server protocol that is
 # more reliable than piping to `codex exec` (which can hang on stdin).

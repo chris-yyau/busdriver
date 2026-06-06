@@ -1,9 +1,11 @@
 # ADR 0002 — Gate Codex via reaction-aware Tier F, tracked in a separate field
 
 ## Status
+
 Accepted (2026-06-07)
 
 ## Context
+
 `chatgpt-codex-connector` (Codex) reviews every pr-grind PR but was **explicitly
 excluded** from the ack registry (`agents/pr-grinder.md` Step 2.5): when it
 finishes a review with no findings, its only signal is a 👍 (`+1`) **reaction**
@@ -28,12 +30,18 @@ findings path must resolve to `stale`. The only available clean anchor is the
 reaction timestamp vs HEAD's commit time.
 
 ## Decision
-1. **Tier F in `ack-ledger.sh`** (the prescribed single source): for
-   `login == chatgpt-codex-connector` with non-empty `ALL_REACTIONS`:
-   - **eyes-override (timestamp-independent):** a current 👀 reaction → `stale`.
-     Codex re-adds 👀 whenever HEAD advances, so this is the robust guard for the
-     re-review race and the backdated-commit residual.
-   - a `+1` whose `created_at > HEAD_COMMITTED_DATE` → HEAD-ack (`:F`);
+
+1. **Hoisted eyes-override (timestamp-independent), above every tier:** for
+   `login == chatgpt-codex-connector`, a current 👀 reaction → `stale`. Codex
+   re-adds 👀 whenever HEAD advances, so this is the robust guard for the
+   re-review race and the backdated-commit residual. It runs BEFORE Tier A so a
+   resolved-current-head thread (see Decision 2) cannot ack while Codex is still
+   mid-review of a newer push.
+2. **Tier F in `ack-ledger.sh`** (the prescribed single source), reached only
+   when Codex is not mid-review:
+   - a `+1` whose `created_at > HEAD_COMMITTED_DATE` → HEAD-ack (`:F`),
+     selected with `sort_by(.created_at) | last` (the reactions API does not
+     guarantee result ordering);
    - an engaged-but-not-fresh Codex (a 👍 from before the last push) → `stale`;
    - no reaction at all → falls through to the existing `none`.
    Codex-only and guarded on non-empty `ALL_REACTIONS`, so it is a strict no-op
@@ -45,34 +53,40 @@ reaction timestamp vs HEAD's commit time.
    committer.date to operation time on commit/amend/rebase/cherry-pick, so a
    rebased or cherry-picked HEAD reads as fresh and a pre-existing 👍 reads as
    stale — the realistic "old commit becomes HEAD" cases are handled.
-2. **Codex is excluded from both "clean-ack" tiers — Tier A's disposed-thread
-   branch and Tier B's `/reviews` branch.** A Codex review is *always* a findings
-   post (it 👍s when clean), so neither a resolved/outdated thread from an older
-   commit nor a COMMENTED `/reviews` entry may ack it — both would let a clean
-   merge race ahead of, or merge past, Codex findings. Codex falls through to
-   `stale` and its only positive ack is Tier F's fresh 👍. Its *unresolved*
-   threads still block via Tier A.1 (login-agnostic), so live findings are never
-   masked, and a findings `/reviews` entry blocks via the downgrade fall-through.
-3. **Track Codex in a dedicated `RESULT_CODEX_ACK` field, NOT in the three-bot
+3. **Codex thread handling — clear resolved-current-head, block everything else.**
+   A Codex review is normally a findings post (it 👍s when clean), so it is
+   excluded from Tier B's `/reviews` clean-ack and from non-Codex Tier A's
+   any-disposed ack. But a **resolved + non-outdated** thread (a finding the
+   worker addressed/dismissed on the *current* head via the out-of-scope-
+   acknowledged workflow — no code push, so no new commit to trigger a fresh 👍)
+   **does** ack via Tier A, or Codex would stay `stale` until `--max-wait` bails
+   (the deadlock Codex's own review of this PR flagged). Live (`unresolved`)
+   threads still block via Tier A.1 (login-agnostic); **outdated** threads block
+   as `stale` (Codex must re-review superseded code), never ack; a COMMENTED
+   `/reviews` findings entry blocks via the downgrade fall-through. The hoisted
+   eyes-override guarantees none of these ack while Codex is mid-review.
+4. **Track Codex in a dedicated `RESULT_CODEX_ACK` field, NOT in the three-bot
    `RESULT_REVIEWER_ACKS` string.** A `stale` value blocks `clean` exactly like a
    stale registered bot (worker returns `needs_more`; the dispatcher COMPLETION
-   `FRESH_ACKS` re-query blocks the merge). The field is additive/backward-
-   compatible; the COMPLETION re-query is authoritative regardless.
-4. The two new inputs (`ALL_REACTIONS`, `HEAD_COMMITTED_DATE`) are fetched and
+   `FRESH_ACKS` re-query blocks the merge). It is also checked by Invariant 2
+   (clean + stale → bail). The field is additive/backward-compatible; the
+   COMPLETION re-query is authoritative regardless.
+5. The two new inputs (`ALL_REACTIONS`, `HEAD_COMMITTED_DATE`) are fetched and
    exported at all three ack-ledger call sites; reactions are fetched **with**
    `--paginate` (Tier F slurps the page stream).
-5. **No-progress invariant is Codex-aware.** The dispatcher's wait-round
+6. **No-progress invariant is Codex-aware.** The dispatcher's wait-round
    legitimacy check (`needs_more` + no commit must coincide with some `stale`
    ack) now also accepts `RESULT_CODEX_ACK=stale`, so a Codex-only wait-round
    (all registered bots acked, Codex still reviewing) is not misread as
    no-progress and bailed. Empty/missing tag `!= stale` → prior behavior.
-6. **First-engagement grace** at the COMPLETION gate: when Codex resolves to
+7. **First-engagement grace** at the COMPLETION gate: when Codex resolves to
    `none` (zero engagement), one bounded re-poll (`PR_GRIND_CODEX_GRACE_SECS`,
    default 20s, `0` disables) catches a Codex that hadn't yet posted its initial
    👀 on a just-pushed HEAD. Rarely fires — COMPLETION is reached only after the
    loop converges, by which point an active Codex has engaged.
 
 ## Alternatives
+
 - **Register Codex as a 4th `REGISTERED_ACK_BOTS` entry** (fold into
   `RESULT_REVIEWER_ACKS`). Rejected: Codex's clean signal is timestamp-keyed, not
   one of the A–E SHA-keyed structured acks. Folding it in would pull it into
@@ -84,6 +98,7 @@ reaction timestamp vs HEAD's commit time.
   would need mirroring in the worker too.
 
 ## Consequences
+
 - Codex is now waited on: a clean merge can no longer race ahead of an in-flight
   Codex review. Bounded by the loop's `--max-wait`; on exhaustion the loop bails
   to the operator (never silent-merge, never wait forever).
@@ -93,6 +108,7 @@ reaction timestamp vs HEAD's commit time.
   `FETCH_OK=0` → `ack-ledger.sh` returns `stale` for every bot.
 
 ## Known limitations
+
 **First-engagement race (now bounded, not eliminated).** In the brief window
 after a fresh push but before Codex posts its first 👀, `ALL_REACTIONS` has no
 Codex entry → Tier F returns `none` (non-gating). Closed at the loop level by
@@ -113,9 +129,11 @@ registered bots' own post-push staleness close this in practice; pr-grind's own
 fix commits are never backdated.
 
 ## Revisit trigger
+
 - Codex changes its completion signal (e.g., starts posting an APPROVED
   `/reviews` entry, or stops using reactions) → Tier F's anchor must change.
-- The first-engagement race is observed to actually skip a Codex review in
-  practice → implement the loop-level grace window.
+- The first-engagement race is observed to actually skip a Codex review despite
+  the COMPLETION grace (Decision 6) → raise the default `PR_GRIND_CODEX_GRACE_SECS`
+  or add a worker-side first-engagement wait.
 - A second reaction-only reviewer appears → generalize Tier F beyond the Codex
   login guard.

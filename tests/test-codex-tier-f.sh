@@ -200,25 +200,71 @@ else
   fail "👀 + fresh 👍 expected 'stale' (eyes-override), got '$got'"
 fi
 
-# --- Test 12: DISPOSED Codex thread + stale 👍 → stale (Tier A exclusion) ---
-# Regression for the HIGH finding: a resolved/outdated Codex thread from an
-# older commit must NOT ack a new HEAD via Tier A. Codex is excluded from the
-# Tier-A disposed→ack branch and falls through to Tier F, which sees only a
-# stale 👍 → stale (waits for a fresh re-review).
-CODEX_DISPOSED='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"}}]}}]}}}}}'
+# --- Test 12: RESOLVED current-head Codex thread → HEAD_SHA (out-of-scope clear) ---
+# A Codex thread the worker resolved on the CURRENT head (the out-of-scope-
+# acknowledged dismissal — no code push, so no new commit to trigger a fresh
+# 👍) must CLEAR via Tier A.2, or Codex would stay stale until --max-wait bails.
+# A stale 👍 in the fixture confirms the resolved thread acks on its own (no
+# fresh reaction needed). Eyes-override does not fire (no 👀).
+CODEX_RESOLVED_CURRENT='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"}}]}}]}}}}}'
 got=$(FETCH_OK=1 \
-  ALL_THREADS="$CODEX_DISPOSED" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_THREADS="$CODEX_RESOLVED_CURRENT" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
   ALL_REACTIONS="$(mk_reaction '+1' "$STALE_TS")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
-if [ "$got" = "stale" ]; then
-  ok "disposed Codex thread + stale 👍 → stale (Tier A disposed-ack excludes Codex)"
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "resolved current-head Codex thread → HEAD_SHA (Tier A.2 clears out-of-scope dismissal)"
 else
-  fail "disposed Codex thread + stale 👍 expected 'stale', got '$got'"
+  fail "resolved current-head Codex thread expected '$HEAD_SHA', got '$got'"
 fi
 
-# --- Test 12b: same DISPOSED thread for a REGISTERED bot still acks (no regression) ---
-# The Tier-A exclusion is Codex-only; cursor's disposed thread must still ack HEAD.
+# --- Test 12a: OUTDATED-only Codex thread → stale (must NOT ack new HEAD) ---
+# A Codex finding from superseded code (HEAD advanced past it) must not clear —
+# Codex has to re-review the new HEAD. No fresh 👍, no 👀 → stale.
+CODEX_OUTDATED='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":false,"isOutdated":true,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"}}]}}]}}}}}'
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_OUTDATED" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "outdated-only Codex thread → stale (superseded code must not ack new HEAD)"
+else
+  fail "outdated-only Codex thread expected 'stale', got '$got'"
+fi
+
+# --- Test 12c: resolved current-head Codex thread BUT 👀 present → stale (eyes beats Tier A.2) ---
+# The hoisted eyes-override must win: if Codex is mid-reviewing a newer push, a
+# resolved older-thread must NOT ack ahead of the in-progress review.
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_RESOLVED_CURRENT" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS="$(mk_reaction 'eyes' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "resolved current-head thread + 👀 → stale (hoisted eyes-override beats Tier A.2)"
+else
+  fail "resolved current-head thread + 👀 expected 'stale', got '$got'"
+fi
+
+# --- Test 12d: MIXED — resolved-current + outdated Codex threads → stale (outdated precedence) ---
+# A resolved-current thread would ack on its own (Test 12), but a coexisting
+# OUTDATED thread means Codex is behind on HEAD and must re-review. The outdated
+# check runs first, so the mixed state stays stale (no premature ack).
+CODEX_MIXED='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"}}]}},{"isResolved":false,"isOutdated":true,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"}}]}}]}}}}}'
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_MIXED" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "mixed resolved-current + outdated Codex threads → stale (outdated takes precedence)"
+else
+  fail "mixed resolved-current + outdated expected 'stale', got '$got'"
+fi
+
+# --- Test 12b: same RESOLVED thread for a REGISTERED bot still acks (no regression) ---
+# Non-Codex bots ack on any disposed thread (the original Tier A.2 behavior).
 CURSOR_DISPOSED='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"cursor[bot]"}}]}}]}}}}}'
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CURSOR_DISPOSED" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
@@ -231,12 +277,11 @@ else
   fail "disposed cursor thread expected '$HEAD_SHA', got '$got'"
 fi
 
-# --- Test 13: DISPOSED Codex thread + fresh 👍 → HEAD_SHA (findings addressed + clean re-review) ---
-# Codex raised findings on an older commit, they were fixed (thread resolved),
-# and Codex re-reviewed the new HEAD clean (fresh 👍). Tier A excluded → Tier F
-# acks on the fresh reaction.
+# --- Test 13: resolved current-head Codex thread + fresh 👍 → HEAD_SHA ---
+# Findings addressed (thread resolved on current head) AND Codex re-reviewed
+# clean (fresh 👍). Either signal alone acks; together they unambiguously do.
 got=$(FETCH_OK=1 \
-  ALL_THREADS="$CODEX_DISPOSED" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_THREADS="$CODEX_RESOLVED_CURRENT" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
   ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)

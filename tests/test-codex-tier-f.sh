@@ -263,6 +263,23 @@ else
   fail "mixed resolved-current + outdated expected 'stale', got '$got'"
 fi
 
+# --- Test 12e: OUTDATED thread + fresh 👍 → HEAD_SHA (deadlock fix; fresh 👍 beats outdated) ---
+# The normal fix flow: Codex flagged commit X, worker fixed + pushed Y, Codex
+# re-reviewed Y clean (fresh 👍). GitHub keeps the X thread as OUTDATED forever.
+# The fresh 👍 must clear it — otherwise the outdated thread keeps the PR stale
+# until --max-wait on every PR that ever had a Codex finding (the permanent
+# deadlock Codex + cubic flagged on PR #185). Fresh-👍 is checked before outdated.
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_OUTDATED" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "outdated thread + fresh 👍 → HEAD_SHA (fresh 👍 clears the retained-outdated deadlock)"
+else
+  fail "outdated thread + fresh 👍 expected '$HEAD_SHA' (deadlock fix), got '$got'"
+fi
+
 # --- Test 12b: same RESOLVED thread for a REGISTERED bot still acks (no regression) ---
 # Non-Codex bots ack on any disposed thread (the original Tier A.2 behavior).
 CURSOR_DISPOSED='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"cursor[bot]"}}]}}]}}}}}'

@@ -179,28 +179,45 @@ if [ "$unresolved" -gt 0 ]; then echo "stale"; exit 0; fi
 # resolved-current-head thread. The hoisted eyes-override above guarantees Codex
 # is not mid-review when this acks.
 if [ "$login" = "chatgpt-codex-connector" ]; then
-  # Check OUTDATED first — it takes precedence over a resolved-current ack. An
-  # OUTDATED Codex thread (resolved or not) means Codex reviewed superseded code
-  # (HEAD advanced past it), so Codex is behind on HEAD and must re-review before
-  # the gate clears — even if some OTHER thread is resolved on the current head.
-  # Treat as `stale` (engaged, not acked), NOT `none`: a fresh 👍 (Tier F) or a
-  # new resolved-current thread on the re-reviewed HEAD will clear it. Ordering
-  # matters: a mixed state (one resolved-current thread + one outdated thread)
-  # must stay stale, so this check runs BEFORE the resolved-current ack below.
+  # Consolidated Codex resolution; precedence order is load-bearing. Tier A.1
+  # above (unresolved+non-outdated → stale) already ran login-agnostically, so a
+  # LIVE finding has blocked.
+  # (1) FRESH 👍 FIRST — a +1 newer than HEAD means Codex re-reviewed the CURRENT
+  #     HEAD and is satisfied → ack. Checked before the OUTDATED short-circuit
+  #     because GitHub retains outdated threads FOREVER once code changes: a
+  #     single past Codex finding would otherwise keep the PR `stale` until
+  #     --max-wait even after a clean re-review (permanent deadlock — flagged by
+  #     Codex + cubic on PR #185). sort_by created_at — reactions API ordering
+  #     is not guaranteed.
+  codex_plus1=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot) | select(.content == "+1")] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
+  if [ -n "$codex_plus1" ] && [ -n "$HEAD_COMMITTED_DATE" ] && [[ "$codex_plus1" > "$HEAD_COMMITTED_DATE" ]]; then
+    emit_head_ack "$HEAD_SHA" F; exit 0
+  fi
+  # (2) OUTDATED thread (no fresh 👍) — Codex reviewed superseded code and must
+  #     re-review the new HEAD → stale (engaged, not none). Precedes the
+  #     resolved-current ack so a MIXED state (resolved-current + outdated) stays
+  #     stale.
   codex_outdated=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
     '[.[].data.repository.pullRequest.reviewThreads.nodes[]
       | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
       | select(.isOutdated == true)] | length' 2>/dev/null || echo 0)
   if [ "${codex_outdated:-0}" -gt 0 ]; then echo "stale"; exit 0; fi
-  # No outdated threads → a RESOLVED + non-outdated thread is a finding the
-  # worker addressed/dismissed on the current head (out-of-scope-acknowledged
-  # workflow resolves without a push → no new commit to trigger a fresh 👍).
-  # Clear it via Tier A, or Codex stays stale until --max-wait bails.
+  # (3) RESOLVED + non-outdated thread — a finding the worker addressed/dismissed
+  #     on the CURRENT head (out-of-scope-acknowledged workflow resolves without
+  #     a push → no new commit to trigger a fresh 👍) → ack, or Codex stays stale
+  #     until --max-wait bails.
   codex_resolved_current=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
     '[.[].data.repository.pullRequest.reviewThreads.nodes[]
       | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
       | select(.isResolved == true and .isOutdated == false)] | length' 2>/dev/null || echo 0)
   if [ "${codex_resolved_current:-0}" -gt 0 ]; then emit_head_ack "$HEAD_SHA" A; exit 0; fi
+  # (4) ENGAGED (a stale 👍 from before the last push, or any other reaction) but
+  #     no fresh ack and no actionable threads → stale (waits for re-review). No
+  #     reaction AND no threads → fall through to Tier B / the `none` early-return.
+  codex_reacted=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot)] | length' 2>/dev/null || echo 0)
+  if [ "${codex_reacted:-0}" -gt 0 ]; then echo "stale"; exit 0; fi
 else
   disposed=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
     '[.[].data.repository.pullRequest.reviewThreads.nodes[]
@@ -298,73 +315,12 @@ if [[ -n "$status_context" && -n "$ALL_STATUSES" ]]; then
   if [[ -n "$status_state" ]]; then echo "stale"; exit 0; fi
 fi
 
-# (F) Reactions (Codex only): chatgpt-codex-connector has no SHA-keyed signal
-# for a CLEAN review — when it finishes with no findings it removes its 👀
-# (eyes) reaction and adds a 👍 (+1) reaction on the PR body; it posts NO
-# /reviews APPROVED entry, no check-run, and no commit-status (verified on
-# Dive-And-Dev/chrisyau.me PR #142 clean-path and PR #140 findings-path).
-# Tiers A–E therefore cannot ack it on the clean path. Tier F reads the 👍 as
-# a HEAD-ack when its created_at postdates HEAD's commit time, so the merge
-# gate can WAIT for Codex without the deadlock the registry note in
-# agents/pr-grinder.md warned about (a bare 👍 would otherwise read as
-# none/stale forever, blocking every clean terminal push).
-#
-# Scope: codex-only AND guarded on non-empty ALL_REACTIONS, so Tier F is a
-# strict no-op for every other login AND for callers not yet upgraded to fetch
-# reactions (same additive/backward-compat pattern as Tier E's ALL_STATUSES).
-# Codex's FINDINGS path is NOT acked here — those post as inline threads
-# (Tier A.1 unresolved → stale) and/or a COMMENTED /reviews entry (Codex is
-# excluded from Tier B's clean-ack, so it falls through to the downgrade block →
-# stale). Both BLOCK the merge until the worker triages and Codex re-reviews
-# clean. Tier F resolves only (a) the reaction-only clean case → HEAD-ack, and
-# (b) the still-reviewing / stale-👍 case → stale (gate waits, bounded by
-# --max-wait). Codex's ONLY positive ack, anywhere, is a fresh 👍 (Tier F).
-#
-# ALL_REACTIONS is `gh api --paginate`'d, so it may be a STREAM of arrays (one
-# per page) — `jq -rs '[.[]? | .[]? ...]'` slurps + double-flattens to a single
-# stream of reaction objects (same pattern Tier B uses for ALL_REVIEWS). A
-# single non-paginated array still works: slurp wraps it, the double `.[]?`
-# unwraps it. Pagination matters because a popular PR can have >30 PR-body
-# reactions and Codex's 👍 could land on page 2 — without --paginate Tier F
-# would miss it and mis-classify Codex as `none` (non-gating).
-#
-# Timestamp soundness: reaction created_at and commit committer.date are both
-# UTC ISO-8601 ("…Z", fixed-width), so lexical `>` equals chronological `>`.
-# HEAD_COMMITTED_DATE is the *committer* date, NOT the author date: git resets
-# committer.date to operation time on commit/amend/rebase/cherry-pick, so a
-# rebased or cherry-picked commit that becomes HEAD is correctly "fresh" and a
-# pre-existing 👍 reads as stale. The one residual the timestamp can't catch is
-# a DELIBERATELY backdated commit (`git commit --date` / GIT_COMMITTER_DATE set
-# to the past) reused under an old 👍 — covered in practice by the eyes-override
-# below (Codex re-adds 👀 on every HEAD advance) plus the registered bots' own
-# post-push staleness, which keeps the COMPLETION gate blocked in that window.
-# pr-grind's own fix commits are never backdated, so the loop is unaffected.
-if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_REACTIONS" ]; then
-  # (The 👀 eyes-override is HOISTED to the top of the script, above Tier A —
-  # see there. By the time control reaches Tier F, Codex is known not mid-review.)
-  # Clean ack: latest 👍 strictly newer than HEAD's commit time. sort_by
-  # created_at first — the GitHub reactions API does NOT guarantee result
-  # ordering, so a bare `last` could pick a non-latest +1 and mis-judge freshness.
-  codex_plus1=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot) | select(.content == "+1")] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
-  if [ -n "$codex_plus1" ] && [ -n "$HEAD_COMMITTED_DATE" ] && [[ "$codex_plus1" > "$HEAD_COMMITTED_DATE" ]]; then
-    emit_head_ack "$HEAD_SHA" F; exit 0
-  fi
-  # Engaged (a 👍 from before the last push, or any other Codex reaction) but no
-  # fresh clean ack → block as `stale` so the gate waits for Codex to re-review
-  # HEAD. Without this, a reaction-only Codex (no /reviews entry, so commit_id
-  # is empty) would fall through to the `none` early-return below and the gate
-  # would race ahead of an in-flight Codex review.
-  codex_reacted=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot)] | length' 2>/dev/null || echo 0)
-  if [ "${codex_reacted:-0}" -gt 0 ]; then echo "stale"; exit 0; fi
-  # No Codex reaction at all → fall through to `none` (non-gating). This is a
-  # pure classifier reporting the instantaneous state; the first-engagement race
-  # (Codex active on the repo but not yet showing its initial 👀) is a TIMING
-  # concern closed at the loop level — the COMPLETION gate's bounded grace
-  # re-poll in skills/pr-grind/SKILL.md, plus the worker's Step 1 check-wait —
-  # not here.
-fi
+# (F) Codex reactions are resolved in the CONSOLIDATED Codex block under Tier A
+# above (fresh 👍 → ack, outdated → stale, resolved-current → ack, engaged →
+# stale), gated by the hoisted 👀 eyes-override at the top. There is no separate
+# Codex tier here — a Codex login that reaches this point fell through with no
+# reaction and no actionable thread, so it lands on the `none`/downgrade logic
+# below exactly like a bot that never posted.
 
 # No HEAD-ack signal anywhere. Did the bot post on this PR at all?
 # If never (no /reviews entry, no body SHA reference) → bot doesn't operate here → none.

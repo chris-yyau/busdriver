@@ -1,3 +1,10 @@
+# [1.59.0](https://github.com/chris-yyau/busdriver/compare/v1.58.0...v1.59.0) (2026-06-07)
+
+
+### Features
+
+* **orchestrator:** adopt impeccable + taste-skill dual-engine for ui/ux routing ([#190](https://github.com/chris-yyau/busdriver/issues/190)) ([b678351](https://github.com/chris-yyau/busdriver/commit/b678351a8f150c2b4584093d6f5fc0e43156948d)), closes [minimalist/brutalist/hi#end](https://github.com/minimalist/brutalist/hi/issues/end)
+
 # [1.58.0](https://github.com/chris-yyau/busdriver/compare/v1.57.0...v1.58.0) (2026-06-07)
 
 

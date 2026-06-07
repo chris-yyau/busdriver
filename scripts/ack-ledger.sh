@@ -227,12 +227,28 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   if [ "${codex_outdated:-0}" -gt 0 ]; then echo "stale"; exit 0; fi
   # (3) RESOLVED + non-outdated thread — a finding the worker addressed/dismissed
   #     on the CURRENT head (out-of-scope-acknowledged workflow resolves without
-  #     a push → no new commit to trigger a fresh 👍) → ack, or Codex stays stale
-  #     until --max-wait bails.
-  codex_resolved_current=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+  #     a push → no new commit to trigger a fresh 👍) → ack.
+  #
+  #     FRESHNESS GUARD: require the thread's first comment createdAt to postdate
+  #     the freshness anchor (_freshness_anchor). A resolved thread from an earlier
+  #     commit can stay isOutdated==false after code changes — GitHub only marks a
+  #     thread outdated when its DIFFHUNK position is invalidated, not when unrelated
+  #     files change. Without the timestamp check, that stale-but-not-outdated
+  #     resolved thread would produce a false HEAD ack before Codex re-reviews the
+  #     new HEAD (flagged by Codex on PR #185, line 236).
+  #     When _freshness_anchor is empty (caller not yet upgraded to export dates),
+  #     the $anchor=="" guard passes the select unconditionally, preserving the
+  #     pre-fix behavior (any resolved non-outdated thread acks). This is safe
+  #     only on old callers that have not been upgraded; upgraded callers always
+  #     provide HEAD_COMMITTED_DATE, so the timestamp check fires.
+  codex_resolved_current=$(printf '%s' "$ALL_THREADS" | jq -rs \
+    --arg login "$login" --arg login_bot "${login}[bot]" \
+    --arg anchor "${_freshness_anchor:-}" \
     '[.[].data.repository.pullRequest.reviewThreads.nodes[]
       | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
-      | select(.isResolved == true and .isOutdated == false)] | length' 2>/dev/null || echo 0)
+      | select(.isResolved == true and .isOutdated == false)
+      | select($anchor == "" or (.comments.nodes[0].createdAt // "") > $anchor)
+    ] | length' 2>/dev/null || echo 0)
   if [ "${codex_resolved_current:-0}" -gt 0 ]; then emit_head_ack "$HEAD_SHA" A; exit 0; fi
   # (4) ENGAGED (a stale 👍 from before the last push, or any other reaction) but
   #     no fresh ack and no actionable threads → stale (waits for re-review). No

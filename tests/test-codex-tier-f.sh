@@ -206,7 +206,7 @@ fi
 # 👍) must CLEAR via Tier A.2, or Codex would stay stale until --max-wait bails.
 # A stale 👍 in the fixture confirms the resolved thread acks on its own (no
 # fresh reaction needed). Eyes-override does not fire (no 👀).
-CODEX_RESOLVED_CURRENT='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"}}]}}]}}}}}'
+CODEX_RESOLVED_CURRENT='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"},"createdAt":"2026-06-06T16:24:36Z"}]}}]}}}}}'
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CODEX_RESOLVED_CURRENT" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
@@ -355,6 +355,73 @@ if [ "$got" = "$HEAD_SHA" ]; then
   ok "👍 after HEAD_PUSH_DATE → HEAD_SHA (fresh ack anchored to push timestamp)"
 else
   fail "fresh 👍 after push expected '$HEAD_SHA', got '$got'"
+fi
+
+# --- Test 18: resolved-current Codex thread with createdAt BEFORE anchor → none ---
+# The P1 Codex finding (PR #185, line 236): a resolved non-outdated thread from a
+# prior commit can survive a HEAD advance without going isOutdated when the diff
+# hunk is outside the changed file. Without the freshness guard that stale-but-
+# not-outdated resolved thread produced a false HEAD ack. This test verifies the
+# guard blocks it: thread opened before the freshness anchor is filtered out, and
+# with no other engagement signals, Codex returns none (not engaged with HEAD) —
+# NOT a false ack, which is the correctness guarantee this guard provides.
+CODEX_RESOLVED_STALE='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"},"createdAt":"2026-06-06T16:00:00Z"}]}}]}}}}}'
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_RESOLVED_STALE" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "none" ]; then
+  ok "resolved thread createdAt BEFORE anchor (no reactions) → none (freshness guard blocks false ack)"
+else
+  fail "resolved thread before anchor + no reactions expected 'none', got '$got'"
+fi
+
+# --- Test 18b: resolved thread BEFORE anchor but stale 👍 present → stale ---
+# Same pre-anchor thread, but Codex has reacted with a stale 👍 (also pre-anchor).
+# The thread is filtered out (false ack blocked), and the stale reaction engages
+# Codex without acking HEAD → stale (waiting for fresh re-review signal).
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_RESOLVED_STALE" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS="$(mk_reaction '+1' "$STALE_TS")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "resolved thread BEFORE anchor + stale 👍 → stale (engaged but not fresh; guard blocks thread ack)"
+else
+  fail "resolved thread before anchor + stale 👍 expected 'stale', got '$got'"
+fi
+
+# --- Test 19: resolved-current Codex thread with createdAt AFTER anchor → HEAD_SHA ---
+# Symmetric case: a thread the worker actually dismissed/resolved on the CURRENT
+# head (via out-of-scope-acknowledged workflow) will have a createdAt newer than
+# the freshness anchor (the thread was opened AFTER the last push). That must ack.
+CODEX_RESOLVED_FRESH='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"},"createdAt":"2026-06-06T16:24:36Z"}]}}]}}}}}'
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_RESOLVED_FRESH" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "resolved thread createdAt AFTER anchor → HEAD_SHA (freshness guard allows legitimate ack)"
+else
+  fail "resolved thread after anchor expected '$HEAD_SHA', got '$got'"
+fi
+
+# --- Test 20: resolved-current thread + empty _freshness_anchor → backward-compat HEAD_SHA ---
+# When neither HEAD_COMMITTED_DATE nor HEAD_PUSH_DATE is available (older caller),
+# the anchor is empty. The jq filter's `$anchor == ""` clause passes the select
+# unconditionally — preserving the pre-fix behavior where any resolved non-outdated
+# thread acks. Older callers that never exported dates keep working as before.
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_RESOLVED_FRESH" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="" HEAD_PUSH_DATE="" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "resolved thread + empty anchor → HEAD_SHA (backward-compat: old callers preserve prior behavior)"
+else
+  fail "resolved thread + empty anchor expected '$HEAD_SHA', got '$got'"
 fi
 
 # --- Test 17: HEAD_PUSH_DATE empty → falls back to HEAD_COMMITTED_DATE (backward-compat) ---

@@ -485,7 +485,7 @@ ALL_THREADS=$(gh api graphql --paginate -f query='
           pageInfo { hasNextPage endCursor }
           nodes {
             isResolved isOutdated
-            comments(first:1) { nodes { author { login } } }
+            comments(first:1) { nodes { author { login } createdAt } }
           }
         }
       }

@@ -12,9 +12,9 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 |------|-----------------|----------|
 | **Refactoring** | cleanup, dead code | `refactor-cleaner` agent |
 | **Authentication** | login, signup, OAuth | `security-review` |
-| **UI/UX Design** | design, UI review, make it look better, styling | `impeccable:impeccable` + `ui-ux-pro-max` + `busdriver:design-system`. Load `.impeccable.md` if present |
+| **UI/UX Design** | design, UI review, make it look better, styling | Dual-engine: `design-taste-frontend` (explore — landing/marketing) → `impeccable:impeccable` (harden; owns dashboards solo) + `ui-ux-pro-max` + `busdriver:design-system` gap-fill. Load `.impeccable.md` if present |
 | **Design Setup** | impeccable, design context, brand setup | `impeccable:shape` (one-time → `.impeccable.md`) |
-| **Design Refinement** | polish, critique, audit UI, animate, make bolder/quieter | Impeccable commands: `/polish`, `/critique`, `/audit`, `/normalize`, `/harden`, `/distill`, `/clarify`, `/colorize`, `/bolder`, `/quieter`, `/delight`, `/animate`, `/overdrive`, `/arrange`, `/extract`, `/typeset`, `/adapt`, `/optimize`, `/onboard` |
+| **Design Refinement** | polish, critique, audit UI, animate, make bolder/quieter | Impeccable commands: `/polish`, `/critique`, `/audit`, `/normalize`, `/harden`, `/distill`, `/clarify`, `/colorize`, `/bolder`, `/quieter`, `/delight`, `/animate`, `/overdrive`, `/arrange`, `/extract`, `/typeset`, `/layout`, `/adapt`, `/optimize`, `/onboard` |
 | **Skill Creation** | create/edit skill | `busdriver:writing-skills` |
 | **API Design** | REST endpoints, API versioning | `busdriver:api-design` |
 | **E2E Testing** | browser testing, e2e | `/e2e` command + `e2e-testing` skill |

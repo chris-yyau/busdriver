@@ -70,8 +70,14 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - **Vue migration** (React→Vue work): `busdriver:ui-to-vue`
 - Design: `busdriver:design-system` (generate/audit design tokens)
 - **UI/UX Design** (load when design/styling work detected):
-  - Intelligence: `ui-ux-pro-max` (50 styles, 21 palettes, 50 font pairings, 20 charts)
-  - Implementation: `impeccable:impeccable` (Impeccable plugin — production-grade UI with anti-slop patterns, 9 reference files: typography, color, spatial, motion, interaction, responsive, UX writing, craft, extract)
+  - **Dual-engine workflow — diverge, then converge:**
+    - **Marketing / landing / portfolio / showcase** → *explore* with `design-taste-frontend` first (lead): bold asymmetric layout, dark palettes, GSAP motion — push `DESIGN_VARIANCE` / `MOTION_INTENSITY` high. Then *harden* with `impeccable:impeccable` (`/typeset` → `/layout` → `/audit`) to converge on a11y, spacing, responsive. Variants: `gpt-taste` (GPT/Codex), `stitch-design-taste` (Google Stitch); reference image → code: `image-to-code`. (`design-taste-frontend` is a global `npx skills` install — invoke by bare name; absent on machines without it.)
+    - **Dashboard / app UI / forms / settings / data tables** → `impeccable:impeccable` owns it end-to-end; `design-taste-frontend` explicitly excludes these, so there is no explore phase.
+    - **Why this order:** taste-skill maximizes visual entropy (divergence); impeccable minimizes error rate (convergence). Taste drives early; impeccable has final say on hardening.
+    - **Presets & Phase 0 — manual, invoke by name on request (NOT auto-routed):** specific aesthetics → `minimalist-ui`, `industrial-brutalist-ui`, `high-end-visual-design`. Optional pre-explore reference boards → `imagegen-frontend-web`, `imagegen-frontend-mobile`, `brandkit`. (`redesign-existing-projects` and `full-output-enforcement` deliberately omitted — redundant with `design-taste-frontend`'s redesign protocol and the litmus/verification gates respectively.)
+  - **Supplements — fill gaps only, do NOT lead:**
+    - `ui-ux-pro-max` — breadth catalog (50 styles, 21 palettes, 50 font pairings, 20 charts, shadcn MCP). Option lookup when an engine needs a named style / palette / font / chart, or shadcn component search on dashboards.
+    - `document-skills:frontend-design` — generic fallback; only for gaps the engines don't cover.
   - Context: `.impeccable.md` if present (created via `impeccable:shape`)
   - Refinement: `/polish`, `/critique`, `/audit`, `/normalize`, `/harden`, `/distill`, `/clarify`
   - Enhancement: `/colorize`, `/bolder`, `/quieter`, `/delight`, `/animate`, `/overdrive`

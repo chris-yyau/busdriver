@@ -1,7 +1,7 @@
 ---
 name: design-anti-slop
 description: "Explicit AI design cliché blacklist — opt-in supplement for impeccable skill to prevent generic AI-generated UI patterns"
-targets: impeccable:impeccable, document-skills:frontend-design, busdriver:frontend-patterns, ui-ux-pro-max
+targets: impeccable:impeccable, document-skills:frontend-design, busdriver:frontend-patterns, ui-ux-pro-max, design-taste-frontend
 type: supplement
 opt_in: true
 source: gstack /design-consultation
@@ -10,7 +10,9 @@ added: 2026-03-24
 
 # Design Anti-Slop Patterns
 
-> **Opt-in supplement.** Load alongside `impeccable:impeccable`, `document-skills:frontend-design`, `busdriver:frontend-patterns`, or `ui-ux-pro-max` when the user wants to avoid generic AI-generated design patterns. Not loaded by default — invoke explicitly or when the user mentions "avoid AI slop", "make it unique", "don't make it generic".
+> **Opt-in supplement.** Load alongside `impeccable:impeccable`, `document-skills:frontend-design`, `busdriver:frontend-patterns`, `ui-ux-pro-max`, or `design-taste-frontend` when the user wants to avoid generic AI-generated design patterns. Not loaded by default — invoke explicitly or when the user mentions "avoid AI slop", "make it unique", "don't make it generic".
+>
+> **Division of labor with `design-taste-frontend`** (global skill, `npx skills` install): for landing pages / portfolios / redesigns it already encodes a stricter superset of this blacklist (variance/motion/density dials + mechanical eyebrow/zigzag count-checks + GSAP skeletons) — prefer invoking it directly there. This file remains the fallback for dashboards / app UI / data tables, which `design-taste-frontend` explicitly excludes. If the skill is absent (machine without the install), this blacklist stands alone.
 
 ## AI Design Clichés to Avoid
 

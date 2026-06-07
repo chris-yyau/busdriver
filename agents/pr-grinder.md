@@ -511,6 +511,17 @@ ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses"
 # human PR-body reactions (Tier F slurps the page stream).
 ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/reactions" 2>/dev/null) || FETCH_OK=0
 HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null) || FETCH_OK=0
+# HEAD_PUSH_DATE: push event timestamp for HEAD_SHA — more robust than committer
+# date for force-push scenarios. Fetched from the repo events API (best-effort;
+# events older than ~300 per repo or ~90 days may not be available). --paginate +
+# slurp (jq -rs) so the PushEvent for HEAD is found even when it lands on a later
+# events page — without pagination a HEAD push beyond the first page yields an
+# empty result and silently falls back to the backdatable committer date. On
+# failure or no match, exports empty string so Tier F falls back to
+# HEAD_COMMITTED_DATE.
+HEAD_FULL_SHA=$(git rev-parse HEAD)
+HEAD_PUSH_DATE=$(gh api --paginate "repos/$OWNER/$REPO/events?per_page=100" 2>/dev/null \
+  | jq -rs --arg head "$HEAD_FULL_SHA" '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head)] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
 
 # Per-bot ack — emits one of: <short-sha> | none | stale via the canonical
 # implementation at scripts/ack-ledger.sh. The script reads the fetched JSON
@@ -519,7 +530,7 @@ HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commi
 # edits live in that file; this site and the two ledger sites in
 # skills/pr-grind/SKILL.md (Step 6.5 inline block, Completion re-query
 # block) all invoke it identically.
-export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_SHA
+export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
 # Call ack-ledger ONCE per bot with ACK_EMIT_TIER=1 → "<sha>:<tier>" on a
 # HEAD-ack, bare "none"/"stale" otherwise. Derive BOTH the plain ack ledger
@@ -601,7 +612,7 @@ RESULT_FIXES: <one-line, comma-separated summary of what you changed this round>
 RESULT_REMAINING: <one-line summary of what's still pending, or "none">
 RESULT_REVIEWER_ACKS: <comma-separated login=value pairs from Step 6.5; always present — early-bail paths emit the all-`none` default initialized at the top of the round. Advisory on fix/wait paths (dispatcher overwrites); authoritative on clean path.>
 RESULT_ACK_TIERS: <comma-separated login=tier pairs from Step 6.5; same registered bots as RESULT_REVIEWER_ACKS; tier ∈ {A,B,C,D,E,none} where the letter is the ack-ledger tier that produced a HEAD-ack (D=check-run, E=commit-status are the bodyless structured tiers) and `none` means not-a-HEAD-ack (the bot is none/stale). Always present; early-bail paths emit the all-`none` default. The dispatcher's Invariant 3 reads this ONLY to exempt a HEAD-acked bot with n_total==0 when its tier is D or E. Additive/backward-compatible: a dispatcher that doesn't read it ignores it; a missing tag makes Invariant 3 fall back to its strict (no-exemption) behavior.>
-RESULT_CODEX_ACK: <single value from Step 6.5 — `<short-sha>` (Codex acked HEAD: a Tier F 👍 reaction newer than HEAD, OR a resolved current-head review thread cleared via Tier A — NOT findings, which block), `stale` (Codex still reviewing, OR has live/outdated findings to triage, OR hasn't re-acked HEAD → blocks `clean`), or `none` (Codex not on this PR → non-gating). Always present; early-bail paths emit `none`. Tracked separately from RESULT_REVIEWER_ACKS because Codex's clean signal is a timestamp-keyed reaction (Tier F), not one of the three SHA-keyed structured acks — keeping it out of that string leaves Invariant 3's intersection scoped to the three registered bots. Additive/backward-compatible: a missing tag means the worker predates Codex gating; the dispatcher's own COMPLETION re-query is the authoritative gate regardless.>
+RESULT_CODEX_ACK: <single value from Step 6.5 — `<short-sha>` (Codex acked HEAD via Tier F 👍 newer than HEAD OR Tier A resolved current-head thread; live/unresolved findings return `stale`), `stale` (Codex still reviewing, OR has live/outdated findings to triage, OR hasn't re-acked HEAD → blocks `clean`), or `none` (Codex not on this PR → non-gating). Always present; early-bail paths emit `none`. Tracked separately from RESULT_REVIEWER_ACKS because Codex's clean signal is a timestamp-keyed reaction (Tier F), not one of the three SHA-keyed structured acks — keeping it out of that string leaves Invariant 3's intersection scoped to the three registered bots. Additive/backward-compatible: a missing tag means the worker predates Codex gating; the dispatcher's own COMPLETION re-query is the authoritative gate regardless.>
 RESULT_BOT_LEDGER: <comma-separated login=n_actionable/n_total:disposition entries from Step 3; always present — early-bail paths emit the all-`0/0:none` default initialized at the top of the round. Disposition prose MUST NOT contain commas — the dispatcher splits on `,` to separate entries; commas inside a disposition would silently corrupt the parse and could hide a HEAD-acked bot's `0/0` entry from the invariant-3 gate. If a fix summary needs commas, replace them with `;` or use a fixed-token disposition like `fixed`. The disposition MAY carry one or more `scope-skipped:<reason>:<count>` segments joined to the primary disposition with bare `+` and no surrounding whitespace (e.g., `coderabbitai=2/4:fixed 2+scope-skipped:schema-refactor:1+scope-skipped:external-research:1`); `+` is the inner segment separator, `,` remains the outer entry separator, and the dispatcher's Invariant 4 sums every count across all bots and rounds. Cap is INCLUSIVE: 5 dismissals are allowed, the 6th BAILs (judgment).>
 RESULT_ISSUES_SPAWNED: <comma-separated GitHub issue numbers spawned this round via the out-of-scope-acknowledged workflow, or "none">  (always present in the new contract; the dispatcher's Invariant 4 sums these across all rounds. Cap is INCLUSIVE: 3 spawned issues are allowed, the 4th BAILs (judgment))
 RESULT_BAIL_REASON: <only when status=bail; one-line free-form prose for human consumption — NOT used for control flow>

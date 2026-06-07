@@ -14,15 +14,22 @@
 #   1. Compute HEAD_SHA via `git rev-parse HEAD | cut -c1-8`.
 #   2. Set FETCH_OK=1, then perform the gh-API fetches that each tag
 #      FETCH_OK=0 on failure (ALL_THREADS via graphql, ALL_REVIEWS,
-#      ALL_COMMENTS, ALL_CHECK_RUNS, ALL_STATUSES, ALL_REACTIONS, and
-#      HEAD_COMMITTED_DATE). The fetch block itself stays in the markdown call
-#      sites — only the per-bot algorithm lives here. ALL_STATUSES is the
-#      legacy commit-statuses API consumed by Tier E (CodeRabbit free-tier on
-#      private repos). ALL_REACTIONS (issue-level reactions JSON array) and
-#      HEAD_COMMITTED_DATE (HEAD's `commit.committer.date`, UTC ISO-8601) feed
-#      Tier F — the Codex-only reaction tier; both are empty for callers that
-#      haven't been upgraded to fetch them, and Tier F no-ops in that case.
-#   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_SHA`
+#      ALL_COMMENTS, ALL_CHECK_RUNS, ALL_STATUSES, ALL_REACTIONS,
+#      HEAD_COMMITTED_DATE, and optionally HEAD_PUSH_DATE). The fetch block
+#      itself stays in the markdown call sites — only the per-bot algorithm
+#      lives here. ALL_STATUSES is the legacy commit-statuses API consumed by
+#      Tier E (CodeRabbit free-tier on private repos). ALL_REACTIONS
+#      (issue-level reactions JSON array) and HEAD_COMMITTED_DATE (HEAD's
+#      `commit.committer.date`, UTC ISO-8601) feed Tier F — the Codex-only
+#      reaction tier; both are empty for callers that haven't been upgraded to
+#      fetch them, and Tier F no-ops in that case. HEAD_PUSH_DATE (optional,
+#      UTC ISO-8601) is the timestamp of the push event that landed HEAD_SHA on
+#      the branch — more reliable than HEAD_COMMITTED_DATE for force-push
+#      scenarios where an old commit is pushed with a backdated committer date.
+#      When provided, Tier F uses max(HEAD_COMMITTED_DATE, HEAD_PUSH_DATE) as
+#      the freshness anchor. Backward-compatible: callers that do not export
+#      HEAD_PUSH_DATE fall back to HEAD_COMMITTED_DATE only (existing behavior).
+#   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA`
 #      so this subprocess inherits them. A caller that hasn't been upgraded
 #      to fetch ALL_STATUSES will export empty for that var — Tier E sees
 #      the empty input, skips silently, and the script falls through to
@@ -91,7 +98,8 @@
 # resolver fired vs no-op'd; set BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 if
 # you need to force the caller's intended path. `exec` preserves "$@" and
 # exported env vars (FETCH_OK, ALL_THREADS, ALL_REVIEWS, ALL_COMMENTS,
-# ALL_CHECK_RUNS, ALL_STATUSES, ALL_REACTIONS, HEAD_COMMITTED_DATE, HEAD_SHA)
+# ALL_CHECK_RUNS, ALL_STATUSES, ALL_REACTIONS, HEAD_COMMITTED_DATE,
+# HEAD_PUSH_DATE, HEAD_SHA)
 # automatically across the process replacement.
 #
 # Why detection runs at script top: the resolver is a permanent forward-fix.
@@ -191,7 +199,21 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   #     is not guaranteed.
   codex_plus1=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
     '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot) | select(.content == "+1")] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
-  if [ -n "$codex_plus1" ] && [ -n "$HEAD_COMMITTED_DATE" ] && [[ "$codex_plus1" > "$HEAD_COMMITTED_DATE" ]]; then
+  # Freshness anchor: use HEAD_PUSH_DATE (push event timestamp) when provided by
+  # the caller, falling back to HEAD_COMMITTED_DATE (git committer date). The push
+  # timestamp is more robust against force-pushes to older commits whose committer
+  # date predates a prior Codex 👍 — in that scenario HEAD_COMMITTED_DATE would
+  # falsely pass the freshness check while HEAD_PUSH_DATE (when available) would
+  # correctly require a newer reaction. Backward-compatible: callers that have not
+  # been upgraded to fetch HEAD_PUSH_DATE export it empty, and the fallback to
+  # HEAD_COMMITTED_DATE preserves existing behavior. The eyes-override above
+  # (Codex re-adds 👀 on every HEAD advance) provides defense-in-depth for callers
+  # that supply neither timestamp.
+  _freshness_anchor="${HEAD_COMMITTED_DATE:-}"
+  if [ -n "${HEAD_PUSH_DATE:-}" ] && [[ "${HEAD_PUSH_DATE}" > "${_freshness_anchor}" ]]; then
+    _freshness_anchor="$HEAD_PUSH_DATE"
+  fi
+  if [ -n "$codex_plus1" ] && [ -n "$_freshness_anchor" ] && [[ "$codex_plus1" > "$_freshness_anchor" ]]; then
     emit_head_ack "$HEAD_SHA" F; exit 0
   fi
   # (2) OUTDATED thread (no fresh 👍) — Codex reviewed superseded code and must

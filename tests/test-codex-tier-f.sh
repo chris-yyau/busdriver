@@ -323,6 +323,55 @@ else
   fail "paginated reactions expected '$HEAD_SHA' (pagination handled), got '$got'"
 fi
 
+# --- Test 15: HEAD_PUSH_DATE later than HEAD_COMMITTED_DATE → blocks stale 👍 ---
+# Force-push scenario: commit committer date is old (pre-dates a prior Codex 👍)
+# but the push event timestamp (HEAD_PUSH_DATE) is newer. Tier F must use the
+# push timestamp as the freshness anchor — the 👍 predates the push, so stale.
+OLD_COMMIT_DATE="2026-06-01T00:00:00Z"  # old backdated committer date
+STALE_PLUS1="2026-06-02T00:00:00Z"       # 👍 after commit date but before push
+PUSH_DATE="2026-06-03T00:00:00Z"          # push event date (most recent anchor)
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS="$(mk_reaction '+1' "$STALE_PLUS1")" \
+  HEAD_COMMITTED_DATE="$OLD_COMMIT_DATE" HEAD_PUSH_DATE="$PUSH_DATE" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "👍 predates HEAD_PUSH_DATE → stale (force-push protection via push anchor)"
+else
+  fail "force-push protection expected 'stale' (👍 predates push), got '$got'"
+fi
+
+# --- Test 16: HEAD_PUSH_DATE provided, fresh 👍 after push → HEAD_SHA ---
+# Same push timestamp setup, but the 👍 arrived AFTER the push → ack.
+FRESH_PLUS1="2026-06-04T00:00:00Z"  # after PUSH_DATE
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS="$(mk_reaction '+1' "$FRESH_PLUS1")" \
+  HEAD_COMMITTED_DATE="$OLD_COMMIT_DATE" HEAD_PUSH_DATE="$PUSH_DATE" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "👍 after HEAD_PUSH_DATE → HEAD_SHA (fresh ack anchored to push timestamp)"
+else
+  fail "fresh 👍 after push expected '$HEAD_SHA', got '$got'"
+fi
+
+# --- Test 17: HEAD_PUSH_DATE empty → falls back to HEAD_COMMITTED_DATE (backward-compat) ---
+# Callers not yet upgraded to fetch HEAD_PUSH_DATE export it empty; Tier F must
+# fall back to HEAD_COMMITTED_DATE and behave as before.
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" \
+  HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "empty HEAD_PUSH_DATE → falls back to HEAD_COMMITTED_DATE (backward-compat)"
+else
+  fail "backward-compat fallback expected '$HEAD_SHA', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

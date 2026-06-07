@@ -1029,13 +1029,22 @@ ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses"
 # isn't missed behind >30 human PR-body reactions (Tier F slurps the stream).
 ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/reactions" 2>/dev/null) || FETCH_OK=0
 HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null) || FETCH_OK=0
+# HEAD_PUSH_DATE: push event timestamp — more robust than committer date for
+# force-push scenarios. --paginate + slurp (jq -rs) so the PushEvent for HEAD is
+# found even when it lands on a later events page; without pagination a HEAD push
+# beyond the first page yields empty and silently falls back to the backdatable
+# committer date. Best-effort; exports empty on failure or no match so Tier F
+# falls back to HEAD_COMMITTED_DATE.
+HEAD_FULL_SHA=$(git rev-parse HEAD)
+HEAD_PUSH_DATE=$(gh api --paginate "repos/$OWNER/$REPO/events?per_page=100" 2>/dev/null \
+  | jq -rs --arg head "$HEAD_FULL_SHA" '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head)] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
 
 # Per-bot ack — algorithm lives in scripts/ack-ledger.sh (single source of
 # truth for this site, the worker's Step 6.5 in agents/pr-grinder.md, and the
 # dispatcher's Completion site below). The script reads FETCH_OK / ALL_THREADS /
 # ALL_REVIEWS / ALL_COMMENTS / ALL_CHECK_RUNS / ALL_STATUSES / ALL_REACTIONS /
-# HEAD_COMMITTED_DATE / HEAD_SHA from env and the bot login from $1.
-export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_SHA
+# HEAD_COMMITTED_DATE / HEAD_PUSH_DATE / HEAD_SHA from env and the bot login from $1.
+export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
 # One call per bot with ACK_EMIT_TIER=1 → "<sha>:<tier>" on a HEAD-ack, bare
 # none/stale otherwise. Derive the plain ack ledger (strip ":<tier>") AND the
@@ -1214,11 +1223,20 @@ ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses"
 # PR-body reactions (Tier F slurps the page stream).
 ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/reactions" 2>/dev/null) || FETCH_OK=0
 HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null) || FETCH_OK=0
+# HEAD_PUSH_DATE: push event timestamp — more robust than committer date for
+# force-push scenarios. --paginate + slurp (jq -rs) so the PushEvent for HEAD is
+# found even when it lands on a later events page; without pagination a HEAD push
+# beyond the first page yields empty and silently falls back to the backdatable
+# committer date. Best-effort; exports empty on failure or no match so Tier F
+# falls back to HEAD_COMMITTED_DATE.
+HEAD_FULL_SHA=$(git rev-parse HEAD)
+HEAD_PUSH_DATE=$(gh api --paginate "repos/$OWNER/$REPO/events?per_page=100" 2>/dev/null \
+  | jq -rs --arg head "$HEAD_FULL_SHA" '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head)] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
 
 # Per-bot ack — same single-sourced algorithm as the worker's Step 6.5 and
 # the inline ledger block in Step 6.5 above. All three sites invoke
 # scripts/ack-ledger.sh; algorithm edits live in that one file.
-export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_SHA
+export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
 # Codex (chatgpt-codex-connector) is appended as a fourth gated reviewer here:
 # its Tier-F 👍 reaction is the authoritative clean signal, and a `stale` value

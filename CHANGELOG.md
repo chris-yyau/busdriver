@@ -1,3 +1,10 @@
+# [1.58.0](https://github.com/chris-yyau/busdriver/compare/v1.57.0...v1.58.0) (2026-06-07)
+
+
+### Features
+
+* **pr-grind:** gate Codex review via reaction-aware ack-ledger Tier F ([#185](https://github.com/chris-yyau/busdriver/issues/185)) ([81ea25a](https://github.com/chris-yyau/busdriver/commit/81ea25a3e4c330d11bf3a38ab4831c747ffa224a)), closes [#142](https://github.com/chris-yyau/busdriver/issues/142) [#140](https://github.com/chris-yyau/busdriver/issues/140) [#mock](https://github.com/chris-yyau/busdriver/issues/mock)
+
 # [1.57.0](https://github.com/chris-yyau/busdriver/compare/v1.56.2...v1.57.0) (2026-06-06)
 
 

@@ -76,7 +76,7 @@ DO NOT skip phases after your entry point. Only exception: small specific tasks 
 
 ### Phase 1: Discovery → `busdriver:brainstorming`
 
-Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design. UI/UX: dual-engine — `design-taste-frontend` explores landing/marketing → `impeccable:impeccable` hardens (impeccable owns dashboards/app UI solo); `ui-ux-pro-max` + `busdriver:design-system` fill gaps; load `.impeccable.md` if present (full model in domain-supplements UI/UX block). Code patterns: `busdriver:frontend-patterns`. API boundaries: `busdriver:api-design`. Consider `council` if 2+ viable approaches. Consider `busdriver:grill-me` if the chosen approach has stakes (auth/payments/migration/irreversible/PII/prod) or ≥3 unresolved sub-decisions or spans ≥3 subsystems — brainstorming offers this automatically at Step 5.5.
+Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design. UI/UX: dual-engine — `design-taste-frontend` explores landing/marketing/portfolio/showcase → `impeccable:impeccable` hardens (impeccable owns dashboards/app UI solo); `ui-ux-pro-max` + `busdriver:design-system` fill gaps; load `.impeccable.md` if present (full model in domain-supplements UI/UX block). Code patterns: `busdriver:frontend-patterns`. API boundaries: `busdriver:api-design`. Consider `council` if 2+ viable approaches. Consider `busdriver:grill-me` if the chosen approach has stakes (auth/payments/migration/irreversible/PII/prod) or ≥3 unresolved sub-decisions or spans ≥3 subsystems — brainstorming offers this automatically at Step 5.5.
 **NEXT:** Phase 2. INVOKE `busdriver:writing-plans`. Do NOT start coding.
 
 ### Phase 2: Planning → `busdriver:writing-plans`

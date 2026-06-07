@@ -99,8 +99,14 @@ _fetch_pr_state() {
     # Capture the FULL head OID: HEAD_SHA is the 8-char prefix used for the
     # commit endpoints, but HEAD_PUSH_DATE matches against PushEvent.payload.head
     # which is a 40-char SHA, so the events lookup needs the untruncated value.
-    local _full_sha _sha
-    _full_sha=$(gh pr view "$pr_number" --json headRefOid -q '.headRefOid' 2>/dev/null) || true
+    # Also capture headRefName in the same call for branch-scoped PushEvent lookup
+    # (Cubic P2: branch-agnostic payload.head match can pick up the wrong PushEvent
+    # if two branches share the same tip SHA; filtering by payload.ref = refs/heads/<branch>
+    # eliminates the ambiguity).
+    local _full_sha _sha _pr_json _pr_branch
+    _pr_json=$(gh pr view "$pr_number" --json headRefOid,headRefName 2>/dev/null) || true
+    _full_sha=$(printf '%s' "$_pr_json" | jq -r '.headRefOid // empty' 2>/dev/null) || true
+    _pr_branch=$(printf '%s' "$_pr_json" | jq -r '.headRefName // empty' 2>/dev/null) || true
     _sha=$(printf '%s' "$_full_sha" | cut -c1-8)
     if [[ -n "$_sha" ]]; then
         HEAD_SHA="$_sha"
@@ -118,8 +124,13 @@ _fetch_pr_state() {
         # an empty result is a legitimate fallback to HEAD_COMMITTED_DATE and must
         # NOT trip FETCH_OK. --paginate + slurp so a HEAD push on a later events
         # page is still found; match on the full OID since payload.head is 40-char.
+        # Branch filter (payload.ref == refs/heads/<branch>) prevents picking up a
+        # PushEvent from a different branch that happens to share the same tip SHA.
+        local _ref="refs/heads/${_pr_branch:-}"
         HEAD_PUSH_DATE=$(gh api --paginate "repos/$owner/$name/events?per_page=100" 2>/dev/null \
-            | jq -rs --arg head "$_full_sha" '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head)] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
+            | jq -rs --arg head "$_full_sha" --arg ref "$_ref" \
+                '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else true end))] | sort_by(.created_at) | last | .created_at // empty' \
+                2>/dev/null || echo "")
     else
         FETCH_OK=0  # gh pr view --json headRefOid failed or returned empty
     fi

@@ -1036,8 +1036,13 @@ HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commi
 # committer date. Best-effort; exports empty on failure or no match so Tier F
 # falls back to HEAD_COMMITTED_DATE.
 HEAD_FULL_SHA=$(git rev-parse HEAD)
+# Branch filter prevents anchoring on a PushEvent from a different branch that
+# shares the same tip SHA. fetch-pr-state.sh uses the same guard; keep in sync.
+PR_BRANCH=$(gh pr view "$PR" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+_ref="refs/heads/${PR_BRANCH:-}"
 HEAD_PUSH_DATE=$(gh api --paginate "repos/$OWNER/$REPO/events?per_page=100" 2>/dev/null \
-  | jq -rs --arg head "$HEAD_FULL_SHA" '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head)] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
+  | jq -rs --arg head "$HEAD_FULL_SHA" --arg ref "$_ref" \
+    '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else true end))] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
 
 # Per-bot ack — algorithm lives in scripts/ack-ledger.sh (single source of
 # truth for this site, the worker's Step 6.5 in agents/pr-grinder.md, and the
@@ -1230,8 +1235,13 @@ HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commi
 # committer date. Best-effort; exports empty on failure or no match so Tier F
 # falls back to HEAD_COMMITTED_DATE.
 HEAD_FULL_SHA=$(git rev-parse HEAD)
+# Branch filter prevents anchoring on a PushEvent from a different branch that
+# shares the same tip SHA. fetch-pr-state.sh uses the same guard; keep in sync.
+PR_BRANCH=$(gh pr view "$PR" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
+_ref="refs/heads/${PR_BRANCH:-}"
 HEAD_PUSH_DATE=$(gh api --paginate "repos/$OWNER/$REPO/events?per_page=100" 2>/dev/null \
-  | jq -rs --arg head "$HEAD_FULL_SHA" '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head)] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
+  | jq -rs --arg head "$HEAD_FULL_SHA" --arg ref "$_ref" \
+    '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else true end))] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
 
 # Per-bot ack — same single-sourced algorithm as the worker's Step 6.5 and
 # the inline ledger block in Step 6.5 above. All three sites invoke

@@ -369,7 +369,7 @@ CODEX_RESOLVED_STALE='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pa
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CODEX_RESOLVED_STALE" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
 if [ "$got" = "none" ]; then
   ok "resolved thread createdAt BEFORE anchor (no reactions) → none (freshness guard blocks false ack)"
@@ -384,7 +384,7 @@ fi
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CODEX_RESOLVED_STALE" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS="$(mk_reaction '+1' "$STALE_TS")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  ALL_REACTIONS="$(mk_reaction '+1' "$STALE_TS")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
 if [ "$got" = "stale" ]; then
   ok "resolved thread BEFORE anchor + stale 👍 → stale (engaged but not fresh; guard blocks thread ack)"
@@ -400,7 +400,7 @@ CODEX_RESOLVED_FRESH='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pa
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CODEX_RESOLVED_FRESH" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
 if [ "$got" = "$HEAD_SHA" ]; then
   ok "resolved thread createdAt AFTER anchor → HEAD_SHA (freshness guard allows legitimate ack)"

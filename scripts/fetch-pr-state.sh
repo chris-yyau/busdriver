@@ -129,7 +129,7 @@ _fetch_pr_state() {
         local _ref="refs/heads/${_pr_branch:-}"
         HEAD_PUSH_DATE=$(gh api --paginate "repos/$owner/$name/events?per_page=100" 2>/dev/null \
             | jq -rs --arg head "$_full_sha" --arg ref "$_ref" \
-                '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else true end))] | sort_by(.created_at) | last | .created_at // empty' \
+                '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else false end))] | sort_by(.created_at) | last | .created_at // empty' \
                 2>/dev/null || echo "")
     else
         FETCH_OK=0  # gh pr view --json headRefOid failed or returned empty

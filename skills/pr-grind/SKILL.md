@@ -271,10 +271,15 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │         wait-rounds) or passed through from the worker (clean path). This
   │         closes the fix-round staleness gap: without recomputing here, the
   │         dispatcher's PRIOR_CODEX_ACK would be the worker's pre-commit
-  │         value, which predates the push. Backward-compat: if absent (legacy
-  │         commit-block), fall back to the worker's RESULT_CODEX_ACK
-  │         unchanged — old workers' Codex acks remain stale-until-next-round
-  │         (same pre-fix behavior), not silently promoted to "none".
+  │         value, which predates the push. Backward-compat: if the
+  │         `result_codex_ack` key is absent from the JSON envelope (legacy
+  │         commit-block that predates Codex gating), the DISPATCHER preserves
+  │         its stored RESULT_CODEX_ACK from the worker unchanged — old workers'
+  │         Codex acks remain stale-until-next-round (same pre-fix behavior),
+  │         not silently promoted to "none". Distinct from the commit-block
+  │         input fallback in the "Outputs" section below, which describes what
+  │         the script itself emits when the caller omits the RESULT_CODEX_ACK
+  │         env var (a different layer: script output vs. dispatcher state).
   │       - Bail: set RESULT_BAIL_CATEGORY / RESULT_BAIL_REASON from
   │         `bail_category` / `bail_reason`, then go to BAIL.
   │
@@ -1052,7 +1057,7 @@ PR_BRANCH=$(gh pr view "$PR" --json headRefName --jq '.headRefName' 2>/dev/null 
 _ref="refs/heads/${PR_BRANCH:-}"
 HEAD_PUSH_DATE=$(gh api --paginate "repos/$OWNER/$REPO/events?per_page=100" 2>/dev/null \
   | jq -rs --arg head "$HEAD_FULL_SHA" --arg ref "$_ref" \
-    '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else true end))] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
+    '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else false end))] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
 
 # Per-bot ack — algorithm lives in scripts/ack-ledger.sh (single source of
 # truth for this site, the worker's Step 6.5 in agents/pr-grinder.md, and the
@@ -1251,7 +1256,7 @@ PR_BRANCH=$(gh pr view "$PR" --json headRefName --jq '.headRefName' 2>/dev/null 
 _ref="refs/heads/${PR_BRANCH:-}"
 HEAD_PUSH_DATE=$(gh api --paginate "repos/$OWNER/$REPO/events?per_page=100" 2>/dev/null \
   | jq -rs --arg head "$HEAD_FULL_SHA" --arg ref "$_ref" \
-    '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else true end))] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
+    '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else false end))] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
 
 # Per-bot ack — same single-sourced algorithm as the worker's Step 6.5 and
 # the inline ledger block in Step 6.5 above. All three sites invoke

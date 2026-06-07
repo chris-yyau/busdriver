@@ -528,7 +528,7 @@ PR_BRANCH=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/de
 _ref="refs/heads/${PR_BRANCH:-}"
 HEAD_PUSH_DATE=$(gh api --paginate "repos/$OWNER/$REPO/events?per_page=100" 2>/dev/null \
   | jq -rs --arg head "$HEAD_FULL_SHA" --arg ref "$_ref" \
-    '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else true end))] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
+    '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else false end))] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
 
 # Per-bot ack — emits one of: <short-sha> | none | stale via the canonical
 # implementation at scripts/ack-ledger.sh. The script reads the fetched JSON

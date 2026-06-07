@@ -5,6 +5,10 @@ case "$*" in
     *api*pulls*reviews*)         echo '[]' ;;
     *pr*view*--comments*)        echo '{"comments":[]}' ;;
     *api*check-runs*)            echo '{"check_runs":[]}' ;;
-    *pr*view*headRefOid*)        echo 'abcdef1234567890' ;;
+    *api*statuses*)              echo '[]' ;;
+    *api*issues*reactions*)      echo '[]' ;;
+    *api*commits*--jq*)          echo '2024-01-01T00:00:00Z' ;;
+    *api*events*)                echo '[[]]' ;;
+    *pr*view*headRefOid*)        echo '{"headRefOid":"abcdef1234567890abcdef1234567890abcdef12","headRefName":"feat/test-branch"}' ;;
     *)                           echo '{}' ;;
 esac

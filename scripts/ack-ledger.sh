@@ -12,13 +12,24 @@
 #
 # Caller responsibilities (BEFORE invoking):
 #   1. Compute HEAD_SHA via `git rev-parse HEAD | cut -c1-8`.
-#   2. Set FETCH_OK=1, then perform the five gh-API fetches that each
-#      tag FETCH_OK=0 on failure (ALL_THREADS via graphql, ALL_REVIEWS,
-#      ALL_COMMENTS, ALL_CHECK_RUNS, ALL_STATUSES). The fetch block itself
-#      stays in the markdown call sites — only the per-bot algorithm lives
-#      here. ALL_STATUSES is the legacy commit-statuses API consumed by
-#      Tier E (CodeRabbit free-tier on private repos).
-#   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA`
+#   2. Set FETCH_OK=1, then perform the gh-API fetches that each tag
+#      FETCH_OK=0 on failure (ALL_THREADS via graphql, ALL_REVIEWS,
+#      ALL_COMMENTS, ALL_CHECK_RUNS, ALL_STATUSES, ALL_REACTIONS,
+#      HEAD_COMMITTED_DATE, and optionally HEAD_PUSH_DATE). The fetch block
+#      itself stays in the markdown call sites — only the per-bot algorithm
+#      lives here. ALL_STATUSES is the legacy commit-statuses API consumed by
+#      Tier E (CodeRabbit free-tier on private repos). ALL_REACTIONS
+#      (issue-level reactions JSON array) and HEAD_COMMITTED_DATE (HEAD's
+#      `commit.committer.date`, UTC ISO-8601) feed Tier F — the Codex-only
+#      reaction tier; both are empty for callers that haven't been upgraded to
+#      fetch them, and Tier F no-ops in that case. HEAD_PUSH_DATE (optional,
+#      UTC ISO-8601) is the timestamp of the push event that landed HEAD_SHA on
+#      the branch — more reliable than HEAD_COMMITTED_DATE for force-push
+#      scenarios where an old commit is pushed with a backdated committer date.
+#      When provided, Tier F uses max(HEAD_COMMITTED_DATE, HEAD_PUSH_DATE) as
+#      the freshness anchor. Backward-compatible: callers that do not export
+#      HEAD_PUSH_DATE fall back to HEAD_COMMITTED_DATE only (existing behavior).
+#   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA`
 #      so this subprocess inherits them. A caller that hasn't been upgraded
 #      to fetch ALL_STATUSES will export empty for that var — Tier E sees
 #      the empty input, skips silently, and the script falls through to
@@ -30,9 +41,10 @@
 # Always exits 0 on success; caller treats stdout as authoritative.
 #
 # Tier exposure (opt-in via ACK_EMIT_TIER=1): when set, a HEAD-ack SHA is
-# suffixed ":<tier>" where <tier> is the letter A–E of the tier that produced
+# suffixed ":<tier>" where <tier> is the letter A–F of the tier that produced
 # the ack (A=disposed inline threads, B=/reviews on HEAD, C=issue-comment body
-# SHA, D=check-run success, E=commit-status success). `none`/`stale` are NEVER
+# SHA, D=check-run success, E=commit-status success, F=Codex 👍 reaction newer
+# than HEAD's commit). `none`/`stale` are NEVER
 # suffixed. Default (env unset) output is byte-for-byte unchanged, so existing
 # callers that compare the value to HEAD_SHA or to `stale` are unaffected. The
 # dispatcher's Invariant 3 uses tiers D/E (bodyless structured acks) to exempt a
@@ -86,7 +98,9 @@
 # resolver fired vs no-op'd; set BUSDRIVER_DISABLE_ACK_SELF_RESOLVE=1 if
 # you need to force the caller's intended path. `exec` preserves "$@" and
 # exported env vars (FETCH_OK, ALL_THREADS, ALL_REVIEWS, ALL_COMMENTS,
-# ALL_CHECK_RUNS, HEAD_SHA) automatically across the process replacement.
+# ALL_CHECK_RUNS, ALL_STATUSES, ALL_REACTIONS, HEAD_COMMITTED_DATE,
+# HEAD_PUSH_DATE, HEAD_SHA)
+# automatically across the process replacement.
 #
 # Why detection runs at script top: the resolver is a permanent forward-fix.
 # Once shipped in vN.M, all vN.M+ caches carry the resolver, so any future
@@ -126,6 +140,20 @@ emit_head_ack() {
 # regression where API failures silently became `none` and didn't gate)
 if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; exit 0; fi
 
+# Codex eyes-override (HOISTED above every tier): a current 👀 reaction means
+# Codex is actively (re-)reviewing HEAD → stale, regardless of any thread/review
+# state below. Codex re-adds 👀 whenever HEAD advances, so this is the robust,
+# timestamp-independent guard for the re-review race — and it MUST run before
+# Tier A so a resolved-current-head thread (Tier A.2) cannot ack while Codex is
+# still mid-review of a newer push. Codex-only and guarded on non-empty
+# ALL_REACTIONS, so it is a strict no-op for every other login and for callers
+# not yet upgraded to fetch reactions.
+if [ "$login" = "chatgpt-codex-connector" ] && [ -n "$ALL_REACTIONS" ]; then
+  codex_eyes=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot) | select(.content == "eyes")] | length' 2>/dev/null || echo 0)
+  if [ "${codex_eyes:-0}" -gt 0 ]; then echo "stale"; exit 0; fi
+fi
+
 # (A) Source 2: are there unresolved+non-outdated threads from this bot?
 # Bots like Copilot post their findings as inline threads. If unresolved+
 # non-outdated, those are real findings to address → stale.
@@ -146,16 +174,127 @@ unresolved=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg logi
     | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
     | select(.isResolved == false and .isOutdated == false)] | length' 2>/dev/null || echo 0)
 if [ "$unresolved" -gt 0 ]; then echo "stale"; exit 0; fi
-disposed=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-  '[.[].data.repository.pullRequest.reviewThreads.nodes[]
-    | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
-    | select(.isOutdated == true or .isResolved == true)] | length' 2>/dev/null || echo 0)
-if [ "$disposed" -gt 0 ]; then emit_head_ack "$HEAD_SHA" A; exit 0; fi
+# Non-Codex bots: any DISPOSED thread (resolved OR outdated) acks HEAD — the
+# bot's prior findings are no longer actionable.
+# Codex: only a RESOLVED + NON-OUTDATED thread acks (a finding the worker
+# addressed/dismissed ON THE CURRENT HEAD). The out-of-scope-acknowledged
+# workflow resolves a thread WITHOUT a code push, so there's no new commit to
+# trigger a fresh Codex 👍 — without this branch that dismissal would leave
+# Codex `stale` until `--max-wait` bails (the deadlock Codex's own review of
+# this PR flagged). An OUTDATED-only Codex thread is from superseded code (HEAD
+# advanced past it) and must NOT ack — Codex has to re-review the new HEAD,
+# caught as `stale` and cleared later by a fresh 👍 (Tier F) or a new
+# resolved-current-head thread. The hoisted eyes-override above guarantees Codex
+# is not mid-review when this acks.
+if [ "$login" = "chatgpt-codex-connector" ]; then
+  # Consolidated Codex resolution; precedence order is load-bearing. Tier A.1
+  # above (unresolved+non-outdated → stale) already ran login-agnostically, so a
+  # LIVE finding has blocked.
+  # (1) FRESH 👍 FIRST — a +1 newer than HEAD means Codex re-reviewed the CURRENT
+  #     HEAD and is satisfied → ack. Checked before the OUTDATED short-circuit
+  #     because GitHub retains outdated threads FOREVER once code changes: a
+  #     single past Codex finding would otherwise keep the PR `stale` until
+  #     --max-wait even after a clean re-review (permanent deadlock — flagged by
+  #     Codex + cubic on PR #185). sort_by created_at — reactions API ordering
+  #     is not guaranteed.
+  codex_plus1=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot) | select(.content == "+1")] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
+  # Freshness anchor: use HEAD_PUSH_DATE (push event timestamp) when provided by
+  # the caller, falling back to HEAD_COMMITTED_DATE (git committer date). The push
+  # timestamp is more robust against force-pushes to older commits whose committer
+  # date predates a prior Codex 👍 — in that scenario HEAD_COMMITTED_DATE would
+  # falsely pass the freshness check while HEAD_PUSH_DATE (when available) would
+  # correctly require a newer reaction. Backward-compatible: callers that have not
+  # been upgraded to fetch HEAD_PUSH_DATE export it empty, and the fallback to
+  # HEAD_COMMITTED_DATE preserves existing behavior. The eyes-override above
+  # (Codex re-adds 👀 on every HEAD advance) provides defense-in-depth for callers
+  # that supply neither timestamp.
+  _freshness_anchor="${HEAD_COMMITTED_DATE:-}"
+  if [ -n "${HEAD_PUSH_DATE:-}" ] && [[ "${HEAD_PUSH_DATE}" > "${_freshness_anchor}" ]]; then
+    _freshness_anchor="$HEAD_PUSH_DATE"
+  fi
+  if [ -n "$codex_plus1" ] && [ -n "$_freshness_anchor" ] && [[ "$codex_plus1" > "$_freshness_anchor" ]]; then
+    emit_head_ack "$HEAD_SHA" F; exit 0
+  fi
+  # (2) OUTDATED thread (no fresh 👍) — Codex reviewed superseded code and must
+  #     re-review the new HEAD → stale (engaged, not none). Precedes the
+  #     resolved-current ack so a MIXED state (resolved-current + outdated) stays
+  #     stale.
+  codex_outdated=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+      | select(.isOutdated == true)] | length' 2>/dev/null || echo 0)
+  if [ "${codex_outdated:-0}" -gt 0 ]; then echo "stale"; exit 0; fi
+  # (3) RESOLVED + non-outdated thread — a finding the worker addressed/dismissed
+  #     on the CURRENT head (out-of-scope-acknowledged workflow resolves without
+  #     a push → no new commit to trigger a fresh 👍) → ack.
+  #
+  #     FRESHNESS GUARD: require the thread's first comment createdAt to postdate
+  #     the freshness anchor (_freshness_anchor). A resolved thread from an earlier
+  #     commit can stay isOutdated==false after code changes — GitHub only marks a
+  #     thread outdated when its DIFFHUNK position is invalidated, not when unrelated
+  #     files change. Without the timestamp check, that stale-but-not-outdated
+  #     resolved thread would produce a false HEAD ack before Codex re-reviews the
+  #     new HEAD (flagged by Codex on PR #185, line 236).
+  #     When _freshness_anchor is empty (caller not yet upgraded to export dates),
+  #     the $anchor=="" guard passes the select unconditionally, preserving the
+  #     pre-fix behavior (any resolved non-outdated thread acks). This is safe
+  #     only on old callers that have not been upgraded; upgraded callers always
+  #     provide HEAD_COMMITTED_DATE, so the timestamp check fires.
+  codex_resolved_current=$(printf '%s' "$ALL_THREADS" | jq -rs \
+    --arg login "$login" --arg login_bot "${login}[bot]" \
+    --arg anchor "${_freshness_anchor:-}" \
+    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+      | select(.isResolved == true and .isOutdated == false)
+      | select($anchor == "" or (.comments.nodes[0].createdAt // "") > $anchor)
+    ] | length' 2>/dev/null || echo 0)
+  if [ "${codex_resolved_current:-0}" -gt 0 ]; then emit_head_ack "$HEAD_SHA" A; exit 0; fi
+  # (3.5) RESOLVED + non-outdated thread EXISTS but was FILTERED by the freshness
+  #       guard (createdAt <= anchor, i.e., from a prior commit). Codex engaged on
+  #       an older commit and must re-review HEAD → stale (fail-CLOSED).
+  #       Without this branch the filtered thread yields no positive Codex signal,
+  #       the fall-through reaches line 368's `none` early-return (no /reviews entry),
+  #       and the gate treats Codex as absent ("not on this PR") instead of as
+  #       "reviewed an older commit, waiting for fresh re-review" — a fail-OPEN
+  #       safety bug flagged by Cursor on PR #185.
+  #       Only fires when the freshness anchor is set (upgraded callers); when the
+  #       anchor is empty the jq filter passes ALL resolved threads unconditionally
+  #       so codex_resolved_current already counted them and this branch is unreachable.
+  if [ -n "${_freshness_anchor:-}" ]; then
+    codex_resolved_any=$(printf '%s' "$ALL_THREADS" | jq -rs \
+      --arg login "$login" --arg login_bot "${login}[bot]" \
+      '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+        | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+        | select(.isResolved == true and .isOutdated == false)
+      ] | length' 2>/dev/null || echo 0)
+    if [ "${codex_resolved_any:-0}" -gt 0 ]; then echo "stale"; exit 0; fi
+  fi
+  # (4) ENGAGED (a stale 👍 from before the last push, or any other reaction) but
+  #     no fresh ack and no actionable threads → stale (waits for re-review). No
+  #     reaction AND no threads → fall through to Tier B / the `none` early-return.
+  codex_reacted=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot)] | length' 2>/dev/null || echo 0)
+  if [ "${codex_reacted:-0}" -gt 0 ]; then echo "stale"; exit 0; fi
+else
+  disposed=$(printf '%s' "$ALL_THREADS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+      | select(.isOutdated == true or .isResolved == true)] | length' 2>/dev/null || echo 0)
+  if [ "$disposed" -gt 0 ]; then emit_head_ack "$HEAD_SHA" A; exit 0; fi
+fi
 
 # (B) /reviews: did the bot explicitly submit a review on HEAD?
 commit_id=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
   '[.[] | .[] | select(.user.login == $login or .user.login == $login_bot)] | last | .commit_id // empty' 2>/dev/null || echo "")
-if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ]; then emit_head_ack "${commit_id:0:8}" B; exit 0; fi
+# Codex exception (same family as Tier A's disposed branch): a Codex /reviews
+# entry is ALWAYS a COMMENTED findings post — Codex reacts with 👍 when it has
+# NO suggestions and only opens a review when it DOES (per OpenAI's integration).
+# Treating that as a clean HEAD-ack would merge past untriaged findings, so Codex
+# is excluded here and falls through to the downgrade block → `stale` (block
+# until the worker triages and Codex re-reviews clean). Codex's only positive ack
+# is the Tier F 👍. `commit_id` is still computed above for that downgrade block.
+if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ] && [ "$login" != "chatgpt-codex-connector" ]; then emit_head_ack "${commit_id:0:8}" B; exit 0; fi
 
 # (C) Issue-comment body SHA: bots like Greptile update a single comment with
 # a "Last reviewed commit: [sha](.../commit/<sha>)" link instead of submitting
@@ -233,6 +372,13 @@ if [[ -n "$status_context" && -n "$ALL_STATUSES" ]]; then
   # context for a different bot doesn't trip this branch.
   if [[ -n "$status_state" ]]; then echo "stale"; exit 0; fi
 fi
+
+# (F) Codex reactions are resolved in the CONSOLIDATED Codex block under Tier A
+# above (fresh 👍 → ack, outdated → stale, resolved-current → ack, engaged →
+# stale), gated by the hoisted 👀 eyes-override at the top. There is no separate
+# Codex tier here — a Codex login that reaches this point fell through with no
+# reaction and no actionable thread, so it lands on the `none`/downgrade logic
+# below exactly like a bot that never posted.
 
 # No HEAD-ack signal anywhere. Did the bot post on this PR at all?
 # If never (no /reviews entry, no body SHA reference) → bot doesn't operate here → none.

@@ -23,10 +23,17 @@
 #                             all-"none" (fail-CLOSED) when absent. The
 #                             wait-round path ignores it and emits all-"none"
 #                             because it refreshes acks (stale tier snapshot).
+#   RESULT_CODEX_ACK        - worker-computed Codex Tier-F ack; passed through
+#                             VERBATIM on the clean path; recomputed from the
+#                             post-push fetch on fix-rounds and wait-rounds so
+#                             the dispatcher's PRIOR_CODEX_ACK always reflects
+#                             post-push state (closes the pre-push staleness gap
+#                             identified by Cursor Bugbot). Defaults to "none"
+#                             when absent (backward-compat with old workers).
 #
 # Outputs (stdout):
 #   Exactly one structured JSON line, either:
-#   - Success: {"status":"success","result_commit_sha":"<sha>","result_reviewer_acks":"login=value,..."}
+#   - Success: {"status":"success","result_commit_sha":"<sha>","result_reviewer_acks":"login=value,...","result_ack_tiers":"login=tier,...","result_codex_ack":"<sha|stale|none>"}
 #   - Bail:    {"bail_category":"judgment|env|budget|policy","bail_reason":"<string>"}
 #
 # Exit code:
@@ -98,7 +105,7 @@ fi
 # clean (worker acks authoritative, no recompute), refresh acks only on
 # wait-rounds (needs_more + clean index).
 emit_success_no_commit() {
-    # $1 = acks ledger, $2 = ack-tier map (callers pass it explicitly — see below).
+    # $1 = acks ledger, $2 = ack-tier map, $3 = codex ack (callers pass all explicitly).
     # The CLEAN pass-through caller passes the worker's RESULT_ACK_TIERS verbatim
     # so a valid bodyless-ack exemption (cursor=D / coderabbitai=E) survives to
     # the dispatcher's Invariant 3. The WAIT-ROUND caller passes the all-`none`
@@ -106,10 +113,14 @@ emit_success_no_commit() {
     # snapshot would be stale against those refreshed acks (fail-CLOSED). Erasing
     # tiers on the clean path would fail-closed-bail Invariant 3 on a legitimate
     # bodyless ack — the regression this split fixes. See ADR 0001.
+    # $3 = codex ack: WAIT-ROUND callers pass freshly-computed value; CLEAN
+    # pass-through passes RESULT_CODEX_ACK from the worker (worker is authoritative
+    # on the clean path). Defaults to "none" when absent (backward-compat).
     local _acks="$1"
     local _tiers="$2"
-    jq -nc --arg acks "$_acks" --arg tiers "$_tiers" \
-        '{status:"success", result_commit_sha:"none", result_reviewer_acks:$acks, result_ack_tiers:$tiers}' || \
+    local _codex_ack="${3:-none}"
+    jq -nc --arg acks "$_acks" --arg tiers "$_tiers" --arg codex_ack "$_codex_ack" \
+        '{status:"success", result_commit_sha:"none", result_reviewer_acks:$acks, result_ack_tiers:$tiers, result_codex_ack:$codex_ack}' || \
         emit_bail "env" "dispatcher-commit-block: emit_success_no_commit jq call failed (jq binary missing or OOM)"
     exit 0
 }
@@ -130,11 +141,14 @@ case "$RESULT_STATUS" in
         if [ -z "${RESULT_REVIEWER_ACKS:-}" ]; then
             emit_bail "judgment" "RESULT_STATUS=clean requires RESULT_REVIEWER_ACKS from worker; worker omitted the tag"
         fi
-        # Clean pass-through: preserve the worker's RESULT_ACK_TIERS (acks are
-        # the worker's, never refreshed here, so the tier map is consistent with
-        # them — a valid D/E exemption must survive). Fall back to all-`none`
-        # only when the worker omitted the tag (fail-CLOSED, pre-ADR-0001 strict).
-        emit_success_no_commit "$RESULT_REVIEWER_ACKS" "${RESULT_ACK_TIERS:-cursor=none,cubic-dev-ai=none,coderabbitai=none}"
+        # Clean pass-through: preserve the worker's RESULT_ACK_TIERS and
+        # RESULT_CODEX_ACK (acks are the worker's, never refreshed here, so the
+        # tier map and codex ack are consistent with them — a valid D/E exemption
+        # must survive). Fall back to all-`none` tiers / "none" codex only when
+        # the worker omitted the tags (fail-CLOSED, pre-ADR-0001 strict).
+        emit_success_no_commit "$RESULT_REVIEWER_ACKS" \
+            "${RESULT_ACK_TIERS:-cursor=none,cubic-dev-ai=none,coderabbitai=none}" \
+            "${RESULT_CODEX_ACK:-none}"
         ;;
     needs_more)
         _cached_exit=0
@@ -158,7 +172,8 @@ case "$RESULT_STATUS" in
                 || [[ "${FETCH_OK:-0}" != "1" ]]; then
                 emit_bail "env" "wait-round: post-push GitHub-state fetch failed; cannot refresh acks"
             fi
-            export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
+            export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES \
+                ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA
             wait_entries=()
             tier_entries=()
             for bot in "${REGISTERED_ACK_BOTS[@]}"; do
@@ -176,12 +191,23 @@ case "$RESULT_STATUS" in
                 wait_entries+=("${bot}=${ack}")
                 tier_entries+=("${bot}=${tier}")
             done
-            # Wait-round: acks and tiers are both FRESHLY computed from the same
+            # Codex ack (Tier F) — computed from the same fetch pass so it reflects
+            # the post-push state. ack-ledger.sh reads ALL_REACTIONS / HEAD_COMMITTED_DATE /
+            # HEAD_PUSH_DATE which fetch-pr-state.sh already exported above.
+            # Fail-CLOSED to `stale` (not `none`) on ack-ledger failure: a helper-
+            # resolution or runtime error must not masquerade as a non-gating Codex
+            # state, which would let `clean` ship past an unverified Codex signal.
+            # Matches the registered-bot `|| echo "stale"` fallback above.
+            wait_codex_raw=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo "stale")
+            wait_codex_ack="${wait_codex_raw%%:*}"
+            # Wait-round: acks, tiers, and codex_ack are all FRESHLY computed from the same
             # ack-ledger pass, so they are mutually consistent. Pass the fresh
             # tiers so Invariant 3's D/E bodyless-ack exemption can fire on
             # wait-rounds (e.g. cursor acks via check-run while other bots are
-            # still stale). The worker's old tier snapshot is discarded.
-            emit_success_no_commit "$(IFS=,; echo "${wait_entries[*]}")" "$(IFS=,; echo "${tier_entries[*]}")"
+            # still stale). The worker's old tier and codex snapshots are discarded.
+            emit_success_no_commit "$(IFS=,; echo "${wait_entries[*]}")" \
+                "$(IFS=,; echo "${tier_entries[*]}")" \
+                "$wait_codex_ack"
         fi
         ;;
     bail)
@@ -405,7 +431,8 @@ fi
 reviewer_ack_entries=()
 tier_entries=()
 if [ "$_fetch_ok" = "1" ]; then
-    export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES HEAD_SHA
+    export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES \
+        ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA
     for bot in "${REGISTERED_ACK_BOTS[@]}"; do
         # ACK_EMIT_TIER=1: HEAD-ack returns "<sha>:<tier>"; none/stale unchanged.
         # Compute acks AND tiers from the SAME ack-ledger pass so they are mutually
@@ -422,23 +449,35 @@ if [ "$_fetch_ok" = "1" ]; then
         reviewer_ack_entries+=("${bot}=${ack}")
         tier_entries+=("${bot}=${tier}")
     done
+    # Codex ack (Tier F) — computed from the same post-push fetch pass so it reflects
+    # the new HEAD. ack-ledger.sh reads ALL_REACTIONS / HEAD_COMMITTED_DATE /
+    # HEAD_PUSH_DATE which fetch-pr-state.sh exported above.
+    # Fail-CLOSED to `stale` (not `none`) on ack-ledger failure so a real Codex
+    # gating signal is never suppressed into a non-gating state after a successful
+    # push. Matches the registered-bot `|| echo "stale"` fallback above.
+    codex_raw=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo "stale")
+    RESULT_CODEX_ACK_OUT="${codex_raw%%:*}"
 else
     # Degrade to all-stale acks + all-none tiers: the dispatcher retries next round.
     for bot in "${REGISTERED_ACK_BOTS[@]}"; do
         reviewer_ack_entries+=("${bot}=stale")
         tier_entries+=("${bot}=none")
     done
+    # Degrade codex to stale so the dispatcher's Invariant 1 treats this as a
+    # wait-round rather than a no-progress bail.
+    RESULT_CODEX_ACK_OUT="stale"
 fi
 RESULT_REVIEWER_ACKS=$(IFS=,; echo "${reviewer_ack_entries[*]}")
 RESULT_ACK_TIERS_OUT=$(IFS=,; echo "${tier_entries[*]}")
 
-# Uniform contract: every success envelope carries result_ack_tiers, computed
-# from the SAME post-push ack-ledger pass as result_reviewer_acks so the two are
-# mutually consistent (ADR 0001). Invariant 3's bodyless-ack exemption fires iff
-# a registered bot acked the post-push HEAD via tier D/E with n_total==0.
+# Uniform contract: every success envelope carries result_ack_tiers and
+# result_codex_ack, all computed from the SAME post-push ack-ledger pass so
+# they are mutually consistent (ADR 0001). Invariant 3's bodyless-ack exemption
+# fires iff a registered bot acked the post-push HEAD via tier D/E with n_total==0.
 jq -nc \
     --arg sha "$RESULT_COMMIT_SHA" \
     --arg acks "$RESULT_REVIEWER_ACKS" \
     --arg tiers "$RESULT_ACK_TIERS_OUT" \
-    '{status:"success", result_commit_sha:$sha, result_reviewer_acks:$acks, result_ack_tiers:$tiers}' || \
+    --arg codex_ack "$RESULT_CODEX_ACK_OUT" \
+    '{status:"success", result_commit_sha:$sha, result_reviewer_acks:$acks, result_ack_tiers:$tiers, result_codex_ack:$codex_ack}' || \
     emit_bail "env" "dispatcher-commit-block: final success-envelope jq call failed (jq binary missing or OOM)"

@@ -248,9 +248,10 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │       bash "$CLAUDE_PLUGIN_ROOT/scripts/dispatcher-commit-block.sh"
   │
   │     Parse the last stdout line as exactly one JSON envelope:
-  │       - Success: set RESULT_COMMIT_SHA, RESULT_REVIEWER_ACKS, AND
-  │         RESULT_ACK_TIERS from `result_commit_sha` / `result_reviewer_acks` /
-  │         `result_ack_tiers`. Every success envelope carries all three, and
+  │       - Success: set RESULT_COMMIT_SHA, RESULT_REVIEWER_ACKS,
+  │         RESULT_ACK_TIERS, AND RESULT_CODEX_ACK from
+  │         `result_commit_sha` / `result_reviewer_acks` / `result_ack_tiers` /
+  │         `result_codex_ack`. Every success envelope carries all four, and
   │         result_ack_tiers is ALWAYS computed from the SAME ack-ledger pass as
   │         result_reviewer_acks (ADR 0001 core invariant): fix-rounds and
   │         wait-rounds compute both freshly from the post-push / refresh
@@ -265,6 +266,15 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │         Backward-compat: if `result_ack_tiers` is absent (legacy
   │         commit-block), reset RESULT_ACK_TIERS to the all-`none` default
   │         (fail-CLOSED — strict pre-ADR-0001 behavior).
+  │         result_codex_ack is ALWAYS recomputed from the same post-push /
+  │         refresh fetch pass as the registered bots (fix-rounds and
+  │         wait-rounds) or passed through from the worker (clean path). This
+  │         closes the fix-round staleness gap: without recomputing here, the
+  │         dispatcher's PRIOR_CODEX_ACK would be the worker's pre-commit
+  │         value, which predates the push. Backward-compat: if absent (legacy
+  │         commit-block), fall back to the worker's RESULT_CODEX_ACK
+  │         unchanged — old workers' Codex acks remain stale-until-next-round
+  │         (same pre-fix behavior), not silently promoted to "none".
   │       - Bail: set RESULT_BAIL_CATEGORY / RESULT_BAIL_REASON from
   │         `bail_category` / `bail_reason`, then go to BAIL.
   │
@@ -456,7 +466,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   └── Update state:
         PRIOR_COMMIT_SHA    = RESULT_COMMIT_SHA
         PRIOR_REVIEWER_ACKS = RESULT_REVIEWER_ACKS
-        PRIOR_CODEX_ACK     = RESULT_CODEX_ACK   # persist for the max-wait bail diagnostic (defaults `none` if the worker omits the tag)
+        PRIOR_CODEX_ACK     = RESULT_CODEX_ACK   # on fix/wait-rounds: overwrite with result_codex_ack from commit-block envelope (post-push); on clean path: use worker-emitted value. Backward-compat: if result_codex_ack absent from envelope (legacy commit-block), retain worker RESULT_CODEX_ACK unchanged — do NOT default to "none" (that would lose a stale signal from the worker).
         PRIOR_ATTEMPTS     += "Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>): fixes=<RESULT_FIXES>; failures=<RESULT_REMAINING>; acks=<RESULT_REVIEWER_ACKS>; scope-skipped=<scope_skipped_this_round>; spawned=<issues_spawned_this_round>"
         # failures= is required — subagent's flaky-check bail (3+ rounds)
         # reads it. Dropping it makes that bail unreachable and the loop
@@ -792,10 +802,10 @@ Inputs (env vars, optional; default 0/empty):
 - `BUSDRIVER_ALLOW_NO_COMMITLINT` - `1` allows a missing local commitlint binary.
 
 Outputs (stdout, exactly one JSON object on the last line):
-Every success envelope carries `result_ack_tiers`, ALWAYS computed from the same ack-ledger pass as `result_reviewer_acks` (ADR 0001 core invariant — they are never desynced):
-- Success (fix-round): `{"status":"success","result_commit_sha":"<sha>","result_reviewer_acks":"login=value,...","result_ack_tiers":"login=tier,..."}` — post-push synthesis computes acks AND tiers from one `ACK_EMIT_TIER=1` pass over the new HEAD. Degrades to all-`stale` acks + all-`none` tiers if the post-push GitHub-state fetch fails.
-- Success (wait-round): `{"status":"success","result_commit_sha":"none","result_reviewer_acks":"login=value,...","result_ack_tiers":"login=tier,..."}` — refreshes acks AND tiers from one `ACK_EMIT_TIER=1` pass, so a bot that bodyless-acks HEAD (e.g. cursor=<sha> tier=D) is exemptible even while slower bots stay stale.
-- Success (clean pass-through): `{"status":"success","result_commit_sha":"none","result_reviewer_acks":"login=value,...","result_ack_tiers":"<worker RESULT_ACK_TIERS verbatim>"}` — passes the worker's acks AND tiers through unchanged (one worker Step 6.5 pass). Falls back to all-`none` tiers only if the caller omitted `RESULT_ACK_TIERS` (fail-CLOSED).
+Every success envelope carries `result_ack_tiers` AND `result_codex_ack`, ALWAYS computed from the same ack-ledger pass as `result_reviewer_acks` (ADR 0001 core invariant — they are never desynced):
+- Success (fix-round): `{"status":"success","result_commit_sha":"<sha>","result_reviewer_acks":"login=value,...","result_ack_tiers":"login=tier,...","result_codex_ack":"<sha|stale|none>"}` — post-push synthesis computes acks, tiers, AND codex_ack from one ack-ledger pass over the new HEAD. Degrades to all-`stale` acks + all-`none` tiers + `"stale"` codex_ack if the post-push GitHub-state fetch fails (stale-codex on degraded fetch prevents Invariant 1 from misclassifying as no-progress).
+- Success (wait-round): `{"status":"success","result_commit_sha":"none","result_reviewer_acks":"login=value,...","result_ack_tiers":"login=tier,...","result_codex_ack":"<sha|stale|none>"}` — refreshes acks, tiers, AND codex_ack from one ack-ledger pass, so a bot that bodyless-acks HEAD (e.g. cursor=<sha> tier=D) is exemptible even while slower bots stay stale. Codex ack reflects the current reaction state.
+- Success (clean pass-through): `{"status":"success","result_commit_sha":"none","result_reviewer_acks":"login=value,...","result_ack_tiers":"<worker RESULT_ACK_TIERS verbatim>","result_codex_ack":"<worker RESULT_CODEX_ACK verbatim>"}` — passes the worker's acks, tiers, AND codex_ack through unchanged (one worker Step 6.5 pass). Falls back to all-`none` tiers / `"none"` codex_ack only if the caller omitted the respective tags (fail-CLOSED for tiers; `"none"` default for codex is safe on clean path since a stale Codex would block clean).
 - Bail: `{"bail_category":"judgment|env|budget|policy","bail_reason":"<string>"}`
 
 Exit code:

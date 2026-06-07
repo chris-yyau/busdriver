@@ -250,6 +250,26 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
       | select($anchor == "" or (.comments.nodes[0].createdAt // "") > $anchor)
     ] | length' 2>/dev/null || echo 0)
   if [ "${codex_resolved_current:-0}" -gt 0 ]; then emit_head_ack "$HEAD_SHA" A; exit 0; fi
+  # (3.5) RESOLVED + non-outdated thread EXISTS but was FILTERED by the freshness
+  #       guard (createdAt <= anchor, i.e., from a prior commit). Codex engaged on
+  #       an older commit and must re-review HEAD → stale (fail-CLOSED).
+  #       Without this branch the filtered thread yields no positive Codex signal,
+  #       the fall-through reaches line 368's `none` early-return (no /reviews entry),
+  #       and the gate treats Codex as absent ("not on this PR") instead of as
+  #       "reviewed an older commit, waiting for fresh re-review" — a fail-OPEN
+  #       safety bug flagged by Cursor on PR #185.
+  #       Only fires when the freshness anchor is set (upgraded callers); when the
+  #       anchor is empty the jq filter passes ALL resolved threads unconditionally
+  #       so codex_resolved_current already counted them and this branch is unreachable.
+  if [ -n "${_freshness_anchor:-}" ]; then
+    codex_resolved_any=$(printf '%s' "$ALL_THREADS" | jq -rs \
+      --arg login "$login" --arg login_bot "${login}[bot]" \
+      '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+        | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
+        | select(.isResolved == true and .isOutdated == false)
+      ] | length' 2>/dev/null || echo 0)
+    if [ "${codex_resolved_any:-0}" -gt 0 ]; then echo "stale"; exit 0; fi
+  fi
   # (4) ENGAGED (a stale 👍 from before the last push, or any other reaction) but
   #     no fresh ack and no actionable threads → stale (waits for re-review). No
   #     reaction AND no threads → fall through to Tier B / the `none` early-return.

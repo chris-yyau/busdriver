@@ -357,24 +357,26 @@ else
   fail "fresh 👍 after push expected '$HEAD_SHA', got '$got'"
 fi
 
-# --- Test 18: resolved-current Codex thread with createdAt BEFORE anchor → none ---
+# --- Test 18: resolved-current Codex thread with createdAt BEFORE anchor → stale ---
 # The P1 Codex finding (PR #185, line 236): a resolved non-outdated thread from a
 # prior commit can survive a HEAD advance without going isOutdated when the diff
-# hunk is outside the changed file. Without the freshness guard that stale-but-
-# not-outdated resolved thread produced a false HEAD ack. This test verifies the
-# guard blocks it: thread opened before the freshness anchor is filtered out, and
-# with no other engagement signals, Codex returns none (not engaged with HEAD) —
-# NOT a false ack, which is the correctness guarantee this guard provides.
+# hunk is outside the changed file. The freshness guard filters the stale thread
+# from the positive-ack path (no false HEAD ack). But Codex DID engage on an
+# older commit — the resolved thread is evidence of prior engagement. The correct
+# signal is `stale` (Codex must re-review HEAD), NOT `none` (Codex absent from PR).
+# Returning `none` was a fail-OPEN bug: the gate would treat Codex as not-engaged
+# and allow merge without a fresh Codex re-review (Cursor finding, PR #185).
+# The step 3.5 guard catches pre-anchor resolved threads and returns `stale`.
 CODEX_RESOLVED_STALE='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"},"createdAt":"2026-06-06T16:00:00Z"}]}}]}}}}}'
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CODEX_RESOLVED_STALE" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
   ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
-if [ "$got" = "none" ]; then
-  ok "resolved thread createdAt BEFORE anchor (no reactions) → none (freshness guard blocks false ack)"
+if [ "$got" = "stale" ]; then
+  ok "resolved thread createdAt BEFORE anchor (no reactions) → stale (engaged on older commit; fail-CLOSED)"
 else
-  fail "resolved thread before anchor + no reactions expected 'none', got '$got'"
+  fail "resolved thread before anchor + no reactions expected 'stale', got '$got'"
 fi
 
 # --- Test 18b: resolved thread BEFORE anchor but stale 👍 present → stale ---
@@ -422,6 +424,41 @@ if [ "$got" = "$HEAD_SHA" ]; then
   ok "resolved thread + empty anchor → HEAD_SHA (backward-compat: old callers preserve prior behavior)"
 else
   fail "resolved thread + empty anchor expected '$HEAD_SHA', got '$got'"
+fi
+
+# --- Test 18c: resolved pre-anchor Codex thread + NO reactions → stale (fail-CLOSED) ---
+# The P1 safety bug (Cursor finding, PR #185): when a resolved+non-outdated Codex
+# thread exists but its createdAt is BEFORE the freshness anchor AND there are no
+# reactions, the freshness guard filters it from codex_resolved_current (good: blocks
+# false ack). Before this fix the fall-through then returned `none` — treating Codex
+# as absent from the PR. The correct answer is `stale`: Codex engaged on an older
+# commit and must re-review HEAD before the gate can clear.
+# CODEX_RESOLVED_STALE is defined above (createdAt="2026-06-06T16:00:00Z", anchor=HEAD_DATE="2026-06-06T16:12:23Z")
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_RESOLVED_STALE" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "resolved pre-anchor thread + no reactions → stale (fail-CLOSED: Codex engaged on older commit)"
+else
+  fail "resolved pre-anchor thread + no reactions expected 'stale' (not 'none'), got '$got'"
+fi
+
+# --- Test 18d: resolved pre-anchor Codex thread + no reactions + empty anchor → HEAD_SHA (backward-compat) ---
+# When anchor is empty (unupgraded caller), the freshness guard is skipped:
+# $anchor=="" passes the select unconditionally → codex_resolved_current > 0 → acks.
+# The new step 3.5 guard only fires when _freshness_anchor is non-empty; old callers
+# still get the pre-fix behavior (any resolved thread acks), preserving backward-compat.
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_RESOLVED_STALE" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="" HEAD_PUSH_DATE="" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "resolved pre-anchor thread + empty anchor → HEAD_SHA (backward-compat: old callers unaffected)"
+else
+  fail "resolved pre-anchor thread + empty anchor expected '$HEAD_SHA' (backward-compat), got '$got'"
 fi
 
 # --- Test 17: HEAD_PUSH_DATE empty → falls back to HEAD_COMMITTED_DATE (backward-compat) ---

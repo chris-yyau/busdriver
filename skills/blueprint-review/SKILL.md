@@ -219,7 +219,9 @@ calling session MUST:
      > `<absolute path to claude-validation-prompt.txt>` and follow it exactly.
      > Use Read/Grep/Glob to verify every claim against the codebase.
      > Write your strict-JSON verdict to `<absolute path to claude.json>`.
-     > Report the model you are running as in the verdict's validation_notes.
+     > Report the model you are running as in the verdict's validation_notes
+     > using the canonical field: `"executed_model": "<model-name>"` (e.g.,
+     > `"executed_model": "fable"`).
      > Return a one-paragraph summary: status, plus issue counts by severity.
 
      The model-self-report sentence is part of the fixed template (the arbiter knows its own runtime identity — nothing flows from the caller), which is how a rejected or silently ignored pin stays observable without breaching the firewall: compare the arbiter's self-reported model against the expected pin in step 3.

@@ -41,12 +41,14 @@ writes `claude.json`. The script never cared who writes the file.
    accepted dispatch 2026-06-10 — this ADR's own dogfood review ran on it).
    Pin observability without breaching the firewall: the fixed dispatch
    template (Decision 3) contains a standing instruction for the arbiter to
-   self-report the model it actually ran as in `validation_notes` — a fact the
-   subagent knows from its own runtime identity, needing nothing from the
-   caller. The caller records the pin status (`pinned` vs
-   `inherited_fallback`) on its own side (its report / review state, never by
-   editing `claude.json`) and compares post-hoc, so a rejected or silently
-   ignored pin is observable.
+   self-report the model it actually ran as in `validation_notes` using the
+   canonical field `executed_model: <model-name>` (e.g.,
+   `"executed_model": "fable"`) — a fact the subagent knows from its own
+   runtime identity, needing nothing from the caller. The caller records the
+   pin status (`pinned` vs `inherited_fallback`) on its own side (its report /
+   review state, never by editing `claude.json`) and compares post-hoc against
+   the `executed_model` field, so a rejected or silently ignored pin is
+   observable.
 3. **Context firewall:** the dispatch prompt is the fixed template plus
    exactly two absolute paths — the validation prompt file and the
    `claude.json` output path. Nothing run-specific beyond the two paths may be

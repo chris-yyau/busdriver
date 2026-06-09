@@ -84,8 +84,9 @@ check "matching run_id but mismatched spec_hash is stale (design changed mid-run
 make_verdict "$V" "run-A" ""
 check "missing spec_hash is stale (freshness contract requires it)" stale "$V" "run-A" "hash-1"
 
-echo '{ not json' > "$V"
-check "unparseable verdict is stale (fail-closed)" stale "$V" "run-A" "hash-1"
+VBAD="$TMPDIR_T/claude-bad.json"
+echo '{ not json' > "$VBAD"
+check "unparseable verdict is stale (fail-closed)" stale "$VBAD" "run-A" "hash-1"
 
 echo ""
 echo "── loop script structure (static) ───────────────────────────"

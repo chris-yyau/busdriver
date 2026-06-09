@@ -404,8 +404,10 @@ while true; do
   # verdict was rendered against reviews that are about to disappear —
   # the pre-v3.3 spec_hash-only preservation let a stale verdict converge a
   # re-run on reviews it never saw. The legitimate pre-written-verdict flow is
-  # --claude-only, which skips this cleanup and recovers run_id from the same
-  # reviewer artifacts the verdict actually validated.
+  # --claude-only, which skips this cleanup and recovers run_id from the
+  # reviewer artifacts on disk — meaningful because the arbiter is dispatched
+  # against those same artifacts (the script cannot itself enforce that
+  # correspondence end-to-end; see ADR 0003 "Orchestration responsibility").
   log_info "Cleaning stale artifacts..."
   rm -f "$(get_review_file "agy.json")" \
         "$(get_review_file "agy-raw.txt")" \

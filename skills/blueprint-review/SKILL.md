@@ -199,8 +199,10 @@ The arbiter sharing a model family with the calling session is fine — cross-mo
 is the reviewers' job (Agy/Codex/Grok); the arbiter's job is codebase validation, not
 independent perspective.
 
-No script changes were needed: the loop's contract has always been "someone writes
-`claude.json`, then re-run `--claude-only`". v3.3 only changes WHO writes it.
+No dispatch-contract changes were needed for the arbiter-identity move itself: the loop's
+contract has always been "someone writes `claude.json`, then re-run `--claude-only`", and
+v3.3 changes WHO writes it. The one script change in v3.3 is separate — the Decision 7
+verdict-freshness re-key (see Version History and ADR 0003).
 
 ### Arbiter Dispatch Protocol
 

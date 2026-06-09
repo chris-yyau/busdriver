@@ -9,7 +9,7 @@ description: >
 
 # Blueprint Review (Three-Tier, Claude Arbiter)
 
-AI-powered design review using Agy + Codex + Grok (parallel) with Claude as the arbiter.
+AI-powered design review using Agy + Codex + Grok (parallel) with a **fresh Claude subagent** as the arbiter (never the plan-authoring session — see Arbiter Dispatch Protocol).
 
 <EXTREMELY-IMPORTANT>
 YOU MUST WAIT FOR ALL THREE REVIEWERS BEFORE MARKING PASS.
@@ -22,22 +22,24 @@ DO NOT rationalize skipping reviewers. These thoughts are violations:
 - "The Claude review is most authoritative since it has codebase context"
 - "Two out of three passed, that's probably good enough"
 - "I can do my own review instead of waiting for the script"
+- "I have the most context — I'll arbitrate inline instead of dispatching the arbiter subagent"
 
 EVERY design review MUST:
 1. Run `run-design-review-loop.sh` as a BLOCKING bash call
 2. Wait for ALL reviewer outputs (agy.json, codex.json, grok.json, plus claude.json from the arbiter) — grok.json is always written by the loop, even when grok was unavailable (it contains an error-status JSON in that case)
-3. Claude validates Agy/Codex/Grok findings against the codebase
-4. Mark PASS ONLY when Claude's verdict has no HIGH/MEDIUM issues (confidence >= 0.5)
+3. Dispatch a FRESH Claude arbiter subagent (see Arbiter Dispatch Protocol) to validate Agy/Codex/Grok findings against the codebase — the session that authored the plan must NOT write claude.json itself
+4. Mark PASS ONLY when the arbiter's verdict has no HIGH/MEDIUM issues (confidence >= 0.5)
 </EXTREMELY-IMPORTANT>
 
 ## Overview
 
 Three-tier model with Claude as arbiter:
 1. **Agy + Codex + Grok**: Run in parallel as independent comprehensive reviewers (Grok added 2026-05-26 to extend voice-lineage diversity into design review; falls back to Droid if grok is unavailable, matching the existing reviewer_1/_2 droid-fallback pattern across all three slots)
-2. **Claude**: Validates their findings against the codebase (arbiter)
-3. **Claude's verdict**: The sole convergence signal
+2. **Claude arbiter (fresh subagent)**: A freshly dispatched Claude subagent — pinned `model: fable` — validates their findings against the codebase. Never the plan-authoring session itself (v3.3; see Arbiter Dispatch Protocol)
+3. **The arbiter's verdict**: The sole convergence signal
 
 **Key features:**
+- Author/arbiter separation (the session that wrote the plan never judges it — fresh subagent arbiter)
 - Parallel execution (Agy + Codex + Grok run simultaneously)
 - Run-scoped artifact isolation (stale outputs cleaned per iteration)
 - Hard freshness contract (run_id + spec_hash in every output)
@@ -64,7 +66,7 @@ Three-tier model with Claude as arbiter:
 | Reviewer 2 | Comprehensive (all aspects) | 1-5min |
 | Reviewer 3 | Comprehensive (all aspects) | 1-5min |
 | Reviewer 1 + 2 + 3 | Parallel execution | 1-5min (wall clock) |
-| Claude | Arbiter + codebase validation | 2-5min |
+| Claude arbiter (fresh subagent) | Codebase validation + verdict | 2-5min |
 
 **Completion criteria:** Claude's verdict has no plan-blocking HIGH or MEDIUM issues (confidence >= 0.5). TDD-discoverable findings (test stubs, lint, perf) and scope-expansion findings ("OUT OF SCOPE", "follow-up PR") do NOT block convergence — they are deferred to `follow-up-issues.md`.
 
@@ -95,7 +97,7 @@ All three reviewer slots walk to `droid` as a universal fallback, mirroring the 
 | Reviewer 1 | `blueprint-review.reviewer_1` | agy |
 | Reviewer 2 | `blueprint-review.reviewer_2` | codex |
 | Reviewer 3 | `blueprint-review.reviewer_3` | grok (added 2026-05-26; falls back to droid if grok not installed, matching reviewer_1/_2 pattern) |
-| Arbiter | (hardcoded) | claude (not configurable — Claude is always the arbiter) |
+| Arbiter | (hardcoded) | claude — dispatched as a fresh subagent pinned `model: fable` (not configurable — the arbiter must be a Claude-family agent with codebase tools; see Arbiter Dispatch Protocol) |
 
 If reviewer_1 and reviewer_2 resolve to the same CLI, the system runs single-reviewer mode for that pair (one execution, output copied to both paths, logged as degradation). If reviewer_3 collides with reviewer_1 or reviewer_2, the reviewer_3 voice is skipped entirely (no duplicate copy — arbitration proceeds with two voices) to avoid combinatorial 3-way copying for an edge case.
 
@@ -110,7 +112,7 @@ digraph review {
 
     init [label="1. Initialize\nbash init-design-review.sh"];
     parallel [label="2. Agy + Codex + Grok\n(parallel)"];
-    claude [label="3. Claude Arbiter\n(codebase context)"];
+    claude [label="3. Claude Arbiter\n(fresh subagent,\ncodebase context)"];
     progress [label="4. Progress Analysis\n(severity breakdown)"];
     converged [label="No HIGH/MEDIUM?" shape=diamond];
     done [label="Design Approved" shape=doublecircle style=filled fillcolor=lightgreen];
@@ -151,7 +153,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/run-design-review-lo
 1. **Clean stale artifacts** from previous iteration
 2. **Run Agy + Codex + Grok in parallel** (background processes, `wait` for all)
 3. **Validate outputs** (JSON integrity + freshness contract)
-4. **Claude validation** with codebase access (manual step or pre-existing output)
+4. **Claude validation** via fresh arbiter subagent (see Arbiter Dispatch Protocol). A pre-written verdict is consumed only via `--claude-only`, and only if its `run_id` AND `spec_hash` match the current reviewer artifacts (ADR 0003 Decision 7) — full-loop iterations always clean `claude.json` and re-arbitrate
 5. **Progress analysis** (severity breakdown from Claude's verdict)
 6. **Convergence check** (no HIGH/MEDIUM with confidence >= 0.5 → PASS)
 
@@ -182,6 +184,67 @@ Claude's manual cross-referencing was doing all the real consensus work.
 
 **New model:** Claude IS the consensus mechanism. Agy and Codex provide independent perspectives;
 Claude validates them against the codebase and renders a verdict.
+
+### Why a Fresh Subagent (v3.3)?
+
+Until v3.2 the arbiter was the calling session itself — the same Claude that wrote (or
+commissioned) the plan. That is author-as-judge: the arbiter has investment in its own plan
+passing, and the class-roll incident (2026-03-10, see the EXTREMELY-IMPORTANT block) showed
+the bias is real, not theoretical. The prose prohibitions at the top of this skill suppressed
+the bias with willpower; v3.3 removes it structurally. The arbiter is a freshly dispatched
+Claude subagent that never saw the plan being written, has no conversation context to defend,
+and judges only what is in the prompt file plus the codebase.
+
+The arbiter sharing a model family with the calling session is fine — cross-model diversity
+is the reviewers' job (Agy/Codex/Grok); the arbiter's job is codebase validation, not
+independent perspective.
+
+No script changes were needed: the loop's contract has always been "someone writes
+`claude.json`, then re-run `--claude-only`". v3.3 only changes WHO writes it.
+
+### Arbiter Dispatch Protocol
+
+When the loop script pauses for arbitration (exit code 2 / `awaiting_claude_validation` in
+agent mode, or auto-mode's "Claude validation must be completed by the calling skill"), the
+calling session MUST:
+
+1. **Dispatch a fresh arbiter subagent** via the Agent tool:
+   - `subagent_type`: `general-purpose` (needs Read/Grep/Glob for codebase validation plus Write for `claude.json`)
+   - `model`: `fable` — pinned, so arbiter quality does not depend on what model the calling session happens to run. (Verified Agent-tool model value — observed accepted dispatch 2026-06-10.) If the dispatch fails with a recognized unsupported-model error, retry once with `model` omitted (inherit the session model) and record `model_pin_status=inherited_fallback` caller-side (your report / review state — NEVER by editing `claude.json`).
+   - Prompt — exactly this fixed template, two absolute paths substituted, nothing more:
+
+     > You are the design-review arbiter. Read the validation prompt at
+     > `<absolute path to claude-validation-prompt.txt>` and follow it exactly.
+     > Use Read/Grep/Glob to verify every claim against the codebase.
+     > Write your strict-JSON verdict to `<absolute path to claude.json>`.
+     > Report the model you are running as in the verdict's validation_notes.
+     > Return a one-paragraph summary: status, plus issue counts by severity.
+
+     The model-self-report sentence is part of the fixed template (the arbiter knows its own runtime identity — nothing flows from the caller), which is how a rejected or silently ignored pin stays observable without breaching the firewall: compare the arbiter's self-reported model against the expected pin in step 3.
+
+2. **Context firewall.** Do NOT include conversation history, plan-authoring rationale,
+   defenses of any design decision, or "the user prefers..." framing in the dispatch prompt.
+   The prompt file is self-contained by design (design doc + all three reviews + coverage +
+   freshness contract). Anything added beyond the two paths reintroduces the author bias this
+   protocol exists to remove.
+
+3. **Post-dispatch check** (calling session, cheap): `claude.json` exists, parses as JSON,
+   has `status` of `PASS` or `FAIL`, and `metadata.run_id` matches the current run. Compare
+   the arbiter's self-reported model in `validation_notes` against the expected pin — on
+   mismatch, record `model_pin_status` caller-side and surface the run as degraded. Then
+   re-run the loop with `--claude-only`. (The script re-validates fully — this check just
+   avoids burning a loop invocation on a garbage file.)
+
+4. **Failure handling (fail-closed), two branches:**
+   - *Unsupported model:* a recognized unsupported-model error from the Agent tool → retry
+     once with `model` omitted (see step 1) — this branch does NOT consume the retry below.
+   - *Everything else:* if the subagent fails or writes invalid JSON, delete the bad
+     `claude.json` and dispatch ONE fresh retry. If the retry also fails, STOP and report
+     to the user — do NOT silently arbitrate inline. Inline arbitration by the calling
+     session is permitted only when the user explicitly authorizes it after being told the
+     dispatch failed twice, and the degradation must be recorded in the verdict's
+     `validation_notes` (`arbiter=inline (degraded, user-authorized)` — consistent here,
+     since in this sole case the calling session is the writer).
 
 ### Freshness Contract
 
@@ -223,12 +286,13 @@ Progress is visible across iterations: "iter1: 4 plan-blocking high → iter2: 3
 
 ## Claude Validation
 
-**Claude's unique role as arbiter:**
+**The arbiter's unique role** (runs in a fresh subagent — see Arbiter Dispatch Protocol):
 
 - Full codebase context (can read existing code)
 - Validates Agy/Codex claims against reality
 - Identifies gaps in their coverage
 - Renders the final verdict
+- No authorship stake — it never saw the plan being written
 
 **Validation types:**
 - `confirms_agy`: Agrees with Agy finding
@@ -291,6 +355,8 @@ Reviewer outputs MUST be validated before Claude arbitration. Malformed or error
 |---------|-----|
 | Show partial results before all reviews complete | Wait for all three outputs, then proceed |
 | Skip Claude validation | Claude is the arbiter — skipping it removes the convergence signal |
+| Arbitrate inline in the plan-authoring session | Dispatch a fresh arbiter subagent — author-as-judge bias is the class-roll failure mode |
+| Paste conversation context into the arbiter dispatch prompt | Two paths only (prompt file + output file) — the prompt file is self-contained by design |
 | Trust external reviews blindly | Claude validates claims against the codebase |
 | Ignore iteration limits | Max 5 iterations prevents infinite loops |
 | Accept error JSON as valid review | Validate `status` field; `error` key → synthetic FAIL |
@@ -309,7 +375,7 @@ If not installed, the workflow uses error fallback. Install CLIs for full review
 
 **Issue: Claude validation is slow**
 
-Claude needs codebase access for validation. In auto mode, the calling skill must complete Claude validation before the script checks for output.
+The arbiter subagent needs codebase access for validation. In auto mode, the calling skill dispatches the arbiter subagent and must wait for it to write `claude.json` before re-running with `--claude-only`.
 
 **Issue: Iteration loop doesn't converge**
 
@@ -487,7 +553,9 @@ Monitor(command: "sleep 35 && echo READY", timeout: 45)
 
 ## Version History
 
-**v3.2 (current, 2026-05-25):** MEDIUM-trajectory tracking + early-stop. Added `medium_issues_history` field and a parallel trajectory check that fires when `progress_status == medium_issues_remaining`. Previously the trajectory check only watched HIGH, leaving MEDIUM-only states with no circuit breaker — they always ground to `max_iterations` (observed in growth-engine task-13-content-audit, iter 3/3, history `[2,0]` with 3 unresolved MEDIUMs). Default `max_iterations` raised 3 → 5 now that both severities have trajectory protection; the v3.1 bimodal-convergence hypothesis didn't account for slow MEDIUM convergence with HIGH already resolved.
+**v3.3 (current, 2026-06-10):** Fresh-subagent arbiter. Arbitration moved from the calling session (author-as-judge) to a freshly dispatched Claude subagent pinned to `model: fable`, with a context firewall (fixed template + two file paths only), arbiter model-self-report for pin observability, and two-branch fail-closed retry handling. Structurally removes the class-roll-style self-pass bias **for the compliant path** (the verdict-renderer has no authorship stake); protocol compliance itself remains prose-enforced defense-in-depth. The loop's `claude.json` contract is unchanged — only who writes the file. Includes the ADR 0003 Decision 7 script change (landed same day): verdict freshness re-keyed from design `spec_hash` alone to current-run `run_id` + `spec_hash` (`validate_claude_verdict_freshness` in `lib/validation.sh`, enforced at both the iteration-cleanup and `--claude-only` acceptance sites; the old guard could converge a re-run on a verdict that never saw the current reviewer artifacts, and its `-n` guard let `run_id`-less verdicts pass). Tests: `tests/test-claude-verdict-freshness.sh`. Dogfooded on ADR 0003 itself (2 iterations, FULL 3/3 coverage, Fable arbiter both rounds). See ADR 0003.
+
+**v3.2 (2026-05-25):** MEDIUM-trajectory tracking + early-stop. Added `medium_issues_history` field and a parallel trajectory check that fires when `progress_status == medium_issues_remaining`. Previously the trajectory check only watched HIGH, leaving MEDIUM-only states with no circuit breaker — they always ground to `max_iterations` (observed in growth-engine task-13-content-audit, iter 3/3, history `[2,0]` with 3 unresolved MEDIUMs). Default `max_iterations` raised 3 → 5 now that both severities have trajectory protection; the v3.1 bimodal-convergence hypothesis didn't account for slow MEDIUM convergence with HIGH already resolved.
 
 **v3.1 (2026-04-29):** Category-aware convergence. Plan-blocking vs. TDD-discoverable category split. Scope-expansion findings auto-deferred to `follow-up-issues.md`. Trajectory-aware early-stop after 2 iterations of no improvement (HIGH only). Default `max_iterations` reduced from 5 to 3 (later reverted in v3.2). Claude `validation_notes` surfaced in user output.
 

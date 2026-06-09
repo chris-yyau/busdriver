@@ -399,19 +399,13 @@ while true; do
   else
 
   # ── Critic #1: Clean stale outputs from previous iteration ────────
-  # Preserve claude.json if it matches the current spec hash — the agent
-  # may have written it in a prior run but couldn't get the loop to consume
-  # it (non-interactive deadlock). Cleaning it forces a redundant review cycle.
-  PRESERVE_CLAUDE=false
-  CLAUDE_FILE_PATH="$(get_review_file "claude.json")"
-  if [[ -f "$CLAUDE_FILE_PATH" ]]; then
-    CLAUDE_SPEC_HASH=$(jq -r '.metadata.spec_hash // ""' "$CLAUDE_FILE_PATH" 2>/dev/null || echo "")
-    if [[ -n "$CLAUDE_SPEC_HASH" && "$CLAUDE_SPEC_HASH" == "$SPEC_HASH" ]]; then
-      PRESERVE_CLAUDE=true
-      log_info "Preserving claude.json (spec_hash matches current design)"
-    fi
-  fi
-
+  # Decision 7 (ADR 0003): claude.json is NOT preserved across full iterations.
+  # The reviewer artifacts are deleted and re-rolled below, so any existing
+  # verdict was rendered against reviews that are about to disappear —
+  # the pre-v3.3 spec_hash-only preservation let a stale verdict converge a
+  # re-run on reviews it never saw. The legitimate pre-written-verdict flow is
+  # --claude-only, which skips this cleanup and recovers run_id from the same
+  # reviewer artifacts the verdict actually validated.
   log_info "Cleaning stale artifacts..."
   rm -f "$(get_review_file "agy.json")" \
         "$(get_review_file "agy-raw.txt")" \
@@ -422,6 +416,7 @@ while true; do
         "$(get_review_file "grok.json")" \
         "$(get_review_file "grok-raw.txt")" \
         "$(get_review_file "grok.json.pending")" \
+        "$(get_review_file "claude.json")" \
         "$(get_review_file "claude.json.pending")" \
         "$(get_review_file "claude-validation-prompt.txt")" \
         "$(get_review_file "consensus.json")" \
@@ -430,9 +425,6 @@ while true; do
         "$(get_review_file "autofix-summary.json")" \
         "$(get_review_file "report.txt")" \
         2>/dev/null || true
-  if [[ "$PRESERVE_CLAUDE" == "false" ]]; then
-    rm -f "$CLAUDE_FILE_PATH" 2>/dev/null || true
-  fi
   log_info "  Stale artifacts cleared"
 
   # Read design file content and build prompt
@@ -874,20 +866,18 @@ EOF
   fi
 
   # Freshness check on Claude output (Critic #2)
-  # Accept claude.json from a different run_id if spec_hash matches — the design
-  # hasn't changed, so the validation is still relevant. This enables the preserved-
-  # claude.json flow where the agent wrote claude.json in a prior run.
-  CLAUDE_RUN_ID=$(jq -r '.metadata.run_id // ""' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo "")
-  CLAUDE_SPEC_HASH_CHECK=$(jq -r '.metadata.spec_hash // ""' "$CLAUDE_OUTPUT_FILE" 2>/dev/null || echo "")
-  if [[ -n "$CLAUDE_RUN_ID" && "$CLAUDE_RUN_ID" != "$RUN_ID" ]]; then
-    if [[ -n "$CLAUDE_SPEC_HASH_CHECK" && "$CLAUDE_SPEC_HASH_CHECK" == "$SPEC_HASH" ]]; then
-      log_info "  Claude output from different run but spec_hash matches — accepting"
-    else
-      log_error "STALE CLAUDE OUTPUT: run_id=$CLAUDE_RUN_ID, expected $RUN_ID (spec_hash mismatch)"
-      log_error "Re-run Claude validation against current Agy/Codex outputs."
-      mark_review_complete "stale_claude_output"
-      exit 1
-    fi
+  # Decision 7 (ADR 0003): the verdict must come from the CURRENT run, with a
+  # matching spec_hash. The pre-v3.3 branch accepted a different-run verdict on
+  # spec_hash match alone — but reviewer artifacts re-roll every full run, so
+  # that let a verdict pass judgment on reviews it never saw. --claude-only
+  # recovers RUN_ID from the reviewer artifacts on disk, so the legitimate
+  # pre-written-verdict flow still matches; anything else is stale (fail-closed,
+  # including missing metadata — the old -n guard let run_id-less verdicts pass).
+  if ! FRESHNESS_REASON=$(validate_claude_verdict_freshness "$CLAUDE_OUTPUT_FILE" "$RUN_ID" "$SPEC_HASH" 2>&1); then
+    log_error "STALE CLAUDE OUTPUT: $FRESHNESS_REASON"
+    log_error "Re-dispatch the arbiter against the current validation prompt, then re-run with --claude-only."
+    mark_review_complete "stale_claude_output"
+    exit 1
   fi
 
   # Validate Claude JSON before parsing (fail-closed)

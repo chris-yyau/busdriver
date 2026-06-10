@@ -45,10 +45,18 @@ writes `claude.json`. The script never cared who writes the file.
    canonical field `executed_model: <model-name>` (e.g.,
    `"executed_model": "fable"`) — a fact the subagent knows from its own
    runtime identity, needing nothing from the caller. The caller records the
-   pin status (`pinned` vs `opus_fallback` vs `inherited_fallback`) on its own side (its report /
-   review state, never by editing `claude.json`) and compares post-hoc against
-   the `executed_model` field, so a rejected or silently ignored pin is
-   observable.
+   pin status on its own side (its report / review state, never by editing
+   `claude.json`) and compares post-hoc against the `executed_model` field, so
+   a rejected or silently ignored pin is observable. Pin status values:
+   `pinned` — initial `fable` dispatch succeeded (record this on success, before
+   any fallback); `opus_fallback` — `fable` was unsupported, retried with
+   `opus`; `inherited_fallback` — both `fable` and `opus` were unsupported,
+   session model inherited; `pin_ignored` — dispatch appeared to succeed but
+   the arbiter's self-reported `executed_model` mismatches the expected pin
+   (overwrite the previously-recorded status and set `run_degraded=true`). The
+   first three values are set during dispatch; `pin_ignored` is set during the
+   post-dispatch check (step 3 in the SKILL.md protocol) and supersedes
+   whichever of the first three was recorded.
 3. **Context firewall:** the dispatch prompt is the fixed template plus
    exactly two absolute paths — the validation prompt file and the
    `claude.json` output path. Nothing run-specific beyond the two paths may be

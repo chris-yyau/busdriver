@@ -212,7 +212,7 @@ calling session MUST:
 
 1. **Dispatch a fresh arbiter subagent** via the Agent tool:
    - `subagent_type`: `general-purpose` (needs Read/Grep/Glob for codebase validation plus Write for `claude.json`)
-   - `model`: `fable` — pinned, so arbiter quality does not depend on what model the calling session happens to run. (Verified Agent-tool model value — observed accepted dispatch 2026-06-10.) If the dispatch fails with a recognized unsupported-model error, walk the fallback chain: retry with `model: opus` (the strongest available pin — preserves the pin's purpose if the `fable` tier is renamed or retired) and record `model_pin_status=opus_fallback`; if that is also rejected as unsupported, retry with `model` omitted (inherit the session model) and record `model_pin_status=inherited_fallback`. Both records are caller-side (your report / review state — NEVER by editing `claude.json`).
+   - `model`: `fable` — pinned, so arbiter quality does not depend on what model the calling session happens to run. (Verified Agent-tool model value — observed accepted dispatch 2026-06-10.) On successful dispatch, record `model_pin_status=pinned` caller-side. If the dispatch fails with a recognized unsupported-model error, walk the fallback chain: retry with `model: opus` (the strongest available pin — preserves the pin's purpose if the `fable` tier is renamed or retired) and record `model_pin_status=opus_fallback`; if that is also rejected as unsupported, retry with `model` omitted (inherit the session model) and record `model_pin_status=inherited_fallback`. All records are caller-side (your report / review state — NEVER by editing `claude.json`). The three values are mutually exclusive; set exactly one per run.
    - Prompt — exactly this fixed template, two absolute paths substituted, nothing more:
 
      > You are the design-review arbiter. Read the validation prompt at
@@ -235,9 +235,11 @@ calling session MUST:
 3. **Post-dispatch check** (calling session, cheap): `claude.json` exists, parses as JSON,
    has `status` of `PASS` or `FAIL`, and `metadata.run_id` matches the current run. Compare
    the arbiter's self-reported model in `validation_notes` against the expected pin (the
-   model actually dispatched, after any step-1 fallback) — on mismatch, record
-   `model_pin_status` caller-side and surface the run as degraded. Then
-   re-run the loop with `--claude-only`. (The script re-validates fully — this check just
+   model actually dispatched, after any step-1 fallback) — on mismatch, **overwrite**
+   `model_pin_status` with `pin_ignored` (the arbiter ran on a different model than
+   requested, so the previously-recorded status is no longer accurate) and additionally
+   set `run_degraded=true` in your caller-side state. Then re-run the loop with
+   `--claude-only`. (The script re-validates fully — this check just
    avoids burning a loop invocation on a garbage file.)
 
 4. **Failure handling (fail-closed), two branches:**

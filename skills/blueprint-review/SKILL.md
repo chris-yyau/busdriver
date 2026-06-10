@@ -212,7 +212,7 @@ calling session MUST:
 
 1. **Dispatch a fresh arbiter subagent** via the Agent tool:
    - `subagent_type`: `general-purpose` (needs Read/Grep/Glob for codebase validation plus Write for `claude.json`)
-   - `model`: `fable` — pinned, so arbiter quality does not depend on what model the calling session happens to run. (Verified Agent-tool model value — observed accepted dispatch 2026-06-10.) If the dispatch fails with a recognized unsupported-model error, retry once with `model` omitted (inherit the session model) and record `model_pin_status=inherited_fallback` caller-side (your report / review state — NEVER by editing `claude.json`).
+   - `model`: `fable` — pinned, so arbiter quality does not depend on what model the calling session happens to run. (Verified Agent-tool model value — observed accepted dispatch 2026-06-10.) On successful dispatch, record `model_pin_status=pinned` caller-side. If the dispatch fails with a recognized unsupported-model error, walk the fallback chain: retry with `model: opus` (the strongest available pin — preserves the pin's purpose if the `fable` tier is renamed or retired) and record `model_pin_status=opus_fallback`; if that is also rejected as unsupported, retry with `model` omitted (inherit the session model) and record `model_pin_status=inherited_fallback`. All records are caller-side (your report / review state — NEVER by editing `claude.json`). The three values are mutually exclusive; set exactly one per run.
    - Prompt — exactly this fixed template, two absolute paths substituted, nothing more:
 
      > You are the design-review arbiter. Read the validation prompt at
@@ -234,14 +234,18 @@ calling session MUST:
 
 3. **Post-dispatch check** (calling session, cheap): `claude.json` exists, parses as JSON,
    has `status` of `PASS` or `FAIL`, and `metadata.run_id` matches the current run. Compare
-   the arbiter's self-reported model in `validation_notes` against the expected pin — on
-   mismatch, record `model_pin_status` caller-side and surface the run as degraded. Then
-   re-run the loop with `--claude-only`. (The script re-validates fully — this check just
+   the arbiter's self-reported model in `validation_notes` against the expected pin (the
+   model actually dispatched, after any step-1 fallback) — on mismatch, **overwrite**
+   `model_pin_status` with `pin_ignored` (the arbiter ran on a different model than
+   requested, so the previously-recorded status is no longer accurate) and additionally
+   set `run_degraded=true` in your caller-side state. Then re-run the loop with
+   `--claude-only`. (The script re-validates fully — this check just
    avoids burning a loop invocation on a garbage file.)
 
 4. **Failure handling (fail-closed), two branches:**
-   - *Unsupported model:* a recognized unsupported-model error from the Agent tool → retry
-     once with `model` omitted (see step 1) — this branch does NOT consume the retry below.
+   - *Unsupported model:* a recognized unsupported-model error from the Agent tool → walk
+     the step-1 fallback chain (`fable` → `opus` → inherit) — these retries do NOT consume
+     the retry below.
    - *Everything else:* if the subagent fails or writes invalid JSON, delete the bad
      `claude.json` and dispatch ONE fresh retry. If the retry also fails, STOP and report
      to the user — do NOT silently arbitrate inline. Inline arbitration by the calling
@@ -557,7 +561,7 @@ Monitor(command: "sleep 35 && echo READY", timeout: 45)
 
 ## Version History
 
-**v3.3 (current, 2026-06-10):** Fresh-subagent arbiter. Arbitration moved from the calling session (author-as-judge) to a freshly dispatched Claude subagent pinned to `model: fable`, with a context firewall (fixed template + two file paths only), arbiter model-self-report for pin observability, and two-branch fail-closed retry handling. Structurally removes the class-roll-style self-pass bias **for the compliant path** (the verdict-renderer has no authorship stake); protocol compliance itself remains prose-enforced defense-in-depth. The loop's `claude.json` contract is unchanged — only who writes the file. Includes the ADR 0003 Decision 7 script change (landed same day): verdict freshness re-keyed from design `spec_hash` alone to current-run `run_id` + `spec_hash` (`validate_claude_verdict_freshness` in `lib/validation.sh`, enforced at both the iteration-cleanup and `--claude-only` acceptance sites; the old guard could converge a re-run on a verdict that never saw the current reviewer artifacts, and its `-n` guard let `run_id`-less verdicts pass). Tests: `tests/test-claude-verdict-freshness.sh`. Dogfooded on ADR 0003 itself (2 iterations, FULL 3/3 coverage, Fable arbiter both rounds). See ADR 0003.
+**v3.3 (current, 2026-06-10; fallback chain added 2026-06-11):** Fresh-subagent arbiter. Arbitration moved from the calling session (author-as-judge) to a freshly dispatched Claude subagent pinned to `model: fable`, with a context firewall (fixed template + two file paths only), arbiter model-self-report for pin observability, two-branch fail-closed retry handling, and an explicit model fallback chain (`fable` → `opus` → inherit) so a renamed/retired tier degrades to the strongest available pin rather than the session model. Structurally removes the class-roll-style self-pass bias **for the compliant path** (the verdict-renderer has no authorship stake); protocol compliance itself remains prose-enforced defense-in-depth. The loop's `claude.json` contract is unchanged — only who writes the file. Includes the ADR 0003 Decision 7 script change (landed same day): verdict freshness re-keyed from design `spec_hash` alone to current-run `run_id` + `spec_hash` (`validate_claude_verdict_freshness` in `lib/validation.sh`, enforced at both the iteration-cleanup and `--claude-only` acceptance sites; the old guard could converge a re-run on a verdict that never saw the current reviewer artifacts, and its `-n` guard let `run_id`-less verdicts pass). Tests: `tests/test-claude-verdict-freshness.sh`. Dogfooded on ADR 0003 itself (2 iterations, FULL 3/3 coverage, Fable arbiter both rounds). See ADR 0003.
 
 **v3.2 (2026-05-25):** MEDIUM-trajectory tracking + early-stop. Added `medium_issues_history` field and a parallel trajectory check that fires when `progress_status == medium_issues_remaining`. Previously the trajectory check only watched HIGH, leaving MEDIUM-only states with no circuit breaker — they always ground to `max_iterations` (observed in growth-engine task-13-content-audit, iter 3/3, history `[2,0]` with 3 unresolved MEDIUMs). Default `max_iterations` raised 3 → 5 now that both severities have trajectory protection; the v3.1 bimodal-convergence hypothesis didn't account for slow MEDIUM convergence with HIGH already resolved.
 

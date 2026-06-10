@@ -45,10 +45,19 @@ writes `claude.json`. The script never cared who writes the file.
    canonical field `executed_model: <model-name>` (e.g.,
    `"executed_model": "fable"`) — a fact the subagent knows from its own
    runtime identity, needing nothing from the caller. The caller records the
-   pin status (`pinned` vs `inherited_fallback`) on its own side (its report /
-   review state, never by editing `claude.json`) and compares post-hoc against
-   the `executed_model` field, so a rejected or silently ignored pin is
-   observable.
+   pin status on its own side (its report / review state, never by editing
+   `claude.json`) and compares post-hoc against the `executed_model` field, so
+   a rejected or silently ignored pin is observable. Pin status values:
+   `pinned` — initial `fable` dispatch succeeded (record this on success, before
+   any fallback); `opus_fallback` — `fable` was unsupported, retried with
+   `opus`; `inherited_fallback` — both `fable` and `opus` were unsupported,
+   session model inherited; `pin_ignored` — dispatch appeared to succeed but
+   the arbiter's self-reported `executed_model` mismatches the model actually
+   dispatched (after any step-1 fallback)
+   (overwrite the previously-recorded status and set `run_degraded=true`). The
+   first three values are set during dispatch; `pin_ignored` is set during the
+   post-dispatch check (step 3 in the SKILL.md protocol) and supersedes
+   whichever of the first three was recorded.
 3. **Context firewall:** the dispatch prompt is the fixed template plus
    exactly two absolute paths — the validation prompt file and the
    `claude.json` output path. Nothing run-specific beyond the two paths may be
@@ -58,9 +67,11 @@ writes `claude.json`. The script never cared who writes the file.
    is part of the fixed shape, not a per-run addition.
 4. **Fail-closed failure handling, two branches:**
    - *Unsupported model:* a recognized unsupported-model error from the Agent
-     tool → retry once with `model` omitted (inherit the session model),
-     record `model_pin_status=inherited_fallback` caller-side, and surface the
-     run as degraded.
+     tool → walk the fallback chain: retry with `model: opus` (strongest
+     available pin, `model_pin_status=opus_fallback`); if that is also
+     rejected, retry with `model` omitted (inherit the session model,
+     `model_pin_status=inherited_fallback`). Record each step caller-side and
+     surface any fallback run as degraded.
    - *Everything else:* invalid/missing subagent output → delete and retry
      ONCE with a fresh subagent; second failure → stop and report. Inline
      arbitration by the calling session is allowed only with explicit user
@@ -172,8 +183,10 @@ script-level enforcement listed in Alternatives and Revisit triggers.
   described in Alternatives.
 - The `fable` model tier is renamed/retired, or the pin is rejected or
   silently ignored in practice (arbiter's self-reported model ≠ expected pin)
-  → update the pin; the protocol already defines the fallback (inherit +
-  caller-side record + arbiter self-report comparison).
+  → update the pin; the protocol already defines an explicit fallback chain
+  (`fable` → `opus` → inherit, each step recorded caller-side) plus the
+  arbiter self-report comparison, so a retired tier degrades to the
+  strongest available pin rather than straight to the session model.
 - A stale-verdict convergence is observed despite the Decision 7 guard → the
   conservative arm (current-run `run_id`) has a bypass; escalate to the full
   context-hash arm (hash of design + all three reviewer JSONs + coverage).

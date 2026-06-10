@@ -52,7 +52,8 @@ writes `claude.json`. The script never cared who writes the file.
    any fallback); `opus_fallback` — `fable` was unsupported, retried with
    `opus`; `inherited_fallback` — both `fable` and `opus` were unsupported,
    session model inherited; `pin_ignored` — dispatch appeared to succeed but
-   the arbiter's self-reported `executed_model` mismatches the expected pin
+   the arbiter's self-reported `executed_model` mismatches the model actually
+   dispatched (after any step-1 fallback)
    (overwrite the previously-recorded status and set `run_degraded=true`). The
    first three values are set during dispatch; `pin_ignored` is set during the
    post-dispatch check (step 3 in the SKILL.md protocol) and supersedes

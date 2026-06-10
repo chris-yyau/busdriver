@@ -28,6 +28,28 @@ validate_file_not_empty() {
   return 0
 }
 
+# Decision 7 (ADR 0003): arbiter-verdict freshness.
+# A claude.json is fresh ONLY for the run whose validation prompt produced it.
+# Reviewer artifacts re-roll every full iteration, so a verdict keyed on
+# spec_hash alone can pass judgment on reviews it never saw. Require BOTH a
+# current-run run_id AND a matching spec_hash — fail-closed: missing or
+# unparseable metadata is stale, never a pass.
+validate_claude_verdict_freshness() {
+  local file="$1" expected_run_id="$2" expected_spec_hash="$3"
+  local run_id spec_hash
+  run_id=$(jq -r '.metadata.run_id // ""' "$file" 2>/dev/null || echo "")
+  spec_hash=$(jq -r '.metadata.spec_hash // ""' "$file" 2>/dev/null || echo "")
+  if [[ -z "$run_id" || "$run_id" != "$expected_run_id" ]]; then
+    echo "stale run_id: verdict has '${run_id:-<missing>}', current run is '$expected_run_id'" >&2
+    return 1
+  fi
+  if [[ -z "$spec_hash" || "$spec_hash" != "$expected_spec_hash" ]]; then
+    echo "stale spec_hash: verdict has '${spec_hash:-<missing>}', current design is '$expected_spec_hash'" >&2
+    return 1
+  fi
+  return 0
+}
+
 # Validate JSON format
 validate_json() {
   local json_string="$1"

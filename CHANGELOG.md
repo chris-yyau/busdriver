@@ -1,3 +1,10 @@
+# [1.61.0](https://github.com/chris-yyau/busdriver/compare/v1.60.0...v1.61.0) (2026-06-10)
+
+
+### Features
+
+* **blueprint-review:** explicit arbiter model fallback chain (fable -> opus -> inherit) ([#193](https://github.com/chris-yyau/busdriver/issues/193)) ([6a4f43a](https://github.com/chris-yyau/busdriver/commit/6a4f43a750cceb80785a2692d2c0f468bc4cd5cd))
+
 # [1.60.0](https://github.com/chris-yyau/busdriver/compare/v1.59.0...v1.60.0) (2026-06-10)
 
 

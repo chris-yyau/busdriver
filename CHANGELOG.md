@@ -1,3 +1,10 @@
+# [1.60.0](https://github.com/chris-yyau/busdriver/compare/v1.59.0...v1.60.0) (2026-06-10)
+
+
+### Features
+
+* **blueprint-review:** fresh fable subagent arbiter + verdict freshness re-key (adr 0003) ([#191](https://github.com/chris-yyau/busdriver/issues/191)) ([4568192](https://github.com/chris-yyau/busdriver/commit/45681923899a7ec1e25abad22e783a3ef562ae40))
+
 # [1.59.0](https://github.com/chris-yyau/busdriver/compare/v1.58.0...v1.59.0) (2026-06-07)
 
 

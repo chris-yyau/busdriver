@@ -1,3 +1,10 @@
+## [1.61.1](https://github.com/chris-yyau/busdriver/compare/v1.61.0...v1.61.1) (2026-06-11)
+
+
+### Bug Fixes
+
+* **pre-pr-gate:** defer PR marker consumption until gh pr create succeeds ([#194](https://github.com/chris-yyau/busdriver/issues/194)) ([19aac01](https://github.com/chris-yyau/busdriver/commit/19aac01a7701bf0fe6293236c82883dd65ce73a6))
+
 # [1.61.0](https://github.com/chris-yyau/busdriver/compare/v1.60.0...v1.61.0) (2026-06-10)
 
 

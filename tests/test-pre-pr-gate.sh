@@ -60,12 +60,16 @@ PR_CREATE_CMD="cd $TMPREPO && gh pr create --fill"
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
-# Run the gate and report allow|block based on stdout decision JSON.
+# Run the gate and report block|crash|allow. A crash (gate failed to execute:
+# missing script, interpreter error before the ERR trap) exits non-zero with
+# no output — do NOT mask it as "allow", which would hide a broken gate.
 run_gate() {
-    local input="$1" output
-    output=$(printf '%s' "$input" | env -u SKIP_LITMUS -u LITMUS_PR_BASE bash "$GATE_SCRIPT" 2>/dev/null || true)
+    local input="$1" output exit_code
+    output=$(printf '%s' "$input" | env -u SKIP_LITMUS -u LITMUS_PR_BASE bash "$GATE_SCRIPT" 2>/dev/null) && exit_code=0 || exit_code=$?
     if printf '%s' "$output" | grep -q '"block"'; then
         echo "block"
+    elif [ "$exit_code" -ne 0 ] && [ -z "$output" ]; then
+        echo "crash"
     else
         echo "allow"
     fi
@@ -131,6 +135,22 @@ EXISTS_NOCODE_INPUT=$(printf '{"tool_name":"Bash","tool_input":{"command":"%s"},
 run_post_hook "$EXISTS_NOCODE_INPUT"
 got=$(marker_state)
 check "post-hook preserves on 'already exists' URL with no exit_code" "present" "$got"
+
+# ── 4c. Post-hook preserves on masked exit code (gh ... || true) ──────
+# A compound command exits 0 even when gh failed; the 'already exists'
+# failure signature must still block consumption despite exit_code == 0.
+printf '%s' "$VALID_HASH" > "$MARKER"
+MASKED_INPUT=$(printf '{"tool_name":"Bash","tool_input":{"command":"%s || true"},"tool_output":{"output":"a pull request for branch already exists:\\nhttps://github.com/owner/repo/pull/7","exit_code":0}}' "$PR_CREATE_CMD")
+run_post_hook "$MASKED_INPUT"
+got=$(marker_state)
+check "post-hook preserves on masked exit code (failure sig wins over exit 0)" "present" "$got"
+
+# ── 4d. Post-hook consumes on GHES / custom-host success URL ──────────
+printf '%s' "$VALID_HASH" > "$MARKER"
+GHES_INPUT=$(printf '{"tool_name":"Bash","tool_input":{"command":"%s"},"tool_output":{"output":"https://github.example.com/owner/repo/pull/42","exit_code":0}}' "$PR_CREATE_CMD")
+run_post_hook "$GHES_INPUT"
+got=$(marker_state)
+check "post-hook consumes on GHES/custom-host PR URL" "absent" "$got"
 
 # ── 5. Post-hook preserves marker on nonzero exit despite a printed URL ─
 printf '%s' "$VALID_HASH" > "$MARKER"

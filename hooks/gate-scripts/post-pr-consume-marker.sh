@@ -14,8 +14,12 @@
 # for the commit gate.
 #
 # Success detection (positive-only, biased toward preserving the marker):
-#   - exit code known   → require exit code 0 AND a PR URL
-#   - exit code unknown → require a PR URL AND no known failure signature
+#   - require a PR URL in the output (host-agnostic — github.com or GHES)
+#   - require NO known failure signature, honored even when exit code is 0
+#     (a compound command like `gh pr create --fill || true` exits 0 even when
+#     gh failed and only printed the "already exists: <url>" diagnostic, so the
+#     exit code alone cannot be trusted — the failure signature still must clear)
+#   - require exit code 0 when the harness reports one
 # A failed `gh pr create` can still print a URL — notably the "already exists"
 # diagnostic echoes the existing PR's URL on its own line — so a URL alone is
 # never treated as proof of success. When success is not confirmed the marker
@@ -88,21 +92,28 @@ try:
                 exit_code = out[k]
                 break
 
-    # A PR URL in the output is necessary but not sufficient: a failed
-    # gh pr create can still print one (e.g. the 'already exists' diagnostic).
-    # A URL is always required. When an exit code is known it must also be 0;
-    # when unknown, additionally require the absence of any failure signature.
-    has_pr_url = bool(re.search(r'https://github\.com/[^/]+/[^/]+/pull/\d+', output_text))
+    # PR URL — host-agnostic (github.com OR GitHub Enterprise / custom hosts),
+    # so a successful PR creation on GHES is not misclassified and left
+    # unconsumed by a hardcoded github.com match.
+    has_pr_url = bool(re.search(r'https?://[^/\s]+/[^/\s]+/[^/\s]+/pull/\d+', output_text))
+    # Failure signatures are honored UNCONDITIONALLY — including when exit code
+    # is 0 — because a compound command can mask gh's real exit status (e.g.
+    # 'gh pr create --fill || true' exits 0 even when gh failed and only printed
+    # the 'already exists: <url>' diagnostic). Without this, exit 0 + URL would
+    # wrongly consume the marker.
     failure_sig = bool(re.search(
         r'already exists|could not|failed to|create failed|GraphQL|HTTP [45][0-9][0-9]|must first be pushed|no commits between|^error:|^fatal:',
         output_text, re.IGNORECASE | re.MULTILINE))
+    # Exit code, when the harness reports one, must be 0; unknown/unparseable
+    # falls back to the URL + failure-signature signals above.
     if exit_code is not None:
         try:
-            succeeded = (int(exit_code) == 0) and has_pr_url
+            exit_ok = int(exit_code) == 0
         except (TypeError, ValueError):
-            succeeded = has_pr_url and not failure_sig
+            exit_ok = True
     else:
-        succeeded = has_pr_url and not failure_sig
+        exit_ok = True
+    succeeded = has_pr_url and exit_ok and not failure_sig
 
     print('yes' if succeeded else 'no')
     print(target_dir)

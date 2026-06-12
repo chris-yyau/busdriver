@@ -62,6 +62,7 @@ done
   echo "GW_API_KEY: ${BLUEPRINT_ARBITER_GATEWAY_API_KEY:-}"
   echo "CUSTOM_HEADERS: ${ANTHROPIC_CUSTOM_HEADERS:-}"
   echo "USE_BEDROCK: ${CLAUDE_CODE_USE_BEDROCK:-}"
+  echo "USE_MANTLE: ${CLAUDE_CODE_USE_MANTLE:-}"
 } > "$STUB_LOG"
 printf '%s' "$prompt" > "$STUB_PROMPT"
 case "${STUB_BEHAVIOR:-good}" in
@@ -133,12 +134,13 @@ check "subprocess sees gateway base URL" "yes" "$(grep -q 'BASE_URL: https://gat
 check "subprocess sees AUTH_TOKEN" "yes" "$(grep -q 'AUTH_TOKEN: tok-secret-123' "$STUB_LOG" && echo yes || echo no)"
 check "subprocess sees empty API_KEY" "yes" "$(grep -q '^API_KEY: $' "$STUB_LOG" && echo yes || echo no)"
 
-rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_API_KEY=key-secret-456 ANTHROPIC_AUTH_TOKEN=parent-shell-token ANTHROPIC_CUSTOM_HEADERS=x-other-proxy-secret:abc CLAUDE_CODE_USE_BEDROCK=1")
+rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_API_KEY=key-secret-456 ANTHROPIC_AUTH_TOKEN=parent-shell-token ANTHROPIC_CUSTOM_HEADERS=x-other-proxy-secret:abc CLAUDE_CODE_USE_BEDROCK=1 CLAUDE_CODE_USE_MANTLE=1")
 check "API_KEY dispatch succeeds" 0 "$rc"
 check "subprocess sees API_KEY" "yes" "$(grep -q 'API_KEY: key-secret-456' "$STUB_LOG" && echo yes || echo no)"
 check "parent-shell ANTHROPIC_AUTH_TOKEN is unset for subprocess (env -u)" "yes" "$(grep -q '^AUTH_TOKEN: $' "$STUB_LOG" && echo yes || echo no)"
 check "parent-shell ANTHROPIC_CUSTOM_HEADERS is unset for subprocess" "yes" "$(grep -q '^CUSTOM_HEADERS: $' "$STUB_LOG" && echo yes || echo no)"
 check "parent-shell CLAUDE_CODE_USE_BEDROCK is unset for subprocess (provider routing)" "yes" "$(grep -q '^USE_BEDROCK: $' "$STUB_LOG" && echo yes || echo no)"
+check "parent-shell CLAUDE_CODE_USE_MANTLE is unset for subprocess (provider routing)" "yes" "$(grep -q '^USE_MANTLE: $' "$STUB_LOG" && echo yes || echo no)"
 
 rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok-secret-123 BLUEPRINT_ARBITER_GATEWAY_API_KEY=key-secret-456")
 check "both credentials set: AUTH_TOKEN wins" "yes" "$(grep -q 'AUTH_TOKEN: tok-secret-123' "$STUB_LOG" && echo yes || echo no)"

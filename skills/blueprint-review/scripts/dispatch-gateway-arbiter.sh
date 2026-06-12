@@ -48,6 +48,16 @@ die()  { echo "gateway-arbiter: ERROR: $1" >&2; exit 1; }
 [[ $# -eq 2 ]] || die "usage: dispatch-gateway-arbiter.sh <validation-prompt-path> <claude-json-output-path>"
 PROMPT_FILE="$1"
 OUTPUT_FILE="$2"
+
+# Opt-in check FIRST (exit 3 = not configured, not an error) so an
+# unconfigured environment never produces a failure the caller must triage —
+# all path validation runs after this gate for the same reason.
+BASE_URL="${BLUEPRINT_ARBITER_GATEWAY_BASE_URL:-}"
+AUTH_TOKEN="${BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN:-}"
+API_KEY="${BLUEPRINT_ARBITER_GATEWAY_API_KEY:-}"
+[[ -n "$BASE_URL" ]] || skip "BLUEPRINT_ARBITER_GATEWAY_BASE_URL not set"
+[[ -n "$AUTH_TOKEN" || -n "$API_KEY" ]] || skip "no gateway credential set (need AUTH_TOKEN or API_KEY)"
+
 [[ "$PROMPT_FILE" == /* ]] || die "validation prompt path must be absolute: $PROMPT_FILE"
 [[ "$OUTPUT_FILE" == /* ]] || die "claude.json output path must be absolute: $OUTPUT_FILE"
 # Both paths are spliced verbatim into the fixed dispatch template below, so
@@ -66,14 +76,6 @@ for _path in "$PROMPT_FILE" "$OUTPUT_FILE"; do
     die "path must not contain control characters"
   fi
 done
-
-# Opt-in check FIRST (exit 3 = not configured, not an error) so an
-# unconfigured environment never produces a failure the caller must triage.
-BASE_URL="${BLUEPRINT_ARBITER_GATEWAY_BASE_URL:-}"
-AUTH_TOKEN="${BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN:-}"
-API_KEY="${BLUEPRINT_ARBITER_GATEWAY_API_KEY:-}"
-[[ -n "$BASE_URL" ]] || skip "BLUEPRINT_ARBITER_GATEWAY_BASE_URL not set"
-[[ -n "$AUTH_TOKEN" || -n "$API_KEY" ]] || skip "no gateway credential set (need AUTH_TOKEN or API_KEY)"
 
 [[ -f "$PROMPT_FILE" && -r "$PROMPT_FILE" ]] || die "validation prompt not found or unreadable: $PROMPT_FILE"
 [[ -s "$PROMPT_FILE" ]] || die "validation prompt is empty: $PROMPT_FILE"
@@ -116,12 +118,17 @@ else
 fi
 
 echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${TIMEOUT_S}s)" >&2
+# --bare skips auto-discovery of hooks, skills, plugins, MCP servers, auto
+# memory, and CLAUDE.md — the arbiter sees ONLY the fixed prompt plus the
+# codebase (no author-side CLAUDE.md context, and busdriver's own PreToolUse
+# gates can't fire inside the subprocess). It also skips OAuth/keychain
+# reads, so auth comes solely from the gateway env overrides above.
 # --tools RESTRICTS the tool set (the firewall); --allowedTools only
 # pre-approves, so without --tools a permissive user/project permission
 # config would let the arbiter reach Bash/Edit. --strict-mcp-config keeps
-# MCP servers from loading at all.
+# MCP servers from loading even if a future flag change re-enables discovery.
 DISPATCH_RC=0
-_portable_timeout "$TIMEOUT_S" env "${ENV_ARGS[@]}" "$CLAUDE_BIN" -p "$DISPATCH_PROMPT" \
+_portable_timeout "$TIMEOUT_S" env "${ENV_ARGS[@]}" "$CLAUDE_BIN" --bare -p "$DISPATCH_PROMPT" \
   --model "$MODEL" \
   --tools Read,Grep,Glob,Write \
   --allowedTools Read,Grep,Glob,Write \

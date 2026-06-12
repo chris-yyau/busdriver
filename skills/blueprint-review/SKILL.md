@@ -318,7 +318,10 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/dispatch-gateway-arb
 Run it from the project root (the arbiter's Read/Grep/Glob resolve there). The script enforces
 the protocol structurally: it builds the **same fixed template** from step 1 out of its two
 path arguments only (the caller cannot inject conversation context — the firewall is code, not
-prose), reads the gateway credentials from the environment itself (the calling session never
+prose), launches the subprocess with `--bare` (no auto-loaded CLAUDE.md/hooks/plugins/skills/
+memory — the arbiter sees only the fixed prompt plus the codebase — and no OAuth/keychain
+fallback, so auth comes solely from the gateway env), reads the gateway credentials from the
+environment itself (the calling session never
 handles the key, and the unused credential variable is explicitly unset for the subprocess so a
 parent-shell export cannot pair the wrong key with the gateway endpoint), and performs the
 cheap structural half of the step-3 post-check (exists / parses / PASS-or-FAIL / `run_id`

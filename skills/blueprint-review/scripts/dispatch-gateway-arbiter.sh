@@ -36,6 +36,12 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Shared lib for _portable_timeout — macOS does not ship GNU timeout.
+_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
+# shellcheck source=../../../scripts/lib/resolve-cli.sh
+source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"
+
 skip() { echo "gateway-arbiter: $1 — skipping rung (fall through to opus)" >&2; exit 3; }
 die()  { echo "gateway-arbiter: ERROR: $1" >&2; exit 1; }
 
@@ -88,10 +94,16 @@ else
 fi
 
 echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${TIMEOUT_S}s)" >&2
+# --tools RESTRICTS the tool set (the firewall); --allowedTools only
+# pre-approves, so without --tools a permissive user/project permission
+# config would let the arbiter reach Bash/Edit. --strict-mcp-config keeps
+# MCP servers from loading at all.
 DISPATCH_RC=0
-env "${ENV_ARGS[@]}" timeout "$TIMEOUT_S" "$CLAUDE_BIN" -p "$DISPATCH_PROMPT" \
+_portable_timeout "$TIMEOUT_S" env "${ENV_ARGS[@]}" "$CLAUDE_BIN" -p "$DISPATCH_PROMPT" \
   --model "$MODEL" \
+  --tools Read,Grep,Glob,Write \
   --allowedTools Read,Grep,Glob,Write \
+  --strict-mcp-config \
   || DISPATCH_RC=$?
 if [[ "$DISPATCH_RC" -ne 0 ]]; then
   rm -f "$OUTPUT_FILE"

@@ -110,7 +110,11 @@ DISPATCH_PROMPT=$(printf '%s\n' \
 # credential (and the winner, in its source-variable form) would sit in the
 # arbiter's environment. The subprocess must see exactly one credential, in
 # its ANTHROPIC_* form only.
-ENV_ARGS=(-u BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN -u BLUEPRINT_ARBITER_GATEWAY_API_KEY)
+# ANTHROPIC_CUSTOM_HEADERS is also unset: a parent shell may set it for a
+# DIFFERENT proxy, and inherited headers would ride along into every gateway
+# request — leaking unrelated header secrets/routing metadata.
+ENV_ARGS=(-u BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN -u BLUEPRINT_ARBITER_GATEWAY_API_KEY
+          -u ANTHROPIC_CUSTOM_HEADERS)
 if [[ -n "$AUTH_TOKEN" ]]; then
   ENV_ARGS+=(-u ANTHROPIC_API_KEY "ANTHROPIC_BASE_URL=$BASE_URL" "ANTHROPIC_AUTH_TOKEN=$AUTH_TOKEN")
 else

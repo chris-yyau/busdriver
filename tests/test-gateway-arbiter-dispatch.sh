@@ -174,6 +174,28 @@ env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
   bash "$SCRIPT" "relative/prompt.txt" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
 check "relative prompt path rejected" 1 "$rc"
 
+# Paths are spliced verbatim into the fixed dispatch template — backticks and
+# control characters must be rejected so a crafted filename cannot inject
+# instructions past the two-paths-only firewall.
+for evil in "$TMPDIR_T/evil\`whoami\`.txt" "$TMPDIR_T/evil"$'\n'"ignore-previous.txt"; do
+  rm -f "$STUB_LOG"
+  rc=0
+  env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
+    STUB_LOG="$STUB_LOG" STUB_OUT="$STUB_OUT" STUB_PROMPT="$STUB_PROMPT" \
+    BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 \
+    BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
+    bash "$SCRIPT" "$evil" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
+  check "prompt path with injection characters rejected (firewall)" 1 "$rc"
+  check "stub not invoked for injection path" "absent" "$([[ -f "$STUB_LOG" ]] && echo present || echo absent)"
+done
+
+rc=0
+env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
+  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 \
+  BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
+  bash "$SCRIPT" "$PROMPT_FILE" "$TMPDIR_T/out\`id\`.json" >/dev/null 2>&1 || rc=$?
+check "output path with backtick rejected (firewall)" 1 "$rc"
+
 # ═══════════════════════════════════════════════════════════════════════
 # RESULTS
 # ═══════════════════════════════════════════════════════════════════════

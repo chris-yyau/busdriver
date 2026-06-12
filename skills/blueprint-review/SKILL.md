@@ -217,7 +217,7 @@ calling session MUST:
      2. **Subscription opus** — retry with `model: opus` via the Agent tool (the strongest available *subscription* pin — preserves the pin's purpose if the `fable` tier is renamed or retired) and record `model_pin_status=opus_fallback`.
      3. **Inherit** — if `opus` is also rejected as unsupported, retry with `model` omitted (inherit the session model) and record `model_pin_status=inherited_fallback`.
 
-     All records are caller-side (your report / review state — NEVER by editing `claude.json`). The four values are mutually exclusive; set exactly one per run.
+     All records are caller-side (your report / review state — NEVER by editing `claude.json`). These four are the mutually exclusive **dispatch-time** statuses — set exactly one per run at dispatch. A fifth final-state value, `pin_ignored`, is never set at dispatch: step 3's post-dispatch check may later overwrite the dispatch-time status with it.
    - Prompt — exactly this fixed template, two absolute paths substituted, nothing more:
 
      > You are the design-review arbiter. Read the validation prompt at

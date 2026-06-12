@@ -50,6 +50,15 @@ PROMPT_FILE="$1"
 OUTPUT_FILE="$2"
 [[ "$PROMPT_FILE" == /* ]] || die "validation prompt path must be absolute: $PROMPT_FILE"
 [[ "$OUTPUT_FILE" == /* ]] || die "claude.json output path must be absolute: $OUTPUT_FILE"
+# Both paths are spliced verbatim into the fixed dispatch template below, so
+# reject characters that could smuggle extra instructions past the
+# two-paths-only firewall (backticks, newlines, any other control chars).
+for _path in "$PROMPT_FILE" "$OUTPUT_FILE"; do
+  [[ "$_path" != *\`* ]] || die "path must not contain backticks: $_path"
+  if printf '%s' "$_path" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+    die "path must not contain control characters"
+  fi
+done
 
 # Opt-in check FIRST (exit 3 = not configured, not an error) so an
 # unconfigured environment never produces a failure the caller must triage.

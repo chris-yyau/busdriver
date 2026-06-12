@@ -59,9 +59,9 @@ writes `claude.json`. The script never cared who writes the file.
    the arbiter's self-reported `executed_model` mismatches the model actually
    dispatched (after any step-1 fallback)
    (overwrite the previously-recorded status and set `run_degraded=true`). The
-   first three values are set during dispatch; `pin_ignored` is set during the
-   post-dispatch check (step 3 in the SKILL.md protocol) and supersedes
-   whichever of the first three was recorded.
+   first four values are the mutually exclusive dispatch-time statuses;
+   `pin_ignored` is set during the post-dispatch check (step 3 in the SKILL.md
+   protocol) and supersedes whichever of the first four was recorded.
 3. **Context firewall:** the dispatch prompt is the fixed template plus
    exactly two absolute paths — the validation prompt file and the
    `claude.json` output path. Nothing run-specific beyond the two paths may be

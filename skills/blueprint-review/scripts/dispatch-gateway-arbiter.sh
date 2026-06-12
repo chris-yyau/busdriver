@@ -70,7 +70,7 @@ API_KEY="${BLUEPRINT_ARBITER_GATEWAY_API_KEY:-}"
 # the firewall auditable without reasoning about shell semantics.
 for _path in "$PROMPT_FILE" "$OUTPUT_FILE"; do
   case "$_path" in
-    *\`*|*\$*|*\\*) die "path must not contain shell-significant characters (backtick, \$, backslash): $_path" ;;
+    *\`*|*\$*|*\\*|*\"*|*\'*) die "path must not contain shell-significant characters (backtick, \$, backslash, quotes): $_path" ;;
   esac
   if printf '%s' "$_path" | LC_ALL=C grep -q '[[:cntrl:]]'; then
     die "path must not contain control characters"
@@ -113,8 +113,13 @@ DISPATCH_PROMPT=$(printf '%s\n' \
 # ANTHROPIC_CUSTOM_HEADERS is also unset: a parent shell may set it for a
 # DIFFERENT proxy, and inherited headers would ride along into every gateway
 # request — leaking unrelated header secrets/routing metadata.
+# CLAUDE_CODE_USE_{BEDROCK,VERTEX,FOUNDRY} are unset because cloud-provider
+# routing outranks ANTHROPIC_* in Claude Code's auth precedence — an inherited
+# selector would route the arbiter to the parent's provider and ignore the
+# gateway endpoint entirely.
 ENV_ARGS=(-u BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN -u BLUEPRINT_ARBITER_GATEWAY_API_KEY
-          -u ANTHROPIC_CUSTOM_HEADERS)
+          -u ANTHROPIC_CUSTOM_HEADERS
+          -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY)
 if [[ -n "$AUTH_TOKEN" ]]; then
   ENV_ARGS+=(-u ANTHROPIC_API_KEY "ANTHROPIC_BASE_URL=$BASE_URL" "ANTHROPIC_AUTH_TOKEN=$AUTH_TOKEN")
 else

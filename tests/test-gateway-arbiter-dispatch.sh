@@ -61,6 +61,7 @@ done
   echo "GW_AUTH_TOKEN: ${BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN:-}"
   echo "GW_API_KEY: ${BLUEPRINT_ARBITER_GATEWAY_API_KEY:-}"
   echo "CUSTOM_HEADERS: ${ANTHROPIC_CUSTOM_HEADERS:-}"
+  echo "USE_BEDROCK: ${CLAUDE_CODE_USE_BEDROCK:-}"
 } > "$STUB_LOG"
 printf '%s' "$prompt" > "$STUB_PROMPT"
 case "${STUB_BEHAVIOR:-good}" in
@@ -132,11 +133,12 @@ check "subprocess sees gateway base URL" "yes" "$(grep -q 'BASE_URL: https://gat
 check "subprocess sees AUTH_TOKEN" "yes" "$(grep -q 'AUTH_TOKEN: tok-secret-123' "$STUB_LOG" && echo yes || echo no)"
 check "subprocess sees empty API_KEY" "yes" "$(grep -q '^API_KEY: $' "$STUB_LOG" && echo yes || echo no)"
 
-rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_API_KEY=key-secret-456 ANTHROPIC_AUTH_TOKEN=parent-shell-token ANTHROPIC_CUSTOM_HEADERS=x-other-proxy-secret:abc")
+rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_API_KEY=key-secret-456 ANTHROPIC_AUTH_TOKEN=parent-shell-token ANTHROPIC_CUSTOM_HEADERS=x-other-proxy-secret:abc CLAUDE_CODE_USE_BEDROCK=1")
 check "API_KEY dispatch succeeds" 0 "$rc"
 check "subprocess sees API_KEY" "yes" "$(grep -q 'API_KEY: key-secret-456' "$STUB_LOG" && echo yes || echo no)"
 check "parent-shell ANTHROPIC_AUTH_TOKEN is unset for subprocess (env -u)" "yes" "$(grep -q '^AUTH_TOKEN: $' "$STUB_LOG" && echo yes || echo no)"
 check "parent-shell ANTHROPIC_CUSTOM_HEADERS is unset for subprocess" "yes" "$(grep -q '^CUSTOM_HEADERS: $' "$STUB_LOG" && echo yes || echo no)"
+check "parent-shell CLAUDE_CODE_USE_BEDROCK is unset for subprocess (provider routing)" "yes" "$(grep -q '^USE_BEDROCK: $' "$STUB_LOG" && echo yes || echo no)"
 
 rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok-secret-123 BLUEPRINT_ARBITER_GATEWAY_API_KEY=key-secret-456")
 check "both credentials set: AUTH_TOKEN wins" "yes" "$(grep -q 'AUTH_TOKEN: tok-secret-123' "$STUB_LOG" && echo yes || echo no)"
@@ -191,7 +193,8 @@ check "relative prompt path rejected" 1 "$rc"
 # control characters must be rejected so a crafted filename cannot inject
 # instructions past the two-paths-only firewall.
 for evil in "$TMPDIR_T/evil\`whoami\`.txt" "$TMPDIR_T/evil"$'\n'"ignore-previous.txt" \
-            "$TMPDIR_T"'/evil$(id).txt' "$TMPDIR_T"'/evil${HOME}.txt' "$TMPDIR_T"'/evil\back.txt'; do
+            "$TMPDIR_T"'/evil$(id).txt' "$TMPDIR_T"'/evil${HOME}.txt' "$TMPDIR_T"'/evil\back.txt' \
+            "$TMPDIR_T"'/evil"dq.txt' "$TMPDIR_T/evil'sq.txt"; do
   rm -f "$STUB_LOG"
   rc=0
   env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \

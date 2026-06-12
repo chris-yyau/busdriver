@@ -57,7 +57,9 @@ writes `claude.json`. The script never cared who writes the file.
    `inherited_fallback` — `fable` and `opus` were both unsupported, session model
    inherited; `pin_ignored` — dispatch appeared to succeed but
    the arbiter's self-reported `executed_model` mismatches the model actually
-   dispatched (after any step-1 fallback)
+   dispatched (after any step-1 fallback; the comparison is by model identity —
+   alias ≡ full id ≡ gateway-namespaced id, e.g. `fable` ≡ `claude-fable-5` ≡
+   `anthropic/claude-fable-5` — never by literal string)
    (overwrite the previously-recorded status and set `run_degraded=true`). The
    first four values are the mutually exclusive dispatch-time statuses;
    `pin_ignored` is set during the post-dispatch check (step 3 in the SKILL.md
@@ -74,12 +76,17 @@ writes `claude.json`. The script never cared who writes the file.
      tool → walk the fallback chain: (a) if gateway credentials are configured,
      dispatch a headless `claude -p` arbiter pinned to `claude-fable-5` through
      the gateway (`model_pin_status=gateway_fable_fallback`; opt-in, skipped
-     silently when unconfigured — see the SKILL.md Gateway-Fallback Rung); (b)
-     retry with `model: opus` via the Agent tool (strongest available
-     *subscription* pin, `model_pin_status=opus_fallback`); (c) if that is also
-     rejected, retry with `model` omitted (inherit the session model,
+     silently when unconfigured — see the SKILL.md Gateway-Fallback Rung). If
+     the gateway dispatch itself fails (configured but exit 1), retry it ONCE
+     and then fall through to (b) — a gateway outage must not stop arbitration
+     the next, independent rung can still provide; (b) retry with `model: opus`
+     via the Agent tool (strongest available *subscription* pin,
+     `model_pin_status=opus_fallback`); (c) if that is also rejected, retry
+     with `model` omitted (inherit the session model,
      `model_pin_status=inherited_fallback`). Record each step caller-side and
-     surface any fallback run as degraded.
+     surface any fallback run as degraded. The one-retry-then-STOP rule below
+     applies to Agent-tool dispatches, where a second failure leaves no rung to
+     fall through to.
    - *Everything else:* invalid/missing subagent output → delete and retry
      ONCE with a fresh subagent; second failure → stop and report. Inline
      arbitration by the calling session is allowed only with explicit user

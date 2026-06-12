@@ -240,17 +240,30 @@ calling session MUST:
 3. **Post-dispatch check** (calling session, cheap): `claude.json` exists, parses as JSON,
    has `status` of `PASS` or `FAIL`, and `metadata.run_id` matches the current run. Compare
    the arbiter's self-reported model in `validation_notes` against the expected pin (the
-   model actually dispatched, after any step-1 fallback) — on mismatch, **overwrite**
+   model actually dispatched, after any step-1 fallback). The comparison is by **model
+   identity, not literal string**: an alias, its full id, and a gateway-namespaced id
+   (`fable` ≡ `claude-fable-5` ≡ `anthropic/claude-fable-5`) all match — a compliant
+   gateway run must not be marked `pin_ignored` over naming. `pin_ignored` is for a
+   genuinely different model (e.g., a sonnet- or opus-family self-report when fable was
+   dispatched). On a true mismatch, **overwrite**
    `model_pin_status` with `pin_ignored` (the arbiter ran on a different model than
    requested, so the previously-recorded status is no longer accurate) and additionally
    set `run_degraded=true` in your caller-side state. Then re-run the loop with
    `--claude-only`. (The script re-validates fully — this check just
    avoids burning a loop invocation on a garbage file.)
 
-4. **Failure handling (fail-closed), two branches:**
+4. **Failure handling (fail-closed), three branches:**
    - *Unsupported model:* a recognized unsupported-model error from the Agent tool → walk
      the step-1 fallback chain (subscription `fable` → gateway `fable` → subscription `opus`
      → inherit) — these retries do NOT consume the retry below.
+   - *Gateway-rung failure (helper script exit 1):* the gateway is configured but the
+     dispatch failed (subprocess error, timeout, or garbage verdict — the helper script
+     already deleted the bad `claude.json`). Retry the gateway dispatch ONCE; if it fails
+     again, record the failure caller-side and **fall through to the subscription `opus`
+     rung — do NOT stop**. The gateway and the Agent tool are independent mechanisms; a
+     gateway outage must not block arbitration the next rung can still provide. The
+     one-retry-then-STOP rule below is reserved for Agent-tool dispatches, where a second
+     failure leaves no rung to fall through to.
    - *Everything else:* if the subagent fails or writes invalid JSON, delete the bad
      `claude.json` and dispatch ONE fresh retry. If the retry also fails, STOP and report
      to the user — do NOT silently arbitrate inline. Inline arbitration by the calling
@@ -297,7 +310,9 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/dispatch-gateway-arb
   "<absolute path to claude.json>"
 # exit 0 → verdict written; record model_pin_status=gateway_fable_fallback, re-run --claude-only
 # exit 3 → gateway not configured; fall through to the opus rung
-# exit 1 → configured but failed (bad claude.json already deleted); apply the one-retry rule
+# exit 1 → configured but failed (bad claude.json already deleted); retry the gateway
+#          dispatch ONCE, then fall through to the opus rung (step 4 — a gateway outage
+#          must not stop arbitration the next rung can provide)
 ```
 
 Run it from the project root (the arbiter's Read/Grep/Glob resolve there). The script enforces
@@ -626,7 +641,7 @@ Monitor(command: "sleep 35 && echo READY", timeout: 45)
 
 ## Version History
 
-**v3.4 (current, 2026-06-12):** Gateway-fallback arbiter rung. Inserted a sub-rung between subscription `fable` and subscription `opus` in the unsupported-model fallback chain: when `fable` is gone from the calling session's plan but the operator has configured gateway credentials (ZenMux or any Anthropic-API-compatible endpoint), the arbiter is dispatched as a headless `claude -p` subprocess pinned to `claude-fable-5` through the gateway, preserving fable-quality arbitration instead of dropping to opus. The rung is opt-in (skipped silently without the `BLUEPRINT_ARBITER_GATEWAY_*` env vars), uses per-process env overrides so the interactive session keeps subscription auth, and reuses the existing context firewall + post-dispatch self-report check unchanged. New `model_pin_status` value `gateway_fable_fallback`. Full chain is now subscription `fable` → gateway `fable` → subscription `opus` → inherit. Dispatch is a helper script (`scripts/dispatch-gateway-arbiter.sh`) that makes the firewall and secret-handling structural — fixed template built from two path args only, credentials read from env by the script (unused credential var unset for the subprocess), structural verdict post-check with delete-on-garbage; tests in `tests/test-gateway-arbiter-dispatch.sh`. The loop's `claude.json` contract is unchanged. See Gateway-Fallback Rung.
+**v3.4 (current, 2026-06-12):** Gateway-fallback arbiter rung. Inserted a sub-rung between subscription `fable` and subscription `opus` in the unsupported-model fallback chain: when `fable` is gone from the calling session's plan but the operator has configured gateway credentials (ZenMux or any Anthropic-API-compatible endpoint), the arbiter is dispatched as a headless `claude -p` subprocess pinned to `claude-fable-5` through the gateway, preserving fable-quality arbitration instead of dropping to opus. The rung is opt-in (skipped silently without the `BLUEPRINT_ARBITER_GATEWAY_*` env vars), uses per-process env overrides so the interactive session keeps subscription auth, and reuses the existing context firewall + post-dispatch self-report check unchanged. New `model_pin_status` value `gateway_fable_fallback`. Full chain is now subscription `fable` → gateway `fable` → subscription `opus` → inherit. Dispatch is a helper script (`scripts/dispatch-gateway-arbiter.sh`) that makes the firewall and secret-handling structural — fixed template built from two path args only, credentials read from env by the script (unused credential var unset for the subprocess), structural verdict post-check with delete-on-garbage; tests in `tests/test-gateway-arbiter-dispatch.sh`. The loop's `claude.json` contract is unchanged. Two protocol clarifications from the PR-196 review round: a configured-but-failed gateway dispatch retries once and then falls through to `opus` (the one-retry-then-STOP rule is reserved for end-of-chain Agent-tool failures), and the step-3 pin comparison is by model identity (alias ≡ full id ≡ gateway-namespaced id) so a compliant gateway run is never falsely `pin_ignored`. See Gateway-Fallback Rung.
 
 **v3.3 (2026-06-10; fallback chain added 2026-06-11):** Fresh-subagent arbiter. Arbitration moved from the calling session (author-as-judge) to a freshly dispatched Claude subagent pinned to `model: fable`, with a context firewall (fixed template + two file paths only), arbiter model-self-report for pin observability, two-branch fail-closed retry handling, and an explicit model fallback chain (`fable` → `opus` → inherit) so a renamed/retired tier degrades to the strongest available pin rather than the session model. Structurally removes the class-roll-style self-pass bias **for the compliant path** (the verdict-renderer has no authorship stake); protocol compliance itself remains prose-enforced defense-in-depth. The loop's `claude.json` contract is unchanged — only who writes the file. Includes the ADR 0003 Decision 7 script change (landed same day): verdict freshness re-keyed from design `spec_hash` alone to current-run `run_id` + `spec_hash` (`validate_claude_verdict_freshness` in `lib/validation.sh`, enforced at both the iteration-cleanup and `--claude-only` acceptance sites; the old guard could converge a re-run on a verdict that never saw the current reviewer artifacts, and its `-n` guard let `run_id`-less verdicts pass). Tests: `tests/test-claude-verdict-freshness.sh`. Dogfooded on ADR 0003 itself (2 iterations, FULL 3/3 coverage, Fable arbiter both rounds). See ADR 0003.
 

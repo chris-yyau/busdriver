@@ -16,7 +16,7 @@
 #
 # Usage:
 #   dispatch-gateway-arbiter.sh <validation-prompt-path> <claude-json-output-path>
-#   (run from the project root — the arbiter's Read/Grep/Glob resolve there)
+#   (run from the project root — the arbiter's Read and Bash searches resolve there)
 #
 # Environment (opt-in — see SKILL.md table):
 #   BLUEPRINT_ARBITER_GATEWAY_BASE_URL     gateway endpoint (required to opt in)
@@ -93,7 +93,7 @@ TIMEOUT_S="${BLUEPRINT_ARBITER_GATEWAY_TIMEOUT:-600}"
 DISPATCH_PROMPT=$(printf '%s\n' \
   "You are the design-review arbiter. Read the validation prompt at" \
   "\`${PROMPT_FILE}\` and follow it exactly." \
-  "Use Read/Grep/Glob to verify every claim against the codebase." \
+  "Use Read and Bash (grep/rg/find) to verify every claim against the codebase." \
   "Write your strict-JSON verdict to \`${OUTPUT_FILE}\`." \
   "Report the model you are running as in the verdict's validation_notes" \
   "using the canonical field: \"executed_model\": \"<model-name>\" (e.g.," \
@@ -129,6 +129,20 @@ else
   ENV_ARGS+=(-u ANTHROPIC_AUTH_TOKEN "ANTHROPIC_BASE_URL=$BASE_URL" "ANTHROPIC_API_KEY=$API_KEY")
 fi
 
+# Force the gateway endpoint to win over the operator's own settings file.
+# Claude Code applies a settings file's `env` block OVER the inherited process
+# environment, so the per-process ANTHROPIC_BASE_URL override above is silently
+# clobbered for any operator whose ~/.claude/settings.json sets
+# env.ANTHROPIC_BASE_URL (e.g. a local proxy) — exactly the population this rung
+# targets, since they route their interactive session elsewhere. A CLI
+# --settings value outranks the default settings file, so the gateway endpoint
+# sticks. Only the (non-secret) base URL goes here; the credential stays in the
+# env overrides above so no secret ever reaches the process argument list. (A
+# credential set in the operator's settings.json `env` would still outrank the
+# env credential — out of scope here; document if that case is ever observed.)
+# Built with jq (already a hard dep, checked above) for correct JSON escaping.
+SETTINGS_JSON="$(jq -nc --arg url "$BASE_URL" '{env:{ANTHROPIC_BASE_URL:$url}}')"
+
 echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${TIMEOUT_S}s)" >&2
 # --bare skips auto-discovery of hooks, skills, plugins, MCP servers, auto
 # memory, and CLAUDE.md — the arbiter sees ONLY the fixed prompt plus the
@@ -137,13 +151,23 @@ echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${T
 # reads, so auth comes solely from the gateway env overrides above.
 # --tools RESTRICTS the tool set (the firewall); --allowedTools only
 # pre-approves, so without --tools a permissive user/project permission
-# config would let the arbiter reach Bash/Edit. --strict-mcp-config keeps
+# config would let the arbiter reach other tools. --strict-mcp-config keeps
 # MCP servers from loading even if a future flag change re-enables discovery.
+# Tool names: under --bare the built-in selectable set is {Bash, Edit, Read}.
+# Grep/Glob/Write are NOT selectable there — passing them silently collapses the
+# set to Read alone, leaving the arbiter unable to write its verdict. So grant
+# the three the arbiter actually needs: Read (inspect the codebase), Bash
+# (search it — the --bare stand-in for Grep/Glob), and Edit (write claude.json;
+# Edit creates the file when absent). This is a wider grant than the non-gateway
+# Agent arbiter (Read/Grep/Glob/Write, no shell), an unavoidable consequence of
+# --bare exposing only Bash for search; the context firewall (fixed prompt + two
+# paths) still bounds what the arbiter does.
 DISPATCH_RC=0
 _portable_timeout "$TIMEOUT_S" env "${ENV_ARGS[@]}" "$CLAUDE_BIN" --bare -p "$DISPATCH_PROMPT" \
+  --settings "$SETTINGS_JSON" \
   --model "$MODEL" \
-  --tools Read,Grep,Glob,Write \
-  --allowedTools Read,Grep,Glob,Write \
+  --tools Read,Edit,Bash \
+  --allowedTools Read,Edit,Bash \
   --strict-mcp-config \
   || DISPATCH_RC=$?
 if [[ "$DISPATCH_RC" -ne 0 ]]; then

@@ -37,11 +37,12 @@ echo "validation prompt body" > "$PROMPT_FILE"
 STUB_BIN="$TMPDIR_T/claude-stub"
 cat > "$STUB_BIN" <<'EOF'
 #!/bin/bash
-prompt="" model="" tools_restrict="" tools_approve="" strict_mcp=0 bare=0
+prompt="" model="" tools_restrict="" tools_approve="" strict_mcp=0 bare=0 settings=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -p) prompt="$2"; shift 2 ;;
     --model) model="$2"; shift 2 ;;
+    --settings) settings="$2"; shift 2 ;;
     --tools) tools_restrict="$2"; shift 2 ;;
     --allowedTools) tools_approve="$2"; shift 2 ;;
     --strict-mcp-config) strict_mcp=1; shift ;;
@@ -51,6 +52,7 @@ while [[ $# -gt 0 ]]; do
 done
 {
   echo "MODEL: $model"
+  echo "SETTINGS: $settings"
   echo "TOOLS_RESTRICT: $tools_restrict"
   echo "TOOLS_APPROVE: $tools_approve"
   echo "STRICT_MCP: $strict_mcp"
@@ -152,10 +154,11 @@ echo "── dispatch shape (fixed template, model, tools) ───────
 
 rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok-secret-123")
 check "default model is claude-fable-5" "yes" "$(grep -q '^MODEL: claude-fable-5$' "$STUB_LOG" && echo yes || echo no)"
-check "tool set restricted to Read,Grep,Glob,Write (--tools)" "yes" "$(grep -q '^TOOLS_RESTRICT: Read,Grep,Glob,Write$' "$STUB_LOG" && echo yes || echo no)"
-check "restricted tools pre-approved (--allowedTools)" "yes" "$(grep -q '^TOOLS_APPROVE: Read,Grep,Glob,Write$' "$STUB_LOG" && echo yes || echo no)"
+check "tool set restricted to Read,Edit,Bash (--tools; --bare selectable set)" "yes" "$(grep -q '^TOOLS_RESTRICT: Read,Edit,Bash$' "$STUB_LOG" && echo yes || echo no)"
+check "restricted tools pre-approved (--allowedTools)" "yes" "$(grep -q '^TOOLS_APPROVE: Read,Edit,Bash$' "$STUB_LOG" && echo yes || echo no)"
 check "MCP servers disabled (--strict-mcp-config)" "yes" "$(grep -q '^STRICT_MCP: 1$' "$STUB_LOG" && echo yes || echo no)"
 check "auto-discovery and OAuth/keychain skipped (--bare)" "yes" "$(grep -q '^BARE: 1$' "$STUB_LOG" && echo yes || echo no)"
+check "gateway base URL forced via --settings (beats operator's default settings.json)" "https://gateway.example/v1" "$(sed -n 's/^SETTINGS: //p' "$STUB_LOG" | jq -r '.env.ANTHROPIC_BASE_URL' 2>/dev/null)"
 check "prompt contains the validation-prompt path" "yes" "$(grep -qF "$PROMPT_FILE" "$STUB_PROMPT" && echo yes || echo no)"
 check "prompt contains the claude.json output path" "yes" "$(grep -qF "$OUTPUT_FILE" "$STUB_PROMPT" && echo yes || echo no)"
 check "prompt contains the fixed-template arbiter framing" "yes" "$(grep -q 'design-review arbiter' "$STUB_PROMPT" && echo yes || echo no)"

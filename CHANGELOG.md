@@ -1,3 +1,10 @@
+# [1.62.0](https://github.com/chris-yyau/busdriver/compare/v1.61.1...v1.62.0) (2026-06-12)
+
+
+### Features
+
+* **blueprint-review:** add gateway-fable arbiter fallback rung ([#196](https://github.com/chris-yyau/busdriver/issues/196)) ([96c9359](https://github.com/chris-yyau/busdriver/commit/96c93595214e5ea25d70b552a4c6be779db6e918))
+
 ## [1.61.1](https://github.com/chris-yyau/busdriver/compare/v1.61.0...v1.61.1) (2026-06-11)
 
 

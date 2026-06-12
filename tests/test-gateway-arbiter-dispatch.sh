@@ -177,7 +177,8 @@ check "relative prompt path rejected" 1 "$rc"
 # Paths are spliced verbatim into the fixed dispatch template — backticks and
 # control characters must be rejected so a crafted filename cannot inject
 # instructions past the two-paths-only firewall.
-for evil in "$TMPDIR_T/evil\`whoami\`.txt" "$TMPDIR_T/evil"$'\n'"ignore-previous.txt"; do
+for evil in "$TMPDIR_T/evil\`whoami\`.txt" "$TMPDIR_T/evil"$'\n'"ignore-previous.txt" \
+            "$TMPDIR_T"'/evil$(id).txt' "$TMPDIR_T"'/evil${HOME}.txt' "$TMPDIR_T"'/evil\back.txt'; do
   rm -f "$STUB_LOG"
   rc=0
   env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \

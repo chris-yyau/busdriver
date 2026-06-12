@@ -53,8 +53,15 @@ OUTPUT_FILE="$2"
 # Both paths are spliced verbatim into the fixed dispatch template below, so
 # reject characters that could smuggle extra instructions past the
 # two-paths-only firewall (backticks, newlines, any other control chars).
+# $ and \ are also rejected as defense-in-depth: expansion text in a variable's
+# VALUE is never shell-re-evaluated (bash does not re-parse expansion results,
+# and the prompt reaches claude as a single execve argument), but the
+# characters have no legitimate place in these paths and excluding them keeps
+# the firewall auditable without reasoning about shell semantics.
 for _path in "$PROMPT_FILE" "$OUTPUT_FILE"; do
-  [[ "$_path" != *\`* ]] || die "path must not contain backticks: $_path"
+  case "$_path" in
+    *\`*|*\$*|*\\*) die "path must not contain shell-significant characters (backtick, \$, backslash): $_path" ;;
+  esac
   if printf '%s' "$_path" | LC_ALL=C grep -q '[[:cntrl:]]'; then
     die "path must not contain control characters"
   fi

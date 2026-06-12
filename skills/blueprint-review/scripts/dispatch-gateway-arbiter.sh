@@ -103,10 +103,16 @@ DISPATCH_PROMPT=$(printf '%s\n' \
 # exported in the parent shell cannot win Claude Code's auth precedence and
 # silently pair the wrong key with the gateway endpoint.
 # NB: env(1) requires -u options BEFORE the NAME=VALUE assignments.
+# The BLUEPRINT_ARBITER_GATEWAY_* secrets are also unset: without this the
+# subprocess inherits them alongside the ANTHROPIC_* override, so the LOSING
+# credential (and the winner, in its source-variable form) would sit in the
+# arbiter's environment. The subprocess must see exactly one credential, in
+# its ANTHROPIC_* form only.
+ENV_ARGS=(-u BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN -u BLUEPRINT_ARBITER_GATEWAY_API_KEY)
 if [[ -n "$AUTH_TOKEN" ]]; then
-  ENV_ARGS=(-u ANTHROPIC_API_KEY "ANTHROPIC_BASE_URL=$BASE_URL" "ANTHROPIC_AUTH_TOKEN=$AUTH_TOKEN")
+  ENV_ARGS+=(-u ANTHROPIC_API_KEY "ANTHROPIC_BASE_URL=$BASE_URL" "ANTHROPIC_AUTH_TOKEN=$AUTH_TOKEN")
 else
-  ENV_ARGS=(-u ANTHROPIC_AUTH_TOKEN "ANTHROPIC_BASE_URL=$BASE_URL" "ANTHROPIC_API_KEY=$API_KEY")
+  ENV_ARGS+=(-u ANTHROPIC_AUTH_TOKEN "ANTHROPIC_BASE_URL=$BASE_URL" "ANTHROPIC_API_KEY=$API_KEY")
 fi
 
 echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${TIMEOUT_S}s)" >&2

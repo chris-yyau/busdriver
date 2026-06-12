@@ -56,6 +56,8 @@ done
   echo "BASE_URL: ${ANTHROPIC_BASE_URL:-}"
   echo "AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}"
   echo "API_KEY: ${ANTHROPIC_API_KEY:-}"
+  echo "GW_AUTH_TOKEN: ${BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN:-}"
+  echo "GW_API_KEY: ${BLUEPRINT_ARBITER_GATEWAY_API_KEY:-}"
 } > "$STUB_LOG"
 printf '%s' "$prompt" > "$STUB_PROMPT"
 case "${STUB_BEHAVIOR:-good}" in
@@ -130,6 +132,7 @@ check "parent-shell ANTHROPIC_AUTH_TOKEN is unset for subprocess (env -u)" "yes"
 rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok-secret-123 BLUEPRINT_ARBITER_GATEWAY_API_KEY=key-secret-456")
 check "both credentials set: AUTH_TOKEN wins" "yes" "$(grep -q 'AUTH_TOKEN: tok-secret-123' "$STUB_LOG" && echo yes || echo no)"
 check "both credentials set: API_KEY not passed" "yes" "$(grep -q '^API_KEY: $' "$STUB_LOG" && echo yes || echo no)"
+check "BLUEPRINT_* source secrets stripped from subprocess (losing key not inherited)" "yes" "$(grep -q '^GW_AUTH_TOKEN: $' "$STUB_LOG" && grep -q '^GW_API_KEY: $' "$STUB_LOG" && echo yes || echo no)"
 
 echo ""
 echo "── dispatch shape (fixed template, model, tools) ─────────────"

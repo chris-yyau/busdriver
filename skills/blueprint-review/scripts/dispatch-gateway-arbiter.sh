@@ -71,17 +71,19 @@ API_KEY="${BLUEPRINT_ARBITER_GATEWAY_API_KEY:-}"
 # characters have no legitimate place in these paths and excluding them keeps
 # the firewall auditable without reasoning about shell semantics.
 # Glob and list metacharacters are also rejected: OUTPUT_FILE is spliced into the
-# --allowedTools "Edit(//<path>)" scope below, which Claude Code parses as a
-# comma/space-separated list of glob-syntax permission rules. A path containing
-# ( or ) (the rule's own delimiters), a comma or whitespace (list separators), or
-# * ? [ ] (glob wildcards) could malform the rule or BROADEN the Edit scope beyond
-# the single intended file — e.g. Edit(//docs/reviews/x*/claude.json) would match
-# siblings. Rejecting them keeps the scope an exact one-file match. None of these
-# belong in a review-artifact path; a path that carries one fails closed (dispatch
-# dies, the chain falls through to opus) rather than silently widening the grant.
+# --allowedTools "Edit(//<path>)" scope below. That value is a COMMA-separated list
+# of glob-syntax permission rules, so a path containing ( or ) (the rule's own
+# delimiters), a comma (the list separator), or * ? [ ] (glob wildcards — Claude
+# Code interprets globs in rule paths; cf. the ** deny rules below) could malform
+# the rule or BROADEN the Edit scope beyond the single intended file — e.g.
+# Edit(//docs/reviews/x*/claude.json) would match siblings. Rejecting them keeps
+# the scope an exact one-file match; such a path fails closed (dispatch dies).
+# Whitespace is NOT rejected: the list separator is the comma, not space, so a
+# legitimate absolute path with spaces (e.g. a checkout under "/Users/me/My App")
+# stays inside the Edit() parens — rejecting it would needlessly fail the rung.
 for _path in "$PROMPT_FILE" "$OUTPUT_FILE"; do
   case "$_path" in
-    *\`*|*\$*|*\\*|*\"*|*\'*|*\(*|*\)*|*\**|*\?*|*\[*|*\]*|*,*|*[[:space:]]*) die "path must not contain shell-significant, glob, or list-separator characters (backtick, \$, backslash, quotes, parentheses, * ? [ ], comma, whitespace): $_path" ;;
+    *\`*|*\$*|*\\*|*\"*|*\'*|*\(*|*\)*|*\**|*\?*|*\[*|*\]*|*,*) die "path must not contain shell-significant, glob, or list-separator characters (backtick, \$, backslash, quotes, parentheses, * ? [ ], comma): $_path" ;;
   esac
   if printf '%s' "$_path" | LC_ALL=C grep -q '[[:cntrl:]]'; then
     die "path must not contain control characters"

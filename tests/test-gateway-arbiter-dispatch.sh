@@ -55,7 +55,7 @@ done
   echo "MODEL: $model"
   echo "SETTINGS: $settings"
   if [[ -n "$settings" && -f "$settings" ]]; then
-    s_mode="$(stat -f '%Lp' "$settings" 2>/dev/null || stat -c '%a' "$settings" 2>/dev/null)"
+    s_mode="$(stat -c '%a' "$settings" 2>/dev/null || stat -f '%Lp' "$settings" 2>/dev/null)"
     s_base="$(jq -r '.env.ANTHROPIC_BASE_URL // empty' "$settings" 2>/dev/null)"
     s_auth="$(jq -r '.env.ANTHROPIC_AUTH_TOKEN // empty' "$settings" 2>/dev/null)"
     s_key="$(jq -r '.env.ANTHROPIC_API_KEY // empty' "$settings" 2>/dev/null)"
@@ -267,15 +267,17 @@ check "relative prompt path rejected" 1 "$rc"
 
 # Paths are spliced verbatim into the fixed dispatch template — backticks and
 # control characters must be rejected so a crafted filename cannot inject
-# instructions past the two-paths-only firewall. Glob/list metacharacters
-# (* ? [ ] , whitespace) and parens are also rejected: OUTPUT_FILE feeds the
-# comma/space-separated glob-syntax --allowedTools "Edit(//<path>)" scope, where
-# such a char could broaden or malform the single-file Edit grant.
+# instructions past the two-paths-only firewall. Glob metacharacters (* ? [ ]) and
+# the rule delimiters/separator ( ) , are also rejected: OUTPUT_FILE feeds the
+# comma-separated glob-syntax --allowedTools "Edit(//<path>)" scope, where such a
+# char could broaden or malform the single-file Edit grant. Whitespace is NOT
+# rejected (the separator is the comma, not space) — see the positive spaced-path
+# case below.
 for evil in "$TMPDIR_T/evil\`whoami\`.txt" "$TMPDIR_T/evil"$'\n'"ignore-previous.txt" \
             "$TMPDIR_T"'/evil$(id).txt' "$TMPDIR_T"'/evil${HOME}.txt' "$TMPDIR_T"'/evil\back.txt' \
             "$TMPDIR_T"'/evil"dq.txt' "$TMPDIR_T/evil'sq.txt" \
             "$TMPDIR_T/evil(paren).txt" "$TMPDIR_T/evil*glob.txt" "$TMPDIR_T/evil?q.txt" \
-            "$TMPDIR_T/evil[br].txt" "$TMPDIR_T/evil,comma.txt" "$TMPDIR_T/evil space.txt"; do
+            "$TMPDIR_T/evil[br].txt" "$TMPDIR_T/evil,comma.txt"; do
   rm -f "$STUB_LOG"
   rc=0
   env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
@@ -302,6 +304,20 @@ env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
   BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
   bash "$SCRIPT" "$PROMPT_FILE" "$TMPDIR_T/out*.json" >/dev/null 2>&1 || rc=$?
 check "output path with glob char rejected (Edit-scope cannot be broadened)" 1 "$rc"
+
+# Whitespace in an absolute path is ACCEPTED: the --allowedTools list separator is
+# the comma (not space), so a legit checkout under a spaced directory must still
+# dispatch rather than needlessly fall through to opus.
+mkdir -p "$TMPDIR_T/sp ace"
+SPACED_OUT="$TMPDIR_T/sp ace/claude.json"
+rm -f "$SPACED_OUT" "$STUB_LOG"
+rc=0
+env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
+  STUB_LOG="$STUB_LOG" STUB_OUT="$SPACED_OUT" STUB_PROMPT="$STUB_PROMPT" STUB_BEHAVIOR=good \
+  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 \
+  BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
+  bash "$SCRIPT" "$PROMPT_FILE" "$SPACED_OUT" >/dev/null 2>&1 || rc=$?
+check "output path with spaces ACCEPTED (whitespace not banned; rung not needlessly failed)" 0 "$rc"
 
 # ═══════════════════════════════════════════════════════════════════════
 # RESULTS

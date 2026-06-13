@@ -175,7 +175,8 @@ echo "── dispatch shape (fixed template, model, tools) ───────
 rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok-secret-123")
 check "default model is claude-fable-5" "yes" "$(grep -q '^MODEL: claude-fable-5$' "$STUB_LOG" && echo yes || echo no)"
 check "tool set restricted to Read,Edit (no shell — credential-exfil guard)" "yes" "$(grep -q '^TOOLS_RESTRICT: Read,Edit$' "$STUB_LOG" && echo yes || echo no)"
-check "restricted tools pre-approved (--allowedTools)" "yes" "$(grep -q '^TOOLS_APPROVE: Read,Edit$' "$STUB_LOG" && echo yes || echo no)"
+check "Edit pre-approved ONLY for the verdict file path (no workspace-wide Edit)" "yes" "$(grep -qF "TOOLS_APPROVE: Read,Edit(//${OUTPUT_FILE#/})" "$STUB_LOG" && echo yes || echo no)"
+check "bare workspace-wide Edit NOT pre-approved (scope replaces 'Read,Edit')" "no" "$(grep -q '^TOOLS_APPROVE: Read,Edit$' "$STUB_LOG" && echo yes || echo no)"
 check "no shell tool granted (no Bash → no env/printenv exfil path)" "no" "$(grep -qE '^TOOLS_(RESTRICT|APPROVE): .*Bash' "$STUB_LOG" && echo yes || echo no)"
 check "Read denied for /proc (blocks /proc/self/environ and cmdline path-discovery)" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF 'Read(//proc/**)' && echo yes || echo no)"
 check "Read denied for /sys" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF 'Read(//sys/**)' && echo yes || echo no)"
@@ -230,10 +231,15 @@ check "relative prompt path rejected" 1 "$rc"
 
 # Paths are spliced verbatim into the fixed dispatch template — backticks and
 # control characters must be rejected so a crafted filename cannot inject
-# instructions past the two-paths-only firewall.
+# instructions past the two-paths-only firewall. Glob/list metacharacters
+# (* ? [ ] , whitespace) and parens are also rejected: OUTPUT_FILE feeds the
+# comma/space-separated glob-syntax --allowedTools "Edit(//<path>)" scope, where
+# such a char could broaden or malform the single-file Edit grant.
 for evil in "$TMPDIR_T/evil\`whoami\`.txt" "$TMPDIR_T/evil"$'\n'"ignore-previous.txt" \
             "$TMPDIR_T"'/evil$(id).txt' "$TMPDIR_T"'/evil${HOME}.txt' "$TMPDIR_T"'/evil\back.txt' \
-            "$TMPDIR_T"'/evil"dq.txt' "$TMPDIR_T/evil'sq.txt"; do
+            "$TMPDIR_T"'/evil"dq.txt' "$TMPDIR_T/evil'sq.txt" \
+            "$TMPDIR_T/evil(paren).txt" "$TMPDIR_T/evil*glob.txt" "$TMPDIR_T/evil?q.txt" \
+            "$TMPDIR_T/evil[br].txt" "$TMPDIR_T/evil,comma.txt" "$TMPDIR_T/evil space.txt"; do
   rm -f "$STUB_LOG"
   rc=0
   env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
@@ -251,6 +257,15 @@ env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
   BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
   bash "$SCRIPT" "$PROMPT_FILE" "$TMPDIR_T/out\`id\`.json" >/dev/null 2>&1 || rc=$?
 check "output path with backtick rejected (firewall)" 1 "$rc"
+
+# Output path with a glob char must be rejected: it feeds the Edit(//<path>) scope,
+# where a wildcard would broaden the single-file Edit grant to siblings.
+rc=0
+env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
+  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 \
+  BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
+  bash "$SCRIPT" "$PROMPT_FILE" "$TMPDIR_T/out*.json" >/dev/null 2>&1 || rc=$?
+check "output path with glob char rejected (Edit-scope cannot be broadened)" 1 "$rc"
 
 # ═══════════════════════════════════════════════════════════════════════
 # RESULTS

@@ -68,9 +68,18 @@ API_KEY="${BLUEPRINT_ARBITER_GATEWAY_API_KEY:-}"
 # and the prompt reaches claude as a single execve argument), but the
 # characters have no legitimate place in these paths and excluding them keeps
 # the firewall auditable without reasoning about shell semantics.
+# Glob and list metacharacters are also rejected: OUTPUT_FILE is spliced into the
+# --allowedTools "Edit(//<path>)" scope below, which Claude Code parses as a
+# comma/space-separated list of glob-syntax permission rules. A path containing
+# ( or ) (the rule's own delimiters), a comma or whitespace (list separators), or
+# * ? [ ] (glob wildcards) could malform the rule or BROADEN the Edit scope beyond
+# the single intended file — e.g. Edit(//docs/reviews/x*/claude.json) would match
+# siblings. Rejecting them keeps the scope an exact one-file match. None of these
+# belong in a review-artifact path; a path that carries one fails closed (dispatch
+# dies, the chain falls through to opus) rather than silently widening the grant.
 for _path in "$PROMPT_FILE" "$OUTPUT_FILE"; do
   case "$_path" in
-    *\`*|*\$*|*\\*|*\"*|*\'*) die "path must not contain shell-significant characters (backtick, \$, backslash, quotes): $_path" ;;
+    *\`*|*\$*|*\\*|*\"*|*\'*|*\(*|*\)*|*\**|*\?*|*\[*|*\]*|*,*|*[[:space:]]*) die "path must not contain shell-significant, glob, or list-separator characters (backtick, \$, backslash, quotes, parentheses, * ? [ ], comma, whitespace): $_path" ;;
   esac
   if printf '%s' "$_path" | LC_ALL=C grep -q '[[:cntrl:]]'; then
     die "path must not contain control characters"
@@ -181,10 +190,14 @@ echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${T
 # Tool names: under --bare the built-in selectable set is {Bash, Edit, Read};
 # Grep/Glob/Write are NOT selectable there (passing them silently collapses the
 # set to Read alone). Grant ONLY Read (inspect the files the reviews cite) and
-# Edit (write claude.json; Edit creates the file when absent) — no shell.
+# Edit (write the verdict) — no shell. Read is broad (the arbiter must open many
+# cited files); Edit is pre-approved for EXACTLY ONE path — the verdict file
+# ($OUTPUT_FILE) — via the --allowedTools "Edit(//<path>)" scope below, because
+# the arbiter has exactly one legitimate write target. Edit creates that file
+# when absent; the path scope covers creation.
 #
-# Credential containment vs. a prompt-injected arbiter (it reads reviewer-authored
-# content, so treat it as hostile). Defence in depth, all deterministic:
+# Containment vs. a prompt-injected arbiter (it reads reviewer-authored content,
+# so treat it as hostile). Defence in depth, all deterministic:
 #   1. No shell — Bash withheld, so no env/printenv.
 #   2. No env token — the credential is NOT in the subprocess environment (see
 #      ENV_ARGS above); it arrives only via the --settings file. So a Read of
@@ -206,15 +219,26 @@ echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${T
 #      secret never leaves the --settings file. These paths are NOT where the loop
 #      puts the arbiter's prompt/verdict (those live under docs/reviews/<slug>/),
 #      so the deny costs the arbiter nothing it needs.
+#   4. Edit confined — Edit is pre-approved (--allowedTools) for the verdict file
+#      ALONE, not workspace-wide. The deny rules above only bound Read; without an
+#      Edit scope a prompt-injected arbiter could Edit ARBITRARY workspace files —
+#      inject code into a source file, rewrite a settings/config file, tamper with
+#      another review's artifacts. Under headless --bare an Edit to any path the
+#      allow-rule doesn't cover is not pre-approved and is denied (no interactive
+#      prompt to fall back on), so scoping the allow to $OUTPUT_FILE confines all
+#      writes to the one legitimate target. (Edit is an allowlist — exactly one
+#      valid target — whereas Read stays a blocklist — many valid targets.)
 # Net: no shell, no env token, no way to discover the settings path, settings file
-# + Anthropic credential stores denied — Read+Edit give the arbiter no route to the
-# gateway secret OR the operator's own credential. Read remains a blocklist, not an
-# allowlist: arbitrary non-credential reads (like every Read-granted subagent) stay
-# in scope of the model's judgement, out of scope for this credential hardening. The
-# cost is no free-form codebase search (Grep/Glob unavailable under --bare), so
-# validation is by reading the cited files, like the non-gateway arbiter.
+# + Anthropic credential stores Read-denied, Edit scoped to the verdict file — the
+# arbiter has no route to the gateway secret OR the operator's own credential, and
+# cannot write anywhere but its verdict. Read remains a blocklist, not an allowlist:
+# arbitrary non-credential reads (like every Read-granted subagent) stay in scope of
+# the model's judgement, out of scope for this credential hardening. The cost is no
+# free-form codebase search (Grep/Glob unavailable under --bare), so validation is
+# by reading the cited files, like the non-gateway arbiter.
 # The deny rules use the //<abs-path> form (the leading-// form is what Claude
-# Code's matcher honours for absolute-path rules).
+# Code's matcher honours for absolute-path rules); the Edit allow-scope uses the
+# same form.
 DISALLOW_ARGS=(--disallowedTools 'Read(//proc/**)'
                --disallowedTools 'Read(//sys/**)'
                --disallowedTools 'Read(//dev/**)'
@@ -227,7 +251,7 @@ _portable_timeout "$TIMEOUT_S" env "${ENV_ARGS[@]}" "$CLAUDE_BIN" --bare -p "$DI
   --settings "$SETTINGS_FILE" \
   --model "$MODEL" \
   --tools Read,Edit \
-  --allowedTools Read,Edit \
+  --allowedTools "Read,Edit(//${OUTPUT_FILE#/})" \
   "${DISALLOW_ARGS[@]}" \
   --strict-mcp-config \
   || DISPATCH_RC=$?

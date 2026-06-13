@@ -231,6 +231,8 @@ calling session MUST:
 
      The model-self-report sentence is part of the fixed template (the arbiter knows its own runtime identity — nothing flows from the caller), which is how a rejected or silently ignored pin stays observable without breaching the firewall: compare the arbiter's self-reported model against the expected pin in step 3.
 
+     *Tooling note:* the `Use Read/Grep/Glob…` line above is for the Agent-tool arbiter (which has those tools). The gateway headless helper substitutes `Use Read to open the files the reviews cite…` instead, because `Grep`/`Glob` are not selectable under `--bare` (see the Gateway-Fallback Rung); the rest of the template is identical.
+
 2. **Context firewall.** Do NOT include conversation history, plan-authoring rationale,
    defenses of any design decision, or "the user prefers..." framing in the dispatch prompt.
    The prompt file is self-contained by design (design doc + all three reviews + coverage +
@@ -306,7 +308,8 @@ only. The arbiter reads
 reviewer-authored prompt content, so it is treated as hostile; its access to the gateway credential
 (and to the workspace) is closed by four deterministic layers: (1) **no shell** — `Bash` is withheld, so no
 `env`/`printenv`; (2) **no env token** — the credential is delivered only through the `--settings`
-file, never the environment, so `Read` of `/proc/self/environ` finds nothing; (3) **confined
+file, never the environment, so `Read` of `/proc/self/environ` finds no credential (only the
+non-secret base URL, which is also set in the process env as a belt-and-suspenders default); (3) **confined
 `Read`** — `--disallowedTools` denies `Read` of `/proc`, `/sys`, `/dev` (blocking both
 `/proc/self/environ` and `/proc/self/cmdline`, which would otherwise reveal the random `--settings`
 path) plus the settings-file path itself, **and** the operator's own Anthropic credential stores:

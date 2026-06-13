@@ -11,8 +11,10 @@
 # The script enforces the dispatch protocol structurally:
 #   - Context firewall: the prompt is the fixed template plus exactly the two
 #     paths given as arguments — the caller cannot inject anything else.
-#   - Secret handling: credentials are read from the environment here and
-#     passed only to the subprocess; the calling session never handles them.
+#   - Secret handling: credentials are read from the environment here, written to
+#     a 0600 temp --settings file, and delivered to the subprocess via that file
+#     ONLY — never the subprocess environment, never argv. The calling Claude
+#     session never handles them.
 #
 # Usage:
 #   dispatch-gateway-arbiter.sh <validation-prompt-path> <claude-json-output-path>

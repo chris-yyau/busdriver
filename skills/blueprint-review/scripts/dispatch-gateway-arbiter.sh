@@ -16,7 +16,7 @@
 #
 # Usage:
 #   dispatch-gateway-arbiter.sh <validation-prompt-path> <claude-json-output-path>
-#   (run from the project root — the arbiter's Read and Bash searches resolve there)
+#   (run from the project root — the arbiter's Read resolves relative paths there)
 #
 # Environment (opt-in — see SKILL.md table):
 #   BLUEPRINT_ARBITER_GATEWAY_BASE_URL     gateway endpoint (required to opt in)
@@ -93,81 +93,142 @@ TIMEOUT_S="${BLUEPRINT_ARBITER_GATEWAY_TIMEOUT:-600}"
 DISPATCH_PROMPT=$(printf '%s\n' \
   "You are the design-review arbiter. Read the validation prompt at" \
   "\`${PROMPT_FILE}\` and follow it exactly." \
-  "Use Read and Bash (grep/rg/find) to verify every claim against the codebase." \
+  "Use Read to open the files the reviews cite and verify every claim against the codebase." \
   "Write your strict-JSON verdict to \`${OUTPUT_FILE}\`." \
   "Report the model you are running as in the verdict's validation_notes" \
   "using the canonical field: \"executed_model\": \"<model-name>\" (e.g.," \
   "\"executed_model\": \"fable\")." \
   "Return a one-paragraph summary: status, plus issue counts by severity.")
 
-# Per-process credential override. Exactly one credential variable reaches the
-# subprocess: the unused one is explicitly UNSET (env -u) so a credential
-# exported in the parent shell cannot win Claude Code's auth precedence and
-# silently pair the wrong key with the gateway endpoint.
-# NB: env(1) requires -u options BEFORE the NAME=VALUE assignments.
-# The BLUEPRINT_ARBITER_GATEWAY_* secrets are also unset: without this the
-# subprocess inherits them alongside the ANTHROPIC_* override, so the LOSING
-# credential (and the winner, in its source-variable form) would sit in the
-# arbiter's environment. The subprocess must see exactly one credential, in
-# its ANTHROPIC_* form only.
-# ANTHROPIC_CUSTOM_HEADERS is also unset: a parent shell may set it for a
-# DIFFERENT proxy, and inherited headers would ride along into every gateway
-# request — leaking unrelated header secrets/routing metadata.
-# CLAUDE_CODE_USE_{BEDROCK,VERTEX,FOUNDRY,AWS,MANTLE} are unset because
-# cloud-provider routing outranks ANTHROPIC_* in Claude Code's auth
-# precedence — an inherited selector would route the arbiter to the parent's
-# provider and ignore the gateway endpoint entirely. (MANTLE is the Bedrock
-# Mantle backend selector, undocumented as of 2026-06 — claude-code#44899;
-# env -u of a variable that does not exist is harmless.)
+# Environment for the subprocess. The gateway credential is delivered ONLY
+# through the --settings file built below — NEVER through the environment — so
+# that /proc/self/environ holds no token for a prompt-injected, Read-capable
+# arbiter to recover. Here we only STRIP every credential/routing variable that
+# could leak in or mis-route the dispatch, and set the (non-secret) base URL:
+#   - ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY: BOTH unset. A value exported in
+#     the parent shell would otherwise win Claude Code's auth precedence and pair
+#     the wrong key with the gateway endpoint; the real gateway credential
+#     arrives via --settings (which outranks even a settings-file value — below).
+#   - BLUEPRINT_ARBITER_GATEWAY_*: unset so the source secrets do not sit in the
+#     arbiter's environment alongside the dispatch.
+#   - ANTHROPIC_CUSTOM_HEADERS: a parent shell may set it for a DIFFERENT proxy;
+#     inherited headers would ride along into every gateway request, leaking
+#     unrelated header secrets/routing metadata.
+#   - CLAUDE_CODE_USE_{BEDROCK,VERTEX,FOUNDRY,AWS,MANTLE}: cloud-provider routing
+#     outranks ANTHROPIC_* in Claude Code's auth precedence; an inherited selector
+#     would route the arbiter to the parent's provider and ignore the gateway
+#     entirely. (MANTLE is the Bedrock Mantle backend selector, undocumented as of
+#     2026-06 — claude-code#44899; env -u of an unset variable is harmless.)
+# NB: env(1) requires -u options BEFORE the NAME=VALUE assignment.
 ENV_ARGS=(-u BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN -u BLUEPRINT_ARBITER_GATEWAY_API_KEY
+          -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY
           -u ANTHROPIC_CUSTOM_HEADERS
           -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY
-          -u CLAUDE_CODE_USE_AWS -u CLAUDE_CODE_USE_MANTLE)
-if [[ -n "$AUTH_TOKEN" ]]; then
-  ENV_ARGS+=(-u ANTHROPIC_API_KEY "ANTHROPIC_BASE_URL=$BASE_URL" "ANTHROPIC_AUTH_TOKEN=$AUTH_TOKEN")
-else
-  ENV_ARGS+=(-u ANTHROPIC_AUTH_TOKEN "ANTHROPIC_BASE_URL=$BASE_URL" "ANTHROPIC_API_KEY=$API_KEY")
-fi
+          -u CLAUDE_CODE_USE_AWS -u CLAUDE_CODE_USE_MANTLE
+          "ANTHROPIC_BASE_URL=$BASE_URL")
 
-# Force the gateway endpoint to win over the operator's own settings file.
-# Claude Code applies a settings file's `env` block OVER the inherited process
-# environment, so the per-process ANTHROPIC_BASE_URL override above is silently
-# clobbered for any operator whose ~/.claude/settings.json sets
-# env.ANTHROPIC_BASE_URL (e.g. a local proxy) — exactly the population this rung
-# targets, since they route their interactive session elsewhere. A CLI
-# --settings value outranks the default settings file, so the gateway endpoint
-# sticks. Only the (non-secret) base URL goes here; the credential stays in the
-# env overrides above so no secret ever reaches the process argument list. (A
-# credential set in the operator's settings.json `env` would still outrank the
-# env credential — out of scope here; document if that case is ever observed.)
-# Built with jq (already a hard dep, checked above) for correct JSON escaping.
-SETTINGS_JSON="$(jq -nc --arg url "$BASE_URL" '{env:{ANTHROPIC_BASE_URL:$url}}')"
+# Force the gateway endpoint AND the gateway credential to win over the
+# operator's own settings file. Claude Code applies a settings file's `env` block
+# OVER the inherited process environment, so the per-process overrides above are
+# clobbered for any operator whose ~/.claude/settings.json sets the same vars:
+#   - env.ANTHROPIC_BASE_URL (a local proxy — the common case for this rung's
+#     audience) would silently redirect the arbiter off the gateway; and, worse,
+#   - env.ANTHROPIC_AUTH_TOKEN / env.ANTHROPIC_API_KEY would pair the operator's
+#     OWN secret with the forced gateway URL and ship it to the third-party
+#     gateway (auth failure at best, credential disclosure at worst).
+# A CLI --settings value outranks the default settings file, so we route the
+# endpoint AND the one gateway credential through it, pinning the unused
+# credential var to empty so a settings.json value cannot reintroduce it. The
+# same file ALSO pins ANTHROPIC_CUSTOM_HEADERS and the CLAUDE_CODE_USE_* provider
+# selectors to empty: ENV_ARGS strips those from the INHERITED environment, but a
+# settings.json `env` value would outrank that strip and could re-introduce proxy
+# headers (leaked to the gateway) or provider routing (sending the arbiter away
+# from the gateway entirely). Pinning them empty in the higher-precedence
+# --settings file neutralizes any settings.json value.
+# The file carries a secret, so: a private temp file (mode 0600), passed as
+# --settings <path> (NOT inline) so no secret ever reaches the process argument
+# list, removed on exit. Built with jq (a hard dep, checked above) for escaping.
+# The credential value is bound with --arg (jq escapes it); the routing/header
+# selectors are pinned to constant empty strings. $cred carries the chosen
+# credential; $which names which ANTHROPIC_* key it fills.
+SETTINGS_FILE="$(mktemp "${TMPDIR:-/tmp}/bp-gw-settings.XXXXXX")"
+chmod 600 "$SETTINGS_FILE"
+trap 'rm -f "${SETTINGS_FILE:-}"' EXIT
+if [[ -n "$AUTH_TOKEN" ]]; then
+  cred="$AUTH_TOKEN"; which="ANTHROPIC_AUTH_TOKEN"; other="ANTHROPIC_API_KEY"
+else
+  cred="$API_KEY"; which="ANTHROPIC_API_KEY"; other="ANTHROPIC_AUTH_TOKEN"
+fi
+jq -n --arg url "$BASE_URL" --arg cred "$cred" --arg which "$which" --arg other "$other" '{
+  env: ({
+    ANTHROPIC_BASE_URL: $url,
+    ANTHROPIC_CUSTOM_HEADERS: "",
+    CLAUDE_CODE_USE_BEDROCK: "", CLAUDE_CODE_USE_VERTEX: "", CLAUDE_CODE_USE_FOUNDRY: "",
+    CLAUDE_CODE_USE_AWS: "", CLAUDE_CODE_USE_MANTLE: ""
+  } + { ($which): $cred, ($other): "" })
+}' >"$SETTINGS_FILE"
 
 echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${TIMEOUT_S}s)" >&2
 # --bare skips auto-discovery of hooks, skills, plugins, MCP servers, auto
 # memory, and CLAUDE.md — the arbiter sees ONLY the fixed prompt plus the
 # codebase (no author-side CLAUDE.md context, and busdriver's own PreToolUse
 # gates can't fire inside the subprocess). It also skips OAuth/keychain
-# reads, so auth comes solely from the gateway env overrides above.
+# reads, so auth comes solely from the gateway --settings file above.
 # --tools RESTRICTS the tool set (the firewall); --allowedTools only
 # pre-approves, so without --tools a permissive user/project permission
 # config would let the arbiter reach other tools. --strict-mcp-config keeps
 # MCP servers from loading even if a future flag change re-enables discovery.
-# Tool names: under --bare the built-in selectable set is {Bash, Edit, Read}.
-# Grep/Glob/Write are NOT selectable there — passing them silently collapses the
-# set to Read alone, leaving the arbiter unable to write its verdict. So grant
-# the three the arbiter actually needs: Read (inspect the codebase), Bash
-# (search it — the --bare stand-in for Grep/Glob), and Edit (write claude.json;
-# Edit creates the file when absent). This is a wider grant than the non-gateway
-# Agent arbiter (Read/Grep/Glob/Write, no shell), an unavoidable consequence of
-# --bare exposing only Bash for search; the context firewall (fixed prompt + two
-# paths) still bounds what the arbiter does.
+# Tool names: under --bare the built-in selectable set is {Bash, Edit, Read};
+# Grep/Glob/Write are NOT selectable there (passing them silently collapses the
+# set to Read alone). Grant ONLY Read (inspect the files the reviews cite) and
+# Edit (write claude.json; Edit creates the file when absent) — no shell.
+#
+# Credential containment vs. a prompt-injected arbiter (it reads reviewer-authored
+# content, so treat it as hostile). Defence in depth, all deterministic:
+#   1. No shell — Bash withheld, so no env/printenv.
+#   2. No env token — the credential is NOT in the subprocess environment (see
+#      ENV_ARGS above); it arrives only via the --settings file. So a Read of
+#      /proc/self/environ exposes nothing.
+#   3. Read confined — --disallowedTools blocks the residual Read vectors:
+#      (a) /proc, /sys, /dev (so the arbiter cannot Read /proc/self/environ, nor
+#      /proc/self/cmdline to learn the random --settings path), plus the settings
+#      file path itself. /proc is a fixed kernel mount with no symlink
+#      alternate-spelling, so unlike a userspace path glob this deny is not
+#      trivially bypassable.
+#      (b) the operator's OWN Anthropic credential stores: $HOME/.claude/**
+#      (settings.json / settings.local.json carry an `env` block that may hold
+#      ANTHROPIC_AUTH_TOKEN/_API_KEY), $HOME/.claude.json (the global state file
+#      holding the subscription/API credential), and the project's .claude/**
+#      (settings.local.json). Without these the gateway-credential containment is
+#      hollow: a prompt-injected arbiter could Read the operator's own Anthropic
+#      secret — which these very docs name as a possible settings.json value — and
+#      exfiltrate it through the transcript or claude.json, even though the gateway
+#      secret never leaves the --settings file. These paths are NOT where the loop
+#      puts the arbiter's prompt/verdict (those live under docs/reviews/<slug>/),
+#      so the deny costs the arbiter nothing it needs.
+# Net: no shell, no env token, no way to discover the settings path, settings file
+# + Anthropic credential stores denied — Read+Edit give the arbiter no route to the
+# gateway secret OR the operator's own credential. Read remains a blocklist, not an
+# allowlist: arbitrary non-credential reads (like every Read-granted subagent) stay
+# in scope of the model's judgement, out of scope for this credential hardening. The
+# cost is no free-form codebase search (Grep/Glob unavailable under --bare), so
+# validation is by reading the cited files, like the non-gateway arbiter.
+# The deny rules use the //<abs-path> form (the leading-// form is what Claude
+# Code's matcher honours for absolute-path rules).
+DISALLOW_ARGS=(--disallowedTools 'Read(//proc/**)'
+               --disallowedTools 'Read(//sys/**)'
+               --disallowedTools 'Read(//dev/**)'
+               --disallowedTools "Read(//${SETTINGS_FILE#/})"
+               --disallowedTools "Read(//${HOME#/}/.claude/**)"
+               --disallowedTools "Read(//${HOME#/}/.claude.json)"
+               --disallowedTools "Read(//${PWD#/}/.claude/**)")
 DISPATCH_RC=0
 _portable_timeout "$TIMEOUT_S" env "${ENV_ARGS[@]}" "$CLAUDE_BIN" --bare -p "$DISPATCH_PROMPT" \
-  --settings "$SETTINGS_JSON" \
+  --settings "$SETTINGS_FILE" \
   --model "$MODEL" \
-  --tools Read,Edit,Bash \
-  --allowedTools Read,Edit,Bash \
+  --tools Read,Edit \
+  --allowedTools Read,Edit \
+  "${DISALLOW_ARGS[@]}" \
   --strict-mcp-config \
   || DISPATCH_RC=$?
 if [[ "$DISPATCH_RC" -ne 0 ]]; then

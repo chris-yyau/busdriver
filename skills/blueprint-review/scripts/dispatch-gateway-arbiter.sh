@@ -70,25 +70,30 @@ API_KEY="${BLUEPRINT_ARBITER_GATEWAY_API_KEY:-}"
 # and the prompt reaches claude as a single execve argument), but the
 # characters have no legitimate place in these paths and excluding them keeps
 # the firewall auditable without reasoning about shell semantics.
-# Glob and list metacharacters are also rejected: OUTPUT_FILE is spliced into the
-# --allowedTools "Edit(//<path>)" scope below. That value is a COMMA-separated list
-# of glob-syntax permission rules, so a path containing ( or ) (the rule's own
-# delimiters), a comma (the list separator), or * ? [ ] (glob wildcards — Claude
-# Code interprets globs in rule paths; cf. the ** deny rules below) could malform
-# the rule or BROADEN the Edit scope beyond the single intended file — e.g.
-# Edit(//docs/reviews/x*/claude.json) would match siblings. Rejecting them keeps
-# the scope an exact one-file match; such a path fails closed (dispatch dies).
-# Whitespace is NOT rejected: the list separator is the comma, not space, so a
-# legitimate absolute path with spaces (e.g. a checkout under "/Users/me/My App")
-# stays inside the Edit() parens — rejecting it would needlessly fail the rung.
+# Shell-significant chars (backtick, $, backslash, quotes) and control chars are
+# rejected for BOTH paths here; glob/list/paren metacharacters are rejected for the
+# OUTPUT path ONLY, just after this loop.
 for _path in "$PROMPT_FILE" "$OUTPUT_FILE"; do
   case "$_path" in
-    *\`*|*\$*|*\\*|*\"*|*\'*|*\(*|*\)*|*\**|*\?*|*\[*|*\]*|*,*) die "path must not contain shell-significant, glob, or list-separator characters (backtick, \$, backslash, quotes, parentheses, * ? [ ], comma): $_path" ;;
+    *\`*|*\$*|*\\*|*\"*|*\'*) die "path must not contain shell-significant characters (backtick, \$, backslash, quotes): $_path" ;;
   esac
   if printf '%s' "$_path" | LC_ALL=C grep -q '[[:cntrl:]]'; then
     die "path must not contain control characters"
   fi
 done
+# Glob/list/paren metacharacters are rejected for the OUTPUT path ONLY: it is spliced
+# into the --allowedTools "Edit(//<path>)" scope below — a COMMA-separated list of
+# glob-syntax permission rules — so ( ) (the rule delimiters), a comma (the list
+# separator), or * ? [ ] (glob wildcards — Claude Code interprets globs in rule paths;
+# cf. the ** deny rules below) could malform the rule or BROADEN the Edit scope beyond
+# the single intended file (e.g. Edit(//docs/reviews/x*/claude.json) would match
+# siblings). The PROMPT path is exempt — it only appears as prompt text + the -f check,
+# so a prompt file under e.g. "Project (copy)/" is harmless. Whitespace is allowed for
+# both (the list separator is the comma, not space), so a legitimate absolute path with
+# spaces stays inside the Edit() parens rather than needlessly failing the rung.
+case "$OUTPUT_FILE" in
+  *\(*|*\)*|*\**|*\?*|*\[*|*\]*|*,*) die "claude.json output path must not contain glob/list/paren metacharacters (( ) * ? [ ], comma) — it is spliced into the Edit(...) permission scope: $OUTPUT_FILE" ;;
+esac
 
 [[ -f "$PROMPT_FILE" && -r "$PROMPT_FILE" ]] || die "validation prompt not found or unreadable: $PROMPT_FILE"
 [[ -s "$PROMPT_FILE" ]] || die "validation prompt is empty: $PROMPT_FILE"
@@ -163,13 +168,17 @@ ENV_ARGS=(-u BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN -u BLUEPRINT_ARBITER_GATEWAY_A
 # The file carries a secret, so: a private temp file (mode 0600), passed as
 # --settings <path> (NOT inline) so no secret ever reaches the process argument
 # list, removed on exit. Built with jq (a hard dep, checked above) for escaping.
-# The credential is fed to jq through the ENVIRONMENT (cred=… jq … env.cred),
-# NOT --arg: a --arg value lands in jq's argv (/proc/<pid>/cmdline), readable by
-# same-user processes / process accounting for jq's lifetime — which would breach
-# the "secret never in argv" guarantee before the arbiter even starts. Only the
-# non-secret base URL and the var NAMES travel via --arg. $cred carries the chosen
-# credential; $cred_var names which ANTHROPIC_* key it fills, $other_var the
-# unused one (pinned empty). ($cred_var avoids shadowing the `which` builtin.)
+# The credential is fed to jq through STDIN (printf … | jq --rawfile cred /dev/stdin),
+# NOT --arg and NOT the environment: a --arg value lands in jq's argv
+# (/proc/<pid>/cmdline) and an env value lands in jq's /proc/<pid>/environ — both
+# readable by same-user processes / process accounting for jq's lifetime, which would
+# breach the "secret never in argv or environ" guarantee before the arbiter even
+# starts. The pipe keeps the secret out of both (printf is a bash builtin, so no
+# separate process; $cred is a non-exported shell var, so not in this script's environ
+# either). Only the non-secret base URL and the var NAMES travel via --arg. $cred
+# carries the chosen credential; $cred_var names which ANTHROPIC_* key it fills,
+# $other_var the unused one (pinned empty). ($cred_var avoids shadowing the `which`
+# builtin.)
 SETTINGS_FILE="$(mktemp "${TMPDIR:-/tmp}/bp-gw-settings.XXXXXX")"
 chmod 600 "$SETTINGS_FILE"
 trap 'rm -f "${SETTINGS_FILE:-}"' EXIT
@@ -182,13 +191,13 @@ fi
 # would hand --settings a file with no credential, and the dispatch would 401
 # confusingly instead of erroring here. Check the exit status AND that the file is
 # non-empty before relying on it (the trap still cleans it up on die).
-cred="$cred" jq -n --arg url "$BASE_URL" --arg cred_var "$cred_var" --arg other_var "$other_var" '{
+printf '%s' "$cred" | jq -n --rawfile cred /dev/stdin --arg url "$BASE_URL" --arg cred_var "$cred_var" --arg other_var "$other_var" '{
   env: ({
     ANTHROPIC_BASE_URL: $url,
     ANTHROPIC_CUSTOM_HEADERS: "",
     CLAUDE_CODE_USE_BEDROCK: "", CLAUDE_CODE_USE_VERTEX: "", CLAUDE_CODE_USE_FOUNDRY: "",
     CLAUDE_CODE_USE_AWS: "", CLAUDE_CODE_USE_MANTLE: ""
-  } + { ($cred_var): env.cred, ($other_var): "" })
+  } + { ($cred_var): $cred, ($other_var): "" })
 }' >"$SETTINGS_FILE" || die "failed to write gateway settings file (jq error)"
 [[ -s "$SETTINGS_FILE" ]] || die "gateway settings file is empty after jq write"
 

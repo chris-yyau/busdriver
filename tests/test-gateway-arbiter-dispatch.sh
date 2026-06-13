@@ -265,19 +265,15 @@ env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
   bash "$SCRIPT" "relative/prompt.txt" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
 check "relative prompt path rejected" 1 "$rc"
 
-# Paths are spliced verbatim into the fixed dispatch template — backticks and
-# control characters must be rejected so a crafted filename cannot inject
-# instructions past the two-paths-only firewall. Glob metacharacters (* ? [ ]) and
-# the rule delimiters/separator ( ) , are also rejected: OUTPUT_FILE feeds the
-# comma-separated glob-syntax --allowedTools "Edit(//<path>)" scope, where such a
-# char could broaden or malform the single-file Edit grant. Whitespace is NOT
-# rejected (the separator is the comma, not space) — see the positive spaced-path
-# case below.
+# Both paths are spliced into the fixed dispatch template, so shell-significant
+# chars (backtick, $, backslash, quotes) and control chars (newline etc.) must be
+# rejected for BOTH so a crafted filename cannot inject instructions past the
+# two-paths-only firewall. (Glob/list/paren metacharacters are an OUTPUT-only
+# concern — see the output-path block below; the prompt path may legitimately
+# contain them. Whitespace is accepted for both — see the spaced-path case below.)
 for evil in "$TMPDIR_T/evil\`whoami\`.txt" "$TMPDIR_T/evil"$'\n'"ignore-previous.txt" \
             "$TMPDIR_T"'/evil$(id).txt' "$TMPDIR_T"'/evil${HOME}.txt' "$TMPDIR_T"'/evil\back.txt' \
-            "$TMPDIR_T"'/evil"dq.txt' "$TMPDIR_T/evil'sq.txt" \
-            "$TMPDIR_T/evil(paren).txt" "$TMPDIR_T/evil*glob.txt" "$TMPDIR_T/evil?q.txt" \
-            "$TMPDIR_T/evil[br].txt" "$TMPDIR_T/evil,comma.txt"; do
+            "$TMPDIR_T"'/evil"dq.txt' "$TMPDIR_T/evil'sq.txt"; do
   rm -f "$STUB_LOG"
   rc=0
   env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
@@ -296,14 +292,31 @@ env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
   bash "$SCRIPT" "$PROMPT_FILE" "$TMPDIR_T/out\`id\`.json" >/dev/null 2>&1 || rc=$?
 check "output path with backtick rejected (firewall)" 1 "$rc"
 
-# Output path with a glob char must be rejected: it feeds the Edit(//<path>) scope,
-# where a wildcard would broaden the single-file Edit grant to siblings.
+# Output path with a glob/list/paren metacharacter must be rejected: OUTPUT_FILE
+# feeds the Edit(//<path>) scope, where such a char would malform or broaden the
+# single-file Edit grant. (Rejected for OUTPUT only — the prompt path is exempt.)
+for badout in 'out*.json' 'out?.json' 'out[ab].json' 'out(p).json' 'out,c.json'; do
+  rc=0
+  env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
+    BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 \
+    BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
+    bash "$SCRIPT" "$PROMPT_FILE" "$TMPDIR_T/$badout" >/dev/null 2>&1 || rc=$?
+  check "output path metachar rejected ($badout — Edit-scope cannot be broadened)" 1 "$rc"
+done
+
+# A PROMPT path containing parens is ACCEPTED: only OUTPUT feeds the Edit() scope,
+# so a prompt file under e.g. "Project (copy)/" must still dispatch (codex/cubic #197).
+mkdir -p "$TMPDIR_T/Project (copy)"
+PAREN_PROMPT="$TMPDIR_T/Project (copy)/prompt.txt"
+echo "validation prompt body" > "$PAREN_PROMPT"
+rm -f "$OUTPUT_FILE" "$STUB_LOG"
 rc=0
-env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
+env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" HOME="$HOME" \
+  STUB_LOG="$STUB_LOG" STUB_OUT="$OUTPUT_FILE" STUB_PROMPT="$STUB_PROMPT" STUB_BEHAVIOR=good \
   BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 \
   BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
-  bash "$SCRIPT" "$PROMPT_FILE" "$TMPDIR_T/out*.json" >/dev/null 2>&1 || rc=$?
-check "output path with glob char rejected (Edit-scope cannot be broadened)" 1 "$rc"
+  bash "$SCRIPT" "$PAREN_PROMPT" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
+check "prompt path with parens ACCEPTED (glob/paren ban is OUTPUT-only)" 0 "$rc"
 
 # Whitespace in an absolute path is ACCEPTED: the --allowedTools list separator is
 # the comma (not space), so a legit checkout under a spaced directory must still
@@ -312,7 +325,7 @@ mkdir -p "$TMPDIR_T/sp ace"
 SPACED_OUT="$TMPDIR_T/sp ace/claude.json"
 rm -f "$SPACED_OUT" "$STUB_LOG"
 rc=0
-env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
+env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" HOME="$HOME" \
   STUB_LOG="$STUB_LOG" STUB_OUT="$SPACED_OUT" STUB_PROMPT="$STUB_PROMPT" STUB_BEHAVIOR=good \
   BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 \
   BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \

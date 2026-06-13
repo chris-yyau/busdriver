@@ -204,6 +204,36 @@ rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok-secret-123 BL
 check "model override honored (namespaced gateway id)" "yes" "$(grep -q '^MODEL: anthropic/claude-fable-5$' "$STUB_LOG" && echo yes || echo no)"
 
 echo ""
+echo "── deny-rule path robustness (absolute guard + symlink spelling) ──"
+
+# Symlinked HOME: both the raw (symlink) spelling AND the resolved (real) spelling
+# of the credential store must be Read-denied, since we cannot assume Claude Code's
+# matcher canonicalizes the requested path before matching. (The symlink guarantees
+# raw != resolved on any OS, so this also exercises the macOS /var->/private/var case.)
+mkdir -p "$TMPDIR_T/realhome"
+ln -s "$TMPDIR_T/realhome" "$TMPDIR_T/linkhome"
+home_real="$(cd "$TMPDIR_T/realhome" && pwd -P)"
+rm -f "$OUTPUT_FILE" "$STUB_LOG"
+rc=0
+env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" HOME="$TMPDIR_T/linkhome" \
+  STUB_LOG="$STUB_LOG" STUB_OUT="$STUB_OUT" STUB_PROMPT="$STUB_PROMPT" STUB_BEHAVIOR=good \
+  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 \
+  BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok-secret-123 \
+  bash "$SCRIPT" "$PROMPT_FILE" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
+check "symlinked HOME dispatch succeeds" 0 "$rc"
+check "raw (symlink) HOME credential store Read-denied" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF "Read(//${TMPDIR_T#/}/linkhome/.claude/**)" && echo yes || echo no)"
+check "resolved (real) HOME credential store also Read-denied (alternate-spelling closed)" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF "Read(//${home_real#/}/.claude/**)" && echo yes || echo no)"
+
+# Empty HOME must fail closed: a //${HOME#/}/.claude rule would degrade to a no-op
+# //.claude/** that protects nothing while the dispatch still proceeds (fail-open).
+rc=0
+env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" HOME="" \
+  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 \
+  BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
+  bash "$SCRIPT" "$PROMPT_FILE" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
+check "empty HOME fails closed (no no-op credential deny rule)" "nonzero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)"
+
+echo ""
 echo "── fail-closed post-check ────────────────────────────────────"
 
 STUB_BEHAVIOR=badjson rc=$(STUB_BEHAVIOR=badjson run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok-secret-123")

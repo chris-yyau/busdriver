@@ -159,23 +159,29 @@ ENV_ARGS=(-u BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN -u BLUEPRINT_ARBITER_GATEWAY_A
 # list, removed on exit. Built with jq (a hard dep, checked above) for escaping.
 # The credential value is bound with --arg (jq escapes it); the routing/header
 # selectors are pinned to constant empty strings. $cred carries the chosen
-# credential; $which names which ANTHROPIC_* key it fills.
+# credential; $cred_var names which ANTHROPIC_* key it fills, $other_var the
+# unused one (pinned empty). ($cred_var avoids shadowing the `which` builtin.)
 SETTINGS_FILE="$(mktemp "${TMPDIR:-/tmp}/bp-gw-settings.XXXXXX")"
 chmod 600 "$SETTINGS_FILE"
 trap 'rm -f "${SETTINGS_FILE:-}"' EXIT
 if [[ -n "$AUTH_TOKEN" ]]; then
-  cred="$AUTH_TOKEN"; which="ANTHROPIC_AUTH_TOKEN"; other="ANTHROPIC_API_KEY"
+  cred="$AUTH_TOKEN"; cred_var="ANTHROPIC_AUTH_TOKEN"; other_var="ANTHROPIC_API_KEY"
 else
-  cred="$API_KEY"; which="ANTHROPIC_API_KEY"; other="ANTHROPIC_AUTH_TOKEN"
+  cred="$API_KEY"; cred_var="ANTHROPIC_API_KEY"; other_var="ANTHROPIC_AUTH_TOKEN"
 fi
-jq -n --arg url "$BASE_URL" --arg cred "$cred" --arg which "$which" --arg other "$other" '{
+# A jq failure (e.g. a full disk) must fail CLOSED: an empty/partial settings file
+# would hand --settings a file with no credential, and the dispatch would 401
+# confusingly instead of erroring here. Check the exit status AND that the file is
+# non-empty before relying on it (the trap still cleans it up on die).
+jq -n --arg url "$BASE_URL" --arg cred "$cred" --arg cred_var "$cred_var" --arg other_var "$other_var" '{
   env: ({
     ANTHROPIC_BASE_URL: $url,
     ANTHROPIC_CUSTOM_HEADERS: "",
     CLAUDE_CODE_USE_BEDROCK: "", CLAUDE_CODE_USE_VERTEX: "", CLAUDE_CODE_USE_FOUNDRY: "",
     CLAUDE_CODE_USE_AWS: "", CLAUDE_CODE_USE_MANTLE: ""
-  } + { ($which): $cred, ($other): "" })
-}' >"$SETTINGS_FILE"
+  } + { ($cred_var): $cred, ($other_var): "" })
+}' >"$SETTINGS_FILE" || die "failed to write gateway settings file (jq error)"
+[[ -s "$SETTINGS_FILE" ]] || die "gateway settings file is empty after jq write"
 
 echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${TIMEOUT_S}s)" >&2
 # --bare skips auto-discovery of hooks, skills, plugins, MCP servers, auto
@@ -201,13 +207,15 @@ echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${T
 #   1. No shell — Bash withheld, so no env/printenv.
 #   2. No env token — the credential is NOT in the subprocess environment (see
 #      ENV_ARGS above); it arrives only via the --settings file. So a Read of
-#      /proc/self/environ exposes nothing.
+#      /proc/self/environ exposes no credential (only the non-secret base URL,
+#      which is also the belt-and-suspenders ANTHROPIC_BASE_URL in ENV_ARGS).
 #   3. Read confined — --disallowedTools blocks the residual Read vectors:
 #      (a) /proc, /sys, /dev (so the arbiter cannot Read /proc/self/environ, nor
 #      /proc/self/cmdline to learn the random --settings path), plus the settings
-#      file path itself. /proc is a fixed kernel mount with no symlink
-#      alternate-spelling, so unlike a userspace path glob this deny is not
-#      trivially bypassable.
+#      file path itself. /proc, /sys, /dev are fixed kernel mounts with no symlink
+#      alternate-spelling; the userspace paths (the settings file and the
+#      credential stores below) ARE alternate-spellable, so each is denied in both
+#      its raw and its pwd -P-resolved spelling (see the construction below).
 #      (b) the operator's OWN Anthropic credential stores: $HOME/.claude/**
 #      (settings.json / settings.local.json carry an `env` block that may hold
 #      ANTHROPIC_AUTH_TOKEN/_API_KEY), $HOME/.claude.json (the global state file
@@ -238,14 +246,36 @@ echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${T
 # by reading the cited files, like the non-gateway arbiter.
 # The deny rules use the //<abs-path> form (the leading-// form is what Claude
 # Code's matcher honours for absolute-path rules); the Edit allow-scope uses the
-# same form.
+# same form. Two robustness measures on the credential-bearing paths:
+#   - Absolute guard: $HOME/$PWD are spliced into //${VAR#/} rules, so an empty or
+#     relative value would yield a no-op rule (//.claude/**) that protects nothing
+#     while the dispatch still proceeds — a fail-OPEN. Require both absolute.
+#   - Alternate-spelling coverage: a deny pins ONE spelling, but a symlinked prefix
+#     (macOS $TMPDIR /var->/private/var; a relocated $HOME; a $PWD under a symlinked
+#     mount) reaches the same file by an undenied canonical spelling. Since we can't
+#     assume the matcher canonicalizes the requested path before matching, emit BOTH
+#     the raw and the resolved (pwd -P) spelling for each credential path. Duplicate
+#     rules when raw==resolved are harmless.
+[[ "$HOME" == /* ]] || die "HOME must be absolute to build credential-deny rules: $HOME"
+[[ "$PWD" == /* ]] || die "PWD must be absolute to build credential-deny rules: $PWD"
+_resolve_dir() { (cd "$1" 2>/dev/null && pwd -P) || true; }
+_home_real="$(_resolve_dir "$HOME")"
+_pwd_real="$(_resolve_dir "$PWD")"
+_settings_dir_real="$(_resolve_dir "$(dirname "$SETTINGS_FILE")")"
 DISALLOW_ARGS=(--disallowedTools 'Read(//proc/**)'
                --disallowedTools 'Read(//sys/**)'
-               --disallowedTools 'Read(//dev/**)'
-               --disallowedTools "Read(//${SETTINGS_FILE#/})"
-               --disallowedTools "Read(//${HOME#/}/.claude/**)"
-               --disallowedTools "Read(//${HOME#/}/.claude.json)"
-               --disallowedTools "Read(//${PWD#/}/.claude/**)")
+               --disallowedTools 'Read(//dev/**)')
+# Append a Read deny for the raw path, and a second for its resolved spelling when
+# that differs. Always returns 0 so a no-op (raw==resolved) can't trip set -e.
+_deny_read() {  # $1 raw abs path, $2 resolved abs path (may be empty or == $1)
+  DISALLOW_ARGS+=(--disallowedTools "Read(//${1#/})")
+  [[ -n "$2" && "$2" != "$1" ]] && DISALLOW_ARGS+=(--disallowedTools "Read(//${2#/})")
+  return 0
+}
+_deny_read "$SETTINGS_FILE"     "${_settings_dir_real:+$_settings_dir_real/$(basename "$SETTINGS_FILE")}"
+_deny_read "$HOME/.claude/**"   "${_home_real:+$_home_real/.claude/**}"
+_deny_read "$HOME/.claude.json" "${_home_real:+$_home_real/.claude.json}"
+_deny_read "$PWD/.claude/**"    "${_pwd_real:+$_pwd_real/.claude/**}"
 DISPATCH_RC=0
 _portable_timeout "$TIMEOUT_S" env "${ENV_ARGS[@]}" "$CLAUDE_BIN" --bare -p "$DISPATCH_PROMPT" \
   --settings "$SETTINGS_FILE" \

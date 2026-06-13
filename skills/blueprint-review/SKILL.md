@@ -337,6 +337,7 @@ tracked file, since they carry a secret):
 | `BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN` | one of these two | Bearer-style key → `ANTHROPIC_AUTH_TOKEN` via the `--settings` file (0600, authoritative over a settings-file credential; never in argv) |
 | `BLUEPRINT_ARBITER_GATEWAY_API_KEY` | one of these two | X-Api-Key-style key → `ANTHROPIC_API_KEY` via the `--settings` file (0600, authoritative; never in argv) |
 | `BLUEPRINT_ARBITER_GATEWAY_MODEL` | no (default `claude-fable-5`) | The gateway's model id for fable (some gateways namespace it, e.g. `anthropic/claude-fable-5`) |
+| `BLUEPRINT_ARBITER_GATEWAY_TIMEOUT` | no (default `600`) | Seconds before the headless dispatch is killed (portable-timeout wrapper; guards against a hung gateway call) |
 
 If `BLUEPRINT_ARBITER_GATEWAY_BASE_URL` and one key are not both present, the rung is skipped
 silently (exit 3) and the chain falls through to `opus`. If both `AUTH_TOKEN` and `API_KEY` are
@@ -361,10 +362,11 @@ the protocol structurally: it builds the **same fixed template** from step 1 out
 path arguments only (the caller cannot inject conversation context — the firewall is code, not
 prose), launches the subprocess with `--bare` (no auto-loaded CLAUDE.md/hooks/plugins/skills/
 memory — the arbiter sees only the fixed prompt plus the codebase — and no OAuth/keychain
-fallback, so auth comes solely from the gateway env), reads the gateway credentials from the
-environment itself (the calling session never
-handles the key, and the unused credential variable is explicitly unset for the subprocess so a
-parent-shell export cannot pair the wrong key with the gateway endpoint), and performs the
+fallback, so auth comes solely from the gateway `--settings` file the helper writes), delivers the
+gateway credential to the subprocess **only** through that `0600` `--settings` file — never the
+environment, never argv (the calling session never handles the key; both `ANTHROPIC_*` credential
+vars are stripped from the subprocess env so a parent-shell export cannot pair the wrong key with
+the gateway endpoint, and `/proc/self/environ` carries no token), and performs the
 cheap structural half of the step-3 post-check (exists / parses / PASS-or-FAIL / `run_id`
 present), deleting a garbage verdict so the retry starts clean. The `executed_model`
 self-report comparison and the `pin_ignored` overwrite-on-mismatch remain the calling session's
@@ -373,8 +375,9 @@ arbiter does, so the loop's `--claude-only` re-validation is identical. Tests:
 `tests/test-gateway-arbiter-dispatch.sh`.
 
 **Caveats.** (1) Gateway traffic is metered API billing, not flat subscription — each
-iteration's arbiter is a paid call. (2) The key must reach the subprocess via environment only;
-never write it into a committed file or into `claude.json`. (3) This rung degrades the run in the
+iteration's arbiter is a paid call. (2) The helper delivers the key to the subprocess **only**
+through the `0600` `--settings` file (never the environment, never argv); never write it into a
+committed file or into `claude.json`. (3) This rung degrades the run in the
 same sense the others do (the pin was not satisfied on-subscription) — record
 `model_pin_status=gateway_fable_fallback` and treat the run as degraded for coverage reporting.
 (4) Supply the gateway credential only via `BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN`/`_API_KEY`; the

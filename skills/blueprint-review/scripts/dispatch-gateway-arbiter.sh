@@ -105,7 +105,9 @@ DISPATCH_PROMPT=$(printf '%s\n' \
   "You are the design-review arbiter. Read the validation prompt at" \
   "\`${PROMPT_FILE}\` and follow it exactly." \
   "Use Read to open the files the reviews cite and verify every claim against the codebase." \
-  "Write your strict-JSON verdict to \`${OUTPUT_FILE}\`." \
+  "The file \`${OUTPUT_FILE}\` already exists with a one-line JSON placeholder; Read it," \
+  "then use Edit to replace its ENTIRE contents with your strict-JSON verdict" \
+  "(the placeholder status is not PASS/FAIL, so leaving it unedited fails the run)." \
   "Report the model you are running as in the verdict's validation_notes" \
   "using the canonical field: \"executed_model\": \"<model-name>\" (e.g.," \
   "\"executed_model\": \"fable\")." \
@@ -159,8 +161,11 @@ ENV_ARGS=(-u BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN -u BLUEPRINT_ARBITER_GATEWAY_A
 # The file carries a secret, so: a private temp file (mode 0600), passed as
 # --settings <path> (NOT inline) so no secret ever reaches the process argument
 # list, removed on exit. Built with jq (a hard dep, checked above) for escaping.
-# The credential value is bound with --arg (jq escapes it); the routing/header
-# selectors are pinned to constant empty strings. $cred carries the chosen
+# The credential is fed to jq through the ENVIRONMENT (cred=… jq … env.cred),
+# NOT --arg: a --arg value lands in jq's argv (/proc/<pid>/cmdline), readable by
+# same-user processes / process accounting for jq's lifetime — which would breach
+# the "secret never in argv" guarantee before the arbiter even starts. Only the
+# non-secret base URL and the var NAMES travel via --arg. $cred carries the chosen
 # credential; $cred_var names which ANTHROPIC_* key it fills, $other_var the
 # unused one (pinned empty). ($cred_var avoids shadowing the `which` builtin.)
 SETTINGS_FILE="$(mktemp "${TMPDIR:-/tmp}/bp-gw-settings.XXXXXX")"
@@ -175,13 +180,13 @@ fi
 # would hand --settings a file with no credential, and the dispatch would 401
 # confusingly instead of erroring here. Check the exit status AND that the file is
 # non-empty before relying on it (the trap still cleans it up on die).
-jq -n --arg url "$BASE_URL" --arg cred "$cred" --arg cred_var "$cred_var" --arg other_var "$other_var" '{
+cred="$cred" jq -n --arg url "$BASE_URL" --arg cred_var "$cred_var" --arg other_var "$other_var" '{
   env: ({
     ANTHROPIC_BASE_URL: $url,
     ANTHROPIC_CUSTOM_HEADERS: "",
     CLAUDE_CODE_USE_BEDROCK: "", CLAUDE_CODE_USE_VERTEX: "", CLAUDE_CODE_USE_FOUNDRY: "",
     CLAUDE_CODE_USE_AWS: "", CLAUDE_CODE_USE_MANTLE: ""
-  } + { ($cred_var): $cred, ($other_var): "" })
+  } + { ($cred_var): env.cred, ($other_var): "" })
 }' >"$SETTINGS_FILE" || die "failed to write gateway settings file (jq error)"
 [[ -s "$SETTINGS_FILE" ]] || die "gateway settings file is empty after jq write"
 
@@ -201,8 +206,11 @@ echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${T
 # Edit (write the verdict) — no shell. Read is broad (the arbiter must open many
 # cited files); Edit is pre-approved for EXACTLY ONE path — the verdict file
 # ($OUTPUT_FILE) — via the --allowedTools "Edit(//<path>)" scope below, because
-# the arbiter has exactly one legitimate write target. Edit creates that file
-# when absent; the path scope covers creation.
+# the arbiter has exactly one legitimate write target. Edit is exact-string
+# replacement and CANNOT create a file (Write is not selectable under --bare), so
+# the script pre-creates $OUTPUT_FILE with a placeholder below (the full loop
+# cleans claude.json before each dispatch, so it is otherwise absent); the arbiter
+# Reads that placeholder, then Edits it to the verdict.
 #
 # Containment vs. a prompt-injected arbiter (it reads reviewer-authored content,
 # so treat it as hostile). Defence in depth, all deterministic:
@@ -260,9 +268,18 @@ echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${T
 #     rules when raw==resolved are harmless.
 [[ "$HOME" == /* ]] || die "HOME must be absolute to build credential-deny rules: $HOME"
 [[ "$PWD" == /* ]] || die "PWD must be absolute to build credential-deny rules: $PWD"
+# Anchor the PROJECT credential-store deny to the repo ROOT, not $PWD: the helper
+# is documented to run from the project root, but if it is invoked from a
+# subdirectory a $PWD/.claude/** rule would deny the wrong directory and leave the
+# repo-root .claude/ (which can hold a settings.local.json credential) readable.
+# git finds the real root regardless of CWD; fall back to $PWD when not in a git
+# repo (this deny is defense-in-depth — the $HOME stores below are the primary
+# guard).
+_proj_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
+[[ -n "$_proj_root" && "$_proj_root" == /* ]] || _proj_root="$PWD"
 _resolve_dir() { (cd "$1" 2>/dev/null && pwd -P) || true; }
 _home_real="$(_resolve_dir "$HOME")"
-_pwd_real="$(_resolve_dir "$PWD")"
+_proj_real="$(_resolve_dir "$_proj_root")"
 _settings_dir_real="$(_resolve_dir "$(dirname "$SETTINGS_FILE")")"
 DISALLOW_ARGS=(--disallowedTools 'Read(//proc/**)'
                --disallowedTools 'Read(//sys/**)'
@@ -277,7 +294,20 @@ _deny_read() {  # $1 raw abs path, $2 resolved abs path (may be empty or == $1)
 _deny_read "$SETTINGS_FILE"     "${_settings_dir_real:+$_settings_dir_real/$(basename "$SETTINGS_FILE")}"
 _deny_read "$HOME/.claude/**"   "${_home_real:+$_home_real/.claude/**}"
 _deny_read "$HOME/.claude.json" "${_home_real:+$_home_real/.claude.json}"
-_deny_read "$PWD/.claude/**"    "${_pwd_real:+$_pwd_real/.claude/**}"
+_deny_read "$_proj_root/.claude/**" "${_proj_real:+$_proj_real/.claude/**}"
+
+# Pre-create the verdict file with a placeholder. Under --bare the arbiter holds
+# Read,Edit only (no Bash; Write is not selectable under --bare), and Edit is
+# exact-string replacement that REQUIRES the target to already exist — it cannot
+# create one. The full loop cleans claude.json before each dispatch, so without
+# this the arbiter would have no tool able to create the verdict and every gateway
+# dispatch would fail the post-check (the rung silently degrades to opus). The
+# placeholder is valid JSON whose status is deliberately NOT PASS/FAIL, so if the
+# arbiter fails to overwrite it the post-check below still fails closed (deleted as
+# garbage). The arbiter Reads this placeholder, then Edits the whole object.
+printf '%s\n' '{"status":"PENDING_ARBITER_WRITE","_note":"placeholder — replace this entire object via Edit with the strict-JSON verdict"}' > "$OUTPUT_FILE" \
+  || die "failed to pre-create verdict placeholder at $OUTPUT_FILE"
+
 DISPATCH_RC=0
 _portable_timeout "$TIMEOUT_S" env "${ENV_ARGS[@]}" "$CLAUDE_BIN" --bare -p "$DISPATCH_PROMPT" \
   --settings "$SETTINGS_FILE" \

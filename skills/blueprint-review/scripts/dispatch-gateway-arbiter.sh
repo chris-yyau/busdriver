@@ -207,9 +207,16 @@ echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${T
 # codebase (no author-side CLAUDE.md context, and busdriver's own PreToolUse
 # gates can't fire inside the subprocess). It also skips OAuth/keychain
 # reads, so auth comes solely from the gateway --settings file above.
-# --tools RESTRICTS the tool set (the firewall); --allowedTools only
-# pre-approves, so without --tools a permissive user/project permission
-# config would let the arbiter reach other tools. --strict-mcp-config keeps
+# --permission-mode dontAsk is the KEYSTONE: it makes the run deny-by-default —
+# only tools matching an --allowedTools rule (and read-only Bash, which is moot
+# since Bash isn't in --tools) execute; everything else is DENIED, never prompted.
+# It also OVERRIDES the operator's settings `defaultMode`, so an operator who runs
+# with acceptEdits/auto/bypassPermissions cannot widen the arbiter: without dontAsk,
+# --allowedTools merely ADDS auto-approvals (it does not restrict), so a permissive
+# inherited mode would auto-approve Edit workspace-wide and defeat the Edit scope.
+# --tools RESTRICTS which tools exist (the firewall); --allowedTools only
+# pre-approves, so without --tools a permissive permission config would let the
+# arbiter reach other tools. --strict-mcp-config keeps
 # MCP servers from loading even if a future flag change re-enables discovery.
 # Tool names: under --bare the built-in selectable set is {Bash, Edit, Read};
 # Grep/Glob/Write are NOT selectable there (passing them silently collapses the
@@ -252,11 +259,13 @@ echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${T
 #      ALONE, not workspace-wide. The deny rules above only bound Read; without an
 #      Edit scope a prompt-injected arbiter could Edit ARBITRARY workspace files —
 #      inject code into a source file, rewrite a settings/config file, tamper with
-#      another review's artifacts. Under headless --bare an Edit to any path the
-#      allow-rule doesn't cover is not pre-approved and is denied (no interactive
-#      prompt to fall back on), so scoping the allow to $OUTPUT_FILE confines all
+#      another review's artifacts. Under --permission-mode dontAsk (the keystone,
+#      above) the run is deny-by-default, so an Edit to any path the allow-rule
+#      doesn't cover is denied (never prompted) regardless of the operator's
+#      settings defaultMode — scoping the allow to $OUTPUT_FILE thus confines all
 #      writes to the one legitimate target. (Edit is an allowlist — exactly one
-#      valid target — whereas Read stays a blocklist — many valid targets.)
+#      valid target — whereas Read stays a blocklist — many valid targets. dontAsk
+#      also denies writes to protected paths like .claude/.git as a bonus.)
 # Net: no shell, no env token, no way to discover the settings path, settings file
 # + Anthropic credential stores Read-denied, Edit scoped to the verdict file — the
 # arbiter has no route to the gateway secret OR the operator's own credential, and
@@ -323,6 +332,7 @@ DISPATCH_RC=0
 _portable_timeout "$TIMEOUT_S" env "${ENV_ARGS[@]}" "$CLAUDE_BIN" --bare -p "$DISPATCH_PROMPT" \
   --settings "$SETTINGS_FILE" \
   --model "$MODEL" \
+  --permission-mode dontAsk \
   --tools Read,Edit \
   --allowedTools "Read,Edit(//${OUTPUT_FILE#/})" \
   "${DISALLOW_ARGS[@]}" \

@@ -37,7 +37,7 @@ echo "validation prompt body" > "$PROMPT_FILE"
 STUB_BIN="$TMPDIR_T/claude-stub"
 cat > "$STUB_BIN" <<'EOF'
 #!/bin/bash
-prompt="" model="" tools_restrict="" tools_approve="" strict_mcp=0 bare=0 settings="" disallowed=""
+prompt="" model="" tools_restrict="" tools_approve="" strict_mcp=0 bare=0 settings="" disallowed="" perm_mode=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -p) prompt="$2"; shift 2 ;;
@@ -46,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     --tools) tools_restrict="$2"; shift 2 ;;
     --allowedTools) tools_approve="$2"; shift 2 ;;
     --disallowedTools) disallowed="$disallowed $2"; shift 2 ;;
+    --permission-mode) perm_mode="$2"; shift 2 ;;
     --strict-mcp-config) strict_mcp=1; shift ;;
     --bare) bare=1; shift ;;
     *) shift ;;
@@ -73,6 +74,7 @@ done
   echo "DISALLOWED:$disallowed"
   echo "STRICT_MCP: $strict_mcp"
   echo "BARE: $bare"
+  echo "PERM_MODE: $perm_mode"
   echo "OUT_PREEXISTING: $([ -s "${STUB_OUT:-/nonexistent}" ] && echo yes || echo no)"
   echo "BASE_URL: ${ANTHROPIC_BASE_URL:-}"
   echo "AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}"
@@ -186,6 +188,7 @@ check "Read denied for the settings file path itself (defense in depth)" "yes" "
 check "Read denied for operator's global Claude config dir ~/.claude (settings.json credential store)" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF "Read(//${HOME#/}/.claude/**)" && echo yes || echo no)"
 check "Read denied for operator's global Claude state file ~/.claude.json (holds API/OAuth credential)" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF "Read(//${HOME#/}/.claude.json)" && echo yes || echo no)"
 check "Read denied for project-local .claude (settings.local.json credential store)" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF "Read(//${PWD#/}/.claude/**)" && echo yes || echo no)"
+check "deny-by-default permission mode forced (--permission-mode dontAsk — allowlist authoritative over operator defaultMode)" "yes" "$(grep -q '^PERM_MODE: dontAsk$' "$STUB_LOG" && echo yes || echo no)"
 check "MCP servers disabled (--strict-mcp-config)" "yes" "$(grep -q '^STRICT_MCP: 1$' "$STUB_LOG" && echo yes || echo no)"
 check "auto-discovery and OAuth/keychain skipped (--bare)" "yes" "$(grep -q '^BARE: 1$' "$STUB_LOG" && echo yes || echo no)"
 check "settings passed as a file path (not inline secret-bearing JSON)" "yes" "$(grep -q '^SETTINGS_IS_FILE: yes$' "$STUB_LOG" && echo yes || echo no)"

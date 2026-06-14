@@ -47,3 +47,12 @@ scripts/codex/.runs/
 
 # CodeGraph tree-sitter index artifacts (regeneratable, per-repo)
 .codegraph/
+
+# headroom-ai local tooling state (context-compression MCP — not part of the plugin)
+# Repo-root-anchored so they can't shadow same-named files/dirs at other depths.
+/headroom_memory.db
+/cache/
+
+# Local agent tooling files (per-developer, not part of the plugin)
+/.agents/
+/WARP.md

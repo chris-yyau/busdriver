@@ -1,3 +1,10 @@
+## [1.62.1](https://github.com/chris-yyau/busdriver/compare/v1.62.0...v1.62.1) (2026-06-14)
+
+
+### Bug Fixes
+
+* **blueprint-review:** make gateway arbiter work live + harden credential containment ([#197](https://github.com/chris-yyau/busdriver/issues/197)) ([649b310](https://github.com/chris-yyau/busdriver/commit/649b310bba1946d80aa9c402fb86eef87fefca78))
+
 # [1.62.0](https://github.com/chris-yyau/busdriver/compare/v1.61.1...v1.62.0) (2026-06-12)
 
 

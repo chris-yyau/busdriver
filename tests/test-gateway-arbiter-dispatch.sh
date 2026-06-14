@@ -37,13 +37,16 @@ echo "validation prompt body" > "$PROMPT_FILE"
 STUB_BIN="$TMPDIR_T/claude-stub"
 cat > "$STUB_BIN" <<'EOF'
 #!/bin/bash
-prompt="" model="" tools_restrict="" tools_approve="" strict_mcp=0 bare=0
+prompt="" model="" tools_restrict="" tools_approve="" strict_mcp=0 bare=0 settings="" disallowed="" perm_mode=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -p) prompt="$2"; shift 2 ;;
     --model) model="$2"; shift 2 ;;
+    --settings) settings="$2"; shift 2 ;;
     --tools) tools_restrict="$2"; shift 2 ;;
     --allowedTools) tools_approve="$2"; shift 2 ;;
+    --disallowedTools) disallowed="$disallowed $2"; shift 2 ;;
+    --permission-mode) perm_mode="$2"; shift 2 ;;
     --strict-mcp-config) strict_mcp=1; shift ;;
     --bare) bare=1; shift ;;
     *) shift ;;
@@ -51,10 +54,28 @@ while [[ $# -gt 0 ]]; do
 done
 {
   echo "MODEL: $model"
+  echo "SETTINGS: $settings"
+  if [[ -n "$settings" && -f "$settings" ]]; then
+    s_mode="$(stat -c '%a' "$settings" 2>/dev/null || stat -f '%Lp' "$settings" 2>/dev/null)"
+    s_base="$(jq -r '.env.ANTHROPIC_BASE_URL // empty' "$settings" 2>/dev/null)"
+    s_auth="$(jq -r '.env.ANTHROPIC_AUTH_TOKEN // empty' "$settings" 2>/dev/null)"
+    s_key="$(jq -r '.env.ANTHROPIC_API_KEY // empty' "$settings" 2>/dev/null)"
+    echo "SETTINGS_IS_FILE: yes"
+    echo "SETTINGS_MODE: $s_mode"
+    echo "SETTINGS_BASE: $s_base"
+    echo "SETTINGS_AUTH_PRESENT: $([ -n "$s_auth" ] && echo yes || echo no)"
+    echo "SETTINGS_APIKEY_PRESENT: $([ -n "$s_key" ] && echo yes || echo no)"
+    echo "SETTINGS_NEUTRALIZED: $(jq -r '[.env.ANTHROPIC_CUSTOM_HEADERS, .env.CLAUDE_CODE_USE_BEDROCK, .env.CLAUDE_CODE_USE_VERTEX, .env.CLAUDE_CODE_USE_FOUNDRY, .env.CLAUDE_CODE_USE_AWS, .env.CLAUDE_CODE_USE_MANTLE] | all(. == "")' "$settings" 2>/dev/null)"
+  else
+    echo "SETTINGS_IS_FILE: no"
+  fi
   echo "TOOLS_RESTRICT: $tools_restrict"
   echo "TOOLS_APPROVE: $tools_approve"
+  echo "DISALLOWED:$disallowed"
   echo "STRICT_MCP: $strict_mcp"
   echo "BARE: $bare"
+  echo "PERM_MODE: $perm_mode"
+  echo "OUT_PREEXISTING: $([ -s "${STUB_OUT:-/nonexistent}" ] && echo yes || echo no)"
   echo "BASE_URL: ${ANTHROPIC_BASE_URL:-}"
   echo "AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}"
   echo "API_KEY: ${ANTHROPIC_API_KEY:-}"
@@ -130,40 +151,96 @@ echo "── credential isolation ───────────────�
 
 rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok-secret-123")
 check "AUTH_TOKEN dispatch succeeds" 0 "$rc"
-check "subprocess sees gateway base URL" "yes" "$(grep -q 'BASE_URL: https://gateway.example/v1' "$STUB_LOG" && echo yes || echo no)"
-check "subprocess sees AUTH_TOKEN" "yes" "$(grep -q 'AUTH_TOKEN: tok-secret-123' "$STUB_LOG" && echo yes || echo no)"
-check "subprocess sees empty API_KEY" "yes" "$(grep -q '^API_KEY: $' "$STUB_LOG" && echo yes || echo no)"
+check "subprocess sees gateway base URL (env, non-secret)" "yes" "$(grep -q 'BASE_URL: https://gateway.example/v1' "$STUB_LOG" && echo yes || echo no)"
+check "credential NOT in subprocess env — AUTH_TOKEN empty (delivered via settings file; /proc/self/environ safe)" "yes" "$(grep -q '^AUTH_TOKEN: $' "$STUB_LOG" && echo yes || echo no)"
+check "credential NOT in subprocess env — API_KEY empty" "yes" "$(grep -q '^API_KEY: $' "$STUB_LOG" && echo yes || echo no)"
+check "settings file carries the gateway AUTH_TOKEN (authoritative auth source)" "yes" "$(grep -q '^SETTINGS_AUTH_PRESENT: yes$' "$STUB_LOG" && echo yes || echo no)"
 
 rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_API_KEY=key-secret-456 ANTHROPIC_AUTH_TOKEN=parent-shell-token ANTHROPIC_CUSTOM_HEADERS=x-other-proxy-secret:abc CLAUDE_CODE_USE_BEDROCK=1 CLAUDE_CODE_USE_MANTLE=1")
 check "API_KEY dispatch succeeds" 0 "$rc"
-check "subprocess sees API_KEY" "yes" "$(grep -q 'API_KEY: key-secret-456' "$STUB_LOG" && echo yes || echo no)"
+check "API_KEY credential NOT in subprocess env (delivered via settings file)" "yes" "$(grep -q '^API_KEY: $' "$STUB_LOG" && echo yes || echo no)"
+check "settings file carries the gateway API_KEY" "yes" "$(grep -q '^SETTINGS_APIKEY_PRESENT: yes$' "$STUB_LOG" && echo yes || echo no)"
 check "parent-shell ANTHROPIC_AUTH_TOKEN is unset for subprocess (env -u)" "yes" "$(grep -q '^AUTH_TOKEN: $' "$STUB_LOG" && echo yes || echo no)"
 check "parent-shell ANTHROPIC_CUSTOM_HEADERS is unset for subprocess" "yes" "$(grep -q '^CUSTOM_HEADERS: $' "$STUB_LOG" && echo yes || echo no)"
 check "parent-shell CLAUDE_CODE_USE_BEDROCK is unset for subprocess (provider routing)" "yes" "$(grep -q '^USE_BEDROCK: $' "$STUB_LOG" && echo yes || echo no)"
 check "parent-shell CLAUDE_CODE_USE_MANTLE is unset for subprocess (provider routing)" "yes" "$(grep -q '^USE_MANTLE: $' "$STUB_LOG" && echo yes || echo no)"
 
 rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok-secret-123 BLUEPRINT_ARBITER_GATEWAY_API_KEY=key-secret-456")
-check "both credentials set: AUTH_TOKEN wins" "yes" "$(grep -q 'AUTH_TOKEN: tok-secret-123' "$STUB_LOG" && echo yes || echo no)"
-check "both credentials set: API_KEY not passed" "yes" "$(grep -q '^API_KEY: $' "$STUB_LOG" && echo yes || echo no)"
-check "BLUEPRINT_* source secrets stripped from subprocess (losing key not inherited)" "yes" "$(grep -q '^GW_AUTH_TOKEN: $' "$STUB_LOG" && grep -q '^GW_API_KEY: $' "$STUB_LOG" && echo yes || echo no)"
+check "both gateway creds set: settings file uses AUTH_TOKEN (preferred)" "yes" "$(grep -q '^SETTINGS_AUTH_PRESENT: yes$' "$STUB_LOG" && echo yes || echo no)"
+check "both gateway creds set: settings file API_KEY pinned empty (AUTH_TOKEN wins)" "no" "$(grep -q '^SETTINGS_APIKEY_PRESENT: yes$' "$STUB_LOG" && echo yes || echo no)"
+check "neither credential in subprocess env — AUTH_TOKEN empty" "yes" "$(grep -q '^AUTH_TOKEN: $' "$STUB_LOG" && echo yes || echo no)"
+check "neither credential in subprocess env — API_KEY empty" "yes" "$(grep -q '^API_KEY: $' "$STUB_LOG" && echo yes || echo no)"
+check "BLUEPRINT_* source secrets stripped from subprocess (no source secret inherited)" "yes" "$(grep -q '^GW_AUTH_TOKEN: $' "$STUB_LOG" && grep -q '^GW_API_KEY: $' "$STUB_LOG" && echo yes || echo no)"
 
 echo ""
 echo "── dispatch shape (fixed template, model, tools) ─────────────"
 
 rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok-secret-123")
 check "default model is claude-fable-5" "yes" "$(grep -q '^MODEL: claude-fable-5$' "$STUB_LOG" && echo yes || echo no)"
-check "tool set restricted to Read,Grep,Glob,Write (--tools)" "yes" "$(grep -q '^TOOLS_RESTRICT: Read,Grep,Glob,Write$' "$STUB_LOG" && echo yes || echo no)"
-check "restricted tools pre-approved (--allowedTools)" "yes" "$(grep -q '^TOOLS_APPROVE: Read,Grep,Glob,Write$' "$STUB_LOG" && echo yes || echo no)"
+check "tool set restricted to Read,Edit (no shell — credential-exfil guard)" "yes" "$(grep -q '^TOOLS_RESTRICT: Read,Edit$' "$STUB_LOG" && echo yes || echo no)"
+check "Edit pre-approved ONLY for the verdict file path (no workspace-wide Edit)" "yes" "$(grep -qF "TOOLS_APPROVE: Read,Edit(//${OUTPUT_FILE#/})" "$STUB_LOG" && echo yes || echo no)"
+check "bare workspace-wide Edit NOT pre-approved (scope replaces 'Read,Edit')" "no" "$(grep -q '^TOOLS_APPROVE: Read,Edit$' "$STUB_LOG" && echo yes || echo no)"
+check "no shell tool granted (no Bash → no env/printenv exfil path)" "no" "$(grep -qE '^TOOLS_(RESTRICT|APPROVE): .*Bash' "$STUB_LOG" && echo yes || echo no)"
+check "Read denied for /proc (blocks /proc/self/environ and cmdline path-discovery)" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF 'Read(//proc/**)' && echo yes || echo no)"
+check "Read denied for /sys" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF 'Read(//sys/**)' && echo yes || echo no)"
+check "Read denied for /dev" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF 'Read(//dev/**)' && echo yes || echo no)"
+check "Read denied for the settings file path itself (defense in depth)" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF 'bp-gw-settings' && echo yes || echo no)"
+check "Read denied for operator's global Claude config dir ~/.claude (settings.json credential store)" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF "Read(//${HOME#/}/.claude/**)" && echo yes || echo no)"
+check "Read denied for operator's global Claude state file ~/.claude.json (holds API/OAuth credential)" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF "Read(//${HOME#/}/.claude.json)" && echo yes || echo no)"
+check "Read denied for project-local .claude (settings.local.json credential store)" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF "Read(//${PWD#/}/.claude/**)" && echo yes || echo no)"
+check "deny-by-default permission mode forced (--permission-mode dontAsk — allowlist authoritative over operator defaultMode)" "yes" "$(grep -q '^PERM_MODE: dontAsk$' "$STUB_LOG" && echo yes || echo no)"
 check "MCP servers disabled (--strict-mcp-config)" "yes" "$(grep -q '^STRICT_MCP: 1$' "$STUB_LOG" && echo yes || echo no)"
 check "auto-discovery and OAuth/keychain skipped (--bare)" "yes" "$(grep -q '^BARE: 1$' "$STUB_LOG" && echo yes || echo no)"
+check "settings passed as a file path (not inline secret-bearing JSON)" "yes" "$(grep -q '^SETTINGS_IS_FILE: yes$' "$STUB_LOG" && echo yes || echo no)"
+check "settings file is private (mode 0600)" "600" "$(sed -n 's/^SETTINGS_MODE: //p' "$STUB_LOG")"
+SETTINGS_PATH_LOGGED=$(sed -n 's/^SETTINGS: //p' "$STUB_LOG" | head -1)
+check "settings file path recorded by stub (sanity)" "yes" "$([ -n "$SETTINGS_PATH_LOGGED" ] && echo yes || echo no)"
+check "temp settings file removed after dispatch (trap cleanup — 0600 secret not left on disk)" "yes" "$([ -n "$SETTINGS_PATH_LOGGED" ] && [ ! -e "$SETTINGS_PATH_LOGGED" ] && echo yes || echo no)"
+check "gateway base URL forced via settings file (beats operator's default settings.json)" "https://gateway.example/v1" "$(sed -n 's/^SETTINGS_BASE: //p' "$STUB_LOG")"
+check "gateway credential carried in settings file (authoritative over a settings.json credential)" "yes" "$(grep -q '^SETTINGS_AUTH_PRESENT: yes$' "$STUB_LOG" && echo yes || echo no)"
+check "unused credential var pinned empty in settings file (no settings.json bleed-through)" "no" "$(grep -q '^SETTINGS_APIKEY_PRESENT: yes$' "$STUB_LOG" && echo yes || echo no)"
+check "settings file pins proxy headers + provider routing empty (settings.json cannot re-inject)" "true" "$(sed -n 's/^SETTINGS_NEUTRALIZED: //p' "$STUB_LOG")"
+check "gateway secret never reaches argv (the --settings value is a path, not the token)" "no" "$(grep '^SETTINGS: ' "$STUB_LOG" | grep -q 'tok-secret-123' && echo yes || echo no)"
 check "prompt contains the validation-prompt path" "yes" "$(grep -qF "$PROMPT_FILE" "$STUB_PROMPT" && echo yes || echo no)"
 check "prompt contains the claude.json output path" "yes" "$(grep -qF "$OUTPUT_FILE" "$STUB_PROMPT" && echo yes || echo no)"
+check "verdict file pre-created before arbiter runs (Edit-only cannot create files)" "yes" "$(grep -q '^OUT_PREEXISTING: yes$' "$STUB_LOG" && echo yes || echo no)"
+check "prompt instructs Edit-replace of the existing placeholder" "yes" "$(grep -q 'replace its ENTIRE contents' "$STUB_PROMPT" && echo yes || echo no)"
 check "prompt contains the fixed-template arbiter framing" "yes" "$(grep -q 'design-review arbiter' "$STUB_PROMPT" && echo yes || echo no)"
 check "prompt contains the model self-report instruction" "yes" "$(grep -q 'executed_model' "$STUB_PROMPT" && echo yes || echo no)"
 check "secret never appears in the prompt (firewall)" "yes" "$(grep -q 'tok-secret-123' "$STUB_PROMPT" && echo no || echo yes)"
 
 rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok-secret-123 BLUEPRINT_ARBITER_GATEWAY_MODEL=anthropic/claude-fable-5")
 check "model override honored (namespaced gateway id)" "yes" "$(grep -q '^MODEL: anthropic/claude-fable-5$' "$STUB_LOG" && echo yes || echo no)"
+
+echo ""
+echo "── deny-rule path robustness (absolute guard + symlink spelling) ──"
+
+# Symlinked HOME: both the raw (symlink) spelling AND the resolved (real) spelling
+# of the credential store must be Read-denied, since we cannot assume Claude Code's
+# matcher canonicalizes the requested path before matching. (The symlink guarantees
+# raw != resolved on any OS, so this also exercises the macOS /var->/private/var case.)
+mkdir -p "$TMPDIR_T/realhome"
+ln -s "$TMPDIR_T/realhome" "$TMPDIR_T/linkhome"
+home_real="$(cd "$TMPDIR_T/realhome" && pwd -P)"
+rm -f "$OUTPUT_FILE" "$STUB_LOG"
+rc=0
+env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" HOME="$TMPDIR_T/linkhome" \
+  STUB_LOG="$STUB_LOG" STUB_OUT="$STUB_OUT" STUB_PROMPT="$STUB_PROMPT" STUB_BEHAVIOR=good \
+  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 \
+  BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok-secret-123 \
+  bash "$SCRIPT" "$PROMPT_FILE" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
+check "symlinked HOME dispatch succeeds" 0 "$rc"
+check "raw (symlink) HOME credential store Read-denied" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF "Read(//${TMPDIR_T#/}/linkhome/.claude/**)" && echo yes || echo no)"
+check "resolved (real) HOME credential store also Read-denied (alternate-spelling closed)" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF "Read(//${home_real#/}/.claude/**)" && echo yes || echo no)"
+
+# Empty HOME must fail closed: a //${HOME#/}/.claude rule would degrade to a no-op
+# //.claude/** that protects nothing while the dispatch still proceeds (fail-open).
+rc=0
+env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" HOME="" \
+  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 \
+  BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
+  bash "$SCRIPT" "$PROMPT_FILE" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
+check "empty HOME fails closed (no no-op credential deny rule)" "nonzero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)"
 
 echo ""
 echo "── fail-closed post-check ────────────────────────────────────"
@@ -191,9 +268,12 @@ env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
   bash "$SCRIPT" "relative/prompt.txt" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
 check "relative prompt path rejected" 1 "$rc"
 
-# Paths are spliced verbatim into the fixed dispatch template — backticks and
-# control characters must be rejected so a crafted filename cannot inject
-# instructions past the two-paths-only firewall.
+# Both paths are spliced into the fixed dispatch template, so shell-significant
+# chars (backtick, $, backslash, quotes) and control chars (newline etc.) must be
+# rejected for BOTH so a crafted filename cannot inject instructions past the
+# two-paths-only firewall. (Glob/list/paren metacharacters are an OUTPUT-only
+# concern — see the output-path block below; the prompt path may legitimately
+# contain them. Whitespace is accepted for both — see the spaced-path case below.)
 for evil in "$TMPDIR_T/evil\`whoami\`.txt" "$TMPDIR_T/evil"$'\n'"ignore-previous.txt" \
             "$TMPDIR_T"'/evil$(id).txt' "$TMPDIR_T"'/evil${HOME}.txt' "$TMPDIR_T"'/evil\back.txt' \
             "$TMPDIR_T"'/evil"dq.txt' "$TMPDIR_T/evil'sq.txt"; do
@@ -214,6 +294,46 @@ env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
   BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
   bash "$SCRIPT" "$PROMPT_FILE" "$TMPDIR_T/out\`id\`.json" >/dev/null 2>&1 || rc=$?
 check "output path with backtick rejected (firewall)" 1 "$rc"
+
+# Output path with a glob/list/paren metacharacter must be rejected: OUTPUT_FILE
+# feeds the Edit(//<path>) scope, where such a char would malform or broaden the
+# single-file Edit grant. (Rejected for OUTPUT only — the prompt path is exempt.)
+for badout in 'out*.json' 'out?.json' 'out[ab].json' 'out(p).json' 'out,c.json'; do
+  rc=0
+  env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
+    BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 \
+    BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
+    bash "$SCRIPT" "$PROMPT_FILE" "$TMPDIR_T/$badout" >/dev/null 2>&1 || rc=$?
+  check "output path metachar rejected ($badout — Edit-scope cannot be broadened)" 1 "$rc"
+done
+
+# A PROMPT path containing parens is ACCEPTED: only OUTPUT feeds the Edit() scope,
+# so a prompt file under e.g. "Project (copy)/" must still dispatch (codex/cubic #197).
+mkdir -p "$TMPDIR_T/Project (copy)"
+PAREN_PROMPT="$TMPDIR_T/Project (copy)/prompt.txt"
+echo "validation prompt body" > "$PAREN_PROMPT"
+rm -f "$OUTPUT_FILE" "$STUB_LOG"
+rc=0
+env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" HOME="$HOME" \
+  STUB_LOG="$STUB_LOG" STUB_OUT="$OUTPUT_FILE" STUB_PROMPT="$STUB_PROMPT" STUB_BEHAVIOR=good \
+  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 \
+  BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
+  bash "$SCRIPT" "$PAREN_PROMPT" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
+check "prompt path with parens ACCEPTED (glob/paren ban is OUTPUT-only)" 0 "$rc"
+
+# Whitespace in an absolute path is ACCEPTED: the --allowedTools list separator is
+# the comma (not space), so a legit checkout under a spaced directory must still
+# dispatch rather than needlessly fall through to opus.
+mkdir -p "$TMPDIR_T/sp ace"
+SPACED_OUT="$TMPDIR_T/sp ace/claude.json"
+rm -f "$SPACED_OUT" "$STUB_LOG"
+rc=0
+env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" HOME="$HOME" \
+  STUB_LOG="$STUB_LOG" STUB_OUT="$SPACED_OUT" STUB_PROMPT="$STUB_PROMPT" STUB_BEHAVIOR=good \
+  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 \
+  BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
+  bash "$SCRIPT" "$PROMPT_FILE" "$SPACED_OUT" >/dev/null 2>&1 || rc=$?
+check "output path with spaces ACCEPTED (whitespace not banned; rung not needlessly failed)" 0 "$rc"
 
 # ═══════════════════════════════════════════════════════════════════════
 # RESULTS

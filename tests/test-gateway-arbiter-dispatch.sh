@@ -42,6 +42,17 @@ cat > "$STUB_BIN" <<'EOF'
 # without writing a log (a probe is not a dispatch).
 for _a in "$@"; do
   if [[ "$_a" == "--help" ]]; then
+    # Record the env this probe was invoked with so the harness can assert the
+    # capability probe ran under `env "${ENV_ARGS[@]}"` scrubbing — i.e. it never
+    # receives the gateway/Anthropic secrets (issue #198 review). Overwrite (not
+    # append); only this --help path writes it, and run_script resets it per run,
+    # so the dispatch invocation in the same run cannot clobber the probe record.
+    {
+      echo "PROBE_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}"
+      echo "PROBE_API_KEY: ${ANTHROPIC_API_KEY:-}"
+      echo "PROBE_GW_AUTH_TOKEN: ${BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN:-}"
+      echo "PROBE_GW_API_KEY: ${BLUEPRINT_ARBITER_GATEWAY_API_KEY:-}"
+    } > "${STUB_PROBE_LOG:-/dev/null}"
     printf '%s\n' '  --setting-sources <sources>  Comma-separated list of setting sources to load (user, project, local).'
     printf '%s\n' '  --settings <file-or-json>'
     exit 0
@@ -133,14 +144,19 @@ chmod +x "$STUB_BIN_OLD"
 export STUB_LOG
 export STUB_OUT="$OUTPUT_FILE"
 export STUB_PROMPT="$TMPDIR_T/stub-prompt.txt"
+# Records the environment the capability probe (`claude --help`) was invoked
+# with, so the harness can assert the probe ran under env-scrubbing (issue #198
+# review: prove the probe never receives the gateway/Anthropic secrets).
+export STUB_PROBE_LOG="$TMPDIR_T/stub-probe.log"
 
 run_script() {
   # $1 = extra env assignments (string, eval-ed), rest handled via globals.
   # Echoes the exit code; never aborts the harness.
   local extra_env="$1" rc=0
-  rm -f "$OUTPUT_FILE" "$STUB_LOG"
+  rm -f "$OUTPUT_FILE" "$STUB_LOG" "$STUB_PROBE_LOG"
   env -i PATH="$PATH" HOME="$HOME" \
     STUB_LOG="$STUB_LOG" STUB_OUT="$STUB_OUT" STUB_PROMPT="$STUB_PROMPT" \
+    STUB_PROBE_LOG="$STUB_PROBE_LOG" \
     STUB_BEHAVIOR="${STUB_BEHAVIOR:-good}" \
     CLAUDE_BIN="$STUB_BIN" \
     $extra_env \
@@ -216,6 +232,8 @@ check "Edit pre-approved ONLY for the verdict file path (no workspace-wide Edit)
 check "bare workspace-wide Edit NOT pre-approved (scope replaces 'Read,Edit')" "no" "$(grep -q '^TOOLS_APPROVE: Read,Edit$' "$STUB_LOG" && echo yes || echo no)"
 check "operator setting sources NOT loaded (--setting-sources passed — neutralizes inherited permissions.allow Edit, issue #198)" "yes" "$(grep -q '^SETTING_SOURCES_PRESENT: yes$' "$STUB_LOG" && echo yes || echo no)"
 check "--setting-sources value is empty (loads none of user/project/local — no inherited allow rule can widen Edit scope)" "yes" "$(grep -q '^SETTING_SOURCES_VALUE: $' "$STUB_LOG" && echo yes || echo no)"
+check "capability probe was invoked (probe env recorded — guard actually ran claude --help)" "yes" "$([ -s "$STUB_PROBE_LOG" ] && echo yes || echo no)"
+check "capability probe ran env-scrubbed (gateway secret NOT visible to claude --help — regression guard for dropping env \${ENV_ARGS[@]})" "no" "$(grep -q 'tok-secret-123' "$STUB_PROBE_LOG" 2>/dev/null && echo yes || echo no)"
 check "no shell tool granted (no Bash → no env/printenv exfil path)" "no" "$(grep -qE '^TOOLS_(RESTRICT|APPROVE): .*Bash' "$STUB_LOG" && echo yes || echo no)"
 check "Read denied for /proc (blocks /proc/self/environ and cmdline path-discovery)" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF 'Read(//proc/**)' && echo yes || echo no)"
 check "Read denied for /sys" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF 'Read(//sys/**)' && echo yes || echo no)"

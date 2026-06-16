@@ -203,8 +203,9 @@ ENV_ARGS=(-u BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN -u BLUEPRINT_ARBITER_GATEWAY_A
 # grep -q closes the pipe on first match and claude can take SIGPIPE (exit 141),
 # which would fail the pipeline and FALSELY reject a supported binary. The `|| true`
 # keeps a non-zero --help (older builds) from tripping `set -e` — an absent flag is
-# handled by the glob test below, not by the exit status.
-_gw_help="$(env "${ENV_ARGS[@]}" "$CLAUDE_BIN" --help 2>/dev/null || true)"
+# handled by the glob test below, not by the exit status. 2>&1 (not 2>/dev/null)
+# so a build that prints --help to stderr is matched, not falsely rejected.
+_gw_help="$(env "${ENV_ARGS[@]}" "$CLAUDE_BIN" --help 2>&1 || true)"
 [[ "$_gw_help" == *--setting-sources* ]] \
   || die "claude ($CLAUDE_BIN) does not support --setting-sources; cannot neutralize operator permission scopes for the arbiter — upgrade claude or unset the gateway config (the caller retries once, then falls through to the opus rung)"
 

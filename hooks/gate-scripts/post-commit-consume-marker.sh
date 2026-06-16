@@ -107,7 +107,7 @@ try:
             if is_commit:
                 c_m = re.search(r'-C\s+(\S+)', seg)
                 if c_m:
-                    target_dir = c_m.group(1).strip('\042\047')
+                    target_dir = os.path.expanduser(c_m.group(1).strip('\042\047'))
                 break
 
     if not is_commit:

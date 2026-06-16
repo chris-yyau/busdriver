@@ -206,7 +206,7 @@ ENV_ARGS=(-u BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN -u BLUEPRINT_ARBITER_GATEWAY_A
 # handled by the glob test below, not by the exit status.
 _gw_help="$(env "${ENV_ARGS[@]}" "$CLAUDE_BIN" --help 2>/dev/null || true)"
 [[ "$_gw_help" == *--setting-sources* ]] \
-  || die "claude ($CLAUDE_BIN) does not support --setting-sources; cannot neutralize operator permission scopes for the arbiter — upgrade claude or unset the gateway config (the caller falls through to the opus rung)"
+  || die "claude ($CLAUDE_BIN) does not support --setting-sources; cannot neutralize operator permission scopes for the arbiter — upgrade claude or unset the gateway config (the caller retries once, then falls through to the opus rung)"
 
 SETTINGS_FILE="$(mktemp "${TMPDIR:-/tmp}/bp-gw-settings.XXXXXX")"
 chmod 600 "$SETTINGS_FILE"

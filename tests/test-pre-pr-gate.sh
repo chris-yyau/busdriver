@@ -206,6 +206,18 @@ check "gate blocks unresolvable cd substitution target" "block" "$got"
 got=$(run_gate "$(make_input_cwd 'cd $PWD && gh pr create --fill' "$TMPREPO")")
 check "gate blocks bare-var cd (\$PWD) create, no marker (was fail-open)" "block" "$got"
 
+# Cross-gate parity: every other shell-active cd target the shared resolver
+# fail-closes (cd -, glob, brace, cd -- options) must also block at the pre-PR
+# gate, locking in the same contract the pre-commit suite asserts.
+got=$(run_gate "$(make_input_cwd 'cd - && gh pr create --fill' "$TMPREPO")")
+check "gate blocks cd - (OLDPWD) create" "block" "$got"
+got=$(run_gate "$(make_input_cwd 'cd * && gh pr create --fill' "$TMPREPO")")
+check "gate blocks glob cd (*) create" "block" "$got"
+got=$(run_gate "$(make_input_cwd 'cd {a,b} && gh pr create --fill' "$TMPREPO")")
+check "gate blocks brace-expansion cd ({a,b}) create" "block" "$got"
+got=$(run_gate "$(make_input_cwd 'cd -- /tmp && gh pr create --fill' "$TMPREPO")")
+check "gate blocks cd -- <path> create (end-of-options form)" "block" "$got"
+
 # cwd is consulted: no cd prefix + valid marker in the cwd repo → allow
 # (before the fix this resolved to the test runner's CWD and blocked).
 printf '%s' "$VALID_HASH" > "$MARKER"

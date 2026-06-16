@@ -44,13 +44,16 @@ gate_classify_target() {
     # $-expansion: `cd -` jumps to $OLDPWD, globs (cd *, cd foo?) and brace
     # expansion (cd {a,b}) succeed at runtime landing the op in a real repo,
     # but as static strings they are not the path the command actually uses.
-    # Fail-CLOSED on all of them. (Not a security boundary: wrapper forms the
-    # regex never sees -- `bash -c "..."`, `(cd X && ...)` subshells, `pushd`,
-    # backslash-escaped paths -- remain a documented residual; the goal is to
-    # close common/accidental skips, not to reimplement a shell. See the
-    # council lesson and PR description.)
+    # Any leading-dash form is a cd option/separator the shell strips before
+    # changing directory (`cd -`, `cd --`, `cd -- /repo`, `cd -L/-P/-e/-@ /repo`)
+    # so the recorded string is not where the op runs. Fail-CLOSED on all of
+    # them. (Not a security boundary: wrapper forms the regex never sees --
+    # `bash -c "..."`, `(cd X && ...)` subshells, `pushd`, backslash-escaped
+    # paths -- remain a documented residual; the goal is to close
+    # common/accidental skips, not to reimplement a shell. See the council
+    # lesson and PR description.)
     case "$t" in
-        -|*'*'*|*'?'*|*'['*|*']'*|*'{'*|*'}'*) printf 'unresolvable\n'; return 0 ;;
+        -*|*'*'*|*'?'*|*'['*|*']'*|*'{'*|*'}'*) printf 'unresolvable\n'; return 0 ;;
     esac
     printf 'literal\n'
 }

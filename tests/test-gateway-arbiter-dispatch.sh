@@ -37,7 +37,17 @@ echo "validation prompt body" > "$PROMPT_FILE"
 STUB_BIN="$TMPDIR_T/claude-stub"
 cat > "$STUB_BIN" <<'EOF'
 #!/bin/bash
-prompt="" model="" tools_restrict="" tools_approve="" strict_mcp=0 bare=0 settings="" disallowed="" perm_mode=""
+# Capability-probe mode: the dispatcher runs `claude --help` to confirm
+# --setting-sources support before dispatching. Advertise the flag and exit
+# without writing a log (a probe is not a dispatch).
+for _a in "$@"; do
+  if [[ "$_a" == "--help" ]]; then
+    printf '%s\n' '  --setting-sources <sources>  Comma-separated list of setting sources to load (user, project, local).'
+    printf '%s\n' '  --settings <file-or-json>'
+    exit 0
+  fi
+done
+prompt="" model="" tools_restrict="" tools_approve="" strict_mcp=0 bare=0 settings="" disallowed="" perm_mode="" ss_present=no ss_value="__UNSET__"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -p) prompt="$2"; shift 2 ;;
@@ -47,6 +57,7 @@ while [[ $# -gt 0 ]]; do
     --allowedTools) tools_approve="$2"; shift 2 ;;
     --disallowedTools) disallowed="$disallowed $2"; shift 2 ;;
     --permission-mode) perm_mode="$2"; shift 2 ;;
+    --setting-sources) ss_present=yes; ss_value="$2"; shift 2 ;;
     --strict-mcp-config) strict_mcp=1; shift ;;
     --bare) bare=1; shift ;;
     *) shift ;;
@@ -75,6 +86,8 @@ done
   echo "STRICT_MCP: $strict_mcp"
   echo "BARE: $bare"
   echo "PERM_MODE: $perm_mode"
+  echo "SETTING_SOURCES_PRESENT: $ss_present"
+  echo "SETTING_SOURCES_VALUE: $ss_value"
   echo "OUT_PREEXISTING: $([ -s "${STUB_OUT:-/nonexistent}" ] && echo yes || echo no)"
   echo "BASE_URL: ${ANTHROPIC_BASE_URL:-}"
   echo "AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}"
@@ -96,6 +109,27 @@ case "${STUB_BEHAVIOR:-good}" in
 esac
 EOF
 chmod +x "$STUB_BIN"
+
+# Stub for an OLDER claude whose --help does NOT advertise --setting-sources.
+# If the dispatcher's capability guard were missing, this stub would still write
+# a valid verdict on dispatch (exit 0) — so the fail-closed test below catches a
+# fail-OPEN (running the arbiter unconfined on a binary that can't honor scope
+# isolation), not just a crash.
+STUB_BIN_OLD="$TMPDIR_T/claude-stub-old"
+cat > "$STUB_BIN_OLD" <<'EOF'
+#!/bin/bash
+for _a in "$@"; do
+  if [[ "$_a" == "--help" ]]; then
+    printf '%s\n' '  --settings <file-or-json>   (older build; per-scope source selection unsupported)'
+    exit 0
+  fi
+done
+# Reached only if the guard failed to stop the dispatch — emit a passing verdict
+# so the test observes the (wrong) success.
+printf '{"status":"PASS","metadata":{"run_id":"r1"}}\n' > "${STUB_OUT:-/dev/null}"
+EOF
+chmod +x "$STUB_BIN_OLD"
+
 export STUB_LOG
 export STUB_OUT="$OUTPUT_FILE"
 export STUB_PROMPT="$TMPDIR_T/stub-prompt.txt"
@@ -180,6 +214,8 @@ check "default model is claude-fable-5" "yes" "$(grep -q '^MODEL: claude-fable-5
 check "tool set restricted to Read,Edit (no shell — credential-exfil guard)" "yes" "$(grep -q '^TOOLS_RESTRICT: Read,Edit$' "$STUB_LOG" && echo yes || echo no)"
 check "Edit pre-approved ONLY for the verdict file path (no workspace-wide Edit)" "yes" "$(grep -qF "TOOLS_APPROVE: Read,Edit(//${OUTPUT_FILE#/})" "$STUB_LOG" && echo yes || echo no)"
 check "bare workspace-wide Edit NOT pre-approved (scope replaces 'Read,Edit')" "no" "$(grep -q '^TOOLS_APPROVE: Read,Edit$' "$STUB_LOG" && echo yes || echo no)"
+check "operator setting sources NOT loaded (--setting-sources passed — neutralizes inherited permissions.allow Edit, issue #198)" "yes" "$(grep -q '^SETTING_SOURCES_PRESENT: yes$' "$STUB_LOG" && echo yes || echo no)"
+check "--setting-sources value is empty (loads none of user/project/local — no inherited allow rule can widen Edit scope)" "yes" "$(grep -q '^SETTING_SOURCES_VALUE: $' "$STUB_LOG" && echo yes || echo no)"
 check "no shell tool granted (no Bash → no env/printenv exfil path)" "no" "$(grep -qE '^TOOLS_(RESTRICT|APPROVE): .*Bash' "$STUB_LOG" && echo yes || echo no)"
 check "Read denied for /proc (blocks /proc/self/environ and cmdline path-discovery)" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF 'Read(//proc/**)' && echo yes || echo no)"
 check "Read denied for /sys" "yes" "$(grep '^DISALLOWED:' "$STUB_LOG" | grep -qF 'Read(//sys/**)' && echo yes || echo no)"
@@ -338,6 +374,16 @@ check "output path with spaces ACCEPTED (whitespace not banned; rung not needles
 # ═══════════════════════════════════════════════════════════════════════
 # RESULTS
 # ═══════════════════════════════════════════════════════════════════════
+echo ""
+echo ""
+echo "── Capability guard: --setting-sources required (fail-closed, issue #198) ──"
+# An older claude that lacks --setting-sources cannot neutralize the operator's
+# user/project/local permission scopes, so the dispatcher must refuse to run the
+# arbiter unconfined rather than silently inherit a broad Edit allow rule.
+rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok-secret-123 CLAUDE_BIN=$STUB_BIN_OLD")
+check "claude lacking --setting-sources → dispatch refused (exit 1, fail-closed)" 1 "$rc"
+check "no verdict written when capability guard fails (arbiter never ran unconfined)" "absent" "$([[ -f "$OUTPUT_FILE" ]] && echo present || echo absent)"
+
 echo ""
 echo "── Results: $PASS/$TOTAL passed ────────────────────────────"
 if [[ "$FAIL" -gt 0 ]]; then

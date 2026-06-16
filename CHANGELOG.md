@@ -1,3 +1,10 @@
+## [1.62.2](https://github.com/chris-yyau/busdriver/compare/v1.62.1...v1.62.2) (2026-06-16)
+
+
+### Bug Fixes
+
+* **gates:** cwd-anchor repo resolution to close cd-substitution fail-open ([#200](https://github.com/chris-yyau/busdriver/issues/200)) ([16a5962](https://github.com/chris-yyau/busdriver/commit/16a5962da39fb9edb1482332acb7b8ef511aff81))
+
 ## [1.62.1](https://github.com/chris-yyau/busdriver/compare/v1.62.0...v1.62.1) (2026-06-14)
 
 

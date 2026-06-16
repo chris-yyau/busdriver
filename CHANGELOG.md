@@ -1,3 +1,10 @@
+## [1.62.3](https://github.com/chris-yyau/busdriver/compare/v1.62.2...v1.62.3) (2026-06-16)
+
+
+### Bug Fixes
+
+* **blueprint-review:** neutralize inherited Edit allow rules in gateway arbiter ([#198](https://github.com/chris-yyau/busdriver/issues/198)) ([#201](https://github.com/chris-yyau/busdriver/issues/201)) ([5f3c9f8](https://github.com/chris-yyau/busdriver/commit/5f3c9f8baf9a0d333fa463901dfda9547e4337f8)), closes [#202](https://github.com/chris-yyau/busdriver/issues/202)
+
 ## [1.62.2](https://github.com/chris-yyau/busdriver/compare/v1.62.1...v1.62.2) (2026-06-16)
 
 

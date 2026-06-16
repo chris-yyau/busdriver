@@ -265,12 +265,16 @@ fi
 # ─────────────────────────────────────────────────────────────────────────
 
 # Skip overrides
-if [ -f ".claude/skip-litmus.local" ]; then
+# All marker/state files are scoped to $REPO_DIR (the cwd-anchored target repo),
+# consistent with the litmus marker below and the sibling pre-pr/pre-merge gates,
+# so a commit targeting a repo other than the hook process CWD reads the right
+# .claude/ directory.
+if [ -f "$REPO_DIR/.claude/skip-litmus.local" ]; then
     # Reject skip files created within the last 30 seconds — likely Claude self-bypass.
     # A human-created skip file (via terminal) will typically be older.
     FILE_AGE=999
-    _MTIME=$(stat -f %m ".claude/skip-litmus.local" 2>/dev/null) \
-        || _MTIME=$(stat -c %Y ".claude/skip-litmus.local" 2>/dev/null) \
+    _MTIME=$(stat -f %m "$REPO_DIR/.claude/skip-litmus.local" 2>/dev/null) \
+        || _MTIME=$(stat -c %Y "$REPO_DIR/.claude/skip-litmus.local" 2>/dev/null) \
         || _MTIME=""
     [ -n "$_MTIME" ] && FILE_AGE=$(( $(date +%s) - _MTIME ))
     if [ "$FILE_AGE" -lt 30 ]; then
@@ -284,25 +288,31 @@ If YOU created this file: STOP. Do NOT create skip files yourself. Run /litmus i
     fi
     # Single-use: consume the skip file after allowing one commit.
     # This prevents stale skip files from permanently disabling review gates.
-    rm -f ".claude/skip-litmus.local"
-    rm -f ".claude/.gate-block-count.local" 2>/dev/null || true  # Reset circuit breaker
+    rm -f "$REPO_DIR/.claude/skip-litmus.local"
+    rm -f "$REPO_DIR/.claude/.gate-block-count.local" 2>/dev/null || true  # Reset circuit breaker
     # ── Bypass telemetry ──────────────────────────────────────────────
     # Log skip-file consumption so there's an auditable record of bypasses.
-    mkdir -p .claude
-    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
+    mkdir -p "$REPO_DIR/.claude"
+    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
     exit 0
 fi
 [ "${SKIP_LITMUS:-0}" = "1" ] && exit 0
 
 # ── Gate 1: Design review ────────────────────────────────────────────────
-DESIGN_STATE=".claude/design-review-needed.local.md"
+DESIGN_STATE="$REPO_DIR/.claude/design-review-needed.local.md"
 if [ -f "$DESIGN_STATE" ]; then
     UNREVIEWED=""
     DESIGN_LINES=$(grep '^\- ' "$DESIGN_STATE" 2>/dev/null || true)
     while IFS= read -r line; do
         file="${line#- }"
         [ -z "$file" ] && continue
-        if [ -f "$file" ] && ! grep -q "<!-- design-reviewed: PASS -->" "$file" 2>/dev/null; then
+        # Listed paths are repo-relative; resolve against $REPO_DIR (matches the
+        # staged-file handling below). Absolute paths are honored as-is.
+        case "$file" in
+            /*) doc_path="$file" ;;
+            *)  doc_path="$REPO_DIR/$file" ;;
+        esac
+        if [ -f "$doc_path" ] && ! grep -q "<!-- design-reviewed: PASS -->" "$doc_path" 2>/dev/null; then
             UNREVIEWED="${UNREVIEWED}  - ${file}\n"
         fi
     done <<< "$DESIGN_LINES"
@@ -473,7 +483,7 @@ fi
 
 # Circuit breaker: detect repeated blocking that may indicate a stuck gate.
 # If blocked >10 times in this session, warn user about manual escape hatch.
-BLOCK_COUNTER=".claude/.gate-block-count.local"
+BLOCK_COUNTER="$REPO_DIR/.claude/.gate-block-count.local"
 BLOCK_COUNT=0
 if [ -f "$BLOCK_COUNTER" ]; then
     BLOCK_COUNT=$(cat "$BLOCK_COUNTER" 2>/dev/null || echo "0")

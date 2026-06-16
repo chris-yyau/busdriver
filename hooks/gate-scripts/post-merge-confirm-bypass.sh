@@ -65,6 +65,13 @@ case "$HOOK_DATA" in
     *) exit 0 ;;
 esac
 
+# Shared repo-dir resolver — keep PENDING_FILE/SKIP_FILE lookup cwd-anchored,
+# consistent with the pre-merge gate, so the toplevel form
+# cd "$(git rev-parse --show-toplevel)" resolves the bypass files in the real
+# repo instead of a junk literal path.
+# shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
+
 # Determine whether this Bash call is the gh pr merge we may have claimed
 # against, and extract the target directory (mirrors pre-merge-gate.sh's
 # cd-prefix resolution so REPO_DIR is anchored to the operator's intended
@@ -78,7 +85,8 @@ try:
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
-        print('false'); print(''); sys.exit(0)
+        print('false'); print(''); print(''); sys.exit(0)
+    cwd = d.get('cwd') or ''
     inp = d.get('tool_input', d.get('toolInput', {}))
     if isinstance(inp, str):
         inp = json.loads(inp)
@@ -97,18 +105,19 @@ try:
             target_dir = os.path.expanduser(raw)
     print('true' if is_merge else 'false')
     print(target_dir)
+    print(cwd)
 except Exception:
-    print('false'); print('')
+    print('false'); print(''); print('')
 " 2>/dev/null || true)
 is_gh_pr_merge=$(printf '%s' "$_PRE_PARSE" | sed -n '1p')
 _TARGET_DIR=$(printf '%s' "$_PRE_PARSE" | sed -n '2p')
+_HOOK_CWD=$(printf '%s' "$_PRE_PARSE" | sed -n '3p')
 [ -z "$is_gh_pr_merge" ] && is_gh_pr_merge=false
 
-# Resolve repo root: use the cd-prefix target dir from the command when
-# present (mirrors pre-merge-gate.sh), fall back to hook-process git root.
-REPO_DIR=$(git -C "${_TARGET_DIR:-.}" rev-parse --show-toplevel 2>/dev/null \
-    || git rev-parse --show-toplevel 2>/dev/null \
-    || pwd)
+# Resolve repo root: cwd-anchored (mirrors pre-merge-gate.sh) so the toplevel
+# cd "$(git rev-parse --show-toplevel)" form resolves the bypass files in the
+# real repo; the lenient resolver falls back to the cwd/process git root.
+REPO_DIR=$(gate_repo_dir_lenient "$_TARGET_DIR" "$_HOOK_CWD")
 PENDING_FILE="$REPO_DIR/.claude/.merge-bypass-pending.local"
 SKIP_FILE="$REPO_DIR/.claude/skip-pr-grind.local"
 LOG_FILE="$REPO_DIR/.claude/bypass-log.jsonl"

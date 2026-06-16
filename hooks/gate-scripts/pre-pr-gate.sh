@@ -28,6 +28,10 @@ block_emit() {
     fi
 }
 
+# ── Shared repo-dir resolver ──────────────────────────────────────────
+# shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
+
 # ── python3 pre-check ─────────────────────────────────────────────────
 if ! command -v python3 &>/dev/null; then
     block_emit "CRITICAL: python3 not found. PR gate requires python3 for JSON parsing. Install python3 to restore gate enforcement."
@@ -53,6 +57,7 @@ try:
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
         sys.exit(0)
+    cwd = d.get('cwd') or ''
     inp = d.get('tool_input', d.get('toolInput', {}))
     if isinstance(inp, str):
         inp = json.loads(inp)
@@ -74,15 +79,18 @@ try:
         if re.match(r'gh\s+pr\s+create\b', seg):
             print('yes')
             print(target_dir)
+            print(cwd)
             break
 except Exception:
     # Fail-CLOSED: fast pre-filter matched gh pr create but parser failed.
     print('error')
     print('')
+    print('')
 " 2>/dev/null || true)
 
 IS_GH_PR_CREATE=$(echo "$PARSE_RESULT" | head -1)
 TARGET_DIR=$(echo "$PARSE_RESULT" | sed -n '2p')
+HOOK_CWD=$(echo "$PARSE_RESULT" | sed -n '3p')
 
 # Fail-closed: parser error after fast pre-filter matched → block as precaution
 if [ "$IS_GH_PR_CREATE" = "error" ]; then
@@ -92,11 +100,16 @@ fi
 
 [ "$IS_GH_PR_CREATE" != "yes" ] && exit 0
 
-# Resolve to git repo root (TARGET_DIR may be a subdirectory, not the root)
-REPO_DIR=$(git -C "${TARGET_DIR:-.}" rev-parse --show-toplevel 2>/dev/null || echo "${TARGET_DIR:-.}")
-
-# Not in a git repo → approve
-git -C "$REPO_DIR" rev-parse --is-inside-work-tree &>/dev/null || exit 0
+# Resolve REPO_DIR (cwd-anchored; cd target only as a safe refinement).
+# Fail-CLOSED on command-substitution targets the gate cannot evaluate.
+gate_resolve_repo_dir "$TARGET_DIR" "$HOOK_CWD"
+if [ "$GATE_RESOLVE_STATUS" = "block-unresolvable" ]; then
+    block_emit "Pre-PR gate: the command's cd target uses command substitution the gate cannot resolve statically (e.g. cd \"\$(...)\"). Run gh pr create from the repo root, or use cd \"\$(git rev-parse --show-toplevel)\" which the gate recognizes. Blocking as precaution (fail-closed)."
+    exit 0
+fi
+# Genuinely not in a git repo → approve (gh pr create fails on its own).
+[ "$GATE_RESOLVE_STATUS" = "outside-repo" ] && exit 0
+REPO_DIR="$GATE_REPO_DIR"
 
 # ── Skip overrides (shared with commit gate) ──────────────────────────
 SKIP_FILE="$REPO_DIR/.claude/skip-litmus.local"

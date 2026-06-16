@@ -91,6 +91,58 @@ run_amend_test() {
     rm -rf "$tmp_dir"
 }
 
+# Compose a hook JSON input that includes the PreToolUse `cwd` field.
+make_hook_input_cwd() {
+    local cmd="$1" cwd="$2"
+    python3 -c "
+import json, sys
+print(json.dumps({'tool_name':'Bash','tool_input':{'command':sys.argv[1]},'cwd':sys.argv[2]}))
+" "$cmd" "$cwd"
+}
+
+# Like run_amend_test but anchors resolution on the cwd field (no cd-prefix
+# parse required) and takes an arbitrary command.
+run_cwd_test() {
+    # $1=name $2=expected(allow|block) $3=command $4=staged-setup (0=clean,1=stage)
+    local name="$1" expected="$2" cmd="$3" staged_setup="$4"
+    TOTAL=$((TOTAL + 1))
+
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    (
+        cd "$tmp_dir"
+        git init -q -b main 2>/dev/null || git init -q
+        git config commit.gpgsign false
+        git config user.email "test@test.com"
+        git config user.name "Test"
+        echo "initial" > file.txt
+        git add file.txt
+        git commit -qm "initial" --no-verify
+        if [ "$staged_setup" = "1" ]; then
+            echo "modified" >> file.txt
+            git add file.txt
+        fi
+    )
+
+    local input output got="allow"
+    input=$(make_hook_input_cwd "$cmd" "$tmp_dir")
+    output=$(printf '%s' "$input" | bash "$GATE_SCRIPT" 2>/dev/null)
+    if echo "$output" | grep -q '"block"' 2>/dev/null; then
+        got="block"
+    fi
+
+    if [ "$got" = "$expected" ]; then
+        printf "  PASS  %s\n" "$name"
+        PASS=$((PASS + 1))
+    else
+        printf "  FAIL  %s (expected=%s got=%s)\n    output: %s\n" \
+            "$name" "$expected" "$got" "$output"
+        FAIL=$((FAIL + 1))
+    fi
+
+    rm -rf "$tmp_dir"
+}
+
 # ── Tests ─────────────────────────────────────────────────────────────
 
 echo "── pre-commit-gate --amend bypass ──────────────────────────"
@@ -129,6 +181,47 @@ run_amend_test "allows --amend regardless of flag order (-m before --amend)" \
 #    finding on PR #98 (commit e2ac6f4).
 run_amend_test "blocks git commit ... -- --amend (pathspec, not flag)" \
     "block" "git commit --allow-empty -- --amend" "0"
+
+# ── cwd-anchored resolution / substitution handling ──────────────────
+echo ""
+echo "── pre-commit-gate cwd-anchored resolution ─────────────────"
+
+# THE regression: cd "$(...)" used to yield a junk REPO_DIR that tripped
+# `... || exit 0`, silently ALLOWING the commit with no review. cwd anchoring
+# now resolves the repo and the missing litmus marker blocks (fail-CLOSED).
+run_cwd_test 'blocks cd "$(git rev-parse --show-toplevel)" commit, no marker (was fail-open)' \
+    "block" 'cd "$(git rev-parse --show-toplevel)" && git commit -m msg' "1"
+
+# Unresolvable command substitution in the cd target → fail-CLOSED block.
+run_cwd_test 'blocks unresolvable cd substitution target' \
+    "block" 'cd "$(echo /tmp)" && git commit -m msg' "1"
+
+# Bare $VAR expansion is also unresolvable — cd $PWD is a real-shell no-op that
+# lands the commit in the live repo, so it must NOT slip through as "literal".
+run_cwd_test 'blocks bare-var cd ($PWD) commit, no marker (was fail-open)' \
+    "block" 'cd $PWD && git commit -m msg' "1"
+
+# Other shell-active cd targets diverge the same way and must fail-CLOSED:
+# `cd -` (-> $OLDPWD) and glob `cd *` succeed at runtime but are not the
+# static string the gate sees.
+run_cwd_test 'blocks cd - (OLDPWD) commit, no marker' \
+    "block" 'cd - && git commit -m msg' "1"
+run_cwd_test 'blocks glob cd (*) commit, no marker' \
+    "block" 'cd * && git commit -m msg' "1"
+
+# `cd -- /repo` / cd options: the shell strips `--` (or -L/-P) before changing
+# dir, so the recorded target is not where the commit runs → fail-CLOSED.
+run_cwd_test 'blocks cd -- <path> commit, no marker (end-of-options form)' \
+    "block" 'cd -- /tmp && git commit -m msg' "1"
+
+# cwd is consulted even with no cd prefix: staged change, no marker → block.
+run_cwd_test 'blocks plain commit anchored on cwd, no marker' \
+    "block" "git commit -m msg" "1"
+
+# Guard against over-blocking: the recognized toplevel idiom resolves, so the
+# --amend empty-staged bypass (no marker needed) is reached → allow.
+run_cwd_test 'allows --amend empty-staged via toplevel idiom (no over-block)' \
+    "allow" 'cd "$(git rev-parse --show-toplevel)" && git commit --amend --no-edit' "0"
 
 # ── Results ───────────────────────────────────────────────────────────
 

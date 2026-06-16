@@ -23,17 +23,22 @@ gate_classify_target() {
     [ -z "$t" ] && { printf 'none\n'; return 0; }
     # Recognized safe idiom: the whole value is $(git rev-parse --show-...) or
     # its backtick form -- equivalent to the cwd's repo root, so the cwd anchor
-    # resolves it faithfully without evaluating the substitution.
+    # resolves it faithfully without evaluating the substitution. The two
+    # alternatives are each fully anchored so a mismatched-delimiter input
+    # (e.g. $(...`) cannot match.
     # SC2016: the $(/backtick literals are the patterns we match, not expansions.
     # shellcheck disable=SC2016
-    if printf '%s' "$t" | grep -Eq '^(\$\(|`)git rev-parse --show-(toplevel|cdup)(\)|`)$'; then
+    if printf '%s' "$t" | grep -Eq '^\$\(git rev-parse --show-(toplevel|cdup)\)$|^`git rev-parse --show-(toplevel|cdup)`$'; then
         printf 'toplevel\n'; return 0
     fi
-    # Any other command substitution / unguarded param-expansion is opaque to a
-    # static parser -> unresolvable (caller fails CLOSED).
+    # ANY dollar expansion or backtick is opaque to a static parser ->
+    # unresolvable (caller fails CLOSED). This includes bare $VAR (cd $PWD,
+    # cd $HOME): the gate cannot know where it points, and at shell runtime it
+    # may be a no-op that lands the op in the live repo unreviewed. The bare
+    # `$` arm subsumes $( and ${; the toplevel idiom already returned above.
     # shellcheck disable=SC2016
     case "$t" in
-        *'$('*|*'`'*|*'${'*) printf 'unresolvable\n'; return 0 ;;
+        *'$'*|*'`'*) printf 'unresolvable\n'; return 0 ;;
     esac
     printf 'literal\n'
 }
@@ -54,7 +59,13 @@ gate_resolve_repo_dir() {
     fi
 
     if [ "$kind" = "literal" ]; then
-        anchor="$target"
+        # Resolve a RELATIVE literal against the authoritative cwd field, not the
+        # hook process CWD (which may differ from where the command runs).
+        # Absolute targets are used as-is.
+        case "$target" in
+            /*) anchor="$target" ;;
+            *)  anchor="${hook_cwd:-.}/$target" ;;
+        esac
     else
         # none | toplevel -> authoritative cwd, falling back to the hook process
         # CWD when the field is absent (older clients).

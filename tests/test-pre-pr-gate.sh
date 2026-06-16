@@ -192,6 +192,11 @@ check "gate blocks substitution-cd create with absent marker (was fail-open)" "b
 got=$(run_gate "$(make_input_cwd 'cd "$(echo /tmp)" && gh pr create --fill' "$TMPREPO")")
 check "gate blocks unresolvable cd substitution target" "block" "$got"
 
+# Bare $VAR expansion is unresolvable too — cd $PWD is a no-op landing in the
+# live repo, so it must not slip through as "literal" and approve unreviewed.
+got=$(run_gate "$(make_input_cwd 'cd $PWD && gh pr create --fill' "$TMPREPO")")
+check "gate blocks bare-var cd (\$PWD) create, no marker (was fail-open)" "block" "$got"
+
 # cwd is consulted: no cd prefix + valid marker in the cwd repo → allow
 # (before the fix this resolved to the test runner's CWD and blocked).
 printf '%s' "$VALID_HASH" > "$MARKER"

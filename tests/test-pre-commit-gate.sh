@@ -196,6 +196,11 @@ run_cwd_test 'blocks cd "$(git rev-parse --show-toplevel)" commit, no marker (wa
 run_cwd_test 'blocks unresolvable cd substitution target' \
     "block" 'cd "$(echo /tmp)" && git commit -m msg' "1"
 
+# Bare $VAR expansion is also unresolvable — cd $PWD is a real-shell no-op that
+# lands the commit in the live repo, so it must NOT slip through as "literal".
+run_cwd_test 'blocks bare-var cd ($PWD) commit, no marker (was fail-open)' \
+    "block" 'cd $PWD && git commit -m msg' "1"
+
 # cwd is consulted even with no cd prefix: staged change, no marker → block.
 run_cwd_test 'blocks plain commit anchored on cwd, no marker' \
     "block" "git commit -m msg" "1"

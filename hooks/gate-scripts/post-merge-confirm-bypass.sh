@@ -86,7 +86,7 @@ try:
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
         print('false'); print(''); print(''); sys.exit(0)
-    cwd = d.get('cwd', '')
+    cwd = d.get('cwd') or ''
     inp = d.get('tool_input', d.get('toolInput', {}))
     if isinstance(inp, str):
         inp = json.loads(inp)

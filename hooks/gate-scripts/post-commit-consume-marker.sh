@@ -56,13 +56,13 @@ esac
 # Parse command, detect git commit, check output for success pattern,
 # and extract target directory for worktree-aware marker lookup.
 PARSE_RESULT=$(printf '%s' "$HOOK_DATA" | python3 -c "
-import sys, json, re
+import sys, json, re, os
 try:
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
         sys.exit(0)
-    cwd = d.get('cwd', '')
+    cwd = d.get('cwd') or ''
     inp = d.get('tool_input', d.get('toolInput', {}))
     if isinstance(inp, str):
         inp = json.loads(inp)
@@ -85,7 +85,7 @@ try:
         seg = seg.strip()
         cd_m = re.match(r'cd\s+(.*)', seg)
         if cd_m:
-            target_dir = cd_m.group(1).strip().strip('\042\047')
+            target_dir = os.path.expanduser(cd_m.group(1).strip().strip('\042\047'))
             continue
         # Strip leading env var assignments
         while re.match(r'^\w+=\S*\s', seg):

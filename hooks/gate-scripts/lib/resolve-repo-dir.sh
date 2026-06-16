@@ -92,3 +92,28 @@ gate_resolve_repo_dir() {
         GATE_RESOLVE_STATUS="outside-repo"
     fi
 }
+
+# Best-effort repo-dir resolution for POST hooks (marker consume / cleanup) --
+# echoes a repo root and NEVER blocks. Post hooks fire only AFTER a command ran,
+# so the pre-gate has already blocked the truly-unresolvable forms ($VAR, cd -,
+# globs); a post hook therefore only sees literal / toplevel / none targets.
+# This mirrors the pre-gate's cwd-anchored resolution so the pre-gate and its
+# paired post hook agree on WHICH repo holds the .claude/ markers -- otherwise
+# the toplevel form (cd "$(git rev-parse --show-toplevel)") would be approved
+# against the real repo but its marker looked up under the literal junk path,
+# leaving a stale marker behind. Defensively, an unresolvable target still
+# falls back to the cwd anchor rather than the junk literal.
+gate_repo_dir_lenient() {
+    local target="$1" hook_cwd="$2" kind anchor
+    kind=$(gate_classify_target "$target")
+    if [ "$kind" = "literal" ]; then
+        case "$target" in
+            /*) anchor="$target" ;;
+            *)  anchor="${hook_cwd:-.}/$target" ;;
+        esac
+    else
+        # none | toplevel | unresolvable -> the authoritative cwd anchor.
+        anchor="${hook_cwd:-.}"
+    fi
+    git -C "$anchor" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$anchor"
+}

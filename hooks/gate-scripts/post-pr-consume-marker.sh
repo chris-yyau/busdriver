@@ -40,6 +40,12 @@ case "$HOOK_DATA" in
     *) exit 0 ;;
 esac
 
+# Shared repo-dir resolver — keep marker lookup cwd-anchored, consistent with
+# the pre-PR gate, so the toplevel form cd "$(git rev-parse --show-toplevel)"
+# consumes its marker in the real repo instead of a junk literal path.
+# shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
+
 # Parse command, confirm gh pr create, detect PR-URL success in the output,
 # and extract the target directory for worktree-aware marker lookup.
 PARSE_RESULT=$(printf '%s' "$HOOK_DATA" | python3 -c "
@@ -49,6 +55,7 @@ try:
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
         sys.exit(0)
+    cwd = d.get('cwd', '')
     inp = d.get('tool_input', d.get('toolInput', {}))
     if isinstance(inp, str):
         inp = json.loads(inp)
@@ -117,18 +124,22 @@ try:
 
     print('yes' if succeeded else 'no')
     print(target_dir)
+    print(cwd)
 except Exception:
     pass
 " 2>/dev/null || true)
 
 PR_CREATED=$(echo "$PARSE_RESULT" | head -1)
 TARGET_DIR=$(echo "$PARSE_RESULT" | sed -n '2p')
+HOOK_CWD=$(echo "$PARSE_RESULT" | sed -n '3p')
 
 # Only consume if a PR was actually created
 [ "$PR_CREATED" != "yes" ] && exit 0
 
-# Resolve to git repo root (handles worktrees, subdirs)
-REPO_DIR=$(git -C "${TARGET_DIR:-.}" rev-parse --show-toplevel 2>/dev/null || echo "${TARGET_DIR:-.}")
+# Resolve to git repo root (cwd-anchored, consistent with the pre-PR gate so the
+# toplevel cd "$(git rev-parse --show-toplevel)" form consumes the marker in the
+# real repo, not a junk literal path; handles worktrees, subdirs).
+REPO_DIR=$(gate_repo_dir_lenient "$TARGET_DIR" "$HOOK_CWD")
 
 # Consume the PR review marker — PR creation confirmed successful
 PR_MARKER="$REPO_DIR/.claude/pr-review-passed.local"

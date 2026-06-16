@@ -102,6 +102,15 @@ print(json.dumps({'tool_name':'Bash','tool_input':{'command':sys.argv[1]},'cwd':
 " "$1" "$2"
 }
 
+# Compose a POST-hook input (command + tool_output + cwd) for consume tests.
+make_posthook_cwd() {
+    # $1=command $2=output $3=cwd
+    python3 -c "
+import json, sys
+print(json.dumps({'tool_name':'Bash','tool_input':{'command':sys.argv[1]},'tool_output':{'output':sys.argv[2],'exit_code':0},'cwd':sys.argv[3]}))
+" "$1" "$2" "$3"
+}
+
 # ── 1. Gate allows on valid hash marker AND does not consume ──────────
 printf '%s' "$VALID_HASH" > "$MARKER"
 GATE_INPUT=$(printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$PR_CREATE_CMD")
@@ -203,6 +212,17 @@ printf '%s' "$VALID_HASH" > "$MARKER"
 got=$(run_gate "$(make_input_cwd 'gh pr create --fill' "$TMPREPO")")
 check "gate allows when cwd anchors to repo with valid marker (cwd consulted)" "allow" "$got"
 rm -f "$MARKER"
+
+# ── 9. Post-hook consumes marker for the toplevel cd form (cwd-anchored) ──
+# Regression (PR #200 review): before the post-hook was cwd-anchored, a
+# `cd "$(git rev-parse --show-toplevel)"` prefix resolved TARGET_DIR to the
+# literal junk path, so the marker was looked up under the junk path and never
+# consumed — left stale, able to re-authorize a later diff. Now the post-hook
+# resolves via the cwd field and consumes the marker in the real repo.
+printf '%s' "$VALID_HASH" > "$MARKER"
+run_post_hook "$(make_posthook_cwd 'cd "$(git rev-parse --show-toplevel)" && gh pr create --fill' 'https://github.com/owner/repo/pull/42' "$TMPREPO")"
+got=$(marker_state)
+check "post-hook consumes marker for toplevel cd form (cwd-anchored)" "absent" "$got"
 
 # ── Summary ───────────────────────────────────────────────────────────
 echo ""

@@ -15,6 +15,12 @@
 #     a 0600 temp --settings file, and delivered to the subprocess via that file
 #     ONLY — never the subprocess environment, never argv. The calling Claude
 #     session never handles them.
+#   - Edit confinement: dispatched with --setting-sources '' so the operator's
+#     user/project/local settings (which may carry a broad `permissions.allow`
+#     Edit rule) are NOT loaded — an inherited allow cannot widen the arbiter's
+#     Edit scope past the single verdict file (issue #198). --settings (the
+#     credential channel) is an explicit, separate input and still applies. A
+#     capability guard fails the dispatch closed on a claude too old for the flag.
 #
 # Usage:
 #   dispatch-gateway-arbiter.sh <validation-prompt-path> <claude-json-output-path>
@@ -179,6 +185,30 @@ ENV_ARGS=(-u BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN -u BLUEPRINT_ARBITER_GATEWAY_A
 # carries the chosen credential; $cred_var names which ANTHROPIC_* key it fills,
 # $other_var the unused one (pinned empty). ($cred_var avoids shadowing the `which`
 # builtin.)
+# Capability guard (fail-CLOSED, issue #198): the arbiter is confined by NOT
+# loading the operator's user/project/local setting sources (--setting-sources ''
+# in the dispatch below), so an inherited broad `permissions.allow` Edit rule
+# cannot widen the arbiter's Edit scope past the single verdict file. If this
+# claude predates --setting-sources, those operator allow rules would merge in
+# unneutralized (settings merge; allow arrays concatenate; --permission-mode
+# dontAsk still honors a pre-approved Edit) and a prompt-injected arbiter could
+# Edit arbitrary workspace files. Refuse to dispatch rather than run unconfined —
+# the caller's fallback chain still provides arbitration via the opus rung.
+# The probe runs under the SAME `env "${ENV_ARGS[@]}"` scrubbing as the real
+# dispatch, so this extra `claude` invocation never receives the gateway or
+# ANTHROPIC_* secrets (it must honor the credential-containment invariant too).
+# Runs before the credential file is written, so an old binary fails closed with
+# no secrets on disk.
+# Capture-then-match rather than `--help | grep -q`: under `set -o pipefail`,
+# grep -q closes the pipe on first match and claude can take SIGPIPE (exit 141),
+# which would fail the pipeline and FALSELY reject a supported binary. The `|| true`
+# keeps a non-zero --help (older builds) from tripping `set -e` — an absent flag is
+# handled by the glob test below, not by the exit status. 2>&1 (not 2>/dev/null)
+# so a build that prints --help to stderr is matched, not falsely rejected.
+_gw_help="$(env "${ENV_ARGS[@]}" "$CLAUDE_BIN" --help 2>&1 || true)"
+[[ "$_gw_help" == *--setting-sources* ]] \
+  || die "claude ($CLAUDE_BIN) does not support --setting-sources; cannot neutralize operator permission scopes for the arbiter — upgrade claude or unset the gateway config (the caller retries once, then falls through to the opus rung)"
+
 SETTINGS_FILE="$(mktemp "${TMPDIR:-/tmp}/bp-gw-settings.XXXXXX")"
 chmod 600 "$SETTINGS_FILE"
 trap 'rm -f "${SETTINGS_FILE:-}"' EXIT
@@ -266,6 +296,12 @@ echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${T
 #      writes to the one legitimate target. (Edit is an allowlist — exactly one
 #      valid target — whereas Read stays a blocklist — many valid targets. dontAsk
 #      also denies writes to protected paths like .claude/.git as a bonus.)
+#      This holds ONLY because the operator's own settings are not loaded: their
+#      user/project/local permissions.allow would otherwise CONCATENATE with our
+#      scoped allow (and dontAsk honors anything pre-approved), so a broad
+#      Edit(//**) the operator once approved would re-widen the scope. That is why
+#      the dispatch passes --setting-sources '' and the capability guard above
+#      fails closed when the flag is unavailable (issue #198).
 # Net: no shell, no env token, no way to discover the settings path, settings file
 # + Anthropic credential stores Read-denied, Edit scoped to the verdict file — the
 # arbiter has no route to the gateway secret OR the operator's own credential, and
@@ -331,6 +367,7 @@ printf '%s\n' '{"status":"PENDING_ARBITER_WRITE","_note":"placeholder — replac
 DISPATCH_RC=0
 _portable_timeout "$TIMEOUT_S" env "${ENV_ARGS[@]}" "$CLAUDE_BIN" --bare -p "$DISPATCH_PROMPT" \
   --settings "$SETTINGS_FILE" \
+  --setting-sources '' \
   --model "$MODEL" \
   --permission-mode dontAsk \
   --tools Read,Edit \

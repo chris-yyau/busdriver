@@ -201,6 +201,14 @@ run_cwd_test 'blocks unresolvable cd substitution target' \
 run_cwd_test 'blocks bare-var cd ($PWD) commit, no marker (was fail-open)' \
     "block" 'cd $PWD && git commit -m msg' "1"
 
+# Other shell-active cd targets diverge the same way and must fail-CLOSED:
+# `cd -` (-> $OLDPWD) and glob `cd *` succeed at runtime but are not the
+# static string the gate sees.
+run_cwd_test 'blocks cd - (OLDPWD) commit, no marker' \
+    "block" 'cd - && git commit -m msg' "1"
+run_cwd_test 'blocks glob cd (*) commit, no marker' \
+    "block" 'cd * && git commit -m msg' "1"
+
 # cwd is consulted even with no cd prefix: staged change, no marker → block.
 run_cwd_test 'blocks plain commit anchored on cwd, no marker' \
     "block" "git commit -m msg" "1"

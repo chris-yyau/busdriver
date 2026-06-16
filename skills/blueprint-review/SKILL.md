@@ -97,7 +97,7 @@ All three reviewer slots walk to `droid` as a universal fallback, mirroring the 
 | Reviewer 1 | `blueprint-review.reviewer_1` | agy |
 | Reviewer 2 | `blueprint-review.reviewer_2` | codex |
 | Reviewer 3 | `blueprint-review.reviewer_3` | grok (added 2026-05-26; falls back to droid if grok not installed, matching reviewer_1/_2 pattern) |
-| Arbiter | (hardcoded) | claude — dispatched as a fresh subagent pinned `model: fable` (not configurable — the arbiter must be a Claude-family agent with codebase tools; see Arbiter Dispatch Protocol) |
+| Arbiter | (hardcoded) | claude — dispatched as a fresh subagent pinned `model: fable` (not configurable — the arbiter must be a Claude-family agent with codebase tools; see Arbiter Dispatch Protocol). Fallback chain on unsupported `fable`: subscription `fable` → gateway `fable` (opt-in headless `claude -p`) → subscription `opus` → inherit |
 
 If reviewer_1 and reviewer_2 resolve to the same CLI, the system runs single-reviewer mode for that pair (one execution, output copied to both paths, logged as degradation). If reviewer_3 collides with reviewer_1 or reviewer_2, the reviewer_3 voice is skipped entirely (no duplicate copy — arbitration proceeds with two voices) to avoid combinatorial 3-way copying for an edge case.
 
@@ -212,7 +212,12 @@ calling session MUST:
 
 1. **Dispatch a fresh arbiter subagent** via the Agent tool:
    - `subagent_type`: `general-purpose` (needs Read/Grep/Glob for codebase validation plus Write for `claude.json`)
-   - `model`: `fable` — pinned, so arbiter quality does not depend on what model the calling session happens to run. (Verified Agent-tool model value — observed accepted dispatch 2026-06-10.) If the dispatch fails with a recognized unsupported-model error, retry once with `model` omitted (inherit the session model) and record `model_pin_status=inherited_fallback` caller-side (your report / review state — NEVER by editing `claude.json`).
+   - `model`: `fable` — pinned, so arbiter quality does not depend on what model the calling session happens to run. (Verified Agent-tool model value — observed accepted dispatch 2026-06-10.) On successful dispatch, record `model_pin_status=pinned` caller-side. If the dispatch fails with a recognized unsupported-model error, walk the fallback chain **in order**:
+     1. **Gateway fable** — if gateway credentials are configured (see Gateway-Fallback Rung below), dispatch the arbiter as a headless `claude -p` subprocess pinned to `claude-fable-5` through the gateway, and record `model_pin_status=gateway_fable_fallback`. This rung preserves fable-quality arbitration when `fable` is gone from the calling session's *subscription* but reachable via an Anthropic-API-compatible gateway (e.g., ZenMux). It is **opt-in**: skipped silently when no gateway credentials are present, falling straight through to the next rung.
+     2. **Subscription opus** — retry with `model: opus` via the Agent tool (the strongest available *subscription* pin — preserves the pin's purpose if the `fable` tier is renamed or retired) and record `model_pin_status=opus_fallback`.
+     3. **Inherit** — if `opus` is also rejected as unsupported, retry with `model` omitted (inherit the session model) and record `model_pin_status=inherited_fallback`.
+
+     All records are caller-side (your report / review state — NEVER by editing `claude.json`). These four are the mutually exclusive **dispatch-time** statuses — set exactly one per run at dispatch. A fifth final-state value, `pin_ignored`, is never set at dispatch: step 3's post-dispatch check may later overwrite the dispatch-time status with it.
    - Prompt — exactly this fixed template, two absolute paths substituted, nothing more:
 
      > You are the design-review arbiter. Read the validation prompt at
@@ -226,6 +231,8 @@ calling session MUST:
 
      The model-self-report sentence is part of the fixed template (the arbiter knows its own runtime identity — nothing flows from the caller), which is how a rejected or silently ignored pin stays observable without breaching the firewall: compare the arbiter's self-reported model against the expected pin in step 3.
 
+     *Tooling note:* the `Use Read/Grep/Glob…` line above is for the Agent-tool arbiter (which has those tools). The gateway headless helper substitutes `Use Read to open the files the reviews cite…` instead, because `Grep`/`Glob` are not selectable under `--bare` (see the Gateway-Fallback Rung); the rest of the template is identical.
+
 2. **Context firewall.** Do NOT include conversation history, plan-authoring rationale,
    defenses of any design decision, or "the user prefers..." framing in the dispatch prompt.
    The prompt file is self-contained by design (design doc + all three reviews + coverage +
@@ -234,14 +241,31 @@ calling session MUST:
 
 3. **Post-dispatch check** (calling session, cheap): `claude.json` exists, parses as JSON,
    has `status` of `PASS` or `FAIL`, and `metadata.run_id` matches the current run. Compare
-   the arbiter's self-reported model in `validation_notes` against the expected pin — on
-   mismatch, record `model_pin_status` caller-side and surface the run as degraded. Then
-   re-run the loop with `--claude-only`. (The script re-validates fully — this check just
+   the arbiter's self-reported model in `validation_notes` against the expected pin (the
+   model actually dispatched, after any step-1 fallback). The comparison is by **model
+   identity, not literal string**: an alias, its full id, and a gateway-namespaced id
+   (`fable` ≡ `claude-fable-5` ≡ `anthropic/claude-fable-5`) all match — a compliant
+   gateway run must not be marked `pin_ignored` over naming. `pin_ignored` is for a
+   genuinely different model (e.g., a sonnet- or opus-family self-report when fable was
+   dispatched). On a true mismatch, **overwrite**
+   `model_pin_status` with `pin_ignored` (the arbiter ran on a different model than
+   requested, so the previously-recorded status is no longer accurate) and additionally
+   set `run_degraded=true` in your caller-side state. Then re-run the loop with
+   `--claude-only`. (The script re-validates fully — this check just
    avoids burning a loop invocation on a garbage file.)
 
-4. **Failure handling (fail-closed), two branches:**
-   - *Unsupported model:* a recognized unsupported-model error from the Agent tool → retry
-     once with `model` omitted (see step 1) — this branch does NOT consume the retry below.
+4. **Failure handling (fail-closed), three branches:**
+   - *Unsupported model:* a recognized unsupported-model error from the Agent tool → walk
+     the step-1 fallback chain (subscription `fable` → gateway `fable` → subscription `opus`
+     → inherit) — these retries do NOT consume the retry below.
+   - *Gateway-rung failure (helper script exit 1):* the gateway is configured but the
+     dispatch failed (subprocess error, timeout, or garbage verdict — the helper script
+     already deleted the bad `claude.json`). Retry the gateway dispatch ONCE; if it fails
+     again, record the failure caller-side and **fall through to the subscription `opus`
+     rung — do NOT stop**. The gateway and the Agent tool are independent mechanisms; a
+     gateway outage must not block arbitration the next rung can still provide. The
+     one-retry-then-STOP rule below is reserved for Agent-tool dispatches, where a second
+     failure leaves no rung to fall through to.
    - *Everything else:* if the subagent fails or writes invalid JSON, delete the bad
      `claude.json` and dispatch ONE fresh retry. If the retry also fails, STOP and report
      to the user — do NOT silently arbitrate inline. Inline arbitration by the calling
@@ -249,6 +273,129 @@ calling session MUST:
      dispatch failed twice, and the degradation must be recorded in the verdict's
      `validation_notes` (`arbiter=inline (degraded, user-authorized)` — consistent here,
      since in this sole case the calling session is the writer).
+
+### Gateway-Fallback Rung (headless `claude -p`)
+
+This rung (the first sub-rung of the unsupported-model fallback chain) exists for exactly one
+scenario: the `fable` tier is no longer available on the calling session's **subscription** plan,
+but the operator has API access to fable through an Anthropic-API-compatible gateway (e.g.,
+ZenMux). Rather than immediately dropping the arbiter to `opus`, the loop preserves fable-quality
+arbitration by routing **one** headless arbiter process through the gateway.
+
+**Why headless, not the Agent tool.** Agent-tool subagents always inherit the parent session's
+auth, endpoint, and credentials — there is no supported way to point a single Agent-tool
+subagent at a different endpoint. A `claude -p --bare` subprocess takes per-process environment
+overrides, so the arbiter talks to the gateway while the interactive session stays on
+subscription auth. (Confirmed against Claude Code authentication + headless docs, 2026-06-12.)
+
+**Two `--bare` subtleties the helper handles** (verified live against ZenMux, 2026-06-13):
+*Endpoint precedence* — Claude Code applies a settings file's `env` block *over* the inherited
+process environment, so an operator whose `~/.claude/settings.json` sets `env.ANTHROPIC_BASE_URL`
+(e.g. a local proxy) would have the per-process gateway endpoint silently clobbered and the
+arbiter would hit the wrong endpoint (a 401, not the gateway). Worse, a credential in that same
+`settings.json` `env` (`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY`) would likewise outrank the
+per-process gateway credential — pairing the operator's *own* secret with the forced gateway URL
+and shipping it to the third-party gateway. The helper therefore routes the gateway endpoint **and**
+the gateway credential through a CLI `--settings` value, which outranks the default settings file,
+and pins the unused credential var to empty so a `settings.json` value cannot reintroduce it.
+Because that payload carries the secret it is written to a private temp file (mode `0600`) and
+passed as `--settings <path>` — never inline — so no secret reaches the process argument list, and
+the file is removed on exit. *Tool names* — under `--bare` the selectable built-in tool set is `{Bash, Edit, Read}`;
+`Grep`/`Glob`/`Write` are not selectable (passing them collapses the set to `Read` alone, so the
+arbiter cannot write its verdict). The helper grants only `Read,Edit` — `Read` opens the cited
+files, `Edit` writes `claude.json`. `Edit` is exact-string replacement and **cannot create** a
+file (`Write` is not selectable under `--bare`), and the full loop cleans `claude.json` before each
+dispatch, so the helper **pre-creates `claude.json` with a one-line placeholder** before launch; the
+arbiter `Read`s that placeholder then `Edit`s it to the verdict (the placeholder's status is not
+`PASS`/`FAIL`, so an un-overwritten file fails the post-check closed). `Edit` is pre-approved for that one path
+only. The arbiter reads
+reviewer-authored prompt content, so it is treated as hostile; its access to the gateway credential
+(and to the workspace) is closed by four deterministic layers: (1) **no shell** — `Bash` is withheld, so no
+`env`/`printenv`; (2) **no env token** — the credential is delivered only through the `--settings`
+file, never the environment, so `Read` of `/proc/self/environ` finds no credential (only the
+non-secret base URL, which is also set in the process env as a belt-and-suspenders default); (3) **confined
+`Read`** — `--disallowedTools` denies `Read` of `/proc`, `/sys`, `/dev` (blocking both
+`/proc/self/environ` and `/proc/self/cmdline`, which would otherwise reveal the random `--settings`
+path) plus the settings-file path itself, **and** the operator's own Anthropic credential stores:
+`~/.claude/**` and `~/.claude.json` (and the project's `.claude/**`), whose `env` blocks may hold
+`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` — the very `settings.json` values named above. Without
+this last deny the gateway-credential containment would be hollow: the arbiter couldn't reach the
+gateway secret but could still Read the operator's *own* Anthropic key and exfiltrate it through the
+transcript or `claude.json`. (The loop puts the arbiter's prompt/verdict under `docs/reviews/<slug>/`,
+not in any `.claude/`, so the deny costs nothing it needs.) `/proc` is a fixed kernel mount with no
+symlink alternate-spelling, so that deny — unlike a userspace path glob — is not trivially bypassable.
+And (4) **confined `Edit`** — `Edit` is pre-approved (`--allowedTools`) for the verdict file
+*alone*, not workspace-wide. The Read denies only bound reads; without an Edit scope a prompt-injected
+arbiter could Edit *arbitrary* files (inject code into a source file, rewrite a config), so the
+allow-rule is scoped to `$OUTPUT_FILE`. The keystone that makes this (and the Read allowlisting)
+authoritative is **`--permission-mode dontAsk`** — a deny-by-default mode the helper forces: only
+allowlisted tools execute, an Edit to any other path is denied (never prompted), and it *overrides*
+the operator's settings `defaultMode`. Without it, `--allowedTools` merely *adds* auto-approvals, so
+an operator running `acceptEdits`/`auto`/`bypassPermissions` would auto-approve `Edit` workspace-wide
+and defeat the scope. (`Edit` is an allowlist — one valid target; `Read` stays a blocklist — many
+valid targets — so arbitrary non-credential reads, as for every Read-granted subagent, are out of
+scope for this hardening.) The trade-off is no free-form codebase
+search in this fallback arbiter (Grep/Glob aren't selectable under `--bare`), matching the
+non-gateway Agent arbiter's no-shell posture.
+
+**Opt-in via environment (never committed).** The rung is attempted only when these are set in
+the session environment (exported in the parent shell or via `settings.json` `env` — NOT in any
+tracked file, since they carry a secret):
+
+| Env var | Required | Purpose |
+|---------|----------|---------|
+| `BLUEPRINT_ARBITER_GATEWAY_BASE_URL` | yes | Gateway endpoint → `ANTHROPIC_BASE_URL`, routed through the `--settings` file so it outranks a settings-file `env.ANTHROPIC_BASE_URL` (also set in process env) |
+| `BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN` | one of these two | Bearer-style key → `ANTHROPIC_AUTH_TOKEN` via the `--settings` file (0600, authoritative over a settings-file credential; never in argv) |
+| `BLUEPRINT_ARBITER_GATEWAY_API_KEY` | one of these two | X-Api-Key-style key → `ANTHROPIC_API_KEY` via the `--settings` file (0600, authoritative; never in argv) |
+| `BLUEPRINT_ARBITER_GATEWAY_MODEL` | no (default `claude-fable-5`) | The gateway's model id for fable (some gateways namespace it, e.g. `anthropic/claude-fable-5`) |
+| `BLUEPRINT_ARBITER_GATEWAY_TIMEOUT` | no (default `600`) | Seconds before the headless dispatch is killed (portable-timeout wrapper; guards against a hung gateway call) |
+
+If `BLUEPRINT_ARBITER_GATEWAY_BASE_URL` and one key are not both present, the rung is skipped
+silently (exit 3) and the chain falls through to `opus`. If both `AUTH_TOKEN` and `API_KEY` are
+set, `AUTH_TOKEN` wins (matching Claude Code's own auth precedence) and only the winner is
+passed to the subprocess.
+
+**Dispatch via the helper script (canonical — do not hand-roll the `claude -p` call):**
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/dispatch-gateway-arbiter.sh" \
+  "<absolute path to claude-validation-prompt.txt>" \
+  "<absolute path to claude.json>"
+# exit 0 → verdict written; record model_pin_status=gateway_fable_fallback, re-run --claude-only
+# exit 3 → gateway not configured; fall through to the opus rung
+# exit 1 → configured but failed (bad claude.json already deleted); retry the gateway
+#          dispatch ONCE, then fall through to the opus rung (step 4 — a gateway outage
+#          must not stop arbitration the next rung can provide)
+```
+
+Run it from the project root (so the arbiter's Read resolves the relative paths the reviews cite). The script enforces
+the protocol structurally: it builds the **same fixed template** from step 1 out of its two
+path arguments only (the caller cannot inject conversation context — the firewall is code, not
+prose), launches the subprocess with `--bare` (no auto-loaded CLAUDE.md/hooks/plugins/skills/
+memory — the arbiter sees only the fixed prompt plus the codebase — and no OAuth/keychain
+fallback, so auth comes solely from the gateway `--settings` file the helper writes), delivers the
+gateway credential to the subprocess **only** through that `0600` `--settings` file — never the
+environment, never argv (the calling session never handles the key; both `ANTHROPIC_*` credential
+vars are stripped from the subprocess env so a parent-shell export cannot pair the wrong key with
+the gateway endpoint, and `/proc/self/environ` carries no token), and performs the
+cheap structural half of the step-3 post-check (exists / parses / PASS-or-FAIL / `run_id`
+present), deleting a garbage verdict so the retry starts clean. The `executed_model`
+self-report comparison and the `pin_ignored` overwrite-on-mismatch remain the calling session's
+job, exactly as in step 3. The subprocess writes `claude.json` exactly as the Agent-tool
+arbiter does, so the loop's `--claude-only` re-validation is identical. Tests:
+`tests/test-gateway-arbiter-dispatch.sh`.
+
+**Caveats.** (1) Gateway traffic is metered API billing, not flat subscription — each
+iteration's arbiter is a paid call. (2) The helper delivers the key to the subprocess **only**
+through the `0600` `--settings` file (never the environment, never argv); never write it into a
+committed file or into `claude.json`. (3) This rung degrades the run in the
+same sense the others do (the pin was not satisfied on-subscription) — record
+`model_pin_status=gateway_fable_fallback` and treat the run as degraded for coverage reporting.
+(4) Supply the gateway credential only via `BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN`/`_API_KEY`; the
+helper makes it authoritative (through the `--settings` file, which outranks the default settings
+file) over any `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` an operator keeps in their own
+`settings.json` `env`, so the operator's non-gateway secret is never paired with — or sent to —
+the gateway.
 
 ### Freshness Contract
 
@@ -557,7 +704,11 @@ Monitor(command: "sleep 35 && echo READY", timeout: 45)
 
 ## Version History
 
-**v3.3 (current, 2026-06-10):** Fresh-subagent arbiter. Arbitration moved from the calling session (author-as-judge) to a freshly dispatched Claude subagent pinned to `model: fable`, with a context firewall (fixed template + two file paths only), arbiter model-self-report for pin observability, and two-branch fail-closed retry handling. Structurally removes the class-roll-style self-pass bias **for the compliant path** (the verdict-renderer has no authorship stake); protocol compliance itself remains prose-enforced defense-in-depth. The loop's `claude.json` contract is unchanged — only who writes the file. Includes the ADR 0003 Decision 7 script change (landed same day): verdict freshness re-keyed from design `spec_hash` alone to current-run `run_id` + `spec_hash` (`validate_claude_verdict_freshness` in `lib/validation.sh`, enforced at both the iteration-cleanup and `--claude-only` acceptance sites; the old guard could converge a re-run on a verdict that never saw the current reviewer artifacts, and its `-n` guard let `run_id`-less verdicts pass). Tests: `tests/test-claude-verdict-freshness.sh`. Dogfooded on ADR 0003 itself (2 iterations, FULL 3/3 coverage, Fable arbiter both rounds). See ADR 0003.
+**v3.4.1 (current, 2026-06-13):** Gateway rung made to actually work against a live gateway (the v3.4 rung shipped tested only against a stub `claude`, so two real-binary failures were latent). (1) *Endpoint precedence:* Claude Code applies a settings file's `env` over the inherited process environment, so an operator whose `~/.claude/settings.json` sets `env.ANTHROPIC_BASE_URL` (a local proxy) had the per-process gateway endpoint silently clobbered — every dispatch hit the wrong endpoint and 401'd. The helper now routes the gateway endpoint **and** credential through a CLI `--settings` file (a `0600` temp file built with `jq`, removed on exit) that outranks the default settings file, pinning the unused credential var to empty. This also closes the worse variant the first fix exposed: a credential in the operator's `settings.json` `env` would otherwise outrank the per-process gateway credential and pair the operator's *own* secret with the now-correctly-forced gateway URL — shipping it to the third-party gateway. For the same reason (settings-file `env` outranks the per-process `env -u` strip) the file also pins `ANTHROPIC_CUSTOM_HEADERS` and the `CLAUDE_CODE_USE_*` provider selectors to empty, so a `settings.json` value can't re-inject proxy headers or route the arbiter off the gateway. The secret lives only in the `0600` file and is fed to `jq` via stdin (`--rawfile cred /dev/stdin`), never `--arg` or the environment — both `jq`'s argv (`/proc/<pid>/cmdline`) and `/proc/<pid>/environ` are same-user-readable for its lifetime, so the secret travels only through the pipe. (2) *Tool names:* under `--bare` the selectable built-in set is `{Bash, Edit, Read}`, so the old `--tools Read,Grep,Glob,Write` collapsed to `Read` alone and the arbiter could not write `claude.json`. Now `Read,Edit`, with `Edit` pre-approved for the verdict file path *only*. Because `Write` is not selectable under `--bare` and `Edit` is exact-string replacement that cannot create a file — while the full loop cleans `claude.json` before each dispatch — the helper pre-creates `claude.json` with a one-line placeholder for the arbiter to `Read` then `Edit` (an un-overwritten placeholder fails the post-check closed). The arbiter reads reviewer-authored content, so its access to the credential **and to the workspace** is closed by four deterministic layers: **no shell** (`Bash` withheld → no `env`/`printenv`); **no env token** (the credential is delivered only via the `--settings` file, so `/proc/self/environ` is clean); **confined `Read`** (`--disallowedTools` denies `/proc`, `/sys`, `/dev` — blocking `/proc/self/environ` and the `/proc/self/cmdline` route that would reveal the random `--settings` path — plus the settings-file path itself, **and** the operator's own Anthropic credential stores `~/.claude/**`, `~/.claude.json`, and the project `.claude/**` (the project deny is anchored to the git repo root, not `$PWD`, so invoking from a subdirectory cannot leave the repo-root `.claude/` readable), so a prompt-injected arbiter can't Read the operator's own key — the same `settings.json` value named in fix (1) — and exfiltrate it; `/proc` has no symlink alternate-spelling, so the deny holds); and **confined `Edit`** (`--allowedTools` scopes `Edit` to `$OUTPUT_FILE` alone — the Read denies don't bound writes, so without this scope the arbiter could Edit arbitrary workspace files, e.g. inject code into a source file. The keystone is `--permission-mode dontAsk`: it makes the run deny-by-default so only allowlisted tools execute and an Edit elsewhere is denied, **and** it overrides the operator's settings `defaultMode` — without it, `--allowedTools` merely *adds* auto-approvals, so an operator running `acceptEdits`/`auto`/`bypassPermissions` would auto-approve `Edit` workspace-wide and defeat the scope). `Edit` is an allowlist (one valid target); `Read` stays a blocklist (many). The output path (only — the prompt path is exempt, as it never enters a permission rule) is rejected if it contains the `Edit(...)` rule's delimiters or any glob/list metacharacter (`( )`, `* ? [ ]`, comma), so a path can neither malform nor broaden the scope; whitespace is allowed (the list separator is the comma, not space), so a checkout under a spaced directory still dispatches. Trade-off: no free-form codebase search in this fallback arbiter (Grep/Glob aren't selectable under `--bare`); validation is by reading the cited files. The endpoint-precedence fix was verified live end-to-end against ZenMux (`claude-fable-5`) with the original `Read,Edit,Bash` grant; the later credential-hardening (settings-file delivery, no-shell `Read,Edit`, the `claude.json` placeholder, and the deny rules) is covered by the stub test suite below and has **not** yet been re-verified against a live gateway. Tests cover settings-file delivery (passed as a `0600` file path not inline; base URL + credential authoritative; unused credential var emptied; credential absent from both argv and the subprocess env), the no-shell grant, the `/proc`+`/sys`+`/dev`+settings-file plus Anthropic-credential-store (`~/.claude`, `~/.claude.json`, project `.claude`) `Read` denies, and the verdict-file-scoped `Edit` allow (`tests/test-gateway-arbiter-dispatch.sh`). No contract change.
+
+**v3.4 (2026-06-12):** Gateway-fallback arbiter rung. Inserted a sub-rung between subscription `fable` and subscription `opus` in the unsupported-model fallback chain: when `fable` is gone from the calling session's plan but the operator has configured gateway credentials (ZenMux or any Anthropic-API-compatible endpoint), the arbiter is dispatched as a headless `claude -p` subprocess pinned to `claude-fable-5` through the gateway, preserving fable-quality arbitration instead of dropping to opus. The rung is opt-in (skipped silently without the `BLUEPRINT_ARBITER_GATEWAY_*` env vars), uses per-process env overrides so the interactive session keeps subscription auth, and reuses the existing context firewall + post-dispatch self-report check unchanged. New `model_pin_status` value `gateway_fable_fallback`. Full chain is now subscription `fable` → gateway `fable` → subscription `opus` → inherit. Dispatch is a helper script (`scripts/dispatch-gateway-arbiter.sh`) that makes the firewall and secret-handling structural — fixed template built from two path args only, credentials read from env by the script (unused credential var unset for the subprocess), structural verdict post-check with delete-on-garbage; tests in `tests/test-gateway-arbiter-dispatch.sh`. The loop's `claude.json` contract is unchanged. Two protocol clarifications from the PR-196 review round: a configured-but-failed gateway dispatch retries once and then falls through to `opus` (the one-retry-then-STOP rule is reserved for end-of-chain Agent-tool failures), and the step-3 pin comparison is by model identity (alias ≡ full id ≡ gateway-namespaced id) so a compliant gateway run is never falsely `pin_ignored`. See Gateway-Fallback Rung.
+
+**v3.3 (2026-06-10; fallback chain added 2026-06-11):** Fresh-subagent arbiter. Arbitration moved from the calling session (author-as-judge) to a freshly dispatched Claude subagent pinned to `model: fable`, with a context firewall (fixed template + two file paths only), arbiter model-self-report for pin observability, two-branch fail-closed retry handling, and an explicit model fallback chain (`fable` → `opus` → inherit) so a renamed/retired tier degrades to the strongest available pin rather than the session model. Structurally removes the class-roll-style self-pass bias **for the compliant path** (the verdict-renderer has no authorship stake); protocol compliance itself remains prose-enforced defense-in-depth. The loop's `claude.json` contract is unchanged — only who writes the file. Includes the ADR 0003 Decision 7 script change (landed same day): verdict freshness re-keyed from design `spec_hash` alone to current-run `run_id` + `spec_hash` (`validate_claude_verdict_freshness` in `lib/validation.sh`, enforced at both the iteration-cleanup and `--claude-only` acceptance sites; the old guard could converge a re-run on a verdict that never saw the current reviewer artifacts, and its `-n` guard let `run_id`-less verdicts pass). Tests: `tests/test-claude-verdict-freshness.sh`. Dogfooded on ADR 0003 itself (2 iterations, FULL 3/3 coverage, Fable arbiter both rounds). See ADR 0003.
 
 **v3.2 (2026-05-25):** MEDIUM-trajectory tracking + early-stop. Added `medium_issues_history` field and a parallel trajectory check that fires when `progress_status == medium_issues_remaining`. Previously the trajectory check only watched HIGH, leaving MEDIUM-only states with no circuit breaker — they always ground to `max_iterations` (observed in growth-engine task-13-content-audit, iter 3/3, history `[2,0]` with 3 unresolved MEDIUMs). Default `max_iterations` raised 3 → 5 now that both severities have trajectory protection; the v3.1 bimodal-convergence hypothesis didn't account for slow MEDIUM convergence with HIGH already resolved.
 

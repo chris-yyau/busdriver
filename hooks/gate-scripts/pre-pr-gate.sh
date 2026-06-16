@@ -184,8 +184,19 @@ if [ -f "$PR_MARKER" ]; then
         DIFF_OUTPUT=$(git -C "$REPO_DIR" diff "${PR_BASE}...HEAD" 2>/dev/null || true)
         CURRENT_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
         if [ "$PR_MARKER_CONTENT" = "$CURRENT_HASH" ]; then
-            # Hash matches current diff — consume and allow
-            rm -f "$PR_MARKER"
+            # Hash matches current diff — defer consumption and allow.
+            # Do NOT consume here. The marker is consumed by the PostToolUse
+            # hook (post-pr-consume-marker.sh) only after `gh pr create`
+            # actually succeeds. Consuming in PreToolUse burns the review when
+            # gh then fails (missing --body-file, network, bad --base, auth
+            # expiry), forcing a redundant 6-agent re-review of unchanged code.
+            # This mirrors the deferred-consumption pattern the commit gate
+            # already uses (pre-commit-gate.sh validates,
+            # post-commit-consume-marker.sh consumes).
+            # Safe to defer: the marker is the SHA-256 of this exact diff, so a
+            # marker that survives a gh failure only ever re-authorizes the
+            # identical reviewed diff — any new commit changes the hash and the
+            # marker is rejected as stale on the next gate check.
             exit 0
         else
             # Stale marker from a different branch or older diff — reject

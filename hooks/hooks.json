@@ -258,6 +258,17 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/post-pr-consume-marker.sh\"",
+            "timeout": 5
+          }
+        ],
+        "description": "[CLEANUP] Consume PR review marker after successful gh pr create"
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/post-merge-confirm-bypass.sh\"",
             "timeout": 5
           }

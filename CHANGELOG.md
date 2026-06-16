@@ -1,3 +1,31 @@
+## [1.62.1](https://github.com/chris-yyau/busdriver/compare/v1.62.0...v1.62.1) (2026-06-14)
+
+
+### Bug Fixes
+
+* **blueprint-review:** make gateway arbiter work live + harden credential containment ([#197](https://github.com/chris-yyau/busdriver/issues/197)) ([649b310](https://github.com/chris-yyau/busdriver/commit/649b310bba1946d80aa9c402fb86eef87fefca78))
+
+# [1.62.0](https://github.com/chris-yyau/busdriver/compare/v1.61.1...v1.62.0) (2026-06-12)
+
+
+### Features
+
+* **blueprint-review:** add gateway-fable arbiter fallback rung ([#196](https://github.com/chris-yyau/busdriver/issues/196)) ([96c9359](https://github.com/chris-yyau/busdriver/commit/96c93595214e5ea25d70b552a4c6be779db6e918))
+
+## [1.61.1](https://github.com/chris-yyau/busdriver/compare/v1.61.0...v1.61.1) (2026-06-11)
+
+
+### Bug Fixes
+
+* **pre-pr-gate:** defer PR marker consumption until gh pr create succeeds ([#194](https://github.com/chris-yyau/busdriver/issues/194)) ([19aac01](https://github.com/chris-yyau/busdriver/commit/19aac01a7701bf0fe6293236c82883dd65ce73a6))
+
+# [1.61.0](https://github.com/chris-yyau/busdriver/compare/v1.60.0...v1.61.0) (2026-06-10)
+
+
+### Features
+
+* **blueprint-review:** explicit arbiter model fallback chain (fable -> opus -> inherit) ([#193](https://github.com/chris-yyau/busdriver/issues/193)) ([6a4f43a](https://github.com/chris-yyau/busdriver/commit/6a4f43a750cceb80785a2692d2c0f468bc4cd5cd))
+
 # [1.60.0](https://github.com/chris-yyau/busdriver/compare/v1.59.0...v1.60.0) (2026-06-10)
 
 

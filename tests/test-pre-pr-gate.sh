@@ -93,6 +93,15 @@ check() {
 
 marker_state() { [[ -f "$MARKER" ]] && echo "present" || echo "absent"; }
 
+# Compose a gate input that includes the PreToolUse `cwd` field (python handles
+# JSON escaping of embedded quotes / command substitution safely).
+make_input_cwd() {
+    python3 -c "
+import json, sys
+print(json.dumps({'tool_name':'Bash','tool_input':{'command':sys.argv[1]},'cwd':sys.argv[2]}))
+" "$1" "$2"
+}
+
 # ── 1. Gate allows on valid hash marker AND does not consume ──────────
 printf '%s' "$VALID_HASH" > "$MARKER"
 GATE_INPUT=$(printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$PR_CREATE_CMD")
@@ -171,6 +180,24 @@ rm -f "$MARKER"
 run_post_hook "$SUCCESS_INPUT"
 got=$(marker_state)
 check "post-hook no-op when marker absent (no crash, none created)" "absent" "$got"
+
+# ── 8. cwd-anchored resolution + substitution handling ───────────────
+# Regression: a `cd "$(...)"` prefix used to produce a junk REPO_DIR that
+# tripped `... || exit 0`, silently ALLOWING gh pr create with no review.
+rm -f "$MARKER"
+got=$(run_gate "$(make_input_cwd 'cd "$(git rev-parse --show-toplevel)" && gh pr create --fill' "$TMPREPO")")
+check "gate blocks substitution-cd create with absent marker (was fail-open)" "block" "$got"
+
+# Unresolvable command substitution target → fail-CLOSED block.
+got=$(run_gate "$(make_input_cwd 'cd "$(echo /tmp)" && gh pr create --fill' "$TMPREPO")")
+check "gate blocks unresolvable cd substitution target" "block" "$got"
+
+# cwd is consulted: no cd prefix + valid marker in the cwd repo → allow
+# (before the fix this resolved to the test runner's CWD and blocked).
+printf '%s' "$VALID_HASH" > "$MARKER"
+got=$(run_gate "$(make_input_cwd 'gh pr create --fill' "$TMPREPO")")
+check "gate allows when cwd anchors to repo with valid marker (cwd consulted)" "allow" "$got"
+rm -f "$MARKER"
 
 # ── Summary ───────────────────────────────────────────────────────────
 echo ""

@@ -30,6 +30,10 @@ block_emit() {
     fi
 }
 
+# ── Shared repo-dir resolver ──────────────────────────────────────────
+# shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
+
 # ── python3 pre-check (F5 fix) ────────────────────────────────────────
 # python3 is REQUIRED for git commit detection and all gate logic.
 # If missing, block — fail-closed principle. The || true on the python3
@@ -59,12 +63,13 @@ esac
 # Fix: marker written by litmus in target repo was invisible to gate
 # when committing to repos outside the session CWD (worktrees, temp clones).
 PARSE_RESULT=$(printf '%s' "$HOOK_DATA" | python3 -c "
-import sys, json, re
+import sys, json, re, os
 try:
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
         sys.exit(0)
+    cwd = d.get('cwd', '')
     inp = d.get('tool_input', d.get('toolInput', {}))
     if isinstance(inp, str):
         inp = json.loads(inp)
@@ -76,7 +81,7 @@ try:
         # Track cd commands to determine target repo directory
         cd_m = re.match(r'cd\s+(.*)', seg)
         if cd_m:
-            target_dir = cd_m.group(1).strip().strip('\042\047')
+            target_dir = os.path.expanduser(cd_m.group(1).strip().strip('\042\047'))
             continue
         # Strip leading env var assignments (e.g. SKIP=1 git commit)
         while re.match(r'^\w+=\S*\s', seg):
@@ -100,7 +105,7 @@ try:
             if found:
                 c_m = re.search(r'-C\s+(\S+)', seg)
                 if c_m:
-                    target_dir = c_m.group(1).strip('\042\047')
+                    target_dir = os.path.expanduser(c_m.group(1).strip('\042\047'))
                 # Detect --amend in the option portion of the segment only
                 # (tokens before the first -- pathspec separator). Scanning
                 # the full word list would match --amend appearing as a
@@ -119,6 +124,7 @@ try:
                 print('yes')
                 print(target_dir)
                 print('1' if is_amend else '0')
+                print(cwd)
                 break
 except Exception:
     # Fail-CLOSED: fast pre-filter matched git commit pattern but parser
@@ -126,11 +132,13 @@ except Exception:
     print('error')
     print('')
     print('')
+    print('')
 " 2>/dev/null || true)
 
 IS_GIT_COMMIT=$(echo "$PARSE_RESULT" | sed -n '1p')
 TARGET_DIR=$(echo "$PARSE_RESULT" | sed -n '2p')
 IS_AMEND=$(echo "$PARSE_RESULT" | sed -n '3p')
+HOOK_CWD=$(echo "$PARSE_RESULT" | sed -n '4p')
 
 # Fail-closed: parser error after fast pre-filter matched → block as precaution
 if [ "$IS_GIT_COMMIT" = "error" ]; then
@@ -140,11 +148,16 @@ fi
 
 [ "$IS_GIT_COMMIT" != "yes" ] && exit 0
 
-# Resolve to git repo root (TARGET_DIR may be a subdirectory, not the root)
-REPO_DIR=$(git -C "${TARGET_DIR:-.}" rev-parse --show-toplevel 2>/dev/null || echo "${TARGET_DIR:-.}")
-
-# Not in a git repo → approve
-git -C "$REPO_DIR" rev-parse --is-inside-work-tree &>/dev/null || exit 0
+# Resolve REPO_DIR (cwd-anchored; cd/-C target only as a safe refinement).
+# Fail-CLOSED on command-substitution targets the gate cannot evaluate.
+gate_resolve_repo_dir "$TARGET_DIR" "$HOOK_CWD"
+if [ "$GATE_RESOLVE_STATUS" = "block-unresolvable" ]; then
+    block_emit "Pre-commit gate: the command's cd target uses command substitution the gate cannot resolve statically (e.g. cd \"\$(...)\"). Commit from the repo root, or use cd \"\$(git rev-parse --show-toplevel)\" which the gate recognizes. Blocking as precaution (fail-closed)."
+    exit 0
+fi
+# Genuinely not in a git repo → nothing to review (git commit fails on its own).
+[ "$GATE_RESOLVE_STATUS" = "outside-repo" ] && exit 0
+REPO_DIR="$GATE_REPO_DIR"
 
 # ── --amend with no staged changes auto-pass ──────────────────────────
 # A `git commit --amend` with no staged changes is a commit-message-only

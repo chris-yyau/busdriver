@@ -226,6 +226,23 @@ else
 fi
 rm -f "$CLEAN_MARKER"
 
+# 7f. cwd-anchored resolution: the recognized $(git rev-parse --show-toplevel)
+#     idiom resolves via cwd instead of a junk path, so a fresh marker
+#     authorizes the merge (previously this spurious-blocked). Shares the
+#     gh-availability precondition with case 2 above.
+SUBST_MERGE='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"cd \"$(git rev-parse --show-toplevel)\" && gh pr merge 31 --squash"}}'
+echo "31" > "$CLEAN_MARKER"
+run_gate_test "allows toplevel-idiom cd prefix with fresh marker" "allow" "$SUBST_MERGE"
+rm -f "$CLEAN_MARKER"
+
+# 7g. Unresolvable command substitution in the cd target → fail-CLOSED block,
+#     even with a marker that would otherwise authorize the merge (the block
+#     fires during resolution, before the marker check).
+UNRESOLV_MERGE='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"cd \"$(echo /x)\" && gh pr merge 31 --squash"}}'
+echo "31" > "$CLEAN_MARKER"
+run_gate_test "blocks unresolvable cd substitution target" "block" "$UNRESOLV_MERGE"
+rm -f "$CLEAN_MARKER"
+
 # ═══════════════════════════════════════════════════════════════════════
 # POST-MERGE BYPASS CONFIRMATION HOOK TESTS (Bug B)
 # ═══════════════════════════════════════════════════════════════════════

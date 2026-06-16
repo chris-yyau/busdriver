@@ -25,6 +25,10 @@ block_emit() {
     fi
 }
 
+# ── Shared repo-dir resolver ──────────────────────────────────────────
+# shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
+
 # ── Required-checks allowlist (with advisory-pattern fallback) ───────
 # When <repo>/.github/required-checks.lock exists and declares
 # `required[].name`, only failures of those checks block this gate.
@@ -83,6 +87,7 @@ try:
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
         sys.exit(0)
+    cwd = d.get('cwd', '')
     inp = d.get('tool_input', d.get('toolInput', {}))
     if isinstance(inp, str):
         inp = json.loads(inp)
@@ -133,17 +138,20 @@ try:
         print(pr_num)
         print(target_dir)
         print(merge_count)
+        print(cwd)
 except Exception:
     print('error')
     print('')
     print('')
     print('0')
+    print('')
 " 2>/dev/null || true)
 
 IS_GH_PR_MERGE=$(echo "$MERGE_PARSE" | sed -n '1p')
 MERGE_PR_NUM=$(echo "$MERGE_PARSE" | sed -n '2p')
 TARGET_DIR=$(echo "$MERGE_PARSE" | sed -n '3p')
 MERGE_COUNT=$(echo "$MERGE_PARSE" | sed -n '4p')
+HOOK_CWD=$(echo "$MERGE_PARSE" | sed -n '5p')
 
 [ -z "$IS_GH_PR_MERGE" ] && exit 0
 
@@ -166,8 +174,18 @@ fi
 
 [ "$IS_GH_PR_MERGE" != "yes" ] && exit 0
 
-# Resolve to git repo root (TARGET_DIR may be a subdirectory, not the root, or empty)
-REPO_DIR=$(git -C "${TARGET_DIR:-.}" rev-parse --show-toplevel 2>/dev/null || echo "${TARGET_DIR:-.}")
+# Resolve REPO_DIR (cwd-anchored; cd target only as a safe refinement).
+# Fail-CLOSED on command-substitution targets the gate cannot evaluate.
+# NOTE: unlike pre-commit/pre-pr there is no `outside-repo -> approve` escape:
+# `gh pr merge` supports `-R owner/repo` and can operate from a non-repo cwd,
+# so an unresolved anchor falls through to the existing marker-not-found block
+# rather than approving.
+gate_resolve_repo_dir "$TARGET_DIR" "$HOOK_CWD"
+if [ "$GATE_RESOLVE_STATUS" = "block-unresolvable" ]; then
+    block_emit "Pre-merge gate: the command's cd target uses command substitution the gate cannot resolve statically (e.g. cd \"\$(...)\"). Merge from the repo root, or use cd \"\$(git rev-parse --show-toplevel)\" which the gate recognizes. Blocking as precaution (fail-closed)."
+    exit 0
+fi
+REPO_DIR="$GATE_REPO_DIR"
 
 # ── Skip overrides ────────────────────────────────────────────────────
 

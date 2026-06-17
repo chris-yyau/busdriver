@@ -50,7 +50,7 @@ RESOLVE_TRAILING="2026-06-06T16:30:00Z"     # non-resolver comment AFTER the res
 
 # Build a resolved+non-outdated Codex thread node.
 #   $1 = resolvedBy login   $2 = resolver-reply createdAt
-#   $3 = (optional) a NON-resolver reply createdAt (Codex's own follow-up, etc.)
+#   $3 = (optional) a Codex bot re-engagement reply createdAt (Codex's follow-up after resolver disposition)
 # comments(first:1) carries Codex's original finding (owner-identity match);
 # resolutionComments(last:10) carries the reply trail used for freshness.
 mk_codex_resolved() {
@@ -543,6 +543,21 @@ if [ "$got" = "stale" ]; then
   ok "mixed fresh + stale resolved threads → stale (all-or-stale, no masking)"
 else
   fail "stale resolved thread must not be masked by a fresh one; expected 'stale', got '$got'"
+fi
+
+# --- Test 19g: resolver reply timestamp EQUAL to push timestamp → stale (boundary condition) ---
+# The freshness check requires strictly greater than ($lastc.createdAt > $push),
+# so a resolver reply at exactly the push time must not ack (the <= arm catches it).
+CODEX_RESOLVED_BOUNDARY="{\"data\":{\"repository\":{\"pullRequest\":{\"reviewThreads\":{\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null},\"nodes\":[$(_mk_codex_node "$RESOLVE_PUSH")]}}}}}"
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_RESOLVED_BOUNDARY" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="$RESOLVE_PUSH" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "resolver reply == push timestamp → stale (boundary: freshness requires strictly >)"
+else
+  fail "resolver reply == push timestamp expected 'stale' (boundary), got '$got'"
 fi
 
 # --- Test 20: resolved thread + fresh resolver reply BUT empty push anchor → stale (#186 settling check) ---

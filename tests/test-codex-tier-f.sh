@@ -79,17 +79,17 @@ mk_reaction() {
 # Generic Codex run with all non-reaction sources empty.
 run_codex() {
   # $1 = ALL_REACTIONS, $2 = HEAD_COMMITTED_DATE, $3 = login (default codex),
-  # $4 = ACK_EMIT_TIER (default 0)
-  local login="${3:-$CODEX}" emit="${4:-0}"
+  # $4 = ACK_EMIT_TIER (default 0), $5 = HEAD_PUSH_DATE (default empty)
+  local login="${3:-$CODEX}" emit="${4:-0}" push="${5:-}"
   FETCH_OK=1 ACK_EMIT_TIER="$emit" \
   ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS="$1" HEAD_COMMITTED_DATE="$2" HEAD_SHA="$HEAD_SHA" \
+  ALL_REACTIONS="$1" HEAD_COMMITTED_DATE="$2" HEAD_PUSH_DATE="$push" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$login" 2>/dev/null
 }
 
 # --- Test 1: fresh 👍 (created_at > HEAD) → HEAD_SHA (the clean-ack case) ---
-got=$(run_codex "$(mk_reaction '+1' "$FRESH")" "$HEAD_DATE")
+got=$(run_codex "$(mk_reaction '+1' "$FRESH")" "$HEAD_DATE" "$CODEX" 0 "$HEAD_DATE")
 if [ "$got" = "$HEAD_SHA" ]; then
   ok "fresh 👍 (after HEAD commit) → HEAD_SHA (clean ack)"
 else
@@ -97,7 +97,7 @@ else
 fi
 
 # --- Test 1b: same case under ACK_EMIT_TIER=1 → SHA:F ---
-got=$(run_codex "$(mk_reaction '+1' "$FRESH")" "$HEAD_DATE" "$CODEX" 1)
+got=$(run_codex "$(mk_reaction '+1' "$FRESH")" "$HEAD_DATE" "$CODEX" 1 "$HEAD_DATE")
 if [ "$got" = "${HEAD_SHA}:F" ]; then
   ok "fresh 👍 under ACK_EMIT_TIER=1 → '${HEAD_SHA}:F'"
 else
@@ -105,7 +105,7 @@ else
 fi
 
 # --- Test 2: stale 👍 (created_at < HEAD) → stale (must re-review HEAD) ---
-got=$(run_codex "$(mk_reaction '+1' "$STALE_TS")" "$HEAD_DATE")
+got=$(run_codex "$(mk_reaction '+1' "$STALE_TS")" "$HEAD_DATE" "$CODEX" 0 "$HEAD_DATE")
 if [ "$got" = "stale" ]; then
   ok "stale 👍 (before HEAD commit) → stale (engaged, not fresh)"
 else
@@ -302,7 +302,7 @@ fi
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CODEX_OUTDATED" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
 if [ "$got" = "$HEAD_SHA" ]; then
   ok "outdated thread + fresh 👍 → HEAD_SHA (fresh 👍 clears the retained-outdated deadlock)"
@@ -330,7 +330,7 @@ fi
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CODEX_RESOLVED_CURRENT" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="$RESOLVE_PUSH" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
 if [ "$got" = "$HEAD_SHA" ]; then
   ok "disposed Codex thread + fresh 👍 → HEAD_SHA (Tier F acks the clean re-review)"
@@ -346,7 +346,7 @@ fi
 PAGE1='[{"content":"+1","created_at":"2026-06-06T16:20:00Z","user":{"login":"alice"}},{"content":"heart","created_at":"2026-06-06T16:21:00Z","user":{"login":"bob"}}]'
 PAGE2=$(mk_reaction '+1' "$FRESH")
 PAGINATED=$(printf '%s\n%s' "$PAGE1" "$PAGE2")
-got=$(run_codex "$PAGINATED" "$HEAD_DATE")
+got=$(run_codex "$PAGINATED" "$HEAD_DATE" "$CODEX" 0 "$HEAD_DATE")
 if [ "$got" = "$HEAD_SHA" ]; then
   ok "paginated reactions, Codex 👍 on page 2 → HEAD_SHA (jq -rs slurps the stream)"
 else

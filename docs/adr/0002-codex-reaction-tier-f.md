@@ -27,7 +27,7 @@ Empirical signal shape (verified on `Dive-And-Dev/chrisyau.me`):
 
 So only the *clean* path needs a new positive-ack signal (the 👍 reaction); the
 findings path must resolve to `stale`. The only available clean anchor is the
-reaction timestamp vs HEAD's commit time.
+reaction timestamp vs the push event time (`HEAD_PUSH_DATE`).
 
 ## Decision
 
@@ -39,7 +39,7 @@ reaction timestamp vs HEAD's commit time.
    mid-review of a newer push.
 2. **Tier F in `ack-ledger.sh`** (the prescribed single source), reached only
    when Codex is not mid-review:
-   - a `+1` whose `created_at > HEAD_COMMITTED_DATE` → HEAD-ack (`:F`),
+   - a `+1` whose `created_at > HEAD_PUSH_DATE` → HEAD-ack (`:F`); absent a push anchor the `+1` path fails CLOSED to `stale` (#189) — see Amendment below,
      selected with `sort_by(.created_at) | last` (the reactions API does not
      guarantee result ordering);
    - an engaged-but-not-fresh Codex (a 👍 from before the last push) → `stale`;
@@ -49,10 +49,12 @@ reaction timestamp vs HEAD's commit time.
    like Tier E). Reaction JSON is slurped with `jq -rs` so it tolerates the
    multi-page stream `gh api --paginate` emits (Codex's 👍 can sit behind >30
    human PR-body reactions).
-   **`HEAD_COMMITTED_DATE` is the *committer* date, not author date:** git resets
-   committer.date to operation time on commit/amend/rebase/cherry-pick, so a
-   rebased or cherry-picked HEAD reads as fresh and a pre-existing 👍 reads as
-   stale — the realistic "old commit becomes HEAD" cases are handled.
+   **`HEAD_COMMITTED_DATE` (committer date) is NO LONGER the Tier-F anchor as of #189:**
+   it was originally the freshness anchor, but the committer date is client-stamped and
+   backdatable (`git commit --date` / `GIT_COMMITTER_DATE`), so a leftover 👍 could
+   falsely ack a deliberately-backdated HEAD. The `+1` path now anchors on
+   `HEAD_PUSH_DATE` (server-stamped) ALONE and fails CLOSED when absent — see the
+   Amendment under "Deliberately backdated HEAD" below.
 3. **Codex thread handling — clear resolved-current-head, block everything else.**
    A Codex review is normally a findings post (it 👍s when clean), so it is
    excluded from Tier B's `/reviews` clean-ack and from non-Codex Tier A's
@@ -127,6 +129,14 @@ the past (`git commit --date` / `GIT_COMMITTER_DATE`) reused under a pre-existin
 👍. The eyes-override (Codex re-adds 👀 on every HEAD advance → `stale`) and the
 registered bots' own post-push staleness close this in practice; pr-grind's own
 fix commits are never backdated.
+
+**Amendment (2026-06-18, #189):** This residual is now CLOSED for the `+1` path. The
+Tier-F `+1` freshness anchor is `HEAD_PUSH_DATE` (server-stamped push event time) ALONE —
+the backdatable committer date no longer participates — and the path fails CLOSED to
+`stale` when no push anchor is available (fork head, events API aged-out/capped), matching
+the resolved-thread path (#186). The eyes-override remains as defense-in-depth. The
+operability cost (a no-push-date PR with a prior Codex finding can stall to `--max-wait`)
+is accepted; a server-stamped fallback marker is a deferred follow-up.
 
 ## Revisit trigger
 

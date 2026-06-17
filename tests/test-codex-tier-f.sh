@@ -8,7 +8,8 @@
 # removes its 👀 (eyes) reaction and adds a 👍 (+1) reaction on the PR body —
 # no /reviews APPROVED entry, no check-run, no commit-status (empirically
 # verified on Dive-And-Dev/chrisyau.me PR #142 clean / PR #140 findings). Tier F
-# reads the 👍 as a HEAD-ack when its created_at postdates HEAD's commit time;
+# reads the 👍 as a HEAD-ack when its created_at postdates HEAD_PUSH_DATE (the push
+# event time); fails closed to `stale` when no push anchor exists (#189);
 # an engaged-but-not-fresh Codex (👀, or a 👍 from before the last push) is
 # `stale` so the gate waits. Codex's findings path is acked/blocked by the
 # existing Tiers A (inline threads) and B (/reviews on HEAD), NOT by Tier F.

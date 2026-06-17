@@ -1041,17 +1041,17 @@ ALL_CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-r
 # scripts/ack-ledger.sh maps the bot login to a context string and treats a
 # latest-by-timestamp `state=success` as a HEAD-ack.
 ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses" 2>/dev/null) || FETCH_OK=0
-# Source 7: issue-level reactions + HEAD commit time — Codex's clean signal is
+# Source 7: issue-level reactions + HEAD push time — Codex's clean signal is
 # a 👍 reaction (Tier F), not a SHA-keyed ack. --paginate so Codex's reaction
 # isn't missed behind >30 human PR-body reactions (Tier F slurps the stream).
 ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/reactions" 2>/dev/null) || FETCH_OK=0
-HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null) || FETCH_OK=0
-# HEAD_PUSH_DATE: push event timestamp — more robust than committer date for
-# force-push scenarios. --paginate + slurp (jq -rs) so the PushEvent for HEAD is
-# found even when it lands on a later events page; without pagination a HEAD push
-# beyond the first page yields empty and silently falls back to the backdatable
-# committer date. Best-effort; exports empty on failure or no match so Tier F
-# falls back to HEAD_COMMITTED_DATE.
+HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null || echo "")
+# HEAD_PUSH_DATE: push event timestamp — the SOLE Tier-F +1 freshness anchor.
+# --paginate + slurp (jq -rs) so the PushEvent for HEAD is found even when it lands
+# on a later events page; without pagination a HEAD push beyond the first page yields
+# empty. Best-effort; exports empty on failure or no match, in which case Tier F fails
+# CLOSED to stale (no committer fallback — the committer date is backdatable, #189).
+# HEAD_COMMITTED_DATE is fetched best-effort and NOT gated on FETCH_OK (nothing reads it).
 HEAD_FULL_SHA=$(git rev-parse HEAD)
 # Branch filter prevents anchoring on a PushEvent from a different branch that
 # shares the same tip SHA. fetch-pr-state.sh uses the same guard; keep in sync.
@@ -1242,17 +1242,17 @@ ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH
 ALL_CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
 # Source 6: commit statuses on HEAD — same as worker/Step 6.5 fetch above.
 ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses" 2>/dev/null) || FETCH_OK=0
-# Source 7: issue-level reactions + HEAD commit time for Codex's Tier-F gate
+# Source 7: issue-level reactions + HEAD push time for Codex's Tier-F gate
 # (👍 reaction). --paginate so Codex's reaction isn't missed behind >30 human
 # PR-body reactions (Tier F slurps the page stream).
 ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/reactions" 2>/dev/null) || FETCH_OK=0
-HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null) || FETCH_OK=0
-# HEAD_PUSH_DATE: push event timestamp — more robust than committer date for
-# force-push scenarios. --paginate + slurp (jq -rs) so the PushEvent for HEAD is
-# found even when it lands on a later events page; without pagination a HEAD push
-# beyond the first page yields empty and silently falls back to the backdatable
-# committer date. Best-effort; exports empty on failure or no match so Tier F
-# falls back to HEAD_COMMITTED_DATE.
+HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null || echo "")
+# HEAD_PUSH_DATE: push event timestamp — the SOLE Tier-F +1 freshness anchor.
+# --paginate + slurp (jq -rs) so the PushEvent for HEAD is found even when it lands
+# on a later events page; without pagination a HEAD push beyond the first page yields
+# empty. Best-effort; exports empty on failure or no match, in which case Tier F fails
+# CLOSED to stale (no committer fallback — the committer date is backdatable, #189).
+# HEAD_COMMITTED_DATE is fetched best-effort and NOT gated on FETCH_OK (nothing reads it).
 HEAD_FULL_SHA=$(git rev-parse HEAD)
 # Branch filter prevents anchoring on a PushEvent from a different branch that
 # shares the same tip SHA. fetch-pr-state.sh uses the same guard; keep in sync.

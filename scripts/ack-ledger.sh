@@ -54,7 +54,8 @@
 # thread proven via the push-anchored resolver-last-comment signal (A.2); B=/reviews
 # on HEAD, C=issue-comment body
 # SHA, D=check-run success, E=commit-status success, F=Codex 👍 reaction newer
-# than HEAD's commit). `none`/`stale` are NEVER
+# than HEAD_PUSH_DATE — the push event time; fails closed when absent, #189).
+# `none`/`stale` are NEVER
 # suffixed. Default (env unset) output is byte-for-byte unchanged, so existing
 # callers that compare the value to HEAD_SHA or to `stale` are unaffected. The
 # dispatcher's Invariant 3 uses tiers D/E (bodyless structured acks) to exempt a

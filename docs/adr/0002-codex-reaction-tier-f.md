@@ -121,7 +121,10 @@ where the grace re-poll (default 20s) still isn't enough for Codex to start; a
 larger `PR_GRIND_CODEX_GRACE_SECS` covers slower starts. `ack-ledger.sh` stays a
 pure classifier — the timing fix lives in the loop, not the tier.
 
-**Deliberately backdated HEAD.** The clean-path freshness anchor is a timestamp
+**Deliberately backdated HEAD.** *(For the `+1` path this residual is now CLOSED —
+see the #189 Amendment below. The paragraph here describes the pre-#189 design, in
+which the committer date was the clean-path anchor; it is retained for historical
+context.)* The clean-path freshness anchor is a timestamp
 (Codex emits no SHA for a findings-free review). The committer-date choice
 handles rebase/cherry-pick/amend (git resets committer.date to operation time),
 so the only residual is a commit whose committer.date is *deliberately* set to

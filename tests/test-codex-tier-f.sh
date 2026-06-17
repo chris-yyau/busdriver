@@ -197,14 +197,15 @@ else
   fail "cursor COMMENTED /reviews on HEAD expected '${HEAD_SHA}:B', got '$got'"
 fi
 
-# --- Test 9: fresh-looking 👍 but HEAD_COMMITTED_DATE empty → stale ---
-# Without a HEAD commit time we cannot prove freshness; pin the date-guard so a
-# missing committedDate degrades to wait, never to a false ack.
+# --- Test 9: fresh-looking 👍 but no HEAD_PUSH_DATE → stale (#189 fail-CLOSED) ---
+# With no server-stamped push anchor there is no trustworthy freshness proof, so the
+# +1 path fails CLOSED to stale — the committer date is NOT consulted (#189). Here
+# both HEAD_COMMITTED_DATE and HEAD_PUSH_DATE are empty (run_codex's push arg omitted).
 got=$(run_codex "$(mk_reaction '+1' "$FRESH")" "")
 if [ "$got" = "stale" ]; then
-  ok "fresh 👍 but empty HEAD_COMMITTED_DATE → stale (cannot confirm fresh)"
+  ok "fresh 👍 but no HEAD_PUSH_DATE → stale (#189 fail-CLOSED; committer date not consulted)"
 else
-  fail "fresh 👍 + empty head-date expected 'stale', got '$got'"
+  fail "fresh 👍 + no push anchor expected 'stale', got '$got'"
 fi
 
 # --- Test 10: FETCH_OK=0 → stale (fail-CLOSED) even with a fresh 👍 ---

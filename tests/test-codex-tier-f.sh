@@ -35,6 +35,33 @@ HEAD_DATE="2026-06-06T16:12:23Z"          # HEAD commit time
 FRESH="2026-06-06T16:24:36Z"              # 👍 AFTER HEAD (PR #142 real timing)
 STALE_TS="2026-06-06T16:00:00Z"           # 👍 BEFORE HEAD (pre-push)
 
+# --- Resolved-thread push-anchored freshness fixtures (#186/#187) ---
+# The resolved-Codex-thread ack (Tier A.2) is keyed to the PUSH timestamp only
+# (never the backdatable committer date) and to a RESOLVER-AUTHORED resolution
+# comment. Out-of-scope-acknowledged dismissals: the worker (operator) posts a
+# reply then resolves, so resolvedBy == the reply author and that comment's
+# createdAt ≈ resolution time. Codex itself authored the original finding
+# (comments.nodes[0]); the resolver is the operator.
+RESOLVER="chris-yyau"                       # operator who resolves out-of-scope threads
+RESOLVE_PUSH="2026-06-06T16:12:23Z"         # HEAD_PUSH_DATE anchor (push event time)
+RESOLVE_AFTER="2026-06-06T16:24:36Z"        # resolver reply AFTER push → fresh → ack
+RESOLVE_BEFORE="2026-06-06T16:00:00Z"       # resolver reply BEFORE push → stale resolution
+RESOLVE_TRAILING="2026-06-06T16:30:00Z"     # non-resolver comment AFTER the resolver reply
+
+# Build a resolved+non-outdated Codex thread node.
+#   $1 = resolvedBy login   $2 = resolver-reply createdAt
+#   $3 = (optional) a NON-resolver reply createdAt (Codex's own follow-up, etc.)
+# comments(first:1) carries Codex's original finding (owner-identity match);
+# resolutionComments(last:10) carries the reply trail used for freshness.
+mk_codex_resolved() {
+  local rb="$1" reply="$2" other="${3:-}"
+  local nodes="{\"author\":{\"login\":\"chatgpt-codex-connector[bot]\"},\"createdAt\":\"$STALE_TS\"},{\"author\":{\"login\":\"$rb\"},\"createdAt\":\"$reply\"}"
+  if [ -n "$other" ]; then
+    nodes="$nodes,{\"author\":{\"login\":\"chatgpt-codex-connector[bot]\"},\"createdAt\":\"$other\"}"
+  fi
+  printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"isOutdated":false,"resolvedBy":{"login":"%s"},"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"},"createdAt":"%s"}]},"resolutionComments":{"nodes":[%s]}}]}}}}}' "$rb" "$STALE_TS" "$nodes"
+}
+
 # Empty fixtures for every non-reaction source so Tiers A–E fall through and
 # Tier F is the only path that can fire.
 EMPTY_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'
@@ -200,20 +227,23 @@ else
   fail "👀 + fresh 👍 expected 'stale' (eyes-override), got '$got'"
 fi
 
-# --- Test 12: RESOLVED current-head Codex thread → HEAD_SHA (out-of-scope clear) ---
-# A Codex thread the worker resolved on the CURRENT head (the out-of-scope-
-# acknowledged dismissal — no code push, so no new commit to trigger a fresh
-# 👍) must CLEAR via Tier A.2, or Codex would stay stale until --max-wait bails.
-# A stale 👍 in the fixture confirms the resolved thread acks on its own (no
-# fresh reaction needed). Eyes-override does not fire (no 👀).
-CODEX_RESOLVED_CURRENT='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"},"createdAt":"2026-06-06T16:24:36Z"}]}}]}}}}}'
+# --- Test 12: RESOLVED current-head Codex thread → HEAD_SHA (#187 out-of-scope clear) ---
+# A Codex thread the worker resolved on the CURRENT head (out-of-scope-acknowledged
+# dismissal — no code push, so no new commit to trigger a fresh 👍) must CLEAR via
+# Tier A.2, or Codex stays stale until --max-wait bails. Under the push-anchored
+# design (#186/#187), it acks iff: HEAD_PUSH_DATE present AND the resolver-authored
+# resolution comment is newer than the push. Here the operator (resolvedBy) posted a
+# reply at RESOLVE_AFTER (16:24) > the push anchor (16:12) → ack. A stale 👍 in the
+# fixture confirms the resolved thread acks on its own (no fresh reaction needed);
+# eyes-override does not fire (no 👀).
+CODEX_RESOLVED_CURRENT="$(mk_codex_resolved "$RESOLVER" "$RESOLVE_AFTER")"
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CODEX_RESOLVED_CURRENT" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS="$(mk_reaction '+1' "$STALE_TS")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  ALL_REACTIONS="$(mk_reaction '+1' "$STALE_TS")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="$RESOLVE_PUSH" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
 if [ "$got" = "$HEAD_SHA" ]; then
-  ok "resolved current-head Codex thread → HEAD_SHA (Tier A.2 clears out-of-scope dismissal)"
+  ok "resolved current-head Codex thread (push present, resolver reply after push) → HEAD_SHA (#187 clears)"
 else
   fail "resolved current-head Codex thread expected '$HEAD_SHA', got '$got'"
 fi
@@ -366,7 +396,8 @@ fi
 # signal is `stale` (Codex must re-review HEAD), NOT `none` (Codex absent from PR).
 # Returning `none` was a fail-OPEN bug: the gate would treat Codex as not-engaged
 # and allow merge without a fresh Codex re-review (Cursor finding, PR #185).
-# The step 3.5 guard catches pre-anchor resolved threads and returns `stale`.
+# With HEAD_PUSH_DATE absent, the unified (3) block's first guard returns `stale`
+# immediately (fail-CLOSED) — no anchor exists, so nothing can be proven fresh.
 CODEX_RESOLVED_STALE='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"},"createdAt":"2026-06-06T16:00:00Z"}]}}]}}}}}'
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CODEX_RESOLVED_STALE" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
@@ -394,46 +425,151 @@ else
   fail "resolved thread before anchor + stale 👍 expected 'stale', got '$got'"
 fi
 
-# --- Test 19: resolved-current Codex thread with createdAt AFTER anchor → HEAD_SHA ---
-# Symmetric case: a thread the worker actually dismissed/resolved on the CURRENT
-# head (via out-of-scope-acknowledged workflow) will have a createdAt newer than
-# the freshness anchor (the thread was opened AFTER the last push). That must ack.
+# --- Test 19: resolved thread, committer date newer than finding BUT push date absent → stale (#186) ---
+# The exact #186 fail-OPEN that the push-anchored design closes. CODEX_RESOLVED_FRESH's
+# first-comment createdAt (16:24) is NEWER than HEAD_COMMITTED_DATE (16:12) — under the
+# OLD design that newer-than-committer-date signal falsely acked HEAD. The committer
+# date is backdatable (force-push an old commit), so it must never gate a resolved-thread
+# ack. With HEAD_PUSH_DATE absent there is no trustworthy anchor → fail-CLOSED to stale.
 CODEX_RESOLVED_FRESH='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"},"createdAt":"2026-06-06T16:24:36Z"}]}}]}}}}}'
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CODEX_RESOLVED_FRESH" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
   ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
-if [ "$got" = "$HEAD_SHA" ]; then
-  ok "resolved thread createdAt AFTER anchor → HEAD_SHA (freshness guard allows legitimate ack)"
+if [ "$got" = "stale" ]; then
+  ok "resolved thread, committer-date-newer but push date absent → stale (#186: committer date not trusted)"
 else
-  fail "resolved thread after anchor expected '$HEAD_SHA', got '$got'"
+  fail "resolved thread, push date absent expected 'stale' (#186 fail-CLOSED), got '$got'"
 fi
 
-# --- Test 20: resolved-current thread + empty _freshness_anchor → backward-compat HEAD_SHA ---
-# When neither HEAD_COMMITTED_DATE nor HEAD_PUSH_DATE is available (older caller),
-# the anchor is empty. The jq filter's `$anchor == ""` clause passes the select
-# unconditionally — preserving the pre-fix behavior where any resolved non-outdated
-# thread acks. Older callers that never exported dates keep working as before.
+# --- Test 19b: a NON-resolver comment is the thread's LAST comment → stale (last-comment rule) ---
+# Codex deep-review finding: freshness must require the thread's LAST comment to be the
+# resolver's, not just "some resolver comment exists after the push". Here resolvedBy
+# (the operator) replied at 16:00, then Codex itself re-engaged with a comment at 16:24
+# (AFTER the push) — so the thread's last activity is a non-resolver comment. The thread
+# is not settled at the resolver's disposition → stale.
+CODEX_RESOLVED_AUTHOR=$(mk_codex_resolved "$RESOLVER" "$RESOLVE_BEFORE" "$RESOLVE_AFTER")
 got=$(FETCH_OK=1 \
-  ALL_THREADS="$CODEX_RESOLVED_FRESH" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_THREADS="$CODEX_RESOLVED_AUTHOR" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="$RESOLVE_PUSH" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "resolver reply pre-push + non-resolver reply post-push → stale (author-identity guard)"
+else
+  fail "non-resolver reply must not freshen; expected 'stale', got '$got'"
+fi
+
+# --- Test 19c: resolver reply BEFORE push → stale (#186 stale resolution, push present) ---
+# Push anchor IS present (16:12) but the resolver resolved on an earlier commit:
+# their reply is dated 16:00 < push → the resolution predates HEAD → stale.
+CODEX_RESOLVED_OLDREPLY=$(mk_codex_resolved "$RESOLVER" "$RESOLVE_BEFORE")
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_RESOLVED_OLDREPLY" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="$RESOLVE_PUSH" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "resolver reply before push (resolution predates HEAD) → stale (#186 common case)"
+else
+  fail "resolver reply before push expected 'stale', got '$got'"
+fi
+
+# --- Test 19d: resolver reply AFTER push, but a LATER non-resolver comment → stale (tightening) ---
+# THE case the deep-review tightening closes. The resolver's reply (16:24) IS newer than
+# the push (16:12) — under the old max()-over-resolver-comments logic this would have
+# ACKed. But Codex (a non-resolver) then commented at 16:30, so the thread's last activity
+# is NOT the resolver's disposition → stale. Closes the "later activity re-freshens a
+# resolution" residual fail-OPEN.
+CODEX_RESOLVED_TRAILING=$(mk_codex_resolved "$RESOLVER" "$RESOLVE_AFTER" "$RESOLVE_TRAILING")
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_RESOLVED_TRAILING" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="$RESOLVE_PUSH" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "resolver reply fresh but trailing non-resolver comment → stale (last-comment tightening)"
+else
+  fail "trailing non-resolver comment must block ack; expected 'stale', got '$got'"
+fi
+
+# --- Test 19e: resolvedBy is the finding bot itself → stale (self-clear exclusion) ---
+# A thread cannot be cleared by the bot that filed it. Even with a fresh, after-push
+# "resolver" comment, resolvedBy == the Codex login is excluded ($rb != finding bot) → stale.
+CODEX_RESOLVED_SELFBOT=$(mk_codex_resolved "chatgpt-codex-connector[bot]" "$RESOLVE_AFTER")
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_RESOLVED_SELFBOT" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="$RESOLVE_PUSH" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "resolvedBy == finding bot → stale (self-clear exclusion)"
+else
+  fail "finding-bot self-resolve must not ack; expected 'stale', got '$got'"
+fi
+
+# --- Test 19e2: resolvedBy is the BARE finding-bot login (no [bot] suffix) → stale ---
+# GitHub may return the bot's login bare ("chatgpt-codex-connector") or [bot]-suffixed,
+# so the exclusion checks both ($rb == $login OR $rb == $login_bot). This pins the bare
+# arm so it is not dead code: a bare-login self-resolve must still fail CLOSED → stale.
+CODEX_RESOLVED_SELFBARE=$(mk_codex_resolved "chatgpt-codex-connector" "$RESOLVE_AFTER")
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_RESOLVED_SELFBARE" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="$RESOLVE_PUSH" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "resolvedBy == bare finding-bot login → stale (bare-form self-clear exclusion)"
+else
+  fail "bare finding-bot self-resolve must not ack; expected 'stale', got '$got'"
+fi
+
+# --- Test 19f: TWO resolved threads — one fresh, one stale → stale (all-or-stale) ---
+# A fresh resolved thread must NOT mask a stale one. Node 1 is proven fresh (resolver
+# reply 16:24 > push 16:12); node 2 is stale (resolver reply 16:00 <= push). The ack
+# fires only when EVERY resolved+non-outdated Codex thread is fresh, so this → stale.
+_mk_codex_node() { # $1 = resolver-reply createdAt
+  printf '{"isResolved":true,"isOutdated":false,"resolvedBy":{"login":"%s"},"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"},"createdAt":"%s"}]},"resolutionComments":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"},"createdAt":"%s"},{"author":{"login":"%s"},"createdAt":"%s"}]}}' \
+    "$RESOLVER" "$STALE_TS" "$STALE_TS" "$RESOLVER" "$1"
+}
+CODEX_RESOLVED_MIXED="{\"data\":{\"repository\":{\"pullRequest\":{\"reviewThreads\":{\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null},\"nodes\":[$(_mk_codex_node "$RESOLVE_AFTER"),$(_mk_codex_node "$RESOLVE_BEFORE")]}}}}}"
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_RESOLVED_MIXED" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="$RESOLVE_PUSH" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "mixed fresh + stale resolved threads → stale (all-or-stale, no masking)"
+else
+  fail "stale resolved thread must not be masked by a fresh one; expected 'stale', got '$got'"
+fi
+
+# --- Test 20: resolved thread + fresh resolver reply BUT empty push anchor → stale (#186 settling check) ---
+# THE settling check for the fail-CLOSED design. Even a perfect resolver reply newer
+# than every other signal does NOT ack when HEAD_PUSH_DATE is absent (fork head, aged-out
+# events). On a P1 merge gate, a visible stall beats a silent fail-OPEN. This deliberately
+# reverses the prior "empty anchor ⇒ ack" backward-compat (council 2026-06-17).
+CODEX_RESOLVED_FRESHREPLY=$(mk_codex_resolved "$RESOLVER" "$RESOLVE_AFTER")
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$CODEX_RESOLVED_FRESHREPLY" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
   ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="" HEAD_PUSH_DATE="" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
-if [ "$got" = "$HEAD_SHA" ]; then
-  ok "resolved thread + empty anchor → HEAD_SHA (backward-compat: old callers preserve prior behavior)"
+if [ "$got" = "stale" ]; then
+  ok "fresh resolver reply + empty push anchor → stale (#186 fail-CLOSED settling check)"
 else
-  fail "resolved thread + empty anchor expected '$HEAD_SHA', got '$got'"
+  fail "empty push anchor expected 'stale' (#186 fail-CLOSED), got '$got'"
 fi
 
-# --- Test 18c: resolved pre-anchor Codex thread + NO reactions → stale (fail-CLOSED) ---
-# The P1 safety bug (Cursor finding, PR #185): when a resolved+non-outdated Codex
-# thread exists but its createdAt is BEFORE the freshness anchor AND there are no
-# reactions, the freshness guard filters it from codex_resolved_current (good: blocks
-# false ack). Before this fix the fall-through then returned `none` — treating Codex
-# as absent from the PR. The correct answer is `stale`: Codex engaged on an older
-# commit and must re-review HEAD before the gate can clear.
-# CODEX_RESOLVED_STALE is defined above (createdAt="2026-06-06T16:00:00Z", anchor=HEAD_DATE="2026-06-06T16:12:23Z")
+# --- Test 18c: resolved Codex thread + NO reactions + empty push anchor → stale (fail-CLOSED) ---
+# The P1 safety bug (Cursor finding, PR #185): a resolved+non-outdated Codex thread that
+# does NOT prove current-HEAD freshness must land on `stale`, not `none`. Under the
+# push-anchored design that proof is unavailable here: HEAD_PUSH_DATE is empty, so the
+# unified (3) block — entered because a resolved+non-outdated Codex thread exists — hits
+# its empty-push-date guard and returns stale immediately. Before the original fix the
+# fall-through returned `none`, treating Codex as absent from the PR (fail-OPEN).
+# CODEX_RESOLVED_STALE is defined above (legacy-shape fixture: no resolvedBy/resolutionComments).
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CODEX_RESOLVED_STALE" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
@@ -445,20 +581,20 @@ else
   fail "resolved pre-anchor thread + no reactions expected 'stale' (not 'none'), got '$got'"
 fi
 
-# --- Test 18d: resolved pre-anchor Codex thread + no reactions + empty anchor → HEAD_SHA (backward-compat) ---
-# When anchor is empty (unupgraded caller), the freshness guard is skipped:
-# $anchor=="" passes the select unconditionally → codex_resolved_current > 0 → acks.
-# The new step 3.5 guard only fires when _freshness_anchor is non-empty; old callers
-# still get the pre-fix behavior (any resolved thread acks), preserving backward-compat.
+# --- Test 18d: resolved Codex thread + no reactions + empty push anchor → stale (#186 fail-CLOSED) ---
+# Reversal of the old backward-compat pass-all. With no HEAD_PUSH_DATE there is no
+# trustworthy anchor and no resolver-authored resolution proof, so the resolved-thread
+# the (3) block's empty-push-date guard returns stale. Old callers that never export a push date
+# now fail CLOSED on a P1 merge gate rather than acking unconditionally (council 2026-06-17).
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CODEX_RESOLVED_STALE" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
   ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="" HEAD_PUSH_DATE="" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
-if [ "$got" = "$HEAD_SHA" ]; then
-  ok "resolved pre-anchor thread + empty anchor → HEAD_SHA (backward-compat: old callers unaffected)"
+if [ "$got" = "stale" ]; then
+  ok "resolved thread + empty push anchor → stale (#186 fail-CLOSED; reverses old pass-all backward-compat)"
 else
-  fail "resolved pre-anchor thread + empty anchor expected '$HEAD_SHA' (backward-compat), got '$got'"
+  fail "resolved thread + empty push anchor expected 'stale' (#186 fail-CLOSED), got '$got'"
 fi
 
 # --- Test 17: HEAD_PUSH_DATE empty → falls back to HEAD_COMMITTED_DATE (backward-compat) ---

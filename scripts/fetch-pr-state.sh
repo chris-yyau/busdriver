@@ -36,9 +36,12 @@
 #                    free-tier on private repos)
 #   ALL_THREADS    : output of `gh api graphql --paginate` reviewThreads query
 #                    (stream of pages, each {data:{...reviewThreads:{nodes:[...]}}};
-#                     each thread's first comment carries author{login} + createdAt,
-#                     the latter consumed by ack-ledger.sh Tier A's Codex
-#                     resolved-non-outdated freshness guard)
+#                     each thread carries resolvedBy{login}, first comment
+#                     author{login}+createdAt, and resolutionComments
+#                     (last:10 author{login}+createdAt). ack-ledger.sh Tier A's
+#                     Codex resolved-non-outdated ack requires the thread's LAST
+#                     comment to be resolver-authored and newer than HEAD_PUSH_DATE,
+#                     failing CLOSED when the push date is absent (#186/#187)
 #   ALL_REACTIONS  : output of `gh api --paginate repos/.../issues/{n}/reactions`
 #                    (stream of pages, each an array of {content, user:{login},
 #                     created_at, ...}); consumed by Tier F for Codex's 👍 ack
@@ -76,8 +79,9 @@ _fetch_pr_state() {
             repository(owner:$owner,name:$name){
               pullRequest(number:$number){
                 reviewThreads(first:100,after:$endCursor){
-                  nodes{id isResolved isOutdated path line
-                        comments(first:1){nodes{author{login} createdAt}}}
+                  nodes{id isResolved isOutdated path line resolvedBy{login}
+                        comments(first:1){nodes{author{login} createdAt}}
+                        resolutionComments: comments(last:10){nodes{author{login} createdAt}}}
                   pageInfo{hasNextPage endCursor}
                 }
               }

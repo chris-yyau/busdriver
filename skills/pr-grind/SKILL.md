@@ -1020,7 +1020,9 @@ ALL_THREADS=$(gh api graphql --paginate -f query='
           pageInfo { hasNextPage endCursor }
           nodes {
             isResolved isOutdated
+            resolvedBy { login }
             comments(first:1) { nodes { author { login } createdAt } }
+            resolutionComments: comments(last:10) { nodes { author { login } createdAt } }
           }
         }
       }
@@ -1222,7 +1224,9 @@ ALL_THREADS=$(gh api graphql --paginate -f query='
           pageInfo { hasNextPage endCursor }
           nodes {
             isResolved isOutdated
+            resolvedBy { login }
             comments(first:1) { nodes { author { login } createdAt } }
+            resolutionComments: comments(last:10) { nodes { author { login } createdAt } }
           }
         }
       }
@@ -1297,7 +1301,12 @@ if [ "$CODEX_DONE" = "none" ] && [ "${CODEX_GRACE}" -gt 0 ] 2>/dev/null; then
         pullRequest(number:$pr) {
           reviewThreads(first:100, after:$endCursor) {
             pageInfo { hasNextPage endCursor }
-            nodes { isResolved isOutdated comments(first:1) { nodes { author { login } createdAt } } }
+            nodes {
+              isResolved isOutdated
+              resolvedBy { login }
+              comments(first:1) { nodes { author { login } createdAt } }
+              resolutionComments: comments(last:10) { nodes { author { login } createdAt } }
+            }
           }
         }
       }

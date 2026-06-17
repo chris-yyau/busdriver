@@ -27,8 +27,15 @@
 #      the branch — more reliable than HEAD_COMMITTED_DATE for force-push
 #      scenarios where an old commit is pushed with a backdated committer date.
 #      When provided, Tier F uses max(HEAD_COMMITTED_DATE, HEAD_PUSH_DATE) as
-#      the freshness anchor. Backward-compatible: callers that do not export
-#      HEAD_PUSH_DATE fall back to HEAD_COMMITTED_DATE only (existing behavior).
+#      the freshness anchor. Backward-compatible for Tier F: callers that do not
+#      export HEAD_PUSH_DATE fall back to HEAD_COMMITTED_DATE only.
+#      NOTE — the Codex RESOLVED-thread ack (Tier A.2, below) is STRICTER: it
+#      anchors on HEAD_PUSH_DATE ALONE (never the backdatable committer date) and
+#      FAILS CLOSED (→ stale) when HEAD_PUSH_DATE is absent (#186). It also requires
+#      ALL_THREADS to carry, per thread, `resolvedBy { login }` and a
+#      `resolutionComments: comments(last:10) { nodes { author { login } createdAt } }`
+#      alias (the resolver-authored resolution-time signal for #187). Callers that
+#      omit those fields get no resolved-thread ack → stale (additive, safe).
 #   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA`
 #      so this subprocess inherits them. A caller that hasn't been upgraded
 #      to fetch ALL_STATUSES will export empty for that var — Tier E sees
@@ -42,16 +49,19 @@
 #
 # Tier exposure (opt-in via ACK_EMIT_TIER=1): when set, a HEAD-ack SHA is
 # suffixed ":<tier>" where <tier> is the letter A–F of the tier that produced
-# the ack (A=disposed inline threads, B=/reviews on HEAD, C=issue-comment body
+# the ack (A=inline threads — non-Codex disposed thread, or Codex resolved-current
+# thread proven via the push-anchored resolver-last-comment signal (A.2); B=/reviews
+# on HEAD, C=issue-comment body
 # SHA, D=check-run success, E=commit-status success, F=Codex 👍 reaction newer
 # than HEAD's commit). `none`/`stale` are NEVER
 # suffixed. Default (env unset) output is byte-for-byte unchanged, so existing
 # callers that compare the value to HEAD_SHA or to `stale` are unaffected. The
 # dispatcher's Invariant 3 uses tiers D/E (bodyless structured acks) to exempt a
 # HEAD-acked bot from the n_total>=1 coverage gate — see ADR 0001 and
-# skills/pr-grind/SKILL.md. Soundness: tier order is A→E, returning at the first
-# HEAD-ack, and Tier A returns `stale`/Tier-A-ack on any Source-2 thread, so
-# reaching D/E proves zero live Source-2 inline threads.
+# skills/pr-grind/SKILL.md. Soundness: tier order is A→F (A→E for non-Codex bots;
+# Tier F is Codex-only), returning at the first HEAD-ack, and Tier A returns
+# `stale`/Tier-A-ack on any Source-2 thread, so reaching D/E proves zero live
+# Source-2 inline threads.
 #
 # Caller fail-CLOSED contract: wrap every invocation with
 #   `$(bash "$ACK_SCRIPT" <bot> 2>/dev/null || echo stale)`
@@ -226,49 +236,89 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
       | select(.isOutdated == true)] | length' 2>/dev/null || echo 0)
   if [ "${codex_outdated:-0}" -gt 0 ]; then echo "stale"; exit 0; fi
   # (3) RESOLVED + non-outdated thread — a finding the worker addressed/dismissed
-  #     on the CURRENT head (out-of-scope-acknowledged workflow resolves without
-  #     a push → no new commit to trigger a fresh 👍) → ack.
+  #     on the CURRENT head (out-of-scope-acknowledged workflow resolves WITHOUT a
+  #     push → no new commit to trigger a fresh 👍). Acking this is the only way the
+  #     out-of-scope flow clears, but a resolved thread carries NO API resolution
+  #     timestamp (GraphQL exposes resolvedBy but not resolvedAt; there is no
+  #     thread-resolution event in the GraphQL timeline union or REST timeline —
+  #     verified 2026-06-17). So freshness is PROVEN from the only two pollable
+  #     signals, and we FAIL-CLOSED when they are absent (#186):
   #
-  #     FRESHNESS GUARD: require the thread's first comment createdAt to postdate
-  #     the freshness anchor (_freshness_anchor). A resolved thread from an earlier
-  #     commit can stay isOutdated==false after code changes — GitHub only marks a
-  #     thread outdated when its DIFFHUNK position is invalidated, not when unrelated
-  #     files change. Without the timestamp check, that stale-but-not-outdated
-  #     resolved thread would produce a false HEAD ack before Codex re-reviews the
-  #     new HEAD (flagged by Codex on PR #185, line 236).
-  #     When _freshness_anchor is empty (caller not yet upgraded to export dates),
-  #     the $anchor=="" guard passes the select unconditionally, preserving the
-  #     pre-fix behavior (any resolved non-outdated thread acks). This is safe
-  #     only on old callers that have not been upgraded; upgraded callers always
-  #     provide HEAD_COMMITTED_DATE, so the timestamp check fires.
-  codex_resolved_current=$(printf '%s' "$ALL_THREADS" | jq -rs \
+  #     (i)  PUSH-TIME ANCHOR ONLY. This path anchors on HEAD_PUSH_DATE (the push
+  #          that landed HEAD), NEVER max(committer, push). The committer date is
+  #          attacker-controllable — force-push an older commit with a backdated
+  #          committer date and a stale resolution looks newer than HEAD — so it must
+  #          not gate a resolved-thread ack. When HEAD_PUSH_DATE is empty (fork head,
+  #          events API delay/aged-out, or an unupgraded caller) there is no trustworthy
+  #          anchor → DO NOT ack; exit stale (fail-CLOSED). This intentionally REVERSES
+  #          the old "empty anchor ⇒ ack" backward-compat: on a P1 merge gate a
+  #          frequent fail-CLOSED stall the operator can see beats a narrow silent
+  #          fail-OPEN (council 2026-06-17; see ~/.claude/notes/lesson-council-2026-
+  #          06-17-resolved-ack-fail-closed.md).
+  #     (ii) RESOLVER-AUTHORED, LAST-COMMENT RESOLUTION SIGNAL. Freshness requires the
+  #          thread's LAST comment (chronologically) to be authored by resolvedBy AND
+  #          to postdate the push — the "reply-then-resolve, nothing after" pattern
+  #          pr-grind's out-of-scope workflow produces. This is deliberately stricter
+  #          than the first comment (Codex's finding time, the #187 false-stale bug)
+  #          and than max() over all resolver comments (which let later unrelated
+  #          activity re-freshen a stale resolution — a residual fail-OPEN caught in PR
+  #          deep review). Requiring the LAST comment to be the resolver's means any
+  #          activity AFTER the resolution (a Codex re-engagement, a third-party reply)
+  #          drops the ack to stale. The finding bot itself is excluded as resolver — in
+  #          both the bare ($login) and [bot]-suffixed ($login_bot) login forms — so the
+  #          Codex App cannot self-clear a thread it filed.
+  #          THREAT MODEL / RESIDUAL: this proves an *operator disposition that is the
+  #          thread's latest state on the current HEAD* — it does NOT prove Codex
+  #          re-reviewed HEAD (no API exposes that without a fresh 👍). The gate guards
+  #          against ACCIDENTAL merge past an un-re-reviewed finding (resolve on commit
+  #          A, push unrelated B, walk away → last comment predates B → stale). A
+  #          DELIBERATE post-push operator comment on the resolved thread can still
+  #          freshen it; that is a conscious act by the merge-authority holder, accepted
+  #          here. The Codex-authored re-review signals remain Tier F (fresh 👍) and the
+  #          eyes-override. (Council 2026-06-17 + PR deep-review tightening.)
+  #          Timestamp contract: createdAt and HEAD_PUSH_DATE are both GitHub-emitted
+  #          UTC 'Z'-form ISO-8601, so lexicographic > is a correct time comparison.
+  #          resolutionComments uses comments(last:10): a resolver reply evicted from
+  #          that window (>10 trailing comments) yields no match → stale (fail-CLOSED).
+  #          A caller that omits resolvedBy/resolutionComments → no match → stale (safe).
+  #     ALL-OR-STALE: the ack fires only when EVERY resolved+non-outdated Codex thread
+  #     is proven fresh. If even one is unproven it forces stale — a stale resolved
+  #     thread must never be masked by a fresh sibling (mirrors the (2) outdated
+  #     precedence). A thread is "proven fresh" iff HEAD_PUSH_DATE is present, resolvedBy
+  #     is set and is not the finding bot, and the thread's LAST comment is resolver-
+  #     authored and strictly newer than HEAD_PUSH_DATE.
+  codex_resolved_any=$(printf '%s' "$ALL_THREADS" | jq -rs \
     --arg login "$login" --arg login_bot "${login}[bot]" \
-    --arg anchor "${_freshness_anchor:-}" \
     '[.[].data.repository.pullRequest.reviewThreads.nodes[]
       | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
       | select(.isResolved == true and .isOutdated == false)
-      | select($anchor == "" or (.comments.nodes[0].createdAt // "") > $anchor)
     ] | length' 2>/dev/null || echo 0)
-  if [ "${codex_resolved_current:-0}" -gt 0 ]; then emit_head_ack "$HEAD_SHA" A; exit 0; fi
-  # (3.5) RESOLVED + non-outdated thread EXISTS but was FILTERED by the freshness
-  #       guard (createdAt <= anchor, i.e., from a prior commit). Codex engaged on
-  #       an older commit and must re-review HEAD → stale (fail-CLOSED).
-  #       Without this branch the filtered thread yields no positive Codex signal,
-  #       the fall-through reaches line 368's `none` early-return (no /reviews entry),
-  #       and the gate treats Codex as absent ("not on this PR") instead of as
-  #       "reviewed an older commit, waiting for fresh re-review" — a fail-OPEN
-  #       safety bug flagged by Cursor on PR #185.
-  #       Only fires when the freshness anchor is set (upgraded callers); when the
-  #       anchor is empty the jq filter passes ALL resolved threads unconditionally
-  #       so codex_resolved_current already counted them and this branch is unreachable.
-  if [ -n "${_freshness_anchor:-}" ]; then
-    codex_resolved_any=$(printf '%s' "$ALL_THREADS" | jq -rs \
+  if [ "${codex_resolved_any:-0}" -gt 0 ]; then
+    # (The outer `codex_resolved_any > 0` guard already closed PR #185's fail-OPEN-to-
+    # `none` — a resolved Codex thread can no longer fall through to the `none` early-
+    # return.) Here: no push anchor → nothing can be proven fresh → stale (#186 fail-CLOSED).
+    if [ -z "${HEAD_PUSH_DATE:-}" ]; then echo "stale"; exit 0; fi
+    # Count resolved+non-outdated threads that are NOT proven fresh (the negation of the
+    # freshness predicate). Any > 0 → stale, so one stale resolution blocks the whole ack.
+    # Fail-CLOSED on jq error: this query indexes resolvedBy/resolutionComments, which the
+    # codex_resolved_any count does NOT — so malformed thread JSON (e.g. resolvedBy not an
+    # object) could break ONLY this query. Defaulting its error case to codex_resolved_any
+    # (which is > 0 here) forces stale instead of a false ack, preserving the file's
+    # fail-CLOSED-on-error invariant.
+    codex_resolved_unproven=$(printf '%s' "$ALL_THREADS" | jq -rs \
       --arg login "$login" --arg login_bot "${login}[bot]" \
+      --arg push "$HEAD_PUSH_DATE" \
       '[.[].data.repository.pullRequest.reviewThreads.nodes[]
         | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
         | select(.isResolved == true and .isOutdated == false)
-      ] | length' 2>/dev/null || echo 0)
-    if [ "${codex_resolved_any:-0}" -gt 0 ]; then echo "stale"; exit 0; fi
+        | (.resolvedBy.login // "") as $rb
+        | ((.resolutionComments.nodes // []) | sort_by(.createdAt) | last) as $lastc
+        | select($rb == "" or $rb == $login or $rb == $login_bot
+                 or $lastc == null or $lastc.author.login != $rb or ($lastc.createdAt <= $push))
+      ] | length' 2>/dev/null || echo "$codex_resolved_any")
+    if [ "${codex_resolved_unproven:-0}" -gt 0 ]; then echo "stale"; exit 0; fi
+    # Every resolved+non-outdated thread is proven fresh → ack.
+    emit_head_ack "$HEAD_SHA" A; exit 0
   fi
   # (4) ENGAGED (a stale 👍 from before the last push, or any other reaction) but
   #     no fresh ack and no actionable threads → stale (waits for re-review). No

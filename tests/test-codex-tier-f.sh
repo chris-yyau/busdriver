@@ -34,6 +34,7 @@ HEAD_SHA="abc12345"
 HEAD_DATE="2026-06-06T16:12:23Z"          # HEAD commit time
 FRESH="2026-06-06T16:24:36Z"              # 👍 AFTER HEAD (PR #142 real timing)
 STALE_TS="2026-06-06T16:00:00Z"           # 👍 BEFORE HEAD (pre-push)
+COMMITTER_AFTER_PUSH="2026-06-06T16:30:00Z" # committer LATER than push (HEAD_DATE 16:12) and the +1 (FRESH 16:24); discriminates push-only anchor from max() (#189)
 
 # --- Resolved-thread push-anchored freshness fixtures (#186/#187) ---
 # The resolved-Codex-thread ack (Tier A.2) is keyed to the PUSH timestamp only
@@ -612,19 +613,55 @@ else
   fail "resolved thread + empty push anchor expected 'stale' (#186 fail-CLOSED), got '$got'"
 fi
 
-# --- Test 17: HEAD_PUSH_DATE empty → falls back to HEAD_COMMITTED_DATE (backward-compat) ---
-# Callers not yet upgraded to fetch HEAD_PUSH_DATE export it empty; Tier F must
-# fall back to HEAD_COMMITTED_DATE and behave as before.
+# --- Test 17: fresh-looking +1 but empty HEAD_PUSH_DATE → stale (#189 fail-CLOSED) ---
+# The git committer date is client-stamped and backdatable, so it must NOT anchor
+# a +1 ack. With no server-stamped push anchor there is no trustworthy freshness
+# proof → fail-CLOSED to stale (mirrors the resolved-thread path, #186). This
+# inverts the prior backward-compat fallback that #189 identified as a fail-OPEN:
+# a leftover +1 newer than a backdated committer date could falsely ack HEAD.
 got=$(FETCH_OK=1 \
   ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
   ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" \
   HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
-if [ "$got" = "$HEAD_SHA" ]; then
-  ok "empty HEAD_PUSH_DATE → falls back to HEAD_COMMITTED_DATE (backward-compat)"
+if [ "$got" = "stale" ]; then
+  ok "fresh +1 but empty HEAD_PUSH_DATE → stale (#189 fail-CLOSED; committer date not trusted)"
 else
-  fail "backward-compat fallback expected '$HEAD_SHA', got '$got'"
+  fail "empty push + fresh +1 expected 'stale' (#189), got '$got'"
+fi
+
+# --- Test 17b: committer date LATER than push, +1 between them → HEAD_SHA (anchor is push, NOT max) ---
+# With committer (COMMITTER_AFTER_PUSH, 16:30) > push (HEAD_DATE, 16:12) and the +1
+# (FRESH, 16:24) between them: max() would anchor on the committer date and return
+# stale, while push-only anchors on the push event and acks. Proves the committer
+# date is no longer consulted even when present and later (#189).
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" \
+  HEAD_COMMITTED_DATE="$COMMITTER_AFTER_PUSH" HEAD_PUSH_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "committer later than push, +1 after push → HEAD_SHA (anchor is push-only, not max; #189)"
+else
+  fail "push-only discriminator expected '$HEAD_SHA', got '$got'"
+fi
+
+# --- Test 17c: empty committer date, push present, fresh +1 → HEAD_SHA (push alone suffices) ---
+# Proves the +1 ack needs ONLY the push anchor — no committer date at all. A regression
+# that re-required HEAD_COMMITTED_DATE would fail here (committer is empty), while the
+# push-only contract correctly acks since FRESH (16:24) > push (HEAD_DATE 16:12). (#189)
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" \
+  HEAD_COMMITTED_DATE="" HEAD_PUSH_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "empty committer + push present + fresh +1 → HEAD_SHA (push anchor alone suffices; #189)"
+else
+  fail "push-alone positive guard expected '$HEAD_SHA', got '$got'"
 fi
 
 echo ""

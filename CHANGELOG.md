@@ -1,3 +1,10 @@
+## [1.62.4](https://github.com/chris-yyau/busdriver/compare/v1.62.3...v1.62.4) (2026-06-17)
+
+
+### Bug Fixes
+
+* **ack-ledger:** push-anchor resolved-Codex-thread ack, fail closed without push date ([#186](https://github.com/chris-yyau/busdriver/issues/186), [#187](https://github.com/chris-yyau/busdriver/issues/187)) ([#204](https://github.com/chris-yyau/busdriver/issues/204)) ([41d109d](https://github.com/chris-yyau/busdriver/commit/41d109dd85edb27a2bb49c7bb7c37c5d48a3a56b))
+
 ## [1.62.3](https://github.com/chris-yyau/busdriver/compare/v1.62.2...v1.62.3) (2026-06-16)
 
 

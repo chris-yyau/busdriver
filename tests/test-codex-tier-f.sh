@@ -269,7 +269,7 @@ fi
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CODEX_RESOLVED_CURRENT" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS="$(mk_reaction 'eyes' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  ALL_REACTIONS="$(mk_reaction 'eyes' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="$RESOLVE_PUSH" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
 if [ "$got" = "stale" ]; then
   ok "resolved current-head thread + 👀 → stale (hoisted eyes-override beats Tier A.2)"
@@ -285,7 +285,7 @@ CODEX_MIXED='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CODEX_MIXED" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="$RESOLVE_PUSH" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
 if [ "$got" = "stale" ]; then
   ok "mixed resolved-current + outdated Codex threads → stale (outdated takes precedence)"

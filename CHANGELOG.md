@@ -1,3 +1,10 @@
+## [1.62.5](https://github.com/chris-yyau/busdriver/compare/v1.62.4...v1.62.5) (2026-06-18)
+
+
+### Bug Fixes
+
+* **ack-ledger:** fail closed on Tier-F +1 when push anchor absent ([#189](https://github.com/chris-yyau/busdriver/issues/189)) ([#205](https://github.com/chris-yyau/busdriver/issues/205)) ([61c20f2](https://github.com/chris-yyau/busdriver/commit/61c20f20844e0c179894594f1fff8dfad0b57544))
+
 ## [1.62.4](https://github.com/chris-yyau/busdriver/compare/v1.62.3...v1.62.4) (2026-06-17)
 
 

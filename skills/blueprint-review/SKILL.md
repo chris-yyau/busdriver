@@ -344,6 +344,31 @@ scope for this hardening.) The trade-off is no free-form codebase
 search in this fallback arbiter (Grep/Glob aren't selectable under `--bare`), matching the
 non-gateway Agent arbiter's no-shell posture.
 
+**Residual checked — the global `~/.claude.json` allow-state (issue #202).** `--setting-sources ''`
+neutralizes only the *settings* sources (user/project/local `settings.json`). The global
+`~/.claude.json` `projects[<cwd>].allowedTools` — the per-project "don't ask again" store — is
+**not** a settings source and is read regardless, so #202 asked whether a broad `Edit` allow stashed
+there could re-widen the verdict-file scope on the **write** side. A live spike on Claude 2.1.181
+settled it (a broad `Edit(//**)` planted under both the raw and the `pwd -P`-resolved cwd key — the
+key `claude` actually looks up — so the plant cannot silently miss):
+
+- **Read-confirmation arm** (planted allow, `dontAsk`, **no** `--allowedTools`): the `Edit` was
+  **denied** even though the planted store was the only conceivable allow source. So in headless
+  `claude -p --permission-mode dontAsk` runs the `projects[<cwd>].allowedTools` store is **not
+  consulted as a permission-granting source at all** — it is interactive-only persistence. The #202
+  vector is moot at the root, not merely overridden.
+- **Malicious vs. control arms** (planted allow vs. empty, both with the real confinement flags):
+  identical — the out-of-scope `Edit` was denied in both, while the in-scope verdict `Edit` (approved
+  solely by `--allowedTools`) succeeded.
+
+The only allow-state that neither `--setting-sources ''` nor a `CLAUDE_CONFIG_DIR` redirect can strip
+is **enterprise managed policy** (highest precedence) — but that is admin-controlled, so an attacker
+who can write `managed-settings` has already escalated past this boundary. (Separately, the *Read*
+side of the operator's real `~/.claude.json` is deny-covered by the `--disallowedTools` rules above;
+this residual is about the *write*/allow side.) Locked in by a gated real-`claude` regression test
+(`tests/test-gateway-arbiter-claude-json-residual.sh`, opt-in via `BLUEPRINT_ARBITER_LIVE_TEST=1` +
+gateway credentials) that re-runs the malicious-vs-control assertion with resolved-path keys.
+
 **Opt-in via environment (never committed).** The rung is attempted only when these are set in
 the session environment (exported in the parent shell or via `settings.json` `env` — NOT in any
 tracked file, since they carry a secret):

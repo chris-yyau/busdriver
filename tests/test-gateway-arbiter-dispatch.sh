@@ -87,7 +87,7 @@ done
     echo "SETTINGS_BASE: $s_base"
     echo "SETTINGS_AUTH_PRESENT: $([ -n "$s_auth" ] && echo yes || echo no)"
     echo "SETTINGS_APIKEY_PRESENT: $([ -n "$s_key" ] && echo yes || echo no)"
-    echo "SETTINGS_NEUTRALIZED: $(jq -r '[.env.ANTHROPIC_CUSTOM_HEADERS, .env.CLAUDE_CODE_USE_BEDROCK, .env.CLAUDE_CODE_USE_VERTEX, .env.CLAUDE_CODE_USE_FOUNDRY, .env.CLAUDE_CODE_USE_AWS, .env.CLAUDE_CODE_USE_MANTLE] | all(. == "")' "$settings" 2>/dev/null)"
+    echo "SETTINGS_NEUTRALIZED: $(jq -r '[.env.ANTHROPIC_CUSTOM_HEADERS, .env.CLAUDE_CODE_USE_BEDROCK, .env.CLAUDE_CODE_USE_VERTEX, .env.CLAUDE_CODE_USE_FOUNDRY, .env.CLAUDE_CODE_USE_ANTHROPIC_AWS, .env.CLAUDE_CODE_USE_MANTLE] | all(. == "")' "$settings" 2>/dev/null)"
   else
     echo "SETTINGS_IS_FILE: no"
   fi
@@ -108,6 +108,7 @@ done
   echo "CUSTOM_HEADERS: ${ANTHROPIC_CUSTOM_HEADERS:-}"
   echo "USE_BEDROCK: ${CLAUDE_CODE_USE_BEDROCK:-}"
   echo "USE_MANTLE: ${CLAUDE_CODE_USE_MANTLE:-}"
+  echo "USE_ANTHROPIC_AWS: ${CLAUDE_CODE_USE_ANTHROPIC_AWS:-}"
 } > "$STUB_LOG"
 printf '%s' "$prompt" > "$STUB_PROMPT"
 case "${STUB_BEHAVIOR:-good}" in
@@ -206,7 +207,7 @@ check "credential NOT in subprocess env — AUTH_TOKEN empty (delivered via sett
 check "credential NOT in subprocess env — API_KEY empty" "yes" "$(grep -q '^API_KEY: $' "$STUB_LOG" && echo yes || echo no)"
 check "settings file carries the gateway AUTH_TOKEN (authoritative auth source)" "yes" "$(grep -q '^SETTINGS_AUTH_PRESENT: yes$' "$STUB_LOG" && echo yes || echo no)"
 
-rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_API_KEY=key-secret-456 ANTHROPIC_AUTH_TOKEN=parent-shell-token ANTHROPIC_CUSTOM_HEADERS=x-other-proxy-secret:abc CLAUDE_CODE_USE_BEDROCK=1 CLAUDE_CODE_USE_MANTLE=1")
+rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_API_KEY=key-secret-456 ANTHROPIC_AUTH_TOKEN=parent-shell-token ANTHROPIC_CUSTOM_HEADERS=x-other-proxy-secret:abc CLAUDE_CODE_USE_BEDROCK=1 CLAUDE_CODE_USE_MANTLE=1 CLAUDE_CODE_USE_ANTHROPIC_AWS=1")
 check "API_KEY dispatch succeeds" 0 "$rc"
 check "API_KEY credential NOT in subprocess env (delivered via settings file)" "yes" "$(grep -q '^API_KEY: $' "$STUB_LOG" && echo yes || echo no)"
 check "settings file carries the gateway API_KEY" "yes" "$(grep -q '^SETTINGS_APIKEY_PRESENT: yes$' "$STUB_LOG" && echo yes || echo no)"
@@ -214,6 +215,7 @@ check "parent-shell ANTHROPIC_AUTH_TOKEN is unset for subprocess (env -u)" "yes"
 check "parent-shell ANTHROPIC_CUSTOM_HEADERS is unset for subprocess" "yes" "$(grep -q '^CUSTOM_HEADERS: $' "$STUB_LOG" && echo yes || echo no)"
 check "parent-shell CLAUDE_CODE_USE_BEDROCK is unset for subprocess (provider routing)" "yes" "$(grep -q '^USE_BEDROCK: $' "$STUB_LOG" && echo yes || echo no)"
 check "parent-shell CLAUDE_CODE_USE_MANTLE is unset for subprocess (provider routing)" "yes" "$(grep -q '^USE_MANTLE: $' "$STUB_LOG" && echo yes || echo no)"
+check "parent-shell CLAUDE_CODE_USE_ANTHROPIC_AWS is unset for subprocess (real AWS selector, #202)" "yes" "$(grep -q '^USE_ANTHROPIC_AWS: $' "$STUB_LOG" && echo yes || echo no)"
 
 rc=$(run_script "$GATEWAY BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok-secret-123 BLUEPRINT_ARBITER_GATEWAY_API_KEY=key-secret-456")
 check "both gateway creds set: settings file uses AUTH_TOKEN (preferred)" "yes" "$(grep -q '^SETTINGS_AUTH_PRESENT: yes$' "$STUB_LOG" && echo yes || echo no)"

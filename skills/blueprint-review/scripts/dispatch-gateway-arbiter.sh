@@ -140,17 +140,21 @@ DISPATCH_PROMPT=$(printf '%s\n' \
 #   - ANTHROPIC_CUSTOM_HEADERS: a parent shell may set it for a DIFFERENT proxy;
 #     inherited headers would ride along into every gateway request, leaking
 #     unrelated header secrets/routing metadata.
-#   - CLAUDE_CODE_USE_{BEDROCK,VERTEX,FOUNDRY,AWS,MANTLE}: cloud-provider routing
-#     outranks ANTHROPIC_* in Claude Code's auth precedence; an inherited selector
-#     would route the arbiter to the parent's provider and ignore the gateway
-#     entirely. (MANTLE is the Bedrock Mantle backend selector, undocumented as of
-#     2026-06 — claude-code#44899; env -u of an unset variable is harmless.)
+#   - CLAUDE_CODE_USE_{BEDROCK,VERTEX,FOUNDRY,ANTHROPIC_AWS,MANTLE}: cloud-provider
+#     routing outranks ANTHROPIC_* in Claude Code's auth precedence; an inherited
+#     selector would route the arbiter to the parent's provider and ignore the
+#     gateway entirely. (MANTLE is the Bedrock Mantle backend selector, undocumented
+#     as of 2026-06 — claude-code#44899; env -u of an unset variable is harmless.)
+#     The AWS selector is CLAUDE_CODE_USE_ANTHROPIC_AWS — verified against the
+#     claude 2.1.181 binary's embedded token table (#202 review): an earlier
+#     CLAUDE_CODE_USE_AWS spelling here was a phantom (no such var) that left the
+#     real selector un-neutralized.
 # NB: env(1) requires -u options BEFORE the NAME=VALUE assignment.
 ENV_ARGS=(-u BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN -u BLUEPRINT_ARBITER_GATEWAY_API_KEY
           -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY
           -u ANTHROPIC_CUSTOM_HEADERS
           -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY
-          -u CLAUDE_CODE_USE_AWS -u CLAUDE_CODE_USE_MANTLE
+          -u CLAUDE_CODE_USE_ANTHROPIC_AWS -u CLAUDE_CODE_USE_MANTLE
           "ANTHROPIC_BASE_URL=$BASE_URL")
 
 # Force the gateway endpoint AND the gateway credential to win over the
@@ -226,7 +230,7 @@ printf '%s' "$cred" | jq -n --rawfile cred /dev/stdin --arg url "$BASE_URL" --ar
     ANTHROPIC_BASE_URL: $url,
     ANTHROPIC_CUSTOM_HEADERS: "",
     CLAUDE_CODE_USE_BEDROCK: "", CLAUDE_CODE_USE_VERTEX: "", CLAUDE_CODE_USE_FOUNDRY: "",
-    CLAUDE_CODE_USE_AWS: "", CLAUDE_CODE_USE_MANTLE: ""
+    CLAUDE_CODE_USE_ANTHROPIC_AWS: "", CLAUDE_CODE_USE_MANTLE: ""
   } + { ($cred_var): $cred, ($other_var): "" })
 }' >"$SETTINGS_FILE" || die "failed to write gateway settings file (jq error)"
 [[ -s "$SETTINGS_FILE" ]] || die "gateway settings file is empty after jq write"
@@ -302,6 +306,23 @@ echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${T
 #      Edit(//**) the operator once approved would re-widen the scope. That is why
 #      the dispatch passes --setting-sources '' and the capability guard above
 #      fails closed when the flag is unavailable (issue #198).
+#      Residual checked (issue #202): --setting-sources '' neutralizes only the
+#      user/project/local SETTINGS sources. The global ~/.claude.json
+#      (projects[<cwd>].allowedTools — the per-project "don't ask again" store) is
+#      NOT a setting source and is read regardless, so #202 asked whether a broad
+#      Edit allow stashed there could re-widen scope on the WRITE side. A live
+#      spike (Claude 2.1.181), planting Edit(//**) under BOTH the raw and the
+#      pwd -P-resolved cwd key (the key claude actually looks up), settled it: with
+#      the planted allow as the ONLY possible source (dontAsk, no --allowedTools)
+#      the Edit was still DENIED — so the projects[].allowedTools store is not
+#      consulted as an allow source under `claude -p --permission-mode dontAsk` at
+#      all (it is interactive-only persistence). Malicious-vs-control arms with the
+#      real flags were identical: out-of-scope Edit denied, in-scope verdict Edit
+#      (approved solely by --allowedTools) succeeded. The only allow-state neither
+#      --setting-sources '' nor a CLAUDE_CONFIG_DIR redirect can strip is
+#      enterprise MANAGED policy, which is admin-controlled (an attacker who can
+#      write managed-settings has already won). Locked in by the gated regression
+#      test tests/test-gateway-arbiter-claude-json-residual.sh.
 # Net: no shell, no env token, no way to discover the settings path, settings file
 # + Anthropic credential stores Read-denied, Edit scoped to the verdict file — the
 # arbiter has no route to the gateway secret OR the operator's own credential, and

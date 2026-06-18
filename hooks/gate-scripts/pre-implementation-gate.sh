@@ -18,6 +18,7 @@ set -euo pipefail
 # BUSDRIVER_PLUGIN_ROOT: set by opencode adapter; CLAUDE_PLUGIN_ROOT by Claude Code.
 # Falls back to relative path from this script's location.
 # BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
+# shellcheck disable=SC2034  # PLUGIN_ROOT used in env-var fallback chains
 PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 # Fail-CLOSED: errors block implementation writes rather than silently approving.
@@ -197,6 +198,7 @@ fi
 # F7 fix: Strip fd-to-fd redirects (2>&1, >&2) before file-redirect detection.
 # F8 fix: Allow review infrastructure scripts (blueprint-review, litmus)
 # to run even when design docs are unreviewed — prevents circular dependency.
+# shellcheck disable=SC2016  # python3 -c string uses '\'' idiom intentionally
 PARSED=$(printf '%s' "$INPUT" | python3 -c '
 import sys, json, re, os
 try:

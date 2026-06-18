@@ -23,6 +23,7 @@ set -euo pipefail
 # BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
 # Source shared CLI library for _portable_timeout and resolve functions
 _PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}}"
+# shellcheck disable=SC2034  # STATE_DIR used in path construction
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 if [[ -f "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh" ]]; then
   source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"

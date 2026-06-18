@@ -19,6 +19,7 @@ set -euo pipefail
 # BUSDRIVER_PLUGIN_ROOT: set by opencode adapter; CLAUDE_PLUGIN_ROOT by Claude Code.
 # Falls back to relative path from this script's location.
 # BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
+# shellcheck disable=SC2034  # PLUGIN_ROOT used in env-var fallback chains
 PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-PR gate error — blocking as precaution. If stuck, create '"$STATE_DIR"'/skip-litmus.local in your terminal.\"}\n"; exit 0' ERR

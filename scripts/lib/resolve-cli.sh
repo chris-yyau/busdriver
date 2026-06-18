@@ -702,10 +702,10 @@ _execute_codex() {
       # events for any non-root invocation.
       local _git_root=""
       _git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
-      if [[ -n "$_git_root" && -d "$_git_root/.claude" ]]; then
+      if [[ -n "$_git_root" && -d "$_git_root/${BUSDRIVER_STATE_DIR:-.claude}" ]]; then
         printf '{"ts":"%s","event":"codex-droid-fallback","codex_exit":%d,"droid_exit":%d,"droid_ok":%d,"codex_attempts":%d}\n' \
           "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$exit_code" "$droid_exit" "$_droid_ok" "$attempts_run" \
-          >> "$_git_root/.claude/bypass-log.jsonl" 2>/dev/null || true
+          >> "$_git_root/${BUSDRIVER_STATE_DIR:-.claude}/bypass-log.jsonl" 2>/dev/null || true
       fi
 
       if [[ "$_droid_ok" -eq 1 ]]; then

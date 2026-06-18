@@ -4,6 +4,8 @@
 
 set -euo pipefail
 
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/validation.sh"
 source "$SCRIPT_DIR/lib/state_management.sh"
@@ -41,14 +43,14 @@ if [[ $EXISTING -eq 2 ]]; then
   # No active review — nothing to clean up, proceed to init
   :
 elif [[ $EXISTING -eq 0 ]]; then
-  STALE_SLUG=$(cat ".claude/current-design-review.local" 2>/dev/null)
+  STALE_SLUG=$(cat "$STATE_DIR/current-design-review.local" 2>/dev/null)
   log_info "Cleaning up stale review: $STALE_SLUG (never completed an iteration)"
   cleanup_stale_review
 elif [[ $EXISTING -eq 1 ]]; then
-  ACTIVE_SLUG=$(cat ".claude/current-design-review.local" 2>/dev/null)
+  ACTIVE_SLUG=$(cat "$STATE_DIR/current-design-review.local" 2>/dev/null)
   log_error "Active review loop already exists: $ACTIVE_SLUG"
   log_error "  State: docs/reviews/$ACTIVE_SLUG/state.md"
-  log_error "  To force: rm .claude/current-design-review.local"
+  log_error "  To force: rm $STATE_DIR/current-design-review.local"
   exit 1
 fi
 
@@ -60,8 +62,8 @@ fi
 # Auto-clears when a later run records FULL coverage, or via BLUEPRINT_ACK_DEGRADED=1.
 _chronic_coverage_check() {
   case "${BLUEPRINT_COVERAGE_PROVENANCE:-1}" in 0|false|no|off) return 0 ;; esac
-  local trend=".claude/blueprint-coverage-trend.local"
-  local advisory=".claude/blueprint-coverage-degraded.local"
+  local trend="$STATE_DIR/blueprint-coverage-trend.local"
+  local advisory="$STATE_DIR/blueprint-coverage-degraded.local"
   local streak="${BLUEPRINT_COVERAGE_MIN_STREAK:-3}"
   case "$streak" in ''|*[!0-9]*) streak=3 ;; esac
   [[ -f "$trend" ]] || return 0

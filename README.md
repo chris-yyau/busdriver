@@ -140,6 +140,45 @@ claude plugin marketplace add github:chris-yyau/busdriver
 claude plugin install busdriver@busdriver
 ```
 
+## Opencode support
+
+Busdriver also works with [opencode](https://opencode.ai) as an alternative harness. The opencode port lives in the `opencode/` directory and provides the same 4 core features: litmus, blueprint-review, council, and pr-grind.
+
+### Install (opencode)
+
+Copy the adapter plugin to your project's `.opencode/plugins/` directory:
+
+```bash
+mkdir -p .opencode/plugins
+cp /path/to/busdriver/opencode/plugin.ts .opencode/plugins/busdriver.ts
+```
+
+Or for global install, copy to `~/.config/opencode/plugins/`:
+
+```bash
+mkdir -p ~/.config/opencode/plugins
+cp /path/to/busdriver/opencode/plugin.ts ~/.config/opencode/plugins/busdriver.ts
+```
+
+Or if published to npm, add to your `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["busdriver"]
+}
+```
+
+The opencode adapter plugin translates opencode's `tool.execute.before` hook into Claude Code's PreToolUse `decision:block` protocol, reusing the same gate-scripts (bash) that power the Claude Code plugin. State files are written to `.opencode/` instead of `.claude/`.
+
+### Architecture
+
+The gate-scripts (`hooks/gate-scripts/*.sh`) are shared between both harnesses. They use env vars with backward-compatible fallbacks:
+- `BUSDRIVER_PLUGIN_ROOT` (opencode) falls back to `CLAUDE_PLUGIN_ROOT` (Claude Code)
+- `BUSDRIVER_STATE_DIR` (defaults to `.opencode` for opencode, `.claude` for Claude Code)
+
+The `claude-release` branch is auto-generated during release — it strips the `opencode/` directory so Claude Code marketplace users get a clean bundle with zero token waste from unused opencode files.
+
 ## How it works
 
 Busdriver registers [PreToolUse and PostToolUse hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) that intercept tool calls at the harness level. The orchestrator skill routes every task to the correct pipeline phase and domain tools.

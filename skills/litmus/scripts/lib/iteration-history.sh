@@ -1,9 +1,10 @@
 #!/bin/bash
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 # Iteration history management for litmus review convergence
 # Tracks issues found across iterations so the LLM can converge
 
 # Store iteration history alongside review state in .claude/ (safe from /tmp symlink attacks)
-ITERATION_HISTORY_FILE=".claude/litmus-iteration-history.local.jsonl"
+ITERATION_HISTORY_FILE="$STATE_DIR/litmus-iteration-history.local.jsonl"
 
 # Append current iteration's issues to history
 # Usage: append_iteration_history <iteration_number> <json_output>

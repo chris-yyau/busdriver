@@ -8,6 +8,12 @@
 # Fail-open: never block file writes — only warn and set state.
 
 set -euo pipefail
+# ── Harness-portable root/state resolution ─────────────────────────────
+# BUSDRIVER_PLUGIN_ROOT: set by opencode adapter; CLAUDE_PLUGIN_ROOT by Claude Code.
+# Falls back to relative path from this script's location.
+# BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
+PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 trap 'exit 0' ERR
 
 # Consume stdin
@@ -18,7 +24,7 @@ INPUT=$(cat 2>/dev/null || true)
 # For Write/Edit: uses file_path from tool input
 # For Bash: extracts file paths from redirect/tee targets matching design patterns
 PARSED=$(printf '%s' "$INPUT" | python3 -c "
-import sys, json, re
+import sys, json, re, os
 try:
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
@@ -48,8 +54,9 @@ try:
             t = m.group(1).strip('\"').strip(\"'\")
             targets.append(t)
         # Filter to only design-doc patterns
+        state_dir = os.environ.get('BUSDRIVER_STATE_DIR', '.claude')
         design_re = re.compile(r'(?:^|/)(?:PLAN|DESIGN|ARCHITECTURE)[^/]*\.md$', re.IGNORECASE)
-        plans_re = re.compile(r'(?:\.claude|docs)/(?:[^/]+/)*(?:plans|specs)/.*\.md$')
+        plans_re = re.compile(r'(?:' + re.escape(state_dir) + r'|docs)/(?:[^/]+/)*(?:plans|specs)/.*\.md$')
         for t in targets:
             if design_re.search(t) or plans_re.search(t):
                 print(f'Bash|{t}')
@@ -83,7 +90,7 @@ fi
 # Check if file matches design document pattern:
 # 1. Basename STARTS WITH PLAN, DESIGN, or ARCHITECTURE (case-insensitive)
 #    This prevents false positives like "lesson-council-reflection-design.md"
-# 2. File is inside a plans/ or specs/ directory under .claude/ or docs/
+# 2. File is inside a plans/ or specs/ directory under $STATE_DIR/ or docs/
 #    (covers docs/plans/, docs/superpowers/plans/, docs/superpowers/specs/, etc.)
 #
 # Exclusion: files in structural directories that never contain design docs
@@ -98,7 +105,7 @@ IS_DESIGN=false
 if echo "$BASENAME" | grep -qiE '^(PLAN|DESIGN|ARCHITECTURE).*\.md$'; then
   IS_DESIGN=true
 fi
-if echo "$FILE_PATH" | grep -qE '(\.claude|docs)/([^/]+/)*(plans|specs)/.*\.md$'; then
+if echo "$FILE_PATH" | grep -qE "(\\.${STATE_DIR#.}|docs)/([^/]+/)*(plans|specs)/.*\\.md\$"; then
   IS_DESIGN=true
 fi
 if [ "$IS_DESIGN" = true ]; then
@@ -138,8 +145,8 @@ if [ "$IS_DESIGN" = true ]; then
 
   if [ "$NEEDS_FLAG" = true ]; then
     # Set state file for pre-commit gate enforcement
-    STATE_FILE=".claude/design-review-needed.local.md"
-    mkdir -p .claude
+    STATE_FILE="$STATE_DIR/design-review-needed.local.md"
+    mkdir -p "$STATE_DIR"
 
     # Append file to review list (avoid duplicates)
     if [ -f "$STATE_FILE" ]; then

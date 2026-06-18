@@ -4,6 +4,8 @@
 
 set -euo pipefail
 
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL_DIR="$(dirname "$SCRIPT_DIR")"
 
@@ -43,7 +45,7 @@ DELETED=$(echo "$STATS" | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' 2>/dev/
 DIFF_SUMMARY=$(echo "$COMMIT_MSG" | head -1 | cut -c1-200)
 
 # Get review iterations from state file (if exists)
-STATE_FILE=".claude/litmus-state.md"
+STATE_FILE="$STATE_DIR/litmus-state.md"
 ITERATIONS=0
 if [ -f "$STATE_FILE" ]; then
   # Extract iteration value from YAML frontmatter

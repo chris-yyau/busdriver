@@ -2,7 +2,7 @@
 # PostToolUse hook: consume PR review marker after a successful `gh pr create`
 #
 # Deferred consumption: PreToolUse (pre-pr-gate.sh) validates the PR review
-# marker (.claude/pr-review-passed.local) against the current base..HEAD diff
+# marker ($STATE_DIR/pr-review-passed.local) against the current base..HEAD diff
 # and approves PR creation, but does NOT delete it on the hash-match path.
 # This hook runs AFTER `gh pr create` completes and consumes the marker only
 # if a PR was actually created.
@@ -28,6 +28,12 @@
 # commit changes the hash and invalidates it on the next gate check.
 
 set -euo pipefail
+# ── Harness-portable root/state resolution ─────────────────────────────
+# BUSDRIVER_PLUGIN_ROOT: set by opencode adapter; CLAUDE_PLUGIN_ROOT by Claude Code.
+# Falls back to relative path from this script's location.
+# BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
+PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 trap 'exit 0' ERR
 
 HOOK_DATA=$(cat 2>/dev/null || true)
@@ -142,7 +148,7 @@ HOOK_CWD=$(echo "$PARSE_RESULT" | sed -n '3p')
 REPO_DIR=$(gate_repo_dir_lenient "$TARGET_DIR" "$HOOK_CWD")
 
 # Consume the PR review marker — PR creation confirmed successful
-PR_MARKER="$REPO_DIR/.claude/pr-review-passed.local"
+PR_MARKER="$REPO_DIR/$STATE_DIR/pr-review-passed.local"
 [ -f "$PR_MARKER" ] && rm -f "$PR_MARKER"
 
 exit 0

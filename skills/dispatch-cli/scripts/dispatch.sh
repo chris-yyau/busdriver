@@ -17,8 +17,13 @@
 
 set -euo pipefail
 
+# ── Harness-portable root/state resolution ─────────────────────────────
+# BUSDRIVER_PLUGIN_ROOT: set by opencode adapter; CLAUDE_PLUGIN_ROOT by Claude Code.
+# Falls back to relative path from this script's location.
+# BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
 # Source shared CLI library for _portable_timeout and resolve functions
-_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
+_PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}}"
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 if [[ -f "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh" ]]; then
   source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"
 fi

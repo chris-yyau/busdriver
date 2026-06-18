@@ -4,7 +4,8 @@
 
 # Source shared CLI resolution library
 _VALIDATION_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$_VALIDATION_SCRIPT_DIR/../../../.." && pwd)}"
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+_PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$_VALIDATION_SCRIPT_DIR/../../../.." && pwd)}}"
 # shellcheck source=../../../../scripts/lib/resolve-cli.sh
 source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"
 
@@ -65,7 +66,7 @@ validate_codex_installed() {
 
 # Validate state file exists
 validate_state_file() {
-  local state_file="${1:-.claude/litmus-state.md}"
+  local state_file="${1:-$STATE_DIR/litmus-state.md}"
 
   if [ ! -f "$state_file" ]; then
     echo "❌ Error: State file not found" >&2
@@ -148,10 +149,10 @@ except Exception as e:
   if [ $exit_code -ne 0 ]; then
     echo "   ⚠️  Review output has schema violations (non-blocking)" >&2
     # Log to telemetry for tracking
-    mkdir -p .claude
+    mkdir -p "$STATE_DIR"
     printf '{"ts":"%s","event":"schema-violation","cli":"%s"}\n' \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${RESOLVED_CLI:-unknown}" \
-      >> ".claude/bypass-log.jsonl" 2>/dev/null || true
+      >> "$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
   fi
   # Always return 0 — schema validation is advisory, not blocking
   return 0

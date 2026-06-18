@@ -46,7 +46,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Shared lib for _portable_timeout — macOS does not ship GNU timeout.
-_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
+_PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}}"
 # shellcheck source=../../../scripts/lib/resolve-cli.sh
 source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"
 

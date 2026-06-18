@@ -26,7 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/validation.sh"
 
 # Source shared CLI resolution library
-_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
+_PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}}"
 # shellcheck source=../../../scripts/lib/resolve-cli.sh
 source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"
 source "$SCRIPT_DIR/lib/state_management.sh"

@@ -41,15 +41,16 @@ function run(rawInput) {
 
     // Write pending-grind marker so we know which PR needs grinding
     try {
-      const claudeDir = path.resolve('.claude');
-      if (fs.existsSync(claudeDir)) {
+      const stateDir = process.env.BUSDRIVER_STATE_DIR || '.claude';
+      const stateDirPath = path.resolve(stateDir);
+      if (fs.existsSync(stateDirPath)) {
         fs.writeFileSync(
-          path.join(claudeDir, 'pr-pending-grind.local'),
+          path.join(stateDirPath, 'pr-pending-grind.local'),
           `${prUrl}\n`,
           'utf8'
         );
         // Invalidate any stale pr-grind-clean marker from a previous PR
-        const cleanMarker = path.join(claudeDir, 'pr-grind-clean.local');
+        const cleanMarker = path.join(stateDirPath, 'pr-grind-clean.local');
         if (fs.existsSync(cleanMarker)) {
           fs.unlinkSync(cleanMarker);
         }

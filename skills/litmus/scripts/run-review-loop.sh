@@ -4,8 +4,10 @@
 
 set -euo pipefail
 
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STATE_FILE=".claude/litmus-state.md"
+STATE_FILE="$STATE_DIR/litmus-state.md"
 
 # write_terminal_status: persist terminal_status field to $STATE_FILE before exit-1.
 # Backward-compatible — interactive /litmus callers see no behavior change.
@@ -70,8 +72,8 @@ if [[ "${1:-}" == "--write-pr-marker" ]]; then
     exit 1
   fi
   DIFF_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
-  mkdir -p .claude
-  echo "$DIFF_HASH" > ".claude/pr-review-passed.local"
+  mkdir -p "$STATE_DIR"
+  echo "$DIFF_HASH" > "$STATE_DIR/pr-review-passed.local"
   echo "✅ PR review marker written (hash: ${DIFF_HASH:0:12}...)"
   exit 0
 fi
@@ -158,10 +160,10 @@ else
     echo "⚠️  BUSDRIVER_REVIEW_CLI=none — review gate disabled" >&2
     echo "   Commits will pass without code review." >&2
     echo "" >&2
-    mkdir -p .claude
-    echo "SKIPPED-NONE-$(date +%s)" > ".claude/litmus-passed.local"
+    mkdir -p "$STATE_DIR"
+    echo "SKIPPED-NONE-$(date +%s)" > "$STATE_DIR/litmus-passed.local"
     printf '{"ts":"%s","event":"review-skipped-none","gate":"pre-commit"}\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
     clear_iteration_history
     rm -f "$STATE_FILE" 2>/dev/null
     exit 0
@@ -177,8 +179,8 @@ else
       echo "ℹ️  Merge commit detected with no changes relative to HEAD"
       echo "   Resolution keeps already-reviewed code — auto-passing review"
       echo ""
-      mkdir -p .claude
-      echo "PASS-MERGE-$(date +%s)" > ".claude/litmus-passed.local"
+      mkdir -p "$STATE_DIR"
+      echo "PASS-MERGE-$(date +%s)" > "$STATE_DIR/litmus-passed.local"
       clear_iteration_history
       rm -f "$STATE_FILE" 2>/dev/null
       exit 0
@@ -300,8 +302,8 @@ if [ -z "$STAGED_DIFF" ]; then
     echo ""
     # Write review-passed marker (same mechanism as normal PASS — pre-commit gate
     # accepts marker existence without hash verification due to TOCTOU constraints)
-    mkdir -p .claude
-    echo "PASS-$(date +%s)" > ".claude/litmus-passed.local"
+    mkdir -p "$STATE_DIR"
+    echo "PASS-$(date +%s)" > "$STATE_DIR/litmus-passed.local"
     # Clean up state file and iteration history
     clear_iteration_history
     rm -f "$STATE_FILE" 2>/dev/null
@@ -530,12 +532,12 @@ if [ "$REVIEW_MODE" = "commit" ] && [ "${LITMUS_SHORTCIRCUIT_DISABLED:-0}" != "1
     log_review_metrics "PASS" "0" "$ITERATION" "$REVIEW_MODE" "short-circuit" '{"status":"PASS","issues":[],"short_circuit":true}'
 
     # Write commit marker (same format as normal PASS)
-    mkdir -p .claude
-    git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > ".claude/litmus-passed.local"
+    mkdir -p "$STATE_DIR"
+    git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > "$STATE_DIR/litmus-passed.local"
 
     # Audit trail — distinct event, separate from skip-bypass
     printf '{"ts":"%s","event":"short-circuit-pass","gate":"pre-commit","weighted_lines":%d}\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$WEIGHTED_LINES" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$WEIGHTED_LINES" >> "$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
 
     # Cleanup
     clear_iteration_history
@@ -613,8 +615,8 @@ if [ "$REVIEW_EXIT" -eq 3 ] && [ "$REVIEW_OUTPUT" = "BUILTIN_FALLBACK" ]; then
   BUILTIN_PROMPT_FILE=$(mktemp -t busdriver-review-XXXXXX)
   chmod 600 "$BUILTIN_PROMPT_FILE"
   printf '%s' "$FINAL_PROMPT" > "$BUILTIN_PROMPT_FILE"
-  mkdir -p .claude
-  echo "$BUILTIN_PROMPT_FILE" > ".claude/builtin-review-prompt-path.local"
+  mkdir -p "$STATE_DIR"
+  echo "$BUILTIN_PROMPT_FILE" > "$STATE_DIR/builtin-review-prompt-path.local"
   echo "ℹ️  No external review CLI available — using built-in agent review" >&2
   echo "   Prompt saved to $BUILTIN_PROMPT_FILE" >&2
   echo "   The litmus skill will dispatch the code-reviewer agent." >&2
@@ -656,7 +658,7 @@ echo ""
 # Resolve extractor — prefer plugin location, fall back to marketplace, then legacy
 EXTRACTOR=""
 for _candidate in \
-    "${CLAUDE_PLUGIN_ROOT:-}/skills/blueprint-review/scripts/lib/extract_review_json.py" \
+    "${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}/skills/blueprint-review/scripts/lib/extract_review_json.py" \
     "$HOME/.claude/plugins/marketplaces/busdriver/skills/blueprint-review/scripts/lib/extract_review_json.py" \
     "$HOME/.claude/skills/blueprint-review/scripts/lib/extract_review_json.py"; do
     if [ -f "$_candidate" ]; then
@@ -679,10 +681,10 @@ set -e
 if [ -z "$JSON_OUTPUT" ]; then
   echo "   No JSON found, attempting to parse narrative output..." >&2
   # Telemetry: track how often the narrative fallback is triggered
-  mkdir -p .claude
+  mkdir -p "$STATE_DIR"
   printf '{"ts":"%s","event":"narrative-fallback-triggered","cli":"%s","iteration":%s}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RESOLVED_CLI" "$ITERATION" \
-    >> ".claude/bypass-log.jsonl" 2>/dev/null || true
+    >> "$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
   set +e
   JSON_OUTPUT=$(echo "$REVIEW_OUTPUT" | python3 "$SCRIPT_DIR/lib/parse-narrative.py" 2>&1)
   PARSE_EXIT=$?
@@ -774,7 +776,7 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
   clear_iteration_history
 
   # Write review-passed marker for the appropriate gate
-  mkdir -p .claude
+  mkdir -p "$STATE_DIR"
   if [ "$REVIEW_MODE" = "pr" ]; then
     # PR mode: marker writing depends on whether deep review is enabled.
     # LITMUS_PR_FAST=1 skips multi-agent review — write marker immediately.
@@ -794,17 +796,17 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
       # from a subdirectory and writes to "./.claude/...", the gate would
       # never find it. Resolve repo root explicitly to make this robust.
       REPO_TOP=$(git rev-parse --show-toplevel 2>/dev/null || echo .)
-      mkdir -p "$REPO_TOP/.claude"
+      mkdir -p "$REPO_TOP/$STATE_DIR"
       DIFF_OUTPUT_FAST=$(git diff "${PR_BASE_BRANCH}...HEAD" 2>/dev/null)
-      printf '%s' "$DIFF_OUTPUT_FAST" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > "$REPO_TOP/.claude/pr-review-passed.local"
-      printf '{"ts":"%s","event":"pr-fast-bypass","gate":"pre-pr"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_TOP/.claude/bypass-log.jsonl" 2>/dev/null || true
+      printf '%s' "$DIFF_OUTPUT_FAST" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > "$REPO_TOP/$STATE_DIR"/pr-review-passed.local
+      printf '{"ts":"%s","event":"pr-fast-bypass","gate":"pre-pr"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_TOP/$STATE_DIR"/bypass-log.jsonl 2>/dev/null || true
       echo "   ⚠️  LITMUS_PR_FAST=1 — skipped multi-agent deep review (logged)"
     else
       echo "   ℹ️  Codex CLI pass complete. Multi-agent deep review pending (Step 2)."
     fi
   else
     # Commit mode: write commit marker for pre-commit gate
-    git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > ".claude/litmus-passed.local"
+    git diff --cached 2>/dev/null | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > "$STATE_DIR/litmus-passed.local"
   fi
 
   # Clean up temporary files
@@ -837,7 +839,7 @@ else
     echo ""
     echo "Options:"
     echo "   1. Fix the issues above and re-run"
-    echo "   2. Run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/.claude/skip-litmus.local"
+    echo "   2. Run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/$STATE_DIR/skip-litmus.local"
     echo ""
     rm -f "${_RAW_OUTPUT_FILE:-}" 2>/dev/null
     write_terminal_status stall

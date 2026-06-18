@@ -5,7 +5,7 @@
 # Lifecycle (paired with pre-merge-gate.sh "deferred consumption" path):
 #   1. PreToolUse (pre-merge-gate.sh) — sees a valid skip-pr-grind.local
 #      (≥30s old, <1h), records its mtime + the merge PR number into
-#      .claude/.merge-bypass-pending.local, leaves the skip file alone,
+#      $STATE_DIR/.merge-bypass-pending.local, leaves the skip file alone,
 #      allows the bash command to run.
 #   2. Bash executes `gh pr merge ...`.
 #   3. PostToolUse (this script) — reads tool_output and the pending claim.
@@ -54,6 +54,12 @@
 # succeed while the GitHub API refuses to merge.
 
 set -euo pipefail
+# ── Harness-portable root/state resolution ─────────────────────────────
+# BUSDRIVER_PLUGIN_ROOT: set by opencode adapter; CLAUDE_PLUGIN_ROOT by Claude Code.
+# Falls back to relative path from this script's location.
+# BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
+PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 trap 'exit 0' ERR
 
 HOOK_DATA=$(cat 2>/dev/null || true)
@@ -118,11 +124,11 @@ _HOOK_CWD=$(printf '%s' "$_PRE_PARSE" | sed -n '3p')
 # cd "$(git rev-parse --show-toplevel)" form resolves the bypass files in the
 # real repo; the lenient resolver falls back to the cwd/process git root.
 REPO_DIR=$(gate_repo_dir_lenient "$_TARGET_DIR" "$_HOOK_CWD")
-PENDING_FILE="$REPO_DIR/.claude/.merge-bypass-pending.local"
-SKIP_FILE="$REPO_DIR/.claude/skip-pr-grind.local"
-LOG_FILE="$REPO_DIR/.claude/bypass-log.jsonl"
+PENDING_FILE="$REPO_DIR/$STATE_DIR/.merge-bypass-pending.local"
+SKIP_FILE="$REPO_DIR/$STATE_DIR/skip-pr-grind.local"
+LOG_FILE="$REPO_DIR/$STATE_DIR/bypass-log.jsonl"
 
-mkdir -p "$REPO_DIR/.claude" 2>/dev/null || true
+mkdir -p "$REPO_DIR/$STATE_DIR" 2>/dev/null || true
 
 log_event() {
     # Args: event_name [reason]. Other fields read from CLAIMED_* globals.

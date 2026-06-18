@@ -6,7 +6,7 @@
 # branches, pre-existing commits from other sessions).
 #
 # Fail-CLOSED: errors block PR creation (user preference: stuck > skipped review)
-# Skip: .claude/skip-litmus.local (or SKIP_LITMUS=1 exported in parent shell
+# Skip: $STATE_DIR/skip-litmus.local (or SKIP_LITMUS=1 exported in parent shell
 #       before `claude` starts — inline `SKIP_LITMUS=1 gh pr create` does NOT
 #       work because PreToolUse hooks fire before the command's inline env
 #       is applied; same caveat as pre-commit gate)
@@ -15,7 +15,13 @@
 # Gating push kills WIP pushes and destroys credibility of the gate system.
 
 set -euo pipefail
-trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-PR gate error — blocking as precaution. If stuck, create .claude/skip-litmus.local in your terminal.\"}\n"; exit 0' ERR
+# ── Harness-portable root/state resolution ─────────────────────────────
+# BUSDRIVER_PLUGIN_ROOT: set by opencode adapter; CLAUDE_PLUGIN_ROOT by Claude Code.
+# Falls back to relative path from this script's location.
+# BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
+PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-PR gate error — blocking as precaution. If stuck, create '"$STATE_DIR"'/skip-litmus.local in your terminal.\"}\n"; exit 0' ERR
 
 # ── Block emission helper ─────────────────────────────────────────────
 block_emit() {
@@ -94,7 +100,7 @@ HOOK_CWD=$(echo "$PARSE_RESULT" | sed -n '3p')
 
 # Fail-closed: parser error after fast pre-filter matched → block as precaution
 if [ "$IS_GH_PR_CREATE" = "error" ]; then
-    block_emit "Pre-PR gate: failed to parse tool input for command matching gh pr create pattern. Blocking as precaution (fail-closed). If stuck, create .claude/skip-litmus.local in your terminal."
+    block_emit "Pre-PR gate: failed to parse tool input for command matching gh pr create pattern. Blocking as precaution (fail-closed). If stuck, create $STATE_DIR/skip-litmus.local in your terminal."
     exit 0
 fi
 
@@ -112,7 +118,7 @@ fi
 REPO_DIR="$GATE_REPO_DIR"
 
 # ── Skip overrides (shared with commit gate) ──────────────────────────
-SKIP_FILE="$REPO_DIR/.claude/skip-litmus.local"
+SKIP_FILE="$REPO_DIR/$STATE_DIR/skip-litmus.local"
 if [ -f "$SKIP_FILE" ]; then
     FILE_AGE=999
     _MTIME=$(stat -f %m "$SKIP_FILE" 2>/dev/null) \
@@ -125,8 +131,8 @@ if [ -f "$SKIP_FILE" ]; then
         exit 0
     fi
     rm -f "$SKIP_FILE"
-    mkdir -p "$REPO_DIR/.claude"
-    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-pr"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
+    mkdir -p "$REPO_DIR/$STATE_DIR"
+    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-pr"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
     exit 0
 fi
 [ "${SKIP_LITMUS:-0}" = "1" ] && exit 0
@@ -173,16 +179,16 @@ if [ "$REPO_ROOT" = "$HOME/.claude" ]; then
 fi
 
 # ── Check for codex review marker ─────────────────────────────────────
-# Uses the SAME marker as the commit gate (.claude/litmus-passed.local).
+# Uses the SAME marker as the commit gate ($STATE_DIR/litmus-passed.local).
 # The PR gate does NOT consume the marker — the commit gate handles that.
 # This allows: review → commit (consumes marker) → push → PR create.
 #
 # For the PR gate to pass, one of these must be true:
 #   1. A review marker exists (review done but not yet committed — unusual but valid)
-#   2. A PR-review marker exists (.claude/pr-review-passed.local) — set by running
+#   2. A PR-review marker exists ($STATE_DIR/pr-review-passed.local) — set by running
 #      litmus specifically for the PR diff
-MARKER="$REPO_DIR/.claude/litmus-passed.local"
-PR_MARKER="$REPO_DIR/.claude/pr-review-passed.local"
+MARKER="$REPO_DIR/$STATE_DIR/litmus-passed.local"
+PR_MARKER="$REPO_DIR/$STATE_DIR/pr-review-passed.local"
 
 if [ -f "$PR_MARKER" ]; then
     PR_MARKER_CONTENT=$(cat "$PR_MARKER" 2>/dev/null || echo "")
@@ -250,7 +256,7 @@ fi
 #
 # Entries are branch-scoped ("branch:sha") to prevent cross-branch carry-over.
 # Also accepts legacy bare SHA format for backwards compatibility.
-REVIEWED_FILE="$REPO_DIR/.claude/reviewed-commits.local"
+REVIEWED_FILE="$REPO_DIR/$STATE_DIR/reviewed-commits.local"
 if [ -f "$REVIEWED_FILE" ]; then
     BASE_BRANCH=$(git -C "$REPO_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo "main")
     CURRENT_BRANCH=$(git -C "$REPO_DIR" symbolic-ref --short HEAD 2>/dev/null || echo "")
@@ -272,8 +278,8 @@ if [ -f "$REVIEWED_FILE" ]; then
         # All commits were per-commit reviewed — codex CLI is redundant.
         # But multi-agent deep review (cross-commit analysis) is still valuable.
         # Signal agents-only mode instead of bypassing entirely.
-        mkdir -p "$REPO_DIR/.claude"
-        echo "agents-only:${CURRENT_BRANCH}" > "$REPO_DIR/.claude/pr-commits-prereviewed.local"
+        mkdir -p "$REPO_DIR/$STATE_DIR"
+        echo "agents-only:${CURRENT_BRANCH}" > "$REPO_DIR/$STATE_DIR/pr-commits-prereviewed.local"
         # Keep REVIEWED_FILE so retries can re-derive agents-only if signal is consumed
         # Fall through to block — require agents-only PR review
     fi
@@ -281,7 +287,7 @@ fi
 
 # No valid review marker → block PR creation
 # Check if agents-only mode was signaled (all commits pre-reviewed)
-AGENTS_ONLY_SIGNAL="$REPO_DIR/.claude/pr-commits-prereviewed.local"
+AGENTS_ONLY_SIGNAL="$REPO_DIR/$STATE_DIR/pr-commits-prereviewed.local"
 SIGNAL_BRANCH=$(git -C "$REPO_DIR" symbolic-ref --short HEAD 2>/dev/null || echo "")
 if [ -f "$AGENTS_ONLY_SIGNAL" ] && grep -qxF "agents-only:${SIGNAL_BRANCH}" "$AGENTS_ONLY_SIGNAL" 2>/dev/null; then
 REASON="All commits were pre-commit reviewed — codex CLI pass is redundant.
@@ -291,25 +297,25 @@ Run agents-only PR review (skip Step 1; continue with Step 1.5 + Step 2):
   1.5. Run scope drift detection (Step 1.5, advisory)
   2. Dispatch 6 parallel review agents (Step 2: Guidelines, Bugs, History, Cross-commit, Security, Docs-consistency)
   3. Score and filter findings (confidence >= 80)
-  4. If no CRITICAL/HIGH: bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker
+  4. If no CRITICAL/HIGH: bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker
   5. Retry gh pr create
 
 IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run the reviewer instead.
-If the user wants to skip: touch $REPO_DIR/.claude/skip-litmus.local"
+If the user wants to skip: touch $REPO_DIR/$STATE_DIR/skip-litmus.local"
 else
 REASON="Code review required before creating a PR.
 
 Follow the PR Review Mode in the litmus SKILL.md:
-  1. Run the CLI pass: LITMUS_MODE=pr bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh\" && LITMUS_MODE=pr bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh\"
+  1. Run the CLI pass: LITMUS_MODE=pr bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/init-review-loop.sh\" && LITMUS_MODE=pr bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\"
   2. Dispatch 6 parallel review agents (Guidelines, Bugs, History, Cross-commit, Security, Docs-consistency)
   3. Score and filter findings (confidence >= 80)
-  4. If no CRITICAL/HIGH: bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker
+  4. If no CRITICAL/HIGH: bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker
   5. Retry gh pr create
 
 For CLI-only fast review (skips 6-agent deep review):
-  bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh\" --auto-pr-review
+  bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --auto-pr-review
 
 IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run the reviewer instead.
-If the user wants to skip: touch $REPO_DIR/.claude/skip-litmus.local"
+If the user wants to skip: touch $REPO_DIR/$STATE_DIR/skip-litmus.local"
 fi
 block_emit "$REASON"

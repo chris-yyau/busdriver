@@ -38,4 +38,18 @@ unset FETCH_OK 2>/dev/null || true
 . "$HELPER" 123
 [[ "$FETCH_OK" = "0" ]] || { echo "FAIL t5: FETCH_OK not 0 on gh fail"; exit 1; }
 
+# t6: committer-date fetch fails but FETCH_OK stays 1 (#189 — committer date is
+# no longer consumed, so its fetch failure must NOT stale every bot). Uses the
+# all-success mock with the GH_MOCK_FAIL_COMMITTER_DATE toggle so ONLY the
+# commits --jq committer-date call fails; all other sources succeed.
+export PATH="$REPO_ROOT/tests/fixtures/gh-mock:$PATH"
+export GH_MOCK_FAIL_COMMITTER_DATE=1
+unset FETCH_OK HEAD_COMMITTED_DATE ALL_REACTIONS 2>/dev/null || true
+# shellcheck source=/dev/null  # $HELPER is dynamic at test time
+. "$HELPER" 123
+unset GH_MOCK_FAIL_COMMITTER_DATE
+[[ "$FETCH_OK" = "1" ]] || { echo "FAIL t6: committer-date fetch failure tripped FETCH_OK ('$FETCH_OK'); #189 expects FETCH_OK=1"; exit 1; }
+[[ -z "${HEAD_COMMITTED_DATE:-}" ]] || { echo "FAIL t6: HEAD_COMMITTED_DATE should be empty on committer fetch failure, got '$HEAD_COMMITTED_DATE'"; exit 1; }
+[[ -n "${ALL_REACTIONS:-}" ]] || { echo "FAIL t6: other sources (ALL_REACTIONS) should remain populated"; exit 1; }
+
 echo "All fetch-pr-state shape tests passed"

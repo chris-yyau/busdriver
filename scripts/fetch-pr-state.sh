@@ -118,15 +118,15 @@ _fetch_pr_state() {
             && ALL_CHECK_RUNS="$_tmp" || FETCH_OK=0
         _tmp=$(gh api --paginate "repos/$owner/$name/commits/$HEAD_SHA/statuses" 2>/dev/null) \
             && ALL_STATUSES="$_tmp" || FETCH_OK=0
-        # Freshness anchors for ack-ledger.sh Tier F (Codex 👍) and the Tier A
-        # Codex resolved-non-outdated thread guard. Without HEAD_COMMITTED_DATE the
-        # guard's `$anchor == ""` fallthrough would treat any resolved non-outdated
-        # Codex thread as a HEAD ack — the exact false-ack case the guard prevents.
-        _tmp=$(gh api "repos/$owner/$name/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null) \
-            && HEAD_COMMITTED_DATE="$_tmp" || FETCH_OK=0
+        # HEAD_COMMITTED_DATE is retained in the export contract but is NO LONGER a
+        # Tier-F freshness anchor: the +1 path is push-anchored as of #189 and the
+        # resolved-thread path was already push-anchored (#186). Nothing consumes it,
+        # so a fetch failure must NOT trip FETCH_OK (that would stale every bot over an
+        # unread value). Best-effort; empty on failure.
+        HEAD_COMMITTED_DATE=$(gh api "repos/$owner/$name/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null || echo "")
         # HEAD_PUSH_DATE is best-effort (events API caps at ~300 events / ~90 days);
-        # an empty result is a legitimate fallback to HEAD_COMMITTED_DATE and must
-        # NOT trip FETCH_OK. --paginate + slurp so a HEAD push on a later events
+        # an empty result makes Tier F fail CLOSED to stale (no committer fallback,
+        # #189) and must NOT trip FETCH_OK. --paginate + slurp so a HEAD push on a later events
         # page is still found; match on the full OID since payload.head is 40-char.
         # Branch filter (payload.ref == refs/heads/<branch>) prevents picking up a
         # PushEvent from a different branch that happens to share the same tip SHA.

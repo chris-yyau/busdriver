@@ -185,7 +185,7 @@ All three bots are gated through the same canonical algorithm in `scripts/ack-le
 
 **Why structured ack signals and not body parsing:** each gated bot exposes a structured per-commit signal — a `/reviews` `commit_id`, a check-run keyed on `head_sha`, or a commit-status — even when its visible output is just an issue comment or inline thread. `ack-ledger.sh` keys on those structured fields: robust against bot-specific markdown drift, no fragile regex on comment bodies, and uniform across the registered bots.
 
-**Codex (`chatgpt-codex-connector`) is gated, but via a SEPARATE field — `RESULT_CODEX_ACK`, not the three-bot `RESULT_REVIEWER_ACKS` registry above.** Codex reviews on pr-open and every push. When it has findings it posts inline review threads (Source 2) and/or a `/reviews` COMMENTED entry (Source 3) — both make `ack-ledger.sh` return `stale` (Codex is excluded from the Tier B `/reviews` clean-ack, and Tier A only clears a Codex thread that is **resolved AND non-outdated** AND anchored to the current HEAD — the thread's last comment must be resolver-authored and newer than `HEAD_PUSH_DATE` (which is why the fetch query carries `resolvedBy{login}` + `resolutionComments`); absent a push date this path fails CLOSED to `stale`. Live, outdated, or resolved-but-stale Codex threads stay `stale`), so the merge BLOCKS until the worker triages them and Codex either re-reviews clean (fresh 👍) or its threads are resolved on the current head. When it has NO findings its only signal is a 👍 **reaction** on the PR body (per OpenAI's GitHub integration: "If Codex has suggestions, it will comment; otherwise it will react with 👍") — no `/reviews` APPROVED entry, no check-run, no commit-status. `scripts/ack-ledger.sh` **Tier F** reads that 👍 as a HEAD-ack when its `created_at` postdates HEAD's commit time (verified on `chrisyau.me` PR #142 clean / #140 findings), so the gate can WAIT for Codex without the deadlock a bare-👍-as-`none`/`stale` reading would cause on every clean terminal push. **Why a separate field and not `REGISTERED_ACK_BOTS`:** Codex's clean signal is timestamp-keyed (a reaction), categorically unlike the three SHA-keyed structured bots; keeping it out of `RESULT_REVIEWER_ACKS` leaves the dispatcher's Invariant 3 intersection scoped to exactly those three. Codex is still enumerated for content in `RESULT_BOT_LEDGER` (Step 2.6), and a `stale` `RESULT_CODEX_ACK` blocks `clean` exactly like a stale registered bot.
+**Codex (`chatgpt-codex-connector`) is gated, but via a SEPARATE field — `RESULT_CODEX_ACK`, not the three-bot `RESULT_REVIEWER_ACKS` registry above.** Codex reviews on pr-open and every push. When it has findings it posts inline review threads (Source 2) and/or a `/reviews` COMMENTED entry (Source 3) — both make `ack-ledger.sh` return `stale` (Codex is excluded from the Tier B `/reviews` clean-ack, and Tier A only clears a Codex thread that is **resolved AND non-outdated** AND anchored to the current HEAD — the thread's last comment must be resolver-authored and newer than `HEAD_PUSH_DATE` (which is why the fetch query carries `resolvedBy{login}` + `resolutionComments`); absent a push date this path fails CLOSED to `stale`. Live, outdated, or resolved-but-stale Codex threads stay `stale`), so the merge BLOCKS until the worker triages them and Codex either re-reviews clean (fresh 👍) or its threads are resolved on the current head. When it has NO findings its only signal is a 👍 **reaction** on the PR body (per OpenAI's GitHub integration: "If Codex has suggestions, it will comment; otherwise it will react with 👍") — no `/reviews` APPROVED entry, no check-run, no commit-status. `scripts/ack-ledger.sh` **Tier F** reads that 👍 as a HEAD-ack when its `created_at` postdates `HEAD_PUSH_DATE` (the push event time; absent a push anchor it fails CLOSED to `stale`, #189) (verified on `chrisyau.me` PR #142 clean / #140 findings), so the gate can WAIT for Codex without the deadlock a bare-👍-as-`none`/`stale` reading would cause on every clean terminal push. **Why a separate field and not `REGISTERED_ACK_BOTS`:** Codex's clean signal is timestamp-keyed (a reaction), categorically unlike the three SHA-keyed structured bots; keeping it out of `RESULT_REVIEWER_ACKS` leaves the dispatcher's Invariant 3 intersection scoped to exactly those three. Codex is still enumerated for content in `RESULT_BOT_LEDGER` (Step 2.6), and a `stale` `RESULT_CODEX_ACK` blocks `clean` exactly like a stale registered bot.
 
 **Interaction with `clean` status:** if any registered bot is `stale` — OR `CODEX_ACK` is `stale` (Codex still reviewing or hasn't re-acked HEAD after the last push) — you cannot return `clean`, even if every other check is green and every thread is resolved. Return `needs_more` (let the dispatcher run another round so the bot/Codex can catch up). A `stale` Codex behaves identically to a stale registered bot here: it is a wait-round, counting against `--max-wait`, not `--max-fix`. There is no stuck-bot bail; if bots never catch up, the dispatcher's `--max-wait` iterations backstop ends the loop (wait-rounds — where you return `needs_more` with `RESULT_COMMIT_SHA=none` because no fix was needed, only patience for bots — count specifically against `--max-wait`, not `--max-fix`). `none` is fine — it means either the bot doesn't operate on this repo, or its only reviews are infra-error/rate-limit markers and waiting for HEAD-ack would block forever, or the bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits — see Step 6.5's downgrade rule). All three cases are non-gating.
 
@@ -507,20 +507,23 @@ ALL_CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-r
 # scripts/ack-ledger.sh maps the bot login to a context string and treats a
 # latest-by-timestamp `state=success` as a HEAD-ack.
 ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses" 2>/dev/null) || FETCH_OK=0
-# Source 7: issue-level reactions + HEAD commit time — Codex's clean-review
+# Source 7: issue-level reactions + HEAD push time — Codex's clean-review
 # signal is a 👍 reaction (Tier F in scripts/ack-ledger.sh), not a SHA-keyed
 # structured ack. --paginate so Codex's reaction is not missed behind >30
 # human PR-body reactions (Tier F slurps the page stream).
 ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR_NUMBER/reactions" 2>/dev/null) || FETCH_OK=0
-HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null) || FETCH_OK=0
-# HEAD_PUSH_DATE: push event timestamp for HEAD_SHA — more robust than committer
-# date for force-push scenarios. Fetched from the repo events API (best-effort;
-# events older than ~300 per repo or ~90 days may not be available). --paginate +
+# HEAD_COMMITTED_DATE is retained best-effort but is NO LONGER a Tier-F freshness
+# anchor (#189) and is NOT gated on FETCH_OK — nothing reads it (the +1 path and the
+# resolved-thread path both anchor on HEAD_PUSH_DATE alone).
+HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null || echo "")
+# HEAD_PUSH_DATE: push event timestamp for HEAD_SHA — the SOLE Tier-F +1 freshness
+# anchor. Fetched from the repo events API (best-effort; events older than ~300 per
+# repo or ~90 days may not be available). --paginate +
 # slurp (jq -rs) so the PushEvent for HEAD is found even when it lands on a later
 # events page — without pagination a HEAD push beyond the first page yields an
-# empty result and silently falls back to the backdatable committer date. On
-# failure or no match, exports empty string so Tier F falls back to
-# HEAD_COMMITTED_DATE.
+# empty result. On failure or no match, exports empty string, in which case Tier F
+# fails CLOSED to stale (no committer fallback — the committer date is backdatable,
+# #189).
 HEAD_FULL_SHA=$(git rev-parse HEAD)
 # Branch filter prevents anchoring on a PushEvent from a different branch that
 # shares the same tip SHA (e.g., a release branch pushed after Codex already

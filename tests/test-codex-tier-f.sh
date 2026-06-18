@@ -8,7 +8,8 @@
 # removes its 👀 (eyes) reaction and adds a 👍 (+1) reaction on the PR body —
 # no /reviews APPROVED entry, no check-run, no commit-status (empirically
 # verified on Dive-And-Dev/chrisyau.me PR #142 clean / PR #140 findings). Tier F
-# reads the 👍 as a HEAD-ack when its created_at postdates HEAD's commit time;
+# reads the 👍 as a HEAD-ack when its created_at postdates HEAD_PUSH_DATE (the push
+# event time); fails closed to `stale` when no push anchor exists (#189);
 # an engaged-but-not-fresh Codex (👀, or a 👍 from before the last push) is
 # `stale` so the gate waits. Codex's findings path is acked/blocked by the
 # existing Tiers A (inline threads) and B (/reviews on HEAD), NOT by Tier F.
@@ -34,6 +35,7 @@ HEAD_SHA="abc12345"
 HEAD_DATE="2026-06-06T16:12:23Z"          # HEAD commit time
 FRESH="2026-06-06T16:24:36Z"              # 👍 AFTER HEAD (PR #142 real timing)
 STALE_TS="2026-06-06T16:00:00Z"           # 👍 BEFORE HEAD (pre-push)
+COMMITTER_AFTER_PUSH="2026-06-06T16:30:00Z" # committer LATER than push (HEAD_DATE 16:12) and the +1 (FRESH 16:24); discriminates push-only anchor from max() (#189)
 
 # --- Resolved-thread push-anchored freshness fixtures (#186/#187) ---
 # The resolved-Codex-thread ack (Tier A.2) is keyed to the PUSH timestamp only
@@ -79,17 +81,17 @@ mk_reaction() {
 # Generic Codex run with all non-reaction sources empty.
 run_codex() {
   # $1 = ALL_REACTIONS, $2 = HEAD_COMMITTED_DATE, $3 = login (default codex),
-  # $4 = ACK_EMIT_TIER (default 0)
-  local login="${3:-$CODEX}" emit="${4:-0}"
+  # $4 = ACK_EMIT_TIER (default 0), $5 = HEAD_PUSH_DATE (default empty)
+  local login="${3:-$CODEX}" emit="${4:-0}" push="${5:-}"
   FETCH_OK=1 ACK_EMIT_TIER="$emit" \
   ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS="$1" HEAD_COMMITTED_DATE="$2" HEAD_SHA="$HEAD_SHA" \
+  ALL_REACTIONS="$1" HEAD_COMMITTED_DATE="$2" HEAD_PUSH_DATE="$push" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$login" 2>/dev/null
 }
 
 # --- Test 1: fresh 👍 (created_at > HEAD) → HEAD_SHA (the clean-ack case) ---
-got=$(run_codex "$(mk_reaction '+1' "$FRESH")" "$HEAD_DATE")
+got=$(run_codex "$(mk_reaction '+1' "$FRESH")" "$HEAD_DATE" "$CODEX" 0 "$HEAD_DATE")
 if [ "$got" = "$HEAD_SHA" ]; then
   ok "fresh 👍 (after HEAD commit) → HEAD_SHA (clean ack)"
 else
@@ -97,7 +99,7 @@ else
 fi
 
 # --- Test 1b: same case under ACK_EMIT_TIER=1 → SHA:F ---
-got=$(run_codex "$(mk_reaction '+1' "$FRESH")" "$HEAD_DATE" "$CODEX" 1)
+got=$(run_codex "$(mk_reaction '+1' "$FRESH")" "$HEAD_DATE" "$CODEX" 1 "$HEAD_DATE")
 if [ "$got" = "${HEAD_SHA}:F" ]; then
   ok "fresh 👍 under ACK_EMIT_TIER=1 → '${HEAD_SHA}:F'"
 else
@@ -105,7 +107,7 @@ else
 fi
 
 # --- Test 2: stale 👍 (created_at < HEAD) → stale (must re-review HEAD) ---
-got=$(run_codex "$(mk_reaction '+1' "$STALE_TS")" "$HEAD_DATE")
+got=$(run_codex "$(mk_reaction '+1' "$STALE_TS")" "$HEAD_DATE" "$CODEX" 0 "$HEAD_DATE")
 if [ "$got" = "stale" ]; then
   ok "stale 👍 (before HEAD commit) → stale (engaged, not fresh)"
 else
@@ -195,14 +197,15 @@ else
   fail "cursor COMMENTED /reviews on HEAD expected '${HEAD_SHA}:B', got '$got'"
 fi
 
-# --- Test 9: fresh-looking 👍 but HEAD_COMMITTED_DATE empty → stale ---
-# Without a HEAD commit time we cannot prove freshness; pin the date-guard so a
-# missing committedDate degrades to wait, never to a false ack.
+# --- Test 9: fresh-looking 👍 but no HEAD_PUSH_DATE → stale (#189 fail-CLOSED) ---
+# With no server-stamped push anchor there is no trustworthy freshness proof, so the
+# +1 path fails CLOSED to stale — the committer date is NOT consulted (#189). Here
+# both HEAD_COMMITTED_DATE and HEAD_PUSH_DATE are empty (run_codex's push arg omitted).
 got=$(run_codex "$(mk_reaction '+1' "$FRESH")" "")
 if [ "$got" = "stale" ]; then
-  ok "fresh 👍 but empty HEAD_COMMITTED_DATE → stale (cannot confirm fresh)"
+  ok "fresh 👍 but no HEAD_PUSH_DATE → stale (#189 fail-CLOSED; committer date not consulted)"
 else
-  fail "fresh 👍 + empty head-date expected 'stale', got '$got'"
+  fail "fresh 👍 + no push anchor expected 'stale', got '$got'"
 fi
 
 # --- Test 10: FETCH_OK=0 → stale (fail-CLOSED) even with a fresh 👍 ---
@@ -302,7 +305,7 @@ fi
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CODEX_OUTDATED" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
 if [ "$got" = "$HEAD_SHA" ]; then
   ok "outdated thread + fresh 👍 → HEAD_SHA (fresh 👍 clears the retained-outdated deadlock)"
@@ -330,7 +333,7 @@ fi
 got=$(FETCH_OK=1 \
   ALL_THREADS="$CODEX_RESOLVED_CURRENT" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
-  ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="$RESOLVE_PUSH" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
 if [ "$got" = "$HEAD_SHA" ]; then
   ok "disposed Codex thread + fresh 👍 → HEAD_SHA (Tier F acks the clean re-review)"
@@ -346,7 +349,7 @@ fi
 PAGE1='[{"content":"+1","created_at":"2026-06-06T16:20:00Z","user":{"login":"alice"}},{"content":"heart","created_at":"2026-06-06T16:21:00Z","user":{"login":"bob"}}]'
 PAGE2=$(mk_reaction '+1' "$FRESH")
 PAGINATED=$(printf '%s\n%s' "$PAGE1" "$PAGE2")
-got=$(run_codex "$PAGINATED" "$HEAD_DATE")
+got=$(run_codex "$PAGINATED" "$HEAD_DATE" "$CODEX" 0 "$HEAD_DATE")
 if [ "$got" = "$HEAD_SHA" ]; then
   ok "paginated reactions, Codex 👍 on page 2 → HEAD_SHA (jq -rs slurps the stream)"
 else
@@ -612,19 +615,55 @@ else
   fail "resolved thread + empty push anchor expected 'stale' (#186 fail-CLOSED), got '$got'"
 fi
 
-# --- Test 17: HEAD_PUSH_DATE empty → falls back to HEAD_COMMITTED_DATE (backward-compat) ---
-# Callers not yet upgraded to fetch HEAD_PUSH_DATE export it empty; Tier F must
-# fall back to HEAD_COMMITTED_DATE and behave as before.
+# --- Test 17: fresh-looking +1 but empty HEAD_PUSH_DATE → stale (#189 fail-CLOSED) ---
+# The git committer date is client-stamped and backdatable, so it must NOT anchor
+# a +1 ack. With no server-stamped push anchor there is no trustworthy freshness
+# proof → fail-CLOSED to stale (mirrors the resolved-thread path, #186). This
+# inverts the prior backward-compat fallback that #189 identified as a fail-OPEN:
+# a leftover +1 newer than a backdated committer date could falsely ack HEAD.
 got=$(FETCH_OK=1 \
   ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
   ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
   ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" \
   HEAD_COMMITTED_DATE="$HEAD_DATE" HEAD_PUSH_DATE="" HEAD_SHA="$HEAD_SHA" \
   bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
-if [ "$got" = "$HEAD_SHA" ]; then
-  ok "empty HEAD_PUSH_DATE → falls back to HEAD_COMMITTED_DATE (backward-compat)"
+if [ "$got" = "stale" ]; then
+  ok "fresh +1 but empty HEAD_PUSH_DATE → stale (#189 fail-CLOSED; committer date not trusted)"
 else
-  fail "backward-compat fallback expected '$HEAD_SHA', got '$got'"
+  fail "empty push + fresh +1 expected 'stale' (#189), got '$got'"
+fi
+
+# --- Test 17b: committer date LATER than push, +1 between them → HEAD_SHA (anchor is push, NOT max) ---
+# With committer (COMMITTER_AFTER_PUSH, 16:30) > push (HEAD_DATE, 16:12) and the +1
+# (FRESH, 16:24) between them: max() would anchor on the committer date and return
+# stale, while push-only anchors on the push event and acks. Proves the committer
+# date is no longer consulted even when present and later (#189).
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" \
+  HEAD_COMMITTED_DATE="$COMMITTER_AFTER_PUSH" HEAD_PUSH_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "committer later than push, +1 after push → HEAD_SHA (anchor is push-only, not max; #189)"
+else
+  fail "push-only discriminator expected '$HEAD_SHA', got '$got'"
+fi
+
+# --- Test 17c: empty committer date, push present, fresh +1 → HEAD_SHA (push alone suffices) ---
+# Proves the +1 ack needs ONLY the push anchor — no committer date at all. A regression
+# that re-required HEAD_COMMITTED_DATE would fail here (committer is empty), while the
+# push-only contract correctly acks since FRESH (16:24) > push (HEAD_DATE 16:12). (#189)
+got=$(FETCH_OK=1 \
+  ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+  ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+  ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" \
+  HEAD_COMMITTED_DATE="" HEAD_PUSH_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "$HEAD_SHA" ]; then
+  ok "empty committer + push present + fresh +1 → HEAD_SHA (push anchor alone suffices; #189)"
+else
+  fail "push-alone positive guard expected '$HEAD_SHA', got '$got'"
 fi
 
 echo ""

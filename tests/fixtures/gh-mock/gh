@@ -7,7 +7,12 @@ case "$*" in
     *api*check-runs*)            echo '{"check_runs":[]}' ;;
     *api*statuses*)              echo '[]' ;;
     *api*issues*reactions*)      echo '[]' ;;
-    *api*commits*--jq*)          echo '2024-01-01T00:00:00Z' ;;
+    *api*commits*--jq*)
+        # GH_MOCK_FAIL_COMMITTER_DATE=1 fails ONLY this committer-date call, to
+        # exercise the #189 partial-failure contract (committer fetch fails but
+        # FETCH_OK must stay 1 because the value is no longer consumed).
+        if [ "${GH_MOCK_FAIL_COMMITTER_DATE:-0}" = "1" ]; then exit 1; fi
+        echo '2024-01-01T00:00:00Z' ;;
     *api*events*)                echo '[[]]' ;;
     *pr*view*headRefOid*)        echo '{"headRefOid":"abcdef1234567890abcdef1234567890abcdef12","headRefName":"feat/test-branch"}' ;;
     *)                           echo '{}' ;;

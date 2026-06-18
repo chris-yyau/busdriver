@@ -19,17 +19,18 @@
 #      itself stays in the markdown call sites — only the per-bot algorithm
 #      lives here. ALL_STATUSES is the legacy commit-statuses API consumed by
 #      Tier E (CodeRabbit free-tier on private repos). ALL_REACTIONS
-#      (issue-level reactions JSON array) and HEAD_COMMITTED_DATE (HEAD's
-#      `commit.committer.date`, UTC ISO-8601) feed Tier F — the Codex-only
-#      reaction tier; both are empty for callers that haven't been upgraded to
-#      fetch them, and Tier F no-ops in that case. HEAD_PUSH_DATE (optional,
-#      UTC ISO-8601) is the timestamp of the push event that landed HEAD_SHA on
-#      the branch — more reliable than HEAD_COMMITTED_DATE for force-push
-#      scenarios where an old commit is pushed with a backdated committer date.
-#      When provided, Tier F uses max(HEAD_COMMITTED_DATE, HEAD_PUSH_DATE) as
-#      the freshness anchor. Backward-compatible for Tier F: callers that do not
-#      export HEAD_PUSH_DATE fall back to HEAD_COMMITTED_DATE only.
-#      NOTE — the Codex RESOLVED-thread ack (Tier A.2, below) is STRICTER: it
+#      (issue-level reactions JSON array) feeds Tier F — the Codex-only reaction
+#      tier; it is empty for callers that haven't been upgraded to fetch it, and
+#      Tier F no-ops in that case. HEAD_PUSH_DATE (UTC ISO-8601) is the timestamp
+#      of the push event that landed HEAD_SHA on the branch and is the SOLE
+#      freshness anchor for Tier F's +1 (👍) ack: a +1 acks HEAD only when it
+#      postdates HEAD_PUSH_DATE, and FAILS CLOSED (→ stale) when HEAD_PUSH_DATE is
+#      absent (#189) — mirroring the resolved-thread path below. HEAD_COMMITTED_DATE
+#      (HEAD's `commit.committer.date`, UTC ISO-8601) is RETAINED in the input
+#      contract (still accepted/exported, best-effort) but is NO LONGER a Tier-F
+#      freshness anchor and does not gate FETCH_OK: the git committer date is
+#      client-stamped and backdatable, so it must not gate an automated merge ack.
+#      NOTE — the Codex RESOLVED-thread ack (Tier A.2, below) shares this contract: it
 #      anchors on HEAD_PUSH_DATE ALONE (never the backdatable committer date) and
 #      FAILS CLOSED (→ stale) when HEAD_PUSH_DATE is absent (#186). It also requires
 #      ALL_THREADS to carry, per thread, `resolvedBy { login }` and a
@@ -53,7 +54,8 @@
 # thread proven via the push-anchored resolver-last-comment signal (A.2); B=/reviews
 # on HEAD, C=issue-comment body
 # SHA, D=check-run success, E=commit-status success, F=Codex 👍 reaction newer
-# than HEAD's commit). `none`/`stale` are NEVER
+# than HEAD_PUSH_DATE — the push event time; fails closed when absent, #189).
+# `none`/`stale` are NEVER
 # suffixed. Default (env unset) output is byte-for-byte unchanged, so existing
 # callers that compare the value to HEAD_SHA or to `stale` are unaffected. The
 # dispatcher's Invariant 3 uses tiers D/E (bodyless structured acks) to exempt a
@@ -209,21 +211,19 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   #     is not guaranteed.
   codex_plus1=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
     '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot) | select(.content == "+1")] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
-  # Freshness anchor: use HEAD_PUSH_DATE (push event timestamp) when provided by
-  # the caller, falling back to HEAD_COMMITTED_DATE (git committer date). The push
-  # timestamp is more robust against force-pushes to older commits whose committer
-  # date predates a prior Codex 👍 — in that scenario HEAD_COMMITTED_DATE would
-  # falsely pass the freshness check while HEAD_PUSH_DATE (when available) would
-  # correctly require a newer reaction. Backward-compatible: callers that have not
-  # been upgraded to fetch HEAD_PUSH_DATE export it empty, and the fallback to
-  # HEAD_COMMITTED_DATE preserves existing behavior. The eyes-override above
-  # (Codex re-adds 👀 on every HEAD advance) provides defense-in-depth for callers
-  # that supply neither timestamp.
-  _freshness_anchor="${HEAD_COMMITTED_DATE:-}"
-  if [ -n "${HEAD_PUSH_DATE:-}" ] && [[ "${HEAD_PUSH_DATE}" > "${_freshness_anchor}" ]]; then
-    _freshness_anchor="$HEAD_PUSH_DATE"
-  fi
-  if [ -n "$codex_plus1" ] && [ -n "$_freshness_anchor" ] && [[ "$codex_plus1" > "$_freshness_anchor" ]]; then
+  # Freshness anchor: HEAD_PUSH_DATE (push event timestamp) ALONE — NEVER the git
+  # committer date. The committer date is client-stamped and backdatable: force-push
+  # an old commit whose committer date predates a leftover +1 and that +1 would look
+  # "fresh" → a false HEAD-ack on un-re-reviewed code (#189). So a +1 acks ONLY when a
+  # server-stamped push anchor exists AND the +1 postdates it. When HEAD_PUSH_DATE is
+  # absent (fork head, events API delayed / aged-out >90d / capped >300 events) there
+  # is no trustworthy anchor → DO NOT ack; fall through to stale (fail-CLOSED). This
+  # matches the resolved-thread sibling below (#186) — uniform fail-closed, no
+  # committer fallback, no sentinel. The hoisted eyes-override above and Tier A.2
+  # (push-anchored resolved-current) cover the active-re-review and out-of-scope-clear
+  # cases; a genuinely outdated finding with no push anchor SHOULD wait for re-review
+  # (operator-visible --max-wait), which is correct, not a regression.
+  if [[ -n "$codex_plus1" && -n "${HEAD_PUSH_DATE:-}" && "$codex_plus1" > "${HEAD_PUSH_DATE}" ]]; then
     emit_head_ack "$HEAD_SHA" F; exit 0
   fi
   # (2) OUTDATED thread (no fresh 👍) — Codex reviewed superseded code and must

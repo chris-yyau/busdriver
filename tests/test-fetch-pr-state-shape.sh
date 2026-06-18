@@ -44,7 +44,7 @@ unset FETCH_OK 2>/dev/null || true
 # commits --jq committer-date call fails; all other sources succeed.
 export PATH="$REPO_ROOT/tests/fixtures/gh-mock:$PATH"
 export GH_MOCK_FAIL_COMMITTER_DATE=1
-unset FETCH_OK HEAD_COMMITTED_DATE 2>/dev/null || true
+unset FETCH_OK HEAD_COMMITTED_DATE ALL_REACTIONS 2>/dev/null || true
 # shellcheck source=/dev/null  # $HELPER is dynamic at test time
 . "$HELPER" 123
 unset GH_MOCK_FAIL_COMMITTER_DATE

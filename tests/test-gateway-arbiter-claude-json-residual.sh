@@ -134,6 +134,9 @@ Task 2 (verdict file): edit ${verdict}, replace exact string PENDING with DONE."
       -u ANTHROPIC_AUTH_TOKEN \
       -u ANTHROPIC_API_KEY \
       -u CLAUDE_CODE_USE_BEDROCK \
+      -u CLAUDE_CODE_USE_VERTEX \
+      -u CLAUDE_CODE_USE_FOUNDRY \
+      -u CLAUDE_CODE_USE_AWS \
       -u CLAUDE_CODE_USE_MANTLE \
       timeout "$TIMEOUT_S" "$CLAUDE_BIN" --bare -p "$prompt" \
       --settings "$SETTINGS" \

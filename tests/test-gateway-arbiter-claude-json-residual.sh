@@ -118,7 +118,24 @@ Task 2 (verdict file): edit ${verdict}, replace exact string PENDING with DONE."
   # regardless of whether claude canonicalizes the path. Read-deny the settings
   # file (both spellings) so a Read-capable arbiter cannot recover the token.
   local settings_real; settings_real="$(cd "$(dirname "$SETTINGS")" && pwd -P)/$(basename "$SETTINGS")"
-  ( cd "$proj" && CLAUDE_CONFIG_DIR="$cfg" timeout "$TIMEOUT_S" "$CLAUDE_BIN" --bare -p "$prompt" \
+  # Scrub the gateway source secrets and provider/proxy routing vars from the
+  # subprocess environment (mirrors the real dispatch's `env -u` wrapper), so
+  # the credential reaches claude ONLY via --settings — never via inherited env
+  # (no /proc/self/environ leak) — and ambient ANTHROPIC_*/Bedrock/Mantle vars
+  # cannot silently re-route the run off the gateway path it is meant to regress.
+  ( cd "$proj" && CLAUDE_CONFIG_DIR="$cfg" env \
+      -u BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN \
+      -u BLUEPRINT_ARBITER_GATEWAY_API_KEY \
+      -u BLUEPRINT_ARBITER_GATEWAY_BASE_URL \
+      -u BLUEPRINT_ARBITER_GATEWAY_MODEL \
+      -u BLUEPRINT_ARBITER_GATEWAY_TIMEOUT \
+      -u ANTHROPIC_CUSTOM_HEADERS \
+      -u ANTHROPIC_BASE_URL \
+      -u ANTHROPIC_AUTH_TOKEN \
+      -u ANTHROPIC_API_KEY \
+      -u CLAUDE_CODE_USE_BEDROCK \
+      -u CLAUDE_CODE_USE_MANTLE \
+      timeout "$TIMEOUT_S" "$CLAUDE_BIN" --bare -p "$prompt" \
       --settings "$SETTINGS" \
       --setting-sources '' \
       --model "$MODEL" \

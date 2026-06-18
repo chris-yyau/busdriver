@@ -140,17 +140,21 @@ DISPATCH_PROMPT=$(printf '%s\n' \
 #   - ANTHROPIC_CUSTOM_HEADERS: a parent shell may set it for a DIFFERENT proxy;
 #     inherited headers would ride along into every gateway request, leaking
 #     unrelated header secrets/routing metadata.
-#   - CLAUDE_CODE_USE_{BEDROCK,VERTEX,FOUNDRY,AWS,MANTLE}: cloud-provider routing
-#     outranks ANTHROPIC_* in Claude Code's auth precedence; an inherited selector
-#     would route the arbiter to the parent's provider and ignore the gateway
-#     entirely. (MANTLE is the Bedrock Mantle backend selector, undocumented as of
-#     2026-06 — claude-code#44899; env -u of an unset variable is harmless.)
+#   - CLAUDE_CODE_USE_{BEDROCK,VERTEX,FOUNDRY,ANTHROPIC_AWS,MANTLE}: cloud-provider
+#     routing outranks ANTHROPIC_* in Claude Code's auth precedence; an inherited
+#     selector would route the arbiter to the parent's provider and ignore the
+#     gateway entirely. (MANTLE is the Bedrock Mantle backend selector, undocumented
+#     as of 2026-06 — claude-code#44899; env -u of an unset variable is harmless.)
+#     The AWS selector is CLAUDE_CODE_USE_ANTHROPIC_AWS — verified against the
+#     claude 2.1.181 binary's embedded token table (#202 review): an earlier
+#     CLAUDE_CODE_USE_AWS spelling here was a phantom (no such var) that left the
+#     real selector un-neutralized.
 # NB: env(1) requires -u options BEFORE the NAME=VALUE assignment.
 ENV_ARGS=(-u BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN -u BLUEPRINT_ARBITER_GATEWAY_API_KEY
           -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_API_KEY
           -u ANTHROPIC_CUSTOM_HEADERS
           -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY
-          -u CLAUDE_CODE_USE_AWS -u CLAUDE_CODE_USE_MANTLE
+          -u CLAUDE_CODE_USE_ANTHROPIC_AWS -u CLAUDE_CODE_USE_MANTLE
           "ANTHROPIC_BASE_URL=$BASE_URL")
 
 # Force the gateway endpoint AND the gateway credential to win over the
@@ -226,7 +230,7 @@ printf '%s' "$cred" | jq -n --rawfile cred /dev/stdin --arg url "$BASE_URL" --ar
     ANTHROPIC_BASE_URL: $url,
     ANTHROPIC_CUSTOM_HEADERS: "",
     CLAUDE_CODE_USE_BEDROCK: "", CLAUDE_CODE_USE_VERTEX: "", CLAUDE_CODE_USE_FOUNDRY: "",
-    CLAUDE_CODE_USE_AWS: "", CLAUDE_CODE_USE_MANTLE: ""
+    CLAUDE_CODE_USE_ANTHROPIC_AWS: "", CLAUDE_CODE_USE_MANTLE: ""
   } + { ($cred_var): $cred, ($other_var): "" })
 }' >"$SETTINGS_FILE" || die "failed to write gateway settings file (jq error)"
 [[ -s "$SETTINGS_FILE" ]] || die "gateway settings file is empty after jq write"

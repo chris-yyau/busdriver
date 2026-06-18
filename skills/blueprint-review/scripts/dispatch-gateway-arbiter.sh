@@ -302,6 +302,23 @@ echo "gateway-arbiter: dispatching headless arbiter (model: $MODEL, timeout: ${T
 #      Edit(//**) the operator once approved would re-widen the scope. That is why
 #      the dispatch passes --setting-sources '' and the capability guard above
 #      fails closed when the flag is unavailable (issue #198).
+#      Residual checked (issue #202): --setting-sources '' neutralizes only the
+#      user/project/local SETTINGS sources. The global ~/.claude.json
+#      (projects[<cwd>].allowedTools — the per-project "don't ask again" store) is
+#      NOT a setting source and is read regardless, so #202 asked whether a broad
+#      Edit allow stashed there could re-widen scope on the WRITE side. A live
+#      spike (Claude 2.1.181), planting Edit(//**) under BOTH the raw and the
+#      pwd -P-resolved cwd key (the key claude actually looks up), settled it: with
+#      the planted allow as the ONLY possible source (dontAsk, no --allowedTools)
+#      the Edit was still DENIED — so the projects[].allowedTools store is not
+#      consulted as an allow source under `claude -p --permission-mode dontAsk` at
+#      all (it is interactive-only persistence). Malicious-vs-control arms with the
+#      real flags were identical: out-of-scope Edit denied, in-scope verdict Edit
+#      (approved solely by --allowedTools) succeeded. The only allow-state neither
+#      --setting-sources '' nor a CLAUDE_CONFIG_DIR redirect can strip is
+#      enterprise MANAGED policy, which is admin-controlled (an attacker who can
+#      write managed-settings has already won). Locked in by the gated regression
+#      test tests/test-gateway-arbiter-claude-json-residual.sh.
 # Net: no shell, no env token, no way to discover the settings path, settings file
 # + Anthropic credential stores Read-denied, Edit scoped to the verdict file — the
 # arbiter has no route to the gateway secret OR the operator's own credential, and

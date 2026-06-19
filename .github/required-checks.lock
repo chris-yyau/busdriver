@@ -89,6 +89,16 @@
       "source_app": "github-actions",
       "workflow": ".github/workflows/security.yml",
       "job": "checkov"
+    },
+    {
+      "name": "Secret scanning",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/security.yml",
+      "job": "gitleaks"
+    },
+    {
+      "name": "GitGuardian Security Checks",
+      "source_app": "gitguardian"
     }
   ],
   "advisory": []

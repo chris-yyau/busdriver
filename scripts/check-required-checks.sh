@@ -583,10 +583,21 @@ else
   # would feed `comm` a blank line and produce a phantom drift entry. Use
   # `printf '%s\n' | grep -v '^$'` to strip blanks so genuine empty/empty,
   # empty/non-empty, and non-empty/empty cases all report cleanly.
-  missing_on_server=$(comm -23 <(printf '%s\n' "$lock_contexts" | grep -v '^$' || true) \
-                                <(printf '%s\n' "$server_contexts" | grep -v '^$' || true) || true)
-  extra_on_server=$(comm -13   <(printf '%s\n' "$lock_contexts" | grep -v '^$' || true) \
-                                <(printf '%s\n' "$server_contexts" | grep -v '^$' || true) || true)
+  #
+  # `comm` itself must ALSO run under LC_ALL=C: it assumes its inputs are sorted
+  # in the SAME collation it uses to compare them. The inputs are LC_ALL=C-sorted
+  # (codepoint) above, but a bare `comm` inherits the caller's locale (e.g.
+  # en_US/en_HK.UTF-8 dictionary order). When the two lists differ in membership
+  # AND contain interleaved case (a lowercase "commitlint" sorting after the
+  # uppercase entries in C order but among them in dictionary order), the
+  # collation mismatch makes comm emit phantom diffs — e.g. "commitlint" on both
+  # sides. This stayed dormant while lock == server (identical line sequences
+  # match in lockstep regardless of locale) and only surfaced once entries were
+  # added. Pinning comm to C makes its comparison consistent with the sort.
+  missing_on_server=$(LC_ALL=C comm -23 <(printf '%s\n' "$lock_contexts" | grep -v '^$' || true) \
+                                         <(printf '%s\n' "$server_contexts" | grep -v '^$' || true) || true)
+  extra_on_server=$(LC_ALL=C comm -13   <(printf '%s\n' "$lock_contexts" | grep -v '^$' || true) \
+                                         <(printf '%s\n' "$server_contexts" | grep -v '^$' || true) || true)
 
   if [[ -n "$missing_on_server" ]]; then
     echo "  DRIFT: in lock but not required on server:"

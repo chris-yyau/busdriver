@@ -1,5 +1,8 @@
 #!/bin/bash
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+# Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
+# the "$repo_root/$STATE_DIR/review-exclude" join below resolves correctly.
+case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 # Shared exclusion logic for auto-generated files
 # Sources: hardcoded defaults + project-level $STATE_DIR/review-exclude
 

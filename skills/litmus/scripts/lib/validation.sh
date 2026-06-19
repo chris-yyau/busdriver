@@ -5,6 +5,11 @@
 # Source shared CLI resolution library
 _VALIDATION_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+# Constrain to a safe relative name (reject absolute/traversal/unsafe chars).
+# This is the canonical definition every litmus/blueprint script inherits when
+# it sources validation.sh, so normalizing here protects all consumers against a
+# traversal/absolute BUSDRIVER_STATE_DIR reaching their mkdir/path joins.
+case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 _PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$_VALIDATION_SCRIPT_DIR/../../../.." && pwd)}}"
 # shellcheck source=../../../../scripts/lib/resolve-cli.sh
 source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"

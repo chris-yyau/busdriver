@@ -9,6 +9,9 @@
 # The handoff file is consumed after use (single-use token).
 set -euo pipefail
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+# Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
+# the "$REPO_DIR/$STATE_DIR" joins below resolve to the configured state dir.
+case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 REPO_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 
 # Validate builtin review was triggered — handoff file is created by

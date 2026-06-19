@@ -5,9 +5,14 @@
 set -euo pipefail
 
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+# Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
+# it is safe to use as a path segment (e.g. under $HOME) below.
+case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+# Re-export the sanitized value so sourced helpers (validation.sh, …) inherit
+# the constrained value rather than re-reading a raw BUSDRIVER_STATE_DIR.
+export BUSDRIVER_STATE_DIR="$STATE_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKILL_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Source validation library
 # shellcheck source=lib/validation.sh
@@ -91,7 +96,7 @@ ENTRY=$(jq -cn \
 
 # Get normalized project path for storage location
 PROJECT_PATH=$(get_normalized_project_path)
-CONTEXT_DIR="$HOME/.claude/projects/$PROJECT_PATH/litmus-context"
+CONTEXT_DIR="$HOME/$STATE_DIR/projects/$PROJECT_PATH/litmus-context"
 
 # Ensure directory exists
 mkdir -p "$CONTEXT_DIR" 2>/dev/null || {

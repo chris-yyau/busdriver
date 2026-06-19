@@ -23,8 +23,10 @@ set -euo pipefail
 # BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
 # Source shared CLI library for _portable_timeout and resolve functions
 _PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}}"
-# shellcheck disable=SC2034  # STATE_DIR used in path construction
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+# Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
+# it is safe to use as a path segment (e.g. under $HOME) below.
+case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 if [[ -f "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh" ]]; then
   source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"
 fi
@@ -34,7 +36,7 @@ if ! type _portable_timeout &>/dev/null; then
   _portable_timeout() { timeout "$@"; }
 fi
 
-LOG_DIR="$HOME/.claude/homunculus"
+LOG_DIR="$HOME/$STATE_DIR/homunculus"
 LOG_FILE="$LOG_DIR/dispatch-log.jsonl"
 
 # ── Defaults ───────────────────────────────────

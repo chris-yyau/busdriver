@@ -26,7 +26,17 @@ skills/          287 skill definitions (.md) — the bulk of the plugin's capabi
                  Python tests live per-skill (e.g. skills/skill-comply/tests/, skills/continuous-learning-v2/scripts/)
 tests/           Shell-based gate tests (test-*.sh)
 docs/            Reference docs and examples
+opencode/        Downstream MIRROR for the opencode harness (NOT loaded by Claude Code) — see note below
 ```
+
+## `opencode/` — Downstream Mirror (ignore in normal Claude Code work)
+
+The `opencode/` subtree is a **port of four features** (litmus, blueprint-review, council, pr-grind) to the [opencode](https://opencode.ai) harness: `opencode/plugin.ts` (gate-bridge adapter), `opencode/agents/`, `opencode/skills/`. It is **not** part of the Claude Code plugin and is not loaded in Claude Code sessions.
+
+- **Source-of-truth lives at the repo root:** `skills/`, `agents/`, `scripts/`, `hooks/`. The `opencode/` copies are downstream — when fixing skill/agent/script behavior, edit the **root** version; only touch `opencode/` when the task is explicitly the opencode port.
+- **Bridge model:** the opencode skills call the *root* `scripts/*.sh` (ack-ledger, dispatcher-commit-block, resolve-cli, etc.) via `$BUSDRIVER_PLUGIN_ROOT` — they are NOT duplicated. Shared scripts must stay harness-neutral (`${BUSDRIVER_STATE_DIR:-.claude}`, no bash-4-isms) so both harnesses pass.
+- **Search hygiene:** a search for `pr-grind`/`litmus`/`council` will hit both the root skill and its `opencode/` mirror. In a normal Claude Code session, prefer the root match and ignore the `opencode/` duplicate unless the port is the task.
+- **Distribution:** `scripts/release.sh` strips `opencode/` from the `claude-release` branch, so Claude Code users never see it. Operator-facing install docs for the port live in `opencode/README.md`.
 
 ## Enforcement Gates (Hook-Driven)
 

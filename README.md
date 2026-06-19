@@ -152,19 +152,29 @@ The adapter plugin needs to know where the busdriver repo root is (to find gate-
 export BUSDRIVER_PLUGIN_ROOT=/path/to/busdriver
 ```
 
-Then copy the adapter plugin to your project's `.opencode/plugins/` directory:
+The port has **three** components that must all be installed: the adapter **plugin** (gate bridge), the **agents** (the `pr-grinder` worker), and the **skills** (the `litmus` / `blueprint-review` / `council` / `pr-grind` instructions). opencode discovers each from a dedicated directory — note the directory names are **plural** (`agents/`, `skills/`); installing the agent into a singular `agent/` directory leaves the worker undiscoverable and silently falls back to a built-in agent.
+
+Project-local install (under `.opencode/`):
 
 ```bash
-mkdir -p .opencode/plugins
-cp /path/to/busdriver/opencode/plugin.ts .opencode/plugins/busdriver.ts
+# 1. Adapter plugin (gate bridge)
+mkdir -p .opencode/plugins && cp "$BUSDRIVER_PLUGIN_ROOT/opencode/plugin.ts" .opencode/plugins/busdriver.ts
+# 2. Agents — PLURAL "agents/" (the pr-grinder worker; dispatched via task())
+mkdir -p .opencode/agents && cp "$BUSDRIVER_PLUGIN_ROOT"/opencode/agents/*.md .opencode/agents/
+# 3. Skills — the four features ( /litmus, /blueprint-review, /council, /pr-grind )
+mkdir -p .opencode/skills && cp -R "$BUSDRIVER_PLUGIN_ROOT"/opencode/skills/* .opencode/skills/
 ```
 
-Or for global install, copy to `~/.config/opencode/plugins/`:
+Global install (under `~/.config/opencode/`) — same three components, plural dirs:
 
 ```bash
-mkdir -p ~/.config/opencode/plugins
-cp /path/to/busdriver/opencode/plugin.ts ~/.config/opencode/plugins/busdriver.ts
+mkdir -p ~/.config/opencode/plugins ~/.config/opencode/agents ~/.config/opencode/skills
+cp "$BUSDRIVER_PLUGIN_ROOT/opencode/plugin.ts" ~/.config/opencode/plugins/busdriver.ts
+cp "$BUSDRIVER_PLUGIN_ROOT"/opencode/agents/*.md ~/.config/opencode/agents/
+cp -R "$BUSDRIVER_PLUGIN_ROOT"/opencode/skills/* ~/.config/opencode/skills/
 ```
+
+> **fish shell:** `$BUSDRIVER_PLUGIN_ROOT` must be set in fish too (it does not read `~/.zshrc`). Use `set -Ux BUSDRIVER_PLUGIN_ROOT /path/to/busdriver` and drop the quotes around the var in the `cp` globs. See `opencode/README.md` for the full opencode-side guide.
 
 Or if published to npm, add to your `opencode.json`:
 

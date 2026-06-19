@@ -1,8 +1,11 @@
 ---
 name: pr-grinder
 description: Runs ONE round of post-PR feedback resolution — waits for checks, collects reviewer comments, applies minimal fixes, stages changes. Returns a structured result. Use when dispatched from the pr-grind skill, never invoked directly by the user.
-tools: ["read", "write", "edit", "bash", "grep", "glob"]
 mode: subagent
+permission:
+  edit: allow
+  bash: allow
+  webfetch: allow
 ---
 
 # PR Grinder — One-Round Worker
@@ -51,7 +54,7 @@ The dispatcher's invariant-2 gate (clean + any `stale` → BAIL) only fires on `
 
 ### Step 0 — Mandatory Pre-Flight Read (DO NOT SKIP)
 
-Before Step 1, run `read opencode/skills/pr-grind/SKILL.md` once. The full Step 1–6 protocol, the 3-phase check-verification block, and the rationale all live there. The inlined bash below is your authoritative copy for Steps 1–3 — but the SKILL.md prose context is what lets you triage edge cases (advisory checks, stuck checks, rebase races, skip-file protocol). Treat skipping this Read as a contract violation; bail with reason "skipped pre-flight Read" if for any reason you cannot.
+Before Step 1, run `read "$BUSDRIVER_PLUGIN_ROOT/opencode/skills/pr-grind/SKILL.md"` once (the `$BUSDRIVER_PLUGIN_ROOT` env var points at the busdriver checkout and is present in your environment — `echo` it via bash first if you need its literal value; this absolute path resolves regardless of which repo's worktree is your CWD). The full Step 1–6 protocol, the 3-phase check-verification block, and the rationale all live there. The inlined bash below is your authoritative copy for Steps 1–3 — but the SKILL.md prose context is what lets you triage edge cases (advisory checks, stuck checks, rebase races, skip-file protocol). Treat skipping this Read as a contract violation; bail with reason "skipped pre-flight Read" if for any reason you cannot.
 
 ### Step 1 — Wait for ALL checks + reviewers
 

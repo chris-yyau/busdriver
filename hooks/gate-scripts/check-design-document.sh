@@ -106,7 +106,7 @@ IS_DESIGN=false
 if echo "$BASENAME" | grep -qiE '^(PLAN|DESIGN|ARCHITECTURE).*\.md$'; then
   IS_DESIGN=true
 fi
-if echo "$FILE_PATH" | grep -qE "(\\.${STATE_DIR#.}|docs)/([^/]+/)*(plans|specs)/.*\\.md\$"; then
+if echo "$FILE_PATH" | grep -qE "($STATE_DIR|docs)/([^/]+/)*(plans|specs)/.*\\.md\$"; then
   IS_DESIGN=true
 fi
 if [ "$IS_DESIGN" = true ]; then

@@ -140,6 +140,59 @@ claude plugin marketplace add github:chris-yyau/busdriver
 claude plugin install busdriver@busdriver
 ```
 
+## Opencode support
+
+Busdriver also works with [opencode](https://opencode.ai) as an alternative harness. The opencode port lives in the `opencode/` directory and provides the same 4 core features: litmus, blueprint-review, council, and pr-grind.
+
+### Install (opencode)
+
+The adapter plugin needs to know where the busdriver repo root is (to find gate-scripts). Set `BUSDRIVER_PLUGIN_ROOT` in your shell environment before starting opencode:
+
+```bash
+export BUSDRIVER_PLUGIN_ROOT=/path/to/busdriver
+```
+
+The port has **three** components that must all be installed: the adapter **plugin** (gate bridge), the **agents** (the `pr-grinder` worker), and the **skills** (the `litmus` / `blueprint-review` / `council` / `pr-grind` instructions). opencode discovers each from a dedicated directory — note the directory names are **plural** (`agents/`, `skills/`); installing the agent into a singular `agent/` directory leaves the worker undiscoverable and silently falls back to a built-in agent.
+
+Project-local install (under `.opencode/`):
+
+```bash
+# 1. Adapter plugin (gate bridge)
+mkdir -p .opencode/plugins && cp "$BUSDRIVER_PLUGIN_ROOT/opencode/plugin.ts" .opencode/plugins/busdriver.ts
+# 2. Agents — PLURAL "agents/" (the pr-grinder worker; dispatched via task())
+mkdir -p .opencode/agents && cp "$BUSDRIVER_PLUGIN_ROOT"/opencode/agents/*.md .opencode/agents/
+# 3. Skills — the four features ( /litmus, /blueprint-review, /council, /pr-grind )
+mkdir -p .opencode/skills && cp -R "$BUSDRIVER_PLUGIN_ROOT"/opencode/skills/* .opencode/skills/
+```
+
+Global install (under `~/.config/opencode/`) — same three components, plural dirs:
+
+```bash
+mkdir -p ~/.config/opencode/plugins ~/.config/opencode/agents ~/.config/opencode/skills
+cp "$BUSDRIVER_PLUGIN_ROOT/opencode/plugin.ts" ~/.config/opencode/plugins/busdriver.ts
+cp "$BUSDRIVER_PLUGIN_ROOT"/opencode/agents/*.md ~/.config/opencode/agents/
+cp -R "$BUSDRIVER_PLUGIN_ROOT"/opencode/skills/* ~/.config/opencode/skills/
+```
+
+Or if published to npm, add to your `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["busdriver"]
+}
+```
+
+The opencode adapter plugin translates opencode's `tool.execute.before` hook into Claude Code's PreToolUse `decision:block` protocol, reusing the same gate-scripts (bash) that power the Claude Code plugin. State files are written to `.opencode/` instead of `.claude/`.
+
+### Architecture
+
+The gate-scripts (`hooks/gate-scripts/*.sh`) are shared between both harnesses. They use env vars with backward-compatible fallbacks:
+- `BUSDRIVER_PLUGIN_ROOT` (opencode) falls back to `CLAUDE_PLUGIN_ROOT` (Claude Code)
+- `BUSDRIVER_STATE_DIR` (defaults to `.opencode` for opencode, `.claude` for Claude Code)
+
+The `claude-release` branch is auto-generated during release — it strips the `opencode/` directory so Claude Code marketplace users get a clean bundle with zero token waste from unused opencode files.
+
 ## How it works
 
 Busdriver registers [PreToolUse and PostToolUse hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) that intercept tool calls at the harness level. The orchestrator skill routes every task to the correct pipeline phase and domain tools.
@@ -333,5 +386,3 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 ## License
 
 MIT
-
-<!-- pr-grind smoke test -->

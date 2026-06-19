@@ -35,7 +35,12 @@ const GIT_COMMANDS_WITH_NO_VERIFY = [
  */
 const VALID_BEFORE_GIT = ' \t\n\r;&|$`(<{!"\']/.~\\';
 
-const GIT_CONFIG_KEY_PREFIX = 'core.hooksPath=';
+// Git config section and variable names are case-insensitive
+// (subsection names are case-sensitive but core.hooksPath has none),
+// so we normalize the candidate token to lowercase before matching.
+// See https://git-scm.com/docs/git-config — "The variable names are
+// case-insensitive."
+const GIT_CONFIG_KEY_PREFIX = 'core.hookspath=';
 
 const COMMIT_OPTIONS_WITH_VALUE = new Set([
   '-m',
@@ -67,7 +72,12 @@ const COMMIT_OPTIONS_WITH_INLINE_VALUE = [
   '--pathspec-from-file=',
 ];
 
-const COMMIT_SHORT_OPTIONS_WITH_VALUE = new Set(['m', 'F', 'C', 'c']);
+// Short options that take a value. When seen as part of a combined
+// short-option token (e.g. -tn), git's parser treats the rest of the
+// token as the option's value (template path 'n' here), so the scanner
+// must stop at this character — anything after it is the inline value,
+// not another flag.
+const COMMIT_SHORT_OPTIONS_WITH_VALUE = new Set(['m', 'F', 'C', 'c', 't']);
 
 function tokenizeShellWords(input, start = 0, end = input.length) {
   const tokens = [];
@@ -237,11 +247,32 @@ function getCommitShortValueOption(value) {
   return null;
 }
 
+// Short options whose presence in a combined cluster means the remainder of the
+// token is that option's inline value, not more flags. Superset of
+// COMMIT_SHORT_OPTIONS_WITH_VALUE: also includes `-u[<mode>]` (--untracked-files)
+// and `-S[<keyid>]` (--gpg-sign), which take an OPTIONAL *inline-only* value.
+// They are deliberately NOT added to COMMIT_SHORT_OPTIONS_WITH_VALUE because they
+// never consume the *next* token (git only accepts their value attached, e.g.
+// `-uno`, `-Skey`), so the next-value scanners must not treat them that way.
+const SHORT_OPTS_WITH_INLINE_VALUE = new Set(['m', 'F', 'C', 'c', 't', 'u', 'S']);
+
 function isCommitNoVerifyShortFlag(value) {
-  // Local fork — detect 'n' at any position in a short-flag cluster, not just first.
-  // Fixes upstream bug where `git commit -an` (a + n) bypassed the gate because
-  // the regex required n to be the first character.
-  return /^-[a-zA-Z]*n/.test(value);
+  // Detect `-n` (--no-verify) anywhere in a combined short-flag cluster, e.g.
+  // `git commit -an` (a + n) — fixes the upstream bug where the flag had to be
+  // first. But git stops treating a cluster as flags once it hits an option that
+  // carries an inline value: the remainder is that value, not more flags. So
+  // `-tn` is `-t n` (template "n"), `-mMSGn` is `-m` with value "MSGn", `-uno` is
+  // `-u no`, and `-Snoone@x` is `-S noone@x` — none are --no-verify. Scan left to
+  // right, returning true on a standalone `n` flag but bailing at the first
+  // inline-value-bearing option.
+  if (value.length < 2 || value[0] !== '-' || value[1] === '-') return false;
+  for (let i = 1; i < value.length; i += 1) {
+    const ch = value[i];
+    if (ch === 'n') return true;
+    if (SHORT_OPTS_WITH_INLINE_VALUE.has(ch)) return false;
+    if (!/[a-zA-Z]/.test(ch)) return false;
+  }
+  return false;
 }
 
 /**
@@ -416,17 +447,21 @@ function hasHooksPathOverride(input, detected) {
 
   for (let i = 0; i < tokens.length; i++) {
     const value = tokens[i].value;
+    // Git config section + variable names are case-insensitive, so a
+    // bypass attempt like `core.HOOKSPATH=...` or `core.hookspath=...`
+    // must compare against the lowercased token.
+    const lowered = value.toLowerCase();
 
     if (value === '-c') {
       const next = tokens[i + 1] && tokens[i + 1].value;
-      if (typeof next === 'string' && next.startsWith(GIT_CONFIG_KEY_PREFIX)) {
+      if (typeof next === 'string' && next.toLowerCase().startsWith(GIT_CONFIG_KEY_PREFIX)) {
         return true;
       }
       i++;
       continue;
     }
 
-    if (value.startsWith(`-c${GIT_CONFIG_KEY_PREFIX}`)) {
+    if (lowered.startsWith(`-c${GIT_CONFIG_KEY_PREFIX}`)) {
       return true;
     }
   }

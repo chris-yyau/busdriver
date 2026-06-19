@@ -216,11 +216,27 @@ def _validate_import_url(source: str) -> str:
     return urllib.parse.urlunparse(parsed)
 
 
+class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-validate every redirect hop against the SSRF denylist.
+
+    Validating only the initial URL is insufficient: a public host can issue a
+    3xx redirect to a loopback/private/link-local address, bypassing the
+    allowlist (SSRF-via-redirect). Re-running ``_validate_import_url`` on each
+    hop ensures the https-only + non-public-address checks apply end to end;
+    a disallowed hop raises ``ValueError`` and aborts the fetch.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_import_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _fetch_import_url(source: str, *, max_bytes: int = 2 * 1024 * 1024) -> str:
     """Fetch a validated remote instinct file with bounded size and timeout."""
     url = _validate_import_url(source)
     req = urllib.request.Request(url, headers={"User-Agent": "ECC-instinct-import/2"})
-    with urllib.request.urlopen(req, timeout=15) as response:
+    opener = urllib.request.build_opener(_ValidatingRedirectHandler())
+    with opener.open(req, timeout=15) as response:
         content_type = response.headers.get("Content-Type", "")
         if content_type and not any(
             allowed in content_type.lower()

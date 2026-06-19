@@ -99,8 +99,17 @@ jobs:
 
   gitleaks:
     name: Secret scanning
-    needs: [changes]
-    if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
+    # Unconditional within this workflow — deliberately NOT gated by the
+    # `changes` path filter (unlike the other scanners below). Secrets can land
+    # in ANY file type, so a path-allowlist skip is fail-open on PRs: a secret in
+    # a non-allowlisted file (*.pem, *.env, config.json, …) would skip the scan,
+    # and a skipped required check counts as passing — letting the secret merge
+    # unscanned. So gitleaks runs on every PR (the merge gate that #209 is about).
+    # NOTE: direct pushes to main remain subject to the workflow-level
+    # `on.push.paths` filter above, so a push touching only non-allowlisted files
+    # won't schedule the workflow at all — PRs (the actual merge gate) are always
+    # covered; direct-push coverage would require broadening `on.push.paths`.
+    # gitleaks is fast (~12s). See #209.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

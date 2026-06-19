@@ -389,6 +389,7 @@ fi
 # those files for design-reviewed markers.
 # Fail-closed: reject flags (-A, -u, -p), globs (*?[{), or any parse failure.
 if [ "$HAS_STAGED" = false ]; then
+    mkdir -p "$REPO_DIR/$STATE_DIR" 2>/dev/null || true
     TOCTOU_FILES=$(printf '%s' "$HOOK_DATA" | python3 -c "
 import sys, json, re
 try:
@@ -427,7 +428,7 @@ try:
 except Exception as e:
     import sys
     sys.stderr.write('toctou-parse-error: ' + repr(e) + '\n')
-" 2>>"${REPO_DIR}/$STATE_DIR/toctou-parse.log" || true)
+" 2>>"${REPO_DIR}/${STATE_DIR}/toctou-parse.log" || true)
 
     if [ -n "$TOCTOU_FILES" ]; then
         TOCTOU_ALL_SPECS=true

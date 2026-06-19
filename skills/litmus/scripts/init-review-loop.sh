@@ -64,7 +64,7 @@ if ! git rev-parse --git-dir > /dev/null 2>&1; then
     exit 1
 fi
 
-# Create .claude directory if it doesn't exist
+# Create state directory if it doesn't exist
 mkdir -p "$STATE_DIR"
 
 # Get current timestamp in ISO 8601 format

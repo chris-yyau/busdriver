@@ -27,8 +27,11 @@ import { writeFileSync, mkdirSync, existsSync } from "node:fs"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
-// opencode/plugin.ts → repo root (parent of opencode/)
-const PLUGIN_ROOT = resolve(__dirname, "..")
+// Resolve plugin root: env var override → relative path from this file.
+// When copied to .opencode/plugins/, __dirname is the plugins dir, NOT the
+// busdriver checkout. Users must set BUSDRIVER_PLUGIN_ROOT to point at the
+// busdriver repo root so gate-scripts can be found.
+const PLUGIN_ROOT = process.env.BUSDRIVER_PLUGIN_ROOT || resolve(__dirname, "..")
 const STATE_DIR = process.env.BUSDRIVER_STATE_DIR || ".opencode"
 
 // ── Tool name mapping: opencode (lowercase) → Claude (PascalCase) ──────
@@ -38,6 +41,7 @@ const TOOL_MAP: Record<string, string> = {
   edit: "Edit",
   read: "Read",
   patch: "Edit",
+  apply_patch: "Edit", // opencode's patch tool — extract paths from patchText
   delete: "Edit",
 }
 
@@ -51,21 +55,21 @@ interface GateConfig {
 
 const GATES: GateConfig[] = [
   // ── Litmus: pre-gates ──
-  // Match git commit in all forms: git commit, git -C dir commit, git -c key=val commit
-  { script: "pre-commit-gate.sh", tool: "bash", match: /git\s+(-\S+\s+\S+\s+)*commit/, type: "pre" },
+  // Match git commit in all forms including no-arg globals: git commit, git -C dir commit, git --no-pager commit
+  { script: "pre-commit-gate.sh", tool: "bash", match: /git\s+(?:-\S+(?:\s+\S+)?\s+)*commit/, type: "pre" },
   // Match gh pr create in all forms: gh pr create, gh -R owner/repo pr create
-  { script: "pre-pr-gate.sh", tool: "bash", match: /gh\s+(-\S+\s+\S+\s+)*pr\s+create/, type: "pre" },
+  { script: "pre-pr-gate.sh", tool: "bash", match: /gh\s+(?:-\S+(?:\s+\S+)?\s+)*pr\s+create/, type: "pre" },
   // ── Litmus: post-gates (marker consumption) ──
-  { script: "post-commit-consume-marker.sh", tool: "bash", match: /git\s+(-\S+\s+\S+\s+)*commit/, type: "post" },
-  { script: "post-pr-consume-marker.sh", tool: "bash", match: /gh\s+(-\S+\s+\S+\s+)*pr\s+create/, type: "post" },
+  { script: "post-commit-consume-marker.sh", tool: "bash", match: /git\s+(?:-\S+(?:\s+\S+)?\s+)*commit/, type: "post" },
+  { script: "post-pr-consume-marker.sh", tool: "bash", match: /gh\s+(?:-\S+(?:\s+\S+)?\s+)*pr\s+create/, type: "post" },
   // ── Blueprint Review: pre-gate ──
   { script: "pre-implementation-gate.sh", tool: "*", type: "pre" },
   // ── Blueprint Review: post-gate (design doc detection) ──
   { script: "check-design-document.sh", tool: "*", type: "post" },
   // ── Pr-Grind: pre-gate ──
-  { script: "pre-merge-gate.sh", tool: "bash", match: /gh\s+(-\S+\s+\S+\s+)*pr\s+merge/, type: "pre" },
+  { script: "pre-merge-gate.sh", tool: "bash", match: /gh\s+(?:-\S+(?:\s+\S+)?\s+)*pr\s+merge/, type: "pre" },
   // ── Pr-Grind: post-gate (bypass confirmation) ──
-  { script: "post-merge-confirm-bypass.sh", tool: "bash", match: /gh\s+(-\S+\s+\S+\s+)*pr\s+merge/, type: "post" },
+  { script: "post-merge-confirm-bypass.sh", tool: "bash", match: /gh\s+(?:-\S+(?:\s+\S+)?\s+)*pr\s+merge/, type: "post" },
 ]
 
 // ── Plugin ─────────────────────────────────────────────────────────────
@@ -83,11 +87,19 @@ export default async function Busdriver({ directory, worktree }: { directory: st
 
     // Pre-tool: run pre-gates, throw on block
     "tool.execute.before": async (input, output) => {
+      // Normalize apply_patch args: extract file paths from patchText so
+      // gate scripts receive file_path like they do for Write/Edit
+      let gateArgs = output.args
+      if (input.tool === "apply_patch" && output.args?.patchText) {
+        const paths = extractPatchPaths(output.args.patchText)
+        gateArgs = { ...output.args, file_path: paths.join(", "), filePath: paths.join(", ") }
+      }
+
       for (const gate of GATES.filter((g) => g.type === "pre")) {
-        if (!matchesGate(gate, input.tool, output.args)) continue
+        if (!matchesGate(gate, input.tool, gateArgs)) continue
         let result
         try {
-          result = await runGateScript(gate, input, output.args, projectRoot)
+          result = await runGateScript(gate, input, gateArgs, projectRoot)
         } catch (e) {
           // Adapter error — log and continue (fail-open for adapter bugs, not for gate decisions)
           console.error(`[busdriver] gate ${gate.script} error:`, e)
@@ -100,17 +112,35 @@ export default async function Busdriver({ directory, worktree }: { directory: st
 
     // Post-tool: run post-gates (no throw), handle pr-created bridge
     "tool.execute.after": async (input, output) => {
-      for (const gate of GATES.filter((g) => g.type === "post")) {
-        if (!matchesGate(gate, input.tool, input.args)) continue
+      // Normalize apply_patch args for post-gates too (design doc detection)
+      // Run post-gates once per path so check-design-document.sh sees each file
+      let postGateCalls: { gate: GateConfig; args: any }[] = []
+      if (input.tool === "apply_patch" && input.args?.patchText) {
+        const paths = extractPatchPaths(input.args.patchText)
+        for (const p of paths) {
+          for (const gate of GATES.filter((g) => g.type === "post")) {
+            if (!matchesGate(gate, input.tool, { ...input.args, file_path: p, filePath: p })) continue
+            postGateCalls.push({ gate, args: { ...input.args, file_path: p, filePath: p } })
+          }
+        }
+      } else {
+        for (const gate of GATES.filter((g) => g.type === "post")) {
+          if (!matchesGate(gate, input.tool, input.args)) continue
+          postGateCalls.push({ gate, args: input.args })
+        }
+      }
+
+      for (const { gate, args } of postGateCalls) {
         try {
-          await runGateScript(gate, input, input.args, projectRoot, output.output)
+          await runGateScript(gate, input, args, projectRoot, output.output)
         } catch (e) {
           console.error(`[busdriver] post-gate ${gate.script} error:`, e)
         }
       }
 
       // Pr-Grind bridge: after gh pr create, write pending-grind marker
-      if (input.tool === "bash" && /gh\s+pr\s+create/.test(input.args?.command ?? "")) {
+      // Use same regex pattern as gates to catch flagged forms (gh -R owner/repo pr create)
+      if (input.tool === "bash" && /gh\s+(?:-\S+(?:\s+\S+)?\s+)*pr\s+create/.test(input.args?.command ?? "")) {
         try {
           handlePrCreated(output.output, projectRoot)
         } catch (e) {
@@ -129,6 +159,23 @@ function matchesGate(gate: GateConfig, tool: string, args: any): boolean {
     return gate.match.test(cmd)
   }
   return true
+}
+
+// ── Extract file paths from apply_patch patchText ──────────────────────
+// opencode's apply_patch tool sends a patch body with *** Begin Patch / 
+// *** Add File: <path> / *** Update File: <path> / *** Delete File: <path>
+// markers. Extract the file paths so gate scripts can evaluate them.
+function extractPatchPaths(patchText: string): string[] {
+  const paths: string[] = []
+  const lines = patchText.split("\n")
+  for (const line of lines) {
+    // Match Add/Update/Delete File and Move to markers
+    const m = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/)
+    const moveM = line.match(/^\*\*\* Move to: (.+)$/)
+    if (m) paths.push(m[1].trim())
+    if (moveM) paths.push(moveM[1].trim())
+  }
+  return paths
 }
 
 // ── Gate-script runner ─────────────────────────────────────────────────

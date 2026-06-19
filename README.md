@@ -146,7 +146,13 @@ Busdriver also works with [opencode](https://opencode.ai) as an alternative harn
 
 ### Install (opencode)
 
-Copy the adapter plugin to your project's `.opencode/plugins/` directory:
+The adapter plugin needs to know where the busdriver repo root is (to find gate-scripts). Set `BUSDRIVER_PLUGIN_ROOT` in your shell environment before starting opencode:
+
+```bash
+export BUSDRIVER_PLUGIN_ROOT=/path/to/busdriver
+```
+
+Then copy the adapter plugin to your project's `.opencode/plugins/` directory:
 
 ```bash
 mkdir -p .opencode/plugins

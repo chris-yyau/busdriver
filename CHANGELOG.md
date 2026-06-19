@@ -1,3 +1,10 @@
+## [1.62.6](https://github.com/chris-yyau/busdriver/compare/v1.62.5...v1.62.6) (2026-06-19)
+
+
+### Bug Fixes
+
+* **security-ci:** run secret scanning unconditionally on every PR ([#211](https://github.com/chris-yyau/busdriver/issues/211)) ([a18c7d0](https://github.com/chris-yyau/busdriver/commit/a18c7d0228b0a05a1306e1938b114dae78fff7b6)), closes [#172](https://github.com/chris-yyau/busdriver/issues/172) [#209](https://github.com/chris-yyau/busdriver/issues/209) [#209](https://github.com/chris-yyau/busdriver/issues/209) [#209](https://github.com/chris-yyau/busdriver/issues/209)
+
 ## [1.62.5](https://github.com/chris-yyau/busdriver/compare/v1.62.4...v1.62.5) (2026-06-18)
 
 

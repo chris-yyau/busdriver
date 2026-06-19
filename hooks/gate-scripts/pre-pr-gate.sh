@@ -15,14 +15,16 @@
 # Gating push kills WIP pushes and destroys credibility of the gate system.
 
 set -euo pipefail
-# ── Harness-portable root/state resolution ─────────────────────────────
-# BUSDRIVER_PLUGIN_ROOT: set by opencode adapter; CLAUDE_PLUGIN_ROOT by Claude Code.
-# Falls back to relative path from this script's location.
+# ── Harness-portable state resolution ──────────────────────────────────
 # BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
-# shellcheck disable=SC2034  # PLUGIN_ROOT used in env-var fallback chains
-PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
+# Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
+# repo-root joins resolve correctly and the value is safe to embed in messages.
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
-trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-PR gate error — blocking as precaution. If stuck, create '"$STATE_DIR"'/skip-litmus.local in your terminal.\"}\n"; exit 0' ERR
+case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+# Re-export the sanitized value so sourced helpers / subprocesses read the
+# constrained STATE_DIR rather than the raw env var.
+export BUSDRIVER_STATE_DIR="$STATE_DIR"
+trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-PR gate error — blocking as precaution. If stuck, create %s/skip-litmus.local in your terminal.\"}\n" "$STATE_DIR"; exit 0' ERR
 
 # ── Block emission helper ─────────────────────────────────────────────
 block_emit() {

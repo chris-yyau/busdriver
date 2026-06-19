@@ -14,17 +14,20 @@
 # Skip: $STATE_DIR/skip-design-review.local
 
 set -euo pipefail
-# ── Harness-portable root/state resolution ─────────────────────────────
-# BUSDRIVER_PLUGIN_ROOT: set by opencode adapter; CLAUDE_PLUGIN_ROOT by Claude Code.
-# Falls back to relative path from this script's location.
+# ── Harness-portable state resolution ──────────────────────────────────
 # BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
-# shellcheck disable=SC2034  # PLUGIN_ROOT used in env-var fallback chains
-PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
+# Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
+# repo-root joins resolve correctly and the value is safe to embed in messages.
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+# Re-export the sanitized value so downstream consumers (the embedded Python
+# rm/mkdir allowlist below, sourced helpers) read the constrained STATE_DIR
+# rather than the raw env var — otherwise a traversal value could bypass them.
+export BUSDRIVER_STATE_DIR="$STATE_DIR"
 # Fail-CLOSED: errors block implementation writes rather than silently approving.
 # User preference: "a stuck session is better than a skipped review."
 # Escape hatch: $STATE_DIR/skip-design-review.local
-trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-implementation gate error — blocking as precaution. If stuck, create '"$STATE_DIR"'/skip-design-review.local in your terminal.\"}\n"; exit 0' ERR
+trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-implementation gate error — blocking as precaution. If stuck, create %s/skip-design-review.local in your terminal.\"}\n" "$STATE_DIR"; exit 0' ERR
 
 # ── Block emission helper (F6 fix) ────────────────────────────────────
 # Uses jq when available, falls back to printf when jq is missing.

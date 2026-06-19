@@ -386,4 +386,3 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 ## License
 
 MIT
-<!-- c2prime smoke -->

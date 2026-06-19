@@ -255,16 +255,20 @@ async function main() {
     if (summary && updatedContent) {
       const summaryBlock = buildSummaryBlock(summary);
 
+      // Use function replacers: summaryBlock embeds raw user-message text, and a
+      // string replacement argument interprets $-sequences ($&, $$, $`, $', $n).
+      // A $& in a user message would otherwise re-inject the entire matched block
+      // and corrupt the persisted summary. A function replacer is treated literally.
       if (updatedContent.includes(SUMMARY_START_MARKER) && updatedContent.includes(SUMMARY_END_MARKER)) {
         updatedContent = updatedContent.replace(
           new RegExp(`${escapeRegExp(SUMMARY_START_MARKER)}[\\s\\S]*?${escapeRegExp(SUMMARY_END_MARKER)}`),
-          summaryBlock
+          () => summaryBlock
         );
       } else {
         // Migration path for files created before summary markers existed.
         updatedContent = updatedContent.replace(
           /## (?:Session Summary|Current State)[\s\S]*?$/,
-          `${summaryBlock}\n\n### Notes for Next Session\n-\n\n### Context to Load\n\`\`\`\n[relevant files]\n\`\`\`\n`
+          () => `${summaryBlock}\n\n### Notes for Next Session\n-\n\n### Context to Load\n\`\`\`\n[relevant files]\n\`\`\`\n`
         );
       }
     }
@@ -296,14 +300,7 @@ function buildSummarySection(summary) {
   // Tasks (from user messages — collapse newlines and escape backticks to prevent markdown breaks)
   section += '### Tasks\n';
   for (const msg of summary.userMessages) {
-    // Escape the backslash (the escape char itself) BEFORE escaping backticks,
-    // otherwise a trailing "\" in the input could neutralize our "\`" escape
-    // (CodeQL js/incomplete-sanitization). Collapse newlines last.
-    const safeMsg = msg
-      .replace(/\\/g, '\\\\')
-      .replace(/`/g, '\\`')
-      .replace(/\n/g, ' ');
-    section += `- ${safeMsg}\n`;
+    section += `- ${msg.replace(/\n/g, ' ').replace(/`/g, '\\`')}\n`;
   }
   section += '\n';
 

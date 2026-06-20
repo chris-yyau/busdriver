@@ -1,6 +1,10 @@
 #!/bin/bash
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+# Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
+# the "$repo_root/$STATE_DIR/review-exclude" join below resolves correctly.
+case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 # Shared exclusion logic for auto-generated files
-# Sources: hardcoded defaults + project-level .claude/review-exclude
+# Sources: hardcoded defaults + project-level $STATE_DIR/review-exclude
 
 # Hardcoded defaults for universally auto-generated files
 # Patterns use ** prefix to match at any depth (monorepo/nested package support)
@@ -28,7 +32,7 @@ build_exclude_args() {
   # Resolve .claude/review-exclude relative to git repo root (not CWD)
   local repo_root
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
-  local review_exclude_file="$repo_root/.claude/review-exclude"
+  local review_exclude_file="$repo_root/$STATE_DIR/review-exclude"
 
   if [ -f "$review_exclude_file" ]; then
     while IFS= read -r line || [ -n "$line" ]; do

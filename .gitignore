@@ -26,8 +26,19 @@ skills/skill-comply/uv.lock
 .claude/.gate-block-count.local
 .claude/.impl-gate-block-count.local
 
+# OpenCode gate state (mirrors .claude/ for opencode harness)
+.opencode/*.local
+.opencode/*.local.*
+.opencode/litmus-state.md
+.opencode/bypass-log.jsonl
+.opencode/review-metrics.jsonl
+.opencode/*.log
+.opencode/.gate-block-count.local
+.opencode/.impl-gate-block-count.local
+
 # Claude workspace artifacts
 .claude/worktrees/
+.opencode/worktrees/
 AGENTS.md
 
 # Internal planning docs and review artifacts

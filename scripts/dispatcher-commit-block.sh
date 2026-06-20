@@ -4,7 +4,7 @@
 #
 # Inputs (required env vars; parent dispatcher injects):
 #   WORKTREE_DIR            - absolute path to worktree (cwd inside script)
-#   CLAUDE_PLUGIN_ROOT      - busdriver plugin root
+#   BUSDRIVER_PLUGIN_ROOT   - busdriver plugin root (opencode) or CLAUDE_PLUGIN_ROOT (Claude Code)
 #   PR_NUMBER               - GitHub PR number
 #   RESULT_STATUS           - "needs_more" | "clean" | "bail" (from worker)
 #   RESULT_FIXES            - worker's intent statement (string)
@@ -52,14 +52,20 @@ emit_bootstrap_bail() {
 
 # Required env var check must run before sourcing helpers from
 # CLAUDE_PLUGIN_ROOT, because the missing-env contract itself is testable.
-for var in WORKTREE_DIR CLAUDE_PLUGIN_ROOT PR_NUMBER RESULT_STATUS RESULT_FIXES; do
+# Accept either BUSDRIVER_PLUGIN_ROOT (opencode) or CLAUDE_PLUGIN_ROOT (Claude Code)
+_PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"
+for var in WORKTREE_DIR PR_NUMBER RESULT_STATUS RESULT_FIXES; do
     if [ -z "${!var:-}" ]; then
         emit_bootstrap_bail "env" "dispatcher-commit-block: missing required env var $var"
     fi
 done
 
+if [ -z "$_PLUGIN_ROOT" ]; then
+    emit_bootstrap_bail "env" "dispatcher-commit-block: missing PLUGIN_ROOT (set BUSDRIVER_PLUGIN_ROOT or CLAUDE_PLUGIN_ROOT)"
+fi
+
 # Resolve script lib paths.
-SCRIPT_LIB="${CLAUDE_PLUGIN_ROOT}/scripts/lib"
+SCRIPT_LIB="${_PLUGIN_ROOT}/scripts/lib"
 # shellcheck source=/dev/null
 . "$SCRIPT_LIB/bail-envelope.sh" || \
     emit_bootstrap_bail "env" "dispatcher-commit-block: failed to source bail-envelope.sh"
@@ -67,10 +73,10 @@ SCRIPT_LIB="${CLAUDE_PLUGIN_ROOT}/scripts/lib"
 . "$SCRIPT_LIB/staged-diff-hash.sh" || \
     emit_bail "env" "dispatcher-commit-block: failed to source staged-diff-hash.sh"
 
-FETCH_PR_STATE_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/fetch-pr-state.sh"
-ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
-LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
-LITMUS_STATE_FILE=".claude/litmus-state.md"
+FETCH_PR_STATE_SCRIPT="${_PLUGIN_ROOT}/scripts/fetch-pr-state.sh"
+ACK_SCRIPT="${_PLUGIN_ROOT}/scripts/ack-ledger.sh"
+LITMUS_SCRIPTS="${_PLUGIN_ROOT}/skills/litmus/scripts"
+LITMUS_STATE_FILE="${BUSDRIVER_STATE_DIR:-.claude}/litmus-state.md"
 
 cd "$WORKTREE_DIR" || \
     emit_bail "env" "dispatcher-commit-block: cd to WORKTREE_DIR ($WORKTREE_DIR) failed"
@@ -308,7 +314,7 @@ esac
 
 # The dispatcher must recompute and verify the marker hash itself; the
 # pre-commit gate is defense-in-depth, not the only verifier.
-LITMUS_MARKER=".claude/litmus-passed.local"
+LITMUS_MARKER="${BUSDRIVER_STATE_DIR:-.claude}/litmus-passed.local"
 if [ ! -f "$LITMUS_MARKER" ]; then
     emit_bail "judgment" "litmus PASS but marker file $LITMUS_MARKER missing"
 fi

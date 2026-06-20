@@ -3,7 +3,15 @@
 import os, sys, re
 from datetime import datetime, timezone, timedelta
 
-state_file = ".claude/design-review-needed.local.md"
+# Resolve the harness state dir, constraining it to a safe relative name (mirror
+# the shell gates) so this cleanup reads the markers from the same directory the
+# gates write them to — including .opencode in opencode mode.
+state_dir = os.environ.get("BUSDRIVER_STATE_DIR", ".claude")
+if (not state_dir or state_dir.startswith("/") or ".." in state_dir
+        or not re.fullmatch(r"[A-Za-z0-9._/-]+", state_dir)):
+    state_dir = ".claude"
+
+state_file = f"{state_dir}/design-review-needed.local.md"
 stale_hours = float(os.environ.get("DESIGN_REVIEW_STALE_HOURS", "2"))
 
 try:
@@ -58,7 +66,7 @@ is_stale = age > timedelta(hours=stale_hours)
 if not unreviewed:
     os.remove(state_file)
     try:
-        os.remove(".claude/.impl-gate-block-count.local")
+        os.remove(f"{state_dir}/.impl-gate-block-count.local")
     except Exception:
         pass
     if resolved:

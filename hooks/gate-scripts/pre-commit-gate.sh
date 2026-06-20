@@ -6,16 +6,27 @@
 #   Gate 2: Codex review  — blocks if no review-passed marker for current staged changes
 #
 # Fail-CLOSED: errors block commits (user preference: stuck > skipped review)
-# Skip: .claude/skip-litmus.local (or SKIP_LITMUS=1 exported in parent shell
+# Skip: $STATE_DIR/skip-litmus.local (or SKIP_LITMUS=1 exported in parent shell
 #       before `claude` starts — inline `SKIP_LITMUS=1 git commit` does NOT
 #       work because PreToolUse hooks fire before the command's inline env
 #       is applied)
 
 set -euo pipefail
+# ── Harness-portable root/state resolution ─────────────────────────────
+# BUSDRIVER_PLUGIN_ROOT: set by opencode adapter; CLAUDE_PLUGIN_ROOT by Claude Code.
+# Falls back to relative path from this script's location.
+# BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
+# shellcheck disable=SC2034  # PLUGIN_ROOT used in env-var fallback chains
+PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+# Constrain to a safe relative name (reject absolute/traversal/unsafe chars) and
+# re-export so every gate writes/consumes markers from the same state dir.
+case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+export BUSDRIVER_STATE_DIR="$STATE_DIR"
 # Fail-CLOSED: errors block commits rather than silently approving.
 # User preference: "a stuck session is better than a skipped review."
-# Escape hatch: .claude/skip-litmus.local (or SKIP_LITMUS=1 in parent shell).
-trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-commit gate error — blocking as precaution. If stuck, create .claude/skip-litmus.local in your terminal.\"}\n"; exit 0' ERR
+# Escape hatch: $STATE_DIR/skip-litmus.local (or SKIP_LITMUS=1 in parent shell).
+trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-commit gate error — blocking as precaution. If stuck, create '"$STATE_DIR"'/skip-litmus.local in your terminal.\"}\n"; exit 0' ERR
 
 # ── Block emission helper (F6 fix) ────────────────────────────────────
 # Uses jq when available, falls back to printf when jq is missing.
@@ -39,7 +50,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
 # If missing, block — fail-closed principle. The || true on the python3
 # call below would otherwise silently allow ALL commits.
 if ! command -v python3 &>/dev/null; then
-    block_emit "CRITICAL: python3 not found. All review gates require python3 for JSON parsing and command detection. Install python3 to restore gate enforcement. Escape hatch: .claude/skip-litmus.local"
+    block_emit "CRITICAL: python3 not found. All review gates require python3 for JSON parsing and command detection. Install python3 to restore gate enforcement. Escape hatch: $STATE_DIR/skip-litmus.local"
     exit 0
 fi
 
@@ -142,7 +153,7 @@ HOOK_CWD=$(echo "$PARSE_RESULT" | sed -n '4p')
 
 # Fail-closed: parser error after fast pre-filter matched → block as precaution
 if [ "$IS_GIT_COMMIT" = "error" ]; then
-    block_emit "Pre-commit gate: failed to parse tool input for command matching git commit pattern. Blocking as precaution (fail-closed). If stuck, create .claude/skip-litmus.local in your terminal."
+    block_emit "Pre-commit gate: failed to parse tool input for command matching git commit pattern. Blocking as precaution (fail-closed). If stuck, create $STATE_DIR/skip-litmus.local in your terminal."
     exit 0
 fi
 
@@ -168,7 +179,7 @@ REPO_DIR="$GATE_REPO_DIR"
 # on a pushed commit body. The fix required force-push amend. Litmus
 # refused to run on empty staged diff ("No uncommitted changes detected"),
 # but this gate still required litmus pass — deadlock. The user had to
-# create `.claude/skip-litmus.local` manually. This auto-pass eliminates
+# create \`$STATE_DIR/skip-litmus.local\` manually. This auto-pass eliminates
 # the skip-file dance for commit-message-only amends.
 #
 # Safety: same invariant as the merge-commit auto-pass below — empty
@@ -268,13 +279,13 @@ fi
 # All marker/state files are scoped to $REPO_DIR (the cwd-anchored target repo),
 # consistent with the litmus marker below and the sibling pre-pr/pre-merge gates,
 # so a commit targeting a repo other than the hook process CWD reads the right
-# .claude/ directory.
-if [ -f "$REPO_DIR/.claude/skip-litmus.local" ]; then
+# $STATE_DIR/ directory.
+if [ -f "$REPO_DIR/$STATE_DIR/skip-litmus.local" ]; then
     # Reject skip files created within the last 30 seconds — likely Claude self-bypass.
     # A human-created skip file (via terminal) will typically be older.
     FILE_AGE=999
-    _MTIME=$(stat -f %m "$REPO_DIR/.claude/skip-litmus.local" 2>/dev/null) \
-        || _MTIME=$(stat -c %Y "$REPO_DIR/.claude/skip-litmus.local" 2>/dev/null) \
+    _MTIME=$(stat -f %m "$REPO_DIR/$STATE_DIR/skip-litmus.local" 2>/dev/null) \
+        || _MTIME=$(stat -c %Y "$REPO_DIR/$STATE_DIR/skip-litmus.local" 2>/dev/null) \
         || _MTIME=""
     [ -n "$_MTIME" ] && FILE_AGE=$(( $(date +%s) - _MTIME ))
     if [ "$FILE_AGE" -lt 30 ]; then
@@ -288,18 +299,18 @@ If YOU created this file: STOP. Do NOT create skip files yourself. Run /litmus i
     fi
     # Single-use: consume the skip file after allowing one commit.
     # This prevents stale skip files from permanently disabling review gates.
-    rm -f "$REPO_DIR/.claude/skip-litmus.local"
-    rm -f "$REPO_DIR/.claude/.gate-block-count.local" 2>/dev/null || true  # Reset circuit breaker
+    rm -f "$REPO_DIR/$STATE_DIR/skip-litmus.local"
+    rm -f "$REPO_DIR/$STATE_DIR/.gate-block-count.local" 2>/dev/null || true  # Reset circuit breaker
     # ── Bypass telemetry ──────────────────────────────────────────────
     # Log skip-file consumption so there's an auditable record of bypasses.
-    mkdir -p "$REPO_DIR/.claude"
-    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
+    mkdir -p "$REPO_DIR/$STATE_DIR"
+    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
     exit 0
 fi
 [ "${SKIP_LITMUS:-0}" = "1" ] && exit 0
 
 # ── Gate 1: Design review ────────────────────────────────────────────────
-DESIGN_STATE="$REPO_DIR/.claude/design-review-needed.local.md"
+DESIGN_STATE="$REPO_DIR/$STATE_DIR/design-review-needed.local.md"
 if [ -f "$DESIGN_STATE" ]; then
     UNREVIEWED=""
     DESIGN_LINES=$(grep '^\- ' "$DESIGN_STATE" 2>/dev/null || true)
@@ -318,7 +329,7 @@ if [ -f "$DESIGN_STATE" ]; then
     done <<< "$DESIGN_LINES"
 
     if [ -n "$UNREVIEWED" ]; then
-        REASON=$(printf "Design review required before committing.\n\nUnreviewed documents:\n%b\nRun /blueprint-review to review these documents, then try committing again.\n\nIMPORTANT: Do NOT create .claude/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the blueprint review instead." "$UNREVIEWED")
+        REASON=$(printf "Design review required before committing.\n\nUnreviewed documents:\n%b\nRun /blueprint-review to review these documents, then try committing again.\n\nIMPORTANT: Do NOT create $STATE_DIR/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the blueprint review instead." "$UNREVIEWED")
         block_emit "$REASON"
         exit 0
     else
@@ -357,9 +368,9 @@ while IFS= read -r staged_file; do
     IS_REVIEWED_SPEC=false
     if echo "$staged_file" | grep -qE '\.md$'; then
         # Match design doc patterns: basename starts with PLAN/DESIGN/ARCHITECTURE,
-        # or file is in a plans/ or specs/ directory under .claude/ or docs/
+        # or file is in a plans/ or specs/ directory under $STATE_DIR/ or docs/
         if echo "$staged_file" | grep -qiE '(^|/)(PLAN|DESIGN|ARCHITECTURE)[^/]*\.md$' || \
-           echo "$staged_file" | grep -qE '(\.claude|docs)/([^/]+/)*(plans|specs)/.*\.md$'; then
+           echo "$staged_file" | grep -qE "(\\.${STATE_DIR#.}|docs)/([^/]+/)*(plans|specs)/.*\\.md\$"; then
             if [ -f "$FULL_PATH" ] && grep -q "<!-- design-reviewed: PASS -->" "$FULL_PATH" 2>/dev/null; then
                 IS_REVIEWED_SPEC=true
             fi
@@ -382,6 +393,7 @@ fi
 # those files for design-reviewed markers.
 # Fail-closed: reject flags (-A, -u, -p), globs (*?[{), or any parse failure.
 if [ "$HAS_STAGED" = false ]; then
+    mkdir -p "$REPO_DIR/$STATE_DIR" 2>/dev/null || true
     TOCTOU_FILES=$(printf '%s' "$HOOK_DATA" | python3 -c "
 import sys, json, re
 try:
@@ -420,7 +432,7 @@ try:
 except Exception as e:
     import sys
     sys.stderr.write('toctou-parse-error: ' + repr(e) + '\n')
-" 2>>"${REPO_DIR}/.claude/toctou-parse.log" || true)
+" 2>>"${REPO_DIR}/${STATE_DIR}/toctou-parse.log" || true)
 
     if [ -n "$TOCTOU_FILES" ]; then
         TOCTOU_ALL_SPECS=true
@@ -432,7 +444,7 @@ except Exception as e:
             IS_SPEC=false
             if echo "$toctou_file" | grep -qE '\.md$'; then
                 if echo "$toctou_file" | grep -qiE '(^|/)(PLAN|DESIGN|ARCHITECTURE)[^/]*\.md$' || \
-                   echo "$toctou_file" | grep -qiE '(\.claude|docs)/([^/]+/)*(plans|specs)/.*\.md$'; then
+                   echo "$toctou_file" | grep -qiE "(\\.${STATE_DIR#.}|docs)/([^/]+/)*(plans|specs)/.*\\.md\$"; then
                     if [ -f "$FULL_PATH" ] && [ ! -L "$FULL_PATH" ] && grep -q "<!-- design-reviewed: PASS -->" "$FULL_PATH" 2>/dev/null; then
                         IS_SPEC=true
                     fi
@@ -451,7 +463,7 @@ except Exception as e:
 fi
 
 # ── Gate 2: Codex review ─────────────────────────────────────────────────
-MARKER="$REPO_DIR/.claude/litmus-passed.local"
+MARKER="$REPO_DIR/$STATE_DIR/litmus-passed.local"
 if [ -f "$MARKER" ]; then
     # Marker exists — verify it represents an actual review, not degraded mode.
     # DEGRADED markers (written when codex CLI is missing) must NOT pass the gate.
@@ -459,7 +471,7 @@ if [ -f "$MARKER" ]; then
     MARKER_CONTENT=$(cat "$MARKER" 2>/dev/null || echo "")
     if echo "$MARKER_CONTENT" | grep -q "^DEGRADED"; then
         rm -f "$MARKER"
-        echo '{"decision":"block","reason":"Code review ran in DEGRADED mode (no review CLI installed). No actual code review was performed. Install a review CLI or create .claude/skip-litmus.local to bypass."}' >&2
+        echo "{\"decision\":\"block\",\"reason\":\"Code review ran in DEGRADED mode (no review CLI installed). No actual code review was performed. Install a review CLI or create $STATE_DIR/skip-litmus.local to bypass.\"}" >&2
         # Do NOT exit 0 — fall through to blocking logic below
     elif echo "$MARKER_CONTENT" | grep -q "^SKIPPED-NONE"; then
         # BUSDRIVER_REVIEW_CLI=none — user explicitly opted out of review.
@@ -483,7 +495,8 @@ fi
 
 # Circuit breaker: detect repeated blocking that may indicate a stuck gate.
 # If blocked >10 times in this session, warn user about manual escape hatch.
-BLOCK_COUNTER="$REPO_DIR/.claude/.gate-block-count.local"
+mkdir -p "$REPO_DIR/$STATE_DIR" 2>/dev/null || true
+BLOCK_COUNTER="$REPO_DIR/$STATE_DIR/.gate-block-count.local"
 BLOCK_COUNT=0
 if [ -f "$BLOCK_COUNTER" ]; then
     BLOCK_COUNT=$(cat "$BLOCK_COUNTER" 2>/dev/null || echo "0")
@@ -496,7 +509,7 @@ if [ "$BLOCK_COUNT" -ge 10 ]; then
     ESCAPE_HINT="
 
 WARNING: This gate has blocked $BLOCK_COUNT consecutive commits this session.
-If you believe the gate is stuck, the user can run: touch $REPO_DIR/.claude/skip-litmus.local"
+If you believe the gate is stuck, the user can run: touch $REPO_DIR/$STATE_DIR/skip-litmus.local"
 fi
 
 # No valid review marker → block commit
@@ -505,6 +518,6 @@ REASON="Code review required before committing.
 Run /litmus to review your staged changes. The review must pass before git commit is allowed.
 
 IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run litmus instead.
-If the user wants to skip: touch $REPO_DIR/.claude/skip-litmus.local
+If the user wants to skip: touch $REPO_DIR/$STATE_DIR/skip-litmus.local
 After the user creates the skip file, WAIT 30 SECONDS before retrying the commit (the gate rejects files newer than 30s to prevent self-bypass).${ESCAPE_HINT}"
 block_emit "$REASON"

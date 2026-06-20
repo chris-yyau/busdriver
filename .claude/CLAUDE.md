@@ -26,7 +26,17 @@ skills/          287 skill definitions (.md) — the bulk of the plugin's capabi
                  Python tests live per-skill (e.g. skills/skill-comply/tests/, skills/continuous-learning-v2/scripts/)
 tests/           Shell-based gate tests (test-*.sh)
 docs/            Reference docs and examples
+opencode/        Downstream MIRROR for the opencode harness (NOT loaded by Claude Code) — see note below
 ```
+
+## `opencode/` — Downstream Mirror (ignore in normal Claude Code work)
+
+The `opencode/` subtree is a **port of four features** (litmus, blueprint-review, council, pr-grind) to the [opencode](https://opencode.ai) harness: `opencode/plugin.ts` (gate-bridge adapter), `opencode/agents/`, `opencode/skills/`. It is **not** part of the Claude Code plugin and is not loaded in Claude Code sessions.
+
+- **Source-of-truth lives at the repo root:** `skills/`, `agents/`, `scripts/`, `hooks/`. The `opencode/` copies are downstream — when fixing skill/agent/script behavior, edit the **root** version; only touch `opencode/` when the task is explicitly the opencode port.
+- **Bridge model:** the opencode skills call the *root* `scripts/*.sh` (ack-ledger, dispatcher-commit-block, resolve-cli, etc.) via `$BUSDRIVER_PLUGIN_ROOT` — they are NOT duplicated. Shared scripts must stay harness-neutral (`${BUSDRIVER_STATE_DIR:-.claude}`, no bash-4-isms) so both harnesses pass.
+- **Search hygiene:** a search for `pr-grind`/`litmus`/`council` will hit both the root skill and its `opencode/` mirror. In a normal Claude Code session, prefer the root match and ignore the `opencode/` duplicate unless the port is the task.
+- **Distribution:** `scripts/release.sh` strips `opencode/` from the `claude-release` branch, so Claude Code users never see it. Operator-facing install docs for the port live in `opencode/README.md`.
 
 ## Enforcement Gates (Hook-Driven)
 
@@ -77,4 +87,5 @@ Version numbers are managed across three manifests (declared in `.version-bump.j
 - **Fail-CLOSED philosophy** — all review gates block on error. "A stuck session is better than a skipped review."
 - **`.local` files are gitignored** — escape hatches (skip-litmus, freeze-scope, design-review-needed) use `.local` suffix to stay out of version control.
 - **Three test suites** — (1) vitest for JS (`__tests__/`, `npm test` / `npm run test:coverage`); (2) pytest for Python, organized **federated per-skill** (each island owns its imports — skill-comply is a self-contained `uv` project; a single root `pytest`/`pyproject.toml` would break its `pythonpath`), run via `scripts/test-python.sh`; (3) shell gate-tests in `tests/test-*.sh` run directly. New JS tests go in `__tests__/`; new Python tests go beside the skill they cover.
+- **Solo operator + provider chain (SETTLED — do not reopen as churn)** — this repo is public but **single-operator** (only the maintainer uses it). The arbiter/dispatch provider chain is fixed at **subscription → zenmux (gateway) → opus → inherit**, exactly as documented in `skills/blueprint-review/SKILL.md`. The operator **never** uses cloud-provider selectors (`CLAUDE_CODE_USE_{BEDROCK,VERTEX,FOUNDRY,ANTHROPIC_AWS,MANTLE}`). The gateway/provider-scrub hardening is **considered done** — treat that surface as frozen and do **not** spend further effort scrubbing providers that are never used or re-litigating the hostile-arbiter threat model for solo use. (The existing credential-containment layers stay as-is — they still protect the operator's own key — but no new provider-scrub work is warranted absent a real second user/threat.)
 - **Public repo** — `chris-yyau/busdriver` is public; you are the sole admin (only approval-capable human — forkers who open PRs are not). Merges are gated by required status checks + sole-admin access. **Solo-admin auto-escalation is enabled** (`.claude/pr-grind-auto-admin-solo.local`, gitignored) but **currently inert**: `main` has no required-review rule (deliberate solo-repo choice — `required_pull_request_reviews: null` since the helmet rollout; **always confirm this via the parent `gh api repos/OWNER/REPO/branches/main/protection` endpoint — the `/protection/required_pull_request_reviews` sub-endpoint phantom-reports `count: 1` even when unenforced and will manufacture a false approver gap**), so there is no approver gap for the opt-in to bridge. The real merge gate is the 8 required status checks with `strict` on (the `mergeStateStatus=BEHIND` enforcer) plus `enforce_admins=false`; an admin squash-merges (`--squash --delete-branch`), adding `--admin` only to clear a `BEHIND` head. The opt-in self-revokes if a second approval-capable human is ever added. Local tooling still preferred over remote CI for development workflow.

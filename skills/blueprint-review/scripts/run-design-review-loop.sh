@@ -22,11 +22,13 @@
 
 set -euo pipefail
 
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/validation.sh"
 
 # Source shared CLI resolution library
-_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
+_PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}}"
 # shellcheck source=../../../scripts/lib/resolve-cli.sh
 source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"
 source "$SCRIPT_DIR/lib/state_management.sh"
@@ -367,7 +369,7 @@ while true; do
   if is_max_iterations_reached; then
     log_warning "Maximum iterations ($MAX_ITERATIONS) reached"
     log_info "Design review did not converge. Human intervention required."
-    log_info "Options: fix issues and re-run, or create .claude/skip-design-review.local in terminal."
+    log_info "Options: fix issues and re-run, or create $STATE_DIR/skip-design-review.local in terminal."
     record_coverage_finalize
     mark_review_complete "max_iterations_exceeded"
     exit 1
@@ -1103,7 +1105,7 @@ EOF
     fi
     record_coverage_finalize
 
-    rm -f ".claude/design-review-needed.local.md"
+    rm -f "$STATE_DIR/design-review-needed.local.md"
     log_info "Design review state cleaned up."
     mark_review_complete "passed"
     exit 0

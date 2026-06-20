@@ -287,7 +287,7 @@ resolve_role_cli() {
 
   # Step 2: Project config routes
   _git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
-  project_config="${_git_root:+$_git_root/.claude/busdriver.json}"
+  project_config="${_git_root:+$_git_root/${BUSDRIVER_STATE_DIR:-.claude}/busdriver.json}"
   [[ -z "$project_config" ]] && project_config=""  # empty _git_root → skip
   if [[ -f "$project_config" ]]; then
     ver=$(_read_config_value "$project_config" '.version')
@@ -299,7 +299,7 @@ resolve_role_cli() {
   fi
 
   # Step 3: User config routes
-  user_config="$HOME/.claude/busdriver.json"
+  user_config="$HOME/${BUSDRIVER_STATE_DIR:-.claude}/busdriver.json"
   if [[ -f "$user_config" ]]; then
     ver=$(_read_config_value "$user_config" '.version')
     if [[ -n "$ver" && "$ver" != "1" ]]; then
@@ -466,8 +466,8 @@ describe_role_resolution() {
     requested="$env_cli"
   else
     _git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
-    project_config="${_git_root:+$_git_root/.claude/busdriver.json}"
-    user_config="$HOME/.claude/busdriver.json"
+    project_config="${_git_root:+$_git_root/${BUSDRIVER_STATE_DIR:-.claude}/busdriver.json}"
+    user_config="$HOME/${BUSDRIVER_STATE_DIR:-.claude}/busdriver.json"
     for cfg in "$project_config" "$user_config"; do
       [[ -z "$cfg" || ! -f "$cfg" ]] && continue
       i=0
@@ -702,10 +702,10 @@ _execute_codex() {
       # events for any non-root invocation.
       local _git_root=""
       _git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
-      if [[ -n "$_git_root" && -d "$_git_root/.claude" ]]; then
+      if [[ -n "$_git_root" && -d "$_git_root/${BUSDRIVER_STATE_DIR:-.claude}" ]]; then
         printf '{"ts":"%s","event":"codex-droid-fallback","codex_exit":%d,"droid_exit":%d,"droid_ok":%d,"codex_attempts":%d}\n' \
           "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$exit_code" "$droid_exit" "$_droid_ok" "$attempts_run" \
-          >> "$_git_root/.claude/bypass-log.jsonl" 2>/dev/null || true
+          >> "$_git_root/${BUSDRIVER_STATE_DIR:-.claude}/bypass-log.jsonl" 2>/dev/null || true
       fi
 
       if [[ "$_droid_ok" -eq 1 ]]; then

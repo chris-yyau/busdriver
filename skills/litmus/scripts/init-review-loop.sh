@@ -4,6 +4,8 @@
 
 set -euo pipefail
 
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+
 # Parse arguments
 FORCE=false
 POSITIONAL_ARGS=()
@@ -31,7 +33,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/iteration-history.sh"
 
 # Guard: prevent re-init while a review loop is active
-STATE_FILE=".claude/litmus-state.md"
+STATE_FILE="$STATE_DIR/litmus-state.md"
 if [ "$FORCE" != "true" ] && [ -f "$STATE_FILE" ]; then
     # Source validation library for get_yaml_value
     # shellcheck source=lib/validation.sh
@@ -62,8 +64,8 @@ if ! git rev-parse --git-dir > /dev/null 2>&1; then
     exit 1
 fi
 
-# Create .claude directory if it doesn't exist
-mkdir -p .claude
+# Create state directory if it doesn't exist
+mkdir -p "$STATE_DIR"
 
 # Get current timestamp in ISO 8601 format
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -83,7 +85,7 @@ fi
 
 # Create state file with YAML frontmatter
 if [ "$REVIEW_MODE" = "pr" ]; then
-cat > .claude/litmus-state.md <<'EOF'
+cat > "$STATE_DIR/litmus-state.md" <<'EOF'
 ---
 active: true
 iteration: 1
@@ -172,7 +174,7 @@ Field rules:
 </grounding_rules>
 EOF
 else
-cat > .claude/litmus-state.md <<'EOF'
+cat > "$STATE_DIR/litmus-state.md" <<'EOF'
 ---
 active: true
 iteration: 1
@@ -262,15 +264,15 @@ EOF
 fi
 
 # Replace placeholders
-sed -i.tmp "s/MAX_ITERATIONS_PLACEHOLDER/$MAX_ITERATIONS/" .claude/litmus-state.md
-sed -i.tmp "s/COMPLETION_PROMISE_PLACEHOLDER/$COMPLETION_PROMISE/" .claude/litmus-state.md
-sed -i.tmp "s/TIMESTAMP_PLACEHOLDER/$TIMESTAMP/" .claude/litmus-state.md
-rm -f .claude/litmus-state.md.tmp
+sed -i.tmp "s/MAX_ITERATIONS_PLACEHOLDER/$MAX_ITERATIONS/" "$STATE_DIR/litmus-state.md"
+sed -i.tmp "s/COMPLETION_PROMISE_PLACEHOLDER/$COMPLETION_PROMISE/" "$STATE_DIR/litmus-state.md"
+sed -i.tmp "s/TIMESTAMP_PLACEHOLDER/$TIMESTAMP/" "$STATE_DIR/litmus-state.md"
+rm -f "$STATE_DIR/litmus-state.md.tmp"
 
 # Success message
 echo "✅ Review loop initialized"
 echo ""
-echo "   State file: .claude/litmus-state.md"
+echo "   State file: $STATE_DIR/litmus-state.md"
 echo "   Max iterations: $MAX_ITERATIONS"
 if [ "$COMPLETION_PROMISE" != "null" ]; then
     echo "   Completion promise: $COMPLETION_PROMISE"

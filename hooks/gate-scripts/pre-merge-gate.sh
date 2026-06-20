@@ -6,13 +6,22 @@
 # regardless of which skill the agent loaded.
 #
 # Fail-CLOSED: errors block merge (user preference: stuck > skipped grind)
-# Skip: .claude/skip-pr-grind.local (or SKIP_PR_GRIND=1 exported in parent
+# Skip: $STATE_DIR/skip-pr-grind.local (or SKIP_PR_GRIND=1 exported in parent
 #       shell before `claude` starts — inline `SKIP_PR_GRIND=1 gh pr merge`
 #       does NOT work because PreToolUse hooks fire before the command's
 #       inline env is applied)
 
 set -euo pipefail
-trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-merge gate error — blocking as precaution. If stuck, create .claude/skip-pr-grind.local in your terminal.\"}\n"; exit 0' ERR
+# ── Harness-portable state resolution ──────────────────────────────────
+# BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
+# Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
+# repo-root joins resolve correctly and the value is safe to embed in messages.
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+# Re-export the sanitized value so sourced helpers / subprocesses read the
+# constrained STATE_DIR rather than the raw env var.
+export BUSDRIVER_STATE_DIR="$STATE_DIR"
+trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-merge gate error — blocking as precaution. If stuck, create %s/skip-pr-grind.local in your terminal.\"}\n" "$STATE_DIR"; exit 0' ERR
 
 # ── Block emission helper ─────────────────────────────────────────────
 block_emit() {
@@ -168,7 +177,7 @@ fi
 
 # Fail-closed: parser error after fast pre-filter matched → block as precaution
 if [ "$IS_GH_PR_MERGE" = "error" ]; then
-    block_emit "Pre-merge gate: failed to parse tool input for command matching gh pr merge pattern. Blocking as precaution (fail-closed). If stuck, create .claude/skip-pr-grind.local in your terminal."
+    block_emit "Pre-merge gate: failed to parse tool input for command matching gh pr merge pattern. Blocking as precaution (fail-closed). If stuck, create $STATE_DIR/skip-pr-grind.local in your terminal."
     exit 0
 fi
 
@@ -193,7 +202,7 @@ REPO_DIR="$GATE_REPO_DIR"
 [ "${SKIP_PR_GRIND:-}" = "1" ] && exit 0
 
 # File-based skip (anti-self-bypass pattern from pre-commit gate)
-SKIP_FILE="$REPO_DIR/.claude/skip-pr-grind.local"
+SKIP_FILE="$REPO_DIR/$STATE_DIR/skip-pr-grind.local"
 if [ -f "$SKIP_FILE" ]; then
     FILE_AGE=999
     _MTIME=$(stat -f %m "$SKIP_FILE" 2>/dev/null) \
@@ -204,7 +213,7 @@ if [ -f "$SKIP_FILE" ]; then
     # Reject skip files created within last 30 seconds — likely Claude self-bypass
     if [ "$FILE_AGE" -lt 30 ]; then
         rm -f "$SKIP_FILE"
-        block_emit "BLOCKED: skip-pr-grind.local was created moments ago (likely self-bypass). Do NOT create .claude/skip-pr-grind.local yourself. Run /pr-grind instead. If the user wants to skip, they should create the file manually in their terminal."
+        block_emit "BLOCKED: skip-pr-grind.local was created moments ago (likely self-bypass). Do NOT create $STATE_DIR/skip-pr-grind.local yourself. Run /pr-grind instead. If the user wants to skip, they should create the file manually in their terminal."
         exit 0
     fi
 
@@ -216,17 +225,17 @@ if [ -f "$SKIP_FILE" ]; then
         # branch-protection refusal), the skip file remains valid so the
         # operator does not need to re-touch it. This closes the
         # consume-on-gate-pass-but-command-fail gap.
-        mkdir -p "$REPO_DIR/.claude"
+        mkdir -p "$REPO_DIR/$STATE_DIR"
         if ! printf 'skip_mtime=%s\nmerge_pr=%s\nclaimed_at=%s\n' \
             "${_MTIME:-0}" "${MERGE_PR_NUM:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            > "$REPO_DIR/.claude/.merge-bypass-pending.local" 2>/dev/null; then
-            block_emit "Pre-merge gate: failed to write bypass-pending claim to $REPO_DIR/.claude/.merge-bypass-pending.local. Cannot proceed safely (PostToolUse hook cannot confirm consumption). Check filesystem permissions."
+            > "$REPO_DIR/$STATE_DIR/.merge-bypass-pending.local" 2>/dev/null; then
+            block_emit "Pre-merge gate: failed to write bypass-pending claim to $REPO_DIR/$STATE_DIR/.merge-bypass-pending.local. Cannot proceed safely (PostToolUse hook cannot confirm consumption). Check filesystem permissions."
             exit 0
         fi
         # Pre-claim telemetry (final consumption logged by PostToolUse hook)
         printf '{"ts":"%s","event":"skip-pr-grind-claimed","gate":"pre-merge","pr":"%s"}\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${MERGE_PR_NUM:-unknown}" \
-            >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
+            >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
         exit 0
     else
         rm -f "$SKIP_FILE"
@@ -234,9 +243,9 @@ if [ -f "$SKIP_FILE" ]; then
 fi
 
 # ── Check for pr-grind-clean marker ──────────────────────────────────
-# pr-grind writes .claude/pr-grind-clean.local when it declares a PR clean.
+# pr-grind writes $STATE_DIR/pr-grind-clean.local when it declares a PR clean.
 # Marker expires after 2 hours (stale marker from a different PR session).
-MARKER_FILE="$REPO_DIR/.claude/pr-grind-clean.local"
+MARKER_FILE="$REPO_DIR/$STATE_DIR/pr-grind-clean.local"
 if [ -f "$MARKER_FILE" ]; then
     MARKER_AGE=99999
     _MTIME=$(stat -f %m "$MARKER_FILE" 2>/dev/null) \
@@ -356,10 +365,10 @@ if [ -n "$MERGE_PR_NUM" ] && command -v gh &>/dev/null; then
             if [ -z "${MODE:-}" ] || [ -z "${FAILED:-}" ] || [ -z "${PENDING:-}" ] || [ -z "${KEPT:-}" ]; then
                 : # fall through to the BLOCK below
             elif [[ "${FAILED:-0}" -eq 0 && "${PENDING:-0}" -eq 0 && "${KEPT:-0}" -gt 0 ]]; then
-                mkdir -p "$REPO_DIR/.claude"
+                mkdir -p "$REPO_DIR/$STATE_DIR"
                 printf '{"ts":"%s","event":"bootstrap-merge","gate":"pre-merge","pr":%s,"gate_files":%s}\n' \
                     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MERGE_PR_NUM" "$GATE_FILES_CHANGED" \
-                    >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
+                    >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
                 exit 0
             fi
         fi
@@ -367,5 +376,5 @@ if [ -n "$MERGE_PR_NUM" ] && command -v gh &>/dev/null; then
 fi
 
 # ── BLOCK: no pr-grind-clean marker found ────────────────────────────
-block_emit "Pre-merge gate: pr-grind has not declared this PR clean. FIRST wait for all CI checks to complete (\`gh pr checks ${MERGE_PR_NUM:-<PR_NUMBER>} --watch\`), THEN run \`/pr-grind\` to address reviewer feedback before merging. Do NOT skip the CI wait. If you just wrote .claude/pr-grind-clean.local: ensure it was a SEPARATE Bash tool call from \`gh pr merge\` — this hook fires BEFORE bash runs, so a combined write+merge call cannot see its own marker (TOCTOU). See skills/pr-grind/SKILL.md COMPLETION section. Escape hatch: create .claude/skip-pr-grind.local in your terminal."
+block_emit "Pre-merge gate: pr-grind has not declared this PR clean. FIRST wait for all CI checks to complete (\`gh pr checks ${MERGE_PR_NUM:-<PR_NUMBER>} --watch\`), THEN run \`/pr-grind\` to address reviewer feedback before merging. Do NOT skip the CI wait. If you just wrote $STATE_DIR/pr-grind-clean.local: ensure it was a SEPARATE Bash tool call from \`gh pr merge\` — this hook fires BEFORE bash runs, so a combined write+merge call cannot see its own marker (TOCTOU). See skills/pr-grind/SKILL.md COMPLETION section. Escape hatch: create $STATE_DIR/skip-pr-grind.local in your terminal."
 exit 0

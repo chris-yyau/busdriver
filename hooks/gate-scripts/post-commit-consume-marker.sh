@@ -14,6 +14,17 @@
 # when tool_output contains explicit failure indicators.
 
 set -euo pipefail
+# ── Harness-portable root/state resolution ─────────────────────────────
+# BUSDRIVER_PLUGIN_ROOT: set by opencode adapter; CLAUDE_PLUGIN_ROOT by Claude Code.
+# Falls back to relative path from this script's location.
+# BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
+# shellcheck disable=SC2034  # PLUGIN_ROOT used in env-var fallback chains
+PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+# Constrain to a safe relative name (reject absolute/traversal/unsafe chars) and
+# re-export so every gate writes/consumes markers from the same state dir.
+case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+export BUSDRIVER_STATE_DIR="$STATE_DIR"
 trap 'exit 0' ERR
 
 HOOK_DATA=$(cat 2>/dev/null || true)
@@ -39,7 +50,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
 case "$HOOK_DATA" in
     *git*rebase*|*git*commit*--amend*)
         REPO_DIR=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
-        REVIEWED_FILE="$REPO_DIR/.claude/reviewed-commits.local"
+        REVIEWED_FILE="$REPO_DIR/$STATE_DIR/reviewed-commits.local"
         if [ -f "$REVIEWED_FILE" ]; then
             rm -f "$REVIEWED_FILE"
         fi
@@ -150,7 +161,7 @@ HOOK_CWD=$(echo "$PARSE_RESULT" | sed -n '3p')
 REPO_DIR=$(gate_repo_dir_lenient "$TARGET_DIR" "$HOOK_CWD")
 
 # Consume the marker — commit confirmed successful
-MARKER="$REPO_DIR/.claude/litmus-passed.local"
+MARKER="$REPO_DIR/$STATE_DIR/litmus-passed.local"
 if [ -f "$MARKER" ]; then
     MARKER_CONTENT=$(cat "$MARKER" 2>/dev/null || echo "")
     rm -f "$MARKER"
@@ -162,9 +173,9 @@ if [ -f "$MARKER" ]; then
         COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
         printf '{"ts":"%s","event":"review-skipped-none","gate":"post-commit","sha":"%s"}\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
-            >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
+            >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
         # Reset circuit breaker and exit — do not track as reviewed
-        rm -f "$REPO_DIR/.claude/.gate-block-count.local" 2>/dev/null || true
+        rm -f "$REPO_DIR/$STATE_DIR/.gate-block-count.local" 2>/dev/null || true
         exit 0
     fi
 
@@ -178,9 +189,9 @@ if [ -f "$MARKER" ]; then
         COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
         printf '{"ts":"%s","event":"builtin-review-accepted","gate":"post-commit","sha":"%s"}\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
-            >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
+            >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
         # Reset circuit breaker and exit — do not track as reviewed
-        rm -f "$REPO_DIR/.claude/.gate-block-count.local" 2>/dev/null || true
+        rm -f "$REPO_DIR/$STATE_DIR/.gate-block-count.local" 2>/dev/null || true
         exit 0
     fi
 
@@ -193,8 +204,8 @@ if [ -f "$MARKER" ]; then
     COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
     CURRENT_BRANCH=$(git -C "$REPO_DIR" symbolic-ref --short HEAD 2>/dev/null || echo "detached")
     if [ -n "$COMMIT_SHA" ] && [ "$CURRENT_BRANCH" != "detached" ]; then
-        mkdir -p "$REPO_DIR/.claude"
-        echo "${CURRENT_BRANCH}:${COMMIT_SHA}" >> "$REPO_DIR/.claude/reviewed-commits.local"
+        mkdir -p "$REPO_DIR/$STATE_DIR"
+        echo "${CURRENT_BRANCH}:${COMMIT_SHA}" >> "$REPO_DIR/$STATE_DIR/reviewed-commits.local"
     fi
 else
     # ── Unreviewed commit detection ──────────────────────────────────
@@ -212,12 +223,12 @@ else
     # Check if a skip was recently consumed (skip file is deleted by the gate
     # before commit runs, so we check the bypass log instead).
     # Compare timestamps to avoid stale entries suppressing real warnings.
-    if [ -f "$REPO_DIR/.claude/bypass-log.jsonl" ]; then
+    if [ -f "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" ]; then
         _CUTOFF=$(date -u -v-120S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
             || _CUTOFF=$(date -u -d '120 seconds ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
             || _CUTOFF=""
         if [ -n "$_CUTOFF" ]; then
-            _LAST_SKIP_TS=$(tail -5 "$REPO_DIR/.claude/bypass-log.jsonl" \
+            _LAST_SKIP_TS=$(tail -5 "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" \
                 | grep '"event":"skip-review-consumed"' \
                 | tail -1 \
                 | python3 -c "import sys,json; print(json.loads(sys.stdin.readline()).get('ts',''))" 2>/dev/null \
@@ -237,15 +248,15 @@ else
 
     if [ "$_SUPPRESS" = false ]; then
         COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
-        mkdir -p "$REPO_DIR/.claude"
+        mkdir -p "$REPO_DIR/$STATE_DIR"
         printf '{"ts":"%s","event":"unreviewed-commit","gate":"post-commit","sha":"%s"}\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
-            >> "$REPO_DIR/.claude/bypass-log.jsonl" 2>/dev/null || true
+            >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
         echo "⚠️  Commit ${COMMIT_SHA:0:7} was not reviewed by litmus (PreToolUse gate did not fire)." >&2
     fi
 fi
 
 # Reset circuit breaker (block counter)
-rm -f "$REPO_DIR/.claude/.gate-block-count.local" 2>/dev/null || true
+rm -f "$REPO_DIR/$STATE_DIR/.gate-block-count.local" 2>/dev/null || true
 
 exit 0

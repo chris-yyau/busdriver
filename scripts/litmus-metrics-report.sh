@@ -9,7 +9,7 @@
 #
 set -euo pipefail
 
-METRICS_FILE="${LITMUS_METRICS_FILE:-.claude/review-metrics.jsonl}"
+METRICS_FILE="${LITMUS_METRICS_FILE:-${BUSDRIVER_STATE_DIR:-.claude}/review-metrics.jsonl}"
 
 if [[ ! -f "$METRICS_FILE" ]]; then
   echo "No metrics data yet. Metrics are recorded automatically by litmus reviews."

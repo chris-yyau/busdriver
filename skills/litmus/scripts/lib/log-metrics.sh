@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 #
 # log-metrics.sh — Append litmus review outcomes to a persistent JSONL log.
 #
@@ -9,10 +10,10 @@
 #   source "$SCRIPT_DIR/lib/log-metrics.sh"
 #   log_review_metrics "$status" "$issue_count" "$iteration" "$mode" "$cli" "$json_output"
 #
-# Output: appends one JSON line to .claude/review-metrics.jsonl
+# Output: appends one JSON line to $STATE_DIR/review-metrics.jsonl
 #
 
-METRICS_FILE="${LITMUS_METRICS_FILE:-.claude/review-metrics.jsonl}"
+METRICS_FILE="${LITMUS_METRICS_FILE:-$STATE_DIR/review-metrics.jsonl}"
 
 log_review_metrics() {
   local status="${1:-UNKNOWN}"

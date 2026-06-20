@@ -2,7 +2,7 @@
 # PreToolUse hook: block implementation code when design docs are unreviewed
 #
 # When a design/plan doc is written, check-design-document.sh flags it in
-# .claude/design-review-needed.local.md. This hook blocks Write/Edit of
+# $STATE_DIR/design-review-needed.local.md. This hook blocks Write/Edit of
 # implementation files AND file-modifying Bash commands until design review
 # completes.
 #
@@ -11,13 +11,23 @@
 # fires at commit time, which is too late.
 #
 # Fail-CLOSED: errors block writes (user preference: stuck > skipped review)
-# Skip: .claude/skip-design-review.local
+# Skip: $STATE_DIR/skip-design-review.local
 
 set -euo pipefail
+# ── Harness-portable state resolution ──────────────────────────────────
+# BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
+# Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
+# repo-root joins resolve correctly and the value is safe to embed in messages.
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+# Re-export the sanitized value so downstream consumers (the embedded Python
+# rm/mkdir allowlist below, sourced helpers) read the constrained STATE_DIR
+# rather than the raw env var — otherwise a traversal value could bypass them.
+export BUSDRIVER_STATE_DIR="$STATE_DIR"
 # Fail-CLOSED: errors block implementation writes rather than silently approving.
 # User preference: "a stuck session is better than a skipped review."
-# Escape hatch: .claude/skip-design-review.local
-trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-implementation gate error — blocking as precaution. If stuck, create .claude/skip-design-review.local in your terminal.\"}\n"; exit 0' ERR
+# Escape hatch: $STATE_DIR/skip-design-review.local
+trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-implementation gate error — blocking as precaution. If stuck, create %s/skip-design-review.local in your terminal.\"}\n" "$STATE_DIR"; exit 0' ERR
 
 # ── Block emission helper (F6 fix) ────────────────────────────────────
 # Uses jq when available, falls back to printf when jq is missing.
@@ -37,8 +47,8 @@ block_emit() {
 # variable defaults to "SAFE|" which silently allows ALL writes.
 if ! command -v python3 &>/dev/null; then
     # Only block if there are pending design reviews (avoid false blocks when no reviews needed)
-    if [ -f ".claude/design-review-needed.local.md" ]; then
-        block_emit "CRITICAL: python3 not found. Pre-implementation gate cannot parse tool inputs. Install python3 to restore enforcement. Escape hatch: .claude/skip-design-review.local"
+    if [ -f "$STATE_DIR/design-review-needed.local.md" ]; then
+        block_emit "CRITICAL: python3 not found. Pre-implementation gate cannot parse tool inputs. Install python3 to restore enforcement. Escape hatch: $STATE_DIR/skip-design-review.local"
         exit 0
     fi
 fi
@@ -123,7 +133,7 @@ if [ "$MARKER_ACTION" = "BLOCK_MARKER" ]; then
         pr-review-passed.local)
             WRITER_HINT="
 To write this marker correctly: finish the PR deep review, then run the trusted wrapper (it computes the diff hash and writes the marker — direct writes stay blocked by design):
-  bash \"\${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker" ;;
+  bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker" ;;
         litmus-passed.local)
             WRITER_HINT="
 This marker is written automatically when the /litmus commit review passes — re-run the review loop to completion instead of writing it by hand." ;;
@@ -131,7 +141,7 @@ This marker is written automatically when the /litmus commit review passes — r
     block_emit "BLOCKED: Cannot write to gate marker file ($MARKER_TARGET) directly.
 Gate markers are written by review infrastructure after a genuine review pass.
 Writing them manually forges compliance. Run /litmus or /blueprint-review instead.${WRITER_HINT}
-If you need to skip review, ask the user to run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/.claude/skip-litmus.local"
+If you need to skip review, ask the user to run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/$STATE_DIR/skip-litmus.local"
     exit 0
 fi
 
@@ -143,7 +153,7 @@ Run /litmus instead."
 fi
 
 # No pending design reviews → approve immediately
-DESIGN_STATE=".claude/design-review-needed.local.md"
+DESIGN_STATE="$STATE_DIR/design-review-needed.local.md"
 [ ! -f "$DESIGN_STATE" ] && exit 0
 
 # ── F10 staleness auto-expiry REMOVED (F11) ───────────────────────────
@@ -151,35 +161,35 @@ DESIGN_STATE=".claude/design-review-needed.local.md"
 # Previously, state older than DESIGN_REVIEW_STALE_HOURS was auto-expired
 # here, creating a session-boundary gap where reviews silently disappeared.
 # SessionStart (load-orchestrator.sh) still warns about stale state for UX.
-# Escape hatch: .claude/skip-design-review.local (user-created only).
+# Escape hatch: $STATE_DIR/skip-design-review.local (user-created only).
 
 # Skip overrides — unified with pre-commit-gate.sh behavior
 # Both gates use the same pattern: single-use consumption + self-bypass detection
-if [ -f ".claude/skip-design-review.local" ]; then
+if [ -f "$STATE_DIR/skip-design-review.local" ]; then
     # Reject skip files created within the last 30 seconds — likely Claude self-bypass.
     # A human-created skip file (via terminal) will typically be older.
     FILE_AGE=999
-    _MTIME=$(stat -f %m ".claude/skip-design-review.local" 2>/dev/null) \
-        || _MTIME=$(stat -c %Y ".claude/skip-design-review.local" 2>/dev/null) \
+    _MTIME=$(stat -f %m "$STATE_DIR/skip-design-review.local" 2>/dev/null) \
+        || _MTIME=$(stat -c %Y "$STATE_DIR/skip-design-review.local" 2>/dev/null) \
         || _MTIME=""
     [ -n "$_MTIME" ] && FILE_AGE=$(( $(date +%s) - _MTIME ))
     if [ "$FILE_AGE" -lt 30 ]; then
         # Likely self-bypass — reject and warn
-        rm -f ".claude/skip-design-review.local"
+        rm -f "$STATE_DIR/skip-design-review.local"
         REASON="BLOCKED: skip-design-review.local was created moments ago (likely self-bypass).
 
-Do NOT create .claude/skip-design-review.local yourself. Run /blueprint-review instead.
+Do NOT create $STATE_DIR/skip-design-review.local yourself. Run /blueprint-review instead.
 If the user wants to skip, they should create the file manually in their terminal."
         block_emit "$REASON"
         exit 0
     fi
     # Single-use: consume the skip file after allowing one bypass.
     # This prevents stale skip files from permanently disabling review gates.
-    rm -f ".claude/skip-design-review.local"
-    rm -f ".claude/.impl-gate-block-count.local" 2>/dev/null || true
+    rm -f "$STATE_DIR/skip-design-review.local"
+    rm -f "$STATE_DIR/.impl-gate-block-count.local" 2>/dev/null || true
     # ── Bypass telemetry ──────────────────────────────────────────────
-    mkdir -p .claude
-    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-implementation"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ".claude/bypass-log.jsonl" 2>/dev/null || true
+    mkdir -p "$STATE_DIR"
+    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-implementation"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
     exit 0
 fi
 [ "${SKIP_DESIGN_REVIEW:-0}" = "1" ] && exit 0
@@ -191,8 +201,9 @@ fi
 # F7 fix: Strip fd-to-fd redirects (2>&1, >&2) before file-redirect detection.
 # F8 fix: Allow review infrastructure scripts (blueprint-review, litmus)
 # to run even when design docs are unreviewed — prevents circular dependency.
+# shellcheck disable=SC2016  # python3 -c string uses '\'' idiom intentionally
 PARSED=$(printf '%s' "$INPUT" | python3 -c '
-import sys, json, re
+import sys, json, re, os
 try:
     d = json.load(sys.stdin)
     tool = d.get("tool_name", d.get("toolName", ""))
@@ -233,12 +244,14 @@ try:
         if is_mod and not has_explicit_mod and re.search(r"(?:^|[\s;|&])(?:ba)?sh\s+\S*(?:blueprint-review|litmus)/(?:scripts|config)/", cmd):
             print("SAFE|")
         elif is_mod:
-            # F9 fix: Allow rm/mkdir targeting only .claude/ infrastructure.
+            # F9 fix: Allow rm/mkdir targeting only $STATE_DIR/ infrastructure.
             # Prevents circular dependency where gate blocks cleanup of its
             # own state files. Conservative: no command chaining allowed,
-            # only .claude/ relative paths, only rm and mkdir.
+            # only $STATE_DIR/ relative paths, only rm and mkdir.
+            state_dir = os.environ.get("BUSDRIVER_STATE_DIR", ".claude")
+            state_pattern = re.escape(state_dir) + "/"
             clean = re.sub(r"\s*(?:2>/dev/null\s*)?(?:\|\|\s*(?:true|:)\s*)?$", "", cmd)
-            if re.match(r"^\s*(?:rm|mkdir)\s+(?:-[a-zA-Z]+\s+)*(?:\.claude/\S+\s*)+$", clean):
+            if re.match(r"^\s*(?:rm|mkdir)\s+(?:-[a-zA-Z]+\s+)*(?:" + state_pattern + r"\S+\s*)+$", clean):
                 print("SAFE|")
             else:
                 print("BASH_MOD|" + cmd[:500])
@@ -266,7 +279,7 @@ if [ "$TOOL_TYPE" = "WRITE_EDIT" ]; then
     # Allow writing to these paths (review infrastructure, not implementation):
     #   - Design/plan docs themselves (writing/editing the plan is fine)
     #   - Review output files (blueprint-review generates these)
-    #   - .claude/ config files
+    #   - $STATE_DIR/ config files
     #   - docs/reviews/ (review artifacts)
     #   - CLAUDE.md, NOTES.md, *.local* files
     case "$FILE_PATH" in
@@ -277,9 +290,9 @@ if [ "$TOOL_TYPE" = "WRITE_EDIT" ]; then
         *CLAUDE.md|*NOTES.md) exit 0 ;;
     esac
 
-    # Allow .claude/ config writes (marker files already guarded unconditionally above)
+    # Allow $STATE_DIR/ config writes (marker files already guarded unconditionally above)
     case "$FILE_PATH" in
-        *.claude/*) exit 0 ;;
+        *"$STATE_DIR"/*) exit 0 ;;
     esac
 
     # Allow files with .local suffix ONLY if they match known config patterns
@@ -308,14 +321,14 @@ done <<< "$DESIGN_LINES"
 # All reviewed → clean up and approve
 if [ -z "$UNREVIEWED" ]; then
     rm -f "$DESIGN_STATE"
-    rm -f ".claude/.impl-gate-block-count.local" 2>/dev/null || true
+    rm -f "$STATE_DIR/.impl-gate-block-count.local" 2>/dev/null || true
     exit 0
 fi
 
 # ── Circuit breaker: detect repeated blocking ──────────────────────────
 # Mirrors pre-commit-gate.sh: warns after 10 blocks so user knows to
 # either run /blueprint-review or create skip-design-review.local manually.
-BLOCK_COUNTER=".claude/.impl-gate-block-count.local"
+BLOCK_COUNTER="$STATE_DIR/.impl-gate-block-count.local"
 BLOCK_COUNT=0
 if [ -f "$BLOCK_COUNTER" ]; then
     BLOCK_COUNT=$(cat "$BLOCK_COUNTER" 2>/dev/null || echo "0")
@@ -328,13 +341,13 @@ if [ "$BLOCK_COUNT" -ge 10 ]; then
     ESCAPE_HINT="
 
 WARNING: This gate has blocked $BLOCK_COUNT consecutive implementation attempts this session.
-If you believe the gate is stuck, the user can create .claude/skip-design-review.local in their terminal to bypass."
+If you believe the gate is stuck, the user can create $STATE_DIR/skip-design-review.local in their terminal to bypass."
 fi
 
 # ── Block: unreviewed design docs exist ────────────────────────────────
 if [ "$TOOL_TYPE" = "BASH_MOD" ]; then
-    REASON=$(printf "Design review must complete before modifying files via Bash.\n\nDetected file-modifying Bash command while design docs are unreviewed:\n%b\nRun /blueprint-review to review these documents first.\n\nIMPORTANT: Do NOT create .claude/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the blueprint review instead.%s" "$UNREVIEWED" "$ESCAPE_HINT")
+    REASON=$(printf "Design review must complete before modifying files via Bash.\n\nDetected file-modifying Bash command while design docs are unreviewed:\n%b\nRun /blueprint-review to review these documents first.\n\nIMPORTANT: Do NOT create $STATE_DIR/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the blueprint review instead.%s" "$UNREVIEWED" "$ESCAPE_HINT")
 else
-    REASON=$(printf "Design review must complete before writing implementation code.\n\nUnreviewed design documents:\n%b\nRun /blueprint-review to review these documents first.\n\nIMPORTANT: Do NOT create .claude/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the blueprint review instead.%s" "$UNREVIEWED" "$ESCAPE_HINT")
+    REASON=$(printf "Design review must complete before writing implementation code.\n\nUnreviewed design documents:\n%b\nRun /blueprint-review to review these documents first.\n\nIMPORTANT: Do NOT create $STATE_DIR/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the blueprint review instead.%s" "$UNREVIEWED" "$ESCAPE_HINT")
 fi
 block_emit "$REASON"

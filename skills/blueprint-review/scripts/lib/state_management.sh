@@ -10,6 +10,8 @@
 
 set -euo pipefail
 
+STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+
 # Derive a slug from the design file name for namespacing review outputs
 # e.g. "docs/plans/2026-03-10-analytics-redesign.md" → "analytics-redesign"
 get_review_slug() {
@@ -26,7 +28,7 @@ get_review_slug() {
 # Get the review output directory for the current review
 # Reads the slug from the pointer file written by init
 get_review_dir() {
-  local pointer_file=".claude/current-design-review.local"
+  local pointer_file="$STATE_DIR/current-design-review.local"
   if [[ -f "$pointer_file" ]]; then
     local slug
     slug=$(cat "$pointer_file" 2>/dev/null)
@@ -62,8 +64,8 @@ init_state_file() {
   mkdir -p "$review_dir"
 
   # Write pointer so other scripts find the current review
-  mkdir -p .claude
-  echo "$slug" > ".claude/current-design-review.local"
+  mkdir -p "$STATE_DIR"
+  echo "$slug" > "$STATE_DIR/current-design-review.local"
 
   local state_file="$review_dir/state.md"
 
@@ -282,7 +284,7 @@ check_convergence() {
 # been touched in DESIGN_REVIEW_STALE_HOURS (default: 2) is considered stale.
 # This prevents previous-session reviews from blocking new reviews indefinitely.
 check_existing_review() {
-  local pointer_file=".claude/current-design-review.local"
+  local pointer_file="$STATE_DIR/current-design-review.local"
   if [[ ! -f "$pointer_file" ]]; then
     return 2  # No active review
   fi
@@ -367,7 +369,7 @@ except Exception:
 
 # Clean up stale review state
 cleanup_stale_review() {
-  local pointer_file=".claude/current-design-review.local"
+  local pointer_file="$STATE_DIR/current-design-review.local"
   if [[ ! -f "$pointer_file" ]]; then
     return
   fi
@@ -650,8 +652,8 @@ append_coverage_history() {
 # (gitignored). Cross-review history for the chronic-degradation check.
 append_coverage_trend() {
   local slug="$1" count="$2"
-  local trend_file=".claude/blueprint-coverage-trend.local"
-  mkdir -p .claude
+  local trend_file="$STATE_DIR/blueprint-coverage-trend.local"
+  mkdir -p "$STATE_DIR"
   local ts
   ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   # Build the JSONL line with python3 so a slug containing quotes/backslashes/

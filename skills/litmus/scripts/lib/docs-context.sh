@@ -31,9 +31,9 @@ _find_referencing_docs() {
 
   grep -rln --include='*.md' \
     --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=vendor \
-    --exclude-dir='.claude' \
+    --exclude-dir='.claude' --exclude-dir='.opencode' \
     -F "$search_term" "$repo_root" 2>/dev/null | \
-    grep -vE 'CHANGELOG|changelog|node_modules|\.claude/' | \
+    grep -vE 'CHANGELOG|changelog|node_modules|\.claude/|\.opencode/' | \
     head -n "$max_snippets" || true
 }
 

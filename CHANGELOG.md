@@ -1,3 +1,15 @@
+# [1.63.0](https://github.com/chris-yyau/busdriver/compare/v1.62.6...v1.63.0) (2026-06-20)
+
+
+### Features
+
+* opencode harness support — litmus, blueprint-review, council, pr-grind ([#207](https://github.com/chris-yyau/busdriver/issues/207)) ([ff1d0a3](https://github.com/chris-yyau/busdriver/commit/ff1d0a3b9cc29a497b7d7abfa9480bf6aa8ec537))
+
+
+### Reverts
+
+* remove opencode install docs from main README ([#213](https://github.com/chris-yyau/busdriver/issues/213) throwaway) ([#214](https://github.com/chris-yyau/busdriver/issues/214)) ([6869ba0](https://github.com/chris-yyau/busdriver/commit/6869ba02fa439782898335a5e4ae4086397b130a)), closes [#207](https://github.com/chris-yyau/busdriver/issues/207) [#207](https://github.com/chris-yyau/busdriver/issues/207)
+
 ## [1.62.6](https://github.com/chris-yyau/busdriver/compare/v1.62.5...v1.62.6) (2026-06-19)
 
 

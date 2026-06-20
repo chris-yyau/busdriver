@@ -116,11 +116,20 @@ try:
             if mf in cmd:
                 # Check if command writes to it (not just reads/checks)
                 stripped = re.sub(r"'\''[^'\'']*'\''", "", cmd)
-                if re.search(r"(?:>|tee|echo.*>|printf.*>|cat.*>).*" + re.escape(mf), stripped):
+                # Search BOTH the raw command and the quote-stripped form. A
+                # redirect whose target is wrapped in single quotes (printf ...
+                # then > then a single-quoted .claude/<marker> path) has that
+                # path removed by the strip, so checking only the stripped form
+                # lets a quoted-path forge through. Raw catches the quoted
+                # target; stripped still avoids matching a marker name that only
+                # appears inside an unrelated quoted string with no redirect.
+                write_re = r"(?:>|tee|echo.*>|printf.*>|cat.*>).*" + re.escape(mf)
+                if re.search(write_re, cmd) or re.search(write_re, stripped):
                     print("BLOCK_MARKER|" + mf)
                     sys.exit(0)
                 # Also block rm of marker files (prevents consumption forgery)
-                if re.search(r"\brm\b.*" + re.escape(mf), stripped):
+                rm_re = r"\brm\b.*" + re.escape(mf)
+                if re.search(rm_re, cmd) or re.search(rm_re, stripped):
                     print("BLOCK_MARKER|" + mf)
                     sys.exit(0)
 

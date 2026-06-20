@@ -438,7 +438,7 @@ if [ -n "$commit_id" ] && acks_head "$commit_id" && [ "$login" != "chatgpt-codex
 # link and treat it as authoritative if it matches HEAD.
 body_sha=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
   '[.comments[] | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null \
-  | grep -oE 'commit/[a-f0-9]{7,40}' | sed 's|.*/||' | tail -1)
+  | grep -oE 'commit/[0-9a-fA-F]{7,64}' | sed 's|.*/||' | tail -1)
 if [ -n "$body_sha" ] && acks_head "$body_sha"; then emit_head_ack "$HEAD_SHA" C; exit 0; fi
 
 # (D) check-runs: did the bot register a passing check-run on HEAD? Some bots

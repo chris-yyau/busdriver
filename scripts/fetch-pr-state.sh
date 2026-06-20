@@ -153,11 +153,11 @@ _fetch_pr_state() {
     # failed fetch could mutate ALL_CHECK_RUNS with stale data from prior
     # invocations, breaking fail-closed state guarantees (Cubic P2).
     if [ "${FETCH_OK:-0}" = "1" ]; then
-    PR_NUMBER="$pr_number"
-    local _augment_script
-    _augment_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/augment-equiv-acks.sh"
-    # shellcheck source=scripts/augment-equiv-acks.sh disable=SC1091
-    if [ -f "$_augment_script" ]; then . "$_augment_script"; fi
+        PR_NUMBER="$pr_number"
+        local _augment_script
+        _augment_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/augment-equiv-acks.sh"
+        # shellcheck source=scripts/augment-equiv-acks.sh disable=SC1091
+        if [ -f "$_augment_script" ]; then . "$_augment_script"; fi
     fi
 
     # Export so child processes (e.g. scripts/ack-ledger.sh run as bash child)

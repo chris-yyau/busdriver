@@ -101,6 +101,7 @@ ECC selective-install CLI
 Usage:
   ecc <command> [args...]
   ecc [install args...]
+  ecc --dry-run <command> [args...]
 
 Commands:
 ${PRIMARY_COMMANDS.map(command => `  ${command.padEnd(15)} ${COMMANDS[command].description}`).join('\n')}
@@ -109,6 +110,9 @@ Compatibility:
   ecc-install        Legacy install entrypoint retained for existing flows
   ecc [args...]      Without a command, args are routed to "install"
   ecc help <command> Show help for a specific command
+
+Global Flags:
+  --dry-run          Preview actions without executing (sets ECC_DRY_RUN=1)
 
 Examples:
   ecc typescript
@@ -146,7 +150,23 @@ function resolveCommand(argv) {
     return { mode: 'help' };
   }
 
-  const [firstArg, ...restArgs] = args;
+  // `--dry-run` is a global flag (documented as `ecc --dry-run <command>`).
+  // Normalize it: set ECC_DRY_RUN, then strip it from positional parsing so it
+  // is never mistaken for the command name (e.g. `ecc help --dry-run doctor`
+  // must resolve to `doctor`, not throw on `--dry-run`). It is re-forwarded to
+  // mutating subcommands below.
+  const dryRun = args.includes('--dry-run');
+  if (dryRun) {
+    process.env.ECC_DRY_RUN = '1';
+  }
+  const cleanArgs = args.filter(arg => arg !== '--dry-run');
+
+  if (cleanArgs.length === 0) {
+    return { mode: 'help' };
+  }
+
+  const firstArg = cleanArgs[0];
+  const restArgs = cleanArgs.slice(1);
 
   if (firstArg === '--help' || firstArg === '-h') {
     return { mode: 'help' };
@@ -159,11 +179,18 @@ function resolveCommand(argv) {
     };
   }
 
+  // Mutating subcommands parse their OWN --dry-run argv flag and do NOT read
+  // ECC_DRY_RUN, so a global `ecc --dry-run <cmd>` must forward the flag or the
+  // destructive action would execute instead of preview. Read-only commands
+  // rely on ECC_DRY_RUN and may reject an unknown flag, so only forward here.
+  const DRY_RUN_ARGV_COMMANDS = new Set(['install', 'repair', 'uninstall', 'auto-update']);
+
   if (COMMANDS[firstArg]) {
+    const forwardDryRun = dryRun && DRY_RUN_ARGV_COMMANDS.has(firstArg);
     return {
       mode: 'command',
       command: firstArg,
-      args: restArgs,
+      args: forwardDryRun ? ['--dry-run', ...restArgs] : restArgs,
     };
   }
 
@@ -177,10 +204,12 @@ function resolveCommand(argv) {
     throw new Error(`Unknown command: ${firstArg}`);
   }
 
+  // Implicit install (e.g. `ecc typescript`, `ecc --profile x`) — install
+  // parses its own --dry-run flag, so forward it on the cleaned args.
   return {
     mode: 'command',
     command: 'install',
-    args,
+    args: dryRun ? ['--dry-run', ...cleanArgs] : cleanArgs,
   };
 }
 

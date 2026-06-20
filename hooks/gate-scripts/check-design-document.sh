@@ -15,6 +15,10 @@ set -euo pipefail
 # shellcheck disable=SC2034  # PLUGIN_ROOT used in env-var fallback chains
 PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
+# Constrain to a safe relative name (reject absolute/traversal/unsafe chars) and
+# re-export so every gate writes/consumes markers from the same state dir.
+case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+export BUSDRIVER_STATE_DIR="$STATE_DIR"
 trap 'exit 0' ERR
 
 # Consume stdin

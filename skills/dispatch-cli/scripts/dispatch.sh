@@ -27,6 +27,9 @@ STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 # Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
 # it is safe to use as a path segment (e.g. under $HOME) below.
 case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+# Re-export so the sourced resolve-cli.sh reads the sanitized value when it
+# builds its $STATE_DIR config/log paths rather than a raw BUSDRIVER_STATE_DIR.
+export BUSDRIVER_STATE_DIR="$STATE_DIR"
 if [[ -f "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh" ]]; then
   source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"
 fi

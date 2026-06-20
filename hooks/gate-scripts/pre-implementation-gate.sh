@@ -77,13 +77,21 @@ try:
     MARKER_FILES = [
         "litmus-passed.local",
         "pr-review-passed.local",
+        # Dual-voice PR artifacts — writable ONLY by run-review-loop.sh: the
+        # backstop verdict via --write-backstop-verdict, the Codex-lead verdict
+        # inline on an actual Codex PASS (no subcommand, so it cannot be forged).
+        # Direct Write/Edit/MultiEdit/shell-redirect/rm against them is blocked so
+        # the hash re-derivation in the writer cannot be bypassed by a file forge.
+        # (Keystone for ADR 0006; .local.json suffix matched as a substring.)
+        "pr-codex-lead.local.json",
+        "pr-backstop-verdict.local.json",
         "skip-litmus.local",
         "skip-design-review.local",
         "reviewed-commits.local",
         "design-review-needed.local",
     ]
 
-    if tool in ("Write", "Edit"):
+    if tool in ("Write", "Edit", "MultiEdit"):
         fp = inp.get("file_path", inp.get("filePath", ""))
         for mf in MARKER_FILES:
             if mf in fp:
@@ -137,6 +145,14 @@ To write this marker correctly: finish the PR deep review, then run the trusted 
         litmus-passed.local)
             WRITER_HINT="
 This marker is written automatically when the /litmus commit review passes — re-run the review loop to completion instead of writing it by hand." ;;
+        pr-backstop-verdict.local.json)
+            WRITER_HINT="
+This is the PR security/bugs backstop artifact. It is written ONLY by the trusted strict writer, which re-derives the diff hash itself and fails closed on stale/bad input:
+  <pr-security-backstop agent JSON> | bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --write-backstop-verdict" ;;
+        pr-codex-lead.local.json)
+            WRITER_HINT="
+This is the PR Codex-lead artifact. It is written ONLY by the litmus PR review, inline on an actual Codex PASS — there is no manual writer subcommand (that would let a PASS be forged without a review). Re-run the PR review to (re)produce it:
+  LITMUS_MODE=pr bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\"" ;;
     esac
     block_emit "BLOCKED: Cannot write to gate marker file ($MARKER_TARGET) directly.
 Gate markers are written by review infrastructure after a genuine review pass.

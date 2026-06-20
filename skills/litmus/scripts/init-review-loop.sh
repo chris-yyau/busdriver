@@ -97,7 +97,29 @@ started_at: "TIMESTAMP_PLACEHOLDER"
 last_result: null
 ---
 
-Review the following FULL BRANCH DIFF (base..HEAD) for bugs, security issues, performance problems, and maintainability.
+Perform a DEEP PR REVIEW of the FULL BRANCH DIFF (base...HEAD) — covering bugs, security, cross-commit consistency, project guidelines, history, and documentation drift. You are the lead deep reviewer; cover every lens below in this single pass.
+
+<review_lenses>
+This is a DEEP PR REVIEW of the entire branch (base...HEAD), not a single commit. Cover ALL of these
+lenses in this one pass. An independent Security/Bugs reviewer runs alongside you — do NOT assume it
+will catch what you skip.
+
+1. BUGS — logic errors, off-by-one, null/undefined, race conditions, resource leaks (changed code only).
+2. SECURITY — hardcoded secrets, injection (shell/SQL/path), auth bypass, SSRF, unsafe deserialization,
+   error messages leaking internals, unsafe or unpinned dependencies. Trace data flow ACROSS files.
+3. CROSS-COMMIT CONSISTENCY — inconsistent naming across commits, partial migrations/refactors,
+   orphaned imports, incomplete renames, a signature changed in one file but not its callers.
+4. GUIDELINES — CLAUDE.md / project conventions, naming consistency, established patterns.
+5. HISTORY — use the injected <commit_history> below (the commit log + per-commit stat for this
+   branch). Flag reverted-then-reintroduced changes, contradictory commits, debug/WIP code left in.
+   Do NOT attempt to run git yourself — review only the injected data and diff.
+6. DOCS DRIFT — README/SKILL.md/docs referencing changed code. Flag stale examples, wrong signatures,
+   removed functions still documented, new features lacking docs.
+</review_lenses>
+
+<commit_history>
+{{HISTORY_CONTEXT}}
+</commit_history>
 
 {{SAST_PRECHECK}}
 
@@ -162,6 +184,7 @@ Field rules:
 - When reviewing shell scripts, check: unquoted variables, missing error handling, unsafe temp files, local outside functions, shasum vs sha256sum portability, mktemp -t portability, CWD/path safety, cleanup ordering before early exits, timeout fail-open, boolean normalization.
 - When reviewing documentation, verify: factual claims match code, examples are correct, counts match reality, no stale references.
 - When reviewing cross-commit changes, check: inconsistent naming, partial refactors, broken dependencies.
+- Severity calibration: "high" is reserved for correctness, security, data-loss, or interface-breaking risks. Documentation drift, missing/weak comments, naming/style nits, and "function is long but correct" MUST be rated "low" (advisory, never blocking) — never "high" or "medium". Severity reflects IMPACT, not certainty.
 - When reviewing CI/CD workflows (.github/workflows/*.yml, .gitlab-ci.yml):
   - Flag `paths` + `paths-ignore` on the same trigger (GitHub Actions ignores one silently).
   - Flag `${{ }}` expressions inside `run:` blocks — use `env:` intermediary to prevent expression injection.

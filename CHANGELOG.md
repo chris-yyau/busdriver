@@ -1,3 +1,10 @@
+# [1.64.0](https://github.com/chris-yyau/busdriver/compare/v1.63.1...v1.64.0) (2026-06-20)
+
+
+### Features
+
+* auto-re-trigger codex when it is the sole stale blocker on an unchanged HEAD ([#221](https://github.com/chris-yyau/busdriver/issues/221)) ([c2462a6](https://github.com/chris-yyau/busdriver/commit/c2462a6d60ae69c1c2105f87257e91702085fb89)), closes [#stubbed](https://github.com/chris-yyau/busdriver/issues/stubbed)
+
 ## [1.63.1](https://github.com/chris-yyau/busdriver/compare/v1.63.0...v1.63.1) (2026-06-20)
 
 

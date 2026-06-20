@@ -10,7 +10,7 @@ The flow is:
 2. **Step 1** — Codex deep multi-lens pass on `base...HEAD`.
 3. **Step 1.5** — scope-drift detection (advisory, never blocks).
 4. **Step 2** — dispatch exactly ONE read-only Opus security/bugs backstop, **only when Codex is clean** (short-circuit if Codex FAILs).
-5. **Step 3** — gate = Codex PASS AND backstop has no `high`@confidence≥80; write the backstop artifact, then the PR marker.
+5. **Step 3** — gate = Codex PASS AND backstop has no `high` finding (any `high` ⇒ FAIL; confidence does not gate); write the backstop artifact, then the PR marker.
 
 ## Fast Path (codex-only, audited bypass)
 
@@ -18,7 +18,7 @@ Only when the user explicitly asks to skip the backstop:
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --auto-pr-review
 ```
-`--auto-pr-review` runs the Codex deep pass and then **defers to Claude for the backstop** — it does NOT write a gate-passing marker on its own. To genuinely skip the backstop (codex-only), set `LITMUS_PR_FAST=1`: this writes a **distinct, diff-bound** `PASS-FAST-<diff_hash>-<epoch>` marker (not a bare hash, not a bare timestamp) via the dedicated audited bypass writer, logged `pr-fast-bypass` to `.claude/bypass-log.jsonl`. The gate accepts that marker ONLY through its explicit fast-bypass branch — requiring `diff_hash == current base...HEAD` **and** `0 ≤ now-epoch ≤ max_age` — never through the normal hash/backstop path. So a preserved fast marker (a failed `gh pr create` keeps markers) cannot later authorize a *changed* diff. This is an audited bypass, not the default — the default path is fully gated.
+`--auto-pr-review` **IS** the audited fast bypass: it force-inits, runs the Codex deep pass with `LITMUS_PR_FAST=1`, and on a Codex PASS writes a **distinct, diff-bound** `PASS-FAST-<diff_hash>-<epoch>` marker (not a bare hash, not a bare timestamp), logged `pr-fast-bypass` to `.claude/bypass-log.jsonl`. It **SKIPS the independent backstop**. The gate accepts that marker ONLY through its explicit fast-bypass branch — requiring `diff_hash == current base...HEAD` **and** `0 ≤ now-epoch ≤ max_age` — never through the normal dual-artifact path. So a preserved fast marker (a failed `gh pr create` keeps markers) cannot later authorize a *changed* diff. This is an audited bypass, not the default — the default path runs both voices and is fully gated.
 
 ## Step 0.5: Always Run the Codex Lead
 
@@ -176,7 +176,7 @@ and **fails closed** on any malformed or out-of-enum field.
 
 ## Step 3: Gate Decision
 
-**The gate passes only when:** Codex lead PASS **AND** the backstop reports no `high` finding at confidence ≥ 80. The backstop blocks on **`high` only**; `medium`/`low` from the backstop are advisory. A single `high` from either voice fails the gate (fix, then re-run the relevant step).
+**The gate passes only when:** Codex lead PASS **AND** the backstop returns no `high` finding. The backstop blocks on **`high` severity alone** — `medium`/`low` are advisory, and `confidence` is recorded for triage but does **NOT** gate: the strict writer recomputes `status:FAIL` for ANY `high` issue regardless of confidence (an explicit FAIL is never overridden). A single `high` from either voice fails the gate (fix, then re-run the relevant step).
 
 **3a. Write the backstop verdict artifact.** The trusted writer re-derives `diff_hash`/`ts` itself and **fails closed if `reviewed_diff_hash` ≠ the current `base...HEAD` hash** — a commit landing mid-review invalidates the verdict, so re-run:
 ```bash
@@ -193,8 +193,8 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write-pr
 
 | Result | Action |
 |--------|--------|
-| Codex PASS + backstop no `high`@≥80 | Write artifact (3a) → write marker (3b) → gate passes |
-| Codex PASS + backstop `high`@≥80 | Report findings. Fix, then re-run Step 2 only |
+| Codex PASS + backstop no `high` | Write artifact (3a) → write marker (3b) → gate passes |
+| Codex PASS + backstop any `high` | Report findings. Fix, then re-run Step 2 only |
 | Codex FAIL | Short-circuit (no backstop). Fix, re-run from Step 1 |
 
 The marker is a SHA-256 hash (64 hex chars) of the `base...HEAD` diff, or the audited `PASS-FAST-<diff_hash>-<epoch>` fast-bypass marker. The gate rejects `DEGRADED`, `SKIPPED-NONE`, and `BUILTIN-` prefixed markers for PR review.
@@ -205,7 +205,7 @@ PR mode is **fail-closed**. A degraded path never silently downgrades to a weake
 
 | Failure | Handling |
 |---------|----------|
-| Codex transient error (rate-limit, network, 5xx) | Codex retries, then escalates to `droid exec` (read-only) — droid is a transient-failure fallback, not a quality substitute |
+| Codex transient error (rate-limit, network, 5xx) | Codex retries with backoff. **In PR mode the droid escalation is DISABLED** (`LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` is set before review), so an exhausted Codex falls to builtin — which PR mode rejects — leaving the lead inconclusive/fail-closed; re-run once Codex is healthy. (Commit-mode litmus still escalates to `droid exec`.) |
 | Codex/droid both exhausted → would fall to builtin (Sonnet) | **Inconclusive/fail-closed.** `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` is set in PR mode so a failed Codex falls to builtin, which PR mode rejects — it never falls silently to droid as the *lead*. A builtin/non-Codex lead is never accepted; log degraded and surface to the user |
 | Non-Codex lead resolved (e.g. `BUSDRIVER_REVIEW_CLI=droid`/`agy`) | **Inconclusive/fail-closed** — the PR normal path requires `RESOLVED_CLI=codex` |
 | Backstop agent times out or errors | **Inconclusive/fail-closed** — no artifact written, gate stays blocked. Re-dispatch |

@@ -17,16 +17,25 @@
 #   6. Post-hook ignores non-PR commands (marker untouched)
 #   7. Post-hook is a no-op (no crash) when no marker exists
 #
-# Determinism: a fresh temp repo has no origin/main, so the gate's
-# `git diff origin/main...HEAD` yields an empty diff. The test computes the
-# marker the exact same way, guaranteeing a hash match without real review
-# state.
+# Determinism: the temp repo anchors origin/main at the initial commit and adds a
+# second commit, so base...HEAD is a real, fixed diff. The test computes the marker
+# hash the exact same way the gate does (explicit merge-base, then
+# `git diff "${MERGE_BASE}...HEAD"`), guaranteeing a match without real review state.
+# (The gate now fails closed on an empty/unresolved diff, so an empty-diff fixture
+# would no longer be honored — see test 2c.)
 #
 # Usage: bash tests/test-pre-pr-gate.sh
 # Exit: 0 if all pass, 1 if any fail.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+# Pin the state dir to .claude — this test seeds markers/artifacts under
+# "$TMPREPO/.claude". A developer (or opencode mirror) shell may export
+# BUSDRIVER_STATE_DIR=.opencode, which would otherwise make the gate look under
+# .opencode and spuriously block. The gate's own value is documented to default
+# to .claude for Claude Code; pin it so the test is environment-independent.
+export BUSDRIVER_STATE_DIR=.claude
 
 GATE_SCRIPT="$(pwd)/hooks/gate-scripts/pre-pr-gate.sh"
 POST_HOOK="$(pwd)/hooks/gate-scripts/post-pr-consume-marker.sh"
@@ -47,14 +56,38 @@ git -C "$TMPREPO" config user.name "Test"
 echo "hello" > "$TMPREPO/file.txt"
 git -C "$TMPREPO" add file.txt
 git -C "$TMPREPO" commit -qm "initial"
+# Anchor a real base: origin/main = the initial commit, then add a second commit
+# so base...HEAD has a NON-EMPTY diff. The gate now fails closed when it cannot
+# resolve a real merge-base/diff (the empty-string SHA must never authorize a PR),
+# so the fixture must present a genuine diff rather than the old empty-diff shortcut.
+git -C "$TMPREPO" update-ref refs/remotes/origin/main HEAD
+git -C "$TMPREPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+printf 'hello\nworld\n' > "$TMPREPO/file.txt"
+git -C "$TMPREPO" add file.txt
+git -C "$TMPREPO" commit -qm "change"
 
 MARKER="$TMPREPO/.claude/pr-review-passed.local"
+CODEX_LEAD_ART="$TMPREPO/.claude/pr-codex-lead.local.json"
+BACKSTOP_ART="$TMPREPO/.claude/pr-backstop-verdict.local.json"
 mkdir -p "$TMPREPO/.claude"
 
-# Compute the diff hash the exact way the gate does (empty diff → empty hash).
-EMPTY_DIFF=$(git -C "$TMPREPO" diff "origin/main...HEAD" 2>/dev/null || true)
-VALID_HASH=$(printf '%s' "$EMPTY_DIFF" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+# Compute the diff hash the exact way the gate does: explicit merge-base, then
+# `git diff "${MERGE_BASE}...HEAD"` (byte-identical to compute_pr_diff_hash).
+MERGE_BASE=$(git -C "$TMPREPO" merge-base origin/main HEAD)
+REAL_DIFF=$(git -C "$TMPREPO" diff "${MERGE_BASE}...HEAD" 2>/dev/null || true)
+VALID_HASH=$(printf '%s' "$REAL_DIFF" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
 STALE_HASH=$(printf '%s' "stale-marker-content" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+
+# Dual-voice PR gate (ADR 0006): a non-fast PR marker is honored only when BOTH
+# diff-bound PASS artifacts (Codex lead + Opus backstop) are fresh for the same
+# hash. Seed both bound to $1, with ts=now (within the default 3600s window).
+seed_artifacts() {
+    local h="$1" now
+    now=$(date +%s)
+    printf '{"status":"PASS","model":"codex","diff_hash":"%s","ts":%s}\n' "$h" "$now" > "$CODEX_LEAD_ART"
+    printf '{"status":"PASS","model":"opus","diff_hash":"%s","ts":%s,"issues":[]}\n' "$h" "$now" > "$BACKSTOP_ART"
+}
+clear_artifacts() { rm -f "$CODEX_LEAD_ART" "$BACKSTOP_ART"; }
 
 PR_CREATE_CMD="cd $TMPREPO && gh pr create --fill"
 
@@ -111,13 +144,22 @@ print(json.dumps({'tool_name':'Bash','tool_input':{'command':sys.argv[1]},'tool_
 " "$1" "$2" "$3"
 }
 
-# ── 1. Gate allows on valid hash marker AND does not consume ──────────
+# ── 1. Gate allows on valid hash marker + both artifacts, and does not consume ──
 printf '%s' "$VALID_HASH" > "$MARKER"
+seed_artifacts "$VALID_HASH"
 GATE_INPUT=$(printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$PR_CREATE_CMD")
 got=$(run_gate "$GATE_INPUT")
-check "gate allows on valid hash marker" "allow" "$got"
+check "gate allows on valid hash marker + dual-voice artifacts" "allow" "$got"
 got=$(marker_state)
 check "gate does NOT consume marker on allow (deferred to post-hook)" "present" "$got"
+
+# ── 1b. Gate blocks when the backstop artifact is missing (lead alone) ─────────
+rm -f "$BACKSTOP_ART"
+got=$(run_gate "$GATE_INPUT")
+check "gate blocks when backstop artifact missing (lead PASS alone)" "block" "$got"
+# restore both for subsequent cases that expect a clean marker write
+seed_artifacts "$VALID_HASH"
+printf '%s' "$VALID_HASH" > "$MARKER"
 
 # ── 2. Gate blocks + cleans up stale (mismatched) marker ──────────────
 printf '%s' "$STALE_HASH" > "$MARKER"
@@ -125,6 +167,23 @@ got=$(run_gate "$GATE_INPUT")
 check "gate blocks on stale hash marker" "block" "$got"
 got=$(marker_state)
 check "gate removes stale marker" "absent" "$got"
+
+# ── 2c. Gate fails closed when merge-base can't be resolved (no real diff) ──
+# Remove origin/main so the gate cannot compute a base...HEAD diff. Even a marker
+# + artifacts carrying the empty-string SHA must NOT authorize a PR (the hardening
+# codex flagged while dogfooding this very change).
+ROOT_COMMIT=$(git -C "$TMPREPO" rev-list --max-parents=0 HEAD | head -1)
+git -C "$TMPREPO" symbolic-ref -d refs/remotes/origin/HEAD 2>/dev/null || true
+git -C "$TMPREPO" update-ref -d refs/remotes/origin/main
+EMPTY_SHA=$(printf '%s' "" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+printf '%s' "$EMPTY_SHA" > "$MARKER"
+seed_artifacts "$EMPTY_SHA"
+got=$(run_gate "$GATE_INPUT")
+check "gate fails closed when merge-base unresolved (empty-diff SHA rejected)" "block" "$got"
+# Restore the base for the remaining tests.
+git -C "$TMPREPO" update-ref refs/remotes/origin/main "$ROOT_COMMIT"
+git -C "$TMPREPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+rm -f "$MARKER"; clear_artifacts
 
 # ── 3. Post-hook consumes marker on success (PR URL + exit 0) ─────────
 printf '%s' "$VALID_HASH" > "$MARKER"
@@ -218,12 +277,14 @@ check "gate blocks brace-expansion cd ({a,b}) create" "block" "$got"
 got=$(run_gate "$(make_input_cwd 'cd -- /tmp && gh pr create --fill' "$TMPREPO")")
 check "gate blocks cd -- <path> create (end-of-options form)" "block" "$got"
 
-# cwd is consulted: no cd prefix + valid marker in the cwd repo → allow
-# (before the fix this resolved to the test runner's CWD and blocked).
+# cwd is consulted: no cd prefix + valid marker + both artifacts in the cwd repo
+# → allow (before the fix this resolved to the test runner's CWD and blocked).
 printf '%s' "$VALID_HASH" > "$MARKER"
+seed_artifacts "$VALID_HASH"
 got=$(run_gate "$(make_input_cwd 'gh pr create --fill' "$TMPREPO")")
 check "gate allows when cwd anchors to repo with valid marker (cwd consulted)" "allow" "$got"
 rm -f "$MARKER"
+clear_artifacts
 
 # ── 9. Post-hook consumes marker for the toplevel cd form (cwd-anchored) ──
 # Regression (PR #200 review): before the post-hook was cwd-anchored, a

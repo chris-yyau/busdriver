@@ -106,7 +106,7 @@ doesn't → `none`, non-blocking).
 - The gate is **not** loosened: a real code change (different tree) or a rebase
   (different parent) still falls through to `stale`. Covered by
   `tests/test-ack-ledger-content-identity.sh` (10 cases incl. arg-injection +
-  `HEAD_FULL_SHA`) and `tests/test-augment-equiv-acks.sh` (4 cases, `gh` stubbed +
+  `HEAD_FULL_SHA`) and `tests/test-augment-equiv-acks.sh` (6 cases / 8 assertions, `gh` stubbed +
   real git, end-to-end Tier-D ack proven).
 - The Codex timestamp tiers (F / A.2) are untouched.
 - **Required status checks are NOT carried forward — only the AI-reviewer ack ledger

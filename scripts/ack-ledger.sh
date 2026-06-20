@@ -566,8 +566,9 @@ if [ "$ever_approved" -eq 0 ]; then
   # doesn't auto-trigger on later non-force pushes; the re-request API 422s
   # so the operator has no recourse. By the time we reach this block we know:
   # (1) FETCH_OK=1, (2) no unresolved threads from this bot (Tier A would
-  # have returned `stale` at the top), (3) `commit_id` is non-empty AND its
-  # 8-char prefix != HEAD_SHA (Tier B would have returned the SHA otherwise),
+  # have returned `stale` at the top), (3) `commit_id` is non-empty AND
+  # `acks_head(commit_id)` is false — it neither 8-char-matches HEAD_SHA nor is
+  # content-identical to HEAD (Tier B would have returned the SHA otherwise),
   # (4) ever_approved==0 AND no prior CHANGES_REQUESTED (the guard above
   # now includes CHANGES_REQUESTED so a [CHANGES_REQUESTED, COMMENTED]
   # history correctly stays `stale`).

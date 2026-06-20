@@ -103,9 +103,18 @@ _augment_equiv_acks() {
                 | jq -r '.comments[]?.body // empty' 2>/dev/null \
                 | grep -oE 'commit/[0-9a-fA-F]{7,64}' 2>/dev/null \
                 | sed 's|commit/||'; } || true
-        } | awk 'NF && !seen[$0]++' | head -16
+        } | awk 'NF && !seen[$0]++' | head -32
     ) || true
     [ -n "$candidates" ] || return 0
+
+    # Fail-safe on malformed HEAD check-run input: if ALL_CHECK_RUNS is non-empty but
+    # does NOT parse cleanly (e.g. a partial gh response that did not trip FETCH_OK),
+    # bail rather than fall through with an empty _head_apps below — an empty app set
+    # would disable HEAD-precedence suppression and could let a predecessor success
+    # mask a live HEAD non-success. No widening at all is the safe outcome here.
+    if [ -n "${ALL_CHECK_RUNS:-}" ]; then
+        printf '%s' "$ALL_CHECK_RUNS" | jq empty 2>/dev/null || return 0
+    fi
 
     # Apps HEAD already reports a check-run for: NEVER override their HEAD signal. If
     # HEAD has a check-run from this app we leave HEAD to win — a success acks via HEAD

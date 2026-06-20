@@ -1038,8 +1038,9 @@ ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH
 # SHA-anchored tier miss and the gate poll-then-bail at --max-wait every time.
 # Tiers B (/reviews) and C (body-SHA) are PR-wide, so ack-ledger.sh's acks_head()
 # carries them forward on its own. Tier D (check-runs) is HEAD-scoped — the augment
-# source above already widened ALL_CHECK_RUNS with the content-identical predecessor's
-# check-runs so Tier D can ack them (re-proven via acks_head(head_sha)). Tier E
+# source below (run after this fetch, before the ledger call) widens ALL_CHECK_RUNS
+# with the content-identical predecessor's check-runs so Tier D can ack them
+# (re-proven via acks_head(head_sha)). Tier E
 # (statuses) is NOT carried forward (no SHA to re-prove); it stays correct on its own
 # HEAD fetch. Timestamp-FREE (git object hashes, not backdatable dates — does NOT relax
 # the #186/#189 posture), parent-pinned (rejects rebases), fails CLOSED. Disable with

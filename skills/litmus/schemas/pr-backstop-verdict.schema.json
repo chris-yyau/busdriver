@@ -18,7 +18,7 @@
       "minLength": 1
     },
     "diff_hash": {
-      "description": "sha256 of `git -c color.ui=never -c diff.external= -c core.quotePath=false diff <merge-base>...HEAD`, re-derived by the writer. 64 lowercase hex chars.",
+      "description": "sha256 of `git diff <merge-base>...HEAD` (bare; deterministic flags -c color.ui=never -c diff.external= -c core.quotePath=false are deferred per ADR 0006), re-derived by the writer. 64 lowercase hex chars.",
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },

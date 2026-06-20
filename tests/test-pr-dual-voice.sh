@@ -36,6 +36,23 @@ export BUSDRIVER_STATE_DIR=.claude
 PASS=0; FAIL=0
 ok() { if [ "$1" = "$2" ]; then echo "  PASS  $3"; PASS=$((PASS+1)); else echo "  FAIL  $3 (got '$1' want '$2')"; FAIL=$((FAIL+1)); fi; }
 
+# Run the gate over a payload and classify its JSON decision. Distinguishes a
+# genuine "allow" (gate ran and chose not to block) from a "crash" (gate failed
+# to execute: nonzero exit AND empty output). Without the crash arm, a broken
+# gate's empty output would be silently read as "allow" by a bare
+# `grep -q '"block"' && echo block || echo allow`, masking a fail-open regression.
+gate_decision() {
+  local payload="$1" out rc
+  out=$(printf '%s' "$payload" | env -u SKIP_LITMUS bash "$GATE" 2>/dev/null); rc=$?
+  if printf '%s' "$out" | grep -q '"block"'; then
+    echo block
+  elif [ "$rc" -ne 0 ] && [ -z "$out" ]; then
+    echo crash
+  else
+    echo allow
+  fi
+}
+
 WORK=$(mktemp -d)
 cleanup() { cd /; rm -rf "$WORK" 2>/dev/null || true; }
 trap cleanup EXIT
@@ -123,15 +140,13 @@ git checkout -q feature
 echo "== 11. gate accepts a fresh FAST marker matching the diff =="
 rm -f .claude/pr-codex-lead.local.json .claude/pr-backstop-verdict.local.json
 printf 'PASS-FAST-%s-%s\n' "$CUR" "$(date +%s)" > .claude/pr-review-passed.local
-DEC=$(printf '{"tool_name":"Bash","tool_input":{"command":"cd %s && gh pr create --fill"}}' "$WORK" \
-  | env -u SKIP_LITMUS bash "$GATE" 2>/dev/null)
-ok "$(printf '%s' "$DEC" | grep -q '"block"' && echo block || echo allow)" "allow" "fresh FAST marker accepted"
+DEC=$(printf '{"tool_name":"Bash","tool_input":{"command":"cd %s && gh pr create --fill"}}' "$WORK")
+ok "$(gate_decision "$DEC")" "allow" "fresh FAST marker accepted"
 
 echo "== 12. gate rejects a FAST marker with a wrong hash =="
 printf 'PASS-FAST-%s-%s\n' "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef" "$(date +%s)" > .claude/pr-review-passed.local
-DEC=$(printf '{"tool_name":"Bash","tool_input":{"command":"cd %s && gh pr create --fill"}}' "$WORK" \
-  | env -u SKIP_LITMUS bash "$GATE" 2>/dev/null)
-ok "$(printf '%s' "$DEC" | grep -q '"block"' && echo block || echo allow)" "block" "FAST marker with wrong hash rejected"
+DEC=$(printf '{"tool_name":"Bash","tool_input":{"command":"cd %s && gh pr create --fill"}}' "$WORK")
+ok "$(gate_decision "$DEC")" "block" "FAST marker with wrong hash rejected"
 
 echo ""
 echo "  ── $PASS/$((PASS+FAIL)) passed ──"

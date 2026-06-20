@@ -226,7 +226,7 @@ try:
     inp = d.get("tool_input", d.get("toolInput", {}))
     if isinstance(inp, str):
         inp = json.loads(inp)
-    if tool in ("Write", "Edit"):
+    if tool in ("Write", "Edit", "MultiEdit"):
         print("WRITE_EDIT|" + inp.get("file_path", inp.get("filePath", "")))
     elif tool == "Bash":
         cmd = inp.get("command", "")

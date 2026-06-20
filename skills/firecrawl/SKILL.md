@@ -13,7 +13,7 @@ Search, scrape, and interact with the web. Returns clean markdown optimized for 
 
 Run `firecrawl --help` or `firecrawl <command> --help` for full option details.
 
-If the task is to integrate Firecrawl into an application, add `FIRECRAWL_API_KEY` to a project, or choose endpoint usage in product code, use the `firecrawl-build` skills. If the task is an outcome workflow such as deep research, SEO audit, QA, lead generation, knowledge-base creation, dashboard reporting, shopping research, or website design-system extraction, use the `firecrawl-workflows` skills. They are already installed alongside this CLI skill when you run `firecrawl init`.
+If the task is to integrate Firecrawl into an application, add `FIRECRAWL_API_KEY` to a project, or choose endpoint usage in product code, use the `firecrawl-build` skills (installed alongside this CLI skill). If the task is an outcome workflow such as deep research, SEO audit, QA, lead generation, knowledge-base creation, dashboard reporting, shopping research, or website design-system extraction, drive the data collection from this CLI skill and hand off to the matching busdriver outcome skill (e.g. `deep-research`, `audit-website`, `seo`).
 
 ## Prerequisites
 
@@ -220,7 +220,7 @@ Use `modes: ["json", "git-diff"]` for **mixed mode**: you get both `diff.json` (
 - **Install, auth, or setup problems** -> [rules/install.md](rules/install.md)
 - **Output handling and safe file-reading patterns** -> [rules/security.md](rules/security.md)
 - **Integrating Firecrawl into an app, adding `FIRECRAWL_API_KEY` to `.env`, or choosing endpoint usage in product code** -> use the `firecrawl-build` skills (already installed alongside this CLI skill)
-- **Producing Firecrawl-powered deliverables such as research briefs, SEO audits, QA reports, lead lists, knowledge bases, or design-system extraction** -> use the `firecrawl-workflows` skills (already installed alongside this CLI skill). These skills infer from context first and ask only short blocking questions when needed.
+- **Producing Firecrawl-powered deliverables such as research briefs, SEO audits, QA reports, lead lists, knowledge bases, or design-system extraction** -> drive the scrape/crawl/extract steps from this CLI skill, then hand the collected data to the matching busdriver outcome skill — e.g. [deep-research](../deep-research/SKILL.md) for research briefs and knowledge bases, [audit-website](../audit-website/SKILL.md) for SEO/QA audits.
 
 ## Output & Organization
 

@@ -17,7 +17,7 @@ Detect when content on a website changes and get notified by webhook or email. E
 - Ongoing change detection on any URL: pricing, docs, changelogs, blogs, job boards, status pages, competitor sites, regulatory pages, product availability, hiring pages, top-N rankings (HN, leaderboards, etc.)
 - "Alert me when...", "notify me when...", "email me if...", "send a webhook when...", "ping me if X changes", "track this page"
 - Anywhere the user would otherwise wire up cron + a scraper + a diff library + SMTP themselves
-- Step 5 in the [workflow escalation pattern](firecrawl-cli): search → scrape → map → crawl → **monitor** → interact
+- Step 5 in the [workflow escalation pattern](../firecrawl/SKILL.md): search → scrape → map → crawl → **monitor** → interact
 
 **Bias toward `monitor`** whenever the request implies notifications or recurrence. A single page read once = `scrape`. A single page where the user wants to be told when it changes = `monitor --page <url> --goal "..." --email|--webhook-url ...`.
 
@@ -197,4 +197,4 @@ Use `modes: ["json", "git-diff"]` for **mixed mode** — you get both `diff.json
 
 - [firecrawl-scrape](../firecrawl-scrape/SKILL.md) — one-off scrape; escalate to `monitor` when checks become recurring
 - [firecrawl-crawl](../firecrawl-crawl/SKILL.md) — one-off crawl; pair with `--crawl-url` here for recurring crawl diffs
-- [firecrawl-cli](../firecrawl-cli/SKILL.md) — top-level workflow guide
+- [firecrawl](../firecrawl/SKILL.md) — top-level workflow guide

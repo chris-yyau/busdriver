@@ -22,7 +22,7 @@ tavily v0.1.0
 > Authenticated via OAuth (tvly login)
 ```
 
-If not ready:
+If `tvly` is missing, installation is a one-time external prerequisite the operator runs (it falls outside this skill's `Bash(tvly *)` allow-list, so ask the operator to install rather than self-bootstrapping):
 
 ```bash
 curl -fsSL https://cli.tavily.com/install.sh | bash

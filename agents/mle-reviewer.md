@@ -44,7 +44,7 @@ MLE review should compose existing SWE review surfaces instead of replacing them
 - Use `e2e-runner` for product flows where predictions affect user-visible or business-critical behavior.
 - Use `a11y-architect` when prediction explanations, confidence states, or fallback UI need to be accessible.
 - Use `doc-updater` when new model contracts, promotion gates, dashboards, or rollback runbooks need durable project documentation.
-- Use `documentation-lookup` before relying on evolving ML serving, vector DB, feature store, or eval-framework APIs.
+- Use `busdriver:context7-cli` before relying on evolving ML serving, vector DB, feature store, or eval-framework APIs.
 
 ## Critical Review Areas
 

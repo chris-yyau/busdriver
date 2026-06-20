@@ -36,7 +36,7 @@ Examples:
 | Instead of code-tour | Use |
 | --- | --- |
 | A one-off explanation in chat is enough | answer directly |
-| The user wants prose docs, not a `.tour` artifact | `documentation-lookup` or repo docs editing |
+| The user wants prose docs, not a `.tour` artifact | `busdriver:context7-cli` or repo docs editing |
 | The task is implementation or refactoring | do the implementation work |
 | The task is broad codebase onboarding without a tour artifact | `codebase-onboarding` |
 

@@ -158,13 +158,11 @@ For each selected category, print the full list of skills below and ask the user
 | `investor-materials` | Pitch decks, one-pagers, investor memos, and financial models |
 | `investor-outreach` | Personalized investor cold emails, warm intros, and follow-ups |
 
-**Category: Research & APIs (4 skills)**
+**Category: Research & APIs (2 skills)**
 
 | Skill | Description |
 |-------|-------------|
-| `deep-research` | Multi-source deep research using Tavily + Exa MCPs (free tier) with cited reports; Firecrawl reserved as paid fallback |
-| `tavily-search` | General web search, news, page extract, and site crawl via Tavily MCP (free tier ~1k/mo); tier-1 default for general lookups |
-| `exa-search` | Neural search via Exa MCP for code, papers, company, and people research (free tier ~1k/mo) |
+| `deep-research` | Multi-source deep research orchestrating Tavily CLI + Exa MCP (free tier) with cited reports; Firecrawl CLI reserved for deep page extraction. Neural search for code/papers/company/people is the official Exa MCP (`mcp__claude_ai_Exa__web_search_exa`) directly |
 | `claude-api-patterns` | Anthropic Claude API patterns: Messages, streaming, tool use, vision, batches, Agent SDK |
 
 **Category: Social & Content Distribution (2 skills)**
@@ -215,6 +213,19 @@ case "$skill_name" in
       cp -r "$ECC_ROOT/skills/claude-api" "$TARGET/skills/claude-api-patterns"
       sed -i.bak 's/^name: claude-api$/name: claude-api-patterns/' "$TARGET/skills/claude-api-patterns/SKILL.md"
       rm -f "$TARGET/skills/claude-api-patterns/SKILL.md.bak"
+    fi
+    ;;
+  deep-research)
+    # Localized in busdriver: rewritten to use busdriver:tavily-cli + Exa MCP +
+    # busdriver:firecrawl CLI. ECC upstream's deep-research targets the
+    # Firecrawl/Exa *MCP* servers instead, so prefer the busdriver-local copy —
+    # otherwise the wizard would install the upstream MCP workflow, not the
+    # localized CLI one described in the skill table above.
+    if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -d "${CLAUDE_PLUGIN_ROOT}/skills/deep-research" ]; then
+      cp -r "${CLAUDE_PLUGIN_ROOT}/skills/deep-research" "$TARGET/skills/"
+    else
+      echo "Note: busdriver plugin not loaded; installing ECC's upstream deep-research (MCP workflow), not the busdriver-localized CLI version."
+      cp -r "$ECC_ROOT/skills/deep-research" "$TARGET/skills/"
     fi
     ;;
   *)
@@ -292,7 +303,7 @@ Some skills reference others. Verify these dependencies:
 - `python-testing` may reference `python-patterns`
 - `golang-testing` may reference `golang-patterns`
 - `crosspost` references `content-engine` and `x-api`
-- `deep-research` references `tavily-search` and `exa-search` (complementary MCP tools — Tavily for general/news, Exa for technical/entity queries)
+- `deep-research` references the Tavily and Exa MCP tools directly (Tavily for general/news, Exa for technical/entity queries)
 - `fal-ai-media` references `videodb` (complementary media skill)
 - `x-api` references `content-engine` and `crosspost`
 - Language-specific rules reference `common/` counterparts

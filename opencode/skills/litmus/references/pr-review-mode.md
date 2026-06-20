@@ -194,7 +194,7 @@ bash "${BUSDRIVER_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write
 | Result | Action |
 |--------|--------|
 | Codex PASS + backstop no `high` | Write artifact (3a) → write marker (3b) → gate passes |
-| Codex PASS + backstop any `high` | Report findings. Fix, then re-run Step 2 only |
+| Codex PASS + backstop any `high` | Report findings. Fix, then re-run from Step 1 (a code fix changes the `base...HEAD` hash, staling the Codex-lead artifact — re-running Step 2 alone cannot rebind it, so the backstop write / PR marker would fail closed) |
 | Codex FAIL | Short-circuit (no backstop). Fix, re-run from Step 1 |
 
 The marker is a SHA-256 hash (64 hex chars) of the `base...HEAD` diff, or the audited `PASS-FAST-<diff_hash>-<epoch>` fast-bypass marker. The gate rejects `DEGRADED`, `SKIPPED-NONE`, and `BUILTIN-` prefixed markers for PR review.

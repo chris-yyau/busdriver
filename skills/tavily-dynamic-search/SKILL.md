@@ -21,7 +21,7 @@ This skill replicates the architecture of [Anthropic's Programmatic Tool Calling
 
 ## Before running any command
 
-If `tvly` is not found on PATH, install it first:
+`tvly` must be installed and authenticated. If it is missing, installation is a one-time external prerequisite the operator runs — it falls outside this skill's `Bash(tvly *)` allow-list, so ask the operator to install rather than self-bootstrapping:
 
 ```bash
 curl -fsSL https://cli.tavily.com/install.sh | bash && tvly login

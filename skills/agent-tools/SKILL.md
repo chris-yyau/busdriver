@@ -12,6 +12,8 @@ Run 150+ AI apps in the cloud with a simple CLI. No GPU required.
 
 ## Install CLI
 
+Installation is a one-time external prerequisite the operator runs — it falls outside this skill's `Bash(infsh *)` allow-list, so ask the operator to install rather than self-bootstrapping:
+
 ```bash
 curl -fsSL https://cli.inference.sh | sh
 infsh login

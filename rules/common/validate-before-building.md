@@ -6,6 +6,16 @@
 
 Do not build, port, or integrate a feature until you have **empirical evidence** the problem it solves actually exists. Assumptions about gaps, coverage, or user demand must be verified with data before they justify engineering work.
 
+## Reach for what exists first
+
+Once the Rule clears (the thing *should* exist), don't reach straight for new code. Stop at the first rung that holds:
+
+**stdlib → native platform feature → already-installed dependency → one clear line → only then new code.**
+
+Mark a deliberate simplification with a greppable inline receipt that names its upgrade trigger — never a bare TODO, never cover for known-broken behavior:
+
+    // keep-simple(UPGRADE: per-account locks if contention is real): single global lock
+
 ## Checklist (before starting any build/port/integration)
 
 - [ ] **Is the problem verified?** Have you measured the gap on real data, not estimated it?

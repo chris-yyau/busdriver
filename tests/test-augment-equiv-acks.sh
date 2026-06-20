@@ -192,10 +192,16 @@ ALL_CHECK_RUNS="$(printf '{"check_runs":[{"app":{"slug":"cursor"},"conclusion":"
 export ALL_COMMENTS=''
 STUB_CHECKRUNS="$(checkruns_json cursor "$OLD")"; export STUB_CHECKRUNS   # predecessor cursor success
 widened=$(run_augment "$repo" "$bin")
+# Two assertions: (1) no predecessor success leaked, AND (2) HEAD failure entry is still present.
 if printf '%s' "$widened" | jq -es '[.[]?|.check_runs[]?|select(.app.slug=="cursor" and .conclusion=="success")]|length==0' >/dev/null 2>&1; then
-  ok "precedence: HEAD cursor check-run not overridden by predecessor success"
+  ok "precedence: predecessor cursor success did not leak"
 else
   fail "precedence: predecessor cursor success leaked despite a HEAD cursor check-run"
+fi
+if printf '%s' "$widened" | jq -es --arg sha "$NEW" '[.[]?|.check_runs[]?|select(.app.slug=="cursor" and .conclusion=="failure" and .head_sha==$sha)]|length==1' >/dev/null 2>&1; then
+  ok "precedence: HEAD cursor failure entry preserved after widening"
+else
+  fail "precedence: HEAD cursor failure entry missing or duplicated after widening"
 fi
 unset HEAD_SHA HEAD_FULL_SHA ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS STUB_CHECKRUNS
 
@@ -219,6 +225,31 @@ if [ -z "$(printf '%s' "$widened" | tr -d '[:space:]')" ]; then
   ok "fail-closed (fresh clone): absent+unfetchable predecessor → no widening"
 else
   fail "fail-closed: widened ALL_CHECK_RUNS despite an absent, unfetchable predecessor"
+fi
+unset HEAD_SHA HEAD_FULL_SHA ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS STUB_CHECKRUNS
+
+# ============================================================
+# 7. MALFORMED ALL_CHECK_RUNS — defensive bail-out: malformed non-empty
+#    ALL_CHECK_RUNS must result in a no-op (no widening, no mutation).
+# ============================================================
+repo=$(mk); bin=$(mk); make_gh_stub "$bin"
+( cd "$repo" && git init -q && git config user.email t@e && git config user.name t && git config commit.gpgsign false \
+   && echo v1 > f.txt && git add f.txt && git commit -qm "feat: thing" )
+( cd "$repo" && git commit -q --amend -m "feat: thing reworded" )
+NEW=$(git -C "$repo" rev-parse HEAD); NEW8=${NEW:0:8}
+OLD=$(git -C "$repo" rev-parse HEAD)
+export HEAD_SHA="$NEW8" HEAD_FULL_SHA="$NEW"
+ALL_REVIEWS="$(reviews_json cubic-dev-ai "$OLD" COMMENTED)"; export ALL_REVIEWS
+export ALL_COMMENTS=''
+ALL_CHECK_RUNS='not-valid-json{{{'; export ALL_CHECK_RUNS   # malformed non-empty payload
+export STUB_CHECKRUNS=''
+widened=$(run_augment "$repo" "$bin")
+# The bail-out (jq empty fails → return 0) leaves ALL_CHECK_RUNS unchanged (no widening).
+# Verify the output equals the original malformed input — no predecessor check-runs appended.
+if [ "$widened" = 'not-valid-json{{{' ]; then
+  ok "malformed ALL_CHECK_RUNS: defensive bail-out — input unchanged, no widening"
+else
+  fail "malformed ALL_CHECK_RUNS: expected unchanged input, got: '$widened'"
 fi
 unset HEAD_SHA HEAD_FULL_SHA ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS STUB_CHECKRUNS
 

@@ -23,8 +23,10 @@ unset FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA HEAD
 [[ "$FETCH_OK" = "1" ]] || { echo "FAIL t3: FETCH_OK='$FETCH_OK'"; exit 1; }
 [[ -n "$ALL_THREADS" ]] && [[ -n "$ALL_REVIEWS" ]] && [[ -n "$ALL_COMMENTS" ]] \
     && [[ -n "$ALL_CHECK_RUNS" ]] && [[ -n "$HEAD_SHA" ]] || { echo "FAIL t3: empty env var"; exit 1; }
-# HEAD_FULL_SHA must be exported and HEAD_SHA must be its 8-char prefix.
-[[ -n "${HEAD_FULL_SHA:-}" ]] || { echo "FAIL t3: HEAD_FULL_SHA not exported"; exit 1; }
+# HEAD_FULL_SHA must be exported (visible to child processes) and HEAD_SHA must be its 8-char prefix.
+# Check via a subshell so we confirm the export attribute, not just current-shell visibility
+# (sourcing a script assigns variables in the current shell regardless of export status).
+bash -c '[[ -n "${HEAD_FULL_SHA:-}" ]]' || { echo "FAIL t3: HEAD_FULL_SHA not exported to child processes"; exit 1; }
 [[ "${HEAD_FULL_SHA:0:8}" = "$HEAD_SHA" ]] || { echo "FAIL t3: HEAD_SHA ('$HEAD_SHA') != HEAD_FULL_SHA prefix ('${HEAD_FULL_SHA:0:8}')"; exit 1; }
 
 # t4: shapes match ack-ledger.sh's parsers (HIGH #3)

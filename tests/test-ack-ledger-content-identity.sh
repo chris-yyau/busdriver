@@ -171,6 +171,9 @@ git -C "$repo" reset -q --hard "$NEW"
 NEW8=${NEW:0:8}
 # Sanity: trees equal, parents differ (so the test exercises the parent pin).
 [ "$( git -C "$repo" rev-parse "${NEW}^{tree}" )" = "$TREE_OLD" ] || fail "setup#5: NEW tree != OLD tree"
+OLD_PARENT=$(git -C "$repo" show -s --format=%P "$OLD")
+NEW_PARENT=$(git -C "$repo" show -s --format=%P "$NEW")
+[ "$OLD_PARENT" != "$NEW_PARENT" ] || fail "setup#5: NEW parent unexpectedly equals OLD parent"
 HEAD_SHA="$NEW8"; ALL_REVIEWS=$(reviews_json cursor "$OLD" APPROVED)
 out=$(run_ledger "$repo" cursor)
 if [ "$out" = "stale" ]; then ok "Negative (parent change / rebase): parent-pin rejects it, stays stale"

@@ -247,6 +247,16 @@ MERGE_BASE=$(git -C "$REPO_DIR" merge-base "${PR_BASE}" HEAD 2>/dev/null || true
 DIFF_OUTPUT=$(git -C "$REPO_DIR" diff "${MERGE_BASE}...HEAD" 2>/dev/null || true)
 CURRENT_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
 
+# Fail-closed cleanup: if a marker exists but we could NOT compute a verifiable
+# base...HEAD diff (empty merge-base, or an empty diff — e.g. a transient git
+# failure, or a base ref that briefly disappeared), clear the marker AND both
+# artifacts. Leaving them lets a later base restoration silently reuse stale
+# review state instead of requiring a fresh review for the resolved diff.
+if [ -f "$PR_MARKER" ] && { [ -z "$MERGE_BASE" ] || [ -z "$DIFF_OUTPUT" ]; }; then
+    echo "[pre-pr-gate] Cannot compute a verifiable base...HEAD diff; clearing stale PR marker + artifacts (fail-closed)." >&2
+    rm -f "$PR_MARKER" "$CODEX_LEAD_ART" "$BACKSTOP_ART"
+fi
+
 # Only honor a marker when we resolved a REAL base...HEAD diff. A failed/empty
 # merge-base (missing or unrelated base ref) and an empty diff BOTH collapse to
 # the empty-string SHA (e3b0c442...); honoring a marker that carries that hash

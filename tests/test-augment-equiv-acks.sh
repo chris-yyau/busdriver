@@ -235,9 +235,9 @@ unset HEAD_SHA HEAD_FULL_SHA ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS STUB_CHECKR
 repo=$(mk); bin=$(mk); make_gh_stub "$bin"
 ( cd "$repo" && git init -q && git config user.email t@e && git config user.name t && git config commit.gpgsign false \
    && echo v1 > f.txt && git add f.txt && git commit -qm "feat: thing" )
+OLD=$(git -C "$repo" rev-parse HEAD)
 ( cd "$repo" && git commit -q --amend -m "feat: thing reworded" )
 NEW=$(git -C "$repo" rev-parse HEAD); NEW8=${NEW:0:8}
-OLD=$(git -C "$repo" rev-parse HEAD)
 export HEAD_SHA="$NEW8" HEAD_FULL_SHA="$NEW"
 ALL_REVIEWS="$(reviews_json cubic-dev-ai "$OLD" COMMENTED)"; export ALL_REVIEWS
 export ALL_COMMENTS=''

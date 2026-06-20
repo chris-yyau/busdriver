@@ -34,7 +34,7 @@ import { BlurView } from "expo-blur";
 
 ### Intensity
 
-Control blur strength with `intensity` (0-100):
+Control blur strength with `intensity` (1-100):
 
 ```tsx
 <BlurView tint="systemMaterial" intensity={50} />  // Subtle

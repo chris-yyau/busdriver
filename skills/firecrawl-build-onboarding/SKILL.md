@@ -72,7 +72,6 @@ Then decide which integration path applies:
 | **Run the browser auth flow and save `FIRECRAWL_API_KEY`** | [references/auth-flow.md](references/auth-flow.md) |
 | **Install the right SDK** | [references/sdk-installation.md](references/sdk-installation.md) |
 | **Put credentials into `.env` or project config** | [references/project-setup.md](references/project-setup.md) |
-| **Choose the right endpoint after setup** | [firecrawl-build](../firecrawl-build/SKILL.md) |
 | **Need live web tooling during this task** | The CLI skills are already installed from the same command |
 | **Start implementation from a known URL** | [firecrawl-build-scrape](../firecrawl-build-scrape/SKILL.md) |
 | **Start implementation from a query** | [firecrawl-build-search](../firecrawl-build-search/SKILL.md) |

@@ -5,7 +5,7 @@ Install the SDK that matches the project stack after `FIRECRAWL_API_KEY` is avai
 ## JavaScript / TypeScript
 
 ```bash
-npm install @mendable/firecrawl-js
+npm install firecrawl
 ```
 
 ## Python

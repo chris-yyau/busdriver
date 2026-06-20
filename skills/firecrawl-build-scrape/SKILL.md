@@ -63,6 +63,5 @@ Read the source-of-truth page for your project language before writing integrati
 
 ## See Also
 
-- [firecrawl-build](../firecrawl-build/SKILL.md)
 - [firecrawl-build-search](../firecrawl-build-search/SKILL.md)
 - [firecrawl-build-interact](../firecrawl-build-interact/SKILL.md)

@@ -80,7 +80,6 @@ Stack multiple gradients by comma-separating them:
 ```tsx
 <View style={{
   experimental_backgroundImage: 'linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%)',
-  backdropFilter: 'blur(10px)',
 }} />
 ```
 

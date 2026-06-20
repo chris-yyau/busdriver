@@ -4,10 +4,10 @@ description: |
   Download an entire website as local files — markdown, screenshots, or multiple formats per page. Use this skill when the user wants to save a site locally, download documentation for offline use, bulk-save pages as files, or says "download the site", "save as local files", "offline copy", "download all the docs", or "save for reference". Combines site mapping and scraping into organized local directories.
 allowed-tools:
   - Bash(firecrawl *)
-  - Bash(npx firecrawl *)
+  - Bash(npx firecrawl-cli *)
 ---
 
-# firecrawl download
+# firecrawl x download
 
 > **Experimental.** Convenience command that combines `map` + `scrape` to save an entire site as local files.
 
@@ -23,23 +23,23 @@ Maps the site first to discover pages, then scrapes each one into nested directo
 
 ```bash
 # Interactive wizard (picks format, screenshots, paths for you)
-firecrawl download https://docs.example.com
+firecrawl x download https://docs.example.com
 
 # With screenshots
-firecrawl download https://docs.example.com --screenshot --limit 20 -y
+firecrawl x download https://docs.example.com --screenshot --limit 20 -y
 
 # Multiple formats (each saved as its own file per page)
-firecrawl download https://docs.example.com --format markdown,links --screenshot --limit 20 -y
+firecrawl x download https://docs.example.com --format markdown,links --screenshot --limit 20 -y
 # Creates per page: index.md + links.txt + screenshot.png
 
 # Filter to specific sections
-firecrawl download https://docs.example.com --include-paths "/features,/sdks"
+firecrawl x download https://docs.example.com --include-paths "/features,/sdks"
 
 # Skip translations
-firecrawl download https://docs.example.com --exclude-paths "/zh,/ja,/fr,/es,/pt-BR"
+firecrawl x download https://docs.example.com --exclude-paths "/zh,/ja,/fr,/es,/pt-BR"
 
 # Full combo
-firecrawl download https://docs.example.com \
+firecrawl x download https://docs.example.com \
   --include-paths "/features,/sdks" \
   --exclude-paths "/zh,/ja" \
   --only-main-content \

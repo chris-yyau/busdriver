@@ -114,22 +114,24 @@ try:
         # Block shell redirects targeting marker files
         for mf in MARKER_FILES:
             if mf in cmd:
-                # Check if command writes to it (not just reads/checks)
-                stripped = re.sub(r"'\''[^'\'']*'\''", "", cmd)
-                # Search BOTH the raw command and the quote-stripped form. A
-                # redirect whose target is wrapped in single quotes (printf ...
-                # then > then a single-quoted .claude/<marker> path) has that
-                # path removed by the strip, so checking only the stripped form
-                # lets a quoted-path forge through. Raw catches the quoted
-                # target; stripped still avoids matching a marker name that only
-                # appears inside an unrelated quoted string with no redirect.
-                write_re = r"(?:>|tee|echo.*>|printf.*>|cat.*>).*" + re.escape(mf)
-                if re.search(write_re, cmd) or re.search(write_re, stripped):
+                # Catch the marker as ANY operand of the same redirect/tee/rm
+                # (tee and rm take MULTIPLE output/target files), while NOT
+                # matching a marker that appears in a SEPARATE command. The gap
+                # between the operator and the marker may span other operands and
+                # whitespace but NOT a command separator (; | & or newline), so
+                # tee /tmp/log MARKER and rm -f a MARKER are blocked, while
+                # rm a && echo MARKER and echo x > log ; echo MARKER are not
+                # false positives. A quoted target (redirect to QUOTE.claude/...)
+                # is covered because the quote is inside the gap.
+                gap = r"[^;|&\n]*"
+                write_re = r"(?:>>?\|?|\btee\b)" + gap + re.escape(mf)
+                if re.search(write_re, cmd):
                     print("BLOCK_MARKER|" + mf)
                     sys.exit(0)
-                # Also block rm of marker files (prevents consumption forgery)
-                rm_re = r"\brm\b.*" + re.escape(mf)
-                if re.search(rm_re, cmd) or re.search(rm_re, stripped):
+                # Also block rm whose operands include the marker (consumption
+                # forgery via deletion), same separator-bounded gap.
+                rm_re = r"\brm\b" + gap + re.escape(mf)
+                if re.search(rm_re, cmd):
                     print("BLOCK_MARKER|" + mf)
                     sys.exit(0)
 

@@ -120,6 +120,12 @@ MERGE_BASE=$(git merge-base "${PR_BASE}" HEAD)
 git diff "${MERGE_BASE}...HEAD"                 # full diff — inject verbatim
 git diff "${MERGE_BASE}...HEAD" --name-only     # changed-file list
 git log --oneline --stat "${MERGE_BASE}..HEAD" | head -n 200   # capped history
+
+# reviewed_diff_hash — binds the backstop verdict to THIS diff. Compute it with
+# the SAME formula the trusted writer and gate use (bare `git diff base...HEAD`,
+# captured via printf '%s'); any other value is rejected fail-closed by
+# --write-backstop-verdict, so do NOT hand-craft or placeholder it.
+REVIEWED_DIFF_HASH=$(printf '%s' "$(git diff "${MERGE_BASE}...HEAD")" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
 ```
 
 **Dispatch prompt** (inject the captured `MERGE_BASE`, full diff, changed-file list, and capped history into the placeholders — no literal placeholder may remain, and the diff must be carried in the prompt):
@@ -180,7 +186,7 @@ and **fails closed** on any malformed or out-of-enum field.
 
 **3a. Write the backstop verdict artifact.** The trusted writer re-derives `diff_hash`/`ts` itself and **fails closed if `reviewed_diff_hash` ≠ the current `base...HEAD` hash** — a commit landing mid-review invalidates the verdict, so re-run:
 ```bash
-printf '%s' '{"status":"PASS","model":"opus","reviewed_diff_hash":"<hash you captured at dispatch>","issues":[]}' \
+printf '{"status":"PASS","model":"opus","reviewed_diff_hash":"%s","issues":[]}' "${REVIEWED_DIFF_HASH}" \
   | bash "${BUSDRIVER_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write-backstop-verdict
 ```
 You supply only `{status, model, issues[]}` (plus `reviewed_diff_hash` for the TOCTOU bind) on stdin. The writer re-derives `diff_hash` and `ts`, **recomputes `status` from the issues** (any `high` ⇒ FAIL — the supplied `status` is advisory and an explicit FAIL is never overridden to PASS), validates strictly (every issue needs `{file,line,severity,confidence,category,description}`; `confidence` 0–100; `severity` in the `high|medium|low` enum; a hallucinated/missing severity ⇒ reject), and **exits nonzero without writing** on any violation. It writes atomically to `${BUSDRIVER_STATE_DIR:-.opencode}/pr-backstop-verdict.local.json`.

@@ -586,6 +586,37 @@ echo "Ack tiers: $ACK_TIERS"
 # Step 2.5). `none` = not on this PR (non-gating); a short SHA = acked HEAD.
 CODEX_ACK=$(_ackpart "$(_at chatgpt-codex-connector)")
 echo "Codex ack: $CODEX_ACK"
+
+# --- Codex sole-stale-blocker auto-re-trigger (one-shot per HEAD) ---------------
+# Codex only re-reviews on a *push*. On a WAIT-round (no fix this round, HEAD
+# unchanged) where Codex is the SOLE stale ack — CODEX_ACK is `stale` AND no
+# registered bot in $ACKS is `stale` (they have all caught up) — Codex will never
+# self-ack the unchanged HEAD: it posts COMMENTED reviews / 0 reactions and its
+# thread resolutions predate the last push (Tier-A.2 fails CLOSED). The gate would
+# then dead-end at --max-wait. Post `@codex review` ONCE so Codex re-reviews the
+# current HEAD (→ fresh 👍/Tier-F ack, or new findings to triage next round),
+# making the gate convergent.
+#
+# Wait-round gate (ADR 0005 trigger condition #1): the worker STAGES fixes but
+# never commits (the dispatcher commit-block does), so a CLEAN working tree here
+# means no fix was made this round (HEAD unchanged) — a genuine wait-round. The
+# guard prevents firing right after a fix, where the push the dispatcher is about to
+# make re-triggers Codex on its own (so an auto-re-trigger would be redundant).
+# "Clean" must cover three states: no unstaged tracked changes (`git diff`), no
+# staged changes (`git diff --cached`), AND no NEW untracked files
+# (`git ls-files --others --exclude-standard` — a fix that adds a file the worker
+# hasn't staged yet would otherwise read as a wait-round). `--exclude-standard`
+# honors .gitignore, so the codex-retrigger `.local` marker and other ignored files
+# never trip the guard. One-shot + opt-out (PR_GRIND_CODEX_RETRIGGER=0) + phrase
+# override (PR_GRIND_CODEX_RETRIGGER_PHRASE) live in the helper; `|| true` guarantees
+# a failed post never stales the gate. See ADR 0005. Distinct from the COMPLETION
+# first-engagement grace (skills/pr-grind/SKILL.md), which only RE-POLLS a `none`
+# Codex and never RE-TRIGGERS a `stale` one.
+if git diff --quiet 2>/dev/null && git diff --cached --quiet 2>/dev/null \
+   && [ -z "$(git ls-files --others --exclude-standard 2>/dev/null)" ] \
+   && [ "$CODEX_ACK" = "stale" ] && ! printf '%s' "$ACKS" | grep -q '=stale'; then
+  bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger.sh" "$PR_NUMBER" "${HEAD_FULL_SHA:-$HEAD_SHA}" || true
+fi
 ```
 
 Emit `$ACKS` verbatim as `RESULT_REVIEWER_ACKS`, `$ACK_TIERS` verbatim as `RESULT_ACK_TIERS`, and `$CODEX_ACK` verbatim as `RESULT_CODEX_ACK`. The dispatcher feeds `$ACKS` back as next round's `PRIOR_REVIEWER_ACKS` and uses it to gate `clean`; it reads `$ACK_TIERS` only at invariant-check time (Invariant 3's bodyless-ack exemption) and does not echo it back to the next round. `RESULT_CODEX_ACK` is gated identically to a registered bot (a `stale` value blocks `clean`) but is transported separately because Codex is not part of the three-bot SHA-keyed `RESULT_REVIEWER_ACKS` contract — see Step 2.5.

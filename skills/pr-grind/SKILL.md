@@ -468,6 +468,31 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │     # the dispatcher's tag-resolution step already canonicalized aliases
   │     # before this point (see "Resolution order" in Dispatch a Round below).
   │
+  │     # Codex sole-stale-blocker auto-re-trigger (one-shot per HEAD) — ADR 0005.
+  │     # On this WAIT-round (RESULT_COMMIT_SHA == "none", so HEAD is unchanged)
+  │     # where Codex is the SOLE stale ack — RESULT_CODEX_ACK == "stale" AND no
+  │     # registered bot in RESULT_REVIEWER_ACKS is "stale" (they all acked HEAD) —
+  │     # Codex will never self-ack the unchanged HEAD (it posts COMMENTED reviews /
+  │     # 0 reactions; its thread resolutions predate the push, Tier-A.2 fail-closed),
+  │     # so the next wait-rounds would just burn --max-wait and BAIL. Post `@codex
+  │     # review` ONCE so Codex re-reviews HEAD before the next round (→ fresh
+  │     # 👍/Tier-F ack → converge, or new findings → worker triages). The helper is
+  │     # idempotent (one-shot marker per (PR,HEAD)) so this is safe even though the
+  │     # worker's Step 6.5 mirrors the same call. Opt out: PR_GRIND_CODEX_RETRIGGER=0;
+  │     # phrase override (forks): PR_GRIND_CODEX_RETRIGGER_PHRASE. `|| true` keeps a
+  │     # failed post from ever staling the gate. Distinct from the COMPLETION
+  │     # first-engagement grace, which only RE-POLLS a `none` Codex (never a `stale`).
+  │     If RESULT_COMMIT_SHA == "none" AND RESULT_CODEX_ACK == "stale"
+  │        AND RESULT_REVIEWER_ACKS has no `stale` entry, run this block. Per the
+  │        "CWD Reset Across Bash Calls" contract it MUST open with `cd "$WORKTREE_DIR"`
+  │        (template-substituted to the literal Step 0 path — do NOT rely on shell-var
+  │        persistence or on the inherited CWD; `$PR_NUMBER` is likewise the Step 0
+  │        literal, and HEAD is read inside the correct worktree after the cd). The
+  │        cd runs in a subshell and ABORTS on failure (`|| exit 0`) so a bad
+  │        WORKTREE_DIR never lets git/gh run in the wrong repo:
+  │          ( cd "$WORKTREE_DIR" || exit 0
+  │            bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger.sh" "$PR_NUMBER" "$(git rev-parse HEAD)" || true )
+  │
   └── Update state:
         PRIOR_COMMIT_SHA    = RESULT_COMMIT_SHA
         PRIOR_REVIEWER_ACKS = RESULT_REVIEWER_ACKS
@@ -1115,10 +1140,22 @@ STALE_BOTS=$(echo "$ROUND_ACKS,chatgpt-codex-connector=$ROUND_CODEX_ACK" | tr ',
 echo "STALE_BOTS: $STALE_BOTS"
 ```
 
+(The Codex sole-stale-blocker auto-re-trigger is **not** invoked inside this Bash block — this block runs *after* the commit-block (Step 6), so the working tree is clean even on a fix-round and a shell guard cannot tell a wait-round apart. It is invoked from the Claude-interpreted "Acting on the result" step below, where the wait-round vs fix-round distinction is known.)
+
 **Acting on the result (instruction to Claude, not shell control flow):** the `STALE_BOTS` variable lives only inside the Bash invocation that runs the snippet above — it does NOT persist into a subsequent inline-loop iteration. After the snippet runs, **Claude reads the printed `Ack ledger:` and `STALE_BOTS:` lines from stdout** and decides:
 
 - **STALE_BOTS empty** → round genuinely complete; proceed to Step 7 (autonomous summary or interactive checkpoint), which will either continue to the next round or dispatch Completion depending on whether checks are green and all findings are resolved.
 - **STALE_BOTS non-empty** → round is in waiting-for-bots state; **skip Step 7 entirely** and re-dispatch Step 1 directly (analogous to the Sonnet subagent's `needs_more + RESULT_COMMIT_SHA=none + stale-acks` flow that the dispatcher's relaxed Invariant 1 permits). Increment the round counter as normal.
+  - **Codex sole-stale-blocker auto-re-trigger (one-shot per HEAD; ADR 0005).** If — AND ONLY IF — this is a **wait-round** (you did NOT run the commit-block this round, so HEAD is unchanged) **and** `STALE_BOTS` is *exactly* `chatgpt-codex-connector` (every registered bot already acked HEAD; Codex is the sole blocker), run the helper ONCE before re-dispatching so Codex re-reviews the unchanged HEAD it would otherwise never self-ack (it posts COMMENTED reviews / 0 reactions, and its thread resolutions predate the last push) — without it the gate dead-ends at `--max-wait`:
+
+    This runs as its own Bash invocation, so per the "CWD Reset Across Bash Calls" contract it MUST open with `cd "$WORKTREE_DIR"` (template-substituted to the literal Step 0 path). Do NOT rely on `$PR` / `$HEAD_SHA` persisting from the Step 6.5 block (shell vars do not survive across Bash calls) and do NOT trust the inherited CWD: `$WORKTREE_DIR` and `$PR_NUMBER` are the Step 0 literals, and HEAD is read inside the correct worktree after the cd. The cd runs in a subshell and ABORTS on failure (`|| exit 0`) so a bad `WORKTREE_DIR` never lets git/gh run in the wrong repo:
+
+    ```bash
+    ( cd "$WORKTREE_DIR" || exit 0
+      bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger.sh" "$PR_NUMBER" "$(git rev-parse HEAD)" || true )
+    ```
+
+    Do NOT run it on a fix-round: the commit-block already pushed a new HEAD, which re-triggers Codex on its own. The wait-round condition is the inline analogue of the dispatcher's `RESULT_COMMIT_SHA == "none"` and the worker's clean-working-tree gate. One-shot + opt-out (`PR_GRIND_CODEX_RETRIGGER=0`) + phrase override (`PR_GRIND_CODEX_RETRIGGER_PHRASE`) live in the helper (`${CLAUDE_PLUGIN_ROOT}` is a session env var, so it persists). `|| true` keeps a failed post from ever staling the gate. Distinct from the COMPLETION first-engagement grace, which only RE-POLLS a `none` Codex (never a `stale` one).
 
 **Interaction with `--max-fix` / `--max-wait`:** wait-rounds count against `--max-wait` (default 8), NOT against `--max-fix` (default 5). The split fixed a real failure mode in the previous unified `--max` budget: every wait-round consumed a fix slot, so a PR with 3 fix iterations + 4 slow-bot polls would exhaust at `--max=5` even though only 3 fixes happened. With the dual budget, fix-budget reflects *engineering effort* and wait-budget reflects *bot latency tolerance* — orthogonal concerns. Either exhausted budget bails with a specific reason: `max-fix iterations (<MAX_FIX>) reached without clean status` (raise `--max-fix` if grinding a PR with many feedback rounds) or `max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD; latest stale: <STALE_AT_BAIL>` (raise `--max-wait` if grinding a PR with known-slow reviewer bots; `STALE_AT_BAIL` is the dispatcher-side derivation from `PRIOR_REVIEWER_ACKS` plus `PRIOR_CODEX_ACK` — see `ON_LOOP_EXHAUSTED` in the Dispatcher Loop above. Note: this is distinct from Step 6.5's transient `$STALE_BOTS` bash variable, which lives only inside the ledger snippet and does not survive into the bail handler). The legacy `--max N` flag is a deprecated alias that sets both budgets to N (emits a `⚠️  --max is deprecated; use --max-fix and --max-wait` warning at dispatch start) and CANNOT be combined with `--max-fix` or `--max-wait` — combining them bails with reason `conflicting flags: --max cannot be combined with --max-fix or --max-wait`.
 
@@ -1311,6 +1348,11 @@ FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-
 # SHA/stale, not `none`) — so on repos where Codex runs there is no wait here.
 # Set PR_GRIND_CODEX_GRACE_SECS=0 on repos that do not use Codex to skip the
 # one-time wait. Bounded by design; never an unbounded hang.
+# This grace handles ONLY the `none` case (Codex never engaged). The `stale` case —
+# Codex reviewed but won't re-ack an UNCHANGED HEAD — is handled earlier, in the
+# LOOP, by the codex-retrigger one-shot (ADR 0005, scripts/codex-retrigger.sh):
+# COMPLETION is unreachable while Codex is `stale` (Invariant 2 blocks `clean`), so
+# the recovery for `stale` must live in the wait-round, not here.
 CODEX_DONE=$(printf '%s' "$FRESH_ACKS" | tr ',' '\n' | awk -F= '$1=="chatgpt-codex-connector"{print $2}')
 CODEX_GRACE="${PR_GRIND_CODEX_GRACE_SECS:-20}"
 if [ "$CODEX_DONE" = "none" ] && [ "${CODEX_GRACE}" -gt 0 ] 2>/dev/null; then

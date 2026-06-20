@@ -150,21 +150,23 @@ function resolveCommand(argv) {
     return { mode: 'help' };
   }
 
-  if (args.includes('--dry-run')) {
+  // `--dry-run` is a global flag (documented as `ecc --dry-run <command>`).
+  // Normalize it: set ECC_DRY_RUN, then strip it from positional parsing so it
+  // is never mistaken for the command name (e.g. `ecc help --dry-run doctor`
+  // must resolve to `doctor`, not throw on `--dry-run`). It is re-forwarded to
+  // mutating subcommands below.
+  const dryRun = args.includes('--dry-run');
+  if (dryRun) {
     process.env.ECC_DRY_RUN = '1';
   }
+  const cleanArgs = args.filter(arg => arg !== '--dry-run');
 
-  let cmdStart = 0;
-  while (cmdStart < args.length && args[cmdStart] === '--dry-run') {
-    cmdStart++;
-  }
-
-  if (cmdStart >= args.length) {
+  if (cleanArgs.length === 0) {
     return { mode: 'help' };
   }
 
-  const firstArg = args[cmdStart];
-  const restArgs = args.slice(cmdStart + 1);
+  const firstArg = cleanArgs[0];
+  const restArgs = cleanArgs.slice(1);
 
   if (firstArg === '--help' || firstArg === '-h') {
     return { mode: 'help' };
@@ -177,11 +179,18 @@ function resolveCommand(argv) {
     };
   }
 
+  // Mutating subcommands parse their OWN --dry-run argv flag and do NOT read
+  // ECC_DRY_RUN, so a global `ecc --dry-run <cmd>` must forward the flag or the
+  // destructive action would execute instead of preview. Read-only commands
+  // rely on ECC_DRY_RUN and may reject an unknown flag, so only forward here.
+  const DRY_RUN_ARGV_COMMANDS = new Set(['install', 'repair', 'uninstall', 'auto-update']);
+
   if (COMMANDS[firstArg]) {
+    const forwardDryRun = dryRun && DRY_RUN_ARGV_COMMANDS.has(firstArg);
     return {
       mode: 'command',
       command: firstArg,
-      args: restArgs,
+      args: forwardDryRun ? ['--dry-run', ...restArgs] : restArgs,
     };
   }
 
@@ -195,10 +204,12 @@ function resolveCommand(argv) {
     throw new Error(`Unknown command: ${firstArg}`);
   }
 
+  // Implicit install (e.g. `ecc typescript`, `ecc --profile x`) — install
+  // parses its own --dry-run flag, so forward it on the cleaned args.
   return {
     mode: 'command',
     command: 'install',
-    args,
+    args: dryRun ? ['--dry-run', ...cleanArgs] : cleanArgs,
   };
 }
 

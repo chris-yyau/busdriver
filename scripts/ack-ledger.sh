@@ -48,6 +48,25 @@
 # Output: exactly one of <8-char-sha> | none | stale on stdout.
 # Always exits 0 on success; caller treats stdout as authoritative.
 #
+# Content-identity carry-forward (the SHA-anchored tiers B, C, D): a bot ack
+# recorded against SHA_old still HEAD-acks when SHA_old is git-provably
+# content-identical to HEAD_SHA — same tree AND same parents, i.e. a message-only
+# `git commit --amend` + force-push (commitlint fix, DCO sign-off, GPG re-sign,
+# message typo). See acks_head() below for the full rationale and threat model.
+# This is timestamp-FREE (proven from git object hashes, not backdatable date
+# claims) and fails CLOSED. Without it, a fresh SHA with zero code delta makes
+# every SHA-anchored tier miss and the gate poll-then-bail at --max-wait every
+# time (the bots won't re-post acks when there is nothing new to re-review).
+# Tier D (check-runs) is fetched HEAD-scoped, so the pre-amend check-run is invisible
+# HERE; its carry-forward is completed by the caller-side scripts/augment-equiv-acks.sh,
+# which appends the content-identical predecessor's check-runs BEFORE this ledger runs
+# (this ledger then re-proves identity via acks_head — defense in depth). Tier E
+# (commit-status) is NOT carried forward (a status carries no SHA to re-prove, and an
+# appended predecessor success could override a HEAD pending/failure); it stays
+# correct on its own HEAD-scoped fetch. The Codex tiers (A.2 / F) are timestamp/
+# reaction-anchored (#186/#189) and not carried forward. Disable carry-forward with
+# ACK_CONTENT_IDENTITY=0.
+#
 # Tier exposure (opt-in via ACK_EMIT_TIER=1): when set, a HEAD-ack SHA is
 # suffixed ":<tier>" where <tier> is the letter A–F of the tier that produced
 # the ack (A=inline threads — non-Codex disposed thread, or Codex resolved-current
@@ -146,6 +165,73 @@ emit_head_ack() {
   else
     printf '%s\n' "$1"
   fi
+}
+
+# acks_head <candidate_sha> — returns 0 (true) when a bot's ack recorded against
+# <candidate_sha> still covers the current HEAD ($HEAD_SHA), via EITHER:
+#   (1) DIRECT MATCH — <candidate_sha>'s 8-char prefix == $HEAD_SHA. This is the
+#       pre-fix behavior and short-circuits BEFORE any git call, so the common
+#       (no-force-push) path is byte-for-byte identical and git-free.
+#   (2) CONTENT IDENTITY — git PROVES <candidate_sha> has the SAME tree AND the
+#       SAME parent set as $HEAD_SHA. That is exactly a message-only
+#       `git commit --amend` + force-push (commitlint header fix, DCO sign-off,
+#       GPG re-sign, commit-message typo): identical reviewable bytes against an
+#       identical base, only the SHA (and commit metadata) changed. A bot that
+#       acked <candidate_sha> reviewed the byte-for-byte code now at HEAD, so its
+#       ack carries forward. Without this, a fresh SHA with zero code delta makes
+#       every SHA-anchored tier (B/C/D) miss; the bots won't re-post acks (nothing
+#       to re-review), and the gate polls then bails at --max-wait every time.
+#
+# WHY THIS DOES NOT WEAKEN THE GATE'S ANTI-BACKDATING POSTURE (#186/#189):
+#   The timestamp tiers distrust committer/push dates because they are CLAIMS an
+#   attacker can backdate. Content identity is not a claim — it is proven from
+#   git object hashes: the tree SHA is a Merkle hash of the full snapshot, and
+#   the parents are pinned. An attacker cannot present a different-but-"identical"
+#   tree without a SHA collision. The only fields free to differ are commit
+#   metadata (message / author / dates / signature) — none of which is code a
+#   reviewer bot gates on. Parent-pinning REJECTS rebases (a changed base => the
+#   reviewed diff differs => fall through to the bot's normal `stale`), confining
+#   carry-forward to the exact amend-without-rebase class.
+#
+# FAILS CLOSED: empty/malformed (non-hex) candidate, git unavailable, either
+#   object missing from the LOCAL repo (fresh clone / gc'd old SHA), or any
+#   tree/parent mismatch => return 1, so the caller keeps its pre-fix code path
+#   (=> `stale`). Set ACK_CONTENT_IDENTITY=0 to disable carry-forward (kill switch).
+acks_head() {
+  local cand ref _ah_cand_tree _ah_head_tree _ah_cand_par _ah_head_par
+  cand="${1:-}"
+  [ -n "$cand" ] || return 1
+  # Sanitize FIRST: a commit SHA is hex, 7–64 chars (40 for SHA-1, 64 for SHA-256
+  # repos). The candidate is derived from bot-controlled API payloads, so reject
+  # anything else BEFORE it reaches git — a value like `-O` or `--upload-pack=...`
+  # would otherwise be an argument-injection vector into `git rev-parse`/`git show`.
+  # A non-hex value can never equal the hex $HEAD_SHA either, so this cannot reject
+  # a legitimate direct match.
+  case "$cand" in *[!0-9A-Fa-f]*) return 1 ;; esac
+  { [ "${#cand}" -ge 7 ] && [ "${#cand}" -le 64 ]; } || return 1
+  # (1) Direct match — old behavior, NO git. Common case exits here.
+  [ "${cand:0:8}" = "$HEAD_SHA" ] && return 0
+  # (2) Content identity — opt-out + git-availability gates, then prove it.
+  [ "${ACK_CONTENT_IDENTITY:-1}" = "1" ] || return 1
+  command -v git >/dev/null 2>&1 || return 1
+  # Resolve both to tree objects present in the LOCAL repo; absent => fail-closed.
+  # Anchor on the FULL head OID ($HEAD_FULL_SHA, exported by fetch-pr-state.sh)
+  # when available, so the proof never hinges on 8-char-prefix uniqueness in a
+  # large repo; fall back to the 8-char $HEAD_SHA (still fail-closed if unresolvable).
+  # Either way the reference is the SHA the gate is evaluating, NOT live `HEAD`,
+  # so a concurrent checkout move can't shift it.
+  ref="${HEAD_FULL_SHA:-$HEAD_SHA}"
+  _ah_cand_tree=$(git rev-parse --verify --quiet "${cand}^{tree}" 2>/dev/null) || return 1
+  _ah_head_tree=$(git rev-parse --verify --quiet "${ref}^{tree}" 2>/dev/null) || return 1
+  [ -n "$_ah_cand_tree" ] && [ "$_ah_cand_tree" = "$_ah_head_tree" ] || return 1
+  # Pin the base too: identical tree AND identical parents == amend-without-rebase.
+  # `%P` yields the space-joined parent hashes (EMPTY for a root commit) — do NOT
+  # use `rev-list --parents | cut -f2-`, which echoes the whole line back when a
+  # commit is parentless (no delimiter), falsely making a root commit look like
+  # its own parent.
+  _ah_cand_par=$(git show -s --format=%P "$cand" 2>/dev/null) || return 1
+  _ah_head_par=$(git show -s --format=%P "$ref" 2>/dev/null) || return 1
+  [ "$_ah_cand_par" = "$_ah_head_par" ]
 }
 
 # Fail-CLOSED: any source-fetch failure → mark stale (Greptile P1 — fail-OPEN
@@ -344,7 +430,7 @@ commit_id=$(printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login
 # is excluded here and falls through to the downgrade block → `stale` (block
 # until the worker triages and Codex re-reviews clean). Codex's only positive ack
 # is the Tier F 👍. `commit_id` is still computed above for that downgrade block.
-if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ] && [ "$login" != "chatgpt-codex-connector" ]; then emit_head_ack "${commit_id:0:8}" B; exit 0; fi
+if [ -n "$commit_id" ] && acks_head "$commit_id" && [ "$login" != "chatgpt-codex-connector" ]; then emit_head_ack "$HEAD_SHA" B; exit 0; fi
 
 # (C) Issue-comment body SHA: bots like Greptile update a single comment with
 # a "Last reviewed commit: [sha](.../commit/<sha>)" link instead of submitting
@@ -352,8 +438,8 @@ if [ -n "$commit_id" ] && [ "${commit_id:0:8}" = "$HEAD_SHA" ] && [ "$login" != 
 # link and treat it as authoritative if it matches HEAD.
 body_sha=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
   '[.comments[] | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null \
-  | grep -oE 'commit/[a-f0-9]{7,40}' | sed 's|.*/||' | tail -1 | cut -c1-8)
-if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then emit_head_ack "$body_sha" C; exit 0; fi
+  | grep -oE 'commit/[0-9a-fA-F]{7,64}' | sed 's|.*/||' | tail -1)
+if [ -n "$body_sha" ] && acks_head "$body_sha"; then emit_head_ack "$HEAD_SHA" C; exit 0; fi
 
 # (D) check-runs: did the bot register a passing check-run on HEAD? Some bots
 # (CodeRabbit free-plan, GitGuardian, etc.) emit a check-run instead of a
@@ -366,7 +452,7 @@ if [ -n "$body_sha" ] && [ "$body_sha" = "$HEAD_SHA" ]; then emit_head_ack "$bod
 # HEAD check-run, mis-classifying as `none` (Greptile P2 / Cubic P2).
 check_run_head=$(printf '%s' "$ALL_CHECK_RUNS" | jq -rs --arg login "$login" \
   '[.[].check_runs[] | select(.app.slug == $login) | select(.conclusion == "success")] | last | .head_sha // empty' 2>/dev/null || echo "")
-if [ -n "$check_run_head" ] && [ "${check_run_head:0:8}" = "$HEAD_SHA" ]; then emit_head_ack "${check_run_head:0:8}" D; exit 0; fi
+if [ -n "$check_run_head" ] && acks_head "$check_run_head"; then emit_head_ack "$HEAD_SHA" D; exit 0; fi
 
 # (E) /commits/{sha}/statuses: bots using the legacy commit-statuses API.
 # CodeRabbit free-tier on private repos posts here instead of registering a
@@ -480,8 +566,9 @@ if [ "$ever_approved" -eq 0 ]; then
   # doesn't auto-trigger on later non-force pushes; the re-request API 422s
   # so the operator has no recourse. By the time we reach this block we know:
   # (1) FETCH_OK=1, (2) no unresolved threads from this bot (Tier A would
-  # have returned `stale` at the top), (3) `commit_id` is non-empty AND its
-  # 8-char prefix != HEAD_SHA (Tier B would have returned the SHA otherwise),
+  # have returned `stale` at the top), (3) `commit_id` is non-empty AND
+  # `acks_head(commit_id)` is false — it neither 8-char-matches HEAD_SHA nor is
+  # content-identical to HEAD (Tier B would have returned the SHA otherwise),
   # (4) ever_approved==0 AND no prior CHANGES_REQUESTED (the guard above
   # now includes CHANGES_REQUESTED so a [CHANGES_REQUESTED, COMMENTED]
   # history correctly stays `stale`).

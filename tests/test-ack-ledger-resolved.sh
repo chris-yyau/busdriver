@@ -345,7 +345,7 @@ fi
 # Case 3 would fire on the empty body and silently downgrade actionable
 # issue-comment findings to `none`. With the guard, last_state is empty
 # (no /reviews) → Case 3 doesn't fire → falls through to `echo stale`.
-# Fixture note: body_sha must be a valid hex SHA (parser regex is commit/[a-f0-9]{7,40})
+# Fixture note: body_sha must be a valid hex SHA (parser regex is commit/[0-9a-fA-F]{7,64})
 # and != HEAD_SHA 'abc12345' so it reaches the downgrade block (not the
 # empty-commit_id/empty-body_sha early-return that lives between Tier D and
 # the downgrade block — the absolute line shifts when resolver/comment blocks

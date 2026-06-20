@@ -1031,6 +1031,20 @@ ALL_THREADS=$(gh api graphql --paginate -f query='
 ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) || FETCH_OK=0
 ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || FETCH_OK=0
 ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH_OK=0
+# Content-identity carry-forward: a bot ack on SHA_old still HEAD-acks when git
+# PROVES SHA_old is content-identical to HEAD — same tree AND same parents, i.e. a
+# message-only `git commit --amend` force-push (commitlint fix, DCO sign-off, GPG
+# re-sign, message typo). Without it, a fresh SHA with zero code delta makes every
+# SHA-anchored tier miss and the gate poll-then-bail at --max-wait every time.
+# Tiers B (/reviews) and C (body-SHA) are PR-wide, so ack-ledger.sh's acks_head()
+# carries them forward on its own. Tier D (check-runs) is HEAD-scoped — the augment
+# source below (run after this fetch, before the ledger call) widens ALL_CHECK_RUNS
+# with the content-identical predecessor's check-runs so Tier D can ack them
+# (re-proven via acks_head(head_sha)). Tier E
+# (statuses) is NOT carried forward (no SHA to re-prove); it stays correct on its own
+# HEAD fetch. Timestamp-FREE (git object hashes, not backdatable dates — does NOT relax
+# the #186/#189 posture), parent-pinned (rejects rebases), fails CLOSED. Disable with
+# ACK_CONTENT_IDENTITY=0. See ack-ledger.sh, augment-equiv-acks.sh + ADR 0004.
 # Source 5: check-runs on HEAD — bots like Cubic emit a check-run instead of
 # a /reviews entry; tier D in scripts/ack-ledger.sh treats a passing check_run
 # whose head_sha == HEAD as a HEAD-ack. (CodeRabbit uses a separate Source 6
@@ -1066,7 +1080,15 @@ HEAD_PUSH_DATE=$(gh api --paginate "repos/$OWNER/$REPO/events?per_page=100" 2>/d
 # dispatcher's Completion site below). The script reads FETCH_OK / ALL_THREADS /
 # ALL_REVIEWS / ALL_COMMENTS / ALL_CHECK_RUNS / ALL_STATUSES / ALL_REACTIONS /
 # HEAD_COMMITTED_DATE / HEAD_PUSH_DATE / HEAD_SHA from env and the bot login from $1.
-export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA
+# Tier D carry-forward across message-only force-pushes: check-runs are HEAD-scoped,
+# so a bot's check-run on the PRE-amend SHA is invisible. Widen ALL_CHECK_RUNS with any
+# content-identical predecessor's check-runs before the ledger runs (additive,
+# best-effort, git-proven; no-op under ACK_CONTENT_IDENTITY=0; Tier E statuses are NOT
+# widened). Keep in sync with scripts/fetch-pr-state.sh, agents/pr-grinder.md, and the
+# Completion mirror below.
+PR_NUMBER="$PR"; AUGMENT_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/augment-equiv-acks.sh"
+[ -f "$AUGMENT_SCRIPT" ] && . "$AUGMENT_SCRIPT"
+export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA HEAD_FULL_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
 # One call per bot with ACK_EMIT_TIER=1 → "<sha>:<tier>" on a HEAD-ack, bare
 # none/stale otherwise. Derive the plain ack ledger (strip ":<tier>") AND the
@@ -1265,7 +1287,14 @@ HEAD_PUSH_DATE=$(gh api --paginate "repos/$OWNER/$REPO/events?per_page=100" 2>/d
 # Per-bot ack — same single-sourced algorithm as the worker's Step 6.5 and
 # the inline ledger block in Step 6.5 above. All three sites invoke
 # scripts/ack-ledger.sh; algorithm edits live in that one file.
-export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA
+# Tier D carry-forward across message-only force-pushes: widen the HEAD-scoped
+# check-runs with any content-identical predecessor's check-runs before the ledger
+# runs (additive, best-effort, git-proven; no-op under ACK_CONTENT_IDENTITY=0; Tier E
+# statuses are NOT widened). Keep in sync with scripts/fetch-pr-state.sh,
+# agents/pr-grinder.md, and the worker mirror above.
+PR_NUMBER="$PR"; AUGMENT_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/augment-equiv-acks.sh"
+[ -f "$AUGMENT_SCRIPT" ] && . "$AUGMENT_SCRIPT"
+export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA HEAD_FULL_SHA
 ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
 # Codex (chatgpt-codex-connector) is appended as a fourth gated reviewer here:
 # its Tier-F 👍 reaction is the authoritative clean signal, and a `stale` value

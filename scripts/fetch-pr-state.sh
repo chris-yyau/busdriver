@@ -139,10 +139,31 @@ _fetch_pr_state() {
         FETCH_OK=0  # gh pr view --json headRefOid failed or returned empty
     fi
 
+    # Full HEAD OID for content-identity proofs (ack-ledger.sh acks_head anchors on
+    # it so the proof never hinges on 8-char-prefix uniqueness); empty if unresolved.
+    HEAD_FULL_SHA="$_full_sha"
+
+    # Tier D carry-forward across message-only force-pushes: check-runs are
+    # HEAD-scoped, so a bot's check-run on the PRE-amend SHA is invisible. Widen
+    # ALL_CHECK_RUNS with any content-identical predecessor's check-runs (additive,
+    # best-effort, git-proven; no-op under ACK_CONTENT_IDENTITY=0). Keep in sync with
+    # agents/pr-grinder.md Step 6.5 and the two skills/pr-grind/SKILL.md mirrors.
+    # PR_NUMBER lets augment consult the force-push timeline (best-effort).
+    # Guard: only source augment when fetch succeeded (FETCH_OK=1); sourcing on a
+    # failed fetch could mutate ALL_CHECK_RUNS with stale data from prior
+    # invocations, breaking fail-closed state guarantees (Cubic P2).
+    if [ "${FETCH_OK:-0}" = "1" ]; then
+        PR_NUMBER="$pr_number"
+        local _augment_script
+        _augment_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/augment-equiv-acks.sh"
+        # shellcheck source=scripts/augment-equiv-acks.sh disable=SC1091
+        if [ -f "$_augment_script" ]; then . "$_augment_script"; fi
+    fi
+
     # Export so child processes (e.g. scripts/ack-ledger.sh run as bash child)
     # can read these without the caller needing a separate export step.
     export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES \
-        ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA
+        ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA HEAD_FULL_SHA
 
     return 0
 }

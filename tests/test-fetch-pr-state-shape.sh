@@ -15,13 +15,19 @@ unset FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA 2>/d
 bash -c "set -euo pipefail; source '$HELPER' 123; echo OK" | grep -q OK \
     || { echo "FAIL: source aborted under set -euo pipefail"; exit 1; }
 
-# t3: all 6 env vars set
-unset FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA 2>/dev/null || true
+# t3: all required env vars set (incl. HEAD_FULL_SHA, exported for content-identity
+# carry-forward — ack-ledger.sh acks_head anchors its proof on the full OID)
+unset FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS HEAD_SHA HEAD_FULL_SHA 2>/dev/null || true
 # shellcheck source=/dev/null  # $HELPER is dynamic at test time
 . "$HELPER" 123
 [[ "$FETCH_OK" = "1" ]] || { echo "FAIL t3: FETCH_OK='$FETCH_OK'"; exit 1; }
 [[ -n "$ALL_THREADS" ]] && [[ -n "$ALL_REVIEWS" ]] && [[ -n "$ALL_COMMENTS" ]] \
     && [[ -n "$ALL_CHECK_RUNS" ]] && [[ -n "$HEAD_SHA" ]] || { echo "FAIL t3: empty env var"; exit 1; }
+# HEAD_FULL_SHA must be exported (visible to child processes) and HEAD_SHA must be its 8-char prefix.
+# Check via a subshell so we confirm the export attribute, not just current-shell visibility
+# (sourcing a script assigns variables in the current shell regardless of export status).
+bash -c '[[ -n "${HEAD_FULL_SHA:-}" ]]' || { echo "FAIL t3: HEAD_FULL_SHA not exported to child processes"; exit 1; }
+[[ "${HEAD_FULL_SHA:0:8}" = "$HEAD_SHA" ]] || { echo "FAIL t3: HEAD_SHA ('$HEAD_SHA') != HEAD_FULL_SHA prefix ('${HEAD_FULL_SHA:0:8}')"; exit 1; }
 
 # t4: shapes match ack-ledger.sh's parsers (HIGH #3)
 # ALL_REVIEWS must be parseable by jq -s '[.[] | .[] | select(.user.login == X)]'

@@ -11,13 +11,13 @@ AI-powered deep research that gathers sources, analyzes them, and produces a cit
 
 ## Before running any command
 
-If `tvly` is not found on PATH, install it first:
+`tvly` must be installed and authenticated. If it is missing, installation is a one-time external prerequisite the operator runs — it falls outside this skill's `Bash(tvly *)` allow-list, so ask the operator to install rather than self-bootstrapping:
 
 ```bash
 curl -fsSL https://cli.tavily.com/install.sh | bash && tvly login
 ```
 
-Do not skip this step or fall back to other tools.
+Once `tvly` is available, do not fall back to other tools.
 
 See [tavily-cli](../tavily-cli/SKILL.md) for alternative install methods and auth options.
 

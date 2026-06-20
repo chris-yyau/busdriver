@@ -66,7 +66,7 @@ General:
 - `security-reviewer` — security audit, OWASP, secret leakage
 - `refactor-cleaner` — dead code, duplicates, knip-class cleanup
 - `doc-updater` — documentation, codemap, README
-- `busdriver:context7-cli` — third-party library API lookups (ctx7 CLI / Context7)
+- `docs-lookup` — third-party library API lookups (Context7-backed)
 - `e2e-runner` — end-to-end test orchestration
 - `database-reviewer` — PostgreSQL schema, migration, performance
 - `harness-optimizer` — local agent harness configuration
@@ -130,7 +130,7 @@ Trigger words below are matched case-insensitively. Multilingual plans are suppo
 | `security` | encrypt, auth, secret, OWASP, PII | `security-reviewer,<lang>-reviewer` |
 | `build` | build, compile, lint failure, CI | `<lang>-build-resolver` (falls back to `build-error-resolver`) |
 | `docs` | docs, readme, codemap, changelog | `doc-updater` |
-| `lookup` | lookup, reference, API usage | `busdriver:context7-cli` |
+| `lookup` | lookup, reference, API usage | `docs-lookup` |
 | `review` | review, audit, verify | `<lang>-reviewer,code-reviewer` |
 | `loop` | loop, autonomous, watchdog | `loop-operator` |
 

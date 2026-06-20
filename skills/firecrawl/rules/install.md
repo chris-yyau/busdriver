@@ -9,6 +9,8 @@ description: |
 
 # Firecrawl CLI Installation
 
+> Installation is a one-time **external prerequisite** the operator runs. The `npx -y firecrawl-cli` / `npm install -g firecrawl-cli` commands below intentionally fall outside the firecrawl skill's `Bash(firecrawl *)` / `Bash(npx firecrawl *)` runtime allow-list — that list scopes the `firecrawl` CLI **binary**, not the `firecrawl-cli` installer package. Ask the operator to run the install rather than self-bootstrapping. Once installed, the `firecrawl` binary is on PATH and every runtime command in the skill is covered.
+
 ## Quick Setup (Recommended)
 
 ```bash

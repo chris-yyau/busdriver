@@ -253,5 +253,35 @@ else
 fi
 unset HEAD_SHA HEAD_FULL_SHA ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS STUB_CHECKRUNS
 
+# ============================================================
+# 8. TIER-E STATUS SUPPRESSION — a bot that uses the legacy commit-statuses API
+#    (Tier E in ack-ledger.sh; e.g. coderabbitai → "CodeRabbit" context) has a
+#    live HEAD status entry but no HEAD check-run. A content-identical predecessor
+#    check-run for that bot must NOT be appended: because Tier D fires before Tier E
+#    in ack-ledger.sh, an appended predecessor success would falsely HEAD-ack,
+#    masking the live HEAD pending/failure status (the bug Codex flagged).
+# ============================================================
+repo=$(mk); bin=$(mk); make_gh_stub "$bin"
+( cd "$repo" && git init -q && git config user.email t@e && git config user.name t && git config commit.gpgsign false \
+   && echo v1 > f.txt && git add f.txt && git commit -qm "feat: thing" )
+OLD=$(git -C "$repo" rev-parse HEAD)
+( cd "$repo" && git commit -q --amend -m "feat: thing (commitlint-shortened)" )
+NEW=$(git -C "$repo" rev-parse HEAD); NEW8=${NEW:0:8}
+export HEAD_SHA="$NEW8" HEAD_FULL_SHA="$NEW"
+ALL_REVIEWS="$(reviews_json cubic-dev-ai "$OLD" COMMENTED)"; export ALL_REVIEWS
+export ALL_COMMENTS='' ALL_CHECK_RUNS=''
+# Simulate a live HEAD commit-status for coderabbitai ("CodeRabbit" context) with
+# state=pending — the bot is actively reviewing HEAD but has no check-run.
+ALL_STATUSES="$(printf '[{"context":"CodeRabbit","state":"pending","id":1}]')"; export ALL_STATUSES
+# The predecessor has a coderabbitai check-run success — must NOT be appended.
+STUB_CHECKRUNS="$(checkruns_json coderabbitai "$OLD")"; export STUB_CHECKRUNS
+widened=$(run_augment "$repo" "$bin")
+if printf '%s' "$widened" | jq -es '[.[]?|.check_runs[]?|select(.app.slug=="coderabbitai")]|length==0' >/dev/null 2>&1; then
+  ok "Tier-E status suppression: predecessor coderabbitai check-run NOT appended (live HEAD status present)"
+else
+  fail "Tier-E status suppression: predecessor coderabbitai check-run was appended despite live HEAD status (false ack risk)"
+fi
+unset HEAD_SHA HEAD_FULL_SHA ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES STUB_CHECKRUNS
+
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

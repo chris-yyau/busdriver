@@ -193,6 +193,12 @@ and **fails closed** on any malformed or out-of-enum field.
 # Build the JSON with a real encoder, not string interpolation: a quote,
 # backslash, or newline in the model value would otherwise produce invalid JSON
 # and the strict writer would reject the artifact (blocking the PR path).
+# NOTE: This example shows the clean-PASS invocation (no findings). If the
+# backstop agent reports findings, include them in the issues array:
+#   issues=[{"file":"…","line":N,"severity":"high","confidence":90,
+#            "category":"security","description":"…"}]
+# The writer recomputes status from issues (any high ⇒ FAIL); the supplied
+# status field is advisory only and an explicit FAIL is never overridden.
 python3 -c 'import json,sys; print(json.dumps({"status":"PASS","model":sys.argv[1],"reviewed_diff_hash":sys.argv[2],"issues":[]}))' \
   "${BACKSTOP_MODEL}" "${REVIEWED_DIFF_HASH}" \
   | bash "${BUSDRIVER_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write-backstop-verdict

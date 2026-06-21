@@ -31,7 +31,7 @@ Small, specific tasks (bug fix, typo, config tweak) skip straight to Phase 4. Ev
 | Gate | Trigger | What it blocks |
 |------|---------|---------------|
 | **Litmus** | `git commit` | Blocks commit until code review passes |
-| **Litmus (deep)** | `gh pr create` | Blocks PR until 6 parallel review agents pass weighted quorum (score ≥ 7/12, Bugs+Security required) |
+| **Litmus (deep)** | `gh pr create` | Blocks PR until a Codex deep multi-lens pass + an independent read-only Opus Security/Bugs backstop both pass; the PR marker is refused without a fresh PASS backstop artifact matching `base...HEAD` |
 | **Blueprint Review** | Plan/design doc written | Blocks implementation code while plans are unreviewed |
 | **Pre-implementation** | `Write`/`Edit` of code files | Blocks file writes while design docs lack `<!-- design-reviewed: PASS -->` |
 | **Freeze/Guard** | Debugging session active | Restricts edits to investigation scope only |
@@ -223,7 +223,7 @@ Claude Code                        Busdriver Plugin
                     │
                     └─► Phase 6: finishing
                           ├─► git commit ──► Litmus (fast)
-                          └─► gh pr create ──► Litmus (deep, 6 agents)
+                          └─► gh pr create ──► Litmus (deep: Codex lead + 1 Opus backstop)
 
   Gate hooks (PreToolUse):
     ├── pre-commit gate ──► blocks until litmus review passes

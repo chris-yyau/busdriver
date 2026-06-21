@@ -331,11 +331,11 @@ npm test                                                            # Tests
 git commit -m "Message"                                             # Commit
 ```
 
-## PR Review Mode (Deep — Multi-Voice)
+## PR Review Mode (Deep — Codex + enforced security backstop)
 
-When the pre-PR gate blocks `gh pr create`, run the full deep review. This combines the codex CLI pass with a 6-agent multi-voice review for cross-commit depth.
+When the pre-PR gate blocks `gh pr create`, run the deep review: a **Codex xhigh deep multi-lens pass** (the lead reviewer, on the full `base...HEAD` diff) plus **ONE independent read-only Opus Security/Bugs backstop agent** (`pr-security-backstop`) for cross-model diversity on the two lenses that gate real harm. The gate is **machine-enforced**: the PR marker is refused unless BOTH a fresh PASS Codex-lead artifact AND a fresh PASS backstop verdict artifact exist, each bound to the current `base...HEAD` `diff_hash`. In PR mode a builtin/non-Codex lead is **fail-closed** (codex is pinned and `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` is set, so a failed Codex falls to builtin — which is rejected — never silently to droid).
 
-**Full PR deep-review procedure** — Fast Path, pre-commit-coverage detection (Step 0.5), codex CLI pass, scope-drift detection, the 6-agent multi-voice review, scoring + weighted quorum, gate decision, degraded states, and marker encoding: **Read `references/pr-review-mode.md`** when the pre-PR gate fires. It is not needed on the common commit path.
+**Full PR deep-review procedure** — Fast Path, pre-commit-coverage detection (Step 0.5), Codex deep pass, scope-drift detection, the single Opus backstop dispatch + strict verdict artifact, gate decision, degraded states, and marker encoding: **Read `references/pr-review-mode.md`** when the pre-PR gate fires. It is not needed on the common commit path.
 
 ## Configuration (Environment Variables)
 
@@ -343,7 +343,10 @@ These govern both commit and PR review modes:
 - `BUSDRIVER_REVIEW_CLI=auto` — choose review backend (auto/codex/agy/droid/builtin/none). Per-role routing: `.claude/busdriver.json`
 - `LITMUS_MODE=pr` — switches to PR deep review mode
 - `LITMUS_PR_BASE=main` — override base branch (auto-prefixed to `origin/<branch>` if no `origin/` prefix; defaults to `origin/HEAD` or `origin/main`)
-- `LITMUS_PR_FAST=1` — skip multi-agent review, use fast mode only (audited in bypass-log)
+- `LITMUS_PR_FAST=1` — skip the independent Claude Security/Bugs backstop (codex-only). Audited bypass: writes a distinct `PASS-FAST-<diff_hash>-<epoch>` marker logged as `pr-fast-bypass`; the gate honors it only via its explicit fast-bypass branch, never the normal backstop-gated path.
+- `LITMUS_PR_BENCHMARK` — **planned follow-up, NOT yet wired** (deferred in ADR 0006; setting it currently has no effect). When built, it would be opt-in and strictly NON-GATING: `1` (= `agy,grok`) or a comma list to run those CLIs as benchmark observers, logging to `.claude/pr-review-benchmark.jsonl` to measure net-new true positives vs the Codex+Opus pair, never affecting the gate. See `references/pr-review-mode.md` → "Benchmark Mode" for the spec.
+- `LITMUS_PR_BACKSTOP_MAX_AGE=3600` — freshness window (seconds) for the backstop verdict artifact; older artifacts are rejected (fail-closed).
+- `LITMUS_PR_BACKSTOP_MAX_DIFF` — max diff size (bytes) fed to the backstop prompt; an oversize diff fails closed (split the PR) rather than silently truncating to a PASS.
 - `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` — opt out of the runtime droid escalation. By default (unset or `0`), when codex exhausts retries on transient errors (rate-limit, network, 5xx), the review escalates to `droid exec` (default read-only mode — Create/Edit blocked) before falling back to the builtin Claude agent. The legacy name `LITMUS_CODEX_DROID_FALLBACK=0` is also honored. Escalations are logged to `.claude/bypass-log.jsonl` as `codex-droid-fallback` events. **Note:** this flag only governs the runtime fallback inside `_execute_codex`; install-time routes in `.claude/busdriver.json` control which CLIs are tried for a role, but do not by themselves suppress this runtime escalation once codex is running. Use `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` (or `BUSDRIVER_REVIEW_CLI=codex`) when codex-only runtime behavior is required.
 - `LITMUS_CODEX_RETRIES=5` — maximum retry attempts before escalating to droid. Default: `5`. Backoff sequence at the default is 30, 60, 120, 240, 480 seconds (~15.5 min total). Raise for longer patience before escalation; lower for faster bail (e.g., `export LITMUS_CODEX_RETRIES=2`). The defaults were originally sized to absorb the EAGAIN failure mode observed under Claude Code's Bash tool; that root cause is now bypassed via `--prompt-file` (see Review Protocol above), so the budget is effectively reserved for genuine network / rate-limit / 5xx transients.
 - `LITMUS_CODEX_RETRY_DELAY=30` — base retry delay in seconds; each retry doubles it (exponential backoff). Default: `30`. The resulting sequence at the default is 30, 60, 120, 240, 480 seconds. From retry 2 onward (t≥90s) the sequence clears OpenAI's per-minute window; by retry 4 (t≥450s) it clears the per-5min window. Lower for faster feedback in low-latency environments (e.g., `export LITMUS_CODEX_RETRY_DELAY=5`).

@@ -152,8 +152,14 @@ HOOK_CWD=$(echo "$PARSE_RESULT" | sed -n '3p')
 # real repo, not a junk literal path; handles worktrees, subdirs).
 REPO_DIR=$(gate_repo_dir_lenient "$TARGET_DIR" "$HOOK_CWD")
 
-# Consume the PR review marker — PR creation confirmed successful
+# Consume the PR review marker — PR creation confirmed successful.
+# Also remove the two diff-bound dual-voice artifacts so a later PR on a changed
+# diff cannot be authorized by a leftover PASS (max-age guards them too, but
+# eager cleanup keeps the state dir honest). Only runs after `gh pr create`
+# succeeded; a failed gh leaves all three in place for a retry.
 PR_MARKER="$REPO_DIR/$STATE_DIR/pr-review-passed.local"
 [ -f "$PR_MARKER" ] && rm -f "$PR_MARKER"
+rm -f "$REPO_DIR/$STATE_DIR/pr-codex-lead.local.json" \
+      "$REPO_DIR/$STATE_DIR/pr-backstop-verdict.local.json" 2>/dev/null || true
 
 exit 0

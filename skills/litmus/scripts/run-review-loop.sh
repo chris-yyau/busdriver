@@ -60,29 +60,360 @@ write_terminal_status() {
 # shellcheck source=lib/log-metrics.sh
 source "$SCRIPT_DIR/lib/log-metrics.sh"
 
-# --write-pr-marker: Post-deep-review marker writer.
-# Called by Claude after the 6-agent deep review completes in PR mode.
-# This is the ONLY legitimate path to write pr-review-passed.local because
-# the PreToolUse hook blocks direct writes/redirects to marker files.
-# The hook doesn't inspect what runs inside scripts, so this bypasses it.
+# ── PR-mode dual-voice artifact contract ──────────────────────────────
+# Both artifacts gate `gh pr create` in PR mode and are protected in
+# pre-implementation-gate.sh MARKER_FILES. The backstop verdict has a writer
+# subcommand (--write-backstop-verdict); the Codex-lead verdict is written ONLY
+# inline on an actual Codex PASS (no subcommand — see write_codex_lead_verdict);
+# --write-pr-marker emits the final marker once BOTH artifacts verify. Keep this
+# contract in sync with pre-pr-gate.sh and post-pr-consume-marker.sh. See ADR 0006.
+#
+# Repo-root anchored (no cwd drift): the pre-PR gate resolves the worktree top
+# via `git -C "${TARGET_DIR:-.}" rev-parse --show-toplevel` and reads
+# "$REPO_DIR/$STATE_DIR/...". If litmus runs from a subdirectory and writes a
+# relative "./.claude/...", the gate would never find the artifacts. Anchor all
+# PR artifacts + the marker to "$PR_REPO_TOP/$STATE_DIR" so both sides agree.
+PR_REPO_TOP="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+PR_STATE_DIR="$PR_REPO_TOP/$STATE_DIR"
+PR_BACKSTOP_VERDICT_FILE="$PR_STATE_DIR/pr-backstop-verdict.local.json"
+PR_CODEX_LEAD_FILE="$PR_STATE_DIR/pr-codex-lead.local.json"
+PR_REVIEW_MARKER_FILE="$PR_STATE_DIR/pr-review-passed.local"
+PR_BACKSTOP_MAX_AGE="${LITMUS_PR_BACKSTOP_MAX_AGE:-3600}"
+
+# compute_pr_diff_hash <base-ref>
+# FAIL-CLOSED sha256 of the PR diff (base...HEAD). Byte-identical to the existing
+# pre-pr-gate.sh / pr-review-passed.local computation (plain `git diff` +
+# `printf '%s'` capture) so the trusted writer and the gate verifier agree.
+# Echoes the 64-hex hash on stdout; returns nonzero with NO output if the
+# base/merge-base is missing or the diff is empty (never emit a hash for a
+# missing base — that would fail open).
+# Follow-up (deferred, ADR 0006): add deterministic `-c color.ui=never
+# -c diff.external= -c core.quotePath=false` flags here AND in pre-pr-gate.sh +
+# tests together, to neutralize hostile/unusual operator git config.
+compute_pr_diff_hash() {
+  local base="$1" mb diff
+  [ -z "$base" ] && return 1
+  mb=$(git merge-base "$base" HEAD 2>/dev/null) || return 1
+  [ -z "$mb" ] && return 1
+  diff=$(git diff "${mb}...HEAD" 2>/dev/null) || return 1
+  [ -z "$diff" ] && return 1
+  printf '%s' "$diff" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1
+}
+
+# resolve_pr_base_branch: the origin-qualified base branch for PR mode, matching
+# the resolution used elsewhere in this script and in init-review-loop.sh.
+resolve_pr_base_branch() {
+  local b="${LITMUS_PR_BASE:-}"
+  [ -z "$b" ] && b=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")
+  [[ -n "${LITMUS_PR_BASE:-}" && "$b" != origin/* ]] && b="origin/${b}"
+  printf '%s' "$b"
+}
+
+# read_artifact_field <file> <jq-path>  — small JSON field reader (jq → python3).
+_read_artifact_field() {
+  local f="$1" path="$2"
+  [ -f "$f" ] || return 1
+  if command -v jq >/dev/null 2>&1; then
+    # -e: empty/false output → nonzero exit (fail-closed on a missing field).
+    # -r: RAW output — a string field like .status prints as `PASS` (UNQUOTED),
+    # so the `[ "$status" = "PASS" ]` check below matches. Do NOT drop -r, or
+    # strings come back as `"PASS"` and every artifact is wrongly rejected.
+    jq -er "$path // empty" "$f" 2>/dev/null
+  else
+    python3 -c 'import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+    for k in sys.argv[2].strip(".").split("."):
+        d=d[k]
+    print(d)
+except Exception:
+    sys.exit(1)' "$f" "$path" 2>/dev/null
+  fi
+}
+
+# verify_pr_artifact <file> <expected_diff_hash> — fail-closed freshness/PASS check.
+# Returns 0 only if the artifact exists, parses, status==PASS, diff_hash matches
+# the expected current hash, and ts is within PR_BACKSTOP_MAX_AGE.
+verify_pr_artifact() {
+  local f="$1" expected="$2" status hash ts now age
+  [ -f "$f" ] || return 1
+  status=$(_read_artifact_field "$f" ".status") || return 1
+  [ "$status" = "PASS" ] || return 1
+  hash=$(_read_artifact_field "$f" ".diff_hash") || return 1
+  [ "$hash" = "$expected" ] || return 1
+  ts=$(_read_artifact_field "$f" ".ts") || return 1
+  case "$ts" in ''|*[!0-9]*) return 1 ;; esac
+  now=$(date +%s)
+  age=$(( now - ts ))
+  [ "$age" -ge 0 ] && [ "$age" -le "$PR_BACKSTOP_MAX_AGE" ] || return 1
+  return 0
+}
+
+# write_codex_lead_verdict <reviewed_diff_hash>: trusted writer for
+# pr-codex-lead.local.json. Records the Codex lead's clean PASS bound to the diff
+# hash the lead ACTUALLY reviewed (captured BEFORE the review ran — see
+# PR_REVIEWED_DIFF_HASH), NOT a hash re-derived at write time. The review takes
+# minutes; if HEAD or the PR base moves in that window, binding to the reviewed
+# hash keeps the artifact tied to what Codex saw, and the gate (which re-derives
+# at gate time) then correctly rejects the now-stale state. Atomic mktemp+mv.
+# Returns nonzero on a missing/empty hash (fail-closed — no unbound artifact).
+# Only ever called inline on an actual Codex PASS — there is deliberately NO
+# standalone subcommand, so a PASS lead artifact cannot be forged without a review.
+write_codex_lead_verdict() {
+  local hash="$1" now tmp
+  [ -n "$hash" ] || return 1
+  now=$(date +%s)
+  mkdir -p "$PR_STATE_DIR" || return 1
+  tmp=$(mktemp "${PR_STATE_DIR}/.pr-codex-lead.XXXXXX") || return 1
+  printf '{"status":"PASS","model":"codex","diff_hash":"%s","ts":%s}\n' "$hash" "$now" > "$tmp" \
+    || { rm -f "$tmp"; return 1; }
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$PR_CODEX_LEAD_FILE" || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+# --write-pr-marker: Final PR gate marker writer (dual-voice enforced).
+# Called by Claude ONLY after BOTH deep-review voices have produced fresh,
+# diff-bound PASS artifacts:
+#   • pr-codex-lead.local.json       — the Codex xhigh lead's clean verdict
+#   • pr-backstop-verdict.local.json — the read-only Opus security/bugs backstop
+# This is the ONLY legitimate path to write pr-review-passed.local because the
+# PreToolUse hook blocks direct writes/redirects to marker files (and to both
+# artifacts). The hook doesn't inspect what runs inside scripts, so this writer
+# bypasses it — and in exchange it FAILS CLOSED unless BOTH artifacts are fresh
+# PASS with a diff_hash matching the current base...HEAD. A backstop PASS alone,
+# a stale/forged artifact, or a skipped Codex lead all leave the gate unsatisfied.
 if [[ "${1:-}" == "--write-pr-marker" ]]; then
-  PR_BASE="${LITMUS_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}"
-  [[ -n "${LITMUS_PR_BASE:-}" && "$PR_BASE" != origin/* ]] && PR_BASE="origin/${PR_BASE}"
-  MERGE_BASE=$(git merge-base "${PR_BASE}" HEAD 2>/dev/null) || {
-    echo "❌ Cannot compute merge-base between ${PR_BASE} and HEAD" >&2
+  DIFF_HASH=$(compute_pr_diff_hash "$(resolve_pr_base_branch)") || {
+    echo "❌ Cannot compute PR diff hash (missing base / empty diff) — refusing to write marker" >&2
     write_terminal_status setup_error
     exit 1
   }
-  DIFF_OUTPUT=$(git diff "${MERGE_BASE}...HEAD" 2>/dev/null)
-  if [[ -z "$DIFF_OUTPUT" ]]; then
-    echo "❌ No diff between ${PR_BASE} and HEAD — nothing to mark" >&2
+  if ! verify_pr_artifact "$PR_CODEX_LEAD_FILE" "$DIFF_HASH"; then
+    echo "❌ Codex lead artifact missing/stale/FAIL — refusing PR marker" >&2
+    echo "   Need fresh status:PASS in $PR_CODEX_LEAD_FILE with diff_hash ${DIFF_HASH:0:12}..." >&2
+    echo "   Re-run the Codex deep review (PR mode) before writing the marker." >&2
     write_terminal_status setup_error
     exit 1
   fi
-  DIFF_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
-  mkdir -p "$STATE_DIR"
-  echo "$DIFF_HASH" > "$STATE_DIR/pr-review-passed.local"
-  echo "✅ PR review marker written (hash: ${DIFF_HASH:0:12}...)"
+  if ! verify_pr_artifact "$PR_BACKSTOP_VERDICT_FILE" "$DIFF_HASH"; then
+    echo "❌ Security backstop artifact missing/stale/FAIL — refusing PR marker" >&2
+    echo "   Need fresh status:PASS in $PR_BACKSTOP_VERDICT_FILE with diff_hash ${DIFF_HASH:0:12}..." >&2
+    echo "   Dispatch the read-only pr-security-backstop agent and persist its verdict via" >&2
+    echo "   run-review-loop.sh --write-backstop-verdict before writing the marker." >&2
+    write_terminal_status setup_error
+    exit 1
+  fi
+  mkdir -p "$PR_STATE_DIR"
+  # Marker content = current diff hash. echo (one trailing newline) is
+  # byte-identical to the prior writer and to the FAST/short-circuit writers;
+  # the gate strips the trailing newline via $() on read.
+  echo "$DIFF_HASH" > "$PR_REVIEW_MARKER_FILE"
+  echo "✅ PR review marker written — both voices PASS (hash: ${DIFF_HASH:0:12}...)"
+  exit 0
+fi
+
+# NOTE: there is deliberately NO `--write-codex-lead-verdict` subcommand. The
+# Codex-lead PASS artifact is written ONLY inline by write_codex_lead_verdict on
+# an actual Codex PASS (PR-mode review path below). A standalone subcommand would
+# let a status:PASS lead artifact be forged for the current diff without any
+# Codex review having run — which --write-pr-marker would then accept as proof of
+# the lead voice. Tests seed a lead artifact by writing the JSON directly.
+
+# --write-backstop-verdict: strict, fail-closed writer for the read-only
+# security/bugs backstop verdict artifact (pr-backstop-verdict.local.json).
+#
+# Claude dispatches the read-only pr-security-backstop agent over the SAME
+# base...HEAD diff it gives the Codex lead, then pipes the agent's verdict —
+# augmented with `model` and the `reviewed_diff_hash` Claude computed for the
+# diff it injected — to this writer on stdin:
+#   {"status","model","reviewed_diff_hash",
+#    "issues":[{file,line,severity,confidence,category,description[,suggestion]}]}
+#
+# This writer is the SOLE producer of the artifact. It:
+#   • re-derives the CURRENT diff_hash + ts itself (caller never supplies them);
+#   • fails closed (nonzero, no write) on a stale review (reviewed_diff_hash !=
+#     current → a commit landed mid-review), malformed JSON, unknown/missing
+#     fields, missing/out-of-range confidence, or bad/empty severity|category;
+#   • recomputes status from issues — any `high` ⇒ FAIL; an explicit caller FAIL
+#     is NEVER overridden to PASS;
+#   • writes atomically (mktemp + mv) so the gate never sees a partial artifact.
+if [[ "${1:-}" == "--write-backstop-verdict" ]]; then
+  # Read the agent verdict JSON from stdin up-front (git work below does not touch
+  # stdin) so the strict validator can take its PROGRAM on argv and the PAYLOAD on
+  # stdin without the two colliding.
+  PAYLOAD=$(cat)
+  CURRENT_HASH=$(compute_pr_diff_hash "$(resolve_pr_base_branch)") || {
+    echo "❌ Cannot compute PR diff hash (missing base / empty diff) — refusing backstop verdict" >&2
+    exit 1
+  }
+  # Defense-in-depth: the backstop verdict may only be persisted AFTER a genuine
+  # Codex-lead PASS for THIS exact diff. The Codex-lead artifact is written ONLY
+  # inline by this script on a real codex run (there is no forge-able subcommand),
+  # so requiring it here ties the backstop write to a real review context and
+  # blocks a backstop-ONLY forge (write a PASS backstop with no review at all).
+  #
+  # TCB boundary (accepted residual, ADR 0006): the backstop is a Claude-dispatched
+  # read-only subagent, so this writer must take its verdict on stdin and cannot
+  # cryptographically prove the agent ran — a trusted dispatcher could still
+  # fabricate the agent's findings after a real Codex pass. That residual is
+  # inherent to "Claude is the trusted dispatcher" and is accepted by design; this
+  # precondition shrinks the surface to "requires a real Codex lead pass first."
+  if ! verify_pr_artifact "$PR_CODEX_LEAD_FILE" "$CURRENT_HASH"; then
+    echo "❌ No fresh Codex-lead PASS for the current diff — run the PR review (Step 1)" >&2
+    echo "   before persisting the backstop verdict. The lead artifact is written only" >&2
+    echo "   by a real Codex pass, so the backstop cannot be recorded without one." >&2
+    exit 1
+  fi
+  NOW_TS=$(date +%s)
+  mkdir -p "$PR_STATE_DIR"
+  # Oversize diff → fail closed (never silent-truncate a too-large diff into a
+  # PASS). LITMUS_PR_BACKSTOP_MAX_DIFF caps the byte size of the diff handed to
+  # the backstop; 0 (default) = no cap. When exceeded, refuse the verdict and
+  # tell the operator to split the PR (mirrors Codex's large-diff handling).
+  MAX_DIFF="${LITMUS_PR_BACKSTOP_MAX_DIFF:-0}"
+  case "$MAX_DIFF" in ''|*[!0-9]*) MAX_DIFF=0 ;; esac
+  if [ "$MAX_DIFF" -gt 0 ]; then
+    _OVR_MB=$(git merge-base "$(resolve_pr_base_branch)" HEAD 2>/dev/null || true)
+    DIFF_BYTES=$(git diff "${_OVR_MB}...HEAD" 2>/dev/null | wc -c | tr -d ' ')
+    if [ "${DIFF_BYTES:-0}" -gt "$MAX_DIFF" ]; then
+      echo "❌ PR diff ${DIFF_BYTES}B exceeds LITMUS_PR_BACKSTOP_MAX_DIFF=${MAX_DIFF}B — fail-closed" >&2
+      echo "   Split the PR into smaller reviewable changes (no silent truncation)." >&2
+      printf '{"ts":"%s","event":"pr-backstop-oversize","gate":"pre-pr","diff_bytes":%s,"max":%s}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${DIFF_BYTES:-0}" "$MAX_DIFF" >> "$PR_STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
+      exit 1
+    fi
+  fi
+  SCHEMA_FILE="$SCRIPT_DIR/../schemas/pr-backstop-verdict.schema.json"
+  TMP_VERDICT=$(mktemp "${PR_STATE_DIR}/.pr-backstop-verdict.XXXXXX") || {
+    echo "❌ Cannot create temp file for backstop verdict" >&2
+    exit 1
+  }
+  # Strict validator (net-new — does NOT reuse the fail-open validation.sh).
+  # Emits the final artifact JSON on success; exits nonzero on any violation.
+  # Reads the severity/category enums + required fields from the committed schema
+  # when readable, else falls back to strict embedded defaults (fail-safe).
+  # The program is delivered via -c (argv) and the payload via stdin — they must
+  # not collide (a `python3 - <<HEREDOC` would make the heredoc the program AND
+  # consume stdin, leaving json.load(stdin) empty → every payload falsely rejected).
+  BACKSTOP_VALIDATOR_PY=$(cat <<'PYEOF'
+import json, sys
+
+current_hash, now_ts, schema_path = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+
+def reject(msg):
+    sys.stderr.write("backstop verdict rejected: %s\n" % msg)
+    sys.exit(1)
+
+# Strict defaults — kept in lockstep with pr-backstop-verdict.schema.json.
+SEVERITY_ENUM = ["high", "medium", "low"]
+CATEGORY_ENUM = ["security", "bug"]
+REQUIRED_ISSUE = ["file", "line", "severity", "confidence", "category", "description"]
+ALLOWED_ISSUE = REQUIRED_ISSUE + ["suggestion"]
+try:
+    with open(schema_path) as fh:
+        sch = json.load(fh)
+    items = sch["properties"]["issues"]["items"]
+    SEVERITY_ENUM = items["properties"]["severity"]["enum"]
+    CATEGORY_ENUM = items["properties"]["category"]["enum"]
+    REQUIRED_ISSUE = items["required"]
+    ALLOWED_ISSUE = list(items["properties"].keys())
+except Exception:
+    pass  # fail-safe: strict embedded defaults already set
+
+try:
+    payload = json.load(sys.stdin)
+except Exception as e:
+    reject("stdin is not valid JSON (%s)" % e)
+if not isinstance(payload, dict):
+    reject("top-level payload must be a JSON object")
+
+# The caller may ONLY supply these — diff_hash/ts are writer-derived, never
+# accepted from stdin. Any other top-level field is a contract violation.
+ALLOWED_TOP = {"status", "model", "issues", "reviewed_diff_hash"}
+extra = set(payload.keys()) - ALLOWED_TOP
+if extra:
+    reject("unknown top-level field(s): %s" % ", ".join(sorted(extra)))
+
+reviewed = payload.get("reviewed_diff_hash")
+if not isinstance(reviewed, str) or not reviewed:
+    reject("missing reviewed_diff_hash")
+if reviewed != current_hash:
+    reject("stale review: reviewed_diff_hash != current base...HEAD (a commit landed mid-review; re-run)")
+
+status_in = payload.get("status")
+if status_in not in ("PASS", "FAIL"):
+    reject("status must be PASS or FAIL")
+
+model = payload.get("model")
+if not isinstance(model, str) or not model.strip():
+    reject("missing model")
+
+issues = payload.get("issues")
+if not isinstance(issues, list):
+    reject("issues must be an array")
+
+clean = []
+any_high = False
+for i, it in enumerate(issues):
+    if not isinstance(it, dict):
+        reject("issue[%d] must be an object" % i)
+    for k in it:
+        if k not in ALLOWED_ISSUE:
+            reject("issue[%d] has unknown field %r" % (i, k))
+    for k in REQUIRED_ISSUE:
+        if k not in it:
+            reject("issue[%d] missing required field %r" % (i, k))
+    sev = it["severity"]
+    if sev not in SEVERITY_ENUM:
+        reject("issue[%d] bad/empty severity %r" % (i, sev))
+    cat = it["category"]
+    if cat not in CATEGORY_ENUM:
+        reject("issue[%d] bad/empty category %r" % (i, cat))
+    conf = it["confidence"]
+    if isinstance(conf, bool) or not isinstance(conf, int) or conf < 0 or conf > 100:
+        reject("issue[%d] confidence must be int 0..100" % i)
+    line = it["line"]
+    if isinstance(line, bool) or not isinstance(line, int) or line < 0:
+        reject("issue[%d] line must be int >= 0" % i)
+    if not isinstance(it["file"], str) or not it["file"]:
+        reject("issue[%d] file must be a non-empty string" % i)
+    if not isinstance(it["description"], str) or not it["description"]:
+        reject("issue[%d] description must be a non-empty string" % i)
+    out = {
+        "file": it["file"], "line": line, "severity": sev,
+        "confidence": conf, "category": cat, "description": it["description"],
+    }
+    if "suggestion" in it:
+        if not isinstance(it["suggestion"], str):
+            reject("issue[%d] suggestion must be a string" % i)
+        out["suggestion"] = it["suggestion"]
+    if sev == "high":
+        any_high = True
+    clean.append(out)
+
+# Recompute status: any high ⇒ FAIL; an explicit caller FAIL is never upgraded.
+final_status = "FAIL" if (status_in == "FAIL" or any_high) else "PASS"
+
+artifact = {
+    "status": final_status,
+    "model": model.strip(),
+    "diff_hash": current_hash,
+    "ts": now_ts,
+    "issues": clean,
+}
+sys.stdout.write(json.dumps(artifact, separators=(",", ":")) + "\n")
+PYEOF
+)
+  if ! printf '%s' "$PAYLOAD" | python3 -c "$BACKSTOP_VALIDATOR_PY" "$CURRENT_HASH" "$NOW_TS" "$SCHEMA_FILE" >"$TMP_VERDICT"; then
+    rm -f "$TMP_VERDICT"
+    echo "❌ Backstop verdict rejected (fail-closed) — artifact NOT written" >&2
+    exit 1
+  fi
+  chmod 600 "$TMP_VERDICT" 2>/dev/null || true
+  mv -f "$TMP_VERDICT" "$PR_BACKSTOP_VERDICT_FILE"
+  FINAL_STATUS=$(_read_artifact_field "$PR_BACKSTOP_VERDICT_FILE" ".status" || echo "?")
+  echo "✅ Backstop verdict written: status=$FINAL_STATUS (hash: ${CURRENT_HASH:0:12}...)"
   exit 0
 fi
 
@@ -139,16 +470,26 @@ if [ -f "$STATE_FILE" ]; then
 fi
 
 if [ "$REVIEW_MODE" = "pr" ]; then
-  # PR mode guard: reject none/builtin — PR review requires external CLI
-  if [ "$RESOLVED_CLI" = "builtin" ] || [ "$RESOLVED_CLI" = "none" ]; then
-    echo "❌ Error: PR review requires an external review CLI" >&2
+  # PR mode lead is PINNED to Codex (cross-model gate: an Anthropic-family
+  # backstop checks an OpenAI-family lead). Reject ANY non-codex lead — not just
+  # builtin/none but also droid/agy/grok — so a degraded or misconfigured route
+  # fails closed rather than silently shipping a weaker lead. (A resolve-cli.sh
+  # route like [codex,droid] would otherwise resolve to droid when codex is
+  # missing.) The opt-in benchmark (LITMUS_PR_BENCHMARK) dispatches agy/grok
+  # SEPARATELY and never changes this gating lead.
+  if [ "$RESOLVED_CLI" != "codex" ]; then
+    echo "❌ Error: PR review requires the Codex lead reviewer" >&2
     echo "" >&2
-    echo "   BUSDRIVER_REVIEW_CLI=$RESOLVED_CLI is not supported in PR mode." >&2
-    echo "   PR deep review needs an independent external reviewer." >&2
-    echo "   Set BUSDRIVER_REVIEW_CLI=auto or install codex/agy." >&2
+    echo "   Resolved review CLI is '$RESOLVED_CLI' — PR mode pins the lead to codex" >&2
+    echo "   for cross-model safety; a non-codex lead is inconclusive (fail-closed)." >&2
+    echo "   Install/configure codex (BUSDRIVER_REVIEW_CLI=codex, or auto with codex available)." >&2
     write_terminal_status setup_error
     exit 1
   fi
+  # Close the silent-droid escalation inside _execute_codex: a FAILED Codex must
+  # fall to builtin (already rejected above) — never silently to droid — so the
+  # gating lead is Codex or the gate is inconclusive/fail-closed.
+  export LITMUS_CODEX_DROID_FALLBACK_DISABLED=1
 
   # PR mode: check for branch diff against base
   PR_BASE_BRANCH="${LITMUS_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}"
@@ -280,6 +621,11 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   echo "📋 Capturing branch diff (${PR_BASE_BRANCH}...HEAD)..."
   ALL_STAGED_FILES=$(git diff --name-only "${PR_BASE_BRANCH}...HEAD")
   STAGED_DIFF=$(git diff --no-color "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
+  # Capture the gate-binding diff hash NOW, before the (minutes-long) Codex review,
+  # so the Codex-lead artifact binds to the diff the lead actually reviews. Using a
+  # hash re-derived after the review would drift if HEAD/base moved mid-review.
+  # compute_pr_diff_hash (no exclusions) matches the gate's binding token exactly.
+  PR_REVIEWED_DIFF_HASH=$(compute_pr_diff_hash "$PR_BASE_BRANCH" 2>/dev/null || true)
   FILTERED_FILES=$(git diff --name-only "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
 else
   echo "📋 Capturing staged changes..."
@@ -608,6 +954,21 @@ FINAL_PROMPT="${FINAL_PROMPT/\{\{SMART_CONTEXT\}\}/$SMART_CONTEXT_OUTPUT}"
 # Inject docs context
 FINAL_PROMPT="${FINAL_PROMPT/\{\{DOCS_CONTEXT\}\}/$DOCS_CONTEXT_OUTPUT}"
 
+# Inject PR commit history (PR mode only). init-review-loop.sh emits only the
+# {{HISTORY_CONTEXT}} placeholder; the runtime computes/caps/substitutes it here
+# (mirroring the SMART_CONTEXT pattern) so the HISTORY lens reads injected data
+# and the agent never runs git itself. Capped by MAX_ENRICHMENT_LINES. In commit
+# mode the placeholder is absent, so this substitution is a harmless no-op.
+HISTORY_CONTEXT_OUTPUT=""
+if [ "$REVIEW_MODE" = "pr" ]; then
+  _HIST_MERGE_BASE=$(git merge-base "${PR_BASE_BRANCH}" HEAD 2>/dev/null || true)
+  if [ -n "$_HIST_MERGE_BASE" ]; then
+    HISTORY_CONTEXT_OUTPUT=$(git log --oneline --stat "${_HIST_MERGE_BASE}..HEAD" 2>/dev/null \
+      | head -n "$MAX_ENRICHMENT_LINES" || true)
+  fi
+fi
+FINAL_PROMPT="${FINAL_PROMPT/\{\{HISTORY_CONTEXT\}\}/$HISTORY_CONTEXT_OUTPUT}"
+
 # Run review via resolved CLI
 echo "🔬 Running $RESOLVED_CLI review (loop attempt $ITERATION/$MAX_ITER)..."
 echo ""
@@ -786,31 +1147,43 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
   # Write review-passed marker for the appropriate gate
   mkdir -p "$STATE_DIR"
   if [ "$REVIEW_MODE" = "pr" ]; then
-    # PR mode: marker writing depends on whether deep review is enabled.
-    # LITMUS_PR_FAST=1 skips multi-agent review — write marker immediately.
-    # Otherwise, the SKILL.md multi-agent deep review (Step 2) must run after
-    # this script passes. The marker is written by Claude after the 6-agent
-    # review completes. Writing it here would short-circuit the deep review.
+    # PR mode: the gate marker is NOT written here on the default path. After this
+    # Codex lead PASS, Claude must run the read-only Security/Bugs backstop
+    # (Step 2), persist its verdict via --write-backstop-verdict, then call
+    # --write-pr-marker — which requires BOTH the Codex-lead AND backstop PASS
+    # artifacts (diff-bound). Writing the marker here would short-circuit the
+    # backstop. We DO record the Codex lead's clean verdict so --write-pr-marker
+    # can verify the lead voice independently of the backstop.
     if [ "${LITMUS_PR_FAST:-0}" = "1" ]; then
-      # Hash MUST match pre-pr-gate.sh verifier exactly. The verifier captures
-      # `git diff` via `$()` (which strips trailing newline) and feeds it via
-      # `printf '%s'` (which adds none). Piping `git diff | sha256sum` would
-      # hash DIFF+"\n" — the gate would hash DIFF — and the marker would always
-      # be rejected. Capture-then-printf to keep both sides byte-identical.
-      #
-      # Marker MUST live under the repo root's .claude/ — the gate resolves
-      # REPO_DIR via `git -C "${TARGET_DIR:-.}" rev-parse --show-toplevel` and
-      # reads "$REPO_DIR/.claude/pr-review-passed.local". If litmus is run
-      # from a subdirectory and writes to "./.claude/...", the gate would
-      # never find it. Resolve repo root explicitly to make this robust.
-      REPO_TOP=$(git rev-parse --show-toplevel 2>/dev/null || echo .)
-      mkdir -p "$REPO_TOP/$STATE_DIR"
-      DIFF_OUTPUT_FAST=$(git diff "${PR_BASE_BRANCH}...HEAD" 2>/dev/null)
-      printf '%s' "$DIFF_OUTPUT_FAST" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1 > "$REPO_TOP/$STATE_DIR"/pr-review-passed.local
-      printf '{"ts":"%s","event":"pr-fast-bypass","gate":"pre-pr"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_TOP/$STATE_DIR"/bypass-log.jsonl 2>/dev/null || true
-      echo "   ⚠️  LITMUS_PR_FAST=1 — skipped multi-agent deep review (logged)"
+      # Audited fast bypass: skips the multi-agent backstop and writes a DISTINCT,
+      # diff-bound fast marker — "PASS-FAST-<diff_hash>-<epoch>", NOT a bare hash.
+      # Binds to PR_REVIEWED_DIFF_HASH (captured BEFORE the review) so the marker
+      # ties to the diff Codex actually reviewed (same TOCTOU reasoning as the lead
+      # artifact). The gate accepts this ONLY via its explicit fast-bypass branch
+      # (matching diff_hash AND within max-age), never the normal dual-artifact
+      # path, so a preserved fast marker (a failed `gh pr create` keeps markers)
+      # cannot later authorize a changed diff.
+      if [ -z "$PR_REVIEWED_DIFF_HASH" ]; then
+        echo "❌ LITMUS_PR_FAST: no reviewed diff hash — refusing fast marker" >&2
+        write_terminal_status setup_error
+        exit 1
+      fi
+      mkdir -p "$PR_STATE_DIR"
+      printf 'PASS-FAST-%s-%s\n' "$PR_REVIEWED_DIFF_HASH" "$(date +%s)" > "$PR_REVIEW_MARKER_FILE"
+      printf '{"ts":"%s","event":"pr-fast-bypass","gate":"pre-pr","diff_hash":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR_REVIEWED_DIFF_HASH" >> "$PR_STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
+      echo "   ⚠️  LITMUS_PR_FAST=1 — skipped multi-agent backstop (audited fast bypass, logged)"
     else
-      echo "   ℹ️  Codex CLI pass complete. Multi-agent deep review pending (Step 2)."
+      if write_codex_lead_verdict "$PR_REVIEWED_DIFF_HASH"; then
+        echo "   ✅ Codex lead PASS recorded (pr-codex-lead.local.json)."
+        echo "   ℹ️  Claude Security/Bugs backstop pending — dispatch the read-only"
+        echo "       pr-security-backstop agent, then run --write-backstop-verdict and"
+        echo "       --write-pr-marker (the marker requires BOTH voices PASS)."
+      else
+        echo "❌ Could not record Codex lead verdict (missing base / empty diff)" >&2
+        write_terminal_status setup_error
+        exit 1
+      fi
     fi
   else
     # Commit mode: write commit marker for pre-commit gate

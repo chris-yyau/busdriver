@@ -1,3 +1,10 @@
+# [1.66.0](https://github.com/chris-yyau/busdriver/compare/v1.65.0...v1.66.0) (2026-06-21)
+
+
+### Features
+
+* **skills:** consolidate web/docs/design/native tooling into busdriver; adopt official Vercel/Exa/Context7; rewrite deep-research ([#228](https://github.com/chris-yyau/busdriver/issues/228)) ([a822f91](https://github.com/chris-yyau/busdriver/commit/a822f91444ce70a1c7ed682521cef77dbacf7888))
+
 # [1.65.0](https://github.com/chris-yyau/busdriver/compare/v1.64.0...v1.65.0) (2026-06-21)
 
 

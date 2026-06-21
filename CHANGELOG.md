@@ -1,3 +1,10 @@
+# [1.65.0](https://github.com/chris-yyau/busdriver/compare/v1.64.0...v1.65.0) (2026-06-21)
+
+
+### Features
+
+* hand litmus PR-mode deep review to Codex lead + read-only Opus backstop ([#225](https://github.com/chris-yyau/busdriver/issues/225)) ([25ebef8](https://github.com/chris-yyau/busdriver/commit/25ebef878190b18d8cbbc7b676e47cffd87a4d34))
+
 # [1.64.0](https://github.com/chris-yyau/busdriver/compare/v1.63.1...v1.64.0) (2026-06-20)
 
 

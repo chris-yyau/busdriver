@@ -320,9 +320,6 @@ gate verifies both diff-bound artifacts before honoring the marker.
        bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker
   5. Retry gh pr create
 
-For a CLI-only fast review (audited bypass — runs the Codex lead, SKIPS the backstop):
-  bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --auto-pr-review
-
 IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run the reviewer instead.
 If the user wants to skip: touch $REPO_DIR/$STATE_DIR/skip-litmus.local"
 block_emit "$REASON"

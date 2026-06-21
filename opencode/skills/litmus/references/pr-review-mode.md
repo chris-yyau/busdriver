@@ -186,7 +186,15 @@ and **fails closed** on any malformed or out-of-enum field.
 
 **3a. Write the backstop verdict artifact.** The trusted writer re-derives `diff_hash`/`ts` itself and **fails closed if `reviewed_diff_hash` ≠ the current `base...HEAD` hash** — a commit landing mid-review invalidates the verdict, so re-run:
 ```bash
-printf '{"status":"PASS","model":"opus","reviewed_diff_hash":"%s","issues":[]}' "${REVIEWED_DIFF_HASH}" \
+# Set BACKSTOP_MODEL to the provider/model id used for this backstop session.
+# Required — there is no portable CLI to query the live session model, and a
+# wrong value poisons the audit trail, so fail fast rather than auto-detect.
+: "${BACKSTOP_MODEL:?set BACKSTOP_MODEL to the provider/model id used for this backstop session}"
+# Build the JSON with a real encoder, not string interpolation: a quote,
+# backslash, or newline in the model value would otherwise produce invalid JSON
+# and the strict writer would reject the artifact (blocking the PR path).
+python3 -c 'import json,sys; print(json.dumps({"status":"PASS","model":sys.argv[1],"reviewed_diff_hash":sys.argv[2],"issues":[]}))' \
+  "${BACKSTOP_MODEL}" "${REVIEWED_DIFF_HASH}" \
   | bash "${BUSDRIVER_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write-backstop-verdict
 ```
 You supply only `{status, model, issues[]}` (plus `reviewed_diff_hash` for the TOCTOU bind) on stdin. The writer re-derives `diff_hash` and `ts`, **recomputes `status` from the issues** (any `high` ⇒ FAIL — the supplied `status` is advisory and an explicit FAIL is never overridden to PASS), validates strictly (every issue needs `{file,line,severity,confidence,category,description}`; `confidence` 0–100; `severity` in the `high|medium|low` enum; a hallucinated/missing severity ⇒ reject), and **exits nonzero without writing** on any violation. It writes atomically to `${BUSDRIVER_STATE_DIR:-.opencode}/pr-backstop-verdict.local.json`.

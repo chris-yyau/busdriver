@@ -141,6 +141,12 @@ run_test "PR artifact (.local.json) redirect" "block" \
 run_test "PR artifact (.local.json) rm" "block" \
     "$(bash_input "rm $ARTIFACT")"
 
+BACKSTOP_ARTIFACT=".claude/pr-backstop-verdict.local.json"
+run_test "backstop artifact redirect" "block" \
+    "$(bash_input "echo x > $BACKSTOP_ARTIFACT")"
+run_test "backstop artifact rm" "block" \
+    "$(bash_input "rm $BACKSTOP_ARTIFACT")"
+
 echo ""
 echo "── benign / read-only: must ALLOW ───────────────────────────────"
 

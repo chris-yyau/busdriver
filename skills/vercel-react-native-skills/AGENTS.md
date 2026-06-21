@@ -318,10 +318,10 @@ return (
 )
 ```
 
-**Correct: a single function instance passed to each item**
+**Correct: hoist the stable handler and pass the id via the item prop**
 
 ```typescript
-const onPress = useCallback(() => handlePress(item.id), [handlePress, item.id])
+const onPress = useCallback((id: string) => handlePress(id), [handlePress])
 
 return (
   <LegendList
@@ -331,8 +331,6 @@ return (
   />
 )
 ```
-
-Reference: [https://example.com](https://example.com)
 
 ### 2.3 Keep List Items Lightweight
 
@@ -1443,7 +1441,7 @@ source changes, not just on initial render.
 type Props = { fallbackEnabled: boolean }
 
 function Toggle({ fallbackEnabled }: Props) {
-  const [enabled, setEnabled] = useState(defaultEnabled)
+  const [enabled, setEnabled] = useState(fallbackEnabled)
   // If fallbackEnabled changes, state is stale
   // State mixes user intent with default value
 
@@ -1458,9 +1456,9 @@ type Props = { fallbackEnabled: boolean }
 
 function Toggle({ fallbackEnabled }: Props) {
   const [_enabled, setEnabled] = useState<boolean | undefined>(undefined)
-  const enabled = _enabled ?? defaultEnabled
+  const enabled = _enabled ?? fallbackEnabled
   // undefined = user hasn't touched it, falls back to prop
-  // If defaultEnabled changes, component reflects it
+  // If fallbackEnabled changes, component reflects it
   // Once user interacts, their choice persists
 
   return <Switch value={enabled} onValueChange={setEnabled} />
@@ -1537,14 +1535,15 @@ const onLayout = (e: LayoutChangeEvent) => {
 }
 ```
 
-**Correct: sets primitive state directly**
+**Correct: sets state directly without reading stale state**
 
 ```tsx
+type Size = { width: number; height: number }
 const [size, setSize] = useState<Size | undefined>(undefined)
 
 const onLayout = (e: LayoutChangeEvent) => {
   const { width, height } = e.nativeEvent.layout
-  setSize(width)
+  setSize({ width, height })
 }
 ```
 

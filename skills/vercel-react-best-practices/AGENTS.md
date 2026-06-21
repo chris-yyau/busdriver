@@ -2369,7 +2369,8 @@ function ProjectList({ projects }: { projects: Project[] }) {
 **Correct: cached results**
 
 ```typescript
-// Module-level cache
+// Module-level cache — bounded by unique project names (fixed data set)
+// For user-derived or unbounded keys, use an LRU cache instead
 const slugifyCache = new Map<string, string>()
 
 function cachedSlugify(text: string): string {

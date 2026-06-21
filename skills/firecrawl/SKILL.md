@@ -5,6 +5,11 @@ description: |
 allowed-tools:
   - Bash(firecrawl *)
   - Bash(npx firecrawl *)
+  - Bash(mkdir *)
+  - Bash(wc *)
+  - Bash(head *)
+  - Bash(grep *)
+  - Bash(jq *)
 ---
 
 # Firecrawl CLI

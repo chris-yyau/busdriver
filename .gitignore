@@ -39,7 +39,15 @@ skills/skill-comply/uv.lock
 # Claude workspace artifacts
 .claude/worktrees/
 .opencode/worktrees/
+# AGENTS.md files are agent dev-instructions by default (the repo root file and
+# each vendored skill's upstream dev-meta copy) — keep them out of git.
 AGENTS.md
+# Exceptions: vendored skill *content guides* that a SKILL.md explicitly points to
+# MUST ship so the plugin stays self-contained. These negations also override the
+# user's global core.excludesFile `AGENTS.md` rule (repo .gitignore wins).
+!skills/vercel-react-best-practices/AGENTS.md
+!skills/vercel-composition-patterns/AGENTS.md
+!skills/vercel-react-native-skills/AGENTS.md
 
 # Internal planning docs and review artifacts
 docs/reviews/

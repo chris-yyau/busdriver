@@ -36,6 +36,12 @@ Pick the tool by the *kind* of source you need. Mix freely across sub-questions.
 | Neural / technical / code / papers / company / people | **Exa MCP** | `mcp__claude_ai_Exa__web_search_exa` (search), `mcp__claude_ai_Exa__web_fetch_exa` (read a known URL) |
 | Deep page extraction / scrape / crawl a specific source | `busdriver:firecrawl` (CLI) | Full-page markdown, JS-rendered pages, crawl/download a site section |
 
+> **Note (Exa server name):** The `mcp__claude_ai_Exa__…` tool prefix used above
+> assumes the Exa MCP server is registered as `claude_ai_Exa` (the claude.ai Exa
+> connector used in this environment). With a differently-named Exa MCP server,
+> substitute the matching prefix — the `web_search_exa` / `web_fetch_exa` tool
+> suffixes are unchanged.
+>
 > **Note:** Context7 / `ctx7` (`busdriver:context7-cli`) is **library/API-docs
 > lookup**, NOT a general web-research source — it is excluded from
 > deep-research. Use it only when the question is "how do I call library X",

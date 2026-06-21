@@ -110,8 +110,8 @@ if [[ -f "$CONFIG_FILE" ]]; then
   # Current default connector set (docs/MCP-CONNECTOR-POLICY.md): exactly
   # one connector. Former defaults (github, memory, sequential-thinking,
   # context7, exa, ...) are opt-in user choices, so they are not required.
-  for section in \
-    'mcp_servers.chrome-devtools'
+  required_sections=('mcp_servers.chrome-devtools')
+  for section in "${required_sections[@]}"
   do
     if search_file "^\[$section\]" "$CONFIG_FILE"; then
       ok "MCP section [$section] exists"

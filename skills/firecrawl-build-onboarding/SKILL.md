@@ -30,7 +30,7 @@ If you haven't installed yet, one command sets up both the CLI tools
 (for live web work) and the build skills (for app integration):
 
 ```bash
-npx -y firecrawl-cli@latest init --all --browser
+npx -y firecrawl-cli@1.19.6 init --all --browser
 ```
 
 This installs the Firecrawl CLI, the CLI skills, and these build skills
@@ -98,4 +98,4 @@ Once the key is present:
 5. add the SDK or REST call in code
 6. run a smoke test that proves one real Firecrawl request succeeds
 7. use the endpoint-specific skills in this repo for implementation guidance
-8. if you also need live web tooling during the current task, the CLI skills are already installed — use `firecrawl/cli`
+8. if you also need live web tooling during the current task, the CLI skills are already installed — use [firecrawl](../firecrawl/SKILL.md)

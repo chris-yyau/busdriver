@@ -1,57 +1,61 @@
-# PR Review Mode (Deep — Multi-Voice)
+# PR Review Mode (Deep — Codex + enforced security backstop)
 
 > Loaded on demand by `litmus/SKILL.md` when the pre-PR gate blocks `gh pr create`. Not needed on the common commit path. The shared env-var configuration stays in `SKILL.md`.
 
-When the pre-PR gate blocks `gh pr create`, run the full deep review. This combines the codex CLI pass with a 6-agent multi-voice review for cross-commit depth.
+When the pre-PR gate blocks `gh pr create`, run the full deep review. **Codex (GPT-5 xhigh) owns the deep multi-lens pass over the whole `base...HEAD` diff; a single read-only Opus agent acts as an independent cross-model security/bugs backstop.** The gate passes only when BOTH voices are clear — enforced by machine-checked artifacts, not prose.
 
-## Fast Path (CLI-only, no agents)
+The flow is:
 
-Only when the user explicitly asks to skip the deep review:
+1. **Step 0.5** — always run the Codex lead (no agents-only skip).
+2. **Step 1** — Codex deep multi-lens pass on `base...HEAD`.
+3. **Step 1.5** — scope-drift detection (advisory, never blocks).
+4. **Step 2** — dispatch exactly ONE read-only Opus security/bugs backstop, **only when Codex is clean** (short-circuit if Codex FAILs).
+5. **Step 3** — gate = Codex PASS AND backstop has no `high` finding (any `high` ⇒ FAIL; confidence does not gate); write the backstop artifact, then the PR marker.
+
+## Fast Path (codex-only, audited bypass)
+
+Only when the user explicitly asks to skip the backstop:
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --auto-pr-review
 ```
-This runs CLI review only and writes the marker on PASS. **Does NOT dispatch the 6-agent review.**
+`--auto-pr-review` **IS** the audited fast bypass: it force-inits, runs the Codex deep pass with `LITMUS_PR_FAST=1`, and on a Codex PASS writes a **distinct, diff-bound** `PASS-FAST-<diff_hash>-<epoch>` marker (not a bare hash, not a bare timestamp), logged `pr-fast-bypass` to `.claude/bypass-log.jsonl`. It **SKIPS the independent backstop**. The gate accepts that marker ONLY through its explicit fast-bypass branch — requiring `diff_hash == current base...HEAD` **and** `0 ≤ now-epoch ≤ max_age` — never through the normal dual-artifact path. So a preserved fast marker (a failed `gh pr create` keeps markers) cannot later authorize a *changed* diff. This is an audited bypass, not the default — the default path runs both voices and is fully gated.
 
-## Step 0.5: Smart Detection — Check Pre-Commit Coverage
+## Step 0.5: Always Run the Codex Lead
 
-Before running the codex CLI pass, check if all commits were already pre-commit reviewed:
+In PR mode the Codex lead runs on **every** PR. There is no agents-only skip — the deep multi-lens pass over the full `base...HEAD` diff is structurally different from the per-commit single-diff reviews, and the gate cannot pass without a fresh `status:PASS` Codex-lead artifact.
 
+PR mode pins the lead to Codex and disables the silent droid fallback before the review runs:
 ```bash
-# Check for agents-only signal (written by pre-pr-gate when all commits were pre-reviewed)
-# Signal is branch-scoped ("agents-only:<branch>") to prevent cross-branch contamination
-CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
-if [ -f ".claude/pr-commits-prereviewed.local" ] && \
-   grep -qxF "agents-only:${CURRENT_BRANCH}" ".claude/pr-commits-prereviewed.local" 2>/dev/null; then
-  echo "✅ All commits pre-commit reviewed — skipping codex CLI pass, agents-only mode."
-  rm -f ".claude/pr-commits-prereviewed.local"
-  # SKIP Step 1 entirely → go straight to Step 1.5 (scope drift) and Step 2 (agents)
-fi
+export LITMUS_CODEX_DROID_FALLBACK_DISABLED=1
 ```
+The lead **must** resolve to `codex` (`RESOLVED_CLI=codex`). If Codex is unavailable and the chain would fall to builtin (Sonnet), the PR-mode lead is **inconclusive/fail-closed** — a builtin or any non-Codex lead is rejected, never silently accepted (see Degraded States).
 
-**Why skip codex CLI but keep agents:** Codex CLI reviews individual diffs — the same thing it already did per-commit. The 6 agents review the *full PR diff* for cross-commit issues (inconsistent naming, partial migrations, orphaned imports, security across files, docs drift). These are different types of review with unique value.
-
-| Already done per-commit | Unique to PR agents |
-|---|---|
-| Single-diff bug detection | Cross-commit consistency |
-| Per-file code quality | Naming/migration completeness |
-| Syntax/style issues | Security across file boundaries |
-| | Docs vs code drift |
-
-## Step 1: Codex CLI Pass (fast)
-
-**Skip this step if Step 0.5 detected agents-only mode.**
+## Step 1: Codex Deep Multi-Lens Pass
 
 ```bash
-# Initialize and run in PR mode
+# Initialize and run in PR mode (deep pass over base...HEAD)
 LITMUS_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh"
 LITMUS_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"
 ```
 
-If FAIL → fix and re-run (same auto-continue loop as commit mode).
+The PR heredoc instructs Codex to review the full `base...HEAD` diff through six lenses in a single pass:
+
+| Lens | Focus |
+|------|-------|
+| **Bugs** | Logic errors, off-by-one, null/undefined, race conditions in changed code |
+| **Security** | Hardcoded secrets, injection, auth bypass, error messages leaking internals, unsafe dependencies |
+| **Cross-commit** | Inconsistent naming across commits, partial migrations, orphaned imports, incomplete renames |
+| **Guidelines** | CLAUDE.md compliance, project conventions, naming consistency |
+| **History** | Reverted changes, contradictory commits, partial refactors — driven by the injected `{{HISTORY_CONTEXT}}` (a capped `git log --oneline --stat MERGE_BASE..HEAD`); the prompt references the injected data and never runs git itself |
+| **Docs** | README/SKILL.md/docs accuracy vs changed code — stale examples, wrong signatures, missing new features |
+
+**Severity calibration (cosmetic → LOW):** CRITICAL/HIGH are reserved for correctness, security, data-loss, or interface-breaking risks. Documentation gaps, missing/weak docstrings or comments, naming and style nits, and "function is long but correct" observations are **LOW** — advisory, and they **never** trip the FAIL rule. Severity reflects *impact*, not certainty: do not inflate a cosmetic finding because confidence is high.
+
+On a clean Codex pass, `run-review-loop.sh` writes a diff-bound Codex-lead artifact (`pr-codex-lead.local.json`, `{status, diff_hash, ts}`) via a trusted writer and defers the PR marker to Claude ("Claude Security/Bugs backstop pending"). If Codex FAILs → fix and re-run (same auto-continue loop as commit mode), then re-run Step 1. **Do not proceed to Step 2 while Codex is FAILing.**
 
 ## Step 1.5: Scope Drift Detection (Advisory)
 
-Before launching the expensive multi-agent review, check whether the branch stayed aligned with its stated intent. This is **advisory only** — it flags deviations but never blocks.
+Before dispatching the backstop, check whether the branch stayed aligned with its stated intent. This is **advisory only** — it flags deviations but never blocks.
 
 **Step 1.5a: Find the plan.** Use Glob to search for intent documents: `docs/superpowers/plans/*.md`, `docs/superpowers/specs/*.md`, `docs/plans/*.md`, and top-level `PLAN.md`/`DESIGN.md`/`ARCHITECTURE.md`. Skim each candidate to find the one most relevant to this branch (matching branch name, feature description, or commit subject). If no intent document exists or none is clearly relevant, skip scope drift detection silently.
 
@@ -95,134 +99,172 @@ gh pr view --json body -q .body 2>/dev/null || true
 
 **Important:** This is "explain or trim" framing, not "you violated scope." Legitimate opportunistic fixes are fine. The value is surfacing the gap so the developer can consciously decide, not punishing agility.
 
-## Step 2: Multi-Agent Deep Review
+## Step 2: Read-Only Opus Security/Bugs Backstop
 
 <EXTREMELY-IMPORTANT>
-YOU MUST WAIT FOR ALL 6 AGENTS TO RETURN BEFORE PROCEEDING TO STEP 3.
+Dispatch the backstop **only when the Codex lead is clean** (Step 1 PASSED). If Codex FAILed, **short-circuit** — do not dispatch the backstop; fix the Codex findings and re-run Step 1 first.
 
-DO NOT:
-- Write the PR marker after only some agents complete
-- Rationalize "I have enough results" with partial returns
-- Create the PR while agents are still running
-- Use early agent results to decide "no blocking issues" before all return
+Dispatch **exactly ONE** agent via the Agent tool, `agentType: pr-security-backstop` (NOT the old 6-agent fan-out). The agent is structurally read-only (`tools: Read, Grep, Glob` — no Write/Edit/Bash) and runs on Opus.
 
-If an agent is slow, WAIT. If it times out after 10 minutes, mark it as timed-out and proceed with the remaining results. But never proceed while agents are still "running" or "in progress".
+The agent has **no Bash and cannot run git.** You MUST inject the review material into its prompt — it must not infer the diff from the working tree.
 </EXTREMELY-IMPORTANT>
 
-After codex CLI passes, dispatch **6 parallel review agents** using the Agent tool. Each reviews the full `base..HEAD` diff from a different lens. Launch all 6 in a **single message** for concurrency.
+**Capture the review material first** (you, not the agent, run git):
+```bash
+PR_BASE=${LITMUS_PR_BASE:-}
+[ -z "$PR_BASE" ] && PR_BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||')
+[ -z "$PR_BASE" ] && PR_BASE=origin/main
+[[ -n "${LITMUS_PR_BASE:-}" && "$PR_BASE" != origin/* ]] && PR_BASE="origin/${PR_BASE}"
+MERGE_BASE=$(git merge-base "${PR_BASE}" HEAD)
 
-**Pass the listed `model` parameter to each Agent dispatch.** High-weight agents (Bugs, Security, Cross-commit) need Opus reasoning for kill-switch reliability; lower-weight agents (Guidelines, History, Docs) are pattern-matching tasks where Sonnet is the cost/quality sweet spot. Without explicit `model:` on the Agent call, dispatches inherit the parent's model (typically Opus) and inflate cost ~3×.
+git diff "${MERGE_BASE}...HEAD"                 # full diff — inject verbatim
+git diff "${MERGE_BASE}...HEAD" --name-only     # changed-file list
+git log --oneline --stat "${MERGE_BASE}..HEAD" | head -n 200   # capped history
 
-| Agent | Lens | Model | Focus |
-|-------|------|-------|-------|
-| 1 | **Guidelines** | sonnet | CLAUDE.md compliance, project conventions, naming consistency |
-| 2 | **Bugs** | opus | Logic errors, off-by-one, null/undefined, race conditions (changes only, not full codebase) |
-| 3 | **History** | sonnet | Run `git log --oneline base..HEAD` and `git blame` on changed files. Flag: reverted changes, contradictory commits, partial refactors |
-| 4 | **Cross-commit** | opus | Inconsistent naming across commits, partial migrations, orphaned imports, incomplete renames |
-| 5 | **Security** | opus | Hardcoded secrets, injection, auth bypass, error messages leaking internals, unsafe dependencies |
-| 6 | **Docs-consistency** | sonnet | README, SKILL.md, docs/ accuracy vs changed code. Flag: stale examples, wrong function signatures, missing new features |
+# reviewed_diff_hash — binds the backstop verdict to THIS diff. Compute it with
+# the SAME formula the trusted writer and gate use (bare `git diff base...HEAD`,
+# captured via printf '%s'); any other value is rejected fail-closed by
+# --write-backstop-verdict, so do NOT hand-craft or placeholder it.
+REVIEWED_DIFF_HASH=$(printf '%s' "$(git diff "${MERGE_BASE}...HEAD")" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+```
 
-**Agent prompt template** (adapt per lens, set `model:` per the table above):
+**Dispatch prompt** (inject the captured `MERGE_BASE`, full diff, changed-file list, and capped history into the placeholders — no literal placeholder may remain, and the diff must be carried in the prompt):
 ```text
-model: [MODEL]  # e.g. opus / sonnet — per the dispatch table above
-Review this PR diff for [LENS]. The diff is from base..HEAD.
+You are a read-only Security/Bugs backstop for a pull request. You have NO Bash
+and cannot run git — review ONLY the material provided below. Do NOT infer the
+diff from the working tree.
 
-## Diff
-[paste git diff base..HEAD output, max ~4000 tokens]
+MERGE_BASE: <MERGE_BASE>
 
-## Project Guidelines
-[paste relevant CLAUDE.md sections if they exist]
+## Changed files
+<git diff MERGE_BASE...HEAD --name-only output>
 
-For each issue found, output JSON:
-{"file": "path", "line": N, "severity": "CRITICAL|HIGH|MEDIUM|LOW", "confidence": 0-100, "description": "...", "suggestion": "..."}
+## Commit history (capped)
+<git log --oneline --stat MERGE_BASE..HEAD | head -n 200 output>
+
+## Full diff (base...HEAD)
+<git diff MERGE_BASE...HEAD output — verbatim>
+
+Review the CHANGED code for security vulnerabilities and correctness bugs only:
+hardcoded secrets, injection, auth bypass, SSRF, unsafe deserialization, path
+traversal, leaked internals; plus logic errors, off-by-one, null/undefined, and
+race conditions. This is an independent cross-model check of the Codex lead — be
+adversarial about security.
 
 Rules:
-- Only report issues in CHANGED code, not pre-existing
-- Confidence 0-100: 0=guess, 50=plausible, 80=likely real, 100=certain
-- Do NOT report issues already caught by linters/type checkers
-- Maximum 5 issues per agent
-- Severity calibration: CRITICAL/HIGH are reserved for correctness, security, data-loss, or interface-breaking risks. Documentation gaps, missing/weak docstrings or comments, naming and style nits, and "function is long but correct" observations MUST be rated MEDIUM at most — they are advisory and never block a PR. Do not inflate a cosmetic finding to CRITICAL/HIGH because confidence is high; severity reflects *impact*, not certainty.
+- Only report issues in CHANGED code, not pre-existing code.
+- Confidence 0-100: 0=guess, 50=plausible, 80=likely real, 100=certain.
+- Do NOT report issues already caught by linters/type checkers.
+- Cosmetic findings (docs/comments, naming/style, "long but correct") are LOW —
+  they never block. Severity reflects impact, not certainty.
+
+Output ONE JSON object (severities are LOWERCASE — they must match the gate's
+`high|medium|low` enum; `high` is the only blocking level):
+{
+  "status": "PASS" | "FAIL",
+  "issues": [
+    {"file": "path", "line": N, "severity": "high|medium|low",
+     "confidence": 0-100, "category": "security|bug", "description": "..."}
+  ]
+}
+status = "FAIL" if any issue is `high`, else "PASS".
+If no blocking issues, return {"status": "PASS", "issues": []}.
 ```
 
-**Agent 6 (Docs-consistency) additional instructions:**
-```text
-Also review documentation files (.md) in the diff. For each changed code file:
-1. Search for README.md, docs/, and SKILL.md files that reference the changed code
-2. Flag mismatches: wrong function names, stale examples, missing documentation for new features
-3. Check if removed functions are still documented
-4. Verify code examples in docs match the actual implementation
+**After the agent returns,** take its final message verbatim — by contract it is a
+single JSON object `{status, issues[]}` with **lowercase** severities and nothing
+else (no fences, no prose; if the agent wrapped it, strip to the bare JSON object).
+You (the sole writer — the agent has no Write/Edit/Bash) then add `model` and the
+`reviewed_diff_hash` you captured at dispatch, and pipe the result to the trusted
+writer in Step 3a. No separate extraction or severity-mapping pass is needed: the
+agent already emits the `high|medium|low` enum, and the writer validates strictly
+and **fails closed** on any malformed or out-of-enum field.
+
+## Step 3: Gate Decision
+
+**The gate passes only when:** Codex lead PASS **AND** the backstop returns no `high` finding. The backstop blocks on **`high` severity alone** — `medium`/`low` are advisory, and `confidence` is recorded for triage but does **NOT** gate: the strict writer recomputes `status:FAIL` for ANY `high` issue regardless of confidence (an explicit FAIL is never overridden). A single `high` from either voice fails the gate (fix, then re-run the relevant step).
+
+**3a. Write the backstop verdict artifact.** The trusted writer re-derives `diff_hash`/`ts` itself and **fails closed if `reviewed_diff_hash` ≠ the current `base...HEAD` hash** — a commit landing mid-review invalidates the verdict, so re-run:
+```bash
+# Set BACKSTOP_MODEL to the provider/model id used for this backstop session.
+# Required — there is no portable CLI to query the live session model, and a
+# wrong value poisons the audit trail, so fail fast rather than auto-detect.
+: "${BACKSTOP_MODEL:?set BACKSTOP_MODEL to the provider/model id used for this backstop session}"
+# Build the JSON with a real encoder, not string interpolation: a quote,
+# backslash, or newline in the model value would otherwise produce invalid JSON
+# and the strict writer would reject the artifact (blocking the PR path).
+
+# Case A — no findings (agent returned {"status":"PASS","issues":[]}):
+python3 -c 'import json,sys; print(json.dumps({"status":"PASS","model":sys.argv[1],"reviewed_diff_hash":sys.argv[2],"issues":[]}))' \
+  "${BACKSTOP_MODEL}" "${REVIEWED_DIFF_HASH}" \
+  | bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write-backstop-verdict
+
+# Case B — agent found issues (AGENT_OUTPUT is the agent's verbatim final message
+# per "After the agent returns" above — a single JSON object {status, issues[]}).
+# DO NOT manually reconstruct issues[] from prose; take the agent output as-is
+# and let the writer recompute status from it (any high ⇒ FAIL regardless of
+# the supplied status field, which is advisory only and never overrides FAIL).
+printf '%s' "${AGENT_OUTPUT}" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); d.update({"model":sys.argv[1],"reviewed_diff_hash":sys.argv[2]}); print(json.dumps(d))' \
+    "${BACKSTOP_MODEL}" "${REVIEWED_DIFF_HASH}" \
+  | bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write-backstop-verdict
 ```
+You supply only `{status, model, issues[]}` (plus `reviewed_diff_hash` for the TOCTOU bind) on stdin. The writer re-derives `diff_hash` and `ts`, **recomputes `status` from the issues** (any `high` ⇒ FAIL — the supplied `status` is advisory and an explicit FAIL is never overridden to PASS), validates strictly (every issue needs `{file,line,severity,confidence,category,description}`; `confidence` 0–100; `severity` in the `high|medium|low` enum; a hallucinated/missing severity ⇒ reject), and **exits nonzero without writing** on any violation. It writes atomically to `${BUSDRIVER_STATE_DIR:-.claude}/pr-backstop-verdict.local.json`.
 
-## Step 3: Score and Filter
-
-After all 6 agents return:
-
-1. **Collect** all findings into one list
-2. **Deduplicate** — same file + same line + similar description = keep highest confidence
-3. **Filter** — only surface findings with confidence ≥ 80
-4. **Normalize severity (backstop):** before classifying, downgrade any finding whose substance is purely documentation/comments, naming or style, or function length to **MEDIUM**, regardless of the rating the agent assigned. These categories are advisory and never block. This catches an agent that over-rated a cosmetic issue as CRITICAL/HIGH.
-5. **Classify**:
-   - CRITICAL/HIGH at 80+ confidence → **FAIL** (do not write marker)
-   - MEDIUM/LOW at 80+ confidence → **advisory** (show but don't block)
-   - Below 80 confidence → **suppress** (don't show)
-
-## Step 3.5: Weighted Quorum (Agent Availability)
-
-Not all agents are equally load-bearing. The pass/fail decision uses weighted scoring rather than a flat 4-of-6 count, so that availability hiccups in low-weight agents (Docs, History) don't block merge when the high-weight agents (Bugs, Security) returned clean.
-
-**Agent weights (total 12 points):**
-
-| Agent | Weight | Rationale |
-|-------|--------|-----------|
-| Agent 2 — **Bugs** | 3 | Direct correctness risk |
-| Agent 5 — **Security** | 3 | Direct exploit/exposure risk |
-| Agent 1 — Guidelines | 2 | Convention/consistency |
-| Agent 4 — Cross-commit | 2 | Partial-migration risk |
-| Agent 3 — History | 1 | Mostly retrospective signal |
-| Agent 6 — Docs | 1 | Docs drift, rarely blocking |
-
-**Pass rules (BOTH must hold):**
-
-1. **Score threshold:** returned-agent weight sum ≥ **7** (of 12). Timed-out or errored agents contribute 0.
-2. **Hard requirement:** neither Agent 2 (Bugs) nor Agent 5 (Security) is timed-out or errored. If either is missing, the review is inconclusive regardless of total score.
-
-**Why score + hard requirement:** The weight lets Docs+History timeouts (2 pts missing) still pass if all 4 higher-weight agents returned. The hard requirement prevents "10 out of 12 points with Security down" from being treated as a pass — Security gaps are categorically different from Docs gaps.
-
-**Calibration note:** If you observe weight drift (e.g., Docs catching real bugs consistently, or Bugs producing noise), adjust weights based on observed signal quality. Default weights reflect general-purpose code; healthcare/finance workloads should lift Security to 4 and lower Guidelines.
-
-## Step 4: Gate Decision
-
-| Result | Action |
-|--------|--------|
-| Codex CLI PASS + no CRITICAL/HIGH at 80+ | Write marker (see below) → gate passes |
-| Codex CLI PASS + CRITICAL/HIGH at 80+ | Report findings. Fix, then re-run Step 2 only |
-| Codex CLI FAIL | Fix, re-run from Step 1 |
-
-**Write the marker** (the script does NOT write it in PR mode — you must call the trusted marker writer):
+**3b. Write the PR marker** (only after the artifact is written):
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write-pr-marker
 ```
-This computes the diff hash and writes `.claude/pr-review-passed.local`. Direct writes to marker files are blocked by the PreToolUse hook — only `run-review-loop.sh` can write them.
+`--write-pr-marker` requires **BOTH** a fresh `status:PASS` `pr-codex-lead` artifact **AND** a fresh `status:PASS` `pr-backstop-verdict` artifact, both with `diff_hash` matching the current `base...HEAD`. A backstop PASS alone cannot satisfy the gate if the Codex lead was skipped, misordered, or FAILed — and vice versa. It writes `.claude/pr-review-passed.local`. Direct writes to marker/artifact files are blocked by the PreToolUse hook — only the trusted writers can produce them.
 
-The marker must be a SHA-256 hash (64 hex chars) or a timestamped pass (`PASS-<epoch>`). The gate rejects `DEGRADED`, `SKIPPED-NONE`, and `BUILTIN-` prefixed markers for PR review.
+| Result | Action |
+|--------|--------|
+| Codex PASS + backstop no `high` | Write artifact (3a) → write marker (3b) → gate passes |
+| Codex PASS + backstop any `high` | Report findings. Fix, then re-run from Step 1 (a code fix changes the `base...HEAD` hash, staling the Codex-lead artifact — re-running Step 2 alone cannot rebind it, so the backstop write / PR marker would fail closed) |
+| Codex FAIL | Short-circuit (no backstop). Fix, re-run from Step 1 |
+
+The marker is a SHA-256 hash (64 hex chars) of the `base...HEAD` diff, or the audited `PASS-FAST-<diff_hash>-<epoch>` fast-bypass marker. The gate rejects `DEGRADED`, `SKIPPED-NONE`, and `BUILTIN-` prefixed markers for PR review.
 
 ## Degraded States
 
-Wait for all agents. Only evaluate quorum AFTER agents have timed out (10 min), never while they're still running.
+PR mode is **fail-closed**. A degraded path never silently downgrades to a weaker voice.
 
 | Failure | Handling |
 |---------|----------|
-| Agent times out (>10 min) | Mark as timed-out (weight contribution = 0). Proceed with returned results only after ALL agents are either returned or timed-out |
-| Weighted score ≥ 7 AND Bugs + Security both returned | **Valid review.** Evaluate findings from returned agents (apply Step 3 classification) |
-| Weighted score < 7 | `inconclusive` — fail-closed, do not write marker |
-| Bugs or Security agent timed-out/errored | `inconclusive` — fail-closed regardless of score (hard requirement) |
-| All agents timeout | Fail-closed. Fall back to codex CLI result only (degrade to fast mode) |
-| Codex CLI unavailable | Multi-agent review only (skip Step 1). Marker still written if deep review passes weighted quorum |
+| Codex transient error (rate-limit, network, 5xx) | Codex retries with backoff. **In PR mode the droid escalation is DISABLED** (`LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` is set before review), so an exhausted Codex falls to builtin — which PR mode rejects — leaving the lead inconclusive/fail-closed; re-run once Codex is healthy. (Commit-mode litmus still escalates to `droid exec`.) |
+| Codex/droid both exhausted → would fall to builtin (Sonnet) | **Inconclusive/fail-closed.** `LITMUS_CODEX_DROID_FALLBACK_DISABLED=1` is set in PR mode so a failed Codex falls to builtin, which PR mode rejects — it never falls silently to droid as the *lead*. A builtin/non-Codex lead is never accepted; log degraded and surface to the user |
+| Non-Codex lead resolved (e.g. `BUSDRIVER_REVIEW_CLI=droid`/`agy`) | **Inconclusive/fail-closed** — the PR normal path requires `RESOLVED_CLI=codex` |
+| Backstop agent times out or errors | **Inconclusive/fail-closed** — no artifact written, gate stays blocked. Re-dispatch |
+| Diff exceeds `LITMUS_PR_BACKSTOP_MAX_DIFF` | **Inconclusive/fail-closed** — never silently truncated into a PASS. Split the PR (mirrors Codex's large-diff handling); a truncation marker + size are recorded |
 
-## Marker Encoding
+## Benchmark Mode (opt-in, non-gating)
 
-PR markers contain a SHA-256 hash of the `base...HEAD` diff for staleness detection:
-```text
-<64-hex-char-sha256-hash>
+> **Status: planned follow-up — NOT yet wired.** This section is the *spec* for the
+> benchmark, not a description of current behavior: `run-review-loop.sh` does not yet
+> dispatch `LITMUS_PR_BENCHMARK`, so setting it currently has no effect. It is
+> deliberately deferred (ADR 0006): its only purpose is to gather data on whether a
+> third model family earns a gating seat — a question CLAUDE.md marks SETTLED for this
+> solo repo — so building it now would be speculative. Implement it only when a real
+> measurement need appears; the contract below is what to build to.
+
+`LITMUS_PR_BENCHMARK` would run additional CLIs (Agy, Grok) as **observers** for measurement only — they would **never** affect the gate exit code, artifact, or marker.
+
+```bash
+# unset = off (default); 1 = agy,grok; or a comma list
+export LITMUS_PR_BENCHMARK=agy,grok
 ```
-The pre-PR gate accepts markers that are 64-hex SHA-256 hashes or `PASS-<epoch>` timestamps. It rejects `DEGRADED`, `SKIPPED-NONE`, and `BUILTIN-` prefixed markers.
+After the gating Codex pass, each benchmark CLI runs via `execute_review` (isolated `BUSDRIVER_STATE_DIR`, per-`diff_hash` lock so the same diff is not re-dispatched) through its **own read-only extractor** (decoupled from the gating validator). Results append atomically to `.claude/pr-review-benchmark.jsonl`:
+```text
+{ts, diff_hash, cli, status, high_count, medium_count, issues[]}
+```
+Even a benchmark CRITICAL leaves the gate untouched — the marker is still written if Codex + backstop are clean.
+
+**Comparison recipe:** to measure whether a third model family ever earns a gating seat, replay merged PRs with `LITMUS_PR_BENCHMARK` set, then compare net-new true positives across CLIs via:
+```bash
+bash scripts/litmus-metrics-report.sh
+```
+Use the benchmark JSONL + metrics report to decide if a family's *net-new* catches justify the cost before promoting it into the gate.
+
+## User-Created Skip File
+
+The emergency escape hatch is unchanged: a user-created `.claude/skip-litmus.local` (or `SKIP_LITMUS=1` exported in the parent shell) exits 0 ahead of all backstop logic — the one intentional, audited bypass, consistent across all busdriver gates. See `SKILL.md` → "User-Created Skip File" for the per-gate table (pre-PR deletes the file on a <30s rejection) and `skills/blueprint-review/SKILL.md` for the canonical verbatim protocol.

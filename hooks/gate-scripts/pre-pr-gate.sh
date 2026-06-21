@@ -181,144 +181,145 @@ if [ "$REPO_ROOT" = "$HOME/.claude" ]; then
     fi
 fi
 
-# ── Check for codex review marker ─────────────────────────────────────
-# Uses the SAME marker as the commit gate ($STATE_DIR/litmus-passed.local).
-# The PR gate does NOT consume the marker — the commit gate handles that.
-# This allows: review → commit (consumes marker) → push → PR create.
+# ── Dual-voice PR review enforcement ──────────────────────────────────
+# PR mode (litmus deep review) runs a Codex (GPT-5 xhigh) LEAD reviewer + ONE
+# read-only Opus Security/Bugs BACKSTOP. The gate honors a PR only when:
+#   • $STATE_DIR/pr-review-passed.local = the current base...HEAD diff hash, AND
+#   • BOTH diff-bound artifacts are fresh status:PASS for that same hash:
+#       pr-codex-lead.local.json   (the lead voice)
+#       pr-backstop-verdict.local.json (the backstop voice)
+# The gate re-verifies the artifacts INDEPENDENTLY of the marker, so a bare
+# marker hash alone, a missing/stale artifact, or a backstop PASS without the
+# lead never authorizes a PR. The commit marker ($STATE_DIR/litmus-passed.local)
+# is NOT accepted here — per-commit review does not prove the PR-level dual-voice
+# deep review ran (closes the prior commit-marker PR bypass). See ADR 0006.
 #
-# For the PR gate to pass, one of these must be true:
-#   1. A review marker exists (review done but not yet committed — unusual but valid)
-#   2. A PR-review marker exists ($STATE_DIR/pr-review-passed.local) — set by running
-#      litmus specifically for the PR diff
-MARKER="$REPO_DIR/$STATE_DIR/litmus-passed.local"
+# The PR gate does NOT consume the marker on success — post-pr-consume-marker.sh
+# consumes it (and the artifacts) only after `gh pr create` actually succeeds,
+# so a gh failure (bad --base, auth, network) doesn't burn the review.
 PR_MARKER="$REPO_DIR/$STATE_DIR/pr-review-passed.local"
+CODEX_LEAD_ART="$REPO_DIR/$STATE_DIR/pr-codex-lead.local.json"
+BACKSTOP_ART="$REPO_DIR/$STATE_DIR/pr-backstop-verdict.local.json"
 
-if [ -f "$PR_MARKER" ]; then
+# Freshness window (shared with the writer). Integer seconds; default 3600.
+MAX_AGE="${LITMUS_PR_BACKSTOP_MAX_AGE:-3600}"
+case "$MAX_AGE" in ''|*[!0-9]*) MAX_AGE=3600 ;; esac
+
+# verify_pr_artifact_gate <file> <expected_hash> <max_age> → 0 iff the artifact
+# exists, parses, status==PASS, diff_hash==expected, and 0<=now-ts<=max_age.
+verify_pr_artifact_gate() {
+    local f="$1" expected="$2" max_age="$3"
+    [ -f "$f" ] || return 1
+    python3 - "$f" "$expected" "$max_age" <<'PYV' 2>/dev/null
+import json, sys, time
+f, expected, max_age = sys.argv[1], sys.argv[2], int(sys.argv[3])
+try:
+    d = json.load(open(f))
+except Exception:
+    sys.exit(1)
+if not isinstance(d, dict):
+    sys.exit(1)
+if d.get("status") != "PASS":
+    sys.exit(1)
+if d.get("diff_hash") != expected:
+    sys.exit(1)
+ts = d.get("ts")
+if not isinstance(ts, int) or isinstance(ts, bool):
+    sys.exit(1)
+age = int(time.time()) - ts
+if age < 0 or age > max_age:
+    sys.exit(1)
+sys.exit(0)
+PYV
+}
+
+# Current base...HEAD diff hash (byte-identical to the writer: $()-captured diff
+# fed via printf '%s', no trailing newline). Respect LITMUS_PR_BASE.
+PR_BASE="${LITMUS_PR_BASE:-$(git -C "$REPO_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}"
+[[ -n "${LITMUS_PR_BASE:-}" && "$PR_BASE" != origin/* ]] && PR_BASE="origin/${PR_BASE}"
+# Compute the merge-base explicitly and diff from it, using the SAME expression
+# as the writer's compute_pr_diff_hash (run-review-loop.sh): `git diff "${MB}...HEAD"`.
+# `git diff A...HEAD` already means `git diff $(git merge-base A HEAD) HEAD`, so this
+# is behaviorally identical to the old `${PR_BASE}...HEAD` form — but pinning the
+# gate and the writer to the SAME formula keeps a single source of truth and removes
+# any chance the two drift if one side is later edited.
+MERGE_BASE=$(git -C "$REPO_DIR" merge-base "${PR_BASE}" HEAD 2>/dev/null || true)
+DIFF_OUTPUT=$(git -C "$REPO_DIR" diff "${MERGE_BASE}...HEAD" 2>/dev/null || true)
+CURRENT_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
+
+# Fail-closed cleanup: if a marker exists but we could NOT compute a verifiable
+# base...HEAD diff (empty merge-base, or an empty diff — e.g. a transient git
+# failure, or a base ref that briefly disappeared), clear the marker AND both
+# artifacts. Leaving them lets a later base restoration silently reuse stale
+# review state instead of requiring a fresh review for the resolved diff.
+if [ -f "$PR_MARKER" ] && { [ -z "$MERGE_BASE" ] || [ -z "$DIFF_OUTPUT" ]; }; then
+    echo "[pre-pr-gate] Cannot compute a verifiable base...HEAD diff; clearing stale PR marker + artifacts (fail-closed)." >&2
+    rm -f "$PR_MARKER" "$CODEX_LEAD_ART" "$BACKSTOP_ART"
+fi
+
+# Only honor a marker when we resolved a REAL base...HEAD diff. A failed/empty
+# merge-base (missing or unrelated base ref) and an empty diff BOTH collapse to
+# the empty-string SHA (e3b0c442...); honoring a marker that carries that hash
+# would authorize a PR with no verified diff. Fail closed: skip all marker
+# acceptance and fall through to the block below when there is nothing to gate.
+if [ -n "$MERGE_BASE" ] && [ -n "$DIFF_OUTPUT" ] && [ -f "$PR_MARKER" ]; then
     PR_MARKER_CONTENT=$(cat "$PR_MARKER" 2>/dev/null || echo "")
     if echo "$PR_MARKER_CONTENT" | grep -qE '^(DEGRADED|SKIPPED-NONE|BUILTIN-)'; then
         rm -f "$PR_MARKER"
     elif echo "$PR_MARKER_CONTENT" | grep -qE '^[a-f0-9]{64}$'; then
-        # SHA-256 hash — verify it matches current base..HEAD diff to prevent stale markers
-        # Must match the writer's hashing: printf '%s' "$DIFF" | sha256sum (no trailing newline)
-        # Respect LITMUS_PR_BASE to match the marker writer's base branch
-        PR_BASE="${LITMUS_PR_BASE:-$(git -C "$REPO_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}"
-        [[ -n "${LITMUS_PR_BASE:-}" && "$PR_BASE" != origin/* ]] && PR_BASE="origin/${PR_BASE}"
-        DIFF_OUTPUT=$(git -C "$REPO_DIR" diff "${PR_BASE}...HEAD" 2>/dev/null || true)
-        CURRENT_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
-        if [ "$PR_MARKER_CONTENT" = "$CURRENT_HASH" ]; then
-            # Hash matches current diff — defer consumption and allow.
-            # Do NOT consume here. The marker is consumed by the PostToolUse
-            # hook (post-pr-consume-marker.sh) only after `gh pr create`
-            # actually succeeds. Consuming in PreToolUse burns the review when
-            # gh then fails (missing --body-file, network, bad --base, auth
-            # expiry), forcing a redundant 6-agent re-review of unchanged code.
-            # This mirrors the deferred-consumption pattern the commit gate
-            # already uses (pre-commit-gate.sh validates,
-            # post-commit-consume-marker.sh consumes).
-            # Safe to defer: the marker is the SHA-256 of this exact diff, so a
-            # marker that survives a gh failure only ever re-authorizes the
-            # identical reviewed diff — any new commit changes the hash and the
-            # marker is rejected as stale on the next gate check.
-            exit 0
+        # Dual-voice deep-review marker: require hash match AND both fresh PASS artifacts.
+        if [ "$PR_MARKER_CONTENT" = "$CURRENT_HASH" ] \
+            && verify_pr_artifact_gate "$CODEX_LEAD_ART" "$CURRENT_HASH" "$MAX_AGE" \
+            && verify_pr_artifact_gate "$BACKSTOP_ART" "$CURRENT_HASH" "$MAX_AGE"; then
+            exit 0  # defer consumption to post-pr-consume-marker.sh
         else
-            # Stale marker from a different branch or older diff — reject
-            echo "[pre-pr-gate] PR review marker hash mismatch (stale marker from different branch/diff). Re-run litmus PR review." >&2
+            echo "[pre-pr-gate] PR marker present but dual-voice artifacts missing/stale/mismatched — re-run litmus PR review." >&2
+            rm -f "$PR_MARKER"
+        fi
+    elif echo "$PR_MARKER_CONTENT" | grep -qE '^PASS-FAST-[a-f0-9]{64}-[0-9]+$'; then
+        # Audited fast bypass (LITMUS_PR_FAST): Codex lead ran, backstop skipped.
+        # Accept ONLY if the embedded diff_hash matches the current diff AND it is
+        # within max-age — never via the dual-artifact path. A preserved fast
+        # marker (failed gh keeps markers) cannot authorize a CHANGED diff.
+        FAST_HASH=$(printf '%s' "$PR_MARKER_CONTENT" | sed -E 's/^PASS-FAST-([a-f0-9]{64})-[0-9]+$/\1/')
+        FAST_EPOCH=$(printf '%s' "$PR_MARKER_CONTENT" | sed -E 's/^PASS-FAST-[a-f0-9]{64}-([0-9]+)$/\1/')
+        FAST_AGE=$(( $(date +%s) - FAST_EPOCH ))
+        if [ "$FAST_HASH" = "$CURRENT_HASH" ] && [ "$FAST_AGE" -ge 0 ] && [ "$FAST_AGE" -le "$MAX_AGE" ]; then
+            exit 0  # defer consumption to post-pr-consume-marker.sh
+        else
+            echo "[pre-pr-gate] Fast-bypass marker stale or for a different diff — re-run litmus PR review." >&2
             rm -f "$PR_MARKER"
         fi
     else
-        # Genuine PR review pass (non-hash format) — consume and allow
+        # Unrecognized PR marker format — reject (no blanket allow).
+        echo "[pre-pr-gate] PR marker content not recognized — rejecting: ${PR_MARKER_CONTENT:0:30}..." >&2
         rm -f "$PR_MARKER"
-        exit 0
     fi
 fi
 
-if [ -f "$MARKER" ]; then
-    MARKER_CONTENT=$(cat "$MARKER" 2>/dev/null || echo "")
-    # Reject DEGRADED, SKIPPED-NONE, BUILTIN- markers — PR requires external CLI review
-    if echo "$MARKER_CONTENT" | grep -qE '^(DEGRADED|SKIPPED-NONE|BUILTIN-)'; then
-        : # Fall through to blocking logic — these markers don't satisfy PR gate
-    elif echo "$MARKER_CONTENT" | grep -qE '^[a-f0-9]{64}$'; then
-        # Valid SHA-256 hash from external CLI review — allow PR creation
-        # Do NOT consume — the commit gate needs it
-        exit 0
-    elif echo "$MARKER_CONTENT" | grep -qE '^PASS(-MERGE)?-[0-9]+$'; then
-        # Valid timestamped pass marker (auto-generated files, merge commits)
-        # Do NOT consume — the commit gate needs it
-        exit 0
-    else
-        # Unrecognized marker format — reject as invalid
-        echo "[pre-pr-gate] Marker content not recognized (expected SHA-256 hash or PASS-*): ${MARKER_CONTENT:0:30}..." >&2
-    fi
-fi
+# NOTE: $STATE_DIR/litmus-passed.local (the commit marker) is intentionally NOT
+# accepted for PR creation. Closing that path is the core fix in ADR 0006.
 
-# ── Smart PR gate: check if all commits were per-commit reviewed ──────
-# If every commit in base..HEAD was individually reviewed (tracked in
-# reviewed-commits.local by post-commit-consume-marker.sh), skip the
-# redundant full-branch re-review. Only require PR-level review when
-# unreviewed commits exist (worktree, external tools, other sessions).
-#
-# Entries are branch-scoped ("branch:sha") to prevent cross-branch carry-over.
-# Also accepts legacy bare SHA format for backwards compatibility.
-REVIEWED_FILE="$REPO_DIR/$STATE_DIR/reviewed-commits.local"
-if [ -f "$REVIEWED_FILE" ]; then
-    BASE_BRANCH=$(git -C "$REPO_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo "main")
-    CURRENT_BRANCH=$(git -C "$REPO_DIR" symbolic-ref --short HEAD 2>/dev/null || echo "")
-    ALL_REVIEWED=true
-    while IFS= read -r commit_sha; do
-        [ -z "$commit_sha" ] && continue
-        # Check branch-scoped entry ("branch:sha") first, then bare SHA for compat
-        # Use -x (exact line match) to prevent substring matches across branches
-        if grep -qxF "${CURRENT_BRANCH}:${commit_sha}" "$REVIEWED_FILE" 2>/dev/null; then
-            continue  # Reviewed on this branch
-        elif grep -qxF "$commit_sha" "$REVIEWED_FILE" 2>/dev/null; then
-            continue  # Legacy bare SHA format (backwards compat)
-        else
-            ALL_REVIEWED=false
-            break
-        fi
-    done < <(git -C "$REPO_DIR" log --format='%H' "${BASE_BRANCH}..HEAD" 2>/dev/null)
-    if [ "$ALL_REVIEWED" = true ]; then
-        # All commits were per-commit reviewed — codex CLI is redundant.
-        # But multi-agent deep review (cross-commit analysis) is still valuable.
-        # Signal agents-only mode instead of bypassing entirely.
-        mkdir -p "$REPO_DIR/$STATE_DIR"
-        echo "agents-only:${CURRENT_BRANCH}" > "$REPO_DIR/$STATE_DIR/pr-commits-prereviewed.local"
-        # Keep REVIEWED_FILE so retries can re-derive agents-only if signal is consumed
-        # Fall through to block — require agents-only PR review
-    fi
-fi
+# No valid dual-voice review → block PR creation.
+# The Codex lead runs on EVERY PR (no agents-only skip) — the lead must resolve
+# to codex or the run is inconclusive/fail-closed (see run-review-loop.sh).
+REASON="Code review required before creating a PR (litmus PR mode — deep review).
 
-# No valid review marker → block PR creation
-# Check if agents-only mode was signaled (all commits pre-reviewed)
-AGENTS_ONLY_SIGNAL="$REPO_DIR/$STATE_DIR/pr-commits-prereviewed.local"
-SIGNAL_BRANCH=$(git -C "$REPO_DIR" symbolic-ref --short HEAD 2>/dev/null || echo "")
-if [ -f "$AGENTS_ONLY_SIGNAL" ] && grep -qxF "agents-only:${SIGNAL_BRANCH}" "$AGENTS_ONLY_SIGNAL" 2>/dev/null; then
-REASON="All commits were pre-commit reviewed — codex CLI pass is redundant.
-Run agents-only PR review (skip Step 1; continue with Step 1.5 + Step 2):
+PR mode runs a Codex (GPT-5 xhigh) LEAD reviewer + ONE read-only Opus
+Security/Bugs BACKSTOP. BOTH must PASS on the current base...HEAD diff, and the
+gate verifies both diff-bound artifacts before honoring the marker.
 
-  1. SKIP the codex CLI pass (Step 1) — already reviewed per-commit
-  1.5. Run scope drift detection (Step 1.5, advisory)
-  2. Dispatch 6 parallel review agents (Step 2: Guidelines, Bugs, History, Cross-commit, Security, Docs-consistency)
-  3. Score and filter findings (confidence >= 80)
-  4. If no CRITICAL/HIGH: bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker
+  1. Run the Codex lead pass:
+       LITMUS_MODE=pr bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/init-review-loop.sh\" \\
+         && LITMUS_MODE=pr bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\"
+  2. On Codex PASS, dispatch the read-only pr-security-backstop agent over the
+     SAME base...HEAD diff (see skills/litmus/references/pr-review-mode.md).
+  3. Persist its verdict (re-derives diff_hash/ts, fails closed on stale/bad input):
+       <agent-json> | bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --write-backstop-verdict
+  4. Write the gate marker (requires BOTH voices PASS):
+       bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker
   5. Retry gh pr create
 
 IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run the reviewer instead.
 If the user wants to skip: touch $REPO_DIR/$STATE_DIR/skip-litmus.local"
-else
-REASON="Code review required before creating a PR.
-
-Follow the PR Review Mode in the litmus SKILL.md:
-  1. Run the CLI pass: LITMUS_MODE=pr bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/init-review-loop.sh\" && LITMUS_MODE=pr bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\"
-  2. Dispatch 6 parallel review agents (Guidelines, Bugs, History, Cross-commit, Security, Docs-consistency)
-  3. Score and filter findings (confidence >= 80)
-  4. If no CRITICAL/HIGH: bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker
-  5. Retry gh pr create
-
-For CLI-only fast review (skips 6-agent deep review):
-  bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --auto-pr-review
-
-IMPORTANT: Do NOT create the skip file yourself. That is a user-only escape hatch. You MUST run the reviewer instead.
-If the user wants to skip: touch $REPO_DIR/$STATE_DIR/skip-litmus.local"
-fi
 block_emit "$REASON"

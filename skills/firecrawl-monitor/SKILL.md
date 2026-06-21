@@ -5,6 +5,7 @@ description: |
 allowed-tools:
   - Bash(firecrawl *)
   - Bash(npx firecrawl *)
+  - Bash(cat *)
 ---
 
 # firecrawl monitor

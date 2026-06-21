@@ -46,7 +46,7 @@ To review design/plan documents, INVOKE `blueprint-review` skill (via Skill tool
 ## Emergency Gate Recovery
 
 When a gate blocks and the user needs to bypass, follow the full procedure in `references/gate-recovery.md` (in this skill's directory). **Hard rules — never violate:**
-- NEVER create the skip file yourself — gates reject/delete skip files <30s old (anti-self-bypass). The user must `touch <PROJECT_ROOT>/.claude/skip-<GATE>.local` in their own terminal.
+- NEVER create the skip file yourself — gates reject/delete skip files <30s old (anti-self-bypass). The user must `touch <PROJECT_ROOT>/<STATE_DIR>/skip-<GATE>.local` in their own terminal (`<STATE_DIR>` = `${BUSDRIVER_STATE_DIR:-.claude}` — `.opencode` under the opencode harness; the gate names it verbatim in its block message. Resolve it, NEVER hardcode `.claude`, and give the user the absolute path).
 - NEVER `sleep` directly via Bash — wait via `Monitor(command: "sleep 35 && echo READY", timeout: 45)`.
 - NEVER verify the skip file (`test -f`/`ls`/`stat`/`cat`/`find`) before retrying — it gets consumed on any intervening tool call. Just wait and retry the blocked action directly.
 - NEVER ask the user to wait — Claude waits via Monitor.

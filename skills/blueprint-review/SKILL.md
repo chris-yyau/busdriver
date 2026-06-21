@@ -691,21 +691,22 @@ Critically, the skip-file check in steps 1–2 runs **before** tool-type discrim
 
 ### Verbatim message template (required)
 
-When Claude needs a skip file, it must emit this exact message, with two substitutions:
+When Claude needs a skip file, it must emit this exact message, with three substitutions:
 - `<PROJECT_ROOT>` → the absolute path of the current git repo root (from `git rev-parse --show-toplevel` — not the CWD of the Claude session, which may be a subdirectory or worktree).
+- `<STATE_DIR>` → the gate's state directory: the value of `${BUSDRIVER_STATE_DIR:-.claude}` (default `.claude`, but `.opencode` under the opencode harness). **Resolve it — NEVER hardcode `.claude`.** The gate also names this directory verbatim in its own block message, so when reacting to a gate block you can read it from there.
 - `<GATE>` → one of: `design-review`, `litmus`, `pr-grind` (matches the row in the per-gate-differences table above).
 
 > I need a skip file to bypass the `<GATE>` gate. Please run this in **your terminal** (not in this session):
 >
 > ```
-> touch <PROJECT_ROOT>/.claude/skip-<GATE>.local
+> touch <PROJECT_ROOT>/<STATE_DIR>/skip-<GATE>.local
 > ```
 >
 > After you run it, I will wait ~35 seconds before retrying the blocked action. Please reply "done" once you've run the command. Do not expect an immediate response from me — the wait is required by the gate and is not a stall.
 
 For pr-grind, also tell the user "the file must be touched within the last hour — the gate rejects ages of 3600s or more" so they don't sit on it indefinitely (other gates have unbounded freshness).
 
-Do not give the relative path (`.claude/skip-<GATE>.local`) — gates check `.claude/` relative to the **blocked command's CWD**, which may differ from the user's terminal CWD, and users routinely run `touch` from a different pane.
+Do not give a relative path (`<STATE_DIR>/skip-<GATE>.local`) — gates check the state dir relative to the **blocked command's CWD**, which may differ from the user's terminal CWD, and users routinely run `touch` from a different pane. Always emit the resolved, absolute `<PROJECT_ROOT>/<STATE_DIR>/skip-<GATE>.local` path so the user can copy-paste it directly.
 
 ### After the user confirms ("done")
 

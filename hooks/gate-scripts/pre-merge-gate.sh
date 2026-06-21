@@ -21,7 +21,7 @@ case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 # Re-export the sanitized value so sourced helpers / subprocesses read the
 # constrained STATE_DIR rather than the raw env var.
 export BUSDRIVER_STATE_DIR="$STATE_DIR"
-trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-merge gate error — blocking as precaution. If stuck, create %s/skip-pr-grind.local in your terminal.\"}\n" "$STATE_DIR"; exit 0' ERR
+trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-merge gate error — blocking as precaution. If stuck, create %s/skip-pr-grind.local in your terminal.\"}\n" "${REPO_DIR:+$REPO_DIR/}$STATE_DIR"; exit 0' ERR
 
 # ── Block emission helper ─────────────────────────────────────────────
 block_emit() {
@@ -177,7 +177,7 @@ fi
 
 # Fail-closed: parser error after fast pre-filter matched → block as precaution
 if [ "$IS_GH_PR_MERGE" = "error" ]; then
-    block_emit "Pre-merge gate: failed to parse tool input for command matching gh pr merge pattern. Blocking as precaution (fail-closed). If stuck, create $STATE_DIR/skip-pr-grind.local in your terminal."
+    block_emit "Pre-merge gate: failed to parse tool input for command matching gh pr merge pattern. Blocking as precaution (fail-closed). If stuck, create ${REPO_DIR:+$REPO_DIR/}$STATE_DIR/skip-pr-grind.local in your terminal."
     exit 0
 fi
 
@@ -213,7 +213,7 @@ if [ -f "$SKIP_FILE" ]; then
     # Reject skip files created within last 30 seconds — likely Claude self-bypass
     if [ "$FILE_AGE" -lt 30 ]; then
         rm -f "$SKIP_FILE"
-        block_emit "BLOCKED: skip-pr-grind.local was created moments ago (likely self-bypass). Do NOT create $STATE_DIR/skip-pr-grind.local yourself. Run /pr-grind instead. If the user wants to skip, they should create the file manually in their terminal."
+        block_emit "BLOCKED: skip-pr-grind.local was created moments ago (likely self-bypass). Do NOT create ${REPO_DIR:+$REPO_DIR/}$STATE_DIR/skip-pr-grind.local yourself. Run /pr-grind instead. If the user wants to skip, they should create the file manually in their terminal."
         exit 0
     fi
 
@@ -376,5 +376,5 @@ if [ -n "$MERGE_PR_NUM" ] && command -v gh &>/dev/null; then
 fi
 
 # ── BLOCK: no pr-grind-clean marker found ────────────────────────────
-block_emit "Pre-merge gate: pr-grind has not declared this PR clean. FIRST wait for all CI checks to complete (\`gh pr checks ${MERGE_PR_NUM:-<PR_NUMBER>} --watch\`), THEN run \`/pr-grind\` to address reviewer feedback before merging. Do NOT skip the CI wait. If you just wrote $STATE_DIR/pr-grind-clean.local: ensure it was a SEPARATE Bash tool call from \`gh pr merge\` — this hook fires BEFORE bash runs, so a combined write+merge call cannot see its own marker (TOCTOU). See skills/pr-grind/SKILL.md COMPLETION section. Escape hatch: create $STATE_DIR/skip-pr-grind.local in your terminal."
+block_emit "Pre-merge gate: pr-grind has not declared this PR clean. FIRST wait for all CI checks to complete (\`gh pr checks ${MERGE_PR_NUM:-<PR_NUMBER>} --watch\`), THEN run \`/pr-grind\` to address reviewer feedback before merging. Do NOT skip the CI wait. If you just wrote ${REPO_DIR:+$REPO_DIR/}$STATE_DIR/pr-grind-clean.local: ensure it was a SEPARATE Bash tool call from \`gh pr merge\` — this hook fires BEFORE bash runs, so a combined write+merge call cannot see its own marker (TOCTOU). See skills/pr-grind/SKILL.md COMPLETION section. Escape hatch: create ${REPO_DIR:+$REPO_DIR/}$STATE_DIR/skip-pr-grind.local in your terminal."
 exit 0

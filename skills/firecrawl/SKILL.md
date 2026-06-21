@@ -10,6 +10,7 @@ allowed-tools:
   - Bash(head *)
   - Bash(grep *)
   - Bash(jq *)
+  - Bash(cat *)
 ---
 
 # Firecrawl CLI

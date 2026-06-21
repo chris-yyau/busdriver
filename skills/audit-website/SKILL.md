@@ -6,7 +6,7 @@ compatibility: Requires squirrel CLI installed and accessible in PATH
 metadata:
   author: squirrelscan
   version: "1.22"
-allowed-tools: Bash(squirrel:*) Read Edit Grep Glob
+allowed-tools: Bash(squirrel:*), Read, Edit, Grep, Glob
 ---
 
 # Website Audit Skill

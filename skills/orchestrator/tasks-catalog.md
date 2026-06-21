@@ -12,7 +12,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 |------|-----------------|----------|
 | **Refactoring** | cleanup, dead code | `refactor-cleaner` agent |
 | **Authentication** | login, signup, OAuth | `security-review` |
-| **UI/UX Design** | design, UI review, make it look better, styling | Dual-engine: `busdriver:design-taste-frontend` (explore landing/marketing/portfolio/showcase) → `impeccable:impeccable` (harden; owns dashboards/app UI solo). Supplements (gap-fill only, do NOT lead): `ui-ux-pro-max`, `busdriver:design-system`, `document-skills:frontend-design`. Load `.impeccable.md` if present |
+| **UI/UX Design** | design, UI review, make it look better, styling | Dual-engine: `busdriver:design-taste-frontend` (explore landing/marketing/portfolio/showcase) → `impeccable:impeccable` (harden; owns dashboards/app UI solo). Supplements (gap-fill only, do NOT lead): `busdriver:ui-ux-pro-max`, `busdriver:design-system`, `document-skills:frontend-design`. Load `.impeccable.md` if present |
 | **Design Setup** | impeccable, design context, brand setup | `impeccable:shape` (one-time → `.impeccable.md`) |
 | **Design Refinement** | polish, critique, audit UI, animate, make bolder/quieter | Impeccable commands: `/polish`, `/critique`, `/audit`, `/normalize`, `/harden`, `/distill`, `/clarify`, `/colorize`, `/bolder`, `/quieter`, `/delight`, `/animate`, `/overdrive`, `/arrange`, `/extract`, `/typeset`, `/layout`, `/adapt`, `/optimize`, `/onboard` |
 | **Skill Creation** | create/edit skill | `busdriver:writing-skills` |

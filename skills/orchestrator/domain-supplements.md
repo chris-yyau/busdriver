@@ -77,7 +77,7 @@ Domain skills are loaded as context during execution. They are **additive** — 
     - **Why this order:** taste-skill maximizes visual entropy (divergence); impeccable minimizes error rate (convergence). Taste drives early; impeccable has final say on hardening.
     - **Presets & Phase 0 — manual, invoke by name on request (NOT auto-routed):** specific aesthetics → `busdriver:minimalist-ui`, `busdriver:industrial-brutalist-ui`, `busdriver:high-end-visual-design`. Optional pre-explore reference boards → `busdriver:imagegen-frontend-web`, `busdriver:imagegen-frontend-mobile`, `busdriver:brandkit`. (`redesign-existing-projects` and `full-output-enforcement` deliberately omitted — redundant with `busdriver:design-taste-frontend`'s redesign protocol and the litmus/verification gates respectively.)
   - **Supplements — fill gaps only, do NOT lead:**
-    - `ui-ux-pro-max` — breadth catalog (50 styles, 21 palettes, 50 font pairings, 20 charts, shadcn MCP). Option lookup when an engine needs a named style / palette / font / chart, or shadcn component search on dashboards.
+    - `busdriver:ui-ux-pro-max` — breadth catalog (50 styles, 21 palettes, 50 font pairings, 20 charts, shadcn MCP). Option lookup when an engine needs a named style / palette / font / chart, or shadcn component search on dashboards.
     - `document-skills:frontend-design` — generic fallback; only for gaps the engines don't cover.
   - Context: `.impeccable.md` if present (created via `impeccable:shape`)
   - Refinement: `/polish`, `/critique`, `/audit`, `/normalize`, `/harden`, `/distill`, `/clarify`
@@ -148,7 +148,7 @@ Domain skills are loaded as context during execution. They are **additive** — 
 
 ### Database
 **Detection:** SQL, migrations, schema changes, database operations
-- PostgreSQL: `busdriver:postgres-patterns`
+- PostgreSQL: `busdriver:postgres-patterns` (quick patterns); `busdriver:supabase-postgres-best-practices` for deep perf work — covering/composite/partial indexes, RLS performance, connection pooling, advisory locks, `pg_stat_statements`, JSONB indexing, partitioning
 - MySQL: `busdriver:mysql-patterns`
 - ClickHouse: `busdriver:clickhouse-io`
 - Redis: `busdriver:redis-patterns` (caching, data structures, pub/sub, persistence)

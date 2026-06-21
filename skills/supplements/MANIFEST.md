@@ -33,7 +33,7 @@
 
 | File | Targets | Trigger | Source | Added |
 |------|---------|---------|--------|-------|
-| `design-anti-slop.md` | `impeccable:impeccable`, `document-skills:frontend-design`, `busdriver:frontend-patterns`, `ui-ux-pro-max`, `design-taste-frontend` | "avoid AI slop", "make it unique", "don't make it generic" | gstack /design-consultation | 2026-03-24 |
+| `design-anti-slop.md` | `impeccable:impeccable`, `document-skills:frontend-design`, `busdriver:frontend-patterns`, `busdriver:ui-ux-pro-max`, `design-taste-frontend` | "avoid AI slop", "make it unique", "don't make it generic" | gstack /design-consultation | 2026-03-24 |
 | `directory-freeze.md` | `busdriver:systematic-debugging` | "freeze", "lock this dir" | gstack /freeze | 2026-03-24 |
 | `beginner-mode.md` | `busdriver:brainstorming`, `busdriver:grill-me` | "I'm new to this", "explain like I'm a beginner", "beginner mode", "what does X mean", "I don't understand X" + auto-memory user-knowledge-gap entries | in-house (grill-me integration) | 2026-05-05 |
 

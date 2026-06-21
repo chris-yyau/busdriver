@@ -15,7 +15,6 @@ Analyze token overhead across every loaded component in a Claude Code session an
 - You've recently added many skills, agents, or MCP servers
 - You want to know how much context headroom you actually have
 - Planning to add more components and need to know if there's room
-- Invoking the `context-budget` skill directly
 
 ## How It Works
 
@@ -106,7 +105,8 @@ In verbose mode, additionally output per-file token counts, line-by-line breakdo
 ## Examples
 
 **Basic audit**
-```
+
+```text
 User: audit my context budget
 Skill: Scans setup → 16 agents (12,400 tokens), 28 skills (6,200), 87 MCP tools (43,500), 2 CLAUDE.md (1,200)
        Flags: 3 heavy agents, 14 MCP servers (3 CLI-replaceable)
@@ -114,7 +114,8 @@ Skill: Scans setup → 16 agents (12,400 tokens), 28 skills (6,200), 87 MCP tool
 ```
 
 **Verbose mode**
-```
+
+```text
 User: audit my context budget, verbose
 Skill: Full report + per-file breakdown showing planner.md (213 lines, 1,840 tokens),
        MCP tool list with per-tool sizes, duplicated rule lines side by side

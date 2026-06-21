@@ -526,17 +526,116 @@ _resolve_codex_companion() {
   _CODEX_COMPANION="none"
 }
 
+# ── Shared transient-error predicate ────────────────────────────
+# Reads candidate CLI output from stdin; returns 0 (true) if it looks like a
+# transient failure worth retrying: connection resets, rate-limits, 5xx,
+# EAGAIN I/O races. Single source of truth for _execute_codex's retry loop,
+# the agy/grok retry wrapper below, and dispatch.sh's dispatch_one (council).
+# Match only the `EAGAIN` token (not the phrase "resource temporarily
+# unavailable") to avoid false-positives on fork/thread exhaustion that shares
+# the same strerror text.
+_is_transient_cli_error() {
+  grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|5[0-9][0-9]|getaddrinfo'
+}
+
+# ── Retry wrapper for non-codex review CLIs (agy / grok) ────────
+# Codex has its own richer retry loop in _execute_codex. agy and grok were
+# single-shot until now, so one transient hiccup dropped the voice straight to
+# droid. This retries up to BUSDRIVER_CLI_RETRIES (default 3; blueprint-review
+# exports 5) on a transient failure or an empty-but-clean exit, with short
+# exponential backoff. It NEVER retries a timeout (124) — re-running the full
+# window is too costly; the caller's droid fallback catches that. Echoes the
+# final output to stdout and returns the final exit code.
+# Args: <label> <prompt> <duration> <cmd...>  (cmd reads the prompt from stdin)
+_run_review_with_retries() {
+  local label="$1" prompt="$2" duration="$3"; shift 3
+  local max_retries="${BUSDRIVER_CLI_RETRIES:-3}"
+  local retry_delay="${BUSDRIVER_CLI_RETRY_DELAY:-5}"
+  case "$max_retries" in ''|*[!0-9]*) max_retries=3 ;; esac
+  case "$retry_delay" in ''|*[!0-9]*) retry_delay=5 ;; esac
+  # The WHOLE retry sequence — every attempt PLUS all backoff sleeps — is bounded
+  # to ~"$duration" (the caller's total budget): each attempt's timeout is the
+  # REMAINING budget (equals "$duration" on the first attempt), and each backoff
+  # is capped to the remaining budget so the sleep itself can't overrun. Retries
+  # therefore never multiply the wall-clock to (retries+1)× the timeout; once the
+  # budget is spent we stop and let the caller's droid fallback take over.
+  local attempt=0 exit_code=0 output="" start now remaining cap
+  start=$(date +%s)
+  while [[ "$attempt" -le "$max_retries" ]]; do
+    exit_code=0
+    if [[ "$attempt" -eq 0 ]]; then
+      # The FIRST attempt always runs with the full budget — set it directly (not
+      # via now-start) so a sub-second clock tick can never zero it out and skip
+      # the only invocation. Only RETRIES are budget-gated below.
+      remaining="$duration"
+    else
+      now=$(date +%s); remaining=$(( duration - (now - start) ))
+      # A retry needs budget for the backoff PLUS at least a 1s attempt; if the
+      # remaining budget can't fund a 1s attempt, escalate now instead of
+      # sleeping the rest of the budget away for a retry that can't run.
+      if [[ "$remaining" -le 1 ]]; then
+        echo "⟳ ${label}: retry budget (${duration}s) spent — escalating instead of retrying" >&2
+        # Budget exhaustion is a CLI FAILURE, not a real timeout — use a generic
+        # non-zero (1), never 124, so callers don't trip their timeout/split path.
+        [[ "$exit_code" -eq 0 ]] && exit_code=1
+        break
+      fi
+      # Cap backoff to leave >= 1s for the attempt — never sleep the whole budget.
+      cap=$(( remaining - 1 ))
+      [[ "$retry_delay" -gt "$cap" ]] && retry_delay="$cap"
+      if [[ "$retry_delay" -gt 0 ]]; then
+        echo "⟳ ${label} retry ${attempt}/${max_retries} (waiting ${retry_delay}s)..." >&2
+        sleep "$retry_delay"
+      fi
+      retry_delay=$((retry_delay * 2))
+      now=$(date +%s); remaining=$(( duration - (now - start) ))
+      if [[ "$remaining" -le 0 ]]; then
+        echo "⟳ ${label}: retry budget (${duration}s) spent — escalating instead of retrying" >&2
+        # Budget exhaustion is a CLI FAILURE, not a real timeout — use a generic
+        # non-zero (1), never 124, so callers don't trip their timeout/split path.
+        [[ "$exit_code" -eq 0 ]] && exit_code=1
+        break
+      fi
+    fi
+    output=$(printf '%s' "$prompt" | _portable_timeout "$remaining" "$@" 2>&1) || exit_code=$?
+    # Success with non-empty output → done.
+    [[ "$exit_code" -eq 0 && -n "$output" ]] && break
+    # Timeout → don't retry; let the caller's droid fallback handle it.
+    [[ "$exit_code" -eq 124 ]] && break
+    # Retry if the attempt produced NO output (a CLI that died before writing a
+    # review — empty is never a valid review, whatever the exit code) OR the
+    # failure text looks transient. Otherwise bail (non-transient hard failure
+    # that did produce output → the caller's droid fallback owns the rescue).
+    if [[ -z "$output" ]] || printf '%s' "$output" | _is_transient_cli_error; then
+      attempt=$((attempt + 1))
+      continue
+    fi
+    break
+  done
+  # Exhausted retries while still empty on a clean exit → report a FAILURE, not a
+  # silent success: an empty review is not a passing review, and callers key
+  # fallback/error handling off this exit status (e.g. execute_review → blueprint
+  # droid rescue / litmus error path). Without this, an always-empty reviewer
+  # would return exit 0 with no output and be treated as a clean run.
+  [[ "$exit_code" -eq 0 && -z "$output" ]] && exit_code=1
+  printf '%s' "$output"
+  return "$exit_code"
+}
+
 _execute_codex() {
   local prompt="$1"
   local duration="${2:-1200}"
-  # Defaults sized for codex rate-limit windows. Backoff sequence at the
-  # defaults below is 30, 60, 120, 240, 480 seconds — ~15.5 min total wait
-  # before exhausting and escalating to droid. From retry 2 onward (t≥90s),
-  # the sequence clears OpenAI's per-minute (60s) window; by retry 4 (t≥450s)
-  # it also clears the per-5min (300s) window. Sustained outages (>15 min)
-  # still fall through to droid as the external-voice safety net.
-  # Override via env vars for faster bail or longer patience.
-  local max_retries="${LITMUS_CODEX_RETRIES:-5}"
+  # Defaults sized for codex rate-limit windows. At the default 3 retries the
+  # backoff sequence is 30, 60, 120 seconds — ~3.5 min total wait before
+  # exhausting and escalating to droid. From retry 2 onward (t≥90s) the
+  # sequence clears OpenAI's per-minute (60s) window. The MOST IMPORTANT review
+  # paths raise this to 5: blueprint-review and litmus PR mode both export
+  # LITMUS_CODEX_RETRIES=5 (backoff 30,60,120,240,480 ≈ 15.5 min, also clearing
+  # the per-5min window) because those reviews are the gate of record and have
+  # no/limited droid net. Sustained outages still fall through to droid as the
+  # external-voice safety net. Override via env vars for faster bail or longer
+  # patience.
+  local max_retries="${LITMUS_CODEX_RETRIES:-3}"
   local retry_delay="${LITMUS_CODEX_RETRY_DELAY:-30}"
   local high_from="${LITMUS_CODEX_HIGH_FROM:-3}"  # switch to high reasoning from this attempt
 
@@ -581,6 +680,7 @@ _execute_codex() {
   local exit_code=0
   local output=""
   local last_was_transient=0  # narrows droid fallback to rate-limit/network exhaustion
+  local timed_out=0           # a single full-duration timeout is droid-eligible (not retried)
 
   while [[ "$attempt" -le "$max_retries" ]]; do
     exit_code=0
@@ -620,8 +720,10 @@ _execute_codex() {
       break
     fi
 
-    # Timeout (124) — retrying won't help, bail immediately
+    # Timeout (124) — retrying burns the whole window again, so don't; but a
+    # timeout IS droid-eligible (a different backend may still answer in time).
     if [[ "$exit_code" -eq 124 ]]; then
+      timed_out=1
       break
     fi
 
@@ -638,7 +740,7 @@ _execute_codex() {
     # (not the phrase "resource temporarily unavailable") to avoid false-
     # positives on unrelated fork/thread exhaustion errors that share the
     # same strerror text.
-    if printf '%s' "$output" | grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|5[0-9][0-9]|getaddrinfo'; then
+    if printf '%s' "$output" | _is_transient_cli_error; then
       last_was_transient=1
       attempt=$((attempt + 1))
     else
@@ -648,8 +750,9 @@ _execute_codex() {
     fi
   done
 
-  # All retries exhausted or non-transient error — fall back to builtin
-  if [[ "$exit_code" -ne 0 ]] && [[ "$exit_code" -ne 124 ]]; then
+  # All retries exhausted, non-transient error, or a timeout — try droid (if
+  # eligible), else fall back to builtin (or preserve the timeout signal).
+  if [[ "$exit_code" -ne 0 ]]; then
     local attempts_run=$(( attempt > max_retries ? max_retries + 1 : attempt + 1 ))
     # Surface codex's captured stderr/stdout so callers writing 2>&1 to a raw
     # log can diagnose the failure. Without this, only the wrapper's own
@@ -661,9 +764,10 @@ _execute_codex() {
         "----- end codex output -----" >&2
     fi
 
-    # Droid escalation (narrow): only on transient-error exhaustion (rate-limit,
-    # network, 5xx). Non-transient codex failures (script bugs, malformed prompt)
-    # would likely break droid too — go straight to builtin in that case.
+    # Droid escalation: on transient-error exhaustion (rate-limit, network, 5xx)
+    # OR a single full-duration timeout (a different backend may still answer).
+    # Non-transient codex failures (script bugs, malformed prompt) would likely
+    # break droid too — go straight to builtin in that case.
     #
     # Three opt-outs honored:
     #   1. LITMUS_CODEX_DROID_FALLBACK_DISABLED=1 — matches opt-out convention
@@ -679,10 +783,12 @@ _execute_codex() {
     if [[ "$_droid_disabled" =~ ^(1|true|yes|on)$ ]]; then _droid_disabled=1; fi
     [[ "${LITMUS_CODEX_DROID_FALLBACK:-1}" =~ ^(0|false|no|off)$ ]] && _droid_disabled=1
     [[ "${BUSDRIVER_REVIEW_CLI:-auto}" == "codex" ]] && _droid_disabled=1
-    if [[ "$last_was_transient" -eq 1 ]] && \
+    if { [[ "$last_was_transient" -eq 1 ]] || [[ "$timed_out" -eq 1 ]]; } && \
        [[ "$_droid_disabled" != "1" ]] && \
        is_cli_available droid; then
-      echo "⚠️  Codex exhausted ${attempts_run} attempt(s) on transient errors — escalating to droid" >&2
+      local _fail_reason="transient errors"
+      [[ "$timed_out" -eq 1 ]] && _fail_reason="timeout"
+      echo "⚠️  Codex failed after ${attempts_run} attempt(s) (${_fail_reason}) — escalating to droid" >&2
       local droid_out='' droid_exit=0
       # Bare `droid exec` (default read-only mode, Create/Edit blocked) matches
       # execute_review's posture and the codex `-s read-only` posture this is
@@ -717,6 +823,14 @@ _execute_codex() {
     fi
 
     [[ -n "$_prompt_file" ]] && rm -f "$_prompt_file"
+    # Timeout with no droid rescue (droid disabled/unavailable, e.g. litmus PR
+    # mode or blueprint's one-voice cap) — preserve the timeout signal (exit
+    # 124) so the caller can react (litmus: split into smaller commits). Do NOT
+    # emit BUILTIN_FALLBACK for a timeout.
+    if [[ "$timed_out" -eq 1 ]]; then
+      printf '%s' "$output"
+      return 124
+    fi
     echo "⚠️  Codex failed after ${attempts_run} attempt(s) — falling back to built-in review" >&2
     echo "BUILTIN_FALLBACK"
     return 3
@@ -748,7 +862,8 @@ execute_review() {
     # emit JSON verdicts and never need to mutate the repo or fetch. Align
     # --print-timeout with our outer duration so agy's internal 5m default doesn't
     # abort before _portable_timeout does.
-    agy)     printf '%s' "$prompt" | _portable_timeout "$duration" agy --sandbox --print-timeout "${duration}s" --print /dev/stdin 2>&1 ;;
+    agy)     _run_review_with_retries agy "$prompt" "$duration" \
+               agy --sandbox --print-timeout "${duration}s" --print /dev/stdin ;;
     # Review path: bare `droid exec` (default read-only mode) is the tightest
     # posture that works for stdin-piped review. Create/Edit are blocked at this
     # tier (verified via `droid exec --list-tools` on v0.131.0+); reviews emit
@@ -788,7 +903,8 @@ execute_review() {
     # --prompt-file /dev/stdin: bypasses argv length limits (mirrors agy's
     # --print pattern).
     grok)    echo "Note: grok blueprint-review dispatch — safety relies on user-config 'always approve' being DISABLED. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
-             printf '%s' "$prompt" | _portable_timeout "$duration" grok --prompt-file /dev/stdin --max-turns 150 --sandbox readonly 2>&1 ;;
+             _run_review_with_retries grok "$prompt" "$duration" \
+               grok --prompt-file /dev/stdin --max-turns 150 --sandbox readonly ;;
     builtin) echo "BUILTIN_FALLBACK"; return 3 ;;
     unsupported:*)
              # CLI was rejected upstream (deprecated/removed). Migration warning

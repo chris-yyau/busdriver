@@ -469,6 +469,14 @@ $DESIGN_CONTENT
   # transient retries still run. Covers codex in ANY reviewer slot.
   export LITMUS_CODEX_DROID_FALLBACK_DISABLED=1
 
+  # Blueprint review is a gate of record — raise the per-reviewer retry budget to
+  # 5 (the most important paths get more patience before the single droid rescue
+  # fires). Covers codex (LITMUS_CODEX_RETRIES) and agy/grok (BUSDRIVER_CLI_RETRIES
+  # via execute_review's retry wrapper). `:-5` respects an explicit operator
+  # override exported in the parent shell.
+  export LITMUS_CODEX_RETRIES="${LITMUS_CODEX_RETRIES:-5}"
+  export BUSDRIVER_CLI_RETRIES="${BUSDRIVER_CLI_RETRIES:-5}"
+
   # Run Agy (reviewer 1) in background
   (
     if [[ "$AGY_AVAILABLE" == "true" ]]; then

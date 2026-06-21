@@ -91,6 +91,8 @@ When the user asks to "setup videodb" or similar:
 
 ### 1. Install SDK
 
+Installation is a one-time setup step the operator runs — it falls outside this skill's `Bash(python:*)` allow-list, so ask the operator to install rather than self-bootstrapping:
+
 ```bash
 pip install "videodb[capture]" python-dotenv
 ```

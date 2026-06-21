@@ -66,7 +66,6 @@ General:
 - `security-reviewer` — security audit, OWASP, secret leakage
 - `refactor-cleaner` — dead code, duplicates, knip-class cleanup
 - `doc-updater` — documentation, codemap, README
-- `docs-lookup` — third-party library API lookups (Context7)
 - `e2e-runner` — end-to-end test orchestration
 - `database-reviewer` — PostgreSQL schema, migration, performance
 - `harness-optimizer` — local agent harness configuration
@@ -130,9 +129,10 @@ Trigger words below are matched case-insensitively. Multilingual plans are suppo
 | `security` | encrypt, auth, secret, OWASP, PII | `security-reviewer,<lang>-reviewer` |
 | `build` | build, compile, lint failure, CI | `<lang>-build-resolver` (falls back to `build-error-resolver`) |
 | `docs` | docs, readme, codemap, changelog | `doc-updater` |
-| `lookup` | lookup, reference, API usage | `docs-lookup` |
 | `review` | review, audit, verify | `<lang>-reviewer,code-reviewer` |
 | `loop` | loop, autonomous, watchdog | `loop-operator` |
+
+> **API/reference lookups are handled inline, not as an orchestrate step.** There is no standalone lookup agent — the `context7-cli` skill performs third-party library/API doc lookups inline within whichever agent needs them. A step whose only purpose is a lookup matches no tag and falls through to the zero-tag default (rule 7).
 
 Chain composition rules:
 1. **Primary tag selection**: when a step matches multiple tags, the **first one in table order** (top of the table = highest priority) is the primary; the rest are secondaries. Composition rules 2 and 3 below handle specific multi-tag combinations explicitly; otherwise, append secondary chains in tag table order.
@@ -142,7 +142,7 @@ Chain composition rules:
 5. `<lang>-reviewer` resolves to `code-reviewer` when `lang=unknown`.
 6. `<lang>-build-resolver` resolves to `build-error-resolver` when `lang=unknown`. **Special case**: if Phase 0 set `pytorch=true`, use `pytorch-build-resolver` for `build` chains regardless of `<lang>`. There is no `python-build-resolver`; `--lang=python` without `pytorch=true` resolves to `build-error-resolver`.
 7. **Zero-tag steps**: if no trigger word matches, set chain to `code-reviewer` and write `no tag matched; default review-only chain` under "Chain rationale".
-8. Chain length ≤ 4 after deduplication. If exceeded, drop weakest tag (`lookup` and `docs` first).
+8. Chain length ≤ 4 after deduplication. If exceeded, drop the weakest tag (`docs` first).
 9. Do not pair `planner` and `architect` in an `impl` chain (token waste). Pair them only on `design` steps.
 10. Steps tagged `impl`, `refactor`, or `migration` end with a **reviewer-class** agent — any of `<lang>-reviewer`, `code-reviewer`, `security-reviewer`, or `database-reviewer`. The most domain-specific reviewer wins the tail position (e.g. rule 2's `impl+security` ends with `security-reviewer`; rule 3's `impl+db` ends with `<lang>-reviewer` because `database-reviewer` already gates the migration earlier in the chain). `test` and `build` steps are gated by their own validators (`e2e-runner` and the build resolver respectively) and do not require an additional reviewer.
 

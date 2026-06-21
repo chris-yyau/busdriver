@@ -1,17 +1,22 @@
 ---
 name: deep-research
-description: Multi-source deep research using firecrawl and exa MCPs. Searches the web, synthesizes findings, and delivers cited reports with source attribution. Use when the user wants thorough research on any topic with evidence and citations.
+description: Multi-source deep research using the vendored Tavily CLI (busdriver:tavily-cli), the Exa MCP (mcp__claude_ai_Exa__web_search_exa), and the vendored Firecrawl CLI (busdriver:firecrawl). Searches the web, verifies claims, synthesizes findings, and delivers cited reports with source attribution. Use when the user wants thorough research on any topic with evidence and citations.
 metadata:
-  origin: ECC
+  origin: ECC (forked + localized for busdriver tooling)
 ---
 
 # Deep Research
 
-> **Drift-prone skill.** Firecrawl/Exa MCP tool names, quotas, and result
-> shapes change. Verify the configured MCP tools and current API docs before
-> promising coverage or quoting live source counts.
+> **Tooling-explicit skill.** This skill routes to busdriver's vendored web
+> tools by an explicit selection policy (below). It does **not** depend on the
+> Firecrawl or Exa MCP servers being wired — it calls the Tavily CLI and the
+> Firecrawl CLI as vendored skills, plus the official Exa MCP. CLI flags and
+> Exa MCP result shapes can drift; verify current behavior before promising
+> coverage or quoting live source counts.
 
-Produce thorough, cited research reports from multiple web sources using firecrawl and exa MCP tools.
+Produce thorough, cited research reports from multiple web sources by fanning
+out searches, deep-reading key sources, adversarially verifying claims, and
+synthesizing with full source attribution.
 
 ## When to Activate
 
@@ -21,13 +26,30 @@ Produce thorough, cited research reports from multiple web sources using firecra
 - Any question requiring synthesis from multiple sources
 - User says "research", "deep dive", "investigate", or "what's the current state of"
 
-## MCP Requirements
+## Tool Selection Policy
 
-At least one of:
-- **firecrawl** — `firecrawl_search`, `firecrawl_scrape`, `firecrawl_crawl`
-- **exa** — `web_search_exa`, `web_search_advanced_exa`, `crawling_exa`
+Pick the tool by the *kind* of source you need. Mix freely across sub-questions.
 
-Both together give the best coverage. Configure in `~/.claude.json` or `~/.codex/config.toml`.
+| Need | Tool | How |
+|------|------|-----|
+| General web / news / current events / broad lookups | `busdriver:tavily-cli` | LLM-optimized search + extract/crawl/map/research suite (free tier ~1k/mo) |
+| Neural / technical / code / papers / company / people | **Exa MCP** | `mcp__claude_ai_Exa__web_search_exa` (search), `mcp__claude_ai_Exa__web_fetch_exa` (read a known URL) |
+| Deep page extraction / scrape / crawl a specific source | `busdriver:firecrawl` (CLI) | Full-page markdown, JS-rendered pages, crawl/download a site section |
+
+> **Note (Exa server name):** The `mcp__claude_ai_Exa__…` tool prefix used above
+> assumes the Exa MCP server is registered as `claude_ai_Exa` (the claude.ai Exa
+> connector used in this environment). With a differently-named Exa MCP server,
+> substitute the matching prefix — the `web_search_exa` / `web_fetch_exa` tool
+> suffixes are unchanged.
+>
+> **Note:** Context7 / `ctx7` (`busdriver:context7-cli`) is **library/API-docs
+> lookup**, NOT a general web-research source — it is excluded from
+> deep-research. Use it only when the question is "how do I call library X",
+> not "what is the current state of topic X".
+
+Use the Tavily CLI and Firecrawl CLI as vendored skills (invoke them via the
+Skill tool / their CLI). Use the Exa MCP tools directly. None of these require
+the legacy Firecrawl or Exa MCP servers to be configured.
 
 ## Workflow
 
@@ -39,7 +61,7 @@ Ask 1-2 quick clarifying questions:
 
 If the user says "just research it" — skip ahead with reasonable defaults.
 
-### Step 2: Plan the Research
+### Step 2: Plan the Research (fan-out)
 
 Break the topic into 3-5 research sub-questions. Example:
 - Topic: "Impact of AI on healthcare"
@@ -49,24 +71,24 @@ Break the topic into 3-5 research sub-questions. Example:
   - What companies are leading this space?
   - What's the market size and growth trajectory?
 
-### Step 3: Execute Multi-Source Search
+### Step 3: Execute Multi-Source Search (fan-out)
 
-For EACH sub-question, search using available MCP tools:
+For EACH sub-question, search with the tool that fits the source type per the
+policy above:
 
-**With firecrawl:**
+**General web / news / current events → `busdriver:tavily-cli`:**
 ```
-firecrawl_search(query: "<sub-question keywords>", limit: 8)
+tvly search "<sub-question keywords>" --max-results 8 --json
 ```
 
-**With exa:**
+**Neural / technical / code / papers / company / people → Exa MCP:**
 ```
-web_search_exa(query: "<sub-question keywords>", numResults: 8)
-web_search_advanced_exa(query: "<keywords>", numResults: 5, startPublishedDate: "2025-01-01")
+mcp__claude_ai_Exa__web_search_exa(query: "<sub-question keywords>", numResults: 8)
 ```
 
 **Search strategy:**
 - Use 2-3 different keyword variations per sub-question
-- Mix general and news-focused queries
+- Route general/news queries to Tavily, technical/entity queries to Exa
 - Aim for 15-30 unique sources total
 - Prioritize: academic, official, reputable news > blogs > forums
 
@@ -74,19 +96,34 @@ web_search_advanced_exa(query: "<keywords>", numResults: 5, startPublishedDate: 
 
 For the most promising URLs, fetch full content:
 
-**With firecrawl:**
+**Deep page extraction / scrape / crawl a specific source → `busdriver:firecrawl` (CLI):**
 ```
-firecrawl_scrape(url: "<url>")
+firecrawl scrape "<url>"
+firecrawl crawl "<url>" --limit 10        # to pull a section of a site
 ```
 
-**With exa:**
+**Read a known Exa-surfaced URL → Exa MCP:**
 ```
-crawling_exa(url: "<url>", tokensNum: 5000)
+mcp__claude_ai_Exa__web_fetch_exa(urls: ["<url>"], maxCharacters: 5000)
 ```
 
 Read 3-5 key sources in full for depth. Do not rely only on search snippets.
+Use the Firecrawl CLI when a source is JS-rendered, paginated, or you need a
+whole site section; use Exa's fetch for clean reads of neural search hits.
 
-### Step 5: Synthesize and Write Report
+### Step 5: Adversarially Verify Claims
+
+Before writing, stress-test the findings — do not just collect agreeing sources:
+- For each load-bearing claim, **actively search for the counter-position** (route
+  contrarian/technical counter-searches to Exa, general/news counter-searches to
+  Tavily).
+- If only ONE source supports a claim, mark it **unverified** and try to
+  corroborate or refute it with a second independent source.
+- Watch for circular sourcing (multiple outlets republishing one origin) — trace
+  back to the primary source with the Firecrawl CLI when it matters.
+- Separate fact from inference; flag estimates, projections, and opinions.
+
+### Step 6: Synthesize and Write Report
 
 Structure the report:
 
@@ -118,11 +155,12 @@ Structure the report:
 2. ...
 
 ## Methodology
-Searched [N] queries across web and news. Analyzed [M] sources.
-Sub-questions investigated: [list]
+Searched [N] queries across Tavily (general/news), Exa (neural/technical), and
+deep-read [M] sources via the Firecrawl CLI. Sub-questions investigated: [list].
+Claims cross-checked: [note any flagged as unverified].
 ```
 
-### Step 6: Deliver
+### Step 7: Deliver
 
 - **Short topics**: Post the full report in chat
 - **Long reports**: Post the executive summary + key takeaways, save full report to a file
@@ -138,16 +176,19 @@ Launch 3 research agents in parallel:
 3. Agent 3: Research sub-question 5 + cross-cutting themes
 ```
 
-Each agent searches, reads sources, and returns findings. The main session synthesizes into the final report.
+Each agent searches (Tavily for general, Exa for neural), reads sources (Firecrawl
+CLI / Exa fetch), and returns findings. The main session adversarially verifies
+and synthesizes into the final report.
 
 ## Quality Rules
 
 1. **Every claim needs a source.** No unsourced assertions.
-2. **Cross-reference.** If only one source says it, flag it as unverified.
-3. **Recency matters.** Prefer sources from the last 12 months.
-4. **Acknowledge gaps.** If you couldn't find good info on a sub-question, say so.
-5. **No hallucination.** If you don't know, say "insufficient data found."
-6. **Separate fact from inference.** Label estimates, projections, and opinions clearly.
+2. **Cross-reference.** If only one source says it, flag it as unverified and seek a second.
+3. **Verify adversarially.** Search for the counter-position, not just confirmation.
+4. **Recency matters.** Prefer sources from the last 12 months.
+5. **Acknowledge gaps.** If you couldn't find good info on a sub-question, say so.
+6. **No hallucination.** If you don't know, say "insufficient data found."
+7. **Separate fact from inference.** Label estimates, projections, and opinions clearly.
 
 ## Examples
 

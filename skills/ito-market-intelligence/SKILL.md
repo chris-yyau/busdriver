@@ -39,7 +39,7 @@ Itô-backed data call requires explicit API access through `ITO_API_KEY`.
 
 ## Useful Skill Chains
 
-- Use `deep-research` or `exa-search` for source discovery.
+- Use `deep-research` or the Exa MCP (`mcp__claude_ai_Exa__web_search_exa`) for source discovery.
 - Use `x-api` for public social signal discovery when X access is configured.
 - Use `market-research` for market sizing, competitors, or business use cases.
 - Use `prediction-market-risk-review` before any workflow touches user capital,

@@ -12,7 +12,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 |------|-----------------|----------|
 | **Refactoring** | cleanup, dead code | `refactor-cleaner` agent |
 | **Authentication** | login, signup, OAuth | `security-review` |
-| **UI/UX Design** | design, UI review, make it look better, styling | Dual-engine: `design-taste-frontend` (if installed — explore landing/marketing/portfolio/showcase) → `impeccable:impeccable` (harden; owns dashboards/app UI solo; leads end-to-end when taste-skill absent). Supplements (gap-fill only, do NOT lead): `ui-ux-pro-max`, `busdriver:design-system`, `document-skills:frontend-design`. Load `.impeccable.md` if present |
+| **UI/UX Design** | design, UI review, make it look better, styling | Dual-engine: `busdriver:design-taste-frontend` (explore landing/marketing/portfolio/showcase) → `impeccable:impeccable` (harden; owns dashboards/app UI solo). Supplements (gap-fill only, do NOT lead): `ui-ux-pro-max`, `busdriver:design-system`, `document-skills:frontend-design`. Load `.impeccable.md` if present |
 | **Design Setup** | impeccable, design context, brand setup | `impeccable:shape` (one-time → `.impeccable.md`) |
 | **Design Refinement** | polish, critique, audit UI, animate, make bolder/quieter | Impeccable commands: `/polish`, `/critique`, `/audit`, `/normalize`, `/harden`, `/distill`, `/clarify`, `/colorize`, `/bolder`, `/quieter`, `/delight`, `/animate`, `/overdrive`, `/arrange`, `/extract`, `/typeset`, `/layout`, `/adapt`, `/optimize`, `/onboard` |
 | **Skill Creation** | create/edit skill | `busdriver:writing-skills` |
@@ -21,9 +21,12 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Verification** | verify, build+lint+test | `/verify` command |
 | **Repo pipeline setup** | test setup, scaffold tests, CI pipeline, Codecov, pinact, generate/refresh CLAUDE.md, code intelligence, codegraph, code graph, structural search | `helmet` (personal skill — Phase A tests / B CI / C CLAUDE.md / D CodeGraph) |
 | **Research** | search for libraries | `busdriver:search-first` |
-| **Deep Research** | research X thoroughly, cited reports | `busdriver:deep-research` (Tavily + Exa primary; Firecrawl reserved as paid fallback) |
-| **Web Search (general)** | news, current events, broad lookups, page extract, site crawl | `busdriver:tavily-search` (free tier ~1k/mo) |
-| **Neural Search** | code/papers, company intel, people lookup, technical content | `busdriver:exa-search` (free tier ~1k/mo) |
+| **Deep Research** | research X thoroughly, cited reports | `busdriver:deep-research` (multi-source synthesis: Tavily CLI for general/news, Exa MCP for neural/technical, Firecrawl CLI for deep page extraction) |
+| **Web Search (general)** | news, current events, broad lookups | `busdriver:tavily-search` (fast LLM-optimized search) or `busdriver:tavily-cli` (search/extract/crawl/map/research suite — vendored Tavily CLI, free tier ~1k/mo) |
+| **Web Extract / Crawl / Map** | page extract, site crawl, list site URLs, discover pages | `busdriver:tavily-cli` (or focused variants: `busdriver:tavily-extract`, `busdriver:tavily-crawl`, `busdriver:tavily-map`, `busdriver:tavily-research`, `busdriver:tavily-dynamic-search`) |
+| **Scrape / Crawl / Monitor a site** | scrape page, crawl docs, download site, watch for changes, JS-rendered/interactive pages | `busdriver:firecrawl` (or focused variants: `busdriver:firecrawl-scrape`, `busdriver:firecrawl-crawl`, `busdriver:firecrawl-map`, `busdriver:firecrawl-download`, `busdriver:firecrawl-interact`, `busdriver:firecrawl-monitor`, `busdriver:firecrawl-search`, `busdriver:firecrawl-agent`, `busdriver:firecrawl-parse`) |
+| **Library / API Docs** | up-to-date library docs, framework API reference, package usage | `busdriver:context7-cli` (ctx7 CLI — fetch current docs for any library) |
+| **Neural Search** | code/papers, company intel, people lookup, technical content | Exa MCP (`mcp__claude_ai_Exa__web_search_exa`, `mcp__claude_ai_Exa__web_fetch_exa`) |
 | **Rules Distillation** | distill rules from skills | `/rules-distill` command |
 | **UI State Debugging** | buttons cancel each other, UI state bugs | `busdriver:click-path-audit` |
 | **Skill Auditing** | audit skills, check quality | `skill-stocktake` (quality) or `skill-comply` (compliance) |
@@ -45,10 +48,12 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Recurring Tasks** | run every N minutes | `/loop-start`, `loop-operator` agent |
 | **Notes** | check notes health, refine | `/refine-notes` |
 | **Prompt Engineering** | optimize prompt, improve prompt | `prompt-optimizer` skill or `/prompt-optimize` (advisory) |
-| **Content** | articles, newsletters, blogs | `article-writing` / `content-engine` / `crosspost` / `x-api`. If the personal `humanizer` skill is installed (`~/.claude/skills/humanizer/`), run it as a final pass before publishing to strip AI tone |
+| **Content** | articles, newsletters, blogs | `article-writing` / `content-engine` / `crosspost` / `x-api`. Run `busdriver:humanizer` as a final pass before publishing to strip AI tone |
+| **Humanize Writing** | remove AI tone, sounds AI-written, de-slop text, make it sound human | `busdriver:humanizer` (detect+fix AI-writing tells: em-dash overuse, rule of three, inflated symbolism, vague attributions, filler) |
 | **Data Pipelines** | data collector, scheduled scraping | `data-scraper-agent` |
 | **Fundraising** | pitch deck, investor materials | `investor-materials` / `investor-outreach` / `market-research` |
 | **Media Generation** | generate image/video/audio | `fal-ai-media` |
+| **AI App Launcher** | run AI app/model, inference.sh, infsh, run flux/veo/grok/claude via CLI, serverless AI, OpenRouter, Twitter automation | `busdriver:agent-tools` (inference.sh CLI — 150+ AI apps: image/video/LLM/search/3D/Twitter. Broader than `busdriver:fal-ai-media`, which is media-gen only) |
 | **Video Production** | edit video, analyze, transcribe | `videodb` / `video-editing` / `fal-ai-media` |
 | **Presentations** | create slides, convert PPT | `frontend-slides` |
 | **Agent Architecture** | agent loops, multi-agent DAGs | `autonomous-loops` / `continuous-agent-loop` / `enterprise-agent-ops` / `agent-harness-construction` / `agentic-engineering` / `santa-method` / `autonomous-agent-harness`. Agents: `harness-optimizer`, `loop-operator` |
@@ -74,6 +79,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Code Architecture Improvement** | deepen design, find architectural opportunities | `improve-codebase-architecture` |
 | **Docs Setup** | set up docs, audit docs, standardize docs | `busdriver:docs-setup` |
 | **SEO** | SEO audit, schema markup, search visibility | `seo` / `seo-audit` / `schema-markup` / `ai-seo`. Agent: `seo-specialist` |
+| **Site Audit** | audit website, site health, broken links, technical/perf/security site scan | `busdriver:audit-website` (squirrelscan CLI — 230+ rules across SEO/perf/security/content; health scores + broken-link + meta analysis. Complements `busdriver:seo` for whole-site crawl-based audits) |
 | **Jira** | Jira tickets, issue tracking | `/jira` + `jira-integration` |
 | **GitHub Ops** | GitHub issues, PRs, releases, CI status | `github-ops` |
 | **Email Ops** | email triage, drafting, send verification | `email-ops` |
@@ -146,6 +152,10 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Cost Tracking** | local usage/cost tracking, spend log | `cost-tracking` + `/cost-report` |
 | **Marketing Campaign** | plan/run marketing campaign | `marketing-campaign` + `/marketing-campaign`. Agent: `marketing-agent` |
 | **Frontend A11y / Design Direction** | frontend a11y patterns, design direction, make UI feel better | `frontend-a11y` / `frontend-design-direction` / `make-interfaces-feel-better` |
+| **React/Next Performance** | React/Next perf, re-render, bundle size, waterfalls, memoization, Core Web Vitals | `busdriver:vercel-react-best-practices` (Vercel-authored, 57 rules + per-rule files) — pair with `busdriver:react-patterns` for idiomatic component/state/hooks patterns |
+| **React Composition** | compound components, boolean-prop proliferation, render props vs children, reusable component APIs, React 19 composition | `busdriver:vercel-composition-patterns` (Vercel-authored) — complements `busdriver:react-patterns` |
+| **Next.js Conventions** | Next.js file conventions, RSC boundaries, async APIs, metadata, route handlers, image/font, bundling, self-hosting | `busdriver:next-best-practices` (Vercel-authored) — pair with `busdriver:nextjs-turbopack` for Turbopack/`proxy.ts`-specific dev config |
+| **Web Interface Guidelines Review** | review my UI, audit design, check against best practices, web-interface-guidelines | `busdriver:web-design-guidelines` (Vercel-authored, fetches latest guidelines at review time) — complements `busdriver:accessibility` (WCAG 2.2 standards) and `busdriver:frontend-a11y` (React a11y implementation) |
 | **iOS Icon Generation** | generate iOS app icons | `ios-icon-gen` |
 | **Windows Desktop E2E** | E2E test Windows desktop apps | `windows-desktop-e2e` |
 | **tinystruct** | tinystruct Java framework patterns | `tinystruct-patterns` |
@@ -162,10 +172,10 @@ Available in any pipeline phase:
 | Category | Route(s) |
 |----------|----------|
 | **Context/Session** | `/save-session`, `/resume-session`, `/aside`, `/sessions`, `strategic-compact`, `context-budget` |
-| **Web Research** | `tavily-search` (general/news, free), `exa-search` (neural for code/papers/entities, free), `deep-research` (multi-source synthesis orchestrating Tavily + Exa; Firecrawl reserved as paid fallback) |
-| **Browser Automation** | `agent-browser` CLI, Playwright MCP, Chrome DevTools MCP |
+| **Web Research** | `busdriver:tavily-search` / `busdriver:tavily-cli` (general/news + extract/crawl/map/research, free), Exa MCP (`mcp__claude_ai_Exa__web_search_exa` — neural for code/papers/entities), `deep-research` (multi-source synthesis orchestrating Tavily CLI + Exa MCP; Firecrawl CLI for deep page extraction) |
+| **Browser Automation** | `busdriver:agent-browser` CLI, Playwright MCP, Chrome DevTools MCP |
 | **Project Setup** | `/setup-pm`, `configure-ecc`, `codebase-onboarding` |
-| **Docs Lookup** | `docs-lookup` agent or `/docs` (Context7 MCP) |
+| **Docs Lookup** | `busdriver:context7-cli` (ctx7 CLI) or `/docs` (legacy shim) |
 | **Eval/Benchmark** | `eval-harness` |
 | **Performance** | `content-hash-cache-pattern` |
 

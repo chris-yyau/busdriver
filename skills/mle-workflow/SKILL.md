@@ -59,7 +59,7 @@ The recommended `minimal --with capability:machine-learning` install keeps the c
 | `e2e-testing` / `browser-qa` / `accessibility` | Test critical product flows that consume predictions, including explainability and fallback UI states |
 | `benchmark` / `performance-optimizer` | Measure throughput, p95 latency, memory, GPU utilization, and cost per prediction or retrain |
 | `cost-aware-llm-pipeline` / `token-budget-advisor` | Route LLM/embedding workloads by quality, latency, and budget instead of defaulting to the largest model |
-| `documentation-lookup` / `search-first` | Verify current library behavior for model serving, feature stores, vector DBs, and eval tooling before coding |
+| `busdriver:context7-cli` / `search-first` | Verify current library behavior for model serving, feature stores, vector DBs, and eval tooling before coding |
 | `git-workflow` / `github-ops` / `opensource-pipeline` | Package MLE changes for review with crisp scope, generated artifacts excluded, and reproducible test evidence |
 | `strategic-compact` / `dmux-workflows` | Split long ML work into parallel tracks: data contract, eval harness, serving path, monitoring, and docs |
 

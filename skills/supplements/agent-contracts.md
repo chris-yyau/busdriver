@@ -45,7 +45,7 @@ Agents should end their output with one of these H2 markers so the orchestrator 
 
 1. Markers are **H2 headings** (`## `) at the start of a line in the agent's final output
 2. Use **ALL-CAPS** for standard markers
-3. Agents without explicit markers (e.g., code-reviewer, docs-lookup) write artifacts directly — the orchestrator checks artifact existence instead
+3. Agents without explicit markers (e.g., code-reviewer) write artifacts directly — the orchestrator checks artifact existence instead
 4. When an agent produces partial results, the `## PARTIAL RESULTS` marker should be followed by a summary of what was completed and what remains
 
 ---

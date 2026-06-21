@@ -57,10 +57,11 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Rules: `rules/typescript/` (coding-style, patterns, security, testing, hooks)
 - Patterns: `busdriver:frontend-patterns`
 - Standards: `busdriver:coding-standards`
+- **Auth** (detect: `better-auth` imports, `auth.ts`/`auth-client.ts`, sign-in/session/OAuth work): `busdriver:better-auth-best-practices` (Better Auth — TypeScript auth framework: sessions, providers, plugins, integration)
 - Review: `typescript-reviewer` agent (type safety, async correctness, Node/web security, idiomatic patterns)
 - **React-specific** (detect: `react` imports, hooks, components):
   - Patterns: `busdriver:react-patterns` (composition, hooks, state, effects)
-  - Performance: `busdriver:react-performance` (memoization, re-render reduction, bundle)
+  - Performance: `busdriver:vercel-react-best-practices` (Vercel-authored: 57 rules across waterfalls, bundle, server-side, re-render, rendering, JS micro-perf)
   - Testing: `busdriver:react-testing` (React Testing Library, hooks, async)
   - Animation: `busdriver:motion-foundations`, `busdriver:motion-patterns`, `busdriver:motion-ui`, `busdriver:motion-advanced`
   - Review: `react-reviewer` agent (see Phase 4 DISPATCH rules)
@@ -71,10 +72,10 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Design: `busdriver:design-system` (generate/audit design tokens)
 - **UI/UX Design** (load when design/styling work detected):
   - **Dual-engine workflow — diverge, then converge:**
-    - **Marketing / landing / portfolio / showcase** → *explore* with `design-taste-frontend` (if installed) first (lead): bold asymmetric layout, dark palettes, GSAP motion — push `DESIGN_VARIANCE` / `MOTION_INTENSITY` high. Then *harden* with `impeccable:impeccable` (`/typeset` → `/layout` → `/audit`) to converge on a11y, spacing, responsive. Variants (if installed): `gpt-taste` (GPT/Codex), `stitch-design-taste` (Google Stitch); reference image → code: `image-to-code`. When `design-taste-frontend` is absent, `impeccable:impeccable` leads end-to-end. (`design-taste-frontend` is a global `npx skills` install — invoke by bare name; absent on machines without it.)
-    - **Dashboard / app UI / forms / settings / data tables** → `impeccable:impeccable` owns it end-to-end; `design-taste-frontend` explicitly excludes these, so there is no explore phase.
+    - **Marketing / landing / portfolio / showcase** → *explore* with `busdriver:design-taste-frontend` first (lead): bold asymmetric layout, dark palettes, GSAP motion — push `DESIGN_VARIANCE` / `MOTION_INTENSITY` high. Then *harden* with `impeccable:impeccable` (`/typeset` → `/layout` → `/audit`) to converge on a11y, spacing, responsive. Variants: `busdriver:gpt-taste` (GPT/Codex), `busdriver:stitch-design-taste` (Google Stitch); reference image → code: `busdriver:image-to-code`.
+    - **Dashboard / app UI / forms / settings / data tables** → `impeccable:impeccable` owns it end-to-end; `busdriver:design-taste-frontend` explicitly excludes these, so there is no explore phase.
     - **Why this order:** taste-skill maximizes visual entropy (divergence); impeccable minimizes error rate (convergence). Taste drives early; impeccable has final say on hardening.
-    - **Presets & Phase 0 — manual, invoke by name on request (NOT auto-routed):** specific aesthetics → `minimalist-ui`, `industrial-brutalist-ui`, `high-end-visual-design`. Optional pre-explore reference boards → `imagegen-frontend-web`, `imagegen-frontend-mobile`, `brandkit`. (`redesign-existing-projects` and `full-output-enforcement` deliberately omitted — redundant with `design-taste-frontend`'s redesign protocol and the litmus/verification gates respectively.)
+    - **Presets & Phase 0 — manual, invoke by name on request (NOT auto-routed):** specific aesthetics → `busdriver:minimalist-ui`, `busdriver:industrial-brutalist-ui`, `busdriver:high-end-visual-design`. Optional pre-explore reference boards → `busdriver:imagegen-frontend-web`, `busdriver:imagegen-frontend-mobile`, `busdriver:brandkit`. (`redesign-existing-projects` and `full-output-enforcement` deliberately omitted — redundant with `busdriver:design-taste-frontend`'s redesign protocol and the litmus/verification gates respectively.)
   - **Supplements — fill gaps only, do NOT lead:**
     - `ui-ux-pro-max` — breadth catalog (50 styles, 21 palettes, 50 font pairings, 20 charts, shadcn MCP). Option lookup when an engine needs a named style / palette / font / chart, or shadcn component search on dashboards.
     - `document-skills:frontend-design` — generic fallback; only for gaps the engines don't cover.
@@ -97,6 +98,13 @@ Domain skills are loaded as context during execution. They are **additive** — 
 **Detection:** `nuxt.config.*`, `.nuxt/` directory, `useFetch`, `useAsyncData`, Nuxt imports
 - Patterns: `busdriver:nuxt4-patterns` (hydration safety, SSR, route rules, lazy loading, data fetching)
 - Review: `code-reviewer` agent (no Nuxt-specific reviewer yet)
+
+### React Native / Expo
+**Detection:** `react-native` / `expo` imports, `app.json`/`app.config.*`, `expo-router`, `metro.config.*`, `*.tsx` with native components
+- Performance & patterns: `busdriver:vercel-react-native-skills` (list virtualization, Reanimated GPU props, fonts config plugin, monorepo dep hygiene, design-system composition — Vercel rule pack)
+- Expo Router UI: `busdriver:building-native-ui` (Expo Router fundamentals, styling, components, navigation, animations, native tabs)
+- Review: `typescript-reviewer` agent (React Native is TypeScript-based)
+- Rules: `rules/typescript/`
 
 ### Backend (Node.js / Express / Next.js API)
 **Detection:** `*.js`, `*.ts` in API routes, Express/Node.js context
@@ -217,7 +225,7 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - RAG/retrieval: `busdriver:iterative-retrieval`
 - Text extraction: `busdriver:regex-vs-llm-structured-text`
 - Document processing: `busdriver:nutrient-document-processing`
-- Documentation: `busdriver:documentation-lookup` (up-to-date library/framework docs via Context7 MCP — use instead of training data for API references, setup guides, code examples)
+- Documentation: `busdriver:context7-cli` (up-to-date library/framework docs via the ctx7 CLI — use instead of training data for API references, setup guides, code examples)
 - **PyTorch** (detect: `torch` imports, training loops, CUDA usage):
   - Patterns: `busdriver:pytorch-patterns` (training pipelines, model architectures, data loading)
   - Build issues: `pytorch-build-resolver` agent (tensor shape, CUDA, gradient, DataLoader, mixed precision errors)

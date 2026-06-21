@@ -193,14 +193,20 @@ and **fails closed** on any malformed or out-of-enum field.
 # Build the JSON with a real encoder, not string interpolation: a quote,
 # backslash, or newline in the model value would otherwise produce invalid JSON
 # and the strict writer would reject the artifact (blocking the PR path).
-# NOTE: This example shows the clean-PASS invocation (no findings). If the
-# backstop agent reports findings, include them in the issues array:
-#   issues=[{"file":"…","line":N,"severity":"high","confidence":90,
-#            "category":"security","description":"…"}]
-# The writer recomputes status from issues (any high ⇒ FAIL); the supplied
-# status field is advisory only and an explicit FAIL is never overridden.
+
+# Case A — no findings (agent returned {"status":"PASS","issues":[]}):
 python3 -c 'import json,sys; print(json.dumps({"status":"PASS","model":sys.argv[1],"reviewed_diff_hash":sys.argv[2],"issues":[]}))' \
   "${BACKSTOP_MODEL}" "${REVIEWED_DIFF_HASH}" \
+  | bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write-backstop-verdict
+
+# Case B — agent found issues (AGENT_OUTPUT is the agent's verbatim final message
+# per "After the agent returns" above — a single JSON object {status, issues[]}).
+# DO NOT manually reconstruct issues[] from prose; take the agent output as-is
+# and let the writer recompute status from it (any high ⇒ FAIL regardless of
+# the supplied status field, which is advisory only and never overrides FAIL).
+printf '%s' "${AGENT_OUTPUT}" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); d.update({"model":sys.argv[1],"reviewed_diff_hash":sys.argv[2]}); print(json.dumps(d))' \
+    "${BACKSTOP_MODEL}" "${REVIEWED_DIFF_HASH}" \
   | bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write-backstop-verdict
 ```
 You supply only `{status, model, issues[]}` (plus `reviewed_diff_hash` for the TOCTOU bind) on stdin. The writer re-derives `diff_hash` and `ts`, **recomputes `status` from the issues** (any `high` ⇒ FAIL — the supplied `status` is advisory and an explicit FAIL is never overridden to PASS), validates strictly (every issue needs `{file,line,severity,confidence,category,description}`; `confidence` 0–100; `severity` in the `high|medium|low` enum; a hallucinated/missing severity ⇒ reject), and **exits nonzero without writing** on any violation. It writes atomically to `${BUSDRIVER_STATE_DIR:-.claude}/pr-backstop-verdict.local.json`.

@@ -32,7 +32,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Skill Auditing** | audit skills, check quality | `skill-stocktake` (quality) or `skill-comply` (compliance) |
 | **Multi-Service** | monorepo, microservices | `busdriver:dispatching-parallel-agents` + `/pm2` |
 | **Multi-Session Planning** | plan big project | `busdriver:blueprint` |
-| **Multi-Agent** | agent pipeline, parallel teams | `/orchestrate` / `/devfleet` / `claude-devfleet` / `dmux-workflows` / `team-builder` |
+| **Multi-Agent** | agent pipeline, parallel teams | `/orchestrate` / `claude-devfleet` / `dmux-workflows` / `team-builder` |
 | **Codex Adversarial** | adversarial review, challenge design | `/codex:adversarial-review` (official plugin) |
 | **Codex Rescue** | delegate task to Codex | `/codex:rescue` (official plugin) |
 | **Codex Goal Loop** | iterative Codex handover with declarative pass/fail verifiers (tests/lint/typecheck), result returns to CC. Foreground only — for fire-and-forget use TUI `codex` + `/goal` | `/busdriver:codex-goal` (verifier-led; skill `codex-goal-handover`) |
@@ -97,7 +97,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **AI-First Engineering** | AI agents generating code, eval-first | `ai-first-engineering` |
 | **Git Workflow** | branching, commit conventions, PR process | `git-workflow` |
 | **Hookify Rules** | create hookify rule, prevent behavior | `hookify-rules` |
-| **Agent Sorting** | trim ECC install to what project needs | `/agent-sort` + `agent-sort` |
+| **Agent Sorting** | trim ECC install to what project needs | `agent-sort` skill |
 | **Product Capability** | PRD-to-SRS, capability plan from spec | `product-capability` |
 | **Brand Voice** | writing style profile from real posts | `brand-voice` |
 | **Manim Video** | animated explainers via Manim | `manim-video` |
@@ -175,7 +175,7 @@ Available in any pipeline phase:
 | **Web Research** | `busdriver:tavily-search` / `busdriver:tavily-cli` (general/news + extract/crawl/map/research, free), Exa MCP (`mcp__claude_ai_Exa__web_search_exa` — neural for code/papers/entities), `deep-research` (multi-source synthesis orchestrating Tavily CLI + Exa MCP; Firecrawl CLI for deep page extraction) |
 | **Browser Automation** | `busdriver:agent-browser` CLI, Playwright MCP, Chrome DevTools MCP |
 | **Project Setup** | `/setup-pm`, `configure-ecc`, `codebase-onboarding` |
-| **Docs Lookup** | `busdriver:context7-cli` (ctx7 CLI) or `/docs` (legacy shim) |
+| **Docs Lookup** | `busdriver:context7-cli` (ctx7 CLI) |
 | **Eval/Benchmark** | `eval-harness` |
 | **Performance** | `content-hash-cache-pattern` |
 

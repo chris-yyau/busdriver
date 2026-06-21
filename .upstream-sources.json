@@ -293,22 +293,10 @@
       "upstream_path": "commands/checkpoint.md"
     },
     {
-      "path": "commands/claw.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/claw.md"
-    },
-    {
       "path": "commands/code-review.md",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "commands/code-review.md"
-    },
-    {
-      "path": "commands/context-budget.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/context-budget.md"
     },
     {
       "path": "commands/cpp-build.md",
@@ -327,18 +315,6 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "commands/cpp-test.md"
-    },
-    {
-      "path": "commands/devfleet.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/devfleet.md"
-    },
-    {
-      "path": "commands/docs.md",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "commands/docs.md"
     },
     {
       "path": "commands/e2e.md",
@@ -3922,12 +3898,6 @@
       "path": "commands/flutter-test.md",
       "status": "sync",
       "upstream_path": "commands/flutter-test.md",
-      "source": "ecc"
-    },
-    {
-      "path": "commands/agent-sort.md",
-      "status": "sync",
-      "upstream_path": "commands/agent-sort.md",
       "source": "ecc"
     },
     {

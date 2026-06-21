@@ -1,3 +1,10 @@
+# [1.67.0](https://github.com/chris-yyau/busdriver/compare/v1.66.1...v1.67.0) (2026-06-21)
+
+
+### Features
+
+* **skills:** vendor ui-ux-pro-max + supabase-postgres-best-practices into busdriver ([#233](https://github.com/chris-yyau/busdriver/issues/233)) ([349e9c0](https://github.com/chris-yyau/busdriver/commit/349e9c0ebc2dec3218cbd1e6186d97f5c00cdeae))
+
 ## [1.66.1](https://github.com/chris-yyau/busdriver/compare/v1.66.0...v1.66.1) (2026-06-21)
 
 

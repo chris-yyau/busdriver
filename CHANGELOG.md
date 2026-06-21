@@ -1,3 +1,10 @@
+## [1.66.1](https://github.com/chris-yyau/busdriver/compare/v1.66.0...v1.66.1) (2026-06-21)
+
+
+### Bug Fixes
+
+* state-dir-aware absolute skip-file paths + firecrawl allow-list helpers ([#232](https://github.com/chris-yyau/busdriver/issues/232)) ([9331840](https://github.com/chris-yyau/busdriver/commit/9331840eacc97fc0f34ad50bb0da02d331af17df)), closes [#228](https://github.com/chris-yyau/busdriver/issues/228)
+
 # [1.66.0](https://github.com/chris-yyau/busdriver/compare/v1.65.0...v1.66.0) (2026-06-21)
 
 

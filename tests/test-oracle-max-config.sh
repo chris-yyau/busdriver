@@ -7,47 +7,51 @@ tmp="$(mktemp -d)"; export HOME="$tmp"; mkdir -p "$tmp/.claude"; cd "$tmp" || ex
 git init -q .
 mkdir -p "$tmp/proj/.claude"; cd "$tmp/proj" || exit 1; git init -q .
 
-# USER config: security-sensitive enablement + a model (to test non-sensitive precedence).
+# USER config: the ONLY source oracle-max reads.
 cat > "$tmp/.claude/busdriver.json" <<'JSON'
-{ "oracleMax": { "model": "user-model",
+{ "oracleMax": { "model": "user-model", "timeoutCapSeconds": 1234,
   "brainstorming": { "enabled": true }, "council": { "enabled": false } } }
 JSON
-# PROJECT config: non-sensitive overrides + a sensitive enable that MUST be ignored.
+# PROJECT config (repo-controlled): everything here MUST be ignored.
 cat > "$tmp/proj/.claude/busdriver.json" <<'JSON'
-{ "oracleMax": { "model": "gpt-5.5-pro", "timeoutCapSeconds": 1234,
+{ "oracleMax": { "model": "evil-model", "timeoutCapSeconds": 99999,
   "blueprintReview": { "enabled": true } } }
 JSON
 # shellcheck source=/dev/null
 source "$DIR/scripts/lib/oracle-max-config.sh"
 
-# Non-sensitive fields: project overrides user.
-[ "$(oracle_max_model)" = "gpt-5.5-pro" ] || { echo "FAIL project>user model"; FAIL=1; }
-[ "$(oracle_max_timeout_cap)" = "1234" ] || { echo "FAIL cap"; FAIL=1; }
-# Sensitive enablement: USER config only.
+# User values win; project config is fully ignored.
+[ "$(oracle_max_model)" = "user-model" ] || { echo "FAIL model user-only"; FAIL=1; }
+[ "$(oracle_max_timeout_cap)" = "1234" ] || { echo "FAIL cap user-only"; FAIL=1; }
 oracle_max_surface_enabled brainstorming || { echo "FAIL user brainstorming enabled"; FAIL=1; }
 oracle_max_surface_enabled council && { echo "FAIL user council should be off"; FAIL=1; }
-# SECURITY: a repo-controlled PROJECT config must NOT be able to enable a surface.
-oracle_max_surface_enabled blueprintReview && { echo "FAIL project config must NOT enable surface"; FAIL=1; }
+# SECURITY: a repo-controlled PROJECT config must NOT enable a surface, change the
+# model, or change the timeout.
+oracle_max_surface_enabled blueprintReview && { echo "FAIL project must NOT enable surface"; FAIL=1; }
+[ "$(oracle_max_model)" != "evil-model" ] || { echo "FAIL project model leaked"; FAIL=1; }
+[ "$(oracle_max_timeout_cap)" != "99999" ] || { echo "FAIL project cap leaked"; FAIL=1; }
 
-# timeoutCapSeconds validation (project, non-sensitive): non-numeric -> 900 default.
-cat > "$tmp/proj/.claude/busdriver.json" <<'JSON'
+# timeoutCap validation (USER config): non-numeric -> 900; oversized -> clamp 3600.
+cat > "$tmp/.claude/busdriver.json" <<'JSON'
 { "oracleMax": { "timeoutCapSeconds": "15m" } }
 JSON
 [ "$(oracle_max_timeout_cap 2>/dev/null)" = "900" ] || { echo "FAIL non-numeric cap -> 900"; FAIL=1; }
+cat > "$tmp/.claude/busdriver.json" <<'JSON'
+{ "oracleMax": { "timeoutCapSeconds": 99999 } }
+JSON
+[ "$(oracle_max_timeout_cap 2>/dev/null)" = "3600" ] || { echo "FAIL oversized cap -> clamp 3600"; FAIL=1; }
 
-# malformed USER config -> sensitive surfaces OFF, model default (no crash).
-rm -f "$tmp/proj/.claude/busdriver.json"
+# malformed USER config -> defaults/off, no crash.
 printf '{ this is not json' > "$tmp/.claude/busdriver.json"
 [ "$(oracle_max_model 2>/dev/null)" = "gpt-5.5-pro" ] || { echo "FAIL malformed -> default model"; FAIL=1; }
-oracle_max_surface_enabled brainstorming && { echo "FAIL malformed user -> off"; FAIL=1; }
+oracle_max_surface_enabled brainstorming && { echo "FAIL malformed -> off"; FAIL=1; }
 
 # empty USER config -> defaults.
 echo '{}' > "$tmp/.claude/busdriver.json"
 [ "$(oracle_max_model)" = "gpt-5.5-pro" ] || { echo "FAIL default model"; FAIL=1; }
 oracle_max_surface_enabled blueprintReview && { echo "FAIL empty -> off"; FAIL=1; }
 
-# boolean normalization in USER config: true -> enabled; false -> disabled
-# (parser-agnostic: oracle_max_surface_enabled lowercases jq's `true` AND python3's `True`).
+# boolean normalization in USER config: true -> enabled; false -> disabled.
 cat > "$tmp/.claude/busdriver.json" <<'JSON'
 { "oracleMax": { "council": { "enabled": true } } }
 JSON

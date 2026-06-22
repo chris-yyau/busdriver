@@ -25,7 +25,7 @@ wait_rc() { local f="$1" n=0; while [ ! -f "$f.rc" ] && [ "$n" -lt 50 ]; do slee
 
 # (a) background dispatch -> 'dispatched', then .rc=0 and verdict written
 export ORACLE_MAX_MOCK_MODE=ok
-st="$(oracle_max_consult --mode background --slug "oracle max plan review" --out "$tmp/a.md")"
+st="$(oracle_max_consult --mode background --prompt "review the plan" --slug "oracle max plan review" --out "$tmp/a.md")"
 [ "$st" = "dispatched" ] || { echo "FAIL background status got '$st'"; FAIL=1; }
 wait_rc "$tmp/a.md"
 [ "$(cat "$tmp/a.md.rc" 2>/dev/null)" = "0" ] || { echo "FAIL .rc not 0"; FAIL=1; }
@@ -33,7 +33,7 @@ grep -q "ADVISORY:" "$tmp/a.md" || { echo "FAIL verdict not written"; FAIL=1; }
 
 # (b) background dispatch with failing oracle -> .rc non-zero (caller banners failure)
 export ORACLE_MAX_MOCK_MODE=fail
-st="$(oracle_max_consult --mode background --slug "oracle max plan review" --out "$tmp/b.md")"
+st="$(oracle_max_consult --mode background --prompt "review the plan" --slug "oracle max plan review" --out "$tmp/b.md")"
 [ "$st" = "dispatched" ] || { echo "FAIL background(fail) status got '$st'"; FAIL=1; }
 wait_rc "$tmp/b.md"
 [ "$(cat "$tmp/b.md.rc" 2>/dev/null)" = "0" ] && { echo "FAIL .rc should be non-zero on fail"; FAIL=1; }
@@ -41,14 +41,14 @@ wait_rc "$tmp/b.md"
 # (c) operator skip -> 'skipped:user', no dispatch, no .rc
 export ORACLE_MAX_MOCK_MODE=ok
 touch "$tmp/.claude/skip-oracle-max.local"
-st="$(oracle_max_consult --mode background --slug "oracle max plan review" --out "$tmp/c.md")"
+st="$(oracle_max_consult --mode background --prompt "review the plan" --slug "oracle max plan review" --out "$tmp/c.md")"
 [ "$st" = "skipped:user" ] || { echo "FAIL skip status got '$st'"; FAIL=1; }
 [ -f "$tmp/c.md.rc" ] && { echo "FAIL skip should not write .rc"; FAIL=1; }
 rm -f "$tmp/.claude/skip-oracle-max.local"
 
 # (d) unavailable -> 'skipped:unavailable' (caller banners; never spins on a missing .rc)
 OLDPATH="$PATH"; PATH="/usr/bin:/bin"
-st="$(oracle_max_consult --mode background --slug "oracle max plan review" --out "$tmp/d.md")"
+st="$(oracle_max_consult --mode background --prompt "review the plan" --slug "oracle max plan review" --out "$tmp/d.md")"
 [ "$st" = "skipped:unavailable" ] || { echo "FAIL unavail status got '$st'"; FAIL=1; }
 PATH="$OLDPATH"
 unset ORACLE_MAX_MOCK_MODE

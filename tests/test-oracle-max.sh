@@ -60,6 +60,9 @@ st="$(oracle_max_consult --prompt hi --out "$tmp/v4.md" --mode blocking)"
 export ORACLE_MAX_MOCK_MODE=ok
 st="$(oracle_max_consult --prompt hi --out)"
 [ "$st" = "error" ] || { echo "FAIL missing-value got '$st'"; FAIL=1; }
+# no prompt source (neither --prompt nor --prompt-file) -> typed 'error'
+st="$(oracle_max_consult --out "$tmp/np.md")"
+[ "$st" = "error" ] || { echo "FAIL missing-prompt got '$st'"; FAIL=1; }
 unset ORACLE_MAX_MOCK_MODE
 
 [ "$FAIL" = 0 ] && echo "PASS test-oracle-max" || exit 1

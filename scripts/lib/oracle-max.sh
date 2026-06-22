@@ -39,6 +39,9 @@ oracle_max_consult() {
     esac
   done
   [ -n "$out" ] || { printf 'error'; return 1; }
+  # Require a prompt source — otherwise oracle would be dispatched with an empty
+  # prompt and could return a meaningless advisory.
+  [ -n "$prompt" ] || [ -n "$prompt_file" ] || { printf 'error'; return 1; }
   [ -n "$cap" ] || cap="$(oracle_max_timeout_cap)"
   # Validate the cap regardless of source (explicit --timeout-cap-seconds bypasses
   # oracle_max_timeout_cap); a 0/non-numeric value would break the fail-closed timeout.
@@ -88,7 +91,8 @@ oracle_max_consult() {
     # RUN_ID-scoped output is the CALLER's responsibility (--out includes RUN_ID).
     # Emit an .rc marker on completion so the caller can bounded-wait + read status.
     # disown so an early parent exit cannot orphan/kill it before the .rc lands.
-    ( _portable_timeout "${cap}" oracle "$@" >/dev/null 2>&1; _omx_bg_rc=$?
+    ( set +e   # a caller's errexit must NOT abort the subshell before "$out.rc" is written
+      _portable_timeout "${cap}" oracle "$@" >/dev/null 2>&1; _omx_bg_rc=$?
       # Map exit-0-but-empty-verdict to failure so the .rc matches blocking mode's
       # fail-closed contract (timeout already surfaces as rc 124).
       [ "$_omx_bg_rc" = 0 ] && [ ! -s "$out" ] && _omx_bg_rc=1

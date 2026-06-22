@@ -40,9 +40,12 @@ if ! type _portable_timeout &>/dev/null; then
 fi
 # Fallback transient-error predicate (resolve-cli.sh owns the canonical one).
 # Reads candidate output from stdin; returns 0 if it looks transient.
+# 5xx is context-qualified (HTTP/status word or reason phrase) so incidental
+# 3-digit runs like "line 503"/"port 5000" aren't misread as transient. Keep
+# this regex identical to the canonical copy in scripts/lib/resolve-cli.sh.
 if ! type _is_transient_cli_error &>/dev/null; then
   _is_transient_cli_error() {
-    grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|5[0-9][0-9]|getaddrinfo'
+    grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|(http|status|code|response)[^0-9]{0,6}5[0-9][0-9]|internal server error|bad gateway|service unavailable|gateway time-?out|getaddrinfo'
   }
 fi
 

@@ -533,9 +533,13 @@ _resolve_codex_companion() {
 # the agy/grok retry wrapper below, and dispatch.sh's dispatch_one (council).
 # Match only the `EAGAIN` token (not the phrase "resource temporarily
 # unavailable") to avoid false-positives on fork/thread exhaustion that shares
-# the same strerror text.
+# the same strerror text. The 5xx match is context-qualified (an HTTP/status
+# word within a few non-digit chars, or a 5xx reason phrase) so incidental
+# 3-digit runs — "line 503", "port 5000", "1500 tokens" — are NOT misread as
+# transient server errors and needlessly retried + droid-escalated.
+# Keep this regex in sync with the fallback copy in dispatch.sh.
 _is_transient_cli_error() {
-  grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|5[0-9][0-9]|getaddrinfo'
+  grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|(http|status|code|response)[^0-9]{0,6}5[0-9][0-9]|internal server error|bad gateway|service unavailable|gateway time-?out|getaddrinfo'
 }
 
 # ── Retry wrapper for non-codex review CLIs (agy / grok) ────────

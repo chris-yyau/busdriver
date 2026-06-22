@@ -45,6 +45,14 @@ printf 'ECONNRESET socket hang up\n'             | _is_transient_cli_error && ok
 printf 'EAGAIN temporarily unavailable\n'        | _is_transient_cli_error && ok "EAGAIN → transient"         || bad "EAGAIN → transient"
 printf 'SyntaxError: unexpected token at line 4' | _is_transient_cli_error && bad "syntax error → NOT transient" || ok "syntax error → NOT transient"
 printf 'review complete: 0 issues'               | _is_transient_cli_error && bad "clean output → NOT transient" || ok "clean output → NOT transient"
+# 5xx must be context-qualified: a bare 3-digit run with no HTTP/status context
+# or reason phrase is NOT transient (guards "line 503"/"port 5000"/"1500 tokens"
+# from being needlessly retried + droid-escalated as fake server errors).
+printf '503 Service Unavailable\n'               | _is_transient_cli_error && ok "503 reason phrase → transient"     || bad "503 reason phrase → transient"
+printf 'Request failed with status code 502\n'   | _is_transient_cli_error && ok "status code 502 → transient"        || bad "status code 502 → transient"
+printf 'SyntaxError at line 503 of review.js\n'  | _is_transient_cli_error && bad "line 503 → NOT transient"          || ok "line 503 → NOT transient"
+printf 'unable to bind on port 5000, exiting\n'  | _is_transient_cli_error && bad "port 5000 → NOT transient"         || ok "port 5000 → NOT transient"
+printf 'prompt consumed 1500 tokens, aborting\n' | _is_transient_cli_error && bad "1500 tokens → NOT transient"       || ok "1500 tokens → NOT transient"
 
 # Helper: write a counter-based stub that fails $1 times (with message $2),
 # then succeeds printing "REVIEW_OK". Counter persists in $3.

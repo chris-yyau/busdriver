@@ -154,6 +154,34 @@ You are both a council member AND the synthesizer. This is a conflict of interes
 8. **Settling check (mandatory).** Every **hard** recommendation in the Verdict must name a settling check — the cheapest concrete local command / file / test / data whose result would confirm or refute it, plus the expected disconfirming outcome. If no cheap local check can be named, the item ships as **exploratory**, not a hard recommendation. Run the check in-turn when it is cheap and local; do NOT force a "command" onto questions that have none (strategy/naming/product) — for those, the honest settling check is the evidence or experiment that would decide, and absent that they stay exploratory.
 </CRITICAL>
 
+### Optional Oracle-Max Voice (opt-in, off by default)
+
+**Dispatch this inside the Step 4 PARALLEL block (NOT after synthesis); read its verdict during synthesis.** A 6th GPT-5.5 Pro "oracle-max" voice can be added ONLY when `oracleMax.council.enabled` is true in `${BUSDRIVER_STATE_DIR:-.opencode}/busdriver.json`, OR the user explicitly asks (export `ORACLE_MAX_COUNCIL_FORCE=1` for that run, as the snippet honors). Dispatched via the root-shared `oracle_max_consult` adapter (`${BUSDRIVER_PLUGIN_ROOT}/scripts/lib/oracle-max.sh`, the `oracle` CLI's ChatGPT Pro browser engine), backgrounded alongside the other voices.
+
+> **NOT the arbiter.** The `oracle-max` voice is unrelated to the `task(subagent_type="oracle")` arbiter used in blueprint-review — they merely share the substring "oracle".
+
+- **Trade-off (off by default):** one slow Pro voice dilutes council diversity (one vote) and adds minutes of latency; never in the default roster.
+- **Visible best-effort:** council is not a blocking gate. A successful launch returns `dispatched` (not `ok`); success is decided by the verdict file + `.rc`. Banner only when the voice was attempted but produced no verdict (status `skipped:*`/`error`, or rc≠0 / empty file): `⚠ ORACLE-MAX VOICE FAILED [<status>] — verdict NOT included`.
+- **Data boundary:** transmits the council question to ChatGPT Pro; if `oracleMax.chromeProfileDir` is set it clones that Chrome profile's session — use a dedicated ChatGPT-only profile. Do not enable where the question carries secrets.
+
+```bash
+ORACLE_MAX_OUT=""; ORACLE_MAX_STATUS=""
+# Enabled via config, OR forced for one run on explicit user request (ORACLE_MAX_COUNCIL_FORCE=1).
+if source "${BUSDRIVER_PLUGIN_ROOT}/scripts/lib/oracle-max.sh" 2>/dev/null \
+   && { oracle_max_surface_enabled council || [ "${ORACLE_MAX_COUNCIL_FORCE:-0}" = 1 ]; }; then
+  ORACLE_MAX_OUT="${BUSDRIVER_STATE_DIR:-.opencode}/oracle-max/council-$$.md"
+  mkdir -p "${BUSDRIVER_STATE_DIR:-.opencode}/oracle-max"
+  cat > "$ORACLE_MAX_OUT.prompt" <<'ORACLE_MAX_PROMPT'
+<the council question + context — same text sent to the other voices>
+ORACLE_MAX_PROMPT
+  ORACLE_MAX_STATUS="$(oracle_max_consult --mode background --slug "oracle max council voice" \
+    --out "$ORACLE_MAX_OUT" --prompt-file "$ORACLE_MAX_OUT.prompt" 2>/dev/null || true)"
+fi
+# synthesis: ONLY if [ -n "$ORACLE_MAX_OUT" ] (voice attempted; a disabled council
+#   leaves it empty → skip, no banner). If "$ORACLE_MAX_STATUS" = dispatched, bounded-wait
+#   on "$ORACLE_MAX_OUT.rc"; rc=0 + non-empty → include the voice; else render the failure banner.
+```
+
 ### Step 6: Present the Report
 
 **Compressed format (always use this):**

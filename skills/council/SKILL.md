@@ -128,6 +128,49 @@ This is a **single Bash call** with all three CLI dispatches as background proce
 
 **Missing CLI handling:** Each role's route array is walked left-to-right; the first available CLI wins. If every CLI in the chain resolves to `none`, `builtin`, `missing:<cli>`, or `unsupported:<cli>` (the last fires when a stale config references a removed backend like opencode/amp/claude/aider — migration warning goes to stderr), that voice is skipped and the report notes its absence as `(unavailable)`. The remaining voices still convene. If the Skeptic Agent call fails (rate limit, timeout), same rule applies. Typical minimum is 2 voices (Architect + Skeptic, 40% of full strength); absolute floor is 1 voice (Architect alone) if the Skeptic Agent call also fails. Always note the composition in the report — and when a fallback fires (e.g., Droid serving as Pragmatist because Agy was missing), note that explicitly so the report doesn't misattribute the lens.
 
+### Step 4.5: Optional Oracle-Max Voice (opt-in, off by default)
+
+A 6th GPT-5.5 Pro "oracle-max" voice can be added ONLY when `oracleMax.council.enabled` is true in `.claude/busdriver.json`, OR the user explicitly asks (in which case export `ORACLE_MAX_COUNCIL_FORCE=1` for that run, as the snippet below honors). It is dispatched via the shared `oracle_max_consult` adapter (the `oracle` CLI's ChatGPT Pro browser engine), inside the SAME single-Bash dispatch block as the other voices (separate Bash calls serialize/cancel — see Step 4).
+
+**Trade-off (why it's off by default):** a single slow Pro voice both dilutes council's diversity (one vote, outvoteable) and makes every council it joins run minutes instead of seconds. Never add it to the default roster.
+
+**Data boundary:** oracle-max transmits the council question to ChatGPT Pro via the oracle browser engine; if `oracleMax.chromeProfileDir` is set it clones that Chrome profile's session — use a dedicated ChatGPT-only profile. Do not enable where the question would carry secrets.
+
+Wiring (inside the Step 4 dispatch Bash block, when enabled):
+
+```bash
+ORACLE_MAX_OUT=""; ORACLE_MAX_STATUS=""
+# Enabled via config, OR forced for one run on explicit user request (ORACLE_MAX_COUNCIL_FORCE=1).
+if source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/oracle-max.sh" 2>/dev/null \
+   && { oracle_max_surface_enabled council || [ "${ORACLE_MAX_COUNCIL_FORCE:-0}" = 1 ]; }; then
+  ORACLE_MAX_OUT="${BUSDRIVER_STATE_DIR:-.claude}/oracle-max/council-$$.md"
+  mkdir -p "${BUSDRIVER_STATE_DIR:-.claude}/oracle-max"
+  cat > "$ORACLE_MAX_OUT.prompt" <<'ORACLE_MAX_PROMPT'
+<the council question + context — same text composed into the other voices' heredocs>
+ORACLE_MAX_PROMPT
+  ORACLE_MAX_STATUS="$(oracle_max_consult --mode background --slug "oracle max council voice" \
+    --out "$ORACLE_MAX_OUT" --prompt-file "$ORACLE_MAX_OUT.prompt" 2>/dev/null || true)"
+fi
+# ... existing PIDS dispatch + `wait "${PIDS[@]}"` ...
+```
+
+**Synthesis (Step 5):** ONLY when the voice was actually attempted (`$ORACLE_MAX_OUT` non-empty). A disabled council leaves it empty and skips this block entirely — no banner. Note `--mode background` returns `dispatched` on a *successful launch*; whether a verdict was produced is decided by the `.rc` + verdict file, NOT the status token:
+
+```bash
+if [ -n "$ORACLE_MAX_OUT" ]; then   # voice was attempted (enabled)
+  if [ "$ORACLE_MAX_STATUS" = dispatched ]; then
+    n=0; while [ ! -f "$ORACLE_MAX_OUT.rc" ] && [ "$n" -lt "$(oracle_max_timeout_cap)" ]; do sleep 2; n=$((n + 2)); done
+  fi
+  if [ -s "$ORACLE_MAX_OUT" ] && [ "$(cat "$ORACLE_MAX_OUT.rc" 2>/dev/null)" = 0 ]; then
+    : # include the verdict as the oracle-max voice in synthesis
+  else
+    : # render "⚠ ORACLE-MAX VOICE FAILED [$ORACLE_MAX_STATUS] — verdict NOT included" prominently
+  fi
+fi
+```
+
+Council is not a blocking gate, so the loud banner (only when the voice was attempted) is the strongest fail-closed behavior available.
+
 ### Step 5: Read Output and Synthesize
 
 Read the Fresh Claude output from the Agent tool result. Read the Agy/Codex/Grok output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`). When the resolver falls back to Droid in the Researcher slot (grok unavailable), the output filename is `dispatch-droid-*.txt` and the report should attribute "Droid (Researcher, fallback)" rather than "Grok (Researcher)".

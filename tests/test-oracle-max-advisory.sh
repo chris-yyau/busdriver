@@ -7,6 +7,7 @@ set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAIL=0
 tmp="$(mktemp -d)"; export HOME="$tmp"; mkdir -p "$tmp/.claude" "$tmp/bin"; cd "$tmp" || exit 1
+trap 'rm -rf "$tmp"' EXIT INT TERM   # clean up temp dir even if killed mid-run
 cat > "$tmp/bin/oracle" <<'EOF'
 #!/bin/bash
 out=""

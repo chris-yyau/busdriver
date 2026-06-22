@@ -4,6 +4,7 @@ set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAIL=0
 tmp="$(mktemp -d)"; export HOME="$tmp"; mkdir -p "$tmp/.claude"; cd "$tmp" || exit 1
+trap 'rm -rf "$tmp"' EXIT INT TERM   # clean up temp dir even if killed mid-run
 # Pin env so inherited values can't make the clamp/path assertions host-dependent:
 # a stray ORACLE_MAX_CAP_CEILING would change the oversized-cap -> 3600 expectation,
 # and a stray BUSDRIVER_STATE_DIR would point reads at the wrong config path.

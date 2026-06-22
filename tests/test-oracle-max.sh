@@ -55,6 +55,11 @@ st="$(oracle_max_consult --prompt hi --out "$tmp/v3.md" --mode blocking --timeou
 export ORACLE_MAX_MOCK_MODE=fail
 st="$(oracle_max_consult --prompt hi --out "$tmp/v4.md" --mode blocking)"
 [ "$st" = "error" ] || { echo "FAIL fail->error got '$st'"; FAIL=1; }
+
+# malformed call: a value-flag missing its argument -> typed 'error', not a set -u crash
+export ORACLE_MAX_MOCK_MODE=ok
+st="$(oracle_max_consult --prompt hi --out)"
+[ "$st" = "error" ] || { echo "FAIL missing-value got '$st'"; FAIL=1; }
 unset ORACLE_MAX_MOCK_MODE
 
 [ "$FAIL" = 0 ] && echo "PASS test-oracle-max" || exit 1

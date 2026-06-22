@@ -21,6 +21,12 @@ oracle_max_consult() {
   local prompt="" prompt_file="" mode="blocking" out="" slug="oracle max consult" cap=""
   local -a ctx_arr=()   # indexed array (bash-3.2 safe) — preserves paths with spaces
   while [ $# -gt 0 ]; do
+    # Value-flags require an argument; a missing value returns a typed 'error'
+    # rather than an unbound-variable crash under the caller's `set -u`.
+    case "$1" in
+      --prompt|--prompt-file|--context|--mode|--out|--slug|--timeout-cap-seconds)
+        [ $# -ge 2 ] || { printf 'error'; return 1; } ;;
+    esac
     case "$1" in
       --prompt) prompt="$2"; shift 2;;
       --prompt-file) prompt_file="$2"; shift 2;;
@@ -82,7 +88,11 @@ oracle_max_consult() {
     # RUN_ID-scoped output is the CALLER's responsibility (--out includes RUN_ID).
     # Emit an .rc marker on completion so the caller can bounded-wait + read status.
     # disown so an early parent exit cannot orphan/kill it before the .rc lands.
-    ( _portable_timeout "${cap}" oracle "$@" >/dev/null 2>&1; printf '%s' "$?" > "$out.rc" ) &
+    ( _portable_timeout "${cap}" oracle "$@" >/dev/null 2>&1; _omx_bg_rc=$?
+      # Map exit-0-but-empty-verdict to failure so the .rc matches blocking mode's
+      # fail-closed contract (timeout already surfaces as rc 124).
+      [ "$_omx_bg_rc" = 0 ] && [ ! -s "$out" ] && _omx_bg_rc=1
+      printf '%s' "$_omx_bg_rc" > "$out.rc" ) &
     disown 2>/dev/null || true
     printf 'dispatched'; return 0
   fi

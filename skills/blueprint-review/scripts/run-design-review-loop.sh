@@ -438,7 +438,8 @@ while true; do
 
   # ── Optional oracle-max auxiliary advisory: dispatch in background (parallel) ──
   # Opt-in; visible best-effort. Capture the TYPED status (a skip writes no .rc).
-  if command -v oracle_max_surface_enabled >/dev/null 2>&1 && oracle_max_surface_enabled blueprintReview; then
+  # Never in --claude-only mode (no design re-transmitted when the operator chose Claude-only).
+  if [ "$CLAUDE_ONLY" != "true" ] && command -v oracle_max_surface_enabled >/dev/null 2>&1 && oracle_max_surface_enabled blueprintReview; then
     ORACLE_MAX_ADVISORY_FILE="$STATE_DIR/oracle-max/${RUN_ID}-plan-review.md"
     rm -f "$ORACLE_MAX_ADVISORY_FILE" "$ORACLE_MAX_ADVISORY_FILE.rc" 2>/dev/null || true
     ORACLE_MAX_DISPATCH_STATUS="$(oracle_max_consult --mode background --slug "oracle max plan review" \

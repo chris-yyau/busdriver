@@ -143,16 +143,19 @@ You DO NOT refactor or rewrite code — you report findings only.
 ## Diagnostic Commands
 
 ```bash
-# Required
-npx eslint . --ext .vue,.ts,.js                    # ensure eslint-plugin-vue is configured
-vue-tsc --noEmit                                   # Vue-specific type checking
-npm run typecheck --if-present                     # respect project's canonical command
+# Required — use the project's LOCALLY INSTALLED tooling only. Do NOT use `npx`:
+# if the binary is absent, npm's exec path can resolve and run an unpinned
+# package from the registry mid-review. Local binaries / npm scripts fail closed.
+npm run lint --if-present                              # project's canonical lint (eslint-plugin-vue configured there)
+./node_modules/.bin/eslint . --ext .vue,.ts,.js       # or the local binary directly (errors if not installed)
+./node_modules/.bin/vue-tsc --noEmit                  # Vue-specific type checking
+npm run typecheck --if-present                        # respect project's canonical command
 
-# Useful
-npx eslint . --rule 'vue/multi-word-component-names: error'
-npx eslint . --rule 'vue/no-v-html: warn'
-npx eslint . --rule 'vue/require-default-prop: warn'
-npx prettier --check .
+# Useful (local binary only)
+./node_modules/.bin/eslint . --rule 'vue/multi-word-component-names: error'
+./node_modules/.bin/eslint . --rule 'vue/no-v-html: warn'
+./node_modules/.bin/eslint . --rule 'vue/require-default-prop: warn'
+npm run format:check --if-present                     # or ./node_modules/.bin/prettier --check .
 npm audit
 ```
 

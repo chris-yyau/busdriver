@@ -54,7 +54,7 @@ def check_accuracy(text: str) -> AxisScore:
     verified_patterns = [
         (r"(?i)(tests?\s+pass|all\s+tests?\s+passing|\d+\s+passed)", "Tests passing"),
         (r"(?i)(exit\s+code\s*[:=]?\s*0|exited\s+with\s+0)", "Clean exit code"),
-        (r"(?i)(lint.*clean|no\s+lint\s+errors|0\s+errors)", "Lint clean"),
+        (r"(?i)(lint\s+(?:is\s+)?clean|no\s+lint\s+errors|\b0\s+errors\b)", "Lint clean"),
         (r"(?i)(verified|confirmed|validated)\s+(with|against|using|by)", "Explicit verification"),
         (r"(?i)(grep|rg)\s+.*\b(found|matched|returned)", "Grep confirmed"),
     ]
@@ -74,6 +74,8 @@ def check_accuracy(text: str) -> AxisScore:
             deductions += 1
             evidence.append(f"- {label}")
 
+    positives = [e for e in evidence if e.startswith("+")]
+
     if deductions >= 3:
         score = 2
     elif deductions == 2:
@@ -81,8 +83,13 @@ def check_accuracy(text: str) -> AxisScore:
     elif deductions == 1:
         score = 4
 
+    # Unverified correctness cannot score as excellent: with no positive
+    # verification evidence, cap the score so a terse "Done." earns a 3, not a 5.
+    if not positives:
+        score = min(score, 3)
+
     if not evidence:
-        evidence.append("No verification signals detected — score assumes correctness")
+        evidence.append("No verification signals detected — unverified, score capped")
 
     result = AxisScore(name="Accuracy", score=score, evidence=evidence)
     if score < 5:

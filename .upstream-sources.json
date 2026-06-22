@@ -95,7 +95,7 @@
     {
       "path": "agents/vue-reviewer.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/vue-reviewer.md"
     },
     {

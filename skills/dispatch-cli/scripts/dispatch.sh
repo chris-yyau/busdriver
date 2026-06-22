@@ -58,16 +58,21 @@ if ! type _is_hard_transient_signal &>/dev/null; then
 fi
 # True (0) when an exit-0 output FILE is a bare transient-error notice
 # masquerading as success: short AND carries a HARD transient signal (a machine
-# error token, not a mere prose word). JSON structure is NOT trusted as success:
-# a short error envelope like {"error":"ECONNRESET ..."} must still retry, so
-# braces do not exempt it. A real dispatch answer that merely *mentions* rate
-# limits / capacity carries no hard token and/or exceeds the size bound. Mirrors
-# _is_bare_transient_notice in resolve-cli.sh; CLI_BARE_ERROR_MAX_CHARS in sync.
+# error token, not a mere prose word). A real review/dispatch payload carrying the
+# review schema (top-level "status" + "issues") is exempted up front — it may
+# legitimately discuss a 5xx / network condition in a finding without being a
+# notice. A bare error envelope like {"error":"ECONNRESET ..."} lacks that schema
+# and still retries. Mirrors _is_bare_transient_notice in resolve-cli.sh;
+# CLI_BARE_ERROR_MAX_CHARS and the schema exemption are kept in sync.
 if ! type _is_bare_transient_notice_file &>/dev/null; then
   _is_bare_transient_notice_file() {
     local f="$1" sz
     sz=$(wc -c < "$f" 2>/dev/null | tr -d '[:space:]')
     [[ "${sz:-0}" -le "${CLI_BARE_ERROR_MAX_CHARS:-512}" ]] || return 1
+    # Review schema present → a verdict, not a notice. Never bare.
+    if grep -qiE '"status"[[:space:]]*:' "$f" && grep -qiE '"issues"[[:space:]]*:' "$f"; then
+      return 1
+    fi
     _is_hard_transient_signal < "$f"
   }
 fi

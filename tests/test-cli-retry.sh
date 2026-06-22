@@ -65,6 +65,13 @@ _is_bare_transient_notice '503 Service Unavailable'                    && ok "ba
 _is_bare_transient_notice 'capacity handling looks correct'           && bad "short prose 'capacity' → NOT bare"    || ok "short prose 'capacity' → NOT bare"
 _is_bare_transient_notice 'rate limit logic is fine'                  && bad "short prose 'rate limit' → NOT bare"  || ok "short prose 'rate limit' → NOT bare"
 _is_bare_transient_notice '{"status":"FAIL","issues":[{"description":"handle the 503 / rate limit path"}]}' && bad "JSON review mentioning 5xx → NOT bare" || ok "JSON review mentioning 5xx → NOT bare"
+# A genuine review (status+issues schema) may name a 5xx / reason phrase in a
+# finding without being a notice — the schema exempts it regardless of wording.
+_is_bare_transient_notice '{"status":"FAIL","issues":[{"description":"the bad gateway path lacks tests"}]}' && bad "review JSON naming a reason phrase → NOT bare" || ok "review JSON naming a reason phrase → NOT bare"
+_is_bare_transient_notice '{"status":"FAIL","issues":[{"description":"HTTP 500 handler lacks tests"}]}'      && bad "review JSON naming HTTP 5xx → NOT bare"        || ok "review JSON naming HTTP 5xx → NOT bare"
+# A bare reason-phrase notice (no schema) IS transient — in either word order.
+_is_bare_transient_notice '502 Bad Gateway'                           && ok "bare 502 (code-first) → bare"          || bad "bare 502 (code-first) → bare"
+_is_bare_transient_notice 'Bad Gateway (502)'                         && ok "bare Bad Gateway (phrase-first) → bare" || bad "bare Bad Gateway (phrase-first) → bare"
 # Braces must NOT exempt a short error ENVELOPE — the hard token still wins.
 _is_bare_transient_notice '{"error":"ECONNRESET: socket hang up"}'    && ok "JSON error envelope → bare"            || bad "JSON error envelope → bare"
 _is_bare_transient_notice 'REVIEW_OK'                                  && bad "clean short output → NOT bare"        || ok "clean short output → NOT bare"

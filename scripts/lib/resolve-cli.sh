@@ -564,14 +564,21 @@ CLI_BARE_ERROR_MAX_CHARS="${CLI_BARE_ERROR_MAX_CHARS:-512}"
 # True (0) when exit-0 output is a bare transient-error notice masquerading as a
 # successful review: it is short AND carries a HARD transient signal (a machine
 # error token — ECONNRESET, "fetch failed", a context-qualified 5xx, etc. — not a
-# mere prose word). JSON structure is deliberately NOT trusted as a success
-# signal: a short error *envelope* like {"error":"ECONNRESET ..."} must still
-# retry, so braces do not exempt it. A genuine review carries no hard token (its
-# 5xx / rate-limit mentions are prose, not context-qualified error strings)
-# and/or exceeds the size bound, so it is never misread as a transient failure.
+# mere prose word). A genuine litmus review payload carries the review schema
+# (top-level "status" + "issues") and is exempted up front: such a review may
+# legitimately *discuss* a 5xx / network condition in a finding (e.g. an "HTTP
+# 500 handler lacks tests" description) without being a transient notice. A bare
+# error *envelope* like {"error":"ECONNRESET ..."} lacks that schema, so braces
+# alone do not exempt it — it still retries. Reviews also typically exceed the
+# size bound, a second backstop against misreading them as transient failures.
 _is_bare_transient_notice() {
   local out="$1"
   [[ "${#out}" -le "$CLI_BARE_ERROR_MAX_CHARS" ]] || return 1
+  # Review schema present → it's a verdict, not a notice. Never bare.
+  if printf '%s' "$out" | grep -qiE '"status"[[:space:]]*:' \
+     && printf '%s' "$out" | grep -qiE '"issues"[[:space:]]*:'; then
+    return 1
+  fi
   printf '%s' "$out" | _is_hard_transient_signal
 }
 
@@ -761,8 +768,11 @@ _execute_codex() {
       output=$(printf '%s' "$prompt" | _portable_timeout "$duration" codex exec -s read-only ${config_args[@]+"${config_args[@]}"} - 2>&1) || exit_code=$?
     fi
 
-    # Success — done
-    if [[ "$exit_code" -eq 0 ]]; then
+    # Success — a clean exit WITH a real review payload. An exit-0 that is empty
+    # or only a bare transient notice (a network/5xx envelope the companion
+    # emitted while still exiting 0) is NOT a review; fall through to the
+    # retry/droid path, mirroring _run_review_with_retries and dispatch_one.
+    if [[ "$exit_code" -eq 0 && -n "$output" ]] && ! _is_bare_transient_notice "$output"; then
       break
     fi
 
@@ -786,7 +796,10 @@ _execute_codex() {
     # (not the phrase "resource temporarily unavailable") to avoid false-
     # positives on unrelated fork/thread exhaustion errors that share the
     # same strerror text.
-    if printf '%s' "$output" | _is_transient_cli_error; then
+    # Retry on transient service errors, OR on a clean exit that produced no real
+    # review (empty, or a bare transient notice) — a flake, not a verdict.
+    if { [[ "$exit_code" -eq 0 ]] && { [[ -z "$output" ]] || _is_bare_transient_notice "$output"; }; } \
+       || printf '%s' "$output" | _is_transient_cli_error; then
       last_was_transient=1
       attempt=$((attempt + 1))
     else
@@ -795,6 +808,15 @@ _execute_codex() {
       break
     fi
   done
+
+  # A clean exit that never yielded a real review (empty, or a bare transient
+  # notice, through exhaustion) is not success — promote it to a transient
+  # failure so the droid/builtin fallback below engages instead of returning a
+  # blank PASS. Mirrors _run_review_with_retries' exhaustion guard.
+  if [[ "$exit_code" -eq 0 ]] && { [[ -z "$output" ]] || _is_bare_transient_notice "$output"; }; then
+    exit_code=1
+    last_was_transient=1
+  fi
 
   # All retries exhausted, non-transient error, or a timeout — try droid (if
   # eligible), else fall back to builtin (or preserve the timeout signal).

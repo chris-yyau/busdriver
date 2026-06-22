@@ -1,3 +1,10 @@
+# [1.68.0](https://github.com/chris-yyau/busdriver/compare/v1.67.0...v1.68.0) (2026-06-22)
+
+
+### Features
+
+* retry external review CLIs before droid fallback (blueprint, council, litmus) ([#236](https://github.com/chris-yyau/busdriver/issues/236)) ([a50e6d3](https://github.com/chris-yyau/busdriver/commit/a50e6d3f8a0d8ed8734c809abad031949e00daa8))
+
 # [1.67.0](https://github.com/chris-yyau/busdriver/compare/v1.66.1...v1.67.0) (2026-06-21)
 
 

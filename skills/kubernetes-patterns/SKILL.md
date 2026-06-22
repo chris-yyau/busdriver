@@ -308,19 +308,14 @@ volumeMounts:
 
 ### Secrets — Sensitive data
 
-```bash
-# Avoid --from-literal: a literal value leaks via shell history and `ps`/process
-# listings. Read it from an env var into a private temp file, create with
-# --from-file, then delete it. Real secrets belong in Vault/SOPS/Sealed Secrets.
-: "${DB_PASSWORD:?set DB_PASSWORD before creating the secret}"   # fail if unset/empty
-umask 077; tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT INT TERM   # safety net if interrupted (Ctrl-C / kill)
-printf '%s' "$DB_PASSWORD" > "$tmp"
-kubectl create secret generic my-app-secrets \
-  --from-file=db-password="$tmp" \
-  --namespace=my-namespace \
-  --dry-run=client -o yaml | kubectl apply -f -
-rm -f "$tmp"; trap - EXIT INT TERM   # delete immediately after use (don't wait for shell exit)
+```text
+# Do NOT create Secrets imperatively with `kubectl create secret --from-literal`:
+# the value leaks through shell history and `ps`/process listings, and ad-hoc CLI
+# creation is not reproducible. Manage secrets DECLARATIVELY instead:
+#   • SealedSecrets (bitnami) — encrypt with `kubeseal`, commit the SealedSecret
+#   • SOPS / age           — encrypt the manifest, decrypt in CI at apply time
+#   • External Secrets Operator — sync from Vault / cloud secret managers
+# The plain Secret manifest below shows the SHAPE only — never commit it unencrypted.
 ```
 
 ```yaml

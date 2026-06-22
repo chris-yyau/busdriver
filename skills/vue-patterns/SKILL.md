@@ -331,7 +331,7 @@ Nuxt auto-imports `ref`, `computed`, `watch`, `useFetch`, `useAsyncData`, etc. U
 
 ```ts
 const { data: user, pending, error, refresh } = await useAsyncData(
-  "user", // unique key for caching
+  `user-${id}`, // cache key MUST include id — a constant key reuses one cache entry across all users
   () => $fetch(`/api/users/${id}`),
 );
 

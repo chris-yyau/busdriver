@@ -44,6 +44,29 @@ def count_words(text: str) -> int:
     return len(text.split()) if text else 0
 
 
+# Negation words that, appearing just before a positive signal, invert it
+# ("No PR created", "tests did not pass", "lint is not clean").
+_NEGATION = re.compile(
+    r"(?i)\b(no|not|never|without|fail(?:ed|s|ing)?|couldn'?t|can'?t|cannot|"
+    r"didn'?t|don'?t|won'?t|isn'?t|aren'?t|wasn'?t|weren'?t)\b[\s\w]{0,15}$"
+)
+
+
+def _positive_match(pattern: str, text: str) -> bool:
+    """True if `pattern` matches text NOT immediately preceded by a negation.
+
+    Prevents negated phrases from being scored as positive evidence, which
+    would defeat the fail-closed scoring (e.g. "No PR created" must not count
+    as "+ PR created").
+    """
+    for m in re.finditer(pattern, text):
+        prefix = text[max(0, m.start() - 30):m.start()]
+        if _NEGATION.search(prefix):
+            continue
+        return True
+    return False
+
+
 def check_accuracy(text: str) -> AxisScore:
     """Check for verifiable claims, tool output references, error signs."""
     evidence = []
@@ -59,7 +82,7 @@ def check_accuracy(text: str) -> AxisScore:
         (r"(?i)(grep|rg)\s+.*\b(found|matched|returned)", "Grep confirmed"),
     ]
     for pattern, label in verified_patterns:
-        if re.search(pattern, text):
+        if _positive_match(pattern, text):
             evidence.append(f"+ {label}")
 
     # Negative signals: unverified claims
@@ -110,7 +133,7 @@ def check_completeness(text: str) -> AxisScore:
         (r"(?i)(verification|verified\s+that|confirmed\s+that)", "Verification step present"),
     ]
     for pattern, label in completeness_signals:
-        if re.search(pattern, text):
+        if _positive_match(pattern, text):
             evidence.append(f"+ {label}")
 
     # Gaps
@@ -228,7 +251,7 @@ def check_actionability(text: str) -> AxisScore:
         (r"(?i)(file\s+(created|written|modified|updated)\s+at)", "File path specified"),
     ]
     for pattern, label in actionable_signals:
-        if re.search(pattern, text):
+        if _positive_match(pattern, text):
             evidence.append(f"+ {label}")
 
     # Negative signals

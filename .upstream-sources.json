@@ -29,7 +29,7 @@
     {
       "path": "skills/vue-patterns/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/vue-patterns/SKILL.md"
     },
     {

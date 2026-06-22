@@ -9,7 +9,7 @@ description: Use when implementation is complete, all tests pass, and you need t
 
 Guide completion of development work by presenting clear options and handling chosen workflow.
 
-**Core principle:** Verify tests → Present options → Execute choice → Clean up.
+**Core principle:** Verify tests → Detect environment → Present options → Execute choice → Clean up.
 
 **Announce at start:** "I'm using the finishing-a-development-branch skill to complete this work."
 
@@ -35,7 +35,20 @@ Cannot proceed with merge/PR until tests pass.
 
 Stop. Don't proceed to Step 2.
 
-**If tests pass:** Continue to Step 2.
+**If tests pass:** Continue to Step 1.5.
+
+### Step 1.5: Detect Environment
+
+The workspace shape changes which options are valid — detect it before presenting them:
+
+```bash
+branch=$(git symbolic-ref --quiet --short HEAD || echo "")   # empty => detached HEAD
+case "$(git rev-parse --git-dir)" in */worktrees/*) worktree=yes ;; *) worktree=no ;; esac
+```
+
+- **Normal repo on a named branch** — all 4 options apply.
+- **Linked worktree** (`worktree=yes`) — Option 1 (local merge) would switch the primary checkout's branch; prefer Option 2 (PR), or merge from the primary worktree. Cleanup (Step 5) removes *this* worktree.
+- **Detached HEAD** (`branch` empty) — nothing to merge or keep by name. Offer to create a branch first (`git switch -c <name>`), then present the 4 options.
 
 ### Step 2: Determine Base Branch
 
@@ -144,15 +157,14 @@ Then: Cleanup worktree (Step 5)
 
 **For Options 1, 2, 4:**
 
-Check if in worktree:
+Only clean up a worktree you created, and confirm the exact path first — path naming is not proof of ownership:
 ```bash
-git worktree list | grep $(git branch --show-current)
+wt=$(git rev-parse --show-toplevel)
+case "$(git rev-parse --git-dir)" in */worktrees/*) is_wt=yes ;; *) is_wt=no ;; esac
 ```
 
-If yes:
-```bash
-git worktree remove <worktree-path>
-```
+- `is_wt=no` → normal checkout; nothing to clean up.
+- `is_wt=yes` → report `$wt` and **ask before** `git worktree remove "$wt"`. Never auto-remove. Skip entirely if it is harness-managed (`.claude/worktrees/*`, created by the EnterWorktree tool, which has its own cleanup) or an operator worktree you did not create.
 
 **For Option 3:** Keep worktree.
 

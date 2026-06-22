@@ -217,6 +217,16 @@ git push --force-with-lease origin feature/user-auth
 # Why: Rebase rewrites history, breaking others' work
 ```
 
+### Resolving Conflicts
+
+When a merge/rebase stops on conflicts:
+
+1. **See the state** — `git status`, inspect each conflicting file.
+2. **Find each side's intent** — read the commit messages / PRs / issues behind both changes before touching a hunk. Don't resolve blind.
+3. **Resolve each hunk** — preserve both intents where possible; where incompatible, keep the one matching the merge's goal and note the trade-off. Never invent new behavior. Don't reflexively `--abort` to dodge the work — but if the merge/rebase itself was the mistake (wrong target branch, misunderstood upstream), aborting is the correct recovery.
+4. **Run the project's checks** — typecheck → tests → format; fix anything the merge broke.
+5. **Finish** — stage and commit (or `git rebase --continue` until all commits are replayed).
+
 ## Pull Request Workflow
 
 ### PR Title Format

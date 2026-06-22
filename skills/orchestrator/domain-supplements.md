@@ -99,6 +99,14 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Patterns: `busdriver:nuxt4-patterns` (hydration safety, SSR, route rules, lazy loading, data fetching)
 - Review: `code-reviewer` agent (no Nuxt-specific reviewer yet)
 
+### Vue
+**Detection:** `*.vue` files, `vue` imports, `vue.config.*`, Vue SFC context
+- Rules: `rules/vue/` (coding-style, patterns, security, testing, hooks)
+- Patterns: `busdriver:vue-patterns`
+- Review: `vue-reviewer` agent (see Phase 4 DISPATCH rules)
+- Commands: `/vue-review`
+- **Migration** (React→Vue work): `busdriver:ui-to-vue`
+
 ### React Native / Expo
 **Detection:** `react-native` / `expo` imports, `app.json`/`app.config.*`, `expo-router`, `metro.config.*`, `*.tsx` with native components
 - Performance & patterns: `busdriver:vercel-react-native-skills` (list virtualization, Reanimated GPU props, fonts config plugin, monorepo dep hygiene, design-system composition — Vercel rule pack)
@@ -170,6 +178,7 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Testing: `busdriver:laravel-tdd`
 - Verification: `busdriver:laravel-verification`
 - Rules: `rules/php/` (coding-style, patterns, security, testing, hooks)
+- Review: `php-reviewer` agent (see Phase 4 DISPATCH rules)
 
 ### Kotlin
 **Detection:** `*.kt`, `*.kts`, `build.gradle.kts`, Kotlin context
@@ -217,6 +226,7 @@ Domain skills are loaded as context during execution. They are **additive** — 
 ### Infrastructure / DevOps
 **Detection:** Dockerfile, docker-compose.yml, CI/CD pipelines, deployment configs, Kubernetes
 - Docker: `busdriver:docker-patterns`
+- Kubernetes: `busdriver:kubernetes-patterns` (manifests, deployments, services, secrets/sealed-secrets, probes, resource limits)
 - Deployment: `busdriver:deployment-patterns`
 
 ### AI / LLM Development

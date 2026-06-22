@@ -29,7 +29,7 @@ You MUST create a task for each of these items and complete them in order:
 
 1. **Explore project context** — check files, docs, recent commits
    - **Step 1.5 (Beginner-mode load, conditional)** — at the start of brainstorming, before Step 2, check auto-memory for `user`-type knowledge-gap entries AND check the user's recent messages for trigger phrases ("I'm new", "explain like a beginner", "what does X mean", etc.). If either fires, load `skills/supplements/beginner-mode.md` and apply it through the rest of brainstorming AND any sub-skills it invokes (e.g. grill-me at Step 5.5). See the `## Beginner-Mode Loading` section below for the full activation protocol.
-2. **Offer visual companion** (if topic will involve visual questions) — this is its own message, not combined with a clarifying question. See the Visual Companion section below.
+2. **Offer the visual companion just-in-time — NOT upfront.** The first time a clarifying question would genuinely be clearer shown than described, offer it then (its own message, not combined with a question). If no visual question ever arises, never offer it. See the Visual Companion section below.
 3. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
 4. **Classify decisions, then propose approaches** — classify each decision (reversibility × confidence; see "Exploring approaches" below); decide reversible implementation details yourself (any confidence) and recommend defaults for high-confidence low-reversibility decisions; surface only user-facing picks as 2-3 options with trade-offs and your recommendation
 5. **Present design** — in sections scaled to their complexity, get user approval after each section
@@ -46,8 +46,8 @@ You MUST create a task for each of these items and complete them in order:
 ```dot
 digraph brainstorming {
     "Explore project context" [shape=box];
-    "Visual questions ahead?" [shape=diamond];
-    "Offer Visual Companion\n(own message, no other content)" [shape=box];
+    "Visual question arises?" [shape=diamond];
+    "Offer Visual Companion\n(just-in-time, own message)" [shape=box];
     "Ask clarifying questions" [shape=box];
     "Classify decisions" [shape=box];
     "Propose 2-3 approaches" [shape=box];
@@ -61,11 +61,11 @@ digraph brainstorming {
     "User reviews spec?" [shape=diamond];
     "Invoke writing-plans skill" [shape=doublecircle];
 
-    "Explore project context" -> "Visual questions ahead?";
-    "Visual questions ahead?" -> "Offer Visual Companion\n(own message, no other content)" [label="yes"];
-    "Visual questions ahead?" -> "Ask clarifying questions" [label="no"];
-    "Offer Visual Companion\n(own message, no other content)" -> "Ask clarifying questions";
-    "Ask clarifying questions" -> "Classify decisions";
+    "Explore project context" -> "Ask clarifying questions";
+    "Ask clarifying questions" -> "Visual question arises?";
+    "Visual question arises?" -> "Offer Visual Companion\n(just-in-time, own message)" [label="yes, first time"];
+    "Offer Visual Companion\n(just-in-time, own message)" -> "Ask clarifying questions";
+    "Visual question arises?" -> "Classify decisions" [label="no / done"];
     "Classify decisions" -> "Propose 2-3 approaches" [label="user-facing picks remain"];
     "Classify decisions" -> "Present design sections" [label="all decided internally"];
     "Propose 2-3 approaches" -> "Present design sections";
@@ -259,7 +259,7 @@ Wait for the user's response. If they request changes, make them and re-run the 
 
 A browser-based companion for showing mockups, diagrams, and visual options during brainstorming. Available as a tool — not a mode. Accepting the companion means it's available for questions that benefit from visual treatment; it does NOT mean every question goes through the browser.
 
-**Offering the companion:** When you anticipate that upcoming questions will involve visual content (mockups, layouts, diagrams), offer it once for consent:
+**Offering the companion (just-in-time):** Do NOT offer upfront. The first time a clarifying question would genuinely be clearer shown than described (a mockup, layout, or diagram would land better than prose), offer it then — once, for consent:
 > "Some of what we're working on might be easier to explain if I can show it to you in a web browser. I can put together mockups, diagrams, comparisons, and other visuals as we go. This feature is still new and can be token-intensive. Want to try it? (Requires opening a local URL)"
 
 **This offer MUST be its own message.** Do not combine it with clarifying questions, context summaries, or any other content. The message should contain ONLY the offer above and nothing else. Wait for the user's response before continuing. If they decline, proceed with text-only brainstorming.

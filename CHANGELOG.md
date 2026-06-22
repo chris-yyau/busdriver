@@ -1,3 +1,10 @@
+# [1.69.0](https://github.com/chris-yyau/busdriver/compare/v1.68.0...v1.69.0) (2026-06-22)
+
+
+### Features
+
+* add opt-in oracle-max (GPT-5.5 Pro) consult at three surfaces ([#237](https://github.com/chris-yyau/busdriver/issues/237)) ([b0bef95](https://github.com/chris-yyau/busdriver/commit/b0bef957351e9450276431a71b154e3bdfc2a946))
+
 # [1.68.0](https://github.com/chris-yyau/busdriver/compare/v1.67.0...v1.68.0) (2026-06-22)
 
 

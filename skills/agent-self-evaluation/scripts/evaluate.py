@@ -41,7 +41,7 @@ class AxisScore:
 
 
 def count_words(text: str) -> int:
-    return len(text.split())
+    return len(text.split()) if text else 0
 
 
 def check_accuracy(text: str) -> AxisScore:
@@ -140,12 +140,15 @@ def _check_jargon(text: str) -> tuple[int, list[str]]:
         (r"\b(ACID|CAP|eventual consistency|linearizability)\b", "database theory"),
     ]
     explanation_pattern = r"(?i)({domain}|means|refers to|i\.e\.|in other words)"
+    deductions = 0
+    evidence = []
     for pattern, domain in jargon:
         has_term = re.search(pattern, text, re.IGNORECASE)
         explains_term = re.search(explanation_pattern.format(domain=domain), text)
         if has_term and not explains_term:
-            return 1, [f"- Domain term used without explanation ({domain})"]
-    return 0, []
+            deductions += 1
+            evidence.append(f"- Domain term used without explanation ({domain})")
+    return deductions, evidence
 
 
 def _check_summary(text: str) -> tuple[int, list[str]]:
@@ -372,6 +375,15 @@ def _read_file_or_text(path: Optional[str], *, required: bool = False) -> Option
         if required:
             print(f"Error: output file '{path}' not found", file=sys.stderr)
             sys.exit(1)
+        # Not required: fall back to treating the value as inline text, but warn
+        # when it looks like a mistyped path (has a separator or file extension)
+        # so a typo like `--task taks.txt` is not silently evaluated as literal text.
+        if "/" in path or "\\" in path or re.search(r"\.[A-Za-z0-9]{1,5}$", path):
+            print(
+                f"Warning: '{path}' looks like a file path but was not found; "
+                "treating it as inline text",
+                file=sys.stderr,
+            )
         return path
 
 

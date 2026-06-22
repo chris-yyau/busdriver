@@ -103,6 +103,8 @@ If reviewer_1 and reviewer_2 resolve to the same CLI, the system runs single-rev
 
 See `.claude/busdriver.json` for per-role routing configuration.
 
+**Per-reviewer retry (runtime, distinct from the route-array fallback above):** blueprint review is a gate of record, so the loop raises the per-reviewer retry budget to **5** — it exports `LITMUS_CODEX_RETRIES=5` (codex slot) and `BUSDRIVER_CLI_RETRIES=5` (agy/grok slots). Each reviewer retries up to 5 times on a transient failure (rate-limit, network, 5xx) or empty output before giving up; a timeout is never retried. Only after a reviewer exhausts its retries does the one-voice droid rescue fire (the cap is unchanged: the FIRST failed reviewer is rescued via droid once, then stops — two droids on one shared prompt would be duplicate signal). Override with `LITMUS_CODEX_RETRIES` / `BUSDRIVER_CLI_RETRIES` in the parent shell.
+
 ## Optional Oracle-Max Advisory (opt-in, auxiliary — NOT a reviewer)
 
 When `oracleMax.blueprintReview.enabled` is true in the operator's **USER config** `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it — a branch must not be able to transmit the design to ChatGPT Pro without the reviewer's local opt-in), the loop dispatches a GPT-5.5 Pro "oracle-max" consult (via the `oracle` CLI's ChatGPT Pro browser engine) **in parallel** with Agy/Codex/Grok and injects its verdict into the arbiter prompt under a clearly labelled `OPTIONAL ORACLE-MAX ADVISORY` block.

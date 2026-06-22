@@ -46,7 +46,7 @@ printf '#!/usr/bin/env bash\necho DROID_RESCUE\n' > "$STUB/droid"
 chmod +x "$STUB/grok" "$STUB/droid"
 
 O="$TMP/d.out"; E="$TMP/d.err"
-PATH="$STUB:$PATH" BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 \
+PATH="$STUB:$PATH" BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 BUSDRIVER_CLI_RETRIES=0 \
   bash skills/dispatch-cli/scripts/dispatch.sh --cli grok --timeout 5 --prompt p >"$O" 2>"$E" || true
 grep -q DROID_RESCUE "$O"   && ok "grok failure falls back to droid"   || bad "grok failure falls back to droid"
 grep -q "from droid" "$O"   && ok "fallback output carries marker"     || bad "fallback output carries marker"
@@ -55,7 +55,7 @@ grep -q droid-fallback "$E" && ok "status reports droid-fallback"      || bad "s
 # When droid also fails, the voice drops (no rescue marker, non-zero status).
 printf '#!/usr/bin/env bash\nexit 1\n' > "$STUB/droid"; chmod +x "$STUB/droid"
 O2="$TMP/d2.out"
-PATH="$STUB:$PATH" BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 \
+PATH="$STUB:$PATH" BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 BUSDRIVER_CLI_RETRIES=0 \
   bash skills/dispatch-cli/scripts/dispatch.sh --cli grok --timeout 5 --prompt p >"$O2" 2>/dev/null || true
 grep -q DROID_RESCUE "$O2" && bad "droid-also-fails → voice drops" || ok "droid-also-fails → voice drops"
 
@@ -63,7 +63,7 @@ grep -q DROID_RESCUE "$O2" && bad "droid-also-fails → voice drops" || ok "droi
 printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/grok"   # exit 0, no output
 printf '#!/usr/bin/env bash\nexit 1\n' > "$STUB/droid"
 chmod +x "$STUB/grok" "$STUB/droid"
-PATH="$STUB:$PATH" BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 \
+PATH="$STUB:$PATH" BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 BUSDRIVER_CLI_RETRIES=0 \
   bash skills/dispatch-cli/scripts/dispatch.sh --cli grok --timeout 5 --prompt p >/dev/null 2>/dev/null
 RC=$?
 [[ "$RC" -ne 0 ]] && ok "exit0+empty+droid-fail → non-zero exit (not false success)" \

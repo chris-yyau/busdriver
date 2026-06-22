@@ -38,6 +38,66 @@ fi
 if ! type _portable_timeout &>/dev/null; then
   _portable_timeout() { timeout "$@"; }
 fi
+# Fallback transient-error predicate (resolve-cli.sh owns the canonical one).
+# Reads candidate output from stdin; returns 0 if it looks transient.
+# 5xx is context-qualified (HTTP/status word or reason phrase) so incidental
+# 3-digit runs like "line 503"/"port 5000" aren't misread as transient. Keep
+# this regex identical to the canonical copy in scripts/lib/resolve-cli.sh.
+if ! type _is_transient_cli_error &>/dev/null; then
+  _is_transient_cli_error() {
+    grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|too many requests|(http|status|code|response)[^0-9]{0,6}(429|5[0-9][0-9])|internal server error|bad gateway|service unavailable|gateway time-?out|getaddrinfo'
+  }
+fi
+# Strict transient signal — only unambiguous network/protocol/5xx error tokens
+# (NOT the prose-ambiguous "rate.limit"/"overloaded"/"capacity"). HTTP reason
+# phrases (bad gateway, service unavailable, gateway timeout, internal server
+# error, too many requests) match ONLY when adjacent to their numeric status
+# code, in either word order ("502 Bad Gateway" or "Bad Gateway (502)") so a
+# bare phrase in clean exit-0 prose ("bad gateway handling looks correct") is
+# treated as a review, not a transient notice. Mirrors _is_hard_transient_signal
+# in resolve-cli.sh; used only for clean-exit output.
+if ! type _is_hard_transient_signal &>/dev/null; then
+  _is_hard_transient_signal() {
+    grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|getaddrinfo|(http|status|code|response)[^0-9]{0,6}(429|5[0-9][0-9])|(429|5[0-9][0-9])[^0-9a-z]{0,4}(too many requests|bad gateway|service unavailable|gateway time-?out|internal server error)|(too many requests|bad gateway|service unavailable|gateway time-?out|internal server error)[^0-9a-z]{0,4}(429|5[0-9][0-9])'
+  }
+fi
+# True (0) when output reads like a code review discussing an error term rather
+# than being a bare error notice — freeform council prose has no "status"/"issues"
+# envelope, so a terse valid reply naming an HTTP/5xx code would otherwise be
+# retried away. Every term is review-assessment vocabulary absent from genuine
+# error notices, so it cannot reclassify a true notice. Mirrors
+# _reads_as_review_prose in resolve-cli.sh; keep the word list in sync.
+if ! type _reads_as_review_prose &>/dev/null; then
+  _reads_as_review_prose() {
+    grep -qiE '\b(lacks?|looks (correct|good|fine|right|ok)|need(s|ed)? (a|an|to|more|tests?)|should (add|be|use|have|handle|return|check|verify|guard|consider)|consider|recommend|suggest|missing (a|an|tests?|guards?|checks?|coverage|handling)|edge case|refactor|rename|nit|LGTM|no issues|test coverage|docstring|assertion)\b'
+  }
+fi
+# True (0) when an exit-0 output FILE is a bare transient-error notice
+# masquerading as success: short AND carries a HARD transient signal (a machine
+# error token, not a mere prose word). A real review/dispatch payload carrying the
+# review schema (top-level "status" + "issues") is exempted up front — it may
+# legitimately discuss a 5xx / network condition in a finding without being a
+# notice. Freeform council prose that names an error term but carries review
+# vocabulary is exempted too (_reads_as_review_prose). A bare error envelope like
+# {"error":"ECONNRESET ..."} lacks both and still retries. Mirrors
+# _is_bare_transient_notice in resolve-cli.sh; CLI_BARE_ERROR_MAX_CHARS and the
+# exemptions are kept in sync.
+if ! type _is_bare_transient_notice_file &>/dev/null; then
+  _is_bare_transient_notice_file() {
+    local f="$1" sz
+    sz=$(wc -c < "$f" 2>/dev/null | tr -d '[:space:]')
+    [[ "${sz:-0}" -le "${CLI_BARE_ERROR_MAX_CHARS:-512}" ]] || return 1
+    # Review schema present → a verdict, not a notice. Never bare.
+    if grep -qiE '"status"[[:space:]]*:' "$f" && grep -qiE '"issues"[[:space:]]*:' "$f"; then
+      return 1
+    fi
+    # Reads like a review discussing an error term → a verdict, not a notice.
+    if _reads_as_review_prose < "$f"; then
+      return 1
+    fi
+    _is_hard_transient_signal < "$f"
+  }
+fi
 
 LOG_DIR="$HOME/$STATE_DIR/homunculus"
 LOG_FILE="$LOG_DIR/dispatch-log.jsonl"
@@ -183,13 +243,76 @@ dispatch_one() {
     local start exit_code=0
     start=$(date +%s)
 
+    # ── Primary-CLI retry (council voices flake intermittently) ──────
+    # Retry the primary CLI on a transient failure or empty output BEFORE the
+    # droid fallback below — a single rate-limit/network hiccup shouldn't drop
+    # a council voice straight to droid. BUSDRIVER_CLI_RETRIES (default 3;
+    # council uses the default, blueprint exports 5 via run-design-review-loop).
+    # droid itself is never retried (it is the safety net). A timeout (124) is
+    # never retried either — re-running the full window is too costly; the droid
+    # fallback catches it.
+    local _max_retries="${BUSDRIVER_CLI_RETRIES:-3}"
+    case "$_max_retries" in ''|*[!0-9]*) _max_retries=3 ;; esac
+    [[ "$name" == "droid" ]] && _max_retries=0
+    # --cli all/both COMPARE CLIs on one prompt — a failure there is signal, not
+    # a flake. Match the droid-fallback skip below: no retries in those modes.
+    [[ "$CLI" == "all" || "$CLI" == "both" ]] && _max_retries=0
+    # NEVER retry in write-capable (auto) mode: the case arms below can run
+    # `codex exec --full-auto` / `agy --dangerously-skip-permissions`, which may
+    # edit files before exiting with a transient-looking error. Re-running the
+    # same write prompt could double-apply or corrupt changes. Retries are only
+    # safe for read-only review dispatches (the council voices, MODE=readonly).
+    [[ "$MODE" != "readonly" ]] && _max_retries=0
+    local _retry_delay="${BUSDRIVER_CLI_RETRY_DELAY:-5}"
+    case "$_retry_delay" in ''|*[!0-9]*) _retry_delay=5 ;; esac
+    local _attempt=0
+    while [[ "$_attempt" -le "$_max_retries" ]]; do
+    exit_code=0
+    # The whole retry sequence — every attempt PLUS all backoff sleeps — is
+    # bounded to ~TIMEOUT (the caller's --timeout budget): each attempt's timeout
+    # is the REMAINING budget (equals "$TIMEOUT" on the first attempt) and each
+    # backoff is capped to the remaining budget, so neither the sleep nor the
+    # attempt can overrun. Retries thus can't multiply the wall-clock to
+    # (retries+1)× the timeout before droid fallback fires.
+    local _now _budget _cap
+    if [[ "$_attempt" -eq 0 ]]; then
+        # The FIRST attempt always runs with the full budget — set it directly
+        # (not via now-start) so a sub-second clock tick can never zero it out and
+        # drop the only attempt. Only RETRIES are budget-gated below.
+        _budget="$TIMEOUT"
+    else
+        _now=$(date +%s); _budget=$(( TIMEOUT - (_now - start) ))
+        # A retry needs budget for the backoff PLUS at least a 1s attempt; if the
+        # remaining budget can't fund a 1s attempt, fall back now instead of
+        # sleeping the rest of the budget away for a retry that can't run.
+        if [[ "$_budget" -le 1 ]]; then
+            echo "⟳ ${name}: retry budget (${TIMEOUT}s) spent — falling back instead of retrying" >&2
+            [[ "$exit_code" -eq 0 ]] && exit_code=1
+            break
+        fi
+        # Cap backoff to leave >= 1s for the attempt — never sleep the whole budget.
+        _cap=$(( _budget - 1 ))
+        [[ "$_retry_delay" -gt "$_cap" ]] && _retry_delay="$_cap"
+        if [[ "$_retry_delay" -gt 0 ]]; then
+            echo "⟳ ${name} retry ${_attempt}/${_max_retries} (waiting ${_retry_delay}s)..." >&2
+            sleep "$_retry_delay"
+        fi
+        _retry_delay=$((_retry_delay * 2))
+        _now=$(date +%s); _budget=$(( TIMEOUT - (_now - start) ))
+        if [[ "$_budget" -le 0 ]]; then
+            echo "⟳ ${name}: retry budget (${TIMEOUT}s) spent — falling back instead of retrying" >&2
+            [[ "$exit_code" -eq 0 ]] && exit_code=1
+            break
+        fi
+    fi
+
     case "$name" in
         codex)
             if [[ "$MODE" == "auto" ]]; then
-                _portable_timeout "$TIMEOUT" codex exec --full-auto ${MODEL:+-m "$MODEL"} - \
+                _portable_timeout "$_budget" codex exec --full-auto ${MODEL:+-m "$MODEL"} - \
                     < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             else
-                _portable_timeout "$TIMEOUT" codex exec -s read-only ${MODEL:+-m "$MODEL"} - \
+                _portable_timeout "$_budget" codex exec -s read-only ${MODEL:+-m "$MODEL"} - \
                     < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             fi ;;
         agy)
@@ -206,11 +329,11 @@ dispatch_one() {
                 exit 1
             fi
             if [[ "$MODE" == "auto" ]]; then
-                _portable_timeout "$TIMEOUT" agy --dangerously-skip-permissions \
+                _portable_timeout "$_budget" agy --dangerously-skip-permissions \
                     --print-timeout "${TIMEOUT}s" \
                     --print /dev/stdin < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             else
-                _portable_timeout "$TIMEOUT" agy --sandbox \
+                _portable_timeout "$_budget" agy --sandbox \
                     --print-timeout "${TIMEOUT}s" \
                     --print /dev/stdin < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             fi ;;
@@ -235,7 +358,7 @@ dispatch_one() {
             else
                 _droid_level="high"
             fi
-            _portable_timeout "$TIMEOUT" droid exec --auto "$_droid_level" \
+            _portable_timeout "$_budget" droid exec --auto "$_droid_level" \
                 < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;
         grok)
             # Flags actually passed (see invocation at the end of this case):
@@ -310,12 +433,39 @@ dispatch_one() {
             if [[ "${BUSDRIVER_GROK_QUIET_SANDBOX_WARN:-0}" != "1" ]]; then
                 echo "Warning: grok safety = --sandbox readonly (dispatcher) + 'always approve' DISABLED in grok user-config (verify via grok /permissions). If always-approve is enabled in your grok config, shell exec and writes outside project root are NOT blocked. Set BUSDRIVER_GROK_QUIET_SANDBOX_WARN=1 to suppress once verified." >&2
             fi
-            _portable_timeout "$TIMEOUT" grok \
+            _portable_timeout "$_budget" grok \
                 --prompt-file /dev/stdin \
                 --max-turns 150 \
                 --sandbox readonly \
                 < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;
     esac
+
+    # Timeout → don't retry; the droid fallback below handles it.
+    [[ "$exit_code" -eq 124 ]] && break
+    # A clean exit with non-empty output is success — UNLESS it is a bare
+    # transient notice the CLI wrote while still exiting 0 (a rate-limit/5xx
+    # message in place of a review). Those fall through to the retry/droid path;
+    # a real review payload — even one discussing rate limits / 5xx — is accepted.
+    if [[ "$exit_code" -eq 0 && -s "$outfile" ]] && ! _is_bare_transient_notice_file "$outfile"; then
+        break
+    fi
+    # Retry if the attempt produced NO output (CLI died before writing — empty is
+    # never a valid response, whatever the exit code) OR the output looks
+    # transient. Otherwise bail (non-transient hard failure that produced output
+    # → the droid fallback owns the rescue).
+    if [[ ! -s "$outfile" ]] || _is_transient_cli_error < "$outfile"; then
+        _attempt=$((_attempt + 1))
+        continue
+    fi
+    break
+    done
+    # Exhausted retries while the output file is still empty OR still holds a bare
+    # transient notice on a clean exit → mark as failure so should_escalate_to_droid()
+    # fires AND (when droid is unavailable) the status below is reported as error
+    # rather than a silent empty / rate-limited success.
+    if [[ "$exit_code" -eq 0 ]] && { [[ ! -s "$outfile" ]] || _is_bare_transient_notice_file "$outfile"; }; then
+        exit_code=1
+    fi
 
     # ── Runtime droid fallback (per-voice, single-CLI dispatch only) ──
     # If this voice's CLI failed (timeout 124 or error) and droid is installed,
@@ -323,9 +473,15 @@ dispatch_one() {
     # role prompts → distinct perspectives, so no cross-voice cap (unlike
     # blueprint). SKIPPED for --cli all/both, which COMPARE CLIs on one prompt:
     # a failure there is signal, and two droids would duplicate the comparison.
+    # SKIPPED in write-capable (auto) mode: the droid fallback runs `droid exec`
+    # read-only, so it cannot complete a write task the primary (codex
+    # --full-auto / agy --dangerously-skip-permissions) failed to finish —
+    # reporting droid-fallback "success" there would mask an unfinished change.
+    # The whole resilience layer (retry above + this fallback) is read-only only.
     # `type` guard: a missing resolve-cli.sh (fallback mode) skips escalation.
     local escalated=0
     if [[ "$CLI" != "all" && "$CLI" != "both" ]] \
+       && [[ "$MODE" == "readonly" ]] \
        && type should_escalate_to_droid &>/dev/null \
        && should_escalate_to_droid "$name" "$exit_code" "$outfile"; then
         echo "⟳ ${name} failed (exit ${exit_code}) — falling back to droid (read-only)" >&2

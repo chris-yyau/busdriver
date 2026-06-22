@@ -491,6 +491,13 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # gating lead is Codex or the gate is inconclusive/fail-closed.
   export LITMUS_CODEX_DROID_FALLBACK_DISABLED=1
 
+  # PR mode is the cross-model gate of record with NO droid net (disabled just
+  # above) — retrying is the only recovery. Raise codex's retry budget to 5
+  # (backoff ≈ 15.5 min, which also outwaits OpenAI's per-5min rate-limit window)
+  # vs the default 3 used by the pre-commit path. `:-5` respects an operator
+  # override exported in the parent shell.
+  export LITMUS_CODEX_RETRIES="${LITMUS_CODEX_RETRIES:-5}"
+
   # PR mode: check for branch diff against base
   PR_BASE_BRANCH="${LITMUS_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}"
   # Auto-prefix origin/ if user provided a branch name without remote prefix

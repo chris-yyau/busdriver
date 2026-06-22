@@ -92,8 +92,14 @@ Removing a confirmed-redundant permission entry (JSON has no comments — back u
 ```bash
 cp ~/.claude/settings.local.json ~/.claude/settings.local.json.bak
 echo "$(date -Iseconds) removed permission entry: Bash(git push) (undo: restore from .bak or re-add)" >> ~/.claude/gc_log.md
-jq '.permissions.allow -= ["Bash(git push)"]' ~/.claude/settings.local.json.bak \
-  > ~/.claude/settings.local.json
+# Write to a temp file and move into place only if jq succeeds — `> settings.local.json`
+# with a missing/failing jq would truncate the live settings file before exiting.
+# Create the temp file IN ~/.claude so the mv is a same-filesystem atomic rename
+# (a cross-filesystem mv is a copy-overwrite and can corrupt the target on failure).
+tmp=$(mktemp ~/.claude/settings.local.json.XXXXXX) \
+  && jq '.permissions.allow -= ["Bash(git push)"]' ~/.claude/settings.local.json.bak > "$tmp" \
+  && mv "$tmp" ~/.claude/settings.local.json \
+  || { echo "jq failed — settings unchanged (restore from .bak if needed)"; rm -f "$tmp"; }
 ```
 
 ## Anti-Patterns

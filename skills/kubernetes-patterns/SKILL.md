@@ -309,11 +309,18 @@ volumeMounts:
 ### Secrets — Sensitive data
 
 ```bash
-# Create secret from literal (CLI, then store in Vault/SOPS)
+# Avoid --from-literal: a literal value leaks via shell history and `ps`/process
+# listings. Read it from an env var into a private temp file, create with
+# --from-file, then delete it. Real secrets belong in Vault/SOPS/Sealed Secrets.
+: "${DB_PASSWORD:?set DB_PASSWORD before creating the secret}"   # fail if unset/empty
+umask 077; tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT INT TERM   # safety net if interrupted (Ctrl-C / kill)
+printf '%s' "$DB_PASSWORD" > "$tmp"
 kubectl create secret generic my-app-secrets \
-  --from-literal=db-password='s3cr3t' \
+  --from-file=db-password="$tmp" \
   --namespace=my-namespace \
   --dry-run=client -o yaml | kubectl apply -f -
+rm -f "$tmp"; trap - EXIT INT TERM   # delete immediately after use (don't wait for shell exit)
 ```
 
 ```yaml

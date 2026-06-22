@@ -35,7 +35,7 @@
     {
       "path": "skills/kubernetes-patterns/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/kubernetes-patterns/SKILL.md"
     },
     {
@@ -47,7 +47,7 @@
     {
       "path": "skills/config-gc/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/config-gc/SKILL.md"
     },
     {
@@ -107,7 +107,7 @@
     {
       "path": "agents/agent-evaluator.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/agent-evaluator.md"
     },
     {

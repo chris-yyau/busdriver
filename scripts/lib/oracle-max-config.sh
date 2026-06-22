@@ -30,6 +30,10 @@ oracle_max_model() { oracle_max_config_get_user '.oracleMax.model' 'gpt-5.5-pro'
 # config cannot set an arbitrarily large cap and stall a reviewer (availability DoS).
 oracle_max_timeout_cap() {
   local v ceil="${ORACLE_MAX_CAP_CEILING:-3600}"
+  # Validate the ceiling itself is numeric before the `-gt` below — a non-numeric
+  # ORACLE_MAX_CAP_CEILING would make `[ "$v" -gt "$ceil" ]` error out (and could
+  # let an oversized cap through), so fall back to the 3600s default.
+  case "$ceil" in ''|*[!0-9]*|0) ceil=3600;; esac
   v="$(oracle_max_config_get_user '.oracleMax.timeoutCapSeconds' '900')"
   case "$v" in
     ''|*[!0-9]*) echo "oracle-max: invalid timeoutCapSeconds '$v' — using 900" >&2; printf '900'; return;;

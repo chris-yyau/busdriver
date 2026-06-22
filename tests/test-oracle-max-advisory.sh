@@ -21,13 +21,20 @@ chmod +x "$tmp/bin/oracle"; export PATH="$tmp/bin:$PATH"
 source "$DIR/scripts/lib/oracle-max.sh"
 
 # helper: bounded wait for the .rc completion marker
-wait_rc() { local f="$1" n=0; while [ ! -f "$f.rc" ] && [ "$n" -lt 50 ]; do sleep 0.2; n=$((n + 1)); done; }
+wait_rc() {
+  local f="$1" n=0
+  while [ ! -f "$f.rc" ] && [ "$n" -lt 50 ]; do sleep 0.2; n=$((n + 1)); done
+  # Return non-zero on timeout so callers can distinguish "never wrote .rc" (a real
+  # dispatcher bug) from "wrote .rc=0". Without this a missing .rc reads as empty
+  # and trivially != "0", silently false-passing the failure-path assertion.
+  [ -f "$f.rc" ]
+}
 
 # (a) background dispatch -> 'dispatched', then .rc=0 and verdict written
 export ORACLE_MAX_MOCK_MODE=ok
 st="$(oracle_max_consult --mode background --prompt "review the plan" --slug "oracle max plan review" --out "$tmp/a.md")"
 [ "$st" = "dispatched" ] || { echo "FAIL background status got '$st'"; FAIL=1; }
-wait_rc "$tmp/a.md"
+wait_rc "$tmp/a.md" || { echo "FAIL .rc never written (a)"; FAIL=1; }
 [ "$(cat "$tmp/a.md.rc" 2>/dev/null)" = "0" ] || { echo "FAIL .rc not 0"; FAIL=1; }
 grep -q "ADVISORY:" "$tmp/a.md" || { echo "FAIL verdict not written"; FAIL=1; }
 
@@ -35,8 +42,9 @@ grep -q "ADVISORY:" "$tmp/a.md" || { echo "FAIL verdict not written"; FAIL=1; }
 export ORACLE_MAX_MOCK_MODE=fail
 st="$(oracle_max_consult --mode background --prompt "review the plan" --slug "oracle max plan review" --out "$tmp/b.md")"
 [ "$st" = "dispatched" ] || { echo "FAIL background(fail) status got '$st'"; FAIL=1; }
-wait_rc "$tmp/b.md"
-[ "$(cat "$tmp/b.md.rc" 2>/dev/null)" = "0" ] && { echo "FAIL .rc should be non-zero on fail"; FAIL=1; }
+wait_rc "$tmp/b.md" || { echo "FAIL .rc never written on fail path (b)"; FAIL=1; }
+_rc_b="$(cat "$tmp/b.md.rc" 2>/dev/null)"
+{ [ -n "$_rc_b" ] && [ "$_rc_b" != "0" ]; } || { echo "FAIL .rc should exist and be non-zero on fail (got '$_rc_b')"; FAIL=1; }
 
 # (c) operator skip -> 'skipped:user', no dispatch, no .rc
 export ORACLE_MAX_MOCK_MODE=ok

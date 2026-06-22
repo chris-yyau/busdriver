@@ -49,6 +49,15 @@ oracle_max_consult() {
     echo "oracle-max: invalid timeout cap '$cap' — using config/default" >&2
     cap="$(oracle_max_timeout_cap)" ;;
   esac
+  # Clamp an explicit numeric --timeout-cap-seconds to the same ceiling
+  # oracle_max_timeout_cap enforces (default 3600s) — otherwise an explicit cap
+  # bypasses the guardrail and can stall a reviewer with an arbitrarily long wait.
+  local _omx_cap_ceil="${ORACLE_MAX_CAP_CEILING:-3600}"
+  case "$_omx_cap_ceil" in ''|*[!0-9]*|0) _omx_cap_ceil=3600;; esac
+  if [ "$cap" -gt "$_omx_cap_ceil" ]; then
+    echo "oracle-max: timeout cap $cap exceeds ceiling $_omx_cap_ceil — clamping" >&2
+    cap="$_omx_cap_ceil"
+  fi
   # Fail closed if the output dir can't be created — otherwise background mode
   # would return 'dispatched' but the child could never write "$out.rc".
   mkdir -p "$(dirname "$out")" 2>/dev/null || { printf 'error'; return 1; }
@@ -103,8 +112,11 @@ oracle_max_consult() {
 
   # blocking, under the portable timeout cap. Keep stderr (oracle's --heartbeat
   # progress) on the terminal; only discard stdout.
-  local rc
-  _portable_timeout "${cap}" oracle "$@" >/dev/null; rc=$?
+  # errexit-safe: capture rc via `|| rc=$?` so a non-zero oracle exit cannot abort
+  # the caller (this lib may be sourced under `set -e`) before the status token is
+  # printed — the fail-closed 'error'/'timeout' tokens below depend on reaching them.
+  local rc=0
+  _portable_timeout "${cap}" oracle "$@" >/dev/null || rc=$?
   if [ "$rc" = 124 ]; then printf 'timeout'; return 124; fi
   if [ "$rc" != 0 ]; then printf 'error'; return 1; fi
   [ -s "$out" ] || { printf 'error'; return 1; }   # exit 0 but no verdict = fail-closed

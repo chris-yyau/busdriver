@@ -4,6 +4,11 @@ set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAIL=0
 tmp="$(mktemp -d)"; export HOME="$tmp"; mkdir -p "$tmp/.claude"; cd "$tmp" || exit 1
+# Pin env so inherited values can't make the clamp/path assertions host-dependent:
+# a stray ORACLE_MAX_CAP_CEILING would change the oversized-cap -> 3600 expectation,
+# and a stray BUSDRIVER_STATE_DIR would point reads at the wrong config path.
+unset ORACLE_MAX_CAP_CEILING
+export BUSDRIVER_STATE_DIR=".claude"
 git init -q .
 mkdir -p "$tmp/proj/.claude"; cd "$tmp/proj" || exit 1; git init -q .
 

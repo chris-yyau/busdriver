@@ -823,12 +823,15 @@ WARNING: ORACLE-MAX ADVISORY FAILED [$_omx_term] -- verdict NOT included (visibl
     # OR the optional adapter failed to source while enabled (must warn — never
     # silent). Check config via _read_config_value (always loaded from resolve-cli.sh)
     # so the warning does not depend on the optional adapter's own functions.
+    # USER config ONLY (mirrors oracle_max_config_get_user): a repo-controlled
+    # project config must NOT flip this enablement probe — reading it would
+    # contradict the user-config-only opt-in boundary the whole feature enforces
+    # (a branch could otherwise surface a misleading "enabled" warning).
     _omx_en=""
-    for _omx_cfg in "$STATE_DIR/busdriver.json" "$HOME/$STATE_DIR/busdriver.json"; do
-      [ -f "$_omx_cfg" ] || continue
-      _omx_en="$(_read_config_value "$_omx_cfg" '.oracleMax.blueprintReview.enabled' 2>/dev/null || true)"
-      [ -n "$_omx_en" ] && break
-    done
+    _omx_user_cfg="$HOME/$STATE_DIR/busdriver.json"
+    if [ -f "$_omx_user_cfg" ]; then
+      _omx_en="$(_read_config_value "$_omx_user_cfg" '.oracleMax.blueprintReview.enabled' 2>/dev/null || true)"
+    fi
     case "$(printf '%s' "$_omx_en" | tr '[:upper:]' '[:lower:]')" in
       true|1)
         ORACLE_MAX_ADVISORY_SECTION="=============================================================================

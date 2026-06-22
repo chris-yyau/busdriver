@@ -156,7 +156,7 @@ You are both a council member AND the synthesizer. This is a conflict of interes
 
 ### Optional Oracle-Max Voice (opt-in, off by default)
 
-**Dispatch this inside the Step 4 PARALLEL block (NOT after synthesis); read its verdict during synthesis.** A 6th GPT-5.5 Pro "oracle-max" voice can be added ONLY when `oracleMax.council.enabled` is true in `${BUSDRIVER_STATE_DIR:-.opencode}/busdriver.json`, OR the user explicitly asks (export `ORACLE_MAX_COUNCIL_FORCE=1` for that run, as the snippet honors). Dispatched via the root-shared `oracle_max_consult` adapter (`${BUSDRIVER_PLUGIN_ROOT}/scripts/lib/oracle-max.sh`, the `oracle` CLI's ChatGPT Pro browser engine), backgrounded alongside the other voices.
+**Dispatch this inside the Step 4 PARALLEL block (NOT after synthesis); read its verdict during synthesis.** A 6th GPT-5.5 Pro "oracle-max" voice can be added ONLY when `oracleMax.council.enabled` is true in the operator's **USER config** `~/${BUSDRIVER_STATE_DIR:-.opencode}/busdriver.json` (a repo-controlled project config CANNOT enable it — security), OR the user explicitly asks (export `ORACLE_MAX_COUNCIL_FORCE=1` for that run, as the snippet honors). Dispatched via the root-shared `oracle_max_consult` adapter (`${BUSDRIVER_PLUGIN_ROOT}/scripts/lib/oracle-max.sh`, the `oracle` CLI's ChatGPT Pro browser engine), backgrounded alongside the other voices.
 
 > **NOT the arbiter.** The `oracle-max` voice is unrelated to the `task(subagent_type="oracle")` arbiter used in blueprint-review — they merely share the substring "oracle".
 

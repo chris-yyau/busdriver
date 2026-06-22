@@ -23,6 +23,21 @@ oracle_max_config_get() {
   if [ -n "$val" ] && [ "$val" != "null" ]; then printf '%s' "$val"; else printf '%s' "$default"; fi
 }
 
+# oracle_max_config_get_user <jq-path> <default>
+# Reads ONLY the user config (~/.claude/busdriver.json) — NEVER the repo-controlled
+# project config. Used for the security-sensitive fields (enablement + chromeProfileDir)
+# so a malicious branch cannot opt a reviewer into transmitting the design to ChatGPT
+# Pro or cloning their browser profile without a user-local opt-in.
+oracle_max_config_get_user() {
+  local jq_path="$1" default="$2" val="" state_dir="${BUSDRIVER_STATE_DIR:-.claude}"
+  local user_config="$HOME/$state_dir/busdriver.json"
+  if [ -f "$user_config" ]; then
+    val="$(_read_config_value "$user_config" "$jq_path" 2>/dev/null || true)"
+  fi
+  if [ -n "$val" ] && [ "$val" != "null" ]; then printf '%s' "$val"; else printf '%s' "$default"; fi
+}
+
+# Non-sensitive: project config may override (model choice, timeout cap).
 oracle_max_model() { oracle_max_config_get '.oracleMax.model' 'gpt-5.5-pro'; }
 
 # Validate as a positive integer; non-numeric/empty/zero -> warn + 900 default.
@@ -36,12 +51,13 @@ oracle_max_timeout_cap() {
 }
 
 oracle_max_chrome_profile() {
-  # Returns "" by default (no --copy-profile) so we do NOT clone the operator's
-  # main Chrome profile — and its cookies/sessions — by default. Set
-  # oracleMax.chromeProfileDir to a dedicated, ChatGPT-only Chrome profile to opt
+  # USER config only (security-sensitive — clones a browser session). Returns "" by
+  # default (no --copy-profile) so we do NOT clone the operator's main Chrome
+  # profile — and its cookies/sessions — by default. Set oracleMax.chromeProfileDir
+  # in ~/.claude/busdriver.json to a dedicated, ChatGPT-only Chrome profile to opt
   # into login-free runs. Supports `~` and `~/...` only (not `~user/...`). Value
   # may contain spaces — callers MUST keep it quoted.
-  local d; d="$(oracle_max_config_get '.oracleMax.chromeProfileDir' '')"
+  local d; d="$(oracle_max_config_get_user '.oracleMax.chromeProfileDir' '')"
   # Matching a literal leading tilde from config (not requesting expansion).
   # shellcheck disable=SC2088
   case "$d" in "~"|"~/"*) d="$HOME${d#\~}";; esac
@@ -49,8 +65,10 @@ oracle_max_chrome_profile() {
 }
 
 # oracle_max_surface_enabled <brainstorming|blueprintReview|council> -> exit 0 if true.
+# USER config ONLY (security-sensitive — enabling transmits content to ChatGPT Pro;
+# a repo-controlled project config must NOT be able to opt a reviewer in).
 # Normalize: jq emits `true`, but resolve-cli.sh's python3 fallback emits `True`.
 oracle_max_surface_enabled() {
-  local v; v="$(oracle_max_config_get ".oracleMax.${1}.enabled" 'false')"
+  local v; v="$(oracle_max_config_get_user ".oracleMax.${1}.enabled" 'false')"
   case "$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')" in true|1) return 0;; *) return 1;; esac
 }

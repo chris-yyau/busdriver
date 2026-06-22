@@ -130,7 +130,7 @@ This is a **single Bash call** with all three CLI dispatches as background proce
 
 ### Step 4.5: Optional Oracle-Max Voice (opt-in, off by default)
 
-A 6th GPT-5.5 Pro "oracle-max" voice can be added ONLY when `oracleMax.council.enabled` is true in `.claude/busdriver.json`, OR the user explicitly asks (in which case export `ORACLE_MAX_COUNCIL_FORCE=1` for that run, as the snippet below honors). It is dispatched via the shared `oracle_max_consult` adapter (the `oracle` CLI's ChatGPT Pro browser engine), inside the SAME single-Bash dispatch block as the other voices (separate Bash calls serialize/cancel — see Step 4).
+A 6th GPT-5.5 Pro "oracle-max" voice can be added ONLY when `oracleMax.council.enabled` is true in the operator's **USER config** `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it — security), OR the user explicitly asks (in which case export `ORACLE_MAX_COUNCIL_FORCE=1` for that run, as the snippet below honors). It is dispatched via the shared `oracle_max_consult` adapter (the `oracle` CLI's ChatGPT Pro browser engine), inside the SAME single-Bash dispatch block as the other voices (separate Bash calls serialize/cancel — see Step 4).
 
 **Trade-off (why it's off by default):** a single slow Pro voice both dilutes council's diversity (one vote, outvoteable) and makes every council it joins run minutes instead of seconds. Never add it to the default roster.
 

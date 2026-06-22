@@ -105,7 +105,7 @@ See `.opencode/busdriver.json` for per-role routing configuration.
 
 ## Optional Oracle-Max Advisory (opt-in, auxiliary — NOT a reviewer)
 
-When `oracleMax.blueprintReview.enabled` is true in `${BUSDRIVER_STATE_DIR:-.opencode}/busdriver.json`, the loop dispatches a GPT-5.5 Pro "oracle-max" consult (via the `oracle` CLI's ChatGPT Pro browser engine, the root-shared `scripts/lib/oracle-max.sh` adapter) **in parallel** with Agy/Codex/Grok and injects its verdict into the arbiter prompt under a clearly labelled `OPTIONAL ORACLE-MAX ADVISORY` block.
+When `oracleMax.blueprintReview.enabled` is true in the operator's **USER config** `~/${BUSDRIVER_STATE_DIR:-.opencode}/busdriver.json` (a repo-controlled project config CANNOT enable it — security), the loop dispatches a GPT-5.5 Pro "oracle-max" consult (via the `oracle` CLI's ChatGPT Pro browser engine, the root-shared `scripts/lib/oracle-max.sh` adapter) **in parallel** with Agy/Codex/Grok and injects its verdict into the arbiter prompt under a clearly labelled `OPTIONAL ORACLE-MAX ADVISORY` block.
 
 > **NOT the arbiter.** The `oracle-max` consult voice is unrelated to the `subagent_type="oracle"` arbiter dispatched above — they merely share the substring "oracle". The arbiter remains the `task(subagent_type="oracle")` subagent; oracle-max is an auxiliary GPT-5.5 Pro advisory.
 

@@ -184,7 +184,7 @@ Skip the grill and proceed to Step 6. The design doc will not contain a Key Deci
 
 ## Step 5.6: Oracle-Max Consult (blocking, opt-in)
 
-After the grill (5.5), before writing the doc (Step 6). Fires only if `oracleMax.brainstorming.enabled` is true in `.claude/busdriver.json`, OR the user used a trigger ("consult the oracle"/"ask the oracle"). Skipped silently otherwise.
+After the grill (5.5), before writing the doc (Step 6). Fires only if `oracleMax.brainstorming.enabled` is true in the operator's **USER config** `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it — this prevents a branch from transmitting your design to ChatGPT Pro without your local opt-in), OR the user used a trigger ("consult the oracle"/"ask the oracle"). Skipped silently otherwise.
 
 **Latency:** a GPT-5.5 Pro consult runs minutes (oracle default HTTP timeout 20m, Pro auto-timeout ~60m). This is a deliberate BLOCKING wait; the adapter surfaces oracle's `--heartbeat` progress on the terminal.
 

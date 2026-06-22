@@ -56,9 +56,9 @@ docs/superpowers/plans/
 docs/superpowers/specs/
 .local-archive/
 
-# oracle-max consult verdict output (skip-oracle-max.local already covered by *.local globs)
-.claude/oracle-max/
-.opencode/oracle-max/
+# ultra-oracle consult verdict output (skip-ultra-oracle.local already covered by *.local globs)
+.claude/ultra-oracle/
+.opencode/ultra-oracle/
 
 # codex-goal-handover run artifacts (per-iter logs, verifier outputs, result JSONs)
 # New runs go to ${TMPDIR:-/tmp}/codex-goal-runs/ (see codex-goal-handover SKILL.md);

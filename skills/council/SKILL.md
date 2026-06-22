@@ -132,41 +132,41 @@ This is a **single Bash call** with all three CLI dispatches as background proce
 
 ### Step 4.5: Optional Oracle-Max Voice (opt-in, off by default)
 
-A 6th GPT-5.5 Pro "oracle-max" voice can be added ONLY when `oracleMax.council.enabled` is true in the operator's **USER config** `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it — security), OR the user explicitly asks (in which case export `ORACLE_MAX_COUNCIL_FORCE=1` for that run, as the snippet below honors). It is dispatched via the shared `oracle_max_consult` adapter (the `oracle` CLI's ChatGPT Pro browser engine), inside the SAME single-Bash dispatch block as the other voices (separate Bash calls serialize/cancel — see Step 4).
+A 6th GPT-5.5 Pro "ultra-oracle" voice can be added ONLY when `ultraOracle.council.enabled` is true in the operator's **USER config** `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it — security), OR the user explicitly asks (in which case export `ULTRA_ORACLE_COUNCIL_FORCE=1` for that run, as the snippet below honors). It is dispatched via the shared `ultra_oracle_consult` adapter (the `oracle` CLI's ChatGPT Pro browser engine), inside the SAME single-Bash dispatch block as the other voices (separate Bash calls serialize/cancel — see Step 4).
 
 **Trade-off (why it's off by default):** a single slow Pro voice both dilutes council's diversity (one vote, outvoteable) and makes every council it joins run minutes instead of seconds. Never add it to the default roster.
 
-**Data boundary:** oracle-max transmits the council question to ChatGPT Pro via the oracle browser engine; if `oracleMax.chromeProfileDir` is set it clones that Chrome profile's session — use a dedicated ChatGPT-only profile. Do not enable where the question would carry secrets.
+**Data boundary:** ultra-oracle transmits the council question to ChatGPT Pro via the oracle browser engine; if `ultraOracle.chromeProfileDir` is set it clones that Chrome profile's session — use a dedicated ChatGPT-only profile. Prefer `ultraOracle.cookiePath` (a signed-in Chrome Cookies DB path) to reuse the session headlessly without cloning the whole profile — the reliable path where Chrome app-bound cookie encryption defeats `--copy-profile`.. Do not enable where the question would carry secrets.
 
 Wiring (inside the Step 4 dispatch Bash block, when enabled):
 
 ```bash
-ORACLE_MAX_OUT=""; ORACLE_MAX_STATUS=""
-# Enabled via config, OR forced for one run on explicit user request (ORACLE_MAX_COUNCIL_FORCE=1).
-if source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/oracle-max.sh" 2>/dev/null \
-   && { oracle_max_surface_enabled council || [ "${ORACLE_MAX_COUNCIL_FORCE:-0}" = 1 ]; }; then
-  ORACLE_MAX_OUT="${BUSDRIVER_STATE_DIR:-.claude}/oracle-max/council-$$.md"
-  mkdir -p "${BUSDRIVER_STATE_DIR:-.claude}/oracle-max"
-  cat > "$ORACLE_MAX_OUT.prompt" <<'ORACLE_MAX_PROMPT'
+ULTRA_ORACLE_OUT=""; ULTRA_ORACLE_STATUS=""
+# Enabled via config, OR forced for one run on explicit user request (ULTRA_ORACLE_COUNCIL_FORCE=1).
+if source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/ultra-oracle.sh" 2>/dev/null \
+   && { ultra_oracle_surface_enabled council || [ "${ULTRA_ORACLE_COUNCIL_FORCE:-0}" = 1 ]; }; then
+  ULTRA_ORACLE_OUT="${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/council-$$.md"
+  mkdir -p "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle"
+  cat > "$ULTRA_ORACLE_OUT.prompt" <<'ULTRA_ORACLE_PROMPT'
 <the council question + context — same text composed into the other voices' heredocs>
-ORACLE_MAX_PROMPT
-  ORACLE_MAX_STATUS="$(oracle_max_consult --mode background --slug "oracle max council voice" \
-    --out "$ORACLE_MAX_OUT" --prompt-file "$ORACLE_MAX_OUT.prompt" 2>/dev/null || true)"
+ULTRA_ORACLE_PROMPT
+  ULTRA_ORACLE_STATUS="$(ultra_oracle_consult --mode background --slug "ultra oracle council voice" \
+    --out "$ULTRA_ORACLE_OUT" --prompt-file "$ULTRA_ORACLE_OUT.prompt" 2>/dev/null || true)"
 fi
 # ... existing PIDS dispatch + `wait "${PIDS[@]}"` ...
 ```
 
-**Synthesis (Step 5):** ONLY when the voice was actually attempted (`$ORACLE_MAX_OUT` non-empty). A disabled council leaves it empty and skips this block entirely — no banner. Note `--mode background` returns `dispatched` on a *successful launch*; whether a verdict was produced is decided by the `.rc` + verdict file, NOT the status token:
+**Synthesis (Step 5):** ONLY when the voice was actually attempted (`$ULTRA_ORACLE_OUT` non-empty). A disabled council leaves it empty and skips this block entirely — no banner. Note `--mode background` returns `dispatched` on a *successful launch*; whether a verdict was produced is decided by the `.rc` + verdict file, NOT the status token:
 
 ```bash
-if [ -n "$ORACLE_MAX_OUT" ]; then   # voice was attempted (enabled)
-  if [ "$ORACLE_MAX_STATUS" = dispatched ]; then
-    n=0; while [ ! -f "$ORACLE_MAX_OUT.rc" ] && [ "$n" -lt "$(oracle_max_timeout_cap)" ]; do sleep 2; n=$((n + 2)); done
+if [ -n "$ULTRA_ORACLE_OUT" ]; then   # voice was attempted (enabled)
+  if [ "$ULTRA_ORACLE_STATUS" = dispatched ]; then
+    n=0; while [ ! -f "$ULTRA_ORACLE_OUT.rc" ] && [ "$n" -lt "$(ultra_oracle_timeout_cap)" ]; do sleep 2; n=$((n + 2)); done
   fi
-  if [ -s "$ORACLE_MAX_OUT" ] && [ "$(cat "$ORACLE_MAX_OUT.rc" 2>/dev/null)" = 0 ]; then
-    : # include the verdict as the oracle-max voice in synthesis
+  if [ -s "$ULTRA_ORACLE_OUT" ] && [ "$(cat "$ULTRA_ORACLE_OUT.rc" 2>/dev/null)" = 0 ]; then
+    : # include the verdict as the ultra-oracle voice in synthesis
   else
-    : # render "⚠ ORACLE-MAX VOICE FAILED [$ORACLE_MAX_STATUS] — verdict NOT included" prominently
+    : # render "⚠ ORACLE-MAX VOICE FAILED [$ULTRA_ORACLE_STATUS] — verdict NOT included" prominently
   fi
 fi
 ```

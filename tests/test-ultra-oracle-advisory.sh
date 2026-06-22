@@ -1,7 +1,7 @@
 #!/bin/bash
-# tests/test-oracle-max-advisory.sh
+# tests/test-ultra-oracle-advisory.sh
 # Exercises the background-dispatch mechanism the blueprint-review auxiliary
-# advisory relies on: oracle_max_consult --mode background must return a typed
+# advisory relies on: ultra_oracle_consult --mode background must return a typed
 # status, and on a real dispatch must eventually write "$out.rc" + the verdict.
 set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -12,14 +12,14 @@ cat > "$tmp/bin/oracle" <<'EOF'
 #!/bin/bash
 out=""
 while [ $# -gt 0 ]; do case "$1" in --write-output) out="$2"; shift 2;; *) shift;; esac; done
-case "${ORACLE_MAX_MOCK_MODE:-ok}" in
+case "${ULTRA_ORACLE_MOCK_MODE:-ok}" in
   ok)   [ -n "$out" ] && printf 'ADVISORY: plan looks sound\n' > "$out"; exit 0;;
   fail) exit 9;;
 esac
 EOF
 chmod +x "$tmp/bin/oracle"; export PATH="$tmp/bin:$PATH"
 # shellcheck source=/dev/null
-source "$DIR/scripts/lib/oracle-max.sh"
+source "$DIR/scripts/lib/ultra-oracle.sh"
 
 # helper: bounded wait for the .rc completion marker
 wait_rc() {
@@ -32,34 +32,34 @@ wait_rc() {
 }
 
 # (a) background dispatch -> 'dispatched', then .rc=0 and verdict written
-export ORACLE_MAX_MOCK_MODE=ok
-st="$(oracle_max_consult --mode background --prompt "review the plan" --slug "oracle max plan review" --out "$tmp/a.md")"
+export ULTRA_ORACLE_MOCK_MODE=ok
+st="$(ultra_oracle_consult --mode background --prompt "review the plan" --slug "ultra oracle plan review" --out "$tmp/a.md")"
 [ "$st" = "dispatched" ] || { echo "FAIL background status got '$st'"; FAIL=1; }
 wait_rc "$tmp/a.md" || { echo "FAIL .rc never written (a)"; FAIL=1; }
 [ "$(cat "$tmp/a.md.rc" 2>/dev/null)" = "0" ] || { echo "FAIL .rc not 0"; FAIL=1; }
 grep -q "ADVISORY:" "$tmp/a.md" || { echo "FAIL verdict not written"; FAIL=1; }
 
 # (b) background dispatch with failing oracle -> .rc non-zero (caller banners failure)
-export ORACLE_MAX_MOCK_MODE=fail
-st="$(oracle_max_consult --mode background --prompt "review the plan" --slug "oracle max plan review" --out "$tmp/b.md")"
+export ULTRA_ORACLE_MOCK_MODE=fail
+st="$(ultra_oracle_consult --mode background --prompt "review the plan" --slug "ultra oracle plan review" --out "$tmp/b.md")"
 [ "$st" = "dispatched" ] || { echo "FAIL background(fail) status got '$st'"; FAIL=1; }
 wait_rc "$tmp/b.md" || { echo "FAIL .rc never written on fail path (b)"; FAIL=1; }
 _rc_b="$(cat "$tmp/b.md.rc" 2>/dev/null)"
 { [ -n "$_rc_b" ] && [ "$_rc_b" != "0" ]; } || { echo "FAIL .rc should exist and be non-zero on fail (got '$_rc_b')"; FAIL=1; }
 
 # (c) operator skip -> 'skipped:user', no dispatch, no .rc
-export ORACLE_MAX_MOCK_MODE=ok
-touch "$tmp/.claude/skip-oracle-max.local"
-st="$(oracle_max_consult --mode background --prompt "review the plan" --slug "oracle max plan review" --out "$tmp/c.md")"
+export ULTRA_ORACLE_MOCK_MODE=ok
+touch "$tmp/.claude/skip-ultra-oracle.local"
+st="$(ultra_oracle_consult --mode background --prompt "review the plan" --slug "ultra oracle plan review" --out "$tmp/c.md")"
 [ "$st" = "skipped:user" ] || { echo "FAIL skip status got '$st'"; FAIL=1; }
 [ -f "$tmp/c.md.rc" ] && { echo "FAIL skip should not write .rc"; FAIL=1; }
-rm -f "$tmp/.claude/skip-oracle-max.local"
+rm -f "$tmp/.claude/skip-ultra-oracle.local"
 
 # (d) unavailable -> 'skipped:unavailable' (caller banners; never spins on a missing .rc)
 OLDPATH="$PATH"; PATH="/usr/bin:/bin"
-st="$(oracle_max_consult --mode background --prompt "review the plan" --slug "oracle max plan review" --out "$tmp/d.md")"
+st="$(ultra_oracle_consult --mode background --prompt "review the plan" --slug "ultra oracle plan review" --out "$tmp/d.md")"
 [ "$st" = "skipped:unavailable" ] || { echo "FAIL unavail status got '$st'"; FAIL=1; }
 PATH="$OLDPATH"
-unset ORACLE_MAX_MOCK_MODE
+unset ULTRA_ORACLE_MOCK_MODE
 
-[ "$FAIL" = 0 ] && echo "PASS test-oracle-max-advisory" || exit 1
+[ "$FAIL" = 0 ] && echo "PASS test-ultra-oracle-advisory" || exit 1

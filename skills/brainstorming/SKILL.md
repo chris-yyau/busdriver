@@ -34,7 +34,7 @@ You MUST create a task for each of these items and complete them in order:
 4. **Classify decisions, then propose approaches** — classify each decision (reversibility × confidence; see "Exploring approaches" below); decide reversible implementation details yourself (any confidence) and recommend defaults for high-confidence low-reversibility decisions; surface only user-facing picks as 2-3 options with trade-offs and your recommendation
 5. **Present design** — in sections scaled to their complexity, get user approval after each section
    - **Step 5.5 (Optional Grill, intensifier)** — after design is approved at Step 5 but before Step 6 writes the doc, evaluate signal triggers and offer the user a grill if any fire. See "Step 5.5: Optional Grill" section below.
-   - **Step 5.6 (Optional oracle-max consult, blocking)** — after the grill (5.5) and before writing the doc (Step 6), if enabled, run a GPT-5.5 Pro design critique. See "Step 5.6: Oracle-Max Consult" section below.
+   - **Step 5.6 (Optional ultra-oracle consult, blocking)** — after the grill (5.5) and before writing the doc (Step 6), if enabled, run a GPT-5.5 Pro design critique. See "Step 5.6: Oracle-Max Consult" section below.
 6. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`. **Do NOT commit yet** — commit happens at Step 8b after the hash is finalized. If a `<!-- GRILL-DECISIONS-BEGIN -->...<!-- GRILL-DECISIONS-END -->` block exists in the conversation, paste the **entire block** (including all four HTML comments — two boundary sentinels `<!-- GRILL-DECISIONS-BEGIN -->` and `<!-- GRILL-DECISIONS-END -->`, plus two metadata comments `<!-- design-hash: ... -->` and `<!-- grill-status: ... -->`) verbatim into the design doc as the "Key Decisions" section, following the block placement contract in `skills/grill-me/SKILL.md`'s Direct-on-disk Sub-case B (blank line before BEGIN, BEGIN on its own line, trailing newline after END). **Leave the `design-hash` line as `sha256:PENDING`** — hash finalization happens at Step 8b (after user review) so any post-paste edits don't leave the stored hash stale.
 7. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below). Apply edits if needed; the design-hash placeholder is still `PENDING` so no recompute required yet.
 8. **User reviews written spec** — ask user to review the spec file before proceeding. If user requests revisions, apply them; design-hash is still `PENDING`.
@@ -55,7 +55,7 @@ digraph brainstorming {
     "User approves design?" [shape=diamond];
     "Step 5.5: Offer grill?" [shape=diamond];
     "Invoke grill-me" [shape=box];
-    "Step 5.6: oracle-max consult?" [shape=diamond];
+    "Step 5.6: ultra-oracle consult?" [shape=diamond];
     "Write design doc" [shape=box];
     "Spec self-review\n(fix inline)" [shape=box];
     "User reviews spec?" [shape=diamond];
@@ -73,10 +73,10 @@ digraph brainstorming {
     "User approves design?" -> "Present design sections" [label="no, revise"];
     "User approves design?" -> "Step 5.5: Offer grill?" [label="yes"];
     "Step 5.5: Offer grill?" -> "Invoke grill-me" [label="user yes"];
-    "Step 5.5: Offer grill?" -> "Step 5.6: oracle-max consult?" [label="user no"];
+    "Step 5.5: Offer grill?" -> "Step 5.6: ultra-oracle consult?" [label="user no"];
     "Invoke grill-me" -> "Present design sections" [label="material design change"];
-    "Invoke grill-me" -> "Step 5.6: oracle-max consult?" [label="no material change"];
-    "Step 5.6: oracle-max consult?" -> "Write design doc" [label="ok / skipped / disabled"];
+    "Invoke grill-me" -> "Step 5.6: ultra-oracle consult?" [label="no material change"];
+    "Step 5.6: ultra-oracle consult?" -> "Write design doc" [label="ok / skipped / disabled"];
     "Write design doc" -> "Spec self-review\n(fix inline)";
     "Spec self-review\n(fix inline)" -> "User reviews spec?";
     "User reviews spec?" -> "Write design doc" [label="changes requested"];
@@ -184,26 +184,26 @@ Skip the grill and proceed to Step 6. The design doc will not contain a Key Deci
 
 ## Step 5.6: Oracle-Max Consult (blocking, opt-in)
 
-After the grill (5.5), before writing the doc (Step 6). Fires only if `oracleMax.brainstorming.enabled` is true in the operator's **USER config** `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it — this prevents a branch from transmitting your design to ChatGPT Pro without your local opt-in), OR the user used a trigger ("consult the oracle"/"ask the oracle"). Skipped silently otherwise.
+After the grill (5.5), before writing the doc (Step 6). Fires only if `ultraOracle.brainstorming.enabled` is true in the operator's **USER config** `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it — this prevents a branch from transmitting your design to ChatGPT Pro without your local opt-in), OR the user used a trigger ("consult the oracle"/"ask the oracle"). Skipped silently otherwise.
 
 **Latency:** a GPT-5.5 Pro consult runs minutes (oracle default HTTP timeout 20m, Pro auto-timeout ~60m). This is a deliberate BLOCKING wait; the adapter surfaces oracle's `--heartbeat` progress on the terminal.
 
-**Data boundary:** oracle-max transmits the prompt/context (here, the full design) to ChatGPT Pro via the oracle browser engine. If `oracleMax.chromeProfileDir` is set, oracle clones that Chrome profile (its cookies/session) for a login-free run — point it at a dedicated ChatGPT-only profile, not your main browser. Do not enable where the design would contain secrets.
+**Data boundary:** ultra-oracle transmits the prompt/context (here, the full design) to ChatGPT Pro via the oracle browser engine. If `ultraOracle.chromeProfileDir` is set, oracle clones that Chrome profile (its cookies/session) for a login-free run — point it at a dedicated ChatGPT-only profile, not your main browser. Prefer `ultraOracle.cookiePath` (a signed-in Chrome Cookies DB path) to reuse the session headlessly without cloning the whole profile — the reliable path where Chrome app-bound cookie encryption defeats `--copy-profile`. Do not enable where the design would contain secrets.
 
 Run ONLY when the gate condition holds (Claude evaluates the trigger and runs the block only then). **Write the design text to a file via a SINGLE-QUOTED heredoc and pass `--prompt-file`** — never interpolate design text (which routinely contains backticks, `$(...)`, `$VAR`, quotes) into a double-quoted shell argument:
 
 ```bash
-source "${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/cache/busdriver/busdriver/current}}/scripts/lib/oracle-max.sh"
-if oracle_max_surface_enabled brainstorming; then
-  mkdir -p "${BUSDRIVER_STATE_DIR:-.claude}/oracle-max"
-  cat > "${BUSDRIVER_STATE_DIR:-.claude}/oracle-max/design-critique-prompt.md" <<'ORACLE_MAX_EOF'
+source "${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/cache/busdriver/busdriver/current}}/scripts/lib/ultra-oracle.sh"
+if ultra_oracle_surface_enabled brainstorming; then
+  mkdir -p "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle"
+  cat > "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique-prompt.md" <<'ULTRA_ORACLE_EOF'
 Critique this approved design adversarially. Name the 3 biggest risks, any simpler alternative, and anything underspecified.
 
-<paste the full approved design text here — the single-quoted ORACLE_MAX_EOF marker prevents any backtick/$()/$VAR in the design from executing>
-ORACLE_MAX_EOF
-  status=$(oracle_max_consult --mode blocking --slug "oracle max design critique" \
-    --prompt-file "${BUSDRIVER_STATE_DIR:-.claude}/oracle-max/design-critique-prompt.md" \
-    --out "${BUSDRIVER_STATE_DIR:-.claude}/oracle-max/design-critique.md" || true)
+<paste the full approved design text here — the single-quoted ULTRA_ORACLE_EOF marker prevents any backtick/$()/$VAR in the design from executing>
+ULTRA_ORACLE_EOF
+  status=$(ultra_oracle_consult --mode blocking --slug "ultra oracle design critique" \
+    --prompt-file "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique-prompt.md" \
+    --out "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique.md" || true)
 fi
 ```
 
@@ -211,8 +211,8 @@ fi
 
 **Fail CLOSED (never silent):** branch on `$status`:
 - `ok` → read the verdict file, fold its critique into the conversation, let the user revise before Step 6.
-- `skipped:user` → an operator `skip-oracle-max.local` exists; note "oracle-max consult skipped (operator opt-out)" and proceed.
-- `skipped:unavailable` | `timeout` | `error` → surface verbatim: "⚠ oracle-max consult <status> — no verdict produced. Retry / skip-once / abort?" Do NOT proceed to Step 6 until the user picks. Skipping requires an explicit user choice.
+- `skipped:user` → an operator `skip-ultra-oracle.local` exists; note "ultra-oracle consult skipped (operator opt-out)" and proceed.
+- `skipped:unavailable` | `timeout` | `error` → surface verbatim: "⚠ ultra-oracle consult <status> — no verdict produced. Retry / skip-once / abort?" Do NOT proceed to Step 6 until the user picks. Skipping requires an explicit user choice.
 
 ## After the Design
 

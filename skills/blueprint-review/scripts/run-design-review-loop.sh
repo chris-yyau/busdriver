@@ -31,11 +31,11 @@ source "$SCRIPT_DIR/lib/validation.sh"
 _PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}}"
 # shellcheck source=../../../scripts/lib/resolve-cli.sh
 source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"
-# Optional oracle-max (GPT-5.5 Pro) auxiliary advisory (opt-in; visible best-effort).
-# shellcheck source=../../../scripts/lib/oracle-max.sh
-source "$_PLUGIN_ROOT/scripts/lib/oracle-max.sh" 2>/dev/null || true
-ORACLE_MAX_ADVISORY_FILE=""        # set only when a fresh dispatch happens (non-claude-only)
-ORACLE_MAX_DISPATCH_STATUS=""      # dispatched | skipped:* | error
+# Optional ultra-oracle (GPT-5.5 Pro) auxiliary advisory (opt-in; visible best-effort).
+# shellcheck source=../../../scripts/lib/ultra-oracle.sh
+source "$_PLUGIN_ROOT/scripts/lib/ultra-oracle.sh" 2>/dev/null || true
+ULTRA_ORACLE_ADVISORY_FILE=""        # set only when a fresh dispatch happens (non-claude-only)
+ULTRA_ORACLE_DISPATCH_STATUS=""      # dispatched | skipped:* | error
 source "$SCRIPT_DIR/lib/state_management.sh"
 
 # Ensure output directory exists (namespaced per design doc)
@@ -436,14 +436,14 @@ while true; do
         2>/dev/null || true
   log_info "  Stale artifacts cleared"
 
-  # ── Optional oracle-max auxiliary advisory: dispatch in background (parallel) ──
+  # ── Optional ultra-oracle auxiliary advisory: dispatch in background (parallel) ──
   # Opt-in; visible best-effort. Capture the TYPED status (a skip writes no .rc).
   # Never in --claude-only mode (no design re-transmitted when the operator chose Claude-only).
-  if [ "$CLAUDE_ONLY" != "true" ] && command -v oracle_max_surface_enabled >/dev/null 2>&1 && oracle_max_surface_enabled blueprintReview; then
-    ORACLE_MAX_ADVISORY_FILE="$STATE_DIR/oracle-max/${RUN_ID}-plan-review.md"
-    rm -f "$ORACLE_MAX_ADVISORY_FILE" "$ORACLE_MAX_ADVISORY_FILE.rc" 2>/dev/null || true
-    ORACLE_MAX_DISPATCH_STATUS="$(oracle_max_consult --mode background --slug "oracle max plan review" \
-      --out "$ORACLE_MAX_ADVISORY_FILE" --context "$DESIGN_FILE" \
+  if [ "$CLAUDE_ONLY" != "true" ] && command -v ultra_oracle_surface_enabled >/dev/null 2>&1 && ultra_oracle_surface_enabled blueprintReview; then
+    ULTRA_ORACLE_ADVISORY_FILE="$STATE_DIR/ultra-oracle/${RUN_ID}-plan-review.md"
+    rm -f "$ULTRA_ORACLE_ADVISORY_FILE" "$ULTRA_ORACLE_ADVISORY_FILE.rc" 2>/dev/null || true
+    ULTRA_ORACLE_DISPATCH_STATUS="$(ultra_oracle_consult --mode background --slug "ultra oracle plan review" \
+      --out "$ULTRA_ORACLE_ADVISORY_FILE" --context "$DESIGN_FILE" \
       --prompt "You are an auxiliary design reviewer. Review this implementation plan for architectural risks, missing decomposition, and underspecified steps. Be concise." 2>/dev/null || true)"
   fi
 
@@ -792,29 +792,29 @@ with open(pending, "w") as f:
   CODEX_ISSUES=$(jq -r '.issues[] | "- [\(.severity)] \(.section): \(.description)"' "$CODEX_OUTPUT_FILE" 2>/dev/null || echo "No issues")
   GROK_ISSUES=$(jq -r '.issues[] | "- [\(.severity)] \(.section): \(.description)"' "$GROK_OUTPUT_FILE" 2>/dev/null || echo "No issues")
 
-  # ── Build the oracle-max advisory section (status-aware; only wait if dispatched) ──
-  ORACLE_MAX_ADVISORY_SECTION=""
-  if [ -n "${ORACLE_MAX_ADVISORY_FILE:-}" ]; then
-    if [ "$ORACLE_MAX_DISPATCH_STATUS" = "dispatched" ]; then
-      _omx_wait=0; _omx_cap="$(oracle_max_timeout_cap)"
-      while [ ! -f "$ORACLE_MAX_ADVISORY_FILE.rc" ] && [ "$_omx_wait" -lt "$_omx_cap" ]; do
+  # ── Build the ultra-oracle advisory section (status-aware; only wait if dispatched) ──
+  ULTRA_ORACLE_ADVISORY_SECTION=""
+  if [ -n "${ULTRA_ORACLE_ADVISORY_FILE:-}" ]; then
+    if [ "$ULTRA_ORACLE_DISPATCH_STATUS" = "dispatched" ]; then
+      _omx_wait=0; _omx_cap="$(ultra_oracle_timeout_cap)"
+      while [ ! -f "$ULTRA_ORACLE_ADVISORY_FILE.rc" ] && [ "$_omx_wait" -lt "$_omx_cap" ]; do
         sleep 2; _omx_wait=$((_omx_wait + 2))
       done
     fi
-    if [ -s "$ORACLE_MAX_ADVISORY_FILE" ] && [ -f "$ORACLE_MAX_ADVISORY_FILE.rc" ] && [ "$(cat "$ORACLE_MAX_ADVISORY_FILE.rc")" = "0" ]; then
-      ORACLE_MAX_ADVISORY_SECTION="=============================================================================
+    if [ -s "$ULTRA_ORACLE_ADVISORY_FILE" ] && [ -f "$ULTRA_ORACLE_ADVISORY_FILE.rc" ] && [ "$(cat "$ULTRA_ORACLE_ADVISORY_FILE.rc")" = "0" ]; then
+      ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
 OPTIONAL ORACLE-MAX (GPT-5.5 Pro) ADVISORY -- AUXILIARY, *NOT* A REVIEWER. There are still exactly THREE reviewers (Agy/Codex/Grok); do NOT count this block as a 4th lens or as independent agreement:
 =============================================================================
 
-$(cat "$ORACLE_MAX_ADVISORY_FILE")"
+$(cat "$ULTRA_ORACLE_ADVISORY_FILE")"
     else
-      _omx_rc="$(cat "$ORACLE_MAX_ADVISORY_FILE.rc" 2>/dev/null || true)"
-      if [ "$ORACLE_MAX_DISPATCH_STATUS" != "dispatched" ]; then _omx_term="$ORACLE_MAX_DISPATCH_STATUS"
+      _omx_rc="$(cat "$ULTRA_ORACLE_ADVISORY_FILE.rc" 2>/dev/null || true)"
+      if [ "$ULTRA_ORACLE_DISPATCH_STATUS" != "dispatched" ]; then _omx_term="$ULTRA_ORACLE_DISPATCH_STATUS"
       elif [ "$_omx_rc" = "124" ]; then _omx_term="timeout"
       elif [ -z "$_omx_rc" ]; then _omx_term="timeout (no completion within cap)"
       elif [ "$_omx_rc" != "0" ]; then _omx_term="error (rc=$_omx_rc)"
       else _omx_term="error (empty verdict)"; fi
-      ORACLE_MAX_ADVISORY_SECTION="=============================================================================
+      ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
 WARNING: ORACLE-MAX ADVISORY FAILED [$_omx_term] -- verdict NOT included (visible best-effort; the gate converges on the THREE reviewers Agy/Codex/Grok).
 ============================================================================="
     fi
@@ -823,18 +823,18 @@ WARNING: ORACLE-MAX ADVISORY FAILED [$_omx_term] -- verdict NOT included (visibl
     # OR the optional adapter failed to source while enabled (must warn — never
     # silent). Check config via _read_config_value (always loaded from resolve-cli.sh)
     # so the warning does not depend on the optional adapter's own functions.
-    # USER config ONLY (mirrors oracle_max_config_get_user): a repo-controlled
+    # USER config ONLY (mirrors ultra_oracle_config_get_user): a repo-controlled
     # project config must NOT flip this enablement probe — reading it would
     # contradict the user-config-only opt-in boundary the whole feature enforces
     # (a branch could otherwise surface a misleading "enabled" warning).
     _omx_en=""
     _omx_user_cfg="$HOME/$STATE_DIR/busdriver.json"
     if [ -f "$_omx_user_cfg" ]; then
-      _omx_en="$(_read_config_value "$_omx_user_cfg" '.oracleMax.blueprintReview.enabled' 2>/dev/null || true)"
+      _omx_en="$(_read_config_value "$_omx_user_cfg" '.ultraOracle.blueprintReview.enabled' 2>/dev/null || true)"
     fi
     case "$(printf '%s' "$_omx_en" | tr '[:upper:]' '[:lower:]')" in
       true|1)
-        ORACLE_MAX_ADVISORY_SECTION="=============================================================================
+        ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
 WARNING: ORACLE-MAX ADVISORY enabled but the adapter could not be loaded -- verdict NOT included (visible best-effort; gate converges on the THREE reviewers).
 =============================================================================" ;;
     esac
@@ -884,7 +884,7 @@ $GROK_ISSUES
 Full output:
 $(cat "$GROK_OUTPUT_FILE")
 
-$ORACLE_MAX_ADVISORY_SECTION
+$ULTRA_ORACLE_ADVISORY_SECTION
 
 =============================================================================
 VALIDATION TASK:

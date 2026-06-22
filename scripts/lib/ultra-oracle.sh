@@ -1,14 +1,14 @@
 #!/bin/bash
-# oracle-max.sh — the ONLY surface that touches the oracle CLI (Layer-2).
+# ultra-oracle.sh — the ONLY surface that touches the oracle CLI (Layer-2).
 # Advisory GPT-5.5 Pro consult via ChatGPT Pro subscription (--engine browser).
 # Fails CLOSED: prints ONE typed status token; callers MUST surface it, never
 # silently skip. Reuses resolve-cli.sh _portable_timeout + is_cli_available.
 # Harness-neutral; no bash-4-isms (no associative arrays / mapfile).
-_ORACLE_MAX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_ULTRA_ORACLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
-source "${_ORACLE_MAX_DIR}/oracle-max-config.sh"   # also transitively sources resolve-cli.sh
+source "${_ULTRA_ORACLE_DIR}/ultra-oracle-config.sh"   # also transitively sources resolve-cli.sh
 
-# oracle_max_consult --prompt <t> | --prompt-file <p>  [--context <glob>]... \
+# ultra_oracle_consult --prompt <t> | --prompt-file <p>  [--context <glob>]... \
 #   --out <path> [--mode blocking|background] [--timeout-cap-seconds <n>] [--slug <words>]
 # Prints exactly one of: ok | skipped:unavailable | skipped:user | timeout | error | dispatched
 #
@@ -16,9 +16,9 @@ source "${_ORACLE_MAX_DIR}/oracle-max-config.sh"   # also transitively sources r
 # oracle v0.15.0 has no --prompt-file flag, so the file content is passed via
 # --prompt "$(cat ...)". Command-substitution output is NOT re-parsed by the
 # shell, so backticks/$()/$VAR in the file stay literal.
-oracle_max_consult() {
+ultra_oracle_consult() {
   # oracle requires a 3-5 word --slug; default accordingly (callers override).
-  local prompt="" prompt_file="" mode="blocking" out="" slug="oracle max consult" cap=""
+  local prompt="" prompt_file="" mode="blocking" out="" slug="ultra oracle consult" cap=""
   local -a ctx_arr=()   # indexed array (bash-3.2 safe) — preserves paths with spaces
   while [ $# -gt 0 ]; do
     # Value-flags require an argument; a missing value returns a typed 'error'
@@ -42,20 +42,20 @@ oracle_max_consult() {
   # Require a prompt source — otherwise oracle would be dispatched with an empty
   # prompt and could return a meaningless advisory.
   [ -n "$prompt" ] || [ -n "$prompt_file" ] || { printf 'error'; return 1; }
-  [ -n "$cap" ] || cap="$(oracle_max_timeout_cap)"
+  [ -n "$cap" ] || cap="$(ultra_oracle_timeout_cap)"
   # Validate the cap regardless of source (explicit --timeout-cap-seconds bypasses
-  # oracle_max_timeout_cap); a 0/non-numeric value would break the fail-closed timeout.
+  # ultra_oracle_timeout_cap); a 0/non-numeric value would break the fail-closed timeout.
   case "$cap" in ''|*[!0-9]*|0)
-    echo "oracle-max: invalid timeout cap '$cap' — using config/default" >&2
-    cap="$(oracle_max_timeout_cap)" ;;
+    echo "ultra-oracle: invalid timeout cap '$cap' — using config/default" >&2
+    cap="$(ultra_oracle_timeout_cap)" ;;
   esac
   # Clamp an explicit numeric --timeout-cap-seconds to the same ceiling
-  # oracle_max_timeout_cap enforces (default 3600s) — otherwise an explicit cap
+  # ultra_oracle_timeout_cap enforces (default 3600s) — otherwise an explicit cap
   # bypasses the guardrail and can stall a reviewer with an arbitrarily long wait.
-  local _omx_cap_ceil="${ORACLE_MAX_CAP_CEILING:-3600}"
+  local _omx_cap_ceil="${ULTRA_ORACLE_CAP_CEILING:-3600}"
   case "$_omx_cap_ceil" in ''|*[!0-9]*|0) _omx_cap_ceil=3600;; esac
   if [ "$cap" -gt "$_omx_cap_ceil" ]; then
-    echo "oracle-max: timeout cap $cap exceeds ceiling $_omx_cap_ceil — clamping" >&2
+    echo "ultra-oracle: timeout cap $cap exceeds ceiling $_omx_cap_ceil — clamping" >&2
     cap="$_omx_cap_ceil"
   fi
   # Fail closed if the output dir can't be created — otherwise background mode
@@ -66,27 +66,46 @@ oracle_max_consult() {
   local state_dir git_root skip
   state_dir="${BUSDRIVER_STATE_DIR:-.claude}"
   git_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  skip="${git_root:+$git_root/}$state_dir/skip-oracle-max.local"
+  skip="${git_root:+$git_root/}$state_dir/skip-ultra-oracle.local"
   if [ -f "$skip" ]; then printf 'skipped:user'; return 0; fi
 
   # Health check — fail CLOSED (typed), never silent.
   if ! is_cli_available oracle; then printf 'skipped:unavailable'; return 3; fi
 
-  local model profile; model="$(oracle_max_model)"; profile="$(oracle_max_chrome_profile)"
+  local model profile cookie_path
+  model="$(ultra_oracle_model)"; profile="$(ultra_oracle_chrome_profile)"
+  cookie_path="$(ultra_oracle_cookie_path)"
 
   # Build argv (set -- positional building is bash-3.2 safe).
   set -- --engine browser -m "$model" --timeout "$cap" \
          --write-output "$out" --no-notify --heartbeat 30 --slug "$slug"
-  # Opt-in profile clone (see oracle_max_chrome_profile): empty by default so we
-  # do NOT expose the operator's main browser session unless explicitly configured.
-  [ -n "$profile" ] && [ -d "$profile" ] && set -- "$@" --copy-profile "$profile"
+  # Session reuse (both opt-in; empty by default so we do NOT expose the operator's
+  # main browser session unless explicitly configured). Prefer an explicit cookie DB
+  # (--browser-cookie-path) — it decrypts the live session in place via the OS keychain
+  # and is the reliable headless path where app-bound encryption defeats --copy-profile.
+  # A configured cookiePath is AUTHORITATIVE: if it is set we never silently fall back
+  # to a full-profile clone (a heavier, different-surface operation the operator did not
+  # ask for). If it is set but unreadable, skip session reuse and let the run fail closed
+  # if ChatGPT is not already signed in — never substitute --copy-profile.
+  if [ -n "$cookie_path" ]; then
+    if [ -r "$cookie_path" ]; then
+      set -- "$@" --browser-cookie-path "$cookie_path"
+    else
+      echo "ultra-oracle: cookiePath '$cookie_path' unreadable — skipping session reuse (run fails closed if ChatGPT is not signed in); NOT falling back to --copy-profile" >&2
+    fi
+  elif [ -n "$profile" ] && [ -d "$profile" ]; then
+    set -- "$@" --copy-profile "$profile"
+  fi
+  # Always hide the automation Chrome window — these are non-interactive background
+  # advisory consults; a focus-stealing window is disruptive and never needed here.
+  set -- "$@" --browser-hide-window
   local g; for g in "${ctx_arr[@]:-}"; do [ -n "$g" ] && set -- "$@" --file "$g"; done
   if [ -n "$prompt_file" ]; then
     # Fail closed if the prompt file is unreadable/empty — otherwise a silent cat
     # failure would invoke oracle with an empty prompt.
     if [ ! -r "$prompt_file" ] || [ ! -s "$prompt_file" ]; then printf 'error'; return 1; fi
     local pf_size; pf_size="$(wc -c < "$prompt_file" 2>/dev/null || echo 0)"
-    if [ "$pf_size" -gt "${ORACLE_MAX_INLINE_BYTES:-100000}" ]; then
+    if [ "$pf_size" -gt "${ULTRA_ORACLE_INLINE_BYTES:-100000}" ]; then
       # Too large to safely inline into argv (ARG_MAX) — attach as a file instead.
       set -- "$@" --file "$prompt_file" \
         --prompt "Follow the instructions in the attached file: $(basename "$prompt_file")"

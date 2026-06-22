@@ -103,6 +103,15 @@ If reviewer_1 and reviewer_2 resolve to the same CLI, the system runs single-rev
 
 See `.claude/busdriver.json` for per-role routing configuration.
 
+## Optional Oracle-Max Advisory (opt-in, auxiliary — NOT a reviewer)
+
+When `oracleMax.blueprintReview.enabled` is true in `.claude/busdriver.json`, the loop dispatches a GPT-5.5 Pro "oracle-max" consult (via the `oracle` CLI's ChatGPT Pro browser engine) **in parallel** with Agy/Codex/Grok and injects its verdict into the arbiter prompt under a clearly labelled `OPTIONAL ORACLE-MAX ADVISORY` block.
+
+- **NOT a coverage lens.** The reviewer count is always three. The advisory is auxiliary context only; the arbiter is instructed never to count it toward independent agreement or coverage.
+- **Visible best-effort (not blocking).** Unlike the brainstorming surface, a failed/timed-out consult here does NOT block the gate — the loop converges on the three reviewers and renders a loud `WARNING: ORACLE-MAX ADVISORY FAILED [...]` banner (visible, never silent). Hard-blocking a gate that already has three reviewers on a flaky experimental browser consult is the wrong trade-off.
+- Default OFF. Operator escape: `.claude/skip-oracle-max.local`. It does NOT run in `--claude-only` mode.
+- **Data boundary:** oracle-max transmits the plan/design to ChatGPT Pro via the oracle browser engine; if `oracleMax.chromeProfileDir` is set it clones that Chrome profile's session — point it at a dedicated ChatGPT-only profile. Do not enable on repos with sensitive code.
+
 ## Workflow
 
 ```dot

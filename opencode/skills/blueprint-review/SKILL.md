@@ -103,6 +103,17 @@ If reviewer_1 and reviewer_2 resolve to the same CLI, the system runs single-rev
 
 See `.opencode/busdriver.json` for per-role routing configuration.
 
+## Optional Oracle-Max Advisory (opt-in, auxiliary — NOT a reviewer)
+
+When `oracleMax.blueprintReview.enabled` is true in `${BUSDRIVER_STATE_DIR:-.opencode}/busdriver.json`, the loop dispatches a GPT-5.5 Pro "oracle-max" consult (via the `oracle` CLI's ChatGPT Pro browser engine, the root-shared `scripts/lib/oracle-max.sh` adapter) **in parallel** with Agy/Codex/Grok and injects its verdict into the arbiter prompt under a clearly labelled `OPTIONAL ORACLE-MAX ADVISORY` block.
+
+> **NOT the arbiter.** The `oracle-max` consult voice is unrelated to the `subagent_type="oracle"` arbiter dispatched above — they merely share the substring "oracle". The arbiter remains the `task(subagent_type="oracle")` subagent; oracle-max is an auxiliary GPT-5.5 Pro advisory.
+
+- **NOT a coverage lens.** The reviewer count is always three. The arbiter is instructed never to count the advisory toward independent agreement or coverage.
+- **Visible best-effort (not blocking).** A failed/timed-out consult does NOT block the gate; the loop converges on the three reviewers and renders a loud `WARNING: ORACLE-MAX ADVISORY FAILED [...]` banner (visible, never silent).
+- Default OFF. Operator escape: `${BUSDRIVER_STATE_DIR:-.opencode}/skip-oracle-max.local`. Does NOT run in `--claude-only` mode.
+- **Data boundary:** transmits the plan/design to ChatGPT Pro; if `oracleMax.chromeProfileDir` is set it clones that Chrome profile's session — use a dedicated ChatGPT-only profile. Do not enable on repos with sensitive code.
+
 ## Workflow
 
 ```dot

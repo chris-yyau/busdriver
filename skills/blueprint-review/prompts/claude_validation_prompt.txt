@@ -64,3 +64,4 @@ Rules:
 - Use validation_type to show relationship to other reviews
 - Cite specific code files when validating claims
 - Be thorough but efficient: focus on validating critical issues first
+- An optional "ORACLE-MAX ADVISORY" block may appear after the Grok review. It is AUXILIARY context (a GPT-5.5 Pro consult), NOT a reviewer: the reviewer count is always three (Agy/Codex/Grok), and the advisory must NEVER be counted toward independent agreement or coverage.

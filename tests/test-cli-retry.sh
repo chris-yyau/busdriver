@@ -76,6 +76,12 @@ _is_bare_transient_notice '{"status":"FAIL","issues":[{"description":"HTTP 500 h
 # A bare reason-phrase notice (no schema) IS transient — in either word order.
 _is_bare_transient_notice '502 Bad Gateway'                           && ok "bare 502 (code-first) → bare"          || bad "bare 502 (code-first) → bare"
 _is_bare_transient_notice 'Bad Gateway (502)'                         && ok "bare Bad Gateway (phrase-first) → bare" || bad "bare Bad Gateway (phrase-first) → bare"
+# Freeform council prose (no status/issues schema) that NAMES an HTTP/5xx code but
+# carries review-assessment vocabulary is a verdict, not a notice — the schema
+# exemption can't catch these, so _reads_as_review_prose must.
+_is_bare_transient_notice 'HTTP 500 handler lacks tests'              && bad "prose 'HTTP 500 ... lacks tests' → NOT bare" || ok "prose 'HTTP 500 ... lacks tests' → NOT bare"
+_is_bare_transient_notice 'the 503 retry path looks correct'         && bad "prose '503 ... looks correct' → NOT bare"    || ok "prose '503 ... looks correct' → NOT bare"
+_is_bare_transient_notice 'HTTP 429 backoff needs a test'            && bad "prose 'HTTP 429 ... needs a test' → NOT bare" || ok "prose 'HTTP 429 ... needs a test' → NOT bare"
 # Braces must NOT exempt a short error ENVELOPE — the hard token still wins.
 _is_bare_transient_notice '{"error":"ECONNRESET: socket hang up"}'    && ok "JSON error envelope → bare"            || bad "JSON error envelope → bare"
 _is_bare_transient_notice 'REVIEW_OK'                                  && bad "clean short output → NOT bare"        || ok "clean short output → NOT bare"

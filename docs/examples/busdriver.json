@@ -12,5 +12,13 @@
     "council.critic": ["codex", "droid"],
     "council.researcher": ["grok", "droid"],
     "blueprint-review.reviewer_3": ["grok", "droid"]
+  },
+  "oracleMax": {
+    "model": "gpt-5.5-pro",
+    "chromeProfileDir": "",
+    "timeoutCapSeconds": 900,
+    "brainstorming": { "enabled": false },
+    "blueprintReview": { "enabled": false },
+    "council": { "enabled": false }
   }
 }

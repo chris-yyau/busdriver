@@ -546,11 +546,17 @@ _is_transient_cli_error() {
 # that never occur in human review prose. This is DELIBERATELY narrower than
 # _is_transient_cli_error: it drops the ambiguous words "rate.limit", "overloaded",
 # and "capacity", which legitimately appear in review text ("capacity handling
-# looks correct"). Used ONLY to judge whether *clean-exit* output is a bare error
-# notice; the broad predicate stays for non-zero-exit output, which is genuine
-# error text rather than a possible review.
+# looks correct"). For the same reason the HTTP reason phrases (bad gateway,
+# service unavailable, gateway timeout, internal server error, too many requests)
+# match ONLY when adjacent to their numeric status code, in either word order
+# ("502 Bad Gateway" or "Bad Gateway (502)") — a bare phrase in clean exit-0
+# prose ("bad gateway handling looks correct") is a
+# review, not a transient notice, and must not be retried/replaced away. Real
+# wrapper notices carry the code; prose does not. Used ONLY to judge whether
+# *clean-exit* output is a bare error notice; the broad predicate stays for
+# non-zero-exit output, which is genuine error text rather than a possible review.
 _is_hard_transient_signal() {
-  grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|getaddrinfo|(http|status|code|response)[^0-9]{0,6}(429|5[0-9][0-9])|internal server error|bad gateway|service unavailable|gateway time-?out|too many requests'
+  grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|getaddrinfo|(http|status|code|response)[^0-9]{0,6}(429|5[0-9][0-9])|(429|5[0-9][0-9])[^0-9a-z]{0,4}(too many requests|bad gateway|service unavailable|gateway time-?out|internal server error)|(too many requests|bad gateway|service unavailable|gateway time-?out|internal server error)[^0-9a-z]{0,4}(429|5[0-9][0-9])'
 }
 
 # Max size (chars) of a "bare error notice" — output from a CLI that exits 0
@@ -571,12 +577,30 @@ CLI_BARE_ERROR_MAX_CHARS="${CLI_BARE_ERROR_MAX_CHARS:-512}"
 # error *envelope* like {"error":"ECONNRESET ..."} lacks that schema, so braces
 # alone do not exempt it — it still retries. Reviews also typically exceed the
 # size bound, a second backstop against misreading them as transient failures.
+# True (0) when output reads like a code review *discussing* an error term rather
+# than *being* a bare error notice. Freeform council prose (Pragmatist/Critic/
+# Researcher) has no "status"/"issues" envelope to key off, so a terse but valid
+# reply that names an HTTP/5xx code ("the HTTP 500 handler lacks tests", "503 retry
+# path looks correct") would otherwise trip _is_hard_transient_signal and be retried
+# away. Every term below is review-assessment vocabulary that does NOT appear in a
+# genuine network/5xx error notice ("502 Bad Gateway", "ECONNRESET: socket hang up",
+# "fetch failed"), so this guard cannot reclassify a true notice as a review — it
+# only rescues prose that the bare-notice heuristic would misfire on.
+_reads_as_review_prose() {
+  grep -qiE '\b(lacks?|looks (correct|good|fine|right|ok)|need(s|ed)? (a|an|to|more|tests?)|should (add|be|use|have|handle|return|check|verify|guard|consider)|consider|recommend|suggest|missing (a|an|tests?|guards?|checks?|coverage|handling)|edge case|refactor|rename|nit|LGTM|no issues|test coverage|docstring|assertion)\b'
+}
+
 _is_bare_transient_notice() {
   local out="$1"
   [[ "${#out}" -le "$CLI_BARE_ERROR_MAX_CHARS" ]] || return 1
   # Review schema present → it's a verdict, not a notice. Never bare.
   if printf '%s' "$out" | grep -qiE '"status"[[:space:]]*:' \
      && printf '%s' "$out" | grep -qiE '"issues"[[:space:]]*:'; then
+    return 1
+  fi
+  # Reads like a review discussing an error term → a verdict, not a notice. Closes
+  # the gap the schema exemption leaves open for *freeform* (non-schema) prose.
+  if printf '%s' "$out" | _reads_as_review_prose; then
     return 1
   fi
   printf '%s' "$out" | _is_hard_transient_signal

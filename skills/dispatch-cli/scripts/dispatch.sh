@@ -49,11 +49,27 @@ if ! type _is_transient_cli_error &>/dev/null; then
   }
 fi
 # Strict transient signal — only unambiguous network/protocol/5xx error tokens
-# (NOT the prose-ambiguous "rate.limit"/"overloaded"/"capacity"). Mirrors
-# _is_hard_transient_signal in resolve-cli.sh; used only for clean-exit output.
+# (NOT the prose-ambiguous "rate.limit"/"overloaded"/"capacity"). HTTP reason
+# phrases (bad gateway, service unavailable, gateway timeout, internal server
+# error, too many requests) match ONLY when adjacent to their numeric status
+# code, in either word order ("502 Bad Gateway" or "Bad Gateway (502)") so a
+# bare phrase in clean exit-0 prose ("bad gateway handling looks correct") is
+# treated as a review, not a transient notice. Mirrors _is_hard_transient_signal
+# in resolve-cli.sh; used only for clean-exit output.
 if ! type _is_hard_transient_signal &>/dev/null; then
   _is_hard_transient_signal() {
-    grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|getaddrinfo|(http|status|code|response)[^0-9]{0,6}(429|5[0-9][0-9])|internal server error|bad gateway|service unavailable|gateway time-?out|too many requests'
+    grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|getaddrinfo|(http|status|code|response)[^0-9]{0,6}(429|5[0-9][0-9])|(429|5[0-9][0-9])[^0-9a-z]{0,4}(too many requests|bad gateway|service unavailable|gateway time-?out|internal server error)|(too many requests|bad gateway|service unavailable|gateway time-?out|internal server error)[^0-9a-z]{0,4}(429|5[0-9][0-9])'
+  }
+fi
+# True (0) when output reads like a code review discussing an error term rather
+# than being a bare error notice — freeform council prose has no "status"/"issues"
+# envelope, so a terse valid reply naming an HTTP/5xx code would otherwise be
+# retried away. Every term is review-assessment vocabulary absent from genuine
+# error notices, so it cannot reclassify a true notice. Mirrors
+# _reads_as_review_prose in resolve-cli.sh; keep the word list in sync.
+if ! type _reads_as_review_prose &>/dev/null; then
+  _reads_as_review_prose() {
+    grep -qiE '\b(lacks?|looks (correct|good|fine|right|ok)|need(s|ed)? (a|an|to|more|tests?)|should (add|be|use|have|handle|return|check|verify|guard|consider)|consider|recommend|suggest|missing (a|an|tests?|guards?|checks?|coverage|handling)|edge case|refactor|rename|nit|LGTM|no issues|test coverage|docstring|assertion)\b'
   }
 fi
 # True (0) when an exit-0 output FILE is a bare transient-error notice
@@ -61,9 +77,11 @@ fi
 # error token, not a mere prose word). A real review/dispatch payload carrying the
 # review schema (top-level "status" + "issues") is exempted up front — it may
 # legitimately discuss a 5xx / network condition in a finding without being a
-# notice. A bare error envelope like {"error":"ECONNRESET ..."} lacks that schema
-# and still retries. Mirrors _is_bare_transient_notice in resolve-cli.sh;
-# CLI_BARE_ERROR_MAX_CHARS and the schema exemption are kept in sync.
+# notice. Freeform council prose that names an error term but carries review
+# vocabulary is exempted too (_reads_as_review_prose). A bare error envelope like
+# {"error":"ECONNRESET ..."} lacks both and still retries. Mirrors
+# _is_bare_transient_notice in resolve-cli.sh; CLI_BARE_ERROR_MAX_CHARS and the
+# exemptions are kept in sync.
 if ! type _is_bare_transient_notice_file &>/dev/null; then
   _is_bare_transient_notice_file() {
     local f="$1" sz
@@ -71,6 +89,10 @@ if ! type _is_bare_transient_notice_file &>/dev/null; then
     [[ "${sz:-0}" -le "${CLI_BARE_ERROR_MAX_CHARS:-512}" ]] || return 1
     # Review schema present → a verdict, not a notice. Never bare.
     if grep -qiE '"status"[[:space:]]*:' "$f" && grep -qiE '"issues"[[:space:]]*:' "$f"; then
+      return 1
+    fi
+    # Reads like a review discussing an error term → a verdict, not a notice.
+    if _reads_as_review_prose < "$f"; then
       return 1
     fi
     _is_hard_transient_signal < "$f"

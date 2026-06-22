@@ -54,6 +54,23 @@ printf 'SyntaxError at line 503 of review.js\n'  | _is_transient_cli_error && ba
 printf 'unable to bind on port 5000, exiting\n'  | _is_transient_cli_error && bad "port 5000 → NOT transient"         || ok "port 5000 → NOT transient"
 printf 'prompt consumed 1500 tokens, aborting\n' | _is_transient_cli_error && bad "1500 tokens → NOT transient"       || ok "1500 tokens → NOT transient"
 
+# ── Part A2: _is_bare_transient_notice ──────────────────────────────
+# Distinguishes a short clean-exit error notice (retry) from a real review that
+# merely discusses rate limits / 5xx (accept). Guards the success/break path.
+echo "── _is_bare_transient_notice ───────────────────────────────"
+_is_bare_transient_notice 'ECONNRESET: socket hang up'                 && ok "bare network notice → bare"            || bad "bare network notice → bare"
+_is_bare_transient_notice '503 Service Unavailable'                    && ok "bare 503 notice → bare"                || bad "bare 503 notice → bare"
+# Short, non-JSON reviews that merely USE prose words ("capacity", "rate limit")
+# must NOT be misread as bare notices — only HARD error tokens count.
+_is_bare_transient_notice 'capacity handling looks correct'           && bad "short prose 'capacity' → NOT bare"    || ok "short prose 'capacity' → NOT bare"
+_is_bare_transient_notice 'rate limit logic is fine'                  && bad "short prose 'rate limit' → NOT bare"  || ok "short prose 'rate limit' → NOT bare"
+_is_bare_transient_notice '{"status":"FAIL","issues":[{"description":"handle the 503 / rate limit path"}]}' && bad "JSON review mentioning 5xx → NOT bare" || ok "JSON review mentioning 5xx → NOT bare"
+# Braces must NOT exempt a short error ENVELOPE — the hard token still wins.
+_is_bare_transient_notice '{"error":"ECONNRESET: socket hang up"}'    && ok "JSON error envelope → bare"            || bad "JSON error envelope → bare"
+_is_bare_transient_notice 'REVIEW_OK'                                  && bad "clean short output → NOT bare"        || ok "clean short output → NOT bare"
+_long_review="$(printf 'The retry layer is overloaded with rate limit handling. %.0s' $(seq 1 20))"
+_is_bare_transient_notice "$_long_review"                             && bad "long prose review → NOT bare"         || ok "long prose review → NOT bare"
+
 # Helper: write a counter-based stub that fails $1 times (with message $2),
 # then succeeds printing "REVIEW_OK". Counter persists in $3.
 make_flaky() {
@@ -171,6 +188,37 @@ out=$(BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 1 "$BBIN/ok1s" 2>/d
 [[ "$rc" -eq 0 && "$out" == *REVIEW_OK* && "$(cat "$C")" == 1 ]] \
   && ok "--timeout 1 → first attempt runs and succeeds (not skipped by budget guard)" \
   || bad "--timeout 1 first attempt runs (got rc=$rc inv=$(cat "$C"))"
+
+# B10: exit-0 bare transient notice (CLI prints a network/5xx error but exits 0)
+#      → NOT treated as success; retried, and exhaustion returns NON-zero so the
+#      droid fallback can fire instead of a silent "success". Uses a HARD error
+#      token (ECONNRESET) — prose words like "rate limit" alone do NOT qualify.
+C="$TMP/b10"; printf '0' > "$C"
+cat > "$BBIN/zerotrans" <<EOF
+#!/usr/bin/env bash
+n=\$(cat "$C" 2>/dev/null || echo 0); n=\$((n+1)); printf '%s' "\$n" > "$C"
+printf 'ECONNRESET: socket hang up\n'   # hard transient token on a CLEAN exit
+exit 0
+EOF
+chmod +x "$BBIN/zerotrans"
+out=$(BUSDRIVER_CLI_RETRIES=2 BUSDRIVER_CLI_RETRY_DELAY=0 _run_review_with_retries agy p 5 "$BBIN/zerotrans" 2>/dev/null); rc=$?
+[[ "$rc" -ne 0 && "$(cat "$C")" == 3 ]] \
+  && ok "exit-0 bare transient → retried (3 inv), exhaustion non-zero" \
+  || bad "exit-0 bare transient → retried+nonzero (got rc=$rc inv=$(cat "$C"))"
+
+# B11: a real review payload that exits 0 and merely DISCUSSES rate limits / 5xx
+#      (carries a JSON object) is accepted on the first attempt — never retried.
+C="$TMP/b11"; printf '0' > "$C"
+cat > "$BBIN/jsonreview" <<EOF
+#!/usr/bin/env bash
+n=\$(cat "$C" 2>/dev/null || echo 0); n=\$((n+1)); printf '%s' "\$n" > "$C"
+printf '%s\n' '{"status":"FAIL","issues":[{"description":"handle the 503 rate limit path"}]}'
+EOF
+chmod +x "$BBIN/jsonreview"
+out=$(BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 5 "$BBIN/jsonreview" 2>/dev/null); rc=$?
+[[ "$rc" -eq 0 && "$out" == *503* && "$(cat "$C")" == 1 ]] \
+  && ok "exit-0 JSON review mentioning 5xx → success, no retry (1 inv)" \
+  || bad "exit-0 JSON review → success no retry (got rc=$rc inv=$(cat "$C"))"
 
 # ── Part C: dispatch.sh dispatch_one retry (council, PATH-stubbed) ───
 echo ""

@@ -542,6 +542,39 @@ _is_transient_cli_error() {
   grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|(http|status|code|response)[^0-9]{0,6}5[0-9][0-9]|internal server error|bad gateway|service unavailable|gateway time-?out|getaddrinfo'
 }
 
+# Strict transient signal — only unambiguous network/protocol/5xx error TOKENS
+# that never occur in human review prose. This is DELIBERATELY narrower than
+# _is_transient_cli_error: it drops the ambiguous words "rate.limit", "overloaded",
+# and "capacity", which legitimately appear in review text ("capacity handling
+# looks correct"). Used ONLY to judge whether *clean-exit* output is a bare error
+# notice; the broad predicate stays for non-zero-exit output, which is genuine
+# error text rather than a possible review.
+_is_hard_transient_signal() {
+  grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|getaddrinfo|(http|status|code|response)[^0-9]{0,6}5[0-9][0-9]|internal server error|bad gateway|service unavailable|gateway time-?out'
+}
+
+# Max size (chars) of a "bare error notice" — output from a CLI that exits 0
+# while printing only a short transient-error message (some wrappers emit a
+# network/5xx notice and still exit 0) instead of a real review. A genuine
+# review is a substantial JSON/structured payload; this bound plus the JSON-brace
+# check below separate the two so a review that merely *discusses* rate limits /
+# 5xx (this repo's own reviews do) is never misread as a transient failure.
+CLI_BARE_ERROR_MAX_CHARS="${CLI_BARE_ERROR_MAX_CHARS:-512}"
+
+# True (0) when exit-0 output is a bare transient-error notice masquerading as a
+# successful review: it is short AND carries a HARD transient signal (a machine
+# error token — ECONNRESET, "fetch failed", a context-qualified 5xx, etc. — not a
+# mere prose word). JSON structure is deliberately NOT trusted as a success
+# signal: a short error *envelope* like {"error":"ECONNRESET ..."} must still
+# retry, so braces do not exempt it. A genuine review carries no hard token (its
+# 5xx / rate-limit mentions are prose, not context-qualified error strings)
+# and/or exceeds the size bound, so it is never misread as a transient failure.
+_is_bare_transient_notice() {
+  local out="$1"
+  [[ "${#out}" -le "$CLI_BARE_ERROR_MAX_CHARS" ]] || return 1
+  printf '%s' "$out" | _is_hard_transient_signal
+}
+
 # ── Retry wrapper for non-codex review CLIs (agy / grok) ────────
 # Codex has its own richer retry loop in _execute_codex. agy and grok were
 # single-shot until now, so one transient hiccup dropped the voice straight to
@@ -602,10 +635,16 @@ _run_review_with_retries() {
       fi
     fi
     output=$(printf '%s' "$prompt" | _portable_timeout "$remaining" "$@" 2>&1) || exit_code=$?
-    # Success with non-empty output → done.
-    [[ "$exit_code" -eq 0 && -n "$output" ]] && break
     # Timeout → don't retry; let the caller's droid fallback handle it.
     [[ "$exit_code" -eq 124 ]] && break
+    # A clean exit with non-empty output is success — UNLESS it is a bare
+    # transient notice the CLI emitted while still exiting 0 (a rate-limit/5xx
+    # message in place of a review). Those fall through to the retry/droid path
+    # below; a real review payload — even one discussing rate limits / 5xx — is
+    # accepted here because it carries a JSON object and/or is substantial.
+    if [[ "$exit_code" -eq 0 && -n "$output" ]] && ! _is_bare_transient_notice "$output"; then
+      break
+    fi
     # Retry if the attempt produced NO output (a CLI that died before writing a
     # review — empty is never a valid review, whatever the exit code) OR the
     # failure text looks transient. Otherwise bail (non-transient hard failure
@@ -616,12 +655,15 @@ _run_review_with_retries() {
     fi
     break
   done
-  # Exhausted retries while still empty on a clean exit → report a FAILURE, not a
-  # silent success: an empty review is not a passing review, and callers key
+  # Exhausted retries while still empty OR while still emitting a bare transient
+  # notice on a clean exit → report a FAILURE, not a silent success: neither an
+  # empty review nor a rate-limit/5xx notice is a passing review, and callers key
   # fallback/error handling off this exit status (e.g. execute_review → blueprint
-  # droid rescue / litmus error path). Without this, an always-empty reviewer
-  # would return exit 0 with no output and be treated as a clean run.
-  [[ "$exit_code" -eq 0 && -z "$output" ]] && exit_code=1
+  # droid rescue / litmus error path). Without this, an always-empty or
+  # always-rate-limited reviewer would return exit 0 and be treated as a clean run.
+  if [[ "$exit_code" -eq 0 ]] && { [[ -z "$output" ]] || _is_bare_transient_notice "$output"; }; then
+    exit_code=1
+  fi
   printf '%s' "$output"
   return "$exit_code"
 }

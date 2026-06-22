@@ -48,6 +48,29 @@ if ! type _is_transient_cli_error &>/dev/null; then
     grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|(http|status|code|response)[^0-9]{0,6}5[0-9][0-9]|internal server error|bad gateway|service unavailable|gateway time-?out|getaddrinfo'
   }
 fi
+# Strict transient signal — only unambiguous network/protocol/5xx error tokens
+# (NOT the prose-ambiguous "rate.limit"/"overloaded"/"capacity"). Mirrors
+# _is_hard_transient_signal in resolve-cli.sh; used only for clean-exit output.
+if ! type _is_hard_transient_signal &>/dev/null; then
+  _is_hard_transient_signal() {
+    grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|getaddrinfo|(http|status|code|response)[^0-9]{0,6}5[0-9][0-9]|internal server error|bad gateway|service unavailable|gateway time-?out'
+  }
+fi
+# True (0) when an exit-0 output FILE is a bare transient-error notice
+# masquerading as success: short AND carries a HARD transient signal (a machine
+# error token, not a mere prose word). JSON structure is NOT trusted as success:
+# a short error envelope like {"error":"ECONNRESET ..."} must still retry, so
+# braces do not exempt it. A real dispatch answer that merely *mentions* rate
+# limits / capacity carries no hard token and/or exceeds the size bound. Mirrors
+# _is_bare_transient_notice in resolve-cli.sh; CLI_BARE_ERROR_MAX_CHARS in sync.
+if ! type _is_bare_transient_notice_file &>/dev/null; then
+  _is_bare_transient_notice_file() {
+    local f="$1" sz
+    sz=$(wc -c < "$f" 2>/dev/null | tr -d '[:space:]')
+    [[ "${sz:-0}" -le "${CLI_BARE_ERROR_MAX_CHARS:-512}" ]] || return 1
+    _is_hard_transient_signal < "$f"
+  }
+fi
 
 LOG_DIR="$HOME/$STATE_DIR/homunculus"
 LOG_FILE="$LOG_DIR/dispatch-log.jsonl"
@@ -390,10 +413,15 @@ dispatch_one() {
                 < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;
     esac
 
-    # Success with non-empty output → done.
-    [[ "$exit_code" -eq 0 && -s "$outfile" ]] && break
     # Timeout → don't retry; the droid fallback below handles it.
     [[ "$exit_code" -eq 124 ]] && break
+    # A clean exit with non-empty output is success — UNLESS it is a bare
+    # transient notice the CLI wrote while still exiting 0 (a rate-limit/5xx
+    # message in place of a review). Those fall through to the retry/droid path;
+    # a real review payload — even one discussing rate limits / 5xx — is accepted.
+    if [[ "$exit_code" -eq 0 && -s "$outfile" ]] && ! _is_bare_transient_notice_file "$outfile"; then
+        break
+    fi
     # Retry if the attempt produced NO output (CLI died before writing — empty is
     # never a valid response, whatever the exit code) OR the output looks
     # transient. Otherwise bail (non-transient hard failure that produced output
@@ -404,11 +432,13 @@ dispatch_one() {
     fi
     break
     done
-    # Exhausted retries while the output file is still empty on a clean exit →
-    # mark as failure so should_escalate_to_droid() fires AND (when droid is
-    # unavailable) the status below is reported as error rather than a silent
-    # empty success.
-    [[ "$exit_code" -eq 0 && ! -s "$outfile" ]] && exit_code=1
+    # Exhausted retries while the output file is still empty OR still holds a bare
+    # transient notice on a clean exit → mark as failure so should_escalate_to_droid()
+    # fires AND (when droid is unavailable) the status below is reported as error
+    # rather than a silent empty / rate-limited success.
+    if [[ "$exit_code" -eq 0 ]] && { [[ ! -s "$outfile" ]] || _is_bare_transient_notice_file "$outfile"; }; then
+        exit_code=1
+    fi
 
     # ── Runtime droid fallback (per-voice, single-CLI dispatch only) ──
     # If this voice's CLI failed (timeout 124 or error) and droid is installed,

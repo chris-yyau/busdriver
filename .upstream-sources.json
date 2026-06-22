@@ -2670,7 +2670,7 @@
     {
       "path": "skills/git-workflow/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/git-workflow/SKILL.md"
     },
     {

@@ -86,7 +86,7 @@ _is_bare_transient_notice "$_long_review"                             && bad "lo
 # then succeeds printing "REVIEW_OK". Counter persists in $3.
 make_flaky() {
   local fails="$1" msg="$2" cnt="$3" path="$4" exitcode="${5:-1}"
-  : > "$cnt"; printf '0' > "$cnt"
+  printf '0' > "$cnt"
   cat > "$path" <<EOF
 #!/usr/bin/env bash
 n=\$(cat "$cnt" 2>/dev/null || echo 0); n=\$((n+1)); printf '%s' "\$n" > "$cnt"

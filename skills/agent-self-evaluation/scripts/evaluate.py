@@ -125,10 +125,16 @@ def check_completeness(text: str) -> AxisScore:
             deductions += 1
             evidence.append(f"- {label}")
 
+    positives = [e for e in evidence if e.startswith("+")]
+
     if deductions >= 2:
         score = 3
     elif deductions == 1:
         score = 4
+
+    # No positive coverage evidence: cannot score as excellent — fail closed.
+    if not positives:
+        score = min(score, 3)
 
     if not evidence:
         evidence.append("No completeness signals — unable to assess coverage")
@@ -236,12 +242,18 @@ def check_actionability(text: str) -> AxisScore:
             deductions += 1
             evidence.append(f"- {label}")
 
+    positives = [e for e in evidence if e.startswith("+")]
+
     if deductions >= 3:
         score = 2
     elif deductions == 2:
         score = 3
     elif deductions == 1:
         score = 4
+
+    # No positive actionability evidence: cannot score as excellent — fail closed.
+    if not positives:
+        score = min(score, 3)
 
     if not evidence:
         evidence.append("No actionability signals — user may need to ask 'what now?'")
@@ -341,7 +353,11 @@ def format_report(scores: list[AxisScore]) -> str:
         lines.append("  None")
 
     lines.append("")
-    lines.append("Self-check: Would the user agree with this assessment? [Yes/No + brief justification]")
+    lines.append(
+        "Self-check: heuristic first-pass scores (keyword + structural). "
+        "Confirm borderline axes against the actual task before acting; "
+        "pair with an LLM judge for semantic accuracy."
+    )
     lines.append("")
 
     # Top improvements (axes scoring < 4, ranked by impact)

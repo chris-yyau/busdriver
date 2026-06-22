@@ -80,15 +80,17 @@ On a `.vue` / Vue-related PR, invoke both `vue-reviewer` and `typescript-reviewe
 ## Automated Checks Run
 
 ```bash
-# Lint (required)
-npx eslint . --ext .vue,.ts,.js
+# Lint (required) — local tooling only; do NOT use `npx` (it can fetch+execute
+# an unpinned package from the registry if the binary is absent)
+npm run lint --if-present
+./node_modules/.bin/eslint . --ext .vue,.ts,.js
 
 # Vue-specific typecheck
-vue-tsc --noEmit
+./node_modules/.bin/vue-tsc --noEmit
 
 # Targeted security rules
-npx eslint . --rule 'vue/no-v-html: warn' \
-              --rule 'vue/no-template-target-blank: error'
+./node_modules/.bin/eslint . --rule 'vue/no-v-html: warn' \
+                             --rule 'vue/no-template-target-blank: error'
 
 # Supply-chain
 npm audit

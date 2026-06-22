@@ -113,7 +113,7 @@
     {
       "path": "commands/vue-review.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "commands/vue-review.md"
     },
     {

@@ -53,6 +53,9 @@ printf 'Request failed with status code 502\n'   | _is_transient_cli_error && ok
 printf 'SyntaxError at line 503 of review.js\n'  | _is_transient_cli_error && bad "line 503 → NOT transient"          || ok "line 503 → NOT transient"
 printf 'unable to bind on port 5000, exiting\n'  | _is_transient_cli_error && bad "port 5000 → NOT transient"         || ok "port 5000 → NOT transient"
 printf 'prompt consumed 1500 tokens, aborting\n' | _is_transient_cli_error && bad "1500 tokens → NOT transient"       || ok "1500 tokens → NOT transient"
+# HTTP 429 rate limiting (4xx) is transient too, via phrase or context-qualified code.
+printf 'HTTP 429 Too Many Requests\n'             | _is_transient_cli_error && ok "429 too many requests → transient" || bad "429 too many requests → transient"
+printf 'review flagged at line 429 of foo.js\n'   | _is_transient_cli_error && bad "line 429 → NOT transient"         || ok "line 429 → NOT transient"
 
 # ── Part A2: _is_bare_transient_notice ──────────────────────────────
 # Distinguishes a short clean-exit error notice (retry) from a real review that
@@ -60,6 +63,7 @@ printf 'prompt consumed 1500 tokens, aborting\n' | _is_transient_cli_error && ba
 echo "── _is_bare_transient_notice ───────────────────────────────"
 _is_bare_transient_notice 'ECONNRESET: socket hang up'                 && ok "bare network notice → bare"            || bad "bare network notice → bare"
 _is_bare_transient_notice '503 Service Unavailable'                    && ok "bare 503 notice → bare"                || bad "bare 503 notice → bare"
+_is_bare_transient_notice 'HTTP 429 Too Many Requests'                 && ok "bare 429 notice → bare"                || bad "bare 429 notice → bare"
 # Short, non-JSON reviews that merely USE prose words ("capacity", "rate limit")
 # must NOT be misread as bare notices — only HARD error tokens count.
 _is_bare_transient_notice 'capacity handling looks correct'           && bad "short prose 'capacity' → NOT bare"    || ok "short prose 'capacity' → NOT bare"

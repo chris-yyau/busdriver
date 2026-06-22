@@ -45,7 +45,7 @@ fi
 # this regex identical to the canonical copy in scripts/lib/resolve-cli.sh.
 if ! type _is_transient_cli_error &>/dev/null; then
   _is_transient_cli_error() {
-    grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|(http|status|code|response)[^0-9]{0,6}5[0-9][0-9]|internal server error|bad gateway|service unavailable|gateway time-?out|getaddrinfo'
+    grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|too many requests|(http|status|code|response)[^0-9]{0,6}(429|5[0-9][0-9])|internal server error|bad gateway|service unavailable|gateway time-?out|getaddrinfo'
   }
 fi
 # Strict transient signal — only unambiguous network/protocol/5xx error tokens
@@ -53,7 +53,7 @@ fi
 # _is_hard_transient_signal in resolve-cli.sh; used only for clean-exit output.
 if ! type _is_hard_transient_signal &>/dev/null; then
   _is_hard_transient_signal() {
-    grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|getaddrinfo|(http|status|code|response)[^0-9]{0,6}5[0-9][0-9]|internal server error|bad gateway|service unavailable|gateway time-?out'
+    grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|getaddrinfo|(http|status|code|response)[^0-9]{0,6}(429|5[0-9][0-9])|internal server error|bad gateway|service unavailable|gateway time-?out|too many requests'
   }
 fi
 # True (0) when an exit-0 output FILE is a bare transient-error notice

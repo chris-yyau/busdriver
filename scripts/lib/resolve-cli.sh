@@ -539,7 +539,7 @@ _resolve_codex_companion() {
 # transient server errors and needlessly retried + droid-escalated.
 # Keep this regex in sync with the fallback copy in dispatch.sh.
 _is_transient_cli_error() {
-  grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|(http|status|code|response)[^0-9]{0,6}5[0-9][0-9]|internal server error|bad gateway|service unavailable|gateway time-?out|getaddrinfo'
+  grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|rate.limit|overloaded|capacity|too many requests|(http|status|code|response)[^0-9]{0,6}(429|5[0-9][0-9])|internal server error|bad gateway|service unavailable|gateway time-?out|getaddrinfo'
 }
 
 # Strict transient signal — only unambiguous network/protocol/5xx error TOKENS
@@ -550,7 +550,7 @@ _is_transient_cli_error() {
 # notice; the broad predicate stays for non-zero-exit output, which is genuine
 # error text rather than a possible review.
 _is_hard_transient_signal() {
-  grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|getaddrinfo|(http|status|code|response)[^0-9]{0,6}5[0-9][0-9]|internal server error|bad gateway|service unavailable|gateway time-?out'
+  grep -qiE 'ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAGAIN|socket hang up|fetch failed|getaddrinfo|(http|status|code|response)[^0-9]{0,6}(429|5[0-9][0-9])|internal server error|bad gateway|service unavailable|gateway time-?out|too many requests'
 }
 
 # Max size (chars) of a "bare error notice" — output from a CLI that exits 0
@@ -737,6 +737,10 @@ _execute_codex() {
 
   while [[ "$attempt" -le "$max_retries" ]]; do
     exit_code=0
+    # Reflect only THIS attempt's classification — never carry a prior attempt's
+    # transience into the post-loop droid decision. A timeout escalates via its
+    # own `timed_out` flag, so resetting here does not weaken timeout handling.
+    last_was_transient=0
     local effort_args=()
     if [[ "$attempt" -gt 0 ]]; then
       # No --effort flag = codex config default (xhigh in config.toml)

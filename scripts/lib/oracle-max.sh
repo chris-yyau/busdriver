@@ -75,7 +75,7 @@ oracle_max_consult() {
   if [ -n "$prompt_file" ]; then
     # Fail closed if the prompt file is unreadable/empty — otherwise a silent cat
     # failure would invoke oracle with an empty prompt.
-    [ -r "$prompt_file" ] && [ -s "$prompt_file" ] || { printf 'error'; return 1; }
+    if [ ! -r "$prompt_file" ] || [ ! -s "$prompt_file" ]; then printf 'error'; return 1; fi
     local pf_size; pf_size="$(wc -c < "$prompt_file" 2>/dev/null || echo 0)"
     if [ "$pf_size" -gt "${ORACLE_MAX_INLINE_BYTES:-100000}" ]; then
       # Too large to safely inline into argv (ARG_MAX) — attach as a file instead.

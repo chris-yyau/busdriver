@@ -6,6 +6,7 @@
 ## Agent Output
 
 ### Summary
+
 Added a custom `RetryTransport` wrapper to the shared `ApiClient` class. All HTTP methods are covered: idempotent methods (GET, PUT, DELETE) retry automatically on 429, 5xx, and connection errors with exponential backoff; POST retries are configurable (off by default for idempotency safety). 42 tests pass. Single PR ready to merge.
 
 ### Files Changed

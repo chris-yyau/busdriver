@@ -49,6 +49,10 @@ ultra_oracle_consult() {
   [[ -n "$cap" ]] || cap="$(ultra_oracle_timeout_cap)"
   # Validate the cap regardless of source (explicit --timeout-cap-seconds bypasses
   # ultra_oracle_timeout_cap); a 0/non-numeric value would break the fail-closed timeout.
+  # Strip leading zeros on an all-digit cap so "0600" normalizes to "600" and any
+  # all-zero string ("00") collapses to "" — rejected below. A 0 cap is unsafe:
+  # `timeout 0` / the Perl fallback's `alarm 0` DISABLE the timeout (unbounded run).
+  case "$cap" in *[!0-9]*) : ;; *) cap="${cap#"${cap%%[!0]*}"}" ;; esac
   case "$cap" in ''|*[!0-9]*|0)
     echo "ultra-oracle: invalid timeout cap '$cap' — using config/default" >&2
     cap="$(ultra_oracle_timeout_cap)" ;;

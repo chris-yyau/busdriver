@@ -43,8 +43,13 @@ ultra_oracle_timeout_cap() {
   v="$(ultra_oracle_config_get_user '.ultraOracle.timeoutCapSeconds' '900')"
   case "$v" in
     ''|*[!0-9]*) echo "ultra-oracle: invalid timeoutCapSeconds '$v' — using 900" >&2; printf '900'; return;;
-    0)           echo "ultra-oracle: timeoutCapSeconds 0 — using 900" >&2; printf '900'; return;;
   esac
+  # Strip leading zeros so "0600" normalizes to "600" and any all-zero string
+  # ("0", "00", ...) collapses to "" — which we reject below. A 0 cap is unsafe:
+  # `timeout 0` / the Perl fallback's `alarm 0` DISABLE the timeout, letting an
+  # opt-in consult run unbounded instead of falling back to the safe default.
+  v="${v#"${v%%[!0]*}"}"
+  case "$v" in ''|0) echo "ultra-oracle: timeoutCapSeconds resolves to 0 — using 900" >&2; printf '900'; return;; esac
   # A value with 19+ digits would overflow bash's signed-64-bit `-gt` (INT64_MAX is
   # 19 digits) and could wrap to compare as SMALLER, letting an absurd cap through;
   # anything that long is nonsensical as a second count, so clamp it outright. Below

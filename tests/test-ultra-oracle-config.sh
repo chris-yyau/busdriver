@@ -46,6 +46,16 @@ cat > "$tmp/.claude/busdriver.json" <<'JSON'
 { "ultraOracle": { "timeoutCapSeconds": 99999 } }
 JSON
 [ "$(ultra_oracle_timeout_cap 2>/dev/null)" = "3600" ] || { echo "FAIL oversized cap -> clamp 3600"; FAIL=1; }
+# all-zero cap ("00") must NOT pass through: timeout 0 / alarm 0 disable the timeout.
+cat > "$tmp/.claude/busdriver.json" <<'JSON'
+{ "ultraOracle": { "timeoutCapSeconds": "00" } }
+JSON
+[ "$(ultra_oracle_timeout_cap 2>/dev/null)" = "900" ] || { echo "FAIL all-zero cap -> 900"; FAIL=1; }
+# leading zeros normalize ("0600" -> "600"), not passed through verbatim.
+cat > "$tmp/.claude/busdriver.json" <<'JSON'
+{ "ultraOracle": { "timeoutCapSeconds": "0600" } }
+JSON
+[ "$(ultra_oracle_timeout_cap 2>/dev/null)" = "600" ] || { echo "FAIL leading-zero cap -> 600"; FAIL=1; }
 
 # malformed USER config -> defaults/off, no crash.
 printf '{ this is not json' > "$tmp/.claude/busdriver.json"

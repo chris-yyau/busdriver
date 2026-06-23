@@ -99,6 +99,8 @@ printf '{ "ultraOracle": { "cookiePath": "%s", "chromeProfileDir": "%s" } }\n' "
 : > "$tmp/argv.log"
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/c3.md" --mode blocking)"
 [ "$st" = "ok" ] || { echo "FAIL c3 status got '$st'"; FAIL=1; }
+grep -qx -- "--browser-cookie-path" "$tmp/argv.log" || { echo "FAIL cookie-path flag missing in precedence case"; FAIL=1; }
+grep -qxF -- "$ck" "$tmp/argv.log" || { echo "FAIL cookie-path value missing in precedence case"; FAIL=1; }
 grep -qx -- "--copy-profile" "$tmp/argv.log" && { echo "FAIL copy-profile should yield to cookie-path"; FAIL=1; }
 
 # configured-but-UNREADABLE cookiePath is a fail-closed misconfiguration: return a

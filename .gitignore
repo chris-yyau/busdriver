@@ -59,6 +59,10 @@ docs/superpowers/specs/
 # ultra-oracle consult verdict output (skip-ultra-oracle.local already covered by *.local globs)
 .claude/ultra-oracle/
 .opencode/ultra-oracle/
+# Legacy oracle-max artifacts — keep ignored so pre-rename verdict files (which may
+# contain ChatGPT prompt/design content) don't become unignored after upgrading.
+.claude/oracle-max/
+.opencode/oracle-max/
 
 # codex-goal-handover run artifacts (per-iter logs, verifier outputs, result JSONs)
 # New runs go to ${TMPDIR:-/tmp}/codex-goal-runs/ (see codex-goal-handover SKILL.md);

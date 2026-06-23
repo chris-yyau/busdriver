@@ -30,16 +30,23 @@ ultra_oracle_model() { ultra_oracle_config_get_user '.ultraOracle.model' 'gpt-5.
 # config cannot set an arbitrarily large cap and stall a reviewer (availability DoS).
 ultra_oracle_timeout_cap() {
   local v ceil="${ULTRA_ORACLE_CAP_CEILING:-3600}"
-  # Validate the ceiling itself is numeric before the `-gt` below — a non-numeric
-  # ULTRA_ORACLE_CAP_CEILING would make `[ "$v" -gt "$ceil" ]` error out (and could
-  # let an oversized cap through), so fall back to the 3600s default.
+  # Validate the ceiling itself before the `-gt` below — a non-numeric OR absurdly
+  # long (19+ digit, overflow-prone) ULTRA_ORACLE_CAP_CEILING would make
+  # `[ "$v" -gt "$ceil" ]` error out (and could let an oversized cap through), so
+  # fall back to the 3600s default in either case. This keeps the `-gt` operand
+  # bounded so the value-side guard below is sufficient for overflow safety.
   case "$ceil" in ''|*[!0-9]*|0) ceil=3600;; esac
+  [ "${#ceil}" -ge 19 ] && ceil=3600
   v="$(ultra_oracle_config_get_user '.ultraOracle.timeoutCapSeconds' '900')"
   case "$v" in
     ''|*[!0-9]*) echo "ultra-oracle: invalid timeoutCapSeconds '$v' — using 900" >&2; printf '900'; return;;
     0)           echo "ultra-oracle: timeoutCapSeconds 0 — using 900" >&2; printf '900'; return;;
   esac
-  if [ "$v" -gt "$ceil" ]; then
+  # A value with 19+ digits would overflow bash's signed-64-bit `-gt` (INT64_MAX is
+  # 19 digits) and could wrap to compare as SMALLER, letting an absurd cap through;
+  # anything that long is nonsensical as a second count, so clamp it outright. Below
+  # 19 digits the numeric `-gt` is safe.
+  if [ "${#v}" -ge 19 ] || [ "$v" -gt "$ceil" ]; then
     echo "ultra-oracle: timeoutCapSeconds $v exceeds ceiling $ceil — clamping" >&2; printf '%s' "$ceil"
   else
     printf '%s' "$v"

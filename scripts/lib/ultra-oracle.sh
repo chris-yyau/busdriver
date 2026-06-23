@@ -54,7 +54,14 @@ ultra_oracle_consult() {
   # bypasses the guardrail and can stall a reviewer with an arbitrarily long wait.
   local _omx_cap_ceil="${ULTRA_ORACLE_CAP_CEILING:-3600}"
   case "$_omx_cap_ceil" in ''|*[!0-9]*|0) _omx_cap_ceil=3600;; esac
-  if [ "$cap" -gt "$_omx_cap_ceil" ]; then
+  # An absurdly long (19+ digit) ceiling would itself overflow the `-gt` below;
+  # reset it so the cap-side guard is sufficient for overflow safety.
+  [ "${#_omx_cap_ceil}" -ge 19 ] && _omx_cap_ceil=3600
+  # A value with 19+ digits would overflow bash's signed-64-bit `-gt` (INT64_MAX is
+  # 19 digits) and could wrap to compare as SMALLER, slipping an absurd cap past the
+  # guardrail; anything that long is nonsensical as a second count, so clamp it
+  # outright. Below 19 digits the numeric `-gt` is safe.
+  if [ "${#cap}" -ge 19 ] || [ "$cap" -gt "$_omx_cap_ceil" ]; then
     echo "ultra-oracle: timeout cap $cap exceeds ceiling $_omx_cap_ceil — clamping" >&2
     cap="$_omx_cap_ceil"
   fi
@@ -85,13 +92,16 @@ ultra_oracle_consult() {
   # and is the reliable headless path where app-bound encryption defeats --copy-profile.
   # A configured cookiePath is AUTHORITATIVE: if it is set we never silently fall back
   # to a full-profile clone (a heavier, different-surface operation the operator did not
-  # ask for). If it is set but unreadable, skip session reuse and let the run fail closed
-  # if ChatGPT is not already signed in — never substitute --copy-profile.
+  # ask for). If it is set but unreadable, FAIL CLOSED with a typed 'error' rather than
+  # run anyway — oracle would otherwise default to the standard Chrome profile and
+  # silently reuse whatever ChatGPT session is signed in there (wrong account / a
+  # data-boundary surprise the operator did not authorize). Fix the path or unset it.
   if [ -n "$cookie_path" ]; then
     if [ -r "$cookie_path" ]; then
       set -- "$@" --browser-cookie-path "$cookie_path"
     else
-      echo "ultra-oracle: cookiePath '$cookie_path' unreadable — skipping session reuse (run fails closed if ChatGPT is not signed in); NOT falling back to --copy-profile" >&2
+      echo "ultra-oracle: cookiePath '$cookie_path' unreadable — failing closed (configured cookiePath is authoritative; NOT degrading to the default Chrome session or --copy-profile)" >&2
+      printf 'error'; return 1
     fi
   elif [ -n "$profile" ] && [ -d "$profile" ]; then
     set -- "$@" --copy-profile "$profile"

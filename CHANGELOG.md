@@ -1,3 +1,10 @@
+# [1.70.0](https://github.com/chris-yyau/busdriver/compare/v1.69.0...v1.70.0) (2026-06-23)
+
+
+### Features
+
+* register devin as a fourth pr-grind ack-panel reviewer ([#241](https://github.com/chris-yyau/busdriver/issues/241)) ([209317f](https://github.com/chris-yyau/busdriver/commit/209317fa0ea1e151ade3cd9fffcb4aabb69c05dd))
+
 # [1.69.0](https://github.com/chris-yyau/busdriver/compare/v1.68.0...v1.69.0) (2026-06-22)
 
 

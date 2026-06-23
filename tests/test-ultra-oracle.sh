@@ -13,7 +13,7 @@ cat > "$tmp/bin/oracle" <<'EOF'
 out=""
 while [ $# -gt 0 ]; do case "$1" in --write-output) out="$2"; shift 2;; *) shift;; esac; done
 case "${ULTRA_ORACLE_MOCK_MODE:-ok}" in
-  ok)    [ -n "$out" ] && printf 'ORACLE-MAX VERDICT: looks good\n' > "$out"; exit 0;;
+  ok)    [ -n "$out" ] && printf 'ULTRA-ORACLE VERDICT: looks good\n' > "$out"; exit 0;;
   empty) exit 0;;                 # exits 0 but writes nothing (browser no-op)
   hang)  sleep 30; exit 0;;
   fail)  exit 7;;
@@ -28,7 +28,7 @@ source "$DIR/scripts/lib/ultra-oracle.sh"
 export ULTRA_ORACLE_MOCK_MODE=ok
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/v.md" --mode blocking)"
 [ "$st" = "ok" ] || { echo "FAIL ok got '$st'"; FAIL=1; }
-grep -q "ORACLE-MAX VERDICT" "$tmp/v.md" || { echo "FAIL verdict not captured"; FAIL=1; }
+grep -q "ULTRA-ORACLE VERDICT" "$tmp/v.md" || { echo "FAIL verdict not captured"; FAIL=1; }
 
 # exit 0 but empty output -> error (fail-closed file check)
 export ULTRA_ORACLE_MOCK_MODE=empty
@@ -73,30 +73,43 @@ export ULTRA_ORACLE_MOCK_MODE=ok
 export ULTRA_ORACLE_ARGV_OUT="$tmp/argv.log"
 ck="$tmp/Cookies"; : > "$ck"   # a readable cookie DB stand-in
 
+# Each case clears argv.log and asserts an 'ok' status BEFORE grepping flags —
+# otherwise a failed/short-circuited call leaves the prior case's argv in place
+# and the flag assertions false-pass against stale content.
+
 # default config (no cookiePath): no --browser-cookie-path; window always hidden
 rm -f "$tmp/.claude/busdriver.json"
-ultra_oracle_consult --prompt hi --out "$tmp/c0.md" --mode blocking >/dev/null
+: > "$tmp/argv.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/c0.md" --mode blocking)"
+[ "$st" = "ok" ] || { echo "FAIL c0 status got '$st'"; FAIL=1; }
 grep -qx -- "--browser-cookie-path" "$tmp/argv.log" && { echo "FAIL cookie-path leaked when unset"; FAIL=1; }
 grep -qx -- "--browser-hide-window" "$tmp/argv.log" || { echo "FAIL window not hidden"; FAIL=1; }
 
 # cookiePath set + readable -> argv carries --browser-cookie-path <path>
 printf '{ "ultraOracle": { "cookiePath": "%s" } }\n' "$ck" > "$tmp/.claude/busdriver.json"
-ultra_oracle_consult --prompt hi --out "$tmp/c1.md" --mode blocking >/dev/null
+: > "$tmp/argv.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/c1.md" --mode blocking)"
+[ "$st" = "ok" ] || { echo "FAIL c1 status got '$st'"; FAIL=1; }
 grep -qx -- "--browser-cookie-path" "$tmp/argv.log" || { echo "FAIL cookie-path flag missing"; FAIL=1; }
 grep -qxF -- "$ck" "$tmp/argv.log" || { echo "FAIL cookie-path value missing"; FAIL=1; }
 
 # cookiePath wins over chromeProfileDir (mutually exclusive: no --copy-profile)
 mkdir -p "$tmp/prof"
 printf '{ "ultraOracle": { "cookiePath": "%s", "chromeProfileDir": "%s" } }\n' "$ck" "$tmp/prof" > "$tmp/.claude/busdriver.json"
-ultra_oracle_consult --prompt hi --out "$tmp/c3.md" --mode blocking >/dev/null
+: > "$tmp/argv.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/c3.md" --mode blocking)"
+[ "$st" = "ok" ] || { echo "FAIL c3 status got '$st'"; FAIL=1; }
 grep -qx -- "--copy-profile" "$tmp/argv.log" && { echo "FAIL copy-profile should yield to cookie-path"; FAIL=1; }
 
-# configured-but-UNREADABLE cookiePath must NOT silently fall back to --copy-profile
-# (a heavier, different-surface clone the operator did not ask for): use neither flag.
+# configured-but-UNREADABLE cookiePath is a fail-closed misconfiguration: return a
+# typed 'error' WITHOUT invoking oracle (never silently reuse the default Chrome
+# session, never fall back to --copy-profile). Assert oracle was never called by
+# checking argv.log stays empty.
 printf '{ "ultraOracle": { "cookiePath": "%s/nope/Cookies", "chromeProfileDir": "%s" } }\n' "$tmp" "$tmp/prof" > "$tmp/.claude/busdriver.json"
-ultra_oracle_consult --prompt hi --out "$tmp/c4.md" --mode blocking >/dev/null
-grep -qx -- "--copy-profile" "$tmp/argv.log" && { echo "FAIL unreadable cookiePath must not fall back to copy-profile"; FAIL=1; }
-grep -qx -- "--browser-cookie-path" "$tmp/argv.log" && { echo "FAIL unreadable cookiePath must not be passed"; FAIL=1; }
+: > "$tmp/argv.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/c4.md" --mode blocking)"
+[ "$st" = "error" ] || { echo "FAIL unreadable cookiePath should be 'error' got '$st'"; FAIL=1; }
+[ -s "$tmp/argv.log" ] && { echo "FAIL unreadable cookiePath must not invoke oracle"; FAIL=1; }
 rm -f "$tmp/.claude/busdriver.json"
 unset ULTRA_ORACLE_MOCK_MODE ULTRA_ORACLE_ARGV_OUT
 

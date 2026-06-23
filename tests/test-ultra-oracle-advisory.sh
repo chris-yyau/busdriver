@@ -59,6 +59,9 @@ rm -f "$tmp/.claude/skip-ultra-oracle.local"
 OLDPATH="$PATH"; PATH="/usr/bin:/bin"
 st="$(ultra_oracle_consult --mode background --prompt "review the plan" --slug "ultra oracle plan review" --out "$tmp/d.md")"
 [ "$st" = "skipped:unavailable" ] || { echo "FAIL unavail status got '$st'"; FAIL=1; }
+# Unavailable is a no-dispatch path: assert no .rc was written, catching an
+# accidental background child that would violate the "never dispatched" contract.
+[ -f "$tmp/d.md.rc" ] && { echo "FAIL unavailable should not write .rc"; FAIL=1; }
 PATH="$OLDPATH"
 unset ULTRA_ORACLE_MOCK_MODE
 

@@ -82,7 +82,10 @@ ultra_oracle_consult() {
   # fails — a surviving stale file is the exact bug this prevents, so suppressing
   # the error would defeat the purpose. `rm -f` is a no-op on nonexistent files,
   # so the || branch only fires when a file EXISTS but cannot be removed.
-  rm -f -- "$out" "$out.rc" 2>/dev/null || { printf 'error'; return 1; }
+  rm -f -- "$out" "$out.rc" || {
+    echo "ultra-oracle: cannot clear stale output '$out' — failing closed" >&2
+    printf 'error'; return 1
+  }
 
   # Operator escape (persistent opt-out; fail-closed-with-escape). State-dir resolved.
   local state_dir git_root skip

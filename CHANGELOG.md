@@ -1,3 +1,10 @@
+## [1.70.1](https://github.com/chris-yyau/busdriver/compare/v1.70.0...v1.70.1) (2026-06-23)
+
+
+### Bug Fixes
+
+* clear stale ultra-oracle output before dispatch ([#243](https://github.com/chris-yyau/busdriver/issues/243)) ([b36764a](https://github.com/chris-yyau/busdriver/commit/b36764ab182c9b7a0318e478895a96d87d833453))
+
 # [1.70.0](https://github.com/chris-yyau/busdriver/compare/v1.69.0...v1.70.0) (2026-06-23)
 
 

@@ -11,7 +11,7 @@ Comprehensive guide for Vue.js 3 development using Composition API (`<script set
 ## When to Activate
 
 Activate this skill when:
-- The project uses Vue.js (any version), Nuxt, Vite + Vue, or Pinia.
+- The project uses Vue 3 (Composition API), Nuxt 3+, Vite + Vue, or Pinia. (This skill targets Vue 3; Vue 2 / Options-API codebases are out of scope and may receive incompatible guidance.)
 - The user asks about Vue component architecture, composables, reactivity, or state management.
 - Reviewing Vue Single-File Components (`.vue` files).
 - Setting up Vue Router, Pinia stores, or Vite/Vitest configuration.

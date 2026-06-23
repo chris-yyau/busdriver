@@ -39,8 +39,9 @@ For a `.vue` PR, invoke both agents. For a pure `.ts` change with no Vue imports
 
 1. Establish review scope:
    - PR review: use the actual base branch via `gh pr view --json baseRefName` when available; otherwise the current branch's upstream/merge-base. Never hard-code `main`.
-   - Local review: prefer `git diff --staged -- '*.vue' '*.ts' '*.js'` then `git diff -- '*.vue' '*.ts' '*.js'`.
-   - If history is shallow or single-commit, fall back to `git show --patch HEAD -- '*.vue' '*.ts' '*.js'`.
+   - Local review: prefer `git --no-pager diff --staged -- '*.vue' '*.ts' '*.js'` then `git --no-pager diff -- '*.vue' '*.ts' '*.js'`.
+   - If history is shallow or single-commit, fall back to `git --no-pager show --patch HEAD -- '*.vue' '*.ts' '*.js'`.
+   - Hardening: the global `--no-pager` must precede the subcommand (or use `git -c core.pager=cat …`) to disable pager-driven code execution via a repo-local `.git/config`.
 2. Before reviewing a PR, inspect merge readiness if metadata is available (`gh pr view --json mergeStateStatus,statusCheckRollup`). If checks are red or there are merge conflicts, stop and report.
 3. Run the project's lint command if present — confirm `eslint-plugin-vue` is configured. If the project lacks `vue/multi-word-component-names` or `vue/require-default-prop`, flag as appropriate for project conventions.
 4. Run the project's typecheck command if present (`vue-tsc --noEmit`). Skip cleanly for JS-only projects.
@@ -81,8 +82,8 @@ You DO NOT refactor or rewrite code — you report findings only.
 ### HIGH — Template Security and Correctness
 
 - **`v-for` without `:key`**: Vue can't track identity, causing incorrect DOM reuse and state mismatches on re-render.
-- **`v-for` with `key={index}`**: Reordering, insertion, or deletion attaches state/children to the wrong row. Use stable database IDs.
-- **`v-if` + `v-for` on the same element**: `v-if` evaluates per-item before `v-for` iterates; the condition runs on item, not on iteration. Almost always a logic error. Use `<template v-for>` + inner `v-if` or a computed filtered list.
+- **`v-for` with `:key="index"`**: Reordering, insertion, or deletion attaches state/children to the wrong row. Use stable database IDs.
+- **`v-if` + `v-for` on the same element**: In Vue 3, `v-if` has **higher** priority than `v-for`, so the condition is evaluated *before* the loop alias exists and cannot reference `v-for` variables (it throws or silently misbehaves). (This is the reverse of Vue 2, where `v-for` took priority and `v-if` ran per item.) Almost always a logic error. Use `<template v-for>` with an inner `v-if`, or a computed filtered list.
 - **`v-model` bound to a computed without a setter**: User input silently ignored — must provide both `get` and `set`, or bind to a writable ref.
 - **`v-bind="$attrs"` without `inheritAttrs: false`**: Attributes silently applied to both the root element and the forwarded target. Must disable inheritance explicitly.
 
@@ -98,7 +99,7 @@ You DO NOT refactor or rewrite code — you report findings only.
 
 - **Route guards (beforeEnter, beforeEach) returning `false` without navigation alternative**: User is stuck — must redirect or show a reason.
 - **Missing `scrollBehavior` when navigating to a non-top position**: Without it, the page jumps to top unconditionally.
-- **`useRoute().params` destructured at setup top-level**: Params change on route navigation within the same component — destructuring captures one snapshot. Access via `toRefs(useRoute().params)` or `computed()`.
+- **`useRoute().params` destructured at setup top-level**: Params change on route navigation within the same component — destructuring captures one snapshot. Access via a getter/`computed()` over `route.params` (e.g. `const id = computed(() => route.params.id)`). Do **not** use `toRefs(useRoute().params)`: it binds to the params object captured at setup, which the router *replaces* on navigation, so consumers keep watching the stale object.
 - **Lazy-loaded routes missing error/loading components**: Chunky bundle split without fallback — show fallback UI.
 
 ### HIGH — State Management (Pinia)

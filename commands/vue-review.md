@@ -89,7 +89,8 @@ npm run lint --if-present
 ./node_modules/.bin/vue-tsc --noEmit
 
 # Targeted security rules
-./node_modules/.bin/eslint . --rule 'vue/no-v-html: warn' \
+./node_modules/.bin/eslint . --ext .vue,.ts,.js \
+                             --rule 'vue/no-v-html: warn' \
                              --rule 'vue/no-template-target-blank: error'
 
 # Supply-chain

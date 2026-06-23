@@ -73,6 +73,12 @@ ultra_oracle_consult() {
   # Fail closed if the output dir can't be created — otherwise background mode
   # would return 'dispatched' but the child could never write "$out.rc".
   mkdir -p "$(dirname "$out")" 2>/dev/null || { printf 'error'; return 1; }
+  # Clear any stale output from a prior run at the same path before dispatching.
+  # A non-empty leftover "$out" would make the fail-closed `[[ -s "$out" ]]` check
+  # succeed even if this oracle invocation exits 0 but writes nothing — silently
+  # returning ok with stale content. Truncate both output and .rc marker so each
+  # run starts from a clean slate regardless of caller's output-path reuse policy.
+  rm -f "$out" "$out.rc" 2>/dev/null || true
 
   # Operator escape (persistent opt-out; fail-closed-with-escape). State-dir resolved.
   local state_dir git_root skip

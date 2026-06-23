@@ -6,10 +6,10 @@
 ## Agent Output
 
 ### Summary
-Added `httpx.HTTPTransport` with retry configuration to the shared `ApiClient` class. All HTTP methods (GET, POST, PUT, DELETE) now retry on 429, 5xx, and connection errors with exponential backoff. 42 tests pass. Single PR ready to merge.
+Added a custom `RetryTransport` wrapper to the shared `ApiClient` class. All HTTP methods (GET, POST, PUT, DELETE) now retry on 429, 5xx, and connection errors with exponential backoff. 42 tests pass. Single PR ready to merge.
 
 ### Files Changed
-- `src/api_client.py` — Added `RetryTransport` wrapper with `httpx.HTTPTransport(retries=3)` and exponential backoff configured via `httpx.Limits`
+- `src/api_client.py` — Added `RetryTransport` wrapper around `httpx.HTTPTransport(retries=3)`; the 429/5xx/connection retry and exponential backoff logic is implemented in the wrapper (`httpx.Limits` only configures connection pooling, not retry/backoff)
 - `tests/test_api_client.py` — Added 8 tests: happy path, retry on 429, retry on 503, max retries exhausted, timeout, backoff timing assertion, idempotent GET retry, no-retry on 4xx (except 429)
 
 ### Verification

@@ -182,7 +182,7 @@ if [ "$REPO_ROOT" = "$HOME/.claude" ]; then
 fi
 
 # ── Dual-voice PR review enforcement ──────────────────────────────────
-# PR mode (litmus deep review) runs a Codex (GPT-5 xhigh) LEAD reviewer + ONE
+# PR mode (litmus deep review) runs a Codex (xhigh reasoning) LEAD reviewer + ONE
 # read-only Opus Security/Bugs BACKSTOP. The gate honors a PR only when:
 #   • $STATE_DIR/pr-review-passed.local = the current base...HEAD diff hash, AND
 #   • BOTH diff-bound artifacts are fresh status:PASS for that same hash:
@@ -305,7 +305,7 @@ fi
 # to codex or the run is inconclusive/fail-closed (see run-review-loop.sh).
 REASON="Code review required before creating a PR (litmus PR mode — deep review).
 
-PR mode runs a Codex (GPT-5 xhigh) LEAD reviewer + ONE read-only Opus
+PR mode runs a Codex (xhigh reasoning) LEAD reviewer + ONE read-only Opus
 Security/Bugs BACKSTOP. BOTH must PASS on the current base...HEAD diff, and the
 gate verifies both diff-bound artifacts before honoring the marker.
 

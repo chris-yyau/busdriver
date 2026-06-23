@@ -31,11 +31,11 @@ Do NOT activate for: cleaning project source code (that's refactoring), clearing
 
 | # | Channel | Path | Staleness / redundancy signals |
 |---|---------|------|--------------------------------|
-| 1 | Skills | `~/.claude/skills/*/` | Heavily overlapping names; never triggered in recent transcripts; domain mismatch with the user's actual work; broken or empty SKILL.md |
+| 1 | Skills | `~/.claude/skills/*/` | Heavily overlapping names; not triggered in recent transcripts (e.g., past 60–90 days); domain mismatch with the user's actual work; broken or empty SKILL.md |
 | 2 | Memory | `~/.claude/**/memory/*.md` + its index | Multiple index entries for one topic; contents contradicting newer entries; dates that have passed; orphan files missing from the index; sub-100-word fragments that should merge |
 | 3 | Hooks | `~/.claude/hooks/` + settings | Scripts present on disk but referenced by no hook config; old versions superseded by rewrites |
 | 4 | Permissions | `permissions.allow` in `settings.json` / `settings.local.json` | Duplicate entries; specific entries already covered by a wildcard (e.g. `Bash(git push)` when `Bash(*)` is allowed); one-off grants from past experiments |
-| 5 | MCP servers | `~/.claude.json` or project `.mcp.json` | Servers that fail to connect; functional duplicates; long-unused |
+| 5 | MCP servers | `~/.claude.json` or project `.mcp.json` | Servers that fail to connect; functional duplicates; long-unused (e.g., not used in 60+ days) |
 | 6 | Scheduled reminders / jobs | wherever the user keeps them | Fired one-shots older than 30 days; jobs whose target scripts no longer exist |
 | 7 | Project history | `~/.claude/projects/*/` | Stale handoff snapshots; session records superseded by newer state |
 | 8 | Runtime caches | `cache/`, `file-history/`, `logs/`, `shell-snapshots/` | Sort by size and mtime; propose items >30 days old and large |
@@ -43,7 +43,7 @@ Do NOT activate for: cleaning project source code (that's refactoring), clearing
 ## Workflow
 
 1. **Scan** all channels (or the subset the user names). Collect candidates with: path, channel, signal that flagged it, size, last-modified.
-2. **Rank** by confidence (broken/orphaned = high; merely old = low) and present as a numbered table. Cap each run at ~20 candidates — GC is periodic, not exhaustive.
+2. **Rank** by confidence (broken/orphaned = high; merely old = low) and present as a numbered table. Cap each run at ~20 candidates — GC is periodic, not exhaustive. If >20 candidates remain after ranking, show the top 20 by confidence and suggest a follow-up GC run for the remainder, or offer to filter by a specific channel.
 3. **Confirm one by one.** For each candidate show the evidence, then ask `[y/n/skip]`. The user can stop at any point.
 4. **Soft-delete confirmed items**: prefer `.disabled` rename for skills/hooks and `_gc_trash/<date>/` move for files. Permission entries live in JSON (no comments possible): back up the settings file, record each removed entry verbatim in `gc_log.md`, then remove it from the `allow` array with `jq`. Only hard-delete when the user explicitly asks.
 5. **Log** the run to `~/.claude/gc_log.md`: timestamp, items actioned, undo instructions.

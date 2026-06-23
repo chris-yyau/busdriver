@@ -164,7 +164,7 @@ case "$(git rev-parse --git-dir)" in */worktrees/*) is_wt=yes ;; *) is_wt=no ;; 
 ```
 
 - `is_wt=no` → normal checkout; nothing to clean up.
-- `is_wt=yes` → report `$wt` and **ask before** `git worktree remove "$wt"`. Never auto-remove. Skip entirely if it is harness-managed (`.claude/worktrees/*`, created by the EnterWorktree tool, which has its own cleanup) or an operator worktree you did not create.
+- `is_wt=yes` → report `$wt` and **ask before** `git worktree remove "$wt"`. Never auto-remove. Skip entirely if it is harness-managed (a `worktrees/` directory under the harness state dir — `.claude/worktrees/*`, or `${BUSDRIVER_STATE_DIR:-.claude}/worktrees/*` such as `.opencode/worktrees/*` — created by the EnterWorktree tool, which has its own cleanup) or an operator worktree you did not create.
 
 **For Option 3:** Keep worktree.
 
@@ -172,10 +172,12 @@ case "$(git rev-parse --git-dir)" in */worktrees/*) is_wt=yes ;; *) is_wt=no ;; 
 
 | Option | Merge | Push | Keep Worktree | Cleanup Branch |
 |--------|-------|------|---------------|----------------|
-| 1. Merge locally | ✓ | - | - | ✓ |
-| 2. Create PR | - | ✓ | ✓ | - |
+| 1. Merge locally | ✓ | - | ask† | ✓ |
+| 2. Create PR | - | ✓ | ask† | - |
 | 3. Keep as-is | - | - | ✓ | - |
 | 4. Discard | - | - | - | ✓ (force) |
+
+† Options 1, 2, and 4 **offer** worktree cleanup but **ask before removing** (never automatic), and only for a worktree you created (skip harness-managed ones). Option 3 keeps the worktree. This matches Step 5.
 
 ## Common Mistakes
 
@@ -188,8 +190,8 @@ case "$(git rev-parse --git-dir)" in */worktrees/*) is_wt=yes ;; *) is_wt=no ;; 
 - **Fix:** Present exactly 4 structured options
 
 **Automatic worktree cleanup**
-- **Problem:** Remove worktree when might need it (Option 2, 3)
-- **Fix:** Only cleanup for Options 1 and 4
+- **Problem:** Removing a worktree the user still needs (Option 3), or one you did not create (harness-managed)
+- **Fix:** Offer cleanup for Options 1, 2, and 4 but **ask first** (never automatic); keep for Option 3; skip harness-managed worktrees
 
 **No confirmation for discard**
 - **Problem:** Accidentally delete work

@@ -58,7 +58,7 @@ For each axis:
 
 ### Step 4: Produce Report
 
-Use this exact format (matches `scripts/evaluate.py` output):
+Use this format (based on `scripts/evaluate.py`'s report layout). One line differs by design: the script prints a heuristic disclaimer on the `Self-check:` line (`heuristic first-pass scores …`), whereas this agent performs a *semantic* self-check (`Would the user agree …?`). `scripts/evaluate.py` is the source of truth for the layout if the two ever drift further.
 
 ```
 ============================================================

@@ -56,17 +56,18 @@ Orphaned hook scripts (channel 3) — scripts on disk that no hook config refere
 ```bash
 for f in ~/.claude/hooks/*; do
   name=$(basename "$f")
-  grep -rq "$name" ~/.claude/settings.json ~/.claude/settings.local.json 2>/dev/null \
-    || echo "ORPHAN: $f"
+  grep -rqF "$name" ~/.claude/settings.json ~/.claude/settings.local.json 2>/dev/null \
+    || echo "ORPHAN: $f"  # -F: treat the filename as a literal, not a regex ('.sh' etc. contain metachars)
 done
 ```
 
 Redundant permission entries (channel 4) — duplicates, and specific grants shadowed by a wildcard:
 
 ```bash
-jq -r '.permissions.allow[]' ~/.claude/settings.local.json | sort | uniq -d
-if jq -e '.permissions.allow | index("Bash(*)")' ~/.claude/settings.local.json >/dev/null; then
-  jq -r '.permissions.allow[]' ~/.claude/settings.local.json \
+# `// []` keeps jq from erroring on configs that lack `.permissions` or `.permissions.allow`.
+jq -r '(.permissions.allow // [])[]' ~/.claude/settings.local.json | sort | uniq -d
+if jq -e '(.permissions.allow // []) | index("Bash(*)")' ~/.claude/settings.local.json >/dev/null; then
+  jq -r '(.permissions.allow // [])[]' ~/.claude/settings.local.json \
     | grep '^Bash(' | grep -vF 'Bash(*)'
 fi
 ```

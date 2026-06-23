@@ -75,7 +75,7 @@ def check_accuracy(text: str) -> AxisScore:
 
     # Positive signals: verified claims
     verified_patterns = [
-        (r"(?i)(tests?\s+pass|all\s+tests?\s+passing|\d+\s+passed)", "Tests passing"),
+        (r"(?i)(tests?\s+pass|all\s+tests?\s+passing|[1-9]\d*\s+passed)", "Tests passing"),
         (r"(?i)(exit\s+code\s*[:=]?\s*0|exited\s+with\s+0)", "Clean exit code"),
         (r"(?i)(lint\s+(?:is\s+)?clean|no\s+lint\s+errors|\b0\s+errors\b)", "Lint clean"),
         (r"(?i)(verified|confirmed|validated)\s+(with|against|using|by)", "Explicit verification"),
@@ -93,7 +93,10 @@ def check_accuracy(text: str) -> AxisScore:
         (r"(?i)(TODO|FIXME|HACK|WORKAROUND)", "Unresolved TODO/FIXME"),
     ]
     for pattern, label in danger_patterns:
-        if re.search(pattern, text):
+        # Negation-aware (mirror the positive path): a negated defect statement
+        # such as "No TODOs remain" or "not untested" must NOT deduct. Reusing
+        # _positive_match means we only deduct on a non-negated occurrence.
+        if _positive_match(pattern, text):
             deductions += 1
             evidence.append(f"- {label}")
 
@@ -168,20 +171,49 @@ def check_completeness(text: str) -> AxisScore:
     return result
 
 
+JARGON_EXPLANATION_WINDOW = 80
+
+
 def _check_jargon(text: str) -> tuple[int, list[str]]:
-    """Return clarity deductions for unexplained domain jargon."""
+    """Return clarity deductions for unexplained domain jargon.
+
+    An explanation marker must follow the jargon term within the remainder
+    of the SAME sentence (capped at JARGON_EXPLANATION_WINDOW chars) to
+    count as explaining it — the natural "<term> means/refers to/i.e. ..."
+    structure. Two earlier bugs are avoided:
+      - matching markers against the WHOLE text let a single generic
+        "means" anywhere (even an unrelated later sentence) disable the
+        check (e.g. "...race condition scenarios. Config means deploy...");
+      - including the domain label itself as a marker let the jargon's own
+        category name (e.g. "concurrency") count as its explanation.
+    Markers are forward-only (an explanation follows the term). Strong,
+    explicit markers ("refers to", "i.e.", "in other words") count anywhere
+    in the forward window; the weak/common marker "means" is additionally
+    restricted to the term's own sentence, so an unrelated later-sentence
+    "means" cannot satisfy the check.
+    """
     jargon = [
         (r"\b(idempotent|race condition|deadlock|thundering herd)\b", "concurrency"),
         (r"\b(exponential backoff|circuit breaker|bulkhead)\b", "resilience"),
         (r"\b(ACID|CAP|eventual consistency|linearizability)\b", "database theory"),
     ]
-    explanation_pattern = r"(?i)({domain}|means|refers to|i\.e\.|in other words)"
+    strong_marker = re.compile(r"(?i)(refers to|i\.e\.|in other words)")
+    weak_marker = re.compile(r"(?i)\bmeans\b")
+    sentence_end = re.compile(r"[!?\n]|\.(?:\s|$)")  # period only when sentence-final, so "i.e." stays intact
     deductions = 0
     evidence = []
     for pattern, domain in jargon:
-        has_term = re.search(pattern, text, re.IGNORECASE)
-        explains_term = re.search(explanation_pattern.format(domain=domain), text)
-        if has_term and not explains_term:
+        explained = False
+        seen = False
+        for m in re.finditer(pattern, text, re.IGNORECASE):
+            seen = True
+            window = text[m.end():m.end() + JARGON_EXPLANATION_WINDOW]
+            boundary = sentence_end.search(window)
+            same_sentence = window[:boundary.start()] if boundary else window
+            if strong_marker.search(window) or weak_marker.search(same_sentence):
+                explained = True
+                break
+        if seen and not explained:
             deductions += 1
             evidence.append(f"- Domain term used without explanation ({domain})")
     return deductions, evidence
@@ -245,7 +277,7 @@ def check_actionability(text: str) -> AxisScore:
 
     # Positive signals
     actionable_signals = [
-        (r"(?i)(merge|PR|pull request).*?(created|ready|open)", "PR created"),
+        (r"(?i)(merge|\bPR\b|pull request).*?(created|ready|open)", "PR created"),
         (r"(?i)(run|execute)\s+[`\"']?[\w./-]+", "Specific run command given"),
         (r"(?i)(next\s+steps?|follow[- ]up|what\s+to\s+do)", "Next steps provided"),
         (r"(?i)(file\s+(created|written|modified|updated)\s+at)", "File path specified"),

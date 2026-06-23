@@ -83,13 +83,14 @@ On a `.vue` / Vue-related PR, invoke both `vue-reviewer` and `typescript-reviewe
 # Lint (required) — local tooling only; do NOT use `npx` (it can fetch+execute
 # an unpinned package from the registry if the binary is absent)
 npm run lint --if-present
-./node_modules/.bin/eslint . --ext .vue,.ts,.js
 
 # Vue-specific typecheck
 ./node_modules/.bin/vue-tsc --noEmit
 
-# Targeted security rules
-./node_modules/.bin/eslint . --ext .vue,.ts,.js \
+# Targeted security rules — `--rule` layers ON TOP of the project config, so this
+# single run covers the canonical rules PLUS the targeted ones (no separate full
+# lint pass needed). Glob, not `--ext` (rejected by ESLint 9+ flat config).
+./node_modules/.bin/eslint '**/*.{vue,ts,js}' \
                              --rule 'vue/no-v-html: warn' \
                              --rule 'vue/no-template-target-blank: error'
 

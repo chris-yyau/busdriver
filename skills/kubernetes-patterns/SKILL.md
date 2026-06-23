@@ -716,9 +716,9 @@ spec:
 
 # ---
 
-# BAD: restartPolicy: Always in a Job (causes infinite restart loop)
+# BAD: restartPolicy: Always in a Job — rejected by the API server at admission
 spec:
-  restartPolicy: Always   # Use OnFailure or Never for Jobs
+  restartPolicy: Always   # invalid for Jobs; use OnFailure or Never
 ```
 
 ---

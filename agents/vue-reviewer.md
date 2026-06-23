@@ -112,7 +112,7 @@ You DO NOT refactor or rewrite code — you report findings only.
 ### HIGH — SSR (Nuxt-specific)
 
 - **Browser-only API used without `process.client` guard or `onMounted`**: `window`, `document`, `localStorage` crash the server build.
-- **`useAsyncData` / `useFetch` without `key`**: Duplicate server requests, broken cache deduplication.
+- **`useAsyncData` / `useFetch` key collision from reactive params or shared call sites**: Both auto-generate a key when none is given — `useAsyncData` from the call's code location (file + line), `useFetch` from its URL + fetch options — so a plain static `useAsyncData(() => $fetch('/api/posts'))` or `useFetch('/api/posts')` is correct; do NOT flag those. Flag only when (a) a key or URL derives from reactive state but is passed as a plain interpolated string (`` `user-${id.value}` ``, captured once, never refetches) instead of a getter/ref (`` () => `user-${id.value}` ``), or (b) distinct logical requests share one auto-key — for `useAsyncData`, the same code location reused in a loop or shared composable; for `useFetch`, identical URL + options — collapsing them onto one cache entry; pass an explicit unique key there.
 - **`<ClientOnly>` wrapping content needed for SEO**: Server-rendered empty wrapper — search engines see nothing.
 - **Environment variable leaked via `useRuntimeConfig().public`**: Treat all `.public` runtime config as exposed to the client.
 - **Missing `definePageMeta` for page-level middleware, layout, or auth**: Nuxt features silently skipped if not declared.
@@ -148,7 +148,7 @@ You DO NOT refactor or rewrite code — you report findings only.
 # if the binary is absent, npm's exec path can resolve and run an unpinned
 # package from the registry mid-review. Local binaries / npm scripts fail closed.
 npm run lint --if-present                              # project's canonical lint (eslint-plugin-vue configured there)
-./node_modules/.bin/eslint . --ext .vue,.ts,.js       # or the local binary directly (errors if not installed)
+./node_modules/.bin/eslint '**/*.{vue,ts,js}'         # or the local binary directly (errors if not installed). Glob (not `--ext`, which ESLint 9+ flat config rejects) works on both flat and legacy configs.
 ./node_modules/.bin/vue-tsc --noEmit                  # Vue-specific type checking
 npm run typecheck --if-present                        # respect project's canonical command
 

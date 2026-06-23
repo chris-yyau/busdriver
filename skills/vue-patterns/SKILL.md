@@ -44,7 +44,7 @@ src/
 
 | Convention | When to Use |
 |-----------|-------------|
-| `PascalCase.vue` | All components (enforced by `vue/multi-word-component-names`) |
+| `PascalCase.vue` | All components (team convention; `vue/match-component-file-name` enforces the filename matches the component name, and `vue/component-definition-name-casing` enforces PascalCase on the component definition name) |
 | `useCamelCase.ts` | Composables |
 | `camelCase.ts` | Utilities, API clients, types |
 | `kebab-case` directories | Route segments, feature folders |
@@ -330,9 +330,11 @@ Nuxt auto-imports `ref`, `computed`, `watch`, `useFetch`, `useAsyncData`, etc. U
 ### useAsyncData / useFetch
 
 ```ts
+const route = useRoute();
+const id = computed(() => route.params.id as string);
 const { data: user, pending, error, refresh } = await useAsyncData(
-  `user-${id}`, // cache key MUST include id — a constant key reuses one cache entry across all users
-  () => $fetch(`/api/users/${id}`),
+  () => `user-${id.value}`, // reactive getter key — refetches when id changes; a plain string or stringified Ref (`user-[object Object]`) pins one cache entry
+  () => $fetch(`/api/users/${id.value}`),
 );
 
 const { data: posts } = await useFetch("/api/posts", {

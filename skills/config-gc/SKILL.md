@@ -55,6 +55,7 @@ Orphaned hook scripts (channel 3) — scripts on disk that no hook config refere
 
 ```bash
 for f in ~/.claude/hooks/*; do
+  [ -e "$f" ] || continue   # empty dir: the unmatched glob stays literal — skip it instead of emitting a false ORPHAN
   name=$(basename "$f")
   grep -rqF "$name" ~/.claude/settings.json ~/.claude/settings.local.json 2>/dev/null \
     || echo "ORPHAN: $f"  # -F: treat the filename as a literal, not a regex ('.sh' etc. contain metachars)

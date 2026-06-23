@@ -101,7 +101,7 @@
     {
       "path": "agents/php-reviewer.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/php-reviewer.md"
     },
     {

@@ -4,6 +4,10 @@
 # Fails CLOSED: prints ONE typed status token; callers MUST surface it, never
 # silently skip. Reuses resolve-cli.sh _portable_timeout + is_cli_available.
 # Harness-neutral; no bash-4-isms (no associative arrays / mapfile).
+# Conditional style: [[ ]] for string/file tests; POSIX [ ] for integer -gt/-ge
+# comparisons. `[ ]` does base-10 strtol with NO arithmetic evaluation, which
+# avoids [[ ]]'s octal-parse of leading-zero values (e.g. "09999") AND its
+# command-substitution-in-arithmetic injection surface (e.g. RHS "a[$(cmd)]").
 _ULTRA_ORACLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${_ULTRA_ORACLE_DIR}/ultra-oracle-config.sh"   # also transitively sources resolve-cli.sh
@@ -38,11 +42,11 @@ ultra_oracle_consult() {
       *) shift;;
     esac
   done
-  [ -n "$out" ] || { printf 'error'; return 1; }
+  [[ -n "$out" ]] || { printf 'error'; return 1; }
   # Require a prompt source — otherwise oracle would be dispatched with an empty
   # prompt and could return a meaningless advisory.
-  [ -n "$prompt" ] || [ -n "$prompt_file" ] || { printf 'error'; return 1; }
-  [ -n "$cap" ] || cap="$(ultra_oracle_timeout_cap)"
+  [[ -n "$prompt" ]] || [[ -n "$prompt_file" ]] || { printf 'error'; return 1; }
+  [[ -n "$cap" ]] || cap="$(ultra_oracle_timeout_cap)"
   # Validate the cap regardless of source (explicit --timeout-cap-seconds bypasses
   # ultra_oracle_timeout_cap); a 0/non-numeric value would break the fail-closed timeout.
   case "$cap" in ''|*[!0-9]*|0)
@@ -74,7 +78,7 @@ ultra_oracle_consult() {
   state_dir="${BUSDRIVER_STATE_DIR:-.claude}"
   git_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   skip="${git_root:+$git_root/}$state_dir/skip-ultra-oracle.local"
-  if [ -f "$skip" ]; then printf 'skipped:user'; return 0; fi
+  if [[ -f "$skip" ]]; then printf 'skipped:user'; return 0; fi
 
   # Health check — fail CLOSED (typed), never silent.
   if ! is_cli_available oracle; then printf 'skipped:unavailable'; return 3; fi
@@ -96,24 +100,24 @@ ultra_oracle_consult() {
   # run anyway — oracle would otherwise default to the standard Chrome profile and
   # silently reuse whatever ChatGPT session is signed in there (wrong account / a
   # data-boundary surprise the operator did not authorize). Fix the path or unset it.
-  if [ -n "$cookie_path" ]; then
-    if [ -r "$cookie_path" ]; then
+  if [[ -n "$cookie_path" ]]; then
+    if [[ -r "$cookie_path" ]]; then
       set -- "$@" --browser-cookie-path "$cookie_path"
     else
       echo "ultra-oracle: cookiePath '$cookie_path' unreadable — failing closed (configured cookiePath is authoritative; NOT degrading to the default Chrome session or --copy-profile)" >&2
       printf 'error'; return 1
     fi
-  elif [ -n "$profile" ] && [ -d "$profile" ]; then
+  elif [[ -n "$profile" ]] && [[ -d "$profile" ]]; then
     set -- "$@" --copy-profile "$profile"
   fi
   # Always hide the automation Chrome window — these are non-interactive background
   # advisory consults; a focus-stealing window is disruptive and never needed here.
   set -- "$@" --browser-hide-window
-  local g; for g in "${ctx_arr[@]:-}"; do [ -n "$g" ] && set -- "$@" --file "$g"; done
-  if [ -n "$prompt_file" ]; then
+  local g; for g in "${ctx_arr[@]:-}"; do [[ -n "$g" ]] && set -- "$@" --file "$g"; done
+  if [[ -n "$prompt_file" ]]; then
     # Fail closed if the prompt file is unreadable/empty — otherwise a silent cat
     # failure would invoke oracle with an empty prompt.
-    if [ ! -r "$prompt_file" ] || [ ! -s "$prompt_file" ]; then printf 'error'; return 1; fi
+    if [[ ! -r "$prompt_file" ]] || [[ ! -s "$prompt_file" ]]; then printf 'error'; return 1; fi
     local pf_size; pf_size="$(wc -c < "$prompt_file" 2>/dev/null || echo 0)"
     if [ "$pf_size" -gt "${ULTRA_ORACLE_INLINE_BYTES:-100000}" ]; then
       # Too large to safely inline into argv (ARG_MAX) — attach as a file instead.
@@ -125,7 +129,7 @@ ultra_oracle_consult() {
     fi
   else set -- "$@" --prompt "$prompt"; fi
 
-  if [ "$mode" = "background" ]; then
+  if [[ "$mode" = "background" ]]; then
     # RUN_ID-scoped output is the CALLER's responsibility (--out includes RUN_ID).
     # Emit an .rc marker on completion so the caller can bounded-wait + read status.
     # disown so an early parent exit cannot orphan/kill it before the .rc lands.
@@ -133,7 +137,7 @@ ultra_oracle_consult() {
       _portable_timeout "${cap}" oracle "$@" >/dev/null 2>&1; _omx_bg_rc=$?
       # Map exit-0-but-empty-verdict to failure so the .rc matches blocking mode's
       # fail-closed contract (timeout already surfaces as rc 124).
-      [ "$_omx_bg_rc" = 0 ] && [ ! -s "$out" ] && _omx_bg_rc=1
+      [[ "$_omx_bg_rc" = 0 ]] && [[ ! -s "$out" ]] && _omx_bg_rc=1
       printf '%s' "$_omx_bg_rc" > "$out.rc" ) &
     disown 2>/dev/null || true
     printf 'dispatched'; return 0
@@ -146,8 +150,8 @@ ultra_oracle_consult() {
   # printed — the fail-closed 'error'/'timeout' tokens below depend on reaching them.
   local rc=0
   _portable_timeout "${cap}" oracle "$@" >/dev/null || rc=$?
-  if [ "$rc" = 124 ]; then printf 'timeout'; return 124; fi
-  if [ "$rc" != 0 ]; then printf 'error'; return 1; fi
-  [ -s "$out" ] || { printf 'error'; return 1; }   # exit 0 but no verdict = fail-closed
+  if [[ "$rc" = 124 ]]; then printf 'timeout'; return 124; fi
+  if [[ "$rc" != 0 ]]; then printf 'error'; return 1; fi
+  [[ -s "$out" ]] || { printf 'error'; return 1; }   # exit 0 but no verdict = fail-closed
   printf 'ok'; return 0
 }

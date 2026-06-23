@@ -2,6 +2,9 @@
 # ultra-oracle-config.sh — read the `ultraOracle` block from the USER busdriver.json ONLY.
 # Reuses resolve-cli.sh's _read_config_value (jq preferred, python3 fallback) and
 # _portable_timeout. Harness-neutral: ${BUSDRIVER_STATE_DIR:-.claude}, no bash-4-isms.
+# Conditional style: [[ ]] for string/file tests; POSIX [ ] for integer -gt/-ge
+# comparisons ([ ] does base-10 strtol with no arithmetic eval — avoids [[ ]]'s
+# octal-parse of leading-zero values and command-sub-in-arithmetic injection).
 _ULTRA_ORACLE_CFG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${_ULTRA_ORACLE_CFG_DIR}/resolve-cli.sh"
@@ -15,10 +18,10 @@ source "${_ULTRA_ORACLE_CFG_DIR}/resolve-cli.sh"
 ultra_oracle_config_get_user() {
   local jq_path="$1" default="$2" val="" state_dir="${BUSDRIVER_STATE_DIR:-.claude}"
   local user_config="$HOME/$state_dir/busdriver.json"
-  if [ -f "$user_config" ]; then
+  if [[ -f "$user_config" ]]; then
     val="$(_read_config_value "$user_config" "$jq_path" 2>/dev/null || true)"
   fi
-  if [ -n "$val" ] && [ "$val" != "null" ]; then printf '%s' "$val"; else printf '%s' "$default"; fi
+  if [[ -n "$val" && "$val" != "null" ]]; then printf '%s' "$val"; else printf '%s' "$default"; fi
 }
 
 # The ENTIRE ultraOracle block is read from USER config only — a repo-controlled

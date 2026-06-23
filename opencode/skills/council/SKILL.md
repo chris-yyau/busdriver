@@ -156,15 +156,15 @@ You are both a council member AND the synthesizer. This is a conflict of interes
 8. **Settling check (mandatory).** Every **hard** recommendation in the Verdict must name a settling check — the cheapest concrete local command / file / test / data whose result would confirm or refute it, plus the expected disconfirming outcome. If no cheap local check can be named, the item ships as **exploratory**, not a hard recommendation. Run the check in-turn when it is cheap and local; do NOT force a "command" onto questions that have none (strategy/naming/product) — for those, the honest settling check is the evidence or experiment that would decide, and absent that they stay exploratory.
 </CRITICAL>
 
-### Optional Oracle-Max Voice (opt-in, off by default)
+### Optional Ultra-Oracle Voice (opt-in, off by default)
 
 **Dispatch this inside the Step 4 PARALLEL block (NOT after synthesis); read its verdict during synthesis.** A 6th GPT-5.5 Pro "ultra-oracle" voice can be added ONLY when `ultraOracle.council.enabled` is true in the operator's **USER config** `~/${BUSDRIVER_STATE_DIR:-.opencode}/busdriver.json` (a repo-controlled project config CANNOT enable it — security), OR the user explicitly asks (export `ULTRA_ORACLE_COUNCIL_FORCE=1` for that run, as the snippet honors). Dispatched via the root-shared `ultra_oracle_consult` adapter (`${BUSDRIVER_PLUGIN_ROOT}/scripts/lib/ultra-oracle.sh`, the `oracle` CLI's ChatGPT Pro browser engine), backgrounded alongside the other voices.
 
 > **NOT the arbiter.** The `ultra-oracle` voice is unrelated to the `task(subagent_type="oracle")` arbiter used in blueprint-review — they merely share the substring "oracle".
 
 - **Trade-off (off by default):** one slow Pro voice dilutes council diversity (one vote) and adds minutes of latency; never in the default roster.
-- **Visible best-effort:** council is not a blocking gate. A successful launch returns `dispatched` (not `ok`); success is decided by the verdict file + `.rc`. Banner only when the voice was attempted but produced no verdict (status `skipped:*`/`error`, or rc≠0 / empty file): `⚠ ORACLE-MAX VOICE FAILED [<status>] — verdict NOT included`.
-- **Data boundary:** transmits the council question to ChatGPT Pro; if `ultraOracle.chromeProfileDir` is set it clones that Chrome profile's session — use a dedicated ChatGPT-only profile. Prefer `ultraOracle.cookiePath` (a signed-in Chrome Cookies DB path) to reuse the session headlessly without cloning the whole profile — the reliable path where Chrome app-bound cookie encryption defeats `--copy-profile`.. Do not enable where the question carries secrets.
+- **Visible best-effort:** council is not a blocking gate. A successful launch returns `dispatched` (not `ok`); success is decided by the verdict file + `.rc`. Banner only when the voice was attempted but produced no verdict (status `skipped:*`/`error`, or rc≠0 / empty file): `⚠ ULTRA-ORACLE VOICE FAILED [<status>] — verdict NOT included`.
+- **Data boundary:** transmits the council question to ChatGPT Pro; if `ultraOracle.chromeProfileDir` is set it clones that Chrome profile's session — use a dedicated ChatGPT-only profile. Prefer `ultraOracle.cookiePath` (a signed-in Chrome Cookies DB path) to reuse the session headlessly without cloning the whole profile — the reliable path where Chrome app-bound cookie encryption defeats `--copy-profile`. Do not enable where the question carries secrets.
 
 ```bash
 ULTRA_ORACLE_OUT=""; ULTRA_ORACLE_STATUS=""

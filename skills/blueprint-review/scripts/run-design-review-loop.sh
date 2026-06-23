@@ -803,7 +803,7 @@ with open(pending, "w") as f:
     fi
     if [ -s "$ULTRA_ORACLE_ADVISORY_FILE" ] && [ -f "$ULTRA_ORACLE_ADVISORY_FILE.rc" ] && [ "$(cat "$ULTRA_ORACLE_ADVISORY_FILE.rc")" = "0" ]; then
       ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
-OPTIONAL ORACLE-MAX (GPT-5.5 Pro) ADVISORY -- AUXILIARY, *NOT* A REVIEWER. There are still exactly THREE reviewers (Agy/Codex/Grok); do NOT count this block as a 4th lens or as independent agreement:
+OPTIONAL ULTRA-ORACLE (GPT-5.5 Pro) ADVISORY -- AUXILIARY, *NOT* A REVIEWER. There are still exactly THREE reviewers (Agy/Codex/Grok); do NOT count this block as a 4th lens or as independent agreement:
 =============================================================================
 
 $(cat "$ULTRA_ORACLE_ADVISORY_FILE")"
@@ -815,7 +815,7 @@ $(cat "$ULTRA_ORACLE_ADVISORY_FILE")"
       elif [ "$_omx_rc" != "0" ]; then _omx_term="error (rc=$_omx_rc)"
       else _omx_term="error (empty verdict)"; fi
       ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
-WARNING: ORACLE-MAX ADVISORY FAILED [$_omx_term] -- verdict NOT included (visible best-effort; the gate converges on the THREE reviewers Agy/Codex/Grok).
+WARNING: ULTRA-ORACLE ADVISORY FAILED [$_omx_term] -- verdict NOT included (visible best-effort; the gate converges on the THREE reviewers Agy/Codex/Grok).
 ============================================================================="
     fi
   elif [ "${CLAUDE_ONLY:-false}" != "true" ]; then
@@ -835,7 +835,7 @@ WARNING: ORACLE-MAX ADVISORY FAILED [$_omx_term] -- verdict NOT included (visibl
     case "$(printf '%s' "$_omx_en" | tr '[:upper:]' '[:lower:]')" in
       true|1)
         ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
-WARNING: ORACLE-MAX ADVISORY enabled but the adapter could not be loaded -- verdict NOT included (visible best-effort; gate converges on the THREE reviewers).
+WARNING: ULTRA-ORACLE ADVISORY enabled but the adapter could not be loaded -- verdict NOT included (visible best-effort; gate converges on the THREE reviewers).
 =============================================================================" ;;
     esac
   fi
@@ -890,7 +890,7 @@ $ULTRA_ORACLE_ADVISORY_SECTION
 VALIDATION TASK:
 =============================================================================
 
-1. Read the design document and all three reviews (Agy, Codex, Grok). An optional ORACLE-MAX advisory block may also appear above; it is AUXILIARY context, NOT a reviewer — the reviewer count is always three, and the advisory must not be counted toward independent agreement.
+1. Read the design document and all three reviews (Agy, Codex, Grok). An optional ULTRA-ORACLE advisory block may also appear above; it is AUXILIARY context, NOT a reviewer — the reviewer count is always three, and the advisory must not be counted toward independent agreement.
 2. For each issue: validate against codebase, assign validation_type
 3. Search for issues they missed (validation_type: new_finding)
 4. Output strict JSON with your verdict

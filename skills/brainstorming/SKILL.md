@@ -34,7 +34,7 @@ You MUST create a task for each of these items and complete them in order:
 4. **Classify decisions, then propose approaches** — classify each decision (reversibility × confidence; see "Exploring approaches" below); decide reversible implementation details yourself (any confidence) and recommend defaults for high-confidence low-reversibility decisions; surface only user-facing picks as 2-3 options with trade-offs and your recommendation
 5. **Present design** — in sections scaled to their complexity, get user approval after each section
    - **Step 5.5 (Optional Grill, intensifier)** — after design is approved at Step 5 but before Step 6 writes the doc, evaluate signal triggers and offer the user a grill if any fire. See "Step 5.5: Optional Grill" section below.
-   - **Step 5.6 (Optional ultra-oracle consult, blocking)** — after the grill (5.5) and before writing the doc (Step 6), if enabled, run a GPT-5.5 Pro design critique. See "Step 5.6: Oracle-Max Consult" section below.
+   - **Step 5.6 (Optional ultra-oracle consult, blocking)** — after the grill (5.5) and before writing the doc (Step 6), if enabled, run a GPT-5.5 Pro design critique. See "Step 5.6: Ultra-Oracle Consult" section below.
 6. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`. **Do NOT commit yet** — commit happens at Step 8b after the hash is finalized. If a `<!-- GRILL-DECISIONS-BEGIN -->...<!-- GRILL-DECISIONS-END -->` block exists in the conversation, paste the **entire block** (including all four HTML comments — two boundary sentinels `<!-- GRILL-DECISIONS-BEGIN -->` and `<!-- GRILL-DECISIONS-END -->`, plus two metadata comments `<!-- design-hash: ... -->` and `<!-- grill-status: ... -->`) verbatim into the design doc as the "Key Decisions" section, following the block placement contract in `skills/grill-me/SKILL.md`'s Direct-on-disk Sub-case B (blank line before BEGIN, BEGIN on its own line, trailing newline after END). **Leave the `design-hash` line as `sha256:PENDING`** — hash finalization happens at Step 8b (after user review) so any post-paste edits don't leave the stored hash stale.
 7. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below). Apply edits if needed; the design-hash placeholder is still `PENDING` so no recompute required yet.
 8. **User reviews written spec** — ask user to review the spec file before proceeding. If user requests revisions, apply them; design-hash is still `PENDING`.
@@ -182,7 +182,7 @@ If the grill produced material design changes (new approach, abandoned constrain
 
 Skip the grill and proceed to Step 6. The design doc will not contain a Key Decisions section.
 
-## Step 5.6: Oracle-Max Consult (blocking, opt-in)
+## Step 5.6: Ultra-Oracle Consult (blocking, opt-in)
 
 After the grill (5.5), before writing the doc (Step 6). Fires only if `ultraOracle.brainstorming.enabled` is true in the operator's **USER config** `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it — this prevents a branch from transmitting your design to ChatGPT Pro without your local opt-in), OR the user used a trigger ("consult the oracle"/"ask the oracle"). Skipped silently otherwise.
 

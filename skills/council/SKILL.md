@@ -130,13 +130,13 @@ This is a **single Bash call** with all three CLI dispatches as background proce
 
 **Missing CLI handling:** Each role's route array is walked left-to-right; the first available CLI wins. If every CLI in the chain resolves to `none`, `builtin`, `missing:<cli>`, or `unsupported:<cli>` (the last fires when a stale config references a removed backend like opencode/amp/claude/aider — migration warning goes to stderr), that voice is skipped and the report notes its absence as `(unavailable)`. The remaining voices still convene. If the Skeptic Agent call fails (rate limit, timeout), same rule applies. Typical minimum is 2 voices (Architect + Skeptic, 40% of full strength); absolute floor is 1 voice (Architect alone) if the Skeptic Agent call also fails. Always note the composition in the report — and when a fallback fires (e.g., Droid serving as Pragmatist because Agy was missing), note that explicitly so the report doesn't misattribute the lens.
 
-### Step 4.5: Optional Oracle-Max Voice (opt-in, off by default)
+### Step 4.5: Optional Ultra-Oracle Voice (opt-in, off by default)
 
 A 6th GPT-5.5 Pro "ultra-oracle" voice can be added ONLY when `ultraOracle.council.enabled` is true in the operator's **USER config** `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it — security), OR the user explicitly asks (in which case export `ULTRA_ORACLE_COUNCIL_FORCE=1` for that run, as the snippet below honors). It is dispatched via the shared `ultra_oracle_consult` adapter (the `oracle` CLI's ChatGPT Pro browser engine), inside the SAME single-Bash dispatch block as the other voices (separate Bash calls serialize/cancel — see Step 4).
 
 **Trade-off (why it's off by default):** a single slow Pro voice both dilutes council's diversity (one vote, outvoteable) and makes every council it joins run minutes instead of seconds. Never add it to the default roster.
 
-**Data boundary:** ultra-oracle transmits the council question to ChatGPT Pro via the oracle browser engine; if `ultraOracle.chromeProfileDir` is set it clones that Chrome profile's session — use a dedicated ChatGPT-only profile. Prefer `ultraOracle.cookiePath` (a signed-in Chrome Cookies DB path) to reuse the session headlessly without cloning the whole profile — the reliable path where Chrome app-bound cookie encryption defeats `--copy-profile`.. Do not enable where the question would carry secrets.
+**Data boundary:** ultra-oracle transmits the council question to ChatGPT Pro via the oracle browser engine; if `ultraOracle.chromeProfileDir` is set it clones that Chrome profile's session — use a dedicated ChatGPT-only profile. Prefer `ultraOracle.cookiePath` (a signed-in Chrome Cookies DB path) to reuse the session headlessly without cloning the whole profile — the reliable path where Chrome app-bound cookie encryption defeats `--copy-profile`. Do not enable where the question would carry secrets.
 
 Wiring (inside the Step 4 dispatch Bash block, when enabled):
 
@@ -166,7 +166,7 @@ if [ -n "$ULTRA_ORACLE_OUT" ]; then   # voice was attempted (enabled)
   if [ -s "$ULTRA_ORACLE_OUT" ] && [ "$(cat "$ULTRA_ORACLE_OUT.rc" 2>/dev/null)" = 0 ]; then
     : # include the verdict as the ultra-oracle voice in synthesis
   else
-    : # render "⚠ ORACLE-MAX VOICE FAILED [$ULTRA_ORACLE_STATUS] — verdict NOT included" prominently
+    : # render "⚠ ULTRA-ORACLE VOICE FAILED [$ULTRA_ORACLE_STATUS] — verdict NOT included" prominently
   fi
 fi
 ```

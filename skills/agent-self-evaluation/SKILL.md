@@ -31,7 +31,7 @@ After completing a complex task, the agent pauses to rate its own output against
 
 ### Scoring Scale
 
-```
+```text
 5 — Exceptional: no reasonable improvement possible
 4 — Good: minor nits only, no substantive gaps
 3 — Adequate: meets the request but has a notable weakness on at least one axis
@@ -49,7 +49,7 @@ Every score below 5 MUST cite specific evidence. A score of 3 cannot just say "c
 
 Gather what you'll evaluate:
 
-```
+```text
 - The original user request (read back from conversation)
 - Your final response/output (the deliverable)
 - Any tool outputs that verify correctness (test results, exit codes, lint output)
@@ -71,7 +71,7 @@ Do NOT average the scores in your head first and then work backwards. Score each
 
 Use the template from `templates/evaluation-report.md`. The report must include:
 
-```
+```text
 - One-line summary
 - 5-axis scorecard (score + evidence per axis)
 - Overall score (simple average, rounded to 1 decimal)
@@ -91,7 +91,7 @@ If any axis scored 3 or below:
 
 ### Example: Good Evaluation (Score 4+)
 
-```
+```text
 Task: Add retry logic to HTTP client
 
 Scorecard:
@@ -110,7 +110,7 @@ Overall: 4.6 — One gap (timeout handling). Fix before merging.
 
 ### Example: Weak Evaluation (Score 2-3)
 
-```
+```text
 Task: Add retry logic to HTTP client
 
 Scorecard:
@@ -133,7 +133,7 @@ Overall: 2.8 — Wrong library used. Needs httpx rewrite.
 
 ### "Everything is a 5"
 
-```
+```text
 FAIL: Accuracy:    5 — All good.
    Completeness: 5 — Everything covered.
    Clarity:      5 — Clear.
@@ -143,7 +143,7 @@ No evidence cited. This is self-congratulation, not evaluation. A real 5 require
 
 ### Over-penalizing for scope creep
 
-```
+```text
 FAIL: Completeness: 2 — Didn't handle WebSocket connections or
    gRPC streaming (user didn't ask for these)
 ```
@@ -152,7 +152,7 @@ Only evaluate against what the user actually requested, not what you could have 
 
 ### Using the evaluation to re-litigate
 
-```
+```text
 FAIL: "As I said earlier, this approach is wrong. Score: 1"
 ```
 
@@ -160,7 +160,7 @@ The evaluation is about the delivered output, not about re-arguing design decisi
 
 ### Mixing personal preference with objective gaps
 
-```
+```text
 FAIL: "Score: 3. I don't like Python decorators."
 ```
 

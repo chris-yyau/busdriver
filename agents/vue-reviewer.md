@@ -45,7 +45,7 @@ For a `.vue` PR, invoke both agents. For a pure `.ts` change with no Vue imports
 2. Before reviewing a PR, inspect merge readiness if metadata is available (`gh pr view --json mergeStateStatus,statusCheckRollup`). If checks are red or there are merge conflicts, stop and report.
 3. Run the project's lint command if present — confirm `eslint-plugin-vue` is configured. If the project lacks `vue/multi-word-component-names` or `vue/require-default-prop`, flag as appropriate for project conventions.
 4. Run the project's typecheck command if present (`vue-tsc --noEmit`). Skip cleanly for JS-only projects.
-5. If no `.vue` files or Vue-related changes are present in the diff, defer to `typescript-reviewer` and stop.
+5. If no `.vue` files or Vue/Nuxt-related changes are present in the diff, defer to `typescript-reviewer` and stop. Nuxt-specific paths count as Vue-related and stay in this lane (this agent owns Nitro endpoint validation and SSR safety): `server/api/`, `server/routes/`, `server/middleware/`, `nuxt.config.*`, `middleware/`, `plugins/`, and SSR-only `.ts`. Plain `.ts` in those paths should ALSO be handed to `typescript-reviewer` for the generic TS lane, but do not defer them away from this lane.
 6. Focus on modified `.vue` files and related `.ts`/`.js` files; read surrounding context before commenting.
 7. Begin review.
 

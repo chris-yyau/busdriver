@@ -28,6 +28,7 @@ When invoked:
 ## Review Priorities
 
 ### CRITICAL — Security
+
 - **SQL Injection**: raw string interpolation in queries — use Eloquent or parameterized queries
 - **Mass Assignment**: `$guarded = []` or calling `create($request->all())` — whitelist `$fillable`
 - **Command Injection**: `shell_exec()`, `exec()`, `system()` with unvalidated input
@@ -37,11 +38,13 @@ When invoked:
 - **XSS**: `{!! $userInput !!}` in Blade without purification — use `{{ }}` or `HTMLPurifier`
 
 ### CRITICAL — Error Handling
+
 - **Bare try/catch**: `catch (\Exception $e) {}` — log and handle, never silently swallow
 - **Missing validation**: controller actions without FormRequest or validation rules
 - **Unvalidated file uploads**: missing MIME type, size, or extension checks
 
 ### HIGH — PHP Standards
+
 - Missing `declare(strict_types=1)` in non-views
 - Public methods without type hints for parameters and return types
 - Using `mixed` when a specific union type is possible
@@ -49,6 +52,7 @@ When invoked:
 - Missing `final` on classes not designed for inheritance
 
 ### HIGH — Eloquent / Laravel Patterns
+
 - N+1 queries: missing `with()` for relationships in loops or serialization
 - Eager loading in serialization: missing `$with` on model, or `->load()` on queried relation
 - Missing `$fillable` or `$casts` on models
@@ -57,12 +61,14 @@ When invoked:
 - `DB::raw()` or `whereRaw()` with user input: use parameterized bindings
 
 ### HIGH — Code Quality
+
 - Functions > 50 lines, methods > 5 parameters (use DTO or Value Object)
 - Deep nesting (> 4 levels) — extract early returns or guard clauses
 - Duplicate code patterns — extract to service or trait
 - Magic numbers without named constants or enums
 
 ### MEDIUM — Best Practices
+
 - PSR-12: import order, spacing, brace placement, naming conventions
 - Missing docblocks on complex public methods
 - `dd()`/`dump()`/`var_dump()` left in committed code

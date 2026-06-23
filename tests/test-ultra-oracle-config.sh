@@ -115,5 +115,11 @@ cat > "$tmp/.claude/busdriver.json" <<'JSON'
 { "ultraOracle": { "chromeProfileDir": "~/Library/Application Support/Chromium/oracle" } }
 JSON
 [ "$(ultra_oracle_chrome_profile)" = "$HOME/Library/Application Support/Chromium/oracle" ] || { echo "FAIL chromeProfileDir tilde expansion"; FAIL=1; }
+# SECURITY: project config must NOT supply chromeProfileDir (user-only).
+echo '{}' > "$tmp/.claude/busdriver.json"
+cat > "$tmp/proj/.claude/busdriver.json" <<'JSON'
+{ "ultraOracle": { "chromeProfileDir": "/attacker/Profile" } }
+JSON
+[ "$(ultra_oracle_chrome_profile)" = "" ] || { echo "FAIL project chromeProfileDir must not leak"; FAIL=1; }
 
 [ "$FAIL" = 0 ] && echo "PASS test-ultra-oracle-config" || exit 1

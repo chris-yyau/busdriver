@@ -123,6 +123,19 @@ def check_accuracy(text: str) -> AxisScore:
     return result
 
 
+# A handling verb must be bound to "edge/corner cases" for it to count as
+# positive coverage — a bare mention ("there might be edge cases with POST")
+# is an admission of a GAP, not evidence the cases were handled.
+_EDGE_VERB = (
+    r"(?:handl(?:e|es|ed|ing)|address(?:|es|ed)|cover(?:|s|ed)|test(?:|s|ed)"
+    r"|list(?:|s|ed)|enumerat(?:e|es|ed)|account(?:|ed)\s+for|consider(?:|s|ed))"
+)
+_EDGE_CASE_HANDLED = (
+    rf"(?i)(?:{_EDGE_VERB}\s+(?:the\s+|all\s+|these\s+)?(?:edge|corner)\s*cases?"
+    rf"|(?:edge|corner)\s*cases?\s+(?:are\s+|were\s+|have\s+been\s+|been\s+)?{_EDGE_VERB})"
+)
+
+
 def check_completeness(text: str) -> AxisScore:
     """Check for requirement coverage, edge cases, error handling."""
     evidence = []
@@ -130,7 +143,7 @@ def check_completeness(text: str) -> AxisScore:
 
     # Positive signals
     completeness_signals = [
-        (r"(?i)(edge\s*cases?|corner\s*cases?)", "Edge cases addressed"),
+        (_EDGE_CASE_HANDLED, "Edge cases addressed"),
         (r"(?i)(error\s*handling|exception\s*handling|try/except|try\s*{)", "Error handling present"),
         (r"(?i)(all\s+\w+\s+(methods|endpoints|routes))", "Full coverage claimed"),
         (r"(?i)(verification|verified\s+that|confirmed\s+that)", "Verification step present"),

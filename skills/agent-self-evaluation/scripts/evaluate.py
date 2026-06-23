@@ -5,8 +5,8 @@ Reads a task description and agent output from stdin or files,
 scores each axis, and prints a structured evaluation report.
 
 Usage:
-    # Pipe output directly
-    echo "Task: Add retry logic" | evaluate.py --output response.txt
+    # Pipe agent output directly via stdin (no task context)
+    echo "Agent response here" | evaluate.py
 
     # From files
     evaluate.py --task task.txt --output response.txt
@@ -44,12 +44,17 @@ def count_words(text: str) -> int:
     return len(text.split()) if text else 0
 
 
-# Negation words that, appearing just before a positive signal, invert it
-# ("No PR created", "tests did not pass", "lint is not clean").
-_NEGATION = re.compile(
-    r"(?i)\b(no|not|never|without|fail(?:ed|s|ing)?|couldn'?t|can'?t|cannot|"
-    r"didn'?t|don'?t|won'?t|isn'?t|aren'?t|wasn'?t|weren'?t)\b[\s\w]{0,15}$"
+# Negation / absence words that, appearing just before a positive signal,
+# invert it ("No PR created", "missing error handling", "lacks tests",
+# "tests did not pass", "lint is not clean"). Single source of truth so the
+# prefix check (_NEGATION) and any interior-negation tempered gaps (e.g. the
+# PR-created pattern) stay in sync.
+_NEG_WORDS = (
+    r"no|not|never|without|missing|lacks?|lacking|absent|"
+    r"fail(?:ed|s|ing)?|couldn'?t|can'?t|cannot|"
+    r"didn'?t|don'?t|won'?t|isn'?t|aren'?t|wasn'?t|weren'?t"
 )
+_NEGATION = re.compile(rf"(?i)\b(?:{_NEG_WORDS})\b[\s\w]{{0,15}}$")
 
 
 def _positive_match(pattern: str, text: str) -> bool:
@@ -292,7 +297,11 @@ def check_actionability(text: str) -> AxisScore:
 
     # Positive signals
     actionable_signals = [
-        (r"(?i)(merge|\bPR\b|pull request).*?(created|ready|open)", "PR created"),
+        # Tempered gap: the span between the noun and the verb must not cross a
+        # negation (shares _NEG_WORDS with the prefix check), so "PR not created",
+        # "PR isn't open", "pull request failed to open" do not match — the
+        # prefix-only _NEGATION check can't see an interior negation.
+        (rf"(?i)(merge|\bPR\b|pull request)(?:(?!\b(?:{_NEG_WORDS})\b).)*?(created|ready|open)", "PR created"),
         (r"(?i)(run|execute)\s+[`\"']?[\w./-]+", "Specific run command given"),
         (r"(?i)(next\s+steps?|follow[- ]up|what\s+to\s+do)", "Next steps provided"),
         (r"(?i)(file\s+(created|written|modified|updated)\s+at)", "File path specified"),

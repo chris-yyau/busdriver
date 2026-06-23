@@ -175,7 +175,7 @@ case "$(git rev-parse --git-dir)" in */worktrees/*) is_wt=yes ;; *) is_wt=no ;; 
 | 1. Merge locally | ✓ | - | ask† | ✓ |
 | 2. Create PR | - | ✓ | ask† | - |
 | 3. Keep as-is | - | - | ✓ | - |
-| 4. Discard | - | - | - | ✓ (force) |
+| 4. Discard | - | - | ask† | ✓ (force) |
 
 † Options 1, 2, and 4 **offer** worktree cleanup but **ask before removing** (never automatic), and only for a worktree you created (skip harness-managed ones). Option 3 keeps the worktree. This matches Step 5.
 

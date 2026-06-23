@@ -160,7 +160,9 @@ def check_completeness(text: str) -> AxisScore:
     ]
     deductions = 0
     for pattern, label in gap_signals:
-        if re.search(pattern, text):
+        # Negation-aware, consistent with check_accuracy's danger loop: a
+        # negated gap statement ("not out of scope") must NOT deduct.
+        if _positive_match(pattern, text):
             deductions += 1
             evidence.append(f"- {label}")
 
@@ -306,7 +308,8 @@ def check_actionability(text: str) -> AxisScore:
         (r"(?i)(figure\s+out|look\s+into|investigate)\s", "Defers work to user"),
     ]
     for pattern, label in vague_signals:
-        if re.search(pattern, text):
+        # Negation-aware, consistent with check_accuracy's danger loop.
+        if _positive_match(pattern, text):
             deductions += 1
             evidence.append(f"- {label}")
 

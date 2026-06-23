@@ -211,7 +211,7 @@ case "$(git rev-parse --git-dir)" in */worktrees/*) is_wt=yes ;; *) is_wt=no ;; 
 - Verify tests before offering options
 - Present exactly 4 options
 - Get typed confirmation for Option 4
-- Clean up worktree for Options 1 & 4 only
+- Offer worktree cleanup for Options 1, 2, & 4 (ask first; keep for Option 3; skip harness-managed)
 
 ## Integration
 

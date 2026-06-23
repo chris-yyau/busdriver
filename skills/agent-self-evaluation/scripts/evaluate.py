@@ -99,7 +99,9 @@ _LINK = r"(?:\s*:\s*|(?:\s+(?:is|are|was|were|has|have|had|been)\b)+\s+)"
 # ("none failed") while still catching "none implemented" / "none present".
 _ABS_BARE = (
     r"absent|missing|lacking|omitted|"
-    r"none(?=\s*(?:$|[.,;:!?]|(?:implemented|present|covered|handled|addressed|included|done|provided|available)\b))|"
+    r"none(?=\s*(?:$|[.,;:!?]|(?:implemented|present|covered|handled|"
+    r"addressed|included|done|provided|available|written|added|created|"
+    r"performed|exercised|tested|run|checked|reviewed|verified|completed)\b))|"
     r"nonexistent|unhandled|unimplemented|uncovered"
 )
 _NEG_SUPPRESS = r"(?:not|never)\s+(?:been\s+)?(?:present|handled|implemented|included|done|covered|addressed)"
@@ -341,23 +343,33 @@ def _check_summary(text: str) -> tuple[int, list[str]]:
     return 0, []
 
 
-def check_clarity(text: str) -> AxisScore:
-    """Check for structure, readability, jargon handling."""
+def _structure_evidence(text: str) -> list[str]:
+    """Return clarity evidence for structural formatting (headings, code, bullets)."""
     evidence = []
-    deductions = 0
-
     if re.search(r"^#{1,3}\s+", text, re.MULTILINE):
         evidence.append("+ Uses headings for structure")
     if re.search(r"```", text):
         evidence.append("+ Uses code blocks")
     if re.search(r"^\s*[-*]\s+", text, re.MULTILINE):
         evidence.append("+ Uses bullet points")
+    return evidence
 
+
+def _wall_of_text_evidence(text: str) -> tuple[int, list[str]]:
+    """Return (1, evidence) when a paragraph exceeds the wall-of-text threshold."""
     for paragraph in [p for p in text.split("\n\n") if p.strip()]:
         if count_words(paragraph) > WALL_OF_TEXT_WORDS:
-            deductions += 1
-            evidence.append("- Wall-of-text paragraph (>200 words without break)")
-            break
+            return 1, ["- Wall-of-text paragraph (>200 words without break)"]
+    return 0, []
+
+
+def check_clarity(text: str) -> AxisScore:
+    """Check for structure, readability, jargon handling."""
+    evidence = _structure_evidence(text)
+
+    wall_deductions, wall_evidence = _wall_of_text_evidence(text)
+    deductions = wall_deductions
+    evidence.extend(wall_evidence)
 
     jargon_deductions, jargon_evidence = _check_jargon(text)
     summary_deductions, summary_evidence = _check_summary(text)
@@ -435,6 +447,30 @@ def _ratio_evidence(text: str, task: Optional[str]) -> tuple[int, list[str]]:
     return 5, []
 
 
+def _redundancy_evidence(text: str) -> tuple[int, list[str]]:
+    """Return (count, evidence) for redundancy patterns appearing >2 times.
+
+    Extracted from check_conciseness to reduce its cyclomatic complexity
+    (CodeScene Complex Method).
+    """
+    redundancy_checks = [
+        (r"(?i)(as\s+(I|we)\s+(mentioned|said|noted|discussed)\s+(earlier|above|before))",
+         "Refers back to earlier statement (possible repetition)"),
+        (r"(?i)(to\s+summarize|in\s+summary|in\s+conclusion|to\s+conclude)",
+         "Has explicit summary (good if needed, flag if redundant)"),
+        (r"(?i)(let\s+me\s+(explain|break\s+this\s+down|walk\s+you\s+through))",
+         "Meta-commentary adds words without information"),
+    ]
+    redundant_count = 0
+    evidence: list[str] = []
+    for pattern, label in redundancy_checks:
+        matches = re.findall(pattern, text)
+        if len(matches) > 2:
+            redundant_count += 1
+            evidence.append(f"- '{label}' appears {len(matches)} times")
+    return redundant_count, evidence
+
+
 def check_conciseness(text: str, task: Optional[str] = None) -> AxisScore:
     """Check for redundancy, filler, information density."""
     evidence: list[str] = []
@@ -446,21 +482,8 @@ def check_conciseness(text: str, task: Optional[str] = None) -> AxisScore:
     evidence.extend(ratio_evidence)
 
     # Redundancy signals
-    redundancy_checks = [
-        (r"(?i)(as\s+(I|we)\s+(mentioned|said|noted|discussed)\s+(earlier|above|before))",
-         "Refers back to earlier statement (possible repetition)"),
-        (r"(?i)(to\s+summarize|in\s+summary|in\s+conclusion|to\s+conclude)",
-         "Has explicit summary (good if needed, flag if redundant)"),
-        (r"(?i)(let\s+me\s+(explain|break\s+this\s+down|walk\s+you\s+through))",
-         "Meta-commentary adds words without information"),
-    ]
-    redundant_count = 0
-    for pattern, label in redundancy_checks:
-        matches = re.findall(pattern, text)
-        if len(matches) > 2:
-            redundant_count += 1
-            evidence.append(f"- '{label}' appears {len(matches)} times")
-
+    redundant_count, redundancy_evidence = _redundancy_evidence(text)
+    evidence.extend(redundancy_evidence)
     if redundant_count >= 2:
         score = min(score, 3)
     elif redundant_count == 1:

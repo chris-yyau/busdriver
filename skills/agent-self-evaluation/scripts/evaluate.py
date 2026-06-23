@@ -72,6 +72,61 @@ def _positive_match(pattern: str, text: str) -> bool:
     return False
 
 
+# Shared coverage vocabulary, reused by the positive matcher and the gap signal
+# so the two stay symmetric: every absence phrase that suppresses a positive
+# also lands a deduction (no suppress-without-deduct asymmetry).
+# Error-handling alternation defined once and shared by the positive signal and
+# the gap nouns, so _coverage_match suppression and the deduction stay symmetric
+# (the try/except shorthands must be deductible, not just suppressible).
+_ERR_HANDLING = r"\berror\s*handling\b|\bexception\s*handling\b|\btry/except\b|\btry\s*\{"
+# Per-alternative \b boundaries (not an outer wrap) so try/except and "try {"
+# work while \btests?\b still won't match inside "latest"/"contest".
+_COVERAGE_NOUNS = rf"{_ERR_HANDLING}|\bedge\s*cases?\b|\bvalidation\b|\btests?\b"
+# A coverage noun reads as "absent" when an absence indicator follows it through
+# a COPULA/auxiliary connector only (is/are/was/were/has·have·had·been, or a
+# colon) — never a preposition. That restriction is what keeps "error handling
+# for missing files" (coverage CLAIMED for missing-file inputs) from being read
+# as an admission that error handling is missing.
+_LINK = r"(?:\s*:\s*|(?:\s+(?:is|are|was|were|has|have|had|been)\b)+\s+)"
+# Absence indicators: bare adjectives (always absence) OR a negated state. The
+# negation lives in the indicator, not the connector, so "is implemented" stays
+# a positive while "is not/never [been] implemented" is an absence.
+_ABS_BARE = r"absent|missing|lacking|omitted|none|nonexistent|unhandled|unimplemented|uncovered"
+_NEG_SUPPRESS = r"(?:not|never)\s+(?:been\s+)?(?:present|handled|implemented|included|done|covered|addressed)"
+# Gap-deduction set omits the bare "not covered"/"not handled" forms — the
+# generic "Explicit gap acknowledged" pattern already deducts those, so omitting
+# them here prevents one admission counting as two gaps. It still keeps the
+# "not/never been covered/handled" and "never covered/handled" forms, which that
+# generic pattern does NOT match.
+_NEG_GAP = (
+    r"(?:not|never)\s+(?:present|implemented|included|done|addressed)"
+    r"|(?:not|never)\s+been\s+(?:present|handled|implemented|included|done|covered|addressed)"
+    r"|never\s+(?:covered|handled)"
+)
+# Absence indicator immediately AFTER a coverage signal inverts it ("error
+# handling is absent", "edge cases: none", "tests have not been done").
+# Complements _NEGATION (which catches absence words only BEFORE the signal).
+# Fail-closed: a contrived double negative ("is not absent") is under-credited,
+# the safe direction for this evaluator.
+_ABSENCE_SUFFIX = re.compile(rf"(?i)^{_LINK}(?:{_ABS_BARE}|{_NEG_SUPPRESS})\b")
+
+
+def _coverage_match(pattern: str, text: str) -> bool:
+    """Positive coverage match that rejects a hit negated BEFORE (_NEGATION) or
+    immediately AFTER (_ABSENCE_SUFFIX) the signal, so an explicit admission such
+    as "error handling is absent" is not scored as "+ ... present". The suffix
+    search runs against the full remainder (the ^-anchored, length-bounded regex
+    self-limits) so a longer phrase like "not covered" is never truncated."""
+    for m in re.finditer(pattern, text):
+        prefix = text[max(0, m.start() - 30):m.start()]
+        if _NEGATION.search(prefix):
+            continue
+        if _ABSENCE_SUFFIX.search(text[m.end():]):
+            continue
+        return True
+    return False
+
+
 def check_accuracy(text: str) -> AxisScore:
     """Check for verifiable claims, tool output references, error signs."""
     evidence = []
@@ -146,14 +201,23 @@ def check_completeness(text: str) -> AxisScore:
     evidence = []
     score = 5
 
-    # Positive signals
-    completeness_signals = [
+    # Positive signals. Coverage claims (edge cases, error handling) use the
+    # absence-aware matcher so "error handling is absent" is NOT scored present.
+    # The broader signals stay on _positive_match: "verified that nothing is
+    # missing" is itself a positive completeness claim, so a trailing absence
+    # term there must not invert it.
+    coverage_signals = [
         (_EDGE_CASE_HANDLED, "Edge cases addressed"),
-        (r"(?i)(error\s*handling|exception\s*handling|try/except|try\s*{)", "Error handling present"),
+        (rf"(?i)(?:{_ERR_HANDLING})", "Error handling present"),
+    ]
+    other_signals = [
         (r"(?i)(all\s+\w+\s+(methods|endpoints|routes))", "Full coverage claimed"),
         (r"(?i)(verification|verified\s+that|confirmed\s+that)", "Verification step present"),
     ]
-    for pattern, label in completeness_signals:
+    for pattern, label in coverage_signals:
+        if _coverage_match(pattern, text):
+            evidence.append(f"+ {label}")
+    for pattern, label in other_signals:
         if _positive_match(pattern, text):
             evidence.append(f"+ {label}")
 
@@ -162,6 +226,14 @@ def check_completeness(text: str) -> AxisScore:
         (r"(?i)(not\s+covered|not\s+handled|out\s+of\s+scope)", "Explicit gap acknowledged"),
         (r"(?i)(only\s+(works|handles|supports)\s+\w+)", "Limited scope noted"),
         (r"(?i)(assume[sd]?\s+that|assuming\s+the)", "Assumption without verification"),
+        # Suffix-absence admission, e.g. "error handling is absent",
+        # "edge cases: none", "tests have not been done". Uses the same
+        # _LINK connector as _ABSENCE_SUFFIX so every positive that
+        # _coverage_match suppresses also lands a deduction here (symmetric),
+        # while _NEG_GAP omits the bare not-covered/not-handled forms the
+        # generic gap above already deducts (no double-count).
+        (rf"(?i)(?:{_COVERAGE_NOUNS}){_LINK}(?:{_ABS_BARE}|{_NEG_GAP})\b",
+         "Coverage explicitly absent"),
     ]
     deductions = 0
     for pattern, label in gap_signals:

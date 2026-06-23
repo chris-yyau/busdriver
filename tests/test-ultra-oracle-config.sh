@@ -56,6 +56,17 @@ cat > "$tmp/.claude/busdriver.json" <<'JSON'
 { "ultraOracle": { "timeoutCapSeconds": "0600" } }
 JSON
 [ "$(ultra_oracle_timeout_cap 2>/dev/null)" = "600" ] || { echo "FAIL leading-zero cap -> 600"; FAIL=1; }
+# all-zero CEILING ("00") must reset to 3600, not clamp the cap to 0 (disabled timeout).
+cat > "$tmp/.claude/busdriver.json" <<'JSON'
+{ "ultraOracle": { "timeoutCapSeconds": 5000 } }
+JSON
+[ "$(ULTRA_ORACLE_CAP_CEILING=00 ultra_oracle_timeout_cap 2>/dev/null)" = "3600" ] || { echo "FAIL all-zero ceiling -> 3600"; FAIL=1; }
+# zero-padded small CEILING must normalize (not be mistaken for 19+ digit overflow):
+# ceiling 0000000000000000500 == 500, so a 1000 cap clamps to 500, not 3600.
+cat > "$tmp/.claude/busdriver.json" <<'JSON'
+{ "ultraOracle": { "timeoutCapSeconds": 1000 } }
+JSON
+[ "$(ULTRA_ORACLE_CAP_CEILING=0000000000000000500 ultra_oracle_timeout_cap 2>/dev/null)" = "500" ] || { echo "FAIL zero-padded ceiling -> 500"; FAIL=1; }
 
 # malformed USER config -> defaults/off, no crash.
 printf '{ this is not json' > "$tmp/.claude/busdriver.json"

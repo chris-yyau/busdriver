@@ -38,7 +38,12 @@ ultra_oracle_timeout_cap() {
   # `[ "$v" -gt "$ceil" ]` error out (and could let an oversized cap through), so
   # fall back to the 3600s default in either case. This keeps the `-gt` operand
   # bounded so the value-side guard below is sufficient for overflow safety.
-  case "$ceil" in ''|*[!0-9]*|0) ceil=3600;; esac
+  case "$ceil" in ''|*[!0-9]*) ceil=3600;; esac
+  # Strip leading zeros BEFORE the all-zero and length checks: "00" must not pass
+  # as a valid ceiling (clamping a cap to 0 disables the timeout), and a zero-padded
+  # small value like "000...500" must not be mistaken for a 19+ digit overflow.
+  ceil="${ceil#"${ceil%%[!0]*}"}"
+  case "$ceil" in ''|0) ceil=3600;; esac
   [ "${#ceil}" -ge 19 ] && ceil=3600
   v="$(ultra_oracle_config_get_user '.ultraOracle.timeoutCapSeconds' '900')"
   case "$v" in

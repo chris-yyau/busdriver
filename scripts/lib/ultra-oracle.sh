@@ -61,7 +61,12 @@ ultra_oracle_consult() {
   # ultra_oracle_timeout_cap enforces (default 3600s) — otherwise an explicit cap
   # bypasses the guardrail and can stall a reviewer with an arbitrarily long wait.
   local _omx_cap_ceil="${ULTRA_ORACLE_CAP_CEILING:-3600}"
-  case "$_omx_cap_ceil" in ''|*[!0-9]*|0) _omx_cap_ceil=3600;; esac
+  case "$_omx_cap_ceil" in ''|*[!0-9]*) _omx_cap_ceil=3600;; esac
+  # Strip leading zeros BEFORE the all-zero and length checks: an all-zero ceiling
+  # ("00") must not pass (clamping a cap to 0 disables the timeout), and a zero-padded
+  # small value must not be mistaken for a 19+ digit overflow and reset to 3600.
+  _omx_cap_ceil="${_omx_cap_ceil#"${_omx_cap_ceil%%[!0]*}"}"
+  case "$_omx_cap_ceil" in ''|0) _omx_cap_ceil=3600;; esac
   # An absurdly long (19+ digit) ceiling would itself overflow the `-gt` below;
   # reset it so the cap-side guard is sufficient for overflow safety.
   [ "${#_omx_cap_ceil}" -ge 19 ] && _omx_cap_ceil=3600

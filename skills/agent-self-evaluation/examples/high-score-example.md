@@ -1,12 +1,12 @@
 # High-Score Example: Adding Retry Logic
 
 ## Task
-> Add retry logic with exponential backoff to all HTTP requests in the API client. Max 3 retries, initial delay 1s, max delay 30s.
+> Add retry logic with exponential backoff to all HTTP requests in the API client. Consider idempotency when deciding which methods to retry automatically. Max 3 retries, initial delay 1s, max delay 30s.
 
 ## Agent Output
 
 ### Summary
-Added a custom `RetryTransport` wrapper to the shared `ApiClient` class. Idempotent methods (GET, PUT, DELETE) now retry on 429, 5xx, and connection errors with exponential backoff; POST remains no-retry by default (configurable). 42 tests pass. Single PR ready to merge.
+Added a custom `RetryTransport` wrapper to the shared `ApiClient` class. All HTTP methods are covered: idempotent methods (GET, PUT, DELETE) retry automatically on 429, 5xx, and connection errors with exponential backoff; POST retries are configurable (off by default for idempotency safety). 42 tests pass. Single PR ready to merge.
 
 ### Files Changed
 - `src/api_client.py` — Added `RetryTransport` wrapper around `httpx.HTTPTransport(retries=3)`; the 429/5xx/connection retry and exponential backoff logic is implemented in the wrapper (`httpx.Limits` only configures connection pooling, not retry/backoff)

@@ -1,8 +1,8 @@
 ---
 paths:
   - "**/*.vue"
-  - "**/*.spec.ts"
-  - "**/*.test.ts"
+  - "**/*.vue.spec.ts"
+  - "**/*.vue.test.ts"
 ---
 
 # Vue Testing

@@ -91,7 +91,17 @@ _LINK = r"(?:\s*:\s*|(?:\s+(?:is|are|was|were|has|have|had|been)\b)+\s+)"
 # Absence indicators: bare adjectives (always absence) OR a negated state. The
 # negation lives in the indicator, not the connector, so "is implemented" stays
 # a positive while "is not/never [been] implemented" is an absence.
-_ABS_BARE = r"absent|missing|lacking|omitted|none|nonexistent|unhandled|unimplemented|uncovered"
+# `none` is gated so a bare "none" inside a larger phrase ("Tests: none
+# failed.") is NOT read as absence — only "none" at the end of a clause
+# (end-of-string or before punctuation) OR "none" followed by an
+# absence-completing participle ("none implemented", "none present") is.
+# Prevents false deductions where "none" modifies a following positive
+# ("none failed") while still catching "none implemented" / "none present".
+_ABS_BARE = (
+    r"absent|missing|lacking|omitted|"
+    r"none(?=\s*(?:$|[.,;:!?]|(?:implemented|present|covered|handled|addressed|included|done|provided|available)\b))|"
+    r"nonexistent|unhandled|unimplemented|uncovered"
+)
 _NEG_SUPPRESS = r"(?:not|never)\s+(?:been\s+)?(?:present|handled|implemented|included|done|covered|addressed)"
 # Gap-deduction set omits the bare "not covered"/"not handled" forms — the
 # generic "Explicit gap acknowledged" pattern already deducts those, so omitting
@@ -127,12 +137,36 @@ def _coverage_match(pattern: str, text: str) -> bool:
     return False
 
 
+def _matched_labels(signals: list[tuple[str, str]], text: str, matcher) -> list[str]:
+    """Return the labels of `signals` whose pattern matches `text` via `matcher`.
+
+    Each signal is tested once (matcher returns bool), preserving the
+    one-evidence-line-per-signal semantics of the axis checks. Extracted so the
+    check_* functions can run their pattern lists without a per-function
+    if/for decision point (CodeScene Complex Method).
+    """
+    return [label for pattern, label in signals if matcher(pattern, text)]
+
+
+def _score_from_deductions(deductions: int, *, at_two: int = 3, at_three: int = 2) -> int:
+    """Map a deduction count to a base axis score (5 = clean, lower = more).
+
+    `at_two`/`at_three` are the scores for exactly 2 / 3+ deductions so the
+    axis-specific severity floors stay explicit at the call site (Completeness
+    caps at 3 even for 3+ deductions; the other axes reach 2). Extracted from
+    the per-axis if/elif chains (CodeScene Complex Method).
+    """
+    if deductions >= 3:
+        return at_three
+    if deductions == 2:
+        return at_two
+    if deductions == 1:
+        return 4
+    return 5
+
+
 def check_accuracy(text: str) -> AxisScore:
     """Check for verifiable claims, tool output references, error signs."""
-    evidence = []
-    deductions = 0
-    score = 5
-
     # Positive signals: verified claims
     verified_patterns = [
         (r"(?i)(tests?\s+pass|all\s+tests?\s+passing|[1-9]\d*\s+passed)", "Tests passing"),
@@ -141,37 +175,28 @@ def check_accuracy(text: str) -> AxisScore:
         (r"(?i)(verified|confirmed|validated)\s+(with|against|using|by)", "Explicit verification"),
         (r"(?i)(grep|rg)\s+.*\b(found|matched|returned)", "Grep confirmed"),
     ]
-    for pattern, label in verified_patterns:
-        if _positive_match(pattern, text):
-            evidence.append(f"+ {label}")
-
-    # Negative signals: unverified claims
+    # Negative signals: unverified claims. Negation-aware (mirror the positive
+    # path): a negated defect statement such as "No TODOs remain" or "not
+    # untested" must NOT deduct — reusing _positive_match means we only deduct
+    # on a non-negated occurrence.
     danger_patterns = [
         (r"(?i)(should\s+work|probably\s+fine|should\s+be\s+ok)", "Hedged claim without verification"),
         (r"(?i)(I\s+think|I\s+believe|I\s+assume|might\s+be)", "Speculation without evidence"),
         (r"(?i)(untested|not\s+tested|haven'?t\s+tested)", "Explicitly untested"),
         (r"(?i)(TODO|FIXME|HACK|WORKAROUND)", "Unresolved TODO/FIXME"),
     ]
-    for pattern, label in danger_patterns:
-        # Negation-aware (mirror the positive path): a negated defect statement
-        # such as "No TODOs remain" or "not untested" must NOT deduct. Reusing
-        # _positive_match means we only deduct on a non-negated occurrence.
-        if _positive_match(pattern, text):
-            deductions += 1
-            evidence.append(f"- {label}")
 
-    positives = [e for e in evidence if e.startswith("+")]
+    positive_labels = _matched_labels(verified_patterns, text, _positive_match)
+    danger_labels = _matched_labels(danger_patterns, text, _positive_match)
+    evidence = [f"+ {label}" for label in positive_labels]
+    evidence.extend(f"- {label}" for label in danger_labels)
+    deductions = len(danger_labels)
 
-    if deductions >= 3:
-        score = 2
-    elif deductions == 2:
-        score = 3
-    elif deductions == 1:
-        score = 4
+    score = _score_from_deductions(deductions)
 
     # Unverified correctness cannot score as excellent: with no positive
     # verification evidence, cap the score so a terse "Done." earns a 3, not a 5.
-    if not positives:
+    if not positive_labels:
         score = min(score, 3)
 
     if not evidence:
@@ -198,29 +223,26 @@ _EDGE_CASE_HANDLED = (
 
 def check_completeness(text: str) -> AxisScore:
     """Check for requirement coverage, edge cases, error handling."""
-    evidence = []
-    score = 5
-
-    # Positive signals. Coverage claims (edge cases, error handling) use the
-    # absence-aware matcher so "error handling is absent" is NOT scored present.
-    # The broader signals stay on _positive_match: "verified that nothing is
-    # missing" is itself a positive completeness claim, so a trailing absence
-    # term there must not invert it.
+    # Positive signals. Coverage claims (edge cases, error handling, and the
+    # bare "verification" noun) use the absence-aware matcher so an explicit
+    # admission such as "error handling is absent", "Verification missing.",
+    # or "Verification is absent" is NOT scored present. The bare
+    # `verification` token carries a negative lookahead for a trailing absence
+    # word ("Verification missing.") while _coverage_match's _ABSENCE_SUFFIX
+    # catches the copula form ("Verification is absent"); the verb phrases
+    # ("verified that", "confirmed that") stay bare since "verified that
+    # nothing is missing" is itself a positive completeness claim.
     coverage_signals = [
         (_EDGE_CASE_HANDLED, "Edge cases addressed"),
         (rf"(?i)(?:{_ERR_HANDLING})", "Error handling present"),
+        (
+            rf"(?i)(verification(?!\s+(?:{_ABS_BARE})\b)|verified\s+that|confirmed\s+that)",
+            "Verification step present",
+        ),
     ]
     other_signals = [
         (r"(?i)(all\s+\w+\s+(methods|endpoints|routes))", "Full coverage claimed"),
-        (r"(?i)(verification|verified\s+that|confirmed\s+that)", "Verification step present"),
     ]
-    for pattern, label in coverage_signals:
-        if _coverage_match(pattern, text):
-            evidence.append(f"+ {label}")
-    for pattern, label in other_signals:
-        if _positive_match(pattern, text):
-            evidence.append(f"+ {label}")
-
     # Gaps
     gap_signals = [
         (r"(?i)(not\s+covered|not\s+handled|out\s+of\s+scope)", "Explicit gap acknowledged"),
@@ -235,23 +257,22 @@ def check_completeness(text: str) -> AxisScore:
         (rf"(?i)(?:{_COVERAGE_NOUNS}){_LINK}(?:{_ABS_BARE}|{_NEG_GAP})\b",
          "Coverage explicitly absent"),
     ]
-    deductions = 0
-    for pattern, label in gap_signals:
-        # Negation-aware, consistent with check_accuracy's danger loop: a
-        # negated gap statement ("not out of scope") must NOT deduct.
-        if _positive_match(pattern, text):
-            deductions += 1
-            evidence.append(f"- {label}")
 
-    positives = [e for e in evidence if e.startswith("+")]
+    positive_labels = _matched_labels(coverage_signals, text, _coverage_match)
+    positive_labels += _matched_labels(other_signals, text, _positive_match)
+    # Negation-aware, consistent with check_accuracy's danger loop: a negated
+    # gap statement ("not out of scope") must NOT deduct.
+    gap_labels = _matched_labels(gap_signals, text, _positive_match)
+    evidence = [f"+ {label}" for label in positive_labels]
+    evidence.extend(f"- {label}" for label in gap_labels)
+    deductions = len(gap_labels)
 
-    if deductions >= 2:
-        score = 3
-    elif deductions == 1:
-        score = 4
+    # Completeness's severity floor is 3 (2+ deductions → 3, never 2): gap
+    # signals are weaker indicators than accuracy's danger patterns.
+    score = _score_from_deductions(deductions, at_two=3, at_three=3)
 
     # No positive coverage evidence: cannot score as excellent — fail closed.
-    if not positives:
+    if not positive_labels:
         score = min(score, 3)
 
     if not evidence:
@@ -343,14 +364,7 @@ def check_clarity(text: str) -> AxisScore:
     deductions += jargon_deductions + summary_deductions
     evidence.extend(jargon_evidence + summary_evidence)
 
-    if deductions >= 3:
-        score = 2
-    elif deductions == 2:
-        score = 3
-    elif deductions == 1:
-        score = 4
-    else:
-        score = 5
+    score = _score_from_deductions(deductions)
 
     if not evidence:
         evidence.append("+ Well-structured with no clarity issues detected")
@@ -363,10 +377,6 @@ def check_clarity(text: str) -> AxisScore:
 
 def check_actionability(text: str) -> AxisScore:
     """Check if the user can act on the output immediately."""
-    evidence = []
-    score = 5
-    deductions = 0
-
     # Positive signals
     actionable_signals = [
         # Tempered gap: the span between the noun and the verb must not cross a
@@ -378,33 +388,23 @@ def check_actionability(text: str) -> AxisScore:
         (r"(?i)(next\s+steps?|follow[- ]up|what\s+to\s+do)", "Next steps provided"),
         (r"(?i)(file\s+(created|written|modified|updated)\s+at)", "File path specified"),
     ]
-    for pattern, label in actionable_signals:
-        if _positive_match(pattern, text):
-            evidence.append(f"+ {label}")
-
-    # Negative signals
+    # Negative signals (negation-aware, consistent with check_accuracy's danger loop).
     vague_signals = [
         (r"(?i)(you\s+(should|could|might\s+want\s+to))\s+\w+", "Vague suggestion without specifics"),
         (r"(?i)(consider|maybe|perhaps)\s+\w+ing", "Non-committal suggestion"),
         (r"(?i)(figure\s+out|look\s+into|investigate)\s", "Defers work to user"),
     ]
-    for pattern, label in vague_signals:
-        # Negation-aware, consistent with check_accuracy's danger loop.
-        if _positive_match(pattern, text):
-            deductions += 1
-            evidence.append(f"- {label}")
 
-    positives = [e for e in evidence if e.startswith("+")]
+    positive_labels = _matched_labels(actionable_signals, text, _positive_match)
+    vague_labels = _matched_labels(vague_signals, text, _positive_match)
+    evidence = [f"+ {label}" for label in positive_labels]
+    evidence.extend(f"- {label}" for label in vague_labels)
+    deductions = len(vague_labels)
 
-    if deductions >= 3:
-        score = 2
-    elif deductions == 2:
-        score = 3
-    elif deductions == 1:
-        score = 4
+    score = _score_from_deductions(deductions)
 
     # No positive actionability evidence: cannot score as excellent — fail closed.
-    if not positives:
+    if not positive_labels:
         score = min(score, 3)
 
     if not evidence:
@@ -416,22 +416,34 @@ def check_actionability(text: str) -> AxisScore:
     return result
 
 
+def _ratio_evidence(text: str, task: Optional[str]) -> tuple[int, list[str]]:
+    """Return (score cap, evidence) from the task-to-output length ratio.
+
+    A high ratio (output much longer than the task) caps the conciseness score.
+    Extracted from check_conciseness to flatten its conditional nesting
+    (CodeScene Complex Method). Returns (5, []) when there is no task context.
+    """
+    if not task:
+        return 5, []
+    wc = count_words(text)
+    task_wc = count_words(task)
+    ratio = wc / max(task_wc, 1)
+    if ratio > TASK_OUTPUT_RATIO_HIGH:
+        return 3, [f"- Output is {ratio:.0f}x longer than task description (high ratio)"]
+    if ratio > TASK_OUTPUT_RATIO_MEDIUM:
+        return 4, [f"- Output is {ratio:.0f}x longer than task description"]
+    return 5, []
+
+
 def check_conciseness(text: str, task: Optional[str] = None) -> AxisScore:
     """Check for redundancy, filler, information density."""
-    evidence = []
+    evidence: list[str] = []
     score = 5
-    wc = count_words(text)
 
     # Heuristic: task-to-output ratio
-    if task:
-        task_wc = count_words(task)
-        ratio = wc / max(task_wc, 1)
-        if ratio > TASK_OUTPUT_RATIO_HIGH:
-            evidence.append(f"- Output is {ratio:.0f}x longer than task description (high ratio)")
-            score = min(score, 3)
-        elif ratio > TASK_OUTPUT_RATIO_MEDIUM:
-            evidence.append(f"- Output is {ratio:.0f}x longer than task description")
-            score = min(score, 4)
+    ratio_cap, ratio_evidence = _ratio_evidence(text, task)
+    score = min(score, ratio_cap)
+    evidence.extend(ratio_evidence)
 
     # Redundancy signals
     redundancy_checks = [
@@ -474,6 +486,43 @@ def evaluate(task: Optional[str], output: str) -> list[AxisScore]:
     ]
 
 
+def _critical_lines(scores: list[AxisScore]) -> list[str]:
+    """Render the CRITICAL ISSUES (axes ≤ 2) block."""
+    lines = ["CRITICAL ISSUES (axes ≤ 2):"]
+    critical = [(s, s.improvement or "No improvement suggested") for s in scores if s.score <= 2]
+    if critical:
+        for s, imp in critical:
+            lines.append(f"  [{s.name}] Score {s.score}/5 — {imp}")
+    else:
+        lines.append("  None")
+    return lines
+
+
+def _improvement_lines(scores: list[AxisScore]) -> list[str]:
+    """Render the TOP IMPROVEMENTS block (axes < 4, ranked by score)."""
+    improvements = [(s, s.improvement) for s in scores if s.improvement and s.score < 4]
+    lines = ["TOP IMPROVEMENTS:"]
+    if improvements:
+        for i, (s, imp) in enumerate(sorted(improvements, key=lambda x: x[0].score), 1):
+            lines.append(f"  {i}. [{s.name}] {imp}")
+    else:
+        lines.append("  No axes below 4. Strong output across all dimensions.")
+    return lines
+
+
+def _compute_verdict(scores: list[AxisScore], avg: float) -> str:
+    """Pick the overall verdict string from the per-axis scores."""
+    min_score = min(s.score for s in scores)
+    if min_score <= 2:
+        return f"Redo with specific fixes. Weakest axis: {min(scores, key=lambda s: s.score).name} ({min_score}/5)."
+    if any(s.score <= 3 for s in scores):
+        weak = [s.name for s in scores if s.score <= 3]
+        return f"Fix {'/'.join(weak)} issues, then deliver."
+    if avg >= 4.5:
+        return "Deliver as-is. No changes needed."
+    return "Deliver as-is. Minor improvements noted above."
+
+
 def format_report(scores: list[AxisScore]) -> str:
     """Format scores into a readable evaluation report."""
     avg = sum(s.score for s in scores) / len(scores)
@@ -495,15 +544,10 @@ def format_report(scores: list[AxisScore]) -> str:
     lines.append(f"  {'OVERALL':<15} {avg:.1f}/5")
     lines.append("")
 
-    # Critical issues (axes ≤ 2)
-    critical = [(s, s.improvement or "No improvement suggested") for s in scores if s.score <= 2]
-    lines.append("CRITICAL ISSUES (axes ≤ 2):")
-    if critical:
-        for s, imp in critical:
-            lines.append(f"  [{s.name}] Score {s.score}/5 — {imp}")
-    else:
-        lines.append("  None")
-
+    # Critical issues, self-check, top improvements, and verdict are each
+    # rendered by a dedicated helper so this function stays a flat assembly
+    # loop (CodeScene Complex Method / Bumpy Road Ahead).
+    lines.extend(_critical_lines(scores))
     lines.append("")
     lines.append(
         "Self-check: heuristic first-pass scores (keyword + structural). "
@@ -511,32 +555,22 @@ def format_report(scores: list[AxisScore]) -> str:
         "pair with an LLM judge for semantic accuracy."
     )
     lines.append("")
-
-    # Top improvements (axes scoring < 4, ranked by impact)
-    improvements = [(s, s.improvement) for s in scores if s.improvement and s.score < 4]
-    lines.append("TOP IMPROVEMENTS:")
-    if improvements:
-        for i, (s, imp) in enumerate(sorted(improvements, key=lambda x: x[0].score), 1):
-            lines.append(f"  {i}. [{s.name}] {imp}")
-    else:
-        lines.append("  No axes below 4. Strong output across all dimensions.")
-
+    lines.extend(_improvement_lines(scores))
     lines.append("")
-
-    # Verdict
-    min_score = min(s.score for s in scores)
-    if min_score <= 2:
-        verdict = f"Redo with specific fixes. Weakest axis: {min(scores, key=lambda s: s.score).name} ({min_score}/5)."
-    elif any(s.score <= 3 for s in scores):
-        weak = [s.name for s in scores if s.score <= 3]
-        verdict = f"Fix {'/'.join(weak)} issues, then deliver."
-    elif avg >= 4.5:
-        verdict = "Deliver as-is. No changes needed."
-    else:
-        verdict = "Deliver as-is. Minor improvements noted above."
-    lines.append(f"VERDICT: {verdict}")
+    lines.append(f"VERDICT: {_compute_verdict(scores, avg)}")
 
     return "\n".join(lines)
+
+
+def _looks_like_path(path: str) -> bool:
+    """Heuristic: does `path` look like a file path rather than inline text?
+
+    True when it contains a path separator or ends in a short extension, so a
+    typo like `--task taks.txt` is flagged rather than silently evaluated as
+    literal text. Extracted from _read_file_or_text to keep its conditional
+    shallow (CodeScene Complex Conditional).
+    """
+    return "/" in path or "\\" in path or bool(re.search(r"\.[A-Za-z0-9]{1,5}$", path))
 
 
 def _read_file_or_text(path: Optional[str], *, required: bool = False) -> Optional[str]:
@@ -553,13 +587,19 @@ def _read_file_or_text(path: Optional[str], *, required: bool = False) -> Option
         # Not required: fall back to treating the value as inline text, but warn
         # when it looks like a mistyped path (has a separator or file extension)
         # so a typo like `--task taks.txt` is not silently evaluated as literal text.
-        if "/" in path or "\\" in path or re.search(r"\.[A-Za-z0-9]{1,5}$", path):
+        if _looks_like_path(path):
             print(
                 f"Warning: '{path}' looks like a file path but was not found; "
                 "treating it as inline text",
                 file=sys.stderr,
             )
         return path
+    except OSError as exc:
+        # Non-missing read failures (PermissionError, IsADirectoryError, …) are
+        # hard errors, not "treat as inline text" cases — the path resolves to a
+        # real filesystem object that cannot be read.
+        print(f"Error: unable to read '{path}': {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _read_input(args: argparse.Namespace) -> tuple[Optional[str], str]:
@@ -578,8 +618,11 @@ def main() -> None:
         description="Evaluate agent output against the 5-axis rubric"
     )
     parser.add_argument("--task", help="Task description (file path or inline text)")
-    parser.add_argument("--output", help="Agent output to evaluate (file path)")
-    parser.add_argument("--interactive", action="store_true", help="Prompt for task and read output from stdin")
+    # --output and --interactive are mutually exclusive so passing both cannot
+    # silently let --interactive shadow --output (or vice-versa).
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--output", help="Agent output to evaluate (file path)")
+    mode_group.add_argument("--interactive", action="store_true", help="Prompt for task and read output from stdin")
     args = parser.parse_args()
 
     task, output = _read_input(args)

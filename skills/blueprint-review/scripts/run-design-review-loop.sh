@@ -796,9 +796,9 @@ with open(pending, "w") as f:
   ULTRA_ORACLE_ADVISORY_SECTION=""
   if [ -n "${ULTRA_ORACLE_ADVISORY_FILE:-}" ]; then
     if [ "$ULTRA_ORACLE_DISPATCH_STATUS" = "dispatched" ]; then
-      _omx_wait=0; _omx_cap="$(ultra_oracle_timeout_cap)"
-      while [ ! -f "$ULTRA_ORACLE_ADVISORY_FILE.rc" ] && [ "$_omx_wait" -lt "$_omx_cap" ]; do
-        sleep 2; _omx_wait=$((_omx_wait + 2))
+      _uora_wait=0; _uora_cap="$(ultra_oracle_timeout_cap)"
+      while [ ! -f "$ULTRA_ORACLE_ADVISORY_FILE.rc" ] && [ "$_uora_wait" -lt "$_uora_cap" ]; do
+        sleep 2; _uora_wait=$((_uora_wait + 2))
       done
     fi
     if [ -s "$ULTRA_ORACLE_ADVISORY_FILE" ] && [ -f "$ULTRA_ORACLE_ADVISORY_FILE.rc" ] && [ "$(cat "$ULTRA_ORACLE_ADVISORY_FILE.rc")" = "0" ]; then
@@ -808,14 +808,14 @@ OPTIONAL ULTRA-ORACLE (GPT-5.5 Pro) ADVISORY -- AUXILIARY, *NOT* A REVIEWER. The
 
 $(cat "$ULTRA_ORACLE_ADVISORY_FILE")"
     else
-      _omx_rc="$(cat "$ULTRA_ORACLE_ADVISORY_FILE.rc" 2>/dev/null || true)"
-      if [ "$ULTRA_ORACLE_DISPATCH_STATUS" != "dispatched" ]; then _omx_term="$ULTRA_ORACLE_DISPATCH_STATUS"
-      elif [ "$_omx_rc" = "124" ]; then _omx_term="timeout"
-      elif [ -z "$_omx_rc" ]; then _omx_term="timeout (no completion within cap)"
-      elif [ "$_omx_rc" != "0" ]; then _omx_term="error (rc=$_omx_rc)"
-      else _omx_term="error (empty verdict)"; fi
+      _uora_rc="$(cat "$ULTRA_ORACLE_ADVISORY_FILE.rc" 2>/dev/null || true)"
+      if [ "$ULTRA_ORACLE_DISPATCH_STATUS" != "dispatched" ]; then _uora_term="$ULTRA_ORACLE_DISPATCH_STATUS"
+      elif [ "$_uora_rc" = "124" ]; then _uora_term="timeout"
+      elif [ -z "$_uora_rc" ]; then _uora_term="timeout (no completion within cap)"
+      elif [ "$_uora_rc" != "0" ]; then _uora_term="error (rc=$_uora_rc)"
+      else _uora_term="error (empty verdict)"; fi
       ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
-WARNING: ULTRA-ORACLE ADVISORY FAILED [$_omx_term] -- verdict NOT included (visible best-effort; the gate converges on the THREE reviewers Agy/Codex/Grok).
+WARNING: ULTRA-ORACLE ADVISORY FAILED [$_uora_term] -- verdict NOT included (visible best-effort; the gate converges on the THREE reviewers Agy/Codex/Grok).
 ============================================================================="
     fi
   elif [ "${CLAUDE_ONLY:-false}" != "true" ]; then
@@ -827,12 +827,12 @@ WARNING: ULTRA-ORACLE ADVISORY FAILED [$_omx_term] -- verdict NOT included (visi
     # project config must NOT flip this enablement probe — reading it would
     # contradict the user-config-only opt-in boundary the whole feature enforces
     # (a branch could otherwise surface a misleading "enabled" warning).
-    _omx_en=""
-    _omx_user_cfg="$HOME/$STATE_DIR/busdriver.json"
-    if [ -f "$_omx_user_cfg" ]; then
-      _omx_en="$(_read_config_value "$_omx_user_cfg" '.ultraOracle.blueprintReview.enabled' 2>/dev/null || true)"
+    _uora_en=""
+    _uora_user_cfg="$HOME/$STATE_DIR/busdriver.json"
+    if [ -f "$_uora_user_cfg" ]; then
+      _uora_en="$(_read_config_value "$_uora_user_cfg" '.ultraOracle.blueprintReview.enabled' 2>/dev/null || true)"
     fi
-    case "$(printf '%s' "$_omx_en" | tr '[:upper:]' '[:lower:]')" in
+    case "$(printf '%s' "$_uora_en" | tr '[:upper:]' '[:lower:]')" in
       true|1)
         ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
 WARNING: ULTRA-ORACLE ADVISORY enabled but the adapter could not be loaded -- verdict NOT included (visible best-effort; gate converges on the THREE reviewers).

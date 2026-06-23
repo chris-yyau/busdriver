@@ -60,23 +60,15 @@ ultra_oracle_consult() {
   # Clamp an explicit numeric --timeout-cap-seconds to the same ceiling
   # ultra_oracle_timeout_cap enforces (default 3600s) — otherwise an explicit cap
   # bypasses the guardrail and can stall a reviewer with an arbitrarily long wait.
-  local _omx_cap_ceil="${ULTRA_ORACLE_CAP_CEILING:-3600}"
-  case "$_omx_cap_ceil" in ''|*[!0-9]*) _omx_cap_ceil=3600;; esac
-  # Strip leading zeros BEFORE the all-zero and length checks: an all-zero ceiling
-  # ("00") must not pass (clamping a cap to 0 disables the timeout), and a zero-padded
-  # small value must not be mistaken for a 19+ digit overflow and reset to 3600.
-  _omx_cap_ceil="${_omx_cap_ceil#"${_omx_cap_ceil%%[!0]*}"}"
-  case "$_omx_cap_ceil" in ''|0) _omx_cap_ceil=3600;; esac
-  # An absurdly long (19+ digit) ceiling would itself overflow the `-gt` below;
-  # reset it so the cap-side guard is sufficient for overflow safety.
-  [ "${#_omx_cap_ceil}" -ge 19 ] && _omx_cap_ceil=3600
+  local _uora_cap_ceil
+  _uora_cap_ceil="$(_ultra_oracle_sanitize_ceiling "${ULTRA_ORACLE_CAP_CEILING:-3600}")"
   # A value with 19+ digits would overflow bash's signed-64-bit `-gt` (INT64_MAX is
   # 19 digits) and could wrap to compare as SMALLER, slipping an absurd cap past the
   # guardrail; anything that long is nonsensical as a second count, so clamp it
   # outright. Below 19 digits the numeric `-gt` is safe.
-  if [ "${#cap}" -ge 19 ] || [ "$cap" -gt "$_omx_cap_ceil" ]; then
-    echo "ultra-oracle: timeout cap $cap exceeds ceiling $_omx_cap_ceil — clamping" >&2
-    cap="$_omx_cap_ceil"
+  if [ "${#cap}" -ge 19 ] || [ "$cap" -gt "$_uora_cap_ceil" ]; then
+    echo "ultra-oracle: timeout cap $cap exceeds ceiling $_uora_cap_ceil — clamping" >&2
+    cap="$_uora_cap_ceil"
   fi
   # Fail closed if the output dir can't be created — otherwise background mode
   # would return 'dispatched' but the child could never write "$out.rc".
@@ -143,11 +135,11 @@ ultra_oracle_consult() {
     # Emit an .rc marker on completion so the caller can bounded-wait + read status.
     # disown so an early parent exit cannot orphan/kill it before the .rc lands.
     ( set +e   # a caller's errexit must NOT abort the subshell before "$out.rc" is written
-      _portable_timeout "${cap}" oracle "$@" >/dev/null 2>&1; _omx_bg_rc=$?
+      _portable_timeout "${cap}" oracle "$@" >/dev/null 2>&1; _uora_bg_rc=$?
       # Map exit-0-but-empty-verdict to failure so the .rc matches blocking mode's
       # fail-closed contract (timeout already surfaces as rc 124).
-      [[ "$_omx_bg_rc" = 0 ]] && [[ ! -s "$out" ]] && _omx_bg_rc=1
-      printf '%s' "$_omx_bg_rc" > "$out.rc" ) &
+      [[ "$_uora_bg_rc" = 0 ]] && [[ ! -s "$out" ]] && _uora_bg_rc=1
+      printf '%s' "$_uora_bg_rc" > "$out.rc" ) &
     disown 2>/dev/null || true
     printf 'dispatched'; return 0
   fi

@@ -88,4 +88,32 @@ cat > "$tmp/.claude/busdriver.json" <<'JSON'
 JSON
 ultra_oracle_surface_enabled council && { echo "FAIL enabled:false -> disabled"; FAIL=1; }
 
+# ultra_oracle_cookie_path: user config only; tilde expansion; empty default.
+echo '{}' > "$tmp/.claude/busdriver.json"
+[ "$(ultra_oracle_cookie_path)" = "" ] || { echo "FAIL cookiePath empty default"; FAIL=1; }
+cat > "$tmp/.claude/busdriver.json" <<JSON
+{ "ultraOracle": { "cookiePath": "$tmp/Cookies" } }
+JSON
+[ "$(ultra_oracle_cookie_path)" = "$tmp/Cookies" ] || { echo "FAIL cookiePath absolute passthrough"; FAIL=1; }
+cat > "$tmp/.claude/busdriver.json" <<'JSON'
+{ "ultraOracle": { "cookiePath": "~/Library/Cookies" } }
+JSON
+[ "$(ultra_oracle_cookie_path)" = "$HOME/Library/Cookies" ] || { echo "FAIL cookiePath tilde expansion"; FAIL=1; }
+# SECURITY: project config must NOT supply cookiePath (user-only).
+cat > "$tmp/.claude/busdriver.json" <<'JSON'
+{}
+JSON
+cat > "$tmp/proj/.claude/busdriver.json" <<'JSON'
+{ "ultraOracle": { "cookiePath": "/attacker/Cookies" } }
+JSON
+[ "$(ultra_oracle_cookie_path)" = "" ] || { echo "FAIL project cookiePath must not leak"; FAIL=1; }
+
+# ultra_oracle_chrome_profile: empty default; tilde expansion; project-isolation.
+echo '{}' > "$tmp/.claude/busdriver.json"
+[ "$(ultra_oracle_chrome_profile)" = "" ] || { echo "FAIL chromeProfileDir empty default"; FAIL=1; }
+cat > "$tmp/.claude/busdriver.json" <<'JSON'
+{ "ultraOracle": { "chromeProfileDir": "~/Library/Application Support/Chromium/oracle" } }
+JSON
+[ "$(ultra_oracle_chrome_profile)" = "$HOME/Library/Application Support/Chromium/oracle" ] || { echo "FAIL chromeProfileDir tilde expansion"; FAIL=1; }
+
 [ "$FAIL" = 0 ] && echo "PASS test-ultra-oracle-config" || exit 1

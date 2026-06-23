@@ -24,6 +24,25 @@ ultra_oracle_config_get_user() {
   if [[ -n "$val" && "$val" != "null" ]]; then printf '%s' "$val"; else printf '%s' "$default"; fi
 }
 
+# _ultra_oracle_sanitize_ceiling <raw-value>
+# Internal helper: validate and sanitize an ULTRA_ORACLE_CAP_CEILING value.
+# Prints the safe ceiling (numeric, non-zero, < 19 digits); falls back to 3600 on
+# any invalid input. Shared by ultra_oracle_timeout_cap() and ultra_oracle_consult()
+# so the safety-critical ceiling logic cannot drift between the two call sites.
+_ultra_oracle_sanitize_ceiling() {
+  local ceil="${1:-3600}"
+  # Non-numeric or empty → default.
+  case "$ceil" in ''|*[!0-9]*) ceil=3600;; esac
+  # Strip leading zeros so "00" collapses to "" (all-zero → rejected below) and
+  # "000500" is not mistaken for a 19+ digit overflow.
+  ceil="${ceil#"${ceil%%[!0]*}"}"
+  # All-zero input collapses to "" after stripping.
+  case "$ceil" in '') ceil=3600;; esac
+  # 19+ digit value would overflow signed-64-bit arithmetic; reset to default.
+  [ "${#ceil}" -ge 19 ] && ceil=3600
+  printf '%s' "$ceil"
+}
+
 # The ENTIRE ultraOracle block is read from USER config only — a repo-controlled
 # project config has zero influence on ultra-oracle (no enable, no model, no timing).
 ultra_oracle_model() { ultra_oracle_config_get_user '.ultraOracle.model' 'gpt-5.5-pro'; }
@@ -32,19 +51,13 @@ ultra_oracle_model() { ultra_oracle_config_get_user '.ultraOracle.model' 'gpt-5.
 # Clamp to ULTRA_ORACLE_CAP_CEILING (default 3600s = 1h) so a repo-controlled project
 # config cannot set an arbitrarily large cap and stall a reviewer (availability DoS).
 ultra_oracle_timeout_cap() {
-  local v ceil="${ULTRA_ORACLE_CAP_CEILING:-3600}"
+  local v ceil
   # Validate the ceiling itself before the `-gt` below — a non-numeric OR absurdly
   # long (19+ digit, overflow-prone) ULTRA_ORACLE_CAP_CEILING would make
   # `[ "$v" -gt "$ceil" ]` error out (and could let an oversized cap through), so
   # fall back to the 3600s default in either case. This keeps the `-gt` operand
   # bounded so the value-side guard below is sufficient for overflow safety.
-  case "$ceil" in ''|*[!0-9]*) ceil=3600;; esac
-  # Strip leading zeros BEFORE the all-zero and length checks: "00" must not pass
-  # as a valid ceiling (clamping a cap to 0 disables the timeout), and a zero-padded
-  # small value like "000...500" must not be mistaken for a 19+ digit overflow.
-  ceil="${ceil#"${ceil%%[!0]*}"}"
-  case "$ceil" in ''|0) ceil=3600;; esac
-  [ "${#ceil}" -ge 19 ] && ceil=3600
+  ceil="$(_ultra_oracle_sanitize_ceiling "${ULTRA_ORACLE_CAP_CEILING:-3600}")"
   v="$(ultra_oracle_config_get_user '.ultraOracle.timeoutCapSeconds' '900')"
   case "$v" in
     ''|*[!0-9]*) echo "ultra-oracle: invalid timeoutCapSeconds '$v' — using 900" >&2; printf '900'; return;;
@@ -54,7 +67,7 @@ ultra_oracle_timeout_cap() {
   # `timeout 0` / the Perl fallback's `alarm 0` DISABLE the timeout, letting an
   # opt-in consult run unbounded instead of falling back to the safe default.
   v="${v#"${v%%[!0]*}"}"
-  case "$v" in ''|0) echo "ultra-oracle: timeoutCapSeconds resolves to 0 — using 900" >&2; printf '900'; return;; esac
+  case "$v" in '') echo "ultra-oracle: timeoutCapSeconds resolves to 0 — using 900" >&2; printf '900'; return;; esac
   # A value with 19+ digits would overflow bash's signed-64-bit `-gt` (INT64_MAX is
   # 19 digits) and could wrap to compare as SMALLER, letting an absurd cap through;
   # anything that long is nonsensical as a second count, so clamp it outright. Below

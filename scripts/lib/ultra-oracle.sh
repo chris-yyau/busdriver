@@ -78,7 +78,11 @@ ultra_oracle_consult() {
   # succeed even if this oracle invocation exits 0 but writes nothing — silently
   # returning ok with stale content. Truncate both output and .rc marker so each
   # run starts from a clean slate regardless of caller's output-path reuse policy.
-  rm -f "$out" "$out.rc" 2>/dev/null || true
+  # `--` guards against option-looking paths; fail CLOSED if the cleanup itself
+  # fails — a surviving stale file is the exact bug this prevents, so suppressing
+  # the error would defeat the purpose. `rm -f` is a no-op on nonexistent files,
+  # so the || branch only fires when a file EXISTS but cannot be removed.
+  rm -f -- "$out" "$out.rc" 2>/dev/null || { printf 'error'; return 1; }
 
   # Operator escape (persistent opt-out; fail-closed-with-escape). State-dir resolved.
   local state_dir git_root skip

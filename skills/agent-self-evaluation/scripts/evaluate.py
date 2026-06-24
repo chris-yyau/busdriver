@@ -54,7 +54,7 @@ _NEG_WORDS = (
     r"fail(?:ed|s|ing)?|couldn'?t|can'?t|cannot|"
     r"didn'?t|don'?t|won'?t|isn'?t|aren'?t|wasn'?t|weren'?t"
 )
-_NEGATION = re.compile(rf"(?i)\b(?:{_NEG_WORDS})\b[\s\w]{{0,15}}$")
+_NEGATION = re.compile(rf"(?i)\b(?:{_NEG_WORDS})\b[\s\w'\"`]{{0,15}}$")
 
 
 def _positive_match(pattern: str, text: str) -> bool:
@@ -157,6 +157,10 @@ def _score_from_deductions(deductions: int, *, at_two: int = 3, at_three: int = 
     axis-specific severity floors stay explicit at the call site (Completeness
     caps at 3 even for 3+ deductions; the other axes reach 2). Extracted from
     the per-axis if/elif chains (CodeScene Complex Method).
+
+    The heuristic floors at 2 (at_three); score 1 ("fundamentally incorrect"
+    per the rubric) requires LLM semantic judgment and cannot be reached by
+    keyword counting alone — see the self-check disclosure in format_report().
     """
     if deductions >= 3:
         return at_three

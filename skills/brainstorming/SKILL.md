@@ -65,7 +65,8 @@ digraph brainstorming {
     "Ask clarifying questions" -> "Visual question arises?";
     "Visual question arises?" -> "Offer Visual Companion\n(just-in-time, own message)" [label="yes, first time"];
     "Offer Visual Companion\n(just-in-time, own message)" -> "Ask clarifying questions";
-    "Visual question arises?" -> "Classify decisions" [label="no / done"];
+    "Visual question arises?" -> "Ask clarifying questions" [label="no"];
+    "Visual question arises?" -> "Classify decisions" [label="done"];
     "Classify decisions" -> "Propose 2-3 approaches" [label="user-facing picks remain"];
     "Classify decisions" -> "Present design sections" [label="all decided internally"];
     "Propose 2-3 approaches" -> "Present design sections";

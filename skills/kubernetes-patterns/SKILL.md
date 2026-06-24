@@ -561,6 +561,9 @@ spec:
             requests:
               cpu: "100m"
               memory: "256Mi"
+            limits:
+              cpu: "200m"
+              memory: "512Mi"
 ```
 
 ```yaml
@@ -587,6 +590,9 @@ spec:
                 requests:
                   cpu: "50m"
                   memory: "64Mi"
+                limits:
+                  cpu: "100m"
+                  memory: "128Mi"
 ```
 
 ---

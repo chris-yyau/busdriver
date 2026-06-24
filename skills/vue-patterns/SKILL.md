@@ -454,7 +454,7 @@ const AsyncComp = defineAsyncComponent({
 |-------------|---------------|---------|
 | Destructuring `defineProps()` (Vue < 3.5) | Captures snapshot, loses reactivity | Access via `props.xxx` or use `toRefs()` |
 | `watch()` on destructured prop (Vue 3.5+) | Compile-time error — destructured props can't be watched directly | Use getter wrapper: `watch(() => count, ...)` |
-| `v-if` + `v-for` on same element | Ambiguous execution order | Use computed filtered array |
+| `v-if` + `v-for` on same element | `v-if` evaluates first (Vue 3), can't access `v-for` aliases | Use computed filtered array |
 | `v-for` key = index | Broken state on reorder | Use stable database IDs |
 | Mutating props | Violates one-way data flow | Emit events or use `v-model` |
 | `v-html` with user content | XSS vulnerability | Sanitize with DOMPurify |

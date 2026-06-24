@@ -46,6 +46,7 @@ $ python -c "from src.api_client import ApiClient; c = ApiClient(); print(type(c
 ============================================================
 AGENT SELF-EVALUATION REPORT
 ============================================================
+Summary: Overall score 4.6/5 across 5 quality axes.
 
   Accuracy         █████ 5/5
     + Tests passing
@@ -79,8 +80,15 @@ AGENT SELF-EVALUATION REPORT
 
   OVERALL           4.6/5
 
+CRITICAL ISSUES (axes ≤ 2):
+  None
+
+Self-check: heuristic first-pass scores (keyword + structural). Confirm borderline axes against the actual task before acting; pair with an LLM judge for semantic accuracy.
+
 TOP IMPROVEMENTS:
   No axes below 4. Strong output across all dimensions.
+
+VERDICT: Deliver as-is. No changes needed.
 ```
 
 ### Why This Scores Well

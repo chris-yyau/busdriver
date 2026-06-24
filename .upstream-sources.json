@@ -13,16 +13,6 @@
       "repo": "mattpocock/skills",
       "ref": "main",
       "license": "MIT"
-    },
-    "gstack": {
-      "repo": "garrytan/gstack",
-      "ref": "main",
-      "license": "MIT"
-    },
-    "gsd": {
-      "repo": "gsd-build/get-shit-done",
-      "ref": "main",
-      "license": "MIT"
     }
   },
   "files": [

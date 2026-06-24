@@ -195,15 +195,22 @@ _UNCOUNTED_FAILURE_RE = re.compile(
 _BARE_TESTS_FAILED_RE = re.compile(
     r'(?i)\btests?\s+failed(?!\s*(?:count|total|summary))\b'
 )
-# "tests failed" preceded by a zero count or quantity-negation reports success.
+# "tests failed" reports success when a zero count or quantity-negation sits
+# just BEFORE it ("0 tests failed", "No tests failed") or just AFTER it as a
+# count ("Tests failed: 0", "tests failed (0)", "tests failed: none").
 _FAILURE_ZERO_PREFIX = re.compile(r"(?i)\b(?:no|none|zero|0)\b[\s\w]{0,15}$")
+# `0(?![.\d])` so a duration tail ("tests failed (0.2s)", "tests failed: 0.3s")
+# is NOT read as a zero failure count — only a standalone 0/none/zero counts.
+_FAILURE_ZERO_SUFFIX = re.compile(r"(?i)^\s*[:=(]?\s*(?:0(?![.\d])|none|zero)\b")
 
 
 def _bare_tests_failed(text: str) -> bool:
-    """True for a real bare "tests failed", False when zero/negation-prefixed."""
+    """True for a real bare "tests failed", False when zero/negation-qualified."""
     for m in _BARE_TESTS_FAILED_RE.finditer(text):
         prefix = text[max(0, m.start() - 30):m.start()]
         if _FAILURE_ZERO_PREFIX.search(prefix):
+            continue
+        if _FAILURE_ZERO_SUFFIX.search(text[m.end():]):
             continue
         return True
     return False

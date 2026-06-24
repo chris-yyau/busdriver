@@ -194,7 +194,7 @@ def check_accuracy(text: str) -> AxisScore:
         (r"(?i)(should\s+work|probably\s+fine|should\s+be\s+ok)", "Hedged claim without verification"),
         (r"(?i)(I\s+think|I\s+believe|I\s+assume|might\s+be)", "Speculation without evidence"),
         (r"(?i)(untested|not\s+tested|haven'?t\s+tested)", "Explicitly untested"),
-        (r"(?i)(TODO|FIXME|HACK|WORKAROUND)", "Unresolved TODO/FIXME"),
+        (r"(?i)(\bTODO\b|\bFIXME\b|\bHACK\b|\bWORKAROUND\b)", "Unresolved TODO/FIXME"),
     ]
 
     positive_labels = _matched_labels(verified_patterns, text, _positive_match)
@@ -236,8 +236,8 @@ _EDGE_VERB = (
     r"|list(?:|s|ed)|enumerat(?:e|es|ed)|account(?:|ed)\s+for|consider(?:|s|ed))"
 )
 _EDGE_CASE_HANDLED = (
-    rf"(?i)(?:{_EDGE_VERB}\s+(?:the\s+|all\s+|these\s+)?(?:edge|corner)\s*cases?"
-    rf"|(?:edge|corner)\s*cases?\s+(?:are\s+|were\s+|have\s+been\s+|been\s+)?{_EDGE_VERB})"
+    rf"(?i)(?:\b{_EDGE_VERB}\s+(?:the\s+|all\s+|these\s+)?(?:edge|corner)\s*cases?"
+    rf"|(?:edge|corner)\s*cases?\s+(?:are\s+|were\s+|have\s+been\s+|been\s+)?\b{_EDGE_VERB})"
 )
 
 

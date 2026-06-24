@@ -1,3 +1,24 @@
+## [1.70.1](https://github.com/chris-yyau/busdriver/compare/v1.70.0...v1.70.1) (2026-06-23)
+
+
+### Bug Fixes
+
+* clear stale ultra-oracle output before dispatch ([#243](https://github.com/chris-yyau/busdriver/issues/243)) ([b36764a](https://github.com/chris-yyau/busdriver/commit/b36764ab182c9b7a0318e478895a96d87d833453))
+
+# [1.70.0](https://github.com/chris-yyau/busdriver/compare/v1.69.0...v1.70.0) (2026-06-23)
+
+
+### Features
+
+* register devin as a fourth pr-grind ack-panel reviewer ([#241](https://github.com/chris-yyau/busdriver/issues/241)) ([209317f](https://github.com/chris-yyau/busdriver/commit/209317fa0ea1e151ade3cd9fffcb4aabb69c05dd))
+
+# [1.69.0](https://github.com/chris-yyau/busdriver/compare/v1.68.0...v1.69.0) (2026-06-22)
+
+
+### Features
+
+* add opt-in oracle-max (GPT-5.5 Pro) consult at three surfaces ([#237](https://github.com/chris-yyau/busdriver/issues/237)) ([b0bef95](https://github.com/chris-yyau/busdriver/commit/b0bef957351e9450276431a71b154e3bdfc2a946))
+
 # [1.68.0](https://github.com/chris-yyau/busdriver/compare/v1.67.0...v1.68.0) (2026-06-22)
 
 

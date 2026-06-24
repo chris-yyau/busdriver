@@ -145,7 +145,7 @@ START
                    # 3 spawned issues per grind). Reset on each invocation,
                    # never persisted across invocations or surfaced in
                    # PRIOR_ATTEMPTS — the worker doesn't need to see them.
-                   PRIOR_REVIEWER_ACKS="cursor=none,cubic-dev-ai=none,coderabbitai=none",
+                   PRIOR_REVIEWER_ACKS="cursor=none,cubic-dev-ai=none,coderabbitai=none,devin-ai-integration=none",
                    PRIOR_CODEX_ACK="none"
                    # PRIOR_CODEX_ACK persists Codex's RESULT_CODEX_ACK across
                    # rounds (parallel to PRIOR_REVIEWER_ACKS), so the max-wait
@@ -294,7 +294,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        SHA (dispatcher pushed a fix) OR at least one `stale` ack — a
   │        registered bot in RESULT_REVIEWER_ACKS, OR Codex via
   │        RESULT_CODEX_ACK=stale (Codex is gated but tracked outside
-  │        RESULT_REVIEWER_ACKS, so a Codex-only wait-round — all three
+  │        RESULT_REVIEWER_ACKS, so a Codex-only wait-round — all four
   │        registered bots acked HEAD but Codex is still reviewing — is
   │        legitimate and must NOT be misread as no-progress). A round with
   │        none of these is broken — re-dispatching would loop forever on no
@@ -341,17 +341,18 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        worked-example "always include codescene and
   │        chatgpt-codex-connector in the default ledger" rule, not through this
   │        invariant. The intersection rule keeps Invariant 3 strictly
-  │        scoped to the three registered ack-bots that the worker can
+  │        scoped to the four registered ack-bots that the worker can
   │        cross-correlate.
   │
   │        Parse RESULT_BOT_LEDGER as comma-separated entries of shape
   │        `<login>=<n_actionable>/<n_total>:<disposition>`.
   │
   │        **Defensive count check FIRST.** The known-bot set is fixed
-  │        (5 bots: `cursor`, `cubic-dev-ai`, `coderabbitai`,
-  │        `codescene-delta-analysis`, `chatgpt-codex-connector`).
-  │        After comma-splitting, the number of entries MUST equal 5; if
-  │        it doesn't, BAIL with reason "malformed bot ledger: expected 5
+  │        (6 bots: `cursor`, `cubic-dev-ai`, `coderabbitai`,
+  │        `devin-ai-integration`, `codescene-delta-analysis`,
+  │        `chatgpt-codex-connector`).
+  │        After comma-splitting, the number of entries MUST equal 6; if
+  │        it doesn't, BAIL with reason "malformed bot ledger: expected 6
   │        entries, got <N> — possible disposition comma corruption (the
   │        worker contract requires dispositions to contain no commas
   │        because they would split into phantom entries and could hide
@@ -1122,19 +1123,19 @@ ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
 _at() { ACK_EMIT_TIER=1 bash "$ACK_SCRIPT" "$1" 2>/dev/null || echo stale; }
 _ackpart() { printf '%s' "${1%%:*}"; }
 _tierpart() { case "$1" in *:*) printf '%s' "${1##*:}" ;; *) printf 'none' ;; esac; }
-_cur=$(_at cursor); _cub=$(_at cubic-dev-ai); _cod=$(_at coderabbitai)
-ROUND_ACKS="cursor=$(_ackpart "$_cur"),cubic-dev-ai=$(_ackpart "$_cub"),coderabbitai=$(_ackpart "$_cod")"
-ROUND_ACK_TIERS="cursor=$(_tierpart "$_cur"),cubic-dev-ai=$(_tierpart "$_cub"),coderabbitai=$(_tierpart "$_cod")"
+_cur=$(_at cursor); _cub=$(_at cubic-dev-ai); _cod=$(_at coderabbitai); _dev=$(_at devin-ai-integration)
+ROUND_ACKS="cursor=$(_ackpart "$_cur"),cubic-dev-ai=$(_ackpart "$_cub"),coderabbitai=$(_ackpart "$_cod"),devin-ai-integration=$(_ackpart "$_dev")"
+ROUND_ACK_TIERS="cursor=$(_tierpart "$_cur"),cubic-dev-ai=$(_tierpart "$_cub"),coderabbitai=$(_tierpart "$_cod"),devin-ai-integration=$(_tierpart "$_dev")"
 echo "Ack ledger: $ROUND_ACKS"
 echo "Ack tiers: $ROUND_ACK_TIERS"
 # Codex — gated separately via Tier F (👍 reaction). Tracked in its own var,
-# NOT folded into ROUND_ACKS (the three SHA-keyed bots, which Invariant 3
+# NOT folded into ROUND_ACKS (the four SHA-keyed bots, which Invariant 3
 # intersects). A stale Codex blocks `clean` exactly like a stale registered bot.
 ROUND_CODEX_ACK=$(_ackpart "$(_at chatgpt-codex-connector)")
 echo "Codex ack: $ROUND_CODEX_ACK"
 
-# Compute STALE_BOTS over the registered three PLUS Codex (appended only for
-# this throwaway staleness scan — ROUND_ACKS itself stays the three-bot
+# Compute STALE_BOTS over the registered four PLUS Codex (appended only for
+# this throwaway staleness scan — ROUND_ACKS itself stays the four-bot
 # contract). A stale entry from either source blocks `clean`.
 STALE_BOTS=$(echo "$ROUND_ACKS,chatgpt-codex-connector=$ROUND_CODEX_ACK" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
 echo "STALE_BOTS: $STALE_BOTS"
@@ -1226,10 +1227,10 @@ RESULT_STATUS: needs_more
 RESULT_COMMIT_SHA: 4361cc54
 RESULT_FIXES: remove /blog/* paths from 4 relatedTools blocks
 RESULT_REMAINING: none
-RESULT_REVIEWER_ACKS: cursor=stale,cubic-dev-ai=stale,coderabbitai=stale
-RESULT_ACK_TIERS: cursor=none,cubic-dev-ai=none,coderabbitai=none
+RESULT_REVIEWER_ACKS: cursor=stale,cubic-dev-ai=stale,coderabbitai=stale,devin-ai-integration=stale
+RESULT_ACK_TIERS: cursor=none,cubic-dev-ai=none,coderabbitai=none,devin-ai-integration=none
 RESULT_CODEX_ACK: stale
-RESULT_BOT_LEDGER: cursor=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
+RESULT_BOT_LEDGER: cursor=0/0:none,cubic-dev-ai=0/0:none,coderabbitai=3/3:fixed relatedTools paths+scope-skipped:schema-refactor:1+scope-skipped:external-research:1,devin-ai-integration=0/0:none,codescene-delta-analysis=0/0:none,chatgpt-codex-connector=0/0:none
 RESULT_ISSUES_SPAWNED: 847,848
 ```
 
@@ -1243,7 +1244,7 @@ PRIOR_ATTEMPTS:
   - Round 3 (fix=2/5, wait=0/8): fixes=remove /blog/* paths from 4 relatedTools blocks; failures=none; acks=cursor=stale,...; scope-skipped=2; spawned=2
 ```
 
-**Round 4 (next worker dispatch).** Bots re-review `4361cc54`. CodeRabbit's prior threads are now resolved (worker closed them in Round 3); `scripts/ack-ledger.sh` tier A counts the resolved threads against HEAD-ack rather than `stale` (the change in this PR). All three bots clear, grind converges to `clean`, dispatcher hits COMPLETION.
+**Round 4 (next worker dispatch).** Bots re-review `4361cc54`. CodeRabbit's prior threads are now resolved (worker closed them in Round 3); `scripts/ack-ledger.sh` tier A counts the resolved threads against HEAD-ack rather than `stale` (the change in this PR). All four bots clear, grind converges to `clean`, dispatcher hits COMPLETION.
 
 **Total grind:** 4 rounds (was 7+ rounds + manual intervention before this carve-out existed). 2 dismissals consumed (under cap), 2 follow-up issues spawned (under cap). The two architectural findings live as `#847` and `#848` for separate PRs to address with proper scope.
 
@@ -1337,8 +1338,8 @@ ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
 # its Tier-F 👍 reaction is the authoritative clean signal, and a `stale` value
 # (still reviewing, or hasn't re-acked HEAD after the last push) must block the
 # merge exactly like a stale registered bot. It is NOT in RESULT_REVIEWER_ACKS
-# (the three SHA-keyed bots feeding Invariant 3) — only in this final gate scan.
-FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),chatgpt-codex-connector=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo stale)"
+# (the four SHA-keyed bots feeding Invariant 3) — only in this final gate scan.
+FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),devin-ai-integration=$(bash "$ACK_SCRIPT" devin-ai-integration 2>/dev/null || echo stale),chatgpt-codex-connector=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo stale)"
 # Codex first-engagement grace. If Codex resolved to `none` — zero reaction/
 # review on the PR — it may simply not have posted its initial 👀 on a just-
 # pushed HEAD yet; without this a Codex-ONLY repo (no registered bots forcing

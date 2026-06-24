@@ -182,6 +182,7 @@ def check_accuracy(text: str) -> AxisScore:
     # untested" must NOT deduct — reusing _positive_match means we only deduct
     # on a non-negated occurrence.
     danger_patterns = [
+        (r"(?i)([1-9]\d*\s+tests?\s+(?:failed|failures?|errors?)(?![-\w])|[1-9]\d*\s+failing\s+tests?|\d+\s+passed.{0,30}?[1-9]\d*\s+(?:failed|failures?|errors?)(?![-\w])|[1-9]\d*\s+(?:failed|failures?|errors?)(?![-\w]).{0,30}?\d+\s+passed|(?:pytest|jest|vitest|cargo|unittest).{0,30}?[1-9]\d*\s+(?:failed|failures?|errors?)(?![-\w])|\btests?.{0,10}?[1-9]\d*\s+(?:failed|failures?|errors?)(?![-\w]))", "Failed tests reported"),
         (r"(?i)(should\s+work|probably\s+fine|should\s+be\s+ok)", "Hedged claim without verification"),
         (r"(?i)(I\s+think|I\s+believe|I\s+assume|might\s+be)", "Speculation without evidence"),
         (r"(?i)(untested|not\s+tested|haven'?t\s+tested)", "Explicitly untested"),
@@ -287,6 +288,26 @@ def check_completeness(text: str) -> AxisScore:
 
 
 JARGON_EXPLANATION_WINDOW = 80
+_JARGON_STRONG_MARKER = re.compile(r"(?i)(refers to|i\.e\.|in other words)")
+_JARGON_WEAK_MARKER = re.compile(r"(?i)\bmeans\b")
+_JARGON_SENTENCE_END = re.compile(r"[!?\n]|\.(?:\s|$)")  # period only when sentence-final, so "i.e." stays intact
+
+
+def _jargon_pattern_explained(text: str, pattern: str) -> bool:
+    """Return True if any occurrence of ``pattern`` in ``text`` is explained.
+
+    An explanation marker must follow the jargon term within the forward
+    window (see ``_check_jargon`` for the full rationale).  Strong markers
+    match anywhere in the window; the weak marker "means" is restricted to
+    the term's own sentence.
+    """
+    for m in re.finditer(pattern, text, re.IGNORECASE):
+        window = text[m.end():m.end() + JARGON_EXPLANATION_WINDOW]
+        boundary = _JARGON_SENTENCE_END.search(window)
+        same_sentence = window[:boundary.start()] if boundary else window
+        if _JARGON_STRONG_MARKER.search(window) or _JARGON_WEAK_MARKER.search(same_sentence):
+            return True
+    return False
 
 
 def _check_jargon(text: str) -> tuple[int, list[str]]:
@@ -312,23 +333,10 @@ def _check_jargon(text: str) -> tuple[int, list[str]]:
         (r"\b(exponential backoff|circuit breaker|bulkhead)\b", "resilience"),
         (r"\b(ACID|CAP|eventual consistency|linearizability)\b", "database theory"),
     ]
-    strong_marker = re.compile(r"(?i)(refers to|i\.e\.|in other words)")
-    weak_marker = re.compile(r"(?i)\bmeans\b")
-    sentence_end = re.compile(r"[!?\n]|\.(?:\s|$)")  # period only when sentence-final, so "i.e." stays intact
     deductions = 0
     evidence = []
     for pattern, domain in jargon:
-        explained = False
-        seen = False
-        for m in re.finditer(pattern, text, re.IGNORECASE):
-            seen = True
-            window = text[m.end():m.end() + JARGON_EXPLANATION_WINDOW]
-            boundary = sentence_end.search(window)
-            same_sentence = window[:boundary.start()] if boundary else window
-            if strong_marker.search(window) or weak_marker.search(same_sentence):
-                explained = True
-                break
-        if seen and not explained:
+        if re.search(pattern, text, re.IGNORECASE) and not _jargon_pattern_explained(text, pattern):
             deductions += 1
             evidence.append(f"- Domain term used without explanation ({domain})")
     return deductions, evidence
@@ -596,6 +604,23 @@ def _looks_like_path(path: str) -> bool:
     return "/" in path or "\\" in path or bool(re.search(r"\.[A-Za-z0-9]{1,5}$", path))
 
 
+def _handle_missing_file(path: str, required: bool) -> Optional[str]:
+    """Handle a FileNotFoundError: hard-error if required, else treat as inline text."""
+    if required:
+        print(f"Error: output file '{path}' not found", file=sys.stderr)
+        sys.exit(1)
+    # Not required: fall back to treating the value as inline text, but warn
+    # when it looks like a mistyped path (has a separator or file extension)
+    # so a typo like `--task taks.txt` is not silently evaluated as literal text.
+    if _looks_like_path(path):
+        print(
+            f"Warning: '{path}' looks like a file path but was not found; "
+            "treating it as inline text",
+            file=sys.stderr,
+        )
+    return path
+
+
 def _read_file_or_text(path: Optional[str], *, required: bool = False) -> Optional[str]:
     """Read a file path or return inline text when allowed."""
     if path is None:
@@ -604,19 +629,7 @@ def _read_file_or_text(path: Optional[str], *, required: bool = False) -> Option
         with open(path) as f:
             return f.read()
     except FileNotFoundError:
-        if required:
-            print(f"Error: output file '{path}' not found", file=sys.stderr)
-            sys.exit(1)
-        # Not required: fall back to treating the value as inline text, but warn
-        # when it looks like a mistyped path (has a separator or file extension)
-        # so a typo like `--task taks.txt` is not silently evaluated as literal text.
-        if _looks_like_path(path):
-            print(
-                f"Warning: '{path}' looks like a file path but was not found; "
-                "treating it as inline text",
-                file=sys.stderr,
-            )
-        return path
+        return _handle_missing_file(path, required)
     except OSError as exc:
         # Non-missing read failures (PermissionError, IsADirectoryError, …) are
         # hard errors, not "treat as inline text" cases — the path resolves to a

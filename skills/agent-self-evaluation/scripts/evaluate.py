@@ -54,7 +54,11 @@ _NEG_WORDS = (
     r"fail(?:ed|s|ing)?|couldn'?t|can'?t|cannot|"
     r"didn'?t|don'?t|won'?t|isn'?t|aren'?t|wasn'?t|weren'?t"
 )
-_NEGATION = re.compile(rf"(?i)\b(?:{_NEG_WORDS})\b[\s\w'\"`]{{0,15}}$")
+# The character class spans markdown emphasis markers (`*` for **bold**,
+# `_` already covered by \w) so negated phrases like "not **verified**" or
+# "no _tests passed_" are still detected — without `*` the emphasis asterisks
+# break the bounded lookback and the positive signal scores as real evidence.
+_NEGATION = re.compile(rf"(?i)\b(?:{_NEG_WORDS})\b[\s\w*'\"`]{{0,15}}$")
 
 
 def _positive_match(pattern: str, text: str) -> bool:

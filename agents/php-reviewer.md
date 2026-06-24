@@ -98,9 +98,9 @@ Fix: What to change
 
 ## Approval Criteria
 
-- **Approve**: All automated checks pass (PHPStan, Psalm, PHPUnit, Pint) AND no CRITICAL or HIGH issues
-- **Warning**: All automated checks pass and MEDIUM issues only (can merge with caution)
-- **Block**: Any automated check fails OR CRITICAL/HIGH issues found
+- **Approve**: No CRITICAL or HIGH issues (run PHPStan, Psalm, Pint, and PHPUnit when available; a missing tool is not a block, but a real failure from an available tool is)
+- **Warning**: MEDIUM issues only (can merge with caution)
+- **Block**: CRITICAL or HIGH issues found, or an available automated check fails
 
 ## Framework Checks
 

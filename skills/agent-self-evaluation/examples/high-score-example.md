@@ -52,31 +52,26 @@ Summary: Overall score 4.6/5 across 5 quality axes.
     + Tests passing
     + Explicit verification (grep confirmed class exists, import test passed)
     + Lint clean
-    → All claims backed by tool output. No hedging.
 
   Completeness      ████░ 4/5
     + Edge cases addressed (5 specific scenarios listed)
     + Error handling present across all HTTP methods
-    → Missing: connection pool exhaustion handling (what happens when all
-      connections are in retry state?) — minor gap, not blocking.
+    → List what was covered AND what was intentionally excluded, with reasoning
 
   Clarity           █████ 5/5
     + Uses headings for structure
     + Uses code blocks
     + Uses bullet points
     + Summary in first 3 lines
-    → Well-organized. Reader can scan in 10 seconds.
 
   Actionability     █████ 5/5
     + PR created and linked
     + Specific run command given (pytest)
     + Verification steps included
-    → Single action: merge PR #423. Everything else is done.
 
   Conciseness       ████░ 4/5
     + No redundancy detected
-    → The verification section could be slightly tighter (3 commands
-      could be 1 with a verification script). Minor.
+    → Cut meta-commentary, remove repeated points, trim examples to one representative case
 
   OVERALL           4.6/5
 

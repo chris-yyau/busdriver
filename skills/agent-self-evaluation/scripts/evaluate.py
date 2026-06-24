@@ -175,17 +175,38 @@ def _score_from_deductions(deductions: int, *, at_two: int = 3, at_three: int = 
     return 5
 
 
-# Mixed-result phrasing the long danger regex may miss, e.g. "10 passed, 1 failed".
+# Mixed-result phrasing the long danger regex may miss, e.g. "10 passed, 1
+# failed". Failure count is [1-9]\d* (any non-zero count, not just single digit)
+# so "10 passed, 42 failed" is caught; a "0 failed" tail cannot match.
 _MIXED_RESULT_RE = re.compile(
-    r'(?i)\b\d+\s+passed\b.{0,40}?\b(1|[2-9])\s+(fail|error|failed|failure)'
+    r'(?i)\b\d+\s+passed\b.{0,40}?\b[1-9]\d*\s+(fail|error|failed|failure)'
 )
-# Uncounted failure phrases (Codex P2): "Tests did not pass", "pytest failed",
-# "lint failed" — plain phrases without a numeric count that still mean failure
-# and must not be treated as merely "unverified" (capped at 3).
+# Unambiguous uncounted failure phrases (Codex P2): "Tests did not pass",
+# "pytest failed", "lint failed" — plain phrases without a numeric count that
+# still mean failure and must not be treated as merely "unverified" (cap 3).
 _UNCOUNTED_FAILURE_RE = re.compile(
-    r'(?i)\b(tests?\s+did\s+not\s+pass|pytest\s+failed|lint\s+failed'
-    r'|tests?\s+failed(?!\s*(?:count|total|summary)))\b'
+    r'(?i)\b(tests?\s+did\s+not\s+pass|pytest\s+failed|lint\s+failed)\b'
 )
+# A bare "tests failed" is ambiguous: a real failure ("the tests failed",
+# "2 tests failed") vs SUCCESS reporting ("0 tests failed", "No tests failed",
+# "None of the tests failed", "42 passed, 0 tests failed"). Match it separately
+# so the zero/negation prefix guard below can reject the success phrasings —
+# the broad danger regexes go through _positive_match for the same reason.
+_BARE_TESTS_FAILED_RE = re.compile(
+    r'(?i)\btests?\s+failed(?!\s*(?:count|total|summary))\b'
+)
+# "tests failed" preceded by a zero count or quantity-negation reports success.
+_FAILURE_ZERO_PREFIX = re.compile(r"(?i)\b(?:no|none|zero|0)\b[\s\w]{0,15}$")
+
+
+def _bare_tests_failed(text: str) -> bool:
+    """True for a real bare "tests failed", False when zero/negation-prefixed."""
+    for m in _BARE_TESTS_FAILED_RE.finditer(text):
+        prefix = text[max(0, m.start() - 30):m.start()]
+        if _FAILURE_ZERO_PREFIX.search(prefix):
+            continue
+        return True
+    return False
 
 
 def _reports_test_failure(text: str, danger_labels: list[str]) -> bool:
@@ -193,14 +214,15 @@ def _reports_test_failure(text: str, danger_labels: list[str]) -> bool:
 
     Per the bundled rubric (references/evaluation-criteria.md) a claimed pass
     contradicted by a reported failure is an automatic Accuracy ≤ 2. Covers the
-    counted danger-pattern match plus mixed-result ("10 passed, 1 failed") and
-    uncounted plain-phrase ("tests did not pass") phrasings the long danger
-    regex may miss.
+    counted danger-pattern match, mixed results ("10 passed, 1 failed"), and
+    uncounted plain phrases — while a zero count or negation ("0 tests failed",
+    "No tests failed") correctly does NOT cap.
     """
     return (
         "Failed tests reported" in danger_labels
         or bool(_MIXED_RESULT_RE.search(text))
         or bool(_UNCOUNTED_FAILURE_RE.search(text))
+        or _bare_tests_failed(text)
     )
 
 

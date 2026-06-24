@@ -105,16 +105,16 @@ See `.opencode/busdriver.json` for per-role routing configuration.
 
 **Per-reviewer retry (runtime, distinct from the route-array fallback above):** blueprint review is a gate of record, so the loop raises the per-reviewer retry budget to **5** — it exports `LITMUS_CODEX_RETRIES=5` (codex slot) and `BUSDRIVER_CLI_RETRIES=5` (agy/grok slots). Each reviewer retries up to 5 times on a transient failure (rate-limit, network, 5xx) or empty output before giving up; a timeout is never retried. Only after a reviewer exhausts its retries does the one-voice droid rescue fire (the cap is unchanged: the FIRST failed reviewer is rescued via droid once, then stops — two droids on one shared prompt would be duplicate signal). Override with `LITMUS_CODEX_RETRIES` / `BUSDRIVER_CLI_RETRIES` in the parent shell.
 
-## Optional Oracle-Max Advisory (opt-in, auxiliary — NOT a reviewer)
+## Optional Ultra-Oracle Advisory (opt-in, auxiliary — NOT a reviewer)
 
-When `oracleMax.blueprintReview.enabled` is true in the operator's **USER config** `~/${BUSDRIVER_STATE_DIR:-.opencode}/busdriver.json` (a repo-controlled project config CANNOT enable it — security), the loop dispatches a GPT-5.5 Pro "oracle-max" consult (via the `oracle` CLI's ChatGPT Pro browser engine, the root-shared `scripts/lib/oracle-max.sh` adapter) **in parallel** with Agy/Codex/Grok and injects its verdict into the arbiter prompt under a clearly labelled `OPTIONAL ORACLE-MAX ADVISORY` block.
+When `ultraOracle.blueprintReview.enabled` is true in the operator's **USER config** `~/${BUSDRIVER_STATE_DIR:-.opencode}/busdriver.json` (a repo-controlled project config CANNOT enable it — security), the loop dispatches a GPT-5.5 Pro "ultra-oracle" consult (via the `oracle` CLI's ChatGPT Pro browser engine, the root-shared `scripts/lib/ultra-oracle.sh` adapter) **in parallel** with Agy/Codex/Grok and injects its verdict into the arbiter prompt under a clearly labelled `OPTIONAL ULTRA-ORACLE ADVISORY` block.
 
-> **NOT the arbiter.** The `oracle-max` consult voice is unrelated to the `subagent_type="oracle"` arbiter dispatched above — they merely share the substring "oracle". The arbiter remains the `task(subagent_type="oracle")` subagent; oracle-max is an auxiliary GPT-5.5 Pro advisory.
+> **NOT the arbiter.** The `ultra-oracle` consult voice is unrelated to the `subagent_type="oracle"` arbiter dispatched above — they merely share the substring "oracle". The arbiter remains the `task(subagent_type="oracle")` subagent; ultra-oracle is an auxiliary GPT-5.5 Pro advisory.
 
 - **NOT a coverage lens.** The reviewer count is always three. The arbiter is instructed never to count the advisory toward independent agreement or coverage.
-- **Visible best-effort (not blocking).** A failed/timed-out consult does NOT block the gate; the loop converges on the three reviewers and renders a loud `WARNING: ORACLE-MAX ADVISORY FAILED [...]` banner (visible, never silent).
-- Default OFF. Operator escape: `${BUSDRIVER_STATE_DIR:-.opencode}/skip-oracle-max.local`. Does NOT run in `--claude-only` mode.
-- **Data boundary:** transmits the plan/design to ChatGPT Pro; if `oracleMax.chromeProfileDir` is set it clones that Chrome profile's session — use a dedicated ChatGPT-only profile. Do not enable on repos with sensitive code.
+- **Visible best-effort (not blocking).** A failed/timed-out consult does NOT block the gate; the loop converges on the three reviewers and renders a loud `WARNING: ULTRA-ORACLE ADVISORY FAILED [...]` banner (visible, never silent).
+- Default OFF. Operator escape: `${BUSDRIVER_STATE_DIR:-.opencode}/skip-ultra-oracle.local`. Does NOT run in `--claude-only` mode.
+- **Data boundary:** transmits the plan/design to ChatGPT Pro; if `ultraOracle.chromeProfileDir` is set it clones that Chrome profile's session — use a dedicated ChatGPT-only profile. Prefer `ultraOracle.cookiePath` (a signed-in Chrome Cookies DB path) to reuse the session headlessly without cloning the whole profile — the reliable path where Chrome app-bound cookie encryption defeats `--copy-profile`. Do not enable on repos with sensitive code.
 
 ## Workflow
 

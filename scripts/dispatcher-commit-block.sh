@@ -83,7 +83,7 @@ cd "$WORKTREE_DIR" || \
 
 # Single authoritative list of bots whose ack-ledger entries the dispatcher gates on.
 # Referenced by both the wait-round path and the post-push synthesis (Step 12).
-REGISTERED_ACK_BOTS=(cursor cubic-dev-ai coderabbitai)
+REGISTERED_ACK_BOTS=(cursor cubic-dev-ai coderabbitai devin-ai-integration)
 
 # Pre-dispatch baseline guard (NO_WORKTREE mode only).
 # Parent dispatcher must ensure `git diff --cached --quiet` before worker
@@ -153,7 +153,7 @@ case "$RESULT_STATUS" in
         # must survive). Fall back to all-`none` tiers / "none" codex only when
         # the worker omitted the tags (fail-CLOSED, pre-ADR-0001 strict).
         emit_success_no_commit "$RESULT_REVIEWER_ACKS" \
-            "${RESULT_ACK_TIERS:-cursor=none,cubic-dev-ai=none,coderabbitai=none}" \
+            "${RESULT_ACK_TIERS:-cursor=none,cubic-dev-ai=none,coderabbitai=none,devin-ai-integration=none}" \
             "${RESULT_CODEX_ACK:-none}"
         ;;
     needs_more)

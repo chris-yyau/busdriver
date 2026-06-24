@@ -359,7 +359,6 @@ def _check_jargon(text: str, task: Optional[str] = None) -> tuple[int, list[str]
     ]
     deductions = 0
     evidence = []
-    task_lower = (task or "").lower()
     for pattern, domain in jargon:
         if task and re.search(pattern, task, re.IGNORECASE):
             continue  # task already introduced the term; re-use in output is not unexplained jargon

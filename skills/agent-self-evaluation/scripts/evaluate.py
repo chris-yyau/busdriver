@@ -175,6 +175,35 @@ def _score_from_deductions(deductions: int, *, at_two: int = 3, at_three: int = 
     return 5
 
 
+# Mixed-result phrasing the long danger regex may miss, e.g. "10 passed, 1 failed".
+_MIXED_RESULT_RE = re.compile(
+    r'(?i)\b\d+\s+passed\b.{0,40}?\b(1|[2-9])\s+(fail|error|failed|failure)'
+)
+# Uncounted failure phrases (Codex P2): "Tests did not pass", "pytest failed",
+# "lint failed" — plain phrases without a numeric count that still mean failure
+# and must not be treated as merely "unverified" (capped at 3).
+_UNCOUNTED_FAILURE_RE = re.compile(
+    r'(?i)\b(tests?\s+did\s+not\s+pass|pytest\s+failed|lint\s+failed'
+    r'|tests?\s+failed(?!\s*(?:count|total|summary)))\b'
+)
+
+
+def _reports_test_failure(text: str, danger_labels: list[str]) -> bool:
+    """True when output reports a test/lint failure → forces Accuracy ≤ 2.
+
+    Per the bundled rubric (references/evaluation-criteria.md) a claimed pass
+    contradicted by a reported failure is an automatic Accuracy ≤ 2. Covers the
+    counted danger-pattern match plus mixed-result ("10 passed, 1 failed") and
+    uncounted plain-phrase ("tests did not pass") phrasings the long danger
+    regex may miss.
+    """
+    return (
+        "Failed tests reported" in danger_labels
+        or bool(_MIXED_RESULT_RE.search(text))
+        or bool(_UNCOUNTED_FAILURE_RE.search(text))
+    )
+
+
 def check_accuracy(text: str) -> AxisScore:
     """Check for verifiable claims, tool output references, error signs."""
     # Positive signals: verified claims
@@ -205,23 +234,9 @@ def check_accuracy(text: str) -> AxisScore:
 
     score = _score_from_deductions(deductions)
 
-    # Reported test failures are ground truth per the bundled rubric
-    # (references/evaluation-criteria.md): "If you claimed 'tests pass' but
-    # the terminal output shows a failure — that's an automatic Accuracy
-    # ≤ 2." Force ≤2 whenever any failure count is reported, even if positive
-    # "X passed" signals are also present (mixed results like "10 passed, 1 failed").
-    if "Failed tests reported" in danger_labels:
-        score = min(score, 2)
-
-    # Robust mixed-result detector (addresses phrasings the long danger regex may miss).
-    if re.search(r'(?i)\b\d+\s+passed\b.{0,40}?\b(1|[2-9])\s+(fail|error|failed|failure)', text):
-        score = min(score, 2)
-
-    # Uncounted failure phrases (Codex P2): "Tests did not pass", "pytest failed",
-    # "lint failed" etc. without a numeric count must still force Accuracy ≤ 2.
-    # These plain phrases are common in agent summaries and should not be
-    # treated as mere "unverified" (capped at 3).
-    if re.search(r'(?i)\b(tests?\s+did\s+not\s+pass|pytest\s+failed|lint\s+failed|tests?\s+failed(?!\s*(?:count|total|summary)))\b', text):
+    # A reported test/lint failure is ground truth → automatic Accuracy ≤ 2,
+    # even alongside positive "X passed" signals (see _reports_test_failure).
+    if _reports_test_failure(text, danger_labels):
         score = min(score, 2)
 
     # Unverified correctness cannot score as excellent: with no positive

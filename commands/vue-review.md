@@ -56,7 +56,7 @@ On a `.vue` / Vue-related PR, invoke both `vue-reviewer` and `typescript-reviewe
 
 - Composable with module-scope side effects
 - Missing cleanup in composable (watcher, interval, listener)
-- `v-for` without `:key` or with `key={index}`
+- `v-for` without `:key` or with `:key="index"`
 - `v-if` + `v-for` on same element
 - Props mutation
 - Missing prop validation

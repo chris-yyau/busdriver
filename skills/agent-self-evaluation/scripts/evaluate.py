@@ -217,6 +217,13 @@ def check_accuracy(text: str) -> AxisScore:
     if re.search(r'(?i)\b\d+\s+passed\b.{0,40}?\b(1|[2-9])\s+(fail|error|failed|failure)', text):
         score = min(score, 2)
 
+    # Uncounted failure phrases (Codex P2): "Tests did not pass", "pytest failed",
+    # "lint failed" etc. without a numeric count must still force Accuracy ≤ 2.
+    # These plain phrases are common in agent summaries and should not be
+    # treated as mere "unverified" (capped at 3).
+    if re.search(r'(?i)\b(tests?\s+did\s+not\s+pass|pytest\s+failed|lint\s+failed|tests?\s+failed(?!\s*(?:count|total|summary)))\b', text):
+        score = min(score, 2)
+
     # Unverified correctness cannot score as excellent: with no positive
     # verification evidence, cap the score so a terse "Done." earns a 3, not a 5.
     if not positive_labels:

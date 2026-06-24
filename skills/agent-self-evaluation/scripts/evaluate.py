@@ -205,6 +205,15 @@ def check_accuracy(text: str) -> AxisScore:
 
     score = _score_from_deductions(deductions)
 
+    # Reported test failures are ground truth per the bundled rubric
+    # (references/evaluation-criteria.md): "If you claimed 'tests pass' but
+    # the terminal output shows a failure — that's an automatic Accuracy
+    # ≤ 2." A single deduction under _score_from_deductions leaves the
+    # score at 4 (e.g. "10 passed, 1 failed" still earns Accuracy 4/5);
+    # this cap enforces the rubric's ≤2 floor when test failure is admitted.
+    if "Failed tests reported" in danger_labels:
+        score = min(score, 2)
+
     # Unverified correctness cannot score as excellent: with no positive
     # verification evidence, cap the score so a terse "Done." earns a 3, not a 5.
     if not positive_labels:

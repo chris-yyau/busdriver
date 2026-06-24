@@ -208,10 +208,13 @@ def check_accuracy(text: str) -> AxisScore:
     # Reported test failures are ground truth per the bundled rubric
     # (references/evaluation-criteria.md): "If you claimed 'tests pass' but
     # the terminal output shows a failure — that's an automatic Accuracy
-    # ≤ 2." A single deduction under _score_from_deductions leaves the
-    # score at 4 (e.g. "10 passed, 1 failed" still earns Accuracy 4/5);
-    # this cap enforces the rubric's ≤2 floor when test failure is admitted.
+    # ≤ 2." Force ≤2 whenever any failure count is reported, even if positive
+    # "X passed" signals are also present (mixed results like "10 passed, 1 failed").
     if "Failed tests reported" in danger_labels:
+        score = min(score, 2)
+
+    # Robust mixed-result detector (addresses phrasings the long danger regex may miss).
+    if re.search(r'(?i)\b\d+\s+passed\b.{0,40}?\b(1|[2-9])\s+(fail|error|failed|failure)', text):
         score = min(score, 2)
 
     # Unverified correctness cannot score as excellent: with no positive
@@ -327,7 +330,7 @@ def _jargon_pattern_explained(text: str, pattern: str) -> bool:
     return False
 
 
-def _check_jargon(text: str) -> tuple[int, list[str]]:
+def _check_jargon(text: str, task: Optional[str] = None) -> tuple[int, list[str]]:
     """Return clarity deductions for unexplained domain jargon.
 
     An explanation marker must follow the jargon term within the remainder
@@ -344,6 +347,10 @@ def _check_jargon(text: str) -> tuple[int, list[str]]:
     in the forward window; the weak/common marker "means" is additionally
     restricted to the term's own sentence, so an unrelated later-sentence
     "means" cannot satisfy the check.
+
+    If the input *task* already contains the jargon term, do not penalize
+    the output for re-using it without a fresh explanation (task-provided
+    jargon case).
     """
     jargon = [
         (r"\b(idempotent|race condition|deadlock|thundering herd)\b", "concurrency"),
@@ -352,7 +359,10 @@ def _check_jargon(text: str) -> tuple[int, list[str]]:
     ]
     deductions = 0
     evidence = []
+    task_lower = (task or "").lower()
     for pattern, domain in jargon:
+        if task and re.search(pattern, task, re.IGNORECASE):
+            continue  # task already introduced the term; re-use in output is not unexplained jargon
         if re.search(pattern, text, re.IGNORECASE) and not _jargon_pattern_explained(text, pattern):
             deductions += 1
             evidence.append(f"- Domain term used without explanation ({domain})")
@@ -388,7 +398,7 @@ def _wall_of_text_evidence(text: str) -> tuple[int, list[str]]:
     return 0, []
 
 
-def check_clarity(text: str) -> AxisScore:
+def check_clarity(text: str, task: Optional[str] = None) -> AxisScore:
     """Check for structure, readability, jargon handling."""
     evidence = _structure_evidence(text)
 
@@ -396,7 +406,7 @@ def check_clarity(text: str) -> AxisScore:
     deductions = wall_deductions
     evidence.extend(wall_evidence)
 
-    jargon_deductions, jargon_evidence = _check_jargon(text)
+    jargon_deductions, jargon_evidence = _check_jargon(text, task)
     summary_deductions, summary_evidence = _check_summary(text)
     deductions += jargon_deductions + summary_deductions
     evidence.extend(jargon_evidence + summary_evidence)
@@ -528,7 +538,7 @@ def evaluate(task: Optional[str], output: str) -> list[AxisScore]:
     return [
         check_accuracy(output),
         check_completeness(output),
-        check_clarity(output),
+        check_clarity(output, task),
         check_actionability(output),
         check_conciseness(output, task),
     ]

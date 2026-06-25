@@ -97,7 +97,15 @@ Domain skills are loaded as context during execution. They are **additive** — 
 ### Nuxt
 **Detection:** `nuxt.config.*`, `.nuxt/` directory, `useFetch`, `useAsyncData`, Nuxt imports
 - Patterns: `busdriver:nuxt4-patterns` (hydration safety, SSR, route rules, lazy loading, data fetching)
-- Review: `code-reviewer` agent (no Nuxt-specific reviewer yet)
+- Review: a Nuxt project ALSO matches Vue detection below (Nuxt is Vue-based) — the supplements are additive, not exclusive. Route deterministically: `vue-reviewer` for `.vue` SFCs AND Nuxt server routes / config / SSR-only `.ts` (this agent owns Nitro endpoint validation and SSR secret-leak checks), plus `typescript-reviewer` for the generic TS lane on those same `.ts` files — invoke both on Nuxt server/config changes. Load both `nuxt4-patterns` and `vue-patterns` + `rules/vue/`.
+
+### Vue
+**Detection:** `*.vue` files, `vue` imports, `vue.config.*`, Vue SFC context
+- Rules: `rules/vue/` (coding-style, patterns, security, testing, hooks)
+- Patterns: `busdriver:vue-patterns`
+- Review: `vue-reviewer` agent (see Phase 4 DISPATCH rules)
+- Commands: `/vue-review`
+- **Migration** (React→Vue work): `busdriver:ui-to-vue`
 
 ### React Native / Expo
 **Detection:** `react-native` / `expo` imports, `app.json`/`app.config.*`, `expo-router`, `metro.config.*`, `*.tsx` with native components
@@ -170,6 +178,7 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Testing: `busdriver:laravel-tdd`
 - Verification: `busdriver:laravel-verification`
 - Rules: `rules/php/` (coding-style, patterns, security, testing, hooks)
+- Review: `php-reviewer` agent (see Phase 4 DISPATCH rules)
 
 ### Kotlin
 **Detection:** `*.kt`, `*.kts`, `build.gradle.kts`, Kotlin context
@@ -217,6 +226,7 @@ Domain skills are loaded as context during execution. They are **additive** — 
 ### Infrastructure / DevOps
 **Detection:** Dockerfile, docker-compose.yml, CI/CD pipelines, deployment configs, Kubernetes
 - Docker: `busdriver:docker-patterns`
+- Kubernetes: `busdriver:kubernetes-patterns` (manifests, deployments, services, secrets/sealed-secrets, probes, resource limits)
 - Deployment: `busdriver:deployment-patterns`
 
 ### AI / LLM Development

@@ -2,7 +2,7 @@
 
 > Loaded on demand by `litmus/SKILL.md` when the pre-PR gate blocks `gh pr create`. Not needed on the common commit path. The shared env-var configuration stays in `SKILL.md`.
 
-When the pre-PR gate blocks `gh pr create`, run the full deep review. **Codex (GPT-5 xhigh) owns the deep multi-lens pass over the whole `base...HEAD` diff; a single read-only Opus agent acts as an independent cross-model security/bugs backstop.** The gate passes only when BOTH voices are clear — enforced by machine-checked artifacts, not prose.
+When the pre-PR gate blocks `gh pr create`, run the full deep review. **Codex (xhigh reasoning) owns the deep multi-lens pass over the whole `base...HEAD` diff; a single read-only Opus agent acts as an independent cross-model security/bugs backstop.** The gate passes only when BOTH voices are clear — enforced by machine-checked artifacts, not prose.
 
 The flow is:
 

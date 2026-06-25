@@ -30,6 +30,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Rules Distillation** | distill rules from skills | `/rules-distill` command |
 | **UI State Debugging** | buttons cancel each other, UI state bugs | `busdriver:click-path-audit` |
 | **Skill Auditing** | audit skills, check quality | `skill-stocktake` (quality) or `skill-comply` (compliance) |
+| **Skill Scouting** | find/evaluate external skills to adopt, vet third-party skills before adoption | `skill-scout` |
 | **Multi-Service** | monorepo, microservices | `busdriver:dispatching-parallel-agents` + `/pm2` |
 | **Multi-Session Planning** | plan big project | `busdriver:blueprint` |
 | **Multi-Agent** | agent pipeline, parallel teams | `/orchestrate` / `claude-devfleet` / `dmux-workflows` / `team-builder` |
@@ -114,9 +115,11 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Safety Guard** | production safety, prevent destructive ops | `safety-guard` |
 | **GateGuard** | force fact-gathering before edits/writes | `gateguard` + `scripts/hooks/gateguard-fact-force.js` (opt-in) |
 | **Token Budget** | context budget advice, token usage | `token-budget-advisor` |
+| **Config Cleanup** | garbage-collect `~/.claude`, prune dead skills/agents/config, reduce bloat | `config-gc` (human-confirm soft-delete to trash) |
 | **Caveman Mode** | ultra-compressed output, save tokens | `caveman` skill or `/caveman` toggle |
 | **ADRs** | architecture decision record, capture decision | `architecture-decision-records` |
 | **Agent Eval** | compare agents, agent benchmark, head-to-head | `agent-eval` |
+| **Agent Self-Evaluation** | score agent output against a rubric, self-evaluate quality | `agent-self-evaluation`. Agent: `agent-evaluator` |
 | **AI Regression** | AI regression testing, sandbox mode | `ai-regression-testing` |
 | **Visa Translation** | translate visa docs, immigration documents | `visa-doc-translate` |
 | **RFC Pipeline** | RFC-driven multi-agent DAG execution | `ralphinho-rfc-pipeline` |

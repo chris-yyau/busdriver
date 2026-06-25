@@ -57,6 +57,8 @@ This structure informs the task decomposition. Each task should produce self-con
 
 **Tech Stack:** [Key technologies/libraries]
 
+**Global Constraints:** [Project-wide binding requirements EVERY task must honor — version floors, naming conventions, platform targets, "no new deps", API-compat/backward-compat rules. Listed ONCE here instead of repeated per task; every task and every task reviewer reads this block.]
+
 ---
 ```
 
@@ -69,6 +71,12 @@ This structure informs the task decomposition. Each task should produce self-con
 - Create: `exact/path/to/file.py`
 - Modify: `exact/path/to/existing.py:123-145`
 - Test: `tests/exact/path/to/test.py`
+
+**Interfaces:**
+- Consumes: `[signatures/types this task depends on from earlier tasks — e.g. parseConfig(path: str) -> Config]`
+- Produces: `[signatures/types this task exposes for later tasks — e.g. Config dataclass; loadUser(id: int) -> User]`
+
+(Interfaces make cross-task dependencies explicit so a worker implementing Task N — possibly in a fresh subagent with no memory of Task 1 — knows the exact signatures it can rely on and must expose. Omit only for a single-task plan.)
 
 - [ ] **Step 1: Write the failing test**
 

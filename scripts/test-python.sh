@@ -47,4 +47,8 @@ run_suite "continuous-learning-v2" \
   uv run --quiet --with 'pytest==9.0.3' --with 'pyyaml==6.0.3' \
     pytest skills/continuous-learning-v2/scripts/test_parse_instinct.py -q
 
+run_suite "agent-self-evaluation" \
+  uv run --quiet --with 'pytest==9.0.3' \
+    pytest skills/agent-self-evaluation/scripts/test_evaluate.py -q
+
 exit "$fail"

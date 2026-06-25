@@ -17,6 +17,131 @@
   },
   "files": [
     {
+      "path": "skills/vue-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "skills/vue-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/kubernetes-patterns/SKILL.md",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "skills/kubernetes-patterns/SKILL.md"
+    },
+    {
+      "path": "skills/skill-scout/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/skill-scout/SKILL.md"
+    },
+    {
+      "path": "skills/config-gc/SKILL.md",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "skills/config-gc/SKILL.md"
+    },
+    {
+      "path": "skills/agent-self-evaluation/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/agent-self-evaluation/SKILL.md"
+    },
+    {
+      "path": "skills/agent-self-evaluation/references/evaluation-criteria.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/agent-self-evaluation/references/evaluation-criteria.md"
+    },
+    {
+      "path": "skills/agent-self-evaluation/references/hook-integration.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/agent-self-evaluation/references/hook-integration.md"
+    },
+    {
+      "path": "skills/agent-self-evaluation/examples/high-score-example.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/agent-self-evaluation/examples/high-score-example.md"
+    },
+    {
+      "path": "skills/agent-self-evaluation/examples/low-score-example.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/agent-self-evaluation/examples/low-score-example.md"
+    },
+    {
+      "path": "skills/agent-self-evaluation/scripts/evaluate.py",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "skills/agent-self-evaluation/scripts/evaluate.py"
+    },
+    {
+      "path": "skills/agent-self-evaluation/scripts/test_evaluate.py",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/agent-self-evaluation/templates/evaluation-report.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/agent-self-evaluation/templates/evaluation-report.md"
+    },
+    {
+      "path": "agents/vue-reviewer.md",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "agents/vue-reviewer.md"
+    },
+    {
+      "path": "agents/php-reviewer.md",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "agents/php-reviewer.md"
+    },
+    {
+      "path": "agents/agent-evaluator.md",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "agents/agent-evaluator.md"
+    },
+    {
+      "path": "commands/vue-review.md",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "commands/vue-review.md"
+    },
+    {
+      "path": "rules/vue/coding-style.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/vue/coding-style.md"
+    },
+    {
+      "path": "rules/vue/hooks.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/vue/hooks.md"
+    },
+    {
+      "path": "rules/vue/patterns.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/vue/patterns.md"
+    },
+    {
+      "path": "rules/vue/security.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/vue/security.md"
+    },
+    {
+      "path": "rules/vue/testing.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "rules/vue/testing.md"
+    },
+    {
       "path": ".claude-plugin/plugin.json",
       "source": "local",
       "status": "local"
@@ -1414,7 +1539,7 @@
     {
       "path": "scripts/hooks/run-with-flags-shell.sh",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/hooks/run-with-flags-shell.sh"
     },
     {
@@ -1648,7 +1773,7 @@
     {
       "path": "scripts/lib/session-adapters/registry.js",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/lib/session-adapters/registry.js"
     },
     {
@@ -2287,7 +2412,7 @@
     {
       "path": "skills/continuous-learning-v2/scripts/instinct-cli.py",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/continuous-learning-v2/scripts/instinct-cli.py"
     },
     {
@@ -2540,7 +2665,7 @@
     {
       "path": "skills/git-workflow/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/git-workflow/SKILL.md"
     },
     {
@@ -3956,7 +4081,7 @@
     },
     {
       "path": "skills/code-tour/SKILL.md",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/code-tour/SKILL.md",
       "source": "ecc"
     },
@@ -4016,7 +4141,7 @@
     },
     {
       "path": "skills/research-ops/SKILL.md",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/research-ops/SKILL.md",
       "source": "ecc"
     },
@@ -4339,7 +4464,7 @@
     {
       "path": "agents/mle-reviewer.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/mle-reviewer.md"
     },
     {
@@ -4459,7 +4584,7 @@
     {
       "path": "skills/react-patterns/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/react-patterns/SKILL.md"
     },
     {
@@ -4555,7 +4680,7 @@
     {
       "path": "skills/plan-orchestrate/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/plan-orchestrate/SKILL.md"
     },
     {

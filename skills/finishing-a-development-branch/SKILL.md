@@ -47,7 +47,7 @@ case "$(git rev-parse --git-dir)" in */worktrees/*) worktree=yes ;; *) worktree=
 ```
 
 - **Normal repo on a named branch** — all 4 options apply.
-- **Linked worktree** (`worktree=yes`) — Options 1 (local merge) and 4 (discard) may fail because `<base-branch>` is often already checked out in another worktree (git refuses to check out a branch that is in use elsewhere); it does NOT switch the primary checkout's branch. For Option 1, prefer Option 2 (PR), or run the local merge from the worktree that owns `<base-branch>`. For Option 4, remove the worktree first (Step 5), then delete the branch from the primary checkout. Cleanup (Step 5) removes *this* worktree and requires confirmation.
+- **Linked worktree** (`worktree=yes`) — Options 1 (local merge) and 4 (discard) may fail because `<base-branch>` is often already checked out in another worktree (git refuses to check out a branch that is in use elsewhere); it does NOT switch the primary checkout's branch. For Option 1, prefer Option 2 (PR), or run the local merge from the worktree that owns `<base-branch>`. For Option 4, follow the linked-worktree branch in Option 4 instead of running `git checkout <base-branch>` from this worktree. Cleanup (Step 5) removes *this* worktree and requires confirmation.
 - **Detached HEAD** (`branch` empty) — nothing to merge or keep by name. Offer to create a branch first (`git switch -c <name>`), then present the 4 options.
 
 ### Step 2: Determine Base Branch
@@ -146,6 +146,15 @@ Type 'discard' to confirm.
 Wait for exact confirmation.
 
 If confirmed:
+
+For a linked worktree (`worktree=yes` from Step 1.5), do **not** run `git checkout <base-branch>` from this worktree. Instead:
+1. Run Cleanup Worktree (Step 5) for this worktree first.
+2. From the primary checkout or the worktree that owns `<base-branch>`, run:
+   ```bash
+   git branch -D <feature-branch>
+   ```
+
+For a normal checkout:
 ```bash
 git checkout <base-branch>
 git branch -D <feature-branch>

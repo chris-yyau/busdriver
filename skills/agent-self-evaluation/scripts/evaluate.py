@@ -125,6 +125,11 @@ _NEG_GAP = (
 # Fail-closed: a contrived double negative ("is not absent") is under-credited,
 # the safe direction for this evaluator.
 _ABSENCE_SUFFIX = re.compile(rf"(?i)^{_LINK}(?:{_ABS_BARE}|{_NEG_SUPPRESS})\b")
+# Shorthand absence immediately after a coverage noun ("error handling missing",
+# "try/except absent") also inverts the positive signal. This intentionally does
+# NOT allow intervening prepositions, so "error handling for missing files" stays
+# a positive coverage claim rather than an absence admission.
+_BARE_ABSENCE_SUFFIX = re.compile(rf"(?i)^\s+(?:{_ABS_BARE})\b")
 
 
 def _coverage_match(pattern: str, text: str) -> bool:
@@ -138,6 +143,8 @@ def _coverage_match(pattern: str, text: str) -> bool:
         if _NEGATION.search(prefix):
             continue
         if _ABSENCE_SUFFIX.search(text[m.end():]):
+            continue
+        if _BARE_ABSENCE_SUFFIX.search(text[m.end():]):
             continue
         return True
     return False
@@ -199,9 +206,9 @@ _BARE_TESTS_FAILED_RE = re.compile(
 # just BEFORE it ("0 tests failed", "No tests failed") or just AFTER it as a
 # count ("Tests failed: 0", "tests failed (0)", "tests failed: none").
 _FAILURE_ZERO_PREFIX = re.compile(r"(?i)\b(?:no|none|zero|0)\b[\s\w]{0,15}$")
-# `0(?![.\d])` so a duration tail ("tests failed (0.2s)", "tests failed: 0.3s")
-# is NOT read as a zero failure count — only a standalone 0/none/zero counts.
-_FAILURE_ZERO_SUFFIX = re.compile(r"(?i)^\s*[:=(]?\s*(?:0(?![.\d])|none|zero)\b")
+# `0(?!\.\d|\d)` allows punctuation after a standalone zero ("tests failed: 0.")
+# while still rejecting duration tails ("tests failed (0.2s)", "tests failed: 0.3s").
+_FAILURE_ZERO_SUFFIX = re.compile(r"(?i)^\s*[:=(]?\s*(?:0(?!\.\d|\d)|none|zero)\b")
 
 
 def _bare_tests_failed(text: str) -> bool:
@@ -267,6 +274,8 @@ def check_accuracy(text: str) -> AxisScore:
     # even alongside positive "X passed" signals (see _reports_test_failure).
     if _reports_test_failure(text, danger_labels):
         score = min(score, 2)
+        if "Failed tests reported" not in danger_labels:
+            evidence.append("- Failed tests/lint reported")
 
     # Unverified correctness cannot score as excellent: with no positive
     # verification evidence, cap the score so a terse "Done." earns a 3, not a 5.
@@ -329,6 +338,11 @@ def check_completeness(text: str) -> AxisScore:
         # while _NEG_GAP omits the bare not-covered/not-handled forms the
         # generic gap above already deducts (no double-count).
         (rf"(?i)(?:{_COVERAGE_NOUNS}){_LINK}(?:{_ABS_BARE}|{_NEG_GAP})\b",
+         "Coverage explicitly absent"),
+        # Shorthand absence without a copula/colon connector, e.g. "try/except
+        # missing" or "exception handling absent". Keep this parallel with
+        # _BARE_ABSENCE_SUFFIX so suppressing a positive also deducts.
+        (rf"(?i)(?:{_COVERAGE_NOUNS})\s+(?:{_ABS_BARE})\b",
          "Coverage explicitly absent"),
     ]
 

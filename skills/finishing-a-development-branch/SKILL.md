@@ -47,7 +47,7 @@ case "$(git rev-parse --git-dir)" in */worktrees/*) worktree=yes ;; *) worktree=
 ```
 
 - **Normal repo on a named branch** — all 4 options apply.
-- **Linked worktree** (`worktree=yes`) — Option 1 (local merge) may fail because `<base-branch>` is often already checked out in another worktree (git refuses to check out a branch that is in use elsewhere); it does NOT switch the primary checkout's branch. Prefer Option 2 (PR), or run the local merge from the worktree that owns `<base-branch>`. Cleanup (Step 5) removes *this* worktree and requires confirmation.
+- **Linked worktree** (`worktree=yes`) — Options 1 (local merge) and 4 (discard) may fail because `<base-branch>` is often already checked out in another worktree (git refuses to check out a branch that is in use elsewhere); it does NOT switch the primary checkout's branch. For Option 1, prefer Option 2 (PR), or run the local merge from the worktree that owns `<base-branch>`. For Option 4, remove the worktree first (Step 5), then delete the branch from the primary checkout. Cleanup (Step 5) removes *this* worktree and requires confirmation.
 - **Detached HEAD** (`branch` empty) — nothing to merge or keep by name. Offer to create a branch first (`git switch -c <name>`), then present the 4 options.
 
 ### Step 2: Determine Base Branch

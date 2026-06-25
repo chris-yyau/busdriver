@@ -161,6 +161,11 @@ jobs:
           pytest -q skills/continuous-learning-v2/scripts/test_parse_instinct.py \
             --cov=skills/continuous-learning-v2/scripts \
             --cov-report=xml:coverage-clv2.xml
+      - name: Coverage — agent-self-evaluation
+        run: |
+          pytest -q skills/agent-self-evaluation/scripts/test_evaluate.py \
+            --cov=skills/agent-self-evaluation/scripts \
+            --cov-report=xml:coverage-agent-self-evaluation.xml
       # Token is passed only to this step (never job-level env, so checked-out
       # PR code in earlier steps cannot read it). continue-on-error is scoped to
       # the two cases that legitimately lack the secret: fork PRs and Dependabot
@@ -172,4 +177,4 @@ jobs:
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./coverage/lcov.info,./coverage-skill-comply.xml,./coverage-clv2.xml
+          files: ./coverage/lcov.info,./coverage-skill-comply.xml,./coverage-clv2.xml,./coverage-agent-self-evaluation.xml

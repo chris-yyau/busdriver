@@ -78,9 +78,8 @@
     },
     {
       "path": "skills/agent-self-evaluation/scripts/test_evaluate.py",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "skills/agent-self-evaluation/scripts/test_evaluate.py"
+      "source": "local",
+      "status": "local"
     },
     {
       "path": "skills/agent-self-evaluation/templates/evaluation-report.md",

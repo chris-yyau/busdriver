@@ -77,6 +77,12 @@
       "upstream_path": "skills/agent-self-evaluation/scripts/evaluate.py"
     },
     {
+      "path": "skills/agent-self-evaluation/scripts/test_evaluate.py",
+      "source": "ecc",
+      "status": "custom",
+      "upstream_path": "skills/agent-self-evaluation/scripts/test_evaluate.py"
+    },
+    {
       "path": "skills/agent-self-evaluation/templates/evaluation-report.md",
       "source": "ecc",
       "status": "sync",

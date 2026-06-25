@@ -182,6 +182,39 @@ def _score_from_deductions(deductions: int, *, at_two: int = 3, at_three: int = 
     return 5
 
 
+def _cap_without_labels(score: int, labels: list[str], *, cap: int = 3) -> int:
+    """Fail closed when an axis has no positive evidence labels."""
+    return min(score, cap) if not labels else score
+
+
+def _ensure_evidence(evidence: list[str], fallback: str) -> None:
+    """Add a fallback evidence line only when no stronger signal was found."""
+    if not evidence:
+        evidence.append(fallback)
+
+
+def _axis_score(name: str, score: int, evidence: list[str], improvement: str) -> AxisScore:
+    """Create an AxisScore and attach the improvement text only when needed."""
+    result = AxisScore(name=name, score=score, evidence=evidence)
+    if score < 5:
+        result.improvement = improvement
+    return result
+
+
+def _cap_reported_failures(
+    score: int,
+    text: str,
+    danger_labels: list[str],
+    evidence: list[str],
+) -> int:
+    """Apply the Accuracy ≤ 2 rule for any reported test/lint failure."""
+    if not _reports_test_failure(text, danger_labels):
+        return score
+    if "Failed tests reported" not in danger_labels:
+        evidence.append("- Failed tests/lint reported")
+    return min(score, 2)
+
+
 # Mixed-result phrasing the long danger regex may miss, e.g. "10 passed, 1
 # failed". Failure count is [1-9]\d* (any non-zero count, not just single digit)
 # so "10 passed, 42 failed" is caught; a "0 failed" tail cannot match.
@@ -269,26 +302,20 @@ def check_accuracy(text: str) -> AxisScore:
     deductions = len(danger_labels)
 
     score = _score_from_deductions(deductions)
-
     # A reported test/lint failure is ground truth → automatic Accuracy ≤ 2,
     # even alongside positive "X passed" signals (see _reports_test_failure).
-    if _reports_test_failure(text, danger_labels):
-        score = min(score, 2)
-        if "Failed tests reported" not in danger_labels:
-            evidence.append("- Failed tests/lint reported")
-
+    score = _cap_reported_failures(score, text, danger_labels, evidence)
     # Unverified correctness cannot score as excellent: with no positive
     # verification evidence, cap the score so a terse "Done." earns a 3, not a 5.
-    if not positive_labels:
-        score = min(score, 3)
+    score = _cap_without_labels(score, positive_labels)
+    _ensure_evidence(evidence, "No verification signals detected — unverified, score capped")
 
-    if not evidence:
-        evidence.append("No verification signals detected — unverified, score capped")
-
-    result = AxisScore(name="Accuracy", score=score, evidence=evidence)
-    if score < 5:
-        result.improvement = "Cite specific tool outputs (test results, exit codes, grep findings) to back claims"
-    return result
+    return _axis_score(
+        "Accuracy",
+        score,
+        evidence,
+        "Cite specific tool outputs (test results, exit codes, grep findings) to back claims",
+    )
 
 
 # A handling verb must be bound to "edge/corner cases" for it to count as
@@ -360,16 +387,15 @@ def check_completeness(text: str) -> AxisScore:
     score = _score_from_deductions(deductions, at_two=3, at_three=3)
 
     # No positive coverage evidence: cannot score as excellent — fail closed.
-    if not positive_labels:
-        score = min(score, 3)
+    score = _cap_without_labels(score, positive_labels)
+    _ensure_evidence(evidence, "No completeness signals — unable to assess coverage")
 
-    if not evidence:
-        evidence.append("No completeness signals — unable to assess coverage")
-
-    result = AxisScore(name="Completeness", score=score, evidence=evidence)
-    if score < 5:
-        result.improvement = "List what was covered AND what was intentionally excluded, with reasoning"
-    return result
+    return _axis_score(
+        "Completeness",
+        score,
+        evidence,
+        "List what was covered AND what was intentionally excluded, with reasoning",
+    )
 
 
 JARGON_EXPLANATION_WINDOW = 80
@@ -476,14 +502,14 @@ def check_clarity(text: str, task: Optional[str] = None) -> AxisScore:
     evidence.extend(jargon_evidence + summary_evidence)
 
     score = _score_from_deductions(deductions)
+    _ensure_evidence(evidence, "+ Well-structured with no clarity issues detected")
 
-    if not evidence:
-        evidence.append("+ Well-structured with no clarity issues detected")
-
-    result = AxisScore(name="Clarity", score=score, evidence=evidence)
-    if score < 5:
-        result.improvement = "Add headings, break long paragraphs, define domain terms on first use"
-    return result
+    return _axis_score(
+        "Clarity",
+        score,
+        evidence,
+        "Add headings, break long paragraphs, define domain terms on first use",
+    )
 
 
 def check_actionability(text: str) -> AxisScore:
@@ -515,16 +541,15 @@ def check_actionability(text: str) -> AxisScore:
     score = _score_from_deductions(deductions)
 
     # No positive actionability evidence: cannot score as excellent — fail closed.
-    if not positive_labels:
-        score = min(score, 3)
+    score = _cap_without_labels(score, positive_labels)
+    _ensure_evidence(evidence, "No actionability signals — user may need to ask 'what now?'")
 
-    if not evidence:
-        evidence.append("No actionability signals — user may need to ask 'what now?'")
-
-    result = AxisScore(name="Actionability", score=score, evidence=evidence)
-    if score < 5:
-        result.improvement = "End with a single clear action: 'Merge this PR', 'Run ./deploy.sh', or 'Review the 3 changed files'"
-    return result
+    return _axis_score(
+        "Actionability",
+        score,
+        evidence,
+        "End with a single clear action: 'Merge this PR', 'Run ./deploy.sh', or 'Review the 3 changed files'",
+    )
 
 
 def _ratio_evidence(text: str, task: Optional[str]) -> tuple[int, list[str]]:
@@ -588,13 +613,15 @@ def check_conciseness(text: str, task: Optional[str] = None) -> AxisScore:
     elif redundant_count == 1:
         score = min(score, 4)
 
-    if not evidence and score == 5:
-        evidence.append("+ No redundancy detected. Information density appears good.")
+    if score == 5:
+        _ensure_evidence(evidence, "+ No redundancy detected. Information density appears good.")
 
-    result = AxisScore(name="Conciseness", score=score, evidence=evidence)
-    if score < 5:
-        result.improvement = "Cut meta-commentary, remove repeated points, trim examples to one representative case"
-    return result
+    return _axis_score(
+        "Conciseness",
+        score,
+        evidence,
+        "Cut meta-commentary, remove repeated points, trim examples to one representative case",
+    )
 
 
 def evaluate(task: Optional[str], output: str) -> list[AxisScore]:

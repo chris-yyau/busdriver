@@ -7,15 +7,14 @@ regex-heavy scoring logic does not regress after the grind converges.
 
 from __future__ import annotations
 
-import importlib.util
+import sys
 from pathlib import Path
 
 
-_SCRIPT = Path(__file__).with_name("evaluate.py")
-_SPEC = importlib.util.spec_from_file_location("agent_self_evaluate", _SCRIPT)
-assert _SPEC and _SPEC.loader
-_evaluate = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(_evaluate)
+_SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(_SCRIPT_DIR))
+
+import evaluate as _evaluate  # noqa: E402
 
 
 def evidence_text(score) -> str:

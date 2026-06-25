@@ -1,3 +1,10 @@
+# [1.71.0](https://github.com/chris-yyau/busdriver/compare/v1.70.1...v1.71.0) (2026-06-25)
+
+
+### Features
+
+* adopt upstream gap-filler skills, agents, and rules from ECC ([#240](https://github.com/chris-yyau/busdriver/issues/240)) ([8b244e4](https://github.com/chris-yyau/busdriver/commit/8b244e4f18abd2b40b84b7b2b2bf32b94bfc9e17)), closes [#239](https://github.com/chris-yyau/busdriver/issues/239) [hi#score](https://github.com/hi/issues/score) [hi#score](https://github.com/hi/issues/score) [hi#score-example](https://github.com/hi/issues/score-example) [hi#score-example](https://github.com/hi/issues/score-example)
+
 ## [1.70.1](https://github.com/chris-yyau/busdriver/compare/v1.70.0...v1.70.1) (2026-06-23)
 
 

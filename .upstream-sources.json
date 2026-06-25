@@ -1540,7 +1540,7 @@
     {
       "path": "scripts/hooks/run-with-flags-shell.sh",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/hooks/run-with-flags-shell.sh"
     },
     {
@@ -1774,7 +1774,7 @@
     {
       "path": "scripts/lib/session-adapters/registry.js",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/lib/session-adapters/registry.js"
     },
     {
@@ -2413,7 +2413,7 @@
     {
       "path": "skills/continuous-learning-v2/scripts/instinct-cli.py",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/continuous-learning-v2/scripts/instinct-cli.py"
     },
     {
@@ -4082,7 +4082,7 @@
     },
     {
       "path": "skills/code-tour/SKILL.md",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/code-tour/SKILL.md",
       "source": "ecc"
     },
@@ -4142,7 +4142,7 @@
     },
     {
       "path": "skills/research-ops/SKILL.md",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/research-ops/SKILL.md",
       "source": "ecc"
     },
@@ -4465,7 +4465,7 @@
     {
       "path": "agents/mle-reviewer.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/mle-reviewer.md"
     },
     {
@@ -4585,7 +4585,7 @@
     {
       "path": "skills/react-patterns/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/react-patterns/SKILL.md"
     },
     {
@@ -4681,7 +4681,7 @@
     {
       "path": "skills/plan-orchestrate/SKILL.md",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/plan-orchestrate/SKILL.md"
     },
     {

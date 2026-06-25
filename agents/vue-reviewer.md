@@ -160,7 +160,7 @@ npm run format:check --if-present                     # or ./node_modules/.bin/p
 npm audit
 ```
 
-If `eslint-plugin-vue` or `vue-tsc` is not in the project, recommend installing during the review.
+If `eslint-plugin-vue` is not in the project, recommend installing it during the review. For `vue-tsc`, flag/recommend it only for TypeScript Vue projects; skip cleanly for JS-only projects.
 
 ## Approval Criteria
 

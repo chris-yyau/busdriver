@@ -149,7 +149,8 @@ If confirmed:
 
 For a linked worktree (`worktree=yes` from Step 1.5), do **not** run `git checkout <base-branch>` from this worktree. Instead:
 1. Run Cleanup Worktree (Step 5) for this worktree first.
-2. From the primary checkout or the worktree that owns `<base-branch>`, run:
+2. If Step 5 skips removal (harness-managed/operator worktree) or the user does not confirm removal, **stop** and report that the branch is still checked out in this worktree; do not try to delete the branch.
+3. After this worktree is removed, from the primary checkout or the worktree that owns `<base-branch>`, run:
    ```bash
    git branch -D <feature-branch>
    ```

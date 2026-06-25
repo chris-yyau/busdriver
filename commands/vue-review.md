@@ -84,7 +84,7 @@ On a `.vue` / Vue-related PR, invoke both `vue-reviewer` and `typescript-reviewe
 # an unpinned package from the registry if the binary is absent)
 npm run lint --if-present
 
-# Vue-specific typecheck
+# Vue-specific typecheck (TypeScript Vue projects only; skip cleanly for JS-only projects)
 ./node_modules/.bin/vue-tsc --noEmit
 
 # Targeted security rules — `--rule` layers ON TOP of the project config, so this
@@ -98,7 +98,7 @@ npm run lint --if-present
 npm audit
 ```
 
-If `eslint-plugin-vue` or `vue-tsc` is not configured, the review will flag the gap as a HIGH config issue and continue.
+If `eslint-plugin-vue` is not configured, flag the gap as a HIGH config issue and continue. If the project has TypeScript Vue setup (`tsconfig.json`, `<script lang="ts">`, or TypeScript deps) but lacks `vue-tsc`, flag that as HIGH; for JavaScript-only Vue projects, skip `vue-tsc` cleanly and mention it as optional rather than blocking the review.
 
 ## Example Usage
 

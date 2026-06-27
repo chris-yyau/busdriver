@@ -1,3 +1,10 @@
+## [1.71.2](https://github.com/chris-yyau/busdriver/compare/v1.71.1...v1.71.2) (2026-06-27)
+
+
+### Bug Fixes
+
+* **litmus:** refuse excluded-only auto-pass when PR modifies review-exclude ([#252](https://github.com/chris-yyau/busdriver/issues/252)) ([#253](https://github.com/chris-yyau/busdriver/issues/253)) ([2e2aca4](https://github.com/chris-yyau/busdriver/commit/2e2aca444acf9bb5f7e022977df0998f7fcc0cd0))
+
 ## [1.71.1](https://github.com/chris-yyau/busdriver/compare/v1.71.0...v1.71.1) (2026-06-27)
 
 

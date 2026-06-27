@@ -6882,6 +6882,18 @@
       "upstream_path": "agents/docs-lookup.md",
       "reason": "redundant with vendored busdriver:context7-cli",
       "date": "2026-06-21"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "scripts/lib/install-targets/opencode-home.js",
+      "reason": "opencode CLI dispatch and install-target removed; busdriver targets Claude Code only",
+      "date": "2026-05-21"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "scripts/build-opencode.js",
+      "reason": "opencode CLI dispatch and install-target removed; busdriver targets Claude Code only",
+      "date": "2026-05-21"
     }
   ]
 }

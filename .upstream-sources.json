@@ -1299,8 +1299,9 @@
     {
       "path": "scripts/ci/validate-hooks.js",
       "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/ci/validate-hooks.js"
+      "status": "custom",
+      "upstream_path": "scripts/ci/validate-hooks.js",
+      "custom_reason": "local fix for CodeQL double-unescape (#219); unfixed upstream as of 2026-06-27"
     },
     {
       "path": "scripts/ci/validate-install-manifests.js",

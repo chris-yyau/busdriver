@@ -14,10 +14,20 @@ const path = require('path');
  */
 
 function safeRealpath(target) {
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- this module IS the path-containment primitive; resolve only canonicalizes, and isWithinRoot/assertWithinTrustedRoot enforce the trusted-root boundary on the result.
+  const resolved = path.resolve(target);
   try {
-    return fs.realpathSync(path.resolve(target));
-  } catch {
-    return path.resolve(target);
+    return fs.realpathSync(resolved);
+  } catch (err) {
+    // ENOENT is expected: not-yet-existing paths are canonicalized by
+    // realpathNearestExisting (which realpaths the nearest existing ancestor).
+    // Any OTHER failure on a path that EXISTS (EACCES, ELOOP, ENOTDIR, …) means
+    // we cannot resolve its symlinks — returning the unresolved path here would
+    // let a symlink escape slip past isWithinRoot. Fail closed instead.
+    if (err && err.code === 'ENOENT') {
+      return resolved;
+    }
+    throw err;
   }
 }
 
@@ -27,6 +37,7 @@ function safeRealpath(target) {
  * where an intermediate directory is a symlink pointing out of the root.
  */
 function realpathNearestExisting(target) {
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- canonicalization step of the containment primitive; the boundary is enforced by isWithinRoot/assertWithinTrustedRoot.
   let current = path.resolve(target);
   const tail = [];
   while (!fs.existsSync(current)) {
@@ -49,8 +60,16 @@ function isWithinRoot(target, root) {
   if (!root) {
     return false;
   }
-  const realRoot = safeRealpath(root);
-  const realTarget = realpathNearestExisting(target);
+  let realRoot;
+  let realTarget;
+  try {
+    realRoot = safeRealpath(root);
+    realTarget = realpathNearestExisting(target);
+  } catch {
+    // Cannot canonicalize an existing path (EACCES/ELOOP/…) → cannot prove
+    // containment → deny.
+    return false;
+  }
   if (realTarget === realRoot) {
     return true;
   }
@@ -76,6 +95,7 @@ function assertWithinTrustedRoot(target, root, action = 'write') {
 }
 
 module.exports = {
+  safeRealpath,
   realpathNearestExisting,
   isWithinRoot,
   assertWithinTrustedRoot

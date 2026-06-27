@@ -8,6 +8,23 @@ const path = require('path');
 const vm = require('vm');
 const Ajv = require('ajv');
 
+// Single-pass unescape for inline `node -e "..."` payloads. A sequential
+// .replace() chain double-unescapes (e.g. `\\n` -> `\n` -> newline); matching a
+// backslash plus one following char consumes each backslash exactly once. The
+// capture regex below guarantees every backslash is followed by a char, so there
+// is no lone trailing backslash to mishandle.
+function unescapeInlineJs(s) {
+  return s.replace(/\\(.)/g, (_, c) => {
+    switch (c) {
+      case 'n': return '\n';
+      case 't': return '\t';
+      case '\\': return '\\';
+      case '"': return '"';
+      default: return '\\' + c; // preserve unknown escapes verbatim
+    }
+  });
+}
+
 const HOOKS_FILE = path.join(__dirname, '../../hooks/hooks.json');
 const HOOKS_SCHEMA_PATH = path.join(__dirname, '../../schemas/hooks.schema.json');
 const VALID_EVENTS = [
@@ -76,7 +93,7 @@ function validateHookEntry(hook, label) {
       const nodeEMatch = hook.command.match(/^node -e "((?:[^"\\]|\\.)*)"(?:\s|$)/s);
       if (nodeEMatch) {
         try {
-          new vm.Script(nodeEMatch[1].replace(/\\\\/g, '\\').replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\t/g, '\t'));
+          new vm.Script(unescapeInlineJs(nodeEMatch[1]));
         } catch (syntaxErr) {
           console.error(`ERROR: ${label} has invalid inline JS: ${syntaxErr.message}`);
           hasErrors = true;
@@ -236,4 +253,8 @@ function validateHooks() {
   console.log(`Validated ${totalMatchers} hook matchers`);
 }
 
-validateHooks();
+if (require.main === module) {
+  validateHooks();
+}
+
+module.exports = { unescapeInlineJs, validateHookEntry };

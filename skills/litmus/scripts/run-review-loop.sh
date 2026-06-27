@@ -673,11 +673,26 @@ if [ -z "$STAGED_DIFF" ]; then
       fi
       # #252: a fail-closed gate must not let an unreviewed policy file certify
       # that nothing needs review. If this PR itself modifies the exclusion list
-      # (.claude/review-exclude is in the RAW changed set), refuse the auto-pass
-      # and fall through to review-required.
-      if echo "$ALL_STAGED_FILES" | grep -qxF ".claude/review-exclude"; then
-        echo "❌ excluded-only PR modifies .claude/review-exclude — refusing auto-pass; review required" >&2
-        write_terminal_status review_findings
+      # ($STATE_DIR/review-exclude is in the RAW changed set), refuse the
+      # auto-pass and surface as a setup error (no reviewer ran, so the
+      # auto-continue loop has nothing to fix — re-running would re-hit this
+      # same structural refusal). Use $STATE_DIR (not a hardcoded .claude) so
+      # the guard tracks exclude-generated.sh's actual policy-file location
+      # when BUSDRIVER_STATE_DIR is customized. Normalize STATE_DIR to git's
+      # canonical form first — the line-10 sanitizer still admits './.claude',
+      # '.claude/', and '.claude//', which the filesystem resolves but git's
+      # --name-only output never emits, so an un-normalized pattern would miss.
+      # Collapse slash runs, drop every './' segment (leading and internal),
+      # then strip a trailing slash — loop substitutions so repeated/nested
+      # forms ('.//.claude', '././.claude') all reduce to git's canonical path.
+      _norm_state_dir=$(printf '%s' "$STATE_DIR" \
+        | sed -e ':a' -e 's#//#/#g' -e 'ta' \
+              -e 's#/\./#/#g' \
+              -e ':b' -e 's#^\./##' -e 'tb' \
+              -e 's#/$##')
+      if echo "$ALL_STAGED_FILES" | grep -qxF "$_norm_state_dir/review-exclude"; then
+        echo "❌ excluded-only PR modifies $_norm_state_dir/review-exclude — refusing auto-pass; review required" >&2
+        write_terminal_status setup_error
         exit 1
       fi
       mkdir -p "$PR_STATE_DIR"

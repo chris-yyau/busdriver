@@ -659,12 +659,28 @@ fi
 if [ -z "$STAGED_DIFF" ]; then
   if [ -n "$ALL_STAGED_FILES" ]; then
     echo ""
-    echo "✅ All staged files are auto-generated — skipping review"
+    echo "✅ All changed files are excluded from review — skipping review"
     echo ""
-    # Write review-passed marker (same mechanism as normal PASS — pre-commit gate
-    # accepts marker existence without hash verification due to TOCTOU constraints)
-    mkdir -p "$STATE_DIR"
-    echo "PASS-$(date +%s)" > "$STATE_DIR/litmus-passed.local"
+    if [ "$REVIEW_MODE" = "pr" ]; then
+      # PR mode: the pre-PR gate rejects the commit marker (ADR 0006), so emit a
+      # DISTINCT diff-bound + age-bound marker the gate's fast-bypass branch honors.
+      # NOT PASS-FAST (that means "codex lead ran, backstop skipped"); here NO
+      # reviewer ran — the whole diff was excluded from review.
+      if [ -z "$PR_REVIEWED_DIFF_HASH" ]; then
+        echo "❌ excluded-only PR: no reviewed diff hash — refusing marker" >&2
+        write_terminal_status setup_error
+        exit 1
+      fi
+      mkdir -p "$PR_STATE_DIR"
+      printf 'PASS-EXCLUDED-%s-%s\n' "$PR_REVIEWED_DIFF_HASH" "$(date +%s)" > "$PR_REVIEW_MARKER_FILE"
+      printf '{"ts":"%s","event":"pr-excluded-only-autopass","gate":"pre-pr","diff_hash":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR_REVIEWED_DIFF_HASH" >> "$PR_STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
+    else
+      # Commit mode: pre-commit gate accepts marker existence without hash
+      # verification due to TOCTOU constraints.
+      mkdir -p "$STATE_DIR"
+      echo "PASS-$(date +%s)" > "$STATE_DIR/litmus-passed.local"
+    fi
     # Clean up state file and iteration history
     clear_iteration_history
     rm -f "$STATE_FILE" 2>/dev/null

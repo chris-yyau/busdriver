@@ -20,6 +20,8 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --auto-pr-
 ```
 `--auto-pr-review` **IS** the audited fast bypass: it force-inits, runs the Codex deep pass with `LITMUS_PR_FAST=1`, and on a Codex PASS writes a **distinct, diff-bound** `PASS-FAST-<diff_hash>-<epoch>` marker (not a bare hash, not a bare timestamp), logged `pr-fast-bypass` to `.claude/bypass-log.jsonl`. It **SKIPS the independent backstop**. The gate accepts that marker ONLY through its explicit fast-bypass branch — requiring `diff_hash == current base...HEAD` **and** `0 ≤ now-epoch ≤ max_age` — never through the normal dual-artifact path. So a preserved fast marker (a failed `gh pr create` keeps markers) cannot later authorize a *changed* diff. This is an audited bypass, not the default — the default path runs both voices and is fully gated.
 
+A sibling marker, **`PASS-EXCLUDED-<diff_hash>-<epoch>`**, is written by the all-excluded auto-pass path when the **entire** `base...HEAD` diff is excluded from review (lockfile/rules/manifest-only PRs) — **no** reviewer ran because nothing was reviewable. Logged `pr-excluded-only-autopass`. The gate accepts it through the **same** fast-bypass branch (same `diff_hash == current` **and** max-age checks), so adding any reviewable file changes the hash and forces a real review. Distinct from `PASS-FAST` (which means the Codex lead ran, backstop skipped). This unblocks excluded-only branches from `gh pr create` (#226).
+
 ## Step 0.5: Always Run the Codex Lead
 
 In PR mode the Codex lead runs on **every** PR. There is no agents-only skip — the deep multi-lens pass over the full `base...HEAD` diff is structurally different from the per-commit single-diff reviews, and the gate cannot pass without a fresh `status:PASS` Codex-lead artifact.
@@ -223,7 +225,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write-pr
 | Codex PASS + backstop any `high` | Report findings. Fix, then re-run from Step 1 (a code fix changes the `base...HEAD` hash, staling the Codex-lead artifact — re-running Step 2 alone cannot rebind it, so the backstop write / PR marker would fail closed) |
 | Codex FAIL | Short-circuit (no backstop). Fix, re-run from Step 1 |
 
-The marker is a SHA-256 hash (64 hex chars) of the `base...HEAD` diff, or the audited `PASS-FAST-<diff_hash>-<epoch>` fast-bypass marker. The gate rejects `DEGRADED`, `SKIPPED-NONE`, and `BUILTIN-` prefixed markers for PR review.
+The marker is a SHA-256 hash (64 hex chars) of the `base...HEAD` diff, or one of the audited diff-bound bypass markers `PASS-FAST-<diff_hash>-<epoch>` (codex lead ran, backstop skipped) / `PASS-EXCLUDED-<diff_hash>-<epoch>` (entire diff excluded from review, no reviewer ran). The gate rejects `DEGRADED`, `SKIPPED-NONE`, and `BUILTIN-` prefixed markers for PR review.
 
 ## Degraded States
 

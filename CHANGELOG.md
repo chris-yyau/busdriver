@@ -1,3 +1,10 @@
+## [1.71.4](https://github.com/chris-yyau/busdriver/compare/v1.71.3...v1.71.4) (2026-06-27)
+
+
+### Bug Fixes
+
+* **security:** harden upstream-synced path-safety + validate-hooks escaping ([#249](https://github.com/chris-yyau/busdriver/issues/249)) ([b2dc23a](https://github.com/chris-yyau/busdriver/commit/b2dc23a805ea34a7969a7a531d5a10de0cad3ca2))
+
 ## [1.71.3](https://github.com/chris-yyau/busdriver/compare/v1.71.2...v1.71.3) (2026-06-27)
 
 

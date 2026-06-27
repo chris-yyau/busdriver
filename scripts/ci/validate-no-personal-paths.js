@@ -20,7 +20,6 @@ const TARGETS = [
   'commands',
   'agents',
   'docs',
-  '.opencode/commands',
 ];
 
 const EXEMPT_PREFIXES = [

@@ -23,7 +23,7 @@ npx ctx7@latest <command>
 
 - **[Documentation](references/docs.md)** — Fetch current docs for any library. Use when writing code, verifying API signatures, or when training data may be outdated.
 - **[Skills management](references/skills.md)** — Install, search, suggest, list, remove, and generate AI coding skills.
-- **[Setup](references/setup.md)** — Configure Context7 MCP for Claude Code / Cursor / OpenCode.
+- **[Setup](references/setup.md)** — Configure Context7 MCP for Claude Code / Cursor.
 
 ## Quick Reference
 

@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 
 # Resolve the harness state dir, constraining it to a safe relative name (mirror
 # the shell gates) so this cleanup reads the markers from the same directory the
-# gates write them to — including .opencode in opencode mode.
+# gates write them to. BUSDRIVER_STATE_DIR overrides; defaults to .claude.
 state_dir = os.environ.get("BUSDRIVER_STATE_DIR", ".claude")
 if (not state_dir or state_dir.startswith("/") or ".." in state_dir
         or not re.fullmatch(r"[A-Za-z0-9._/-]+", state_dir)):

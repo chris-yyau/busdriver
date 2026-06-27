@@ -15,7 +15,7 @@
 
 set -euo pipefail
 # ── Harness-portable state resolution ──────────────────────────────────
-# BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
+# BUSDRIVER_STATE_DIR: state-dir override, defaults to .claude.
 # Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
 # repo-root joins resolve correctly and the value is safe to embed in messages.
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"

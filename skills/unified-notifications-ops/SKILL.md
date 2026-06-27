@@ -175,7 +175,7 @@ NEXT ECC MOVE
 
 - "We have GitHub, Linear, and local hook alerts, but no single operator flow"
 - "Our CI failures are noisy and people ignore them"
-- "I want one notification policy across Claude, OpenCode, and Codex surfaces"
+- "I want one notification policy across Claude and Codex surfaces"
 - "Figure out what should interrupt versus land in a digest"
 - "Collapse overlapping notification PR ideas into one canonical ECC lane"
 

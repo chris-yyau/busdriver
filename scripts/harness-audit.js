@@ -387,8 +387,6 @@ function findPluginInstall(rootDir) {
 
 function getRepoChecks(rootDir) {
   const packageJson = safeParseJson(safeRead(rootDir, 'package.json'));
-  const commandPrimary = safeRead(rootDir, 'commands/harness-audit.md').trim();
-  const commandParity = safeRead(rootDir, '.opencode/commands/harness-audit.md').trim();
   const hooksJson = safeRead(rootDir, 'hooks/hooks.json');
 
   return [
@@ -431,16 +429,6 @@ function getRepoChecks(rootDir) {
       description: 'At least 20 skill definitions exist',
       pass: countFiles(rootDir, 'skills', 'SKILL.md') >= 20,
       fix: 'Add missing skill directories with SKILL.md definitions.',
-    },
-    {
-      id: 'tool-command-parity',
-      category: 'Tool Coverage',
-      points: 2,
-      scopes: ['repo', 'commands'],
-      path: '.opencode/commands/harness-audit.md',
-      description: 'Harness-audit command parity exists between primary and OpenCode command docs',
-      pass: commandPrimary.length > 0 && commandPrimary === commandParity,
-      fix: 'Sync commands/harness-audit.md and .opencode/commands/harness-audit.md.',
     },
     {
       id: 'context-strategic-compact',

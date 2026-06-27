@@ -25,20 +25,10 @@ skills/skill-comply/uv.lock
 .claude/*.log
 .claude/.gate-block-count.local
 .claude/.impl-gate-block-count.local
-
-# OpenCode gate state (mirrors .claude/ for opencode harness)
-.opencode/*.local
-.opencode/*.local.*
-.opencode/litmus-state.md
-.opencode/bypass-log.jsonl
-.opencode/review-metrics.jsonl
-.opencode/*.log
-.opencode/.gate-block-count.local
-.opencode/.impl-gate-block-count.local
+.claude/_backstop/
 
 # Claude workspace artifacts
 .claude/worktrees/
-.opencode/worktrees/
 # AGENTS.md files are agent dev-instructions by default (the repo root file and
 # each vendored skill's upstream dev-meta copy) — keep them out of git.
 AGENTS.md
@@ -58,11 +48,9 @@ docs/superpowers/specs/
 
 # ultra-oracle consult verdict output (skip-ultra-oracle.local already covered by *.local globs)
 .claude/ultra-oracle/
-.opencode/ultra-oracle/
 # Legacy oracle-max artifacts — keep ignored so pre-rename verdict files (which may
 # contain ChatGPT prompt/design content) don't become unignored after upgrading.
 .claude/oracle-max/
-.opencode/oracle-max/
 
 # codex-goal-handover run artifacts (per-iter logs, verifier outputs, result JSONs)
 # New runs go to ${TMPDIR:-/tmp}/codex-goal-runs/ (see codex-goal-handover SKILL.md);

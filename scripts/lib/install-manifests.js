@@ -4,7 +4,7 @@ const path = require('path');
 const { getInstallTargetAdapter, planInstallTargetScaffold } = require('./install-targets/registry');
 
 const DEFAULT_REPO_ROOT = path.join(__dirname, '../..');
-const SUPPORTED_INSTALL_TARGETS = ['claude', 'claude-project', 'cursor', 'antigravity', 'codex', 'gemini', 'opencode', 'codebuddy', 'joycode', 'qwen', 'zed'];
+const SUPPORTED_INSTALL_TARGETS = ['claude', 'claude-project', 'cursor', 'antigravity', 'codex', 'gemini', 'codebuddy', 'joycode', 'qwen', 'zed'];
 const COMPONENT_FAMILY_PREFIXES = {
   baseline: 'baseline:',
   language: 'lang:',
@@ -111,18 +111,8 @@ const LEGACY_LANGUAGE_EXTRA_MODULE_IDS = Object.freeze({
   swift: [],
   typescript: ['framework-language'],
 });
-const TARGET_DEFAULT_PROFILE_IDS = Object.freeze({
-  opencode: 'opencode',
-});
-const TARGET_DEFAULT_EXCLUSIONS = Object.freeze({
-  opencode: [
-    {
-      moduleId: 'hooks-runtime',
-      reason: 'OpenCode defaults intentionally exclude hooks-runtime until users opt in.',
-      optInCommand: './install.sh --target opencode --modules hooks-runtime',
-    },
-  ],
-});
+const TARGET_DEFAULT_PROFILE_IDS = Object.freeze({});
+const TARGET_DEFAULT_EXCLUSIONS = Object.freeze({});
 
 function readJson(filePath, label) {
   try {
@@ -673,7 +663,7 @@ function resolveInstallPlan(options = {}) {
     targetDefaultProfileId,
     targetDefaultExclusions,
     warnings: targetDefaultExclusions.map(exclusion => (
-      `${exclusion.moduleId} is intentionally excluded from the OpenCode default. `
+      `${exclusion.moduleId} is intentionally excluded from this target's default. `
         + `Opt in with: ${exclusion.optInCommand}`
     )),
     selectedModuleIds: selectedModules.map(module => module.id),

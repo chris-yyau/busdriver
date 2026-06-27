@@ -4,7 +4,7 @@
 #
 # Inputs (required env vars; parent dispatcher injects):
 #   WORKTREE_DIR            - absolute path to worktree (cwd inside script)
-#   BUSDRIVER_PLUGIN_ROOT   - busdriver plugin root (opencode) or CLAUDE_PLUGIN_ROOT (Claude Code)
+#   BUSDRIVER_PLUGIN_ROOT   - busdriver plugin root; falls back to CLAUDE_PLUGIN_ROOT
 #   PR_NUMBER               - GitHub PR number
 #   RESULT_STATUS           - "needs_more" | "clean" | "bail" (from worker)
 #   RESULT_FIXES            - worker's intent statement (string)
@@ -52,7 +52,7 @@ emit_bootstrap_bail() {
 
 # Required env var check must run before sourcing helpers from
 # CLAUDE_PLUGIN_ROOT, because the missing-env contract itself is testable.
-# Accept either BUSDRIVER_PLUGIN_ROOT (opencode) or CLAUDE_PLUGIN_ROOT (Claude Code)
+# Accept either BUSDRIVER_PLUGIN_ROOT or CLAUDE_PLUGIN_ROOT (the latter is the default)
 _PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"
 for var in WORKTREE_DIR PR_NUMBER RESULT_STATUS RESULT_FIXES; do
     if [ -z "${!var:-}" ]; then

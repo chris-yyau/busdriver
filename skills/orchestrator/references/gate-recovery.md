@@ -4,7 +4,7 @@
 
 When a gate blocks and the user needs to bypass:
 
-1. **Get absolute project path and state dir:** `git rev-parse --show-toplevel` for `<PROJECT_ROOT>`, and resolve `<STATE_DIR>` = `${BUSDRIVER_STATE_DIR:-.claude}` (default `.claude`; `.opencode` under the opencode harness — the gate also names it verbatim in its block message). Skip files use absolute paths because the gate checks `<STATE_DIR>/` relative to the **blocked command's CWD**.
+1. **Get absolute project path and state dir:** `git rev-parse --show-toplevel` for `<PROJECT_ROOT>`, and resolve `<STATE_DIR>` = `${BUSDRIVER_STATE_DIR:-.claude}` (default `.claude` — the gate also names it verbatim in its block message). Skip files use absolute paths because the gate checks `<STATE_DIR>/` relative to the **blocked command's CWD**.
 2. **Send the user this verbatim message** (substitute `<PROJECT_ROOT>`, `<STATE_DIR>` resolved above — **NEVER hardcode `.claude`** — and `<GATE>` for `litmus` / `design-review` / `pr-grind`):
    > I need a skip file to bypass the `<GATE>` gate. Please run this in **your terminal** (not in this session):
    >

@@ -37,7 +37,6 @@ Targets:
   antigravity  - Install rules, workflows, skills, and agents to ./.agent/
   codex        - Install shared agents/config into ~/.codex/
   gemini       - Install project-local Gemini config into ./.gemini/
-  opencode     - Install shared commands/hooks/config into ~/.opencode/
   codebuddy    - Install commands, agents, skills, and flattened rules into ./.codebuddy/
   joycode      - Install commands, agents, skills, and flattened rules into ./.joycode/
   qwen         - Install commands, agents, skills, rules, and Qwen config into ~/.qwen/

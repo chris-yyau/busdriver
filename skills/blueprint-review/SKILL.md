@@ -704,7 +704,7 @@ Critically, the skip-file check in steps 1–2 runs **before** tool-type discrim
 
 When Claude needs a skip file, it must emit this exact message, with three substitutions:
 - `<PROJECT_ROOT>` → the absolute path of the current git repo root (from `git rev-parse --show-toplevel` — not the CWD of the Claude session, which may be a subdirectory or worktree).
-- `<STATE_DIR>` → the gate's state directory: the value of `${BUSDRIVER_STATE_DIR:-.claude}` (default `.claude`, but `.opencode` under the opencode harness). **Resolve it — NEVER hardcode `.claude`.** The gate also names this directory verbatim in its own block message, so when reacting to a gate block you can read it from there.
+- `<STATE_DIR>` → the gate's state directory: the value of `${BUSDRIVER_STATE_DIR:-.claude}` (default `.claude`). **Resolve it — NEVER hardcode `.claude`.** The gate also names this directory verbatim in its own block message, so when reacting to a gate block you can read it from there.
 - `<GATE>` → one of: `design-review`, `litmus`, `pr-grind` (matches the row in the per-gate-differences table above).
 
 > I need a skip file to bypass the `<GATE>` gate. Please run this in **your terminal** (not in this session):

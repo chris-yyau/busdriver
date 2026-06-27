@@ -14,7 +14,6 @@ ctx7 setup --cli               # Skip prompt, use CLI + Skills mode
 # MCP mode — target a specific agent
 ctx7 setup --claude            # Claude Code only
 ctx7 setup --cursor            # Cursor only
-ctx7 setup --opencode          # OpenCode only
 
 # CLI + Skills mode — target a specific install location
 ctx7 setup --cli --claude      # Claude Code (~/.claude/skills)
@@ -35,7 +34,7 @@ ctx7 setup --oauth             # OAuth endpoint — MCP mode only (IDE handles t
 Without `--api-key` or `--oauth`, setup opens a browser for OAuth login. MCP mode additionally generates a new API key after login. `--oauth` is MCP-only.
 
 **What gets written — MCP mode:**
-- MCP server entry in the agent's config file (`.mcp.json` for Claude, `.cursor/mcp.json` for Cursor, `.opencode.json` for OpenCode)
+- MCP server entry in the agent's config file (`.mcp.json` for Claude, `.cursor/mcp.json` for Cursor)
 - A Context7 rule file instructing the agent to use Context7 for library docs
 - A `context7-mcp` skill in the agent's skills directory
 

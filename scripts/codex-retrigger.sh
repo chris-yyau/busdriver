@@ -37,7 +37,7 @@
 # Marker:   ${BUSDRIVER_STATE_DIR:-.claude}/.pr-grind-codex-retriggered-pr<PR>-<HEAD8>.local
 #           Per-(PR,HEAD) so concurrent grinds on different PRs never race on a
 #           shared marker, and a new push (new HEAD) is eligible again. Gitignored
-#           via `.claude/*.local` (and `.opencode/*.local`).
+#           via `.claude/*.local`.
 set -u
 
 PR="${1:-}"

@@ -5410,12 +5410,6 @@
       "upstream_path": "scripts/lib/install-targets/joycode-project.js"
     },
     {
-      "path": "scripts/lib/install-targets/opencode-home.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/lib/install-targets/opencode-home.js"
-    },
-    {
       "path": "scripts/lib/install-targets/qwen-home.js",
       "source": "ecc",
       "status": "sync",
@@ -6867,18 +6861,6 @@
     },
     {
       "source": "ecc",
-      "upstream_path": "scripts/lib/install-targets/opencode-home.js",
-      "reason": "opencode CLI dispatch and install-target removed; busdriver targets Claude Code only",
-      "date": "2026-05-21"
-    },
-    {
-      "source": "ecc",
-      "upstream_path": "scripts/build-opencode.js",
-      "reason": "opencode CLI dispatch and install-target removed; busdriver targets Claude Code only",
-      "date": "2026-05-21"
-    },
-    {
-      "source": "ecc",
       "upstream_path": "skills/react-performance/SKILL.md",
       "reason": "superseded by official Vercel vercel-react-best-practices",
       "date": "2026-06-21"
@@ -6900,6 +6882,18 @@
       "upstream_path": "agents/docs-lookup.md",
       "reason": "redundant with vendored busdriver:context7-cli",
       "date": "2026-06-21"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "scripts/lib/install-targets/opencode-home.js",
+      "reason": "opencode CLI dispatch and install-target removed; busdriver targets Claude Code only",
+      "date": "2026-05-21"
+    },
+    {
+      "source": "ecc",
+      "upstream_path": "scripts/build-opencode.js",
+      "reason": "opencode CLI dispatch and install-target removed; busdriver targets Claude Code only",
+      "date": "2026-05-21"
     }
   ]
 }

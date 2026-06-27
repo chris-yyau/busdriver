@@ -15,9 +15,9 @@
 
 set -euo pipefail
 # ── Harness-portable root/state resolution ─────────────────────────────
-# BUSDRIVER_PLUGIN_ROOT: set by opencode adapter; CLAUDE_PLUGIN_ROOT by Claude Code.
+# BUSDRIVER_PLUGIN_ROOT: plugin-root override; falls back to CLAUDE_PLUGIN_ROOT.
 # Falls back to relative path from this script's location.
-# BUSDRIVER_STATE_DIR: .opencode for opencode, .claude for Claude Code (default).
+# BUSDRIVER_STATE_DIR: state-dir override, defaults to .claude.
 # shellcheck disable=SC2034  # PLUGIN_ROOT used in env-var fallback chains
 PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"

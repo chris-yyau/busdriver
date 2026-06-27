@@ -1,3 +1,10 @@
+## [1.71.3](https://github.com/chris-yyau/busdriver/compare/v1.71.2...v1.71.3) (2026-06-27)
+
+
+### Bug Fixes
+
+* **skills:** correct vendored ui-ux/supabase doc refs and track upstreams ([#255](https://github.com/chris-yyau/busdriver/issues/255)) ([30be5d9](https://github.com/chris-yyau/busdriver/commit/30be5d9ac4689a1b8e753111b1cc1b0f4814c1bc)), closes [#254](https://github.com/chris-yyau/busdriver/issues/254)
+
 ## [1.71.2](https://github.com/chris-yyau/busdriver/compare/v1.71.1...v1.71.2) (2026-06-27)
 
 

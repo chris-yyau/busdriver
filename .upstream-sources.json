@@ -13,6 +13,14 @@
       "repo": "mattpocock/skills",
       "ref": "main",
       "license": "MIT"
+    },
+    "nextlevelbuilder": {
+      "repo": "nextlevelbuilder/ui-ux-pro-max-skill",
+      "ref": "main"
+    },
+    "supabase": {
+      "repo": "supabase/agent-skills",
+      "ref": "main"
     }
   },
   "files": [
@@ -6469,303 +6477,369 @@
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/advanced-full-text-search.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/advanced-full-text-search.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/advanced-jsonb-indexing.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/advanced-jsonb-indexing.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/conn-idle-timeout.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/conn-idle-timeout.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/conn-limits.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/conn-limits.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/conn-pooling.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/conn-pooling.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/conn-prepared-statements.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/conn-prepared-statements.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/data-batch-inserts.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/data-batch-inserts.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/data-n-plus-one.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/data-n-plus-one.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/data-pagination.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/data-pagination.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/data-upsert.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/data-upsert.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/lock-advisory.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/lock-advisory.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/lock-deadlock-prevention.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/lock-deadlock-prevention.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/lock-short-transactions.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/lock-short-transactions.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/lock-skip-locked.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/lock-skip-locked.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/monitor-explain-analyze.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/monitor-explain-analyze.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/monitor-pg-stat-statements.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/monitor-pg-stat-statements.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/monitor-vacuum-analyze.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/monitor-vacuum-analyze.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/query-composite-indexes.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/query-composite-indexes.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/query-covering-indexes.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/query-covering-indexes.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/query-index-types.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/query-index-types.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/query-missing-indexes.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/query-missing-indexes.md"
+    },
+    {
+      "path": "skills/supabase-postgres-best-practices/references/_sections.md",
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/_sections.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/query-partial-indexes.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/query-partial-indexes.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/schema-constraints.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/schema-constraints.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/schema-data-types.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/schema-data-types.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/schema-foreign-key-indexes.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/schema-foreign-key-indexes.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/schema-lowercase-identifiers.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/schema-lowercase-identifiers.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/schema-partitioning.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/schema-partitioning.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/schema-primary-keys.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/schema-primary-keys.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/security-privileges.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/security-privileges.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/security-rls-basics.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/security-rls-basics.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/references/security-rls-performance.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "custom",
+      "upstream_path": "skills/supabase-postgres-best-practices/references/security-rls-performance.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "supabase",
+      "status": "custom",
+      "upstream_path": "skills/supabase-postgres-best-practices/SKILL.md"
     },
     {
       "path": "skills/ui-ux-pro-max/data/charts.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/charts.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/colors.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/colors.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/icons.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/icons.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/landing.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/landing.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/products.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/products.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/react-performance.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "sync",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/react-performance.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/stacks/astro.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "sync",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/stacks/astro.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/stacks/flutter.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/stacks/flutter.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/stacks/html-tailwind.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/stacks/html-tailwind.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/stacks/jetpack-compose.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "sync",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/stacks/jetpack-compose.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/stacks/nextjs.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/stacks/nextjs.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/stacks/nuxt-ui.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "sync",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/stacks/nuxt-ui.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/stacks/nuxtjs.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "sync",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/stacks/nuxtjs.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/stacks/react-native.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/stacks/react-native.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/stacks/react.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/stacks/react.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/stacks/shadcn.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "sync",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/stacks/shadcn.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/stacks/svelte.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/stacks/svelte.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/stacks/swiftui.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/stacks/swiftui.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/stacks/vue.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/stacks/vue.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/styles.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/styles.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/typography.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/typography.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/ui-reasoning.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/ui-reasoning.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/ux-guidelines.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/ux-guidelines.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/data/web-interface.csv",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/data/web-interface.csv"
     },
     {
       "path": "skills/ui-ux-pro-max/scripts/core.py",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/scripts/core.py"
     },
     {
       "path": "skills/ui-ux-pro-max/scripts/design_system.py",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/scripts/design_system.py"
     },
     {
       "path": "skills/ui-ux-pro-max/scripts/search.py",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/scripts/search.py"
     },
     {
       "path": "skills/ui-ux-pro-max/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "nextlevelbuilder",
+      "status": "custom",
+      "upstream_path": ".claude/skills/ui-ux-pro-max/SKILL.md"
     }
   ],
   "rejected": [

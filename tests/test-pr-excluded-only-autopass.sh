@@ -68,6 +68,7 @@ trap cleanup EXIT
 # Fake codex: satisfies `command -v codex` + version probes; logs any review
 # invocation so we can prove the excluded-only path never dispatched it.
 STUB_LOG="$STUBDIR/codex-invocations.log"
+: > "$STUB_LOG"
 cat > "$STUBDIR/codex" <<EOF
 #!/bin/sh
 case "\$1" in --version|-V|version) echo "codex 0.0.0 (fake)"; exit 0;; esac
@@ -141,10 +142,13 @@ mkdir -p "$TMPREPO/rules/sub"
 printf '# rule\nbody\n' > "$TMPREPO/rules/sub/x.md"
 git -C "$TMPREPO" add rules/sub/x.md
 git -C "$TMPREPO" commit -qm "rules only"
+: > "$STUB_LOG"
 run_producer pr
 check "excluded-only PR writes a PASS-EXCLUDED marker" "yes" "$(marker_is_excluded)"
 check "excluded-only PR does NOT write the commit marker" "absent" \
     "$([ -f "$COMMIT_MARKER" ] && echo present || echo absent)"
+check "excluded-only PR does NOT dispatch codex" "no" \
+    "$(grep -q '^invoked:' "$STUB_LOG" 2>/dev/null && echo yes || echo no)"
 check "bypass-log records pr-excluded-only-autopass" "yes" \
     "$(grep -q 'pr-excluded-only-autopass' "$BYPASS_LOG" 2>/dev/null && echo yes || echo no)"
 # Reuse the producer-written hash for the gate cases below — the test must NOT
@@ -185,8 +189,11 @@ printf '# rule3\n' > "$TMPREPO/rules/sub/z.md"
 echo "console.log(1)" > "$TMPREPO/app.js"   # reviewable -> diff not excluded-only
 git -C "$TMPREPO" add rules/sub/z.md app.js
 git -C "$TMPREPO" commit -qm "mixed"
+: > "$STUB_LOG"
 run_producer pr
 check "mixed diff does NOT write a PASS-EXCLUDED marker" "no" "$(marker_is_excluded)"
+check "mixed diff dispatches codex review" "yes" \
+    "$(grep -q '^invoked:' "$STUB_LOG" 2>/dev/null && echo yes || echo no)"
 
 # ── Summary ───────────────────────────────────────────────────────────
 echo ""

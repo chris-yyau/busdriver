@@ -671,6 +671,25 @@ if [ -z "$STAGED_DIFF" ]; then
         write_terminal_status setup_error
         exit 1
       fi
+      # #252: a fail-closed gate must not let an unreviewed policy file certify
+      # that nothing needs review. If this PR itself modifies the exclusion list
+      # ($STATE_DIR/review-exclude is in the RAW changed set), refuse the
+      # auto-pass and surface as a setup error (no reviewer ran, so the
+      # auto-continue loop has nothing to fix — re-running would re-hit this
+      # same structural refusal). Resolve the policy file's canonical
+      # repo-relative path via git itself rather than hand-normalizing
+      # $STATE_DIR: git normalizes the `--` pathspec exactly the way it
+      # normalizes `git diff --name-only` output, so the two are guaranteed
+      # consistent for ANY sanitizer-permitted form ('.', 'foo/.', './/x',
+      # trailing slash, './.claude'). $STATE_DIR (not a hardcoded .claude)
+      # keeps the guard aligned with exclude-generated.sh's actual location
+      # when BUSDRIVER_STATE_DIR is customized.
+      _exclude_target=$(git -C "$PR_REPO_TOP" ls-files --full-name -- "$STATE_DIR/review-exclude" 2>/dev/null | head -n1)
+      if [ -n "$_exclude_target" ] && echo "$ALL_STAGED_FILES" | grep -qxF "$_exclude_target"; then
+        echo "❌ excluded-only PR modifies $_exclude_target — refusing auto-pass; review required" >&2
+        write_terminal_status setup_error
+        exit 1
+      fi
       mkdir -p "$PR_STATE_DIR"
       printf 'PASS-EXCLUDED-%s-%s\n' "$PR_REVIEWED_DIFF_HASH" "$(date +%s)" > "$PR_REVIEW_MARKER_FILE"
       printf '{"ts":"%s","event":"pr-excluded-only-autopass","gate":"pre-pr","diff_hash":"%s"}\n' \

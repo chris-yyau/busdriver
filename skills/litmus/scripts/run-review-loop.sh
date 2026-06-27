@@ -687,7 +687,7 @@ if [ -z "$STAGED_DIFF" ]; then
       # forms ('.//.claude', '././.claude') all reduce to git's canonical path.
       _norm_state_dir=$(printf '%s' "$STATE_DIR" \
         | sed -e ':a' -e 's#//#/#g' -e 'ta' \
-              -e 's#/\./#/#g' \
+              -e ':c' -e 's#/\./#/#g' -e 'tc' \
               -e ':b' -e 's#^\./##' -e 'tb' \
               -e 's#/$##')
       if echo "$ALL_STAGED_FILES" | grep -qxF "$_norm_state_dir/review-exclude"; then

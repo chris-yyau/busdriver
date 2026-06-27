@@ -35,9 +35,9 @@ GitHub branch-protection settings encode org policy that pr-grind has no automat
 **Best-effort (low priority, addressed if fix budget allows — counts against `--max-fix`, not `--max-wait`):**
 - Style/nit findings: typically fixed because the effort is low
 
-**Invariant:** required status checks are the merge authority. AI reviewer acks are bounded-wait advisory signals — apps rate-limit, freeze, or fail; `--max-wait` is the backstop. On exhaustion the loop **bails to the operator** (does NOT silently merge AND does NOT wait forever). Never wait indefinitely for any single reviewer app. The infra-error downgrade in `scripts/ack-ledger.sh` (`ever_approved=0` defense) handles the specific case of a frozen review that the bot can't self-recover from; `--max-wait` is the broader safety net for slow-bot scenarios outside that pattern.
+**Invariant:** required status checks are the merge authority. AI reviewer acks are bounded-wait advisory signals — apps rate-limit, freeze, or fail; `--max-wait` is the backstop. On exhaustion the loop **bails to the operator** (does NOT silently merge AND does NOT wait forever). Never wait indefinitely for any single reviewer app. Error/no-review/rate-limit reviewer notices stay `stale`; `--max-wait` is the safety net for slow or stuck bots.
 
-**Why:** helmet PR #35 stuck for a full session because a frozen Copilot review couldn't be classified by the pre-v1.30.1 ack ledger (introduced v1.29.1, PR #70). v1.30.1 added the body-text infra-error downgrade with the `ever_approved=0` admin-bypass guard (PR #77, three sub-commits); v1.31 extracted the algorithm into `scripts/ack-ledger.sh` for single-source maintenance + added a fail-CLOSED `|| echo stale` guard at the new call sites (PR #79); v1.33 added the `--max-wait` budget (PR #84). Codifying the principle prevents regression — a future "tighten the gate" PR must not reintroduce unbounded waits, must not silently merge past stale acks, and must not treat reviewer acks as co-equal with required checks.
+**Why:** helmet PR #35 stuck for a full session because a frozen Copilot review couldn't be classified by the pre-v1.30.1 ack ledger (introduced v1.29.1, PR #70). v1.31 extracted the algorithm into `scripts/ack-ledger.sh` for single-source maintenance + added a fail-CLOSED `|| echo stale` guard at the new call sites (PR #79); v1.33 added the `--max-wait` budget (PR #84). Codifying the principle prevents regression — a future "tighten the gate" PR must not reintroduce unbounded waits, must not silently merge past stale acks, and must not treat reviewer acks as co-equal with required checks.
 
 ## Architecture: Dispatcher + Per-Round Worker
 
@@ -301,8 +301,8 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        progress. (Backward-compat: a worker that omits RESULT_CODEX_ACK
   │        leaves it empty, which is `!= stale`, so the check reduces to its
   │        prior registered-bot-only behavior.)
-  │        Note: a bot whose review was downgraded to `none` by the
-  │        infra-error path (see scripts/ack-ledger.sh) will not appear as
+  │        Note: a bot whose non-actionable review was downgraded to `none`
+  │        by the PR-overview/skipped-check path will not appear as
   │        `stale`. If that downgraded bot was the ONLY reason the worker
   │        considered the round incomplete, the worker should return
   │        `clean` (or `bail`), not `needs_more` with all-`none` acks —
@@ -398,11 +398,11 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        `stale` and `none` ack values do NOT trigger this gate —
   │        `stale` means bot hasn't re-reviewed yet (Invariant 2 already
   │        gates on this for clean status); `none` means bot never posted,
-  │        or only posted infra-error markers, or acknowledged HEAD via a
-  │        check-run with conclusion=skipped and non-actionable body. The
+  │        or acknowledged HEAD via a check-run with
+  │        conclusion=skipped and non-actionable body. The
   │        matching ledger shapes are `<bot>=0/0:none` for bots that posted
   │        nothing, OR `<bot>=0/N:no-findings` for bots whose N>=1 artifacts
-  │        were Case-1/2/3 downgraded with zero actionable findings (per
+  │        were Case-2/3 downgraded with zero actionable findings (per
   │        the n_actionable/n_total contract at pr-grinder.md:200). Only
   │        HEAD-acked bots
   │        prove a body exists that should have been enumerated.
@@ -1259,7 +1259,7 @@ PRIOR_ATTEMPTS:
 4. No unresolved actionable comments from any source
 5. No new comments arrived after your last push (wait for the full cycle)
 6. Advisory check issues either fixed or noted as beyond PR scope
-7. **Reviewer ack ledger**: every registered bot (Cursor, Cubic, CodeRabbit) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot's only reviews are infra-error/rate-limit markers that cannot self-recover" OR "bot only posted a non-actionable PR-overview summary on an older commit" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all four cases are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 1, 2, and 3. Note: Tier E (commit-statuses API) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.) Codex is gated too, but tracked in its own `RESULT_CODEX_ACK` field (Tier F 👍 reaction), not in `RESULT_REVIEWER_ACKS` — a `stale` Codex blocks completion identically; `none` (never reacted/reviewed on this PR) is non-gating.
+7. **Reviewer ack ledger**: every registered bot (Cursor, Cubic, CodeRabbit) is either `<HEAD-short-SHA>` or `none` in `RESULT_REVIEWER_ACKS`. Any `stale` entry blocks completion — the bot finished its check but hasn't re-reviewed HEAD yet, and merging now would race ahead of its findings. (`none` here can mean "bot doesn't operate on this repo" OR "bot only posted a non-actionable PR-overview summary on an older commit" OR "bot acknowledged HEAD via a check-run with conclusion=skipped and non-actionable body (e.g., cubic-dev-ai on merge commits)" — all three cases are non-gating; see `scripts/ack-ledger.sh`'s downgrade Cases 2 and 3. Error/no-review/rate-limit notices are `stale`, not `none`. Note: Tier E (commit-statuses API) does NOT produce `none` — a `success` status returns HEAD-ack, and a `pending`/`failure`/`error` status returns `stale` to block on the live reviewer signal.) Codex is gated too, but tracked in its own `RESULT_CODEX_ACK` field (Tier F 👍 reaction), not in `RESULT_REVIEWER_ACKS` — a `stale` Codex blocks completion identically; `none` (never reacted/reviewed on this PR) is non-gating.
 
 **Re-query the ack ledger fresh (REQUIRED — defense in depth against late posts between subagent return and merge time):**
 

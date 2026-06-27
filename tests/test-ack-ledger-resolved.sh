@@ -153,15 +153,33 @@ fi
 # which requires a non-empty ALL_REVIEWS fixture. The run_ledger helper
 # uses EMPTY_REVIEWS, so we use a separate helper here.
 STALE_COMMIT="oldcommit"
-run_ledger_reviews() {
-  # $1 = ALL_REVIEWS json
+run_ledger_reviews_for() {
+  # $1 = login to query
+  # $2 = ALL_REVIEWS json
   FETCH_OK=1 \
   ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' \
-  ALL_REVIEWS="$1" \
+  ALL_REVIEWS="$2" \
   ALL_COMMENTS='{"comments":[]}' \
   ALL_CHECK_RUNS='{"check_runs":[]}' \
   HEAD_SHA="$HEAD_SHA" \
-  bash "$ACK_SCRIPT" cursor 2>/dev/null
+  bash "$ACK_SCRIPT" "$1" 2>/dev/null
+}
+
+run_ledger_reviews() {
+  # $1 = ALL_REVIEWS json
+  run_ledger_reviews_for cursor "$1"
+}
+
+run_ledger_comments_for() {
+  # $1 = login to query
+  # $2 = ALL_COMMENTS json
+  FETCH_OK=1 \
+  ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' \
+  ALL_REVIEWS='[]' \
+  ALL_COMMENTS="$2" \
+  ALL_CHECK_RUNS='{"check_runs":[]}' \
+  HEAD_SHA="$HEAD_SHA" \
+  bash "$ACK_SCRIPT" "$1" 2>/dev/null
 }
 
 # Helper for check-run-driven tests (Tier D / downgrade Case 3). Parametrizes
@@ -190,7 +208,34 @@ run_ledger_check_runs() {
   bash "$ACK_SCRIPT" "$1" 2>/dev/null
 }
 
-# --- Test 7: COMMENTED on stale commit, ever_approved==0 → none (new Case 2 behavior) ---
+# --- Test 6b: CodeRabbit rate-limit/no-review/error body on stale review → stale ---
+CODERABBIT_NO_REVIEW=$(printf '[{"user":{"login":"coderabbitai[bot]"},"state":"COMMENTED","commit_id":"%s","body":"CodeRabbit encountered an error and was unable to review because of the PR review rate limit. No review was performed."}]' "$STALE_COMMIT")
+got=$(run_ledger_reviews_for coderabbitai "$CODERABBIT_NO_REVIEW")
+if [ "$got" = "stale" ]; then
+  ok "CodeRabbit rate-limit/no-review/error body on stale review → stale"
+else
+  fail "CodeRabbit rate-limit/no-review/error stale review expected 'stale', got '$got'"
+fi
+
+# --- Test 6c: CodeRabbit rate-limit/no-review/error issue comment → stale ---
+CODERABBIT_NO_REVIEW_COMMENT='{"comments":[{"author":{"login":"coderabbitai[bot]"},"body":"we could not start this review because you reached your PR review rate limit"}]}'
+got=$(run_ledger_comments_for coderabbitai "$CODERABBIT_NO_REVIEW_COMMENT")
+if [ "$got" = "stale" ]; then
+  ok "CodeRabbit rate-limit/no-review/error issue comment → stale"
+else
+  fail "CodeRabbit rate-limit/no-review/error issue comment expected 'stale', got '$got'"
+fi
+
+# --- Test 6d: generic bot issue comment without commit link/no-review wording → none ---
+GENERIC_BOT_COMMENT='{"comments":[{"author":{"login":"coderabbitai[bot]"},"body":"Automated summary: changed files look organized."}]}'
+got=$(run_ledger_comments_for coderabbitai "$GENERIC_BOT_COMMENT")
+if [ "$got" = "none" ]; then
+  ok "generic bot issue comment without commit link/no-review wording → none"
+else
+  fail "generic bot issue comment without commit link/no-review wording expected 'none', got '$got'"
+fi
+
+# --- Test 7: COMMENTED on stale commit, ever_approved==0 → none (Case 2 behavior) ---
 COMMENTED_REVIEWS=$(printf '[{"user":{"login":"cursor[bot]"},"state":"COMMENTED","commit_id":"%s","body":"PR overview summary."}]' "$STALE_COMMIT")
 got=$(run_ledger_reviews "$COMMENTED_REVIEWS")
 if [ "$got" = "none" ]; then

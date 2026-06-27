@@ -234,6 +234,10 @@ acks_head() {
   [ "$_ah_cand_par" = "$_ah_head_par" ]
 }
 
+is_no_review_notice() {
+  printf '%s' "$1" | grep -qiE "no[ -]?review|no review was performed|unable to review|could(n't| not) (start|review)|cannot review|can't review|rate[ -]?limit|encountered an error|review (failed|error)|failed to (start|review)"
+}
+
 # Fail-CLOSED: any source-fetch failure → mark stale (Greptile P1 — fail-OPEN
 # regression where API failures silently became `none` and didn't gate)
 if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; exit 0; fi
@@ -436,9 +440,11 @@ if [ -n "$commit_id" ] && acks_head "$commit_id" && [ "$login" != "chatgpt-codex
 # a "Last reviewed commit: [sha](.../commit/<sha>)" link instead of submitting
 # a new /reviews entry per commit. Parse the body for the most recent commit/<sha>
 # link and treat it as authoritative if it matches HEAD.
-body_sha=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
-  '[.comments[] | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null \
-  | grep -oE 'commit/[0-9a-fA-F]{7,64}' | sed 's|.*/||' | tail -1)
+comment_body=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" \
+  '[.comments[] | select(.author.login == $login or .author.login == $login_bot)] | last | .body // empty' 2>/dev/null || echo "")
+body_sha=$(printf '%s' "$comment_body" | grep -oE 'commit/[0-9a-fA-F]{7,64}' | sed 's|.*/||' | tail -1)
+comment_no_review=0
+if [ -n "$comment_body" ] && is_no_review_notice "$comment_body"; then comment_no_review=1; fi
 if [ -n "$body_sha" ] && acks_head "$body_sha"; then emit_head_ack "$HEAD_SHA" C; exit 0; fi
 
 # (D) check-runs: did the bot register a passing check-run on HEAD? Some bots
@@ -517,13 +523,14 @@ fi
 # below exactly like a bot that never posted.
 
 # No HEAD-ack signal anywhere. Did the bot post on this PR at all?
-# If never (no /reviews entry, no body SHA reference) → bot doesn't operate here → none.
+# If never (no /reviews entry, no body SHA reference, no issue-comment
+# no-review/error notice) → bot doesn't operate here → none.
 # Otherwise (posted on an older commit, no HEAD signal yet) → stale, subject to
-# the three-case downgrade block below (Cases 1/2/3 may downgrade to `none`
-# when ever_approved==0 and a specific positive signal matches).
-if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; exit 0; fi
+# the downgrade block below (Cases 2/3 may downgrade to `none` when
+# ever_approved==0 and a specific positive signal matches).
+if [ -z "$commit_id" ] && [ -z "$body_sha" ] && [ "$comment_no_review" -eq 0 ]; then echo "none"; exit 0; fi
 
-# Three-case downgrade — all gated by `ever_approved == 0` so a bot that has
+# Downgrades are all gated by `ever_approved == 0` so a bot that has
 # ever approved, had an approval dismissed, or previously requested changes
 # is never silently bypassed.
 # DISMISSED counts as "ever approved" because a dismissed approval is still
@@ -548,17 +555,8 @@ if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; exit 0; fi
   || printf '0\n\n\n'
 )
 if [ "$ever_approved" -eq 0 ]; then
-  # Case 1: infra-error / rate-limit — Copilot's "encountered an error and
-  # was unable to review" review object is the canonical case. GitHub leaves
-  # it frozen on the SHA where it errored, never updates commit_id on later
-  # pushes, and there's no gh-CLI surface to clear it (DELETE only works on
-  # pending reviews; requested_reviewers POST 422s for Copilot). Treating
-  # those as `stale` blocks the merge gate forever; downgrade to `none` so
-  # the loop surfaces the situation to the operator instead of looping in
-  # vain.
-  if printf '%s' "$last_body" | grep -qiE 'encountered an error|rate.?limit|unable to review|try again by re-requesting'; then
-    echo "none"; exit 0
-  fi
+  # Error/rate-limit/no-review bodies deliberately fall through to `stale`:
+  # the bot posted, but did not ack HEAD.
   # Case 2: one-and-done COMMENTED — bot reviewed a prior commit with a
   # non-actionable PR-overview summary (state=COMMENTED, not APPROVED/
   # CHANGES_REQUESTED), then never re-fired despite HEAD advancing. Canonical
@@ -592,11 +590,11 @@ if [ "$ever_approved" -eq 0 ]; then
   # the pre-merge commit. Tier D above (which requires conclusion=success)
   # doesn't match HEAD, the downgrade block runs, and without this case it
   # falls through to `echo stale` (cubic posts a "No issues found" COMMENTED
-  # review body that matches neither Case 1's error patterns nor Case 2's
-  # PR-overview regex), deadlocking invariant 2 indefinitely.
+  # review body that does not match Case 2's PR-overview regex), deadlocking
+  # invariant 2 indefinitely.
   #
   # Four-predicate guard:
-  # (a) Same ever_approved==0 outer guard as Cases 1 and 2 — a bot with prior
+  # (a) Same ever_approved==0 outer guard as Case 2 — a bot with prior
   #     APPROVED / DISMISSED / CHANGES_REQUESTED never reaches this block, so
   #     the [CHANGES_REQUESTED, skipped-HEAD] history correctly stays `stale`.
   # (b) last_state == COMMENTED — implies the bot has at least one /reviews
@@ -642,7 +640,7 @@ if [ "$ever_approved" -eq 0 ]; then
   #
   # Mapping to `none` (not HEAD_SHA) preserves the semantic distinction:
   # "bot acknowledged HEAD via check-run but declined to review" is not the
-  # same as "bot approved HEAD". Same precedent as Case 1.
+  # same as "bot approved HEAD".
   #
   # Reachability: bots with zero review history (no /reviews entry, no body
   # SHA reference) exit via the empty-commit_id/empty-body_sha early-return

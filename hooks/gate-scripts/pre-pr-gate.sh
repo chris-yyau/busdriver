@@ -276,18 +276,23 @@ if [ -n "$MERGE_BASE" ] && [ -n "$DIFF_OUTPUT" ] && [ -f "$PR_MARKER" ]; then
             echo "[pre-pr-gate] PR marker present but dual-voice artifacts missing/stale/mismatched — re-run litmus PR review." >&2
             rm -f "$PR_MARKER"
         fi
-    elif echo "$PR_MARKER_CONTENT" | grep -qE '^PASS-FAST-[a-f0-9]{64}-[0-9]+$'; then
-        # Audited fast bypass (LITMUS_PR_FAST): Codex lead ran, backstop skipped.
+    elif echo "$PR_MARKER_CONTENT" | grep -qE '^PASS-(FAST|EXCLUDED)-[a-f0-9]{64}-[0-9]+$'; then
+        # Diff-bound bypass markers, both honored ONLY here (never the dual-artifact
+        # path):
+        #   PASS-FAST     — audited LITMUS_PR_FAST bypass: Codex lead ran, backstop skipped.
+        #   PASS-EXCLUDED — the entire diff was excluded from review (lockfile/rules/
+        #                   manifest-only PR): NO reviewer ran, nothing to review.
         # Accept ONLY if the embedded diff_hash matches the current diff AND it is
-        # within max-age — never via the dual-artifact path. A preserved fast
-        # marker (failed gh keeps markers) cannot authorize a CHANGED diff.
-        FAST_HASH=$(printf '%s' "$PR_MARKER_CONTENT" | sed -E 's/^PASS-FAST-([a-f0-9]{64})-[0-9]+$/\1/')
-        FAST_EPOCH=$(printf '%s' "$PR_MARKER_CONTENT" | sed -E 's/^PASS-FAST-[a-f0-9]{64}-([0-9]+)$/\1/')
+        # within max-age. A preserved marker (failed gh keeps markers) cannot
+        # authorize a CHANGED diff. The (FAST|EXCLUDED) alternation is group 1, so
+        # the hash/epoch captures shift to \2.
+        FAST_HASH=$(printf '%s' "$PR_MARKER_CONTENT" | sed -E 's/^PASS-(FAST|EXCLUDED)-([a-f0-9]{64})-[0-9]+$/\2/')
+        FAST_EPOCH=$(printf '%s' "$PR_MARKER_CONTENT" | sed -E 's/^PASS-(FAST|EXCLUDED)-[a-f0-9]{64}-([0-9]+)$/\2/')
         FAST_AGE=$(( $(date +%s) - FAST_EPOCH ))
         if [ "$FAST_HASH" = "$CURRENT_HASH" ] && [ "$FAST_AGE" -ge 0 ] && [ "$FAST_AGE" -le "$MAX_AGE" ]; then
             exit 0  # defer consumption to post-pr-consume-marker.sh
         else
-            echo "[pre-pr-gate] Fast-bypass marker stale or for a different diff — re-run litmus PR review." >&2
+            echo "[pre-pr-gate] Bypass marker stale or for a different diff — re-run litmus PR review." >&2
             rm -f "$PR_MARKER"
         fi
     else

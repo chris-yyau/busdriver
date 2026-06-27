@@ -5410,12 +5410,6 @@
       "upstream_path": "scripts/lib/install-targets/joycode-project.js"
     },
     {
-      "path": "scripts/lib/install-targets/opencode-home.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/lib/install-targets/opencode-home.js"
-    },
-    {
       "path": "scripts/lib/install-targets/qwen-home.js",
       "source": "ecc",
       "status": "sync",
@@ -6864,18 +6858,6 @@
       "upstream_path": "the-shortform-guide.md",
       "reason": "ECC marketing-style guide; busdriver uses README.md",
       "date": "2026-05-12"
-    },
-    {
-      "source": "ecc",
-      "upstream_path": "scripts/lib/install-targets/opencode-home.js",
-      "reason": "opencode CLI dispatch and install-target removed; busdriver targets Claude Code only",
-      "date": "2026-05-21"
-    },
-    {
-      "source": "ecc",
-      "upstream_path": "scripts/build-opencode.js",
-      "reason": "opencode CLI dispatch and install-target removed; busdriver targets Claude Code only",
-      "date": "2026-05-21"
     },
     {
       "source": "ecc",

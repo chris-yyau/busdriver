@@ -108,7 +108,7 @@ All skills commands accept these flags to target a specific AI coding assistant:
 
 | Flag | Directory | Used by |
 |------|-----------|---------|
-| `--universal` | `.agents/skills/` | Amp, Codex, Gemini CLI, OpenCode, GitHub Copilot |
+| `--universal` | `.agents/skills/` | Amp, Codex, Gemini CLI, GitHub Copilot |
 | `--claude` | `.claude/skills/` | Claude Code |
 | `--cursor` | `.cursor/skills/` | Cursor |
 | `--antigravity` | `.agent/skills/` | Antigravity |

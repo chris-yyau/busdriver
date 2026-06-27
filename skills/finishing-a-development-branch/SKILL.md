@@ -174,7 +174,7 @@ case "$(git rev-parse --git-dir)" in */worktrees/*) is_wt=yes ;; *) is_wt=no ;; 
 ```
 
 - `is_wt=no` → normal checkout; nothing to clean up.
-- `is_wt=yes` → report `$wt` and **ask before** `git worktree remove "$wt"`. Never auto-remove. Skip entirely if it is harness-managed (a `worktrees/` directory under the harness state dir — `.claude/worktrees/*`, or `${BUSDRIVER_STATE_DIR:-.claude}/worktrees/*` such as `.opencode/worktrees/*` — created by the EnterWorktree tool, which has its own cleanup) or an operator worktree you did not create.
+- `is_wt=yes` → report `$wt` and **ask before** `git worktree remove "$wt"`. Never auto-remove. Skip entirely if it is harness-managed (a `worktrees/` directory under the harness state dir — `.claude/worktrees/*`, or `${BUSDRIVER_STATE_DIR:-.claude}/worktrees/*` — created by the EnterWorktree tool, which has its own cleanup) or an operator worktree you did not create.
 
 **For Option 3:** Keep worktree.
 

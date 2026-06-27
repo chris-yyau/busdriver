@@ -4,26 +4,6 @@ const { createClaudeHistoryAdapter } = require('./claude-history');
 const { createDmuxTmuxAdapter } = require('./dmux-tmux');
 const { createCodexWorktreeAdapter } = require('./codex-worktree');
 
-// Optional adapter — busdriver does not ship the opencode session adapter by
-// default. Load it lazily so a missing ./opencode module degrades to
-// "opencode targets unsupported" instead of throwing MODULE_NOT_FOUND at
-// registry-init time (which would crash every consumer, e.g. session-inspect).
-let createOpencodeAdapter = null;
-try {
-  ({ createOpencodeAdapter } = require('./opencode'));
-} catch (err) {
-  // Tolerate ONLY the adapter module itself being absent (busdriver does not
-  // ship it). A syntax error, or a missing transitive dependency once
-  // ./opencode IS present, must surface rather than be silently downgraded to
-  // "opencode unsupported" — otherwise a real failure hides behind this catch.
-  const isMissingOpencodeModule =
-    err && err.code === 'MODULE_NOT_FOUND' &&
-    typeof err.message === 'string' &&
-    err.message.includes("'./opencode'");
-  if (!isMissingOpencodeModule) throw err;
-  createOpencodeAdapter = null;
-}
-
 const TARGET_TYPE_TO_ADAPTER_ID = Object.freeze({
   plan: 'dmux-tmux',
   session: 'dmux-tmux',
@@ -31,8 +11,7 @@ const TARGET_TYPE_TO_ADAPTER_ID = Object.freeze({
   'claude-alias': 'claude-history',
   'session-file': 'claude-history',
   'codex-worktree': 'codex-worktree',
-  codex: 'codex-worktree',
-  opencode: 'opencode'
+  codex: 'codex-worktree'
 });
 
 function buildDefaultAdapterOptions(options, adapterId) {
@@ -57,11 +36,6 @@ function createDefaultAdapters(options = {}) {
     createDmuxTmuxAdapter(buildDefaultAdapterOptions(options, 'dmux-tmux')),
     createCodexWorktreeAdapter(buildDefaultAdapterOptions(options, 'codex-worktree'))
   ];
-  // opencode adapter is optional (see lazy require above). Only register it
-  // when the module is present; otherwise opencode targets are unsupported.
-  if (typeof createOpencodeAdapter === 'function') {
-    adapters.push(createOpencodeAdapter(buildDefaultAdapterOptions(options, 'opencode')));
-  }
   return adapters;
 }
 
@@ -103,13 +77,6 @@ function normalizeStructuredTarget(target, context = {}) {
   if (type === 'codex-worktree' || type === 'codex') {
     return {
       target: `codex:${value}`,
-      context: nextContext
-    };
-  }
-
-  if (type === 'opencode') {
-    return {
-      target: `opencode:${value}`,
       context: nextContext
     };
   }

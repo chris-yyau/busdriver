@@ -577,60 +577,6 @@ function normalizeCodexWorktreeSession(session, sourceTarget) {
   });
 }
 
-function normalizeOpencodeSession(session, sourceTarget) {
-  const state = session.active ? 'active' : 'recorded';
-  const objective = typeof session.objective === 'string' ? session.objective : '';
-  const worker = {
-    id: session.sessionId,
-    label: session.title || session.sessionId,
-    state,
-    health: 'healthy',
-    branch: session.branch || null,
-    worktree: session.cwd || null,
-    runtime: {
-      kind: 'opencode-session',
-      command: 'opencode',
-      pid: null,
-      active: Boolean(session.active),
-      dead: !session.active,
-    },
-    intent: {
-      objective,
-      seedPaths: []
-    },
-    outputs: {
-      summary: [],
-      validation: [],
-      remainingRisks: []
-    },
-    artifacts: {
-      sessionFile: session.sessionPath || null,
-      projectId: session.projectId || null,
-      version: session.version || null,
-      model: session.model || null,
-      provider: session.provider || null,
-      title: session.title || null,
-      createdAt: session.createdAt || null,
-      updatedAt: session.updatedAt || null,
-      messageCount: Number.isInteger(session.messageCount) ? session.messageCount : null
-    }
-  };
-
-  return validateCanonicalSnapshot({
-    schemaVersion: SESSION_SCHEMA_VERSION,
-    adapterId: 'opencode',
-    session: {
-      id: session.sessionId,
-      kind: 'opencode',
-      state,
-      repoRoot: session.cwd || null,
-      sourceTarget
-    },
-    workers: [worker],
-    aggregates: buildAggregates([worker])
-  });
-}
-
 module.exports = {
   SESSION_SCHEMA_VERSION,
   buildAggregates,
@@ -638,7 +584,6 @@ module.exports = {
   normalizeClaudeHistorySession,
   normalizeCodexWorktreeSession,
   normalizeDmuxSnapshot,
-  normalizeOpencodeSession,
   persistCanonicalSnapshot,
   validateCanonicalSnapshot
 };

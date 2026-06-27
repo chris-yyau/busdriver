@@ -96,6 +96,8 @@ risk is a lazy dispatch, not a hostile actor with repo shell access.
   agent's stdout under restricted tools) and full write-vector protection.
 - Observed PR escapes (bugs/security issues that reach `main`) rise → use the benchmark JSONL evidence
   to re-introduce a gating reviewer voice.
+> **2026-06-27 update:** opencode support has been removed; this section is historical/moot.
+
 - The `opencode/` litmus mirror's PR-mode docs are stale-until-port; a full mirror update is deferred
   to the opencode port task.
 

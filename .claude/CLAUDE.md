@@ -26,17 +26,7 @@ skills/          287 skill definitions (.md) — the bulk of the plugin's capabi
                  Python tests live per-skill (e.g. skills/skill-comply/tests/, skills/continuous-learning-v2/scripts/)
 tests/           Shell-based gate tests (test-*.sh)
 docs/            Reference docs and examples
-opencode/        Downstream MIRROR for the opencode harness (NOT loaded by Claude Code) — see note below
 ```
-
-## `opencode/` — Downstream Mirror (ignore in normal Claude Code work)
-
-The `opencode/` subtree is a **port of four features** (litmus, blueprint-review, council, pr-grind) to the [opencode](https://opencode.ai) harness: `opencode/plugin.ts` (gate-bridge adapter), `opencode/agents/`, `opencode/skills/`. It is **not** part of the Claude Code plugin and is not loaded in Claude Code sessions.
-
-- **Source-of-truth lives at the repo root:** `skills/`, `agents/`, `scripts/`, `hooks/`. The `opencode/` copies are downstream. **Mirror policy (standing rule): when you change a root skill/agent/reference whose content is mirrored, update the matching mirror copy in the SAME change — do not defer it to a separate "port task."** Today the only mirror is `opencode/`, but treat this as a general rule for any future mirror/harness. The files that need mirroring are the *prose copies* — `opencode/skills/<name>/SKILL.md` + `references/*.md`, and `opencode/agents/<name>.md` (adapt to opencode conventions: `${BUSDRIVER_PLUGIN_ROOT}`, `${BUSDRIVER_STATE_DIR:-.opencode}`, `mode: subagent` + `permission:` map instead of `tools:`/`model:`, `task()` `subagent_type=` dispatch instead of the Agent tool). Bridged `scripts/*.sh` and root `hooks/gate-scripts/*.sh` are shared automatically (run via `$BUSDRIVER_PLUGIN_ROOT`/`plugin.ts`) and need no copy — **but that is exactly why a stale prose mirror is dangerous: a shared gate hardened at the root will silently break the mirrored harness when its stale skill can no longer satisfy the new gate.**
-- **Bridge model:** the opencode skills call the *root* `scripts/*.sh` (ack-ledger, dispatcher-commit-block, resolve-cli, etc.) via `$BUSDRIVER_PLUGIN_ROOT` — they are NOT duplicated. Shared scripts must stay harness-neutral (`${BUSDRIVER_STATE_DIR:-.claude}`, no bash-4-isms) so both harnesses pass.
-- **Search hygiene:** a search for `pr-grind`/`litmus`/`council` will hit both the root skill and its `opencode/` mirror. In a normal Claude Code session, prefer the root match and ignore the `opencode/` duplicate unless the port is the task.
-- **Distribution:** `scripts/release.sh` strips `opencode/` from the `claude-release` branch, so Claude Code users never see it. Operator-facing install docs for the port live in `opencode/README.md`.
 
 ## Enforcement Gates (Hook-Driven)
 

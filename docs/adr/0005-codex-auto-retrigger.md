@@ -178,6 +178,8 @@ expressions of trigger condition #1:
 
 ## Out of scope (follow-up)
 
+> **2026-06-27 update:** opencode support has been removed; this section is historical/moot.
+
 - **opencode mirror wiring.** pr-grind is one of the four features mirrored to the
   `opencode/` subtree, and that mirror carries the identical
   Codex-stale-on-unchanged-HEAD wait-round dead-end. Wiring the opencode pr-grind

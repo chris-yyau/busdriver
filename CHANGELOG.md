@@ -1,3 +1,10 @@
+## [1.71.1](https://github.com/chris-yyau/busdriver/compare/v1.71.0...v1.71.1) (2026-06-27)
+
+
+### Bug Fixes
+
+* **litmus:** unblock excluded-only PRs via PASS-EXCLUDED marker ([#250](https://github.com/chris-yyau/busdriver/issues/250)) ([72941bf](https://github.com/chris-yyau/busdriver/commit/72941bfe8283f3b50e314ba3edf54dbb32787dd3)), closes [#226](https://github.com/chris-yyau/busdriver/issues/226)
+
 # [1.71.0](https://github.com/chris-yyau/busdriver/compare/v1.70.1...v1.71.0) (2026-06-25)
 
 

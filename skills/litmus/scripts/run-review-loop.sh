@@ -676,28 +676,16 @@ if [ -z "$STAGED_DIFF" ]; then
       # ($STATE_DIR/review-exclude is in the RAW changed set), refuse the
       # auto-pass and surface as a setup error (no reviewer ran, so the
       # auto-continue loop has nothing to fix — re-running would re-hit this
-      # same structural refusal). Use $STATE_DIR (not a hardcoded .claude) so
-      # the guard tracks exclude-generated.sh's actual policy-file location
-      # when BUSDRIVER_STATE_DIR is customized. Normalize STATE_DIR to git's
-      # canonical form first — the line-10 sanitizer still admits './.claude',
-      # '.claude/', and '.claude//', which the filesystem resolves but git's
-      # --name-only output never emits, so an un-normalized pattern would miss.
-      # Collapse slash runs, drop every './' segment (leading and internal),
-      # then strip a trailing slash — loop substitutions so repeated/nested
-      # forms ('.//.claude', '././.claude') all reduce to git's canonical path.
-      _norm_state_dir=$(printf '%s' "$STATE_DIR" \
-        | sed -e ':a' -e 's#//#/#g' -e 'ta' \
-              -e ':c' -e 's#/\./#/#g' -e 'tc' \
-              -e ':b' -e 's#^\./##' -e 'tb' \
-              -e 's#/$##')
-      # A repo-root state dir (BUSDRIVER_STATE_DIR='.') normalizes to '.' or '',
-      # but git emits the bare 'review-exclude' — so build the target without a
-      # directory prefix in that case.
-      case "$_norm_state_dir" in
-        ""|".") _exclude_target="review-exclude" ;;
-        *)      _exclude_target="$_norm_state_dir/review-exclude" ;;
-      esac
-      if echo "$ALL_STAGED_FILES" | grep -qxF "$_exclude_target"; then
+      # same structural refusal). Resolve the policy file's canonical
+      # repo-relative path via git itself rather than hand-normalizing
+      # $STATE_DIR: git normalizes the `--` pathspec exactly the way it
+      # normalizes `git diff --name-only` output, so the two are guaranteed
+      # consistent for ANY sanitizer-permitted form ('.', 'foo/.', './/x',
+      # trailing slash, './.claude'). $STATE_DIR (not a hardcoded .claude)
+      # keeps the guard aligned with exclude-generated.sh's actual location
+      # when BUSDRIVER_STATE_DIR is customized.
+      _exclude_target=$(git -C "$PR_REPO_TOP" ls-files --full-name -- "$STATE_DIR/review-exclude" 2>/dev/null | head -n1)
+      if [ -n "$_exclude_target" ] && echo "$ALL_STAGED_FILES" | grep -qxF "$_exclude_target"; then
         echo "❌ excluded-only PR modifies $_exclude_target — refusing auto-pass; review required" >&2
         write_terminal_status setup_error
         exit 1

@@ -690,8 +690,15 @@ if [ -z "$STAGED_DIFF" ]; then
               -e ':c' -e 's#/\./#/#g' -e 'tc' \
               -e ':b' -e 's#^\./##' -e 'tb' \
               -e 's#/$##')
-      if echo "$ALL_STAGED_FILES" | grep -qxF "$_norm_state_dir/review-exclude"; then
-        echo "❌ excluded-only PR modifies $_norm_state_dir/review-exclude — refusing auto-pass; review required" >&2
+      # A repo-root state dir (BUSDRIVER_STATE_DIR='.') normalizes to '.' or '',
+      # but git emits the bare 'review-exclude' — so build the target without a
+      # directory prefix in that case.
+      case "$_norm_state_dir" in
+        ""|".") _exclude_target="review-exclude" ;;
+        *)      _exclude_target="$_norm_state_dir/review-exclude" ;;
+      esac
+      if echo "$ALL_STAGED_FILES" | grep -qxF "$_exclude_target"; then
+        echo "❌ excluded-only PR modifies $_exclude_target — refusing auto-pass; review required" >&2
         write_terminal_status setup_error
         exit 1
       fi

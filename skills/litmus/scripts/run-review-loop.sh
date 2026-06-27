@@ -671,6 +671,15 @@ if [ -z "$STAGED_DIFF" ]; then
         write_terminal_status setup_error
         exit 1
       fi
+      # #252: a fail-closed gate must not let an unreviewed policy file certify
+      # that nothing needs review. If this PR itself modifies the exclusion list
+      # (.claude/review-exclude is in the RAW changed set), refuse the auto-pass
+      # and fall through to review-required.
+      if echo "$ALL_STAGED_FILES" | grep -qxF ".claude/review-exclude"; then
+        echo "❌ excluded-only PR modifies .claude/review-exclude — refusing auto-pass; review required" >&2
+        write_terminal_status review_findings
+        exit 1
+      fi
       mkdir -p "$PR_STATE_DIR"
       printf 'PASS-EXCLUDED-%s-%s\n' "$PR_REVIEWED_DIFF_HASH" "$(date +%s)" > "$PR_REVIEW_MARKER_FILE"
       printf '{"ts":"%s","event":"pr-excluded-only-autopass","gate":"pre-pr","diff_hash":"%s"}\n' \

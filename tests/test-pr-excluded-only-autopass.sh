@@ -195,6 +195,26 @@ check "mixed diff does NOT write a PASS-EXCLUDED marker" "no" "$(marker_is_exclu
 check "mixed diff dispatches codex review" "yes" \
     "$(grep -q '^invoked:' "$STUB_LOG" 2>/dev/null && echo yes || echo no)"
 
+# ── 7. #252: excluded-only PR that ALSO modifies .claude/review-exclude → no auto-pass ──
+# A fail-closed gate must not let an unreviewed policy file certify that nothing
+# needs review. Make review-exclude self-excluding (.claude/** covers it), so the
+# filtered diff goes empty and the excluded-only short-circuit is reached — the
+# #252 guard must then REFUSE the marker because review-exclude is in the raw set.
+rm -f "$MARKER" "$COMMIT_MARKER"
+# Re-anchor origin/main (the resolved PR base) to current HEAD so this scenario's
+# base...HEAD diff is isolated from the reviewable files (app.js/src.js) earlier
+# scenarios left on the branch.
+git -C "$TMPREPO" update-ref refs/remotes/origin/main HEAD
+printf 'rules/**/*.md\n.claude/**\n' > "$TMPREPO/.claude/review-exclude"
+printf '# rule7\n' > "$TMPREPO/rules/sub/g.md"
+git -C "$TMPREPO" add .claude/review-exclude rules/sub/g.md
+git -C "$TMPREPO" commit -qm "modify review-exclude + excluded file"
+: > "$STUB_LOG"
+run_producer pr
+check "PR modifying review-exclude (excluded-only) does NOT write PASS-EXCLUDED" "no" "$(marker_is_excluded)"
+check "PR modifying review-exclude does NOT dispatch codex" "no" \
+    "$(grep -q '^invoked:' "$STUB_LOG" 2>/dev/null && echo yes || echo no)"
+
 # ── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "  ───────────────────────────────"

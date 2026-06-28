@@ -170,5 +170,19 @@ else
 fi
 ( cd "$TMP" && git checkout -q -- app.sh app.token )
 
+# Test 16: upstream-audit inventories a git work tree (indexed/sanitized name) and
+#          skips a non-repo dir.
+NOREPO="$(mktemp -d)"
+run --mode upstream-audit --out-dir "$TMP/p16" --question-file "$TMP/q.txt" \
+    --upstream "$TMP" --upstream "$NOREPO" >/dev/null
+if ls "$TMP/p16"/upstream-1_*.txt >/dev/null 2>&1 \
+   && ! ls "$TMP/p16"/upstream-2_*.txt >/dev/null 2>&1 \
+   && grep -q "upstream_inventory" "$TMP/p16/manifest.txt"; then
+  ok "upstream git repo inventoried, non-repo skipped"
+else
+  fail "t16 upstream-audit inventory wrong"
+fi
+rm -rf "$NOREPO"
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

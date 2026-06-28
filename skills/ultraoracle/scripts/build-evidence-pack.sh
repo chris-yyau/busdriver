@@ -231,19 +231,29 @@ attach_one() {
   echo "file: files/$flat <= $src ($sz bytes)" >> "$MANIFEST"
 }
 
-for f in "${FILES[@]:-}"; do [[ -n "$f" ]] && attach_one "$f"; done
+# Count-guard the expansion (bash-3.2 + set -u safe) — "${arr[@]:-}" would inject one
+# empty arg and call attach_one "" spuriously.
+if [ "${#FILES[@]}" -gt 0 ]; then
+  for f in "${FILES[@]}"; do [[ -n "$f" ]] && attach_one "$f"; done
+fi
 
 # upstream-audit: record an inventory (file tree) of each upstream path. The tree
 # listing is metadata, not raw repo source, so it does NOT by itself make this a
 # repo-attached review.
-if [[ "$MODE" == "upstream-audit" ]]; then
-  for u in "${UPSTREAM[@]:-}"; do
+up_idx=0
+if [[ "$MODE" == "upstream-audit" && "${#UPSTREAM[@]}" -gt 0 ]]; then
+  for u in "${UPSTREAM[@]}"; do
     [[ -n "$u" && -d "$u" ]] || { echo "skip upstream (not a dir): $u" >&2; continue; }
-    # Require a real git repo root — a bare directory (a home dir, an arbitrary
+    # Require an actual git work tree — a bare directory (a home dir, an arbitrary
     # mount) must not be inventoried, since the file listing itself can leak private
-    # names. This scopes upstream-audit to deliberately-chosen project checkouts.
-    [[ -d "$u/.git" ]] || { echo "skip upstream (not a git repo root): $u" >&2; continue; }
-    inv_name="$(printf '%s' "$u" | tr '/' '_')"
+    # names. rev-parse handles worktrees (where .git is a file), not just classic
+    # repos with a physical .git directory.
+    ( cd "$u" && git rev-parse --is-inside-work-tree >/dev/null 2>&1 ) \
+      || { echo "skip upstream (not a git work tree): $u" >&2; continue; }
+    # Index prefix + alnum-only sanitize: a user-supplied path with newlines, slashes,
+    # or leading dashes can never produce a confusing/unsafe output filename.
+    up_idx=$((up_idx + 1))
+    inv_name="${up_idx}_$(printf '%s' "$u" | tr -c 'A-Za-z0-9' '_')"
     # Tracked files only — no `find` fallback (which could inventory .git internals,
     # untracked files, or run from the wrong dir if cd failed). Skip on any failure.
     if ! ( cd "$u" && git ls-files ) > "$OUT_DIR/upstream-$inv_name.txt" 2>/dev/null; then

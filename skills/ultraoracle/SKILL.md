@@ -54,14 +54,18 @@ adapter cannot leave a half-state.
 # wrong here. Each external call is handled explicitly instead.
 set -uo pipefail
 PR="${CLAUDE_PLUGIN_ROOT}"
+# STATE must resolve INSIDE the repo — build-evidence-pack.sh refuses an --out-dir
+# outside GIT_ROOT, so an absolute BUSDRIVER_STATE_DIR elsewhere would fail closed.
 STATE="${BUSDRIVER_STATE_DIR:-.claude}"
 RUN_ID="ultraoracle-$$"
-PACK_DIR="$STATE/ultra-oracle/$RUN_ID"
-OUT="$PACK_DIR/verdict.md"
-mkdir -p "$PACK_DIR"
+WORK="$STATE/ultra-oracle"
+PACK_DIR="$WORK/$RUN_ID"          # the script CREATES this; it must NOT pre-exist
+QUESTION="$WORK/q-$RUN_ID.txt"    # question lives OUTSIDE the pack dir (no self-copy)
+OUT="$WORK/verdict-$RUN_ID.md"    # verdict also outside the pack dir
+mkdir -p "$WORK"                  # parent only — never pre-create PACK_DIR
 
-# 1. Write the question/design to a file (injection-safe; passed as --prompt-file).
-#    (Claude writes the actual question into $PACK_DIR/question.txt before this block.)
+# 1. Write the question/design into $QUESTION (injection-safe; passed as --prompt-file).
+#    (Claude writes the actual question text into "$QUESTION" before this block.)
 
 # 2. Build the evidence pack for repo modes. LABEL is the LAST stdout line.
 LABEL="ORACLE_SUMMARY_REVIEW"   # quick mode default
@@ -75,12 +79,12 @@ if [ "$MODE" = "repo" ] || [ "$MODE" = "upstream-audit" ]; then
   # array aborts, so branch on the element count.
   if [ "${#PACK_ARGS[@]}" -gt 0 ]; then
     LABEL="$(bash "$PR/skills/ultraoracle/scripts/build-evidence-pack.sh" \
-              --mode "$MODE" --out-dir "$PACK_DIR" --question-file "$PACK_DIR/question.txt" \
+              --mode "$MODE" --out-dir "$PACK_DIR" --question-file "$QUESTION" \
               "${PACK_ARGS[@]}" | tail -n1)" \
       || { echo "⚠ ULTRAORACLE: evidence pack failed — ABORTING (fail closed)"; exit 1; }
   else
     LABEL="$(bash "$PR/skills/ultraoracle/scripts/build-evidence-pack.sh" \
-              --mode "$MODE" --out-dir "$PACK_DIR" --question-file "$PACK_DIR/question.txt" \
+              --mode "$MODE" --out-dir "$PACK_DIR" --question-file "$QUESTION" \
               | tail -n1)" \
       || { echo "⚠ ULTRAORACLE: evidence pack failed — ABORTING (fail closed)"; exit 1; }
   fi
@@ -97,19 +101,24 @@ source "$PR/scripts/lib/ultra-oracle.sh"
 # exit, and there is no `set -e` here, so the capture keeps that token. Only default
 # to "error" when nothing was printed — never clobber a specific diagnostic token.
 if [ "${#PACK_ATTACH[@]}" -gt 0 ]; then
-  STATUS="$(ultra_oracle_consult --prompt-file "$PACK_DIR/question.txt" \
+  STATUS="$(ultra_oracle_consult --prompt-file "$QUESTION" \
     "${PACK_ATTACH[@]}" --out "$OUT" --mode blocking --slug "ultra oracle consult")"
 else
-  STATUS="$(ultra_oracle_consult --prompt-file "$PACK_DIR/question.txt" \
+  STATUS="$(ultra_oracle_consult --prompt-file "$QUESTION" \
     --out "$OUT" --mode blocking --slug "ultra oracle consult")"
 fi
 [ -n "$STATUS" ] || STATUS="error"
 
-# 4. Render under label, fail-closed.
+# 4. Render under label, fail-closed. `ok` AND a non-empty verdict are BOTH required —
+#    defense in depth even though the adapter already maps exit-0-but-empty to a failure.
 case "$STATUS" in
   ok)
-    echo "## UltraOracle Expert Witness — [$LABEL]"
-    cat "$OUT" ;;
+    if [ -s "$OUT" ]; then
+      echo "## UltraOracle Expert Witness — [$LABEL]"
+      cat "$OUT"
+    else
+      echo "## ⚠ ORACLE_FAILED [empty-verdict] — adapter returned ok but $OUT is empty"
+    fi ;;
   *)
     echo "## ⚠ ORACLE_FAILED [$STATUS] — no usable verdict (NOT silently omitted)" ;;
 esac

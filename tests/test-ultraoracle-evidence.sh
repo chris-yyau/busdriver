@@ -124,12 +124,12 @@ else
   fail "t10 late secret slipped through (got '$out')"
 fi
 
-# Test 11: --out-dir outside the repo is rejected (write-boundary).
+# Test 11: --out-dir outside the repo is rejected (write-boundary) AND emits no label.
 OUTDIR="$(mktemp -d)"
 set +e
-( cd "$TMP" && bash "$SCRIPT" --mode repo --out-dir "$OUTDIR/pack" --question-file "$TMP/q.txt" >/dev/null 2>&1 ); rc=$?
+out="$( cd "$TMP" && bash "$SCRIPT" --mode repo --out-dir "$OUTDIR/pack" --question-file "$TMP/q.txt" 2>/dev/null )"; rc=$?
 set -e
-if [[ "$rc" -ne 0 ]]; then ok "out-of-repo --out-dir rejected"; else fail "t11 out-of-repo out-dir accepted"; fi
+if [[ "$rc" -ne 0 && -z "$out" ]]; then ok "out-of-repo --out-dir rejected, no label"; else fail "t11 out-dir rc=$rc out='$out'"; fi
 rm -rf "$OUTDIR"
 
 # Test 12: a trailing value-flag with no argument fails closed (no set -u crash).
@@ -208,9 +208,9 @@ fi
 # Test 19: a --question-file larger than the byte budget fails closed.
 head -c 5000 /dev/zero | tr '\0' 'q' > "$TMP/bigq.txt"
 set +e
-( cd "$TMP" && bash "$SCRIPT" --mode repo --out-dir "$TMP/p19" --question-file "$TMP/bigq.txt" --byte-budget 100 >/dev/null 2>&1 ); rc=$?
+out="$( cd "$TMP" && bash "$SCRIPT" --mode repo --out-dir "$TMP/p19" --question-file "$TMP/bigq.txt" --byte-budget 100 2>/dev/null )"; rc=$?
 set -e
-if [[ "$rc" -eq 4 ]]; then ok "oversized question-file fails closed"; else fail "t19 question budget not enforced (rc=$rc)"; fi
+if [[ "$rc" -eq 4 && -z "$out" ]]; then ok "oversized question-file fails closed, no label"; else fail "t19 budget rc=$rc out='$out'"; fi
 
 # Test 20: STAGED changes are captured in git-diff.txt (git diff HEAD, not bare git diff).
 ( cd "$TMP" && echo "staged line" >> app.sh && git add app.sh )
@@ -236,15 +236,13 @@ else
   fail "t21 ancestor false-positive (got '$out')"
 fi
 
-# Test 22: question file already inside the pack dir is not cp'd onto itself (set -e).
-mkdir -p "$TMP/p22"
-echo "the question text" > "$TMP/p22/question.txt"
-out="$(run --mode repo --out-dir "$TMP/p22" --question-file "$TMP/p22/question.txt" | tail -n1)"
-if [[ "$out" == "ORACLE_SUMMARY_REVIEW" ]] && [ -s "$TMP/p22/question.txt" ]; then
-  ok "in-pack question file not self-copied"
-else
-  fail "t22 self-copy aborted (got '$out')"
-fi
+# Test 22: a pre-existing --out-dir is rejected (defends against planted child symlinks
+#          in an untrusted checkout that could redirect writes outside the repo).
+mkdir -p "$TMP/p22exists"
+set +e
+( cd "$TMP" && bash "$SCRIPT" --mode repo --out-dir "$TMP/p22exists" --question-file "$TMP/q.txt" >/dev/null 2>&1 ); rc=$?
+set -e
+if [[ "$rc" -eq 4 ]]; then ok "pre-existing out-dir rejected"; else fail "t22 pre-existing out-dir accepted (rc=$rc)"; fi
 
 # Test 23: a quoted/space secret-named path is stripped from git-status.txt.
 ( cd "$TMP" && echo "x" > "my secret.txt" && echo "status23" >> app.sh )
@@ -257,16 +255,43 @@ else
 fi
 ( cd "$TMP" && rm -f "my secret.txt"; git checkout -q -- app.sh )
 
-# Test 24: a rename OUT of a secret dir keeps the secret old path out of git-diff.txt.
-( cd "$TMP" && mkdir -p secrets && echo "data" > secrets/old.txt && git add secrets/old.txt \
+# Test 24: a rename from a secret path to a NON-secret path leaks NEITHER the old path
+#          NOR the file CONTENT (both rename halves excluded — cubic P1).
+( cd "$TMP" && mkdir -p secrets && echo "MARKER24SECRETBODY" > secrets/old.txt && git add secrets/old.txt \
    && git commit -qm s && git mv secrets/old.txt visible24.txt )
 run --mode repo --out-dir "$TMP/p24" --question-file "$TMP/q.txt" >/dev/null
-if ! grep -q "secrets/old.txt" "$TMP/p24/git-diff.txt" 2>/dev/null; then
-  ok "rename source under secret dir excluded from diff"
+if ! grep -q "secrets/old.txt" "$TMP/p24/git-diff.txt" 2>/dev/null \
+   && ! grep -q "MARKER24SECRETBODY" "$TMP/p24/git-diff.txt" 2>/dev/null; then
+  ok "secret rename: both old path and content excluded from diff"
 else
-  fail "t24 secret rename source leaked into diff"
+  fail "t24 secret rename leaked path or content into diff"
 fi
 ( cd "$TMP" && git checkout -q -- . 2>/dev/null; git reset -q --hard HEAD >/dev/null 2>&1 )
+
+# Test 25: attached file names are REPO-RELATIVE (no absolute checkout path leaked).
+run --mode repo --out-dir "$TMP/p25" --question-file "$TMP/q.txt" --file "$TMP/app.sh" >/dev/null
+leak25=0; have25=0
+for f in "$TMP/p25/files/"*; do
+  [ -e "$f" ] || continue
+  case "${f##*/}" in *_app.sh) have25=1;; esac
+  case "${f##*/}" in *private*|*Volumes*|*Users*|*tmp*) leak25=1;; esac
+done
+if [ "$have25" -eq 1 ] && [ "$leak25" -eq 0 ]; then
+  ok "attachment name is repo-relative"
+else
+  fail "t25 absolute path leaked (have=$have25 leak=$leak25)"
+fi
+
+# Test 26: upstream inventory strips a secret-named tracked file.
+( cd "$TMP" && echo "k" > api.token && git add api.token && git commit -qm tok2 )
+run --mode upstream-audit --out-dir "$TMP/p26" --question-file "$TMP/q.txt" --upstream "$TMP" >/dev/null
+INV=""; for f in "$TMP/p26"/upstream-1_*.txt; do [ -f "$f" ] && { INV="$f"; break; }; done
+if [ -n "$INV" ] && grep -q "app.sh" "$INV" && ! grep -q "api.token" "$INV"; then
+  ok "upstream inventory strips secret-named file"
+else
+  fail "t26 upstream secret strip failed (inv=$INV)"
+fi
+( cd "$TMP" && git rm -q api.token >/dev/null 2>&1 && git commit -qm rmtok >/dev/null 2>&1 )
 
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

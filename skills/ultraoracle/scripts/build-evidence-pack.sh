@@ -67,21 +67,21 @@ GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 # RUN_ID must be unique per run; this is a plain operator-run script, so date is fine.
 RUN_ID="evpack-$(date -u +%Y%m%d-%H%M%S)-$$"
 
-# Constrain the only write target to live under the repo, and validate BEFORE any
-# mkdir so a rejected out-of-repo path leaves nothing behind. Canonicalize from the
-# existing dir, or from the parent when the target does not exist yet.
-if [[ -d "$OUT_DIR" ]]; then
-  OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
-else
-  _op="$(cd "$(dirname -- "$OUT_DIR")" 2>/dev/null && pwd -P)" \
-    || { echo "error: --out-dir parent does not exist" >&2; exit 4; }
-  OUT_DIR="$_op/$(basename -- "$OUT_DIR")"
-fi
+# The out-dir MUST NOT already exist: a pre-existing tree (in an untrusted checkout)
+# could contain committed child symlinks that redirect our writes outside the repo.
+# We create it fresh and own every node under it. Canonicalize from the PARENT (the
+# target doesn't exist yet), validate it's inside the repo BEFORE any mkdir so a
+# rejected path leaves nothing behind, then `mkdir` (not -p) so a race that pre-creates
+# the path fails loudly rather than reusing a planted dir.
+[[ -e "$OUT_DIR" ]] && { echo "error: --out-dir must not already exist (a fresh dir is required)" >&2; exit 4; }
+_op="$(cd "$(dirname -- "$OUT_DIR")" 2>/dev/null && pwd -P)" \
+  || { echo "error: --out-dir parent does not exist" >&2; exit 4; }
+OUT_DIR="$_op/$(basename -- "$OUT_DIR")"
 case "$OUT_DIR" in
   "$GIT_ROOT"/*) : ;;
   *) echo "error: --out-dir must be inside the repo ($GIT_ROOT)" >&2; exit 4;;
 esac
-mkdir -p "$OUT_DIR/files" || { echo "error: cannot create out-dir" >&2; exit 4; }
+if ! mkdir "$OUT_DIR" || ! mkdir "$OUT_DIR/files"; then echo "error: cannot create out-dir" >&2; exit 4; fi
 MANIFEST="$OUT_DIR/manifest.txt"
 : > "$MANIFEST"
 
@@ -152,27 +152,18 @@ contained_path() {
 
 bytes_of() { wc -c < "$1" 2>/dev/null | tr -d ' ' || echo 0; }
 
-# stdin -> stdout, dropping any line that mentions a secret-like basename. Applied to
-# generated metadata listings (git status, upstream ls-files) so a secret PATH NAME
-# (.env, deploy.pem, app.token) is never transmitted even though its content is absent.
-strip_secret_paths() {
-  # Tokenize with `read -ra` (splits on whitespace, NO pathname expansion) rather than
-  # an unquoted `for tok in $line` — a filename with glob chars (test[1].txt, log*.bak)
-  # would otherwise expand against CWD. Each token is checked component-wise, so both a
-  # secret leaf (.env.local) and a secret dir (secrets/x) drop the line. Substring
-  # patterns (*secret*/*token*/*credential*/*cookie*) still match inside porcelain
-  # quoting; the rarer anchored patterns on a control-char-quoted path are a known gap.
-  local line tok drop
-  local -a toks
-  while IFS= read -r line; do
-    read -ra toks <<< "$line"
-    drop=0
-    for tok in "${toks[@]:-}"; do
-      [ -n "$tok" ] && is_secret_path "$tok" && { drop=1; break; }
-    done
-    [ "$drop" -eq 0 ] && printf '%s\n' "$line"
+# Read NUL-delimited paths on stdin; emit (newline-terminated) only the non-secret
+# ones. NUL input means git never C-quotes a control-char path, so a secret name with
+# an embedded tab/newline can't evade the anchored denylist via a leading quote.
+# Applied to git status and upstream ls-files so a secret PATH NAME is never
+# transmitted even though its content is already absent.
+emit_nonsecret_z() {
+  local p
+  while IFS= read -r -d '' p; do
+    [ -n "$p" ] && is_secret_path "$p" && continue
+    printf '%s\n' "$p"
   done
-  return 0   # never let a final dropped line look like upstream failure under pipefail
+  return 0   # a final dropped record must not look like a pipeline failure under pipefail
 }
 
 # Running budget accounting — shared by selected files AND generated git context, so
@@ -240,15 +231,33 @@ gate_generated() {
 # never ride out inside the aggregated diff even when its value matches no token regex.
 # `git diff HEAD` so STAGED changes are captured too — `git diff` alone shows only
 # the unstaged worktree, so a fully-staged change would send an empty patch.
-# --no-renames so a rename OUT of a secret dir surfaces as a delete(old)+add(new)
-# pair: the secret old path then appears in --name-only and is excluded by pathspec,
-# instead of hiding inside a rename hunk that --name-only (new path only) would miss.
+# Build the exclude set from `--name-status -M -z`: detect renames so that when EITHER
+# endpoint is secret we exclude BOTH the old AND the new path. Excluding only the old
+# path would still leak the file's CONTENT through the add-half of the --no-renames
+# content diff. -z keeps control-char paths intact (no C-quoting). The content diff
+# below then runs with --no-renames so each excluded endpoint drops its own hunk.
 diff_excludes=()
-while IFS= read -r _p; do
-  [[ -n "$_p" ]] || continue
-  is_secret_path "$_p" && diff_excludes+=(":(exclude)$_p")
-done < <(git -C "$GIT_ROOT" diff HEAD --no-ext-diff --no-renames --name-only 2>/dev/null || true)
-git -C "$GIT_ROOT" status --porcelain 2>/dev/null | strip_secret_paths > "$OUT_DIR/git-status.txt" || true
+while IFS= read -r -d '' _st; do
+  case "$_st" in
+    R*|C*)   # rename/copy: two path records follow (old, new)
+      IFS= read -r -d '' _old || break
+      IFS= read -r -d '' _new || break
+      if is_secret_path "$_old" || is_secret_path "$_new"; then
+        diff_excludes+=(":(exclude)$_old" ":(exclude)$_new")
+      fi ;;
+    *)       # everything else: one path record follows
+      IFS= read -r -d '' _p || break
+      [[ -n "$_p" ]] && is_secret_path "$_p" && diff_excludes+=(":(exclude)$_p") ;;
+  esac
+done < <(git -C "$GIT_ROOT" diff HEAD --no-ext-diff -M --name-status -z 2>/dev/null || true)
+# git status: -z (no C-quoting) + status.renames=false so every record is `XY <path>`,
+# letting us strip the fixed 3-byte `XY ` prefix and secret-check the real path.
+git -C "$GIT_ROOT" -c status.renames=false status --porcelain -z 2>/dev/null \
+  | { while IFS= read -r -d '' _rec; do
+        _p="${_rec:3}"
+        [ -n "$_p" ] && is_secret_path "$_p" && continue
+        printf '%s\n' "$_rec"
+      done; } > "$OUT_DIR/git-status.txt" || true
 # Expand the exclude array only when non-empty — "${arr[@]}" on an empty array trips
 # set -u under bash 3.2, and an empty pathspec arg would confuse git diff.
 if [ "${#diff_excludes[@]}" -gt 0 ]; then
@@ -280,8 +289,13 @@ attach_one() {
   fi
   # Unique, collision-free name: a monotonic index prefix means two source paths that
   # flatten to the same string (a/b.txt vs a_b.txt) never overwrite each other.
+  # Flatten the REPO-RELATIVE path, not the absolute one — an absolute name would leak
+  # workstation/user path components into the transmitted file names and could
+  # reintroduce a secret-like ancestor name that is_secret_like deliberately ignores
+  # above GIT_ROOT. The index prefix still guarantees collision-free names.
   attach_idx=$((attach_idx + 1))
-  local flat; flat="${attach_idx}_$(printf '%s' "$src" | tr '/' '_')"
+  local rel flat; rel="${src#"$GIT_ROOT"/}"
+  flat="${attach_idx}_$(printf '%s' "$rel" | tr '/' '_')"
   cp -- "$src" "$OUT_DIR/files/$flat" || { echo "skip (copy failed): $src" >&2; return 0; }
   spent=$((spent + sz))
   attached_files=$((attached_files + 1))
@@ -311,9 +325,9 @@ if [[ "$MODE" == "upstream-audit" && "${#UPSTREAM[@]}" -gt 0 ]]; then
     # or leading dashes can never produce a confusing/unsafe output filename.
     up_idx=$((up_idx + 1))
     inv_name="${up_idx}_$(printf '%s' "$u" | tr -c 'A-Za-z0-9' '_')"
-    # Tracked files only — no `find` fallback (which could inventory .git internals,
-    # untracked files, or run from the wrong dir if cd failed). Skip on any failure.
-    if ! ( cd "$u" && git ls-files ) 2>/dev/null | strip_secret_paths > "$OUT_DIR/upstream-$inv_name.txt"; then
+    # Tracked files only (no `find` fallback — that could inventory .git internals or
+    # untracked files). -z so a control-char path isn't C-quoted past the denylist.
+    if ! ( cd "$u" && git ls-files -z ) 2>/dev/null | emit_nonsecret_z > "$OUT_DIR/upstream-$inv_name.txt"; then
       rm -f -- "$OUT_DIR/upstream-$inv_name.txt"
       echo "skip upstream (git ls-files failed): $u" >&2; continue
     fi

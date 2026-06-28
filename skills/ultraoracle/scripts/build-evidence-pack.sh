@@ -93,20 +93,24 @@ is_secret_basename() {
   # Case-INSENSITIVE so API_TOKEN / SERVICE_CREDENTIALS / Cookies.txt are caught too.
   # Scope nocasematch to this function (bash 3.2 has no ${x,,}) and restore the prior
   # setting so no other case statement in the script is affected.
+  # `|| true`: `shopt -p` returns non-zero when the option is currently OFF (the
+  # default), which would abort under set -e if this function were ever called outside
+  # a condition context. Capturing the restore command must not fail.
   local restore rc=1
-  restore="$(shopt -p nocasematch)"
+  restore="$(shopt -p nocasematch || true)"
   shopt -s nocasematch
   # Key patterns match only SECRET-CONTEXT prefixes (api/access/private/signing/
-  # encryption + key) — NOT a bare `*key*`/`*_key*`/`*-key*`, which would over-exclude
-  # ordinary source (schema-foreign-key.sql, primary_key_index, keyboard, keys.json
-  # i18n). A generic "key"/"keys" basename is intentionally NOT denylisted: its secret
-  # VALUES are still caught by is_secret_like's content scan and the operator selects
-  # --file attachments explicitly. *secret* already covers secret_key.
+  # encryption + key) in snake_case, kebab-case AND camelCase/no-separator (the `?`
+  # form needs a separator; the bare form covers apiKey/accessKey). NOT a bare
+  # `*key*`/`*_key*`, which would over-exclude ordinary source (schema-foreign-key.sql,
+  # primary_key_index, keyboard, keys.json i18n). Plus well-known credential dotfiles.
+  # A generic key/keys basename stays attachable — its secret VALUES hit the content scan.
   case "$1" in
     .env|.env.*|*.pem|*.key|*.pfx|*.p12|id_rsa|id_dsa|id_ecdsa|id_ed25519|\
+    .netrc|*.netrc|.pgpass|.npmrc|.htpasswd|\
     *secret*|*token*|*credential*|*cookie*|*.keystore|*.jks|\
-    *apikey*|*api_key*|*api-key*|*access?key*|*private?key*|*privatekey*|\
-    *signing?key*|*encryption?key*) rc=0;;
+    *api?key*|*apikey*|*access?key*|*accesskey*|*private?key*|*privatekey*|\
+    *signing?key*|*signingkey*|*encryption?key*|*encryptionkey*) rc=0;;
   esac
   eval "$restore"
   return "$rc"
@@ -253,7 +257,7 @@ gate_generated() {
 # Seed excludes with the pack dir itself: if the operator's state dir isn't gitignored,
 # the pack we just created would otherwise show up as untracked in our own status/diff.
 out_rel="${OUT_DIR#"$GIT_ROOT"/}"
-diff_excludes=(":(exclude)$out_rel")
+diff_excludes=(":(exclude,literal)$out_rel")
 # -M10% (lower than the 50% default) so a move-with-edits out of a secret path is still
 # detected as a rename and BOTH endpoints excluded. A near-total rewrite that drops
 # below this still has its secret VALUES caught by gate_generated's content scan.
@@ -263,17 +267,17 @@ while IFS= read -r -d '' _st; do
       IFS= read -r -d '' _old || break
       IFS= read -r -d '' _new || break
       if is_secret_path "$_old" || is_secret_path "$_new"; then
-        diff_excludes+=(":(exclude)$_old" ":(exclude)$_new")
+        diff_excludes+=(":(exclude,literal)$_old" ":(exclude,literal)$_new")
       fi ;;
     *)       # everything else: one path record follows
       IFS= read -r -d '' _p || break
-      [[ -n "$_p" ]] && is_secret_path "$_p" && diff_excludes+=(":(exclude)$_p") ;;
+      [[ -n "$_p" ]] && is_secret_path "$_p" && diff_excludes+=(":(exclude,literal)$_p") ;;
   esac
 done < <(git -C "$GIT_ROOT" diff HEAD --no-ext-diff -M10% --name-status -z 2>/dev/null || true)
 # git status: -z (no C-quoting) + status.renames=false so every record is `XY <path>`,
 # letting us strip the fixed 3-byte `XY ` prefix and secret-check the real path. Exclude
 # the pack dir via pathspec so the pack never lists itself.
-git -C "$GIT_ROOT" -c status.renames=false status --porcelain -z -- . ":(exclude)$out_rel" 2>/dev/null \
+git -C "$GIT_ROOT" -c status.renames=false status --porcelain -z -- . ":(exclude,literal)$out_rel" 2>/dev/null \
   | { while IFS= read -r -d '' _rec; do
         _p="${_rec:3}"
         [ -n "$_p" ] && is_secret_path "$_p" && continue

@@ -240,9 +240,9 @@ fi
 #          in an untrusted checkout that could redirect writes outside the repo).
 mkdir -p "$TMP/p22exists"
 set +e
-( cd "$TMP" && bash "$SCRIPT" --mode repo --out-dir "$TMP/p22exists" --question-file "$TMP/q.txt" >/dev/null 2>&1 ); rc=$?
+out="$( cd "$TMP" && bash "$SCRIPT" --mode repo --out-dir "$TMP/p22exists" --question-file "$TMP/q.txt" 2>/dev/null )"; rc=$?
 set -e
-if [[ "$rc" -eq 4 ]]; then ok "pre-existing out-dir rejected"; else fail "t22 pre-existing out-dir accepted (rc=$rc)"; fi
+if [[ "$rc" -eq 4 && -z "$out" ]]; then ok "pre-existing out-dir rejected, no label"; else fail "t22 rc=$rc out='$out'"; fi
 
 # Test 23: a quoted/space secret-named path is stripped from git-status.txt.
 ( cd "$TMP" && echo "x" > "my secret.txt" && echo "status23" >> app.sh )
@@ -261,10 +261,11 @@ fi
    && git commit -qm s && git mv secrets/old.txt visible24.txt )
 run --mode repo --out-dir "$TMP/p24" --question-file "$TMP/q.txt" >/dev/null
 if ! grep -q "secrets/old.txt" "$TMP/p24/git-diff.txt" 2>/dev/null \
+   && ! grep -q "visible24.txt" "$TMP/p24/git-diff.txt" 2>/dev/null \
    && ! grep -q "MARKER24SECRETBODY" "$TMP/p24/git-diff.txt" 2>/dev/null; then
-  ok "secret rename: both old path and content excluded from diff"
+  ok "secret rename: both endpoints and content excluded from diff"
 else
-  fail "t24 secret rename leaked path or content into diff"
+  fail "t24 secret rename leaked an endpoint or content into diff"
 fi
 ( cd "$TMP" && git checkout -q -- . 2>/dev/null; git reset -q --hard HEAD >/dev/null 2>&1 )
 
@@ -353,6 +354,22 @@ if ! grep -q "p31/" "$TMP/p31/git-status.txt" 2>/dev/null; then
 else
   fail "t31 pack dir self-listed in git status"
 fi
+
+# Test 32: camelCase key names + .netrc credential file are excluded.
+echo "k" > "$TMP/apiKey.ts"; echo "k" > "$TMP/accessKey"; echo "k" > "$TMP/.netrc"
+echo "code" > "$TMP/monkey.js"
+out="$(run --mode repo --out-dir "$TMP/p32" --question-file "$TMP/q.txt" \
+        --file "$TMP/apiKey.ts" --file "$TMP/accessKey" --file "$TMP/.netrc" --file "$TMP/monkey.js" | tail -n1)"
+have_monkey=0; for f in "$TMP/p32/files/"*; do case "${f##*/}" in *monkey.js) have_monkey=1;; esac; done
+if [[ "$out" == "ORACLE_REPO_ATTACHED_REVIEW" ]] && [ "$have_monkey" -eq 1 ] \
+   && grep -q "secret_excluded: .*apiKey.ts" "$TMP/p32/manifest.txt" \
+   && grep -q "secret_excluded: .*accessKey" "$TMP/p32/manifest.txt" \
+   && grep -q "secret_excluded: .*.netrc" "$TMP/p32/manifest.txt"; then
+  ok "camelCase keys + .netrc excluded, monkey.js kept"
+else
+  fail "t32 camelCase/.netrc handling wrong (got '$out' monkey=$have_monkey)"
+fi
+rm -f "$TMP/apiKey.ts" "$TMP/accessKey" "$TMP/.netrc" "$TMP/monkey.js"
 
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

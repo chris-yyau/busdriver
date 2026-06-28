@@ -384,5 +384,25 @@ else
 fi
 ( cd "$TMP" && git reset -q --hard HEAD >/dev/null 2>&1; git rm -q -r --cached sdir >/dev/null 2>&1; rm -rf sdir copied33.txt; git commit -qm cleanup33 >/dev/null 2>&1 || true )
 
+# Test 34: a tracked working-tree change (real diff) with NO --file makes the consult
+#          ORACLE_REPO_ATTACHED_REVIEW — a git-diff carries raw repo source, not a summary.
+( cd "$TMP" && echo "diff34 change" >> app.sh )
+out="$(run --mode repo --out-dir "$TMP/p34" --question-file "$TMP/q.txt" | tail -n1)"
+if [[ "$out" == "ORACLE_REPO_ATTACHED_REVIEW" ]] && [ -s "$TMP/p34/git-diff.txt" ]; then
+  ok "git-diff alone => REPO_ATTACHED (not summary)"
+else
+  fail "t34 diff-only consult mislabeled (got '$out')"
+fi
+( cd "$TMP" && git checkout -q -- app.sh )
+
+# Test 35: a CLEAN worktree with no --file stays ORACLE_SUMMARY_REVIEW (no repo artifacts).
+( cd "$TMP" && git checkout -q -- . 2>/dev/null; git reset -q --hard HEAD >/dev/null 2>&1 )
+out="$(run --mode repo --out-dir "$TMP/p35" --question-file "$TMP/q.txt" | tail -n1)"
+if [[ "$out" == "ORACLE_SUMMARY_REVIEW" ]]; then
+  ok "clean worktree, no files => SUMMARY"
+else
+  fail "t35 clean consult mislabeled (got '$out')"
+fi
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

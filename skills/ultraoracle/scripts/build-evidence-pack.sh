@@ -291,6 +291,12 @@ git -C "$GIT_ROOT" diff HEAD --no-ext-diff --no-textconv --no-renames -- . "${di
   > "$OUT_DIR/git-diff.txt" 2>/dev/null || true
 gate_generated "$OUT_DIR/git-status.txt" "git_status"
 gate_generated "$OUT_DIR/git-diff.txt"   "git_diff"
+# A surviving (non-empty, secret-gated) git-diff carries RAW repo source hunks, so a
+# consult that ships it is NOT "summary-only" — it counts as repo evidence for the
+# label below (git-status is only path names, so it does NOT count). gate_generated
+# rm's an empty diff, so this is true only when there were real tracked changes.
+diff_evidence=0
+[ -s "$OUT_DIR/git-diff.txt" ] && diff_evidence=1
 
 # Attach selected raw files, honoring the byte budget and secret exclusion.
 attach_one() {
@@ -365,9 +371,12 @@ fi
 echo "attached_file_count: $attached_files" >> "$MANIFEST"
 echo "attached_bytes: $spent" >> "$MANIFEST"
 
-# LABEL DECISION (settling check #2): only raw repo files attached can upgrade the
-# label. Question text, git context, and upstream inventories are advisory metadata.
-if [ "$attached_files" -gt 0 ]; then
+# LABEL DECISION (ADR settling check #2): ORACLE_SUMMARY_REVIEW means Oracle saw NO
+# raw repo artifacts — only the prompt/summary. Either explicitly attached --file
+# content OR a surviving git-diff (raw source hunks) means Oracle saw real repo
+# artifacts → ORACLE_REPO_ATTACHED_REVIEW. Path-name metadata (git-status, upstream
+# inventories) is advisory and does NOT by itself upgrade the label.
+if [ "$attached_files" -gt 0 ] || [ "$diff_evidence" -eq 1 ]; then
   LABEL="ORACLE_REPO_ATTACHED_REVIEW"
 else
   LABEL="ORACLE_SUMMARY_REVIEW"

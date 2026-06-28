@@ -178,6 +178,7 @@ def _search_csv(filepath, search_cols, output_cols, query, max_results):
     ranked = bm25.score(query)
 
     # Get top results with score > 0
+    max_results = max(0, max_results)  # a negative value would wrap the slice
     results = []
     for idx, score in ranked[:max_results]:
         if score > 0:
@@ -214,7 +215,10 @@ def search(query, domain=None, max_results=MAX_RESULTS):
     if domain is None:
         domain = detect_domain(query)
 
-    config = CSV_CONFIG.get(domain, CSV_CONFIG["style"])
+    if domain not in CSV_CONFIG:
+        return {"error": f"Unknown domain: {domain}. Available: {', '.join(CSV_CONFIG)}", "domain": domain}
+
+    config = CSV_CONFIG[domain]
     filepath = DATA_DIR / config["file"]
 
     if not filepath.exists():

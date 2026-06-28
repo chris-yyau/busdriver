@@ -184,5 +184,16 @@ else
 fi
 rm -rf "$NOREPO"
 
+# Test 17: a secret-like path NAME is stripped from git-status.txt metadata.
+( cd "$TMP" && echo "x" > .env.local && echo "status change" >> app.sh )
+run --mode repo --out-dir "$TMP/p17" --question-file "$TMP/q.txt" >/dev/null
+if grep -q "app.sh" "$TMP/p17/git-status.txt" 2>/dev/null \
+   && ! grep -q ".env.local" "$TMP/p17/git-status.txt" 2>/dev/null; then
+  ok "secret-like path name stripped from git status"
+else
+  fail "t17 secret path name leaked into git status"
+fi
+( cd "$TMP" && rm -f .env.local && git checkout -q -- app.sh )
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

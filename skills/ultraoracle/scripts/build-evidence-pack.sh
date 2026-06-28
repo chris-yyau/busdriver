@@ -135,6 +135,21 @@ contained_path() {
 
 bytes_of() { wc -c < "$1" 2>/dev/null | tr -d ' ' || echo 0; }
 
+# stdin -> stdout, dropping any line that mentions a secret-like basename. Applied to
+# generated metadata listings (git status, upstream ls-files) so a secret PATH NAME
+# (.env, deploy.pem, app.token) is never transmitted even though its content is absent.
+strip_secret_paths() {
+  local line tok drop
+  while IFS= read -r line; do
+    drop=0
+    for tok in $line; do
+      is_secret_basename "${tok##*/}" && { drop=1; break; }
+    done
+    [ "$drop" -eq 0 ] && printf '%s\n' "$line"
+  done
+  return 0   # never let a final dropped line look like upstream failure under pipefail
+}
+
 # Running budget accounting — shared by selected files AND generated git context, so
 # nothing escapes the boundary. attach_idx guarantees collision-free flattened names.
 attached_files=0 spent=0 attach_idx=0
@@ -191,7 +206,7 @@ while IFS= read -r _p; do
   [[ -n "$_p" ]] || continue
   is_secret_basename "${_p##*/}" && diff_excludes+=(":(exclude)$_p")
 done < <(git -C "$GIT_ROOT" diff --no-ext-diff --name-only 2>/dev/null || true)
-git -C "$GIT_ROOT" status --porcelain > "$OUT_DIR/git-status.txt" 2>/dev/null || true
+git -C "$GIT_ROOT" status --porcelain 2>/dev/null | strip_secret_paths > "$OUT_DIR/git-status.txt" || true
 # Expand the exclude array only when non-empty — "${arr[@]}" on an empty array trips
 # set -u under bash 3.2, and an empty pathspec arg would confuse git diff.
 if [ "${#diff_excludes[@]}" -gt 0 ]; then
@@ -256,7 +271,7 @@ if [[ "$MODE" == "upstream-audit" && "${#UPSTREAM[@]}" -gt 0 ]]; then
     inv_name="${up_idx}_$(printf '%s' "$u" | tr -c 'A-Za-z0-9' '_')"
     # Tracked files only — no `find` fallback (which could inventory .git internals,
     # untracked files, or run from the wrong dir if cd failed). Skip on any failure.
-    if ! ( cd "$u" && git ls-files ) > "$OUT_DIR/upstream-$inv_name.txt" 2>/dev/null; then
+    if ! ( cd "$u" && git ls-files ) 2>/dev/null | strip_secret_paths > "$OUT_DIR/upstream-$inv_name.txt"; then
       rm -f -- "$OUT_DIR/upstream-$inv_name.txt"
       echo "skip upstream (git ls-files failed): $u" >&2; continue
     fi

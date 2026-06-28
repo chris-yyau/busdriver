@@ -195,5 +195,32 @@ else
 fi
 ( cd "$TMP" && rm -f .env.local && git checkout -q -- app.sh )
 
+# Test 18: a safe leaf under a SECRET-NAMED directory is excluded (path-component check).
+mkdir -p "$TMP/secrets"
+echo "harmless looking" > "$TMP/secrets/config.yml"
+out="$(run --mode repo --out-dir "$TMP/p18" --question-file "$TMP/q.txt" --file "$TMP/secrets/config.yml" | tail -n1)"
+if [[ "$out" == "ORACLE_SUMMARY_REVIEW" ]] && grep -q "secret_excluded: .*secrets/config.yml" "$TMP/p18/manifest.txt"; then
+  ok "file under secret-named dir excluded"
+else
+  fail "t18 secret-named dir not caught (got '$out')"
+fi
+
+# Test 19: a --question-file larger than the byte budget fails closed.
+head -c 5000 /dev/zero | tr '\0' 'q' > "$TMP/bigq.txt"
+set +e
+( cd "$TMP" && bash "$SCRIPT" --mode repo --out-dir "$TMP/p19" --question-file "$TMP/bigq.txt" --byte-budget 100 >/dev/null 2>&1 ); rc=$?
+set -e
+if [[ "$rc" -eq 4 ]]; then ok "oversized question-file fails closed"; else fail "t19 question budget not enforced (rc=$rc)"; fi
+
+# Test 20: STAGED changes are captured in git-diff.txt (git diff HEAD, not bare git diff).
+( cd "$TMP" && echo "staged line" >> app.sh && git add app.sh )
+run --mode repo --out-dir "$TMP/p20" --question-file "$TMP/q.txt" >/dev/null
+if grep -q "staged line" "$TMP/p20/git-diff.txt" 2>/dev/null; then
+  ok "staged changes captured in diff"
+else
+  fail "t20 staged change missing from diff"
+fi
+( cd "$TMP" && git checkout -q -- app.sh 2>/dev/null; git reset -q HEAD app.sh 2>/dev/null; git checkout -q -- app.sh 2>/dev/null )
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

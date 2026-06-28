@@ -48,6 +48,10 @@ adapter, then render the verdict under its label. Run as ONE Bash block so a fai
 adapter cannot leave a half-state.
 
 ```bash
+# NOTE: deliberately NOT `set -e`. ultra_oracle_consult PRINTS a typed status token
+# (ok|error|timeout|skipped:*) AND returns non-zero on failure — we MUST capture the
+# token and render ORACLE_FAILED, so errexit (which would abort before the case) is
+# wrong here. Each external call is handled explicitly instead.
 set -uo pipefail
 PR="${CLAUDE_PLUGIN_ROOT}"
 STATE="${BUSDRIVER_STATE_DIR:-.claude}"
@@ -62,27 +66,40 @@ mkdir -p "$PACK_DIR"
 # 2. Build the evidence pack for repo modes. LABEL is the LAST stdout line.
 LABEL="ORACLE_SUMMARY_REVIEW"   # quick mode default
 MODE="repo"                      # set per the user's request: repo | upstream-audit | quick
-PACK_ARGS=()
+PACK_ARGS=()    # repeated --file / --upstream you chose; declared so [@] is safe when empty
+PACK_ATTACH=()  # declared up front so "${PACK_ATTACH[@]}" never trips set -u on bash 3.2
 if [ "$MODE" = "repo" ] || [ "$MODE" = "upstream-audit" ]; then
   # Pass the files you deliberately chose to attach via repeated --file, and
   # upstream paths via --upstream. Keep the set minimal and secret-free.
-  LABEL="$(bash "$PR/skills/ultraoracle/scripts/build-evidence-pack.sh" \
-            --mode "$MODE" --out-dir "$PACK_DIR" \
-            --question-file "$PACK_DIR/question.txt" \
-            "${PACK_ARGS[@]}" | tail -n1)" || {
-    echo "⚠ ULTRAORACLE: evidence pack failed — ABORTING (fail closed)"; exit 1; }
-  # Attach every file the pack collected.
+  # Guard the empty-array expansion (bash 3.2 + set -u): "${arr[@]}" on an empty
+  # array aborts, so branch on the element count.
+  if [ "${#PACK_ARGS[@]}" -gt 0 ]; then
+    LABEL="$(bash "$PR/skills/ultraoracle/scripts/build-evidence-pack.sh" \
+              --mode "$MODE" --out-dir "$PACK_DIR" --question-file "$PACK_DIR/question.txt" \
+              "${PACK_ARGS[@]}" | tail -n1)" \
+      || { echo "⚠ ULTRAORACLE: evidence pack failed — ABORTING (fail closed)"; exit 1; }
+  else
+    LABEL="$(bash "$PR/skills/ultraoracle/scripts/build-evidence-pack.sh" \
+              --mode "$MODE" --out-dir "$PACK_DIR" --question-file "$PACK_DIR/question.txt" \
+              | tail -n1)" \
+      || { echo "⚠ ULTRAORACLE: evidence pack failed — ABORTING (fail closed)"; exit 1; }
+  fi
+  # Attach every file the pack collected (globs that match nothing are skipped by -f).
   for f in "$PACK_DIR"/files/* "$PACK_DIR"/git-*.txt "$PACK_DIR"/upstream-*.txt; do
     [ -f "$f" ] && PACK_ATTACH+=(--context "$f")
   done
 fi
 
 # 3. Dispatch via the shared adapter (the ONLY surface that touches the oracle CLI).
+#    On any non-zero return, force STATUS=error so the case below renders ORACLE_FAILED.
 source "$PR/scripts/lib/ultra-oracle.sh"
-STATUS="$(ultra_oracle_consult \
-  --prompt-file "$PACK_DIR/question.txt" \
-  "${PACK_ATTACH[@]:-}" \
-  --out "$OUT" --mode blocking --slug "ultra oracle consult")"
+if [ "${#PACK_ATTACH[@]}" -gt 0 ]; then
+  STATUS="$(ultra_oracle_consult --prompt-file "$PACK_DIR/question.txt" \
+    "${PACK_ATTACH[@]}" --out "$OUT" --mode blocking --slug "ultra oracle consult")" || STATUS="error"
+else
+  STATUS="$(ultra_oracle_consult --prompt-file "$PACK_DIR/question.txt" \
+    --out "$OUT" --mode blocking --slug "ultra oracle consult")" || STATUS="error"
+fi
 
 # 4. Render under label, fail-closed.
 case "$STATUS" in

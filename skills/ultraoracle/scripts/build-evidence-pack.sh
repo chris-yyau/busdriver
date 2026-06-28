@@ -98,9 +98,23 @@ is_secret_basename() {
   return 1
 }
 
+# True if ANY component of the path is secret-like (not just the leaf). Walks
+# right-to-left via parameter expansion — no word-split/glob hazard. Catches a safe
+# leaf under a secret-named dir, e.g. secrets/config.yml or .env.d/app.
+is_secret_path() {
+  local p="$1" comp
+  while [ -n "$p" ]; do
+    comp="${p##*/}"
+    [ -n "$comp" ] && is_secret_basename "$comp" && return 0
+    [ "$p" = "${p%/*}" ] && break
+    p="${p%/*}"
+  done
+  return 1
+}
+
 is_secret_like() {
-  local p="$1" base; base="$(basename "$p")"
-  is_secret_basename "$base" && return 0
+  local p="$1"
+  is_secret_path "$p" && return 0
   # Content scan over the WHOLE file (a token past an arbitrary byte cap must not
   # slip through); -a treats binary as text. Files are bounded by the byte budget.
   if LC_ALL=C grep -aqE \
@@ -143,7 +157,7 @@ strip_secret_paths() {
   while IFS= read -r line; do
     drop=0
     for tok in $line; do
-      is_secret_basename "${tok##*/}" && { drop=1; break; }
+      is_secret_path "$tok" && { drop=1; break; }
     done
     [ "$drop" -eq 0 ] && printf '%s\n' "$line"
   done
@@ -170,8 +184,13 @@ if [[ -n "$QUESTION_FILE" ]]; then
     if is_secret_like "$QUESTION_FILE"; then
       echo "error: --question-file looks secret-like — refusing to send" >&2; exit 4
     fi
+    q_sz="$(bytes_of "$QUESTION_FILE")"
+    if [ "$q_sz" -gt "$BYTE_BUDGET" ]; then
+      echo "error: --question-file ($q_sz bytes) exceeds byte budget ($BYTE_BUDGET)" >&2; exit 4
+    fi
     cp -- "$QUESTION_FILE" "$OUT_DIR/question.txt"
-    echo "question: question.txt ($(bytes_of "$QUESTION_FILE") bytes)" >> "$MANIFEST"
+    spent=$((spent + q_sz))   # question counts against the shared byte budget
+    echo "question: question.txt ($q_sz bytes)" >> "$MANIFEST"
   else
     echo "error: --question-file unreadable or empty" >&2; exit 4
   fi
@@ -201,19 +220,21 @@ gate_generated() {
 # textconv commands while building a supposedly read-only pack. Secret-pathed files
 # are excluded from the diff up front (pathspec), so a tracked .env/*.pem change can
 # never ride out inside the aggregated diff even when its value matches no token regex.
+# `git diff HEAD` so STAGED changes are captured too — `git diff` alone shows only
+# the unstaged worktree, so a fully-staged change would send an empty patch.
 diff_excludes=()
 while IFS= read -r _p; do
   [[ -n "$_p" ]] || continue
-  is_secret_basename "${_p##*/}" && diff_excludes+=(":(exclude)$_p")
-done < <(git -C "$GIT_ROOT" diff --no-ext-diff --name-only 2>/dev/null || true)
+  is_secret_path "$_p" && diff_excludes+=(":(exclude)$_p")
+done < <(git -C "$GIT_ROOT" diff HEAD --no-ext-diff --name-only 2>/dev/null || true)
 git -C "$GIT_ROOT" status --porcelain 2>/dev/null | strip_secret_paths > "$OUT_DIR/git-status.txt" || true
 # Expand the exclude array only when non-empty — "${arr[@]}" on an empty array trips
 # set -u under bash 3.2, and an empty pathspec arg would confuse git diff.
 if [ "${#diff_excludes[@]}" -gt 0 ]; then
-  git -C "$GIT_ROOT" diff --no-ext-diff --no-textconv -- . "${diff_excludes[@]}" \
+  git -C "$GIT_ROOT" diff HEAD --no-ext-diff --no-textconv -- . "${diff_excludes[@]}" \
     > "$OUT_DIR/git-diff.txt" 2>/dev/null || true
 else
-  git -C "$GIT_ROOT" diff --no-ext-diff --no-textconv > "$OUT_DIR/git-diff.txt" 2>/dev/null || true
+  git -C "$GIT_ROOT" diff HEAD --no-ext-diff --no-textconv > "$OUT_DIR/git-diff.txt" 2>/dev/null || true
 fi
 gate_generated "$OUT_DIR/git-status.txt" "git_status"
 gate_generated "$OUT_DIR/git-diff.txt"   "git_diff"

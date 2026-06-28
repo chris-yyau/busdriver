@@ -1,3 +1,10 @@
+# [1.72.0](https://github.com/chris-yyau/busdriver/compare/v1.71.5...v1.72.0) (2026-06-28)
+
+
+### Features
+
+* **ultraoracle:** ADR 0007 Phase 1 — standalone expert-witness skill ([#258](https://github.com/chris-yyau/busdriver/issues/258)) ([194d735](https://github.com/chris-yyau/busdriver/commit/194d73575985093d6633514f6e74c5f3ec5dfb4e)), closes [#2](https://github.com/chris-yyau/busdriver/issues/2)
+
 ## [1.71.5](https://github.com/chris-yyau/busdriver/compare/v1.71.4...v1.71.5) (2026-06-28)
 
 

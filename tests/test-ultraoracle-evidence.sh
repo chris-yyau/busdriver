@@ -124,5 +124,19 @@ else
   fail "t10 late secret slipped through (got '$out')"
 fi
 
+# Test 11: --out-dir outside the repo is rejected (write-boundary).
+OUTDIR="$(mktemp -d)"
+set +e
+( cd "$TMP" && bash "$SCRIPT" --mode repo --out-dir "$OUTDIR/pack" --question-file "$TMP/q.txt" >/dev/null 2>&1 ); rc=$?
+set -e
+if [[ "$rc" -ne 0 ]]; then ok "out-of-repo --out-dir rejected"; else fail "t11 out-of-repo out-dir accepted"; fi
+rm -rf "$OUTDIR"
+
+# Test 12: a trailing value-flag with no argument fails closed (no set -u crash).
+set +e
+( cd "$TMP" && bash "$SCRIPT" --mode repo --out-dir "$TMP/p12" --file >/dev/null 2>&1 ); rc=$?
+set -e
+if [[ "$rc" -eq 2 ]]; then ok "trailing --file fails closed (usage)"; else fail "t12 trailing --file rc=$rc (expected 2)"; fi
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

@@ -32,7 +32,7 @@ MODE="" OUT_DIR="" QUESTION_FILE="" BYTE_BUDGET=2000000
 FILES=() UPSTREAM=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --mode|--out-dir|--question-file|--byte-budget)
+    --mode|--out-dir|--question-file|--byte-budget|--file|--upstream)
       [ $# -ge 2 ] || { echo "error: $1 needs a value" >&2; exit 2; } ;;
   esac
   case "$1" in
@@ -68,6 +68,14 @@ GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 RUN_ID="evpack-$(date -u +%Y%m%d-%H%M%S)-$$"
 
 mkdir -p "$OUT_DIR/files" || { echo "error: cannot create out-dir" >&2; exit 4; }
+# Constrain the only write target to live under the repo — the script documents
+# read-only behavior everywhere except --out-dir, so enforce that boundary rather
+# than letting a caller scatter the manifest/diff/attached files into arbitrary paths.
+OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
+case "$OUT_DIR" in
+  "$GIT_ROOT"/*) : ;;
+  *) echo "error: --out-dir must be inside the repo ($GIT_ROOT)" >&2; exit 4;;
+esac
 MANIFEST="$OUT_DIR/manifest.txt"
 : > "$MANIFEST"
 
@@ -197,6 +205,10 @@ for f in "${FILES[@]:-}"; do [[ -n "$f" ]] && attach_one "$f"; done
 if [[ "$MODE" == "upstream-audit" ]]; then
   for u in "${UPSTREAM[@]:-}"; do
     [[ -n "$u" && -d "$u" ]] || { echo "skip upstream (not a dir): $u" >&2; continue; }
+    # Require a real git repo root — a bare directory (a home dir, an arbitrary
+    # mount) must not be inventoried, since the file listing itself can leak private
+    # names. This scopes upstream-audit to deliberately-chosen project checkouts.
+    [[ -d "$u/.git" ]] || { echo "skip upstream (not a git repo root): $u" >&2; continue; }
     inv_name="$(printf '%s' "$u" | tr '/' '_')"
     ( cd "$u" && git ls-files 2>/dev/null || find . -type f ) > "$OUT_DIR/upstream-$inv_name.txt" 2>/dev/null || true
     gate_generated "$OUT_DIR/upstream-$inv_name.txt" "upstream_inventory"

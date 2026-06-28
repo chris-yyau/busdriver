@@ -1,3 +1,10 @@
+## [1.71.5](https://github.com/chris-yyau/busdriver/compare/v1.71.4...v1.71.5) (2026-06-28)
+
+
+### Bug Fixes
+
+* **ui-ux-pro-max:** path containment + input validation ([#234](https://github.com/chris-yyau/busdriver/issues/234)) ([#256](https://github.com/chris-yyau/busdriver/issues/256)) ([a6bb638](https://github.com/chris-yyau/busdriver/commit/a6bb6380e565f91d3a1cb4a8163f9f74295d9871))
+
 ## [1.71.4](https://github.com/chris-yyau/busdriver/compare/v1.71.3...v1.71.4) (2026-06-27)
 
 

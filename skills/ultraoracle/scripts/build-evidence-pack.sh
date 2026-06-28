@@ -113,8 +113,11 @@ is_secret_path() {
 }
 
 is_secret_like() {
-  local p="$1"
-  is_secret_path "$p" && return 0
+  # Strip the repo root first so path components ABOVE GIT_ROOT (e.g. a checkout under
+  # ~/token-service or /private/secrets) cannot false-positive EVERY file. Only the
+  # repo-relative portion is denylist-checked; the content scan still uses the full $p.
+  local p="$1" rel="${1#"$GIT_ROOT"/}"
+  is_secret_path "$rel" && return 0
   # Content scan over the WHOLE file (a token past an arbitrary byte cap must not
   # slip through); -a treats binary as text. Files are bounded by the byte budget.
   if LC_ALL=C grep -aqE \
@@ -153,11 +156,19 @@ bytes_of() { wc -c < "$1" 2>/dev/null | tr -d ' ' || echo 0; }
 # generated metadata listings (git status, upstream ls-files) so a secret PATH NAME
 # (.env, deploy.pem, app.token) is never transmitted even though its content is absent.
 strip_secret_paths() {
+  # Tokenize with `read -ra` (splits on whitespace, NO pathname expansion) rather than
+  # an unquoted `for tok in $line` — a filename with glob chars (test[1].txt, log*.bak)
+  # would otherwise expand against CWD. Each token is checked component-wise, so both a
+  # secret leaf (.env.local) and a secret dir (secrets/x) drop the line. Substring
+  # patterns (*secret*/*token*/*credential*/*cookie*) still match inside porcelain
+  # quoting; the rarer anchored patterns on a control-char-quoted path are a known gap.
   local line tok drop
+  local -a toks
   while IFS= read -r line; do
+    read -ra toks <<< "$line"
     drop=0
-    for tok in $line; do
-      is_secret_path "$tok" && { drop=1; break; }
+    for tok in "${toks[@]:-}"; do
+      [ -n "$tok" ] && is_secret_path "$tok" && { drop=1; break; }
     done
     [ "$drop" -eq 0 ] && printf '%s\n' "$line"
   done
@@ -181,14 +192,21 @@ attached_files=0 spent=0 attach_idx=0
 # scanned for secrets like everything else).
 if [[ -n "$QUESTION_FILE" ]]; then
   if [[ -r "$QUESTION_FILE" && -s "$QUESTION_FILE" ]]; then
-    if is_secret_like "$QUESTION_FILE"; then
+    # Canonicalize FIRST so the GIT_ROOT-relative secret check and the self-copy guard
+    # both compare canonical paths — a raw /var arg vs a /private/var GIT_ROOT (macOS
+    # symlink) would otherwise miss the prefix-strip and walk secret-named ancestors.
+    q_canon="$(cd "$(dirname -- "$QUESTION_FILE")" && pwd -P)/$(basename -- "$QUESTION_FILE")"
+    if is_secret_like "$q_canon"; then
       echo "error: --question-file looks secret-like — refusing to send" >&2; exit 4
     fi
     q_sz="$(bytes_of "$QUESTION_FILE")"
     if [ "$q_sz" -gt "$BYTE_BUDGET" ]; then
       echo "error: --question-file ($q_sz bytes) exceeds byte budget ($BYTE_BUDGET)" >&2; exit 4
     fi
-    cp -- "$QUESTION_FILE" "$OUT_DIR/question.txt"
+    # Skip the copy when the caller already wrote the question INTO the pack dir —
+    # the documented SKILL flow does exactly this, and `cp file file` errors under set -e.
+    # q_canon was computed above.
+    [ "$q_canon" = "$OUT_DIR/question.txt" ] || cp -- "$QUESTION_FILE" "$OUT_DIR/question.txt"
     spent=$((spent + q_sz))   # question counts against the shared byte budget
     echo "question: question.txt ($q_sz bytes)" >> "$MANIFEST"
   else
@@ -222,19 +240,22 @@ gate_generated() {
 # never ride out inside the aggregated diff even when its value matches no token regex.
 # `git diff HEAD` so STAGED changes are captured too — `git diff` alone shows only
 # the unstaged worktree, so a fully-staged change would send an empty patch.
+# --no-renames so a rename OUT of a secret dir surfaces as a delete(old)+add(new)
+# pair: the secret old path then appears in --name-only and is excluded by pathspec,
+# instead of hiding inside a rename hunk that --name-only (new path only) would miss.
 diff_excludes=()
 while IFS= read -r _p; do
   [[ -n "$_p" ]] || continue
   is_secret_path "$_p" && diff_excludes+=(":(exclude)$_p")
-done < <(git -C "$GIT_ROOT" diff HEAD --no-ext-diff --name-only 2>/dev/null || true)
+done < <(git -C "$GIT_ROOT" diff HEAD --no-ext-diff --no-renames --name-only 2>/dev/null || true)
 git -C "$GIT_ROOT" status --porcelain 2>/dev/null | strip_secret_paths > "$OUT_DIR/git-status.txt" || true
 # Expand the exclude array only when non-empty — "${arr[@]}" on an empty array trips
 # set -u under bash 3.2, and an empty pathspec arg would confuse git diff.
 if [ "${#diff_excludes[@]}" -gt 0 ]; then
-  git -C "$GIT_ROOT" diff HEAD --no-ext-diff --no-textconv -- . "${diff_excludes[@]}" \
+  git -C "$GIT_ROOT" diff HEAD --no-ext-diff --no-textconv --no-renames -- . "${diff_excludes[@]}" \
     > "$OUT_DIR/git-diff.txt" 2>/dev/null || true
 else
-  git -C "$GIT_ROOT" diff HEAD --no-ext-diff --no-textconv > "$OUT_DIR/git-diff.txt" 2>/dev/null || true
+  git -C "$GIT_ROOT" diff HEAD --no-ext-diff --no-textconv --no-renames > "$OUT_DIR/git-diff.txt" 2>/dev/null || true
 fi
 gate_generated "$OUT_DIR/git-status.txt" "git_status"
 gate_generated "$OUT_DIR/git-diff.txt"   "git_diff"

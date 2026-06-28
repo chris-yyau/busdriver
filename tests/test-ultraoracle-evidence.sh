@@ -222,5 +222,51 @@ else
 fi
 ( cd "$TMP" && git checkout -q -- app.sh 2>/dev/null; git reset -q HEAD app.sh 2>/dev/null; git checkout -q -- app.sh 2>/dev/null )
 
+# Test 21: a repo CHECKED OUT under a secret-named ancestor dir does NOT false-exclude
+#          its files (is_secret_like must only check the repo-relative portion).
+mkdir -p "$TMP/token-ws"
+( cd "$TMP/token-ws" && git init -q && git config user.email t@t.t && git config user.name t \
+   && echo "real" > normal.sh && git add -A && git commit -qm i )
+echo "q" > "$TMP/token-ws/q.txt"
+out="$( cd "$TMP/token-ws" && bash "$SCRIPT" --mode repo --out-dir "$TMP/token-ws/p" \
+        --question-file "$TMP/token-ws/q.txt" --file "$TMP/token-ws/normal.sh" | tail -n1 )"
+if [[ "$out" == "ORACLE_REPO_ATTACHED_REVIEW" ]]; then
+  ok "file under secret-named ANCESTOR not false-excluded"
+else
+  fail "t21 ancestor false-positive (got '$out')"
+fi
+
+# Test 22: question file already inside the pack dir is not cp'd onto itself (set -e).
+mkdir -p "$TMP/p22"
+echo "the question text" > "$TMP/p22/question.txt"
+out="$(run --mode repo --out-dir "$TMP/p22" --question-file "$TMP/p22/question.txt" | tail -n1)"
+if [[ "$out" == "ORACLE_SUMMARY_REVIEW" ]] && [ -s "$TMP/p22/question.txt" ]; then
+  ok "in-pack question file not self-copied"
+else
+  fail "t22 self-copy aborted (got '$out')"
+fi
+
+# Test 23: a quoted/space secret-named path is stripped from git-status.txt.
+( cd "$TMP" && echo "x" > "my secret.txt" && echo "status23" >> app.sh )
+run --mode repo --out-dir "$TMP/p23" --question-file "$TMP/q.txt" >/dev/null
+if grep -q "app.sh" "$TMP/p23/git-status.txt" 2>/dev/null \
+   && ! grep -qi "secret" "$TMP/p23/git-status.txt" 2>/dev/null; then
+  ok "quoted secret path stripped from git status"
+else
+  fail "t23 quoted secret path leaked"
+fi
+( cd "$TMP" && rm -f "my secret.txt"; git checkout -q -- app.sh )
+
+# Test 24: a rename OUT of a secret dir keeps the secret old path out of git-diff.txt.
+( cd "$TMP" && mkdir -p secrets && echo "data" > secrets/old.txt && git add secrets/old.txt \
+   && git commit -qm s && git mv secrets/old.txt visible24.txt )
+run --mode repo --out-dir "$TMP/p24" --question-file "$TMP/q.txt" >/dev/null
+if ! grep -q "secrets/old.txt" "$TMP/p24/git-diff.txt" 2>/dev/null; then
+  ok "rename source under secret dir excluded from diff"
+else
+  fail "t24 secret rename source leaked into diff"
+fi
+( cd "$TMP" && git checkout -q -- . 2>/dev/null; git reset -q --hard HEAD >/dev/null 2>&1 )
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

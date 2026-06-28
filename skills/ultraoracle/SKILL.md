@@ -93,13 +93,17 @@ fi
 # 3. Dispatch via the shared adapter (the ONLY surface that touches the oracle CLI).
 #    On any non-zero return, force STATUS=error so the case below renders ORACLE_FAILED.
 source "$PR/scripts/lib/ultra-oracle.sh"
+# The adapter PRINTS its typed token (ok|timeout|error|skipped:*) even on non-zero
+# exit, and there is no `set -e` here, so the capture keeps that token. Only default
+# to "error" when nothing was printed — never clobber a specific diagnostic token.
 if [ "${#PACK_ATTACH[@]}" -gt 0 ]; then
   STATUS="$(ultra_oracle_consult --prompt-file "$PACK_DIR/question.txt" \
-    "${PACK_ATTACH[@]}" --out "$OUT" --mode blocking --slug "ultra oracle consult")" || STATUS="error"
+    "${PACK_ATTACH[@]}" --out "$OUT" --mode blocking --slug "ultra oracle consult")"
 else
   STATUS="$(ultra_oracle_consult --prompt-file "$PACK_DIR/question.txt" \
-    --out "$OUT" --mode blocking --slug "ultra oracle consult")" || STATUS="error"
+    --out "$OUT" --mode blocking --slug "ultra oracle consult")"
 fi
+[ -n "$STATUS" ] || STATUS="error"
 
 # 4. Render under label, fail-closed.
 case "$STATUS" in

@@ -293,5 +293,19 @@ else
 fi
 ( cd "$TMP" && git rm -q api.token >/dev/null 2>&1 && git commit -qm rmtok >/dev/null 2>&1 )
 
+# Test 27: case-variant secret names (API_TOKEN, Cookies.txt) are excluded.
+echo "k1" > "$TMP/API_TOKEN"; echo "k2" > "$TMP/Cookies.txt"
+out="$(run --mode repo --out-dir "$TMP/p27" --question-file "$TMP/q.txt" \
+        --file "$TMP/API_TOKEN" --file "$TMP/Cookies.txt" | tail -n1)"
+if [[ "$out" == "ORACLE_SUMMARY_REVIEW" ]] \
+   && ! ls "$TMP/p27/files/"* >/dev/null 2>&1 \
+   && grep -q "secret_excluded: .*API_TOKEN" "$TMP/p27/manifest.txt" \
+   && grep -q "secret_excluded: .*Cookies.txt" "$TMP/p27/manifest.txt"; then
+  ok "case-variant secret names excluded"
+else
+  fail "t27 case-variant secret not caught (got '$out')"
+fi
+rm -f "$TMP/API_TOKEN" "$TMP/Cookies.txt"
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

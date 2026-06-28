@@ -90,12 +90,18 @@ MANIFEST="$OUT_DIR/manifest.txt"
 # Filename denylist only (no content read) — reused by is_secret_like AND the git-diff
 # pathspec filter so a tracked secret file never rides out inside the aggregated diff.
 is_secret_basename() {
+  # Case-INSENSITIVE so API_TOKEN / SERVICE_CREDENTIALS / Cookies.txt are caught too.
+  # Scope nocasematch to this function (bash 3.2 has no ${x,,}) and restore the prior
+  # setting so no other case statement in the script is affected.
+  local restore rc=1
+  restore="$(shopt -p nocasematch)"
+  shopt -s nocasematch
   case "$1" in
     .env|.env.*|*.pem|*.key|*.pfx|*.p12|id_rsa|id_dsa|id_ecdsa|id_ed25519|\
-    *secret*|*Secret*|*SECRET*|*token*|*Token*|*credential*|*Credential*|\
-    *.keystore|*.jks|cookies|Cookies|*.cookie) return 0;;
+    *secret*|*token*|*credential*|*cookie*|*.keystore|*.jks) rc=0;;
   esac
-  return 1
+  eval "$restore"
+  return "$rc"
 }
 
 # True if ANY component of the path is secret-like (not just the leaf). Walks

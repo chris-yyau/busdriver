@@ -406,5 +406,24 @@ else
   fail "t35 clean consult mislabeled (got '$out')"
 fi
 
+# Test 36: an --out-dir with MULTIPLE trailing slashes is handled (parent resolved,
+#          dir created) — regression guard for the param-expansion path split.
+out="$(run --mode repo --out-dir "$TMP/p36///" --question-file "$TMP/q.txt" | tail -n1)"
+if [[ "$out" == "ORACLE_SUMMARY_REVIEW" ]] && [ -d "$TMP/p36" ]; then
+  ok "out-dir with trailing slashes handled"
+else
+  fail "t36 trailing-slash out-dir failed (got '$out')"
+fi
+
+# Test 37: a password-named data file is excluded.
+echo "p=hunter2" > "$TMP/db_password.txt"
+out="$(run --mode repo --out-dir "$TMP/p37" --question-file "$TMP/q.txt" --file "$TMP/db_password.txt" | tail -n1)"
+if [[ "$out" == "ORACLE_SUMMARY_REVIEW" ]] && grep -q "secret_excluded: .*db_password.txt" "$TMP/p37/manifest.txt"; then
+  ok "password-named file excluded"
+else
+  fail "t37 password file not excluded (got '$out')"
+fi
+rm -f "$TMP/db_password.txt"
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

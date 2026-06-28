@@ -79,7 +79,9 @@ RUN_ID="evpack-$(date -u +%Y%m%d-%H%M%S)-$$"
 [[ -e "$OUT_DIR" ]] && { echo "error: --out-dir must not already exist (a fresh dir is required)" >&2; exit 4; }
 # dirname/basename via parameter expansion (portable; no reliance on `--` support):
 # strip a trailing slash, take the parent (or "." when there's no slash) and the leaf.
-_od="${OUT_DIR%/}"; _odp="${_od%/*}"; [ "$_odp" = "$_od" ] && _odp="."
+# Strip ALL trailing slashes (a single `%/` mishandles `path///`), then take parent+leaf.
+_od="$OUT_DIR"; while [ "$_od" != "/" ] && [ "${_od%/}" != "$_od" ]; do _od="${_od%/}"; done
+_odp="${_od%/*}"; [ "$_odp" = "$_od" ] && _odp="."
 _op="$(cd "$_odp" 2>/dev/null && pwd -P)" \
   || { echo "error: --out-dir parent does not exist" >&2; exit 4; }
 OUT_DIR="$_op/${_od##*/}"
@@ -98,27 +100,25 @@ MANIFEST="$OUT_DIR/manifest.txt"
 is_secret_basename() {
   # Case-INSENSITIVE so API_TOKEN / SERVICE_CREDENTIALS / Cookies.txt are caught too.
   # Scope nocasematch to this function (bash 3.2 has no ${x,,}) and restore the prior
-  # setting so no other case statement in the script is affected.
-  # `|| true`: `shopt -p` returns non-zero when the option is currently OFF (the
-  # default), which would abort under set -e if this function were ever called outside
-  # a condition context. Capturing the restore command must not fail.
-  local restore rc=1
-  restore="$(shopt -p nocasematch || true)"
+  # setting explicitly (no eval) so no other case statement is affected and there is no
+  # eval of any command string, even bash's own trusted shopt output.
+  local rc=1 had_ncm=0
+  shopt -q nocasematch && had_ncm=1
   shopt -s nocasematch
   # Key patterns match only SECRET-CONTEXT prefixes (api/access/private/signing/
-  # encryption + key) in snake_case, kebab-case AND camelCase/no-separator (the `?`
-  # form needs a separator; the bare form covers apiKey/accessKey). NOT a bare
-  # `*key*`/`*_key*`, which would over-exclude ordinary source (schema-foreign-key.sql,
-  # primary_key_index, keyboard, keys.json i18n). Plus well-known credential dotfiles.
-  # A generic key/keys basename stays attachable — its secret VALUES hit the content scan.
+  # encryption + key) in snake/kebab/camelCase — NOT a bare `*key*`, which would
+  # over-exclude ordinary source (foreign-key.sql, keyboard, keys.json). Plus credential
+  # dotfiles and *password* (conservative: an evidence pack errs toward excluding a
+  # password-named file; the operator sees the exclusion in the manifest). A generic
+  # key/keys basename stays attachable — its secret VALUES hit the content scan.
   case "$1" in
     .env|.env.*|*.pem|*.key|*.pfx|*.p12|id_rsa|id_dsa|id_ecdsa|id_ed25519|\
-    .netrc|*.netrc|.pgpass|.npmrc|.htpasswd|\
+    .netrc|*.netrc|.pgpass|.npmrc|.htpasswd|passwd|shadow|*password*|*passwd*|\
     *secret*|*token*|*credential*|*cookie*|*.keystore|*.jks|\
     *api?key*|*apikey*|*access?key*|*accesskey*|*private?key*|*privatekey*|\
     *signing?key*|*signingkey*|*encryption?key*|*encryptionkey*) rc=0;;
   esac
-  eval "$restore"
+  [ "$had_ncm" -eq 1 ] || shopt -u nocasematch
   return "$rc"
 }
 
@@ -164,7 +164,8 @@ contained_path() {
   # but a repo-local link (repo/leak -> /outside/file) would otherwise canonicalize to
   # an in-repo name yet cp through to outside content. Regular evidence files only.
   [[ -L "$src" ]] && return 1
-  local s="${src%/}" sp; sp="${s%/*}"; [ "$sp" = "$s" ] && sp="."
+  local s="$src" sp; while [ "$s" != "/" ] && [ "${s%/}" != "$s" ]; do s="${s%/}"; done
+  sp="${s%/*}"; [ "$sp" = "$s" ] && sp="."
   dir="$(cd "$sp" 2>/dev/null && pwd -P)" || return 1
   base="${s##*/}"
   canon="$dir/$base"
@@ -211,7 +212,8 @@ if [[ -n "$QUESTION_FILE" ]]; then
     # Canonicalize FIRST so the GIT_ROOT-relative secret check and the self-copy guard
     # both compare canonical paths — a raw /var arg vs a /private/var GIT_ROOT (macOS
     # symlink) would otherwise miss the prefix-strip and walk secret-named ancestors.
-    _qf="${QUESTION_FILE%/}"; _qfp="${_qf%/*}"; [ "$_qfp" = "$_qf" ] && _qfp="."
+    _qf="$QUESTION_FILE"; while [ "$_qf" != "/" ] && [ "${_qf%/}" != "$_qf" ]; do _qf="${_qf%/}"; done
+    _qfp="${_qf%/*}"; [ "$_qfp" = "$_qf" ] && _qfp="."
     q_canon="$(cd "$_qfp" && pwd -P)/${_qf##*/}"
     if is_secret_like "$q_canon"; then
       echo "error: --question-file looks secret-like — refusing to send" >&2; exit 4

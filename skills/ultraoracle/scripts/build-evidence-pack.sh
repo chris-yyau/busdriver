@@ -5,8 +5,11 @@
 # (settling check #2: a summary-only pack must NOT be upgraded to a repo review).
 #
 # Prints, on the LAST stdout line, exactly one label token:
-#   ORACLE_REPO_ATTACHED_REVIEW  — at least one raw repo file is in the pack
-#   ORACLE_SUMMARY_REVIEW        — only question/summary text, no raw repo files
+#   ORACLE_REPO_ATTACHED_REVIEW  — Oracle will see raw repo artifacts: at least one
+#                                  attached --file, OR a surviving git-diff (raw source
+#                                  hunks). May occur with attached_file_count: 0 when the
+#                                  only repo evidence is the diff (manifest records both).
+#   ORACLE_SUMMARY_REVIEW        — no raw repo artifacts: only question/summary text
 # Any earlier stdout lines are human progress; the caller reads only the last line.
 # Exits non-zero (no label) on misuse so the skill fails CLOSED rather than mislabel.
 #
@@ -368,8 +371,13 @@ if [[ "$MODE" == "upstream-audit" && "${#UPSTREAM[@]}" -gt 0 ]]; then
   done
 fi
 
-echo "attached_file_count: $attached_files" >> "$MANIFEST"
-echo "attached_bytes: $spent" >> "$MANIFEST"
+# diff_evidence explains a REPO_ATTACHED label when attached_file_count is 0 (the diff,
+# not a selected --file, is the repo artifact). Recorded so the audit trail is complete.
+{
+  echo "attached_file_count: $attached_files"
+  echo "attached_bytes: $spent"
+  echo "diff_evidence: $diff_evidence"
+} >> "$MANIFEST"
 
 # LABEL DECISION (ADR settling check #2): ORACLE_SUMMARY_REVIEW means Oracle saw NO
 # raw repo artifacts — only the prompt/summary. Either explicitly attached --file

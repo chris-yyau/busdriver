@@ -388,10 +388,12 @@ fi
 #          ORACLE_REPO_ATTACHED_REVIEW — a git-diff carries raw repo source, not a summary.
 ( cd "$TMP" && echo "diff34 change" >> app.sh )
 out="$(run --mode repo --out-dir "$TMP/p34" --question-file "$TMP/q.txt" | tail -n1)"
-if [[ "$out" == "ORACLE_REPO_ATTACHED_REVIEW" ]] && [ -s "$TMP/p34/git-diff.txt" ]; then
-  ok "git-diff alone => REPO_ATTACHED (not summary)"
+if [[ "$out" == "ORACLE_REPO_ATTACHED_REVIEW" ]] && [ -s "$TMP/p34/git-diff.txt" ] \
+   && grep -q "^attached_file_count: 0" "$TMP/p34/manifest.txt" \
+   && grep -q "^diff_evidence: 1" "$TMP/p34/manifest.txt"; then
+  ok "git-diff alone => REPO_ATTACHED, manifest records diff_evidence=1 with 0 files"
 else
-  fail "t34 diff-only consult mislabeled (got '$out')"
+  fail "t34 diff-only consult mislabeled or manifest inconsistent (got '$out')"
 fi
 ( cd "$TMP" && git checkout -q -- app.sh )
 

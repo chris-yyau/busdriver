@@ -255,12 +255,15 @@ gate_generated() {
 # content diff. -z keeps control-char paths intact (no C-quoting). The content diff
 # below then runs with --no-renames so each excluded endpoint drops its own hunk.
 # Seed excludes with the pack dir itself: if the operator's state dir isn't gitignored,
-# the pack we just created would otherwise show up as untracked in our own status/diff.
+# the pack we just created (and the SKILL's sibling question/verdict files under the
+# same work parent) would otherwise show up as untracked in our own status/diff.
 out_rel="${OUT_DIR#"$GIT_ROOT"/}"
-diff_excludes=(":(exclude,literal)$out_rel")
-# -M10% (lower than the 50% default) so a move-with-edits out of a secret path is still
-# detected as a rename and BOTH endpoints excluded. A near-total rewrite that drops
-# below this still has its secret VALUES caught by gate_generated's content scan.
+work_rel="${out_rel%/*}"   # the ultra-oracle work area (parent); == out_rel if top-level
+diff_excludes=(":(exclude,literal)$out_rel" ":(exclude,literal)$work_rel")
+# -M10% (rename) + -C10% --find-copies-harder (copy, incl. from UNMODIFIED sources) so a
+# move OR copy of a secret-pathed file out to a safe name is detected and BOTH endpoints
+# excluded — otherwise a verbatim copy's add-half would carry the secret content through.
+# --find-copies-harder is O(changed×tracked); fine for an occasional operator-run pack.
 while IFS= read -r -d '' _st; do
   case "$_st" in
     R*|C*)   # rename/copy: two path records follow (old, new)
@@ -273,11 +276,11 @@ while IFS= read -r -d '' _st; do
       IFS= read -r -d '' _p || break
       [[ -n "$_p" ]] && is_secret_path "$_p" && diff_excludes+=(":(exclude,literal)$_p") ;;
   esac
-done < <(git -C "$GIT_ROOT" diff HEAD --no-ext-diff -M10% --name-status -z 2>/dev/null || true)
+done < <(git -C "$GIT_ROOT" diff HEAD --no-ext-diff -M10% -C10% --find-copies-harder --name-status -z 2>/dev/null || true)
 # git status: -z (no C-quoting) + status.renames=false so every record is `XY <path>`,
 # letting us strip the fixed 3-byte `XY ` prefix and secret-check the real path. Exclude
-# the pack dir via pathspec so the pack never lists itself.
-git -C "$GIT_ROOT" -c status.renames=false status --porcelain -z -- . ":(exclude,literal)$out_rel" 2>/dev/null \
+# the pack dir AND its work parent via pathspec so neither lists itself.
+git -C "$GIT_ROOT" -c status.renames=false status --porcelain -z -- . ":(exclude,literal)$out_rel" ":(exclude,literal)$work_rel" 2>/dev/null \
   | { while IFS= read -r -d '' _rec; do
         _p="${_rec:3}"
         [ -n "$_p" ] && is_secret_path "$_p" && continue
@@ -342,7 +345,7 @@ if [[ "$MODE" == "upstream-audit" && "${#UPSTREAM[@]}" -gt 0 ]]; then
     ( cd "$u" && git rev-parse --is-inside-work-tree >/dev/null 2>&1 ) \
       || { echo "skip upstream (not a git work tree): $u" >&2; continue; }
     # Inventory file name = index + sanitized BASENAME only. Using the full path would
-    # encode the absolute local checkout location (/Users/alice/client-x/...) into a
+    # encode the absolute local checkout location (a full home/workspace path) into a
     # transmitted attachment name; the index keeps names unique without that leak.
     up_idx=$((up_idx + 1))
     # Pure parameter expansion (no basename(1), whose `--` handling varies on BSD):

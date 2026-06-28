@@ -371,5 +371,18 @@ else
 fi
 rm -f "$TMP/apiKey.ts" "$TMP/accessKey" "$TMP/.netrc" "$TMP/monkey.js"
 
+# Test 33: a verbatim COPY of an (unmodified) secret-pathed file to a safe name keeps
+#          the secret content out of git-diff.txt (--find-copies-harder).
+( cd "$TMP" && mkdir -p sdir && echo "COPYMARKER33" > sdir/secret.env && git add sdir/secret.env \
+   && git commit -qm se && cp sdir/secret.env copied33.txt && git add copied33.txt )
+run --mode repo --out-dir "$TMP/p33" --question-file "$TMP/q.txt" >/dev/null
+if ! grep -q "COPYMARKER33" "$TMP/p33/git-diff.txt" 2>/dev/null \
+   && ! grep -q "copied33.txt" "$TMP/p33/git-diff.txt" 2>/dev/null; then
+  ok "copy of secret file: content excluded from diff"
+else
+  fail "t33 secret copy leaked content/path into diff"
+fi
+( cd "$TMP" && git reset -q --hard HEAD >/dev/null 2>&1; git rm -q -r --cached sdir >/dev/null 2>&1; rm -rf sdir copied33.txt; git commit -qm cleanup33 >/dev/null 2>&1 || true )
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

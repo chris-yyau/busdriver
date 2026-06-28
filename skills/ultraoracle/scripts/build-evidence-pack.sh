@@ -59,6 +59,10 @@ case "$BYTE_BUDGET" in ''|*[!0-9]*|0) echo "error: --byte-budget must be a posit
 
 GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "$GIT_ROOT" ]] || { echo "error: not inside a git repo" >&2; exit 4; }
+# Canonicalize so the path-containment check compares against a symlink-resolved root
+# (e.g. macOS /var -> /private/var); otherwise a legitimate in-repo file could be
+# rejected, or a symlinked sibling slip through.
+GIT_ROOT="$(cd "$GIT_ROOT" && pwd -P)"
 GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 # RUN_ID must be unique per run; this is a plain operator-run script, so date is fine.
 RUN_ID="evpack-$(date -u +%Y%m%d-%H%M%S)-$$"
@@ -76,16 +80,31 @@ is_secret_like() {
     *secret*|*Secret*|*SECRET*|*token*|*Token*|*credential*|*Credential*|\
     *.keystore|*.jks|cookies|Cookies|*.cookie) return 0;;
   esac
-  # Content scan: obvious key material / provider prefixes in the first 64KB.
-  if head -c 65536 -- "$p" 2>/dev/null | LC_ALL=C grep -qE \
+  # Content scan over the WHOLE file (a token past an arbitrary byte cap must not
+  # slip through); -a treats binary as text. Files are bounded by the byte budget.
+  if LC_ALL=C grep -aqE \
     -e '-----BEGIN [A-Z ]*PRIVATE KEY-----' \
     -e '(AKIA|ASIA)[0-9A-Z]{16}' \
     -e 'sk-[A-Za-z0-9_-]{20,}' \
     -e 'xox[baprs]-[A-Za-z0-9-]{10,}' \
-    -e 'gh[pousr]_[A-Za-z0-9]{30,}'; then
+    -e 'gh[pousr]_[A-Za-z0-9]{30,}' -- "$p"; then
     return 0
   fi
   return 1
+}
+
+# Canonicalize a --file path and require it to live under GIT_ROOT. Echoes the
+# resolved path on success; returns non-zero for anything outside the repo (absolute
+# escapes, ../ traversal, symlinked siblings) so it is never attached.
+contained_path() {
+  local src="$1" dir base canon
+  dir="$(cd "$(dirname -- "$src")" 2>/dev/null && pwd -P)" || return 1
+  base="$(basename -- "$src")"
+  canon="$dir/$base"
+  case "$canon" in
+    "$GIT_ROOT"/*) printf '%s' "$canon"; return 0;;
+    *) return 1;;
+  esac
 }
 
 bytes_of() { wc -c < "$1" 2>/dev/null | tr -d ' ' || echo 0; }
@@ -146,6 +165,11 @@ gate_generated "$OUT_DIR/git-diff.txt"   "git_diff"
 attach_one() {
   local src="$1"
   [[ -f "$src" ]] || { echo "skip (not a file): $src" >&2; return 0; }
+  # Containment first: never attach anything outside the repo, regardless of content.
+  if ! src="$(contained_path "$src")"; then
+    echo "path_excluded (outside repo): $1" >> "$MANIFEST"
+    echo "EXCLUDED outside repo: $1" >&2; return 0
+  fi
   if is_secret_like "$src"; then
     echo "secret_excluded: $src" >> "$MANIFEST"
     echo "EXCLUDED secret-like: $src" >&2; return 0

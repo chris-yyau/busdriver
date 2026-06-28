@@ -105,5 +105,24 @@ else
   fail "t8 namespaced key not caught (got '$out')"
 fi
 
+# Test 9: a --file outside the repo is rejected (path containment), label stays SUMMARY.
+OUTSIDE="$(mktemp)"; echo "external content" > "$OUTSIDE"
+out="$(run --mode repo --out-dir "$TMP/p9" --question-file "$TMP/q.txt" --file "$OUTSIDE" | tail -n1)"
+if [[ "$out" == "ORACLE_SUMMARY_REVIEW" ]] && grep -q "path_excluded" "$TMP/p9/manifest.txt"; then
+  ok "out-of-repo --file rejected"
+else
+  fail "t9 out-of-repo file attached (got '$out')"
+fi
+rm -f "$OUTSIDE"
+
+# Test 10: a secret AFTER 64KB of padding is still caught (whole-file scan).
+{ head -c 70000 /dev/zero | tr '\0' 'x'; printf '\nAKIA%s\n' "$(printf 'C%.0s' {1..16})"; } > "$TMP/late.txt"
+out="$(run --mode repo --out-dir "$TMP/p10" --question-file "$TMP/q.txt" --file "$TMP/late.txt" | tail -n1)"
+if [[ "$out" == "ORACLE_SUMMARY_REVIEW" ]] && grep -q "secret_excluded: .*late.txt" "$TMP/p10/manifest.txt"; then
+  ok "secret past 64KB caught"
+else
+  fail "t10 late secret slipped through (got '$out')"
+fi
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

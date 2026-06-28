@@ -96,9 +96,13 @@ is_secret_basename() {
   local restore rc=1
   restore="$(shopt -p nocasematch)"
   shopt -s nocasematch
+  # `*_key*`/`*-key*`/`*apikey*` catch api_key, api-key, access_key, private-key.json
+  # WITHOUT over-matching ordinary names (keyboard, keymap, monkey, hotkeys) the way a
+  # bare `*key*` would. Content secret-values are caught separately by is_secret_like.
   case "$1" in
     .env|.env.*|*.pem|*.key|*.pfx|*.p12|id_rsa|id_dsa|id_ecdsa|id_ed25519|\
-    *secret*|*token*|*credential*|*cookie*|*.keystore|*.jks) rc=0;;
+    *secret*|*token*|*credential*|*cookie*|*.keystore|*.jks|\
+    *_key*|*-key*|*apikey*) rc=0;;
   esac
   eval "$restore"
   return "$rc"

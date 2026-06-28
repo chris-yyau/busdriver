@@ -307,5 +307,20 @@ else
 fi
 rm -f "$TMP/API_TOKEN" "$TMP/Cookies.txt"
 
+# Test 28: API-key basenames excluded, but ordinary "key" names NOT over-excluded.
+echo "k" > "$TMP/API_KEY"; echo "k" > "$TMP/api-key.json"; echo "code" > "$TMP/keyboard.sh"
+out="$(run --mode repo --out-dir "$TMP/p28" --question-file "$TMP/q.txt" \
+        --file "$TMP/API_KEY" --file "$TMP/api-key.json" --file "$TMP/keyboard.sh" | tail -n1)"
+# keyboard.sh must be attached (REPO_ATTACHED), the two key files excluded.
+have_kbd=0; for f in "$TMP/p28/files/"*; do case "${f##*/}" in *keyboard.sh) have_kbd=1;; esac; done
+if [[ "$out" == "ORACLE_REPO_ATTACHED_REVIEW" ]] && [ "$have_kbd" -eq 1 ] \
+   && grep -q "secret_excluded: .*API_KEY" "$TMP/p28/manifest.txt" \
+   && grep -q "secret_excluded: .*api-key.json" "$TMP/p28/manifest.txt"; then
+  ok "API-key names excluded, keyboard.sh kept (no over-match)"
+else
+  fail "t28 key-name handling wrong (got '$out' have_kbd=$have_kbd)"
+fi
+rm -f "$TMP/API_KEY" "$TMP/api-key.json" "$TMP/keyboard.sh"
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

@@ -77,9 +77,12 @@ RUN_ID="evpack-$(date -u +%Y%m%d-%H%M%S)-$$"
 # rejected path leaves nothing behind, then `mkdir` (not -p) so a race that pre-creates
 # the path fails loudly rather than reusing a planted dir.
 [[ -e "$OUT_DIR" ]] && { echo "error: --out-dir must not already exist (a fresh dir is required)" >&2; exit 4; }
-_op="$(cd "$(dirname -- "$OUT_DIR")" 2>/dev/null && pwd -P)" \
+# dirname/basename via parameter expansion (portable; no reliance on `--` support):
+# strip a trailing slash, take the parent (or "." when there's no slash) and the leaf.
+_od="${OUT_DIR%/}"; _odp="${_od%/*}"; [ "$_odp" = "$_od" ] && _odp="."
+_op="$(cd "$_odp" 2>/dev/null && pwd -P)" \
   || { echo "error: --out-dir parent does not exist" >&2; exit 4; }
-OUT_DIR="$_op/$(basename -- "$OUT_DIR")"
+OUT_DIR="$_op/${_od##*/}"
 case "$OUT_DIR" in
   "$GIT_ROOT"/*) : ;;
   *) echo "error: --out-dir must be inside the repo ($GIT_ROOT)" >&2; exit 4;;
@@ -161,8 +164,9 @@ contained_path() {
   # but a repo-local link (repo/leak -> /outside/file) would otherwise canonicalize to
   # an in-repo name yet cp through to outside content. Regular evidence files only.
   [[ -L "$src" ]] && return 1
-  dir="$(cd "$(dirname -- "$src")" 2>/dev/null && pwd -P)" || return 1
-  base="$(basename -- "$src")"
+  local s="${src%/}" sp; sp="${s%/*}"; [ "$sp" = "$s" ] && sp="."
+  dir="$(cd "$sp" 2>/dev/null && pwd -P)" || return 1
+  base="${s##*/}"
   canon="$dir/$base"
   [[ -L "$canon" ]] && return 1
   case "$canon" in
@@ -207,7 +211,8 @@ if [[ -n "$QUESTION_FILE" ]]; then
     # Canonicalize FIRST so the GIT_ROOT-relative secret check and the self-copy guard
     # both compare canonical paths — a raw /var arg vs a /private/var GIT_ROOT (macOS
     # symlink) would otherwise miss the prefix-strip and walk secret-named ancestors.
-    q_canon="$(cd "$(dirname -- "$QUESTION_FILE")" && pwd -P)/$(basename -- "$QUESTION_FILE")"
+    _qf="${QUESTION_FILE%/}"; _qfp="${_qf%/*}"; [ "$_qfp" = "$_qf" ] && _qfp="."
+    q_canon="$(cd "$_qfp" && pwd -P)/${_qf##*/}"
     if is_secret_like "$q_canon"; then
       echo "error: --question-file looks secret-like — refusing to send" >&2; exit 4
     fi
@@ -242,7 +247,7 @@ gate_generated() {
     rm -f -- "$p"; echo "SKIP over budget: $label" >&2; return 0
   fi
   spent=$((spent + sz))
-  echo "$label: $(basename "$p") ($sz bytes)" >> "$MANIFEST"
+  echo "$label: ${p##*/} ($sz bytes)" >> "$MANIFEST"
 }
 
 # Git context — deterministic, read-only, then gated like any other artifact.

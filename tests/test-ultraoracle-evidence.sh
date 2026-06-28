@@ -307,20 +307,52 @@ else
 fi
 rm -f "$TMP/API_TOKEN" "$TMP/Cookies.txt"
 
-# Test 28: API-key basenames excluded, but ordinary "key" names NOT over-excluded.
-echo "k" > "$TMP/API_KEY"; echo "k" > "$TMP/api-key.json"; echo "code" > "$TMP/keyboard.sh"
+# Test 28: secret-context key basenames excluded, ordinary "key" names NOT over-excluded.
+echo "k" > "$TMP/API_KEY"; echo "k" > "$TMP/api-key.json"; echo "k" > "$TMP/private_key.json"
+echo "code" > "$TMP/keyboard.sh"
 out="$(run --mode repo --out-dir "$TMP/p28" --question-file "$TMP/q.txt" \
-        --file "$TMP/API_KEY" --file "$TMP/api-key.json" --file "$TMP/keyboard.sh" | tail -n1)"
-# keyboard.sh must be attached (REPO_ATTACHED), the two key files excluded.
+        --file "$TMP/API_KEY" --file "$TMP/api-key.json" --file "$TMP/private_key.json" \
+        --file "$TMP/keyboard.sh" | tail -n1)"
 have_kbd=0; for f in "$TMP/p28/files/"*; do case "${f##*/}" in *keyboard.sh) have_kbd=1;; esac; done
 if [[ "$out" == "ORACLE_REPO_ATTACHED_REVIEW" ]] && [ "$have_kbd" -eq 1 ] \
    && grep -q "secret_excluded: .*API_KEY" "$TMP/p28/manifest.txt" \
-   && grep -q "secret_excluded: .*api-key.json" "$TMP/p28/manifest.txt"; then
-  ok "API-key names excluded, keyboard.sh kept (no over-match)"
+   && grep -q "secret_excluded: .*api-key.json" "$TMP/p28/manifest.txt" \
+   && grep -q "secret_excluded: .*private_key.json" "$TMP/p28/manifest.txt"; then
+  ok "secret-context key names excluded, keyboard.sh kept (no over-match)"
 else
   fail "t28 key-name handling wrong (got '$out' have_kbd=$have_kbd)"
 fi
-rm -f "$TMP/API_KEY" "$TMP/api-key.json" "$TMP/keyboard.sh"
+rm -f "$TMP/API_KEY" "$TMP/api-key.json" "$TMP/private_key.json" "$TMP/keyboard.sh"
+
+# Test 29: ordinary "key"-containing names are NOT over-excluded (cubic overmatch guard).
+echo "a" > "$TMP/schema-foreign-key.sql"; echo "b" > "$TMP/primary_key_index.sql"; echo "c" > "$TMP/keys.json"
+out="$(run --mode repo --out-dir "$TMP/p29" --question-file "$TMP/q.txt" \
+        --file "$TMP/schema-foreign-key.sql" --file "$TMP/primary_key_index.sql" --file "$TMP/keys.json" | tail -n1)"
+n29=0; for f in "$TMP/p29/files/"*; do [ -e "$f" ] && n29=$((n29+1)); done
+if [[ "$out" == "ORACLE_REPO_ATTACHED_REVIEW" ]] && [ "$n29" -eq 3 ]; then
+  ok "foreign-key/primary_key/keys.json not over-excluded"
+else
+  fail "t29 ordinary key names over-excluded (n=$n29 out='$out')"
+fi
+rm -f "$TMP/schema-foreign-key.sql" "$TMP/primary_key_index.sql" "$TMP/keys.json"
+
+# Test 30: upstream inventory filename uses the BASENAME, not the absolute path.
+run --mode upstream-audit --out-dir "$TMP/p30" --question-file "$TMP/q.txt" --upstream "$TMP" >/dev/null
+leak30=0
+for f in "$TMP/p30"/upstream-*.txt; do
+  [ -e "$f" ] || continue
+  case "${f##*/}" in *private*|*Volumes*|*Users*|*folders*) leak30=1;; esac
+done
+if [ "$leak30" -eq 0 ]; then ok "upstream inv filename is basename-only"; else fail "t30 absolute path in inv filename"; fi
+
+# Test 31: the pack dir itself is excluded from git-status.txt (no self-listing when
+#          the state dir is not gitignored).
+run --mode repo --out-dir "$TMP/p31" --question-file "$TMP/q.txt" >/dev/null
+if ! grep -q "p31/" "$TMP/p31/git-status.txt" 2>/dev/null; then
+  ok "pack dir excluded from git status"
+else
+  fail "t31 pack dir self-listed in git status"
+fi
 
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

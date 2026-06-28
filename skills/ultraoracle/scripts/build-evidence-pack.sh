@@ -96,13 +96,17 @@ is_secret_basename() {
   local restore rc=1
   restore="$(shopt -p nocasematch)"
   shopt -s nocasematch
-  # `*_key*`/`*-key*`/`*apikey*` catch api_key, api-key, access_key, private-key.json
-  # WITHOUT over-matching ordinary names (keyboard, keymap, monkey, hotkeys) the way a
-  # bare `*key*` would. Content secret-values are caught separately by is_secret_like.
+  # Key patterns match only SECRET-CONTEXT prefixes (api/access/private/signing/
+  # encryption + key) — NOT a bare `*key*`/`*_key*`/`*-key*`, which would over-exclude
+  # ordinary source (schema-foreign-key.sql, primary_key_index, keyboard, keys.json
+  # i18n). A generic "key"/"keys" basename is intentionally NOT denylisted: its secret
+  # VALUES are still caught by is_secret_like's content scan and the operator selects
+  # --file attachments explicitly. *secret* already covers secret_key.
   case "$1" in
     .env|.env.*|*.pem|*.key|*.pfx|*.p12|id_rsa|id_dsa|id_ecdsa|id_ed25519|\
     *secret*|*token*|*credential*|*cookie*|*.keystore|*.jks|\
-    *_key*|*-key*|*apikey*) rc=0;;
+    *apikey*|*api_key*|*api-key*|*access?key*|*private?key*|*privatekey*|\
+    *signing?key*|*encryption?key*) rc=0;;
   esac
   eval "$restore"
   return "$rc"
@@ -246,7 +250,13 @@ gate_generated() {
 # path would still leak the file's CONTENT through the add-half of the --no-renames
 # content diff. -z keeps control-char paths intact (no C-quoting). The content diff
 # below then runs with --no-renames so each excluded endpoint drops its own hunk.
-diff_excludes=()
+# Seed excludes with the pack dir itself: if the operator's state dir isn't gitignored,
+# the pack we just created would otherwise show up as untracked in our own status/diff.
+out_rel="${OUT_DIR#"$GIT_ROOT"/}"
+diff_excludes=(":(exclude)$out_rel")
+# -M10% (lower than the 50% default) so a move-with-edits out of a secret path is still
+# detected as a rename and BOTH endpoints excluded. A near-total rewrite that drops
+# below this still has its secret VALUES caught by gate_generated's content scan.
 while IFS= read -r -d '' _st; do
   case "$_st" in
     R*|C*)   # rename/copy: two path records follow (old, new)
@@ -259,23 +269,19 @@ while IFS= read -r -d '' _st; do
       IFS= read -r -d '' _p || break
       [[ -n "$_p" ]] && is_secret_path "$_p" && diff_excludes+=(":(exclude)$_p") ;;
   esac
-done < <(git -C "$GIT_ROOT" diff HEAD --no-ext-diff -M --name-status -z 2>/dev/null || true)
+done < <(git -C "$GIT_ROOT" diff HEAD --no-ext-diff -M10% --name-status -z 2>/dev/null || true)
 # git status: -z (no C-quoting) + status.renames=false so every record is `XY <path>`,
-# letting us strip the fixed 3-byte `XY ` prefix and secret-check the real path.
-git -C "$GIT_ROOT" -c status.renames=false status --porcelain -z 2>/dev/null \
+# letting us strip the fixed 3-byte `XY ` prefix and secret-check the real path. Exclude
+# the pack dir via pathspec so the pack never lists itself.
+git -C "$GIT_ROOT" -c status.renames=false status --porcelain -z -- . ":(exclude)$out_rel" 2>/dev/null \
   | { while IFS= read -r -d '' _rec; do
         _p="${_rec:3}"
         [ -n "$_p" ] && is_secret_path "$_p" && continue
         printf '%s\n' "$_rec"
       done; } > "$OUT_DIR/git-status.txt" || true
-# Expand the exclude array only when non-empty — "${arr[@]}" on an empty array trips
-# set -u under bash 3.2, and an empty pathspec arg would confuse git diff.
-if [ "${#diff_excludes[@]}" -gt 0 ]; then
-  git -C "$GIT_ROOT" diff HEAD --no-ext-diff --no-textconv --no-renames -- . "${diff_excludes[@]}" \
-    > "$OUT_DIR/git-diff.txt" 2>/dev/null || true
-else
-  git -C "$GIT_ROOT" diff HEAD --no-ext-diff --no-textconv --no-renames > "$OUT_DIR/git-diff.txt" 2>/dev/null || true
-fi
+# diff_excludes is always non-empty (seeded with the pack dir), so the pathspec form runs.
+git -C "$GIT_ROOT" diff HEAD --no-ext-diff --no-textconv --no-renames -- . "${diff_excludes[@]}" \
+  > "$OUT_DIR/git-diff.txt" 2>/dev/null || true
 gate_generated "$OUT_DIR/git-status.txt" "git_status"
 gate_generated "$OUT_DIR/git-diff.txt"   "git_diff"
 
@@ -331,10 +337,14 @@ if [[ "$MODE" == "upstream-audit" && "${#UPSTREAM[@]}" -gt 0 ]]; then
     # repos with a physical .git directory.
     ( cd "$u" && git rev-parse --is-inside-work-tree >/dev/null 2>&1 ) \
       || { echo "skip upstream (not a git work tree): $u" >&2; continue; }
-    # Index prefix + alnum-only sanitize: a user-supplied path with newlines, slashes,
-    # or leading dashes can never produce a confusing/unsafe output filename.
+    # Inventory file name = index + sanitized BASENAME only. Using the full path would
+    # encode the absolute local checkout location (/Users/alice/client-x/...) into a
+    # transmitted attachment name; the index keeps names unique without that leak.
     up_idx=$((up_idx + 1))
-    inv_name="${up_idx}_$(printf '%s' "$u" | tr -c 'A-Za-z0-9' '_')"
+    # Pure parameter expansion (no basename(1), whose `--` handling varies on BSD):
+    # strip a trailing slash, then everything up to the last remaining slash.
+    u_base="${u%/}"; u_base="${u_base##*/}"
+    inv_name="${up_idx}_$(printf '%s' "$u_base" | tr -c 'A-Za-z0-9' '_')"
     # Tracked files only (no `find` fallback — that could inventory .git internals or
     # untracked files). -z so a control-char path isn't C-quoted past the denylist.
     if ! ( cd "$u" && git ls-files -z ) 2>/dev/null | emit_nonsecret_z > "$OUT_DIR/upstream-$inv_name.txt"; then

@@ -87,13 +87,20 @@ MANIFEST="$OUT_DIR/manifest.txt"
 
 # secret-like? filename denylist + known secret-content prefixes. No override (ADR 348).
 # The sk- pattern allows '-'/'_' so namespaced keys (sk-proj-…, sk-ant-api03-…) match.
-is_secret_like() {
-  local p="$1" base; base="$(basename "$p")"
-  case "$base" in
+# Filename denylist only (no content read) — reused by is_secret_like AND the git-diff
+# pathspec filter so a tracked secret file never rides out inside the aggregated diff.
+is_secret_basename() {
+  case "$1" in
     .env|.env.*|*.pem|*.key|*.pfx|*.p12|id_rsa|id_dsa|id_ecdsa|id_ed25519|\
     *secret*|*Secret*|*SECRET*|*token*|*Token*|*credential*|*Credential*|\
     *.keystore|*.jks|cookies|Cookies|*.cookie) return 0;;
   esac
+  return 1
+}
+
+is_secret_like() {
+  local p="$1" base; base="$(basename "$p")"
+  is_secret_basename "$base" && return 0
   # Content scan over the WHOLE file (a token past an arbitrary byte cap must not
   # slip through); -a treats binary as text. Files are bounded by the byte budget.
   if LC_ALL=C grep -aqE \
@@ -175,8 +182,24 @@ gate_generated() {
 }
 
 # Git context — deterministic, read-only, then gated like any other artifact.
+# --no-ext-diff/--no-textconv stop git from invoking configured external diff or
+# textconv commands while building a supposedly read-only pack. Secret-pathed files
+# are excluded from the diff up front (pathspec), so a tracked .env/*.pem change can
+# never ride out inside the aggregated diff even when its value matches no token regex.
+diff_excludes=()
+while IFS= read -r _p; do
+  [[ -n "$_p" ]] || continue
+  is_secret_basename "${_p##*/}" && diff_excludes+=(":(exclude)$_p")
+done < <(git -C "$GIT_ROOT" diff --no-ext-diff --name-only 2>/dev/null || true)
 git -C "$GIT_ROOT" status --porcelain > "$OUT_DIR/git-status.txt" 2>/dev/null || true
-git -C "$GIT_ROOT" diff > "$OUT_DIR/git-diff.txt" 2>/dev/null || true
+# Expand the exclude array only when non-empty — "${arr[@]}" on an empty array trips
+# set -u under bash 3.2, and an empty pathspec arg would confuse git diff.
+if [ "${#diff_excludes[@]}" -gt 0 ]; then
+  git -C "$GIT_ROOT" diff --no-ext-diff --no-textconv -- . "${diff_excludes[@]}" \
+    > "$OUT_DIR/git-diff.txt" 2>/dev/null || true
+else
+  git -C "$GIT_ROOT" diff --no-ext-diff --no-textconv > "$OUT_DIR/git-diff.txt" 2>/dev/null || true
+fi
 gate_generated "$OUT_DIR/git-status.txt" "git_status"
 gate_generated "$OUT_DIR/git-diff.txt"   "git_diff"
 
@@ -221,7 +244,12 @@ if [[ "$MODE" == "upstream-audit" ]]; then
     # names. This scopes upstream-audit to deliberately-chosen project checkouts.
     [[ -d "$u/.git" ]] || { echo "skip upstream (not a git repo root): $u" >&2; continue; }
     inv_name="$(printf '%s' "$u" | tr '/' '_')"
-    ( cd "$u" && git ls-files 2>/dev/null || find . -type f ) > "$OUT_DIR/upstream-$inv_name.txt" 2>/dev/null || true
+    # Tracked files only — no `find` fallback (which could inventory .git internals,
+    # untracked files, or run from the wrong dir if cd failed). Skip on any failure.
+    if ! ( cd "$u" && git ls-files ) > "$OUT_DIR/upstream-$inv_name.txt" 2>/dev/null; then
+      rm -f -- "$OUT_DIR/upstream-$inv_name.txt"
+      echo "skip upstream (git ls-files failed): $u" >&2; continue
+    fi
     gate_generated "$OUT_DIR/upstream-$inv_name.txt" "upstream_inventory"
   done
 fi

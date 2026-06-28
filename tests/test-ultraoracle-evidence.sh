@@ -157,5 +157,18 @@ set -e
 if [[ ! -e "$OUTDIR2/pack" ]]; then ok "rejected out-dir leaves nothing behind"; else fail "t14 out-dir created outside repo"; fi
 rm -rf "$OUTDIR2"
 
+# Test 15: a tracked secret-NAMED file's change is excluded from git-diff.txt by
+#          pathspec, even when its value matches no token regex (HIGH boundary).
+( cd "$TMP" && echo "plainvalue" > app.token && git add app.token && git commit -qm tok \
+   && echo "changed-secret" >> app.token && echo "ordinary change" >> app.sh )
+run --mode repo --out-dir "$TMP/p15" --question-file "$TMP/q.txt" >/dev/null
+if grep -q "app.sh" "$TMP/p15/git-diff.txt" 2>/dev/null \
+   && ! grep -q "app.token" "$TMP/p15/git-diff.txt" 2>/dev/null; then
+  ok "secret-named file excluded from git diff"
+else
+  fail "t15 secret-named file leaked into git diff"
+fi
+( cd "$TMP" && git checkout -q -- app.sh app.token )
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

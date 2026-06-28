@@ -138,5 +138,24 @@ set +e
 set -e
 if [[ "$rc" -eq 2 ]]; then ok "trailing --file fails closed (usage)"; else fail "t12 trailing --file rc=$rc (expected 2)"; fi
 
+# Test 13: a repo-local symlink pointing outside the repo is rejected (no cp-through).
+EXT="$(mktemp)"; echo "external secretless content" > "$EXT"
+( cd "$TMP" && ln -sf "$EXT" leak.txt )
+out="$(run --mode repo --out-dir "$TMP/p13" --question-file "$TMP/q.txt" --file "$TMP/leak.txt" | tail -n1)"
+if [[ "$out" == "ORACLE_SUMMARY_REVIEW" ]] && grep -q "path_excluded" "$TMP/p13/manifest.txt"; then
+  ok "repo-local symlink to outside rejected"
+else
+  fail "t13 symlink escape attached (got '$out')"
+fi
+rm -f "$EXT" "$TMP/leak.txt"
+
+# Test 14: a rejected out-of-repo --out-dir leaves nothing behind.
+OUTDIR2="$(mktemp -d)"
+set +e
+( cd "$TMP" && bash "$SCRIPT" --mode repo --out-dir "$OUTDIR2/pack" --question-file "$TMP/q.txt" >/dev/null 2>&1 )
+set -e
+if [[ ! -e "$OUTDIR2/pack" ]]; then ok "rejected out-dir leaves nothing behind"; else fail "t14 out-dir created outside repo"; fi
+rm -rf "$OUTDIR2"
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

@@ -67,15 +67,21 @@ GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 # RUN_ID must be unique per run; this is a plain operator-run script, so date is fine.
 RUN_ID="evpack-$(date -u +%Y%m%d-%H%M%S)-$$"
 
-mkdir -p "$OUT_DIR/files" || { echo "error: cannot create out-dir" >&2; exit 4; }
-# Constrain the only write target to live under the repo — the script documents
-# read-only behavior everywhere except --out-dir, so enforce that boundary rather
-# than letting a caller scatter the manifest/diff/attached files into arbitrary paths.
-OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
+# Constrain the only write target to live under the repo, and validate BEFORE any
+# mkdir so a rejected out-of-repo path leaves nothing behind. Canonicalize from the
+# existing dir, or from the parent when the target does not exist yet.
+if [[ -d "$OUT_DIR" ]]; then
+  OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
+else
+  _op="$(cd "$(dirname -- "$OUT_DIR")" 2>/dev/null && pwd -P)" \
+    || { echo "error: --out-dir parent does not exist" >&2; exit 4; }
+  OUT_DIR="$_op/$(basename -- "$OUT_DIR")"
+fi
 case "$OUT_DIR" in
   "$GIT_ROOT"/*) : ;;
   *) echo "error: --out-dir must be inside the repo ($GIT_ROOT)" >&2; exit 4;;
 esac
+mkdir -p "$OUT_DIR/files" || { echo "error: cannot create out-dir" >&2; exit 4; }
 MANIFEST="$OUT_DIR/manifest.txt"
 : > "$MANIFEST"
 
@@ -106,9 +112,14 @@ is_secret_like() {
 # escapes, ../ traversal, symlinked siblings) so it is never attached.
 contained_path() {
   local src="$1" dir base canon
+  # Reject a symlinked final component: cd+pwd -P resolves intermediate dir symlinks,
+  # but a repo-local link (repo/leak -> /outside/file) would otherwise canonicalize to
+  # an in-repo name yet cp through to outside content. Regular evidence files only.
+  [[ -L "$src" ]] && return 1
   dir="$(cd "$(dirname -- "$src")" 2>/dev/null && pwd -P)" || return 1
   base="$(basename -- "$src")"
   canon="$dir/$base"
+  [[ -L "$canon" ]] && return 1
   case "$canon" in
     "$GIT_ROOT"/*) printf '%s' "$canon"; return 0;;
     *) return 1;;

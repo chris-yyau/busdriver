@@ -38,7 +38,7 @@ A dogfood ultra-council run was performed before this ADR was written:
 - Run id: `ultra-council-20260625-160348`
 - Voices: Agy Pragmatist, Codex Critic, Grok Researcher, Fresh Claude Skeptic, UltraOracle GPT-5.5 Pro
 - Result: all voices completed after retrying the Fresh Claude Skeptic with a higher turn budget; UltraOracle completed with `rc=0`
-- UltraOracle in that run received attached repo files, so it was better than a pure summary review, but it was not yet a two-round retrieval review.
+- UltraOracle in that run received attached repo files, so under the labels defined below it was an `ORACLE_REPO_ATTACHED_REVIEW` (better than a pure summary review), but it was not yet a two-round `ORACLE_RETRIEVAL_REVIEW`.
 
 The dogfood consensus was:
 
@@ -114,7 +114,7 @@ For every material claim from Agy, Codex, Grok, Oracle, or Claude main, the arbi
 3. record evidence such as `path:line`, command output, test output, or explicit missing evidence;
 4. mark ungrounded claims explicitly;
 5. inspect the repo directly to fill gaps;
-6. decide `PASS` or `FAIL` only after validation.
+6. decide `PASS` or `FAIL` only after validation. Per the upstream `skills/blueprint-review/SKILL.md` contract, mark `PASS` only when the arbiter's verdict has no HIGH/MEDIUM issues at confidence >= 0.5.
 
 Oracle may raise high-value issues. Fable decides whether those issues are real and gate-blocking.
 
@@ -235,11 +235,13 @@ Oracle receives the requested evidence and returns:
 }
 ```
 
+`UNCERTAIN` is advisory-only: it never gate-blocks on its own. Downstream consumers treat it as an Oracle limitation rather than a verdict — the Fable/Claude arbiter still decides the final `PASS`/`FAIL` from arbiter-validated claims, and an `UNCERTAIN` Oracle result does not by itself force ultra-council escalation or require human intervention. It is recorded in the evidence trail so the arbiter can weigh the unresolved area.
+
 ## Rollout plan
 
-### Phase 0: Dogfood first
+### Phase 0: Dogfood first (Completed 2026-06-28)
 
-Any major review-architecture change should be dogfooded through ultra-council once before implementation.
+Any major review-architecture change should be dogfooded through ultra-council once before implementation. This phase is complete: the dogfood run described in the Context section above satisfied the acceptance criteria below.
 
 Acceptance:
 
@@ -342,9 +344,9 @@ Acceptance:
 
 - `ultraOracle` enablement remains user-only (`~/.claude/busdriver.json`).
 - Repo-controlled config must not silently enable ChatGPT/Oracle transmission.
-- Cookie/session paths are credential-bearing and must not be logged or inlined beyond necessary status messages.
+- Cookie/session paths are credential-bearing: only sanitized path basenames may appear in status messages, and full paths must never appear in logs or terminal output.
 - Unreadable configured cookie/session paths fail closed.
-- Secret-like files must not be included in evidence packs by default.
+- Secret-like files must never be included in evidence packs; there is no override path.
 - Oracle requests in retrieval-loop mode are treated as untrusted; Busdriver chooses what to read and attach.
 
 ## Settling checks
@@ -353,7 +355,7 @@ These checks falsify the design if they fail:
 
 1. **Ultra-council trigger check:** a forced ultra-council run must show normal council voices plus a separate UltraOracle Expert Witness section. If Oracle appears as vote #6, the design failed.
 2. **Label check:** a summary-only repo-specific Oracle consult must be labeled `ORACLE_SUMMARY_REVIEW`. If it becomes `ORACLE_REPO_ATTACHED_REVIEW` or `ORACLE_RETRIEVAL_REVIEW`, the labeling contract failed.
-3. **Arbiter validation check:** inject or simulate an Oracle advisory with one false file claim. Blueprint-review must not pass/fail based on that claim without Fable/Claude arbiter verification.
+3. **Arbiter validation check:** inject or simulate an Oracle advisory with one false file claim. Blueprint-review must reject the false claim; the final `PASS`/`FAIL` must depend solely on arbiter-validated claims.
 4. **Coverage check:** Oracle output must not count toward formal reviewer coverage in blueprint-review.
 5. **Retrieval check:** a claimed `ORACLE_RETRIEVAL_REVIEW` must include a trace where Oracle requested files/searches not present in the initial payload and Busdriver retrieved them read-only.
 6. **Failure check:** if Oracle times out or writes no verdict, the report must render `ORACLE_FAILED` or a loud failure banner, not silently omit it.

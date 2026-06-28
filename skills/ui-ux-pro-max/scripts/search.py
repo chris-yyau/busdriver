@@ -85,7 +85,7 @@ if __name__ == "__main__":
         
         # Print persistence confirmation
         if args.persist:
-            project_slug = _safe_slug(args.project_name) if args.project_name else "default"
+            project_slug = _safe_slug(args.project_name) if args.project_name else _safe_slug(args.query.upper())
             print("\n" + "=" * 60)
             print(f"✅ Design system persisted to design-system/{project_slug}/")
             print(f"   📄 design-system/{project_slug}/MASTER.md (Global Source of Truth)")

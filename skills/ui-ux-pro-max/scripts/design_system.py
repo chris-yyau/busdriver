@@ -31,9 +31,8 @@ def _safe_slug(name: str, default: str = "default") -> str:
     `project_name`/`page` come from operator CLI args, but containment is
     cheap insurance.
     """
-    slug = re.sub(r"\s+", "-", str(name).strip().lower())
-    slug = re.sub(r"[/\\\x00-\x1f]+", "", slug)  # path separators + control chars
-    slug = slug.strip(". ")  # drop leading/trailing dots so "." / ".." can't survive
+    slug = re.sub(r'[\s/\\:*?"<>|\x00-\x1f]+', "-", str(name).strip().lower())
+    slug = slug.strip(".- ")  # drop edge dots/spaces/dashes after sanitization
     return slug or default
 
 

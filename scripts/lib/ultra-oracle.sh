@@ -19,11 +19,14 @@ source "${_ULTRA_ORACLE_DIR}/ultra-oracle-config.sh"   # also transitively sourc
 # check accepts that and renders junk as a successful verdict (false-ok). Require a
 # minimum count of NON-WHITESPACE bytes so single-token captures ("I", "ok", "n/a")
 # fail closed while any real one-sentence advisory passes. Tunable via
-# ULTRA_ORACLE_MIN_VERDICT_CHARS (default 8; invalid/empty falls back to 8).
+# ULTRA_ORACLE_MIN_VERDICT_BYTES (default 8; invalid/empty/zero falls back to 8).
+# Note: wc -c counts bytes, not Unicode characters — multibyte chars count more than
+# one toward the floor. ASCII verdicts dominate in practice; the byte floor is the
+# correct primitive here (we're guarding against near-empty captures, not charset issues).
 _ultra_oracle_verdict_ok() {
   local f="$1" min nonws
-  min="${ULTRA_ORACLE_MIN_VERDICT_CHARS:-8}"
-  case "$min" in ''|*[!0-9]*) min=8;; esac
+  min="${ULTRA_ORACLE_MIN_VERDICT_BYTES:-8}"
+  case "$min" in ''|*[!0-9]*|0) min=8;; esac
   [[ -s "$f" ]] || return 1
   nonws="$(tr -d '[:space:]' < "$f" 2>/dev/null | wc -c | tr -dc '0-9')"
   [ -n "$nonws" ] || return 1

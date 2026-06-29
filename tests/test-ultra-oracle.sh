@@ -35,10 +35,27 @@ grep -q "ULTRA-ORACLE VERDICT" "$tmp/v.md" || { echo "FAIL verdict not captured"
 export ULTRA_ORACLE_MOCK_MODE=degen
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/vd.md" --mode blocking)"
 [ "$st" = "error" ] || { echo "FAIL degen->error got '$st'"; FAIL=1; }
-# ...and the floor must NOT reject a real short verdict (regression guard on the default)
-export ULTRA_ORACLE_MOCK_MODE=ok
+# ...and the floor must NOT reject a verdict at exactly the default threshold (8 non-ws bytes).
+# Use a dedicated near-threshold stub so this guard actually exercises the boundary,
+# not the full ~30-char 'ok' mock which would pass even with a much higher floor.
+cat > "$tmp/bin/oracle" <<'STUB'
+#!/bin/bash
+[ -n "${ULTRA_ORACLE_ARGV_OUT:-}" ] && for a in "$@"; do printf '%s\n' "$a"; done > "$ULTRA_ORACLE_ARGV_OUT"
+out=""
+while [ $# -gt 0 ]; do case "$1" in --write-output) out="$2"; shift 2;; *) shift;; esac; done
+case "${ULTRA_ORACLE_MOCK_MODE:-ok}" in
+  ok)       [ -n "$out" ] && printf 'ULTRA-ORACLE VERDICT: looks good\n' > "$out"; exit 0;;
+  empty)    exit 0;;
+  degen)    [ -n "$out" ] && printf 'I\n' > "$out"; exit 0;;
+  mingood)  [ -n "$out" ] && printf 'abcdefgh\n' > "$out"; exit 0;;  # exactly 8 non-ws bytes
+  hang)     sleep 30; exit 0;;
+  fail)     exit 7;;
+esac
+STUB
+chmod +x "$tmp/bin/oracle"
+export ULTRA_ORACLE_MOCK_MODE=mingood
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/vok.md" --mode blocking)"
-[ "$st" = "ok" ] || { echo "FAIL floor false-rejects real verdict got '$st'"; FAIL=1; }
+[ "$st" = "ok" ] || { echo "FAIL floor false-rejects 8-byte verdict got '$st'"; FAIL=1; }
 
 # exit 0 but empty output -> error (fail-closed file check)
 export ULTRA_ORACLE_MOCK_MODE=empty

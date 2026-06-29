@@ -1,3 +1,10 @@
+## [1.72.1](https://github.com/chris-yyau/busdriver/compare/v1.72.0...v1.72.1) (2026-06-29)
+
+
+### Bug Fixes
+
+* **ultra-oracle:** reject degenerate near-empty verdicts (false-ok) ([#259](https://github.com/chris-yyau/busdriver/issues/259)) ([ca7e1c3](https://github.com/chris-yyau/busdriver/commit/ca7e1c381a8c495607c3648c6b3f60a4dcd7b993))
+
 # [1.72.0](https://github.com/chris-yyau/busdriver/compare/v1.71.5...v1.72.0) (2026-06-28)
 
 

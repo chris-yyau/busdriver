@@ -1,3 +1,10 @@
+## [1.72.2](https://github.com/chris-yyau/busdriver/compare/v1.72.1...v1.72.2) (2026-06-29)
+
+
+### Bug Fixes
+
+* **test:** eliminate SIGPIPE race in verdict-freshness cleanup check ([#260](https://github.com/chris-yyau/busdriver/issues/260)) ([b1a9bd4](https://github.com/chris-yyau/busdriver/commit/b1a9bd45f99e8db9722b915b5af801b7f789838f))
+
 ## [1.72.1](https://github.com/chris-yyau/busdriver/compare/v1.72.0...v1.72.1) (2026-06-29)
 
 

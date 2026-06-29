@@ -124,7 +124,10 @@ fi
 # Static 4: claude.json is cleaned unconditionally with the other artifacts
 TOTAL=$((TOTAL + 1))
 CLEANUP_BLOCK=$(sed -n '/Cleaning stale artifacts/,/Stale artifacts cleared/p' "$REVIEW_SCRIPT")
-if echo "$CLEANUP_BLOCK" | grep -q 'get_review_file "claude.json"'; then
+# here-string, not `echo | grep -q`: under `set -o pipefail`, grep -q closes the
+# pipe on first match and the upstream echo takes SIGPIPE (141), flipping the
+# pipeline non-zero even on a match — an intermittent false FAIL. No pipe, no race.
+if grep -q 'get_review_file "claude.json"' <<<"$CLEANUP_BLOCK"; then
   printf "  PASS  claude.json cleaned unconditionally in iteration cleanup\n"
   PASS=$((PASS + 1))
 else

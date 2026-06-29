@@ -12,6 +12,27 @@ _ULTRA_ORACLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${_ULTRA_ORACLE_DIR}/ultra-oracle-config.sh"   # also transitively sources resolve-cli.sh
 
+# _ultra_oracle_verdict_ok <file> -> 0 if the file holds a usable verdict.
+# A usable verdict must be more than a degenerate token. The oracle browser engine can
+# exit 0 yet write a near-empty body (observed live: a 2-byte "I\n" when extraction
+# races the response stream or the ChatGPT session is stale). A bare `-s` (non-empty)
+# check accepts that and renders junk as a successful verdict (false-ok). Require a
+# minimum count of NON-WHITESPACE bytes so single-token captures ("I", "ok", "n/a")
+# fail closed while any real one-sentence advisory passes. Tunable via
+# ULTRA_ORACLE_MIN_VERDICT_BYTES (default 8; invalid/empty/zero falls back to 8).
+# Note: wc -c counts bytes, not Unicode characters — multibyte chars count more than
+# one toward the floor. ASCII verdicts dominate in practice; the byte floor is the
+# correct primitive here (we're guarding against near-empty captures, not charset issues).
+_ultra_oracle_verdict_ok() {
+  local f="$1" min nonws
+  min="${ULTRA_ORACLE_MIN_VERDICT_BYTES:-8}"
+  case "$min" in ''|*[!0-9]*|0) min=8;; esac
+  [[ -s "$f" ]] || return 1
+  nonws="$(tr -d '[:space:]' < "$f" 2>/dev/null | wc -c | tr -dc '0-9')"
+  [[ -n "$nonws" ]] || return 1
+  [ "$nonws" -ge "$min" ]
+}
+
 # ultra_oracle_consult --prompt <t> | --prompt-file <p>  [--context <glob>]... \
 #   --out <path> [--mode blocking|background] [--timeout-cap-seconds <n>] [--slug <words>]
 # Prints exactly one of: ok | skipped:unavailable | skipped:user | timeout | error | dispatched
@@ -74,7 +95,7 @@ ultra_oracle_consult() {
   # would return 'dispatched' but the child could never write "$out.rc".
   mkdir -p "$(dirname "$out")" 2>/dev/null || { printf 'error'; return 1; }
   # Clear any stale output from a prior run at the same path before dispatching.
-  # A non-empty leftover "$out" would make the fail-closed `[[ -s "$out" ]]` check
+  # A non-empty leftover "$out" would make the fail-closed verdict check
   # succeed even if this oracle invocation exits 0 but writes nothing — silently
   # returning ok with stale content. Truncate both output and .rc marker so each
   # run starts from a clean slate regardless of caller's output-path reuse policy.
@@ -151,7 +172,7 @@ ultra_oracle_consult() {
       _portable_timeout "${cap}" oracle "$@" >/dev/null 2>&1; _uora_bg_rc=$?
       # Map exit-0-but-empty-verdict to failure so the .rc matches blocking mode's
       # fail-closed contract (timeout already surfaces as rc 124).
-      [[ "$_uora_bg_rc" = 0 ]] && [[ ! -s "$out" ]] && _uora_bg_rc=1
+      [[ "$_uora_bg_rc" = 0 ]] && ! _ultra_oracle_verdict_ok "$out" && _uora_bg_rc=1
       printf '%s' "$_uora_bg_rc" > "$out.rc" ) &
     disown 2>/dev/null || true
     printf 'dispatched'; return 0
@@ -166,6 +187,6 @@ ultra_oracle_consult() {
   _portable_timeout "${cap}" oracle "$@" >/dev/null || rc=$?
   if [[ "$rc" = 124 ]]; then printf 'timeout'; return 124; fi
   if [[ "$rc" != 0 ]]; then printf 'error'; return 1; fi
-  [[ -s "$out" ]] || { printf 'error'; return 1; }   # exit 0 but no verdict = fail-closed
+  _ultra_oracle_verdict_ok "$out" || { printf 'error'; return 1; }   # exit 0 but missing/degenerate verdict = fail-closed
   printf 'ok'; return 0
 }

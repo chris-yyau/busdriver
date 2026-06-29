@@ -15,6 +15,7 @@ while [ $# -gt 0 ]; do case "$1" in --write-output) out="$2"; shift 2;; *) shift
 case "${ULTRA_ORACLE_MOCK_MODE:-ok}" in
   ok)    [ -n "$out" ] && printf 'ULTRA-ORACLE VERDICT: looks good\n' > "$out"; exit 0;;
   empty) exit 0;;                 # exits 0 but writes nothing (browser no-op)
+  degen) [ -n "$out" ] && printf 'I\n' > "$out"; exit 0;;  # exit 0 + degenerate 2-byte capture
   hang)  sleep 30; exit 0;;
   fail)  exit 7;;
 esac
@@ -29,6 +30,15 @@ export ULTRA_ORACLE_MOCK_MODE=ok
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/v.md" --mode blocking)"
 [ "$st" = "ok" ] || { echo "FAIL ok got '$st'"; FAIL=1; }
 grep -q "ULTRA-ORACLE VERDICT" "$tmp/v.md" || { echo "FAIL verdict not captured"; FAIL=1; }
+
+# exit 0 + degenerate near-empty capture ("I\n") -> error (fail-closed verdict floor)
+export ULTRA_ORACLE_MOCK_MODE=degen
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/vd.md" --mode blocking)"
+[ "$st" = "error" ] || { echo "FAIL degen->error got '$st'"; FAIL=1; }
+# ...and the floor must NOT reject a real short verdict (regression guard on the default)
+export ULTRA_ORACLE_MOCK_MODE=ok
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/vok.md" --mode blocking)"
+[ "$st" = "ok" ] || { echo "FAIL floor false-rejects real verdict got '$st'"; FAIL=1; }
 
 # exit 0 but empty output -> error (fail-closed file check)
 export ULTRA_ORACLE_MOCK_MODE=empty

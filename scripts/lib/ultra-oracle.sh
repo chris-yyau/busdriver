@@ -29,7 +29,7 @@ _ultra_oracle_verdict_ok() {
   case "$min" in ''|*[!0-9]*|0) min=8;; esac
   [[ -s "$f" ]] || return 1
   nonws="$(tr -d '[:space:]' < "$f" 2>/dev/null | wc -c | tr -dc '0-9')"
-  [ -n "$nonws" ] || return 1
+  [[ -n "$nonws" ]] || return 1
   [ "$nonws" -ge "$min" ]
 }
 

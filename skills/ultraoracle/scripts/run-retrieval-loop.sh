@@ -57,9 +57,18 @@ GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "$GIT_ROOT" ]] || { printf 'error'; exit 1; }
 GIT_ROOT="$(cd "$GIT_ROOT" && pwd -P)"   # canonicalize for is_secret_like
 
-# Gate the QUESTION before the first BILLED dispatch: a secret-like question file (by name
-# or content) must never be transmitted to ChatGPT Pro. Mirrors build-evidence-pack.sh.
-q_canon="$(contained_path "$QUESTION_FILE" 2>/dev/null || printf '%s' "$QUESTION_FILE")"
+# Gate the QUESTION before the first BILLED dispatch: a secret-like question (by name or
+# content) must never be transmitted to ChatGPT Pro. Canonicalize WITHOUT requiring in-repo
+# (an operator question may live in /tmp — build-evidence-pack.sh allows this too), but REJECT
+# a symlink (never read through it) and fail closed on a missing parent — do NOT fall back to
+# the raw, unresolved path (that would defeat the symlink guard and scan a stale path). Then
+# is_secret_like scans the real regular-file bytes.
+[[ -L "$QUESTION_FILE" ]] && { echo "error: --question-file is a symlink — refusing" >&2; printf 'error'; exit 2; }
+_qf="$QUESTION_FILE"; while [ "$_qf" != "/" ] && [ "${_qf%/}" != "$_qf" ]; do _qf="${_qf%/}"; done
+_qfp="${_qf%/*}"; [ "$_qfp" = "$_qf" ] && _qfp="."
+_qdir="$(cd "$_qfp" 2>/dev/null && pwd -P)" || { echo "error: --question-file parent missing" >&2; printf 'error'; exit 2; }
+q_canon="$_qdir/${_qf##*/}"
+[[ -L "$q_canon" ]] && { echo "error: --question-file resolves to a symlink — refusing" >&2; printf 'error'; exit 2; }
 if is_secret_like "$q_canon"; then echo "error: --question-file looks secret-like — refusing" >&2; printf 'error'; exit 2; fi
 
 # --- Round 1: inventory -> request ---

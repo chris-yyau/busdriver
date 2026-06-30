@@ -125,5 +125,14 @@ run --request-file "$TMP/req11.json" --out-dir "$TMP/o11" >/dev/null 2>&1 || tru
 if ! ls "$TMP/o11/files/"*app.sh >/dev/null 2>&1; then
   ok "embedded-newline path not split (no app.sh retrieved)"; else fail "embedded-newline path split into extra retrieval"; fi
 
+# a search hit whose bytes exceed the budget => REJECTED (not truncated-and-sent). The "real"
+# match in app.sh (~20-byte hit line) overflows a 5-byte budget, so no artifact reaches files/.
+cat > req12.json <<JSON
+{ "needed_files": [], "search_queries": [ {"query": "real", "reason": "r"} ] }
+JSON
+run --request-file "$TMP/req12.json" --out-dir "$TMP/o12" --byte-budget 5 >/dev/null 2>&1 || true
+if ! ls "$TMP/o12/files/"*search* >/dev/null 2>&1 && grep -q "skipped_over_budget_search:" "$TMP/o12/manifest.txt"; then
+  ok "over-budget search rejected, not truncated"; else fail "over-budget search not rejected"; fi
+
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

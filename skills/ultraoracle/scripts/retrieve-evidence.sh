@@ -135,11 +135,13 @@ while IFS= read -r -d '' q; do
     | while IFS= read -r -d '' f; do
         is_secret_path "$f" && continue
         git -C "$GIT_ROOT" grep -nIF -e "$q" -- "$f" 2>/dev/null
-      done | head -n "$MAX_HITS" | head -c "$BYTE_BUDGET" > "$stage" || true
-  # head -c bounds the staged bytes to the budget too: head -n caps LINES, but one match in a
-  # huge single-line tracked file could write far past BYTE_BUDGET (disk-exhaustion / cap
-  # bypass) before the size check below. The byte cap makes the stage file budget-bounded.
+      done | head -n "$MAX_HITS" | head -c "$((BYTE_BUDGET + 1))" > "$stage" || true
+  # head -c caps the staged bytes (head -n caps LINES; one match in a huge single-line tracked
+  # file could blow far past BYTE_BUDGET — disk exhaustion). Cap at BUDGET+1 so an OVERFLOW is
+  # detectable: reject the whole search rather than TRUNCATE-and-send. A truncated artifact
+  # could split a secret at the cut point, leaving a sub-regex partial the scan below misses.
   if [ ! -s "$stage" ]; then rm -f "$stage"; echo "search_empty: query[$qidx]" >> "$MANIFEST"; continue; fi
+  if [ "$(bytes_of "$stage")" -gt "$BYTE_BUDGET" ]; then rm -f "$stage"; echo "skipped_over_budget_search: query[$qidx] (truncated)" >> "$MANIFEST"; continue; fi
   # CONTENT scan: a query like `sk-` can match a secret value living in a NON-secret-named
   # file, which the path denylist above misses. is_secret_like scans the whole artifact;
   # if it trips, the staged hits are dropped before they can ever enter files/.

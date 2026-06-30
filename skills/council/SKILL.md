@@ -7,14 +7,16 @@ description: >
   "input", "feedback", "recommendations", says "council", "roundtable", "perspectives",
   "what would others think", "group wisdom", "diverse viewpoints", "what do you all think",
   or needs group deliberation on decisions, tradeoffs, design choices, architecture,
-  or strategy. NOT for simple tasks with clear answers — only for ambiguous problems
+  or strategy. Also triggers on "ultra-council" / "ultra council" — the same council plus
+  a forced UltraOracle expert-witness escalation (rendered separately, never a vote).
+  NOT for simple tasks with clear answers — only for ambiguous problems
   that benefit from multiple lenses.
 origin: custom
 ---
 
 # Council
 
-Convene five advisors — the in-context Claude plus four fresh agents — for diverse perspectives. Each gives an independent perspective, then synthesize into a compressed verdict.
+Convene five advisors — the in-context Claude plus four fresh agents — for diverse perspectives. Each gives an independent perspective, then synthesize into a compressed verdict. (An **ultra-council** run adds an optional UltraOracle expert witness — see Step 4.5 — rendered as its own section, never counted among the five voices.)
 
 ## Roles (Fixed)
 
@@ -25,6 +27,8 @@ Convene five advisors — the in-context Claude plus four fresh agents — for d
 | Configurable | dispatch-cli | Pragmatist | Shipping speed, simplicity, user impact, practical tradeoffs | Yes: `council.pragmatist` (default: agy) |
 | Configurable | dispatch-cli | Critic | Edge cases, risks, failure modes, what could go wrong | Yes: `council.critic` (default: codex) |
 | Configurable | dispatch-cli | Researcher | Evidence, prior art, current state, factual grounding | Yes: `council.researcher` (default: grok, fallback: droid) |
+
+(UltraOracle is **not** in this table — it is an optional expert witness, not a sixth fixed role. See Step 4.5.)
 
 **CLI routing:** Pragmatist, Critic, and Researcher CLIs are resolved from `.claude/busdriver.json` via `resolve_role_cli()`. Each role accepts a route array — the resolver walks it left-to-right and returns the first available CLI (e.g., `"council.pragmatist": ["agy", "droid"]` falls back to Droid if Agy is missing). If every CLI in the chain is missing, that voice is skipped and noted in the report; other voices still fire. Changing the CLI only changes which binary receives the prompt — the role framing (Pragmatist lens, Critic lens, Researcher lens) is always the same. **Trade-off to know:** fallback preserves availability but dilutes role identity — Droid filling in as Pragmatist is no longer "Agy's strategic lens." Accept this when resilience matters more than signal purity. See README for per-role routing docs.
 
@@ -130,52 +134,71 @@ This is a **single Bash call** with all three CLI dispatches as background proce
 
 **Missing CLI handling:** Each role's route array is walked left-to-right; the first available CLI wins. If every CLI in the chain resolves to `none`, `builtin`, `missing:<cli>`, or `unsupported:<cli>` (the last fires when a stale config references a removed backend like amp/claude/aider — migration warning goes to stderr), that voice is skipped and the report notes its absence as `(unavailable)`. The remaining voices still convene. If the Skeptic Agent call fails (rate limit, timeout), same rule applies. Typical minimum is 2 voices (Architect + Skeptic, 40% of full strength); absolute floor is 1 voice (Architect alone) if the Skeptic Agent call also fails. Always note the composition in the report — and when a fallback fires (e.g., Droid serving as Pragmatist because Agy was missing), note that explicitly so the report doesn't misattribute the lens.
 
-### Step 4.5: Optional Ultra-Oracle Voice (opt-in, off by default)
+### Step 4.5: Optional UltraOracle Expert Witness ("ultra-council", off by default)
 
-A 6th GPT-5.5 Pro "ultra-oracle" voice can be added ONLY when `ultraOracle.council.enabled` is true in the operator's **USER config** `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it — security), OR the user explicitly asks (in which case export `ULTRA_ORACLE_COUNCIL_FORCE=1` for that run, as the snippet below honors). It is dispatched via the shared `ultra_oracle_consult` adapter (the `oracle` CLI's ChatGPT Pro browser engine), inside the SAME single-Bash dispatch block as the other voices (separate Bash calls serialize/cancel — see Step 4).
+An UltraOracle (GPT-5.5 Pro) **expert witness** can be escalated ONLY when `ultraOracle.council.enabled` is true in the operator's **USER config** `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it — security), OR the user explicitly invokes **"ultra-council" / "ultra council"** (or asks to include the oracle). To force it for that run, add `ULTRA_ORACLE_COUNCIL_FORCE=1` as a **plain, non-exported** assignment at the very top of the single Step 4 dispatch Bash block, and `unset ULTRA_ORACLE_COUNCIL_FORCE` as its last line (the launch wiring below already reads the var). Do NOT `export` it (it would persist into a later council in a persistent shell), do NOT use a one-command `VAR=1 cmd` prefix (it would not reach the gate), and do NOT wrap the dispatch in a subshell (the no-subshell rule in Step 4 — it would strand `PIDS`). A **normal council omits that line entirely**; the gate's `:-0` default then leaves the oracle off unless user-config enabled it. It is dispatched via the shared `ultra_oracle_consult` adapter (the `oracle` CLI's ChatGPT Pro browser engine), inside that SAME single-Bash dispatch block as the other voices (separate Bash calls serialize/cancel — see Step 4).
 
-**Trade-off (why it's off by default):** a single slow Pro voice both dilutes council's diversity (one vote, outvoteable) and makes every council it joins run minutes instead of seconds. Never add it to the default roster.
+UltraOracle is **not** a vote: it is rendered as its own Expert Witness section (Step 5/Step 6) and is EXCLUDED from the council vote tally — consensus, strongest dissent, and the recommendation are computed from the five voices only (ADR 0007 settling-check #1). The consult attaches no evidence-pack files (it sends only the prompt text — a Claude-authored question + context), so its result is labeled `ORACLE_SUMMARY_REVIEW` per the ADR review-type table (a Claude-authored summary, not a repo-attached review) even if that prompt text quotes snippets; a repo-specific claim with no file/path evidence is ungrounded — say so.
+
+**Trade-off (why it's off by default):** a single slow Pro consult makes every council it joins run minutes instead of seconds, and as an expert witness it carries weight only when its claims are evidence-backed. Never add it to the default roster.
 
 **Data boundary:** ultra-oracle transmits the council question to ChatGPT Pro via the oracle browser engine; if `ultraOracle.chromeProfileDir` is set it clones that Chrome profile's session — use a dedicated ChatGPT-only profile. Prefer `ultraOracle.cookiePath` (a signed-in Chrome Cookies DB path) to reuse the session headlessly without cloning the whole profile — the reliable path where Chrome app-bound cookie encryption defeats `--copy-profile`. Do not enable where the question would carry secrets.
 
-Wiring (inside the Step 4 dispatch Bash block, when enabled):
+Launch wiring (inside the Step 4 dispatch Bash block, alongside the voices). `ULTRA_ORACLE_ATTEMPTED` records that the oracle ran (config-enabled OR forced) and drives the render after `wait`:
 
 ```bash
-ULTRA_ORACLE_OUT=""; ULTRA_ORACLE_STATUS=""
-# Enabled via config, OR forced for one run on explicit user request (ULTRA_ORACLE_COUNCIL_FORCE=1).
+ULTRA_ORACLE_OUT=""; ULTRA_ORACLE_STATUS=""; ULTRA_ORACLE_ATTEMPTED=0
+# Enabled via user config, OR forced for one run by an ultra-council request
+# (ULTRA_ORACLE_COUNCIL_FORCE=1, set+unset by the executor per this step — a normal council omits it).
 if source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/ultra-oracle.sh" 2>/dev/null \
    && { ultra_oracle_surface_enabled council || [ "${ULTRA_ORACLE_COUNCIL_FORCE:-0}" = 1 ]; }; then
+  ULTRA_ORACLE_ATTEMPTED=1
   ULTRA_ORACLE_OUT="${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/council-$$.md"
   mkdir -p "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle"
   cat > "$ULTRA_ORACLE_OUT.prompt" <<'ULTRA_ORACLE_PROMPT'
 <the council question + context — same text composed into the other voices' heredocs>
 ULTRA_ORACLE_PROMPT
-  ULTRA_ORACLE_STATUS="$(ultra_oracle_consult --mode background --slug "ultra oracle council voice" \
+  ULTRA_ORACLE_STATUS="$(ultra_oracle_consult --mode background --slug "ultra oracle expert witness" \
     --out "$ULTRA_ORACLE_OUT" --prompt-file "$ULTRA_ORACLE_OUT.prompt" 2>/dev/null || true)"
+elif [ "${ULTRA_ORACLE_COUNCIL_FORCE:-0}" = 1 ]; then
+  ULTRA_ORACLE_ATTEMPTED=1   # forced but the adapter failed to load / gate was false → render a loud banner below
 fi
 # ... existing PIDS dispatch + `wait "${PIDS[@]}"` ...
 ```
 
-**Synthesis (Step 5):** ONLY when the voice was actually attempted (`$ULTRA_ORACLE_OUT` non-empty). A disabled council leaves it empty and skips this block entirely — no banner. Note `--mode background` returns `dispatched` on a *successful launch*; whether a verdict was produced is decided by the `.rc` + verdict file, NOT the status token:
+**Render (Step 5):** after `wait "${PIDS[@]}"`, in the same block. Render whenever the oracle was ATTEMPTED (config-enabled OR ultra-council-forced) — never mid-dispatch, never as a voice. Grade **status-first**: `ultra_oracle_consult --mode background` returns `dispatched` once it launches and a backgrounded subshell writes `$ULTRA_ORACLE_OUT.rc` on completion (rc 0 + verdict = ok, rc 124 = timeout, other rc = error); a `skipped:*`/`error` status never launched and writes no `.rc`. The directive after the block does the actual rendering:
 
 ```bash
-if [ -n "$ULTRA_ORACLE_OUT" ]; then   # voice was attempted (enabled)
+if [ "$ULTRA_ORACLE_ATTEMPTED" = 1 ]; then
   if [ "$ULTRA_ORACLE_STATUS" = dispatched ]; then
     n=0; while [ ! -f "$ULTRA_ORACLE_OUT.rc" ] && [ "$n" -lt "$(ultra_oracle_timeout_cap)" ]; do sleep 2; n=$((n + 2)); done
-  fi
-  if [ -s "$ULTRA_ORACLE_OUT" ] && [ "$(cat "$ULTRA_ORACLE_OUT.rc" 2>/dev/null)" = 0 ]; then
-    : # include the verdict as the ultra-oracle voice in synthesis
+    rc="$(cat "$ULTRA_ORACLE_OUT.rc" 2>/dev/null)"
+    if [ -s "$ULTRA_ORACLE_OUT" ] && [ "$rc" = 0 ]; then
+      cat "$ULTRA_ORACLE_OUT"                                 # verdict text → place in the Expert Witness section
+    elif [ "$rc" = 0 ]; then
+      echo "ORACLE_FAILED [empty verdict]"                    # exited clean but wrote no verdict (degenerate/false-ok) — not a process error
+    elif [ "$rc" = 124 ]; then
+      echo "ORACLE_FAILED [timeout]"
+    elif [ -n "$rc" ]; then
+      echo "ORACLE_FAILED [error rc=$rc]"
+    else
+      echo "ORACLE_FAILED [timeout]"                          # launched, no .rc after the full wait → timed out
+    fi
   else
-    : # render "⚠ ULTRA-ORACLE VOICE FAILED [$ULTRA_ORACLE_STATUS] — verdict NOT included" prominently
+    echo "ORACLE_FAILED [${ULTRA_ORACLE_STATUS:-adapter-unavailable}]"   # never launched: skipped:* / error / source failed
   fi
 fi
 ```
 
-Council is not a blocking gate, so the loud banner (only when the voice was attempted) is the strongest fail-closed behavior available.
+**Rendering directive (binding):** In the Step 6 report, whenever the oracle was attempted, render a SEPARATE top-level `## UltraOracle — Expert Witness [ORACLE_SUMMARY_REVIEW]` section AFTER the five voice blocks and BEFORE `### Verdict`. On a verdict, place the `cat`'d text (reproduced faithfully — annotate any ungrounded repo-specific claim as ungrounded); it is advisory and EXCLUDED from the vote tally, and must NOT flip a hard recommendation without independent local evidence (grep/Read/run). On any `ORACLE_FAILED […]` token render a loud `## ⚠ ORACLE_FAILED [<status>] — UltraOracle Expert Witness verdict NOT included` banner in that slot — never silently omit it (ADR 0007 settling-check #6). Never place UltraOracle in a voice slot or count it toward consensus.
+
+Council is not a blocking gate, so the loud banner (only when the oracle was attempted) is the strongest fail-closed behavior available.
 
 ### Step 5: Read Output and Synthesize
 
 Read the Fresh Claude output from the Agent tool result. Read the Agy/Codex/Grok output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`). When the resolver falls back to Droid in the Researcher slot (grok unavailable), the output filename is `dispatch-droid-*.txt` and the report should attribute "Droid (Researcher, fallback)" rather than "Grok (Researcher)".
+
+If the UltraOracle escalation ran (`ULTRA_ORACLE_ATTEMPTED=1`, ultra-council), its verdict (or `ORACLE_FAILED` token) is emitted by the render block above into the dispatch Bash output and also persists at `$ULTRA_ORACLE_OUT` — capture it and render it as the separate Expert Witness section per Step 4.5's binding directive, never as a voice and never folded into the vote.
 
 **CRITICAL: Read the ENTIRE output file, not just the first few lines.** CLI output files contain noise before the actual response:
 - **Agy:** Dumps MCP server initialization logs (e.g., `Registering notification handlers...`, `Loading extension...`) before the response. The actual answer may be 50+ lines deep.
@@ -197,6 +220,8 @@ You are both a council member AND the synthesizer. This is a conflict of interes
 6. The Fresh Claude Skeptic's premise challenges deserve special weight — they see what you can't because of conversational anchoring
 7. **Researcher claims are UNVERIFIED by default (taint by source-class, not self-report).** A factual/empirical claim or citation from the Researcher (Grok/Droid) may NOT justify a **hard** recommendation on its own. To promote it, verify it IN THIS REPORT against pasted local evidence — a grep/Read/run output, the cited source text, or user-provided data — OR route it to a fresh clean-memory verifier (a second Skeptic-style Agent call). If you cannot cheaply verify a load-bearing Researcher claim, mark it `[unverified]` and downgrade any recommendation that rests on it to **exploratory**. Rule 1's "state why" does NOT satisfy this — for a Researcher fact, paste the evidence or mark it unverified. (Both documented Researcher failures — a fabricated quantitative claim and real-but-off-task citations — happened while the narrated "flag claims that lack grounding" guidance was already present; narration alone is insufficient.)
 8. **Settling check (mandatory).** Every **hard** recommendation in the Verdict must name a settling check — the cheapest concrete local command / file / test / data whose result would confirm or refute it, plus the expected disconfirming outcome. If no cheap local check can be named, the item ships as **exploratory**, not a hard recommendation. Run the check in-turn when it is cheap and local; do NOT force a "command" onto questions that have none (strategy/naming/product) — for those, the honest settling check is the evidence or experiment that would decide, and absent that they stay exploratory.
+
+The UltraOracle expert witness (ultra-council only) is advisory and is NOT one of the voices above — keep it out of the vote tally and the consensus/dissent counts; treat its claims like a Researcher's (unverified until checked against local evidence).
 </CRITICAL>
 
 ### Step 6: Present the Report
@@ -221,6 +246,11 @@ You are both a council member AND the synthesizer. This is a conflict of interes
 **Grok (Researcher):** [position in 1-2 sentences]
 [1-line key reasoning + key evidence cited]
 (If grok was unavailable and Droid handled the slot, use **Droid (Researcher, fallback):** instead.)
+
+## UltraOracle — Expert Witness [ORACLE_SUMMARY_REVIEW]
+(Render this section whenever the UltraOracle escalation RAN — user-config enabled OR ultra-council forced; OMIT the entire section when the oracle did not run. It is NOT a voice and is EXCLUDED from Consensus / Strongest dissent / Recommendation below.)
+[the verdict text, reproduced faithfully — annotate any ungrounded repo-specific claim as ungrounded]
+(On failure render instead: **⚠ ORACLE_FAILED [status] — UltraOracle Expert Witness verdict NOT included**.)
 
 ### Verdict
 - **Consensus:** [where they agree]

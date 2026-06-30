@@ -5,6 +5,7 @@
 # ORACLE_RETRIEVAL_REVIEW. Live dispatch is gated behind the USER-config, default-OFF
 # ultraOracle.blueprintReview.enabled flag. Fail-CLOSED on every error.
 set -euo pipefail
+umask 077   # question copy, prompts, and Oracle round1/round2 JSON are operator-only on disk
 _RL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _LIB="$(cd "$_RL_DIR/../../.." && pwd)/scripts/lib"
 # shellcheck source=/dev/null

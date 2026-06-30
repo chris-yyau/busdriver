@@ -135,7 +135,10 @@ while IFS= read -r -d '' q; do
     | while IFS= read -r -d '' f; do
         is_secret_path "$f" && continue
         git -C "$GIT_ROOT" grep -nIF -e "$q" -- "$f" 2>/dev/null
-      done | head -n "$MAX_HITS" > "$stage" || true
+      done | head -n "$MAX_HITS" | head -c "$BYTE_BUDGET" > "$stage" || true
+  # head -c bounds the staged bytes to the budget too: head -n caps LINES, but one match in a
+  # huge single-line tracked file could write far past BYTE_BUDGET (disk-exhaustion / cap
+  # bypass) before the size check below. The byte cap makes the stage file budget-bounded.
   if [ ! -s "$stage" ]; then rm -f "$stage"; echo "search_empty: query[$qidx]" >> "$MANIFEST"; continue; fi
   # CONTENT scan: a query like `sk-` can match a secret value living in a NON-secret-named
   # file, which the path denylist above misses. is_secret_like scans the whole artifact;

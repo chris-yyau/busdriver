@@ -5,6 +5,12 @@
 # rejected request is recorded and skipped, never copied. Fail-CLOSED on bad JSON.
 set -euo pipefail
 umask 077   # every artifact this script writes (manifest, copies, search hits) is operator-only
+# Treat EVERY git pathspec literally: untrusted Oracle paths ($rel) and tracked filenames fed
+# back as pathspecs ($f) could otherwise start with `:(...)` and be read as MAGIC pathspecs —
+# `--` stops option parsing but does NOT disable pathspec magic. A magic `$f` could make the
+# per-file grep scan files that never passed is_secret_path; a magic `$rel` could glob-match
+# the ls-files tracked check. This env var disables all pathspec magic for git in this script.
+export GIT_LITERAL_PATHSPECS=1
 _RE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$_RE_DIR/lib/evidence-safety.sh"

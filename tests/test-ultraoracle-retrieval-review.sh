@@ -100,5 +100,12 @@ v "$TMP/noncite.json" >/dev/null 2>&1 && fail "colon-without-line evidence accep
 printf '{ "review_type": "ORACLE_RETRIEVAL_REVIEW", "claims": [ {"claim": "x", "evidence": ["a\\nb:1"]} ], "verdict": "PASS" }' > "$TMP/nlcite.json"
 v "$TMP/nlcite.json" >/dev/null 2>&1 && fail "newline-in-citation accepted" || ok "newline-in-citation rejected"
 
+# a path that itself contains a colon (git allows it) with a trailing :line => VALID. The line
+# number is the last colon-separated component, so colon-in-path citations must pass.
+cat > "$TMP/coloncite.json" <<JSON
+{ "review_type": "ORACLE_RETRIEVAL_REVIEW", "claims": [ {"claim": "x", "evidence": ["dir/a:b.txt:12"]} ], "verdict": "PASS" }
+JSON
+v "$TMP/coloncite.json" >/dev/null 2>&1 && ok "colon-in-path citation passes" || fail "colon-in-path citation wrongly rejected"
+
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

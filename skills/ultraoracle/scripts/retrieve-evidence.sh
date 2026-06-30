@@ -143,6 +143,11 @@ while IFS= read -r -d '' q; do
   git -C "$GIT_ROOT" grep -lIF -z -e "$q" -- . 2>/dev/null \
     | while IFS= read -r -d '' f; do
         is_secret_path "$f" && continue
+        # Whole-FILE secret exclusion, matching the needed_files posture: if the matched
+        # source file contains a secret ANYWHERE (not just on the hit line), drop ALL its
+        # hits — a query line adjacent to a secret must not ride out. $f is a tracked file
+        # from `git grep -l`, so it is a regular file (no FIFO-hang risk).
+        is_secret_like "$GIT_ROOT/$f" && continue
         git -C "$GIT_ROOT" grep -nIF -e "$q" -- "$f" 2>/dev/null
       done | head -n "$MAX_HITS" | head -c "$((BYTE_BUDGET + 1))" > "$stage" || true
   # head -c caps the staged bytes (head -n caps LINES; one match in a huge single-line tracked

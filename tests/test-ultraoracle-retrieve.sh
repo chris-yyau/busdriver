@@ -87,8 +87,10 @@ cat > req8.json <<JSON
 { "needed_files": [], "search_queries": [ {"query": "sk-ant-api03", "reason": "r"} ] }
 JSON
 run --request-file "$TMP/req8.json" --out-dir "$TMP/o8" >/dev/null 2>&1 || true
-if ! grep -rq "sk-ant-api03" "$TMP/o8/files" 2>/dev/null && grep -q "rejected_secret_search:" "$TMP/o8/manifest.txt"; then
-  ok "secret-content search rejected"; else fail "secret content leaked via search"; fi
+# Security property (token-agnostic): the secret is whole-file-excluded, so config.txt's hits
+# never stage and NO search artifact is written — the secret string must be absent from files/.
+if ! grep -rq "sk-ant-api03" "$TMP/o8/files" 2>/dev/null && ! ls "$TMP/o8/files/"*search* >/dev/null 2>&1; then
+  ok "secret-content search excluded"; else fail "secret content leaked via search"; fi
 
 # wrong-typed collections / elements => schema gate fails closed (exit non-zero, no out-dir)
 schema_ok=1; n=0

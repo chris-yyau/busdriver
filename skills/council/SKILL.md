@@ -175,6 +175,8 @@ if [ "$ULTRA_ORACLE_ATTEMPTED" = 1 ]; then
     rc="$(cat "$ULTRA_ORACLE_OUT.rc" 2>/dev/null)"
     if [ -s "$ULTRA_ORACLE_OUT" ] && [ "$rc" = 0 ]; then
       cat "$ULTRA_ORACLE_OUT"                                 # verdict text → place in the Expert Witness section
+    elif [ "$rc" = 0 ]; then
+      echo "ORACLE_FAILED [empty verdict]"                    # exited clean but wrote no verdict (degenerate/false-ok) — not a process error
     elif [ "$rc" = 124 ]; then
       echo "ORACLE_FAILED [timeout]"
     elif [ -n "$rc" ]; then

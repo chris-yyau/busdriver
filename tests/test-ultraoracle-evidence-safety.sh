@@ -29,15 +29,28 @@ is_secret_basename "app.sh" && fail "app.sh wrongly flagged" || ok "non-secret: 
 # secret in an ancestor directory component
 is_secret_path "secrets/config.yml" && ok "secret ancestor dir" || fail "secrets/ dir not flagged"
 
+# content secret detection through is_secret_like
+echo "prefix sk-proj-123456789012345678901234 suffix" > "$GIT_ROOT/plain.txt"
+is_secret_like "$GIT_ROOT/plain.txt" && ok "secret: content token" || fail "content token not flagged"
+echo "ordinary notes" > "$GIT_ROOT/notes.txt"
+is_secret_like "$GIT_ROOT/notes.txt" && fail "ordinary content wrongly flagged" || ok "non-secret content"
+
 # containment: in-repo file resolves; out-of-repo / traversal rejected
 echo hi > "$GIT_ROOT/real.txt"
 contained_path "$GIT_ROOT/real.txt" >/dev/null && ok "in-repo contained" || fail "in-repo rejected"
 contained_path "/etc/passwd" >/dev/null && fail "abs out-of-repo accepted" || ok "abs out-of-repo rejected"
 contained_path "$GIT_ROOT/../../etc/passwd" >/dev/null && fail "traversal accepted" || ok "traversal rejected"
+contained_path "" >/dev/null && fail "empty src accepted" || ok "empty src rejected"
 
 # symlink rejection (a symlink whose target is outside must not slip through)
 ln -s /etc/hosts "$GIT_ROOT/link"
 contained_path "$GIT_ROOT/link" >/dev/null && fail "symlink accepted" || ok "symlink rejected"
+
+# NUL-delimited inventory filtering, including control-char path rejection
+printf 'safe.txt\0secrets/config.yml\0API_TOKEN\0' | emit_nonsecret_z > "$TMP/emitted.txt"
+[ "$(cat "$TMP/emitted.txt")" = "safe.txt" ] && ok "emit_nonsecret_z filters secret paths" || fail "emit_nonsecret_z leaked secret paths"
+printf 'safe.txt\0bad%bname\0' "\\t" | emit_nonsecret_z > "$TMP/emitted2.txt"
+[ "$(cat "$TMP/emitted2.txt")" = "safe.txt" ] && ok "emit_nonsecret_z filters control-char paths" || fail "emit_nonsecret_z leaked control-char path"
 
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

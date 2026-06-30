@@ -22,9 +22,11 @@ grep -q 'skipped:disabled' "$S" && ok "A2 disabled token" || fail "A2 missing di
 rl=$(grep -n 'retrieve-evidence.sh' "$S" | head -1 | cut -d: -f1)
 vl=$(grep -n 'validate-retrieval-review.sh' "$S" | head -1 | cut -d: -f1)
 { [ -n "$rl" ] && [ -n "$vl" ] && [ "$rl" -lt "$vl" ]; } && ok "A3 retrieve before validate" || fail "A3 ordering wrong"
-# A4: exactly two oracle consults (Round 1 + Round 2).
-c=$(grep -c 'ultra_oracle_consult' "$S" || true)
-[ "$c" -ge 2 ] && ok "A4 two consults ($c)" || fail "A4 expected >=2 consults, got $c"
+# A4: exactly two oracle consults (Round 1 + Round 2) — anchor to actual call
+# sites (the `st="$(ultra_oracle_consult ...)"` invocations), not every mention
+# of the function name (comments referencing it would inflate a plain grep -c).
+c=$(grep -cE '="\$\(ultra_oracle_consult' "$S" || true)
+[ "$c" -eq 2 ] && ok "A4 exactly two consults ($c)" || fail "A4 expected exactly 2 consults, got $c"
 # A5: fail-closed token on a failed validation / consult.
 grep -Eq 'printf .?error|echo .?error|"error"' "$S" && ok "A5 fail-closed token" || fail "A5 missing error token"
 # A6: question-file validated (present+readable+non-empty) before any billed dispatch.

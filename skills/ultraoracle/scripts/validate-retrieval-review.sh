@@ -16,6 +16,18 @@ done
 
 jq -e . "$REVIEW_FILE" >/dev/null 2>&1 || { echo "error: review JSON invalid — failing closed" >&2; exit 3; }
 
+# `[]`, `42`, `"x"` are all valid JSON (the check above passes), and so is a
+# multi-document jq STREAM like `[] {valid review object}` — but the field
+# lookups below (`.review_type`, `.verdict`, `.claims`) abort with a jq error on
+# a non-object root (under `set -e` that crashes the validator before its own
+# typed exit-code handling runs), and a bare `jq -e 'type == "object"'`
+# evaluates the filter PER document and keys its exit code to the LAST value, so
+# `[] {obj}` would slip through and then parse inconsistently. Slurp the whole
+# input (-s) and require EXACTLY ONE value that is an object, so every malformed
+# shape — wrong type, empty input, OR a multi-document stream — gets the
+# validator's controlled failure.
+jq -se 'length == 1 and (.[0] | type) == "object"' "$REVIEW_FILE" >/dev/null 2>&1 || { echo "error: review JSON root is not a single object — failing closed" >&2; exit 3; }
+
 rtype="$(jq -r '.review_type // empty' "$REVIEW_FILE")"
 [ "$rtype" = "ORACLE_RETRIEVAL_REVIEW" ] || { echo "error: review_type not ORACLE_RETRIEVAL_REVIEW ('$rtype')" >&2; exit 4; }
 

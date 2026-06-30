@@ -74,13 +74,14 @@ if run --request-file "$TMP/req6.json" --out-dir "$TMP/o6" >/dev/null 2>&1; then
 cat > req7.json <<JSON
 { "needed_files": [ {"path": "app.sh", "reason": "r"} ], "search_queries": [] }
 JSON
-mkdir -p "$TMP/o7"; ln -s /tmp "$TMP/o7/files"
+ESCAPE_DIR="$(mktemp -d)"; trap 'rm -rf "$TMP" "$ESCAPE_DIR"' EXIT
+mkdir -p "$TMP/o7"; ln -s "$ESCAPE_DIR" "$TMP/o7/files"
 # A pre-existing out-dir must be REJECTED (no-`-p` mkdir) — the script exits non-zero, so
 # the call MUST be in an if (a bare call under `set -e` would abort the whole test here).
 if run --request-file "$TMP/req7.json" --out-dir "$TMP/o7" >/dev/null 2>&1; then
   fail "pre-existing out-dir / symlinked files accepted"
-elif [ ! -e /tmp/1_app.sh ]; then ok "pre-existing out-dir rejected, no escape write"
-else rm -f /tmp/1_app.sh; fail "wrote through escaping files/ symlink"; fi
+elif [ ! -e "$ESCAPE_DIR/1_app.sh" ]; then ok "pre-existing out-dir rejected, no escape write"
+else fail "wrote through escaping files/ symlink"; fi
 
 # search query matching secret CONTENT in a non-secret-named file => not transmitted
 cat > req8.json <<JSON

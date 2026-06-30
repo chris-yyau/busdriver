@@ -75,7 +75,42 @@ if is_secret_like "$q_canon"; then echo "error: --question-file looks secret-lik
 # Inventory routes through emit_nonsecret_z so a secret-like TRACKED path name (.env.local,
 # secrets/…) is never shown to the Oracle — same posture as build-evidence-pack.sh.
 inv="$OUT_DIR/inventory.txt"
-git -C "$GIT_ROOT" ls-files -z 2>/dev/null | emit_nonsecret_z | head -n 2000 > "$inv" || true
+# Wrap the pipeline in `set +e` (NOT a trailing `|| true`) so `set -e` can't
+# abort on the EXPECTED SIGPIPE (exit 141) that `head` sends upstream when it
+# truncates at 2000 lines, while still preserving PIPESTATUS. A `|| true` would
+# run `true` whenever the pipeline exits non-zero (pipefail makes it do so on
+# SIGPIPE), and that length-1 pipeline RESETS PIPESTATUS[0] to 0 — masking a
+# real `git ls-files` failure (e.g. rc=128, not a git repo) as success and
+# letting an empty inventory advance to the Round-1 consult, violating ADR
+# 0007's fail-closed posture. Snapshotting PIPESTATUS into an array immediately,
+# before any other command can overwrite it, is the only way to tell the
+# expected SIGPIPE (141) apart from an outright git failure.
+set +e
+git -C "$GIT_ROOT" ls-files -z 2>/dev/null | emit_nonsecret_z | head -n 2000 > "$inv"
+inv_pipe_rc=("${PIPESTATUS[@]}")
+set -e
+# Validate EVERY pipeline segment, not just git ls-files. A failure in the
+# secret filter (emit_nonsecret_z) or in head/redirection after a partial write
+# would otherwise leave a truncated inventory that still advances to a billed
+# Round-1 consult, violating ADR 0007's fail-closed posture. The two UPSTREAM
+# segments (git ls-files, emit_nonsecret_z) may legitimately die with SIGPIPE
+# (141) when head truncates at 2000 lines, so 0 or 141 is acceptable there. The
+# final consumer `head` writes to the inventory file and never receives SIGPIPE
+# itself, so it must exit 0 — any non-zero status means a real truncate/write
+# failure. Fail closed on any unexpected status.
+inv_last_idx=$(( ${#inv_pipe_rc[@]} - 1 ))
+for inv_seg_idx in "${!inv_pipe_rc[@]}"; do
+  inv_seg_rc="${inv_pipe_rc[$inv_seg_idx]}"
+  if [ "$inv_seg_idx" -eq "$inv_last_idx" ]; then
+    if [ "$inv_seg_rc" -ne 0 ]; then
+      echo "error: inventory write/truncate failed (head rc=$inv_seg_rc)" >&2
+      printf 'error'; exit 1
+    fi
+  elif [ "$inv_seg_rc" -ne 0 ] && [ "$inv_seg_rc" -ne 141 ]; then
+    echo "error: inventory pipeline stage $inv_seg_idx failed (rc=$inv_seg_rc) building inventory" >&2
+    printf 'error'; exit 1
+  fi
+done
 r1prompt="$OUT_DIR/round1-prompt.txt"
 { echo "You are a repo-grounded expert witness. Given this file inventory and the"
   echo "question below, return ONLY JSON: {needed_files:[{path,reason}], search_queries:[{query,reason}], cannot_assess_yet:[...]}."

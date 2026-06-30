@@ -160,7 +160,10 @@ that evidence. The deterministic core lives in `scripts/`:
   claims, or any uncited/malformed claim. Citation *existence* is the Phase-4 arbiter's
   job, not this structural check.
 - **`run-retrieval-loop.sh`** — thin wrapper chaining consult → retrieve → consult →
-  validate (`--question-file`/`--out-dir`). Prints a typed status token on its last line.
+  validate (`--question-file`/`--out-dir`). On success it prints
+  `ORACLE_RETRIEVAL_REVIEW <verdict>` on its last line; `error` and `skipped:*` are the
+  token-only (no verdict) non-success cases. Downstream callers should branch on this
+  distinction rather than treat the last line as a generic status token.
 
 **Live dispatch is default-OFF.** The two billed `ultra_oracle_consult` calls only fire
 when `ultra_oracle_surface_enabled blueprintReview` returns 0 — a USER-config opt-in

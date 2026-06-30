@@ -72,11 +72,20 @@ is_secret_like() {
   return 1
 }
 
+# True if $1 contains any C0 control byte (0x01-0x1F) or DEL (0x7F) — tabs/newlines
+# embedded in a tracked path (git permits these in filenames) so a malicious entry
+# can't smuggle extra newline-delimited records into a manifest/inventory stream.
+path_has_control_char() {
+  [[ "$1" == *[[:cntrl:]]* ]]
+}
+
 # Canonicalize a --file path and require it to live under GIT_ROOT. Echoes the
 # resolved path on success; returns non-zero for anything outside the repo (absolute
 # escapes, ../ traversal, symlinked siblings) so it is never attached.
 contained_path() {
   local src="$1" dir base canon
+  [ -n "$src" ] || return 1
+  path_has_control_char "$src" && return 1
   # Reject a symlinked final component: cd+pwd -P resolves intermediate dir symlinks,
   # but a repo-local link (repo/leak -> /outside/file) would otherwise canonicalize to
   # an in-repo name yet cp through to outside content. Regular evidence files only.
@@ -85,6 +94,7 @@ contained_path() {
   sp="${s%/*}"; [ "$sp" = "$s" ] && sp="."
   dir="$(cd "$sp" 2>/dev/null && pwd -P)" || return 1
   base="${s##*/}"
+  [ -n "$base" ] || return 1
   canon="$dir/$base"
   [[ -L "$canon" ]] && return 1
   case "$canon" in
@@ -103,7 +113,9 @@ bytes_of() { wc -c < "$1" 2>/dev/null | tr -d ' ' || echo 0; }
 emit_nonsecret_z() {
   local p
   while IFS= read -r -d '' p; do
-    [ -n "$p" ] && is_secret_path "$p" && continue
+    [ -n "$p" ] || continue
+    path_has_control_char "$p" && continue
+    is_secret_path "$p" && continue
     printf '%s\n' "$p"
   done
   return 0   # a final dropped record must not look like a pipeline failure under pipefail

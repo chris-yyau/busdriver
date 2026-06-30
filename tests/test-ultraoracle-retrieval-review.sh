@@ -87,6 +87,20 @@ if v "$TMP/strclaim.json" >/dev/null 2>&1; then fail "string claim element accep
 printf '{ not json' > "$TMP/bad.json"
 v "$TMP/bad.json" >/dev/null 2>&1 && fail "malformed JSON accepted" || ok "malformed JSON rejected"
 
+# valid JSON but non-object root ([], number, string) => fail closed (exit 3), not a jq crash.
+for root in '[]' '42' '"x"'; do
+  printf '%s' "$root" > "$TMP/nonobj.json"
+  if v "$TMP/nonobj.json" >/dev/null 2>&1; then fail "non-object root ($root) accepted"; else
+    rc=$?; [ "$rc" -eq 3 ] && ok "non-object root ($root) -> typed exit 3" || fail "non-object root ($root) exit $rc (want 3)"; fi
+done
+
+# multi-document jq STREAM whose LAST value is an object ([] {obj}) => fail closed
+# (exit 3). A per-document `jq -e 'type=="object"'` keys its exit to the last
+# value and would accept this; the slurp+length==1 guard must reject it.
+printf '%s' '[] { "review_type": "ORACLE_RETRIEVAL_REVIEW", "claims": [ {"claim": "x", "evidence": ["a:1"]} ], "verdict": "PASS" }' > "$TMP/multidoc.json"
+if v "$TMP/multidoc.json" >/dev/null 2>&1; then fail "multi-document stream accepted"; else
+  rc=$?; [ "$rc" -eq 3 ] && ok "multi-document stream -> typed exit 3" || fail "multi-document stream exit $rc (want 3)"; fi
+
 # evidence with a colon but NO line number ("file:") is NOT a path:line citation => fail
 # closed (exit 7). Pins test(":[0-9]"): a bare colon or "trust:me" must not pass. Existence
 # is still the arbiter's job; this only enforces the structural path:line citation shape.

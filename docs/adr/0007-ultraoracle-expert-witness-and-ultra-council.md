@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phases 0–4 implemented. Phases 5–6 remain (not started).
+Accepted — Phases 0–5 implemented. Phase 6 remains (not started).
 
 ## Tracking
 

@@ -7,7 +7,7 @@ set -euo pipefail
 REVIEW_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --review-file) REVIEW_FILE="$2"; shift 2;;
+    --review-file) [ $# -ge 2 ] || { echo "error: --review-file needs a value" >&2; exit 2; }; REVIEW_FILE="$2"; shift 2;;
     -h|--help) echo "usage: validate-retrieval-review.sh --review-file <json>" >&2; exit 0;;
     *) echo "error: unknown arg '$1'" >&2; exit 2;;
   esac

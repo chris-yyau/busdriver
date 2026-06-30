@@ -18,9 +18,9 @@ source "$_RE_DIR/lib/evidence-safety.sh"
 REQUEST_FILE=""; OUT_DIR=""; BYTE_BUDGET="262144"  # 256 KiB default, matches consult cap intent
 while [ $# -gt 0 ]; do
   case "$1" in
-    --request-file) REQUEST_FILE="$2"; shift 2;;
-    --out-dir)      OUT_DIR="$2"; shift 2;;
-    --byte-budget)  BYTE_BUDGET="$2"; shift 2;;
+    --request-file) [ $# -ge 2 ] || { echo "error: --request-file needs a value" >&2; exit 2; }; REQUEST_FILE="$2"; shift 2;;
+    --out-dir)      [ $# -ge 2 ] || { echo "error: --out-dir needs a value" >&2; exit 2; }; OUT_DIR="$2"; shift 2;;
+    --byte-budget)  [ $# -ge 2 ] || { echo "error: --byte-budget needs a value" >&2; exit 2; }; BYTE_BUDGET="$2"; shift 2;;
     -h|--help)      echo "usage: retrieve-evidence.sh --request-file <json> --out-dir <dir> [--byte-budget <n>]" >&2; exit 0;;
     *) echo "error: unknown arg '$1'" >&2; exit 2;;
   esac
@@ -96,16 +96,19 @@ while IFS= read -r -d '' reqpath; do
   #   1. is_secret_path — path-NAME denylist only, no file read (safe on any node type).
   #   2. ls-files tracked — special files are never tracked, so a FIFO is rejected here.
   #   3. [[ -f && -r ]] — confirm a regular, readable file before ANY content read.
-  #   4. is_secret_like — content scan, now guaranteed to run only on a regular file.
+  #   4. byte-budget check — a cheap stat (wc -c). Runs BEFORE the content scan so an
+  #      untrusted request for up to 64 oversized files can't force 64 full-file greps that
+  #      would be skipped over budget anyway.
+  #   5. is_secret_like — content scan, now guaranteed to run only on a regular, in-budget file.
   if is_secret_path "$rel"; then echo "rejected_secret: $reqpath" >> "$MANIFEST"; continue; fi
   # Only transmit TRACKED files — match the inventory the Oracle was shown and
   # build-evidence-pack.sh's tracked-only posture (also excludes FIFOs / untracked scratch
   # such as local notes, build artifacts, an un-gitignored .env.local).
   git -C "$GIT_ROOT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 || { echo "rejected_untracked: $reqpath" >> "$MANIFEST"; continue; }
   [ -f "$canon" ] && [ -r "$canon" ] || { echo "skipped_unavailable: $reqpath" >> "$MANIFEST"; continue; }
-  if is_secret_like "$canon"; then echo "rejected_secret: $reqpath" >> "$MANIFEST"; continue; fi
   sz="$(bytes_of "$canon")"
   if [ "$((spent + sz))" -gt "$BYTE_BUDGET" ]; then echo "skipped_over_budget: $reqpath" >> "$MANIFEST"; continue; fi
+  if is_secret_like "$canon"; then echo "rejected_secret: $reqpath" >> "$MANIFEST"; continue; fi
   idx=$((idx + 1)); flat="${idx}_$(printf '%s' "$rel" | tr '/' '_')"
   cp -- "$canon" "$OUT_DIR/files/$flat" || { echo "skipped_copy_failed: $reqpath" >> "$MANIFEST"; continue; }
   spent=$((spent + sz)); accepted=$((accepted + 1))

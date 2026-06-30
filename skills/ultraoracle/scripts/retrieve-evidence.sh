@@ -4,6 +4,7 @@
 # path and search runs through the shared secret-scan + repo-containment gates; a
 # rejected request is recorded and skipped, never copied. Fail-CLOSED on bad JSON.
 set -euo pipefail
+umask 077   # every artifact this script writes (manifest, copies, search hits) is operator-only
 _RE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$_RE_DIR/lib/evidence-safety.sh"
@@ -116,28 +117,35 @@ while IFS= read -r -d '' q; do
   if [ "$seen_q" -gt "$MAX_QUERIES" ]; then echo "skipped_excess_queries: query[$seen_q] (cap $MAX_QUERIES)" >> "$MANIFEST"; continue; fi
   # Reject an overlong query before spending a full-tree git grep on it.
   if [ "$(printf '%s' "$q" | wc -c | tr -d ' ')" -gt "$MAX_QUERY_BYTES" ]; then echo "skipped_query_too_long: query[$seen_q]" >> "$MANIFEST"; continue; fi
-  qidx=$((qidx + 1)); hits="$OUT_DIR/files/search-$qidx.txt"
+  qidx=$((qidx + 1))
+  # STAGE the hits OUTSIDE files/ first, scan, then mv in only when clean. files/ is the dir
+  # attached to the Oracle, so an UNSCANNED secret artifact must never land there even
+  # transiently — a crash (or a reader racing a default umask) between write and the secret
+  # scan would otherwise leave secret content on disk inside the transmit set. The staging
+  # file is a sibling of files/ (never attached) and is removed on every rejection path.
+  stage="$OUT_DIR/.search-stage-$qidx"; final="$OUT_DIR/files/search-$qidx.txt"
   # -F fixed-string (query is untrusted; no regex injection), -I skip binary.
   # Pass query as a single -e arg (never interpolated into a pattern string).
   # First get the MATCHING FILE PATHS as NUL-delimited records (`-l -z`) so a path that
   # itself contains a colon stays intact — the secret-path denylist must see the WHOLE
   # path (`${line%%:*}` on `dir:secrets/cfg:12:...` would truncate to `dir`, dropping the
   # secret-named component). Secret-filter on the intact path, THEN per-file grep for hits.
-  : > "$hits"
+  : > "$stage"
   git -C "$GIT_ROOT" grep -lIF -z -e "$q" -- . 2>/dev/null \
     | while IFS= read -r -d '' f; do
         is_secret_path "$f" && continue
         git -C "$GIT_ROOT" grep -nIF -e "$q" -- "$f" 2>/dev/null
-      done | head -n "$MAX_HITS" > "$hits" || true
-  if [ ! -s "$hits" ]; then rm -f "$hits"; echo "search_empty: query[$qidx]" >> "$MANIFEST"; continue; fi
+      done | head -n "$MAX_HITS" > "$stage" || true
+  if [ ! -s "$stage" ]; then rm -f "$stage"; echo "search_empty: query[$qidx]" >> "$MANIFEST"; continue; fi
   # CONTENT scan: a query like `sk-` can match a secret value living in a NON-secret-named
   # file, which the path denylist above misses. is_secret_like scans the whole artifact;
-  # if it trips, the hits file is dropped before it can be attached/transmitted.
-  if is_secret_like "$hits"; then rm -f "$hits"; echo "rejected_secret_search: query[$qidx]" >> "$MANIFEST"; continue; fi
-  hsz="$(bytes_of "$hits")"
-  if [ "$((spent + hsz))" -gt "$BYTE_BUDGET" ]; then rm -f "$hits"; echo "skipped_over_budget_search: query[$qidx]" >> "$MANIFEST"; continue; fi
+  # if it trips, the staged hits are dropped before they can ever enter files/.
+  if is_secret_like "$stage"; then rm -f "$stage"; echo "rejected_secret_search: query[$qidx]" >> "$MANIFEST"; continue; fi
+  hsz="$(bytes_of "$stage")"
+  if [ "$((spent + hsz))" -gt "$BYTE_BUDGET" ]; then rm -f "$stage"; echo "skipped_over_budget_search: query[$qidx]" >> "$MANIFEST"; continue; fi
+  mv "$stage" "$final"     # only a scanned-clean, in-budget artifact enters files/
   spent=$((spent + hsz))   # search bytes count against the same shared budget as files
-  echo "search: files/search-$qidx.txt <= query[$qidx] ($(wc -l < "$hits" | tr -d ' ') hits)" >> "$MANIFEST"
+  echo "search: files/search-$qidx.txt <= query[$qidx] ($(wc -l < "$final" | tr -d ' ') hits)" >> "$MANIFEST"
 done < <(jq -j '.search_queries // [] | .[]? | (.query // empty) + "\u0000"' "$REQUEST_FILE")
 
 { echo "accepted_files: $accepted"; echo "accepted_bytes: $spent"; } >> "$MANIFEST"

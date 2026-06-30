@@ -35,7 +35,10 @@ if ! ultra_oracle_surface_enabled blueprintReview; then printf 'skipped:disabled
 # Fail CLOSED before the first BILLED consult: require a present, readable, NON-EMPTY
 # question. The consult's own guard only checks the prompt (which always carries
 # the inventory header), so an empty question would otherwise reach a paid Round-1 call.
-[[ -n "$QUESTION_FILE" && -r "$QUESTION_FILE" && -s "$QUESTION_FILE" ]] || { echo "error: --question-file required/readable/non-empty" >&2; printf 'error'; exit 2; }
+# -f (regular file) is REQUIRED, not just -r/-s: a directory satisfies -r and -s, and the
+# later `cat "$QUESTION_FILE" 2>/dev/null || true` would suppress its read failure, letting
+# an empty original question reach a paid Round-1 consult.
+[[ -n "$QUESTION_FILE" && -f "$QUESTION_FILE" && -r "$QUESTION_FILE" && -s "$QUESTION_FILE" ]] || { echo "error: --question-file required/regular-file/readable/non-empty" >&2; printf 'error'; exit 2; }
 
 # Fresh-dir + symlink guard (same posture as retrieve-evidence.sh): a pre-existing OUT_DIR
 # may contain planted symlinks (e.g. inventory.txt -> /etc/...) that the fixed-name `>`

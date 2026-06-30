@@ -117,5 +117,13 @@ fifo_rc=0; ( cd "$TMP" && $TO bash "$SCRIPT" --request-file "$TMP/req10.json" --
 if [ "$fifo_rc" != 124 ] && ! ls "$TMP/o10/files/"*pipe* >/dev/null 2>&1; then
   ok "FIFO rejected without hang"; else fail "FIFO hung (rc=$fifo_rc) or was retrieved"; fi
 
+# embedded-newline path => rejected at the schema gate (control-char rule), never split into
+# a second retrieval. Without the guard, jq -r + newline `read` would split "app.sh\nconfig.txt"
+# and retrieve the tracked app.sh from the smuggled second line. Either way: no app.sh copied.
+printf '{ "needed_files": [ {"path": "app.sh\\nconfig.txt", "reason": "r"} ], "search_queries": [] }' > req11.json
+run --request-file "$TMP/req11.json" --out-dir "$TMP/o11" >/dev/null 2>&1 || true
+if ! ls "$TMP/o11/files/"*app.sh >/dev/null 2>&1; then
+  ok "embedded-newline path not split (no app.sh retrieved)"; else fail "embedded-newline path split into extra retrieval"; fi
+
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

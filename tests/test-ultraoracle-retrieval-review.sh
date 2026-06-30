@@ -87,5 +87,13 @@ if v "$TMP/strclaim.json" >/dev/null 2>&1; then fail "string claim element accep
 printf '{ not json' > "$TMP/bad.json"
 v "$TMP/bad.json" >/dev/null 2>&1 && fail "malformed JSON accepted" || ok "malformed JSON rejected"
 
+# evidence with a colon but NO line number ("file:") is NOT a path:line citation => fail
+# closed (exit 7). Pins test(":[0-9]"): a bare colon or "trust:me" must not pass. Existence
+# is still the arbiter's job; this only enforces the structural path:line citation shape.
+cat > "$TMP/noncite.json" <<JSON
+{ "review_type": "ORACLE_RETRIEVAL_REVIEW", "claims": [ {"claim": "x", "evidence": ["file:"]} ], "verdict": "PASS" }
+JSON
+v "$TMP/noncite.json" >/dev/null 2>&1 && fail "colon-without-line evidence accepted" || ok "colon-without-line evidence rejected"
+
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

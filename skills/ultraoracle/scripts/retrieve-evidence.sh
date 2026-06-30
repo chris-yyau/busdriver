@@ -32,10 +32,13 @@ jq -e . "$REQUEST_FILE" >/dev/null 2>&1 || { echo "error: request JSON invalid �
 # Reject up front: root must be an object; when present, needed_files/search_queries must
 # be arrays whose every element is an object with a non-empty string path/query. A
 # whole-array ABSENT is allowed (scope note in Global Constraints) — `// []` covers that.
+# Also reject any path/query containing a CONTROL char (`\p{Cc}` — newline, NUL, etc.): the
+# retrieval loops stream these values NUL-delimited, so a value carrying its own newline OR
+# NUL would otherwise split one Oracle field into multiple requests. Reject at the boundary.
 jq -e '
   (type=="object")
-  and ((.needed_files // [])   | type=="array" and all(.[]; (type=="object") and ((.path  // "")|type=="string") and ((.path  // "")|length>0)))
-  and ((.search_queries // []) | type=="array" and all(.[]; (type=="object") and ((.query // "")|type=="string") and ((.query // "")|length>0)))
+  and ((.needed_files // [])   | type=="array" and all(.[]; (type=="object") and ((.path  // "")|type=="string") and ((.path  // "")|length>0) and ((.path  // "")|test("\\p{Cc}")|not)))
+  and ((.search_queries // []) | type=="array" and all(.[]; (type=="object") and ((.query // "")|type=="string") and ((.query // "")|length>0) and ((.query // "")|test("\\p{Cc}")|not)))
 ' "$REQUEST_FILE" >/dev/null 2>&1 || { echo "error: request JSON schema invalid (needed_files/search_queries must be arrays of {path|query:non-empty-string}) — failing closed" >&2; exit 3; }
 
 GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -68,7 +71,11 @@ MANIFEST="$OUT_DIR/manifest.txt"; : > "$MANIFEST"
 spent=0; idx=0; accepted=0; seen_files=0
 MAX_FILES=64; MAX_QUERIES=20; MAX_QUERY_BYTES=256   # untrusted-input backpressure caps
 # --- needed_files: each requested path runs the gates ---
-while IFS= read -r reqpath; do
+# NUL-delimited extraction (jq -j emits each value followed by a \u0000 terminator): a
+# schema-valid path STRING can still contain an embedded newline; a newline-delimited
+# `read` would split one Oracle field into multiple retrieval requests, breaking the
+# one-field-one-request boundary. NUL keeps each Oracle field a single record.
+while IFS= read -r -d '' reqpath; do
   [ -n "$reqpath" ] || continue
   seen_files=$((seen_files + 1))
   if [ "$seen_files" -gt "$MAX_FILES" ]; then echo "skipped_excess_files: $reqpath (cap $MAX_FILES)" >> "$MANIFEST"; continue; fi
@@ -96,14 +103,14 @@ while IFS= read -r reqpath; do
   cp -- "$canon" "$OUT_DIR/files/$flat" || { echo "skipped_copy_failed: $reqpath" >> "$MANIFEST"; continue; }
   spent=$((spent + sz)); accepted=$((accepted + 1))
   echo "file: files/$flat <= $rel ($sz bytes)" >> "$MANIFEST"
-done < <(jq -r '.needed_files // [] | .[]? | .path // empty' "$REQUEST_FILE")
+done < <(jq -j '.needed_files // [] | .[]? | (.path // empty) + "\u0000"' "$REQUEST_FILE")
 
 # --- search_queries: bounded, read-only, secret-filtered (path AND content) ---
 # Search artifacts land UNDER files/ so the Round-2 wrapper's single files/* glob
 # attaches them too (resolves the arbiter's "Round-2 omits search context" finding).
 MAX_HITS=200
 qidx=0; seen_q=0
-while IFS= read -r q; do
+while IFS= read -r -d '' q; do
   [ -n "$q" ] || continue
   seen_q=$((seen_q + 1))
   if [ "$seen_q" -gt "$MAX_QUERIES" ]; then echo "skipped_excess_queries: query[$seen_q] (cap $MAX_QUERIES)" >> "$MANIFEST"; continue; fi
@@ -131,7 +138,7 @@ while IFS= read -r q; do
   if [ "$((spent + hsz))" -gt "$BYTE_BUDGET" ]; then rm -f "$hits"; echo "skipped_over_budget_search: query[$qidx]" >> "$MANIFEST"; continue; fi
   spent=$((spent + hsz))   # search bytes count against the same shared budget as files
   echo "search: files/search-$qidx.txt <= query[$qidx] ($(wc -l < "$hits" | tr -d ' ') hits)" >> "$MANIFEST"
-done < <(jq -r '.search_queries // [] | .[]? | .query // empty' "$REQUEST_FILE")
+done < <(jq -j '.search_queries // [] | .[]? | (.query // empty) + "\u0000"' "$REQUEST_FILE")
 
 { echo "accepted_files: $accepted"; echo "accepted_bytes: $spent"; } >> "$MANIFEST"
 # Progress to STDERR only (mirrors build-evidence-pack.sh's stdout discipline) so a caller

@@ -42,5 +42,9 @@ qline=$(grep -n 'is_secret_like "\$q_canon"' "$S" | head -1 | cut -d: -f1)
 c1line=$(grep -n 'ultra_oracle_consult' "$S" | head -1 | cut -d: -f1)
 { [ -n "$qline" ] && [ -n "$c1line" ] && [ "$qline" -lt "$c1line" ]; } && ok "A10 question secret-gated pre-consult" || fail "A10 question not gated before consult"
 
+# A11: question-file guarded as a REGULAR file (-f), not just -r/-s — a directory satisfies
+#      -r/-s and `cat dir` fails silently, which would bill a Round-1 consult on an empty question.
+grep -q '\-f "\$QUESTION_FILE"' "$S" && ok "A11 question-file regular-file guard" || fail "A11 missing -f guard"
+
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

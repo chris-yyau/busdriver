@@ -19,7 +19,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOOP="$DIR/skills/blueprint-review/scripts/run-design-review-loop.sh"
 FAIL=0
 
-[ -f "$LOOP" ] || { echo "FAIL loop script not found: $LOOP"; exit 1; }
+[[ -f "$LOOP" ]] || { echo "FAIL loop script not found: $LOOP"; exit 1; }
 
 check() { # desc, fixed-string
   if grep -qF "$2" "$LOOP"; then
@@ -44,4 +44,4 @@ check "arbiter instructed to validate each issue against codebase" \
 check "arbiter instructed to use repo tools for examination" \
   'Use Read, Grep, Glob tools to examine the codebase'
 
-[ "$FAIL" = 0 ] && echo "PASS test-blueprint-review-oracle-arbiter-contract" || exit 1
+[[ "$FAIL" = 0 ]] && echo "PASS test-blueprint-review-oracle-arbiter-contract" || exit 1

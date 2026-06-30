@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted — Phases 0–4 implemented. Phases 5–6 remain (not started).
 
 ## Tracking
 
@@ -250,7 +250,7 @@ Acceptance:
 - output records Oracle review type;
 - strongest dissent and settling checks are captured.
 
-### Phase 1: Standalone user-local `ultraoracle`
+### Phase 1: Standalone user-local `ultraoracle` (Completed 2026-06-29, PR #258)
 
 Create a direct reusable workflow for maintainers before promoting it into the plugin.
 
@@ -261,7 +261,7 @@ Acceptance:
 - fails closed on missing cookie/session/output;
 - documents what evidence was sent.
 
-### Phase 2: Review-type labels and minimal evidence pack
+### Phase 2: Review-type labels and minimal evidence pack (Completed 2026-06-29, PRs #258–#259)
 
 Add result labeling and deterministic evidence pack generation.
 
@@ -271,7 +271,7 @@ Acceptance:
 - attached-file calls record file manifest;
 - tests cover label selection and stale-output handling.
 
-### Phase 3: `ultra-council` explicit escalation
+### Phase 3: `ultra-council` explicit escalation (Completed 2026-06-30, PR #261)
 
 Add a thin trigger/wrapper for normal council plus UltraOracle.
 
@@ -282,9 +282,20 @@ Acceptance:
 - Oracle is rendered separately as Expert Witness;
 - Oracle failure is loud and not silently ignored.
 
-### Phase 4: Blueprint-review integration
+### Phase 4: Blueprint-review integration (Completed 2026-06-30)
 
 Pass evidence and Oracle output into the Fable/Claude arbiter contract.
+
+Wired in `skills/blueprint-review/scripts/run-design-review-loop.sh`: when
+`ultraOracle.blueprintReview.enabled` is set in USER config, the loop dispatches
+the oracle in parallel with Agy/Codex/Grok and injects its verdict into the
+arbiter prompt under an `OPTIONAL ULTRA-ORACLE ADVISORY` block explicitly framed
+as auxiliary ("*NOT* A REVIEWER… exactly THREE reviewers"). The arbiter
+VALIDATION TASK re-states that the advisory is uncounted and instructs the
+arbiter to validate every issue against the codebase with Read/Grep/Glob. A
+failed/timed-out consult renders a loud banner and never blocks the gate. The
+auxiliary contract that settling-checks #3/#4 depend on is locked by
+`tests/test-blueprint-review-oracle-arbiter-contract.sh`.
 
 Acceptance:
 

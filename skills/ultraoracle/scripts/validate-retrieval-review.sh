@@ -31,10 +31,11 @@ case "$nclaims" in ''|*[!0-9]*) echo "error: claims count unreadable — failing
 
 # A claim is VALID only if it is an OBJECT with a non-empty string `.claim` AND a non-empty
 # `.evidence` array whose every element is a `path:line`-shaped string citation, anchored as
-# `^[^:]+:[0-9]+$` (a colon-free path, one colon, a trailing line number), so the
-# wrapper-requested "path:line" passes while "trust me", ":", "file:", "file:1junk", and
-# "http://x:80" are rejected. This is still STRUCTURAL, not existence: whether the cited
-# path:line resolves in
+# `\A[^:[:cntrl:]]+:[0-9]+\z` — a WHOLE-STRING (\A..\z, NOT ^..$ which match per-line and
+# would let "a\nb:1" pass on its second line) path with no colon AND no control char, one
+# colon, a trailing line number. So "path:line" passes while "trust me", ":", "file:",
+# "file:1junk", "http://x:80", and "a\nb:1" are rejected. This is still STRUCTURAL, not
+# existence: whether the cited path:line resolves in
 # the retrieved evidence stays the downstream arbiter's job (see NOTE below). Everything else —
 # a non-object element, a null/empty claim text, string/empty/object/colon-less evidence — is
 # counted invalid => fail closed (exit 7). jq `and` short-circuits, so the leading
@@ -45,7 +46,7 @@ invalid="$(jq '[.claims[]? | select(
     ( (type=="object")
       and ((.claim|type)=="string") and ((.claim|length)>0)
       and ((.evidence|type)=="array") and ((.evidence|length)>0)
-      and (all(.evidence[]; (type=="string") and (test("^[^:]+:[0-9]+$"))))
+      and (all(.evidence[]; (type=="string") and (test("\\A[^:[:cntrl:]]+:[0-9]+\\z"))))
     ) | not)] | length' "$REVIEW_FILE")"
 case "$invalid" in ''|*[!0-9]*) echo "error: claim validation unreadable — failing closed" >&2; exit 7;; esac
 [ "$invalid" -eq 0 ] || { echo "error: $invalid malformed/uncited claim(s) — failing closed" >&2; exit 7; }

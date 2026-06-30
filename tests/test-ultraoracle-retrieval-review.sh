@@ -95,5 +95,10 @@ cat > "$TMP/noncite.json" <<JSON
 JSON
 v "$TMP/noncite.json" >/dev/null 2>&1 && fail "colon-without-line evidence accepted" || ok "colon-without-line evidence rejected"
 
+# a citation with a NEWLINE in the path is not a single-line path:line => fail closed. Pins
+# the \A..\z whole-string anchor (a per-line ^..$ would match the "b:1" second line).
+printf '{ "review_type": "ORACLE_RETRIEVAL_REVIEW", "claims": [ {"claim": "x", "evidence": ["a\\nb:1"]} ], "verdict": "PASS" }' > "$TMP/nlcite.json"
+v "$TMP/nlcite.json" >/dev/null 2>&1 && fail "newline-in-citation accepted" || ok "newline-in-citation rejected"
+
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

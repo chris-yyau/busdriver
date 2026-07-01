@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phases 0–4 implemented. Phases 5–6 remain (not started).
+Accepted — Phases 0–5 implemented. Phase 6 remains (not started).
 
 ## Tracking
 
@@ -304,7 +304,7 @@ Acceptance:
 - ungrounded claims are explicitly recorded;
 - false Oracle file claims do not affect PASS/FAIL without validation.
 
-### Phase 5: Two-round retrieval loop
+### Phase 5: Two-round retrieval loop (Completed 2026-07-01)
 
 Implement Oracle-directed retrieval after simpler evidence-pack mode is stable.
 
@@ -314,6 +314,8 @@ Acceptance:
 - Busdriver retrieves read-only evidence with manifest;
 - Round 2 produces `ORACLE_RETRIEVAL_REVIEW`;
 - tests cover unsafe requested paths and empty/uncited verdicts.
+
+The deterministic core — `retrieve-evidence.sh` (Round-1 read-only executor), `validate-retrieval-review.sh` (Round-2 fail-closed verdict validator), and the thin `run-retrieval-loop.sh` wrapper, all sharing the extracted `lib/evidence-safety.sh` secret/containment gates — is test-locked (`tests/test-ultraoracle-evidence-safety.sh`, `-retrieve.sh`, `-retrieval-review.sh`, `-retrieval-loop-contract.sh`). The live two-round GPT-5.5 Pro dispatch stays behind the USER-config, default-OFF `ultraOracle.blueprintReview.enabled` flag; the wrapper is verified by a static grep-anchored contract test only and CI never sets the flag, so no billed dogfood occurred this session.
 
 ### Phase 6: Optional auto-escalation
 

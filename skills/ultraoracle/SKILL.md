@@ -35,7 +35,7 @@ not gate anything and does not feed blueprint-review yet (that is Phase 4).
 | `quick` | prompt + small inline `--context` text only | `ORACLE_SUMMARY_REVIEW` |
 | `repo` | deterministic evidence pack with **raw repo files** attached | `ORACLE_REPO_ATTACHED_REVIEW` |
 | `upstream-audit` | repo evidence + inventory of upstream paths | `ORACLE_REPO_ATTACHED_REVIEW` if raw files attached, else `ORACLE_SUMMARY_REVIEW` |
-| `retrieval-loop` | two-round Oracle-directed retrieval | **Phase 5 — not implemented.** The script rejects it; never claim `ORACLE_RETRIEVAL_REVIEW`. |
+| `retrieval-loop` | two-round Oracle-directed retrieval | Implemented as the **separate** `run-retrieval-loop.sh` (default-OFF — see "Phase 5 retrieval loop" below), which emits `ORACLE_RETRIEVAL_REVIEW` only via the validated wrapper. It is **not** a `build-evidence-pack.sh` mode: that script still rejects `--mode retrieval-loop`. |
 
 The label is whatever `build-evidence-pack.sh` prints — it is determined by what was
 **actually attached**, so a summary-only consult can never masquerade as a repo review
@@ -139,3 +139,35 @@ Every run leaves an auditable trail in `$PACK_DIR`: `manifest.txt` (run id, repo
 git SHA, byte budget, every attached file, every secret/budget exclusion, the label),
 `question.txt`, git context, and the raw `verdict.md`. That manifest is the record of
 exactly what evidence was sent.
+
+## Phase 5 retrieval loop (ADR 0007 Phase 5)
+
+An Oracle-directed, two-round alternative to the single-shot evidence pack: the Oracle
+first says what it needs, Busdriver retrieves it read-only, then the Oracle reviews only
+that evidence. The deterministic core lives in `scripts/`:
+
+- **`lib/evidence-safety.sh`** — sourceable secret-scan + repo-containment gates
+  (`is_secret_basename`/`is_secret_path`/`is_secret_like`/`contained_path`/`bytes_of`/
+  `emit_nonsecret_z`), single-sourced by `build-evidence-pack.sh` and the scripts below.
+  Caller must set canonicalized `GIT_ROOT` first.
+- **`retrieve-evidence.sh`** — Round-1 executor. Consumes the Oracle's UNTRUSTED request
+  JSON (`--request-file`) and writes a read-only manifest + copied evidence (`--out-dir`).
+  Every requested path/search runs the gates; out-of-repo, traversal, secret, symlink,
+  untracked, and FIFO/special paths are rejected and recorded, never copied. Fail-CLOSED
+  on malformed/wrong-typed JSON.
+- **`validate-retrieval-review.sh`** — Round-2 validator (`--review-file`). Fail-CLOSED
+  (typed non-zero exit) on invalid JSON, wrong `review_type`, non-enum verdict, empty
+  claims, or any uncited/malformed claim. Citation *existence* is the Phase-4 arbiter's
+  job, not this structural check.
+- **`run-retrieval-loop.sh`** — thin wrapper chaining consult → retrieve → consult →
+  validate (`--question-file`/`--out-dir`). On success it prints
+  `ORACLE_RETRIEVAL_REVIEW <verdict>` on its last line; `error` and `skipped:*` are the
+  token-only (no verdict) non-success cases. Downstream callers should branch on this
+  distinction rather than treat the last line as a generic status token.
+
+**Live dispatch is default-OFF.** The two billed `ultra_oracle_consult` calls only fire
+when `ultra_oracle_surface_enabled blueprintReview` returns 0 — a USER-config opt-in
+(`~/.claude/busdriver.json` → `ultraOracle.blueprintReview.enabled: true`), never a
+repo-controlled toggle. With the flag off the wrapper prints `skipped:disabled` and exits
+0. The loop is verified by the static contract test
+`tests/test-ultraoracle-retrieval-loop-contract.sh` only — no test performs a live consult.

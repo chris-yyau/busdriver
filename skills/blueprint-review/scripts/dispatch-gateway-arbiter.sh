@@ -69,6 +69,16 @@ API_KEY="${BLUEPRINT_ARBITER_GATEWAY_API_KEY:-}"
 [[ -n "$BASE_URL" ]] || skip "BLUEPRINT_ARBITER_GATEWAY_BASE_URL not set"
 [[ -n "$AUTH_TOKEN" || -n "$API_KEY" ]] || skip "no gateway credential set (need AUTH_TOKEN or API_KEY)"
 
+# Ultra-arbiter opt-in boundary (#265): even with gateway credentials, the escalation
+# only runs when the operator opted in at the USER level (`.ultraArbiter.enabled` in USER
+# ~/.claude/busdriver.json, or `BLUEPRINT_ARBITER_ULTRA=1`). This makes "reviewed content
+# can never trigger the gateway" a structural rung, not just prose — mirroring the
+# ultraOracle enable. Skip (fall through to opus) when not opted in, exactly like an
+# unconfigured gateway. The helper reads the enable from USER config ONLY.
+# shellcheck source=../../../scripts/lib/ultra-arbiter-config.sh
+source "$_PLUGIN_ROOT/scripts/lib/ultra-arbiter-config.sh"
+ultra_arbiter_enabled || skip "ultra-arbiter not opted in (.ultraArbiter.enabled / BLUEPRINT_ARBITER_ULTRA=1)"
+
 [[ "$PROMPT_FILE" == /* ]] || die "validation prompt path must be absolute: $PROMPT_FILE"
 [[ "$OUTPUT_FILE" == /* ]] || die "claude.json output path must be absolute: $OUTPUT_FILE"
 # Both paths are spliced verbatim into the fixed dispatch template below, so

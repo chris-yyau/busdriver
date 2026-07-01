@@ -51,7 +51,11 @@ get_cli_install_hint() {
 # Usage: _read_config_value "/path/to/busdriver.json" '.routes["council.critic"][0]'
 # Returns: extracted value on stdout, empty if missing/error. Exit 1 on parse error.
 
-_JSON_PARSER=""
+# `${_JSON_PARSER:-}` (not a bare "") preserves a value inherited from the
+# environment across re-sourcing — the deliberate test hook that lets
+# test-ultra-arbiter-config.sh force `_JSON_PARSER=python3` to exercise the
+# python3 normalization branch. Prod never sets it, so behavior is unchanged.
+_JSON_PARSER="${_JSON_PARSER:-}"
 _detect_json_parser() {
   if [[ -n "$_JSON_PARSER" ]]; then return; fi
   if command -v jq &>/dev/null; then

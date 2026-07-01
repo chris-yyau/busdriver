@@ -76,6 +76,8 @@ check "BUSDRIVER_STATE_DIR relocates the USER config" 0 \
 
 # 8. python3-fallback normalization: resolve-cli.sh's python3 path emits `True`, so the
 #    helper must lowercase-normalize. Force the python3 parser to exercise that branch.
+#    `_JSON_PARSER=python3` is honored via resolve-cli.sh's `${_JSON_PARSER:-}` init
+#    (a deliberate test hook); without it resolve-cli re-detects and picks jq on CI.
 if command -v python3 >/dev/null 2>&1; then
   H="$TMP/py-true"; write_cfg "$H" ".claude/busdriver.json" '{"ultraArbiter":{"enabled":true}}'
   check "python3 fallback True normalizes to enabled" 0 \

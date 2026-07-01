@@ -55,7 +55,8 @@ jobs:
             skills/blueprint-review/scripts/dispatch-gateway-arbiter.sh \
             tests/test-ultra-arbiter-config.sh \
             tests/test-blueprint-arbiter-default-pin.sh \
-            tests/test-gateway-arbiter-dispatch.sh
+            tests/test-gateway-arbiter-dispatch.sh \
+            tests/test-blueprint-review-oracle-arbiter-contract.sh
 
   compliance:
     if: github.event_name == 'push'

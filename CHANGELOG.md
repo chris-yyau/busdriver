@@ -1,3 +1,10 @@
+# [1.74.0](https://github.com/chris-yyau/busdriver/compare/v1.73.0...v1.74.0) (2026-07-01)
+
+
+### Features
+
+* **ultraoracle:** ADR 0007 Phase 5 — two-round retrieval loop (deterministic core) ([#263](https://github.com/chris-yyau/busdriver/issues/263)) ([4de5dc1](https://github.com/chris-yyau/busdriver/commit/4de5dc1a2f5984614335df0207204c8ac54d7118))
+
 # [1.73.0](https://github.com/chris-yyau/busdriver/compare/v1.72.2...v1.73.0) (2026-06-30)
 
 

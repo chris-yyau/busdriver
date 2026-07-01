@@ -1,3 +1,10 @@
+# [1.76.0](https://github.com/chris-yyau/busdriver/compare/v1.75.0...v1.76.0) (2026-07-01)
+
+
+### Features
+
+* **blueprint-review:** enforce ultra-arbiter opt-in + CI/test hardening ([#265](https://github.com/chris-yyau/busdriver/issues/265)) ([#267](https://github.com/chris-yyau/busdriver/issues/267)) ([fb86e2f](https://github.com/chris-yyau/busdriver/commit/fb86e2f01b3ef5e58f322bda9e74aa069d254564)), closes [#266](https://github.com/chris-yyau/busdriver/issues/266)
+
 # [1.75.0](https://github.com/chris-yyau/busdriver/compare/v1.74.0...v1.75.0) (2026-07-01)
 
 

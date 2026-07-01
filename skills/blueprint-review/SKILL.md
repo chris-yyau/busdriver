@@ -290,8 +290,11 @@ USER `~/.claude/busdriver.json` and/or `BLUEPRINT_ARBITER_ULTRA=1`, never a repo
 content) **and** has API access to `fable` through an Anthropic-API-compatible gateway (e.g.,
 ZenMux), the arbiter is dispatched as **one** headless `claude -p` subprocess pinned to
 `claude-fable-5` through the gateway — a deliberate escalation to fable-quality arbitration *above*
-the default `opus`, not an automatic fallback. It is skipped silently when the operator has not
-opted in or no gateway credentials are present, and the default `opus` arbiter runs instead.
+the default `opus`, not an automatic fallback. It is skipped **silently** only when the operator has
+**not** opted in (the default `opus` arbiter simply runs). When the operator **has** opted in but no
+gateway credentials are present, the dispatch protocol above applies instead of a silent skip —
+record `model_pin_status=ultra_arbiter_unavailable` + `run_degraded=true` and emit the loud
+caller-side `WARNING: ULTRA-ARBITER UNAVAILABLE — ran opus` before the default `opus` arbiter runs.
 
 **Why headless, not the Agent tool.** Agent-tool subagents always inherit the parent session's
 auth, endpoint, and credentials — there is no supported way to point a single Agent-tool

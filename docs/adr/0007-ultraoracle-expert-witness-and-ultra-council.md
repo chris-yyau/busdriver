@@ -4,6 +4,8 @@
 
 Accepted — Phases 0–5 implemented. Phase 6 remains (not started).
 
+**Arbiter-model note (2026-07-01, [ADR 0008](./0008-opus-default-arbiter-drop-fable.md)):** every "Fable/Claude arbiter" reference in this ADR (Context, Decision — incl. the *Fable arbiter contract* section — and the roles table) now denotes the **opus-default** arbiter: `fable` is leaving the subscription plan, so the final blueprint-review judge is pinned to `opus`, with the gateway-fable path re-cast as an opt-in "ultra arbiter" escalation. Only the model *label* changed — the arbiter **contract** (an evidence-validating final gate that never merely aggregates reviewer/Oracle outputs) is unchanged. Body left unedited as historical record.
+
 ## Tracking
 
 - GitHub issue: https://github.com/chris-yyau/busdriver/issues/247

@@ -1,12 +1,15 @@
 #!/bin/bash
-# Gateway-fallback arbiter dispatch (SKILL.md "Gateway-Fallback Rung").
+# Ultra-arbiter escalation dispatch (SKILL.md "Ultra-Arbiter Escalation").
 #
 # Dispatches the blueprint-review arbiter as a headless `claude -p` subprocess
-# routed through an Anthropic-API-compatible gateway (e.g., ZenMux), for the
-# case where the `fable` tier is unavailable on the calling session's
-# subscription but reachable via gateway API. Agent-tool subagents always
-# inherit the parent session's auth/endpoint, so this rung MUST be a separate
-# process with per-process environment overrides.
+# routed through an Anthropic-API-compatible gateway (e.g., ZenMux) to `fable` —
+# the opt-in "ultra arbiter" escalation ABOVE the default `opus`, gated by an
+# operator USER-level opt-in (see SKILL.md), not an automatic fallback. Agent-tool
+# subagents always inherit the parent session's auth/endpoint, so this MUST be a
+# separate process with per-process environment overrides.
+# (Code-level enforcement of the opt-in in this helper is tracked in #265; today
+#  the calling session decides per the SKILL.md protocol and this script gates on
+#  gateway credentials.)
 #
 # The script enforces the dispatch protocol structurally:
 #   - Context firewall: the prompt is the fixed template plus exactly the two
@@ -414,5 +417,5 @@ STATUS=$(jq -r '.status // ""' "$OUTPUT_FILE")
 RUN_ID=$(jq -r '.metadata.run_id // ""' "$OUTPUT_FILE")
 [[ -n "$RUN_ID" ]] || post_fail "metadata.run_id missing (freshness contract)"
 
-echo "gateway-arbiter: verdict written ($STATUS, run_id $RUN_ID) — record model_pin_status=gateway_fable_fallback" >&2
+echo "gateway-arbiter: verdict written ($STATUS, run_id $RUN_ID) — record model_pin_status=ultra_arbiter_fable" >&2
 exit 0

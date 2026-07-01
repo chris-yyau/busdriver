@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-06-10)
+Accepted (2026-06-10). **Superseded in part by [ADR 0008](./0008-opus-default-arbiter-drop-fable.md) (2026-07-01):** the *arbiter-model* decisions here — the `model: fable` pin, the `fable → gateway fable → opus → inherit` fallback chain, the `gateway_fable_fallback`/`opus_fallback`/`inherited_fallback` status values, the inline-degraded allowance, and the Revisit trigger below — are replaced by an **opus-default** arbiter with the gateway-fable path re-cast as an opt-in "ultra arbiter" escalation. The **fresh-subagent / author≠judge / context-firewall / verdict-freshness** decisions of this ADR remain in force. Body left unedited as historical record.
 
 ## Context
 

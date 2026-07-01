@@ -1,3 +1,10 @@
+# [1.75.0](https://github.com/chris-yyau/busdriver/compare/v1.74.0...v1.75.0) (2026-07-01)
+
+
+### Features
+
+* **blueprint-review:** opus-default arbiter, drop fable, gateway-fable as opt-in ultra arbiter ([#266](https://github.com/chris-yyau/busdriver/issues/266)) ([cd320a1](https://github.com/chris-yyau/busdriver/commit/cd320a16c22271cc2dc00b153987becf6215e2b3)), closes [#265](https://github.com/chris-yyau/busdriver/issues/265)
+
 # [1.74.0](https://github.com/chris-yyau/busdriver/compare/v1.73.0...v1.74.0) (2026-07-01)
 
 

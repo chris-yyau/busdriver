@@ -179,7 +179,7 @@ case "$RESULT_STATUS" in
                 emit_bail "env" "wait-round: post-push GitHub-state fetch failed; cannot refresh acks"
             fi
             export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES \
-                ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA
+                ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA
             wait_entries=()
             tier_entries=()
             for bot in "${REGISTERED_ACK_BOTS[@]}"; do
@@ -438,7 +438,7 @@ reviewer_ack_entries=()
 tier_entries=()
 if [ "$_fetch_ok" = "1" ]; then
     export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES \
-        ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA
+        ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA
     for bot in "${REGISTERED_ACK_BOTS[@]}"; do
         # ACK_EMIT_TIER=1: HEAD-ack returns "<sha>:<tier>"; none/stale unchanged.
         # Compute acks AND tiers from the SAME ack-ledger pass so they are mutually

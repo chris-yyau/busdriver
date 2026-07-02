@@ -22,22 +22,32 @@
 #      (issue-level reactions JSON array) feeds Tier F — the Codex-only reaction
 #      tier; it is empty for callers that haven't been upgraded to fetch it, and
 #      Tier F no-ops in that case. HEAD_PUSH_DATE (UTC ISO-8601) is the timestamp
-#      of the push event that landed HEAD_SHA on the branch and is the SOLE
+#      of the push event that landed HEAD_SHA on the branch and is the PREFERRED
 #      freshness anchor for Tier F's +1 (👍) ack: a +1 acks HEAD only when it
-#      postdates HEAD_PUSH_DATE, and FAILS CLOSED (→ stale) when HEAD_PUSH_DATE is
-#      absent (#189) — mirroring the resolved-thread path below. HEAD_COMMITTED_DATE
+#      postdates the anchor. HEAD_CHECKS_DATE (UTC ISO-8601, #269) is the earliest
+#      check-SUITE created_at for HEAD_SHA, used ONLY as a fallback anchor when
+#      HEAD_PUSH_DATE is empty — the new-branch case where the first push CREATED the ref
+#      (GitHub emits a CreateEvent, not a PushEvent, so no PushEvent exists). GitHub stamps
+#      the suite created_at when HEAD is pushed and it is queried per-SHA
+#      (commits/<HEAD>/check-suites), so it is SHA-BOUND and — unlike a check-RUN started_at
+#      or the committer date — NOT client/app-settable. Both anchors are GitHub
+#      server-stamped (never the backdatable committer date), so the fallback preserves the
+#      #186/#189 anti-backdating posture; the +1 path FAILS CLOSED (→ stale) only when BOTH
+#      are absent — mirroring the resolved-thread path below.
+#      HEAD_COMMITTED_DATE
 #      (HEAD's `commit.committer.date`, UTC ISO-8601) is RETAINED in the input
 #      contract (still accepted/exported, best-effort) but is NO LONGER a Tier-F
 #      freshness anchor and does not gate FETCH_OK: the git committer date is
 #      client-stamped and backdatable, so it must not gate an automated merge ack.
 #      NOTE — the Codex RESOLVED-thread ack (Tier A.2, below) shares this contract: it
-#      anchors on HEAD_PUSH_DATE ALONE (never the backdatable committer date) and
-#      FAILS CLOSED (→ stale) when HEAD_PUSH_DATE is absent (#186). It also requires
+#      anchors on the same HEAD_PUSH_DATE || HEAD_CHECKS_DATE resolution (never the
+#      backdatable committer date) and FAILS CLOSED (→ stale) when BOTH are absent
+#      (#186/#269). It also requires
 #      ALL_THREADS to carry, per thread, `resolvedBy { login }` and a
 #      `resolutionComments: comments(last:10) { nodes { author { login } createdAt } }`
 #      alias (the resolver-authored resolution-time signal for #187). Callers that
 #      omit those fields get no resolved-thread ack → stale (additive, safe).
-#   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA`
+#   3. `export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA`
 #      so this subprocess inherits them. A caller that hasn't been upgraded
 #      to fetch ALL_STATUSES will export empty for that var — Tier E sees
 #      the empty input, skips silently, and the script falls through to
@@ -130,7 +140,7 @@
 # you need to force the caller's intended path. `exec` preserves "$@" and
 # exported env vars (FETCH_OK, ALL_THREADS, ALL_REVIEWS, ALL_COMMENTS,
 # ALL_CHECK_RUNS, ALL_STATUSES, ALL_REACTIONS, HEAD_COMMITTED_DATE,
-# HEAD_PUSH_DATE, HEAD_SHA)
+# HEAD_PUSH_DATE, HEAD_CHECKS_DATE, HEAD_SHA)
 # automatically across the process replacement.
 #
 # Why detection runs at script top: the resolver is a permanent forward-fix.
@@ -285,6 +295,16 @@ if [ "$unresolved" -gt 0 ]; then echo "stale"; exit 0; fi
 # resolved-current-head thread. The hoisted eyes-override above guarantees Codex
 # is not mid-review when this acks.
 if [ "$login" = "chatgpt-codex-connector" ]; then
+  # Effective freshness anchor (#269): prefer HEAD_PUSH_DATE (push event) unchanged;
+  # fall back to HEAD_CHECKS_DATE (earliest check-SUITE created_at for HEAD_SHA) ONLY when
+  # HEAD_PUSH_DATE is empty — the new-branch case where the first push CREATED the ref so
+  # GitHub emitted a CreateEvent, not a PushEvent, and a genuine fresh 👍 would otherwise
+  # fail-close forever. The suite created_at is GitHub-stamped on push AND SHA-bound (queried
+  # per-SHA), so — like the push anchor and unlike the committer date — it is not client/app-
+  # settable and keeps the #186/#189 posture. Used by BOTH the +1 path (Tier F) and the
+  # resolved-thread path (Tier A.2) below; fails CLOSED to stale only when BOTH are empty.
+  anchor_date="${HEAD_PUSH_DATE:-}"
+  [ -z "$anchor_date" ] && anchor_date="${HEAD_CHECKS_DATE:-}"
   # Consolidated Codex resolution; precedence order is load-bearing. Tier A.1
   # above (unresolved+non-outdated → stale) already ran login-agnostically, so a
   # LIVE finding has blocked.
@@ -297,19 +317,19 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   #     is not guaranteed.
   codex_plus1=$(printf '%s' "$ALL_REACTIONS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
     '[.[]? | .[]? | select(.user.login == $login or .user.login == $login_bot) | select(.content == "+1")] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
-  # Freshness anchor: HEAD_PUSH_DATE (push event timestamp) ALONE — NEVER the git
-  # committer date. The committer date is client-stamped and backdatable: force-push
-  # an old commit whose committer date predates a leftover +1 and that +1 would look
-  # "fresh" → a false HEAD-ack on un-re-reviewed code (#189). So a +1 acks ONLY when a
-  # server-stamped push anchor exists AND the +1 postdates it. When HEAD_PUSH_DATE is
-  # absent (fork head, events API delayed / aged-out >90d / capped >300 events) there
-  # is no trustworthy anchor → DO NOT ack; fall through to stale (fail-CLOSED). This
-  # matches the resolved-thread sibling below (#186) — uniform fail-closed, no
-  # committer fallback, no sentinel. The hoisted eyes-override above and Tier A.2
-  # (push-anchored resolved-current) cover the active-re-review and out-of-scope-clear
-  # cases; a genuinely outdated finding with no push anchor SHOULD wait for re-review
-  # (operator-visible --max-wait), which is correct, not a regression.
-  if [[ -n "$codex_plus1" && -n "${HEAD_PUSH_DATE:-}" && "$codex_plus1" > "${HEAD_PUSH_DATE}" ]]; then
+  # Freshness anchor: $anchor_date (HEAD_PUSH_DATE, or HEAD_CHECKS_DATE fallback for a
+  # brand-new branch, #269) — NEVER the git committer date. The committer date is
+  # client-stamped and backdatable: force-push an old commit whose committer date predates
+  # a leftover +1 and that +1 would look "fresh" → a false HEAD-ack on un-re-reviewed code
+  # (#189). So a +1 acks ONLY when a server-stamped anchor exists AND the +1 postdates it.
+  # When $anchor_date is absent (fork head, events API delayed / aged-out >90d / capped
+  # >300 events, and no check-suite either) there is no trustworthy anchor → DO NOT ack;
+  # fall through to stale (fail-CLOSED). This matches the resolved-thread sibling below
+  # (#186) — uniform fail-closed, no committer fallback, no sentinel. The hoisted
+  # eyes-override above and Tier A.2 (anchored resolved-current) cover the active-re-review
+  # and out-of-scope-clear cases; a genuinely outdated finding with no anchor SHOULD wait
+  # for re-review (operator-visible --max-wait), which is correct, not a regression.
+  if [[ -n "$codex_plus1" && -n "$anchor_date" && "$codex_plus1" > "$anchor_date" ]]; then
     emit_head_ack "$HEAD_SHA" F; exit 0
   fi
   # (2) OUTDATED thread (no fresh 👍) — Codex reviewed superseded code and must
@@ -330,13 +350,16 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   #     verified 2026-06-17). So freshness is PROVEN from the only two pollable
   #     signals, and we FAIL-CLOSED when they are absent (#186):
   #
-  #     (i)  PUSH-TIME ANCHOR ONLY. This path anchors on HEAD_PUSH_DATE (the push
-  #          that landed HEAD), NEVER max(committer, push). The committer date is
-  #          attacker-controllable — force-push an older commit with a backdated
-  #          committer date and a stale resolution looks newer than HEAD — so it must
-  #          not gate a resolved-thread ack. When HEAD_PUSH_DATE is empty (fork head,
-  #          events API delay/aged-out, or an unupgraded caller) there is no trustworthy
-  #          anchor → DO NOT ack; exit stale (fail-CLOSED). This intentionally REVERSES
+  #     (i)  SERVER-STAMPED ANCHOR ONLY. This path anchors on $anchor_date — the push
+  #          that landed HEAD (HEAD_PUSH_DATE), or the earliest check-SUITE created_at for
+  #          HEAD_SHA (HEAD_CHECKS_DATE, #269 — SHA-bound, GitHub-stamped) — NEVER
+  #          max(committer, push). The committer date is attacker-controllable —
+  #          force-push an older commit with a backdated committer date and a stale
+  #          resolution looks newer than HEAD — so it must not gate a resolved-thread
+  #          ack; both anchor sources are GitHub server-stamped, so the fallback keeps
+  #          that posture. When $anchor_date is empty (fork head, events API
+  #          delay/aged-out with no check-suite, or an unupgraded caller) there is no
+  #          trustworthy anchor → DO NOT ack; exit stale (fail-CLOSED). This REVERSES
   #          the old "empty anchor ⇒ ack" backward-compat: on a P1 merge gate a
   #          frequent fail-CLOSED stall the operator can see beats a narrow silent
   #          fail-OPEN (council 2026-06-17; see ~/.claude/notes/lesson-council-2026-
@@ -362,7 +385,7 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   #          freshen it; that is a conscious act by the merge-authority holder, accepted
   #          here. The Codex-authored re-review signals remain Tier F (fresh 👍) and the
   #          eyes-override. (Council 2026-06-17 + PR deep-review tightening.)
-  #          Timestamp contract: createdAt and HEAD_PUSH_DATE are both GitHub-emitted
+  #          Timestamp contract: createdAt and $anchor_date are both GitHub-emitted
   #          UTC 'Z'-form ISO-8601, so lexicographic > is a correct time comparison.
   #          resolutionComments uses comments(last:10): a resolver reply evicted from
   #          that window (>10 trailing comments) yields no match → stale (fail-CLOSED).
@@ -370,9 +393,9 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   #     ALL-OR-STALE: the ack fires only when EVERY resolved+non-outdated Codex thread
   #     is proven fresh. If even one is unproven it forces stale — a stale resolved
   #     thread must never be masked by a fresh sibling (mirrors the (2) outdated
-  #     precedence). A thread is "proven fresh" iff HEAD_PUSH_DATE is present, resolvedBy
+  #     precedence). A thread is "proven fresh" iff $anchor_date is present, resolvedBy
   #     is set and is not the finding bot, and the thread's LAST comment is resolver-
-  #     authored and strictly newer than HEAD_PUSH_DATE.
+  #     authored and strictly newer than $anchor_date.
   codex_resolved_any=$(printf '%s' "$ALL_THREADS" | jq -rs \
     --arg login "$login" --arg login_bot "${login}[bot]" \
     '[.[].data.repository.pullRequest.reviewThreads.nodes[]
@@ -382,8 +405,9 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
   if [ "${codex_resolved_any:-0}" -gt 0 ]; then
     # (The outer `codex_resolved_any > 0` guard already closed PR #185's fail-OPEN-to-
     # `none` — a resolved Codex thread can no longer fall through to the `none` early-
-    # return.) Here: no push anchor → nothing can be proven fresh → stale (#186 fail-CLOSED).
-    if [ -z "${HEAD_PUSH_DATE:-}" ]; then echo "stale"; exit 0; fi
+    # return.) Here: no anchor (neither push nor check-suite) → nothing can be proven
+    # fresh → stale (#186/#269 fail-CLOSED).
+    if [ -z "$anchor_date" ]; then echo "stale"; exit 0; fi
     # Count resolved+non-outdated threads that are NOT proven fresh (the negation of the
     # freshness predicate). Any > 0 → stale, so one stale resolution blocks the whole ack.
     # Fail-CLOSED on jq error: this query indexes resolvedBy/resolutionComments, which the
@@ -393,7 +417,7 @@ if [ "$login" = "chatgpt-codex-connector" ]; then
     # fail-CLOSED-on-error invariant.
     codex_resolved_unproven=$(printf '%s' "$ALL_THREADS" | jq -rs \
       --arg login "$login" --arg login_bot "${login}[bot]" \
-      --arg push "$HEAD_PUSH_DATE" \
+      --arg push "$anchor_date" \
       '[.[].data.repository.pullRequest.reviewThreads.nodes[]
         | select(.comments.nodes[0].author.login == $login or .comments.nodes[0].author.login == $login_bot)
         | select(.isResolved == true and .isOutdated == false)

@@ -1,3 +1,10 @@
+## [1.76.1](https://github.com/chris-yyau/busdriver/compare/v1.76.0...v1.76.1) (2026-07-02)
+
+
+### Bug Fixes
+
+* **refine-notes:** correct tuple unpacking in prune-notes stale loops ([#268](https://github.com/chris-yyau/busdriver/issues/268)) ([9d5024c](https://github.com/chris-yyau/busdriver/commit/9d5024c63606e8bccea8e7e83edd4d2c5fd63a44))
+
 # [1.76.0](https://github.com/chris-yyau/busdriver/compare/v1.75.0...v1.76.0) (2026-07-01)
 
 

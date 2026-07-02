@@ -30,7 +30,7 @@ Plan and execute launch campaigns that convert — not just campaigns that ship.
 
 ### Phase 1: Research
 
-Use `market-research` to: (vault)
+Use `market-research` (vault) to:
 - profile the target audience (jobs-to-be-done, fears, language, alternatives they use)
 - map 3+ direct or adjacent competitors (positioning, gaps, messaging weaknesses)
 - identify 1–3 audience insights the campaign angle will exploit

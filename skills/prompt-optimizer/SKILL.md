@@ -132,16 +132,16 @@ Map intent + scope + tech stack (from Phase 0) to specific ECC components.
 
 | Tech Stack | Skills to Add | Agent |
 |------------|--------------|-------|
-| Python / Django | django-patterns, django-tdd, django-security, django-verification (vault), python-patterns, python-testing | python-reviewer |
+| Python / Django | django-patterns (vault), django-tdd (vault), django-security (vault), django-verification (vault), python-patterns, python-testing | python-reviewer |
 | Go | golang-patterns, golang-testing | go-reviewer, go-build-resolver |
 | Spring Boot / Java | springboot-patterns, springboot-tdd, springboot-security, springboot-verification, java-coding-standards, jpa-patterns | java-reviewer (vault) |
 | Quarkus / Java | quarkus-patterns, quarkus-tdd, quarkus-security, quarkus-verification, java-coding-standards, jpa-patterns | java-reviewer (vault) |
 | Kotlin / Android | kotlin-coroutines-flows, compose-multiplatform-patterns, android-clean-architecture | kotlin-reviewer (vault) |
 | TypeScript / React | frontend-patterns, backend-patterns, coding-standards | code-reviewer |
-| Swift / iOS | swiftui-patterns, swift-concurrency-6-2, swift-actor-persistence, swift-protocol-di-testing | code-reviewer (vault) |
+| Swift / iOS | swiftui-patterns, swift-concurrency-6-2, swift-actor-persistence, swift-protocol-di-testing (vault) | code-reviewer |
 | PostgreSQL | postgres-patterns, database-migrations | database-reviewer |
-| Perl | perl-patterns, perl-testing, perl-security | code-reviewer (vault) |
-| C++ | cpp-coding-standards, cpp-testing | code-reviewer (vault) |
+| Perl | perl-patterns, perl-testing, perl-security (vault) | code-reviewer |
+| C++ | cpp-coding-standards, cpp-testing (vault) | code-reviewer |
 | Other / Unlisted | coding-standards (universal) | code-reviewer |
 
 ### Phase 4: Missing Context Detection

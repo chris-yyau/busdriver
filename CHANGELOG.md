@@ -1,3 +1,10 @@
+## [1.76.2](https://github.com/chris-yyau/busdriver/compare/v1.76.1...v1.76.2) (2026-07-02)
+
+
+### Bug Fixes
+
+* **ack-ledger:** branch+SHA-bound check-suite fallback anchor for new-branch codex ack ([#269](https://github.com/chris-yyau/busdriver/issues/269)) ([#270](https://github.com/chris-yyau/busdriver/issues/270)) ([b575734](https://github.com/chris-yyau/busdriver/commit/b57573409eb0c6aaa951c2d9e859bad873ae737f))
+
 ## [1.76.1](https://github.com/chris-yyau/busdriver/compare/v1.76.0...v1.76.1) (2026-07-02)
 
 

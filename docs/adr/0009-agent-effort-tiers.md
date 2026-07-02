@@ -24,8 +24,13 @@ Tier every agent by **blast radius**, not role prestige:
 |------|-----------|
 | `low` | read-only analysis/exploration only (no Write/Edit tool) |
 | `medium` | ordinary reviewers **and anything that mutates the working tree** |
-| `high` | hard-gate reviewers + irreversible/secret-handling actions |
+| `high` | hard-gate reviewers, secret-handling actions, and deep-reasoning analysis agents (silent-failure-hunter, type-design-analyzer, network-architect, plan-code-reviewer, healthcare-reviewer, GAN trio) |
 | `xhigh` | opus-only deep reasoning: architecture, security, planning, db, performance |
+
+Only the gate-critical/secret subset of `high` is floor-enforced by the test
+(invariant 3); the deep-reasoning analyzers are `high` by policy but not
+floor-protected, since under-tiering a read-only analyzer is a mild cost, not a
+safety risk.
 
 Enforced by `tests/test-agent-effort-tiers.sh`, which asserts:
 1. every agent has exactly one valid effort value (no missing/duplicate/malformed);
@@ -52,8 +57,9 @@ Enforced by `tests/test-agent-effort-tiers.sh`, which asserts:
 - The test fails **red** on any sync that drops/clobbers a tier — a fail-closed signal, by design.
 - Known limitation: the test *detects* drift, it does not auto-remediate. A red run means
   re-apply the tier by hand.
-- Bash frontmatter parsing is tolerant (`^effort:`/`^model:`/`^tools:`); a radical reformat
-  upstream could need the matcher updated.
+- Frontmatter checks are scoped to the YAML block between the first two `---` fences, so a
+  body line beginning with `effort:`/`model:`/`tools:` cannot spoof a match; a radical
+  fence reformat upstream could still need the extractor updated.
 
 ## Revisit trigger
 
@@ -61,3 +67,5 @@ Enforced by `tests/test-agent-effort-tiers.sh`, which asserts:
   not magnitude, drove this), OR
 - Claude Code changes the effort enum / model-cap semantics, OR
 - a new gate-critical agent is added (extend invariant 3's list).
+
+<!-- design-reviewed: PASS -->

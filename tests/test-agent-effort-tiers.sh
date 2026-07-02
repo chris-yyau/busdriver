@@ -17,9 +17,17 @@
 #   (ii)  any agent whose tools include Write or Edit is >= medium (never low):
 #         effort tracks BLAST RADIUS — anything that mutates the working tree
 #         reasons at least at medium
-#   (iii) gate-critical / secret-handling agents are >= high
+#   (iii) gate-critical / secret-handling agents are >= high (a MINIMUM floor
+#         for the agents where under-tiering causes real harm — NOT an
+#         enumeration of every high-tier agent; deep-reasoning analyzers are
+#         high by policy but not floor-enforced, since under-tiering them is a
+#         mild cost, not a safety risk)
 #   (iv)  effort xhigh|max requires model: opus (sonnet silently caps at ~high,
 #         so sonnet+xhigh is a misconfig that pays for reasoning it can't use)
+#
+# All frontmatter checks are scoped to the YAML block between the first two
+# `---` fences, so a body line that happens to begin with `effort:`/`model:`/
+# `tools:` (prose, an example) cannot spoof or inflate a match.
 
 set -euo pipefail
 
@@ -42,6 +50,12 @@ rank() {
   esac
 }
 
+# Print the YAML frontmatter block (lines strictly between the first two `---`
+# fences). Empty output => no well-formed frontmatter block.
+frontmatter() {
+  awk 'NR==1 && $0=="---" {infm=1; next} infm && $0=="---" {exit} infm {print}' "$1"
+}
+
 if [[ ! -d "$AGENTS_DIR" ]]; then
   fail "agents/ dir missing at $AGENTS_DIR"
   echo "Results: $passed passed, $failed failed"
@@ -50,9 +64,14 @@ fi
 
 for f in "$AGENTS_DIR"/*.md; do
   name="$(basename "$f" .md)"
+  fm="$(frontmatter "$f")"
+  if [[ -z "$fm" ]]; then
+    fail "$name: no YAML frontmatter block (expected '---' fences at top)"
+    continue
+  fi
 
-  # (i) exactly one valid effort line
-  n_effort="$(grep -c '^effort:' "$f" || true)"
+  # (i) exactly one valid effort line (within frontmatter)
+  n_effort="$(printf '%s\n' "$fm" | grep -c '^effort:' || true)"
   if [[ "$n_effort" -eq 0 ]]; then
     fail "$name: no effort line (would inherit xhigh default)"
     continue
@@ -61,7 +80,7 @@ for f in "$AGENTS_DIR"/*.md; do
     fail "$name: $n_effort effort lines (duplicate)"
     continue
   fi
-  effort="$(grep -m1 '^effort:' "$f" | sed -E 's/^effort:[[:space:]]*//; s/[[:space:]]+$//')"
+  effort="$(printf '%s\n' "$fm" | grep -m1 '^effort:' | sed -E 's/^effort:[[:space:]]*//; s/[[:space:]]+$//')"
   r="$(rank "$effort")"
   if [[ "$r" -lt 0 ]]; then
     fail "$name: invalid effort value '$effort'"
@@ -71,12 +90,12 @@ for f in "$AGENTS_DIR"/*.md; do
   # `|| true`: a model-less agent legitimately inherits the session model; don't
   # let grep's exit-1 abort the whole run under `set -e` (invariant iv treats an
   # empty model as "not opus", which is the correct fail for an xhigh/max agent).
-  model="$(grep -m1 '^model:' "$f" | sed -E 's/^model:[[:space:]]*//; s/[[:space:]]+$//' || true)"
+  model="$(printf '%s\n' "$fm" | grep -m1 '^model:' | sed -E 's/^model:[[:space:]]*//; s/[[:space:]]+$//' || true)"
 
   # (ii) Write/Edit tool => >= medium.
   # Quoting-agnostic: matches "Write"/"Edit" and unquoted Write/Edit forms, and
   # NotebookEdit/MultiEdit (also mutating). No non-mutating tool contains these.
-  if grep -m1 '^tools:' "$f" | grep -qE 'Write|Edit'; then
+  if printf '%s\n' "$fm" | grep -m1 '^tools:' | grep -qE 'Write|Edit'; then
     if [[ "$r" -lt 1 ]]; then
       fail "$name: has Write/Edit tool but effort=$effort (< medium)"
       continue

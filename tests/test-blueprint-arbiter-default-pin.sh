@@ -2,7 +2,7 @@
 # tests/test-blueprint-arbiter-default-pin.sh
 # Static contract test (#265) locking the opus-default arbiter migration
 # (ADR 0008 / SKILL.md v3.5) into the live spec: a future refactor must not silently
-# regress the default pin back to fable, drop the ultra-arbiter opt-in, or resurrect the
+# regress the default pin back to fable, drop the ultimate-arbiter opt-in, or resurrect the
 # retired `model_pin_status` fallback tokens.
 #
 # The retired tokens (gateway_fable_fallback / opus_fallback / inherited_fallback) and the
@@ -42,15 +42,15 @@ present "default arbiter pin is model: opus" 'model: opus'
 present "opus success status recorded" 'model_pin_status=pinned'
 absent  "fable is NOT the default pin in the live body" 'model: fable'
 
-echo "── ultra-arbiter is the opt-in escalation ──"
-present "ultra-arbiter opt-in key documented (USER config)" '.ultraArbiter.enabled'
-present "env force documented" 'BLUEPRINT_ARBITER_ULTRA=1'
-present "ultra escalation ran status" 'model_pin_status=ultra_arbiter_fable'
-present "ultra unavailable status (opt-in set, ran opus)" 'model_pin_status=ultra_arbiter_unavailable'
+echo "── ultimate-arbiter is the opt-in escalation ──"
+present "ultimate-arbiter opt-in key documented (USER config)" '.ultimate.surfaces.arbiter'
+present "env force documented" 'BUSDRIVER_ULTIMATE=1'
+present "ultimate escalation ran status" 'model_pin_status=ultimate_arbiter_fable'
+present "ultimate unavailable status (opt-in set, ran opus)" 'model_pin_status=ultimate_arbiter_unavailable'
 
 echo "── unavailable → expect opus + caller-side loudness (crit 5/6) ──"
 present "pin check expects opus for the unavailable case" 'the expected pin is `opus`'
-present "loud caller-side warning banner" 'WARNING: ULTRA-ARBITER UNAVAILABLE'
+present "loud caller-side warning banner" 'WARNING: ULTIMATE-ARBITER UNAVAILABLE'
 
 echo "── retired fallback statuses gone from the live spec (Version-History-excluded) ──"
 absent "gateway_fable_fallback retired" 'gateway_fable_fallback'

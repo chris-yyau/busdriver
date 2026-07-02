@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# shellcheck disable=SC2034  # ALL_THREADS/ALL_REVIEWS/ALL_CHECK_RUNS/ALL_STATUSES/ALL_REACTIONS/HEAD_COMMITTED_DATE/HEAD_PUSH_DATE exported to parent via `source`
+# shellcheck disable=SC2034  # ALL_THREADS/ALL_REVIEWS/ALL_CHECK_RUNS/ALL_STATUSES/ALL_REACTIONS/HEAD_COMMITTED_DATE/HEAD_PUSH_DATE/HEAD_CHECKS_DATE exported to parent via `source`
 # scripts/fetch-pr-state.sh — sourced helper; populates parent-shell env vars.
 #
 # CRITICAL: source this file (`. fetch-pr-state.sh <pr_number>`); do NOT execute
@@ -22,6 +22,10 @@
 #   HEAD_COMMITTED_DATE  (ISO-8601 committer date of HEAD)
 #   HEAD_PUSH_DATE       (ISO-8601 push-event timestamp of HEAD; best-effort,
 #                         empty when the events API has no matching PushEvent)
+#   HEAD_CHECKS_DATE     (#269 ISO-8601 earliest check-SUITE created_at stamped for THIS
+#                         branch AND HEAD SHA; branch+SHA-bound, GitHub-server-stamped
+#                         fallback anchor populated ONLY when HEAD_PUSH_DATE is empty;
+#                         ack-ledger prefers HEAD_PUSH_DATE)
 #
 # Shapes (mirrored from agents/pr-grinder.md Step 6.5 fetch block):
 #   ALL_REVIEWS    : output of `gh api --paginate repos/{owner}/{repo}/pulls/{n}/reviews`
@@ -135,6 +139,26 @@ _fetch_pr_state() {
             | jq -rs --arg head "$_full_sha" --arg ref "$_ref" \
                 '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else false end))] | sort_by(.created_at) | last | .created_at // empty' \
                 2>/dev/null || echo "")
+        # BRANCH+SHA-bound fallback freshness anchor (#269): HEAD_PUSH_DATE (PushEvent) is
+        # preferred, but it is empty for a brand-new branch whose FIRST push CREATED the ref
+        # (GitHub emits a CreateEvent, not a PushEvent) — a genuine fresh Codex 👍 then
+        # fail-closes to stale forever. Fall back to the earliest check-SUITE created_at that is
+        # stamped for THIS branch AND THIS HEAD SHA (select head_branch==branch AND
+        # head_sha==full-oid). GitHub stamps the suite created_at when HEAD is pushed to the
+        # branch, so it marks when THIS SHA landed on THIS branch — a suite from another
+        # branch/run that merely shares the SHA has a different head_branch and is EXCLUDED, so
+        # it cannot make a stale +1 look fresh. Unlike a check-RUN started_at or the git
+        # committer date, the suite created_at is NOT app/client-settable (preserves #186/#189).
+        # No matching suite (no CI yet, fork namespace, or not created) → empty → ack-ledger
+        # fails closed to stale. Fetched only when HEAD_PUSH_DATE is empty. Best-effort (never
+        # trips FETCH_OK).
+        HEAD_CHECKS_DATE=""
+        if [[ -z "$HEAD_PUSH_DATE" && -n "$HEAD_SHA" && -n "${_pr_branch:-}" && -n "${_full_sha:-}" ]]; then
+            HEAD_CHECKS_DATE=$(gh api --paginate "repos/$owner/$name/commits/$HEAD_SHA/check-suites" 2>/dev/null \
+                | jq -rs --arg branch "$_pr_branch" --arg sha "$_full_sha" \
+                    '[.[].check_suites[]? | select(.head_branch==$branch and .head_sha==$sha) | .created_at] | map(select(. != null and . != "")) | sort | .[0] // empty' \
+                2>/dev/null || echo "")
+        fi
     else
         FETCH_OK=0  # gh pr view --json headRefOid failed or returned empty
     fi
@@ -163,7 +187,7 @@ _fetch_pr_state() {
     # Export so child processes (e.g. scripts/ack-ledger.sh run as bash child)
     # can read these without the caller needing a separate export step.
     export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES \
-        ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_SHA HEAD_FULL_SHA
+        ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA HEAD_FULL_SHA
 
     return 0
 }

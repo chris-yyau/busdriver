@@ -666,6 +666,82 @@ else
   fail "push-alone positive guard expected '$HEAD_SHA', got '$got'"
 fi
 
+# --- Test 20a: #269 fresh 👍, empty HEAD_PUSH_DATE, check-suite anchor present → HEAD_SHA ---
+# New-branch PR: the first push CREATED the ref, so GitHub emitted a CreateEvent (not a
+# PushEvent) and HEAD_PUSH_DATE is empty. HEAD_CHECKS_DATE (server-stamped) is the fallback
+# anchor; a 👍 that postdates it is a genuine fresh ack. Before #269 this fail-closed forever.
+got=$(FETCH_OK=1 \
+    ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+    ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+    ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" \
+    HEAD_PUSH_DATE="" HEAD_CHECKS_DATE="$HEAD_DATE" HEAD_SHA="$HEAD_SHA" \
+    bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "$HEAD_SHA" ]; then
+    ok "fresh 👍 + empty push + check-suite anchor → HEAD_SHA (#269 new-branch fallback)"
+else
+    fail "#269 new-branch fallback expected '$HEAD_SHA', got '$got'"
+fi
+
+# --- Test 20b: #269 👍 predates check-suite anchor → stale ---
+# Fallback is still push-strict: a 👍 older than the branch-create anchor is not fresh.
+got=$(FETCH_OK=1 \
+    ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+    ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+    ALL_REACTIONS="$(mk_reaction '+1' "$STALE_TS")" HEAD_COMMITTED_DATE="$HEAD_DATE" \
+    HEAD_PUSH_DATE="" HEAD_CHECKS_DATE="$FRESH" HEAD_SHA="$HEAD_SHA" \
+    bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+    ok "👍 predates check-suite anchor → stale (#269 fallback stays push-strict)"
+else
+    fail "#269 pre-anchor 👍 expected 'stale', got '$got'"
+fi
+
+# --- Test 20c: #269 both push AND create anchors empty + fresh 👍 → stale (fail-CLOSED) ---
+# Regression guard: the fallback must NOT weaken the both-empty case (#186/#189). No
+# server-stamped anchor of either kind → no trustworthy freshness proof → stale.
+got=$(FETCH_OK=1 \
+    ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+    ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+    ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" \
+    HEAD_PUSH_DATE="" HEAD_CHECKS_DATE="" HEAD_SHA="$HEAD_SHA" \
+    bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+    ok "fresh 👍 + both anchors empty → stale (#269 preserves #186/#189 fail-CLOSED)"
+else
+    fail "#269 both-empty fail-CLOSED expected 'stale', got '$got'"
+fi
+
+# --- Test 20d: #269 PushEvent present AND check-suite present → PushEvent wins ---
+# Precedence: HEAD_PUSH_DATE (16:30, newer) must be the anchor even when HEAD_CHECKS_DATE
+# (16:00, older) exists. The 👍 (16:24) postdates create but predates push → stale. If the
+# create anchor were wrongly used, this would false-ack — so 'stale' proves push precedence.
+got=$(FETCH_OK=1 \
+    ALL_THREADS="$EMPTY_THREADS" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+    ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+    ALL_REACTIONS="$(mk_reaction '+1' "$FRESH")" HEAD_COMMITTED_DATE="$HEAD_DATE" \
+    HEAD_PUSH_DATE="$COMMITTER_AFTER_PUSH" HEAD_CHECKS_DATE="$STALE_TS" HEAD_SHA="$HEAD_SHA" \
+    bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "stale" ]; then
+    ok "push present + create present → push wins (#269 prefers PushEvent, unchanged behavior)"
+else
+    fail "#269 push-precedence expected 'stale' (👍 predates push), got '$got'"
+fi
+
+# --- Test 20e: #269 resolved-current thread, empty push, check-suite anchor → HEAD_SHA ---
+# The resolved-thread path (Tier A.2) shares the same anchor_date resolution, so it too
+# honors the check-suite fallback: resolver reply (16:24) postdates the check-suite anchor (16:12).
+got=$(FETCH_OK=1 \
+    ALL_THREADS="$(mk_codex_resolved "$RESOLVER" "$RESOLVE_AFTER")" ALL_REVIEWS="$EMPTY_REVIEWS" ALL_COMMENTS="$EMPTY_COMMENTS" \
+    ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" ALL_STATUSES="$EMPTY_STATUSES" \
+    ALL_REACTIONS="$(mk_reaction '+1' "$STALE_TS")" HEAD_COMMITTED_DATE="$HEAD_DATE" \
+    HEAD_PUSH_DATE="" HEAD_CHECKS_DATE="$RESOLVE_PUSH" HEAD_SHA="$HEAD_SHA" \
+    bash "$ACK_SCRIPT" "$CODEX" 2>/dev/null)
+if [ "$got" = "$HEAD_SHA" ]; then
+    ok "resolved-current thread + empty push + check-suite anchor → HEAD_SHA (#269 Tier A.2 fallback)"
+else
+    fail "#269 Tier A.2 fallback expected '$HEAD_SHA', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# test-vault-references.sh — vault contract test
+#
+# Invariants:
+#  1. No archived name may exist in BOTH the live dir and its archive dir
+#     (resurrection guard — e.g. sync-upstream re-copying an archived skill).
+#  2. Any line in an ACTIVE surface (skills/ agents/ commands/ hooks/ scripts/)
+#     that references an archived name must carry the literal token "(vault)"
+#     on the same line — the single loading convention defined in
+#     skills/orchestrator/SKILL.md.
+#  3. .upstream-sources.json must not track an archived name at a live path
+#     (skills/<name>/ etc.) — moved files must point at skills-archive/.
+set -u
+cd "$(dirname "$0")/.." || exit 1
+
+FAIL=0
+fail() { echo "FAIL: $1"; FAIL=1; }
+
+archived_names() {
+  for d in skills-archive/*/; do [ -d "$d" ] && basename "$d"; done
+  for f in agents-archive/*.md commands-archive/*.md; do
+    [ -f "$f" ] && basename "$f" .md
+  done
+}
+
+NAMES="$(archived_names)"
+[ -n "$NAMES" ] || { echo "SKIP: no archives present"; exit 0; }
+
+# ── 1. Resurrection guard ────────────────────────────────────────────────
+for d in skills-archive/*/; do
+  n="$(basename "$d")"
+  [ -e "skills/$n" ] && fail "resurrected skill: skills/$n also exists in skills-archive/"
+done
+for f in agents-archive/*.md; do
+  [ -f "$f" ] || continue
+  [ -e "agents/$(basename "$f")" ] && fail "resurrected agent: agents/$(basename "$f") also exists in agents-archive/"
+done
+for f in commands-archive/*.md; do
+  [ -f "$f" ] || continue
+  [ -e "commands/$(basename "$f")" ] && fail "resurrected command: commands/$(basename "$f") also exists in commands-archive/"
+done
+
+# ── 2. Active-surface references must be (vault)-annotated ──────────────
+# Build one alternation of all archived names, word-bounded on the skill-name
+# alphabet [a-z0-9-] so e.g. "x-api" doesn't match "flux-api-tools".
+PATTERN="$(printf '%s\n' "$NAMES" | paste -sd'|' -)"
+VIOLATIONS="$(grep -rInE "(^|[^a-z0-9-])(${PATTERN})([^a-z0-9-]|\$)" \
+  skills agents commands hooks scripts 2>/dev/null \
+  | grep -v '(vault)' || true)"
+if [ -n "$VIOLATIONS" ]; then
+  fail "un-annotated references to archived names (add \"(vault)\" on the line or archive the referrer):"
+  echo "$VIOLATIONS" | head -50
+  COUNT="$(echo "$VIOLATIONS" | wc -l | tr -d ' ')"
+  [ "$COUNT" -gt 50 ] && echo "  ... and $((COUNT - 50)) more"
+fi
+
+# ── 3. Manifest must not point archived names at live paths ─────────────
+if [ -f .upstream-sources.json ]; then
+  MANIFEST_HITS="$(printf '%s\n' "$NAMES" | while read -r n; do
+    grep -nE "\"path\": *\"(skills|agents|commands)/${n}(/|\.md\")" .upstream-sources.json || true
+  done)"
+  [ -n "$MANIFEST_HITS" ] && {
+    fail ".upstream-sources.json tracks archived names at live paths (sync would resurrect them):"
+    echo "$MANIFEST_HITS" | head -20
+  }
+fi
+
+if [ "$FAIL" -eq 0 ]; then
+  echo "PASS: vault references clean ($(printf '%s\n' "$NAMES" | wc -l | tr -d ' ') archived names checked)"
+  exit 0
+fi
+exit 1

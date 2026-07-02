@@ -73,10 +73,10 @@ General:
 - `chief-of-staff` — multi-channel triage (rarely a fit for plan steps)
 
 Build error resolvers:
-- `build-error-resolver` (generic) / `cpp-build-resolver` / `go-build-resolver` / `java-build-resolver` / `kotlin-build-resolver` / `rust-build-resolver` / `pytorch-build-resolver`
+- `build-error-resolver` (generic) / `cpp-build-resolver` (vault) / `go-build-resolver` / `java-build-resolver` (vault) / `kotlin-build-resolver` (vault) / `rust-build-resolver` / `pytorch-build-resolver`
 
 Code reviewers:
-- `python-reviewer` / `typescript-reviewer` / `go-reviewer` / `rust-reviewer` / `cpp-reviewer` / `java-reviewer` / `kotlin-reviewer` / `flutter-reviewer`
+- `python-reviewer` / `typescript-reviewer` / `go-reviewer` / `rust-reviewer` / `cpp-reviewer` (vault) / `java-reviewer` (vault) / `kotlin-reviewer` (vault) / `flutter-reviewer` (vault)
 
 A misspelled agent name fails `/orchestrate`. Cross-check against this list before emitting.
 

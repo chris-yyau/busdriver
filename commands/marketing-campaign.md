@@ -113,10 +113,10 @@ Confirm the save location before writing files.
 
 This command invokes:
 - `marketing-agent` — campaign planning and copy production
-- `brand-voice` — voice capture when tone needs locking across multiple outputs
-- `content-engine` — platform-native social content production
-- `crosspost` — multi-platform distribution
-- `market-research` — deep audience or competitive intelligence
+- `brand-voice` — voice capture when tone needs locking across multiple outputs (vault)
+- `content-engine` — platform-native social content production (vault)
+- `crosspost` — multi-platform distribution (vault)
+- `market-research` — deep audience or competitive intelligence (vault)
 
 ## Related Commands
 

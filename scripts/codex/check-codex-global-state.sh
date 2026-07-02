@@ -134,19 +134,17 @@ if [[ -f "$CONFIG_FILE" ]]; then
   fi
 fi
 
+# article-writing, content-engine, investor-materials (vault),
+# investor-outreach, market-research (vault) — moved to skills-archive/ and no
+# longer required Codex-side.
 declare -a required_skills=(
   api-design
-  article-writing
   backend-patterns
   coding-standards
-  content-engine
   e2e-testing
   eval-harness
   frontend-patterns
   frontend-slides
-  investor-materials
-  investor-outreach
-  market-research
   security-review
   strategic-compact
   tdd-workflow
@@ -165,7 +163,7 @@ if [[ -d "$SKILLS_DIR" ]]; then
   done
 
   if [[ "$missing_skills" -eq 0 ]]; then
-    ok "All 16 ECC skills are present in $SKILLS_DIR"
+    ok "All ${#required_skills[@]} required ECC skills are present in $SKILLS_DIR"
   else
     warn "$missing_skills ECC skills missing from $SKILLS_DIR (install via ECC installer or npx skills)"
   fi

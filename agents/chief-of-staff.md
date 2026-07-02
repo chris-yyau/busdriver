@@ -32,7 +32,7 @@ Every message gets classified into exactly one tier, applied in priority order:
 
 ### 1. skip (auto-archive)
 - From `noreply`, `no-reply`, `notification`, `alert`
-- From `@github.com`, `@slack.com`, `@jira`, `@notion.so`
+- From `@github.com`, `@slack.com`, `@jira`, `@notion.so` (vault)
 - Bot messages, channel join/leave, automated alerts
 - Official LINE accounts, Messenger page notifications
 

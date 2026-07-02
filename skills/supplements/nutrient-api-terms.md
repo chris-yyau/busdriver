@@ -1,7 +1,7 @@
 ---
 name: nutrient-api-terms
 description: Commercial API terms warning for Nutrient document processing skill
-targets: busdriver:nutrient-document-processing
+targets: busdriver:nutrient-document-processing  # (vault)
 type: supplement
 added: "2026-03-24"
 source: fork-edit migration (council decision 2026-03-24)

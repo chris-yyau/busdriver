@@ -112,8 +112,8 @@ finds no close match.
 ```markdown
 | # | Skill | Source | Why it matches | Gap |
 | --- | --- | --- | --- | --- |
-| 1 | article-writing | Local ECC | Drafts articles and guides | Not focused on release notes |
-| 2 | content-engine | Local ECC | Multi-format content workflow | Heavier than needed |
+| 1 | article-writing | Local ECC | Drafts articles and guides | Not focused on release notes (vault) |
+| 2 | content-engine | Local ECC | Multi-format content workflow | Heavier than needed (vault) |
 | 3 | blog-writer | GitHub | Blog writing skill with recent commits | Needs security review |
 ```
 
@@ -121,8 +121,8 @@ finds no close match.
 
 ```markdown
 I found two close local matches and one external candidate. The closest fit is
-`article-writing`; it covers drafting and revision, but it does not include the
-release-note checklist you asked for. I can either use it as-is, fork it into a
+`article-writing` (vault); it covers drafting and revision, but it does not include
+the release-note checklist you asked for. I can either use it as-is, fork it into a
 release-note variant, or create a fresh skill.
 ```
 

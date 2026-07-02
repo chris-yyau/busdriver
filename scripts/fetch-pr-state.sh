@@ -153,8 +153,10 @@ _fetch_pr_state() {
         # fails closed to stale. Fetched only when HEAD_PUSH_DATE is empty. Best-effort (never
         # trips FETCH_OK).
         HEAD_CHECKS_DATE=""
-        if [[ -z "$HEAD_PUSH_DATE" && -n "$HEAD_SHA" && -n "${_pr_branch:-}" && -n "${_full_sha:-}" ]]; then
-            HEAD_CHECKS_DATE=$(gh api --paginate "repos/$owner/$name/commits/$HEAD_SHA/check-suites" 2>/dev/null \
+        if [[ -z "$HEAD_PUSH_DATE" && -n "${_pr_branch:-}" && -n "${_full_sha:-}" ]]; then
+            # Use the FULL 40-char OID for both the API path and the jq head_sha filter
+            # (HEAD_SHA is the 8-char prefix; a short SHA can be ambiguous / unresolved).
+            HEAD_CHECKS_DATE=$(gh api --paginate "repos/$owner/$name/commits/$_full_sha/check-suites" 2>/dev/null \
                 | jq -rs --arg branch "$_pr_branch" --arg sha "$_full_sha" \
                     '[.[].check_suites[]? | select(.head_branch==$branch and .head_sha==$sha) | .created_at] | map(select(. != null and . != "")) | sort | .[0] // empty' \
                 2>/dev/null || echo "")

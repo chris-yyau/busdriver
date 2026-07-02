@@ -215,14 +215,14 @@ def scan_notes():
         issues_found = True
         print(f"\n## ARCHIVE CANDIDATES ({len(stale_archive)}) — past archive TTL")
         for item in stale_archive:
-            f, t, a, ttl = item["file"], item["type"], item["age_days"], item["ttl_days"]
+            f, t, a, ttl = item
             print(f"  >> {f}  (type={t}, {a}d old, ttl={ttl}d)")
 
     if stale_warn:
         issues_found = True
         print(f"\n## STALE WARNINGS ({len(stale_warn)}) — past warn TTL")
         for item in stale_warn:
-            f, t, a, ttl = item["file"], item["type"], item["age_days"], item["ttl_days"]
+            f, t, a, ttl = item
             print(f"  ~ {f}  (type={t}, {a}d old, ttl={ttl}d)")
 
     if no_validated:

@@ -3,6 +3,7 @@ name: pr-grinder
 description: Runs ONE round of post-PR feedback resolution — waits for checks, collects reviewer comments, applies minimal fixes, commits and pushes. Returns a structured result. Use when dispatched from the pr-grind skill, never invoked directly by the user.
 tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
 model: sonnet
+effort: medium
 ---
 
 # PR Grinder — One-Round Worker

@@ -3,6 +3,7 @@ name: pr-security-backstop
 description: Read-only independent Security/Bugs backstop for litmus PR mode. Dispatched alongside the Codex lead reviewer to provide cross-model diversity on the two highest-risk lenses. Emits a strict confidence-bearing JSON verdict and NEVER modifies files. Used only by the litmus pre-PR gate, never invoked directly.
 tools: ["Read", "Grep", "Glob"]
 model: opus
+effort: high
 ---
 
 ## Prompt Defense Baseline

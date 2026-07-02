@@ -143,7 +143,7 @@ Skills not in either file are still discoverable via the system-prompt skill reg
 
 ## Vault (Archived Skills)
 
-Long-tail skills, agents, and commands live in `skills-archive/`, `agents-archive/`, and `commands-archive/` at the plugin root — outside auto-discovery, so they cost zero registry context. A route marked `(vault)` in this file, `tasks-catalog.md`, or `domain-supplements.md` means: **Read `${CLAUDE_PLUGIN_ROOT}/skills-archive/<name>/SKILL.md` (or `agents-archive/<name>.md`) and apply its content directly** — same guidance, loaded on demand. Dispatch of an archived agent is replaced by applying its `.md` body as instructions in-context or via a `general-purpose` agent.
+Long-tail skills, agents, and commands live in `skills-archive/`, `agents-archive/`, and `commands-archive/` at the plugin root — outside auto-discovery, so they cost zero registry context. A route marked `(vault)` in this file, `tasks-catalog.md`, or `domain-supplements.md` means: **Read `${CLAUDE_PLUGIN_ROOT}/skills-archive/<name>/SKILL.md` (or `agents-archive/<name>.md`, or `commands-archive/<name>.md` for archived `/command` shims) and apply its content directly** — same guidance, loaded on demand. Dispatch of an archived agent is replaced by applying its `.md` body as instructions in-context or via a `general-purpose` agent; an archived command shim is followed to its backing skill (usually also in the vault).
 
 **Promotion is manual-on-friction:** if a vaulted skill keeps coming back (roughly ≥2 loads in a month), `git mv` it back to the live directory and drop its `(vault)` markers — `tests/test-vault-references.sh` enforces consistency both ways.
 

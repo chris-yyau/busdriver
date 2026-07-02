@@ -132,7 +132,7 @@ Map intent + scope + tech stack (from Phase 0) to specific ECC components.
 
 | Tech Stack | Skills to Add | Agent |
 |------------|--------------|-------|
-| Python / Django | django-patterns, django-tdd, django-security, django-verification, python-patterns, python-testing | python-reviewer (vault) |
+| Python / Django | django-patterns, django-tdd, django-security, django-verification (vault), python-patterns, python-testing | python-reviewer |
 | Go | golang-patterns, golang-testing | go-reviewer, go-build-resolver |
 | Spring Boot / Java | springboot-patterns, springboot-tdd, springboot-security, springboot-verification, java-coding-standards, jpa-patterns | java-reviewer (vault) |
 | Quarkus / Java | quarkus-patterns, quarkus-tdd, quarkus-security, quarkus-verification, java-coding-standards, jpa-patterns | java-reviewer (vault) |

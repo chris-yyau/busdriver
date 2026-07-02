@@ -66,7 +66,7 @@ mkdir -p $TARGET/skills $TARGET/rules
 
 ### 2a: Choose Scope (Core vs Niche)
 
-Default to **Core (recommended for new users)** — copy `.agents/skills/*` plus `skills/search-first/` for research-first workflows. This bundle covers engineering, evals, verification, security, strategic compaction, frontend design, and Anthropic cross-functional skills (article-writing, content-engine, market-research, frontend-slides). (vault)
+Default to **Core (recommended for new users)** — copy `.agents/skills/*` plus `skills/search-first/` for research-first workflows. This bundle covers engineering, evals, verification, security, strategic compaction, frontend design, and Anthropic cross-functional skills (frontend-slides; article-writing, content-engine, market-research (vault)).
 
 Use `AskUserQuestion` (single select):
 ```

@@ -112,8 +112,8 @@ finds no close match.
 ```markdown
 | # | Skill | Source | Why it matches | Gap |
 | --- | --- | --- | --- | --- |
-| 1 | article-writing | Local ECC | Drafts articles and guides | Not focused on release notes (vault) |
-| 2 | content-engine | Local ECC | Multi-format content workflow | Heavier than needed (vault) |
+| 1 | article-writing (vault) | Local ECC | Drafts articles and guides | Not focused on release notes |
+| 2 | content-engine (vault) | Local ECC | Multi-format content workflow | Heavier than needed |
 | 3 | blog-writer | GitHub | Blog writing skill with recent commits | Needs security review |
 ```
 

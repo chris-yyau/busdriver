@@ -97,6 +97,17 @@ for _p in "$PROMPT_FILE" "$OUTPUT_FILE"; do
   if printf '%s' "$_p" | LC_ALL=C grep -q '[[:cntrl:]]'; then die "path must not contain control characters"; fi
 done
 
+# Containment: the generic dispatch only ever writes into the caller's configured ultimate
+# state dir (${BUSDRIVER_STATE_DIR:-.claude}/ultimate) — refuse arbitrary absolute targets so
+# a buggy/compromised caller cannot use the helper to overwrite unrelated writable paths.
+# The expected dir is created first (the helper owned dir creation before this check existed),
+# then both sides are canonicalized and compared exactly — no suffix wildcard.
+_EXPECTED_ULTIMATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}/ultimate"
+mkdir -p "$_EXPECTED_ULTIMATE_DIR" 2>/dev/null || die "cannot create ultimate state dir: $_EXPECTED_ULTIMATE_DIR"
+_EXPECTED_ULTIMATE_DIR="$(cd "$_EXPECTED_ULTIMATE_DIR" && pwd -P)" || die "cannot resolve ultimate state dir"
+_OUTPUT_PARENT="$(cd "$(dirname "$OUTPUT_FILE")" 2>/dev/null && pwd -P)" || die "output dir does not exist: $(dirname "$OUTPUT_FILE")"
+[[ "$_OUTPUT_PARENT" == "$_EXPECTED_ULTIMATE_DIR" ]] || die "output file must live directly under $_EXPECTED_ULTIMATE_DIR: $OUTPUT_FILE"
+
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 command -v "$CLAUDE_BIN" >/dev/null 2>&1 || die "claude binary not found: $CLAUDE_BIN"
 # jq preferred; python3 accepted as fallback for the settings-file write below.
@@ -175,7 +186,7 @@ _run_once() {
   # Clean the temp output on ANY function return (incl. signal/timeout edge cases) so
   # council prompts/responses never linger in $TMPDIR; the success path mv's it first.
   # shellcheck disable=SC2064  # expand $out_tmp now — it is function-local
-  trap "rm -f '$out_tmp'" RETURN
+  trap "rm -f '$out_tmp' 2>/dev/null || true" RETURN
   # Prompt via stdin (not argv): council prompts can be large (ARG_MAX) and
   # sensitive (argv is visible in local process listings). No tools granted:
   # the witness only needs the supplied prompt — a prompt-injected witness

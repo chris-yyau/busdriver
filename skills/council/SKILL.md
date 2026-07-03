@@ -243,7 +243,10 @@ MYTHOS_OUT=""; MYTHOS_STATUS=""; MYTHOS_ATTEMPTED=0
 # Enabled via user config, OR forced for one run by an ultimate-council request
 # (ULTIMATE_COUNCIL_FORCE=1, set+unset by the executor per this step — a normal council omits it).
 if source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/ultimate-config.sh" 2>/dev/null \
+   && [ "${BUSDRIVER_ULTIMATE:-}" != 0 ] \
    && { ultimate_surface_enabled council || [ "${ULTIMATE_COUNCIL_FORCE:-0}" = 1 ]; }; then
+   # BUSDRIVER_ULTIMATE=0 is the operator's global force-OFF: it outranks the per-run
+   # ULTIMATE_COUNCIL_FORCE escape hatch — a forced run must never bypass an explicit opt-out.
   MYTHOS_ATTEMPTED=1
   _mythos_dir="${BUSDRIVER_STATE_DIR:-.claude}/ultimate"
   mkdir -p "$_mythos_dir"

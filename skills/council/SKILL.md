@@ -259,7 +259,10 @@ MYTHOS_PROMPT
   ( _mythos_rc=0
     bash "${CLAUDE_PLUGIN_ROOT}/scripts/ultimate-dispatch.sh" mythos-witness \
       "$MYTHOS_OUT.prompt" "$MYTHOS_OUT" >/dev/null 2>&1 || _mythos_rc=$?
-    echo "$_mythos_rc" > "$MYTHOS_OUT.rc" ) &   # || capture survives set -e — the .rc marker is always written
+    # Atomic marker write; if even the fallback write fails the render step reads a
+    # missing marker as timeout — documented as MYTHOS_FAILED [error] territory.
+    { printf '%s\n' "$_mythos_rc" > "$MYTHOS_OUT.rc.tmp" && mv "$MYTHOS_OUT.rc.tmp" "$MYTHOS_OUT.rc"; } \
+      || printf '%s\n' 1 > "$MYTHOS_OUT.rc" || true ) &   # || capture survives set -e — the .rc marker is always written
   PIDS+=("$!")
   MYTHOS_STATUS=dispatched
 elif [ "${ULTIMATE_COUNCIL_FORCE:-0}" = 1 ]; then

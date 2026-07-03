@@ -148,18 +148,20 @@ if [[ "$JSON_WRITER" == jq ]]; then
     } + { ($cred_var): $cred, ($other_var): "" })
   }' >"$SETTINGS_FILE" || die "failed to write gateway settings file (jq error)"
 else
-  printf '%s' "$cred" | BASE_URL="$BASE_URL" CRED_VAR="$cred_var" OTHER_VAR="$other_var" python3 -c '
-import json, os, sys
+  # Non-secret values via argv (mirrors jq --arg); ONLY the secret rides stdin.
+  printf '%s' "$cred" | python3 -c '
+import json, sys
+base_url, cred_var, other_var = sys.argv[1:4]
 env = {
-    "ANTHROPIC_BASE_URL": os.environ["BASE_URL"],
+    "ANTHROPIC_BASE_URL": base_url,
     "ANTHROPIC_CUSTOM_HEADERS": "",
     "CLAUDE_CODE_USE_BEDROCK": "", "CLAUDE_CODE_USE_VERTEX": "", "CLAUDE_CODE_USE_FOUNDRY": "",
     "CLAUDE_CODE_USE_ANTHROPIC_AWS": "", "CLAUDE_CODE_USE_MANTLE": "",
-    os.environ["CRED_VAR"]: sys.stdin.read(),
-    os.environ["OTHER_VAR"]: "",
+    cred_var: sys.stdin.read(),
+    other_var: "",
 }
 json.dump({"env": env}, sys.stdout)
-' >"$SETTINGS_FILE" || die "failed to write gateway settings file (python3 error)"
+' "$BASE_URL" "$cred_var" "$other_var" >"$SETTINGS_FILE" || die "failed to write gateway settings file (python3 error)"
 fi
 [[ -s "$SETTINGS_FILE" ]] || die "gateway settings file is empty after JSON write"
 
@@ -170,6 +172,10 @@ mkdir -p "$(dirname "$OUTPUT_FILE")" 2>/dev/null || die "cannot create output di
 _run_once() {
   local out_tmp rc=0
   out_tmp="$(mktemp "${TMPDIR:-/tmp}/ultimate-out.XXXXXX")"
+  # Clean the temp output on ANY function return (incl. signal/timeout edge cases) so
+  # council prompts/responses never linger in $TMPDIR; the success path mv's it first.
+  # shellcheck disable=SC2064  # expand $out_tmp now — it is function-local
+  trap "rm -f '$out_tmp'" RETURN
   # Prompt via stdin (not argv): council prompts can be large (ARG_MAX) and
   # sensitive (argv is visible in local process listings). No tools granted:
   # the witness only needs the supplied prompt — a prompt-injected witness

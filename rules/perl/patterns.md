@@ -73,4 +73,4 @@ carton exec prove -lr t/
 
 ## Reference
 
-See skill: `perl-patterns` for comprehensive modern Perl patterns and idioms.
+See skill: `perl-patterns` for comprehensive modern Perl patterns and idioms. (vault)

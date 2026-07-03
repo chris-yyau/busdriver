@@ -142,6 +142,6 @@ public record ApiResponse<T>(boolean success, T data, String error) {
 
 ## References
 
-See skill: `springboot-patterns` for Spring Boot architecture patterns.
-See skill: `quarkus-patterns` for Quarkus architecture patterns with REST, Panache, and messaging.
-See skill: `jpa-patterns` for entity design and query optimization.
+See skill: `springboot-patterns` for Spring Boot architecture patterns. (vault)
+See skill: `quarkus-patterns` for Quarkus architecture patterns with REST, Panache, and messaging. (vault)
+See skill: `jpa-patterns` for entity design and query optimization. (vault)

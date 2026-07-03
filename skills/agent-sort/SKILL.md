@@ -119,7 +119,7 @@ Use this format:
 
 ```text
 skills/frontend-patterns | skill | DAILY | 84 .tsx files, next.config.ts present | core frontend stack
-skills/django-patterns   | skill | LIBRARY | no .py files, no pyproject.toml       | not active in this repo
+skills/django-patterns   | skill | LIBRARY | no .py files, no pyproject.toml       | not active in this repo (vault)
 rules/typescript/*       | rules | DAILY | package.json + tsconfig.json            | active TS repo
 rules/python/*           | rules | LIBRARY | zero Python source files             | keep accessible only
 ```

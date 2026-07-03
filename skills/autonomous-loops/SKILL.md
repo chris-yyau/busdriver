@@ -135,7 +135,7 @@ CLAW_SESSION=my-project CLAW_SKILLS=tdd-workflow,security-review node scripts/cl
 | Context accumulation | Grows per turn | Fresh each step |
 | CI/CD integration | Poor | Excellent |
 
-See the `nanoclaw-repl` skill for full details.
+See the `nanoclaw-repl` skill for full details. (vault)
 
 ---
 
@@ -606,5 +606,5 @@ These patterns compose well:
 | Ralphinho | enitrat | credit: @enitrat |
 | Infinite Agentic Loop | disler | credit: @disler |
 | Continuous Claude | AnandChowdhary | credit: @AnandChowdhary |
-| NanoClaw | ECC | `nanoclaw-repl` skill in this repo |
+| NanoClaw | ECC | `nanoclaw-repl` skill in this repo (vault) |
 | Verification Loop | ECC | `skills/verification-loop/` in this repo |

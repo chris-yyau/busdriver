@@ -266,7 +266,7 @@ This skill is router-agnostic. The patterns above work with React Router, TanSta
 ## Related
 
 - Rules: [rules/react/](../../rules/react/) — coding-style, hooks, patterns, security, testing
-- Skills: [vercel-react-best-practices](../vercel-react-best-practices/SKILL.md) for the Vercel-authored performance ruleset, [frontend-patterns](../frontend-patterns/SKILL.md) for cross-framework UI concerns, [accessibility](../accessibility/SKILL.md), [angular-developer](../angular-developer/SKILL.md) for framework comparison
+- Skills: [vercel-react-best-practices](../vercel-react-best-practices/SKILL.md) for the Vercel-authored performance ruleset, [frontend-patterns](../frontend-patterns/SKILL.md) for cross-framework UI concerns, [accessibility](../accessibility/SKILL.md), [angular-developer](../../skills-archive/angular-developer/SKILL.md) (vault) for framework comparison
 - Agents: `react-reviewer` for code review, `react-build-resolver` for build/bundler errors
 - Commands: `/react-review`, `/react-build`, `/react-test`
 

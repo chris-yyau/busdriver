@@ -1,3 +1,10 @@
+# [1.77.0](https://github.com/chris-yyau/busdriver/compare/v1.76.2...v1.77.0) (2026-07-02)
+
+
+### Features
+
+* **agents:** tier per-agent reasoning effort with enforced guard ([#272](https://github.com/chris-yyau/busdriver/issues/272)) ([65cd3aa](https://github.com/chris-yyau/busdriver/commit/65cd3aa62dad84bdc23ae45f17c22c43475007d0))
+
 ## [1.76.2](https://github.com/chris-yyau/busdriver/compare/v1.76.1...v1.76.2) (2026-07-02)
 
 

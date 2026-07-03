@@ -56,7 +56,8 @@ jobs:
             tests/test-ultra-arbiter-config.sh \
             tests/test-blueprint-arbiter-default-pin.sh \
             tests/test-gateway-arbiter-dispatch.sh \
-            tests/test-blueprint-review-oracle-arbiter-contract.sh
+            tests/test-blueprint-review-oracle-arbiter-contract.sh \
+            tests/test-vault-references.sh
 
   compliance:
     if: github.event_name == 'push'
@@ -225,3 +226,4 @@ jobs:
           bash tests/test-ultra-arbiter-config.sh
           bash tests/test-gateway-arbiter-dispatch.sh
           bash tests/test-blueprint-review-oracle-arbiter-contract.sh
+          bash tests/test-vault-references.sh

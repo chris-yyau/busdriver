@@ -53,7 +53,7 @@ PATTERN="$(printf '%s\n' "$ESCAPED" | paste -sd'|' -)"
 # collisions force a semantically misleading "(vault)" annotation onto lines
 # that don't actually reference the archive.
 VIOLATIONS="$(grep -rInE "(^|[^a-z0-9@-])(${PATTERN})([^a-z0-9-]|\$)" \
-  skills agents commands hooks scripts 2>/dev/null | grep -v '(vault)' || true)"
+  skills agents commands hooks scripts rules 2>/dev/null | grep -v '(vault)' || true)"
 if [[ -n "$VIOLATIONS" ]]; then
   fail "un-annotated references to archived names (add \"(vault)\" on the line or archive the referrer):"
   echo "$VIOLATIONS" | head -50

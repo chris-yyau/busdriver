@@ -48,4 +48,4 @@ private:
 
 ## Reference
 
-See skill: `cpp-coding-standards` for comprehensive C++ patterns and anti-patterns.
+See skill: `cpp-coding-standards` for comprehensive C++ patterns and anti-patterns. (vault)

@@ -43,4 +43,4 @@ perlcritic --severity 3 --theme 'core || pbp || security' lib/
 
 ## Reference
 
-See skill: `perl-patterns` for comprehensive modern Perl idioms and best practices.
+See skill: `perl-patterns` for comprehensive modern Perl idioms and best practices. (vault)

@@ -118,6 +118,8 @@ This command invokes:
 - `crosspost` — multi-platform distribution (vault)
 - `market-research` — deep audience or competitive intelligence (vault)
 
+`(vault)` delegates are archived and not auto-discoverable when this command is invoked directly: read `${CLAUDE_PLUGIN_ROOT}/skills-archive/<name>/SKILL.md` and apply its content in-context (the vault loading convention in `skills/orchestrator/SKILL.md`), instead of invoking the missing live skill.
+
 ## Related Commands
 
 - `/plan` — Strategic planning before a campaign

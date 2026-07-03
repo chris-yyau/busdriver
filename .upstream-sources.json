@@ -3757,7 +3757,7 @@
     {
       "path": "skills-archive/marketing-plan/references/idea-cross-reference.md",
       "source": "marketingskills",
-      "status": "custom",
+      "status": "sync",
       "upstream_path": "skills/marketing-plan/references/idea-cross-reference.md"
     },
     {
@@ -3895,7 +3895,7 @@
     {
       "path": "skills-archive/marketing-prospecting/references/saas-prospecting.md",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/prospecting/references/saas-prospecting.md"
     },
     {

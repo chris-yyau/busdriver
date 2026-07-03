@@ -342,7 +342,8 @@ For pulling performance data and managing campaigns, see the [tools registry](ht
 ### Workflow: Pull Data, Analyze, Generate
 
 ```bash
-# 1. Pull recent ad performance
+# 1. Pull recent ad performance — the CLI lives in the upstream marketingskills repo
+#    (clone github.com/coreyhaines31/marketingskills and run from its root; tools/ is not vendored here)
 node tools/clis/google-ads.js reports get --type ad_performance --date-range last_30_days
 
 # 2. Analyze output (identify top/bottom performers)

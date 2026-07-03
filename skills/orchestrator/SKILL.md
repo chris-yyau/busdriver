@@ -103,11 +103,11 @@ Creates isolated workspace, verifies baseline tests pass.
 - **TDD** — `busdriver:test-driven-development` (RED → GREEN → REFACTOR). Detailed coverage: `busdriver:tdd-workflow`.
 - **Verification** — `busdriver:verification-before-completion` (no claims without fresh evidence).
 - **Debugging** — `busdriver:systematic-debugging` when stuck — root cause first.
-- **Code Review** — `busdriver:requesting-code-review` after EVERY task. DISPATCH `{lang}-reviewer` agent (`typescript-reviewer`, `go-reviewer`, `python-reviewer`, `rust-reviewer`, `cpp-reviewer`, `java-reviewer`, `kotlin-reviewer`, `flutter-reviewer`, `csharp-reviewer`, `swift-reviewer`, `react-reviewer`, `django-reviewer`, `fastapi-reviewer`, `fsharp-reviewer`, `mle-reviewer`, `vue-reviewer`, `php-reviewer`). Fallback: `code-reviewer`. Handle feedback per `busdriver:receiving-code-review`. (vault)
+- **Code Review** — `busdriver:requesting-code-review` after EVERY task. DISPATCH `{lang}-reviewer` agent (`typescript-reviewer`, `go-reviewer`, `python-reviewer`, `rust-reviewer`, `cpp-reviewer` (vault), `java-reviewer` (vault), `kotlin-reviewer` (vault), `flutter-reviewer` (vault), `csharp-reviewer` (vault), `swift-reviewer` (vault), `react-reviewer`, `django-reviewer` (vault), `fastapi-reviewer`, `fsharp-reviewer` (vault), `mle-reviewer`, `vue-reviewer` (vault), `php-reviewer` (vault)). Fallback: `code-reviewer`. Handle feedback per `busdriver:receiving-code-review`.
 - **Lesson Capture** — After review finds HIGH+ issue not anticipated in plan, save to `~/.claude/notes/lesson-review-{YYYY-MM-DD}-{slug}.md`.
 
 **When build fails — DISPATCH immediately, don't debug manually first:**
-DISPATCH `{lang}-build-resolver` agent if one exists. TS/JS: `build-error-resolver`. PyTorch: `pytorch-build-resolver`. Swift: `swift-build-resolver`. React: `react-build-resolver`. Django: `django-build-resolver`. Java/Quarkus/Spring: `java-build-resolver`. HarmonyOS: `harmonyos-app-resolver`. No resolver: use `busdriver:systematic-debugging`. (vault)
+DISPATCH `{lang}-build-resolver` agent if one exists. TS/JS: `build-error-resolver`. PyTorch: `pytorch-build-resolver`. Swift: `swift-build-resolver` (vault). React: `react-build-resolver`. Django: `django-build-resolver` (vault). Java/Quarkus/Spring: `java-build-resolver` (vault). HarmonyOS: `harmonyos-app-resolver` (vault). No resolver: use `busdriver:systematic-debugging`.
 
 **DISPATCH `tdd-guide` agent** to produce test files. The discipline governs process; the agent produces tests.
 
@@ -115,7 +115,7 @@ DISPATCH `{lang}-build-resolver` agent if one exists. TS/JS: `build-error-resolv
 
 ### Phase 5: Verification
 
-Run `busdriver:verification-loop` (build + lint + tests). Then `busdriver:verification-before-completion` as the final gate. Django: `django-verification`. Spring Boot: `springboot-verification`. Also `busdriver:security-scan` for `.claude/` config. (vault)
+Run `busdriver:verification-loop` (build + lint + tests). Then `busdriver:verification-before-completion` as the final gate. Django: `django-verification` (vault). Spring Boot: `springboot-verification` (vault). Also `busdriver:security-scan` for `.claude/` config.
 
 **DISPATCH `security-reviewer` agent** if auth, user input, API endpoints, payments, or secrets touched.
 

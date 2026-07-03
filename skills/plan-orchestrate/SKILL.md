@@ -213,7 +213,7 @@ Append a final "Batch execution" block aggregating every step's command in order
 - [ ] Each task description begins with `[Plan: <path>#step-<id>]` and includes Acceptance (1–3 items). The `Out of scope:` clause is present only when inherited from the plan.
 - [ ] No duplicate agent in any chain after Phase 2 dedup.
 - [ ] Chain length ≤ 4.
-- [ ] Steps tagged `impl`/`refactor`/`migration` end with a reviewer-class agent (`<lang>-reviewer`, `code-reviewer`, `security-reviewer`, or `database-reviewer`). `test` and `build` are exempt — see Phase 2 rule 10.
+- [ ] Steps tagged `impl`/`refactor`/`migration` end with a reviewer-class agent (`<lang>-reviewer`, `code-reviewer`, `security-reviewer`, or `database-reviewer`) — or `general-purpose` when it substitutes a vault-marked reviewer per the vault note above. `test` and `build` are exempt — see Phase 2 rule 10.
 - [ ] Zero-tag steps emit `code-reviewer` with the rationale `no tag matched; default review-only chain`.
 - [ ] Overview table lists every step in the plan, regardless of `--scope`.
 - [ ] Per-step detail block count matches the resolved `--scope` (full plan when `--scope=all`; one block for `step:n`; range size for `range:a-b`). In overview-only mode, no per-step blocks and no Batch block are emitted.

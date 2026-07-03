@@ -54,10 +54,10 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Data Pipelines** | data collector, scheduled scraping | `data-scraper-agent` (vault) |
 | **Fundraising** | pitch deck, investor materials | `investor-materials` / `investor-outreach` / `market-research` (vault) |
 | **Media Generation** | generate image/video/audio | `fal-ai-media` (vault) |
-| **AI App Launcher** | run AI app/model, inference.sh, infsh, run flux/veo/grok/claude via CLI, serverless AI, OpenRouter, Twitter automation | `busdriver:agent-tools` (inference.sh CLI — 150+ AI apps: image/video/LLM/search/3D/Twitter. Broader than `busdriver:fal-ai-media`, which is media-gen only) (vault) |
+| **AI App Launcher** | run AI app/model, inference.sh, infsh, run flux/veo/grok/claude via CLI, serverless AI, OpenRouter, Twitter automation | `busdriver:agent-tools` (inference.sh CLI — 150+ AI apps: image/video/LLM/search/3D/Twitter. Broader than `busdriver:fal-ai-media` (vault), which is media-gen only) |
 | **Video Production** | edit video, analyze, transcribe | `videodb` / `video-editing` / `fal-ai-media` (vault) |
 | **Presentations** | create slides, convert PPT | `frontend-slides` |
-| **Agent Architecture** | agent loops, multi-agent DAGs | `autonomous-loops` / `continuous-agent-loop` / `enterprise-agent-ops` / `agent-harness-construction` / `agentic-engineering` / `santa-method` / `autonomous-agent-harness`. Agents: `harness-optimizer`, `loop-operator` (vault) |
+| **Agent Architecture** | agent loops, multi-agent DAGs | `autonomous-loops` / `continuous-agent-loop` / `enterprise-agent-ops` (vault) / `agent-harness-construction` / `agentic-engineering` / `santa-method` / `autonomous-agent-harness`. Agents: `harness-optimizer`, `loop-operator` |
 | **GAN Harness** | build app iteratively, gen+eval loop | `gan-style-harness` / `/gan-design` / `/gan-build`. Agents: `gan-planner`, `gan-generator`, `gan-evaluator` |
 | **Open-Sourcing** | open source this, make public | `opensource-pipeline`. Agents: `opensource-forker`, `opensource-sanitizer`, `opensource-packager` |
 | **Healthcare** | EMR, clinical, PHI, CDSS | `healthcare-emr-patterns` / `healthcare-cdss-patterns` / `healthcare-phi-compliance` / `healthcare-eval-harness`. Agent: `healthcare-reviewer` (vault) |

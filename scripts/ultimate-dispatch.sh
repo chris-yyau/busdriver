@@ -102,10 +102,23 @@ done
 # a buggy/compromised caller cannot use the helper to overwrite unrelated writable paths.
 # The expected dir is created first (the helper owned dir creation before this check existed),
 # then both sides are canonicalized and compared exactly — no suffix wildcard.
-_EXPECTED_ULTIMATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}/ultimate"
+# Anchor the expected dir to the repo that OWNS the output path (CWD-independent): a caller
+# composing an absolute OUTPUT_FILE in one CWD and dispatching the helper from another still
+# validates against the same repo-rooted ${BUSDRIVER_STATE_DIR:-.claude}/ultimate. Falls back
+# to the helper's CWD when the output path is not inside a git repo.
+# Never create the caller-supplied parent before validation — anchor from the nearest
+# EXISTING ancestor instead, so a rejected path leaves no directories behind.
+_OUTPUT_DIR="$(dirname "$OUTPUT_FILE")"
+_EXISTING_ANCESTOR="$_OUTPUT_DIR"
+while [[ ! -d "$_EXISTING_ANCESTOR" && "$_EXISTING_ANCESTOR" != "/" ]]; do
+  _EXISTING_ANCESTOR="$(dirname "$_EXISTING_ANCESTOR")"
+done
+_ANCHOR_ROOT="$(git -C "$_EXISTING_ANCESTOR" rev-parse --show-toplevel 2>/dev/null)" || _ANCHOR_ROOT="$PWD"
+_EXPECTED_ULTIMATE_DIR="$_ANCHOR_ROOT/${BUSDRIVER_STATE_DIR:-.claude}/ultimate"
 mkdir -p "$_EXPECTED_ULTIMATE_DIR" 2>/dev/null || die "cannot create ultimate state dir: $_EXPECTED_ULTIMATE_DIR"
 _EXPECTED_ULTIMATE_DIR="$(cd "$_EXPECTED_ULTIMATE_DIR" && pwd -P)" || die "cannot resolve ultimate state dir"
-_OUTPUT_PARENT="$(cd "$(dirname "$OUTPUT_FILE")" 2>/dev/null && pwd -P)" || die "output dir does not exist: $(dirname "$OUTPUT_FILE")"
+# Only the expected dir was created above; the output parent must already resolve to it.
+_OUTPUT_PARENT="$(cd "$_OUTPUT_DIR" 2>/dev/null && pwd -P)" || die "output dir does not exist (only $_EXPECTED_ULTIMATE_DIR is created by this helper): $_OUTPUT_DIR"
 [[ "$_OUTPUT_PARENT" == "$_EXPECTED_ULTIMATE_DIR" ]] || die "output file must live directly under $_EXPECTED_ULTIMATE_DIR: $OUTPUT_FILE"
 
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"

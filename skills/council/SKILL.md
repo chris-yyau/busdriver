@@ -266,7 +266,8 @@ MYTHOS_PROMPT
     # Atomic marker write; if even the fallback write fails the render step reads a
     # missing marker as timeout — documented as MYTHOS_FAILED [error] territory.
     { printf '%s\n' "$_mythos_rc" > "$MYTHOS_OUT.rc.tmp" && mv "$MYTHOS_OUT.rc.tmp" "$MYTHOS_OUT.rc"; } \
-      || printf '%s\n' 1 > "$MYTHOS_OUT.rc" || true ) &   # || capture survives set -e — the .rc marker is always written
+      || printf '%s\n' 1 > "$MYTHOS_OUT.rc" || true
+    exit 0 ) &   # subshell always exits 0: `wait "${PIDS[@]}"` under set -e must not abort on a failed witness — the .rc marker carries the real status
   PIDS+=("$!")
   MYTHOS_STATUS=dispatched
 elif [ "${ULTIMATE_COUNCIL_FORCE:-0}" = 1 ]; then

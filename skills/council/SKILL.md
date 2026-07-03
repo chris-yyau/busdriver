@@ -459,6 +459,6 @@ If the question doesn't benefit from multiple perspectives, say so and just answ
 ## Related Skills
 
 - `santa-method` — adversarial verification (two-reviewer convergence)
-- `knowledge-ops` — persist durable decision deltas to the right location
+- `knowledge-ops` — persist durable decision deltas to the right location (vault)
 - `search-first` — gather external reference material before convening
 - `architecture-decision-records` — formalize the outcome when the decision becomes long-lived system policy

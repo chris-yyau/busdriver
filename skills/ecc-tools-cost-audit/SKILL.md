@@ -17,7 +17,7 @@ Pull these ECC-native skills into the workflow when relevant:
 
 - `autonomous-loops` for bounded multi-step audits that cross webhooks, queues, billing, and retries
 - `agentic-engineering` for tracing the request path into discrete, provable units
-- `customer-billing-ops` when repo behavior and customer-impact math must be separated cleanly
+- `customer-billing-ops` when repo behavior and customer-impact math must be separated cleanly (vault)
 - `search-first` before inventing helpers or re-implementing repo-local utilities
 - `security-review` when auth, usage gates, entitlements, or secrets are touched
 - `verification-loop` for proving rerun safety and exact post-fix state

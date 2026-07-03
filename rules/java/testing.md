@@ -111,8 +111,8 @@ class OrderRepositoryIT {
 }
 ```
 
-For Spring Boot integration tests, see skill: `springboot-tdd`.
-For Quarkus integration tests, see skill: `quarkus-tdd`.
+For Spring Boot integration tests, see skill: `springboot-tdd`. (vault)
+For Quarkus integration tests, see skill: `quarkus-tdd`. (vault)
 
 ## Test Naming
 
@@ -128,6 +128,6 @@ Use descriptive names with `@DisplayName`:
 
 ## References
 
-See skill: `springboot-tdd` for Spring Boot TDD patterns with MockMvc and Testcontainers.
-See skill: `quarkus-tdd` for Quarkus TDD patterns with REST Assured and Dev Services.
-See skill: `java-coding-standards` for testing expectations.
+See skill: `springboot-tdd` for Spring Boot TDD patterns with MockMvc and Testcontainers. (vault)
+See skill: `quarkus-tdd` for Quarkus TDD patterns with REST Assured and Dev Services. (vault)
+See skill: `java-coding-standards` for testing expectations. (vault)

@@ -101,10 +101,10 @@ End with the exact handoff:
 
 If useful, point to the next ECC-native lane:
 
-- `project-flow-ops`
+- `project-flow-ops` (vault)
 - `workspace-surface-audit`
 - `api-connector-builder`
-- `dashboard-builder`
+- `dashboard-builder` (vault)
 - `tdd-workflow`
 - `verification-loop`
 

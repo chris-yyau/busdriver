@@ -66,7 +66,7 @@ mkdir -p $TARGET/skills $TARGET/rules
 
 ### 2a: Choose Scope (Core vs Niche)
 
-Default to **Core (recommended for new users)** — copy `.agents/skills/*` plus `skills/search-first/` for research-first workflows. This bundle covers engineering, evals, verification, security, strategic compaction, frontend design, and Anthropic cross-functional skills (article-writing, content-engine, market-research, frontend-slides).
+Default to **Core (recommended for new users)** — copy `.agents/skills/*` plus `skills/search-first/` for research-first workflows. This bundle covers engineering, evals, verification, security, strategic compaction, and frontend design, plus `frontend-slides` for Anthropic cross-functional work. `article-writing` (vault), `content-engine` (vault), and `market-research` (vault) are vault-loaded on demand (see `busdriver:orchestrator`'s "Vault (Archived Skills)" convention) — not part of the default Core copy.
 
 Use `AskUserQuestion` (single select):
 ```
@@ -91,7 +91,7 @@ Options:
   - "Database" — "PostgreSQL, ClickHouse, JPA/Hibernate patterns"
   - "Workflow & Quality" — "TDD, verification, learning, security review, compaction"
   - "Research & APIs" — "Deep research, Exa search, Claude API patterns"
-  - "Social & Content Distribution" — "X/Twitter API, crossposting alongside content-engine"
+  - "Social & Content Distribution" — "X/Twitter API, crossposting alongside content-engine (vault)"
   - "Media Generation" — "fal.ai image/video/audio alongside VideoDB"
   - "Orchestration" — "dmux multi-agent workflows"
   - "All skills" — "Install every available skill"
@@ -107,32 +107,32 @@ For each selected category, print the full list of skills below and ask the user
 |-------|-------------|
 | `backend-patterns` | Backend architecture, API design, server-side best practices for Node.js/Express/Next.js |
 | `coding-standards` | Universal coding standards for TypeScript, JavaScript, React, Node.js |
-| `django-patterns` | Django architecture, REST API with DRF, ORM, caching, signals, middleware |
-| `django-security` | Django security: auth, CSRF, SQL injection, XSS prevention |
-| `django-tdd` | Django testing with pytest-django, factory_boy, mocking, coverage |
-| `django-verification` | Django verification loop: migrations, linting, tests, security scans |
-| `laravel-patterns` | Laravel architecture patterns: routing, controllers, Eloquent, queues, caching |
-| `laravel-security` | Laravel security: auth, policies, CSRF, mass assignment, rate limiting |
-| `laravel-tdd` | Laravel testing with PHPUnit and Pest, factories, fakes, coverage |
-| `laravel-verification` | Laravel verification: linting, static analysis, tests, security scans |
+| `django-patterns` | Django architecture, REST API with DRF, ORM, caching, signals, middleware (vault) |
+| `django-security` | Django security: auth, CSRF, SQL injection, XSS prevention (vault) |
+| `django-tdd` | Django testing with pytest-django, factory_boy, mocking, coverage (vault) |
+| `django-verification` | Django verification loop: migrations, linting, tests, security scans (vault) |
+| `laravel-patterns` | Laravel architecture patterns: routing, controllers, Eloquent, queues, caching (vault) |
+| `laravel-security` | Laravel security: auth, policies, CSRF, mass assignment, rate limiting (vault) |
+| `laravel-tdd` | Laravel testing with PHPUnit and Pest, factories, fakes, coverage (vault) |
+| `laravel-verification` | Laravel verification: linting, static analysis, tests, security scans (vault) |
 | `frontend-patterns` | React, Next.js, state management, performance, UI patterns |
 | `frontend-slides` | Zero-dependency HTML presentations, style previews, and PPTX-to-web conversion |
 | `golang-patterns` | Idiomatic Go patterns, conventions for robust Go applications |
 | `golang-testing` | Go testing: table-driven tests, subtests, benchmarks, fuzzing |
-| `java-coding-standards` | Java coding standards for Spring Boot: naming, immutability, Optional, streams |
+| `java-coding-standards` | Java coding standards for Spring Boot: naming, immutability, Optional, streams (vault) |
 | `python-patterns` | Pythonic idioms, PEP 8, type hints, best practices |
 | `python-testing` | Python testing with pytest, TDD, fixtures, mocking, parametrization |
-| `springboot-patterns` | Spring Boot architecture, REST API, layered services, caching, async |
-| `springboot-security` | Spring Security: authn/authz, validation, CSRF, secrets, rate limiting |
-| `springboot-tdd` | Spring Boot TDD with JUnit 5, Mockito, MockMvc, Testcontainers |
-| `springboot-verification` | Spring Boot verification: build, static analysis, tests, security scans |
+| `springboot-patterns` | Spring Boot architecture, REST API, layered services, caching, async (vault) |
+| `springboot-security` | Spring Security: authn/authz, validation, CSRF, secrets, rate limiting (vault) |
+| `springboot-tdd` | Spring Boot TDD with JUnit 5, Mockito, MockMvc, Testcontainers (vault) |
+| `springboot-verification` | Spring Boot verification: build, static analysis, tests, security scans (vault) |
 
 **Category: Database (3 skills)**
 
 | Skill | Description |
 |-------|-------------|
-| `clickhouse-io` | ClickHouse patterns, query optimization, analytics, data engineering |
-| `jpa-patterns` | JPA/Hibernate entity design, relationships, query optimization, transactions |
+| `clickhouse-io` | ClickHouse patterns, query optimization, analytics, data engineering (vault) |
+| `jpa-patterns` | JPA/Hibernate entity design, relationships, query optimization, transactions (vault) |
 | `postgres-patterns` | PostgreSQL query optimization, schema design, indexing, security |
 
 **Category: Workflow & Quality (8 skills)**
@@ -152,11 +152,11 @@ For each selected category, print the full list of skills below and ask the user
 
 | Skill | Description |
 |-------|-------------|
-| `article-writing` | Long-form writing in a supplied voice using notes, examples, or source docs |
-| `content-engine` | Multi-platform social content, scripts, and repurposing workflows |
-| `market-research` | Source-attributed market, competitor, fund, and technology research |
-| `investor-materials` | Pitch decks, one-pagers, investor memos, and financial models |
-| `investor-outreach` | Personalized investor cold emails, warm intros, and follow-ups |
+| `article-writing` | Long-form writing in a supplied voice using notes, examples, or source docs (vault) |
+| `content-engine` | Multi-platform social content, scripts, and repurposing workflows (vault) |
+| `market-research` | Source-attributed market, competitor, fund, and technology research (vault) |
+| `investor-materials` | Pitch decks, one-pagers, investor memos, and financial models (vault) |
+| `investor-outreach` | Personalized investor cold emails, warm intros, and follow-ups (vault) |
 
 **Category: Research & APIs (2 skills)**
 
@@ -169,15 +169,15 @@ For each selected category, print the full list of skills below and ask the user
 
 | Skill | Description |
 |-------|-------------|
-| `x-api` | X/Twitter API integration for posting, threads, search, and analytics |
-| `crosspost` | Multi-platform content distribution with platform-native adaptation |
+| `x-api` | X/Twitter API integration for posting, threads, search, and analytics (vault) |
+| `crosspost` | Multi-platform content distribution with platform-native adaptation (vault) |
 
 **Category: Media Generation (2 skills)**
 
 | Skill | Description |
 |-------|-------------|
-| `fal-ai-media` | Unified AI media generation (image, video, audio) via fal.ai MCP |
-| `video-editing` | AI-assisted video editing for cutting, structuring, and augmenting real footage |
+| `fal-ai-media` | Unified AI media generation (image, video, audio) via fal.ai MCP (vault) |
+| `video-editing` | AI-assisted video editing for cutting, structuring, and augmenting real footage (vault) |
 
 **Category: Orchestration (1 skill)**
 
@@ -229,7 +229,21 @@ case "$skill_name" in
     fi
     ;;
   *)
-    cp -r "$ECC_ROOT/skills/$skill_name" "$TARGET/skills/"
+    # Vault-aware fallback: `(vault)` entries were moved to busdriver's
+    # skills-archive/, so copy archived skills from there when the plugin
+    # is loaded; otherwise fall back to ECC upstream. If the skill exists
+    # in neither source, warn and skip it (rather than aborting the whole
+    # install) — the operator sees the warning in the transcript and can
+    # re-run for that one skill.
+    if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -d "${CLAUDE_PLUGIN_ROOT}/skills-archive/$skill_name" ]; then
+      cp -r "${CLAUDE_PLUGIN_ROOT}/skills-archive/$skill_name" "$TARGET/skills/"
+    elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -d "${CLAUDE_PLUGIN_ROOT}/skills/$skill_name" ]; then
+      cp -r "${CLAUDE_PLUGIN_ROOT}/skills/$skill_name" "$TARGET/skills/"
+    elif [ -d "$ECC_ROOT/skills/$skill_name" ]; then
+      cp -r "$ECC_ROOT/skills/$skill_name" "$TARGET/skills/"
+    else
+      echo "⚠️  $skill_name not found in busdriver (skills/ or skills-archive/) or ECC upstream — skipped."
+    fi
     ;;
 esac
 ```
@@ -296,16 +310,16 @@ grep -rn "skills/" $TARGET/skills/
 ### 4c: Check Cross-References Between Skills
 
 Some skills reference others. Verify these dependencies:
-- `django-tdd` may reference `django-patterns`
-- `laravel-tdd` may reference `laravel-patterns`
-- `springboot-tdd` may reference `springboot-patterns`
+- `django-tdd` may reference `django-patterns` (vault)
+- `laravel-tdd` may reference `laravel-patterns` (vault)
+- `springboot-tdd` may reference `springboot-patterns` (vault)
 - `continuous-learning-v2` references `~/.claude/homunculus/` directory
 - `python-testing` may reference `python-patterns`
 - `golang-testing` may reference `golang-patterns`
-- `crosspost` references `content-engine` and `x-api`
+- `crosspost` references `content-engine` and `x-api` (vault)
 - `deep-research` references the Tavily and Exa MCP tools directly (Tavily for general/news, Exa for technical/entity queries)
-- `fal-ai-media` references `videodb` (complementary media skill)
-- `x-api` references `content-engine` and `crosspost`
+- `fal-ai-media` references `videodb` (complementary media skill) (vault)
+- `x-api` references `content-engine` and `crosspost` (vault)
 - Language-specific rules reference `common/` counterparts
 
 ### 4d: Report Issues

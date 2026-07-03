@@ -41,4 +41,4 @@ paths:
 
 ## Reference
 
-See skill: `cpp-coding-standards` for comprehensive C++ coding standards and guidelines.
+See skill: `cpp-coding-standards` for comprehensive C++ coding standards and guidelines. (vault)

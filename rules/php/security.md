@@ -34,4 +34,4 @@ paths:
 
 ## Reference
 
-See skill: `laravel-security` for Laravel-specific security guidance.
+See skill: `laravel-security` for Laravel-specific security guidance. (vault)

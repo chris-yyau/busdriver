@@ -41,7 +41,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Multi-Model** | multi-model planning | `/multi-plan`, `/multi-backend`, `/multi-frontend`, `/multi-execute`, `/multi-workflow` |
 | **Council** | perspectives, group wisdom, tradeoffs, ambiguous decision, structured deliberation | `council` (5-voice: Architect + Skeptic + Pragmatist + Critic + Researcher) |
 | **Communication** | email triage, Slack, inbox | `chief-of-staff` agent |
-| **Documents** | .docx/.xlsx/.pptx/.pdf, OCR | `nutrient-document-processing` |
+| **Documents** | .docx/.xlsx/.pptx/.pdf, OCR | `nutrient-document-processing` (vault) |
 | **Claude API/SDK** | imports anthropic/claude_agent_sdk | `claude-api-patterns` |
 | **MCP Dev** | build MCP server | `mcp-server-patterns` |
 | **Canary** | post-deploy canary check | `canary` |
@@ -49,30 +49,30 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Recurring Tasks** | run every N minutes | `/loop-start`, `loop-operator` agent |
 | **Notes** | check notes health, refine | `/refine-notes` |
 | **Prompt Engineering** | optimize prompt, improve prompt | `prompt-optimizer` skill or `/prompt-optimize` (advisory) |
-| **Content** | articles, newsletters, blogs | `article-writing` / `content-engine` / `crosspost` / `x-api`. Run `busdriver:humanizer` as a final pass before publishing to strip AI tone |
+| **Content** | articles, newsletters, blogs | `article-writing` (vault) / `content-engine` (vault) / `crosspost` (vault) / `x-api` (vault). Run `busdriver:humanizer` as a final pass before publishing to strip AI tone |
 | **Humanize Writing** | remove AI tone, sounds AI-written, de-slop text, make it sound human | `busdriver:humanizer` (detect+fix AI-writing tells: em-dash overuse, rule of three, inflated symbolism, vague attributions, filler) |
-| **Data Pipelines** | data collector, scheduled scraping | `data-scraper-agent` |
-| **Fundraising** | pitch deck, investor materials | `investor-materials` / `investor-outreach` / `market-research` |
-| **Media Generation** | generate image/video/audio | `fal-ai-media` |
-| **AI App Launcher** | run AI app/model, inference.sh, infsh, run flux/veo/grok/claude via CLI, serverless AI, OpenRouter, Twitter automation | `busdriver:agent-tools` (inference.sh CLI — 150+ AI apps: image/video/LLM/search/3D/Twitter. Broader than `busdriver:fal-ai-media`, which is media-gen only) |
-| **Video Production** | edit video, analyze, transcribe | `videodb` / `video-editing` / `fal-ai-media` |
+| **Data Pipelines** | data collector, scheduled scraping | `data-scraper-agent` (vault) |
+| **Fundraising** | pitch deck, investor materials | `investor-materials` (vault) / `investor-outreach` (vault) / `market-research` (vault) |
+| **Media Generation** | generate image/video/audio | `fal-ai-media` (vault) |
+| **AI App Launcher** | run AI app/model, inference.sh, infsh, run flux/veo/grok/claude via CLI, serverless AI, OpenRouter, Twitter automation | `busdriver:agent-tools` (inference.sh CLI — 150+ AI apps: image/video/LLM/search/3D/Twitter. Broader than `busdriver:fal-ai-media` (vault), which is media-gen only) |
+| **Video Production** | edit video, analyze, transcribe | `videodb` (vault) / `video-editing` (vault) / `fal-ai-media` (vault) |
 | **Presentations** | create slides, convert PPT | `frontend-slides` |
-| **Agent Architecture** | agent loops, multi-agent DAGs | `autonomous-loops` / `continuous-agent-loop` / `enterprise-agent-ops` / `agent-harness-construction` / `agentic-engineering` / `santa-method` / `autonomous-agent-harness`. Agents: `harness-optimizer`, `loop-operator` |
+| **Agent Architecture** | agent loops, multi-agent DAGs | `autonomous-loops` / `continuous-agent-loop` / `enterprise-agent-ops` (vault) / `agent-harness-construction` / `agentic-engineering` / `santa-method` / `autonomous-agent-harness`. Agents: `harness-optimizer`, `loop-operator` |
 | **GAN Harness** | build app iteratively, gen+eval loop | `gan-style-harness` / `/gan-design` / `/gan-build`. Agents: `gan-planner`, `gan-generator`, `gan-evaluator` |
 | **Open-Sourcing** | open source this, make public | `opensource-pipeline`. Agents: `opensource-forker`, `opensource-sanitizer`, `opensource-packager` |
-| **Healthcare** | EMR, clinical, PHI, CDSS | `healthcare-emr-patterns` / `healthcare-cdss-patterns` / `healthcare-phi-compliance` / `healthcare-eval-harness`. Agent: `healthcare-reviewer` |
-| **Lead Intelligence** | find leads, outreach, prospects | `lead-intelligence` |
+| **Healthcare** | EMR, clinical, PHI, CDSS | `healthcare-emr-patterns` (vault) / `healthcare-cdss-patterns` (vault) / `healthcare-phi-compliance` (vault) / `healthcare-eval-harness` (vault). Agent: `healthcare-reviewer` (vault) |
+| **Lead Intelligence** | find leads, outreach, prospects | `lead-intelligence` (vault) |
 | **PRP Workflow** | PRD, plan, implement, commit, PR | `/prp-prd` / `/prp-plan` / `/prp-implement` / `/prp-commit` / `/prp-pr` |
-| **Remotion Video** | create video with React, Remotion | `remotion-video-creation` |
-| **Agent Payments** | x402, agent wallet, pay for API | `agent-payment-x402` |
+| **Remotion Video** | create video with React, Remotion | `remotion-video-creation` (vault) |
+| **Agent Payments** | x402, agent wallet, pay for API | `agent-payment-x402` (vault) |
 | **Hexagonal Arch** | ports & adapters, domain boundaries | `hexagonal-architecture` |
 | **Dual Review** | adversarial review, two reviewers | `/santa-loop` |
 | **UI Demo Recording** | record demo, walkthrough video | `ui-demo` |
-| **Billing Ops** | subscriptions, refunds, Stripe | `customer-billing-ops` |
-| **Google Workspace** | Drive, Docs, Sheets, Slides | `google-workspace-ops` |
-| **Project Flow** | GitHub+Linear triage, backlog | `project-flow-ops` |
+| **Billing Ops** | subscriptions, refunds, Stripe | `customer-billing-ops` (vault) |
+| **Google Workspace** | Drive, Docs, Sheets, Slides | `google-workspace-ops` (vault) |
+| **Project Flow** | GitHub+Linear triage, backlog | `project-flow-ops` (vault) |
 | **Workspace Audit** | audit setup, discover capabilities | `workspace-surface-audit` |
-| **Laravel Plugins** | find Laravel packages | `laravel-plugin-discovery` |
+| **Laravel Plugins** | find Laravel packages | `laravel-plugin-discovery` (vault) |
 | **Error Handling Review** | check error handling, silent failures, catch blocks | `silent-failure-hunter` agent |
 | **Type Design Review** | review types, check invariants, type safety | `type-design-analyzer` agent |
 | **Test Coverage Review** | check test quality, test gaps, edge cases | `pr-test-analyzer` agent |
@@ -81,29 +81,29 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Docs Setup** | set up docs, audit docs, standardize docs | `busdriver:docs-setup` |
 | **SEO** | SEO audit, schema markup, search visibility | `seo` / `seo-audit` / `schema-markup` / `ai-seo`. Agent: `seo-specialist` |
 | **Site Audit** | audit website, site health, broken links, technical/perf/security site scan | `busdriver:audit-website` (squirrelscan CLI — 230+ rules across SEO/perf/security/content; health scores + broken-link + meta analysis. Complements `busdriver:seo` for whole-site crawl-based audits) |
-| **Jira** | Jira tickets, issue tracking | `/jira` + `jira-integration` |
+| **Jira** | Jira tickets, issue tracking | `/jira` (vault — command shim archived; read `commands-archive/jira.md`) + `jira-integration` (vault) |
 | **GitHub Ops** | GitHub issues, PRs, releases, CI status | `github-ops` |
-| **Email Ops** | email triage, drafting, send verification | `email-ops` |
-| **Messages Ops** | text messages, DMs, one-time codes | `messages-ops` |
-| **Notifications** | alert routing, dedup, inbox collapse | `unified-notifications-ops` |
-| **Network Ops** | X/LinkedIn cleanup, warm intros | `connections-optimizer` + `social-graph-ranker` |
-| **Knowledge Ops** | knowledge base, ingestion, sync | `knowledge-ops` |
-| **Research Ops** | fresh facts, comparisons, enrichment | `research-ops` |
-| **Finance/Billing Ops** | revenue, pricing, refunds, billing model | `finance-billing-ops` |
-| **Automation Audit** | audit jobs, hooks, connectors for overlap | `automation-audit-ops` |
+| **Email Ops** | email triage, drafting, send verification | `email-ops` (vault) |
+| **Messages Ops** | text messages, DMs, one-time codes | `messages-ops` (vault) |
+| **Notifications** | alert routing, dedup, inbox collapse | `unified-notifications-ops` (vault) |
+| **Network Ops** | X/LinkedIn cleanup, warm intros | `connections-optimizer` (vault) + `social-graph-ranker` (vault) |
+| **Knowledge Ops** | knowledge base, ingestion, sync | `knowledge-ops` (vault) |
+| **Research Ops** | fresh facts, comparisons, enrichment | `research-ops` (vault) |
+| **Finance/Billing Ops** | revenue, pricing, refunds, billing model | `finance-billing-ops` (vault) |
+| **Automation Audit** | audit jobs, hooks, connectors for overlap | `automation-audit-ops` (vault) |
 | **ECC Cost Audit** | PR creation burns, quota bypass, agent cost | `ecc-tools-cost-audit` |
 | **Code Tour** | CodeTour `.tour` files, onboarding walkthroughs | `code-tour` |
 | **Agent Debugging** | agent failures, self-debugging workflow | `agent-introspection-debugging` |
-| **Terminal Ops** | run commands, execute, deploy, repo ops | `terminal-ops` |
+| **Terminal Ops** | run commands, execute, deploy, repo ops | `terminal-ops` (vault) |
 | **AI-First Engineering** | AI agents generating code, eval-first | `ai-first-engineering` |
 | **Git Workflow** | branching, commit conventions, PR process | `git-workflow` |
 | **Hookify Rules** | create hookify rule, prevent behavior | `hookify-rules` |
 | **Agent Sorting** | trim ECC install to what project needs | `agent-sort` skill |
 | **Product Capability** | PRD-to-SRS, capability plan from spec | `product-capability` |
-| **Brand Voice** | writing style profile from real posts | `brand-voice` |
-| **Manim Video** | animated explainers via Manim | `manim-video` |
+| **Brand Voice** | writing style profile from real posts | `brand-voice` (vault) |
+| **Manim Video** | animated explainers via Manim | `manim-video` (vault) |
 | **Security Bounty** | bounty-worthy vulnerability hunting | `security-bounty-hunter` |
-| **Dashboard** | monitoring dashboards (Grafana, SigNoz) | `dashboard-builder` |
+| **Dashboard** | monitoring dashboards (Grafana, SigNoz) | `dashboard-builder` (vault) |
 | **API Connector** | add API integration matching repo patterns | `api-connector-builder` |
 | **PR Grind** | grind PR, fix CI, address PR comments, PR feedback loop | `pr-grind` |
 | **Performance Bench** | benchmark, measure performance baseline | `benchmark` |
@@ -121,7 +121,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Agent Eval** | compare agents, agent benchmark, head-to-head | `agent-eval` |
 | **Agent Self-Evaluation** | score agent output against a rubric, self-evaluate quality | `agent-self-evaluation`. Agent: `agent-evaluator` |
 | **AI Regression** | AI regression testing, sandbox mode | `ai-regression-testing` |
-| **Visa Translation** | translate visa docs, immigration documents | `visa-doc-translate` |
+| **Visa Translation** | translate visa docs, immigration documents | `visa-doc-translate` (vault) |
 | **RFC Pipeline** | RFC-driven multi-agent DAG execution | `ralphinho-rfc-pipeline` |
 | **Code Quality** | plankton, auto-format, lint enforcement | `plankton-code-quality` |
 | **Plan Review** | review code against plan, step completion | `plan-code-reviewer` agent |
@@ -129,9 +129,9 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Accessibility** | WCAG, a11y, screen reader, aria | `accessibility`. Agent: `a11y-architect` |
 | **Continuous Learning** | extract patterns, session learning | `continuous-learning` (v1) / `continuous-learning-v2` (instinct-based) |
 | **Frontend Design** | design-led UI, visual direction, typography | `frontend-design` |
-| **NanoClaw REPL** | session-aware nanoclaw, persistent project memory | `nanoclaw-repl` |
+| **NanoClaw REPL** | session-aware nanoclaw, persistent project memory | `nanoclaw-repl` (vault) |
 | **Project Memory** | per-project persistent memory | `ck` |
-| **OpenClaw Persona** | AI Agent persona forge | `openclaw-persona-forge` |
+| **OpenClaw Persona** | AI Agent persona forge | `openclaw-persona-forge` (vault) |
 | **Plan Stress-Test** | grill the plan, hostile interview | `grill-me` (general) / `grill-with-docs` (docs-grounded) |
 | **Issue Triage** | triage issues, prioritize backlog, label issues | `triage` (state-machine triage) |
 | **Bug Diagnosis (HITL)** | diagnose bug, root-cause loop, reproduce failure | `diagnose` (6-phase HITL) — complements `systematic-debugging` |
@@ -142,8 +142,8 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Repo Onboarding Setup** | issue tracker + triage labels + domain glossary scaffold | `setup-matt-pocock-skills` |
 | **Pre-commit Setup** | husky, lint-staged, pre-commit hooks | `setup-pre-commit` |
 | **Git Guardrails** | block dangerous git ops, git safety layer | `git-guardrails-claude-code` |
-| **Scientific Research** | PubMed, USPTO patents, genomics (gget), literature review, scholar eval | `scientific-db-pubmed-database` / `scientific-db-uspto-database` / `scientific-pkg-gget` / `scientific-thinking-literature-review` / `scientific-thinking-scholar-evaluation` |
-| **Prediction Markets / ITO** | prediction market oracle/risk, ITO trade baskets, market intel | `prediction-market-oracle-research` / `prediction-market-risk-review` / `ito-trade-planner` / `ito-basket-compare` / `ito-market-intelligence` / `ito-data-atlas-agent` |
+| **Scientific Research** | PubMed, USPTO patents, genomics (gget), literature review, scholar eval | `scientific-db-pubmed-database` (vault) / `scientific-db-uspto-database` (vault) / `scientific-pkg-gget` (vault) / `scientific-thinking-literature-review` (vault) / `scientific-thinking-scholar-evaluation` (vault) |
+| **Prediction Markets / ITO** | prediction market oracle/risk, ITO trade baskets, market intel | `prediction-market-oracle-research` (vault) / `prediction-market-risk-review` (vault) / `ito-trade-planner` (vault) / `ito-basket-compare` (vault) / `ito-market-intelligence` (vault) / `ito-data-atlas-agent` (vault) |
 | **Agent Architecture Audit** | audit agent design, agent architecture review | `agent-architecture-audit` |
 | **Agentic OS** | solo-dev agentic operating-system patterns | `agentic-os` |
 | **Parallel Execution / Orchestration** | optimize parallel fan-out, plan→orchestrate bridge | `parallel-execution-optimizer` / `plan-orchestrate` |
@@ -159,13 +159,13 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **React Composition** | compound components, boolean-prop proliferation, render props vs children, reusable component APIs, React 19 composition | `busdriver:vercel-composition-patterns` (Vercel-authored) — complements `busdriver:react-patterns` |
 | **Next.js Conventions** | Next.js file conventions, RSC boundaries, async APIs, metadata, route handlers, image/font, bundling, self-hosting | `busdriver:next-best-practices` (Vercel-authored) — pair with `busdriver:nextjs-turbopack` for Turbopack/`proxy.ts`-specific dev config |
 | **Web Interface Guidelines Review** | review my UI, audit design, check against best practices, web-interface-guidelines | `busdriver:web-design-guidelines` (Vercel-authored, fetches latest guidelines at review time) — complements `busdriver:accessibility` (WCAG 2.2 standards) and `busdriver:frontend-a11y` (React a11y implementation) |
-| **iOS Icon Generation** | generate iOS app icons | `ios-icon-gen` |
-| **Windows Desktop E2E** | E2E test Windows desktop apps | `windows-desktop-e2e` |
-| **tinystruct** | tinystruct Java framework patterns | `tinystruct-patterns` |
-| **Blender Motion** | inspect Blender motion/animation state | `blender-motion-state-inspection` |
-| **HarmonyOS** | HarmonyOS app build errors | `harmonyos-app-resolver` agent |
-| **Self-hosting (uncloud)** | uncloud deployment/self-hosting | `uncloud` |
-| **Hermes Imports** | Hermes import management/resolution | `hermes-imports` |
+| **iOS Icon Generation** | generate iOS app icons | `ios-icon-gen` (vault) |
+| **Windows Desktop E2E** | E2E test Windows desktop apps | `windows-desktop-e2e` (vault) |
+| **tinystruct** | tinystruct Java framework patterns | `tinystruct-patterns` (vault) |
+| **Blender Motion** | inspect Blender motion/animation state | `blender-motion-state-inspection` (vault) |
+| **HarmonyOS** | HarmonyOS app build errors | `harmonyos-app-resolver` agent (vault) |
+| **Self-hosting (uncloud)** | uncloud deployment/self-hosting | `uncloud` (vault) |
+| **Hermes Imports** | Hermes import management/resolution | `hermes-imports` (vault) |
 | **Project Init** | initialize new project scaffold | `/project-init` |
 
 ## Cross-Cutting Utilities

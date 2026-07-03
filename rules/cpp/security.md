@@ -48,4 +48,4 @@ paths:
 
 ## Reference
 
-See skill: `cpp-coding-standards` for detailed security guidelines.
+See skill: `cpp-coding-standards` for detailed security guidelines. (vault)

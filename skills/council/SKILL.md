@@ -252,12 +252,15 @@ if source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/ultimate-config.sh" 2>/dev/null \
 <the council question + context — same text composed into the other voices' heredocs>
 MYTHOS_PROMPT
   # Background so the gateway call overlaps the other voices; write an .rc marker on completion
-  # (0 = verdict written, non-zero = fail-closed). disown so an early parent exit can't kill it.
+  # (0 = verdict written, non-zero = fail-closed). Tracked in PIDS like every other council
+  # job — do NOT disown: the Step 4 block's `wait "${PIDS[@]}"` must cover the witness, or the
+  # render step can run before the .rc marker exists and misreport a successful dispatch as
+  # MYTHOS_FAILED [timeout] while orphaning the gateway call.
   ( _mythos_rc=0
     bash "${CLAUDE_PLUGIN_ROOT}/scripts/ultimate-dispatch.sh" mythos-witness \
       "$MYTHOS_OUT.prompt" "$MYTHOS_OUT" >/dev/null 2>&1 || _mythos_rc=$?
     echo "$_mythos_rc" > "$MYTHOS_OUT.rc" ) &   # || capture survives set -e — the .rc marker is always written
-  disown 2>/dev/null || true
+  PIDS+=("$!")
   MYTHOS_STATUS=dispatched
 elif [ "${ULTIMATE_COUNCIL_FORCE:-0}" = 1 ]; then
   MYTHOS_ATTEMPTED=1   # forced but the adapter failed to load / gate was false → render a loud banner below

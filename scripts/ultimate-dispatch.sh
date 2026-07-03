@@ -99,7 +99,11 @@ done
 
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 command -v "$CLAUDE_BIN" >/dev/null 2>&1 || die "claude binary not found: $CLAUDE_BIN"
-command -v jq >/dev/null 2>&1 || die "jq is required to write the gateway settings file"
+# jq preferred; python3 accepted as fallback for the settings-file write below.
+JSON_WRITER=""
+if command -v jq >/dev/null 2>&1; then JSON_WRITER=jq
+elif command -v python3 >/dev/null 2>&1; then JSON_WRITER=python3
+else die "jq or python3 is required to write the gateway settings file"; fi
 
 MODEL="${BLUEPRINT_ARBITER_GATEWAY_MODEL:-claude-fable-5}"
 TIMEOUT_S="${BLUEPRINT_ARBITER_GATEWAY_TIMEOUT:-600}"
@@ -129,18 +133,35 @@ if [[ -n "$AUTH_TOKEN" ]]; then
 else
   cred="$API_KEY"; cred_var="ANTHROPIC_API_KEY"; other_var="ANTHROPIC_AUTH_TOKEN"
 fi
-# Credential fed to jq via STDIN (never --arg / never env) so it never lands in jq's argv or
-# environ. Pin the unused credential var + the provider selectors empty so a settings.json
-# value cannot reintroduce them (the --settings file outranks the default settings file).
-printf '%s' "$cred" | jq -n --rawfile cred /dev/stdin --arg url "$BASE_URL" --arg cred_var "$cred_var" --arg other_var "$other_var" '{
-  env: ({
-    ANTHROPIC_BASE_URL: $url,
-    ANTHROPIC_CUSTOM_HEADERS: "",
-    CLAUDE_CODE_USE_BEDROCK: "", CLAUDE_CODE_USE_VERTEX: "", CLAUDE_CODE_USE_FOUNDRY: "",
-    CLAUDE_CODE_USE_ANTHROPIC_AWS: "", CLAUDE_CODE_USE_MANTLE: ""
-  } + { ($cred_var): $cred, ($other_var): "" })
-}' >"$SETTINGS_FILE" || die "failed to write gateway settings file (jq error)"
-[[ -s "$SETTINGS_FILE" ]] || die "gateway settings file is empty after jq write"
+# Credential fed to the JSON writer via STDIN (never argv / never env) so it never lands in
+# the writer's argv or environ. Pin the unused credential var + the provider selectors empty
+# so a settings.json value cannot reintroduce them (the --settings file outranks the default
+# settings file). jq preferred; python3 fallback keeps the shared dispatcher as portable as
+# the existing arbiter helper on jq-less machines.
+if [[ "$JSON_WRITER" == jq ]]; then
+  printf '%s' "$cred" | jq -n --rawfile cred /dev/stdin --arg url "$BASE_URL" --arg cred_var "$cred_var" --arg other_var "$other_var" '{
+    env: ({
+      ANTHROPIC_BASE_URL: $url,
+      ANTHROPIC_CUSTOM_HEADERS: "",
+      CLAUDE_CODE_USE_BEDROCK: "", CLAUDE_CODE_USE_VERTEX: "", CLAUDE_CODE_USE_FOUNDRY: "",
+      CLAUDE_CODE_USE_ANTHROPIC_AWS: "", CLAUDE_CODE_USE_MANTLE: ""
+    } + { ($cred_var): $cred, ($other_var): "" })
+  }' >"$SETTINGS_FILE" || die "failed to write gateway settings file (jq error)"
+else
+  printf '%s' "$cred" | BASE_URL="$BASE_URL" CRED_VAR="$cred_var" OTHER_VAR="$other_var" python3 -c '
+import json, os, sys
+env = {
+    "ANTHROPIC_BASE_URL": os.environ["BASE_URL"],
+    "ANTHROPIC_CUSTOM_HEADERS": "",
+    "CLAUDE_CODE_USE_BEDROCK": "", "CLAUDE_CODE_USE_VERTEX": "", "CLAUDE_CODE_USE_FOUNDRY": "",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS": "", "CLAUDE_CODE_USE_MANTLE": "",
+    os.environ["CRED_VAR"]: sys.stdin.read(),
+    os.environ["OTHER_VAR"]: "",
+}
+json.dump({"env": env}, sys.stdout)
+' >"$SETTINGS_FILE" || die "failed to write gateway settings file (python3 error)"
+fi
+[[ -s "$SETTINGS_FILE" ]] || die "gateway settings file is empty after JSON write"
 
 mkdir -p "$(dirname "$OUTPUT_FILE")" 2>/dev/null || die "cannot create output dir for $OUTPUT_FILE"
 

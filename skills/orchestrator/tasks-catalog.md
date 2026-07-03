@@ -49,7 +49,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Recurring Tasks** | run every N minutes | `/loop-start`, `loop-operator` agent |
 | **Notes** | check notes health, refine | `/refine-notes` |
 | **Prompt Engineering** | optimize prompt, improve prompt | `prompt-optimizer` skill or `/prompt-optimize` (advisory) |
-| **Content** | articles, newsletters, blogs | `article-writing` / `content-engine` / `crosspost` / `x-api`. Run `busdriver:humanizer` as a final pass before publishing to strip AI tone (vault) |
+| **Content** | articles, newsletters, blogs | `article-writing` (vault) / `content-engine` (vault) / `crosspost` (vault) / `x-api` (vault). Run `busdriver:humanizer` as a final pass before publishing to strip AI tone |
 | **Humanize Writing** | remove AI tone, sounds AI-written, de-slop text, make it sound human | `busdriver:humanizer` (detect+fix AI-writing tells: em-dash overuse, rule of three, inflated symbolism, vague attributions, filler) |
 | **Data Pipelines** | data collector, scheduled scraping | `data-scraper-agent` (vault) |
 | **Fundraising** | pitch deck, investor materials | `investor-materials` / `investor-outreach` / `market-research` (vault) |

@@ -97,7 +97,7 @@ Domain skills are loaded as context during execution. They are **additive** — 
 ### Nuxt
 **Detection:** `nuxt.config.*`, `.nuxt/` directory, `useFetch`, `useAsyncData`, Nuxt imports
 - Patterns: `busdriver:nuxt4-patterns` (hydration safety, SSR, route rules, lazy loading, data fetching) (vault)
-- Review: a Nuxt project ALSO matches Vue detection below (Nuxt is Vue-based) — the supplements are additive, not exclusive. Route deterministically: `vue-reviewer` for `.vue` SFCs AND Nuxt server routes / config / SSR-only `.ts` (this agent owns Nitro endpoint validation and SSR secret-leak checks), plus `typescript-reviewer` for the generic TS lane on those same `.ts` files — invoke both on Nuxt server/config changes. Load both `nuxt4-patterns` and `vue-patterns` + `rules/vue/`. (vault)
+- Review: a Nuxt project ALSO matches Vue detection below (Nuxt is Vue-based) — the supplements are additive, not exclusive. Route deterministically: `vue-reviewer` for `.vue` SFCs AND Nuxt server routes / config / SSR-only `.ts` (this agent owns Nitro endpoint validation and SSR secret-leak checks), plus `typescript-reviewer` for the generic TS lane on those same `.ts` files — invoke both on Nuxt server/config changes. Load both `nuxt4-patterns` (vault) and `vue-patterns` (vault) + `rules/vue/`.
 
 ### Vue
 **Detection:** `*.vue` files, `vue` imports, `vue.config.*`, Vue SFC context

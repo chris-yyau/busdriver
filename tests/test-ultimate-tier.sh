@@ -26,7 +26,7 @@ LIVE_FILES=(
   "$DIR/skills/blueprint-review/scripts/dispatch-gateway-arbiter.sh"
 )
 for f in "${LIVE_FILES[@]}"; do
-  if [[ -f "$f" ]] && grep -qE 'BLUEPRINT_ARBITER_ULTRA|ultraArbiter|ultra-arbiter-config' "$f"; then
+  if [[ -f "$f" ]] && grep -qEi 'BLUEPRINT_ARBITER_ULTRA|ultraArbiter|ultra-arbiter-config|ultra-arbiter|ultra arbiter' "$f"; then
     fail "dropped key present in $(basename "$f")"
   else
     pass "no dropped keys in $(basename "$f")"

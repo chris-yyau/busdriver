@@ -1,5 +1,5 @@
 #!/bin/bash
-# Ultra-arbiter escalation dispatch (SKILL.md "Ultra-Arbiter Escalation").
+# Ultimate-arbiter escalation dispatch (SKILL.md "Ultimate-Arbiter Escalation").
 #
 # Dispatches the blueprint-review arbiter as a headless `claude -p` subprocess
 # routed through an Anthropic-API-compatible gateway (e.g., ZenMux) to `fable` —

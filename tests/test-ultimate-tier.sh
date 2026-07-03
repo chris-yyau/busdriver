@@ -66,6 +66,49 @@ else
   echo "  SKIP  zsh not installed"
 fi
 
+# Output-containment check: with dummy gateway creds set (credential gate is FIRST in the
+# helper, so this exercises the containment logic at line ~126-137 without a real dispatch —
+# the script dies before it ever calls the claude binary). Covers the PWD-fallback branch
+# flagged in PR #275 review (Devin): when OUTPUT_FILE is not inside a git repo, the anchor
+# falls back to $PWD, and a correctly-composed path under that fallback must be ACCEPTED
+# (not incorrectly rejected), while a path outside the expected dir must still be REJECTED.
+echo "── (b.1) output containment (dummy creds, no real dispatch) ──"
+NOTGIT="$(mktemp -d)"; trap 'rm -rf "$TMP" "$NOTGIT"' EXIT
+# Accept case: OUTPUT_FILE composed directly under the PWD-fallback anchor's expected dir.
+mkdir -p "$NOTGIT/.claude/ultimate"
+CONTAIN_PROMPT="$NOTGIT/prompt.txt"; printf 'test prompt\n' > "$CONTAIN_PROMPT"
+CONTAIN_OUT="$NOTGIT/.claude/ultimate/out.md"
+# CLAUDE_BIN pointed at a nonexistent binary so the script dies fast right AFTER the
+# containment check (next gate down, line ~140) instead of proceeding to a real (and
+# potentially hanging) network dispatch — no network I/O reaches this test.
+rc=0
+( cd "$NOTGIT" && env -i PATH="$PATH" HOME="$NOTGIT" \
+    BLUEPRINT_ARBITER_GATEWAY_BASE_URL="https://example.invalid" \
+    BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN="dummy" \
+    ULTIMATE_COUNCIL_FORCE=1 \
+    CLAUDE_BIN="/nonexistent/claude-binary-for-test" \
+    bash "$HELPER" mythos-witness "$CONTAIN_PROMPT" "$CONTAIN_OUT" >"$NOTGIT/stderr.log" 2>&1 ) || rc=$?
+if grep -qF "output file must live directly under" "$NOTGIT/stderr.log"; then
+  fail "PWD-fallback containment incorrectly rejected a correctly-composed path"
+elif grep -qF "claude binary not found" "$NOTGIT/stderr.log"; then
+  pass "PWD-fallback containment accepts a correctly-composed path (fails later, on claude binary lookup, not containment)"
+else
+  fail "unexpected failure mode for PWD-fallback accept case: $(cat "$NOTGIT/stderr.log")"
+fi
+# Reject case: OUTPUT_FILE outside the expected dir must still die at the containment check.
+rc=0
+( cd "$NOTGIT" && env -i PATH="$PATH" HOME="$NOTGIT" \
+    BLUEPRINT_ARBITER_GATEWAY_BASE_URL="https://example.invalid" \
+    BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN="dummy" \
+    ULTIMATE_COUNCIL_FORCE=1 \
+    CLAUDE_BIN="/nonexistent/claude-binary-for-test" \
+    bash "$HELPER" mythos-witness "$CONTAIN_PROMPT" "$NOTGIT/out.md" >"$NOTGIT/stderr2.log" 2>&1 ) || rc=$?
+if [[ "$rc" -ne 0 ]] && grep -qF "output file must live directly under" "$NOTGIT/stderr2.log"; then
+  pass "containment rejects an output path outside the expected dir"
+else
+  fail "containment did not reject an out-of-bounds output path (rc=$rc)"
+fi
+
 # ── (c) Mythos Witness contract anchors in council SKILL.md ───────────────
 echo "── (c) council Mythos Witness contract ──"
 SKILL_C="$DIR/skills/council/SKILL.md"

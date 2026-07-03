@@ -3367,7 +3367,7 @@
     {
       "path": "skills-archive/marketing-content-strategy/references/headless-cms.md",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/content-strategy/references/headless-cms.md"
     },
     {
@@ -3463,7 +3463,7 @@
     {
       "path": "skills-archive/marketing-customer-research/references/source-guides.md",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/customer-research/references/source-guides.md"
     },
     {
@@ -3757,7 +3757,7 @@
     {
       "path": "skills-archive/marketing-plan/references/idea-cross-reference.md",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/marketing-plan/references/idea-cross-reference.md"
     },
     {
@@ -3883,7 +3883,7 @@
     {
       "path": "skills-archive/marketing-prospecting/references/data-sources.md",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/prospecting/references/data-sources.md"
     },
     {
@@ -3955,7 +3955,7 @@
     {
       "path": "skills-archive/marketing-referrals/references/affiliate-programs.md",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/referrals/references/affiliate-programs.md"
     },
     {
@@ -4171,7 +4171,7 @@
     {
       "path": "skills-archive/marketing-social/references/listening.md",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/social/references/listening.md"
     },
     {

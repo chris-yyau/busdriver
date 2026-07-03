@@ -277,7 +277,7 @@ cp .agents/skills/social/references/listening-sources-template.md .agents/listen
 # .claude/ install:
 cp .claude/skills/social/references/listening-sources-template.md .agents/listening-sources.md
 # Working inside the marketingskills repo:
-cp skills/social/references/listening-sources-template.md .agents/listening-sources.md
+cp skills/marketing-social/references/listening-sources-template.md .agents/listening-sources.md
 ```
 
 The template covers: brand/category, ICP (for scoring), target accounts per platform, intent keywords, subreddits, saved-search URLs, and a do-not-engage list.

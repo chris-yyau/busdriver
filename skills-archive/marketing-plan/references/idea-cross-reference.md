@@ -254,12 +254,12 @@ After all five AARRR tables + skip list:
 ## How to maintain this doc
 
 If `marketing-ideas` adds new ideas (it's a living skill — the 139 may become 145 or 160 over time):
-1. Read `skills/marketing-ideas/references/ideas-by-category.md` in the `marketingskills` repo
+1. Read `skills/marketing-marketing-ideas/references/ideas-by-category.md` in the `marketingskills` repo
 2. Assign each new idea to a primary AARRR stage using the rules above
 3. Add to this doc's tables
 4. Update SKILL.md's idea-count reference
 
 ## Sources
 
-- `skills/marketing-ideas/SKILL.md` (in the `marketingskills` repo)
-- `skills/marketing-ideas/references/ideas-by-category.md` (in the `marketingskills` repo)
+- `skills/marketing-marketing-ideas/SKILL.md` (in the `marketingskills` repo)
+- `skills/marketing-marketing-ideas/references/ideas-by-category.md` (in the `marketingskills` repo)

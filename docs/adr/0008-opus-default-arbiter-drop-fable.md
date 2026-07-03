@@ -1,5 +1,7 @@
 # ADR 0008: Opus-Default Blueprint-Review Arbiter (Drop Fable)
 
+> **Amended by [ADR 0011](./0011-ultimate-tier-fable-surfaces.md) (2026-07-03, rename: ultra arbiter → ultimate arbiter).** The opt-in gateway-fable escalation this ADR calls the "ultra arbiter" is renamed the **"ultimate arbiter"** (the `ultimate` tier = Claude Fable via the zenmux gateway; `ultra*` stays reserved for the GPT-5.5 Pro / UltraOracle surfaces). The USER opt-in moved from `.ultraArbiter.enabled` to `.ultimate.surfaces.arbiter`, the env force `BLUEPRINT_ARBITER_ULTRA=1` → `BUSDRIVER_ULTIMATE=1`, and `model_pin_status` `ultra_arbiter_*` → `ultimate_arbiter_*`. Only labels/keys changed — the opus-default decision and containment posture of this ADR are unchanged. Body below left as historical record.
+
 ## Status
 
 Accepted (2026-07-01). Supersedes the arbiter-*model* decisions of

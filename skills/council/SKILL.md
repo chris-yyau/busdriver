@@ -262,6 +262,7 @@ MYTHOS_PROMPT
   ( _mythos_rc=0
     bash "${CLAUDE_PLUGIN_ROOT}/scripts/ultimate-dispatch.sh" mythos-witness \
       "$MYTHOS_OUT.prompt" "$MYTHOS_OUT" >/dev/null 2>&1 || _mythos_rc=$?
+    rm -f "$MYTHOS_OUT.prompt"   # the witness prompt carries council context — don't leave it in the state dir
     # Atomic marker write; if even the fallback write fails the render step reads a
     # missing marker as timeout — documented as MYTHOS_FAILED [error] territory.
     { printf '%s\n' "$_mythos_rc" > "$MYTHOS_OUT.rc.tmp" && mv "$MYTHOS_OUT.rc.tmp" "$MYTHOS_OUT.rc"; } \

@@ -150,13 +150,15 @@ fi
 # settings file). jq preferred; python3 fallback keeps the shared dispatcher as portable as
 # the existing arbiter helper on jq-less machines.
 if [[ "$JSON_WRITER" == jq ]]; then
-  printf '%s' "$cred" | jq -n --rawfile cred /dev/stdin --arg url "$BASE_URL" --arg cred_var "$cred_var" --arg other_var "$other_var" '{
+  # -Rs slurps stdin as one raw string (`.`) — portable, unlike --rawfile /dev/stdin
+  # which is unreliable when jq's program context also owns stdin under -n.
+  printf '%s' "$cred" | jq -Rs --arg url "$BASE_URL" --arg cred_var "$cred_var" --arg other_var "$other_var" '{
     env: ({
       ANTHROPIC_BASE_URL: $url,
       ANTHROPIC_CUSTOM_HEADERS: "",
       CLAUDE_CODE_USE_BEDROCK: "", CLAUDE_CODE_USE_VERTEX: "", CLAUDE_CODE_USE_FOUNDRY: "",
       CLAUDE_CODE_USE_ANTHROPIC_AWS: "", CLAUDE_CODE_USE_MANTLE: ""
-    } + { ($cred_var): $cred, ($other_var): "" })
+    } + { ($cred_var): ., ($other_var): "" })
   }' >"$SETTINGS_FILE" || die "failed to write gateway settings file (jq error)"
 else
   # Non-secret values via argv (mirrors jq --arg); ONLY the secret rides stdin.

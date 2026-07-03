@@ -267,7 +267,13 @@ MYTHOS_PROMPT
   # MYTHOS_FAILED [timeout] while orphaning the gateway call.
   ( umask 077   # subshell-local: the verdict/output and rc marker carry council context too
     _mythos_rc=0
-    bash "${CLAUDE_PLUGIN_ROOT}/scripts/ultimate-dispatch.sh" mythos-witness \
+    # ULTIMATE_COUNCIL_FORCE is deliberately non-exported in the parent shell (see the
+    # "plain, non-exported" instruction above), so `bash ultimate-dispatch.sh` as a NEW
+    # child process would not inherit it and the child's own defense-in-depth gate would
+    # reject an already-gate-passed forced run. Pass it narrowly via a per-command env
+    # prefix — visible to this one child process only, never exported into the parent shell.
+    ULTIMATE_COUNCIL_FORCE="${ULTIMATE_COUNCIL_FORCE:-0}" \
+      bash "${CLAUDE_PLUGIN_ROOT}/scripts/ultimate-dispatch.sh" mythos-witness \
       "$MYTHOS_OUT.prompt" "$MYTHOS_OUT" >/dev/null 2>&1 || _mythos_rc=$?
     rm -f "$MYTHOS_OUT.prompt"   # the witness prompt carries council context — don't leave it in the state dir
     # Atomic marker write; if even the fallback write fails the render step reads a
@@ -295,6 +301,8 @@ if [ "$MYTHOS_ATTEMPTED" = 1 ]; then
       cat "$MYTHOS_OUT"                                    # verdict text → place in the Mythos Witness section
     elif [ "$rc" = 3 ]; then
       echo "MYTHOS_FAILED [gateway-not-configured]"        # creds missing (helper exit 3)
+    elif [ "$rc" = 0 ]; then
+      echo "MYTHOS_FAILED [empty verdict]"                 # exited clean but wrote no verdict
     elif [ -n "$rc" ]; then
       echo "MYTHOS_FAILED [error rc=$rc]"                  # dispatched but failed closed (helper exit 1)
     else

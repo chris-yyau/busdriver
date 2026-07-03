@@ -12,6 +12,14 @@
 # Anthropic-API-compatible gateway, so — like the ultraOracle boundary it mirrors — the
 # enable MUST be user-local: a repo-controlled project config or reviewed branch content
 # can never opt a reviewer into the escalation.
+# Portable dir resolution. BASH_SOURCE is unset under zsh (and other non-bash shells), where
+# `dirname "${BASH_SOURCE[0]}"` silently collapses to "." and mis-sources resolve-cli.sh from
+# the CWD — functions end up undefined with no error. Guard loudly: this lib is bash-only.
+if [ -z "${BASH_SOURCE:-}" ]; then
+  echo "ultimate-config.sh: ERROR — must be sourced under bash (BASH_SOURCE unset; zsh/other shells mis-resolve the script dir and half-load)" >&2
+  # shellcheck disable=SC2317  # reached when sourced under a non-bash shell
+  return 1 2>/dev/null || exit 1
+fi
 _ULTIMATE_CFG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${_ULTIMATE_CFG_DIR}/resolve-cli.sh"

@@ -235,7 +235,14 @@ _run_once() {
     return 0
   fi
   rm -f "$out_tmp"
-  return "${rc:-1}"
+  # A zero exit with empty stdout is NOT success — `${rc:-1}` only substitutes when rc is
+  # unset/empty, and rc is the literal string "0" here, so it would return 0 (success) and
+  # let the caller print "verdict written" for a file that was never created. Force non-zero
+  # so the fail-closed retry/failure contract holds for the empty-but-clean-exit case too.
+  if [[ "$rc" -eq 0 ]]; then
+    return 1
+  fi
+  return "$rc"
 }
 
 echo "ultimate-dispatch: dispatching '$ROLE' witness (model: $MODEL, timeout: ${TIMEOUT_S}s)" >&2

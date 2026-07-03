@@ -57,7 +57,7 @@ env -i PATH="$PATH" bash "$HELPER" mythos-witness "$PROMPT" "$OUT" >/dev/null 2>
 [[ ! -e "$OUT" ]] && pass "no output written when creds absent" || fail "output written despite missing creds"
 # Guard against sourcing under zsh (must fail loudly, not half-load).
 if command -v zsh >/dev/null 2>&1; then
-  if zsh -c "source '$HELPER'" 2>&1 | grep -qi 'requires bash'; then
+  if zsh -c 'source "$0"' "$HELPER" 2>&1 | grep -qi 'requires bash'; then
     pass "sourcing under zsh fails loudly"
   else
     fail "zsh source guard did not fire"

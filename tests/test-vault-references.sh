@@ -47,7 +47,12 @@ done
 ESCAPED="$(printf '%s\n' "$NAMES" | sed 's/[][\.|$(){}?+*^]/\\&/g')"
 PATTERN="$(printf '%s\n' "$ESCAPED" | paste -sd'|' -)"
 # shellcheck disable=SC2312  # first grep's exit is intentionally masked; no-match is handled by || true
-VIOLATIONS="$(grep -rInE "(^|[^a-z0-9-])(${PATTERN})([^a-z0-9-]|\$)" \
+# Excludes matches preceded by '@' — a short archived name (e.g. "jira") can
+# collide with an unrelated email-domain/mention token (e.g. "@jira") that has
+# nothing to do with the archived command. Without this exclusion those
+# collisions force a semantically misleading "(vault)" annotation onto lines
+# that don't actually reference the archive.
+VIOLATIONS="$(grep -rInE "(^|[^a-z0-9@-])(${PATTERN})([^a-z0-9-]|\$)" \
   skills agents commands hooks scripts 2>/dev/null | grep -v '(vault)' || true)"
 if [[ -n "$VIOLATIONS" ]]; then
   fail "un-annotated references to archived names (add \"(vault)\" on the line or archive the referrer):"

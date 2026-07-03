@@ -41,7 +41,7 @@ Where `{ORCH_CMD}` is determined in Phase 0 (see below). The command string in t
 - `custom` is a sequential chain; each agent's HANDOFF feeds the next.
 - Comma-separated agent list. No spaces preferred; one space tolerated.
 - No `--mode` / `--gate` / `--agents=...` flags exist — never invent them.
-- Agent names come from the catalogue in this skill. Embedded double quotes in the task description are escaped as `\"`.
+- Agent names come from the catalogue in this skill (sole exception: `general-purpose`, the Claude Code built-in substituted for `(vault)`-marked agents — see the note after the catalogue). Embedded double quotes in the task description are escaped as `\"`.
 
 ## ECC install form and namespacing
 
@@ -79,6 +79,8 @@ Code reviewers:
 - `python-reviewer` / `typescript-reviewer` / `go-reviewer` / `rust-reviewer` / `cpp-reviewer` (vault) / `java-reviewer` (vault) / `kotlin-reviewer` (vault) / `flutter-reviewer` (vault)
 
 A misspelled agent name fails `/orchestrate`. Cross-check against this list before emitting.
+
+`(vault)` marks an agent archived to `agents-archive/` at the busdriver plugin root — it is NOT auto-discovered by `/orchestrate` under either install form (plugin or legacy), so emitting it directly in a `custom` chain would fail to resolve at dispatch time. When a plan step's best-fit agent is vault-marked, do not emit it as a bare chain entry; instead substitute `general-purpose` in the chain and insert into the task description — immediately after the `[Plan: <path>#step-<id>]` prefix, which must remain first per Phase 3 — a one-line instruction to read `<busdriver-plugin-root>/agents-archive/<name>.md` and apply its body in-context (resolve `<busdriver-plugin-root>` to the busdriver plugin's absolute install path — e.g. `${CLAUDE_PLUGIN_ROOT}` when set — before emitting; a bare relative `agents-archive/` path only resolves when the current repo IS the plugin repo). This mirrors the resolution convention in `skills/orchestrator/SKILL.md` "Vault (Archived Skills)". Note `general-purpose` is a Claude Code built-in, not an ECC catalogue agent: it is exempt from Phase 4 prefixing — emit it bare in BOTH install forms (never `everything-claude-code:general-purpose`).
 
 ## How It Works
 
@@ -203,7 +205,7 @@ Append a final "Batch execution" block aggregating every step's command in order
 
 ### Phase 5 — Self-check (run before emitting)
 
-- [ ] Every agent in every chain comes from the catalogue (after stripping any `everything-claude-code:` prefix that appeared in the plan; see Phase 0 step 5).
+- [ ] Every agent in every chain comes from the catalogue (after stripping any `everything-claude-code:` prefix that appeared in the plan; see Phase 0 step 5). Sole exception: `general-purpose` substituted for a `(vault)`-marked agent — it is a Claude Code built-in, valid in a chain, and NEVER prefixed in plugin mode (see the vault note after the catalogue).
 - [ ] Resolved `{ORCH_CMD}` and every resolved `{AGENT(...)}` use the **same** form (`plugin` or `legacy`) — never mixed in one output.
 - [ ] No `# plugin form` / `# legacy form` annotations and no "strip the prefix" instructions remain in the rendered output.
 - [ ] No invented `--mode` / `--gate` / `--agents=...` fields.

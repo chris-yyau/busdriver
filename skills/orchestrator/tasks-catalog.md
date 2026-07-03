@@ -52,15 +52,15 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Content** | articles, newsletters, blogs | `article-writing` (vault) / `content-engine` (vault) / `crosspost` (vault) / `x-api` (vault). Run `busdriver:humanizer` as a final pass before publishing to strip AI tone |
 | **Humanize Writing** | remove AI tone, sounds AI-written, de-slop text, make it sound human | `busdriver:humanizer` (detect+fix AI-writing tells: em-dash overuse, rule of three, inflated symbolism, vague attributions, filler) |
 | **Data Pipelines** | data collector, scheduled scraping | `data-scraper-agent` (vault) |
-| **Fundraising** | pitch deck, investor materials | `investor-materials` / `investor-outreach` / `market-research` (vault) |
+| **Fundraising** | pitch deck, investor materials | `investor-materials` (vault) / `investor-outreach` (vault) / `market-research` (vault) |
 | **Media Generation** | generate image/video/audio | `fal-ai-media` (vault) |
 | **AI App Launcher** | run AI app/model, inference.sh, infsh, run flux/veo/grok/claude via CLI, serverless AI, OpenRouter, Twitter automation | `busdriver:agent-tools` (inference.sh CLI — 150+ AI apps: image/video/LLM/search/3D/Twitter. Broader than `busdriver:fal-ai-media` (vault), which is media-gen only) |
-| **Video Production** | edit video, analyze, transcribe | `videodb` / `video-editing` / `fal-ai-media` (vault) |
+| **Video Production** | edit video, analyze, transcribe | `videodb` (vault) / `video-editing` (vault) / `fal-ai-media` (vault) |
 | **Presentations** | create slides, convert PPT | `frontend-slides` |
 | **Agent Architecture** | agent loops, multi-agent DAGs | `autonomous-loops` / `continuous-agent-loop` / `enterprise-agent-ops` (vault) / `agent-harness-construction` / `agentic-engineering` / `santa-method` / `autonomous-agent-harness`. Agents: `harness-optimizer`, `loop-operator` |
 | **GAN Harness** | build app iteratively, gen+eval loop | `gan-style-harness` / `/gan-design` / `/gan-build`. Agents: `gan-planner`, `gan-generator`, `gan-evaluator` |
 | **Open-Sourcing** | open source this, make public | `opensource-pipeline`. Agents: `opensource-forker`, `opensource-sanitizer`, `opensource-packager` |
-| **Healthcare** | EMR, clinical, PHI, CDSS | `healthcare-emr-patterns` / `healthcare-cdss-patterns` / `healthcare-phi-compliance` / `healthcare-eval-harness`. Agent: `healthcare-reviewer` (vault) |
+| **Healthcare** | EMR, clinical, PHI, CDSS | `healthcare-emr-patterns` (vault) / `healthcare-cdss-patterns` (vault) / `healthcare-phi-compliance` (vault) / `healthcare-eval-harness` (vault). Agent: `healthcare-reviewer` (vault) |
 | **Lead Intelligence** | find leads, outreach, prospects | `lead-intelligence` (vault) |
 | **PRP Workflow** | PRD, plan, implement, commit, PR | `/prp-prd` / `/prp-plan` / `/prp-implement` / `/prp-commit` / `/prp-pr` |
 | **Remotion Video** | create video with React, Remotion | `remotion-video-creation` (vault) |
@@ -86,7 +86,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Email Ops** | email triage, drafting, send verification | `email-ops` (vault) |
 | **Messages Ops** | text messages, DMs, one-time codes | `messages-ops` (vault) |
 | **Notifications** | alert routing, dedup, inbox collapse | `unified-notifications-ops` (vault) |
-| **Network Ops** | X/LinkedIn cleanup, warm intros | `connections-optimizer` + `social-graph-ranker` (vault) |
+| **Network Ops** | X/LinkedIn cleanup, warm intros | `connections-optimizer` (vault) + `social-graph-ranker` (vault) |
 | **Knowledge Ops** | knowledge base, ingestion, sync | `knowledge-ops` (vault) |
 | **Research Ops** | fresh facts, comparisons, enrichment | `research-ops` (vault) |
 | **Finance/Billing Ops** | revenue, pricing, refunds, billing model | `finance-billing-ops` (vault) |
@@ -142,8 +142,8 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Repo Onboarding Setup** | issue tracker + triage labels + domain glossary scaffold | `setup-matt-pocock-skills` |
 | **Pre-commit Setup** | husky, lint-staged, pre-commit hooks | `setup-pre-commit` |
 | **Git Guardrails** | block dangerous git ops, git safety layer | `git-guardrails-claude-code` |
-| **Scientific Research** | PubMed, USPTO patents, genomics (gget), literature review, scholar eval | `scientific-db-pubmed-database` / `scientific-db-uspto-database` / `scientific-pkg-gget` / `scientific-thinking-literature-review` / `scientific-thinking-scholar-evaluation` (vault) |
-| **Prediction Markets / ITO** | prediction market oracle/risk, ITO trade baskets, market intel | `prediction-market-oracle-research` / `prediction-market-risk-review` / `ito-trade-planner` / `ito-basket-compare` / `ito-market-intelligence` / `ito-data-atlas-agent` (vault) |
+| **Scientific Research** | PubMed, USPTO patents, genomics (gget), literature review, scholar eval | `scientific-db-pubmed-database` (vault) / `scientific-db-uspto-database` (vault) / `scientific-pkg-gget` (vault) / `scientific-thinking-literature-review` (vault) / `scientific-thinking-scholar-evaluation` (vault) |
+| **Prediction Markets / ITO** | prediction market oracle/risk, ITO trade baskets, market intel | `prediction-market-oracle-research` (vault) / `prediction-market-risk-review` (vault) / `ito-trade-planner` (vault) / `ito-basket-compare` (vault) / `ito-market-intelligence` (vault) / `ito-data-atlas-agent` (vault) |
 | **Agent Architecture Audit** | audit agent design, agent architecture review | `agent-architecture-audit` |
 | **Agentic OS** | solo-dev agentic operating-system patterns | `agentic-os` |
 | **Parallel Execution / Orchestration** | optimize parallel fan-out, plan→orchestrate bridge | `parallel-execution-optimizer` / `plan-orchestrate` |

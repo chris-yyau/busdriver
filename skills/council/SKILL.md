@@ -248,18 +248,25 @@ if source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/ultimate-config.sh" 2>/dev/null \
    # BUSDRIVER_ULTIMATE=0 is the operator's global force-OFF: it outranks the per-run
    # ULTIMATE_COUNCIL_FORCE escape hatch — a forced run must never bypass an explicit opt-out.
   MYTHOS_ATTEMPTED=1
-  _mythos_dir="${BUSDRIVER_STATE_DIR:-.claude}/ultimate"
+  # Repo-root anchored (matches the helper's containment check) — running council from a
+  # subdirectory must not create subdir/.claude/ultimate and then be rejected.
+  _repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  _mythos_dir="$_repo_root/${BUSDRIVER_STATE_DIR:-.claude}/ultimate"
   mkdir -p "$_mythos_dir"
   MYTHOS_OUT="$(cd "$_mythos_dir" && pwd)/mythos-council-$$.md"   # absolute — the helper requires absolute paths
+  # umask 077: the prompt carries council context — never world/group-readable, even briefly.
+  _old_umask=$(umask); umask 077
   cat > "$MYTHOS_OUT.prompt" <<'MYTHOS_PROMPT'
 <the council question + context — same text composed into the other voices' heredocs>
 MYTHOS_PROMPT
+  umask "$_old_umask"
   # Background so the gateway call overlaps the other voices; write an .rc marker on completion
   # (0 = verdict written, non-zero = fail-closed). Tracked in PIDS like every other council
   # job — do NOT disown: the Step 4 block's `wait "${PIDS[@]}"` must cover the witness, or the
   # render step can run before the .rc marker exists and misreport a successful dispatch as
   # MYTHOS_FAILED [timeout] while orphaning the gateway call.
-  ( _mythos_rc=0
+  ( umask 077   # subshell-local: the verdict/output and rc marker carry council context too
+    _mythos_rc=0
     bash "${CLAUDE_PLUGIN_ROOT}/scripts/ultimate-dispatch.sh" mythos-witness \
       "$MYTHOS_OUT.prompt" "$MYTHOS_OUT" >/dev/null 2>&1 || _mythos_rc=$?
     rm -f "$MYTHOS_OUT.prompt"   # the witness prompt carries council context — don't leave it in the state dir

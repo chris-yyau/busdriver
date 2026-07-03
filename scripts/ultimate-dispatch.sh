@@ -214,7 +214,9 @@ _run_once() {
     --tools "" \
     --strict-mcp-config <"$PROMPT_FILE" >"$out_tmp" 2>/dev/null || rc=$?
   if [[ "$rc" -eq 0 && -s "$out_tmp" ]]; then
-    mv "$out_tmp" "$OUTPUT_FILE"
+    # Explicit failure path: _run_once is called inside `if`, which disables set -e —
+    # a failed final write must not fall through to a success return.
+    mv "$out_tmp" "$OUTPUT_FILE" || { rm -f "$out_tmp"; return 1; }
     return 0
   fi
   rm -f "$out_tmp"

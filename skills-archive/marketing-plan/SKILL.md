@@ -23,14 +23,9 @@ Invoke this skill when:
 
 ## How this skill is invoked
 
-```
-/marketing-plan {client-name-or-domain}
-```
+This skill is vaulted (`skills-archive/`, no live `/marketing-plan` command shim) — it is not auto-discoverable and has no slash-command entrypoint. Invoke it via the vault-loading convention documented in `skills/orchestrator/SKILL.md` ("Vault (Archived Skills)"): read `${CLAUDE_PLUGIN_ROOT}/skills-archive/marketing-plan/SKILL.md` in-context and apply its content directly, for example when a user asks for a "12-month marketing roadmap," "fCMO plan," or similar trigger phrase from the frontmatter `description`.
 
-Examples:
-- `/marketing-plan quietude.app`
-- `/marketing-plan acme-saas`
-- `/marketing-plan` (will prompt for client name)
+Once loaded, treat the plan-build request as if invoked with a client name or domain (e.g. `quietude.app`, `acme-saas`, or prompt the user for one if not given).
 
 On invocation, the skill reads `~/marketing-plans/{client-slug}/progress.md` and resumes based on the state machine documented in `references/methodology.md` Step 1.1.2 (fresh → INIT → REVIEW → FINALIZE → finalized). Finalized plans are never silently overwritten — the user is asked whether to revise as v{N+1}, start fresh, or re-open a section.
 
@@ -52,7 +47,7 @@ Present each section's draft in chat. For each section you can:
 - Add observations ("also mention Z")
 - Expand ("go deeper on this")
 
-Save each confirmed section to the progress file as you go. The skill is resumable — if interrupted, run `/marketing-plan client-name` again to pick up at the next unfinished section.
+Save each confirmed section to the progress file as you go. The skill is resumable — if interrupted, re-load this skill via the vault-loading convention (see "How this skill is invoked" above) for the same client to pick up at the next unfinished section.
 
 ### Phase 3 — FINALIZE (compile + verify + publish)
 

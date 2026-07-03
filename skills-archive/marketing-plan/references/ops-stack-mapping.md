@@ -47,8 +47,8 @@ The plan's Section 11 makes this thesis explicit by:
 | `popups` | Optimize popups, modals, slide-ins | Lead capture + activation prompts |
 | `copywriting` | Write marketing copy | Onboarding screens, paywall copy, CTAs |
 | `copy-editing` | Edit and improve existing copy | Voice / clarity pass before ship |
-| `copycraft` | Real-time copy variation overlay | Live copy iteration during reviews |
-| `website-copy` | Write full website copy (stage-8 from CF process) | Comprehensive site copy production |
+| `copycraft` _(not in this repo; no equivalent — fall back to `marketing-copywriting`/`marketing-copy-editing` per scope note above)_ | Real-time copy variation overlay | Live copy iteration during reviews |
+| `website-copy` _(not in this repo; use `marketing-copywriting` for site-copy production, or fall back per scope note above)_ | Write full website copy (stage-8 from CF process) | Comprehensive site copy production |
 | `ab-testing` | Plan A/B tests | Structure for onboarding variant tests |
 | `marketing-psychology` | Apply behavioral science to copy and CRO | Persuasion principles in activation moments |
 

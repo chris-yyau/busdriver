@@ -273,9 +273,9 @@ The user should maintain a list of sources somewhere persistent at `.agents/list
 
 ```bash
 # Plugin / marketplace install (most common):
-cp .agents/skills/social/references/listening-sources-template.md .agents/listening-sources.md
+cp .agents/skills/marketing-social/references/listening-sources-template.md .agents/listening-sources.md
 # .claude/ install:
-cp .claude/skills/social/references/listening-sources-template.md .agents/listening-sources.md
+cp .claude/skills/marketing-social/references/listening-sources-template.md .agents/listening-sources.md
 # Working inside the marketingskills repo:
 cp skills-archive/marketing-social/references/listening-sources-template.md .agents/listening-sources.md  # busdriver vault layout (from the plugin root)
 ```

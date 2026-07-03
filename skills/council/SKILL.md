@@ -253,8 +253,10 @@ if source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/ultimate-config.sh" 2>/dev/null \
 MYTHOS_PROMPT
   # Background so the gateway call overlaps the other voices; write an .rc marker on completion
   # (0 = verdict written, non-zero = fail-closed). disown so an early parent exit can't kill it.
-  ( bash "${CLAUDE_PLUGIN_ROOT}/scripts/ultimate-dispatch.sh" mythos-witness \
-      "$MYTHOS_OUT.prompt" "$MYTHOS_OUT" >/dev/null 2>&1; echo $? > "$MYTHOS_OUT.rc" ) &
+  ( _mythos_rc=0
+    bash "${CLAUDE_PLUGIN_ROOT}/scripts/ultimate-dispatch.sh" mythos-witness \
+      "$MYTHOS_OUT.prompt" "$MYTHOS_OUT" >/dev/null 2>&1 || _mythos_rc=$?
+    echo "$_mythos_rc" > "$MYTHOS_OUT.rc" ) &   # || capture survives set -e — the .rc marker is always written
   disown 2>/dev/null || true
   MYTHOS_STATUS=dispatched
 elif [ "${ULTIMATE_COUNCIL_FORCE:-0}" = 1 ]; then

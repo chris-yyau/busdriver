@@ -144,21 +144,22 @@ printf '%s' "$cred" | jq -n --rawfile cred /dev/stdin --arg url "$BASE_URL" --ar
 
 mkdir -p "$(dirname "$OUTPUT_FILE")" 2>/dev/null || die "cannot create output dir for $OUTPUT_FILE"
 
-PROMPT_CONTENT="$(cat "$PROMPT_FILE")"
-
 # One dispatch attempt → prints the model's final response on stdout, captured to OUTPUT_FILE.
 # Read-only (no Edit, no Bash); credential via --settings only; operator settings not loaded.
 _run_once() {
   local out_tmp rc=0
   out_tmp="$(mktemp "${TMPDIR:-/tmp}/ultimate-out.XXXXXX")"
-  _portable_timeout "$TIMEOUT_S" env "${ENV_ARGS[@]}" "$CLAUDE_BIN" --bare -p "$PROMPT_CONTENT" \
+  # Prompt via stdin (not argv): council prompts can be large (ARG_MAX) and
+  # sensitive (argv is visible in local process listings). No tools granted:
+  # the witness only needs the supplied prompt — a prompt-injected witness
+  # must not be able to read local files (--tools "" closes that boundary).
+  _portable_timeout "$TIMEOUT_S" env "${ENV_ARGS[@]}" "$CLAUDE_BIN" --bare -p \
     --settings "$SETTINGS_FILE" \
     --setting-sources '' \
     --model "$MODEL" \
     --permission-mode dontAsk \
-    --tools Read \
-    --allowedTools Read \
-    --strict-mcp-config >"$out_tmp" 2>/dev/null || rc=$?
+    --tools "" \
+    --strict-mcp-config <"$PROMPT_FILE" >"$out_tmp" 2>/dev/null || rc=$?
   if [[ "$rc" -eq 0 && -s "$out_tmp" ]]; then
     mv "$out_tmp" "$OUTPUT_FILE"
     return 0

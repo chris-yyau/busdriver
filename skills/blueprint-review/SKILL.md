@@ -97,7 +97,7 @@ All three reviewer slots walk to `droid` as a universal fallback, mirroring the 
 | Reviewer 1 | `blueprint-review.reviewer_1` | agy |
 | Reviewer 2 | `blueprint-review.reviewer_2` | codex |
 | Reviewer 3 | `blueprint-review.reviewer_3` | grok (added 2026-05-26; falls back to droid if grok not installed, matching reviewer_1/_2 pattern) |
-| Arbiter | (hardcoded) | claude — dispatched as a fresh subagent pinned `model: opus` (not configurable — the arbiter must be a Claude-family agent with codebase tools; see Arbiter Dispatch Protocol). Optional escalation: an operator USER-level opt-in ("ultra arbiter") routes the arbiter through the gateway to `fable` (opt-in headless `claude -p`; see Ultra-Arbiter Escalation) |
+| Arbiter | (hardcoded) | claude — dispatched as a fresh subagent pinned `model: opus` (not configurable — the arbiter must be a Claude-family agent with codebase tools; see Arbiter Dispatch Protocol). Optional escalation: an operator USER-level opt-in ("ultimate arbiter") routes the arbiter through the gateway to `fable` (opt-in headless `claude -p`; see Ultimate-Arbiter Escalation) |
 
 If reviewer_1 and reviewer_2 resolve to the same CLI, the system runs single-reviewer mode for that pair (one execution, output copied to both paths, logged as degradation). If reviewer_3 collides with reviewer_1 or reviewer_2, the reviewer_3 voice is skipped entirely (no duplicate copy — arbitration proceeds with two voices) to avoid combinatorial 3-way copying for an edge case.
 
@@ -224,7 +224,7 @@ calling session MUST:
 1. **Dispatch a fresh arbiter subagent** via the Agent tool:
    - `subagent_type`: `general-purpose` (needs Read/Grep/Glob for codebase validation plus Write for `claude.json`)
    - `model`: `opus` — pinned (the strongest available *subscription* model), so arbiter quality does not depend on what model the calling session happens to run. `opus` is a verified Agent-tool model value (this migration's own review arbiter ran on it). On successful dispatch, record `model_pin_status=pinned` caller-side.
-     - **Ultra-arbiter escalation (opt-in).** When the operator has opted in at the USER level (a top-level `.ultraArbiter.enabled` in USER `~/.claude/busdriver.json`, or `BLUEPRINT_ARBITER_ULTRA=1` — never a repo-controlled config or reviewed content; see the trigger rule and Ultra-Arbiter Escalation below) **and** gateway credentials are configured, dispatch the arbiter as a headless `claude -p` subprocess pinned to `claude-fable-5` through the gateway *instead of* the opus Agent dispatch, and record `model_pin_status=ultra_arbiter_fable`. This is a deliberate escalation above the default `opus`, not an automatic fallback. If the operator opted in but the gateway is unconfigured or its dispatch fails twice, fall back to the `opus` Agent dispatch and record `model_pin_status=ultra_arbiter_unavailable` (+ `run_degraded=true` in caller-side state), emitting a loud caller-side `WARNING: ULTRA-ARBITER UNAVAILABLE — ran opus` — never silently. (Enforcing the opt-in as a code boundary in the helper is tracked in #265; until then the gateway path is creds-gated exactly as before — no regression.)
+     - **Ultimate-arbiter escalation (opt-in).** When the operator has opted in at the USER level (a top-level `.ultimate.surfaces.arbiter` in USER `~/.claude/busdriver.json`, or `BUSDRIVER_ULTIMATE=1` — never a repo-controlled config or reviewed content; see the trigger rule and Ultimate-Arbiter Escalation below) **and** gateway credentials are configured, dispatch the arbiter as a headless `claude -p` subprocess pinned to `claude-fable-5` through the gateway *instead of* the opus Agent dispatch, and record `model_pin_status=ultimate_arbiter_fable`. This is a deliberate escalation above the default `opus`, not an automatic fallback. The trigger phrase **"ultimate arbiter"** authorizes the escalation for a single run needing NO config (gateway creds only) — the executor sets `BUSDRIVER_ULTIMATE=1` for that run. If the operator opted in but the gateway is unconfigured or its dispatch fails twice, fall back to the `opus` Agent dispatch and record `model_pin_status=ultimate_arbiter_unavailable` (+ `run_degraded=true` in caller-side state), emitting a loud caller-side `WARNING: ULTIMATE-ARBITER UNAVAILABLE — ran opus` — never silently. Both surfaces route through `scripts/ultimate-dispatch.sh` (the `arbiter` role delegates to the hardened `dispatch-gateway-arbiter.sh`). (Enforcing the opt-in as a code boundary in the helper is tracked in #265; the gateway path is also creds-gated.)
 
      All records are caller-side (your report / review state — NEVER by editing `claude.json`). These are the mutually exclusive **dispatch-time** statuses — set exactly one per run at dispatch. A final-state value, `pin_ignored`, is never set at dispatch: the step-3 post-dispatch check may later overwrite the dispatch-time status with it.
    - Prompt — exactly this fixed template, two absolute paths substituted, nothing more:
@@ -240,7 +240,7 @@ calling session MUST:
 
      The model-self-report sentence is part of the fixed template (the arbiter knows its own runtime identity — nothing flows from the caller), which is how a rejected or silently ignored pin stays observable without breaching the firewall: compare the arbiter's self-reported model against the expected pin in step 3.
 
-     *Tooling note:* the `Use Read/Grep/Glob…` line above is for the Agent-tool arbiter (which has those tools). The gateway headless helper substitutes `Use Read to open the files the reviews cite…` instead, because `Grep`/`Glob` are not selectable under `--bare` (see Ultra-Arbiter Escalation); the rest of the template is identical.
+     *Tooling note:* the `Use Read/Grep/Glob…` line above is for the Agent-tool arbiter (which has those tools). The gateway headless helper substitutes `Use Read to open the files the reviews cite…` instead, because `Grep`/`Glob` are not selectable under `--bare` (see Ultimate-Arbiter Escalation); the rest of the template is identical.
 
 2. **Context firewall.** Do NOT include conversation history, plan-authoring rationale,
    defenses of any design decision, or "the user prefers..." framing in the dispatch prompt.
@@ -251,8 +251,8 @@ calling session MUST:
 3. **Post-dispatch check** (calling session, cheap): `claude.json` exists, parses as JSON,
    has `status` of `PASS` or `FAIL`, and `metadata.run_id` matches the current run. Compare
    the arbiter's self-reported model in `validation_notes` against the expected pin —
-   `opus` by default, or `fable` only when the ultra-arbiter escalation actually ran
-   (`model_pin_status=ultra_arbiter_fable`). For `ultra_arbiter_unavailable` the run
+   `opus` by default, or `fable` only when the ultimate-arbiter escalation actually ran
+   (`model_pin_status=ultimate_arbiter_fable`). For `ultimate_arbiter_unavailable` the run
    executed on `opus`, so the expected pin is `opus`. The comparison is by **model
    identity, not literal string**: for the fable/gateway path an alias, its full id, and
    a gateway-namespaced id (`fable` ≡ `claude-fable-5` ≡ `anthropic/claude-fable-5`) all
@@ -267,10 +267,10 @@ calling session MUST:
    avoids burning a loop invocation on a garbage file.)
 
 4. **Failure handling (fail-closed):**
-   - *Ultra-arbiter gateway failure (helper script exit 1):* the operator opted in and the
+   - *Ultimate-arbiter gateway failure (helper script exit 1):* the operator opted in and the
      gateway is configured but the dispatch failed (subprocess error, timeout, or garbage
      verdict — the helper script already deleted the bad `claude.json`). Retry the gateway
-     dispatch ONCE; if it fails again, record `model_pin_status=ultra_arbiter_unavailable`
+     dispatch ONCE; if it fails again, record `model_pin_status=ultimate_arbiter_unavailable`
      with the loud `WARNING` (step 1) and **fall through to the `opus` Agent dispatch — do
      NOT stop**. The gateway and the Agent tool are independent mechanisms; a gateway outage
      must not block arbitration the opus dispatch still provides.
@@ -282,19 +282,21 @@ calling session MUST:
      the same-session inline `opus` cannot either (same auth, same plan). A persistent
      dispatch failure is a stop, not a degradation.
 
-### Ultra-Arbiter Escalation (opt-in, headless `claude -p`)
+### Ultimate-Arbiter Escalation (opt-in, headless `claude -p`)
 
-This is the **opt-in "ultra arbiter"** path. When the operator has opted in at the USER level
-(the trigger rule in the Arbiter Dispatch Protocol above — a top-level `.ultraArbiter.enabled` in
-USER `~/.claude/busdriver.json` and/or `BLUEPRINT_ARBITER_ULTRA=1`, never a repo config or reviewed
-content) **and** has API access to `fable` through an Anthropic-API-compatible gateway (e.g.,
-ZenMux), the arbiter is dispatched as **one** headless `claude -p` subprocess pinned to
+This is the **opt-in "ultimate arbiter"** path (part of the `ultimate` tier — Claude Fable via the
+zenmux gateway; see ADR 0011). When the operator has opted in at the USER level
+(the trigger rule in the Arbiter Dispatch Protocol above — a top-level `.ultimate.surfaces.arbiter` in
+USER `~/.claude/busdriver.json` and/or `BUSDRIVER_ULTIMATE=1`, never a repo config or reviewed
+content), OR the run is authorized by the per-run trigger phrase **"ultimate arbiter"** (needs no
+config — gateway creds only), **and** has API access to `fable` through an Anthropic-API-compatible
+gateway (e.g., ZenMux), the arbiter is dispatched as **one** headless `claude -p` subprocess pinned to
 `claude-fable-5` through the gateway — a deliberate escalation to fable-quality arbitration *above*
 the default `opus`, not an automatic fallback. It is skipped **silently** only when the operator has
 **not** opted in (the default `opus` arbiter simply runs). When the operator **has** opted in but no
 gateway credentials are present, the dispatch protocol above applies instead of a silent skip —
-record `model_pin_status=ultra_arbiter_unavailable` + `run_degraded=true` and emit the loud
-caller-side `WARNING: ULTRA-ARBITER UNAVAILABLE — ran opus` before the default `opus` arbiter runs.
+record `model_pin_status=ultimate_arbiter_unavailable` + `run_degraded=true` and emit the loud
+caller-side `WARNING: ULTIMATE-ARBITER UNAVAILABLE — ran opus` before the default `opus` arbiter runs.
 
 **Why headless, not the Agent tool.** Agent-tool subagents always inherit the parent session's
 auth, endpoint, and credentials — there is no supported way to point a single Agent-tool
@@ -406,7 +408,7 @@ passed to the subprocess.
 bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/dispatch-gateway-arbiter.sh" \
   "<absolute path to claude-validation-prompt.txt>" \
   "<absolute path to claude.json>"
-# exit 0 → verdict written; record model_pin_status=ultra_arbiter_fable, re-run --claude-only
+# exit 0 → verdict written; record model_pin_status=ultimate_arbiter_fable, re-run --claude-only
 # exit 3 → gateway not configured; fall through to the opus dispatch
 # exit 1 → configured but failed (bad claude.json already deleted); retry the gateway
 #          dispatch ONCE, then fall through to the opus dispatch (step 4 — a gateway outage
@@ -434,8 +436,8 @@ arbiter does, so the loop's `--claude-only` re-validation is identical. Tests:
 iteration's arbiter is a paid call. (2) The helper delivers the key to the subprocess **only**
 through the `0600` `--settings` file (never the environment, never argv); never write it into a
 committed file or into `claude.json`. (3) A successful escalation records
-`model_pin_status=ultra_arbiter_fable` — the operator's requested tier, NOT a degradation.
-(Only `ultra_arbiter_unavailable` — the opt-in could not be honoured and the run fell back to
+`model_pin_status=ultimate_arbiter_fable` — the operator's requested tier, NOT a degradation.
+(Only `ultimate_arbiter_unavailable` — the opt-in could not be honoured and the run fell back to
 `opus` — is the degraded state; see the Arbiter Dispatch Protocol.)
 (4) Supply the gateway credential only via `BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN`/`_API_KEY`; the
 helper makes it authoritative (through the `--settings` file, which outranks the default settings
@@ -751,7 +753,9 @@ Monitor(command: "sleep 35 && echo READY", timeout: 45)
 
 ## Version History
 
-**v3.5 (current, 2026-07-01):** Opus-default arbiter; fable dropped. `fable` is leaving the subscription plan, so the arbiter is now pinned to `model: opus` by default (the strongest subscription model, and a verified Agent-tool value — this migration's own review arbiter ran on opus). The old unsupported-`fable` fallback chain is gone: the **inherit** rung and the **inline (user-authorized) degraded** allowance are both removed — they assumed same-session availability (a fresh `opus` subagent that can't dispatch means inline `opus` can't either) and inline reintroduced the author-as-judge bias the protocol exists to remove; a persistent dispatch failure is now a fail-closed STOP, not a degradation. The gateway-fable path is retained but **re-cast from an automatic fallback rung into an opt-in "ultra arbiter" escalation** above the default opus, gated by an operator USER-level opt-in (`.ultraArbiter.enabled` in USER `~/.claude/busdriver.json` and/or `BLUEPRINT_ARBITER_ULTRA=1`, mirroring the `ultraOracle` boundary so reviewed content can never trigger it). New `model_pin_status` values `ultra_arbiter_fable` (escalation ran) and `ultra_arbiter_unavailable` (opt-in set but gateway unavailable → ran opus, degraded, with a loud caller-side `WARNING`); retired `gateway_fable_fallback`/`opus_fallback`/`inherited_fallback`. The gateway helper's credential-containment + AWS/provider scrub are unchanged. Code-level enforcement of the opt-in (a helper guard + `scripts/lib/ultra-arbiter-config.sh` + a static contract test + CI) is tracked in #265; until then the gateway path stays creds-gated exactly as before (no regression). Supersedes the arbiter-model parts of ADR 0003 and 0007 — see ADR 0008.
+**v3.6 (current, 2026-07-03):** Rename "ultra arbiter" → "ultimate arbiter" (ADR 0011). The gateway-fable escalation is now the `ultimate` tier's *arbiter* surface (`ultimate*` = Claude Fable via the zenmux gateway; `ultra*` stays reserved for the GPT-5.5 Pro / UltraOracle surfaces). USER-config opt-in moved from `.ultraArbiter.enabled` to a top-level `.ultimate.surfaces.arbiter`; env force `BLUEPRINT_ARBITER_ULTRA=1` → `BUSDRIVER_ULTIMATE=1`; the per-run trigger phrase "ultimate arbiter" authorizes one run with no config. `model_pin_status` values `ultra_arbiter_fable`/`ultra_arbiter_unavailable` → `ultimate_arbiter_fable`/`ultimate_arbiter_unavailable`; the loud banner `WARNING: ULTRA-ARBITER UNAVAILABLE` → `WARNING: ULTIMATE-ARBITER UNAVAILABLE`. Config reader `scripts/lib/ultra-arbiter-config.sh` → `scripts/lib/ultimate-config.sh` (function `ultra_arbiter_enabled` → `ultimate_surface_enabled arbiter`). New shared entry `scripts/ultimate-dispatch.sh` fronts both ultimate surfaces (arbiter + the new council Mythos Witness); the `arbiter` role delegates to the unchanged hardened `dispatch-gateway-arbiter.sh`. No behavior change to the credential-containment/provider scrub. The v3.5 entry below keeps the old names as historical record.
+
+**v3.5 (2026-07-01):** Opus-default arbiter; fable dropped. `fable` is leaving the subscription plan, so the arbiter is now pinned to `model: opus` by default (the strongest subscription model, and a verified Agent-tool value — this migration's own review arbiter ran on opus). The old unsupported-`fable` fallback chain is gone: the **inherit** rung and the **inline (user-authorized) degraded** allowance are both removed — they assumed same-session availability (a fresh `opus` subagent that can't dispatch means inline `opus` can't either) and inline reintroduced the author-as-judge bias the protocol exists to remove; a persistent dispatch failure is now a fail-closed STOP, not a degradation. The gateway-fable path is retained but **re-cast from an automatic fallback rung into an opt-in "ultra arbiter" escalation** above the default opus, gated by an operator USER-level opt-in (`.ultraArbiter.enabled` in USER `~/.claude/busdriver.json` and/or `BLUEPRINT_ARBITER_ULTRA=1`, mirroring the `ultraOracle` boundary so reviewed content can never trigger it). New `model_pin_status` values `ultra_arbiter_fable` (escalation ran) and `ultra_arbiter_unavailable` (opt-in set but gateway unavailable → ran opus, degraded, with a loud caller-side `WARNING`); retired `gateway_fable_fallback`/`opus_fallback`/`inherited_fallback`. The gateway helper's credential-containment + AWS/provider scrub are unchanged. Code-level enforcement of the opt-in (a helper guard + `scripts/lib/ultra-arbiter-config.sh` + a static contract test + CI) is tracked in #265; until then the gateway path stays creds-gated exactly as before (no regression). Supersedes the arbiter-model parts of ADR 0003 and 0007 — see ADR 0008.
 
 **v3.4.2 (2026-06-17):** Neutralize inherited operator permission scopes in the gateway rung (issue #198). The four-layer containment of v3.4.1 confined `Edit` to the verdict file via a scoped `--allowedTools` + `--permission-mode dontAsk`, but `--settings` *merges* with the operator's user/project/local settings and `permissions.allow` arrays *concatenate* — so an operator who had once approved a broad `Edit` (e.g. `Edit(//**)`) inherited it into the arbiter run, letting a prompt-injected arbiter Edit arbitrary workspace files despite `dontAsk` (which still honours pre-approved tools). The dispatch now also passes **`--setting-sources ''`** so none of the operator's user/project/local scopes load; the gateway credential is unaffected (it arrives via the independent `--settings` file). A **capability guard** probes `claude --help` — under the same `env` scrubbing as the dispatch, before any credential is written — and fails the dispatch **closed** if the local `claude` predates `--setting-sources` (the caller retries once, then falls through to the `opus` rung) rather than running unconfined; the probe captures and glob-matches the help text instead of `--help | grep -q` to avoid a SIGPIPE-induced false rejection under `set -o pipefail`. +3 test assertions (`--setting-sources` passed with an empty value; a fail-closed case where a `claude` lacking the flag is refused with no verdict written); `tests/test-gateway-arbiter-dispatch.sh` now 90/90. No contract change.
 

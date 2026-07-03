@@ -45,15 +45,17 @@ jobs:
       - name: Lint hook scripts (shell only)
         run: |
           find scripts/hooks -name '*.sh' -print0 | xargs -0 shellcheck --severity=warning || true
-      - name: Lint blueprint-review ultra-arbiter surface (#265)
+      - name: Lint blueprint-review ultimate-arbiter surface (#265)
         # These were unlinted before #265. Required (not soft) — the opt-in gate is a
         # security boundary. SC1091 (sourced libs not followed) is info-level, so
         # --severity=warning ignores it without needing -x/source-path.
         run: |
           shellcheck --severity=warning \
-            scripts/lib/ultra-arbiter-config.sh \
+            scripts/lib/ultimate-config.sh \
+            scripts/ultimate-dispatch.sh \
             skills/blueprint-review/scripts/dispatch-gateway-arbiter.sh \
-            tests/test-ultra-arbiter-config.sh \
+            tests/test-ultimate-config.sh \
+            tests/test-ultimate-tier.sh \
             tests/test-blueprint-arbiter-default-pin.sh \
             tests/test-gateway-arbiter-dispatch.sh \
             tests/test-blueprint-review-oracle-arbiter-contract.sh \
@@ -195,7 +197,7 @@ jobs:
   shell-tests:
     # Blueprint-review arbiter shell gate-tests (#265). Before this, the tests/*.sh
     # gate-tests were never executed in CI — only vitest/pytest ran. This job runs the
-    # ultra-arbiter / default-pin suite. It has NO `paths` filter, so on `pull_request`
+    # ultimate-arbiter / default-pin suite. It has NO `paths` filter, so on `pull_request`
     # (which carries no paths-ignore) it runs for ANY change — including a pure SKILL.md
     # edit, which the default-pin contract test reads. A doc-only push to main is skipped
     # by the workflow-level push `paths-ignore`, but such changes land via PR, where this
@@ -219,11 +221,12 @@ jobs:
         # jq + python3 are preinstalled on ubuntu-latest (the config helper needs one of
         # them; the dispatch test needs jq). The default bash shell runs with `-eo
         # pipefail`, so the first failing test fails the job. Scoped to the CI-safe
-        # ultra-arbiter / default-pin suite; broaden to the full tests/*.sh set once each
+        # ultimate-arbiter / default-pin suite; broaden to the full tests/*.sh set once each
         # is confirmed runner-safe.
         run: |
           bash tests/test-blueprint-arbiter-default-pin.sh
-          bash tests/test-ultra-arbiter-config.sh
+          bash tests/test-ultimate-config.sh
+          bash tests/test-ultimate-tier.sh
           bash tests/test-gateway-arbiter-dispatch.sh
           bash tests/test-blueprint-review-oracle-arbiter-contract.sh
           bash tests/test-vault-references.sh

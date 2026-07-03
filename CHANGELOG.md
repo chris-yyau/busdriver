@@ -1,3 +1,10 @@
+# [1.78.0](https://github.com/chris-yyau/busdriver/compare/v1.77.0...v1.78.0) (2026-07-03)
+
+
+### Features
+
+* **ultimate:** ultimate arbiter rename + ultimate council mythos witness ([#275](https://github.com/chris-yyau/busdriver/issues/275)) ([c9118ef](https://github.com/chris-yyau/busdriver/commit/c9118ef79b9f3c387e91d7d7cf86299497f6455d))
+
 # [1.77.0](https://github.com/chris-yyau/busdriver/compare/v1.76.2...v1.77.0) (2026-07-02)
 
 

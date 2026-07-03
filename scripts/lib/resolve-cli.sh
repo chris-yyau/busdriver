@@ -53,7 +53,7 @@ get_cli_install_hint() {
 
 # `${_JSON_PARSER:-}` (not a bare "") preserves a value inherited from the
 # environment across re-sourcing — the deliberate test hook that lets
-# test-ultra-arbiter-config.sh force `_JSON_PARSER=python3` to exercise the
+# test-ultimate-config.sh force `_JSON_PARSER=python3` to exercise the
 # python3 normalization branch. Prod never sets it, so behavior is unchanged.
 _JSON_PARSER="${_JSON_PARSER:-}"
 _detect_json_parser() {

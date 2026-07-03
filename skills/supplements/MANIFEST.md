@@ -5,6 +5,8 @@
 >
 > **How supplements load:** Supplements are NOT auto-loaded by hooks. When invoking a skill or dispatching an agent listed in a supplement's `targets:` frontmatter, Claude must Read the supplement file from `skills/supplements/` and apply its content alongside the targeted skill. The orchestrator's "Supplement Loading Protocol" section provides the instruction. Opt-in supplements require an explicit trigger condition (a user trigger phrase OR an auto-memory signal listed in the manifest's Trigger column).
 >
+> **`(vault)` targets:** A `(vault)` marker in the Added column means the supplement's target skill has been archived to `skills-archive/` and is no longer loaded via the `Skill` tool — it's Read on-demand instead. This changes the loading path: the orchestrator's automatic "check MANIFEST.md for active supplements targeting this skill" step only fires on `Skill`-tool invocation, so it does not automatically fire when an archived skill is loaded by manually Reading it from `skills-archive/`. Consumers who Read a `(vault)` skill directly must independently apply this manifest's supplement-loading protocol — the supplement will not be surfaced for them automatically.
+>
 > **Upstream tracking:** Fork-edit state is tracked in `.upstream-sources.json` at the repo root, not in this file.
 
 ## Active Supplements

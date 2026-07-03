@@ -231,8 +231,10 @@ case "$skill_name" in
   *)
     # Vault-aware fallback: `(vault)` entries were moved to busdriver's
     # skills-archive/, so copy archived skills from there when the plugin
-    # is loaded; otherwise fall back to ECC upstream. Fail loudly if the
-    # skill exists in neither source.
+    # is loaded; otherwise fall back to ECC upstream. If the skill exists
+    # in neither source, warn and skip it (rather than aborting the whole
+    # install) — the operator sees the warning in the transcript and can
+    # re-run for that one skill.
     if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -d "${CLAUDE_PLUGIN_ROOT}/skills-archive/$skill_name" ]; then
       cp -r "${CLAUDE_PLUGIN_ROOT}/skills-archive/$skill_name" "$TARGET/skills/"
     elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -d "${CLAUDE_PLUGIN_ROOT}/skills/$skill_name" ]; then

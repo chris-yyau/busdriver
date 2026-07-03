@@ -86,6 +86,21 @@ fi
 # ---------------------------------------------------------------------------
 # Generic TEXT dispatch (e.g. mythos-witness): capture the model's final response.
 # ---------------------------------------------------------------------------
+# Defense in depth: enforce the USER-config surface opt-in HERE, not only in the
+# calling skill snippet — a caller that skips the SKILL.md gate must still be
+# refused. Only known generic roles dispatch; BUSDRIVER_ULTIMATE=0 (global
+# force-off) outranks the per-run ULTIMATE_COUNCIL_FORCE escape hatch.
+case "$ROLE" in
+  mythos-witness)
+    # shellcheck source=/dev/null
+    source "$_PLUGIN_ROOT/scripts/lib/ultimate-config.sh" 2>/dev/null       || die "cannot load ultimate-config.sh for surface gate"
+    [[ "${BUSDRIVER_ULTIMATE:-}" != "0" ]] || skip "BUSDRIVER_ULTIMATE=0 (global force-off)"
+    if ! ultimate_surface_enabled council && [[ "${ULTIMATE_COUNCIL_FORCE:-0}" != "1" ]]; then
+      skip "ultimate council surface not enabled (user config) and not force-enabled for this run"
+    fi
+    ;;
+  *) die "unknown generic dispatch role: $ROLE (only mythos-witness is supported)" ;;
+esac
 [[ -f "$PROMPT_FILE" && -r "$PROMPT_FILE" ]] || die "prompt file not found or unreadable: $PROMPT_FILE"
 [[ -s "$PROMPT_FILE" ]] || die "prompt file is empty: $PROMPT_FILE"
 # Reject shell-significant / control chars in paths spliced into the dispatch (defense in depth,

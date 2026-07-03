@@ -4,7 +4,7 @@
 # Invariants:
 #  1. No archived name may exist in BOTH the live dir and its archive dir
 #     (resurrection guard — e.g. sync-upstream re-copying an archived skill).
-#  2. Any line in an ACTIVE surface (skills/ agents/ commands/ hooks/ scripts/)
+#  2. Any line in an ACTIVE surface (skills/ agents/ commands/ hooks/ scripts/ rules/)
 #     that references an archived name must carry the literal token "(vault)"
 #     on the same line — the single loading convention defined in
 #     skills/orchestrator/SKILL.md.

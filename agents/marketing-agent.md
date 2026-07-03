@@ -24,6 +24,8 @@ When invoked:
 4. Produce deliverables in order: positioning → landing page → email sequence → social posts → ad variants → video scripts → content calendar.
 5. Gate every output through the copy review checklist before delivering.
 
+`(vault)` delegates referenced below (`market-research`, `brand-voice`) are archived and not auto-discoverable: read `${CLAUDE_PLUGIN_ROOT}/skills-archive/<name>/SKILL.md` and apply its content in-context (the vault loading convention in `skills/orchestrator/SKILL.md`), instead of invoking the missing live skill.
+
 ## Campaign Workflow
 
 ### Step 1: Audience and Competitor Research

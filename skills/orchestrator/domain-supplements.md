@@ -198,7 +198,7 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Code review: `busdriver:flutter-dart-code-review` (library-agnostic checklist — BLoC, Riverpod, Provider, GetX, MobX, Signals) (vault)
 - Review: `flutter-reviewer` agent (see Phase 4 DISPATCH rules) (vault)
 - Commands: `/flutter-review`, `/flutter-test`, `/flutter-build` (vault)
-- Build issues: `busdriver:gradle-build` command (Android/Gradle build failures), `dart-build-resolver` agent (vault)
+- Build issues: `busdriver:gradle-build` command (vault) (Android/Gradle build failures), `dart-build-resolver` agent (vault)
 
 ### Android / Kotlin Multiplatform (KMP)
 **Detection:** `app/src/main/`, KMP config, `build.gradle.kts` with Android plugin, Compose imports

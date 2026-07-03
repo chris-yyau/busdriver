@@ -44,13 +44,16 @@ because they are already part of the user's environment.
 ```bash
 find ~/.claude/skills -maxdepth 2 -name SKILL.md 2>/dev/null | grep -iE "keyword|synonym"
 find ~/.claude/plugins/marketplaces -path '*/skills/*/SKILL.md' 2>/dev/null | grep -iE "keyword|synonym"
+find ~/.claude/plugins/marketplaces -path '*/skills-archive/*/SKILL.md' 2>/dev/null | grep -iE "keyword|synonym"
 ```
 
-Then search frontmatter descriptions:
+Then search frontmatter descriptions (including archived/vaulted skills):
 
 ```bash
 grep -RilE "keyword|synonym" ~/.claude/skills ~/.claude/plugins/marketplaces 2>/dev/null
 ```
+
+Vault matches are still valid matches — a skill archived to `skills-archive/` is a Local ECC match like any other, just lazily loaded. Report it as `<name> (vault)` in the result table rather than treating it as absent and recommending a fresh/forked skill.
 
 ### Step 3 - Search Remote Sources
 

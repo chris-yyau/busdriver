@@ -29,11 +29,11 @@ The plan's Section 11 makes this thesis explicit by:
 | `ads` | Plan and structure paid campaigns | Apple Search Ads, Meta, Google, LinkedIn |
 | `ad-creative` | Generate ad variations and creative | Iterate ad creative across platforms |
 | `social` | Plan and write social media content | LinkedIn, Twitter/X, Instagram, TikTok |
-| `typefully` | Schedule/post tweets, threads, LinkedIn content | Cadence operations for founder-led channels |
+| `typefully` _(external tool — not a skill in this repo; see scope note above, fall back to the underlying tactic)_ | Schedule/post tweets, threads, LinkedIn content | Cadence operations for founder-led channels |
 | `cold-email` | Write B2B cold outreach + sequences | Outbound for B2B SaaS / hybrid businesses |
 | `analytics` | Set up tracking, GA4, conversion events | Funnel instrumentation |
 | `free-tools` | Plan engineering-as-marketing free tools | Build tools that generate links + leads |
-| `marketing-website-design` | Design marketing sites with intention | Pillar/landing page design |
+| `marketing-website-design` _(not in this repo; use `busdriver:frontend-design` / `busdriver:high-end-visual-design`, or fall back per scope note)_ | Design marketing sites with intention | Pillar/landing page design |
 | `launch` | Plan and execute launches (Product Hunt, GA, feature launches) | GTM moments — strategy + tactical execution |
 
 ### Activation skills
@@ -69,7 +69,7 @@ The plan's Section 11 makes this thesis explicit by:
 | `referrals` | Plan and launch referral / affiliate / ambassador programs | Core skill for Section 7 |
 | `social` | Create ambassador-shareable content | Talking points, post templates |
 | `copywriting` | Ambassador / affiliate email copy | Recruitment, onboarding, communication |
-| `marketing-website-design` | Per-ambassador landing pages | Attribution surface |
+| `marketing-website-design` _(not in this repo; use `busdriver:frontend-design`, or fall back per scope note)_ | Per-ambassador landing pages | Attribution surface |
 | `emails` | Ambassador lifecycle emails | Onboarding, monthly digest, payout notifications |
 
 ### Revenue skills

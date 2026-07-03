@@ -3775,7 +3775,7 @@
     {
       "path": "skills-archive/marketing-plan/references/ops-stack-mapping.md",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/marketing-plan/references/ops-stack-mapping.md"
     },
     {

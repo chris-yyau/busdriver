@@ -30,7 +30,7 @@ Plan and execute launch campaigns that convert — not just campaigns that ship.
 
 ### Phase 1: Research
 
-Use `market-research` to:
+Use `market-research` (vault) to:
 - profile the target audience (jobs-to-be-done, fears, language, alternatives they use)
 - map 3+ direct or adjacent competitors (positioning, gaps, messaging weaknesses)
 - identify 1–3 audience insights the campaign angle will exploit
@@ -43,7 +43,7 @@ Produce:
 - core benefit statement (one sentence, no feature list, no jargon)
 - positioning formula: "[Product] helps [audience] [achieve outcome] by [mechanism]"
 - campaign angle: the specific tension, insight, or moment the whole campaign lives in
-- tone profile: lock before writing (delegate to `brand-voice` for durable, session-reusable voice capture)
+- tone profile: lock before writing (delegate to `brand-voice` for durable, session-reusable voice capture) (vault)
 
 Do not write any copy until positioning and angle are approved.
 
@@ -53,7 +53,7 @@ Produce in this order — each layer informs the next:
 
 1. **Landing page copy** (all sections: hero, problem, solution, features, how it works, proof, CTA)
 2. **Email sequence** (each email has one purpose; follow the arc: problem → education → agitation → solution → proof → urgency → final CTA)
-3. **Social posts** (platform-native via `content-engine`; LinkedIn and X are different formats, not the same copy resized)
+3. **Social posts** (platform-native via `content-engine`; LinkedIn and X are different formats, not the same copy resized) (vault)
 4. **Short-form video scripts** (timestamp-blocked; written for screen and ear, not the page)
 5. **Ad copy variants** (3–4 variants testing different angles or audience segments)
 6. **Content calendar** (day-by-day schedule with channel, type, timing, and dependencies)
@@ -107,8 +107,8 @@ Delete and rewrite any:
 
 ## Related Skills
 
-- `brand-voice` — source-derived voice capture (run before content production)
-- `content-engine` — platform-native content production
-- `crosspost` — multi-platform distribution
-- `market-research` — audience and competitive intelligence
+- `brand-voice` — source-derived voice capture (run before content production) (vault)
+- `content-engine` — platform-native content production (vault)
+- `crosspost` — multi-platform distribution (vault)
+- `market-research` — audience and competitive intelligence (vault)
 - `seo` — on-page optimisation for landing page copy

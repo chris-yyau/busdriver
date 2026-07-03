@@ -132,16 +132,16 @@ Map intent + scope + tech stack (from Phase 0) to specific ECC components.
 
 | Tech Stack | Skills to Add | Agent |
 |------------|--------------|-------|
-| Python / Django | django-patterns, django-tdd, django-security, django-verification, python-patterns, python-testing | python-reviewer |
+| Python / Django | django-patterns (vault), django-tdd (vault), django-security (vault), django-verification (vault), python-patterns, python-testing | python-reviewer |
 | Go | golang-patterns, golang-testing | go-reviewer, go-build-resolver |
-| Spring Boot / Java | springboot-patterns, springboot-tdd, springboot-security, springboot-verification, java-coding-standards, jpa-patterns | java-reviewer |
-| Quarkus / Java | quarkus-patterns, quarkus-tdd, quarkus-security, quarkus-verification, java-coding-standards, jpa-patterns | java-reviewer |
-| Kotlin / Android | kotlin-coroutines-flows, compose-multiplatform-patterns, android-clean-architecture | kotlin-reviewer |
+| Spring Boot / Java | springboot-patterns (vault), springboot-tdd (vault), springboot-security (vault), springboot-verification (vault), java-coding-standards (vault), jpa-patterns (vault) | java-reviewer (vault) |
+| Quarkus / Java | quarkus-patterns (vault), quarkus-tdd (vault), quarkus-security (vault), quarkus-verification (vault), java-coding-standards (vault), jpa-patterns (vault) | java-reviewer (vault) |
+| Kotlin / Android | kotlin-coroutines-flows (vault), compose-multiplatform-patterns (vault), android-clean-architecture (vault) | kotlin-reviewer (vault) |
 | TypeScript / React | frontend-patterns, backend-patterns, coding-standards | code-reviewer |
-| Swift / iOS | swiftui-patterns, swift-concurrency-6-2, swift-actor-persistence, swift-protocol-di-testing | code-reviewer |
+| Swift / iOS | swiftui-patterns (vault), swift-concurrency-6-2 (vault), swift-actor-persistence (vault), swift-protocol-di-testing (vault) | code-reviewer |
 | PostgreSQL | postgres-patterns, database-migrations | database-reviewer |
-| Perl | perl-patterns, perl-testing, perl-security | code-reviewer |
-| C++ | cpp-coding-standards, cpp-testing | code-reviewer |
+| Perl | perl-patterns (vault), perl-testing (vault), perl-security (vault) | code-reviewer |
+| C++ | cpp-coding-standards (vault), cpp-testing (vault) | code-reviewer |
 | Other / Unlisted | coding-standards (universal) | code-reviewer |
 
 ### Phase 4: Missing Context Detection

@@ -23,34 +23,34 @@ Domain skills are loaded as context during execution. They are **additive** — 
 
 ### Django
 **Detection:** `manage.py`, `settings.py`, Django context
-- Patterns: `busdriver:django-patterns`
-- Security: `busdriver:django-security`
-- Testing: `busdriver:django-tdd`
-- Verification: `busdriver:django-verification`
-- Async tasks: `busdriver:django-celery` (Celery task queues, workers, beat scheduling, retries)
-- Review: `django-reviewer` agent (see Phase 4 DISPATCH rules)
-- Build issues: `django-build-resolver` agent
+- Patterns: `busdriver:django-patterns` (vault)
+- Security: `busdriver:django-security` (vault)
+- Testing: `busdriver:django-tdd` (vault)
+- Verification: `busdriver:django-verification` (vault)
+- Async tasks: `busdriver:django-celery` (Celery task queues, workers, beat scheduling, retries) (vault)
+- Review: `django-reviewer` agent (see Phase 4 DISPATCH rules) (vault)
+- Build issues: `django-build-resolver` agent (vault)
 
 ### Spring Boot / Java
 **Detection:** `pom.xml`, `@SpringBootApplication`, Spring context
 - Rules: `rules/java/` (coding-style, patterns, security, testing, hooks)
-- Patterns: `busdriver:springboot-patterns`
-- Security: `busdriver:springboot-security`
-- Testing: `busdriver:springboot-tdd`
-- JPA: `busdriver:jpa-patterns`
-- Standards: `busdriver:java-coding-standards`
-- Verification: `busdriver:springboot-verification`
-- Review: `java-reviewer` agent (see Phase 4 DISPATCH rules)
-- Build issues: `java-build-resolver` agent (auto-detects Spring Boot vs Quarkus)
+- Patterns: `busdriver:springboot-patterns` (vault)
+- Security: `busdriver:springboot-security` (vault)
+- Testing: `busdriver:springboot-tdd` (vault)
+- JPA: `busdriver:jpa-patterns` (vault)
+- Standards: `busdriver:java-coding-standards` (vault)
+- Verification: `busdriver:springboot-verification` (vault)
+- Review: `java-reviewer` agent (see Phase 4 DISPATCH rules) (vault)
+- Build issues: `java-build-resolver` agent (auto-detects Spring Boot vs Quarkus) (vault)
 
 ### Quarkus
 **Detection:** `quarkus` in `pom.xml`/`build.gradle`, `quarkus-bom`, `application.properties` with `quarkus.*`, Quarkus imports
-- Patterns: `busdriver:quarkus-patterns`
-- Security: `busdriver:quarkus-security`
-- Testing: `busdriver:quarkus-tdd`
-- Verification: `busdriver:quarkus-verification`
-- Review: `java-reviewer` agent (see Phase 4 DISPATCH rules)
-- Build issues: `java-build-resolver` agent (Quarkus augmentation, native image, CDI errors)
+- Patterns: `busdriver:quarkus-patterns` (vault)
+- Security: `busdriver:quarkus-security` (vault)
+- Testing: `busdriver:quarkus-tdd` (vault)
+- Verification: `busdriver:quarkus-verification` (vault)
+- Review: `java-reviewer` agent (see Phase 4 DISPATCH rules) (vault)
+- Build issues: `java-build-resolver` agent (Quarkus augmentation, native image, CDI errors) (vault)
 
 ### Frontend (React / Next.js / TypeScript)
 **Detection:** `*.tsx`, `*.jsx`, `*.ts`, React components, Next.js, TypeScript
@@ -75,7 +75,7 @@ Domain skills are loaded as context during execution. They are **additive** — 
     - **Marketing / landing / portfolio / showcase** → *explore* with `busdriver:design-taste-frontend` first (lead): bold asymmetric layout, dark palettes, GSAP motion — push `DESIGN_VARIANCE` / `MOTION_INTENSITY` high. Then *harden* with `impeccable:impeccable` (`/typeset` → `/layout` → `/audit`) to converge on a11y, spacing, responsive. Variants: `busdriver:gpt-taste` (GPT/Codex), `busdriver:stitch-design-taste` (Google Stitch); reference image → code: `busdriver:image-to-code`.
     - **Dashboard / app UI / forms / settings / data tables** → `impeccable:impeccable` owns it end-to-end; `busdriver:design-taste-frontend` explicitly excludes these, so there is no explore phase.
     - **Why this order:** taste-skill maximizes visual entropy (divergence); impeccable minimizes error rate (convergence). Taste drives early; impeccable has final say on hardening.
-    - **Presets & Phase 0 — manual, invoke by name on request (NOT auto-routed):** specific aesthetics → `busdriver:minimalist-ui`, `busdriver:industrial-brutalist-ui`, `busdriver:high-end-visual-design`. Optional pre-explore reference boards → `busdriver:imagegen-frontend-web`, `busdriver:imagegen-frontend-mobile`, `busdriver:brandkit`. (`redesign-existing-projects` and `full-output-enforcement` deliberately omitted — redundant with `busdriver:design-taste-frontend`'s redesign protocol and the litmus/verification gates respectively.)
+    - **Presets & Phase 0 — manual, invoke by name on request (NOT auto-routed):** specific aesthetics → `busdriver:minimalist-ui`, `busdriver:industrial-brutalist-ui`, `busdriver:high-end-visual-design`. Optional pre-explore reference boards → `busdriver:imagegen-frontend-web`, `busdriver:imagegen-frontend-mobile`, `busdriver:brandkit` (vault). (`redesign-existing-projects` and `full-output-enforcement` deliberately omitted — redundant with `busdriver:design-taste-frontend`'s redesign protocol and the litmus/verification gates respectively.)
   - **Supplements — fill gaps only, do NOT lead:**
     - `busdriver:ui-ux-pro-max` — breadth catalog (50 styles, 21 palettes, 50 font pairings, 20 charts, shadcn MCP). Option lookup when an engine needs a named style / palette / font / chart, or shadcn component search on dashboards.
     - `document-skills:frontend-design` — generic fallback; only for gaps the engines don't cover.
@@ -90,21 +90,21 @@ Domain skills are loaded as context during execution. They are **additive** — 
 
 ### Angular
 **Detection:** `angular.json`, `@angular/*` imports, `*.component.ts`, Angular CLI projects
-- Developer guide: `busdriver:angular-developer` (signals, standalone components, reactive forms, SSR, routing, testing, a11y — comprehensive 36-file family)
+- Developer guide: `busdriver:angular-developer` (signals, standalone components, reactive forms, SSR, routing, testing, a11y — comprehensive 36-file family) (vault)
 - Rules: `rules/typescript/` (Angular is TypeScript-based)
 - Review: `typescript-reviewer` agent
 
 ### Nuxt
 **Detection:** `nuxt.config.*`, `.nuxt/` directory, `useFetch`, `useAsyncData`, Nuxt imports
-- Patterns: `busdriver:nuxt4-patterns` (hydration safety, SSR, route rules, lazy loading, data fetching)
-- Review: a Nuxt project ALSO matches Vue detection below (Nuxt is Vue-based) — the supplements are additive, not exclusive. Route deterministically: `vue-reviewer` for `.vue` SFCs AND Nuxt server routes / config / SSR-only `.ts` (this agent owns Nitro endpoint validation and SSR secret-leak checks), plus `typescript-reviewer` for the generic TS lane on those same `.ts` files — invoke both on Nuxt server/config changes. Load both `nuxt4-patterns` and `vue-patterns` + `rules/vue/`.
+- Patterns: `busdriver:nuxt4-patterns` (hydration safety, SSR, route rules, lazy loading, data fetching) (vault)
+- Review: a Nuxt project ALSO matches Vue detection below (Nuxt is Vue-based) — the supplements are additive, not exclusive. Route deterministically: `vue-reviewer` (vault) for `.vue` SFCs AND Nuxt server routes / config / SSR-only `.ts` (this agent owns Nitro endpoint validation and SSR secret-leak checks), plus `typescript-reviewer` for the generic TS lane on those same `.ts` files — invoke both on Nuxt server/config changes. Load both `nuxt4-patterns` (vault) and `vue-patterns` (vault) + `rules/vue/`.
 
 ### Vue
 **Detection:** `*.vue` files, `vue` imports, `vue.config.*`, Vue SFC context
 - Rules: `rules/vue/` (coding-style, patterns, security, testing, hooks)
-- Patterns: `busdriver:vue-patterns`
-- Review: `vue-reviewer` agent (see Phase 4 DISPATCH rules)
-- Commands: `/vue-review`
+- Patterns: `busdriver:vue-patterns` (vault)
+- Review: `vue-reviewer` agent (see Phase 4 DISPATCH rules) (vault)
+- Commands: `/vue-review` (vault)
 - **Migration** (React→Vue work): `busdriver:ui-to-vue`
 
 ### React Native / Expo
@@ -119,46 +119,46 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Patterns: `busdriver:backend-patterns`
 - Standards: `busdriver:coding-standards`
 - **NestJS** (detect: `@nestjs/core`, `@Module`, `@Controller`, `@Injectable` decorators):
-  - Patterns: `busdriver:nestjs-patterns` (modules, controllers, providers, DTO validation, guards, interceptors, config)
+  - Patterns: `busdriver:nestjs-patterns` (modules, controllers, providers, DTO validation, guards, interceptors, config) (vault)
 
 ### C# / .NET
 **Detection:** `*.cs`, `*.csproj`, `*.sln`, .NET context
-- Patterns: `busdriver:dotnet-patterns` (DI, async/await, conventions, best practices)
-- Testing: `busdriver:csharp-testing` (xUnit, FluentAssertions, mocking, integration tests)
-- Review: `csharp-reviewer` agent
+- Patterns: `busdriver:dotnet-patterns` (DI, async/await, conventions, best practices) (vault)
+- Testing: `busdriver:csharp-testing` (xUnit, FluentAssertions, mocking, integration tests) (vault)
+- Review: `csharp-reviewer` agent (vault)
 - Rules: `rules/csharp/` (coding-style, patterns, security, testing, hooks)
 
 ### F#
 **Detection:** `*.fs`, `*.fsproj`, `*.fsx`, F# context
-- Patterns: no F#-specific skill yet — fall back to `busdriver:dotnet-patterns` for shared .NET idioms (DI, async/await)
-- Testing: `busdriver:fsharp-testing` (Expecto, FsCheck, property-based testing)
-- Review: `fsharp-reviewer` agent (see Phase 4 DISPATCH rules)
+- Patterns: no F#-specific skill yet — fall back to `busdriver:dotnet-patterns` for shared .NET idioms (DI, async/await) (vault)
+- Testing: `busdriver:fsharp-testing` (Expecto, FsCheck, property-based testing) (vault)
+- Review: `fsharp-reviewer` agent (see Phase 4 DISPATCH rules) (vault)
 
 ### C++
 **Detection:** `*.cpp`, `*.h`, `*.hpp`, `CMakeLists.txt`, C++ context
 - Rules: `rules/cpp/` (coding-style, patterns, security, testing, hooks)
-- Standards: `busdriver:cpp-coding-standards`
-- Testing: `busdriver:cpp-testing`
-- Review: `cpp-reviewer` agent (see Phase 4 DISPATCH rules)
-- Build issues: `busdriver:cpp-build` command
+- Standards: `busdriver:cpp-coding-standards` (vault)
+- Testing: `busdriver:cpp-testing` (vault)
+- Review: `cpp-reviewer` agent (see Phase 4 DISPATCH rules) (vault)
+- Build issues: `busdriver:cpp-build` command (vault)
 
 ### Swift
 **Detection:** `*.swift`, `Package.swift`, Xcode project context
 - Rules: `rules/swift/` (coding-style, patterns, security, testing, hooks)
-- SwiftUI: `busdriver:swiftui-patterns` (@Observable, navigation, view composition)
-- Concurrency: `busdriver:swift-concurrency-6-2` (Swift 6.2 model, @concurrent, nonisolated)
-- Persistence: `busdriver:swift-actor-persistence` (actor-based thread-safe data)
-- Testing/DI: `busdriver:swift-protocol-di-testing`
-- On-device AI: `busdriver:foundation-models-on-device` (Apple FoundationModels framework)
-- iOS 26 UI: `busdriver:liquid-glass-design` (Liquid Glass design system)
-- Review: `swift-reviewer` agent (see Phase 4 DISPATCH rules)
-- Build issues: `swift-build-resolver` agent
+- SwiftUI: `busdriver:swiftui-patterns` (@Observable, navigation, view composition) (vault)
+- Concurrency: `busdriver:swift-concurrency-6-2` (Swift 6.2 model, @concurrent, nonisolated) (vault)
+- Persistence: `busdriver:swift-actor-persistence` (actor-based thread-safe data) (vault)
+- Testing/DI: `busdriver:swift-protocol-di-testing` (vault)
+- On-device AI: `busdriver:foundation-models-on-device` (Apple FoundationModels framework) (vault)
+- iOS 26 UI: `busdriver:liquid-glass-design` (Liquid Glass design system) (vault)
+- Review: `swift-reviewer` agent (see Phase 4 DISPATCH rules) (vault)
+- Build issues: `swift-build-resolver` agent (vault)
 
 ### Database
 **Detection:** SQL, migrations, schema changes, database operations
 - PostgreSQL: `busdriver:postgres-patterns` (quick patterns); `busdriver:supabase-postgres-best-practices` for deep perf work — covering/composite/partial indexes, RLS performance, connection pooling, advisory locks, `pg_stat_statements`, JSONB indexing, partitioning
 - MySQL: `busdriver:mysql-patterns`
-- ClickHouse: `busdriver:clickhouse-io`
+- ClickHouse: `busdriver:clickhouse-io` (vault)
 - Redis: `busdriver:redis-patterns` (caching, data structures, pub/sub, persistence)
 - Prisma ORM: `busdriver:prisma-patterns` (schema, migrations, type-safe queries, relations)
 - Migrations: `busdriver:database-migrations`
@@ -166,47 +166,47 @@ Domain skills are loaded as context during execution. They are **additive** — 
 
 ### Perl
 **Detection:** `*.pl`, `*.pm`, Perl context
-- Patterns: `busdriver:perl-patterns`
-- Security: `busdriver:perl-security`
-- Testing: `busdriver:perl-testing`
+- Patterns: `busdriver:perl-patterns` (vault)
+- Security: `busdriver:perl-security` (vault)
+- Testing: `busdriver:perl-testing` (vault)
 - Rules: `rules/perl/` (coding-style, patterns, security, testing, hooks)
 
 ### PHP / Laravel
 **Detection:** `*.php`, `composer.json`, Laravel context
-- Patterns: `busdriver:laravel-patterns`
-- Security: `busdriver:laravel-security`
-- Testing: `busdriver:laravel-tdd`
-- Verification: `busdriver:laravel-verification`
+- Patterns: `busdriver:laravel-patterns` (vault)
+- Security: `busdriver:laravel-security` (vault)
+- Testing: `busdriver:laravel-tdd` (vault)
+- Verification: `busdriver:laravel-verification` (vault)
 - Rules: `rules/php/` (coding-style, patterns, security, testing, hooks)
-- Review: `php-reviewer` agent (see Phase 4 DISPATCH rules)
+- Review: `php-reviewer` agent (see Phase 4 DISPATCH rules) (vault)
 
 ### Kotlin
 **Detection:** `*.kt`, `*.kts`, `build.gradle.kts`, Kotlin context
-- Patterns: `busdriver:kotlin-patterns`
-- Testing: `busdriver:kotlin-testing`
-- Coroutines/Flow: `busdriver:kotlin-coroutines-flows`
-- Exposed ORM: `busdriver:kotlin-exposed-patterns`
-- Ktor: `busdriver:kotlin-ktor-patterns`
-- Android/KMP: `busdriver:android-clean-architecture`, `busdriver:compose-multiplatform-patterns`
-- Review: `kotlin-reviewer` agent (see Phase 4 DISPATCH rules)
-- Build issues: `busdriver:kotlin-build` command
+- Patterns: `busdriver:kotlin-patterns` (vault)
+- Testing: `busdriver:kotlin-testing` (vault)
+- Coroutines/Flow: `busdriver:kotlin-coroutines-flows` (vault)
+- Exposed ORM: `busdriver:kotlin-exposed-patterns` (vault)
+- Ktor: `busdriver:kotlin-ktor-patterns` (vault)
+- Android/KMP: `busdriver:android-clean-architecture`, `busdriver:compose-multiplatform-patterns` (vault)
+- Review: `kotlin-reviewer` agent (see Phase 4 DISPATCH rules) (vault)
+- Build issues: `busdriver:kotlin-build` command (vault)
 - Rules: `rules/kotlin/` (coding-style, patterns, security, testing, hooks)
 
 ### Flutter / Dart
 **Detection:** `*.dart` files, `pubspec.yaml`, Flutter imports, widget code
-- Patterns: `busdriver:dart-flutter-patterns` (null safety, immutable state, async, widget arch, BLoC, Riverpod, Provider, GoRouter, Dio, Freezed, clean arch)
-- Code review: `busdriver:flutter-dart-code-review` (library-agnostic checklist — BLoC, Riverpod, Provider, GetX, MobX, Signals)
-- Review: `flutter-reviewer` agent (see Phase 4 DISPATCH rules)
-- Commands: `/flutter-review`, `/flutter-test`, `/flutter-build`
-- Build issues: `busdriver:gradle-build` command (Android/Gradle build failures), `dart-build-resolver` agent
+- Patterns: `busdriver:dart-flutter-patterns` (null safety, immutable state, async, widget arch, BLoC, Riverpod, Provider, GoRouter, Dio, Freezed, clean arch) (vault)
+- Code review: `busdriver:flutter-dart-code-review` (library-agnostic checklist — BLoC, Riverpod, Provider, GetX, MobX, Signals) (vault)
+- Review: `flutter-reviewer` agent (see Phase 4 DISPATCH rules) (vault)
+- Commands: `/flutter-review`, `/flutter-test`, `/flutter-build` (vault)
+- Build issues: `busdriver:gradle-build` command (vault) (Android/Gradle build failures), `dart-build-resolver` agent (vault)
 
 ### Android / Kotlin Multiplatform (KMP)
 **Detection:** `app/src/main/`, KMP config, `build.gradle.kts` with Android plugin, Compose imports
-- Clean architecture: `busdriver:android-clean-architecture` (module structure, dependency rules, UseCases, Repositories)
-- Compose: `busdriver:compose-multiplatform-patterns` (state management, navigation, theming, platform UI)
-- Kotlin patterns: `busdriver:kotlin-patterns`, `busdriver:kotlin-coroutines-flows`
-- Review: `kotlin-reviewer` agent (see Phase 4 DISPATCH rules)
-- Build issues: `busdriver:kotlin-build` or `busdriver:gradle-build` command
+- Clean architecture: `busdriver:android-clean-architecture` (module structure, dependency rules, UseCases, Repositories) (vault)
+- Compose: `busdriver:compose-multiplatform-patterns` (state management, navigation, theming, platform UI) (vault)
+- Kotlin patterns: `busdriver:kotlin-patterns`, `busdriver:kotlin-coroutines-flows` (vault)
+- Review: `kotlin-reviewer` agent (see Phase 4 DISPATCH rules) (vault)
+- Build issues: `busdriver:kotlin-build` or `busdriver:gradle-build` command (vault)
 
 ### Rust
 **Detection:** `*.rs`, `Cargo.toml`, Rust context
@@ -217,11 +217,11 @@ Domain skills are loaded as context during execution. They are **additive** — 
 
 ### Networking / Homelab
 **Detection:** Cisco IOS configs, BGP, VLAN, network device configs, `netmiko`, homelab/VPN setup, network troubleshooting
-- Cisco IOS: `busdriver:cisco-ios-patterns` (read-only diagnostics, config patterns)
-- SSH automation: `busdriver:netmiko-ssh-automation` (⚠️ read-only first; config changes require explicit operator approval)
-- Diagnostics: `busdriver:network-bgp-diagnostics`, `busdriver:network-config-validation`, `busdriver:network-interface-health`
-- Homelab: `busdriver:homelab-network-setup`, `busdriver:homelab-network-readiness`, `busdriver:homelab-vlan-segmentation`, `busdriver:homelab-pihole-dns`, `busdriver:homelab-wireguard-vpn`
-- Agents: `network-architect`, `network-config-reviewer`, `network-troubleshooter`, `homelab-architect`
+- Cisco IOS: `busdriver:cisco-ios-patterns` (read-only diagnostics, config patterns) (vault)
+- SSH automation: `busdriver:netmiko-ssh-automation` (⚠️ read-only first; config changes require explicit operator approval) (vault)
+- Diagnostics: `busdriver:network-bgp-diagnostics`, `busdriver:network-config-validation`, `busdriver:network-interface-health` (vault)
+- Homelab: `busdriver:homelab-network-setup`, `busdriver:homelab-network-readiness`, `busdriver:homelab-vlan-segmentation`, `busdriver:homelab-pihole-dns`, `busdriver:homelab-wireguard-vpn` (vault)
+- Agents: `network-architect`, `network-config-reviewer`, `network-troubleshooter`, `homelab-architect` (vault)
 
 ### Infrastructure / DevOps
 **Detection:** Dockerfile, docker-compose.yml, CI/CD pipelines, deployment configs, Kubernetes
@@ -234,38 +234,38 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Cost optimization: `busdriver:cost-aware-llm-pipeline`
 - RAG/retrieval: `busdriver:iterative-retrieval`
 - Text extraction: `busdriver:regex-vs-llm-structured-text`
-- Document processing: `busdriver:nutrient-document-processing`
+- Document processing: `busdriver:nutrient-document-processing` (vault)
 - Documentation: `busdriver:context7-cli` (up-to-date library/framework docs via the ctx7 CLI — use instead of training data for API references, setup guides, code examples)
 - **PyTorch** (detect: `torch` imports, training loops, CUDA usage):
   - Patterns: `busdriver:pytorch-patterns` (training pipelines, model architectures, data loading)
   - Build issues: `pytorch-build-resolver` agent (tensor shape, CUDA, gradient, DataLoader, mixed precision errors)
 - **ML Engineering** (detect: training pipelines, feature stores, model serving, MLOps):
   - Workflow: `busdriver:mle-workflow` (end-to-end ML engineering: data, training, eval, deployment)
-  - RecSys: `busdriver:recsys-pipeline-architect` (recommendation system pipelines)
+  - RecSys: `busdriver:recsys-pipeline-architect` (recommendation system pipelines) (vault)
   - Review: `mle-reviewer` agent (see Phase 4 DISPATCH rules)
 - **Performance-critical** (latency budgets, HFT, throughput): `busdriver:latency-critical-systems`, `busdriver:data-throughput-accelerator`, `busdriver:benchmark-optimization-loop`
 
 ### Video & Media
 **Detection:** Video files, FFmpeg commands, Remotion imports, video editing context
-- Understanding/indexing: `busdriver:videodb` (ingest, index, search video/audio)
-- Editing workflows: `busdriver:video-editing` (FFmpeg, Remotion, ElevenLabs, fal.ai)
-- Generation: `busdriver:fal-ai-media` (text-to-image/video/audio)
+- Understanding/indexing: `busdriver:videodb` (ingest, index, search video/audio) (vault)
+- Editing workflows: `busdriver:video-editing` (FFmpeg, Remotion, ElevenLabs, fal.ai) (vault)
+- Generation: `busdriver:fal-ai-media` (text-to-image/video/audio) (vault)
 
 ### Crypto / DeFi / EVM
 **Detection:** Solidity, EVM, `ethers.js`, `web3.js`, AMM, liquidity pools, token contracts
-- AMM Security: `busdriver:defi-amm-security` (reentrancy, CEI, donation attacks, oracle manipulation, slippage)
-- Token Decimals: `busdriver:evm-token-decimals` (runtime decimal lookup, bridged-token drift, safe normalization)
-- Node.js Hashing: `busdriver:nodejs-keccak256` (Keccak-256 vs NIST SHA3 — critical for selectors, signatures, storage slots)
-- Trading Agent Security: `busdriver:llm-trading-agent-security` (prompt injection, spend limits, circuit breakers, MEV protection)
+- AMM Security: `busdriver:defi-amm-security` (reentrancy, CEI, donation attacks, oracle manipulation, slippage) (vault)
+- Token Decimals: `busdriver:evm-token-decimals` (runtime decimal lookup, bridged-token drift, safe normalization) (vault)
+- Node.js Hashing: `busdriver:nodejs-keccak256` (Keccak-256 vs NIST SHA3 — critical for selectors, signatures, storage slots) (vault)
+- Trading Agent Security: `busdriver:llm-trading-agent-security` (prompt injection, spend limits, circuit breakers, MEV protection) (vault)
 
 ### Healthcare
 **Detection:** EMR, clinical, PHI, HIPAA, HL7, FHIR context
-- EMR Patterns: `busdriver:healthcare-emr-patterns`
-- CDSS: `busdriver:healthcare-cdss-patterns`
-- PHI Compliance: `busdriver:healthcare-phi-compliance`
-- HIPAA: `busdriver:hipaa-compliance` (HIPAA-specific entrypoint for PHI handling, BAAs, breach posture)
-- Eval Harness: `busdriver:healthcare-eval-harness`
-- Review: `healthcare-reviewer` agent
+- EMR Patterns: `busdriver:healthcare-emr-patterns` (vault)
+- CDSS: `busdriver:healthcare-cdss-patterns` (vault)
+- PHI Compliance: `busdriver:healthcare-phi-compliance` (vault)
+- HIPAA: `busdriver:hipaa-compliance` (HIPAA-specific entrypoint for PHI handling, BAAs, breach posture) (vault)
+- Eval Harness: `busdriver:healthcare-eval-harness` (vault)
+- Review: `healthcare-reviewer` agent (vault)
 
 ### MCP Development
 **Detection:** MCP server code, `@modelcontextprotocol/sdk`, tool/resource definitions
@@ -273,11 +273,11 @@ Domain skills are loaded as context during execution. They are **additive** — 
 
 ### Supply Chain / Logistics
 **Detection:** Freight, shipping, carrier, warehouse, inventory, procurement, customs, tariff, demand planning, production scheduling context
-- Carrier Management: `busdriver:carrier-relationship-management` (carrier portfolios, freight negotiation, lane optimization)
-- Customs/Trade: `busdriver:customs-trade-compliance` (customs docs, tariff classification, duty calculations, trade compliance)
-- Energy Procurement: `busdriver:energy-procurement` (electricity/gas procurement, tariff optimization)
-- Inventory: `busdriver:inventory-demand-planning` (demand forecasting, safety stock, reorder points)
-- Exceptions: `busdriver:logistics-exception-management` (freight exceptions, shipment delays, damage claims)
-- Production: `busdriver:production-scheduling` (job sequencing, line balancing, capacity planning)
-- Quality: `busdriver:quality-nonconformance` (quality control, non-conformance investigation, CAPA)
-- Returns: `busdriver:returns-reverse-logistics` (returns authorization, inspection, disposition)
+- Carrier Management: `busdriver:carrier-relationship-management` (carrier portfolios, freight negotiation, lane optimization) (vault)
+- Customs/Trade: `busdriver:customs-trade-compliance` (customs docs, tariff classification, duty calculations, trade compliance) (vault)
+- Energy Procurement: `busdriver:energy-procurement` (electricity/gas procurement, tariff optimization) (vault)
+- Inventory: `busdriver:inventory-demand-planning` (demand forecasting, safety stock, reorder points) (vault)
+- Exceptions: `busdriver:logistics-exception-management` (freight exceptions, shipment delays, damage claims) (vault)
+- Production: `busdriver:production-scheduling` (job sequencing, line balancing, capacity planning) (vault)
+- Quality: `busdriver:quality-nonconformance` (quality control, non-conformance investigation, CAPA) (vault)
+- Returns: `busdriver:returns-reverse-logistics` (returns authorization, inspection, disposition) (vault)

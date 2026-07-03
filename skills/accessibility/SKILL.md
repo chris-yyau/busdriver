@@ -143,5 +143,5 @@ Switch(
 
 - `frontend-patterns`
 - `design-system`
-- `liquid-glass-design`
-- `swiftui-patterns`
+- `liquid-glass-design` (vault)
+- `swiftui-patterns` (vault)

@@ -66,4 +66,4 @@ perlcritic --severity 4 --theme security lib/
 
 ## Reference
 
-See skill: `perl-security` for comprehensive Perl security patterns, taint mode, and safe I/O.
+See skill: `perl-security` for comprehensive Perl security patterns, taint mode, and safe I/O. (vault)

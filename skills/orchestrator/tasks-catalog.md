@@ -81,7 +81,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Docs Setup** | set up docs, audit docs, standardize docs | `busdriver:docs-setup` |
 | **SEO** | SEO audit, schema markup, search visibility | `seo` / `seo-audit` / `schema-markup` / `ai-seo`. Agent: `seo-specialist` |
 | **Site Audit** | audit website, site health, broken links, technical/perf/security site scan | `busdriver:audit-website` (squirrelscan CLI — 230+ rules across SEO/perf/security/content; health scores + broken-link + meta analysis. Complements `busdriver:seo` for whole-site crawl-based audits) |
-| **Jira** | Jira tickets, issue tracking | `/jira` + `jira-integration` (vault) |
+| **Jira** | Jira tickets, issue tracking | `/jira` (vault — command shim archived; read `commands-archive/jira.md`) + `jira-integration` (vault) |
 | **GitHub Ops** | GitHub issues, PRs, releases, CI status | `github-ops` |
 | **Email Ops** | email triage, drafting, send verification | `email-ops` (vault) |
 | **Messages Ops** | text messages, DMs, one-time codes | `messages-ops` (vault) |

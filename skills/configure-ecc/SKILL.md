@@ -229,7 +229,19 @@ case "$skill_name" in
     fi
     ;;
   *)
-    cp -r "$ECC_ROOT/skills/$skill_name" "$TARGET/skills/"
+    # Vault-aware fallback: `(vault)` entries were moved to busdriver's
+    # skills-archive/, so copy archived skills from there when the plugin
+    # is loaded; otherwise fall back to ECC upstream. Fail loudly if the
+    # skill exists in neither source.
+    if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -d "${CLAUDE_PLUGIN_ROOT}/skills-archive/$skill_name" ]; then
+      cp -r "${CLAUDE_PLUGIN_ROOT}/skills-archive/$skill_name" "$TARGET/skills/"
+    elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -d "${CLAUDE_PLUGIN_ROOT}/skills/$skill_name" ]; then
+      cp -r "${CLAUDE_PLUGIN_ROOT}/skills/$skill_name" "$TARGET/skills/"
+    elif [ -d "$ECC_ROOT/skills/$skill_name" ]; then
+      cp -r "$ECC_ROOT/skills/$skill_name" "$TARGET/skills/"
+    else
+      echo "⚠️  $skill_name not found in busdriver (skills/ or skills-archive/) or ECC upstream — skipped."
+    fi
     ;;
 esac
 ```

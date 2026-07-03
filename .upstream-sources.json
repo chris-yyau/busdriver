@@ -3649,7 +3649,7 @@
     {
       "path": "skills-archive/marketing-offers/references/offer-formats.md",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/offers/references/offer-formats.md"
     },
     {

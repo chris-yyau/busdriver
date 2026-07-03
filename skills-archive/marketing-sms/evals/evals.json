@@ -1,5 +1,5 @@
 {
-  "skill_name": "sms",
+  "skill_name": "marketing-sms",
   "evals": [
     {
       "id": 1,
@@ -37,7 +37,7 @@
     {
       "id": 3,
       "prompt": "Can I just send SMS without any opt-in if customers gave me their phone number at checkout?",
-      "expected_output": "Should refuse and explain TCPA requires express written consent for marketing SMS. Should distinguish marketing SMS (requires express written consent) from transactional/account SMS (order updates, auth — implied consent during transaction OK if directly related). Should explain the express written consent requirements: clear disclosure adjacent to the phone field, frequency expectation, msg & data rates notice, STOP/HELP instructions, terms link, electronically captured with timestamp. Should mention penalty exposure: $500-$1,500 per message, class actions reach 7-8 figures. Should recommend implementing a compliant opt-in flow: checkbox + disclosure text, double opt-in optional but cleaner. Should reference compliance.md for the full disclosure template. Should warn that 'customers gave their number at checkout' is NOT sufficient for marketing SMS — it's only sufficient for the specific transaction's communications.",
+      "expected_output": "Should refuse and explain TCPA requires express written consent for marketing SMS. Should distinguish marketing SMS (requires express written consent) from transactional/account SMS (order updates, auth \u2014 implied consent during transaction OK if directly related). Should explain the express written consent requirements: clear disclosure adjacent to the phone field, frequency expectation, msg & data rates notice, STOP/HELP instructions, terms link, electronically captured with timestamp. Should mention penalty exposure: $500-$1,500 per message, class actions reach 7-8 figures. Should recommend implementing a compliant opt-in flow: checkbox + disclosure text, double opt-in optional but cleaner. Should reference compliance.md for the full disclosure template. Should warn that 'customers gave their number at checkout' is NOT sufficient for marketing SMS \u2014 it's only sufficient for the specific transaction's communications.",
       "assertions": [
         "Refuses the no-opt-in approach",
         "Distinguishes marketing SMS from transactional SMS",
@@ -53,7 +53,7 @@
     {
       "id": 4,
       "prompt": "Our SMS list is 50K subscribers. We send 3 promotional messages per week. Opt-out rate has crept up to 4% per send. What's wrong?",
-      "expected_output": "Should diagnose this as audience fatigue from over-sending. Should reference healthy benchmarks: opt-out rate should be <2% per send and <0.5% for promotional sends — 4% is significantly elevated. Should review send frequency: 3 promotional sends/week is on the high side; recommend reducing to 1-2/week, especially for newer subscribers. Should audit relevance: are sends segmented or going to entire list? Generic blasts to a 50K list will burn out the inactive 30K. Should recommend segmenting by engagement (recently engaged vs cold), purchase recency, and opt-in source. Should suggest reactivating cold subscribers with a re-engagement flow before sending more promos. Should warn that 4% opt-out per send means the list is being destroyed at the rate of ~2K/week. Should cross-reference analytics for proper measurement and the principle 'every send must justify itself.'",
+      "expected_output": "Should diagnose this as audience fatigue from over-sending. Should reference healthy benchmarks: opt-out rate should be <2% per send and <0.5% for promotional sends \u2014 4% is significantly elevated. Should review send frequency: 3 promotional sends/week is on the high side; recommend reducing to 1-2/week, especially for newer subscribers. Should audit relevance: are sends segmented or going to entire list? Generic blasts to a 50K list will burn out the inactive 30K. Should recommend segmenting by engagement (recently engaged vs cold), purchase recency, and opt-in source. Should suggest reactivating cold subscribers with a re-engagement flow before sending more promos. Should warn that 4% opt-out per send means the list is being destroyed at the rate of ~2K/week. Should cross-reference analytics for proper measurement and the principle 'every send must justify itself.'",
       "assertions": [
         "Diagnoses as over-sending / audience fatigue",
         "Cites healthy benchmark (<2% opt-out per send, <0.5% promotional)",
@@ -68,7 +68,7 @@
     {
       "id": 5,
       "prompt": "We just submitted our A2P 10DLC registration and our sends are working. Can we start scaling to 100K+ messages per day?",
-      "expected_output": "Should ask about phone number type currently in use: 10DLC, toll-free, or short code. Should explain throughput limits: 10DLC standard brand ~4-10 msg/sec, verified brand ~75-100+ msg/sec, toll-free ~3 msg/sec, short code 100+ msg/sec. Should calculate: 100K msgs at 10 msg/sec = ~2.8 hours of continuous send time, may run into quiet hour cutoff. Should recommend short code lease for 100K+/day sustained volume. Should warn about carrier filtering on burst sends — use platform throttling. Should mention that sample message text from A2P registration must match actual sends or carriers will flag. Should recommend monitoring trust score and deliverability dashboards. Should reference platforms.md for short code provisioning details.",
+      "expected_output": "Should ask about phone number type currently in use: 10DLC, toll-free, or short code. Should explain throughput limits: 10DLC standard brand ~4-10 msg/sec, verified brand ~75-100+ msg/sec, toll-free ~3 msg/sec, short code 100+ msg/sec. Should calculate: 100K msgs at 10 msg/sec = ~2.8 hours of continuous send time, may run into quiet hour cutoff. Should recommend short code lease for 100K+/day sustained volume. Should warn about carrier filtering on burst sends \u2014 use platform throttling. Should mention that sample message text from A2P registration must match actual sends or carriers will flag. Should recommend monitoring trust score and deliverability dashboards. Should reference platforms.md for short code provisioning details.",
       "assertions": [
         "Asks about phone number type (10DLC vs toll-free vs short code)",
         "Explains throughput limits with specific msg/sec numbers",
@@ -84,7 +84,7 @@
     {
       "id": 6,
       "prompt": "Should we put emojis in our SMS messages? Other brands seem to use them a lot.",
-      "expected_output": "Should explain the cost trade-off: emojis force UCS-2 encoding, which cuts segment size from 160 GSM-7 chars to 70 chars. A 100-char message with one emoji becomes 2 segments billed instead of 1 — effectively doubling the per-send cost. Should advise: 1 emoji per message max, situationally relevant, only when the emoji genuinely earns its segment cost (high-energy promotional, brand-personality fit, etc.). Should warn against emoji clutter — it signals 'mass send' rather than personal. Should note that some accented characters (curly quotes, em dashes) also force UCS-2 — copy-pasting from Word/Google Docs is a common silent cause of doubled costs. Should recommend testing in the platform's preview to verify segment count before scheduling. Should remind that segment count matters at scale: 100K sends at 2 segments instead of 1 = $750-$4,000 in extra cost per campaign.",
+      "expected_output": "Should explain the cost trade-off: emojis force UCS-2 encoding, which cuts segment size from 160 GSM-7 chars to 70 chars. A 100-char message with one emoji becomes 2 segments billed instead of 1 \u2014 effectively doubling the per-send cost. Should advise: 1 emoji per message max, situationally relevant, only when the emoji genuinely earns its segment cost (high-energy promotional, brand-personality fit, etc.). Should warn against emoji clutter \u2014 it signals 'mass send' rather than personal. Should note that some accented characters (curly quotes, em dashes) also force UCS-2 \u2014 copy-pasting from Word/Google Docs is a common silent cause of doubled costs. Should recommend testing in the platform's preview to verify segment count before scheduling. Should remind that segment count matters at scale: 100K sends at 2 segments instead of 1 = $750-$4,000 in extra cost per campaign.",
       "assertions": [
         "Explains UCS-2 encoding cost",
         "Specifies 160 GSM-7 vs 70 UCS-2 segment sizes",

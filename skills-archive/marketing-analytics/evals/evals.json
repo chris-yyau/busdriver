@@ -1,10 +1,10 @@
 {
-  "skill_name": "analytics",
+  "skill_name": "marketing-analytics",
   "evals": [
     {
       "id": 1,
       "prompt": "Help me set up analytics tracking for our B2B SaaS product. We use GA4 and GTM. We need to track signups, feature usage, and upgrade events.",
-      "expected_output": "Should check for product-marketing.md first. Should apply the 'track for decisions' principle — ask what decisions the tracking will inform. Should use the event naming convention (object_action, lowercase with underscores). Should define essential events for SaaS: signup_completed, trial_started, feature_used, plan_upgraded, etc. Should provide GA4 implementation details with proper event parameters. Should include GTM data layer push examples. Should organize output as a tracking plan with event name, trigger, parameters, and purpose for each event.",
+      "expected_output": "Should check for product-marketing.md first. Should apply the 'track for decisions' principle \u2014 ask what decisions the tracking will inform. Should use the event naming convention (object_action, lowercase with underscores). Should define essential events for SaaS: signup_completed, trial_started, feature_used, plan_upgraded, etc. Should provide GA4 implementation details with proper event parameters. Should include GTM data layer push examples. Should organize output as a tracking plan with event name, trigger, parameters, and purpose for each event.",
       "assertions": [
         "Checks for product-marketing.md",
         "Applies 'track for decisions' principle",
@@ -32,7 +32,7 @@
     },
     {
       "id": 3,
-      "prompt": "our tracking seems broken — we're seeing duplicate events and our conversion numbers in GA4 don't match what our database shows. help?",
+      "prompt": "our tracking seems broken \u2014 we're seeing duplicate events and our conversion numbers in GA4 don't match what our database shows. help?",
       "expected_output": "Should trigger on casual phrasing. Should apply the debugging and validation framework. Should systematically check for common issues: duplicate GTM tags firing, missing event deduplication, incorrect trigger conditions, cross-domain tracking issues, consent mode filtering. Should provide specific debugging steps: use GA4 DebugView, GTM Preview mode, browser developer tools. Should address the GA4 vs database discrepancy (common causes: consent mode, ad blockers, client-side vs server-side tracking, session timeout differences).",
       "assertions": [
         "Triggers on casual phrasing",

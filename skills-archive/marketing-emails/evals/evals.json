@@ -1,10 +1,10 @@
 {
-  "skill_name": "emails",
+  "skill_name": "marketing-emails",
   "evals": [
     {
       "id": 1,
       "prompt": "Create a welcome email sequence for new users who sign up for our project management tool's free trial. The trial is 14 days. We want to get them to their aha moment (creating their first project and inviting a team member).",
-      "expected_output": "Should check for product-marketing.md first. Should create a welcome sequence (5-7 emails) following the core principles: one email one job, value before ask. Should map each email to a specific goal in the 14-day trial journey. Should include timing/delays between emails. Each email should follow the email copy structure: hook → context → value → CTA → sign-off. Should include subject lines following the subject line strategy. Should align sequence with the aha moment (first project + team invite). Output should follow the structured format with sequence overview and per-email specs.",
+      "expected_output": "Should check for product-marketing.md first. Should create a welcome sequence (5-7 emails) following the core principles: one email one job, value before ask. Should map each email to a specific goal in the 14-day trial journey. Should include timing/delays between emails. Each email should follow the email copy structure: hook \u2192 context \u2192 value \u2192 CTA \u2192 sign-off. Should include subject lines following the subject line strategy. Should align sequence with the aha moment (first project + team invite). Output should follow the structured format with sequence overview and per-email specs.",
       "assertions": [
         "Checks for product-marketing.md",
         "Creates 5-7 email welcome sequence",
@@ -21,7 +21,7 @@
     {
       "id": 2,
       "prompt": "We need a lead nurture sequence for people who download our 'State of DevOps 2024' report. Goal is to get them to book a demo of our CI/CD platform.",
-      "expected_output": "Should create a lead nurture sequence (6-8 emails). Should follow value before ask — first emails should provide related value, not immediately push for demo. Should map the sequence from awareness (report download) through consideration (related content, case studies) to decision (demo request). Should include timing between emails. Each email should have clear subject line, hook, single CTA. Should gradually increase commitment asks across the sequence.",
+      "expected_output": "Should create a lead nurture sequence (6-8 emails). Should follow value before ask \u2014 first emails should provide related value, not immediately push for demo. Should map the sequence from awareness (report download) through consideration (related content, case studies) to decision (demo request). Should include timing between emails. Each email should have clear subject line, hook, single CTA. Should gradually increase commitment asks across the sequence.",
       "assertions": [
         "Creates 6-8 email lead nurture sequence",
         "Follows value before ask principle",
@@ -66,7 +66,7 @@
     {
       "id": 5,
       "prompt": "What's the ideal timing for our onboarding email sequence? We send the first email immediately after signup, but we're not sure about the rest.",
-      "expected_output": "Should provide timing guidance for onboarding sequences. Should reference the timing and delays framework: immediate first email (welcome/confirmation), then suggest data-driven timing based on user behavior triggers vs fixed time delays. Should recommend behavior-triggered emails when possible (user completed action → next email) with time-based fallbacks. Should provide typical timing patterns for SaaS onboarding (day 0, day 1, day 3, day 5, day 7, etc.). Should note that optimal timing depends on product complexity and trial length.",
+      "expected_output": "Should provide timing guidance for onboarding sequences. Should reference the timing and delays framework: immediate first email (welcome/confirmation), then suggest data-driven timing based on user behavior triggers vs fixed time delays. Should recommend behavior-triggered emails when possible (user completed action \u2192 next email) with time-based fallbacks. Should provide typical timing patterns for SaaS onboarding (day 0, day 1, day 3, day 5, day 7, etc.). Should note that optimal timing depends on product complexity and trial length.",
       "assertions": [
         "Provides timing guidance for onboarding sequences",
         "Recommends immediate first email",

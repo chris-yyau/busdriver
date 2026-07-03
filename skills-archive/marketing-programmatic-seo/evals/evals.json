@@ -1,9 +1,9 @@
 {
-  "skill_name": "programmatic-seo",
+  "skill_name": "marketing-programmatic-seo",
   "evals": [
     {
       "id": 1,
-      "prompt": "We want to create programmatic SEO pages for our CRM. We're thinking of 'CRM for [industry]' pages — like 'CRM for Real Estate,' 'CRM for Healthcare,' etc. How should we approach this?",
+      "prompt": "We want to create programmatic SEO pages for our CRM. We're thinking of 'CRM for [industry]' pages \u2014 like 'CRM for Real Estate,' 'CRM for Healthcare,' etc. How should we approach this?",
       "expected_output": "Should check for product-marketing.md first. Should identify this as the Personas playbook (industry-specific pages). Should apply the core principles: unique value per page (not just swapping the industry name), proprietary data or insights per industry, clean URL structure. Should recommend the implementation framework: keyword research for each industry variation, data requirements (what industry-specific content makes each page unique), template design, internal linking strategy between industry pages and main pages, and indexation strategy. Should warn against thin content (just template + keyword swap).",
       "assertions": [
         "Checks for product-marketing.md",

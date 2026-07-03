@@ -1,5 +1,5 @@
 {
-  "skill_name": "copy-editing",
+  "skill_name": "marketing-copy-editing",
   "evals": [
     {
       "id": 1,
@@ -20,9 +20,9 @@
     {
       "id": 2,
       "prompt": "Quick edit on this CTA section: 'Ready to take your business to the next level? Our team of dedicated professionals is standing by to help you achieve your goals. Click here to learn more about how we can help you succeed.'",
-      "expected_output": "Should apply the quick-pass editing checks. Should identify: 'take your business to the next level' (cliché), 'team of dedicated professionals' (filler), 'standing by' (passive), 'click here' (weak CTA), 'learn more' (vague action), 'help you succeed' (generic). Should apply word-level, sentence-level, and paragraph-level checks. Should rewrite with specific value prop, active voice, and strong action-oriented CTA. Should be concise since this was requested as a 'quick edit.'",
+      "expected_output": "Should apply the quick-pass editing checks. Should identify: 'take your business to the next level' (clich\u00e9), 'team of dedicated professionals' (filler), 'standing by' (passive), 'click here' (weak CTA), 'learn more' (vague action), 'help you succeed' (generic). Should apply word-level, sentence-level, and paragraph-level checks. Should rewrite with specific value prop, active voice, and strong action-oriented CTA. Should be concise since this was requested as a 'quick edit.'",
       "assertions": [
-        "Identifies clichés and filler phrases",
+        "Identifies clich\u00e9s and filler phrases",
         "Flags 'click here' and 'learn more' as weak",
         "Applies word-level and sentence-level checks",
         "Rewrites with specific value and strong CTA",
@@ -62,7 +62,7 @@
     {
       "id": 5,
       "prompt": "I need you to apply the 'So What' and 'Zero Risk' sweeps to this pricing page copy: 'Our Pro plan includes unlimited projects, advanced reporting, priority support, and custom integrations. Starting at $99/month.'",
-      "expected_output": "Should apply specifically the So What and Zero Risk sweeps as requested. So What: for each feature, ask 'so what does this mean for the customer?' — unlimited projects (what does that enable?), advanced reporting (what decisions can they make?), priority support (what does that mean in practice? response time?), custom integrations (which ones? what workflow does it enable?). Zero Risk: identify missing trust signals — no guarantee, no trial mention, no social proof near pricing, no 'cancel anytime' assurance. Should provide rewritten copy addressing both sweeps.",
+      "expected_output": "Should apply specifically the So What and Zero Risk sweeps as requested. So What: for each feature, ask 'so what does this mean for the customer?' \u2014 unlimited projects (what does that enable?), advanced reporting (what decisions can they make?), priority support (what does that mean in practice? response time?), custom integrations (which ones? what workflow does it enable?). Zero Risk: identify missing trust signals \u2014 no guarantee, no trial mention, no social proof near pricing, no 'cancel anytime' assurance. Should provide rewritten copy addressing both sweeps.",
       "assertions": [
         "Applies So What sweep to each feature",
         "Translates features to customer benefits",

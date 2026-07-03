@@ -1,5 +1,5 @@
 {
-  "skill_name": "aso",
+  "skill_name": "marketing-aso",
   "evals": [
     {
       "id": 1,
@@ -36,7 +36,7 @@
     {
       "id": 3,
       "prompt": "Instagram's App Store listing has just 'Instagram' as the title and barely any keywords. Should they fix that?",
-      "expected_output": "Should classify Instagram as a Dominant-tier app and apply tier-adjusted scoring. Should explain that brand-only titles are valid for Dominant apps (score 8+ if brand IS the keyword) because users search by brand name, not generic keywords. Should NOT flag this as a missed opportunity. Should explain the key principle: 'Is this a mistake or a deliberate choice by a team that has data I don't?' Should note that other dimensions (screenshots, description, what's new) are also evaluated against tier — lifestyle/brand photography and brief release notes are acceptable for Dominant apps. Should contrast with what would be a problem for a Challenger app.",
+      "expected_output": "Should classify Instagram as a Dominant-tier app and apply tier-adjusted scoring. Should explain that brand-only titles are valid for Dominant apps (score 8+ if brand IS the keyword) because users search by brand name, not generic keywords. Should NOT flag this as a missed opportunity. Should explain the key principle: 'Is this a mistake or a deliberate choice by a team that has data I don't?' Should note that other dimensions (screenshots, description, what's new) are also evaluated against tier \u2014 lifestyle/brand photography and brief release notes are acceptable for Dominant apps. Should contrast with what would be a problem for a Challenger app.",
       "assertions": [
         "Classifies Instagram as Dominant tier",
         "Explains brand-only titles are valid for Dominant",
@@ -49,7 +49,7 @@
     {
       "id": 4,
       "prompt": "Compare our app https://apps.apple.com/us/app/ourapp/id111 against these two competitors: https://apps.apple.com/us/app/competitor1/id222 and https://apps.apple.com/us/app/competitor2/id333",
-      "expected_output": "Should run Phase 3 competitor comparison. Should fetch and score all three apps with the same 6-dimension framework. Should build a side-by-side comparison table highlighting where the user's app is weaker or stronger across each dimension. Should identify keyword gaps — terms competitors target that the user's app doesn't. Should produce a prioritized list of competitor-informed changes. Should call out platform-specific considerations consistently across all three apps.",
+      "expected_output": "Should run Phase 3 competitor comparison. Should fetch and score all three apps with the same 6-dimension framework. Should build a side-by-side comparison table highlighting where the user's app is weaker or stronger across each dimension. Should identify keyword gaps \u2014 terms competitors target that the user's app doesn't. Should produce a prioritized list of competitor-informed changes. Should call out platform-specific considerations consistently across all three apps.",
       "assertions": [
         "Scores all 3 apps with same framework",
         "Builds comparison table",
@@ -62,7 +62,7 @@
     {
       "id": 5,
       "prompt": "We only have 3 screenshots and no preview video. Does this really matter that much?",
-      "expected_output": "Should explain that screenshot count and video presence are heavily weighted in the Visual Assets dimension (25% of total score). Should cite specific data: Apple allows up to 10 screenshots per device with the first 3 visible in search, and 90% of users never scroll past the 3rd. Should note Apple screenshot captions are indexed for search since June 2025. Should cite the conversion benchmark: app preview video delivers +20-40% conversion lift on iOS (note Google Play video has lower ROI — only ~6% tap play). Should recommend adding 5-8 screenshots minimum with caption text, and a 15-30s preview video. Should flag fewer than 5 screenshots as an always-flag issue across all tiers.",
+      "expected_output": "Should explain that screenshot count and video presence are heavily weighted in the Visual Assets dimension (25% of total score). Should cite specific data: Apple allows up to 10 screenshots per device with the first 3 visible in search, and 90% of users never scroll past the 3rd. Should note Apple screenshot captions are indexed for search since June 2025. Should cite the conversion benchmark: app preview video delivers +20-40% conversion lift on iOS (note Google Play video has lower ROI \u2014 only ~6% tap play). Should recommend adding 5-8 screenshots minimum with caption text, and a 15-30s preview video. Should flag fewer than 5 screenshots as an always-flag issue across all tiers.",
       "assertions": [
         "Notes Visual Assets is 25% of score",
         "Cites first 3 screenshots are most important",
@@ -77,7 +77,7 @@
     {
       "id": 6,
       "prompt": "Should I run a Custom Product Page experiment on iOS for our paid search campaigns?",
-      "expected_output": "Should reference Apple-specific facts: Custom Product Pages (CPP) — up to 70 — appear in organic search since July 2025 with +5.9% average conversion lift. Should explain CPPs let you test variants of screenshots, video, and promotional text against specific traffic sources (e.g., paid search keywords). Should recommend matching CPP variants to the keyword intent for the campaign. Should cross-reference the ab-testing skill for proper experiment design and the ads skill for the campaign side. Should note this is an iOS-only feature (Google Play has Store Listing Experiments and Custom Store Listings as equivalents).",
+      "expected_output": "Should reference Apple-specific facts: Custom Product Pages (CPP) \u2014 up to 70 \u2014 appear in organic search since July 2025 with +5.9% average conversion lift. Should explain CPPs let you test variants of screenshots, video, and promotional text against specific traffic sources (e.g., paid search keywords). Should recommend matching CPP variants to the keyword intent for the campaign. Should cross-reference the ab-testing skill for proper experiment design and the ads skill for the campaign side. Should note this is an iOS-only feature (Google Play has Store Listing Experiments and Custom Store Listings as equivalents).",
       "assertions": [
         "Identifies Custom Product Pages as iOS-specific",
         "Cites +5.9% conversion lift benchmark",

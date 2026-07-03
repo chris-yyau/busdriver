@@ -1,10 +1,10 @@
 {
-  "skill_name": "churn-prevention",
+  "skill_name": "marketing-churn-prevention",
   "evals": [
     {
       "id": 1,
       "prompt": "Our SaaS product has a 7% monthly churn rate and we need to bring it down. We're a $49/month project management tool with about 2,000 paying customers. Can you help us design a churn prevention strategy?",
-      "expected_output": "Should check for product-marketing.md first. Should address both voluntary and involuntary churn. Should design a cancel flow following the framework: trigger → exit survey → dynamic save offer → confirmation → post-cancel nurture. Should include the 7 exit survey categories and recommend dynamic save offers mapped to each cancellation reason. Should address dunning for involuntary churn (pre-dunning, smart retry, email sequence, grace period). Should recommend a health score model. Should provide prioritized implementation plan.",
+      "expected_output": "Should check for product-marketing.md first. Should address both voluntary and involuntary churn. Should design a cancel flow following the framework: trigger \u2192 exit survey \u2192 dynamic save offer \u2192 confirmation \u2192 post-cancel nurture. Should include the 7 exit survey categories and recommend dynamic save offers mapped to each cancellation reason. Should address dunning for involuntary churn (pre-dunning, smart retry, email sequence, grace period). Should recommend a health score model. Should provide prioritized implementation plan.",
       "assertions": [
         "Checks for product-marketing.md",
         "Addresses both voluntary and involuntary churn",
@@ -36,7 +36,7 @@
     {
       "id": 3,
       "prompt": "what should we show users when they click the cancel button? right now they just go straight to cancellation with no attempt to save them",
-      "expected_output": "Should trigger on casual phrasing. Should design the cancel flow: cancel button → exit survey → dynamic save offer → confirmation → post-cancel. Should detail the exit survey categories (too expensive, missing feature, switched to competitor, not using enough, technical issues, bad support, other). Should provide dynamic save offers matched to each reason (e.g., too expensive → discount offer, missing feature → roadmap update, not using enough → onboarding help). Should include copy recommendations for each screen. Should warn against dark patterns (making it impossible to cancel).",
+      "expected_output": "Should trigger on casual phrasing. Should design the cancel flow: cancel button \u2192 exit survey \u2192 dynamic save offer \u2192 confirmation \u2192 post-cancel. Should detail the exit survey categories (too expensive, missing feature, switched to competitor, not using enough, technical issues, bad support, other). Should provide dynamic save offers matched to each reason (e.g., too expensive \u2192 discount offer, missing feature \u2192 roadmap update, not using enough \u2192 onboarding help). Should include copy recommendations for each screen. Should warn against dark patterns (making it impossible to cancel).",
       "assertions": [
         "Triggers on casual phrasing",
         "Designs multi-step cancel flow",
@@ -66,7 +66,7 @@
     {
       "id": 5,
       "prompt": "Our exit survey shows that 40% of cancellations say 'too expensive' as the reason. What save offers should we try?",
-      "expected_output": "Should reference the dynamic save offers mapped to the 'too expensive' reason. Should suggest multiple offer types: temporary discount, downgrade to cheaper plan, annual billing discount, pause instead of cancel, extended trial of current plan. Should recommend testing different offers to find what works best. Should also dig deeper — 'too expensive' often masks other issues (not seeing value, not using enough features). Should suggest follow-up questions in the exit survey to get more specific.",
+      "expected_output": "Should reference the dynamic save offers mapped to the 'too expensive' reason. Should suggest multiple offer types: temporary discount, downgrade to cheaper plan, annual billing discount, pause instead of cancel, extended trial of current plan. Should recommend testing different offers to find what works best. Should also dig deeper \u2014 'too expensive' often masks other issues (not seeing value, not using enough features). Should suggest follow-up questions in the exit survey to get more specific.",
       "assertions": [
         "References save offers for 'too expensive' reason",
         "Suggests multiple offer types (discount, downgrade, pause)",

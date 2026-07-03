@@ -1,5 +1,5 @@
 {
-  "skill_name": "schema",
+  "skill_name": "marketing-schema",
   "evals": [
     {
       "id": 1,
@@ -61,7 +61,7 @@
     {
       "id": 5,
       "prompt": "We added schema markup to our site but it's not showing rich results in Google. Can you help debug?",
-      "expected_output": "Should provide a systematic debugging approach: first validate with Google Rich Results Test and Schema.org validator (syntax errors), then check for common issues (incorrect nesting, missing required properties, JSON-LD placement errors). Should explain that valid schema doesn't guarantee rich results — Google chooses when to show them. Should recommend checking Search Console for structured data reports and errors. Should address common debugging scenarios: schema not detected, warnings vs errors, eligible vs displayed.",
+      "expected_output": "Should provide a systematic debugging approach: first validate with Google Rich Results Test and Schema.org validator (syntax errors), then check for common issues (incorrect nesting, missing required properties, JSON-LD placement errors). Should explain that valid schema doesn't guarantee rich results \u2014 Google chooses when to show them. Should recommend checking Search Console for structured data reports and errors. Should address common debugging scenarios: schema not detected, warnings vs errors, eligible vs displayed.",
       "assertions": [
         "Recommends validation tools for debugging",
         "Checks for common schema errors",

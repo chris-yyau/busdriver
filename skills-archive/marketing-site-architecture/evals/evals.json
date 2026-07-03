@@ -1,5 +1,5 @@
 {
-  "skill_name": "site-architecture",
+  "skill_name": "marketing-site-architecture",
   "evals": [
     {
       "id": 1,
@@ -48,7 +48,7 @@
     },
     {
       "id": 4,
-      "prompt": "We're adding programmatic SEO pages — 200 integration pages and 50 comparison pages. How should these fit into our site architecture?",
+      "prompt": "We're adding programmatic SEO pages \u2014 200 integration pages and 50 comparison pages. How should these fit into our site architecture?",
       "expected_output": "Should address how to integrate scaled content into the site architecture. Should recommend hub pages for both sections (/integrations and /compare or /vs). Should apply the hub-and-spoke internal linking model. Should address navigation: these shouldn't clutter the main nav, but should be accessible via hub pages. Should provide URL structure for both sections. Should address crawl budget considerations for 250 new pages. Should cross-reference programmatic-seo for the content strategy.",
       "assertions": [
         "Recommends hub pages for each section",
@@ -76,7 +76,7 @@
     {
       "id": 6,
       "prompt": "Our XML sitemap hasn't been updated in 6 months and we have crawl errors in Search Console. Can you fix our technical SEO?",
-      "expected_output": "Should recognize this is a technical SEO audit task, not a site architecture design task. Should defer to or cross-reference the seo-audit skill, which handles XML sitemaps, crawl errors, and technical SEO issues. Site-architecture focuses on page hierarchy, navigation, and URL structure design — not technical SEO troubleshooting.",
+      "expected_output": "Should recognize this is a technical SEO audit task, not a site architecture design task. Should defer to or cross-reference the seo-audit skill, which handles XML sitemaps, crawl errors, and technical SEO issues. Site-architecture focuses on page hierarchy, navigation, and URL structure design \u2014 not technical SEO troubleshooting.",
       "assertions": [
         "Recognizes this as technical SEO, not site architecture",
         "References or defers to seo-audit skill",

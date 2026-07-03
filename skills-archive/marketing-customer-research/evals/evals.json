@@ -1,5 +1,5 @@
 {
-  "skill_name": "customer-research",
+  "skill_name": "marketing-customer-research",
   "evals": [
     {
       "id": 1,
@@ -59,13 +59,13 @@
     {
       "id": 5,
       "prompt": "I have 6 months of customer support tickets. What insights can I pull from them?",
-      "expected_output": "Should check for product-marketing.md first. Should recommend categorizing tickets before analyzing (bugs vs. confusion vs. feature requests vs. expectation mismatches). Should warn against treating all tickets as equal signal. Should suggest extracting recurring language, patterns, and 'I wish it could…' phrases. Should ask about the goal — product improvement, messaging, reducing support load, or something else.",
+      "expected_output": "Should check for product-marketing.md first. Should recommend categorizing tickets before analyzing (bugs vs. confusion vs. feature requests vs. expectation mismatches). Should warn against treating all tickets as equal signal. Should suggest extracting recurring language, patterns, and 'I wish it could\u2026' phrases. Should ask about the goal \u2014 product improvement, messaging, reducing support load, or something else.",
       "assertions": [
         "Checks for product-marketing.md",
         "Recommends categorizing tickets before analyzing (bugs vs confusion vs feature requests)",
         "Warns against treating all tickets as equal signal",
         "Mentions extracting recurring language and patterns",
-        "Asks about the goal — product improvement, messaging, or something else"
+        "Asks about the goal \u2014 product improvement, messaging, or something else"
       ],
       "files": []
     },
@@ -98,7 +98,7 @@
     {
       "id": 8,
       "prompt": "I want to understand why customers churn. I have exit survey results.",
-      "expected_output": "Should check for product-marketing.md first. Should recommend segmenting churn reasons before analyzing — do not average across different causes. Should suggest pairing open-ended responses with quantitative data. Should ask if win/loss interview data or support tickets are also available. Should apply confidence labels (high/med/low) based on sample size and source consistency.",
+      "expected_output": "Should check for product-marketing.md first. Should recommend segmenting churn reasons before analyzing \u2014 do not average across different causes. Should suggest pairing open-ended responses with quantitative data. Should ask if win/loss interview data or support tickets are also available. Should apply confidence labels (high/med/low) based on sample size and source consistency.",
       "assertions": [
         "Checks for product-marketing.md",
         "Recommends segmenting churn reasons before analyzing",

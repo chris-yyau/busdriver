@@ -1,5 +1,5 @@
 {
-  "skill_name": "social",
+  "skill_name": "marketing-social",
   "evals": [
     {
       "id": 1,
@@ -35,11 +35,11 @@
     {
       "id": 3,
       "prompt": "i have a blog post that did really well. how do i turn it into social media content for multiple platforms?",
-      "expected_output": "Should trigger on casual phrasing. Should apply the content repurposing system. Should use the Blog Post → Social Content mapping: LinkedIn (key insight post + carousel of main points), Twitter/X (thread of key takeaways), Instagram (carousel with visuals + Reel summarizing the post). Should follow the repurposing workflow: create pillar content → extract key insights (3-5) → adapt to each platform → schedule across the week. Should provide specific format recommendations per platform.",
+      "expected_output": "Should trigger on casual phrasing. Should apply the content repurposing system. Should use the Blog Post \u2192 Social Content mapping: LinkedIn (key insight post + carousel of main points), Twitter/X (thread of key takeaways), Instagram (carousel with visuals + Reel summarizing the post). Should follow the repurposing workflow: create pillar content \u2192 extract key insights (3-5) \u2192 adapt to each platform \u2192 schedule across the week. Should provide specific format recommendations per platform.",
       "assertions": [
         "Triggers on casual phrasing",
         "Applies content repurposing system",
-        "Uses Blog Post → Social Content mapping",
+        "Uses Blog Post \u2192 Social Content mapping",
         "Provides format for LinkedIn, Twitter/X, and Instagram",
         "Follows the repurposing workflow",
         "Extracts 3-5 key insights to repurpose",

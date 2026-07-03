@@ -3031,7 +3031,7 @@
     {
       "path": "skills-archive/marketing-ab-testing/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/ab-testing/evals/evals.json"
     },
     {
@@ -3055,7 +3055,7 @@
     {
       "path": "skills-archive/marketing-ad-creative/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/ad-creative/evals/evals.json"
     },
     {
@@ -3079,7 +3079,7 @@
     {
       "path": "skills-archive/marketing-ads/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/ads/evals/evals.json"
     },
     {
@@ -3115,7 +3115,7 @@
     {
       "path": "skills-archive/marketing-ai-seo/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/ai-seo/evals/evals.json"
     },
     {
@@ -3151,7 +3151,7 @@
     {
       "path": "skills-archive/marketing-analytics/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/analytics/evals/evals.json"
     },
     {
@@ -3181,7 +3181,7 @@
     {
       "path": "skills-archive/marketing-aso/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/aso/evals/evals.json"
     },
     {
@@ -3223,7 +3223,7 @@
     {
       "path": "skills-archive/marketing-churn-prevention/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/churn-prevention/evals/evals.json"
     },
     {
@@ -3247,7 +3247,7 @@
     {
       "path": "skills-archive/marketing-co-marketing/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/co-marketing/evals/evals.json"
     },
     {
@@ -3259,7 +3259,7 @@
     {
       "path": "skills-archive/marketing-cold-email/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/cold-email/evals/evals.json"
     },
     {
@@ -3301,7 +3301,7 @@
     {
       "path": "skills-archive/marketing-community-marketing/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/community-marketing/evals/evals.json"
     },
     {
@@ -3313,7 +3313,7 @@
     {
       "path": "skills-archive/marketing-competitor-profiling/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/competitor-profiling/evals/evals.json"
     },
     {
@@ -3337,7 +3337,7 @@
     {
       "path": "skills-archive/marketing-competitors/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/competitors/evals/evals.json"
     },
     {
@@ -3361,7 +3361,7 @@
     {
       "path": "skills-archive/marketing-content-strategy/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/content-strategy/evals/evals.json"
     },
     {
@@ -3379,7 +3379,7 @@
     {
       "path": "skills-archive/marketing-copy-editing/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/copy-editing/evals/evals.json"
     },
     {
@@ -3409,7 +3409,7 @@
     {
       "path": "skills-archive/marketing-copywriting/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/copywriting/evals/evals.json"
     },
     {
@@ -3433,7 +3433,7 @@
     {
       "path": "skills-archive/marketing-cro/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/cro/evals/evals.json"
     },
     {
@@ -3457,7 +3457,7 @@
     {
       "path": "skills-archive/marketing-customer-research/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/customer-research/evals/evals.json"
     },
     {
@@ -3475,7 +3475,7 @@
     {
       "path": "skills-archive/marketing-directory-submissions/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/directory-submissions/evals/evals.json"
     },
     {
@@ -3505,7 +3505,7 @@
     {
       "path": "skills-archive/marketing-emails/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/emails/evals/evals.json"
     },
     {
@@ -3535,7 +3535,7 @@
     {
       "path": "skills-archive/marketing-free-tools/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/free-tools/evals/evals.json"
     },
     {
@@ -3571,7 +3571,7 @@
     {
       "path": "skills-archive/marketing-image/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/image/evals/evals.json"
     },
     {
@@ -3589,7 +3589,7 @@
     {
       "path": "skills-archive/marketing-launch/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/launch/evals/evals.json"
     },
     {
@@ -3601,7 +3601,7 @@
     {
       "path": "skills-archive/marketing-lead-magnets/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/lead-magnets/evals/evals.json"
     },
     {
@@ -3673,7 +3673,7 @@
     {
       "path": "skills-archive/marketing-onboarding/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/onboarding/evals/evals.json"
     },
     {
@@ -3691,7 +3691,7 @@
     {
       "path": "skills-archive/marketing-paywalls/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/paywalls/evals/evals.json"
     },
     {
@@ -3799,7 +3799,7 @@
     {
       "path": "skills-archive/marketing-popups/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/popups/evals/evals.json"
     },
     {
@@ -3811,7 +3811,7 @@
     {
       "path": "skills-archive/marketing-pricing/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/pricing/evals/evals.json"
     },
     {
@@ -3835,7 +3835,7 @@
     {
       "path": "skills-archive/marketing-product-marketing/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/product-marketing/evals/evals.json"
     },
     {
@@ -3847,7 +3847,7 @@
     {
       "path": "skills-archive/marketing-programmatic-seo/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/programmatic-seo/evals/evals.json"
     },
     {
@@ -3865,7 +3865,7 @@
     {
       "path": "skills-archive/marketing-prospecting/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/prospecting/evals/evals.json"
     },
     {
@@ -3949,7 +3949,7 @@
     {
       "path": "skills-archive/marketing-referrals/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/referrals/evals/evals.json"
     },
     {
@@ -3973,7 +3973,7 @@
     {
       "path": "skills-archive/marketing-revops/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/revops/evals/evals.json"
     },
     {
@@ -4009,7 +4009,7 @@
     {
       "path": "skills-archive/marketing-sales-enablement/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/sales-enablement/evals/evals.json"
     },
     {
@@ -4045,7 +4045,7 @@
     {
       "path": "skills-archive/marketing-schema/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/schema/evals/evals.json"
     },
     {
@@ -4063,7 +4063,7 @@
     {
       "path": "skills-archive/marketing-seo-audit/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/seo-audit/evals/evals.json"
     },
     {
@@ -4087,7 +4087,7 @@
     {
       "path": "skills-archive/marketing-signup/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/signup/evals/evals.json"
     },
     {
@@ -4099,7 +4099,7 @@
     {
       "path": "skills-archive/marketing-site-architecture/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/site-architecture/evals/evals.json"
     },
     {
@@ -4129,7 +4129,7 @@
     {
       "path": "skills-archive/marketing-sms/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/sms/evals/evals.json"
     },
     {
@@ -4159,7 +4159,7 @@
     {
       "path": "skills-archive/marketing-social/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/social/evals/evals.json"
     },
     {
@@ -4213,7 +4213,7 @@
     {
       "path": "skills-archive/marketing-video/evals/evals.json",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/video/evals/evals.json"
     },
     {

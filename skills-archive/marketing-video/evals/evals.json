@@ -1,10 +1,10 @@
 {
-  "skill_name": "video",
+  "skill_name": "marketing-video",
   "evals": [
     {
       "id": 1,
       "prompt": "We need a 2-minute product demo video for our SaaS homepage. What's the fastest way to produce it?",
-      "expected_output": "Should check for product-marketing.md first. Should walk through the Product Demo Video workflow: script the key features and value props (cross-reference copywriting skill), screen record the product flow, programmatic overlay with Hyperframes or Remotion for titles/callouts/transitions, optional AI B-roll with Veo/Runway for establishing shots, voiceover via recording or AI avatar (HeyGen) for narration, export at platform-appropriate specs (16:9 for homepage). Should recommend Hyperframes for agent-friendliness (plain HTML, no React DSL). Should remind: don't use AI for product UI screens (models hallucinate UI) — use real screen recording. Should mention captions are essential (85% of social video watched without sound — applies to homepage too).",
+      "expected_output": "Should check for product-marketing.md first. Should walk through the Product Demo Video workflow: script the key features and value props (cross-reference copywriting skill), screen record the product flow, programmatic overlay with Hyperframes or Remotion for titles/callouts/transitions, optional AI B-roll with Veo/Runway for establishing shots, voiceover via recording or AI avatar (HeyGen) for narration, export at platform-appropriate specs (16:9 for homepage). Should recommend Hyperframes for agent-friendliness (plain HTML, no React DSL). Should remind: don't use AI for product UI screens (models hallucinate UI) \u2014 use real screen recording. Should mention captions are essential (85% of social video watched without sound \u2014 applies to homepage too).",
       "assertions": [
         "Checks for product-marketing.md",
         "Walks through Product Demo workflow steps",
@@ -32,7 +32,7 @@
     {
       "id": 3,
       "prompt": "I want to generate a 10-second clip of a person typing on a laptop in a coffee shop for our landing page. Which AI tool?",
-      "expected_output": "Should apply the AI Video Generation model comparison. Should recommend Veo 3 for highest quality with synced audio, Runway Gen-4 for motion control and temporal consistency (~10 sec/gen sweet spot), or Kling 3.0 for lower-cost volume production. Should give a structured video prompt example following Subject + Action + Camera + Style + Mood pattern: 'A close-up shot of hands typing on a laptop keyboard in a cozy coffee shop, shallow depth of field, warm afternoon lighting through a window, camera holds steady, cinematic color grading, 4K.' Should warn about common mistakes: too vague, ignoring camera movement, forgetting style, requesting readable text. Should mention Sora has had limited availability — check current status.",
+      "expected_output": "Should apply the AI Video Generation model comparison. Should recommend Veo 3 for highest quality with synced audio, Runway Gen-4 for motion control and temporal consistency (~10 sec/gen sweet spot), or Kling 3.0 for lower-cost volume production. Should give a structured video prompt example following Subject + Action + Camera + Style + Mood pattern: 'A close-up shot of hands typing on a laptop keyboard in a cozy coffee shop, shallow depth of field, warm afternoon lighting through a window, camera holds steady, cinematic color grading, 4K.' Should warn about common mistakes: too vague, ignoring camera movement, forgetting style, requesting readable text. Should mention Sora has had limited availability \u2014 check current status.",
       "assertions": [
         "Compares Veo, Runway, and Kling",
         "Provides structured video prompt example",
@@ -45,7 +45,7 @@
     {
       "id": 4,
       "prompt": "We just did a 60-minute webinar. How do we get short clips out of it for social?",
-      "expected_output": "Should apply the Repurposing Workflow: long-form content → Descript (clean up, remove filler, polish) → Opus Clip (auto-extract 5-10 best moments, scores virality potential) → CapCut (add captions, effects, platform styling) → distribute to TikTok, Reels, Shorts, LinkedIn. Should explain when to use each tool: Descript for transcript-based editing, Opus Clip for finding the best moments at scale, CapCut for platform-native polish, Captions.ai for auto-captions and eye-contact correction if needed. Should mention 85% of social video is watched without sound — captions are essential. Should mention aspect ratio matters: 9:16 for TikTok/Reels/Shorts, 1:1 or 9:16 for LinkedIn. Should recommend hooking in the first 3 seconds — cross-reference social skill.",
+      "expected_output": "Should apply the Repurposing Workflow: long-form content \u2192 Descript (clean up, remove filler, polish) \u2192 Opus Clip (auto-extract 5-10 best moments, scores virality potential) \u2192 CapCut (add captions, effects, platform styling) \u2192 distribute to TikTok, Reels, Shorts, LinkedIn. Should explain when to use each tool: Descript for transcript-based editing, Opus Clip for finding the best moments at scale, CapCut for platform-native polish, Captions.ai for auto-captions and eye-contact correction if needed. Should mention 85% of social video is watched without sound \u2014 captions are essential. Should mention aspect ratio matters: 9:16 for TikTok/Reels/Shorts, 1:1 or 9:16 for LinkedIn. Should recommend hooking in the first 3 seconds \u2014 cross-reference social skill.",
       "assertions": [
         "Applies repurposing workflow",
         "Names Descript, Opus Clip, CapCut in sequence",
@@ -59,7 +59,7 @@
     {
       "id": 5,
       "prompt": "We need to generate 50 personalized intro videos for sales outreach. Each one mentions a different company name and pain point.",
-      "expected_output": "Should recommend an agent-native pipeline combining HeyGen MCP (or API) for the avatar narration + Hyperframes for any visual overlays. Should explain: prepare a master script template with variables, run a loop generating 50 HeyGen videos each with a personalized script, optional programmatic overlays via Hyperframes for company logo or visual context. Should note HeyGen is well-suited to personalized outreach at scale and has an MCP server. Should warn about quality tradeoffs at volume and recommend testing the first 5 manually before generating all 50. Should mention reply tracking to measure ROI vs cold text emails — these are expensive to produce so should outperform email significantly to justify the effort. Should mention captions for the videos.",
+      "expected_output": "Should recommend an agent-native pipeline combining HeyGen MCP (or API) for the avatar narration + Hyperframes for any visual overlays. Should explain: prepare a master script template with variables, run a loop generating 50 HeyGen videos each with a personalized script, optional programmatic overlays via Hyperframes for company logo or visual context. Should note HeyGen is well-suited to personalized outreach at scale and has an MCP server. Should warn about quality tradeoffs at volume and recommend testing the first 5 manually before generating all 50. Should mention reply tracking to measure ROI vs cold text emails \u2014 these are expensive to produce so should outperform email significantly to justify the effort. Should mention captions for the videos.",
       "assertions": [
         "Recommends HeyGen + Hyperframes pipeline",
         "Names HeyGen MCP server",
@@ -73,7 +73,7 @@
     {
       "id": 6,
       "prompt": "Should I use Hyperframes or Remotion for programmatic video?",
-      "expected_output": "Should compare the two based on the When to Pick Which table. Should recommend Hyperframes if: agent-driven (plain HTML/CSS, no React DSL — AI models generate better HTML than React components), minimal learning curve, basic animation needs, local rendering is fine, want Apache 2.0 license. Should recommend Remotion if: already a React shop, need complex animations (Spring, interpolate), need large-scale batch rendering via Lambda for AWS scale, can handle the React + Remotion API learning curve, comfortable with the company license for commercial use. Should note Hyperframes is from HeyGen and LLM-native by design. Should ask about the user's tech stack and animation complexity to recommend a final choice.",
+      "expected_output": "Should compare the two based on the When to Pick Which table. Should recommend Hyperframes if: agent-driven (plain HTML/CSS, no React DSL \u2014 AI models generate better HTML than React components), minimal learning curve, basic animation needs, local rendering is fine, want Apache 2.0 license. Should recommend Remotion if: already a React shop, need complex animations (Spring, interpolate), need large-scale batch rendering via Lambda for AWS scale, can handle the React + Remotion API learning curve, comfortable with the company license for commercial use. Should note Hyperframes is from HeyGen and LLM-native by design. Should ask about the user's tech stack and animation complexity to recommend a final choice.",
       "assertions": [
         "Compares the two with the When to Pick Which table",
         "Notes Hyperframes uses plain HTML/CSS",

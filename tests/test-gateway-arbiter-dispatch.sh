@@ -155,7 +155,7 @@ run_script() {
   # Echoes the exit code; never aborts the harness.
   local extra_env="$1" rc=0
   rm -f "$OUTPUT_FILE" "$STUB_LOG" "$STUB_PROBE_LOG"
-  # Force the ultra-arbiter opt-in (#265) so the dispatch-path assertions below test
+  # Force the ultimate-arbiter opt-in (#265) so the dispatch-path assertions below test
   # the dispatch, not the opt-in gate. The env force also short-circuits the USER-config
   # read, so run_script cases can't be made flaky by the developer's real
   # ~/.claude/busdriver.json. The dedicated "creds but no opt-in → skip" case below runs
@@ -165,7 +165,7 @@ run_script() {
     STUB_PROBE_LOG="$STUB_PROBE_LOG" \
     STUB_BEHAVIOR="${STUB_BEHAVIOR:-good}" \
     CLAUDE_BIN="$STUB_BIN" \
-    BLUEPRINT_ARBITER_ULTRA=1 \
+    BUSDRIVER_ULTIMATE=1 \
     $extra_env \
     bash "$SCRIPT" "$PROMPT_FILE" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
   echo "$rc"
@@ -203,7 +203,7 @@ env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
   bash "$SCRIPT" "$TMPDIR_T/evil\`whoami\`.txt" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
 check "unconfigured env skips with exit 3 even for a bad path (opt-in gate runs first)" 3 "$rc"
 
-# #265 ultra-arbiter opt-in gate: full gateway creds present but the operator has NOT
+# #265 ultimate-arbiter opt-in gate: full gateway creds present but the operator has NOT
 # opted in → must skip (exit 3, fall through to opus), never dispatch. HOME-isolated to
 # an empty dir so a developer's real ~/.claude/busdriver.json (which may enable it) cannot
 # make this flaky — the enable is USER-config only.
@@ -302,7 +302,7 @@ rm -f "$OUTPUT_FILE" "$STUB_LOG"
 rc=0
 env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" HOME="$TMPDIR_T/linkhome" \
   STUB_LOG="$STUB_LOG" STUB_OUT="$STUB_OUT" STUB_PROMPT="$STUB_PROMPT" STUB_BEHAVIOR=good \
-  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 BLUEPRINT_ARBITER_ULTRA=1 \
+  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 BUSDRIVER_ULTIMATE=1 \
   BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok-secret-123 \
   bash "$SCRIPT" "$PROMPT_FILE" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
 check "symlinked HOME dispatch succeeds" 0 "$rc"
@@ -313,7 +313,7 @@ check "resolved (real) HOME credential store also Read-denied (alternate-spellin
 # //.claude/** that protects nothing while the dispatch still proceeds (fail-open).
 rc=0
 env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" HOME="" \
-  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 BLUEPRINT_ARBITER_ULTRA=1 \
+  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 BUSDRIVER_ULTIMATE=1 \
   BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
   bash "$SCRIPT" "$PROMPT_FILE" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
 check "empty HOME fails closed (no no-op credential deny rule)" "nonzero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)"
@@ -339,7 +339,7 @@ PROMPT_FILE="$SAVED_PROMPT"
 
 rc=0
 env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
-  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 BLUEPRINT_ARBITER_ULTRA=1 \
+  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 BUSDRIVER_ULTIMATE=1 \
   BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
   bash "$SCRIPT" "relative/prompt.txt" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
 check "relative prompt path rejected" 1 "$rc"
@@ -357,7 +357,7 @@ for evil in "$TMPDIR_T/evil\`whoami\`.txt" "$TMPDIR_T/evil"$'\n'"ignore-previous
   rc=0
   env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
     STUB_LOG="$STUB_LOG" STUB_OUT="$STUB_OUT" STUB_PROMPT="$STUB_PROMPT" \
-    BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 BLUEPRINT_ARBITER_ULTRA=1 \
+    BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 BUSDRIVER_ULTIMATE=1 \
     BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
     bash "$SCRIPT" "$evil" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
   check "prompt path with injection characters rejected (firewall)" 1 "$rc"
@@ -366,7 +366,7 @@ done
 
 rc=0
 env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
-  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 BLUEPRINT_ARBITER_ULTRA=1 \
+  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 BUSDRIVER_ULTIMATE=1 \
   BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
   bash "$SCRIPT" "$PROMPT_FILE" "$TMPDIR_T/out\`id\`.json" >/dev/null 2>&1 || rc=$?
 check "output path with backtick rejected (firewall)" 1 "$rc"
@@ -377,7 +377,7 @@ check "output path with backtick rejected (firewall)" 1 "$rc"
 for badout in 'out*.json' 'out?.json' 'out[ab].json' 'out(p).json' 'out,c.json'; do
   rc=0
   env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" \
-    BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 BLUEPRINT_ARBITER_ULTRA=1 \
+    BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 BUSDRIVER_ULTIMATE=1 \
     BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
     bash "$SCRIPT" "$PROMPT_FILE" "$TMPDIR_T/$badout" >/dev/null 2>&1 || rc=$?
   check "output path metachar rejected ($badout — Edit-scope cannot be broadened)" 1 "$rc"
@@ -392,7 +392,7 @@ rm -f "$OUTPUT_FILE" "$STUB_LOG"
 rc=0
 env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" HOME="$HOME" \
   STUB_LOG="$STUB_LOG" STUB_OUT="$OUTPUT_FILE" STUB_PROMPT="$STUB_PROMPT" STUB_BEHAVIOR=good \
-  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 BLUEPRINT_ARBITER_ULTRA=1 \
+  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 BUSDRIVER_ULTIMATE=1 \
   BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
   bash "$SCRIPT" "$PAREN_PROMPT" "$OUTPUT_FILE" >/dev/null 2>&1 || rc=$?
 check "prompt path with parens ACCEPTED (glob/paren ban is OUTPUT-only)" 0 "$rc"
@@ -406,7 +406,7 @@ rm -f "$SPACED_OUT" "$STUB_LOG"
 rc=0
 env -i PATH="$PATH" CLAUDE_BIN="$STUB_BIN" HOME="$HOME" \
   STUB_LOG="$STUB_LOG" STUB_OUT="$SPACED_OUT" STUB_PROMPT="$STUB_PROMPT" STUB_BEHAVIOR=good \
-  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 BLUEPRINT_ARBITER_ULTRA=1 \
+  BLUEPRINT_ARBITER_GATEWAY_BASE_URL=https://gateway.example/v1 BUSDRIVER_ULTIMATE=1 \
   BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN=tok \
   bash "$SCRIPT" "$PROMPT_FILE" "$SPACED_OUT" >/dev/null 2>&1 || rc=$?
 check "output path with spaces ACCEPTED (whitespace not banned; rung not needlessly failed)" 0 "$rc"

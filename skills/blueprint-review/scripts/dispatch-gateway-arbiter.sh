@@ -1,9 +1,9 @@
 #!/bin/bash
-# Ultra-arbiter escalation dispatch (SKILL.md "Ultra-Arbiter Escalation").
+# Ultimate-arbiter escalation dispatch (SKILL.md "Ultimate-Arbiter Escalation").
 #
 # Dispatches the blueprint-review arbiter as a headless `claude -p` subprocess
 # routed through an Anthropic-API-compatible gateway (e.g., ZenMux) to `fable` —
-# the opt-in "ultra arbiter" escalation ABOVE the default `opus`, gated by an
+# the opt-in "ultimate arbiter" escalation ABOVE the default `opus`, gated by an
 # operator USER-level opt-in (see SKILL.md), not an automatic fallback. Agent-tool
 # subagents always inherit the parent session's auth/endpoint, so this MUST be a
 # separate process with per-process environment overrides.
@@ -69,15 +69,15 @@ API_KEY="${BLUEPRINT_ARBITER_GATEWAY_API_KEY:-}"
 [[ -n "$BASE_URL" ]] || skip "BLUEPRINT_ARBITER_GATEWAY_BASE_URL not set"
 [[ -n "$AUTH_TOKEN" || -n "$API_KEY" ]] || skip "no gateway credential set (need AUTH_TOKEN or API_KEY)"
 
-# Ultra-arbiter opt-in boundary (#265): even with gateway credentials, the escalation
-# only runs when the operator opted in at the USER level (`.ultraArbiter.enabled` in USER
-# ~/.claude/busdriver.json, or `BLUEPRINT_ARBITER_ULTRA=1`). This makes "reviewed content
+# Ultimate-arbiter opt-in boundary (#265): even with gateway credentials, the escalation
+# only runs when the operator opted in at the USER level (`.ultimate.surfaces.arbiter` in USER
+# ~/.claude/busdriver.json, or `BUSDRIVER_ULTIMATE=1`). This makes "reviewed content
 # can never trigger the gateway" a structural rung, not just prose — mirroring the
 # ultraOracle enable. Skip (fall through to opus) when not opted in, exactly like an
 # unconfigured gateway. The helper reads the enable from USER config ONLY.
-# shellcheck source=../../../scripts/lib/ultra-arbiter-config.sh
-source "$_PLUGIN_ROOT/scripts/lib/ultra-arbiter-config.sh"
-ultra_arbiter_enabled || skip "ultra-arbiter not opted in (.ultraArbiter.enabled / BLUEPRINT_ARBITER_ULTRA=1)"
+# shellcheck source=../../../scripts/lib/ultimate-config.sh
+source "$_PLUGIN_ROOT/scripts/lib/ultimate-config.sh"
+ultimate_surface_enabled arbiter || skip "ultimate-arbiter not opted in (.ultimate.surfaces.arbiter / BUSDRIVER_ULTIMATE=1)"
 
 [[ "$PROMPT_FILE" == /* ]] || die "validation prompt path must be absolute: $PROMPT_FILE"
 [[ "$OUTPUT_FILE" == /* ]] || die "claude.json output path must be absolute: $OUTPUT_FILE"
@@ -427,5 +427,5 @@ STATUS=$(jq -r '.status // ""' "$OUTPUT_FILE")
 RUN_ID=$(jq -r '.metadata.run_id // ""' "$OUTPUT_FILE")
 [[ -n "$RUN_ID" ]] || post_fail "metadata.run_id missing (freshness contract)"
 
-echo "gateway-arbiter: verdict written ($STATUS, run_id $RUN_ID) — record model_pin_status=ultra_arbiter_fable" >&2
+echo "gateway-arbiter: verdict written ($STATUS, run_id $RUN_ID) — record model_pin_status=ultimate_arbiter_fable" >&2
 exit 0

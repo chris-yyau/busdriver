@@ -8,6 +8,15 @@
 # comparisons. `[ ]` does base-10 strtol with NO arithmetic evaluation, which
 # avoids [[ ]]'s octal-parse of leading-zero values (e.g. "09999") AND its
 # command-substitution-in-arithmetic injection surface (e.g. RHS "a[$(cmd)]").
+# Portable dir resolution. BASH_SOURCE is unset under zsh (and other non-bash shells), where
+# `dirname "${BASH_SOURCE[0]}"` silently collapses to "." and mis-sources the sibling libs from
+# the CWD — functions end up undefined with no error. Guard loudly: this lib is bash-only, so
+# fail closed rather than half-load.
+if [ -z "${BASH_SOURCE:-}" ]; then
+  echo "ultra-oracle.sh: ERROR — must be sourced under bash (BASH_SOURCE unset; zsh/other shells mis-resolve the script dir and half-load)" >&2
+  # shellcheck disable=SC2317  # reached when sourced under a non-bash shell
+  return 1 2>/dev/null || exit 1
+fi
 _ULTRA_ORACLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${_ULTRA_ORACLE_DIR}/ultra-oracle-config.sh"   # also transitively sources resolve-cli.sh

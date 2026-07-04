@@ -137,6 +137,21 @@ except (json.JSONDecodeError, OSError) as e:
   esac
 }
 
+# _read_user_config_value <jq-path> <default>
+# Reads ONLY the USER config (~/${BUSDRIVER_STATE_DIR:-.claude}/busdriver.json) —
+# NEVER repo-controlled project config. Security-sensitive: callers gate
+# external-transmission / cost / model surfaces on this, so a malicious branch
+# must never be able to opt a reviewer in via committed project config.
+# Returns the value, or <default> when absent/null/unreadable.
+_read_user_config_value() {
+    local jq_path="$1" default="$2" val="" state_dir="${BUSDRIVER_STATE_DIR:-.claude}"
+    local user_config="$HOME/$state_dir/busdriver.json"
+    if [[ -f "$user_config" ]]; then
+        val="$(_read_config_value "$user_config" "$jq_path" 2>/dev/null || true)"
+    fi
+    if [[ -n "$val" && "$val" != "null" ]]; then printf '%s' "$val"; else printf '%s' "$default"; fi
+}
+
 # ── Portable timeout wrapper ────────────────────────────────────
 # macOS does not ship GNU timeout. Try timeout, then gtimeout,
 # then fall back to a Perl alarm wrapper.

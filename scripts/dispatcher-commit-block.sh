@@ -348,7 +348,14 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     # misses because the worktree copy still matches HEAD), unstaged modification,
     # and untracked (`??`). Any non-empty output ⇒ the policy is not the committed
     # one ⇒ bail.
-    _policy_rel="${BUSDRIVER_STATE_DIR:-.claude}/review-exclude"
+    # Sanitize STATE_DIR EXACTLY as exclude-generated.sh does (reject empty /
+    # absolute / traversal / unsafe chars → .claude) so STEP 1's divergence check
+    # and STEP 2's actual policy read anchor on an IDENTICAL path — otherwise an
+    # unsafe operator-set BUSDRIVER_STATE_DIR could make the two target different
+    # files (backstop advisory, defense-in-depth).
+    _policy_state_dir="${BUSDRIVER_STATE_DIR:-.claude}"
+    case "$_policy_state_dir" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) _policy_state_dir=".claude" ;; esac
+    _policy_rel="$_policy_state_dir/review-exclude"
     _policy_status=$(git status --porcelain --untracked-files=all -- "$_policy_rel" 2>/dev/null || true)
     if [[ -n "$_policy_status" ]]; then
         emit_bail "judgment" "excluded-only marker but the exclusion policy ($_policy_rel) has uncommitted or untracked changes; the policy governing an excluded-only auto-pass must be committed and reviewed"

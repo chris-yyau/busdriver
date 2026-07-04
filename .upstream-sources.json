@@ -3703,7 +3703,7 @@
     {
       "path": "skills-archive/marketing-plan/SKILL.md",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/marketing-plan/SKILL.md"
     },
     {
@@ -3781,7 +3781,7 @@
     {
       "path": "skills-archive/marketing-plan/references/plan-template.md",
       "source": "marketingskills",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/marketing-plan/references/plan-template.md"
     },
     {

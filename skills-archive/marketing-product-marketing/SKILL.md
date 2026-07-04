@@ -228,7 +228,7 @@ After gathering information, create `.agents/product-marketing.md` with this str
 - Show the completed document
 - Ask if anything needs adjustment
 - Save to `.agents/product-marketing.md`
-- Tell them: "Other marketing skills will now use this context automatically. Run `/product-marketing` anytime to update it."
+- Tell them: "Other marketing skills will now use this context automatically. This skill is vaulted (`skills-archive/`, no live `/product-marketing` command shim) — to update it later, re-load `skills-archive/marketing-product-marketing/SKILL.md` via the vault-loading convention documented in `skills/orchestrator/SKILL.md` ('Vault (Archived Skills)')."
 
 ---
 

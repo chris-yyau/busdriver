@@ -191,7 +191,7 @@ Quarter-by-quarter outcome state (Q1 / Q2 / Q3 / Q4).
 - Paywall + pricing review (often Activation × Revenue)
 
 ### Skills + tools
-`onboarding`, `signup`, `paywalls`, `copywriting`, `marketing-website-design`, `ab-testing`, etc.
+`onboarding`, `signup`, `paywalls`, `copywriting`, `marketing-website-design` _(not in this repo; use `busdriver:frontend-design` / `busdriver:high-end-visual-design`, or fall back per scope note)_, `ab-testing`, etc.
 
 ---
 

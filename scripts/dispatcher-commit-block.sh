@@ -326,14 +326,42 @@ case "$MARKER_CONTENT" in
         ;;
 esac
 
-if ! [[ "$MARKER_CONTENT" =~ ^[0-9a-f]{64}$ ]]; then
-    emit_bail "judgment" "marker is not a valid 64-char SHA-256 hex string: '$MARKER_CONTENT'"
-fi
+if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
+    # #278: litmus commit-mode writes PASS-EXCLUDED-<epoch> when the ENTIRE
+    # staged diff is review-excluded (all paths under .claude/review-exclude or
+    # the hardcoded defaults). There is no reviewer and no 64-hex diff hash to
+    # bind to, so instead of demanding one we re-verify the claim ourselves,
+    # fail-closed: the staged diff filtered through the SAME exclusion logic the
+    # producer used must be empty. Any non-excluded staged content ⇒ stale or
+    # mismatched marker ⇒ bail.
+    # shellcheck source=/dev/null
+    . "$LITMUS_SCRIPTS/lib/exclude-generated.sh" || \
+        emit_bail "env" "failed to source exclude-generated.sh for excluded-only marker re-verify"
+    NON_EXCLUDED_DIFF=$(git diff --cached --no-color -- :/ "${REVIEW_EXCLUDE_ARGS[@]}") || \
+        emit_bail "env" "failed to compute non-excluded staged diff for excluded-only marker re-verify"
+    if [[ -n "$NON_EXCLUDED_DIFF" ]]; then
+        emit_bail "judgment" "excluded-only marker ($MARKER_CONTENT) but staged diff contains non-excluded content; marker is stale or the staged diff was mutated post-PASS — review required"
+    fi
+    # #252 mirror: an unreviewed change to the exclusion policy file must not
+    # self-certify that nothing needs review. Scope a --cached diff to the policy
+    # path (git normalizes the pathspec AND the diff reports staged DELETIONS) —
+    # git ls-files would miss a policy file staged for deletion because it only
+    # lists the index snapshot, silently skipping the guard.
+    _policy_staged=$(git diff --cached --name-only -- "${BUSDRIVER_STATE_DIR:-.claude}/review-exclude" 2>/dev/null || true)
+    if [[ -n "$_policy_staged" ]]; then
+        emit_bail "judgment" "excluded-only marker but staged diff modifies the exclusion policy (${BUSDRIVER_STATE_DIR:-.claude}/review-exclude); review required"
+    fi
+    # Verified excluded-only auto-pass — no reviewed diff to hash-bind against.
+else
+    if ! [[ "$MARKER_CONTENT" =~ ^[0-9a-f]{64}$ ]]; then
+        emit_bail "judgment" "marker is not a valid 64-char SHA-256 hex string: '$MARKER_CONTENT'"
+    fi
 
-EXPECTED_HASH=$(git diff --cached | hash_stdin) || \
-    emit_bail "env" "failed to hash post-litmus staged diff"
-if [ "$MARKER_CONTENT" != "$EXPECTED_HASH" ]; then
-    emit_bail "judgment" "marker/staged-diff hash mismatch (marker=$MARKER_CONTENT vs computed=$EXPECTED_HASH); marker may be stale or the staged diff was mutated post-PASS"
+    EXPECTED_HASH=$(git diff --cached | hash_stdin) || \
+        emit_bail "env" "failed to hash post-litmus staged diff"
+    if [[ "$MARKER_CONTENT" != "$EXPECTED_HASH" ]]; then
+        emit_bail "judgment" "marker/staged-diff hash mismatch (marker=$MARKER_CONTENT vs computed=$EXPECTED_HASH); marker may be stale or the staged diff was mutated post-PASS"
+    fi
 fi
 
 # --- Step 6: Commit message composition + commit-type derivation ---

@@ -21,11 +21,15 @@ assert_json() {
 }
 
 write_default_plugin_root() {
-    mkdir -p "$plugin_root/scripts/lib" "$plugin_root/skills/litmus/scripts"
+    mkdir -p "$plugin_root/scripts/lib" "$plugin_root/skills/litmus/scripts/lib"
 
     ln -s "$REPO_ROOT/scripts/lib/bail-envelope.sh" "$plugin_root/scripts/lib/bail-envelope.sh"
     ln -s "$REPO_ROOT/scripts/lib/staged-diff-hash.sh" "$plugin_root/scripts/lib/staged-diff-hash.sh"
     ln -s "$REPO_ROOT/scripts/ack-ledger.sh" "$plugin_root/scripts/ack-ledger.sh"
+    # Real exclusion logic — dispatcher sources this to re-verify excluded-only
+    # PASS-EXCLUDED markers (#278).
+    ln -s "$REPO_ROOT/skills/litmus/scripts/lib/exclude-generated.sh" \
+        "$plugin_root/skills/litmus/scripts/lib/exclude-generated.sh"
 
     cat > "$plugin_root/scripts/fetch-pr-state.sh" <<'EOF'
 FETCH_OK=1
@@ -112,6 +116,12 @@ case "${LITMUS_MODE:-pass}" in
     nonhex)
         mkdir -p .claude
         printf 'not-a-sha\n' > .claude/litmus-passed.local
+        ;;
+    excluded_pass)
+        # #278: excluded-only commit-mode auto-pass writes PASS-EXCLUDED-<epoch>
+        # (no reviewer, no diff hash). Consumer re-verifies all-excluded.
+        mkdir -p .claude
+        printf 'PASS-EXCLUDED-%s\n' "$(date +%s)" > .claude/litmus-passed.local
         ;;
     *)
         printf 'unknown LITMUS_MODE=%s\n' "${LITMUS_MODE:-}" >&2
@@ -634,6 +644,76 @@ test_r_marker_validation() {
         [ "$dispatcher_exit" -eq 1 ] &&
         assert_json "$dispatcher_json" \
             '.bail_category == "judgment" and (.bail_reason | contains("not a valid 64-char SHA-256"))'
+}
+
+# #278: excluded-only PASS-EXCLUDED-<epoch> marker is accepted (and the diff
+# committed) when the entire staged diff is review-excluded.
+test_r2_excluded_only_marker_accepted() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode after_sha
+
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+    # Reset the fixture's non-excluded staged file.txt; stage ONLY a nested
+    # *.min.js (matches the hardcoded default exclusion **/*.min.js).
+    git -C "$sandbox" reset -q --hard HEAD
+    mkdir -p "$sandbox/pkg"
+    printf 'var x=1\n' > "$sandbox/pkg/vendor.min.js"
+    git -C "$sandbox" add pkg/vendor.min.js
+    litmus_mode=excluded_pass
+    run_dispatcher_capture
+    after_sha=$(git -C "$sandbox" rev-parse HEAD)
+
+    [[ "$dispatcher_exit" -eq 0 ]] || return 1
+    assert_json "$dispatcher_json" '.status == "success"' || return 1
+    [[ "$after_sha" != "$initial_sha" ]]
+}
+
+# #278 no-escape: a PASS-EXCLUDED marker must NOT certify a diff that contains
+# non-excluded content — the dispatcher re-verifies and bails.
+test_r3_excluded_marker_rejects_nonexcluded() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
+
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+    # Fixture leaves the non-excluded file.txt staged; forcing an excluded-only
+    # marker must be rejected.
+    litmus_mode=excluded_pass
+    run_dispatcher_capture
+
+    [[ "$dispatcher_exit" -eq 1 ]] || return 1
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment" and (.bail_reason | contains("non-excluded content"))'
+}
+
+# #278/#252 no-escape: an excluded-only marker must not certify a staged
+# DELETION of the (self-excluded) exclusion policy file. git ls-files would miss
+# it (index-only); the pathspec --cached diff catches the deletion.
+test_r5_excluded_marker_rejects_policy_deletion() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
+
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+    git -C "$sandbox" reset -q --hard HEAD
+    # Commit a policy that excludes ITSELF (so its own churn is filtered out of
+    # the non-excluded check and only the #252 policy guard can catch it).
+    mkdir -p "$sandbox/.claude"
+    printf '.claude/review-exclude\n**/*.min.js\n' > "$sandbox/.claude/review-exclude"
+    git -C "$sandbox" add .claude/review-exclude
+    git -C "$sandbox" commit --no-gpg-sign -qm "add self-excluding review policy"
+    # Stage its DELETION (--cached keeps the worktree copy so build_exclude_args
+    # still reads the self-exclusion pattern), plus an excluded min.js.
+    git -C "$sandbox" rm -q --cached .claude/review-exclude
+    mkdir -p "$sandbox/pkg"; printf 'var x=1\n' > "$sandbox/pkg/vendor.min.js"
+    git -C "$sandbox" add pkg/vendor.min.js
+    litmus_mode=excluded_pass
+    run_dispatcher_capture
+
+    [[ "$dispatcher_exit" -eq 1 ]] || return 1
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment" and (.bail_reason | contains("exclusion policy"))'
 }
 test_s_bail_envelope_roundtrip() {
     local sandbox plugin_root shimdir remote original_dir initial_sha

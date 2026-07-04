@@ -6,3 +6,7 @@ rules/**/*.md
 
 # Upstream sources manifest — mechanical JSON tracking
 .upstream-sources.json
+
+# Vendored marketing-skills pack (coreyhaines31/marketingskills) — upstream
+# marketing guidance markdown, not code; tracked via .upstream-sources.json
+skills-archive/marketing-*/**

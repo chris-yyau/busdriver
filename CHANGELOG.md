@@ -1,3 +1,10 @@
+# [1.79.0](https://github.com/chris-yyau/busdriver/compare/v1.78.0...v1.79.0) (2026-07-04)
+
+
+### Features
+
+* **skills:** adopt marketing-skills pack into zero-context vault ([#276](https://github.com/chris-yyau/busdriver/issues/276)) ([553aa89](https://github.com/chris-yyau/busdriver/commit/553aa8966ffb9b3f9cb5c36cb7589187960c462f))
+
 # [1.78.0](https://github.com/chris-yyau/busdriver/compare/v1.77.0...v1.78.0) (2026-07-03)
 
 

@@ -356,6 +356,25 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     _policy_state_dir="${BUSDRIVER_STATE_DIR:-.claude}"
     case "$_policy_state_dir" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) _policy_state_dir=".claude" ;; esac
     _policy_rel="$_policy_state_dir/review-exclude"
+    # Reject a COMMITTED symlink at ANY in-worktree path component (leaf OR a
+    # parent dir) of the policy/logic files. `git status --porcelain` tracks only a
+    # symlink's target-string blob, not its target's content, so a symlinked
+    # component (e.g. `lib/` → an external dir) makes a leaf-only -L test pass while
+    # the later exclusion read / `.`-source follows it to unverified, mutated
+    # content (Cursor/Cubic/Codex + litmus, PR #280). Walk every prefix and bail on
+    # the first symlink. $1 = worktree root, $2 = path relative to it.
+    _reject_symlink_components() {
+        local _root="$1" _rel="$2" _prefix="" _seg _segs
+        IFS=/ read -r -a _segs <<< "$_rel"
+        for _seg in "${_segs[@]}"; do
+            [[ -z "$_seg" || "$_seg" == "." ]] && continue
+            _prefix="${_prefix:+$_prefix/}$_seg"
+            if [[ -L "$_root/$_prefix" ]]; then
+                emit_bail "judgment" "excluded-only marker but in-worktree path component '$_prefix' is a symlink; a symlinked component cannot be trusted since git status verifies only the symlink blob, not its target's content"
+            fi
+        done
+    }
+    _reject_symlink_components "$WORKTREE_DIR" "$_policy_rel"
     # Distinguish "git status succeeded, output empty (clean)" from "git status
     # FAILED": a bare `2>/dev/null || true` would collapse an error into empty and
     # fail OPEN. Only an empty status from a SUCCESSFUL run means clean.
@@ -398,9 +417,59 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
         /*) : ;;
         *)  _excl_logic_file="$_wt/$_excl_logic_file" ;;
     esac
+    # Collapse ".." (and "." and duplicate "/") segments PURELY LEXICALLY
+    # (string manipulation only — no filesystem access, so this cannot be
+    # fooled by a symlink swap the way `realpath`/`pwd -P` could). A relative
+    # LITMUS_SCRIPTS containing ".." (e.g. `../external-plugin/scripts`, a
+    # legitimate trusted-external plugin root) would otherwise
+    # string-prefix-match "$_wt"/* even though it actually escapes $_wt,
+    # making the guard run `git status` on a bogus out-of-repo pathspec and
+    # fail-close every excluded-only commit for that trusted case
+    # (Cursor/Cubic, PR #280). Collapsing first makes the prefix check answer
+    # the real question: does the file resolve INSIDE $_wt?
+    #
+    # Apply the IDENTICAL collapse to $_wt itself, not just $_excl_logic_file:
+    # collapsing normalizes away incidental double-slashes too (e.g. an
+    # operator-supplied WORKTREE_DIR with a trailing-slash directory
+    # component), and comparing an un-collapsed $_wt against a collapsed
+    # $_excl_logic_file would desync the prefix match even when both
+    # genuinely point at the same in-worktree file.
+    _lexical_collapse() {
+        local _path="$1" _out="" _s _parts
+        # Split on "/" WITHOUT pathname (glob) expansion. An unquoted array
+        # assignment `_parts=($_path)` under IFS=/ ALSO globs each segment, so a
+        # "*"/"?"/"[" in WORKTREE_DIR or LITMUS_SCRIPTS would expand against the
+        # filesystem and normalize to the wrong path (litmus, PR #280). `read -ra`
+        # word-splits on IFS only — no globbing. The `IFS=/` prefix scopes IFS to
+        # the read builtin, so no save/restore of the shell's IFS is needed.
+        IFS=/ read -r -a _parts <<< "$_path"
+        for _s in "${_parts[@]}"; do
+            case "$_s" in
+                ""|".") continue ;;
+                "..") _out="${_out%/*}" ;;
+                *) _out="$_out/$_s" ;;
+            esac
+        done
+        [[ -z "$_out" ]] && _out="/"
+        printf '%s' "$_out"
+    }
+    _wt=$(_lexical_collapse "$_wt")
+    _excl_logic_file=$(_lexical_collapse "$_excl_logic_file")
+    # Check-vs-use consistency (litmus, PR #280): Step 2 below MUST source the
+    # exact path the guard validated. Sourcing the ORIGINAL, un-collapsed
+    # "$LITMUS_SCRIPTS/lib/exclude-generated.sh" while validating the collapsed
+    # path lets the two diverge when the path contains ".." across a symlink
+    # component (verify one file, execute another). Pin the source to the
+    # collapsed path here so both branches (in-worktree + trusted-external) run
+    # the same file that was checked.
+    _excl_logic_source="$_excl_logic_file"
     case "$_excl_logic_file" in
         "$_wt"/*)
             _excl_logic_rel="${_excl_logic_file#"$_wt"/}"
+            # Reject a committed symlink at any component of the logic path (leaf or
+            # a parent dir), same rationale as the policy check above — a leaf-only
+            # -L test misses a symlinked parent like `lib/` (litmus, PR #280).
+            _reject_symlink_components "$_wt" "$_excl_logic_rel"
             # Same fail-CLOSED discipline as the policy guard: a git status error
             # must bail, not collapse to empty (clean) via `|| true`.
             if _excl_logic_status=$(git status --porcelain --untracked-files=all --ignored -- "$_excl_logic_rel" 2>/dev/null); then
@@ -416,7 +485,7 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     # the SAME exclusion logic the producer used must be empty. Any non-excluded
     # staged content ⇒ stale or mismatched marker ⇒ bail.
     # shellcheck source=/dev/null
-    . "$LITMUS_SCRIPTS/lib/exclude-generated.sh" || \
+    . "$_excl_logic_source" || \
         emit_bail "env" "failed to source exclude-generated.sh for excluded-only marker re-verify"
     NON_EXCLUDED_DIFF=$(git diff --cached --no-color -- :/ "${REVIEW_EXCLUDE_ARGS[@]}") || \
         emit_bail "env" "failed to compute non-excluded staged diff for excluded-only marker re-verify"

@@ -23,16 +23,51 @@ check() { # name expected(BAIL|CLEAN) actual
   else echo "FAIL: $1 — expected $2 got $3"; fail=$((fail+1)); fi
 }
 
-# Verbatim port of the guard's LEXICAL membership + status decision (STEP 1b).
+# Verbatim port of the guard's LEXICAL membership + status decision (STEP 1b),
+# updated (PR #280) to match dispatcher-commit-block.sh's ".." collapse and
+# committed-symlink rejection.
 # Returns "BAIL" if the in-worktree logic file has divergence, else "CLEAN".
 # worktree_dir is the trusted dispatcher input; logic_file is $LITMUS_SCRIPTS/lib/...
+_lexical_collapse() { # pure string ".."/"."/duplicate-"/" collapse — no filesystem access
+  local path="$1" out="" s parts
+  # Split on "/" without glob expansion (mirrors dispatcher-commit-block.sh; an
+  # unquoted `parts=($path)` under IFS=/ would also glob "*"/"?"/"[" segments).
+  IFS=/ read -r -a parts <<< "$path"
+  for s in "${parts[@]}"; do
+    case "$s" in
+      ""|".") continue ;;
+      "..") out="${out%/*}" ;;
+      *) out="$out/$s" ;;
+    esac
+  done
+  [[ -z "$out" ]] && out="/"
+  printf '%s' "$out"
+}
+
 decide() { # <worktree_dir> <logic_file(abs|relative-to-worktree)>
   local worktree_dir="$1" logic_file="$2" rel status
   while [[ "$worktree_dir" == */ && "$worktree_dir" != "/" ]]; do worktree_dir="${worktree_dir%/}"; done
   case "$logic_file" in /*) : ;; *) logic_file="$worktree_dir/$logic_file" ;; esac
+  # PURELY LEXICAL ".." collapse (string manipulation only, no filesystem access —
+  # cannot be fooled by a symlink swap the way realpath/pwd -P could). Apply the
+  # IDENTICAL collapse to worktree_dir too, so an incidental double-slash (e.g.
+  # from a TMPDIR with a trailing slash) can't desync the prefix match.
+  worktree_dir=$(_lexical_collapse "$worktree_dir")
+  logic_file=$(_lexical_collapse "$logic_file")
   case "$logic_file" in
     "$worktree_dir"/*)
       rel="${logic_file#"$worktree_dir"/}"
+      # Reject a committed symlink at ANY component of the logic path (leaf OR a
+      # parent dir): git status only tracks a symlink's target-string blob, and a
+      # committed-symlink PARENT (e.g. lib/) reports clean for a path underneath it
+      # while the source follows it to unverified content (litmus, PR #280).
+      local prefix="" seg segs
+      IFS=/ read -r -a segs <<< "$rel"
+      for seg in "${segs[@]}"; do
+        [[ -z "$seg" || "$seg" == "." ]] && continue
+        prefix="${prefix:+$prefix/}$seg"
+        [[ -L "$worktree_dir/$prefix" ]] && { echo BAIL; return; }
+      done
       # Fail-CLOSED: a git status error bails, only a successful empty run is clean.
       if status=$(git -C "$worktree_dir" status --porcelain --untracked-files=all --ignored -- "$rel" 2>/dev/null); then
         [[ -n "$status" ]] && { echo BAIL; return; }
@@ -106,6 +141,44 @@ git -C "$wt" add skills/litmus/scripts/lib/exclude-generated.sh; git -C "$wt" co
 outside="$base/plugin/skills/litmus/scripts/lib/exclude-generated.sh"
 mkdir -p "$(dirname "$outside")"; printf '#defaults\n#dirty\n' > "$outside"
 r=$(decide "$wt" "$outside"); check "logic file outside worktree → no bail (trusted)" CLEAN "$r"
+
+# #280 regression: a RELATIVE plugin root containing ".." (e.g.
+# CLAUDE_PLUGIN_ROOT=../external-plugin) must not lexically string-prefix-match
+# "$worktree_dir"/* — the ".." must be collapsed first, resolving OUTSIDE the
+# worktree, correctly treated as trusted-external (no bail on a bogus
+# out-of-repo git-status pathspec).
+ext_plugin="$base/external-plugin/scripts/lib/exclude-generated.sh"
+mkdir -p "$(dirname "$ext_plugin")"; printf '#defaults\n#external\n' > "$ext_plugin"
+r=$(decide "$wt" "../external-plugin/scripts/lib/exclude-generated.sh")
+check "relative '..'-escaping plugin root → no bail (trusted, not fail-closed)" CLEAN "$r"
+
+# #280 regression: a COMMITTED symlink for the logic file itself. git status
+# only tracks the symlink's target-string blob, so mutating the external
+# target's content leaves git status clean — the guard must reject the
+# symlink outright rather than trust git status here.
+rm -f "$wt/skills/litmus/scripts/lib/exclude-generated.sh"
+sym_target="$base/evil-logic.sh"; printf '#evil\n' > "$sym_target"
+ln -s "$sym_target" "$wt/skills/litmus/scripts/lib/exclude-generated.sh"
+git -C "$wt" add -A; git -C "$wt" commit -q -m "commit symlinked logic file"
+r=$(decide "$wt" "$logic"); check "committed symlink logic file → BAIL" BAIL "$r"
+# Restore a regular tracked file so cleanup below is unaffected.
+rm -f "$wt/skills/litmus/scripts/lib/exclude-generated.sh"
+printf '#defaults\n' > "$wt/skills/litmus/scripts/lib/exclude-generated.sh"
+git -C "$wt" add -A; git -C "$wt" commit -q -m "restore regular logic file"
+
+# #280 regression: a COMMITTED symlink at a PARENT component of the logic path
+# (lib/ committed as a symlink to an external dir). git status on the path UNDER
+# the symlink reports clean (nothing tracked there), so a leaf-only -L check
+# passes while the source follows lib/ to unverified content. Only walking EVERY
+# component catches the symlinked parent.
+wt2="$base/repo-symparent"; mkdir -p "$wt2/skills/litmus/scripts"
+git -C "$wt2" init -q; git -C "$wt2" config user.email t@t; git -C "$wt2" config user.name t
+ext_parent="$base/evil-parent"; mkdir -p "$ext_parent"; printf '#evil\n' > "$ext_parent/exclude-generated.sh"
+ln -s "$ext_parent" "$wt2/skills/litmus/scripts/lib"
+printf 'x\n' > "$wt2/f.txt"
+git -C "$wt2" add -A; git -C "$wt2" commit -q -m "commit symlinked lib parent"
+r=$(decide "$wt2" "skills/litmus/scripts/lib/exclude-generated.sh")
+check "committed symlink PARENT component → BAIL" BAIL "$r"
 
 rm -rf "$base"
 echo "───────────────────────────────"

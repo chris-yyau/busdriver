@@ -555,6 +555,14 @@ HEAD_PUSH_DATE=$(gh api --paginate "repos/$OWNER/$REPO/events?per_page=100" 2>/d
 # created_at is NOT app/client-settable (preserves #186/#189). No suite (no CI yet, fork ns)
 # → empty → ack-ledger fails closed.
 HEAD_CHECKS_DATE=""
+# Fail-CLOSED (litmus, PR #280): require PR_BRANCH known before using this fallback,
+# EVEN THOUGH the jq filter below is SHA-only. GitHub emits per-(SHA,ref) check-suites
+# (a `refs/pull/N/head` suite can carry an older created_at than the real PR-head push),
+# so a SHA-only lookup run with the branch UNKNOWN could anchor Codex-ack freshness on a
+# backdated suite and accept a stale 👍 / resolved thread as fresh. When PR_BRANCH is empty
+# (transient `gh pr view` failure, deleted/fork branch) we cannot confirm the suite belongs
+# to this PR — fail closed to stale (one extra wait-round / codex-retrigger) rather than
+# risk a backdated ack. The guard is deliberate, not dead code.
 if [ -z "$HEAD_PUSH_DATE" ] && [ -n "${PR_BRANCH:-}" ] && [ -n "${HEAD_FULL_SHA:-}" ]; then
   HEAD_CHECKS_DATE=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_FULL_SHA/check-suites" 2>/dev/null \
     | jq -rs --arg sha "$HEAD_FULL_SHA" \

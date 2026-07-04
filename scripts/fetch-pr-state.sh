@@ -158,6 +158,15 @@ _fetch_pr_state() {
         # fails closed to stale. Fetched only when HEAD_PUSH_DATE is empty. Best-effort (never
         # trips FETCH_OK).
         HEAD_CHECKS_DATE=""
+        # Fail-CLOSED (litmus, PR #280): require _pr_branch known before using this
+        # fallback, EVEN THOUGH the jq filter is SHA-only. GitHub emits per-(SHA,ref)
+        # check-suites (a `refs/pull/N/head` suite can carry an older created_at than
+        # the real PR-head push), so a SHA-only lookup run with the branch UNKNOWN could
+        # anchor Codex-ack freshness on a backdated suite and accept a stale 👍 / resolved
+        # thread as fresh. When _pr_branch is empty (transient `gh pr view` failure,
+        # deleted/fork branch) we cannot confirm the suite belongs to this PR — fail
+        # closed to stale (one extra wait-round / codex-retrigger) rather than risk a
+        # backdated ack. The guard is deliberate, not dead code.
         if [[ -z "$HEAD_PUSH_DATE" && -n "${_pr_branch:-}" && -n "${_full_sha:-}" ]]; then
             # Use the FULL 40-char OID for both the API path and the jq head_sha filter
             # (HEAD_SHA is the 8-char prefix; a short SHA can be ambiguous / unresolved).

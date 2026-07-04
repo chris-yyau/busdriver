@@ -356,25 +356,62 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     _policy_state_dir="${BUSDRIVER_STATE_DIR:-.claude}"
     case "$_policy_state_dir" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) _policy_state_dir=".claude" ;; esac
     _policy_rel="$_policy_state_dir/review-exclude"
-    _policy_status=$(git status --porcelain --untracked-files=all -- "$_policy_rel" 2>/dev/null || true)
-    if [[ -n "$_policy_status" ]]; then
-        emit_bail "judgment" "excluded-only marker but the exclusion policy ($_policy_rel) has uncommitted or untracked changes; the policy governing an excluded-only auto-pass must be committed and reviewed"
+    # Distinguish "git status succeeded, output empty (clean)" from "git status
+    # FAILED": a bare `2>/dev/null || true` would collapse an error into empty and
+    # fail OPEN. Only an empty status from a SUCCESSFUL run means clean.
+    if _policy_status=$(git status --porcelain --untracked-files=all --ignored -- "$_policy_rel" 2>/dev/null); then
+        if [[ -n "$_policy_status" ]]; then
+            emit_bail "judgment" "excluded-only marker but the exclusion policy ($_policy_rel) has uncommitted or untracked changes; the policy governing an excluded-only auto-pass must be committed and reviewed"
+        fi
+    else
+        emit_bail "judgment" "excluded-only marker but could not verify the exclusion policy ($_policy_rel) is committed-clean (git status failed); fail-closed"
     fi
     # The exclusion LOGIC (exclude-generated.sh) is the OTHER input to the filter:
-    # its hardcoded defaults + review-exclude parse decide what counts as excluded.
-    # It is normally trusted plugin code OUTSIDE the reviewed worktree (the plugin
-    # cache), but when the plugin root IS the worktree (busdriver self-review) an
-    # uncommitted change to it could redefine REVIEW_EXCLUDE_ARGS to over-exclude
-    # real source. If the sourced logic file is tracked INSIDE this worktree,
-    # require it committed-clean too; if it lives outside (the usual plugin case),
-    # ls-files --error-unmatch yields nothing and this is a no-op (trusted).
-    _excl_logic_rel=$(git ls-files --full-name --error-unmatch -- "$LITMUS_SCRIPTS/lib/exclude-generated.sh" 2>/dev/null || true)
-    if [[ -n "$_excl_logic_rel" ]]; then
-        _excl_logic_status=$(git status --porcelain --untracked-files=all -- "$_excl_logic_rel" 2>/dev/null || true)
-        if [[ -n "$_excl_logic_status" ]]; then
-            emit_bail "judgment" "excluded-only marker but the exclusion logic ($_excl_logic_rel) has uncommitted changes; the logic governing an excluded-only auto-pass must be committed and reviewed"
-        fi
-    fi
+    # sourcing it runs its code AND its hardcoded defaults + review-exclude parse
+    # decide what counts as excluded. It is normally trusted plugin code OUTSIDE
+    # the reviewed worktree (the plugin cache), but when the plugin root IS the
+    # worktree (busdriver self-review) a tampered copy could redefine
+    # REVIEW_EXCLUDE_ARGS (or run arbitrary code) to over-exclude real source.
+    # Decide membership LEXICALLY against WORKTREE_DIR (a trusted dispatcher input,
+    # cwd since line 81) rather than by index or physical realpath. Both prior
+    # approaches were defeatable: `git ls-files --error-unmatch` by `git rm
+    # --cached` (untracks but keeps the tamperable copy), and `pwd -P` by swapping
+    # an in-worktree path component for a symlink to an external dir. A lexical
+    # prefix check + `git status` on the tracked path sidesteps both: git reports
+    # divergence on the TRACKED path regardless of physical resolution, so a
+    # swapped-to-symlink `lib/` shows its tracked files as deleted and an
+    # rm --cached shows the copy as untracked — either way non-empty ⇒ bail. If the
+    # logic file is not lexically under the worktree (the usual plugin-cache case)
+    # this is a no-op (trusted).
+    _excl_logic_file="$LITMUS_SCRIPTS/lib/exclude-generated.sh"
+    # Strip trailing slashes from WORKTREE_DIR (an operator-supplied input): with a
+    # trailing slash the "$WORKTREE_DIR"/* pattern becomes `/repo//*` and fails to
+    # match a normal `/repo/skills/...` path, silently SKIPPING the guard. Keep "/"
+    # itself intact (degenerate root case).
+    _wt="$WORKTREE_DIR"
+    while [[ "$_wt" == */ && "$_wt" != "/" ]]; do _wt="${_wt%/}"; done
+    # Normalize to absolute: a RELATIVE plugin root (e.g. CLAUDE_PLUGIN_ROOT=.)
+    # resolves against cwd, which is WORKTREE_DIR (line 81). Without this, a
+    # relative path would fail the "$_wt"/* prefix test and skip the guard even
+    # though the file is in-worktree.
+    case "$_excl_logic_file" in
+        /*) : ;;
+        *)  _excl_logic_file="$_wt/$_excl_logic_file" ;;
+    esac
+    case "$_excl_logic_file" in
+        "$_wt"/*)
+            _excl_logic_rel="${_excl_logic_file#"$_wt"/}"
+            # Same fail-CLOSED discipline as the policy guard: a git status error
+            # must bail, not collapse to empty (clean) via `|| true`.
+            if _excl_logic_status=$(git status --porcelain --untracked-files=all --ignored -- "$_excl_logic_rel" 2>/dev/null); then
+                if [[ -n "$_excl_logic_status" ]]; then
+                    emit_bail "judgment" "excluded-only marker but the exclusion logic ($_excl_logic_rel) has uncommitted, untracked, or deleted changes; the logic governing an excluded-only auto-pass must be committed and reviewed"
+                fi
+            else
+                emit_bail "judgment" "excluded-only marker but could not verify the exclusion logic ($_excl_logic_rel) is committed-clean (git status failed); fail-closed"
+            fi
+            ;;
+    esac
     # STEP 2 (policy + logic now proven committed): the staged diff filtered through
     # the SAME exclusion logic the producer used must be empty. Any non-excluded
     # staged content ⇒ stale or mismatched marker ⇒ bail.

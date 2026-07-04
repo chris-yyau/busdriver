@@ -665,6 +665,7 @@ test_r2_excluded_only_marker_accepted() {
     after_sha=$(git -C "$sandbox" rev-parse HEAD)
 
     [[ "$dispatcher_exit" -eq 0 ]] || return 1
+    # shellcheck disable=SC2310  # assert_json is a plain jq wrapper; the runner checks the return
     assert_json "$dispatcher_json" '.status == "success"' || return 1
     [[ "$after_sha" != "$initial_sha" ]]
 }

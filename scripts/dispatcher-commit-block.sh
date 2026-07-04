@@ -331,9 +331,31 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     # staged diff is review-excluded (all paths under .claude/review-exclude or
     # the hardcoded defaults). There is no reviewer and no 64-hex diff hash to
     # bind to, so instead of demanding one we re-verify the claim ourselves,
-    # fail-closed: the staged diff filtered through the SAME exclusion logic the
-    # producer used must be empty. Any non-excluded staged content ⇒ stale or
-    # mismatched marker ⇒ bail.
+    # fail-closed.
+    #
+    # STEP 1 (BEFORE trusting any worktree exclusion pattern): prove the policy
+    # that certifies "nothing needs review" is the COMMITTED policy.
+    # build_exclude_args reads $STATE_DIR/review-exclude from the WORKTREE, so an
+    # unstaged, staged, or UNTRACKED review-exclude could over-exclude real source,
+    # empty NON_EXCLUDED_DIFF, and let an excluded-only marker commit unreviewed
+    # content. Require the policy to match HEAD with no uncommitted divergence
+    # FIRST — `git diff HEAD` catches any staged/unstaged modification or deletion,
+    # and ls-files --others catches an untracked policy file — so the filtering
+    # below can only ever use a committed, reviewed policy. (This also subsumes
+    # the #252 staged-policy-change guard.)
+    # git status --porcelain reports ALL divergence for the path in one shot —
+    # staged modification/deletion (incl. `git rm --cached`, which git diff HEAD
+    # misses because the worktree copy still matches HEAD), unstaged modification,
+    # and untracked (`??`). Any non-empty output ⇒ the policy is not the committed
+    # one ⇒ bail.
+    _policy_rel="${BUSDRIVER_STATE_DIR:-.claude}/review-exclude"
+    _policy_status=$(git status --porcelain --untracked-files=all -- "$_policy_rel" 2>/dev/null || true)
+    if [[ -n "$_policy_status" ]]; then
+        emit_bail "judgment" "excluded-only marker but the exclusion policy ($_policy_rel) has uncommitted or untracked changes; the policy governing an excluded-only auto-pass must be committed and reviewed"
+    fi
+    # STEP 2 (policy now proven committed): the staged diff filtered through the
+    # SAME exclusion logic the producer used must be empty. Any non-excluded
+    # staged content ⇒ stale or mismatched marker ⇒ bail.
     # shellcheck source=/dev/null
     . "$LITMUS_SCRIPTS/lib/exclude-generated.sh" || \
         emit_bail "env" "failed to source exclude-generated.sh for excluded-only marker re-verify"
@@ -341,15 +363,6 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
         emit_bail "env" "failed to compute non-excluded staged diff for excluded-only marker re-verify"
     if [[ -n "$NON_EXCLUDED_DIFF" ]]; then
         emit_bail "judgment" "excluded-only marker ($MARKER_CONTENT) but staged diff contains non-excluded content; marker is stale or the staged diff was mutated post-PASS — review required"
-    fi
-    # #252 mirror: an unreviewed change to the exclusion policy file must not
-    # self-certify that nothing needs review. Scope a --cached diff to the policy
-    # path (git normalizes the pathspec AND the diff reports staged DELETIONS) —
-    # git ls-files would miss a policy file staged for deletion because it only
-    # lists the index snapshot, silently skipping the guard.
-    _policy_staged=$(git diff --cached --name-only -- "${BUSDRIVER_STATE_DIR:-.claude}/review-exclude" 2>/dev/null || true)
-    if [[ -n "$_policy_staged" ]]; then
-        emit_bail "judgment" "excluded-only marker but staged diff modifies the exclusion policy (${BUSDRIVER_STATE_DIR:-.claude}/review-exclude); review required"
     fi
     # Verified excluded-only auto-pass — no reviewed diff to hash-bind against.
 else

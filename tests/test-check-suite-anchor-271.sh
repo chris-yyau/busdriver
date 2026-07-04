@@ -18,7 +18,7 @@ FILTER='[.[].check_suites[]? | select(.head_sha==$sha) | .created_at] | map(sele
 pass=0 fail=0
 check() {
   local name="$1" expected="$2" got="$3"
-  if [ "$got" = "$expected" ]; then echo "PASS: $name"; pass=$((pass+1))
+  if [[ "$got" == "$expected" ]]; then echo "PASS: $name"; pass=$((pass+1))
   else echo "FAIL: $name — expected [$expected] got [$got]"; fail=$((fail+1)); fi
 }
 
@@ -48,4 +48,4 @@ check "no suites → empty" "" "$got"
 
 echo "───────────────────────────────"
 echo "Total: $((pass+fail))  Pass: $pass  Fail: $fail"
-[ "$fail" -eq 0 ]
+[[ "$fail" -eq 0 ]]

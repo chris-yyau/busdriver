@@ -161,6 +161,7 @@ _fetch_pr_state() {
         if [[ -z "$HEAD_PUSH_DATE" && -n "${_pr_branch:-}" && -n "${_full_sha:-}" ]]; then
             # Use the FULL 40-char OID for both the API path and the jq head_sha filter
             # (HEAD_SHA is the 8-char prefix; a short SHA can be ambiguous / unresolved).
+            # shellcheck disable=SC2312  # gh failure is intentionally masked → best-effort (|| echo "")
             HEAD_CHECKS_DATE=$(gh api --paginate "repos/$owner/$name/commits/$_full_sha/check-suites" 2>/dev/null \
                 | jq -rs --arg sha "$_full_sha" \
                     '[.[].check_suites[]? | select(.head_sha==$sha) | .created_at] | map(select(. != null and . != "")) | sort | .[0] // empty' \

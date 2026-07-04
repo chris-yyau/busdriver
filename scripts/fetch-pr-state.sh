@@ -142,14 +142,19 @@ _fetch_pr_state() {
         # BRANCH+SHA-bound fallback freshness anchor (#269): HEAD_PUSH_DATE (PushEvent) is
         # preferred, but it is empty for a brand-new branch whose FIRST push CREATED the ref
         # (GitHub emits a CreateEvent, not a PushEvent) — a genuine fresh Codex 👍 then
-        # fail-closes to stale forever. Fall back to the earliest check-SUITE created_at that is
-        # stamped for THIS branch AND THIS HEAD SHA (select head_branch==branch AND
-        # head_sha==full-oid). GitHub stamps the suite created_at when HEAD is pushed to the
-        # branch, so it marks when THIS SHA landed on THIS branch — a suite from another
-        # branch/run that merely shares the SHA has a different head_branch and is EXCLUDED, so
-        # it cannot make a stale +1 look fresh. Unlike a check-RUN started_at or the git
-        # committer date, the suite created_at is NOT app/client-settable (preserves #186/#189).
-        # No matching suite (no CI yet, fork namespace, or not created) → empty → ack-ledger
+        # fail-closes to stale forever. Fall back to the earliest check-SUITE created_at stamped
+        # for THIS HEAD SHA. The endpoint is already SHA-scoped (/commits/<sha>/check-suites), so
+        # do NOT also filter on head_branch (#271): GitHub emits ONE check_suite per commit SHA
+        # GLOBALLY (docs: "usually only one check_suite event per commit SHA, even if you push the
+        # SHA to more than one branch"), so the suite's head_branch is whatever branch the SHA was
+        # FIRST pushed to — which may differ from this PR branch, or be null (forks / not detected).
+        # Filtering head_branch==branch would drop the only suite and fail-close a genuinely-fresh
+        # ack to stale forever. Anchoring on the SHA alone stays safe: created_at is content-bound
+        # (when CI first saw THIS SHA's content) and the EARLIEST is the most conservative choice
+        # (older = fail-closed toward stale). Unlike a check-RUN started_at or the git committer
+        # date, the suite created_at is NOT app/client-settable (preserves #186/#189). The
+        # head_sha==$sha guard is retained as belt-and-suspenders against a payload the endpoint
+        # scope wouldn't. No suite (no CI yet, fork namespace, or not created) → empty → ack-ledger
         # fails closed to stale. Fetched only when HEAD_PUSH_DATE is empty. Best-effort (never
         # trips FETCH_OK).
         HEAD_CHECKS_DATE=""
@@ -157,8 +162,8 @@ _fetch_pr_state() {
             # Use the FULL 40-char OID for both the API path and the jq head_sha filter
             # (HEAD_SHA is the 8-char prefix; a short SHA can be ambiguous / unresolved).
             HEAD_CHECKS_DATE=$(gh api --paginate "repos/$owner/$name/commits/$_full_sha/check-suites" 2>/dev/null \
-                | jq -rs --arg branch "$_pr_branch" --arg sha "$_full_sha" \
-                    '[.[].check_suites[]? | select(.head_branch==$branch and .head_sha==$sha) | .created_at] | map(select(. != null and . != "")) | sort | .[0] // empty' \
+                | jq -rs --arg sha "$_full_sha" \
+                    '[.[].check_suites[]? | select(.head_sha==$sha) | .created_at] | map(select(. != null and . != "")) | sort | .[0] // empty' \
                 2>/dev/null || echo "")
         fi
     else

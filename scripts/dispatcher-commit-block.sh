@@ -360,8 +360,23 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     if [[ -n "$_policy_status" ]]; then
         emit_bail "judgment" "excluded-only marker but the exclusion policy ($_policy_rel) has uncommitted or untracked changes; the policy governing an excluded-only auto-pass must be committed and reviewed"
     fi
-    # STEP 2 (policy now proven committed): the staged diff filtered through the
-    # SAME exclusion logic the producer used must be empty. Any non-excluded
+    # The exclusion LOGIC (exclude-generated.sh) is the OTHER input to the filter:
+    # its hardcoded defaults + review-exclude parse decide what counts as excluded.
+    # It is normally trusted plugin code OUTSIDE the reviewed worktree (the plugin
+    # cache), but when the plugin root IS the worktree (busdriver self-review) an
+    # uncommitted change to it could redefine REVIEW_EXCLUDE_ARGS to over-exclude
+    # real source. If the sourced logic file is tracked INSIDE this worktree,
+    # require it committed-clean too; if it lives outside (the usual plugin case),
+    # ls-files --error-unmatch yields nothing and this is a no-op (trusted).
+    _excl_logic_rel=$(git ls-files --full-name --error-unmatch -- "$LITMUS_SCRIPTS/lib/exclude-generated.sh" 2>/dev/null || true)
+    if [[ -n "$_excl_logic_rel" ]]; then
+        _excl_logic_status=$(git status --porcelain --untracked-files=all -- "$_excl_logic_rel" 2>/dev/null || true)
+        if [[ -n "$_excl_logic_status" ]]; then
+            emit_bail "judgment" "excluded-only marker but the exclusion logic ($_excl_logic_rel) has uncommitted changes; the logic governing an excluded-only auto-pass must be committed and reviewed"
+        fi
+    fi
+    # STEP 2 (policy + logic now proven committed): the staged diff filtered through
+    # the SAME exclusion logic the producer used must be empty. Any non-excluded
     # staged content ⇒ stale or mismatched marker ⇒ bail.
     # shellcheck source=/dev/null
     . "$LITMUS_SCRIPTS/lib/exclude-generated.sh" || \

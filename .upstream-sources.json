@@ -1561,30 +1561,6 @@
       "upstream_path": "scripts/claw.js"
     },
     {
-      "path": "scripts/codex/check-codex-global-state.sh",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/codex/check-codex-global-state.sh"
-    },
-    {
-      "path": "scripts/codex/install-global-git-hooks.sh",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/codex/install-global-git-hooks.sh"
-    },
-    {
-      "path": "scripts/codex/merge-codex-config.js",
-      "status": "sync",
-      "upstream_path": "scripts/codex/merge-codex-config.js",
-      "source": "ecc"
-    },
-    {
-      "path": "scripts/codex/merge-mcp-config.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/codex/merge-mcp-config.js"
-    },
-    {
       "path": "scripts/doctor.js",
       "source": "ecc",
       "status": "sync",
@@ -2260,12 +2236,6 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/status.js"
-    },
-    {
-      "path": "scripts/sync-ecc-to-codex.sh",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "scripts/sync-ecc-to-codex.sh"
     },
     {
       "path": "scripts/uninstall.js",

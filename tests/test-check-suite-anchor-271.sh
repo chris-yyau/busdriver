@@ -11,9 +11,18 @@
 # the pr-grind markdown mirrors.
 set -uo pipefail
 
-# The canonical filter (must stay byte-identical to the shipped call sites).
-# shellcheck disable=SC2016  # $sha is a jq --arg variable, not a shell expansion
-FILTER='[.[].check_suites[]? | select(.head_sha==$sha) | .created_at] | map(select(. != null and . != "")) | sort | .[0] // empty'
+# The canonical filter, extracted directly from the shipped call site in
+# scripts/fetch-pr-state.sh (rather than a hand-copied literal) so any future
+# edit to the production jq expression fails THIS test instead of silently
+# drifting from a stale copy (CodeRabbit, PR #280).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FETCH_PR_STATE="${SCRIPT_DIR}/../scripts/fetch-pr-state.sh"
+FILTER=$(awk '/jq -rs --arg sha "\$_full_sha"/{getline; print; exit}' "$FETCH_PR_STATE" \
+  | sed -E "s/^[[:space:]]*'(.*)'[[:space:]]*\\\\?$/\\1/")
+if [[ -z "$FILTER" ]]; then
+  echo "FAIL: could not extract FILTER from $FETCH_PR_STATE"
+  exit 1
+fi
 
 pass=0 fail=0
 check() {

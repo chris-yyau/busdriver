@@ -696,9 +696,14 @@ if [ -z "$STAGED_DIFF" ]; then
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR_REVIEWED_DIFF_HASH" >> "$PR_STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
     else
       # Commit mode: pre-commit gate accepts marker existence without hash
-      # verification due to TOCTOU constraints.
+      # verification due to TOCTOU constraints. Use a self-identifying
+      # PASS-EXCLUDED-<epoch> marker (not a bare PASS-<epoch>) so the dispatcher
+      # commit-block (#278) recognizes an excluded-only auto-pass and re-verifies
+      # the staged diff is genuinely all-excluded, instead of hard-bailing
+      # because the marker is not a 64-hex diff hash.
       mkdir -p "$STATE_DIR"
-      echo "PASS-$(date +%s)" > "$STATE_DIR/litmus-passed.local"
+      _excluded_epoch=$(date +%s)
+      echo "PASS-EXCLUDED-$_excluded_epoch" > "$STATE_DIR/litmus-passed.local"
     fi
     # Clean up state file and iteration history
     clear_iteration_history

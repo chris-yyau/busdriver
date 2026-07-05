@@ -27,14 +27,7 @@ source "${_ULTIMATE_CFG_DIR}/resolve-cli.sh"
 # ultimate_config_get_user <jq-path> <default>
 # Reads ONLY the user config (~/.claude/busdriver.json) — NEVER the repo-controlled
 # project config (mirrors ultra_oracle_config_get_user).
-ultimate_config_get_user() {
-  local jq_path="$1" default="$2" val="" state_dir="${BUSDRIVER_STATE_DIR:-.claude}"
-  local user_config="$HOME/$state_dir/busdriver.json"
-  if [[ -f "$user_config" ]]; then
-    val="$(_read_config_value "$user_config" "$jq_path" 2>/dev/null || true)"
-  fi
-  if [[ -n "$val" && "$val" != "null" ]]; then printf '%s' "$val"; else printf '%s' "$default"; fi
-}
+ultimate_config_get_user() { _read_user_config_value "$1" "$2"; }
 
 # ultimate_surface_enabled <arbiter|council> -> exit 0 if that ultimate surface is opted in.
 # USER config ONLY (security-sensitive — enabling transmits content to an external gateway).

@@ -542,21 +542,31 @@ _ref="refs/heads/${PR_BRANCH:-}"
 HEAD_PUSH_DATE=$(gh api --paginate "repos/$OWNER/$REPO/events?per_page=100" 2>/dev/null \
   | jq -rs --arg head "$HEAD_FULL_SHA" --arg ref "$_ref" \
     '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else false end))] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
-# HEAD_CHECKS_DATE (#269): BRANCH+SHA-bound fallback freshness anchor. HEAD_PUSH_DATE
+# HEAD_CHECKS_DATE (#269): SHA-bound fallback freshness anchor. HEAD_PUSH_DATE
 # (PushEvent) is preferred, but it is empty for a brand-new branch whose FIRST push CREATED
 # the ref (GitHub emits a CreateEvent, not a PushEvent) — a genuine fresh Codex 👍 then
 # fail-closes to stale forever. Fall back to the earliest check-SUITE created_at stamped for
-# THIS branch AND THIS HEAD SHA (select head_branch==branch AND head_sha==full-oid). GitHub
-# stamps the suite created_at when HEAD is pushed to the branch, marking when THIS SHA landed
-# on THIS branch — a suite from another branch/run that merely shares the SHA has a different
-# head_branch and is EXCLUDED, so it cannot make a stale +1 look fresh. Unlike a check-RUN
-# started_at or the committer date, the suite created_at is NOT app/client-settable (preserves
-# #186/#189). No matching suite (no CI yet, fork ns) → empty → ack-ledger fails closed.
+# THIS HEAD SHA. Do NOT also filter on head_branch (#271): GitHub emits ONE check_suite per
+# commit SHA GLOBALLY (docs), so the suite's head_branch is whatever branch the SHA was FIRST
+# pushed to — which may differ from this PR branch, or be null (forks) — and filtering it out
+# would drop the only suite and fail-close a fresh ack to stale forever. The endpoint is
+# already SHA-scoped and created_at is content-bound; the EARLIEST is the most conservative
+# (older = fail-closed). Unlike a check-RUN started_at or the committer date, the suite
+# created_at is NOT app/client-settable (preserves #186/#189). No suite (no CI yet, fork ns)
+# → empty → ack-ledger fails closed.
 HEAD_CHECKS_DATE=""
+# Fail-CLOSED (litmus, PR #280): require PR_BRANCH known before using this fallback,
+# EVEN THOUGH the jq filter below is SHA-only. GitHub emits per-(SHA,ref) check-suites
+# (a `refs/pull/N/head` suite can carry an older created_at than the real PR-head push),
+# so a SHA-only lookup run with the branch UNKNOWN could anchor Codex-ack freshness on a
+# backdated suite and accept a stale 👍 / resolved thread as fresh. When PR_BRANCH is empty
+# (transient `gh pr view` failure, deleted/fork branch) we cannot confirm the suite belongs
+# to this PR — fail closed to stale (one extra wait-round / codex-retrigger) rather than
+# risk a backdated ack. The guard is deliberate, not dead code.
 if [ -z "$HEAD_PUSH_DATE" ] && [ -n "${PR_BRANCH:-}" ] && [ -n "${HEAD_FULL_SHA:-}" ]; then
   HEAD_CHECKS_DATE=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_FULL_SHA/check-suites" 2>/dev/null \
-    | jq -rs --arg branch "$PR_BRANCH" --arg sha "$HEAD_FULL_SHA" \
-      '[.[].check_suites[]? | select(.head_branch==$branch and .head_sha==$sha) | .created_at] | map(select(. != null and . != "")) | sort | .[0] // empty' 2>/dev/null || echo "")
+    | jq -rs --arg sha "$HEAD_FULL_SHA" \
+      '[.[].check_suites[]? | select(.head_sha==$sha) | .created_at] | map(select(. != null and . != "")) | sort | .[0] // empty' 2>/dev/null || echo "")
 fi
 
 # Per-bot ack — emits one of: <short-sha> | none | stale via the canonical

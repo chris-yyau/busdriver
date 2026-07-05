@@ -1,6 +1,6 @@
 ---
 name: loop-operator
-description: Operate autonomous agent loops, monitor progress, and intervene safely when loops stall.
+description: Operate autonomous agent loops, monitor progress, and intervene safely when loops stall. Use when running or babysitting a continuous/autonomous loop, tracking its progress, or deciding how to intervene when it stalls, thrashes, or drifts off-task.
 tools: ["Read", "Grep", "Glob", "Bash", "Edit"]
 model: sonnet
 effort: medium

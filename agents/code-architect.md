@@ -1,6 +1,6 @@
 ---
 name: code-architect
-description: Designs feature architectures by analyzing existing codebase patterns and conventions, then providing implementation blueprints with concrete files, interfaces, data flow, and build order.
+description: Designs feature architectures by analyzing existing codebase patterns and conventions, then providing implementation blueprints with concrete files, interfaces, data flow, and build order. Use when planning a new feature or refactor and you need a concrete, codebase-grounded implementation blueprint before writing code.
 model: opus
 effort: xhigh
 tools: [Read, Grep, Glob, Bash]

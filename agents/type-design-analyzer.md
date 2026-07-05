@@ -1,6 +1,6 @@
 ---
 name: type-design-analyzer
-description: Analyze type design for encapsulation, invariant expression, usefulness, and enforcement.
+description: Analyze type design for encapsulation, invariant expression, usefulness, and enforcement. Use when reviewing or designing types, interfaces, or schemas — to check whether they encapsulate state, make illegal states unrepresentable, and enforce invariants at compile time.
 model: sonnet
 effort: high
 tools: [Read, Grep, Glob, Bash]

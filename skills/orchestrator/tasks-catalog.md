@@ -23,8 +23,9 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Research** | search for libraries | `busdriver:search-first` |
 | **Deep Research** | research X thoroughly, cited reports | `busdriver:deep-research` (multi-source synthesis: Tavily CLI for general/news, Exa MCP for neural/technical, Firecrawl CLI for deep page extraction) |
 | **Web Search (general)** | news, current events, broad lookups | `busdriver:tavily-search` (fast LLM-optimized search) or `busdriver:tavily-cli` (search/extract/crawl/map/research suite — vendored Tavily CLI, free tier ~1k/mo) |
-| **Web Extract / Crawl / Map** | page extract, site crawl, list site URLs, discover pages | `busdriver:tavily-cli` (or focused variants: `busdriver:tavily-extract`, `busdriver:tavily-crawl`, `busdriver:tavily-map`, `busdriver:tavily-research`, `busdriver:tavily-dynamic-search`) |
+| **Web Extract / Crawl / Map** | page extract, site crawl, list site URLs, discover pages | `busdriver:tavily-cli` (or focused variants: `busdriver:tavily-extract`, `busdriver:tavily-crawl`, `busdriver:tavily-map`, `busdriver:tavily-research`, `busdriver:tavily-dynamic-search`; for API/param guidance see `busdriver:tavily-best-practices`) |
 | **Scrape / Crawl / Monitor a site** | scrape page, crawl docs, download site, watch for changes, JS-rendered/interactive pages | `busdriver:firecrawl` (or focused variants: `busdriver:firecrawl-scrape`, `busdriver:firecrawl-crawl`, `busdriver:firecrawl-map`, `busdriver:firecrawl-download`, `busdriver:firecrawl-interact`, `busdriver:firecrawl-monitor`, `busdriver:firecrawl-search`, `busdriver:firecrawl-agent`, `busdriver:firecrawl-parse`) |
+| **Firecrawl app integration** | embed Firecrawl in product code, add FIRECRAWL_API_KEY, SDK setup, scrape/search/interact in an app | `busdriver:firecrawl-build-onboarding` (creds + SDK setup) then `busdriver:firecrawl-build-scrape` / `busdriver:firecrawl-build-search` / `busdriver:firecrawl-build-interact` |
 | **Library / API Docs** | up-to-date library docs, framework API reference, package usage | `busdriver:context7-cli` (ctx7 CLI — fetch current docs for any library) |
 | **Neural Search** | code/papers, company intel, people lookup, technical content | Exa MCP (`mcp__claude_ai_Exa__web_search_exa`, `mcp__claude_ai_Exa__web_fetch_exa`) |
 | **Rules Distillation** | distill rules from skills | `/rules-distill` command |
@@ -79,7 +80,7 @@ Use Skill tool unless marked "agent" (Agent tool) or "command" (`/name`).
 | **Code Polish** | simplify code, make clearer, refine | `code-simplifier` agent |
 | **Code Architecture Improvement** | deepen design, find architectural opportunities | `improve-codebase-architecture` |
 | **Docs Setup** | set up docs, audit docs, standardize docs | `busdriver:docs-setup` |
-| **SEO** | SEO audit, schema markup, search visibility | `seo` / `seo-audit` / `schema-markup` / `ai-seo`. Agent: `seo-specialist` |
+| **SEO** | SEO audit, schema markup, search visibility | `seo` (live — technical SEO + structured data + AI search) / `marketing-seo-audit` (vault) / `marketing-schema` (vault) / `marketing-ai-seo` (vault). Agent: `seo-specialist` |
 | **Site Audit** | audit website, site health, broken links, technical/perf/security site scan | `busdriver:audit-website` (squirrelscan CLI — 230+ rules across SEO/perf/security/content; health scores + broken-link + meta analysis. Complements `busdriver:seo` for whole-site crawl-based audits) |
 | **Jira** | Jira tickets, issue tracking | `/jira` (vault — command shim archived; read `commands-archive/jira.md`) + `jira-integration` (vault) |
 | **GitHub Ops** | GitHub issues, PRs, releases, CI status | `github-ops` |

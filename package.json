@@ -9,8 +9,8 @@
     "validate": "node scripts/ci/validate-all.js"
   },
   "devDependencies": {
-    "@commitlint/cli": "^19.8.1",
-    "@commitlint/config-conventional": "^19.8.1",
+    "@commitlint/cli": "^21.2.0",
+    "@commitlint/config-conventional": "^21.2.0",
     "@vitest/coverage-v8": "^4.1.9",
     "ajv": "^8.20.0",
     "vitest": "^4.1.8"

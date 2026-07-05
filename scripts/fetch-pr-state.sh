@@ -22,10 +22,14 @@
 #   HEAD_COMMITTED_DATE  (ISO-8601 committer date of HEAD)
 #   HEAD_PUSH_DATE       (ISO-8601 push-event timestamp of HEAD; best-effort,
 #                         empty when the events API has no matching PushEvent)
-#   HEAD_CHECKS_DATE     (#269 ISO-8601 earliest check-SUITE created_at stamped for THIS
-#                         branch AND HEAD SHA; branch+SHA-bound, GitHub-server-stamped
-#                         fallback anchor populated ONLY when HEAD_PUSH_DATE is empty;
-#                         ack-ledger prefers HEAD_PUSH_DATE)
+#   HEAD_CHECKS_DATE     (#269 ISO-8601 earliest check-SUITE created_at for HEAD SHA
+#                         ALONE — SHA-bound; the jq filter does NOT check head_branch
+#                         (#271, GitHub emits one check_suite per SHA globally). Gated
+#                         on `_pr_branch` being known (fail-closed guard, PR #280) before
+#                         this fallback runs at all — that gate is a pre-condition, not a
+#                         filter criterion, so "branch+SHA-bound" was inaccurate.
+#                         GitHub-server-stamped fallback anchor populated ONLY when
+#                         HEAD_PUSH_DATE is empty; ack-ledger prefers HEAD_PUSH_DATE)
 #
 # Shapes (mirrored from agents/pr-grinder.md Step 6.5 fetch block):
 #   ALL_REVIEWS    : output of `gh api --paginate repos/{owner}/{repo}/pulls/{n}/reviews`

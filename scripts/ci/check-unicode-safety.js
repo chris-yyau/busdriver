@@ -86,10 +86,23 @@ const targetedReplacements = [
   [new RegExp(String.fromCodePoint(0x2728), 'gu'), ''],
 ];
 
+function isIgnoredClaudeSubdirSegment(parts) {
+  // Check EVERY `.claude` segment in the path, not just the first — a
+  // `.claude` component can recur deeper in a path (e.g. a fixture tree
+  // that nests another `.claude/`), and only checking indexOf's first hit
+  // would let a transient subdir under a later `.claude` segment slip
+  // through unskipped.
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    if (parts[i] === '.claude' && ignoredClaudeSubdirs.has(parts[i + 1])) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function shouldSkip(entryPath) {
   const parts = entryPath.split(path.sep);
-  const claudeIndex = parts.indexOf('.claude');
-  if (claudeIndex !== -1 && ignoredClaudeSubdirs.has(parts[claudeIndex + 1])) {
+  if (isIgnoredClaudeSubdirSegment(parts)) {
     return true;
   }
   return parts.some(part => ignoredDirs.has(part));
@@ -229,6 +242,13 @@ function collectMatches(text, regex, kind) {
 
 const emojiBaseRe = /\p{Extended_Pictographic}/u;
 
+// A BMP variation selector (U+FE00–FE0F) that immediately follows an emoji
+// base is legitimate emoji-style rendering (⚠️, ℹ️) — not smuggling.
+// Everything else, including a bare/dangling selector, stays flagged.
+function isLegitimateEmojiVariationSelector(codePoint, prevChar) {
+  return codePoint >= 0xFE00 && codePoint <= 0xFE0F && emojiBaseRe.test(prevChar);
+}
+
 function collectDangerousInvisibleMatches(text) {
   const matches = [];
   let index = 0;
@@ -237,12 +257,7 @@ function collectDangerousInvisibleMatches(text) {
   for (const char of text) {
     const codePoint = char.codePointAt(0);
     if (isDangerousInvisibleCodePoint(codePoint)) {
-      // A BMP variation selector (U+FE00–FE0F) that immediately follows an emoji
-      // base is legitimate emoji-style rendering (⚠️, ℹ️) — not smuggling.
-      // Everything else, including a bare/dangling selector, stays flagged.
-      const isEmojiVariationSelector =
-        codePoint >= 0xFE00 && codePoint <= 0xFE0F && emojiBaseRe.test(prevChar);
-      if (!isEmojiVariationSelector) {
+      if (!isLegitimateEmojiVariationSelector(codePoint, prevChar)) {
         const { line, column } = lineAndColumn(text, index);
         matches.push({
           kind: 'dangerous-invisible',

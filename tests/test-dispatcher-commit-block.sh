@@ -716,6 +716,42 @@ test_r5_excluded_marker_rejects_policy_deletion() {
     assert_json "$dispatcher_json" \
         '.bail_category == "judgment" and (.bail_reason | contains("exclusion policy"))'
 }
+# #281 no-escape: an excluded-only marker must not be trusted when a policy path
+# COMPONENT (.claude) is a committed gitlink/submodule (mode 160000). A gitlink is
+# not a symlink, so the -L guard misses it; and `git status -- .claude/review-exclude`
+# does not descend into a submodule (its dirty bytes surface only as `M .claude`),
+# so the committed-clean check is blind to divergent review-exclude bytes read
+# through it. The dispatcher must reject the gitlink component outright, before the
+# (blind) committed-clean status check.
+test_r6_excluded_marker_rejects_gitlink_policy_component() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
+
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+    git -C "$sandbox" reset -q --hard HEAD
+    # Commit .claude as a GITLINK (mode 160000) instead of a normal tree. Git cannot
+    # hold both a gitlink at .claude AND a tracked child under it, so clear any
+    # indexed .claude/* first — the current fixture tracks only file.txt, but this
+    # keeps the setup correct if the fixture ever starts tracking .claude/*.
+    git -C "$sandbox" rm -r -q --cached --ignore-unmatch .claude 2>/dev/null || true
+    mkdir -p "$sandbox/.claude"
+    # Physical review-exclude stays present (untracked inside the gitlink dir) so
+    # build_exclude_args COULD still read it — but the guard must bail before that.
+    # cacheinfo needs a real object sha; initial_sha is a committed sha in-repo.
+    printf '.claude/review-exclude\n**/*.min.js\n' > "$sandbox/.claude/review-exclude"
+    git -C "$sandbox" update-index --add --cacheinfo "160000,$initial_sha,.claude"
+    git -C "$sandbox" commit --no-gpg-sign -qm "add .claude gitlink"
+    # Stage an excluded-only diff so nothing else bails first.
+    mkdir -p "$sandbox/pkg"; printf 'var x=1\n' > "$sandbox/pkg/vendor.min.js"
+    git -C "$sandbox" add pkg/vendor.min.js
+    litmus_mode=excluded_pass
+    run_dispatcher_capture
+
+    [[ "$dispatcher_exit" -eq 1 ]] || return 1
+    assert_json "$dispatcher_json" \
+        '.bail_category == "judgment" and (.bail_reason | contains("gitlink"))'
+}
 test_s_bail_envelope_roundtrip() {
     local sandbox plugin_root shimdir remote original_dir initial_sha
     local dispatcher_output dispatcher_exit dispatcher_json litmus_mode bail_json empty_json

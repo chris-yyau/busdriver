@@ -356,15 +356,24 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     _policy_state_dir="${BUSDRIVER_STATE_DIR:-.claude}"
     case "$_policy_state_dir" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) _policy_state_dir=".claude" ;; esac
     _policy_rel="$_policy_state_dir/review-exclude"
-    # Reject a COMMITTED symlink at ANY in-worktree path component (leaf OR a
-    # parent dir) of the policy/logic files. `git status --porcelain` tracks only a
-    # symlink's target-string blob, not its target's content, so a symlinked
-    # component (e.g. `lib/` → an external dir) makes a leaf-only -L test pass while
-    # the later exclusion read / `.`-source follows it to unverified, mutated
-    # content (Cursor/Cubic/Codex + litmus, PR #280). Walk every prefix and bail on
-    # the first symlink. $1 = worktree root, $2 = path relative to it.
-    _reject_symlink_components() {
-        local _root="$1" _rel="$2" _prefix="" _seg _segs
+    # Reject an UNTRUSTED path component (COMMITTED symlink OR gitlink/submodule) at
+    # ANY in-worktree component (leaf OR parent dir) of the policy/logic files:
+    #   - symlink: `git status --porcelain` tracks only a symlink's target-string
+    #     blob, not its target's content, so a symlinked component (e.g. `lib/` → an
+    #     external dir) makes a leaf-only -L test pass while the later exclusion read
+    #     / `.`-source follows it to unverified, mutated content (Cursor/Cubic/Codex
+    #     + litmus, PR #280).
+    #   - gitlink: a committed submodule (mode 160000) is a directory, not a symlink,
+    #     so the -L test never fires; and `git status --porcelain -- <path-inside>`
+    #     does not descend into a submodule (its dirtiness surfaces only as
+    #     `M <submodule>`, scoped to the gitlink path), so the committed-clean check
+    #     below is blind to divergent review-exclude / logic bytes read through it
+    #     (Codex P2, issue #281). busdriver has no submodules, so any gitlink on this
+    #     path is anomalous — reject it fail-closed.
+    # Walk every prefix and bail on the first untrusted component.
+    # $1 = worktree root, $2 = path relative to it.
+    _reject_untrusted_components() {
+        local _root="$1" _rel="$2" _prefix="" _seg _segs _mode
         IFS=/ read -r -a _segs <<< "$_rel"
         for _seg in "${_segs[@]}"; do
             [[ -z "$_seg" || "$_seg" == "." ]] && continue
@@ -372,9 +381,21 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
             if [[ -L "$_root/$_prefix" ]]; then
                 emit_bail "judgment" "excluded-only marker but in-worktree path component '$_prefix' is a symlink; a symlinked component cannot be trusted since git status verifies only the symlink blob, not its target's content"
             fi
+            # gitlink (submodule) = mode 160000 in the index. Read the mode from the
+            # first ls-files record for this prefix; a normal dir reports blob modes
+            # (100644/100755) for its children, never 160000, so this cannot
+            # false-positive. NOTE: no early awk `exit` — under `set -e`/`pipefail` an
+            # awk that exits mid-stream would SIGPIPE `git ls-files` (141) on a prefix
+            # with many tracked descendants (e.g. skills/), aborting the script
+            # WITHOUT a fail-closed bail. awk reads to EOF; `|| true` keeps the
+            # pipeline non-fatal if git itself errors.
+            _mode=$(git -C "$_root" ls-files --stage -- "$_prefix" 2>/dev/null | awk 'NR==1{print $1}' || true)
+            if [[ "$_mode" == "160000" ]]; then
+                emit_bail "judgment" "excluded-only marker but in-worktree path component '$_prefix' is a gitlink/submodule (mode 160000); a submodule cannot be trusted since git status of a path inside it does not descend to verify the committed content"
+            fi
         done
     }
-    _reject_symlink_components "$WORKTREE_DIR" "$_policy_rel"
+    _reject_untrusted_components "$WORKTREE_DIR" "$_policy_rel"
     # Distinguish "git status succeeded, output empty (clean)" from "git status
     # FAILED": a bare `2>/dev/null || true` would collapse an error into empty and
     # fail OPEN. Only an empty status from a SUCCESSFUL run means clean.
@@ -478,7 +499,7 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     # root and worktree to their PHYSICAL paths ONCE, using only trusted
     # operator/environment-set roots (not attacker-controlled path
     # components), purely to catch that classification mismatch — it does not
-    # replace or weaken the lexical + _reject_symlink_components defense used
+    # replace or weaken the lexical + _reject_untrusted_components defense used
     # for the already-in-worktree case below (that stays lexical-only, per
     # the rationale a few lines up).
     if [[ "$_excl_logic_file" != "$_wt"/* ]]; then
@@ -492,10 +513,11 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     case "$_excl_logic_file" in
         "$_wt"/*)
             _excl_logic_rel="${_excl_logic_file#"$_wt"/}"
-            # Reject a committed symlink at any component of the logic path (leaf or
-            # a parent dir), same rationale as the policy check above — a leaf-only
-            # -L test misses a symlinked parent like `lib/` (litmus, PR #280).
-            _reject_symlink_components "$_wt" "$_excl_logic_rel"
+            # Reject a committed symlink or gitlink at any component of the logic path
+            # (leaf or a parent dir), same rationale as the policy check above — a
+            # leaf-only -L test misses a symlinked parent like `lib/` (litmus, PR #280)
+            # and a submodule component entirely (Codex P2, issue #281).
+            _reject_untrusted_components "$_wt" "$_excl_logic_rel"
             # Same fail-CLOSED discipline as the policy guard: a git status error
             # must bail, not collapse to empty (clean) via `|| true`.
             if _excl_logic_status=$(git status --porcelain --untracked-files=all --ignored -- "$_excl_logic_rel" 2>/dev/null); then

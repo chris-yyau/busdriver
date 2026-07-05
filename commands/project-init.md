@@ -83,4 +83,4 @@ Never replace an existing `CLAUDE.md` without showing a diff and receiving appro
 - `config/project-stack-mappings.json` for stack-to-surface hints
 - `scripts/install-plan.js` for deterministic plan resolution
 - `scripts/install-apply.js` for dry-run and apply operations
-- `/ecc-guide` for interactive feature discovery before installing
+- the `configure-ecc` skill for interactive feature discovery before installing

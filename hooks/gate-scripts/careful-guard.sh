@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # careful-guard.sh — PreToolUse hook for Bash commands
 # Detects destructive operations and triggers confirmation prompt.
-# Returns {"permissionDecision":"ask","message":"..."} to warn, or {} to allow.
+# Emits the PreToolUse hookSpecificOutput schema (permissionDecision "ask") to warn,
+# or {} to allow. The old top-level {"permissionDecision":...} shape was ignored by
+# the harness, leaving the guard silently inert.
 #
 # Ported from garrytan/gstack careful/bin/check-careful.sh (MIT)
 # Stripped: telemetry, kubectl/docker patterns (not relevant for solo dev)
 # Added: git clean -f detection
 set -euo pipefail
+
+# Advisory guard: on any internal error, fail OPEN (allow) rather than blocking
+# every Bash command. This is a warn/ask guard, not a fail-closed review gate.
+trap 'echo "{}"; exit 0' ERR
 
 INPUT=$(cat)
 CMD=""
@@ -108,7 +114,7 @@ fi
 # --- Output ---
 if [[ -n "$WARN" ]]; then
   WARN_ESCAPED=$(printf '%s' "$WARN" | sed 's/"/\\"/g')
-  printf '{"permissionDecision":"ask","message":"[careful] %s"}\n' "$WARN_ESCAPED"
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"[careful] %s"}}\n' "$WARN_ESCAPED"
 else
   echo '{}'
 fi

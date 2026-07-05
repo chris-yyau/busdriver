@@ -123,7 +123,7 @@ This command invokes:
 ## Related Commands
 
 - `/plan` — Strategic planning before a campaign
-- `/plan-prd` — Product requirements document before briefing a campaign
+- `/prp-prd` — Product requirements document before briefing a campaign
 - `/code-review` — Review code behind a landing page implementation
 
 ---

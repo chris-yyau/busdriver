@@ -221,7 +221,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Write|Edit|Bash",
+        "matcher": "Write|Edit|MultiEdit|Bash",
         "hooks": [
           {
             "type": "command",
@@ -232,7 +232,7 @@
         "description": "[STATE] Flag design docs for review gate"
       },
       {
-        "matcher": "Edit",
+        "matcher": "Write|Edit|MultiEdit",
         "hooks": [
           {
             "type": "command",

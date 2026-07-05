@@ -165,6 +165,13 @@ function findViolations(filePath, source) {
 
   if (WRITE_PERMISSION_PATTERN.test(source) || WRITE_ALL_PATTERN.test(source)) {
     for (const step of checkoutSteps) {
+      // Honor an explicit `# zizmor: ignore[artipacked]` on the checkout step.
+      // `artipacked` is zizmor's own rule for this exact finding (persisted
+      // checkout credentials); workflows that must push (release tags, pinact
+      // auto-fix commits) annotate the intentional exception there.
+      if (/zizmor:\s*ignore\[[^\]]*artipacked[^\]]*\]/.test(step.text)) {
+        continue;
+      }
       if (!/persist-credentials:\s*['"]?false['"]?\b/m.test(step.text)) {
         violations.push({
           filePath,

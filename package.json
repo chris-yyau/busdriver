@@ -5,7 +5,8 @@
   "description": "Unified workflow orchestrator for Claude Code",
   "scripts": {
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "validate": "node scripts/ci/validate-all.js"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.8.1",

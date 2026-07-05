@@ -37,7 +37,22 @@ block_emit() {
 
 # Consume stdin
 INPUT=$(cat 2>/dev/null || true)
-[ -z "$INPUT" ] && exit 0
+[[ -z "$INPUT" ]] && exit 0
+
+# ── Fail CLOSED when python3 is unavailable ──────────────────────────
+# A freeze is active (checked above) but without python3 we cannot parse the
+# tool input to learn the target path. Every sibling gate blocks in this state;
+# freeze-guard must too, or it silently fails OPEN and lets out-of-scope edits
+# through. The matcher is Write|Edit|MultiEdit only, so blocking here never
+# touches Bash — `rm .claude/freeze-scope.local` still unfreezes.
+if ! command -v python3 &>/dev/null; then
+    block_emit "FREEZE/GUARD: python3 not found — cannot verify the edit target while a freeze is active, so this write is blocked (fail-closed).
+
+Allowed scope: $ALLOWED_SCOPE
+
+Install python3 to restore scope checking, or unfreeze via Bash: rm .claude/freeze-scope.local"
+    exit 0
+fi
 
 # ── Parse tool name and file path ────────────────────────────────────
 TOOL_NAME=""
@@ -52,6 +67,14 @@ try:
     if isinstance(inp, str):
         inp = json.loads(inp)
     fp = inp.get("file_path", inp.get("filePath", ""))
+    if not fp and tool == "MultiEdit":
+        # MultiEdit carries file_path at the top level in the common case;
+        # fall back to the first edits[] entry, mirroring the sibling hooks
+        # (post-edit-accumulator.js, gateguard-fact-force.js) that handle
+        # the same MultiEdit shape.
+        edits = inp.get("edits", [])
+        if isinstance(edits, list) and edits and isinstance(edits[0], dict):
+            fp = edits[0].get("file_path", edits[0].get("filePath", ""))
     print(tool + "|" + fp)
 except Exception:
     print("|")

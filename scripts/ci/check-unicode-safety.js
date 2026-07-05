@@ -1,5 +1,13 @@
 #!/usr/bin/env node
 
+// Unicode SMUGGLING gate. The threat model is INVISIBLE unicode that hides
+// content from a human reviewer while the LLM still consumes it: zero-width
+// chars, bidi overrides, the deprecated Tag block (ASCII smuggling), variation-
+// selector supplements, and other zero-width format controls. Decorative emoji
+// (✅ ❌ ⚠️ 👍) are VISIBLE and cannot smuggle anything, so they are NOT flagged
+// by default — this repo uses status emoji throughout by design. Opt into the
+// stricter "no emoji in source" policy with ECC_UNICODE_SCAN_EMOJI=1.
+
 const fs = require('fs');
 const path = require('path');
 
@@ -8,6 +16,9 @@ const repoRoot = process.env.ECC_UNICODE_SCAN_ROOT
   : path.resolve(__dirname, '..', '..');
 
 const writeMode = process.argv.includes('--write');
+// Off by default: emoji are visible and not a smuggling vector. Set to 1 to
+// additionally forbid decorative emoji in source.
+const scanEmoji = process.env.ECC_UNICODE_SCAN_EMOJI === '1';
 
 const ignoredDirs = new Set([
   '.git',
@@ -18,6 +29,14 @@ const ignoredDirs = new Set([
   'coverage',
   'venv',
 ]);
+
+// .claude/ holds a mix of committed config (CLAUDE.md, busdriver.json,
+// review-exclude) and transient run artifacts (worktrees, ultra-oracle runs,
+// review outputs). Excluding the whole tree would blind the scanner to the
+// committed files — exactly the high-risk area (LLM-consumed instructions)
+// this gate exists to protect against smuggling. Skip only the known
+// transient subdirectories, wherever they appear directly under `.claude/`.
+const ignoredClaudeSubdirs = new Set(['worktrees', 'ultra-oracle', '_backstop']);
 
 const textExtensions = new Set([
   '.md',
@@ -67,8 +86,26 @@ const targetedReplacements = [
   [new RegExp(String.fromCodePoint(0x2728), 'gu'), ''],
 ];
 
+function isIgnoredClaudeSubdirSegment(parts) {
+  // Check EVERY `.claude` segment in the path, not just the first — a
+  // `.claude` component can recur deeper in a path (e.g. a fixture tree
+  // that nests another `.claude/`), and only checking indexOf's first hit
+  // would let a transient subdir under a later `.claude` segment slip
+  // through unskipped.
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    if (parts[i] === '.claude' && ignoredClaudeSubdirs.has(parts[i + 1])) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function shouldSkip(entryPath) {
-  return entryPath.split(path.sep).some(part => ignoredDirs.has(part));
+  const parts = entryPath.split(path.sep);
+  if (isIgnoredClaudeSubdirSegment(parts)) {
+    return true;
+  }
+  return parts.some(part => ignoredDirs.has(part));
 }
 
 function isTextFile(filePath) {
@@ -113,7 +150,12 @@ function isDangerousInvisibleCodePoint(codePoint) {
     codePoint === 0xFEFF ||
     (codePoint >= 0x202A && codePoint <= 0x202E) ||
     (codePoint >= 0x2066 && codePoint <= 0x2069) ||
+    // BMP variation selectors — flagged in general because they can carry
+    // variation-selector smuggling. collectDangerousInvisibleMatches() exempts
+    // ONLY a selector that immediately follows an emoji base (legitimate
+    // emoji-style rendering: ⚠️, ℹ️); a bare or dangling selector stays flagged.
     (codePoint >= 0xFE00 && codePoint <= 0xFE0F) ||
+    // Supplement variation selectors — the documented smuggling vector.
     (codePoint >= 0xE0100 && codePoint <= 0xE01EF) ||
     // Unicode Tag block (U+E0000–U+E007F). Tag characters were proposed
     // for language tagging in Unicode 3.1 and have been deprecated since
@@ -156,11 +198,17 @@ function sanitizeText(text) {
   let next = text;
   next = stripDangerousInvisibleChars(next);
 
-  for (const [pattern, replacement] of targetedReplacements) {
-    next = next.replace(pattern, replacement);
+  // Emoji rewrites — both the label replacements (✅→PASS:, ⚠️→WARNING:, …) and
+  // the bare-emoji strip — run in --write mode ONLY under the opt-in policy
+  // (ECC_UNICODE_SCAN_EMOJI=1). By default emoji are allowed, so sanitize mode
+  // must not rewrite decorative emoji that check mode permits (keeps --write
+  // consistent with the report path; see the threat-model comment at the top).
+  if (scanEmoji) {
+    for (const [pattern, replacement] of targetedReplacements) {
+      next = next.replace(pattern, replacement);
+    }
+    next = next.replace(emojiRe, match => (isAllowedEmojiLikeSymbol(match) ? match : ''));
   }
-
-  next = next.replace(emojiRe, match => (isAllowedEmojiLikeSymbol(match) ? match : ''));
   next = next.replace(/^ +(?=\*\*)/gm, '');
   next = next.replace(/^(\*\*)\s+/gm, '$1');
   next = next.replace(/^(#+)\s{2,}/gm, '$1 ');
@@ -192,23 +240,36 @@ function collectMatches(text, regex, kind) {
   return matches;
 }
 
+const emojiBaseRe = /\p{Extended_Pictographic}/u;
+
+// A BMP variation selector (U+FE00–FE0F) that immediately follows an emoji
+// base is legitimate emoji-style rendering (⚠️, ℹ️) — not smuggling.
+// Everything else, including a bare/dangling selector, stays flagged.
+function isLegitimateEmojiVariationSelector(codePoint, prevChar) {
+  return codePoint >= 0xFE00 && codePoint <= 0xFE0F && emojiBaseRe.test(prevChar);
+}
+
 function collectDangerousInvisibleMatches(text) {
   const matches = [];
   let index = 0;
+  let prevChar = '';
 
   for (const char of text) {
     const codePoint = char.codePointAt(0);
     if (isDangerousInvisibleCodePoint(codePoint)) {
-      const { line, column } = lineAndColumn(text, index);
-      matches.push({
-        kind: 'dangerous-invisible',
-        char,
-        codePoint: `U+${codePoint.toString(16).toUpperCase()}`,
-        line,
-        column,
-      });
+      if (!isLegitimateEmojiVariationSelector(codePoint, prevChar)) {
+        const { line, column } = lineAndColumn(text, index);
+        matches.push({
+          kind: 'dangerous-invisible',
+          char,
+          codePoint: `U+${codePoint.toString(16).toUpperCase()}`,
+          line,
+          column,
+        });
+      }
     }
     index += char.length;
+    prevChar = char;
   }
 
   return matches;
@@ -241,7 +302,7 @@ for (const filePath of listFiles(repoRoot)) {
 
   const fileViolations = [
     ...collectDangerousInvisibleMatches(text),
-    ...collectMatches(text, emojiRe, 'emoji'),
+    ...(scanEmoji ? collectMatches(text, emojiRe, 'emoji') : []),
   ];
 
   for (const violation of fileViolations) {

@@ -24,6 +24,9 @@ const TARGETS = [
 
 const EXEMPT_PREFIXES = [
   'docs/fixes/',
+  // Gitignored review provenance (blueprint-review / pr-grind run outputs).
+  // Never checked out in CI; may legitimately record a reviewer's local path.
+  'docs/reviews/',
 ];
 
 const PLACEHOLDER_USERNAMES = new Set([

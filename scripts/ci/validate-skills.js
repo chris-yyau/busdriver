@@ -164,6 +164,18 @@ function validateSkillDir(dir, skillsDir, reportFrontmatterFinding) {
   return { fatal: false };
 }
 
+// supplements/ is a support directory (prompt-level supplement files loaded
+// by the orchestrator), not a skill — it has no SKILL.md by design.
+const NON_SKILL_DIRS = new Set(['supplements']);
+
+/**
+ * @param {fs.Dirent} entry
+ * @returns {boolean}
+ */
+function isCuratedSkillDirEntry(entry) {
+  return entry.isDirectory() && !entry.name.startsWith('.') && !NON_SKILL_DIRS.has(entry.name);
+}
+
 function validateSkills() {
   if (!fs.existsSync(SKILLS_DIR)) {
     console.log('No curated skills directory (skills/), skipping');
@@ -171,7 +183,7 @@ function validateSkills() {
   }
 
   const entries = fs.readdirSync(SKILLS_DIR, { withFileTypes: true });
-  const dirs = entries.filter(e => e.isDirectory() && !e.name.startsWith('.')).map(e => e.name);
+  const dirs = entries.filter(isCuratedSkillDirEntry).map(e => e.name);
 
   let hasErrors = false;
   let warnCount = 0;

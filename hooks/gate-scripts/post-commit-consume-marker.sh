@@ -49,7 +49,14 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
 # "git rebase" in file content). Uses the raw Bash command text.
 case "$HOOK_DATA" in
     *git*rebase*|*git*commit*--amend*)
-        REPO_DIR=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
+        # Anchor to the PreToolUse payload cwd via the shared resolver, NOT the
+        # hook process CWD. `git rev-parse` from the process CWD can resolve to a
+        # different repo than where the amend/rebase actually ran, deleting the
+        # wrong repo's reviewed-commits.local. Consistent with the marker lookup
+        # at the foot of this script. Empty payload cwd falls back to the process
+        # CWD inside the resolver, preserving prior behavior.
+        _AMEND_CWD=$(printf '%s' "$HOOK_DATA" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd') or '')" 2>/dev/null || true)
+        REPO_DIR=$(gate_repo_dir_lenient "" "$_AMEND_CWD")
         REVIEWED_FILE="$REPO_DIR/$STATE_DIR/reviewed-commits.local"
         if [ -f "$REVIEWED_FILE" ]; then
             rm -f "$REVIEWED_FILE"

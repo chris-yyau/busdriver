@@ -186,7 +186,7 @@ After planning:
 - Use `/code-review` to review completed implementation
 - Use `/prp-pr` to open a pull request
 
-> **Need requirements first?** Use `/prp-prd` for a lean PRD at `.claude/prds/{name}.prd.md`.
+> **Need requirements first?** Use `/prp-prd` for a lean PRD at `.claude/PRPs/prds/{name}.prd.md`.
 >
 > **Need the legacy PRP flow?** Use `/prp-plan` for deep PRP planning with `.claude/PRPs/` artifacts. Use `/prp-implement` to execute those plans with rigorous validation loops.
 

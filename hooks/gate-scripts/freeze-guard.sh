@@ -67,6 +67,14 @@ try:
     if isinstance(inp, str):
         inp = json.loads(inp)
     fp = inp.get("file_path", inp.get("filePath", ""))
+    if not fp and tool == "MultiEdit":
+        # MultiEdit carries file_path at the top level in the common case;
+        # fall back to the first edits[] entry, mirroring the sibling hooks
+        # (post-edit-accumulator.js, gateguard-fact-force.js) that handle
+        # the same MultiEdit shape.
+        edits = inp.get("edits", [])
+        if isinstance(edits, list) and edits and isinstance(edits[0], dict):
+            fp = edits[0].get("file_path", edits[0].get("filePath", ""))
     print(tool + "|" + fp)
 except Exception:
     print("|")

@@ -22,7 +22,6 @@ const scanEmoji = process.env.ECC_UNICODE_SCAN_EMOJI === '1';
 
 const ignoredDirs = new Set([
   '.git',
-  '.claude', // transient run artifacts: worktrees, ultra-oracle runs, review outputs
   'node_modules',
   '.dmux',
   '.next',
@@ -30,6 +29,14 @@ const ignoredDirs = new Set([
   'coverage',
   'venv',
 ]);
+
+// .claude/ holds a mix of committed config (CLAUDE.md, busdriver.json,
+// review-exclude) and transient run artifacts (worktrees, ultra-oracle runs,
+// review outputs). Excluding the whole tree would blind the scanner to the
+// committed files — exactly the high-risk area (LLM-consumed instructions)
+// this gate exists to protect against smuggling. Skip only the known
+// transient subdirectories, wherever they appear directly under `.claude/`.
+const ignoredClaudeSubdirs = new Set(['worktrees', 'ultra-oracle', '_backstop']);
 
 const textExtensions = new Set([
   '.md',
@@ -80,7 +87,12 @@ const targetedReplacements = [
 ];
 
 function shouldSkip(entryPath) {
-  return entryPath.split(path.sep).some(part => ignoredDirs.has(part));
+  const parts = entryPath.split(path.sep);
+  const claudeIndex = parts.indexOf('.claude');
+  if (claudeIndex !== -1 && ignoredClaudeSubdirs.has(parts[claudeIndex + 1])) {
+    return true;
+  }
+  return parts.some(part => ignoredDirs.has(part));
 }
 
 function isTextFile(filePath) {
@@ -173,11 +185,17 @@ function sanitizeText(text) {
   let next = text;
   next = stripDangerousInvisibleChars(next);
 
-  for (const [pattern, replacement] of targetedReplacements) {
-    next = next.replace(pattern, replacement);
+  // Emoji rewrites — both the label replacements (✅→PASS:, ⚠️→WARNING:, …) and
+  // the bare-emoji strip — run in --write mode ONLY under the opt-in policy
+  // (ECC_UNICODE_SCAN_EMOJI=1). By default emoji are allowed, so sanitize mode
+  // must not rewrite decorative emoji that check mode permits (keeps --write
+  // consistent with the report path; see the threat-model comment at the top).
+  if (scanEmoji) {
+    for (const [pattern, replacement] of targetedReplacements) {
+      next = next.replace(pattern, replacement);
+    }
+    next = next.replace(emojiRe, match => (isAllowedEmojiLikeSymbol(match) ? match : ''));
   }
-
-  next = next.replace(emojiRe, match => (isAllowedEmojiLikeSymbol(match) ? match : ''));
   next = next.replace(/^ +(?=\*\*)/gm, '');
   next = next.replace(/^(\*\*)\s+/gm, '$1');
   next = next.replace(/^(#+)\s{2,}/gm, '$1 ');

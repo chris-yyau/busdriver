@@ -55,6 +55,13 @@ case "$HOOK_DATA" in
         # wrong repo's reviewed-commits.local. Consistent with the marker lookup
         # at the foot of this script. Empty payload cwd falls back to the process
         # CWD inside the resolver, preserving prior behavior.
+        # Anchor to the authoritative PreToolUse payload cwd. A rebase/amend
+        # aimed at a DIFFERENT repo via `git -C <other> …` or `cd <other> && …`
+        # is a documented residual — the same wrapper-form limitation
+        # resolve-repo-dir.sh notes for the pre-gates (statically parsing git's
+        # full arg grammar is not a boundary worth reimplementing here). In that
+        # case invalidation anchors to the payload cwd; the common in-repo
+        # `git commit --amend` / `git rebase` case is exact.
         _AMEND_CWD=$(printf '%s' "$HOOK_DATA" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd') or '')" 2>/dev/null || true)
         REPO_DIR=$(gate_repo_dir_lenient "" "$_AMEND_CWD")
         REVIEWED_FILE="$REPO_DIR/$STATE_DIR/reviewed-commits.local"

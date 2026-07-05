@@ -15,7 +15,10 @@ case "$HOOK_DATA" in
     *) exit 0 ;;
 esac
 
-# Extract file path from tool input
+# Extract file path from tool input. MultiEdit carries file_path at the top
+# level in the common case; fall back to the first edit's own file_path,
+# mirroring the sibling hooks (post-edit-accumulator.js, gateguard-fact-force.js)
+# that handle the same MultiEdit shape.
 FILE_PATH=$(printf '%s' "$HOOK_DATA" | python3 -c "
 import sys, json
 try:
@@ -23,7 +26,12 @@ try:
     inp = d.get('tool_input', d.get('toolInput', {}))
     if isinstance(inp, str):
         inp = json.loads(inp)
-    print(inp.get('file_path', ''))
+    path = inp.get('file_path', '')
+    if not path:
+        edits = inp.get('edits', [])
+        if isinstance(edits, list) and edits and isinstance(edits[0], dict):
+            path = edits[0].get('file_path', '')
+    print(path)
 except Exception:
     print('')
 " 2>/dev/null || true)

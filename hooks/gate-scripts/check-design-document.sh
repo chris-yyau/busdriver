@@ -36,8 +36,19 @@ try:
     inp = d.get('tool_input', d.get('toolInput', {}))
     if isinstance(inp, str):
         inp = json.loads(inp)
-    if tool in ('Write', 'Edit', 'MultiEdit'):
+    if tool in ('Write', 'Edit'):
         path = inp.get('file_path', inp.get('filePath', ''))
+        print(f'{tool}|{path}')
+    elif tool == 'MultiEdit':
+        # MultiEdit's tool_input carries file_path at the top level in the
+        # common case, but mirror the sibling hooks (post-edit-accumulator.js,
+        # gateguard-fact-force.js) that also fall back to the first edit's own
+        # file_path — defensive against harness variants that nest it there.
+        path = inp.get('file_path', inp.get('filePath', ''))
+        if not path:
+            edits = inp.get('edits', [])
+            if isinstance(edits, list) and edits and isinstance(edits[0], dict):
+                path = edits[0].get('file_path', edits[0].get('filePath', ''))
         print(f'{tool}|{path}')
     elif tool == 'Bash':
         # Extract file paths from Bash commands that create design docs

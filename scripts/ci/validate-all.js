@@ -8,10 +8,10 @@
  * (unlike an `&&` chain, it does not stop at the first failure — so one run
  * surfaces all problems).
  *
- * check-unicode-safety.js is intentionally NOT included: on this repo it flags
- * ~900 decorative status emoji (✅ ❌ ⚠️) that skills/agents/docs use by design.
- * Narrow its threat model to genuinely-dangerous categories (bidi overrides,
- * zero-width, tag chars) before adding it here.
+ * check-unicode-safety runs in its default smuggling-only mode: it flags
+ * invisible/dangerous unicode (zero-width, bidi, tag block, variation-selector
+ * supplements) but not the decorative status emoji this repo uses by design.
+ * Set ECC_UNICODE_SCAN_EMOJI=1 to additionally forbid emoji in source.
  */
 
 const { execFileSync } = require('child_process');
@@ -26,6 +26,7 @@ const VALIDATORS = [
   'validate-install-manifests.js',
   'validate-no-personal-paths.js',
   'validate-workflow-security.js',
+  'check-unicode-safety.js',
 ];
 
 let failed = 0;

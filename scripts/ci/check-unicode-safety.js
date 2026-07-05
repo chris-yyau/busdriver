@@ -1,5 +1,13 @@
 #!/usr/bin/env node
 
+// Unicode SMUGGLING gate. The threat model is INVISIBLE unicode that hides
+// content from a human reviewer while the LLM still consumes it: zero-width
+// chars, bidi overrides, the deprecated Tag block (ASCII smuggling), variation-
+// selector supplements, and other zero-width format controls. Decorative emoji
+// (✅ ❌ ⚠️ 👍) are VISIBLE and cannot smuggle anything, so they are NOT flagged
+// by default — this repo uses status emoji throughout by design. Opt into the
+// stricter "no emoji in source" policy with ECC_UNICODE_SCAN_EMOJI=1.
+
 const fs = require('fs');
 const path = require('path');
 
@@ -8,6 +16,9 @@ const repoRoot = process.env.ECC_UNICODE_SCAN_ROOT
   : path.resolve(__dirname, '..', '..');
 
 const writeMode = process.argv.includes('--write');
+// Off by default: emoji are visible and not a smuggling vector. Set to 1 to
+// additionally forbid decorative emoji in source.
+const scanEmoji = process.env.ECC_UNICODE_SCAN_EMOJI === '1';
 
 const ignoredDirs = new Set([
   '.git',
@@ -114,7 +125,11 @@ function isDangerousInvisibleCodePoint(codePoint) {
     codePoint === 0xFEFF ||
     (codePoint >= 0x202A && codePoint <= 0x202E) ||
     (codePoint >= 0x2066 && codePoint <= 0x2069) ||
-    (codePoint >= 0xFE00 && codePoint <= 0xFE0F) ||
+    // NOTE: the BMP variation selectors U+FE00–FE0F are deliberately NOT
+    // flagged — U+FE0F legitimately follows an emoji base to force emoji-style
+    // rendering (⚠️, ℹ️), and flagging it produced hundreds of false positives.
+    // The supplement variation selectors below (U+E0100–E01EF) ARE the
+    // documented "variation-selector smuggling" vector and stay flagged.
     (codePoint >= 0xE0100 && codePoint <= 0xE01EF) ||
     // Unicode Tag block (U+E0000–U+E007F). Tag characters were proposed
     // for language tagging in Unicode 3.1 and have been deprecated since
@@ -242,7 +257,7 @@ for (const filePath of listFiles(repoRoot)) {
 
   const fileViolations = [
     ...collectDangerousInvisibleMatches(text),
-    ...collectMatches(text, emojiRe, 'emoji'),
+    ...(scanEmoji ? collectMatches(text, emojiRe, 'emoji') : []),
   ];
 
   for (const violation of fileViolations) {

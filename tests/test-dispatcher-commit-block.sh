@@ -752,6 +752,39 @@ test_r6_excluded_marker_rejects_gitlink_policy_component() {
     assert_json "$dispatcher_json" \
         '.bail_category == "judgment" and (.bail_reason | contains("gitlink"))'
 }
+# #282 no-false-positive: a NORMAL directory prefix (.claude) that contains a
+# gitlink DESCENDANT sorted before review-exclude must NOT be treated as a gitlink.
+# The exact-match probe ($2==prefix) looks for an index entry whose path IS the
+# prefix; a normal dir has only descendant entries, so it never matches 160000.
+# (A first-row `ls-files` read would wrongly pick the submodule child's mode.)
+test_r7_gitlink_sibling_does_not_false_positive() {
+    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local dispatcher_output dispatcher_exit dispatcher_json litmus_mode after_sha
+
+    make_dispatcher_fixture
+    trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
+    git -C "$sandbox" reset -q --hard HEAD
+    # .claude stays a NORMAL dir: commit a self-excluding review-exclude AND a gitlink
+    # SIBLING (.claude/aaa-sub, mode 160000) whose path sorts BEFORE review-exclude,
+    # so a first-row ls-files read would see 160000 and falsely bail. update-index
+    # cacheinfo needs a real object sha; initial_sha is a committed sha in-repo.
+    mkdir -p "$sandbox/.claude"
+    printf '.claude/review-exclude\n**/*.min.js\n' > "$sandbox/.claude/review-exclude"
+    git -C "$sandbox" add .claude/review-exclude
+    git -C "$sandbox" update-index --add --cacheinfo "160000,$initial_sha,.claude/aaa-sub"
+    git -C "$sandbox" commit --no-gpg-sign -qm "normal .claude with gitlink sibling"
+    # Excluded-only staged diff → must PASS (no false gitlink bail on the .claude dir).
+    mkdir -p "$sandbox/pkg"; printf 'var x=1\n' > "$sandbox/pkg/vendor.min.js"
+    git -C "$sandbox" add pkg/vendor.min.js
+    litmus_mode=excluded_pass
+    run_dispatcher_capture
+    after_sha=$(git -C "$sandbox" rev-parse HEAD)
+
+    [[ "$dispatcher_exit" -eq 0 ]] || return 1
+    # shellcheck disable=SC2310
+    assert_json "$dispatcher_json" '.status == "success"' || return 1
+    [[ "$after_sha" != "$initial_sha" ]]
+}
 test_s_bail_envelope_roundtrip() {
     local sandbox plugin_root shimdir remote original_dir initial_sha
     local dispatcher_output dispatcher_exit dispatcher_json litmus_mode bail_json empty_json

@@ -381,15 +381,23 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
             if [[ -L "$_root/$_prefix" ]]; then
                 emit_bail "judgment" "excluded-only marker but in-worktree path component '$_prefix' is a symlink; a symlinked component cannot be trusted since git status verifies only the symlink blob, not its target's content"
             fi
-            # gitlink (submodule) = mode 160000 in the index. Read the mode from the
-            # first ls-files record for this prefix; a normal dir reports blob modes
-            # (100644/100755) for its children, never 160000, so this cannot
-            # false-positive. NOTE: no early awk `exit` — under `set -e`/`pipefail` an
-            # awk that exits mid-stream would SIGPIPE `git ls-files` (141) on a prefix
-            # with many tracked descendants (e.g. skills/), aborting the script
-            # WITHOUT a fail-closed bail. awk reads to EOF; `|| true` keeps the
-            # pipeline non-fatal if git itself errors.
-            _mode=$(git -C "$_root" ls-files --stage -- "$_prefix" 2>/dev/null | awk 'NR==1{print $1}' || true)
+            # gitlink (submodule) = mode 160000 in the index. Match the EXACT index
+            # entry for this prefix ($2==p after a tab split), NOT merely the first
+            # ls-files row: for a normal directory prefix, ls-files lists its
+            # DESCENDANTS, and a gitlink descendant sorted first (e.g. `.claude/sub`
+            # before `.claude/review-exclude`) would otherwise set _mode=160000 and
+            # falsely bail a valid excluded-only commit (Codex/cubic, PR #282). A
+            # gitlink AT the prefix is the sole index entry whose path == prefix.
+            # No early awk `exit` → no SIGPIPE under set -e/pipefail (the path is
+            # unique, so awk matches at most one line while reading to EOF). Fail
+            # CLOSED on a genuine probe error — a git/awk failure must not leave
+            # _mode empty and silently skip the gitlink check (CodeRabbit, PR #282);
+            # an empty _mode from a SUCCESSFUL run (prefix has no exact index entry —
+            # a normal dir or untracked component) is legitimately not a gitlink.
+            if ! _mode=$(git -C "$_root" ls-files --stage -- "$_prefix" 2>/dev/null \
+                    | awk -F'\t' -v p="$_prefix" '$2==p{split($1,h," "); print h[1]}'); then
+                emit_bail "judgment" "excluded-only marker but could not verify the index mode of in-worktree path component '$_prefix' (git ls-files failed); rejecting fail-closed"
+            fi
             if [[ "$_mode" == "160000" ]]; then
                 emit_bail "judgment" "excluded-only marker but in-worktree path component '$_prefix' is a gitlink/submodule (mode 160000); a submodule cannot be trusted since git status of a path inside it does not descend to verify the committed content"
             fi

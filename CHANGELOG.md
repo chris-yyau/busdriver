@@ -1,3 +1,10 @@
+## [1.79.3](https://github.com/chris-yyau/busdriver/compare/v1.79.2...v1.79.3) (2026-07-05)
+
+
+### Bug Fixes
+
+* resolve full-plugin audit findings (gates, agents, commands, CI validators) ([#283](https://github.com/chris-yyau/busdriver/issues/283)) ([b333137](https://github.com/chris-yyau/busdriver/commit/b333137f422c1bb9f5f11fce6abf0e8b2cc04d82))
+
 ## [1.79.2](https://github.com/chris-yyau/busdriver/compare/v1.79.1...v1.79.2) (2026-07-05)
 
 

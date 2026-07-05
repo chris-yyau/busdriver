@@ -54,6 +54,21 @@ decide() { # <worktree_dir> <logic_file(abs|relative-to-worktree)>
   # from a TMPDIR with a trailing slash) can't desync the prefix match.
   worktree_dir=$(_lexical_collapse "$worktree_dir")
   logic_file=$(_lexical_collapse "$logic_file")
+  # #280 regression: symlinked-plugin-root defense. If logic_file is lexically
+  # OUTSIDE worktree_dir but PHYSICALLY resolves inside it (plugin root is a
+  # symlink into the worktree), the lexical case below would wrongly classify
+  # it as trusted-external and skip the guard entirely, while sourcing it
+  # later would follow the symlink into mutable worktree content. Resolve
+  # both to their physical paths ONCE (trusted roots, not attacker-controlled
+  # components) purely to catch this classification mismatch.
+  if [[ "$logic_file" != "$worktree_dir"/* ]]; then
+    local real_wt real_dir
+    real_wt=$(cd "$worktree_dir" 2>/dev/null && pwd -P) || { echo BAIL; return; }
+    real_dir=$(cd "$(dirname "$logic_file")" 2>/dev/null && pwd -P) || real_dir=""
+    if [[ -n "$real_dir" ]] && { [[ "$real_dir" == "$real_wt" ]] || [[ "$real_dir" == "$real_wt"/* ]]; }; then
+      echo BAIL; return
+    fi
+  fi
   case "$logic_file" in
     "$worktree_dir"/*)
       rel="${logic_file#"$worktree_dir"/}"
@@ -179,6 +194,21 @@ printf 'x\n' > "$wt2/f.txt"
 git -C "$wt2" add -A; git -C "$wt2" commit -q -m "commit symlinked lib parent"
 r=$(decide "$wt2" "skills/litmus/scripts/lib/exclude-generated.sh")
 check "committed symlink PARENT component → BAIL" BAIL "$r"
+
+# #280 regression: symlinked PLUGIN ROOT into the worktree. logic_file's
+# lexical path runs through a symlink dir OUTSIDE worktree_dir, so it never
+# lexically matches "$worktree_dir"/* — but it physically resolves inside
+# the worktree. Must BAIL rather than silently trust as external.
+wt3="$base/repo-symroot"; mkdir -p "$wt3/skills/litmus/scripts/lib"
+git -C "$wt3" init -q; git -C "$wt3" config user.email t@t; git -C "$wt3" config user.name t
+printf '#tampered-via-symroot\n' > "$wt3/skills/litmus/scripts/lib/exclude-generated.sh"
+printf 'x\n' > "$wt3/f.txt"
+git -C "$wt3" add -A; git -C "$wt3" commit -q -m init
+symroot="$base/plugin-symlink-root"
+ln -s "$wt3" "$symroot"
+r=$(decide "$wt3" "$symroot/skills/litmus/scripts/lib/exclude-generated.sh")
+check "symlinked plugin root resolving into worktree → BAIL" BAIL "$r"
+rm -f "$symroot"
 
 rm -rf "$base"
 echo "───────────────────────────────"

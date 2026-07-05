@@ -463,6 +463,32 @@ if [[ "$MARKER_CONTENT" == PASS-EXCLUDED-* ]]; then
     # collapsed path here so both branches (in-worktree + trusted-external) run
     # the same file that was checked.
     _excl_logic_source="$_excl_logic_file"
+    # Symlinked-plugin-root defense (Codex, PR #280): the LEXICAL prefix check
+    # below only classifies "$_excl_logic_file" as in-worktree when it is
+    # lexically under "$_wt". If BUSDRIVER_PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT is
+    # itself a symlink whose TARGET lives inside the worktree (a self-review
+    # layout where the plugin root is symlinked to the checkout rather than
+    # set to it directly), _excl_logic_file's lexical path runs through the
+    # symlink and never matches "$_wt"/*, so the classification below falls
+    # through to "trusted-external" and skips the committed-clean guard
+    # entirely. But `. "$_excl_logic_source"` two steps down follows the
+    # symlink at execution time and loads the file's real (physical) bytes —
+    # which DO live in the mutable worktree and could carry an uncommitted or
+    # tampered redefinition of REVIEW_EXCLUDE_ARGS. This resolves the plugin
+    # root and worktree to their PHYSICAL paths ONCE, using only trusted
+    # operator/environment-set roots (not attacker-controlled path
+    # components), purely to catch that classification mismatch — it does not
+    # replace or weaken the lexical + _reject_symlink_components defense used
+    # for the already-in-worktree case below (that stays lexical-only, per
+    # the rationale a few lines up).
+    if [[ "$_excl_logic_file" != "$_wt"/* ]]; then
+        _real_wt=$(cd "$_wt" 2>/dev/null && pwd -P) || \
+            emit_bail "env" "could not resolve real path of worktree ($_wt) to check for a symlinked plugin root"
+        _real_excl_dir=$(cd "$(dirname "$_excl_logic_file")" 2>/dev/null && pwd -P) || _real_excl_dir=""
+        if [[ -n "$_real_excl_dir" ]] && { [[ "$_real_excl_dir" == "$_real_wt" ]] || [[ "$_real_excl_dir" == "$_real_wt"/* ]]; }; then
+            emit_bail "judgment" "exclusion logic path ($_excl_logic_file) is lexically outside the worktree but physically resolves inside it ($_real_excl_dir) — the plugin root is likely a symlink into the worktree, so it cannot safely be treated as trusted-external. Point BUSDRIVER_PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT at a location outside the worktree, or set it to the worktree path directly so the in-worktree guard applies."
+        fi
+    fi
     case "$_excl_logic_file" in
         "$_wt"/*)
             _excl_logic_rel="${_excl_logic_file#"$_wt"/}"

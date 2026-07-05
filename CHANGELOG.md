@@ -1,3 +1,10 @@
+## [1.79.1](https://github.com/chris-yyau/busdriver/compare/v1.79.0...v1.79.1) (2026-07-05)
+
+
+### Bug Fixes
+
+* resolve deferred issues [#271](https://github.com/chris-yyau/busdriver/issues/271), [#277](https://github.com/chris-yyau/busdriver/issues/277), [#278](https://github.com/chris-yyau/busdriver/issues/278) ([#280](https://github.com/chris-yyau/busdriver/issues/280)) ([f11b04f](https://github.com/chris-yyau/busdriver/commit/f11b04ffcf577b382a0bd98412b3af343d00a22b)), closes [#252](https://github.com/chris-yyau/busdriver/issues/252)
+
 # [1.79.0](https://github.com/chris-yyau/busdriver/compare/v1.78.0...v1.79.0) (2026-07-04)
 
 

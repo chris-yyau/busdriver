@@ -1693,18 +1693,6 @@
       "upstream_path": "scripts/hooks/mcp-health-check.js"
     },
     {
-      "path": "scripts/hooks/observe-runner.js",
-      "source": "ecc",
-      "status": "custom",
-      "upstream_path": "scripts/hooks/observe-runner.js"
-    },
-    {
-      "path": "scripts/hooks/plugin-hook-bootstrap.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/plugin-hook-bootstrap.js"
-    },
-    {
       "path": "scripts/hooks/post-bash-build-complete.js",
       "source": "ecc",
       "status": "sync",
@@ -1739,12 +1727,6 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/hooks/post-edit-format.js"
-    },
-    {
-      "path": "scripts/hooks/post-edit-typecheck.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/post-edit-typecheck.js"
     },
     {
       "path": "scripts/hooks/pre-bash-dev-server-block.js",
@@ -1811,12 +1793,6 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "scripts/hooks/session-end.js"
-    },
-    {
-      "path": "scripts/hooks/session-start-bootstrap.js",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "scripts/hooks/session-start-bootstrap.js"
     },
     {
       "path": "scripts/hooks/session-start.js",

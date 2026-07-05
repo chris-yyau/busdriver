@@ -348,7 +348,17 @@ if [ -n "$MERGE_PR_NUM" ] && command -v gh &>/dev/null; then
     # via the inner `2>/dev/null` and absent stdout, then grep -c yields 0).
     GATE_FILES_CHANGED=$( (cd "$REPO_DIR" && gh pr diff "$MERGE_PR_NUM" --name-only 2>/dev/null) \
         | grep -cE "^hooks/(gate-scripts/|hooks\.json)" || true)
-    if [ "$GATE_FILES_CHANGED" -gt 0 ]; then
+    # Scope the bootstrap bypass to the busdriver plugin repo itself. A gate-
+    # modifying PR is only meaningful here; any OTHER repo that happens to have
+    # hooks/gate-scripts/ or hooks/hooks.json paths must NOT inherit this
+    # pr-grind bypass. Fail CLOSED — if the busdriver plugin manifest can't be
+    # confirmed at $REPO_DIR, fall through to the normal block below.
+    IS_BUSDRIVER_REPO=false
+    if [ -f "$REPO_DIR/.claude-plugin/plugin.json" ] && \
+       grep -q '"name"[[:space:]]*:[[:space:]]*"busdriver"' "$REPO_DIR/.claude-plugin/plugin.json" 2>/dev/null; then
+        IS_BUSDRIVER_REPO=true
+    fi
+    if [ "$GATE_FILES_CHANGED" -gt 0 ] && [ "$IS_BUSDRIVER_REPO" = true ]; then
         GH_EXIT=0
         CHECKS_OUTPUT=$(cd "$REPO_DIR" && gh pr checks "$MERGE_PR_NUM" 2>&1) || GH_EXIT=$?
         if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_OUTPUT" | grep -qE "pass|fail|pending"; then

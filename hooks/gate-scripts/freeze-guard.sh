@@ -39,6 +39,21 @@ block_emit() {
 INPUT=$(cat 2>/dev/null || true)
 [ -z "$INPUT" ] && exit 0
 
+# ── Fail CLOSED when python3 is unavailable ──────────────────────────
+# A freeze is active (checked above) but without python3 we cannot parse the
+# tool input to learn the target path. Every sibling gate blocks in this state;
+# freeze-guard must too, or it silently fails OPEN and lets out-of-scope edits
+# through. The matcher is Write|Edit|MultiEdit only, so blocking here never
+# touches Bash — `rm .claude/freeze-scope.local` still unfreezes.
+if ! command -v python3 &>/dev/null; then
+    block_emit "FREEZE/GUARD: python3 not found — cannot verify the edit target while a freeze is active, so this write is blocked (fail-closed).
+
+Allowed scope: $ALLOWED_SCOPE
+
+Install python3 to restore scope checking, or unfreeze via Bash: rm .claude/freeze-scope.local"
+    exit 0
+fi
+
 # ── Parse tool name and file path ────────────────────────────────────
 TOOL_NAME=""
 FILE_PATH=""

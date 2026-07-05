@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Design Review — PostToolUse Hook (Write|Edit|Bash matcher)
+# Design Review — PostToolUse Hook (Write|Edit|MultiEdit|Bash matcher)
 #
 # Detects when design/plan documents are written and flags them for review.
 # Sets a state file that the pre-commit gate enforces.
-# Supports Write/Edit (file_path) and Bash (extracts paths from redirects/tee).
+# Supports Write/Edit/MultiEdit (file_path) and Bash (extracts paths from redirects/tee).
 #
 # Fail-open: never block file writes — only warn and set state.
 
@@ -36,7 +36,7 @@ try:
     inp = d.get('tool_input', d.get('toolInput', {}))
     if isinstance(inp, str):
         inp = json.loads(inp)
-    if tool in ('Write', 'Edit'):
+    if tool in ('Write', 'Edit', 'MultiEdit'):
         path = inp.get('file_path', inp.get('filePath', ''))
         print(f'{tool}|{path}')
     elif tool == 'Bash':

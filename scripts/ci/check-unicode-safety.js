@@ -125,11 +125,12 @@ function isDangerousInvisibleCodePoint(codePoint) {
     codePoint === 0xFEFF ||
     (codePoint >= 0x202A && codePoint <= 0x202E) ||
     (codePoint >= 0x2066 && codePoint <= 0x2069) ||
-    // NOTE: the BMP variation selectors U+FE00–FE0F are deliberately NOT
-    // flagged — U+FE0F legitimately follows an emoji base to force emoji-style
-    // rendering (⚠️, ℹ️), and flagging it produced hundreds of false positives.
-    // The supplement variation selectors below (U+E0100–E01EF) ARE the
-    // documented "variation-selector smuggling" vector and stay flagged.
+    // BMP variation selectors — flagged in general because they can carry
+    // variation-selector smuggling. collectDangerousInvisibleMatches() exempts
+    // ONLY a selector that immediately follows an emoji base (legitimate
+    // emoji-style rendering: ⚠️, ℹ️); a bare or dangling selector stays flagged.
+    (codePoint >= 0xFE00 && codePoint <= 0xFE0F) ||
+    // Supplement variation selectors — the documented smuggling vector.
     (codePoint >= 0xE0100 && codePoint <= 0xE01EF) ||
     // Unicode Tag block (U+E0000–U+E007F). Tag characters were proposed
     // for language tagging in Unicode 3.1 and have been deprecated since
@@ -208,23 +209,34 @@ function collectMatches(text, regex, kind) {
   return matches;
 }
 
+const emojiBaseRe = /\p{Extended_Pictographic}/u;
+
 function collectDangerousInvisibleMatches(text) {
   const matches = [];
   let index = 0;
+  let prevChar = '';
 
   for (const char of text) {
     const codePoint = char.codePointAt(0);
     if (isDangerousInvisibleCodePoint(codePoint)) {
-      const { line, column } = lineAndColumn(text, index);
-      matches.push({
-        kind: 'dangerous-invisible',
-        char,
-        codePoint: `U+${codePoint.toString(16).toUpperCase()}`,
-        line,
-        column,
-      });
+      // A BMP variation selector (U+FE00–FE0F) that immediately follows an emoji
+      // base is legitimate emoji-style rendering (⚠️, ℹ️) — not smuggling.
+      // Everything else, including a bare/dangling selector, stays flagged.
+      const isEmojiVariationSelector =
+        codePoint >= 0xFE00 && codePoint <= 0xFE0F && emojiBaseRe.test(prevChar);
+      if (!isEmojiVariationSelector) {
+        const { line, column } = lineAndColumn(text, index);
+        matches.push({
+          kind: 'dangerous-invisible',
+          char,
+          codePoint: `U+${codePoint.toString(16).toUpperCase()}`,
+          line,
+          column,
+        });
+      }
     }
     index += char.length;
+    prevChar = char;
   }
 
   return matches;

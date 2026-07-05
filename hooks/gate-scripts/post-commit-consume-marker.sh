@@ -58,7 +58,7 @@ case "$HOOK_DATA" in
         _AMEND_CWD=$(printf '%s' "$HOOK_DATA" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd') or '')" 2>/dev/null || true)
         REPO_DIR=$(gate_repo_dir_lenient "" "$_AMEND_CWD")
         REVIEWED_FILE="$REPO_DIR/$STATE_DIR/reviewed-commits.local"
-        if [ -f "$REVIEWED_FILE" ]; then
+        if [[ -f "$REVIEWED_FILE" ]]; then
             rm -f "$REVIEWED_FILE"
         fi
         ;;

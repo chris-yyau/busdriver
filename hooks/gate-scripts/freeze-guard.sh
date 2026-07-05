@@ -37,7 +37,7 @@ block_emit() {
 
 # Consume stdin
 INPUT=$(cat 2>/dev/null || true)
-[ -z "$INPUT" ] && exit 0
+[[ -z "$INPUT" ]] && exit 0
 
 # ── Fail CLOSED when python3 is unavailable ──────────────────────────
 # A freeze is active (checked above) but without python3 we cannot parse the

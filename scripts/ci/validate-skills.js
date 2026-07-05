@@ -170,8 +170,13 @@ function validateSkills() {
     process.exit(0);
   }
 
+  // supplements/ is a support directory (prompt-level supplement files loaded
+  // by the orchestrator), not a skill — it has no SKILL.md by design.
+  const NON_SKILL_DIRS = new Set(['supplements']);
   const entries = fs.readdirSync(SKILLS_DIR, { withFileTypes: true });
-  const dirs = entries.filter(e => e.isDirectory() && !e.name.startsWith('.')).map(e => e.name);
+  const dirs = entries
+    .filter(e => e.isDirectory() && !e.name.startsWith('.') && !NON_SKILL_DIRS.has(e.name))
+    .map(e => e.name);
 
   let hasErrors = false;
   let warnCount = 0;

@@ -72,6 +72,10 @@ function validateCommands() {
   // Build set of valid command names (without .md extension)
   const validCommands = new Set(files.map(f => f.replace(/\.md$/, '')));
 
+  // Commands provided by OTHER tools/harnesses (not busdriver's commands/ dir)
+  // that command bodies may legitimately reference. Keep this list tight.
+  const KNOWN_EXTERNAL_COMMANDS = new Set(['goal']); // Codex TUI /goal
+
   // Build set of valid agent names (without .md extension)
   const validAgents = new Set();
   if (fs.existsSync(AGENTS_DIR)) {
@@ -133,7 +137,7 @@ function validateCommands() {
       const lineRefs = line.matchAll(/`\/([a-z][-a-z0-9]*)`/g);
       for (const match of lineRefs) {
         const refName = match[1];
-        if (!validCommands.has(refName)) {
+        if (!validCommands.has(refName) && !KNOWN_EXTERNAL_COMMANDS.has(refName)) {
           console.error(`ERROR: ${file} - references non-existent command /${refName}`);
           hasErrors = true;
         }

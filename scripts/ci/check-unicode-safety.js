@@ -11,6 +11,7 @@ const writeMode = process.argv.includes('--write');
 
 const ignoredDirs = new Set([
   '.git',
+  '.claude', // transient run artifacts: worktrees, ultra-oracle runs, review outputs
   'node_modules',
   '.dmux',
   '.next',

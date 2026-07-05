@@ -1,3 +1,10 @@
+## [1.79.2](https://github.com/chris-yyau/busdriver/compare/v1.79.1...v1.79.2) (2026-07-05)
+
+
+### Bug Fixes
+
+* **pr-grind:** reject gitlink path components in excluded-only exclusion verification ([#281](https://github.com/chris-yyau/busdriver/issues/281)) ([#282](https://github.com/chris-yyau/busdriver/issues/282)) ([87df515](https://github.com/chris-yyau/busdriver/commit/87df51574bebeaac6c8186e4d0c12bf34acb6f19))
+
 ## [1.79.1](https://github.com/chris-yyau/busdriver/compare/v1.79.0...v1.79.1) (2026-07-05)
 
 

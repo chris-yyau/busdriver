@@ -1,3 +1,10 @@
+## [1.81.1](https://github.com/chris-yyau/busdriver/compare/v1.81.0...v1.81.1) (2026-07-06)
+
+
+### Bug Fixes
+
+* correct upstream attribution and licenses in manifest ([#288](https://github.com/chris-yyau/busdriver/issues/288)) ([7a5a5b8](https://github.com/chris-yyau/busdriver/commit/7a5a5b8cb4160c0b6e168a93a6aa471a5d856829)), closes [hi#end-visual-design](https://github.com/hi/issues/end-visual-design)
+
 # [1.81.0](https://github.com/chris-yyau/busdriver/compare/v1.80.0...v1.81.0) (2026-07-06)
 
 

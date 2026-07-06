@@ -1,3 +1,10 @@
+# [1.81.0](https://github.com/chris-yyau/busdriver/compare/v1.80.0...v1.81.0) (2026-07-06)
+
+
+### Features
+
+* complete superpowers v6 adoption (SDD scripts, manifest validator) ([#287](https://github.com/chris-yyau/busdriver/issues/287)) ([1046fbb](https://github.com/chris-yyau/busdriver/commit/1046fbb2d82a6d06459a7fb2eeb8a9a402856fc7)), closes [#49](https://github.com/chris-yyau/busdriver/issues/49) [#147](https://github.com/chris-yyau/busdriver/issues/147) [#215](https://github.com/chris-yyau/busdriver/issues/215)
+
 # [1.80.0](https://github.com/chris-yyau/busdriver/compare/v1.79.3...v1.80.0) (2026-07-06)
 
 

@@ -151,4 +151,6 @@ grep -rInE "(^|[^a-z0-9@-])$NAME([^a-z0-9-]|\$)" skills agents commands hooks sc
   | grep '(vault)' | sed 's/^/  /' || echo "  (none — clean)"
 
 echo
-echo "done. review, then: git commit"
+echo "the rename + manifest flip are already staged; your marker trims above are NOT."
+echo "stage them too before committing, or they'll be dropped from the commit:"
+echo "    git add -A && git commit"

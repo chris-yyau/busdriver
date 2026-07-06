@@ -7,7 +7,8 @@
     },
     "ecc": {
       "repo": "affaan-m/everything-claude-code",
-      "ref": "main"
+      "ref": "main",
+      "note": "agents/*.md carry local `effort:` frontmatter per ADR 0009 (per-agent reasoning-effort cost tiers). Upstream ECC has no such lines, so an effort-line diff vs upstream is permanent local policy — NEVER sync a removal. tests/test-agent-effort-tiers.sh enforces presence."
     },
     "mattpocock": {
       "repo": "mattpocock/skills",
@@ -16,15 +17,35 @@
     },
     "nextlevelbuilder": {
       "repo": "nextlevelbuilder/ui-ux-pro-max-skill",
-      "ref": "main"
+      "ref": "main",
+      "license": "MIT"
     },
     "supabase": {
       "repo": "supabase/agent-skills",
-      "ref": "main"
+      "ref": "main",
+      "license": "MIT"
     },
     "marketingskills": {
       "repo": "coreyhaines31/marketingskills",
-      "ref": "main"
+      "ref": "main",
+      "license": "MIT"
+    },
+    "gstack": {
+      "repo": "garrytan/gstack",
+      "ref": "main",
+      "license": "MIT",
+      "adoption": "pattern-derived",
+      "note": "Patterns distilled into skills/supplements/, NOT verbatim file syncs. Provenance ledger: skills/supplements/MANIFEST.md (Source column). Not pulled by sync-upstream.sh — no file-level entries (the supplements are prose rewrites of multi-file skill patterns and would generate false semantic-drift diffs). Distilled 2026-03-23/24 from gstack /office-hours, /cso, /qa, /design-consultation, /freeze; re-audited against v1.58.5.0 (2026-07-06)."
+    },
+    "taste-skill": {
+      "repo": "Leonxlnx/taste-skill",
+      "ref": "main",
+      "license": "MIT"
+    },
+    "humanizer": {
+      "repo": "blader/humanizer",
+      "ref": "main",
+      "license": "MIT"
     }
   },
   "files": [
@@ -5424,8 +5445,9 @@
     },
     {
       "path": "skills/design-taste-frontend/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "taste-skill",
+      "status": "sync",
+      "upstream_path": "skills/taste-skill/SKILL.md"
     },
     {
       "path": "skills/diagnose/SKILL.md",
@@ -5725,8 +5747,9 @@
     },
     {
       "path": "skills/gpt-taste/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "taste-skill",
+      "status": "sync",
+      "upstream_path": "skills/gpt-tasteskill/SKILL.md"
     },
     {
       "path": "skills/grill-me/SKILL.md",
@@ -5766,8 +5789,9 @@
     },
     {
       "path": "skills/high-end-visual-design/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "taste-skill",
+      "status": "sync",
+      "upstream_path": "skills/soft-skill/SKILL.md"
     },
     {
       "path": "skills/hookify-rules/SKILL.md",
@@ -5777,33 +5801,39 @@
     },
     {
       "path": "skills/humanizer/LICENSE",
-      "source": "local",
-      "status": "local"
+      "source": "humanizer",
+      "status": "sync",
+      "upstream_path": "LICENSE"
     },
     {
       "path": "skills/humanizer/README.md",
-      "source": "local",
-      "status": "local"
+      "source": "humanizer",
+      "status": "custom",
+      "upstream_path": "README.md"
     },
     {
       "path": "skills/humanizer/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "humanizer",
+      "status": "sync",
+      "upstream_path": "SKILL.md"
     },
     {
       "path": "skills/image-to-code/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "taste-skill",
+      "status": "sync",
+      "upstream_path": "skills/image-to-code-skill/SKILL.md"
     },
     {
       "path": "skills/imagegen-frontend-mobile/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "taste-skill",
+      "status": "sync",
+      "upstream_path": "skills/imagegen-frontend-mobile/SKILL.md"
     },
     {
       "path": "skills/imagegen-frontend-web/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "taste-skill",
+      "status": "sync",
+      "upstream_path": "skills/imagegen-frontend-web/SKILL.md"
     },
     {
       "path": "skills/improve-codebase-architecture/DEEPENING.md",
@@ -5831,8 +5861,9 @@
     },
     {
       "path": "skills/industrial-brutalist-ui/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "taste-skill",
+      "status": "sync",
+      "upstream_path": "skills/brutalist-skill/SKILL.md"
     },
     {
       "path": "skills/iterative-retrieval/SKILL.md",
@@ -5962,8 +5993,9 @@
     },
     {
       "path": "skills/minimalist-ui/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "taste-skill",
+      "status": "sync",
+      "upstream_path": "skills/minimalist-skill/SKILL.md"
     },
     {
       "path": "skills/mle-workflow/SKILL.md",
@@ -6587,13 +6619,15 @@
     },
     {
       "path": "skills/stitch-design-taste/DESIGN.md",
-      "source": "local",
-      "status": "local"
+      "source": "taste-skill",
+      "status": "sync",
+      "upstream_path": "skills/stitch-skill/DESIGN.md"
     },
     {
       "path": "skills/stitch-design-taste/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "taste-skill",
+      "status": "custom",
+      "upstream_path": "skills/stitch-skill/SKILL.md"
     },
     {
       "path": "skills/strategic-compact/SKILL.md",

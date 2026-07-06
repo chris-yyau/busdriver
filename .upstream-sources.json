@@ -529,12 +529,6 @@
       "upstream_path": "commands/auto-update.md"
     },
     {
-      "path": "commands/brainstorm.md",
-      "source": "superpowers",
-      "status": "local",
-      "upstream_path": "commands/brainstorm.md"
-    },
-    {
       "path": "commands/build-fix.md",
       "source": "ecc",
       "status": "custom",
@@ -580,12 +574,6 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "commands/evolve.md"
-    },
-    {
-      "path": "commands/execute-plan.md",
-      "source": "superpowers",
-      "status": "local",
-      "upstream_path": "commands/execute-plan.md"
     },
     {
       "path": "commands/fastapi-review.md",
@@ -968,12 +956,6 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "commands/verify.md"
-    },
-    {
-      "path": "commands/write-plan.md",
-      "source": "superpowers",
-      "status": "local",
-      "upstream_path": "commands/write-plan.md"
     },
     {
       "path": "docs/superpowers/plans/2026-03-28-test-setup.md",
@@ -1464,16 +1446,6 @@
       "source": "ecc",
       "status": "sync",
       "upstream_path": "rules/vue/testing.md"
-    },
-    {
-      "path": "rules/zh/investigate-before-acting.md",
-      "source": "local",
-      "status": "local"
-    },
-    {
-      "path": "rules/zh/validate-before-building.md",
-      "source": "local",
-      "status": "local"
     },
     {
       "path": "scripts/auto-update.js",
@@ -6630,34 +6602,16 @@
       "upstream_path": "skills/strategic-compact/SKILL.md"
     },
     {
-      "path": "skills/strategic-compact/suggest-compact.sh",
-      "source": "ecc",
-      "status": "sync",
-      "upstream_path": "skills/strategic-compact/suggest-compact.sh"
-    },
-    {
       "path": "skills/subagent-driven-development/SKILL.md",
       "source": "superpowers",
       "status": "sync",
       "upstream_path": "skills/subagent-driven-development/SKILL.md"
     },
     {
-      "path": "skills/subagent-driven-development/code-quality-reviewer-prompt.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/subagent-driven-development/code-quality-reviewer-prompt.md"
-    },
-    {
       "path": "skills/subagent-driven-development/implementer-prompt.md",
       "source": "superpowers",
       "status": "sync",
       "upstream_path": "skills/subagent-driven-development/implementer-prompt.md"
-    },
-    {
-      "path": "skills/subagent-driven-development/spec-reviewer-prompt.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/subagent-driven-development/spec-reviewer-prompt.md"
     },
     {
       "path": "skills/supabase-postgres-best-practices/SKILL.md",
@@ -7342,7 +7296,7 @@
     {
       "path": "skills/using-superpowers/SKILL.md",
       "source": "superpowers",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/using-superpowers/SKILL.md"
     },
     {
@@ -7350,18 +7304,6 @@
       "source": "superpowers",
       "status": "sync",
       "upstream_path": "skills/using-superpowers/references/codex-tools.md"
-    },
-    {
-      "path": "skills/using-superpowers/references/copilot-tools.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/using-superpowers/references/copilot-tools.md"
-    },
-    {
-      "path": "skills/using-superpowers/references/gemini-tools.md",
-      "source": "superpowers",
-      "status": "sync",
-      "upstream_path": "skills/using-superpowers/references/gemini-tools.md"
     },
     {
       "path": "skills/vercel-composition-patterns/AGENTS.md",
@@ -7991,6 +7933,36 @@
       "path": "tests/test-gate-adversarial.sh",
       "source": "local",
       "status": "local"
+    },
+    {
+      "path": "skills/subagent-driven-development/task-reviewer-prompt.md",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/subagent-driven-development/task-reviewer-prompt.md"
+    },
+    {
+      "path": "skills/subagent-driven-development/scripts/task-brief",
+      "source": "superpowers",
+      "status": "custom",
+      "upstream_path": "skills/subagent-driven-development/scripts/task-brief"
+    },
+    {
+      "path": "skills/subagent-driven-development/scripts/review-package",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/subagent-driven-development/scripts/review-package"
+    },
+    {
+      "path": "skills/subagent-driven-development/scripts/sdd-workspace",
+      "source": "superpowers",
+      "status": "sync",
+      "upstream_path": "skills/subagent-driven-development/scripts/sdd-workspace"
+    },
+    {
+      "path": "skills/using-superpowers/references/agy-tools.md",
+      "source": "superpowers",
+      "status": "custom",
+      "upstream_path": "skills/using-superpowers/references/antigravity-tools.md"
     }
   ],
   "rejected": [

@@ -112,7 +112,13 @@ ARCHIVED_OTHERS="$(
   } | grep -vxF "$NAME" || true)"
 PREFLIGHT=""
 if [[ -n "$ARCHIVED_OTHERS" ]]; then
-  OTHERS_PAT="$(printf '%s\n' "$ARCHIVED_OTHERS" | paste -sd'|' -)"
+  # Escape ERE metacharacters before building the alternation — same as the
+  # contract test (tests/test-vault-references.sh). $NAME is validated to be
+  # metachar-free, but these OTHER archive basenames are not, and an unescaped
+  # metachar would make grep -E exit 2, which `|| true` would swallow into an
+  # empty PREFLIGHT — a fail-OPEN past the guard below.
+  # shellcheck disable=SC2016  # literal sed pattern — $ is a regex anchor here, not an expansion
+  OTHERS_PAT="$(printf '%s\n' "$ARCHIVED_OTHERS" | sed 's/[][\.|$(){}?+*^]/\\&/g' | paste -sd'|' -)"
   PREFLIGHT="$(grep -rInE "(^|[^a-z0-9@-])(${OTHERS_PAT})([^a-z0-9-]|\$)" "$SRC" 2>/dev/null \
     | grep -v '(vault)' || true)"
 fi

@@ -38,11 +38,12 @@ if [[ $# -gt 2 ]]; then
   echo "error: too many arguments" >&2
   echo "usage: vault-promote.sh <name> [--dry-run]" >&2; exit 2
 fi
-# Validate at the trust boundary: skill/agent/command names are kebab-case.
-# Rejecting anything else keeps NAME free of regex metacharacters, so the
-# marker grep below can't be subverted by a crafted name.
-if [[ ! "$NAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-  echo "error: invalid name '$NAME' (expected [a-zA-Z0-9_-])" >&2
+# Validate at the trust boundary: skill/agent/command names are strict
+# lowercase kebab-case. Rejecting anything else keeps NAME free of regex
+# metacharacters (so the marker grep can't be subverted) and rejects
+# non-names like -leading, trailing-, or CONSECUTIVE__UNDERSCORES up front.
+if [[ ! "$NAME" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+  echo "error: invalid name '$NAME' (expected lowercase kebab-case, e.g. django-patterns)" >&2
   exit 2
 fi
 
@@ -127,8 +128,13 @@ git mv "$SRC" "$DST"
 if [[ -n "$MANIFEST_TMP" ]]; then
   mv "$MANIFEST_TMP" "$MANIFEST"   # atomic same-fs rename
   trap - EXIT
+  # Stage the manifest rewrite so it rides with the git-mv'd rename in the
+  # SAME commit. git mv auto-stages the rename; a plain filesystem mv does
+  # not — without this a bare `git commit` would land the rename but drop the
+  # manifest flip, and the next sync-upstream would resurrect the archive.
+  git add "$MANIFEST"
   hit_count="$(grep -c . <<<"$MANIFEST_HITS" || true)"
-  echo "rewrote ${hit_count} manifest path(s) archive->live"
+  echo "rewrote ${hit_count} manifest path(s) archive->live (staged)"
 fi
 
 # ── 5. Verify contract, then hand off the marker cleanup ─────────────────

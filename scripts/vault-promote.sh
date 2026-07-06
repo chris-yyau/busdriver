@@ -98,14 +98,47 @@ if [[ -f "$MANIFEST" ]]; then
   fi
 fi
 
+# ── 2b. Preflight the promoted content ───────────────────────────────────
+# After the move the promoted file enters the contract test's scan scope
+# (skills/ agents/ commands/). If its body references OTHER still-archived
+# names without a (vault) marker, the post-move test would fail — but only
+# after git mv has already mutated the worktree. Catch it here, before any
+# move, so the failure is clean and the fix (add (vault), or promote those
+# items too) is surfaced up front. Common for command shims / agents whose
+# body points at their still-archived backing skill.
+ARCHIVED_OTHERS="$(
+  { for d in skills-archive/*/; do [[ -d "$d" ]] && basename "$d"; done
+    for f in agents-archive/*.md commands-archive/*.md; do [[ -f "$f" ]] && basename "$f" .md; done
+  } | grep -vxF "$NAME" || true)"
+PREFLIGHT=""
+if [[ -n "$ARCHIVED_OTHERS" ]]; then
+  OTHERS_PAT="$(printf '%s\n' "$ARCHIVED_OTHERS" | paste -sd'|' -)"
+  PREFLIGHT="$(grep -rInE "(^|[^a-z0-9@-])(${OTHERS_PAT})([^a-z0-9-]|\$)" "$SRC" 2>/dev/null \
+    | grep -v '(vault)' || true)"
+fi
+
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "--- dry run, nothing changed ---"
   echo "git mv $SRC $DST"
   [[ -n "$MANIFEST_HITS" ]] && echo "manifest paths to flip archive->live:" && printf '%s\n' "$MANIFEST_HITS" | sed 's/^/  /'
+  if [[ -n "$PREFLIGHT" ]]; then
+    echo "WARNING: promoted content references still-archived names without (vault) —"
+    echo "the post-move contract test would FAIL until you add (vault) here (or promote those items too):"
+    printf '%s\n' "$PREFLIGHT" | sed 's/^/  /'
+  fi
   echo "marker lines to trim by hand afterward:"
   grep -rInE "(^|[^a-z0-9@-])$NAME([^a-z0-9-]|\$)" skills agents commands hooks scripts rules 2>/dev/null \
     | grep '(vault)' | sed 's/^/  /' || echo "  (none)"
   exit 0
+fi
+
+# Fail CLOSED before touching the worktree: refuse a promotion whose content
+# would fail the contract test post-move (would otherwise leave it half-moved).
+if [[ -n "$PREFLIGHT" ]]; then
+  echo "error: promoting '$NAME' would move a file that references still-archived names without (vault);" >&2
+  echo "the vault contract test would fail post-move. Add (vault) to these refs (or promote those items too), then retry:" >&2
+  printf '%s\n' "$PREFLIGHT" | sed 's/^/  /' >&2
+  exit 1
 fi
 
 # ── 3. Prepare the manifest rewrite BEFORE moving, so a jq failure aborts ─

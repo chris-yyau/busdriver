@@ -43,7 +43,7 @@ fi
 # metacharacters (so the marker grep can't be subverted) and rejects
 # non-names like -leading, trailing-, or CONSECUTIVE__UNDERSCORES up front.
 if [[ ! "$NAME" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
-  echo "error: invalid name '$NAME' (expected lowercase kebab-case, e.g. django-patterns)" >&2
+  echo "error: invalid name '$NAME' (expected lowercase kebab-case, e.g. my-skill-name)" >&2
   exit 2
 fi
 

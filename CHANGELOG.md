@@ -1,3 +1,10 @@
+# [1.80.0](https://github.com/chris-yyau/busdriver/compare/v1.79.3...v1.80.0) (2026-07-06)
+
+
+### Features
+
+* add vault-promote.sh helper for skill vault promotion ([#285](https://github.com/chris-yyau/busdriver/issues/285)) ([bc3dd76](https://github.com/chris-yyau/busdriver/commit/bc3dd766256b8ae1943a6cfe15bee32a07aeffc8))
+
 ## [1.79.3](https://github.com/chris-yyau/busdriver/compare/v1.79.2...v1.79.3) (2026-07-05)
 
 

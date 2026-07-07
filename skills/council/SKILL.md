@@ -158,11 +158,23 @@ ULTRA_ORACLE_PROMPT
 # until done, so `wait "${PIDS[@]}"` covers it. ULTRA_ORACLE_COUNCIL_FORCE is the
 # plain (non-exported) per-run escalation; pass it as arg 2 (a normal council
 # leaves it unset → 0). arg 4 is where the verdict markdown + .rc marker land.
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/ultra-oracle-run.sh" council "${ULTRA_ORACLE_COUNCIL_FORCE:-0}" \
-  "$ULTRA_ORACLE_PROMPT_FILE" "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/council-$$.md" \
-  > "$ULTRA_ORACLE_RESULT" 2>/dev/null &
+# The `{ ...; rm -f ...; }` group deletes the prompt file once the wrapper exits
+# (VERDICT, FAILED, or NOT_ATTEMPTED alike) so the council question text — which
+# may carry sensitive repo/design context — never lingers in $TMPDIR after an
+# off-by-default (NOT_ATTEMPTED) run; the wrapper has already fully read the file
+# by the time it exits, so this is not a race.
+{ bash "${CLAUDE_PLUGIN_ROOT}/scripts/ultra-oracle-run.sh" council "${ULTRA_ORACLE_COUNCIL_FORCE:-0}" \
+    "$ULTRA_ORACLE_PROMPT_FILE" "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/council-$$.md" \
+    > "$ULTRA_ORACLE_RESULT" 2>/dev/null; rm -f "$ULTRA_ORACLE_PROMPT_FILE"; } &
 PIDS+=("$!")
-# ... existing PIDS dispatch + `wait "${PIDS[@]}"` ...
+# CRITICAL — insert this ENTIRE snippet into the Step 4 dispatch block BEFORE its
+# closing `(( ${#PIDS[@]} )) && wait "${PIDS[@]}"` line (the last line of the Step 4
+# code fence above), not after it and not as a separate Bash call. Step 5's render
+# reads $ULTRA_ORACLE_RESULT immediately with no polling loop of its own, so the
+# combined `wait` is the ONLY thing guaranteeing the wrapper has finished — appending
+# this dispatch after Step 4's `wait` already ran (or issuing it as its own Bash tool
+# call) lets the render execute while the wrapper is still running, producing a false
+# `ORACLE_FAILED [no wrapper output]`.
 ```
 
 **Render (Step 5):** after `wait "${PIDS[@]}"`, in the same block. The wrapper already did the surface-gate + status grading + `.rc` wait, so the render just reads its first-line token: `VERDICT` (verdict text follows on subsequent lines), `NOT_ATTEMPTED` (oracle did not run — omit the section entirely), or `FAILED [<status>]` (render the loud banner).

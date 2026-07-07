@@ -176,6 +176,13 @@ first_line="${out%%$'\n'*}"
 printf '%s\n' "$out" | grep -q "ULTRA-ORACLE VERDICT" || { echo "FAIL wrapper verdict body missing"; FAIL=1; }
 unset ULTRA_ORACLE_MOCK_MODE
 
+# forced + failing stub -> FAILED [<status>] token (drives the ORACLE_FAILED banner)
+export ULTRA_ORACLE_MOCK_MODE=fail
+out="$(bash "$WRAP" council 1 "$wp" "$tmp/wrap_fail.md")"
+first_line="${out%%$'\n'*}"
+[[ "$first_line" == FAILED\ \[*\] ]] || { echo "FAIL wrapper FAILED token got '$first_line'"; FAIL=1; }
+unset ULTRA_ORACLE_MOCK_MODE
+
 # REGRESSION (the actual bug): invoked from a NON-bash caller shell it must still
 # work — an in-shell `source ultra-oracle.sh` aborted under zsh, but `bash $WRAP`
 # runs the wrapper under bash regardless. Skip cleanly if zsh is absent.

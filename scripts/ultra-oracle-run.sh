@@ -41,13 +41,30 @@ fi
 _SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$_SELF_DIR/.." && pwd)}"
 
+# Decide attempt-worthiness (forced OR surface-enabled) BEFORE paying the cost of
+# sourcing the full bash-only adapter. This must come first: on a normal
+# (disabled, non-forced) run, an adapter that fails to source is NOT a real
+# failure from the caller's perspective — nothing was ever going to run — so it
+# must stay NOT_ATTEMPTED, matching the pre-wrapper `if source && gate` behavior
+# that omitted the Expert Witness section entirely. Checking gate first (via the
+# lightweight config-only lib, not the full adapter) prevents a broken/missing
+# adapter from manufacturing a loud FAILED banner on every ordinary council run.
+_SHOULD_ATTEMPT=0
+if [[ "$FORCE" == 1 ]]; then
+  _SHOULD_ATTEMPT=1
+else
+  # shellcheck source=/dev/null
+  if source "$ROOT/scripts/lib/ultra-oracle-config.sh" 2>/dev/null && ultra_oracle_surface_enabled "$SURFACE"; then
+    _SHOULD_ATTEMPT=1
+  fi
+fi
+if [[ "$_SHOULD_ATTEMPT" != 1 ]]; then
+  echo "NOT_ATTEMPTED"; exit 0
+fi
+
 # shellcheck source=/dev/null
 if ! source "$ROOT/scripts/lib/ultra-oracle.sh" 2>/dev/null; then
   echo "FAILED [adapter-unavailable]"; exit 0
-fi
-
-if ! { ultra_oracle_surface_enabled "$SURFACE" || [[ "$FORCE" == 1 ]]; }; then
-  echo "NOT_ATTEMPTED"; exit 0
 fi
 
 mkdir -p "$(dirname "$OUT")"

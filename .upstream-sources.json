@@ -2515,8 +2515,9 @@
     },
     {
       "path": "skills-archive/brandkit/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "taste-skill",
+      "status": "sync",
+      "upstream_path": "skills/brandkit/SKILL.md"
     },
     {
       "path": "skills-archive/carrier-relationship-management/SKILL.md",
@@ -8021,6 +8022,133 @@
       "source": "superpowers",
       "status": "custom",
       "upstream_path": "skills/using-superpowers/references/antigravity-tools.md"
+    },
+    {
+      "path": "skills/loop-design-check/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/loop-design-check/SKILL.md"
+    },
+    {
+      "path": "skills-archive/delivery-gate/SKILL.md",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/delivery-gate/SKILL.md"
+    },
+    {
+      "path": "skills-archive/delivery-gate/hooks/quality-gate.py",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "skills/delivery-gate/hooks/quality-gate.py"
+    },
+    {
+      "path": "skills-archive/wayfinder/SKILL.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/in-progress/wayfinder/SKILL.md"
+    },
+    {
+      "path": "skills-archive/codebase-design/SKILL.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/codebase-design/SKILL.md"
+    },
+    {
+      "path": "skills-archive/codebase-design/DEEPENING.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/codebase-design/DEEPENING.md"
+    },
+    {
+      "path": "skills-archive/codebase-design/DESIGN-IT-TWICE.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/codebase-design/DESIGN-IT-TWICE.md"
+    },
+    {
+      "path": "skills-archive/domain-modeling/SKILL.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/domain-modeling/SKILL.md"
+    },
+    {
+      "path": "skills-archive/domain-modeling/ADR-FORMAT.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/domain-modeling/ADR-FORMAT.md"
+    },
+    {
+      "path": "skills-archive/domain-modeling/CONTEXT-FORMAT.md",
+      "source": "mattpocock",
+      "status": "sync",
+      "upstream_path": "skills/engineering/domain-modeling/CONTEXT-FORMAT.md"
+    },
+    {
+      "path": "skills-archive/supabase-router/SKILL.md",
+      "source": "supabase",
+      "status": "custom",
+      "upstream_path": "skills/supabase/SKILL.md",
+      "custom_reason": "Vault rename supabase→supabase-router: the bare name `supabase` collides with ubiquitous Supabase-library tokens (supabase.rpc, supabase.com, supabase functions) across active skills, tripping the vault-references contract test. Only the frontmatter name line diverges from upstream; body synced."
+    },
+    {
+      "path": "skills-archive/supabase-router/CHANGELOG.md",
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase/CHANGELOG.md"
+    },
+    {
+      "path": "skills-archive/supabase-router/assets/feedback-issue-template.md",
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase/assets/feedback-issue-template.md"
+    },
+    {
+      "path": "skills-archive/supabase-router/references/skill-feedback.md",
+      "source": "supabase",
+      "status": "sync",
+      "upstream_path": "skills/supabase/references/skill-feedback.md"
+    },
+    {
+      "path": "skills-archive/marketing-loops/SKILL.md",
+      "source": "marketingskills",
+      "status": "sync",
+      "upstream_path": "skills/marketing-loops/SKILL.md"
+    },
+    {
+      "path": "skills-archive/marketing-loops/evals/evals.json",
+      "source": "marketingskills",
+      "status": "sync",
+      "upstream_path": "skills/marketing-loops/evals/evals.json"
+    },
+    {
+      "path": "skills-archive/marketing-loops/references/loop-catalog.md",
+      "source": "marketingskills",
+      "status": "sync",
+      "upstream_path": "skills/marketing-loops/references/loop-catalog.md"
+    },
+    {
+      "path": "skills-archive/marketing-loops/references/loop-guardrails.md",
+      "source": "marketingskills",
+      "status": "sync",
+      "upstream_path": "skills/marketing-loops/references/loop-guardrails.md"
+    },
+    {
+      "path": "skills-archive/marketing-loops/references/loop-orchestration.md",
+      "source": "marketingskills",
+      "status": "sync",
+      "upstream_path": "skills/marketing-loops/references/loop-orchestration.md"
+    },
+    {
+      "path": "skills-archive/marketing-loops/references/loop-state.md",
+      "source": "marketingskills",
+      "status": "sync",
+      "upstream_path": "skills/marketing-loops/references/loop-state.md"
+    },
+    {
+      "path": "skills-archive/marketing-loops/references/loop-template.md",
+      "source": "marketingskills",
+      "status": "sync",
+      "upstream_path": "skills/marketing-loops/references/loop-template.md"
     }
   ],
   "rejected": [

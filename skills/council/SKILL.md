@@ -147,50 +147,49 @@ UltraOracle is **not** a vote: it is rendered as its own Expert Witness section 
 
 **Data boundary:** ultra-oracle transmits the council question to ChatGPT Pro via the oracle browser engine; if `ultraOracle.chromeProfileDir` is set it clones that Chrome profile's session — use a dedicated ChatGPT-only profile. Prefer `ultraOracle.cookiePath` (a signed-in Chrome Cookies DB path) to reuse the session headlessly without cloning the whole profile — the reliable path where Chrome app-bound cookie encryption defeats `--copy-profile`. Do not enable where the question would carry secrets.
 
-Launch wiring (inside the Step 4 dispatch Bash block, alongside the voices). `ULTRA_ORACLE_ATTEMPTED` records that the oracle ran (config-enabled OR forced) and drives the render after `wait`:
+Launch wiring (inside the Step 4 dispatch Bash block, alongside the voices). The oracle runs via the **bash-shebang wrapper `scripts/ultra-oracle-run.sh`**, NOT an in-block `source`. This is load-bearing: `scripts/lib/ultra-oracle.sh` is bash-only (resolves its own dir via `${BASH_SOURCE[0]}`, uses `local -a`) and fail-closes when sourced outside bash — and this Step 4 block is pasted verbatim into the executor's Bash tool, which on a zsh-default machine (macOS) runs **zsh**. An in-block `source` therefore aborted with rc=1 and every ultra-council run silently rendered `ORACLE_FAILED [adapter-unavailable]` (the oracle never launched; the voices were immune only because `dispatch.sh` carries its own bash shebang). The wrapper gives the oracle the same shell-agnostic immunity. It self-gates (surface-enabled OR forced), blocks internally until the consult completes, and prints one typed token — track it in `PIDS` like every other voice and read its result after `wait`. A normal council omits `ULTRA_ORACLE_COUNCIL_FORCE` entirely; the wrapper then prints `NOT_ATTEMPTED` unless user config enabled the surface.
 
 ```bash
-ULTRA_ORACLE_OUT=""; ULTRA_ORACLE_STATUS=""; ULTRA_ORACLE_ATTEMPTED=0
-# Enabled via user config, OR forced for one run by an ultra-council request
-# (ULTRA_ORACLE_COUNCIL_FORCE=1, set+unset by the executor per this step — a normal council omits it).
-if source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/ultra-oracle.sh" 2>/dev/null \
-   && { ultra_oracle_surface_enabled council || [ "${ULTRA_ORACLE_COUNCIL_FORCE:-0}" = 1 ]; }; then
-  ULTRA_ORACLE_ATTEMPTED=1
-  ULTRA_ORACLE_OUT="${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/council-$$.md"
-  mkdir -p "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle"
-  cat > "$ULTRA_ORACLE_OUT.prompt" <<'ULTRA_ORACLE_PROMPT'
+ULTRA_ORACLE_RESULT="$(mktemp)"; ULTRA_ORACLE_PROMPT_FILE="$(mktemp)"
+cat > "$ULTRA_ORACLE_PROMPT_FILE" <<'ULTRA_ORACLE_PROMPT'
 <the council question + context — same text composed into the other voices' heredocs>
 ULTRA_ORACLE_PROMPT
-  ULTRA_ORACLE_STATUS="$(ultra_oracle_consult --mode background --slug "ultra oracle expert witness" \
-    --out "$ULTRA_ORACLE_OUT" --prompt-file "$ULTRA_ORACLE_OUT.prompt" 2>/dev/null || true)"
-elif [ "${ULTRA_ORACLE_COUNCIL_FORCE:-0}" = 1 ]; then
-  ULTRA_ORACLE_ATTEMPTED=1   # forced but the adapter failed to load / gate was false → render a loud banner below
-fi
-# ... existing PIDS dispatch + `wait "${PIDS[@]}"` ...
+# Background the wrapper so its consult overlaps the voices; it blocks internally
+# until done, so `wait "${PIDS[@]}"` covers it. ULTRA_ORACLE_COUNCIL_FORCE is the
+# plain (non-exported) per-run escalation; pass it as arg 2 (a normal council
+# leaves it unset → 0). arg 4 is where the verdict markdown + .rc marker land.
+# The `{ ...; rm -f ...; }` group deletes the prompt file once the wrapper exits
+# (VERDICT, FAILED, or NOT_ATTEMPTED alike) so the council question text — which
+# may carry sensitive repo/design context — never lingers in $TMPDIR after an
+# off-by-default (NOT_ATTEMPTED) run; the wrapper has already fully read the file
+# by the time it exits, so this is not a race.
+{ bash "${CLAUDE_PLUGIN_ROOT}/scripts/ultra-oracle-run.sh" council "${ULTRA_ORACLE_COUNCIL_FORCE:-0}" \
+    "$ULTRA_ORACLE_PROMPT_FILE" "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/council-$$.md" \
+    > "$ULTRA_ORACLE_RESULT" 2>/dev/null; rm -f "$ULTRA_ORACLE_PROMPT_FILE"; } &
+PIDS+=("$!")
+# CRITICAL — insert this ENTIRE snippet into the Step 4 dispatch block BEFORE its
+# closing `(( ${#PIDS[@]} )) && wait "${PIDS[@]}"` line (the last line of the Step 4
+# code fence above), not after it and not as a separate Bash call. Step 5's render
+# reads $ULTRA_ORACLE_RESULT immediately with no polling loop of its own, so the
+# combined `wait` is the ONLY thing guaranteeing the wrapper has finished — appending
+# this dispatch after Step 4's `wait` already ran (or issuing it as its own Bash tool
+# call) lets the render execute while the wrapper is still running, producing a false
+# `ORACLE_FAILED [no wrapper output]`.
 ```
 
-**Render (Step 5):** after `wait "${PIDS[@]}"`, in the same block. Render whenever the oracle was ATTEMPTED (config-enabled OR ultra-council-forced) — never mid-dispatch, never as a voice. Grade **status-first**: `ultra_oracle_consult --mode background` returns `dispatched` once it launches and a backgrounded subshell writes `$ULTRA_ORACLE_OUT.rc` on completion (rc 0 + verdict = ok, rc 124 = timeout, other rc = error); a `skipped:*`/`error` status never launched and writes no `.rc`. The directive after the block does the actual rendering:
+**Render (Step 5):** after `wait "${PIDS[@]}"`, in the same block. The wrapper already did the surface-gate + status grading + `.rc` wait, so the render just reads its first-line token: `VERDICT` (verdict text follows on subsequent lines), `NOT_ATTEMPTED` (oracle did not run — omit the section entirely), or `FAILED [<status>]` (render the loud banner).
 
 ```bash
-if [ "$ULTRA_ORACLE_ATTEMPTED" = 1 ]; then
-  if [ "$ULTRA_ORACLE_STATUS" = dispatched ]; then
-    n=0; while [ ! -f "$ULTRA_ORACLE_OUT.rc" ] && [ "$n" -lt "$(ultra_oracle_timeout_cap)" ]; do sleep 2; n=$((n + 2)); done
-    rc="$(cat "$ULTRA_ORACLE_OUT.rc" 2>/dev/null)"
-    if [ -s "$ULTRA_ORACLE_OUT" ] && [ "$rc" = 0 ]; then
-      cat "$ULTRA_ORACLE_OUT"                                 # verdict text → place in the Expert Witness section
-    elif [ "$rc" = 0 ]; then
-      echo "ORACLE_FAILED [empty verdict]"                    # exited clean but wrote no verdict (degenerate/false-ok) — not a process error
-    elif [ "$rc" = 124 ]; then
-      echo "ORACLE_FAILED [timeout]"
-    elif [ -n "$rc" ]; then
-      echo "ORACLE_FAILED [error rc=$rc]"
-    else
-      echo "ORACLE_FAILED [timeout]"                          # launched, no .rc after the full wait → timed out
-    fi
-  else
-    echo "ORACLE_FAILED [${ULTRA_ORACLE_STATUS:-adapter-unavailable}]"   # never launched: skipped:* / error / source failed
-  fi
-fi
+_uo_tok="$(head -1 "$ULTRA_ORACLE_RESULT" 2>/dev/null)"
+case "$_uo_tok" in
+  VERDICT)         tail -n +2 "$ULTRA_ORACLE_RESULT" ;;         # verdict text → Expert Witness section
+  FAILED*)         echo "ORACLE_${_uo_tok}" ;;                  # → "ORACLE_FAILED [status]" loud banner
+  NOT_ATTEMPTED)   : ;;                                         # oracle did not run → omit the section
+  *)               echo "ORACLE_FAILED [no wrapper output]" ;; # empty/unknown token: the wrapper prints exactly one
+                                                               # of the three tokens and exits 0, so an empty result
+                                                               # means it died before emitting — fail CLOSED to the
+                                                               # loud banner, NEVER silently omit (ADR 0007 #6).
+esac
 ```
 
 **Rendering directive (binding):** In the Step 6 report, whenever the oracle was attempted, render a SEPARATE top-level `## UltraOracle — Expert Witness [ORACLE_SUMMARY_REVIEW]` section AFTER the five voice blocks and BEFORE `### Verdict`. On a verdict, place the `cat`'d text (reproduced faithfully — annotate any ungrounded repo-specific claim as ungrounded); it is advisory and EXCLUDED from the vote tally, and must NOT flip a hard recommendation without independent local evidence (grep/Read/run). On any `ORACLE_FAILED […]` token render a loud `## ⚠ ORACLE_FAILED [<status>] — UltraOracle Expert Witness verdict NOT included` banner in that slot — never silently omit it (ADR 0007 settling-check #6). Never place UltraOracle in a voice slot or count it toward consensus.
@@ -327,7 +326,7 @@ toward consensus.
 
 Read the Fresh Claude output from the Agent tool result. Read the Agy/Codex/Grok output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`). When the resolver falls back to Droid in the Researcher slot (grok unavailable), the output filename is `dispatch-droid-*.txt` and the report should attribute "Droid (Researcher, fallback)" rather than "Grok (Researcher)".
 
-If the UltraOracle escalation ran (`ULTRA_ORACLE_ATTEMPTED=1`, ultra-council), its verdict (or `ORACLE_FAILED` token) is emitted by the render block above into the dispatch Bash output and also persists at `$ULTRA_ORACLE_OUT` — capture it and render it as the separate Expert Witness section per Step 4.5's binding directive, never as a voice and never folded into the vote.
+If the UltraOracle escalation ran (ultra-council), the wrapper's first-line token in `$ULTRA_ORACLE_RESULT` (`VERDICT` / `NOT_ATTEMPTED` / `FAILED [status]`) is graded by the render block above; the verdict text also persists at the `--out` path (`.claude/ultra-oracle/council-$$.md`). Capture the emitted verdict (or `ORACLE_FAILED` token) and render it as the separate Expert Witness section per Step 4.5's binding directive, never as a voice and never folded into the vote. A `NOT_ATTEMPTED` token means the oracle did not run — omit the section entirely.
 
 **CRITICAL: Read the ENTIRE output file, not just the first few lines.** CLI output files contain noise before the actual response:
 - **Agy:** Dumps MCP server initialization logs (e.g., `Registering notification handlers...`, `Loading extension...`) before the response. The actual answer may be 50+ lines deep.

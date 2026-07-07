@@ -8026,8 +8026,9 @@
     {
       "path": "skills/loop-design-check/SKILL.md",
       "source": "ecc",
-      "status": "sync",
-      "upstream_path": "skills/loop-design-check/SKILL.md"
+      "status": "custom",
+      "upstream_path": "skills/loop-design-check/SKILL.md",
+      "custom_reason": "Quoted the frontmatter description (double-quote wrap) — upstream ships it unquoted, but as a LIVE-promoted skill the unquoted description contains \": \" (e.g. \"Two actions:\") which strict YAML rejects (mapping values not allowed), so the live skill fails to load. Only divergence from ecc upstream @4130457."
     },
     {
       "path": "skills-archive/delivery-gate/SKILL.md",

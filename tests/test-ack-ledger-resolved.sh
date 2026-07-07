@@ -590,6 +590,158 @@ else
   fail "stale under ACK_EMIT_TIER=1 expected 'stale', got '$got'"
 fi
 
+# --- Tests for Case 1b (issue-comment infra-error / rate-limit downgrade) ---
+# CodeRabbit posts rate-limit notices as ISSUE COMMENTS, not /reviews bodies, so
+# the last-/reviews-body scan of Case 1 never sees them. Case 1b scans the bot's
+# issue comments authored strictly after the freshness anchor. All four tests
+# share a stale non-actionable COMMENTED /reviews entry so the reducer reaches
+# the downgrade block (non-empty commit_id, ever_approved==0, no HEAD ack) and,
+# absent Case 1b, would fall through to `stale`.
+CB_STALE_REVIEW='[{"user":{"login":"coderabbitai[bot]"},"state":"COMMENTED","commit_id":"oldcommit","body":"Summary of changes."}]'
+CB_ANCHOR="2026-07-07T10:00:00Z"          # HEAD_PUSH_DATE
+CB_FRESH_TS="2026-07-07T11:00:00Z"        # comment newer than anchor
+CB_STALE_TS="2026-07-07T09:00:00Z"        # comment older than anchor
+CB_LIMIT_BODY='> [!WARNING] Rate limit exceeded. Please try again by re-requesting a review.'
+mk_cb_comments() { # $1 = createdAt
+  printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_LIMIT_BODY"
+}
+run_cb() { # $1 = reviews, $2 = comments, $3 = HEAD_PUSH_DATE
+  FETCH_OK=1 ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' \
+    ALL_REVIEWS="$1" ALL_COMMENTS="$2" ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" \
+    ALL_STATUSES='[]' ALL_REACTIONS='[]' HEAD_COMMITTED_DATE='' HEAD_PUSH_DATE="$3" \
+    HEAD_SHA="$HEAD_SHA" bash "$ACK_SCRIPT" coderabbitai 2>/dev/null
+}
+
+# Test 1b.1: fresh issue-comment rate-limit + anchor + ever_approved==0 → none
+got=$(run_cb "$CB_STALE_REVIEW" "$(mk_cb_comments "$CB_FRESH_TS")" "$CB_ANCHOR")
+if [ "$got" = "none" ]; then
+  ok "issue-comment rate-limit newer than anchor → none (Case 1b)"
+else
+  fail "issue-comment rate-limit newer than anchor expected 'none', got '$got'"
+fi
+
+# Test 1b.2: same notice but NO anchor (HEAD_PUSH_DATE empty) → stale (fail-closed)
+got=$(run_cb "$CB_STALE_REVIEW" "$(mk_cb_comments "$CB_FRESH_TS")" "")
+if [ "$got" = "stale" ]; then
+  ok "issue-comment rate-limit with no anchor → stale (Case 1b fail-closed)"
+else
+  fail "issue-comment rate-limit with no anchor expected 'stale', got '$got'"
+fi
+
+# Test 1b.3: rate-limit notice OLDER than anchor → stale (freshness filter)
+got=$(run_cb "$CB_STALE_REVIEW" "$(mk_cb_comments "$CB_STALE_TS")" "$CB_ANCHOR")
+if [ "$got" = "stale" ]; then
+  ok "issue-comment rate-limit older than anchor → stale (freshness filter)"
+else
+  fail "issue-comment rate-limit older than anchor expected 'stale', got '$got'"
+fi
+
+# Test 1b.4: prior APPROVED review + fresh rate-limit comment → stale (ever_approved guard)
+CB_APPROVED_THEN_COMMENTED='[{"user":{"login":"coderabbitai[bot]"},"state":"APPROVED","commit_id":"oldcommit","body":"LGTM"},{"user":{"login":"coderabbitai[bot]"},"state":"COMMENTED","commit_id":"oldcommit","body":"Summary of changes."}]'
+got=$(run_cb "$CB_APPROVED_THEN_COMMENTED" "$(mk_cb_comments "$CB_FRESH_TS")" "$CB_ANCHOR")
+if [ "$got" = "stale" ]; then
+  ok "issue-comment rate-limit after prior APPROVED → stale (ever_approved guard)"
+else
+  fail "issue-comment rate-limit after prior APPROVED expected 'stale', got '$got'"
+fi
+
+# Test 1b.5: latest comment is a real FINDING that mentions rate limiting → stale.
+# Codex P2 (PR #292): the broad `rate.?limit` regex over arbitrary issue-comment
+# prose would match an actionable finding ("add a rate limit to this endpoint")
+# and wrongly downgrade it to none. The notice-SHAPE regex must NOT match a
+# findings body — the bot stays stale (gate blocks) so the finding is surfaced.
+CB_FINDING_BODY='Consider adding a rate limit to the /login endpoint to prevent brute-force attempts.'
+mk_cb_finding() { printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_FINDING_BODY"; }
+got=$(run_cb "$CB_STALE_REVIEW" "$(mk_cb_finding "$CB_FRESH_TS")" "$CB_ANCHOR")
+if [ "$got" = "stale" ]; then
+  ok "issue-comment finding mentioning rate limiting → stale (not an infra notice)"
+else
+  fail "issue-comment finding mentioning rate limiting expected 'stale', got '$got'"
+fi
+
+# Test 1b.6: canonical latest comment wins — older rate-limit notice superseded
+# by a newer real finding → stale. Only the bot's newest comment is inspected.
+CB_NOTICE_THEN_FINDING=$(printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"},{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' \
+  "$CB_FRESH_TS" "$CB_LIMIT_BODY" "2026-07-07T12:00:00Z" "$CB_FINDING_BODY")
+got=$(run_cb "$CB_STALE_REVIEW" "$CB_NOTICE_THEN_FINDING" "$CB_ANCHOR")
+if [ "$got" = "stale" ]; then
+  ok "older rate-limit notice + newer finding → stale (latest comment canonical)"
+else
+  fail "older notice superseded by newer finding expected 'stale', got '$got'"
+fi
+
+# Test 1b.7: canonical latest comment wins the other way — older finding
+# superseded by a newer rate-limit notice → none (bot is currently rate-limited).
+CB_FINDING_THEN_NOTICE=$(printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"},{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' \
+  "$CB_FRESH_TS" "$CB_FINDING_BODY" "2026-07-07T12:00:00Z" "$CB_LIMIT_BODY")
+got=$(run_cb "$CB_STALE_REVIEW" "$CB_FINDING_THEN_NOTICE" "$CB_ANCHOR")
+if [ "$got" = "none" ]; then
+  ok "older finding + newer rate-limit notice → none (latest comment canonical)"
+else
+  fail "newer rate-limit notice expected 'none', got '$got'"
+fi
+
+# Test 1b.8: finding using the words "rate-limited by" → stale (Codex P2 #2).
+# "not rate-limited by user/IP" is an actionable finding, not an infra notice;
+# the dropped over-broad `rate.?limited by` alternative must not resurrect.
+CB_RLBY_BODY='This endpoint is not rate-limited by user/IP; add throttling to prevent abuse.'
+mk_cb_rlby() { printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_RLBY_BODY"; }
+got=$(run_cb "$CB_STALE_REVIEW" "$(mk_cb_rlby "$CB_FRESH_TS")" "$CB_ANCHOR")
+if [ "$got" = "stale" ]; then
+  ok "finding 'not rate-limited by user/IP' → stale (no bare 'rate limited by' match)"
+else
+  fail "finding 'not rate-limited by user/IP' expected 'stale', got '$got'"
+fi
+
+# Test 1b.9: real CodeRabbit rate-limit notice ("Review limit reached") still
+# downgrades → none, proving dropping "rate limited by" lost no notice coverage.
+CB_REVLIMIT_BODY='> [!WARNING] Review limit reached. You have reached your PR review limit.'
+mk_cb_revlimit() { printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_REVLIMIT_BODY"; }
+got=$(run_cb "$CB_STALE_REVIEW" "$(mk_cb_revlimit "$CB_FRESH_TS")" "$CB_ANCHOR")
+if [ "$got" = "none" ]; then
+  ok "CodeRabbit 'Review limit reached' notice → none (real notice still matched)"
+else
+  fail "CodeRabbit 'Review limit reached' notice expected 'none', got '$got'"
+fi
+
+# Test 1b.10: issue-comment finding using review-object phrasing → stale (Codex
+# P2 #3). Case 1b uses a rate-limit-NOTICE-only regex, so generic review-object
+# phrases ("unable to review", "encountered an error") that are canonical for a
+# /reviews body must NOT match an issue-comment finding.
+CB_UNABLE_BODY='Users are unable to review invoices after this change; the modal never opens.'
+mk_cb_unable() { printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_UNABLE_BODY"; }
+got=$(run_cb "$CB_STALE_REVIEW" "$(mk_cb_unable "$CB_FRESH_TS")" "$CB_ANCHOR")
+if [ "$got" = "stale" ]; then
+  ok "issue-comment finding 'unable to review invoices' → stale (notice-only regex)"
+else
+  fail "issue-comment finding 'unable to review invoices' expected 'stale', got '$got'"
+fi
+
+# Test 1b.11: finding "handle the rate limit exceeded response" → stale (Codex
+# P2 #4). The generic `rate limit exceeded` phrase was dropped; only CodeRabbit
+# notice wording downgrades. This body has none of that wording → stays stale.
+CB_RLE_BODY='Please handle the rate limit exceeded response from the upstream API.'
+mk_cb_rle() { printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_RLE_BODY"; }
+got=$(run_cb "$CB_STALE_REVIEW" "$(mk_cb_rle "$CB_FRESH_TS")" "$CB_ANCHOR")
+if [ "$got" = "stale" ]; then
+  ok "finding 'rate limit exceeded response' → stale (generic phrase dropped)"
+else
+  fail "finding 'rate limit exceeded response' expected 'stale', got '$got'"
+fi
+
+# Test 1.rl: Case 1 (/reviews body) broad rate-limit downgrade preserved (Codex
+# P2 #5). A frozen /reviews infra-error object "Rate limited. Please try later"
+# has no exceeded/reached/notice wording, but Case 1 (unlike Case 1b) uses the
+# broad bare `rate.?limit` — a /reviews object that errored is not findings
+# prose, so it must still downgrade to none rather than wait forever.
+C1_RL_REVIEW='[{"user":{"login":"cursor[bot]"},"state":"COMMENTED","commit_id":"oldcommit","body":"Rate limited. Please try later."}]'
+got=$(run_ledger_reviews "$C1_RL_REVIEW")
+if [ "$got" = "none" ]; then
+  ok "Case 1 /reviews body 'Rate limited. Please try later' → none (broad downgrade preserved)"
+else
+  fail "Case 1 /reviews 'Rate limited' expected 'none', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

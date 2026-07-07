@@ -572,6 +572,36 @@ if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; exit 0; fi
   || printf '0\n\n\n'
 )
 if [ "$ever_approved" -eq 0 ]; then
+  # TWO separate regexes for two different surfaces — deliberately NOT shared.
+  # Case 1 scans a bot's last /reviews OBJECT body, where a review-object infra
+  # error is canonical (Copilot's "encountered an error and was unable to
+  # review"). Case 1b scans a bot's latest ISSUE COMMENT, which is also where a
+  # bot posts actionable FINDINGS prose — so it must match ONLY the shape of a
+  # rate-limit NOTICE, never generic review-object phrases. Sharing one regex
+  # let review-object phrases ("unable to review", "encountered an error") leak
+  # into the issue-comment scan and match findings like "Users are unable to
+  # review invoices after this change" (three successive Codex P2s on PR #292).
+  #
+  # Case 1 (/reviews body): the ORIGINAL broad review-object infra-error set,
+  # including bare `rate.?limit`. A frozen /reviews infra-error object ("Rate
+  # limited. Please try later", Copilot's "encountered an error and was unable
+  # to review") is a review OBJECT that errored, not findings prose, so the
+  # broad match is safe and desirable here — narrowing it would let an
+  # un-clearable infra-error body fall through to `stale` and wait forever
+  # (fifth Codex P2 on PR #292). This is the pre-split behavior, unchanged;
+  # only Case 1b (issue comments) needs the strict notice-only regex below.
+  infra_error_re='encountered an error|rate.?limit|unable to review|try again by re-requesting'
+  # Case 1b (issue comment): CodeRabbit rate-limit-NOTICE wording ONLY. Scoped to
+  # the specific phrases CodeRabbit's review-limit notice emits — "Review limit
+  # reached", "reached your … review limit", "try again by re-requesting" — none
+  # of which appears in normal findings prose. The generic `rate limit
+  # exceeded|reached` alternative was deliberately dropped: it added no coverage
+  # of the real notice (which uses the review-limit wording above) yet matched
+  # findings like "handle the rate limit exceeded response" (fourth Codex P2 on
+  # PR #292). Case 1b exists specifically for CodeRabbit's issue-comment notices
+  # (44/47 of the Jun–Jul 2026 events), so notice-specific wording is correct,
+  # not over-fitting.
+  rate_notice_re='review limit reached|reached your [^.]{0,40}review limit|try again by re-requesting'
   # Case 1: infra-error / rate-limit — Copilot's "encountered an error and
   # was unable to review" review object is the canonical case. GitHub leaves
   # it frozen on the SHA where it errored, never updates commit_id on later
@@ -580,7 +610,47 @@ if [ "$ever_approved" -eq 0 ]; then
   # those as `stale` blocks the merge gate forever; downgrade to `none` so
   # the loop surfaces the situation to the operator instead of looping in
   # vain.
-  if printf '%s' "$last_body" | grep -qiE 'encountered an error|rate.?limit|unable to review|try again by re-requesting'; then
+  if printf '%s' "$last_body" | grep -qiE "$infra_error_re"; then
+    echo "none"; exit 0
+  fi
+  # Case 1b: issue-comment infra-error / rate-limit — CodeRabbit posts its
+  # rate-limit notices as ISSUE COMMENTS, not /reviews bodies (44 of 47 limit
+  # events observed Jun–Jul 2026 were issue comments), so `last_body` above
+  # never sees them and the ledger loops in vain (each wait-round costs ~15 min
+  # and risks a max-wait bail) for a review the rate-limited bot will not
+  # deliver.
+  #
+  # Inspect ONLY the bot's CANONICAL LATEST issue comment (max createdAt) — the
+  # same "latest issue comment is canonical, older ones superseded" rule the
+  # pr-grind worker uses for Source 4 (agents/pr-grinder.md). Greping every
+  # post-anchor comment (the original Case 1b) could match a stale older notice
+  # while the bot's current comment is an actionable finding, OR match a
+  # findings comment that merely mentions rate limiting — either way wrongly
+  # downgrading an actionable review to `none` (Codex P2, PR #292). Combined
+  # with the rate-limit-NOTICE-only regex ($rate_notice_re, NOT the broader
+  # review-object $infra_error_re), the downgrade fires only when the bot's
+  # newest word on this PR is genuinely a rate-limit notice.
+  #
+  # The latest comment must also be authored strictly AFTER the freshness
+  # anchor (the push that landed HEAD) so the notice is about HEAD, not a stale
+  # earlier commit. The anchor is resolved locally from HEAD_PUSH_DATE
+  # (HEAD_CHECKS_DATE fallback for a brand-new branch, #269) — the same
+  # server-stamped, non-backdatable signals the Codex block uses at line ~306.
+  # It is deliberately NOT the $anchor_date variable: that is assigned only
+  # inside the `login == chatgpt-codex-connector` block and is empty for every
+  # other bot, so reusing it here would make Case 1b a silent no-op for
+  # CodeRabbit. Fail closed when neither anchor signal is present (fork head /
+  # events API aged-out): an unanchored notice cannot be proven current, so
+  # leave the bot `stale`. Same ever_approved==0 outer guard as Case 1.
+  cr_anchor="${HEAD_PUSH_DATE:-}"
+  [ -z "$cr_anchor" ] && cr_anchor="${HEAD_CHECKS_DATE:-}"
+  if [ -n "$cr_anchor" ] && \
+     printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" --arg anchor "$cr_anchor" \
+       '[.comments[] | select(.author.login == $login or .author.login == $login_bot)]
+        | sort_by(.createdAt) | last
+        | select(. != null and .createdAt > $anchor)
+        | .body // empty' 2>/dev/null \
+       | grep -qiE "$rate_notice_re"; then
     echo "none"; exit 0
   fi
   # Case 2: one-and-done COMMENTED — bot reviewed a prior commit with a

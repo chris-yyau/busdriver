@@ -793,6 +793,16 @@ else
   fail "#294: non-success status + findings comment expected 'stale', got '$got'"
 fi
 
+# Test 294.5: non-success `error` status + fresh rate-limit notice → none. Rounds
+# out coverage of all three legacy non-success states named in issue #294
+# (pending/failure/error) — 294.1-294.3 covered failure, 294.4 covered pending.
+got=$(run_cb_status "$CB_STALE_REVIEW" "$(mk_cb_comments "$CB_FRESH_TS")" "$CB_ANCHOR" error)
+if [ "$got" = "none" ]; then
+  ok "#294: 'error' status + fresh rate-limit notice → none (Tier E exemption)"
+else
+  fail "#294: 'error' status + fresh notice expected 'none', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

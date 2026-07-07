@@ -1,3 +1,10 @@
+## [1.83.3](https://github.com/chris-yyau/busdriver/compare/v1.83.2...v1.83.3) (2026-07-07)
+
+
+### Bug Fixes
+
+* hoist Case 1b rate-limit exemption ahead of Tier E non-success exit ([#294](https://github.com/chris-yyau/busdriver/issues/294)) ([#297](https://github.com/chris-yyau/busdriver/issues/297)) ([a23ca20](https://github.com/chris-yyau/busdriver/commit/a23ca2003a113869a4754887bccd324bc5c4f831))
+
 ## [1.83.2](https://github.com/chris-yyau/busdriver/compare/v1.83.1...v1.83.2) (2026-07-07)
 
 

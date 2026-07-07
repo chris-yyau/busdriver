@@ -1,3 +1,10 @@
+# [1.82.0](https://github.com/chris-yyau/busdriver/compare/v1.81.1...v1.82.0) (2026-07-07)
+
+
+### Features
+
+* sync verified upstream content across clv2, hooks, and skills ([#289](https://github.com/chris-yyau/busdriver/issues/289)) ([c0d5d16](https://github.com/chris-yyau/busdriver/commit/c0d5d16126e1ec1015731c732283a0e52c06b604)), closes [#2296](https://github.com/chris-yyau/busdriver/issues/2296) [#2300](https://github.com/chris-yyau/busdriver/issues/2300) [#2413](https://github.com/chris-yyau/busdriver/issues/2413) [#2370](https://github.com/chris-yyau/busdriver/issues/2370) [#2417](https://github.com/chris-yyau/busdriver/issues/2417) [#2297](https://github.com/chris-yyau/busdriver/issues/2297) [#276](https://github.com/chris-yyau/busdriver/issues/276)
+
 ## [1.81.1](https://github.com/chris-yyau/busdriver/compare/v1.81.0...v1.81.1) (2026-07-06)
 
 

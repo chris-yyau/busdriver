@@ -742,6 +742,57 @@ else
   fail "Case 1 /reviews 'Rate limited' expected 'none', got '$got'"
 fi
 
+# --- Tests for #294: Tier E non-success status must not short-circuit the Case
+# 1b issue-comment notice scan. A rate-limited CodeRabbit can leave a non-success
+# legacy commit-status on HEAD while its "review limit reached" NOTICE lands as an
+# issue comment. Before the fix, Tier E's non-success branch returned `stale`
+# before Case 1b could downgrade; now it falls through iff ever_approved==0 AND a
+# fresh notice is present. run_cb_status is run_cb with a chosen commit-status.
+run_cb_status() { # $1=reviews $2=comments $3=HEAD_PUSH_DATE $4=status_state
+  FETCH_OK=1 ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' \
+    ALL_REVIEWS="$1" ALL_COMMENTS="$2" ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" \
+    ALL_STATUSES="$(printf '[{"context":"CodeRabbit","state":"%s","created_at":"2026-07-07T11:30:00Z","id":3}]' "$4")" \
+    ALL_REACTIONS='[]' HEAD_COMMITTED_DATE='' HEAD_PUSH_DATE="$3" \
+    HEAD_SHA="$HEAD_SHA" bash "$ACK_SCRIPT" coderabbitai 2>/dev/null
+}
+
+# Test 294.1: non-success commit-status + fresh rate-limit issue comment → none.
+# This is the bug: Tier E's `failure` state must not pre-empt the Case 1b scan.
+got=$(run_cb_status "$CB_STALE_REVIEW" "$(mk_cb_comments "$CB_FRESH_TS")" "$CB_ANCHOR" failure)
+if [ "$got" = "none" ]; then
+  ok "#294: non-success status + fresh rate-limit notice → none (Tier E exemption)"
+else
+  fail "#294: non-success status + fresh notice expected 'none', got '$got'"
+fi
+
+# Test 294.2: non-success status + NO fresh notice → stale. The exemption must not
+# over-fire; a genuinely non-success bot with no notice still gates the merge.
+got=$(run_cb_status "$CB_STALE_REVIEW" "$EMPTY_COMMENTS" "$CB_ANCHOR" failure)
+if [ "$got" = "stale" ]; then
+  ok "#294: non-success status + no notice → stale (live signal still gates)"
+else
+  fail "#294: non-success status + no notice expected 'stale', got '$got'"
+fi
+
+# Test 294.3: non-success status + fresh notice + prior APPROVED → stale. The
+# ever_approved==0 guard holds on the Tier E path exactly as it does in Case 1b.
+got=$(run_cb_status "$CB_APPROVED_THEN_COMMENTED" "$(mk_cb_comments "$CB_FRESH_TS")" "$CB_ANCHOR" failure)
+if [ "$got" = "stale" ]; then
+  ok "#294: non-success status + fresh notice after APPROVED → stale (ever_approved guard)"
+else
+  fail "#294: non-success status + fresh notice after APPROVED expected 'stale', got '$got'"
+fi
+
+# Test 294.4: non-success status + fresh FINDING (not a notice) → stale. The Tier E
+# exemption uses the same notice-only discrimination as Case 1b, so a findings
+# comment that merely mentions rate limiting does not open the exemption.
+got=$(run_cb_status "$CB_STALE_REVIEW" "$(mk_cb_finding "$CB_FRESH_TS")" "$CB_ANCHOR" pending)
+if [ "$got" = "stale" ]; then
+  ok "#294: non-success status + findings comment → stale (notice-only discrimination)"
+else
+  fail "#294: non-success status + findings comment expected 'stale', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

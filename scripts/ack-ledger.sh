@@ -244,6 +244,38 @@ acks_head() {
   [ "$_ah_cand_par" = "$_ah_head_par" ]
 }
 
+# _fresh_rate_limit_notice — true (0) iff the bot's CANONICAL-LATEST issue comment
+# is a fresh (strictly post-anchor) CodeRabbit rate-limit NOTICE. Single source of
+# truth shared by Tier E's non-success guard (#294) and the Case 1b downgrade, so a
+# rate-limited bot is classified identically whether it surfaced via a legacy
+# commit-status or only via issue comments. Self-contained: reads $login,
+# $ALL_COMMENTS, and the push/checks anchor globals.
+#
+# Guards (all must hold) keep this from ever reading findings prose as a notice:
+#   - notice-only regex ($rate_notice_re) — the exact review-limit wording, NOT the
+#     broader review-object infra_error_re (Codex P2s, PR #292).
+#   - canonical-latest only (max createdAt) — an older stale notice can't win while
+#     the bot's current comment is an actionable finding.
+#   - anchor-freshness — the comment must postdate the push that landed HEAD
+#     (HEAD_PUSH_DATE || HEAD_CHECKS_DATE, #269); the same server-stamped,
+#     non-backdatable signals used elsewhere. Fail CLOSED (return 1) when neither
+#     anchor is present — an unanchored notice cannot be proven current.
+# Callers additionally gate on ever_approved==0 (a bot that ever approved is never
+# silently downgraded).
+_fresh_rate_limit_notice() {
+  local anchor rate_notice_re
+  anchor="${HEAD_PUSH_DATE:-}"
+  [ -z "$anchor" ] && anchor="${HEAD_CHECKS_DATE:-}"
+  [ -n "$anchor" ] || return 1
+  rate_notice_re='review limit reached|reached your [^.]{0,40}review limit|try again by re-requesting'
+  printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" --arg anchor "$anchor" \
+    '[.comments[] | select(.author.login == $login or .author.login == $login_bot)]
+     | sort_by(.createdAt) | last
+     | select(. != null and .createdAt > $anchor)
+     | .body // empty' 2>/dev/null \
+    | grep -qiE "$rate_notice_re"
+}
+
 # Fail-CLOSED: any source-fetch failure → mark stale (Greptile P1 — fail-OPEN
 # regression where API failures silently became `none` and didn't gate)
 if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; exit 0; fi
@@ -512,6 +544,22 @@ if [ -n "$check_run_head" ] && acks_head "$check_run_head"; then emit_head_ack "
 # Empty input guard: in-flight upgrades where a caller hasn't been updated
 # to fetch ALL_STATUSES export an empty string. The `-n` check makes Tier E
 # a no-op in that case, preserving pre-Tier-E semantics for unupgraded callers.
+#
+# ever_approved / last_state / last_body are read HERE (hoisted above Tier E for
+# #294) so Tier E's non-success guard below and the Case 1b downgrade block share
+# one parse. Rationale for the APPROVED/DISMISSED/CHANGES_REQUESTED classification
+# set is documented at the "Three-case downgrade" comment below, where these vars
+# are consumed. The FETCH_OK guard at the top already returned `stale` on any
+# source-fetch failure, so this parse only runs on successful fetches.
+{ read -r ever_approved; read -r last_state; read -r last_body; } < <(
+  printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
+    '[ .[] | .[] | select(.user.login == $login or .user.login == $login_bot) ]
+     | ( (map(select(.state == "APPROVED" or .state == "DISMISSED" or .state == "CHANGES_REQUESTED")) | length),
+         (last | .state // ""),
+         (last | .body // "" | gsub("\n"; " ")) )' 2>/dev/null \
+  || printf '0\n\n\n'
+)
+
 status_context=""
 case "$login" in
   coderabbitai) status_context="CodeRabbit" ;;
@@ -530,7 +578,24 @@ if [[ -n "$status_context" && -n "$ALL_STATUSES" ]]; then
   # downgrade block (which handles the existing one-and-done semantics) —
   # the explicit `-n` check on $status_state means an empty/missing status
   # context for a different bot doesn't trip this branch.
-  if [[ -n "$status_state" ]]; then echo "stale"; exit 0; fi
+  #
+  # #294 exemption: a rate-limited CodeRabbit posts its "review limit reached"
+  # NOTICE as an issue comment while its legacy commit-status for HEAD is
+  # non-success (pending/failure/error). Without this guard the non-success
+  # `stale` short-circuits BEFORE the Case 1b issue-comment scan can run, so the
+  # bot stays `stale` forever and pr-grind waits for a review the rate-limited
+  # bot cannot deliver — the exact case Case 1b exists to downgrade. Fall through
+  # to the downgrade block ONLY when the bot never approved (ever_approved==0) AND
+  # its canonical-latest issue comment is a proven-fresh rate-limit notice — the
+  # identical guards Case 1b already applies, so this cannot reclassify findings
+  # prose. Every other non-success state still gates (`stale`).
+  if [[ -n "$status_state" ]]; then
+    if [ "$ever_approved" -eq 0 ] && _fresh_rate_limit_notice; then
+      : # fall through → Case 1b downgrade block emits `none`
+    else
+      echo "stale"; exit 0
+    fi
+  fi
 fi
 
 # (F) Codex reactions are resolved in the CONSOLIDATED Codex block under Tier A
@@ -561,16 +626,8 @@ if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; exit 0; fi
 # discard the prior request for changes. The shared `ever_approved>0` guard
 # also closes a potential admin-edit body-injection attack on review bodies.
 #
-# Note: the FETCH_OK guard at the top already returns `stale` on any
-# source-fetch failure, so this block only runs on successful fetches.
-{ read -r ever_approved; read -r last_state; read -r last_body; } < <(
-  printf '%s' "$ALL_REVIEWS" | jq -rs --arg login "$login" --arg login_bot "${login}[bot]" \
-    '[ .[] | .[] | select(.user.login == $login or .user.login == $login_bot) ]
-     | ( (map(select(.state == "APPROVED" or .state == "DISMISSED" or .state == "CHANGES_REQUESTED")) | length),
-         (last | .state // ""),
-         (last | .body // "" | gsub("\n"; " ")) )' 2>/dev/null \
-  || printf '0\n\n\n'
-)
+# ever_approved / last_state / last_body were parsed above Tier E (hoisted for
+# the #294 non-success guard); they are consumed here unchanged.
 if [ "$ever_approved" -eq 0 ]; then
   # TWO separate regexes for two different surfaces — deliberately NOT shared.
   # Case 1 scans a bot's last /reviews OBJECT body, where a review-object infra
@@ -600,8 +657,7 @@ if [ "$ever_approved" -eq 0 ]; then
   # findings like "handle the rate limit exceeded response" (fourth Codex P2 on
   # PR #292). Case 1b exists specifically for CodeRabbit's issue-comment notices
   # (44/47 of the Jun–Jul 2026 events), so notice-specific wording is correct,
-  # not over-fitting.
-  rate_notice_re='review limit reached|reached your [^.]{0,40}review limit|try again by re-requesting'
+  # not over-fitting. The regex itself lives in _fresh_rate_limit_notice().
   # Case 1: infra-error / rate-limit — Copilot's "encountered an error and
   # was unable to review" review object is the canonical case. GitHub leaves
   # it frozen on the SHA where it errored, never updates commit_id on later
@@ -620,37 +676,13 @@ if [ "$ever_approved" -eq 0 ]; then
   # and risks a max-wait bail) for a review the rate-limited bot will not
   # deliver.
   #
-  # Inspect ONLY the bot's CANONICAL LATEST issue comment (max createdAt) — the
-  # same "latest issue comment is canonical, older ones superseded" rule the
-  # pr-grind worker uses for Source 4 (agents/pr-grinder.md). Greping every
-  # post-anchor comment (the original Case 1b) could match a stale older notice
-  # while the bot's current comment is an actionable finding, OR match a
-  # findings comment that merely mentions rate limiting — either way wrongly
-  # downgrading an actionable review to `none` (Codex P2, PR #292). Combined
-  # with the rate-limit-NOTICE-only regex ($rate_notice_re, NOT the broader
-  # review-object $infra_error_re), the downgrade fires only when the bot's
-  # newest word on this PR is genuinely a rate-limit notice.
-  #
-  # The latest comment must also be authored strictly AFTER the freshness
-  # anchor (the push that landed HEAD) so the notice is about HEAD, not a stale
-  # earlier commit. The anchor is resolved locally from HEAD_PUSH_DATE
-  # (HEAD_CHECKS_DATE fallback for a brand-new branch, #269) — the same
-  # server-stamped, non-backdatable signals the Codex block uses at line ~306.
-  # It is deliberately NOT the $anchor_date variable: that is assigned only
-  # inside the `login == chatgpt-codex-connector` block and is empty for every
-  # other bot, so reusing it here would make Case 1b a silent no-op for
-  # CodeRabbit. Fail closed when neither anchor signal is present (fork head /
-  # events API aged-out): an unanchored notice cannot be proven current, so
-  # leave the bot `stale`. Same ever_approved==0 outer guard as Case 1.
-  cr_anchor="${HEAD_PUSH_DATE:-}"
-  [ -z "$cr_anchor" ] && cr_anchor="${HEAD_CHECKS_DATE:-}"
-  if [ -n "$cr_anchor" ] && \
-     printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" --arg anchor "$cr_anchor" \
-       '[.comments[] | select(.author.login == $login or .author.login == $login_bot)]
-        | sort_by(.createdAt) | last
-        | select(. != null and .createdAt > $anchor)
-        | .body // empty' 2>/dev/null \
-       | grep -qiE "$rate_notice_re"; then
+  # The detection (canonical-latest issue comment, notice-only regex, strict
+  # post-anchor freshness, fail-closed when unanchored) lives in
+  # _fresh_rate_limit_notice() so Tier E's #294 non-success guard and this Case 1b
+  # downgrade classify a rate-limited bot identically. Same ever_approved==0 outer
+  # guard as Case 1. Also reachable via fall-through from Tier E when CodeRabbit's
+  # legacy commit-status for HEAD is non-success (#294).
+  if _fresh_rate_limit_notice; then
     echo "none"; exit 0
   fi
   # Case 2: one-and-done COMMENTED — bot reviewed a prior commit with a

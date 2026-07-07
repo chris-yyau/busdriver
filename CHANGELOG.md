@@ -1,3 +1,10 @@
+# [1.83.0](https://github.com/chris-yyau/busdriver/compare/v1.82.0...v1.83.0) (2026-07-07)
+
+
+### Features
+
+* adopt tranche D upstream vault skills (loop-design-check live + 6 vaulted) ([#291](https://github.com/chris-yyau/busdriver/issues/291)) ([f7e53f8](https://github.com/chris-yyau/busdriver/commit/f7e53f89b130e3d6bf028058a2b60458ee560b8e))
+
 # [1.82.0](https://github.com/chris-yyau/busdriver/compare/v1.81.1...v1.82.0) (2026-07-07)
 
 

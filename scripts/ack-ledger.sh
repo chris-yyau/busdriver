@@ -572,10 +572,21 @@ if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; exit 0; fi
   || printf '0\n\n\n'
 )
 if [ "$ever_approved" -eq 0 ]; then
-  # Shared infra-error / rate-limit regex — used by Case 1 (last /reviews body)
-  # and Case 1b (issue-comment bodies). Defined once so the two surfaces can
-  # never drift out of sync. Both consumers use `grep -qiE` (POSIX ERE).
-  infra_error_re='encountered an error|rate.?limit|unable to review|try again by re-requesting'
+  # Shared infra-error / rate-limit-NOTICE regex — used by Case 1 (last /reviews
+  # body) and Case 1b (canonical latest issue comment). Defined once so the two
+  # surfaces can never drift. Both consumers use `grep -qiE` (POSIX ERE).
+  #
+  # Deliberately matches the SHAPE of an infra/rate-limit *notice*, never bare
+  # "rate limit": Case 1b scans issue comments, which is exactly where a bot may
+  # post an actionable FINDING that merely discusses rate limiting ("add a rate
+  # limit to this endpoint"). A bare `rate.?limit` alternative would grep that
+  # finding and wrongly downgrade an actionable review to `none` (Codex P2 on
+  # PR #292). So the rate-limit alternatives require a notice qualifier
+  # (exceeded/reached/limited-by/"review limit reached"/"reached your … review
+  # limit") that a findings body would not contain, while "encountered an error"
+  # / "unable to review" / "try again by re-requesting" keep Case 1's canonical
+  # Copilot infra-error match intact.
+  infra_error_re='encountered an error|unable to review|try again by re-requesting|rate.?limit(ed|s)? (exceeded|reached)|rate.?limited by|review limit reached|reached your [^.]{0,40}review limit'
   # Case 1: infra-error / rate-limit — Copilot's "encountered an error and
   # was unable to review" review object is the canonical case. GitHub leaves
   # it frozen on the SHA where it errored, never updates commit_id on later
@@ -592,27 +603,37 @@ if [ "$ever_approved" -eq 0 ]; then
   # events observed Jun–Jul 2026 were issue comments), so `last_body` above
   # never sees them and the ledger loops in vain (each wait-round costs ~15 min
   # and risks a max-wait bail) for a review the rate-limited bot will not
-  # deliver. Scan this bot's issue comments authored strictly AFTER the
-  # freshness anchor (the push that landed HEAD) so the notice is about HEAD,
-  # not a stale earlier commit the bot has since moved past. The anchor is
-  # resolved locally from HEAD_PUSH_DATE (HEAD_CHECKS_DATE fallback for a
-  # brand-new branch, #269) — the same server-stamped, non-backdatable signals
-  # the Codex block uses at line ~306. It is deliberately NOT the $anchor_date
-  # variable: that is assigned only inside the `login == chatgpt-codex-connector`
-  # block and is empty for every other bot, so reusing it here would make
-  # Case 1b a silent no-op for CodeRabbit. Fail closed when neither signal is
-  # present (fork head / events API aged-out): an unanchored notice cannot be
-  # proven current, so leave the bot `stale` rather than bypass the gate on
-  # stale evidence. Same ever_approved==0 outer guard as Case 1. Newlines
-  # within a body are irrelevant: grep is line-oriented, so a match on any line
-  # fires.
+  # deliver.
+  #
+  # Inspect ONLY the bot's CANONICAL LATEST issue comment (max createdAt) — the
+  # same "latest issue comment is canonical, older ones superseded" rule the
+  # pr-grind worker uses for Source 4 (agents/pr-grinder.md). Greping every
+  # post-anchor comment (the original Case 1b) could match a stale older notice
+  # while the bot's current comment is an actionable finding, OR match a
+  # findings comment that merely mentions rate limiting — either way wrongly
+  # downgrading an actionable review to `none` (Codex P2, PR #292). Combined
+  # with the notice-SHAPE regex above (not bare `rate.?limit`), the downgrade
+  # fires only when the bot's newest word on this PR is genuinely an infra
+  # notice.
+  #
+  # The latest comment must also be authored strictly AFTER the freshness
+  # anchor (the push that landed HEAD) so the notice is about HEAD, not a stale
+  # earlier commit. The anchor is resolved locally from HEAD_PUSH_DATE
+  # (HEAD_CHECKS_DATE fallback for a brand-new branch, #269) — the same
+  # server-stamped, non-backdatable signals the Codex block uses at line ~306.
+  # It is deliberately NOT the $anchor_date variable: that is assigned only
+  # inside the `login == chatgpt-codex-connector` block and is empty for every
+  # other bot, so reusing it here would make Case 1b a silent no-op for
+  # CodeRabbit. Fail closed when neither anchor signal is present (fork head /
+  # events API aged-out): an unanchored notice cannot be proven current, so
+  # leave the bot `stale`. Same ever_approved==0 outer guard as Case 1.
   cr_anchor="${HEAD_PUSH_DATE:-}"
   [ -z "$cr_anchor" ] && cr_anchor="${HEAD_CHECKS_DATE:-}"
   if [ -n "$cr_anchor" ] && \
      printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" --arg anchor "$cr_anchor" \
-       '.comments[]
-        | select(.author.login == $login or .author.login == $login_bot)
-        | select(.createdAt > $anchor)
+       '[.comments[] | select(.author.login == $login or .author.login == $login_bot)]
+        | sort_by(.createdAt) | last
+        | select(. != null and .createdAt > $anchor)
         | .body // empty' 2>/dev/null \
        | grep -qiE "$infra_error_re"; then
     echo "none"; exit 0

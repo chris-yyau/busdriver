@@ -645,6 +645,42 @@ else
   fail "issue-comment rate-limit after prior APPROVED expected 'stale', got '$got'"
 fi
 
+# Test 1b.5: latest comment is a real FINDING that mentions rate limiting → stale.
+# Codex P2 (PR #292): the broad `rate.?limit` regex over arbitrary issue-comment
+# prose would match an actionable finding ("add a rate limit to this endpoint")
+# and wrongly downgrade it to none. The notice-SHAPE regex must NOT match a
+# findings body — the bot stays stale (gate blocks) so the finding is surfaced.
+CB_FINDING_BODY='Consider adding a rate limit to the /login endpoint to prevent brute-force attempts.'
+mk_cb_finding() { printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_FINDING_BODY"; }
+got=$(run_cb "$CB_STALE_REVIEW" "$(mk_cb_finding "$CB_FRESH_TS")" "$CB_ANCHOR")
+if [ "$got" = "stale" ]; then
+  ok "issue-comment finding mentioning rate limiting → stale (not an infra notice)"
+else
+  fail "issue-comment finding mentioning rate limiting expected 'stale', got '$got'"
+fi
+
+# Test 1b.6: canonical latest comment wins — older rate-limit notice superseded
+# by a newer real finding → stale. Only the bot's newest comment is inspected.
+CB_NOTICE_THEN_FINDING=$(printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"},{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' \
+  "$CB_FRESH_TS" "$CB_LIMIT_BODY" "2026-07-07T12:00:00Z" "$CB_FINDING_BODY")
+got=$(run_cb "$CB_STALE_REVIEW" "$CB_NOTICE_THEN_FINDING" "$CB_ANCHOR")
+if [ "$got" = "stale" ]; then
+  ok "older rate-limit notice + newer finding → stale (latest comment canonical)"
+else
+  fail "older notice superseded by newer finding expected 'stale', got '$got'"
+fi
+
+# Test 1b.7: canonical latest comment wins the other way — older finding
+# superseded by a newer rate-limit notice → none (bot is currently rate-limited).
+CB_FINDING_THEN_NOTICE=$(printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"},{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' \
+  "$CB_FRESH_TS" "$CB_FINDING_BODY" "2026-07-07T12:00:00Z" "$CB_LIMIT_BODY")
+got=$(run_cb "$CB_STALE_REVIEW" "$CB_FINDING_THEN_NOTICE" "$CB_ANCHOR")
+if [ "$got" = "none" ]; then
+  ok "older finding + newer rate-limit notice → none (latest comment canonical)"
+else
+  fail "newer rate-limit notice expected 'none', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

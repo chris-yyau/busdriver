@@ -681,6 +681,29 @@ else
   fail "newer rate-limit notice expected 'none', got '$got'"
 fi
 
+# Test 1b.8: finding using the words "rate-limited by" → stale (Codex P2 #2).
+# "not rate-limited by user/IP" is an actionable finding, not an infra notice;
+# the dropped over-broad `rate.?limited by` alternative must not resurrect.
+CB_RLBY_BODY='This endpoint is not rate-limited by user/IP; add throttling to prevent abuse.'
+mk_cb_rlby() { printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_RLBY_BODY"; }
+got=$(run_cb "$CB_STALE_REVIEW" "$(mk_cb_rlby "$CB_FRESH_TS")" "$CB_ANCHOR")
+if [ "$got" = "stale" ]; then
+  ok "finding 'not rate-limited by user/IP' → stale (no bare 'rate limited by' match)"
+else
+  fail "finding 'not rate-limited by user/IP' expected 'stale', got '$got'"
+fi
+
+# Test 1b.9: real CodeRabbit rate-limit notice ("Review limit reached") still
+# downgrades → none, proving dropping "rate limited by" lost no notice coverage.
+CB_REVLIMIT_BODY='> [!WARNING] Review limit reached. You have reached your PR review limit.'
+mk_cb_revlimit() { printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_REVLIMIT_BODY"; }
+got=$(run_cb "$CB_STALE_REVIEW" "$(mk_cb_revlimit "$CB_FRESH_TS")" "$CB_ANCHOR")
+if [ "$got" = "none" ]; then
+  ok "CodeRabbit 'Review limit reached' notice → none (real notice still matched)"
+else
+  fail "CodeRabbit 'Review limit reached' notice expected 'none', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

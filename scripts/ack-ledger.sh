@@ -577,16 +577,19 @@ if [ "$ever_approved" -eq 0 ]; then
   # surfaces can never drift. Both consumers use `grep -qiE` (POSIX ERE).
   #
   # Deliberately matches the SHAPE of an infra/rate-limit *notice*, never bare
-  # "rate limit": Case 1b scans issue comments, which is exactly where a bot may
-  # post an actionable FINDING that merely discusses rate limiting ("add a rate
-  # limit to this endpoint"). A bare `rate.?limit` alternative would grep that
-  # finding and wrongly downgrade an actionable review to `none` (Codex P2 on
-  # PR #292). So the rate-limit alternatives require a notice qualifier
-  # (exceeded/reached/limited-by/"review limit reached"/"reached your … review
-  # limit") that a findings body would not contain, while "encountered an error"
-  # / "unable to review" / "try again by re-requesting" keep Case 1's canonical
-  # Copilot infra-error match intact.
-  infra_error_re='encountered an error|unable to review|try again by re-requesting|rate.?limit(ed|s)? (exceeded|reached)|rate.?limited by|review limit reached|reached your [^.]{0,40}review limit'
+  # "rate limit" and never a bare "rate limited by": Case 1b scans issue
+  # comments, which is exactly where a bot may post an actionable FINDING that
+  # merely discusses rate limiting ("add a rate limit to this endpoint", "this
+  # endpoint is not rate-limited by user/IP"). Such prose must NOT downgrade an
+  # actionable review to `none` (two successive Codex P2s on PR #292). So every
+  # rate-limit alternative carries a notice qualifier that a findings body would
+  # not contain: `rate limit exceeded|reached`, "review limit reached", or
+  # "reached your … review limit" (CodeRabbit's real rate-limit notice always
+  # includes the latter two, so dropping the over-broad "rate limited by"
+  # alternative loses no notice coverage). "encountered an error" / "unable to
+  # review" / "try again by re-requesting" keep Case 1's canonical Copilot
+  # infra-error match intact.
+  infra_error_re='encountered an error|unable to review|try again by re-requesting|rate.?limit(ed|s)? (exceeded|reached)|review limit reached|reached your [^.]{0,40}review limit'
   # Case 1: infra-error / rate-limit — Copilot's "encountered an error and
   # was unable to review" review object is the canonical case. GitHub leaves
   # it frozen on the SHA where it errored, never updates commit_id on later

@@ -117,6 +117,9 @@ r1prompt="$OUT_DIR/round1-prompt.txt"
   echo "--- QUESTION ---"; cat "$QUESTION_FILE" 2>/dev/null || true
   echo "--- INVENTORY ---"; cat "$inv"; } > "$r1prompt"
 r1out="$OUT_DIR/round1.json"
+# --slug MUST be 3-5 words: the underlying `oracle` CLI requires a 3-to-5-word slug and
+# rejects anything outside that range. "oracle retrieval round1" is 3 words. Keep any
+# caller-supplied slug within 3-5 words (see ultra_oracle_consult in scripts/lib/ultra-oracle.sh).
 # errexit-safe capture: ultra_oracle_consult RETURNS NON-ZERO for the typed tokens
 # error(1)/timeout(124)/skipped:unavailable(3). Under `set -e`, a bare st1=$(...) aborts
 # the wrapper HERE — before the status-check line — so it would exit WITHOUT printing the

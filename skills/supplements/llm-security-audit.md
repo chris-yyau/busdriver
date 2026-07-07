@@ -27,6 +27,8 @@ Trigger this audit when the codebase:
 - [ ] Input that contains prompt-like patterns (e.g., "ignore previous instructions") is flagged or filtered
 - [ ] Retrieval-augmented content (RAG chunks) is treated as untrusted input, not system context
 
+> **Not a finding (FP precedent):** user content in the *user-message position* of an AI conversation is NOT prompt injection. Flag injection only when untrusted content lands in the `system` position or is concatenated into instructions.
+
 ### 2. Unsanitized LLM Output
 - [ ] LLM output rendered in HTML is escaped (XSS via LLM)
 - [ ] LLM output used in SQL queries is parameterized (SQLi via LLM)

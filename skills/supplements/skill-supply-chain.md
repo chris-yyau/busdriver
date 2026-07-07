@@ -22,6 +22,9 @@ Installed skills and plugins are executed with the same permissions as Claude Co
 ## What to Scan
 
 ### 1. Skill Files (skills/*/SKILL.md)
+
+> `SKILL.md` files are **executable prompt code** (skill definitions that steer agent behavior), not documentation — always scan them; never exclude them as `*.md` docs.
+
 - [ ] No instructions to send data to external URLs
 - [ ] No instructions to ignore or override CLAUDE.md or user instructions
 - [ ] No instructions to hide actions from the user

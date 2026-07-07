@@ -39,4 +39,4 @@ During debugging, it's easy to start "fixing" things in unrelated areas. The fre
 
 ## Limitations
 
-This is prompt-based guidance, not a mechanical hook. It relies on following the discipline. For mechanical enforcement, this would need a PreToolUse hook (future work).
+This layer is prompt-based guidance that relies on following the discipline. Mechanical enforcement is provided by the `freeze-guard.sh` PreToolUse gate, which blocks Write/Edit outside the scoped directory whenever `.claude/freeze-scope.local` is set.

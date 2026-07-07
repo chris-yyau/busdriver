@@ -233,15 +233,17 @@
     },
     {
       "path": "agents/code-architect.md",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/code-architect.md",
-      "source": "ecc"
+      "source": "ecc",
+      "custom_reason": "extended trigger description + model:opus cost-tiering (ADR 0009)"
     },
     {
       "path": "agents/code-explorer.md",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "agents/code-explorer.md",
-      "source": "ecc"
+      "source": "ecc",
+      "custom_reason": "extended trigger description for orchestrator routing"
     },
     {
       "path": "agents/code-reviewer.md",
@@ -270,8 +272,9 @@
     {
       "path": "agents/database-reviewer.md",
       "source": "ecc",
-      "status": "sync",
-      "upstream_path": "agents/database-reviewer.md"
+      "status": "custom",
+      "upstream_path": "agents/database-reviewer.md",
+      "custom_reason": "read-only reviewer tools + model:opus cost-tiering (ADR 0009)"
     },
     {
       "path": "agents/doc-updater.md",
@@ -324,20 +327,23 @@
     {
       "path": "agents/harness-optimizer.md",
       "source": "ecc",
-      "status": "sync",
-      "upstream_path": "agents/harness-optimizer.md"
+      "status": "custom",
+      "upstream_path": "agents/harness-optimizer.md",
+      "custom_reason": "extended trigger description for orchestrator routing"
     },
     {
       "path": "agents/loop-operator.md",
       "source": "ecc",
-      "status": "sync",
-      "upstream_path": "agents/loop-operator.md"
+      "status": "custom",
+      "upstream_path": "agents/loop-operator.md",
+      "custom_reason": "extended trigger description for orchestrator routing"
     },
     {
       "path": "agents/marketing-agent.md",
       "source": "ecc",
-      "status": "sync",
-      "upstream_path": "agents/marketing-agent.md"
+      "status": "custom",
+      "upstream_path": "agents/marketing-agent.md",
+      "custom_reason": "(vault) archived-skill delegation markers per orchestrator vault convention"
     },
     {
       "path": "agents/mle-reviewer.md",
@@ -366,8 +372,9 @@
     {
       "path": "agents/performance-optimizer.md",
       "source": "ecc",
-      "status": "sync",
-      "upstream_path": "agents/performance-optimizer.md"
+      "status": "custom",
+      "upstream_path": "agents/performance-optimizer.md",
+      "custom_reason": "model:opus cost-tiering (ADR 0009)"
     },
     {
       "path": "agents/plan-code-reviewer.md",
@@ -2154,6 +2161,18 @@
       "upstream_path": "scripts/lib/utils.js"
     },
     {
+      "path": "scripts/lib/llm-summary.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/llm-summary.js"
+    },
+    {
+      "path": "scripts/lib/transcript-context.js",
+      "source": "ecc",
+      "status": "sync",
+      "upstream_path": "scripts/lib/transcript-context.js"
+    },
+    {
       "path": "scripts/list-installed.js",
       "source": "ecc",
       "status": "sync",
@@ -3013,13 +3032,15 @@
       "path": "skills-archive/marketing-ads/SKILL.md",
       "source": "marketingskills",
       "status": "custom",
-      "upstream_path": "skills/ads/SKILL.md"
+      "upstream_path": "skills/ads/SKILL.md",
+      "custom_reason": "PR #276 vault adaptation: name marketing-ads (not ads) + tools/ links absolute-ized to upstream GitHub (vault has no local tools/ dir). Body synced to upstream v2.1.0 (Andromeda Meta playbook, creative-first reframe)."
     },
     {
       "path": "skills-archive/marketing-ads/evals/evals.json",
       "source": "marketingskills",
       "status": "custom",
-      "upstream_path": "skills/ads/evals/evals.json"
+      "upstream_path": "skills/ads/evals/evals.json",
+      "custom_reason": "PR #276 vault adaptation: skill_name marketing-ads (not ads). Otherwise synced to upstream."
     },
     {
       "path": "skills-archive/marketing-ads/references/ad-copy-templates.md",
@@ -5333,8 +5354,9 @@
     {
       "path": "skills/continuous-learning-v2/agents/start-observer.sh",
       "source": "ecc",
-      "status": "sync",
-      "upstream_path": "skills/continuous-learning-v2/agents/start-observer.sh"
+      "status": "custom",
+      "upstream_path": "skills/continuous-learning-v2/agents/start-observer.sh",
+      "custom_reason": "upstream 4130457 shipped an incomplete _ecc_→_clv2_ rename: start-observer.sh:40 still called the removed _ecc_resolve_homunculus_dir (undefined → empty CONFIG_DIR). Fixed locally to _clv2_resolve_homunculus_dir; report upstream."
     },
     {
       "path": "skills/continuous-learning-v2/config.json",
@@ -5358,7 +5380,8 @@
       "path": "skills/continuous-learning-v2/scripts/instinct-cli.py",
       "source": "ecc",
       "status": "custom",
-      "upstream_path": "skills/continuous-learning-v2/scripts/instinct-cli.py"
+      "upstream_path": "skills/continuous-learning-v2/scripts/instinct-cli.py",
+      "custom_reason": "adds _ValidatingRedirectHandler (SSRF-via-redirect defense: re-validates every redirect hop against the denylist) which upstream lacks; otherwise reconciled to upstream 4130457 (shared _registry_lock, registry healing/created_at, #2297 traversal guard). Report SSRF gap upstream."
     },
     {
       "path": "skills/continuous-learning-v2/scripts/lib/homunculus-dir.sh",
@@ -5452,14 +5475,15 @@
     {
       "path": "skills/diagnose/SKILL.md",
       "source": "mattpocock",
-      "status": "sync",
-      "upstream_path": "skills/engineering/diagnose/SKILL.md"
+      "status": "custom",
+      "upstream_path": "skills/engineering/diagnosing-bugs/SKILL.md",
+      "custom_reason": "busdriver frontmatter adaptation (name: diagnose, richer trigger description, # Diagnose title) for busdriver:diagnose routing; body refreshed from upstream diagnosing-bugs (mattpocock rename of engineering/diagnose)."
     },
     {
       "path": "skills/diagnose/scripts/hitl-loop.template.sh",
       "source": "mattpocock",
       "status": "sync",
-      "upstream_path": "skills/engineering/diagnose/scripts/hitl-loop.template.sh"
+      "upstream_path": "skills/engineering/diagnosing-bugs/scripts/hitl-loop.template.sh"
     },
     {
       "path": "skills/dispatch-cli/SKILL.md",

@@ -86,3 +86,4 @@ Diff-Aware QA Scope:
 - Component-level mapping requires static import analysis (may miss dynamic imports)
 - API route mapping may miss indirect dependencies
 - When in doubt, include the route (false positive > false negative for QA)
+- If a changed file maps to **no** route (pure lib/config with no traceable importer), fall back to **Quick** mode (critical/high smoke) rather than skipping QA — "no route found" must never mean "no testing"

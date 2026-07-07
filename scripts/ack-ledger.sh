@@ -582,8 +582,15 @@ if [ "$ever_approved" -eq 0 ]; then
   # into the issue-comment scan and match findings like "Users are unable to
   # review invoices after this change" (three successive Codex P2s on PR #292).
   #
-  # Case 1 (/reviews body): the original broad review-object infra-error set.
-  infra_error_re='encountered an error|unable to review|try again by re-requesting|rate.?limit(ed|s)? (exceeded|reached)|review limit reached|reached your [^.]{0,40}review limit'
+  # Case 1 (/reviews body): the ORIGINAL broad review-object infra-error set,
+  # including bare `rate.?limit`. A frozen /reviews infra-error object ("Rate
+  # limited. Please try later", Copilot's "encountered an error and was unable
+  # to review") is a review OBJECT that errored, not findings prose, so the
+  # broad match is safe and desirable here — narrowing it would let an
+  # un-clearable infra-error body fall through to `stale` and wait forever
+  # (fifth Codex P2 on PR #292). This is the pre-split behavior, unchanged;
+  # only Case 1b (issue comments) needs the strict notice-only regex below.
+  infra_error_re='encountered an error|rate.?limit|unable to review|try again by re-requesting'
   # Case 1b (issue comment): CodeRabbit rate-limit-NOTICE wording ONLY. Scoped to
   # the specific phrases CodeRabbit's review-limit notice emits — "Review limit
   # reached", "reached your … review limit", "try again by re-requesting" — none

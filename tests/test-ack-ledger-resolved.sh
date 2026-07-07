@@ -729,6 +729,19 @@ else
   fail "finding 'rate limit exceeded response' expected 'stale', got '$got'"
 fi
 
+# Test 1.rl: Case 1 (/reviews body) broad rate-limit downgrade preserved (Codex
+# P2 #5). A frozen /reviews infra-error object "Rate limited. Please try later"
+# has no exceeded/reached/notice wording, but Case 1 (unlike Case 1b) uses the
+# broad bare `rate.?limit` — a /reviews object that errored is not findings
+# prose, so it must still downgrade to none rather than wait forever.
+C1_RL_REVIEW='[{"user":{"login":"cursor[bot]"},"state":"COMMENTED","commit_id":"oldcommit","body":"Rate limited. Please try later."}]'
+got=$(run_ledger_reviews "$C1_RL_REVIEW")
+if [ "$got" = "none" ]; then
+  ok "Case 1 /reviews body 'Rate limited. Please try later' → none (broad downgrade preserved)"
+else
+  fail "Case 1 /reviews 'Rate limited' expected 'none', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

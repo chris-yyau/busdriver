@@ -112,7 +112,7 @@ ultra_oracle_consult() {
   # fails — a surviving stale file is the exact bug this prevents, so suppressing
   # the error would defeat the purpose. `rm -f` is a no-op on nonexistent files,
   # so the || branch only fires when a file EXISTS but cannot be removed.
-  rm -f -- "$out" "$out.rc" || {
+  rm -f -- "$out" "$out.rc" "$out.err" || {
     echo "ultra-oracle: cannot clear stale output '$out' — failing closed" >&2
     printf 'error'; return 1
   }
@@ -154,9 +154,10 @@ ultra_oracle_consult() {
   elif [[ -n "$profile" ]] && [[ -d "$profile" ]]; then
     set -- "$@" --copy-profile "$profile"
   fi
-  # Always hide the automation Chrome window — these are non-interactive background
-  # advisory consults; a focus-stealing window is disruptive and never needed here.
-  set -- "$@" --browser-hide-window
+  # Hide the automation Chrome window ONLY when explicitly opted in (B8). Passing
+  # --browser-hide-window was root-caused as breaking oracle's ChatGPT browser engine,
+  # so the window is now VISIBLE by default; set ultraOracle.hideWindow=true to restore.
+  if ultra_oracle_hide_window; then set -- "$@" --browser-hide-window; fi
   local g; for g in "${ctx_arr[@]:-}"; do [[ -n "$g" ]] && set -- "$@" --file "$g"; done
   if [[ -n "$prompt_file" ]]; then
     # Fail closed if the prompt file is unreadable/empty — otherwise a silent cat
@@ -178,24 +179,32 @@ ultra_oracle_consult() {
     # Emit an .rc marker on completion so the caller can bounded-wait + read status.
     # disown so an early parent exit cannot orphan/kill it before the .rc lands.
     ( set +e   # a caller's errexit must NOT abort the subshell before "$out.rc" is written
-      _portable_timeout "${cap}" oracle "$@" >/dev/null 2>&1; _uora_bg_rc=$?
+      # Capture oracle STDOUT+STDERR to "$out.err" (B8): oracle emits its failure
+      # diagnostics on STDOUT, so the old >/dev/null 2>&1 discarded them and every
+      # failure looked silent. Keep the file on failure for diagnosis; remove on success.
+      _portable_timeout "${cap}" oracle "$@" >"$out.err" 2>&1; _uora_bg_rc=$?
       # Map exit-0-but-empty-verdict to failure so the .rc matches blocking mode's
       # fail-closed contract (timeout already surfaces as rc 124).
       [[ "$_uora_bg_rc" = 0 ]] && ! _ultra_oracle_verdict_ok "$out" && _uora_bg_rc=1
+      [[ "$_uora_bg_rc" = 0 ]] && rm -f "$out.err"   # success: drop the captured stdout
       printf '%s' "$_uora_bg_rc" > "$out.rc" ) &
     disown 2>/dev/null || true
     printf 'dispatched'; return 0
   fi
 
   # blocking, under the portable timeout cap. Keep stderr (oracle's --heartbeat
-  # progress) on the terminal; only discard stdout.
+  # progress) on the terminal; capture STDOUT to "$out.err" (B8) — oracle emits its
+  # failure diagnostics on STDOUT, so the old >/dev/null hid them and made every
+  # failure look silent. The .err file is kept on any failure (a stderr pointer names
+  # it) and removed on success.
   # errexit-safe: capture rc via `|| rc=$?` so a non-zero oracle exit cannot abort
   # the caller (this lib may be sourced under `set -e`) before the status token is
   # printed — the fail-closed 'error'/'timeout' tokens below depend on reaching them.
   local rc=0
-  _portable_timeout "${cap}" oracle "$@" >/dev/null || rc=$?
-  if [[ "$rc" = 124 ]]; then printf 'timeout'; return 124; fi
-  if [[ "$rc" != 0 ]]; then printf 'error'; return 1; fi
-  _ultra_oracle_verdict_ok "$out" || { printf 'error'; return 1; }   # exit 0 but missing/degenerate verdict = fail-closed
+  _portable_timeout "${cap}" oracle "$@" >"$out.err" || rc=$?
+  if [[ "$rc" = 124 ]]; then echo "ultra-oracle: timed out after ${cap}s — oracle STDOUT captured at $out.err" >&2; printf 'timeout'; return 124; fi
+  if [[ "$rc" != 0 ]]; then echo "ultra-oracle: oracle exited $rc — STDOUT/diagnostics captured at $out.err" >&2; printf 'error'; return 1; fi
+  _ultra_oracle_verdict_ok "$out" || { echo "ultra-oracle: exit 0 but missing/degenerate verdict — oracle STDOUT at $out.err" >&2; printf 'error'; return 1; }   # exit 0 but missing/degenerate verdict = fail-closed
+  rm -f "$out.err"   # success: drop the captured stdout
   printf 'ok'; return 0
 }

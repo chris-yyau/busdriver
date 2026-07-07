@@ -100,11 +100,19 @@ ultra_oracle_cookie_path() {
   printf '%s' "$d"
 }
 
-# NOTE: the automation Chrome window is ALWAYS hidden by the consult (these are
-# non-interactive background advisory runs reusing a stored session). A default-true
-# boolean toggle is intentionally NOT offered here: the shared _read_config_value uses
-# jq's `// empty`, which collapses a configured `false` to empty (jq treats false as a
-# null-alternative), so a `false` could never override a `true` default anyway.
+# ultra_oracle_hide_window -> exit 0 if the automation Chrome window should be HIDDEN.
+# Opt-in, VISIBLE by default (B8). Passing --browser-hide-window to oracle was
+# root-caused as breaking its ChatGPT browser engine (the consult failed silently;
+# see the STDOUT-to-.err capture in ultra-oracle.sh). The window is now VISIBLE by
+# default; set `ultraOracle.hideWindow` to true in ~/.claude/busdriver.json to restore
+# hiding. Opt-in-TRUE semantics sidestep the jq `// empty` collapse-false problem that
+# previously made a default-true toggle unworkable: absent OR explicit-false both
+# resolve to the 'false' default (visible); only an explicit true hides. USER config
+# only (consistent with the rest of the ultraOracle block).
+ultra_oracle_hide_window() {
+  local v; v="$(ultra_oracle_config_get_user '.ultraOracle.hideWindow' 'false')"
+  case "$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')" in true|1) return 0;; *) return 1;; esac
+}
 
 # ultra_oracle_surface_enabled <brainstorming|blueprintReview|council> -> exit 0 if true.
 # USER config ONLY (security-sensitive — enabling transmits content to ChatGPT Pro;

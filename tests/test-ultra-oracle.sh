@@ -104,13 +104,23 @@ ck="$tmp/Cookies"; : > "$ck"   # a readable cookie DB stand-in
 # otherwise a failed/short-circuited call leaves the prior case's argv in place
 # and the flag assertions false-pass against stale content.
 
-# default config (no cookiePath): no --browser-cookie-path; window always hidden
+# default config (no cookiePath, no hideWindow): no --browser-cookie-path; window VISIBLE
+# by default (B8 — --browser-hide-window is now opt-in because hiding it broke oracle's
+# ChatGPT browser engine and failed silently).
 rm -f "$tmp/.claude/busdriver.json"
 : > "$tmp/argv.log"
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/c0.md" --mode blocking)"
 [ "$st" = "ok" ] || { echo "FAIL c0 status got '$st'"; FAIL=1; }
 grep -qx -- "--browser-cookie-path" "$tmp/argv.log" && { echo "FAIL cookie-path leaked when unset"; FAIL=1; }
-grep -qx -- "--browser-hide-window" "$tmp/argv.log" || { echo "FAIL window not hidden"; FAIL=1; }
+grep -qx -- "--browser-hide-window" "$tmp/argv.log" && { echo "FAIL window hidden by default (B8: should be VISIBLE)"; FAIL=1; }
+
+# hideWindow=true (opt-in) -> argv carries --browser-hide-window
+printf '{ "ultraOracle": { "hideWindow": true } }\n' > "$tmp/.claude/busdriver.json"
+: > "$tmp/argv.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/c0h.md" --mode blocking)"
+[ "$st" = "ok" ] || { echo "FAIL c0h status got '$st'"; FAIL=1; }
+grep -qx -- "--browser-hide-window" "$tmp/argv.log" || { echo "FAIL hideWindow=true should add --browser-hide-window"; FAIL=1; }
+rm -f "$tmp/.claude/busdriver.json"
 
 # cookiePath set + readable -> argv carries --browser-cookie-path <path>
 printf '{ "ultraOracle": { "cookiePath": "%s" } }\n' "$ck" > "$tmp/.claude/busdriver.json"

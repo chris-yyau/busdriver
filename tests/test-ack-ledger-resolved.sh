@@ -704,6 +704,19 @@ else
   fail "CodeRabbit 'Review limit reached' notice expected 'none', got '$got'"
 fi
 
+# Test 1b.10: issue-comment finding using review-object phrasing → stale (Codex
+# P2 #3). Case 1b uses a rate-limit-NOTICE-only regex, so generic review-object
+# phrases ("unable to review", "encountered an error") that are canonical for a
+# /reviews body must NOT match an issue-comment finding.
+CB_UNABLE_BODY='Users are unable to review invoices after this change; the modal never opens.'
+mk_cb_unable() { printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_UNABLE_BODY"; }
+got=$(run_cb "$CB_STALE_REVIEW" "$(mk_cb_unable "$CB_FRESH_TS")" "$CB_ANCHOR")
+if [ "$got" = "stale" ]; then
+  ok "issue-comment finding 'unable to review invoices' → stale (notice-only regex)"
+else
+  fail "issue-comment finding 'unable to review invoices' expected 'stale', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

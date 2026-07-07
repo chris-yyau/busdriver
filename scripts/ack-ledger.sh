@@ -572,24 +572,25 @@ if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; exit 0; fi
   || printf '0\n\n\n'
 )
 if [ "$ever_approved" -eq 0 ]; then
-  # Shared infra-error / rate-limit-NOTICE regex — used by Case 1 (last /reviews
-  # body) and Case 1b (canonical latest issue comment). Defined once so the two
-  # surfaces can never drift. Both consumers use `grep -qiE` (POSIX ERE).
+  # TWO separate regexes for two different surfaces — deliberately NOT shared.
+  # Case 1 scans a bot's last /reviews OBJECT body, where a review-object infra
+  # error is canonical (Copilot's "encountered an error and was unable to
+  # review"). Case 1b scans a bot's latest ISSUE COMMENT, which is also where a
+  # bot posts actionable FINDINGS prose — so it must match ONLY the shape of a
+  # rate-limit NOTICE, never generic review-object phrases. Sharing one regex
+  # let review-object phrases ("unable to review", "encountered an error") leak
+  # into the issue-comment scan and match findings like "Users are unable to
+  # review invoices after this change" (three successive Codex P2s on PR #292).
   #
-  # Deliberately matches the SHAPE of an infra/rate-limit *notice*, never bare
-  # "rate limit" and never a bare "rate limited by": Case 1b scans issue
-  # comments, which is exactly where a bot may post an actionable FINDING that
-  # merely discusses rate limiting ("add a rate limit to this endpoint", "this
-  # endpoint is not rate-limited by user/IP"). Such prose must NOT downgrade an
-  # actionable review to `none` (two successive Codex P2s on PR #292). So every
-  # rate-limit alternative carries a notice qualifier that a findings body would
-  # not contain: `rate limit exceeded|reached`, "review limit reached", or
-  # "reached your … review limit" (CodeRabbit's real rate-limit notice always
-  # includes the latter two, so dropping the over-broad "rate limited by"
-  # alternative loses no notice coverage). "encountered an error" / "unable to
-  # review" / "try again by re-requesting" keep Case 1's canonical Copilot
-  # infra-error match intact.
+  # Case 1 (/reviews body): the original broad review-object infra-error set.
   infra_error_re='encountered an error|unable to review|try again by re-requesting|rate.?limit(ed|s)? (exceeded|reached)|review limit reached|reached your [^.]{0,40}review limit'
+  # Case 1b (issue comment): rate-limit-NOTICE shapes ONLY. Every alternative
+  # carries a notice qualifier a findings body would not contain — CodeRabbit's
+  # real rate-limit notice always includes "Review limit reached" / "reached
+  # your … review limit" / "try again by re-requesting", while none of "add a
+  # rate limit", "not rate-limited by user/IP", or "unable to review invoices"
+  # can match.
+  rate_notice_re='rate.?limit(ed|s)? (exceeded|reached)|review limit reached|reached your [^.]{0,40}review limit|try again by re-requesting'
   # Case 1: infra-error / rate-limit — Copilot's "encountered an error and
   # was unable to review" review object is the canonical case. GitHub leaves
   # it frozen on the SHA where it errored, never updates commit_id on later
@@ -615,9 +616,9 @@ if [ "$ever_approved" -eq 0 ]; then
   # while the bot's current comment is an actionable finding, OR match a
   # findings comment that merely mentions rate limiting — either way wrongly
   # downgrading an actionable review to `none` (Codex P2, PR #292). Combined
-  # with the notice-SHAPE regex above (not bare `rate.?limit`), the downgrade
-  # fires only when the bot's newest word on this PR is genuinely an infra
-  # notice.
+  # with the rate-limit-NOTICE-only regex ($rate_notice_re, NOT the broader
+  # review-object $infra_error_re), the downgrade fires only when the bot's
+  # newest word on this PR is genuinely a rate-limit notice.
   #
   # The latest comment must also be authored strictly AFTER the freshness
   # anchor (the push that landed HEAD) so the notice is about HEAD, not a stale
@@ -638,7 +639,7 @@ if [ "$ever_approved" -eq 0 ]; then
         | sort_by(.createdAt) | last
         | select(. != null and .createdAt > $anchor)
         | .body // empty' 2>/dev/null \
-       | grep -qiE "$infra_error_re"; then
+       | grep -qiE "$rate_notice_re"; then
     echo "none"; exit 0
   fi
   # Case 2: one-and-done COMMENTED — bot reviewed a prior commit with a

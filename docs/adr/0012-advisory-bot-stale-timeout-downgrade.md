@@ -1,0 +1,131 @@
+# ADR 0012: Bounded Advisory-Bot Stale-Ack Timeout Downgrade in pr-grind
+
+## Status
+
+Accepted (2026-07-07). Settled by an ultra-council review this session (5 voices
++ forced UltraOracle expert witness). Extends the `ever_approved=0` infra-error
+downgrade in `scripts/ack-ledger.sh` and complements
+[ADR 0004](./0004-content-identity-ack-carryforward.md) (content-identity
+carry-forward) and [ADR 0005](./0005-codex-auto-retrigger.md) (Codex one-shot
+re-trigger). Resolves issue #295.
+
+## Date
+
+2026-07-07
+
+## Context
+
+pr-grind's clean-marker (Invariant 2, `skills/pr-grind/SKILL.md`) refuses to
+write the `clean` (merge-ready) marker while ANY registered advisory reviewer bot
+(`cursor`, `cubic-dev-ai`, `coderabbitai`, `devin-ai-integration`,
+`codescene-delta-analysis`, plus Codex tracked separately) is `stale` in the ack
+ledger. `stale` means the bot's last review targets a non-HEAD SHA.
+
+The real merge authority is server-side and untouched by this decision: required
+GitHub status checks (`.github/required-checks.lock`) + branch protection + the
+separate `litmus` deep review (Codex lead + Opus backstop). Advisory acks are a
+bounded-wait quality nicety, capped by `--max-wait`; on exhaustion pr-grind bails
+to the operator.
+
+**The friction:** Codex and Devin do not reliably re-ack a force-pushed / rebased
+HEAD. They leave their last review on the old SHA (often with 0 findings) or post
+a `COMMENTED` review without the clean 👍 the ledger keys on. The bot then stays
+`stale` indefinitely, blocking the clean marker even though it found nothing and
+every real gate is green. The only recourse today is a manual
+`touch .claude/skip-pr-grind.local` each time — ~7–15 min wasted per PR for zero
+safety benefit. Observed twice on 2026-07-07: PR #291 (Codex `COMMENTED`, never a
+clean 👍) and PR #293 (Devin reviewed the pre-rebase SHA with 0 findings, did not
+re-review HEAD). Both had 8/8 CI green, litmus PASS, 0 unresolved threads,
+`mergeState=CLEAN`.
+
+The council (4/5) and the UltraOracle independently converged on the preferred
+direction below. The Skeptic dissented (delete the advisory stale-gate entirely);
+its risk — laundering a *genuine* silent bot failure into a false all-clear —
+reshaped the trigger precondition (see Consequences).
+
+## Decision
+
+Add a **bounded, logged, precondition-gated auto-downgrade** of an advisory bot's
+ack from `stale` → `none` (non-gating), **solo-repo opt-in** (mirrors the existing
+`.claude/pr-grind-auto-admin-solo.local` affordance; a repo-controlled config
+cannot enable it).
+
+**Trigger — ALL of the following must hold** (fail closed if any is unprovable):
+
+1. `--max-wait` is exhausted (this is a last-resort release, never a fast path).
+2. The bot is advisory-only (not a required GitHub check).
+3. The bot is `stale` solely because its last review targets a non-HEAD SHA.
+4. The bot's own last review on that SHA had **0 unresolved findings** — the
+   decisive precondition. This distinguishes "the bot signaled clean and simply
+   didn't re-ack" from "the bot went silent / crashed / is rate-limited mid-review"
+   (the Skeptic's laundering risk). A bot that never produced a clean signal is
+   NOT downgraded.
+5. Zero unresolved review threads attributable to the bot on HEAD (reuses the
+   existing Source-2 unresolved-thread query, `ack-ledger.sh`).
+6. Required status checks are green (per `required-checks.lock`).
+7. `litmus` is green on the current HEAD (Codex lead + Opus backstop).
+8. No bot-authored live blocking / changes-requested / security / must-fix signal
+   on still-relevant diff content.
+
+Downgrade emits `stale → none` (**never** `stale → approved`): the ledger records
+"this advisory signal expired cleanly," not "the bot approved HEAD." Anti-laundering
+lives in the **audit trail**, not the marker: the `pr-grind-clean.local` marker must
+stay a bare PR number (`pre-merge-gate.sh` parses it with `tr -d '[:space:]'` and
+treats any non-digit as corrupt), so the released-bot list is recorded in
+`bypass-log.jsonl` (one event per bot) and surfaced to the operator in the
+completion message — `clean` is never silently equated with "all advisors approved
+HEAD."
+
+**Forensic logging:** one JSONL event per downgrade to `.claude/bypass-log.jsonl`,
+distinct event `advisory_stale_timeout_downgrade`, carrying at least: `event`,
+`repo`, `pr`, `bot`, `head_sha`, `stale_review_sha`, `last_state`,
+`unresolved_bot_findings_on_head`, `unresolved_bot_threads`,
+`required_checks_state`, `litmus_state`, `wait_rounds`, `policy_version`,
+`operator`, `timestamp`.
+
+## Alternatives
+
+- **(2) Content-identity / message-only carry-forward extended to `/reviews`-based
+  bots (Devin).** Rejected as the primary fix: review states and comments are
+  messy and human-visible, so misclassification after a rebase is riskier than for
+  check-runs (Codex Critic + Grok). May be added later for bots with stable review
+  fingerprints.
+- **(3) Per-repo drop of specific advisory bots from the clean-gating set.**
+  Rejected as "too blunt" (UltraOracle): it discards the bot's signal wholesale
+  rather than releasing only after the bounded, green-gated conditions.
+- **(4) Devin re-trigger parity (mirror ADR 0005's Codex re-trigger).** Kept as an
+  optional *pre-timeout* optimization, not the main fix — it is vendor-specific
+  whack-a-mole and unproven (Devin may expose no re-review API), and Codex already
+  has a re-trigger yet still stalled on #291. The bounded downgrade is the backstop
+  that always terminates.
+- **(Skeptic) Delete the advisory stale-gate entirely.** Rejected: the gate still
+  protects the common case — a bot mid-review on HEAD, or one with live findings,
+  or the slow-bot race where a fast bot acks seconds before a slower bot posts
+  findings. The bounded downgrade preserves the gate for that case and releases
+  only after `--max-wait` + green gates + a proven-clean bot signal.
+
+## Consequences
+
+- Eliminates the manual-skip tax on green PRs where an advisory bot merely failed
+  to re-ack, without touching required-check or litmus merge authority.
+- The precondition "bot's last review had 0 unresolved findings" (not merely "bot
+  is stale") is load-bearing: it is what prevents laundering a silent/crashed bot
+  into a false all-clear. A rate-limited or crashed bot that produced no clean
+  signal stays `stale` and still bails to the operator.
+- `clean` remains forensically honest — the downgraded-bot list travels with the
+  marker and every downgrade is logged, so a future reader cannot mistake a
+  timeout-released `clean` for "all advisors approved HEAD."
+- Solo-repo opt-in keeps blast radius minimal; a multi-maintainer repo (where an
+  advisory bot may encode team policy) must opt in explicitly.
+- New surface to maintain in the pr-grind Completion block + a new ledger/marker
+  interaction; covered by gate tests.
+
+## Revisit trigger
+
+- A second approval-capable human joins the repo (the solo assumption breaks) —
+  re-evaluate whether the opt-in should self-revoke like `pr-grind-auto-admin-solo`.
+- Evidence that a downgraded bot later surfaced a real finding that the trigger's
+  0-findings precondition missed — tighten the precondition or add a bot to a
+  never-downgrade set.
+- A registered bot gains a reliable force-push re-ack (making the downgrade
+  unnecessary for it) — drop it from the downgrade-eligible set.

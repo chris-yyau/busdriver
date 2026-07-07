@@ -534,7 +534,53 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                           registered bot logins whose ack value is the literal string `stale`, PLUS
                           `chatgpt-codex-connector` when PRIOR_CODEX_ACK is `stale` (Codex lives outside
                           PRIOR_REVIEWER_ACKS, so a Codex-only wait would otherwise produce an empty list
-                          and read as a classification bug). Then BAIL with reason
+                          and read as a classification bug).
+
+                          ── ADR 0012: bounded advisory-bot stale-ack timeout downgrade (issue #295) ──
+                          BEFORE bailing, attempt a bounded, logged, fail-CLOSED downgrade of the
+                          stale advisory acks. This releases a green PR that is held hostage only
+                          because a bot reviewed an old SHA, found nothing, and never re-acked HEAD
+                          (e.g. Codex/Devin after a rebase). It NEVER touches merge authority — required
+                          checks + litmus still gate; this only releases the *advisory* ack after those
+                          are already green. Treats ALL registered advisory bots uniformly (no per-bot
+                          special-casing — Codex and Devin are aligned with cursor/cubic/coderabbit).
+
+                          1. Opt-in gate: proceed ONLY if `<STATE_DIR>/pr-grind-advisory-downgrade.local`
+                             exists at the main-repo root (solo-repo affordance; `<STATE_DIR>` =
+                             `${BUSDRIVER_STATE_DIR:-.claude}`). Absent → skip to BAIL below (unchanged).
+                          2. Global green gates (fail-CLOSED — any not provably true → skip to BAIL):
+                             - CI_GREEN: required status checks green per `scripts/relevant-check-status.sh`.
+                             - LITMUS_GREEN: a fresh litmus PASS bound to the current HEAD `base...HEAD`
+                               diff_hash (the pre-PR PASS artifact; a stale/missing artifact fails closed).
+                          3. Assemble CANDIDATES — for each STALE_AT_BAIL bot (registered bots AND
+                             `chatgpt-codex-connector` when Codex is the stale one), gather:
+                               `login:unresolved_threads:actionable_findings:last_state:stale_sha`
+                             where `actionable_findings` = that login's `n_actionable` from
+                             RESULT_BOT_LEDGER (0 for `0/N:no-findings` or `0/0:none`), `unresolved_threads`
+                             = a fresh Source-2 unresolved+non-outdated thread count for that bot on HEAD
+                             (the same query ack-ledger Tier A.1 uses), `last_state` = the bot's last
+                             /reviews state, `stale_sha` = the SHA its stale review targets.
+                          4. Call the single source of truth (pass BYPASS_LOG EXPLICITLY as a
+                             main-repo-root-anchored absolute path — the script's default is
+                             CWD-relative `.claude/bypass-log.jsonl`, which lands in the wrong place
+                             when BUSDRIVER_STATE_DIR is set or the CWD is a worktree/subdir):
+                             `DOWNGRADED=$(SOLO_OPTIN=1 CI_GREEN=<0|1> LITMUS_GREEN=<0|1> HEAD_SHA=<sha> \
+                               PR=<PR_NUMBER> REPO=<owner/repo> WAIT_ROUNDS=<MAX_WAIT> \
+                               BYPASS_LOG="<MAIN_REPO_ROOT>/<STATE_DIR>/bypass-log.jsonl" \
+                               CANDIDATES=<assembled> bash "<PLUGIN_ROOT>/scripts/advisory-stale-downgrade.sh")`
+                             It re-checks every condition, emits one `advisory_stale_timeout_downgrade`
+                             JSONL event per released bot to `<STATE_DIR>/bypass-log.jsonl`, and prints the
+                             comma-separated logins it released (empty = nothing eligible). It downgrades
+                             `stale → none` (NEVER `→ approved`): the ledger records the signal expired
+                             cleanly, not that the bot approved HEAD.
+                          5. If DOWNGRADED covers EVERY stale blocker in STALE_AT_BAIL (i.e. no stale
+                             advisory bot remains and Codex is either acked or in DOWNGRADED) → treat those
+                             acks as `none` and go to COMPLETION with DOWNGRADED_BOTS=<DOWNGRADED> so the
+                             clean marker records the released list (see COMPLETION). Otherwise fall through
+                             to BAIL — a bot with live findings, a failed green gate, or the missing opt-in
+                             all keep the PR blocked exactly as before.
+
+                          Then BAIL with reason
                           "max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD;
                           latest stale: <STALE_AT_BAIL>" (or "<none>" if neither any registered bot nor
                           Codex is stale — which would itself be diagnostic, since exhausting wait-rounds
@@ -556,8 +602,23 @@ COMPLETION:
   ├── Verify checks one more time (defense in depth)
   ├── Recompute ack ledger and assert all entries are <HEAD-SHA> or `none`
   │   (defense in depth — invariant check 2 already gated this, but the
-  │   bot may have re-posted between subagent return and merge time)
-  ├── Write .claude/pr-grind-clean.local at repo root
+  │   bot may have re-posted between subagent return and merge time).
+  │   ADR 0012: when reached via the bounded stale-ack downgrade path, treat
+  │   every login in DOWNGRADED_BOTS as `none` for this assertion — the release
+  │   was already condition-checked and logged by advisory-stale-downgrade.sh; a
+  │   naive recompute would re-derive `stale` (the bot's posted state is
+  │   unchanged) and falsely re-block. A bot NOT in DOWNGRADED_BOTS that is now
+  │   `stale` still blocks (it re-posted or was never released) → back to BAIL.
+  ├── Write .claude/pr-grind-clean.local at repo root. ⚠ The marker MUST stay a
+  │   BARE PR number — `pre-merge-gate.sh` does `PR_NUM=$(tr -d '[:space:]' < marker)`
+  │   and treats ANY non-digit as corrupt (deletes the marker, blocks the merge).
+  │   So NEVER write the released-bot list into the marker. ADR 0012 anti-laundering
+  │   instead lives in the audit trail: advisory-stale-downgrade.sh has already
+  │   written one `advisory_stale_timeout_downgrade` event per released bot to
+  │   <STATE_DIR>/bypass-log.jsonl (the durable record that `clean` was reached via
+  │   a bounded release, not "all advisors approved HEAD"). Additionally surface the
+  │   released list (DOWNGRADED_BOTS) to the operator in the completion message so
+  │   the release is visible, never silent.
   ├── default → gh pr merge --squash --delete-branch
   ├── --no-merge → write marker to original-worktree repo root, report ready
   └── Cleanup ephemeral worktree (skip if NO_WORKTREE=1)

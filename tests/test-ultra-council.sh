@@ -26,8 +26,9 @@ fi
 if grep -qF 'ultra oracle council voice' "$SKILL"; then
   echo "FAIL: residual '--slug \"ultra oracle council voice\"' present"; FAIL=1
 fi
-grep -qF 'ultra oracle expert witness' "$SKILL" \
-  || { echo "FAIL: dispatch --slug not renamed to the expert-witness label"; FAIL=1; }
+# The dispatch --slug now lives in the shell-agnostic wrapper, not inline in the SKILL.
+grep -qF 'ultra oracle expert witness' "$DIR/scripts/ultra-oracle-run.sh" \
+  || { echo "FAIL: dispatch --slug not the expert-witness label in the wrapper"; FAIL=1; }
 
 # (d) Force is named, SCOPED (plain assignment + unset), never exported.
 grep -qF 'ULTRA_ORACLE_COUNCIL_FORCE=1' "$SKILL" \
@@ -38,17 +39,22 @@ fi
 grep -qF 'unset ULTRA_ORACLE_COUNCIL_FORCE' "$SKILL" \
   || { echo "FAIL: force var is not unset (would leak into a later council)"; FAIL=1; }
 
-# (e) ATTEMPTED flag drives the render (so config-enabled + forced-but-failed both render).
-grep -qF 'ULTRA_ORACLE_ATTEMPTED' "$SKILL" \
-  || { echo "FAIL: no ULTRA_ORACLE_ATTEMPTED flag (render keys on it)"; FAIL=1; }
+# (e) Oracle runs via the bash-shebang wrapper (shell-agnostic entry — an in-block
+# `source ultra-oracle.sh` aborts under a zsh Bash tool), and the render keys on
+# the wrapper's typed token (VERDICT / NOT_ATTEMPTED / FAILED).
+grep -qF 'scripts/ultra-oracle-run.sh' "$SKILL" \
+  || { echo "FAIL: council SKILL does not invoke the ultra-oracle-run.sh wrapper (shell-agnostic entry)"; FAIL=1; }
+grep -qF 'NOT_ATTEMPTED' "$SKILL" \
+  || { echo "FAIL: render does not handle the wrapper's NOT_ATTEMPTED token"; FAIL=1; }
 
 # (f) Loud failure banner survives (settling-check #6).
 grep -qF 'ORACLE_FAILED' "$SKILL" \
   || { echo "FAIL: ORACLE_FAILED banner missing"; FAIL=1; }
 
-# (g) Real render present (cat the verdict); no inert ': #' placeholders.
-grep -qF 'cat "$ULTRA_ORACLE_OUT"' "$SKILL" \
-  || { echo "FAIL: render branch does not cat the verdict (still inert?)"; FAIL=1; }
+# (g) Real render present (emits the verdict text); no inert ': #' placeholders.
+# shellcheck disable=SC2016  # literal grep pattern: match the $VAR verbatim in the SKILL
+grep -qF 'tail -n +2 "$ULTRA_ORACLE_RESULT"' "$SKILL" \
+  || { echo "FAIL: render branch does not emit the verdict text (still inert?)"; FAIL=1; }
 if grep -qF ': # include the verdict' "$SKILL"; then
   echo "FAIL: inert ': #' render placeholder still present"; FAIL=1
 fi

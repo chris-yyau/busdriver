@@ -152,4 +152,37 @@ st="$(ultra_oracle_consult --prompt hi --out "$tmp/c4.md" --mode blocking)"
 rm -f "$tmp/.claude/busdriver.json"
 unset ULTRA_ORACLE_MOCK_MODE ULTRA_ORACLE_ARGV_OUT
 
+# --- scripts/ultra-oracle-run.sh wrapper (shell-agnostic entry) ---
+# The wrapper exists so the council/etc. SKILL blocks can invoke the bash-only
+# oracle lib from ANY caller shell (they are pasted into a zsh Bash tool on
+# macOS). HOME=$tmp has no busdriver.json -> council surface disabled by default.
+WRAP="$DIR/scripts/ultra-oracle-run.sh"
+rm -f "$tmp/.claude/busdriver.json"
+wp="$(mktemp)"; printf 'council question' > "$wp"
+
+# bad args -> fail closed
+out="$(bash "$WRAP" council 1 "" "")"
+[[ "$out" == "FAILED [bad-args]" ]] || { echo "FAIL wrapper bad-args got '$out'"; FAIL=1; }
+
+# surface disabled + not forced -> NOT_ATTEMPTED (caller omits the section)
+out="$(bash "$WRAP" council 0 "$wp" "$tmp/wrap_na.md")"
+[[ "$out" == "NOT_ATTEMPTED" ]] || { echo "FAIL wrapper NOT_ATTEMPTED got '$out'"; FAIL=1; }
+
+# forced + ok stub -> VERDICT on line 1, verdict text after
+export ULTRA_ORACLE_MOCK_MODE=ok
+out="$(bash "$WRAP" council 1 "$wp" "$tmp/wrap_ok.md")"
+first_line="${out%%$'\n'*}"
+[[ "$first_line" == "VERDICT" ]] || { echo "FAIL wrapper VERDICT token got '$first_line'"; FAIL=1; }
+printf '%s\n' "$out" | grep -q "ULTRA-ORACLE VERDICT" || { echo "FAIL wrapper verdict body missing"; FAIL=1; }
+unset ULTRA_ORACLE_MOCK_MODE
+
+# REGRESSION (the actual bug): invoked from a NON-bash caller shell it must still
+# work — an in-shell `source ultra-oracle.sh` aborted under zsh, but `bash $WRAP`
+# runs the wrapper under bash regardless. Skip cleanly if zsh is absent.
+if command -v zsh >/dev/null 2>&1; then
+  out="$(zsh -c 'bash "$1" council 0 "$2" "$3"' _ "$WRAP" "$wp" "$tmp/wrap_zsh.md" 2>&1)"
+  [[ "$out" == "NOT_ATTEMPTED" ]] || { echo "FAIL wrapper under zsh caller got '$out'"; FAIL=1; }
+fi
+rm -f "$wp"
+
 [ "$FAIL" = 0 ] && echo "PASS test-ultra-oracle" || exit 1

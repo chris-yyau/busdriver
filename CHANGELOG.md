@@ -1,3 +1,10 @@
+## [1.83.1](https://github.com/chris-yyau/busdriver/compare/v1.83.0...v1.83.1) (2026-07-07)
+
+
+### Bug Fixes
+
+* downgrade issue-comment rate-limit notices in ack-ledger (Case 1b) ([#292](https://github.com/chris-yyau/busdriver/issues/292)) ([d99001e](https://github.com/chris-yyau/busdriver/commit/d99001eba60db206e434ca9efa99b8d723d074d5))
+
 # [1.83.0](https://github.com/chris-yyau/busdriver/compare/v1.82.0...v1.83.0) (2026-07-07)
 
 

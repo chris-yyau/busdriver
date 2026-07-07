@@ -572,6 +572,10 @@ if [ -z "$commit_id" ] && [ -z "$body_sha" ]; then echo "none"; exit 0; fi
   || printf '0\n\n\n'
 )
 if [ "$ever_approved" -eq 0 ]; then
+  # Shared infra-error / rate-limit regex — used by Case 1 (last /reviews body)
+  # and Case 1b (issue-comment bodies). Defined once so the two surfaces can
+  # never drift out of sync. Both consumers use `grep -qiE` (POSIX ERE).
+  infra_error_re='encountered an error|rate.?limit|unable to review|try again by re-requesting'
   # Case 1: infra-error / rate-limit — Copilot's "encountered an error and
   # was unable to review" review object is the canonical case. GitHub leaves
   # it frozen on the SHA where it errored, never updates commit_id on later
@@ -580,7 +584,37 @@ if [ "$ever_approved" -eq 0 ]; then
   # those as `stale` blocks the merge gate forever; downgrade to `none` so
   # the loop surfaces the situation to the operator instead of looping in
   # vain.
-  if printf '%s' "$last_body" | grep -qiE 'encountered an error|rate.?limit|unable to review|try again by re-requesting'; then
+  if printf '%s' "$last_body" | grep -qiE "$infra_error_re"; then
+    echo "none"; exit 0
+  fi
+  # Case 1b: issue-comment infra-error / rate-limit — CodeRabbit posts its
+  # rate-limit notices as ISSUE COMMENTS, not /reviews bodies (44 of 47 limit
+  # events observed Jun–Jul 2026 were issue comments), so `last_body` above
+  # never sees them and the ledger loops in vain (each wait-round costs ~15 min
+  # and risks a max-wait bail) for a review the rate-limited bot will not
+  # deliver. Scan this bot's issue comments authored strictly AFTER the
+  # freshness anchor (the push that landed HEAD) so the notice is about HEAD,
+  # not a stale earlier commit the bot has since moved past. The anchor is
+  # resolved locally from HEAD_PUSH_DATE (HEAD_CHECKS_DATE fallback for a
+  # brand-new branch, #269) — the same server-stamped, non-backdatable signals
+  # the Codex block uses at line ~306. It is deliberately NOT the $anchor_date
+  # variable: that is assigned only inside the `login == chatgpt-codex-connector`
+  # block and is empty for every other bot, so reusing it here would make
+  # Case 1b a silent no-op for CodeRabbit. Fail closed when neither signal is
+  # present (fork head / events API aged-out): an unanchored notice cannot be
+  # proven current, so leave the bot `stale` rather than bypass the gate on
+  # stale evidence. Same ever_approved==0 outer guard as Case 1. Newlines
+  # within a body are irrelevant: grep is line-oriented, so a match on any line
+  # fires.
+  cr_anchor="${HEAD_PUSH_DATE:-}"
+  [ -z "$cr_anchor" ] && cr_anchor="${HEAD_CHECKS_DATE:-}"
+  if [ -n "$cr_anchor" ] && \
+     printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" --arg anchor "$cr_anchor" \
+       '.comments[]
+        | select(.author.login == $login or .author.login == $login_bot)
+        | select(.createdAt > $anchor)
+        | .body // empty' 2>/dev/null \
+       | grep -qiE "$infra_error_re"; then
     echo "none"; exit 0
   fi
   # Case 2: one-and-done COMMENTED — bot reviewed a prior commit with a

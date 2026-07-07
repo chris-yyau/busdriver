@@ -590,6 +590,61 @@ else
   fail "stale under ACK_EMIT_TIER=1 expected 'stale', got '$got'"
 fi
 
+# --- Tests for Case 1b (issue-comment infra-error / rate-limit downgrade) ---
+# CodeRabbit posts rate-limit notices as ISSUE COMMENTS, not /reviews bodies, so
+# the last-/reviews-body scan of Case 1 never sees them. Case 1b scans the bot's
+# issue comments authored strictly after the freshness anchor. All four tests
+# share a stale non-actionable COMMENTED /reviews entry so the reducer reaches
+# the downgrade block (non-empty commit_id, ever_approved==0, no HEAD ack) and,
+# absent Case 1b, would fall through to `stale`.
+CB_STALE_REVIEW='[{"user":{"login":"coderabbitai[bot]"},"state":"COMMENTED","commit_id":"oldcommit","body":"Summary of changes."}]'
+CB_ANCHOR="2026-07-07T10:00:00Z"          # HEAD_PUSH_DATE
+CB_FRESH_TS="2026-07-07T11:00:00Z"        # comment newer than anchor
+CB_STALE_TS="2026-07-07T09:00:00Z"        # comment older than anchor
+CB_LIMIT_BODY='> [!WARNING] Rate limit exceeded. Please try again by re-requesting a review.'
+mk_cb_comments() { # $1 = createdAt
+  printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_LIMIT_BODY"
+}
+run_cb() { # $1 = reviews, $2 = comments, $3 = HEAD_PUSH_DATE
+  FETCH_OK=1 ALL_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' \
+    ALL_REVIEWS="$1" ALL_COMMENTS="$2" ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" \
+    ALL_STATUSES='[]' ALL_REACTIONS='[]' HEAD_COMMITTED_DATE='' HEAD_PUSH_DATE="$3" \
+    HEAD_SHA="$HEAD_SHA" bash "$ACK_SCRIPT" coderabbitai 2>/dev/null
+}
+
+# Test 1b.1: fresh issue-comment rate-limit + anchor + ever_approved==0 → none
+got=$(run_cb "$CB_STALE_REVIEW" "$(mk_cb_comments "$CB_FRESH_TS")" "$CB_ANCHOR")
+if [ "$got" = "none" ]; then
+  ok "issue-comment rate-limit newer than anchor → none (Case 1b)"
+else
+  fail "issue-comment rate-limit newer than anchor expected 'none', got '$got'"
+fi
+
+# Test 1b.2: same notice but NO anchor (HEAD_PUSH_DATE empty) → stale (fail-closed)
+got=$(run_cb "$CB_STALE_REVIEW" "$(mk_cb_comments "$CB_FRESH_TS")" "")
+if [ "$got" = "stale" ]; then
+  ok "issue-comment rate-limit with no anchor → stale (Case 1b fail-closed)"
+else
+  fail "issue-comment rate-limit with no anchor expected 'stale', got '$got'"
+fi
+
+# Test 1b.3: rate-limit notice OLDER than anchor → stale (freshness filter)
+got=$(run_cb "$CB_STALE_REVIEW" "$(mk_cb_comments "$CB_STALE_TS")" "$CB_ANCHOR")
+if [ "$got" = "stale" ]; then
+  ok "issue-comment rate-limit older than anchor → stale (freshness filter)"
+else
+  fail "issue-comment rate-limit older than anchor expected 'stale', got '$got'"
+fi
+
+# Test 1b.4: prior APPROVED review + fresh rate-limit comment → stale (ever_approved guard)
+CB_APPROVED_THEN_COMMENTED='[{"user":{"login":"coderabbitai[bot]"},"state":"APPROVED","commit_id":"oldcommit","body":"LGTM"},{"user":{"login":"coderabbitai[bot]"},"state":"COMMENTED","commit_id":"oldcommit","body":"Summary of changes."}]'
+got=$(run_cb "$CB_APPROVED_THEN_COMMENTED" "$(mk_cb_comments "$CB_FRESH_TS")" "$CB_ANCHOR")
+if [ "$got" = "stale" ]; then
+  ok "issue-comment rate-limit after prior APPROVED → stale (ever_approved guard)"
+else
+  fail "issue-comment rate-limit after prior APPROVED expected 'stale', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

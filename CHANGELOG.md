@@ -1,3 +1,10 @@
+## [1.83.4](https://github.com/chris-yyau/busdriver/compare/v1.83.3...v1.83.4) (2026-07-07)
+
+
+### Bug Fixes
+
+* run UltraOracle via bash-shebang wrapper so ultra-council works under zsh ([#299](https://github.com/chris-yyau/busdriver/issues/299)) ([9370833](https://github.com/chris-yyau/busdriver/commit/93708335b4dad326f88c4db2d046a4f860201a79)), closes [#6](https://github.com/chris-yyau/busdriver/issues/6)
+
 ## [1.83.3](https://github.com/chris-yyau/busdriver/compare/v1.83.2...v1.83.3) (2026-07-07)
 
 

@@ -584,13 +584,17 @@ if [ "$ever_approved" -eq 0 ]; then
   #
   # Case 1 (/reviews body): the original broad review-object infra-error set.
   infra_error_re='encountered an error|unable to review|try again by re-requesting|rate.?limit(ed|s)? (exceeded|reached)|review limit reached|reached your [^.]{0,40}review limit'
-  # Case 1b (issue comment): rate-limit-NOTICE shapes ONLY. Every alternative
-  # carries a notice qualifier a findings body would not contain — CodeRabbit's
-  # real rate-limit notice always includes "Review limit reached" / "reached
-  # your … review limit" / "try again by re-requesting", while none of "add a
-  # rate limit", "not rate-limited by user/IP", or "unable to review invoices"
-  # can match.
-  rate_notice_re='rate.?limit(ed|s)? (exceeded|reached)|review limit reached|reached your [^.]{0,40}review limit|try again by re-requesting'
+  # Case 1b (issue comment): CodeRabbit rate-limit-NOTICE wording ONLY. Scoped to
+  # the specific phrases CodeRabbit's review-limit notice emits — "Review limit
+  # reached", "reached your … review limit", "try again by re-requesting" — none
+  # of which appears in normal findings prose. The generic `rate limit
+  # exceeded|reached` alternative was deliberately dropped: it added no coverage
+  # of the real notice (which uses the review-limit wording above) yet matched
+  # findings like "handle the rate limit exceeded response" (fourth Codex P2 on
+  # PR #292). Case 1b exists specifically for CodeRabbit's issue-comment notices
+  # (44/47 of the Jun–Jul 2026 events), so notice-specific wording is correct,
+  # not over-fitting.
+  rate_notice_re='review limit reached|reached your [^.]{0,40}review limit|try again by re-requesting'
   # Case 1: infra-error / rate-limit — Copilot's "encountered an error and
   # was unable to review" review object is the canonical case. GitHub leaves
   # it frozen on the SHA where it errored, never updates commit_id on later

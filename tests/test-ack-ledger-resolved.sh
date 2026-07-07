@@ -717,6 +717,18 @@ else
   fail "issue-comment finding 'unable to review invoices' expected 'stale', got '$got'"
 fi
 
+# Test 1b.11: finding "handle the rate limit exceeded response" → stale (Codex
+# P2 #4). The generic `rate limit exceeded` phrase was dropped; only CodeRabbit
+# notice wording downgrades. This body has none of that wording → stays stale.
+CB_RLE_BODY='Please handle the rate limit exceeded response from the upstream API.'
+mk_cb_rle() { printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_RLE_BODY"; }
+got=$(run_cb "$CB_STALE_REVIEW" "$(mk_cb_rle "$CB_FRESH_TS")" "$CB_ANCHOR")
+if [ "$got" = "stale" ]; then
+  ok "finding 'rate limit exceeded response' → stale (generic phrase dropped)"
+else
+  fail "finding 'rate limit exceeded response' expected 'stale', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

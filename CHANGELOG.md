@@ -1,3 +1,10 @@
+## [1.83.2](https://github.com/chris-yyau/busdriver/compare/v1.83.1...v1.83.2) (2026-07-07)
+
+
+### Bug Fixes
+
+* ultra-oracle hideWindow opt-in (visible default) + capture oracle stdout on failure (B8) ([#293](https://github.com/chris-yyau/busdriver/issues/293)) ([8c3414d](https://github.com/chris-yyau/busdriver/commit/8c3414dea4f7f3d63fda4c01b93e2db4a5963b70))
+
 ## [1.83.1](https://github.com/chris-yyau/busdriver/compare/v1.83.0...v1.83.1) (2026-07-07)
 
 

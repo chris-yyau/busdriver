@@ -1,3 +1,10 @@
+# [1.84.0](https://github.com/chris-yyau/busdriver/compare/v1.83.4...v1.84.0) (2026-07-08)
+
+
+### Features
+
+* bounded advisory-bot stale-ack timeout downgrade in pr-grind ([#295](https://github.com/chris-yyau/busdriver/issues/295)) ([#300](https://github.com/chris-yyau/busdriver/issues/300)) ([780b2ba](https://github.com/chris-yyau/busdriver/commit/780b2bac08560f7de7376dcf989132629be50da3)), closes [#291](https://github.com/chris-yyau/busdriver/issues/291) [#293](https://github.com/chris-yyau/busdriver/issues/293)
+
 ## [1.83.4](https://github.com/chris-yyau/busdriver/compare/v1.83.3...v1.83.4) (2026-07-07)
 
 

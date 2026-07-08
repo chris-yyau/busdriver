@@ -1,3 +1,10 @@
+## [1.84.1](https://github.com/chris-yyau/busdriver/compare/v1.84.0...v1.84.1) (2026-07-08)
+
+
+### Bug Fixes
+
+* route brainstorming + ultraoracle oracle consults through bash wrapper ([#296](https://github.com/chris-yyau/busdriver/issues/296)) ([#303](https://github.com/chris-yyau/busdriver/issues/303)) ([a4f84bf](https://github.com/chris-yyau/busdriver/commit/a4f84bfab3de53abad2b4a095f5b8e95f67cbae8))
+
 # [1.84.0](https://github.com/chris-yyau/busdriver/compare/v1.83.4...v1.84.0) (2026-07-08)
 
 

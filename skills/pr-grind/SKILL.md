@@ -1558,11 +1558,22 @@ fi
 # echoes empty → nothing suppressed → the merge blocks on the still-`stale` acks.
 REVALIDATED_DOWNGRADE=""
 if [ -n "$DOWNGRADED_BOTS" ]; then
+  # Resolve the MAIN repo root for the audit log — NOT `git rev-parse --show-toplevel`.
+  # In default (worktree) mode --show-toplevel is the ephemeral worktree, but the
+  # exhaustion path writes bypass-log.jsonl to the MAIN repo's .claude/ (state .local
+  # files are not copied into worktrees). `--git-common-dir`'s parent is the main repo
+  # root in BOTH worktree and --no-worktree modes — the same resolver the opt-in/audit
+  # write uses. Fail-CLOSED: if it can't resolve to an absolute path, BYPASS_LOG points
+  # at a nonexistent file → the revalidator reads a missing log → suppresses nothing →
+  # downgraded bots stay `stale` and block (never a fail-open).
+  _MAIN_ROOT=""
+  _GCD=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  case "$_GCD" in /*) _MAIN_ROOT=$(dirname "$_GCD") ;; esac
   REVALIDATED_DOWNGRADE=$(DOWNGRADED_BOTS="$DOWNGRADED_BOTS" FETCH_OK="$FETCH_OK" \
     ALL_THREADS="$ALL_THREADS" ALL_REVIEWS="$ALL_REVIEWS" ALL_REACTIONS="$ALL_REACTIONS" \
     ALL_COMMENTS="$ALL_COMMENTS" ALL_CHECK_RUNS="$ALL_CHECK_RUNS" ALL_STATUSES="$ALL_STATUSES" \
     HEAD_SHA="$HEAD_SHA" \
-    BYPASS_LOG="$(git rev-parse --show-toplevel)/${BUSDRIVER_STATE_DIR:-.claude}/bypass-log.jsonl" \
+    BYPASS_LOG="${_MAIN_ROOT}/${BUSDRIVER_STATE_DIR:-.claude}/bypass-log.jsonl" \
     bash "${CLAUDE_PLUGIN_ROOT}/scripts/advisory-downgrade-revalidate.sh" 2>/dev/null || echo "")
   if [ "$REVALIDATED_DOWNGRADE" != "$DOWNGRADED_BOTS" ]; then
     echo "⚠️  ADR 0012: a downgraded bot re-engaged before merge — only re-validated release(s) suppressed: '${REVALIDATED_DOWNGRADE:-<none>}' (was '$DOWNGRADED_BOTS'). Re-engaged bot(s) stay stale and block."

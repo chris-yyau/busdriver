@@ -95,16 +95,19 @@ if [ "$MODE" = "repo" ] || [ "$MODE" = "upstream-audit" ]; then
 fi
 
 # 3. Dispatch via the shared adapter (the ONLY surface that touches the oracle CLI).
-#    On any non-zero return, force STATUS=error so the case below renders ORACLE_FAILED.
-source "$PR/scripts/lib/ultra-oracle.sh"
-# The adapter PRINTS its typed token (ok|timeout|error|skipped:*) even on non-zero
-# exit, and there is no `set -e` here, so the capture keeps that token. Only default
-# to "error" when nothing was printed — never clobber a specific diagnostic token.
+#    Run through the bash-shebang wrapper `scripts/ultra-oracle-consult-run.sh`, NOT
+#    an in-block `source` — ultra-oracle.sh is bash-only and fail-closes under zsh,
+#    and this block is pasted into the executor's zsh Bash tool on macOS (issue #296).
+#    The wrapper sources+consults under bash and passes through the raw token
+#    (ok|timeout|error|skipped:*); no --surface flag (ultraoracle always runs when
+#    invoked). Only default to "error" when nothing was printed — never clobber a
+#    specific diagnostic token.
+WRAP="$PR/scripts/ultra-oracle-consult-run.sh"
 if [ "${#PACK_ATTACH[@]}" -gt 0 ]; then
-  STATUS="$(ultra_oracle_consult --prompt-file "$QUESTION" \
+  STATUS="$(bash "$WRAP" --prompt-file "$QUESTION" \
     "${PACK_ATTACH[@]}" --out "$OUT" --mode blocking --slug "ultra oracle consult")"
 else
-  STATUS="$(ultra_oracle_consult --prompt-file "$QUESTION" \
+  STATUS="$(bash "$WRAP" --prompt-file "$QUESTION" \
     --out "$OUT" --mode blocking --slug "ultra oracle consult")"
 fi
 [ -n "$STATUS" ] || STATUS="error"

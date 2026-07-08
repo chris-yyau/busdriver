@@ -86,8 +86,12 @@ _newest_activity() { # $1 login
   # `|| echo "$_FUTURE"` (fail-CLOSED: a parse error forces re-engaged), so the
   # masked pipe exit inside this group is intentional, not a swallowed error.
   {
-    printf '%s' "${ALL_REVIEWS:-}" | jq -rs --arg l "$1" --arg lb "${1}[bot]" \
-      '.[][]? | select(.user.login==$l or .user.login==$lb) | .submitted_at // empty' 2>/dev/null || echo "$_FUTURE"
+    # A PENDING (in-progress) review carries NO submitted_at, so keying on it alone
+    # would read an actively-reviewing bot as silent (fail-open). Emit the far-future
+    # sentinel for any matching review that is PENDING or lacks submitted_at → block.
+    printf '%s' "${ALL_REVIEWS:-}" | jq -rs --arg l "$1" --arg lb "${1}[bot]" --arg fut "$_FUTURE" \
+      '.[][]? | select(.user.login==$l or .user.login==$lb)
+       | if (.state=="PENDING") or (.submitted_at == null) then $fut else .submitted_at end' 2>/dev/null || echo "$_FUTURE"
     # Threads: match the bot on the FIRST comment (thread opener) OR any of the
     # last-10 resolution/reply comments, and emit every matching createdAt — so a
     # reply or resolution comment posted after the downgrade also counts.

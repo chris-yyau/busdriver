@@ -140,6 +140,14 @@ CR_STATUS=$(printf '[{"creator":{"login":"github-actions[bot]"},"context":"CodeR
 run "coderabbitai" "$EMPTY_THREADS" "$CR_REV" "$NO_RXN" "$NO_COMMENTS" "$NO_CHECKS" "$CR_STATUS"
 empty "$R" "CodeRabbit legacy status by context after downgrade -> not suppressed (blocks)"
 
+# 13c. A PENDING (in-progress) review has no submitted_at -> block, not read as silent.
+#      Without the sentinel, the only timestamp is the pre-downgrade review (BEFORE < ref)
+#      and the bot would be wrongly suppressed while it is actively re-reviewing.
+mk_log devin-ai-integration
+PENDING_REV=$(printf '[{"user":{"login":"devin-ai-integration[bot]"},"state":"COMMENTED","submitted_at":"%s"},{"user":{"login":"devin-ai-integration[bot]"},"state":"PENDING","submitted_at":null}]' "$BEFORE")
+run "devin-ai-integration" "$EMPTY_THREADS" "$PENDING_REV" "$NO_RXN" "$NO_COMMENTS"
+empty "$R" "PENDING in-progress review -> not suppressed (blocks)"
+
 # 14. Activity in the SAME SECOND as the downgrade event -> block (>=, not strict >).
 #     A re-comment stamped exactly at REF must not be waved through by a strict > compare.
 mk_log devin-ai-integration

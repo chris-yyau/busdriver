@@ -209,6 +209,11 @@ out="$(bash "$CWRAP")"
 out="$(bash "$CWRAP" --surface)"
 [[ "$out" == "error" ]] || { echo "FAIL consult-run dangling --surface got '$out'"; FAIL=1; }
 
+# --surface followed by a flag (no real value) -> fail closed to `error`
+# (must NOT consume `--mode` as the surface name and silently skip)
+out="$(bash "$CWRAP" --surface --mode blocking --prompt-file "$cwp" --out "$tmp/cr_flagval.md")"
+[[ "$out" == "error" ]] || { echo "FAIL consult-run --surface-eats-flag got '$out'"; FAIL=1; }
+
 # --surface brainstorming, config disabled (no busdriver.json) -> skipped:disabled
 out="$(bash "$CWRAP" --surface brainstorming --mode blocking --prompt-file "$cwp" --out "$tmp/cr_dis.md")"
 [[ "$out" == "skipped:disabled" ]] || { echo "FAIL consult-run disabled surface got '$out'"; FAIL=1; }

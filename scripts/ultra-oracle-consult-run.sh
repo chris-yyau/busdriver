@@ -50,8 +50,10 @@ _ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --surface)
-      # A dangling --surface with no value is a caller bug — fail closed.
-      [[ $# -ge 2 ]] || { echo "error"; exit 0; }
+      # A missing value — no arg at all, OR the next token is itself a flag
+      # (e.g. `--surface --mode`) — is a caller bug. Fail CLOSED rather than
+      # consume a flag as the surface name and silently skip the consult.
+      { [[ $# -ge 2 ]] && [[ "$2" != --* ]]; } || { echo "error"; exit 0; }
       SURFACE="$2"; shift 2 ;;
     *) _ARGS+=("$1"); shift ;;
   esac

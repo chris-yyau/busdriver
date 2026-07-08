@@ -75,12 +75,13 @@ fi
 # are the authoritative "merged" record, not this log. Consumers reading
 # bypass-log.jsonl for "what got released" should join against actual merge
 # outcomes, not treat every event here as proof of a completed merge.
-_emit_log() { # $1 login  $2 unresolved_threads  $3 actionable  $4 last_state  $5 stale_sha
+_emit_log() { # $1 login  $2 unresolved_threads  $3 actionable  $4 last_state  $5 stale_sha  $6 ever_cr  $7 engaged
   jq -cn \
     --arg event "advisory_stale_timeout_downgrade" \
     --arg repo "${REPO:-}" --arg pr "${PR:-}" --arg bot "$1" \
     --arg head_sha "${HEAD_SHA:-}" --arg stale_sha "$5" --arg last_state "$4" \
     --arg threads "$2" --arg findings "$3" \
+    --arg ever_cr "$6" --arg engaged "$7" \
     --arg checks "green" --arg litmus "pass" \
     --arg wait "${WAIT_ROUNDS:-}" --arg policy "$POLICY_VERSION" \
     --arg operator "$OPERATOR" --arg ts "$_now" \
@@ -88,6 +89,8 @@ _emit_log() { # $1 login  $2 unresolved_threads  $3 actionable  $4 last_state  $
       stale_review_sha:$stale_sha, last_state:$last_state,
       unresolved_bot_findings_on_head:($findings|tonumber? // $findings),
       unresolved_bot_threads:($threads|tonumber? // $threads),
+      ever_changes_requested:($ever_cr|tonumber? // $ever_cr),
+      engaged_signal:($engaged|tonumber? // $engaged),
       required_checks_state:$checks, litmus_state:$litmus,
       wait_rounds:($wait|tonumber? // $wait), policy_version:$policy,
       operator:$operator, timestamp:$ts}' 2>/dev/null >> "$BYPASS_LOG"
@@ -136,7 +139,7 @@ for _c in ${_cands[@]+"${_cands[@]}"}; do
     *) continue ;;
   esac
   # Downgrade ONLY if the audit event was durably written.
-  if _emit_log "$login" "$threads" "$findings" "$last_state" "$stale_sha"; then
+  if _emit_log "$login" "$threads" "$findings" "$last_state" "$stale_sha" "$ever_cr" "$engaged"; then
     eligible="${eligible:+$eligible,}$login"
   else
     printf 'advisory-stale-downgrade: audit log write failed for %s — NOT downgrading (fail-closed)\n' "$login" >&2

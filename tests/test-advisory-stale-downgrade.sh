@@ -34,6 +34,10 @@ eq   "$LAST_OUT" "devin-ai-integration" "clean stale bot -> eligible"
 logn "$LAST_LOG" 1 "one bypass-log event written"
 has  '"event":"advisory_stale_timeout_downgrade"' "$LAST_LOG" "log carries the distinct event name"
 has  '"stale_review_sha":"old1"' "$LAST_LOG" "log carries stale_review_sha"
+# Forensic completeness: the two load-bearing eligibility signals are recorded
+# (both are always 0 for a downgraded bot — the gate requires ever_cr==0 && engaged==0).
+has  '"ever_changes_requested":0' "$LAST_LOG" "log carries ever_changes_requested"
+has  '"engaged_signal":0' "$LAST_LOG" "log carries engaged_signal"
 
 # 1b. APPROVED terminal state is also allowlisted -> eligible.
 run "devin-ai-integration:0:0:APPROVED:old1:0:0"

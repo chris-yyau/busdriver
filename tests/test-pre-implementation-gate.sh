@@ -106,6 +106,10 @@ run_test "#290 install into skip file" "block" "$(bash_input "install -m 644 /tm
 run_test "#290 leading-assignment touch still blocks" "block" "$(bash_input "X=1 touch $SKIPF")"
 run_test "#290 NAME+=VALUE leading assignment touch blocks" "block" "$(bash_input "X+=1 touch $SKIPF")"
 run_test "#290 += var-indirection (M+=marker; touch \$M) blocks" "block" "$(bash_input "M+=$SKIPF ; touch \$M")"
+# Leading redirect must not mask the command word (cursor/codex/devin PR #304).
+run_test "#290 leading redirect masks touch (>/dev/null touch marker)" "block" "$(bash_input ">/dev/null touch $SKIPF")"
+run_test "#290 fd redirect masks touch (2>/dev/null touch marker)" "block" "$(bash_input "2>/dev/null touch $SKIPF")"
+run_test "#290 leading redirect masks cp (>out cp x marker)" "block" "$(bash_input ">out.txt cp /tmp/x $MARKER")"
 run_test "subshell redirect" "block"     "$(bash_input "( echo x > $MARKER )")"
 run_test "multiline: rm on second line" "block" \
     "$(bash_input "echo safe\nrm $MARKER")"
@@ -211,6 +215,8 @@ run_test "#290 allow read marker piped to grep cp" "allow" "$(bash_input "cat $M
 # Documented residual (ADR 0006 addendum): a wrapper-hidden indirect write
 # (sudo/env prefix) is NOT caught — out of scope for the cooperative-agent threat.
 run_test "#290 wrapper sudo touch is residual (allow)" "allow" "$(bash_input "sudo touch $SKIPF")"
+# Leading redirect + a genuine READ command word stays allowed (no false positive).
+run_test "#290 allow leading redirect + read (>/dev/null cat marker)" "allow" "$(bash_input ">/dev/null cat $MARKER")"
 
 echo ""
 echo "── Write/Edit/MultiEdit marker file_path must BLOCK ─────────────"

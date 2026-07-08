@@ -179,9 +179,18 @@ def _scan_segment(segtext, markers, simple_vars):
         return next((mf for mf in markers if _bn(mf) in segtext), None)
     seg = []
     seg_has_cmd = False
+    seg_cmd_word = None  # first real command word (redirect ops/targets excluded)
     i, n = 0, len(toks)
     while i < n:
         t = toks[i]
+        # A lone file-descriptor digit binding a redirect (2>/dev/null, 1>&2) is
+        # PART of the redirect, not a command word — skip it so it cannot masquerade
+        # as the command word (2>/dev/null touch <marker>) (#290 PR review). Safe
+        # even when the digit is really an echo arg (echo 2 >f): the command word
+        # is already captured, and a digit is never a marker basename.
+        if t.isdigit() and i + 1 < n and _is_redir(toks[i + 1]):
+            i += 1
+            continue
         if _is_redir(t):
             if ">" in t:  # write redirect; next word is its target
                 if i + 1 < n and not _is_redir(toks[i + 1]):
@@ -212,6 +221,12 @@ def _scan_segment(segtext, markers, simple_vars):
             name, plus, val = assign_m.group(1), assign_m.group(2), assign_m.group(3)
             simple_vars[name] = (simple_vars.get(name, "") + val) if plus else val
         else:
+            # First non-assignment word to reach here is the command word. Redirect
+            # operators AND their targets never reach this branch (handled+continued
+            # above), so a leading redirect (>/dev/null touch <marker>) cannot masquerade
+            # as the command word (#290 PR review — cursor/codex/devin).
+            if not seg_has_cmd:
+                seg_cmd_word = t
             seg_has_cmd = True
         seg.append(t)
         i += 1
@@ -233,10 +248,10 @@ def _scan_segment(segtext, markers, simple_vars):
     # incl. `touch -t` backdating that also defeats the pre-commit 30s age heuristic
     # — while a wrapper-hidden `sudo touch <marker>` and the eval class stay in the
     # ADR 0006 residual (a cooperative agent uses none of those to skip its own gate).
-    # Skip leading assignments — both NAME=VALUE and bash/zsh NAME+=VALUE (the +=
-    # form must be skipped too, else `X+=1 touch <marker>` leaves cmd_word=X+=1
-    # and slips the touch through — #290 PR review).
-    cmd_word = next((w for w in seg if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", w)), None)
+    # seg_cmd_word is captured in the token loop, so leading assignments (NAME=/NAME+=)
+    # AND leading redirects (>/dev/null touch <marker>) are already excluded — a naive
+    # first-non-assignment scan of seg would mis-pick the redirect target as the verb.
+    cmd_word = seg_cmd_word
     if cmd_word is not None and _bn(cmd_word) in ("touch", "cp", "mv", "ln", "install"):
         for w in seg:
             m = _match_marker(w, markers, simple_vars)

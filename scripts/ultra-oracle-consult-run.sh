@@ -34,6 +34,11 @@
 # SKILL sourced the lib directly. Always exits 0 — the token carries the status; a
 # non-zero exit under the caller's shell must never abort the surrounding skill.
 set -u
+# This wrapper's contract is: ALWAYS print exactly one status token and exit 0.
+# Disable errexit explicitly so an inherited `set -e` (e.g. via an exported
+# SHELLOPTS in the caller's environment) can never abort mid-flow before the token
+# is printed — every failure path here emits a token deliberately.
+set +e
 
 # Derive plugin root from our own location (bash guarantees BASH_SOURCE here) so
 # our sibling libs are ALWAYS co-located under our own scripts/lib. Resolve ROOT
@@ -44,6 +49,17 @@ set -u
 _SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$_SELF_DIR/.." && pwd)"
 
+# Source the config-only lib and confirm the surface-gate function is defined.
+# Fail CLOSED (return nonzero → caller emits `error`) if the lib cannot be sourced
+# OR sources but does not define ultra_oracle_surface_enabled: a partial/renamed
+# lib would otherwise leave the function undefined, and `if ! undefined_fn` reads as
+# "disabled" — a silent skip, the exact fail-open this wrapper exists to prevent.
+_load_surface_gate() {
+  # shellcheck source=/dev/null
+  source "$ROOT/scripts/lib/ultra-oracle-config.sh" 2>/dev/null || return 1
+  declare -F ultra_oracle_surface_enabled >/dev/null 2>&1 || return 1
+}
+
 # Gate-only query: `--surface-check <name>` prints `enabled` | `disabled` | `error`
 # and exits WITHOUT consulting. This lets a caller decide whether to build and
 # persist a prompt BEFORE any design text touches disk — brainstorming uses it so a
@@ -53,8 +69,7 @@ ROOT="$(cd "$_SELF_DIR/.." && pwd)"
 # `error` (do not transmit on doubt), never a false `enabled`.
 if [[ "${1:-}" == "--surface-check" ]]; then
   [[ -n "${2:-}" && "$2" != --* ]] || { echo "error"; exit 0; }
-  # shellcheck source=/dev/null
-  source "$ROOT/scripts/lib/ultra-oracle-config.sh" 2>/dev/null || { echo "error"; exit 0; }
+  _load_surface_gate || { echo "error"; exit 0; }
   if ultra_oracle_surface_enabled "$2"; then echo "enabled"; else echo "disabled"; fi
   exit 0
 fi
@@ -80,10 +95,7 @@ done
 # `skipped:disabled` — a silent skip would reintroduce the very silent-no-consult
 # bug this wrapper exists to prevent. Only a genuinely-disabled surface skips.
 if [[ -n "$SURFACE" ]]; then
-  # shellcheck source=/dev/null
-  if ! source "$ROOT/scripts/lib/ultra-oracle-config.sh" 2>/dev/null; then
-    echo "error"; exit 0
-  fi
+  _load_surface_gate || { echo "error"; exit 0; }
   if ! ultra_oracle_surface_enabled "$SURFACE"; then
     echo "skipped:disabled"; exit 0
   fi

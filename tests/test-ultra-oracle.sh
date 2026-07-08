@@ -254,4 +254,4 @@ fi
 unset ULTRA_ORACLE_MOCK_MODE
 rm -f "$cwp" "$tmp/.claude/busdriver.json"
 
-[ "$FAIL" = 0 ] && echo "PASS test-ultra-oracle" || exit 1
+[[ "$FAIL" = 0 ]] && echo "PASS test-ultra-oracle" || exit 1

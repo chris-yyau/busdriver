@@ -36,29 +36,38 @@
 set -u
 
 # Derive plugin root from our own location (bash guarantees BASH_SOURCE here) so
-# we do not depend on the caller exporting CLAUDE_PLUGIN_ROOT.
+# our sibling libs are ALWAYS co-located under our own scripts/lib. Resolve ROOT
+# from our own on-disk location (bash guarantees BASH_SOURCE here) and do NOT let a
+# caller's CLAUDE_PLUGIN_ROOT override where we source our own libraries from — a
+# stale/mismatched env var could otherwise run this wrapper from one plugin checkout
+# while sourcing the adapter from another.
 _SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$_SELF_DIR/.." && pwd)}"
+ROOT="$(cd "$_SELF_DIR/.." && pwd)"
 
 # Extract an optional --surface flag; forward everything else to the adapter.
 SURFACE=""
 _ARGS=()
-while [ $# -gt 0 ]; do
+while [[ $# -gt 0 ]]; do
   case "$1" in
     --surface)
       # A dangling --surface with no value is a caller bug — fail closed.
-      [ $# -ge 2 ] || { echo "error"; exit 0; }
+      [[ $# -ge 2 ]] || { echo "error"; exit 0; }
       SURFACE="$2"; shift 2 ;;
     *) _ARGS+=("$1"); shift ;;
   esac
 done
 
 # Surface gate (brainstorming only). Use the lightweight config-only lib — no need
-# to pay for the full adapter just to decide the surface is disabled.
+# to pay for the full adapter just to decide the surface is disabled. A source
+# FAILURE (missing/misresolved lib) must fail CLOSED to `error`, NOT collapse to
+# `skipped:disabled` — a silent skip would reintroduce the very silent-no-consult
+# bug this wrapper exists to prevent. Only a genuinely-disabled surface skips.
 if [[ -n "$SURFACE" ]]; then
   # shellcheck source=/dev/null
-  if ! source "$ROOT/scripts/lib/ultra-oracle-config.sh" 2>/dev/null \
-       || ! ultra_oracle_surface_enabled "$SURFACE"; then
+  if ! source "$ROOT/scripts/lib/ultra-oracle-config.sh" 2>/dev/null; then
+    echo "error"; exit 0
+  fi
+  if ! ultra_oracle_surface_enabled "$SURFACE"; then
     echo "skipped:disabled"; exit 0
   fi
 fi
@@ -70,9 +79,9 @@ fi
 
 # No forwarded args means no --out — ultra_oracle_consult would reject it; short
 # circuit to the same fail-closed token (guards "${_ARGS[@]}" under set -u/bash 3.2).
-if [ "${#_ARGS[@]}" -eq 0 ]; then echo "error"; exit 0; fi
+if [[ "${#_ARGS[@]}" -eq 0 ]]; then echo "error"; exit 0; fi
 
 STATUS="$(ultra_oracle_consult "${_ARGS[@]}")"
-[ -n "$STATUS" ] || STATUS="error"
+[[ -n "$STATUS" ]] || STATUS="error"
 printf '%s\n' "$STATUS"
 exit 0

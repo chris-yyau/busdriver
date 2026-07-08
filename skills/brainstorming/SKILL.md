@@ -206,6 +206,11 @@ status=$(bash "${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plug
   --surface brainstorming --mode blocking --slug "ultra oracle design critique" \
   --prompt-file "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique-prompt.md" \
   --out "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique.md")
+# The wrapper has fully read the prompt file by the time it exits (VERDICT or
+# skipped:disabled alike), so delete it now — the design text must not linger on
+# disk after a disabled/opt-out run, matching the pre-wrapper gated block that
+# never wrote it when the surface was off.
+rm -f "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique-prompt.md"
 ```
 
 (`--surface brainstorming` runs the consult only when `ultraOracle.brainstorming.enabled` is set in USER config — the wrapper prints `skipped:disabled` and does nothing otherwise. `--prompt-file` is the *adapter's* interface — it reads the file and passes the content to oracle via `--prompt "$(cat ...)"`, since oracle has no `--prompt-file` flag; large files are attached via `--file` to avoid ARG_MAX.)

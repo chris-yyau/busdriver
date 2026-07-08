@@ -203,10 +203,14 @@ def _scan_segment(segtext, markers, simple_vars):
             continue
         # Leading name=value tokens (before the command word) are real shell
         # assignments; once a non-assignment word appears, later name=value tokens
-        # are arguments, not assignments.
-        if not seg_has_cmd and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t):
-            name, _eq, val = t.partition("=")
-            simple_vars[name] = val
+        # are arguments, not assignments. Both NAME=VALUE and bash/zsh NAME+=VALUE
+        # (append) are tracked — kept consistent with the +=-aware command-word skip
+        # below. Otherwise `M+=.claude/skip-litmus.local ; touch "$M"` would leave M
+        # unrecorded and the indirect marker write would slip through (#290 PR review).
+        assign_m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=(.*)$", t, re.DOTALL) if not seg_has_cmd else None
+        if assign_m:
+            name, plus, val = assign_m.group(1), assign_m.group(2), assign_m.group(3)
+            simple_vars[name] = (simple_vars.get(name, "") + val) if plus else val
         else:
             seg_has_cmd = True
         seg.append(t)
@@ -216,6 +220,24 @@ def _scan_segment(segtext, markers, simple_vars):
     # position) means wrapper preambles (sudo/env/nohup/timeout, with flags or
     # leading assignments) cannot hide the rm/tee.
     if any(_bn(w) in ("rm", "tee") for w in seg):
+        for w in seg:
+            m = _match_marker(w, markers, simple_vars)
+            if m:
+                return m
+    # #290 indirect-write verbs (touch/cp/mv/ln/install) that FORGE the skip/marker
+    # file. Unlike rm/tee, these are matched ONLY in COMMAND-WORD position (the
+    # first token after any leading name=value assignments), NOT scanned across all
+    # words — otherwise a marker READ whose args merely contain one of these words
+    # (grep touch <marker>, cat <marker> | grep cp) would be misread as a write.
+    # This closes the realistic self-bypass — a bare `touch .claude/skip-litmus.local`,
+    # incl. `touch -t` backdating that also defeats the pre-commit 30s age heuristic
+    # — while a wrapper-hidden `sudo touch <marker>` and the eval class stay in the
+    # ADR 0006 residual (a cooperative agent uses none of those to skip its own gate).
+    # Skip leading assignments — both NAME=VALUE and bash/zsh NAME+=VALUE (the +=
+    # form must be skipped too, else `X+=1 touch <marker>` leaves cmd_word=X+=1
+    # and slips the touch through — #290 PR review).
+    cmd_word = next((w for w in seg if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", w)), None)
+    if cmd_word is not None and _bn(cmd_word) in ("touch", "cp", "mv", "ln", "install"):
         for w in seg:
             m = _match_marker(w, markers, simple_vars)
             if m:
@@ -233,7 +255,7 @@ def _writes_marker(cmd, markers):
     # Out of scope (accepted defense-in-depth residual, ADR 0006 — the real
     # anti-forge boundary is the trusted writers plus diff-hash binding, and
     # Claude is the trusted dispatcher). The detector stops the DIRECT, common
-    # forms — redirect/tee/rm to a marker, plus quoting, ${IFS}, same-command
+    # forms — redirect/tee/rm/touch/cp/mv/ln/install to a marker, plus quoting, ${IFS}, same-command
     # variable, line-continuation, and ANSI-C-prefix obfuscation of them. It does
     # NOT try to stop a dispatcher that runs an ARBITRARY STRING OR PROGRAM; that
     # is an unbounded class, all equivalent to eval, and is left to the diff-hash
@@ -242,14 +264,22 @@ def _writes_marker(cmd, markers):
     #     evaluation (python -c, perl -e, ruby -e, node -e, awk, xargs,
     #     find -exec/-delete)
     #   - command substitution: backticks and $(...)
-    #   - indirect writers: copy/move/convert (cp/mv/dd/install/ln)
+    #   - indirect writers NOT enumerated as command words: dd, and other
+    #     copy/convert tools (cp/mv/ln/install ARE now blocked — see #290 below)
     #   - runtime name synthesis: pathname globbing (* ? [ ]) and brace expansion
     #     ({a,b}) that expand to the marker (rm ...loca?, tee ...loca{l,})
     #   - environment / nested / computed shell variables, ANSI-C escape
     #     SEQUENCES (\x6c-style), and the nested single-quote idiom (which trips
     #     the segmenter into its fail-closed substring fallback)
-    # These are one tier: a dispatcher that can do any of them can forge the
-    # marker directly, so partial blocking is theater. See #227.
+    # These are one tier against a HOSTILE dispatcher: one that can eval can forge
+    # the marker directly, so blocking a subset is theater against that actor.
+    # #290 extended the blocked verbs (rm/tee → +touch/cp/mv/ln/install as command
+    # words) anyway, because the realistic threat is an accidental/lazy self-bypass
+    # by a COOPERATIVE agent (a bare `touch .claude/skip-litmus.local`); blocking the
+    # bare-command indirect-write forms removes the easy path and forces any bypass
+    # to be a deliberate wrapper-hidden or eval-forge a cooperative agent will not
+    # build. A human touch typed in a real terminal is unaffected — this hook only
+    # sees the Claude tool calls. See #227 and the ADR 0006 residual addendum.
     norm = cmd.replace("\r\n", "\n").replace("\r", "\n")
     # Bash removes an unquoted backslash-newline (line continuation) before
     # execution; mirror that BEFORE splitting on newlines so a marker write or

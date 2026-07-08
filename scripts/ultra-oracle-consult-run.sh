@@ -44,6 +44,21 @@ set -u
 _SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$_SELF_DIR/.." && pwd)"
 
+# Gate-only query: `--surface-check <name>` prints `enabled` | `disabled` | `error`
+# and exits WITHOUT consulting. This lets a caller decide whether to build and
+# persist a prompt BEFORE any design text touches disk — brainstorming uses it so a
+# disabled surface never writes the design (matching the pre-wrapper gated block),
+# instead of writing-then-deleting (which would leave the text on disk if the shell
+# is interrupted before cleanup). A config-lib source failure fails CLOSED to
+# `error` (do not transmit on doubt), never a false `enabled`.
+if [[ "${1:-}" == "--surface-check" ]]; then
+  [[ -n "${2:-}" && "$2" != --* ]] || { echo "error"; exit 0; }
+  # shellcheck source=/dev/null
+  source "$ROOT/scripts/lib/ultra-oracle-config.sh" 2>/dev/null || { echo "error"; exit 0; }
+  if ultra_oracle_surface_enabled "$2"; then echo "enabled"; else echo "disabled"; fi
+  exit 0
+fi
+
 # Extract an optional --surface flag; forward everything else to the adapter.
 SURFACE=""
 _ARGS=()

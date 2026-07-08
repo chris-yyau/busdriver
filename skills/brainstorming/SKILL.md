@@ -193,27 +193,29 @@ After the grill (5.5), before writing the doc (Step 6). Fires only if `ultraOrac
 
 Run ONLY when the gate condition holds (Claude evaluates the trigger and runs the block only then). **Write the design text to a file via a SINGLE-QUOTED heredoc and pass `--prompt-file`** — never interpolate design text (which routinely contains backticks, `$(...)`, `$VAR`, quotes) into a double-quoted shell argument:
 
-The oracle runs via the **bash-shebang wrapper `scripts/ultra-oracle-consult-run.sh`**, NOT an in-block `source`. This is load-bearing: `scripts/lib/ultra-oracle.sh` is bash-only (resolves its own dir via `${BASH_SOURCE[0]}`, uses `local -a`) and fail-closes when sourced outside bash — and this block is pasted verbatim into the executor's Bash tool, which on a zsh-default machine (macOS) runs **zsh**, so an in-block `source` aborted rc=1 and the consult silently never launched (issue #296). The wrapper does the surface gate + source + consult under bash and prints the raw status token.
+The oracle runs via the **bash-shebang wrapper `scripts/ultra-oracle-consult-run.sh`**, NOT an in-block `source`. This is load-bearing: `scripts/lib/ultra-oracle.sh` is bash-only (resolves its own dir via `${BASH_SOURCE[0]}`, uses `local -a`) and fail-closes when sourced outside bash — and this block is pasted verbatim into the executor's Bash tool, which on a zsh-default machine (macOS) runs **zsh**, so an in-block `source` aborted rc=1 and the consult silently never launched (issue #296). The wrapper does the surface gate + source + consult under bash and prints the raw status token. **Gate the surface FIRST (`--surface-check`) so the design text is written to disk only when the oracle will actually run — a disabled surface must never persist the design.**
 
 ```bash
-mkdir -p "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle"
-cat > "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique-prompt.md" <<'ULTRA_ORACLE_EOF'
+WRAP="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/cache/busdriver/busdriver/current}}/scripts/ultra-oracle-consult-run.sh"
+case "$(bash "$WRAP" --surface-check brainstorming)" in
+  enabled)
+    mkdir -p "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle"
+    cat > "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique-prompt.md" <<'ULTRA_ORACLE_EOF'
 Critique this approved design adversarially. Name the 3 biggest risks, any simpler alternative, and anything underspecified.
 
 <paste the full approved design text here — the single-quoted ULTRA_ORACLE_EOF marker prevents any backtick/$()/$VAR in the design from executing>
 ULTRA_ORACLE_EOF
-status=$(bash "${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/cache/busdriver/busdriver/current}}/scripts/ultra-oracle-consult-run.sh" \
-  --surface brainstorming --mode blocking --slug "ultra oracle design critique" \
-  --prompt-file "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique-prompt.md" \
-  --out "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique.md")
-# The wrapper has fully read the prompt file by the time it exits (VERDICT or
-# skipped:disabled alike), so delete it now — the design text must not linger on
-# disk after a disabled/opt-out run, matching the pre-wrapper gated block that
-# never wrote it when the surface was off.
-rm -f "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique-prompt.md"
+    status=$(bash "$WRAP" --surface brainstorming --mode blocking --slug "ultra oracle design critique" \
+      --prompt-file "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique-prompt.md" \
+      --out "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique.md")
+    rm -f "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/design-critique-prompt.md"
+    ;;
+  disabled) status="skipped:disabled" ;;   # surface off → never wrote the design
+  *)        status="error" ;;               # config lib unresolvable → fail closed
+esac
 ```
 
-(`--surface brainstorming` runs the consult only when `ultraOracle.brainstorming.enabled` is set in USER config — the wrapper prints `skipped:disabled` and does nothing otherwise. `--prompt-file` is the *adapter's* interface — it reads the file and passes the content to oracle via `--prompt "$(cat ...)"`, since oracle has no `--prompt-file` flag; large files are attached via `--file` to avoid ARG_MAX.)
+(`--surface-check brainstorming` reports `enabled` only when `ultraOracle.brainstorming.enabled` is set in USER config, so the design text is written and transmitted only then; a disabled surface never touches disk. `--prompt-file` is the *adapter's* interface — it reads the file and passes the content to oracle via `--prompt "$(cat ...)"`, since oracle has no `--prompt-file` flag; large files are attached via `--file` to avoid ARG_MAX.)
 
 **Fail CLOSED (never silent):** branch on `$status`:
 - `ok` → read the verdict file, fold its critique into the conversation, let the user revise before Step 6.

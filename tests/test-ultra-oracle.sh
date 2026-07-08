@@ -214,12 +214,22 @@ out="$(bash "$CWRAP" --surface)"
 out="$(bash "$CWRAP" --surface --mode blocking --prompt-file "$cwp" --out "$tmp/cr_flagval.md")"
 [[ "$out" == "error" ]] || { echo "FAIL consult-run --surface-eats-flag got '$out'"; FAIL=1; }
 
+# --surface-check gate query (used by brainstorming to gate BEFORE writing the design)
+out="$(bash "$CWRAP" --surface-check)"                       # no name -> error
+[[ "$out" == "error" ]] || { echo "FAIL surface-check no-name got '$out'"; FAIL=1; }
+out="$(bash "$CWRAP" --surface-check brainstorming)"         # config disabled -> disabled
+[[ "$out" == "disabled" ]] || { echo "FAIL surface-check disabled got '$out'"; FAIL=1; }
+
 # --surface brainstorming, config disabled (no busdriver.json) -> skipped:disabled
 out="$(bash "$CWRAP" --surface brainstorming --mode blocking --prompt-file "$cwp" --out "$tmp/cr_dis.md")"
 [[ "$out" == "skipped:disabled" ]] || { echo "FAIL consult-run disabled surface got '$out'"; FAIL=1; }
 
 # enable the brainstorming surface via USER config for the remaining surface-gated cases
 printf '{"ultraOracle":{"brainstorming":{"enabled":true}}}' > "$tmp/.claude/busdriver.json"
+
+# --surface-check now reports enabled
+out="$(bash "$CWRAP" --surface-check brainstorming)"
+[[ "$out" == "enabled" ]] || { echo "FAIL surface-check enabled got '$out'"; FAIL=1; }
 
 # --surface brainstorming, enabled + ok stub -> raw `ok` + verdict body at --out
 export ULTRA_ORACLE_MOCK_MODE=ok

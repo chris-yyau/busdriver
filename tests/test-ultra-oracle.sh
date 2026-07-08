@@ -192,4 +192,66 @@ if command -v zsh >/dev/null 2>&1; then
 fi
 rm -f "$wp"
 
+# --- scripts/ultra-oracle-consult-run.sh wrapper (blocking, raw-token passthrough) ---
+# The BLOCKING sibling of ultra-oracle-run.sh: brainstorming + ultraoracle SKILL
+# blocks call it instead of sourcing the bash-only lib in a zsh Bash tool (#296).
+# It passes ultra_oracle_consult's raw token through (ok|skipped:*|timeout|error),
+# with an optional --surface gate.
+CWRAP="$DIR/scripts/ultra-oracle-consult-run.sh"
+rm -f "$tmp/.claude/busdriver.json"
+cwp="$(mktemp)"; printf 'design to critique' > "$cwp"
+
+# no forwarded args (no --out) -> fail closed to `error`
+out="$(bash "$CWRAP")"
+[[ "$out" == "error" ]] || { echo "FAIL consult-run no-args got '$out'"; FAIL=1; }
+
+# dangling --surface with no value -> fail closed to `error`
+out="$(bash "$CWRAP" --surface)"
+[[ "$out" == "error" ]] || { echo "FAIL consult-run dangling --surface got '$out'"; FAIL=1; }
+
+# --surface brainstorming, config disabled (no busdriver.json) -> skipped:disabled
+out="$(bash "$CWRAP" --surface brainstorming --mode blocking --prompt-file "$cwp" --out "$tmp/cr_dis.md")"
+[[ "$out" == "skipped:disabled" ]] || { echo "FAIL consult-run disabled surface got '$out'"; FAIL=1; }
+
+# enable the brainstorming surface via USER config for the remaining surface-gated cases
+printf '{"ultraOracle":{"brainstorming":{"enabled":true}}}' > "$tmp/.claude/busdriver.json"
+
+# --surface brainstorming, enabled + ok stub -> raw `ok` + verdict body at --out
+export ULTRA_ORACLE_MOCK_MODE=ok
+out="$(bash "$CWRAP" --surface brainstorming --mode blocking --prompt-file "$cwp" --out "$tmp/cr_ok.md")"
+[[ "$out" == "ok" ]] || { echo "FAIL consult-run enabled ok got '$out'"; FAIL=1; }
+grep -q "ULTRA-ORACLE VERDICT" "$tmp/cr_ok.md" || { echo "FAIL consult-run verdict not captured"; FAIL=1; }
+
+# no --surface (ultraoracle shape) + ok stub -> `ok` even with no config gate
+out="$(bash "$CWRAP" --mode blocking --prompt-file "$cwp" --out "$tmp/cr_noguard.md")"
+[[ "$out" == "ok" ]] || { echo "FAIL consult-run no-surface ok got '$out'"; FAIL=1; }
+
+# --context globs (ultraoracle evidence pack) must reach oracle as --file args
+export ULTRA_ORACLE_ARGV_OUT="$tmp/cr_argv.log"
+ctx="$(mktemp)"; printf 'evidence' > "$ctx"
+bash "$CWRAP" --prompt-file "$cwp" --context "$ctx" --out "$tmp/cr_ctx.md" --mode blocking >/dev/null
+if ! grep -qxF -- "--file" "$tmp/cr_argv.log" || ! grep -qxF -- "$ctx" "$tmp/cr_argv.log"; then
+  echo "FAIL consult-run --context not forwarded to oracle --file"; FAIL=1
+fi
+rm -f "$ctx"; unset ULTRA_ORACLE_ARGV_OUT
+
+# failing oracle -> raw `error` token (drives caller's ORACLE_FAILED / block-and-ask)
+export ULTRA_ORACLE_MOCK_MODE=fail
+out="$(bash "$CWRAP" --mode blocking --prompt-file "$cwp" --out "$tmp/cr_fail.md")"
+[[ "$out" == "error" ]] || { echo "FAIL consult-run fail stub got '$out'"; FAIL=1; }
+unset ULTRA_ORACLE_MOCK_MODE
+
+# REGRESSION (#296): invoked from a NON-bash (zsh) caller it must still work — an
+# in-shell `source ultra-oracle.sh` aborted under zsh, but `bash $CWRAP` runs under
+# bash regardless. Surface is enabled + ok stub, so a working wrapper returns `ok`;
+# the pre-fix in-shell source would have half-loaded and produced no verdict.
+export ULTRA_ORACLE_MOCK_MODE=ok
+if command -v zsh >/dev/null 2>&1; then
+  out="$(zsh -c 'bash "$1" --surface brainstorming --mode blocking --prompt-file "$2" --out "$3"' \
+        _ "$CWRAP" "$cwp" "$tmp/cr_zsh.md" 2>&1)"
+  [[ "$out" == "ok" ]] || { echo "FAIL consult-run under zsh caller got '$out'"; FAIL=1; }
+fi
+unset ULTRA_ORACLE_MOCK_MODE
+rm -f "$cwp" "$tmp/.claude/busdriver.json"
+
 [ "$FAIL" = 0 ] && echo "PASS test-ultra-oracle" || exit 1

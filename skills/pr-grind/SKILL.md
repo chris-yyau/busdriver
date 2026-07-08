@@ -521,7 +521,11 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
 # Loop exits naturally when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT
 # without ever seeing RESULT_STATUS=clean → fail-CLOSED to BAIL, NOT to
 # COMPLETION. The PR isn't clean; we just ran out of attempts. Writing the
-# marker here would silently merge an unfinished PR.
+# marker here would silently merge an unfinished PR. EXCEPTION: the
+# wait_round >= MAX_WAIT branch below may still route to COMPLETION, but only
+# via the explicit, condition-gated, logged ADR 0012 downgrade path (step 5) —
+# never as a bare "ran out of attempts" fallthrough. Absent that opt-in/gate
+# chain, exhaustion still fails closed to BAIL exactly as this paragraph says.
 ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                      Both flavors emit RESULT_BAIL_CATEGORY=budget — this is the
                      dispatcher-only enum value documented in agents/pr-grinder.md
@@ -554,12 +558,35 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                                diff_hash (the pre-PR PASS artifact; a stale/missing artifact fails closed).
                           3. Assemble CANDIDATES — for each STALE_AT_BAIL bot (registered bots AND
                              `chatgpt-codex-connector` when Codex is the stale one), gather:
-                               `login:unresolved_threads:actionable_findings:last_state:stale_sha`
+                               `login:unresolved_threads:actionable_findings:last_state:stale_sha:ever_changes_requested:engaged_signal`
                              where `actionable_findings` = that login's `n_actionable` from
-                             RESULT_BOT_LEDGER (0 for `0/N:no-findings` or `0/0:none`), `unresolved_threads`
-                             = a fresh Source-2 unresolved+non-outdated thread count for that bot on HEAD
-                             (the same query ack-ledger Tier A.1 uses), `last_state` = the bot's last
-                             /reviews state, `stale_sha` = the SHA its stale review targets.
+                             RESULT_BOT_LEDGER, `unresolved_threads` = a fresh Source-2
+                             unresolved+non-outdated thread count for that bot on HEAD (the same query
+                             ack-ledger Tier A.1 uses), `last_state` = the bot's last /reviews state,
+                             `stale_sha` = the SHA its stale review targets, `ever_changes_requested` = 1
+                             iff ANY review in the bot's FULL `/reviews` history (not just the latest) was
+                             CHANGES_REQUESTED or DISMISSED — mirrors `ack-ledger.sh`'s own
+                             `[CHANGES_REQUESTED, COMMENTED]` guard (a later non-blocking review does not
+                             erase an earlier raised concern) and satisfies ADR 0012 precondition 8.
+                             `engaged_signal` = 1 iff the bot has a live non-thread engagement marker that
+                             `ack-ledger.sh` gates on ahead of every tier — concretely,
+                             `chatgpt-codex-connector`'s hoisted 👀-reaction override (a current 👀 means
+                             Codex is actively re-reviewing HEAD *right now*, forced `stale` regardless of
+                             thread/review state). 0 for every bot without such a signal (always 0 for
+                             non-Codex logins today; re-use `ALL_REACTIONS` already fetched for Codex's Tier
+                             F check rather than an extra API call). A live `engaged_signal` means this
+                             bot's `stale` classification is not the "reviewed an old SHA, found nothing,
+                             never re-acked" case ADR 0012 targets — releasing it now would race a review in
+                             progress, so `advisory-stale-downgrade.sh` keeps it stale when `engaged_signal=1`.
+                             **`actionable_findings=0` evidence requirement (fail-CLOSED):** only assemble
+                             a bot into CANDIDATES with `actionable_findings=0` when its RESULT_BOT_LEDGER
+                             entry is `0/N:no-findings` with `N >= 1` (a genuinely enumerated body with no
+                             findings) — NOT `0/0:none`. A `0/0:none` entry means the bot's body was never
+                             enumerated (default ledger value, early-bail output, or a parser miss), which
+                             is not proof the bot reviewed and found nothing; Invariant 3 only requires
+                             `n_total >= 1` for HEAD-acked bots, so a stale bot's `0/0:none` is otherwise
+                             unprotected. Skip (do not assemble) any bot whose ledger entry doesn't meet
+                             this bar — it stays in STALE_AT_BAIL and falls through to BAIL below.
                           4. Call the single source of truth (pass BYPASS_LOG EXPLICITLY as a
                              main-repo-root-anchored absolute path — the script's default is
                              CWD-relative `.claude/bypass-log.jsonl`, which lands in the wrong place
@@ -575,10 +602,15 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                              cleanly, not that the bot approved HEAD.
                           5. If DOWNGRADED covers EVERY stale blocker in STALE_AT_BAIL (i.e. no stale
                              advisory bot remains and Codex is either acked or in DOWNGRADED) → treat those
-                             acks as `none` and go to COMPLETION with DOWNGRADED_BOTS=<DOWNGRADED> so the
-                             clean marker records the released list (see COMPLETION). Otherwise fall through
-                             to BAIL — a bot with live findings, a failed green gate, or the missing opt-in
-                             all keep the PR blocked exactly as before.
+                             acks as `none` and go to COMPLETION with DOWNGRADED_BOTS=<DOWNGRADED> so
+                             COMPLETION's ack-recompute honors the release instead of re-deriving `stale`
+                             (see COMPLETION) and so the released list is surfaced in the operator-facing
+                             completion message and audit trail. ⚠ The `pr-grind-clean.local` marker itself
+                             MUST stay a bare PR number regardless — it does NOT carry DOWNGRADED_BOTS or
+                             any other non-digit content (see COMPLETION's marker note; the durable record
+                             of the release lives in `bypass-log.jsonl`, not the marker). Otherwise fall
+                             through to BAIL — a bot with live findings, a failed green gate, or the missing
+                             opt-in all keep the PR blocked exactly as before.
 
                           Then BAIL with reason
                           "max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD;
@@ -1351,12 +1383,15 @@ PRIOR_ATTEMPTS:
 
 The dispatcher must re-run the same `scripts/ack-ledger.sh` lookup the worker used in Step 6.5, against all live ack-ledger sources (review threads, `/reviews`, issue comments, check-runs, and commit statuses), with HEAD recomputed against the current branch state. Just re-parsing `$RESULT_REVIEWER_ACKS` would only validate the worker's snapshot — it can't catch a bot that finished re-reviewing in the seconds between subagent return and merge.
 
-The `<PR_NUMBER>`, `<owner>`, `<repo>` placeholders below follow the same template-substitution convention as `<PR_NUMBER>` elsewhere in this Completion section — Claude substitutes the literal owner / repo / PR-number values at run time before executing the bash.
+The `<PR_NUMBER>`, `<owner>`, `<repo>` placeholders below follow the same template-substitution convention as `<PR_NUMBER>` elsewhere in this Completion section — Claude substitutes the literal owner / repo / PR-number values at run time before executing the bash. `<DOWNGRADED_BOTS>` follows the same convention: if COMPLETION was reached via the ADR 0012 wait-round downgrade path (ON_LOOP_EXHAUSTED step 5), Claude substitutes the comma-separated released-login list computed there; on the normal `RESULT_STATUS=clean` path (no downgrade involved) it substitutes the empty string.
 
 ```bash
 PR=<PR_NUMBER>
 OWNER=<owner>
 REPO=<repo>
+# ADR 0012: comma-separated logins released by the bounded stale-ack downgrade
+# (empty on the normal clean path — see the template-substitution note above).
+DOWNGRADED_BOTS="<DOWNGRADED_BOTS>"
 HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
 
 # One-shot fetches — same four sources as worker's Step 6.5.
@@ -1475,9 +1510,16 @@ if [ "$CODEX_DONE" = "none" ] && [ "${CODEX_GRACE}" -gt 0 ] 2>/dev/null; then
   # commit_id is HEAD → Tier B), not only a clean 👍. Refreshing reactions alone
   # would leave ack-ledger reading the stale pre-sleep threads/reviews and miss
   # findings that arrived in the window — passing the gate with untriaged Codex
-  # findings. (Tiers C/D/E don't apply to Codex, so their snapshots can stand.)
+  # findings. Tiers C/D/E don't apply to Codex itself, BUT the ADR 0012 downgrade
+  # re-validation below reads ALL six sources for the NON-Codex downgraded bots;
+  # a registered bot could post a comment/check-run/status during this same sleep,
+  # so those three are refreshed too — otherwise the revalidator would scan a
+  # pre-sleep snapshot and suppress a bot that re-engaged in the window (fail-open).
   ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/reactions" 2>/dev/null) || FETCH_OK=0
   ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || FETCH_OK=0
+  ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH_OK=0
+  ALL_CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
+  ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses" 2>/dev/null) || FETCH_OK=0
   ALL_THREADS=$(gh api graphql --paginate -f query='
     query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String) {
       repository(owner:$owner,name:$repo) {
@@ -1495,18 +1537,53 @@ if [ "$CODEX_DONE" = "none" ] && [ "${CODEX_GRACE}" -gt 0 ] 2>/dev/null; then
       }
     }
   ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) || FETCH_OK=0
-  export ALL_REACTIONS ALL_REVIEWS ALL_THREADS FETCH_OK
+  export ALL_REACTIONS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_THREADS FETCH_OK
   CODEX_REGRACE=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo stale)
   # Re-fold only if Codex engaged during the grace (now `stale` or a fresh SHA);
   # SHA → still passes, `stale` → blocks below. SHAs/stale/none are sed-safe.
   [ "$CODEX_REGRACE" != "none" ] && FRESH_ACKS=$(printf '%s' "$FRESH_ACKS" | sed "s/chatgpt-codex-connector=none/chatgpt-codex-connector=${CODEX_REGRACE}/")
 fi
-STALE_BOTS=$(echo "$FRESH_ACKS" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
+# ADR 0012 (litmus HIGH fix): a login in DOWNGRADED_BOTS was released at
+# --max-wait exhaustion, but it can RE-ENGAGE between that decision and this
+# merge — a new unresolved thread, a CHANGES_REQUESTED review, or (Codex) a
+# current 👀 reaction. FRESH_ACKS above would then correctly read `stale`;
+# blindly suppressing every DOWNGRADED_BOTS login would defeat this
+# defense-in-depth re-query and merge past a live review. Re-VALIDATE each
+# downgraded login against the FRESH sources just fetched, re-running the SAME
+# advisory-stale-downgrade.sh predicate (scripts/advisory-downgrade-revalidate.sh).
+# Only logins that STILL pass on fresh data are suppressed; a re-engaged bot
+# fails the fresh predicate, drops out of REVALIDATED_DOWNGRADE, stays in
+# STALE_BOTS, and blocks. Fail-CLOSED: on any error — or FETCH_OK≠1, meaning a
+# fresh source failed to fetch so re-engagement can't be proven — the script
+# echoes empty → nothing suppressed → the merge blocks on the still-`stale` acks.
+REVALIDATED_DOWNGRADE=""
+if [ -n "$DOWNGRADED_BOTS" ]; then
+  REVALIDATED_DOWNGRADE=$(DOWNGRADED_BOTS="$DOWNGRADED_BOTS" FETCH_OK="$FETCH_OK" \
+    ALL_THREADS="$ALL_THREADS" ALL_REVIEWS="$ALL_REVIEWS" ALL_REACTIONS="$ALL_REACTIONS" \
+    ALL_COMMENTS="$ALL_COMMENTS" ALL_CHECK_RUNS="$ALL_CHECK_RUNS" ALL_STATUSES="$ALL_STATUSES" \
+    HEAD_SHA="$HEAD_SHA" \
+    BYPASS_LOG="$(git rev-parse --show-toplevel)/${BUSDRIVER_STATE_DIR:-.claude}/bypass-log.jsonl" \
+    bash "${CLAUDE_PLUGIN_ROOT}/scripts/advisory-downgrade-revalidate.sh" 2>/dev/null || echo "")
+  if [ "$REVALIDATED_DOWNGRADE" != "$DOWNGRADED_BOTS" ]; then
+    echo "⚠️  ADR 0012: a downgraded bot re-engaged before merge — only re-validated release(s) suppressed: '${REVALIDATED_DOWNGRADE:-<none>}' (was '$DOWNGRADED_BOTS'). Re-engaged bot(s) stay stale and block."
+  fi
+fi
+STALE_BOTS=$(echo "$FRESH_ACKS" | tr ',' '\n' | awk -F= -v downgraded="$REVALIDATED_DOWNGRADE" '
+  BEGIN { n = split(downgraded, arr, ","); for (i = 1; i <= n; i++) if (arr[i] != "") skip[arr[i]] = 1 }
+  $2 == "stale" && !($1 in skip) { print $1 }
+')
 if [ -n "$STALE_BOTS" ]; then
   echo "❌ BLOCKED: AI reviewer(s) with stale ack at merge time: $STALE_BOTS"
   echo "   Re-run the loop or wait for the bot(s) to ack HEAD ($HEAD_SHA)."
   echo "   (chatgpt-codex-connector stale = Codex still reviewing / no 👍 newer than HEAD.)"
   exit 1
+fi
+# Surface the release to the operator (never silent — see ADR 0012). This is
+# forensic visibility only; it does NOT get written into the bare-PR-number
+# clean marker (see the marker note in "All of these must be true" above).
+if [ -n "$DOWNGRADED_BOTS" ]; then
+  echo "ℹ️  ADR 0012: advisory-bot stale ack(s) timeout-downgraded to none for this merge: $DOWNGRADED_BOTS"
+  echo "   (logged to bypass-log.jsonl — see docs/adr/0012-advisory-bot-stale-timeout-downgrade.md)"
 fi
 ```
 

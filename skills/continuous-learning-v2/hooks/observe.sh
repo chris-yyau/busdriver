@@ -190,176 +190,54 @@ SKILL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Source shared project detection helper
 # This sets: PROJECT_ID, PROJECT_NAME, PROJECT_ROOT, PROJECT_DIR
-source "${SKILL_ROOT}/scripts/detect-project.sh"
+# ponytail: cwd-keyed detect-project cache, 5-min TTL — delete the cache file
+# (or wait 5 min) after a git init/root change; atomic mktemp+mv write.
+# CACHE CONTRACT: every `export`ed var of detect-project.sh must be cached
+# (grep the script; extend the printf below if upstream adds exports).
+_PROJ_CACHE=""
+_sha_cmd=""
+if command -v sha256sum >/dev/null 2>&1; then _sha_cmd="sha256sum";
+elif command -v shasum >/dev/null 2>&1; then _sha_cmd="shasum -a 256"; fi
+if [[ -n "$_sha_cmd" && -n "${CONFIG_DIR:-}" ]]; then
+  _key=$(printf '%s' "${STDIN_CWD:-}" | $_sha_cmd | cut -c1-16) || _key=""
+  [[ -n "$_key" ]] && _PROJ_CACHE="${CONFIG_DIR}/.proj-cache-${_key}"
+fi
+_cache_stale=""
+if [[ -n "$_PROJ_CACHE" && -f "$_PROJ_CACHE" ]]; then
+  _cache_stale=$(find "$_PROJ_CACHE" -mmin +5 2>/dev/null) || _cache_stale="expired"
+fi
+if [[ -n "$_PROJ_CACHE" && -f "$_PROJ_CACHE" && -z "$_cache_stale" ]]; then
+  # shellcheck disable=SC1090
+  . "$_PROJ_CACHE"
+  mkdir -p "$PROJECT_DIR" 2>/dev/null || true   # re-apply dir side-effect
+else
+  # shellcheck disable=SC1091
+  source "${SKILL_ROOT}/scripts/detect-project.sh"
+  if [[ -n "$_PROJ_CACHE" ]]; then
+    _tmp=$(mktemp "${CONFIG_DIR}/.proj-cache.XXXXXX" 2>/dev/null) && {
+      printf 'export PROJECT_ID=%q PROJECT_NAME=%q PROJECT_ROOT=%q PROJECT_DIR=%q\n' \
+        "$PROJECT_ID" "$PROJECT_NAME" "$PROJECT_ROOT" "$PROJECT_DIR" > "$_tmp"
+      printf 'export CLV2_PYTHON_CMD=%q CLV2_OBSERVER_PROMPT_PATTERN=%q CLV2_OBSERVER_SENTINEL_FILE=%q\n' \
+        "${CLV2_PYTHON_CMD:-}" "${CLV2_OBSERVER_PROMPT_PATTERN:-}" "${CLV2_OBSERVER_SENTINEL_FILE:-}" >> "$_tmp"
+      mv "$_tmp" "$_PROJ_CACHE"
+    }
+  fi
+fi
 PYTHON_CMD="${CLV2_PYTHON_CMD:-$PYTHON_CMD}"
 
 # ─────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────
 
-OBSERVATIONS_FILE="${PROJECT_DIR}/observations.jsonl"
-MAX_FILE_SIZE_MB=10
-
-# Auto-purge observation files older than 30 days (runs once per session)
-PURGE_MARKER="${PROJECT_DIR}/.last-purge"
-if [ ! -f "$PURGE_MARKER" ] || [ "$(find "$PURGE_MARKER" -mtime +1 2>/dev/null)" ]; then
-  find "${PROJECT_DIR}" -name "observations-*.jsonl" -mtime +30 -delete 2>/dev/null || true
-  touch "$PURGE_MARKER" 2>/dev/null || true
-fi
-
-# Parse using Python via stdin pipe (safe for all JSON payloads)
-# Pass HOOK_PHASE via env var since Claude Code does not include hook type in stdin JSON
-PARSED=$(echo "$INPUT_JSON" | HOOK_PHASE="$HOOK_PHASE" "$PYTHON_CMD" -c '
-import json
-import sys
-import os
-
-try:
-    data = json.load(sys.stdin)
-
-    # Determine event type from CLI argument passed via env var.
-    # Claude Code does NOT include a "hook_type" field in the stdin JSON,
-    # so we rely on the shell argument ("pre" or "post") instead.
-    hook_phase = os.environ.get("HOOK_PHASE", "post")
-    event = "tool_start" if hook_phase == "pre" else "tool_complete"
-
-    # Extract fields - Claude Code hook format
-    tool_name = data.get("tool_name", data.get("tool", "unknown"))
-    tool_input = data.get("tool_input", data.get("input", {}))
-    tool_output = data.get("tool_response")
-    if tool_output is None:
-        tool_output = data.get("tool_output", data.get("output", ""))
-    session_id = data.get("session_id", "unknown")
-    tool_use_id = data.get("tool_use_id", "")
-    cwd = data.get("cwd", "")
-
-    # Truncate large inputs/outputs
-    if isinstance(tool_input, dict):
-        tool_input_str = json.dumps(tool_input)[:5000]
-    else:
-        tool_input_str = str(tool_input)[:5000]
-
-    if isinstance(tool_output, dict):
-        tool_response_str = json.dumps(tool_output)[:5000]
-    else:
-        tool_response_str = str(tool_output)[:5000]
-
-    print(json.dumps({
-        "parsed": True,
-        "event": event,
-        "tool": tool_name,
-        "input": tool_input_str if event == "tool_start" else None,
-        "output": tool_response_str if event == "tool_complete" else None,
-        "session": session_id,
-        "tool_use_id": tool_use_id,
-        "cwd": cwd
-    }))
-except Exception as e:
-    print(json.dumps({"parsed": False, "error": str(e)}))
-')
-
-# Check if parsing succeeded
-PARSED_OK=$(echo "$PARSED" | "$PYTHON_CMD" -c "import json,sys; print(json.load(sys.stdin).get('parsed', False))" 2>/dev/null || echo "False")
-
-if [ "$PARSED_OK" != "True" ]; then
-  # Fallback: log raw input for debugging (scrub secrets before persisting)
-  timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  export TIMESTAMP="$timestamp"
-  echo "$INPUT_JSON" | "$PYTHON_CMD" -c '
-import json, sys, os, re
-
-# Linear-time secret matcher. Bounded quantifiers and a fixed set of auth
-# schemes (instead of a generic [A-Za-z]+\s+ that overlapped the value class)
-# prevent the catastrophic backtracking that pegged python at 100% CPU (#2278).
-_SECRET_RE = re.compile(
-    r"(?i)(api[_-]?key|token|secret|password|authorization|credentials?|auth)"
-    r"""(["'"'"'\s:=]{1,8})"""
-    r"((?:bearer|basic|token|bot)\s+)?"
-    r"([A-Za-z0-9_\-/.+=]{8,256})"
-)
-
-import signal
-def _clv2_bail(*_):
-    print("[observe] SIGALRM timeout: parse-error fallback observation dropped before write (#2300)", file=sys.stderr)
-    sys.exit(0)
-try:
-    signal.signal(signal.SIGALRM, _clv2_bail)
-    signal.alarm(8)  # self-terminate before the async hook 10s timeout can orphan us (#2278)
-except Exception:
-    pass
-
-raw = sys.stdin.read()[:2000]
-raw = _SECRET_RE.sub(lambda m: m.group(1) + m.group(2) + (m.group(3) or "") + "[REDACTED]", raw)
-print(json.dumps({"timestamp": os.environ["TIMESTAMP"], "event": "parse_error", "raw": raw}))
-' >> "$OBSERVATIONS_FILE"
-  exit 0
-fi
-
-# Archive if file too large (atomic: rename with unique suffix to avoid race)
-if [ -f "$OBSERVATIONS_FILE" ]; then
-  file_size_mb=$(du -m "$OBSERVATIONS_FILE" 2>/dev/null | cut -f1)
-  if [ "${file_size_mb:-0}" -ge "$MAX_FILE_SIZE_MB" ]; then
-    archive_dir="${PROJECT_DIR}/observations.archive"
-    mkdir -p "$archive_dir"
-    mv "$OBSERVATIONS_FILE" "$archive_dir/observations-$(date +%Y%m%d-%H%M%S)-$$.jsonl" 2>/dev/null || true
-  fi
-fi
-
-# Build and write observation (now includes project context)
-# Scrub common secret patterns from tool I/O before persisting
-timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-export PROJECT_ID_ENV="$PROJECT_ID"
-export PROJECT_NAME_ENV="$PROJECT_NAME"
-export TIMESTAMP="$timestamp"
-
-echo "$PARSED" | "$PYTHON_CMD" -c '
-import json, sys, os, re
-import signal
-
-def _clv2_bail(*_):
-    print("[observe] SIGALRM timeout: in-flight observation dropped before write (#2300)", file=sys.stderr)
-    sys.exit(0)
-try:
-    signal.signal(signal.SIGALRM, _clv2_bail)
-    signal.alarm(8)  # self-terminate before the async hook 10s timeout can orphan us (#2278)
-except Exception:
-    pass
-
-parsed = json.load(sys.stdin)
-observation = {
-    "timestamp": os.environ["TIMESTAMP"],
-    "event": parsed["event"],
-    "tool": parsed["tool"],
-    "session": parsed["session"],
-    "project_id": os.environ.get("PROJECT_ID_ENV", "global"),
-    "project_name": os.environ.get("PROJECT_NAME_ENV", "global")
-}
-
-# Scrub secrets: match common key=value, key: value, and key"value patterns
-# Includes optional auth scheme (e.g., "Bearer", "Basic") before token
-# Linear-time secret matcher. Bounded quantifiers and a fixed set of auth
-# schemes (instead of a generic [A-Za-z]+\s+ that overlapped the value class)
-# prevent the catastrophic backtracking that pegged python at 100% CPU (#2278).
-_SECRET_RE = re.compile(
-    r"(?i)(api[_-]?key|token|secret|password|authorization|credentials?|auth)"
-    r"""(["'"'"'\s:=]{1,8})"""
-    r"((?:bearer|basic|token|bot)\s+)?"
-    r"([A-Za-z0-9_\-/.+=]{8,256})"
-)
-
-def scrub(val):
-    if val is None:
-        return None
-    return _SECRET_RE.sub(lambda m: m.group(1) + m.group(2) + (m.group(3) or "") + "[REDACTED]", str(val))
-
-if parsed["input"]:
-    observation["input"] = scrub(parsed["input"])
-if parsed["output"] is not None:
-    observation["output"] = scrub(parsed["output"])
-
-print(json.dumps(observation))
-' >> "$OBSERVATIONS_FILE"
+# ─────────────────────────────────────────────
+# Fast path: parse + scrub + rotate + purge + append in ONE python spawn
+# (observe_fast.py). Replaces the three legacy inline python blocks.
+# printf, NOT a heredoc: an unquoted heredoc would shell-expand $/backticks
+# inside the JSON payload; a quoted delimiter would block $INPUT_JSON itself.
+# ─────────────────────────────────────────────
+printf '%s' "$INPUT_JSON" | HOOK_PHASE="$HOOK_PHASE" PROJECT_ID="$PROJECT_ID" \
+  PROJECT_NAME="$PROJECT_NAME" PROJECT_DIR="$PROJECT_DIR" \
+  "$PYTHON_CMD" "${SCRIPT_DIR}/observe_fast.py" || true
 
 # Lazy-start observer if enabled but not running (first-time setup)
 # Use flock for atomic check-then-act to prevent race conditions

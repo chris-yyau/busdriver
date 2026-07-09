@@ -1,6 +1,11 @@
 ---
 name: product-naming
-description: Use when the user needs to name a product, brand, feature, startup, or project. Also use when the user says "name this," "what should I call it," "I need a better name," "naming ideas," "brand name," "product name," "rename this," or is choosing between name candidates. Based on David Placek's methodology (Lexicon Branding — named Swiffer, BlackBerry, Impossible Burger, Febreze, Sonos, Intel Pentium, Azure, Windsurf).
+description: >-
+  Name a product, brand, feature, startup, or project using David Placek's
+  Lexicon Branding methodology (Swiffer, BlackBerry, Sonos, Azure). Use when
+  the user says name this, what should I call it, naming ideas, brand name,
+  product name, rename this, or is choosing between name candidates.
+
 ---
 
 # Product Naming

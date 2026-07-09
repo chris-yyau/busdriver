@@ -1,11 +1,12 @@
 ---
 name: reflect
-description: >
-  Reflect on conversation mistakes, corrections, or lessons and save as feedback notes.
-  Use when the user says "reflect on that", "remember this mistake", "learn from that",
-  "what went wrong", or after a correction/failure in the current session. Outputs feedback
-  notes to ~/.claude/notes/ (high trust, always loaded). For analyzing tool-use observation
-  logs, the ECC v2 observer handles this automatically.
+description: >-
+  Reflect on conversation mistakes, corrections, or lessons and save them as
+  feedback notes to ~/.claude/notes/ (high trust, always loaded). Triggers
+  include reflect on that, remember this mistake, learn from that, what went
+  wrong, or after a correction/failure in the session. Tool-use observation
+  logs are handled by the ECC v2 observer.
+
 ---
 
 # /reflect — Session Reflection

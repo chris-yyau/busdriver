@@ -1,19 +1,14 @@
 ---
 name: council
-description: >
-  Convene a 5-voice AI council (Claude Architect + Fresh Claude Skeptic + Agy Pragmatist + Codex Critic + Grok Researcher) for diverse perspectives.
-  Use when the user asks "what would a good group of people think/design/do",
-  wants multiple opinions, asks for "ideas", "thoughts", "suggestions", "advice",
-  "input", "feedback", "recommendations", says "council", "roundtable", "perspectives",
-  "what would others think", "group wisdom", "diverse viewpoints", "what do you all think",
-  or needs group deliberation on decisions, tradeoffs, design choices, architecture,
-  or strategy. Also triggers on "ultra-council" / "ultra council" — the same council plus
-  a forced UltraOracle expert-witness escalation (rendered separately, never a vote) —
-  and on "ultimate-council" / "ultimate council" — the same 5-voice council plus BOTH
-  expert witnesses: the UltraOracle (GPT-5.5 Pro) AND the Mythos Witness (Claude Fable via
-  the zenmux gateway), each rendered as its own separate section, never a vote.
-  NOT for simple tasks with clear answers — only for ambiguous problems
-  that benefit from multiple lenses.
+description: >-
+  Convene a 5-voice AI council (Architect, Skeptic, Pragmatist, Critic,
+  Researcher) for ambiguous decisions needing multiple lenses — design,
+  tradeoffs, architecture, strategy. Triggers include council, roundtable,
+  perspectives, group wisdom, ideas/feedback/advice; "ultra-council" adds the
+  UltraOracle (GPT-5.5 Pro) expert witness; "ultimate-council" adds BOTH the
+  UltraOracle AND the Mythos Witness (Claude Fable via the zenmux gateway),
+  each rendered separately, never a vote. Not for simple tasks with clear
+  answers.
 origin: custom
 ---
 

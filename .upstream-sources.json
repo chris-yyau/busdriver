@@ -8,7 +8,7 @@
     "ecc": {
       "repo": "affaan-m/everything-claude-code",
       "ref": "main",
-      "note": "agents/*.md carry local `effort:` frontmatter per ADR 0009 (per-agent reasoning-effort cost tiers). Upstream ECC has no such lines, so an effort-line diff vs upstream is permanent local policy — NEVER sync a removal. tests/test-agent-effort-tiers.sh enforces presence."
+      "note": "agents/*.md carry local `effort:` frontmatter per ADR 0009 (per-agent reasoning-effort cost tiers). Upstream ECC has no such lines, so an effort-line diff vs upstream is permanent local policy \u2014 NEVER sync a removal. tests/test-agent-effort-tiers.sh enforces presence."
     },
     "mattpocock": {
       "repo": "mattpocock/skills",
@@ -35,7 +35,7 @@
       "ref": "main",
       "license": "MIT",
       "adoption": "pattern-derived",
-      "note": "Patterns distilled into skills/supplements/, NOT verbatim file syncs. Provenance ledger: skills/supplements/MANIFEST.md (Source column). Not pulled by sync-upstream.sh — no file-level entries (the supplements are prose rewrites of multi-file skill patterns and would generate false semantic-drift diffs). Distilled 2026-03-23/24 from gstack /office-hours, /cso, /qa, /design-consultation, /freeze; re-audited against v1.58.5.0 (2026-07-06)."
+      "note": "Patterns distilled into skills/supplements/, NOT verbatim file syncs. Provenance ledger: skills/supplements/MANIFEST.md (Source column). Not pulled by sync-upstream.sh \u2014 no file-level entries (the supplements are prose rewrites of multi-file skill patterns and would generate false semantic-drift diffs). Distilled 2026-03-23/24 from gstack /office-hours, /cso, /qa, /design-consultation, /freeze; re-audited against v1.58.5.0 (2026-07-06)."
     },
     "taste-skill": {
       "repo": "Leonxlnx/taste-skill",
@@ -5398,7 +5398,7 @@
       "source": "ecc",
       "status": "custom",
       "upstream_path": "skills/continuous-learning-v2/agents/start-observer.sh",
-      "custom_reason": "upstream 4130457 shipped an incomplete _ecc_→_clv2_ rename: start-observer.sh:40 still called the removed _ecc_resolve_homunculus_dir (undefined → empty CONFIG_DIR). Fixed locally to _clv2_resolve_homunculus_dir; report upstream."
+      "custom_reason": "upstream 4130457 shipped an incomplete _ecc_\u2192_clv2_ rename: start-observer.sh:40 still called the removed _ecc_resolve_homunculus_dir (undefined \u2192 empty CONFIG_DIR). Fixed locally to _clv2_resolve_homunculus_dir; report upstream."
     },
     {
       "path": "skills/continuous-learning-v2/config.json",
@@ -5409,7 +5409,7 @@
     {
       "path": "skills/continuous-learning-v2/hooks/observe.sh",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/continuous-learning-v2/hooks/observe.sh"
     },
     {
@@ -5603,89 +5603,89 @@
       "upstream_path": "skills/finishing-a-development-branch/SKILL.md"
     },
     {
-      "path": "skills/firecrawl-agent/SKILL.md",
+      "path": "skills-archive/firecrawl-agent/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/firecrawl-build-interact/SKILL.md",
+      "path": "skills-archive/firecrawl-build-interact/SKILL.md",
       "source": "firecrawl",
       "status": "custom",
       "upstream_path": "skills/firecrawl-build-interact/SKILL.md"
     },
     {
-      "path": "skills/firecrawl-build-onboarding/SKILL.md",
+      "path": "skills-archive/firecrawl-build-onboarding/SKILL.md",
       "source": "firecrawl",
       "status": "custom",
       "upstream_path": "skills/firecrawl-build-onboarding/SKILL.md"
     },
     {
-      "path": "skills/firecrawl-build-onboarding/references/auth-flow.md",
+      "path": "skills-archive/firecrawl-build-onboarding/references/auth-flow.md",
       "source": "firecrawl",
       "status": "custom",
       "upstream_path": "skills/firecrawl-build-onboarding/references/auth-flow.md"
     },
     {
-      "path": "skills/firecrawl-build-onboarding/references/project-setup.md",
+      "path": "skills-archive/firecrawl-build-onboarding/references/project-setup.md",
       "source": "firecrawl",
       "status": "custom",
       "upstream_path": "skills/firecrawl-build-onboarding/references/project-setup.md"
     },
     {
-      "path": "skills/firecrawl-build-onboarding/references/sdk-installation.md",
+      "path": "skills-archive/firecrawl-build-onboarding/references/sdk-installation.md",
       "source": "firecrawl",
       "status": "custom",
       "upstream_path": "skills/firecrawl-build-onboarding/references/sdk-installation.md"
     },
     {
-      "path": "skills/firecrawl-build-scrape/SKILL.md",
+      "path": "skills-archive/firecrawl-build-scrape/SKILL.md",
       "source": "firecrawl",
       "status": "custom",
       "upstream_path": "skills/firecrawl-build-scrape/SKILL.md"
     },
     {
-      "path": "skills/firecrawl-build-search/SKILL.md",
+      "path": "skills-archive/firecrawl-build-search/SKILL.md",
       "source": "firecrawl",
       "status": "custom",
       "upstream_path": "skills/firecrawl-build-search/SKILL.md"
     },
     {
-      "path": "skills/firecrawl-crawl/SKILL.md",
+      "path": "skills-archive/firecrawl-crawl/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/firecrawl-download/SKILL.md",
+      "path": "skills-archive/firecrawl-download/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/firecrawl-interact/SKILL.md",
+      "path": "skills-archive/firecrawl-interact/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/firecrawl-map/SKILL.md",
+      "path": "skills-archive/firecrawl-map/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/firecrawl-monitor/SKILL.md",
+      "path": "skills-archive/firecrawl-monitor/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/firecrawl-parse/SKILL.md",
+      "path": "skills-archive/firecrawl-parse/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/firecrawl-scrape/SKILL.md",
+      "path": "skills-archive/firecrawl-scrape/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/firecrawl-search/SKILL.md",
+      "path": "skills-archive/firecrawl-search/SKILL.md",
       "source": "local",
       "status": "local"
     },
@@ -7085,37 +7085,37 @@
       "upstream_path": "skills/systematic-debugging/test-pressure-3.md"
     },
     {
-      "path": "skills/tavily-best-practices/SKILL.md",
+      "path": "skills-archive/tavily-best-practices/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-best-practices/references/crawl.md",
+      "path": "skills-archive/tavily-best-practices/references/crawl.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-best-practices/references/extract.md",
+      "path": "skills-archive/tavily-best-practices/references/extract.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-best-practices/references/integrations.md",
+      "path": "skills-archive/tavily-best-practices/references/integrations.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-best-practices/references/research.md",
+      "path": "skills-archive/tavily-best-practices/references/research.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-best-practices/references/sdk.md",
+      "path": "skills-archive/tavily-best-practices/references/sdk.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-best-practices/references/search.md",
+      "path": "skills-archive/tavily-best-practices/references/search.md",
       "source": "local",
       "status": "local"
     },
@@ -7125,32 +7125,32 @@
       "status": "local"
     },
     {
-      "path": "skills/tavily-crawl/SKILL.md",
+      "path": "skills-archive/tavily-crawl/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-dynamic-search/SKILL.md",
+      "path": "skills-archive/tavily-dynamic-search/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-extract/SKILL.md",
+      "path": "skills-archive/tavily-extract/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-map/SKILL.md",
+      "path": "skills-archive/tavily-map/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-research/SKILL.md",
+      "path": "skills-archive/tavily-research/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-search/SKILL.md",
+      "path": "skills-archive/tavily-search/SKILL.md",
       "source": "local",
       "status": "local"
     },
@@ -8184,7 +8184,7 @@
       "source": "ecc",
       "status": "custom",
       "upstream_path": "skills/loop-design-check/SKILL.md",
-      "custom_reason": "Quoted the frontmatter description (double-quote wrap) — upstream ships it unquoted, but as a LIVE-promoted skill the unquoted description contains \": \" (e.g. \"Two actions:\") which strict YAML rejects (mapping values not allowed), so the live skill fails to load. Only divergence from ecc upstream @4130457."
+      "custom_reason": "Quoted the frontmatter description (double-quote wrap) \u2014 upstream ships it unquoted, but as a LIVE-promoted skill the unquoted description contains \": \" (e.g. \"Two actions:\") which strict YAML rejects (mapping values not allowed), so the live skill fails to load. Only divergence from ecc upstream @4130457."
     },
     {
       "path": "skills-archive/delivery-gate/SKILL.md",
@@ -8245,7 +8245,7 @@
       "source": "supabase",
       "status": "custom",
       "upstream_path": "skills/supabase/SKILL.md",
-      "custom_reason": "Vault rename supabase→supabase-router: the bare name `supabase` collides with ubiquitous Supabase-library tokens (supabase.rpc, supabase.com, supabase functions) across active skills, tripping the vault-references contract test. Only the frontmatter name line diverges from upstream; body synced."
+      "custom_reason": "Vault rename supabase\u2192supabase-router: the bare name `supabase` collides with ubiquitous Supabase-library tokens (supabase.rpc, supabase.com, supabase functions) across active skills, tripping the vault-references contract test. Only the frontmatter name line diverges from upstream; body synced."
     },
     {
       "path": "skills-archive/supabase-router/CHANGELOG.md",
@@ -8306,6 +8306,41 @@
       "source": "marketingskills",
       "status": "sync",
       "upstream_path": "skills/marketing-loops/references/loop-template.md"
+    },
+    {
+      "path": "skills/ultraoracle/SKILL.md",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/ultraoracle/scripts/build-evidence-pack.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/ultraoracle/scripts/lib/evidence-safety.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/ultraoracle/scripts/retrieve-evidence.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/ultraoracle/scripts/run-retrieval-loop.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/ultraoracle/scripts/validate-retrieval-review.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/continuous-learning-v2/hooks/observe_fast.py",
+      "source": "local",
+      "status": "local"
     }
   ],
   "rejected": [

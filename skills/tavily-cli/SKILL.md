@@ -1,7 +1,10 @@
 ---
 name: tavily-cli
-description: |
-  Web search, content extraction, crawling, and deep research via the Tavily CLI. Use this skill whenever the user wants to search the web, find articles, research a topic, look something up online, extract content from a URL, grab text from a webpage, crawl documentation, download a site's pages, discover URLs on a domain, or conduct in-depth research with citations. Also use when they say "fetch this page", "pull the content from", "get the page at https://", "find me articles about", or reference extracting data from external websites. This provides LLM-optimized web search, content extraction, site crawling, URL discovery, and AI-powered deep research — capabilities beyond what agents can do natively. Do NOT trigger for local file operations, git commands, deployments, or code editing tasks.
+description: >-
+  Web search, extract, crawl, and site-map via the vendored Tavily CLI. Use
+  for real-time web research, finding articles/news/docs, or grounding answers
+  in live sources. Triggers include search the web, look up, find articles,
+  research a topic online.
 compatibility: Requires tavily-cli (`curl -fsSL https://cli.tavily.com/install.sh | bash`) and a Tavily API key from tavily.com.
 allowed-tools: Bash(tvly *)
 ---
@@ -56,7 +59,7 @@ Follow this escalation pattern — start simple, escalate when needed:
 | Bulk extract a site section | `tvly crawl` | Need many pages (e.g., all /docs/) |
 | Deep research with citations | `tvly research` | Need multi-source synthesis |
 
-For detailed command reference, use the individual skill for each command (e.g., `tavily-search`, `tavily-crawl`) or run `tvly <command> --help`.
+For detailed command reference, run `tvly <command> --help`, or Read the archived per-command skill from `skills-archive/` (e.g. `skills-archive/tavily-search/SKILL.md`) on demand. (vault)
 
 ## Output
 

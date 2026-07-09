@@ -1,12 +1,12 @@
 ---
 name: dispatch-cli
-description: >
-  Dispatch any task to Codex, Antigravity (agy), or Droid CLI as an autonomous agent.
-  Use when needing an external AI to perform analysis, audit, review, code changes,
-  or any self-contained task. Triggers: "send to codex/agy/droid", "dispatch to",
-  "have codex/agy/droid do", "external agent", "second opinion", general audits,
-  or when a task would benefit from independent external execution.
-  NOT for gate-specific reviews (use litmus or blueprint-review for those).
+description: >-
+  Dispatch any task to Codex, Antigravity (agy), or Droid CLI as an autonomous
+  agent — analysis, audit, review, code changes, or any self-contained task.
+  Triggers include send to codex/agy/droid, dispatch to, external agent,
+  second opinion. NOT for gate-specific reviews (litmus and blueprint-review
+  own those).
+
 ---
 
 # Dispatch CLI

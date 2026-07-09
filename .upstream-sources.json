@@ -46,6 +46,26 @@
       "repo": "blader/humanizer",
       "ref": "main",
       "license": "MIT"
+    },
+    "vercel": {
+      "repo": "vercel-labs/agent-skills",
+      "ref": "main",
+      "license": "MIT"
+    },
+    "firecrawl": {
+      "repo": "firecrawl/skills",
+      "ref": "main",
+      "license": "ISC"
+    },
+    "squirrelscan": {
+      "repo": "squirrelscan/skills",
+      "ref": "main",
+      "license": "MIT"
+    },
+    "expo": {
+      "repo": "expo/skills",
+      "ref": "main",
+      "license": "MIT"
     }
   },
   "files": [
@@ -4970,33 +4990,39 @@
     },
     {
       "path": "skills/audit-website/README.md",
-      "source": "local",
-      "status": "local"
+      "source": "squirrelscan",
+      "status": "custom",
+      "upstream_path": "skills/audit-website/README.md"
     },
     {
       "path": "skills/audit-website/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "squirrelscan",
+      "status": "custom",
+      "upstream_path": "skills/audit-website/SKILL.md"
     },
     {
       "path": "skills/audit-website/agents/openai.yaml",
-      "source": "local",
-      "status": "local"
+      "source": "squirrelscan",
+      "status": "custom",
+      "upstream_path": "skills/audit-website/agents/openai.yaml"
     },
     {
       "path": "skills/audit-website/assets/icon-large.png",
-      "source": "local",
-      "status": "local"
+      "source": "squirrelscan",
+      "status": "custom",
+      "upstream_path": "skills/audit-website/assets/icon-large.png"
     },
     {
       "path": "skills/audit-website/assets/icon-small.svg",
-      "source": "local",
-      "status": "local"
+      "source": "squirrelscan",
+      "status": "custom",
+      "upstream_path": "skills/audit-website/assets/icon-small.svg"
     },
     {
       "path": "skills/audit-website/references/OUTPUT-FORMAT.md",
-      "source": "local",
-      "status": "local"
+      "source": "squirrelscan",
+      "status": "custom",
+      "upstream_path": "skills/audit-website/references/OUTPUT-FORMAT.md"
     },
     {
       "path": "skills/autonomous-agent-harness/SKILL.md",
@@ -5140,78 +5166,93 @@
     },
     {
       "path": "skills/building-native-ui/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "expo",
+      "status": "custom",
+      "upstream_path": "plugins/expo/skills/expo-native-ui/SKILL.md"
     },
     {
       "path": "skills/building-native-ui/references/animations.md",
-      "source": "local",
-      "status": "local"
+      "source": "expo",
+      "status": "custom",
+      "upstream_path": "plugins/expo/skills/expo-native-ui/references/animations.md"
     },
     {
       "path": "skills/building-native-ui/references/controls.md",
-      "source": "local",
-      "status": "local"
+      "source": "expo",
+      "status": "custom",
+      "upstream_path": "plugins/expo/skills/expo-native-ui/references/controls.md"
     },
     {
       "path": "skills/building-native-ui/references/form-sheet.md",
-      "source": "local",
-      "status": "local"
+      "source": "expo",
+      "status": "custom",
+      "upstream_path": "plugins/expo/skills/expo-router/references/form-sheet.md"
     },
     {
       "path": "skills/building-native-ui/references/gradients.md",
-      "source": "local",
-      "status": "local"
+      "source": "expo",
+      "status": "custom",
+      "upstream_path": "plugins/expo/skills/expo-native-ui/references/gradients.md"
     },
     {
       "path": "skills/building-native-ui/references/icons.md",
-      "source": "local",
-      "status": "local"
+      "source": "expo",
+      "status": "custom",
+      "upstream_path": "plugins/expo/skills/expo-native-ui/references/icons.md"
     },
     {
       "path": "skills/building-native-ui/references/media.md",
-      "source": "local",
-      "status": "local"
+      "source": "expo",
+      "status": "custom",
+      "upstream_path": "plugins/expo/skills/expo-native-ui/references/media.md"
     },
     {
       "path": "skills/building-native-ui/references/route-structure.md",
-      "source": "local",
-      "status": "local"
+      "source": "expo",
+      "status": "custom",
+      "upstream_path": "plugins/expo/skills/expo-router/references/route-structure.md"
     },
     {
       "path": "skills/building-native-ui/references/search.md",
-      "source": "local",
-      "status": "local"
+      "source": "expo",
+      "status": "custom",
+      "upstream_path": "plugins/expo/skills/expo-router/references/search.md"
     },
     {
       "path": "skills/building-native-ui/references/storage.md",
-      "source": "local",
-      "status": "local"
+      "source": "expo",
+      "status": "custom",
+      "upstream_path": "plugins/expo/skills/expo-native-ui/references/storage.md"
     },
     {
       "path": "skills/building-native-ui/references/tabs.md",
-      "source": "local",
-      "status": "local"
+      "source": "expo",
+      "status": "custom",
+      "upstream_path": "plugins/expo/skills/expo-router/references/tabs.md"
     },
     {
       "path": "skills/building-native-ui/references/toolbar-and-headers.md",
-      "source": "local",
-      "status": "local"
+      "source": "expo",
+      "status": "custom",
+      "upstream_path": "plugins/expo/skills/expo-router/references/toolbar-and-headers.md"
     },
     {
       "path": "skills/building-native-ui/references/visual-effects.md",
-      "source": "local",
-      "status": "local"
+      "source": "expo",
+      "status": "custom",
+      "upstream_path": "plugins/expo/skills/expo-native-ui/references/visual-effects.md"
     },
     {
       "path": "skills/building-native-ui/references/webgpu-three.md",
-      "source": "local",
-      "status": "local"
+      "source": "expo",
+      "status": "custom",
+      "upstream_path": "plugins/expo/skills/expo-native-ui/references/webgpu-three.md"
     },
     {
       "path": "skills/building-native-ui/references/zoom-transitions.md",
-      "source": "local",
-      "status": "local"
+      "source": "expo",
+      "status": "custom",
+      "upstream_path": "plugins/expo/skills/expo-router/references/zoom-transitions.md"
     },
     {
       "path": "skills/bun-runtime/SKILL.md",
@@ -5568,38 +5609,45 @@
     },
     {
       "path": "skills/firecrawl-build-interact/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "firecrawl",
+      "status": "custom",
+      "upstream_path": "skills/firecrawl-build-interact/SKILL.md"
     },
     {
       "path": "skills/firecrawl-build-onboarding/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "firecrawl",
+      "status": "custom",
+      "upstream_path": "skills/firecrawl-build-onboarding/SKILL.md"
     },
     {
       "path": "skills/firecrawl-build-onboarding/references/auth-flow.md",
-      "source": "local",
-      "status": "local"
+      "source": "firecrawl",
+      "status": "custom",
+      "upstream_path": "skills/firecrawl-build-onboarding/references/auth-flow.md"
     },
     {
       "path": "skills/firecrawl-build-onboarding/references/project-setup.md",
-      "source": "local",
-      "status": "local"
+      "source": "firecrawl",
+      "status": "custom",
+      "upstream_path": "skills/firecrawl-build-onboarding/references/project-setup.md"
     },
     {
       "path": "skills/firecrawl-build-onboarding/references/sdk-installation.md",
-      "source": "local",
-      "status": "local"
+      "source": "firecrawl",
+      "status": "custom",
+      "upstream_path": "skills/firecrawl-build-onboarding/references/sdk-installation.md"
     },
     {
       "path": "skills/firecrawl-build-scrape/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "firecrawl",
+      "status": "custom",
+      "upstream_path": "skills/firecrawl-build-scrape/SKILL.md"
     },
     {
       "path": "skills/firecrawl-build-search/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "firecrawl",
+      "status": "custom",
+      "upstream_path": "skills/firecrawl-build-search/SKILL.md"
     },
     {
       "path": "skills/firecrawl-crawl/SKILL.md",
@@ -7366,538 +7414,645 @@
     },
     {
       "path": "skills/vercel-composition-patterns/AGENTS.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/composition-patterns/AGENTS.md"
     },
     {
       "path": "skills/vercel-composition-patterns/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/composition-patterns/SKILL.md"
     },
     {
       "path": "skills/vercel-composition-patterns/rules/architecture-avoid-boolean-props.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/composition-patterns/rules/architecture-avoid-boolean-props.md"
     },
     {
       "path": "skills/vercel-composition-patterns/rules/architecture-compound-components.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/composition-patterns/rules/architecture-compound-components.md"
     },
     {
       "path": "skills/vercel-composition-patterns/rules/patterns-children-over-render-props.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/composition-patterns/rules/patterns-children-over-render-props.md"
     },
     {
       "path": "skills/vercel-composition-patterns/rules/patterns-explicit-variants.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/composition-patterns/rules/patterns-explicit-variants.md"
     },
     {
       "path": "skills/vercel-composition-patterns/rules/react19-no-forwardref.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/composition-patterns/rules/react19-no-forwardref.md"
     },
     {
       "path": "skills/vercel-composition-patterns/rules/state-context-interface.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/composition-patterns/rules/state-context-interface.md"
     },
     {
       "path": "skills/vercel-composition-patterns/rules/state-decouple-implementation.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/composition-patterns/rules/state-decouple-implementation.md"
     },
     {
       "path": "skills/vercel-composition-patterns/rules/state-lift-state.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/composition-patterns/rules/state-lift-state.md"
     },
     {
       "path": "skills/vercel-react-best-practices/AGENTS.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/AGENTS.md"
     },
     {
       "path": "skills/vercel-react-best-practices/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/SKILL.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/advanced-event-handler-refs.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/advanced-event-handler-refs.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/advanced-init-once.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/advanced-init-once.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/advanced-use-latest.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/advanced-use-latest.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/async-api-routes.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/async-api-routes.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/async-defer-await.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/async-defer-await.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/async-dependencies.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/async-dependencies.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/async-parallel.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/async-parallel.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/async-suspense-boundaries.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/async-suspense-boundaries.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/bundle-barrel-imports.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/bundle-barrel-imports.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/bundle-conditional.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/bundle-conditional.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/bundle-defer-third-party.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/bundle-defer-third-party.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/bundle-dynamic-imports.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/bundle-dynamic-imports.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/bundle-preload.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/bundle-preload.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/client-event-listeners.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/client-event-listeners.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/client-localstorage-schema.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/client-localstorage-schema.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/client-passive-event-listeners.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/client-passive-event-listeners.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/client-swr-dedup.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/client-swr-dedup.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/js-batch-dom-css.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/js-batch-dom-css.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/js-cache-function-results.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/js-cache-function-results.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/js-cache-property-access.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/js-cache-property-access.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/js-cache-storage.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/js-cache-storage.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/js-combine-iterations.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/js-combine-iterations.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/js-early-exit.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/js-early-exit.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/js-hoist-regexp.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/js-hoist-regexp.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/js-index-maps.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/js-index-maps.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/js-length-check-first.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/js-length-check-first.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/js-min-max-loop.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/js-min-max-loop.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/js-set-map-lookups.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/js-set-map-lookups.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/js-tosorted-immutable.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/js-tosorted-immutable.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rendering-activity.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rendering-activity.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rendering-animate-svg-wrapper.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rendering-animate-svg-wrapper.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rendering-conditional-render.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rendering-conditional-render.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rendering-content-visibility.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rendering-content-visibility.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rendering-hoist-jsx.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rendering-hoist-jsx.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rendering-hydration-no-flicker.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rendering-hydration-no-flicker.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rendering-hydration-suppress-warning.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rendering-hydration-suppress-warning.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rendering-svg-precision.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rendering-svg-precision.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rendering-usetransition-loading.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rendering-usetransition-loading.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rerender-defer-reads.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rerender-defer-reads.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rerender-dependencies.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rerender-dependencies.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rerender-derived-state-no-effect.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rerender-derived-state-no-effect.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rerender-derived-state.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rerender-derived-state.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rerender-functional-setstate.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rerender-functional-setstate.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rerender-lazy-state-init.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rerender-lazy-state-init.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rerender-memo-with-default-value.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rerender-memo-with-default-value.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rerender-memo.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rerender-memo.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rerender-move-effect-to-event.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rerender-move-effect-to-event.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rerender-simple-expression-in-memo.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rerender-simple-expression-in-memo.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rerender-transitions.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rerender-transitions.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/rerender-use-ref-transient-values.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/rerender-use-ref-transient-values.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/server-after-nonblocking.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/server-after-nonblocking.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/server-auth-actions.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/server-auth-actions.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/server-cache-lru.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/server-cache-lru.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/server-cache-react.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/server-cache-react.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/server-dedup-props.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/server-dedup-props.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/server-parallel-fetching.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/server-parallel-fetching.md"
     },
     {
       "path": "skills/vercel-react-best-practices/rules/server-serialization.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-best-practices/rules/server-serialization.md"
     },
     {
       "path": "skills/vercel-react-native-skills/AGENTS.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/AGENTS.md"
     },
     {
       "path": "skills/vercel-react-native-skills/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/SKILL.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/animation-derived-value.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/animation-derived-value.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/animation-gesture-detector-press.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/animation-gesture-detector-press.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/animation-gpu-properties.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/animation-gpu-properties.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/design-system-compound-components.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/design-system-compound-components.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/fonts-config-plugin.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/fonts-config-plugin.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/imports-design-system-folder.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/imports-design-system-folder.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/js-hoist-intl.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/js-hoist-intl.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/list-performance-callbacks.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/list-performance-callbacks.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/list-performance-function-references.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/list-performance-function-references.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/list-performance-images.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/list-performance-images.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/list-performance-inline-objects.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/list-performance-inline-objects.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/list-performance-item-expensive.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/list-performance-item-expensive.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/list-performance-item-memo.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/list-performance-item-memo.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/list-performance-item-types.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/list-performance-item-types.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/list-performance-virtualize.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/list-performance-virtualize.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/monorepo-native-deps-in-app.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/monorepo-native-deps-in-app.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/monorepo-single-dependency-versions.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/monorepo-single-dependency-versions.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/navigation-native-navigators.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/navigation-native-navigators.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/react-compiler-destructure-functions.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/react-compiler-destructure-functions.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/react-compiler-reanimated-shared-values.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/react-compiler-reanimated-shared-values.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/react-state-dispatcher.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/react-state-dispatcher.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/react-state-fallback.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/react-state-fallback.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/react-state-minimize.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/react-state-minimize.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/rendering-no-falsy-and.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/rendering-no-falsy-and.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/rendering-text-in-text-component.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/rendering-text-in-text-component.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/scroll-position-no-state.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/scroll-position-no-state.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/state-ground-truth.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/state-ground-truth.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/ui-expo-image.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/ui-expo-image.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/ui-image-gallery.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/ui-image-gallery.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/ui-measure-views.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/ui-measure-views.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/ui-menus.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/ui-menus.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/ui-native-modals.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/ui-native-modals.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/ui-pressable.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/ui-pressable.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/ui-safe-area-scroll.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/ui-safe-area-scroll.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/ui-scrollview-content-inset.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/ui-scrollview-content-inset.md"
     },
     {
       "path": "skills/vercel-react-native-skills/rules/ui-styling.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/react-native-skills/rules/ui-styling.md"
     },
     {
       "path": "skills/verification-before-completion/SKILL.md",
@@ -7919,8 +8074,9 @@
     },
     {
       "path": "skills/web-design-guidelines/SKILL.md",
-      "source": "local",
-      "status": "local"
+      "source": "vercel",
+      "status": "custom",
+      "upstream_path": "skills/web-design-guidelines/SKILL.md"
     },
     {
       "path": "skills/workspace-surface-audit/SKILL.md",

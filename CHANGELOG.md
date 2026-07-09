@@ -1,3 +1,10 @@
+## [1.84.5](https://github.com/chris-yyau/busdriver/compare/v1.84.4...v1.84.5) (2026-07-09)
+
+
+### Bug Fixes
+
+* **upstream:** track 136 vendored skills under 4 new upstreams ([#254](https://github.com/chris-yyau/busdriver/issues/254)) ([#307](https://github.com/chris-yyau/busdriver/issues/307)) ([a3d5fbc](https://github.com/chris-yyau/busdriver/commit/a3d5fbc29f83b775721bd1dda2ef807aecad5507))
+
 ## [1.84.4](https://github.com/chris-yyau/busdriver/compare/v1.84.3...v1.84.4) (2026-07-09)
 
 

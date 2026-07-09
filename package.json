@@ -1,6 +1,6 @@
 {
   "private": true,
-  "version": "1.84.4",
+  "version": "1.84.5",
   "name": "busdriver",
   "description": "Unified workflow orchestrator for Claude Code",
   "scripts": {

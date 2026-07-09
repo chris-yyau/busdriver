@@ -91,6 +91,9 @@ run_guard() {
     for field in source homepage; do
       val="$(printf '%s\n' "$fm" | grep -iE "^[[:space:]]*${field}:" | head -1 | sed 's/^[^:]*://')"
       url="$(_norm "$val")"
+      # normalize scp/ssh remote form (git@github.com:org/repo) to https path
+      # form so the org check below catches it too, not just https URLs.
+      url="${url//github.com:/github.com/}"
       case "$url" in
         *github.com/*)
           org="${url##*github.com/}"; org="${org%%/*}"
@@ -139,6 +142,12 @@ selftest() {
   printf '%s\n' "$m" > "$tmp/ghsrc/$MANIFEST_NAME"
   printf -- '---\nname: acme\nsource: https://github.com/acmecorp/skills\n---\n# Acme\n' > "$tmp/ghsrc/skills/acme/SKILL.md"
   if run_guard "$tmp/ghsrc" >/dev/null 2>&1; then echo "SELF-TEST FAIL: did not flag an external github source"; return 1; fi
+
+  # bad: SSH/scp-form github source (git@github.com:org/repo) -> MUST flag too
+  mkdir -p "$tmp/ghssh/skills/acme"
+  printf '%s\n' "$m" > "$tmp/ghssh/$MANIFEST_NAME"
+  printf -- '---\nname: acme\nsource: git@github.com:acmecorp/skills\n---\n# Acme\n' > "$tmp/ghssh/skills/acme/SKILL.md"
+  if run_guard "$tmp/ghssh" >/dev/null 2>&1; then echo "SELF-TEST FAIL: did not flag an ssh-form github source"; return 1; fi
 
   # good: no external provenance -> MUST pass
   mkdir -p "$tmp/good/skills/acme"

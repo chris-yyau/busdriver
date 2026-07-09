@@ -1,14 +1,12 @@
 ---
 name: ultraoracle
-description: >
-  Standalone maintainer workflow for a single repo-grounded UltraOracle (GPT-5.5 Pro)
-  expert-witness consult. Use when the user says "ultraoracle", "ask the oracle",
-  "oracle consult", "repo-grounded oracle review", "upstream audit with oracle", or
-  wants a high-cost external expert opinion on a design/plan/repo question that is
-  attached as real evidence (not a peer-reviewer vote and not a gate). Implements
-  ADR 0007 Phase 1: quick / repo / upstream-audit modes, review-type labeling,
-  fail-closed handling, and a documented evidence boundary. NOT for routine review —
-  use litmus/blueprint-review/council for that.
+description: >-
+  Standalone maintainer workflow for a single repo-grounded UltraOracle
+  (GPT-5.5 Pro) expert-witness consult — quick / repo / upstream-audit modes,
+  review-type labeling, fail-closed handling (ADR 0007). Triggers:
+  ultraoracle, ask the oracle, oracle consult, repo-grounded oracle review,
+  upstream audit with oracle. NOT for routine review — litmus/blueprint-
+  review/council own that.
 origin: custom
 ---
 

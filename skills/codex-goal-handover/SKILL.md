@@ -1,6 +1,12 @@
 ---
 name: codex-goal-handover
-description: Iteratively delegate a goal-shaped task to Codex via `codex exec` with verifier-led stop signal. Use when the task has explicit pass/fail verifier commands (tests, lint, typecheck) AND the result needs to return to this Claude Code session for review. Cheaper than inline implementation; safer than headless Ralph loops. Foreground only — for true fire-and-forget runs, point user to the Codex TUI `/goal` command.
+description: >-
+  Iteratively delegate a goal-shaped task to Codex via codex exec with a
+  verifier-led stop signal. Use when the task has explicit pass/fail verifier
+  commands (tests, lint, typecheck) AND the result returns to this session for
+  review. Cheaper than inline implementation; foreground only — for fire-and-
+  forget use the Codex TUI /goal command.
+
 ---
 
 # Codex Goal Handover

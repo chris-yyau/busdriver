@@ -590,8 +590,15 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                           4. Call the single source of truth (pass BYPASS_LOG EXPLICITLY as a
                              main-repo-root-anchored absolute path — the script's default is
                              CWD-relative `.claude/bypass-log.jsonl`, which lands in the wrong place
-                             when BUSDRIVER_STATE_DIR is set or the CWD is a worktree/subdir):
+                             when BUSDRIVER_STATE_DIR is set or the CWD is a worktree/subdir).
+                             First anchor the event clock to GitHub's, NOT the operator's — the logged
+                             `timestamp` is later compared against GitHub activity timestamps by the
+                             revalidator, so a skewed local clock would fail OPEN (issue #302):
+                             `SERVER_NOW=$(bash "<PLUGIN_ROOT>/scripts/github-server-now.sh")`
+                             (empty on any gh/parse failure → the call below fails CLOSED and downgrades
+                             nothing — the safe direction). Then:
                              `DOWNGRADED=$(SOLO_OPTIN=1 CI_GREEN=<0|1> LITMUS_GREEN=<0|1> HEAD_SHA=<sha> \
+                               SERVER_NOW="$SERVER_NOW" \
                                PR=<PR_NUMBER> REPO=<owner/repo> WAIT_ROUNDS=<MAX_WAIT> \
                                BYPASS_LOG="<MAIN_REPO_ROOT>/<STATE_DIR>/bypass-log.jsonl" \
                                CANDIDATES=<assembled> bash "<PLUGIN_ROOT>/scripts/advisory-stale-downgrade.sh")`

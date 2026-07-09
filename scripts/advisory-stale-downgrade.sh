@@ -21,6 +21,13 @@
 #                        The caller resolves presence; absent => no downgrade.
 #   CI_GREEN             1 iff required status checks are green (required-checks.lock).
 #   LITMUS_GREEN         1 iff litmus PASS on the current HEAD.
+#   SERVER_NOW           GitHub-server "now" as ISO-8601 UTC (YYYY-MM-DDThh:mm:ssZ),
+#                        from scripts/github-server-now.sh. Used as the event
+#                        `timestamp` so the downgrade `ref` is on the SAME clock as
+#                        the GitHub activity timestamps advisory-downgrade-revalidate.sh
+#                        compares it against (issue #302: a local clock ahead of
+#                        GitHub fails OPEN). REQUIRED and fail-CLOSED: absent or
+#                        non-ISO => no downgrade (never a skew-prone local fallback).
 #   HEAD_SHA PR REPO     forensic context for the log.
 #   WAIT_ROUNDS          --max-wait value that was exhausted (forensics).
 #   OPERATOR             operator identity for the log (default: git user.name).
@@ -52,12 +59,42 @@ set -u
 POLICY_VERSION="adr-0012-v1"
 BYPASS_LOG="${BYPASS_LOG:-.claude/bypass-log.jsonl}"
 OPERATOR="${OPERATOR:-$(git config user.name 2>/dev/null || echo unknown)}"
-_now="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+
+# Server-time anchor (issue #302). The event `timestamp` is compared LEXICALLY by
+# advisory-downgrade-revalidate.sh against GitHub-stamped activity timestamps to
+# decide re-engagement, so it MUST be on GitHub's clock, not the operator's. A
+# local `date` here fails OPEN under clock skew (a machine ahead of GitHub makes a
+# fresh re-engagement sort before the ref => read as silence => merged past a live
+# review). SERVER_NOW carries GitHub's own clock (scripts/github-server-now.sh);
+# require it and validate it against the SAME ISO regex the revalidator enforces
+# on the ref, so a malformed/forged value can't slip through.
+_now="${SERVER_NOW:-}"
 
 # Global fail-CLOSED gates. Any not provably true => no downgrade at all.
 if [[ "${SOLO_OPTIN:-0}" != 1 || "${CI_GREEN:-0}" != 1 || "${LITMUS_GREEN:-0}" != 1 ]]; then
   exit 0
 fi
+# Fail-CLOSED on the server anchor: no valid GitHub-server timestamp => refuse to
+# downgrade (never stamp a skew-prone local clock).
+[[ "$_now" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || exit 0
+
+# Defense-in-depth: SERVER_NOW is caller-supplied, so bound its VALUE, not just its
+# shape. CLAMP the ref to the local clock: `ref = min(SERVER_NOW, local_now)`. The
+# logged ref must never exceed "now", or a stale/poisoned/misconfigured future
+# SERVER_NOW (even seconds ahead) would create a suppression window — the
+# revalidator would read a re-engagement whose GitHub timestamp falls before the
+# inflated ref as silence and merge past a live review. The clamp closes that
+# window at any magnitude with no tolerance knob:
+#   - #302 case (operator clock AHEAD of GitHub): SERVER_NOW < local_now, so the
+#     GitHub anchor is kept unchanged and the skew fix holds.
+#   - SERVER_NOW ahead of local (poison, or operator BEHIND GitHub): fall back to
+#     local_now, the EARLIER/safer ref => the revalidator over-blocks
+#     (fail-CLOSED), never fail-open.
+# ISO-8601 UTC strings sort lexically = chronologically. Fail-CLOSED if the local
+# clock is unreadable (cannot bound the ref).
+_local_now="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '')"
+[[ -n "$_local_now" ]] || exit 0
+[[ "$_now" > "$_local_now" ]] && _now="$_local_now"
 
 # Emit ONE audit event; RETURN its write status. A bot is downgraded only when
 # this succeeds — no audit trail => no release (fail-CLOSED on the forensic

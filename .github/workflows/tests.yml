@@ -252,6 +252,7 @@ jobs:
           bash tests/test-blueprint-review-oracle-arbiter-contract.sh
           bash tests/test-vault-references.sh
           bash tests/test-upstream-manifest.sh
+          bash tests/test-provenance-guard.sh
           bash tests/test-advisory-stale-downgrade.sh
           bash tests/test-advisory-downgrade-revalidate.sh
           bash tests/test-github-server-now.sh

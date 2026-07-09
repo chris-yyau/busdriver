@@ -19,7 +19,7 @@ Search, scrape, and interact with the web. Returns clean markdown optimized for 
 
 Run `firecrawl --help` or `firecrawl <command> --help` for full option details.
 
-If the task is to integrate Firecrawl into an application, add `FIRECRAWL_API_KEY` to a project, or choose endpoint usage in product code, use the `firecrawl-build` skills (installed alongside this CLI skill). If the task is an outcome workflow such as deep research, SEO audit, QA, lead generation, knowledge-base creation, dashboard reporting, shopping research, or website design-system extraction, drive the data collection from this CLI skill and hand off to the matching busdriver outcome skill (e.g. `deep-research`, `audit-website`, `seo`).
+If the task is to integrate Firecrawl into an application, add `FIRECRAWL_API_KEY` to a project, or choose endpoint usage in product code, use the `firecrawl-build` skills (vaulted in `skills-archive/` — Read the archived SKILL.md on demand). If the task is an outcome workflow such as deep research, SEO audit, QA, lead generation, knowledge-base creation, dashboard reporting, shopping research, or website design-system extraction, drive the data collection from this CLI skill and hand off to the matching busdriver outcome skill (e.g. `deep-research`, `audit-website`, `seo`).
 
 ## Prerequisites
 
@@ -214,18 +214,18 @@ Use `modes: ["json", "git-diff"]` for **mixed mode**: you get both `diff.json` (
 
 ## When to Load References
 
-- **Searching the web or finding sources first** -> [firecrawl-search](../firecrawl-search/SKILL.md)
-- **Scraping a known URL** -> [firecrawl-scrape](../firecrawl-scrape/SKILL.md)
-- **Finding URLs on a known site** -> [firecrawl-map](../firecrawl-map/SKILL.md)
-- **Bulk extraction from a docs section or site** -> [firecrawl-crawl](../firecrawl-crawl/SKILL.md)
-- **AI-powered structured extraction from complex sites** -> [firecrawl-agent](../firecrawl-agent/SKILL.md)
-- **Clicks, forms, login, pagination, or post-scrape browser actions** -> [firecrawl-interact](../firecrawl-interact/SKILL.md)
-- **Downloading a site to local files** -> [firecrawl-download](../firecrawl-download/SKILL.md)
-- **Parsing a local file (PDF, DOCX, XLSX, HTML, etc.)** -> [firecrawl-parse](../firecrawl-parse/SKILL.md)
-- **Detecting content changes on a website and getting notified by webhook or email (pricing, jobs, posts, docs, status pages, anything ongoing)** -> [firecrawl-monitor](../firecrawl-monitor/SKILL.md)
+- **Searching the web or finding sources first** -> [firecrawl-search](../../skills-archive/firecrawl-search/SKILL.md) (vault)
+- **Scraping a known URL** -> [firecrawl-scrape](../../skills-archive/firecrawl-scrape/SKILL.md) (vault)
+- **Finding URLs on a known site** -> [firecrawl-map](../../skills-archive/firecrawl-map/SKILL.md) (vault)
+- **Bulk extraction from a docs section or site** -> [firecrawl-crawl](../../skills-archive/firecrawl-crawl/SKILL.md) (vault)
+- **AI-powered structured extraction from complex sites** -> [firecrawl-agent](../../skills-archive/firecrawl-agent/SKILL.md) (vault)
+- **Clicks, forms, login, pagination, or post-scrape browser actions** -> [firecrawl-interact](../../skills-archive/firecrawl-interact/SKILL.md) (vault)
+- **Downloading a site to local files** -> [firecrawl-download](../../skills-archive/firecrawl-download/SKILL.md) (vault)
+- **Parsing a local file (PDF, DOCX, XLSX, HTML, etc.)** -> [firecrawl-parse](../../skills-archive/firecrawl-parse/SKILL.md) (vault)
+- **Detecting content changes on a website and getting notified by webhook or email (pricing, jobs, posts, docs, status pages, anything ongoing)** -> [firecrawl-monitor](../../skills-archive/firecrawl-monitor/SKILL.md) (vault)
 - **Install, auth, or setup problems** -> [rules/install.md](rules/install.md)
 - **Output handling and safe file-reading patterns** -> [rules/security.md](rules/security.md)
-- **Integrating Firecrawl into an app, adding `FIRECRAWL_API_KEY` to `.env`, or choosing endpoint usage in product code** -> use the `firecrawl-build` skills (already installed alongside this CLI skill)
+- **Integrating Firecrawl into an app, adding `FIRECRAWL_API_KEY` to `.env`, or choosing endpoint usage in product code** -> use the `firecrawl-build` skills (vault: Read the archived SKILL.md from `skills-archive/` on demand)
 - **Producing Firecrawl-powered deliverables such as research briefs, SEO audits, QA reports, lead lists, knowledge bases, or design-system extraction** -> drive the scrape/crawl/extract steps from this CLI skill, then hand the collected data to the matching busdriver outcome skill — e.g. [deep-research](../deep-research/SKILL.md) for research briefs and knowledge bases, [audit-website](../audit-website/SKILL.md) for SEO/QA audits.
 
 ## Output & Organization
@@ -283,7 +283,7 @@ firecrawl search-feedback "$SEARCH_ID" \
 
 The most useful field is `--missing-content`: an _array_ of specific pieces of content you expected to find but didn't. Use one entry per missing topic. Bad/partial feedback with detailed `--missing-content` is just as valuable as good feedback.
 
-**Opt out:** `export FIRECRAWL_NO_SEARCH_FEEDBACK=1` makes the CLI skip every feedback call silently. Respect that flag — do not try to work around it. See [firecrawl-search](../firecrawl-search/SKILL.md) for the full pattern.
+**Opt out:** `export FIRECRAWL_NO_SEARCH_FEEDBACK=1` makes the CLI skip every feedback call silently. Respect that flag — do not try to work around it. See [firecrawl-search](../../skills-archive/firecrawl-search/SKILL.md) for the full pattern. (vault)
 
 ## Parallelization
 

@@ -56,7 +56,7 @@ Follow this escalation pattern — start simple, escalate when needed:
 | Bulk extract a site section | `tvly crawl` | Need many pages (e.g., all /docs/) |
 | Deep research with citations | `tvly research` | Need multi-source synthesis |
 
-For detailed command reference, use the individual skill for each command (e.g., `tavily-search`, `tavily-crawl`) or run `tvly <command> --help`.
+For detailed command reference, run `tvly <command> --help`, or Read the archived per-command skill from `skills-archive/` (e.g. `skills-archive/tavily-search/SKILL.md`) on demand. (vault)
 
 ## Output
 

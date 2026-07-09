@@ -5603,89 +5603,89 @@
       "upstream_path": "skills/finishing-a-development-branch/SKILL.md"
     },
     {
-      "path": "skills/firecrawl-agent/SKILL.md",
+      "path": "skills-archive/firecrawl-agent/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/firecrawl-build-interact/SKILL.md",
+      "path": "skills-archive/firecrawl-build-interact/SKILL.md",
       "source": "firecrawl",
       "status": "custom",
       "upstream_path": "skills/firecrawl-build-interact/SKILL.md"
     },
     {
-      "path": "skills/firecrawl-build-onboarding/SKILL.md",
+      "path": "skills-archive/firecrawl-build-onboarding/SKILL.md",
       "source": "firecrawl",
       "status": "custom",
       "upstream_path": "skills/firecrawl-build-onboarding/SKILL.md"
     },
     {
-      "path": "skills/firecrawl-build-onboarding/references/auth-flow.md",
+      "path": "skills-archive/firecrawl-build-onboarding/references/auth-flow.md",
       "source": "firecrawl",
       "status": "custom",
       "upstream_path": "skills/firecrawl-build-onboarding/references/auth-flow.md"
     },
     {
-      "path": "skills/firecrawl-build-onboarding/references/project-setup.md",
+      "path": "skills-archive/firecrawl-build-onboarding/references/project-setup.md",
       "source": "firecrawl",
       "status": "custom",
       "upstream_path": "skills/firecrawl-build-onboarding/references/project-setup.md"
     },
     {
-      "path": "skills/firecrawl-build-onboarding/references/sdk-installation.md",
+      "path": "skills-archive/firecrawl-build-onboarding/references/sdk-installation.md",
       "source": "firecrawl",
       "status": "custom",
       "upstream_path": "skills/firecrawl-build-onboarding/references/sdk-installation.md"
     },
     {
-      "path": "skills/firecrawl-build-scrape/SKILL.md",
+      "path": "skills-archive/firecrawl-build-scrape/SKILL.md",
       "source": "firecrawl",
       "status": "custom",
       "upstream_path": "skills/firecrawl-build-scrape/SKILL.md"
     },
     {
-      "path": "skills/firecrawl-build-search/SKILL.md",
+      "path": "skills-archive/firecrawl-build-search/SKILL.md",
       "source": "firecrawl",
       "status": "custom",
       "upstream_path": "skills/firecrawl-build-search/SKILL.md"
     },
     {
-      "path": "skills/firecrawl-crawl/SKILL.md",
+      "path": "skills-archive/firecrawl-crawl/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/firecrawl-download/SKILL.md",
+      "path": "skills-archive/firecrawl-download/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/firecrawl-interact/SKILL.md",
+      "path": "skills-archive/firecrawl-interact/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/firecrawl-map/SKILL.md",
+      "path": "skills-archive/firecrawl-map/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/firecrawl-monitor/SKILL.md",
+      "path": "skills-archive/firecrawl-monitor/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/firecrawl-parse/SKILL.md",
+      "path": "skills-archive/firecrawl-parse/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/firecrawl-scrape/SKILL.md",
+      "path": "skills-archive/firecrawl-scrape/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/firecrawl-search/SKILL.md",
+      "path": "skills-archive/firecrawl-search/SKILL.md",
       "source": "local",
       "status": "local"
     },
@@ -7085,37 +7085,37 @@
       "upstream_path": "skills/systematic-debugging/test-pressure-3.md"
     },
     {
-      "path": "skills/tavily-best-practices/SKILL.md",
+      "path": "skills-archive/tavily-best-practices/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-best-practices/references/crawl.md",
+      "path": "skills-archive/tavily-best-practices/references/crawl.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-best-practices/references/extract.md",
+      "path": "skills-archive/tavily-best-practices/references/extract.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-best-practices/references/integrations.md",
+      "path": "skills-archive/tavily-best-practices/references/integrations.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-best-practices/references/research.md",
+      "path": "skills-archive/tavily-best-practices/references/research.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-best-practices/references/sdk.md",
+      "path": "skills-archive/tavily-best-practices/references/sdk.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-best-practices/references/search.md",
+      "path": "skills-archive/tavily-best-practices/references/search.md",
       "source": "local",
       "status": "local"
     },
@@ -7125,32 +7125,32 @@
       "status": "local"
     },
     {
-      "path": "skills/tavily-crawl/SKILL.md",
+      "path": "skills-archive/tavily-crawl/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-dynamic-search/SKILL.md",
+      "path": "skills-archive/tavily-dynamic-search/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-extract/SKILL.md",
+      "path": "skills-archive/tavily-extract/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-map/SKILL.md",
+      "path": "skills-archive/tavily-map/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-research/SKILL.md",
+      "path": "skills-archive/tavily-research/SKILL.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "skills/tavily-search/SKILL.md",
+      "path": "skills-archive/tavily-search/SKILL.md",
       "source": "local",
       "status": "local"
     },

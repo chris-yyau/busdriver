@@ -1,6 +1,12 @@
 ---
 name: docs-setup
-description: Standardize repo documentation (README, CONTRIBUTING, SECURITY, LICENSE, CHANGELOG) across projects. Audit existing docs against the standard format or apply templates to generate/fix missing or inconsistent docs. Use when setting up a new repo, auditing doc quality, or fixing doc drift across multiple repos. Complements helmet (which handles tests/CI/CLAUDE.md/codegraph) — this skill owns doc *content*.
+description: >-
+  Standardize repo documentation (README, CONTRIBUTING, SECURITY, LICENSE,
+  CHANGELOG) — audit against the standard format or apply templates to fix
+  missing or inconsistent docs. Use when setting up a new repo, auditing doc
+  quality, or fixing doc drift. Complements helmet (tests/CI/CLAUDE.md); this
+  skill owns doc content.
+
 ---
 
 # Docs Setup

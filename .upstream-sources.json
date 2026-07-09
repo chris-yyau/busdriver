@@ -5409,7 +5409,7 @@
     {
       "path": "skills/continuous-learning-v2/hooks/observe.sh",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "skills/continuous-learning-v2/hooks/observe.sh"
     },
     {
@@ -8334,6 +8334,11 @@
     },
     {
       "path": "skills/ultraoracle/scripts/validate-retrieval-review.sh",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "skills/continuous-learning-v2/hooks/observe_fast.py",
       "source": "local",
       "status": "local"
     }

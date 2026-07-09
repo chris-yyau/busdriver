@@ -1,3 +1,10 @@
+## [1.84.6](https://github.com/chris-yyau/busdriver/compare/v1.84.5...v1.84.6) (2026-07-09)
+
+
+### Performance Improvements
+
+* token & hook-latency optimization (registry −3.3k tokens, observe.sh ~571ms→127ms) ([#309](https://github.com/chris-yyau/busdriver/issues/309)) ([913a778](https://github.com/chris-yyau/busdriver/commit/913a778a0b4d743f240e1fada04c025f4794e48c))
+
 ## [1.84.5](https://github.com/chris-yyau/busdriver/compare/v1.84.4...v1.84.5) (2026-07-09)
 
 

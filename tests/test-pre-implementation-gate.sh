@@ -91,6 +91,25 @@ run_test "double-quoted redirect target" "block" \
     "$(bash_input "echo x > \\\"$MARKER\\\"")"
 run_test "pipe into tee" "block"         "$(bash_input "echo x | tee $MARKER")"
 run_test "plain rm (deletion forgery)" "block" "$(bash_input "rm $MARKER")"
+
+# #290: indirect-write self-bypass vectors. A bare touch of the skip file (and
+# touch -t backdating, which also defeats the 30s age heuristic in one shot) was
+# the live self-bypass; cp/mv/ln/install are sibling indirect-write channels.
+# All now blocked by the extended command-word set in _writes_marker.
+SKIPF=".claude/skip-litmus.local"
+run_test "#290 touch skip file (self-bypass)" "block" "$(bash_input "touch $SKIPF")"
+run_test "#290 touch -t backdate skip file" "block" "$(bash_input "touch -t 202501010000 $SKIPF")"
+run_test "#290 cp into marker" "block"        "$(bash_input "cp /tmp/x $MARKER")"
+run_test "#290 mv into marker" "block"        "$(bash_input "mv /tmp/x $MARKER")"
+run_test "#290 ln -sf into skip file" "block" "$(bash_input "ln -sf /tmp/x $SKIPF")"
+run_test "#290 install into skip file" "block" "$(bash_input "install -m 644 /tmp/x $SKIPF")"
+run_test "#290 leading-assignment touch still blocks" "block" "$(bash_input "X=1 touch $SKIPF")"
+run_test "#290 NAME+=VALUE leading assignment touch blocks" "block" "$(bash_input "X+=1 touch $SKIPF")"
+run_test "#290 += var-indirection (M+=marker; touch \$M) blocks" "block" "$(bash_input "M+=$SKIPF ; touch \$M")"
+# Leading redirect must not mask the command word (cursor/codex/devin PR #304).
+run_test "#290 leading redirect masks touch (>/dev/null touch marker)" "block" "$(bash_input ">/dev/null touch $SKIPF")"
+run_test "#290 fd redirect masks touch (2>/dev/null touch marker)" "block" "$(bash_input "2>/dev/null touch $SKIPF")"
+run_test "#290 leading redirect masks cp (>out cp x marker)" "block" "$(bash_input ">out.txt cp /tmp/x $MARKER")"
 run_test "subshell redirect" "block"     "$(bash_input "( echo x > $MARKER )")"
 run_test "multiline: rm on second line" "block" \
     "$(bash_input "echo safe\nrm $MARKER")"
@@ -183,6 +202,21 @@ run_test "IFS-split marker as echo arg (read, not write)" "allow" \
 run_test "read: grep quoted rm|tee pattern over marker" "allow" \
     "$(bash_input "grep -E \\\"rm|tee\\\" $MARKER")"
 run_test "no marker at all" "allow"      "$(bash_input "rm -rf /tmp/junk")"
+
+# #290: legit touch/cp/mv of NON-marker files must still be allowed (no false
+# positives from the extended command-word set).
+run_test "#290 allow touch non-marker src" "allow" "$(bash_input "touch src/newfile.js")"
+run_test "#290 allow cp non-marker files" "allow"  "$(bash_input "cp a.txt b.txt")"
+run_test "#290 allow mv non-marker files" "allow"  "$(bash_input "mv old.js new.js")"
+# The verb appears only as an ARGUMENT to a read (not the command word) → allow.
+# This is the read-only contract the command-word-position check preserves.
+run_test "#290 allow grep 'touch' pattern over marker (read)" "allow" "$(bash_input "grep touch $MARKER")"
+run_test "#290 allow read marker piped to grep cp" "allow" "$(bash_input "cat $MARKER | grep cp")"
+# Documented residual (ADR 0006 addendum): a wrapper-hidden indirect write
+# (sudo/env prefix) is NOT caught — out of scope for the cooperative-agent threat.
+run_test "#290 wrapper sudo touch is residual (allow)" "allow" "$(bash_input "sudo touch $SKIPF")"
+# Leading redirect + a genuine READ command word stays allowed (no false positive).
+run_test "#290 allow leading redirect + read (>/dev/null cat marker)" "allow" "$(bash_input ">/dev/null cat $MARKER")"
 
 echo ""
 echo "── Write/Edit/MultiEdit marker file_path must BLOCK ─────────────"

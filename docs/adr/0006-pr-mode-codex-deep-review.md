@@ -90,6 +90,22 @@ exhaustively chased. This is explicitly accepted for this **solo-operator** repo
 frozen-hardening principle (CLAUDE.md: don't over-harden absent a second writer/threat) — the realistic
 risk is a lazy dispatch, not a hostile actor with repo shell access.
 
+> **2026-07-09 addendum (#290) — indirect-write verbs now blocked.** The residual
+> above called blocking `cp`/`mv`/`install`/`ln` (and `touch`) "theater," and it
+> still is against a *hostile* dispatcher — one that can `eval` forges the marker
+> directly. But the realistic threat is an *accidental/lazy self-bypass by a
+> cooperative agent*: a bare `touch .claude/skip-litmus.local` (plus `touch -t`
+> backdating, which also defeats the pre-commit 30s age heuristic in one shot) let
+> Claude skip review. `_writes_marker`'s command-word set was therefore extended
+> `rm`/`tee` → `+touch`/`cp`/`mv`/`ln`/`install` (matched in command-word position),
+> closing every easy *bare-command* indirect-write path. A bypass must now be a
+> deliberate wrapper-hidden form (`sudo`/`env` prefix — still allowed residual) or
+> an eval-forge — neither of which a cooperative agent builds to skip its own gate.
+> The interpreter/eval class (`python -c open(…)`, `sh -c`, `dd`) and wrapper-hidden
+> writes stay out of scope — only an OS sandbox closes them. The human's
+> own-terminal `touch` is unaffected (this PreToolUse hook only sees Claude's tool
+> calls). Regression cases: `tests/test-pre-implementation-gate.sh` (`#290`).
+
 ## Revisit trigger
 
 - A second approval-capable human / writer ever appears → add script-captured dispatch (capture the

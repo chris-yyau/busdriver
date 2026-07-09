@@ -1,3 +1,10 @@
+## [1.84.4](https://github.com/chris-yyau/busdriver/compare/v1.84.3...v1.84.4) (2026-07-09)
+
+
+### Bug Fixes
+
+* **pr-grind:** opt-in one-shot Codex nudge when Codex never auto-triggers (none) ([#298](https://github.com/chris-yyau/busdriver/issues/298)) ([#306](https://github.com/chris-yyau/busdriver/issues/306)) ([22b0cbd](https://github.com/chris-yyau/busdriver/commit/22b0cbd6b7f54efaf84efe8a6d77bda196d667a5))
+
 ## [1.84.3](https://github.com/chris-yyau/busdriver/compare/v1.84.2...v1.84.3) (2026-07-09)
 
 

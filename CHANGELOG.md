@@ -1,3 +1,10 @@
+## [1.84.3](https://github.com/chris-yyau/busdriver/compare/v1.84.2...v1.84.3) (2026-07-09)
+
+
+### Bug Fixes
+
+* **gates:** anchor advisory-downgrade timestamp to github server clock ([#302](https://github.com/chris-yyau/busdriver/issues/302)) ([#305](https://github.com/chris-yyau/busdriver/issues/305)) ([429c4c9](https://github.com/chris-yyau/busdriver/commit/429c4c9030cec15294d904be2e2f4e85462bee0f))
+
 ## [1.84.2](https://github.com/chris-yyau/busdriver/compare/v1.84.1...v1.84.2) (2026-07-09)
 
 

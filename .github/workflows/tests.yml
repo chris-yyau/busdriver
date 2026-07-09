@@ -255,3 +255,4 @@ jobs:
           bash tests/test-advisory-stale-downgrade.sh
           bash tests/test-advisory-downgrade-revalidate.sh
           bash tests/test-github-server-now.sh
+          bash tests/test-codex-nudge-if-expected.sh

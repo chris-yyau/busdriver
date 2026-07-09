@@ -126,6 +126,14 @@ selftest() {
   printf -- '---\nname: acme\nauthor: acmecorp\n---\n# Acme\n' > "$tmp/bad/skills/acme/SKILL.md"
   if run_guard "$tmp/bad" >/dev/null 2>&1; then echo "SELF-TEST FAIL: did not flag a vendored-author local skill"; return 1; fi
 
+  # bad: NESTED metadata.author (the shape the Vercel skills used) -> MUST flag.
+  # Locks in the indent-tolerant `^[[:space:]]*author:` match so a future edit
+  # that narrows it to top-level-only fails here instead of silently regressing.
+  mkdir -p "$tmp/badnest/skills/acme"
+  printf '%s\n' "$m" > "$tmp/badnest/$MANIFEST_NAME"
+  printf -- '---\nname: acme\nmetadata:\n  author: acmecorp\n  version: "1.0.0"\n---\n# Acme\n' > "$tmp/badnest/skills/acme/SKILL.md"
+  if run_guard "$tmp/badnest" >/dev/null 2>&1; then echo "SELF-TEST FAIL: did not flag nested metadata.author"; return 1; fi
+
   # bad: external github source URL -> MUST flag
   mkdir -p "$tmp/ghsrc/skills/acme"
   printf '%s\n' "$m" > "$tmp/ghsrc/$MANIFEST_NAME"

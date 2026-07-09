@@ -1,3 +1,10 @@
+## [1.84.2](https://github.com/chris-yyau/busdriver/compare/v1.84.1...v1.84.2) (2026-07-09)
+
+
+### Bug Fixes
+
+* **gates:** block indirect-write self-bypass of skip/marker files ([#290](https://github.com/chris-yyau/busdriver/issues/290)) ([#304](https://github.com/chris-yyau/busdriver/issues/304)) ([5045010](https://github.com/chris-yyau/busdriver/commit/504501000a37515514e0869d3a2985f853b6811f))
+
 ## [1.84.1](https://github.com/chris-yyau/busdriver/compare/v1.84.0...v1.84.1) (2026-07-08)
 
 

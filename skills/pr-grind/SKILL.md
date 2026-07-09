@@ -1520,9 +1520,23 @@ if [ "$CODEX_DONE" = "none" ] && [ "${CODEX_GRACE}" -gt 0 ] 2>/dev/null; then
   # we fall through to non-gating `none` (bounded; NEVER a hang — quota-exhausted /
   # uninstalled / silent all degrade gracefully). The wrapper delegates to the same
   # ADR 0005 codex-retrigger mechanism (shared one-shot marker → at most one nudge
-  # per HEAD across the stale AND none paths). `|| true`: a failed nudge never
-  # stales the gate. Opt out entirely with PR_GRIND_CODEX_RETRIGGER=0.
-  bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-nudge-if-expected.sh" "$PR" "$HEAD_FULL_SHA" "$OWNER/$REPO" || true
+  # per HEAD across the stale AND none paths). Opt out entirely with
+  # PR_GRIND_CODEX_RETRIGGER=0.
+  #
+  # Runs in a subshell that `cd`s into $WORKTREE_DIR FIRST (template-substituted to
+  # the literal Step 0 worktree path; in --no-worktree mode that IS the repo root),
+  # exactly like the LOOP's stale-retrigger call site. This cd is load-bearing — both
+  # reasons flagged on PR #306: (1) codex-nudge-if-expected.sh resolves the opt-in
+  # file from the CWD-derived main-repo root, so a COMPLETION CWD that drifted to a
+  # DIFFERENT checkout (the documented "CWD Reset Across Bash Calls" hazard) would
+  # read another repo's consent while the nudge posts to $OWNER/$REPO — a wrong-repo
+  # consent violation; and (2) the delegated codex-retrigger marker is CWD-relative,
+  # so a drifted CWD would write a SECOND marker and post a DUPLICATE @codex review
+  # for the same HEAD, breaking the shared-one-shot guarantee. `cd || exit 0` aborts
+  # the subshell on a bad worktree path (no nudge, never the wrong repo); the outer
+  # `|| true` keeps a failed nudge from ever staling the gate.
+  ( cd "$WORKTREE_DIR" || exit 0
+    bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-nudge-if-expected.sh" "$PR" "$HEAD_FULL_SHA" "$OWNER/$REPO" ) || true
   echo "ℹ️  Codex shows no engagement on HEAD; ${CODEX_GRACE}s first-engagement grace re-poll…"
   sleep "$CODEX_GRACE"
   # Refresh ALL Codex-relevant sources, not just reactions: during the grace

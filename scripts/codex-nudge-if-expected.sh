@@ -33,6 +33,14 @@
 #
 #   Usage:  codex-nudge-if-expected.sh <pr-number> <head-sha> [owner/repo]
 #
+# CWD CONTRACT — the caller MUST invoke this from inside the target repo's worktree
+# (or pass BUSDRIVER_MAIN_ROOT explicitly), because the opt-in root is resolved from
+# the CWD-derived `git --git-common-dir`. This mirrors codex-retrigger.sh's own
+# CWD-relative marker contract: the pr-grind COMPLETION call site wraps this in
+# `( cd "$WORKTREE_DIR" || exit 0; ... )` so the repo whose consent is read is the
+# SAME repo the nudge posts to. Absent that anchoring a drifted CWD could read a
+# different checkout's consent (wrong-repo nudge) or split the one-shot marker.
+#
 # Test seam: BUSDRIVER_MAIN_ROOT overrides the git-derived main-repo root so the
 # opt-in lookup needs no real git checkout.
 set -u

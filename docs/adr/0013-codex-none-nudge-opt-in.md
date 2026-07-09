@@ -62,6 +62,11 @@ so the nudge fires **after CI has settled** — it never races normal auto-trigg
 latency. The existing bounded re-poll then observes the result; if Codex still does
 not engage within the grace, the block falls through to non-gating `none` exactly as
 before. `|| true` at the call site keeps a failed nudge from ever staling the gate.
+The call runs in a subshell that `cd`s into `$WORKTREE_DIR` first — identical to the
+LOOP's stale-retrigger call site — so (a) the wrapper's CWD-derived opt-in root is
+the PR's own repo, not a drifted checkout's (per-repo consent), and (b) the delegated
+codex-retrigger marker lands in the same worktree `.claude/` the stale path uses,
+preserving the single shared one-shot marker.
 
 **Shared one-shot marker.** The wrapper delegates to `codex-retrigger.sh` with no
 new marker, so the `none` and `stale` paths share the same per-(PR,HEAD) marker:

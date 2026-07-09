@@ -120,6 +120,32 @@ distinct event `advisory_stale_timeout_downgrade`, carrying at least: `event`,
 - New surface to maintain in the pr-grind Completion block + a new ledger/marker
   interaction; covered by gate tests.
 
+## Addendum (2026-07-09): server-time anchor for the revalidation ref (issue #302)
+
+The COMPLETION-time revalidation (`scripts/advisory-downgrade-revalidate.sh`, added
+in PR #300) decides "did this bot re-engage after its downgrade?" by comparing the
+downgrade event's `timestamp` **lexically** against GitHub activity timestamps
+(`created_at`/`submitted_at`/`createdAt`). The event `timestamp` was originally
+stamped with the operator's **local** clock — a fail-**open** under clock skew: a
+machine clock ahead of GitHub makes a genuine re-engagement carry a GitHub
+`created_at` that sorts *before* the ref, so the revalidator reads the bot as
+silent and suppresses a live review.
+
+Fix (fix direction 1, "server-time anchor"): the downgrade event is now stamped
+with GitHub's own clock via `scripts/github-server-now.sh` (the `Date` response
+header of the quota-exempt `/rate_limit` endpoint, converted to ISO-8601 with a
+portable awk month-map). `advisory-stale-downgrade.sh` takes this as a required
+`SERVER_NOW` input, validated against the same ISO regex the revalidator enforces
+on the ref, and **fails CLOSED** (no downgrade) when it is absent or malformed —
+it never falls back to the local clock. The revalidator is unchanged: once the
+logged ref is on GitHub's clock, its existing comparison is skew-correct.
+
+Scope note: this closes the clock-skew gap in the issue body. The broader
+timestamp-diff gap *class* raised in the issue comment (edited comments/reviews,
+reaction churn — bots that mutate existing activity without a fresh `created_at`)
+is deliberately deferred; the recommended holistic direction is to reuse the
+ack-ledger staleness verdict directly rather than patch each timestamp source.
+
 ## Revisit trigger
 
 - A second approval-capable human joins the repo (the solo assumption breaks) —

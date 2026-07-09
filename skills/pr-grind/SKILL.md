@@ -1510,6 +1510,19 @@ FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-
 CODEX_DONE=$(printf '%s' "$FRESH_ACKS" | tr ',' '\n' | awk -F= '$1=="chatgpt-codex-connector"{print $2}')
 CODEX_GRACE="${PR_GRIND_CODEX_GRACE_SECS:-20}"
 if [ "$CODEX_DONE" = "none" ] && [ "${CODEX_GRACE}" -gt 0 ] 2>/dev/null; then
+  # Codex `none`-nudge (opt-in, one-shot per (PR,HEAD)) — ADR 0013 / issue #298.
+  # Codex never engaged on this PR. On a repo that OPTS IN (a
+  # <main-root>/.claude/pr-grind-codex-expected.local marker), post `@codex review`
+  # ONCE — here, AFTER CI has settled (COMPLETION is post-convergence) so we never
+  # race normal auto-trigger latency — then let the bounded grace re-poll below
+  # observe the result. ABSENT the opt-in this is a no-op (a `none` Codex stays
+  # non-gating, exactly as before). If Codex still does not engage within the grace,
+  # we fall through to non-gating `none` (bounded; NEVER a hang — quota-exhausted /
+  # uninstalled / silent all degrade gracefully). The wrapper delegates to the same
+  # ADR 0005 codex-retrigger mechanism (shared one-shot marker → at most one nudge
+  # per HEAD across the stale AND none paths). `|| true`: a failed nudge never
+  # stales the gate. Opt out entirely with PR_GRIND_CODEX_RETRIGGER=0.
+  bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-nudge-if-expected.sh" "$PR" "$HEAD_FULL_SHA" "$OWNER/$REPO" || true
   echo "ℹ️  Codex shows no engagement on HEAD; ${CODEX_GRACE}s first-engagement grace re-poll…"
   sleep "$CODEX_GRACE"
   # Refresh ALL Codex-relevant sources, not just reactions: during the grace

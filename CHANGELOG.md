@@ -1,3 +1,10 @@
+# [1.88.0](https://github.com/chris-yyau/busdriver/compare/v1.87.1...v1.88.0) (2026-07-10)
+
+
+### Features
+
+* **writing-plans:** ultra-oracle plan advisory + de-version oracle prose ([#322](https://github.com/chris-yyau/busdriver/issues/322)) ([ca18d29](https://github.com/chris-yyau/busdriver/commit/ca18d2994235d561dac0ae5a4c1d889d58cbe2c2))
+
 ## [1.87.1](https://github.com/chris-yyau/busdriver/compare/v1.87.0...v1.87.1) (2026-07-10)
 
 

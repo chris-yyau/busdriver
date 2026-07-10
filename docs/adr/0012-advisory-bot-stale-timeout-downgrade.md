@@ -163,19 +163,23 @@ per-repo file via the same `--git-common-dir`-parent main-root resolver the rest
 the opt-in ecosystem uses. Any ambiguity — unresolvable root with no global file —
 prints `0` (stay strict / BAIL), because this opt-in *relaxes* a gate.
 
-**Operator-consent boundary on the per-repo file.** ADR 0012 requires that "a
-repo-controlled config cannot enable" the downgrade, so the resolver accepts the
-per-repo marker as consent only when it is an **untracked, non-symlink regular
-file** in a non-symlink state dir — otherwise a PR author could `git add -f` a
-tracked marker (gitignore notwithstanding) or drop a symlink and self-enable the
-downgrade for their own PR when the operator grinds it. The global file lives
-outside any repo, so it is operator-controlled by construction and needs no such
-check, and any git error along the per-repo path fails CLOSED (reject) rather than
-being read as "untracked ⇒ enable". Covered by
-`tests/test-advisory-downgrade-optin.sh` (11 cases; env-seam roots for the
-presence matrix, plus real `git init` repos exercising the operator-consent
-boundary: untracked marker ⇒ opted in, tracked (`git add -f`) / symlinked marker
-⇒ rejected, and a non-git root ⇒ fail-closed).
+**Operator-consent boundary.** ADR 0012 requires that "a repo-controlled config
+cannot enable" the downgrade, so **either** marker is accepted as consent only when
+it is a **non-symlink regular file in a non-symlink state dir** that, *if it lives
+inside a git work tree*, is not **repo-controlled** — its state dir is not a gitlink
+/ submodule, and the marker is present in neither the index nor HEAD's tree.
+Otherwise a PR author could `git add -f` a tracked marker (gitignore
+notwithstanding), commit-then-`git rm --cached` it, drop a symlink, or embed it in a
+submodule, and self-enable the downgrade for their own PR when the operator grinds
+it. The global file normally lives outside any repo ($HOME/.claude) — operator space
+by construction — but the same in-repo check still guards the exotic case where the
+global dir itself sits inside a repo (e.g. a dotfiles repo rooted at $HOME). Every
+git query fails CLOSED (reject) on error, never read as "untracked ⇒ enable"; the
+per-repo path additionally requires a queryable repo. Covered by
+`tests/test-advisory-downgrade-optin.sh` (13 cases; env-seam roots for the presence
+matrix, plus real `git init` repos exercising the boundary: untracked marker ⇒
+opted in; tracked (`git add -f`), symlinked, in-HEAD-but-de-indexed, and
+tracked-global-inside-a-repo markers ⇒ rejected; non-git root ⇒ fail-closed).
 
 **Why global is safe here.** The switch does **not** open the merge gate — it only
 changes *where the opt-in is read from*. Every downgrade precondition above is

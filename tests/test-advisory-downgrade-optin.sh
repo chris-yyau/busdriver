@@ -111,5 +111,22 @@ ROOT=$(mk); GDIR=$(mk); mkdir -p "$ROOT/.claude"; : > "$ROOT/.claude/$FILE"
 out=$(run "$ROOT" "$GDIR")
 assert_eq 0 "$out" "non-git root with marker → 0 (fail-closed)"
 
+# 12. A GLOBAL marker that sits inside a git repo AND is tracked there (dotfiles
+#     repo rooted at the global dir) is repo-controlled → 0. Per-repo root is a
+#     fresh empty repo so it doesn't independently opt in.
+GREPO=$(mkrepo); PREPO=$(mkrepo); mkdir -p "$GREPO/gstate"; : > "$GREPO/gstate/$FILE"
+git -C "$GREPO" add -f "gstate/$FILE"
+out=$(run "$PREPO" "$GREPO/gstate")
+assert_eq 0 "$out" "tracked global marker inside a repo → 0 (rejected)"
+
+# 13. A per-repo marker committed in HEAD but removed from the index (`git rm
+#     --cached`) is still repo-originated → 0 (HEAD-tree check, not just index).
+ROOT=$(mkrepo); GDIR=$(mk); mkdir -p "$ROOT/.claude"; : > "$ROOT/.claude/$FILE"
+git -C "$ROOT" add -f ".claude/$FILE"
+git -C "$ROOT" -c user.email=t@t -c user.name=t commit -q -m init
+git -C "$ROOT" rm --cached -q ".claude/$FILE"   # out of index, still in HEAD + worktree
+out=$(run "$ROOT" "$GDIR")
+assert_eq 0 "$out" "marker in HEAD but not index → 0 (rejected)"
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

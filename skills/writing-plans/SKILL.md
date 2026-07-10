@@ -22,7 +22,7 @@ Assume they are a skilled developer, but know almost nothing about our toolset o
 
 If the spec covers multiple independent subsystems, it should have been broken into sub-project specs during brainstorming. If it wasn't, suggest breaking this into separate plans — one per subsystem. Each plan should produce working, testable software on its own.
 
-## Optional Ultra-Oracle Plan Advisory (blocking, opt-in)
+## Optional Ultra-Oracle Plan Advisory (opt-in)
 
 Before locking in the decomposition below, an **advisory** cross-model consult can help Claude author a better plan. Claude writes the plan and can be wrong — this surfaces a second opinion on decomposition *before the draft exists*. It is deliberately distinct from blueprint-review, which *critiques the finished plan* at the gate: this **advises** (forward-looking, prevents mistakes), the gate **critiques** (backward-looking, catches them). Fires only if `ultraOracle.writingPlans.enabled` is true in the operator's **USER config** `~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it — this prevents a branch from transmitting the design to ChatGPT Pro without your local opt-in), OR the user used a trigger ("consult the oracle" / "ask the oracle"). Skipped silently otherwise.
 

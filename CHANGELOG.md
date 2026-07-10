@@ -1,3 +1,10 @@
+# [1.87.0](https://github.com/chris-yyau/busdriver/compare/v1.86.1...v1.87.0) (2026-07-10)
+
+
+### Features
+
+* **rules:** retire 70 vendored ECC rules; own a tiny hand-written canon ([#315](https://github.com/chris-yyau/busdriver/issues/315)) ([8df00f4](https://github.com/chris-yyau/busdriver/commit/8df00f4122c6220db6f2ab8478b911c40f48904c))
+
 ## [1.86.1](https://github.com/chris-yyau/busdriver/compare/v1.86.0...v1.86.1) (2026-07-10)
 
 

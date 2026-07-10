@@ -1061,25 +1061,25 @@
       "status": "local"
     },
     {
-      "path": "rules/common/agents.md",
+      "path": "rules-archive/common/agents.md",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "rules/common/agents.md"
     },
     {
-      "path": "rules/common/code-review.md",
+      "path": "rules-archive/common/code-review.md",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "rules/common/code-review.md"
     },
     {
-      "path": "rules/common/coding-style.md",
+      "path": "rules-archive/common/coding-style.md",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "rules/common/coding-style.md"
     },
     {
-      "path": "rules/common/development-workflow.md",
+      "path": "rules-archive/common/development-workflow.md",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "rules/common/development-workflow.md"
@@ -1102,13 +1102,13 @@
       "status": "local"
     },
     {
-      "path": "rules/common/patterns.md",
+      "path": "rules-archive/common/patterns.md",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "rules/common/patterns.md"
     },
     {
-      "path": "rules/common/performance.md",
+      "path": "rules-archive/common/performance.md",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "rules/common/performance.md"
@@ -1120,7 +1120,7 @@
       "upstream_path": "rules/common/security.md"
     },
     {
-      "path": "rules/common/testing.md",
+      "path": "rules-archive/common/testing.md",
       "source": "ecc",
       "status": "sync",
       "upstream_path": "rules/common/testing.md"

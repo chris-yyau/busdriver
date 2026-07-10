@@ -267,7 +267,18 @@ calling session MUST:
    ran). On a true mismatch, **overwrite**
    `model_pin_status` with `pin_ignored` (the arbiter ran on a different model than
    requested, so the previously-recorded status is no longer accurate) and additionally
-   set `run_degraded=true` in your caller-side state. Then re-run the loop with
+   set `run_degraded=true` in your caller-side state.
+
+   **Fable-subagent pin mismatch is a fable-subagent failure, not a bare retry.** If the
+   dispatch-time status was `ultimate_arbiter_fable` from the **primary** Agent-tool rung
+   (step 1) and the self-report doesn't match `fable`, the harness accepted `model="fable"`
+   but silently ran something else — the subagent didn't error or return empty, so step 4's
+   fable-subagent-failure branch never fired at dispatch time. Treat this discovery as if
+   that branch HAD fired: fall through to the gateway rung (step 4) when creds are
+   configured, or to `opus` when they aren't — do NOT simply re-run `--claude-only`, which
+   would re-dispatch the same subagent against the same harness and reproduce the identical
+   mismatch. A mismatch discovered on the gateway or `opus` rungs has no further fallback to
+   offer, so those still just overwrite `pin_ignored` and re-run the loop with
    `--claude-only`. (The script re-validates fully — this check just
    avoids burning a loop invocation on a garbage file.)
 

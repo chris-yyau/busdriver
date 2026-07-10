@@ -83,8 +83,9 @@ Before dispatching, check CLI availability and find the dispatch script:
 # "${CLAUDE_PLUGIN_ROOT}/..." would then collapse to "/scripts/..." and every
 # voice + witness would silently fail to launch. Fall back to the newest
 # installed cache dir; override with BUSDRIVER_PLUGIN_ROOT. This PLUGIN_ROOT is
-# in scope for the Step 4.5/4.6 witness snippets, which are inserted into THIS
-# same block (they share this shell, alongside PIDS).
+# in scope for the Step 4.5 witness snippet (UltraOracle), which is inserted into THIS
+# same block (it shares this shell, alongside PIDS). Step 4.6 (Mythos Witness) runs as
+# standalone Bash calls and re-resolves PLUGIN_ROOT independently (see there).
 PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"
 if [ -z "$PLUGIN_ROOT" ]; then
   # newest installed STABLE cache version. grep keeps only pure X.Y.Z dirs
@@ -263,7 +264,18 @@ the trigger directly); the config opt-in is read from USER config; `BUSDRIVER_UL
 # Standalone Bash call — shell state does NOT carry over from the Step 4 block, so resolve
 # PLUGIN_ROOT here too (same chain as Step 4b's preamble; see there for the full rationale).
 PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"
-[ -n "$PLUGIN_ROOT" ] || { _c="$HOME/.claude/plugins/cache/busdriver/busdriver"; PLUGIN_ROOT="$_c/$(ls "$_c" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"; }
+if [ -z "$PLUGIN_ROOT" ]; then
+  _c="$HOME/.claude/plugins/cache/busdriver/busdriver"
+  _v="$(ls "$_c" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
+  [ -n "$_v" ] && PLUGIN_ROOT="$_c/$_v"
+fi
+PLUGIN_ROOT="${PLUGIN_ROOT%/}"
+# Validate but do NOT exit 1 — unlike Step 4b, the _forced=1 trigger path below needs
+# NEITHER the adapter NOR the gateway (fable-subagent-first needs no plugin root at
+# all), so a bogus/missing PLUGIN_ROOT here must not abort the whole gate. It only
+# matters for the USER-config check a few lines down, which already fails closed via
+# `source ... 2>/dev/null` — this just makes the failure diagnosable instead of silent.
+[ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT" ] || echo "council: cannot resolve busdriver plugin root for the USER-config check — set BUSDRIVER_PLUGIN_ROOT (the forced-trigger path is unaffected)" >&2
 _forced=0   # set to 1 when the user invoked "ultimate council" this run
 MYTHOS_ATTEMPT=0
 # BUSDRIVER_ULTIMATE=0 (global force-OFF) outranks both config opt-in and the trigger.
@@ -303,7 +315,18 @@ _forced=0   # set to 1 (MATCHING the gate snippet) when the user invoked "ultima
             # shell state does not survive across Bash calls, so this block re-declares it independently
 # Standalone Bash call — resolve PLUGIN_ROOT again (same chain as Step 4b's preamble).
 PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"
-[ -n "$PLUGIN_ROOT" ] || { _c="$HOME/.claude/plugins/cache/busdriver/busdriver"; PLUGIN_ROOT="$_c/$(ls "$_c" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"; }
+if [ -z "$PLUGIN_ROOT" ]; then
+  _c="$HOME/.claude/plugins/cache/busdriver/busdriver"
+  _v="$(ls "$_c" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
+  [ -n "$_v" ] && PLUGIN_ROOT="$_c/$_v"
+fi
+PLUGIN_ROOT="${PLUGIN_ROOT%/}"
+# Validate but do NOT exit 1 here either — an invalid PLUGIN_ROOT already fails
+# closed below (the `bash "${PLUGIN_ROOT}/scripts/ultimate-dispatch.sh"` call errors,
+# `_mythos_rc` captures the non-zero exit, and the existing rc-branch below renders
+# MYTHOS_FAILED). An early exit would additionally skip the `rm -f "$MYTHOS_OUT.prompt"`
+# cleanup, leaking council context. Just make the failure diagnosable.
+[ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT" ] || echo "council: cannot resolve busdriver plugin root for the gateway fallback — set BUSDRIVER_PLUGIN_ROOT" >&2
 _repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 _mythos_dir="$_repo_root/${BUSDRIVER_STATE_DIR:-.claude}/ultimate"; mkdir -p "$_mythos_dir"
 MYTHOS_OUT="$(cd "$_mythos_dir" && pwd)/mythos-council-$$.md"   # absolute — the helper requires absolute paths

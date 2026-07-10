@@ -175,4 +175,3 @@ Recommendation: FAIL: Block merge until CRITICAL issue is fixed
 - Agent: `agents/vue-reviewer.md`
 - Companion agent: `agents/typescript-reviewer.md` (run alongside for Vue-related TS/JS)
 - Skills: `skills/vue-patterns/`
-- Rules: `rules/vue/`

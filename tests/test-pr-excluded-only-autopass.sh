@@ -137,7 +137,7 @@ marker_is_excluded() {
 # ── 1. Producer: excluded-only PR writes PASS-EXCLUDED, not the commit marker ──
 rm -f "$MARKER" "$COMMIT_MARKER" "$BYPASS_LOG"
 # Nested under rules/ — `rules/**/*.md` matches rules/<dir>/<file>.md (mirrors the
-# real repo's rules/common/, rules/typescript/), NOT a top-level rules/*.md.
+# real repo's rules/common/ layout), NOT a top-level rules/*.md.
 mkdir -p "$TMPREPO/rules/sub"
 printf '# rule\nbody\n' > "$TMPREPO/rules/sub/x.md"
 git -C "$TMPREPO" add rules/sub/x.md

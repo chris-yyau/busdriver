@@ -19,7 +19,7 @@ Measures whether coding agents actually follow skills, rules, or agent definitio
 ## Supported Targets
 
 - **Skills** (`skills/*/SKILL.md`): Workflow skills like search-first, TDD guides
-- **Rules** (`rules/common/*.md`): Mandatory rules like testing.md, security.md, git-workflow.md
+- **Rules** (`rules/common/*.md`): Hand-written canon like policy.md, investigate-before-acting.md, validate-before-building.md
 - **Agent definitions** (`agents/*.md`): Whether an agent gets invoked when expected (internal workflow verification not yet supported)
 
 ## When to Activate
@@ -33,7 +33,7 @@ Measures whether coding agents actually follow skills, rules, or agent definitio
 
 ```bash
 # Full run
-uv run python -m scripts.run ~/.claude/rules/common/testing.md
+uv run python -m scripts.run ~/.claude/rules/common/policy.md
 
 # Dry run (no cost, spec + scenarios only)
 uv run python -m scripts.run --dry-run ~/.claude/skills/search-first/SKILL.md

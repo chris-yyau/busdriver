@@ -142,7 +142,7 @@ Evaluation is **holistic AI judgment** — not a numeric rubric. Guiding dimensi
   - Good: `"276 lines; Section 'Framework Comparison' (L80–140) duplicates ai-era-architecture-principles; delete it to reach ~150 lines."`
 - For **Keep** (mtime-only change in Quick Scan): restate the original verdict rationale, do not write "unchanged"
   - Bad: `"Unchanged"`
-  - Good: `"mtime updated but content unchanged. Unique Python reference explicitly imported by rules/python/; no overlap found."`
+  - Good: `"mtime updated but content unchanged. Unique Python reference explicitly imported by python-patterns; no overlap found."`
 
 ### Phase 3 — Summary Table
 

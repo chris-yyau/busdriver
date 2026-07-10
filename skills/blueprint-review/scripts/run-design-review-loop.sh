@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC1091  # dynamic $SCRIPT_DIR/$_PLUGIN_ROOT source paths are not resolvable at lint time
 # Three-tier design review: Agy + Codex (parallel) → Claude arbiter
 #
 # Architecture (post-A++ council fix, 2026-03-27):
@@ -31,7 +32,7 @@ source "$SCRIPT_DIR/lib/validation.sh"
 _PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}}"
 # shellcheck source=../../../scripts/lib/resolve-cli.sh
 source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"
-# Optional ultra-oracle (GPT-5.5 Pro) auxiliary advisory (opt-in; visible best-effort).
+# Optional ultra-oracle (ChatGPT Pro) auxiliary advisory (opt-in; visible best-effort).
 # shellcheck source=../../../scripts/lib/ultra-oracle.sh
 source "$_PLUGIN_ROOT/scripts/lib/ultra-oracle.sh" 2>/dev/null || true
 ULTRA_ORACLE_ADVISORY_FILE=""        # set only when a fresh dispatch happens (non-claude-only)
@@ -801,9 +802,9 @@ with open(pending, "w") as f:
         sleep 2; _uora_wait=$((_uora_wait + 2))
       done
     fi
-    if [ -s "$ULTRA_ORACLE_ADVISORY_FILE" ] && [ -f "$ULTRA_ORACLE_ADVISORY_FILE.rc" ] && [ "$(cat "$ULTRA_ORACLE_ADVISORY_FILE.rc")" = "0" ]; then
+    if [[ -s "$ULTRA_ORACLE_ADVISORY_FILE" ]] && [[ -f "$ULTRA_ORACLE_ADVISORY_FILE.rc" ]] && [[ "$(cat "$ULTRA_ORACLE_ADVISORY_FILE.rc")" = "0" ]]; then
       ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
-OPTIONAL ULTRA-ORACLE (GPT-5.5 Pro) ADVISORY -- AUXILIARY, *NOT* A REVIEWER. There are still exactly THREE reviewers (Agy/Codex/Grok); do NOT count this block as a 4th lens or as independent agreement:
+OPTIONAL ULTRA-ORACLE (ChatGPT Pro) ADVISORY -- AUXILIARY, *NOT* A REVIEWER. There are still exactly THREE reviewers (Agy/Codex/Grok); do NOT count this block as a 4th lens or as independent agreement:
 =============================================================================
 
 $(cat "$ULTRA_ORACLE_ADVISORY_FILE")"

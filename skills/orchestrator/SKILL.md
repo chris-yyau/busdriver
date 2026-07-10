@@ -82,6 +82,7 @@ Use Skill tool, not EnterPlanMode. Load `architect` agent for complex design. UI
 ### Phase 2: Planning → `busdriver:writing-plans`
 
 Produces TDD tasks with file paths, commands, expected output. Saves to `docs/plans/`. Blueprint Review triggers on plan doc.
+**Optional ultra-oracle advisory** (opt-in, USER config `ultraOracle.writingPlans.enabled`): before decomposition is locked in, a blocking ChatGPT Pro consult *advises* on task sequencing/risk — distinct from Blueprint Review, which *critiques* the finished plan at the gate (advise → draft → critique). See writing-plans "Optional Ultra-Oracle Plan Advisory".
 **AUTO-EXECUTION:** After plan review passes, Phases 3–6 run without user pause.
 
 ### Phase 3: Worktree → `busdriver:using-git-worktrees`

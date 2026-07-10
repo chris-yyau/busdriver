@@ -63,6 +63,11 @@ else
     SKILL_FILE="${CLAUDE_PLUGIN_ROOT:-${HOME}/.claude}/skills/orchestrator/SKILL.md"
 fi
 
+# Prefer the condensed session brief; fall back to the full SKILL.md if it is
+# absent (never inject nothing — the pipeline directive is load-bearing).
+BRIEF_FILE="${SKILL_FILE%/SKILL.md}/session-brief.md"
+[ -f "$BRIEF_FILE" ] && SKILL_FILE="$BRIEF_FILE"
+
 # Read orchestrator content
 content=$(cat "$SKILL_FILE" 2>&1 || echo "Error: orchestrator SKILL.md not found at ${SKILL_FILE}")
 

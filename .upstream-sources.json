@@ -7936,6 +7936,11 @@
       "path": "rules/common/policy.md",
       "source": "local",
       "status": "local"
+    },
+    {
+      "path": "skills/orchestrator/session-brief.md",
+      "source": "local",
+      "status": "local"
     }
   ],
   "rejected": [

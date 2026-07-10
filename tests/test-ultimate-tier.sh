@@ -120,10 +120,34 @@ anchor "MYTHOS_FAILED banner on failure"                   'MYTHOS_FAILED'
 anchor "rendered AFTER UltraOracle, BEFORE the Verdict"    'AFTER the `## UltraOracle — Expert Witness`'
 anchor "routes through the shared ultimate-dispatch helper" 'scripts/ultimate-dispatch.sh'
 anchor "config gate is ultimate.surfaces.council"          'ultimate.surfaces.council'
-anchor "per-run force var named + scoped"                  'ULTIMATE_COUNCIL_FORCE=1'
+# ADR 0015: subagent-first. The per-run force var is now DERIVED from the trigger decision
+# ($_forced) and passed as a narrow per-command env prefix to the gateway FALLBACK — never
+# assigned into the shell, so there is nothing to leak and nothing to `unset`.
+anchor "per-run force derived from the trigger decision"   'ULTIMATE_COUNCIL_FORCE="$_forced"'
+anchor "trigger decision variable is declared"             '_forced=0'
 grep -qF 'export ULTIMATE_COUNCIL_FORCE' "$SKILL_C" && fail "force var must never be exported" \
   || pass "force var is not exported"
-grep -qF 'unset ULTIMATE_COUNCIL_FORCE' "$SKILL_C" && pass "force var is unset after the block" \
-  || fail "force var not unset (would leak into a later council)"
+
+# Test the FORCED path, not only the default initializer. The default-0 assertion above
+# would still pass even if ultimate-council never actually forced the Mythos path — assert
+# BOTH Step 4.6 blocks (gate pre-check + gateway-fallback, separate Bash calls per the
+# "shell state does not carry over" design) declare `_forced=0` as their OWN independent
+# initializer (i.e. the placeholder exists twice, once per block, matching the "MATCHING
+# the gate snippet" / "re-declares it independently" comments in SKILL.md), and that
+# commands/ultimate-council.md documents the executor instruction to override it to 1 in
+# BOTH blocks for a forced run.
+_forced_count="$(grep -cF -- '_forced=0' "$SKILL_C")"
+if [[ "$_forced_count" -ge 2 ]]; then
+  pass "both Step 4.6 blocks (gate + fallback) independently declare _forced=0"
+else
+  fail "expected _forced=0 in BOTH Step 4.6 blocks, found $_forced_count occurrence(s)"
+fi
+
+CMD_ULTIMATE="$DIR/commands/ultimate-council.md"
+if [[ -f "$CMD_ULTIMATE" ]] && grep -qF -- 'setting `_forced=1` in BOTH the Step 4.6' "$CMD_ULTIMATE"; then
+  pass "ultimate-council command instructs the executor to force _forced=1 in BOTH Step 4.6 blocks"
+else
+  fail "ultimate-council command missing the both-blocks _forced=1 instruction"
+fi
 
 [[ "$FAIL" = 0 ]] && echo "PASS test-ultimate-tier" || { echo "FAIL test-ultimate-tier"; exit 1; }

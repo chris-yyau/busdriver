@@ -120,10 +120,12 @@ anchor "MYTHOS_FAILED banner on failure"                   'MYTHOS_FAILED'
 anchor "rendered AFTER UltraOracle, BEFORE the Verdict"    'AFTER the `## UltraOracle — Expert Witness`'
 anchor "routes through the shared ultimate-dispatch helper" 'scripts/ultimate-dispatch.sh'
 anchor "config gate is ultimate.surfaces.council"          'ultimate.surfaces.council'
-anchor "per-run force var named + scoped"                  'ULTIMATE_COUNCIL_FORCE=1'
+# ADR 0014: subagent-first. The per-run force var is now DERIVED from the trigger decision
+# ($_forced) and passed as a narrow per-command env prefix to the gateway FALLBACK — never
+# assigned into the shell, so there is nothing to leak and nothing to `unset`.
+anchor "per-run force derived from the trigger decision"   'ULTIMATE_COUNCIL_FORCE="$_forced"'
+anchor "trigger decision variable is declared"             '_forced=0'
 grep -qF 'export ULTIMATE_COUNCIL_FORCE' "$SKILL_C" && fail "force var must never be exported" \
   || pass "force var is not exported"
-grep -qF 'unset ULTIMATE_COUNCIL_FORCE' "$SKILL_C" && pass "force var is unset after the block" \
-  || fail "force var not unset (would leak into a later council)"
 
 [[ "$FAIL" = 0 ]] && echo "PASS test-ultimate-tier" || { echo "FAIL test-ultimate-tier"; exit 1; }

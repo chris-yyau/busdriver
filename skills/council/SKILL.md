@@ -6,7 +6,7 @@ description: >-
   tradeoffs, architecture, strategy. Triggers include council, roundtable,
   perspectives, group wisdom, ideas/feedback/advice; "ultra-council" adds the
   UltraOracle (GPT-5.5 Pro) expert witness; "ultimate-council" adds BOTH the
-  UltraOracle AND the Mythos Witness (Claude Fable via the zenmux gateway),
+  UltraOracle AND the Mythos Witness (Claude Fable, subagent-first),
   each rendered separately, never a vote. Not for simple tasks with clear
   answers.
 origin: custom
@@ -14,7 +14,7 @@ origin: custom
 
 # Council
 
-Convene five advisors — the in-context Claude plus four fresh agents — for diverse perspectives. Each gives an independent perspective, then synthesize into a compressed verdict. (An **ultra-council** run adds an optional UltraOracle expert witness — see Step 4.5 — rendered as its own section, never counted among the five voices. An **ultimate-council** run adds BOTH the UltraOracle AND a **Mythos Witness** — Claude Fable via the zenmux gateway; see Step 4.6 — each rendered as its own section, neither counted among the five voices.)
+Convene five advisors — the in-context Claude plus four fresh agents — for diverse perspectives. Each gives an independent perspective, then synthesize into a compressed verdict. (An **ultra-council** run adds an optional UltraOracle expert witness — see Step 4.5 — rendered as its own section, never counted among the five voices. An **ultimate-council** run adds BOTH the UltraOracle AND a **Mythos Witness** — Claude Fable, dispatched subagent-first with a zenmux-gateway fallback; see Step 4.6 — each rendered as its own section, neither counted among the five voices.)
 
 ## Roles (Fixed)
 
@@ -215,24 +215,27 @@ Council is not a blocking gate, so the loud banner (only when the oracle was att
 
 ### Step 4.6: Optional Mythos Witness — Claude Fable ("ultimate-council", off by default)
 
-The **Mythos Witness** is the council's second expert witness — **Claude Fable dispatched through
-the zenmux gateway** (the `ultimate` tier; see ADR 0011). It is escalated ONLY when
-`ultimate.surfaces.council` is true in the operator's **USER config** `~/.claude/busdriver.json`
-(a repo-controlled project config CANNOT enable it — enabling transmits the question to an external
-gateway), OR the user explicitly invokes **"ultimate-council" / "ultimate council"**. An
-ultimate-council runs BOTH witnesses — the UltraOracle (Step 4.5) AND the Mythos Witness; "ultra-council"
-(Step 4.5) is UNCHANGED and runs the UltraOracle only.
+The **Mythos Witness** is the council's second expert witness — **Claude Fable**, dispatched
+**subagent-first** (the `ultimate` tier; see ADR 0011 as amended by ADR 0014):
 
-To force it for that run, add `ULTIMATE_COUNCIL_FORCE=1` as a **plain, non-exported** assignment at the
-very top of the single Step 4 dispatch Bash block (right beside `ULTRA_ORACLE_COUNCIL_FORCE=1` for an
-ultimate-council), and `unset ULTIMATE_COUNCIL_FORCE` as its last line. Do NOT `export` it (it would
-persist into a later council in a persistent shell), do NOT use a one-command `VAR=1 cmd` prefix (it
-would not reach the gate), and do NOT wrap the dispatch in a subshell (the no-subshell rule in Step 4).
-A **normal or ultra council omits that line entirely**; the gate's `:-0` default then leaves the Mythos
-Witness off unless user-config enabled it. It is dispatched via the shared `scripts/ultimate-dispatch.sh`
-helper (role slug `mythos-witness`), which pins `claude-fable-5` through the gateway and fails CLOSED
-(loud warning + non-zero exit) when gateway creds are missing or the dispatch fails twice — inside that
-SAME single-Bash dispatch block as the other voices (separate Bash calls serialize/cancel — see Step 4).
+1. **Primary — fable subagent.** A fresh `Agent(model="fable")` in-harness subagent (pinned
+   `claude-fable-5`), dispatched in the SAME Step 4 message as the 4a Skeptic and the 4b voices.
+   In-account, no external transmission — the data boundary below applies ONLY to the gateway fallback.
+2. **Fallback — zenmux gateway.** ONLY if the fable subagent errors, is unavailable (the harness
+   rejects `model="fable"`), or returns empty, fall back to the shared `scripts/ultimate-dispatch.sh`
+   helper (role slug `mythos-witness`), which pins `claude-fable-5` through the gateway and fails CLOSED
+   when gateway creds are missing or the dispatch fails twice.
+
+It is escalated ONLY when `ultimate.surfaces.council` is true in the operator's **USER config**
+`~/.claude/busdriver.json` (a repo-controlled project config CANNOT enable it), OR the user explicitly
+invokes **"ultimate-council" / "ultimate council"**. An ultimate-council runs BOTH witnesses — the
+UltraOracle (Step 4.5) AND the Mythos Witness; "ultra-council" (Step 4.5) is UNCHANGED and runs the
+UltraOracle only.
+
+`BUSDRIVER_ULTIMATE=0` is the operator's global force-OFF and outranks both the config opt-in and the
+per-run trigger. The gateway-fallback's own defense-in-depth gate still re-checks the surface, so a
+trigger-phrase run (no config) that reaches the fallback must pass `ULTIMATE_COUNCIL_FORCE=1` to the
+helper (see the fallback snippet); a **normal or ultra council never sets it**.
 
 The Mythos Witness is **not** a vote: it is rendered as its own `## Mythos Witness — Expert Witness`
 section (Step 5/Step 6), placed AFTER the UltraOracle section and BEFORE the Verdict, and is EXCLUDED
@@ -241,94 +244,102 @@ five voices only. Its claims are treated as **unverified-until-checked** like th
 before any hard recommendation rests on them). On failure it renders a loud `MYTHOS_FAILED [status]`
 banner — NEVER a silent omission.
 
-**Trade-off (why it's off by default):** it is a second slow, metered gateway call on top of the
-UltraOracle, so an ultimate-council runs minutes instead of seconds. As an expert witness it carries
-weight only when its claims are evidence-backed. Never add it to the default roster.
+**Trade-off (why it's off by default):** the primary fable subagent is still a full, slow model call
+(and the metered gateway fallback slower still), so an ultimate-council runs minutes instead of seconds.
+As an expert witness it carries weight only when its claims are evidence-backed. Never add it to the
+default roster.
 
-**Data boundary:** the Mythos Witness transmits the council question + context to Claude Fable via the
-zenmux gateway — metered API billing, not flat subscription. Gateway creds come from the same
-`BLUEPRINT_ARBITER_GATEWAY_*` environment as the ultimate arbiter (never a committed file). Do not enable
-where the question would carry secrets.
+**Data boundary:** the **fable subagent primary stays in-account** — no external transmission. Only the
+**gateway fallback** transmits the council question + context to Claude Fable via the zenmux gateway
+(metered API billing; creds from the same `BLUEPRINT_ARBITER_GATEWAY_*` environment as the ultimate
+arbiter, never a committed file). Do not let the run reach the gateway fallback where the question would
+carry secrets.
 
-Launch wiring (inside the Step 4 dispatch Bash block, alongside the voices — background it so it runs
-concurrently). `MYTHOS_ATTEMPTED` records that the witness ran (config-enabled OR forced) and drives the
-render after `wait`:
-
-```bash
-MYTHOS_OUT=""; MYTHOS_STATUS=""; MYTHOS_ATTEMPTED=0
-# Enabled via user config, OR forced for one run by an ultimate-council request
-# (ULTIMATE_COUNCIL_FORCE=1, set+unset by the executor per this step — a normal council omits it).
-if source "${PLUGIN_ROOT}/scripts/lib/ultimate-config.sh" 2>/dev/null \
-   && [ "${BUSDRIVER_ULTIMATE:-}" != 0 ] \
-   && { ultimate_surface_enabled council || [ "${ULTIMATE_COUNCIL_FORCE:-0}" = 1 ]; }; then
-   # BUSDRIVER_ULTIMATE=0 is the operator's global force-OFF: it outranks the per-run
-   # ULTIMATE_COUNCIL_FORCE escape hatch — a forced run must never bypass an explicit opt-out.
-  MYTHOS_ATTEMPTED=1
-  # Repo-root anchored (matches the helper's containment check) — running council from a
-  # subdirectory must not create subdir/.claude/ultimate and then be rejected.
-  _repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-  _mythos_dir="$_repo_root/${BUSDRIVER_STATE_DIR:-.claude}/ultimate"
-  mkdir -p "$_mythos_dir"
-  MYTHOS_OUT="$(cd "$_mythos_dir" && pwd)/mythos-council-$$.md"   # absolute — the helper requires absolute paths
-  # umask 077: the prompt carries council context — never world/group-readable, even briefly.
-  _old_umask=$(umask); umask 077
-  cat > "$MYTHOS_OUT.prompt" <<'MYTHOS_PROMPT'
-<the council question + context — same text composed into the other voices' heredocs>
-MYTHOS_PROMPT
-  umask "$_old_umask"
-  # Background so the gateway call overlaps the other voices; write an .rc marker on completion
-  # (0 = verdict written, non-zero = fail-closed). Tracked in PIDS like every other council
-  # job — do NOT disown: the Step 4 block's `wait "${PIDS[@]}"` must cover the witness, or the
-  # render step can run before the .rc marker exists and misreport a successful dispatch as
-  # MYTHOS_FAILED [timeout] while orphaning the gateway call.
-  ( umask 077   # subshell-local: the verdict/output and rc marker carry council context too
-    _mythos_rc=0
-    # ULTIMATE_COUNCIL_FORCE is deliberately non-exported in the parent shell (see the
-    # "plain, non-exported" instruction above), so `bash ultimate-dispatch.sh` as a NEW
-    # child process would not inherit it and the child's own defense-in-depth gate would
-    # reject an already-gate-passed forced run. Pass it narrowly via a per-command env
-    # prefix — visible to this one child process only, never exported into the parent shell.
-    ULTIMATE_COUNCIL_FORCE="${ULTIMATE_COUNCIL_FORCE:-0}" \
-      bash "${PLUGIN_ROOT}/scripts/ultimate-dispatch.sh" mythos-witness \
-      "$MYTHOS_OUT.prompt" "$MYTHOS_OUT" >/dev/null 2>&1 || _mythos_rc=$?
-    rm -f "$MYTHOS_OUT.prompt"   # the witness prompt carries council context — don't leave it in the state dir
-    # Atomic marker write; if even the fallback write fails the render step reads a
-    # missing marker as timeout — documented as MYTHOS_FAILED [error] territory.
-    { printf '%s\n' "$_mythos_rc" > "$MYTHOS_OUT.rc.tmp" && mv "$MYTHOS_OUT.rc.tmp" "$MYTHOS_OUT.rc"; } \
-      || printf '%s\n' 1 > "$MYTHOS_OUT.rc" || true
-    exit 0 ) &   # subshell always exits 0: `wait "${PIDS[@]}"` under set -e must not abort on a failed witness — the .rc marker carries the real status
-  PIDS+=("$!")
-  MYTHOS_STATUS=dispatched
-elif [ "${ULTIMATE_COUNCIL_FORCE:-0}" = 1 ]; then
-  MYTHOS_ATTEMPTED=1   # forced but the adapter failed to load / gate was false → render a loud banner below
-fi
-# ... existing PIDS dispatch + `wait "${PIDS[@]}"` ...
-```
-
-**Render (Step 5):** after `wait "${PIDS[@]}"`, in the same block. Render whenever the witness was
-ATTEMPTED (config-enabled OR ultimate-council-forced) — never mid-dispatch, never as a voice:
+**Gate (run ONCE before composing the Step 4 dispatch message).** Sets `MYTHOS_ATTEMPT=1` when this run
+is an ultimate-council. Set `_forced=1` when the user invoked "ultimate council" this run (Claude knows
+the trigger directly); the config opt-in is read from USER config; `BUSDRIVER_ULTIMATE=0` outranks both.
 
 ```bash
-if [ "$MYTHOS_ATTEMPTED" = 1 ]; then
-  if [ "$MYTHOS_STATUS" = dispatched ]; then
-    n=0; while [ ! -f "$MYTHOS_OUT.rc" ] && [ "$n" -lt "${BLUEPRINT_ARBITER_GATEWAY_TIMEOUT:-600}" ]; do sleep 2; n=$((n + 2)); done
-    rc="$(cat "$MYTHOS_OUT.rc" 2>/dev/null)"
-    if [ -s "$MYTHOS_OUT" ] && [ "$rc" = 0 ]; then
-      cat "$MYTHOS_OUT"                                    # verdict text → place in the Mythos Witness section
-    elif [ "$rc" = 3 ]; then
-      echo "MYTHOS_FAILED [gateway-not-configured]"        # creds missing (helper exit 3)
-    elif [ "$rc" = 0 ]; then
-      echo "MYTHOS_FAILED [empty verdict]"                 # exited clean but wrote no verdict
-    elif [ -n "$rc" ]; then
-      echo "MYTHOS_FAILED [error rc=$rc]"                  # dispatched but failed closed (helper exit 1)
-    else
-      echo "MYTHOS_FAILED [timeout]"                       # launched, no .rc after the full wait
-    fi
-  else
-    echo "MYTHOS_FAILED [${MYTHOS_STATUS:-adapter-unavailable}]"   # never launched: source failed / gate false
+# Standalone Bash call — shell state does NOT carry over from the Step 4 block, so resolve
+# PLUGIN_ROOT here too (same chain as Step 4b's preamble; see there for the full rationale).
+PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"
+[ -n "$PLUGIN_ROOT" ] || { _c="$HOME/.claude/plugins/cache/busdriver/busdriver"; PLUGIN_ROOT="$_c/$(ls "$_c" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"; }
+_forced=0   # set to 1 when the user invoked "ultimate council" this run
+MYTHOS_ATTEMPT=0
+# BUSDRIVER_ULTIMATE=0 (global force-OFF) outranks both config opt-in and the trigger.
+if [ "${BUSDRIVER_ULTIMATE:-}" != 0 ]; then
+  if [ "$_forced" = 1 ]; then
+    MYTHOS_ATTEMPT=1        # trigger authorizes the in-harness subagent — needs NEITHER the
+                            # adapter NOR the gateway, so it must NOT be gated on sourcing them
+  # ultimate-config.sh is bash-only (its BASH_SOURCE guard rejects the zsh executor macOS uses),
+  # so run the surface check under an explicit `bash -c`, passing PLUGIN_ROOT as $1.
+  elif bash -c 'source "$1/scripts/lib/ultimate-config.sh" 2>/dev/null && ultimate_surface_enabled council' _ "$PLUGIN_ROOT"; then
+    MYTHOS_ATTEMPT=1        # USER-config opt-in (the adapter reads the surface flag)
   fi
 fi
+echo "MYTHOS_ATTEMPT=$MYTHOS_ATTEMPT"
 ```
+
+**Primary — fable subagent (only when `MYTHOS_ATTEMPT=1`).** Dispatch in the SAME Step 4 message as the
+4a Skeptic and the 4b voices Bash call — one message, maximal concurrency:
+
+```text
+Agent(
+  description="Council Mythos Witness",
+  prompt="You are the Mythos Witness — a second, independent expert witness to a council of five advisors. You are NOT one of the five voices and NOT a vote. [QUESTION + CONTEXT]. Bring a distinct synthesizing lens the five voices miss — second-order effects, the framing they all share, the option nobody named. Give: 1. Position (1-2 sentences) 2. Reasoning (3 points) 3. Risk 4. Surprise. Under 300 words, opinionated, no hedging. Your factual/empirical claims are treated as UNVERIFIED until checked against local evidence.",
+  model="fable"   # pins claude-fable-5 in-harness — no gateway, no external transmission
+)
+```
+
+Read the subagent's returned text as the Mythos verdict. Fall to the gateway ONLY if the Agent tool
+**errors, reports `model="fable"` unavailable, or returns empty** — a successful subagent needs no
+gateway creds, so SKIP the fallback entirely in that (common) case.
+
+**Fallback — gateway (ONLY when the fable subagent failed/unavailable/empty).** Foreground; the rare path.
+It dispatches and grades in one block:
+
+```bash
+_forced=0   # set to 1 (MATCHING the gate snippet) when the user invoked "ultimate council" this run —
+            # shell state does not survive across Bash calls, so this block re-declares it independently
+# Standalone Bash call — resolve PLUGIN_ROOT again (same chain as Step 4b's preamble).
+PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"
+[ -n "$PLUGIN_ROOT" ] || { _c="$HOME/.claude/plugins/cache/busdriver/busdriver"; PLUGIN_ROOT="$_c/$(ls "$_c" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"; }
+_repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+_mythos_dir="$_repo_root/${BUSDRIVER_STATE_DIR:-.claude}/ultimate"; mkdir -p "$_mythos_dir"
+MYTHOS_OUT="$(cd "$_mythos_dir" && pwd)/mythos-council-$$.md"   # absolute — the helper requires absolute paths
+_old_umask=$(umask); umask 077   # the prompt carries council context — never world/group-readable
+cat > "$MYTHOS_OUT.prompt" <<'MYTHOS_PROMPT'
+<the council question + context — same text sent to the fable subagent above>
+MYTHOS_PROMPT
+umask "$_old_umask"
+# ULTIMATE_COUNCIL_FORCE passed narrowly (per-command env prefix, never exported) so the helper's own
+# defense-in-depth surface gate passes for a trigger-phrase run with no config. It is DERIVED from the
+# trigger decision ($_forced), NOT read back from the environment (which is normally unset → 0 and would
+# wrongly reject a legitimate trigger-only fallback). Config-enabled runs leave _forced=0 — the helper's
+# ultimate_surface_enabled check passes on its own.
+_mythos_rc=0
+ULTIMATE_COUNCIL_FORCE="$_forced" \
+  bash "${PLUGIN_ROOT}/scripts/ultimate-dispatch.sh" mythos-witness \
+  "$MYTHOS_OUT.prompt" "$MYTHOS_OUT" >/dev/null 2>&1 || _mythos_rc=$?
+rm -f "$MYTHOS_OUT.prompt"   # don't leave council context in the state dir
+if [ "$_mythos_rc" = 0 ] && [ -s "$MYTHOS_OUT" ]; then
+  cat "$MYTHOS_OUT"                                              # gateway verdict → Mythos Witness section
+elif [ "$_mythos_rc" = 3 ]; then
+  echo "MYTHOS_FAILED [subagent-unavailable + gateway-not-configured]"   # neither path available
+elif [ "$_mythos_rc" = 0 ]; then
+  echo "MYTHOS_FAILED [empty verdict]"                           # gateway exited clean but wrote nothing
+else
+  echo "MYTHOS_FAILED [subagent-failed + gateway rc=$_mythos_rc]"
+fi
+```
+
+**Render (Step 5).** Whenever `MYTHOS_ATTEMPT=1`, render the Mythos Witness — never as a voice, never in
+the vote tally:
+
+- **Fable subagent returned a verdict** → place its text in the Mythos Witness section (no gateway touched).
+- **Subagent failed → gateway fallback ran** → render the fallback block's `cat`/`MYTHOS_FAILED` output.
+- **Attempted but neither path produced a verdict** → `MYTHOS_FAILED [<status>]`. NEVER silently omit an
+  attempted witness (an omitted section reads as "not an ultimate-council" — a fail-OPEN).
 
 **Rendering directive (binding):** In the Step 6 report, whenever the Mythos Witness was attempted, render
 a SEPARATE top-level `## Mythos Witness — Expert Witness` section AFTER the `## UltraOracle — Expert Witness`
@@ -398,7 +409,7 @@ The UltraOracle expert witness (ultra-council / ultimate-council) AND the Mythos
 (On failure render instead: **⚠ ORACLE_FAILED [status] — UltraOracle Expert Witness verdict NOT included**.)
 
 ## Mythos Witness — Expert Witness
-(Render this section whenever the Mythos Witness RAN — user-config `ultimate.surfaces.council` enabled OR ultimate-council forced; OMIT the entire section when it did not run. Place it AFTER the UltraOracle section and BEFORE the Verdict. It is Claude Fable via the zenmux gateway, NOT a voice, and is EXCLUDED from Consensus / Strongest dissent / Recommendation below.)
+(Render this section whenever the Mythos Witness RAN — user-config `ultimate.surfaces.council` enabled OR ultimate-council forced; OMIT the entire section when it did not run. Place it AFTER the UltraOracle section and BEFORE the Verdict. It is Claude Fable (dispatched subagent-first, gateway fallback), NOT a voice, and is EXCLUDED from Consensus / Strongest dissent / Recommendation below.)
 [the verdict text, reproduced faithfully — annotate any ungrounded repo-specific claim as ungrounded; treat claims as unverified until checked]
 (On failure render instead: **⚠ MYTHOS_FAILED [status] — Mythos Witness verdict NOT included**.)
 

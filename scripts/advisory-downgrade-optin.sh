@@ -2,102 +2,84 @@
 # scripts/advisory-downgrade-optin.sh — resolve whether ADR 0012's bounded
 # advisory-bot stale-ack timeout downgrade is opted in for THIS repo.
 #
-# WHY: ADR 0012's opt-in was per-repo only (`<repo>/.claude/pr-grind-advisory-
-# downgrade.local`). A solo operator who wants the affordance on every one of
-# their repos had to drop the file into each checkout. This resolver adds a
-# GLOBAL opt-in (`$HOME/.claude/pr-grind-advisory-downgrade.local`) so a single
-# file switches it on everywhere, while the per-repo file still works unchanged.
-# Either present => opted in. The switch is safe because it does NOT open the
-# gate: advisory-stale-downgrade.sh still re-checks CI_GREEN + LITMUS_GREEN +
-# 0-findings + no-live-signal and never touches merge authority. See ADR 0012.
+# Opt-in is a PER-REPO file: <main-root>/<STATE_DIR>/pr-grind-advisory-downgrade.local.
+# To opt in across many repos, the operator drops that file into each with a trusted loop
+# (a hardened one-shot enroller is a deferred follow-up — see ADR 0012). There is
+# deliberately NO global env-var / global-file
+# switch: an env var can be set by a repo's committed .claude/settings.json (Claude Code
+# applies its `env` block) and a global marker file is likewise repo-injectable — either
+# would let the PR being graded enable its OWN downgrade, violating ADR 0012's "a
+# repo-controlled config cannot enable it." A per-repo file the operator places
+# (untracked, gitignored) keeps consent operator-owned. See ADR 0012 + the 2026-07-10
+# council (unanimous: per-repo file + one-shot helper, no global consent surface).
 #
-# OPERATOR-CONSENT BOUNDARY (ADR 0012: "a repo-controlled config cannot enable
-# it"). A PR author who could get a marker accepted as consent could self-enable
-# the downgrade for their own PR when the operator grinds it. So EITHER marker is
-# accepted only when it is a non-symlink REGULAR file, in a non-symlink state dir,
-# and — if it lives inside a git work tree — is NOT repo-controlled (its state dir
-# is not a gitlink, and the marker is in neither the index nor HEAD's tree). The
-# global file normally lives outside any repo ($HOME/.claude) and is operator space
-# by construction; the in-repo check only matters for the exotic case where the
-# global dir itself sits inside a repo (e.g. a dotfiles repo rooted at $HOME).
+# The marker is accepted as OPERATOR consent only when it is a non-symlink REGULAR file,
+# in a non-symlink / non-gitlink state dir, that is NOT repo-controlled (present in
+# neither the index nor HEAD's tree). Every git query fails CLOSED (reject) on error — a
+# git error is NEVER read as "untracked => enable".
 #
 # CONTRACT — prints exactly `1` (opted in) or `0` (not) to stdout; always exit 0.
-#   The value lives in STDOUT (mirrors advisory-stale-downgrade.sh), so the
-#   pr-grind caller consumes it as `OPTIN=$(… advisory-downgrade-optin.sh)`.
-#   FAIL-CLOSED: this opt-in RELAXES a gate, so any ambiguity prints `0`. For the
-#   per-repo path, an unresolvable/unqueryable repo or ANY git error rejects (a
-#   git error is NEVER read as "untracked => enable"). For the global path, a
-#   marker that is NOT inside a repo is operator consent (the normal case); it is
-#   rejected only when it IS inside a repo AND provably repo-controlled.
+#   FAIL-CLOSED: an unresolvable/unqueryable repo or any git error prints `0`.
 #
 # Env:
-#   BUSDRIVER_STATE_DIR        per-repo state dir name (default `.claude`).
-#   BUSDRIVER_GLOBAL_STATE_DIR global state dir (default `$HOME/.claude`).
-#   BUSDRIVER_MAIN_ROOT        test seam — overrides the git-derived main-repo
-#                              root so the per-repo lookup needs no real checkout.
+#   BUSDRIVER_STATE_DIR   per-repo state dir name (default `.claude`).
+# The main-repo root is derived PURELY from git (CWD) — there is deliberately no env
+# override, because a committed `.claude/settings.json` `env` block can set arbitrary
+# env vars, and a repo-supplied override must never point the resolver at another
+# checkout's marker. Tests exercise it by running from inside a fixture repo.
 set -u
+
+# Neutralize repo-supplied git-environment injection: a committed `.claude/settings.json`
+# `env` block could set GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR / GIT_INDEX_FILE / config
+# overrides to redirect our git queries at another checkout and self-enable the downgrade.
+# Unset the documented repo-discovery + config vars so every git command below discovers
+# the repo purely from CWD (which the SKILL pins to the PR's own worktree).
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM \
+      GIT_NAMESPACE GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT 2>/dev/null || true
 
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 FILE="pr-grind-advisory-downgrade.local"
 
-# Return 0 (== "repo-controlled, REJECT") iff the marker <path>, which lives inside
-# the git work tree rooted at <root>, is: in a gitlink/submodule state dir (mode
-# 160000), OR present in the index, OR present in HEAD's tree. FAIL-CLOSED: any git
-# error returns 0 (reject). Returns 1 only when provably none of these hold.
+# BUSDRIVER_STATE_DIR is itself repo-injectable (a committed `.claude/settings.json` `env`
+# block can set arbitrary env vars). A MULTI-COMPONENT value like `alias/.claude` — with
+# `alias` a tracked symlink into a tracked dir — would slip a repo-controlled marker past
+# the final-component symlink checks below while `_repo_controlled` queries the lexical
+# path. Require a plain single dir NAME; anything else (traversal / slash / empty) fails
+# CLOSED.
+case "$STATE_DIR" in ''|.|..|*/*) echo 0; exit 0 ;; esac
+
+# Return 0 (== "repo-controlled, REJECT") iff the marker <path>, inside the git work
+# tree rooted at <root>, is: in a gitlink/submodule state dir (mode 160000), OR present
+# in the index, OR present in HEAD's tree. FAIL-CLOSED: any git error returns 0 (reject).
+# Returns 1 only when provably none hold.
 _repo_controlled() {   # <marker_path> <repo_root>
     local path="$1" root="$2" rel dir_rel stage tracked
     rel="${path#"${root%/}"/}"
     dir_rel=$(dirname "$rel")
-    # State dir is a gitlink/submodule — the parent index can't see a marker
-    # embedded inside it as tracked, so reject the whole subtree.
     stage=$(git -C "$root" ls-files --stage -- "$dir_rel" 2>/dev/null) || return 0
     grep -q '^160000 ' <<<"$stage" && return 0
-    # In the index (e.g. a `git add -f` of the gitignored marker).
     tracked=$(git -C "$root" ls-files -- "$rel" 2>/dev/null) || return 0
     [[ -n "$tracked" ]] && return 0
-    # In HEAD's tree (committed then de-indexed with `git rm --cached` — still a
-    # repo-originated marker). Only meaningful when HEAD exists (a fresh repo with
-    # no commits has nothing committed).
     if git -C "$root" rev-parse --verify -q HEAD >/dev/null 2>&1; then
         git -C "$root" cat-file -e "HEAD:$rel" 2>/dev/null && return 0
     fi
     return 1
 }
 
-# --- Global opt-in (repo-independent operator consent) — checked first so it holds
-#     even when the repo root can't be resolved. ---
-# `${HOME:-}` guards `set -u`; leave GLOBAL_BASE empty (skip the global check) when
-# neither BUSDRIVER_GLOBAL_STATE_DIR nor HOME is set — never collapse the default to
-# a root-level `/.claude` that a container/system env could hold.
-GLOBAL_BASE="${BUSDRIVER_GLOBAL_STATE_DIR:-}"
-if [[ -z "$GLOBAL_BASE" && -n "${HOME:-}" ]]; then
-    GLOBAL_BASE="${HOME%/}/.claude"
-fi
-if [[ -n "$GLOBAL_BASE" ]]; then
-    gpath="${GLOBAL_BASE%/}/${FILE}"
-    if [[ -f "$gpath" && ! -L "$gpath" && ! -L "${GLOBAL_BASE%/}" ]]; then
-        # Normally $HOME/.claude is outside any repo => operator consent. If it DOES
-        # resolve inside a git work tree (dotfiles repo rooted at $HOME, or a global
-        # dir pointed into a repo), apply the same repo-controlled rejection so a PR
-        # to THAT repo cannot add the global marker and self-enable.
-        groot=$(git -C "${GLOBAL_BASE%/}" rev-parse --show-toplevel 2>/dev/null || true)
-        if [[ -z "$groot" ]]; then
-            echo 1; exit 0            # not inside a repo => operator consent
-        elif ! _repo_controlled "$gpath" "$groot"; then
-            echo 1; exit 0            # inside a repo but provably not repo-controlled
-        fi
-        # else: repo-controlled global marker => reject; fall through to per-repo.
-    fi
-fi
-
-# --- Per-repo opt-in. Resolve the MAIN repo root (--git-common-dir's parent is the
-#     main-repo root in BOTH worktree and plain-clone modes). Must be a queryable
-#     repo; FAIL-CLOSED otherwise. ---
-MAIN_ROOT="${BUSDRIVER_MAIN_ROOT:-}"
-if [[ -z "$MAIN_ROOT" ]]; then
-    GCD=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-    case "$GCD" in /*) MAIN_ROOT="$(dirname "$GCD")" ;; esac
-fi
+# Resolve the MAIN repo root from CWD's git dir (--git-common-dir's parent is the
+# main-repo root in BOTH worktree and plain-clone modes). Must be a queryable repo;
+# FAIL-CLOSED otherwise.
+# The MAIN work-tree root is where the operator's gitignored `.local` lives. For a linked
+# worktree that is NOT this (ephemeral pr-grind) worktree — `git worktree add` does not copy
+# gitignored files — so resolve it via `git worktree list`, whose FIRST entry is always the
+# main worktree. This is robust across linked worktrees, submodules, and `--separate-git-dir`,
+# where `dirname(--git-common-dir)` is not reliably a checkout root. FAIL-CLOSED: not a repo
+# => empty => `0` below.
+# Capture git's output AND status first (a mid-stream git failure must fail CLOSED, not
+# leave a partial root): `|| WT=""` discards any partial output on a nonzero git exit.
+WT=$(git worktree list --porcelain 2>/dev/null) || WT=""
+MAIN_ROOT=$(printf '%s\n' "$WT" | awk '/^worktree /{print substr($0, 10); exit}')
 if [[ -n "$MAIN_ROOT" ]]; then
     ppath="${MAIN_ROOT%/}/${STATE_DIR}/${FILE}"
     pdir="${MAIN_ROOT%/}/${STATE_DIR}"

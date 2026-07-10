@@ -1,19 +1,12 @@
 #!/usr/bin/env bash
 # tests/test-advisory-downgrade-optin.sh
 #
-# Verifies scripts/advisory-downgrade-optin.sh — the ADR 0012 opt-in resolver that
-# prints `1` iff the advisory-bot stale-ack downgrade is opted in for this repo via
-# EITHER the per-repo file (`<main-root>/<STATE_DIR>/pr-grind-advisory-downgrade.local`)
-# OR the global file (`<GLOBAL_STATE_DIR>/pr-grind-advisory-downgrade.local`).
-#
-# Env seams: BUSDRIVER_MAIN_ROOT pins the per-repo root, BUSDRIVER_GLOBAL_STATE_DIR
-# the global dir, BUSDRIVER_STATE_DIR the per-repo state dir name. The per-repo path
-# requires a real git repo (operator-consent boundary: the marker must be untracked
-# / not committed / not a symlink / not inside a gitlink), so per-repo cases init a
-# throwaway repo; global/unresolvable cases need no git. We assert the OBSERVABLE
-# contract: opted-in IFF an eligible file is present, and FAIL-CLOSED (`0`) on any
-# ambiguity — unresolvable root, unqueryable repo, or a repo-controlled marker.
-
+# Verifies scripts/advisory-downgrade-optin.sh — the ADR 0012 per-repo opt-in resolver.
+# It prints `1` iff the per-repo file <main-root>/<STATE_DIR>/pr-grind-advisory-
+# downgrade.local is present AND accepted as operator consent (non-repo-controlled,
+# non-symlink regular file); else `0`, FAIL-CLOSED on any git error. There is no global
+# switch and no repo-root env override by design — the root is derived purely from git
+# (CWD), so tests run the resolver from INSIDE a fixture repo.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,109 +17,60 @@ FILE="pr-grind-advisory-downgrade.local"
 passed=0; failed=0
 fail() { echo "FAIL: $1"; failed=$((failed + 1)); }
 ok()   { echo "OK:   $1"; passed=$((passed + 1)); }
-assert_eq() { # <expected> <actual> <label>
-  if [[ "$2" == "$1" ]]; then ok "$3"; else fail "$3 (expected '$1', got '$2')"; fi
-}
+assert_eq() { if [[ "$2" == "$1" ]]; then ok "$3"; else fail "$3 (expected '$1', got '$2')"; fi; }
 
 [[ -f "$S" ]] || { fail "missing $S"; echo "Results: $passed passed, $failed failed"; exit 1; }
 
-# One sandbox root; sub-dirs live under it and are removed by a single recursive
-# cleanup. (Avoids relying on an array mutated inside command substitution — `mk`
-# runs in a subshell via `$(mk)`, so a parent-scope array would stay empty and leak.)
 TMPROOT=$(mktemp -d)
 cleanup() { rm -rf "$TMPROOT"; }
 trap cleanup EXIT
-mk() { mktemp -d "$TMPROOT/XXXXXX"; }          # bare temp dir (NOT a git repo)
-mkrepo() { local d; d=$(mk); git -C "$d" init -q; printf '%s' "$d"; }   # git repo
+mk() { mktemp -d "$TMPROOT/XXXXXX"; }
+mkrepo() { local d; d=$(mk); git -C "$d" init -q; printf '%s' "$d"; }
 
-# Run the resolver with pinned roots; echo its stdout. GLOBAL points at an empty
-# dir by default so only files the test creates count.
-run() { # <main_root> <global_dir> [state_dir]
-  local root="$1" gdir="$2" sdir="${3:-.claude}"
-  env BUSDRIVER_MAIN_ROOT="$root" BUSDRIVER_GLOBAL_STATE_DIR="$gdir" \
-      BUSDRIVER_STATE_DIR="$sdir" "$BASH_BIN" "$S"
-}
+# Run the resolver FROM INSIDE <dir> (root is git-derived from CWD; no env seam).
+run() { local dir="$1" sdir="${2:-.claude}"; ( cd "$dir" && env BUSDRIVER_STATE_DIR="$sdir" "$BASH_BIN" "$S" ); }
 
-# 1. Neither file present → 0
-ROOT=$(mkrepo); GDIR=$(mk); mkdir -p "$ROOT/.claude"
-out=$(run "$ROOT" "$GDIR")
-assert_eq 0 "$out" "neither present → 0"
+# 1. Neither → 0
+ROOT=$(mkrepo); mkdir -p "$ROOT/.claude"; out=$(run "$ROOT")
+assert_eq 0 "$out" "neither → 0"
 
-# 2. Per-repo untracked marker (operator consent) → 1
-ROOT=$(mkrepo); GDIR=$(mk); mkdir -p "$ROOT/.claude"; : > "$ROOT/.claude/$FILE"
-out=$(run "$ROOT" "$GDIR")
-assert_eq 1 "$out" "per-repo untracked marker → 1"
+# 2. Untracked per-repo marker (operator consent) → 1
+ROOT=$(mkrepo); mkdir -p "$ROOT/.claude"; : > "$ROOT/.claude/$FILE"; out=$(run "$ROOT")
+assert_eq 1 "$out" "untracked per-repo marker → 1"
 
-# 3. Global file only → 1 (global is repo-independent; no git needed)
-ROOT=$(mk); GDIR=$(mk); : > "$GDIR/$FILE"
-out=$(run "$ROOT" "$GDIR")
-assert_eq 1 "$out" "global only → 1"
+# 3. Custom BUSDRIVER_STATE_DIR respected → 1
+ROOT=$(mkrepo); mkdir -p "$ROOT/state"; : > "$ROOT/state/$FILE"; out=$(run "$ROOT" state)
+assert_eq 1 "$out" "custom STATE_DIR → 1"
 
-# 4. Both present → 1 (global short-circuits first)
-ROOT=$(mkrepo); GDIR=$(mk); mkdir -p "$ROOT/.claude"; : > "$ROOT/.claude/$FILE"; : > "$GDIR/$FILE"
-out=$(run "$ROOT" "$GDIR")
-assert_eq 1 "$out" "both present → 1"
+# 4. Tracked marker is repo-controlled (a PR could `git add -f` it) → 0
+ROOT=$(mkrepo); mkdir -p "$ROOT/.claude"; : > "$ROOT/.claude/$FILE"
+git -C "$ROOT" add -f ".claude/$FILE"; out=$(run "$ROOT")
+assert_eq 0 "$out" "tracked marker → 0 (repo-controlled)"
 
-# 5. Custom BUSDRIVER_STATE_DIR respected for the per-repo marker → 1
-ROOT=$(mkrepo); GDIR=$(mk); mkdir -p "$ROOT/state"; : > "$ROOT/state/$FILE"
-out=$(run "$ROOT" "$GDIR" "state")
-assert_eq 1 "$out" "custom STATE_DIR per-repo → 1"
+# 5. Symlink marker → 0
+ROOT=$(mkrepo); mkdir -p "$ROOT/.claude"; ln -s /dev/null "$ROOT/.claude/$FILE"; out=$(run "$ROOT")
+assert_eq 0 "$out" "symlink marker → 0"
 
-# 6. FAIL-CLOSED: unresolvable main root (empty, run from a non-git dir) + no global → 0
-NONGIT=$(mk); GDIR=$(mk)
-out=$(cd "$NONGIT" && env BUSDRIVER_MAIN_ROOT="" BUSDRIVER_GLOBAL_STATE_DIR="$GDIR" \
-        BUSDRIVER_STATE_DIR=".claude" "$BASH_BIN" "$S")
-assert_eq 0 "$out" "unresolvable root + no global → 0 (fail-closed)"
-
-# 7. Global still wins even when the root is unresolvable (standing consent) → 1
-NONGIT=$(mk); GDIR=$(mk); : > "$GDIR/$FILE"
-out=$(cd "$NONGIT" && env BUSDRIVER_MAIN_ROOT="" BUSDRIVER_GLOBAL_STATE_DIR="$GDIR" \
-        BUSDRIVER_STATE_DIR=".claude" "$BASH_BIN" "$S")
-assert_eq 1 "$out" "global present, unresolvable root → 1"
-
-# 8. FAIL-CLOSED: both HOME and BUSDRIVER_GLOBAL_STATE_DIR unset makes the global
-#    root unresolvable — skip the global check (never probe a root-level /.claude);
-#    with no per-repo file + non-git cwd → 0, no crash under `set -u`.
-NONGIT=$(mk)
-out=$(cd "$NONGIT" && env -u HOME -u BUSDRIVER_GLOBAL_STATE_DIR BUSDRIVER_MAIN_ROOT="" \
-        BUSDRIVER_STATE_DIR=".claude" "$BASH_BIN" "$S")
-assert_eq 0 "$out" "HOME + global unset, unresolvable root → 0 (fail-closed)"
-
-# 9. A TRACKED per-repo marker is repo-controlled (a PR author could `git add -f`
-#    it), NOT operator consent → 0.
-ROOT=$(mkrepo); GDIR=$(mk); mkdir -p "$ROOT/.claude"
-: > "$ROOT/.claude/$FILE"; git -C "$ROOT" add -f ".claude/$FILE"
-out=$(run "$ROOT" "$GDIR")
-assert_eq 0 "$out" "tracked per-repo marker → 0 (repo-controlled, rejected)"
-
-# 10. A SYMLINK per-repo marker is rejected (must be a regular non-symlink file).
-ROOT=$(mkrepo); GDIR=$(mk); mkdir -p "$ROOT/.claude"
-ln -s /dev/null "$ROOT/.claude/$FILE"
-out=$(run "$ROOT" "$GDIR")
-assert_eq 0 "$out" "symlink per-repo marker → 0 (rejected)"
-
-# 11. FAIL-CLOSED: MAIN_ROOT is NOT a git repo — consent is unprovable even though
-#     the marker file is present → 0 (a git error must never read as "untracked").
-ROOT=$(mk); GDIR=$(mk); mkdir -p "$ROOT/.claude"; : > "$ROOT/.claude/$FILE"
-out=$(run "$ROOT" "$GDIR")
-assert_eq 0 "$out" "non-git root with marker → 0 (fail-closed)"
-
-# 12. A GLOBAL marker that sits inside a git repo AND is tracked there (dotfiles
-#     repo rooted at the global dir) is repo-controlled → 0. Per-repo root is a
-#     fresh empty repo so it doesn't independently opt in.
-GREPO=$(mkrepo); PREPO=$(mkrepo); mkdir -p "$GREPO/gstate"; : > "$GREPO/gstate/$FILE"
-git -C "$GREPO" add -f "gstate/$FILE"
-out=$(run "$PREPO" "$GREPO/gstate")
-assert_eq 0 "$out" "tracked global marker inside a repo → 0 (rejected)"
-
-# 13. A per-repo marker committed in HEAD but removed from the index (`git rm
-#     --cached`) is still repo-originated → 0 (HEAD-tree check, not just index).
-ROOT=$(mkrepo); GDIR=$(mk); mkdir -p "$ROOT/.claude"; : > "$ROOT/.claude/$FILE"
+# 6. Marker in HEAD but removed from index (`git rm --cached`) → 0
+ROOT=$(mkrepo); mkdir -p "$ROOT/.claude"; : > "$ROOT/.claude/$FILE"
 git -C "$ROOT" add -f ".claude/$FILE"
 git -C "$ROOT" -c user.email=t@t -c user.name=t commit -q -m init
-git -C "$ROOT" rm --cached -q ".claude/$FILE"   # out of index, still in HEAD + worktree
-out=$(run "$ROOT" "$GDIR")
-assert_eq 0 "$out" "marker in HEAD but not index → 0 (rejected)"
+git -C "$ROOT" rm --cached -q ".claude/$FILE"; out=$(run "$ROOT")
+assert_eq 0 "$out" "marker in HEAD but not index → 0"
+
+# 7. FAIL-CLOSED: non-git dir with a marker present → 0 (git resolution fails)
+NG=$(mk); mkdir -p "$NG/.claude"; : > "$NG/.claude/$FILE"; out=$(run "$NG")
+assert_eq 0 "$out" "non-git dir with marker → 0 (fail-closed)"
+
+# 8. FAIL-CLOSED: non-git dir, no marker → 0
+NG2=$(mk); out=$(run "$NG2")
+assert_eq 0 "$out" "non-git dir, no marker → 0"
+
+# 9. FAIL-CLOSED: a multi-component / traversal BUSDRIVER_STATE_DIR (repo-injectable) is
+#    rejected even with a marker at that lexical path → 0.
+ROOT=$(mkrepo); mkdir -p "$ROOT/alias/.claude"; : > "$ROOT/alias/.claude/$FILE"
+out=$(run "$ROOT" "alias/.claude")
+assert_eq 0 "$out" "multi-component STATE_DIR → 0 (fail-closed)"
 
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

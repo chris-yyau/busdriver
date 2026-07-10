@@ -1,3 +1,10 @@
+## [1.88.1](https://github.com/chris-yyau/busdriver/compare/v1.88.0...v1.88.1) (2026-07-10)
+
+
+### Bug Fixes
+
+* **blueprint-review:** correct stale advisory name ORACLE-MAX -> ULTRA-ORACLE ([#323](https://github.com/chris-yyau/busdriver/issues/323)) ([31c1b6a](https://github.com/chris-yyau/busdriver/commit/31c1b6aab6d94eb6e5d6b95d6acf064377da517b)), closes [#322](https://github.com/chris-yyau/busdriver/issues/322)
+
 # [1.88.0](https://github.com/chris-yyau/busdriver/compare/v1.87.1...v1.88.0) (2026-07-10)
 
 

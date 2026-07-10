@@ -1,3 +1,10 @@
+## [1.86.1](https://github.com/chris-yyau/busdriver/compare/v1.86.0...v1.86.1) (2026-07-10)
+
+
+### Bug Fixes
+
+* **security:** fail-closed guard for .github/ changes in scanner detector ([#318](https://github.com/chris-yyau/busdriver/issues/318)) ([834088c](https://github.com/chris-yyau/busdriver/commit/834088cb03278e800d11e986b9c6ad1f90747c0c))
+
 # [1.86.0](https://github.com/chris-yyau/busdriver/compare/v1.85.1...v1.86.0) (2026-07-10)
 
 

@@ -1,5 +1,5 @@
 ---
-description: Convene the 5-voice council plus BOTH expert witnesses — UltraOracle (GPT-5.5 Pro) AND the Mythos Witness (Claude Fable, subagent-first) — each rendered separately, never a vote.
+description: Convene the 5-voice council plus BOTH expert witnesses — UltraOracle (ChatGPT Pro) AND the Mythos Witness (Claude Fable, subagent-first) — each rendered separately, never a vote.
 ---
 
 # Ultimate-Council

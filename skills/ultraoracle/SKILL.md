@@ -2,7 +2,7 @@
 name: ultraoracle
 description: >-
   Standalone maintainer workflow for a single repo-grounded UltraOracle
-  (GPT-5.5 Pro) expert-witness consult — quick / repo / upstream-audit modes,
+  (ChatGPT Pro) expert-witness consult — quick / repo / upstream-audit modes,
   review-type labeling, fail-closed handling (ADR 0007). Triggers:
   ultraoracle, ask the oracle, oracle consult, repo-grounded oracle review,
   upstream audit with oracle. NOT for routine review — litmus/blueprint-

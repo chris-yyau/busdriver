@@ -161,8 +161,21 @@ COMPLETION block (step 1). It checks the global file first (repo-independent
 standing consent, valid even when the repo root can't be resolved), then the
 per-repo file via the same `--git-common-dir`-parent main-root resolver the rest of
 the opt-in ecosystem uses. Any ambiguity — unresolvable root with no global file —
-prints `0` (stay strict / BAIL), because this opt-in *relaxes* a gate. Covered by
-`tests/test-advisory-downgrade-optin.sh` (8 cases; env-seam roots, no real git).
+prints `0` (stay strict / BAIL), because this opt-in *relaxes* a gate.
+
+**Operator-consent boundary on the per-repo file.** ADR 0012 requires that "a
+repo-controlled config cannot enable" the downgrade, so the resolver accepts the
+per-repo marker as consent only when it is an **untracked, non-symlink regular
+file** in a non-symlink state dir — otherwise a PR author could `git add -f` a
+tracked marker (gitignore notwithstanding) or drop a symlink and self-enable the
+downgrade for their own PR when the operator grinds it. The global file lives
+outside any repo, so it is operator-controlled by construction and needs no such
+check, and any git error along the per-repo path fails CLOSED (reject) rather than
+being read as "untracked ⇒ enable". Covered by
+`tests/test-advisory-downgrade-optin.sh` (11 cases; env-seam roots for the
+presence matrix, plus real `git init` repos exercising the operator-consent
+boundary: untracked marker ⇒ opted in, tracked (`git add -f`) / symlinked marker
+⇒ rejected, and a non-git root ⇒ fail-closed).
 
 **Why global is safe here.** The switch does **not** open the merge gate — it only
 changes *where the opt-in is read from*. Every downgrade precondition above is

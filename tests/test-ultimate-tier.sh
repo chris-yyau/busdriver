@@ -120,7 +120,7 @@ anchor "MYTHOS_FAILED banner on failure"                   'MYTHOS_FAILED'
 anchor "rendered AFTER UltraOracle, BEFORE the Verdict"    'AFTER the `## UltraOracle — Expert Witness`'
 anchor "routes through the shared ultimate-dispatch helper" 'scripts/ultimate-dispatch.sh'
 anchor "config gate is ultimate.surfaces.council"          'ultimate.surfaces.council'
-# ADR 0014: subagent-first. The per-run force var is now DERIVED from the trigger decision
+# ADR 0015: subagent-first. The per-run force var is now DERIVED from the trigger decision
 # ($_forced) and passed as a narrow per-command env prefix to the gateway FALLBACK — never
 # assigned into the shell, so there is nothing to leak and nothing to `unset`.
 anchor "per-run force derived from the trigger decision"   'ULTIMATE_COUNCIL_FORCE="$_forced"'

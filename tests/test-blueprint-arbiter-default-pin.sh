@@ -9,7 +9,7 @@
 # survive in the APPEND-ONLY Version History. The negative checks therefore scan the BODY ONLY —
 # everything BEFORE the `## Version History` heading — cut with a heading-level-ROBUST regex
 # (`/^#+ Version History/`), never a fixed line number, so appending a v3.7 entry or renumbering
-# the doc can't break the exclusion (issue #265, low finding). NOTE (ADR 0014): `model: fable` is
+# the doc can't break the exclusion (issue #265, low finding). NOTE (ADR 0015): `model: fable` is
 # now a LIVE-BODY pin — the ultimate-arbiter escalation dispatches a fable subagent first — so the
 # default is guarded POSITIVELY (opus is the *subscription* default) rather than by asserting
 # `model: fable` absent. Same static-string approach as
@@ -42,7 +42,7 @@ fi
 echo "── opus is the default pin ──"
 present "default arbiter pin is model: opus" 'model: opus'
 present "opus success status recorded" 'model_pin_status=pinned'
-# Positive default guard (ADR 0014 made `model: fable` a legitimate live-body escalation pin, so
+# Positive default guard (ADR 0015 made `model: fable` a legitimate live-body escalation pin, so
 # the old blanket `absent 'model: fable'` no longer holds): the DEFAULT dispatch pins opus, tied
 # to the subscription-tier rationale that fable cannot satisfy.
 present "opus is the DEFAULT (subscription) pin" 'the strongest available *subscription* model'

@@ -216,7 +216,7 @@ Council is not a blocking gate, so the loud banner (only when the oracle was att
 ### Step 4.6: Optional Mythos Witness — Claude Fable ("ultimate-council", off by default)
 
 The **Mythos Witness** is the council's second expert witness — **Claude Fable**, dispatched
-**subagent-first** (the `ultimate` tier; see ADR 0011 as amended by ADR 0014):
+**subagent-first** (the `ultimate` tier; see ADR 0011 as amended by ADR 0015):
 
 1. **Primary — fable subagent.** A fresh `Agent(model="fable")` in-harness subagent (pinned
    `claude-fable-5`), dispatched in the SAME Step 4 message as the 4a Skeptic and the 4b voices.

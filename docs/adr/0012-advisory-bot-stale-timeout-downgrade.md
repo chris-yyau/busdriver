@@ -146,8 +146,77 @@ reaction churn — bots that mutate existing activity without a fresh `created_a
 is deliberately deferred; the recommended holistic direction is to reuse the
 ack-ledger staleness verdict directly rather than patch each timestamp source.
 
+## Addendum (2026-07-10): opting in every repo — keep per-repo consent, no global switch
+
+The opt-in is per-repo (`<repo>/.claude/pr-grind-advisory-downgrade.local`). A solo
+operator who wants the affordance on every checkout drops the marker file into each repo's
+`.claude/` as a plain, untracked regular file (the resolver rejects a symlinked or tracked
+marker). A hardened one-shot `enable-advisory-downgrade.sh` enroller that does this safely
+in bulk is a **planned follow-up** — see "Deferred" below. Either way there is **no new
+global consent surface** to injection-harden.
+
+**Why no global env var / global file (load-bearing).** A global switch — a file
+(`$HOME/.claude/...`) or an env var (`BUSDRIVER_ADVISORY_DOWNGRADE=1`) — forces the
+resolver to answer *"was this placed by the operator, or injected by the PR being
+graded?"* A committed marker file is repo-injectable (defensible only via fragile
+filesystem path-containment — an adversarial review drove it through ~10 rounds of
+pathological path cases). An env var is **also** repo-injectable: Claude Code applies the
+`env` block from a repo's *committed* `.claude/settings.json`, so a PR can set it. Either
+lets the PR under review enable its OWN downgrade — the exact thing the invariant ("a
+repo-controlled config cannot enable it") forbids. A 5-voice `busdriver:council` plus an
+ultimate-council (both UltraOracle GPT-5.5-Pro runs + a Claude-Fable Mythos witness),
+2026-07-10, were **unanimous**: keep consent operator-owned, drop the global switch,
+deliver the convenience as a helper. Prior art agrees — git (`~/.gitconfig`), npm (user
+`.npmrc`), GHA (admin secrets) all place operator consent *outside* the repo. A key
+distinction settled it: busdriver's `SKIP_LITMUS` env var is an **escape hatch** (an overt
+operator override to *skip* a gate) — a different trust class from *enabling* a
+gate-relaxing feature from config the graded subject can set. (Meta-lesson: when
+adversarial review exceeds ~3 rounds on a *convenience* feature, the mechanism is wrong —
+redesign so the invariant holds *by construction*, as the per-repo file does, not by
+hardening a leaky global.)
+
+**Per-repo consent boundary (resolver `scripts/advisory-downgrade-optin.sh`).** The marker
+is accepted only when it is a non-symlink REGULAR file, in a non-symlink / non-gitlink
+state dir, NOT repo-controlled (present in neither the index nor HEAD's tree), with every
+git query failing CLOSED on error and a queryable repo required. Blocks the `git add -f`,
+commit-then-`git rm --cached`, symlink, and — via the state-dir gitlink (mode 160000)
+check — submodule-embedded vectors, and rejects a repo-injected multi-component
+`BUSDRIVER_STATE_DIR`. The main-repo root is derived from `git worktree list` (robust
+across linked worktrees, submodules, and `--separate-git-dir`), never a repo-supplied
+env var. Covered by `tests/test-advisory-downgrade-optin.sh` (9 cases; the gitlink branch
+is exercised at the code level rather than a dedicated submodule fixture).
+
+**Deferred: the hardened one-shot enroller.** A drafted `enable-advisory-downgrade.sh`
+(explicit repo paths only — never a recursive scanner; verify owner + non-bare work-tree
+root + non-symlink state dir; delegate acceptance to the resolver; `--dry-run`) itself
+grew an adversarial tail on *operator-machine-local* vectors — forged `.git` gitfiles and
+an intermediate-directory symlink-swap TOCTOU that portable bash cannot close (`O_NOFOLLOW`
+on each path component is unavailable). That is exactly the "stop after ~3 rounds; the
+mechanism is over-hardened" signal, and the enroller's real threat model is *the operator
+running a script over their own repos*, not untrusted PR content. So it is **deferred to a
+follow-up** (ideally not in bash, or wired into repo-bootstrap): the resolver — the piece
+that actually runs on untrusted PR content — ships now and holds *by construction*, and
+the operator enrolls with the trusted loop above meanwhile. New repos stay default-OFF
+until enrolled.
+
+**Follow-up (out of scope here):** `SKIP_LITMUS` / `SKIP_PR_GRIND` are themselves settable
+via a committed `.claude/settings.json` `env` block (verified: `pre-commit-gate.sh:310` /
+`pre-pr-gate.sh:141` accept a bare env value) — a strictly more powerful injection than
+this feature, worth hardening or an explicit ADR acceptance in its own change.
+
+**Why this is safe.** The switch never opens the merge gate: `advisory-stale-downgrade.sh`
+still re-checks CI green, litmus green, 0 findings, 0 unresolved threads, no live signal,
+server-time anchored. It only releases a *stale-but-clean* advisory ack once the real
+gates are already green.
+
 ## Revisit trigger
 
+- A persistent, truly non-injectable *global* toggle becomes worth its cost — revisit
+  an authenticated parent capability (an operator launch-wrapper passing an
+  unforgeable token / non-inheritable descriptor, keyed to verified repo identity)
+  rather than any repo-readable file or env var. The 2026-07-10 council judged this
+  disproportionate for a solo operator (the per-repo file + enroller suffices); revisit
+  only if per-repo enrollment becomes a real burden.
 - A second approval-capable human joins the repo (the solo assumption breaks) —
   re-evaluate whether the opt-in should self-revoke like `pr-grind-auto-admin-solo`.
 - Evidence that a downgraded bot later surfaced a real finding that the trigger's

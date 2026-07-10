@@ -78,12 +78,34 @@ Agent(
 Before dispatching, check CLI availability and find the dispatch script:
 
 ```bash
+# Resolve the plugin root ONCE. CLAUDE_PLUGIN_ROOT is NOT populated in the Bash
+# tool env of every harness (empty in SDK/child sessions), and a bare
+# "${CLAUDE_PLUGIN_ROOT}/..." would then collapse to "/scripts/..." and every
+# voice + witness would silently fail to launch. Fall back to the newest
+# installed cache dir; override with BUSDRIVER_PLUGIN_ROOT. This PLUGIN_ROOT is
+# in scope for the Step 4.5/4.6 witness snippets, which are inserted into THIS
+# same block (they share this shell, alongside PIDS).
+PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"
+if [ -z "$PLUGIN_ROOT" ]; then
+  # newest installed STABLE cache version. grep keeps only pure X.Y.Z dirs
+  # (drops prereleases like 2.0.0-beta.1, whose numeric key ties with 2.0.0 and
+  # would win the line tie-break). Then numeric field sort by major.minor.patch:
+  # NOT `sort -V` (GNU-only; stock macOS BSD sort lacks it) and NOT mtime/`ls -t`
+  # (a reinstalled older version can carry a newer mtime). `sort -t. -kN,Nn` is
+  # portable across BSD and GNU sort.
+  _cache="$HOME/.claude/plugins/cache/busdriver/busdriver"
+  _v="$(ls "$_cache" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
+  [ -n "$_v" ] && PLUGIN_ROOT="$_cache/$_v"
+fi
+PLUGIN_ROOT="${PLUGIN_ROOT%/}"
+[ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT" ] || { echo "council: cannot resolve busdriver plugin root — set BUSDRIVER_PLUGIN_ROOT" >&2; exit 1; }
+
 # Source shared CLI library and resolve roles from config
-source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/resolve-cli.sh"
+source "${PLUGIN_ROOT}/scripts/lib/resolve-cli.sh"
 PRAGMATIST_CLI=$(resolve_role_cli "council.pragmatist")
 CRITIC_CLI=$(resolve_role_cli "council.critic")
 RESEARCHER_CLI=$(resolve_role_cli "council.researcher")
-DISPATCH="${CLAUDE_PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
+DISPATCH="${PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
 
 # Dispatch available voices — capture PIDs so wait blocks on the actual processes
 # IMPORTANT: Use heredocs (<<'DELIM') NOT --prompt "..." to avoid shell escaping bugs
@@ -158,7 +180,7 @@ ULTRA_ORACLE_PROMPT
 # may carry sensitive repo/design context — never lingers in $TMPDIR after an
 # off-by-default (NOT_ATTEMPTED) run; the wrapper has already fully read the file
 # by the time it exits, so this is not a race.
-{ bash "${CLAUDE_PLUGIN_ROOT}/scripts/ultra-oracle-run.sh" council "${ULTRA_ORACLE_COUNCIL_FORCE:-0}" \
+{ bash "${PLUGIN_ROOT}/scripts/ultra-oracle-run.sh" council "${ULTRA_ORACLE_COUNCIL_FORCE:-0}" \
     "$ULTRA_ORACLE_PROMPT_FILE" "${BUSDRIVER_STATE_DIR:-.claude}/ultra-oracle/council-$$.md" \
     > "$ULTRA_ORACLE_RESULT" 2>/dev/null; rm -f "$ULTRA_ORACLE_PROMPT_FILE"; } &
 PIDS+=("$!")
@@ -236,7 +258,7 @@ render after `wait`:
 MYTHOS_OUT=""; MYTHOS_STATUS=""; MYTHOS_ATTEMPTED=0
 # Enabled via user config, OR forced for one run by an ultimate-council request
 # (ULTIMATE_COUNCIL_FORCE=1, set+unset by the executor per this step — a normal council omits it).
-if source "${CLAUDE_PLUGIN_ROOT}/scripts/lib/ultimate-config.sh" 2>/dev/null \
+if source "${PLUGIN_ROOT}/scripts/lib/ultimate-config.sh" 2>/dev/null \
    && [ "${BUSDRIVER_ULTIMATE:-}" != 0 ] \
    && { ultimate_surface_enabled council || [ "${ULTIMATE_COUNCIL_FORCE:-0}" = 1 ]; }; then
    # BUSDRIVER_ULTIMATE=0 is the operator's global force-OFF: it outranks the per-run
@@ -267,7 +289,7 @@ MYTHOS_PROMPT
     # reject an already-gate-passed forced run. Pass it narrowly via a per-command env
     # prefix — visible to this one child process only, never exported into the parent shell.
     ULTIMATE_COUNCIL_FORCE="${ULTIMATE_COUNCIL_FORCE:-0}" \
-      bash "${CLAUDE_PLUGIN_ROOT}/scripts/ultimate-dispatch.sh" mythos-witness \
+      bash "${PLUGIN_ROOT}/scripts/ultimate-dispatch.sh" mythos-witness \
       "$MYTHOS_OUT.prompt" "$MYTHOS_OUT" >/dev/null 2>&1 || _mythos_rc=$?
     rm -f "$MYTHOS_OUT.prompt"   # the witness prompt carries council context — don't leave it in the state dir
     # Atomic marker write; if even the fallback write fails the render step reads a

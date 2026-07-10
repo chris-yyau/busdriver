@@ -83,6 +83,26 @@ jobs:
             echo "security=true" >> "$GITHUB_OUTPUT"
             exit 0
           }
+          # Defense-in-depth: any change under .github/ (workflows, scripts, this
+          # detector itself) is always security-relevant, independent of the
+          # pattern below — so a future edit that accidentally narrows the pattern
+          # can't stop a workflow-touching PR from being scanned. (^|/) anchors to
+          # a real path segment so e.g. src/my.github/x.js does not match.
+          # Capture exit status explicitly rather than testing the grep
+          # directly in the `if` — bash suspends `set -e` for commands used
+          # as `if` test conditions, so a grep exit-2 (I/O/regex error) would
+          # otherwise be silently treated as "false" and fall through to the
+          # broader pattern below, defeating this block's independence from
+          # that pattern (the exact anti-pattern fixed at lines 100-107,
+          # flagged by Devin Review on this block).
+          github_grep_status=0
+          grep -qE '(^|/)\.github/' <<< "$changed_files" || github_grep_status=$?
+          case "$github_grep_status" in
+            0) echo "security=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            1) ;; # no .github/ changes — continue to broader pattern check
+            *) echo "::warning::grep (.github check) failed (exit $github_grep_status) — running scanners (fail-closed)"
+               echo "security=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
           # Capture grep's exit status explicitly. Bash suspends `set -e` for commands
           # used as `if` test conditions (per `man bash`) — same class of bug as the
           # git diff case above. A grep exit-2 (regex error, I/O fault) would otherwise

@@ -1,3 +1,10 @@
+## [1.85.1](https://github.com/chris-yyau/busdriver/compare/v1.85.0...v1.85.1) (2026-07-10)
+
+
+### Bug Fixes
+
+* harden bump-version.sh (jq injection, semver anchor, empty-array guard) ([#312](https://github.com/chris-yyau/busdriver/issues/312)) ([a922afe](https://github.com/chris-yyau/busdriver/commit/a922afe18d94184811089275238337f5eb560210))
+
 # [1.85.0](https://github.com/chris-yyau/busdriver/compare/v1.84.7...v1.85.0) (2026-07-10)
 
 

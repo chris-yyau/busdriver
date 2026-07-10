@@ -146,8 +146,48 @@ reaction churn — bots that mutate existing activity without a fresh `created_a
 is deliberately deferred; the recommended holistic direction is to reuse the
 ack-ledger staleness verdict directly rather than patch each timestamp source.
 
+## Addendum (2026-07-10): global opt-in — one switch for all repos
+
+The opt-in was per-repo only (`<repo>/.claude/pr-grind-advisory-downgrade.local`),
+so a solo operator who wants the affordance on every checkout had to drop the file
+into each one. Added a **global** opt-in alternative:
+`${BUSDRIVER_GLOBAL_STATE_DIR:-$HOME/.claude}/pr-grind-advisory-downgrade.local`.
+Either file present ⇒ opted in; the per-repo file still works unchanged and wins on
+its own.
+
+Resolution moved into a single fail-CLOSED resolver, `scripts/advisory-downgrade-optin.sh`
+(prints `1`/`0`), replacing the inline prompt-level presence check in the pr-grind
+COMPLETION block (step 1). It checks the global file first (repo-independent
+standing consent, valid even when the repo root can't be resolved), then the
+per-repo file via the same `--git-common-dir`-parent main-root resolver the rest of
+the opt-in ecosystem uses. Any ambiguity — unresolvable root with no global file —
+prints `0` (stay strict / BAIL), because this opt-in *relaxes* a gate. Covered by
+`tests/test-advisory-downgrade-optin.sh` (7 cases; env-seam roots, no real git).
+
+**Why global is safe here.** The switch does **not** open the merge gate — it only
+changes *where the opt-in is read from*. Every downgrade precondition above is
+unchanged and re-checked by `advisory-stale-downgrade.sh`: CI green, litmus green,
+the bot found 0 findings, 0 unresolved threads, no live/blocking signal, server-time
+anchored. It never touches required checks or litmus, and for the genuine-new-commit
+case litmus has already reviewed the new diff. So the marginal effect of "on
+everywhere" is only that a *stale-but-clean* advisory ack stops blocking when the
+real gates are already green.
+
+**Blast radius (chosen: plain global).** The operator's repos are single-operator,
+so a plain global switch was chosen over auto-scoping it to sole-admin repos. The
+tradeoff: on a *shared* repo the operator later contributes to (a second
+approval-capable human, advisory bots encoding team policy), the global file would
+apply there too. The stricter **solo-admin-gated global** — active only where the
+existing sole-admin detector says the operator is the only approval-capable human,
+self-revoking otherwise — is documented as the upgrade path (revisit trigger below)
+and is a small delta on this resolver if a shared repo ever enters the mix.
+
 ## Revisit trigger
 
+- The operator starts running pr-grind in a **shared / multi-maintainer** repo while
+  the global opt-in is set — upgrade the resolver to the **solo-admin-gated global**
+  variant (reuse the `pr-grind-auto-admin-solo` sole-admin detector; active only where
+  the operator is the sole approver, self-revoking when a second appears).
 - A second approval-capable human joins the repo (the solo assumption breaks) —
   re-evaluate whether the opt-in should self-revoke like `pr-grind-auto-admin-solo`.
 - Evidence that a downgraded bot later surfaced a real finding that the trigger's

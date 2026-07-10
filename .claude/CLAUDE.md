@@ -47,7 +47,7 @@ Six gates enforced by PreToolUse hooks. All fail-CLOSED (block on error). Escape
 |------|-----------------|-----------------|
 | `.claude/pr-grind-auto-admin-solo.local` | Solo-admin repos: `--admin-on-approver-gap` implicit, snapshot-anchored anti-self-bypass, self-revokes if a 2nd approver appears | `skills/pr-grind/SKILL.md` flag table |
 | `.claude/pr-grind-codex-expected.local` | One-shot `@codex review` nudge when Codex never auto-triggered (`none`) before merge | `docs/adr/0013-codex-none-nudge-opt-in.md` |
-| `.claude/pr-grind-advisory-downgrade.local` | At `--max-wait` exhaustion, may downgrade a 0-finding advisory bot's stale ack `stale→none`; never touches merge authority | `docs/adr/0012-advisory-bot-stale-timeout-downgrade.md` |
+| `.claude/pr-grind-advisory-downgrade.local` **(or global `${BUSDRIVER_GLOBAL_STATE_DIR:-$HOME/.claude}/pr-grind-advisory-downgrade.local`)** | At `--max-wait` exhaustion, may downgrade a 0-finding advisory bot's stale ack `stale→none`; never touches merge authority. The **global** file opts in *every* repo (resolver `scripts/advisory-downgrade-optin.sh`, fail-CLOSED: either present ⇒ opted in; unresolvable root + no global ⇒ BAIL) | `docs/adr/0012-advisory-bot-stale-timeout-downgrade.md` |
 
 ## Version Sync
 

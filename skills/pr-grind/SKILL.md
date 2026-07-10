@@ -549,9 +549,17 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                           are already green. Treats ALL registered advisory bots uniformly (no per-bot
                           special-casing — Codex and Devin are aligned with cursor/cubic/coderabbit).
 
-                          1. Opt-in gate: proceed ONLY if `<STATE_DIR>/pr-grind-advisory-downgrade.local`
-                             exists at the main-repo root (solo-repo affordance; `<STATE_DIR>` =
-                             `${BUSDRIVER_STATE_DIR:-.claude}`). Absent → skip to BAIL below (unchanged).
+                          1. Opt-in gate: run the resolver and proceed ONLY if it prints `1`:
+                             `OPTIN=$(bash "<PLUGIN_ROOT>/scripts/advisory-downgrade-optin.sh")`.
+                             It returns `1` iff the opt-in is present as EITHER the per-repo file
+                             `<STATE_DIR>/pr-grind-advisory-downgrade.local` at the main-repo root
+                             (solo-repo affordance; `<STATE_DIR>` = `${BUSDRIVER_STATE_DIR:-.claude}`)
+                             OR the global file
+                             `${BUSDRIVER_GLOBAL_STATE_DIR:-$HOME/.claude}/pr-grind-advisory-downgrade.local`
+                             (a single switch that opts in every repo). Fail-CLOSED: `0` — not opted
+                             in, or the resolver could not confirm the repo root — → skip to BAIL below
+                             (unchanged). Run it from inside the PR's worktree so the per-repo lookup's
+                             main-repo root is the PR's own repo (same CWD contract as the sibling opt-ins).
                           2. Global green gates (fail-CLOSED — any not provably true → skip to BAIL):
                              - CI_GREEN: required status checks green per `scripts/relevant-check-status.sh`.
                              - LITMUS_GREEN: a fresh litmus PASS bound to the current HEAD `base...HEAD`

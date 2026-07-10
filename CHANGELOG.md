@@ -1,3 +1,10 @@
+## [1.84.7](https://github.com/chris-yyau/busdriver/compare/v1.84.6...v1.84.7) (2026-07-10)
+
+
+### Reverts
+
+* Revert "refactor: vault 7 upstream-duplicated common rules behind rules-archive ([#310](https://github.com/chris-yyau/busdriver/issues/310))" ([#311](https://github.com/chris-yyau/busdriver/issues/311)) ([1f6e1d9](https://github.com/chris-yyau/busdriver/commit/1f6e1d9f0c5ca2c10886a65ac38d86fd063e6a56))
+
 ## [1.84.6](https://github.com/chris-yyau/busdriver/compare/v1.84.5...v1.84.6) (2026-07-09)
 
 

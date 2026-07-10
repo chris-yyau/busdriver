@@ -1,3 +1,10 @@
+## [1.87.1](https://github.com/chris-yyau/busdriver/compare/v1.87.0...v1.87.1) (2026-07-10)
+
+
+### Bug Fixes
+
+* **rules:** sweep dangling rules/<lang>/ pointers (retired by [#315](https://github.com/chris-yyau/busdriver/issues/315) + pre-existing typos) ([#319](https://github.com/chris-yyau/busdriver/issues/319)) ([b239865](https://github.com/chris-yyau/busdriver/commit/b23986517744cdace99bde01cb533615f5e19f17)), closes [#316](https://github.com/chris-yyau/busdriver/issues/316)
+
 # [1.87.0](https://github.com/chris-yyau/busdriver/compare/v1.86.1...v1.87.0) (2026-07-10)
 
 

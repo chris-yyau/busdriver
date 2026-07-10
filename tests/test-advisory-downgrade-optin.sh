@@ -92,5 +92,12 @@ mkdir -p "$SGD2/linked/.claude"; : > "$SGD2/linked/.claude/$FILE"
 out=$(run "$SGD2/linked")
 assert_eq 0 "$out" "separate-git-dir main + linked-worktree marker → 0 (fail-closed)"
 
+# 12. Symlinked state dir (`.claude` → another dir) with a marker behind it → 0.
+#     Guard: `! -L "$pdir"` rejects a symlinked STATE DIR (repo-injectable vector)
+#     before the marker is ever considered.
+ROOT=$(mkrepo); mkdir -p "$ROOT/real"; ln -s "$ROOT/real" "$ROOT/.claude"; : > "$ROOT/real/$FILE"
+out=$(run "$ROOT")
+assert_eq 0 "$out" "symlinked state dir → 0"
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

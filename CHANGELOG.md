@@ -1,3 +1,10 @@
+# [1.86.0](https://github.com/chris-yyau/busdriver/compare/v1.85.1...v1.86.0) (2026-07-10)
+
+
+### Features
+
+* ultimate-tier fable subagent-first + council plugin-root self-resolve ([#317](https://github.com/chris-yyau/busdriver/issues/317)) ([46ba372](https://github.com/chris-yyau/busdriver/commit/46ba37214a702a80eb206ec7335c01e900c8e251))
+
 ## [1.85.1](https://github.com/chris-yyau/busdriver/compare/v1.85.0...v1.85.1) (2026-07-10)
 
 

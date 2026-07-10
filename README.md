@@ -206,12 +206,9 @@ touch .claude/skip-design-review.local
 # file remains valid until 1h after the original touch.
 touch .claude/skip-pr-grind.local
 
-# Environment variable bypass — must be exported in the parent shell BEFORE
-# starting `claude`. Inline `SKIP_LITMUS=1 git commit` does NOT work because
-# PreToolUse hooks fire before the command's inline env is applied.
-export SKIP_LITMUS=1
-export SKIP_DESIGN_REVIEW=1
-export SKIP_PR_GRIND=1
+# (The gate-skip env vars SKIP_LITMUS / SKIP_DESIGN_REVIEW / SKIP_PR_GRIND were
+# removed — a committed .claude/settings.json env block is PR-injectable, so the
+# skip *file* above is the only bypass. See docs/adr/0016.)
 
 # Per-repo opt-in (NOT a skip-file — operator-consent file): treat
 # `--admin-on-approver-gap` as implicit for pr-grind when you are
@@ -248,7 +245,7 @@ Every gate execution writes to a persistent JSONL log per project, so you can an
 | File (per project) | Who writes | What it captures |
 |--------------------|-----------|------------------|
 | `.claude/review-metrics.jsonl` | litmus | Review outcome (PASS/FAIL), issue count, severity breakdown, iteration, CLI used, mode, commit SHA, branch, diff size |
-| `.claude/bypass-log.jsonl` | litmus + busdriver gates (+ seatbelt plugin if installed) | Skip-file consumptions + selected telemetry events (see taxonomy below). **Not logged:** env-var bypasses (`SKIP_LITMUS=1`, `SKIP_PR_GRIND=1`) exit without logging — only file-based skips are audited |
+| `.claude/bypass-log.jsonl` | litmus + busdriver gates (+ seatbelt plugin if installed) | Skip-file consumptions + selected telemetry events (see taxonomy below). Gate skips are file-based only (the env-var hatches were removed — ADR 0016), so every bypass is audited |
 
 **Event types written to `bypass-log.jsonl`:**
 

@@ -199,10 +199,12 @@ that actually runs on untrusted PR content — ships now and holds *by construct
 the operator enrolls with the trusted loop above meanwhile. New repos stay default-OFF
 until enrolled.
 
-**Follow-up (out of scope here):** `SKIP_LITMUS` / `SKIP_PR_GRIND` are themselves settable
-via a committed `.claude/settings.json` `env` block (verified: `pre-commit-gate.sh:310` /
-`pre-pr-gate.sh:141` accept a bare env value) — a strictly more powerful injection than
-this feature, worth hardening or an explicit ADR acceptance in its own change.
+**Follow-up — RESOLVED by [ADR 0016](./0016-settings-env-gate-bypass-acceptance.md) (2026-07-11, issue #325):**
+`SKIP_LITMUS` / `SKIP_PR_GRIND` were themselves settable via a committed
+`.claude/settings.json` `env` block (verified at filing: `pre-commit-gate.sh:310` /
+`pre-pr-gate.sh:141` accepted a bare env value) — a strictly more powerful injection than
+this feature. ADR 0016 removed the four `SKIP_*` gate-skip env-var reads (file hatch
+retained) and accepted the residual `BASH_ENV`/`PATH`/`GIT_*` surface as bounded.
 
 **Why this is safe.** The switch never opens the merge gate: `advisory-stale-downgrade.sh`
 still re-checks CI green, litmus green, 0 findings, 0 unresolved threads, no live signal,

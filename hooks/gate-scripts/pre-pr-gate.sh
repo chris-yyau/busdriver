@@ -6,10 +6,9 @@
 # branches, pre-existing commits from other sessions).
 #
 # Fail-CLOSED: errors block PR creation (user preference: stuck > skipped review)
-# Skip: $STATE_DIR/skip-litmus.local (or SKIP_LITMUS=1 exported in parent shell
-#       before `claude` starts — inline `SKIP_LITMUS=1 gh pr create` does NOT
-#       work because PreToolUse hooks fire before the command's inline env
-#       is applied; same caveat as pre-commit gate)
+# Skip: $STATE_DIR/skip-litmus.local — git-resolved, operator-placed, single-use,
+#       audited. No env-var hatch: a committed .claude/settings.json env block is
+#       injectable by the PR under review (issue #325 / ADR 0016).
 #
 # Council decision (2026-03-21): Gate `gh pr create` only, NOT `git push`.
 # Gating push kills WIP pushes and destroys credibility of the gate system.
@@ -138,7 +137,8 @@ if [ -f "$SKIP_FILE" ]; then
     printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-pr"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
     exit 0
 fi
-[ "${SKIP_LITMUS:-0}" = "1" ] && exit 0
+# No SKIP_LITMUS env-var hatch — injectable via committed settings.json
+# (issue #325 / ADR 0016); use the skip file above.
 
 # ── ~/.claude repo: auto-generated file bypass ────────────────────────
 # If all changes on this branch vs main are auto-generated files, skip review.

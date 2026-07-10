@@ -463,7 +463,8 @@ If the user wants to skip, they should create the file manually in their termina
     printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-implementation"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
     exit 0
 fi
-[ "${SKIP_DESIGN_REVIEW:-0}" = "1" ] && exit 0
+# No SKIP_DESIGN_REVIEW env-var hatch — injectable via committed settings.json
+# (issue #325 / ADR 0016); use the skip file above.
 
 # ── Parse tool type and relevant input ─────────────────────────────────
 # Returns: WRITE_EDIT|<file_path>  or  BASH_MOD|<command>  or  SAFE|

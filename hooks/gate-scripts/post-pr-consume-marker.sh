@@ -92,7 +92,7 @@ try:
             raw = cd_m.group(1).strip().strip('\042\047')
             target_dir = os.path.expanduser(raw)
             continue
-        # Strip leading env var assignments (e.g. SKIP_LITMUS=1 gh pr create)
+        # Strip leading env var assignments (e.g. GIT_PAGER=cat gh pr create)
         while re.match(r'^\w+=\S*\s', seg):
             seg = re.sub(r'^\w+=\S*\s+', '', seg, count=1)
         if re.match(r'gh\s+pr\s+create\b', seg):

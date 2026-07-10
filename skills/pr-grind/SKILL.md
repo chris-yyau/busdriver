@@ -704,8 +704,11 @@ INVOCATION_START_EPOCH=$(date +%s)
 #   1. File:    .claude/skip-baseref-check.local (touched in the user's terminal)
 #   2. Env var: PR_GRIND_ALLOW_NON_MAIN_BASE=1 (exported in the PARENT shell
 #              BEFORE launching claude — inline `PR_GRIND_ALLOW_NON_MAIN_BASE=1
-#              claude` does NOT work because hooks fire before inline env applies,
-#              same caveat as SKIP_LITMUS).
+#              claude` does NOT work because hooks fire before inline env applies).
+#   NOTE: this env var is the same injectable class as the removed SKIP_* gate
+#   hatches (a committed settings.json env is PR-injectable — ADR 0016). It is
+#   retained here as a skill-level *safety* refusal (not a review-gate skip);
+#   prefer the file hatch. See ADR 0016 "same-class sibling retained and flagged".
 #
 # Capture stderr so auth/network errors are surfaced in the bail message
 # instead of being swallowed by `2>/dev/null`.
@@ -746,7 +749,7 @@ case "$BASE_BRANCH" in
       echo "   If this is intentional (stacked PR, long-lived feature branch), either:"
       echo "     - In your terminal: touch .claude/skip-baseref-check.local"
       echo "     - Or in the PARENT shell BEFORE launching claude: export PR_GRIND_ALLOW_NON_MAIN_BASE=1"
-      echo "       (inline 'PR_GRIND_ALLOW_NON_MAIN_BASE=1 claude' does NOT work — same rule as SKIP_LITMUS)"
+      echo "       (inline 'PR_GRIND_ALLOW_NON_MAIN_BASE=1 claude' does NOT work — hooks fire before inline env applies)"
       rm -f "$BASE_BRANCH_ERR"
       exit 1
     fi

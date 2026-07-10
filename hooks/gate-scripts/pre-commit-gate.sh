@@ -6,10 +6,9 @@
 #   Gate 2: Codex review  — blocks if no review-passed marker for current staged changes
 #
 # Fail-CLOSED: errors block commits (user preference: stuck > skipped review)
-# Skip: $STATE_DIR/skip-litmus.local (or SKIP_LITMUS=1 exported in parent shell
-#       before `claude` starts — inline `SKIP_LITMUS=1 git commit` does NOT
-#       work because PreToolUse hooks fire before the command's inline env
-#       is applied)
+# Skip: $STATE_DIR/skip-litmus.local — git-resolved, operator-placed, single-use,
+#       audited. No env-var hatch: a committed .claude/settings.json env block is
+#       injectable by the PR under review (issue #325 / ADR 0016).
 
 set -euo pipefail
 # ── Harness-portable root/state resolution ─────────────────────────────
@@ -25,7 +24,7 @@ case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 export BUSDRIVER_STATE_DIR="$STATE_DIR"
 # Fail-CLOSED: errors block commits rather than silently approving.
 # User preference: "a stuck session is better than a skipped review."
-# Escape hatch: $STATE_DIR/skip-litmus.local (or SKIP_LITMUS=1 in parent shell).
+# Escape hatch: $STATE_DIR/skip-litmus.local (git-resolved file; no env-var hatch — ADR 0016).
 trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-commit gate error — blocking as precaution. If stuck, create '"$STATE_DIR"'/skip-litmus.local in your terminal.\"}\n"; exit 0' ERR
 
 # ── Block emission helper (F6 fix) ────────────────────────────────────
@@ -307,7 +306,8 @@ If YOU created this file: STOP. Do NOT create skip files yourself. Run /litmus i
     printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-commit"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
     exit 0
 fi
-[ "${SKIP_LITMUS:-0}" = "1" ] && exit 0
+# No SKIP_LITMUS env-var hatch — env is injectable via a committed
+# .claude/settings.json (issue #325 / ADR 0016); use the skip file above.
 
 # ── Gate 1: Design review ────────────────────────────────────────────────
 DESIGN_STATE="$REPO_DIR/$STATE_DIR/design-review-needed.local.md"

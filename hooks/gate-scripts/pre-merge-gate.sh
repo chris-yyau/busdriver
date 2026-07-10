@@ -6,10 +6,9 @@
 # regardless of which skill the agent loaded.
 #
 # Fail-CLOSED: errors block merge (user preference: stuck > skipped grind)
-# Skip: $STATE_DIR/skip-pr-grind.local (or SKIP_PR_GRIND=1 exported in parent
-#       shell before `claude` starts — inline `SKIP_PR_GRIND=1 gh pr merge`
-#       does NOT work because PreToolUse hooks fire before the command's
-#       inline env is applied)
+# Skip: $STATE_DIR/skip-pr-grind.local — git-resolved, operator-placed, audited.
+#       No env-var hatch: a committed .claude/settings.json env block is
+#       injectable by the PR under review (issue #325 / ADR 0016).
 
 set -euo pipefail
 # ── Harness-portable state resolution ──────────────────────────────────
@@ -197,9 +196,8 @@ fi
 REPO_DIR="$GATE_REPO_DIR"
 
 # ── Skip overrides ────────────────────────────────────────────────────
-
-# Env var override
-[ "${SKIP_PR_GRIND:-}" = "1" ] && exit 0
+# No SKIP_PR_GRIND env-var hatch — injectable via committed settings.json
+# (issue #325 / ADR 0016); use the skip file below.
 
 # File-based skip (anti-self-bypass pattern from pre-commit gate)
 SKIP_FILE="$REPO_DIR/$STATE_DIR/skip-pr-grind.local"

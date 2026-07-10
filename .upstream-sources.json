@@ -8341,6 +8341,16 @@
       "path": "skills/continuous-learning-v2/hooks/observe_fast.py",
       "source": "local",
       "status": "local"
+    },
+    {
+      "path": "rules/.install-exclude",
+      "source": "local",
+      "status": "local"
+    },
+    {
+      "path": "tests/test-rules-install-exclude.sh",
+      "source": "local",
+      "status": "local"
     }
   ],
   "rejected": [

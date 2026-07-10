@@ -1,3 +1,10 @@
+# [1.89.0](https://github.com/chris-yyau/busdriver/compare/v1.88.1...v1.89.0) (2026-07-10)
+
+
+### Features
+
+* **pr-grind:** per-repo advisory-bot stale-ack downgrade opt-in ([#314](https://github.com/chris-yyau/busdriver/issues/314)) ([9ed5e23](https://github.com/chris-yyau/busdriver/commit/9ed5e2358efba1bdfa98906145f1f3c5d60ebe76))
+
 ## [1.88.1](https://github.com/chris-yyau/busdriver/compare/v1.88.0...v1.88.1) (2026-07-10)
 
 

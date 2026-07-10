@@ -7923,7 +7923,7 @@
       "status": "local"
     },
     {
-      "path": "tests/test-rules-install-exclude.sh",
+      "path": "tests/test-rules-install.sh",
       "source": "local",
       "status": "local"
     },

@@ -1,137 +1,109 @@
 #!/usr/bin/env bash
-# install.sh — Install busdriver rules to ~/.claude/rules/
+# install.sh — Install the busdriver rules canon to ~/.claude/rules/common/
 #
 # Usage:
-#   ./install.sh                    # Install common rules only
-#   ./install.sh typescript python  # Install common + language-specific
-#   ./install.sh --all              # Install common + all languages
+#   ./install.sh          # replace ~/.claude/rules/common/ with rules/common/
 #
-# Always installs common/ first. Language directories are additive.
-# Uses cp -r to preserve directory structure (do NOT flatten).
+# The busdriver rules are a small, hand-written, always-loaded canon under
+# rules/common/ (see rules/README.md) — currently the four files listed there.
+# There are no language-specific rule packs: they were retired (the source tree
+# has no rules/<language>/ dirs left), procedural guidance lives in on-demand
+# skills, and mechanically checkable rules are enforced by the gates.
 #
-# Install exclusions: paths listed in rules/.install-exclude are copied into the
-# repo tree but NOT installed to ~/.claude/rules/ (they duplicate on-demand
-# busdriver skills or are stale, so they stay out of always-loaded context). The
-# files REMAIN in the repo so cross-references resolve and sync-upstream keeps
-# them current. Override with RULES_INSTALL_NO_EXCLUDE=1 to install everything.
+# This is a CLEAN install of common/ (the target dir is replaced, not merged),
+# so a re-install never leaves stale files behind. The retired language packs
+# are separate directories (~/.claude/rules/<language>/) this never touches —
+# remove any you still have by hand (see rules/README.md → Installation).
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET_DIR="${HOME}/.claude/rules"
-EXCLUDE_FILE="${SCRIPT_DIR}/.install-exclude"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
-ALL_LANGS=(typescript python golang swift php java kotlin cpp perl rust csharp)
-
-# Load exclude list (paths relative to rules/, one per line; '#' comments and
-# blank lines ignored). Absent/empty file or RULES_INSTALL_NO_EXCLUDE=1 → no
-# exclusions (install everything).
-EXCLUDES=()
-if [[ "${RULES_INSTALL_NO_EXCLUDE:-0}" != "1" && -f "$EXCLUDE_FILE" ]]; then
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%%#*}"                          # strip trailing comment
-    line="${line#"${line%%[![:space:]]*}"}"     # ltrim
-    line="${line%"${line##*[![:space:]]}"}"      # rtrim
-    [[ -z "$line" ]] && continue
-    # Strict shape: exactly <dir>/<file>, each a single path segment of
-    # [A-Za-z0-9._-] (no leading/trailing slash, no subdirs, no "."/".."
-    # segments). This is all real rule layout needs (rules/<dir>/<file>.md) and
-    # structurally forecloses the whole path-traversal / intermediate-symlink
-    # class before the rm -f below — a hostile or typo'd entry can never escape
-    # ~/.claude/rules. (Symlinked <dir> itself is caught in install_dir.)
-    if [[ ! "$line" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*/[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]] \
-       || [[ "$line" == *".."* ]]; then
-      echo -e "${RED}WARNING: ignoring unsafe exclude entry: ${line}${NC}" >&2
-      continue
-    fi
-    EXCLUDES+=("$line")
-  done < "$EXCLUDE_FILE"
+# Legacy usage was `./install.sh <language> ...` / `--all`. The packs are gone,
+# so arguments now mean nothing — say so loudly rather than silently ignoring
+# them and installing only common.
+if [[ $# -gt 0 ]]; then
+  echo -e "${YELLOW}Note: language rule packs were retired — argument(s) '$*' are ignored.${NC}" >&2
+  echo -e "${YELLOW}Only the common canon is installed now (see rules/README.md).${NC}" >&2
 fi
 
-install_dir() {
-  local name="$1"
-  local src="${SCRIPT_DIR}/${name}"
-  local dst="${TARGET_DIR}/${name}"
+src="${SCRIPT_DIR}/common"
+dst="${TARGET_DIR}/common"
 
-  if [[ ! -d "$src" ]]; then
-    echo -e "${RED}ERROR: ${name}/ not found in ${SCRIPT_DIR}${NC}"
-    return 1
-  fi
-
-  mkdir -p "$dst"
-
-  # Physical containment: the fully-resolved install dir (pwd -P follows every
-  # symlink — leaf, ancestor like a symlinked ~/.claude, or intermediate) MUST
-  # stay under the resolved $HOME. A legitimately symlinked ~/.claude that lives
-  # under $HOME (dotfiles repos) passes; a symlink escaping outside $HOME is
-  # rejected, so neither the cp below nor the exclusion rm can touch files
-  # outside the operator's home tree. Fail-CLOSED on unresolvable paths.
-  local home_real dst_real
-  home_real="$(cd "$HOME" 2>/dev/null && pwd -P)" || home_real=""
-  dst_real="$(cd "$dst" 2>/dev/null && pwd -P)" || dst_real=""
-  if [[ -z "$home_real" || -z "$dst_real" || ( "$dst_real/" != "$home_real/"* && "$dst_real" != "$home_real" ) ]]; then
-    echo -e "${RED}ERROR: install dir ${dst} resolves outside \$HOME (${dst_real:-unresolved}) — refusing${NC}" >&2
-    return 1
-  fi
-
-  cp -r "$src"/. "$dst"/
-
-  # Prune any excluded paths that fall under this just-installed dir. Removal is
-  # contained by construction, not by a runtime path check: every entry is a
-  # validated <dir>/<file> pair (strict-shape regex above rejects absolute
-  # paths, ".." and any intermediate component), and this <dir> ($dst) was just
-  # confirmed non-symlink above — so "${TARGET_DIR}/${excl}" can only ever be a
-  # real file directly inside a real install dir. Only count an exclusion when
-  # the file existed and is gone afterward; any failure is fail-CLOSED.
-  local excl target skipped=0
-  for excl in ${EXCLUDES[@]+"${EXCLUDES[@]}"}; do
-    [[ "$excl" == "${name}/"* ]] || continue
-    target="${TARGET_DIR}/${excl}"
-    [[ -e "$target" ]] || continue
-    if ! rm -f -- "$target" || [[ -e "$target" ]]; then
-      echo -e "${RED}ERROR: failed to exclude ${excl} (still present at ${target})${NC}" >&2
-      return 1
-    fi
-    skipped=$((skipped + 1))
-  done
-
-  if [[ "$skipped" -gt 0 ]]; then
-    echo -e "${GREEN}  ✓ ${name}/${NC} ${YELLOW}(${skipped} excluded — see rules/.install-exclude)${NC}"
-  else
-    echo -e "${GREEN}  ✓ ${name}/${NC}"
-  fi
-}
+if [[ ! -d "$src" ]]; then
+  echo -e "${RED}ERROR: common/ not found in ${SCRIPT_DIR}${NC}" >&2
+  exit 1
+fi
 
 echo "Installing busdriver rules → ${TARGET_DIR}"
-if [[ "${#EXCLUDES[@]}" -gt 0 ]]; then
-  echo -e "${YELLOW}Excluding ${#EXCLUDES[@]} rule(s) per rules/.install-exclude (RULES_INSTALL_NO_EXCLUDE=1 to install all).${NC}"
-fi
-echo ""
 
-# Always install common
-install_dir "common"
-
-if [[ $# -eq 0 ]]; then
-  echo ""
-  echo -e "${YELLOW}Tip: Pass language names to install language-specific rules:${NC}"
-  echo "  ./install.sh typescript python golang"
-  exit 0
-fi
-
-if [[ "$1" == "--all" ]]; then
-  for lang in "${ALL_LANGS[@]}"; do
-    install_dir "$lang"
-  done
-else
-  for lang in "$@"; do
-    install_dir "$lang"
-  done
+# Physical containment, checked BEFORE touching anything: walk up to the deepest
+# EXISTING ancestor of $dst and verify it resolves under $HOME. A symlinked
+# directory at ANY level (~/.claude, rules/, or common/ — leaf, ancestor, or
+# intermediate) that escapes $HOME is refused before a single file is removed or
+# created. (pwd -P resolves every symlink in the path.) Fail-CLOSED on
+# unresolvable paths.
+home_real="$(cd "$HOME" 2>/dev/null && pwd -P)" || home_real=""
+[[ -z "$home_real" ]] && { echo -e "${RED}ERROR: cannot resolve \$HOME${NC}" >&2; exit 1; }
+anc="$dst"
+while [[ ! -e "$anc" ]]; do anc="$(dirname "$anc")"; done
+anc_real="$(cd "$anc" 2>/dev/null && pwd -P)" || anc_real=""
+if [[ -z "$anc_real" || ( "$anc_real/" != "$home_real/"* && "$anc_real" != "$home_real" ) ]]; then
+  echo -e "${RED}ERROR: install path ${anc} resolves outside \$HOME (${anc_real:-unresolved}) — refusing${NC}" >&2
+  exit 1
 fi
 
-echo ""
+# Source-safety: never clean-install in a way that would delete the source.
+# `rm`/swap the target while the source ($src) is the SAME dir, or a dir NESTED
+# UNDER the target, would delete the source (or the whole checkout) out from
+# under us. Resolve both and compare.
+src_real="$(cd "$src" 2>/dev/null && pwd -P)" || src_real=""
+if [[ -e "$dst" ]]; then
+  dst_real="$(cd "$dst" 2>/dev/null && pwd -P)" || dst_real=""
+  if [[ -n "$src_real" && -n "$dst_real" ]]; then
+    if [[ "$src_real" == "$dst_real" ]]; then
+      echo -e "${GREEN}  ✓ common/ (already in place — install target resolves to the source)${NC}"
+      echo -e "${GREEN}Done.${NC}"
+      exit 0
+    fi
+    if [[ "$src_real" == "$dst_real"/* ]]; then
+      echo -e "${RED}ERROR: source (${src_real}) lives under the install target (${dst_real}); a clean install would delete it. Move the checkout outside ${dst}.${NC}" >&2
+      exit 1
+    fi
+  fi
+fi
+
+# Clean install via staging dir + swap, all on the SAME filesystem ($staging is
+# a mktemp-unique sibling of $dst under $TARGET_DIR, so the mv is a rename, not a
+# copy):
+#   1. copy the new canon into $staging        (fails → old canon untouched)
+#   2. remove the old $dst                      (unlinks a planted dest symlink;
+#                                                confirmed above to be under $HOME)
+#   3. rename $staging into the now-free slot   (atomic)
+# The EXIT trap makes step 2→3 crash-safe WITHOUT a fragile backup copy:
+# "complete-or-drop" — if we were interrupted after removing $dst but before the
+# rename, it finishes the rename so the canon is never left missing; otherwise it
+# just drops $staging. It only ever moves $staging into $dst or removes $staging
+# — it never deletes $dst or any pre-existing/unrelated path.
+mkdir -p "$TARGET_DIR"
+staging="$(mktemp -d "${TARGET_DIR}/.common-new.XXXXXX")"
+_finish_or_drop() {
+  if [[ -d "$staging" && ! -e "$dst" ]]; then
+    mv "$staging" "$dst" 2>/dev/null || rm -rf "$staging" 2>/dev/null || true
+  else
+    rm -rf "$staging" 2>/dev/null || true
+  fi
+}
+trap _finish_or_drop EXIT
+cp -r "$src"/. "$staging"/
+rm -rf "$dst"
+mv "$staging" "$dst"
+trap - EXIT
+echo -e "${GREEN}  ✓ common/${NC}"
 echo -e "${GREEN}Done.${NC}"

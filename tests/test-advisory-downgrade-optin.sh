@@ -72,5 +72,25 @@ ROOT=$(mkrepo); mkdir -p "$ROOT/alias/.claude"; : > "$ROOT/alias/.claude/$FILE"
 out=$(run "$ROOT" "alias/.claude")
 assert_eq 0 "$out" "multi-component STATE_DIR → 0 (fail-closed)"
 
+# 10. `--separate-git-dir` checkout, marker in the checkout, resolver run in-place → 1.
+#     `git worktree list` reports the SEPARATE GIT DIR (not the checkout) as the worktree
+#     path; the fix detects the non-work-tree path and falls back to the current toplevel.
+SGD=$(mk); mkdir -p "$SGD/co"
+git init -q --separate-git-dir "$SGD/gd" "$SGD/co"
+mkdir -p "$SGD/co/.claude"; : > "$SGD/co/.claude/$FILE"
+out=$(run "$SGD/co")
+assert_eq 1 "$out" "separate-git-dir checkout (in-place) → 1"
+
+# 11. `--separate-git-dir` MAIN repo, resolver run from a LINKED worktree with a
+#     marker planted there → 0. The main checkout is unreachable from the linked
+#     worktree, so we FAIL CLOSED rather than trust the linked worktree's toplevel.
+SGD2=$(mk); mkdir -p "$SGD2/co"
+git init -q --separate-git-dir "$SGD2/gd" "$SGD2/co"
+git -C "$SGD2/co" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$SGD2/co" worktree add -q "$SGD2/linked" >/dev/null 2>&1
+mkdir -p "$SGD2/linked/.claude"; : > "$SGD2/linked/.claude/$FILE"
+out=$(run "$SGD2/linked")
+assert_eq 0 "$out" "separate-git-dir main + linked-worktree marker → 0 (fail-closed)"
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

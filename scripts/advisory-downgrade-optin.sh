@@ -73,13 +73,33 @@ _repo_controlled() {   # <marker_path> <repo_root>
 # The MAIN work-tree root is where the operator's gitignored `.local` lives. For a linked
 # worktree that is NOT this (ephemeral pr-grind) worktree — `git worktree add` does not copy
 # gitignored files — so resolve it via `git worktree list`, whose FIRST entry is always the
-# main worktree. This is robust across linked worktrees, submodules, and `--separate-git-dir`,
-# where `dirname(--git-common-dir)` is not reliably a checkout root. FAIL-CLOSED: not a repo
+# main worktree. Robust across linked worktrees and submodules. FAIL-CLOSED: not a repo
 # => empty => `0` below.
 # Capture git's output AND status first (a mid-stream git failure must fail CLOSED, not
 # leave a partial root): `|| WT=""` discards any partial output on a nonzero git exit.
 WT=$(git worktree list --porcelain 2>/dev/null) || WT=""
 MAIN_ROOT=$(printf '%s\n' "$WT" | awk '/^worktree /{print substr($0, 10); exit}')
+# `--separate-git-dir` quirk: for a main worktree created with
+# `git init --separate-git-dir`, the porcelain `worktree` line reports the
+# SEPARATE GIT DIR, not the checkout — and git stores no reverse pointer
+# (core.worktree is empty), so the gitdir path cannot be mapped back to the
+# checkout. `--is-inside-work-tree` prints `false` with EXIT 0 on such a gitdir,
+# so compare the printed value, not the exit status.
+_is_wt=$(git -C "$MAIN_ROOT" rev-parse --is-inside-work-tree 2>/dev/null || true)
+if [[ -n "$MAIN_ROOT" && "$_is_wt" != "true" ]]; then
+    # Recover the checkout via the current work-tree toplevel ONLY when we ARE the
+    # main worktree (in-place run) — i.e. git-dir == git-common-dir. From a LINKED
+    # worktree the separate-git-dir main checkout is unreachable, and trusting the
+    # linked worktree's toplevel would FAIL OPEN on a marker planted there (the
+    # consent must come from the main checkout). So fail CLOSED (empty => `0`) then.
+    _gd=$(git rev-parse --path-format=absolute --git-dir 2>/dev/null || true)
+    _gcd=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+    if [[ -n "$_gd" && "$_gd" == "$_gcd" ]]; then
+        MAIN_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || MAIN_ROOT=""
+    else
+        MAIN_ROOT=""
+    fi
+fi
 if [[ -n "$MAIN_ROOT" ]]; then
     ppath="${MAIN_ROOT%/}/${STATE_DIR}/${FILE}"
     pdir="${MAIN_ROOT%/}/${STATE_DIR}"

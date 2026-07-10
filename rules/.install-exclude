@@ -1,0 +1,27 @@
+# Rules excluded from install to ~/.claude/rules/ by rules/install.sh.
+#
+# These 7 common rules duplicate on-demand busdriver skills (litmus/code-review,
+# tdd-workflow, the orchestrator pipeline, the live Agent-tool registry,
+# coding-standards) or are stale (model-tier guidance), so they are kept OUT of
+# always-loaded context (~3.7k tokens/session saved).
+#
+# The files REMAIN in the repo under rules/common/ — so their cross-references
+# resolve, and sync-upstream keeps them current in the archive-free tree. Only
+# the *install* step skips copying them to ~/.claude/rules/common/.
+#
+# To install one anyway: delete its line. To install everything (ignore this
+# file): run `RULES_INSTALL_NO_EXCLUDE=1 ./install.sh ...`.
+#
+# One path per line, relative to rules/. '#' comments and blank lines ignored.
+#
+# NOTE: development-workflow.md is referenced by the kept git-workflow.md via a
+# "see [development-workflow.md]" pointer; excluding it leaves that one cosmetic
+# dead link in the installed git-workflow.md (its own content is complete — no
+# functional impact). Remove the line below to keep that pointer live.
+common/agents.md
+common/code-review.md
+common/coding-style.md
+common/development-workflow.md
+common/patterns.md
+common/performance.md
+common/testing.md

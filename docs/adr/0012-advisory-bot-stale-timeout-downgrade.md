@@ -162,7 +162,7 @@ standing consent, valid even when the repo root can't be resolved), then the
 per-repo file via the same `--git-common-dir`-parent main-root resolver the rest of
 the opt-in ecosystem uses. Any ambiguity — unresolvable root with no global file —
 prints `0` (stay strict / BAIL), because this opt-in *relaxes* a gate. Covered by
-`tests/test-advisory-downgrade-optin.sh` (7 cases; env-seam roots, no real git).
+`tests/test-advisory-downgrade-optin.sh` (8 cases; env-seam roots, no real git).
 
 **Why global is safe here.** The switch does **not** open the merge gate — it only
 changes *where the opt-in is read from*. Every downgrade precondition above is

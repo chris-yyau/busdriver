@@ -13,7 +13,7 @@ This command enforces test-driven development for React using React Testing Libr
 3. **Run Tests**: Verify they fail for the right reason
 4. **Implement Minimal Code**: Just enough to pass — GREEN
 5. **Refactor**: Improve while keeping tests green
-6. **Check Coverage**: Hit the targets in [rules/react/testing.md](../rules/react/testing.md)
+6. **Check Coverage**: Hit the configured coverage targets
 
 ## When to Use
 
@@ -261,5 +261,4 @@ CI=true vitest run --coverage
 ## Related
 
 - Skills: `skills/react-testing/`, `skills/tdd-workflow/`, `skills/accessibility/`, `skills/e2e-testing/`
-- Rules: `rules/react/testing.md`
 - Agents: `react-reviewer` (reviews test quality), `tdd-guide` (enforces TDD process)

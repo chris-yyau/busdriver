@@ -4,7 +4,6 @@ Domain skills are loaded as context during execution. They are **additive** — 
 
 ### Go
 **Detection:** `*.go` files, `go.mod`, Go code context
-- Rules: `rules/golang/` (coding-style, patterns, security, testing, hooks)
 - Patterns: `busdriver:golang-patterns`
 - Testing: `busdriver:golang-testing`
 - Review: `go-reviewer` agent (see Phase 4 DISPATCH rules)
@@ -12,7 +11,6 @@ Domain skills are loaded as context during execution. They are **additive** — 
 
 ### Python
 **Detection:** `*.py` files, `requirements.txt`, Python code context
-- Rules: `rules/python/` (coding-style, patterns, security, testing, hooks)
 - Patterns: `busdriver:python-patterns`
 - Testing: `busdriver:python-testing`
 - Review: `python-reviewer` agent (see Phase 4 DISPATCH rules)
@@ -33,7 +31,6 @@ Domain skills are loaded as context during execution. They are **additive** — 
 
 ### Spring Boot / Java
 **Detection:** `pom.xml`, `@SpringBootApplication`, Spring context
-- Rules: `rules/java/` (coding-style, patterns, security, testing, hooks)
 - Patterns: `busdriver:springboot-patterns` (vault)
 - Security: `busdriver:springboot-security` (vault)
 - Testing: `busdriver:springboot-tdd` (vault)
@@ -54,7 +51,6 @@ Domain skills are loaded as context during execution. They are **additive** — 
 
 ### Frontend (React / Next.js / TypeScript)
 **Detection:** `*.tsx`, `*.jsx`, `*.ts`, React components, Next.js, TypeScript
-- Rules: `rules/typescript/` (coding-style, patterns, security, testing, hooks)
 - Patterns: `busdriver:frontend-patterns`
 - Standards: `busdriver:coding-standards`
 - **Auth** (detect: `better-auth` imports, `auth.ts`/`auth-client.ts`, sign-in/session/OAuth work): `busdriver:better-auth-best-practices` (Better Auth — TypeScript auth framework: sessions, providers, plugins, integration)
@@ -91,17 +87,15 @@ Domain skills are loaded as context during execution. They are **additive** — 
 ### Angular
 **Detection:** `angular.json`, `@angular/*` imports, `*.component.ts`, Angular CLI projects
 - Developer guide: `busdriver:angular-developer` (signals, standalone components, reactive forms, SSR, routing, testing, a11y — comprehensive 36-file family) (vault)
-- Rules: `rules/typescript/` (Angular is TypeScript-based)
 - Review: `typescript-reviewer` agent
 
 ### Nuxt
 **Detection:** `nuxt.config.*`, `.nuxt/` directory, `useFetch`, `useAsyncData`, Nuxt imports
 - Patterns: `busdriver:nuxt4-patterns` (hydration safety, SSR, route rules, lazy loading, data fetching) (vault)
-- Review: a Nuxt project ALSO matches Vue detection below (Nuxt is Vue-based) — the supplements are additive, not exclusive. Route deterministically: `vue-reviewer` (vault) for `.vue` SFCs AND Nuxt server routes / config / SSR-only `.ts` (this agent owns Nitro endpoint validation and SSR secret-leak checks), plus `typescript-reviewer` for the generic TS lane on those same `.ts` files — invoke both on Nuxt server/config changes. Load both `nuxt4-patterns` (vault) and `vue-patterns` (vault) + `rules/vue/`.
+- Review: a Nuxt project ALSO matches Vue detection below (Nuxt is Vue-based) — the supplements are additive, not exclusive. Route deterministically: `vue-reviewer` (vault) for `.vue` SFCs AND Nuxt server routes / config / SSR-only `.ts` (this agent owns Nitro endpoint validation and SSR secret-leak checks), plus `typescript-reviewer` for the generic TS lane on those same `.ts` files — invoke both on Nuxt server/config changes. Load both `nuxt4-patterns` (vault) and `vue-patterns` (vault).
 
 ### Vue
 **Detection:** `*.vue` files, `vue` imports, `vue.config.*`, Vue SFC context
-- Rules: `rules/vue/` (coding-style, patterns, security, testing, hooks)
 - Patterns: `busdriver:vue-patterns` (vault)
 - Review: `vue-reviewer` agent (see Phase 4 DISPATCH rules) (vault)
 - Commands: `/vue-review` (vault)
@@ -112,7 +106,6 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Performance & patterns: `busdriver:vercel-react-native-skills` (list virtualization, Reanimated GPU props, fonts config plugin, monorepo dep hygiene, design-system composition — Vercel rule pack)
 - Expo Router UI: `busdriver:building-native-ui` (Expo Router fundamentals, styling, components, navigation, animations, native tabs)
 - Review: `typescript-reviewer` agent (React Native is TypeScript-based)
-- Rules: `rules/typescript/`
 
 ### Backend (Node.js / Express / Next.js API)
 **Detection:** `*.js`, `*.ts` in API routes, Express/Node.js context
@@ -126,7 +119,6 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Patterns: `busdriver:dotnet-patterns` (DI, async/await, conventions, best practices) (vault)
 - Testing: `busdriver:csharp-testing` (xUnit, FluentAssertions, mocking, integration tests) (vault)
 - Review: `csharp-reviewer` agent (vault)
-- Rules: `rules/csharp/` (coding-style, patterns, security, testing, hooks)
 
 ### F#
 **Detection:** `*.fs`, `*.fsproj`, `*.fsx`, F# context
@@ -136,7 +128,6 @@ Domain skills are loaded as context during execution. They are **additive** — 
 
 ### C++
 **Detection:** `*.cpp`, `*.h`, `*.hpp`, `CMakeLists.txt`, C++ context
-- Rules: `rules/cpp/` (coding-style, patterns, security, testing, hooks)
 - Standards: `busdriver:cpp-coding-standards` (vault)
 - Testing: `busdriver:cpp-testing` (vault)
 - Review: `cpp-reviewer` agent (see Phase 4 DISPATCH rules) (vault)
@@ -144,7 +135,6 @@ Domain skills are loaded as context during execution. They are **additive** — 
 
 ### Swift
 **Detection:** `*.swift`, `Package.swift`, Xcode project context
-- Rules: `rules/swift/` (coding-style, patterns, security, testing, hooks)
 - SwiftUI: `busdriver:swiftui-patterns` (@Observable, navigation, view composition) (vault)
 - Concurrency: `busdriver:swift-concurrency-6-2` (Swift 6.2 model, @concurrent, nonisolated) (vault)
 - Persistence: `busdriver:swift-actor-persistence` (actor-based thread-safe data) (vault)
@@ -169,7 +159,6 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Patterns: `busdriver:perl-patterns` (vault)
 - Security: `busdriver:perl-security` (vault)
 - Testing: `busdriver:perl-testing` (vault)
-- Rules: `rules/perl/` (coding-style, patterns, security, testing, hooks)
 
 ### PHP / Laravel
 **Detection:** `*.php`, `composer.json`, Laravel context
@@ -177,7 +166,6 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Security: `busdriver:laravel-security` (vault)
 - Testing: `busdriver:laravel-tdd` (vault)
 - Verification: `busdriver:laravel-verification` (vault)
-- Rules: `rules/php/` (coding-style, patterns, security, testing, hooks)
 - Review: `php-reviewer` agent (see Phase 4 DISPATCH rules) (vault)
 
 ### Kotlin
@@ -190,7 +178,6 @@ Domain skills are loaded as context during execution. They are **additive** — 
 - Android/KMP: `busdriver:android-clean-architecture`, `busdriver:compose-multiplatform-patterns` (vault)
 - Review: `kotlin-reviewer` agent (see Phase 4 DISPATCH rules) (vault)
 - Build issues: `busdriver:kotlin-build` command (vault)
-- Rules: `rules/kotlin/` (coding-style, patterns, security, testing, hooks)
 
 ### Flutter / Dart
 **Detection:** `*.dart` files, `pubspec.yaml`, Flutter imports, widget code

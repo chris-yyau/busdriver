@@ -141,7 +141,7 @@ class TestGradeEdgeCases:
         spec = ComplianceSpec(
             id="out-of-order-after-step",
             name="Out of order after_step",
-            source_rule="rules/common/testing.md",
+            source_rule="skills/tdd-workflow/SKILL.md",
             version="1.0",
             steps=(
                 Step(

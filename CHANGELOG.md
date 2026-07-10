@@ -1,3 +1,10 @@
+# [1.85.0](https://github.com/chris-yyau/busdriver/compare/v1.84.7...v1.85.0) (2026-07-10)
+
+
+### Features
+
+* **rules:** install-exclude mechanism to skip redundant common rules ([#313](https://github.com/chris-yyau/busdriver/issues/313)) ([d4ce47d](https://github.com/chris-yyau/busdriver/commit/d4ce47d71afcb19a702d4ef3f3f29bae27c4641c)), closes [310/#311](https://github.com/chris-yyau/busdriver/issues/311)
+
 ## [1.84.7](https://github.com/chris-yyau/busdriver/compare/v1.84.6...v1.84.7) (2026-07-10)
 
 

@@ -15,8 +15,12 @@ EXCLUDED=(agents code-review coding-style development-workflow patterns performa
 KEPT=(git-workflow hooks investigate-before-acting security validate-before-building)
 
 # --- default install (exclusions active) ---
-TMP=$(mktemp -d); TMP2=""
-trap 'rm -rf "$TMP" "$TMP2"' EXIT
+# Initialize every temp var and set the cleanup trap ONCE, before any
+# allocation, so a mktemp failure mid-test can never leak a dir the trap
+# doesn't yet cover. (rm -rf "" is a harmless no-op for the not-yet-set ones.)
+TMP=""; TMP2=""; TMP3=""; EXDIR=""
+trap 'rm -rf "$TMP" "$TMP2" "$TMP3" "$EXDIR"' EXIT
+TMP=$(mktemp -d)
 HOME="$TMP" bash rules/install.sh >/dev/null 2>&1
 for f in "${EXCLUDED[@]}"; do
   _ck "excluded $f.md NOT installed" "[[ ! -f \"$TMP/.claude/rules/common/$f.md\" ]]"

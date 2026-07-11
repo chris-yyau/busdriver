@@ -35,9 +35,9 @@ Six gates enforced by PreToolUse hooks. All fail-CLOSED (block on error). Escape
 | Gate | Hook Script | Blocks | Skip With |
 |------|------------|--------|-----------|
 | **Design review** | `check-design-document.sh` → `pre-implementation-gate.sh` | Write/Edit of impl files when design docs are unreviewed | `.claude/skip-design-review.local` |
-| **Pre-commit (litmus)** | `pre-commit-gate.sh` | `git commit` until codex review passes | `.claude/skip-litmus.local` (or `SKIP_LITMUS=1` exported in parent shell before `claude` starts — inline `SKIP_LITMUS=1 git commit` does NOT work, hooks fire before the command's env is applied) |
-| **Pre-PR** | `pre-pr-gate.sh` | `gh pr create` until litmus passes on full branch diff | `.claude/skip-litmus.local` (or `SKIP_LITMUS=1` in parent shell — same caveat as pre-commit) |
-| **Pre-merge (pr-grind)** | `pre-merge-gate.sh` | `gh pr merge` until pr-grind declares PR clean | `.claude/skip-pr-grind.local` (or `SKIP_PR_GRIND=1` in parent shell — same caveat as pre-commit) |
+| **Pre-commit (litmus)** | `pre-commit-gate.sh` | `git commit` until codex review passes | `.claude/skip-litmus.local` (gitignored, operator-created; the env-based `SKIP_LITMUS` escape was removed — #325 / ADR 0016 sanitizes gate env, so a committed `settings.json` can't inject it) |
+| **Pre-PR** | `pre-pr-gate.sh` | `gh pr create` until litmus passes on full branch diff | `.claude/skip-litmus.local` (gitignored, operator-created — env-based skip removed, #325) |
+| **Pre-merge (pr-grind)** | `pre-merge-gate.sh` | `gh pr merge` until pr-grind declares PR clean | `.claude/skip-pr-grind.local` (gitignored, operator-created — env-based skip removed, #325) |
 | **Careful guard** | `careful-guard.sh` | Destructive Bash commands (rm -rf, git reset --hard, etc.) | Confirmation prompt |
 | **Freeze guard** | `freeze-guard.sh` | Write/Edit outside scoped directory during debugging | Remove `.claude/freeze-scope.local` |
 

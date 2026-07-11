@@ -120,3 +120,31 @@ gate_repo_dir_lenient() {
     fi
     git -C "$anchor" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$anchor"
 }
+
+# Return 0 (== "repo-controlled → do NOT honor as a skip signal") iff the skip
+# file at <repo_root>/<repo_relative_path> is tracked by git — present in the
+# index or HEAD, or sitting in a gitlinked/submodule state dir. A `.claude/*.local`
+# skip file is only real OPERATOR consent when it is UNtracked: `.gitignore`
+# prevents an accidental `git add`, but NOT `git add -f`, so a malicious PR can
+# commit a skip file that (after checkout, past the 30s age window) would bypass
+# the gate. This is the same committable-content injection class as issue #325.
+# FAIL-CLOSED: any git error returns 0 (reject the skip). Mirrors the vetted
+# `_repo_controlled` resolver in scripts/advisory-downgrade-optin.sh.
+# shellcheck disable=SC2034  # consumed by the sourcing gate scripts
+gate_skip_file_repo_controlled() {   # <repo_root> <repo_relative_path>
+    local root="$1" rel="$2" dir_rel stage tracked
+    [ -z "$root" ] && return 0
+    dir_rel=$(dirname "$rel")
+    stage=$(git -C "$root" ls-files --stage -- "$dir_rel" 2>/dev/null) || return 0
+    grep -q '^160000 ' <<<"$stage" && return 0          # gitlink/submodule state dir
+    # Parent dir tracked as a symlink (mode 120000): git resolves `.claude/skip-*.local`
+    # behind an attacker-committed `.claude` symlink that the leaf-path ls-files/cat-file
+    # checks below never see. Reject — same committable-injection class as #325.
+    awk -v p="$dir_rel" '$1=="120000" && $4==p {f=1} END{exit !f}' <<<"$stage" && return 0
+    tracked=$(git -C "$root" ls-files -- "$rel" 2>/dev/null) || return 0
+    [ -n "$tracked" ] && return 0                        # in the index
+    if git -C "$root" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+        git -C "$root" cat-file -e "HEAD:$rel" 2>/dev/null && return 0   # in HEAD's tree
+    fi
+    return 1
+}

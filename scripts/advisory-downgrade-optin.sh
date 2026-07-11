@@ -61,10 +61,23 @@ _repo_controlled() {   # <marker_path> <repo_root>
     grep -q '^160000 ' <<<"$stage" && return 0
     tracked=$(git -C "$root" ls-files -- "$rel" 2>/dev/null) || return 0
     [[ -n "$tracked" ]] && return 0
-    if git -C "$root" rev-parse --verify -q HEAD >/dev/null 2>&1; then
-        git -C "$root" cat-file -e "HEAD:$rel" 2>/dev/null && return 0
+    # Is <rel> in HEAD's tree? `ls-tree` distinguishes the three outcomes `cat-file -e`
+    # conflates: rc==0+entry → present (repo-controlled); rc==0+empty → trees readable,
+    # marker absent (not repo-controlled); rc!=0 → a tree/subtree on the path is unreadable
+    # (root OR nested corruption) or the repo is unborn. `HEAD^{tree}` only proves the ROOT
+    # tree exists, so it misses a corrupt nested subtree — ls-tree does not. (Mirror of
+    # gate_skip_file_repo_controlled in hooks/gate-scripts/lib/resolve-repo-dir.sh — keep in sync.)
+    local head_entry rc
+    head_entry=$(git -C "$root" ls-tree HEAD -- "$rel" 2>/dev/null); rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+        [[ -n "$head_entry" ]] && return 0              # in HEAD's tree → repo-controlled
+        return 1                                        # readable trees, marker absent → not repo-controlled
     fi
-    return 1
+    # ls-tree errored: corrupt tree object, or unborn HEAD. `rev-parse --verify HEAD` is 0
+    # for a dangling/corrupt ref but 1 for unborn — splitting corrupt (fail CLOSED) from
+    # unborn (not repo-controlled).
+    git -C "$root" rev-parse -q --verify HEAD >/dev/null 2>&1 && return 0   # corrupt tree → fail CLOSED (reject)
+    return 1                                                                # unborn repo → not repo-controlled
 }
 
 # Resolve the MAIN repo root from CWD's git dir (--git-common-dir's parent is the

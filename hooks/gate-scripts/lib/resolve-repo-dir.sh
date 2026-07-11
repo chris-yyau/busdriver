@@ -143,11 +143,24 @@ gate_skip_file_repo_controlled() {   # <repo_root> <repo_relative_path>
     awk -v p="$dir_rel" '$1=="120000" && $4==p {f=1} END{exit !f}' <<<"$stage" && return 0
     tracked=$(git -C "$root" ls-files -- "$rel" 2>/dev/null) || return 0
     [ -n "$tracked" ] && return 0                        # in the index
-    if git -C "$root" rev-parse --verify -q HEAD >/dev/null 2>&1; then
-        # HEAD:./<rel> resolves <rel> relative to git's CWD (the -C dir), matching the
-        # ls-files pathspec above. A bare HEAD:<rel> is always repo-root-anchored, which
-        # would diverge from the index check when a caller passes root="." from a subdir.
-        git -C "$root" cat-file -e "HEAD:./$rel" 2>/dev/null && return 0   # in HEAD's tree
+    # Is <rel> in HEAD's tree? `ls-tree` (pathspec relative to the -C dir, matching the
+    # ls-files check above) distinguishes the three outcomes `cat-file -e` conflates:
+    #   rc==0, entry set   → present in HEAD's tree                       → reject
+    #   rc==0, entry empty → every tree on the path readable, file absent → honor
+    #   rc!=0              → a tree/subtree needed to resolve <rel> is unreadable (root OR
+    #                        nested corruption) — OR the repo is unborn. Discriminate below.
+    # This is why `cat-file -e "HEAD:<rel>"` / `HEAD^{tree}` are insufficient: the former
+    # can't tell "absent" from "unreadable", and the latter only proves the ROOT tree
+    # exists, missing corruption of a nested subtree (e.g. `.claude/`) on the path.
+    local head_entry rc
+    head_entry=$(git -C "$root" ls-tree HEAD -- "$rel" 2>/dev/null); rc=$?
+    if [ "$rc" -eq 0 ]; then
+        [ -n "$head_entry" ] && return 0                 # in HEAD's tree → reject
+        return 1                                         # readable trees, file absent → honor
     fi
-    return 1
+    # ls-tree errored: corrupt/unreadable tree object, or unborn HEAD. `rev-parse --verify
+    # HEAD` is 0 for a dangling/corrupt ref (sha resolves syntactically) but 1 for unborn —
+    # so it cleanly splits "corrupt → fail CLOSED" from "unborn → honor".
+    git -C "$root" rev-parse -q --verify HEAD >/dev/null 2>&1 && return 0   # corrupt tree → fail CLOSED
+    return 1                                                                # unborn repo → honor
 }

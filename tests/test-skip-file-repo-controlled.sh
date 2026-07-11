@@ -66,6 +66,35 @@ rm -rf "$TMP2"
 $G rm --cached -q "$REL"
 ( cd "$TMP" && gate_skip_file_repo_controlled "." "$REL" ); assert $? "root=. detects HEAD-only skip file via HEAD:./ check"
 
+# 9. UNBORN repo (git init, no commits): an untracked skip file is genuine operator
+#    consent — HEAD does not resolve, but this is legitimate, so HONOR (return 1).
+TMP3="$(mktemp -d)"
+G3="git -C $TMP3 -c user.email=t@t -c user.name=t -c init.defaultBranch=main"
+$G3 init -q .
+mkdir -p "$TMP3/.claude"; printf 'skip\n' > "$TMP3/.claude/skip-litmus.local"
+! gate_skip_file_repo_controlled "$TMP3" "$REL"; assert $? "unborn repo honors untracked skip file (HEAD unresolved is not an error)"
+
+# 10. CORRUPT HEAD (ref points at a missing, non-null object): git resolves the sha
+#     syntactically (rev-parse --verify HEAD == 0) but HEAD's tree is unreadable — a git
+#     error that must FAIL CLOSED (return 0), NOT be mistaken for the unborn case.
+printf 'ref: refs/heads/main\n' > "$TMP3/.git/HEAD"
+printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n' > "$TMP3/.git/refs/heads/main"
+gate_skip_file_repo_controlled "$TMP3" "$REL"; assert $? "corrupt HEAD (missing object) fails closed (rejected)"
+rm -rf "$TMP3"
+
+# 11. CORRUPT NESTED SUBTREE: HEAD and its ROOT tree are intact, but the `.claude/`
+#     subtree object needed to resolve the skip-file path is missing. `cat-file -e` /
+#     `HEAD^{tree}` would pass the root-tree check and fail open; ls-tree errors → reject.
+TMP4="$(mktemp -d)"
+G4="git -C $TMP4 -c user.email=t@t -c user.name=t -c init.defaultBranch=main -c commit.gpgsign=false"
+$G4 init -q .
+mkdir -p "$TMP4/.claude"; printf 'skip\n' > "$TMP4/.claude/skip-litmus.local"
+$G4 add -A; $G4 commit -qm c
+SUBTREE=$($G4 rev-parse 'HEAD:.claude')
+rm -f "$TMP4/.git/objects/${SUBTREE:0:2}/${SUBTREE:2}"    # delete the .claude subtree object
+gate_skip_file_repo_controlled "$TMP4" "$REL"; assert $? "corrupt nested .claude subtree fails closed (root tree intact)"
+rm -rf "$TMP4"
+
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1

@@ -1,3 +1,10 @@
+# [1.90.0](https://github.com/chris-yyau/busdriver/compare/v1.89.2...v1.90.0) (2026-07-11)
+
+
+### Features
+
+* **pr-grind:** auto-detect Codex-active repos for the none-nudge ([#320](https://github.com/chris-yyau/busdriver/issues/320), [#327](https://github.com/chris-yyau/busdriver/issues/327)) ([#330](https://github.com/chris-yyau/busdriver/issues/330)) ([f5abd07](https://github.com/chris-yyau/busdriver/commit/f5abd07ae923e2d238ef90c4ab9af8124315e1cd)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
 ## [1.89.2](https://github.com/chris-yyau/busdriver/compare/v1.89.1...v1.89.2) (2026-07-11)
 
 

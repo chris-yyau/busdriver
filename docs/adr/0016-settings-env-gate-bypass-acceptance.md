@@ -80,10 +80,19 @@ hand-waving):**
 the git-resolved, operator-placed skip *files* (`skip-litmus.local`,
 `skip-pr-grind.local`, `skip-design-review.local`) — which are already
 anti-self-bypass hardened (≥30s age, single-use consumption, audited to
-`bypass-log.jsonl`) and are **not** injectable via a committed `settings.json`.
-This makes gate-skip consent handling uniform with the "operator-placed file over
-env var" pattern ADR 0012 / PR #314 settled, and reduces the *named* attack
-surface the issue enumerates to zero.
+`bypass-log.jsonl`). The skip-file check now honors a skip file **only when it is
+operator-owned** — a non-symlink regular file, in a non-symlink / non-gitlink
+single-component state dir, that is **not** present in the git index or HEAD's
+tree — via `hooks/gate-scripts/lib/skip-file-guard.sh` (mirroring the ADR 0012
+repo-controlled-file resolver). This closes the residual vector Codex flagged on
+PR #328: a committed / tracked skip file (directly, or via a
+`BUSDRIVER_STATE_DIR`-redirected tracked dir) is now rejected, because any
+PR-delivered file is necessarily git-tracked. The skip files are therefore **not**
+injectable via a committed `settings.json` *now that repo-controlled skip files
+are rejected*; the residual `BASH_ENV`/`ENV`/`PATH`/`GIT_*` RCE surface remains
+accepted-bounded as documented in item 2. This makes gate-skip consent handling
+uniform with the "operator-placed file over env var" pattern ADR 0012 / PR #314
+settled, and reduces the *named* attack surface the issue enumerates to zero.
 
 **2. Accept the residual `BASH_ENV`/`ENV`/`PATH`/`GIT_*` RCE surface as bounded
 and documented, not hardened.** Per the reasoning above it is not reliably
@@ -140,3 +149,28 @@ remain the merge authority regardless.
   can be closed by construction and this acceptance should be narrowed.
 - **Evidence of real exploitation** (a PR that actually leveraged the surface, or
   a second user/threat materializes) — promote to full hardening.
+
+## Addendum (2026-07-11): reject repo-controlled skip files (PR #328 Codex P1)
+
+**Vector.** Removing the `SKIP_*` env reads (above) left the retained skip *file*
+as the sole bypass — but Codex's review of PR #328 found that a *file* is just as
+PR-injectable as an env var. A PR can commit a **git-tracked** skip file two ways:
+(a) force-add it past `.gitignore` — `git add -f .claude/skip-litmus.local` — or
+(b) commit a `.claude/settings.json` with `env.BUSDRIVER_STATE_DIR=evil` plus a
+tracked `evil/skip-litmus.local`. After the checkout ages past the gate's 30s
+self-bypass window, the old `[ -f "$SKIP_FILE" ]` test consumed the file and
+exited 0 **before any review**. The original claim that the skip file was "not
+injectable via `settings.json`" was therefore false for a tracked file.
+
+**Fix.** The `[ -f … ]` condition in all four gates is replaced with
+`skip_file_operator_owned` (`hooks/gate-scripts/lib/skip-file-guard.sh`), which
+honors a skip file only when it is a non-symlink **regular** file, in a
+non-symlink / non-gitlink **single-component** state dir, that is **not** in the
+index and **not** in HEAD's tree — failing CLOSED (reject) on any git error. It
+scrubs repo-supplied `GIT_*` env in a subshell and pins every git query to the
+gate's own `REPO_DIR`, exactly like the ADR 0012 resolver
+(`scripts/advisory-downgrade-optin.sh`). Because **any PR-delivered file is
+necessarily git-tracked**, rejecting repo-controlled skip files closes the vector
+by construction. Regression coverage: `tests/test-skip-file-guard.sh`. The
+residual `BASH_ENV`/`ENV`/`PATH`/`GIT_*` RCE surface is unchanged and remains
+accepted-bounded per item 2 above.

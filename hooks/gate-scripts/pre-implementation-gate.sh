@@ -24,6 +24,8 @@ case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 # rm/mkdir allowlist below, sourced helpers) read the constrained STATE_DIR
 # rather than the raw env var — otherwise a traversal value could bypass them.
 export BUSDRIVER_STATE_DIR="$STATE_DIR"
+# shellcheck source=lib/skip-file-guard.sh disable=SC1091,SC2312
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/skip-file-guard.sh"
 # Fail-CLOSED: errors block implementation writes rather than silently approving.
 # User preference: "a stuck session is better than a skipped review."
 # Escape hatch: $STATE_DIR/skip-design-review.local
@@ -436,7 +438,14 @@ DESIGN_STATE="$STATE_DIR/design-review-needed.local.md"
 
 # Skip overrides — unified with pre-commit-gate.sh behavior
 # Both gates use the same pattern: single-use consumption + self-bypass detection
-if [ -f "$STATE_DIR/skip-design-review.local" ]; then
+# Root = CWD (not `git rev-parse --show-toplevel`): the body's age-check, rm, and
+# telemetry below all use CWD-relative "$STATE_DIR/skip-design-review.local", so the
+# guard must resolve the SAME file. Anchoring the guard to the repo toplevel while the
+# body stays CWD-relative would let the guard accept a root-level file the body then
+# can't stat/consume (age 999, never consumed → repeatable bypass). $(pwd) keeps them
+# consistent regardless of CWD; git queries still discover the repo via `git -C`.
+GATE_REPO_ROOT=$(pwd)
+if skip_file_operator_owned "$GATE_REPO_ROOT" "$STATE_DIR" "skip-design-review.local"; then
     # Reject skip files created within the last 30 seconds — likely Claude self-bypass.
     # A human-created skip file (via terminal) will typically be older.
     FILE_AGE=999

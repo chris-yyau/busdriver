@@ -22,6 +22,8 @@ STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 # re-export so every gate writes/consumes markers from the same state dir.
 case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 export BUSDRIVER_STATE_DIR="$STATE_DIR"
+# shellcheck source=lib/skip-file-guard.sh disable=SC1091,SC2312
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/skip-file-guard.sh"
 # Fail-CLOSED: errors block commits rather than silently approving.
 # User preference: "a stuck session is better than a skipped review."
 # Escape hatch: $STATE_DIR/skip-litmus.local (git-resolved file; no env-var hatch — ADR 0016).
@@ -279,7 +281,7 @@ fi
 # consistent with the litmus marker below and the sibling pre-pr/pre-merge gates,
 # so a commit targeting a repo other than the hook process CWD reads the right
 # $STATE_DIR/ directory.
-if [ -f "$REPO_DIR/$STATE_DIR/skip-litmus.local" ]; then
+if skip_file_operator_owned "$REPO_DIR" "$STATE_DIR" "skip-litmus.local"; then
     # Reject skip files created within the last 30 seconds — likely Claude self-bypass.
     # A human-created skip file (via terminal) will typically be older.
     FILE_AGE=999

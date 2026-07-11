@@ -34,8 +34,10 @@ block_emit() {
 }
 
 # ── Shared repo-dir resolver ──────────────────────────────────────────
-# shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
+# shellcheck source=lib/resolve-repo-dir.sh disable=SC1091,SC2312
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
+# shellcheck source=lib/skip-file-guard.sh disable=SC1091,SC2312
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/skip-file-guard.sh"
 
 # ── Required-checks allowlist (with advisory-pattern fallback) ───────
 # When <repo>/.github/required-checks.lock exists and declares
@@ -201,7 +203,7 @@ REPO_DIR="$GATE_REPO_DIR"
 
 # File-based skip (anti-self-bypass pattern from pre-commit gate)
 SKIP_FILE="$REPO_DIR/$STATE_DIR/skip-pr-grind.local"
-if [ -f "$SKIP_FILE" ]; then
+if skip_file_operator_owned "$REPO_DIR" "$STATE_DIR" "skip-pr-grind.local"; then
     FILE_AGE=999
     _MTIME=$(stat -f %m "$SKIP_FILE" 2>/dev/null) \
         || _MTIME=$(stat -c %Y "$SKIP_FILE" 2>/dev/null) \

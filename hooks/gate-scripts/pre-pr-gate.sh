@@ -23,6 +23,8 @@ case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 # Re-export the sanitized value so sourced helpers / subprocesses read the
 # constrained STATE_DIR rather than the raw env var.
 export BUSDRIVER_STATE_DIR="$STATE_DIR"
+# shellcheck source=lib/skip-file-guard.sh disable=SC1091,SC2312
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/skip-file-guard.sh"
 trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-PR gate error — blocking as precaution. If stuck, create %s/skip-litmus.local in your terminal.\"}\n" "$STATE_DIR"; exit 0' ERR
 
 # ── Block emission helper ─────────────────────────────────────────────
@@ -121,7 +123,7 @@ REPO_DIR="$GATE_REPO_DIR"
 
 # ── Skip overrides (shared with commit gate) ──────────────────────────
 SKIP_FILE="$REPO_DIR/$STATE_DIR/skip-litmus.local"
-if [ -f "$SKIP_FILE" ]; then
+if skip_file_operator_owned "$REPO_DIR" "$STATE_DIR" "skip-litmus.local"; then
     FILE_AGE=999
     _MTIME=$(stat -f %m "$SKIP_FILE" 2>/dev/null) \
         || _MTIME=$(stat -c %Y "$SKIP_FILE" 2>/dev/null) \

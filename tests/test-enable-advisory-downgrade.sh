@@ -41,8 +41,10 @@ enroll() {
 optin() { local dir="$1" sdir="${2:-.claude}"; ( cd "$dir" && env BUSDRIVER_STATE_DIR="$sdir" "$BASH_BIN" "$R" ); }
 
 # 1. Fresh git repo → ENROLLED, marker is a regular file, resolver accepts it.
+#    (set +e around the capture so a non-zero exit is asserted, not silently aborted
+#    by set -e before code=$? — the exit-0 assertion is only meaningful this way.)
 ROOT=$(mkrepo)
-out=$(enroll "$ROOT"); code=$?
+set +e; out=$(enroll "$ROOT"); code=$?; set -e
 assert_eq 0 "$code" "fresh repo → exit 0"
 assert_prefix ENROLLED "$out" "fresh repo → ENROLLED"
 assert_true test -f "$ROOT/.claude/$FILE" -a ! -L "$ROOT/.claude/$FILE"
@@ -50,7 +52,7 @@ verdict=$(optin "$ROOT")
 assert_eq 1 "$verdict" "resolver accepts placed marker"
 
 # 2. Idempotent → ALREADY, still accepted, exit 0.
-out=$(enroll "$ROOT"); code=$?
+set +e; out=$(enroll "$ROOT"); code=$?; set -e
 assert_eq 0 "$code" "re-run → exit 0"
 assert_prefix ALREADY "$out" "re-run → ALREADY (idempotent)"
 
@@ -159,9 +161,10 @@ verdict=$(optin "$SGD/co")
 assert_eq 1 "$verdict" "resolver accepts separate-git-dir enrollment"
 
 # 15. A repo whose path has a space, a non-ASCII char, AND a trailing space must still
-#     enroll end-to-end — exercises the NUL-safe `worktree list -z` parse,
-#     surrogateescape decoding, and _chomp (strips only git's trailing newline, not the
-#     path's own trailing space). Regression for the byte-safety findings.
+#     enroll end-to-end — exercises surrogateescape decoding and _chomp (strips only
+#     git's trailing newline, not the path's own trailing space). git emits these paths
+#     raw in `worktree list --porcelain` (no C-quoting without a control byte). Regression
+#     for the byte-safety findings.
 WEIRD="$TMPROOT/spacé dir "   # trailing space is part of the directory name
 mkdir -p "$WEIRD"; git -C "$WEIRD" init -q
 out=$(enroll "$WEIRD")

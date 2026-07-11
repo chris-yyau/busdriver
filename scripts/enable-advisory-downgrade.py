@@ -157,13 +157,16 @@ def main_root(repo):
     # would grade against a foreign index/HEAD. The lone exception is a
     # `--separate-git-dir` main checkout, whose first entry is the git DIR (not a work
     # tree); repo_real is already confirmed as the checkout via show-toplevel above.
-    # `-z` (NUL-separated) so a path with a newline / tab / non-ASCII byte is emitted
-    # RAW, not C-quoted — the default `--porcelain` would quote it and we'd compare a
-    # quoted string against realpath and wrongly reject a valid worktree.
-    wt = git_out(repo_real, "worktree", "list", "--porcelain", "-z")
+    # Plain `--porcelain` (NOT `-z`) — matches the resolver's own parse and works on
+    # every git (the `-z` variant needs git 2.40+, which would silently reject every
+    # repo on older git). git C-quotes a path only when it contains a control byte
+    # (newline/tab); a space or non-ASCII byte is emitted raw, so realpath comparison
+    # holds for the realistic special-char paths. A path with an embedded control byte
+    # is the accepted residual — the same limit the resolver has.
+    wt = git_out(repo_real, "worktree", "list", "--porcelain")
     if not wt:
         return None
-    first = next((f[len("worktree "):] for f in wt.split("\0") if f.startswith("worktree ")), None)
+    first = next((ln[len("worktree "):] for ln in wt.split("\n") if ln.startswith("worktree ")), None)
     if first is None:
         return None
     if os.path.realpath(first) != repo_real:
@@ -341,7 +344,78 @@ def remove_marker(sd_fd):
         return False
 
 
-def main(argv):
+def _report_dry_run(repo, root, target, status, root_fd):
+    """Print the dry-run prediction line for one repo; return True iff it would SKIP.
+    Consults the resolver for an existing marker and the index/HEAD for an absent one —
+    a real run would create the file but the resolver would then reject a tracked path."""
+    if status == "ALREADY":
+        if resolver_accepts(root_fd):
+            print(f"ALREADY       {repo}  (opted-in) -> {target}")
+            return False
+        print(f"WOULD-SKIP    {repo}  (marker present but resolver rejects it — tracked/repo-controlled)")
+        return True
+    if marker_repo_tracked(root):
+        print(f"WOULD-SKIP    {repo}  (marker path is tracked in index/HEAD — resolver would reject a real run)")
+        return True
+    print(f"WOULD-ENROLL  {repo}  [dry-run] -> {target}")
+    return False
+
+
+def _enroll_one(repo, dry_run):
+    """Process ONE repo and print exactly one status line. Returns True iff the repo was
+    SKIPPED / WOULD-SKIP (a per-target failure the caller reflects in the exit code).
+
+    Opens the validated root ONCE (symlink-free; the resolver binds to it via fchdir),
+    opens STATE_DIR once and shares that fd between placement and rollback — so no path
+    rename/replace between those steps can make them act on different directory objects."""
+    root = main_root(repo)
+    if root is None:
+        print(f"SKIPPED       {repo}  (not the main worktree root of a git repo)")
+        return True
+    try:
+        root_fd = open_dir_nofollow(root)
+    except OSError as e:  # fail-closed per target; the caller keeps going for the rest
+        print(f"SKIPPED       {repo}  (filesystem error: {e.strerror})")
+        return True
+    target = f"{root}/{STATE_DIR}/{MARKER}"
+    sd_fd = None
+    try:
+        try:
+            sd_fd, early = open_state_dir(root_fd, dry_run)
+            status, detail = early if early is not None else place_marker(sd_fd, dry_run)
+        except OSError as e:
+            print(f"SKIPPED       {repo}  (filesystem error: {e.strerror})")
+            return True
+        if status == "SKIPPED":
+            print(f"SKIPPED       {repo}  ({detail})")
+            return True
+        if dry_run:
+            return _report_dry_run(repo, root, target, status, root_fd)
+        if resolver_accepts(root_fd):  # single source of truth confirms it took
+            print(f"{status:<12}  {repo}  -> {target}")
+            return False
+        # Resolver rejects. If WE just created the marker, roll it back (via the SAME
+        # sd_fd) so a transient resolver failure cannot become a silent opt-in later; a
+        # pre-existing (ALREADY) marker is the operator's — leave it untouched.
+        if status == "ENROLLED" and not remove_marker(sd_fd):
+            print(f"SKIPPED       {repo}  (resolver rejected the marker AND rollback FAILED — remove {target} MANUALLY)")
+        else:
+            print(f"SKIPPED       {repo}  (resolver rejects the marker — tracked/repo-controlled or resolver unavailable; inspect {root}/{STATE_DIR})")
+        return True
+    finally:
+        if sd_fd is not None:
+            try:
+                os.close(sd_fd)
+            except OSError:
+                pass
+        try:
+            os.close(root_fd)
+        except OSError:
+            pass
+
+
+def parse_args(argv):
+    """Return (dry_run, repos), or an int exit code for --help / usage / unknown option."""
     dry_run = False
     repos = []
     for a in argv:
@@ -358,80 +432,23 @@ def main(argv):
     if not repos:
         sys.stderr.write("usage: enable-advisory-downgrade.py [--dry-run] REPO [REPO ...]\n")
         return 2
+    return (dry_run, repos)
+
+
+def main(argv):
+    parsed = parse_args(argv)
+    if isinstance(parsed, int):
+        return parsed
+    dry_run, repos = parsed
     # STATE_DIR must be a single dir name — a multi-component / traversal value would
     # place the marker where the resolver (which rejects such values) never reads it.
     if STATE_DIR in ("", ".", "..") or "/" in STATE_DIR:
         sys.stderr.write(f"error: unsafe BUSDRIVER_STATE_DIR={STATE_DIR!r} (must be a single dir name)\n")
         return 2
-
     any_skipped = False
     for repo in repos:
-        root = main_root(repo)
-        if root is None:
-            print(f"SKIPPED       {repo}  (not the main worktree root of a git repo)")
+        if _enroll_one(repo, dry_run):
             any_skipped = True
-            continue
-        # Open the validated root ONCE (symlink-free); the resolver check binds to it via
-        # fchdir. Open STATE_DIR once too and share that fd between placement and rollback,
-        # so no path rename/replace between those steps can make them act on different
-        # directory objects.
-        try:
-            root_fd = open_dir_nofollow(root)
-        except OSError as e:  # fail-closed per target; keep going for the rest
-            print(f"SKIPPED       {repo}  (filesystem error: {e.strerror})")
-            any_skipped = True
-            continue
-        target = f"{root}/{STATE_DIR}/{MARKER}"
-        sd_fd = None
-        try:
-            try:
-                sd_fd, early = open_state_dir(root_fd, dry_run)
-                status, detail = early if early is not None else place_marker(sd_fd, dry_run)
-            except OSError as e:
-                print(f"SKIPPED       {repo}  (filesystem error: {e.strerror})")
-                any_skipped = True
-                continue
-            if status == "SKIPPED":
-                print(f"SKIPPED       {repo}  ({detail})")
-                any_skipped = True
-            elif dry_run:
-                # Predict honestly: consult the resolver for an existing marker, and for
-                # an absent one check whether the PATH is already tracked (index/HEAD) — a
-                # real run would create the file but the resolver would then reject it.
-                if status == "ALREADY":
-                    if resolver_accepts(root_fd):
-                        print(f"ALREADY       {repo}  (opted-in) -> {target}")
-                    else:
-                        print(f"WOULD-SKIP    {repo}  (marker present but resolver rejects it — tracked/repo-controlled)")
-                        any_skipped = True
-                elif marker_repo_tracked(root):  # WOULD-ENROLL path, but the path is tracked
-                    print(f"WOULD-SKIP    {repo}  (marker path is tracked in index/HEAD — resolver would reject a real run)")
-                    any_skipped = True
-                else:
-                    print(f"WOULD-ENROLL  {repo}  [dry-run] -> {target}")
-            elif resolver_accepts(root_fd):  # single source of truth confirms it took
-                print(f"{status:<12}  {repo}  -> {target}")
-            else:
-                # Resolver rejects. If WE just created the marker, roll it back (via the
-                # SAME sd_fd) so a transient resolver failure cannot become a silent opt-in
-                # later; a pre-existing (ALREADY) marker is the operator's — leave it.
-                if status == "ENROLLED" and not remove_marker(sd_fd):
-                    # Rollback failed — the marker we created is still there and could be
-                    # accepted once a transient rejection clears. Make that LOUD.
-                    print(f"SKIPPED       {repo}  (resolver rejected the marker AND rollback FAILED — remove {target} MANUALLY)")
-                else:
-                    print(f"SKIPPED       {repo}  (resolver rejects the marker — tracked/repo-controlled or resolver unavailable; inspect {root}/{STATE_DIR})")
-                any_skipped = True
-        finally:
-            if sd_fd is not None:
-                try:
-                    os.close(sd_fd)
-                except OSError:
-                    pass
-            try:
-                os.close(root_fd)
-            except OSError:
-                pass
     return 1 if any_skipped else 0
 
 

@@ -120,10 +120,11 @@ def main_root(repo):
 
     The returned path is the operator's OWN path — git is used only to VALIDATE it,
     never to CHOOSE the write target. Every caller anchors the marker under this
-    returned path, so a forged `.git` gitfile (which could make `git -C repo` resolve
-    ANOTHER repository) can at most cause a wrong skip/accept decision — it can NEVER
-    redirect the marker into a repo the operator did not name. That closes the
-    redirection class by construction, without trusting any git-reported path.
+    returned path, so the marker can NEVER be redirected into a repo the operator did
+    not name. As defense-in-depth we ALSO reject the case where the dir the resolver
+    would read consent from diverges from the named dir (a forged `.git` gitfile
+    pointing at another repo), so we never even place a marker the resolver would then
+    evaluate against a FOREIGN index/HEAD.
 
     Consent is read at the MAIN worktree root, so a linked worktree or a subdirectory
     is rejected (the operator must name the main root)."""
@@ -131,17 +132,32 @@ def main_root(repo):
     top = git_out(repo_real, "rev-parse", "--show-toplevel")
     if top is None or os.path.realpath(top.strip()) != repo_real:
         return None  # not a work-tree ROOT (subdir, non-repo, or unresolvable) → fail closed
-    # MAIN worktree iff git-dir == git-common-dir. A LINKED worktree's git-dir is
-    # <main>/.git/worktrees/<name> while its common-dir is <main>/.git, so they differ.
-    # This is robust to `git init --separate-git-dir` (where `worktree list` reports the
-    # separate git dir, not the checkout) — matching how the resolver resolves the main
-    # root, so the enroller stays consistent with the authority it delegates to.
+    # MAIN (not linked) worktree: git-dir == git-common-dir. A LINKED worktree's git-dir
+    # is <main>/.git/worktrees/<name> while its common-dir is <main>/.git, so they differ.
     gd = git_out(repo_real, "rev-parse", "--path-format=absolute", "--git-dir")
     gcd = git_out(repo_real, "rev-parse", "--path-format=absolute", "--git-common-dir")
-    if gd is None or gcd is None:
+    if gd is None or gcd is None or os.path.realpath(gd.strip()) != os.path.realpath(gcd.strip()):
         return None
-    if os.path.realpath(gd.strip()) != os.path.realpath(gcd.strip()):
-        return None  # linked worktree — consent is read at the main root; name that instead
+    # The dir the RESOLVER reads consent from (`worktree list` first entry) must be
+    # repo_real. A forged `.git` gitfile pointing at ANOTHER repo makes that first entry
+    # the FOREIGN checkout (≠ repo_real) — reject, so we never place a marker the resolver
+    # would grade against a foreign index/HEAD. The lone exception is a
+    # `--separate-git-dir` main checkout, whose first entry is the git DIR (not a work
+    # tree); repo_real is already confirmed as the checkout via show-toplevel above.
+    # `-z` (NUL-separated) so a path with a newline / tab / non-ASCII byte is emitted
+    # RAW, not C-quoted — the default `--porcelain` would quote it and we'd compare a
+    # quoted string against realpath and wrongly reject a valid worktree.
+    wt = git_out(repo_real, "worktree", "list", "--porcelain", "-z")
+    if not wt:
+        return None
+    first = next((f[len("worktree "):] for f in wt.split("\0") if f.startswith("worktree ")), None)
+    if first is None:
+        return None
+    if os.path.realpath(first) != repo_real:
+        chk = git_out(first, "rev-parse", "--is-inside-work-tree")
+        if chk is None or chk.strip() == "true":
+            return None  # first entry is a DIFFERENT real work tree (forged gitfile) → reject
+        # else chk == "false": separate-git-dir, first entry is the git dir → allow
     return repo_real
 
 

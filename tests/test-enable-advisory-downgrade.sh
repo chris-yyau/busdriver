@@ -104,15 +104,17 @@ set +e; out=$(python3 "$E" --dry-run "$ROOT"); code=$?; set -e
 assert_eq 1 "$code" "dry-run over tracked marker → exit 1"
 assert_prefix WOULD-SKIP "$out" "dry-run over tracked marker → WOULD-SKIP"
 
-# 10. Forged `.git` gitfile pointing at another repo must NOT redirect the marker into
-#     that repo — the realpath-membership check fails closed (regression for the
-#     forged-.git finding).
+# 10. Forged `.git` gitfile pointing at another repo → rejected at main_root because the
+#     dir the resolver would read consent from (worktree-list first entry = REAL) diverges
+#     from the named dir (DECOY). Marker never lands in EITHER repo (regression for the
+#     forged-.git / foreign-index findings).
 REAL=$(mkrepo)
 DECOY=$(mk); printf 'gitdir: %s/.git\n' "$REAL" > "$DECOY/.git"
 set +e; out=$(enroll "$DECOY"); code=$?; set -e
 assert_eq 1 "$code" "forged .git gitfile → exit 1"
 assert_prefix SKIPPED "$out" "forged .git gitfile → SKIPPED"
-assert_true test ! -e "$REAL/.claude/$FILE"   # marker was not redirected into the real repo
+assert_true test ! -e "$REAL/.claude/$FILE"     # not redirected into the foreign repo
+assert_true test ! -e "$DECOY/.claude/$FILE"    # nor left in the named decoy dir
 
 # 11. Resolver rejects a marker we JUST created (path tracked in HEAD, absent from the
 #     working tree) → the enroller rolls the created marker back, so a transient

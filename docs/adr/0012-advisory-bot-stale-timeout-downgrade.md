@@ -151,9 +151,9 @@ ack-ledger staleness verdict directly rather than patch each timestamp source.
 The opt-in is per-repo (`<repo>/.claude/pr-grind-advisory-downgrade.local`). A solo
 operator who wants the affordance on every checkout drops the marker file into each repo's
 `.claude/` as a plain, untracked regular file (the resolver rejects a symlinked or tracked
-marker). A hardened one-shot `enable-advisory-downgrade.sh` enroller that does this safely
-in bulk is a **planned follow-up** — see "Deferred" below. Either way there is **no new
-global consent surface** to injection-harden.
+marker). A hardened bulk enroller that does this safely in one shot
+(`scripts/enable-advisory-downgrade.py`) **shipped in issue #326** — see "Shipped" below.
+Either way there is **no new global consent surface** to injection-harden.
 
 **Why no global env var / global file (load-bearing).** A global switch — a file
 (`$HOME/.claude/...`) or an env var (`BUSDRIVER_ADVISORY_DOWNGRADE=1`) — forces the
@@ -186,18 +186,23 @@ across linked worktrees, submodules, and `--separate-git-dir`), never a repo-sup
 env var. Covered by `tests/test-advisory-downgrade-optin.sh` (9 cases; the gitlink branch
 is exercised at the code level rather than a dedicated submodule fixture).
 
-**Deferred: the hardened one-shot enroller.** A drafted `enable-advisory-downgrade.sh`
-(explicit repo paths only — never a recursive scanner; verify owner + non-bare work-tree
-root + non-symlink state dir; delegate acceptance to the resolver; `--dry-run`) itself
-grew an adversarial tail on *operator-machine-local* vectors — forged `.git` gitfiles and
-an intermediate-directory symlink-swap TOCTOU that portable bash cannot close (`O_NOFOLLOW`
-on each path component is unavailable). That is exactly the "stop after ~3 rounds; the
-mechanism is over-hardened" signal, and the enroller's real threat model is *the operator
-running a script over their own repos*, not untrusted PR content. So it is **deferred to a
-follow-up** (ideally not in bash, or wired into repo-bootstrap): the resolver — the piece
-that actually runs on untrusted PR content — ships now and holds *by construction*, and
-the operator enrolls with the trusted loop above meanwhile. New repos stay default-OFF
-until enrolled.
+**Shipped (issue #326): the hardened one-shot enroller.** The first draft was
+`enable-advisory-downgrade.sh`, but it grew an adversarial tail on *operator-machine-local*
+vectors — forged `.git` gitfiles and an intermediate-directory symlink-swap TOCTOU that
+portable bash cannot close (`O_NOFOLLOW` on each path component is unavailable). That is why
+#314 deferred it. The follow direction the "Deferred" note flagged (*"ideally not in
+bash"*) is what shipped: `scripts/enable-advisory-downgrade.py`. Python's
+`os.open(..., dir_fd=fd)` is `openat(2)`, so the write path is opened component-by-component
+with `O_NOFOLLOW` — the resolved root (a trusted git answer) first, then `<STATE_DIR>`, then
+the marker under `O_CREAT|O_EXCL|O_NOFOLLOW`. An intermediate symlink swap can no longer
+redirect the write outside the resolved root, closing the exact gap bash left open. It takes
+**explicit repo paths only** (no globbing/auto-discovery, closing the wandering-scan /
+forged-`.git` vector), is idempotent, has `--dry-run`, fails CLOSED per target, and — crucially
+— **delegates acceptance back to the resolver** (runs it after placing each marker and only
+reports `ENROLLED` when the resolver returns `1`), so there is no second, divergent notion of
+consent. The resolver — the piece that actually runs on untrusted PR content — remains the
+single source of truth and still holds *by construction*. New repos stay default-OFF until
+enrolled. Covered by `tests/test-enable-advisory-downgrade.sh`.
 
 **Follow-up (out of scope here):** `SKIP_LITMUS` / `SKIP_PR_GRIND` are themselves settable
 via a committed `.claude/settings.json` `env` block (verified: `pre-commit-gate.sh:310` /

@@ -3,8 +3,9 @@
 # advisory-bot stale-ack timeout downgrade is opted in for THIS repo.
 #
 # Opt-in is a PER-REPO file: <main-root>/<STATE_DIR>/pr-grind-advisory-downgrade.local.
-# To opt in across many repos, the operator drops that file into each with a trusted loop
-# (a hardened one-shot enroller is a deferred follow-up — see ADR 0012). There is
+# To opt in across many repos, the operator drops that file into each with a trusted loop,
+# or runs scripts/enable-advisory-downgrade.py (issue #326 — explicit repo paths only;
+# writes via openat + O_NOFOLLOW; delegates acceptance back to THIS resolver). There is
 # deliberately NO global env-var / global-file
 # switch: an env var can be set by a repo's committed .claude/settings.json (Claude Code
 # applies its `env` block) and a global marker file is likewise repo-injectable — either

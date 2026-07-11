@@ -1,3 +1,10 @@
+## [1.89.2](https://github.com/chris-yyau/busdriver/compare/v1.89.1...v1.89.2) (2026-07-11)
+
+
+### Bug Fixes
+
+* **hooks:** contain gate env injection from committed settings.json ([#325](https://github.com/chris-yyau/busdriver/issues/325)) ([#329](https://github.com/chris-yyau/busdriver/issues/329)) ([55db7d1](https://github.com/chris-yyau/busdriver/commit/55db7d1e92905162bda4141b35e582c443061ec3))
+
 ## [1.89.1](https://github.com/chris-yyau/busdriver/compare/v1.89.0...v1.89.1) (2026-07-10)
 
 

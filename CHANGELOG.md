@@ -1,3 +1,10 @@
+# [1.91.0](https://github.com/chris-yyau/busdriver/compare/v1.90.0...v1.91.0) (2026-07-11)
+
+
+### Features
+
+* **pr-grind:** hardened bulk advisory-downgrade enroller ([#326](https://github.com/chris-yyau/busdriver/issues/326)) ([#332](https://github.com/chris-yyau/busdriver/issues/332)) ([6f3d88f](https://github.com/chris-yyau/busdriver/commit/6f3d88f88aa7d81fc3d6f64d15346f2a1caa4f41)), closes [#314](https://github.com/chris-yyau/busdriver/issues/314)
+
 # [1.90.0](https://github.com/chris-yyau/busdriver/compare/v1.89.2...v1.90.0) (2026-07-11)
 
 

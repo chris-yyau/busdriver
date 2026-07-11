@@ -52,10 +52,11 @@ hook entry point (the one place above the scripts), not inside the scripts.
   poisoned `PATH`, `GIT_*`, `SKIP_*`, `BUSDRIVER_*`, `LITMUS_PR_*`, and any unknown
   future lever — in one move. Only a minimal allowlist is re-added.
 - `lib/sanitized-gate.sh` rebuilds a **trusted `PATH`** from a fixed list of absolute
-  dirs that exist (never the caller's `PATH`), **neutralizes global + system git config**
-  (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`) so a re-imported `HOME`
-  cannot smuggle a `~/.gitconfig` with an executable helper/alias/pager, then execs the
-  named gate with stdin (the PreToolUse JSON) passed through untouched.
+  dirs that exist (never the caller's `PATH`), **re-derives `HOME` from the password
+  database** (`getent`/`dscl` — the real operator's home, not the PR-influenced env),
+  **neutralizes global + system git config** (`GIT_CONFIG_GLOBAL=/dev/null`,
+  `GIT_CONFIG_SYSTEM=/dev/null`), sets **`PYTHONNOUSERSITE=1`**, then execs the named gate
+  with stdin (the PreToolUse JSON) passed through untouched.
 
 Additionally, the named `SKIP_LITMUS` / `SKIP_PR_GRIND` / `SKIP_DESIGN_REVIEW` env
 escape hatches are **removed** from the gate scripts. They are stripped by `env -i`
@@ -79,8 +80,10 @@ themselves injection levers → dropping them to their secure defaults (`origin/
 (`MODE`, `MERGE_PR_NUM`, …), arrives on stdin, or is read from repo files.
 
 The one real trade-off is `gh` config. `gh` in the pre-PR / pre-merge gates authenticates
-via its config/keyring under `$HOME` (`~/.config/gh` — preserved), so the default
-`gh auth login` path is unaffected. But `env -i` intentionally does **not** re-import
+via its config/keyring under `$HOME` (`~/.config/gh`) — and because `HOME` is re-derived
+from the password database (not the env), that resolves to the **real operator's** config,
+so the default `gh auth login` path is unaffected and a poisoned `HOME` can't point `gh` at
+attacker config. But `env -i` intentionally does **not** re-import
 `GH_TOKEN` / `GITHUB_TOKEN` / `GH_HOST` / proxy vars, because those are themselves
 injection levers (a committed `settings.json` could set `GH_TOKEN` to an attacker token,
 or `GH_HOST` to redirect PR-state queries). Consequence: an operator relying on
@@ -131,11 +134,15 @@ formatter would strip its Go toolchain PATH, and the bootstrap legitimately read
   [plugins-reference](https://code.claude.com/docs/en/plugins-reference.md)). It is the
   plugin trust root every busdriver hook already relies on, and #325's lever list
   correctly omits it.
-- **`HOME`** is re-imported because tools need it (`gh` reads `~/.config/gh` for auth).
-  The concrete git-helper RCE it enabled (`~/.gitconfig` alias/helper) is **closed** by the
-  `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM=/dev/null` neutralization above; a spoofed
-  `~/.config/gh` remains a bounded residual (the gates' `gh` calls are read-only PR-state
-  queries).
+- **`HOME`** — **closed**, not accepted. `HOME` is a general tool-config RCE channel (a
+  poisoned `HOME` supplies a `~/.gitconfig` helper, a Python user-site
+  `~/.local/.../sitecustomize.py` that runs on every `python3`, or a spoofed `~/.config/gh`
+  that feeds a gate fake PR state). Rather than whack-a-mole per tool, the wrapper
+  **re-derives `HOME` from the password database** (`getent`/`dscl`, keyed on `id -un`), so
+  git/python3/gh all read the *real* operator's config regardless of the env `HOME`.
+  `GIT_CONFIG_*=/dev/null` and `PYTHONNOUSERSITE=1` are belt-and-suspenders. The only
+  residual is the near-impossible case where `id`/getpwnam yield nothing (no override, so
+  the passed `HOME` stands) — acceptable under the solo-operator bound.
 - **Outer-shell `BASH_ENV`** — **verified not a live vector** for the documented hook
   runner. `env -i` protects the gate script, but not the *outer* shell that Claude uses to
   launch the hook command (that shell sources its startup files before parsing our

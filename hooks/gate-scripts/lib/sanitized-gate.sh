@@ -64,6 +64,36 @@ export TMPDIR="${TMPDIR:-/tmp}"
 # committed tree, so a PR cannot inject it) — gates need it for remote resolution.
 export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_SYSTEM=/dev/null
+# HOME is re-derived from the password database (getpwnam), NOT the PR-influenced
+# session env. A poisoned HOME is a general tool-config RCE channel: git helpers
+# (~/.gitconfig — also neutralized above), a Python user-site
+# ~/.local/lib/pythonX/site-packages/sitecustomize.py that runs on every `python3`,
+# or a spoofed ~/.config/gh that feeds a gate fake PR state. The passwd home is the
+# real operator's, independent of $HOME, so git/python3/gh all read trusted config.
+# PYTHONNOUSERSITE also disables Python user-site outright (belt-and-suspenders; the
+# gates use only stdlib).
+export PYTHONNOUSERSITE=1
+_u=$(id -un 2>/dev/null || true)
+_home=""
+if [[ -n "$_u" ]]; then
+    # Try getent (Linux); fall THROUGH to dscl (macOS) if it is absent or yields
+    # nothing usable — an `elif` would trust a present-but-empty getent and skip the
+    # override, leaving the poisoned HOME in place.
+    if command -v getent >/dev/null 2>&1; then
+        _home=$(getent passwd "$_u" 2>/dev/null | cut -d: -f6 || true)
+    fi
+    if [[ -z "$_home" || ! -d "$_home" ]] && command -v dscl >/dev/null 2>&1; then
+        _home=$(dscl . -read "/Users/$_u" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)
+    fi
+fi
+if [[ -n "$_home" && -d "$_home" ]]; then
+    export HOME="$_home"
+else
+    # Could not derive a trusted home → FAIL CLOSED: drop the env-supplied (possibly
+    # poisoned) HOME rather than trusting it. Tools that getpwuid-fall-back still find the
+    # real home; a gh-using gate without HOME fails closed (blocks), never bypasses.
+    unset HOME
+fi
 
 # ── Resolve the gate to run ────────────────────────────────────────────────
 # A bare basename supplied by hooks.json (trusted), but reject path/traversal

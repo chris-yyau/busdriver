@@ -37,6 +37,9 @@ echo "BASH_ENV=[${BASH_ENV:-}]"
 echo "PATH=[${PATH}]"
 echo "GIT=[$(git --version 2>&1)]"          # shimmed/functioned git would announce itself
 echo "STATE_DIR=[${BUSDRIVER_STATE_DIR:-}]"
+echo "HOME=[${HOME:-}]"
+echo "PYTHONNOUSERSITE=[${PYTHONNOUSERSITE:-}]"
+python3 -c 'pass' 2>/dev/null || true   # would run a poisoned ~/.local sitecustomize.py
 PROBE
 
 # ── Poison payloads ─────────────────────────────────────────────────────────
@@ -51,6 +54,13 @@ cat > "$TMP/shim/git" <<'SHIM'
 echo "PWNED-SHIM-GIT"
 SHIM
 chmod +x "$TMP/shim/git"
+# A poisoned HOME with a Python user-site sitecustomize (the exact HOME-based RCE the
+# wrapper must defeat by re-deriving HOME from the password database). Target the actual
+# python3 version's user-site dir so the negative test is valid on any interpreter.
+_pyver=$(python3 -c 'import sys; print("python%d.%d" % sys.version_info[:2])' 2>/dev/null || echo python3)
+_usersite="$TMP/evil_home/.local/lib/$_pyver/site-packages"
+mkdir -p "$_usersite"
+printf 'open("%s","w").close()\n' "$TMP/SITECUSTOMIZE_RAN" > "$_usersite/sitecustomize.py"
 
 # ── Run the probe through the EXACT hooks.json invocation, env fully poisoned ─
 # Outer shell exports the levers a committed settings.json `env` block would set:
@@ -64,9 +74,10 @@ run_out="$(
   export BASH_ENV="$TMP/evil.sh"
   export BUSDRIVER_STATE_DIR="attacker-dir"
   export PATH="$TMP/shim:$PATH"
+  export HOME="$TMP/evil_home"
   /usr/bin/env -i \
     PATH=/usr/bin:/bin \
-    HOME="$HOME" \
+    HOME="$TMP/evil_home" \
     CLAUDE_PLUGIN_ROOT="$TMP/root" \
     bash "$TMP/root/hooks/gate-scripts/lib/sanitized-gate.sh" _probe.sh 2>&1
 )"
@@ -82,6 +93,9 @@ grep -q 'BASH_ENV=\[\]'     <<<"$run_out"; assert $? "BASH_ENV stripped"
 ! grep -q 'PWNED'           <<<"$run_out"; assert $? "git not hijacked (no shim/function)"
 ! grep -q "$TMP/shim"       <<<"$run_out"; assert $? "PATH shim dir stripped"
 grep -q 'STATE_DIR=\[\]'    <<<"$run_out"; assert $? "BUSDRIVER_STATE_DIR override stripped (gate defaults to .claude)"
+! grep -q "evil_home"       <<<"$run_out"; assert $? "poisoned HOME overridden (re-derived from passwd, not the env)"
+[[ ! -e "$TMP/SITECUSTOMIZE_RAN" ]];       assert $? "poisoned ~/.local sitecustomize.py never ran (HOME re-derived + PYTHONNOUSERSITE)"
+grep -q 'PYTHONNOUSERSITE=\[1\]' <<<"$run_out"; assert $? "PYTHONNOUSERSITE=1 set (Python user-site disabled)"
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"

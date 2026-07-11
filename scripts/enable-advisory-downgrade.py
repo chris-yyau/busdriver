@@ -17,20 +17,30 @@ repo the marker lands at
 main-worktree root is resolved via git exactly like the resolver reads it.
 
 Safety (operator-machine-local threats named in ADR 0012's "Deferred" section):
-  * The write path is opened component-by-component with openat + O_NOFOLLOW
-    (os.open(dir_fd=...)), so an intermediate symlink-swap TOCTOU on <STATE_DIR> or
-    the marker cannot redirect the write outside the resolved repo root. This is the
-    guarantee portable bash could not give — the reason #314 deferred this enroller.
   * No redirection, BY CONSTRUCTION: the marker is always written under the operator's
-    EXPLICIT path (realpath'd), opened component-by-component with openat + O_NOFOLLOW.
-    git is used only to VALIDATE that path is a main worktree root — never to CHOOSE
-    the write target — so a forged `.git` gitfile (which could make `git -C repo`
-    resolve ANOTHER repo) can at most cause a wrong skip/accept decision, never send
-    the marker to a repo the operator did not name. Only explicit paths are accepted
-    (no globbing/auto-discovery). Every git invocation also runs with the
-    repo-discovery environment scrubbed (GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR / …
-    — the set the resolver unsets internally), so a committed .claude/settings.json
-    `env` block cannot redirect discovery either.
+    EXPLICIT path (realpath'd), which is opened ONCE component-by-component with openat
+    + O_NOFOLLOW (emulating openat2(RESOLVE_NO_SYMLINKS)) — a per-component symlink
+    guarantee portable bash could not give (the reason #314 deferred this enroller).
+    git is used only to VALIDATE that path is a main worktree root, never to CHOOSE the
+    write target — so a forged `.git` gitfile (which could make `git -C repo` resolve
+    ANOTHER repo) can at most cause a wrong skip/accept decision, never send the marker
+    to a repo the operator did not name. Only explicit paths are accepted (no
+    globbing/auto-discovery).
+  * Stable fds, not re-resolved paths: the root is opened ONCE and the resolver's
+    acceptance check binds to it via fchdir (not a path cwd that could re-resolve to a
+    swapped dir); the state dir is opened ONCE and that fd is shared by placement AND
+    rollback — so a directory rename/replace between the write and the rollback cannot
+    make them act on different objects (the rollback removes exactly what was placed).
+    The resolver still re-resolves STATE_DIR by name inside root — by design, as the
+    independent authority; on a mid-run swap it rejects and the shared-fd rollback cleans
+    up what we placed, so the net result stays fail-closed.
+  * Injectable-env defense is by ALLOWLIST, not blocklist: every git/resolver
+    subprocess gets ONLY a fixed PATH (/usr/bin:/bin) and the validated
+    BUSDRIVER_STATE_DIR. So a committed .claude/settings.json `env` block cannot reach
+    them with GIT_DIR/…, BASH_ENV / ENV / BASH_FUNC_* (bash startup code exec), a
+    shadowing PATH, or anything else — those are dropped by construction rather than
+    enumerated. This is what prevents a poisoned child from forging the resolver's
+    verdict; the resolver is the security-relevant subprocess.
   * Residuals (accepted, operator-machine-local — the threat model per ADR 0012 is the
     operator running this over THEIR OWN repos, not untrusted PR content; the resolver
     is the piece that faces untrusted content and holds by construction):
@@ -38,11 +48,14 @@ Safety (operator-machine-local threats named in ADR 0012's "Deferred" section):
         marker at that path's current contents — but never at a DIFFERENT path than the
         one named, and enabling advisory-downgrade on a repo grants nothing (it never
         opens the merge gate; the operator can opt in any repo trivially).
-      - PATH / BASH_ENV poisoning: a committed settings.json `env` block can prepend
-        PATH, and git/bash are invoked by name. We prefer trusted system dirs
-        (/usr/bin, /bin), defeating the naive prepend, but a fully poisoned session
-        PATH is the session-wide residual ADR 0016 accepts as outside the (server-side)
-        merge-security boundary — the resolver and gates call bare `git` too.
+      - A poisoned session that runs code in THIS interpreter before it defends itself —
+        PYTHONPATH/sitecustomize or LD_PRELOAD/DYLD_* set by a committed settings.json
+        `env` block, which execute during interpreter startup. This is irreducible in a
+        script the operator launches from the poisoned session (an in-process re-exec is
+        already too late — startup ran first), and is the same session-wide residual
+        ADR 0016 accepts as outside the (server-side) merge-security boundary; the
+        resolver and gates run under the same assumption. The subprocess allowlist above
+        still prevents this from forging the resolver's independent verdict.
   * Fail-closed per target: any ambiguity (not the main worktree root, symlinked state
     dir or marker, or the resolver rejecting the placed marker) SKIPS that repo and is
     reported; other repos continue.
@@ -65,28 +78,23 @@ CONTENT = (
 )
 RESOLVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "advisory-downgrade-optin.sh")
 
-# Scrub git repo-discovery vars (the set the resolver unsets internally) from the
-# environment handed to every git/resolver subprocess: a committed
-# .claude/settings.json `env` block could otherwise set GIT_DIR / GIT_WORK_TREE / …
-# to redirect discovery at another checkout and plant the marker there.
-_GIT_DISCOVERY_VARS = (
-    "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_NAMESPACE",
-    "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT",
-)
-_CLEAN_ENV = {k: v for k, v in os.environ.items() if k not in _GIT_DISCOVERY_VARS}
-# Prefer trusted system locations for `git`/`bash` so a repo-prepended PATH (a
-# committed .claude/settings.json `env` block) cannot shadow them with a planted
-# binary. Reduces — does not eliminate — PATH poisoning; the broader PATH/BASH_ENV
-# lever is the session-wide residual ADR 0016 accepts (outside the merge-security
-# boundary), not unique to this tool. rstrip avoids a trailing empty entry (== CWD).
-_CLEAN_ENV["PATH"] = os.pathsep.join(["/usr/bin", "/bin", _CLEAN_ENV.get("PATH", "")]).rstrip(os.pathsep)
+# Build the git/resolver subprocess environment as a strict ALLOWLIST, not a blocklist:
+# a committed .claude/settings.json `env` block can set ARBITRARY vars, and enumerating
+# every dangerous one (GIT_DIR/…, BASH_ENV, ENV, BASH_FUNC_* exported functions,
+# LD_PRELOAD, …) is a losing game. Instead we pass ONLY what git's read-only plumbing
+# and the resolver need, so every injected variable is dropped by construction.
+#   * PATH: fixed to trusted system dirs (git → /usr/bin/git, bash → /bin/bash), so a
+#     planted binary on a repo-prepended PATH cannot shadow them.
+#   * BUSDRIVER_STATE_DIR: forwarded so the resolver reads the SAME state dir; both it
+#     and this script validate it (single component), so a hostile value fails closed.
+# HOME is deliberately omitted: git's plumbing (ls-files/ls-tree/rev-parse/worktree
+# list) works without it and then cannot be steered by a repo-controlled ~/.gitconfig.
+_CLEAN_ENV = {"PATH": "/usr/bin:/bin", "BUSDRIVER_STATE_DIR": STATE_DIR}
 
 
 def git_out(cwd, *args):
     """`git -C <cwd> <args>` stdout on success, else None (fail-closed). Runs with
-    the repo-discovery environment scrubbed (see _CLEAN_ENV)."""
+    the minimal allowlist environment (see _CLEAN_ENV)."""
     try:
         r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True,
                            check=False, env=_CLEAN_ENV)
@@ -191,126 +199,101 @@ def marker_repo_tracked(root):
     return any(ln.startswith("160000 ") for ln in stage.splitlines())
 
 
-def place_marker(root, dry_run):
-    """Place the marker under <root>/<STATE_DIR> via openat + O_NOFOLLOW.
-    Returns (status, detail). Status ∈ {ENROLLED, ALREADY, WOULD-ENROLL, SKIPPED}."""
-    root_fd = open_dir_nofollow(root)  # symlink-free walk, anchored on the operator's path
+def open_state_dir(root_fd, dry_run):
+    """openat STATE_DIR from root_fd (mkdir first on a real run), O_NOFOLLOW so a
+    symlinked state dir fails closed. Returns (sd_fd, None) on success, or
+    (None, (status, detail)) when it is not a usable dir: absent under --dry-run →
+    WOULD-ENROLL; symlink / non-dir → SKIPPED. The caller owns and closes sd_fd, and
+    shares it with both place_marker and remove_marker so placement and rollback act on
+    ONE state-dir object even if <STATE_DIR> is renamed/replaced between them."""
+    if not dry_run:
+        try:
+            os.mkdir(STATE_DIR, 0o755, dir_fd=root_fd)
+        except FileExistsError:
+            pass
     try:
-        if not dry_run:
-            try:
-                os.mkdir(STATE_DIR, 0o755, dir_fd=root_fd)
-            except FileExistsError:
-                pass
-        try:
-            sd_fd = os.open(STATE_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
-        except FileNotFoundError:
-            return ("WOULD-ENROLL", None)  # dry-run: state dir not created yet
-        except OSError as e:
-            return ("SKIPPED", f"{STATE_DIR} is a symlink or not a directory ({e.strerror})")
-        try:
-            # Inspect the existing marker without following a symlink (fstatat NOFOLLOW).
-            try:
-                st = os.stat(MARKER, dir_fd=sd_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                st = None
-            if st is not None:
-                if stat.S_ISREG(st.st_mode):
-                    return ("ALREADY", None)
-                return ("SKIPPED", "existing marker is not a regular file")
-            if dry_run:
-                return ("WOULD-ENROLL", None)
-            # Create atomically, never following a final-component symlink. A failure
-            # from EITHER the write OR the close (e.g. EIO) must leave nothing behind —
-            # a half-written/regular marker still reads as a valid opt-in the resolver
-            # would ACCEPT, so a SKIPPED report must not sit over a live marker.
-            fd = os.open(MARKER, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=sd_fd)
-            err = None
-            try:
-                os.write(fd, CONTENT.encode())
-            except OSError as e:
-                err = e
-            finally:
-                try:
-                    os.close(fd)
-                except OSError as e:
-                    err = err or e
-            if err is not None:
-                detail = f"write failed, marker removed ({err.strerror})"
-                try:
-                    os.unlink(MARKER, dir_fd=sd_fd)
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    # Rollback of the just-created marker failed — it may still be a
-                    # valid opt-in. Say so LOUDLY rather than claim it was removed.
-                    detail = (f"write failed AND rollback FAILED — remove the marker under "
-                              f"{STATE_DIR}/ MANUALLY ({err.strerror})")
-                return ("SKIPPED", detail)
-            return ("ENROLLED", None)
-        finally:
-            # The marker fd was already written+closed above (its close failure is
-            # handled there). A failure closing these read-only DIRECTORY fds does not
-            # affect the on-disk marker, so swallow it — otherwise it would override a
-            # successful ENROLLED return with an exception, and main() would report a
-            # bare filesystem-error SKIPPED WITHOUT rolling back the live marker.
-            try:
-                os.close(sd_fd)
-            except OSError:
-                pass
+        sd_fd = os.open(STATE_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+    except FileNotFoundError:
+        return (None, ("WOULD-ENROLL", None))  # dry-run: state dir not created yet
+    except OSError as e:
+        return (None, ("SKIPPED", f"{STATE_DIR} is a symlink or not a directory ({e.strerror})"))
+    return (sd_fd, None)
+
+
+def place_marker(sd_fd, dry_run):
+    """Create the marker under the already-open state-dir fd (O_CREAT|O_EXCL|O_NOFOLLOW).
+    Returns (status, detail). Status ∈ {ENROLLED, ALREADY, WOULD-ENROLL, SKIPPED}."""
+    # Inspect any existing marker without following a symlink (fstatat NOFOLLOW).
+    try:
+        st = os.stat(MARKER, dir_fd=sd_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        st = None
+    if st is not None:
+        if stat.S_ISREG(st.st_mode):
+            return ("ALREADY", None)
+        return ("SKIPPED", "existing marker is not a regular file")
+    if dry_run:
+        return ("WOULD-ENROLL", None)
+    # Create atomically, never following a final-component symlink. A failure from EITHER
+    # the write OR the close (e.g. EIO) must leave nothing behind — a half-written/regular
+    # marker still reads as a valid opt-in the resolver would ACCEPT, so a SKIPPED report
+    # must not sit over a live marker.
+    fd = os.open(MARKER, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=sd_fd)
+    err = None
+    try:
+        os.write(fd, CONTENT.encode())
+    except OSError as e:
+        err = e
     finally:
         try:
-            os.close(root_fd)
-        except OSError:
+            os.close(fd)
+        except OSError as e:
+            err = err or e
+    if err is not None:
+        detail = f"write failed, marker removed ({err.strerror})"
+        try:
+            os.unlink(MARKER, dir_fd=sd_fd)
+        except FileNotFoundError:
             pass
+        except OSError:
+            # Rollback of the just-created marker failed — it may still be a valid
+            # opt-in. Say so LOUDLY rather than claim it was removed.
+            detail = (f"write failed AND rollback FAILED — remove the marker under "
+                      f"{STATE_DIR}/ MANUALLY ({err.strerror})")
+        return ("SKIPPED", detail)
+    return ("ENROLLED", None)
 
 
-def resolver_accepts(root):
-    """Delegate acceptance to the resolver (single source of truth). Run it from the
-    resolved root so its git/CWD lookup matches. The resolver's contract is "print 0/1,
-    ALWAYS exit 0", so a nonzero exit (crash, signal after flushing stdout) means it
-    malfunctioned — fail CLOSED and do not trust the printed verdict. True iff exit 0
-    AND stdout is `1`."""
+def resolver_accepts(root_fd):
+    """Delegate acceptance to the resolver (single source of truth), binding it to the
+    SAME directory object as the write via fchdir(root_fd) in the child — NOT a
+    path-based cwd that could re-resolve to a swapped directory. The resolver's
+    contract is "print 0/1, ALWAYS exit 0", so a nonzero exit (crash, signal after
+    flushing stdout) means it malfunctioned — fail CLOSED. True iff exit 0 AND `1`."""
     try:
-        r = subprocess.run(["bash", RESOLVER], cwd=root, capture_output=True, text=True,
-                           check=False, env=_CLEAN_ENV)
-    except OSError:
+        r = subprocess.run(["bash", RESOLVER], preexec_fn=lambda: os.fchdir(root_fd),
+                           capture_output=True, text=True, check=False, env=_CLEAN_ENV)
+    except (OSError, subprocess.SubprocessError):
+        # OSError = spawn failure; SubprocessError wraps a preexec_fn (fchdir) failure —
+        # fail CLOSED for THIS target rather than crash the whole run.
         return False
     return r.returncode == 0 and r.stdout.strip() == "1"
 
 
-def remove_marker(root):
-    """Roll back a marker WE just created (openat + O_NOFOLLOW, same anchoring as the
-    write). Returns True iff the marker is gone afterward (removed or already absent),
-    False if it may still exist — so the caller can surface a LOUD manual-cleanup
-    warning instead of a SKIPPED that silently sits over a live opt-in marker."""
+def remove_marker(sd_fd):
+    """Roll back a marker WE just created, using the SAME state-dir fd placement wrote
+    through — NO path re-resolution, so a renamed/replaced <STATE_DIR> cannot make us
+    delete another directory's marker while ours survives. Returns True iff the marker
+    is gone afterward (removed or already absent), False if it may still exist — so the
+    caller can surface a LOUD manual-cleanup warning instead of a SKIPPED that silently
+    sits over a live opt-in marker."""
     try:
-        root_fd = open_dir_nofollow(root)
+        os.unlink(MARKER, dir_fd=sd_fd)
+        return True
+    except FileNotFoundError:
+        return True  # already absent
     except OSError:
         return False
-    try:
-        try:
-            sd_fd = os.open(STATE_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
-        except FileNotFoundError:
-            return True  # state dir gone → marker gone
-        except OSError:
-            return False
-        try:
-            os.unlink(MARKER, dir_fd=sd_fd)
-            return True
-        except FileNotFoundError:
-            return True  # already absent
-        except OSError:
-            return False
-        finally:
-            try:
-                os.close(sd_fd)
-            except OSError:
-                pass
-    finally:
-        try:
-            os.close(root_fd)
-        except OSError:
-            pass
 
 
 def main(argv):
@@ -343,44 +326,67 @@ def main(argv):
             print(f"SKIPPED       {repo}  (not the main worktree root of a git repo)")
             any_skipped = True
             continue
+        # Open the validated root ONCE (symlink-free); the resolver check binds to it via
+        # fchdir. Open STATE_DIR once too and share that fd between placement and rollback,
+        # so no path rename/replace between those steps can make them act on different
+        # directory objects.
         try:
-            status, detail = place_marker(root, dry_run)
+            root_fd = open_dir_nofollow(root)
         except OSError as e:  # fail-closed per target; keep going for the rest
             print(f"SKIPPED       {repo}  (filesystem error: {e.strerror})")
             any_skipped = True
             continue
         target = f"{root}/{STATE_DIR}/{MARKER}"
-        if status == "SKIPPED":
-            print(f"SKIPPED       {repo}  ({detail})")
-            any_skipped = True
-        elif dry_run:
-            # Predict honestly: consult the resolver for an existing marker, and for an
-            # absent one check whether the PATH is already tracked (index/HEAD) — a real
-            # run would create the file but the resolver would then reject it.
-            if status == "ALREADY":
-                if resolver_accepts(root):
-                    print(f"ALREADY       {repo}  (opted-in) -> {target}")
-                else:
-                    print(f"WOULD-SKIP    {repo}  (marker present but resolver rejects it — tracked/repo-controlled)")
-                    any_skipped = True
-            elif marker_repo_tracked(root):  # WOULD-ENROLL path, but the path is tracked
-                print(f"WOULD-SKIP    {repo}  (marker path is tracked in index/HEAD — resolver would reject a real run)")
+        sd_fd = None
+        try:
+            try:
+                sd_fd, early = open_state_dir(root_fd, dry_run)
+                status, detail = early if early is not None else place_marker(sd_fd, dry_run)
+            except OSError as e:
+                print(f"SKIPPED       {repo}  (filesystem error: {e.strerror})")
                 any_skipped = True
+                continue
+            if status == "SKIPPED":
+                print(f"SKIPPED       {repo}  ({detail})")
+                any_skipped = True
+            elif dry_run:
+                # Predict honestly: consult the resolver for an existing marker, and for
+                # an absent one check whether the PATH is already tracked (index/HEAD) — a
+                # real run would create the file but the resolver would then reject it.
+                if status == "ALREADY":
+                    if resolver_accepts(root_fd):
+                        print(f"ALREADY       {repo}  (opted-in) -> {target}")
+                    else:
+                        print(f"WOULD-SKIP    {repo}  (marker present but resolver rejects it — tracked/repo-controlled)")
+                        any_skipped = True
+                elif marker_repo_tracked(root):  # WOULD-ENROLL path, but the path is tracked
+                    print(f"WOULD-SKIP    {repo}  (marker path is tracked in index/HEAD — resolver would reject a real run)")
+                    any_skipped = True
+                else:
+                    print(f"WOULD-ENROLL  {repo}  [dry-run] -> {target}")
+            elif resolver_accepts(root_fd):  # single source of truth confirms it took
+                print(f"{status:<12}  {repo}  -> {target}")
             else:
-                print(f"WOULD-ENROLL  {repo}  [dry-run] -> {target}")
-        elif resolver_accepts(root):  # single source of truth confirms it took
-            print(f"{status:<12}  {repo}  -> {target}")
-        else:
-            # Resolver rejects. If WE just created the marker, roll it back so a
-            # transient resolver failure cannot become a silent opt-in later; a
-            # pre-existing (ALREADY) marker is the operator's — leave it untouched.
-            if status == "ENROLLED" and not remove_marker(root):
-                # Rollback failed — the marker we created is still there and could be
-                # accepted once a transient rejection clears. Make that LOUD, not silent.
-                print(f"SKIPPED       {repo}  (resolver rejected the marker AND rollback FAILED — remove {target} MANUALLY)")
-            else:
-                print(f"SKIPPED       {repo}  (resolver rejects the marker — tracked/repo-controlled or resolver unavailable; inspect {root}/{STATE_DIR})")
-            any_skipped = True
+                # Resolver rejects. If WE just created the marker, roll it back (via the
+                # SAME sd_fd) so a transient resolver failure cannot become a silent opt-in
+                # later; a pre-existing (ALREADY) marker is the operator's — leave it.
+                if status == "ENROLLED" and not remove_marker(sd_fd):
+                    # Rollback failed — the marker we created is still there and could be
+                    # accepted once a transient rejection clears. Make that LOUD.
+                    print(f"SKIPPED       {repo}  (resolver rejected the marker AND rollback FAILED — remove {target} MANUALLY)")
+                else:
+                    print(f"SKIPPED       {repo}  (resolver rejects the marker — tracked/repo-controlled or resolver unavailable; inspect {root}/{STATE_DIR})")
+                any_skipped = True
+        finally:
+            if sd_fd is not None:
+                try:
+                    os.close(sd_fd)
+                except OSError:
+                    pass
+            try:
+                os.close(root_fd)
+            except OSError:
+                pass
     return 1 if any_skipped else 0
 
 

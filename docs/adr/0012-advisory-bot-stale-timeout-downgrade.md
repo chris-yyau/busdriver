@@ -191,18 +191,23 @@ is exercised at the code level rather than a dedicated submodule fixture).
 vectors — forged `.git` gitfiles and an intermediate-directory symlink-swap TOCTOU that
 portable bash cannot close (`O_NOFOLLOW` on each path component is unavailable). That is why
 #314 deferred it. The follow direction the "Deferred" note flagged (*"ideally not in
-bash"*) is what shipped: `scripts/enable-advisory-downgrade.py`. Python's
-`os.open(..., dir_fd=fd)` is `openat(2)`, so the write path is opened component-by-component
-with `O_NOFOLLOW` — the resolved root (a trusted git answer) first, then `<STATE_DIR>`, then
-the marker under `O_CREAT|O_EXCL|O_NOFOLLOW`. An intermediate symlink swap can no longer
-redirect the write outside the resolved root, closing the exact gap bash left open. It takes
-**explicit repo paths only** (no globbing/auto-discovery, closing the wandering-scan /
-forged-`.git` vector), is idempotent, has `--dry-run`, fails CLOSED per target, and — crucially
-— **delegates acceptance back to the resolver** (runs it after placing each marker and only
-reports `ENROLLED` when the resolver returns `1`), so there is no second, divergent notion of
-consent. The resolver — the piece that actually runs on untrusted PR content — remains the
-single source of truth and still holds *by construction*. New repos stay default-OFF until
-enrolled. Covered by `tests/test-enable-advisory-downgrade.sh`.
+bash"*) is what shipped: `scripts/enable-advisory-downgrade.py`. The marker is always written
+under the operator's **explicit** path (realpath'd) — git is used only to VALIDATE that path
+is a main worktree root, never to CHOOSE the write target, so no forged `.git` gitfile or
+`worktree list` result can redirect the marker into a repo the operator did not name. Python's
+`os.open(..., dir_fd=fd)` is `openat(2)`, so that explicit path is opened component-by-component
+with `O_NOFOLLOW` (emulating `openat2(RESOLVE_NO_SYMLINKS)`): a symlink swapped in anywhere on
+the path — root, `<STATE_DIR>`, or the marker under `O_CREAT|O_EXCL|O_NOFOLLOW` — fails closed.
+It takes **explicit repo paths only** (no globbing/auto-discovery), is idempotent, has
+`--dry-run`, fails CLOSED per target, runs git/the resolver under a strict env **allowlist**
+(PATH + validated `BUSDRIVER_STATE_DIR`, dropping GIT_* / BASH_ENV / PYTHONPATH / … by
+construction), and — crucially — **delegates acceptance back to the resolver** (runs it after
+placing each marker and only reports `ENROLLED` when the resolver returns `1`), so there is no
+second, divergent notion of consent. The resolver — the piece that actually runs on untrusted
+PR content — remains the single source of truth and still holds *by construction*. Accepted
+residuals are operator-machine-local only (a swap of the operator's OWN named path; PATH/
+LD_PRELOAD/sitecustomize poisoning of the launching session — the ADR 0016 class). New repos
+stay default-OFF until enrolled. Covered by `tests/test-enable-advisory-downgrade.sh`.
 
 **Follow-up (out of scope here):** `SKIP_LITMUS` / `SKIP_PR_GRIND` are themselves settable
 via a committed `.claude/settings.json` `env` block (verified: `pre-commit-gate.sh:310` /

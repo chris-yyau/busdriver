@@ -158,5 +158,15 @@ assert_true test -f "$SGD/co/.claude/$FILE"
 verdict=$(optin "$SGD/co")
 assert_eq 1 "$verdict" "resolver accepts separate-git-dir enrollment"
 
+# 15. A repo whose path has a space, a non-ASCII char, AND a trailing space must still
+#     enroll end-to-end — exercises the NUL-safe `worktree list -z` parse,
+#     surrogateescape decoding, and _chomp (strips only git's trailing newline, not the
+#     path's own trailing space). Regression for the byte-safety findings.
+WEIRD="$TMPROOT/spacé dir "   # trailing space is part of the directory name
+mkdir -p "$WEIRD"; git -C "$WEIRD" init -q
+out=$(enroll "$WEIRD")
+assert_prefix ENROLLED "$out" "special-char path (space / non-ASCII / trailing-space) → ENROLLED"
+assert_true test -f "$WEIRD/.claude/$FILE"
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

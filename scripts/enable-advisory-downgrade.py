@@ -308,12 +308,16 @@ def resolver_accepts(root_fd):
 
 
 def remove_marker(sd_fd):
-    """Roll back a marker WE just created, using the SAME state-dir fd placement wrote
-    through — NO path re-resolution, so a renamed/replaced <STATE_DIR> cannot make us
-    delete another directory's marker while ours survives. Returns True iff the marker
-    is gone afterward (removed or already absent), False if it may still exist — so the
-    caller can surface a LOUD manual-cleanup warning instead of a SKIPPED that silently
-    sits over a live opt-in marker."""
+    """Roll back after a rejected placement by ensuring NO marker remains at the name,
+    using the SAME state-dir fd placement wrote through (no path re-resolution, so a
+    renamed/replaced <STATE_DIR> can't send the unlink to a different directory). The
+    security goal is "no opt-in marker at this name" — which unlink achieves for
+    whatever regular file is currently there; it is deliberately NOT inode-exact
+    ("delete precisely the inode we created"), which name-based unlink cannot guarantee
+    against a concurrent same-name replacement (an operator-local write-race on the
+    operator's own .claude, outside ADR 0012's threat model). Returns True iff the name
+    is gone afterward, False if it may still exist — so the caller can surface a LOUD
+    manual-cleanup warning instead of a SKIPPED that silently sits over a live marker."""
     try:
         os.unlink(MARKER, dir_fd=sd_fd)
         return True

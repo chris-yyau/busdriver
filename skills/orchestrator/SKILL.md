@@ -37,7 +37,7 @@ All gates emit `{"decision":"block"}` via PreToolUse hooks. The harness rejects 
 | **Freeze/Guard** | Write/Edit/MultiEdit while `.claude/freeze-scope.local` exists | `rm .claude/freeze-scope.local` (deactivates the freeze; activate with `echo "path/to/scope" > .claude/freeze-scope.local`) | `hooks/gate-scripts/freeze-guard.sh` |
 | **Pre-merge (pr-grind)** | `gh pr merge` | `.claude/skip-pr-grind.local` (must be ≥30s and ≤3600s old) | `pr-grind/SKILL.md` |
 
-`SKIP_LITMUS=1` / `SKIP_DESIGN_REVIEW=1` / `SKIP_PR_GRIND=1` work only when **exported in the parent shell before `claude` starts** — inline `SKIP_LITMUS=1 git commit` does NOT work because hooks fire before the command's env is applied.
+The only escape hatch is the gitignored, operator-created `.local` skip file (`.claude/skip-litmus.local`, `skip-design-review.local`, `skip-pr-grind.local`). The env-based `SKIP_LITMUS` / `SKIP_DESIGN_REVIEW` / `SKIP_PR_GRIND` skips were **removed** (#325 / ADR 0016): a committed `settings.json` `env` block could inject them, so gate env is now sanitized (`env -i` + allowlist at the hook entry).
 
 <CRITICAL>
 To review design/plan documents, INVOKE `blueprint-review` skill (via Skill tool). Do NOT use `code-reviewer` agent — it cannot write the `<!-- design-reviewed: PASS -->` marker.

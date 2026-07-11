@@ -6,10 +6,9 @@
 # regardless of which skill the agent loaded.
 #
 # Fail-CLOSED: errors block merge (user preference: stuck > skipped grind)
-# Skip: $STATE_DIR/skip-pr-grind.local (or SKIP_PR_GRIND=1 exported in parent
-#       shell before `claude` starts — inline `SKIP_PR_GRIND=1 gh pr merge`
-#       does NOT work because PreToolUse hooks fire before the command's
-#       inline env is applied)
+# Skip: $STATE_DIR/skip-pr-grind.local — a gitignored, operator-created file.
+#       (The env-based SKIP_PR_GRIND escape was removed in issue #325 / ADR 0016:
+#       a committed settings.json could inject it, so gate env is now sanitized.)
 
 set -euo pipefail
 # ── Harness-portable state resolution ──────────────────────────────────
@@ -197,13 +196,12 @@ fi
 REPO_DIR="$GATE_REPO_DIR"
 
 # ── Skip overrides ────────────────────────────────────────────────────
-
-# Env var override
-[ "${SKIP_PR_GRIND:-}" = "1" ] && exit 0
+# (env-based SKIP_PR_GRIND removed — issue #325; use the .local skip file. ADR 0016.)
 
 # File-based skip (anti-self-bypass pattern from pre-commit gate)
 SKIP_FILE="$REPO_DIR/$STATE_DIR/skip-pr-grind.local"
-if [ -f "$SKIP_FILE" ]; then
+if [ -f "$SKIP_FILE" ] \
+   && ! gate_skip_file_repo_controlled "$REPO_DIR" "$STATE_DIR/skip-pr-grind.local"; then
     FILE_AGE=999
     _MTIME=$(stat -f %m "$SKIP_FILE" 2>/dev/null) \
         || _MTIME=$(stat -c %Y "$SKIP_FILE" 2>/dev/null) \

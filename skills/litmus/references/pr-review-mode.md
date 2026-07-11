@@ -269,4 +269,4 @@ Use the benchmark JSONL + metrics report to decide if a family's *net-new* catch
 
 ## User-Created Skip File
 
-The emergency escape hatch is unchanged: a user-created `.claude/skip-litmus.local` (or `SKIP_LITMUS=1` exported in the parent shell) exits 0 ahead of all backstop logic — the one intentional, audited bypass, consistent across all busdriver gates. See `SKILL.md` → "User-Created Skip File" for the per-gate table (pre-PR deletes the file on a <30s rejection) and `skills/blueprint-review/SKILL.md` for the canonical verbatim protocol.
+The emergency escape hatch is a user-created `.claude/skip-litmus.local` file that exits 0 ahead of all backstop logic — the one intentional, audited bypass, consistent across all busdriver gates. (The env-based `SKIP_LITMUS` skip was removed in #325 / ADR 0016; gate env is now sanitized.) See `SKILL.md` → "User-Created Skip File" for the per-gate table (pre-PR deletes the file on a <30s rejection) and `skills/blueprint-review/SKILL.md` for the canonical verbatim protocol.

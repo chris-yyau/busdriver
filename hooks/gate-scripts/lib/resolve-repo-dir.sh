@@ -120,3 +120,47 @@ gate_repo_dir_lenient() {
     fi
     git -C "$anchor" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$anchor"
 }
+
+# Return 0 (== "repo-controlled → do NOT honor as a skip signal") iff the skip
+# file at <repo_root>/<repo_relative_path> is tracked by git — present in the
+# index or HEAD, or sitting in a gitlinked/submodule state dir. A `.claude/*.local`
+# skip file is only real OPERATOR consent when it is UNtracked: `.gitignore`
+# prevents an accidental `git add`, but NOT `git add -f`, so a malicious PR can
+# commit a skip file that (after checkout, past the 30s age window) would bypass
+# the gate. This is the same committable-content injection class as issue #325.
+# FAIL-CLOSED: any git error returns 0 (reject the skip). Mirrors the vetted
+# `_repo_controlled` resolver in scripts/advisory-downgrade-optin.sh.
+# shellcheck disable=SC2034  # consumed by the sourcing gate scripts
+gate_skip_file_repo_controlled() {   # <repo_root> <repo_relative_path>
+    local root="$1" rel="$2" dir_rel stage tracked
+    [ -z "$root" ] && return 0
+    dir_rel=$(dirname "$rel")
+    stage=$(git -C "$root" ls-files --stage -- "$dir_rel" 2>/dev/null) || return 0
+    grep -q '^160000 ' <<<"$stage" && return 0          # gitlink/submodule state dir
+    # Parent dir tracked as a symlink (mode 120000): git resolves `.claude/skip-*.local`
+    # behind an attacker-committed `.claude` symlink that the leaf-path ls-files/cat-file
+    # checks below never see. Reject — same committable-injection class as #325.
+    awk -v p="$dir_rel" '$1=="120000" && $4==p {f=1} END{exit !f}' <<<"$stage" && return 0
+    tracked=$(git -C "$root" ls-files -- "$rel" 2>/dev/null) || return 0
+    [ -n "$tracked" ] && return 0                        # in the index
+    # Is <rel> in HEAD's tree? `ls-tree` (pathspec relative to the -C dir, matching the
+    # ls-files check above) distinguishes the three outcomes `cat-file -e` conflates:
+    #   rc==0, entry set   → present in HEAD's tree                       → reject
+    #   rc==0, entry empty → every tree on the path readable, file absent → honor
+    #   rc!=0              → a tree/subtree needed to resolve <rel> is unreadable (root OR
+    #                        nested corruption) — OR the repo is unborn. Discriminate below.
+    # This is why `cat-file -e "HEAD:<rel>"` / `HEAD^{tree}` are insufficient: the former
+    # can't tell "absent" from "unreadable", and the latter only proves the ROOT tree
+    # exists, missing corruption of a nested subtree (e.g. `.claude/`) on the path.
+    local head_entry rc
+    head_entry=$(git -C "$root" ls-tree HEAD -- "$rel" 2>/dev/null); rc=$?
+    if [ "$rc" -eq 0 ]; then
+        [ -n "$head_entry" ] && return 0                 # in HEAD's tree → reject
+        return 1                                         # readable trees, file absent → honor
+    fi
+    # ls-tree errored: corrupt/unreadable tree object, or unborn HEAD. `rev-parse --verify
+    # HEAD` is 0 for a dangling/corrupt ref (sha resolves syntactically) but 1 for unborn —
+    # so it cleanly splits "corrupt → fail CLOSED" from "unborn → honor".
+    git -C "$root" rev-parse -q --verify HEAD >/dev/null 2>&1 && return 0   # corrupt tree → fail CLOSED
+    return 1                                                                # unborn repo → honor
+}

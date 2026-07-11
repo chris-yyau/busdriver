@@ -6,10 +6,9 @@
 # branches, pre-existing commits from other sessions).
 #
 # Fail-CLOSED: errors block PR creation (user preference: stuck > skipped review)
-# Skip: $STATE_DIR/skip-litmus.local (or SKIP_LITMUS=1 exported in parent shell
-#       before `claude` starts — inline `SKIP_LITMUS=1 gh pr create` does NOT
-#       work because PreToolUse hooks fire before the command's inline env
-#       is applied; same caveat as pre-commit gate)
+# Skip: $STATE_DIR/skip-litmus.local — a gitignored, operator-created file.
+#       (The env-based SKIP_LITMUS escape was removed in issue #325 / ADR 0016:
+#       a committed settings.json could inject it, so gate env is now sanitized.)
 #
 # Council decision (2026-03-21): Gate `gh pr create` only, NOT `git push`.
 # Gating push kills WIP pushes and destroys credibility of the gate system.
@@ -122,7 +121,8 @@ REPO_DIR="$GATE_REPO_DIR"
 
 # ── Skip overrides (shared with commit gate) ──────────────────────────
 SKIP_FILE="$REPO_DIR/$STATE_DIR/skip-litmus.local"
-if [ -f "$SKIP_FILE" ]; then
+if [ -f "$SKIP_FILE" ] \
+   && ! gate_skip_file_repo_controlled "$REPO_DIR" "$STATE_DIR/skip-litmus.local"; then
     FILE_AGE=999
     _MTIME=$(stat -f %m "$SKIP_FILE" 2>/dev/null) \
         || _MTIME=$(stat -c %Y "$SKIP_FILE" 2>/dev/null) \
@@ -138,7 +138,7 @@ if [ -f "$SKIP_FILE" ]; then
     printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-pr"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
     exit 0
 fi
-[ "${SKIP_LITMUS:-0}" = "1" ] && exit 0
+# (env-based SKIP_LITMUS removed — issue #325; use the .local skip file. ADR 0016.)
 
 # ── ~/.claude repo: auto-generated file bypass ────────────────────────
 # If all changes on this branch vs main are auto-generated files, skip review.

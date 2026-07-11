@@ -436,7 +436,16 @@ DESIGN_STATE="$STATE_DIR/design-review-needed.local.md"
 
 # Skip overrides — unified with pre-commit-gate.sh behavior
 # Both gates use the same pattern: single-use consumption + self-bypass detection
-if [ -f "$STATE_DIR/skip-design-review.local" ]; then
+# A git-tracked (git add -f'd) skip file is repo-controlled, not operator consent
+# (issue #325) — resolve the repo root and refuse it. FAIL-CLOSED via the helper.
+# shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
+# Anchor the guard on the SAME path the `-f` check tests. That check is relative to
+# the hook CWD, so resolve the guard against the CWD too (git -C ".") — otherwise a
+# committed subdir/.claude skip file could satisfy one check and evade the other.
+# FAIL-CLOSED: outside a git repo the helper returns "repo-controlled" → skip ignored.
+if [ -f "$STATE_DIR/skip-design-review.local" ] \
+   && ! gate_skip_file_repo_controlled "." "$STATE_DIR/skip-design-review.local"; then
     # Reject skip files created within the last 30 seconds — likely Claude self-bypass.
     # A human-created skip file (via terminal) will typically be older.
     FILE_AGE=999
@@ -463,7 +472,7 @@ If the user wants to skip, they should create the file manually in their termina
     printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-implementation"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
     exit 0
 fi
-[ "${SKIP_DESIGN_REVIEW:-0}" = "1" ] && exit 0
+# (env-based SKIP_DESIGN_REVIEW removed — issue #325; use the .local skip file. ADR 0016.)
 
 # ── Parse tool type and relevant input ─────────────────────────────────
 # Returns: WRITE_EDIT|<file_path>  or  BASH_MOD|<command>  or  SAFE|

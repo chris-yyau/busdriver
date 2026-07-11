@@ -1521,34 +1521,43 @@ FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-
 # the recovery for `stale` must live in the wait-round, not here.
 CODEX_DONE=$(printf '%s' "$FRESH_ACKS" | tr ',' '\n' | awk -F= '$1=="chatgpt-codex-connector"{print $2}')
 CODEX_GRACE="${PR_GRIND_CODEX_GRACE_SECS:-20}"
-if [ "$CODEX_DONE" = "none" ] && [ "${CODEX_GRACE}" -gt 0 ] 2>/dev/null; then
-  # Codex `none`-nudge (opt-in, one-shot per (PR,HEAD)) — ADR 0013 / issue #298.
-  # Codex never engaged on this PR. On a repo that OPTS IN (a
-  # <main-root>/.claude/pr-grind-codex-expected.local marker), post `@codex review`
-  # ONCE — here, AFTER CI has settled (COMPLETION is post-convergence) so we never
-  # race normal auto-trigger latency — then let the bounded grace re-poll below
-  # observe the result. ABSENT the opt-in this is a no-op (a `none` Codex stays
-  # non-gating, exactly as before). If Codex still does not engage within the grace,
-  # we fall through to non-gating `none` (bounded; NEVER a hang — quota-exhausted /
-  # uninstalled / silent all degrade gracefully). The wrapper delegates to the same
-  # ADR 0005 codex-retrigger mechanism (shared one-shot marker → at most one nudge
-  # per HEAD across the stale AND none paths). Opt out entirely with
-  # PR_GRIND_CODEX_RETRIGGER=0.
+# ADR 0013 revision (#320): the `none`-nudge + the missing-Codex warning now fire
+# when the repo is PROVEN Codex-active (auto-detect over recent reviews/reactions)
+# OR the force-on opt-in file is present — no longer gated on the manual marker.
+# Detection is DECOUPLED from grace>0 so PR_GRIND_CODEX_GRACE_SECS=0 still disables
+# the WAIT+nudge but leaves the warning intact. CODEX_REGRACE defaults to CODEX_DONE
+# so the grace=0 path has a defined value (this block runs without `set -u`).
+CODEX_REGRACE="$CODEX_DONE"
+CODEX_REPO_ACTIVE=0
+if [ "$CODEX_DONE" = "none" ]; then
+  # Auto-detect whether Codex is an active reviewer on THIS repo. Skip the GraphQL
+  # call entirely when the nudge is kill-switched off (PR_GRIND_CODEX_RETRIGGER=0) —
+  # a disabled repo pays no network round-trip and gets no warning. Stdout is
+  # discarded; the detector's stderr diagnostic still reaches the transcript.
+  if [ "${PR_GRIND_CODEX_RETRIGGER:-1}" != "0" ] \
+     && bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-active-repo.sh" "$OWNER/$REPO" >/dev/null; then
+    CODEX_REPO_ACTIVE=1
+  fi
+  if [ "${CODEX_GRACE}" -gt 0 ] 2>/dev/null; then
+  # `none`-nudge (one-shot per (PR,HEAD)) — ADR 0013 (as revised). Post `@codex
+  # review` ONCE, here, AFTER CI has settled (COMPLETION is post-convergence) so we
+  # never race normal auto-trigger latency, then let the bounded grace re-poll below
+  # observe the result. The wrapper nudges on force-on OR the auto-detect bit, passed
+  # POSITIONALLY as $CODEX_REPO_ACTIVE (arg #4) — NOT an env var, which a committed
+  # .claude/settings.json env block could inject (#325 / ADR 0016). Absent both it is
+  # a no-op (non-gating `none`, exactly as before). Shared one-shot marker → at most
+  # one nudge per HEAD across the stale AND none paths. Fall-through on non-engagement
+  # is bounded; NEVER a hang. Opt out entirely with PR_GRIND_CODEX_RETRIGGER=0.
   #
-  # Runs in a subshell that `cd`s into $WORKTREE_DIR FIRST (template-substituted to
-  # the literal Step 0 worktree path; in --no-worktree mode that IS the repo root),
-  # exactly like the LOOP's stale-retrigger call site. This cd is load-bearing — both
-  # reasons flagged on PR #306: (1) codex-nudge-if-expected.sh resolves the opt-in
-  # file from the CWD-derived main-repo root, so a COMPLETION CWD that drifted to a
-  # DIFFERENT checkout (the documented "CWD Reset Across Bash Calls" hazard) would
-  # read another repo's consent while the nudge posts to $OWNER/$REPO — a wrong-repo
-  # consent violation; and (2) the delegated codex-retrigger marker is CWD-relative,
-  # so a drifted CWD would write a SECOND marker and post a DUPLICATE @codex review
-  # for the same HEAD, breaking the shared-one-shot guarantee. `cd || exit 0` aborts
-  # the subshell on a bad worktree path (no nudge, never the wrong repo); the outer
-  # `|| true` keeps a failed nudge from ever staling the gate.
+  # The subshell `cd`s into $WORKTREE_DIR FIRST (template-substituted Step 0 worktree
+  # path; the repo root under --no-worktree), exactly like the LOOP's stale-retrigger
+  # call site. Load-bearing (PR #306): (1) the wrapper's force-on opt-in root is
+  # CWD-derived, so a drifted COMPLETION CWD ("CWD Reset Across Bash Calls") would read
+  # another repo's consent; and (2) the delegated codex-retrigger marker is CWD-relative,
+  # so a drift would post a DUPLICATE nudge. `cd || exit 0` aborts on a bad worktree
+  # path; the outer `|| true` keeps a failed nudge from ever staling the gate.
   ( cd "$WORKTREE_DIR" || exit 0
-    bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-nudge-if-expected.sh" "$PR" "$HEAD_FULL_SHA" "$OWNER/$REPO" ) || true
+    bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-nudge-if-expected.sh" "$PR" "$HEAD_FULL_SHA" "$OWNER/$REPO" "$CODEX_REPO_ACTIVE" ) || true
   echo "ℹ️  Codex shows no engagement on HEAD; ${CODEX_GRACE}s first-engagement grace re-poll…"
   sleep "$CODEX_GRACE"
   # Refresh ALL Codex-relevant sources, not just reactions: during the grace
@@ -1588,6 +1597,15 @@ if [ "$CODEX_DONE" = "none" ] && [ "${CODEX_GRACE}" -gt 0 ] 2>/dev/null; then
   # Re-fold only if Codex engaged during the grace (now `stale` or a fresh SHA);
   # SHA → still passes, `stale` → blocks below. SHAs/stale/none are sed-safe.
   [ "$CODEX_REGRACE" != "none" ] && FRESH_ACKS=$(printf '%s' "$FRESH_ACKS" | sed "s/chatgpt-codex-connector=none/chatgpt-codex-connector=${CODEX_REGRACE}/")
+  fi
+  # Missing-Codex warning (#320 secondary ask): Codex is HISTORICALLY active here but
+  # still `none` at merge. Gated on CODEX_REPO_ACTIVE (already forced to 0 by the kill
+  # switch), so the "engaged on recent PRs" claim is true and a force-on cold-start
+  # repo with NO history gets no warning. "engaged" (not "reviewed") — a clean Codex
+  # leaves only a Tier-F reaction, no review. Non-gating: surface the gap, then merge.
+  if [ "$CODEX_REGRACE" = "none" ] && [ "$CODEX_REPO_ACTIVE" = "1" ]; then
+    echo "⚠️  Codex (chatgpt-codex-connector) has engaged on recent PRs of this repo (review and/or reaction) but did not engage on this PR — merging without a Codex review (the nudge may have been skipped, disabled, or failed)."
+  fi
 fi
 # ADR 0012 (litmus HIGH fix): a login in DOWNGRADED_BOTS was released at
 # --max-wait exhaustion, but it can RE-ENGAGE between that decision and this
@@ -2181,6 +2199,11 @@ if [ "$MERGE_STATE" != "MERGED" ]; then
   echo "❌ approver-gap admin merge: PR #$PR not merged after 3 attempts (state=$MERGE_STATE); bypass-log entry was written but merge did not land."
   exit 1
 fi
+# GC the merged PR's codex-retrigger idempotency markers (#327). Runs from
+# $WORKTREE_DIR — the CWD codex-retrigger wrote them relative to — so they are
+# pruned even though this admin-merge path removes no worktree. Best-effort;
+# a failed prune must never affect merge success.
+( cd "$WORKTREE_DIR" || exit 0; bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger-gc.sh" "$PR" ) || true
 ```
 
 **Operator-decision message template** (rendered to stdout on BAIL; `[admin]` is omitted when no audit workflow exists). Placeholders: `{REQUIRED_COUNT}` is the branch-protection rule's `required_approving_review_count` (from `$GAP_DECISION_JSON`); `<PR_NUMBER>` is the PR number — distinct values, distinct placeholders so the rendering layer doesn't conflate them:
@@ -2273,6 +2296,11 @@ if [ "$MERGE_STATE" != "MERGED" ]; then
   echo "❌ PR #<PR_NUMBER> not merged after 3 attempts (state=$MERGE_STATE); preserving worktree for inspection."
   exit 1
 fi
+# GC the merged PR's codex-retrigger idempotency markers (#327), from $WORKTREE_DIR
+# (the CWD codex-retrigger wrote them relative to) BEFORE any worktree removal below,
+# so a skipped/failed removal never leaks them. Best-effort. NOTE: this block uses the
+# <PR_NUMBER> template literal (Claude substitutes it), NOT the $PR shell var.
+( cd "$WORKTREE_DIR" || exit 0; bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger-gc.sh" "<PR_NUMBER>" ) || true
 # Only return to a separate worktree and remove the ephemeral one if Step 0
 # actually created it. With --no-worktree we ran in-place — there is no
 # separate worktree to leave or remove.

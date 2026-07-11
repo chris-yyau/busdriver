@@ -175,6 +175,10 @@ expressions of trigger condition #1:
   cleanup; on a busy repo with many force-pushes these accumulate. Impact is
   cosmetic (small gitignored files under the state dir). Prune if desired:
   `find "${BUSDRIVER_STATE_DIR:-.claude}" -name '.pr-grind-codex-retriggered-*' -mtime +30 -delete`.
+  **Partly addressed (2026-07-11, #327):** `scripts/codex-retrigger-gc.sh <pr>` now prunes a
+  PR's markers at pr-grind merge (both merge blocks), so the common merge-through-pr-grind
+  path self-cleans (ADR 0013 revision). The age-sweep above is still the belt-and-suspenders
+  for PRs merged outside pr-grind or closed without merging (deferred).
 
 ## Out of scope (follow-up)
 

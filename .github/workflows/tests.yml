@@ -257,3 +257,6 @@ jobs:
           bash tests/test-advisory-downgrade-revalidate.sh
           bash tests/test-github-server-now.sh
           bash tests/test-codex-nudge-if-expected.sh
+          bash tests/test-codex-active-repo.sh
+          bash tests/test-codex-retrigger-gc.sh
+          bash tests/test-pr-grind-codex-wiring.sh

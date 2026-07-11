@@ -558,7 +558,9 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                              not gitlinked), non-symlink regular file (ADR 0012 boundary). There is NO
                              global env-var / global-file switch by design (both are repo-injectable —
                              see ADR 0012); to opt in many repos the operator drops the per-repo file
-                             into each with a trusted loop (a hardened enroller is a deferred follow-up).
+                             into each with a trusted loop, or runs `scripts/enable-advisory-downgrade.py`
+                             (the hardened bulk enroller from #326 — openat+O_NOFOLLOW writes, acceptance
+                             delegated back to this resolver).
                              Fail-CLOSED: `0` — not opted
                              in, or the resolver could not confirm/query the repo root — → skip to BAIL
                              below (unchanged). Run it from inside the PR's worktree so the per-repo

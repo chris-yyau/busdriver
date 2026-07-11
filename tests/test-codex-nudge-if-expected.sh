@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # tests/test-codex-nudge-if-expected.sh
 #
-# Verifies scripts/codex-nudge-if-expected.sh — the opt-in POLICY wrapper (ADR 0013
-# / issue #298) that nudges a `none` (never-engaged) Codex with one `@codex review`
-# ONLY when the per-repo opt-in `<main-root>/.claude/pr-grind-codex-expected.local`
-# is present, delegating the actual one-shot post to codex-retrigger.sh.
+# Verifies scripts/codex-nudge-if-expected.sh — the POLICY wrapper (ADR 0013 as
+# revised, #320) that nudges a `none` (never-engaged) Codex with one `@codex
+# review` when EITHER a force-on opt-in file is present OR the repo is Codex-active
+# (active-bit positional arg, or self-detected via codex-active-repo.sh),
+# delegating the actual one-shot post to codex-retrigger.sh.
 #
-# `gh` is stubbed on PATH (records `pr comment` invocations); the main-repo root is
-# pinned via BUSDRIVER_MAIN_ROOT (no real git needed) and codex-retrigger's marker
-# is redirected via BUSDRIVER_STATE_DIR so the real repo is never touched. We assert
-# the OBSERVABLE contract: a nudge is delegated IFF the opt-in file exists, the
-# one-shot marker is respected through the wrapper, and no path ever stales the gate.
+# `gh` is stubbed on PATH (records `pr comment` argv/body; on `api graphql` returns
+# $GH_FIXTURE so the wrapper's self-detect path is deterministic). The main-repo
+# root is pinned via BUSDRIVER_MAIN_ROOT and codex-retrigger's marker via
+# BUSDRIVER_STATE_DIR. We assert the OBSERVABLE contract across the trigger matrix.
 
 set -euo pipefail
 
@@ -29,145 +29,167 @@ cleanup() { local d; for d in "${TMP_DIRS[@]:-}"; do [ -n "${d:-}" ] && rm -rf "
 trap cleanup EXIT
 mk() { local d; d=$(mktemp -d); TMP_DIRS+=("$d"); printf '%s' "$d"; }
 
-# A fake `gh`: logs argv to $GH_CALLLOG, the --body to $GH_BODYFILE, and fails on a
-# `pr comment` when STUB_GH_FAIL=1. (Same shape as tests/test-codex-retrigger.sh.)
+# gh stub: logs argv; records `pr comment` --body; fails a `pr comment` if
+# STUB_GH_FAIL=1; on `api graphql` returns $GH_FIXTURE (for self-detect).
 make_gh_stub() {
-  local bindir="$1"
-  cat > "$bindir/gh" <<'STUB'
+  cat > "$1/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${GH_CALLLOG:?}"
 if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
   prev=""
-  for a in "$@"; do
-    [ "$prev" = "--body" ] && printf '%s\n' "$a" >> "${GH_BODYFILE:?}"
-    prev="$a"
-  done
+  for a in "$@"; do [ "$prev" = "--body" ] && printf '%s\n' "$a" >> "${GH_BODYFILE:?}"; prev="$a"; done
   [ "${STUB_GH_FAIL:-0}" = "1" ] && exit 1
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
+  [ -n "${GH_FIXTURE:-}" ] && cat "$GH_FIXTURE"
   exit 0
 fi
 exit 0
 STUB
-  chmod +x "$bindir/gh"
+  chmod +x "$1/gh"
 }
 
 PR=298
 HEAD=11abbbdfdeadbeef
 HEAD8=${HEAD:0:8}
 MARKER_NAME=".pr-grind-codex-retriggered-pr${PR}-${HEAD8}.local"
+ACTIVE_FIXTURE='{"data":{"repository":{"pullRequests":{"nodes":[{"reviews":{"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]"}}]},"reactions":{"nodes":[]}}]}}}}'
 
-# Fresh sandbox per case: a main-repo root (holds .claude/ for the opt-in AND, via
-# BUSDRIVER_STATE_DIR, the codex-retrigger marker) plus a bindir with the gh stub.
-# Echoes "root bindir calllog bodyfile" on one line.
+# setup_case → "root bindir calllog bodyfile" ; fresh sandbox per case.
 setup_case() {
   local root bin
   root=$(mk); bin=$(mk); make_gh_stub "$bin"
   mkdir -p "$root/.claude"
   printf '%s %s %s %s' "$root" "$bin" "$root/calls.log" "$root/body.log"
 }
-opt_in() { : > "$1/.claude/pr-grind-codex-expected.local"; }
-posts_in() { [ -f "$1" ] && grep -c 'pr comment' "$1" 2>/dev/null || echo 0; }
-run_nudge() { # ROOT BIN CALLLOG BODYFILE [extra env=val ...]
-  local root="$1" bin="$2" calllog="$3" bodyfile="$4"; shift 4
-  env PATH="$bin:$PATH" GH_CALLLOG="$calllog" GH_BODYFILE="$bodyfile" \
-      BUSDRIVER_MAIN_ROOT="$root" BUSDRIVER_STATE_DIR="$root/.claude" "$@" \
-      "$BASH_BIN" "$NW" "$PR" "$HEAD"
+force_on()  { : > "$1/.claude/pr-grind-codex-expected.local"; }
+posts_in()  { if [ -f "$1" ]; then grep -c 'pr comment' "$1" 2>/dev/null || true; else echo 0; fi; }
+
+# run_nudge ROOT BIN CALLLOG BODYFILE [-- extra env=val ...] [-- args...]
+# Simplerform: run_nudge_full <root> <bin> <calllog> <bodyfile> <fixture|""> <extra-env-str> <args...>
+run_nudge() { # <root> <bin> <calllog> <bodyfile> <fixturefile|-> <extra-env|-> <wrapper-args...>
+  local root="$1" bin="$2" calllog="$3" bodyfile="$4" fixture="$5" extra="$6"; shift 6
+  local envargs=(PATH="$bin:$PATH" GH_CALLLOG="$calllog" GH_BODYFILE="$bodyfile"
+                 BUSDRIVER_MAIN_ROOT="$root" BUSDRIVER_STATE_DIR="$root/.claude")
+  [ "$fixture" != "-" ] && envargs+=(GH_FIXTURE="$fixture")
+  [ "$extra" != "-" ] && envargs+=("$extra")
+  env "${envargs[@]}" "$BASH_BIN" "$NW" "$@"
 }
+write_fixture() { local f; f=$(mktemp); printf '%s' "$1" > "$f"; printf '%s' "$f"; }
 
 # ============================================================
-# 1. NOT OPTED IN — no opt-in file: no delegation, no post, no marker, exit 0.
-#    This is the critical guardrail — a `none` Codex must stay non-gating by default.
+# 1. FORCE-ON (opt-in file), no active-bit → delegates one `@codex review`.
 # ============================================================
-read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"
-rc=0; run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" || rc=$?
-if [ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 0 ] && [ ! -e "$ROOT/.claude/$MARKER_NAME" ]; then
-  ok "not opted in: no nudge, no post, no marker (exit 0)"
-else
-  fail "not opted in: rc=$rc posts=$(posts_in "$CALLLOG") marker=$([ -e "$ROOT/.claude/$MARKER_NAME" ] && echo yes || echo no)"
-fi
-
-# ============================================================
-# 2. OPTED IN — opt-in present: delegates → exactly one `@codex review`, marker
-#    written, exit 0.
-# ============================================================
-read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"; opt_in "$ROOT"
-rc=0; run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" || rc=$?
+read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"; force_on "$ROOT"
+rc=0; run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" - - "$PR" "$HEAD" "owner/repo" || rc=$?
 if [ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 1 ] && [ -e "$ROOT/.claude/$MARKER_NAME" ] \
    && [ "$(cat "$BODYFILE" 2>/dev/null)" = "@codex review" ]; then
-  ok "opted in: one '@codex review' delegated + posted, marker written (exit 0)"
+  ok "force-on: one '@codex review' posted, marker written (exit 0)"
 else
-  fail "opted in: rc=$rc posts=$(posts_in "$CALLLOG") marker=$([ -e "$ROOT/.claude/$MARKER_NAME" ] && echo yes || echo no) body='$(cat "$BODYFILE" 2>/dev/null)'"
+  fail "force-on: rc=$rc posts=$(posts_in "$CALLLOG") marker=$([ -e "$ROOT/.claude/$MARKER_NAME" ] && echo yes || echo no)"
 fi
 
 # ============================================================
-# 3. ONE-SHOT THROUGH WRAPPER — opt-in present but marker already claimed for this
-#    (PR,HEAD): delegate is a no-op (shared marker → at most one nudge per HEAD).
+# 2. FORCE-ON wins even with active-bit=0 (override beats auto-detect).
 # ============================================================
-read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"; opt_in "$ROOT"
-: > "$ROOT/.claude/$MARKER_NAME"     # pre-existing marker (e.g. stale path already nudged)
-rc=0; run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" || rc=$?
-if [ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 0 ]; then
-  ok "one-shot: opt-in + marker present → no second post (exit 0)"
-else
-  fail "one-shot: expected no post, rc=$rc posts=$(posts_in "$CALLLOG")"
-fi
+read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"; force_on "$ROOT"
+rc=0; run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" - - "$PR" "$HEAD" "owner/repo" 0 || rc=$?
+[ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 1 ] \
+  && ok "force-on + active-bit=0 → still posts (override wins)" \
+  || fail "force-on+bit0: rc=$rc posts=$(posts_in "$CALLLOG")"
 
 # ============================================================
-# 4. OPT-OUT PASSES THROUGH — opt-in present but PR_GRIND_CODEX_RETRIGGER=0: the
-#    wrapper delegates, codex-retrigger honors the global opt-out → no post. Proves
-#    delegation reached the mechanism and the kill switch still wins.
-# ============================================================
-read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"; opt_in "$ROOT"
-rc=0
-run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" PR_GRIND_CODEX_RETRIGGER=0 || rc=$?
-if [ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 0 ] && [ ! -e "$ROOT/.claude/$MARKER_NAME" ]; then
-  ok "opt-out: PR_GRIND_CODEX_RETRIGGER=0 through wrapper → no post, no marker (exit 0)"
-else
-  fail "opt-out: rc=$rc posts=$(posts_in "$CALLLOG") marker=$([ -e "$ROOT/.claude/$MARKER_NAME" ] && echo yes || echo no)"
-fi
-
-# ============================================================
-# 5. FAIL-SAFE — opt-in present, gh post fails: exit 0 (never stale gate), marker
-#    NOT written (retry next round), one post attempted.
-# ============================================================
-read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"; opt_in "$ROOT"
-rc=0
-run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" STUB_GH_FAIL=1 || rc=$?
-if [ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 1 ] && [ ! -e "$ROOT/.claude/$MARKER_NAME" ]; then
-  ok "fail-safe: post failed → exit 0, marker NOT written (retry next round)"
-else
-  fail "fail-safe: rc=$rc posts=$(posts_in "$CALLLOG") marker=$([ -e "$ROOT/.claude/$MARKER_NAME" ] && echo yes || echo no)"
-fi
-
-# ============================================================
-# 5b. UNRESOLVABLE MAIN ROOT (fail-safe) — no BUSDRIVER_MAIN_ROOT override and CWD
-#    is outside any git repo, so the main-repo root can't be resolved. We MUST NOT
-#    fall back to a CWD-relative opt-in lookup (which could nudge a non-consenting
-#    repo): even with an opt-in file sitting in the CWD, no post happens, exit 0.
+# 3. AUTO-DETECT via active-bit=1 (no opt-in) → posts.
 # ============================================================
 read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"
-NONGIT=$(mk); mkdir -p "$NONGIT/.claude"; : > "$NONGIT/.claude/pr-grind-codex-expected.local"
+rc=0; run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" - - "$PR" "$HEAD" "owner/repo" 1 || rc=$?
+[ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 1 ] && [ -e "$ROOT/.claude/$MARKER_NAME" ] \
+  && ok "active-bit=1 (no opt-in) → posts" \
+  || fail "bit1: rc=$rc posts=$(posts_in "$CALLLOG")"
+
+# ============================================================
+# 4. active-bit=0, no opt-in → no post (the today's-behavior guardrail).
+# ============================================================
+read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"
+rc=0; run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" - - "$PR" "$HEAD" "owner/repo" 0 || rc=$?
+[ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 0 ] && [ ! -e "$ROOT/.claude/$MARKER_NAME" ] \
+  && ok "active-bit=0, no opt-in → no post (exit 0)" \
+  || fail "bit0: rc=$rc posts=$(posts_in "$CALLLOG")"
+
+# ============================================================
+# 5. SELF-DETECT (no bit) with active fixture → posts.
+# ============================================================
+read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"
+FIX=$(write_fixture "$ACTIVE_FIXTURE")
+rc=0; run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" "$FIX" - "$PR" "$HEAD" "owner/repo" || rc=$?
+[ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 1 ] \
+  && ok "no bit + self-detect active (fixture) → posts" \
+  || fail "self-detect active: rc=$rc posts=$(posts_in "$CALLLOG")"
+rm -f "$FIX"
+
+# ============================================================
+# 6. SELF-DETECT (no bit) inactive (empty fixture) → no post.
+# ============================================================
+read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"
+rc=0; run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" - - "$PR" "$HEAD" "owner/repo" || rc=$?
+[ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 0 ] \
+  && ok "no bit + self-detect inactive → no post (today's behavior)" \
+  || fail "self-detect inactive: rc=$rc posts=$(posts_in "$CALLLOG")"
+
+# ============================================================
+# 7. active-bit=1 + PR_GRIND_CODEX_RETRIGGER=0 → kill switch wins, no post.
+# ============================================================
+read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"
+rc=0; run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" - "PR_GRIND_CODEX_RETRIGGER=0" "$PR" "$HEAD" "owner/repo" 1 || rc=$?
+[ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 0 ] && [ ! -e "$ROOT/.claude/$MARKER_NAME" ] \
+  && ok "active-bit=1 + PR_GRIND_CODEX_RETRIGGER=0 → no post (kill switch)" \
+  || fail "kill switch: rc=$rc posts=$(posts_in "$CALLLOG")"
+
+# ============================================================
+# 8. ONE-SHOT: active-bit=1 but marker already present → no second post.
+# ============================================================
+read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"
+: > "$ROOT/.claude/$MARKER_NAME"
+rc=0; run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" - - "$PR" "$HEAD" "owner/repo" 1 || rc=$?
+[ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 0 ] \
+  && ok "one-shot: marker present → no second post (exit 0)" \
+  || fail "one-shot: rc=$rc posts=$(posts_in "$CALLLOG")"
+
+# ============================================================
+# 9. FAIL-SAFE: active-bit=1, gh post fails → exit 0, marker NOT written.
+# ============================================================
+read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"
+rc=0; run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" - "STUB_GH_FAIL=1" "$PR" "$HEAD" "owner/repo" 1 || rc=$?
+[ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 1 ] && [ ! -e "$ROOT/.claude/$MARKER_NAME" ] \
+  && ok "fail-safe: post failed → exit 0, marker NOT written" \
+  || fail "fail-safe: rc=$rc posts=$(posts_in "$CALLLOG") marker=$([ -e "$ROOT/.claude/$MARKER_NAME" ] && echo yes || echo no)"
+
+# ============================================================
+# 10. MAIN_ROOT UNRESOLVABLE but active-bit=1 → auto-detect still posts (the
+#     opt-in-root early-return must NOT no-op the auto-detect path — iter3 fix).
+# ============================================================
+NONGIT=$(mk); mkdir -p "$NONGIT/.claude"; BIN2=$(mk); make_gh_stub "$BIN2"
 rc=0
-( cd "$NONGIT" && env PATH="$BIN:$PATH" GH_CALLLOG="$CALLLOG" GH_BODYFILE="$BODYFILE" \
-      BUSDRIVER_STATE_DIR="$NONGIT/.claude" "$BASH_BIN" "$NW" "$PR" "$HEAD" ) || rc=$?
-if [ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 0 ] && [ ! -e "$NONGIT/.claude/$MARKER_NAME" ]; then
-  ok "unresolvable root: no CWD-relative fallback → no post (fail-safe, exit 0)"
+( cd "$NONGIT" && env PATH="$BIN2:$PATH" GH_CALLLOG="$NONGIT/calls.log" GH_BODYFILE="$NONGIT/body.log" \
+    BUSDRIVER_STATE_DIR="$NONGIT/.claude" "$BASH_BIN" "$NW" "$PR" "$HEAD" "owner/repo" 1 ) || rc=$?
+if [ "$rc" = 0 ] && [ "$(posts_in "$NONGIT/calls.log")" = 1 ]; then
+  ok "MAIN_ROOT unresolvable + active-bit=1 → auto-detect still posts"
 else
-  fail "unresolvable root: rc=$rc posts=$(posts_in "$CALLLOG") marker=$([ -e "$NONGIT/.claude/$MARKER_NAME" ] && echo yes || echo no)"
+  fail "unresolvable root + bit1: rc=$rc posts=$(posts_in "$NONGIT/calls.log")"
 fi
 
 # ============================================================
-# 6. USAGE ERROR — missing required args: exit 2, no post (a wiring bug, surfaced).
+# 11. USAGE ERROR — missing required args → exit 2, no post.
 # ============================================================
-read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"; opt_in "$ROOT"
+read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"
 rc=0
 env PATH="$BIN:$PATH" GH_CALLLOG="$CALLLOG" GH_BODYFILE="$BODYFILE" \
     BUSDRIVER_MAIN_ROOT="$ROOT" BUSDRIVER_STATE_DIR="$ROOT/.claude" \
     "$BASH_BIN" "$NW" || rc=$?
-if [ "$rc" = 2 ] && [ "$(posts_in "$CALLLOG")" = 0 ]; then
-  ok "usage error: missing args → exit 2, no post"
-else
-  fail "usage error: expected exit 2, got rc=$rc posts=$(posts_in "$CALLLOG")"
-fi
+[ "$rc" = 2 ] && [ "$(posts_in "$CALLLOG")" = 0 ] \
+  && ok "usage error: missing args → exit 2, no post" \
+  || fail "usage error: expected exit 2, got rc=$rc"
 
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

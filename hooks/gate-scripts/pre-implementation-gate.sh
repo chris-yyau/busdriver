@@ -440,9 +440,12 @@ DESIGN_STATE="$STATE_DIR/design-review-needed.local.md"
 # (issue #325) — resolve the repo root and refuse it. FAIL-CLOSED via the helper.
 # shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
-_IMPL_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+# Anchor the guard on the SAME path the `-f` check tests. That check is relative to
+# the hook CWD, so resolve the guard against the CWD too (git -C ".") — otherwise a
+# committed subdir/.claude skip file could satisfy one check and evade the other.
+# FAIL-CLOSED: outside a git repo the helper returns "repo-controlled" → skip ignored.
 if [ -f "$STATE_DIR/skip-design-review.local" ] \
-   && ! gate_skip_file_repo_controlled "$_IMPL_ROOT" "$STATE_DIR/skip-design-review.local"; then
+   && ! gate_skip_file_repo_controlled "." "$STATE_DIR/skip-design-review.local"; then
     # Reject skip files created within the last 30 seconds — likely Claude self-bypass.
     # A human-created skip file (via terminal) will typically be older.
     FILE_AGE=999

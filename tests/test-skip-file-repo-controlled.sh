@@ -56,6 +56,16 @@ $G2 commit -qm "sneak via .claude symlink"
 gate_skip_file_repo_controlled "$TMP2" "$REL"; assert $? "committed .claude symlink is rejected"
 rm -rf "$TMP2"
 
+# 7. root="." from the repo root (the shape pre-implementation-gate uses): a committed
+#    skip file must still be detected. ($TMP still has $REL committed from case 3.)
+( cd "$TMP" && gate_skip_file_repo_controlled "." "$REL" ); assert $? "root=. detects committed skip file (pre-impl call shape)"
+
+# 8. In HEAD but removed from the index (git rm --cached): the index check misses it,
+#    so the HEAD:./<rel> check must catch it — this is exactly the root=. vs repo-root
+#    anchoring bug the `HEAD:./` form fixes.
+$G rm --cached -q "$REL"
+( cd "$TMP" && gate_skip_file_repo_controlled "." "$REL" ); assert $? "root=. detects HEAD-only skip file via HEAD:./ check"
+
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1

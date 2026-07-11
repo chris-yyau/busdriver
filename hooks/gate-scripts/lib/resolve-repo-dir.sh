@@ -144,7 +144,10 @@ gate_skip_file_repo_controlled() {   # <repo_root> <repo_relative_path>
     tracked=$(git -C "$root" ls-files -- "$rel" 2>/dev/null) || return 0
     [ -n "$tracked" ] && return 0                        # in the index
     if git -C "$root" rev-parse --verify -q HEAD >/dev/null 2>&1; then
-        git -C "$root" cat-file -e "HEAD:$rel" 2>/dev/null && return 0   # in HEAD's tree
+        # HEAD:./<rel> resolves <rel> relative to git's CWD (the -C dir), matching the
+        # ls-files pathspec above. A bare HEAD:<rel> is always repo-root-anchored, which
+        # would diverge from the index check when a caller passes root="." from a subdir.
+        git -C "$root" cat-file -e "HEAD:./$rel" 2>/dev/null && return 0   # in HEAD's tree
     fi
     return 1
 }

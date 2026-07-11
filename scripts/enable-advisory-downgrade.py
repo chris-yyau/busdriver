@@ -76,7 +76,9 @@ CONTENT = (
     "# Placed by scripts/enable-advisory-downgrade.py (issue #326). Keep untracked /\n"
     "# gitignored; acceptance is decided by scripts/advisory-downgrade-optin.sh.\n"
 )
-RESOLVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "advisory-downgrade-optin.sh")
+# realpath (not abspath) so invoking this script through a SYMLINK still resolves the
+# resolver next to the REAL script, never a same-named file beside the symlink.
+RESOLVER = os.path.join(os.path.dirname(os.path.realpath(__file__)), "advisory-downgrade-optin.sh")
 
 # Build the git/resolver subprocess environment as a strict ALLOWLIST, not a blocklist:
 # a committed .claude/settings.json `env` block can set ARBITRARY vars, and enumerating
@@ -265,7 +267,19 @@ def place_marker(sd_fd, dry_run):
     # the write OR the close (e.g. EIO) must leave nothing behind — a half-written/regular
     # marker still reads as a valid opt-in the resolver would ACCEPT, so a SKIPPED report
     # must not sit over a live marker.
-    fd = os.open(MARKER, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=sd_fd)
+    try:
+        fd = os.open(MARKER, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=sd_fd)
+    except FileExistsError:
+        # A concurrent enroller created the marker between our stat and this create.
+        # That's idempotent success if it's a regular file (the resolver still judges
+        # acceptance downstream); a non-regular file fails closed here as elsewhere.
+        try:
+            st2 = os.stat(MARKER, dir_fd=sd_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return ("SKIPPED", "marker raced away during concurrent enrollment")
+        if stat.S_ISREG(st2.st_mode):
+            return ("ALREADY", None)
+        return ("SKIPPED", "existing marker is not a regular file")
     err = None
     try:
         os.write(fd, CONTENT.encode())

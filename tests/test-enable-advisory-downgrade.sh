@@ -168,5 +168,18 @@ out=$(enroll "$WEIRD")
 assert_prefix ENROLLED "$out" "special-char path (space / non-ASCII / trailing-space) → ENROLLED"
 assert_true test -f "$WEIRD/.claude/$FILE"
 
+# 16. A path byte that is INVALID in the locale encoding (0xE9 alone) exercises the
+#     surrogateescape decode path specifically — a regression to strict decoding would
+#     raise UnicodeDecodeError. Only runs where the filesystem permits such names (Linux);
+#     macOS APFS rejects them, so the mkdir guard skips the case cleanly there.
+INV="$TMPROOT/inv"$'\xe9'"dir"
+if mkdir "$INV" 2>/dev/null && git -C "$INV" init -q 2>/dev/null; then
+    out=$(enroll "$INV")
+    assert_prefix ENROLLED "$out" "invalid-UTF-8-byte path → ENROLLED (surrogateescape)"
+    assert_true test -f "$INV/.claude/$FILE"
+else
+    echo "SKIP: filesystem rejects invalid-UTF-8 names (e.g. macOS APFS) — surrogateescape case skipped"
+fi
+
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

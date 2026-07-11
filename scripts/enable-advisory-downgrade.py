@@ -92,12 +92,23 @@ RESOLVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "advisory-do
 _CLEAN_ENV = {"PATH": "/usr/bin:/bin", "BUSDRIVER_STATE_DIR": STATE_DIR}
 
 
+def _chomp(s):
+    """Strip the SINGLE trailing newline git appends to a path-valued line, WITHOUT
+    touching trailing spaces/tabs that may be part of the filename. (A path with an
+    EMBEDDED newline can't be disambiguated from rev-parse output — accepted residual,
+    absurdly pathological on an operator's own repo.)"""
+    return s[:-1] if s.endswith("\n") else s
+
+
+# errors="surrogateescape": git paths can hold bytes invalid in the locale encoding; a
+# strict decode would raise UnicodeDecodeError and abort the WHOLE run. surrogateescape
+# round-trips such bytes losslessly, and os.* filesystem calls accept the result.
 def git_out(cwd, *args):
     """`git -C <cwd> <args>` stdout on success, else None (fail-closed). Runs with
     the minimal allowlist environment (see _CLEAN_ENV)."""
     try:
         r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True,
-                           check=False, env=_CLEAN_ENV)
+                           errors="surrogateescape", check=False, env=_CLEAN_ENV)
     except OSError:
         return None
     return r.stdout if r.returncode == 0 else None
@@ -109,7 +120,7 @@ def git_rc(cwd, *args):
     git_out() cannot — needed to fail CLOSED on errors rather than read them as 'no'."""
     try:
         return subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True,
-                              check=False, env=_CLEAN_ENV).returncode
+                              errors="surrogateescape", check=False, env=_CLEAN_ENV).returncode
     except OSError:
         return None
 
@@ -130,13 +141,13 @@ def main_root(repo):
     is rejected (the operator must name the main root)."""
     repo_real = os.path.realpath(repo)
     top = git_out(repo_real, "rev-parse", "--show-toplevel")
-    if top is None or os.path.realpath(top.strip()) != repo_real:
+    if top is None or os.path.realpath(_chomp(top)) != repo_real:
         return None  # not a work-tree ROOT (subdir, non-repo, or unresolvable) → fail closed
     # MAIN (not linked) worktree: git-dir == git-common-dir. A LINKED worktree's git-dir
     # is <main>/.git/worktrees/<name> while its common-dir is <main>/.git, so they differ.
     gd = git_out(repo_real, "rev-parse", "--path-format=absolute", "--git-dir")
     gcd = git_out(repo_real, "rev-parse", "--path-format=absolute", "--git-common-dir")
-    if gd is None or gcd is None or os.path.realpath(gd.strip()) != os.path.realpath(gcd.strip()):
+    if gd is None or gcd is None or os.path.realpath(_chomp(gd)) != os.path.realpath(_chomp(gcd)):
         return None
     # The dir the RESOLVER reads consent from (`worktree list` first entry) must be
     # repo_real. A forged `.git` gitfile pointing at ANOTHER repo makes that first entry

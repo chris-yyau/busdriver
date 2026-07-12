@@ -80,8 +80,8 @@ HOOK_DATA=$(cat 2>/dev/null || true)
 
 # Fast pre-filter: skip if hook data doesn't look like it could contain gh pr merge
 case "$HOOK_DATA" in
-    *\"Bash\"*gh\ pr\ merge*) ;;
-    *gh\ pr\ merge*\"Bash\"*) ;;
+    *\"Bash\"*gh*pr*merge*) ;;
+    *gh*pr*merge*\"Bash\"*) ;;
     *) exit 0 ;;
 esac
 
@@ -126,15 +126,16 @@ try:
             continue
         while re.match(r'^\w+=\S*\s', seg):
             seg = re.sub(r'^\w+=\S*\s+', '', seg, count=1)
-        if re.match(r'gh\s+pr\s+merge\b', seg) and not pr_num:
-            # Capture the FIRST top-level merge's PR number. If the actual
-            # merge command is wrapped (bash -c, eval, etc.), pr_num may
-            # remain empty — the multi-merge guard below blocks on count,
-            # and even if count is 1 a wrapped merge will be gated on
-            # \`unknown\` PR (downstream PostToolUse refuses consumption
-            # on unknown-PR claims).
-            args = re.split(r'\s+', seg)
-            for a in args[3:]:  # skip 'gh', 'pr', 'merge'
+        m_merge = re.search(r'\bgh\s+pr\s+merge\b(.*)', seg)
+        if m_merge and not pr_num:
+            # Capture the FIRST top-level merge's PR number, parsing the args
+            # AFTER the 'gh pr merge' token (not seg.split()[3:]) so a wrapper
+            # prefix like 'command gh pr merge 5' does not shift the offset and
+            # drop the PR number. If the merge is wrapped (bash -c, eval, etc.)
+            # pr_num may remain empty — the multi-merge guard blocks on count,
+            # and a count==1 wrapped merge is gated on \`unknown\` PR (downstream
+            # PostToolUse refuses consumption on unknown-PR claims).
+            for a in m_merge.group(1).split():
                 if a.startswith('-'):
                     break
                 if re.match(r'^\d+$', a):

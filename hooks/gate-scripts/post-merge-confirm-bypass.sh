@@ -90,9 +90,15 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
 # `cd <dir> && gh pr merge ...`). The narrower test must run before
 # stale-cleanup so that a slow operator (>5 min between claim and merge)
 # doesn't lose merge processing to opportunistic cleanup.
-_PRE_PARSE=$(printf '%s' "$HOOK_DATA" | python3 -c "
-import sys, json, re, os
+_GATE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+_PRE_PARSE=$(printf '%s' "$HOOK_DATA" | PYTHONPATH="$_GATE_LIB" python3 -S -c "
+import sys
+# Drop CWD from sys.path (python3 -c prepends it ahead of PYTHONPATH) so a repo-
+# controlled gitcmd_detect.py or shadowed stdlib (json.py) cannot run in the gate.
+sys.path[:] = [p for p in sys.path if p not in ('', '.')]
 try:
+    import json
+    from gitcmd_detect import gh_pr
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
@@ -102,18 +108,11 @@ try:
     if isinstance(inp, str):
         inp = json.loads(inp)
     cmd = inp.get('command', '')
-    is_merge = bool(re.search(r'\bgh\s+pr\s+merge\b', cmd))
-    target_dir = ''
-    for seg in re.split(r'&&|\|\||[;\n|]', cmd):
-        seg = seg.strip()
-        # Stop before the merge segment: a trailing cd after gh pr merge
-        # must not redirect PENDING_FILE/SKIP_FILE to the wrong repository.
-        if re.match(r'gh\s+pr\s+merge\b', seg):
-            break
-        cd_m = re.match(r'cd\s+(.*)', seg)
-        if cd_m:
-            raw = cd_m.group(1).strip().strip('\042\047')
-            target_dir = os.path.expanduser(raw)
+    # Fail-CLOSED command-word detection via the shared detector: prose/args
+    # like 'echo gh pr merge 31' must NOT count as a completed merge (a bare
+    # re.search did, letting crafted text drive confirmation/consumption of
+    # bypass state). target_dir is the cd/gh -C repo scope.
+    is_merge, target_dir, _pr = gh_pr(cmd, 'merge')
     print('true' if is_merge else 'false')
     print(target_dir)
     print(cwd)
@@ -230,9 +229,14 @@ fi
 # Parse the bash command + tool_output. Output two newline-separated values:
 #   line 1: status   (success | auto_queued | failure | ambiguous)
 #   line 2: extracted PR number (empty if not present in the command)
-PARSE=$(printf '%s' "$HOOK_DATA" | python3 -c "
-import sys, json, re
+PARSE=$(printf '%s' "$HOOK_DATA" | PYTHONPATH="$_GATE_LIB" python3 -S -c "
+import sys
+# Drop CWD from sys.path (python3 -c prepends it ahead of PYTHONPATH) so a repo-
+# controlled gitcmd_detect.py or shadowed stdlib (json.py) cannot run in the gate.
+sys.path[:] = [p for p in sys.path if p not in ('', '.')]
 try:
+    import json, re
+    from gitcmd_detect import gh_pr
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
@@ -241,24 +245,11 @@ try:
     if isinstance(inp, str):
         inp = json.loads(inp)
     cmd = inp.get('command', '')
-    if not re.search(r'\bgh\s+pr\s+merge\b', cmd):
+    # Fail-CLOSED command-word detection via the shared detector: only a real
+    # gh-pr-merge invocation counts, not prose like 'echo gh pr merge 31'.
+    is_merge, _td, pr_num = gh_pr(cmd, 'merge')
+    if not is_merge:
         sys.exit(0)
-
-    # Re-extract PR number from cmd (mirrors pre-merge-gate.sh logic).
-    pr_num = ''
-    for seg in re.split(r'&&|\|\||[;\n|]', cmd):
-        seg = seg.strip()
-        while re.match(r'^\w+=\S*\s', seg):
-            seg = re.sub(r'^\w+=\S*\s+', '', seg, count=1)
-        if re.match(r'gh\s+pr\s+merge\b', seg):
-            args = re.split(r'\s+', seg)
-            for a in args[3:]:  # skip 'gh', 'pr', 'merge'
-                if a.startswith('-'):
-                    break
-                if re.match(r'^\d+$', a):
-                    pr_num = a
-                    break
-            break
 
     out = d.get('tool_output', d.get('toolOutput', {}))
     if isinstance(out, dict):

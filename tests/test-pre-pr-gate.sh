@@ -297,6 +297,39 @@ run_post_hook "$(make_posthook_cwd 'cd "$(git rev-parse --show-toplevel)" && gh 
 got=$(marker_state)
 check "post-hook consumes marker for toplevel cd form (cwd-anchored)" "absent" "$got"
 
+# ── Matcher hardening: wrapper/prefix bypass regression (Task 1) ──────
+echo ""
+echo "── pre-pr-gate wrapper/prefix bypass ───────────────────────"
+clear_artifacts; rm -f "$MARKER"
+
+# Compose input for CMD and run the gate. The got=$(...) assignment form below
+# avoids masked command-substitution returns (SC2312) that a nested $() causes.
+gate_of() { local _in; _in=$(make_input_cwd "$1" "$TMPREPO"); run_gate "$_in"; }
+
+# Start-anchored matcher + literal-space pre-filter (command/double-space/abs
+# path) AND the wrapper-word-only strip (option-bearing wrappers) all let real,
+# unreviewed PR creations through. Every form below MUST now block.
+got=$(gate_of 'command gh pr create --fill');        check "blocks: command gh pr create" "block" "$got"
+got=$(gate_of 'gh  pr create --fill');               check "blocks: gh  pr create (double space)" "block" "$got"
+got=$(gate_of '/usr/bin/gh pr create --fill');       check "blocks: /usr/bin/gh pr create" "block" "$got"
+got=$(gate_of 'env -i FOO=1 gh pr create --fill');   check "blocks: env -i FOO=1 gh pr create" "block" "$got"
+got=$(gate_of 'sudo -u nobody gh pr create --fill'); check "blocks: sudo -u nobody gh pr create" "block" "$got"
+got=$(gate_of 'sudo -n gh pr create --fill');        check "blocks: sudo -n gh pr create (no-arg option)" "block" "$got"
+got=$(gate_of 'command -- gh pr create --fill');     check "blocks: command -- gh pr create" "block" "$got"
+# Negative: gh named only in prose is NOT a create → allow (both revisions).
+got=$(gate_of 'echo run gh pr create when ready');   check "allows: prose mentioning gh pr create" "allow" "$got"
+
+# Consume-marker parity: the post-hook carried the SAME matcher, so a wrapper-
+# prefixed create would leave the marker stale (re-authorizing a later diff).
+# It must recognize the prefix and consume; prose must NOT consume.
+in1=$(make_posthook_cwd 'command gh pr create --fill' 'https://github.com/owner/repo/pull/43' "$TMPREPO")
+printf '%s' "$VALID_HASH" > "$MARKER"; run_post_hook "$in1"
+got=$(marker_state); check "post-hook consumes marker for command-prefixed create" "absent" "$got"
+in2=$(make_posthook_cwd 'echo run gh pr create later' 'no-url' "$TMPREPO")
+printf '%s' "$VALID_HASH" > "$MARKER"; run_post_hook "$in2"
+got=$(marker_state); check "post-hook leaves marker for prose (not a real create)" "present" "$got"
+rm -f "$MARKER"
+
 # ── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "  ── $PASS/$TOTAL passed ──"

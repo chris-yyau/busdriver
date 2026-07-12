@@ -59,9 +59,15 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
 
 # Parse command, confirm gh pr create, detect PR-URL success in the output,
 # and extract the target directory for worktree-aware marker lookup.
-PARSE_RESULT=$(printf '%s' "$HOOK_DATA" | python3 -c "
-import sys, json, re, os
+_GATE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+PARSE_RESULT=$(printf '%s' "$HOOK_DATA" | PYTHONPATH="$_GATE_LIB" python3 -S -c "
+import sys
+# Drop CWD from sys.path (python3 -c prepends it ahead of PYTHONPATH) so a repo-
+# controlled gitcmd_detect.py or shadowed stdlib (json.py) cannot run in the gate.
+sys.path[:] = [p for p in sys.path if p not in ('', '.')]
 try:
+    import json, re
+    from gitcmd_detect import gh_pr
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
@@ -81,23 +87,8 @@ try:
     else:
         output_text = ''
 
-    # Walk command segments to confirm gh pr create and track cd target dir
-    segments = re.split(r'&&|\|\||[;\n|]', cmd)
-    target_dir = ''
-    is_pr_create = False
-    for seg in segments:
-        seg = seg.strip()
-        cd_m = re.match(r'cd\s+(.*)', seg)
-        if cd_m:
-            raw = cd_m.group(1).strip().strip('\042\047')
-            target_dir = os.path.expanduser(raw)
-            continue
-        # Strip leading env var assignments (e.g. SKIP_LITMUS=1 gh pr create)
-        while re.match(r'^\w+=\S*\s', seg):
-            seg = re.sub(r'^\w+=\S*\s+', '', seg, count=1)
-        if re.match(r'gh\s+pr\s+create\b', seg):
-            is_pr_create = True
-            break
+    # Confirm a real gh pr create via the shared command-word detector.
+    is_pr_create, target_dir, _pr = gh_pr(cmd, 'create')
 
     if not is_pr_create:
         sys.exit(0)

@@ -891,6 +891,60 @@ fi
 rm -rf "$REPO_R8"
 
 # ═══════════════════════════════════════════════════════════════════════
+# MATCHER HARDENING: whitespace/prefix bypass regression (Task 1)
+# ═══════════════════════════════════════════════════════════════════════
+echo ""
+echo "── pre-merge-gate whitespace/prefix bypass ─────────────────"
+rm -f "$CLEAN_MARKER" "$SKIP_FILE" "$PENDING_MARKER" "$BYPASS_PENDING"
+
+# Double space defeated the literal-single-space pre-filter (*gh\ pr\ merge*),
+# skipping the parser entirely → early exit 0 (allow). Now *gh*pr*merge*.
+run_gate_test "blocks 'gh  pr  merge' (double-space pre-filter bypass)" "block" \
+    '{"tool_name":"Bash","tool_input":{"command":"gh  pr  merge 31 --squash"}}'
+# Wrapper prefix: the parser already used whole-command re.findall, so this was
+# blocked pre-fix too — asserted here to lock in cross-gate detection parity.
+run_gate_test "blocks 'command gh pr merge' (wrapper prefix)" "block" \
+    '{"tool_name":"Bash","tool_input":{"command":"command gh pr merge 31 --squash"}}'
+
+# ═══════════════════════════════════════════════════════════════════════
+# POST-MERGE-CONFIRM detection: prose must NOT be treated as a merge (Task 1)
+# ═══════════════════════════════════════════════════════════════════════
+echo ""
+echo "── post-merge-confirm-bypass prose vs command ──────────────"
+PMCB="hooks/gate-scripts/post-merge-confirm-bypass.sh"
+# Setup a scratch repo with a STALE pending file, run the post-merge hook on it,
+# and report whether stale-cleanup fired. Stale-cleanup only runs when detection
+# says NOT-a-merge, so it is a clean proxy for the is_merge decision against the
+# real script: prose → cleanup fires; real command-word merge → cleanup skipped.
+pmcb_stale_cleanup_fired() {
+    local cmd="$1" tmp input
+    tmp=$(mktemp -d)
+    git -C "$tmp" init -q
+    mkdir -p "$tmp/.claude"
+    echo "merge_pr=5" > "$tmp/.claude/.merge-bypass-pending.local"
+    touch -t "$(date -v-10M '+%Y%m%d%H%M.%S' 2>/dev/null || date -d '10 minutes ago' '+%Y%m%d%H%M.%S')" \
+        "$tmp/.claude/.merge-bypass-pending.local" 2>/dev/null || true
+    input=$(python3 -c "import json,sys; print(json.dumps({'tool_name':'Bash','tool_input':{'command':sys.argv[1]},'cwd':sys.argv[2]}))" "$cmd" "$tmp")
+    printf '%s' "$input" | bash "$PMCB" >/dev/null 2>&1 || true
+    if grep -q 'merge-bypass-stale-cleanup' "$tmp/.claude/bypass-log.jsonl" 2>/dev/null; then echo yes; else echo no; fi
+    rm -rf "$tmp"
+}
+_pmcb_prose=$(pmcb_stale_cleanup_fired 'echo gh pr merge 5')
+TOTAL=$((TOTAL + 1))
+if [[ "$_pmcb_prose" == "yes" ]]; then
+    printf "  PASS  prose 'echo gh pr merge 5' not treated as merge\n"; PASS=$((PASS + 1))
+else
+    printf "  FAIL  prose treated as merge (stale-cleanup did not fire, got=%s)\n" "$_pmcb_prose"; FAIL=$((FAIL + 1))
+fi
+_pmcb_real=$(pmcb_stale_cleanup_fired 'command gh pr merge 5')
+TOTAL=$((TOTAL + 1))
+if [[ "$_pmcb_real" == "no" ]]; then
+    printf "  PASS  'command gh pr merge 5' recognized as merge\n"; PASS=$((PASS + 1))
+else
+    printf "  FAIL  command-prefixed merge not recognized (got=%s)\n" "$_pmcb_real"; FAIL=$((FAIL + 1))
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
 # RESULTS
 # ═══════════════════════════════════════════════════════════════════════
 echo ""

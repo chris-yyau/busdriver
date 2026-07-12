@@ -80,9 +80,15 @@ esac
 
 # Parse command, detect git commit, check output for success pattern,
 # and extract target directory for worktree-aware marker lookup.
-PARSE_RESULT=$(printf '%s' "$HOOK_DATA" | python3 -c "
-import sys, json, re, os
+_GATE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+PARSE_RESULT=$(printf '%s' "$HOOK_DATA" | PYTHONPATH="$_GATE_LIB" python3 -S -c "
+import sys
+# Drop CWD from sys.path (python3 -c prepends it ahead of PYTHONPATH) so a repo-
+# controlled gitcmd_detect.py or shadowed stdlib (json.py) cannot run in the gate.
+sys.path[:] = [p for p in sys.path if p not in ('', '.')]
 try:
+    import json, re
+    from gitcmd_detect import git_commit
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
@@ -102,38 +108,8 @@ try:
     else:
         output_text = ''
 
-    # Walk command segments to find git commit and track cd/git -C
-    segments = re.split(r'&&|\|\||[;\n|]', cmd)
-    target_dir = ''
-    is_commit = False
-    for seg in segments:
-        seg = seg.strip()
-        cd_m = re.match(r'cd\s+(.*)', seg)
-        if cd_m:
-            target_dir = os.path.expanduser(cd_m.group(1).strip().strip('\042\047'))
-            continue
-        # Strip leading env var assignments
-        while re.match(r'^\w+=\S*\s', seg):
-            seg = re.sub(r'^\w+=\S*\s+', '', seg, count=1)
-        if re.match(r'git\b', seg):
-            words = seg.split()
-            skip_next = False
-            for w in words[1:]:
-                if skip_next:
-                    skip_next = False
-                    continue
-                if w in ('-C', '-c'):
-                    skip_next = True
-                    continue
-                if w.startswith('-'):
-                    continue
-                is_commit = (w == 'commit')
-                break
-            if is_commit:
-                c_m = re.search(r'-C\s+(\S+)', seg)
-                if c_m:
-                    target_dir = os.path.expanduser(c_m.group(1).strip('\042\047'))
-                break
+    # Detect a real git commit via the shared command-word detector.
+    is_commit, target_dir, _amend = git_commit(cmd)
 
     if not is_commit:
         sys.exit(0)

@@ -41,7 +41,7 @@ st="$(ultra_oracle_consult --prompt hi --out "$tmp/vd.md" --mode blocking)"
 cat > "$tmp/bin/oracle" <<'STUB'
 #!/bin/bash
 [ -n "${ULTRA_ORACLE_ARGV_OUT:-}" ] && for a in "$@"; do printf '%s\n' "$a"; done > "$ULTRA_ORACLE_ARGV_OUT"
-# Record the received ORACLE_REMOTE_TOKEN env (secret delivery channel) for assertions.
+# Record the received ORACLE_REMOTE_TOKEN env (the secret delivery channel) for assertions.
 [ -n "${ULTRA_ORACLE_ENV_OUT:-}" ] && printf '%s' "${ORACLE_REMOTE_TOKEN-}" > "$ULTRA_ORACLE_ENV_OUT"
 out=""
 while [ $# -gt 0 ]; do case "$1" in --write-output) out="$2"; shift 2;; *) shift;; esac; done
@@ -154,10 +154,10 @@ st="$(ultra_oracle_consult --prompt hi --out "$tmp/c4.md" --mode blocking)"
 rm -f "$tmp/.claude/busdriver.json"
 
 # --- serve delegation wiring (remoteHost/remoteToken, #340) ---
-# remoteHost set -> argv carries --remote-host <hv>; the SECRET token is delivered via
-# the ORACLE_REMOTE_TOKEN env (NOT argv — a --remote-token flag would be world-readable
-# in `ps` for the whole consult). serve owns its own signed-in session, so NO
-# --browser-cookie-path even when cookiePath is ALSO set (mutually exclusive; wins).
+# remoteHost set -> argv carries --remote-host <hv>; the SECRET token is delivered via the
+# ORACLE_REMOTE_TOKEN env, NOT --remote-token argv (which `ps` would expose). serve owns
+# its own signed-in session, so NO --browser-cookie-path even when cookiePath is ALSO set
+# (mutually exclusive; remoteHost wins).
 export ULTRA_ORACLE_ENV_OUT="$tmp/env.log"
 printf '{ "ultraOracle": { "remoteHost": "127.0.0.1:8765", "remoteToken": "tok-xyz", "cookiePath": "%s" } }\n' "$ck" > "$tmp/.claude/busdriver.json"
 : > "$tmp/argv.log"; : > "$tmp/env.log"

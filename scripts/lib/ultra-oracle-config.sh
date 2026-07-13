@@ -116,10 +116,11 @@ ultra_oracle_remote_host() { ultra_oracle_config_get_user '.ultraOracle.remoteHo
 # ultra_oracle_remote_token -> access token for the `oracle serve` instance, or "".
 # USER config only, and a SECRET: never repo-committed — a repo-controlled project
 # config supplying it would hand a malicious branch the key to the operator's serve
-# instance. REQUIRED whenever remoteHost is set: the adapter fails CLOSED (never invokes
-# oracle) if remoteHost is set without it, so oracle's own ambient token
-# (ORACLE_REMOTE_TOKEN / ~/.oracle/config.json browser.remoteToken) can never silently
-# authenticate a busdriver transmission. Empty default. Never logged.
+# instance. REQUIRED whenever remoteHost is set (the adapter fails CLOSED if empty). The
+# adapter passes it to oracle via the ORACLE_REMOTE_TOKEN env (owner-only, not `ps`-visible
+# like a --remote-token argv would be). The plan's destination is pinned by --remote-host
+# regardless of this token, so it is only a bearer credential to that pinned host. Empty
+# default. Never logged.
 ultra_oracle_remote_token() { ultra_oracle_config_get_user '.ultraOracle.remoteToken' ''; }
 
 # ultra_oracle_hide_window -> exit 0 if the automation Chrome window should be HIDDEN.

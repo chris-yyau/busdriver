@@ -183,14 +183,24 @@ ultra_oracle_consult() {
     # design; the delegation credential must come from there too, never from oracle's
     # ambient environment. Same fail-closed posture as the unreadable-cookiePath branch.
     if [[ -z "$remote_token" ]]; then
-      echo "ultra-oracle: remoteHost set but remoteToken empty — failing closed (a token from oracle's own config/env must NOT silently authenticate a busdriver transmission). Set ultraOracle.remoteToken in ~/.claude/busdriver.json" >&2
+      echo "ultra-oracle: remoteHost set but remoteToken empty — failing closed (set ultraOracle.remoteToken in ~/.claude/busdriver.json; the consult would otherwise fail auth against a token-protected 'oracle serve')" >&2
       printf 'error'; return 1
     fi
-    # Deliver the token to oracle via the ORACLE_REMOTE_TOKEN ENV VAR at the invocation
-    # sites below (oracle's documented env fallback for the token slot), NOT on argv: a
-    # --remote-token flag would sit in the process argument list — world-readable via
-    # `ps` — for the whole multi-minute consult, leaking the secret. Env is owner-only.
-    # Only the non-secret host goes on argv.
+    # Deliver the token via the ORACLE_REMOTE_TOKEN env at the invocation sites below —
+    # NOT --remote-token on argv, which `ps` exposes to same-user/root for the whole
+    # multi-minute consult. Only the non-secret host goes on argv.
+    #
+    # Confidentiality does NOT rest on this token. Oracle resolves the destination as
+    #   host  = cliHost(--remote-host) ?? config.browser.remoteHost ?? ORACLE_REMOTE_HOST
+    #   token = cliToken(--remote-token) ?? config.browser.remoteToken ?? ORACLE_REMOTE_TOKEN
+    # (verified in oracle 0.15.2 remoteServiceConfig.js). We ALWAYS pass --remote-host, so
+    # the destination is PINNED to busdriver's USER-config host — no ambient config/env can
+    # redirect the plan elsewhere. The token is merely the bearer credential presented TO
+    # that pinned host. So if an ambient oracle-config `browser.remoteToken` outranks our
+    # env token (config > env), the only effect is that the pinned serve accepts or rejects
+    # the connection: a wrong token fails auth LOUDLY (the #340 hint surfaces), it can never
+    # divert the plan. Env delivery is therefore safe WITHOUT trying to out-parse oracle's
+    # (JSON5 keys, symlink-physical CWD) config-discovery to detect an ambient token.
     set -- "$@" --remote-host "$remote_host"
   elif [[ -n "$cookie_path" ]]; then
     if [[ -r "$cookie_path" ]]; then

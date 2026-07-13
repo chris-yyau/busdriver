@@ -78,14 +78,18 @@ fi
 _n=0; _cap="$(ultra_oracle_timeout_cap)"
 while [[ ! -f "$OUT.rc" && "$_n" -lt "$_cap" ]]; do sleep 2; _n=$((_n + 2)); done
 _rc="$(cat "$OUT.rc" 2>/dev/null)"
+# A human-actionable hint (#340) the adapter persisted for a known failure (ABE /
+# login / Cloudflare). Append it to the FAILED banner so the operator sees WHAT to
+# do, not just a status code. Contains only oracle's own diagnostic text, no secret.
+_hint="$(cat "$OUT.hint" 2>/dev/null)"; _sfx=""; [[ -n "$_hint" ]] && _sfx=" — $_hint"
 if [[ -s "$OUT" && "$_rc" == 0 ]]; then
   echo "VERDICT"; cat "$OUT"
 elif [[ "$_rc" == 0 ]]; then
-  echo "FAILED [empty verdict]"
+  echo "FAILED [empty verdict]$_sfx"
 elif [[ "$_rc" == 124 ]]; then
-  echo "FAILED [timeout]"
+  echo "FAILED [timeout]$_sfx"
 elif [[ -n "$_rc" ]]; then
-  echo "FAILED [error rc=$_rc]"
+  echo "FAILED [error rc=$_rc]$_sfx"
 else
   echo "FAILED [timeout]"
 fi

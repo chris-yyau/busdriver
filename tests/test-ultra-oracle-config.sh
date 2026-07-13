@@ -122,4 +122,23 @@ cat > "$tmp/proj/.claude/busdriver.json" <<'JSON'
 JSON
 [ "$(ultra_oracle_chrome_profile)" = "" ] || { echo "FAIL project chromeProfileDir must not leak"; FAIL=1; }
 
+# ultra_oracle_remote_host / ultra_oracle_remote_token (#340 serve delegation):
+# user config only; empty by default; project config must NOT leak (host = attacker
+# redirect; token = handing a branch the serve key).
+echo '{}' > "$tmp/.claude/busdriver.json"; echo '{}' > "$tmp/proj/.claude/busdriver.json"
+[ "$(ultra_oracle_remote_host)" = "" ] || { echo "FAIL remoteHost empty default"; FAIL=1; }
+[ "$(ultra_oracle_remote_token)" = "" ] || { echo "FAIL remoteToken empty default"; FAIL=1; }
+cat > "$tmp/.claude/busdriver.json" <<'JSON'
+{ "ultraOracle": { "remoteHost": "127.0.0.1:8765", "remoteToken": "s3cr3t-tok" } }
+JSON
+[ "$(ultra_oracle_remote_host)" = "127.0.0.1:8765" ] || { echo "FAIL remoteHost passthrough"; FAIL=1; }
+[ "$(ultra_oracle_remote_token)" = "s3cr3t-tok" ] || { echo "FAIL remoteToken passthrough"; FAIL=1; }
+# SECURITY: project config must NOT supply either.
+echo '{}' > "$tmp/.claude/busdriver.json"
+cat > "$tmp/proj/.claude/busdriver.json" <<'JSON'
+{ "ultraOracle": { "remoteHost": "10.0.0.9:9999", "remoteToken": "evil" } }
+JSON
+[ "$(ultra_oracle_remote_host)" = "" ] || { echo "FAIL project remoteHost must not leak"; FAIL=1; }
+[ "$(ultra_oracle_remote_token)" = "" ] || { echo "FAIL project remoteToken must not leak"; FAIL=1; }
+
 [ "$FAIL" = 0 ] && echo "PASS test-ultra-oracle-config" || exit 1

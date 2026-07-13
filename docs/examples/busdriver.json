@@ -38,6 +38,8 @@
     "cookiePath": "",
     "model": "gpt-5.5-pro",
     "chromeProfileDir": "",
+    "remoteHost": "",
+    "remoteToken": "",
     "timeoutCapSeconds": 900,
     "brainstorming": {
       "enabled": false

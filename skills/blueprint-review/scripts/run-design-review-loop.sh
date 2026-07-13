@@ -442,7 +442,7 @@ while true; do
   # Never in --claude-only mode (no design re-transmitted when the operator chose Claude-only).
   if [ "$CLAUDE_ONLY" != "true" ] && command -v ultra_oracle_surface_enabled >/dev/null 2>&1 && ultra_oracle_surface_enabled blueprintReview; then
     ULTRA_ORACLE_ADVISORY_FILE="$STATE_DIR/ultra-oracle/${RUN_ID}-plan-review.md"
-    rm -f "$ULTRA_ORACLE_ADVISORY_FILE" "$ULTRA_ORACLE_ADVISORY_FILE.rc" 2>/dev/null || true
+    rm -f "$ULTRA_ORACLE_ADVISORY_FILE" "$ULTRA_ORACLE_ADVISORY_FILE.rc" "$ULTRA_ORACLE_ADVISORY_FILE.hint" 2>/dev/null || true
     ULTRA_ORACLE_DISPATCH_STATUS="$(ultra_oracle_consult --mode background --slug "ultra oracle plan review" \
       --out "$ULTRA_ORACLE_ADVISORY_FILE" --context "$DESIGN_FILE" \
       --prompt "You are an auxiliary design reviewer. Review this implementation plan for architectural risks, missing decomposition, and underspecified steps. Be concise." 2>/dev/null || true)"
@@ -797,7 +797,11 @@ with open(pending, "w") as f:
   ULTRA_ORACLE_ADVISORY_SECTION=""
   if [ -n "${ULTRA_ORACLE_ADVISORY_FILE:-}" ]; then
     if [ "$ULTRA_ORACLE_DISPATCH_STATUS" = "dispatched" ]; then
-      _uora_wait=0; _uora_cap="$(ultra_oracle_timeout_cap)"
+      # Grace margin BEYOND the oracle cap: on a real timeout the background child writes
+      # .rc/.hint only AFTER _portable_timeout kills oracle at t=cap, so waiting exactly
+      # cap races the child and reads no .rc (banner falls to "timeout (no completion)"
+      # and drops the #340 hint). +10s lets the marker + hint land.
+      _uora_wait=0; _uora_cap=$(( $(ultra_oracle_timeout_cap) + 10 ))
       while [ ! -f "$ULTRA_ORACLE_ADVISORY_FILE.rc" ] && [ "$_uora_wait" -lt "$_uora_cap" ]; do
         sleep 2; _uora_wait=$((_uora_wait + 2))
       done
@@ -815,8 +819,14 @@ $(cat "$ULTRA_ORACLE_ADVISORY_FILE")"
       elif [ -z "$_uora_rc" ]; then _uora_term="timeout (no completion within cap)"
       elif [ "$_uora_rc" != "0" ]; then _uora_term="error (rc=$_uora_rc)"
       else _uora_term="error (empty verdict)"; fi
+      # Fold in the adapter's actionable hint (#340) for a known failure (cookie
+      # decryption blocked / not-signed-in / Cloudflare) so THIS banner — the one the
+      # operator actually sees, since blueprint-review calls the adapter directly rather
+      # than via ultra-oracle-run.sh — names the next step, not just a status code.
+      _uora_hint="$(cat "$ULTRA_ORACLE_ADVISORY_FILE.hint" 2>/dev/null || true)"
+      _uora_suffix=""; [ -n "$_uora_hint" ] && _uora_suffix=" -- $_uora_hint"
       ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
-WARNING: ULTRA-ORACLE ADVISORY FAILED [$_uora_term] -- verdict NOT included (visible best-effort; the gate converges on the THREE reviewers Agy/Codex/Grok).
+WARNING: ULTRA-ORACLE ADVISORY FAILED [$_uora_term]$_uora_suffix -- verdict NOT included (visible best-effort; the gate converges on the THREE reviewers Agy/Codex/Grok).
 ============================================================================="
     fi
   elif [ "${CLAUDE_ONLY:-false}" != "true" ]; then

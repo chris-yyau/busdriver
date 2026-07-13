@@ -100,6 +100,29 @@ ultra_oracle_cookie_path() {
   printf '%s' "$d"
 }
 
+# ultra_oracle_remote_host -> `host:port` of a running `oracle serve` instance, or "".
+# USER config only. This is the cookie-decryption-blocked path (issue #340): on recent
+# Chrome builds the browser blocks PROGRAMMATIC cookie decryption (App-Bound Encryption
+# on Windows, Keychain-bound on macOS; observed on macOS Chrome 149), so
+# --browser-cookie-path / --copy-profile cannot reuse the ChatGPT session at all.
+# `oracle serve --manual-login`
+# keeps a dedicated, human-signed-in Chrome profile warm; each run DELEGATES to it via
+# oracle's --remote-host, sidestepping ABE entirely. When set it takes precedence over
+# cookiePath/chromeProfileDir in the adapter (serve owns its own browser session).
+# Pin serve to 127.0.0.1 — it defaults to --host 0.0.0.0 and would otherwise be
+# reachable over LAN/Tailscale. Empty default.
+ultra_oracle_remote_host() { ultra_oracle_config_get_user '.ultraOracle.remoteHost' ''; }
+
+# ultra_oracle_remote_token -> access token for the `oracle serve` instance, or "".
+# USER config only, and a SECRET: never repo-committed — a repo-controlled project
+# config supplying it would hand a malicious branch the key to the operator's serve
+# instance. REQUIRED whenever remoteHost is set (the adapter fails CLOSED if empty). The
+# adapter passes it to oracle via the ORACLE_REMOTE_TOKEN env (owner-only, not `ps`-visible
+# like a --remote-token argv would be). The plan's destination is pinned by --remote-host
+# regardless of this token, so it is only a bearer credential to that pinned host. Empty
+# default. Never logged.
+ultra_oracle_remote_token() { ultra_oracle_config_get_user '.ultraOracle.remoteToken' ''; }
+
 # ultra_oracle_hide_window -> exit 0 if the automation Chrome window should be HIDDEN.
 # Opt-in, VISIBLE by default (B8). Passing --browser-hide-window to oracle was
 # root-caused as breaking its ChatGPT browser engine (the consult failed silently;

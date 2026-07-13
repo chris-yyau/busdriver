@@ -42,6 +42,27 @@ _ultra_oracle_verdict_ok() {
   [ "$nonws" -ge "$min" ]
 }
 
+# _ultra_oracle_diagnose_hint <err-file> -> print ONE human-actionable line (no
+# trailing newline) naming the operator's next step for a KNOWN oracle failure
+# signature, else print nothing. Matches the ABE / login / Cloudflare cases from
+# issue #340 so a failed consult tells the operator WHAT to do instead of surfacing a
+# bare 'error' token. Read-only; matches only oracle's own captured STDOUT text, never
+# any secret (the token is never written to the .err file).
+_ultra_oracle_diagnose_hint() {
+  local f="$1"
+  [[ -r "$f" ]] || return 0
+  # Backticks below are LITERAL operator-facing command examples, not command
+  # substitution — the strings are printed verbatim, never evaluated.
+  # shellcheck disable=SC2016
+  if grep -qiE 'no chatgpt cookies|cookie extraction is unavailable|cookie sync' "$f" 2>/dev/null; then
+    printf 'cookie sync unavailable (this Chrome blocks programmatic cookie decryption, #340): run `oracle serve --manual-login --host 127.0.0.1 --token <T>`, sign in once, then set ultraOracle.remoteHost + ultraOracle.remoteToken in ~/.claude/busdriver.json'
+  elif grep -qiE 'login button detected|session not detected|not signed in|please log ?in' "$f" 2>/dev/null; then
+    printf 'ChatGPT session not detected: sign in to the `oracle serve --manual-login` browser window (or re-login), then re-run'
+  elif grep -qiE 'just a moment|cloudflare|verify you are human|are you human|challenge' "$f" 2>/dev/null; then
+    printf 'Cloudflare "Just a moment" challenge: complete the check in the serve browser window, then re-run'
+  fi
+}
+
 # ultra_oracle_consult --prompt <t> | --prompt-file <p>  [--context <glob>]... \
 #   --out <path> [--mode blocking|background] [--timeout-cap-seconds <n>] [--slug <words>]
 # Prints exactly one of: ok | skipped:unavailable | skipped:user | timeout | error | dispatched
@@ -112,7 +133,7 @@ ultra_oracle_consult() {
   # fails — a surviving stale file is the exact bug this prevents, so suppressing
   # the error would defeat the purpose. `rm -f` is a no-op on nonexistent files,
   # so the || branch only fires when a file EXISTS but cannot be removed.
-  rm -f -- "$out" "$out.rc" "$out.err" || {
+  rm -f -- "$out" "$out.rc" "$out.rc.partial" "$out.err" "$out.hint" || {
     echo "ultra-oracle: cannot clear stale output '$out' — failing closed" >&2
     printf 'error'; return 1
   }
@@ -127,24 +148,63 @@ ultra_oracle_consult() {
   # Health check — fail CLOSED (typed), never silent.
   if ! is_cli_available oracle; then printf 'skipped:unavailable'; return 3; fi
 
-  local model profile cookie_path
+  local model profile cookie_path remote_host remote_token
+  # The token we inject via ORACLE_REMOTE_TOKEN — set ONLY on the remoteHost delegation
+  # path (below). Empty elsewhere so a configured remoteToken can NEVER pair with an
+  # ambient host (oracle-config browser.remoteHost / ORACLE_REMOTE_HOST) and transmit to a
+  # destination busdriver did not pin: the confidentiality guarantee holds only because we
+  # both pass --remote-host AND supply the credential exclusively in that same branch.
+  local _uora_env_token=""
   model="$(ultra_oracle_model)"; profile="$(ultra_oracle_chrome_profile)"
   cookie_path="$(ultra_oracle_cookie_path)"
+  remote_host="$(ultra_oracle_remote_host)"; remote_token="$(ultra_oracle_remote_token)"
 
   # Build argv (set -- positional building is bash-3.2 safe).
   set -- --engine browser -m "$model" --timeout "$cap" \
          --write-output "$out" --no-notify --heartbeat 30 --slug "$slug"
-  # Session reuse (both opt-in; empty by default so we do NOT expose the operator's
-  # main browser session unless explicitly configured). Prefer an explicit cookie DB
-  # (--browser-cookie-path) — it decrypts the live session in place via the OS keychain
-  # and is the reliable headless path where app-bound encryption defeats --copy-profile.
-  # A configured cookiePath is AUTHORITATIVE: if it is set we never silently fall back
-  # to a full-profile clone (a heavier, different-surface operation the operator did not
-  # ask for). If it is set but unreadable, FAIL CLOSED with a typed 'error' rather than
-  # run anyway — oracle would otherwise default to the standard Chrome profile and
+  # Session source, in precedence order (all opt-in; empty by default so we do NOT
+  # expose the operator's main browser session unless explicitly configured):
+  #   1. remoteHost   — delegate to a running `oracle serve` (issue #340). The ONLY
+  #                     path that works when Chrome blocks programmatic cookie
+  #                     decryption (recent cookie-encryption hardening), where
+  #                     cookiePath/copy-profile cannot reuse the session. serve owns
+  #                     its own signed-in browser.
+  #   2. cookiePath   — decrypt a live Cookies DB in place via the OS keychain.
+  #   3. chromeProfileDir — clone a dedicated profile (heaviest; last resort).
+  # These are MUTUALLY EXCLUSIVE: when remoteHost is set we pass ONLY
+  # --remote-host/--remote-token and never also --browser-cookie-path/--copy-profile
+  # (a second, ABE-broken session source that would confuse oracle). A configured
+  # cookiePath is AUTHORITATIVE within its own branch: if it is set but unreadable we
+  # FAIL CLOSED rather than let oracle default to the standard Chrome profile and
   # silently reuse whatever ChatGPT session is signed in there (wrong account / a
   # data-boundary surprise the operator did not authorize). Fix the path or unset it.
-  if [[ -n "$cookie_path" ]]; then
+  if [[ -n "$remote_host" ]]; then
+    # remoteToken is REQUIRED with remoteHost — fail CLOSED if empty. Empty would leave the
+    # consult to fail auth against a token-protected serve; refuse up front with guidance.
+    if [[ -z "$remote_token" ]]; then
+      echo "ultra-oracle: remoteHost set but remoteToken empty — failing closed (set ultraOracle.remoteToken in ~/.claude/busdriver.json; the consult would otherwise fail auth against a token-protected 'oracle serve')" >&2
+      printf 'error'; return 1
+    fi
+    # Deliver the token via the ORACLE_REMOTE_TOKEN env at the invocation sites — NOT
+    # --remote-token on argv, which `ps` exposes to same-user/root for the whole
+    # multi-minute consult. Only the non-secret host goes on argv. Scope the env token to
+    # _uora_env_token, set ONLY here, so it is delivered EXCLUSIVELY on this path — never
+    # paired with an ambient host on a cookiePath/profile run.
+    #
+    # Confidentiality does NOT rest on this token. Oracle resolves the destination as
+    #   host  = cliHost(--remote-host) ?? config.browser.remoteHost ?? ORACLE_REMOTE_HOST
+    #   token = cliToken(--remote-token) ?? config.browser.remoteToken ?? ORACLE_REMOTE_TOKEN
+    # (verified in oracle 0.15.2 remoteServiceConfig.js). We ALWAYS pass --remote-host here,
+    # so the destination is PINNED to busdriver's USER-config host — no ambient config/env
+    # can redirect the plan elsewhere. The token is merely the bearer credential presented
+    # TO that pinned host: if an ambient oracle-config `browser.remoteToken` outranks our env
+    # token (config > env), the only effect is the pinned serve accepts or rejects the
+    # connection — a wrong token fails auth LOUDLY (the #340 hint surfaces), it can never
+    # divert the plan. So env delivery is safe WITHOUT out-parsing oracle's (JSON5 keys,
+    # symlink-physical CWD) config discovery to detect an ambient token.
+    _uora_env_token="$remote_token"
+    set -- "$@" --remote-host "$remote_host"
+  elif [[ -n "$cookie_path" ]]; then
     if [[ -r "$cookie_path" ]]; then
       set -- "$@" --browser-cookie-path "$cookie_path"
     else
@@ -182,12 +242,23 @@ ultra_oracle_consult() {
       # Capture oracle STDOUT+STDERR to "$out.err" (B8): oracle emits its failure
       # diagnostics on STDOUT, so the old >/dev/null 2>&1 discarded them and every
       # failure looked silent. Keep the file on failure for diagnosis; remove on success.
-      _portable_timeout "${cap}" oracle "$@" >"$out.err" 2>&1; _uora_bg_rc=$?
+      ORACLE_REMOTE_TOKEN="$_uora_env_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" 2>&1; _uora_bg_rc=$?
       # Map exit-0-but-empty-verdict to failure so the .rc matches blocking mode's
       # fail-closed contract (timeout already surfaces as rc 124).
       [[ "$_uora_bg_rc" = 0 ]] && ! _ultra_oracle_verdict_ok "$out" && _uora_bg_rc=1
-      [[ "$_uora_bg_rc" = 0 ]] && rm -f "$out.err"   # success: drop the captured stdout
-      printf '%s' "$_uora_bg_rc" > "$out.rc" ) &
+      if [[ "$_uora_bg_rc" = 0 ]]; then
+        rm -f "$out.err" "$out.hint"   # success: drop the captured stdout + any stale hint
+      else
+        # Persist a human-actionable hint (#340) next to the .err so the caller's FAILED
+        # banner can name the operator's next step, not just a bare status code.
+        _uora_hint="$(_ultra_oracle_diagnose_hint "$out.err")"
+        if [[ -n "$_uora_hint" ]]; then printf '%s' "$_uora_hint" > "$out.hint"; else rm -f "$out.hint"; fi
+      fi
+      # Write .rc ATOMICALLY and LAST: the waiters treat .rc's existence as completion, so a
+      # created-but-not-yet-written .rc could be read empty (reported as a spurious timeout,
+      # no hint). Rename is atomic on one filesystem, and it lands after .err/.hint are
+      # already in place, so once a waiter sees .rc every sibling file is fully written.
+      printf '%s' "$_uora_bg_rc" > "$out.rc.partial" && mv -f "$out.rc.partial" "$out.rc" ) &
     disown 2>/dev/null || true
     printf 'dispatched'; return 0
   fi
@@ -200,11 +271,25 @@ ultra_oracle_consult() {
   # errexit-safe: capture rc via `|| rc=$?` so a non-zero oracle exit cannot abort
   # the caller (this lib may be sourced under `set -e`) before the status token is
   # printed — the fail-closed 'error'/'timeout' tokens below depend on reaching them.
-  local rc=0
-  _portable_timeout "${cap}" oracle "$@" >"$out.err" || rc=$?
-  if [[ "$rc" = 124 ]]; then echo "ultra-oracle: timed out after ${cap}s — oracle STDOUT captured at $out.err" >&2; printf 'timeout'; return 124; fi
-  if [[ "$rc" != 0 ]]; then echo "ultra-oracle: oracle exited $rc — STDOUT/diagnostics captured at $out.err" >&2; printf 'error'; return 1; fi
-  _ultra_oracle_verdict_ok "$out" || { echo "ultra-oracle: exit 0 but missing/degenerate verdict — oracle STDOUT at $out.err" >&2; printf 'error'; return 1; }   # exit 0 but missing/degenerate verdict = fail-closed
+  local rc=0 _hint=""
+  ORACLE_REMOTE_TOKEN="$_uora_env_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" || rc=$?
+  if [[ "$rc" = 124 ]]; then
+    # A login/Cloudflare wall that never clears also manifests AS a timeout — the
+    # partial page oracle wrote to $out.err before the cap fired can still carry the
+    # signature, so name the operator's next step here too, not only on hard errors.
+    _hint="$(_ultra_oracle_diagnose_hint "$out.err")"; [[ -n "$_hint" ]] && echo "ultra-oracle: $_hint" >&2
+    echo "ultra-oracle: timed out after ${cap}s — oracle STDOUT captured at $out.err" >&2; printf 'timeout'; return 124
+  fi
+  if [[ "$rc" != 0 ]]; then
+    # Name the operator's next step for a known failure (ABE / login / Cloudflare, #340)
+    # before the generic pointer, so a failed consult is actionable, not just 'error'.
+    _hint="$(_ultra_oracle_diagnose_hint "$out.err")"; [[ -n "$_hint" ]] && echo "ultra-oracle: $_hint" >&2
+    echo "ultra-oracle: oracle exited $rc — STDOUT/diagnostics captured at $out.err" >&2; printf 'error'; return 1
+  fi
+  _ultra_oracle_verdict_ok "$out" || {
+    _hint="$(_ultra_oracle_diagnose_hint "$out.err")"; [[ -n "$_hint" ]] && echo "ultra-oracle: $_hint" >&2
+    echo "ultra-oracle: exit 0 but missing/degenerate verdict — oracle STDOUT at $out.err" >&2; printf 'error'; return 1
+  }   # exit 0 but missing/degenerate verdict = fail-closed
   rm -f "$out.err"   # success: drop the captured stdout
   printf 'ok'; return 0
 }

@@ -1,3 +1,10 @@
+## [1.91.5](https://github.com/chris-yyau/busdriver/compare/v1.91.4...v1.91.5) (2026-07-13)
+
+
+### Bug Fixes
+
+* **hooks:** correct strategic-compact window for bare opus-4 model id ([#343](https://github.com/chris-yyau/busdriver/issues/343)) ([fb348f8](https://github.com/chris-yyau/busdriver/commit/fb348f8161c82e77814204ec622361c1d92dee5e)), closes [#2290](https://github.com/chris-yyau/busdriver/issues/2290)
+
 ## [1.91.4](https://github.com/chris-yyau/busdriver/compare/v1.91.3...v1.91.4) (2026-07-13)
 
 

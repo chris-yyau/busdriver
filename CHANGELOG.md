@@ -1,3 +1,10 @@
+## [1.91.1](https://github.com/chris-yyau/busdriver/compare/v1.91.0...v1.91.1) (2026-07-13)
+
+
+### Bug Fixes
+
+* **security:** always run trivy on PRs + pin scanners ([#335](https://github.com/chris-yyau/busdriver/issues/335)) ([dc9d8fe](https://github.com/chris-yyau/busdriver/commit/dc9d8fe8f54d90e94f4da99215d979ac8a8564df))
+
 # [1.91.0](https://github.com/chris-yyau/busdriver/compare/v1.90.0...v1.91.0) (2026-07-11)
 
 

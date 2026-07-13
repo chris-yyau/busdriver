@@ -232,7 +232,7 @@ WORKTREE_DIR="" CLAUDE_PLUGIN_ROOT="" PR_NUMBER="" RESULT_STATUS="" RESULT_FIXES
     || { echo "FAIL t1: exit=$t1_exit result=$result"; exit 1; }
 
 test_a_litmus_before_commit() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json dispatcher_event_log
     local first_event second_event
     make_dispatcher_fixture
@@ -264,7 +264,7 @@ EOF
     }
 }
 test_b_litmus_fail_to_pass() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
     make_dispatcher_fixture
     trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
@@ -280,7 +280,7 @@ test_b_litmus_fail_to_pass() {
         '.bail_category == "judgment" and (.bail_reason | contains("review_findings"))'
 }
 test_c_marker_consumed() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json
     make_dispatcher_fixture
     trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
@@ -303,7 +303,7 @@ EOF
     }
 }
 test_d_commitlint_bails() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json allow_no_commitlint
     make_dispatcher_fixture
     trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
@@ -333,7 +333,7 @@ EOF
         '.bail_category == "judgment" and (.bail_reason | contains("commitlint pre-flight failed"))'
 }
 test_e_autofix_trailer_inplace() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json litmus_mode message
     make_dispatcher_fixture
     trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
@@ -349,7 +349,7 @@ test_e_autofix_trailer_inplace() {
     printf '%s\n' "$message" | grep -q 'Litmus-Auto-Fix: content-only-edits'
 }
 test_f_adversarial_result_fixes() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json before_count after_count message
     local result_fixes
     make_dispatcher_fixture
@@ -372,7 +372,7 @@ test_f_adversarial_result_fixes() {
     printf '%s\n' "$message" | grep -Fq '$(git commit -m pwned)'
 }
 test_g_inline_subagent_parity() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json first_json first_exit
     local no_worktree pre_dispatch_baseline
 
@@ -401,7 +401,7 @@ test_g_inline_subagent_parity() {
         assert_json "$dispatcher_json" '.status == "success"'
 }
 test_h_litmus_stall() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
     make_dispatcher_fixture
     trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
@@ -417,7 +417,7 @@ test_h_litmus_stall() {
         '.bail_category == "judgment" and (.bail_reason | contains("litmus exit 1 (stall)"))'
 }
 test_i_litmus_max_iter() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
     make_dispatcher_fixture
     trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
@@ -433,7 +433,7 @@ test_i_litmus_max_iter() {
         '.bail_category == "judgment" and (.bail_reason | contains("litmus exit 1 (max_iterations)"))'
 }
 test_j_litmus_infra_fail() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
     make_dispatcher_fixture
     trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
@@ -449,7 +449,7 @@ test_j_litmus_infra_fail() {
         '.bail_category == "judgment" and (.bail_reason | contains("litmus exit 1 (infra_failure)"))'
 }
 test_k_push_failure() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json before_sha after_sha
     make_dispatcher_fixture
     trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
@@ -471,7 +471,7 @@ test_k_push_failure() {
         '.bail_category == "judgment" and (.bail_reason | contains("git push failed"))'
 }
 test_l_fix_round_classifier() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json head_sha
     make_dispatcher_fixture
     trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
@@ -486,7 +486,7 @@ test_l_fix_round_classifier() {
         }
 }
 test_m_wait_round_classifier() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json
     make_dispatcher_fixture
     trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
@@ -506,7 +506,7 @@ test_m_wait_round_classifier() {
     fail_test "test_m wait-round no-staged path should return result_commit_sha=none with refreshed acks and all-none tiers; got exit=$dispatcher_exit json=$dispatcher_json"
 }
 test_n_clean_path_acks() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json before_sha after_sha
     local result_reviewer_acks
     make_dispatcher_fixture
@@ -530,7 +530,7 @@ test_n_clean_path_acks() {
 test_n2_clean_path_missing_acks_bails() {
     # Negative: clean + RESULT_REVIEWER_ACKS absent -> dispatcher must bail (judgment),
     # not silently synthesise all-"none" defaults and declare success.
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json
     make_dispatcher_fixture
     trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
@@ -558,7 +558,7 @@ test_o_clean_path_preserves_tiers() {
     # it must NOT erase the tiers to all-`none` (the bug that fail-closed-bailed
     # a legitimate clean cursor=<sha> tier=D ack). The wait-round path resets;
     # the clean pass-through does not.
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json before_sha after_sha
     local result_reviewer_acks result_ack_tiers
     make_dispatcher_fixture
@@ -605,7 +605,7 @@ test_p_pre_dispatch_baseline() {
 }
 
 test_q_routing_unrecognized() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json
     make_dispatcher_fixture
     trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
@@ -621,7 +621,7 @@ test_q_routing_unrecognized() {
     fail_test "test_q unrecognized RESULT_STATUS should bail before commit; got exit=$dispatcher_exit json=$dispatcher_json"
 }
 test_r_marker_validation() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
     local skipped_json skipped_exit
 
@@ -649,7 +649,7 @@ test_r_marker_validation() {
 # #278: excluded-only PASS-EXCLUDED-<epoch> marker is accepted (and the diff
 # committed) when the entire staged diff is review-excluded.
 test_r2_excluded_only_marker_accepted() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json litmus_mode after_sha
 
     make_dispatcher_fixture
@@ -673,7 +673,7 @@ test_r2_excluded_only_marker_accepted() {
 # #278 no-escape: a PASS-EXCLUDED marker must NOT certify a diff that contains
 # non-excluded content — the dispatcher re-verifies and bails.
 test_r3_excluded_marker_rejects_nonexcluded() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
 
     make_dispatcher_fixture
@@ -692,7 +692,7 @@ test_r3_excluded_marker_rejects_nonexcluded() {
 # DELETION of the (self-excluded) exclusion policy file. git ls-files would miss
 # it (index-only); the pathspec --cached diff catches the deletion.
 test_r5_excluded_marker_rejects_policy_deletion() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
 
     make_dispatcher_fixture
@@ -724,7 +724,7 @@ test_r5_excluded_marker_rejects_policy_deletion() {
 # through it. The dispatcher must reject the gitlink component outright, before the
 # (blind) committed-clean status check.
 test_r6_excluded_marker_rejects_gitlink_policy_component() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
 
     make_dispatcher_fixture
@@ -758,7 +758,7 @@ test_r6_excluded_marker_rejects_gitlink_policy_component() {
 # prefix; a normal dir has only descendant entries, so it never matches 160000.
 # (A first-row `ls-files` read would wrongly pick the submodule child's mode.)
 test_r7_gitlink_sibling_does_not_false_positive() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json litmus_mode after_sha
 
     make_dispatcher_fixture
@@ -786,7 +786,7 @@ test_r7_gitlink_sibling_does_not_false_positive() {
     [[ "$after_sha" != "$initial_sha" ]]
 }
 test_s_bail_envelope_roundtrip() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json litmus_mode bail_json empty_json
     make_dispatcher_fixture
     trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
@@ -806,7 +806,7 @@ test_s_bail_envelope_roundtrip() {
             '.bail_category == "judgment" and (.bail_reason | contains("review_findings"))'
 }
 test_t_terminal_status_preferred() {
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json litmus_mode
     make_dispatcher_fixture
     trap 'cd "$original_dir"; rm -rf "$sandbox" "$plugin_root" "$shimdir" "$remote"' RETURN
@@ -831,7 +831,7 @@ test_u_no_orphaned_commit_on_env_bail() {
     # left an orphaned local commit when this path bailed; a subsequent retry
     # with the bypass set would see no staged changes and take the wait-round
     # path, missing the orphaned commit entirely.
-    local sandbox plugin_root shimdir remote original_dir initial_sha
+    local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json allow_no_commitlint
     local post_bail_head
     make_dispatcher_fixture

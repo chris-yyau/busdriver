@@ -33,6 +33,34 @@ SKIP_FILE="$MARKER_DIR/skip-pr-grind.local"
 PENDING_MARKER="$MARKER_DIR/pr-pending-grind.local"
 BYPASS_PENDING="$MARKER_DIR/.merge-bypass-pending.local"
 
+# ── Hermetic gh stub ──────────────────────────────────────────────────
+# The pre-merge gate independently verifies CI via `gh pr checks <PR>`
+# (pre-merge-gate.sh). A real gh call needs network + auth, which CI runners
+# lack; the gate then fail-closes and the "allow with fresh marker" cases
+# wrongly block. Shim gh so `gh pr checks` reports every required check (read
+# from the lock in the gate's cwd, so it can't drift) as passing — making these
+# tests hermetic (no network/auth dependency). Only `gh pr checks` is exercised
+# by the gate; any other subcommand exits 0.
+GH_STUBDIR=$(mktemp -d)
+cat > "$GH_STUBDIR/gh" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "checks" ]; then
+  python3 - <<'PY' 2>/dev/null || printf 'shellcheck\tpass\t1s\thttps://x\n'
+import json
+try:
+    names = [c["name"] for c in json.load(open(".github/required-checks.lock")).get("required", [])]
+except Exception:
+    names = []
+for n in (names or ["shellcheck"]):
+    print(f"{n}\tpass\t1s\thttps://x")
+PY
+  exit 0
+fi
+exit 0
+STUB
+chmod +x "$GH_STUBDIR/gh"
+export PATH="$GH_STUBDIR:$PATH"
+
 # ── Helpers ───────────────────────────────────────────────────────────
 
 run_gate_test() {
@@ -89,6 +117,7 @@ PREV_CLEAN="" ; PREV_SKIP="" ; PREV_PENDING="" ; PREV_BYPASS=""
 [ -f "$BYPASS_PENDING" ]  && HAD_BYPASS=true   && PREV_BYPASS=$(cat "$BYPASS_PENDING")
 
 cleanup() {
+    rm -rf "$GH_STUBDIR" 2>/dev/null || true
     rm -f "$CLEAN_MARKER" "$SKIP_FILE" "$PENDING_MARKER" "$BYPASS_PENDING"
     [ "$HAD_CLEAN" = true ]   && printf '%s' "$PREV_CLEAN"   > "$CLEAN_MARKER"   || true
     [ "$HAD_SKIP" = true ]    && printf '%s' "$PREV_SKIP"    > "$SKIP_FILE"      || true

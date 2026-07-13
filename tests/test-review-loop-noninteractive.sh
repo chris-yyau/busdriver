@@ -36,10 +36,20 @@ else
     FAIL=$((FAIL + 1))
 fi
 
-# Test 2: Terminal stdin is correctly detected as interactive
+# Test 2: Terminal stdin is correctly detected as interactive.
+# `script` allocates a PTY, but its CLI differs by platform: BSD/macOS is
+# `script -q <file> <cmd> <args>`, while util-linux (Linux/CI) is
+# `script -q -c "<cmd>" <file>`. Using the BSD form on util-linux makes it read
+# `bash` as the typescript FILE, so no PTY is created and detection returns empty
+# (a CI-only FAIL). Detect the variant and use the matching syntax. The probe is
+# POSIX (`test -t 0`) so it runs under either script's default shell.
 TOTAL=$((TOTAL + 1))
-# Use script to create a pseudo-terminal
-RESULT=$(script -q /dev/null bash -c '[[ ! -t 0 ]] && echo "non-interactive" || echo "interactive"' </dev/null 2>/dev/null | tr -d '\r' | grep -o 'interactive\|non-interactive' | head -1)
+_pty_probe='test -t 0 && echo interactive || echo non-interactive'
+if script --version 2>/dev/null | grep -qi util-linux; then
+    RESULT=$(script -q -c "$_pty_probe" /dev/null </dev/null 2>/dev/null | tr -d '\r' | grep -o 'interactive\|non-interactive' | head -1)
+else
+    RESULT=$(script -q /dev/null sh -c "$_pty_probe" </dev/null 2>/dev/null | tr -d '\r' | grep -o 'interactive\|non-interactive' | head -1)
+fi
 if [[ "$RESULT" == "interactive" ]]; then
     printf "  PASS  terminal stdin detected as interactive\n"
     PASS=$((PASS + 1))

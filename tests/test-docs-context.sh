@@ -56,7 +56,7 @@ fi
 # Default-off contract: with the flag unset, the collector must be silent
 # (docs-context.sh returns early). Run in a subshell so the export above is undone.
 DEFAULT_OFF_OUTPUT=$(unset LITMUS_DOCS_CONTEXT; collect_docs_context "src/processor.sh" "$(git diff --cached)")
-if [ -z "$DEFAULT_OFF_OUTPUT" ]; then
+if [[ -z "$DEFAULT_OFF_OUTPUT" ]]; then
   ok "Collector is silent when LITMUS_DOCS_CONTEXT is unset (default off)"
 else
   fail "Collector emitted output with LITMUS_DOCS_CONTEXT unset (should be silent)"

@@ -32,18 +32,29 @@ coverage can only be dropped by a conscious edit to `SKIP_ALLOWED`, which
 extends "gate suites always PASS, never SKIP" to *every* non-allowlisted suite.
 The allowlist currently holds exactly one entry (the live-claude test below).
 
-## Headless-safety evidence (2026-07-13)
+## Runner-safety evidence (2026-07-13)
 
-Full-glob run, then re-run with the AI CLIs (`codex`/`agy`/`droid`/`grok`)
-stripped from `PATH` to simulate ubuntu-latest:
+The first CI run of the full glob failed 4 suites that had never run in CI before
+(the old job hand-picked ~15 known-safe tests). A local proxy that only stripped
+the AI CLIs from `PATH` was **not** faithful enough — it kept the system's bash
+(3.2) and an *authenticated* `gh`. The real ubuntu runner (bash 5.x, unauthenticated
+`gh`) exposed pre-existing, non-hermetic assumptions in those 4 tests, since fixed:
+
+| Test | CI-only failure | Fix |
+|------|-----------------|-----|
+| `test-dispatcher-commit-block` | `${var?}` guard misfires — `local x` (no value) is *unset* on bash ≥5, *set-empty* on 3.2 | declare fixture vars with `=""` |
+| `test-pre-merge-gate` | gate's real `gh pr checks` fails-closed without auth | hermetic `gh` stub (required checks pass, names from the lock) |
+| `test-pr-excluded-only-autopass` | stub-codex empty output → litmus retry backoff (30/60/120s) → 120s timeout | pin `LITMUS_CODEX_RETRIES=1`, low delay, no droid fallback |
+| `test-review-loop-noninteractive` | BSD `script` syntax; util-linux needs `-c` | detect the `script` variant |
+
+Re-verified under a faithful proxy — full glob under **bash 5.3 + unauthenticated
+`gh` + `CI=true`**:
 
 ```
-discovered=69  pass=68  skip=1  fail=0   (both runs identical)
+discovered=69  pass=68  skip=1  fail=0
 skipped: test-gateway-arbiter-claude-json-residual
 ```
 
-The suite is hermetic: identical result with the AI CLIs absent, so no suite
-depends on live `codex`/`agy`/`droid`/`grok`. The only self-skip is
-`test-gateway-arbiter-claude-json-residual`, gated behind
+The only self-skip is `test-gateway-arbiter-claude-json-residual`, gated behind
 `BLUEPRINT_ARBITER_LIVE_TEST=1` (a real-claude round-trip test) — correct to skip
 headless. It is **not** a gate suite, so the skip-masking guard permits it.

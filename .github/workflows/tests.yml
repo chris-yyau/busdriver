@@ -42,6 +42,10 @@ jobs:
         # filter sourced by the pre-merge gate + pr-grind (issue #154); lint it
         # as a required check (not via the soft scripts/hooks pass below).
         run: shellcheck --severity=warning scripts/relevant-check-status.sh
+      - name: Lint CI shell-test runner
+        # scripts/ci/run-shell-tests.sh is the full-glob gate-test runner the
+        # shell-tests job executes — lint it as a required check so it can't drift.
+        run: shellcheck --severity=warning scripts/ci/run-shell-tests.sh
       - name: Lint hook scripts (shell only)
         run: |
           find scripts/hooks -name '*.sh' -print0 | xargs -0 shellcheck --severity=warning || true
@@ -216,18 +220,20 @@ jobs:
           files: ./coverage/lcov.info,./coverage-skill-comply.xml,./coverage-clv2.xml,./coverage-agent-self-evaluation.xml
 
   shell-tests:
-    # Blueprint-review arbiter shell gate-tests (#265). Before this, the tests/*.sh
-    # gate-tests were never executed in CI — only vitest/pytest ran. This job runs the
-    # ultimate-arbiter / default-pin suite. It has NO `paths` filter, so on `pull_request`
-    # (which carries no paths-ignore) it runs for ANY change — including a pure SKILL.md
-    # edit, which the default-pin contract test reads. A doc-only push to main is skipped
-    # by the workflow-level push `paths-ignore`, but such changes land via PR, where this
-    # runs. (GitHub Actions path filters are event-level, not job-level, and paths +
-    # paths-ignore cannot coexist on one event — hence relying on the unfiltered
+    # Full tests/test-*.sh gate/security suite (#265, then broadened to full-glob in
+    # the pipeline-audit-fixes plan). Before this job the shell gate-tests were never
+    # executed in CI — only vitest/pytest ran; then a hand-picked ~15-test list ran,
+    # leaving most gate suites uncovered. scripts/ci/run-shell-tests.sh now runs EVERY
+    # discovered suite (local and CI identical), so a gate regression can't slip past
+    # by never being wired in. It has NO `paths` filter, so on `pull_request` (which
+    # carries no paths-ignore) it runs for ANY change. A doc-only push to main is
+    # skipped by the workflow-level push `paths-ignore`, but such changes land via PR,
+    # where this runs. (GitHub Actions path filters are event-level, not job-level, and
+    # paths + paths-ignore cannot coexist on one event — hence relying on the unfiltered
     # pull_request trigger rather than a job-scoped `paths:` list.)
     needs: shellcheck
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 12
     permissions:
       contents: read
     steps:
@@ -238,25 +244,11 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
-      - name: Blueprint-review arbiter gate-tests
-        # jq + python3 are preinstalled on ubuntu-latest (the config helper needs one of
-        # them; the dispatch test needs jq). The default bash shell runs with `-eo
-        # pipefail`, so the first failing test fails the job. Scoped to the CI-safe
-        # ultimate-arbiter / default-pin suite; broaden to the full tests/*.sh set once each
-        # is confirmed runner-safe.
-        run: |
-          bash tests/test-blueprint-arbiter-default-pin.sh
-          bash tests/test-ultimate-config.sh
-          bash tests/test-ultimate-tier.sh
-          bash tests/test-gateway-arbiter-dispatch.sh
-          bash tests/test-blueprint-review-oracle-arbiter-contract.sh
-          bash tests/test-vault-references.sh
-          bash tests/test-upstream-manifest.sh
-          bash tests/test-provenance-guard.sh
-          bash tests/test-advisory-stale-downgrade.sh
-          bash tests/test-advisory-downgrade-revalidate.sh
-          bash tests/test-github-server-now.sh
-          bash tests/test-codex-nudge-if-expected.sh
-          bash tests/test-codex-active-repo.sh
-          bash tests/test-codex-retrigger-gc.sh
-          bash tests/test-pr-grind-codex-wiring.sh
+      - name: Full shell gate-test suite
+        # jq + python3 + git are preinstalled on ubuntu-latest. The runner distinguishes
+        # PASS/SKIP/FAIL, enforces that the gate suites never SKIP (skip-masking guard),
+        # and fails the job on any non-zero test or timeout. The suite is hermetic — it
+        # does not depend on codex/agy/droid/grok being installed (see
+        # docs/ci/shell-test-inventory.md). Per-test timeout is portable via
+        # scripts/lib/resolve-cli.sh's _portable_timeout.
+        run: bash scripts/ci/run-shell-tests.sh

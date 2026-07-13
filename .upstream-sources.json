@@ -1769,7 +1769,7 @@
     {
       "path": "scripts/lib/transcript-context.js",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/lib/transcript-context.js"
     },
     {

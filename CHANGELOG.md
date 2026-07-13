@@ -1,3 +1,10 @@
+## [1.91.4](https://github.com/chris-yyau/busdriver/compare/v1.91.3...v1.91.4) (2026-07-13)
+
+
+### Bug Fixes
+
+* **ultra-oracle:** pass --force to bypass oracle's stale duplicate-prompt guard ([#333](https://github.com/chris-yyau/busdriver/issues/333)) ([#342](https://github.com/chris-yyau/busdriver/issues/342)) ([88a80f6](https://github.com/chris-yyau/busdriver/commit/88a80f6d297d79c57a65de2a53380f8e78e62adf))
+
 ## [1.91.3](https://github.com/chris-yyau/busdriver/compare/v1.91.2...v1.91.3) (2026-07-13)
 
 

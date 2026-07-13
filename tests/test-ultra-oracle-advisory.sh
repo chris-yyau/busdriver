@@ -15,6 +15,7 @@ while [ $# -gt 0 ]; do case "$1" in --write-output) out="$2"; shift 2;; *) shift
 case "${ULTRA_ORACLE_MOCK_MODE:-ok}" in
   ok)   [ -n "$out" ] && printf 'ADVISORY: plan looks sound\n' > "$out"; exit 0;;
   fail) exit 9;;
+  abe)  echo "ERROR: ChatGPT session not detected. Login button detected on page."; exit 9;;
 esac
 EOF
 chmod +x "$tmp/bin/oracle"; export PATH="$tmp/bin:$PATH"
@@ -46,6 +47,18 @@ st="$(ultra_oracle_consult --mode background --prompt "review the plan" --slug "
 wait_rc "$tmp/b.md" || { echo "FAIL .rc never written on fail path (b)"; FAIL=1; }
 _rc_b="$(cat "$tmp/b.md.rc" 2>/dev/null)"
 { [ -n "$_rc_b" ] && [ "$_rc_b" != "0" ]; } || { echo "FAIL .rc should exist and be non-zero on fail (got '$_rc_b')"; FAIL=1; }
+
+# (b2) background failure with a KNOWN signature -> adapter writes "$out.hint" with the
+# actionable operator step (#340). This is the exact channel the blueprint-review loop
+# consumes to render its "ULTRA-ORACLE ADVISORY FAILED [...]" banner, since it calls the
+# adapter directly (not via ultra-oracle-run.sh).
+export ULTRA_ORACLE_MOCK_MODE=abe
+st="$(ultra_oracle_consult --mode background --prompt "review the plan" --slug "ultra oracle plan review" --out "$tmp/b2.md")"
+[ "$st" = "dispatched" ] || { echo "FAIL background(abe) status got '$st'"; FAIL=1; }
+wait_rc "$tmp/b2.md" || { echo "FAIL .rc never written on abe path (b2)"; FAIL=1; }
+[ "$(cat "$tmp/b2.md.rc" 2>/dev/null)" != "0" ] || { echo "FAIL abe path should be non-zero rc"; FAIL=1; }
+[ -f "$tmp/b2.md.hint" ] || { echo "FAIL .hint not written on known-signature failure"; FAIL=1; }
+grep -qi "serve --manual-login" "$tmp/b2.md.hint" 2>/dev/null || { echo "FAIL .hint missing operator action"; FAIL=1; }
 
 # (c) operator skip -> 'skipped:user', no dispatch, no .rc
 export ULTRA_ORACLE_MOCK_MODE=ok

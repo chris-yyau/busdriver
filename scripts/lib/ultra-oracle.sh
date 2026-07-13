@@ -186,7 +186,12 @@ ultra_oracle_consult() {
       echo "ultra-oracle: remoteHost set but remoteToken empty — failing closed (a token from oracle's own config/env must NOT silently authenticate a busdriver transmission). Set ultraOracle.remoteToken in ~/.claude/busdriver.json" >&2
       printf 'error'; return 1
     fi
-    set -- "$@" --remote-host "$remote_host" --remote-token "$remote_token"
+    # Deliver the token to oracle via the ORACLE_REMOTE_TOKEN ENV VAR at the invocation
+    # sites below (oracle's documented env fallback for the token slot), NOT on argv: a
+    # --remote-token flag would sit in the process argument list — world-readable via
+    # `ps` — for the whole multi-minute consult, leaking the secret. Env is owner-only.
+    # Only the non-secret host goes on argv.
+    set -- "$@" --remote-host "$remote_host"
   elif [[ -n "$cookie_path" ]]; then
     if [[ -r "$cookie_path" ]]; then
       set -- "$@" --browser-cookie-path "$cookie_path"
@@ -225,7 +230,7 @@ ultra_oracle_consult() {
       # Capture oracle STDOUT+STDERR to "$out.err" (B8): oracle emits its failure
       # diagnostics on STDOUT, so the old >/dev/null 2>&1 discarded them and every
       # failure looked silent. Keep the file on failure for diagnosis; remove on success.
-      _portable_timeout "${cap}" oracle "$@" >"$out.err" 2>&1; _uora_bg_rc=$?
+      ORACLE_REMOTE_TOKEN="$remote_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" 2>&1; _uora_bg_rc=$?
       # Map exit-0-but-empty-verdict to failure so the .rc matches blocking mode's
       # fail-closed contract (timeout already surfaces as rc 124).
       [[ "$_uora_bg_rc" = 0 ]] && ! _ultra_oracle_verdict_ok "$out" && _uora_bg_rc=1
@@ -251,7 +256,7 @@ ultra_oracle_consult() {
   # the caller (this lib may be sourced under `set -e`) before the status token is
   # printed — the fail-closed 'error'/'timeout' tokens below depend on reaching them.
   local rc=0 _hint=""
-  _portable_timeout "${cap}" oracle "$@" >"$out.err" || rc=$?
+  ORACLE_REMOTE_TOKEN="$remote_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" || rc=$?
   if [[ "$rc" = 124 ]]; then
     # A login/Cloudflare wall that never clears also manifests AS a timeout — the
     # partial page oracle wrote to $out.err before the cap fired can still carry the

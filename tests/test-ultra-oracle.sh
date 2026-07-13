@@ -41,6 +41,8 @@ st="$(ultra_oracle_consult --prompt hi --out "$tmp/vd.md" --mode blocking)"
 cat > "$tmp/bin/oracle" <<'STUB'
 #!/bin/bash
 [ -n "${ULTRA_ORACLE_ARGV_OUT:-}" ] && for a in "$@"; do printf '%s\n' "$a"; done > "$ULTRA_ORACLE_ARGV_OUT"
+# Record the received ORACLE_REMOTE_TOKEN env (secret delivery channel) for assertions.
+[ -n "${ULTRA_ORACLE_ENV_OUT:-}" ] && printf '%s' "${ORACLE_REMOTE_TOKEN-}" > "$ULTRA_ORACLE_ENV_OUT"
 out=""
 while [ $# -gt 0 ]; do case "$1" in --write-output) out="$2"; shift 2;; *) shift;; esac; done
 case "${ULTRA_ORACLE_MOCK_MODE:-ok}" in
@@ -151,18 +153,21 @@ st="$(ultra_oracle_consult --prompt hi --out "$tmp/c4.md" --mode blocking)"
 [ -s "$tmp/argv.log" ] && { echo "FAIL unreadable cookiePath must not invoke oracle"; FAIL=1; }
 rm -f "$tmp/.claude/busdriver.json"
 
-# --- serve delegation argv wiring (remoteHost/remoteToken, #340) ---
-# remoteHost set -> argv carries --remote-host <hv> --remote-token <tv>. serve owns its
-# own signed-in session, so NO --browser-cookie-path even when cookiePath is ALSO set
-# (mutually exclusive; remoteHost is the App-Bound-Encryption path and wins).
+# --- serve delegation wiring (remoteHost/remoteToken, #340) ---
+# remoteHost set -> argv carries --remote-host <hv>; the SECRET token is delivered via
+# the ORACLE_REMOTE_TOKEN env (NOT argv — a --remote-token flag would be world-readable
+# in `ps` for the whole consult). serve owns its own signed-in session, so NO
+# --browser-cookie-path even when cookiePath is ALSO set (mutually exclusive; wins).
+export ULTRA_ORACLE_ENV_OUT="$tmp/env.log"
 printf '{ "ultraOracle": { "remoteHost": "127.0.0.1:8765", "remoteToken": "tok-xyz", "cookiePath": "%s" } }\n' "$ck" > "$tmp/.claude/busdriver.json"
-: > "$tmp/argv.log"
+: > "$tmp/argv.log"; : > "$tmp/env.log"
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/rh.md" --mode blocking)"
 [ "$st" = "ok" ] || { echo "FAIL rh status got '$st'"; FAIL=1; }
 grep -qx -- "--remote-host" "$tmp/argv.log" || { echo "FAIL remote-host flag missing"; FAIL=1; }
 grep -qxF -- "127.0.0.1:8765" "$tmp/argv.log" || { echo "FAIL remote-host value missing"; FAIL=1; }
-grep -qx -- "--remote-token" "$tmp/argv.log" || { echo "FAIL remote-token flag missing"; FAIL=1; }
-grep -qxF -- "tok-xyz" "$tmp/argv.log" || { echo "FAIL remote-token value missing"; FAIL=1; }
+grep -qx -- "--remote-token" "$tmp/argv.log" && { echo "FAIL token must NOT be on argv (ps-visible)"; FAIL=1; }
+grep -qxF -- "tok-xyz" "$tmp/argv.log" && { echo "FAIL token value leaked to argv"; FAIL=1; }
+[ "$(cat "$tmp/env.log")" = "tok-xyz" ] || { echo "FAIL token not delivered via ORACLE_REMOTE_TOKEN env"; FAIL=1; }
 grep -qx -- "--browser-cookie-path" "$tmp/argv.log" && { echo "FAIL cookie-path must yield to remoteHost"; FAIL=1; }
 
 # remoteHost set, remoteToken EMPTY -> FAIL CLOSED ('error'), oracle NOT invoked. Oracle
@@ -176,20 +181,20 @@ st="$(ultra_oracle_consult --prompt hi --out "$tmp/rh2.md" --mode blocking 2> "$
 [ -s "$tmp/argv.log" ] && { echo "FAIL empty remoteToken must not invoke oracle"; FAIL=1; }
 grep -qi "remoteToken empty" "$tmp/rh2.err" || { echo "FAIL empty remoteToken message missing"; FAIL=1; }
 
-# token containment (secret hygiene): a token with spaces + shell metacharacters must
-# reach oracle as exactly ONE argv element (never word-split) and must NEVER appear in
-# stderr (no-secrets-in-logs). Guards the quoting on --remote-token and the warning path.
+# token containment (secret hygiene): a token with spaces + shell metacharacters must be
+# delivered VERBATIM via the ORACLE_REMOTE_TOKEN env, and must NEVER appear on argv
+# (ps-visible) or in stderr (no-secrets-in-logs).
 # shellcheck disable=SC2016  # $(id)/backticks are DELIBERATELY literal — an injection probe, not expansion
 tok='a b;$(id)`x` &|>'
 printf '{ "ultraOracle": { "remoteHost": "127.0.0.1:8765", "remoteToken": "%s" } }\n' "$tok" > "$tmp/.claude/busdriver.json"
-: > "$tmp/argv.log"
+: > "$tmp/argv.log"; : > "$tmp/env.log"
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/rh3.md" --mode blocking 2> "$tmp/rh3.err")"
 [ "$st" = "ok" ] || { echo "FAIL rh3 status got '$st'"; FAIL=1; }
-n_tok="$(grep -cxF -- "$tok" "$tmp/argv.log")"
-[ "$n_tok" = "1" ] || { echo "FAIL token not a single argv element (n=$n_tok)"; FAIL=1; }
+[ "$(cat "$tmp/env.log")" = "$tok" ] || { echo "FAIL token not delivered verbatim via env"; FAIL=1; }
+grep -qF -- "$tok" "$tmp/argv.log" && { echo "FAIL token value leaked to argv"; FAIL=1; }
 grep -qF -- "$tok" "$tmp/rh3.err" && { echo "FAIL token value leaked to stderr"; FAIL=1; }
 rm -f "$tmp/.claude/busdriver.json"
-unset ULTRA_ORACLE_MOCK_MODE ULTRA_ORACLE_ARGV_OUT
+unset ULTRA_ORACLE_MOCK_MODE ULTRA_ORACLE_ARGV_OUT ULTRA_ORACLE_ENV_OUT
 
 # --- scripts/ultra-oracle-run.sh wrapper (shell-agnostic entry) ---
 # The wrapper exists so the council/etc. SKILL blocks can invoke the bash-only

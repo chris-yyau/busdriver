@@ -359,8 +359,12 @@ case "$PARSE_STATUS" in
             exit 0
         fi
 
-        _CURRENT_SKIP_MTIME=$(stat -f %m "$SKIP_FILE" 2>/dev/null \
-            || stat -c %Y "$SKIP_FILE" 2>/dev/null \
+        # GNU-first: on Linux `stat -f` is --file-system and prints block info
+        # to stdout (corrupting the value); `stat -c` is GNU's format flag. BSD
+        # lacks -c and falls through to -f. (BSD-first here would return
+        # "<fs-info>\n<mtime>" on Linux and read as an mtime tamper.)
+        _CURRENT_SKIP_MTIME=$(stat -c %Y "$SKIP_FILE" 2>/dev/null \
+            || stat -f %m "$SKIP_FILE" 2>/dev/null \
             || echo "")
         if [ -z "$_CURRENT_SKIP_MTIME" ] \
             || [ "$_CURRENT_SKIP_MTIME" != "$CLAIMED_SKIP_MTIME" ]; then

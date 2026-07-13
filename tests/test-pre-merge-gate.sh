@@ -283,7 +283,7 @@ touch "$SKIP_FILE"
 touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
     || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
 printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
-    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     > "$BYPASS_PENDING"
 SUCCESS_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 42 --squash --delete-branch"},"tool_output":{"output":"✓ Squashed and merged pull request #42","exit_code":0}}'
@@ -305,7 +305,7 @@ touch "$SKIP_FILE"
 touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
     || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
 printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
-    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     > "$BYPASS_PENDING"
 FAIL_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 42 --squash --delete-branch"},"tool_output":{"output":"X Pull request is not mergeable: the head branch is not up to date with the base branch.","exit_code":1}}'
@@ -360,7 +360,7 @@ touch "$SKIP_FILE"
 touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
     || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
 printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
-    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     > "$BYPASS_PENDING"
 AMBIG_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 42 --squash"},"tool_output":{"output":"some unfamiliar output that matches neither pattern"}}'
@@ -383,7 +383,7 @@ rm -f "$SKIP_FILE" "$BYPASS_PENDING"
 touch "$SKIP_FILE"
 touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
     || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
-ORIGINAL_MTIME=$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)
+ORIGINAL_MTIME=$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)
 printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
     "$ORIGINAL_MTIME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     > "$BYPASS_PENDING"
@@ -426,7 +426,7 @@ rm -f "$SKIP_FILE" "$BYPASS_PENDING"
 #     against a Claude self-touch between claim and confirm.
 touch "$SKIP_FILE"  # fresh mtime → age = 0s
 printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
-    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     > "$BYPASS_PENDING"
 printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
@@ -448,7 +448,7 @@ touch "$SKIP_FILE"
 touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
     || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
 printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
-    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     > "$BYPASS_PENDING"
 MISMATCH_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 99 --squash"},"tool_output":{"output":"✓ Squashed and merged pull request #99","exit_code":0}}'
@@ -472,7 +472,7 @@ touch "$SKIP_FILE"
 touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
     || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
 printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
-    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     > "$BYPASS_PENDING"
 AUTO_INPUT='{"tool_name":"Bash","tool_input":{"command":"gh pr merge 42 --squash --auto"},"tool_output":{"output":"✓ Pull request #42 will be automatically merged via squash when all requirements are met","exit_code":0}}'
@@ -517,7 +517,7 @@ touch "$SKIP_FILE"
 touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
     || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
 printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
-    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     > "$BYPASS_PENDING"
 # Make pending file >5min old (10 min)
@@ -546,7 +546,7 @@ touch "$SKIP_FILE"
 touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
     || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
 printf 'skip_mtime=%s\nmerge_pr=unknown\nclaimed_at=%s\n' \
-    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     > "$BYPASS_PENDING"
 printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
@@ -570,7 +570,7 @@ touch "$SKIP_FILE"
 touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
     || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
 printf 'skip_mtime=%s\nmerge_pr=42","event":"INJECTED-VIA-PR\nclaimed_at=%s\n' \
-    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$BYPASS_PENDING"
 LOG_LINES_BEFORE_B15A=$(wc -l < .claude/bypass-log.jsonl 2>/dev/null || echo 0)
 printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
@@ -605,7 +605,7 @@ touch "$SKIP_FILE"
 touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
     || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
 printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=2026-05-20T02:00:00Z","event":"INJECTED\n' \
-    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)" \
     > "$BYPASS_PENDING"
 LOG_LINES_BEFORE_B15=$(wc -l < .claude/bypass-log.jsonl 2>/dev/null || echo 0)
 printf '%s' "$SUCCESS_INPUT" | bash "$POST_HOOK_SCRIPT" 2>/dev/null || true
@@ -644,7 +644,7 @@ touch "$SKIP_FILE"
 touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null \
     || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
 printf 'skip_mtime=%s\nmerge_pr=42\nclaimed_at=%s\n' \
-    "$(stat -f %m "$SKIP_FILE" 2>/dev/null || stat -c %Y "$SKIP_FILE" 2>/dev/null)" \
+    "$(stat -c %Y "$SKIP_FILE" 2>/dev/null || stat -f %m "$SKIP_FILE" 2>/dev/null)" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     > "$BYPASS_PENDING"
 touch -t "$(date -v-10M '+%Y%m%d%H%M.%S')" "$BYPASS_PENDING" 2>/dev/null \
@@ -733,7 +733,15 @@ echo "── required-checks allowlist ─────────────�
 export BUSDRIVER_DISABLE_RELEVANT_CHECK_SELF_RESOLVE=1  # test the working copy deterministically
 HELPER="$(cd "$(dirname "$GATE_SCRIPT")" && pwd -P)/../../scripts/relevant-check-status.sh"
 TOTAL=$((TOTAL + 1))
-if [ -f "$HELPER" ] && grep -vE '^\s*#' "$GATE_SCRIPT" | grep -q 'relevant-check-status\.sh' && ! grep -q 'import sys, os, json, re' "$GATE_SCRIPT"; then
+# Read non-comment lines into a var first, then match via a here-string. Piping
+# `grep -vE … | grep -q …` is fragile under `set -o pipefail`: `grep -q`
+# short-circuits on the first match and SIGPIPEs the upstream grep (exit 141),
+# which pipefail surfaces as a whole-pipeline failure (seen only on GNU grep,
+# where the short-circuit wins the race). A here-string has no upstream to break.
+GATE_BODY=$(grep -vE '^\s*#' "$GATE_SCRIPT" || true)
+if [ -f "$HELPER" ] \
+    && grep -q 'relevant-check-status\.sh' <<< "$GATE_BODY" \
+    && ! grep -q 'import sys, os, json, re' "$GATE_SCRIPT"; then
     printf "  PASS  gate wired to relevant-check-status.sh (inline python removed)\n"
     PASS=$((PASS + 1))
 else

@@ -71,6 +71,17 @@
         "description": "[GATE] Block gh pr merge until pr-grind declares PR clean"
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" PR_GRIND_CODEX_RETRIGGER=\"${PR_GRIND_CODEX_RETRIGGER:-}\" BUSDRIVER_STATE_DIR=\"${BUSDRIVER_STATE_DIR:-}\" GH_REPO=\"${GH_REPO:-}\" GH_HOST=\"${GH_HOST:-}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" codex-nudge-premerge.sh",
+            "timeout": 20
+          }
+        ],
+        "description": "[NUDGE] Non-gating: fire @codex review on gh pr merge when Codex is none + repo active"
+      },
+      {
         "matcher": "Write|Edit|MultiEdit|Bash",
         "hooks": [
           {

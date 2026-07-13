@@ -323,7 +323,8 @@ def _scan_commit(chunk, allow_cd):
         # mistaken for the subcommand (git --git-dir /d --work-tree /r commit).
         skip = False
         sub = None
-        for a in argv[1:]:
+        sub_idx = len(argv)
+        for i, a in enumerate(argv[1:], start=1):
             if skip:
                 skip = False
                 continue
@@ -334,17 +335,21 @@ def _scan_commit(chunk, allow_cd):
             if a.startswith('-'):
                 continue
             sub = a
+            sub_idx = i
             break
         if sub != 'commit':
             pending_cd = None
             continue
         base = _trusted_cd(pending_cd, op) if allow_cd else ''
         if allow_cd:
-            # git applies every -C in order; a relative value resolves from the
-            # directory established so far (cd base, then each preceding -C).
+            # git applies every GLOBAL -C in order; a relative value resolves from
+            # the directory established so far (cd base, then each preceding -C).
+            # Only pre-subcommand -C changes directory; `git commit -C <ref>` (after
+            # the subcommand) is the reuse-message flag, not a cd — so bound the
+            # walk to sub_idx or it mis-scopes the marker check to the wrong repo.
             k = 0
-            while k < len(argv):
-                if argv[k] == '-C' and k + 1 < len(argv):
+            while k < sub_idx:
+                if argv[k] == '-C' and k + 1 < sub_idx:
                     v = os.path.expanduser(argv[k + 1])
                     if os.path.isabs(v):
                         base = v
@@ -418,9 +423,21 @@ def _scan_gh(chunk, subcommand, allow_cd):
             continue
         target_dir = _trusted_cd(pending_cd, op) if allow_cd else ''
         pr_num = ''
+        # The PR number is the first bare integer that is NOT a flag's value.
+        # Skip flags; for gh-pr-merge value-taking flags also skip their separate
+        # value, so `gh pr merge --subject 123 5` resolves 5 (not the subject),
+        # while `gh pr merge --squash 5` (boolean flag) still resolves 5.
+        value_flags = {'-b', '--body', '-F', '--body-file', '-t', '--subject',
+                       '-R', '--repo', '--match-head-commit', '--author-email'}
+        skip_val = False
         for x in rest[j + 2:]:
+            if skip_val:
+                skip_val = False
+                continue
             if x.startswith('-'):
-                break
+                if '=' not in x and x in value_flags:
+                    skip_val = True
+                continue
             if re.match(r'^\d+$', x):
                 pr_num = x
                 break

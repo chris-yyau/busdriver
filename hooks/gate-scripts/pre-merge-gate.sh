@@ -88,8 +88,13 @@ esac
 # Parse tool name and command, verify gh pr merge, extract PR number AND target dir.
 # target_dir mirrors pre-pr-gate.sh: parse `cd <dir> && gh pr merge` so the gate
 # reads marker files from the user's intended repo, not Claude's CWD.
-MERGE_PARSE=$(printf '%s' "$HOOK_DATA" | python3 -c "
-import sys, json, re, os
+MERGE_PARSE=$(printf '%s' "$HOOK_DATA" | python3 -S -c "
+import sys
+# Drop CWD from sys.path (python3 -c prepends it) + -S skips site so a repo-
+# planted sitecustomize.py or shadowed stdlib (json.py) cannot run in the gate.
+# Scrub BEFORE importing json/re/os, or the shadowed module runs at import time.
+sys.path[:] = [p for p in sys.path if p not in ('', '.')]
+import json, re, os
 try:
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))

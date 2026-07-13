@@ -140,12 +140,16 @@ check("cd NOT trusted (semicolon)", g.git_commit('cd /tmp/r; git commit')[1], ''
 check("git -C target_dir", g.git_commit('git -C /tmp/r commit')[1], '/tmp/r')
 check("cd + relative -C", g.git_commit('cd /repoA && git -C nested commit')[1], '/repoA/nested')
 check("sequential -C", g.git_commit('git -C /repoA -C nested commit')[1], '/repoA/nested')
+check("commit -C is reuse-msg not cd", g.git_commit('git commit -C HEAD')[1], '')
+check("cd + commit -C reuse (not HEAD)", g.git_commit('cd /repoA && git commit -C HEAD')[1], '/repoA')
 check("merge pr_num past global flag", g.gh_pr('gh --repo o/r pr merge 7', 'merge')[2], '7')
 check("is_amend true", g.git_commit('git commit --amend --no-edit')[2], True)
 check("is_amend flag-order", g.git_commit("git commit -m 'x' --amend")[2], True)
 check("is_amend pathspec-scoped", g.git_commit('git commit --allow-empty -- --amend')[2], False)
 check("merge pr_num", g.gh_pr('command gh pr merge 5 --squash', 'merge')[2], '5')
-check("merge pr_num flag-first", g.gh_pr('gh pr merge --squash 5', 'merge')[2], '')
+check("merge pr_num flag-first", g.gh_pr('gh pr merge --squash 5', 'merge')[2], '5')
+check("merge pr_num after -R flag", g.gh_pr('gh pr merge -R owner/repo 5', 'merge')[2], '5')
+check("merge pr_num skips value-flag arg", g.gh_pr('gh pr merge --subject 123 5', 'merge')[2], '5')
 
 # ── Property-based: {leading operators} × {wrappers} × git-commit should ALL
 #    detect; the same form as an ARGUMENT to a non-git command must NOT. ──────

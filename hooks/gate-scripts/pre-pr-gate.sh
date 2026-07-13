@@ -52,15 +52,21 @@ HOOK_DATA=$(cat 2>/dev/null || true)
 
 # Fast pre-filter: skip if hook data doesn't look like it could contain gh pr create
 case "$HOOK_DATA" in
-    *\"Bash\"*gh\ pr\ create*) ;;
-    *gh\ pr\ create*\"Bash\"*) ;;
+    *\"Bash\"*gh*pr*create*) ;;
+    *gh*pr*create*\"Bash\"*) ;;
     *) exit 0 ;;
 esac
 
 # Parse tool name and command, verify gh pr create, and extract target directory
-PARSE_RESULT=$(printf '%s' "$HOOK_DATA" | python3 -c "
-import sys, json, re, os
+_GATE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+PARSE_RESULT=$(printf '%s' "$HOOK_DATA" | PYTHONPATH="$_GATE_LIB" python3 -S -c "
+import sys
+# Drop CWD from sys.path (python3 -c prepends it ahead of PYTHONPATH) so a repo-
+# controlled gitcmd_detect.py or shadowed stdlib (json.py) cannot run in the gate.
+sys.path[:] = [p for p in sys.path if p not in ('', '.')]
 try:
+    import json
+    from gitcmd_detect import gh_pr
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
@@ -70,25 +76,11 @@ try:
     if isinstance(inp, str):
         inp = json.loads(inp)
     cmd = inp.get('command', '')
-    segments = re.split(r'&&|\|\||[;\n|]', cmd)
-    target_dir = ''
-    for seg in segments:
-        seg = seg.strip()
-        cd_m = re.match(r'cd\s+(.*)', seg)
-        if cd_m:
-            # Strip outer quotes, then expand ~ (shell would expand it before
-            # cd runs; the gate sees the literal command string, so we have
-            # to mimic that expansion or git -C will fail on '~/repo' literal).
-            raw = cd_m.group(1).strip().strip('\042\047')
-            target_dir = os.path.expanduser(raw)
-            continue
-        while re.match(r'^\w+=\S*\s', seg):
-            seg = re.sub(r'^\w+=\S*\s+', '', seg, count=1)
-        if re.match(r'gh\s+pr\s+create\b', seg):
-            print('yes')
-            print(target_dir)
-            print(cwd)
-            break
+    is_create, target_dir, _pr = gh_pr(cmd, 'create')
+    if is_create:
+        print('yes')
+        print(target_dir)
+        print(cwd)
 except Exception:
     # Fail-CLOSED: fast pre-filter matched gh pr create but parser failed.
     print('error')

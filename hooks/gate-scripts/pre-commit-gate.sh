@@ -72,9 +72,15 @@ esac
 # from `cd <dir> &&` prefix or `git -C <dir>` flag.
 # Fix: marker written by litmus in target repo was invisible to gate
 # when committing to repos outside the session CWD (worktrees, temp clones).
-PARSE_RESULT=$(printf '%s' "$HOOK_DATA" | python3 -c "
-import sys, json, re, os
+_GATE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+PARSE_RESULT=$(printf '%s' "$HOOK_DATA" | PYTHONPATH="$_GATE_LIB" python3 -S -c "
+import sys
+# Drop CWD from sys.path (python3 -c prepends it ahead of PYTHONPATH) so a repo-
+# controlled gitcmd_detect.py or shadowed stdlib (json.py) cannot run in the gate.
+sys.path[:] = [p for p in sys.path if p not in ('', '.')]
 try:
+    import json
+    from gitcmd_detect import git_commit
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
@@ -84,58 +90,12 @@ try:
     if isinstance(inp, str):
         inp = json.loads(inp)
     cmd = inp.get('command', '')
-    segments = re.split(r'&&|\|\||[;\n|]', cmd)
-    target_dir = ''
-    for seg in segments:
-        seg = seg.strip()
-        # Track cd commands to determine target repo directory
-        cd_m = re.match(r'cd\s+(.*)', seg)
-        if cd_m:
-            target_dir = os.path.expanduser(cd_m.group(1).strip().strip('\042\047'))
-            continue
-        # Strip leading env var assignments (e.g. SKIP=1 git commit)
-        while re.match(r'^\w+=\S*\s', seg):
-            seg = re.sub(r'^\w+=\S*\s+', '', seg, count=1)
-        if re.match(r'git\b', seg):
-            # Find subcommand by skipping flags (-C val, --no-pager, etc.)
-            words = seg.split()
-            skip_next = False
-            found = False
-            for w in words[1:]:
-                if skip_next:
-                    skip_next = False
-                    continue
-                if w in ('-C', '-c'):
-                    skip_next = True
-                    continue
-                if w.startswith('-'):
-                    continue
-                found = (w == 'commit')
-                break
-            if found:
-                c_m = re.search(r'-C\s+(\S+)', seg)
-                if c_m:
-                    target_dir = os.path.expanduser(c_m.group(1).strip('\042\047'))
-                # Detect --amend in the option portion of the segment only
-                # (tokens before the first -- pathspec separator). Scanning
-                # the full word list would match --amend appearing as a
-                # pathspec argument (e.g. git commit --allow-empty -- --amend
-                # treats --amend as a filename), producing a false positive
-                # that triggers the bash-side amend bypass unintentionally.
-                #
-                # Note: the comments above intentionally use NO backticks
-                # because bash interprets backticks inside double-quoted
-                # python3 -c arguments as command substitution. A literal
-                # backtick-git-commit inside a comment would cause bash
-                # to actually invoke that command and substitute its
-                # output, corrupting the python source.
-                option_words = words[:words.index('--')] if '--' in words else words
-                is_amend = '--amend' in option_words
-                print('yes')
-                print(target_dir)
-                print('1' if is_amend else '0')
-                print(cwd)
-                break
+    is_commit, target_dir, is_amend = git_commit(cmd)
+    if is_commit:
+        print('yes')
+        print(target_dir)
+        print('1' if is_amend else '0')
+        print(cwd)
 except Exception:
     # Fail-CLOSED: fast pre-filter matched git commit pattern but parser
     # failed. Print sentinel so bash can block rather than silently approve.

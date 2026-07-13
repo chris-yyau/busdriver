@@ -220,8 +220,127 @@ run_cwd_test 'blocks plain commit anchored on cwd, no marker' \
 
 # Guard against over-blocking: the recognized toplevel idiom resolves, so the
 # --amend empty-staged bypass (no marker needed) is reached → allow.
+# shellcheck disable=SC2016  # the $(...) is an intentional literal fed to the gate
 run_cwd_test 'allows --amend empty-staged via toplevel idiom (no over-block)' \
     "allow" 'cd "$(git rev-parse --show-toplevel)" && git commit --amend --no-edit' "0"
+
+# ── Matcher hardening: wrapper/prefix bypass regression (Task 1) ──────
+echo ""
+echo "── pre-commit-gate wrapper/prefix bypass ───────────────────"
+
+# These prefixes defeated the old start-anchored re.match(r'git\b', seg):
+# a real (staged, unreviewed) commit MUST still be gated → block.
+run_cwd_test 'blocks: command git commit (wrapper prefix)' \
+    "block" "command git commit -m msg" "1"
+run_cwd_test 'blocks: env VAR=1 git commit (env wrapper)' \
+    "block" "env FOO=1 git commit -m msg" "1"
+run_cwd_test 'blocks: /usr/bin/git commit (absolute path)' \
+    "block" "/usr/bin/git commit -m msg" "1"
+# Negative: git named only in prose is NOT a commit → allow. Must hold in
+# BOTH revisions (not a regression).
+run_cwd_test 'allows: prose mentioning git commit (not a real commit)' \
+    "allow" "echo please remember to git commit later" "1"
+
+# Option-bearing wrappers: stripping only the wrapper WORD left an option as
+# the command token and fell through to allow (fail-open). The launcher parser
+# skips wrapper options and arg-taking options (-u/-g/-C/-n/-S) too.
+run_cwd_test 'blocks: env -i FOO=1 git commit (env option)' \
+    "block" "env -i FOO=1 git commit -m msg" "1"
+run_cwd_test 'blocks: sudo -u nobody git commit (arg-taking option)' \
+    "block" "sudo -u nobody git commit -m msg" "1"
+run_cwd_test 'blocks: command -- git commit (end-of-options)' \
+    "block" "command -- git commit -m msg" "1"
+run_cwd_test 'blocks: time -p git commit (option without arg)' \
+    "block" "time -p git commit -m msg" "1"
+# 'sudo -n' / 'sudo -S' take NO argument; the parser must not consume 'git' as
+# their arg (that fixed-arg-list heuristic was a fail-open bug).
+run_cwd_test 'blocks: sudo -n git commit (no-arg option)' \
+    "block" "sudo -n git commit -m msg" "1"
+run_cwd_test 'blocks: sudo -S git commit (no-arg option)' \
+    "block" "sudo -S git commit -m msg" "1"
+# 'env -u git commit' means 'unset var git; run commit' — not a git commit. The
+# fail-CLOSED parser refuses to skip a 'git' executable token as an option
+# argument, so it blocks. Over-blocking this contrived form is safe.
+run_cwd_test 'blocks: env -u git commit (fail-closed on git-exec token)' \
+    "block" "env -u git commit -m msg" "1"
+
+# Consume-marker parity: post-commit-consume-marker.sh carried the SAME
+# start-anchored matcher; a wrapper-prefixed commit would leave the litmus
+# marker stale. It must recognize the prefix and consume on success.
+echo ""
+echo "── post-commit-consume-marker wrapper parity ───────────────"
+POST_COMMIT_HOOK="hooks/gate-scripts/post-commit-consume-marker.sh"
+run_consume_test() {
+    # $1=name $2=command $3=expected(absent|present)
+    local name="$1" cmd="$2" expected="$3"
+    TOTAL=$((TOTAL + 1))
+    local tmp; tmp=$(mktemp -d)
+    ( cd "$tmp"; git init -q -b main 2>/dev/null || git init -q
+      git config commit.gpgsign false; git config user.email t@t.co; git config user.name T
+      echo x > f; git add f; git commit -qm init --no-verify )
+    mkdir -p "$tmp/.claude"; printf 'abc123hash\n' > "$tmp/.claude/litmus-passed.local"
+    local sha; sha=$(git -C "$tmp" rev-parse --short HEAD)
+    local input
+    input=$(python3 -c "import json,sys; print(json.dumps({'tool_name':'Bash','tool_input':{'command':sys.argv[1]},'tool_output':'[main '+sys.argv[2]+'] msg','cwd':sys.argv[3]}))" "$cmd" "$sha" "$tmp")
+    printf '%s' "$input" | bash "$POST_COMMIT_HOOK" >/dev/null 2>&1 || true
+    local got=present; [[ -f "$tmp/.claude/litmus-passed.local" ]] || got=absent
+    if [[ "$got" == "$expected" ]]; then printf "  PASS  %s\n" "$name"; PASS=$((PASS + 1))
+    else printf "  FAIL  %s (expected=%s got=%s)\n" "$name" "$expected" "$got"; FAIL=$((FAIL + 1)); fi
+    rm -rf "$tmp"
+}
+run_consume_test "consumes marker for command-prefixed commit" "command git commit -m msg" "absent"
+run_consume_test "leaves marker for prose (not a real commit)" "echo do a git commit soon" "present"
+
+# Security: python3 -c prepends CWD to sys.path, so a repo-planted
+# gitcmd_detect.py could shadow the trusted detector and forge an allow. The
+# gate drops CWD from sys.path first; a malicious module in the working
+# directory must be ignored (the unreviewed commit is still blocked).
+echo ""
+echo "── pre-commit-gate sys.path shadow defense ─────────────────"
+GATE_ABS="$(pwd)/$GATE_SCRIPT"
+TOTAL=$((TOTAL + 1))
+shadow_tmp=$(mktemp -d)
+(
+  cd "$shadow_tmp"
+  git init -q -b main 2>/dev/null || git init -q
+  git config commit.gpgsign false; git config user.email t@t.co; git config user.name T
+  echo x > f; git add f; git commit -qm init --no-verify
+  echo y >> f; git add f    # staged, unreviewed → must block
+  # Malicious detector: if imported, forges "not a commit" → allow (bypass).
+  printf 'def git_commit(c):\n    return (False, "", False)\ndef gh_pr(c, s):\n    return (False, "", "")\n' > gitcmd_detect.py
+)
+shadow_input=$(make_hook_input_cwd "git commit -m x" "$shadow_tmp")
+shadow_out=$(cd "$shadow_tmp" && printf '%s' "$shadow_input" | bash "$GATE_ABS" 2>/dev/null || true)
+if echo "$shadow_out" | grep -q '"block"'; then
+    printf "  PASS  repo-planted gitcmd_detect.py is not imported (commit still blocked)\n"; PASS=$((PASS + 1))
+else
+    printf "  FAIL  CWD-shadow bypass: planted module imported (out: %s)\n" "$shadow_out"; FAIL=$((FAIL + 1))
+fi
+rm -rf "$shadow_tmp"
+
+# Security: python runs sitecustomize.py at interpreter STARTUP, before any -c
+# code — so the in-code sys.path cleaning cannot stop it. The gate uses
+# `python3 -S`, which disables site processing, so a repo-planted sitecustomize
+# never loads and the unreviewed commit is still blocked.
+TOTAL=$((TOTAL + 1))
+sitec_tmp=$(mktemp -d)
+(
+  cd "$sitec_tmp"
+  git init -q -b main 2>/dev/null || git init -q
+  git config commit.gpgsign false; git config user.email t@t.co; git config user.name T
+  echo x > f; git add f; git commit -qm init --no-verify
+  echo y >> f; git add f
+  # If loaded at startup, hard-exit 0 with no output → gate reads empty → allow.
+  printf 'import os\nos._exit(0)\n' > sitecustomize.py
+)
+sitec_input=$(make_hook_input_cwd "git commit -m x" "$sitec_tmp")
+sitec_out=$(cd "$sitec_tmp" && printf '%s' "$sitec_input" | bash "$GATE_ABS" 2>/dev/null || true)
+if echo "$sitec_out" | grep -q '"block"'; then
+    printf "  PASS  repo-planted sitecustomize.py not loaded under python3 -S (still blocked)\n"; PASS=$((PASS + 1))
+else
+    printf "  FAIL  sitecustomize startup bypass (out: %s)\n" "$sitec_out"; FAIL=$((FAIL + 1))
+fi
+rm -rf "$sitec_tmp"
 
 # ── Results ───────────────────────────────────────────────────────────
 

@@ -344,4 +344,22 @@ printf '%s\n' "$first_line" | grep -qi "serve --manual-login" || { echo "FAIL hi
 [ -f "$tmp/hintbg.md.hint" ] || { echo "FAIL hint file not persisted in bg mode"; FAIL=1; }
 rm -f "$hwp"
 
+# wrapper timeout surfaces the hint (#340 race fix): a login/Cloudflare wall manifests AS
+# a timeout — oracle emits the signature then hangs past the cap. The background child
+# writes .rc=124 + .hint only AFTER _portable_timeout kills oracle, so ultra-oracle-run.sh
+# must poll BEYOND the cap and fold the hint into the FAILED [timeout] banner.
+cat > "$tmp/bin/oracle" <<'STUB'
+#!/bin/bash
+echo "ERROR: ChatGPT session not detected. Login button detected on page."
+sleep 30
+STUB
+chmod +x "$tmp/bin/oracle"
+twp="$(mktemp)"; printf 'q' > "$twp"
+printf '{ "ultraOracle": { "timeoutCapSeconds": 1 } }\n' > "$tmp/.claude/busdriver.json"  # tiny cap -> fast timeout
+out="$(bash "$WRAP" council 1 "$twp" "$tmp/wto.md")"
+first_line="${out%%$'\n'*}"
+[[ "$first_line" == FAILED\ \[timeout\]* ]] || { echo "FAIL wrapper timeout token got '$first_line'"; FAIL=1; }
+printf '%s\n' "$first_line" | grep -qi "serve --manual-login" || { echo "FAIL wrapper timeout banner missing hint"; FAIL=1; }
+rm -f "$twp" "$tmp/.claude/busdriver.json"
+
 [[ "$FAIL" = 0 ]] && echo "PASS test-ultra-oracle" || exit 1

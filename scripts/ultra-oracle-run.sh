@@ -74,13 +74,20 @@ if [[ "$STATUS" != dispatched ]]; then
   echo "FAILED [${STATUS:-adapter-unavailable}]"; exit 0
 fi
 
-# Block until the backgrounded consult writes its .rc marker (or the cap elapses).
-_n=0; _cap="$(ultra_oracle_timeout_cap)"
+# Block until the backgrounded consult writes its .rc marker (or the grace cap elapses).
+# Poll a grace margin BEYOND the oracle timeout cap: on a REAL timeout the background
+# child writes .rc (and .hint) only AFTER _portable_timeout kills oracle at t=cap, so a
+# wait that stops at exactly cap races the child and reads both files empty — emitting a
+# generic "FAILED [timeout]" with no hint. The +10s slack lets the completion marker and
+# the actionable hint land first.
+_n=0; _cap=$(( $(ultra_oracle_timeout_cap) + 10 ))
 while [[ ! -f "$OUT.rc" && "$_n" -lt "$_cap" ]]; do sleep 2; _n=$((_n + 2)); done
 _rc="$(cat "$OUT.rc" 2>/dev/null)"
-# A human-actionable hint (#340) the adapter persisted for a known failure (ABE /
-# login / Cloudflare). Append it to the FAILED banner so the operator sees WHAT to
-# do, not just a status code. Contains only oracle's own diagnostic text, no secret.
+# A human-actionable hint (#340) the adapter persisted for a known failure (cookie
+# decryption blocked / login / Cloudflare). Read it AFTER the wait so a just-landed hint
+# is included, and append it to EVERY FAILED banner (including the no-.rc fallthrough) so
+# the operator sees WHAT to do, not just a status code. Only oracle's own diagnostic
+# text, never a secret.
 _hint="$(cat "$OUT.hint" 2>/dev/null)"; _sfx=""; [[ -n "$_hint" ]] && _sfx=" — $_hint"
 if [[ -s "$OUT" && "$_rc" == 0 ]]; then
   echo "VERDICT"; cat "$OUT"
@@ -91,6 +98,6 @@ elif [[ "$_rc" == 124 ]]; then
 elif [[ -n "$_rc" ]]; then
   echo "FAILED [error rc=$_rc]$_sfx"
 else
-  echo "FAILED [timeout]"
+  echo "FAILED [timeout]$_sfx"
 fi
 exit 0

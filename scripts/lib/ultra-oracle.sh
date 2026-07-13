@@ -133,7 +133,7 @@ ultra_oracle_consult() {
   # fails — a surviving stale file is the exact bug this prevents, so suppressing
   # the error would defeat the purpose. `rm -f` is a no-op on nonexistent files,
   # so the || branch only fires when a file EXISTS but cannot be removed.
-  rm -f -- "$out" "$out.rc" "$out.err" "$out.hint" || {
+  rm -f -- "$out" "$out.rc" "$out.rc.partial" "$out.err" "$out.hint" || {
     echo "ultra-oracle: cannot clear stale output '$out' — failing closed" >&2
     printf 'error'; return 1
   }
@@ -254,7 +254,11 @@ ultra_oracle_consult() {
         _uora_hint="$(_ultra_oracle_diagnose_hint "$out.err")"
         if [[ -n "$_uora_hint" ]]; then printf '%s' "$_uora_hint" > "$out.hint"; else rm -f "$out.hint"; fi
       fi
-      printf '%s' "$_uora_bg_rc" > "$out.rc" ) &
+      # Write .rc ATOMICALLY and LAST: the waiters treat .rc's existence as completion, so a
+      # created-but-not-yet-written .rc could be read empty (reported as a spurious timeout,
+      # no hint). Rename is atomic on one filesystem, and it lands after .err/.hint are
+      # already in place, so once a waiter sees .rc every sibling file is fully written.
+      printf '%s' "$_uora_bg_rc" > "$out.rc.partial" && mv -f "$out.rc.partial" "$out.rc" ) &
     disown 2>/dev/null || true
     printf 'dispatched'; return 0
   fi

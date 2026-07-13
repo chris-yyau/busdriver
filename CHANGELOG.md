@@ -1,3 +1,10 @@
+## [1.91.2](https://github.com/chris-yyau/busdriver/compare/v1.91.1...v1.91.2) (2026-07-13)
+
+
+### Bug Fixes
+
+* **gates:** shared quote-aware git/gh command detector (fail-open hardening) ([#336](https://github.com/chris-yyau/busdriver/issues/336)) ([eae6149](https://github.com/chris-yyau/busdriver/commit/eae6149b30f5c91482cbe0b1567fb8aca2bebe32))
+
 ## [1.91.1](https://github.com/chris-yyau/busdriver/compare/v1.91.0...v1.91.1) (2026-07-13)
 
 

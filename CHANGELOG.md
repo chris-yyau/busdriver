@@ -1,3 +1,10 @@
+## [1.91.3](https://github.com/chris-yyau/busdriver/compare/v1.91.2...v1.91.3) (2026-07-13)
+
+
+### Bug Fixes
+
+* **ultra-oracle:** delegate to oracle serve when Chrome blocks cookie decryption + surface failures ([#340](https://github.com/chris-yyau/busdriver/issues/340)) ([#341](https://github.com/chris-yyau/busdriver/issues/341)) ([3eeba7f](https://github.com/chris-yyau/busdriver/commit/3eeba7faa432824a461ff28526effc68ed2a08df))
+
 ## [1.91.2](https://github.com/chris-yyau/busdriver/compare/v1.91.1...v1.91.2) (2026-07-13)
 
 

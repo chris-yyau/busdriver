@@ -160,7 +160,17 @@ ultra_oracle_consult() {
   remote_host="$(ultra_oracle_remote_host)"; remote_token="$(ultra_oracle_remote_token)"
 
   # Build argv (set -- positional building is bash-3.2 safe).
-  set -- --engine browser -m "$model" --timeout "$cap" \
+  # --force bypasses oracle's duplicate-prompt guard (#333). That guard blocks a new run
+  # when a session with the SAME prompt signature is still status="running"
+  # (duplicatePromptGuard.js keys on the prompt, NOT the slug — so a per-run unique slug
+  # would NOT help). Every ultra-oracle consult is fire-and-forget: it reads its own
+  # RUN_ID-scoped --write-output and never reattaches, so "prefer reattaching" does not
+  # apply — a fresh run each time is exactly what we want. Critically, oracle never reaps
+  # a crashed/interrupted session (its status stays "running" in the store forever), so
+  # without --force a single stale phantom permanently blocks EVERY future same-prompt
+  # dispatch — most visibly blueprint-review, whose prompt is fixed (design goes via
+  # --context). --force makes us immune regardless of WHY a stale session lingers.
+  set -- --engine browser -m "$model" --timeout "$cap" --force \
          --write-output "$out" --no-notify --heartbeat 30 --slug "$slug"
   # Session source, in precedence order (all opt-in; empty by default so we do NOT
   # expose the operator's main browser session unless explicitly configured):

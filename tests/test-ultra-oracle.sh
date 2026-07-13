@@ -115,6 +115,9 @@ st="$(ultra_oracle_consult --prompt hi --out "$tmp/c0.md" --mode blocking)"
 [ "$st" = "ok" ] || { echo "FAIL c0 status got '$st'"; FAIL=1; }
 grep -qx -- "--browser-cookie-path" "$tmp/argv.log" && { echo "FAIL cookie-path leaked when unset"; FAIL=1; }
 grep -qx -- "--browser-hide-window" "$tmp/argv.log" && { echo "FAIL window hidden by default (B8: should be VISIBLE)"; FAIL=1; }
+# --force is ALWAYS passed (#333): bypasses oracle's prompt-keyed duplicate guard so a
+# stale phantom "running" session can't permanently block future same-prompt dispatches.
+grep -qx -- "--force" "$tmp/argv.log" || { echo "FAIL --force missing (#333 dup-guard)"; FAIL=1; }
 
 # hideWindow=true (opt-in) -> argv carries --browser-hide-window
 printf '{ "ultraOracle": { "hideWindow": true } }\n' > "$tmp/.claude/busdriver.json"

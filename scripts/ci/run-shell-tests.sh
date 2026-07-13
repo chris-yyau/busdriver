@@ -108,6 +108,10 @@ for t in "${tests[@]}"; do
     else
       echo "FAIL (rc=$rc): $base"
     fi
+    # Surface explicit failure/error lines first — for a suite with many
+    # assertions the failing ones are often earlier than the tail, so a bare
+    # `tail` hides them (esp. for CI-only failures). Then show the tail for context.
+    grep -nE 'FAIL|Error|error:|not found|expected=' "$out_file" | head -n 30 | sed 's/^/    ! /'
     tail -n 20 "$out_file" | sed 's/^/    | /'
     fail=$((fail + 1))
     failed_names+=("$base")

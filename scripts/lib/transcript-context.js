@@ -27,6 +27,12 @@ const DEFAULT_CONTEXT_INTERVAL_TOKENS = 60000;
 const DEFAULT_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
 const MAX_TOKEN_SETTING = 10000000;
 const LARGE_WINDOW_MODEL_MARKER = '[1m]';
+// Model families whose *bare* transcript id (suffix dropped) implies a large
+// window. The harness surfaces "claude-opus-4-8[1m]" but the transcript's
+// message.model logs bare "claude-opus-4-8", so the marker check never matches —
+// key off the family. ponytail: opus-4 only; add families here if their bare ids
+// also fall through to the 200k default.
+const LARGE_WINDOW_MODEL_FAMILY = /claude-opus-4/i;
 
 /**
  * Read the trailing `tailBytes` of a file as UTF-8.
@@ -147,6 +153,13 @@ function resolveContextWindowTokens(tokens, model) {
   }
 
   if (typeof model === 'string' && model.includes(LARGE_WINDOW_MODEL_MARKER)) {
+    return LARGE_CONTEXT_WINDOW_TOKENS;
+  }
+
+  // The transcript logs the bare id (marker dropped), so recognize the large-
+  // window family directly — otherwise Opus 4.x reports the 200k default until
+  // context happens to cross 200k, mislabeling a 1M window as 200k.
+  if (typeof model === 'string' && LARGE_WINDOW_MODEL_FAMILY.test(model)) {
     return LARGE_CONTEXT_WINDOW_TOKENS;
   }
 

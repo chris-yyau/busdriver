@@ -26,13 +26,16 @@ const DEFAULT_CONTEXT_THRESHOLD_LARGE = 250000;
 const DEFAULT_CONTEXT_INTERVAL_TOKENS = 60000;
 const DEFAULT_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
 const MAX_TOKEN_SETTING = 10000000;
+const EXTENDED_CONTEXT_WINDOW_TOKENS = 400000;
 const LARGE_WINDOW_MODEL_MARKER = '[1m]';
-// Model families whose *bare* transcript id (suffix dropped) implies a large
-// window. The harness surfaces "claude-opus-4-8[1m]" but the transcript's
-// message.model logs bare "claude-opus-4-8", so the marker check never matches —
-// key off the family. ponytail: opus-4 only; add families here if their bare ids
-// also fall through to the 200k default.
-const LARGE_WINDOW_MODEL_FAMILY = /claude-opus-4/i;
+// Opus 4.x base window (#2290). The harness surfaces "claude-opus-4-8[1m]" but
+// the transcript's message.model logs the bare "claude-opus-4-8", so the [1m]
+// marker check never matches. The bare id can't reveal whether the 1M beta was
+// enabled, so treat 400k as the safe floor for the family and only upgrade to 1M
+// once observed context proves it — never over-report a standard session as 1M.
+// Anchored so "claude-opus-40"/substring ids don't false-match. ponytail: opus-4
+// only; add families here if their bare ids also fall through to the 200k default.
+const EXTENDED_WINDOW_MODEL_FAMILY = /^claude-opus-4(?![0-9])/i;
 
 /**
  * Read the trailing `tailBytes` of a file as UTF-8.
@@ -156,11 +159,13 @@ function resolveContextWindowTokens(tokens, model) {
     return LARGE_CONTEXT_WINDOW_TOKENS;
   }
 
-  // The transcript logs the bare id (marker dropped), so recognize the large-
-  // window family directly — otherwise Opus 4.x reports the 200k default until
-  // context happens to cross 200k, mislabeling a 1M window as 200k.
-  if (typeof model === 'string' && LARGE_WINDOW_MODEL_FAMILY.test(model)) {
-    return LARGE_CONTEXT_WINDOW_TOKENS;
+  // The transcript logs the bare id (marker dropped), so key off the family:
+  // floor at the 400k base and only reach 1M when observed context confirms it,
+  // instead of defaulting Opus 4.x to 200k or over-reporting it as 1M.
+  if (typeof model === 'string' && EXTENDED_WINDOW_MODEL_FAMILY.test(model)) {
+    return Number.isFinite(tokens) && tokens > EXTENDED_CONTEXT_WINDOW_TOKENS
+      ? LARGE_CONTEXT_WINDOW_TOKENS
+      : EXTENDED_CONTEXT_WINDOW_TOKENS;
   }
 
   if (Number.isFinite(tokens) && tokens > STANDARD_CONTEXT_WINDOW_TOKENS) {
@@ -224,6 +229,7 @@ function formatWindowLabel(windowTokens) {
 
 module.exports = {
   STANDARD_CONTEXT_WINDOW_TOKENS,
+  EXTENDED_CONTEXT_WINDOW_TOKENS,
   LARGE_CONTEXT_WINDOW_TOKENS,
   DEFAULT_CONTEXT_THRESHOLD_STANDARD,
   DEFAULT_CONTEXT_THRESHOLD_LARGE,

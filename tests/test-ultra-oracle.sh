@@ -170,6 +170,16 @@ grep -qxF -- "tok-xyz" "$tmp/argv.log" && { echo "FAIL token value leaked to arg
 [ "$(cat "$tmp/env.log")" = "tok-xyz" ] || { echo "FAIL token not delivered via ORACLE_REMOTE_TOKEN env"; FAIL=1; }
 grep -qx -- "--browser-cookie-path" "$tmp/argv.log" && { echo "FAIL cookie-path must yield to remoteHost"; FAIL=1; }
 
+# injection scope (#340): remoteToken configured but NO remoteHost -> the token is NEVER
+# delivered via env, so it can't pair with an ambient host (config/env remoteHost) and
+# transmit off-pin. cookiePath present so oracle still runs; env.log must stay EMPTY.
+printf '{ "ultraOracle": { "remoteToken": "orphan-tok", "cookiePath": "%s" } }\n' "$ck" > "$tmp/.claude/busdriver.json"
+: > "$tmp/argv.log"; : > "$tmp/env.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/rho.md" --mode blocking)"
+[ "$st" = "ok" ] || { echo "FAIL rho status got '$st'"; FAIL=1; }
+[ -z "$(cat "$tmp/env.log")" ] || { echo "FAIL token delivered via env with no remoteHost"; FAIL=1; }
+grep -qx -- "--browser-cookie-path" "$tmp/argv.log" || { echo "FAIL cookiePath path not taken (no remoteHost)"; FAIL=1; }
+
 # remoteHost set, remoteToken EMPTY -> FAIL CLOSED ('error'), oracle NOT invoked. Oracle
 # resolves its token as cliToken ?? config.browser.remoteToken ?? ORACLE_REMOTE_TOKEN,
 # so proceeding could silently authenticate a transmission via oracle's ambient token —

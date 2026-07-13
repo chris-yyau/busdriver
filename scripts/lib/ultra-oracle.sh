@@ -149,6 +149,12 @@ ultra_oracle_consult() {
   if ! is_cli_available oracle; then printf 'skipped:unavailable'; return 3; fi
 
   local model profile cookie_path remote_host remote_token
+  # The token we inject via ORACLE_REMOTE_TOKEN — set ONLY on the remoteHost delegation
+  # path (below). Empty elsewhere so a configured remoteToken can NEVER pair with an
+  # ambient host (oracle-config browser.remoteHost / ORACLE_REMOTE_HOST) and transmit to a
+  # destination busdriver did not pin: the confidentiality guarantee holds only because we
+  # both pass --remote-host AND supply the credential exclusively in that same branch.
+  local _uora_env_token=""
   model="$(ultra_oracle_model)"; profile="$(ultra_oracle_chrome_profile)"
   cookie_path="$(ultra_oracle_cookie_path)"
   remote_host="$(ultra_oracle_remote_host)"; remote_token="$(ultra_oracle_remote_token)"
@@ -173,34 +179,30 @@ ultra_oracle_consult() {
   # silently reuse whatever ChatGPT session is signed in there (wrong account / a
   # data-boundary surprise the operator did not authorize). Fix the path or unset it.
   if [[ -n "$remote_host" ]]; then
-    # remoteToken is REQUIRED with remoteHost — fail CLOSED if empty rather than invoke
-    # oracle with --remote-host alone. Oracle resolves its token as
-    #   cliToken ?? userConfig.browser.remoteToken ?? ORACLE_REMOTE_TOKEN
-    # (verified in oracle 0.15.2 remoteServiceConfig.js), so proceeding without
-    # --remote-token would let a token from oracle's OWN ambient config/env silently
-    # authenticate and transmit the design to the configured host — outside busdriver's
-    # USER-config trust boundary. The whole ultraOracle block is USER-config-only by
-    # design; the delegation credential must come from there too, never from oracle's
-    # ambient environment. Same fail-closed posture as the unreadable-cookiePath branch.
+    # remoteToken is REQUIRED with remoteHost — fail CLOSED if empty. Empty would leave the
+    # consult to fail auth against a token-protected serve; refuse up front with guidance.
     if [[ -z "$remote_token" ]]; then
       echo "ultra-oracle: remoteHost set but remoteToken empty — failing closed (set ultraOracle.remoteToken in ~/.claude/busdriver.json; the consult would otherwise fail auth against a token-protected 'oracle serve')" >&2
       printf 'error'; return 1
     fi
-    # Deliver the token via the ORACLE_REMOTE_TOKEN env at the invocation sites below —
-    # NOT --remote-token on argv, which `ps` exposes to same-user/root for the whole
-    # multi-minute consult. Only the non-secret host goes on argv.
+    # Deliver the token via the ORACLE_REMOTE_TOKEN env at the invocation sites — NOT
+    # --remote-token on argv, which `ps` exposes to same-user/root for the whole
+    # multi-minute consult. Only the non-secret host goes on argv. Scope the env token to
+    # _uora_env_token, set ONLY here, so it is delivered EXCLUSIVELY on this path — never
+    # paired with an ambient host on a cookiePath/profile run.
     #
     # Confidentiality does NOT rest on this token. Oracle resolves the destination as
     #   host  = cliHost(--remote-host) ?? config.browser.remoteHost ?? ORACLE_REMOTE_HOST
     #   token = cliToken(--remote-token) ?? config.browser.remoteToken ?? ORACLE_REMOTE_TOKEN
-    # (verified in oracle 0.15.2 remoteServiceConfig.js). We ALWAYS pass --remote-host, so
-    # the destination is PINNED to busdriver's USER-config host — no ambient config/env can
-    # redirect the plan elsewhere. The token is merely the bearer credential presented TO
-    # that pinned host. So if an ambient oracle-config `browser.remoteToken` outranks our
-    # env token (config > env), the only effect is that the pinned serve accepts or rejects
-    # the connection: a wrong token fails auth LOUDLY (the #340 hint surfaces), it can never
-    # divert the plan. Env delivery is therefore safe WITHOUT trying to out-parse oracle's
-    # (JSON5 keys, symlink-physical CWD) config-discovery to detect an ambient token.
+    # (verified in oracle 0.15.2 remoteServiceConfig.js). We ALWAYS pass --remote-host here,
+    # so the destination is PINNED to busdriver's USER-config host — no ambient config/env
+    # can redirect the plan elsewhere. The token is merely the bearer credential presented
+    # TO that pinned host: if an ambient oracle-config `browser.remoteToken` outranks our env
+    # token (config > env), the only effect is the pinned serve accepts or rejects the
+    # connection — a wrong token fails auth LOUDLY (the #340 hint surfaces), it can never
+    # divert the plan. So env delivery is safe WITHOUT out-parsing oracle's (JSON5 keys,
+    # symlink-physical CWD) config discovery to detect an ambient token.
+    _uora_env_token="$remote_token"
     set -- "$@" --remote-host "$remote_host"
   elif [[ -n "$cookie_path" ]]; then
     if [[ -r "$cookie_path" ]]; then
@@ -240,7 +242,7 @@ ultra_oracle_consult() {
       # Capture oracle STDOUT+STDERR to "$out.err" (B8): oracle emits its failure
       # diagnostics on STDOUT, so the old >/dev/null 2>&1 discarded them and every
       # failure looked silent. Keep the file on failure for diagnosis; remove on success.
-      ORACLE_REMOTE_TOKEN="$remote_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" 2>&1; _uora_bg_rc=$?
+      ORACLE_REMOTE_TOKEN="$_uora_env_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" 2>&1; _uora_bg_rc=$?
       # Map exit-0-but-empty-verdict to failure so the .rc matches blocking mode's
       # fail-closed contract (timeout already surfaces as rc 124).
       [[ "$_uora_bg_rc" = 0 ]] && ! _ultra_oracle_verdict_ok "$out" && _uora_bg_rc=1
@@ -266,7 +268,7 @@ ultra_oracle_consult() {
   # the caller (this lib may be sourced under `set -e`) before the status token is
   # printed — the fail-closed 'error'/'timeout' tokens below depend on reaching them.
   local rc=0 _hint=""
-  ORACLE_REMOTE_TOKEN="$remote_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" || rc=$?
+  ORACLE_REMOTE_TOKEN="$_uora_env_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" || rc=$?
   if [[ "$rc" = 124 ]]; then
     # A login/Cloudflare wall that never clears also manifests AS a timeout — the
     # partial page oracle wrote to $out.err before the cap fired can still carry the

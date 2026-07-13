@@ -181,22 +181,14 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
-      - name: Check for compliance job
-        id: check
-        run: |
-          if grep -ql 'trivy-action\|scanners.*vuln' .github/workflows/tests.yml 2>/dev/null; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Trivy already covered by compliance job — skipping"
-          fi
-      - name: Install trivy
-        if: steps.check.outputs.skip != 'true'
-        run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sudo sh -s -- -b /usr/local/bin
-          trivy --version
       - name: Scan dependencies
-        if: steps.check.outputs.skip != 'true'
-        run: trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 --skip-dirs tests .
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          exit-code: 1
+          skip-dirs: tests
 
   semgrep:
     name: Code security
@@ -213,7 +205,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install semgrep
-        run: pip install --quiet semgrep
+        run: pip install --quiet 'semgrep==1.169.0'  # Pin version — unpinned is a supply chain risk
       - name: Scan for vulnerabilities
         run: semgrep scan --config p/security-audit --error --exclude tests --exclude 'scripts/**' --exclude 'skills/*/scripts/**' .
 
@@ -232,7 +224,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install checkov
-        run: pip install --quiet checkov
+        run: pip install --quiet 'checkov==3.3.8'  # Pin version — unpinned is a supply chain risk
       - name: Scan for misconfigurations
         run: checkov -d . --skip-path tests --quiet --compact
 
@@ -253,7 +245,7 @@ jobs:
       - name: Verify SHA pinning
         run: bash .github/scripts/check-pinned-uses.sh
       - name: Install zizmor
-        run: pip install --quiet zizmor
+        run: pip install --quiet 'zizmor==1.26.1'  # Pin version — unpinned is a supply chain risk
       - name: Scan GitHub Actions workflows
         run: zizmor .github/workflows/
 

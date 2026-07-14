@@ -100,7 +100,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS="$DIR/../../scripts"
 # shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
-source "$DIR/lib/resolve-repo-dir.sh"
+source "$DIR/lib/resolve-repo-dir.sh" || exit 0
 
 # ── Parse via the shared, quote/wrapper-aware detector ─────────────────
 # gh_pr confirms a REAL `gh pr merge` (defeats decoys/quoting/wrappers). A second,

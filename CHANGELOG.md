@@ -1,3 +1,10 @@
+## [1.91.6](https://github.com/chris-yyau/busdriver/compare/v1.91.5...v1.91.6) (2026-07-14)
+
+
+### Bug Fixes
+
+* **pr-grind:** deterministic PreToolUse hook for the Codex none-nudge ([#344](https://github.com/chris-yyau/busdriver/issues/344)) ([9e61448](https://github.com/chris-yyau/busdriver/commit/9e6144818cb4c282267d84d9a61e23795291b659)), closes [335-#342](https://github.com/335-/issues/342) [#335](https://github.com/chris-yyau/busdriver/issues/335)
+
 ## [1.91.5](https://github.com/chris-yyau/busdriver/compare/v1.91.4...v1.91.5) (2026-07-13)
 
 

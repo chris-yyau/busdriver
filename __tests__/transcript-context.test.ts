@@ -4,8 +4,10 @@
  * harness's "[1m]" suffix is dropped), so marker-only detection fell back to the
  * 200k default and mislabeled the window as 200k until context crossed 200k.
  *
- * The fix floors the Opus 4.x family at its 400k base and upgrades to 1M only
- * when observed tokens prove it — never over-reporting a standard session.
+ * This is a solo, always-1M operator (see CLAUDE.md), so the fix resolves the
+ * bare Opus 4.x family straight to the 1M window (the [1m] marker is dropped in
+ * the transcript, so the marker check can never catch it). ECC_CONTEXT_WINDOW_TOKENS
+ * remains the escape hatch for a standard (non-1M) session.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import transcriptContext from '../scripts/lib/transcript-context.js'
@@ -13,7 +15,6 @@ import transcriptContext from '../scripts/lib/transcript-context.js'
 const {
   resolveContextWindowTokens,
   STANDARD_CONTEXT_WINDOW_TOKENS,
-  EXTENDED_CONTEXT_WINDOW_TOKENS,
   LARGE_CONTEXT_WINDOW_TOKENS,
 } = transcriptContext
 
@@ -31,14 +32,14 @@ describe('resolveContextWindowTokens', () => {
     }
   })
 
-  // Core regression: bare Opus 4.x id, no marker, sub-400k tokens -> 400k floor
-  // (was the 200k default).
-  it('floors bare claude-opus-4-8 at the 400k window (marker dropped in transcript)', () => {
-    expect(resolveContextWindowTokens(50000, 'claude-opus-4-8')).toBe(EXTENDED_CONTEXT_WINDOW_TOKENS)
+  // Core regression: bare Opus 4.x id, no marker -> 1M window (always-1M
+  // operator). Was the 200k default before #343, then the 400k floor.
+  it('resolves the bare Opus 4.x family to the 1M window (marker dropped in transcript)', () => {
+    expect(resolveContextWindowTokens(50000, 'claude-opus-4-8')).toBe(LARGE_CONTEXT_WINDOW_TOKENS)
   })
 
-  // Only reaches 1M when observed context can't fit a 400k window.
-  it('upgrades the Opus 4.x family to 1M once observed tokens exceed 400k', () => {
+  // Token count is irrelevant for the family now — always the 1M window.
+  it('keeps the Opus 4.x family at 1M regardless of observed token count', () => {
     expect(resolveContextWindowTokens(500000, 'claude-opus-4-8')).toBe(LARGE_CONTEXT_WINDOW_TOKENS)
   })
 

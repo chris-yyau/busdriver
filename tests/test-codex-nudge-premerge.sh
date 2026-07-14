@@ -24,10 +24,12 @@ ok()   { echo "OK:   $1"; passed=$((passed + 1)); }
 fail() { echo "FAIL: $1"; failed=$((failed + 1)); }
 if [[ ! -f "$HOOK" ]]; then fail "missing $HOOK"; echo "Results: 0 passed, 1 failed"; exit 1; fi
 
-TMP_DIRS=()
-cleanup() { local d; for d in "${TMP_DIRS[@]:-}"; do [[ -n "${d:-}" ]] && rm -rf "$d"; done; return 0; }
+# Single base dir so `mk` (called in $() subshells, where an array append would be
+# lost) still leaves every temp dir under one tree the EXIT trap can remove.
+TMP_BASE=$(mktemp -d)
+cleanup() { rm -rf "$TMP_BASE"; return 0; }
 trap cleanup EXIT
-mk() { local d; d=$(mktemp -d); TMP_DIRS+=("$d"); printf '%s' "$d"; }
+mk() { mktemp -d "$TMP_BASE/XXXXXX"; }
 
 PR=515
 HEAD=abcdef0123456789abcdef0123456789abcdef01
@@ -174,6 +176,16 @@ if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "semicolon cd: skipped (no nudge)"; el
 setup_case
 run_hook "GIT_DIR=/x/.git gh pr merge $PR --squash" "" ""
 if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "GIT_DIR= prefix: skipped (no nudge)"; else fail "GIT_DIR= prefix: rc=$RC body='$B'"; fi
+
+# ── Case 8h: two chained cd segments (2nd relative, not captured) → SKIP ──
+setup_case
+run_hook "cd . && cd nested && gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "double cd: skipped (no nudge)"; else fail "double cd: rc=$RC body='$B'"; fi
+
+# ── Case 8i: two positional PR args (gh rejects; we must not pre-nudge one) → SKIP ──
+setup_case
+run_hook "gh pr merge $PR 516 --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "two positionals: skipped (no nudge)"; else fail "two positionals: rc=$RC body='$B'"; fi
 
 # ── Case 9: GLOBAL `-R` (before the subcommand) → SKIP, no post ──
 setup_case

@@ -51,6 +51,22 @@
 # review` (the inverse of the security gates, which fail-CLOSED to a block — a
 # nudge that fails closed would spam comments).
 #
+# ACCEPTED LIMITS (independently reviewed 2026-07-15 — inherent, NOT bugs; do not
+# "fix" without re-reading this):
+#   1. Fires on merge-INTENT, decoupled from the pre-merge GATE's verdict. The
+#      one-shot dedup is per-(PR,HEAD) (codex-retrigger.sh), so firing on an
+#      attempt the gate later blocks still did its job — Codex was asked about
+#      THIS code state; a same-HEAD retry needs no re-nudge, new commits earn a
+#      fresh one. Gating on the pr-grind-clean marker instead would duplicate the
+#      gate's admission logic AND re-exclude the bootstrap-bypass PRs this hook
+#      exists to cover — a strictly worse trade.
+#   2. A PreToolUse hook is a separate pre-exec process reading only the payload;
+#      it cannot observe the executing shell's aliases / gh() functions / PATH.
+#      sanitized-gate fixes PATH for OUR gh/git calls only. The literal-'gh'-token
+#      guard below already skips wrapper/decoy forms; the residual (a real `gh`
+#      alias that keeps the literal `gh pr merge N` shape) is bounded to a deduped,
+#      possibly-early nudge — never a blocked merge (non-gating), never a flood.
+#
 # Runs under lib/sanitized-gate.sh (ADR 0016 env containment), like the gates.
 # PR_GRIND_CODEX_RETRIGGER (kill switch), BUSDRIVER_STATE_DIR, and GH_REPO/GH_HOST
 # are re-imported through the hooks.json `env -i` line: unlike the review gates,
@@ -128,7 +144,8 @@ try:
     #   * NO env-assignment prefix anywhere (GIT_DIR=, GH_REPO=, anything can redirect);
     #   * NO gh pr non-merge prefix (checkout re-points the branch!), NO shell
     #     expansion, NO -R. Everything else -> UNSAFE (skip); SKILL prose still covers it.
-    found = False; positional = ''; unsafe = False; merge_count = 0; has_cd = False
+    found = False; positional = ''; unsafe = False
+    merge_count = 0; cd_count = 0; pos_count = 0
     for op, seg in split_segments(cmd):
         if op not in ('', '&&'):
             unsafe = True            # ';', '|', '||', '&' -> runtime state undecidable
@@ -147,7 +164,7 @@ try:
             continue                 # nothing but assignments (already marked unsafe if any)
         tok = toks[i]                # LITERAL executable token — no basename, no wrapper
         if tok == 'cd':
-            has_cd = True; continue  # honored only via the target_dir guard after the loop
+            cd_count += 1; continue  # honored only via the target_dir guard after the loop
         if tok != 'gh':
             unsafe = True; continue  # /tmp/gh, a wrapper, or an arbitrary command -> skip
         rest = toks[i + 1:]
@@ -173,15 +190,22 @@ try:
                 j += 2 if t in ('-R', '--repo') else 1
                 continue
             if t in VALFLAGS:
+                if j + 1 >= len(margs):
+                    unsafe = True   # value-flag with NO value -> gh rejects the merge -> skip
                 j += 2; continue
             if t.startswith('-'):
                 j += 1; continue
-            if not positional:
+            pos_count += 1          # a positional arg (PR number / url / branch)
+            if pos_count == 1:
                 positional = t
             j += 1
     if not found or merge_count != 1:   # zero/unparsed, or multiple merges in one call
         unsafe = True
-    if has_cd and not target_dir:       # a cd NOT captured as the merge's and-and prefix
+    if pos_count > 1:                   # 'gh pr merge 515 516' — ambiguous; gh rejects it too
+        unsafe = True
+    if cd_count > 1:                    # a 2nd (possibly relative) cd gh_pr does NOT capture
+        unsafe = True                   # would resolve against the wrong base -> skip
+    if cd_count and not target_dir:     # a cd NOT captured as the merge's and-and prefix
         unsafe = True                   # (e.g. 'cd B; gh pr merge') -> REPO_DIR would be wrong
     if positional and not re.match(r'^[0-9]+$', positional):
         unsafe = True             # branch name / PR URL → skip

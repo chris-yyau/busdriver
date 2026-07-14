@@ -270,3 +270,21 @@ on an unresolved PR/repo.
 - New coverage: `tests/test-codex-nudge-premerge.sh` (none+active posts once; already-engaged
   / kill-switch / non-merge post nothing; always silent + exit 0). Auto-discovered by the
   full-glob `scripts/ci/run-shell-tests.sh` (`tests/test-*.sh`) — no explicit registration.
+
+**Accepted limits (independently reviewed 2026-07-15 — inherent, not bugs).** Litmus
+(Codex, adversarial) surfaced two theoretical concerns that an independent second reviewer
+confirmed are structural properties of a non-gating, out-of-process, static PreToolUse
+hook — not defects, and not worth code changes. They are documented here and in the hook
+header so they are not re-raised as bugs:
+1. **Fires on merge-INTENT, decoupled from the pre-merge gate's verdict.** The one-shot
+   dedup is per-`(PR,HEAD)` (`codex-retrigger.sh`), so firing on an attempt the gate later
+   blocks still did its job — Codex was asked about *this* code state; a same-HEAD retry
+   needs no re-nudge, new commits earn a fresh one. Gating on the `pr-grind-clean` marker
+   instead would duplicate the gate's admission logic (drift risk) **and** re-exclude the
+   bootstrap-bypass PRs this hook exists to cover — a strictly worse trade.
+2. **Cannot see the executing shell's aliases / `gh()` functions / PATH.** A PreToolUse
+   hook is a separate pre-exec process reading only the payload; `sanitized-gate` fixes
+   PATH for the hook's *own* `gh`/`git` calls only. The literal-`gh`-token guard already
+   skips wrapper/decoy forms; the residual (a real `gh` alias keeping the literal
+   `gh pr merge N` shape) is bounded to a deduped, possibly-early nudge — never a blocked
+   merge (non-gating), never a comment flood. No PreToolUse-time fix exists.

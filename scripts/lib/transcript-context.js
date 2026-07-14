@@ -26,15 +26,15 @@ const DEFAULT_CONTEXT_THRESHOLD_LARGE = 250000;
 const DEFAULT_CONTEXT_INTERVAL_TOKENS = 60000;
 const DEFAULT_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
 const MAX_TOKEN_SETTING = 10000000;
+// Opus 4.x standard base window (#2290) — the escape-hatch value for a non-1M
+// session (ECC_CONTEXT_WINDOW_TOKENS=400000); not the family default (see below).
 const EXTENDED_CONTEXT_WINDOW_TOKENS = 400000;
 const LARGE_WINDOW_MODEL_MARKER = '[1m]';
-// Opus 4.x base window (#2290). The harness surfaces "claude-opus-4-8[1m]" but
-// the transcript's message.model logs the bare "claude-opus-4-8", so the [1m]
-// marker check never matches. The bare id can't reveal whether the 1M beta was
-// enabled, so treat 400k as the safe floor for the family and only upgrade to 1M
-// once observed context proves it — never over-report a standard session as 1M.
-// Anchored so "claude-opus-40"/substring ids don't false-match. ponytail: opus-4
-// only; add families here if their bare ids also fall through to the 200k default.
+// The harness surfaces "claude-opus-4-8[1m]" but the transcript's message.model
+// logs the bare "claude-opus-4-8", so the [1m] marker check never matches. This
+// is a solo, always-1M operator (see CLAUDE.md), so the family resolves straight
+// to the 1M window. Anchored so "claude-opus-40"/substring ids don't false-match.
+// ponytail: opus-4 only; add families here if their bare ids also fall through.
 const EXTENDED_WINDOW_MODEL_FAMILY = /^claude-opus-4(?![0-9])/i;
 
 /**
@@ -141,9 +141,10 @@ function readLatestContextTokens(transcriptPath, options = {}) {
 
 /**
  * Detect the context window size for a turn.
- * 1M when the model id carries the `[1m]` marker, or when the observed token
- * count already exceeds the standard 200k window (covers logs that drop the
- * suffix); otherwise the standard 200k window.
+ * 1M when the model id carries the `[1m]` marker, belongs to the Opus 4.x family
+ * (always-1M operator; the marker is dropped in transcript logs), or when the
+ * observed token count already exceeds the standard 200k window; otherwise the
+ * standard 200k window. An explicit env override wins over all of these.
  */
 function resolveContextWindowTokens(tokens, model) {
   // Explicit window override wins: 400k models (e.g. Opus 4.x) match neither the
@@ -159,13 +160,14 @@ function resolveContextWindowTokens(tokens, model) {
     return LARGE_CONTEXT_WINDOW_TOKENS;
   }
 
-  // The transcript logs the bare id (marker dropped), so key off the family:
-  // floor at the 400k base and only reach 1M when observed context confirms it,
-  // instead of defaulting Opus 4.x to 200k or over-reporting it as 1M.
+  // The transcript logs the bare id (marker dropped), so the [1m] check above
+  // never fires. This is a solo, always-1M operator (see CLAUDE.md), so resolve
+  // the Opus 4.x family straight to the 1M window instead of the conservative
+  // 400k floor — fixes both the reported percentage and the window-scaled
+  // compact threshold (250k vs 160k). ponytail: set ECC_CONTEXT_WINDOW_TOKENS=400000
+  // if you ever run a standard (non-1M) Opus 4.x session.
   if (typeof model === 'string' && EXTENDED_WINDOW_MODEL_FAMILY.test(model)) {
-    return Number.isFinite(tokens) && tokens > EXTENDED_CONTEXT_WINDOW_TOKENS
-      ? LARGE_CONTEXT_WINDOW_TOKENS
-      : EXTENDED_CONTEXT_WINDOW_TOKENS;
+    return LARGE_CONTEXT_WINDOW_TOKENS;
   }
 
   if (Number.isFinite(tokens) && tokens > STANDARD_CONTEXT_WINDOW_TOKENS) {

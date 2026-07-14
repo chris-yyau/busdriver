@@ -201,3 +201,90 @@ a normally-participating reviewer was absent).
   closed/merged PRs no longer include a Codex review/reaction, then self-corrects. Bounded
   and kill-switchable. Reaction-content filtering (👀 vs 👍) is deferred — any connector
   reaction proves activity.
+
+---
+
+## Revision 2026-07-14 — deterministic PreToolUse backstop (the nudge was prose)
+
+**Context.** The auto-detect nudge above still lived ONLY as an agent-executed bash
+block in `skills/pr-grind/SKILL.md`'s COMPLETION section. That block runs only if the
+grinding agent executes it verbatim, from the right CWD, with `CLAUDE_PLUGIN_ROOT` set.
+The one deterministic enforcement — `pre-merge-gate.sh` — checks a pr-grind-clean marker
++ green CI and NEVER verifies the nudge ran. So the nudge silently no-opped on every
+merge path that reaches "clean" without that block: the gate's **bootstrap-merge bypass**
+(gate-modifying PRs, e.g. #336), skip-pr-grind bypasses, worktree `--admin` squashes, and
+any run where the agent shortcut to the marker. Verified empirically: of PRs #335–#342,
+only #335 (normally ground, no gate-infra changes) got a nudge; the gate-refactor and
+ultra-oracle merges got none, despite `codex-active-repo.sh` reporting the repo active.
+
+**Decision.** Fire the nudge from a NON-GATING PreToolUse hook on the merge command —
+`hooks/gate-scripts/codex-nudge-premerge.sh` — the one deterministic point that is
+post-CI-settle AND pre-merge. It reuses the whole existing chain
+(`codex-active-repo.sh` → `codex-nudge-if-expected.sh` → `codex-retrigger.sh`) and adds
+only (1) the deterministic firing point and (2) the `none`-GUARD the wrapper lacks (a
+fully-paginated single-PR REST check of reviews + reactions: nudge ONLY when Codex has
+zero engagement on the PR, so we never re-poke an already-engaged Codex on every merge).
+
+**Why a separate hook, not folding into `pre-merge-gate.sh`.** The gate is fail-CLOSED and
+security-critical; adding a network side-effect (a review-request comment) to it raises its
+blast radius. The nudge hook is purely additive and **can never block a merge** — it emits
+nothing to stdout and always exits 0. FAIL-SAFE = SKIP (the inverse of the gates): on any
+parse/query error it exits 0 WITHOUT posting, so it never spams a spurious `@codex review`
+on an unresolved PR/repo.
+
+**Consequences.**
+- The SKILL COMPLETION nudge block is UNCHANGED and now redundant-but-harmless: both paths
+  share `codex-retrigger.sh`'s per-(PR,HEAD) one-shot marker, so at most one `@codex review`
+  per HEAD fires across the prose path AND the hook. On the paths the prose misses, the hook
+  is now the sole (and reliable) trigger.
+- Runs under `lib/sanitized-gate.sh` (ADR 0016 env containment) like the gates. Kill switch
+  `PR_GRIND_CODEX_RETRIGGER=0` short-circuits it before any network work. Rather than
+  reconstruct gh's repo/PR/host resolution from the command string, the hook fires ONLY when
+  the merge provably targets THIS repo: (a) the scoped parser SKIPS any per-command override
+  it can't neutralize — a `-R`/`--repo` flag (global or after `merge`), an inline
+  `GH_REPO=`/`GH_HOST=` assignment, or a non-numeric positional (branch / PR URL); and (b) it
+  DELEGATES resolution to gh (`gh pr view [<num>] --json number,headRefOid,url`) in the
+  merge's cwd + env, then REQUIRES the resolved `host/owner/repo` to EQUAL the cwd repo's
+  `origin` (github.com only). Any divergence — inherited `GH_REPO`/`GH_HOST`, a
+  cross-repo/cross-host URL — fails the equality check and skips. An INHERITED
+  `GH_REPO`/`GH_HOST`, or a `GH_REPO=`/`GH_HOST=` assignment anywhere in the command, would
+  re-target the merge to a host/repo the delegate's default-host `gh pr comment -R
+  owner/repo` could not match; so those are re-imported through the `env -i` line ONLY to be
+  DETECTED — if set, the hook skips, otherwise it clears them so every gh call (its own and
+  the delegate's) resolves one default host. Because the fire path is gated on target == cwd
+  repo, the force-on marker (checked at the delegate's exact location — the git-common-dir
+  main root under `.claude`, valid from a linked worktree) and the delegate's one-shot dedup
+  marker are always the target repo's own — repo A's consent never nudges repo B.
+  `PR_GRIND_CODEX_RETRIGGER`/`BUSDRIVER_STATE_DIR` are likewise re-imported (a disabled nudge
+  is not a merge/review bypass, so it is safe, unlike the gates). Finally, the hook fires ONLY
+  on the tightest CANONICAL shape — a SINGLE `gh pr merge`, optionally prefixed by a bare `cd`
+  joined with `&&` (the only form `gh_pr` captures into `target_dir`, so `REPO_DIR` stays
+  correct). ANYTHING else in the invocation is un-analyzable and skipped: an env-assignment
+  prefix (`GIT_DIR=`, `GH_REPO=`, anything — any can redirect git/gh), a `;`-joined or
+  otherwise-uncaptured `cd`, a `gh pr <non-merge>` prefix (`checkout` re-points the branch a
+  targetless merge resolves), `source`/`git`/`export`/`echo`/arbitrary commands, shell
+  expansion, or a second chained merge. The SKILL-prose nudge still covers everything the
+  hook conservatively skips.
+- Timing caveat (unchanged, pre-existing): the nudge triggers Codex but does NOT block the
+  merge on Codex's response — same best-effort "poke" semantics as the original design.
+- New coverage: `tests/test-codex-nudge-premerge.sh` (none+active posts once; already-engaged
+  / kill-switch / non-merge post nothing; always silent + exit 0). Auto-discovered by the
+  full-glob `scripts/ci/run-shell-tests.sh` (`tests/test-*.sh`) — no explicit registration.
+
+**Accepted limits (independently reviewed 2026-07-15 — inherent, not bugs).** Litmus
+(Codex, adversarial) surfaced two theoretical concerns that an independent second reviewer
+confirmed are structural properties of a non-gating, out-of-process, static PreToolUse
+hook — not defects, and not worth code changes. They are documented here and in the hook
+header so they are not re-raised as bugs:
+1. **Fires on merge-INTENT, decoupled from the pre-merge gate's verdict.** The one-shot
+   dedup is per-`(PR,HEAD)` (`codex-retrigger.sh`), so firing on an attempt the gate later
+   blocks still did its job — Codex was asked about *this* code state; a same-HEAD retry
+   needs no re-nudge, new commits earn a fresh one. Gating on the `pr-grind-clean` marker
+   instead would duplicate the gate's admission logic (drift risk) **and** re-exclude the
+   bootstrap-bypass PRs this hook exists to cover — a strictly worse trade.
+2. **Cannot see the executing shell's aliases / `gh()` functions / PATH.** A PreToolUse
+   hook is a separate pre-exec process reading only the payload; `sanitized-gate` fixes
+   PATH for the hook's *own* `gh`/`git` calls only. The literal-`gh`-token guard already
+   skips wrapper/decoy forms; the residual (a real `gh` alias keeping the literal
+   `gh pr merge N` shape) is bounded to a deduped, possibly-early nudge — never a blocked
+   merge (non-gating), never a comment flood. No PreToolUse-time fix exists.

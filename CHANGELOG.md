@@ -1,3 +1,10 @@
+## [1.91.7](https://github.com/chris-yyau/busdriver/compare/v1.91.6...v1.91.7) (2026-07-14)
+
+
+### Bug Fixes
+
+* **hooks:** resolve Opus 4.x family to 1M window in strategic-compact ([#345](https://github.com/chris-yyau/busdriver/issues/345)) ([d2286a7](https://github.com/chris-yyau/busdriver/commit/d2286a75acfa58039dc716c0777ab246556815f4)), closes [#343](https://github.com/chris-yyau/busdriver/issues/343) [pre-#343](https://github.com/pre-/issues/343)
+
 ## [1.91.6](https://github.com/chris-yyau/busdriver/compare/v1.91.5...v1.91.6) (2026-07-14)
 
 

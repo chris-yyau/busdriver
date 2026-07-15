@@ -75,6 +75,38 @@ function parseInput(inputOrRaw) {
 }
 
 /**
+ * Resolve a protected-config file_path to an ABSOLUTE path so the existence check does not
+ * depend on THIS process's cwd. The sanitized-node.sh wrapper runs node from a neutral cwd
+ * (to defeat version-manager shims that read repo-local .tool-versions/.nvmrc), so a relative
+ * file_path must be resolved against the PAYLOAD's cwd — and that cwd must itself be absolute
+ * (a relative one like "." would resolve against the neutral "/" and hide an existing config).
+ * Returns the absolute path, or null when it cannot be resolved (caller FAILS CLOSED).
+ */
+function resolveProtectedPath(filePath, payloadCwd) {
+  if (path.isAbsolute(filePath)) return filePath;
+  if (typeof payloadCwd === 'string' && path.isAbsolute(payloadCwd)) {
+    // Not a traversal sink: the result is only lstat'd for an existence CHECK (block/allow) —
+    // never opened, read, or written — so a `..` segment can at most change whether we block.
+    return path.resolve(payloadCwd, filePath); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+  }
+  return null;
+}
+
+/**
+ * True if something (file, dir, or symlink) exists at absPath. Uses lstatSync so a dangling
+ * symlink still counts as present, and treats only genuine ENOENT as absent — any other error
+ * (EACCES/EPERM/ELOOP) leaves the guard closed (returns true), never silently weakened.
+ */
+function pathExists(absPath) {
+  try {
+    fs.lstatSync(absPath);
+    return true;
+  } catch (err) {
+    return !(err && err.code === 'ENOENT');
+  }
+}
+
+/**
  * Exportable run() for in-process execution via run-with-flags.js.
  * Avoids the ~50-100ms spawnSync overhead when available.
  */
@@ -94,70 +126,34 @@ function run(inputOrRaw, options = {}) {
   if (!filePath) return { exitCode: 0 };
 
   const basename = path.basename(filePath);
-  if (PROTECTED_FILES.has(basename)) {
-    // Resolve the target to an ABSOLUTE path so the existence check below does not depend
-    // on THIS process's cwd. The sanitized-node.sh wrapper runs node from a neutral cwd
-    // (to defeat version-manager shims that read repo-local .tool-versions/.nvmrc), so a
-    // relative file_path must be resolved against the PAYLOAD's cwd, not process.cwd().
-    let absPath = filePath;
-    if (!path.isAbsolute(filePath)) {
-      // Require an ABSOLUTE payload cwd. A relative one (e.g. ".") would resolve against the
-      // wrapper's neutral `/` cwd, making an existing repo config look absent → fail-open.
-      const payloadCwd = input.cwd;
-      if (typeof payloadCwd === 'string' && path.isAbsolute(payloadCwd)) {
-        // Not a traversal sink: absPath is only lstat'd for an existence CHECK (block/allow
-        // decision) — never opened, read, or written — so a `..` segment can at most change
-        // whether we block; this hook performs no file access with absPath.
-        absPath = path.resolve(payloadCwd, filePath); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
-      } else {
-        // No trustworthy ABSOLUTE base to resolve a relative protected-config path → we
-        // cannot prove this is a first-time creation, so FAIL CLOSED (block) rather than risk
-        // allowing a silent edit of an existing config via an unresolvable relative path.
-        return {
-          exitCode: 2,
-          stderr:
-            `BLOCKED: cannot resolve relative config path ${filePath} (no payload cwd). ` +
-            'Retry with an absolute path, or disable the config-protection hook temporarily.'
-        };
-      }
-    }
-    // Allow first-time creation — there's no existing config to weaken.
-    // The hook's purpose is blocking modifications; writing a brand-new
-    // config file in a project that has none is a legitimate bootstrap
-    // path (e.g. scaffolding ESLint into a fresh repo).
-    //
-    // Fail closed on any stat error other than ENOENT. Use lstatSync so a
-    // symlink at the protected path is treated as present even if its target
-    // is missing — a dangling symlink at e.g. .eslintrc.js still represents
-    // an existing config entry that an agent should not silently replace.
-    // fs.existsSync would swallow EACCES/EPERM as false; lstatSync exposes
-    // the error code so we can treat only genuine "path not found" (ENOENT)
-    // as absent.
-    let exists = true;
-    try {
-      fs.lstatSync(absPath);
-      // lstat succeeded — something (file, dir, or symlink) exists here.
-    } catch (err) {
-      if (err && err.code === 'ENOENT') {
-        exists = false;
-      }
-      // Any other error (EACCES, EPERM, ELOOP, etc.) leaves exists=true
-      // so the guard is never silently weakened.
-    }
+  if (!PROTECTED_FILES.has(basename)) return { exitCode: 0 };
 
-    if (!exists) {
-      return { exitCode: 0 };
-    }
-
+  const absPath = resolveProtectedPath(filePath, input.cwd);
+  if (absPath === null) {
+    // Cannot prove first-time creation for a relative path with no trustworthy absolute base
+    // → FAIL CLOSED rather than risk allowing a silent edit of an existing config.
     return {
       exitCode: 2,
       stderr:
-        `BLOCKED: Modifying ${basename} is not allowed. ` +
-        'Fix the source code to satisfy linter/formatter rules instead of ' +
-        'weakening the config. If this is a legitimate config change, ' +
-        'disable the config-protection hook temporarily.'
+        `BLOCKED: cannot resolve relative config path ${filePath} (no absolute payload cwd). ` +
+        'Retry with an absolute path, or disable the config-protection hook temporarily.'
     };
   }
+
+  // Allow first-time creation — there's no existing config to weaken (a brand-new config in a
+  // project that has none is a legitimate bootstrap, e.g. scaffolding ESLint into a fresh repo).
+  if (!pathExists(absPath)) {
+    return { exitCode: 0 };
+  }
+
+  return {
+    exitCode: 2,
+    stderr:
+      `BLOCKED: Modifying ${basename} is not allowed. ` +
+      'Fix the source code to satisfy linter/formatter rules instead of ' +
+      'weakening the config. If this is a legitimate config change, ' +
+      'disable the config-protection hook temporarily.'
+  };
 
   return { exitCode: 0 };
 }

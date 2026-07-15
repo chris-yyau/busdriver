@@ -93,6 +93,18 @@ function resolveLegacySpawnStdout(raw, result) {
   return '';
 }
 
+// sanitized-node.sh appends a `--fail-closed` ARG (only via hooks.json, never the
+// settings-env channel) for the pure-block gate hooks. For those, this runner's own
+// failure paths — a caught run() exception, a missing/rejected hook script, a
+// legacy-spawn failure, an unhandled error — must BLOCK (exit 2), not fall open to exit
+// 0. A positional arg (not an env var) is used deliberately: the bare non-gate hook
+// registrations run this runner directly without `env -i`, so a PR-set fail-closed ENV
+// var would spuriously block advisory hooks (a DoS); an argv cannot be injected that way.
+// Returns the exit code to use on such a failure: 2 when fail-closed, else historical 0.
+function failOpenExitCode() {
+  return process.argv.includes('--fail-closed') ? 2 : 0;
+}
+
 function getPluginRoot() {
   if (process.env.CLAUDE_PLUGIN_ROOT && process.env.CLAUDE_PLUGIN_ROOT.trim()) {
     return process.env.CLAUDE_PLUGIN_ROOT;
@@ -180,13 +192,13 @@ async function main() {
   // Prevent path traversal outside the plugin root
   if (!scriptPath.startsWith(resolvedRoot + path.sep)) {
     process.stderr.write(`[Hook] Path traversal rejected for ${hookId}: ${scriptPath}\n`);
-    exitWithStdout(sanitizeEcho(raw), 0);
+    exitWithStdout(sanitizeEcho(raw), failOpenExitCode());
     return;
   }
 
   if (!fs.existsSync(scriptPath)) {
     process.stderr.write(`[Hook] Script not found for ${hookId}: ${scriptPath}\n`);
-    exitWithStdout(sanitizeEcho(raw), 0);
+    exitWithStdout(sanitizeEcho(raw), failOpenExitCode());
     return;
   }
 
@@ -222,7 +234,9 @@ async function main() {
       exitWithStdout(sanitizeEcho(result.stdout), result.exitCode);
     } catch (runErr) {
       process.stderr.write(`[Hook] run() error for ${hookId}: ${runErr.message}\n`);
-      exitWithStdout(sanitizeEcho(raw), 0);
+      // A blocking gate whose hook crashed cannot confirm an allow → fail CLOSED when
+      // sanitized-node.sh requested it (the `--fail-closed` arg); else historical exit 0.
+      exitWithStdout(sanitizeEcho(raw), failOpenExitCode());
     }
     return;
   }
@@ -249,7 +263,7 @@ async function main() {
   if (result.error || result.signal || result.status === null) {
     const failureDetail = result.error ? result.error.message : result.signal ? `terminated by signal ${result.signal}` : 'missing exit status';
     writeStderr(`[Hook] legacy hook execution failed for ${hookId}: ${failureDetail}`);
-    exitWithStdout(legacyStdout, 1);
+    exitWithStdout(legacyStdout, process.argv.includes('--fail-closed') ? 2 : 1);
     return;
   }
 
@@ -258,5 +272,6 @@ async function main() {
 
 main().catch(err => {
   process.stderr.write(`[Hook] run-with-flags error: ${err.message}\n`);
-  process.exit(0);
+  // Unhandled runner error: fail CLOSED for the pure-block gate hooks, else exit 0.
+  process.exit(failOpenExitCode());
 });

@@ -1349,7 +1349,7 @@
     {
       "path": "scripts/hooks/run-with-flags.js",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/hooks/run-with-flags.js"
     },
     {

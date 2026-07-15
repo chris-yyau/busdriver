@@ -269,33 +269,51 @@ If YOU created this file: STOP. Do NOT create skip files yourself. Run /litmus i
 fi
 # (env-based SKIP_LITMUS removed — issue #325; use the .local skip file. ADR 0016.)
 
-# ── Gate 1: Design review ────────────────────────────────────────────────
-DESIGN_STATE="$REPO_DIR/$STATE_DIR/design-review-needed.local.md"
-if [ -f "$DESIGN_STATE" ]; then
-    UNREVIEWED=""
-    DESIGN_LINES=$(grep '^\- ' "$DESIGN_STATE" 2>/dev/null || true)
-    while IFS= read -r line; do
-        file="${line#- }"
-        [ -z "$file" ] && continue
-        # Listed paths are repo-relative; resolve against $REPO_DIR (matches the
-        # staged-file handling below). Absolute paths are honored as-is.
-        case "$file" in
-            /*) doc_path="$file" ;;
-            *)  doc_path="$REPO_DIR/$file" ;;
-        esac
-        if [ -f "$doc_path" ] && ! grep -q "<!-- design-reviewed: PASS -->" "$doc_path" 2>/dev/null; then
-            UNREVIEWED="${UNREVIEWED}  - ${file}\n"
+# ── Gate 1: Design review (ADR-A/C — existence-keyed tokens) ──────────────
+# Anchor on the cwd-resolved target repo; all linked worktrees share one marker
+# dir. Pure-shell fast reject first, then the authoritative classifier only for
+# the maybe-pending case. Readers NEVER mutate (ADR-C removes the whole-file rm).
+if ! gate_marker_pending_pureshell "$REPO_DIR"; then
+    _MK_RECS="$(mktemp 2>/dev/null)" || _MK_RECS=""
+    _MK_CODE=0
+    if [ -n "$_MK_RECS" ]; then
+        gate_marker_pending "$REPO_DIR" >"$_MK_RECS" 2>/dev/null || _MK_CODE=$?
+    else
+        # mktemp failed — never redirect to a predictable path (symlink-clobber
+        # risk). Take the decision without records.
+        gate_marker_pending "$REPO_DIR" >/dev/null 2>&1 || _MK_CODE=$?
+    fi
+    if [ "$_MK_CODE" != "0" ]; then
+        UNREVIEWED=""
+        if [ "$_MK_CODE" = "2" ] || [ -z "$_MK_RECS" ]; then
+            UNREVIEWED="  - (design review pending — run /blueprint-review to see the specific documents)\n"
+        else
+            _mk_sp=""; _mk_dp=""; _mk_reason=""; _mk_i=0
+            while IFS= read -r -d '' _mk_field; do
+                _mk_i=$((_mk_i + 1))
+                case $(( _mk_i % 4 )) in
+                    2) _mk_sp="$_mk_field" ;;
+                    3) _mk_dp="$_mk_field" ;;
+                    0) _mk_reason="$_mk_field"
+                       if [ -n "$_mk_dp" ]; then
+                           _mk_sp_q="${_mk_sp//\'/\'\\\'\'}"  # shell-escape single quotes for the rm hint
+                           UNREVIEWED="${UNREVIEWED}  - ${_mk_dp}  (drain if abandoned: rm '${_mk_sp_q}')\n"
+                       else
+                           UNREVIEWED="${UNREVIEWED}  - ${_mk_sp}  [${_mk_reason}]\n"
+                       fi
+                       _mk_sp=""; _mk_dp="" ;;
+                esac
+            done <"$_MK_RECS"
+            [ -n "$UNREVIEWED" ] || UNREVIEWED="  - (design review pending)\n"
         fi
-    done <<< "$DESIGN_LINES"
-
-    if [ -n "$UNREVIEWED" ]; then
-        REASON=$(printf "Design review required before committing.\n\nUnreviewed documents:\n%b\nRun /blueprint-review to review these documents, then try committing again.\n\nIMPORTANT: Do NOT create $STATE_DIR/skip-design-review.local yourself. That is a user-only escape hatch. You MUST run the blueprint review instead." "$UNREVIEWED")
+        rm -f "$_MK_RECS"
+        # §6: a COMMIT is bypassed with skip-litmus.local (pre-commit consumes only
+        # that, above, before this gate — NOT skip-design-review.local).
+        REASON=$(printf "Design review required before committing.\n\nUnreviewed documents:\n%b\nRun /blueprint-review to review these documents, then try committing again.\n\nIf the user wants to bypass the commit: touch %s/%s/skip-litmus.local (pre-commit consumes skip-litmus.local, not skip-design-review.local). Do NOT create it yourself." "$UNREVIEWED" "$REPO_DIR" "$STATE_DIR")
         block_emit "$REASON"
         exit 0
-    else
-        # All files have the review marker → clean up state
-        rm -f "$DESIGN_STATE"
     fi
+    rm -f "$_MK_RECS"
 fi
 
 # ── Merge commit auto-pass ─────────────────────────────────────────────

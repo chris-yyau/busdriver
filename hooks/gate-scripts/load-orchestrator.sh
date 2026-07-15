@@ -47,12 +47,13 @@ fi
 # Check for stale design-review-needed.local.md from previous sessions.
 # Validates entries (removes resolved ones) but does NOT auto-expire stale state.
 # Stale reviews persist until explicitly completed or manually skipped.
-DESIGN_STATE=".claude/design-review-needed.local.md"
 DESIGN_CLEANUP_MSG=""
 HOOK_LIB_DIR="$(cd "$(dirname "$0")" && pwd)/lib"
-if [ -f "$DESIGN_STATE" ]; then
-    DESIGN_CLEANUP_MSG=$(python3 "$HOOK_LIB_DIR/design_cleanup.py" 2>/dev/null || true)
-fi
+# Task 2 (Step 4): the pending state now lives in the shared git-common-dir, not a
+# CWD-relative file. Drop the old `[ -f .claude/design-review-needed.local.md ]`
+# pre-check (it missed the shared location) and always run the warn-only cleanup,
+# which resolves the marker dir itself.
+DESIGN_CLEANUP_MSG=$(python3 "$HOOK_LIB_DIR/design_cleanup.py" 2>/dev/null || true)
 
 # Resolve orchestrator SKILL.md — prefer plugin location, fall back to legacy
 if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/skills/orchestrator/SKILL.md" ]; then

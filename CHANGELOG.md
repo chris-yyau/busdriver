@@ -1,3 +1,10 @@
+## [1.91.9](https://github.com/chris-yyau/busdriver/compare/v1.91.8...v1.91.9) (2026-07-15)
+
+
+### Bug Fixes
+
+* **gates:** contain pure-block node hooks via sanitized-node.sh (Task 3) ([#349](https://github.com/chris-yyau/busdriver/issues/349)) ([c0ffeb7](https://github.com/chris-yyau/busdriver/commit/c0ffeb718b9f5234acbbee85a6ea95e2a425b924))
+
 ## [1.91.8](https://github.com/chris-yyau/busdriver/compare/v1.91.7...v1.91.8) (2026-07-15)
 
 

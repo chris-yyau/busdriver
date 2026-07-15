@@ -49,8 +49,9 @@ recs_has(){ tr '\0' '\n' <"$RECS" | grep -qF "$1"; }
 arm(){ bash "$R" arm "$1" >/dev/null 2>&1; }
 markerdir(){ bash "$R" dir "$1" 2>/dev/null; }
 
-# Emit a Bash/Write hook payload.
-payload_write(){ printf '{"tool_name":"Write","tool_input":{"file_path":"%s"},"cwd":"%s"}' "$1" "$2"; }
+# Emit a Bash/Write hook payload. JSON-encode the paths (jq) so a path containing
+# a quote/backslash/control byte can't corrupt the payload.
+payload_write(){ jq -cn --arg fp "$1" --arg cwd "$2" '{tool_name:"Write",tool_input:{file_path:$fp},cwd:$cwd}'; }
 
 echo "── (Step 1) classifier: arm / existence-keyed / exit codes ───────"
 

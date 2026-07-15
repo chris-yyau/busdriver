@@ -52,7 +52,9 @@ if code == 0:
         pass
     sys.exit(0)
 
-if code == 2:
+if code != 1:
+    # Anything other than 0 (handled above) or 1 (pending, below) — 2, or a child
+    # 127/126 (python3 missing/uninvocable) — is an enumeration failure, not "clean".
     print("WARNING: could not enumerate the design-review marker set — the review gate will block as a precaution.")
     print("Run /blueprint-review, or inspect the repo's git-common-dir marker directory.")
     sys.exit(0)

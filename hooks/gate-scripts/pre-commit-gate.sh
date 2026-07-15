@@ -296,7 +296,8 @@ if ! gate_marker_pending_pureshell "$REPO_DIR"; then
                     3) _mk_dp="$_mk_field" ;;
                     0) _mk_reason="$_mk_field"
                        if [ -n "$_mk_dp" ]; then
-                           UNREVIEWED="${UNREVIEWED}  - ${_mk_dp}  (drain if abandoned: rm '${_mk_sp}')\n"
+                           _mk_sp_q="${_mk_sp//\'/\'\\\'\'}"  # shell-escape single quotes for the rm hint
+                           UNREVIEWED="${UNREVIEWED}  - ${_mk_dp}  (drain if abandoned: rm '${_mk_sp_q}')\n"
                        else
                            UNREVIEWED="${UNREVIEWED}  - ${_mk_sp}  [${_mk_reason}]\n"
                        fi

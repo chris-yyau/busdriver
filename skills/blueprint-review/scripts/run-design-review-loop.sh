@@ -187,12 +187,20 @@ log_info "Design file: $DESIGN_FILE"
 # never cross-clears a divergent branch's token in another worktree.
 _MARKER_RESOLVER="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$SCRIPT_DIR/../../..}}/hooks/gate-scripts/lib/resolve-repo-dir.sh"
 _MARKER_SNAP=()
-if [[ -f "$DESIGN_FILE" ]]; then
+_MARKER_RESOLVE_OK=false
+if [[ ! -f "$_MARKER_RESOLVER" ]]; then
+  # Unset SCRIPT_DIR / plugin root collapses the fallback to "/…" — the resolver
+  # won't exist, so prune would be a silent no-op. Warn rather than pretend.
+  log_warning "Marker resolver not found at $_MARKER_RESOLVER; token prune will be skipped on PASS (drain manually if needed)."
+elif [[ -f "$DESIGN_FILE" ]]; then
   _mk_glob="$(bash "$_MARKER_RESOLVER" marker-glob "$DESIGN_FILE" 2>/dev/null || true)"
   if [[ -n "$_mk_glob" ]]; then
+    _MARKER_RESOLVE_OK=true
     shopt -s nullglob 2>/dev/null || true
     for _mk_f in "$_mk_glob"*; do _MARKER_SNAP+=("$_mk_f"); done
     shopt -u nullglob 2>/dev/null || true
+  else
+    log_warning "Could not resolve the marker dir for $DESIGN_FILE; token prune will be skipped on PASS (drain manually if needed)."
   fi
 fi
 
@@ -1216,7 +1224,11 @@ EOF
     if [ "${#_MARKER_SNAP[@]}" -gt 0 ]; then
       rm -f "${_MARKER_SNAP[@]}"
     fi
-    log_info "Design review state cleaned up (${#_MARKER_SNAP[@]} marker token(s) pruned)."
+    if [ "$_MARKER_RESOLVE_OK" = true ]; then
+      log_info "Design review state cleaned up (${#_MARKER_SNAP[@]} marker token(s) pruned)."
+    else
+      log_warning "PASS recorded, but the marker dir was unresolved at loop start — NO tokens were pruned; drain manually if the gate keeps blocking."
+    fi
     mark_review_complete "passed"
     exit 0
   fi

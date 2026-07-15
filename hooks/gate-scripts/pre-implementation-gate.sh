@@ -651,6 +651,11 @@ if [ "$TOOL_TYPE" = "WRITE_EDIT" ]; then
     # can't be resolved, do NOT exempt (fall through to the marker check).
     # (The unconditional marker-forge guard at the top already ran, so the marker
     # files themselves stay protected regardless.)
+    # FAIL-CLOSED: gate_marker_relpath resolves FILE_PATH's PHYSICAL repo-relative
+    # path. A relative FILE_PATH is resolved against the gate CWD, which for an impl
+    # file yields e.g. `src/…` (not `$STATE_DIR/…`) → not exempted → the marker
+    # check runs. It can only ever FAIL to exempt (block), never wrongly exempt, so
+    # the payload-cwd nicety is deferred rather than plumb a newline-unsafe abspath.
     _REL="$(gate_marker_relpath "$FILE_PATH" 2>/dev/null || true)"
     case "$_REL" in
         "$STATE_DIR"/*) exit 0 ;;
@@ -685,7 +690,8 @@ else
             3) _mk_dp="$_mk_field" ;;      # doc_path — validated abspath, or empty
             0) _mk_reason="$_mk_field"
                if [ -n "$_mk_dp" ]; then
-                   UNREVIEWED="${UNREVIEWED}  - ${_mk_dp}  (drain if abandoned: rm '${_mk_sp}')\n"
+                   _mk_sp_q="${_mk_sp//\'/\'\\\'\'}"  # shell-escape single quotes for the rm hint
+                   UNREVIEWED="${UNREVIEWED}  - ${_mk_dp}  (drain if abandoned: rm '${_mk_sp_q}')\n"
                else
                    UNREVIEWED="${UNREVIEWED}  - ${_mk_sp}  [${_mk_reason}]\n"
                fi

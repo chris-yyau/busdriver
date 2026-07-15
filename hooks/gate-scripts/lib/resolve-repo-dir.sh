@@ -277,6 +277,10 @@ gate_marker_pending_pureshell() {
     # state, not "absent" — treat it as uncertain (→ authoritative → fail-CLOSED).
     if [ -e "$tokdir" ] || [ -L "$tokdir" ]; then
         [ -d "$tokdir" ] || return 1                 # not a dir (incl. dangling symlink)
+        # Need BOTH read (to list) and search/execute (to stat entries via the glob
+        # below). A dir readable-but-not-searchable would list names yet make every
+        # `[ -e ]` stat fail → the glob loop would miss real tokens and fast-allow.
+        { [ -r "$tokdir" ] && [ -x "$tokdir" ]; } || return 1
         ls -A "$tokdir" >/dev/null 2>&1 || return 1  # listing error → uncertain
         # Detect ANY entry via GLOBBING, never `$(ls)` — a filename made entirely
         # of newline bytes survives command substitution's trailing-newline strip

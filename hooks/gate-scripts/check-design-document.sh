@@ -22,8 +22,14 @@ export BUSDRIVER_STATE_DIR="$STATE_DIR"
 trap 'exit 0' ERR
 
 # Shared marker helpers (gate_marker_arm / gate_marker_relpath — Task 2).
+# Guard the source explicitly: the `trap 'exit 0' ERR` above would otherwise turn
+# a missing/unreadable resolver into a silent exit-0 that arms nothing and warns
+# nothing (fail-open). Warn, then keep the pre-existing disabled-gate behavior.
 # shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
+if ! source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"; then
+  echo "WARNING: design-review marker helpers unavailable; no marker was armed." >&2
+  exit 0
+fi
 
 # Consume stdin
 INPUT=$(cat 2>/dev/null || true)
@@ -184,32 +190,19 @@ if [ "$IS_DESIGN" = true ]; then
     # non-inline-cd write the hook CWD equals the command's effective dir, so
     # arming is correct.
     if ! gate_marker_arm "$FILE_PATH"; then
-      # §5: best-effort miss (unresolvable common-dir, or a create failure). If
-      # the repo root still resolves, fall back to the LEGACY marker anchored at
-      # $REPO_DIR (where the read gates union it — Decision-D3) so the pending
-      # state is never SILENTLY lost; anchor at the repo root, never CWD-relative.
-      # Every fallback write is guarded and success is tracked explicitly: without
-      # this, a failing mkdir/append/create would hit `trap 'exit 0' ERR` and the
-      # hook would exit 0 with no marker AND no warning — a silent fail-open.
-      _armed_fallback=false
-      _REPO_DIR="$(git -C "$(dirname -- "$FILE_PATH")" rev-parse --show-toplevel 2>/dev/null || true)"
-      if [ -n "$_REPO_DIR" ]; then
-        _LEGACY="$_REPO_DIR/$STATE_DIR/design-review-needed.local.md"
-        _REL="$(gate_marker_relpath "$FILE_PATH" 2>/dev/null || printf '%s' "$FILE_PATH")"
-        if mkdir -p "$_REPO_DIR/$STATE_DIR" 2>/dev/null; then
-          if [ -f "$_LEGACY" ]; then
-            if grep -qF "$_REL" "$_LEGACY" 2>/dev/null || printf -- '- %s\n' "$_REL" >> "$_LEGACY" 2>/dev/null; then
-              _armed_fallback=true
-            fi
-          elif printf -- '---\nactive: true\ncreated_at: %s\n---\n\n# Design documents pending review\n\n- %s\n' \
-                 "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$_REL" > "$_LEGACY" 2>/dev/null; then
-            _armed_fallback=true
-          fi
-        fi
-      fi
-      if [ "$_armed_fallback" != true ]; then
-        echo "WARNING: could not arm the design-review marker for $BASENAME (token + legacy fallback both failed); the review gate may not fire for this doc. Re-save it, or check .git/busdriver/ and $STATE_DIR/ permissions." >&2
-      fi
+      # Best-effort miss — this is the design-DEFERRED "fail-closed arming" item
+      # (§2). Arming lives in this PostToolUse detector, which cannot block; making
+      # it truly fail-closed means moving it into a PreToolUse gate (deferred to the
+      # follow-up issue). Some failure modes DO stay fail-CLOSED here: an
+      # unresolvable common-dir also makes the READ gates return exit 2 → block, and
+      # a partial-token write leaves an `unparseable` token → block. The residual
+      # (a pre-token mkdir/normalize failure while the common-dir is resolvable)
+      # is the accepted best-effort miss — UNCHANGED from the prior detector (which
+      # was silently fail-open on write failure; this at least warns). We do NOT
+      # write a repo-relative legacy marker fallback: a `>>`/`>` to a computed path
+      # is a symlink / TOCTOU surface for marginal coverage. The D3 legacy UNION
+      # reader still honours any pre-existing migration markers.
+      echo "WARNING: could not arm the design-review marker for $BASENAME. If the repo state is resolvable the review gate may not fire for this doc — re-save it, or run /blueprint-review before implementing." >&2
     fi
 
     echo "Design document written: $BASENAME"

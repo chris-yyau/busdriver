@@ -77,6 +77,11 @@ def cmd_arm(argv):
             continue
         except OSError:
             return 1
+        # KEEP any partially-written token on write/close failure — do NOT unlink.
+        # The classifier reads a malformed/truncated token as `unparseable` →
+        # PENDING → block, so a failed arm still leaves durable FAIL-CLOSED state
+        # rather than silently losing the review requirement (a fail-OPEN). The
+        # operator drains a genuinely spurious token via the §6 manual `rm`.
         try:
             off = 0
             while off < len(data):  # os.write may short-write
@@ -84,7 +89,10 @@ def cmd_arm(argv):
         except OSError:
             return 1
         finally:
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         return 0
     return 1
 
@@ -181,8 +189,13 @@ def _classify_tokens(marker_dir, em):
         except OSError:
             em.add("token", tok, "", "unreadable")
             continue
-        body = raw[:-1] if raw.endswith(b"\n") else raw
-        if b"\n" in body or b"\r" in body:  # exactly one trailing LF allowed
+        # arm ALWAYS writes norm + exactly one trailing LF; a body missing it is a
+        # truncated/forged token → unparseable (not silently accepted).
+        if not raw.endswith(b"\n"):
+            em.add("token", tok, "", "unparseable")
+            continue
+        body = raw[:-1]
+        if b"\n" in body or b"\r" in body:  # only the one trailing LF allowed
             em.add("token", tok, "", "unparseable")
             continue
         norm = body.decode("utf-8", "surrogateescape")

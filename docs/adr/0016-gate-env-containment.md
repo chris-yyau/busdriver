@@ -110,10 +110,19 @@ the PR-injectable channel a committed `settings.json` `env` block controls, so a
 attacker could switch the gates OFF. `BASH_ENV` indeed does not apply to `node`, but
 the *flag* channel does. These three are now CONTAINED via
 `hooks/gate-scripts/lib/sanitized-node.sh` — an `env -i` wrapper that mirrors
-`sanitized-gate.sh` (trusted-PATH rebuild so `node` still resolves off
-`/opt/homebrew/bin` and the operator's own bin dirs, git-config/HOME neutralization)
-and then runs the runner (`run-with-flags.js`) as a CHILD — deliberately not `exec` —
-so it can inspect the exit status. With the profile flag wiped, each hook falls back to
+`sanitized-gate.sh` (trusted-PATH rebuild, git-config/HOME neutralization) and then runs
+the runner (`run-with-flags.js`) as a CHILD — deliberately not `exec` — so it can inspect
+the exit status. **Node resolution:** the system allowlist is searched first, then the
+operator's passwd-HOME *direct-binary* dirs (`~/.local/bin` + nvm per-version bins) as a
+fallback so an nvm-only host still resolves; each candidate is validated with
+`node --check "$runner"` (a real syntax parse of the runner, so an incompatible node is
+skipped rather than dead-ending the gate closed). Version-manager *shims* (Volta/asdf/mise)
+and shared prefixes (Linuxbrew) are excluded — a shim reads PR-controlled repo config to
+pick a runtime and a shared prefix is an LCE surface. As defense-in-depth the wrapper runs
+node from a **neutral CWD (`/`)** so even a system `node` that is a symlink to a shim can't
+read repo-local `.tool-versions`/`.nvmrc`/`package.json`; `config-protection` correspondingly
+resolves a relative `file_path` against the *payload* cwd (and fails closed if it can't), so
+the neutral process cwd never weakens it. With the profile flag wiped, each hook falls back to
 its default-enabled state and fires. If `node`/the runner cannot be found, OR the runner
 exits non-0/non-2 (a launch/crash — 1/126/127 — the harness would otherwise treat as a
 non-blocking error and let the tool through), the wrapper converts it to

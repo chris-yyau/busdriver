@@ -69,77 +69,16 @@ else
     unset HOME
 fi
 
-# Append the operator's own DIRECT-binary node dirs so node resolves even when it lives
-# outside a system prefix (~/.local/bin is the documented common case; the nvm glob below
-# adds each installed version's real binary). These are ALL derived from the trusted
-# passwd HOME, never the PR-influenced env, and hold direct binaries — NOT version-manager
-# shims that read repo config (see the trust note below for why shims are excluded). They are
-# appended LAST on PATH (so system tools still win for child processes), but the node
-# RESOLUTION below deliberately prefers these operator dirs (see Codex P2 fix).
-# ponytail: this list is best-effort, not exhaustive — a node
-# under a layout not covered here (an exotic version manager, a bespoke prefix) falls
-# through to the loud fail-CLOSED block below, which is SAFE (it blocks, never bypasses)
-# and names the searched PATH so the operator can symlink node into ~/.local/bin. Add a
-# dir here only if a real operator hits it; don't pre-enumerate the world.
-_uds=()   # operator-managed node dirs, in preference order (hoisted so node resolution below can read it even when HOME is unset)
-if [[ -n "${HOME:-}" ]]; then
-    # Only DIRECT node binaries under the passwd-HOME belong here — dirs a PR cannot write
-    # to AND whose `node` does not consult repo-local config to decide what to run:
-    #   - ~/.local/bin: a plain binary/symlink the operator placed.
-    #   - nvm version dirs (added below): each is a specific version's real node binary.
-    # DELIBERATELY EXCLUDED:
-    #   - Volta / asdf / mise SHIM dirs: the shim reads PR-controlled repo files
-    #     (package.json volta pin, .tool-versions, mise config) to select the node — and
-    #     `node --check` below EXECUTES the shim, so a PR could steer which node (and which
-    #     version-manager plugin code) runs before the gate. Preferring a shim is a
-    #     PR-influence vector (Codex/litmus HIGH).
-    #   - A shared prefix like /home/linuxbrew/.linuxbrew/bin: not in the sanitized-gate
-    #     allowlist and group-writable on multi-user hosts → an LCE escalation if preferred.
-    # An operator whose node lives only behind an excluded manager can symlink it into
-    # ~/.local/bin (the documented fail-closed escape).
-    _uds=(
-        "$HOME/.local/bin"
-    )
-    # nvm installs under ~/.nvm/versions/node/<version>/bin. PATH resolution takes the
-    # FIRST match, so add ONLY the highest installed version that actually holds an
-    # executable `node`. Version comparison is done in PURE BASH (numeric major.minor.patch),
-    # NOT `sort -V` — that flag is GNU-only and absent from BSD/macOS `sort`, so relying on
-    # it would make an nvm-only macOS host fail-CLOSED and block every operation.
-    # Rank the highest CLEAN stable (vMAJOR.MINOR.PATCH) first so `command -v` prefers it,
-    # then append EVERY other node-bearing nvm dir (prereleases, unparseable names) as a
-    # fallback — so node ALWAYS resolves, even on a prerelease-only host, while a stable
-    # release still wins when one exists. No `sort` (BSD `sort` lacks `-V`); component-wise
-    # numeric compare (no packed-int overflow); a prerelease never outranks a stable but is
-    # never excluded either.
-    if [[ -d "$HOME/.nvm/versions/node" ]]; then
-        _b_maj=-1; _b_min=-1; _b_pat=-1; _best_dir=""
-        _other_nvm=()
-        for _nv in "$HOME"/.nvm/versions/node/*/bin; do
-            [[ -x "$_nv/node" ]] || continue
-            _ver=${_nv%/bin}; _ver=${_ver##*/v}          # ".../v20.11.0/bin" → "20.11.0"
-            # ONE strict anchored regex admits only clean MAJOR.MINOR.PATCH with each
-            # component 1–6 digits. This single check rejects prereleases (`-rc.1`), build
-            # metadata, trailing/leading dots, wrong arity, and over-long components in one
-            # shot — the 6-digit cap also keeps 10#<n> (max 999999) inside 64-bit arithmetic
-            # so nothing can overflow. BASH_REMATCH is read below before any other `[[ =~ ]]`.
-            if [[ "$_ver" =~ ^([0-9]{1,6})\.([0-9]{1,6})\.([0-9]{1,6})$ ]] \
-               && { (( 10#${BASH_REMATCH[1]} >  _b_maj )) \
-                    || (( 10#${BASH_REMATCH[1]} == _b_maj && 10#${BASH_REMATCH[2]} >  _b_min )) \
-                    || (( 10#${BASH_REMATCH[1]} == _b_maj && 10#${BASH_REMATCH[2]} == _b_min && 10#${BASH_REMATCH[3]} > _b_pat )); }; then
-                [[ -n "$_best_dir" ]] && _other_nvm+=("$_best_dir")   # demote prior best to fallback
-                _b_maj=$((10#${BASH_REMATCH[1]})); _b_min=$((10#${BASH_REMATCH[2]})); _b_pat=$((10#${BASH_REMATCH[3]})); _best_dir=$_nv
-            else
-                _other_nvm+=("$_nv")
-            fi
-        done
-        [[ -n "$_best_dir" ]] && _uds+=("$_best_dir")
-        [[ ${#_other_nvm[@]} -gt 0 ]] && _uds+=("${_other_nvm[@]}")
-    fi
-    for _ud in "${_uds[@]}"; do
-        [[ -d "$_ud" ]] && PATH="$PATH:$_ud"
-    done
-    export PATH
-fi
+# NOTE on node location: node is resolved from the trusted system allowlist FIRST, then
+# from the operator's own passwd-HOME direct-binary dirs (~/.local/bin and nvm's per-version
+# bins) as a fallback — so a host whose only node is under nvm still resolves. Two surfaces
+# are DELIBERATELY excluded: (a) Volta/asdf/mise SHIM dirs and (b) shared prefixes like
+# /home/linuxbrew/.linuxbrew/bin. (a) because a shim is extra indirection best avoided even
+# though the `cd /` below already neutralizes the repo-config vector; (b) because a
+# group-writable shared prefix is an LCE surface `cd /` does NOT fix (it is about who owns
+# the binary, not the cwd). The `cd /` neutral-cwd step below is what makes the operator
+# fallback safe: even if ~/.local/bin/node is a symlink to a version manager, running it
+# from `/` means no repo-local .tool-versions/.nvmrc/package.json can steer it.
 
 # ── Fail-CLOSED helper ─────────────────────────────────────────────────────
 # A blocking hook that cannot launch its runtime MUST block, never pass through.
@@ -160,40 +99,43 @@ if [[ ! -f "$runner" ]]; then
            "hook runner missing; blocking hook cannot launch"
 fi
 
-# Neutralize the CWD before running ANY node. A `node` that is (or wraps) a version-manager
-# shim selects its runtime + can run manager plugin code based on config found RELATIVE TO
-# THE CWD — `.tool-versions`, `.nvmrc`, `package.json`, mise config. Claude invokes hooks
-# with the CWD set to the repo, so a PR could drop such a file to steer node selection
-# before the gate. Running from a neutral dir with none of those files (root `/`) closes
-# that vector for both the `--check` validation AND the runner exec below. Safe for the
-# three contained hooks: they act on stdin / absolute file_path, never a CWD-relative path.
+# Neutralize the CWD before running ANY node — belt-and-suspenders against a system-dir
+# `node` that is actually a SYMLINK/wrapper to a version-manager shim (Volta/asdf/mise can
+# install into /usr/local/bin): such a shim selects its runtime + can run manager plugin
+# code from config found RELATIVE TO THE CWD (.tool-versions/.nvmrc/package.json/mise). The
+# hook CWD is the repo, so a PR could drop such a file to steer node before the gate. Running
+# from `/` (no such files) closes that for both `--check` AND the runner exec below. The
+# three contained hooks stay correct: block-no-verify / dev-server-block act on the command
+# string; config-protection now resolves a relative file_path against the PAYLOAD cwd (not
+# process.cwd()), so a neutral process CWD does not weaken it (see config-protection.js).
 cd / 2>/dev/null || _block "sanitized-node: cannot cd to a neutral dir — failing CLOSED" \
                            "cannot neutralize CWD; blocking hook cannot launch safely"
 
-# ── Resolve node, PREFERRING the operator-managed node ─────────────────────
-# The pre-wrapper hook used the session PATH, where the operator's own (usually newer)
-# node won. A plain `command -v node` over the rebuilt PATH would instead pick a distro
-# node in /usr/local/bin or /usr/bin FIRST (operator dirs are appended last) — and if
-# that stale node cannot parse the runner, the wrapper fails CLOSED and blocks every
-# gated action (Codex P2). So try the operator-managed dirs (in the preference order built
-# above) BEFORE the system dirs, and VALIDATE each candidate with `node --check "$runner"`
-# — a real syntax parse of THE runner, not a mere `--version` (which an outdated node that
-# cannot parse the runner's `??`/`?.` syntax would still pass). A node that can't parse the
-# runner is skipped, so resolution falls through to a compatible one instead of preferring
-# a too-old operator node. All candidate dirs are trusted (operator dirs from the passwd
-# HOME a PR cannot write; system dirs from the fixed allowlist), and the neutral CWD above
-# blocks the repo-config shim vector, so no injection surface.
+# ── Resolve node: system dirs first, passwd-HOME direct-binary dirs as fallback ──────
+# Candidate order per the node-location note above: system allowlist FIRST (real binaries),
+# then ~/.local/bin and each nvm version bin (so an nvm-only host still resolves). For EACH
+# candidate, VALIDATE with `node --check "$runner"` — a real syntax parse of THE runner,
+# stronger than `--version` (which an outdated node that can't parse the runner's `??`/`?.`
+# would still pass). This is the fix for Codex P2 ("an incompatible node the wrapper picks
+# fails EVERY gated action closed"): an unparseable node is SKIPPED so resolution falls
+# through to a compatible one. --check picks the first working node (any node that parses the
+# trivial runner works — no version ranking needed). `cd /` above already ran, so a shim
+# candidate cannot read repo config. Excluded: Volta/asdf/mise shims + Linuxbrew (see note).
 _node=""
-_node_cands=()
-[[ ${#_uds[@]} -gt 0 ]] && _node_cands+=("${_uds[@]}")
-_node_cands+=(/opt/homebrew/bin /usr/local/bin /usr/bin /bin)
-for _cand in "${_node_cands[@]}"; do
-    [[ -n "$_cand" && -x "$_cand/node" ]] || continue
+_cands=(/opt/homebrew/bin /usr/local/bin /usr/bin /bin)
+if [[ -n "${HOME:-}" ]]; then
+    _cands+=("$HOME/.local/bin")
+    for _nv in "$HOME"/.nvm/versions/node/*/bin; do
+        [[ -d "$_nv" ]] && _cands+=("$_nv")
+    done
+fi
+for _cand in "${_cands[@]}"; do
+    [[ -x "$_cand/node" ]] || continue
     "$_cand/node" --check "$runner" >/dev/null 2>&1 || continue
     _node="$_cand/node"; break
 done
 if [[ -z "$_node" ]]; then
-    _block "sanitized-node: no node able to parse the runner on trusted candidates (PATH=$PATH) — failing CLOSED" \
+    _block "sanitized-node: no node able to parse the runner on trusted candidates (PATH=$PATH, +~/.local/bin, +nvm) — failing CLOSED" \
            "no compatible node runtime; blocking hook cannot launch"
 fi
 

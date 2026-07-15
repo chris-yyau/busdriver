@@ -245,7 +245,18 @@ assert_true test "$_prefer" = "OK" "node resolution skips a candidate that fails
 # --version) and must build the candidate list operator-dirs (_uds) BEFORE system dirs.
 # shellcheck disable=SC2016  # grepping for the LITERAL string --check "$runner" in the wrapper
 grep -q -- '--check "$runner"' "$NODE_WRAPPER"; assert $? "wrapper validates node with --check against the runner (not --version)"
-awk '/_node_cands\+=\("\$\{_uds\[@\]\}"\)/{u=NR} /_node_cands\+=\(\/opt\/homebrew/{s=NR} END{exit !(u>0 && s>0 && u<s)}' "$NODE_WRAPPER"; assert $? "wrapper orders operator dirs (_uds) before system dirs in the node candidate list"
+# Node candidates: system dirs first, then passwd-HOME direct-binary fallback (~/.local/bin
+# + nvm version bins) so an nvm-only host resolves. Shims (Volta/asdf/mise) and shared
+# prefixes (Linuxbrew) stay OUT of executed code (shim = repo-config indirection; shared =
+# LCE surface). The cd / above makes the ~/.local/bin + nvm fallback shim-config-safe.
+grep -qE '_cands=\(/opt/homebrew/bin /usr/local/bin /usr/bin /bin\)' "$NODE_WRAPPER"; assert $? "node candidate list starts with the trusted system dirs"
+grep -qE '\.nvm/versions/node/\*/bin' "$NODE_WRAPPER"; assert $? "nvm version bins are searched as a passwd-HOME fallback (nvm-only host resolves)"
+# (strip comment lines first — the rationale note legitimately names these dirs)
+! grep -vE '^[[:space:]]*#' "$NODE_WRAPPER" | grep -qE '\.volta|\.asdf|mise/shims|linuxbrew'; assert $? "no version-manager shim dir or shared prefix in EXECUTED code (no shim-indirection / LCE surface)"
+# The wrapper MUST neutralize CWD (cd /) before running node, so a system-dir node that is
+# a symlink to a version-manager shim can't read repo-local config. Safe because
+# config-protection resolves file_path against the PAYLOAD cwd (asserted below).
+grep -qE '^[[:space:]]*cd / ' "$NODE_WRAPPER"; assert $? "wrapper neutralizes CWD (cd /) before running node"
 
 # run() EXCEPTION: run-with-flags.js catches a hook's run() throw and would exit 0
 # (fail-open). The `--fail-closed` ARG makes the runner convert it to exit 2. Exercise the
@@ -275,6 +286,32 @@ printf '%s' "$_cfg_payload" | ECC_HOOK_PROFILE=minimal /usr/bin/env -i \
     PATH=/usr/bin:/bin HOME="$REAL_HOME" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" CLAUDE_HOOK_EVENT_NAME="PreToolUse" \
     bash "$NODE_WRAPPER" "pre:config-protection" "scripts/hooks/config-protection.js" "standard,strict" >/dev/null 2>&1 || cfg_rc=$?
 assert_true test "$cfg_rc" -eq 2 "config-protection still BLOCKS a protected-file edit under sanitized env"
+
+# config-protection with a RELATIVE file_path (Codex P1 regression guard): the wrapper runs
+# node from a neutral cwd (/), so config-protection MUST resolve the relative path against
+# the PAYLOAD cwd — an EXISTING protected config named relatively must still BLOCK, not slip
+# through as a phantom ENOENT/allow.
+mkdir -p "$TMP/proj"; : > "$TMP/proj/.eslintrc"
+_cfg_rel=$(printf '{"cwd":"%s/proj","tool":"Write","tool_input":{"file_path":".eslintrc","content":"x"}}' "$TMP")
+crel_rc=0
+printf '%s' "$_cfg_rel" | /usr/bin/env -i \
+    PATH=/usr/bin:/bin HOME="$REAL_HOME" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" CLAUDE_HOOK_EVENT_NAME="PreToolUse" \
+    bash "$NODE_WRAPPER" "pre:config-protection" "scripts/hooks/config-protection.js" "standard,strict" >/dev/null 2>&1 || crel_rc=$?
+assert_true test "$crel_rc" -eq 2 "config-protection resolves a RELATIVE file_path against payload cwd and still BLOCKS (neutral process cwd doesn't weaken it)"
+# A relative protected path with NO payload cwd cannot be resolved → fail CLOSED (block).
+_cfg_nocwd='{"tool":"Write","tool_input":{"file_path":".eslintrc","content":"x"}}'
+cnc_rc=0
+printf '%s' "$_cfg_nocwd" | /usr/bin/env -i \
+    PATH=/usr/bin:/bin HOME="$REAL_HOME" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" CLAUDE_HOOK_EVENT_NAME="PreToolUse" \
+    bash "$NODE_WRAPPER" "pre:config-protection" "scripts/hooks/config-protection.js" "standard,strict" >/dev/null 2>&1 || cnc_rc=$?
+assert_true test "$cnc_rc" -eq 2 "config-protection fails CLOSED on an unresolvable relative protected path (no payload cwd)"
+# A RELATIVE payload cwd (e.g. ".") is untrustworthy under the neutral process cwd → fail CLOSED.
+_cfg_relcwd='{"cwd":".","tool":"Write","tool_input":{"file_path":".eslintrc","content":"x"}}'
+crc_rc=0
+printf '%s' "$_cfg_relcwd" | /usr/bin/env -i \
+    PATH=/usr/bin:/bin HOME="$REAL_HOME" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" CLAUDE_HOOK_EVENT_NAME="PreToolUse" \
+    bash "$NODE_WRAPPER" "pre:config-protection" "scripts/hooks/config-protection.js" "standard,strict" >/dev/null 2>&1 || crc_rc=$?
+assert_true test "$crc_rc" -eq 2 "config-protection fails CLOSED when payload cwd is relative (untrustworthy under neutral cwd)"
 
 # pre-bash-dev-server-block e2e: an un-tmux'd dev server, profile-flag injected, must BLOCK.
 _dev_payload='{"tool":"Bash","tool_input":{"command":"npm run dev"}}'

@@ -1217,7 +1217,7 @@
     {
       "path": "scripts/hooks/config-protection.js",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/hooks/config-protection.js"
     },
     {

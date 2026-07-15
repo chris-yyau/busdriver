@@ -95,6 +95,32 @@ function run(inputOrRaw, options = {}) {
 
   const basename = path.basename(filePath);
   if (PROTECTED_FILES.has(basename)) {
+    // Resolve the target to an ABSOLUTE path so the existence check below does not depend
+    // on THIS process's cwd. The sanitized-node.sh wrapper runs node from a neutral cwd
+    // (to defeat version-manager shims that read repo-local .tool-versions/.nvmrc), so a
+    // relative file_path must be resolved against the PAYLOAD's cwd, not process.cwd().
+    let absPath = filePath;
+    if (!path.isAbsolute(filePath)) {
+      // Require an ABSOLUTE payload cwd. A relative one (e.g. ".") would resolve against the
+      // wrapper's neutral `/` cwd, making an existing repo config look absent → fail-open.
+      const payloadCwd = input.cwd;
+      if (typeof payloadCwd === 'string' && path.isAbsolute(payloadCwd)) {
+        // Not a traversal sink: absPath is only lstat'd for an existence CHECK (block/allow
+        // decision) — never opened, read, or written — so a `..` segment can at most change
+        // whether we block; this hook performs no file access with absPath.
+        absPath = path.resolve(payloadCwd, filePath); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+      } else {
+        // No trustworthy ABSOLUTE base to resolve a relative protected-config path → we
+        // cannot prove this is a first-time creation, so FAIL CLOSED (block) rather than risk
+        // allowing a silent edit of an existing config via an unresolvable relative path.
+        return {
+          exitCode: 2,
+          stderr:
+            `BLOCKED: cannot resolve relative config path ${filePath} (no payload cwd). ` +
+            'Retry with an absolute path, or disable the config-protection hook temporarily.'
+        };
+      }
+    }
     // Allow first-time creation — there's no existing config to weaken.
     // The hook's purpose is blocking modifications; writing a brand-new
     // config file in a project that has none is a legitimate bootstrap
@@ -109,7 +135,7 @@ function run(inputOrRaw, options = {}) {
     // as absent.
     let exists = true;
     try {
-      fs.lstatSync(filePath);
+      fs.lstatSync(absPath);
       // lstat succeeded — something (file, dir, or symlink) exists here.
     } catch (err) {
       if (err && err.code === 'ENOENT') {

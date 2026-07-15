@@ -1,3 +1,10 @@
+## [1.91.8](https://github.com/chris-yyau/busdriver/compare/v1.91.7...v1.91.8) (2026-07-15)
+
+
+### Bug Fixes
+
+* **gates:** worktree-safe design-review marker via immutable per-arming tokens ([#346](https://github.com/chris-yyau/busdriver/issues/346)) ([3fef25a](https://github.com/chris-yyau/busdriver/commit/3fef25a0df2584a24b87e977bf3f9a96686fc9c3))
+
 ## [1.91.7](https://github.com/chris-yyau/busdriver/compare/v1.91.6...v1.91.7) (2026-07-14)
 
 

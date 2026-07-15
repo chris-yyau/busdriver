@@ -179,6 +179,23 @@ fi
 DESIGN_FILE=$(get_design_file)
 log_info "Design file: $DESIGN_FILE"
 
+# ── Task 2 (ADR-D): snapshot this doc's marker tokens BEFORE the review runs ──
+# On PASS we prune exactly this snapshot. A token re-armed DURING the review (a
+# concurrent edit → new nonce) is NOT in the snapshot, so it survives the prune
+# and the existence-keyed reader keeps blocking — the lost-rearm race is killed
+# by construction (design test (i)). The key is the physical abspath, so this
+# never cross-clears a divergent branch's token in another worktree.
+_MARKER_RESOLVER="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$SCRIPT_DIR/../../..}}/hooks/gate-scripts/lib/resolve-repo-dir.sh"
+_MARKER_SNAP=()
+if [[ -f "$DESIGN_FILE" ]]; then
+  _mk_glob="$(bash "$_MARKER_RESOLVER" marker-glob "$DESIGN_FILE" 2>/dev/null || true)"
+  if [[ -n "$_mk_glob" ]]; then
+    shopt -s nullglob 2>/dev/null || true
+    for _mk_f in "$_mk_glob"*; do _MARKER_SNAP+=("$_mk_f"); done
+    shopt -u nullglob 2>/dev/null || true
+  fi
+fi
+
 # Compute spec hash for freshness contract (Critic #2)
 SPEC_HASH=$(compute_spec_hash "$DESIGN_FILE")
 log_info "Spec hash: ${SPEC_HASH:0:12}..."
@@ -1190,8 +1207,16 @@ EOF
     fi
     record_coverage_finalize
 
-    rm -f "$STATE_DIR/design-review-needed.local.md"
-    log_info "Design review state cleaned up."
+    # ADR-D: prune ONLY the tokens snapshotted at loop start (physical-abspath
+    # keyed → never cross-clears a divergent branch; re-armed tokens survive).
+    # This inline rm inside the trusted loop is invisible to the marker-forge
+    # guard (which sees only the top-level `bash …run-design-review-loop.sh` call);
+    # a Claude tool-call rm of a token stays blocked. Replaces the old whole-file
+    # `rm` of the single CWD-relative marker (divergence 4).
+    if [ "${#_MARKER_SNAP[@]}" -gt 0 ]; then
+      rm -f "${_MARKER_SNAP[@]}"
+    fi
+    log_info "Design review state cleaned up (${#_MARKER_SNAP[@]} marker token(s) pruned)."
     mark_review_complete "passed"
     exit 0
   fi

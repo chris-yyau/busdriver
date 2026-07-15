@@ -1,83 +1,66 @@
 #!/usr/bin/env python3
-"""Design review state cleanup for SessionStart hook."""
-import os, sys, re
-from datetime import datetime, timezone, timedelta
+"""Design review state cleanup for SessionStart hook (Task 2 / Decision-D2).
 
-# Resolve the harness state dir, constraining it to a safe relative name (mirror
-# the shell gates) so this cleanup reads the markers from the same directory the
-# gates write them to. BUSDRIVER_STATE_DIR overrides; defaults to .claude.
+WARN-ONLY. It shells out to the shared existence-keyed classifier
+(`resolve-repo-dir.sh pending`) and prints a warning built from its NUL records.
+It NEVER mutates marker state (ADR-C: readers never mutate — the old whole-file
+`os.remove` is gone). It may still delete the local `.impl-gate-block-count.local`
+counter when nothing is pending. No SessionStart subtree scan (D3 — the ~10s
+budget forbids a recursive walk; subdir-CWD legacy markers are an operator drain).
+
+The warning goes to STDOUT because load-orchestrator.sh captures stdout into the
+session message and drops stderr.
+"""
+import os
+import re
+import sys
+import subprocess
+
 state_dir = os.environ.get("BUSDRIVER_STATE_DIR", ".claude")
 if (not state_dir or state_dir.startswith("/") or ".." in state_dir
         or not re.fullmatch(r"[A-Za-z0-9._/-]+", state_dir)):
     state_dir = ".claude"
 
-state_file = f"{state_dir}/design-review-needed.local.md"
-stale_hours = float(os.environ.get("DESIGN_REVIEW_STALE_HOURS", "2"))
+resolver = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resolve-repo-dir.sh")
 
-try:
-    with open(state_file) as f:
-        content = f.read()
-except Exception:
-    sys.exit(0)
 
-created = None
-if content.startswith("---"):
-    parts = content.split("---", 2)
-    if len(parts) >= 3:
-        for line in parts[1].strip().split("\n"):
-            if line.strip().startswith("created_at:"):
-                ts = line.split(":", 1)[1].strip().strip('"').strip("'")
-                for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d"):
-                    try:
-                        created = datetime.strptime(ts, fmt)
-                        if created.tzinfo is None:
-                            created = created.replace(tzinfo=timezone.utc)
-                        break
-                    except ValueError:
-                        continue
-                break
-
-if created is None:
+def classify(anchor="."):
+    """(code, records): code is 0 none / 1 pending / 2 failure, or None if the
+    resolver is unavailable. records = list of (kind, source_path, doc_path, reason)."""
     try:
-        mtime = os.path.getmtime(state_file)
-        created = datetime.fromtimestamp(mtime, tz=timezone.utc)
+        p = subprocess.run(["bash", resolver, "pending", anchor], capture_output=True)
     except Exception:
-        sys.exit(0)
+        return None, []
+    fields = p.stdout.split(b"\0")
+    if fields and fields[-1] == b"":
+        fields = fields[:-1]  # trailing empty after the final NUL terminator
+    recs = []
+    for i in range(0, len(fields) - 3, 4):
+        recs.append(tuple(f.decode("utf-8", "surrogateescape") for f in fields[i:i + 4]))
+    return p.returncode, recs
 
-lines = re.findall(r"^- (.+)$", content, re.MULTILINE)
-unreviewed = []
-resolved = []
-for f in lines:
-    if not os.path.isfile(f):
-        resolved.append(f"{f} (deleted)")
-    else:
-        try:
-            with open(f) as fh:
-                if "<!-- design-reviewed: PASS -->" in fh.read():
-                    resolved.append(f"{f} (reviewed)")
-                else:
-                    unreviewed.append(f)
-        except Exception:
-            unreviewed.append(f)
 
-age = datetime.now(timezone.utc) - created
-is_stale = age > timedelta(hours=stale_hours)
+code, recs = classify(".")
 
-if not unreviewed:
-    os.remove(state_file)
+if code is None:
+    sys.exit(0)  # resolver unavailable — SessionStart is non-gating; say nothing
+
+if code == 0:
     try:
         os.remove(f"{state_dir}/.impl-gate-block-count.local")
-    except Exception:
+    except OSError:
         pass
-    if resolved:
-        print(f"Design review state cleaned up ({len(resolved)} resolved entries).")
-elif is_stale:
-    age_str = f"{age.seconds // 3600}h" if age.days == 0 else f"{age.days}d {age.seconds // 3600}h"
-    files = ", ".join(os.path.basename(f) for f in unreviewed)
-    print(f"WARNING: Stale design review pending ({age_str} old, from previous session).")
-    print(f"Unreviewed: {files}")
-    print("Run /design-reviewer to complete review, or create .claude/skip-design-review.local to bypass.")
-else:
-    files = ", ".join(os.path.basename(f) for f in unreviewed)
-    print(f"Active design review pending: {files}")
-    print("Run /design-reviewer before writing implementation code.")
+    sys.exit(0)
+
+if code == 2:
+    print("WARNING: could not enumerate the design-review marker set — the review gate will block as a precaution.")
+    print("Run /blueprint-review, or inspect the repo's git-common-dir marker directory.")
+    sys.exit(0)
+
+names = []
+for _kind, sp, dp, reason in recs[:8]:
+    names.append(os.path.basename(dp) if dp else f"{os.path.basename(sp)} [{reason}]")
+extra = f" (+{len(recs) - 8} more)" if len(recs) > 8 else ""
+print(f"Design review pending ({len(recs)} marker(s)): {', '.join(names)}{extra}")
+print("Run /blueprint-review before writing implementation code. To drain an abandoned")
+print("marker, rm its token file in your terminal (the exact path is in the block message).")

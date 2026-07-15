@@ -164,3 +164,173 @@ gate_skip_file_repo_controlled() {   # <repo_root> <repo_relative_path>
     git -C "$root" rev-parse -q --verify HEAD >/dev/null 2>&1 && return 0   # corrupt tree → fail CLOSED
     return 1                                                                # unborn repo → honor
 }
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Task 2 — worktree-safe design-review marker (immutable per-arming tokens).
+# Replaces the single CWD-relative `design-review-needed.local.md` with a
+# directory of EXISTENCE-keyed tokens under the shared git-common-dir, so a doc
+# armed in one worktree blocks commits/impl writes in every linked worktree.
+# Design: docs/plans/2026-07-13-task2-worktree-design-marker.md (ADR-A..E, §5).
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Directory holding THIS file (the trusted gate lib/). Recomputed per call so
+# sourcing has NO side effects; ${BASH_SOURCE[0]} is always resolve-repo-dir.sh.
+_gate_marker_lib_dir() { cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P; }
+
+# Sanitized harness state dir (mirror the gates) — decouples the CLI/classifier
+# from the caller having STATE_DIR set.
+_gate_marker_state_dir() {
+    local sd="${BUSDRIVER_STATE_DIR:-.claude}"
+    case "$sd" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) sd=".claude" ;; esac
+    printf '%s\n' "$sd"
+}
+
+# ADR-B · Physical absolute path = the token GROUP KEY. Non-zero if the parent
+# dir can't be resolved (deleted/unreadable/not-yet-created) → §2 best-effort miss.
+gate_marker_norm_path() {
+    local f="$1" dir
+    [ -n "$f" ] || return 1
+    dir="$(cd "$(dirname -- "$f")" 2>/dev/null && pwd -P)" || return 1
+    [ -n "$dir" ] || return 1
+    printf '%s/%s\n' "$dir" "$(basename -- "$f")"
+}
+
+# Repo-relative path of <path> within its OWNING worktree — for the ADR-B
+# structural-dir exclusion and the ADR-E allowlist ONLY (never the token key).
+# Non-zero if not inside a repo, or the file escapes the resolved root.
+gate_marker_relpath() {
+    local f="$1" d root abs
+    [ -n "$f" ] || return 1
+    d="$(dirname -- "$f")"
+    root="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" || return 1
+    [ -n "$root" ] || return 1
+    root="$(cd "$root" 2>/dev/null && pwd -P)" || return 1
+    abs="$(cd "$d" 2>/dev/null && pwd -P)" || return 1
+    abs="$abs/$(basename -- "$f")"
+    case "$abs" in
+        "$root"/*) printf '%s\n' "${abs#"$root"/}" ;;
+        *) return 1 ;;
+    esac
+}
+
+# ADR-A · The shared marker directory <git-common-dir>/busdriver/…local.d/.
+# Exit 0 = resolved (path on stdout); 3 = ENOREPO carve-out (§5 — not inside a
+# work tree; caller ALLOWs, matching today); 1 = in-repo but common-dir
+# unresolvable (caller BLOCKs fail-CLOSED).
+gate_marker_dir() {
+    local anchor="${1:-.}" inwt common
+    inwt="$(git -C "$anchor" rev-parse --is-inside-work-tree 2>/dev/null || true)"
+    [ "$inwt" = "true" ] || return 3
+    common="$(cd "$anchor" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)" || return 1
+    [ -n "$common" ] || return 1
+    printf '%s/busdriver/design-review-needed.local.d\n' "$common"
+}
+
+# ADR-D · Arm a doc: best-effort create-only token. Non-zero on any miss (§2).
+gate_marker_arm() {
+    local doc="$1" norm dir lib
+    norm="$(gate_marker_norm_path "$doc")" || return 1
+    dir="$(gate_marker_dir "$(dirname -- "$norm")")" || return 1
+    lib="$(_gate_marker_lib_dir)" || return 1
+    python3 -S "$lib/marker_ops.py" arm "$dir" "$norm"
+}
+
+# ADR-C · Existence-keyed classifier + bounded legacy union. Mandatory anchor.
+# Streams NUL records on stdout. Exit 0 = none pending; 1 = pending; 2 = failure.
+gate_marker_pending() {
+    local anchor="$1" dir st=0 lib sd
+    [ -n "$anchor" ] || return 2
+    # `|| st=$?` (not `; st=$?`): a failing command-substitution assignment trips
+    # `set -e` in the sourcing gates before the next line runs — the OR-list form
+    # suppresses that and captures the code.
+    dir="$(gate_marker_dir "$anchor")" || st=$?
+    case "$st" in
+        0) : ;;
+        3) return 0 ;;   # ENOREPO → allow (no marker to consult)
+        *) return 2 ;;   # in-repo unresolvable → block (fail-CLOSED)
+    esac
+    lib="$(_gate_marker_lib_dir)" || return 2
+    sd="$(_gate_marker_state_dir)"
+    python3 -S "$lib/marker_ops.py" classify "$dir" "$anchor" "$sd"
+}
+
+# Pure-shell existence probe — no python3. Two uses: (1) the read gates' hot-path
+# fast reject (the common "nothing pending" case, so a benign edit doesn't fork
+# python3), and (2) the python3-MISSING degraded path (the classifier needs
+# python3). Exit 0 = nothing pending / ENOREPO (allow); 1 = pending OR in-repo but
+# common-dir unresolvable (caller blocks fail-CLOSED). It does NOT parse legacy
+# PASS markers — a bare-existing legacy marker returns 1, so the authoritative
+# gate_marker_pending must run next to decide reviewed-vs-pending. Anchor → CWD.
+gate_marker_pending_pureshell() {
+    local anchor="${1:-.}" inwt common tokdir sd root line wt _e
+    inwt="$(git -C "$anchor" rev-parse --is-inside-work-tree 2>/dev/null || true)"
+    [ "$inwt" = "true" ] || return 0   # ENOREPO → allow (matches today)
+    common="$(cd "$anchor" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P || true)"
+    [ -n "$common" ] || return 1       # in a repo, common-dir unresolvable → uncertain
+    tokdir="$common/busdriver/design-review-needed.local.d"
+    # CONTRACT: return 0 ONLY when definitively clean. Any error/ambiguity → return
+    # 1, so the read gate falls through to the authoritative classifier (which
+    # returns exit 2 = block) and the python3-missing path blocks fail-CLOSED. A
+    # listing error, a non-directory at the marker path, or a worktree-enumeration
+    # failure must NEVER read as "empty" (would disable enforcement — litmus HIGH).
+    # `-e || -L`: a DANGLING symlink is false under `-e` but is anomalous marker
+    # state, not "absent" — treat it as uncertain (→ authoritative → fail-CLOSED).
+    if [ -e "$tokdir" ] || [ -L "$tokdir" ]; then
+        [ -d "$tokdir" ] || return 1                 # not a dir (incl. dangling symlink)
+        ls -A "$tokdir" >/dev/null 2>&1 || return 1  # listing error → uncertain
+        # Detect ANY entry via GLOBBING, never `$(ls)` — a filename made entirely
+        # of newline bytes survives command substitution's trailing-newline strip
+        # and would read as "empty" (fast allow); a glob never serializes the name.
+        for _e in "$tokdir"/* "$tokdir"/.[!.]* "$tokdir"/..?*; do
+            { [ -e "$_e" ] || [ -L "$_e" ]; } || continue   # skip non-matching glob patterns
+            return 1                                         # >=1 entry present
+        done
+    fi
+    sd="$(_gate_marker_state_dir)"
+    if ! wt="$(git -C "$anchor" worktree list --porcelain 2>/dev/null)"; then
+        return 1                                     # worktree enumeration failed
+    fi
+    while IFS= read -r line; do
+        case "$line" in
+            'worktree "'*)                           # C-quoted path (newline/quote/backslash in it):
+                return 1 ;;                           # can't parse safely here → NUL-aware classifier
+            'worktree '*)
+                root="${line#worktree }"
+                if [ -e "$root/$sd/design-review-needed.local.md" ] || [ -L "$root/$sd/design-review-needed.local.md" ]; then
+                    return 1                         # a legacy marker exists (bounded per-root)
+                fi ;;
+        esac
+    done < <(printf '%s\n' "$wt")
+    return 0
+}
+
+# Loop prune helper (ADR-D): print "<marker-dir>/<sha(norm(doc))>." prefix. The
+# review loop snapshots `${prefix}*` at start and `rm -f`s exactly that on PASS.
+gate_marker_glob() {
+    local doc="$1" norm dir sha lib
+    norm="$(gate_marker_norm_path "$doc")" || return 1
+    dir="$(gate_marker_dir "$(dirname -- "$norm")")" || return 1
+    lib="$(_gate_marker_lib_dir)" || return 1
+    sha="$(python3 -S "$lib/marker_ops.py" sha "$norm")" || return 1
+    printf '%s/%s.\n' "$dir" "$sha"
+}
+
+# ── CLI dispatcher (Step 1) ───────────────────────────────────────────────────
+# Side-effect-free when sourced (BASH_SOURCE[0] != $0). Direct invocation:
+#   bash resolve-repo-dir.sh <norm|relpath|dir|arm|pending|sha|marker-glob> ARGS
+# Unknown subcommand → exit 2 (fail-CLOSED for gating consumers).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    _sub="${1:-}"; shift 2>/dev/null || true
+    case "$_sub" in
+        norm)        gate_marker_norm_path "$@" ;;
+        relpath)     gate_marker_relpath "$@" ;;
+        dir)         gate_marker_dir "$@" ;;
+        arm)         gate_marker_arm "$@" ;;
+        pending)     gate_marker_pending "$@" ;;
+        pending-pureshell) gate_marker_pending_pureshell "$@" ;;
+        sha)         python3 -S "$(_gate_marker_lib_dir)/marker_ops.py" sha "$@" ;;
+        marker-glob) gate_marker_glob "$@" ;;
+        *)           exit 2 ;;
+    esac
+    exit $?
+fi

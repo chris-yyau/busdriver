@@ -21,6 +21,10 @@ case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 export BUSDRIVER_STATE_DIR="$STATE_DIR"
 trap 'exit 0' ERR
 
+# Shared marker helpers (gate_marker_arm / gate_marker_relpath — Task 2).
+# shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
+
 # Consume stdin
 INPUT=$(cat 2>/dev/null || true)
 [ -z "$INPUT" ] && exit 0
@@ -111,8 +115,13 @@ fi
 #
 # Exclusion: files in structural directories that never contain design docs
 # (agents/, commands/, scripts/, hooks/, tests/, src/, lib/, skills/)
-# Prevents false positives like agents/plan-code-reviewer.md
-if echo "$FILE_PATH" | grep -qE '(^|/)(agents|commands|scripts|hooks|tests|src|lib|skills)/'; then
+# Prevents false positives like agents/plan-code-reviewer.md.
+# ADR-B: match the REPO-RELATIVE path, not the full path — a repo checked out
+# under /home/u/src/proj/ must not have its own docs/plans/X.md un-flagged just
+# because the ancestor path contains /src/. Fall back to the full path when the
+# repo root can't be resolved.
+_EXCL_TARGET="$(gate_marker_relpath "$FILE_PATH" 2>/dev/null || printf '%s' "$FILE_PATH")"
+if echo "$_EXCL_TARGET" | grep -qE '(^|/)(agents|commands|scripts|hooks|tests|src|lib|skills)/'; then
   exit 0
 fi
 
@@ -160,26 +169,47 @@ if [ "$IS_DESIGN" = true ]; then
   fi
 
   if [ "$NEEDS_FLAG" = true ]; then
-    # Set state file for pre-commit gate enforcement
-    STATE_FILE="$STATE_DIR/design-review-needed.local.md"
-    mkdir -p "$STATE_DIR"
-
-    # Append file to review list (avoid duplicates)
-    if [ -f "$STATE_FILE" ]; then
-      if ! grep -qF "$FILE_PATH" "$STATE_FILE" 2>/dev/null; then
-        echo "- $FILE_PATH" >> "$STATE_FILE"
+    # ADR-D: arm an immutable per-arming token under the shared git-common-dir so
+    # the pending state is visible from every linked worktree. This replaces the
+    # single CWD-relative design-review-needed.local.md whose per-worktree
+    # divergence was the fail-open this PR closes.
+    #
+    # DEFERRED (design §2/§9 — "Bash-write effective-directory resolution"): for a
+    # Bash tool call, FILE_PATH is the raw redirect/tee target. If the command
+    # changed directory inline (`cd /other && > docs/plans/X.md`), the effective
+    # dir differs from the hook CWD and the wrong repo could be armed (or, more
+    # commonly, norm() fails → best-effort miss). This is UNCHANGED from the prior
+    # append-to-file code (equally cd-blind) and NOT a regression; a correct fix
+    # needs a shell-aware cd parser, deferred to the follow-up issue. For every
+    # non-inline-cd write the hook CWD equals the command's effective dir, so
+    # arming is correct.
+    if ! gate_marker_arm "$FILE_PATH"; then
+      # §5: best-effort miss (unresolvable common-dir, or a create failure). If
+      # the repo root still resolves, fall back to the LEGACY marker anchored at
+      # $REPO_DIR (where the read gates union it — Decision-D3) so the pending
+      # state is never SILENTLY lost; anchor at the repo root, never CWD-relative.
+      # Every fallback write is guarded and success is tracked explicitly: without
+      # this, a failing mkdir/append/create would hit `trap 'exit 0' ERR` and the
+      # hook would exit 0 with no marker AND no warning — a silent fail-open.
+      _armed_fallback=false
+      _REPO_DIR="$(git -C "$(dirname -- "$FILE_PATH")" rev-parse --show-toplevel 2>/dev/null || true)"
+      if [ -n "$_REPO_DIR" ]; then
+        _LEGACY="$_REPO_DIR/$STATE_DIR/design-review-needed.local.md"
+        _REL="$(gate_marker_relpath "$FILE_PATH" 2>/dev/null || printf '%s' "$FILE_PATH")"
+        if mkdir -p "$_REPO_DIR/$STATE_DIR" 2>/dev/null; then
+          if [ -f "$_LEGACY" ]; then
+            if grep -qF "$_REL" "$_LEGACY" 2>/dev/null || printf -- '- %s\n' "$_REL" >> "$_LEGACY" 2>/dev/null; then
+              _armed_fallback=true
+            fi
+          elif printf -- '---\nactive: true\ncreated_at: %s\n---\n\n# Design documents pending review\n\n- %s\n' \
+                 "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$_REL" > "$_LEGACY" 2>/dev/null; then
+            _armed_fallback=true
+          fi
+        fi
       fi
-    else
-      cat > "$STATE_FILE" << EOF
----
-active: true
-created_at: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
----
-
-# Design documents pending review
-
-- $FILE_PATH
-EOF
+      if [ "$_armed_fallback" != true ]; then
+        echo "WARNING: could not arm the design-review marker for $BASENAME (token + legacy fallback both failed); the review gate may not fire for this doc. Re-save it, or check .git/busdriver/ and $STATE_DIR/ permissions." >&2
+      fi
     fi
 
     echo "Design document written: $BASENAME"

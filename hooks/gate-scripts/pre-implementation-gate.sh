@@ -41,14 +41,22 @@ block_emit() {
     fi
 }
 
+# ── Shared marker helpers (Task 2) ────────────────────────────────────
+# Sourced BEFORE the python3 pre-check so its pure-shell fallback is available,
+# and before the read-gate below uses gate_marker_pending.
+# shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
+
 # ── python3 pre-check (F5 fix) ────────────────────────────────────────
-# python3 is REQUIRED for tool type parsing and command detection.
-# If missing, block — fail-closed principle. Without python3, the PARSED
-# variable defaults to "SAFE|" which silently allows ALL writes.
+# python3 is REQUIRED for tool type parsing and command detection. If missing,
+# the PARSED variable defaults to "SAFE|" which silently allows ALL writes →
+# fail-CLOSED, but only when a review is actually pending. The old probe keyed on
+# the CWD-relative marker file (gone post-migration → fail-OPEN); the pure-shell
+# probe resolves the SHARED marker dir and blocks if any token OR bounded
+# per-worktree-root legacy marker exists (Step 3; test (w)).
 if ! command -v python3 &>/dev/null; then
-    # Only block if there are pending design reviews (avoid false blocks when no reviews needed)
-    if [ -f "$STATE_DIR/design-review-needed.local.md" ]; then
-        block_emit "CRITICAL: python3 not found. Pre-implementation gate cannot parse tool inputs. Install python3 to restore enforcement. Escape hatch: $STATE_DIR/skip-design-review.local"
+    if ! gate_marker_pending_pureshell "."; then
+        block_emit "CRITICAL: python3 not found. Pre-implementation gate cannot parse tool inputs, and a design review is pending. Install python3 to restore enforcement. Escape hatch: $STATE_DIR/skip-design-review.local"
         exit 0
     fi
 fi
@@ -423,9 +431,75 @@ Run /litmus instead."
     exit 0
 fi
 
-# No pending design reviews → approve immediately
-DESIGN_STATE="$STATE_DIR/design-review-needed.local.md"
-[ ! -f "$DESIGN_STATE" ] && exit 0
+# ── Design-review pending? (ADR-A/C — replaces the CWD-relative marker check) ──
+# Anchor = the target file's dir (resolves the file's OWN worktree common-dir, so
+# a Write in a linked worktree sees the shared marker), else the hook cwd. All
+# linked worktrees share one common-dir, so any in-repo anchor yields the same set.
+#
+# DEFERRED (design §2/§9 — "Bash-write effective-directory resolution"): a Bash
+# tool call has no file_path, so the anchor is the payload cwd. A command that
+# changes directory inline (`cd /other-repo && > src/impl.sh`) is checked against
+# the payload cwd, not the repo actually receiving the write. This is UNCHANGED
+# from the prior gate (which read the CWD-relative marker, equally cd-blind) and
+# NOT a regression; a correct anchor needs a shell-aware cd parser, deferred to
+# the follow-up issue. Symmetric with the detector-side note in check-design-document.sh.
+# shellcheck disable=SC2016  # python3 -c program; $/quotes are literal code
+_MK_ANCHOR="$(printf '%s' "$INPUT" | python3 -S -c '
+import sys, json, os
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+try:
+    d = json.load(sys.stdin)
+    inp = d.get("tool_input", d.get("toolInput", {}))
+    if isinstance(inp, str):
+        inp = json.loads(inp)
+    fp = inp.get("file_path", inp.get("filePath", "")) if isinstance(inp, dict) else ""
+    cwd = d.get("cwd") or "."
+    # Resolve a RELATIVE file_path against the PAYLOAD cwd (where the write lands),
+    # NOT the gate process CWD — otherwise a write with cwd=/other/repo and a
+    # relative path would inspect the wrong repo and fast-allow despite that repo
+    # having pending markers (litmus HIGH).
+    if fp:
+        target = fp if os.path.isabs(fp) else os.path.join(cwd, fp)
+        anchor = os.path.dirname(target)
+    else:
+        anchor = cwd
+    anchor = os.path.abspath(anchor)
+    # The target file (and its parent dirs) may not exist yet — walk up to the
+    # deepest EXISTING ancestor so git -C can resolve the repo (§11 / ADR-B). A
+    # non-existent anchor would make git fail and the gate fall-OPEN as ENOREPO.
+    while anchor and anchor != os.path.dirname(anchor) and not os.path.isdir(anchor):
+        anchor = os.path.dirname(anchor)
+    print(anchor or ".")
+except Exception:
+    print(".")
+' 2>/dev/null || echo ".")"
+[ -n "$_MK_ANCHOR" ] || _MK_ANCHOR="."
+
+# Hot-path fast reject: a pure-shell probe (no python3 fork) approves the common
+# "nothing pending" case immediately, keeping benign edits cheap on the 5s budget.
+if gate_marker_pending_pureshell "$_MK_ANCHOR"; then
+    rm -f "$STATE_DIR/.impl-gate-block-count.local" 2>/dev/null || true
+    exit 0
+fi
+
+# Maybe pending → the authoritative classifier builds the NUL records + exact code
+# (0 none / 1 pending / 2 enumerate-or-list failure). A bash var cannot hold NUL,
+# so STREAM the records via a temp file and capture the exit separately (ADR-C).
+_MK_RECS="$(mktemp 2>/dev/null)" || _MK_RECS=""
+_MK_CODE=0
+if [ -n "$_MK_RECS" ]; then
+    trap 'rm -f "$_MK_RECS" 2>/dev/null || true' EXIT
+    gate_marker_pending "$_MK_ANCHOR" >"$_MK_RECS" 2>/dev/null || _MK_CODE=$?
+else
+    # mktemp failed — NEVER fall back to a predictable path (a pre-placed symlink
+    # there would be truncated/clobbered). Take the decision without records; the
+    # block message degrades to a generic line.
+    gate_marker_pending "$_MK_ANCHOR" >/dev/null 2>&1 || _MK_CODE=$?
+fi
+if [ "$_MK_CODE" = "0" ]; then
+    rm -f "$STATE_DIR/.impl-gate-block-count.local" 2>/dev/null || true
+    exit 0
+fi
 
 # ── F10 staleness auto-expiry REMOVED (F11) ───────────────────────────
 # Design review state now persists across sessions unconditionally.
@@ -438,8 +512,7 @@ DESIGN_STATE="$STATE_DIR/design-review-needed.local.md"
 # Both gates use the same pattern: single-use consumption + self-bypass detection
 # A git-tracked (git add -f'd) skip file is repo-controlled, not operator consent
 # (issue #325) — resolve the repo root and refuse it. FAIL-CLOSED via the helper.
-# shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
+# (resolve-repo-dir.sh is already sourced near the top of this script.)
 # Anchor the guard on the SAME path the `-f` check tests. That check is relative to
 # the hook CWD, so resolve the guard against the CWD too (git -C ".") — otherwise a
 # committed subdir/.claude skip file could satisfy one check and evade the other.
@@ -570,9 +643,17 @@ if [ "$TOOL_TYPE" = "WRITE_EDIT" ]; then
         *CLAUDE.md|*NOTES.md) exit 0 ;;
     esac
 
-    # Allow $STATE_DIR/ config writes (marker files already guarded unconditionally above)
-    case "$FILE_PATH" in
-        *"$STATE_DIR"/*) exit 0 ;;
+    # ADR-E: allow $STATE_DIR/ config writes — but ONLY when the path is
+    # $STATE_DIR/… RELATIVE TO ITS OWN REPO ROOT. busdriver homes linked worktrees
+    # at <main>/.claude/worktrees/<name>/, so a plain `*"$STATE_DIR"/*` substring
+    # match vacuously exempts EVERY impl file in a linked worktree — the exact
+    # pre-implementation fail-open this PR closes. Fail-CLOSED: if the repo root
+    # can't be resolved, do NOT exempt (fall through to the marker check).
+    # (The unconditional marker-forge guard at the top already ran, so the marker
+    # files themselves stay protected regardless.)
+    _REL="$(gate_marker_relpath "$FILE_PATH" 2>/dev/null || true)"
+    case "$_REL" in
+        "$STATE_DIR"/*) exit 0 ;;
     esac
 
     # Allow files with .local suffix ONLY if they match known config patterns
@@ -587,22 +668,31 @@ fi
 # extracting target paths, and the patterns (sed -i, tee, patch) are
 # unambiguous file-modification operations.
 
-# ── Check if ANY flagged design docs are still unreviewed ──────────────
+# ── Render the pending records (ADR-C) into the block message ──────────
+# _MK_CODE is 1 (>=1 pending) or 2 (enumerate/list failure) — this write is gated
+# either way. Stream the NUL records (a bash var cannot hold NUL); NEVER re-open
+# the doc — the block signal is token EXISTENCE, not the doc's PASS comment. The
+# readers never mutate (ADR-C removes the old whole-file `rm`, divergence 4).
 UNREVIEWED=""
-DESIGN_LINES=$(grep '^\- ' "$DESIGN_STATE" 2>/dev/null || true)
-while IFS= read -r line; do
-    file="${line#- }"
-    [ -z "$file" ] && continue
-    if [ -f "$file" ] && ! grep -q "<!-- design-reviewed: PASS -->" "$file" 2>/dev/null; then
-        UNREVIEWED="${UNREVIEWED}  - ${file}\n"
-    fi
-done <<< "$DESIGN_LINES"
-
-# All reviewed → clean up and approve
-if [ -z "$UNREVIEWED" ]; then
-    rm -f "$DESIGN_STATE"
-    rm -f "$STATE_DIR/.impl-gate-block-count.local" 2>/dev/null || true
-    exit 0
+if [ "$_MK_CODE" = "2" ] || [ -z "$_MK_RECS" ]; then
+    UNREVIEWED="  - (design review pending — run /blueprint-review to see the specific documents)\n"
+else
+    _mk_sp=""; _mk_dp=""; _mk_reason=""; _mk_i=0
+    while IFS= read -r -d '' _mk_field; do
+        _mk_i=$((_mk_i + 1))
+        case $(( _mk_i % 4 )) in
+            2) _mk_sp="$_mk_field" ;;      # source_path — what an operator rm's to drain
+            3) _mk_dp="$_mk_field" ;;      # doc_path — validated abspath, or empty
+            0) _mk_reason="$_mk_field"
+               if [ -n "$_mk_dp" ]; then
+                   UNREVIEWED="${UNREVIEWED}  - ${_mk_dp}  (drain if abandoned: rm '${_mk_sp}')\n"
+               else
+                   UNREVIEWED="${UNREVIEWED}  - ${_mk_sp}  [${_mk_reason}]\n"
+               fi
+               _mk_sp=""; _mk_dp="" ;;
+        esac
+    done <"$_MK_RECS"
+    [ -n "$UNREVIEWED" ] || UNREVIEWED="  - (design review pending)\n"
 fi
 
 # ── Circuit breaker: detect repeated blocking ──────────────────────────

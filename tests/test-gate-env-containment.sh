@@ -137,6 +137,14 @@ assert_true test "$blk_rc" -eq 2      "commit-bypass still BLOCKED (exit 2) desp
 grep -qi 'BLOCKED'        <<<"$blk_out";  assert $? "block reason reached stderr"
 ! grep -qi 'node not found\|runtime unavailable' <<<"$blk_out"; assert $? "node resolved via trusted PATH (no fail-closed launch fallback needed)"
 
+# Relative CLAUDE_PLUGIN_ROOT (manual/local setups): the wrapper normalizes root to absolute
+# BEFORE cd /, so $runner + hook path survive the neutral cwd and the gate still fires.
+relroot_rc=0
+( cd "$REPO_ROOT" && printf '%s' "$_payload" | /usr/bin/env -i \
+    PATH=/usr/bin:/bin HOME="$REAL_HOME" CLAUDE_PLUGIN_ROOT="." CLAUDE_HOOK_EVENT_NAME="PreToolUse" \
+    bash "$NODE_WRAPPER" "pre:bash:block-no-verify" "scripts/hooks/block-no-verify.js" "standard,strict" ) >/dev/null 2>&1 || relroot_rc=$?
+assert_true test "$relroot_rc" -eq 2 "relative CLAUDE_PLUGIN_ROOT normalized to absolute → gate still BLOCKS through cd /"
+
 # Fail-CLOSED launch: if node/runner cannot be found, the wrapper blocks (exit 2),
 # never passes through. Simulate by pointing CLAUDE_PLUGIN_ROOT at a nonexistent
 # root so the runner (run-with-flags.js) is missing — the _block path must fire.

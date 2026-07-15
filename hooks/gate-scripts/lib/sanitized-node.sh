@@ -93,6 +93,15 @@ _block() {
 # hooks.json passes the runner's OWN args after this wrapper: <hookId> <scriptRelPath> <profilesCsv>.
 # The runner is hardcoded here (the dispatch layer), NOT taken from "$@".
 root="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
+# Normalize root to ABSOLUTE before the `cd /` below. A relative CLAUDE_PLUGIN_ROOT
+# (e.g. a manual/local `CLAUDE_PLUGIN_ROOT=.`) would make $runner and the hook-script
+# path relative, and after `cd /` they would resolve against `/` and vanish — every gate
+# would then fail CLOSED (safe, but a usability break). Resolving here keeps them valid.
+if [[ "$root" != /* ]]; then
+    root=$(cd "$root" 2>/dev/null && pwd) || _block \
+        "sanitized-node: CLAUDE_PLUGIN_ROOT '$CLAUDE_PLUGIN_ROOT' does not resolve — failing CLOSED" \
+        "plugin root unresolvable; blocking hook cannot launch"
+fi
 runner="$root/scripts/hooks/run-with-flags.js"
 if [[ ! -f "$runner" ]]; then
     _block "sanitized-node: runner not found: $runner — failing CLOSED" \

@@ -215,6 +215,38 @@ printf '%s' "$_payload" | /usr/bin/env -i PATH=/usr/bin:/bin HOME="$REAL_HOME" \
     bash "$NODE_WRAPPER" "pre:bash:block-no-verify" "" "standard,strict" >/dev/null 2>&1 || empty_rc=$?
 assert_true test "$empty_rc" -eq 2 "empty hook script arg → fail CLOSED (exit 2)"
 
+# Node preference + validation (Codex P2): the wrapper must prefer an operator-managed
+# node over a stale system node, and SKIP a candidate whose `node --check <runner>` fails
+# (a node too old to PARSE the runner, which a bare `--version` would not catch). The
+# wrapper re-derives HOME from passwd (so a fake ~/.nvm can't be injected through env),
+# hence exercise the exact resolution loop standalone: an early candidate that fails
+# --check must be skipped for a later one that passes.
+_prefer=$(bash -c '
+  set -euo pipefail
+  TMP=$(mktemp -d)
+  mkdir -p "$TMP/oldnode" "$TMP/goodnode"
+  # oldnode: exits nonzero on `--check` (models a node too old to parse the runner)
+  printf "#!/bin/sh\nexit 1\n" > "$TMP/oldnode/node"; chmod +x "$TMP/oldnode/node"
+  # goodnode: `--check` succeeds
+  printf "#!/bin/sh\nexit 0\n" > "$TMP/goodnode/node"; chmod +x "$TMP/goodnode/node"
+  runner="$TMP/runner.js"; : > "$runner"
+  _node=""; _node_cands=("$TMP/oldnode" "$TMP/goodnode" /usr/bin /bin)
+  for _cand in "${_node_cands[@]}"; do
+    [[ -n "$_cand" && -x "$_cand/node" ]] || continue
+    "$_cand/node" --check "$runner" >/dev/null 2>&1 || continue
+    _node="$_cand/node"; break
+  done
+  case "$_node" in *"/goodnode/node") echo OK ;; *) echo "BAD:$_node" ;; esac
+  rm -rf "$TMP"
+')
+assert_true test "$_prefer" = "OK" "node resolution skips a candidate that fails --check <runner> for one that passes"
+# Tie the test to the PRODUCTION wrapper (guards against the loop/validation being
+# removed or weakened): the real file must validate with `--check "$runner"` (not a bare
+# --version) and must build the candidate list operator-dirs (_uds) BEFORE system dirs.
+# shellcheck disable=SC2016  # grepping for the LITERAL string --check "$runner" in the wrapper
+grep -q -- '--check "$runner"' "$NODE_WRAPPER"; assert $? "wrapper validates node with --check against the runner (not --version)"
+awk '/_node_cands\+=\("\$\{_uds\[@\]\}"\)/{u=NR} /_node_cands\+=\(\/opt\/homebrew/{s=NR} END{exit !(u>0 && s>0 && u<s)}' "$NODE_WRAPPER"; assert $? "wrapper orders operator dirs (_uds) before system dirs in the node candidate list"
+
 # run() EXCEPTION: run-with-flags.js catches a hook's run() throw and would exit 0
 # (fail-open). The `--fail-closed` ARG makes the runner convert it to exit 2. Exercise the
 # REAL runner with a throwing hook under a temp plugin root. The signal is a positional

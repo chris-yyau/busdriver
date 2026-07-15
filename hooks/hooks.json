@@ -108,7 +108,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:bash:block-no-verify\" \"scripts/hooks/block-no-verify.js\" \"standard,strict\""
+            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" \"pre:bash:block-no-verify\" \"scripts/hooks/block-no-verify.js\" \"standard,strict\" || exit 2"
           }
         ],
         "description": "Block git hook-bypass flag to protect pre-commit hooks"
@@ -148,7 +148,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:bash:dev-server-block\" \"scripts/hooks/pre-bash-dev-server-block.js\" \"standard,strict\""
+            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" \"pre:bash:dev-server-block\" \"scripts/hooks/pre-bash-dev-server-block.js\" \"standard,strict\" || exit 2"
           }
         ],
         "description": "Block unattended dev server launches outside tmux"
@@ -178,8 +178,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-with-flags.js\" \"pre:config-protection\" \"scripts/hooks/config-protection.js\" \"standard,strict\"",
-            "timeout": 5
+            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" CLAUDE_HOOK_EVENT_NAME=\"$CLAUDE_HOOK_EVENT_NAME\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-node.sh\" \"pre:config-protection\" \"scripts/hooks/config-protection.js\" \"standard,strict\" || exit 2",
+            "timeout": 30
           }
         ],
         "description": "Block modifications to linter/formatter config files"

@@ -97,8 +97,76 @@ For this solo repo (keyring auth, github.com, no proxy) there is no impact.
 `post-merge-confirm-bypass`. The `go-post-edit` formatter and `load-orchestrator`
 bootstrap are intentionally **not** wrapped (not enforcement gates; wrapping the
 formatter would strip its Go toolchain PATH, and the bootstrap legitimately reads
-`CLAUDE_HOMUNCULUS_INTERNAL`). The `node`-based reminder/logger hooks are out of scope:
-`BASH_ENV` does not apply to `node`, and they make no allow/block decision.
+`CLAUDE_HOMUNCULUS_INTERNAL`).
+
+**Node hooks (corrected — Task 3).** An earlier revision of this scope claimed the
+`node`-based hooks "make no allow/block decision." That was FALSE: three node hooks
+exit 2 on a *pure* gate decision derived from stdin/`file_path`, not from the
+environment — `block-no-verify` (blocks `git commit --no-verify`), `config-protection`
+(blocks edits to linter/formatter config), and `pre-bash-dev-server-block` (blocks
+unattended dev-server launches). Their only env read is the `ECC_HOOK_PROFILE` /
+`ECC_DISABLED_HOOKS` FLAG that `hook-flags.js` uses to enable/disable them — precisely
+the PR-injectable channel a committed `settings.json` `env` block controls, so an
+attacker could switch the gates OFF. `BASH_ENV` indeed does not apply to `node`, but
+the *flag* channel does. These three are now CONTAINED via
+`hooks/gate-scripts/lib/sanitized-node.sh` — an `env -i` wrapper that mirrors
+`sanitized-gate.sh` (trusted-PATH rebuild, git-config/HOME neutralization) and then runs
+the runner (`run-with-flags.js`) as a CHILD — deliberately not `exec` — so it can inspect
+the exit status. **Node resolution:** the system allowlist is searched first, then the
+operator's passwd-HOME *direct-binary* dirs (`~/.local/bin` + nvm per-version bins) as a
+fallback so an nvm-only host still resolves; each candidate is validated with
+`node --check "$runner"` (a real syntax parse of the runner, so an incompatible node is
+skipped rather than dead-ending the gate closed). Version-manager *shims* (Volta/asdf/mise)
+and shared prefixes (Linuxbrew) are excluded — a shim reads PR-controlled repo config to
+pick a runtime and a shared prefix is an LCE surface. As defense-in-depth the wrapper runs
+node from a **neutral CWD (`/`)** so even a system `node` that is a symlink to a shim can't
+read repo-local `.tool-versions`/`.nvmrc`/`package.json`; `config-protection` correspondingly
+resolves a relative `file_path` against the *payload* cwd (and fails closed if it can't), so
+the neutral process cwd never weakens it. With the profile flag wiped, each hook falls back to
+its default-enabled state and fires. If `node`/the runner cannot be found, OR the runner
+exits non-0/non-2 (a launch/crash — 1/126/127 — the harness would otherwise treat as a
+non-blocking error and let the tool through), the wrapper converts it to
+`{"decision":"block"}` / exit 2 (fail-CLOSED), never a silent pass. The wrapper's own
+fail-closed only runs once it starts, so each hooks.json registration also appends
+`|| exit 2`: if bash itself cannot launch the wrapper (a bad `CLAUDE_PLUGIN_ROOT`, the
+wrapper file missing, ENOEXEC), the outer command's 1/126/127 is still converted to a
+block at the registration level. (This same launch-failure exposure exists for the shell
+gates' `bash sanitized-gate.sh` registrations; hardening those symmetrically is a
+follow-up, not in this task's diff.) The wrapper also verifies the target hook script
+exists before dispatch and fails closed if it is missing or its path is absolute /
+traversing — because `run-with-flags.js` itself exits 0 (allow) on a missing/rejected
+hook script, which would fail-open a blocking gate. And `run-with-flags.js` otherwise
+exits 0 (allow) on its OWN internal failures — most importantly a caught exception from
+a hook's `run()`, which it would swallow to exit 0, indistinguishable from a genuine
+allow. To close that, `sanitized-node.sh` appends a `--fail-closed` ARG to the runner
+invocation and `run-with-flags.js` converts every fail-open exit point (run() exception,
+missing/rejected script, legacy-spawn failure, unhandled error) to exit 2 when that arg
+is present. It is deliberately a positional ARG, not an env var: the bare non-gate hook
+registrations invoke the runner directly WITHOUT `env -i`, so a fail-closed *env var*
+could be set by a committed `settings.json` `env` block and would turn advisory hooks
+into spurious blocks (a DoS) — exactly the silent channel this ADR closes. An argv is
+settable only via `hooks.json` (review-visible code), never that env channel. The bare
+non-gate registrations do not pass the arg, so their historical fail-open is unchanged.
+
+**Accepted residual — `mcp-health-check`.** Its exit-2 paths are env-DRIVEN
+(`exitCode: shouldFailOpen() ? 0 : 2`, gated on `ECC_MCP_HEALTH_FAIL_OPEN`, plus ≥4
+other behavior-affecting vars), so `env -i` would *change* its behavior, not merely
+strip the injection flag — containing it needs those legit vars re-imported, a separate
+scoped task. Note the default is fail-CLOSED but that does NOT bound the PR-injection
+risk: a committed settings `env` block can set `ECC_MCP_HEALTH_FAIL_OPEN` and force the
+`? 0 : 2` fail-OPEN branch. What bounds it instead is IMPACT — `mcp-health-check` gates
+MCP server *connectivity/health*, not code-review or commit/PR/merge enforcement. An
+injected fail-open degrades health-gating availability; it does NOT bypass any of the
+review/enforcement gates this ADR protects. It is left uncontained as documented residual. The remaining
+reminder/logger/telemetry node hooks make no allow/block decision and stay out of
+scope. `tests/test-node-hook-containment.sh` guards this split: a NEW node hook whose
+exit-2 uses a *recognized* form (`process.exit(2)`, `exitCode: 2` / `= 2`, or the
+`? 0 : 2` ternary) and is neither contained nor listed as residual fails the suite.
+The discovery grep is a heuristic, not a proof of completeness — a hook that hides
+its exit-2 behind a constant or a helper call would evade it; the explicit
+CONTAINED/RESIDUAL lists in the test are the authority, and the trip-wire covers the
+common shapes. Full static proof would need an AST pass, deferred as not worth it for
+a solo repo whose hook set changes rarely.
 
 ## Alternatives considered
 
@@ -154,13 +222,16 @@ formatter would strip its Go toolchain PATH, and the bootstrap legitimately read
   `BASH_ENV` that `bash -c` *does* source (a `BASH_ENV` script that `exit 0`s suppresses
   the command only under `bash -c`). The single way this reopens is an upstream change to
   invoke hooks via `bash -c` — recorded as a revisit trigger.
-- `node`-based non-gate hooks remain env-exposed (out of scope; no allow/block role).
+- The three pure-block `node` gate hooks are now CONTAINED via `sanitized-node.sh`
+  (Task 3, see Scope). `mcp-health-check` (env-driven exit-2, defaults fail-closed) is
+  accepted residual; the remaining `node` reminder/logger/telemetry hooks make no
+  allow/block decision and stay env-exposed (out of scope).
 
 ## Revisit trigger
 
 - A second approval-capable human is added (repo stops being solo-operator) → tighten
-  the residuals above (pin `CLAUDE_PLUGIN_ROOT`, wrap the `node` hooks, re-examine
-  `HOME`).
+  the residuals above (pin `CLAUDE_PLUGIN_ROOT`, contain `mcp-health-check` by
+  re-importing its legitimate vars, re-examine `HOME`).
 - Claude Code gains a first-class "don't honor project-`settings.json` `env` for
   security-relevant keys" control → prefer it and simplify this wrapper.
 - Claude Code changes hook execution from `sh -c` to `bash -c` (or any bash-named shell)

@@ -22,7 +22,7 @@ This skill is an **optional intensifier**, not a gate. It never blocks work.
 
 Before asking any questions, locate the design doc under discussion. It may be:
 - Passed in by `busdriver:brainstorming` (still in conversation, not yet on disk between Step 5 and Step 6).
-- A doc on disk under `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` if user invoked grill-me directly on an existing design.
+- A doc on disk under `docs/specs/YYYY-MM-DD-<topic>-design.md` if user invoked grill-me directly on an existing design.
 
 If the design doc (or its in-conversation draft) contains a sentinel-bracketed Key Decisions block:
 
@@ -136,7 +136,7 @@ YAML frontmatter, if present, is INCLUDED in the hash. Trailing newlines that ex
 **Reference Python one-liner** (use this verbatim or any equivalent that produces the same digest):
 
 ```bash
-python3 -c "import re,hashlib,sys; b=open(sys.argv[1],'rb').read(); body=re.sub(rb'(?m)^[^\n]*<!-- GRILL-DECISIONS-BEGIN -->.*?<!-- GRILL-DECISIONS-END -->[^\n]*(?:\r?\n)?', b'', b, flags=re.DOTALL); body=body.replace(b'\r\n', b'\n'); print(hashlib.sha256(body).hexdigest())" docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md
+python3 -c "import re,hashlib,sys; b=open(sys.argv[1],'rb').read(); body=re.sub(rb'(?m)^[^\n]*<!-- GRILL-DECISIONS-BEGIN -->.*?<!-- GRILL-DECISIONS-END -->[^\n]*(?:\r?\n)?', b'', b, flags=re.DOTALL); body=body.replace(b'\r\n', b'\n'); print(hashlib.sha256(body).hexdigest())" docs/specs/YYYY-MM-DD-<topic>-design.md
 ```
 
 The regex `(?m)^[^\n]*<!-- GRILL-DECISIONS-BEGIN -->.*?<!-- GRILL-DECISIONS-END -->[^\n]*(?:\r?\n)?` with `re.DOTALL` matches:

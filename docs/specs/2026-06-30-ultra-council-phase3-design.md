@@ -1,7 +1,7 @@
 # ultra-council — ADR 0007 Phase 3 design
 
 **Date:** 2026-06-30
-**ADR:** [docs/adr/0007-ultraoracle-expert-witness-and-ultra-council.md](../../adr/0007-ultraoracle-expert-witness-and-ultra-council.md) — Phase 3
+**ADR:** [docs/adr/0007-ultraoracle-expert-witness-and-ultra-council.md](../adr/0007-ultraoracle-expert-witness-and-ultra-council.md) — Phase 3
 **Status:** approved, pending implementation plan
 
 ## Problem

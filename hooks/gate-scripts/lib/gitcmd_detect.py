@@ -272,6 +272,70 @@ def _command_substitutions(cmd):
 
 _INTERPRETERS = frozenset(('sh', 'bash', 'zsh', 'dash', 'ksh', 'ash'))
 
+# Short option CHARS that consume the following argv as their value (bash -o/-O
+# set/shopt names). `c` also consumes one — the command string — and is handled
+# separately below. Long options that take a separate value.
+_SH_ARG_CHARS = frozenset('oO')
+_SH_ARG_LONG = frozenset(('--rcfile', '--init-file'))
+
+
+def _interpreter_payloads(argv):
+    """Command strings an interpreter argv will execute (`bash -c '<s>'`).
+
+    Walks the OPTION section only, honoring option arguments, and stops at the
+    first real operand. Behaviors verified against real bash/sh/zsh/dash/ksh:
+
+      -c / -lc / -ec / -xc / -cl / -ce  all execute the payload — `c` may be
+          clustered anywhere in the token, so match on membership, not position.
+      +c / +lc                          bash accepts '+' as an option sign and
+          `case c` ignores the sign.
+      -O extglob -c "<s>" / -Oc extglob "<s>"   `-O` eats its value first, so
+          the command string is pushed one argv further along.
+      --rcfile -custom -c "<s>"         an option VALUE can itself look like a
+          clustered `-c`; it must be consumed as a value, not matched.
+
+    Option arity has to be modelled to tell an OPTION from an OPERAND. Without
+    it, `bash script.sh -lc "git commit"` — where `-lc` is script.sh's OWN
+    argument and bash executes nothing — is misread as a payload. Here the
+    operand `script.sh` ends the option section, so `-lc` is never considered.
+
+    Returns argv[cmd_idx:] (a slice, not a single element): if the arity model
+    is ever off by one, scanning an extra inert chunk is the fail-closed
+    direction, whereas returning the wrong single element would MISS the real
+    payload and fail OPEN.
+    """
+    k = 1
+    cmd_idx = None
+    while k < len(argv):
+        tok = argv[k]
+        if tok == '--':
+            break
+        if tok in _SH_ARG_LONG:
+            k += 2
+            continue
+        if (tok[:1] in ('-', '+') and not tok.startswith(('--', '++'))
+                and len(tok) > 1):
+            # Each arg-taking char in the cluster consumes one following argv,
+            # in order; `c` consumes the command string.
+            consumed = 0
+            for ch in tok[1:]:
+                if ch == 'c':
+                    cmd_idx = k + 1 + consumed
+                    consumed += 1
+                elif ch in _SH_ARG_CHARS:
+                    consumed += 1
+            if cmd_idx is not None:
+                break
+            k += 1 + consumed
+            continue
+        if tok.startswith('--'):
+            k += 1
+            continue
+        break  # first operand — end of the option section
+    if cmd_idx is None or cmd_idx >= len(argv):
+        return []
+    return argv[cmd_idx:]
+
 
 def _shell_payloads(cmd):
     """Strings an interpreter/eval will itself execute — `bash -c '<s>'`,
@@ -283,32 +347,7 @@ def _shell_payloads(cmd):
             continue
         base = argv[0].rsplit('/', 1)[-1]
         if base in _INTERPRETERS:
-            # Find the option token that turns on "read the command string",
-            # then treat EVERY later argv as a candidate payload.
-            #
-            # `c` may be CLUSTERED with other short options and may carry any
-            # option SIGN. Verified against real bash/sh: `-lc`, `-ec`, `-xc`,
-            # `-cl`, `-ce` (c not last), and `+c` / `+lc` (plus sign) ALL
-            # execute the payload. Matching only a bare '-c' let every one of
-            # these hide it from the gates.
-            #
-            # Do NOT try to pick WHICH argv holds the command string: an option
-            # inside the same cluster can consume an argument and shift it.
-            # Both verified to really execute:
-            #   bash --rcfile -custom -c "git commit"   # payload at argv[3]
-            #   bash -Oc extglob "git commit"           # -O eats extglob
-            # Guessing an index makes a wrong guess a MISS (fail OPEN), so take
-            # everything after the candidate instead. A wrong guess then only
-            # scans an extra inert chunk — the fail-closed direction — and no
-            # option-arity table is needed. Fan-out stays bounded by the
-            # _all_chunks depth cap.
-            for k in range(1, len(argv)):
-                tok = argv[k]
-                if (tok[:1] in ('-', '+')
-                        and not tok.startswith(('--', '++'))
-                        and 'c' in tok[1:]):
-                    out.extend(argv[k + 1:])
-                    break
+            out.extend(_interpreter_payloads(argv))
         elif base == 'eval':
             out.append(' '.join(argv[1:]))
     return out

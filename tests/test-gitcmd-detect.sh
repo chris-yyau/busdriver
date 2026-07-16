@@ -106,6 +106,13 @@ COMMIT_NO = [
     'bash script.sh',                    # no -c → no payload to scan
     'bash -s',                           # short option without c
     'bash -Oc extglob "echo hi"',        # payload scanned, but not a commit
+    # An operand ENDS the option section, so a later `-c`-looking token is the
+    # SCRIPT's own argument, not bash's. Verified against real bash:
+    #   bash script.sh -lc 'echo PAYLOAD'
+    #     -> "script ran with args: -lc echo PAYLOAD"  (payload NOT executed)
+    # Treating it as a payload would block a command that never commits.
+    'bash script.sh -lc "git commit"',
+    'bash deploy.sh -c "git commit -m x"',
 ]
 
 for c in COMMIT_YES:

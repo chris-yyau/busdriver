@@ -273,6 +273,64 @@ def _command_substitutions(cmd):
 _INTERPRETERS = frozenset(('sh', 'bash', 'zsh', 'dash', 'ksh', 'ash'))
 
 
+
+def _interpreter_payloads(argv):
+    """Strings an interpreter argv may execute (`bash -c '<s>'`), fail-CLOSED.
+
+    Find the first sign-prefixed token containing `c`, then return EVERY later
+    argv as a candidate. Behaviors verified against real bash/sh/zsh:
+
+      -c / -lc / -ec / -xc / -cl / -ce   all execute the payload — `c` may sit
+          anywhere in the cluster, so match on membership, not position.
+      +c / +lc                           bash accepts '+' as an option sign and
+          ignores the sign when matching `c`.
+      -Oc extglob / -cO extglob          an option in the SAME cluster can eat a
+          value, shifting the command string further along.
+      --rcfile -custom -c "<s>"          an option VALUE can itself look like a
+          clustered `-c`.
+      zsh -cO "<s>" placeholder          zsh's `-O` takes NO value, unlike
+          bash's — option arity is PER-SHELL.
+
+    Returning the whole tail rather than one computed index is deliberate. To
+    pick a single index you must model option arity, and arity differs per
+    interpreter (bash `-O` consumes a value; zsh `-O` does not), so a
+    bash-shaped model MISSES on zsh — fail-OPEN. The tail also covers every way
+    a command string can reach its own arguments without enumerating them:
+    `$0`, `$1`, `$@`, `${!#}`, `$BASH_ARGV`, `$argv[1]` — all verified to
+    execute the trailing argument. Scanning an extra inert token is the
+    fail-CLOSED direction; missing a real one is not.
+
+    ACCEPTED RESIDUALS (deliberate — see the module docstring):
+
+    1. False positive on a script's OWN arguments. `bash script.sh -lc "git
+       commit"` passes `-lc` to script.sh and executes nothing, but `-lc` is
+       matched here anyway, so the gate fires on a command that never commits.
+       Suppressing it requires the per-shell arity model above, whose failure
+       mode is fail-OPEN. An over-firing gate is the safe direction for a
+       warn/block gate; the operator can still proceed.
+    2. Dynamically constructed payloads are UNDECIDABLE and NOT covered.
+       `bash -c "$(printf '...' | base64 -d)"` is verified to execute, and no
+       static scan can decide it. This gate stops CARELESS commits, not a
+       determined operator — who already has `--no-verify` and the skip file.
+       Do not try to close this class; it cannot be closed.
+    """
+    for k in range(1, len(argv)):
+        if _is_c_option(argv[k]):
+            return argv[k + 1:]
+    return []
+
+
+def _is_c_option(tok):
+    """True iff `tok` is a sign-prefixed short-option cluster containing `c`
+    (e.g. `-c`, `-lc`, `+c`) rather than a long option (`--foo`, `++foo`).
+
+    Extracted from `_interpreter_payloads` as a named predicate purely to
+    reduce that function's branch count (CodeScene "Complex Conditional");
+    behavior is unchanged."""
+    return (tok[:1] in ('-', '+') and not tok.startswith(('--', '++'))
+            and 'c' in tok[1:])
+
+
 def _shell_payloads(cmd):
     """Strings an interpreter/eval will itself execute — `bash -c '<s>'`,
     `sh -c '<s>'`, `eval '<s>' '<t>'`, etc. — for recursive scanning."""
@@ -283,12 +341,7 @@ def _shell_payloads(cmd):
             continue
         base = argv[0].rsplit('/', 1)[-1]
         if base in _INTERPRETERS:
-            k = 1
-            while k < len(argv):
-                if argv[k] == '-c' and k + 1 < len(argv):
-                    out.append(argv[k + 1])
-                    break
-                k += 1
+            out.extend(_interpreter_payloads(argv))
         elif base == 'eval':
             out.append(' '.join(argv[1:]))
     return out

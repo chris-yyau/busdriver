@@ -67,6 +67,47 @@ COMMIT_YES = [
     'sudo bash -c "git commit"',         # wrapped interpreter
     "sh -c 'git commit'",                # sh -c payload
     "echo \"$(printf ')'; git commit -m x)\"",  # quoted ) inside substitution
+    # Clustered -c: bash/sh take the NEXT argv as the command string wherever
+    # `c` sits in the cluster. Matching only a bare '-c' let these evade every
+    # gate. Verified against real bash/sh — all of these do execute the payload.
+    "bash -lc 'git commit -m x'",        # c last in cluster
+    "bash -cl 'git commit -m x'",        # c NOT last — still the command string
+    "bash -ec 'git commit'",
+    "bash -xc 'git commit'",
+    "sh -ec 'git commit'",
+    "zsh -lc 'git commit'",
+    "sudo bash -lc 'git commit'",        # wrapped + clustered
+    'bash --norc -c "git commit"',       # long option walked past, then -c
+    # An arg-taking option can carry a value that itself looks like a clustered
+    # -c. Verified to really execute, so the scan must not stop at the first
+    # candidate and skip the REAL payload.
+    'bash --rcfile -custom -c "git commit"',
+    'bash --rcfile -c -c "git commit"',  # option value is literally -c
+    'bash -O extglob -c "git commit"',   # short option with a separate argument
+    # An arg-taking option INSIDE the cluster shifts the command string further
+    # along (-O eats extglob, so the payload is argv[3]) — verified to execute.
+    'bash -Oc extglob "git commit"',
+    # -cO and -Oc are identical to bash (verified — both run the payload), so
+    # the position of c in the cluster must not change the result.
+    'bash -cO extglob "git commit"',
+    # zsh's -O takes NO value (bash's does) — option arity is PER-SHELL, which
+    # is why no single arity model is used. Verified: this runs the payload.
+    'zsh -cO "git commit" placeholder',
+    # bash accepts '+' as an option sign and `case c` ignores the sign.
+    'bash +c "git commit"',              # verified: really executes
+    'bash +lc "git commit"',             # clustered, plus sign
+    # A command string that references positional params can EXECUTE the
+    # interpreter's own arguments — they are not inert. Verified against bash:
+    #   bash -c '$0' 'echo RAN'           -> RAN
+    #   bash -c 'eval "$1"' _ 'echo RAN'  -> RAN
+    """bash -c '$0' 'git commit'""",
+    """bash -c 'eval "$1"' _ 'git commit'""",
+    """bash -c '"$@"' _ 'git commit'""",
+    # Other verified routes from a command string to its own arguments. Scanning
+    # the whole tail covers these without enumerating them.
+    """bash -c 'eval "${!#}"' _ 'git commit'""",
+    """bash -c 'eval "$BASH_ARGV"' _ 'git commit'""",
+    """zsh -c 'eval "$argv[1]"' _ 'git commit'""",
 ]
 # ── git commit: negatives (must NOT be recognized → gate allows) ──────
 COMMIT_NO = [
@@ -79,12 +120,32 @@ COMMIT_NO = [
     '> git commit',                      # redirect stdout to file 'git', runs 'commit'
     "echo '$(git commit)'",              # single quotes suppress the substitution
     "bash -c 'echo hi'",                 # interpreter payload is not a commit
+    "bash -lc 'echo hi'",                # clustered -c, still not a commit
+    'bash script.sh',                    # no -c → no payload to scan
+    'bash -s',                           # short option without c
+    'bash -Oc extglob "echo hi"',        # payload scanned, but not a commit
+]
+
+# ── ACCEPTED FALSE POSITIVES (deliberate — do NOT "fix" by adding an arity
+# model; see _interpreter_payloads). These DO fire the gate even though bash
+# executes no commit. Suppressing them needs per-shell option arity, whose
+# failure mode is fail-OPEN — strictly worse than an over-firing gate.
+#   bash script.sh -lc "git commit"        -lc is script.sh's own argument
+#   bash deploy.sh -c "git commit -m x"    same class
+#   bash -c "echo ok" placeholder "git commit"   trailing args are $0/$N
+# Asserted as-is so the behavior is pinned and a future change is visible.
+COMMIT_ACCEPTED_FP = [
+    'bash script.sh -lc "git commit"',
+    'bash deploy.sh -c "git commit -m x"',
+    'bash -c "echo ok" placeholder "git commit"',
 ]
 
 for c in COMMIT_YES:
     check(f"commit+ {c!r}", g.git_commit(c)[0], True)
 for c in COMMIT_NO:
     check(f"commit- {c!r}", g.git_commit(c)[0], False)
+for c in COMMIT_ACCEPTED_FP:
+    check(f"commit~ (accepted FP) {c!r}", g.git_commit(c)[0], True)
 
 # ── gh pr create ──────────────────────────────────────────────────────
 CREATE_YES = [

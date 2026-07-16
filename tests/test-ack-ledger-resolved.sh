@@ -803,6 +803,103 @@ else
   fail "#294: 'error' status + fresh notice expected 'none', got '$got'"
 fi
 
+# --- Tests for #353: the fail-OPEN twin of #294. A rate-limited CodeRabbit emits
+# state=success ("Review completed") on the same HEAD whose comment body says "we
+# couldn't start this review" (chris-yyau/helmet PR #81, HEAD 3bbcd8df). Before the
+# fix, Tier E's `success` arm HEAD-acked before the rate-limit scan could run, so
+# "not reviewed" silently became "reviewed, no findings". #294 over-blocked (safe);
+# this under-blocked (unsafe). Tests 353.2-353.5 pin the exemption's blast radius:
+# a `success` that is NOT a proven-fresh notice must still HEAD-ack exactly as before.
+CB_HEAD_ACK="${HEAD_SHA:0:8}"
+
+# Test 353.1: success status + fresh rate-limit notice → none. THE BUG: a bot that
+# reported success while stating it never started must not be recorded as HEAD-acked.
+got=$(run_cb_status "$CB_STALE_REVIEW" "$(mk_cb_comments "$CB_FRESH_TS")" "$CB_ANCHOR" success)
+if [[ "$got" == "none" ]]; then
+  ok "#353: success status + fresh rate-limit notice → none (fail-OPEN closed)"
+else
+  fail "#353: success status + fresh notice expected 'none', got '$got'"
+fi
+
+# Test 353.1b: the verbatim CodeRabbit notice wording from the #353 evidence, via
+# the real-notice fixture — proves the fix fires on the wording actually observed,
+# not only on the synthetic mk_cb_comments body.
+got=$(run_cb_status "$CB_STALE_REVIEW" "$(mk_cb_revlimit "$CB_FRESH_TS")" "$CB_ANCHOR" success)
+if [[ "$got" == "none" ]]; then
+  ok "#353: success + real 'Review limit reached' notice → none (observed wording)"
+else
+  fail "#353: success + real revlimit notice expected 'none', got '$got'"
+fi
+
+# Test 353.2: success status + NO notice → HEAD-ack. The ordinary path. If this
+# regresses, every genuinely-reviewed CodeRabbit PR stops converging.
+got=$(run_cb_status "$CB_STALE_REVIEW" "$EMPTY_COMMENTS" "$CB_ANCHOR" success)
+if [[ "$got" == "$CB_HEAD_ACK" ]]; then
+  ok "#353: success status + no notice → HEAD-ack (no-regression)"
+else
+  fail "#353: success status + no notice expected '$CB_HEAD_ACK', got '$got'"
+fi
+
+# Test 353.3: success + fresh notice + prior APPROVED → stale. ever_approved picks
+# the TERMINAL, it does not gate the exemption: a bot that reviewed an earlier commit
+# and was then rate-limited on HEAD has not reviewed HEAD. `stale` preserves the
+# earlier verdict and blocks; a HEAD-ack here would fail-OPEN on a history-bearing bot.
+got=$(run_cb_status "$CB_APPROVED_THEN_COMMENTED" "$(mk_cb_comments "$CB_FRESH_TS")" "$CB_ANCHOR" success)
+if [[ "$got" == "stale" ]]; then
+  ok "#353: success + fresh notice after APPROVED → stale (history not bypassed)"
+else
+  fail "#353: success + notice after APPROVED expected 'stale', got '$got'"
+fi
+
+# Test 353.3b: the CHANGES_REQUESTED variant — the highest-risk subset, since the bot
+# has UNRESOLVED findings on an earlier commit. Must block, never HEAD-ack.
+CB_CHANGES_REQ='[{"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","commit_id":"oldcommit","body":"Fix the auth bypass on line 12."}]'
+got=$(run_cb_status "$CB_CHANGES_REQ" "$(mk_cb_comments "$CB_FRESH_TS")" "$CB_ANCHOR" success)
+if [[ "$got" == "stale" ]]; then
+  ok "#353: success + fresh notice after CHANGES_REQUESTED → stale (findings preserved)"
+else
+  fail "#353: success + notice after CHANGES_REQUESTED expected 'stale', got '$got'"
+fi
+
+# Test 353.4: success + findings comment mentioning rate limiting → HEAD-ack. The
+# notice-only regex must not let findings prose revoke a real review's HEAD-ack.
+got=$(run_cb_status "$CB_STALE_REVIEW" "$(mk_cb_finding "$CB_FRESH_TS")" "$CB_ANCHOR" success)
+if [[ "$got" == "$CB_HEAD_ACK" ]]; then
+  ok "#353: success + findings comment → HEAD-ack (notice-only discrimination)"
+else
+  fail "#353: success + findings comment expected '$CB_HEAD_ACK', got '$got'"
+fi
+
+# Test 353.5: success + PRE-anchor (stale) notice → HEAD-ack. An old rate-limit
+# notice from a previous round must not revoke the current HEAD's genuine review.
+got=$(run_cb_status "$CB_STALE_REVIEW" "$(mk_cb_comments "$CB_STALE_TS")" "$CB_ANCHOR" success)
+if [[ "$got" == "$CB_HEAD_ACK" ]]; then
+  ok "#353: success + pre-anchor stale notice → HEAD-ack (anchor-freshness)"
+else
+  fail "#353: success + stale notice expected '$CB_HEAD_ACK', got '$got'"
+fi
+
+# Test 353.6: success + notice but NO anchor (neither push date nor checks date) →
+# stale. _fresh_rate_limit_notice returns false without an anchor, which is only
+# fail-CLOSED where the terminal is `stale`; on the success arm that same false would
+# HEAD-ack a bot whose latest comment says it never started. Freshness unprovable ⇒
+# a review is unprovable ⇒ withhold the ack.
+got=$(run_cb_status "$CB_STALE_REVIEW" "$(mk_cb_comments "$CB_FRESH_TS")" "" success)
+if [[ "$got" == "stale" ]]; then
+  ok "#353: success + unanchored notice → stale (no anchor ⇒ ack unprovable)"
+else
+  fail "#353: success + unanchored notice expected 'stale', got '$got'"
+fi
+
+# Test 353.7: NO anchor + no notice → HEAD-ack. The 353.6 guard must stay scoped to
+# the notice case; an anchorless PR whose bot genuinely reviewed must still converge.
+got=$(run_cb_status "$CB_STALE_REVIEW" "$EMPTY_COMMENTS" "" success)
+if [[ "$got" == "$CB_HEAD_ACK" ]]; then
+  ok "#353: no anchor + no notice → HEAD-ack (guard scoped to notices)"
+else
+  fail "#353: no anchor + no notice expected '$CB_HEAD_ACK', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

@@ -246,9 +246,11 @@ acks_head() {
 
 # _fresh_rate_limit_notice — true (0) iff the bot's CANONICAL-LATEST issue comment
 # is a fresh (strictly post-anchor) CodeRabbit rate-limit NOTICE. Single source of
-# truth shared by Tier E's non-success guard (#294) and the Case 1b downgrade, so a
-# rate-limited bot is classified identically whether it surfaced via a legacy
-# commit-status or only via issue comments. Self-contained: reads $login,
+# truth shared by Tier E's status guard (#294 non-success + #353 success) and the
+# Case 1b downgrade, so a rate-limited bot is classified identically whether it
+# surfaced via a legacy commit-status — in ANY state, since a rate-limited bot may
+# report `success` while saying it never started — or only via issue comments.
+# Self-contained: reads $login,
 # $ALL_COMMENTS, and the push/checks anchor globals.
 #
 # Guards (all must hold) keep this from ever reading findings prose as a notice:
@@ -262,18 +264,55 @@ acks_head() {
 #     anchor is present — an unanchored notice cannot be proven current.
 # Callers additionally gate on ever_approved==0 (a bot that ever approved is never
 # silently downgraded).
-_fresh_rate_limit_notice() {
-  local anchor rate_notice_re
+_RATE_NOTICE_RE='review limit reached|reached your [^.]{0,40}review limit|try again by re-requesting'
+
+# _rate_limit_anchor — the freshness anchor, or empty when neither signal exists.
+_rate_limit_anchor() {
+  local anchor
   anchor="${HEAD_PUSH_DATE:-}"
   [ -z "$anchor" ] && anchor="${HEAD_CHECKS_DATE:-}"
-  [ -n "$anchor" ] || return 1
-  rate_notice_re='review limit reached|reached your [^.]{0,40}review limit|try again by re-requesting'
-  printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" --arg anchor "$anchor" \
+  printf '%s' "$anchor"
+}
+
+# _latest_comment_is_notice <anchor> — true iff the bot's CANONICAL-LATEST issue
+# comment matches the notice-only regex. A non-empty <anchor> additionally requires
+# the comment to strictly postdate it; an empty <anchor> checks the latest comment
+# regardless of age (freshness UNPROVEN — see _unprovable_rate_limit_notice).
+_latest_comment_is_notice() {
+  printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" --arg anchor "${1:-}" \
     '[.comments[] | select(.author.login == $login or .author.login == $login_bot)]
      | sort_by(.createdAt) | last
-     | select(. != null and .createdAt > $anchor)
+     | select(. != null)
+     | select($anchor == "" or .createdAt > $anchor)
      | .body // empty' 2>/dev/null \
-    | grep -qiE "$rate_notice_re"
+    | grep -qiE "$_RATE_NOTICE_RE"
+}
+
+_fresh_rate_limit_notice() {
+  local anchor
+  anchor="$(_rate_limit_anchor)"
+  [ -n "$anchor" ] || return 1
+  _latest_comment_is_notice "$anchor"
+}
+
+# _unprovable_rate_limit_notice — true iff NEITHER anchor exists AND the bot's
+# canonical-latest comment is a rate-limit notice. Narrow companion to
+# _fresh_rate_limit_notice for the one caller whose "closed" direction differs:
+# Tier E's `success` arm (#353).
+#
+# _fresh_rate_limit_notice returns false without an anchor, which is fail-CLOSED
+# only where the fall-through terminal is `stale`. On the success arm the terminal
+# is a HEAD-ack, so the same false would assert "this bot reviewed HEAD" on the
+# strength of a status the bot's own latest comment contradicts — fail-OPEN.
+# Without an anchor we can prove neither that the notice is current NOR that a
+# review happened; withholding the ack (→ `stale`) is the only honest answer.
+#
+# Deliberately NOT used when an anchor exists: there, freshness is decidable, and a
+# pre-anchor notice is a spent notice from an earlier round that must not revoke the
+# current HEAD's genuine review.
+_unprovable_rate_limit_notice() {
+  [ -n "$(_rate_limit_anchor)" ] && return 1
+  _latest_comment_is_notice ""
 }
 
 # Fail-CLOSED: any source-fetch failure → mark stale (Greptile P1 — fail-OPEN
@@ -516,8 +555,10 @@ if [ -n "$check_run_head" ] && acks_head "$check_run_head"; then emit_head_ack "
 # failure mode that forced admin-merge on PR #160). The login → status-context
 # mapping is explicit because context strings are vendor-defined and don't
 # follow a derivable slug convention. Statuses are inherently for HEAD_SHA
-# (the fetch URL is /commits/$HEAD_SHA/statuses), so a success state IS a
-# HEAD-ack — no separate SHA comparison needed.
+# (the fetch URL is /commits/$HEAD_SHA/statuses), so a success state is a
+# HEAD-ack — no separate SHA comparison needed — EXCEPT when the bot itself
+# says it never reviewed (#353 rate-limit exemption below). The status proves
+# WHICH commit the bot reported on, never THAT it reviewed.
 #
 # Latest-wins selection: bots emit `pending → success` (or `pending → failure`)
 # during review. Primary sort key is `created_at`; secondary key is `id`
@@ -527,8 +568,11 @@ if [ -n "$check_run_head" ] && acks_head "$check_run_head"; then emit_head_ack "
 # --paginate` does not guarantee. A bot whose latest state is `success` exits
 # here with HEAD-ack. A bot whose latest state is non-empty non-success
 # (`pending`/`failure`/`error`) exits here with `stale` (live signal must
-# gate the merge). Only when there's no matching status entry at all (the
-# bot has a mapped context but `last | .state` returns empty) does Tier E
+# gate the merge). Both terminals are preceded by the rate-limit exemption
+# (#294/#353): a never-approved bot with a proven-fresh "couldn't start this
+# review" notice falls through to the Case 1b downgrade → `none` regardless of
+# which state it reported. Only when there's no matching status entry at all
+# (the bot has a mapped context but `last | .state` returns empty) does Tier E
 # fall through to the next checks; whether the script then lands on `none`
 # or `stale` depends on the bot's /reviews history.
 #
@@ -567,31 +611,64 @@ esac
 if [[ -n "$status_context" && -n "$ALL_STATUSES" ]]; then
   status_state=$(printf '%s' "$ALL_STATUSES" | jq -rs --arg ctx "$status_context" \
     '[.[]? | .[]? | select(.context == $ctx)] | sort_by(.created_at, .id) | last | .state // empty' 2>/dev/null || echo "")
-  if [[ "$status_state" == "success" ]]; then emit_head_ack "${HEAD_SHA:0:8}" E; exit 0; fi
-  # Non-success states (pending, failure, error) mean the bot HAS signaled
-  # something about HEAD — it's either mid-review or actively flagging.
-  # Without this branch, a statuses-only bot in pending/failure state would
-  # fall through to the empty-commit_id `none` early-return below and the
-  # gate would silently treat the live signal as "bot doesn't operate here".
-  # Emit `stale` so the merge gate correctly blocks. A bot WITH /reviews
-  # history that's also in pending state still falls through to the
-  # downgrade block (which handles the existing one-and-done semantics) —
-  # the explicit `-n` check on $status_state means an empty/missing status
-  # context for a different bot doesn't trip this branch.
+  # Rate-limit exemption is checked BEFORE either terminal, so it covers every
+  # state the bot can report (#294 = non-success, #353 = success).
   #
-  # #294 exemption: a rate-limited CodeRabbit posts its "review limit reached"
-  # NOTICE as an issue comment while its legacy commit-status for HEAD is
-  # non-success (pending/failure/error). Without this guard the non-success
-  # `stale` short-circuits BEFORE the Case 1b issue-comment scan can run, so the
-  # bot stays `stale` forever and pr-grind waits for a review the rate-limited
-  # bot cannot deliver — the exact case Case 1b exists to downgrade. Fall through
-  # to the downgrade block ONLY when the bot never approved (ever_approved==0) AND
-  # its canonical-latest issue comment is a proven-fresh rate-limit notice — the
-  # identical guards Case 1b already applies, so this cannot reclassify findings
-  # prose. Every other non-success state still gates (`stale`).
+  # #294 (non-success): a rate-limited CodeRabbit posts its "review limit
+  # reached" NOTICE as an issue comment while its legacy commit-status for HEAD
+  # is pending/failure/error. A non-success `stale` short-circuiting before the
+  # Case 1b issue-comment scan leaves the bot `stale` forever, and pr-grind waits
+  # for a review the rate-limited bot cannot deliver. Fail-CLOSED (over-blocks).
+  #
+  # #353 (success): the fail-OPEN twin, and why this guard sits above BOTH arms.
+  # A rate-limited CodeRabbit emits context=CodeRabbit state=success
+  # ("Review completed") on the SAME HEAD whose comment body says "we couldn't
+  # start this review" (evidence: chris-yyau/helmet PR #81, HEAD 3bbcd8df). The
+  # status is not a review verdict — it is the bot reporting that its run
+  # finished, including when the run did nothing. Taking `success` as a HEAD-ack
+  # silently converts "not reviewed" into "reviewed, no findings": the ledger
+  # HEAD-acks, `clean` is reached, and pr-grind's completion output claims all
+  # reviewers finished with no actionable findings when the bot never started.
+  #
+  # The notice gate is the one Case 1b already applies: a proven-fresh,
+  # canonical-latest, notice-only rate-limit comment strictly postdating the HEAD
+  # anchor. It cannot reclassify findings prose.
+  #
+  # ever_approved does NOT gate the exemption — it only picks the terminal. The
+  # guard exists so a bot with history is never silently BYPASSED, and bypass here
+  # means `none`. A bot that reviewed an earlier commit (APPROVED / DISMISSED /
+  # CHANGES_REQUESTED) and was then rate-limited on HEAD has NOT reviewed HEAD, so
+  # `stale` is the honest terminal — it preserves the earlier findings and blocks.
+  # Gating the exemption itself on ever_approved==0 would send exactly that bot
+  # down the success arm to a HEAD-ack, i.e. fail-OPEN on the highest-risk subset
+  # (a bot with unresolved findings). `stale` is emitted explicitly rather than by
+  # fall-through: the `-z commit_id && -z body_sha` early-return below would turn a
+  # history-bearing bot into `none` if its reviews carry no commit_id.
+  #
+  # `none`, not `stale`, is the ever_approved==0 target: `stale` would block on a
+  # review that cannot arrive until quota resets (the #294 dead-end), while `none`
+  # keeps the PR moving and records honestly that the bot contributed nothing.
+  #
+  # Non-success states (pending, failure, error) otherwise mean the bot HAS
+  # signaled something about HEAD — mid-review or actively flagging. Without the
+  # `stale` arm, a statuses-only bot in pending/failure would fall through to the
+  # empty-commit_id `none` early-return below and the gate would silently treat
+  # the live signal as "bot doesn't operate here". A bot WITH /reviews history
+  # that's also pending still falls through to the downgrade block (existing
+  # one-and-done semantics). The `-n` check on $status_state means an empty or
+  # missing status context for a different bot doesn't trip either arm.
   if [[ -n "$status_state" ]]; then
-    if [ "$ever_approved" -eq 0 ] && _fresh_rate_limit_notice; then
-      : # fall through → Case 1b downgrade block emits `none`
+    if _fresh_rate_limit_notice; then
+      # Bot's own latest word: it did not review HEAD. Its status is not a verdict.
+      if [[ "$ever_approved" -eq 0 ]]; then
+        : # fall through → Case 1b downgrade block emits `none`
+      else
+        echo "stale"; exit 0
+      fi
+    elif [[ "$status_state" == "success" ]]; then
+      # Anchorless notice: freshness unprovable, so a review is unprovable too (#353).
+      if _unprovable_rate_limit_notice; then echo "stale"; exit 0; fi
+      emit_head_ack "${HEAD_SHA:0:8}" E; exit 0
     else
       echo "stale"; exit 0
     fi

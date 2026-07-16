@@ -283,22 +283,23 @@ def _shell_payloads(cmd):
             continue
         base = argv[0].rsplit('/', 1)[-1]
         if base in _INTERPRETERS:
-            k = 1
-            while k < len(argv):
-                # `-c` may be CLUSTERED with other short options. Verified
-                # against bash/sh: `-lc`, `-ec`, `-xc`, and even `-cl` / `-ce`
-                # (where c is not last) all take the NEXT argv as the command
-                # string. Matching only a bare '-c' let `bash -lc "git commit"`
-                # hide its payload and evade the gates. Long options (`--norc`)
-                # never carry the command string, so they are walked past.
-                # A false positive here only ever scans MORE, which is the
-                # fail-closed direction.
+            # `-c` may be CLUSTERED with other short options. Verified against
+            # bash/sh: `-lc`, `-ec`, `-xc`, and even `-cl` / `-ce` (where c is
+            # not last) all take the NEXT argv as the command string. Matching
+            # only a bare '-c' let `bash -lc "git commit"` hide its payload.
+            #
+            # Take EVERY candidate rather than committing to the first: an
+            # arg-taking option can carry a value that itself looks clustered
+            # (`bash --rcfile -custom -c "git commit"` — verified to execute),
+            # so stopping at the first match would skip the REAL payload and
+            # fail OPEN. Collecting all candidates means a wrong guess only
+            # scans an extra inert chunk, which is the fail-closed direction,
+            # and avoids modelling which options take arguments.
+            for k in range(1, len(argv) - 1):
                 tok = argv[k]
                 if (tok.startswith('-') and not tok.startswith('--')
-                        and 'c' in tok[1:] and k + 1 < len(argv)):
+                        and 'c' in tok[1:]):
                     out.append(argv[k + 1])
-                    break
-                k += 1
         elif base == 'eval':
             out.append(' '.join(argv[1:]))
     return out

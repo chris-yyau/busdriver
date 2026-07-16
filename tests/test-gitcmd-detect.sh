@@ -78,6 +78,12 @@ COMMIT_YES = [
     "zsh -lc 'git commit'",
     "sudo bash -lc 'git commit'",        # wrapped + clustered
     'bash --norc -c "git commit"',       # long option walked past, then -c
+    # An arg-taking option can carry a value that itself looks like a clustered
+    # -c. Verified to really execute, so the scan must not stop at the first
+    # candidate and skip the REAL payload.
+    'bash --rcfile -custom -c "git commit"',
+    'bash --rcfile -c -c "git commit"',  # option value is literally -c
+    'bash -O extglob -c "git commit"',   # short option with a separate argument
 ]
 # ── git commit: negatives (must NOT be recognized → gate allows) ──────
 COMMIT_NO = [

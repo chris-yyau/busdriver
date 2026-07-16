@@ -285,7 +285,17 @@ def _shell_payloads(cmd):
         if base in _INTERPRETERS:
             k = 1
             while k < len(argv):
-                if argv[k] == '-c' and k + 1 < len(argv):
+                # `-c` may be CLUSTERED with other short options. Verified
+                # against bash/sh: `-lc`, `-ec`, `-xc`, and even `-cl` / `-ce`
+                # (where c is not last) all take the NEXT argv as the command
+                # string. Matching only a bare '-c' let `bash -lc "git commit"`
+                # hide its payload and evade the gates. Long options (`--norc`)
+                # never carry the command string, so they are walked past.
+                # A false positive here only ever scans MORE, which is the
+                # fail-closed direction.
+                tok = argv[k]
+                if (tok.startswith('-') and not tok.startswith('--')
+                        and 'c' in tok[1:] and k + 1 < len(argv)):
                     out.append(argv[k + 1])
                     break
                 k += 1

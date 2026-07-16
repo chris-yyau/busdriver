@@ -67,6 +67,17 @@ COMMIT_YES = [
     'sudo bash -c "git commit"',         # wrapped interpreter
     "sh -c 'git commit'",                # sh -c payload
     "echo \"$(printf ')'; git commit -m x)\"",  # quoted ) inside substitution
+    # Clustered -c: bash/sh take the NEXT argv as the command string wherever
+    # `c` sits in the cluster. Matching only a bare '-c' let these evade every
+    # gate. Verified against real bash/sh — all of these do execute the payload.
+    "bash -lc 'git commit -m x'",        # c last in cluster
+    "bash -cl 'git commit -m x'",        # c NOT last — still the command string
+    "bash -ec 'git commit'",
+    "bash -xc 'git commit'",
+    "sh -ec 'git commit'",
+    "zsh -lc 'git commit'",
+    "sudo bash -lc 'git commit'",        # wrapped + clustered
+    'bash --norc -c "git commit"',       # long option walked past, then -c
 ]
 # ── git commit: negatives (must NOT be recognized → gate allows) ──────
 COMMIT_NO = [
@@ -79,6 +90,9 @@ COMMIT_NO = [
     '> git commit',                      # redirect stdout to file 'git', runs 'commit'
     "echo '$(git commit)'",              # single quotes suppress the substitution
     "bash -c 'echo hi'",                 # interpreter payload is not a commit
+    "bash -lc 'echo hi'",                # clustered -c, still not a commit
+    'bash script.sh',                    # no -c → no payload to scan
+    'bash -s',                           # short option without c
 ]
 
 for c in COMMIT_YES:

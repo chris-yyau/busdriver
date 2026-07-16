@@ -1,3 +1,10 @@
+## [1.91.10](https://github.com/chris-yyau/busdriver/compare/v1.91.9...v1.91.10) (2026-07-16)
+
+
+### Bug Fixes
+
+* **docs:** complete the specs move — repair broken refs and skill paths ([#359](https://github.com/chris-yyau/busdriver/issues/359)) ([d68b422](https://github.com/chris-yyau/busdriver/commit/d68b42238ce179c6048519e88de61613fa17e1cf))
+
 ## [1.91.9](https://github.com/chris-yyau/busdriver/compare/v1.91.8...v1.91.9) (2026-07-15)
 
 

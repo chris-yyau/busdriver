@@ -10,7 +10,7 @@
 
 **Tech Stack:** Markdown skill (SKILL.md), busdriver plugin conventions
 
-**Spec:** `docs/superpowers/specs/2026-03-28-test-setup-design.md`
+**Spec:** `docs/specs/2026-03-28-test-setup-design.md`
 
 ---
 

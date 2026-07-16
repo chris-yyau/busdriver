@@ -34,6 +34,14 @@ else
   _line="$(gh api -i /rate_limit 2>/dev/null | grep -i '^date:' | head -1)"
 fi
 
+# HTTP headers are CRLF-terminated (RFC 7230), and `gh api -i` emits them raw, so
+# the live line ends `GMT\r`. The awk below requires `$7 == "GMT"`, which a
+# trailing CR silently fails — so the LIVE path always emitted empty and every
+# caller fail-CLOSED forever (ADR 0012's downgrade could never fire). The unit
+# tests missed it because a hand-typed offline header has no CR. Strip it here so
+# both paths agree; CR has no legitimate place in an IMF-fixdate.
+_line="${_line%$'\r'}"
+
 printf '%s\n' "$_line" | awk '
   tolower($1) == "date:" && NF >= 7 {
     split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", _m, " ")

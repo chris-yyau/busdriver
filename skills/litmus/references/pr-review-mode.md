@@ -59,7 +59,7 @@ On a clean Codex pass, `run-review-loop.sh` writes a diff-bound Codex-lead artif
 
 Before dispatching the backstop, check whether the branch stayed aligned with its stated intent. This is **advisory only** — it flags deviations but never blocks.
 
-**Step 1.5a: Find the plan.** Use Glob to search for intent documents: `docs/superpowers/plans/*.md`, `docs/superpowers/specs/*.md`, `docs/plans/*.md`, and top-level `PLAN.md`/`DESIGN.md`/`ARCHITECTURE.md`. Skim each candidate to find the one most relevant to this branch (matching branch name, feature description, or commit subject). If no intent document exists or none is clearly relevant, skip scope drift detection silently.
+**Step 1.5a: Find the plan.** Use Glob to search for intent documents: `docs/plans/*.md`, `docs/specs/*.md`, and top-level `PLAN.md`/`DESIGN.md`/`ARCHITECTURE.md`. Skim each candidate to find the one most relevant to this branch (matching branch name, feature description, or commit subject). If no intent document exists or none is clearly relevant, skip scope drift detection silently.
 
 **Step 1.5b: Gather intent and changes.** Read the matched plan file. Also read `TODOS.md` (if it exists), commit messages, and PR description. Gather the actual diff by computing the merge-base explicitly:
 ```bash

@@ -1,3 +1,10 @@
+## [1.91.11](https://github.com/chris-yyau/busdriver/compare/v1.91.10...v1.91.11) (2026-07-16)
+
+
+### Bug Fixes
+
+* **manifest:** repoint test-setup doc entries after the [#357](https://github.com/chris-yyau/busdriver/issues/357) move ([#360](https://github.com/chris-yyau/busdriver/issues/360)) ([ee8f495](https://github.com/chris-yyau/busdriver/commit/ee8f4953759b4a26d0ed487e0059d494dd7b5ca4))
+
 ## [1.91.10](https://github.com/chris-yyau/busdriver/compare/v1.91.9...v1.91.10) (2026-07-16)
 
 

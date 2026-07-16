@@ -1006,12 +1006,12 @@
       "upstream_path": "commands/verify.md"
     },
     {
-      "path": "docs/superpowers/plans/2026-03-28-test-setup.md",
+      "path": "docs/plans/2026-03-28-test-setup.md",
       "source": "local",
       "status": "local"
     },
     {
-      "path": "docs/superpowers/specs/2026-03-28-test-setup-design.md",
+      "path": "docs/specs/2026-03-28-test-setup-design.md",
       "source": "local",
       "status": "local"
     },

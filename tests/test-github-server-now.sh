@@ -23,6 +23,15 @@ eq "$(conv 'Date: Fri, 01 Jan 2027 00:00:00 GMT')" "2027-01-01T00:00:00Z" "Janua
 eq "$(conv 'Date: Thu, 31 Dec 2026 23:59:59 GMT')" "2026-12-31T23:59:59Z" "December -> 12"
 # 3. Case-insensitive header name (gh may emit `date:` lowercased).
 eq "$(conv 'date: Wed, 08 Jul 2026 16:25:31 GMT')" "2026-07-08T16:25:31Z" "lowercase header name accepted"
+# 3b. CRLF-terminated header — the shape the LIVE `gh api -i` path actually emits.
+# Every other case here is hand-typed and CR-free, which is exactly why the live
+# path could return empty forever without a single test noticing: real headers are
+# CRLF-terminated (RFC 7230), and the trailing CR made `$7 == "GMT"` compare
+# against "GMT\r" and fail, so ADR 0012's downgrade could never fire.
+eq "$(conv "$(printf 'Date: Wed, 08 Jul 2026 16:25:31 GMT\r')")" "2026-07-08T16:25:31Z" \
+  "CRLF-terminated live header -> ISO"
+eq "$(conv "$(printf 'date: Thu, 16 Jul 2026 19:32:24 GMT\r')")" "2026-07-16T19:32:24Z" \
+  "CRLF + lowercase name (real gh output shape) -> ISO"
 
 # 4. Malformed inputs fail-EMPTY (caller then fails CLOSED).
 empty "$(conv 'not a date line at all')"                  "non-Date line -> empty"

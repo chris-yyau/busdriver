@@ -1,3 +1,24 @@
+## [1.91.12](https://github.com/chris-yyau/busdriver/compare/v1.91.11...v1.91.12) (2026-07-16)
+
+
+### Bug Fixes
+
+* **gates:** strip CR so the live server-clock path stops returning empty ([#362](https://github.com/chris-yyau/busdriver/issues/362)) ([f973f9b](https://github.com/chris-yyau/busdriver/commit/f973f9bead6548a5571464d00a92c14adad7042b)), closes [#300](https://github.com/chris-yyau/busdriver/issues/300) [#305](https://github.com/chris-yyau/busdriver/issues/305) [#314](https://github.com/chris-yyau/busdriver/issues/314) [#332](https://github.com/chris-yyau/busdriver/issues/332)
+
+## [1.91.11](https://github.com/chris-yyau/busdriver/compare/v1.91.10...v1.91.11) (2026-07-16)
+
+
+### Bug Fixes
+
+* **manifest:** repoint test-setup doc entries after the [#357](https://github.com/chris-yyau/busdriver/issues/357) move ([#360](https://github.com/chris-yyau/busdriver/issues/360)) ([ee8f495](https://github.com/chris-yyau/busdriver/commit/ee8f4953759b4a26d0ed487e0059d494dd7b5ca4))
+
+## [1.91.10](https://github.com/chris-yyau/busdriver/compare/v1.91.9...v1.91.10) (2026-07-16)
+
+
+### Bug Fixes
+
+* **docs:** complete the specs move — repair broken refs and skill paths ([#359](https://github.com/chris-yyau/busdriver/issues/359)) ([d68b422](https://github.com/chris-yyau/busdriver/commit/d68b42238ce179c6048519e88de61613fa17e1cf))
+
 ## [1.91.9](https://github.com/chris-yyau/busdriver/compare/v1.91.8...v1.91.9) (2026-07-15)
 
 

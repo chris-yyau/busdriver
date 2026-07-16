@@ -196,6 +196,21 @@ t="$(mkrepo)"; mkdir -p "$t/docs/plans"; printf '# plan\n' >"$t/docs/plans/DESIG
 printf '{"tool_name":"Write","tool_input":{"file_path":"%s/docs/plans/DESIGN-x.md"}}' "$t" | bash "$CHECKDOC" >/dev/null 2>&1
 pending "$t"; eq "(Step2) detector armed a token → pending exit 1" "$PEXIT" "1"
 
+echo "── (specs) design-doc paths stay writable while a review pends ──"
+# c0bdaf7f moved docs/superpowers/{plans,specs} → docs/{plans,specs}, but the
+# gate's exemption list still named the old dir. A lowercase *-design.md under
+# docs/specs/ also misses the case-sensitive *DESIGN*.md glob, so with any review
+# pending the gate blocked the very spec the review waits on — a deadlock
+# brainstorming could not write its way out of. Needs a pending marker: with none
+# armed the gate approves everything and this test would pass vacuously.
+t="$(mkrepo)"; printf x >"$t/doc.md"; arm "$t/doc.md"
+out="$(payload_write "$t/src/impl.sh" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) ok "(specs) control: impl Write blocks while review pends" ;; *) no "(specs) control: impl Write should block" "got=$out" ;; esac
+out="$(payload_write "$t/docs/specs/2026-07-17-x-design.md" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) no "(specs) docs/specs design doc must stay writable" "got=$out" ;; *) ok "(specs) docs/specs design doc stays writable" ;; esac
+out="$(payload_write "$t/docs/plans/2026-07-17-x.md" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) no "(specs) docs/plans plan doc must stay writable" "got=$out" ;; *) ok "(specs) docs/plans plan doc stays writable" ;; esac
+
 echo "── (h) deleted pending doc still blocks ─────────────────────────"
 t="$(mkrepo)"; printf x >"$t/doc.md"; arm "$t/doc.md"; rm -f "$t/doc.md"
 pending "$t"; eq "(h) doc deleted, token remains → exit 1" "$PEXIT" "1"

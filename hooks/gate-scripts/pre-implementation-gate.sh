@@ -699,8 +699,8 @@ if [ "$TOOL_TYPE" = "WRITE_EDIT" ]; then
     case "$FILE_PATH" in
         *PLAN*.md|*DESIGN*.md|*ARCHITECTURE*.md) exit 0 ;;
         *docs/plans/*) exit 0 ;;
+        *docs/specs/*) exit 0 ;;
         *docs/reviews/*) exit 0 ;;
-        *docs/superpowers/*) exit 0 ;;
         *CLAUDE.md|*NOTES.md) exit 0 ;;
     esac
 

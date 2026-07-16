@@ -91,6 +91,9 @@ run_test "infra bypass (CLAUDE.md)" "allow" "$FREEZE_SCRIPT" \
 run_test "infra bypass (docs/plans/)" "allow" "$FREEZE_SCRIPT" \
     '{"tool_name":"Write","tool_input":{"file_path":"docs/plans/debug-plan.md"}}'
 
+run_test "infra bypass (docs/specs/)" "allow" "$FREEZE_SCRIPT" \
+    '{"tool_name":"Write","tool_input":{"file_path":"docs/specs/2026-07-17-x-design.md"}}'
+
 # 9. Non-Write/Edit tools pass through
 run_test "Read tool not gated" "allow" "$FREEZE_SCRIPT" \
     '{"tool_name":"Read","tool_input":{"file_path":"src/payments/stripe.js"}}'

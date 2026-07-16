@@ -117,7 +117,7 @@ fi
 # 1. Basename STARTS WITH PLAN, DESIGN, or ARCHITECTURE (case-insensitive)
 #    This prevents false positives like "lesson-council-reflection-design.md"
 # 2. File is inside a plans/ or specs/ directory under $STATE_DIR/ or docs/
-#    (covers docs/plans/, docs/superpowers/plans/, docs/superpowers/specs/, etc.)
+#    (covers docs/plans/, docs/specs/, $STATE_DIR/plans/, etc.)
 #
 # Exclusion: files in structural directories that never contain design docs
 # (agents/, commands/, scripts/, hooks/, tests/, src/, lib/, skills/)

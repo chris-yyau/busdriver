@@ -97,7 +97,7 @@ FILE_LOWER=$(echo "$FILE_PATH" | tr '[:upper:]' '[:lower:]')
 case "$FILE_LOWER" in
     *.claude/*) exit 0 ;;
     *claude.md|*notes.md) exit 0 ;;
-    *docs/plans/*|*docs/reviews/*|*docs/superpowers/*) exit 0 ;;
+    *docs/plans/*|*docs/specs/*|*docs/reviews/*) exit 0 ;;
 esac
 
 # ── Normalize paths for comparison ───────────────────────────────────

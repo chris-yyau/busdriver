@@ -1,3 +1,10 @@
+## [1.91.13](https://github.com/chris-yyau/busdriver/compare/v1.91.12...v1.91.13) (2026-07-16)
+
+
+### Bug Fixes
+
+* **ack-ledger:** close Tier E success-status fail-open on rate-limited bots ([#361](https://github.com/chris-yyau/busdriver/issues/361)) ([350d337](https://github.com/chris-yyau/busdriver/commit/350d3372cb4a626685621e7e92949e2f2b98a4ec)), closes [#81](https://github.com/chris-yyau/busdriver/issues/81) [#294](https://github.com/chris-yyau/busdriver/issues/294) [#294](https://github.com/chris-yyau/busdriver/issues/294) [#294](https://github.com/chris-yyau/busdriver/issues/294) [#353](https://github.com/chris-yyau/busdriver/issues/353) [#353](https://github.com/chris-yyau/busdriver/issues/353) [#353](https://github.com/chris-yyau/busdriver/issues/353) [#294](https://github.com/chris-yyau/busdriver/issues/294)
+
 ## [1.91.12](https://github.com/chris-yyau/busdriver/compare/v1.91.11...v1.91.12) (2026-07-16)
 
 

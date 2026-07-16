@@ -330,8 +330,12 @@ _rate_limit_anchor() {
 #   0 = yes, the latest comment is a rate-limit notice
 #   1 = clean negative: the source was READ and says otherwise (not a notice, no
 #       comments from this bot, or none postdating the anchor)
-#   2 = UNDECIDABLE: the source could not be read at all — jq failed (malformed or
-#       shape-drifted payload) or ALL_COMMENTS is absent.
+#   2 = UNDECIDABLE: the notice question could not be answered — jq failed (malformed
+#       or shape-drifted payload), ALL_COMMENTS is absent, or the matcher itself
+#       errored (grep exits 2 on error, and _body_is_rate_limit_notice's status is
+#       this function's status). "Undecidable" is deliberately the WIDER reading: an
+#       errored matcher has not proven the body is a review any more than an
+#       unreadable one has, and both must fail the same way.
 # Collapsing 2 into 1 was #353's shape one layer in: on Tier E's `success` arm the
 # fall-through terminal is a HEAD-ack, so an unreadable payload silently re-asserted
 # "this bot reviewed HEAD". FETCH_OK guards fetch-level failure; it says nothing about

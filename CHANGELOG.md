@@ -1,3 +1,10 @@
+## [1.91.14](https://github.com/chris-yyau/busdriver/compare/v1.91.13...v1.91.14) (2026-07-16)
+
+
+### Bug Fixes
+
+* **gates:** close interpreter-payload evasions in the shared detector ([#358](https://github.com/chris-yyau/busdriver/issues/358)) ([8995d0d](https://github.com/chris-yyau/busdriver/commit/8995d0d6e25c24bafb36698c3cbfd039cd0bd6ea)), closes [#336](https://github.com/chris-yyau/busdriver/issues/336)
+
 ## [1.91.13](https://github.com/chris-yyau/busdriver/compare/v1.91.12...v1.91.13) (2026-07-16)
 
 

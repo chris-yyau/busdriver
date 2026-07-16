@@ -315,11 +315,20 @@ def _interpreter_payloads(argv):
        Do not try to close this class; it cannot be closed.
     """
     for k in range(1, len(argv)):
-        tok = argv[k]
-        if (tok[:1] in ('-', '+') and not tok.startswith(('--', '++'))
-                and 'c' in tok[1:]):
+        if _is_c_option(argv[k]):
             return argv[k + 1:]
     return []
+
+
+def _is_c_option(tok):
+    """True iff `tok` is a sign-prefixed short-option cluster containing `c`
+    (e.g. `-c`, `-lc`, `+c`) rather than a long option (`--foo`, `++foo`).
+
+    Extracted from `_interpreter_payloads` as a named predicate purely to
+    reduce that function's branch count (CodeScene "Complex Conditional");
+    behavior is unchanged."""
+    return (tok[:1] in ('-', '+') and not tok.startswith(('--', '++'))
+            and 'c' in tok[1:])
 
 
 def _shell_payloads(cmd):

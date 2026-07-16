@@ -283,23 +283,32 @@ def _shell_payloads(cmd):
             continue
         base = argv[0].rsplit('/', 1)[-1]
         if base in _INTERPRETERS:
-            # `-c` may be CLUSTERED with other short options. Verified against
-            # bash/sh: `-lc`, `-ec`, `-xc`, and even `-cl` / `-ce` (where c is
-            # not last) all take the NEXT argv as the command string. Matching
-            # only a bare '-c' let `bash -lc "git commit"` hide its payload.
+            # Find the option token that turns on "read the command string",
+            # then treat EVERY later argv as a candidate payload.
             #
-            # Take EVERY candidate rather than committing to the first: an
-            # arg-taking option can carry a value that itself looks clustered
-            # (`bash --rcfile -custom -c "git commit"` — verified to execute),
-            # so stopping at the first match would skip the REAL payload and
-            # fail OPEN. Collecting all candidates means a wrong guess only
-            # scans an extra inert chunk, which is the fail-closed direction,
-            # and avoids modelling which options take arguments.
-            for k in range(1, len(argv) - 1):
+            # `c` may be CLUSTERED with other short options and may carry any
+            # option SIGN. Verified against real bash/sh: `-lc`, `-ec`, `-xc`,
+            # `-cl`, `-ce` (c not last), and `+c` / `+lc` (plus sign) ALL
+            # execute the payload. Matching only a bare '-c' let every one of
+            # these hide it from the gates.
+            #
+            # Do NOT try to pick WHICH argv holds the command string: an option
+            # inside the same cluster can consume an argument and shift it.
+            # Both verified to really execute:
+            #   bash --rcfile -custom -c "git commit"   # payload at argv[3]
+            #   bash -Oc extglob "git commit"           # -O eats extglob
+            # Guessing an index makes a wrong guess a MISS (fail OPEN), so take
+            # everything after the candidate instead. A wrong guess then only
+            # scans an extra inert chunk — the fail-closed direction — and no
+            # option-arity table is needed. Fan-out stays bounded by the
+            # _all_chunks depth cap.
+            for k in range(1, len(argv)):
                 tok = argv[k]
-                if (tok.startswith('-') and not tok.startswith('--')
+                if (tok[:1] in ('-', '+')
+                        and not tok.startswith(('--', '++'))
                         and 'c' in tok[1:]):
-                    out.append(argv[k + 1])
+                    out.extend(argv[k + 1:])
+                    break
         elif base == 'eval':
             out.append(' '.join(argv[1:]))
     return out

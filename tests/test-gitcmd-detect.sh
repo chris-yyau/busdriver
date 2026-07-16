@@ -84,6 +84,12 @@ COMMIT_YES = [
     'bash --rcfile -custom -c "git commit"',
     'bash --rcfile -c -c "git commit"',  # option value is literally -c
     'bash -O extglob -c "git commit"',   # short option with a separate argument
+    # An arg-taking option INSIDE the cluster shifts the command string further
+    # along (-O eats extglob, so the payload is argv[3]) — verified to execute.
+    'bash -Oc extglob "git commit"',
+    # bash accepts '+' as an option sign and `case c` ignores the sign.
+    'bash +c "git commit"',              # verified: really executes
+    'bash +lc "git commit"',             # clustered, plus sign
 ]
 # ── git commit: negatives (must NOT be recognized → gate allows) ──────
 COMMIT_NO = [
@@ -99,6 +105,7 @@ COMMIT_NO = [
     "bash -lc 'echo hi'",                # clustered -c, still not a commit
     'bash script.sh',                    # no -c → no payload to scan
     'bash -s',                           # short option without c
+    'bash -Oc extglob "echo hi"',        # payload scanned, but not a commit
 ]
 
 for c in COMMIT_YES:

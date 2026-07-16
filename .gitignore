@@ -39,11 +39,9 @@ AGENTS.md
 !skills/vercel-composition-patterns/AGENTS.md
 !skills/vercel-react-native-skills/AGENTS.md
 
-# Internal planning docs and review artifacts
+# Review artifacts: prompt dumps, verdict JSON, and review-loop state. Machine
+# output — regenerable, and worthless once the review has landed.
 docs/reviews/
-docs/plans/
-docs/superpowers/plans/
-docs/superpowers/specs/
 .local-archive/
 
 # ultra-oracle consult verdict output (skip-ultra-oracle.local already covered by *.local globs)

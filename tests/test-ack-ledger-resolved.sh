@@ -891,6 +891,100 @@ else
   fail "#353: success + unanchored notice expected 'stale', got '$got'"
 fi
 
+# Test 353.8: genuine review comment carrying the BARE "try again by re-requesting"
+# advice, with no quota context → HEAD-ack. The (B) notice signature pairs its tail
+# with `rate limit exceeded`; unpaired, the tail is ordinary prose. Unpaired matching
+# was inert under #294 (the bot was already stale) but would REVOKE a real review's
+# HEAD-ack on the success arm. Codex HIGH, PR deep pass.
+CB_RETRY_PROSE='Looks good overall. If CI was flaky you can try again by re-requesting a review.'
+mk_cb_retry_prose() { printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_RETRY_PROSE"; }
+got=$(run_cb_status "$CB_STALE_REVIEW" "$(mk_cb_retry_prose "$CB_FRESH_TS")" "$CB_ANCHOR" success)
+if [[ "$got" == "$CB_HEAD_ACK" ]]; then
+  ok "#353: success + bare 're-requesting' prose (no quota) → HEAD-ack (paired signature)"
+else
+  fail "#353: success + bare 're-requesting' prose expected '$CB_HEAD_ACK', got '$got'"
+fi
+
+# Test 353.9: the (B) notice itself — head+tail inside its callout chrome → none.
+# Proves the 353.8/353.10 tightening lost no #292 coverage.
+got=$(run_cb_status "$CB_STALE_REVIEW" "$(mk_cb_comments "$CB_FRESH_TS")" "$CB_ANCHOR" success)
+if [[ "$got" == "none" ]]; then
+  ok "#353: success + (B) notice in callout → none (#292 coverage kept)"
+else
+  fail "#353: success + (B) notice in callout expected 'none', got '$got'"
+fi
+
+# Test 353.10: ACCEPTED, BENIGN false positive. One finding carrying both (B) halves
+# classifies as a notice → `none`. This is deliberate, not a gap: `none` and a HEAD-ack
+# are BOTH non-gating, so the merge outcome is identical — only the ledger label
+# differs. Tightening to exclude this missed the canonical multi-line alert (353.14),
+# i.e. it traded a real fail-open for a cosmetic one. Recall wins; see the rationale
+# above _body_is_rate_limit_notice.
+CB_BOTH_PROSE='Handle the rate limit exceeded response; then try again by re-requesting a review.'
+mk_cb_both() { printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_BOTH_PROSE"; }
+got=$(run_cb_status "$CB_STALE_REVIEW" "$(mk_cb_both "$CB_FRESH_TS")" "$CB_ANCHOR" success)
+if [[ "$got" == "none" ]]; then
+  ok "#353: success + both-halves finding → none (accepted benign false positive)"
+else
+  fail "#353: success + both-halves finding expected 'none', got '$got'"
+fi
+
+# Test 353.11: a callout used for a FINDING that mentions quota but gives no retry
+# advice → HEAD-ack. CodeRabbit does render findings as callouts, so chrome alone
+# cannot be the signal — the (B) line must carry head AND tail together.
+CB_WARN_FINDING='> [!WARNING] This code does not handle the rate limit exceeded response.'
+mk_cb_warn() { printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_WARN_FINDING"; }
+got=$(run_cb_status "$CB_STALE_REVIEW" "$(mk_cb_warn "$CB_FRESH_TS")" "$CB_ANCHOR" success)
+if [[ "$got" == "$CB_HEAD_ACK" ]]; then
+  ok "#353: success + WARNING callout finding (no retry tail) → HEAD-ack (chrome≠notice)"
+else
+  fail "#353: success + callout finding expected '$CB_HEAD_ACK', got '$got'"
+fi
+
+# Test 353.12: same accepted false positive, callout-rendered. Kept to pin that chrome
+# is NOT the discriminator — CodeRabbit renders findings as callouts too, so any
+# chrome-based signature is both unsound (353.11) and lossy (353.14).
+CB_WARN_BOTH='> [!WARNING] Handle the rate limit exceeded response; then try again by re-requesting a review.'
+mk_cb_warn_both() { printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_WARN_BOTH"; }
+got=$(run_cb_status "$CB_STALE_REVIEW" "$(mk_cb_warn_both "$CB_FRESH_TS")" "$CB_ANCHOR" success)
+if [[ "$got" == "none" ]]; then
+  ok "#353: success + callout finding w/ both halves → none (chrome is not the signal)"
+else
+  fail "#353: success + callout finding w/ both halves expected 'none', got '$got'"
+fi
+
+# Test 353.14: RECALL — the canonical multi-line GitHub alert. The real notice renders
+# the marker on its own line; a single-line-anchored signature MISSES it and HEAD-acks
+# a bot that never reviewed, reintroducing #353 for the (B) variant. Codex HIGH, 5th
+# round — the one finding in the UNSAFE direction. Body-scoped greps pair across lines.
+CB_MULTILINE_NOTICE='> [!WARNING]\n> Rate limit exceeded. Please try again by re-requesting a review.'
+mk_cb_multiline() { printf '{"comments":[{"author":{"login":"coderabbitai[bot]"},"createdAt":"%s","body":"%s"}]}' "$1" "$CB_MULTILINE_NOTICE"; }
+got=$(run_cb_status "$CB_STALE_REVIEW" "$(mk_cb_multiline "$CB_FRESH_TS")" "$CB_ANCHOR" success)
+if [[ "$got" == "none" ]]; then
+  ok "#353: success + canonical MULTI-LINE alert notice → none (recall preserved)"
+else
+  fail "#353: success + multi-line alert notice expected 'none', got '$got'"
+fi
+
+# Test 353.13: THREAD PRECEDENCE — an unresolved actionable thread pre-empts Tier E
+# entirely (Tier A exits `stale` at the unresolved-threads check, long before the
+# notice classifier runs). This is why notice-classifier PRECISION is not safety-
+# critical on the success arm: a misread findings comment cannot bury an actionable
+# finding, because an actionable finding gates here first. Recall is what matters —
+# a MISSED notice is the #353 fail-open. Pinned so a future refactor that reorders
+# the tiers cannot silently make the classifier load-bearing.
+CB_OPEN_THREAD='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"coderabbitai[bot]"},"body":"Auth bypass on line 12."}]}}]}}}}}'
+got=$(FETCH_OK=1 ALL_THREADS="$CB_OPEN_THREAD" ALL_REVIEWS='[]' \
+  ALL_COMMENTS="$(mk_cb_warn_both "$CB_FRESH_TS")" ALL_CHECK_RUNS="$EMPTY_CHECK_RUNS" \
+  ALL_STATUSES='[{"context":"CodeRabbit","state":"success","created_at":"2026-07-07T11:30:00Z","id":3}]' \
+  ALL_REACTIONS='[]' HEAD_COMMITTED_DATE='' HEAD_PUSH_DATE="$CB_ANCHOR" \
+  HEAD_SHA="$HEAD_SHA" bash "$ACK_SCRIPT" coderabbitai 2>/dev/null)
+if [[ "$got" == "stale" ]]; then
+  ok "#353: actionable thread + success → stale (Tier A pre-empts the notice classifier)"
+else
+  fail "#353: actionable thread + success expected 'stale', got '$got'"
+fi
+
 # Test 353.7: NO anchor + no notice → HEAD-ack. The 353.6 guard must stay scoped to
 # the notice case; an anchorless PR whose bot genuinely reviewed must still converge.
 got=$(run_cb_status "$CB_STALE_REVIEW" "$EMPTY_COMMENTS" "" success)

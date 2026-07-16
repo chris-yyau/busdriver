@@ -264,7 +264,54 @@ acks_head() {
 #     anchor is present — an unanchored notice cannot be proven current.
 # Callers additionally gate on ever_approved==0 (a bot that ever approved is never
 # silently downgraded).
-_RATE_NOTICE_RE='review limit reached|reached your [^.]{0,40}review limit|try again by re-requesting'
+# Notice signatures. CodeRabbit emits two observed shapes:
+#   (A) "Review limit reached" / "you've reached your PR review limit"   (#292, #353)
+#   (B) "Rate limit exceeded. Please try again by re-requesting a review." (#292)
+#
+# (A) is self-identifying — the wording exists only in the notice.
+#
+# (B) is not: both halves are ordinary prose about rate-limiting code. The head
+# (`rate limit exceeded`) was already dropped as a lone signal — it matched "handle
+# the rate limit exceeded response" (Codex P2, PR #292). The tail ("try again by
+# re-requesting") is likewise ordinary advice. So (B) requires BOTH, body-scoped.
+#
+# ── Why body-scoped, and not tighter ──────────────────────────────────────────────
+# This predicate CANNOT be made exact: prose does not reliably self-identify. So the
+# question is which error to prefer, and the two directions are NOT symmetric.
+#
+#   MISS (notice read as a review)  → HEAD-ack. This IS the #353 fail-open: the
+#     ledger asserts a review that never happened. UNSAFE.
+#   FALSE POSITIVE (finding read as a notice):
+#     - ever_approved==0 → `none`. Both `none` and a HEAD-ack are NON-gating
+#       (skills/pr-grind/SKILL.md: "`stale` and `none` ack values do NOT trigger this
+#       gate"), so the merge outcome is IDENTICAL — only the ledger label differs.
+#     - ever_approved>0  → `stale`. Blocks. Strictly SAFER.
+#   And a false positive cannot bury an actionable finding: unresolved non-outdated
+#   threads exit `stale` at Tier A, far above Tier E (pinned by test 353.13).
+#
+# ⇒ Recall is safety-critical; precision is nearly free. Prefer the looser matcher.
+#
+# Tightening was tried and rejected on evidence. Anchoring (B) to a single callout
+# line ("[!WARNING] Rate limit exceeded…") missed the CANONICAL GitHub alert, whose
+# marker sits on its own line:
+#     > [!WARNING]
+#     > Rate limit exceeded. Please try again by re-requesting a review.
+# — i.e. the tightening reintroduced #353 for the (B) variant to avoid a false
+# positive that is provably benign. Body-scoped greps match either rendering, since
+# each succeeds if ANY line matches. See test 353.14 (multi-line) and 353.10
+# (accepted, benign false positive).
+_NOTICE_SELF_RE='review limit reached|reached your [^.]{0,40}review limit'
+_NOTICE_RETRY_RE='try again by re-requesting'
+_NOTICE_QUOTA_RE='rate.?limit exceeded'
+
+# _body_is_rate_limit_notice <body> — true iff the body is a rate-limit NOTICE.
+# Body-scoped by design (see above): each grep succeeds if ANY line matches, so a
+# notice split across lines — the canonical GitHub alert shape — still pairs.
+_body_is_rate_limit_notice() {
+  printf '%s' "$1" | grep -qiE "$_NOTICE_SELF_RE" && return 0
+  printf '%s' "$1" | grep -qiE "$_NOTICE_RETRY_RE" \
+    && printf '%s' "$1" | grep -qiE "$_NOTICE_QUOTA_RE"
+}
 
 # _rate_limit_anchor — the freshness anchor, or empty when neither signal exists.
 _rate_limit_anchor() {
@@ -279,13 +326,15 @@ _rate_limit_anchor() {
 # the comment to strictly postdate it; an empty <anchor> checks the latest comment
 # regardless of age (freshness UNPROVEN — see _unprovable_rate_limit_notice).
 _latest_comment_is_notice() {
-  printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" --arg anchor "${1:-}" \
+  local body
+  body=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" --arg anchor "${1:-}" \
     '[.comments[] | select(.author.login == $login or .author.login == $login_bot)]
      | sort_by(.createdAt) | last
      | select(. != null)
      | select($anchor == "" or .createdAt > $anchor)
-     | .body // empty' 2>/dev/null \
-    | grep -qiE "$_RATE_NOTICE_RE"
+     | .body // empty' 2>/dev/null) || return 1
+  [ -n "$body" ] || return 1
+  _body_is_rate_limit_notice "$body"
 }
 
 _fresh_rate_limit_notice() {

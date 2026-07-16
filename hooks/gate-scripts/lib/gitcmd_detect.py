@@ -272,69 +272,54 @@ def _command_substitutions(cmd):
 
 _INTERPRETERS = frozenset(('sh', 'bash', 'zsh', 'dash', 'ksh', 'ash'))
 
-# Short option CHARS that consume the following argv as their value (bash -o/-O
-# set/shopt names). `c` also consumes one — the command string — and is handled
-# separately below. Long options that take a separate value.
-_SH_ARG_CHARS = frozenset('oO')
-_SH_ARG_LONG = frozenset(('--rcfile', '--init-file'))
 
 
 def _interpreter_payloads(argv):
-    """Command strings an interpreter argv will execute (`bash -c '<s>'`).
+    """Strings an interpreter argv may execute (`bash -c '<s>'`), fail-CLOSED.
 
-    Walks the OPTION section only, honoring option arguments, and stops at the
-    first real operand. Behaviors verified against real bash/sh/zsh/dash/ksh:
+    Find the first sign-prefixed token containing `c`, then return EVERY later
+    argv as a candidate. Behaviors verified against real bash/sh/zsh:
 
-      -c / -lc / -ec / -xc / -cl / -ce  all execute the payload — `c` may be
-          clustered anywhere in the token, so match on membership, not position.
-      +c / +lc                          bash accepts '+' as an option sign and
-          `case c` ignores the sign.
-      -O extglob -c "<s>" / -Oc extglob "<s>"   `-O` eats its value first, so
-          the command string is pushed one argv further along.
-      --rcfile -custom -c "<s>"         an option VALUE can itself look like a
-          clustered `-c`; it must be consumed as a value, not matched.
+      -c / -lc / -ec / -xc / -cl / -ce   all execute the payload — `c` may sit
+          anywhere in the cluster, so match on membership, not position.
+      +c / +lc                           bash accepts '+' as an option sign and
+          ignores the sign when matching `c`.
+      -Oc extglob / -cO extglob          an option in the SAME cluster can eat a
+          value, shifting the command string further along.
+      --rcfile -custom -c "<s>"          an option VALUE can itself look like a
+          clustered `-c`.
+      zsh -cO "<s>" placeholder          zsh's `-O` takes NO value, unlike
+          bash's — option arity is PER-SHELL.
 
-    Option arity has to be modelled to tell an OPTION from an OPERAND. Without
-    it, `bash script.sh -lc "git commit"` — where `-lc` is script.sh's OWN
-    argument and bash executes nothing — is misread as a payload. Here the
-    operand `script.sh` ends the option section, so `-lc` is never considered.
+    Returning the whole tail rather than one computed index is deliberate. To
+    pick a single index you must model option arity, and arity differs per
+    interpreter (bash `-O` consumes a value; zsh `-O` does not), so a
+    bash-shaped model MISSES on zsh — fail-OPEN. The tail also covers every way
+    a command string can reach its own arguments without enumerating them:
+    `$0`, `$1`, `$@`, `${!#}`, `$BASH_ARGV`, `$argv[1]` — all verified to
+    execute the trailing argument. Scanning an extra inert token is the
+    fail-CLOSED direction; missing a real one is not.
 
-    Returns argv[cmd_idx:] (a slice, not a single element): if the arity model
-    is ever off by one, scanning an extra inert chunk is the fail-closed
-    direction, whereas returning the wrong single element would MISS the real
-    payload and fail OPEN.
+    ACCEPTED RESIDUALS (deliberate — see the module docstring):
+
+    1. False positive on a script's OWN arguments. `bash script.sh -lc "git
+       commit"` passes `-lc` to script.sh and executes nothing, but `-lc` is
+       matched here anyway, so the gate fires on a command that never commits.
+       Suppressing it requires the per-shell arity model above, whose failure
+       mode is fail-OPEN. An over-firing gate is the safe direction for a
+       warn/block gate; the operator can still proceed.
+    2. Dynamically constructed payloads are UNDECIDABLE and NOT covered.
+       `bash -c "$(printf '...' | base64 -d)"` is verified to execute, and no
+       static scan can decide it. This gate stops CARELESS commits, not a
+       determined operator — who already has `--no-verify` and the skip file.
+       Do not try to close this class; it cannot be closed.
     """
-    k = 1
-    cmd_idx = None
-    while k < len(argv):
+    for k in range(1, len(argv)):
         tok = argv[k]
-        if tok == '--':
-            break
-        if tok in _SH_ARG_LONG:
-            k += 2
-            continue
         if (tok[:1] in ('-', '+') and not tok.startswith(('--', '++'))
-                and len(tok) > 1):
-            # Each arg-taking char in the cluster consumes one following argv,
-            # in order; `c` consumes the command string.
-            consumed = 0
-            for ch in tok[1:]:
-                if ch == 'c':
-                    cmd_idx = k + 1 + consumed
-                    consumed += 1
-                elif ch in _SH_ARG_CHARS:
-                    consumed += 1
-            if cmd_idx is not None:
-                break
-            k += 1 + consumed
-            continue
-        if tok.startswith('--'):
-            k += 1
-            continue
-        break  # first operand — end of the option section
-    if cmd_idx is None or cmd_idx >= len(argv):
-        return []
-    return argv[cmd_idx:]
+                and 'c' in tok[1:]):
+            return argv[k + 1:]
+    return []
 
 
 def _shell_payloads(cmd):

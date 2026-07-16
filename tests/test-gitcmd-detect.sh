@@ -87,9 +87,27 @@ COMMIT_YES = [
     # An arg-taking option INSIDE the cluster shifts the command string further
     # along (-O eats extglob, so the payload is argv[3]) — verified to execute.
     'bash -Oc extglob "git commit"',
+    # -cO and -Oc are identical to bash (verified — both run the payload), so
+    # the position of c in the cluster must not change the result.
+    'bash -cO extglob "git commit"',
+    # zsh's -O takes NO value (bash's does) — option arity is PER-SHELL, which
+    # is why no single arity model is used. Verified: this runs the payload.
+    'zsh -cO "git commit" placeholder',
     # bash accepts '+' as an option sign and `case c` ignores the sign.
     'bash +c "git commit"',              # verified: really executes
     'bash +lc "git commit"',             # clustered, plus sign
+    # A command string that references positional params can EXECUTE the
+    # interpreter's own arguments — they are not inert. Verified against bash:
+    #   bash -c '$0' 'echo RAN'           -> RAN
+    #   bash -c 'eval "$1"' _ 'echo RAN'  -> RAN
+    """bash -c '$0' 'git commit'""",
+    """bash -c 'eval "$1"' _ 'git commit'""",
+    """bash -c '"$@"' _ 'git commit'""",
+    # Other verified routes from a command string to its own arguments. Scanning
+    # the whole tail covers these without enumerating them.
+    """bash -c 'eval "${!#}"' _ 'git commit'""",
+    """bash -c 'eval "$BASH_ARGV"' _ 'git commit'""",
+    """zsh -c 'eval "$argv[1]"' _ 'git commit'""",
 ]
 # ── git commit: negatives (must NOT be recognized → gate allows) ──────
 COMMIT_NO = [
@@ -106,19 +124,28 @@ COMMIT_NO = [
     'bash script.sh',                    # no -c → no payload to scan
     'bash -s',                           # short option without c
     'bash -Oc extglob "echo hi"',        # payload scanned, but not a commit
-    # An operand ENDS the option section, so a later `-c`-looking token is the
-    # SCRIPT's own argument, not bash's. Verified against real bash:
-    #   bash script.sh -lc 'echo PAYLOAD'
-    #     -> "script ran with args: -lc echo PAYLOAD"  (payload NOT executed)
-    # Treating it as a payload would block a command that never commits.
+]
+
+# ── ACCEPTED FALSE POSITIVES (deliberate — do NOT "fix" by adding an arity
+# model; see _interpreter_payloads). These DO fire the gate even though bash
+# executes no commit. Suppressing them needs per-shell option arity, whose
+# failure mode is fail-OPEN — strictly worse than an over-firing gate.
+#   bash script.sh -lc "git commit"        -lc is script.sh's own argument
+#   bash deploy.sh -c "git commit -m x"    same class
+#   bash -c "echo ok" placeholder "git commit"   trailing args are $0/$N
+# Asserted as-is so the behavior is pinned and a future change is visible.
+COMMIT_ACCEPTED_FP = [
     'bash script.sh -lc "git commit"',
     'bash deploy.sh -c "git commit -m x"',
+    'bash -c "echo ok" placeholder "git commit"',
 ]
 
 for c in COMMIT_YES:
     check(f"commit+ {c!r}", g.git_commit(c)[0], True)
 for c in COMMIT_NO:
     check(f"commit- {c!r}", g.git_commit(c)[0], False)
+for c in COMMIT_ACCEPTED_FP:
+    check(f"commit~ (accepted FP) {c!r}", g.git_commit(c)[0], True)
 
 # ── gh pr create ──────────────────────────────────────────────────────
 CREATE_YES = [

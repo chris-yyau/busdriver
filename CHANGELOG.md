@@ -1,3 +1,10 @@
+## [1.91.12](https://github.com/chris-yyau/busdriver/compare/v1.91.11...v1.91.12) (2026-07-16)
+
+
+### Bug Fixes
+
+* **gates:** strip CR so the live server-clock path stops returning empty ([#362](https://github.com/chris-yyau/busdriver/issues/362)) ([f973f9b](https://github.com/chris-yyau/busdriver/commit/f973f9bead6548a5571464d00a92c14adad7042b)), closes [#300](https://github.com/chris-yyau/busdriver/issues/300) [#305](https://github.com/chris-yyau/busdriver/issues/305) [#314](https://github.com/chris-yyau/busdriver/issues/314) [#332](https://github.com/chris-yyau/busdriver/issues/332)
+
 ## [1.91.11](https://github.com/chris-yyau/busdriver/compare/v1.91.10...v1.91.11) (2026-07-16)
 
 

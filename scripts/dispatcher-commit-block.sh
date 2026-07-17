@@ -10,7 +10,7 @@
 #   RESULT_FIXES            - worker's intent statement (string)
 #
 # Inputs (optional env vars; default 0/empty):
-#   NO_WORKTREE             - "1" inline / no-worktree mode
+#   NO_WORKTREE             - "1" no-worktree mode (worker shares parent repo index)
 #   PRE_DISPATCH_BASELINE   - JSON array of paths staged before worker dispatch
 #   BUSDRIVER_ALLOW_NO_COMMITLINT - "1" allows missing local commitlint
 #   RESULT_REVIEWER_ACKS    - worker-computed ack ledger; passed through on
@@ -94,12 +94,12 @@ if [ "${NO_WORKTREE:-0}" = "1" ]; then
         baseline_count=$(printf '%s' "$PRE_DISPATCH_BASELINE" | jq -r 'length' 2>/dev/null || echo invalid)
         case "$baseline_count" in
             ''|*[!0-9]*)
-                emit_bail "judgment" "inline mode received invalid PRE_DISPATCH_BASELINE JSON"
+                emit_bail "judgment" "no-worktree mode received invalid PRE_DISPATCH_BASELINE JSON"
                 ;;
         esac
 
         if [ "$baseline_count" -gt 0 ]; then
-            emit_bail "judgment" "inline mode requires clean index before worker dispatch; baseline had $baseline_count staged paths"
+            emit_bail "judgment" "no-worktree mode requires clean index before worker dispatch; baseline had $baseline_count staged paths"
         fi
     fi
 fi
@@ -297,7 +297,7 @@ case "$LITMUS_EXIT" in
 
         case "$LITMUS_STATUS" in
             review_findings)
-                emit_bail "judgment" "litmus review_findings - dispatcher-side fix loop not yet implemented; operator must address inline"
+                emit_bail "judgment" "litmus review_findings - dispatcher-side fix loop not yet implemented; operator must address them manually"
                 ;;
             stall|max_iterations|infra_failure|setup_error)
                 emit_bail "judgment" "litmus exit 1 (${LITMUS_STATUS})"

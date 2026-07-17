@@ -47,8 +47,6 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
 - Flattens conversation context — each round starts with O(1) tokens instead of O(N) accumulation across rounds
 - Keeps Opus available for orchestration: triage of subagent results, bail handling, merge decisions, and skip-file protocol
 
-**Override with `--opus`:** Run the loop inline in the parent Opus context (skips dispatch). Use when a PR has known nuance — multi-file architectural fixes, subtle review threads, etc.
-
 ## Anti-Patterns (DO NOT)
 
 | Trap | Why it breaks the loop |
@@ -65,7 +63,7 @@ This skill is a **thin Opus dispatcher**. The actual round work runs in a fresh 
 ## Safety Rails
 
 - **Max iterations:** Two independent budgets — **fix-rounds** (default 5, override with `--max-fix N`) cap how many dispatcher-owned fix commits can be pushed; **wait-rounds** (default 8, override with `--max-wait N`) cap how many polling rounds spent waiting for slow bots to ack HEAD. A round is classified as a *fix round* when `RESULT_COMMIT_SHA != "none"` and as a *wait round* otherwise. Bail when EITHER counter exhausts its budget. Both `--max-fix` and `--max-wait` must be `>= 1` — there is no "zero means unlimited" or "zero disables this class" form; if you want a larger budget, pass a larger number. The legacy `--max N` flag is accepted as a deprecated alias that sets both budgets to N (emits a deprecation warning). The split exists because under the old unified `--max`, every wait-round consumed a fix slot — so a PR with 3 fix iterations + 4 slow-bot polls would exhaust at MAX=5 even though only 3 fixes happened.
-- **Autonomous by default:** Grinds without pausing between rounds (override with `--interactive` for human checkpoints)
+- **Autonomous by default:** Grinds without pausing between rounds
 - **Merges by default:** After grinding clean, pr-grind merges the PR. Pass `--no-merge` to skip the merge and just declare "Ready for merge". This is NOT GitHub auto-merge — pr-grind merges *after* all checks pass and all comments are addressed, inside its own control flow.
 - **Bail triggers:** Stop immediately and clean up worktree if:
   - A comment is a design/scope question (not a code fix)
@@ -156,18 +154,7 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │
   ├── round_number += 1                  # pre-increment so ROUND=<N> is 1-indexed at dispatch time
   │
-  ├── Decide model:
-  │     --opus, --interactive,
-  │       --ci-only, --comments-only → run inline (Steps 1–7 below)
-  │     default                       → dispatch pr-grinder subagent
-  │
-  │   (--ci-only and --comments-only force inline because they need
-  │   Step 2's per-source branching; the subagent contract collects
-  │   all sources unconditionally and the round-isolated dispatch
-  │   doesn't carry per-flag suppression. Until those are wired into
-  │   the worker, the inline path is the honest place for them.)
-  │
-  ├── Dispatch (default path):
+  ├── Dispatch a round:
   │     Agent(subagent_type="pr-grinder", prompt=<context block>)
   │     ↳ Subagent does ONE round (Steps 1–6.5), returns RESULT_* tags
   │
@@ -942,7 +929,7 @@ Inputs (env vars, required):
 - `WORKTREE_DIR`, `CLAUDE_PLUGIN_ROOT`, `PR_NUMBER`, `RESULT_STATUS`, `RESULT_FIXES`.
 
 Inputs (env vars, optional; default 0/empty):
-- `NO_WORKTREE` - `1` enables the pre-dispatch baseline check for inline/no-worktree mode.
+- `NO_WORKTREE` - `1` enables the pre-dispatch baseline check for no-worktree mode (worker runs in the repo root and shares the parent index).
 - `PRE_DISPATCH_BASELINE` - JSON array of paths staged before worker dispatch; required when `NO_WORKTREE=1`.
 - `BUSDRIVER_ALLOW_NO_COMMITLINT` - `1` allows a missing local commitlint binary.
 
@@ -964,362 +951,6 @@ The fallback fires on EITHER missing OR invalid `RESULT_STATUS`. A worker that e
 
 If after both probes `RESULT_STATUS` is still missing or its value still isn't one of the three valid options, then bail "subagent output unparseable" — do not guess.
 
-### Inline Execution (`--opus`, `--interactive`, `--ci-only`, or `--comments-only`)
-
-When inline, the dispatcher executes the round triage/fix/stage body itself in the parent Opus context. Commit, litmus, push, and post-push ack synthesis still go through `scripts/dispatcher-commit-block.sh`, exactly like subagent mode.
-
-<EXTREMELY-IMPORTANT>
-YOU MUST COMPLETE STEP 1 BEFORE PROCEEDING. Do NOT skip, abbreviate, or defer CI waiting.
-The entire pr-grind workflow depends on checks being complete. If you proceed without waiting,
-you will be blocked by the pre-merge gate and waste the user's time.
-</EXTREMELY-IMPORTANT>
-
-#### Step 1: Wait for ALL Checks + Reviewers
-
-**DO NOT skip this step. DO NOT proceed while checks are still pending.**
-
-Automated reviewers (CodeRabbit, Cursor, Cubic, CodeScene, GitGuardian) register as GitHub checks. `gh pr checks --watch` blocks until ALL of them complete — not just CI build/lint/test.
-
-**Advisory checks (CodeScene):** CodeScene is non-blocking — its feedback is still collected and you MUST attempt to fix its issues, but its pass/fail status does not block the clean marker or merge gate. If a CodeScene finding requires architectural changes beyond PR scope, note it and proceed.
-
-```bash
-# Phase 1: Wait for all GitHub-registered checks (CI + automated reviewers).
-# NOTE: --watch has no allowlist knob, so it waits for the FULL GitHub check
-# set; lock-aware filtering applies to the DECISION below (Phase 2/2.5), not
-# this wait. A perpetually-pending NON-required check can delay this up to the
-# timeout — a known minor latency caveat, not a correctness issue.
-timeout 900 gh pr checks <PR_NUMBER> --watch 2>&1 || true
-
-# Lock-aware check filter — single source of truth across this skill, the
-# pre-merge gate, and the pr-grinder worker (scripts/relevant-check-status.sh,
-# issue #154). Pass the repo-ROOT DIR so it can read .github/required-checks.lock
-# — NOT the repo name (a bare name resolves the lock at ./name/.github/... and
-# silently falls back to mode=all). It emits "<failed> <pending> <mode> <kept>"
-# on line 1 (read consumes only line 1) and the failing rows on lines 2..N.
-# Fail-CLOSED: any error → conservative blocking "1 0 all 0".
-REPO_DIR=$(git rev-parse --show-toplevel)
-RCS="${CLAUDE_PLUGIN_ROOT}/scripts/relevant-check-status.sh"
-
-# Phase 2: Verify no REQUIRED checks are still pending (lock-aware; defensive).
-for i in 1 2 3 4 5; do
-  COUNTS=$(gh pr checks <PR_NUMBER> 2>&1 | bash "$RCS" "$REPO_DIR" 2>/dev/null || printf '1 0 all 0\n')
-  read -r _F PENDING _M _K <<<"$COUNTS"
-  [ "${PENDING:-1}" -eq 0 ] && break
-  echo "⏳ $PENDING required checks still pending — waiting 60s (attempt $i/5)..."
-  sleep 60
-done
-if [ "${PENDING:-1}" -gt 0 ]; then
-  echo "❌ $PENDING required checks still pending after 5 retries. Cannot proceed."
-  exit 1
-fi
-
-# Phase 2.5: Verify all REQUIRED checks PASSED (not just completed).
-GH_EXIT=0
-CHECKS_RAW=$(gh pr checks <PR_NUMBER> 2>&1) || GH_EXIT=$?
-if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_RAW" | grep -qE "pass|fail|pending"; then
-  echo "❌ gh pr checks failed (exit $GH_EXIT). Resolve CLI/auth issues."
-  exit 1
-fi
-COUNTS=$(printf '%s\n' "$CHECKS_RAW" | bash "$RCS" "$REPO_DIR" 2>/dev/null || printf '1 0 all 0\n')
-read -r FAILED PENDING MODE KEPT <<<"$COUNTS"
-# Guard (mirror the gate): empty/garbled output → treat as blocking.
-if [ -z "${MODE:-}" ] || [ -z "${FAILED:-}" ] || [ -z "${KEPT:-}" ]; then FAILED=1; fi
-# No relevant-check evidence (KEPT=0 — e.g. a required check never posted) must
-# NOT read as clean; mirror the gate's KEPT>0 bootstrap guard.
-if [ "${KEPT:-0}" -eq 0 ]; then FAILED=1; fi
-# Advisory (cosmetic, mode-independent FYI): CodeScene failing is non-blocking.
-ADVISORY_FAILED=$(printf '%s\n' "$CHECKS_RAW" | grep -iE "CodeScene" | grep -cE "fail" || true)
-if [ "$ADVISORY_FAILED" -gt 0 ]; then
-  echo "⚠️  $ADVISORY_FAILED advisory checks failing (non-blocking)."
-fi
-if [ "${FAILED:-1}" -gt 0 ]; then
-  echo "❌ $FAILED required checks FAILED. Continuing to Step 2 to collect details."
-  printf '%s\n' "$COUNTS" | tail -n +2
-fi
-
-# Phase 3: Grace period for late-arriving comments
-sleep 30
-```
-
-**Polling/proceed gate is `0 pending` — NOT a specific check count.** Once nothing is pending, continue so Step 2 can collect any failures or review feedback. **Clean/merge-ready state is `0 pending AND 0 failed`.** After rebases, some services (CodeRabbit, cubic) may not re-register their check. Do NOT poll for "expected N checks" — only use pending vs failed state.
-
-#### Step 2: Collect Feedback
-
-Gather ALL pending issues in one pass:
-
-```bash
-# CI check results
-gh pr checks <PR_NUMBER>
-
-# Inline review threads (GraphQL — skips resolved and outdated threads)
-gh api graphql --paginate -f query='
-  query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
-    repository(owner: $owner, name: $repo) {
-      pullRequest(number: $pr) {
-        reviewThreads(first: 100, after: $endCursor) {
-          pageInfo { hasNextPage endCursor }
-          nodes {
-            isResolved
-            isOutdated
-            path
-            line
-            comments(first: 100) {
-              nodes { body author { login } createdAt }
-            }
-          }
-        }
-      }
-    }
-  }
-' -f owner={owner} -f repo={repo} -F pr=<PR_NUMBER> \
-  --jq '.data.repository.pullRequest.reviewThreads.nodes[]
-    | select(.isResolved == false and .isOutdated == false)
-    | {path, line, comments: [.comments.nodes[] | {body, user: .author.login, createdAt}]}'
-
-# Review-level comments (approve/request changes/comment)
-gh api repos/{owner}/{repo}/pulls/<PR_NUMBER>/reviews \
-  --jq '.[] | select(.state == "CHANGES_REQUESTED" or .state == "COMMENTED") | {user: .user.login, state: .state, body: .body}'
-
-# Issue comments
-gh pr view <PR_NUMBER> --comments --json comments \
-  --jq '.comments[] | {author: .author.login, body: .body}'
-```
-
-**On filtering:** Don't filter by "latest comment newer than `PRIOR_COMMIT_SHA`" — that drops unresolved threads whose latest reply happens to be old, even though they're still actionable (a reviewer can post a comment, you push a commit that *doesn't* address it, and the thread stays unresolved with an "old" timestamp). Use **per-source** staleness signals, not one filter that covers all:
-- **Source 2 (inline review threads):** `isResolved == false AND isOutdated == false`
-- **Source 3 (review-level comments):** `state == CHANGES_REQUESTED` or `COMMENTED`; an explicit `APPROVED` from the same reviewer clears prior CHANGES_REQUESTED
-- **Source 4 (issue comments):** no GitHub-side flag exists. Each bot's latest comment body is canonical; older comments from same bot are superseded. **CodeRabbit-Pro posts its findings only here** — running Source 2 alone misses them. See `agents/pr-grinder.md` Step 2 for concrete bot-by-bot parsing rules.
-
-Re-fetching all four sources each round is cheap; the cost we cared about was conversation-context accumulation, not API traffic, and per-round subagent dispatch already solves that.
-
-#### Step 3: Triage
-
-Classify each piece of feedback:
-
-| Category | Action |
-|----------|--------|
-| **CI failure — test/lint/build** | Fix it |
-| **CI failure — flaky/infra** | Note it, skip after 3 consecutive identical failures |
-| **Automated reviewer — specific fix** (CodeRabbit, Cursor, Cubic, Codex) | Fix it — treat like human review |
-| **Automated reviewer — out-of-scope-acknowledged on YOUR changed code** | Apply the workflow at `agents/pr-grinder.md` Step 3 (Out-of-Scope-Acknowledged Workflow): classify with one of 6 enumerated reasons, spawn follow-up issue (3 spawn reasons) or post audit-only reply (3 audit reasons), then resolve the thread. **DEFAULT IS FIX** — only dismiss with ≥80% confidence the fix would expand scope or require off-codebase work. Per-round cap ≤3 dismissals; cumulative caps ≤5 dismissals + ≤3 spawned issues across the grind (Invariant 4 BAILs past either) |
-| **Automated reviewer — stale/pre-existing issue in untouched code** | Skip — only fix issues in YOUR PR's changed lines (this is distinct from out-of-scope-acknowledged: this row is for findings on lines your PR did NOT touch; the row above is for findings on touched lines where the fix is out of scope) |
-| **Resolved or outdated thread** | Skip — already filtered out by GraphQL (`isResolved`, `isOutdated`); note that pr-grind's own out-of-scope flow resolves threads after dismissal, so resolved-by-operator threads also fall in this row on subsequent rounds |
-| **Human review — specific fix request** | Fix it |
-| **Human review — question/clarification** | Reply with explanation, don't change code |
-| **Human review — design/scope concern** | **BAIL** — surface to user, this needs human judgment |
-| **Code review — nit/style** | Fix it (low effort, high goodwill) |
-
-**Important:** Automated reviewers often post on code that was already in the repo before your PR. Only fix issues in files/lines that YOUR PR changed.
-
-**Inline-mode self-tracking note:** When running inline (`--opus`, `--interactive`, `--ci-only`, `--comments-only`), the dispatcher IS the worker — there is no subagent boundary to emit `RESULT_BOT_LEDGER` / `RESULT_ISSUES_SPAWNED` across. Self-track `total_scope_skipped` and `total_issues_spawned` in your conversation context across rounds, and apply the same Invariant 4 cumulative caps with strict-greater-than thresholds (`>5` dismissals OR `>3` spawned issues → BAIL with `RESULT_BAIL_CATEGORY=judgment`). Caps are INCLUSIVE — 5 dismissals and 3 spawns are the maximum allowed; the 6th dismissal / 4th spawn is what BAILs. This matches the canonical pseudocode at "Invariant checks → 4. Discipline rails" in the Dispatcher Loop above. The discipline rails are protocol invariants, not subagent-only checks; both the inline and subagent surfaces enforce identical thresholds.
-
-#### Step 4: Fix
-
-For each actionable item:
-
-1. Read the relevant file(s) at the referenced lines
-2. Understand the surrounding context
-3. Apply the minimal fix that addresses the feedback
-4. Do NOT refactor, improve, or "while I'm here" adjacent code
-
-#### Step 5: Verify Locally
-
-Run the narrowest test that covers the fix. If local tests fail, fix before pushing.
-
-#### Step 6: Stage Intent; Dispatcher Commits
-
-Stage only the files changed by this round and record the fix summary in `RESULT_FIXES`. Do not run `git commit`, `git push`, litmus, or commitlint from the inline body. The dispatcher commit/state-synthesis block invokes `scripts/dispatcher-commit-block.sh` with `NO_WORKTREE=1`; that script enforces the clean-index pre-condition, runs litmus, commits, pushes, and returns the authoritative `RESULT_COMMIT_SHA` / `RESULT_REVIEWER_ACKS` envelope.
-
-If you didn't change any files this round (no actionable findings — only waiting for bots to re-review), skip the commit-block and proceed to Step 6.5; HEAD is unchanged and the ledger will reflect bot acks against the existing HEAD.
-
-#### Step 6.5: Compute reviewer ack ledger (post-push)
-
-After any commit/push has settled, compute the per-bot ack ledger. This closes the slow-bot race: a bot's GitHub check can flip green seconds before the bot actually posts its review. Without this gate, Step 7 would declare the round complete and the loop would exit before the bot's findings landed.
-
-The per-bot algorithm itself is single-sourced at `scripts/ack-ledger.sh` and invoked identically here, in `agents/pr-grinder.md` Step 6.5 (the Sonnet worker copy), and in COMPLETION below — algorithm edits touch one file. The fetch block (`ALL_THREADS`/`ALL_REVIEWS`/`ALL_COMMENTS` and the `FETCH_OK` flag) still lives at each call site because PR/owner/repo come from caller-local context. The result-var name (`ROUND_ACKS`) differs from the worker (`ACKS`) and dispatcher (`FRESH_ACKS`) so multiple snippets can coexist in a single Bash invocation without namespace collision.
-
-The `<PR_NUMBER>`, `<owner>`, `<repo>` placeholders below follow the same template-substitution convention used by COMPLETION — Claude substitutes the literal owner / repo / PR-number values at run time before executing the bash.
-
-```bash
-PR=<PR_NUMBER>
-OWNER=<owner>
-REPO=<repo>
-HEAD_SHA=$(git rev-parse HEAD | cut -c1-8)
-
-# One-shot fetches. FETCH_OK tracks any source failure; if any source failed,
-# scripts/ack-ledger.sh fails-CLOSED to `stale` for every bot (fail-OPEN
-# regression guard — empty-default fallbacks would silently produce `none`
-# and let `clean` slip through).
-FETCH_OK=1
-# Source 2: --paginate + cursor — large PRs can exceed reviewThreads(first:100)
-ALL_THREADS=$(gh api graphql --paginate -f query='
-  query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String) {
-    repository(owner:$owner,name:$repo) {
-      pullRequest(number:$pr) {
-        reviewThreads(first:100, after:$endCursor) {
-          pageInfo { hasNextPage endCursor }
-          nodes {
-            isResolved isOutdated
-            resolvedBy { login }
-            comments(first:1) { nodes { author { login } createdAt } }
-            resolutionComments: comments(last:10) { nodes { author { login } createdAt } }
-          }
-        }
-      }
-    }
-  }
-' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) || FETCH_OK=0
-ALL_REVIEWS=$(gh api --paginate "repos/$OWNER/$REPO/pulls/$PR/reviews" 2>/dev/null) || FETCH_OK=0
-ALL_COMMENTS=$(gh pr view "$PR" --comments --json comments 2>/dev/null) || FETCH_OK=0
-# Content-identity carry-forward: a bot ack on SHA_old still HEAD-acks when git
-# PROVES SHA_old is content-identical to HEAD — same tree AND same parents, i.e. a
-# message-only `git commit --amend` force-push (commitlint fix, DCO sign-off, GPG
-# re-sign, message typo). Without it, a fresh SHA with zero code delta makes every
-# SHA-anchored tier miss and the gate poll-then-bail at --max-wait every time.
-# Tiers B (/reviews) and C (body-SHA) are PR-wide, so ack-ledger.sh's acks_head()
-# carries them forward on its own. Tier D (check-runs) is HEAD-scoped — the augment
-# source below (run after this fetch, before the ledger call) widens ALL_CHECK_RUNS
-# with the content-identical predecessor's check-runs so Tier D can ack them
-# (re-proven via acks_head(head_sha)). Tier E
-# (statuses) is NOT carried forward (no SHA to re-prove); it stays correct on its own
-# HEAD fetch. Timestamp-FREE (git object hashes, not backdatable dates — does NOT relax
-# the #186/#189 posture), parent-pinned (rejects rebases), fails CLOSED. Disable with
-# ACK_CONTENT_IDENTITY=0. See ack-ledger.sh, augment-equiv-acks.sh + ADR 0004.
-# Source 5: check-runs on HEAD — bots like Cubic emit a check-run instead of
-# a /reviews entry; tier D in scripts/ack-ledger.sh treats a passing check_run
-# whose head_sha == HEAD as a HEAD-ack. (CodeRabbit uses a separate Source 6
-# below — its private-repo signal lives in the legacy commit-statuses API.)
-ALL_CHECK_RUNS=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/check-runs" 2>/dev/null) || FETCH_OK=0
-# Source 6: commit statuses on HEAD — CodeRabbit on private repos uses the
-# legacy commit-statuses API (no check-run registered). Tier E in
-# scripts/ack-ledger.sh maps the bot login to a context string and treats a
-# latest-by-timestamp `state=success` as a HEAD-ack.
-ALL_STATUSES=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_SHA/statuses" 2>/dev/null) || FETCH_OK=0
-# Source 7: issue-level reactions + HEAD push time — Codex's clean signal is
-# a 👍 reaction (Tier F), not a SHA-keyed ack. --paginate so Codex's reaction
-# isn't missed behind >30 human PR-body reactions (Tier F slurps the stream).
-ALL_REACTIONS=$(gh api --paginate "repos/$OWNER/$REPO/issues/$PR/reactions" 2>/dev/null) || FETCH_OK=0
-HEAD_COMMITTED_DATE=$(gh api "repos/$OWNER/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' 2>/dev/null || echo "")
-# HEAD_PUSH_DATE: push event timestamp — the SOLE Tier-F +1 freshness anchor.
-# --paginate + slurp (jq -rs) so the PushEvent for HEAD is found even when it lands
-# on a later events page; without pagination a HEAD push beyond the first page yields
-# empty. Best-effort; exports empty on failure or no match, in which case Tier F fails
-# CLOSED to stale (no committer fallback — the committer date is backdatable, #189).
-# HEAD_COMMITTED_DATE is fetched best-effort and NOT gated on FETCH_OK (nothing reads it).
-HEAD_FULL_SHA=$(git rev-parse HEAD)
-# Branch filter prevents anchoring on a PushEvent from a different branch that
-# shares the same tip SHA. fetch-pr-state.sh uses the same guard; keep in sync.
-PR_BRANCH=$(gh pr view "$PR" --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
-_ref="refs/heads/${PR_BRANCH:-}"
-HEAD_PUSH_DATE=$(gh api --paginate "repos/$OWNER/$REPO/events?per_page=100" 2>/dev/null \
-  | jq -rs --arg head "$HEAD_FULL_SHA" --arg ref "$_ref" \
-    '[.[]? | .[]? | select(.type=="PushEvent" and .payload.head==$head and (if $ref != "refs/heads/" then .payload.ref==$ref else false end))] | sort_by(.created_at) | last | .created_at // empty' 2>/dev/null || echo "")
-# HEAD_CHECKS_DATE (#269): SHA-bound fallback freshness anchor. HEAD_PUSH_DATE
-# (PushEvent) is preferred, but it is empty for a brand-new branch whose FIRST push CREATED
-# the ref (GitHub emits a CreateEvent, not a PushEvent) — a genuine fresh Codex 👍 then
-# fail-closes to stale forever. Fall back to the earliest check-SUITE created_at stamped for
-# THIS HEAD SHA. Do NOT also filter on head_branch (#271): GitHub emits ONE check_suite per
-# commit SHA GLOBALLY (docs), so the suite's head_branch is whatever branch the SHA was FIRST
-# pushed to — which may differ from this PR branch, or be null (forks) — and filtering it out
-# would drop the only suite and fail-close a fresh ack to stale forever. The endpoint is
-# already SHA-scoped and created_at is content-bound; the EARLIEST is the most conservative
-# (older = fail-closed). Unlike a check-RUN started_at or the committer date, the suite
-# created_at is NOT app/client-settable (preserves #186/#189). No suite (no CI yet, fork ns)
-# → empty → ack-ledger fails closed.
-HEAD_CHECKS_DATE=""
-# Fail-CLOSED (litmus, PR #280): require PR_BRANCH known before using this fallback,
-# EVEN THOUGH the jq filter above is SHA-only. GitHub emits per-(SHA,ref) check-suites
-# (a `refs/pull/N/head` suite can carry an older created_at than the real PR-head push),
-# so a SHA-only lookup run with the branch UNKNOWN could anchor Codex-ack freshness on a
-# backdated suite and accept a stale 👍 / resolved thread as fresh. When PR_BRANCH is empty
-# (transient `gh pr view` failure, deleted/fork branch) we cannot confirm the suite belongs
-# to this PR — fail closed to stale rather than risk a backdated ack. Deliberate, not dead code.
-if [ -z "$HEAD_PUSH_DATE" ] && [ -n "${PR_BRANCH:-}" ] && [ -n "${HEAD_FULL_SHA:-}" ]; then
-  HEAD_CHECKS_DATE=$(gh api --paginate "repos/$OWNER/$REPO/commits/$HEAD_FULL_SHA/check-suites" 2>/dev/null \
-    | jq -rs --arg sha "$HEAD_FULL_SHA" \
-      '[.[].check_suites[]? | select(.head_sha==$sha) | .created_at] | map(select(. != null and . != "")) | sort | .[0] // empty' 2>/dev/null || echo "")
-fi
-
-# Per-bot ack — algorithm lives in scripts/ack-ledger.sh (single source of
-# truth for this site, the worker's Step 6.5 in agents/pr-grinder.md, and the
-# dispatcher's Completion site below). The script reads FETCH_OK / ALL_THREADS /
-# ALL_REVIEWS / ALL_COMMENTS / ALL_CHECK_RUNS / ALL_STATUSES / ALL_REACTIONS /
-# HEAD_COMMITTED_DATE / HEAD_PUSH_DATE / HEAD_SHA from env and the bot login from $1.
-# Tier D carry-forward across message-only force-pushes: check-runs are HEAD-scoped,
-# so a bot's check-run on the PRE-amend SHA is invisible. Widen ALL_CHECK_RUNS with any
-# content-identical predecessor's check-runs before the ledger runs (additive,
-# best-effort, git-proven; no-op under ACK_CONTENT_IDENTITY=0; Tier E statuses are NOT
-# widened). Keep in sync with scripts/fetch-pr-state.sh, agents/pr-grinder.md, and the
-# Completion mirror below.
-PR_NUMBER="$PR"; AUGMENT_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/augment-equiv-acks.sh"
-[ -f "$AUGMENT_SCRIPT" ] && . "$AUGMENT_SCRIPT"
-export FETCH_OK ALL_THREADS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_REACTIONS HEAD_COMMITTED_DATE HEAD_PUSH_DATE HEAD_CHECKS_DATE HEAD_SHA HEAD_FULL_SHA
-ACK_SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/ack-ledger.sh"
-# One call per bot with ACK_EMIT_TIER=1 → "<sha>:<tier>" on a HEAD-ack, bare
-# none/stale otherwise. Derive the plain ack ledger (strip ":<tier>") AND the
-# tier map. Inline mode runs the same tier-aware Invariant 3 the subagent path
-# does (ADR 0001), so it needs the tiers here just as the worker emits them.
-_at() { ACK_EMIT_TIER=1 bash "$ACK_SCRIPT" "$1" 2>/dev/null || echo stale; }
-_ackpart() { printf '%s' "${1%%:*}"; }
-_tierpart() { case "$1" in *:*) printf '%s' "${1##*:}" ;; *) printf 'none' ;; esac; }
-_cur=$(_at cursor); _cub=$(_at cubic-dev-ai); _cod=$(_at coderabbitai); _dev=$(_at devin-ai-integration); _grp=$(_at greptile-apps)
-ROUND_ACKS="cursor=$(_ackpart "$_cur"),cubic-dev-ai=$(_ackpart "$_cub"),coderabbitai=$(_ackpart "$_cod"),devin-ai-integration=$(_ackpart "$_dev"),greptile-apps=$(_ackpart "$_grp")"
-ROUND_ACK_TIERS="cursor=$(_tierpart "$_cur"),cubic-dev-ai=$(_tierpart "$_cub"),coderabbitai=$(_tierpart "$_cod"),devin-ai-integration=$(_tierpart "$_dev"),greptile-apps=$(_tierpart "$_grp")"
-echo "Ack ledger: $ROUND_ACKS"
-echo "Ack tiers: $ROUND_ACK_TIERS"
-# Codex — gated separately via Tier F (👍 reaction). Tracked in its own var,
-# NOT folded into ROUND_ACKS (the five SHA-keyed bots, which Invariant 3
-# intersects). A stale Codex blocks `clean` exactly like a stale registered bot.
-ROUND_CODEX_ACK=$(_ackpart "$(_at chatgpt-codex-connector)")
-echo "Codex ack: $ROUND_CODEX_ACK"
-
-# Compute STALE_BOTS over the registered five PLUS Codex (appended only for
-# this throwaway staleness scan — ROUND_ACKS itself stays the five-bot
-# contract). A stale entry from either source blocks `clean`.
-STALE_BOTS=$(echo "$ROUND_ACKS,chatgpt-codex-connector=$ROUND_CODEX_ACK" | tr ',' '\n' | awk -F= '$2=="stale"{print $1}')
-echo "STALE_BOTS: $STALE_BOTS"
-```
-
-(The Codex sole-stale-blocker auto-re-trigger is **not** invoked inside this Bash block — this block runs *after* the commit-block (Step 6), so the working tree is clean even on a fix-round and a shell guard cannot tell a wait-round apart. It is invoked from the Claude-interpreted "Acting on the result" step below, where the wait-round vs fix-round distinction is known.)
-
-**Acting on the result (instruction to Claude, not shell control flow):** the `STALE_BOTS` variable lives only inside the Bash invocation that runs the snippet above — it does NOT persist into a subsequent inline-loop iteration. After the snippet runs, **Claude reads the printed `Ack ledger:` and `STALE_BOTS:` lines from stdout** and decides:
-
-- **STALE_BOTS empty** → round genuinely complete; proceed to Step 7 (autonomous summary or interactive checkpoint), which will either continue to the next round or dispatch Completion depending on whether checks are green and all findings are resolved.
-- **STALE_BOTS non-empty** → round is in waiting-for-bots state; **skip Step 7 entirely** and re-dispatch Step 1 directly (analogous to the Sonnet subagent's `needs_more + RESULT_COMMIT_SHA=none + stale-acks` flow that the dispatcher's relaxed Invariant 1 permits). Increment the round counter as normal.
-  - **Codex sole-stale-blocker auto-re-trigger (one-shot per HEAD; ADR 0005).** If — AND ONLY IF — this is a **wait-round** (you did NOT run the commit-block this round, so HEAD is unchanged) **and** `STALE_BOTS` is *exactly* `chatgpt-codex-connector` (every registered bot already acked HEAD; Codex is the sole blocker), run the helper ONCE before re-dispatching so Codex re-reviews the unchanged HEAD it would otherwise never self-ack (it posts COMMENTED reviews / 0 reactions, and its thread resolutions predate the last push) — without it the gate dead-ends at `--max-wait`:
-
-    This runs as its own Bash invocation, so per the "CWD Reset Across Bash Calls" contract it MUST open with `cd "$WORKTREE_DIR"` (template-substituted to the literal Step 0 path). Do NOT rely on `$PR` / `$HEAD_SHA` persisting from the Step 6.5 block (shell vars do not survive across Bash calls) and do NOT trust the inherited CWD: `$WORKTREE_DIR` and `$PR_NUMBER` are the Step 0 literals, and HEAD is read inside the correct worktree after the cd. The cd runs in a subshell and ABORTS on failure (`|| exit 0`) so a bad `WORKTREE_DIR` never lets git/gh run in the wrong repo:
-
-    ```bash
-    ( cd "$WORKTREE_DIR" || exit 0
-      bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger.sh" "$PR_NUMBER" "$(git rev-parse HEAD)" || true )
-    ```
-
-    Do NOT run it on a fix-round: the commit-block already pushed a new HEAD, which re-triggers Codex on its own. The wait-round condition is the inline analogue of the dispatcher's `RESULT_COMMIT_SHA == "none"` and the worker's clean-working-tree gate. One-shot + opt-out (`PR_GRIND_CODEX_RETRIGGER=0`) + phrase override (`PR_GRIND_CODEX_RETRIGGER_PHRASE`) live in the helper (`${CLAUDE_PLUGIN_ROOT}` is a session env var, so it persists). `|| true` keeps a failed post from ever staling the gate. Distinct from the COMPLETION first-engagement grace, which only RE-POLLS a `none` Codex (never a `stale` one).
-
-**Interaction with `--max-fix` / `--max-wait`:** wait-rounds count against `--max-wait` (default 8), NOT against `--max-fix` (default 5). The split fixed a real failure mode in the previous unified `--max` budget: every wait-round consumed a fix slot, so a PR with 3 fix iterations + 4 slow-bot polls would exhaust at `--max=5` even though only 3 fixes happened. With the dual budget, fix-budget reflects *engineering effort* and wait-budget reflects *bot latency tolerance* — orthogonal concerns. Either exhausted budget bails with a specific reason: `max-fix iterations (<MAX_FIX>) reached without clean status` (raise `--max-fix` if grinding a PR with many feedback rounds) or `max-wait iterations (<MAX_WAIT>) reached without all bots acking HEAD; latest stale: <STALE_AT_BAIL>` (raise `--max-wait` if grinding a PR with known-slow reviewer bots; `STALE_AT_BAIL` is the dispatcher-side derivation from `PRIOR_REVIEWER_ACKS` plus `PRIOR_CODEX_ACK` — see `ON_LOOP_EXHAUSTED` in the Dispatcher Loop above. Note: this is distinct from Step 6.5's transient `$STALE_BOTS` bash variable, which lives only inside the ledger snippet and does not survive into the bail handler). The legacy `--max N` flag is a deprecated alias that sets both budgets to N (emits a `⚠️  --max is deprecated; use --max-fix and --max-wait` warning at dispatch start) and CANNOT be combined with `--max-fix` or `--max-wait` — combining them bails with reason `conflicting flags: --max cannot be combined with --max-fix or --max-wait`.
-
-#### Step 7: Round summary / checkpoint
-
-**Gate:** Step 7 only runs when Step 6.5's `STALE_BOTS` was empty (every registered bot is `<HEAD-SHA>` or `none`). When `STALE_BOTS` is non-empty, the round is in waiting-for-bots state — skip Step 7 entirely and re-dispatch Step 1 directly (mirrors the dispatcher's relaxed Invariant 1 handling for stale-ack rounds).
-
-In autonomous mode (default), log a brief summary and continue immediately to the next round (or to Completion if every check is green and no findings remain). In interactive mode (`--interactive`), present to user and wait:
-
-```text
-## PR Grind — Round N (fix=<fix_round>/<MAX_FIX>, wait=<wait_round>/<MAX_WAIT>) complete
-
-**Fixed:**
-- [ ] CI: <what failed and how you fixed it>
-- [ ] Review: <comment summary and what you changed>
-
-**Skipped:**
-- <design questions, flaky tests, etc.>
-
-**Status:** Pushed. CI will re-run.
-
-Continue grinding?
-```
-
 ## Worked Example: Out-of-Scope-Acknowledged Flow
 
 Concrete walk-through of the carve-out — what the worker does, what the dispatcher sees, and how Invariant 4 interacts with it. Drawn from the failure mode that motivated this flow (jikdak PR #129, where the dispatcher had no clean way to dispose of architectural findings on touched lines and the merge stayed blocked across 7+ rounds).
@@ -1331,7 +962,7 @@ Concrete walk-through of the carve-out — what the worker does, what the dispat
 
 Both are real findings on changed code. Neither fits the existing pre-existing-issue carve-out (the lines were touched). Without out-of-scope-acknowledged, the worker would either fix them (3+ scope-creep rounds, bot finds new things on the new HEAD, grind never converges) or leave the threads unresolved (ack ledger stays `stale` forever, merge gate blocks indefinitely).
 
-**Round 3 (worker, inline).**
+**Round 3 (worker).**
 
 ```text
 Round 3 triage (BOT_REVIEWS["coderabbitai"]):
@@ -1392,7 +1023,7 @@ PRIOR_ATTEMPTS:
 ## Completion (post-loop, dispatcher only)
 
 **All of these must be true before declaring done:**
-1. Subagent returned `RESULT_STATUS=clean` (or inline mode reached the same state)
+1. Subagent returned `RESULT_STATUS=clean`
 2. All required CI checks passing (build, lint, test)
 3. All automated reviewers completed (CodeRabbit, Cursor, Cubic, etc.). Codex (`chatgpt-codex-connector`) has no GitHub check, but it IS waited on via `ack-ledger.sh` Tier F: its 👍 reaction (clean) or findings on HEAD (Tiers A/B) must ack the current HEAD, surfaced as `RESULT_CODEX_ACK` and re-checked in the COMPLETION gate's `FRESH_ACKS` scan. A `stale` Codex blocks completion just like a stale registered bot; its findings are additionally triaged via Step 2.6 enumeration.
 4. No unresolved actionable comments from any source
@@ -1489,9 +1120,9 @@ if [ -z "$HEAD_PUSH_DATE" ] && [ -n "${PR_BRANCH:-}" ] && [ -n "${HEAD_FULL_SHA:
       '[.[].check_suites[]? | select(.head_sha==$sha) | .created_at] | map(select(. != null and . != "")) | sort | .[0] // empty' 2>/dev/null || echo "")
 fi
 
-# Per-bot ack — same single-sourced algorithm as the worker's Step 6.5 and
-# the inline ledger block in Step 6.5 above. All three sites invoke
-# scripts/ack-ledger.sh; algorithm edits live in that one file.
+# Per-bot ack — same single-sourced algorithm as the worker's Step 6.5 in
+# agents/pr-grinder.md. Both sites invoke scripts/ack-ledger.sh; algorithm
+# edits live in that one file.
 # Tier D carry-forward across message-only force-pushes: widen the HEAD-scoped
 # check-runs with any content-identical predecessor's check-runs before the ledger
 # runs (additive, best-effort, git-proven; no-op under ACK_CONTENT_IDENTITY=0; Tier E
@@ -2340,7 +1971,7 @@ fi
 ## PR Grind Complete
 
 PR #<N> is clean after <rounds> round(s).
-- Model: <Sonnet (default) | Opus (--opus)>
+- Model: Sonnet
 - CI: all required checks passing
 - Automated reviewers: all completed, no actionable findings
 - Advisory checks: [fixed | N failing — noted as beyond PR scope]
@@ -2360,12 +1991,8 @@ PR #<N> is clean after <rounds> round(s).
 | `--max-fix N` | Maximum **fix-rounds** (dispatcher pushed a commit; `RESULT_COMMIT_SHA != "none"`) before bail. Reflects engineering iteration budget. | 5 |
 | `--max-wait N` | Maximum **wait-rounds** (worker did not push; `RESULT_COMMIT_SHA == "none"` — polling for slow bots to ack HEAD) before bail. Reflects bot-latency tolerance. | 8 |
 | `--max N` | **Deprecated alias** that sets both `--max-fix` and `--max-wait` to N. Emits a `⚠️  --max is deprecated; use --max-fix and --max-wait` warning. Cannot be combined with `--max-fix` or `--max-wait` — combining bails with `conflicting flags`. | unset |
-| `--opus` | Run rounds inline in parent Opus context (no Sonnet dispatch) | Off (dispatches Sonnet subagent) |
-| `--interactive` | Pause for human confirmation each round (forces inline; subagent can't pause) | Off (autonomous) |
 | `--no-worktree` | Skip worktree creation, work in current directory. Same behavior auto-engages without the flag if `git worktree add` reports the branch is already checked out elsewhere — see Step 0 fallback. | Off (creates worktree) |
-| `--ci-only` | Only fix CI failures, ignore comments. Forces inline mode (Step 2 branching not yet wired into the subagent). | Off |
 | `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
-| `--comments-only` | Only address comments, ignore CI. Forces inline mode (same reason as `--ci-only`). | Off |
 | `--admin-on-approver-gap` | Opt-in auto-escalation when the approver gap is the sole remaining merge-gate blocker. Eligibility (ALL must hold): CI green, bots ack HEAD, all threads resolved, no failing required checks; author has `admin` or `maintain` repo permission; `.github/workflows/bypass-audit.yml` exists in the repo. With all gates green, the dispatcher runs `gh pr merge <PR> --squash --delete-branch --admin` and logs the event to `.claude/bypass-log.jsonl` (`event: pr-grind-admin-on-approver-gap`). **Fail-CLOSED when no audit workflow exists** — the flag is ignored without a trail and the dispatcher surfaces the operator-decision message instead. Off by default. **Alternative — per-repo opt-in:** for repos where the operator is structurally the sole human with PR-approval capability (no other humans with write/maintain/admin could ever approve), drop `.claude/pr-grind-auto-admin-solo.local` once (gitignored, same pattern as `skip-litmus.local`) and pr-grind treats the flag as implicit. The same eligibility gates apply, plus a live structural check that `HUMAN_ADMIN_COUNT==1` (counting humans with `permissions.push==true` — write/maintain/admin) and the author is that one approval-capable human. The opt-in self-revokes if a second approval-capable human appears — a contractor with write permission alone is enough to invalidate it. **Anti-self-bypass (snapshot-anchored, three conditions):** the opt-in file must be at least 30s old AT pr-grind INVOCATION START (Step 0), not at Completion. Step 0 snapshots the file's mtime to a per-PR snapshot at `.claude/.pr-grind-solo-opt-in-snapshot-<PR>.local` (written 0600) only when the file is already ≥30s old; Completion auto-fires only when (1) the per-PR snapshot exists, (2) its recorded mtime equals the opt-in file's current mtime, AND (3) the snapshot file's own filesystem mtime is ≥30s after the opt-in file's mtime (defeats a same-NOW forge where an attacker creates both files in one action with identical mtimes). A mid-run touch (no snapshot) or mid-run replacement (mismatch) both invalidate the opt-in for the current run. The per-PR scoping prevents concurrent pr-grind runs on different PRs from racing on shared state. Snapshot and opt-in file both live in the MAIN repo's `.claude/`, not the ephemeral worktree. The audit-log event is distinct: `pr-grind-admin-on-approver-gap-solo-admin-auto` with `trigger: "solo-admin-auto"` and `human_admin_count` recorded (variable name preserved for backward compat; semantic is now "humans with PR-approval capability"). | Off (surfaces decision message) |
 
 ## User-Created Skip File

@@ -574,9 +574,8 @@ fi
 # implementation at scripts/ack-ledger.sh. The script reads the fetched JSON
 # blobs from env (FETCH_OK, ALL_THREADS, ALL_REVIEWS, ALL_COMMENTS,
 # ALL_CHECK_RUNS, ALL_STATUSES, HEAD_SHA) and the bot login from $1. Algorithm
-# edits live in that file; this site and the two ledger sites in
-# skills/pr-grind/SKILL.md (Step 6.5 inline block, Completion re-query
-# block) all invoke it identically.
+# edits live in that file; this site and the Completion re-query block in
+# skills/pr-grind/SKILL.md both invoke it identically.
 # Tier D carry-forward across message-only force-pushes (commitlint/DCO/GPG/typo):
 # check-runs (Source 5) are fetched per-commit at HEAD only, so cursor's check-run on
 # the PRE-amend SHA is invisible and Tier D would falsely read `stale`.
@@ -650,7 +649,7 @@ fi
 
 Emit `$ACKS` verbatim as `RESULT_REVIEWER_ACKS`, `$ACK_TIERS` verbatim as `RESULT_ACK_TIERS`, and `$CODEX_ACK` verbatim as `RESULT_CODEX_ACK`. The dispatcher feeds `$ACKS` back as next round's `PRIOR_REVIEWER_ACKS` and uses it to gate `clean`; it reads `$ACK_TIERS` only at invariant-check time (Invariant 3's bodyless-ack exemption) and does not echo it back to the next round. `RESULT_CODEX_ACK` is gated identically to a registered bot (a `stale` value blocks `clean`) but is transported separately because Codex is not part of the five-bot SHA-keyed `RESULT_REVIEWER_ACKS` contract — see Step 2.5.
 
-You do NOT do Step 7 (checkpoint). You do NOT write the clean marker. You do NOT merge. You do NOT clean up the worktree. Those belong to the dispatcher.
+You do NOT do the post-round checkpoint or summary. You do NOT write the clean marker. You do NOT merge. You do NOT clean up the worktree. Those belong to the dispatcher.
 
 When you finish your round, populate `RESULT_FIXES` with what you changed AND populate `RESULT_REMAINING` with the names of any failing checks you observed but didn't address (so the dispatcher can fold them into next round's `failures=` field). If you have nothing failing, set `RESULT_REMAINING: none`.
 
@@ -658,16 +657,16 @@ When you finish your round, populate `RESULT_FIXES` with what you changed AND po
 
 Stop the round and return `RESULT_STATUS: bail` with the appropriate `RESULT_BAIL_CATEGORY` enum value:
 
-| Trigger | Category | Recovery-via-inline eligible? |
-|---|---|---|
-| Comment is a design/scope question — surface it, don't try to answer | `judgment` | No |
-| Fix would require architectural changes | `judgment` | No |
-| Same flaky CI check name appears in `PRIOR_ATTEMPTS` `failures=` field for 2 prior rounds AND fails again now (3 total) | `judgment` | No |
-| Fix would require rewriting published git history — commitlint `header-max-length` on an already-pushed commit, oversized commits that need splitting via `git rebase` (interactive or otherwise), anything that needs `git commit --amend` on a pushed SHA, `git filter-branch`, or `git push --force(-with-lease)` | `judgment` | No |
-| **Local commitlint check fails on commits BASE..HEAD before push** (Step 6 pre-push pre-flight catches subject/body violations while the bad commit is still local-only — the operator can amend locally without force-pushing a published SHA) | **`judgment`** | No |
-| `gh` CLI auth or rate-limit errors that you can't resolve | `env` | No |
-| `WORKTREE_DIR` missing or unreadable | `env` | No |
-| Skipped Step 0 mandatory Read of SKILL.md | `env` | No |
+| Trigger | Category |
+|---|---|
+| Comment is a design/scope question — surface it, don't try to answer | `judgment` |
+| Fix would require architectural changes | `judgment` |
+| Same flaky CI check name appears in `PRIOR_ATTEMPTS` `failures=` field for 2 prior rounds AND fails again now (3 total) | `judgment` |
+| Fix would require rewriting published git history — commitlint `header-max-length` on an already-pushed commit, oversized commits that need splitting via `git rebase` (interactive or otherwise), anything that needs `git commit --amend` on a pushed SHA, `git filter-branch`, or `git push --force(-with-lease)` | `judgment` |
+| **Local commitlint check fails on commits BASE..HEAD before push** (Step 6 pre-push pre-flight catches subject/body violations while the bad commit is still local-only — the operator can amend locally without force-pushing a published SHA) | **`judgment`** |
+| `gh` CLI auth or rate-limit errors that you can't resolve | `env` |
+| `WORKTREE_DIR` missing or unreadable | `env` |
+| Skipped Step 0 mandatory Read of SKILL.md | `env` |
 
 **Why history-rewrite bails are `judgment`.** The worker physically *can* invoke `git commit --amend` or `git filter-branch` and force-push, but doing so destroys SHAs that downstream consumers (other clones, the PR's review-thread anchors, ack-ledger entries, claude-mem observations) may already reference. That's a blast-radius decision the operator owns. Categorizing as `judgment` forces the operator to choose between a fix-up commit, a manual rewrite, or scoping the fix differently. The trigger is named broadly ("rewriting published git history") rather than enumerating individual git verbs because the test isn't *which command* — it's *whether the action would invalidate any commit SHA already on the remote*. New commits added on top are always fine; anything that re-hashes an existing commit is not.
 

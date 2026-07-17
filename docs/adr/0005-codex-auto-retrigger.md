@@ -4,6 +4,11 @@
 
 Accepted (2026-06-20)
 
+Amended (2026-07-18): pr-grind's inline `--opus` execution mode was removed
+(subagent-only dispatch). The wait-round is now detected at two sites, not three
+— the dispatcher loop and the worker's Step 6.5. References below to the "Inline
+`--opus`" detection site and the three-way ledger mirror are historical.
+
 ## Context
 
 pr-grind gates a merge on a *fresh per-HEAD* ack from each AI reviewer. Codex
@@ -106,11 +111,6 @@ expressions of trigger condition #1:
   does), so a fully clean tree means no fix was made this round (HEAD unchanged).
   `--exclude-standard` honors `.gitignore`, so the re-trigger `.local` marker and
   other ignored files never trip the guard.
-- **Inline `--opus`** ("Acting on the result" in `skills/pr-grind/SKILL.md`) —
-  Claude-evaluated (did this round run the commit-block?). A shell guard can't tell
-  here because the commit-block runs *before* the inline ledger, leaving a clean
-  tree even on a fix-round; the surrounding step is already Claude-interpreted, so
-  the wait-round test is too.
 
 ## Alternatives
 
@@ -131,7 +131,7 @@ expressions of trigger condition #1:
   The recovery has to be in the loop.
 - **Centralize the call in one site only.** The mechanism *is* centralized (one
   helper); the call is mirrored at each wait-round site because the existing ledger
-  algorithm is already mirrored there (worker / inline / dispatcher), and the
+  algorithm is already mirrored there (worker / dispatcher), and the
   one-shot marker makes mirrored calls idempotent.
 
 ## Consequences

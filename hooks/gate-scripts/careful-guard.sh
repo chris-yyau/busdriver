@@ -49,27 +49,119 @@ fi
 
 CMD_LOWER=$(printf '%s' "$CMD" | tr '[:upper:]' '[:lower:]')
 
-# --- Safe exceptions: rm -rf of known build artifacts ---
-if printf '%s' "$CMD" | grep -qE 'rm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|--recursive\s+)' 2>/dev/null; then
-  SAFE_ONLY=true
-  RM_ARGS=$(printf '%s' "$CMD" | sed -E 's/.*rm[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*//;s/--recursive[[:space:]]*//')
-  set -f  # disable glob expansion on unquoted vars
-  for target in $RM_ARGS; do
-    case "$target" in
-      */node_modules|node_modules|*/\.next|\.next|*/dist|dist|*/__pycache__|__pycache__|*/\.cache|\.cache|*/build|build|*/\.turbo|\.turbo|*/coverage|coverage|*/target|target)
-        ;; # safe build artifact
-      -*)
-        ;; # flag, skip
-      *)
-        SAFE_ONLY=false
-        break
-        ;;
-    esac
-  done
-  set +f  # restore glob expansion
-  if [[ "$SAFE_ONLY" == true ]]; then
-    echo '{}'
-    exit 0
+# --- Recursive rm: judge EVERY rm in the chain, not just the last one ---
+# `rm -rf /etc && rm -rf node_modules` must warn about /etc even though the last
+# rm targets a safe artifact. The previous greedy sed stripped to the final rm,
+# so only that one was ever judged, and a trailing safe rm also short-circuited
+# every other check below (git reset --hard, DROP TABLE, ...).
+# Segment splitting is delegated to gitcmd_detect.split_segments (quote-aware);
+# the safe-artifact carve-out stays here because it is this guard's own policy.
+# Prints exactly "unsafe" or "safe"; ANY other output (including empty) means
+# the scanner itself did not run, which falls through to the grep fallback below.
+RM_VERDICT=""
+if command -v python3 &>/dev/null; then
+  _GUARD_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+  # shellcheck disable=SC2016  # python source: $-expansion must not happen in bash
+  RM_VERDICT=$(printf '%s' "$CMD" | PYTHONPATH="$_GUARD_LIB" python3 -S -c '
+import sys
+# Drop CWD from sys.path (python3 -c prepends it ahead of PYTHONPATH) so a
+# repo-controlled gitcmd_detect.py or shadowed stdlib cannot run in the guard.
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import shlex
+# _all_chunks is private but deliberately reused: it expands $(...), backticks
+# and `bash -c` payloads recursively, so `bash -c "rm -rf /etc"` is still seen.
+# Scanning only the literal command would miss every nested form.
+from gitcmd_detect import split_segments, _all_chunks
+
+SAFE = {"node_modules", ".next", "dist", "__pycache__", ".cache",
+        "build", ".turbo", "coverage", "target"}
+
+
+def is_safe(target):
+    return target.rstrip("/").rsplit("/", 1)[-1] in SAFE
+
+
+def recursive_targets(argv):
+    """(is_recursive, targets) for an rm argv starting at the command word."""
+    recursive = False
+    targets = []
+    opts = True
+    for tok in argv[1:]:
+        if opts and tok == "--":
+            opts = False
+        elif opts and len(tok) >= 3 and tok.startswith("--") \
+                and "recursive".startswith(tok[2:]):
+            # GNU rm accepts any unambiguous prefix of --recursive (--r, --rec,
+            # and so on). recursive is the only r-prefixed long option rm has,
+            # so any --r prefix means recursive. Verified.
+            recursive = True
+        elif opts and tok.startswith("--"):
+            pass
+        elif opts and len(tok) > 1 and tok.startswith("-"):
+            if "r" in tok[1:].lower():
+                recursive = True
+        else:
+            targets.append(tok)
+    return recursive, targets
+
+
+def unsafe(cmd):
+    for chunk in _all_chunks(cmd):
+        for _op, seg in split_segments(chunk):
+            try:
+                toks = shlex.split(seg, posix=True)
+            except ValueError:
+                toks = seg.split()
+            for i, tok in enumerate(toks):
+                # basename match so `env rm`, `sudo rm` and /bin/rm all count;
+                # lstrip the shell grouping punctuation `(`/`{` so a grouped
+                # command like `(rm -rf /etc)` still exposes its command word.
+                # lower() because a case-insensitive filesystem (macOS default)
+                # runs `RM` as /bin/rm — matches CMD_LOWER + the grep fallback.
+                if tok.lstrip("({").rsplit("/", 1)[-1].lower() != "rm":
+                    continue
+                recursive, targets = recursive_targets(toks[i:])
+                # A recursive rm with NO visible literal target takes its targets
+                # from elsewhere (xargs/stdin, "$@", a glob, a variable), e.g.
+                # `... | xargs rm -rf` — we cannot prove those are safe artifacts,
+                # so warn. Otherwise warn iff any listed target is non-safe.
+                if recursive and (not targets
+                                  or any(not is_safe(t) for t in targets)):
+                    return True
+    return False
+
+
+# SCOPE (advisory guard, fails-open by design). This judges every rm the
+# structured scan REACHES: chains, wrappers, command AND process substitutions
+# (via gitcmd_detect._all_chunks), operands before or after the flag, and a
+# targetless recursive rm. Known residual fail-opens are LEFT for a follow-up
+# rather than chased with brittle raw-text heuristics (see issue in the PR):
+#   - a recursive rm nested in shell wrappers DEEPER than _all_chunks expands;
+#   - a recursive rm carried by a NON-shell interpreter (python -c, perl -e),
+#     opaque to _all_chunks;
+#   - ANSI-C quoted spellings of the command word ($'rm').
+# These are exotic and, being advisory, non-blocking; the grep fallback below
+# still catches many of them in the python-absent path.
+
+
+_cmd = sys.stdin.read()
+print("unsafe" if unsafe(_cmd) else "safe")
+' 2>/dev/null || true)
+fi
+
+if [[ "$RM_VERDICT" != "unsafe" && "$RM_VERDICT" != "safe" ]]; then
+  # The scanner did not run (no python3, import failure, crash). Do NOT treat a
+  # missing verdict as safe — drop the safe-artifact carve-out and warn on any
+  # recursive rm. Over-warning is the safe direction for an advisory guard.
+  # ponytail: grep, not a bash port of split_segments; revisit only if a
+  # python3-less host ever actually matters.
+  # Match a recursive rm crudely but broadly (this path is the degraded, no-
+  # python fallback, so it biases hard toward warning): case-insensitive so -Rf
+  # counts, and allowing quotes/backslashes/whitespace between the rm word and
+  # the flag so "rm" -rf and env rm -Rf still trip. Over-warning is the safe
+  # direction here.
+  if printf '%s' "$CMD" | grep -qiE 'rm[^|;&]{0,20}(-[a-z]*r|--r)' 2>/dev/null; then
+    RM_VERDICT="unsafe"
   fi
 fi
 
@@ -77,7 +169,7 @@ fi
 WARN=""
 
 # rm -rf / rm -r / rm --recursive (non-safe targets)
-if printf '%s' "$CMD" | grep -qE 'rm\s+(-[a-zA-Z]*r|--recursive)' 2>/dev/null; then
+if [[ "$RM_VERDICT" == "unsafe" ]]; then
   WARN="Destructive: recursive delete (rm -r). This permanently removes files."
 fi
 

@@ -1,3 +1,10 @@
+## [1.91.15](https://github.com/chris-yyau/busdriver/compare/v1.91.14...v1.91.15) (2026-07-17)
+
+
+### Bug Fixes
+
+* **ack-ledger:** fail closed when the ledger cannot decide ([#364](https://github.com/chris-yyau/busdriver/issues/364)) ([#366](https://github.com/chris-yyau/busdriver/issues/366)) ([f6245ee](https://github.com/chris-yyau/busdriver/commit/f6245eeb4a8a909087ebb24142f10b603717cf00)), closes [#353](https://github.com/chris-yyau/busdriver/issues/353) [#294](https://github.com/chris-yyau/busdriver/issues/294)
+
 ## [1.91.14](https://github.com/chris-yyau/busdriver/compare/v1.91.13...v1.91.14) (2026-07-16)
 
 

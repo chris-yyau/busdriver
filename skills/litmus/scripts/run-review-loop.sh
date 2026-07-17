@@ -758,7 +758,11 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   if [ "$WEIGHTED_LINES" -gt 2000 ]; then
     echo ""
     echo "⚠️  Large PR diff ($WEIGHTED_LINES weighted lines) — review may be slow or hit context limits"
-    echo "   Consider splitting into smaller PRs if review times out (${REVIEW_TIMEOUT:-600}s limit)"
+    # Use the SAME default as the REVIEW_TIMEOUT assignment below. This warning runs
+    # ~270 lines BEFORE that assignment, so REVIEW_TIMEOUT is still unset here and the
+    # old `:-600` fallback printed a 600s limit while the real one is 1200s — the gate
+    # telling the operator the wrong number about its own timeout.
+    echo "   Consider splitting into smaller PRs if review times out (${LITMUS_TIMEOUT:-1200}s limit)"
   fi
 else
   # Commit mode: hard size gate with env var override

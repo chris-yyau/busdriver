@@ -208,6 +208,16 @@ if printf '%s' "$out" | grep -q "mode=unset"; then
 else
     bad "#363: legacy state should report mode=unset (got: $(printf '%s' "$out" | head -1))"
 fi
+# 6c. The whole message must agree with itself. Test 6b pinned the HEADER but the (c)
+#     recovery two lines below still printed the raw defaulted $EXISTING_MODE — telling
+#     an operator with LITMUS_MODE=pr to "resume in its own mode (commit)" while the
+#     header of the SAME message said unset-and-follows-the-env. One message, two
+#     contradictory claims, and the fabricated one is the wrong-diff assertion.
+if printf '%s' "$out" | grep -q "resume it in its own mode (commit)"; then
+    bad "#363: legacy state must not fabricate 'commit' in the (c) recovery either"
+else
+    ok "#363: legacy (c) recovery does not fabricate a mode"
+fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

@@ -111,7 +111,11 @@ if [ "$FORCE" != "true" ] && [ -f "$STATE_FILE" ]; then
         fi
         echo "" >&2
         echo "   (c) The loop is PAUSED between iterations (status=FAIL, waiting on your fixes)" >&2
-        echo "       → resume it in its own mode ($EXISTING_MODE), which keeps the counter:" >&2
+        # _MODE_SHOWN, not the raw $EXISTING_MODE: the latter is defaulted to "commit"
+        # for the guard's own comparison, and printing that default here would assert
+        # "resume in commit mode" for a legacy file that will actually follow
+        # $LITMUS_MODE — contradicting this message's own header two lines up.
+        echo "       → resume it in its own mode ($_MODE_SHOWN), which keeps the counter:" >&2
         echo "         bash $SCRIPT_DIR/run-review-loop.sh" >&2
         exit 1
     fi

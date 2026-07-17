@@ -49,7 +49,13 @@ function runDispatch(
   })
 }
 
-const BLOCK = '{"decision":"block","reason":"gate says no"}'
+// Written verbatim (no dynamic interpolation) into generated fixture module
+// source below — CodeQL's js/bad-code-sanitization flags JSON.stringify()
+// used as a code-construction sanitizer even when the interpolated value is
+// this file's own hardcoded constant; a static literal sidesteps the pattern
+// entirely instead of relying on a sanitizer CodeQL doesn't recognize as safe
+// for this sink.
+const BLOCK_LITERAL = "'{\"decision\":\"block\",\"reason\":\"gate says no\"}'"
 
 beforeAll(() => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rwf-await-'))
@@ -62,7 +68,7 @@ describe('run-with-flags async run() is awaited', () => {
   it('honors an async run() blocking decision (not swallowed to exit 0)', () => {
     const rel = writeFixture(
       'async-block.js',
-      `module.exports = { run: async () => ({ exitCode: 2, stdout: ${JSON.stringify(BLOCK)} }) };`,
+      `module.exports = { run: async () => ({ exitCode: 2, stdout: ${BLOCK_LITERAL} }) };`,
     )
     const r = runDispatch(['pre:test-async', rel, 'standard'], '{"tool":"Bash"}')
     expect(r.status).toBe(2)
@@ -72,7 +78,7 @@ describe('run-with-flags async run() is awaited', () => {
   it('still honors a sync run() blocking decision', () => {
     const rel = writeFixture(
       'sync-block.js',
-      `module.exports = { run: () => ({ exitCode: 2, stdout: ${JSON.stringify(BLOCK)} }) };`,
+      `module.exports = { run: () => ({ exitCode: 2, stdout: ${BLOCK_LITERAL} }) };`,
     )
     const r = runDispatch(['pre:test-sync', rel, 'standard'], '{"tool":"Bash"}')
     expect(r.status).toBe(2)
@@ -84,7 +90,7 @@ describe('run-with-flags async run() is awaited', () => {
     // function the receiver would be lost and this.blockCode undefined.
     const rel = writeFixture(
       'this-method.js',
-      `module.exports = { blockCode: 2, run() { return { exitCode: this.blockCode, stdout: ${JSON.stringify(BLOCK)} }; } };`,
+      `module.exports = { blockCode: 2, run() { return { exitCode: this.blockCode, stdout: ${BLOCK_LITERAL} }; } };`,
     )
     const r = runDispatch(['pre:test-this', rel, 'standard'], '{"tool":"Bash"}')
     expect(r.status).toBe(2)

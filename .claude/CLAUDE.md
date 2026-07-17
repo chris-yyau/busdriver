@@ -14,7 +14,7 @@ Unified workflow orchestrator for Claude Code. Consolidates pipeline process, do
 ## Project Structure
 
 ```
-agents/          65 agent definitions (.md) — specialized reviewers, builders, resolvers
+agents/          Agent definitions (.md) — specialized reviewers, builders, resolvers
 commands/        Slash command entry points (.md) — user-invokable shortcuts to skills
 hooks/
   hooks.json     Hook registration manifest (PreToolUse, PostToolUse, SessionStart, Stop)
@@ -22,7 +22,7 @@ hooks/
 rules/           Hand-written rules canon installed to ~/.claude/rules/ (common/ only)
 scripts/         JS/shell utilities — release, install, session management, health checks
 __tests__/       JS unit tests (vitest) — smoke + gold-standard template
-skills/          287 skill definitions (.md) — the bulk of the plugin's capability (plus `supplements/` support dir)
+skills/          Skill definitions (.md) — the bulk of the plugin's capability (plus `supplements/` support dir)
                  Python tests live per-skill (e.g. skills/skill-comply/tests/, skills/continuous-learning-v2/scripts/)
 tests/           Shell-based gate tests (test-*.sh)
 docs/            Reference docs and examples

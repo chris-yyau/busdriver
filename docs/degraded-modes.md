@@ -14,7 +14,8 @@ External service dependencies in the busdriver pipeline, what fails if each goes
 | **GitHub Apps (bots)** | CI | See per-app rows below | Varies | Detailed below |
 | CodeRabbit | CI bot | No AI line-level review | No blocker — other reviewers cover | Continue; re-review by cursor + cubic |
 | Cursor Bugbot | CI bot | No AI bug review; loses a gated ack | Other gated reviewers (Cubic, CodeRabbit) still gate | Continue; `--max-wait` backstops a stuck `Cursor Bugbot` check |
-| Cubic | CI bot | No additional AI review | Low impact — 3 other reviewers | Continue |
+| Cubic | CI bot | No additional AI review | Low impact — other gated reviewers cover | Continue |
+| Greptile | CI bot | No AI review; loses a gated ack | Other gated reviewers (Cursor, Cubic, CodeRabbit, Devin) still gate | Continue; `--max-wait` backstops a stuck `Greptile Review` check |
 | CodeScene | CI bot | No code-health delta | Advisory only — never blocks merge | Continue; check manually if concerned |
 | GitGuardian | CI bot | No secrets scan | gitleaks local hook is the primary | Ensure gitleaks passed locally |
 | Codecov | CI bot | No coverage diff | Advisory only | Continue; coverage unmeasured on this PR |

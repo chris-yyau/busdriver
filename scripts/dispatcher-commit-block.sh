@@ -83,7 +83,7 @@ cd "$WORKTREE_DIR" || \
 
 # Single authoritative list of bots whose ack-ledger entries the dispatcher gates on.
 # Referenced by both the wait-round path and the post-push synthesis (Step 12).
-REGISTERED_ACK_BOTS=(cursor cubic-dev-ai coderabbitai devin-ai-integration)
+REGISTERED_ACK_BOTS=(cursor cubic-dev-ai coderabbitai devin-ai-integration greptile-apps)
 
 # Pre-dispatch baseline guard (NO_WORKTREE mode only).
 # Parent dispatcher must ensure `git diff --cached --quiet` before worker

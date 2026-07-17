@@ -1,3 +1,10 @@
+## [1.93.3](https://github.com/chris-yyau/busdriver/compare/v1.93.2...v1.93.3) (2026-07-17)
+
+
+### Bug Fixes
+
+* **gate:** surface arming worktree in design-review block message ([#356](https://github.com/chris-yyau/busdriver/issues/356)) ([#391](https://github.com/chris-yyau/busdriver/issues/391)) ([6f3a1eb](https://github.com/chris-yyau/busdriver/commit/6f3a1eba2f206014d2ae538bbdbff691dd3415b2))
+
 ## [1.93.2](https://github.com/chris-yyau/busdriver/compare/v1.93.1...v1.93.2) (2026-07-17)
 
 

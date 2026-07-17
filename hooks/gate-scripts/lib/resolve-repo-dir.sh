@@ -226,6 +226,19 @@ gate_marker_dir() {
     printf '%s/busdriver/design-review-needed.local.d\n' "$common"
 }
 
+# #355 · Is a doc's design-reviewed PASS marker honorable? PASS present AND no
+# DEGRADED coverage marker beside it — a security-gate plan must not be authorized
+# on partial review coverage. DELEGATES to marker_ops.py `reviewed` so there is ONE
+# implementation (no Bash/Python divergence, no two-open race, no NUL-stripping):
+# python3 is already a hard dependency of every gate that sources this lib.
+#   return 0 → honorable PASS; non-zero → not honored (missing/unreadable/PASS-over-DEGRADED)
+gate_design_pass_honored() {
+    local f="$1" lib
+    [[ -f "$f" ]] || return 1
+    lib="$(_gate_marker_lib_dir)" || return 1
+    python3 -S "$lib/marker_ops.py" reviewed "$f"
+}
+
 # ADR-D · Arm a doc: best-effort create-only token. Non-zero on any miss (§2).
 gate_marker_arm() {
     local doc="$1" norm dir lib

@@ -12,6 +12,12 @@ Subcommands
         ADR-D: create-only, no-clobber token `<sha(norm)>.<nonce>` whose body is
         exactly `norm` + one trailing LF. Never reads/dedups existing tokens
         (that read-before-write is the race). exit 0 = armed; 1 = best-effort miss.
+  reviewed <doc>
+        #355: exit 0 iff <doc> carries an honorable design-reviewed PASS marker
+        (PASS present AND no DEGRADED coverage marker). 1 = not honored / missing /
+        unreadable (fail-CLOSED). Single byte-faithful read — the Bash gate readers
+        delegate here (gate_design_pass_honored) so there is ONE implementation, no
+        two-open race, and no NUL-stripping divergence.
   classify <marker_dir> <anchor> <state_dir>
         ADR-C: pure, EXISTENCE-keyed classifier + bounded legacy union. Emits one
         NUL-delimited record per pending finding as four NUL-TERMINATED fields
@@ -40,7 +46,59 @@ K = 20
 
 # A token filename is <64 lowercase-hex sha256>.<hex nonce>.
 _TOKEN_RE = re.compile(r"([0-9a-f]{64})\.[0-9a-f]+\Z")
-_PASS_MARKER = "<!-- design-reviewed: PASS -->"
+# #355 — all reader regexes are WHOLE-LINE (re.MULTILINE `^…$`), matching the writer,
+# which emits every marker on its own line. This keeps reader and writer in lockstep:
+# a marker string embedded in PROSE (`… the <!-- design-reviewed: PASS --> marker …`)
+# is ignored by BOTH — the writer never rewrites it and the reader never counts it —
+# so a design doc can safely discuss the markers inline. (`.` excludes newline without
+# re.DOTALL, so `.*` stays within its line.)
+_PASS_LINE_RE = re.compile(r"^[ \t]*<!-- design-reviewed: PASS -->[ \t]*$", re.M)
+# A LINE that STARTS with the coverage prefix — the total the FULL count must equal.
+# Keyed on the prefix (not a complete `-->`) so a TRUNCATED/split/malformed marker
+# on its own line (`<!-- design-review-coverage:` at EOF, or the prefix with `FULL`
+# on the next line) still counts toward the total and therefore BLOCKS unless it is
+# also a well-formed FULL line. Anchored to line start, so a prefix appearing mid-line
+# in PROSE is ignored (writer and reader agree: only own-line markers are real).
+#
+# DESIGN TRADE-OFF (accepted, operator-approved): line-start detection makes design
+# docs that DISCUSS these markers inline (this repo's own docs, incl. #355's plan)
+# authorizable — an any-occurrence reader would block them forever. The cost is a
+# narrow blind spot: a marker FUSED mid-line by the pre-#355 writer's old missing-
+# newline append (`text<!-- design-review-coverage: DEGRADED -->`) is read as prose.
+# This is NOT a regression — before #355 the reader did no coverage check at all and
+# honored ANY PASS — and the writer's leading-`\n` fix means new writes are always
+# own-line. The residual is stale on-disk docs from the old writer that also lacked a
+# trailing newline (astronomically rare); those re-anchor the moment the writer runs.
+_COVERAGE_LINE_START_RE = re.compile(r"^[ \t]*<!-- design-review-coverage:", re.M)
+# A line that is EXACTLY ONE well-formed FULL marker: status token EXACTLY `FULL` and
+# count EXACTLY `3/3` — the writer's invariant is FULL ⟺ all 3 lenses fulfilled
+# (state_management.sh: count==3 ⇒ FULL), so `FULL 0/3`, `FULL garbage`, or no count
+# is contradictory and must NOT count. `(?=[ \t]|-->)` pins the count (a bare `\b`
+# would match before `-`,`/`,`.`, letting `3/3-extra`/`3/3/4`/`3/3.5` slip). The body
+# `(?:(?!-->)(?!<!--).)*` forbids BOTH a second closer `-->` AND a second opener `<!--`,
+# so a line carrying a FULL marker plus another marker — sharing the closer
+# (`…FULL 3/3 <!-- …DEGRADED 1/3 -->`) or bringing its own (`…FULL 3/3 --><!-- …DEGRADED -->`)
+# — is NOT a valid FULL line ⇒ total>full ⇒ block.
+_FULL_LINE_RE = re.compile(
+    r"^[ \t]*<!-- design-review-coverage:[ \t]*FULL[ \t]+3/3(?=[ \t]|-->)(?:(?!-->)(?!<!--).)*-->[ \t]*$",
+    re.M)
+
+
+def _doc_reviewed(content):
+    """True iff the doc carries an honorable PASS marker: a whole-line PASS marker is
+    present AND every own-line coverage marker is a well-formed FULL 3/3 marker (a
+    security-gate plan must not be authorized on partial coverage, #355). A doc with
+    NO coverage marker stays honorable (pre-provenance docs / provenance off). Single
+    source of truth — used by the legacy classifier here AND (via the `reviewed`
+    subcommand) by the Bash readers' gate_design_pass_honored() in
+    lib/resolve-repo-dir.sh, so they cannot diverge."""
+    if not _PASS_LINE_RE.search(content):
+        return False
+    total = len(_COVERAGE_LINE_START_RE.findall(content))
+    if total == 0:
+        return True  # no own-line coverage marker at all → honorable
+    # Every own-line coverage marker must be a well-formed FULL 3/3 marker line.
+    return total == len(_FULL_LINE_RE.findall(content))
 
 
 def _sha(norm):
@@ -54,6 +112,19 @@ def cmd_sha(argv):
         return 2
     sys.stdout.write(_sha(argv[0]))
     return 0
+
+
+def cmd_reviewed(argv):
+    # #355: exit 0 iff the doc is honorably reviewed. Single byte-faithful read;
+    # missing/unreadable → fail-CLOSED (exit 1, not honored).
+    if len(argv) != 1:
+        return 2
+    try:
+        with open(argv[0], "r", errors="surrogateescape") as fh:
+            content = fh.read()
+    except OSError:
+        return 1
+    return 0 if _doc_reviewed(content) else 1
 
 
 def cmd_arm(argv):
@@ -231,7 +302,7 @@ def _classify_legacy(roots, state_dir, em):
             reviewed = False
             try:
                 with open(doc, "r", errors="surrogateescape") as dfh:
-                    reviewed = _PASS_MARKER in dfh.read()
+                    reviewed = _doc_reviewed(dfh.read())
             except OSError:
                 reviewed = False  # absent / unreadable doc -> pending (fail-closed)
             if not reviewed:
@@ -252,7 +323,8 @@ def cmd_classify(argv):
     return 1 if em.pending else 0
 
 
-_DISPATCH = {"sha": cmd_sha, "arm": cmd_arm, "classify": cmd_classify}
+_DISPATCH = {"sha": cmd_sha, "arm": cmd_arm, "classify": cmd_classify,
+             "reviewed": cmd_reviewed}
 
 
 def main(argv):

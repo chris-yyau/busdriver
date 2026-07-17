@@ -91,6 +91,40 @@ run_test "infra bypass (CLAUDE.md)" "allow" "$FREEZE_SCRIPT" \
 run_test "infra bypass (docs/plans/)" "allow" "$FREEZE_SCRIPT" \
     '{"tool_name":"Write","tool_input":{"file_path":"docs/plans/debug-plan.md"}}'
 
+run_test "infra bypass (docs/specs/)" "allow" "$FREEZE_SCRIPT" \
+    '{"tool_name":"Write","tool_input":{"file_path":"docs/specs/2026-07-17-x-design.md"}}'
+
+# `docs` must START a path segment — a bare *docs/plans/* glob also exempts
+# notdocs/, which is not a docs dir. Nested (monorepo) docs dirs stay exempt.
+run_test "infra bypass NOT granted to notdocs/plans/" "block" "$FREEZE_SCRIPT" \
+    '{"tool_name":"Write","tool_input":{"file_path":"notdocs/plans/impl.sh"}}'
+
+run_test "infra bypass NOT granted to notdocs/specs/" "block" "$FREEZE_SCRIPT" \
+    '{"tool_name":"Write","tool_input":{"file_path":"notdocs/specs/runtime.sh"}}'
+
+run_test "infra bypass (nested monorepo docs/specs/)" "allow" "$FREEZE_SCRIPT" \
+    '{"tool_name":"Write","tool_input":{"file_path":"packages/foo/docs/specs/x-design.md"}}'
+
+# Traversal: matches the docs glob raw, resolves to src/impl.sh. The exemption is
+# checked post-normalization so the real target decides, not the prefix.
+run_test "infra bypass NOT granted via docs/specs/../.. traversal" "block" "$FREEZE_SCRIPT" \
+    '{"tool_name":"Write","tool_input":{"file_path":"docs/specs/../../src/payments/impl.sh"}}'
+
+run_test "infra bypass NOT granted via docs/plans/../.. traversal" "block" "$FREEZE_SCRIPT" \
+    '{"tool_name":"Write","tool_input":{"file_path":"docs/plans/../../src/payments/impl.sh"}}'
+
+# The mirror case must still work: traversal that genuinely lands in docs/specs/.
+run_test "infra bypass (traversal resolving INTO docs/specs/)" "allow" "$FREEZE_SCRIPT" \
+    '{"tool_name":"Write","tool_input":{"file_path":"src/../docs/specs/x-design.md"}}'
+
+# NOTE — known residual, deliberately NOT asserted: a symlinked docs/specs -> src
+# reads as a docs path here. It is shared with the pre-existing docs/plans and
+# docs/reviews arms (not new to docs/specs), unreachable via the gated toolset (`ln`
+# is FILE_MOD), and cannot be closed by resolving physically without diverging from
+# the LEXICAL detector and tripping the `*.claude/*` fail-open. See the UPGRADE
+# receipt on the docs/ arms in freeze-guard.sh — it closes with repo-relative
+# anchoring, in its own change.
+
 # 9. Non-Write/Edit tools pass through
 run_test "Read tool not gated" "allow" "$FREEZE_SCRIPT" \
     '{"tool_name":"Read","tool_input":{"file_path":"src/payments/stripe.js"}}'

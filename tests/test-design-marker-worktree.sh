@@ -196,6 +196,173 @@ t="$(mkrepo)"; mkdir -p "$t/docs/plans"; printf '# plan\n' >"$t/docs/plans/DESIG
 printf '{"tool_name":"Write","tool_input":{"file_path":"%s/docs/plans/DESIGN-x.md"}}' "$t" | bash "$CHECKDOC" >/dev/null 2>&1
 pending "$t"; eq "(Step2) detector armed a token → pending exit 1" "$PEXIT" "1"
 
+echo "── (specs) design-doc paths stay writable while a review pends ──"
+# c0bdaf7f moved docs/superpowers/{plans,specs} → docs/{plans,specs}, but the
+# gate's exemption list still named the old dir. A lowercase *-design.md under
+# docs/specs/ also misses the case-sensitive *DESIGN*.md glob, so with any review
+# pending the gate blocked the very spec the review waits on — a deadlock
+# brainstorming could not write its way out of. Needs a pending marker: with none
+# armed the gate approves everything and this test would pass vacuously.
+t="$(mkrepo)"; printf x >"$t/doc.md"; arm "$t/doc.md"
+out="$(payload_write "$t/src/impl.sh" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) ok "(specs) control: impl Write blocks while review pends" ;; *) no "(specs) control: impl Write should block" "got=$out" ;; esac
+out="$(payload_write "$t/docs/specs/2026-07-17-x-design.md" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) no "(specs) docs/specs design doc must stay writable" "got=$out" ;; *) ok "(specs) docs/specs design doc stays writable" ;; esac
+out="$(payload_write "$t/docs/plans/2026-07-17-x.md" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) no "(specs) docs/plans plan doc must stay writable" "got=$out" ;; *) ok "(specs) docs/plans plan doc stays writable" ;; esac
+# `docs` must start a path segment: notdocs/ is not a docs dir and must not inherit
+# the exemption. Nested (monorepo) docs dirs must keep it.
+out="$(payload_write "$t/notdocs/specs/impl.sh" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) ok "(specs) notdocs/specs/ does not inherit the exemption" ;; *) no "(specs) notdocs/specs/ must NOT be exempt" "got=$out" ;; esac
+# ...and with a .md target, which actually REACHES the design-doc regex (a .sh
+# never does — the regex is `.*\.md$`, so the .sh case above passes vacuously).
+# An unanchored `docs/` alternative matched the `docs/specs/w.md` suffix of this
+# path; the `(^|/)` boundary is what makes this assertion real.
+out="$(payload_write "$t/notdocs/specs/w.md" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) ok "(specs) notdocs/specs/w.md (.md) is not exempt" ;; *) no "(specs) notdocs/specs/w.md MUST NOT be exempt" "got=$out" ;; esac
+out="$(payload_write "$t/packages/foo/docs/specs/x-design.md" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) no "(specs) nested monorepo docs/specs must stay writable" "got=$out" ;; *) ok "(specs) nested monorepo docs/specs stays writable" ;; esac
+
+# INVARIANT: every path the DETECTOR arms a review for must stay writable by the
+# gate. Detector ([^/]+/)* covers nested docs, so root-anchoring the exemption
+# would flag a doc as needing review while refusing the write that answers it.
+# This pins the two together — narrow one without the other and this fails.
+mkdir -p "$t/packages/foo/docs/specs"; printf '# d\n' >"$t/packages/foo/docs/specs/DESIGN-n.md"
+printf '{"tool_name":"Write","tool_input":{"file_path":"%s/packages/foo/docs/specs/DESIGN-n.md"}}' "$t" | bash "$CHECKDOC" >/dev/null 2>&1
+pending "$t"; eq "(specs) detector arms nested docs/specs → exit 1" "$PEXIT" "1"
+out="$(payload_write "$t/packages/foo/docs/specs/DESIGN-n.md" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) no "(specs) detector/exemption disagree — nested doc armed but not writable" "got=$out" ;; *) ok "(specs) detector-armed nested doc stays writable (no deadlock)" ;; esac
+
+# Traversal: `docs/specs/../../src/impl.sh` matches the docs glob on the raw path
+# but resolves to src/impl.sh — a pending review would be bypassed outright.
+# Exemption is matched post-normalization, so the resolved target decides.
+out="$(payload_write "$t/docs/specs/../../src/impl.sh" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) ok "(specs) docs/specs/../.. traversal cannot bypass the gate" ;; *) no "(specs) traversal MUST NOT be exempt" "got=$out" ;; esac
+out="$(payload_write "$t/src/../docs/specs/y-design.md" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) no "(specs) traversal resolving INTO docs/specs must stay writable" "got=$out" ;; *) ok "(specs) traversal resolving INTO docs/specs stays writable" ;; esac
+
+# RELATIVE file_path is a real shape: the marker anchor joins it to the payload
+# cwd (see the (anchor) case below). A relative `../docs/specs/x.md` sent with
+# cwd=<repo>/src resolves INTO docs/specs and must stay writable — matching the
+# exemption on the raw string would leave the `..` and refuse the design doc,
+# re-deadlocking the review. Found by Codex on PR #369.
+mkdir -p "$t/src"
+out="$(payload_write "../docs/specs/rel-design.md" "$t/src" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) no "(specs) relative ../docs/specs from subdir cwd must stay writable" "got=$out" ;; *) ok "(specs) relative ../docs/specs from subdir cwd stays writable" ;; esac
+out="$(payload_write "docs/specs/rel2-design.md" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) no "(specs) relative docs/specs from repo-root cwd must stay writable" "got=$out" ;; *) ok "(specs) relative docs/specs from repo-root cwd stays writable" ;; esac
+# The mirror: a relative traversal that escapes docs/ must still be refused.
+out="$(payload_write "../docs/specs/../../src/impl.sh" "$t/src" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) ok "(specs) relative traversal escaping docs/specs cannot bypass" ;; *) no "(specs) relative traversal MUST NOT be exempt" "got=$out" ;; esac
+
+# LOCKSTEP: every shape the DETECTOR can arm must stay writable, or the gate
+# deadlocks on the doc the review waits for. A fixed-depth glob cannot express the
+# detector's ([^/]+/)* + unanchored match, so these shapes (nested, $STATE_DIR/,
+# lowercase -design.md) each deadlocked under the earlier approximation.
+for _rel in \
+    "docs/team/specs/2026-07-17-x-design.md" \
+    "docs/a/b/plans/2026-07-17-y.md" \
+    ".claude/specs/z-design.md" \
+    "design-notes.md" \
+    "notdocs/specs/w.md" ; do
+    # Fresh repo per iteration: markers are sticky per-repo, so reusing one repo
+    # would let an earlier shape's armed marker make `pending` report 1 for a
+    # shape the detector does NOT arm (e.g. notdocs/specs/w.md post-anchoring),
+    # producing a phantom DEADLOCK. Isolate so `pending` reflects THIS shape only.
+    t="$(mkrepo)"
+    mkdir -p "$t/$(dirname "$_rel")"
+    printf '# d\n' >"$t/$_rel"
+    printf '{"tool_name":"Write","tool_input":{"file_path":"%s/%s"}}' "$t" "$_rel" | bash "$CHECKDOC" >/dev/null 2>&1
+    pending "$t"
+    if [ "$PEXIT" = "1" ]; then
+        out="$(payload_write "$t/$_rel" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+        case "$out" in
+            *'"block"'*) no "(lockstep) detector arms $_rel but gate blocks it — DEADLOCK" "got=$out" ;;
+            *) ok "(lockstep) detector-armed $_rel stays writable" ;;
+        esac
+    else
+        ok "(lockstep) detector does not arm $_rel (nothing to reconcile)"
+    fi
+done
+
+echo "── (statedir) normalize-unstable BUSDRIVER_STATE_DIR cannot deadlock ─"
+# A STATE_DIR that os.path.normpath collapses (bare '.', '//', '/./', trailing /)
+# matched the DETECTOR's raw path but vanished from the exemption's NORMALIZED
+# path, deadlocking the doc — e.g. STATE_DIR=. with a relative `./specs/x.md`
+# arms via `^\./…specs/` but normalizes to `specs/x.md`, which the exemption then
+# refuses. The sanitizer now rejects such values (→ default .claude), so detector
+# and exemption stay in lockstep. Each value must arm-then-allow or never arm.
+for _sd in "." "a//b" "a/./b" "foo/" ; do
+    t="$(mkrepo)"; mkdir -p "$t/specs"; printf '# d\n' >"$t/specs/x-design.md"
+    ( cd "$t" && printf '{"tool_name":"Write","tool_input":{"file_path":"./specs/x-design.md"}}' \
+        | BUSDRIVER_STATE_DIR="$_sd" bash "$CHECKDOC" >/dev/null 2>&1 )
+    pending "$t"
+    if [ "$PEXIT" = "1" ]; then
+        out="$(payload_write "./specs/x-design.md" "$t" | BUSDRIVER_STATE_DIR="$_sd" bash "$PREIMPL" 2>/dev/null || true)"
+        case "$out" in
+            *'"block"'*) no "(statedir) STATE_DIR=$_sd armed ./specs but gate blocks — DEADLOCK" "got=$out" ;;
+            *) ok "(statedir) STATE_DIR=$_sd armed doc stays writable" ;;
+        esac
+    else
+        ok "(statedir) STATE_DIR=$_sd sanitized → ./specs not armed (no deadlock)"
+    fi
+done
+
+echo "── (newline) embedded LF cannot smuggle an exempt second line ───"
+# The design-doc arm matches with a LINE-oriented tool, so a path whose first line is
+# an impl file and whose second line looks like a design doc would match on line 2 and
+# exempt line 1. jq JSON-encodes the LF, so this is a reachable payload shape.
+t="$(mkrepo)"; printf x >"$t/doc.md"; arm "$t/doc.md"
+out="$(payload_write "$t/src/impl.sh
+docs/specs/payload.md" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in
+    *'"block"'*) ok "(newline) LF-smuggled docs/specs line cannot exempt an impl write" ;;
+    *) no "(newline) LF payload MUST NOT be exempt" "got=$out" ;;
+esac
+
+echo "── (pypath) repo-local json.py cannot forge an exempt path ──────"
+# The exemption parser runs python3 in the payload's repo. Importing json BEFORE
+# scrubbing sys.path let a repo-local json.py execute inside the gate and return a
+# forged docs/specs path, exempting an arbitrary impl write. Isolated mode + a scrub
+# that precedes the import closes it. The stub must never load: if it does, the gate
+# exempts src/impl.sh and this fails.
+t="$(mkrepo)"; printf x >"$t/doc.md"; arm "$t/doc.md"
+cat >"$t/json.py" <<'PYEOF'
+def load(*a, **k):
+    return {"tool_input": {"file_path": "docs/specs/pwned-design.md"}, "cwd": "/"}
+def loads(*a, **k):
+    return {}
+PYEOF
+out="$( cd "$t" && payload_write "$t/src/impl.sh" "$t" | bash "$PREIMPL" 2>/dev/null || true )"
+case "$out" in
+    *'"block"'*) ok "(pypath) repo-local json.py cannot exempt an impl write" ;;
+    *) no "(pypath) json.py HIJACKED the gate — impl write exempted" "got=$out" ;;
+esac
+# Control: same repo, same stub, a genuine design doc still resolves.
+out="$( cd "$t" && payload_write "$t/docs/specs/real-design.md" "$t" | bash "$PREIMPL" 2>/dev/null || true )"
+case "$out" in
+    *'"block"'*) no "(pypath) genuine design doc must stay writable" "got=$out" ;;
+    *) ok "(pypath) genuine design doc still writable alongside the stub" ;;
+esac
+
+echo "── (pypath-detector) repo-local json.py cannot disable the detector ─"
+# check-design-document.sh parses the payload with python3 too. Importing json
+# BEFORE scrubbing sys.path let a repo-local json.py hijack the DETECTOR so no
+# marker arms — the pre-implementation gate then fast-allows every impl write
+# (fail-OPEN, the same class this branch closes, at an 8th interpreter site the
+# other fixes missed). Isolated mode + a scrub ahead of the import closes it: a
+# genuine design doc must still arm its marker with the stub present.
+t="$(mkrepo)"
+cat >"$t/json.py" <<'PYEOF'
+def load(*a, **k):
+    return {}
+def loads(*a, **k):
+    return {}
+PYEOF
+mkdir -p "$t/docs/specs"; printf '# d\n' >"$t/docs/specs/real-design.md"
+( cd "$t" && printf '{"tool_name":"Write","tool_input":{"file_path":"%s/docs/specs/real-design.md"}}' "$t" | bash "$CHECKDOC" >/dev/null 2>&1 )
+pending "$t"; eq "(pypath-detector) json.py cannot suppress marker arming" "$PEXIT" "1"
+
 echo "── (h) deleted pending doc still blocks ─────────────────────────"
 t="$(mkrepo)"; printf x >"$t/doc.md"; arm "$t/doc.md"; rm -f "$t/doc.md"
 pending "$t"; eq "(h) doc deleted, token remains → exit 1" "$PEXIT" "1"

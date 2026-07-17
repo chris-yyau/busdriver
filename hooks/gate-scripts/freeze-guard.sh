@@ -58,8 +58,10 @@ fi
 TOOL_NAME=""
 FILE_PATH=""
 if command -v python3 &>/dev/null; then
-    PARSED=$(printf '%s' "$INPUT" | python3 -c '
-import sys, json
+    PARSED=$(printf '%s' "$INPUT" | python3 -I -c '
+import sys
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import json
 try:
     d = json.load(sys.stdin)
     tool = d.get("tool_name", d.get("toolName", ""))
@@ -92,28 +94,81 @@ esac
 # No file path → approve
 [ -z "$FILE_PATH" ] && exit 0
 
-# ── Always allow writes to infrastructure paths ──────────────────────
-FILE_LOWER=$(echo "$FILE_PATH" | tr '[:upper:]' '[:lower:]')
-case "$FILE_LOWER" in
-    *.claude/*) exit 0 ;;
-    *claude.md|*notes.md) exit 0 ;;
-    *docs/plans/*|*docs/reviews/*|*docs/superpowers/*) exit 0 ;;
-esac
-
 # ── Normalize paths for comparison ───────────────────────────────────
 # Strip trailing slashes, collapse . and .. segments
+#
+# LEXICAL on purpose (see UPGRADE below). realpath would additionally close a
+# symlink-laundering gap — a symlinked docs/specs -> src reads as a docs path
+# here — but it CANNOT land until the `*.claude/*` arm below is repo-anchored:
+# realpath makes every path absolute, and busdriver homes worktrees at
+# <main>/.claude/worktrees/<name>/, so every absolute path in a worktree session
+# would match `*.claude/*` and be exempted — turning the freeze into a no-op
+# instead of closing a hole. (Verified: swapping in realpath alone fails 9 of
+# this file's own scope assertions for exactly that reason.)
+# UPGRADE: anchor `*.claude/*` to a repo-relative path (as
+# pre-implementation-gate.sh does via gate_marker_relpath / ADR-E), THEN switch
+# this to realpath in the same change. Both belong in one PR — that arm is
+# already a live fail-open independent of symlinks.
 normalize() {
     local p="$1"
     p="${p%/}"
     # Resolve . and .. via python3 if available (stdin to avoid injection), else basic strip
     if command -v python3 &>/dev/null; then
-        p=$(printf '%s' "$p" | python3 -c 'import sys, os.path; print(os.path.normpath(sys.stdin.read()))' 2>/dev/null || echo "$p")
+        p=$(printf '%s' "$p" | python3 -I -c 'import sys
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import os.path
+print(os.path.normpath(sys.stdin.read()))' 2>/dev/null || echo "$p")
     fi
     echo "$p"
 }
 
 NORM_SCOPE=$(normalize "$ALLOWED_SCOPE")
 NORM_FILE=$(normalize "$FILE_PATH")
+
+# ── Always allow writes to infrastructure paths ──────────────────────
+# Matched against the NORMALIZED path. Against the raw path,
+# `docs/specs/../../src/impl.sh` matches the docs glob but resolves to
+# `src/impl.sh` — the exemption would hand an impl write a free pass.
+#
+# The docs/ arms require `docs` to START a path segment — a bare `*docs/specs/*`
+# also matches `notdocs/specs/runtime.sh`, which is not a docs dir at all. Kept
+# segment-start rather than repo-root-anchored so nested docs (packages/foo/docs/
+# specs/) still resolve — check-design-document.sh arms reviews for those, so a
+# narrower exemption here would refuse the write that answers the review. See
+# pre-implementation-gate.sh for the full rationale; both gates share this shape.
+FILE_LOWER=$(echo "$NORM_FILE" | tr '[:upper:]' '[:lower:]')
+case "$FILE_LOWER" in
+    # FAIL-CLOSED: normalize() returns its input unchanged when python3 is absent,
+    # so a surviving `..` segment means traversal was NOT resolved. Grant no
+    # exemption — fall through to the scope check rather than trust the glob.
+    ../*|*/../*|*/..) ;;
+    *.claude/*) exit 0 ;;
+    *claude.md|*notes.md) exit 0 ;;
+esac
+
+# ── docs/ arms ────────────────────────────────────────────────────────
+# Matched LEXICALLY (NORM_FILE), like the paired detector. Two known residuals,
+# both SHARED with the pre-existing docs/plans and docs/reviews arms rather than new
+# to docs/specs, and both needing the same repo-relative anchoring to fix:
+#   1. A symlinked docs/specs -> src reads as a docs path. Not reachable through the
+#      gated toolset — `ln` is a FILE_MOD command, so creating that symlink is itself
+#      blocked. Resolving physically is NOT the fix: it diverges from the LEXICAL
+#      detector (a legitimately symlinked docs dir would arm a review and then be
+#      refused the write answering it) and it makes every path absolute, which trips
+#      residual 2 and the `*.claude/*` arm above — verified, that turns the freeze
+#      into a no-op and fails 9 of this file's own scope assertions.
+#   2. A checkout under an ancestor named docs/specs (e.g. /srv/docs/specs/proj/)
+#      matches every target. Same class as `*.claude/*` matching every file in a
+#      worktree homed at <main>/.claude/worktrees/<name>/ — already a live fail-open
+#      today, independent of this change.
+# UPGRADE: anchor these arms to a repo-relative path (as pre-implementation-gate.sh
+# does via gate_marker_relpath / ADR-E) in one change; that closes 1 and 2 together
+# and lets the docs and `.claude` arms share a single resolver.
+case "$FILE_LOWER" in
+    docs/plans/*|*/docs/plans/*) exit 0 ;;
+    docs/specs/*|*/docs/specs/*) exit 0 ;;
+    docs/reviews/*|*/docs/reviews/*) exit 0 ;;
+esac
 
 # Check if file is within allowed scope
 # Match: exact scope path OR scope path followed by / (directory boundary)

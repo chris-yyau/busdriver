@@ -102,32 +102,29 @@ SCRIPTS="$DIR/../../scripts"
 # shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
 source "$DIR/lib/resolve-repo-dir.sh" || exit 0
 
-# ── Parse via the shared, quote/wrapper-aware detector ─────────────────
-# gh_pr confirms a REAL `gh pr merge` (defeats decoys/quoting/wrappers). The
-# pr-grind merge is a MULTI-LINE tool call (`gh pr merge … || true` + a `for`
-# retry loop, `$(gh pr view …)`, `if`, `cd`, `git worktree remove`; the admin
-# path also writes the bypass-log jq BEFORE the merge). The OLD parser required a
-# single canonical command and skipped all of it — so the deterministic backstop
-# never fired on the real merge (ADR 0013 rev 2026-07-17). This loosened parser
-# fires on that shape while keeping the wrong-repo hole closed. It:
-#   1. STRIPS shell comments first — the real block embeds `gh pr merge` inside
-#      comments (naive counting would see multiple merges) and comments can carry
-#      shell operators that would confuse the segmenter.
-#   2. Counts merges by COMMAND-WORD (not substring), requires EXACTLY ONE, with a
-#      clean merge segment: no `-R`/`--repo` (global or local), no `$`/backtick in
-#      the merge segment (a dynamic operand could expand to `-R`), exactly one
-#      NUMERIC positional (or none = current branch).
-#   3. Requires every segment BEFORE the merge to be benign — audit/setup commands
-#      (jq, mkdir, echo, case/if/for) are fine, but a re-target vector is NOT: an
-#      uncaptured `cd`, ANY `gh` (checkout re-points the branch; view/other could
-#      `-R`), `git remote`/`git config`, a `source`/`eval`/`bash`/`sh`/`exec`
-#      subshell, or a sensitive env-assignment (GH_REPO/GH_HOST/GIT_DIR/… inline,
-#      standalone, or exported). Anything after the merge cannot re-target it.
-# The residual (aliases/functions/PATH the hook can't see) is bounded to a
-# deduped, possibly-spurious nudge on the CWD repo's OWN PR — never a post to a
-# different repo (that stays closed by the inherited-env skip + the merge-segment
-# checks + the downstream gh-pr-view == cwd-origin equality). On ANY parse error we
-# emit nothing → skip (non-gating). SKILL prose still covers whatever this skips.
+# ── Parse via the standalone lib/nudge_parse.py (a FILE, not an inline python -c,
+#    so no bash double-quote layer can corrupt backslashes/backticks) ───────
+# The OLD parser required a single canonical `gh pr merge <literal>` command and so
+# ALWAYS skipped pr-grind's real MULTI-LINE merge (`gh pr merge … || true` + a `for`
+# retry loop, `$(gh pr view …)`, `if`, `cd`, `git worktree remove`; both paths embed
+# `gh pr merge` in comments). ADR 0013 rev 2026-07-17 replaced it with a MERGE-FIRST
+# rule that fires on the real shape while staying adversarially closed. nudge_parse.py:
+#   1. Strips shell comments (Bash-faithful) first, then counts merges by COMMAND-WORD
+#      (not substring — the block's commented `gh pr merge` decoys must not inflate the
+#      count); requires EXACTLY ONE clean merge segment (no `-R`, no `$`/backtick, one
+#      NUMERIC PR or none = current branch).
+#   2. MERGE-FIRST: nothing may execute before the merge except pure non-sensitive
+#      assignments and a single captured `cd &&` prefix; ANY real command before it →
+#      skip. Complete by construction — no denylist of re-targeting commands to keep
+#      exhaustive (`printf > .git/config`, cp, sed -i, pushd, $(git …), then GH_REPO=…
+#      all re-point origin; requiring merge-first sidesteps enumerating them).
+# The pr-grind DEFAULT block and skip/bootstrap bypass merges ARE merge-first (only
+# `NO_WORKTREE=<0|1>` precedes) → nudged. The admin approver-gap block writes bypass-log
+# jq before the merge → not merge-first → skipped here, covered by the SKILL-prose nudge.
+# The residual (a `gh` alias / shell function / PATH this separate hook process can't see)
+# is bounded to a deduped, possibly-spurious nudge on the CWD repo's OWN PR — never a
+# cross-repo post (inherited-env skip + merge-segment checks + gh-pr-view==cwd-origin
+# equality) and never a blocked merge. On ANY parse error we emit nothing → skip.
 PARSE=$(printf '%s' "$HOOK_DATA" | PYTHONPATH="$DIR/lib" python3 -S "$DIR/lib/nudge_parse.py" 2>/dev/null || true)
 
 IS_MERGE=$(printf '%s' "$PARSE" | sed -n '1p')

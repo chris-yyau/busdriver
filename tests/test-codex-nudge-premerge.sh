@@ -209,15 +209,12 @@ setup_case
 run_hook "GH_REPO=other/repo gh pr merge $PR --squash" "" ""
 if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "inline GH_REPO=: skipped (no nudge)"; else fail "inline GH_REPO=: rc=$RC body='$B'"; fi
 
-# ── Case 8: a BENIGN sibling before the merge (here `echo`, with a `-R` decoy in
-#    ITS args) → still nudges. The hook fires at PreToolUse, BEFORE any command
-#    runs, so `echo` can't re-target; the `-R` belongs to echo, not a gh command;
-#    and the real merge segment is clean and targets the cwd PR. (This is the same
-#    property that lets the admin block run `jq`/`echo` before its merge.) A
-#    sibling that CAN re-target (gh/git-remote/source/cd) is still skipped — see 8c/18/19.
+# ── Case 8: ANY command before the merge (here `echo`) → SKIP under merge-first.
+#    We don't classify siblings as benign/hostile (a denylist can't be complete);
+#    the merge must be the FIRST command (modulo pure assignments + a captured cd).
 setup_case
 run_hook "echo gh pr merge -R other/repo ; gh pr merge $PR --squash" "" ""
-if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "benign echo sibling: nudged (decoy -R is echo's arg)"; else fail "benign echo sibling: rc=$RC body='$B'"; fi
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "command before merge (echo): skipped (merge-first)"; else fail "echo before merge: rc=$RC body='$B'"; fi
 
 # ── Case 8b: a `cd` prefix IS allowed (the canonical worktree form) → posts once ──
 setup_case
@@ -300,12 +297,13 @@ run_hook_ml "$CF" "" ""
 if [[ "$RC" == 0 && -z "$OUT" ]]; then ok "default block: silent approve"; else fail "default block: rc=$RC out='$OUT'"; fi
 if [[ "$N" == 1 ]]; then ok "default block: posted exactly one nudge (comments not counted)"; else fail "default block: expected 1, body='$B'"; fi
 
-# ── Case 15: REAL admin merge block (bypass-log jq/mkdir/case BEFORE the merge,
-#    literal PR) → posts exactly once. Proves benign pre-merge audit cmds are OK.
+# ── Case 15: REAL admin approver-gap block writes bypass-log jq/mkdir/case BEFORE
+#    the merge, so it is NOT merge-first → SKIP (hook). The admin path is covered by
+#    the SKILL-prose nudge instead; the hook owns the default + skip-bypass paths.
 setup_case
 emit_admin_block > "$CF"
 run_hook_ml "$CF" "" ""
-if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "admin block: posted exactly one nudge"; else fail "admin block: rc=$RC body='$B'"; fi
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "admin block (audit-before-merge): skipped, prose covers it"; else fail "admin block: rc=$RC body='$B'"; fi
 
 # ── Case 16: default block but inline GH_REPO= on the merge line → SKIP.
 setup_case
@@ -352,11 +350,11 @@ setup_case
 run_hook "/usr/bin/git remote set-url origin https://github.com/evil/x.git && gh pr merge $PR --squash" "" ""
 if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "path-form git remote before merge: skipped"; else fail "path git remote: rc=$RC body='$B'"; fi
 
-# ── Case 23: a `#`-decoy merge after `;` must be stripped as a comment (Bash does),
-#    so it does NOT inflate the count and suppress the real block's nudge → posts once.
+# ── Case 23: a `#`-decoy merge after `;` (post-metachar) must be stripped as a
+#    comment (Bash does), so the decoy does NOT inflate the merge count. Merge stays
+#    FIRST; the comment trails it → posts exactly once.
 setup_case
-{ printf 'true;# noise || gh pr merge 999 --squash\n'; emit_default_block; } > "$CF"
-run_hook_ml "$CF" "" ""
+run_hook "gh pr merge $PR --squash ;# noise || gh pr merge 999 --squash" "" ""
 if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "post-metachar # decoy stripped: nudged once"; else fail "# decoy: rc=$RC N=$N body='$B'"; fi
 
 # ── Case 24: `builtin cd`/`builtin export` wrappers before the merge → SKIP.
@@ -379,10 +377,112 @@ if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "piped merge (|): skipped"; else fail 
 # ── Case 26: a line-continuation before `#` — Bash removes the continuation FIRST,
 #    so the `#` is NOT a comment and the `cd /repo-b` after it executes → SKIP
 #    (strip_continuations must run before comment stripping, else the cd is hidden).
+#    Built with explicit pieces so the payload UNAMBIGUOUSLY contains backslash+LF.
 setup_case
-printf 'foo\\\n#; cd /repo-b\ngh pr merge %s --squash\n' "$PR" > "$CF"
+{ printf 'foo'; printf '%s' "\\"; printf '\n#; cd /repo-b\ngh pr merge %s --squash\n' "$PR"; } > "$CF"
 run_hook_ml "$CF" "" ""
 if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "continuation-hidden cd before merge: skipped"; else fail "continuation cd: rc=$RC N=$N body='$B'"; fi
+
+# ── Case 27: an escaped space before `#` (\ #) — Bash keeps the escaped space in
+#    the word, so the `#` is mid-word (NOT a comment) and the `cd /repo-b` runs →
+#    SKIP (the escaped char must not make a following `#` a comment start).
+setup_case
+{ printf 'printf x '; printf '%s' "\\"; printf ' #; cd /repo-b\ngh pr merge %s --squash\n' "$PR"; } > "$CF"
+run_hook_ml "$CF" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "escaped-space-then-# hidden cd: skipped"; else fail "escaped-space cd: rc=$RC N=$N body='$B'"; fi
+
+# ── Case 28: assignment hidden behind a reserved word (`then GH_REPO=…`) plus a
+#    bare `export GH_REPO` — both must be caught (interleaved strip + bare-name export).
+setup_case
+run_hook "if true; then GH_REPO=evil/x; export GH_REPO; fi; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "reserved-hidden sensitive assign + bare export: skipped"; else fail "hidden assign: rc=$RC body='$B'"; fi
+
+# ── Case 29: Git env-config injection (GIT_CONFIG_* rewrites remote.origin.url) → SKIP.
+setup_case
+run_hook "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.url GIT_CONFIG_VALUE_0=https://github.com/evil/x gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "GIT_CONFIG_* injection: skipped"; else fail "GIT_CONFIG: rc=$RC body='$B'"; fi
+
+# ── Case 30: combinatorial — every {prefix} × {reserved} × {retargeter} placed
+#    BEFORE a real merge MUST skip; a benign prefix/reserved with NO retargeter posts.
+#    Guards the parser's grammar interaction beyond hand-picked cases (review LOW).
+prefixes=("" "GH_REPO=evil/x " "GIT_DIR=/x/.git " "NO_WORKTREE=0 ")
+reserved=("" "then " "{ ")
+retargets=("cd /x" "gh pr view 1" "git remote -v" "source ./y" "builtin cd /x" "export GH_REPO")
+combo_fail=0
+for pfx in "${prefixes[@]}"; do
+  for rsv in "${reserved[@]}"; do
+    for rt in "${retargets[@]}"; do
+      setup_case
+      run_hook "${pfx}${rsv}${rt} ; gh pr merge $PR --squash" "" ""
+      if [[ "$RC" != 0 || "$N" != 0 ]]; then combo_fail=$((combo_fail+1)); echo "  combo posted (should skip): [${pfx}${rsv}${rt}] N=$N"; fi
+    done
+  done
+done
+if [[ "$combo_fail" == 0 ]]; then ok "combinatorial retargeters-before-merge: all skipped"; else fail "combinatorial: $combo_fail combos wrongly posted"; fi
+# a benign prefix + reserved with NO retargeter (just the merge) still posts once
+setup_case
+run_hook "NO_WORKTREE=0 ; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "benign prefix, no retargeter: nudged"; else fail "benign prefix: rc=$RC body='$B'"; fi
+
+# ── Case 31: `pushd`/`popd` dir-changing builtins before the merge → SKIP.
+setup_case
+run_hook "pushd /repo-b ; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "pushd before merge: skipped"; else fail "pushd: rc=$RC body='$B'"; fi
+
+# ── Case 32: a re-targeter hidden in a command substitution before the merge
+#    (echo "$(git remote set-url …)") → SKIP (substitution content is scanned).
+setup_case
+# shellcheck disable=SC2016  # the literal $(...) is the payload under test, not for expansion
+printf 'echo "$(git remote set-url origin https://github.com/evil/x.git)" ; gh pr merge %s --squash\n' "$PR" > "$CF"
+run_hook_ml "$CF" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "retargeter in \$( ) before merge: skipped"; else fail "subst retargeter: rc=$RC body='$B'"; fi
+
+# ── Case 33: position-aware — a sensitive assignment / pipe WHOLLY AFTER a
+#    sequential merge must NOT suppress the nudge (post-merge can't re-target).
+setup_case
+run_hook "gh pr merge $PR --squash ; GH_REPO=x/y true" "" ""
+if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "sensitive assign after merge: still nudged"; else fail "post-merge sensitive: rc=$RC N=$N body='$B'"; fi
+setup_case
+run_hook "gh pr merge $PR --squash ; echo done | tee /tmp/log" "" ""
+if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "pipe after merge: still nudged"; else fail "post-merge pipe: rc=$RC N=$N body='$B'"; fi
+
+# ── Case 34: merge as a LOOP CONDITION (`while gh pr merge; do <retarget>; done`)
+#    re-runs after the body's retargeter → SKIP.
+setup_case
+run_hook "while gh pr merge $PR --squash; do cd /repo-b; done" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "merge as while-condition: skipped"; else fail "while-merge: rc=$RC body='$B'"; fi
+
+# ── Case 35: merge inside a LOOP BODY (`for …; do gh pr merge; cd …; done`) → SKIP.
+setup_case
+run_hook "for i in 1 2; do gh pr merge $PR --squash; cd /repo-b; done" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "merge in for-body: skipped"; else fail "for-body merge: rc=$RC body='$B'"; fi
+
+# ── Case 36: process substitution in the merge segment (--body-file <(/tmp/x)) runs
+#    a command concurrently → SKIP.
+setup_case
+run_hook "gh pr merge $PR --squash --body-file <(/tmp/retarget)" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "process-substitution in merge seg: skipped"; else fail "proc-subst: rc=$RC body='$B'"; fi
+
+# ── Case 37: any shell expansion in the merge segment → SKIP (merge-seg allowlist).
+#    brace {a,--repo=evil}, and glob/pathname [-!]*/* — both inject extra args at
+#    runtime though shlex sees one token.
+setup_case
+run_hook "gh pr merge $PR --squash --body-file {safe,--repo=evil/x}" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "brace expansion in merge seg: skipped"; else fail "brace expansion: rc=$RC body='$B'"; fi
+setup_case
+run_hook "gh pr merge $PR --squash --body-file [-!]*/*" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "glob/pathname expansion in merge seg: skipped"; else fail "glob expansion: rc=$RC body='$B'"; fi
+# a normal merge with only literal flags still nudges (allowlist admits it)
+setup_case
+run_hook "gh pr merge $PR --squash --delete-branch --admin" "" ""
+if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "plain literal merge flags: nudged"; else fail "plain merge: rc=$RC body='$B'"; fi
+
+# ── Case 38: Bash append-assignment export of a sensitive var (GH_REPO+=…) → SKIP.
+#    (merge-first already skips the `export` command before the merge; this also
+#    proves the sensitive-name check normalizes the `+=` append form.)
+setup_case
+run_hook "export GH_REPO+=evil/x ; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "export GH_REPO+= append: skipped"; else fail "append export: rc=$RC body='$B'"; fi
 
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

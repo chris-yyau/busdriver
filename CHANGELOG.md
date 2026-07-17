@@ -1,3 +1,10 @@
+## [1.93.8](https://github.com/chris-yyau/busdriver/compare/v1.93.7...v1.93.8) (2026-07-17)
+
+
+### Bug Fixes
+
+* P1 triage — unpin stale codex model ([#331](https://github.com/chris-yyau/busdriver/issues/331)) + correct [update-merge] rationale ([#354](https://github.com/chris-yyau/busdriver/issues/354)) ([#401](https://github.com/chris-yyau/busdriver/issues/401)) ([a21a5a3](https://github.com/chris-yyau/busdriver/commit/a21a5a3aa0e39d5b5a4cf5afc22c0ed0f301ddcf)), closes [#361](https://github.com/chris-yyau/busdriver/issues/361) [#81](https://github.com/chris-yyau/busdriver/issues/81)
+
 ## [1.93.7](https://github.com/chris-yyau/busdriver/compare/v1.93.6...v1.93.7) (2026-07-17)
 
 

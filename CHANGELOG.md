@@ -1,3 +1,10 @@
+## [1.92.4](https://github.com/chris-yyau/busdriver/compare/v1.92.3...v1.92.4) (2026-07-17)
+
+
+### Bug Fixes
+
+* **hooks:** await async run() + fail-closed missing-hookId for blocking gates ([#385](https://github.com/chris-yyau/busdriver/issues/385)) ([453b3e1](https://github.com/chris-yyau/busdriver/commit/453b3e1b066685efaf6eaaaa4314d82a6fc61aec)), closes [#349](https://github.com/chris-yyau/busdriver/issues/349)
+
 ## [1.92.3](https://github.com/chris-yyau/busdriver/compare/v1.92.2...v1.92.3) (2026-07-17)
 
 

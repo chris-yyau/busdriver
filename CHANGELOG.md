@@ -1,3 +1,10 @@
+## [1.92.1](https://github.com/chris-yyau/busdriver/compare/v1.92.0...v1.92.1) (2026-07-17)
+
+
+### Bug Fixes
+
+* **careful-guard:** judge every rm in a chain, not just the last ([#376](https://github.com/chris-yyau/busdriver/issues/376)) ([6627c40](https://github.com/chris-yyau/busdriver/commit/6627c40063d8809a1851d306a6b909133c3dbe3f))
+
 # [1.92.0](https://github.com/chris-yyau/busdriver/compare/v1.91.18...v1.92.0) (2026-07-17)
 
 

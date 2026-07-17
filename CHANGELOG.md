@@ -1,3 +1,10 @@
+## [1.92.6](https://github.com/chris-yyau/busdriver/compare/v1.92.5...v1.92.6) (2026-07-17)
+
+
+### Bug Fixes
+
+* **design-gate:** refuse to authorize implementation on DEGRADED coverage ([#355](https://github.com/chris-yyau/busdriver/issues/355)) ([#387](https://github.com/chris-yyau/busdriver/issues/387)) ([e95777e](https://github.com/chris-yyau/busdriver/commit/e95777e3d4392290d5fd62f8975568fcb6806823))
+
 ## [1.92.5](https://github.com/chris-yyau/busdriver/compare/v1.92.4...v1.92.5) (2026-07-17)
 
 

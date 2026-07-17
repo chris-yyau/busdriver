@@ -352,9 +352,81 @@ gate_marker_glob() {
     printf '%s/%s.\n' "$dir" "$sha"
 }
 
+# ── #356 · Cross-worktree provenance for the block message ────────────────────
+# The shared marker dir means a doc armed in ONE worktree blocks implementation in
+# EVERY linked worktree (ADR-D, deliberate). The blast radius is repo-wide but the
+# trigger is one doc in one worktree, so a blocked session sees an unrelated doc
+# and misdiagnoses ("did a rogue hook delete my files?"). These helpers annotate
+# each pending doc with the worktree/branch that armed it — visibility only, NO
+# change to what blocks (the semantic blast-radius fix is its own design task,
+# docs/plans/2026-07-12-pipeline-audit-fixes.md §A). Draining a marker armed by
+# another session forges its review, so the message must name the owner, not
+# invite a self-drain.
+
+# One-line provenance suffix for a pending design doc. Empty when the doc lives in
+# the SAME worktree as the blocked write (the normal plan→impl flow — no noise);
+# otherwise it locates the OTHER worktree so a cross-worktree block is legible. A
+# doc whose directory is gone is flagged as an abandoned marker (the drain-hint
+# `rm` on the same line is then the resolution). The branch is reported as the
+# owning worktree's CURRENT HEAD ("now on branch X"), NOT the branch that armed
+# the token: the token is keyed only by the doc's abspath (existence-keyed, ADR-D)
+# and survives branch switches, so it cannot know the arming branch. What is
+# always true — and all the message needs — is that the doc is in a different
+# worktree, so don't blindly drain another session's marker.
+gate_marker_owner_note() {   # <doc_abspath> <self_worktree_root>
+    local doc="$1" self="$2" d root branch
+    [ -n "$doc" ] || return 0
+    d="$(dirname -- "$doc")"
+    if [ ! -d "$d" ]; then
+        printf '  [doc dir missing — this marker looks abandoned]'
+        return 0
+    fi
+    root="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -n "$root" ] || return 0                       # not in a repo → say nothing
+    # Same worktree as the write → expected case, no annotation.
+    [ -n "$self" ] && [ "$root" = "$self" ] && return 0
+    branch="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    if [ -n "$branch" ] && [ "$branch" != "HEAD" ]; then
+        printf '  [in another worktree, now on branch %s — do not drain it unless it is abandoned]' "$branch"
+    else
+        printf '  [in another worktree — do not drain it unless it is abandoned]'
+    fi
+}
+
+# Render the classifier's NUL records (4 fields/record: kind, source_path,
+# doc_path, reason — see marker_ops.py) into the operator-facing block list,
+# annotating each doc with gate_marker_owner_note. Reads records from FILE $1;
+# $2 is the write's anchor (its worktree resolves "same vs other"). Echoes the
+# `%b`-ready list string (literal `\n` separators, matching the callers' printf).
+# Extracted from the byte-identical loops in pre-implementation-gate.sh and
+# pre-commit-gate.sh so the annotation lives in ONE place and the two cannot drift.
+gate_render_pending_records() {   # <recs_file> <anchor>
+    local recs="$1" anchor="$2" out="" self_root
+    self_root="$(git -C "$anchor" rev-parse --show-toplevel 2>/dev/null || true)"
+    local _sp="" _dp="" _reason="" _i=0 _field _sp_q _note
+    while IFS= read -r -d '' _field; do
+        _i=$((_i + 1))
+        case $(( _i % 4 )) in
+            2) _sp="$_field" ;;                      # source_path (token file)
+            3) _dp="$_field" ;;                      # doc_path (validated abspath, or empty)
+            0) _reason="$_field"
+               if [ -n "$_dp" ]; then
+                   _sp_q="${_sp//\'/\'\\\'\'}"       # shell-escape single quotes for the rm hint
+                   _note="$(gate_marker_owner_note "$_dp" "$self_root")"
+                   out="${out}  - ${_dp}${_note}  (drain if abandoned: rm '${_sp_q}')\n"
+               else
+                   out="${out}  - ${_sp}  [${_reason}]\n"
+               fi
+               _sp=""; _dp="" ;;
+        esac
+    done <"$recs"
+    [ -n "$out" ] || out="  - (design review pending)\n"
+    printf '%s' "$out"
+}
+
 # ── CLI dispatcher (Step 1) ───────────────────────────────────────────────────
 # Side-effect-free when sourced (BASH_SOURCE[0] != $0). Direct invocation:
-#   bash resolve-repo-dir.sh <norm|relpath|dir|arm|pending|sha|marker-glob> ARGS
+#   bash resolve-repo-dir.sh <norm|relpath|dir|arm|pending|sha|marker-glob|render> ARGS
 # Unknown subcommand → exit 2 (fail-CLOSED for gating consumers).
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     _sub="${1:-}"; shift 2>/dev/null || true
@@ -367,6 +439,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         pending-pureshell) gate_marker_pending_pureshell "$@" ;;
         sha)         python3 -S "$(_gate_marker_lib_dir)/marker_ops.py" sha "$@" ;;
         marker-glob) gate_marker_glob "$@" ;;
+        render)      gate_render_pending_records "$@" ;;
         *)           exit 2 ;;
     esac
     exit $?

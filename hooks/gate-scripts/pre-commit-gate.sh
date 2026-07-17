@@ -299,23 +299,10 @@ if ! gate_marker_pending_pureshell "$REPO_DIR"; then
         if [ "$_MK_CODE" = "2" ] || [ -z "$_MK_RECS" ]; then
             UNREVIEWED="  - (design review pending — run /blueprint-review to see the specific documents)\n"
         else
-            _mk_sp=""; _mk_dp=""; _mk_reason=""; _mk_i=0
-            while IFS= read -r -d '' _mk_field; do
-                _mk_i=$((_mk_i + 1))
-                case $(( _mk_i % 4 )) in
-                    2) _mk_sp="$_mk_field" ;;
-                    3) _mk_dp="$_mk_field" ;;
-                    0) _mk_reason="$_mk_field"
-                       if [ -n "$_mk_dp" ]; then
-                           _mk_sp_q="${_mk_sp//\'/\'\\\'\'}"  # shell-escape single quotes for the rm hint
-                           UNREVIEWED="${UNREVIEWED}  - ${_mk_dp}  (drain if abandoned: rm '${_mk_sp_q}')\n"
-                       else
-                           UNREVIEWED="${UNREVIEWED}  - ${_mk_sp}  [${_mk_reason}]\n"
-                       fi
-                       _mk_sp=""; _mk_dp="" ;;
-                esac
-            done <"$_MK_RECS"
-            [ -n "$UNREVIEWED" ] || UNREVIEWED="  - (design review pending)\n"
+            # Shared renderer (resolve-repo-dir.sh) — annotates each doc with the
+            # worktree that armed it when it isn't THIS commit's worktree (#356
+            # cross-worktree visibility). REPO_DIR is the committing worktree.
+            UNREVIEWED="$(gate_render_pending_records "$_MK_RECS" "$REPO_DIR")"
         fi
         rm -f "$_MK_RECS"
         # §6: a COMMIT is bypassed with skip-litmus.local (pre-commit consumes only

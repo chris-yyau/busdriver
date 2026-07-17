@@ -1,3 +1,10 @@
+## [1.93.2](https://github.com/chris-yyau/busdriver/compare/v1.93.1...v1.93.2) (2026-07-17)
+
+
+### Bug Fixes
+
+* **pr-grind:** fire the Codex none-nudge hook on real multi-line merges ([#390](https://github.com/chris-yyau/busdriver/issues/390)) ([6b856a6](https://github.com/chris-yyau/busdriver/commit/6b856a6e937a97149dbe87de0b77d82f18f20280)), closes [#pr-view](https://github.com/chris-yyau/busdriver/issues/pr-view) [98/#102](https://github.com/chris-yyau/busdriver/issues/102)
+
 ## [1.93.1](https://github.com/chris-yyau/busdriver/compare/v1.93.0...v1.93.1) (2026-07-17)
 
 

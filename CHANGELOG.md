@@ -1,3 +1,10 @@
+## [1.92.7](https://github.com/chris-yyau/busdriver/compare/v1.92.6...v1.92.7) (2026-07-17)
+
+
+### Bug Fixes
+
+* **litmus:** make the mode guard and the timeout docs tell the truth ([#363](https://github.com/chris-yyau/busdriver/issues/363)) ([#370](https://github.com/chris-yyau/busdriver/issues/370)) ([f0cef0f](https://github.com/chris-yyau/busdriver/commit/f0cef0f646f6534f2f1e4c6b710f53ce518a28a2)), closes [#368](https://github.com/chris-yyau/busdriver/issues/368) [#368](https://github.com/chris-yyau/busdriver/issues/368) [#368](https://github.com/chris-yyau/busdriver/issues/368) [#368](https://github.com/chris-yyau/busdriver/issues/368)
+
 ## [1.92.6](https://github.com/chris-yyau/busdriver/compare/v1.92.5...v1.92.6) (2026-07-17)
 
 

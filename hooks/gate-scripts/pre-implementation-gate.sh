@@ -372,8 +372,10 @@ try:
         "litmus-passed.local",
         "pr-review-passed.local",
         # Dual-voice PR artifacts — writable ONLY by run-review-loop.sh: the
-        # backstop verdict via --write-backstop-verdict, the Codex-lead verdict
-        # inline on an actual Codex PASS (no subcommand, so it cannot be forged).
+        # backstop verdict via --run-backstop (a captured claude -p dispatch → an
+        # internal writer; no public writer subcommand — removes the easy #350 retype
+        # forge, though a Bash-holding dispatcher can still fabricate: accepted ADR
+        # 0006 residual), the Codex-lead verdict inline on an actual Codex PASS.
         # Direct Write/Edit/MultiEdit/shell-redirect/rm against them is blocked so
         # the hash re-derivation in the writer cannot be bypassed by a file forge.
         # (Keystone for ADR 0006; .local.json suffix matched as a substring.)
@@ -469,8 +471,8 @@ To write this marker correctly: finish the PR deep review, then run the trusted 
 This marker is written automatically when the /litmus commit review passes — re-run the review loop to completion instead of writing it by hand." ;;
         pr-backstop-verdict.local.json)
             WRITER_HINT="
-This is the PR security/bugs backstop artifact. It is written ONLY by the trusted strict writer, which re-derives the diff hash itself and fails closed on stale/bad input:
-  <pr-security-backstop agent JSON> | bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --write-backstop-verdict" ;;
+This is the PR security/bugs backstop artifact. It is written ONLY by --run-backstop, which dispatches the read-only backstop as a captured claude -p subprocess and pipes the result to an internal strict writer (re-derives the diff hash, fails closed on stale/bad input). There is no manual writer subcommand — that would let the verdict be forged by hand (#350):
+  bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --run-backstop" ;;
         pr-codex-lead.local.json)
             WRITER_HINT="
 This is the PR Codex-lead artifact. It is written ONLY by the litmus PR review, inline on an actual Codex PASS — there is no manual writer subcommand (that would let a PASS be forged without a review). Re-run the PR review to (re)produce it:

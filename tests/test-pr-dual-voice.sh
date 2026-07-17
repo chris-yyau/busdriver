@@ -1,25 +1,21 @@
 #!/usr/bin/env bash
-# Tests for the litmus PR-mode dual-voice writers + gate enforcement (ADR 0006).
+# Tests for the litmus PR-mode dual-voice flow (ADR 0006) after the #350 seal.
 #
-# Covers the trusted writers in run-review-loop.sh and the matching acceptance
-# logic in pre-pr-gate.sh:
-#   (codex-lead artifact written inline on a real Codex PASS — no subcommand)
-#   --write-backstop-verdict     → pr-backstop-verdict.local.json (strict validator)
-#   --write-pr-marker            → pr-review-passed.local (requires BOTH artifacts)
+# The backstop verdict is produced ONLY by `run-review-loop.sh --run-backstop`,
+# which dispatches the read-only backstop as a CAPTURED `claude -p` subprocess and
+# pipes its stdout to an INTERNAL strict writer (`_persist_backstop_verdict`).
+# There is NO public `--write-backstop-verdict` subcommand — a public writer let
+# the orchestrating model forge a PASS by piping hand-typed JSON (#350). These
+# tests drive the real captured path with a stubbed `claude` on PATH.
 #
-# Matrix:
-#   1. codex-lead writer emits a PASS artifact bound to the current diff
-#   2. backstop writer accepts a valid empty PASS
-#   3. write-pr-marker writes the marker when BOTH voices PASS
-#   4. a backstop `high` issue is recomputed to FAIL even if caller said PASS
-#   5. write-pr-marker refuses once the backstop is FAIL
-#   6. strict validator rejects a missing confidence
-#   7. strict validator rejects an out-of-enum severity (CRITICAL)
-#   8. strict validator rejects a stale reviewed_diff_hash (TOCTOU)
-#   9. strict validator rejects caller-supplied diff_hash/ts (unknown top-level)
-#  10. writer fails closed on an empty diff (no base)
-#  11. gate accepts a fresh FAST marker matching the diff
-#  12. gate rejects a FAST marker whose hash != current diff
+# Covered:
+#   - --run-backstop: clean capture ⇒ PASS artifact; high ⇒ recomputed FAIL;
+#     fence-stripping; dispatch failure / malformed output / missing codex-lead
+#     / empty diff ⇒ fail-closed (no artifact); strict validation (missing
+#     confidence, out-of-enum severity, unknown top-level field) ⇒ no artifact.
+#   - --write-pr-marker: writes only when BOTH voices PASS; refuses on backstop FAIL.
+#   - the seal itself: no public --write-backstop-verdict subcommand exists.
+#   - pre-pr-gate.sh: accepts a fresh matching FAST marker; rejects a wrong-hash one.
 #
 # Usage: bash tests/test-pr-dual-voice.sh
 # Exit: 0 if all pass, 1 if any fail.
@@ -39,8 +35,7 @@ ok() { if [ "$1" = "$2" ]; then echo "  PASS  $3"; PASS=$((PASS+1)); else echo "
 # Run the gate over a payload and classify its JSON decision. Distinguishes a
 # genuine "allow" (gate ran and chose not to block) from a "crash" (gate failed
 # to execute: nonzero exit AND empty output). Without the crash arm, a broken
-# gate's empty output would be silently read as "allow" by a bare
-# `grep -q '"block"' && echo block || echo allow`, masking a fail-open regression.
+# gate's empty output would be silently read as "allow".
 gate_decision() {
   local payload="$1" out rc
   out=$(printf '%s' "$payload" | env -u SKIP_LITMUS bash "$GATE" 2>/dev/null); rc=$?
@@ -72,78 +67,144 @@ export LITMUS_PR_BASE=main   # resolve_pr_base_branch → origin/main
 _D=$(git diff "$(git merge-base origin/main HEAD)...HEAD")
 CUR=$(printf '%s' "$_D" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
 
+BS=".claude/pr-backstop-verdict.local.json"
 art_status() { python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['status'])" "$1" 2>/dev/null; }
+has_art()    { [[ -f "$BS" ]] && echo y || echo n; }
 
-# The Codex-lead PASS artifact is written ONLY inline on a real Codex PASS (there
-# is deliberately no writer subcommand — that would let it be forged without a
-# review). Seed one directly as a fixture so the marker/gate tests below have the
-# lead voice present; the inline writer is covered by the live PR-mode flow.
+# The Codex-lead PASS artifact is written ONLY inline on a real Codex PASS (no
+# subcommand — forging it would need a real review). Seed one as a fixture so the
+# backstop precondition (a fresh Codex-lead PASS for THIS diff) is satisfiable.
 seed_codex_lead() {
   mkdir -p .claude
   printf '{"status":"PASS","model":"codex","diff_hash":"%s","ts":%s}\n' "$CUR" "$(date +%s)" > .claude/pr-codex-lead.local.json
 }
 
-echo "== 1. codex-lead artifact fixture =="
+# Stub `claude` on PATH so --run-backstop dispatches offline. The stub answers the
+# confinement capability guard (`claude --help` must advertise --tools /
+# --setting-sources), drains the prompt, and emits an --output-format json
+# envelope whose .result is $STUB_VERDICT. STUB_RC forces a dispatch failure.
+STUBDIR="$WORK/stubbin"; mkdir -p "$STUBDIR"
+write_stub() {
+  cat > "$STUBDIR/claude" <<'STUB'
+#!/bin/bash
+if [ "$1" = "--help" ]; then echo "  --tools <tools...>"; echo "  --setting-sources <sources>"; exit 0; fi
+cat >/dev/null 2>&1 || true
+[ "${STUB_RC:-0}" != "0" ] && exit "${STUB_RC}"
+python3 -c 'import json,os,sys; sys.stdout.write(json.dumps({"type":"result","subtype":"success","is_error":os.environ.get("STUB_ERR")=="1","result":os.environ.get("STUB_VERDICT","")}))'
+STUB
+  chmod +x "$STUBDIR/claude"
+}
+write_stub
+export PATH="$STUBDIR:$PATH"
+
+# run_bs <verdict-json>: seed codex-lead, clear any prior artifact, run --run-backstop
+# with the stub emitting <verdict-json> as the backstop's verdict. Returns the exit code.
+run_bs() {
+  rm -f "$BS"; seed_codex_lead
+  STUB_VERDICT="$1" bash "$RL" --run-backstop >/dev/null 2>&1
+}
+
+echo "== 1. codex-lead fixture present/PASS =="
 seed_codex_lead
-ok "$([ -f .claude/pr-codex-lead.local.json ] && echo y || echo n)" "y" "codex-lead artifact present"
+ok "$([[ -f .claude/pr-codex-lead.local.json ]] && echo y || echo n)" "y" "codex-lead artifact present"
 ok "$(art_status .claude/pr-codex-lead.local.json)" "PASS" "codex-lead status=PASS"
 
-echo "== 2. backstop writer — valid empty PASS =="
-echo "{\"status\":\"PASS\",\"model\":\"opus\",\"reviewed_diff_hash\":\"$CUR\",\"issues\":[]}" | bash "$RL" --write-backstop-verdict >/dev/null 2>&1
-ok "$?" "0" "valid empty PASS accepted"
-ok "$(art_status .claude/pr-backstop-verdict.local.json)" "PASS" "backstop status=PASS"
+echo "== 2. --run-backstop: captured clean verdict ⇒ PASS artifact =="
+run_bs '{"status":"PASS","issues":[]}'
+ok "$?" "0" "run-backstop exit 0 on clean capture"
+ok "$(art_status "$BS")" "PASS" "captured artifact status=PASS"
 
-echo "== 2b. backstop rejected without a fresh Codex-lead PASS (precondition) =="
-mv .claude/pr-codex-lead.local.json .claude/pr-codex-lead.bak
-echo "{\"status\":\"PASS\",\"model\":\"opus\",\"reviewed_diff_hash\":\"$CUR\",\"issues\":[]}" | bash "$RL" --write-backstop-verdict >/dev/null 2>&1
-ok "$?" "1" "backstop-only forge blocked when codex-lead absent"
-mv .claude/pr-codex-lead.bak .claude/pr-codex-lead.local.json  # restore for later tests
-
-echo "== 3. write-pr-marker — both PASS ⇒ marker =="
+echo "== 3. --write-pr-marker writes when BOTH voices PASS =="
+rm -f .claude/pr-review-passed.local
 bash "$RL" --write-pr-marker >/dev/null 2>&1
 ok "$?" "0" "marker writer exit 0"
 ok "$(cat .claude/pr-review-passed.local 2>/dev/null)" "$CUR" "marker == current diff hash"
 
-echo "== 4. backstop high severity ⇒ recomputed FAIL =="
-echo "{\"status\":\"PASS\",\"model\":\"opus\",\"reviewed_diff_hash\":\"$CUR\",\"issues\":[{\"file\":\"f.txt\",\"line\":1,\"severity\":\"high\",\"confidence\":90,\"category\":\"security\",\"description\":\"x\"}]}" | bash "$RL" --write-backstop-verdict >/dev/null 2>&1
-ok "$(art_status .claude/pr-backstop-verdict.local.json)" "FAIL" "high issue recomputed to FAIL (caller said PASS)"
+echo "== 4. --run-backstop: captured high finding ⇒ recomputed FAIL =="
+run_bs '{"status":"PASS","issues":[{"file":"f.txt","line":1,"severity":"high","confidence":88,"category":"security","description":"x"}]}'
+ok "$(art_status "$BS")" "FAIL" "captured high issue recomputed to FAIL (agent said PASS)"
 
-echo "== 5. write-pr-marker refuses on backstop FAIL =="
+echo "== 5. --write-pr-marker refuses on backstop FAIL =="
 rm -f .claude/pr-review-passed.local
 bash "$RL" --write-pr-marker >/dev/null 2>&1
 ok "$?" "1" "marker refused when backstop FAIL"
-ok "$([ -f .claude/pr-review-passed.local ] && echo y || echo n)" "n" "no marker written"
+ok "$([[ -f .claude/pr-review-passed.local ]] && echo y || echo n)" "n" "no marker written"
 
-echo "== 6. reject missing confidence =="
-echo "{\"status\":\"PASS\",\"model\":\"opus\",\"reviewed_diff_hash\":\"$CUR\",\"issues\":[{\"file\":\"f.txt\",\"line\":1,\"severity\":\"low\",\"category\":\"bug\",\"description\":\"x\"}]}" | bash "$RL" --write-backstop-verdict >/dev/null 2>&1
-ok "$?" "1" "missing confidence rejected"
+echo "== 6. --run-backstop: strips a markdown fence around the verdict =="
+FENCE='`''`''`'   # three backticks, quote-safe
+run_bs "$(printf '%sjson\n{"status":"PASS","issues":[]}\n%s' "$FENCE" "$FENCE")"
+ok "$?" "0" "fenced verdict parsed"
+ok "$(art_status "$BS")" "PASS" "fenced verdict ⇒ PASS artifact"
 
-echo "== 7. reject out-of-enum severity =="
-echo "{\"status\":\"PASS\",\"model\":\"opus\",\"reviewed_diff_hash\":\"$CUR\",\"issues\":[{\"file\":\"f.txt\",\"line\":1,\"severity\":\"CRITICAL\",\"confidence\":80,\"category\":\"bug\",\"description\":\"x\"}]}" | bash "$RL" --write-backstop-verdict >/dev/null 2>&1
-ok "$?" "1" "out-of-enum severity (CRITICAL) rejected"
+echo "== 7. strict validation via the captured path (fail-closed, no artifact) =="
+# missing confidence
+run_bs '{"status":"PASS","issues":[{"file":"f.txt","line":1,"severity":"low","category":"bug","description":"x"}]}'
+ok "$(has_art)" "n" "missing confidence rejected (no artifact)"
+# out-of-enum severity
+run_bs '{"status":"PASS","issues":[{"file":"f.txt","line":1,"severity":"CRITICAL","confidence":80,"category":"bug","description":"x"}]}'
+ok "$(has_art)" "n" "out-of-enum severity (CRITICAL) rejected"
+# unknown top-level field — faithful passthrough hands it to the writer, which rejects it
+run_bs '{"status":"PASS","issues":[],"diff_hash":"deadbeef"}'
+ok "$(has_art)" "n" "unknown top-level field (diff_hash) rejected — parser does not launder"
+# missing issues array — faithful passthrough must NOT default it to []
+run_bs '{"status":"PASS"}'
+ok "$(has_art)" "n" "missing issues array rejected — parser does not default to []"
 
-echo "== 8. reject stale reviewed_diff_hash (TOCTOU) =="
-echo "{\"status\":\"PASS\",\"model\":\"opus\",\"reviewed_diff_hash\":\"deadbeef\",\"issues\":[]}" | bash "$RL" --write-backstop-verdict >/dev/null 2>&1
-ok "$?" "1" "stale reviewed_diff_hash rejected"
+echo "== 8. --run-backstop: dispatch failure (nonzero claude) ⇒ fail-closed =="
+rm -f "$BS"; seed_codex_lead
+STUB_RC=7 STUB_VERDICT='{"status":"PASS","issues":[]}' bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$?" "1" "nonzero claude ⇒ run-backstop fails"
+ok "$(has_art)" "n" "no artifact on dispatch failure"
 
-echo "== 9. reject caller-supplied diff_hash/ts (unknown top-level) =="
-echo "{\"status\":\"PASS\",\"model\":\"opus\",\"reviewed_diff_hash\":\"$CUR\",\"diff_hash\":\"$CUR\",\"ts\":1,\"issues\":[]}" | bash "$RL" --write-backstop-verdict >/dev/null 2>&1
-ok "$?" "1" "caller-supplied diff_hash/ts rejected"
+echo "== 9. --run-backstop: malformed CLI output ⇒ fail-closed =="
+# result-level malformed via STUB_VERDICT: "" (empty), non-object, then a non-JSON envelope
+for bad in '' '[1,2,3]'; do
+  rm -f "$BS"; seed_codex_lead
+  STUB_VERDICT="$bad" bash "$RL" --run-backstop >/dev/null 2>&1
+  ok "$(has_art)" "n" "malformed result leaves no artifact: '${bad}'"
+done
+rm -f "$BS"; seed_codex_lead
+cat > "$STUBDIR/claude" <<'STUB'
+#!/bin/bash
+if [ "$1" = "--help" ]; then echo "  --tools <tools...>"; echo "  --setting-sources <sources>"; exit 0; fi
+cat >/dev/null 2>&1 || true
+printf '%s' "not json at all"
+STUB
+chmod +x "$STUBDIR/claude"
+bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$(has_art)" "n" "non-JSON envelope leaves no artifact"
+write_stub  # restore the well-behaved stub
 
-echo "== 10. writer fails closed on empty diff (no base) =="
-( cd "$WORK" && git checkout -q main 2>/dev/null
-  echo "{\"status\":\"PASS\",\"model\":\"opus\",\"reviewed_diff_hash\":\"$CUR\",\"issues\":[]}" \
-    | LITMUS_PR_BASE=main bash "$RL" --write-backstop-verdict >/dev/null 2>&1 )
-ok "$?" "1" "empty diff (HEAD==base) fails closed"
+echo "== 10. --run-backstop: no fresh Codex-lead ⇒ fail-closed (dispatch skipped) =="
+rm -f "$BS" .claude/pr-codex-lead.local.json
+STUB_VERDICT='{"status":"PASS","issues":[]}' bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$?" "1" "run-backstop fails without a codex-lead PASS"
+ok "$(has_art)" "n" "no artifact without codex-lead"
+
+echo "== 11. --run-backstop: empty diff (HEAD==base) ⇒ fail-closed =="
+rm -f "$BS"
+( git checkout -q main 2>/dev/null; seed_codex_lead
+  STUB_VERDICT='{"status":"PASS","issues":[]}' LITMUS_PR_BASE=main bash "$RL" --run-backstop >/dev/null 2>&1 )
+ok "$?" "1" "empty diff fails closed"
+ok "$(has_art)" "n" "no artifact on empty diff"
 git checkout -q feature
 
-echo "== 11. gate accepts a fresh FAST marker matching the diff =="
-rm -f .claude/pr-codex-lead.local.json .claude/pr-backstop-verdict.local.json
+echo "== 12. seal: no public --write-backstop-verdict subcommand (#350 forge closed) =="
+ok "$(grep -cE '"--write-backstop-verdict"' "$RL")" "0" "no public --write-backstop-verdict guard in the script"
+ok "$(grep -cE '^_persist_backstop_verdict\(\) \{' "$RL")" "1" "writer is an internal function"
+# A direct pipe to the (removed) subcommand must NOT produce an artifact.
+rm -f "$BS"; seed_codex_lead
+echo "{\"status\":\"PASS\",\"model\":\"opus\",\"reviewed_diff_hash\":\"$CUR\",\"issues\":[]}" \
+  | BUSDRIVER_REVIEW_CLI=none bash "$RL" --write-backstop-verdict >/dev/null 2>&1 || true
+ok "$(has_art)" "n" "piping hand-typed JSON to the dead subcommand produces no artifact"
+
+echo "== 13. gate accepts a fresh FAST marker matching the diff =="
+rm -f .claude/pr-codex-lead.local.json "$BS"
 printf 'PASS-FAST-%s-%s\n' "$CUR" "$(date +%s)" > .claude/pr-review-passed.local
 DEC=$(printf '{"tool_name":"Bash","tool_input":{"command":"cd %s && gh pr create --fill"}}' "$WORK")
 ok "$(gate_decision "$DEC")" "allow" "fresh FAST marker accepted"
 
-echo "== 12. gate rejects a FAST marker with a wrong hash =="
+echo "== 14. gate rejects a FAST marker with a wrong hash =="
 printf 'PASS-FAST-%s-%s\n' "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef" "$(date +%s)" > .claude/pr-review-passed.local
 DEC=$(printf '{"tool_name":"Bash","tool_input":{"command":"cd %s && gh pr create --fill"}}' "$WORK")
 ok "$(gate_decision "$DEC")" "block" "FAST marker with wrong hash rejected"

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://busdriver/skills/litmus/schemas/pr-backstop-verdict.schema.json",
   "title": "PR Security/Bugs Backstop Verdict",
-  "description": "On-disk artifact written ONLY by `run-review-loop.sh --write-backstop-verdict`. The gate (pre-pr-gate.sh) and `--write-pr-marker` require a fresh PASS instance of this artifact whose diff_hash matches the current base...HEAD before a PR marker is honored. The writer re-derives `diff_hash` and `ts` itself; the caller never supplies them.",
+  "description": "On-disk artifact written ONLY by `run-review-loop.sh --run-backstop` (a captured `claude -p` dispatch piped to an internal strict writer; no public writer subcommand — this removed the honest-path retype forge of #350, though a Bash-holding dispatcher can still forge: accepted ADR 0006 trusted-dispatcher residual). The gate (pre-pr-gate.sh) and `--write-pr-marker` require a fresh PASS instance of this artifact whose diff_hash matches the current base...HEAD before a PR marker is honored. The writer re-derives `diff_hash` and `ts` itself; the caller never supplies them.",
   "type": "object",
   "additionalProperties": false,
   "required": ["status", "model", "diff_hash", "ts", "issues"],

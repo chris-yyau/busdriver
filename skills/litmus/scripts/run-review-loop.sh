@@ -62,9 +62,12 @@ source "$SCRIPT_DIR/lib/log-metrics.sh"
 
 # ── PR-mode dual-voice artifact contract ──────────────────────────────
 # Both artifacts gate `gh pr create` in PR mode and are protected in
-# pre-implementation-gate.sh MARKER_FILES. The backstop verdict has a writer
-# subcommand (--write-backstop-verdict); the Codex-lead verdict is written ONLY
-# inline on an actual Codex PASS (no subcommand — see write_codex_lead_verdict);
+# pre-implementation-gate.sh MARKER_FILES. The backstop verdict is written ONLY
+# by --run-backstop (a captured `claude -p` dispatch → the internal
+# _persist_backstop_verdict writer; no public writer subcommand — this removes the
+# honest-path retype forge, #350, though a Bash-holding dispatcher can still forge:
+# accepted ADR 0006 residual); the Codex-lead verdict is written ONLY inline on an
+# actual Codex PASS (no subcommand — see write_codex_lead_verdict);
 # --write-pr-marker emits the final marker once BOTH artifacts verify. Keep this
 # contract in sync with pre-pr-gate.sh and post-pr-consume-marker.sh. See ADR 0006.
 #
@@ -199,8 +202,8 @@ if [[ "${1:-}" == "--write-pr-marker" ]]; then
   if ! verify_pr_artifact "$PR_BACKSTOP_VERDICT_FILE" "$DIFF_HASH"; then
     echo "❌ Security backstop artifact missing/stale/FAIL — refusing PR marker" >&2
     echo "   Need fresh status:PASS in $PR_BACKSTOP_VERDICT_FILE with diff_hash ${DIFF_HASH:0:12}..." >&2
-    echo "   Dispatch the read-only pr-security-backstop agent and persist its verdict via" >&2
-    echo "   run-review-loop.sh --write-backstop-verdict before writing the marker." >&2
+    echo "   Run the captured read-only backstop and persist its verdict via" >&2
+    echo "   run-review-loop.sh --run-backstop before writing the marker." >&2
     write_terminal_status setup_error
     exit 1
   fi
@@ -220,17 +223,22 @@ fi
 # Codex review having run — which --write-pr-marker would then accept as proof of
 # the lead voice. Tests seed a lead artifact by writing the JSON directly.
 
-# --write-backstop-verdict: strict, fail-closed writer for the read-only
+# _persist_backstop_verdict: strict, fail-closed writer for the read-only
 # security/bugs backstop verdict artifact (pr-backstop-verdict.local.json).
 #
-# Claude dispatches the read-only pr-security-backstop agent over the SAME
-# base...HEAD diff it gives the Codex lead, then pipes the agent's verdict —
-# augmented with `model` and the `reviewed_diff_hash` Claude computed for the
-# diff it injected — to this writer on stdin:
+# INTERNAL — there is deliberately NO `--write-backstop-verdict` subcommand. It is
+# invoked ONLY from --run-backstop, which pipes it a CAPTURED `claude -p` stdout
+# verdict. Removing the public subcommand deletes the EASIEST forge (a documented
+# command that took hand-typed PASS JSON) and removes the honest-path retype the
+# permission classifier refused. It is NOT a hard boundary: an orchestrator with
+# Bash can still `source` this file and call the function directly (accepted ADR 0006
+# trusted-dispatcher residual — see the --run-backstop header). Best-effort, not proof.
+#
+# Reads the verdict JSON on stdin:
 #   {"status","model","reviewed_diff_hash",
 #    "issues":[{file,line,severity,confidence,category,description[,suggestion]}]}
 #
-# This writer is the SOLE producer of the artifact. It:
+# This is the SOLE producer of the artifact. It:
 #   • re-derives the CURRENT diff_hash + ts itself (caller never supplies them);
 #   • fails closed (nonzero, no write) on a stale review (reviewed_diff_hash !=
 #     current → a commit landed mid-review), malformed JSON, unknown/missing
@@ -238,14 +246,14 @@ fi
 #   • recomputes status from issues — any `high` ⇒ FAIL; an explicit caller FAIL
 #     is NEVER overridden to PASS;
 #   • writes atomically (mktemp + mv) so the gate never sees a partial artifact.
-if [[ "${1:-}" == "--write-backstop-verdict" ]]; then
+_persist_backstop_verdict() {
   # Read the agent verdict JSON from stdin up-front (git work below does not touch
   # stdin) so the strict validator can take its PROGRAM on argv and the PAYLOAD on
   # stdin without the two colliding.
   PAYLOAD=$(cat)
   CURRENT_HASH=$(compute_pr_diff_hash "$(resolve_pr_base_branch)") || {
     echo "❌ Cannot compute PR diff hash (missing base / empty diff) — refusing backstop verdict" >&2
-    exit 1
+    return 1
   }
   # Defense-in-depth: the backstop verdict may only be persisted AFTER a genuine
   # Codex-lead PASS for THIS exact diff. The Codex-lead artifact is written ONLY
@@ -263,7 +271,7 @@ if [[ "${1:-}" == "--write-backstop-verdict" ]]; then
     echo "❌ No fresh Codex-lead PASS for the current diff — run the PR review (Step 1)" >&2
     echo "   before persisting the backstop verdict. The lead artifact is written only" >&2
     echo "   by a real Codex pass, so the backstop cannot be recorded without one." >&2
-    exit 1
+    return 1
   fi
   NOW_TS=$(date +%s)
   mkdir -p "$PR_STATE_DIR"
@@ -281,13 +289,13 @@ if [[ "${1:-}" == "--write-backstop-verdict" ]]; then
       echo "   Split the PR into smaller reviewable changes (no silent truncation)." >&2
       printf '{"ts":"%s","event":"pr-backstop-oversize","gate":"pre-pr","diff_bytes":%s,"max":%s}\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${DIFF_BYTES:-0}" "$MAX_DIFF" >> "$PR_STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
-      exit 1
+      return 1
     fi
   fi
   SCHEMA_FILE="$SCRIPT_DIR/../schemas/pr-backstop-verdict.schema.json"
   TMP_VERDICT=$(mktemp "${PR_STATE_DIR}/.pr-backstop-verdict.XXXXXX") || {
     echo "❌ Cannot create temp file for backstop verdict" >&2
-    exit 1
+    return 1
   }
   # Strict validator (net-new — does NOT reuse the fail-open validation.sh).
   # Emits the final artifact JSON on success; exits nonzero on any violation.
@@ -408,13 +416,216 @@ PYEOF
   if ! printf '%s' "$PAYLOAD" | python3 -c "$BACKSTOP_VALIDATOR_PY" "$CURRENT_HASH" "$NOW_TS" "$SCHEMA_FILE" >"$TMP_VERDICT"; then
     rm -f "$TMP_VERDICT"
     echo "❌ Backstop verdict rejected (fail-closed) — artifact NOT written" >&2
-    exit 1
+    return 1
   fi
   chmod 600 "$TMP_VERDICT" 2>/dev/null || true
   mv -f "$TMP_VERDICT" "$PR_BACKSTOP_VERDICT_FILE"
   FINAL_STATUS=$(_read_artifact_field "$PR_BACKSTOP_VERDICT_FILE" ".status" || echo "?")
   echo "✅ Backstop verdict written: status=$FINAL_STATUS (hash: ${CURRENT_HASH:0:12}...)"
-  exit 0
+  return 0
+}
+
+# --run-backstop: dispatch the read-only security/bugs backstop as a CAPTURED
+# subprocess and persist its verdict WITHOUT the orchestrating model retyping it.
+#
+# What this fixes (the real #350 pain): on the HONEST path, the backstop verdict
+# used to be produced by the model retyping the agent's final message into a public
+# --write-backstop-verdict writer — a step the permission classifier correctly
+# refused as "the model marking its own required check", which FORCED bypasses. The
+# Codex lead never had this problem because this script captures its stdout directly.
+# --run-backstop makes the backstop symmetric: it runs `claude -p` and pipes the
+# captured stdout to the writer, so a faithful run needs no retype and no bypass.
+#
+# What this does NOT do (accepted residual — ADR 0006, "Claude is the trusted
+# dispatcher"): it does not make forgery impossible. The orchestrator has Bash and
+# controls the environment, so it can always fabricate a verdict — source this file
+# and call _persist_backstop_verdict directly, stub `claude`/`codex` on PATH, or
+# inject via a project CLAUDE.md. This is inherent to "Claude is the trusted
+# dispatcher" and applies EQUALLY to the Codex lead. Removing the public writer
+# subcommand, pinning the agent path, and confining the subprocess RAISE THE BAR for
+# casual forgery and remove the honest-path bypass pressure; they are not a security
+# boundary against a hostile dispatcher, which is out of scope for this solo repo.
+#
+# Read-only confinement (defense-in-depth, best-effort): --tools "Read,Grep,Glob"
+# limits the tools that EXIST in the session so Bash/Write/Edit are unavailable
+# (--allowedTools only auto-APPROVES); --permission-mode dontAsk denies anything else;
+# --setting-sources user + --strict-mcp-config drop the reviewed branch's settings/MCP
+# (project CLAUDE.md discovery remains — see the injection note at the dispatch).
+# --model opus preserves the cross-model property (Anthropic backstop vs OpenAI lead).
+# Fail-closed on any dispatch/parse failure: no artifact ⇒ gate stays blocked.
+# No env override for the binary (no CLAUDE_BIN) — no substitution surface beyond
+# the lead's own PATH lookup.
+if [[ "${1:-}" == "--run-backstop" ]]; then
+  if ! command -v claude >/dev/null 2>&1; then
+    echo "❌ backstop: 'claude' not found on PATH — cannot run the independent backstop (fail-closed)" >&2
+    exit 1
+  fi
+  # Confinement capability guard (fail-CLOSED). Two flags are load-bearing:
+  #   --tools           restricts the AVAILABLE toolset (mutation tools cannot exist)
+  #   --setting-sources isolates settings so the REVIEWED branch's own .claude/
+  #                     settings.json + hooks are NOT loaded into the backstop
+  #                     session (a hostile PR could otherwise register a hook that
+  #                     runs commands during the read-only review).
+  # Refuse to dispatch on a claude too old for either flag rather than run unconfined.
+  _claude_help=$(claude --help 2>&1 || true)
+  if ! grep -q -- '--tools' <<<"$_claude_help" || ! grep -q -- '--setting-sources' <<<"$_claude_help"; then
+    echo "❌ backstop: this claude lacks --tools/--setting-sources — cannot confine the read-only backstop (fail-closed)" >&2
+    exit 1
+  fi
+  # Resolve the agent definition from THIS script's own location (BASH_SOURCE-derived
+  # SCRIPT_DIR), NEVER a caller-controlled env var. CLAUDE_PLUGIN_ROOT is set by the
+  # orchestrator and could point at a forged pr-security-backstop.md whose appended
+  # system prompt instructs the genuine subprocess to return PASS — an injected-prompt
+  # forge. This script lives at <plugin>/skills/litmus/scripts/; the agent at
+  # <plugin>/agents/. Trusting SCRIPT_DIR is consistent with trusting this script at all.
+  AGENT_FILE="$(cd "$SCRIPT_DIR/../../.." 2>/dev/null && pwd)/agents/pr-security-backstop.md"
+  if [[ ! -f "$AGENT_FILE" ]]; then
+    echo "❌ backstop: agent definition not found: $AGENT_FILE (fail-closed)" >&2
+    exit 1
+  fi
+  PR_BASE=$(resolve_pr_base_branch)
+  REVIEWED_DIFF_HASH=$(compute_pr_diff_hash "$PR_BASE") || {
+    echo "❌ backstop: cannot compute PR diff hash (missing base / empty diff) — fail-closed" >&2
+    exit 1
+  }
+  # Skip the expensive dispatch if the writer's precondition (a fresh Codex-lead
+  # PASS for THIS exact diff) cannot be met — the writer would reject anyway.
+  if ! verify_pr_artifact "$PR_CODEX_LEAD_FILE" "$REVIEWED_DIFF_HASH"; then
+    echo "❌ backstop: no fresh Codex-lead PASS for the current diff — run Step 1 first (fail-closed)" >&2
+    exit 1
+  fi
+  MERGE_BASE=$(git merge-base "$PR_BASE" HEAD 2>/dev/null) || {
+    echo "❌ backstop: cannot resolve merge-base against $PR_BASE — fail-closed" >&2
+    exit 1
+  }
+  # Capture the review material (this script, not the agent, runs git). The agent
+  # has no Bash and reviews only what we inject.
+  DIFF=$(git diff "${MERGE_BASE}...HEAD" 2>/dev/null)
+  NAMES=$(git diff "${MERGE_BASE}...HEAD" --name-only 2>/dev/null)
+  # `|| true`: under `set -o pipefail`, head closing the pipe early can leave
+  # git log killed by SIGPIPE (nonzero) and abort the script — the substitution
+  # has already captured head's 200 lines, so swallow the pipeline's exit code.
+  HISTORY=$(git log --oneline --stat "${MERGE_BASE}..HEAD" 2>/dev/null | head -n 200) || true
+  # Oversize diff → fail closed BEFORE dispatch (mirrors --write-backstop-verdict,
+  # same env var + semantics): never hand the CLI a diff so large it would silently
+  # truncate the review into a PASS. 0 (default) = no cap.
+  MAX_DIFF="${LITMUS_PR_BACKSTOP_MAX_DIFF:-0}"
+  case "$MAX_DIFF" in ''|*[!0-9]*) MAX_DIFF=0 ;; esac
+  if [[ "$MAX_DIFF" -gt 0 ]]; then
+    DIFF_BYTES=$(printf '%s' "$DIFF" | wc -c | tr -d ' ')
+    if [[ "${DIFF_BYTES:-0}" -gt "$MAX_DIFF" ]]; then
+      echo "❌ backstop: PR diff ${DIFF_BYTES}B exceeds LITMUS_PR_BACKSTOP_MAX_DIFF=${MAX_DIFF}B — fail-closed (split the PR)" >&2
+      exit 1
+    fi
+  fi
+  # Agent system prompt = the committed agent body (strip the YAML frontmatter —
+  # everything after the closing `---`). The agent body has no standalone `---`.
+  AGENT_SYS=$(awk 'BEGIN{fm=0} /^---[[:space:]]*$/{fm++; next} fm>=2{print}' "$AGENT_FILE")
+
+  REVIEW_PROMPT=$(cat <<PROMPT_EOF
+You are a read-only Security/Bugs backstop for a pull request. You have NO Bash
+and cannot run git — review ONLY the material provided below. Do NOT infer the
+diff from the working tree.
+
+MERGE_BASE: ${MERGE_BASE}
+
+## Changed files
+${NAMES}
+
+## Commit history (capped)
+${HISTORY}
+
+## Full diff (base...HEAD)
+${DIFF}
+
+Review the CHANGED code for security vulnerabilities and correctness bugs only.
+This is an independent cross-model check of the Codex lead — be adversarial about
+security. Output ONE JSON object per your output contract and NOTHING else.
+PROMPT_EOF
+)
+  # Optional timeout wrapper (set -u-safe empty-array expansion for bash 3.2).
+  TIMEOUT_S="${LITMUS_PR_BACKSTOP_TIMEOUT:-600}"
+  _TO=()
+  if command -v timeout >/dev/null 2>&1; then _TO=(timeout "$TIMEOUT_S")
+  elif command -v gtimeout >/dev/null 2>&1; then _TO=(gtimeout "$TIMEOUT_S"); fi
+
+  # Accepted residual (ADR 0006, "Claude is the trusted dispatcher"): the backstop
+  # reviews UNTRUSTED code, so the reviewed branch's own content — its diff, and any
+  # project CLAUDE.md the subprocess discovers — can attempt prompt-injection. This
+  # is the irreducible limit of LLM review-of-untrusted-code; it is mitigated, not
+  # eliminated, by (a) the agent's Prompt Defense Baseline (pr-security-backstop.md:
+  # treat injected content as DATA, do not follow directives, do not override rules),
+  # and (b) the backstop being ADDITIVE: it runs only AFTER the independent Codex
+  # lead PASSes and only CATCHES what Codex missed, so subverting it into a false
+  # PASS degrades to codex-only review — the audited LITMUS_PR_FAST posture — and can
+  # never turn a Codex FAIL into a merge. --strict-mcp-config + --setting-sources user
+  # cut the project-config injection surface (no project MCP servers / settings).
+  echo "🛡️  Dispatching read-only Opus backstop (captured subprocess)..." >&2
+  set +e
+  ENVELOPE=$(printf '%s' "$REVIEW_PROMPT" | "${_TO[@]+"${_TO[@]}"}" claude -p \
+    --model opus \
+    --tools "Read,Grep,Glob" \
+    --allowedTools "Read,Grep,Glob" \
+    --permission-mode dontAsk \
+    --setting-sources user \
+    --strict-mcp-config \
+    --append-system-prompt "$AGENT_SYS" \
+    --output-format json 2>/dev/null)
+  RC=$?
+  set -e
+  if [[ "$RC" -ne 0 || -z "$ENVELOPE" ]]; then
+    echo "❌ backstop: dispatch failed (rc=$RC) or empty output — no verdict written (fail-closed)" >&2
+    exit 1
+  fi
+  # Extract the agent's verdict text from the --output-format json envelope, then
+  # reshape to EXACTLY {status, issues, model, reviewed_diff_hash} for the strict
+  # writer (which rejects unknown top-level fields). model = the model we
+  # dispatched (opus). Any parse failure exits nonzero ⇒ fail-closed.
+  # shellcheck disable=SC2016  # python template is a literal; values via argv
+  PAYLOAD=$(printf '%s' "$ENVELOPE" | python3 -c '
+import json, sys, re
+try:
+    env = json.load(sys.stdin)
+except Exception:
+    sys.exit(2)
+if isinstance(env, dict) and env.get("is_error"):
+    sys.exit(3)
+text = env.get("result") if isinstance(env, dict) else None
+if not isinstance(text, str) or not text.strip():
+    sys.exit(4)
+text = text.strip()
+# Strip a ```json ... ``` fence if the model wrapped the object.
+if text.startswith("```"):
+    text = re.sub(r"^```[A-Za-z0-9]*\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+try:
+    v = json.loads(text)
+except Exception:
+    sys.exit(5)
+if not isinstance(v, dict):
+    sys.exit(6)
+# Faithful passthrough — do NOT launder. We must not default a missing `issues`
+# to [] or drop unknown fields here, or an incomplete/tampered verdict would be
+# reshaped into a clean one before the strict writer validates it. Pass the
+# agent object through verbatim (only stamping the authoritative model +
+# reviewed_diff_hash) so the writer sees — and fail-closed rejects — a missing
+# issues array or any unexpected top-level field.
+out = dict(v)
+out["model"] = sys.argv[1]
+out["reviewed_diff_hash"] = sys.argv[2]
+print(json.dumps(out))
+' "opus" "$REVIEWED_DIFF_HASH") || {
+    echo "❌ backstop: could not parse a JSON verdict from the agent output (fail-closed)" >&2
+    exit 1
+  }
+  # Hand the CAPTURED verdict to the internal trusted writer — same strict
+  # validation, TOCTOU bind, and atomic write, but the model never retyped it. The
+  # writer re-derives diff_hash/ts and recomputes status (any high ⇒ FAIL), so a
+  # malformed payload cannot smuggle a PASS through validation. This captured
+  # dispatch is the intended path; the removed public subcommand was the easy forge
+  # (#350). A Bash-holding dispatcher can still fabricate — accepted ADR 0006 residual.
+  printf '%s' "$PAYLOAD" | _persist_backstop_verdict
+  exit $?
 fi
 
 # --auto-pr-review: Self-contained PR review triggered by the pre-PR gate.
@@ -1195,8 +1406,8 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
   mkdir -p "$STATE_DIR"
   if [ "$REVIEW_MODE" = "pr" ]; then
     # PR mode: the gate marker is NOT written here on the default path. After this
-    # Codex lead PASS, Claude must run the read-only Security/Bugs backstop
-    # (Step 2), persist its verdict via --write-backstop-verdict, then call
+    # Codex lead PASS, Claude must run the captured read-only Security/Bugs backstop
+    # (Step 2) via --run-backstop, then call
     # --write-pr-marker — which requires BOTH the Codex-lead AND backstop PASS
     # artifacts (diff-bound). Writing the marker here would short-circuit the
     # backstop. We DO record the Codex lead's clean verdict so --write-pr-marker
@@ -1223,9 +1434,8 @@ if [ "$REVIEW_STATUS" = "PASS" ]; then
     else
       if write_codex_lead_verdict "$PR_REVIEWED_DIFF_HASH"; then
         echo "   ✅ Codex lead PASS recorded (pr-codex-lead.local.json)."
-        echo "   ℹ️  Claude Security/Bugs backstop pending — dispatch the read-only"
-        echo "       pr-security-backstop agent, then run --write-backstop-verdict and"
-        echo "       --write-pr-marker (the marker requires BOTH voices PASS)."
+        echo "   ℹ️  Claude Security/Bugs backstop pending — run --run-backstop (captured"
+        echo "       read-only dispatch), then --write-pr-marker (requires BOTH voices PASS)."
       else
         echo "❌ Could not record Codex lead verdict (missing base / empty diff)" >&2
         write_terminal_status setup_error

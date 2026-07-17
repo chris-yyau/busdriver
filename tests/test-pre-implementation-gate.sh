@@ -245,6 +245,26 @@ TOTAL=$((TOTAL + 1))
 run_test "#365 unparseable mention still fails closed" "block" \
     "$(bash_input "git commit -F - <<'EOF'\nOperator's $SKIPF was used\nEOF")"
 
+# NOT TESTED, deliberately: "an unparseable segment followed by a genuine forge in a
+# LATER segment". _scan_segment's per-segment reset guards it, but no input reaches it —
+# _split_simple_commands splits only on UNQUOTED separators, so every segment inherits
+# balanced quote parity and shlex has nothing left to reject; any real imbalance trips
+# the whole-command ok=False path FIRST (see the tests above, which is why
+# `echo 'unbalanced ; touch <marker>` correctly reports a parse failure: the ; is inside
+# the quote, so there is no second command). The reset stays as hygiene in case the two
+# parsers ever diverge; writing a test that only appears to cover it would be worse than
+# naming the gap here.
+
+# The message must not tell the AGENT to create a skip file — it is a user-only escape
+# hatch, and every sibling message in the gate says so. Pins the wording against drift
+# that would nudge a cooperative agent toward the self-bypass this detector deters.
+if printf '%s' "$UNPARSED_REASON" | grep -qi "Do NOT create or re-touch a skip file yourself"; then
+    printf "  PASS  %s\n" "#365 unparseable message keeps the user-only skip framing"; PASS=$((PASS + 1))
+else
+    printf "  FAIL  %s\n" "#365 unparseable message keeps the user-only skip framing"; FAIL=$((FAIL + 1))
+fi
+TOTAL=$((TOTAL + 1))
+
 # #290: legit touch/cp/mv of NON-marker files must still be allowed (no false
 # positives from the extended command-word set).
 run_test "#290 allow touch non-marker src" "allow" "$(bash_input "touch src/newfile.js")"

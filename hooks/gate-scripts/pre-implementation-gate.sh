@@ -342,6 +342,19 @@ def _writes_marker(cmd, markers):
     simple_vars = {}
     flags = {"unparseable": False}
     for segtext in segs:
+        # Reset per segment: the flag must describe the segment that PRODUCED the
+        # hit, not some earlier one. Shared across the loop it would report
+        # "could not parse" for a genuine forge that merely FOLLOWED an unparseable
+        # segment — and that error runs the wrong way, telling the operator "nothing
+        # was necessarily being written" about a real write attempt. A security
+        # message may overstate; it must not understate.
+        #
+        # Defensive, not known-reachable: _split_simple_commands splits only on
+        # UNQUOTED separators, so each segment inherits balanced quote parity and the
+        # shlex ValueError below has nothing to reject — a real imbalance trips the
+        # whole-command ok=False path first. The reset costs one assignment and holds
+        # the invariant if the two parsers ever drift apart.
+        flags["unparseable"] = False
         hit = _scan_segment(segtext, markers, simple_vars, flags)
         if hit:
             return (hit, flags["unparseable"])
@@ -437,7 +450,7 @@ If you are only NAMING the marker in text (a commit message, a heredoc, an echo)
 
 If you ARE trying to write a marker: gate markers are written by review infrastructure after a genuine review pass. Writing them manually forges compliance. Run /litmus or /blueprint-review instead.
 
-Note: a block here does NOT consume your skip file — but an earlier gate in the same tool call may already have. If you were bypassing a gate, re-touch the skip file before retrying."
+Note: a block here does NOT consume a skip file — but an earlier gate in the SAME tool call may already have, which is why a retry can fail with a different gate's message. Do NOT create or re-touch a skip file yourself: it is a user-only escape hatch. If the user is bypassing a gate, ask them to re-create it in their terminal before you retry."
     exit 0
 fi
 

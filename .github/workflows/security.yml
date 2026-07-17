@@ -205,7 +205,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install semgrep
-        run: pip install --quiet 'semgrep==1.169.0'  # Pin version — unpinned is a supply chain risk
+        run: pip install --quiet 'semgrep==1.170.0'  # Pin version — unpinned is a supply chain risk
       - name: Scan for vulnerabilities
         run: semgrep scan --config p/security-audit --error --exclude tests --exclude 'scripts/**' --exclude 'skills/*/scripts/**' .
 
@@ -245,7 +245,7 @@ jobs:
       - name: Verify SHA pinning
         run: bash .github/scripts/check-pinned-uses.sh
       - name: Install zizmor
-        run: pip install --quiet 'zizmor==1.26.1'  # Pin version — unpinned is a supply chain risk
+        run: pip install --quiet 'zizmor==1.27.0'  # Pin version — unpinned is a supply chain risk
       - name: Scan GitHub Actions workflows
         run: zizmor .github/workflows/
 

@@ -101,117 +101,33 @@ gh pr view --json body -q .body 2>/dev/null || true
 
 **Important:** This is "explain or trim" framing, not "you violated scope." Legitimate opportunistic fixes are fine. The value is surfacing the gap so the developer can consciously decide, not punishing agility.
 
-## Step 2: Read-Only Opus Security/Bugs Backstop
+## Step 2: Read-Only Opus Security/Bugs Backstop (captured dispatch)
 
 <EXTREMELY-IMPORTANT>
-Dispatch the backstop **only when the Codex lead is clean** (Step 1 PASSED). If Codex FAILed, **short-circuit** — do not dispatch the backstop; fix the Codex findings and re-run Step 1 first.
+Run the backstop **only when the Codex lead is clean** (Step 1 PASSED). If Codex FAILed, **short-circuit** — fix the Codex findings and re-run Step 1 first.
 
-Dispatch **exactly ONE** agent via the Agent tool, `agentType: pr-security-backstop` (NOT the old 6-agent fan-out). The agent is structurally read-only (`tools: Read, Grep, Glob` — no Write/Edit/Bash) and runs on Opus.
-
-The agent has **no Bash and cannot run git.** You MUST inject the review material into its prompt — it must not infer the diff from the working tree.
+Do NOT dispatch the backstop via the Agent tool and retype its verdict into a writer. A hand-typed security verdict is indistinguishable from a fabricated one — it is the orchestrating model marking its own required check (#350). The Codex lead avoids this because `run-review-loop.sh` captures its stdout directly; the backstop must be captured the same way. Run the single command below — it dispatches the read-only backstop as a **captured `claude -p` subprocess** and pipes its stdout straight to the trusted writer. You never see or retype the verdict.
 </EXTREMELY-IMPORTANT>
 
-**Capture the review material first** (you, not the agent, run git):
 ```bash
-PR_BASE=${LITMUS_PR_BASE:-}
-[ -z "$PR_BASE" ] && PR_BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||')
-[ -z "$PR_BASE" ] && PR_BASE=origin/main
-[[ -n "${LITMUS_PR_BASE:-}" && "$PR_BASE" != origin/* ]] && PR_BASE="origin/${PR_BASE}"
-MERGE_BASE=$(git merge-base "${PR_BASE}" HEAD)
-
-git diff "${MERGE_BASE}...HEAD"                 # full diff — inject verbatim
-git diff "${MERGE_BASE}...HEAD" --name-only     # changed-file list
-git log --oneline --stat "${MERGE_BASE}..HEAD" | head -n 200   # capped history
-
-# reviewed_diff_hash — binds the backstop verdict to THIS diff. Compute it with
-# the SAME formula the trusted writer and gate use (bare `git diff base...HEAD`,
-# captured via printf '%s'); any other value is rejected fail-closed by
-# --write-backstop-verdict, so do NOT hand-craft or placeholder it.
-REVIEWED_DIFF_HASH=$(printf '%s' "$(git diff "${MERGE_BASE}...HEAD")" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --run-backstop
 ```
 
-**Dispatch prompt** (inject the captured `MERGE_BASE`, full diff, changed-file list, and capped history into the placeholders — no literal placeholder may remain, and the diff must be carried in the prompt):
-```text
-You are a read-only Security/Bugs backstop for a pull request. You have NO Bash
-and cannot run git — review ONLY the material provided below. Do NOT infer the
-diff from the working tree.
+This one command (all inside the trusted script — the orchestrating model is not in the evidence path):
 
-MERGE_BASE: <MERGE_BASE>
+- verifies a fresh Codex-lead PASS artifact exists for the current `base...HEAD` (else fail-closed — run Step 1 first);
+- captures the full diff, changed-file list, and capped commit history via git (the agent has **no Bash** and reviews only the injected material);
+- dispatches `claude -p --model opus --tools "Read,Grep,Glob" --allowedTools "Read,Grep,Glob" --permission-mode dontAsk --append-system-prompt <pr-security-backstop.md body> --output-format json` — read-only is enforced **structurally** by `--tools` (which limits the tools that *exist* in the session, so Bash/Write/Edit are unavailable regardless of any inherited/repo-committed permission settings — `--allowedTools` alone only auto-approves and would not stop an injected diff reaching a mutation tool), with a fail-closed capability guard that refuses to dispatch if `claude` lacks `--tools`; `--model opus` preserves the cross-model property (an Anthropic-family backstop checks the OpenAI Codex lead);
+- extracts the agent's JSON verdict from the envelope, binds it to the computed `reviewed_diff_hash`, and pipes it to an **internal** trusted writer (same strict validation: any `high` ⇒ FAIL, TOCTOU-bound, atomic write). There is **no public `--write-backstop-verdict` subcommand** — the writer is reachable only from `--run-backstop`, so the verdict cannot be produced by hand-typed JSON (that retype path was the #350 hole);
+- **fails closed** on any dispatch/parse failure (missing `claude`, non-zero exit, empty/malformed output, timeout) — no artifact is written, so the gate stays blocked.
 
-## Changed files
-<git diff MERGE_BASE...HEAD --name-only output>
-
-## Commit history (capped)
-<git log --oneline --stat MERGE_BASE..HEAD | head -n 200 output>
-
-## Full diff (base...HEAD)
-<git diff MERGE_BASE...HEAD output — verbatim>
-
-Review the CHANGED code for security vulnerabilities and correctness bugs only:
-hardcoded secrets, injection, auth bypass, SSRF, unsafe deserialization, path
-traversal, leaked internals; plus logic errors, off-by-one, null/undefined, and
-race conditions. This is an independent cross-model check of the Codex lead — be
-adversarial about security.
-
-Rules:
-- Only report issues in CHANGED code, not pre-existing code.
-- Confidence 0-100: 0=guess, 50=plausible, 80=likely real, 100=certain.
-- Do NOT report issues already caught by linters/type checkers.
-- Cosmetic findings (docs/comments, naming/style, "long but correct") are LOW —
-  they never block. Severity reflects impact, not certainty.
-
-Output ONE JSON object (severities are LOWERCASE — they must match the gate's
-`high|medium|low` enum; `high` is the only blocking level):
-{
-  "status": "PASS" | "FAIL",
-  "issues": [
-    {"file": "path", "line": N, "severity": "high|medium|low",
-     "confidence": 0-100, "category": "security|bug", "description": "..."}
-  ]
-}
-status = "FAIL" if any issue is `high`, else "PASS".
-If no blocking issues, return {"status": "PASS", "issues": []}.
-```
-
-**After the agent returns,** take its final message verbatim — by contract it is a
-single JSON object `{status, issues[]}` with **lowercase** severities and nothing
-else (no fences, no prose; if the agent wrapped it, strip to the bare JSON object).
-You (the sole writer — the agent has no Write/Edit/Bash) then add `model` and the
-`reviewed_diff_hash` you captured at dispatch, and pipe the result to the trusted
-writer in Step 3a. No separate extraction or severity-mapping pass is needed: the
-agent already emits the `high|medium|low` enum, and the writer validates strictly
-and **fails closed** on any malformed or out-of-enum field.
+On success it writes `pr-backstop-verdict.local.json` (the Step 3a artifact) directly; go straight to Step 3b. Tunables: `LITMUS_PR_BACKSTOP_TIMEOUT` (default 600s), `LITMUS_PR_BACKSTOP_MAX_DIFF` (oversize ⇒ fail-closed).
 
 ## Step 3: Gate Decision
 
 **The gate passes only when:** Codex lead PASS **AND** the backstop returns no `high` finding. The backstop blocks on **`high` severity alone** — `medium`/`low` are advisory, and `confidence` is recorded for triage but does **NOT** gate: the strict writer recomputes `status:FAIL` for ANY `high` issue regardless of confidence (an explicit FAIL is never overridden). A single `high` from either voice fails the gate (fix, then re-run the relevant step).
 
-**3a. Write the backstop verdict artifact.** The trusted writer re-derives `diff_hash`/`ts` itself and **fails closed if `reviewed_diff_hash` ≠ the current `base...HEAD` hash** — a commit landing mid-review invalidates the verdict, so re-run:
-```bash
-# Set BACKSTOP_MODEL to the provider/model id used for this backstop session.
-# Required — there is no portable CLI to query the live session model, and a
-# wrong value poisons the audit trail, so fail fast rather than auto-detect.
-: "${BACKSTOP_MODEL:?set BACKSTOP_MODEL to the provider/model id used for this backstop session}"
-# Build the JSON with a real encoder, not string interpolation: a quote,
-# backslash, or newline in the model value would otherwise produce invalid JSON
-# and the strict writer would reject the artifact (blocking the PR path).
-
-# Case A — no findings (agent returned {"status":"PASS","issues":[]}):
-python3 -c 'import json,sys; print(json.dumps({"status":"PASS","model":sys.argv[1],"reviewed_diff_hash":sys.argv[2],"issues":[]}))' \
-  "${BACKSTOP_MODEL}" "${REVIEWED_DIFF_HASH}" \
-  | bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write-backstop-verdict
-
-# Case B — agent found issues (AGENT_OUTPUT is the agent's verbatim final message
-# per "After the agent returns" above — a single JSON object {status, issues[]}).
-# DO NOT manually reconstruct issues[] from prose; take the agent output as-is
-# and let the writer recompute status from it (any high ⇒ FAIL regardless of
-# the supplied status field, which is advisory only and never overrides FAIL).
-printf '%s' "${AGENT_OUTPUT}" \
-  | python3 -c 'import json,sys; d=json.load(sys.stdin); d.update({"model":sys.argv[1],"reviewed_diff_hash":sys.argv[2]}); print(json.dumps(d))' \
-    "${BACKSTOP_MODEL}" "${REVIEWED_DIFF_HASH}" \
-  | bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write-backstop-verdict
-```
-You supply only `{status, model, issues[]}` (plus `reviewed_diff_hash` for the TOCTOU bind) on stdin. The writer re-derives `diff_hash` and `ts`, **recomputes `status` from the issues** (any `high` ⇒ FAIL — the supplied `status` is advisory and an explicit FAIL is never overridden to PASS), validates strictly (every issue needs `{file,line,severity,confidence,category,description}`; `confidence` 0–100; `severity` in the `high|medium|low` enum; a hallucinated/missing severity ⇒ reject), and **exits nonzero without writing** on any violation. It writes atomically to `${BUSDRIVER_STATE_DIR:-.claude}/pr-backstop-verdict.local.json`.
+**3a. Backstop verdict artifact — written by `--run-backstop` (Step 2).** The captured dispatch pipes the agent's verdict to the trusted writer, which re-derives `diff_hash`/`ts` itself and **fails closed if `reviewed_diff_hash` ≠ the current `base...HEAD` hash** (a commit landing mid-review invalidates the verdict → re-run Step 2). The writer **recomputes `status` from the issues** (any `high` ⇒ FAIL — the agent's `status` is advisory and an explicit FAIL is never overridden to PASS), validates strictly (every issue needs `{file,line,severity,confidence,category,description}`; `confidence` 0–100; `severity` in the `high|medium|low` enum; a hallucinated/missing severity ⇒ reject), and **exits nonzero without writing** on any violation. It writes atomically to `${BUSDRIVER_STATE_DIR:-.claude}/pr-backstop-verdict.local.json`. The writer is an **internal function** (`_persist_backstop_verdict`) invoked only from `--run-backstop` — there is no public `--write-backstop-verdict` subcommand. This removes the honest-path retype forge of #350 (the permission classifier refused a hand-typed verdict, which forced bypasses); it is **not** a hard boundary — an orchestrator with Bash can still fabricate a verdict (source the function, stub `claude`, inject via `CLAUDE.md`), the accepted **ADR 0006** "Claude is the trusted dispatcher" residual that applies equally to the Codex lead.
 
 **3b. Write the PR marker** (only after the artifact is written):
 ```bash
@@ -221,7 +137,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh" --write-pr
 
 | Result | Action |
 |--------|--------|
-| Codex PASS + backstop no `high` | Write artifact (3a) → write marker (3b) → gate passes |
+| Codex PASS + backstop no `high` | Run `--run-backstop` (writes the 3a artifact) → write marker (3b) → gate passes |
 | Codex PASS + backstop any `high` | Report findings. Fix, then re-run from Step 1 (a code fix changes the `base...HEAD` hash, staling the Codex-lead artifact — re-running Step 2 alone cannot rebind it, so the backstop write / PR marker would fail closed) |
 | Codex FAIL | Short-circuit (no backstop). Fix, re-run from Step 1 |
 

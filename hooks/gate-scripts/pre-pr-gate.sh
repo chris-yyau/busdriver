@@ -309,10 +309,10 @@ gate verifies both diff-bound artifacts before honoring the marker.
   1. Run the Codex lead pass:
        LITMUS_MODE=pr bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/init-review-loop.sh\" \\
          && LITMUS_MODE=pr bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\"
-  2. On Codex PASS, dispatch the read-only pr-security-backstop agent over the
-     SAME base...HEAD diff (see skills/litmus/references/pr-review-mode.md).
-  3. Persist its verdict (re-derives diff_hash/ts, fails closed on stale/bad input):
-       <agent-json> | bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --write-backstop-verdict
+  2. On Codex PASS, run the captured read-only backstop (dispatches claude -p
+     itself and persists the verdict — you never retype it; #350):
+       bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --run-backstop
+  3. (see skills/litmus/references/pr-review-mode.md for details / tunables)
   4. Write the gate marker (requires BOTH voices PASS):
        bash \"\${BUSDRIVER_PLUGIN_ROOT:-\${CLAUDE_PLUGIN_ROOT}}/skills/litmus/scripts/run-review-loop.sh\" --write-pr-marker
   5. Retry gh pr create

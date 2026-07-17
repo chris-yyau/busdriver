@@ -60,9 +60,16 @@ if [ "$FORCE" != "true" ] && [ -f "$STATE_FILE" ]; then
     source "$SCRIPT_DIR/lib/validation.sh"
     EXISTING_ACTIVE=$(get_yaml_value "active" "$STATE_FILE" 2>/dev/null || echo "false")
     EXISTING_MODE=$(get_yaml_value "review_mode" "$STATE_FILE" 2>/dev/null || echo "")
-    # A state file predating review_mode, or one whose field is unreadable, reads as
-    # the default mode — it still gets the guard rather than a free pass.
-    [ -z "$EXISTING_MODE" ] && EXISTING_MODE="commit"
+    # Track PRESENCE separately from value. run-review-loop.sh only lets the state file
+    # override $LITMUS_MODE when the field is non-empty and != "null"; an ABSENT field
+    # means it falls back to $LITMUS_MODE. So a legacy state file has no mode to clash
+    # with, and claiming one would make this message assert the opposite of what
+    # run-review-loop.sh will do — the exact class of lie this change exists to remove.
+    EXISTING_MODE_PRESENT=1
+    case "$EXISTING_MODE" in ""|null) EXISTING_MODE_PRESENT=0 ;; esac
+    # The value still defaults for the guard itself: an active loop is guarded either
+    # way (it is the counter that needs protecting, not the mode).
+    [ "$EXISTING_MODE_PRESENT" = "0" ] && EXISTING_MODE="commit"
     # Normalize the REQUEST exactly as the state writer below does (anything that is
     # not "pr" is written as "commit"). Without this, LITMUS_MODE=typo would compare
     # as a third, non-existent mode and report a mismatch against a state file that
@@ -73,9 +80,11 @@ if [ "$FORCE" != "true" ] && [ -f "$STATE_FILE" ]; then
         EXISTING_ITER=$(get_yaml_value "iteration" "$STATE_FILE" 2>/dev/null || echo "?")
         EXISTING_MAX=$(get_yaml_value "max_iterations" "$STATE_FILE" 2>/dev/null || echo "?")
         EXISTING_STATUS=$(get_yaml_value "review_status" "$STATE_FILE" 2>/dev/null || echo "?")
-        echo "⚠️  Active review loop already exists (iteration $EXISTING_ITER/$EXISTING_MAX, mode=$EXISTING_MODE, status=$EXISTING_STATUS)" >&2
+        _MODE_SHOWN="$EXISTING_MODE"
+        [ "$EXISTING_MODE_PRESENT" = "0" ] && _MODE_SHOWN="unset (run-review-loop.sh will use \$LITMUS_MODE)"
+        echo "⚠️  Active review loop already exists (iteration $EXISTING_ITER/$EXISTING_MAX, mode=$_MODE_SHOWN, status=$EXISTING_STATUS)" >&2
         echo "   Re-initializing would reset the iteration counter!" >&2
-        if [ "$EXISTING_MODE" != "$REQUESTED_MODE" ]; then
+        if [ "$EXISTING_MODE_PRESENT" = "1" ] && [ "$EXISTING_MODE" != "$REQUESTED_MODE" ]; then
             echo "" >&2
             echo "   ❗ You requested mode=$REQUESTED_MODE but the state file says mode=$EXISTING_MODE." >&2
             echo "      run-review-loop.sh reads review_mode from this file and it OVERRIDES \$LITMUS_MODE," >&2

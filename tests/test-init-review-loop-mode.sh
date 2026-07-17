@@ -185,6 +185,30 @@ else
     bad "#363: legacy state without review_mode should still refuse in commit mode (rc=$rc)"
 fi
 
+# 6b. ...but it must NOT claim a mode mismatch. run-review-loop.sh only lets the state
+#     file override $LITMUS_MODE when review_mode is non-empty and != "null"; an ABSENT
+#     field means it falls back to $LITMUS_MODE. So with LITMUS_MODE=pr and a legacy
+#     file, run-review-loop.sh WOULD review the pr diff — asserting "the state says
+#     commit, you will get the commit diff" is the exact inversion of the truth, i.e.
+#     the class of lie this whole change removes. Guard still refuses; message must not
+#     invent a clash that does not exist.
+rc=0; out=$(env LITMUS_MODE=pr bash "$INIT" 10 2>&1) || rc=$?
+if [ "$rc" -ne 0 ]; then
+    ok "#363: legacy state + pr requested → still refuses"
+else
+    bad "#363: legacy state + pr requested should refuse (rc=$rc)"
+fi
+if printf '%s' "$out" | grep -q "but the state file says mode="; then
+    bad "#363: legacy state must NOT claim a mode mismatch (run-review-loop would use \$LITMUS_MODE)"
+else
+    ok "#363: legacy state claims no mode mismatch"
+fi
+if printf '%s' "$out" | grep -q "mode=unset"; then
+    ok "#363: legacy state reports mode as unset, not a fabricated 'commit'"
+else
+    bad "#363: legacy state should report mode=unset (got: $(printf '%s' "$out" | head -1))"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] && exit 0 || exit 1

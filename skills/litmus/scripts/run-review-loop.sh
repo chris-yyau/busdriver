@@ -737,7 +737,10 @@ echo "   Diff lines: $STAGED_DIFF_LINES (added: $ADDITION_LINES, removed: $DELET
 # Check if diff is too large for a single review (commit mode only)
 # PR mode skips the size check — PR diffs are inherently larger (aggregate of
 # all commits) and blocking review on the largest diffs defeats the purpose of
-# the safety net. The REVIEW_TIMEOUT (default 30min, configurable via LITMUS_TIMEOUT) handles runaway reviews.
+# the safety net. The REVIEW_TIMEOUT (default 20min — see LITMUS_TIMEOUT below;
+# this said 30min and never matched the 1200s the code actually uses) handles
+# runaway reviews. NOTE it is ABOVE the harness Bash cap of 600s, so a blocking
+# caller can be killed before this timeout ever fires — see SKILL.md CRITICAL RULES.
 # Council decision 2026-03-21: per-commit and PR size checks serve different
 # purposes — fix independently. PR size check was structurally broken.
 #
@@ -748,8 +751,10 @@ echo "   Diff lines: $STAGED_DIFF_LINES (added: $ADDITION_LINES, removed: $DELET
 #   Override: LITMUS_MAX_WEIGHTED_LINES env var (per-project tuning)
 if [ "$REVIEW_MODE" = "pr" ]; then
   # PR mode: soft warning only — large PR diffs may be slow or hit context limits,
-  # but blocking them defeats the safety net. The REVIEW_TIMEOUT (default 30min) handles
-  # truly runaway reviews. Warn so the user knows to expect a longer wait.
+  # but blocking them defeats the safety net. The REVIEW_TIMEOUT (default 20min — the
+  # 1200s below; "30min" here was stale) handles truly runaway reviews. Warn so the user
+  # knows to expect a longer wait — and note it can outlast a blocking caller, since the
+  # harness Bash cap is 600s (see SKILL.md CRITICAL RULES: background-plus-block).
   if [ "$WEIGHTED_LINES" -gt 2000 ]; then
     echo ""
     echo "⚠️  Large PR diff ($WEIGHTED_LINES weighted lines) — review may be slow or hit context limits"

@@ -32,24 +32,78 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/iteration-history.sh
 source "$SCRIPT_DIR/lib/iteration-history.sh"
 
-# Guard: prevent re-init while a review loop is active
+# Guard: prevent re-init while a review loop is active.
+#
+# The guard REFUSES for every active loop, mode-mismatched or not. `active: true`
+# cannot tell a KILLED run from a LIVE one, so auto-re-initializing on a mode change
+# would clear the iteration history and overwrite the state file of a review that may
+# still be running — two writers on one file. That trades a stranded caller (annoying,
+# safe) for a race (silent, unsafe), which is the wrong direction for this gate.
+#
+# What #363 actually needed was the TRUTH, not a re-init. The old message never
+# mentioned the mode, so the stranding was invisible: a run killed mid-review (the
+# harness Bash timeout — see the timeout note in SKILL.md) leaves `active: true` +
+# `review_status: PENDING` behind; the next init refused and exited 1 to stderr, easy
+# to miss; review_mode was never rewritten; and run-review-loop.sh — which reads
+# review_mode from this file and lets it OVERRIDE $LITMUS_MODE — silently re-ran the
+# PREVIOUS mode. A believed commit-mode review of a staged fix actually re-reviewed
+# `origin/main...HEAD`, reported the already-fixed issue as still present, and cost a
+# full cycle chasing a phantom disagreement with the reviewer.
+#
+# So the mismatch is now called out explicitly, because it is the case where silently
+# continuing is not merely stale but reviews the WRONG DIFF, and the operator is told
+# which recovery applies.
 STATE_FILE="$STATE_DIR/litmus-state.md"
 if [ "$FORCE" != "true" ] && [ -f "$STATE_FILE" ]; then
     # Source validation library for get_yaml_value
     # shellcheck source=lib/validation.sh
     source "$SCRIPT_DIR/lib/validation.sh"
     EXISTING_ACTIVE=$(get_yaml_value "active" "$STATE_FILE" 2>/dev/null || echo "false")
+    EXISTING_MODE=$(get_yaml_value "review_mode" "$STATE_FILE" 2>/dev/null || echo "")
+    # A state file predating review_mode, or one whose field is unreadable, reads as
+    # the default mode — it still gets the guard rather than a free pass.
+    [ -z "$EXISTING_MODE" ] && EXISTING_MODE="commit"
+    # Normalize the REQUEST exactly as the state writer below does (anything that is
+    # not "pr" is written as "commit"). Without this, LITMUS_MODE=typo would compare
+    # as a third, non-existent mode and report a mismatch against a state file that
+    # is in fact the very mode it is about to create.
+    REQUESTED_MODE="${LITMUS_MODE:-commit}"
+    [ "$REQUESTED_MODE" != "pr" ] && REQUESTED_MODE="commit"
     if [ "$EXISTING_ACTIVE" = "true" ]; then
         EXISTING_ITER=$(get_yaml_value "iteration" "$STATE_FILE" 2>/dev/null || echo "?")
         EXISTING_MAX=$(get_yaml_value "max_iterations" "$STATE_FILE" 2>/dev/null || echo "?")
-        echo "⚠️  Active review loop already exists (iteration $EXISTING_ITER/$EXISTING_MAX)" >&2
+        EXISTING_STATUS=$(get_yaml_value "review_status" "$STATE_FILE" 2>/dev/null || echo "?")
+        echo "⚠️  Active review loop already exists (iteration $EXISTING_ITER/$EXISTING_MAX, mode=$EXISTING_MODE, status=$EXISTING_STATUS)" >&2
         echo "   Re-initializing would reset the iteration counter!" >&2
+        if [ "$EXISTING_MODE" != "$REQUESTED_MODE" ]; then
+            echo "" >&2
+            echo "   ❗ You requested mode=$REQUESTED_MODE but the state file says mode=$EXISTING_MODE." >&2
+            echo "      run-review-loop.sh reads review_mode from this file and it OVERRIDES \$LITMUS_MODE," >&2
+            echo "      so running it now reviews the $EXISTING_MODE diff, NOT the $REQUESTED_MODE one" >&2
+            echo "      (commit = git diff --cached; pr = <base>...HEAD). Do not just re-run it." >&2
+        fi
         echo "" >&2
-        echo "   To continue the existing loop:" >&2
-        echo "     bash $SCRIPT_DIR/run-review-loop.sh" >&2
+        echo "   Pick by what is actually true — check first whether a reviewer is running:" >&2
         echo "" >&2
-        echo "   To force re-init (resets counter):" >&2
-        echo "     $0 --force $MAX_ITERATIONS" >&2
+        echo "   (a) A review is RUNNING right now → WAIT for it. Do NOT start another and do" >&2
+        echo "       NOT --force: a second run-review-loop.sh writes this same state file, and" >&2
+        echo "       two writers are what this guard exists to prevent." >&2
+        echo "" >&2
+        echo "   (b) The previous run was KILLED (status=PENDING, nothing running) → the state" >&2
+        echo "       is stale; discard it:" >&2
+        # Carry LITMUS_MODE into the printed remedy. It is an ENV VAR, so a bare
+        # `$0 --force N` silently re-creates the DEFAULT (commit) mode — an operator who
+        # invoked `LITMUS_MODE=pr init-review-loop.sh` and pasted that would land right
+        # back in the wrong-diff behavior this message exists to prevent.
+        if [ "$REQUESTED_MODE" = "pr" ]; then
+            echo "         LITMUS_MODE=pr $0 --force $MAX_ITERATIONS" >&2
+        else
+            echo "         $0 --force $MAX_ITERATIONS" >&2
+        fi
+        echo "" >&2
+        echo "   (c) The loop is PAUSED between iterations (status=FAIL, waiting on your fixes)" >&2
+        echo "       → resume it in its own mode ($EXISTING_MODE), which keeps the counter:" >&2
+        echo "         bash $SCRIPT_DIR/run-review-loop.sh" >&2
         exit 1
     fi
 fi

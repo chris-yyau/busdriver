@@ -24,8 +24,11 @@ DO NOT rationalize skipping review. These thoughts are violations:
 - "The diff is too small to matter"
 
 EVERY commit MUST:
-1. Run `run-review-loop.sh` as a BLOCKING bash call (timeout=1260000)
-2. Wait for the result — NEVER run in background
+1. Run `run-review-loop.sh` as a BLOCKING bash call (timeout=600000 — the harness cap;
+   a pass that needs longer is the unsolved case in CRITICAL RULES / #368)
+2. Wait for the result — NEVER proceed while it runs. (A pass that CANNOT fit the
+   600000ms Bash cap has no verified blocking mechanism — see CRITICAL RULES and #368;
+   prefer shrinking the pass so blocking works. Backgrounding to keep working is forbidden.)
 3. If FAIL: fix issues silently, re-run — do NOT ask user between iterations
 4. If PASS: proceed to tests and commit
 5. NEVER use `--no-verify` or skip hooks to bypass review
@@ -108,7 +111,10 @@ LITMUS_SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts"
 # Run as BLOCKING call - just wait for the result
 Bash(
     command='bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
-    timeout=1260000  # 21 min timeout (inner codex review timeout is 20 min)
+    timeout=600000  # 10 min — the harness Bash tool CAPS timeout here; larger values
+                    # do not extend it, they are silently clamped and the call is
+                    # killed at 10 min. A pass that needs longer is the unsolved case
+                    # in CRITICAL RULES / #368 — raising this number does nothing.
 )
 ```
 
@@ -134,15 +140,27 @@ git commit -m "Message"
 
 **This is the default workflow** - fully automated, silent iteration:
 
-1. Run review (BLOCKING, 21 min timeout) → get result
+1. Run review (BLOCKING, timeout=600000 — the harness cap) → get result
 2. If PASS → done, proceed to tests & commit
 3. If FAIL → **silently** fix issues, stage, re-run step 1
 4. If TOO LARGE (exit 2) or TIMEOUT (exit 124) → auto-split (see below)
 5. Repeat until PASS or max iterations (10)
 
 **CRITICAL RULES:**
-- **NO background tasks** - run blocking, wait for result
-- **NO polling/sleep loops** - just use timeout=1260000
+- **NEVER proceed while the review is running** — this is the rule. A commit-mode pass
+  fits well inside the cap, so run it blocking and wait for the result.
+- **A pass that cannot fit in 10 min** is an UNSOLVED case, not a licence to background
+  and carry on. The Bash tool CAPS `timeout` at 600000ms, so a longer blocking call is
+  killed mid-review and leaves `review_status: PENDING` and no verdict — and there is
+  currently **no verified mechanism that holds the gate across it** (`run_in_background`
+  returns immediately; the completion notification is a message, not a block;
+  `TaskOutput` can return with the task still running). See #368 and the Execution
+  Pattern section. Until it is settled: make the pass FIT — split the change, or lower
+  `LITMUS_TIMEOUT` (default 1200s, i.e. double the cap) so the review terminates inside
+  the cap and this rule is satisfiable as written. If you background it anyway, YOU are
+  responsible for confirming the process actually EXITED before you act on anything —
+  a wait returning is not proof.
+- **NO polling/sleep loops** - just use timeout=600000 (the cap); see #368 for the rest
 - **NO user interaction** between iterations - fix silently
 - **NO verbose progress** - don't narrate each step
 - **ONLY talk to user when:** PASS, setup_error, infra_failure (when the codex→droid→builtin chain itself has exhausted or returned infra_failure for JSON-extraction/schema/timeout reasons), or post-rescue still failing (see "Auto-Escalation on Logical Failure" — stall/max-iterations auto-dispatch the `codex:rescue` skill first)
@@ -208,26 +226,110 @@ Claude: "Still running... 20s"
 
 <CRITICAL>
 <!-- advisory: the real gate is the PreToolUse hook in pre-commit-gate.sh -->
-EXECUTION MUST BE BLOCKING. NEVER run review in background.
+NEVER PROCEED WHILE THE REVIEW IS RUNNING. That is the rule this section enforces.
 
-If you are about to set `run_in_background=True` for the review loop, STOP. This defeats the entire gate — you'll proceed to commit while review is still running.
+If you are about to set `run_in_background=True` and then keep working — staging, committing, editing — STOP. That defeats the entire gate: you would commit while review is still running.
+
+A pass that exceeds the harness Bash cap of `timeout=600000` (10 min) has **no verified compliant path** — see #368. A longer blocking call is not honored: it is clamped and KILLED mid-review, leaving `review_status: PENDING` and no verdict. Backgrounding would only be compliant if something reliably held the gate until the process EXITED, and nothing here is proven to (`run_in_background` returns at once; the notification is a message; `TaskOutput` can return with the task still running). So make the pass FIT — split the change, or lower `LITMUS_TIMEOUT` — rather than reach for a scaffold that unblocks early.
+
+**The cap is BELOW the review's own timeout.** `run-review-loop.sh` gives the reviewer `LITMUS_TIMEOUT` seconds (default **1200 = 20 min**), so a legitimate pass in EITHER mode can outlive a blocking call. Do not assume a mode always fits.
+
+- **Commit mode** — usually finishes well inside the cap (small diffs; a tiny diff short-circuits before the CLI runs at all). Run it blocking with `timeout=600000`. Default.
+- **PR mode (deep pass)** — routinely exceeds 10 min, which is the unsolved case above (#368). Shrink it to fit if you can; if you background it, confirm the process EXITED before acting — never treat a returning wait as the verdict.
+- **Killed at the cap in either mode** (state left `PENDING`, no verdict in the log) — that is the signal, not a failure of the review. Lower `LITMUS_TIMEOUT` or split the change so the pass fits (see #368). Discard the stale state FIRST (`init-review-loop.sh --force`, carrying `LITMUS_MODE`), or the next run silently reuses the old mode.
+
+Never treat a killed-at-the-cap call as a verdict, and never read `$?` for the result — a wrapper such as `run-review-loop.sh > log; echo done` reports the *echo's* status, not the review's. Read the log.
 </CRITICAL>
 
 ## Execution Pattern
 
+### A. Commit mode — blocking (the default)
+
 ```bash
+# 0. Initialize first — same reason as pattern B: run-review-loop.sh takes review_mode
+#    from the state file OVER $LITMUS_MODE, so a leftover pr-mode state file makes this
+#    "commit review" review the BRANCH diff instead of your staged changes (#363).
+Bash(command='bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" 10')
+
 # ✅ CORRECT - blocking, silent
 Bash(
     command='bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh"',
-    timeout=1260000  # 21 min timeout (inner codex review timeout is 20 min)
+    timeout=600000  # 10 min — the harness Bash tool CAPS timeout here; larger values
+                    # do not extend it, they are silently clamped and the call is
+                    # killed at 10 min. If the pass needs longer, use pattern B —
+                    # do NOT raise this number, it has no effect.
 )
-# Parse exit code: 0=PASS, 1=FAIL (fix and re-run), 2=TOO_LARGE (split), 124=TIMEOUT (split)
+# Read the LOG for the verdict. The exit code is 0=PASS, 1=FAIL, 2=TOO_LARGE, 124=TIMEOUT,
+# but ONLY when you invoke the script directly: a wrapper like `run-review-loop.sh > log;
+# echo done` reports the echo's status (0) even on a FAIL.
+```
 
-# ❌ WRONG - background + polling
-Bash(
-    command="...",
-    run_in_background=True  # NEVER use this for codex review
-)
+### B. PR mode / any pass that may exceed 10 min — background-plus-block
+
+> **UNRESOLVED — see #368. Do not treat what follows as a recipe.** The deep pass
+> routinely outlives the cap (the reviewer gets `LITMUS_TIMEOUT`, default 1200s = 20
+> min), so a blocking call is killed mid-review. There is currently **no verified way to
+> hold the gate across a pass that exceeds the cap**: `run_in_background` returns
+> immediately, the completion notification is a message rather than a block, and
+> `TaskOutput` can return with the task still running. Every scaffold tried so far
+> unblocked early — the anti-pattern table below is the list, and it cost ten review
+> rounds to compile. #368 tracks the two real options (verify a blocking primitive, or
+> lower `LITMUS_TIMEOUT` under the cap so blocking always suffices).
+
+Until #368 settles, the **invariant** is what binds, not a recipe:
+
+1. **Initialize the mode FIRST, and verify it.** `run-review-loop.sh` reads `review_mode`
+   from the state file and it **OVERRIDES** `$LITMUS_MODE`. So `LITMUS_MODE=pr` on the
+   *run* call alone does nothing if a commit-mode state file exists — your "deep PR
+   review" silently reviews `git diff --cached` and the PR gate is bypassed. That is this
+   very issue (#363).
+   ```bash
+   LITMUS_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" 10
+   grep review_mode .claude/litmus-state.md    # MUST show: review_mode: "pr"
+   ```
+   If init REFUSES, read its message before acting — it distinguishes three cases, and
+   only one of them is `--force`. A refusal does NOT prove the loop is dead: `active: true`
+   cannot tell a killed run from a live one, so `--force`-ing a RUNNING review erases its
+   state mid-flight and creates the concurrent-writer race the guard exists to prevent.
+   Check whether a reviewer is actually running first; `--force` only the killed case
+   (`status=PENDING`, nothing running), and carry the mode when you do:
+   `LITMUS_MODE=pr … init-review-loop.sh --force 10`.
+2. **Do not PROCEED while the review runs.** Whatever mechanism you use, you must
+   confirm the process actually EXITED — not merely that a wait returned.
+3. **Judge on the log AND the exit code** (both — see below), never on a wait returning.
+
+**Reading the verdict — two traps, opposite directions:**
+
+- **A `PASS - No issues` line is NOT success.** The script prints it and THEN writes the diff-bound artifacts; if `write_codex_lead_verdict` or the marker write fails it prints `❌ Could not record…` and exits **1**. Require exit 0 *and* the log.
+- **The exit code is only trustworthy when the command is redirect-only**, as above (`… > log 2>&1`). Add anything after it — `; echo done` — and the reported status is the *echo's* `0`, even on a FAIL. That wrapper form is what makes "the deep pass exits 0 on FAIL" look like a script bug when it is the caller's.
+
+**Do not build a poll/sentinel/`Monitor` around this.** Each was tried here and is wrong:
+
+| tempting | why it defeats the gate |
+|---|---|
+| `Monitor` grepping for a verdict string (or a bare `❌`) | matches mid-run output → returns while the reviewer is still working |
+| an `echo SENTINEL=$?` appended after the script, grepped for | the reviewed DIFF can contain that literal, so it can appear in the log before exit |
+| any `Monitor timeout_ms` | must exceed `LITMUS_TIMEOUT` (default 1200s) **plus** startup/cleanup, or it unblocks on a live review |
+| `LOG=$(mktemp)` in one call, `"$LOG"` in the next | shell variables do NOT persist across tool calls — `$LOG` is empty and the redirect goes nowhere |
+| the completion notification alone | it is a message, not a block — nothing prevents you acting before it arrives |
+
+This obeys the `<CRITICAL>` rule: you never PROCEED while the review runs. What the rule forbids is backgrounding **and continuing to work** — staging, committing, editing — which is what actually defeats the gate.
+
+```bash
+# ❌ WRONG - background and keep working
+Bash(command="...", run_in_background=True)
+Edit(...)          # ← the violation: the gate is now bypassed
+Bash("git commit") #   you are committing while review is still running
+
+# ❌ WRONG - raising the timeout past the cap
+Bash(command="...", timeout=1260000)  # clamped to 600000, killed at 10 min,
+                                      # leaves review_status: PENDING and no verdict
+```
+
+**If a run IS killed at the cap** it leaves an active state file behind. `init-review-loop.sh` will then refuse (it cannot tell a killed loop from a live one) and — this is the trap — `run-review-loop.sh` reads `review_mode` from that file and it OVERRIDES `$LITMUS_MODE`, so re-running silently reviews the *previous* mode's diff. Discard the stale state, carrying the mode you want:
+
+```bash
+LITMUS_MODE=pr bash "${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/init-review-loop.sh" --force 10
 ```
 
 **Note:** If project has pre-commit hooks, just use `git commit` normally.
@@ -497,7 +599,8 @@ Both gates use the same skip file (`.claude/skip-litmus.local`) and both enforce
 1. **Review before commit** - No exceptions
 2. **Silent auto-continue** - Fix and re-review without talking to user
 3. **Max iterations safety** - Stop at 10, ask user
-4. **Blocking execution** - Run with timeout=1260000, NEVER use background
+4. **Blocking execution** - Run with timeout=600000 (the harness cap). Never PROCEED while
+   the review runs; a pass that exceeds the cap is unsolved — see CRITICAL RULES / #368
 5. **Structured output** - Parse JSON for status and issues
 6. **Test after pass** - Run test suite before committing
 7. **Split large commits** - If >800 weighted lines (override: `LITMUS_MAX_WEIGHTED_LINES`), split into logical commits FIRST. PR mode skips size check.

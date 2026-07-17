@@ -1,3 +1,10 @@
+## [1.91.18](https://github.com/chris-yyau/busdriver/compare/v1.91.17...v1.91.18) (2026-07-17)
+
+
+### Bug Fixes
+
+* **gates:** detect commands inside process substitutions ([#372](https://github.com/chris-yyau/busdriver/issues/372)) ([3a379c5](https://github.com/chris-yyau/busdriver/commit/3a379c5899211bd012c2584286e032447af4600f)), closes [358/#371](https://github.com/chris-yyau/busdriver/issues/371)
+
 ## [1.91.17](https://github.com/chris-yyau/busdriver/compare/v1.91.16...v1.91.17) (2026-07-17)
 
 

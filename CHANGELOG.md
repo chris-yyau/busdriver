@@ -1,3 +1,10 @@
+# [1.92.0](https://github.com/chris-yyau/busdriver/compare/v1.91.18...v1.92.0) (2026-07-17)
+
+
+### Features
+
+* **litmus:** captured backstop dispatch (--run-backstop) + reduce forge surface ([#374](https://github.com/chris-yyau/busdriver/issues/374)) ([ac9a8c1](https://github.com/chris-yyau/busdriver/commit/ac9a8c149acf02c9b96a85951029c6eb8faac628)), closes [#350](https://github.com/chris-yyau/busdriver/issues/350) [#350](https://github.com/chris-yyau/busdriver/issues/350)
+
 ## [1.91.18](https://github.com/chris-yyau/busdriver/compare/v1.91.17...v1.91.18) (2026-07-17)
 
 

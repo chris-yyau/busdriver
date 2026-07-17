@@ -251,5 +251,30 @@ out=$(run_ledger "$repo" cubic-dev-ai)
 if [ "$out" = "$NEW8" ]; then ok "HEAD_FULL_SHA path: full-OID anchor still carries the amend forward ($out)"
 else fail "HEAD_FULL_SHA path: expected HEAD-ack $NEW8, got '$out'"; fi
 
+# =====================================================================
+# 11. greptile-apps Tier-D guard — a success check-run on HEAD with NO review
+#     object must NOT bodyless-ack (its check goes success even WITH findings, so
+#     a green check can't prove clean; a Tier-D `0/0` ack would trip Invariant 3's
+#     ADR-0001 exemption → merge-past-findings fail-open). Fail-CLOSED: greptile
+#     falls through to `none` (non-gating), never a fabricated clean HEAD-ack.
+# =====================================================================
+reset_fixture
+new_repo
+( cd "$repo" && echo v1 > f.txt && git add f.txt && git commit -qm "feat: thing" )
+HEAD=$( git -C "$repo" rev-parse HEAD ); HEAD8=${HEAD:0:8}
+HEAD_SHA="$HEAD8"; ALL_CHECK_RUNS=$(checkruns_json greptile-apps "$HEAD")
+out=$(run_ledger "$repo" greptile-apps)
+if [ "$out" = "none" ]; then ok "greptile Tier-D guard: check-run-only success does NOT bodyless-ack ($out)"
+elif [ "$out" = "$HEAD8" ]; then fail "greptile Tier-D guard: FAIL-OPEN — check-run alone fabricated a clean HEAD-ack!"
+else fail "greptile Tier-D guard: expected none, got '$out'"; fi
+
+# Control: the SAME fixture for a clean-only-check bot (cursor) MUST still ack via
+# Tier D — proves the guard is greptile-specific, not a blanket Tier-D break.
+reset_fixture
+HEAD_SHA="$HEAD8"; ALL_CHECK_RUNS=$(checkruns_json cursor "$HEAD")
+out=$(run_ledger "$repo" cursor)
+if [ "$out" = "$HEAD8" ]; then ok "control: cursor still Tier-D acks the same check-run fixture ($out)"
+else fail "control: cursor Tier-D ack broke — guard is not greptile-specific; got '$out'"; fi
+
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

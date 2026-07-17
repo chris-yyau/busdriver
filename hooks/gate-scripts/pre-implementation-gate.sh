@@ -167,7 +167,7 @@ def _split_simple_commands(s):
     return segs, not (in_s or in_d or esc)
 
 
-def _scan_segment(segtext, markers, simple_vars):
+def _scan_segment(segtext, markers, simple_vars, flags=None):
     # Tokenize ONE already-separated simple command and decide block/allow.
     # commenters is cleared because the newline->";" normalization (in
     # _writes_marker) leaves a "#" with no terminating newline, so default shlex
@@ -184,6 +184,16 @@ def _scan_segment(segtext, markers, simple_vars):
         # Unparseable segment (e.g. unbalanced quote): a segment that does not
         # even mention a marker basename cannot be a forge (allow); otherwise fail
         # CLOSED (block).
+        #
+        # This is the SECOND could-not-parse path (the first is the ok=False branch
+        # in _writes_marker). Both must report the same TRUTH, or the #365 fix only
+        # half-lands: a hit here would still assert "you tried to write a marker"
+        # when all we really know is that the text could not be parsed. Signalled via
+        # `flags` rather than the return value because this function has several
+        # return sites and only one caller — widening them all would be a bigger,
+        # riskier diff than an out-param for a message-only distinction.
+        if flags is not None:
+            flags["unparseable"] = True
         return next((mf for mf in markers if _bn(mf) in segtext), None)
     seg = []
     seg_has_cmd = False
@@ -330,10 +340,11 @@ def _writes_marker(cmd, markers):
     # (m=.../marker ; rm "$m") resolves; updated in order, so a write sees the
     # value assigned BEFORE it and a later reassignment cannot mask it.
     simple_vars = {}
+    flags = {"unparseable": False}
     for segtext in segs:
-        hit = _scan_segment(segtext, markers, simple_vars)
+        hit = _scan_segment(segtext, markers, simple_vars, flags)
         if hit:
-            return (hit, False)
+            return (hit, flags["unparseable"])
     return (None, False)
 
 

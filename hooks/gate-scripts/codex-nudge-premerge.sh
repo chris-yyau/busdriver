@@ -203,8 +203,13 @@ if bash "$SCRIPTS/codex-active-repo.sh" "$OWNER/$NAME" >/dev/null 2>&1; then ACT
 # Paginate FULLY (--paginate), never a single 100-item page, so engagement beyond
 # the first page is never missed — a false `none` would post a redundant nudge.
 # ANY fetch error → exit 0, no post. Bare + [bot]-suffixed login (per ADR 0002).
-REVIEW_LOGINS=$(gh api --paginate "repos/$OWNER/$NAME/pulls/$PR/reviews" --jq '.[].user.login' 2>/dev/null) || exit 0
-REACTION_LOGINS=$(gh api --paginate "repos/$OWNER/$NAME/issues/$PR/reactions" --jq '.[].user.login' 2>/dev/null) || exit 0
+# jq is fully defensive — `.[]?.user?.login? // empty`: a ghost/deleted reviewer or
+# any malformed non-object element yields empty, NOT a jq error. Without the `?`s a
+# single such element makes jq exit non-zero → `gh` non-zero → `|| exit 0` → a missed
+# nudge (false-negative). A plain null `user` was already harmless (emits a stray
+# `null` line the grep ignores); this also drops that noise.
+REVIEW_LOGINS=$(gh api --paginate "repos/$OWNER/$NAME/pulls/$PR/reviews" --jq '.[]?.user?.login? // empty' 2>/dev/null) || exit 0
+REACTION_LOGINS=$(gh api --paginate "repos/$OWNER/$NAME/issues/$PR/reactions" --jq '.[]?.user?.login? // empty' 2>/dev/null) || exit 0
 if printf '%s\n%s\n' "$REVIEW_LOGINS" "$REACTION_LOGINS" \
    | grep -qxE 'chatgpt-codex-connector(\[bot\])?'; then
     exit 0                            # Codex already engaged → not `none` → no nudge

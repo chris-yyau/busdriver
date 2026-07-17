@@ -1757,17 +1757,28 @@ requires the head branch to be up-to-date with the base before merge.
 Options:
   [update-merge]  gh pr update-branch <PR_NUMBER>
                     # creates a merge commit bringing base into the PR branch.
-                    # No force-push; ack-ledger SHAs stay valid. Triggers a
-                    # CI re-run + bot re-review on the new merge commit;
-                    # plan for 1-2 additional wait-rounds. Cleanest correctness
-                    # path when bots tolerate merge commits.
-                    # Note on cubic-dev-ai: cubic skips reviewing merge commits
-                    # (check-run conclusion=skipped). Ack-ledger Case 3 maps
-                    # that to `none` so [update-merge] still converges, but
-                    # cubic will appear as `none` rather than HEAD-acked in
-                    # the final ledger. If a positive cubic HEAD-ack matters
-                    # (e.g., for audit), use [update-rebase] instead — it
-                    # forces a fresh review at the cost of 3-5 wait-rounds.
+                    # No force-push, so no SHA is *rewritten* — but HEAD MOVES
+                    # to the merge commit, so every HEAD-pinned ack strands on
+                    # the parent until its bot re-reviews the new HEAD. Triggers
+                    # a CI re-run + bot re-review; plan for 1-2 additional
+                    # wait-rounds. Cleanest correctness path when bots re-review
+                    # merge commits.
+                    # Merge-commit-skipping bots: cubic-dev-ai skips reviewing
+                    # merge commits (check-run conclusion=skipped) and Ack-ledger
+                    # Case 3 maps that to `none`, so [update-merge] converges
+                    # (cubic shows `none`, not HEAD-acked, in the final ledger).
+                    # devin-ai-integration ALSO skips merge commits but registers
+                    # NO check-run at all — no `skipped` artifact for Case 3 to
+                    # key on — so a Devin HEAD-ack strands `stale` PERMANENTLY and
+                    # blocks Invariant 2 on an otherwise-green PR (evidence: #354,
+                    # helmet #81). Before [update-merge] on a repo with Devin (or
+                    # any bot lacking a Case-3-style downgrade), enroll the ADR
+                    # 0012 opt-in `.claude/pr-grind-advisory-downgrade.local` so
+                    # the stranded ack can downgrade at --max-wait; otherwise this
+                    # path dead-ends in a manual skip-pr-grind.local.
+                    # If a positive cubic HEAD-ack matters (e.g., for audit), use
+                    # [update-rebase] instead — it forces a fresh review at the
+                    # cost of 3-5 wait-rounds.
   [update-rebase] gh pr update-branch <PR_NUMBER> --rebase
                     # rebases PR onto base. Force-push, rewrites published
                     # SHAs, invalidates ack-ledger entries (all bots stale).
@@ -1801,17 +1812,28 @@ audit trail. Strongly consider [update-merge] or [update-rebase].
 Options:
   [update-merge]  gh pr update-branch <PR_NUMBER>
                     # creates a merge commit bringing base into the PR branch.
-                    # No force-push; ack-ledger SHAs stay valid. Triggers a
-                    # CI re-run + bot re-review on the new merge commit;
-                    # plan for 1-2 additional wait-rounds. Cleanest correctness
-                    # path when bots tolerate merge commits.
-                    # Note on cubic-dev-ai: cubic skips reviewing merge commits
-                    # (check-run conclusion=skipped). Ack-ledger Case 3 maps
-                    # that to `none` so [update-merge] still converges, but
-                    # cubic will appear as `none` rather than HEAD-acked in
-                    # the final ledger. If a positive cubic HEAD-ack matters
-                    # (e.g., for audit), use [update-rebase] instead — it
-                    # forces a fresh review at the cost of 3-5 wait-rounds.
+                    # No force-push, so no SHA is *rewritten* — but HEAD MOVES
+                    # to the merge commit, so every HEAD-pinned ack strands on
+                    # the parent until its bot re-reviews the new HEAD. Triggers
+                    # a CI re-run + bot re-review; plan for 1-2 additional
+                    # wait-rounds. Cleanest correctness path when bots re-review
+                    # merge commits.
+                    # Merge-commit-skipping bots: cubic-dev-ai skips reviewing
+                    # merge commits (check-run conclusion=skipped) and Ack-ledger
+                    # Case 3 maps that to `none`, so [update-merge] converges
+                    # (cubic shows `none`, not HEAD-acked, in the final ledger).
+                    # devin-ai-integration ALSO skips merge commits but registers
+                    # NO check-run at all — no `skipped` artifact for Case 3 to
+                    # key on — so a Devin HEAD-ack strands `stale` PERMANENTLY and
+                    # blocks Invariant 2 on an otherwise-green PR (evidence: #354,
+                    # helmet #81). Before [update-merge] on a repo with Devin (or
+                    # any bot lacking a Case-3-style downgrade), enroll the ADR
+                    # 0012 opt-in `.claude/pr-grind-advisory-downgrade.local` so
+                    # the stranded ack can downgrade at --max-wait; otherwise this
+                    # path dead-ends in a manual skip-pr-grind.local.
+                    # If a positive cubic HEAD-ack matters (e.g., for audit), use
+                    # [update-rebase] instead — it forces a fresh review at the
+                    # cost of 3-5 wait-rounds.
   [update-rebase] gh pr update-branch <PR_NUMBER> --rebase
                     # rebases PR onto base. Force-push, rewrites published
                     # SHAs, invalidates ack-ledger entries (all bots stale).

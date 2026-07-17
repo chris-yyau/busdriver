@@ -1,3 +1,10 @@
+## [1.92.5](https://github.com/chris-yyau/busdriver/compare/v1.92.4...v1.92.5) (2026-07-17)
+
+
+### Bug Fixes
+
+* **litmus:** retry the captured PR backstop on transient failures ([#382](https://github.com/chris-yyau/busdriver/issues/382)) ([de387d6](https://github.com/chris-yyau/busdriver/commit/de387d60c0271f48e14ee9220a94018c6c552fa2))
+
 ## [1.92.4](https://github.com/chris-yyau/busdriver/compare/v1.92.3...v1.92.4) (2026-07-17)
 
 

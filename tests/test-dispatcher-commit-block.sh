@@ -371,7 +371,7 @@ test_f_adversarial_result_fixes() {
     message=$(git -C "$sandbox" log -1 --format=%B)
     printf '%s\n' "$message" | grep -Fq '$(git commit -m pwned)'
 }
-test_g_inline_subagent_parity() {
+test_g_no_worktree_subagent_parity() {
     local sandbox="" plugin_root="" shimdir="" remote="" original_dir="" initial_sha=""
     local dispatcher_output dispatcher_exit dispatcher_json first_json first_exit
     local no_worktree pre_dispatch_baseline
@@ -394,7 +394,7 @@ test_g_inline_subagent_parity() {
         return 1
     }
     [ "$dispatcher_exit" -eq 0 ] || {
-        echo "test_g inline-style invocation failed: $dispatcher_output"
+        echo "test_g no-worktree invocation failed: $dispatcher_output"
         return 1
     }
     assert_json "$first_json" '.status == "success"' &&

@@ -317,10 +317,15 @@ def _writes_marker(cmd, markers):
     # (rm${IFS}<marker>); normalize to a separator so the rm/tee command word and
     # redirect operands are recognized rather than glued into one token.
     norm = re.sub(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])", " ", norm)
+    # Returns (marker_or_None, unparseable). `unparseable` is TRUE only for the
+    # fail-CLOSED raw-substring path below, where the command could not be parsed
+    # at all and a marker WRITE is therefore indistinguishable from a mere MENTION.
+    # It changes NO decision -- both paths block -- it only lets the caller emit an
+    # accurate diagnostic instead of asserting a write that may not exist (#365).
     segs, ok = _split_simple_commands(norm)
     if not ok:
         # Unterminated quote / dangling escape: fail CLOSED via raw substring.
-        return next((mf for mf in markers if _bn(mf) in cmd), None)
+        return (next((mf for mf in markers if _bn(mf) in cmd), None), True)
     # simple_vars persists across segments so a cross-segment assignment
     # (m=.../marker ; rm "$m") resolves; updated in order, so a write sees the
     # value assigned BEFORE it and a later reassignment cannot mask it.
@@ -328,8 +333,8 @@ def _writes_marker(cmd, markers):
     for segtext in segs:
         hit = _scan_segment(segtext, markers, simple_vars)
         if hit:
-            return hit
-    return None
+            return (hit, False)
+    return (None, False)
 
 
 try:
@@ -382,9 +387,9 @@ try:
         # filename that no contiguous raw substring contains. Quoted, wrapped,
         # and multi-operand targets are caught without false-positiving benign
         # commands that merely mention a marker name in a non-write position.
-        hit = _writes_marker(cmd, MARKER_FILES)
+        hit, unparseable = _writes_marker(cmd, MARKER_FILES)
         if hit:
-            print("BLOCK_MARKER|" + hit)
+            print(("BLOCK_MARKER_UNPARSED|" if unparseable else "BLOCK_MARKER|") + hit)
             sys.exit(0)
 
     print("OK|")
@@ -394,6 +399,36 @@ except Exception:
 
 MARKER_ACTION="${MARKER_CHECK%%|*}"
 MARKER_TARGET="${MARKER_CHECK#*|}"
+
+# Fail-CLOSED fallback block (#365) — the command could not be PARSED (unbalanced
+# quote / dangling escape), so the detector cannot tell a marker WRITE from a mere
+# MENTION and blocks on the raw substring. Same decision as BLOCK_MARKER, different
+# TRUTH: asserting "you tried to write a marker" here is often simply false, and the
+# generic message sent operators hunting for a write that never existed.
+#
+# The realistic trigger is prose, not a forge: a possessive apostrophe inside a
+# heredoc commit message that documents a bypass ("the operator's skip file"). Bash
+# does no quote processing in a heredoc BODY, but this gate models the body as shell
+# source, so one apostrophe opens a quote that never closes. Deciding data-vs-source
+# properly needs a real shell parser (quoted vs unquoted delimiters change expansion;
+# wrappers/pipelines/later commands change the consumer), and building one INSIDE the
+# forge detector was tried and rejected: every iteration opened a new segment-split
+# bypass. Naming the cause precisely costs nothing and stays fail-closed.
+if [ "$MARKER_ACTION" = "BLOCK_MARKER_UNPARSED" ]; then
+    block_emit "BLOCKED (fail-closed): this command could not be parsed — it has an unbalanced quote or a dangling escape — and its text mentions the gate marker ($MARKER_TARGET).
+
+Nothing was necessarily being written. Because the command is unparseable, the gate cannot distinguish a marker WRITE from a mere MENTION, so it blocks.
+
+If you are only NAMING the marker in text (a commit message, a heredoc, an echo), the usual cause is an apostrophe in prose inside a heredoc body — bash treats a heredoc body as literal text, but this gate parses it as shell source. Any of these clears it:
+  - rephrase to avoid the literal filename (say \"the operator-created skip file\")
+  - use: git commit -m \"...\" instead of a heredoc (a quoted -m argument parses fine)
+  - balance the quotes in the body
+
+If you ARE trying to write a marker: gate markers are written by review infrastructure after a genuine review pass. Writing them manually forges compliance. Run /litmus or /blueprint-review instead.
+
+Note: a block here does NOT consume your skip file — but an earlier gate in the same tool call may already have. If you were bypassing a gate, re-touch the skip file before retrying."
+    exit 0
+fi
 
 if [ "$MARKER_ACTION" = "BLOCK_MARKER" ]; then
     # Breadcrumb back to the legitimate writer. A Claude that went off-script

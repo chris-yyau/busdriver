@@ -28,14 +28,25 @@ export BUSDRIVER_STATE_DIR="$STATE_DIR"
 trap 'printf "{\"decision\":\"block\",\"reason\":\"Pre-commit gate error — blocking as precaution. If stuck, create '"$STATE_DIR"'/skip-litmus.local in your terminal.\"}\n"; exit 0' ERR
 
 # ── Block emission helper (F6 fix) ────────────────────────────────────
-# Uses jq when available, falls back to printf when jq is missing.
-# Ensures block decisions are always emitted regardless of jq availability.
+# jq → python3 (json.dumps) → pure-shell escape. jq is NOT guaranteed on the
+# sanitized PATH, so the python3 tier does the real escaping (backslash, newline,
+# control chars) that sed alone cannot. Block decisions always emit as valid JSON.
 block_emit() {
     if command -v jq &>/dev/null; then
         jq -n --arg r "$1" '{decision:"block", reason:$r}'
+    elif command -v python3 &>/dev/null; then
+        # python3 is a hard dependency of these gates; json.dumps escapes
+        # backslashes, quotes, newlines and control chars that sed alone cannot.
+        printf '%s' "$1" | python3 -I -c 'import json,sys; sys.stdout.write(json.dumps({"decision":"block","reason":sys.stdin.read()}))'
+        printf '\n'
     else
+        # Last resort (no jq, no python3 — must still emit a block or the gate
+        # fails OPEN). Delete the two JSON-special bytes (" = \042, \\ = \134) and
+        # every control char, so the surviving text needs no escaping at all.
+        # Lossy but always valid JSON; this tier only serializes fixed gate
+        # messages, which contain neither a quote nor a backslash.
         local escaped
-        escaped=$(printf '%s' "$1" | sed 's/"/\\"/g' | head -c 2000)
+        escaped=$(printf '%s' "$1" | tr -d '\042\134' | tr '\n\r\t' '   ' | tr -d '\000-\037')
         printf '{"decision":"block","reason":"%s"}\n' "$escaped"
     fi
 }

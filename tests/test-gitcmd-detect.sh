@@ -130,6 +130,20 @@ COMMIT_YES = [
     # unconditionally (no quote-state machine) rejoins `$(` so the recursive
     # substitution scan still finds the inner commit. Verified: commits in bash.
     'echo "$(echo x ; $\\\n(git commit -m x))"',
+    # Process substitutions <(...) / >(...) run their body like $(...). The
+    # extractor skipped them, so a commit inside one evaded every gate.
+    # Verified: `cat <(git commit)` and `diff <(git commit) <(:)` really commit.
+    # `>(...)` runs async (may race the shell exit) — detecting it is the
+    # fail-CLOSED direction regardless, since it CAN execute.
+    'cat <(git commit -m x)',            # input process substitution
+    'diff <(git commit -m x) <(echo)',   # commit in one of two process subs
+    'tee >(git commit -m x)',            # output process substitution
+    'cat <( git commit )',               # spaced body
+    'cat <(echo hi; git commit)',        # multi-command body
+    'cat =(git commit -m x)',            # zsh =() process substitution (executes)
+    'cat =( git commit )',               # zsh =() spaced body
+    'foo; =(git commit -m x)',           # =( at a word boundary after an operator
+    '=(git commit -m x)',                # =( at start of command (word boundary)
 ]
 
 # ── LINE-CONTINUATION FALSE POSITIVES (deliberate, fail-CLOSED — do NOT "fix").
@@ -141,19 +155,25 @@ COMMIT_YES = [
 #   cat <<'EOF' / git \<newline>commit / EOF   heredoc data misread as a commit
 CONTINUATION_ACCEPTED_FP = [
     "cat <<'EOF'\ngit \\\ncommit\nEOF",
+    # Process substitutions are scanned unconditionally, so a <()/>() body inside
+    # double quotes — which bash/zsh keep literal — over-fires. Fail-CLOSED and
+    # deliberate: a double-quote state machine to suppress it instead fails OPEN
+    # on an unbalanced quote in a comment (verified). Pinned so the tradeoff shows.
+    'echo "<(git commit)"',
+    'echo ">(git commit)"',
 ]
 
-# ── KNOWN PRE-EXISTING MISS (fail-OPEN, tracked separately — NOT introduced or
-# fixed here). `_command_substitutions` stops recursing into a NESTED `$(...)`
-# once an apostrophe appears in the OUTER substitution body, so a git command in
-# the innermost substitution is missed. This exists on main with NO continuation
-# involved (verified), is a substitution-parser bug distinct from this line-
-# continuation fix, and is left for its own change to avoid scope-creeping a
-# security PR. Pinned asserting the CURRENT (buggy) False so a future fix flips
-# it loudly. Tracked in the follow-up issue referenced in the PR.
+# ── KNOWN PRE-EXISTING MISS (fail-OPEN, NOT introduced here). `_command_substitutions`
+# tracks single quotes only, so an apostrophe in an inner double-quoted value (or an
+# unbalanced quote in a comment/heredoc) can suppress a later $()/process sub. This
+# exists on main today for $() and is a substitution-parser limitation distinct from
+# process-sub coverage; left for its own change rather than a double-quote state
+# machine (which trades this fail-OPEN for a worse one). Pinned asserting the current
+# False so a real fix flips it loudly.
 COMMIT_KNOWN_MISS = [
     'echo "$(echo "it\'s" ; $(git commit -m e))"',
 ]
+
 # ── git commit: negatives (must NOT be recognized → gate allows) ──────
 COMMIT_NO = [
     'echo please git commit later',      # prose
@@ -175,6 +195,24 @@ COMMIT_NO = [
     'echo "git \\\ncommit"',             # continuation inside a quoted string
     "echo 'git \\\ncommit'",             # single quotes: bash keeps both chars
     'echo a\\\\\ngit log',               # escaped backslash, then a REAL newline
+    # Plain redirects are NOT process substitutions — the '>'/'<' must be
+    # followed immediately by '(' to be a process sub. These must stay allowed.
+    'echo git commit > out.txt',         # redirect to a file, not >(...)
+    '2>/dev/null git log',               # fd redirect prefix
+    'git log < input.txt',               # input redirect from a file
+    # `name=(...)` is an array assignment, not a process substitution — its
+    # contents are NOT executed (verified in bash and zsh). The word-boundary
+    # guard on =( skips every assignment form.
+    'x=(git commit -m x)',               # array assignment
+    'arr=(a b c)',                       # array assignment, no command
+    'foo_bar=(git commit)',              # identifier with '_' before =
+    'x+=(git commit -m x)',              # append assignment ('+' before =)
+    'a[0]=(git commit -m x)',            # subscripted assignment (']' before =)
+    # `name=(...)` in ARGUMENT position (after a command word) is NOT a process
+    # substitution and does NOT execute — verified inert in real zsh AND bash.
+    # The alnum-before-'=' skip is therefore correct here, not a fail-open.
+    'cat x=(git commit -m x)',           # verified inert in zsh + bash
+    'echo foo x=(git commit -m x)',      # verified inert in zsh + bash
 ]
 
 # ── ACCEPTED FALSE POSITIVES (deliberate — do NOT "fix" by adding an arity
@@ -230,6 +268,7 @@ CREATE_YES = [
     "eval 'gh pr create'",               # eval payload
     'gh \\\npr create --fill',           # line continuation before subcommand
     'gh pr \\\ncreate --fill',           # continuation before the verb
+    'cat <(gh pr create --fill)',        # process substitution runs the create
 ]
 CREATE_NO = [
     'echo run gh pr create when ready',  # prose

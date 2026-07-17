@@ -252,12 +252,23 @@ def _trusted_cd(pending_cd, op):
 
 def _command_substitutions(cmd):
     """Return the inner command strings of every EXECUTING substitution —
-    $(...) and backticks — including nested ones. Single quotes suppress
-    substitution (their contents are skipped); double quotes do not."""
+    $(...), backticks, and process substitutions <(...) / >(...) / =(...) —
+    including nested ones. Process substitutions run their body just like $(...)
+    (verified: `cat <(git commit)` commits, `cat <(rm -rf x)` deletes, and zsh
+    `cat =(git commit)` commits), so a body-scanning gate must see them or they
+    read as inert.
+
+    Single quotes suppress every substitution (their contents are skipped).
+    Process substitutions are detected UNCONDITIONALLY inside double quotes: the
+    shells suppress them there, so over-scanning inert double-quoted text only
+    ever fails CLOSED, whereas a double-quote state machine gets poisoned by an
+    unbalanced quote in a comment and fails OPEN (verified). `name=(...)` is an
+    array assignment, not a process substitution, so =( counts only at a word
+    boundary."""
     subs = []
     i = 0
     n = len(cmd)
-    sq = False
+    sq = False   # inside single quotes: all substitution suppressed
     while i < n:
         c = cmd[i]
         if sq:
@@ -272,7 +283,37 @@ def _command_substitutions(cmd):
         if c == '\\' and i + 1 < n:
             i += 2
             continue
-        if c == '$' and i + 1 < n and cmd[i + 1] == '(':
+        # Substitution openers, all requiring an immediate '(':
+        #   $(       command substitution
+        #   <(  >(   process substitution
+        #   =(       zsh process substitution — but ONLY at a word boundary;
+        #            `name=(...)` / `name+=(...)` / `arr[i]=(...)` is an array
+        #            assignment whose contents do NOT execute (verified).
+        # Detection is UNCONDITIONAL with respect to double quotes: bash/zsh DO
+        # suppress <()/>()/=() inside "...", so scanning them there only ever
+        # OVER-fires on inert text (fail-CLOSED). Tracking a double-quote state
+        # to honor that suppression instead gets poisoned by an unbalanced quote
+        # in a comment/heredoc and MISSES a live process sub (fail-OPEN, verified)
+        # — strictly worse for a gate (mirrors the strip_continuations tradeoff).
+        # The immediate '(' also separates a process sub from a plain '>'/'<'
+        # redirect (a redirect is followed by a filename or space).
+        opener = False
+        if i + 1 < n and cmd[i + 1] == '(':
+            if c in ('$', '<', '>'):
+                opener = True
+            elif c == '=':
+                prev = cmd[i - 1] if i > 0 else ''
+                # zsh =() process sub UNLESS prev could continue an assignment
+                # target: an identifier char, '+' (name+=), or ']' (arr[i]=).
+                # Everything else (whitespace, ';', '|', start, a control
+                # operator, ...) is a word boundary ⇒ process sub. Stated as the
+                # skip-set so the allow-set need not enumerate every operator.
+                # NB: tuple membership, not `in '_+]'` — `'' in '_+]'` is True
+                # in Python (empty substring), which would wrongly skip a
+                # start-of-string `=(...)`.
+                if not (prev.isalnum() or prev in ('_', '+', ']')):
+                    opener = True
+        if opener:
             depth = 1
             j = i + 2
             start = j

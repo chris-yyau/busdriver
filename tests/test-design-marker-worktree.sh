@@ -449,6 +449,40 @@ rb="$(mkrepo)"                                             # repo B: clean
 out="$( cd "$rb" && printf '{"tool_name":"Write","tool_input":{"file_path":"src/impl.sh"},"cwd":"%s"}' "$ra" | bash "$PREIMPL" 2>/dev/null || true )"
 case "$out" in *'"block"'*) ok "(anchor) relative path + cwd=pending-repo → BLOCK" ;; *) no "(anchor) relative path anchors to payload cwd" "got=$out" ;; esac
 
+echo "── (#356) cross-worktree provenance annotation in the block list ─"
+# The shared marker dir blocks impl in every worktree; the render helper LOCATES
+# the owning worktree (naming its current branch) so a blocked session doesn't
+# misdiagnose an unrelated doc. Note is present iff the pending doc is in a
+# DIFFERENT worktree than the write. Arm the doc IN a named-branch worktree so the
+# owning branch is deterministic and can be asserted (a bare "another worktree"
+# grep would pass even if the branch were missing/wrong).
+main="$(mkrepo)"; wtn="$main/.claude/worktrees/wnote"
+git -C "$main" worktree add -q -b annot-note "$wtn" >/dev/null 2>&1
+if [ -d "$wtn" ]; then
+    printf x >"$wtn/plan-note.md"; arm "$wtn/plan-note.md"         # arm IN wnote (branch annot-note)
+    # (356a) rendered from MAIN's anchor → doc is in wnote → annotated + named.
+    pending "$main"
+    rn="$(bash "$R" render "$RECS" "$main" 2>/dev/null || true)"
+    case "$rn" in *"another worktree"*) ok "(356a) foreign-worktree doc is annotated" ;; *) no "(356a) foreign-worktree doc annotated" "got=$rn" ;; esac
+    case "$rn" in *annot-note*) ok "(356a) annotation names the owning branch" ;; *) no "(356a) annotation names owning branch" "got=$rn" ;; esac
+    # (356b) rendered from wnote's OWN anchor (the doc's worktree) → NO annotation.
+    pending "$wtn"
+    rb="$(bash "$R" render "$RECS" "$wtn" 2>/dev/null || true)"
+    case "$rb" in *"another worktree"*) no "(356b) same-worktree doc must NOT be annotated" "got=$rb" ;; *) ok "(356b) same-worktree doc is not annotated (no noise)" ;; esac
+    # (356c) end-to-end: a blocked impl Write in MAIN carries the branch-named note.
+    out="$(payload_write "$main/src/impl.sh" "$main" | bash "$PREIMPL" 2>/dev/null || true)"
+    case "$out" in *'"block"'*) : ;; *) no "(356c) precondition: impl Write should block" "got=$out" ;; esac
+    case "$out" in *annot-note*) ok "(356c) block reason names the arming worktree branch" ;; *) no "(356c) block reason carries the branch-named annotation" "got=$out" ;; esac
+else
+    no "(356) worktree add failed"
+fi
+# (356d) abandoned marker: the doc's directory is gone → flagged as abandoned, not
+# silently rendered as a live doc (the drain-hint rm on the same line resolves it).
+t="$(mkrepo)"; mkdir -p "$t/sub"; printf x >"$t/sub/doc.md"; arm "$t/sub/doc.md"; rm -rf "$t/sub"
+pending "$t"
+rd="$(bash "$R" render "$RECS" "$t" 2>/dev/null || true)"
+case "$rd" in *abandoned*) ok "(356d) abandoned doc (dir gone) is flagged" ;; *) no "(356d) abandoned doc flagged" "got=$rd" ;; esac
+
 echo
 echo "════ design-marker-worktree: $PASS passed, $FAIL failed ════"
 [ "$FAIL" -eq 0 ]

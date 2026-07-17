@@ -1,3 +1,11 @@
+## [1.93.4](https://github.com/chris-yyau/busdriver/compare/v1.93.3...v1.93.4) (2026-07-17)
+
+
+### Bug Fixes
+
+* **gates:** dedup the unreviewed-commit audit so real gate-misses are visible ([#352](https://github.com/chris-yyau/busdriver/issues/352)) ([#395](https://github.com/chris-yyau/busdriver/issues/395)) ([d7fda4f](https://github.com/chris-yyau/busdriver/commit/d7fda4ff84baee794e9fdc15d3942fad8dffbbe5)), closes [#385](https://github.com/chris-yyau/busdriver/issues/385)
+* **litmus:** render review prompt in one literal pass (bash 5.2 ampersand + token collision) ([#396](https://github.com/chris-yyau/busdriver/issues/396)) ([51a570d](https://github.com/chris-yyau/busdriver/commit/51a570dd0905d2a995e80af25509146264c46441)), closes [#393](https://github.com/chris-yyau/busdriver/issues/393) [#393](https://github.com/chris-yyau/busdriver/issues/393)
+
 ## [1.93.3](https://github.com/chris-yyau/busdriver/compare/v1.93.2...v1.93.3) (2026-07-17)
 
 

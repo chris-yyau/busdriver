@@ -102,121 +102,30 @@ SCRIPTS="$DIR/../../scripts"
 # shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
 source "$DIR/lib/resolve-repo-dir.sh" || exit 0
 
-# ── Parse via the shared, quote/wrapper-aware detector ─────────────────
-# gh_pr confirms a REAL `gh pr merge` (defeats decoys/quoting/wrappers). A second,
-# segment-scoped shlex pass inspects ONLY the gh COMMAND-WORD segment (so an
-# `echo gh pr merge -R x` decoy cannot inject) and marks UNSAFE any per-command
-# override we cannot neutralize: a `-R`/`--repo` flag (global — before `pr` — OR
-# after `merge`), an inline `GH_REPO=`/`GH_HOST=` assignment, or a non-numeric
-# positional (branch name / PR URL). Only a bare numeric PR (or none = current
-# branch) is safe. On ANY parse error we emit nothing → skip (non-gating).
-PARSE=$(printf '%s' "$HOOK_DATA" | PYTHONPATH="$DIR/lib" python3 -S -c "
-import sys
-sys.path[:] = [p for p in sys.path if p not in ('', '.')]
-try:
-    import json, re, shlex
-    from gitcmd_detect import gh_pr, split_segments
-    d = json.load(sys.stdin)
-    if d.get('tool_name', d.get('toolName', '')) != 'Bash':
-        sys.exit(0)
-    cwd = d.get('cwd') or ''
-    inp = d.get('tool_input', d.get('toolInput', {}))
-    if isinstance(inp, str):
-        inp = json.loads(inp)
-    cmd = inp.get('command', '')
-    is_merge, target_dir, _pr = gh_pr(cmd, 'merge')
-    if not is_merge:
-        sys.exit(0)
-    # gh pr merge flags that consume a following value (must not be read as the PR);
-    # both long and short forms (short forms per gh pr merge --help).
-    VALFLAGS = {'--author-email', '-A', '--body', '-b', '--body-file', '-F',
-                '--match-head-commit', '--subject', '-t'}
-    def is_repo_flag(t):
-        return t in ('-R', '--repo') or t.startswith('--repo=') or (t.startswith('-R') and len(t) > 2)
-    # Fire ONLY on the tightest canonical shape, because ANY preceding command or
-    # non-trivial control flow can mutate the state a static hook can't see. Required:
-    #   * the ONLY shell operators are '' (single command) and '&&' — any ';', '|',
-    #     '||', '&' makes the runtime state (which cd wins, what ran) undecidable;
-    #   * exactly ONE segment invoking the LITERAL executable 'gh' (not /tmp/gh, not
-    #     a wrapper) as 'gh pr merge';
-    #   * every OTHER segment is a bare literal 'cd' (honored only via the &&-cd form
-    #     gh_pr captures into target_dir — see the has_cd/target_dir guard below);
-    #   * NO env-assignment prefix anywhere (GIT_DIR=, GH_REPO=, anything can redirect);
-    #   * NO gh pr non-merge prefix (checkout re-points the branch!), NO shell
-    #     expansion, NO -R. Everything else -> UNSAFE (skip); SKILL prose still covers it.
-    found = False; positional = ''; unsafe = False
-    merge_count = 0; cd_count = 0; pos_count = 0
-    for op, seg in split_segments(cmd):
-        if op not in ('', '&&'):
-            unsafe = True            # ';', '|', '||', '&' -> runtime state undecidable
-        if not seg.strip():
-            continue
-        try:
-            toks = shlex.split(seg)
-        except ValueError:
-            unsafe = True; continue
-        if not toks:
-            continue
-        i = 0
-        while i < len(toks) and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', toks[i]):
-            unsafe = True; i += 1    # ANY env-assignment prefix (GIT_DIR=, GH_REPO=, ...) -> skip
-        if i >= len(toks):
-            continue                 # nothing but assignments (already marked unsafe if any)
-        tok = toks[i]                # LITERAL executable token — no basename, no wrapper
-        if tok == 'cd':
-            cd_count += 1; continue  # honored only via the target_dir guard after the loop
-        if tok != 'gh':
-            unsafe = True; continue  # /tmp/gh, a wrapper, or an arbitrary command -> skip
-        rest = toks[i + 1:]
-        if 'pr' not in rest:
-            unsafe = True; continue  # gh NON-pr subcommand (repo/config/auth ...) -> skip
-        pri = rest.index('pr')
-        after = rest[pri + 1:]
-        if not after or after[0] != 'merge':
-            unsafe = True; continue  # gh pr <non-merge> (checkout mutates the branch!) -> skip
-        merge_count += 1; found = True
-        if any(is_repo_flag(g) for g in rest[:pri]):   # global -R before the subcommand
-            unsafe = True
-        # Any shell expansion in the invocation (a variable, command substitution, or
-        # backtick) is opaque to a static parser and could expand to a repo override
-        # or positional at runtime. Fail-safe: skip when the segment contains one.
-        if chr(36) in seg or chr(96) in seg:
-            unsafe = True
-        margs = after[1:]; j = 0
-        while j < len(margs):
-            t = margs[j]
-            if is_repo_flag(t):
-                unsafe = True
-                j += 2 if t in ('-R', '--repo') else 1
-                continue
-            if t in VALFLAGS:
-                if j + 1 >= len(margs):
-                    unsafe = True   # value-flag with NO value -> gh rejects the merge -> skip
-                j += 2; continue
-            if t.startswith('-'):
-                j += 1; continue
-            pos_count += 1          # a positional arg (PR number / url / branch)
-            if pos_count == 1:
-                positional = t
-            j += 1
-    if not found or merge_count != 1:   # zero/unparsed, or multiple merges in one call
-        unsafe = True
-    if pos_count > 1:                   # 'gh pr merge 515 516' — ambiguous; gh rejects it too
-        unsafe = True
-    if cd_count > 1:                    # a 2nd (possibly relative) cd gh_pr does NOT capture
-        unsafe = True                   # would resolve against the wrong base -> skip
-    if cd_count and not target_dir:     # a cd NOT captured as the merge's and-and prefix
-        unsafe = True                   # (e.g. 'cd B; gh pr merge') -> REPO_DIR would be wrong
-    if positional and not re.match(r'^[0-9]+$', positional):
-        unsafe = True             # branch name / PR URL → skip
-    print('yes')
-    print(target_dir)
-    print(positional)
-    print('1' if unsafe else '')
-    print(cwd)
-except Exception:
-    pass
-" 2>/dev/null || true)
+# ── Parse via the standalone lib/nudge_parse.py (a FILE, not an inline python -c,
+#    so no bash double-quote layer can corrupt backslashes/backticks) ───────
+# The OLD parser required a single canonical `gh pr merge <literal>` command and so
+# ALWAYS skipped pr-grind's real MULTI-LINE merge (`gh pr merge … || true` + a `for`
+# retry loop, `$(gh pr view …)`, `if`, `cd`, `git worktree remove`; both paths embed
+# `gh pr merge` in comments). ADR 0013 rev 2026-07-17 replaced it with a MERGE-FIRST
+# rule that fires on the real shape while staying adversarially closed. nudge_parse.py:
+#   1. Strips shell comments (Bash-faithful) first, then counts merges by COMMAND-WORD
+#      (not substring — the block's commented `gh pr merge` decoys must not inflate the
+#      count); requires EXACTLY ONE clean merge segment (no `-R`, no `$`/backtick, one
+#      NUMERIC PR or none = current branch).
+#   2. MERGE-FIRST: nothing may execute before the merge except pure non-sensitive
+#      assignments and a single captured `cd &&` prefix; ANY real command before it →
+#      skip. Complete by construction — no denylist of re-targeting commands to keep
+#      exhaustive (`printf > .git/config`, cp, sed -i, pushd, $(git …), then GH_REPO=…
+#      all re-point origin; requiring merge-first sidesteps enumerating them).
+# The pr-grind DEFAULT block and skip/bootstrap bypass merges ARE merge-first (only
+# `NO_WORKTREE=<0|1>` precedes) → nudged. The admin approver-gap block writes bypass-log
+# jq before the merge → not merge-first → skipped here, covered by the SKILL-prose nudge.
+# The residual (a `gh` alias / shell function / PATH this separate hook process can't see)
+# is bounded to a deduped, possibly-spurious nudge on the CWD repo's OWN PR — never a
+# cross-repo post (inherited-env skip + merge-segment checks + gh-pr-view==cwd-origin
+# equality) and never a blocked merge. On ANY parse error we emit nothing → skip.
+PARSE=$(printf '%s' "$HOOK_DATA" | PYTHONPATH="$DIR/lib" python3 -S "$DIR/lib/nudge_parse.py" 2>/dev/null || true)
 
 IS_MERGE=$(printf '%s' "$PARSE" | sed -n '1p')
 TARGET_DIR=$(printf '%s' "$PARSE" | sed -n '2p')

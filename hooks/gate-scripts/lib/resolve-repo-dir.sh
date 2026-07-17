@@ -298,7 +298,7 @@ gate_marker_pending_pureshell() {
     local anchor="${1:-.}" inwt common tokdir sd root line wt _e
     inwt="$(git -C "$anchor" rev-parse --is-inside-work-tree 2>/dev/null || true)"
     [ "$inwt" = "true" ] || return 0   # ENOREPO → allow (matches today)
-    common="$(cd "$anchor" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P || true)"
+    common="$(cd "$anchor" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)" || common=""
     [ -n "$common" ] || return 1       # in a repo, common-dir unresolvable → uncertain
     tokdir="$common/busdriver/design-review-needed.local.d"
     # CONTRACT: return 0 ONLY when definitively clean. Any error/ambiguity → return

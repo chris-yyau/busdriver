@@ -1,3 +1,24 @@
+## [1.93.2](https://github.com/chris-yyau/busdriver/compare/v1.93.1...v1.93.2) (2026-07-17)
+
+
+### Bug Fixes
+
+* **pr-grind:** fire the Codex none-nudge hook on real multi-line merges ([#390](https://github.com/chris-yyau/busdriver/issues/390)) ([6b856a6](https://github.com/chris-yyau/busdriver/commit/6b856a6e937a97149dbe87de0b77d82f18f20280)), closes [#pr-view](https://github.com/chris-yyau/busdriver/issues/pr-view) [98/#102](https://github.com/chris-yyau/busdriver/issues/102)
+
+## [1.93.1](https://github.com/chris-yyau/busdriver/compare/v1.93.0...v1.93.1) (2026-07-17)
+
+
+### Bug Fixes
+
+* **gate-lib:** silence SC2015 in resolve-repo-dir common-dir probe ([#389](https://github.com/chris-yyau/busdriver/issues/389)) ([cb35d09](https://github.com/chris-yyau/busdriver/commit/cb35d092ae84a6edc5882c47ae5e8a51584e2ff4))
+
+# [1.93.0](https://github.com/chris-yyau/busdriver/compare/v1.92.7...v1.93.0) (2026-07-17)
+
+
+### Features
+
+* **pr-grind:** re-add greptile-apps as 5th gated ack-bot ([#388](https://github.com/chris-yyau/busdriver/issues/388)) ([6866ea0](https://github.com/chris-yyau/busdriver/commit/6866ea01a4302c7ddf4ae141230d4754fc88be11)), closes [#179](https://github.com/chris-yyau/busdriver/issues/179) [#174](https://github.com/chris-yyau/busdriver/issues/174)
+
 ## [1.92.7](https://github.com/chris-yyau/busdriver/compare/v1.92.6...v1.92.7) (2026-07-17)
 
 

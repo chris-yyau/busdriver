@@ -487,9 +487,14 @@ if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "export GH_REPO+= append: skipped"; el
 # ── Case 39: the `none`-check jq filter must tolerate a ghost/deleted reviewer or
 #    any malformed (non-object) array element. A bare `.[].user.login` exits non-zero
 #    on such an element → `gh` non-zero → `|| exit 0` → a false-negative MISSED nudge.
-#    Extract the filter FROM THE HOOK (not a hardcoded copy) so reverting the `?`s
-#    fails here. Fixture mixes a bare string, a null-user element, and the real login.
-NONE_FILTER=$(grep -oE "\.\[\]\?[^']*// empty" "$HOOK" | head -1)
+#    Extract the filter from the HOOK's actual `--jq '…'` CODE line (not a hardcoded
+#    copy) so reverting the `?`s fails here. ANCHOR on `--jq '`: a bare filter-pattern
+#    grep also matches the explanatory comment above line 211 (which quotes the filter),
+#    so a regressed runtime line would be shadowed by the still-defensive comment and the
+#    test would pass vacuously (Greptile P1, #397). The comment has no `--jq '`, so
+#    anchoring on it targets only the runtime code. Fixture mixes a bare string, a
+#    null-user element, and the real login.
+NONE_FILTER=$(grep -oE "\-\-jq '[^']*'" "$HOOK" | head -1 | cut -d"'" -f2)
 NF_OUT=$(printf '%s' '["ghost",{"user":null},{"user":{"login":"chatgpt-codex-connector[bot]"}}]' \
   | jq -r "${NONE_FILTER:-.INVALID}" 2>&1) || true
 if [[ "$NF_OUT" == "chatgpt-codex-connector[bot]" ]]; then

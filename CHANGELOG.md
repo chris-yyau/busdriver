@@ -1,3 +1,10 @@
+## [1.91.17](https://github.com/chris-yyau/busdriver/compare/v1.91.16...v1.91.17) (2026-07-17)
+
+
+### Bug Fixes
+
+* **gates:** strip bash line continuations before command detection ([#371](https://github.com/chris-yyau/busdriver/issues/371)) ([967ede0](https://github.com/chris-yyau/busdriver/commit/967ede069555e9ba915bc46919ae990e4f0d0cdf)), closes [#358](https://github.com/chris-yyau/busdriver/issues/358)
+
 ## [1.91.16](https://github.com/chris-yyau/busdriver/compare/v1.91.15...v1.91.16) (2026-07-17)
 
 

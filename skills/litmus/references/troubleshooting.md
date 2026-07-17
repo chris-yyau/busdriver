@@ -90,7 +90,7 @@ git add -A  # Stage all changes
    # CORRECT - blocking gate
    Bash(
      command="bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
-     timeout=1260000  # 21 min timeout
+     timeout=600000  # 10 min — harness cap; larger values are clamped, not honored
    )
    ```
 
@@ -114,7 +114,7 @@ bash "$LITMUS_SCRIPTS/run-review-loop.sh"
 # Each call does ONE pass — caller re-runs on FAIL
 Bash(
     command="bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
-    timeout=1260000  # blocking, NOT background
+    timeout=600000  # blocking; harness caps at 600000 (see SKILL.md CRITICAL RULES)
 )
 ```
 
@@ -124,7 +124,7 @@ def run_litmus():
     return Bash(
         command="bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
         description="Run Codex review (blocking gate)",
-        timeout=1260000  # 21 min timeout
+        timeout=600000  # 10 min — harness cap; larger values are clamped, not honored
     )
 ```
 

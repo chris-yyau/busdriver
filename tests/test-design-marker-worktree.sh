@@ -210,6 +210,30 @@ out="$(payload_write "$t/docs/specs/2026-07-17-x-design.md" "$t" | bash "$PREIMP
 case "$out" in *'"block"'*) no "(specs) docs/specs design doc must stay writable" "got=$out" ;; *) ok "(specs) docs/specs design doc stays writable" ;; esac
 out="$(payload_write "$t/docs/plans/2026-07-17-x.md" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
 case "$out" in *'"block"'*) no "(specs) docs/plans plan doc must stay writable" "got=$out" ;; *) ok "(specs) docs/plans plan doc stays writable" ;; esac
+# `docs` must start a path segment: notdocs/ is not a docs dir and must not inherit
+# the exemption. Nested (monorepo) docs dirs must keep it.
+out="$(payload_write "$t/notdocs/specs/impl.sh" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) ok "(specs) notdocs/specs/ does not inherit the exemption" ;; *) no "(specs) notdocs/specs/ must NOT be exempt" "got=$out" ;; esac
+out="$(payload_write "$t/packages/foo/docs/specs/x-design.md" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) no "(specs) nested monorepo docs/specs must stay writable" "got=$out" ;; *) ok "(specs) nested monorepo docs/specs stays writable" ;; esac
+
+# INVARIANT: every path the DETECTOR arms a review for must stay writable by the
+# gate. Detector ([^/]+/)* covers nested docs, so root-anchoring the exemption
+# would flag a doc as needing review while refusing the write that answers it.
+# This pins the two together — narrow one without the other and this fails.
+mkdir -p "$t/packages/foo/docs/specs"; printf '# d\n' >"$t/packages/foo/docs/specs/DESIGN-n.md"
+printf '{"tool_name":"Write","tool_input":{"file_path":"%s/packages/foo/docs/specs/DESIGN-n.md"}}' "$t" | bash "$CHECKDOC" >/dev/null 2>&1
+pending "$t"; eq "(specs) detector arms nested docs/specs → exit 1" "$PEXIT" "1"
+out="$(payload_write "$t/packages/foo/docs/specs/DESIGN-n.md" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) no "(specs) detector/exemption disagree — nested doc armed but not writable" "got=$out" ;; *) ok "(specs) detector-armed nested doc stays writable (no deadlock)" ;; esac
+
+# Traversal: `docs/specs/../../src/impl.sh` matches the docs glob on the raw path
+# but resolves to src/impl.sh — a pending review would be bypassed outright.
+# Exemption is matched post-normalization, so the resolved target decides.
+out="$(payload_write "$t/docs/specs/../../src/impl.sh" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) ok "(specs) docs/specs/../.. traversal cannot bypass the gate" ;; *) no "(specs) traversal MUST NOT be exempt" "got=$out" ;; esac
+out="$(payload_write "$t/src/../docs/specs/y-design.md" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) no "(specs) traversal resolving INTO docs/specs must stay writable" "got=$out" ;; *) ok "(specs) traversal resolving INTO docs/specs stays writable" ;; esac
 
 echo "── (h) deleted pending doc still blocks ─────────────────────────"
 t="$(mkrepo)"; printf x >"$t/doc.md"; arm "$t/doc.md"; rm -f "$t/doc.md"

@@ -92,14 +92,6 @@ esac
 # No file path → approve
 [ -z "$FILE_PATH" ] && exit 0
 
-# ── Always allow writes to infrastructure paths ──────────────────────
-FILE_LOWER=$(echo "$FILE_PATH" | tr '[:upper:]' '[:lower:]')
-case "$FILE_LOWER" in
-    *.claude/*) exit 0 ;;
-    *claude.md|*notes.md) exit 0 ;;
-    *docs/plans/*|*docs/specs/*|*docs/reviews/*) exit 0 ;;
-esac
-
 # ── Normalize paths for comparison ───────────────────────────────────
 # Strip trailing slashes, collapse . and .. segments
 normalize() {
@@ -114,6 +106,30 @@ normalize() {
 
 NORM_SCOPE=$(normalize "$ALLOWED_SCOPE")
 NORM_FILE=$(normalize "$FILE_PATH")
+
+# ── Always allow writes to infrastructure paths ──────────────────────
+# Matched against the NORMALIZED path. Against the raw path,
+# `docs/specs/../../src/impl.sh` matches the docs glob but resolves to
+# `src/impl.sh` — the exemption would hand an impl write a free pass.
+#
+# The docs/ arms require `docs` to START a path segment — a bare `*docs/specs/*`
+# also matches `notdocs/specs/runtime.sh`, which is not a docs dir at all. Kept
+# segment-start rather than repo-root-anchored so nested docs (packages/foo/docs/
+# specs/) still resolve — check-design-document.sh arms reviews for those, so a
+# narrower exemption here would refuse the write that answers the review. See
+# pre-implementation-gate.sh for the full rationale; both gates share this shape.
+FILE_LOWER=$(echo "$NORM_FILE" | tr '[:upper:]' '[:lower:]')
+case "$FILE_LOWER" in
+    # FAIL-CLOSED: normalize() returns its input unchanged when python3 is absent,
+    # so a surviving `..` segment means traversal was NOT resolved. Grant no
+    # exemption — fall through to the scope check rather than trust the glob.
+    ../*|*/../*|*/..) ;;
+    *.claude/*) exit 0 ;;
+    *claude.md|*notes.md) exit 0 ;;
+    docs/plans/*|*/docs/plans/*) exit 0 ;;
+    docs/specs/*|*/docs/specs/*) exit 0 ;;
+    docs/reviews/*|*/docs/reviews/*) exit 0 ;;
+esac
 
 # Check if file is within allowed scope
 # Match: exact scope path OR scope path followed by / (directory boundary)

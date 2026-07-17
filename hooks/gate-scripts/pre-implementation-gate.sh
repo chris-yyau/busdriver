@@ -696,11 +696,41 @@ if [ "$TOOL_TYPE" = "WRITE_EDIT" ]; then
     #   - $STATE_DIR/ config files
     #   - docs/reviews/ (review artifacts)
     #   - CLAUDE.md, NOTES.md, *.local* files
-    case "$FILE_PATH" in
+    # The docs/ arms require `docs` to START a path segment: a bare `*docs/specs/*`
+    # also matches `notdocs/specs/impl.sh` — not a docs dir at all.
+    #
+    # They are deliberately NOT anchored to the repo root. This exemption MUST stay
+    # at least as wide as the design-doc DETECTOR it is paired with: check-design-
+    # document.sh matches ($STATE_DIR|docs)/([^/]+/)*(plans|specs)/*.md, whose
+    # ([^/]+/)* arms a review for nested docs — e.g. packages/foo/docs/specs/x.md.
+    # Root-anchoring to `docs/specs/*` would flag that doc as needing review while
+    # refusing the write that answers it: the exact deadlock this change fixes,
+    # relocated one directory down. Detector and exemption must agree.
+    #
+    # Ceiling: src/docs/specs/impl.sh stays exempt. Accepted — unlike the $STATE_DIR
+    # case below, where worktree homing under <main>/.claude/ made EVERY file match
+    # (a true fail-open), nothing homes a repo under docs/, so there is no universal
+    # match to exploit; the "bypass" costs the writer their impl file's real location.
+    # UPGRADE: if the detector ever root-anchors, anchor these in the same change.
+    # Matched against a LEXICALLY normalized path. Raw, `docs/specs/../../src/impl.sh`
+    # matches the docs glob but resolves to `src/impl.sh` — the exemption would hand
+    # a pending review's impl write a free pass. Normalized lexically, NOT via
+    # gate_marker_relpath: that resolves physically (cd + pwd -P), so it fails on a
+    # not-yet-created docs/specs/ dir — the exact case a new design doc needs.
+    _NORM_FP="$FILE_PATH"
+    if command -v python3 >/dev/null 2>&1; then
+        _NORM_FP="$(printf '%s' "$FILE_PATH" \
+            | python3 -c 'import sys, os.path; print(os.path.normpath(sys.stdin.read()))' 2>/dev/null \
+            || printf '%s' "$FILE_PATH")"
+    fi
+    case "$_NORM_FP" in
+        # FAIL-CLOSED: a `..` that survives normalization escapes the cwd (or python3
+        # was absent and nothing was resolved). Grant no exemption either way.
+        ../*|*/../*|*/..) ;;
         *PLAN*.md|*DESIGN*.md|*ARCHITECTURE*.md) exit 0 ;;
-        *docs/plans/*) exit 0 ;;
-        *docs/specs/*) exit 0 ;;
-        *docs/reviews/*) exit 0 ;;
+        docs/plans/*|*/docs/plans/*) exit 0 ;;
+        docs/specs/*|*/docs/specs/*) exit 0 ;;
+        docs/reviews/*|*/docs/reviews/*) exit 0 ;;
         *CLAUDE.md|*NOTES.md) exit 0 ;;
     esac
 

@@ -1,3 +1,10 @@
+# [1.93.0](https://github.com/chris-yyau/busdriver/compare/v1.92.7...v1.93.0) (2026-07-17)
+
+
+### Features
+
+* **pr-grind:** re-add greptile-apps as 5th gated ack-bot ([#388](https://github.com/chris-yyau/busdriver/issues/388)) ([6866ea0](https://github.com/chris-yyau/busdriver/commit/6866ea01a4302c7ddf4ae141230d4754fc88be11)), closes [#179](https://github.com/chris-yyau/busdriver/issues/179) [#174](https://github.com/chris-yyau/busdriver/issues/174)
+
 ## [1.92.7](https://github.com/chris-yyau/busdriver/compare/v1.92.6...v1.92.7) (2026-07-17)
 
 

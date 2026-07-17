@@ -60,6 +60,11 @@ write_terminal_status() {
 # shellcheck source=lib/log-metrics.sh
 source "$SCRIPT_DIR/lib/log-metrics.sh"
 
+# Load single-pass prompt renderer (bash ≥5.2 `&`-in-replacement fix + injected
+# values can't shadow later placeholders, #393)
+# shellcheck source=lib/inject.sh
+source "$SCRIPT_DIR/lib/inject.sh"
+
 # ── PR-mode dual-voice artifact contract ──────────────────────────────
 # Both artifacts gate `gh pr create` in PR mode and are protected in
 # pre-implementation-gate.sh MARKER_FILES. The backstop verdict is written ONLY
@@ -1252,12 +1257,11 @@ PREV_CHANGELOG=$("$SCRIPT_DIR/load_changelog.sh" 2>/dev/null || echo "")
 # Load iteration history for convergence
 ITER_HISTORY=$(load_iteration_history)
 
-# Substitute all placeholders into the prompt
-FINAL_PROMPT="${PROMPT/\{\{PREV_CHANGELOG\}\}/$PREV_CHANGELOG}"
-FINAL_PROMPT="${FINAL_PROMPT/\{\{STAGED_DIFF\}\}/$STAGED_DIFF}"
-FINAL_PROMPT="${FINAL_PROMPT/\{\{ITERATION_HISTORY\}\}/$ITER_HISTORY}"
+# All placeholder values are computed first, then spliced in a single pass by
+# render_prompt (below) — see lib/inject.sh for why one-at-a-time substitution
+# corrupted the reviewer's copy (#393).
 
-# Inject SAST pre-check results
+# Build SAST pre-check results
 SAST_PRECHECK_TEXT=""
 if [ "$SAST_COUNT" -gt 0 ]; then
   SAST_PRECHECK_TEXT="## SAST Pre-Check Results (deterministic — these are confirmed findings)
@@ -1268,7 +1272,6 @@ for f in json.load(sys.stdin):
     print(f'- [{f[\"severity\"].upper()}] {f[\"file\"]}:{f[\"line\"]} — {f[\"description\"]}')
 ")"
 fi
-FINAL_PROMPT="${FINAL_PROMPT/\{\{SAST_PRECHECK\}\}/$SAST_PRECHECK_TEXT}"
 
 # Budget cap for enrichment context (prevent prompt bloat)
 MAX_ENRICHMENT_LINES="${LITMUS_MAX_ENRICHMENT_LINES:-100}"
@@ -1282,13 +1285,7 @@ if [ -n "$DOCS_CONTEXT_OUTPUT" ]; then
   DOCS_CONTEXT_OUTPUT=$(echo "$DOCS_CONTEXT_OUTPUT" | head -n "$MAX_ENRICHMENT_LINES")
 fi
 
-# Inject smart context
-FINAL_PROMPT="${FINAL_PROMPT/\{\{SMART_CONTEXT\}\}/$SMART_CONTEXT_OUTPUT}"
-
-# Inject docs context
-FINAL_PROMPT="${FINAL_PROMPT/\{\{DOCS_CONTEXT\}\}/$DOCS_CONTEXT_OUTPUT}"
-
-# Inject PR commit history (PR mode only). init-review-loop.sh emits only the
+# Compute PR commit history (PR mode only). init-review-loop.sh emits only the
 # {{HISTORY_CONTEXT}} placeholder; the runtime computes/caps/substitutes it here
 # (mirroring the SMART_CONTEXT pattern) so the HISTORY lens reads injected data
 # and the agent never runs git itself. Capped by MAX_ENRICHMENT_LINES. In commit
@@ -1301,7 +1298,19 @@ if [ "$REVIEW_MODE" = "pr" ]; then
       | head -n "$MAX_ENRICHMENT_LINES" || true)
   fi
 fi
-FINAL_PROMPT="${FINAL_PROMPT/\{\{HISTORY_CONTEXT\}\}/$HISTORY_CONTEXT_OUTPUT}"
+# Splice every value into the template in one forward pass. Single pass (not
+# seven ${var/}/inject calls) so an injected value that itself contains a
+# placeholder token — e.g. a staged diff of this very file — cannot be re-read as
+# a later placeholder. Absent placeholders (e.g. {{HISTORY_CONTEXT}} in commit
+# mode) are ignored. See lib/inject.sh (#393).
+FINAL_PROMPT=$(render_prompt "$PROMPT" \
+  '{{PREV_CHANGELOG}}'    "$PREV_CHANGELOG" \
+  '{{STAGED_DIFF}}'       "$STAGED_DIFF" \
+  '{{ITERATION_HISTORY}}' "$ITER_HISTORY" \
+  '{{SAST_PRECHECK}}'     "$SAST_PRECHECK_TEXT" \
+  '{{SMART_CONTEXT}}'     "$SMART_CONTEXT_OUTPUT" \
+  '{{DOCS_CONTEXT}}'      "$DOCS_CONTEXT_OUTPUT" \
+  '{{HISTORY_CONTEXT}}'   "$HISTORY_CONTEXT_OUTPUT")
 
 # Run review via resolved CLI
 echo "🔬 Running $RESOLVED_CLI review (loop attempt $ITERATION/$MAX_ITER)..."

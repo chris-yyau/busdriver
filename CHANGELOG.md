@@ -1,3 +1,10 @@
+## [1.93.1](https://github.com/chris-yyau/busdriver/compare/v1.93.0...v1.93.1) (2026-07-17)
+
+
+### Bug Fixes
+
+* **gate-lib:** silence SC2015 in resolve-repo-dir common-dir probe ([#389](https://github.com/chris-yyau/busdriver/issues/389)) ([cb35d09](https://github.com/chris-yyau/busdriver/commit/cb35d092ae84a6edc5882c47ae5e8a51584e2ff4))
+
 # [1.93.0](https://github.com/chris-yyau/busdriver/compare/v1.92.7...v1.93.0) (2026-07-17)
 
 

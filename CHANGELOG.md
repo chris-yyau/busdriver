@@ -1,3 +1,10 @@
+## [1.92.2](https://github.com/chris-yyau/busdriver/compare/v1.92.1...v1.92.2) (2026-07-17)
+
+
+### Bug Fixes
+
+* **gates:** exempt docs/specs and match doc exemptions post-normalization ([#369](https://github.com/chris-yyau/busdriver/issues/369)) ([63cb759](https://github.com/chris-yyau/busdriver/commit/63cb759f2c8b09fbb3d60fe14245c743d54ef804)), closes [#359](https://github.com/chris-yyau/busdriver/issues/359) [#359](https://github.com/chris-yyau/busdriver/issues/359) [#360](https://github.com/chris-yyau/busdriver/issues/360)
+
 ## [1.92.1](https://github.com/chris-yyau/busdriver/compare/v1.92.0...v1.92.1) (2026-07-17)
 
 

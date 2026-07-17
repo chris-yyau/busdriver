@@ -20,6 +20,9 @@
 # Usage: bash tests/test-pr-dual-voice.sh
 # Exit: 0 if all pass, 1 if any fail.
 
+# SC2312: assertions read `ok "$(fn)" ...` throughout — the masked-return caveat
+# does not apply (the helpers only compare + count), so disable it file-wide.
+# shellcheck disable=SC2312
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 REPO="$(pwd)"
@@ -89,6 +92,23 @@ write_stub() {
 #!/bin/bash
 if [ "$1" = "--help" ]; then echo "  --tools <tools...>"; echo "  --setting-sources <sources>"; exit 0; fi
 cat >/dev/null 2>&1 || true
+# STUB_FAIL_FIRST=N: fail transiently (is_error envelope) on the first N dispatches
+# of this run, then succeed — exercises the backstop retry loop. Counter persists in
+# a per-run file so retries within one --run-backstop advance it.
+if { [ -n "${STUB_FAIL_FIRST:-}" ] || [ -n "${STUB_BAD_FIRST:-}" ]; } && [ -n "${STUB_COUNT_FILE:-}" ]; then
+  n=$(cat "$STUB_COUNT_FILE" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$STUB_COUNT_FILE"
+  # STUB_FAIL_FIRST: transient is_error (ECONNRESET) for the first N dispatches.
+  if [ -n "${STUB_FAIL_FIRST:-}" ] && [ "$n" -le "$STUB_FAIL_FIRST" ]; then
+    python3 -c 'import json,sys; sys.stdout.write(json.dumps({"type":"result","is_error":True,"result":"API Error: ECONNRESET"}))'
+    exit 0
+  fi
+  # STUB_BAD_FIRST: parseable-but-schema-invalid verdict ({}) for the first N — the
+  # writer rejects it, so the retry loop must re-dispatch rather than fail-closed.
+  if [ -n "${STUB_BAD_FIRST:-}" ] && [ "$n" -le "$STUB_BAD_FIRST" ]; then
+    python3 -c 'import json,sys; sys.stdout.write(json.dumps({"type":"result","is_error":False,"result":"{}"}))'
+    exit 0
+  fi
+fi
 [ "${STUB_RC:-0}" != "0" ] && exit "${STUB_RC}"
 python3 -c 'import json,os,sys; sys.stdout.write(json.dumps({"type":"result","subtype":"success","is_error":os.environ.get("STUB_ERR")=="1","result":os.environ.get("STUB_VERDICT","")}))'
 STUB
@@ -96,6 +116,8 @@ STUB
 }
 write_stub
 export PATH="$STUBDIR:$PATH"
+# Keep the retry loop instant in tests (exercise the COUNT, never sleep).
+export LITMUS_PR_BACKSTOP_RETRY_DELAY=0
 
 # run_bs <verdict-json>: seed codex-lead, clear any prior artifact, run --run-backstop
 # with the stub emitting <verdict-json> as the backstop's verdict. Returns the exit code.
@@ -174,6 +196,57 @@ chmod +x "$STUBDIR/claude"
 bash "$RL" --run-backstop >/dev/null 2>&1
 ok "$(has_art)" "n" "non-JSON envelope leaves no artifact"
 write_stub  # restore the well-behaved stub
+
+echo "== 9b. --run-backstop: transient is_error, then success ⇒ retry recovers =="
+rm -f "$BS"; seed_codex_lead
+CF="$WORK/stub-count"; rm -f "$CF"
+# Fail the first 2 dispatches (is_error), succeed on the 3rd — within the default
+# 2 retries (3 total attempts). Expect a clean PASS artifact.
+STUB_FAIL_FIRST=2 STUB_COUNT_FILE="$CF" STUB_VERDICT='{"status":"PASS","issues":[]}' \
+  bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$?" "0" "run-backstop recovers after 2 transient failures"
+ok "$(art_status "$BS")" "PASS" "recovered verdict ⇒ PASS artifact"
+ok "$(cat "$CF" 2>/dev/null)" "3" "took exactly 3 dispatch attempts"
+
+echo "== 9c. --run-backstop: transient failures exceed retries ⇒ fail-closed =="
+rm -f "$BS"; seed_codex_lead; rm -f "$CF"
+# Fail more times than retries allow (5 > 3 total) — must fail-closed, no artifact.
+STUB_FAIL_FIRST=9 STUB_COUNT_FILE="$CF" LITMUS_PR_BACKSTOP_RETRIES=2 STUB_VERDICT='{"status":"PASS","issues":[]}' \
+  bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$?" "1" "run-backstop fails-closed when retries exhausted"
+ok "$(has_art)" "n" "no artifact when retries exhausted"
+ok "$(cat "$CF" 2>/dev/null)" "3" "stopped after exactly 3 attempts (1 + 2 retries)"
+
+echo "== 9d. --run-backstop: schema-invalid but parseable verdict ⇒ TERMINAL fail-closed (no retry) =="
+rm -f "$BS"; seed_codex_lead; rm -f "$CF"
+# A parseable-but-schema-invalid `{}` is handed to the writer, which is terminal:
+# the writer's nonzero can also mean TOCTOU/oversize/FS — a re-dispatch cannot fix
+# those — so it fails-closed on the FIRST dispatch, not after burning retries.
+STUB_BAD_FIRST=1 STUB_COUNT_FILE="$CF" STUB_VERDICT='{"status":"PASS","issues":[]}' \
+  bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$?" "1" "writer rejection is terminal (fail-closed)"
+ok "$(has_art)" "n" "no artifact on writer rejection"
+ok "$(cat "$CF" 2>/dev/null)" "1" "writer failure NOT retried — exactly 1 dispatch"
+
+echo "== 9e. tunables clamped: huge RETRIES bounded (no unbounded paid dispatch) =="
+rm -f "$BS"; seed_codex_lead; rm -f "$CF"
+# RETRIES=999999 must clamp to 5 (6 total). Fail every dispatch → exactly 6 attempts.
+STUB_FAIL_FIRST=999 STUB_COUNT_FILE="$CF" LITMUS_PR_BACKSTOP_RETRIES=999999 STUB_VERDICT='{"status":"PASS","issues":[]}' \
+  bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$?" "1" "clamped retries still fail-closed when all transient"
+ok "$(cat "$CF" 2>/dev/null)" "6" "RETRIES clamped to 5 ⇒ exactly 6 attempts"
+
+echo "== 9f. tunables: overflow-length value snaps to ceiling (no negative/abort) =="
+rm -f "$BS"; seed_codex_lead; rm -f "$CF"
+# A >2^63 RETRIES string must NOT wrap negative past the clamp; it snaps to 5 (6
+# attempts) and the run must still fail-closed cleanly, not abort under set -e.
+# (DELAY inherits the global 0 so this stays instant — the DELAY length-guard is
+# covered by the arithmetic-overflow unit check, not a 120s live sleep.)
+STUB_FAIL_FIRST=999 STUB_COUNT_FILE="$CF" \
+  LITMUS_PR_BACKSTOP_RETRIES=9223372036854775808 \
+  STUB_VERDICT='{"status":"PASS","issues":[]}' bash "$RL" --run-backstop >/dev/null 2>&1
+ok "$?" "1" "overflow-length RETRIES still fail-closed cleanly"
+ok "$(cat "$CF" 2>/dev/null)" "6" "overflow RETRIES snaps to 5 ⇒ exactly 6 attempts"
 
 echo "== 10. --run-backstop: no fresh Codex-lead ⇒ fail-closed (dispatch skipped) =="
 rm -f "$BS" .claude/pr-codex-lead.local.json

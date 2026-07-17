@@ -206,9 +206,24 @@ else
     # Log for audit visibility so the gap is not silent.
     #
     # Suppressed when:
+    #   - this exact SHA was already logged unreviewed — a commit SHA is
+    #     immutable, so re-firing on the same HEAD must not double-count (#352)
     #   - skip-review-consumed was logged in the last 120s (gate ran, used skip file)
     #   - ~/.claude repo with only auto-generated files (gate bypasses by design)
+    #
+    # NOT suppressed: release/version-bump commits. They are logged honestly —
+    # they genuinely were not litmus-reviewed. Every emitter-side "this is a
+    # release" heuristic is forgeable (subject strings are author-controlled;
+    # a filename allowlist is dodged by a code payload smuggled into an inert-
+    # looking manifest — package.json preinstall, plugin.json hooks), so a
+    # release exemption would reopen the audit bypass this fix exists to close
+    # (#352). Release entries are trivially recognizable and filterable at
+    # report time.
     _SUPPRESS=false
+
+    # Resolve the just-created commit once — the dedup check and the final log
+    # line both need it.
+    COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
 
     # Check if a skip was recently consumed (skip file is deleted by the gate
     # before commit runs, so we check the bypass log instead).
@@ -236,13 +251,58 @@ else
         _SUPPRESS=true
     fi
 
-    if [ "$_SUPPRESS" = false ]; then
-        COMMIT_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
+    # Log the gate-miss atomically, at-most-once per SHA. A commit SHA is
+    # immutable, so re-firing on the same HEAD (a no-op commit mis-scored as
+    # success, or a worktree HEAD re-read) must not log it twice (#352:
+    # eae6149b was logged 5x in 14 min). The "already logged?" check and the
+    # append run under one exclusive fcntl.flock on the log, so concurrent
+    # firings for the same HEAD cannot both pass the check and double-log
+    # (a plain grep-then-append is a check-then-act race). fcntl.flock is
+    # portable across macOS and Linux; python3 is already a hard dependency
+    # of this hook. Prints "logged" (new record), "dup" (already present), or
+    # "error" (python/flock failed -> shell fail-open fallback below).
+    if [[ "$_SUPPRESS" == false ]]; then
         mkdir -p "$REPO_DIR/$STATE_DIR"
-        printf '{"ts":"%s","event":"unreviewed-commit","gate":"post-commit","sha":"%s"}\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
-            >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
-        echo "⚠️  Commit ${COMMIT_SHA:0:7} was not reviewed by litmus (PreToolUse gate did not fire)." >&2
+        _LOGGED=$(SHA="${COMMIT_SHA:-unknown}" \
+            LOGFILE="$REPO_DIR/$STATE_DIR/bypass-log.jsonl" \
+            python3 -I -c '
+# -I (isolated): ignore PYTHON* env and do NOT prepend cwd/PYTHONPATH to
+# sys.path, so a repo-controlled fcntl.py/datetime.py cannot shadow stdlib.
+import os, fcntl, datetime
+sha = os.environ["SHA"]; path = os.environ["LOGFILE"]
+try:
+    outcome = "logged"
+    with open(path, "a+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        # Dedup by immutable SHA. "unknown" (HEAD unresolvable) is NOT a stable
+        # identity — never dedup it, or distinct unresolved gate-misses would
+        # collapse into one lost record.
+        if sha != "unknown":
+            needle = "\"event\":\"unreviewed-commit\",\"gate\":\"post-commit\",\"sha\":\"%s\"" % sha
+            f.seek(0)
+            if any(needle in line for line in f):
+                outcome = "dup"
+        if outcome != "dup":
+            ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            f.write("{\"ts\":\"%s\",\"event\":\"unreviewed-commit\",\"gate\":\"post-commit\",\"sha\":\"%s\"}\n" % (ts, sha))
+    # Print ONLY after the with-block flushes+closes cleanly. A close/flush
+    # failure (disk full) then raises into except -> "error" alone, so the
+    # shell fail-open fallback runs instead of a false "logged".
+    print(outcome)
+except Exception:
+    print("error")
+' 2>/dev/null || echo error)
+        if [[ "$_LOGGED" == error ]]; then
+            # Fail-open: never drop a gate-miss record. Non-atomic append (a
+            # sub-PIPE_BUF line append is atomic on POSIX), no dedup — a rare
+            # duplicate beats a silently missed bypass.
+            printf '{"ts":"%s","event":"unreviewed-commit","gate":"post-commit","sha":"%s"}\n' \
+                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${COMMIT_SHA:-unknown}" \
+                >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
+            _LOGGED=logged
+        fi
+        [[ "$_LOGGED" == logged ]] \
+            && echo "⚠️  Commit ${COMMIT_SHA:0:7} was not reviewed by litmus (PreToolUse gate did not fire)." >&2
     fi
 fi
 

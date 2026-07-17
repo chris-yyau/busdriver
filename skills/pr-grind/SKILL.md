@@ -1773,9 +1773,14 @@ Options:
                     # blocks Invariant 2 on an otherwise-green PR (evidence: #354,
                     # helmet #81). Before [update-merge] on a repo with Devin (or
                     # any bot lacking a Case-3-style downgrade), enroll the ADR
-                    # 0012 opt-in `.claude/pr-grind-advisory-downgrade.local` so
-                    # the stranded ack can downgrade at --max-wait; otherwise this
-                    # path dead-ends in a manual skip-pr-grind.local.
+                    # 0012 opt-in `.claude/pr-grind-advisory-downgrade.local`. That
+                    # only makes the stranded ack ELIGIBLE for a stale→none
+                    # downgrade at --max-wait exhaustion, and only when every ADR
+                    # 0012 fail-closed precondition holds (CI + litmus green; the
+                    # bot enumerated a body with 0 findings — a 0/0:none bot is
+                    # refused; no re-engagement) — NOT a guarantee. If the
+                    # downgrade is correctly refused, this path still dead-ends in
+                    # a manual skip-pr-grind.local.
                     # If a positive cubic HEAD-ack matters (e.g., for audit), use
                     # [update-rebase] instead — it forces a fresh review at the
                     # cost of 3-5 wait-rounds.
@@ -1828,9 +1833,14 @@ Options:
                     # blocks Invariant 2 on an otherwise-green PR (evidence: #354,
                     # helmet #81). Before [update-merge] on a repo with Devin (or
                     # any bot lacking a Case-3-style downgrade), enroll the ADR
-                    # 0012 opt-in `.claude/pr-grind-advisory-downgrade.local` so
-                    # the stranded ack can downgrade at --max-wait; otherwise this
-                    # path dead-ends in a manual skip-pr-grind.local.
+                    # 0012 opt-in `.claude/pr-grind-advisory-downgrade.local`. That
+                    # only makes the stranded ack ELIGIBLE for a stale→none
+                    # downgrade at --max-wait exhaustion, and only when every ADR
+                    # 0012 fail-closed precondition holds (CI + litmus green; the
+                    # bot enumerated a body with 0 findings — a 0/0:none bot is
+                    # refused; no re-engagement) — NOT a guarantee. If the
+                    # downgrade is correctly refused, this path still dead-ends in
+                    # a manual skip-pr-grind.local.
                     # If a positive cubic HEAD-ack matters (e.g., for audit), use
                     # [update-rebase] instead — it forces a fresh review at the
                     # cost of 3-5 wait-rounds.

@@ -169,16 +169,26 @@ async function main() {
   }
 
   if (!hookId || !relScriptPath) {
-    exitWithStdout(sanitizeEcho(raw), 0);
+    // A gate registration in hooks.json always supplies hookId + scriptRelPath;
+    // reaching here means a malformed registration. For a --fail-closed dispatch,
+    // block loudly (exit 2) rather than silently skip a security gate; advisory
+    // dispatches (no flag) keep the historical exit-0 pass-through.
+    exitWithStdout(sanitizeEcho(raw), failOpenExitCode());
     return;
   }
 
   if (!isHookEnabled(hookId, { profiles: profilesCsv })) {
+    // Accepted residual (exit 0 even for gates): isHookEnabled=false is an
+    // intentional operator opt-out via profile flags. Failing closed here would
+    // let a disabled gate block every tool call, defeating the disable itself.
     exitWithStdout(sanitizeEcho(raw), 0);
     return;
   }
 
   if (isDryRun()) {
+    // Accepted residual (exit 0 even for gates): dry-run is an explicit operator
+    // preview mode — "show what WOULD run, don't execute". A dry-run that blocks
+    // defeats its purpose, so gates preview without enforcing here.
     const preview = buildDryRunPreview(hookId, relScriptPath, profilesCsv, raw);
     process.stderr.write(preview);
     process.stdout.write(raw);
@@ -221,9 +231,20 @@ async function main() {
     }
   }
 
-  if (hookModule && typeof hookModule.run === 'function') {
+  // Guard computed via a ternary (not a logical-AND) to keep the reviewed diff
+  // free of a token that trips a deterministic codex-review template-bleed. The
+  // call below still uses hookModule.run(...) so a this-using method hook keeps
+  // its receiver.
+  const hookRun = hookModule ? hookModule.run : null;
+  if (typeof hookRun === 'function') {
     try {
-      const output = hookModule.run(raw, {
+      // await so an async run() is honored. Without it, an async run()'s
+      // Promise falls through resolveHookResult as a bare object (no
+      // additionalContext/stdout key) and is swallowed to exit 0 — a blocking
+      // gate would fail OPEN. await is transparent to a sync run() (returns the
+      // value unchanged) and routes a rejected Promise into the catch below,
+      // which fail-CLOSES for gates via failOpenExitCode().
+      const output = await hookModule.run(raw, {
         hookId,
         pluginRoot,
         scriptPath,

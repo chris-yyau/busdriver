@@ -139,7 +139,8 @@ def unsafe(cmd):
 #   - a recursive rm nested in shell wrappers DEEPER than _all_chunks expands;
 #   - a recursive rm carried by a NON-shell interpreter (python -c, perl -e),
 #     opaque to _all_chunks;
-#   - ANSI-C quoted spellings of the command word ($'rm').
+#   - ANSI-C quoted spellings of the command word (the dollar-single-quote
+#     form, e.g. rm spelled as dollar-quote-rm-quote).
 # These are exotic and, being advisory, non-blocking; the grep fallback below
 # still catches many of them in the python-absent path.
 

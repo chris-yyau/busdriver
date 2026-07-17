@@ -117,6 +117,14 @@ run_test "infra bypass NOT granted via docs/plans/../.. traversal" "block" "$FRE
 run_test "infra bypass (traversal resolving INTO docs/specs/)" "allow" "$FREEZE_SCRIPT" \
     '{"tool_name":"Write","tool_input":{"file_path":"src/../docs/specs/x-design.md"}}'
 
+# NOTE — known residual, deliberately NOT asserted: a symlinked docs/specs -> src
+# reads as a docs path here. It is shared with the pre-existing docs/plans and
+# docs/reviews arms (not new to docs/specs), unreachable via the gated toolset (`ln`
+# is FILE_MOD), and cannot be closed by resolving physically without diverging from
+# the LEXICAL detector and tripping the `*.claude/*` fail-open. See the UPGRADE
+# receipt on the docs/ arms in freeze-guard.sh — it closes with repo-relative
+# anchoring, in its own change.
+
 # 9. Non-Write/Edit tools pass through
 run_test "Read tool not gated" "allow" "$FREEZE_SCRIPT" \
     '{"tool_name":"Read","tool_input":{"file_path":"src/payments/stripe.js"}}'

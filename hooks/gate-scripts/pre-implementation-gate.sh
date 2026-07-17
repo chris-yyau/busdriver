@@ -74,8 +74,10 @@ INPUT=$(cat 2>/dev/null || true)
 # ran when design review was pending. Moved here to be unconditional.
 # See: "skip codex review" bypass incident 2026-04-01.
 # shellcheck disable=SC2016  # python3 -c program; $ and quotes are literal code, not shell expansion
-MARKER_CHECK=$(printf '%s' "$INPUT" | python3 -c '
-import sys, json, re, shlex
+MARKER_CHECK=$(printf '%s' "$INPUT" | python3 -I -c '
+import sys
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import json, re, shlex
 
 _SQ = chr(39)
 _DQ = chr(34)
@@ -505,9 +507,10 @@ fi
 # NOT a regression; a correct anchor needs a shell-aware cd parser, deferred to
 # the follow-up issue. Symmetric with the detector-side note in check-design-document.sh.
 # shellcheck disable=SC2016  # python3 -c program; $/quotes are literal code
-_MK_ANCHOR="$(printf '%s' "$INPUT" | python3 -S -c '
-import sys, json, os
+_MK_ANCHOR="$(printf '%s' "$INPUT" | python3 -I -c '
+import sys
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import json, os
 try:
     d = json.load(sys.stdin)
     inp = d.get("tool_input", d.get("toolInput", {}))
@@ -616,8 +619,10 @@ fi
 # F8 fix: Allow review infrastructure scripts (blueprint-review, litmus)
 # to run even when design docs are unreviewed — prevents circular dependency.
 # shellcheck disable=SC2016  # python3 -c string uses '\'' idiom intentionally
-PARSED=$(printf '%s' "$INPUT" | python3 -c '
-import sys, json, re, os
+PARSED=$(printf '%s' "$INPUT" | python3 -I -c '
+import sys
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import json, re, os
 try:
     d = json.load(sys.stdin)
     tool = d.get("tool_name", d.get("toolName", ""))
@@ -712,26 +717,87 @@ if [ "$TOOL_TYPE" = "WRITE_EDIT" ]; then
     # (a true fail-open), nothing homes a repo under docs/, so there is no universal
     # match to exploit; the "bypass" costs the writer their impl file's real location.
     # UPGRADE: if the detector ever root-anchors, anchor these in the same change.
-    # Matched against a LEXICALLY normalized path. Raw, `docs/specs/../../src/impl.sh`
-    # matches the docs glob but resolves to `src/impl.sh` — the exemption would hand
-    # a pending review's impl write a free pass. Normalized lexically, NOT via
-    # gate_marker_relpath: that resolves physically (cd + pwd -P), so it fails on a
-    # not-yet-created docs/specs/ dir — the exact case a new design doc needs.
-    _NORM_FP="$FILE_PATH"
-    if command -v python3 >/dev/null 2>&1; then
-        _NORM_FP="$(printf '%s' "$FILE_PATH" \
-            | python3 -c 'import sys, os.path; print(os.path.normpath(sys.stdin.read()))' 2>/dev/null \
-            || printf '%s' "$FILE_PATH")"
-    fi
-    case "$_NORM_FP" in
-        # FAIL-CLOSED: a `..` that survives normalization escapes the cwd (or python3
-        # was absent and nothing was resolved). Grant no exemption either way.
+    # Matched against the RESOLVED, normalized write target — a relative file_path
+    # joined to the PAYLOAD cwd exactly as the _MK_ANCHOR block above does, then
+    # lexically normalized. Both halves are load-bearing:
+    #   - Without normalization, `docs/specs/../../src/impl.sh` matches the docs glob
+    #     while resolving to `src/impl.sh` — the exemption hands a pending review's
+    #     impl write a free pass.
+    #   - Without the cwd join, a legitimate `../docs/specs/x-design.md` sent with
+    #     cwd=<repo>/src stays relative, trips the `..` arm below, and is refused —
+    #     re-deadlocking the very doc the review waits on. Relative file_path IS a
+    #     real shape here: the marker code joins it to the payload cwd, and
+    #     test-design-marker-worktree.sh's "(anchor)" case exercises it.
+    # Lexical, NOT gate_marker_relpath: that resolves physically (cd + pwd -P) and so
+    # fails on a not-yet-created docs/specs/ dir — the exact case a new design doc needs.
+    # shellcheck disable=SC2016  # python3 -c program; $ and quotes are literal code
+    # -I (isolated): ignores PYTHONPATH/PYTHONHOME, skips site, and keeps the cwd off
+    # sys.path — a repo-local sitecustomize.py must not get to redefine realpath inside
+    # a security gate. The explicit sys.path scrub runs BEFORE json/os are imported and
+    # covers pythons predating -I's -P behaviour: importing first and filtering after is
+    # too late, since a repo-local json.py would already have executed and could forge an
+    # exempt path (demonstrated: a stub json.load returning docs/specs/... exempts an
+    # arbitrary impl write). `import sys` alone is safe — it is built in, never from disk.
+    _NORM_FP="$(printf '%s' "$INPUT" | python3 -I -c '
+import sys
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import json, os
+try:
+    d = json.load(sys.stdin)
+    inp = d.get("tool_input", d.get("toolInput", {}))
+    if isinstance(inp, str):
+        inp = json.loads(inp)
+    fp = inp.get("file_path", inp.get("filePath", "")) if isinstance(inp, dict) else ""
+    if not fp:
+        raise ValueError("no file_path")
+    cwd = d.get("cwd") or "."
+    target = fp if os.path.isabs(fp) else os.path.join(cwd, fp)
+    # LEXICAL on purpose. check-design-document.sh arms reviews from the LEXICAL path,
+    # and this exemption must stay in lockstep with it: resolving physically here makes
+    # a legitimately symlinked docs/specs -> shared/specs arm as a design doc but
+    # resolve outside docs/, so the gate would refuse the write answering its own
+    # review — the deadlock this branch exists to fix. Residual (shared with the
+    # pre-existing docs/plans and docs/reviews arms, not new here): a symlinked
+    # docs/specs reads as a docs path. Not reachable through the gated toolset — `ln`
+    # is a FILE_MOD command, so creating that symlink is itself blocked while a review
+    # is pending. UPGRADE: close it in the same change that anchors these arms to a
+    # repo-relative path (see the ancestor-path note on the case block below).
+    print(os.path.normpath(target))
+except Exception:
+    pass
+' 2>/dev/null || true)"
+    # FAIL-CLOSED: an unparseable payload / absent python3 leaves this empty, and the
+    # placeholder matches no arm below → no exemption. (python3 is already a hard
+    # requirement whenever a review is pending — see the pre-check near the top — so
+    # this and the `..` arm are belt-and-braces, not the primary defense.)
+    case "${_NORM_FP:-<unresolved>}" in
+        # A `..` surviving the join+normalize escapes even the payload cwd, so the real
+        # target cannot be proven. Grant no exemption.
         ../*|*/../*|*/..) ;;
+        # A newline in the path: the design-doc arm below matches with a LINE-oriented
+        # tool, so `src/impl.sh<LF>docs/specs/x.md` would match on its second line and
+        # exempt the first. No real design-doc path carries one — refuse outright.
+        *$'\n'*) ;;
         *PLAN*.md|*DESIGN*.md|*ARCHITECTURE*.md) exit 0 ;;
-        docs/plans/*|*/docs/plans/*) exit 0 ;;
-        docs/specs/*|*/docs/specs/*) exit 0 ;;
         docs/reviews/*|*/docs/reviews/*) exit 0 ;;
         *CLAUDE.md|*NOTES.md) exit 0 ;;
+        *)
+            # Design docs: mirror the DETECTOR's grammar VERBATIM rather than
+            # approximate it. check-design-document.sh arms a review for
+            # ($STATE_DIR|docs)/([^/]+/)*(plans|specs)/*.md — its ([^/]+/)* admits
+            # intermediate dirs (docs/team/specs/x-design.md) and it is unanchored,
+            # which no fixed-depth glob can express. Anything the detector can ARM must
+            # stay writable or the review deadlocks on the doc it is waiting for; an
+            # earlier `docs/specs/*|*/docs/specs/*` approximation silently deadlocked
+            # nested, $STATE_DIR/, and lowercase-*-design.md docs (the shape
+            # brainstorming actually emits). Keep the two in lockstep — a test pins it.
+            # Safe despite being wider than the globs: the `.md` requirement means this
+            # arm cannot launder implementation code.
+            if printf '%s' "$_NORM_FP" \
+                | grep -qE "($STATE_DIR|docs)/([^/]+/)*(plans|specs)/.*\.md$"; then
+                exit 0
+            fi
+            ;;
     esac
 
     # ADR-E: allow $STATE_DIR/ config writes — but ONLY when the path is

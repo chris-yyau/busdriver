@@ -2180,7 +2180,12 @@ jq -c -n \
   --arg head_sha "$HEAD_SHA" \
   '{ts:$ts, event:$event, trigger:$trigger, pr:$pr, owner:$owner, repo:$repo, branch:$branch, author:$author, author_perm:$author_perm, required_approving_review_count:$required, human_approvals:$approvals, human_admin_count:$human_admin_count, head_sha:$head_sha}' \
   >> "$REPO_ROOT/.claude/bypass-log.jsonl" || { echo "❌ failed to append bypass-log entry; aborting admin merge"; exit 1; }
-gh pr merge "$PR" --squash --delete-branch --admin || true
+# Merge operand is the LITERAL <PR_NUMBER> template (Claude substitutes the digit),
+# NOT "$PR": the merge segment must be shell-expansion-free so the deterministic
+# Codex none-nudge hook (codex-nudge-premerge.sh) can read a numeric target and
+# fire on this admin path — a `$`/non-numeric operand makes it skip (ADR 0013 rev
+# 2026-07-17). Keep `|| true` + the gh-pr-view retry below (PR #98/#102 contract).
+gh pr merge <PR_NUMBER> --squash --delete-branch --admin || true
 # Verify via authoritative source — `gh pr merge --delete-branch` can
 # exit non-zero on a post-merge local worktree-checkout conflict (e.g.,
 # "main is already used by worktree at ...") even after the remote merge

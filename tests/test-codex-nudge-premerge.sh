@@ -98,6 +98,75 @@ run_hook() {
   B=$(cat "$BODY" 2>/dev/null || true)
 }
 
+# run_hook_ml <cmd-file> <review_logins> <reaction_logins> [extra VAR=val ...]
+# Same as run_hook but the command is a MULTI-LINE script read from a file and
+# JSON-escaped with jq (so real pr-grind merge payloads — newlines, quotes, `||`,
+# `$(...)`, comments — reach the hook verbatim). Sets OUT, RC, N, B.
+run_hook_ml() {
+  local cmdfile="$1" reviews="$2" reactions="$3"; shift 3
+  local payload
+  payload=$(jq -Rs --arg cwd "$REPO" '{tool_name:"Bash",cwd:$cwd,tool_input:{command:.}}' "$cmdfile")
+  set +e
+  OUT=$(printf '%s' "$payload" | env PATH="$BIN:$PATH" \
+        GH_BODYFILE="$BODY" GH_PR_NUMBER="$PR" GH_SLUG="$SLUG" HEAD_FIXT="$HEAD" ACTIVE_FIXTURE="$AF" \
+        REVIEW_LOGINS="$reviews" REACTION_LOGINS="$reactions" "$@" bash "$HOOK" 2>/dev/null)
+  RC=$?
+  set -e
+  N=$(grep -c '@codex review' "$BODY" 2>/dev/null || true); [[ -n "$N" ]] || N=0
+  B=$(cat "$BODY" 2>/dev/null || true)
+}
+
+# Emit the REAL pr-grind DEFAULT merge block (template-substituted: literal PR,
+# NO_WORKTREE=0), comments and all, to stdout. The commented `gh pr merge`
+# references are the whole point — they must NOT inflate the merge count.
+emit_default_block() {
+  local mrg="gh pr merge"   # keep the literal out of this test file's own gate exposure
+  cat <<BLK
+# NO_WORKTREE template-substituted by the dispatcher at run time
+NO_WORKTREE=0
+$mrg $PR --squash --delete-branch || true
+# Verify via authoritative source — \`$mrg\` exit code is unreliable when
+# --delete-branch hits a post-merge worktree-checkout conflict (the remote
+# merge already SUCCEEDED). Empirical: surfaced during PR #98's grind.
+MERGE_STATE=""
+for attempt in 1 2 3; do
+  MERGE_STATE=\$(gh pr view $PR --json state -q .state 2>/dev/null || echo "")
+  [ "\$MERGE_STATE" = "MERGED" ] && break
+  # the worktree-checkout conflict above makes \`$mrg\` exit non-zero even on success
+  [ "\$attempt" -lt 3 ] && sleep 2
+done
+if [ "\$MERGE_STATE" != "MERGED" ]; then
+  echo "PR #$PR not merged after 3 attempts; preserving worktree."
+  exit 1
+fi
+( cd "\$WORKTREE_DIR" || exit 0; bash "\${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger-gc.sh" "$PR" ) || true
+if [ "\$NO_WORKTREE" != "1" ]; then
+  cd /some/original
+  git worktree remove "../pr-grind-$PR" --force 2>/dev/null || true
+fi
+BLK
+}
+
+# Emit the REAL pr-grind ADMIN merge block: bypass-log jq write + mkdir + case
+# BEFORE the merge (audit-before-privileged-action), then merge, then retry+gc.
+emit_admin_block() {
+  local mrg="gh pr merge"
+  cat <<BLK
+case "\$LOG_TRIGGER" in solo-admin-auto) LOG_EVENT="x" ;; *) LOG_EVENT="y" ;; esac
+mkdir -p "\$REPO_ROOT/.claude"
+jq -c -n --arg ts "\$TS" '{ts:\$ts}' >> "\$REPO_ROOT/.claude/bypass-log.jsonl" || { echo "failed"; exit 1; }
+$mrg $PR --squash --delete-branch --admin || true
+MERGE_STATE=""
+for attempt in 1 2 3; do
+  MERGE_STATE=\$(gh pr view $PR --json state -q .state 2>/dev/null || echo "")
+  [ "\$MERGE_STATE" = "MERGED" ] && break
+  [ "\$attempt" -lt 3 ] && sleep 2
+done
+if [ "\$MERGE_STATE" != "MERGED" ]; then echo "not merged"; exit 1; fi
+( cd "\$WORKTREE_DIR" || exit 0; bash "\${CLAUDE_PLUGIN_ROOT}/scripts/codex-retrigger-gc.sh" "$PR" ) || true
+BLK
+}
+
 # ── Case 1: none + active, explicit PR → posts exactly one `@codex review` ──
 setup_case
 run_hook "gh pr merge $PR --squash" "" ""
@@ -140,12 +209,15 @@ setup_case
 run_hook "GH_REPO=other/repo gh pr merge $PR --squash" "" ""
 if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "inline GH_REPO=: skipped (no nudge)"; else fail "inline GH_REPO=: rc=$RC body='$B'"; fi
 
-# ── Case 8: any non-cd/non-gh-pr sibling command (here an `echo` decoy) → SKIP ──
-# A preceding arbitrary command could mutate env/remote before the merge, so the
-# whole invocation is treated as un-analyzable and skipped.
+# ── Case 8: a BENIGN sibling before the merge (here `echo`, with a `-R` decoy in
+#    ITS args) → still nudges. The hook fires at PreToolUse, BEFORE any command
+#    runs, so `echo` can't re-target; the `-R` belongs to echo, not a gh command;
+#    and the real merge segment is clean and targets the cwd PR. (This is the same
+#    property that lets the admin block run `jq`/`echo` before its merge.) A
+#    sibling that CAN re-target (gh/git-remote/source/cd) is still skipped — see 8c/18/19.
 setup_case
 run_hook "echo gh pr merge -R other/repo ; gh pr merge $PR --squash" "" ""
-if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "sibling command (echo): skipped (no nudge)"; else fail "sibling echo: rc=$RC body='$B'"; fi
+if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "benign echo sibling: nudged (decoy -R is echo's arg)"; else fail "benign echo sibling: rc=$RC body='$B'"; fi
 
 # ── Case 8b: a `cd` prefix IS allowed (the canonical worktree form) → posts once ──
 setup_case
@@ -213,6 +285,104 @@ if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "inherited GH_REPO: skipped (no nudge)
 setup_case
 run_hook "GH_REPO=other/repo ; gh pr merge $PR --squash" "" ""
 if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "standalone GH_REPO= assignment: skipped (no nudge)"; else fail "standalone GH_REPO=: rc=$RC body='$B'"; fi
+
+# ══ A′ loosening (ADR 0013 rev 2026-07-17): fire on the REAL multi-line pr-grind
+#    merge payloads, keeping the wrong-repo hole closed. ══════════════════════
+
+CF="$(mk)/cmd"
+
+# ── Case 14: REAL default merge block (multi-line, `|| true`, for/$( )/if, cd,
+#    git worktree, and TWO commented `gh pr merge` decoys) → posts EXACTLY once.
+#    Proves: command-word merge count is comment-safe (naive regex would see 3).
+setup_case
+emit_default_block > "$CF"
+run_hook_ml "$CF" "" ""
+if [[ "$RC" == 0 && -z "$OUT" ]]; then ok "default block: silent approve"; else fail "default block: rc=$RC out='$OUT'"; fi
+if [[ "$N" == 1 ]]; then ok "default block: posted exactly one nudge (comments not counted)"; else fail "default block: expected 1, body='$B'"; fi
+
+# ── Case 15: REAL admin merge block (bypass-log jq/mkdir/case BEFORE the merge,
+#    literal PR) → posts exactly once. Proves benign pre-merge audit cmds are OK.
+setup_case
+emit_admin_block > "$CF"
+run_hook_ml "$CF" "" ""
+if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "admin block: posted exactly one nudge"; else fail "admin block: rc=$RC body='$B'"; fi
+
+# ── Case 16: default block but inline GH_REPO= on the merge line → SKIP.
+setup_case
+{ emit_default_block | sed "s#^gh pr merge $PR#GH_REPO=evil/x gh pr merge $PR#"; } > "$CF"
+run_hook_ml "$CF" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "inline GH_REPO= in multiline: skipped"; else fail "inline GH_REPO= multiline: rc=$RC body='$B'"; fi
+
+# ── Case 17: default block + a SECOND real merge appended → SKIP (count != 1).
+setup_case
+{ emit_default_block; printf 'gh pr merge 999 --squash\n'; } > "$CF"
+run_hook_ml "$CF" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "second merge appended: skipped"; else fail "second merge: rc=$RC body='$B'"; fi
+
+# ── Case 18: a `git remote set-url` re-target BEFORE the merge → SKIP.
+setup_case
+{ printf 'git remote set-url origin https://github.com/evil/x.git\n'; emit_default_block; } > "$CF"
+run_hook_ml "$CF" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "git remote set-url before merge: skipped"; else fail "git remote before merge: rc=$RC body='$B'"; fi
+
+# ── Case 19: a `cd` (uncaptured, ;-joined) BEFORE the merge in a real block → SKIP.
+setup_case
+{ printf 'cd /tmp\n'; emit_default_block; } > "$CF"
+run_hook_ml "$CF" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "uncaptured cd before merge: skipped"; else fail "cd before merge: rc=$RC body='$B'"; fi
+
+# ── Case 20: default block whose merge operand is a shell var (`$PR` unsub'd) → SKIP.
+#    Guards the SKILL contract: the admin merge operand MUST be a literal digit.
+setup_case
+{ emit_default_block | sed "s#^gh pr merge $PR#gh pr merge \"\$PR\"#"; } > "$CF"
+run_hook_ml "$CF" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "shell-var merge operand: skipped"; else fail "shell-var operand: rc=$RC body='$B'"; fi
+
+# ── Case 21: a `cd` hidden behind a `then` reserved word before the merge → SKIP.
+#    (leading reserved/control words are stripped so the re-targeter is analysed).
+setup_case
+run_hook "if true; then cd /repo-b; fi ; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "reserved-word-hidden cd: skipped"; else fail "reserved cd: rc=$RC body='$B'"; fi
+
+# ── Case 22: `git -C . remote set-url` (flagged/path git) before the merge → SKIP.
+setup_case
+run_hook "git -C . remote set-url origin https://github.com/evil/x.git && gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "git -C remote before merge: skipped"; else fail "git -C remote: rc=$RC body='$B'"; fi
+setup_case
+run_hook "/usr/bin/git remote set-url origin https://github.com/evil/x.git && gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "path-form git remote before merge: skipped"; else fail "path git remote: rc=$RC body='$B'"; fi
+
+# ── Case 23: a `#`-decoy merge after `;` must be stripped as a comment (Bash does),
+#    so it does NOT inflate the count and suppress the real block's nudge → posts once.
+setup_case
+{ printf 'true;# noise || gh pr merge 999 --squash\n'; emit_default_block; } > "$CF"
+run_hook_ml "$CF" "" ""
+if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "post-metachar # decoy stripped: nudged once"; else fail "# decoy: rc=$RC N=$N body='$B'"; fi
+
+# ── Case 24: `builtin cd`/`builtin export` wrappers before the merge → SKIP.
+setup_case
+run_hook "builtin cd /repo-b ; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "builtin cd wrapper: skipped"; else fail "builtin cd: rc=$RC body='$B'"; fi
+setup_case
+run_hook "builtin export GH_REPO=evil/x ; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "builtin export GH_REPO=: skipped"; else fail "builtin export: rc=$RC body='$B'"; fi
+
+# ── Case 25: concurrency joins (`&` background, `|` pipe) around the merge → SKIP.
+#    An "after" segment joined concurrently could race the merge's repo resolution.
+setup_case
+run_hook "gh pr merge $PR --squash & git remote set-url origin https://github.com/evil/x.git" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "backgrounded merge (&): skipped"; else fail "background merge: rc=$RC body='$B'"; fi
+setup_case
+run_hook "gh pr merge $PR --squash | tee /tmp/x" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "piped merge (|): skipped"; else fail "piped merge: rc=$RC body='$B'"; fi
+
+# ── Case 26: a line-continuation before `#` — Bash removes the continuation FIRST,
+#    so the `#` is NOT a comment and the `cd /repo-b` after it executes → SKIP
+#    (strip_continuations must run before comment stripping, else the cd is hidden).
+setup_case
+printf 'foo\\\n#; cd /repo-b\ngh pr merge %s --squash\n' "$PR" > "$CF"
+run_hook_ml "$CF" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "continuation-hidden cd before merge: skipped"; else fail "continuation cd: rc=$RC N=$N body='$B'"; fi
 
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

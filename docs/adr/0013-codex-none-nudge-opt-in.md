@@ -288,3 +288,62 @@ header so they are not re-raised as bugs:
    skips wrapper/decoy forms; the residual (a real `gh` alias keeping the literal
    `gh pr merge N` shape) is bounded to a deduped, possibly-early nudge — never a blocked
    merge (non-gating), never a comment flood. No PreToolUse-time fix exists.
+
+---
+
+## Revision 2026-07-17 — loosen the hook to fire on the REAL multi-line merge (the "canonical shape" was too strict)
+
+**Context.** The 2026-07-14 backstop above fired ONLY on the tightest canonical shape (a
+single `gh pr merge <literal>`, optionally one `cd … &&` prefix). But pr-grind's real merge
+is a MULTI-LINE Bash tool call — `gh pr merge … --squash --delete-branch [--admin] || true`
+followed by a `for` retry loop, `$(gh pr view …)`, `if`, `cd`, `git worktree remove` (the
+admin path also writes the bypass-log `jq` BEFORE the merge, and both paths embed
+`gh pr merge` inside comments). That shape tripped every one of the old parser's bans
+(`;`, `|`, `||`, `$`, env-assignments, extra segments), so the deterministic backstop
+**always skipped the standard merge** — verified empirically: of 15 recent merged PRs only
+2 got nudged, both hand-typed canonical merges. The nudge therefore fired reliably on almost
+nothing; the SKILL prose (COMPLETION `CODEX_DONE==none`) carried the normal path, and bypass
+merges got no nudge at all — the exact gap this hook exists to close.
+
+**Decision (council-reviewed, 5-voice + Skeptic).** The single-canonical-command shape was a
+proxy for the wrong invariant. The real target-safety boundary is the delegate `gh pr view`
++ origin-equality check plus the per-override detectors — NOT the command shape. So
+`codex-nudge-premerge.sh` now:
+1. **Strips shell comments first** — the real block embeds `gh pr merge` in comments (a naive
+   substring count sees ≥3), and comments can carry shell operators that confuse the segmenter.
+2. **Counts merges by COMMAND-WORD** (comment-safe), requires **exactly one**, with a clean
+   merge segment: no `-R`/`--repo` (global or local), no `$`/backtick in the merge segment, one
+   NUMERIC positional (or none = current branch).
+3. **Requires every segment BEFORE the merge to be benign.** Audit/setup commands (jq, mkdir,
+   echo, case/if/for) are fine — but a re-target vector is not: an uncaptured `cd`, ANY `gh`
+   (checkout re-points the branch; view/other could `-R`), `git remote`/`git config`, a
+   `source`/`eval`/`bash`/`sh`/`exec`/`env`/`sudo`/… subshell, or a sensitive env-assignment
+   (`GH_REPO`/`GH_HOST`/`GIT_DIR`/`GIT_COMMON_DIR`/`GIT_WORK_TREE`/`PATH` inline, standalone, or
+   `export`ed). Anything AFTER the merge cannot re-target it and is ignored. The hook fires at
+   PreToolUse (before ANY command runs), so its own `gh pr view` always resolves the pristine
+   cwd origin regardless of what the command would later do.
+
+**Paired SKILL edit.** The admin merge operand changed from `gh pr merge "$PR"` to the literal
+`<PR_NUMBER>` template (`skills/pr-grind/SKILL.md`). Loosening the hook alone was insufficient:
+`"$PR"` is a `$`-bearing non-numeric operand the merge-segment check must still reject, so the
+auto-admin path — this repo's most-used merge — would have stayed skipped. The tool call, `|| true`,
+and `gh pr view` retry are UNCHANGED, so the PR #98/#102 exit-code contract is intact; the literal
+also lets the pre-merge-gate parse the PR number instead of `unknown`.
+
+**Consequences.**
+- The backstop now fires on the real default AND admin multi-line merges (and bypass-path merges),
+  not just hand-typed canonical ones.
+- **Hard invariant unchanged:** the hook always posts to the CWD repo's PR (inherited-env skip +
+  merge-segment inline-env/`-R` skip + `gh pr view` == cwd-origin equality). It NEVER posts to a
+  different repo. The loosened before-merge blocklist is best-effort defense against a bounded,
+  deduped, possibly-spurious nudge on the cwd repo's OWN PR (a re-target the hook can't see, e.g.
+  a `git remote set-url` that runs after the hook already resolved) — the same accepted-limit class
+  as the alias/PATH residual above, never a cross-repo post and never a blocked merge.
+- A benign non-re-targeting sibling before the merge (e.g. an `echo` with a `-R` in ITS args) now
+  nudges the real clean merge — correct, and the same property that lets the admin block run
+  `jq`/`echo` before its merge.
+- New coverage in `tests/test-codex-nudge-premerge.sh` (cases 14–20): real default block posts once
+  (comments not counted), real admin block posts once (benign pre-merge audit cmds OK), inline
+  `GH_REPO=`/second-merge/`git remote`-before/uncaptured-`cd`-before/`$`-operand all skip. All 31
+  cases pass. Existing case 8 flipped from skip→nudge (a benign `echo` decoy no longer suppresses
+  the real merge).

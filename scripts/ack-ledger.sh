@@ -366,10 +366,11 @@ _fresh_rate_limit_notice() {
   _latest_comment_is_notice "$anchor"
 }
 
-# _unprovable_rate_limit_notice — true iff NEITHER anchor exists AND the bot's
-# canonical-latest comment is a rate-limit notice. Narrow companion to
-# _fresh_rate_limit_notice for the one caller whose "closed" direction differs:
-# Tier E's `success` arm (#353).
+# _unprovable_rate_limit_notice — true iff Tier E's `success` status cannot be taken
+# as proof this bot reviewed HEAD. That is EITHER of the two unprovables enumerated
+# below: an undecidable comments source (#364, anchor or not), or an anchorless
+# canonical-latest notice (#353). Narrow companion to _fresh_rate_limit_notice for
+# the one caller whose "closed" direction differs: Tier E's `success` arm.
 #
 # _fresh_rate_limit_notice returns false without an anchor, which is fail-CLOSED
 # only where the fall-through terminal is `stale`. On the success arm the terminal

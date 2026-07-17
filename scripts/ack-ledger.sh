@@ -321,18 +321,40 @@ _rate_limit_anchor() {
   printf '%s' "$anchor"
 }
 
-# _latest_comment_is_notice <anchor> — true iff the bot's CANONICAL-LATEST issue
-# comment matches the notice-only regex. A non-empty <anchor> additionally requires
-# the comment to strictly postdate it; an empty <anchor> checks the latest comment
-# regardless of age (freshness UNPROVEN — see _unprovable_rate_limit_notice).
+# _latest_comment_is_notice <anchor> — does the bot's CANONICAL-LATEST issue comment
+# match the notice-only regex? A non-empty <anchor> additionally requires the comment
+# to strictly postdate it; an empty <anchor> checks the latest comment regardless of
+# age (freshness UNPROVEN — see _unprovable_rate_limit_notice).
+#
+# TRI-STATE (#364) — the third state is the point:
+#   0 = yes, the latest comment is a rate-limit notice
+#   1 = clean negative: the source was READ and says otherwise (not a notice, no
+#       comments from this bot, or none postdating the anchor)
+#   2 = UNDECIDABLE: the notice question could not be answered — jq failed (malformed
+#       or shape-drifted payload) or ALL_COMMENTS is absent. A matcher error may also
+#       surface here, since grep exits 2 on error and _body_is_rate_limit_notice's
+#       status is this function's status; that is BEST-EFFORT, not an invariant — a
+#       first-grep error followed by a clean negative from the (B) pair still reads
+#       as 1. Unreachable in practice (all three greps run the same tool over the
+#       same stdin with constant patterns, so an error in one implies an error in
+#       all), and harmless either way: the wider reading is the safe one, because an
+#       errored matcher has not proven the body is a review any more than an
+#       unreadable one has.
+# Collapsing 2 into 1 was #353's shape one layer in: on Tier E's `success` arm the
+# fall-through terminal is a HEAD-ack, so an unreadable payload silently re-asserted
+# "this bot reviewed HEAD". FETCH_OK guards fetch-level failure; it says nothing about
+# a body that arrived and then failed to parse. Callers whose fall-through terminal is
+# already `stale` (the non-success arm, Case 1b) may keep treating any non-zero as
+# false — for them 1 and 2 are the same fail-CLOSED direction.
 _latest_comment_is_notice() {
   local body
+  [ -n "$ALL_COMMENTS" ] || return 2
   body=$(printf '%s' "$ALL_COMMENTS" | jq -r --arg login "$login" --arg login_bot "${login}[bot]" --arg anchor "${1:-}" \
     '[.comments[] | select(.author.login == $login or .author.login == $login_bot)]
      | sort_by(.createdAt) | last
      | select(. != null)
      | select($anchor == "" or .createdAt > $anchor)
-     | .body // empty' 2>/dev/null) || return 1
+     | .body // empty' 2>/dev/null) || return 2
   [ -n "$body" ] || return 1
   _body_is_rate_limit_notice "$body"
 }
@@ -344,10 +366,11 @@ _fresh_rate_limit_notice() {
   _latest_comment_is_notice "$anchor"
 }
 
-# _unprovable_rate_limit_notice — true iff NEITHER anchor exists AND the bot's
-# canonical-latest comment is a rate-limit notice. Narrow companion to
-# _fresh_rate_limit_notice for the one caller whose "closed" direction differs:
-# Tier E's `success` arm (#353).
+# _unprovable_rate_limit_notice — true iff Tier E's `success` status cannot be taken
+# as proof this bot reviewed HEAD. That is EITHER of the two unprovables enumerated
+# below: an undecidable comments source (#364, anchor or not), or an anchorless
+# canonical-latest notice (#353). Narrow companion to _fresh_rate_limit_notice for
+# the one caller whose "closed" direction differs: Tier E's `success` arm.
 #
 # _fresh_rate_limit_notice returns false without an anchor, which is fail-CLOSED
 # only where the fall-through terminal is `stale`. On the success arm the terminal
@@ -359,14 +382,36 @@ _fresh_rate_limit_notice() {
 # Deliberately NOT used when an anchor exists: there, freshness is decidable, and a
 # pre-anchor notice is a spent notice from an earlier round that must not revoke the
 # current HEAD's genuine review.
+#
+# TWO independent unprovables, resolved on one parse (#364 added the first):
+#   (1) The comments source is UNDECIDABLE (rc=2). Unprovable REGARDLESS of the anchor:
+#       freshness only matters once the body can be read at all, so this is checked
+#       BEFORE the anchor short-circuit — the anchor-present path is exactly the one
+#       that reached emit_head_ack with a garbled payload.
+#   (2) No anchor AND the canonical-latest comment IS a notice (#353): freshness is
+#       unprovable, so a review is unprovable too.
+# A clean negative (rc=1) is the genuine ack, and so is rc=0 WITH an anchor — there
+# _fresh_rate_limit_notice above already ruled the notice spent.
 _unprovable_rate_limit_notice() {
+  local rc
+  _latest_comment_is_notice ""; rc=$?
+  [ "$rc" -eq 2 ] && return 0
   [ -n "$(_rate_limit_anchor)" ] && return 1
-  _latest_comment_is_notice ""
+  return "$rc"
 }
 
 # Fail-CLOSED: any source-fetch failure → mark stale (Greptile P1 — fail-OPEN
-# regression where API failures silently became `none` and didn't gate)
-if [ "$FETCH_OK" -eq 0 ]; then echo "stale"; exit 0; fi
+# regression where API failures silently became `none` and didn't gate).
+#
+# The test is `!= "1"`, NOT `-eq 0` (#364): the caller must EXPLICITLY assert a good
+# fetch, and every other value — unset, empty, non-numeric — fails closed. `-eq 0` is
+# an arithmetic test, so an unset/empty FETCH_OK made `[ "" -eq 0 ]` a bash ERROR
+# ("integer expected", rc=2) rather than a true condition. With no `set -e` the script
+# continued past the guard, read the empty ALL_* sources, and returned `none` for EVERY
+# bot — the guard failed OPEN in precisely the case where the caller's state is most
+# obviously broken. Observed live during #361's grind: a 0-byte env file zeroed every
+# source, and devin's genuine Tier-B HEAD-ack was reported as `none` (non-gating).
+if [ "${FETCH_OK:-0}" != "1" ]; then echo "stale"; exit 0; fi
 
 # Codex eyes-override (HOISTED above every tier): a current 👀 reaction means
 # Codex is actively (re-)reviewing HEAD → stale, regardless of any thread/review

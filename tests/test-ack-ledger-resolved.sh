@@ -994,6 +994,90 @@ else
   fail "#353: no anchor + no notice expected '$CB_HEAD_ACK', got '$got'"
 fi
 
+# --- Tests for #364 (a state the ledger CANNOT decide must not resolve to non-gating) ---
+# Both groups are #353's shape one layer in. #353's thesis was "a status proves WHICH
+# commit a bot reported on, never THAT it reviewed"; these pin the two remaining places
+# where "cannot decide" still resolved to "nothing to wait for".
+
+# Test 364.1: FETCH_OK UNSET → stale, not none. The guard exists to make source-failure
+# fail closed, and it did not fire in the one case where the caller's state is most
+# obviously broken: `[ "" -eq 0 ]` is a bash ERROR ("integer expected", rc=2), not a
+# true condition, so the script continued, read the empty ALL_* sources, and returned
+# `none` for EVERY bot — non-gating, i.e. a silent green light. Reproduced live during
+# #361's grind: a 0-byte env file made devin's genuine Tier-B HEAD-ack read as `none`.
+got=$(ALL_THREADS='' ALL_REVIEWS='' ALL_COMMENTS='' ALL_CHECK_RUNS='' ALL_STATUSES='' \
+  HEAD_SHA="$HEAD_SHA" bash "$ACK_SCRIPT" cursor 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "#364: FETCH_OK unset → stale (fail-CLOSED, not a silent all-none)"
+else
+  fail "#364: FETCH_OK unset expected 'stale', got '$got'"
+fi
+
+# Test 364.2: FETCH_OK empty-string → stale. Same `[ "" -eq 0 ]` error path as 364.1,
+# reached by a caller that assigned the var but never got a value into it.
+got=$(FETCH_OK='' ALL_THREADS='' ALL_REVIEWS='' ALL_COMMENTS='' ALL_CHECK_RUNS='' \
+  ALL_STATUSES='' HEAD_SHA="$HEAD_SHA" bash "$ACK_SCRIPT" cursor 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "#364: FETCH_OK='' → stale (fail-CLOSED)"
+else
+  fail "#364: FETCH_OK='' expected 'stale', got '$got'"
+fi
+
+# Test 364.3: FETCH_OK non-numeric → stale. The guard now demands the caller EXPLICITLY
+# assert a good fetch (== "1") rather than merely failing to say "0"; anything else is
+# a caller whose fetch state is not decidable from here.
+got=$(FETCH_OK='yes' ALL_THREADS='' ALL_REVIEWS='' ALL_COMMENTS='' ALL_CHECK_RUNS='' \
+  ALL_STATUSES='' HEAD_SHA="$HEAD_SHA" bash "$ACK_SCRIPT" cursor 2>/dev/null)
+if [ "$got" = "stale" ]; then
+  ok "#364: FETCH_OK non-numeric → stale (only an explicit 1 asserts a good fetch)"
+else
+  fail "#364: FETCH_OK non-numeric expected 'stale', got '$got'"
+fi
+
+# Test 364.4: Tier E success + MALFORMED comments payload → stale, not HEAD-ack.
+# FETCH_OK covers fetch-level failure, not a fetched-but-malformed body. jq fails, which
+# pre-#364 was indistinguishable from "latest comment is not a notice" — so a garbled
+# payload silently re-asserted "this bot reviewed HEAD". Note the anchor is PRESENT
+# here: undecidability of the comment source is independent of freshness, and the
+# anchor-present path is the one that reached emit_head_ack.
+got=$(run_cb_status "$CB_STALE_REVIEW" 'not json at all' "$CB_ANCHOR" success)
+if [[ "$got" == "stale" ]]; then
+  ok "#364: success + malformed comments → stale (parse failure ≠ clean negative)"
+else
+  fail "#364: success + malformed comments expected 'stale', got '$got'"
+fi
+
+# Test 364.5: Tier E success + EMPTY comments source → stale. ALL_COMMENTS is in the
+# base fetch contract (a failed fetch tags FETCH_OK=0), so empty-with-FETCH_OK=1 means
+# the source is unreadable, not that the bot said nothing.
+got=$(run_cb_status "$CB_STALE_REVIEW" '' "$CB_ANCHOR" success)
+if [[ "$got" == "stale" ]]; then
+  ok "#364: success + empty comments source → stale (cannot rule out a notice)"
+else
+  fail "#364: success + empty comments source expected 'stale', got '$got'"
+fi
+
+# Test 364.6: Tier E success + valid JSON missing the `.comments` key → stale. Shape
+# drift (jq "Cannot iterate over null") is a parse failure, not a clean negative.
+got=$(run_cb_status "$CB_STALE_REVIEW" '{}' "$CB_ANCHOR" success)
+if [[ "$got" == "stale" ]]; then
+  ok "#364: success + comments shape drift → stale"
+else
+  fail "#364: success + comments shape drift expected 'stale', got '$got'"
+fi
+
+# Test 364.7: ANTI-OVERBLOCK — success + a well-formed EMPTY comment list + anchor →
+# HEAD-ack. The 364.4-364.6 guards must stay scoped to UNDECIDABLE sources: a bot that
+# genuinely reviewed and simply posted no issue comment must still converge. Without
+# this, the fail-closed direction silently becomes a blanket stale and the gate never
+# clears — the #294 dead-end.
+got=$(run_cb_status "$CB_STALE_REVIEW" "$EMPTY_COMMENTS" "$CB_ANCHOR" success)
+if [[ "$got" == "$CB_HEAD_ACK" ]]; then
+  ok "#364: success + readable-but-empty comments → HEAD-ack (clean negative preserved)"
+else
+  fail "#364: success + readable-but-empty comments expected '$CB_HEAD_ACK', got '$got'"
+fi
+
 echo ""
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] && exit 0 || exit 1

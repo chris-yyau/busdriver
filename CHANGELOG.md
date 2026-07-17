@@ -1,3 +1,10 @@
+## [1.91.16](https://github.com/chris-yyau/busdriver/compare/v1.91.15...v1.91.16) (2026-07-17)
+
+
+### Bug Fixes
+
+* **gates:** tell the truth when an unparseable command mentions a marker ([#365](https://github.com/chris-yyau/busdriver/issues/365)) ([#367](https://github.com/chris-yyau/busdriver/issues/367)) ([4c3a17f](https://github.com/chris-yyau/busdriver/commit/4c3a17fcd0700f033492ebd0a4e09e199b5b4f3b))
+
 ## [1.91.15](https://github.com/chris-yyau/busdriver/compare/v1.91.14...v1.91.15) (2026-07-17)
 
 

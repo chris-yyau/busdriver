@@ -115,7 +115,7 @@ def run_litmus():
     return Bash(
         command="bash ${CLAUDE_PLUGIN_ROOT}/skills/litmus/scripts/run-review-loop.sh",
         description="Run Codex review (blocking gate)",
-        timeout=1260000  # 21 min timeout
+        timeout=600000  # 10 min — harness cap; larger values are clamped, not honored
     )
 ```
 

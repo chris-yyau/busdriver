@@ -181,8 +181,9 @@ if [ "$IS_DESIGN" = true ]; then
       fi
     fi
   else
-    # Edit — trust the marker (blueprint-review adds it legitimately via Edit)
-    if ! grep -q "<!-- design-reviewed: PASS -->" "$FILE_PATH" 2>/dev/null; then
+    # Edit — trust the marker (blueprint-review adds it legitimately via Edit),
+    # but a PASS over DEGRADED coverage is not honored (#355) → re-arm review.
+    if ! gate_design_pass_honored "$FILE_PATH"; then
       NEEDS_FLAG=true
     fi
   fi

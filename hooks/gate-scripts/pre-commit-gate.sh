@@ -360,7 +360,7 @@ while IFS= read -r staged_file; do
         # or file is in a plans/ or specs/ directory under $STATE_DIR/ or docs/
         if echo "$staged_file" | grep -qiE '(^|/)(PLAN|DESIGN|ARCHITECTURE)[^/]*\.md$' || \
            echo "$staged_file" | grep -qE "(\\.${STATE_DIR#.}|docs)/([^/]+/)*(plans|specs)/.*\\.md\$"; then
-            if [ -f "$FULL_PATH" ] && grep -q "<!-- design-reviewed: PASS -->" "$FULL_PATH" 2>/dev/null; then
+            if gate_design_pass_honored "$FULL_PATH"; then
                 IS_REVIEWED_SPEC=true
             fi
         fi
@@ -434,7 +434,7 @@ except Exception as e:
             if echo "$toctou_file" | grep -qE '\.md$'; then
                 if echo "$toctou_file" | grep -qiE '(^|/)(PLAN|DESIGN|ARCHITECTURE)[^/]*\.md$' || \
                    echo "$toctou_file" | grep -qiE "(\\.${STATE_DIR#.}|docs)/([^/]+/)*(plans|specs)/.*\\.md\$"; then
-                    if [ -f "$FULL_PATH" ] && [ ! -L "$FULL_PATH" ] && grep -q "<!-- design-reviewed: PASS -->" "$FULL_PATH" 2>/dev/null; then
+                    if [[ ! -L "$FULL_PATH" ]] && gate_design_pass_honored "$FULL_PATH"; then
                         IS_SPEC=true
                     fi
                 fi

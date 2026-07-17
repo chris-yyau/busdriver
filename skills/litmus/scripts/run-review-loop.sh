@@ -561,31 +561,66 @@ PROMPT_EOF
   # never turn a Codex FAIL into a merge. --strict-mcp-config + --setting-sources user
   # cut the project-config injection surface (no project MCP servers / settings).
   echo "🛡️  Dispatching read-only Opus backstop (captured subprocess)..." >&2
-  set +e
-  ENVELOPE=$(printf '%s' "$REVIEW_PROMPT" | "${_TO[@]+"${_TO[@]}"}" claude -p \
-    --model opus \
-    --tools "Read,Grep,Glob" \
-    --allowedTools "Read,Grep,Glob" \
-    --permission-mode dontAsk \
-    --setting-sources user \
-    --strict-mcp-config \
-    --append-system-prompt "$AGENT_SYS" \
-    --output-format json 2>/dev/null)
-  RC=$?
-  set -e
-  if [[ "$RC" -ne 0 || -z "$ENVELOPE" ]]; then
-    echo "❌ backstop: dispatch failed (rc=$RC) or empty output — no verdict written (fail-closed)" >&2
-    exit 1
-  fi
-  # Extract the agent's verdict text from the --output-format json envelope, then
-  # reshape to EXACTLY {status, issues, model, reviewed_diff_hash} for the strict
-  # writer (which rejects unknown top-level fields). model = the model we
-  # dispatched (opus). Any parse failure exits nonzero ⇒ fail-closed.
-  # shellcheck disable=SC2016  # python template is a literal; values via argv
-  PAYLOAD=$(printf '%s' "$ENVELOPE" | python3 -c '
+  # Bounded retry on TRANSIENT failure to obtain a verdict — a single `claude -p`
+  # that hits a network blip (ECONNRESET), an overloaded API (is_error envelope), a
+  # truncated/empty response, or a one-off non-JSON reply would otherwise fail-closed
+  # and block the PR on noise, not a real finding. None of the retried conditions is a
+  # valid verdict (a real status:PASS/FAIL parses and breaks immediately), so retrying
+  # is always safe — fail-closed still wins if the attempts are exhausted. Mirrors the
+  # Codex lead's retry posture. Tunables: LITMUS_PR_BACKSTOP_RETRIES (extra attempts,
+  # default 2 ⇒ 3 total), LITMUS_PR_BACKSTOP_RETRY_DELAY (base seconds, linear backoff).
+  BACKSTOP_RETRIES="${LITMUS_PR_BACKSTOP_RETRIES:-2}"
+  case "$BACKSTOP_RETRIES" in ''|*[!0-9]*) BACKSTOP_RETRIES=2 ;; esac
+  BACKSTOP_RETRY_DELAY="${LITMUS_PR_BACKSTOP_RETRY_DELAY:-15}"
+  case "$BACKSTOP_RETRY_DELAY" in ''|*[!0-9]*) BACKSTOP_RETRY_DELAY=15 ;; esac
+  # Cap the string LENGTH before any arithmetic: a huge digit string (e.g. 2^63+)
+  # would wrap NEGATIVE in the base-10 conversion and slip past the -gt ceilings,
+  # and a negative delay later trips `sleep` under set -e. ≤9 digits is far below
+  # any real need and cannot overflow; a longer value snaps straight to its ceiling.
+  # (`if`, not `&&`: a false `[[ ]]` returns 1 and would trip set -e.)
+  if [[ "${#BACKSTOP_RETRIES}" -gt 9 ]]; then BACKSTOP_RETRIES=5; fi
+  if [[ "${#BACKSTOP_RETRY_DELAY}" -gt 9 ]]; then BACKSTOP_RETRY_DELAY=120; fi
+  # Force base-10: a digits-only value like `08` is octal-invalid to $((...)) and
+  # would abort under set -e (delay) or skip retries (count). 10# normalizes it.
+  BACKSTOP_RETRIES=$((10#$BACKSTOP_RETRIES))
+  BACKSTOP_RETRY_DELAY=$((10#$BACKSTOP_RETRY_DELAY))
+  # Clamp to sane ceilings: each retry is a PAID Opus dispatch, so an oversized
+  # value (mistaken or injected) must not fan out into unbounded spend, and the
+  # bounded product keeps the linear-backoff arithmetic well clear of overflow.
+  if [[ "$BACKSTOP_RETRIES" -gt 5 ]]; then BACKSTOP_RETRIES=5; fi
+  if [[ "$BACKSTOP_RETRY_DELAY" -gt 120 ]]; then BACKSTOP_RETRY_DELAY=120; fi
+
+  PAYLOAD=""
+  _bs_attempt=0
+  while : ; do
+    set +e
+    ENVELOPE=$(printf '%s' "$REVIEW_PROMPT" | "${_TO[@]+"${_TO[@]}"}" claude -p \
+      --model opus \
+      --tools "Read,Grep,Glob" \
+      --allowedTools "Read,Grep,Glob" \
+      --permission-mode dontAsk \
+      --setting-sources user \
+      --strict-mcp-config \
+      --append-system-prompt "$AGENT_SYS" \
+      --output-format json 2>/dev/null)
+    RC=$?
+    set -e
+
+    # Extract the agent's verdict text from the --output-format json envelope, then
+    # reshape to EXACTLY {status, issues, model, reviewed_diff_hash} for the strict
+    # writer (which rejects unknown top-level fields). model = the model we
+    # dispatched (opus). Distinct exit codes drive per-mode diagnostics + retry.
+    _PARSE_RC=0
+    if [[ "$RC" -eq 0 && -n "$ENVELOPE" ]]; then
+      set +e
+      # shellcheck disable=SC2016  # python template is a literal; values via argv
+      PAYLOAD=$(printf '%s' "$ENVELOPE" | python3 -c '
 import json, sys, re
 try:
-    env = json.load(sys.stdin)
+    # strict=False so a control character INSIDE a JSON string value (e.g. the CLI
+    # embedding a raw newline/tab in the result text) does not fail the whole parse;
+    # structural validation is unaffected, and the strict writer still gates status.
+    env = json.loads(sys.stdin.read(), strict=False)
 except Exception:
     sys.exit(2)
 if isinstance(env, dict) and env.get("is_error"):
@@ -599,7 +634,7 @@ if text.startswith("```"):
     text = re.sub(r"^```[A-Za-z0-9]*\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
 try:
-    v = json.loads(text)
+    v = json.loads(text, strict=False)
 except Exception:
     sys.exit(5)
 if not isinstance(v, dict):
@@ -614,16 +649,48 @@ out = dict(v)
 out["model"] = sys.argv[1]
 out["reviewed_diff_hash"] = sys.argv[2]
 print(json.dumps(out))
-' "opus" "$REVIEWED_DIFF_HASH") || {
-    echo "❌ backstop: could not parse a JSON verdict from the agent output (fail-closed)" >&2
+' "opus" "$REVIEWED_DIFF_HASH")
+      _PARSE_RC=$?
+      set -e
+    else
+      _PARSE_RC=90  # dispatch failure (rc!=0 or empty output) — never reached parser
+    fi
+
+    # A syntactically valid verdict object was captured → stop retrying. The writer
+    # below is TERMINAL: only TRANSIENT dispatch/parse failures are retried here.
+    [[ "$_PARSE_RC" -eq 0 && -n "$PAYLOAD" ]] && break
+
+    case "$_PARSE_RC" in
+      90) _bs_reason="dispatch failed (rc=$RC) or empty output" ;;
+      2)  _bs_reason="the CLI envelope was not valid JSON" ;;
+      3)  _bs_reason="the CLI returned an API/runtime error (is_error, e.g. ECONNRESET/overloaded)" ;;
+      4)  _bs_reason="the agent returned no result text" ;;
+      5)  _bs_reason="the agent verdict was not valid JSON" ;;
+      6)  _bs_reason="the agent verdict was not a JSON object" ;;
+      *)  _bs_reason="unexpected parser failure (rc=$_PARSE_RC)" ;;
+    esac
+
+    if [[ "$_bs_attempt" -lt "$BACKSTOP_RETRIES" ]]; then
+      _bs_attempt=$((_bs_attempt + 1))
+      _bs_delay=$((BACKSTOP_RETRY_DELAY * _bs_attempt))
+      echo "⚠️  backstop: ${_bs_reason} — retry ${_bs_attempt}/${BACKSTOP_RETRIES} in ${_bs_delay}s (fail-closed if exhausted)" >&2
+      sleep "$_bs_delay"
+      continue
+    fi
+    echo "❌ backstop: ${_bs_reason} — no verdict written after $((BACKSTOP_RETRIES + 1)) attempt(s) (fail-closed)" >&2
     exit 1
-  }
+  done
   # Hand the CAPTURED verdict to the internal trusted writer — same strict
   # validation, TOCTOU bind, and atomic write, but the model never retyped it. The
   # writer re-derives diff_hash/ts and recomputes status (any high ⇒ FAIL), so a
-  # malformed payload cannot smuggle a PASS through validation. This captured
-  # dispatch is the intended path; the removed public subcommand was the easy forge
-  # (#350). A Bash-holding dispatcher can still fabricate — accepted ADR 0006 residual.
+  # malformed payload cannot smuggle a PASS. This is TERMINAL, deliberately NOT
+  # retried: the writer returns nonzero for schema rejection AND for causes a
+  # re-dispatch cannot fix — stale diff_hash (TOCTOU), a missing Codex-lead, an
+  # oversize diff, or an atomic-write error — so looping would only burn paid Opus
+  # calls. The retry loop above already handles the transient DISPATCH failures.
+  # (#350: the public writer subcommand that let a Bash-holding dispatcher forge a
+  # PASS stays removed; the trusted-dispatcher fabrication is the accepted ADR 0006
+  # residual.)
   printf '%s' "$PAYLOAD" | _persist_backstop_verdict
   exit $?
 fi
@@ -948,7 +1015,10 @@ echo "   Diff lines: $STAGED_DIFF_LINES (added: $ADDITION_LINES, removed: $DELET
 # Check if diff is too large for a single review (commit mode only)
 # PR mode skips the size check — PR diffs are inherently larger (aggregate of
 # all commits) and blocking review on the largest diffs defeats the purpose of
-# the safety net. The REVIEW_TIMEOUT (default 30min, configurable via LITMUS_TIMEOUT) handles runaway reviews.
+# the safety net. The REVIEW_TIMEOUT (default 20min — see LITMUS_TIMEOUT below;
+# this said 30min and never matched the 1200s the code actually uses) handles
+# runaway reviews. NOTE it is ABOVE the harness Bash cap of 600s, so a blocking
+# caller can be killed before this timeout ever fires — see SKILL.md CRITICAL RULES.
 # Council decision 2026-03-21: per-commit and PR size checks serve different
 # purposes — fix independently. PR size check was structurally broken.
 #
@@ -959,12 +1029,18 @@ echo "   Diff lines: $STAGED_DIFF_LINES (added: $ADDITION_LINES, removed: $DELET
 #   Override: LITMUS_MAX_WEIGHTED_LINES env var (per-project tuning)
 if [ "$REVIEW_MODE" = "pr" ]; then
   # PR mode: soft warning only — large PR diffs may be slow or hit context limits,
-  # but blocking them defeats the safety net. The REVIEW_TIMEOUT (default 30min) handles
-  # truly runaway reviews. Warn so the user knows to expect a longer wait.
+  # but blocking them defeats the safety net. The REVIEW_TIMEOUT (default 20min — the
+  # 1200s below; "30min" here was stale) handles truly runaway reviews. Warn so the user
+  # knows to expect a longer wait — and note it can outlast a blocking caller, since the
+  # harness Bash cap is 600s (see SKILL.md CRITICAL RULES: background-plus-block).
   if [ "$WEIGHTED_LINES" -gt 2000 ]; then
     echo ""
     echo "⚠️  Large PR diff ($WEIGHTED_LINES weighted lines) — review may be slow or hit context limits"
-    echo "   Consider splitting into smaller PRs if review times out (${REVIEW_TIMEOUT:-600}s limit)"
+    # Use the SAME default as the REVIEW_TIMEOUT assignment below. This warning runs
+    # ~270 lines BEFORE that assignment, so REVIEW_TIMEOUT is still unset here and the
+    # old `:-600` fallback printed a 600s limit while the real one is 1200s — the gate
+    # telling the operator the wrong number about its own timeout.
+    echo "   Consider splitting into smaller PRs if review times out (${LITMUS_TIMEOUT:-1200}s limit)"
   fi
 else
   # Commit mode: hard size gate with env var override

@@ -1178,12 +1178,124 @@ EOF
     log_info "  Verdict: $PROGRESS_STATUS | Run: $RUN_ID"
     log_info ""
 
+    # #355: implementation may be authorized ONLY on CONFIRMED FULL coverage. Fail
+    # CLOSED: when coverage tracking is on, any status that is not exactly "FULL"
+    # (DEGRADED, UNKNOWN, empty, malformed) withholds the PASS marker AND leaves the
+    # pending tokens armed below — the pre-implementation gate keys on token
+    # existence, so a bare non-prune is what actually keeps a security-gate plan
+    # blocked. Writing the coverage marker first keeps provenance honest either way.
+    # Authorize (stamp PASS + prune tokens) ONLY on the SAME invariant the readers
+    # enforce: coverage_status == FULL AND fulfilled_lens_count == 3. Checking status
+    # alone would let a torn/contradictory state (status FULL with count 2) prune the
+    # tokens while the reader rejects the resulting `FULL 2/3` marker — a fail-open.
+    _cov_block=false
+    # shellcheck disable=SC2310  # predicate used in a condition by design (matches the coverage-marker block below)
+    if _coverage_enabled; then
+      _cov_status_now="$(get_state_field "coverage_status")"
+      _cov_count_now="$(get_state_field "fulfilled_lens_count")"
+      if [[ "$_cov_status_now" != "FULL" || "$_cov_count_now" != "3" ]]; then
+        _cov_block=true
+      fi
+    fi
+
+    # Atomic in-place sed via an UNPREDICTABLE mktemp sibling — never a fixed
+    # `${DESIGN_FILE}.tmp`/.covtmp name a pre-existing symlink could hijack into
+    # truncating an arbitrary target. (Concurrent reviews of the SAME doc are already
+    # prevented upstream by the loop's review-pointer guard, so this only needs to be
+    # single-writer-safe.) The mode is copied from the source AFTER sed writes the
+    # temp — before-write would make a read-only (0444) source's redirect fail — so the
+    # replacement keeps the doc's original perms rather than mktemp's 0600. The temp is
+    # always removed, including on an mv failure, so no `.dr-edit.*` copy is leaked.
+    _dr_atomic_sed() {  # <sed-expr> <file>
+      local _e="$1" _f="$2" _d _t _m
+      _d=$(dirname -- "$_f") || return 1
+      _t=$(mktemp "$_d/.dr-edit.XXXXXX") || return 1
+      # `if` guards throughout (never `cmd && ...`): a failing left-of-&& would trip
+      # set -e and skip the temp cleanup below.
+      if sed "$_e" "$_f" > "$_t"; then
+        # Copy the source mode onto the temp (GNU `stat -c` / BSD `stat -f`) before the
+        # swap; best-effort, and 0600 is the safe fallback if the mode is unreadable.
+        _m=$(stat -c '%a' "$_f" 2>/dev/null || stat -f '%Lp' "$_f" 2>/dev/null || true)
+        if [[ -n "$_m" ]]; then chmod "$_m" "$_t" 2>/dev/null || true; fi
+        if mv -f "$_t" "$_f"; then return 0; fi
+      fi
+      rm -f "$_t"
+      return 1
+    }
+
+    # WHOLE-LINE marker regexes (the writer always emits each marker on its own line).
+    # Every detect (grep) and rewrite (sed) below anchors to these so a marker string
+    # embedded in PROSE — `... the <!-- design-reviewed: PASS --> marker ...` — is never
+    # matched or corrupted. A marker ALONE on its own line is treated as a real marker
+    # by BOTH the writer here AND the reader (_doc_reviewed matches any occurrence): this
+    # is inherent to the machine-consumed marker design, so a tracked design doc must not
+    # place a bare-line marker example (even inside a ``` fence). No ERE-only metachars,
+    # so the same pattern is valid in grep BRE and sed BRE.
+    # _RE_COV keys on a line STARTING with the coverage prefix (not a complete `-->`),
+    # matching the reader's total count — so the upsert/strip below can also REPAIR a
+    # truncated/split/malformed stale marker line, not just a well-formed one. `.*$`
+    # consumes the rest of that line so the whole line is replaced/deleted. A prefix
+    # mid-line in prose is not at line start ⇒ untouched.
+    _RE_COV='^[[:space:]]*<!-- design-review-coverage:.*$'
+    _RE_PASS='^[[:space:]]*<!-- design-reviewed: PASS -->[[:space:]]*$'
+    _RE_PEND='^[[:space:]]*<!-- design-reviewed: PENDING -->[[:space:]]*$'
+
+    # Write the coverage provenance marker FIRST — BEFORE any PASS — so a durable
+    # PASS is never present without its coverage marker beside it. A crash between the
+    # two would otherwise leave a bare PASS that _doc_reviewed honors (no coverage
+    # marker = honorable). Always upsert: it records the honest DEGRADED/FULL status.
+    # shellcheck disable=SC2310  # predicate used in a condition by design
+    if _coverage_enabled && [[ -f "$DESIGN_FILE" ]]; then
+      _cov_status=$(get_state_field "coverage_status")
+      _cov_count=$(get_state_field "fulfilled_lens_count")
+      _cov_detail=""
+      for _cn in 1 2 3; do
+        _cr=$(get_state_field "reviewer_${_cn}_reason")
+        [[ -n "$_cr" && "$_cr" != "ok" ]] && _cov_detail="${_cov_detail:+$_cov_detail }reviewer_${_cn}=${_cr}"
+      done
+      _cov_marker="<!-- design-review-coverage: ${_cov_status:-UNKNOWN} ${_cov_count}/3 ${_cov_detail} -->"
+      if grep -q "$_RE_COV" "$DESIGN_FILE" 2>/dev/null; then
+        _dr_atomic_sed "s|$_RE_COV|${_cov_marker}|" "$DESIGN_FILE"
+      else
+        # Leading '\n' guarantees the marker lands on its OWN line even when the file
+        # lacks a trailing newline — otherwise it would fuse onto the last line
+        # (`text<!-- ... -->`), which the whole-line regex could never find or replace,
+        # so a later FULL review would append a duplicate instead of updating it.
+        printf '\n%s\n' "$_cov_marker" >> "$DESIGN_FILE"
+      fi
+    elif [[ -f "$DESIGN_FILE" ]] && grep -q "$_RE_COV" "$DESIGN_FILE" 2>/dev/null; then
+      # Coverage tracking OFF but the doc carries a stale WHOLE-LINE marker from a prior
+      # tracked run: with no upsert to refresh it, a leftover DEGRADED/UNKNOWN would make
+      # the reader reject the PASS we may stamp below (contradictory writer/reader state).
+      # Provenance is off ⇒ no coverage gate ⇒ strip the stale marker line so both agree.
+      _dr_atomic_sed "/$_RE_COV/d" "$DESIGN_FILE"
+    fi
+    record_coverage_finalize
+
+    # Not confirmed FULL 3/3 → withhold PASS, keep pending tokens ARMED (do not prune)
+    # so the pre-implementation gate keeps blocking, and finish without marking passed.
+    # mark_review_complete sets active:false → the caller stops re-invoking.
+    if [[ "$_cov_block" == true ]]; then
+      # Downgrade any stale PASS (from a prior FULL run) to PENDING so the withheld
+      # verdict is HONEST — the reader already rejects PASS-beside-DEGRADED, but don't
+      # leave the physical contradiction in the doc.
+      if [[ -f "$DESIGN_FILE" ]] && grep -q "$_RE_PASS" "$DESIGN_FILE" 2>/dev/null; then
+        _dr_atomic_sed "s|$_RE_PASS|<!-- design-reviewed: PENDING -->|" "$DESIGN_FILE"
+      fi
+      log_warning "  COVERAGE NOT CONFIRMED FULL (status=${_cov_status_now:-unset} count=${_cov_count_now:-unset}) — PASS withheld (#355); review stays PENDING."
+      log_warning "  Pending review tokens left ARMED — implementation stays gated on partial coverage."
+      log_warning "  Fix the reviewer CLIs (which agy codex grok) and re-run, or create skip-design-review.local to proceed knowingly."
+      update_state_field "early_stopped" "\"degraded_coverage\""
+      mark_review_complete "degraded_coverage"
+      exit 1
+    fi
+
+    # Confirmed FULL 3/3 → authorize. The FULL 3/3 coverage marker is already durable
+    # above, so stamp PASS now (then prune the pending tokens below).
     if [[ -f "$DESIGN_FILE" ]]; then
-      if ! grep -q "<!-- design-reviewed: PASS -->" "$DESIGN_FILE" 2>/dev/null; then
-        if grep -q "<!-- design-reviewed: PENDING -->" "$DESIGN_FILE" 2>/dev/null; then
-          # Portable in-place edit (works on macOS and Linux)
-          tmp_design="${DESIGN_FILE}.tmp"
-          sed 's/<!-- design-reviewed: PENDING -->/<!-- design-reviewed: PASS -->/' "$DESIGN_FILE" > "$tmp_design" && mv "$tmp_design" "$DESIGN_FILE"
+      if ! grep -q "$_RE_PASS" "$DESIGN_FILE" 2>/dev/null; then
+        if grep -q "$_RE_PEND" "$DESIGN_FILE" 2>/dev/null; then
+          _dr_atomic_sed "s|$_RE_PEND|<!-- design-reviewed: PASS -->|" "$DESIGN_FILE"
         else
           printf '\n<!-- design-reviewed: PASS -->\n' >> "$DESIGN_FILE"
         fi
@@ -1194,26 +1306,6 @@ EOF
       mark_review_complete "error_no_design_file"
       exit 1
     fi
-
-    # Coverage provenance: durable marker (idempotent upsert, co-located with the
-    # PASS marker so the verdict and its coverage travel together) + finalize.
-    if _coverage_enabled && [[ -f "$DESIGN_FILE" ]]; then
-      _cov_status=$(get_state_field "coverage_status")
-      _cov_count=$(get_state_field "fulfilled_lens_count")
-      _cov_detail=""
-      for _cn in 1 2 3; do
-        _cr=$(get_state_field "reviewer_${_cn}_reason")
-        [[ -n "$_cr" && "$_cr" != "ok" ]] && _cov_detail="${_cov_detail:+$_cov_detail }reviewer_${_cn}=${_cr}"
-      done
-      _cov_marker="<!-- design-review-coverage: ${_cov_status:-UNKNOWN} ${_cov_count}/3 ${_cov_detail} -->"
-      if grep -q "<!-- design-review-coverage:" "$DESIGN_FILE" 2>/dev/null; then
-        _cov_tmp="${DESIGN_FILE}.covtmp"
-        sed "s|<!-- design-review-coverage:.*-->|${_cov_marker}|" "$DESIGN_FILE" > "$_cov_tmp" && mv "$_cov_tmp" "$DESIGN_FILE"
-      else
-        printf '%s\n' "$_cov_marker" >> "$DESIGN_FILE"
-      fi
-    fi
-    record_coverage_finalize
 
     # ADR-D: prune ONLY the tokens snapshotted at loop start (physical-abspath
     # keyed → never cross-clears a divergent branch; re-armed tokens survive).

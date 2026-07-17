@@ -1,3 +1,31 @@
+## [1.92.7](https://github.com/chris-yyau/busdriver/compare/v1.92.6...v1.92.7) (2026-07-17)
+
+
+### Bug Fixes
+
+* **litmus:** make the mode guard and the timeout docs tell the truth ([#363](https://github.com/chris-yyau/busdriver/issues/363)) ([#370](https://github.com/chris-yyau/busdriver/issues/370)) ([f0cef0f](https://github.com/chris-yyau/busdriver/commit/f0cef0f646f6534f2f1e4c6b710f53ce518a28a2)), closes [#368](https://github.com/chris-yyau/busdriver/issues/368) [#368](https://github.com/chris-yyau/busdriver/issues/368) [#368](https://github.com/chris-yyau/busdriver/issues/368) [#368](https://github.com/chris-yyau/busdriver/issues/368)
+
+## [1.92.6](https://github.com/chris-yyau/busdriver/compare/v1.92.5...v1.92.6) (2026-07-17)
+
+
+### Bug Fixes
+
+* **design-gate:** refuse to authorize implementation on DEGRADED coverage ([#355](https://github.com/chris-yyau/busdriver/issues/355)) ([#387](https://github.com/chris-yyau/busdriver/issues/387)) ([e95777e](https://github.com/chris-yyau/busdriver/commit/e95777e3d4392290d5fd62f8975568fcb6806823))
+
+## [1.92.5](https://github.com/chris-yyau/busdriver/compare/v1.92.4...v1.92.5) (2026-07-17)
+
+
+### Bug Fixes
+
+* **litmus:** retry the captured PR backstop on transient failures ([#382](https://github.com/chris-yyau/busdriver/issues/382)) ([de387d6](https://github.com/chris-yyau/busdriver/commit/de387d60c0271f48e14ee9220a94018c6c552fa2))
+
+## [1.92.4](https://github.com/chris-yyau/busdriver/compare/v1.92.3...v1.92.4) (2026-07-17)
+
+
+### Bug Fixes
+
+* **hooks:** await async run() + fail-closed missing-hookId for blocking gates ([#385](https://github.com/chris-yyau/busdriver/issues/385)) ([453b3e1](https://github.com/chris-yyau/busdriver/commit/453b3e1b066685efaf6eaaaa4314d82a6fc61aec)), closes [#349](https://github.com/chris-yyau/busdriver/issues/349)
+
 ## [1.92.3](https://github.com/chris-yyau/busdriver/compare/v1.92.2...v1.92.3) (2026-07-17)
 
 

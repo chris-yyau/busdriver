@@ -1,3 +1,10 @@
+## [1.93.6](https://github.com/chris-yyau/busdriver/compare/v1.93.5...v1.93.6) (2026-07-17)
+
+
+### Bug Fixes
+
+* **security:** bump semgrep 1.170.0 and zizmor 1.27.0 ([#400](https://github.com/chris-yyau/busdriver/issues/400)) ([7cc6c3f](https://github.com/chris-yyau/busdriver/commit/7cc6c3f813d414eac4b030d1ce0cb7f5e267eb7f))
+
 ## [1.93.5](https://github.com/chris-yyau/busdriver/compare/v1.93.4...v1.93.5) (2026-07-17)
 
 

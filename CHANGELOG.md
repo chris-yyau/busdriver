@@ -1,3 +1,10 @@
+## [1.92.3](https://github.com/chris-yyau/busdriver/compare/v1.92.2...v1.92.3) (2026-07-17)
+
+
+### Bug Fixes
+
+* **gates:** harden block_emit JSON fallback when jq is absent ([#381](https://github.com/chris-yyau/busdriver/issues/381)) ([990ffa5](https://github.com/chris-yyau/busdriver/commit/990ffa586b8e7491b99877fb635af4e69287439a))
+
 ## [1.92.2](https://github.com/chris-yyau/busdriver/compare/v1.92.1...v1.92.2) (2026-07-17)
 
 

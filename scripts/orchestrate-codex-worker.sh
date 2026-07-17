@@ -77,7 +77,10 @@ Task file: $task_file
 $(cat "$task_file")
 EOF
 
-if codex exec -p yolo -m gpt-5.4 --color never -C "$(pwd)" -o "$output_file" - < "$prompt_file"; then
+# ponytail: no hardcoded model pin — let the codex CLI config default win (as litmus
+# does), overridable via CODEX_MODEL. A pinned version silently runs stale (#331: this
+# was stuck on gpt-5.4, two releases behind the CLI's own default).
+if codex exec -p yolo ${CODEX_MODEL:+-m "$CODEX_MODEL"} --color never -C "$(pwd)" -o "$output_file" - < "$prompt_file"; then
   {
     echo "# Handoff"
     echo

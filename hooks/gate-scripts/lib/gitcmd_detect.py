@@ -49,6 +49,48 @@ _WRAPPERS = frozenset((
 ))
 
 
+def strip_continuations(cmd):
+    r"""Remove backslash-newline line continuations, as bash does when lexing.
+
+    bash deletes backslash-newline BEFORE any parsing, so every downstream reader
+    — command substitution, interpreter payloads, segment splitting — must see the
+    joined text or it reads a different command than the shell runs. Verified
+    against real bash: `git \<newline>commit -m x` commits, and `echo $\<newline>(git
+    commit)` commits (the continuation splits the `$(` token itself, which is why
+    stripping inside the segment splitter alone was not enough).
+
+    We strip UNCONDITIONALLY — no quote or heredoc tracking — except that a
+    doubled backslash is an escaped backslash followed by a REAL newline command
+    separator, so its newline is kept (verified). This deliberately over-strips
+    the two contexts where bash keeps backslash-newline literal — single-quoted
+    spans and quoted heredoc bodies (`<<'EOF'`) — but that text is DATA bash never
+    executes, so mis-joining it can only make the detector OVER-fire on inert text
+    (a fail-CLOSED false positive), never miss an executed command. An earlier
+    quote-state machine that tried to honor those exemptions instead mis-tracked
+    the quoting reset inside `$(...)` and let real nested-substitution evasions
+    through (fail-OPEN) — strictly worse for a gate. So: bias to stripping, and
+    stay fail-closed. Consuming two chars after any non-newline backslash also
+    makes odd/even backslash runs (`\\\<newline>` = literal `\` then a real
+    continuation) fall out correctly.
+    """
+    out = []
+    i = 0
+    n = len(cmd)
+    while i < n:
+        c = cmd[i]
+        if c == '\\' and i + 1 < n:
+            if cmd[i + 1] == '\n':
+                i += 2          # line continuation — bash removes both chars
+                continue
+            out.append(c)
+            out.append(cmd[i + 1])
+            i += 2              # consume the escaped char so \\ cannot continue
+            continue
+        out.append(c)
+        i += 1
+    return ''.join(out)
+
+
 def split_segments(cmd):
     """Split a command line into (operator_before, segment) pairs. Splits on
     top-level &&, ||, ;, |, &, and newline, honoring quotes/escapes so an
@@ -56,7 +98,10 @@ def split_segments(cmd):
     operator that precedes each segment ('' for the first) — callers use it to
     tell whether a `cd` actually gated the following command (only '&&' does).
     A lone '&' is the background operator; both '&&' and '&' terminate the
-    current top-level command so `true & git commit` does not hide the commit."""
+    current top-level command so `true & git commit` does not hide the commit.
+    Line continuations are stripped first (see strip_continuations), so
+    `git \\<newline>commit` is seen as the `git commit` it runs as."""
+    cmd = strip_continuations(cmd)
     out = []
     buf = []
     op = ''
@@ -349,7 +394,12 @@ def _shell_payloads(cmd):
 
 def _all_chunks(cmd, _depth=0):
     """cmd plus every string the shell will additionally execute — command
-    substitutions and interpreter/eval payloads — recursively (depth-bounded)."""
+    substitutions and interpreter/eval payloads — recursively (depth-bounded).
+
+    Continuations are stripped BEFORE extraction: a continuation can split the
+    `$(` of a substitution, and an extractor reading the raw text would miss the
+    substitution entirely (verified — `echo $\\<newline>(git commit)` commits)."""
+    cmd = strip_continuations(cmd)
     chunks = [cmd]
     if _depth < 6:
         for extra in _command_substitutions(cmd) + _shell_payloads(cmd):

@@ -108,6 +108,51 @@ COMMIT_YES = [
     """bash -c 'eval "${!#}"' _ 'git commit'""",
     """bash -c 'eval "$BASH_ARGV"' _ 'git commit'""",
     """zsh -c 'eval "$argv[1]"' _ 'git commit'""",
+    # Backslash-newline line continuations. bash removes them during lexing, so
+    # all of these run a real commit (verified: `git \<newline>commit -m x` in a
+    # script produces a commit). shlex does NOT remove them — it leaves a literal
+    # newline glued to the next word ('\ncommit'), which matched no subcommand,
+    # so every one of these evaded the commit/PR/merge gates.
+    'git \\\ncommit -m x',               # continuation between exe and subcommand
+    'git \\\n  commit -m x',             # continuation + leading indent
+    'git commit \\\n-m x',               # continuation before a flag
+    'git \\\ncommit \\\n-m \\\nx',       # several continuations
+    'echo hi && git \\\ncommit -m x',    # continuation in a chained segment
+    'bash -c "git \\\ncommit -m x"',     # continuation inside an interpreter payload
+    'env FOO="bar" \\\ngit commit -m x',  # continuation after a double-quoted value
+    # A continuation can split the `$(` of a substitution or the `-c` of a
+    # payload, so stripping must happen BEFORE extraction, not just before
+    # segment splitting. Verified: both of these really execute the commit.
+    'echo $\\\n(git commit -m x)',       # continuation inside the $( token
+    'echo "$\\\n(git commit -m x)"',     # same, inside double quotes
+    'bash -\\\nc "git commit -m x"',     # continuation splitting the -c option
+    # Nested substitution whose inner `$(` is split by a continuation. Stripping
+    # unconditionally (no quote-state machine) rejoins `$(` so the recursive
+    # substitution scan still finds the inner commit. Verified: commits in bash.
+    'echo "$(echo x ; $\\\n(git commit -m x))"',
+]
+
+# ── LINE-CONTINUATION FALSE POSITIVES (deliberate, fail-CLOSED — do NOT "fix").
+# Backslash-newline is stripped unconditionally, so bash's two literal-data
+# exemptions (single-quoted spans, quoted heredoc bodies) get over-joined. That
+# text is never executed by bash, so the worst case is the gate OVER-firing on
+# inert data — the safe direction. Modeling the exemptions needs a full shell
+# parser whose failure mode is fail-OPEN. Pinned so the tradeoff stays visible.
+#   cat <<'EOF' / git \<newline>commit / EOF   heredoc data misread as a commit
+CONTINUATION_ACCEPTED_FP = [
+    "cat <<'EOF'\ngit \\\ncommit\nEOF",
+]
+
+# ── KNOWN PRE-EXISTING MISS (fail-OPEN, tracked separately — NOT introduced or
+# fixed here). `_command_substitutions` stops recursing into a NESTED `$(...)`
+# once an apostrophe appears in the OUTER substitution body, so a git command in
+# the innermost substitution is missed. This exists on main with NO continuation
+# involved (verified), is a substitution-parser bug distinct from this line-
+# continuation fix, and is left for its own change to avoid scope-creeping a
+# security PR. Pinned asserting the CURRENT (buggy) False so a future fix flips
+# it loudly. Tracked in the follow-up issue referenced in the PR.
+COMMIT_KNOWN_MISS = [
+    'echo "$(echo "it\'s" ; $(git commit -m e))"',
 ]
 # ── git commit: negatives (must NOT be recognized → gate allows) ──────
 COMMIT_NO = [
@@ -124,6 +169,12 @@ COMMIT_NO = [
     'bash script.sh',                    # no -c → no payload to scan
     'bash -s',                           # short option without c
     'bash -Oc extglob "echo hi"',        # payload scanned, but not a commit
+    # Continuation-adjacent forms bash does NOT continue. Pinned so the removal
+    # above cannot over-reach into strings the shell keeps literal.
+    'echo git \\\ncommit',               # prose across a continuation
+    'echo "git \\\ncommit"',             # continuation inside a quoted string
+    "echo 'git \\\ncommit'",             # single quotes: bash keeps both chars
+    'echo a\\\\\ngit log',               # escaped backslash, then a REAL newline
 ]
 
 # ── ACCEPTED FALSE POSITIVES (deliberate — do NOT "fix" by adding an arity
@@ -146,6 +197,10 @@ for c in COMMIT_NO:
     check(f"commit- {c!r}", g.git_commit(c)[0], False)
 for c in COMMIT_ACCEPTED_FP:
     check(f"commit~ (accepted FP) {c!r}", g.git_commit(c)[0], True)
+for c in CONTINUATION_ACCEPTED_FP:
+    check(f"commit~ (continuation FP) {c!r}", g.git_commit(c)[0], True)
+for c in COMMIT_KNOWN_MISS:
+    check(f"commit~ (known pre-existing miss) {c!r}", g.git_commit(c)[0], False)
 
 # ── gh pr create ──────────────────────────────────────────────────────
 CREATE_YES = [
@@ -173,6 +228,8 @@ CREATE_YES = [
     'echo "$(gh pr create)"',            # executing substitution
     "sh -c 'gh pr create --fill'",       # interpreter payload
     "eval 'gh pr create'",               # eval payload
+    'gh \\\npr create --fill',           # line continuation before subcommand
+    'gh pr \\\ncreate --fill',           # continuation before the verb
 ]
 CREATE_NO = [
     'echo run gh pr create when ready',  # prose

@@ -133,6 +133,80 @@ run_test "rm -rf dist (safe)" "allow" "$CAREFUL_SCRIPT" \
 run_test "rm -rf .next (safe)" "allow" "$CAREFUL_SCRIPT" \
     '{"tool_name":"Bash","tool_input":{"command":"rm -rf .next"}}'
 
+# 3b. Chained rm: EVERY rm is judged, not just the last one.
+# Regression: a greedy sed stripped to the final rm, so an unsafe rm followed by
+# a safe one warned about nothing, and the safe carve-out short-circuited every
+# later check as well.
+run_test "unsafe rm before safe rm → ask" "ask" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"rm -rf /etc && rm -rf node_modules"}}'
+
+run_test "safe rm before unsafe rm → ask" "ask" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"rm -rf node_modules && rm -rf /etc"}}'
+
+run_test "unsafe rm after safe rm (semicolon) → ask" "ask" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"rm -rf dist ; rm -rf /etc"}}'
+
+run_test "safe rm must not mask a later check" "ask" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"rm -rf node_modules && git reset --hard"}}'
+
+run_test "wrapped rm (env rm -rf /etc) → ask" "ask" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"env rm -rf /etc"}}'
+
+# 3c. Nested/executed forms: the payload really runs, so it must be scanned.
+run_test "bash -c payload rm → ask" "ask" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"bash -c \"rm -rf /etc\""}}'
+
+run_test "command substitution rm → ask" "ask" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo \"$(rm -rf /etc)\""}}'
+
+run_test "process substitution rm → ask" "ask" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"cat <(rm -rf /etc)"}}'
+
+# Recursive rm with NO literal target (targets piped via xargs) — cannot be
+# proven safe, so warn.
+run_test "xargs rm -rf (targetless) → ask" "ask" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"printf /etc | xargs rm -rf"}}'
+
+run_test "safe rm then bash -c unsafe rm → ask" "ask" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"rm -rf dist && bash -c \"rm -rf /etc\""}}'
+
+run_test "all-safe chain stays allowed" "allow" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"rm -rf ./node_modules && rm -rf ./dist"}}'
+
+run_test "quoted rm is not a real rm" "allow" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo \"rm -rf /\""}}'
+
+# 3d. --recursive long-option abbreviations (GNU rm accepts any --r… prefix).
+run_test "rm --rec /etc → ask" "ask" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"rm --rec /etc"}}'
+
+run_test "rm --r /etc → ask" "ask" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"rm --r /etc"}}'
+
+# Case-insensitive filesystem (macOS): RM resolves to /bin/rm and executes.
+run_test "uppercase RM -rf → ask" "ask" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"RM -rf /etc"}}'
+
+# A nested substitution the structured scan CAN reach is judged precisely: a
+# safe artifact inside it stays quiet.
+run_test "nested substitution safe rm → allow" "allow" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo \"$(echo \"$(rm -rf dist)\")\""}}'
+
+# rm accepts operands BEFORE the recursive flag; every non-flag token is judged,
+# so a non-safe operand ahead of -rf is still caught (and a safe one allowed).
+run_test "operand before flag (unsafe) → ask" "ask" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"bash -c \"rm /etc -rf dist\""}}'
+
+run_test "operand before flag (safe) → allow" "allow" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"bash -c \"rm dist -rf\""}}'
+
+run_test "interpreter rm of relative safe artifact → allow" "allow" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"bash -c \"rm -rf ./dist\""}}'
+
+# Quoted absolute target ("/etc") inside an interpreter still warns.
+run_test "interpreter rm of quoted absolute path → ask" "ask" "$CAREFUL_SCRIPT" \
+    '{"tool_name":"Bash","tool_input":{"command":"bash -c \"rm -rf \\\"/etc\\\"\""}}'
+
 # 4. git force push → ask
 run_test "git push --force detected" "ask" "$CAREFUL_SCRIPT" \
     '{"tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}'

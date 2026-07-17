@@ -203,6 +203,68 @@ run_test "read: grep quoted rm|tee pattern over marker" "allow" \
     "$(bash_input "grep -E \\\"rm|tee\\\" $MARKER")"
 run_test "no marker at all" "allow"      "$(bash_input "rm -rf /tmp/junk")"
 
+echo ""
+echo "── #365: unparseable-command block names its real cause ─────────"
+# The DECISION is unchanged (still fail-CLOSED block); only the diagnostic differs.
+# An unparseable command that merely MENTIONS a marker was reported as "Cannot write
+# to gate marker file directly" — an assertion that is often simply false, and one
+# that sent operators hunting for a write that never existed (#365). These pin that
+# the two paths stay distinguishable, so a future refactor cannot silently re-merge
+# the truthful message back into the write-assertion one.
+reason_of() {  # $1 = bash command → prints the gate's block reason (empty if allowed)
+    printf '%s' "$(bash_input "$1")" | bash "$GATE" 2>/dev/null \
+      | { jq -r '.reason // ""' 2>/dev/null || cat; }
+}
+
+# A genuine forge keeps the write-assertion message.
+if reason_of "touch $SKIPF" | grep -q "Cannot write to gate marker file"; then
+    printf "  PASS  %s\n" "#365 real forge keeps the write-assertion message"; PASS=$((PASS + 1))
+else
+    printf "  FAIL  %s\n" "#365 real forge keeps the write-assertion message"; FAIL=$((FAIL + 1))
+fi
+TOTAL=$((TOTAL + 1))
+
+# An unparseable mention gets the fail-closed/could-not-parse message instead —
+# and must NOT claim a write was attempted.
+UNPARSED_REASON=$(reason_of "git commit -F - <<'EOF'\nOperator's $SKIPF was used\nEOF")
+if printf '%s' "$UNPARSED_REASON" | grep -q "could not be parsed"; then
+    printf "  PASS  %s\n" "#365 unparseable mention names the parse failure"; PASS=$((PASS + 1))
+else
+    printf "  FAIL  %s (got: %.60s)\n" "#365 unparseable mention names the parse failure" "$UNPARSED_REASON"; FAIL=$((FAIL + 1))
+fi
+TOTAL=$((TOTAL + 1))
+
+if printf '%s' "$UNPARSED_REASON" | grep -q "Cannot write to gate marker file"; then
+    printf "  FAIL  %s\n" "#365 unparseable mention must not assert a write"; FAIL=$((FAIL + 1))
+else
+    printf "  PASS  %s\n" "#365 unparseable mention must not assert a write"; PASS=$((PASS + 1))
+fi
+TOTAL=$((TOTAL + 1))
+
+# It still BLOCKS — the message change must not become a behavior change.
+run_test "#365 unparseable mention still fails closed" "block" \
+    "$(bash_input "git commit -F - <<'EOF'\nOperator's $SKIPF was used\nEOF")"
+
+# NOT TESTED, deliberately: "an unparseable segment followed by a genuine forge in a
+# LATER segment". _scan_segment's per-segment reset guards it, but no input reaches it —
+# _split_simple_commands splits only on UNQUOTED separators, so every segment inherits
+# balanced quote parity and shlex has nothing left to reject; any real imbalance trips
+# the whole-command ok=False path FIRST (see the tests above, which is why
+# `echo 'unbalanced ; touch <marker>` correctly reports a parse failure: the ; is inside
+# the quote, so there is no second command). The reset stays as hygiene in case the two
+# parsers ever diverge; writing a test that only appears to cover it would be worse than
+# naming the gap here.
+
+# The message must not tell the AGENT to create a skip file — it is a user-only escape
+# hatch, and every sibling message in the gate says so. Pins the wording against drift
+# that would nudge a cooperative agent toward the self-bypass this detector deters.
+if printf '%s' "$UNPARSED_REASON" | grep -qi "Do NOT create or re-touch a skip file yourself"; then
+    printf "  PASS  %s\n" "#365 unparseable message keeps the user-only skip framing"; PASS=$((PASS + 1))
+else
+    printf "  FAIL  %s\n" "#365 unparseable message keeps the user-only skip framing"; FAIL=$((FAIL + 1))
+fi
+TOTAL=$((TOTAL + 1))
+
 # #290: legit touch/cp/mv of NON-marker files must still be allowed (no false
 # positives from the extended command-word set).
 run_test "#290 allow touch non-marker src" "allow" "$(bash_input "touch src/newfile.js")"

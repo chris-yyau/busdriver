@@ -1,3 +1,10 @@
+## [1.93.7](https://github.com/chris-yyau/busdriver/compare/v1.93.6...v1.93.7) (2026-07-17)
+
+
+### Bug Fixes
+
+* **codex-nudge:** bounded retry closes single-transient silent-skip on inline/admin merges ([#398](https://github.com/chris-yyau/busdriver/issues/398)) ([#402](https://github.com/chris-yyau/busdriver/issues/402)) ([3ec374b](https://github.com/chris-yyau/busdriver/commit/3ec374b853c80e91e9917f80aa7aa692c5c1de4e))
+
 ## [1.93.6](https://github.com/chris-yyau/busdriver/compare/v1.93.5...v1.93.6) (2026-07-17)
 
 

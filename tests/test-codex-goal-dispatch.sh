@@ -77,6 +77,15 @@ new_repo() {
 # env vars). Sets globals RC and LOG. Named vars are used rather than positional
 # KEY=val args because bash does not re-recognize a `"$@"`-expanded `VAR=val` as
 # an assignment — it becomes a bogus command word instead.
+#
+# All three dispatcher-recognized env vars (BUSDRIVER_CODEX_ALLOW_DIRTY_TREE,
+# BUSDRIVER_CODEX_ALLOW_UNCLAIMED, BUSDRIVER_CODEX_FAIL_ON_IGNORED) are
+# explicitly set to `${var:-}` here so none of them leak in from the ambient
+# environment. Without this, a caller running the suite with e.g.
+# BUSDRIVER_CODEX_FAIL_ON_IGNORED=1 already exported would make ordinary cases
+# fail closed on the test's own ignored sidecar files (.canned.json,
+# .result.json*, .err.log — created after the dispatcher's ignored-file
+# baseline), turning their asserted exit codes into exit 6.
 run_dispatch() {
   local repo="$1"
   LOG="$repo/.err.log"
@@ -86,6 +95,7 @@ run_dispatch() {
       CODEX_STUB_WRITE="${write:-1}" CODEX_STUB_EXIT="${cexit:-0}" \
       BUSDRIVER_CODEX_ALLOW_DIRTY_TREE="${allow_dirty:-}" \
       BUSDRIVER_CODEX_ALLOW_UNCLAIMED="${allow_unclaimed:-}" \
+      BUSDRIVER_CODEX_FAIL_ON_IGNORED="${fail_on_ignored:-}" \
       bash "$DISPATCH" --result-file "$repo/.result.json" -- "do the thing" \
   ) >/dev/null 2>"$LOG" || RC=$?
 }

@@ -641,7 +641,21 @@ if [ -n "$body_sha" ] && acks_head "$body_sha"; then emit_head_ack "$HEAD_SHA" C
 # HEAD check-run, mis-classifying as `none` (Greptile P2 / Cubic P2).
 check_run_head=$(printf '%s' "$ALL_CHECK_RUNS" | jq -rs --arg login "$login" \
   '[.[].check_runs[] | select(.app.slug == $login) | select(.conclusion == "success")] | last | .head_sha // empty' 2>/dev/null || echo "")
-if [ -n "$check_run_head" ] && acks_head "$check_run_head"; then emit_head_ack "$HEAD_SHA" D; exit 0; fi
+# greptile-apps exclusion: its `Greptile Review` check goes conclusion=success
+# even WITH open findings (observed on PR #174), so a success check-run does NOT
+# prove clean — unlike cursor/coderabbit, whose Tier-D check is clean-only. A
+# bodyless Tier-D ack here would carry n_total==0 and trip Invariant 3's ADR-0001
+# D/E exemption (auto-PASS), and because the check-run is published SEPARATELY
+# from the review object with no read-after-write ordering, it can be observed
+# green while the findings review is not yet visible — a merge-past-findings
+# fail-OPEN (flagged in PR review). Fail-CLOSED: greptile's HEAD-ack must come
+# from the review object itself — Tier A inline threads (findings → stale) or the
+# Tier B bodyless /reviews commit_id (atomic with any threads); a clean summary
+# issue-comment enumerates as an artifact (n_total≥1, normal gating). A
+# check-run-ONLY clean run falls through to `none` (non-gating) rather than
+# fabricating a bodyless clean ack. Promote to Tier-D-eligible only after a
+# clean greptile run proves its check is clean-only. Mirrors the Codex Tier-B guard.
+if [ -n "$check_run_head" ] && acks_head "$check_run_head" && [ "$login" != "greptile-apps" ]; then emit_head_ack "$HEAD_SHA" D; exit 0; fi
 
 # (E) /commits/{sha}/statuses: bots using the legacy commit-statuses API.
 # CodeRabbit free-tier on private repos posts here instead of registering a

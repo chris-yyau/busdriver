@@ -16,6 +16,26 @@
 # prior art), and treat the parsed cd target only as a refinement.
 # Single source of truth so the three gates cannot drift apart again.
 
+# Escape ERE metacharacters in $1 so a literal string (e.g. $STATE_DIR) can be
+# embedded in a `grep -E` pattern. Parity with Python's re.escape(), which the
+# design-review DETECTOR uses on the same value — the detector and the exemption
+# must treat $STATE_DIR as a literal identically or they drift out of lockstep
+# (deadlock an armed review, or exempt the wrong path). Pure bash to avoid sed
+# bracket-portability traps: every char outside the ERE-safe set is escaped.
+# (Callers today pass an already charset-sanitized $STATE_DIR where `.` is the
+# only metachar, but escaping generally keeps this correct if that ever loosens.)
+gate_ere_escape() {
+    local s="$1" out="" c i
+    for ((i = 0; i < ${#s}; i++)); do
+        c="${s:i:1}"
+        case "$c" in
+            [a-zA-Z0-9_/-]) out+="$c" ;;
+            *) out+="\\$c" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
 # Classify a (quote-stripped, ~-expanded) cd/-C target string.
 # Echoes one of: none | literal | toplevel | unresolvable
 gate_classify_target() {

@@ -19,7 +19,12 @@ set -euo pipefail
 # Constrain to a safe relative name (reject absolute/traversal/unsafe chars) so
 # repo-root joins resolve correctly and the value is safe to embed in messages.
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
-case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+# Reject absolute, traversal, bad chars — AND any value os.path.normpath would
+# collapse (bare `.`, trailing `/`, `./` prefix, `/.` suffix, `//` or `/./`
+# segments). The detector greps STATE_DIR against the RAW path while the
+# exemption greps the NORMALIZED path; a normalize-unstable STATE_DIR would arm a
+# review the exemption then can't match — deadlocking that doc. Default is stable.
+case "$STATE_DIR" in ""|.|/*|*/|./*|*/.|*//*|*/./*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 # Re-export the sanitized value so downstream consumers (the embedded Python
 # rm/mkdir allowlist below, sourced helpers) read the constrained STATE_DIR
 # rather than the raw env var — otherwise a traversal value could bypass them.
@@ -778,23 +783,34 @@ except Exception:
         # tool, so `src/impl.sh<LF>docs/specs/x.md` would match on its second line and
         # exempt the first. No real design-doc path carries one — refuse outright.
         *$'\n'*) ;;
-        *PLAN*.md|*DESIGN*.md|*ARCHITECTURE*.md) exit 0 ;;
         docs/reviews/*|*/docs/reviews/*) exit 0 ;;
         *CLAUDE.md|*NOTES.md) exit 0 ;;
         *)
             # Design docs: mirror the DETECTOR's grammar VERBATIM rather than
-            # approximate it. check-design-document.sh arms a review for
-            # ($STATE_DIR|docs)/([^/]+/)*(plans|specs)/*.md — its ([^/]+/)* admits
-            # intermediate dirs (docs/team/specs/x-design.md) and it is unanchored,
-            # which no fixed-depth glob can express. Anything the detector can ARM must
-            # stay writable or the review deadlocks on the doc it is waiting for; an
-            # earlier `docs/specs/*|*/docs/specs/*` approximation silently deadlocked
-            # nested, $STATE_DIR/, and lowercase-*-design.md docs (the shape
-            # brainstorming actually emits). Keep the two in lockstep — a test pins it.
-            # Safe despite being wider than the globs: the `.md` requirement means this
-            # arm cannot launder implementation code.
+            # approximate it. check-design-document.sh arms a review via TWO arms —
+            # a fixed-depth or case-sensitive glob can express neither, and any
+            # mismatch deadlocks the review on the doc it waits for:
+            #   1. basename STARTS WITH plan/design/architecture, CASE-INSENSITIVE. The
+            #      detector arms lowercase `design.md`, so the earlier case-sensitive
+            #      `*DESIGN*.md` glob refused the very write answering its own review.
+            #   2. path under ($STATE_DIR|docs)/([^/]+/)*(plans|specs)/*.md, case-
+            #      SENSITIVE (matches the detector's plans_re / line-139 grep) — the
+            #      detector's ([^/]+/)* admits intermediate dirs (docs/team/specs/…),
+            #      and `docs` must START a segment: a bare `docs/` also matched the
+            #      suffix of notdocs/specs/x.md. $STATE_DIR is regex-escaped (its
+            #      default `.claude` carries a `.` metachar). An earlier
+            #      `docs/specs/*|*/docs/specs/*` approximation silently deadlocked
+            #      nested, $STATE_DIR/, and lowercase-*-design.md docs (the shape
+            #      brainstorming actually emits).
+            # Safe despite being wider than the globs: the `.md` requirement means
+            # neither arm can launder implementation code. A test pins the lockstep.
             if printf '%s' "$_NORM_FP" \
-                | grep -qE "($STATE_DIR|docs)/([^/]+/)*(plans|specs)/.*\.md$"; then
+                | grep -qiE '(^|/)(PLAN|DESIGN|ARCHITECTURE)[^/]*\.md$'; then
+                exit 0
+            fi
+            STATE_DIR_ESC="$(gate_ere_escape "$STATE_DIR")"
+            if printf '%s' "$_NORM_FP" \
+                | grep -qE "(^|/)(${STATE_DIR_ESC}|docs)/([^/]+/)*(plans|specs)/.*\.md$"; then
                 exit 0
             fi
             ;;

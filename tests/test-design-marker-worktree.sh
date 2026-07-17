@@ -214,6 +214,12 @@ case "$out" in *'"block"'*) no "(specs) docs/plans plan doc must stay writable" 
 # the exemption. Nested (monorepo) docs dirs must keep it.
 out="$(payload_write "$t/notdocs/specs/impl.sh" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
 case "$out" in *'"block"'*) ok "(specs) notdocs/specs/ does not inherit the exemption" ;; *) no "(specs) notdocs/specs/ must NOT be exempt" "got=$out" ;; esac
+# ...and with a .md target, which actually REACHES the design-doc regex (a .sh
+# never does — the regex is `.*\.md$`, so the .sh case above passes vacuously).
+# An unanchored `docs/` alternative matched the `docs/specs/w.md` suffix of this
+# path; the `(^|/)` boundary is what makes this assertion real.
+out="$(payload_write "$t/notdocs/specs/w.md" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
+case "$out" in *'"block"'*) ok "(specs) notdocs/specs/w.md (.md) is not exempt" ;; *) no "(specs) notdocs/specs/w.md MUST NOT be exempt" "got=$out" ;; esac
 out="$(payload_write "$t/packages/foo/docs/specs/x-design.md" "$t" | bash "$PREIMPL" 2>/dev/null || true)"
 case "$out" in *'"block"'*) no "(specs) nested monorepo docs/specs must stay writable" "got=$out" ;; *) ok "(specs) nested monorepo docs/specs stays writable" ;; esac
 
@@ -257,7 +263,13 @@ for _rel in \
     "docs/team/specs/2026-07-17-x-design.md" \
     "docs/a/b/plans/2026-07-17-y.md" \
     ".claude/specs/z-design.md" \
+    "design-notes.md" \
     "notdocs/specs/w.md" ; do
+    # Fresh repo per iteration: markers are sticky per-repo, so reusing one repo
+    # would let an earlier shape's armed marker make `pending` report 1 for a
+    # shape the detector does NOT arm (e.g. notdocs/specs/w.md post-anchoring),
+    # producing a phantom DEADLOCK. Isolate so `pending` reflects THIS shape only.
+    t="$(mkrepo)"
     mkdir -p "$t/$(dirname "$_rel")"
     printf '# d\n' >"$t/$_rel"
     printf '{"tool_name":"Write","tool_input":{"file_path":"%s/%s"}}' "$t" "$_rel" | bash "$CHECKDOC" >/dev/null 2>&1
@@ -270,6 +282,29 @@ for _rel in \
         esac
     else
         ok "(lockstep) detector does not arm $_rel (nothing to reconcile)"
+    fi
+done
+
+echo "── (statedir) normalize-unstable BUSDRIVER_STATE_DIR cannot deadlock ─"
+# A STATE_DIR that os.path.normpath collapses (bare '.', '//', '/./', trailing /)
+# matched the DETECTOR's raw path but vanished from the exemption's NORMALIZED
+# path, deadlocking the doc — e.g. STATE_DIR=. with a relative `./specs/x.md`
+# arms via `^\./…specs/` but normalizes to `specs/x.md`, which the exemption then
+# refuses. The sanitizer now rejects such values (→ default .claude), so detector
+# and exemption stay in lockstep. Each value must arm-then-allow or never arm.
+for _sd in "." "a//b" "a/./b" "foo/" ; do
+    t="$(mkrepo)"; mkdir -p "$t/specs"; printf '# d\n' >"$t/specs/x-design.md"
+    ( cd "$t" && printf '{"tool_name":"Write","tool_input":{"file_path":"./specs/x-design.md"}}' \
+        | BUSDRIVER_STATE_DIR="$_sd" bash "$CHECKDOC" >/dev/null 2>&1 )
+    pending "$t"
+    if [ "$PEXIT" = "1" ]; then
+        out="$(payload_write "./specs/x-design.md" "$t" | BUSDRIVER_STATE_DIR="$_sd" bash "$PREIMPL" 2>/dev/null || true)"
+        case "$out" in
+            *'"block"'*) no "(statedir) STATE_DIR=$_sd armed ./specs but gate blocks — DEADLOCK" "got=$out" ;;
+            *) ok "(statedir) STATE_DIR=$_sd armed doc stays writable" ;;
+        esac
+    else
+        ok "(statedir) STATE_DIR=$_sd sanitized → ./specs not armed (no deadlock)"
     fi
 done
 
@@ -309,6 +344,24 @@ case "$out" in
     *'"block"'*) no "(pypath) genuine design doc must stay writable" "got=$out" ;;
     *) ok "(pypath) genuine design doc still writable alongside the stub" ;;
 esac
+
+echo "── (pypath-detector) repo-local json.py cannot disable the detector ─"
+# check-design-document.sh parses the payload with python3 too. Importing json
+# BEFORE scrubbing sys.path let a repo-local json.py hijack the DETECTOR so no
+# marker arms — the pre-implementation gate then fast-allows every impl write
+# (fail-OPEN, the same class this branch closes, at an 8th interpreter site the
+# other fixes missed). Isolated mode + a scrub ahead of the import closes it: a
+# genuine design doc must still arm its marker with the stub present.
+t="$(mkrepo)"
+cat >"$t/json.py" <<'PYEOF'
+def load(*a, **k):
+    return {}
+def loads(*a, **k):
+    return {}
+PYEOF
+mkdir -p "$t/docs/specs"; printf '# d\n' >"$t/docs/specs/real-design.md"
+( cd "$t" && printf '{"tool_name":"Write","tool_input":{"file_path":"%s/docs/specs/real-design.md"}}' "$t" | bash "$CHECKDOC" >/dev/null 2>&1 )
+pending "$t"; eq "(pypath-detector) json.py cannot suppress marker arming" "$PEXIT" "1"
 
 echo "── (h) deleted pending doc still blocks ─────────────────────────"
 t="$(mkrepo)"; printf x >"$t/doc.md"; arm "$t/doc.md"; rm -f "$t/doc.md"

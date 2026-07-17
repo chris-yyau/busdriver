@@ -17,7 +17,12 @@ PLUGIN_ROOT="${BUSDRIVER_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${B
 STATE_DIR="${BUSDRIVER_STATE_DIR:-.claude}"
 # Constrain to a safe relative name (reject absolute/traversal/unsafe chars) and
 # re-export so every gate writes/consumes markers from the same state dir.
-case "$STATE_DIR" in ""|/*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
+# Reject absolute, traversal, bad chars — AND any value os.path.normpath would
+# collapse (bare `.`, trailing `/`, `./` prefix, `/.` suffix, `//` or `/./`
+# segments). The detector greps STATE_DIR against the RAW path while the
+# exemption greps the NORMALIZED path; a normalize-unstable STATE_DIR would arm a
+# review the exemption then can't match — deadlocking that doc. Default is stable.
+case "$STATE_DIR" in ""|.|/*|*/|./*|*/.|*//*|*/./*|*..*|*[!a-zA-Z0-9._/-]*) STATE_DIR=".claude" ;; esac
 export BUSDRIVER_STATE_DIR="$STATE_DIR"
 trap 'exit 0' ERR
 
@@ -38,8 +43,10 @@ INPUT=$(cat 2>/dev/null || true)
 # Extract file_path and tool_name from JSON input using Python (robust parsing)
 # For Write/Edit: uses file_path from tool input
 # For Bash: extracts file paths from redirect/tee targets matching design patterns
-PARSED=$(printf '%s' "$INPUT" | python3 -c "
-import sys, json, re, os
+PARSED=$(printf '%s' "$INPUT" | python3 -I -c "
+import sys
+sys.path[:] = [p for p in sys.path if p not in ('', '.')]
+import json, re, os
 try:
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
@@ -82,7 +89,7 @@ try:
         # Filter to only design-doc patterns
         state_dir = os.environ.get('BUSDRIVER_STATE_DIR', '.claude')
         design_re = re.compile(r'(?:^|/)(?:PLAN|DESIGN|ARCHITECTURE)[^/]*\.md$', re.IGNORECASE)
-        plans_re = re.compile(r'(?:' + re.escape(state_dir) + r'|docs)/(?:[^/]+/)*(?:plans|specs)/.*\.md$')
+        plans_re = re.compile(r'(?:^|/)(?:' + re.escape(state_dir) + r'|docs)/(?:[^/]+/)*(?:plans|specs)/.*\.md$')
         for t in targets:
             if design_re.search(t) or plans_re.search(t):
                 print(f'Bash|{t}')
@@ -136,7 +143,13 @@ IS_DESIGN=false
 if echo "$BASENAME" | grep -qiE '^(PLAN|DESIGN|ARCHITECTURE).*\.md$'; then
   IS_DESIGN=true
 fi
-if echo "$FILE_PATH" | grep -qE "($STATE_DIR|docs)/([^/]+/)*(plans|specs)/.*\\.md\$"; then
+# `docs`/`$STATE_DIR` must START a path segment — a bare `docs/` alternative also
+# matches the suffix of `notdocs/specs/x.md`, arming a review for a non-docs dir.
+# `$STATE_DIR` is regex-escaped via gate_ere_escape (parity with the Python
+# arm's re.escape) so the two treat it as a literal identically — kept VERBATIM
+# in lockstep with the exemption in pre-implementation-gate.sh.
+STATE_DIR_ESC="$(gate_ere_escape "$STATE_DIR")"
+if echo "$FILE_PATH" | grep -qE "(^|/)(${STATE_DIR_ESC}|docs)/([^/]+/)*(plans|specs)/.*\\.md\$"; then
   IS_DESIGN=true
 fi
 if [ "$IS_DESIGN" = true ]; then

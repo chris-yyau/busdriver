@@ -27,8 +27,10 @@ cleanup() { local d; for d in "${TMP_DIRS[@]:-}"; do [ -n "${d:-}" ] && rm -rf "
 trap cleanup EXIT
 mk() { local d; d=$(mktemp -d); TMP_DIRS+=("$d"); printf '%s' "$d"; }
 
-# A fake `gh`: logs the full argv to $GH_CALLLOG, the --body value to $GH_BODYFILE,
-# and fails (exit 1) on a `pr comment` when STUB_GH_FAIL=1.
+# A fake `gh`: logs the full argv to $GH_CALLLOG, the --body value to $GH_BODYFILE.
+# STUB_GH_FAIL=1  → every `pr comment` fails (exit 1).
+# STUB_GH_FAIL_ONCE=1 → only the FIRST `pr comment` fails, later ones succeed
+#   (a single transient) — proves the bounded in-process retry recovers (#398).
 make_gh_stub() {
   local bindir="$1"
   cat > "$bindir/gh" <<'STUB'
@@ -41,6 +43,11 @@ if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
     prev="$a"
   done
   [ "${STUB_GH_FAIL:-0}" = "1" ] && exit 1
+  # This invocation was already logged above, so on the first post the count is 1.
+  if [ "${STUB_GH_FAIL_ONCE:-0}" = "1" ] \
+     && [ "$(grep -c 'pr comment' "${GH_CALLLOG}" 2>/dev/null)" -le 1 ]; then
+    exit 1
+  fi
   exit 0
 fi
 exit 0
@@ -104,17 +111,33 @@ else
 fi
 
 # ============================================================
-# 4. FAIL-SAFE — gh post fails: exit 0 (never stale gate) AND marker NOT written
-#    (so the next wait-round retries).
+# 4. FAIL-SAFE — gh post fails on BOTH bounded attempts: exit 0 (never stale gate)
+#    AND marker NOT written (so the next wait-round retries). The retry (#398) makes
+#    this 2 attempts, not 1.
 # ============================================================
 read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
 rc=0
 ( PATH="$BIN:$PATH" GH_CALLLOG="$CALLLOG" GH_BODYFILE="$BODYFILE" BUSDRIVER_STATE_DIR="$STATE" \
        STUB_GH_FAIL=1 "$BASH_BIN" "$RT" "$PR" "$HEAD" ) || rc=$?
-if [ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 1 ] && [ ! -e "$STATE/$MARKER_NAME" ]; then
-  ok "fail-safe: post failed → exit 0, marker NOT written (retry next round)"
+if [ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 2 ] && [ ! -e "$STATE/$MARKER_NAME" ]; then
+  ok "fail-safe: post failed both attempts → exit 0, marker NOT written (retry next round)"
 else
-  fail "fail-safe: rc=$rc posts=$(posts_in "$CALLLOG") marker=$([ -e "$STATE/$MARKER_NAME" ] && echo yes || echo no)"
+  fail "fail-safe: rc=$rc posts=$(posts_in "$CALLLOG") (expected 2) marker=$([ -e "$STATE/$MARKER_NAME" ] && echo yes || echo no)"
+fi
+
+# ============================================================
+# 4b. TRANSIENT RECOVERY (#398) — first post fails, the bounded retry succeeds: the
+#     nudge IS delivered → marker written, exit 0. Without the retry the single
+#     transient would release the claim and drop the nudge with no next round behind it.
+# ============================================================
+read -r STATE BIN CALLLOG BODYFILE <<<"$(setup_case)"
+rc=0
+( PATH="$BIN:$PATH" GH_CALLLOG="$CALLLOG" GH_BODYFILE="$BODYFILE" BUSDRIVER_STATE_DIR="$STATE" \
+       STUB_GH_FAIL_ONCE=1 "$BASH_BIN" "$RT" "$PR" "$HEAD" ) || rc=$?
+if [ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 2 ] && [ -e "$STATE/$MARKER_NAME" ]; then
+  ok "transient recovery: first post failed, retry posted → marker written (exit 0)"
+else
+  fail "transient recovery: rc=$rc posts=$(posts_in "$CALLLOG") marker=$([ -e "$STATE/$MARKER_NAME" ] && echo yes || echo no)"
 fi
 
 # ============================================================

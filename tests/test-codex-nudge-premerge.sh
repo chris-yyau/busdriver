@@ -56,7 +56,15 @@ fi
 if [[ "${1:-}" == "api" ]]; then
   case "$*" in
     *graphql*)    case "$*" in *'pullRequests('*) [[ -n "${ACTIVE_FIXTURE:-}" ]] && cat "$ACTIVE_FIXTURE" ;; esac ;;
-    */reviews*)   printf '%s' "${REVIEW_LOGINS:-}" ;;
+    */reviews*)
+      # STUB_REVIEWS_FAIL_ONCE=1: fail only the FIRST reviews read (a transient),
+      # succeed after — proves the hook's bounded fetch retry recovers (#398). The
+      # attempt count persists across the stub's separate processes via a file.
+      if [[ "${STUB_REVIEWS_FAIL_ONCE:-0}" == "1" ]]; then
+        printf 'x\n' >> "${STUB_ATTEMPTS_FILE:?}"
+        [[ "$(wc -l < "${STUB_ATTEMPTS_FILE}")" -le 1 ]] && exit 1
+      fi
+      printf '%s' "${REVIEW_LOGINS:-}" ;;
     */reactions*) printf '%s' "${REACTION_LOGINS:-}" ;;
   esac
   exit 0
@@ -502,6 +510,15 @@ if [[ "$NF_OUT" == "chatgpt-codex-connector[bot]" ]]; then
 else
   fail "none-check jq must tolerate ghost/null elements — filter='$NONE_FILTER' out='$NF_OUT'"
 fi
+
+# ── Case 40: TRANSIENT `none`-guard fetch (#398) — the first reviews read fails, the
+#    hook's bounded retry succeeds → the nudge STILL fires. Without the retry the
+#    single transient would `|| exit 0` and silently drop the nudge on this
+#    inline/admin merge (the sole delivery path, no pr-grind COMPLETION re-poll).
+setup_case
+ATT="$(mk)/attempts"
+run_hook "gh pr merge $PR --squash" "" "" STUB_REVIEWS_FAIL_ONCE=1 STUB_ATTEMPTS_FILE="$ATT"
+if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "transient reviews fetch: retry recovered → nudged once"; else fail "transient fetch: rc=$RC N=$N body='$B'"; fi
 
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

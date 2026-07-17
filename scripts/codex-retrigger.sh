@@ -120,19 +120,32 @@ if ! ( set -o noclobber; : > "$MARKER" ) 2>/dev/null; then
 fi
 chmod 600 "$MARKER" 2>/dev/null || true
 
-# Post once (we hold the claim). `-R owner/repo` is added only when a repo arg was
+# Post (we hold the claim). `-R owner/repo` is added only when a repo arg was
 # supplied; otherwise gh infers the repo from the current working directory.
-if [ -n "$REPO" ]; then
-    gh pr comment "$PR" -R "$REPO" --body "$PHRASE" >/dev/null 2>&1
-else
-    gh pr comment "$PR" --body "$PHRASE" >/dev/null 2>&1
-fi
-post_rc=$?
+# Bounded in-process retry (2 attempts, brief backoff) before the fail-safe release:
+# on an inline/admin merge the PreToolUse hook is the SOLE delivery path — there is no
+# "next wait-round" behind it — so a single transient here would silently drop the
+# nudge with no retry (issue #398). The per-(PR,HEAD) claim dedups across separate
+# invocations; a within-call retry can at worst re-post once on a false-negative
+# transient — the same bounded trade the cross-round retry already makes, and a
+# duplicate `@codex review` is harmless (idempotent nudge).
+post_rc=0
+for _attempt in 1 2; do
+    if [ -n "$REPO" ]; then
+        gh pr comment "$PR" -R "$REPO" --body "$PHRASE" >/dev/null 2>&1
+    else
+        gh pr comment "$PR" --body "$PHRASE" >/dev/null 2>&1
+    fi
+    post_rc=$?
+    [ "$post_rc" -eq 0 ] && break
+    [ "$_attempt" -lt 2 ] && sleep 1
+done
 
 if [ "$post_rc" -ne 0 ]; then
-    # Fail-SAFE: the EXIT trap releases the claim so the NEXT wait-round retries the
-    # post. Never propagate the failure — a failed re-trigger must not stale the gate.
-    echo "⚠️  codex-retrigger: '$PHRASE' post failed (gh rc=$post_rc); released claim, will retry next wait-round." >&2
+    # Fail-SAFE: after the bounded retries still failed, the EXIT trap releases the
+    # claim so the NEXT wait-round (if any) retries. Never propagate the failure — a
+    # failed re-trigger must not stale the gate.
+    echo "⚠️  codex-retrigger: '$PHRASE' post failed after 2 attempts (gh rc=$post_rc); released claim, will retry next wait-round." >&2
     exit 0
 fi
 

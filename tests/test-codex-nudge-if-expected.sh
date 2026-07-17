@@ -161,9 +161,10 @@ rc=0; run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" - - "$PR" "$HEAD" "owner/r
 # ============================================================
 read -r ROOT BIN CALLLOG BODYFILE <<<"$(setup_case)"
 rc=0; run_nudge "$ROOT" "$BIN" "$CALLLOG" "$BODYFILE" - "STUB_GH_FAIL=1" "$PR" "$HEAD" "owner/repo" 1 || rc=$?
-[ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 1 ] && [ ! -e "$ROOT/.claude/$MARKER_NAME" ] \
-  && ok "fail-safe: post failed → exit 0, marker NOT written" \
-  || fail "fail-safe: rc=$rc posts=$(posts_in "$CALLLOG") marker=$([ -e "$ROOT/.claude/$MARKER_NAME" ] && echo yes || echo no)"
+# The delegate's bounded retry (#398) attempts the failing post twice before releasing.
+[ "$rc" = 0 ] && [ "$(posts_in "$CALLLOG")" = 2 ] && [ ! -e "$ROOT/.claude/$MARKER_NAME" ] \
+  && ok "fail-safe: post failed both attempts → exit 0, marker NOT written" \
+  || fail "fail-safe: rc=$rc posts=$(posts_in "$CALLLOG") (expected 2) marker=$([ -e "$ROOT/.claude/$MARKER_NAME" ] && echo yes || echo no)"
 
 # ============================================================
 # 10. MAIN_ROOT UNRESOLVABLE but active-bit=1 → auto-detect still posts (the

@@ -208,8 +208,25 @@ if bash "$SCRIPTS/codex-active-repo.sh" "$OWNER/$NAME" >/dev/null 2>&1; then ACT
 # single such element makes jq exit non-zero → `gh` non-zero → `|| exit 0` → a missed
 # nudge (false-negative). A plain null `user` was already harmless (emits a stray
 # `null` line the grep ignores); this also drops that noise.
-REVIEW_LOGINS=$(gh api --paginate "repos/$OWNER/$NAME/pulls/$PR/reviews" --jq '.[]?.user?.login? // empty' 2>/dev/null) || exit 0
-REACTION_LOGINS=$(gh api --paginate "repos/$OWNER/$NAME/issues/$PR/reactions" --jq '.[]?.user?.login? // empty' 2>/dev/null) || exit 0
+# Bounded retry (2 attempts, brief backoff) around each transient gh api read before
+# the fail-safe skip: on an inline/admin merge this hook is the SOLE nudge path (no
+# pr-grind COMPLETION re-poll behind it), so a single flaky `none`-guard fetch would
+# `|| exit 0` and silently drop the nudge with no retry (issue #398). Echoes stdout on
+# success (rc 0 — including a legitimately EMPTY "no engagement" body); returns
+# non-zero only after every attempt fails, preserving the fail-safe `|| exit 0`. The
+# `--jq` filter stays a single-quoted literal here (identical for both reads) so the
+# jq-defensiveness regression test still anchors on the runtime line.
+gh_api_logins() {
+    local _out _rc _attempt
+    for _attempt in 1 2; do
+        _out=$(gh api --paginate "$1" --jq '.[]?.user?.login? // empty' 2>/dev/null); _rc=$?
+        [ "$_rc" -eq 0 ] && { printf '%s' "$_out"; return 0; }
+        [ "$_attempt" -lt 2 ] && sleep 1
+    done
+    return 1
+}
+REVIEW_LOGINS=$(gh_api_logins "repos/$OWNER/$NAME/pulls/$PR/reviews") || exit 0
+REACTION_LOGINS=$(gh_api_logins "repos/$OWNER/$NAME/issues/$PR/reactions") || exit 0
 if printf '%s\n%s\n' "$REVIEW_LOGINS" "$REACTION_LOGINS" \
    | grep -qxE 'chatgpt-codex-connector(\[bot\])?'; then
     exit 0                            # Codex already engaged → not `none` → no nudge

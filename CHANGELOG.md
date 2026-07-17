@@ -1,3 +1,10 @@
+## [1.93.5](https://github.com/chris-yyau/busdriver/compare/v1.93.4...v1.93.5) (2026-07-17)
+
+
+### Bug Fixes
+
+* **codex-nudge:** harden none-check jq against ghost/malformed reviewers ([#397](https://github.com/chris-yyau/busdriver/issues/397)) ([5b65f9d](https://github.com/chris-yyau/busdriver/commit/5b65f9da1e5e773040676432fd1126a83c281214))
+
 ## [1.93.4](https://github.com/chris-yyau/busdriver/compare/v1.93.3...v1.93.4) (2026-07-17)
 
 

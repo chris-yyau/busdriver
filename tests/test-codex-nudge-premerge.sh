@@ -368,7 +368,7 @@ REPO2=$(mk)
   git init -q; git config user.email t@t.t; git config user.name t
   git commit -q --allow-empty -m init
   git remote add origin "https://github.com/evil/x.git" ) >/dev/null 2>&1
-run_hook "cd $REPO2 ; gh pr merge $PR --squash" "" ""
+run_hook "cd $REPO2 ; gh pr merge $PR --squash" "" "" GH_SLUG=evil/x
 if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "cross-cwd origin mismatch (target≠payload repo): skipped"; else fail "cross-cwd guard: rc=$RC N=$N body='$B'"; fi
 # same guard, but target shares the payload origin → still nudges (worktree-equivalent)
 setup_case

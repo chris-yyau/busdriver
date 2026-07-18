@@ -1200,7 +1200,12 @@ if [ "$CODEX_DONE" = "none" ]; then
   # one), honor BUSDRIVER_MAIN_ROOT, and use a LITERAL `.claude` — the wrapper does
   # NOT honor BUSDRIVER_STATE_DIR here, and reading a different dir than the wrapper
   # is exactly the mismatch. Fail-SAFE: unresolvable → 0 → short wait, never long.
-  CODEX_EXPECTED=$( cd "$WORKTREE_DIR" 2>/dev/null || { echo 0; exit 0; }
+  # The kill switch governs this too. PR_GRIND_CODEX_RETRIGGER=0 already forces
+  # CODEX_REPO_ACTIVE=0 and disables the nudge wrapper; without the same guard here
+  # a leftover force-on marker would still impose the full 480s wait on a repo whose
+  # Codex integration is switched OFF — waiting for a nudge that was never sent.
+  CODEX_EXPECTED=$( [ "${PR_GRIND_CODEX_RETRIGGER:-1}" = "0" ] && { echo 0; exit 0; }
+    cd "$WORKTREE_DIR" 2>/dev/null || { echo 0; exit 0; }
     _MR="${BUSDRIVER_MAIN_ROOT:-}"
     if [ -z "$_MR" ]; then
       _G=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
@@ -1340,6 +1345,25 @@ if [ "$CODEX_DONE" = "none" ]; then
   # on data known to be out of date. Recomputing all six closes it: any bot that
   # re-engaged now reads `stale` and blocks below, exactly as on the normal path.
   # Same fail-CLOSED `|| echo stale` as the original computation.
+  # Normalize the Codex verdict before it is folded in. CODEX_REGRACE is already
+  # seeded from CODEX_DONE above, so it cannot currently be empty — this is
+  # belt-and-braces against a future edit that moves or drops that seed: an EMPTY
+  # value would render as `chatgpt-codex-connector=` and match neither the `none`
+  # nor the `stale` check, slipping through as an unclassified ack. Anything not a
+  # recognized verdict becomes `stale` (fail-CLOSED, blocks).
+  # ack-ledger.sh's contract is exactly three outputs: `none`, `stale`, or the
+  # CURRENT $HEAD_SHA. Match that contract literally — anything else (empty, an
+  # error string, a stray hex value, a SHA that is not this HEAD) becomes `stale`
+  # and blocks, because the gate below blocks only on the literal `stale`.
+  # Two wrong ways to write this, both tried and rejected in review:
+  #   - a `?*` arm, or any "looks like hex" test, accepts arbitrary output → fail-OPEN;
+  #   - a 40-char length test rejects every REAL ack (HEAD_SHA is
+  #     `git rev-parse HEAD | cut -c1-8`, 8 chars) → blocks every Codex merge.
+  # Equality with $HEAD_SHA is both, correctly: nothing else can pass.
+  case "$CODEX_REGRACE" in
+    none | stale | "$HEAD_SHA") : ;;
+    *) CODEX_REGRACE=stale ;;
+  esac
   FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),devin-ai-integration=$(bash "$ACK_SCRIPT" devin-ai-integration 2>/dev/null || echo stale),greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),chatgpt-codex-connector=${CODEX_REGRACE}"
   # HEAD-MOVED GUARD (fail-CLOSED). Everything above classifies acks against
   # HEAD_SHA captured BEFORE the wait, but the later `gh pr merge` targets whatever

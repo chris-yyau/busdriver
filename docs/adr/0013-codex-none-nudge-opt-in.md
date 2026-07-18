@@ -94,7 +94,12 @@ new marker, so the `none` and `stale` paths share the same per-(PR,HEAD) marker:
   PR. The blind sleep is now a **bounded poll**: deadline `PR_GRIND_CODEX_GRACE_SECS`
   (default 480s) polled every `PR_GRIND_CODEX_POLL_SECS` (default 30s), breaking the
   instant Codex engages. A fast Codex now costs ~30s instead of 20s-and-a-miss; a slow
-  one is actually caught. `=0` still disables the wait; still never an unbounded hang.
+  one is actually caught. `=0` still disables the wait. **Bound, stated precisely:**
+  the deadline caps the SLEEP budget, not total wall time — the per-poll `gh` fetches
+  carry no explicit timeout, exactly as every other COMPLETION fetch does, so a hung
+  request stalls here as it would there. The poll adds no new exposure of that kind;
+  it repeats an existing one up to `GRACE/POLL` times. Closing it means wrapping all
+  the COMPLETION fetches in `timeout`/`gtimeout`, which is a separate change.
   This is precisely the action ADR 0002's own revisit trigger prescribed for this
   symptom ("raise the default `PR_GRIND_CODEX_GRACE_SECS`").
 

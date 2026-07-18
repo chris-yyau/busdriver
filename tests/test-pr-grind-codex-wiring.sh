@@ -138,6 +138,43 @@ fi
 # HEAD must be re-verified after the wait: acks are classified against the PRE-wait
 # HEAD_SHA while `gh pr merge` targets the live PR, so a push during the window
 # would carry old acks onto a new head.
+# The Codex verdict normalization must be fail-CLOSED. A `?*` arm matches every
+# non-empty string and would accept arbitrary ack-ledger output.
+if grep -qE 'none \| stale \| \?\*' "$SKILL"; then
+  fail "verdict normalization has a ?* arm — fail-OPEN, accepts any non-empty value"
+else
+  ok "verdict normalization has no fail-open ?* arm"
+fi
+# A length check here would be a severe bug: ack-ledger emits the SHORT sha
+# (SKILL.md: `git rev-parse HEAD | cut -c1-8`), so requiring 40 chars would stale
+# every valid ack and block every merge where Codex engaged.
+if grep -qE '\$\{#CODEX_REGRACE\}" -eq 40' "$SKILL"; then
+  fail "verdict normalization length-checks for 40 chars — ack-ledger emits an 8-char sha"
+else
+  ok "verdict normalization does not length-check the sha"
+fi
+# ack-ledger's contract is exactly none | stale | the CURRENT HEAD_SHA, so the
+# guard must test equality with HEAD_SHA -- not "looks like hex", which admits
+# stray values like `f` or an unrelated SHA as successful acks.
+has 'none | stale | "$HEAD_SHA") : ;;' \
+  && ok "verdict matched against the ack-ledger contract (none|stale|HEAD_SHA)" \
+  || fail "verdict not matched against \$HEAD_SHA — a stray value could read as an ack"
+_norm() {  # mirrors the SKILL normalization; $2 = current HEAD_SHA
+  local v="$1" HEAD_SHA="$2"
+  case "$v" in
+    none | stale | "$HEAD_SHA") : ;;
+    *) v=stale ;;
+  esac
+  echo "$v"
+}
+[ "$(_norm none abc12345)" = "none" ] && [ "$(_norm stale abc12345)" = "stale" ] \
+  && [ "$(_norm abc12345 abc12345)" = "abc12345" ] \
+  && ok "normalization preserves valid verdicts (none/stale/current HEAD_SHA)" \
+  || fail "normalization corrupted a valid verdict"
+[ "$(_norm '' abc12345)" = "stale" ] && [ "$(_norm 'ERROR: boom' abc12345)" = "stale" ] \
+  && [ "$(_norm deadbeef abc12345)" = "stale" ] && [ "$(_norm f abc12345)" = "stale" ] \
+  && ok "normalization blocks empty / error / stray-hex / other-SHA (fail-CLOSED)" \
+  || fail "normalization let a malformed verdict through"
 has 'CODEX_HEAD_NOW=$(gh pr view "$PR" --json headRefOid' \
   && ok "HEAD re-verified after the wait" || fail "no post-wait HEAD re-verify — merge could target an unreviewed head"
 has '[ -z "$CODEX_HEAD_NOW" ] || [ "$CODEX_HEAD_NOW" != "$HEAD_FULL_SHA" ]' \

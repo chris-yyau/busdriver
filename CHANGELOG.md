@@ -1,3 +1,10 @@
+## [1.93.10](https://github.com/chris-yyau/busdriver/compare/v1.93.9...v1.93.10) (2026-07-18)
+
+
+### Bug Fixes
+
+* **codex-nudge:** fire none-nudge on rule-compliant pr-grind merges (ADR 0018) ([#406](https://github.com/chris-yyau/busdriver/issues/406)) ([33eb0e2](https://github.com/chris-yyau/busdriver/commit/33eb0e202b41254c59740d63ebbf23519253d5a5)), closes [#403](https://github.com/chris-yyau/busdriver/issues/403) [#403-shape](https://github.com/chris-yyau/busdriver/issues/403-shape) [#2](https://github.com/chris-yyau/busdriver/issues/2) [#3](https://github.com/chris-yyau/busdriver/issues/3)
+
 ## [1.93.9](https://github.com/chris-yyau/busdriver/compare/v1.93.8...v1.93.9) (2026-07-18)
 
 

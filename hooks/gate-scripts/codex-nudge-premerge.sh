@@ -66,6 +66,12 @@
 #      guard below already skips wrapper/decoy forms; the residual (a real `gh`
 #      alias that keeps the literal `gh pr merge N` shape) is bounded to a deduped,
 #      possibly-early nudge — never a blocked merge (non-gating), never a flood.
+#   3. Same root cause as #2 for `cd` (ADR 0018): a `cd` shell FUNCTION/alias can
+#      send the merge to a THIRD dir the hook cannot see, so the standalone-cd
+#      cross-cwd origin guard (payload==target origin) cannot fully prove the merge's
+#      runtime repo. Like #2 this is inherent to a pre-exec hook and applies equally to
+#      the pre-existing &&-captured-cd path; bounded to a deduped, possibly-mistargeted
+#      nudge on the operator's OWN machine — never a blocked or mis-routed merge.
 #
 # Runs under lib/sanitized-gate.sh (ADR 0016 env containment), like the gates.
 # PR_GRIND_CODEX_RETRIGGER (kill switch), BUSDRIVER_STATE_DIR, and GH_REPO/GH_HOST
@@ -176,7 +182,11 @@ printf '%s' "$OWNER$NAME" | LC_ALL=C grep -q '[^A-Za-z0-9._-]' && exit 0
 # so the real pr-grind case (payload cwd + WORKTREE_DIR of the same repo) passes. Only
 # enforced when TARGET_DIR is set — a no-cd merge already runs in the payload cwd, so
 # CWD_CANON (from REPO_DIR) is that repo and there is no divergence to guard.
+# NOT closed by this guard: a `cd` shell FUNCTION/alias can send the merge to a THIRD
+# dir neither HOOK_CWD nor TARGET_DIR — see ACCEPTED LIMITS #3 below; that residual is
+# inherent to a pre-exec hook and identical to the gh-alias one (#2).
 if [[ -n "$TARGET_DIR" && -n "$HOOK_CWD" ]]; then
+    # shellcheck disable=SC2312  # canon pipeline: sed/tr cannot fail meaningfully here
     PAYLOAD_URL=$(git -C "$HOOK_CWD" remote get-url origin 2>/dev/null || true)
     PAYLOAD_CANON=$(printf '%s' "$PAYLOAD_URL" | sed -E 's#^git@#https://#; s#^https?://##; s#:#/#; s#\.git/?$##; s#/+$##' | tr '[:upper:]' '[:lower:]')
     CWD_CANON_LC=$(printf '%s' "$CWD_CANON" | tr '[:upper:]' '[:lower:]')

@@ -47,9 +47,11 @@ per the same allowlist the merge segment already uses. A `cd "$(git rev-parse
 --show-toplevel)"`, `cd $VAR`, or relative `cd leaf` is **not** accepted here (the
 `&&`-capture path still handles the substitution form when it is `&&`-joined).
 
-Predicting the merge's runtime cwd statically is a rabbit hole; five constraints
-close it, each with a regression test (cases 8f4–8f9). They were found by the review
-gate (Codex) across two rounds — recorded here so they are not "simplified" away:
+Predicting the merge's runtime cwd statically is a rabbit hole; the constraints below
+(seven, each with a regression test — cases 8f4–8f14) narrow it, and the hook's
+cross-cwd origin guard (next section) is the actual backstop. They were surfaced by the
+review gate (Codex) across several rounds — recorded here so they are not "simplified"
+away:
 
 1. **Builtin only.** The command word must be exactly `cd`, not an external
    `/tmp/cd` (basename `cd`): an external executable cannot change its parent
@@ -98,27 +100,33 @@ rests on **two layers**:
    `WORKTREE_DIR` of the same repo) passes; a `cd` into a different-origin repo is
    refused.
 
-Together these make the parser's `target_dir` **advisory**: even a fully mis-parsed
-cd cannot produce a cross-repo post, because layer 2 rejects any payload≠target
-origin divergence and layer 1 rejects any resolved-PR≠origin divergence.
+Together these close every wrong-repo vector in which the merge's real cwd is one of
+the two dirs the hook can see — the parsed target (cd executed) or the payload cwd (cd
+was a no-op/conditional/failure). Layer 2 rejects any payload≠target origin divergence;
+layer 1 rejects any resolved-PR≠origin divergence.
 
 The parser tightenings (builtin-only, no-subst, single-cd, no-subshell, absolute-only,
 no-`..`, no-reserved-word, sequential-operator-only) remain as **defense in depth** and
-keep `target_dir` honest, but the cross-cwd guard is what makes the loosening safe by
-construction. Every existing adversarial test still passes.
+keep `target_dir` honest. Every existing adversarial test still passes.
 
 The hook remains **non-gating and fail-safe = skip**: a bug here can only cause a
-missed or bounded-deduped nudge, never a blocked merge and never a cross-repo post.
+missed or bounded-deduped nudge, never a blocked merge.
 
-### Residual accepted limit
+### Residual accepted limit (NOT closed — inherent)
 
-A `cd` shell function/alias/conditional could still cause the nudge to fire on the
-**same** repo the operator is in for a merge that (in a contrived command) targets a
-different worktree of that **same** repo on a different branch, resolved via an
-implicit `gh pr merge` (no PR number). This is bounded to a non-gating, deduped nudge
-on the operator's OWN repo — the identical residual class already accepted for a `gh`
-alias/function (`codex-nudge-premerge.sh` ACCEPTED LIMITS #2). It is not a cross-repo
-post and cannot block or mis-route a merge.
+The cross-cwd guard assumes the merge runs in EITHER the payload cwd OR the parsed
+target. A `cd` that is a **shell function or alias** in the operator's environment
+breaks that assumption: it can send the merge to a THIRD, arbitrary directory the
+pre-exec hook cannot observe (it runs as a separate process with no view of the
+executing shell's functions/aliases). So a hostile/unusual `cd` override could nudge
+the payload/target repo for a merge that actually ran elsewhere. This is **not closed**
+and cannot be, from a pre-exec hook — it is the **identical residual already accepted**
+for a `gh` alias/function (`codex-nudge-premerge.sh` ACCEPTED LIMITS #2), and it applies
+equally to the pre-existing `&&`-captured-cd path. It is bounded to a non-gating,
+deduped `@codex review` comment on the operator's OWN machine — never a blocked or
+mis-routed merge. Closing it would require the hook to observe the operator's shell
+state (impossible) or to refuse the nudge whenever ANY `cd` is present (which
+reintroduces exactly the #403 miss this ADR fixes).
 
 ## Alternatives considered
 

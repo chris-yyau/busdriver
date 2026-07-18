@@ -684,7 +684,22 @@ _run_review_with_retries() {
         break
       fi
     fi
-    output=$(printf '%s' "$prompt" | _portable_timeout "$remaining" "$@" 2>&1) || exit_code=$?
+    # STDIN MODE. Most CLIs read the prompt from fd 0, so the default pipes it in.
+    # A CLI that takes the prompt via ARGV (agy >=1.1, `--print "$prompt"`) never
+    # drains fd 0 — and under `pipefail` the upstream `printf` then dies of SIGPIPE
+    # as soon as the child exits, making the whole command substitution return 141
+    # even though the CLI produced a perfectly good review. Callers read that as a
+    # failure and degrade to droid, silently losing the reviewer.
+    # Only bites above the ~64 KB pipe buffer: a small prompt is absorbed and exits
+    # 0, so this is invisible in light testing and fires on real 40-100 KB review
+    # prompts. Verified: 1 KB → rc=0, 200 KB → rc=141 with valid output.
+    # Callers set `_RRWR_STDIN_MODE=none` (a `local` in the calling function; bash
+    # dynamic scoping makes it visible here) to hand the child /dev/null instead.
+    if [[ "${_RRWR_STDIN_MODE:-pipe}" == "none" ]]; then
+      output=$(_portable_timeout "$remaining" "$@" </dev/null 2>&1) || exit_code=$?
+    else
+      output=$(printf '%s' "$prompt" | _portable_timeout "$remaining" "$@" 2>&1) || exit_code=$?
+    fi
     # Timeout → don't retry; let the caller's droid fallback handle it.
     [[ "$exit_code" -eq 124 ]] && break
     # A clean exit with non-empty output is success — UNLESS it is a bare
@@ -956,6 +971,105 @@ _execute_codex() {
   return "$exit_code"
 }
 
+# ── SECURITY TRADE-OFF: agy prompt travels in argv (accepted residual) ────────
+# Delivering the prompt as `--print "$prompt"` puts the ENTIRE review prompt —
+# repo content, the full diff, and anything embedded in it — into the process
+# argument list. The old `--print /dev/stdin` form did not: fd 0 is not visible
+# to `ps`, /proc/<pid>/cmdline, or command-line auditing.
+#
+# This is a REAL regression in exposure, accepted because there is no alternative
+# that works: agy 1.1.4 has no file-input flag, bare `--print` errors with "flag
+# needs an argument", and the stdin form is simply broken (it sends the literal
+# string "/dev/stdin"). The choice is argv delivery or no agy reviewer at all.
+#
+# Exposure bounds: on Linux /proc/<pid>/cmdline is world-readable by default
+# (mitigate with hidepid, or don't run reviews on a shared host); on macOS other
+# users' full argv requires root. The content is the repo's own working tree,
+# already readable by the same user — the marginal leak is to OTHER local users
+# for the lifetime of the process.
+#
+# Revisit if: agy gains a file/stdin input flag, or these reviews ever run on a
+# multi-tenant host. Do not "fix" by moving the prompt to an env var without
+# checking agy supports it — /proc/<pid>/environ has its own exposure profile.
+#
+# ── agy argv size ceiling (shared by execute_review and dispatch.sh) ──────────
+# agy 1.1.x takes the prompt as `--print`'s argv VALUE, so it is subject to the
+# kernel's exec limits. TWO independent ceilings apply and they differ by OS:
+#   - ARG_MAX          total argv+envp; getconf reports it (macOS 1 MB, Linux ~2 MB)
+#   - MAX_ARG_STRLEN   per-ARGUMENT, LINUX ONLY, 32 pages - 1 = 131071 B. Not
+#                      reported by getconf, not derived from ARG_MAX, and NOT
+#                      present on macOS/BSD — where a single 500 KB argv element
+#                      is fine as long as the ARG_MAX total holds.
+# Applying the Linux figure unconditionally would reject prompts that macOS
+# delivers happily, so it is gated on uname. Review prompts run ~40-100 KB, so on
+# Linux the headroom is modest (~30% at the top end) — this is a live constraint,
+# not a theoretical one.
+_agy_argv_limit() {
+    local total linux_strmax=131071
+    total=$(( $(getconf ARG_MAX 2>/dev/null || echo 1048576) / 2 ))
+    if [[ "$(uname -s 2>/dev/null)" == "Linux" ]] && [[ "$linux_strmax" -lt "$total" ]]; then
+        printf '%s\n' "$linux_strmax"
+    else
+        printf '%s\n' "$total"
+    fi
+}
+
+# BYTE length of $1 — NOT ${#var}, which counts CHARACTERS under a multibyte
+# locale (LANG=*.UTF-8). MAX_ARG_STRLEN and ARG_MAX are byte limits, so a prompt
+# of non-ASCII text (CJK review comments, em-dashes, box-drawing in a diff) can
+# report far fewer characters than bytes and slip past a ${#var} guard straight
+# into the E2BIG this check exists to prevent. LC_ALL=C forces byte semantics.
+_agy_bytelen() {
+    local LC_ALL=C
+    printf '%s' "${1-}" | wc -c | tr -d '[:space:]'
+}
+
+# Does this agy read `--print`'s value as PROMPT TEXT (>=1.1) or as a PATH (1.0.x)?
+# 1.0.x resolved the value as a file, which is why `--print /dev/stdin` worked
+# there; 1.1.x sends it verbatim. Delivering argv unconditionally would break a
+# 1.0.x install (it would treat the whole prompt as a filename), so probe once.
+# Unknown/unparseable version => assume modern: every current release is >=1.1,
+# and guessing "old" would reintroduce the /dev/stdin bug on a working install.
+# Cached across calls: the probe spawns a process, and both call sites may run it
+# more than once per dispatch. `_AGY_ARGV_PROMPT` holds 1 (argv) or 0 (stdin).
+#
+# NOT inherited from the environment (`=""`, never `="${_AGY_ARGV_PROMPT:-}"`).
+# An inherited value would let anything that can set env — including a committed
+# .claude/settings.json `env` block, the #325 / ADR 0016 gate-env threat — pin the
+# delivery path: a forced "1" breaks agy 1.0.x by handing it the prompt as a
+# filename, and any non-"1" value forces the stdin form that is broken on >=1.1.
+# Detection is cheap (bounded, cached per process), so there is nothing to gain by
+# letting it be overridden. Only the two assignments below ever populate it, and
+# only with a literal 1 or 0.
+_AGY_ARGV_PROMPT=""
+_agy_wants_argv_prompt() {
+    case "$_AGY_ARGV_PROMPT" in
+        1) return 0 ;;
+        0) return 1 ;;
+    esac
+    local v maj min
+    # BOUNDED: a stalled `agy --version` must not hang the caller before its own
+    # bounded invocation begins — that would defeat the outer timeout contract.
+    # On timeout/failure the version is unknown, which falls through to "modern".
+    v=$(_portable_timeout 5 agy --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    if [[ -z "$v" ]]; then _AGY_ARGV_PROMPT=1; return 0; fi
+    maj="${v%%.*}"; min="${v#*.}"
+    if [[ "$maj" -gt 1 ]] || [[ "$maj" -eq 1 && "$min" -ge 1 ]]; then
+        _AGY_ARGV_PROMPT=1; return 0
+    fi
+    _AGY_ARGV_PROMPT=0; return 1
+}
+
+# Returns 0 (true) when $1 bytes exceeds the agy argv ceiling. Callers fail loudly;
+# the alternative is a raw E2BIG at exec, which surfaces as an empty/garbled reply
+# and degrades to "Output was not valid JSON" — the silent failure this whole
+# change exists to remove.
+_agy_prompt_oversize() {
+    local size="${1:-0}" limit
+    limit=$(_agy_argv_limit)
+    [[ "$size" -gt "$limit" ]]
+}
+
 execute_review() {
   local cli="$1"
   local prompt="$2"
@@ -970,15 +1084,46 @@ execute_review() {
   # plugin is installed, falling back to direct CLI. Other CLIs use stdin piping.
   case "$cli" in
     codex)   _execute_codex "$prompt" "$duration" ;;
-    # agy normally takes the prompt as an argv arg (and would be ARG_MAX-limited),
-    # but `agy --print /dev/stdin` makes it read the prompt from fd 0 — so we pipe
-    # and bypass the ~1MB argv limit for big review diffs. --sandbox restricts
-    # terminal capabilities (matching dispatch.sh's readonly mode) — review prompts
-    # emit JSON verdicts and never need to mutate the repo or fetch. Align
-    # --print-timeout with our outer duration so agy's internal 5m default doesn't
-    # abort before _portable_timeout does.
-    agy)     _run_review_with_retries agy "$prompt" "$duration" \
-               agy --sandbox --print-timeout "${duration}s" --print /dev/stdin ;;
+    # agy takes the prompt as `--print`'s ARGV VALUE. The former
+    # (see _agy_argv_limit / _agy_prompt_oversize above for the size ceiling)
+    # `--print /dev/stdin` idiom read fd 0 on agy v1.0.0, but 1.1.x treats the
+    # value as literal prompt text: agy answers "It looks like you just sent
+    # `/dev/stdin`" — prose, never JSON — so the reviewer slot failed as "Output
+    # was not valid JSON", fell back to droid, and silently degraded blueprint
+    # coverage below FULL (which withholds the PASS marker entirely). 1.1.4 has no
+    # file-input flag and bare `--print` errors with "flag needs an argument", so
+    # argv is the only delivery path. SIZE CEILING: the binding limit is NOT the
+    # ~1 MB ARG_MAX the old comment cited but Linux's per-argument MAX_ARG_STRLEN
+    # (32 pages - 1 = 131071 B), which getconf does not report and which applies to
+    # the prompt as a single argv element. Review prompts run ~40-100 KB, so the
+    # headroom is real but modest — roughly 30% at the top end, not the 10x the old
+    # comment implied. Exceeding it fails loudly (E2BIG at exec) rather than
+    # silently truncating — and the agy branch below pre-flights the size via
+    # _agy_bytelen/_agy_prompt_oversize, so an oversize prompt is refused with a
+    # actionable message rather than reaching exec at all.
+    # --sandbox restricts terminal capabilities (matching dispatch.sh's readonly
+    # mode): review prompts emit JSON verdicts and never mutate the repo or fetch.
+    # Align --print-timeout with our outer duration so agy's internal 5m default
+    # doesn't abort before _portable_timeout does.
+    agy)     if _agy_wants_argv_prompt; then
+               _agy_psize=$(_agy_bytelen "$prompt")
+               if _agy_prompt_oversize "$_agy_psize"; then
+                 echo "agy: review prompt is ${_agy_psize}B, over the argv ceiling ($(_agy_argv_limit)B) — agy >=1.1 has no file-input flag. Split the diff or route this review to codex." >&2
+                 return 1
+               fi
+               # argv transport: the child gets the prompt as an argument and never
+               # reads fd 0, so piping it would SIGPIPE the writer under pipefail
+               # (rc=141 on a >64 KB prompt despite a valid review). See the
+               # _RRWR_STDIN_MODE contract in _run_review_with_retries.
+               local _RRWR_STDIN_MODE=none
+               _run_review_with_retries agy "$prompt" "$duration" \
+                 agy --sandbox --print-timeout "${duration}s" --print "$prompt"
+             else
+               # agy 1.0.x resolves --print's value as a PATH, so fd 0 works and
+               # the argv size ceiling and exposure do not apply on this rung.
+               _run_review_with_retries agy "$prompt" "$duration" \
+                 agy --sandbox --print-timeout "${duration}s" --print /dev/stdin
+             fi ;;
     # Review path: bare `droid exec` (default read-only mode) is the tightest
     # posture that works for stdin-piped review. Create/Edit are blocked at this
     # tier (verified via `droid exec --list-tools` on v0.131.0+); reviews emit

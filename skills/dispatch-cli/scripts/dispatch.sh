@@ -316,19 +316,76 @@ dispatch_one() {
                     < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             fi ;;
         agy)
-            # `agy --print /dev/stdin` reads the prompt from fd 0, which bypasses the
-            # ARG_MAX (~1 MB) limit that would clamp argv-passed prompts. --print-timeout
-            # is aligned with our outer timeout so agy's internal 5m default doesn't
-            # abort before _portable_timeout does.
-            # NOTE: agy v1.0.0 has no `--model` flag (only `--add-dir`, `--sandbox`,
-            # `--print`, `--print-timeout`, `--dangerously-skip-permissions`, etc.).
-            # Forwarding $MODEL would crash with "flags provided but not defined: -model".
-            # Model selection is implicit in the active conversation/config.
+            # PROMPT DELIVERY (agy >= 1.1.x): `--print` takes the prompt TEXT as its
+            # argument value. The old `--print /dev/stdin < "$PROMPT_FILE"` idiom worked
+            # on v1.0.0, where the value was read as a path; on 1.1.4 it sends the
+            # LITERAL string "/dev/stdin" and agy replies "It looks like you just sent
+            # `/dev/stdin`" — valid prose, never JSON, so every blueprint-review agy slot
+            # failed as "Output was not valid JSON" and silently degraded coverage to 2/3.
+            # There is no file-input flag in 1.1.4 (`--help` lists only --log-file), and
+            # bare `--print` errors with "flag needs an argument", so argv is the only
+            # delivery path left. The ARG_MAX ceiling the old comment guarded against is
+            # real but distant (blueprint prompts measure ~40-100 KB against a 1 MB
+            # limit); the guard below fails LOUDLY rather than truncating silently if
+            # that headroom ever shifts. --print-timeout stays aligned with the outer
+            # timeout so agy's internal 5m default doesn't abort before _portable_timeout.
+            # NOTE: agy 1.1.4 DOES advertise `--model` (and `--agent`) — the previous
+            # claim that it has no such flag was true of v1.0.0 only. The rejection
+            # below is therefore now a DELIBERATE non-support decision rather than a
+            # version constraint: forwarding is untested here and out of scope for a
+            # prompt-delivery fix. Follow-up: wire $MODEL through and drop this branch.
             if [[ -n "$MODEL" ]]; then
-                echo "Error: --model is not supported by agy v1.0.0 (model selection is implicit in the active agy config). Remove --model or use --cli codex to pin a specific model." >&2
+                echo "Error: --model is not forwarded to agy by this dispatcher (agy 1.1.4 accepts --model, but forwarding is unverified here). Remove --model to use agy's configured model, or use --cli codex to pin one." >&2
                 exit 1
             fi
-            if [[ "$MODE" == "auto" ]]; then
+            # Fail loudly before the kernel E2BIGs a prompt into another silent
+            # "not valid JSON" degrade. The OS-dependent ceiling logic lives in
+            # _agy_argv_limit/_agy_prompt_oversize (scripts/lib/resolve-cli.sh,
+            # sourced above) so the two agy call sites cannot drift apart.
+            # agy 1.0.x resolves --print's value as a PATH (so /dev/stdin works);
+            # >=1.1 sends it verbatim. Branch on the probe in resolve-cli.sh so a
+            # 1.0.x install is not broken by the argv switch.
+            # HARD REQUIREMENT: the agy transport helpers live in resolve-cli.sh.
+            # dispatch.sh tolerates that library being absent (see the
+            # `_portable_timeout` fallback near the top), but this branch cannot:
+            # with the helpers undefined, `if _agy_wants_argv_prompt` does NOT
+            # abort under `set -e` (an undefined command in an `if` CONDITION is
+            # exempt) — it silently takes the else branch, which is the agy 1.0.x
+            # `--print /dev/stdin` path. On agy >=1.1 that reintroduces the exact
+            # bug this code exists to fix, and it does so SILENTLY. Fail loudly
+            # instead. Defining local copies here was the alternative and is
+            # rejected: three duplicated helpers would drift from the originals,
+            # which is the failure this repo already paid for once (see the
+            # header of scripts/ack-ledger.sh).
+            # `declare -F`, not `type`: type also succeeds for aliases, builtins,
+            # and any same-named EXECUTABLE on PATH, so a stray file called
+            # `_agy_argv_limit` would satisfy the guard while the real helpers
+            # stayed undefined — passing the check and then silently taking the
+            # 1.0.x branch, which is exactly what this guard exists to prevent.
+            # declare -F matches shell FUNCTIONS only.
+            if ! declare -F _agy_wants_argv_prompt >/dev/null \
+               || ! declare -F _agy_prompt_oversize >/dev/null \
+               || ! declare -F _agy_argv_limit >/dev/null; then
+                printf 'Error: agy transport helpers unavailable — %s/scripts/lib/resolve-cli.sh could not be sourced. Cannot choose argv-vs-stdin prompt delivery safely; refusing rather than silently using the 1.0.x path. Use --cli codex/droid, or fix BUSDRIVER_PLUGIN_ROOT.\n' \
+                    "$_PLUGIN_ROOT" > "$outfile" 2>&1
+                exit_code=1
+            elif _agy_wants_argv_prompt; then
+                _agy_size=$(wc -c < "$PROMPT_FILE" 2>/dev/null || echo 0)
+                if _agy_prompt_oversize "$_agy_size"; then
+                    echo "Error: prompt is ${_agy_size}B, over agy's argv ceiling ($(_agy_argv_limit)B). agy >=1.1 has no file-input flag; use --cli codex for prompts this large." >&2
+                    exit 1
+                fi
+                _agy_prompt=$(cat "$PROMPT_FILE")
+                if [[ "$MODE" == "auto" ]]; then
+                    _portable_timeout "$_budget" agy --dangerously-skip-permissions \
+                        --print-timeout "${TIMEOUT}s" \
+                        --print "$_agy_prompt" > "$outfile" 2>&1 || exit_code=$?
+                else
+                    _portable_timeout "$_budget" agy --sandbox \
+                        --print-timeout "${TIMEOUT}s" \
+                        --print "$_agy_prompt" > "$outfile" 2>&1 || exit_code=$?
+                fi
+            elif [[ "$MODE" == "auto" ]]; then
                 _portable_timeout "$_budget" agy --dangerously-skip-permissions \
                     --print-timeout "${TIMEOUT}s" \
                     --print /dev/stdin < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?

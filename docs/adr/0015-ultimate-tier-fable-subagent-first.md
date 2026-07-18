@@ -1,5 +1,7 @@
 # ADR 0015: Ultimate Tier — Fable via In-Harness Subagent (Gateway Demoted to Fallback)
 
+> **Amended by [ADR 0019](./0019-ultimate-tier-drop-gateway-rung.md) (2026-07-18, gateway transport deleted).** This ADR demoted the gateway from primary to *fallback*; ADR 0019 removes the fallback entirely. The arbiter chain is now **fable subagent → opus (degraded)** and the Mythos Witness is subagent-only. The "Alternatives considered → Drop the gateway entirely (Rejected)" entry below is thereby **superseded**: with fable reliably in-plan and in-account, the never-exercised fallback was net cost. Body below left as historical record.
+
 ## Status
 
 Accepted (2026-07-10). Amends [ADR 0011](./0011-ultimate-tier-fable-surfaces.md)

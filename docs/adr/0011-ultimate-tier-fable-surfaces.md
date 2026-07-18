@@ -1,5 +1,7 @@
 # ADR 0011: Ultimate Tier — Claude Fable Surfaces via the zenmux Gateway
 
+> **Amended by [ADR 0019](./0019-ultimate-tier-drop-gateway-rung.md) (2026-07-18, gateway transport deleted).** The `ultra*` / `ultimate*` **naming split** below is unchanged, but the *definition* of `ultimate*` narrows: from "Claude Fable **via the zenmux gateway**" to "Claude Fable **via the in-harness Agent subagent**". `scripts/ultimate-dispatch.sh` and `dispatch-gateway-arbiter.sh` are deleted; neither ultimate surface has a gateway transport. Body below left as historical record.
+
 ## Status
 
 Accepted (2026-07-03). Settled by an ultra-council review this session. Amends

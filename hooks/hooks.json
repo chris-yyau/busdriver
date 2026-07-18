@@ -75,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" PR_GRIND_CODEX_RETRIGGER=\"${PR_GRIND_CODEX_RETRIGGER:-}\" BUSDRIVER_STATE_DIR=\"${BUSDRIVER_STATE_DIR:-}\" GH_REPO=\"${GH_REPO:-}\" GH_HOST=\"${GH_HOST:-}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" codex-nudge-premerge.sh",
+            "command": "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$HOME\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" PR_GRIND_CODEX_RETRIGGER=\"${PR_GRIND_CODEX_RETRIGGER:-}\" bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate-scripts/lib/sanitized-gate.sh\" codex-nudge-premerge.sh",
             "timeout": 20
           }
         ],

@@ -245,13 +245,29 @@ on an unresolved PR/repo.
   `GH_REPO=`/`GH_HOST=` assignment, or a non-numeric positional (branch / PR URL); and (b) it
   DELEGATES resolution to gh (`gh pr view [<num>] --json number,headRefOid,url`) in the
   merge's cwd + env, then REQUIRES the resolved `host/owner/repo` to EQUAL the cwd repo's
-  `origin` (github.com only). Any divergence — inherited `GH_REPO`/`GH_HOST`, a
-  cross-repo/cross-host URL — fails the equality check and skips. An INHERITED
-  `GH_REPO`/`GH_HOST`, or a `GH_REPO=`/`GH_HOST=` assignment anywhere in the command, would
-  re-target the merge to a host/repo the delegate's default-host `gh pr comment -R
-  owner/repo` could not match; so those are re-imported through the `env -i` line ONLY to be
-  DETECTED — if set, the hook skips, otherwise it clears them so every gh call (its own and
-  the delegate's) resolves one default host. Because the fire path is gated on target == cwd
+  `origin` (github.com only). Any divergence — a cross-repo/cross-host URL — fails the
+  equality check and skips; a `GH_REPO=`/`GH_HOST=` assignment anywhere in the command is
+  rejected by (a).
+
+  **Revision 2026-07-19 (#416).** Those two vars were previously re-imported through the
+  `env -i` line to be DETECTED (set ⇒ skip). That made the hook the one registration in
+  `hooks/hooks.json` importing repo-controlled env beyond `PATH`/`HOME`/`CLAUDE_PLUGIN_ROOT`
+  — and `GH_HOST` in particular steers a CREDENTIALED outbound `gh` request to an arbitrary
+  host, since a committed `.claude/settings.json` `env` block is repo-injectable (ADR 0016).
+  Detection is not worth that surface for a non-gating nudge. `GH_REPO`, `GH_HOST`, and
+  `BUSDRIVER_STATE_DIR` (which misdirected the delegate's one-shot dedup marker, and which
+  the hook's force-on lookup already ignored in favour of a hardcoded `.claude`) are no
+  longer imported; the hook instead **pins** `GH_HOST=github.com` and clears `GH_REPO` at the
+  top, so no repo-controlled value reaches any `gh` invocation. Only
+  `PR_GRIND_CODEX_RETRIGGER` — the documented kill switch, which can only DISABLE — remains.
+  Residual, accepted: the merge shell may still carry an inherited `GH_REPO` the hook can no
+  longer see, so a merge landing on repo B can earn a nudge on the cwd repo's own PR. That is
+  a possibly-wrong-PR comment inside a repo already trusted enough to run agents in — bounded
+  by the per-(PR,HEAD) dedup and by the hook being non-gating — traded for the guarantee that
+  the outbound write is never re-routed. Regression: `tests/test-codex-nudge-premerge.sh`
+  cases 12 / 12b.
+
+  Because the fire path is gated on target == cwd
   repo, the force-on marker (checked at the delegate's exact location — the git-common-dir
   main root under `.claude`, valid from a linked worktree) and the delegate's one-shot dedup
   marker are always the target repo's own — repo A's consent never nudges repo B.

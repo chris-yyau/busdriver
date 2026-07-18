@@ -44,6 +44,10 @@ SLUG=testowner/testrepo
 make_gh_stub() {
   cat > "$1/gh" <<'STUB'
 #!/usr/bin/env bash
+# #416 containment probe: record the routing env EVERY gh invocation actually sees,
+# so a test can assert no repo-controlled GH_REPO/GH_HOST ever reaches an outbound
+# call. Written before any dispatch so `pr view`, `api`, and `pr comment` all log.
+[[ -n "${GH_ENVFILE:-}" ]] && printf 'GH_REPO=%s GH_HOST=%s\n' "${GH_REPO-<unset>}" "${GH_HOST-<unset>}" >> "$GH_ENVFILE"
 if [[ "${1:-}" == "pr" && "${2:-}" == "comment" ]]; then
   prev=""; for a in "$@"; do [[ "$prev" == "--body" ]] && printf '%s\n' "$a" >> "${GH_BODYFILE:?}"; prev="$a"; done
   exit 0
@@ -81,6 +85,7 @@ ACTIVE_JSON='{"data":{"repository":{"pullRequests":{"nodes":[{"reviews":{"nodes"
 # Sets globals: REPO BIN BODY AF.
 setup_case() {
   REPO=$(mk); BIN=$(mk); BODY="$(mk)/bodies"; : > "$BODY"
+  ENVF="$(mk)/ghenv"; : > "$ENVF"
   ( cd "$REPO"
     git init -q
     git config user.email t@t.t; git config user.name t
@@ -98,7 +103,7 @@ run_hook() {
   payload=$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
   set +e
   OUT=$(printf '%s' "$payload" | env PATH="$BIN:$PATH" \
-        GH_BODYFILE="$BODY" GH_PR_NUMBER="$PR" GH_SLUG="$SLUG" HEAD_FIXT="$HEAD" ACTIVE_FIXTURE="$AF" \
+        GH_ENVFILE="$ENVF" GH_BODYFILE="$BODY" GH_PR_NUMBER="$PR" GH_SLUG="$SLUG" HEAD_FIXT="$HEAD" ACTIVE_FIXTURE="$AF" \
         REVIEW_LOGINS="$reviews" REACTION_LOGINS="$reactions" "$@" bash "$HOOK" 2>/dev/null)
   RC=$?
   set -e
@@ -116,7 +121,7 @@ run_hook_ml() {
   payload=$(jq -Rs --arg cwd "$REPO" '{tool_name:"Bash",cwd:$cwd,tool_input:{command:.}}' "$cmdfile")
   set +e
   OUT=$(printf '%s' "$payload" | env PATH="$BIN:$PATH" \
-        GH_BODYFILE="$BODY" GH_PR_NUMBER="$PR" GH_SLUG="$SLUG" HEAD_FIXT="$HEAD" ACTIVE_FIXTURE="$AF" \
+        GH_ENVFILE="$ENVF" GH_BODYFILE="$BODY" GH_PR_NUMBER="$PR" GH_SLUG="$SLUG" HEAD_FIXT="$HEAD" ACTIVE_FIXTURE="$AF" \
         REVIEW_LOGINS="$reviews" REACTION_LOGINS="$reactions" "$@" bash "$HOOK" 2>/dev/null)
   RC=$?
   set -e
@@ -414,10 +419,29 @@ setup_case
 run_hook 'gh pr merge '"$PR"' $OPTS --squash' "" ""
 if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "shell-var in args: skipped (no nudge)"; else fail "shell-var: rc=$RC body='$B'"; fi
 
-# ── Case 12: INHERITED GH_REPO in the env → SKIP (re-targets vs default host) ──
+# ── Case 12 (#416): INHERITED GH_REPO/GH_HOST must never reach a `gh` call ──
+# A committed `.claude/settings.json` `env` block is repo-controlled, so these are
+# hostile input. hooks.json no longer re-imports them and the hook pins GH_HOST /
+# clears GH_REPO, so the nudge still lands on the CWD repo's own PR and EVERY gh
+# invocation (pr view, api, the delegate's pr comment) sees the pinned routing.
+# Simulates the leak the `env -i` line used to allow by setting them directly.
 setup_case
-run_hook "gh pr merge $PR --squash" "" "" GH_REPO=other/repo
-if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "inherited GH_REPO: skipped (no nudge)"; else fail "inherited GH_REPO: rc=$RC body='$B'"; fi
+run_hook "gh pr merge $PR --squash" "" "" GH_REPO=other/repo GH_HOST=evil.example.com
+LEAK=$(grep -vc 'GH_REPO=<unset> GH_HOST=github.com' "$ENVF" 2>/dev/null || true); [[ -n "$LEAK" ]] || LEAK=0
+SAW=$(wc -l < "$ENVF" | tr -d ' ')
+if [[ "$RC" == 0 && "$N" == 1 && "$LEAK" == 0 && "$SAW" -gt 0 ]]; then
+  ok "inherited GH_REPO/GH_HOST: contained (nudge on cwd repo, $SAW gh calls all pinned)"
+else
+  fail "#416 env containment: rc=$RC N=$N leaked=$LEAK of $SAW gh calls; env log: $(cat "$ENVF")"
+fi
+
+# ── Case 12b (#416): hooks.json must not re-import routing/state env on line 78 ──
+NUDGE_LINE=$(grep -n 'codex-nudge-premerge.sh' "$SCRIPT_DIR/hooks/hooks.json" | head -1)
+if [[ -n "$NUDGE_LINE" ]] && ! printf '%s' "$NUDGE_LINE" | grep -qE 'GH_REPO=|GH_HOST=|BUSDRIVER_STATE_DIR='; then
+  ok "hooks.json nudge registration passes no GH_REPO/GH_HOST/BUSDRIVER_STATE_DIR"
+else
+  fail "#416: hooks.json re-imports repo-controlled env for the nudge hook: $NUDGE_LINE"
+fi
 
 # ── Case 13: preceding standalone GH_REPO= assignment segment → SKIP ──
 setup_case

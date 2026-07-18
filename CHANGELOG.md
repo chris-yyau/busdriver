@@ -1,3 +1,10 @@
+# [1.94.0](https://github.com/chris-yyau/busdriver/compare/v1.93.11...v1.94.0) (2026-07-18)
+
+
+### Features
+
+* **design-clear:** audited operator release of one design-review token ([#405](https://github.com/chris-yyau/busdriver/issues/405)) ([#413](https://github.com/chris-yyau/busdriver/issues/413)) ([061cdc1](https://github.com/chris-yyau/busdriver/commit/061cdc19656ef14d66b7af33b7ad4ca76e9847f5))
+
 ## [1.93.11](https://github.com/chris-yyau/busdriver/compare/v1.93.10...v1.93.11) (2026-07-18)
 
 

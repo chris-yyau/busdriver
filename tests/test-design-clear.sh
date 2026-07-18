@@ -267,7 +267,11 @@ check "symlinked-log: decoy target untouched" "0" "$(grep -c . "$DECOY" || true)
 rm -f "$LOG"
 
 # ── The audit event records HOW the release was authorized ────────────────────
-OUT="$( cd "$REPO" && "$CLEAR" "$REPO/docs/plans/alpha-design.md" --yes 2>&1 )"; RC=$?
+# Via no_tty_run: invoked directly, this inherits the SUITE's controlling
+# terminal when someone runs the tests from a real shell, and the script would
+# then correctly record "assumed-yes" — making the assertion depend on the
+# caller rather than on the product.
+OUT="$(no_tty_run "$REPO/docs/plans/alpha-design.md" --yes 2>&1)"; RC=$?
 check "confirm-mode: clear succeeds" "0" "$RC"
 if python3 -S -c '
 import json, sys

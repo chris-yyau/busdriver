@@ -60,7 +60,7 @@ set -uo pipefail
 STATE_DIR=".claude"
 
 _SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=../hooks/gate-scripts/lib/resolve-repo-dir.sh
+# shellcheck source=../hooks/gate-scripts/lib/resolve-repo-dir.sh disable=SC1091
 source "$_SELF_DIR/../hooks/gate-scripts/lib/resolve-repo-dir.sh"
 
 SELECTOR=""
@@ -297,13 +297,16 @@ fi
 #     it reports the GIT DIR path instead of the worktree.
 # So: take the first worktree-list entry, but only trust it if it actually looks
 # like a worktree root (has a .git entry); otherwise fall back to the toplevel.
-# A path containing a newline is emitted C-quoted as `worktree "..."` — treat it
-# as untrusted and fall back rather than mis-parse.
-_MAIN_WT="$(git -C "$PWD" worktree list --porcelain 2>/dev/null \
-            | awk '/^worktree /{print substr($0, 10); exit}' || true)"
-case "$_MAIN_WT" in
-    ""|'"'*) _MAIN_WT="" ;;
-esac
+# Read it NUL-delimited (-z): the plain --porcelain form C-quotes any path with
+# a newline, and silently falling back on such a path would file the record in
+# the disposable linked worktree — exactly the failure this block prevents. With
+# -z there is no quoting, so every valid path is handled.
+_MAIN_WT=""
+while IFS= read -r -d '' _wt_field; do
+    case "$_wt_field" in
+        "worktree "*) _MAIN_WT="${_wt_field#worktree }"; break ;;
+    esac
+done < <(git -C "$PWD" worktree list --porcelain -z 2>/dev/null || true)
 if [ -n "$_MAIN_WT" ] && [ ! -e "$_MAIN_WT/.git" ]; then
     _MAIN_WT=""                      # separate-git-dir: that was the git dir
 fi
@@ -318,6 +321,10 @@ LOG="$ROOT_DIR/$STATE_DIR/bypass-log.jsonl"
 HEAD_SHA="$(git -C "$PWD" rev-parse HEAD 2>/dev/null || true)"
 
 log_event() {   # <event>
+    # shellcheck disable=SC2016 # the whole python3 -I -c '...' body below is
+    # intentionally single-quoted (it's Python source, not shell) and passes
+    # values in via the env vars above, not shell interpolation; the embedded
+    # '"'"' quote-escape trick later in the block re-triggers this per segment.
     EVENT="$1" DOC="$DOC" TOKEN_SHA="$TOKEN_SHA" HEAD_SHA="$HEAD_SHA" \
     ROOT_DIR="$ROOT_DIR" CONFIRM="$CONFIRM_MODE" \
     python3 -I -c '
@@ -437,8 +444,15 @@ fi
 if ! rm -f -- "$TOKEN"; then
     # Already recorded as cleared, but it is not — emit the correction so the
     # trail stays truthful rather than leaving a phantom release on the record.
-    log_event "design-marker-clear-failed" 2>/dev/null || true
-    printf 'design-clear: could not remove %s (the audit log records the attempt).\n' "$TOKEN" >&2
+    if ! log_event "design-marker-clear-failed"; then
+        # The log now claims a release that did not happen and the correction
+        # could not be appended. Say so loudly — a silently inconsistent audit
+        # trail is worse than a noisy one.
+        printf 'design-clear: WARNING — the audit log records this token as CLEARED but it\n' >&2
+        printf 'was NOT removed, and the correcting entry could not be written. The log at\n' >&2
+        printf '%s is INCONSISTENT and needs manual reconciliation.\n' "$LOG" >&2
+    fi
+    printf 'design-clear: could not remove %s.\n' "$TOKEN" >&2
     exit 2
 fi
 

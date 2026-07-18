@@ -342,20 +342,33 @@ dispatch_one() {
             # "not valid JSON" degrade. The OS-dependent ceiling logic lives in
             # _agy_argv_limit/_agy_prompt_oversize (scripts/lib/resolve-cli.sh,
             # sourced above) so the two agy call sites cannot drift apart.
-            _agy_size=$(wc -c < "$PROMPT_FILE" 2>/dev/null || echo 0)
-            if _agy_prompt_oversize "$_agy_size"; then
-                echo "Error: prompt is ${_agy_size}B, over agy's argv ceiling ($(_agy_argv_limit)B). agy 1.1.4 has no file-input flag; use --cli codex for prompts this large." >&2
-                exit 1
-            fi
-            _agy_prompt=$(cat "$PROMPT_FILE")
-            if [[ "$MODE" == "auto" ]]; then
+            # agy 1.0.x resolves --print's value as a PATH (so /dev/stdin works);
+            # >=1.1 sends it verbatim. Branch on the probe in resolve-cli.sh so a
+            # 1.0.x install is not broken by the argv switch.
+            if _agy_wants_argv_prompt; then
+                _agy_size=$(wc -c < "$PROMPT_FILE" 2>/dev/null || echo 0)
+                if _agy_prompt_oversize "$_agy_size"; then
+                    echo "Error: prompt is ${_agy_size}B, over agy's argv ceiling ($(_agy_argv_limit)B). agy >=1.1 has no file-input flag; use --cli codex for prompts this large." >&2
+                    exit 1
+                fi
+                _agy_prompt=$(cat "$PROMPT_FILE")
+                if [[ "$MODE" == "auto" ]]; then
+                    _portable_timeout "$_budget" agy --dangerously-skip-permissions \
+                        --print-timeout "${TIMEOUT}s" \
+                        --print "$_agy_prompt" > "$outfile" 2>&1 || exit_code=$?
+                else
+                    _portable_timeout "$_budget" agy --sandbox \
+                        --print-timeout "${TIMEOUT}s" \
+                        --print "$_agy_prompt" > "$outfile" 2>&1 || exit_code=$?
+                fi
+            elif [[ "$MODE" == "auto" ]]; then
                 _portable_timeout "$_budget" agy --dangerously-skip-permissions \
                     --print-timeout "${TIMEOUT}s" \
-                    --print "$_agy_prompt" > "$outfile" 2>&1 || exit_code=$?
+                    --print /dev/stdin < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             else
                 _portable_timeout "$_budget" agy --sandbox \
                     --print-timeout "${TIMEOUT}s" \
-                    --print "$_agy_prompt" > "$outfile" 2>&1 || exit_code=$?
+                    --print /dev/stdin < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$?
             fi ;;
         droid)
             # Droid has no strict readonly mode — its --auto tier controls whether it

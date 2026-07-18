@@ -1022,7 +1022,10 @@ echo "   Diff lines: $STAGED_DIFF_LINES (added: $ADDITION_LINES, removed: $DELET
 # all commits) and blocking review on the largest diffs defeats the purpose of
 # the safety net. The REVIEW_TIMEOUT (default 540s — see LITMUS_TIMEOUT below)
 # handles runaway reviews. It is now UNDER the harness Bash cap of 600s (#368),
-# so a blocking caller always outlives the review instead of being killed mid-run.
+# so a blocking caller normally outlives the review instead of being killed
+# mid-run — but the reviewer timer starts only after setup, so expensive
+# setup/cleanup can still eat the ~60s headroom and let the 600s harness cap
+# fire first.
 # Council decision 2026-03-21: per-commit and PR size checks serve different
 # purposes — fix independently. PR size check was structurally broken.
 #
@@ -1035,15 +1038,16 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # PR mode: soft warning only — large PR diffs may be slow or hit context limits,
   # but blocking them defeats the safety net. The REVIEW_TIMEOUT (default 540s below)
   # handles truly runaway reviews. Warn so the user knows to expect a longer wait —
-  # 540s is under the 600s harness Bash cap (#368), so a blocking caller won't be
-  # killed mid-review.
+  # 540s is under the 600s harness Bash cap (#368), so a blocking caller normally
+  # won't be killed mid-review — but the reviewer timer starts only after setup,
+  # so expensive setup/cleanup can still eat the ~60s headroom on a very large diff.
   if [ "$WEIGHTED_LINES" -gt 2000 ]; then
     echo ""
     echo "⚠️  Large PR diff ($WEIGHTED_LINES weighted lines) — review may be slow or hit context limits"
     # Use the SAME default as the REVIEW_TIMEOUT assignment below. This warning runs
-    # ~270 lines BEFORE that assignment, so REVIEW_TIMEOUT is still unset here and the
-    # old `:-600` fallback printed a 600s limit while the real one is 1200s — the gate
-    # telling the operator the wrong number about its own timeout.
+    # ~270 lines BEFORE that assignment, so REVIEW_TIMEOUT is still unset here — keep
+    # this `:-540` fallback in lockstep with the REVIEW_TIMEOUT assignment below, or the
+    # gate tells the operator the wrong number about its own timeout.
     echo "   Consider splitting into smaller PRs if review times out (${LITMUS_TIMEOUT:-540}s limit)"
   fi
 else
@@ -1316,9 +1320,11 @@ echo "🔬 Running $RESOLVED_CLI review (loop attempt $ITERATION/$MAX_ITER)..."
 echo ""
 
 REVIEW_TIMEOUT="${LITMUS_TIMEOUT:-540}"  # 9 min default — UNDER the 600s harness Bash cap so a
-                                          # blocking caller always outlives the review (see #368).
-                                          # Configurable via env var; raising it above 600 reintroduces
-                                          # the kill-mid-review / orphaned-PENDING failure.
+                                          # blocking caller normally outlives the review (see #368).
+                                          # Configurable via env var; raising it to 600 or above
+                                          # reintroduces the kill-mid-review / orphaned-PENDING
+                                          # failure (setup/cleanup run inside the same 600s harness
+                                          # budget, so 600 exactly leaves no headroom either).
 set +e
 REVIEW_OUTPUT=$(execute_review "$RESOLVED_CLI" "$FINAL_PROMPT" "$REVIEW_TIMEOUT")
 REVIEW_EXIT=$?

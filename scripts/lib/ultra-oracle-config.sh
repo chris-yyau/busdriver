@@ -137,6 +137,33 @@ ultra_oracle_hide_window() {
   case "$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')" in true|1) return 0;; *) return 1;; esac
 }
 
+# ultra_oracle_attach_running -> exit 0 if consults should ATTACH to an already-running
+# ordinary Chrome (oracle's --browser-attach-running) instead of letting oracle launch its
+# own. USER config only, opt-in (`ultraOracle.attachRunning: true`), consistent with the
+# rest of the block: it selects a browser session, the same security class as
+# cookiePath/remoteHost, so a repo-controlled project config must never set it.
+# WHY (ADR 0020): oracle's self-launched Chrome carries automation flags Cloudflare
+# fingerprints, so the serve/cookiePath paths hit an unclearable "Just a moment" wall. A
+# vanilla attached browser does not. Takes precedence over remoteHost/cookiePath/profile.
+ultra_oracle_attach_running() {
+  local v; v="$(ultra_oracle_config_get_user '.ultraOracle.attachRunning' 'false')"
+  case "$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')" in true|1) return 0;; *) return 1;; esac
+}
+
+# ultra_oracle_attach_profile_dir -> user-data-dir for the attached Chrome. USER config
+# only. MUST sit under ~/Library/Application Support: oracle discovers attachable
+# browsers by walking exactly that root for a DevToolsActivePort file (0.15.2
+# detect.js:105), so a profile elsewhere is invisible regardless of health. The
+# preflight enforces this and fails closed. Supports `~`/`~/...` only (not `~user/...`).
+ultra_oracle_attach_profile_dir() {
+  local d; d="$(ultra_oracle_config_get_user '.ultraOracle.attachProfileDir' '')"
+  # Matching a literal leading tilde from config (not requesting expansion).
+  # shellcheck disable=SC2088
+  case "$d" in "~"|"~/"*) d="$HOME${d#\~}";; esac
+  [[ -n "$d" ]] || d="$HOME/Library/Application Support/oracle-attach"
+  printf '%s' "$d"
+}
+
 # ultra_oracle_surface_enabled <brainstorming|blueprintReview|council> -> exit 0 if true.
 # USER config ONLY (security-sensitive — enabling transmits content to ChatGPT Pro;
 # a repo-controlled project config must NOT be able to opt a reviewer in).

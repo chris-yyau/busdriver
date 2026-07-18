@@ -18,6 +18,11 @@ if [ -z "${BASH_SOURCE:-}" ]; then
   return 1 2>/dev/null || exit 1
 fi
 _ULTRA_ORACLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Attach-mode preflight (ADR 0020). Assigned UNCONDITIONALLY from the resolved lib dir —
+# never from the environment — so no exported var can redirect the adapter to an
+# attacker-chosen script. In-process test harnesses reassign this shell variable AFTER
+# sourcing to stub the preflight; that is deliberately the only override path.
+_ULTRA_ORACLE_PREFLIGHT="${_ULTRA_ORACLE_DIR}/../ultra-oracle-attach-preflight.sh"
 # shellcheck source=/dev/null
 source "${_ULTRA_ORACLE_DIR}/ultra-oracle-config.sh"   # also transitively sources resolve-cli.sh
 
@@ -55,11 +60,26 @@ _ultra_oracle_diagnose_hint() {
   # substitution — the strings are printed verbatim, never evaluated.
   # shellcheck disable=SC2016
   if grep -qiE 'no chatgpt cookies|cookie extraction is unavailable|cookie sync' "$f" 2>/dev/null; then
-    printf 'cookie sync unavailable (this Chrome blocks programmatic cookie decryption, #340): run `oracle serve --manual-login --host 127.0.0.1 --token <T>`, sign in once, then set ultraOracle.remoteHost + ultraOracle.remoteToken in ~/.claude/busdriver.json'
+    printf 'cookie sync unavailable (this Chrome blocks programmatic cookie decryption, #340): set ultraOracle.attachRunning=true in ~/.claude/busdriver.json (ADR 0020) — attach mode reuses a signed-in browser and needs no cookie decryption'
   elif grep -qiE 'login button detected|session not detected|not signed in|please log ?in' "$f" 2>/dev/null; then
-    printf 'ChatGPT session not detected: sign in to the `oracle serve --manual-login` browser window (or re-login), then re-run'
+    # Recovery differs per transport: attach mode has ONE browser the operator signs into,
+    # while remoteHost/cookiePath/profile runs have their own session sources. Naming the
+    # attached window unconditionally would misdirect every non-attach install.
+    if ultra_oracle_attach_running; then
+      printf 'ChatGPT session not detected: sign in to the attached Chrome window (profile ultraOracle.attachProfileDir, default ~/Library/Application Support/oracle-attach; run scripts/ultra-oracle-attach-preflight.sh to open it), then re-run'
+    else
+      printf 'ChatGPT session not detected: sign in to the browser session this transport uses (oracle serve --manual-login window for remoteHost, or the profile behind cookiePath/chromeProfileDir), then re-run'
+    fi
   elif grep -qiE 'just a moment|cloudflare|verify you are human|are you human|challenge' "$f" 2>/dev/null; then
-    printf 'Cloudflare "Just a moment" challenge: complete the check in the serve browser window, then re-run'
+    # ADR 0020: a challenge means the run used an oracle-LAUNCHED Chrome (automation-
+    # fingerprinted). Clearing the check by hand does not stick — switching transports does.
+    # Under attach mode the browser is NOT oracle-launched, so that advice would be a no-op;
+    # point at the attached window instead.
+    if ultra_oracle_attach_running; then
+      printf 'Cloudflare "Just a moment" challenge in the ATTACHED browser: complete the check in that Chrome window (profile ultraOracle.attachProfileDir), then re-run'
+    else
+      printf 'Cloudflare "Just a moment" challenge: oracle-launched Chrome is fingerprinted — set ultraOracle.attachRunning=true in ~/.claude/busdriver.json (ADR 0020) to attach to an ordinary browser instead'
+    fi
   fi
 }
 
@@ -174,6 +194,11 @@ ultra_oracle_consult() {
          --write-output "$out" --no-notify --heartbeat 30 --slug "$slug"
   # Session source, in precedence order (all opt-in; empty by default so we do NOT
   # expose the operator's main browser session unless explicitly configured):
+  #   0. attachRunning — attach to an ordinary, already-running Chrome (ADR 0020). The
+  #                     only path that is not Cloudflare-challenged: oracle's OWN Chrome
+  #                     launches carry automation flags Cloudflare fingerprints, so
+  #                     serve/cookiePath consults hit a "Just a moment" wall that
+  #                     re-login never clears. Highest precedence for that reason.
   #   1. remoteHost   — delegate to a running `oracle serve` (issue #340). The ONLY
   #                     path that works when Chrome blocks programmatic cookie
   #                     decryption (recent cookie-encryption hardening), where
@@ -188,7 +213,47 @@ ultra_oracle_consult() {
   # FAIL CLOSED rather than let oracle default to the standard Chrome profile and
   # silently reuse whatever ChatGPT session is signed in there (wrong account / a
   # data-boundary surprise the operator did not authorize). Fix the path or unset it.
-  if [[ -n "$remote_host" ]]; then
+  if ultra_oracle_attach_running; then
+    # Preflight resolves (and self-heals) the attach target: ensures a vanilla Chrome is
+    # running on the discoverable profile and that its DevToolsActivePort is current,
+    # then prints `ok <host>:<port>`. The port is DYNAMIC by design (Chrome only records
+    # the file when it picks its own), so it is resolved per-run and never pinned.
+    # Fail CLOSED: without a live attach target oracle would silently fall back to
+    # launching its own Chrome and walk straight back into the Cloudflare wall.
+    local _uora_pf _uora_target
+    _uora_pf="$("$_ULTRA_ORACLE_PREFLIGHT" "$(ultra_oracle_attach_profile_dir)" 2>&1)" || {
+      echo "ultra-oracle: attach preflight failed — ${_uora_pf}" >&2
+      printf 'error'; return 1
+    }
+    # Parse STRICTLY. A loose `*:[0-9]*` match accepts `garbage:1x`, trailing junk, an
+    # out-of-range port, or a NON-LOOPBACK host — and whatever survives is handed to
+    # oracle as --remote-chrome, i.e. the address a browser session is driven through.
+    # Take the LAST line only (diagnostics may precede it), require the exact `ok <target>`
+    # shape, pin the host to loopback, and range-check the port.
+    _uora_target="${_uora_pf##*$'\n'}"
+    case "$_uora_target" in
+      "ok 127.0.0.1:"*) _uora_target="${_uora_target#ok }" ;;
+      *) echo "ultra-oracle: attach preflight returned no usable target ('$_uora_pf')" >&2
+         printf 'error'; return 1 ;;
+    esac
+    local _uora_port="${_uora_target#127.0.0.1:}"
+    case "$_uora_port" in
+      ''|*[!0-9]*) _uora_port="" ;;
+    esac
+    # Length-guard BEFORE the numeric comparisons (same reasoning as the timeout cap above):
+    # an all-digit value with 19+ digits overflows bash's signed-64-bit `-lt`/`-gt`, which
+    # then return status 2 and let the `||` chain fall through — validation failing OPEN on
+    # exactly the malformed input it exists to reject. A port is at most 5 digits.
+    if [[ -z "$_uora_port" ]] || [ "${#_uora_port}" -gt 5 ] \
+       || [ "$_uora_port" -lt 1 ] || [ "$_uora_port" -gt 65535 ]; then
+      echo "ultra-oracle: attach preflight returned an invalid port ('$_uora_pf')" >&2
+      printf 'error'; return 1
+    fi
+    # --browser-attach-running is mutually exclusive with --browser-port/--browser-debug-port
+    # (oracle rejects the combination outright) and with the remoteHost/cookiePath/profile
+    # session sources — attach mode reuses a browser rather than configuring one.
+    set -- "$@" --browser-attach-running --remote-chrome "$_uora_target"
+  elif [[ -n "$remote_host" ]]; then
     # remoteToken is REQUIRED with remoteHost — fail CLOSED if empty. Empty would leave the
     # consult to fail auth against a token-protected serve; refuse up front with guidance.
     if [[ -z "$remote_token" ]]; then
@@ -227,7 +292,11 @@ ultra_oracle_consult() {
   # Hide the automation Chrome window ONLY when explicitly opted in (B8). Passing
   # --browser-hide-window was root-caused as breaking oracle's ChatGPT browser engine,
   # so the window is now VISIBLE by default; set ultraOracle.hideWindow=true to restore.
-  if ultra_oracle_hide_window; then set -- "$@" --browser-hide-window; fi
+  # Skip entirely when attach mode is active: oracle documents
+  # --browser-attach-running as mutually exclusive with --browser-hide-window, so
+  # passing both is a hard CLI rejection — attach mode always reuses (and never
+  # hides) the operator's already-visible Chrome window.
+  if ! ultra_oracle_attach_running && ultra_oracle_hide_window; then set -- "$@" --browser-hide-window; fi
   local g; for g in "${ctx_arr[@]:-}"; do [[ -n "$g" ]] && set -- "$@" --file "$g"; done
   if [[ -n "$prompt_file" ]]; then
     # Fail closed if the prompt file is unreadable/empty — otherwise a silent cat

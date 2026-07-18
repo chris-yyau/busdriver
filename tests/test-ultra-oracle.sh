@@ -156,6 +156,97 @@ st="$(ultra_oracle_consult --prompt hi --out "$tmp/c4.md" --mode blocking)"
 [ -s "$tmp/argv.log" ] && { echo "FAIL unreadable cookiePath must not invoke oracle"; FAIL=1; }
 rm -f "$tmp/.claude/busdriver.json"
 
+# --- attach-running wiring (ADR 0020) ---
+# attachRunning is the highest-precedence session source: oracle's OWN Chrome launches are
+# Cloudflare-fingerprinted, so attaching to a vanilla browser is the only path that
+# completes. Stub the preflight in-process (see _ULTRA_ORACLE_PREFLIGHT) so the test never
+# launches a real Chrome.
+export ULTRA_ORACLE_MOCK_MODE=ok
+cat > "$tmp/bin/preflight-ok.sh" <<'EOF'
+#!/bin/bash
+echo "ok 127.0.0.1:61850"
+EOF
+cat > "$tmp/bin/preflight-fail.sh" <<'EOF'
+#!/bin/bash
+echo "ultra-oracle-attach: Chrome did not expose a DevTools endpoint within 15s" >&2
+exit 1
+EOF
+cat > "$tmp/bin/preflight-junk.sh" <<'EOF'
+#!/bin/bash
+echo "something unparseable"
+EOF
+chmod +x "$tmp/bin/preflight-ok.sh" "$tmp/bin/preflight-fail.sh" "$tmp/bin/preflight-junk.sh"
+_ULTRA_ORACLE_PREFLIGHT="$tmp/bin/preflight-ok.sh"
+
+# attachRunning true -> argv carries --browser-attach-running + --remote-chrome <target>.
+# cookiePath AND remoteHost are ALSO set here: attach must win over both, and neither
+# --browser-cookie-path nor --remote-host may appear (a second session source confuses oracle).
+printf '{ "ultraOracle": { "attachRunning": true, "remoteHost": "127.0.0.1:8765", "remoteToken": "tok-xyz", "cookiePath": "%s" } }\n' "$ck" > "$tmp/.claude/busdriver.json"
+: > "$tmp/argv.log"; : > "$tmp/env.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/at.md" --mode blocking)"
+[ "$st" = "ok" ] || { echo "FAIL attach status got '$st'"; FAIL=1; }
+grep -qx -- "--browser-attach-running" "$tmp/argv.log" || { echo "FAIL attach flag missing"; FAIL=1; }
+grep -qxF -- "127.0.0.1:61850" "$tmp/argv.log" || { echo "FAIL attach target missing"; FAIL=1; }
+grep -qx -- "--remote-host" "$tmp/argv.log" && { echo "FAIL remoteHost must yield to attachRunning"; FAIL=1; }
+grep -qx -- "--browser-cookie-path" "$tmp/argv.log" && { echo "FAIL cookiePath must yield to attachRunning"; FAIL=1; }
+# oracle REJECTS --browser-attach-running combined with --browser-port/--browser-debug-port.
+grep -qx -- "--browser-port" "$tmp/argv.log" && { echo "FAIL browser-port incompatible with attach"; FAIL=1; }
+# The serve token must not be delivered when the attach path is taken (no remoteHost on argv).
+[ -z "$(cat "$tmp/env.log")" ] || { echo "FAIL token delivered via env on attach path"; FAIL=1; }
+
+# preflight failure -> fail CLOSED ('error'), oracle NEVER invoked. Proceeding would let
+# oracle silently launch its own Chrome and walk back into the Cloudflare wall.
+_ULTRA_ORACLE_PREFLIGHT="$tmp/bin/preflight-fail.sh"
+printf '{ "ultraOracle": { "attachRunning": true } }\n' > "$tmp/.claude/busdriver.json"
+: > "$tmp/argv.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/at2.md" --mode blocking 2> "$tmp/at2.err")"
+[ "$st" = "error" ] || { echo "FAIL attach preflight failure should be 'error' got '$st'"; FAIL=1; }
+[ -s "$tmp/argv.log" ] && { echo "FAIL failed preflight must not invoke oracle"; FAIL=1; }
+grep -qi "attach preflight failed" "$tmp/at2.err" || { echo "FAIL preflight failure message missing"; FAIL=1; }
+
+# preflight exits 0 but prints no parseable host:port -> still fail CLOSED. An exit-0
+# stub whose output we cannot parse would otherwise pass an empty --remote-chrome value.
+_ULTRA_ORACLE_PREFLIGHT="$tmp/bin/preflight-junk.sh"
+: > "$tmp/argv.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/at3.md" --mode blocking 2> "$tmp/at3.err")"
+[ "$st" = "error" ] || { echo "FAIL unparseable preflight output should be 'error' got '$st'"; FAIL=1; }
+[ -s "$tmp/argv.log" ] && { echo "FAIL unparseable preflight must not invoke oracle"; FAIL=1; }
+
+# Malformed preflight targets must ALL fail closed. Whatever survives parsing becomes
+# --remote-chrome, i.e. the address a browser session is driven through, so a loose match
+# (`*:[0-9]*` accepted every one of these) is a real hazard, not a cosmetic one.
+printf '{ "ultraOracle": { "attachRunning": true } }\n' > "$tmp/.claude/busdriver.json"
+for bad in 'ok garbage:1x' 'ok 10.0.0.9:9222' 'ok 127.0.0.1:99999' 'ok 127.0.0.1:0' 'ok 127.0.0.1:' 'ok 127.0.0.1:8080 extra'; do
+  printf '#!/bin/bash\necho "%s"\n' "$bad" > "$tmp/bin/preflight-bad.sh"; chmod +x "$tmp/bin/preflight-bad.sh"
+  _ULTRA_ORACLE_PREFLIGHT="$tmp/bin/preflight-bad.sh"
+  : > "$tmp/argv.log"
+  st="$(ultra_oracle_consult --prompt hi --out "$tmp/atbad.md" --mode blocking 2>/dev/null)"
+  [ "$st" = "error" ] || { echo "FAIL malformed target '$bad' should be 'error' got '$st'"; FAIL=1; }
+  [ -s "$tmp/argv.log" ] && { echo "FAIL malformed target '$bad' must not invoke oracle"; FAIL=1; }
+done
+# ...while a valid target preceded by diagnostic chatter is still accepted (last line wins).
+printf '#!/bin/bash\necho "launching chrome..."\necho "ok 127.0.0.1:61850"\n' > "$tmp/bin/preflight-chatty.sh"
+chmod +x "$tmp/bin/preflight-chatty.sh"
+_ULTRA_ORACLE_PREFLIGHT="$tmp/bin/preflight-chatty.sh"
+: > "$tmp/argv.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/atchat.md" --mode blocking)"
+[ "$st" = "ok" ] || { echo "FAIL chatty-but-valid preflight got '$st'"; FAIL=1; }
+grep -qxF -- "127.0.0.1:61850" "$tmp/argv.log" || { echo "FAIL chatty preflight target not parsed"; FAIL=1; }
+rm -f "$tmp/.claude/busdriver.json"
+
+# attachRunning ABSENT (default) -> preflight is never consulted and the pre-ADR-0020
+# precedence is untouched (cookiePath path still taken). Guards against the new branch
+# hijacking existing installs.
+_ULTRA_ORACLE_PREFLIGHT="$tmp/bin/preflight-fail.sh"   # would error if wrongly invoked
+printf '{ "ultraOracle": { "cookiePath": "%s" } }\n' "$ck" > "$tmp/.claude/busdriver.json"
+: > "$tmp/argv.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/at4.md" --mode blocking)"
+[ "$st" = "ok" ] || { echo "FAIL default (no attachRunning) status got '$st'"; FAIL=1; }
+grep -qx -- "--browser-attach-running" "$tmp/argv.log" && { echo "FAIL attach flag leaked with attachRunning absent"; FAIL=1; }
+grep -qx -- "--browser-cookie-path" "$tmp/argv.log" || { echo "FAIL cookiePath path not taken by default"; FAIL=1; }
+_ULTRA_ORACLE_PREFLIGHT="$DIR/scripts/ultra-oracle-attach-preflight.sh"   # restore
+rm -f "$tmp/.claude/busdriver.json"
+
 # --- serve delegation wiring (remoteHost/remoteToken, #340) ---
 # remoteHost set -> argv carries --remote-host <hv>; the SECRET token is delivered via the
 # ORACLE_REMOTE_TOKEN env, NOT --remote-token argv (which `ps` would expose). serve owns
@@ -344,7 +435,20 @@ rm -f "$tmp/.claude/busdriver.json"
 # generic "captured at ...err" pointer).
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/hint.md" --mode blocking 2> "$tmp/hint.err")"
 [ "$st" = "error" ] || { echo "FAIL hint blocking status got '$st'"; FAIL=1; }
-grep -qi "serve --manual-login" "$tmp/hint.err" || { echo "FAIL blocking hint not surfaced to stderr"; FAIL=1; }
+grep -qi "sign in to the" "$tmp/hint.err" || { echo "FAIL blocking hint not surfaced to stderr"; FAIL=1; }
+
+# The recovery hint is TRANSPORT-CONDITIONAL (ADR 0020 review): attach mode has one
+# operator-visible browser to sign into; remoteHost/cookiePath/profile do not, so naming
+# the attached window there would misdirect. Assert both branches.
+printf '{ "ultraOracle": { "attachRunning": true } }\n' > "$tmp/.claude/busdriver.json"
+_ULTRA_ORACLE_PREFLIGHT="$tmp/bin/preflight-ok.sh"   # stub: never launch a real Chrome
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/hintA.md" --mode blocking 2> "$tmp/hintA.err")"
+_ULTRA_ORACLE_PREFLIGHT="$DIR/scripts/ultra-oracle-attach-preflight.sh"
+grep -qi "attached Chrome window" "$tmp/hintA.err" || { echo "FAIL attach-mode hint should name the attached window"; FAIL=1; }
+rm -f "$tmp/.claude/busdriver.json"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/hintB.md" --mode blocking 2> "$tmp/hintB.err")"
+grep -qi "attached Chrome window" "$tmp/hintB.err" && { echo "FAIL non-attach hint must not name the attached window"; FAIL=1; }
+grep -qi "sign in to the browser session this transport uses" "$tmp/hintB.err" || { echo "FAIL non-attach hint missing transport-neutral guidance"; FAIL=1; }
 
 # background mode: adapter persists $out.hint and ultra-oracle-run.sh folds it into the
 # FAILED banner (the blueprint-review path that motivated #340). FORCE=1 bypasses the
@@ -353,7 +457,7 @@ hwp="$(mktemp)"; printf 'design' > "$hwp"
 out="$(bash "$DIR/scripts/ultra-oracle-run.sh" blueprintReview 1 "$hwp" "$tmp/hintbg.md")"
 first_line="${out%%$'\n'*}"
 [[ "$first_line" == FAILED\ * ]] || { echo "FAIL hint bg first line got '$first_line'"; FAIL=1; }
-printf '%s\n' "$first_line" | grep -qi "serve --manual-login" || { echo "FAIL hint bg banner missing operator action"; FAIL=1; }
+printf '%s\n' "$first_line" | grep -qi "sign in to the" || { echo "FAIL hint bg banner missing operator action"; FAIL=1; }
 [ -f "$tmp/hintbg.md.hint" ] || { echo "FAIL hint file not persisted in bg mode"; FAIL=1; }
 rm -f "$hwp"
 
@@ -372,7 +476,7 @@ printf '{ "ultraOracle": { "timeoutCapSeconds": 1 } }\n' > "$tmp/.claude/busdriv
 out="$(bash "$WRAP" council 1 "$twp" "$tmp/wto.md")"
 first_line="${out%%$'\n'*}"
 [[ "$first_line" == FAILED\ \[timeout\]* ]] || { echo "FAIL wrapper timeout token got '$first_line'"; FAIL=1; }
-printf '%s\n' "$first_line" | grep -qi "serve --manual-login" || { echo "FAIL wrapper timeout banner missing hint"; FAIL=1; }
+printf '%s\n' "$first_line" | grep -qi "sign in to the" || { echo "FAIL wrapper timeout banner missing hint"; FAIL=1; }
 rm -f "$twp" "$tmp/.claude/busdriver.json"
 
 [[ "$FAIL" = 0 ]] && echo "PASS test-ultra-oracle" || exit 1

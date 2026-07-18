@@ -49,19 +49,17 @@ jobs:
       - name: Lint hook scripts (shell only)
         run: |
           find scripts/hooks -name '*.sh' -print0 | xargs -0 shellcheck --severity=warning || true
-      - name: Lint blueprint-review ultimate-arbiter surface (#265)
-        # These were unlinted before #265. Required (not soft) — the opt-in gate is a
-        # security boundary. SC1091 (sourced libs not followed) is info-level, so
-        # --severity=warning ignores it without needing -x/source-path.
+      - name: Lint blueprint-review ultimate-arbiter surface
+        # Required (not soft) — the opt-in gate is a security boundary. SC1091
+        # (sourced libs not followed) is info-level, so --severity=warning ignores
+        # it without needing -x/source-path. The gateway scripts/tests that used to
+        # be listed here were deleted with the gateway rung (ADR 0019).
         run: |
           shellcheck --severity=warning \
             scripts/lib/ultimate-config.sh \
-            scripts/ultimate-dispatch.sh \
-            skills/blueprint-review/scripts/dispatch-gateway-arbiter.sh \
             tests/test-ultimate-config.sh \
             tests/test-ultimate-tier.sh \
             tests/test-blueprint-arbiter-default-pin.sh \
-            tests/test-gateway-arbiter-dispatch.sh \
             tests/test-blueprint-review-oracle-arbiter-contract.sh \
             tests/test-vault-references.sh \
             tests/test-upstream-manifest.sh

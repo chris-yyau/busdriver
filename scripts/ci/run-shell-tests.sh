@@ -46,14 +46,17 @@ PER_TEST_TIMEOUT="${SHELL_TEST_TIMEOUT:-120}"
 # The ONLY tests permitted to SKIP. Everything else — every gate/security suite
 # included — must run to completion; an unexpected SKIP fails the job (see the
 # skip-masking guard above). Keep this list minimal and justify each entry.
-SKIP_ALLOWED=(
-  # Real-claude round-trip, gated behind BLUEPRINT_ARBITER_LIVE_TEST=1 — correct
-  # to skip in headless CI. See docs/ci/shell-test-inventory.md.
-  test-gateway-arbiter-claude-json-residual
-)
+# Currently EMPTY: the only entry (test-gateway-arbiter-claude-json-residual, a
+# real-claude round-trip gated behind BLUEPRINT_ARBITER_LIVE_TEST=1) was deleted
+# with the gateway rung (ADR 0019). Every discovered test must now run to
+# completion; an unexpected SKIP fails the job.
+SKIP_ALLOWED=()
 
 is_skip_allowed() {
   local base="$1" n
+  # `${arr[@]}` on an EMPTY array is "unbound" under `set -u` on bash 3.2 (macOS),
+  # so check the count first — the allowlist is empty by design right now.
+  [ "${#SKIP_ALLOWED[@]}" -eq 0 ] && return 1
   for n in "${SKIP_ALLOWED[@]}"; do
     [[ "$n" == "$base" ]] && return 0
   done

@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # tests/test-ultimate-tier.sh
-# Static + behavioral contract for the "ultimate" tier (Claude Fable via the zenmux
-# gateway) — ADR 0011. Locks in the PR-2 rename + the two shipping surfaces:
+# Static contract for the "ultimate" tier (Claude Fable via an in-harness Agent
+# subagent) — ADR 0011, as amended by ADR 0015 and ADR 0019. Locks in the rename,
+# the removal of the zenmux gateway transport, and the two shipping surfaces:
 #   (a) NO live code references the dropped ultra-arbiter keys
 #       (BLUEPRINT_ARBITER_ULTRA / ultraArbiter) — they live only in immutable history
 #       (docs/adr/, CHANGELOG, SKILL.md Version History).
-#   (b) the shared scripts/ultimate-dispatch.sh helper exists, is executable, and
-#       FAIL-CLOSES (non-zero, no output) when gateway creds are absent.
+#   (b) the gateway rung is GONE (ADR 0019): its scripts are deleted and no live
+#       instruction routes through them; the arbiter chain is fable subagent → opus.
 #   (c) skills/council/SKILL.md carries the Mythos Witness contract anchors
-#       (rendered-separately, never-a-vote, MYTHOS_FAILED banner).
+#       (rendered-separately, never-a-vote, MYTHOS_FAILED banner) with no gateway fallback.
 set -u
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAIL=0
@@ -21,9 +22,7 @@ fail() { echo "  FAIL  $1"; FAIL=1; }
 echo "── (a) dropped ultra-arbiter keys gone from live code ──"
 LIVE_FILES=(
   "$DIR/scripts/lib/ultimate-config.sh"
-  "$DIR/scripts/ultimate-dispatch.sh"
   "$DIR/scripts/lib/resolve-cli.sh"
-  "$DIR/skills/blueprint-review/scripts/dispatch-gateway-arbiter.sh"
 )
 for f in "${LIVE_FILES[@]}"; do
   if [[ -f "$f" ]] && grep -qEi 'BLUEPRINT_ARBITER_ULTRA|ultraArbiter|ultra-arbiter-config|ultra-arbiter|ultra arbiter' "$f"; then
@@ -41,72 +40,53 @@ else
   pass "blueprint-review SKILL.md body uses the ultimate-* names"
 fi
 
-# ── (b) shared helper exists, executable, fail-closes without creds ────────
-echo "── (b) scripts/ultimate-dispatch.sh helper ──"
-HELPER="$DIR/scripts/ultimate-dispatch.sh"
-[[ -f "$HELPER" ]] && pass "ultimate-dispatch.sh exists" || fail "ultimate-dispatch.sh missing"
-[[ -x "$HELPER" ]] && pass "ultimate-dispatch.sh is executable" || fail "ultimate-dispatch.sh not executable"
+# ── (b) gateway rung removed (ADR 0019) ───────────────────────────────────
+# Regression guard: reintroducing the gateway must be a deliberate, test-visible
+# change, not an accidental resurrection of a credential-bearing transport.
+echo "── (b) gateway rung is gone (ADR 0019) ──"
+for gone in \
+  "scripts/ultimate-dispatch.sh" \
+  "skills/blueprint-review/scripts/dispatch-gateway-arbiter.sh" \
+  "tests/test-gateway-arbiter-dispatch.sh" \
+  "tests/test-gateway-arbiter-claude-json-residual.sh"
+do
+  [[ ! -e "$DIR/$gone" ]] && pass "deleted: $gone" || fail "gateway artifact still present: $gone"
+done
 
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-PROMPT="$TMP/prompt.txt"; printf 'test prompt\n' > "$PROMPT"
-OUT="$TMP/out.md"
-# No gateway env at all → must fail-closed (non-zero) and write no output.
-rc=0
-env -i PATH="$PATH" bash "$HELPER" mythos-witness "$PROMPT" "$OUT" >/dev/null 2>&1 || rc=$?
-[[ "$rc" -ne 0 ]] && pass "no-creds dispatch fails closed (rc=$rc, non-zero)" || fail "no-creds dispatch did not fail closed (rc=0)"
-[[ ! -e "$OUT" ]] && pass "no output written when creds absent" || fail "output written despite missing creds"
-# Guard against sourcing under zsh (must fail loudly, not half-load).
-if command -v zsh >/dev/null 2>&1; then
-  if zsh -c 'source "$0"' "$HELPER" 2>&1 | grep -qi 'requires bash'; then
-    pass "sourcing under zsh fails loudly"
+# No LIVE instruction may route through the deleted helpers or the gateway creds.
+# (Prose that *explains* the removal is fine; these tokens are the machinery itself.)
+COUNCIL_BODY="$(cat "$DIR/skills/council/SKILL.md")"
+for tok in 'ultimate-dispatch.sh' 'dispatch-gateway-arbiter.sh' 'BLUEPRINT_ARBITER_GATEWAY'; do
+  if grep -qF -- "$tok" <<<"$BODY"; then
+    fail "blueprint-review SKILL.md body still routes through '$tok'"
   else
-    fail "zsh source guard did not fire"
+    pass "blueprint-review SKILL.md body free of '$tok'"
   fi
+  if grep -qF -- "$tok" <<<"$COUNCIL_BODY"; then
+    fail "council SKILL.md still routes through '$tok'"
+  else
+    pass "council SKILL.md free of '$tok'"
+  fi
+done
+
+# The deleted escalation section must not come back under its old HEADING. Scope to the
+# body: Version History legitimately names the section as historical record of its removal.
+if grep -qE '^#+[[:space:]]+Ultimate-Arbiter Escalation' <<<"$BODY"; then
+  fail "the headless claude -p escalation section is back in blueprint-review SKILL.md"
 else
-  echo "  SKIP  zsh not installed"
+  pass "no Ultimate-Arbiter Escalation section heading (deleted in ADR 0019)"
 fi
 
-# Output-containment check: with dummy gateway creds set (credential gate is FIRST in the
-# helper, so this exercises the containment logic at line ~126-137 without a real dispatch —
-# the script dies before it ever calls the claude binary). Covers the PWD-fallback branch
-# flagged in PR #275 review (Devin): when OUTPUT_FILE is not inside a git repo, the anchor
-# falls back to $PWD, and a correctly-composed path under that fallback must be ACCEPTED
-# (not incorrectly rejected), while a path outside the expected dir must still be REJECTED.
-echo "── (b.1) output containment (dummy creds, no real dispatch) ──"
-NOTGIT="$(mktemp -d)"; trap 'rm -rf "$TMP" "$NOTGIT"' EXIT
-# Accept case: OUTPUT_FILE composed directly under the PWD-fallback anchor's expected dir.
-mkdir -p "$NOTGIT/.claude/ultimate"
-CONTAIN_PROMPT="$NOTGIT/prompt.txt"; printf 'test prompt\n' > "$CONTAIN_PROMPT"
-CONTAIN_OUT="$NOTGIT/.claude/ultimate/out.md"
-# CLAUDE_BIN pointed at a nonexistent binary so the script dies fast right AFTER the
-# containment check (next gate down, line ~140) instead of proceeding to a real (and
-# potentially hanging) network dispatch — no network I/O reaches this test.
-rc=0
-( cd "$NOTGIT" && env -i PATH="$PATH" HOME="$NOTGIT" \
-    BLUEPRINT_ARBITER_GATEWAY_BASE_URL="https://example.invalid" \
-    BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN="dummy" \
-    ULTIMATE_COUNCIL_FORCE=1 \
-    CLAUDE_BIN="/nonexistent/claude-binary-for-test" \
-    bash "$HELPER" mythos-witness "$CONTAIN_PROMPT" "$CONTAIN_OUT" >"$NOTGIT/stderr.log" 2>&1 ) || rc=$?
-if grep -qF "output file must live directly under" "$NOTGIT/stderr.log"; then
-  fail "PWD-fallback containment incorrectly rejected a correctly-composed path"
-elif grep -qF "claude binary not found" "$NOTGIT/stderr.log"; then
-  pass "PWD-fallback containment accepts a correctly-composed path (fails later, on claude binary lookup, not containment)"
+# The arbiter chain is exactly: fable subagent → opus (degraded). No third rung.
+bp_anchor() { grep -qF -- "$2" "$SKILL_BP" && pass "$1" || fail "$1 (missing: $2)"; }
+bp_anchor "arbiter chain is fable subagent → opus degraded" 'fable subagent, opus degraded'
+bp_anchor "chain explicitly has no third rung"              'There is no third rung'
+bp_anchor "fable pin identity kept for the subagent"        '`fable` ≡ `claude-fable-5`'
+# The gateway-namespaced id was the gateway's alone — it must not survive the deletion.
+if grep -qF -- 'anthropic/claude-fable-5' <<<"$BODY"; then
+  fail "gateway-namespaced model id still in the blueprint-review body"
 else
-  fail "unexpected failure mode for PWD-fallback accept case: $(cat "$NOTGIT/stderr.log")"
-fi
-# Reject case: OUTPUT_FILE outside the expected dir must still die at the containment check.
-rc=0
-( cd "$NOTGIT" && env -i PATH="$PATH" HOME="$NOTGIT" \
-    BLUEPRINT_ARBITER_GATEWAY_BASE_URL="https://example.invalid" \
-    BLUEPRINT_ARBITER_GATEWAY_AUTH_TOKEN="dummy" \
-    ULTIMATE_COUNCIL_FORCE=1 \
-    CLAUDE_BIN="/nonexistent/claude-binary-for-test" \
-    bash "$HELPER" mythos-witness "$CONTAIN_PROMPT" "$NOTGIT/out.md" >"$NOTGIT/stderr2.log" 2>&1 ) || rc=$?
-if [[ "$rc" -ne 0 ]] && grep -qF "output file must live directly under" "$NOTGIT/stderr2.log"; then
-  pass "containment rejects an output path outside the expected dir"
-else
-  fail "containment did not reject an out-of-bounds output path (rc=$rc)"
+  pass "gateway-namespaced model id dropped from the body"
 fi
 
 # ── (c) Mythos Witness contract anchors in council SKILL.md ───────────────
@@ -118,36 +98,36 @@ anchor "Mythos Witness is never a vote"                    'The Mythos Witness i
 anchor "Mythos Witness excluded from the vote tally"       'EXCLUDED from the council vote tally'
 anchor "MYTHOS_FAILED banner on failure"                   'MYTHOS_FAILED'
 anchor "rendered AFTER UltraOracle, BEFORE the Verdict"    'AFTER the `## UltraOracle — Expert Witness`'
-anchor "routes through the shared ultimate-dispatch helper" 'scripts/ultimate-dispatch.sh'
 anchor "config gate is ultimate.surfaces.council"          'ultimate.surfaces.council'
-# ADR 0015: subagent-first. The per-run force var is now DERIVED from the trigger decision
-# ($_forced) and passed as a narrow per-command env prefix to the gateway FALLBACK — never
-# assigned into the shell, so there is nothing to leak and nothing to `unset`.
-anchor "per-run force derived from the trigger decision"   'ULTIMATE_COUNCIL_FORCE="$_forced"'
 anchor "trigger decision variable is declared"             '_forced=0'
-grep -qF 'export ULTIMATE_COUNCIL_FORCE' "$SKILL_C" && fail "force var must never be exported" \
-  || pass "force var is not exported"
+# ADR 0019: the never-silent contract survives the gateway deletion. The banner is now
+# emitted by the Step 5 RENDER logic (the executor grades the Agent call directly) —
+# the Bash rc-branch that used to emit it lived inside the deleted gateway block.
+anchor "subagent failure renders a banner, not an omission" 'MYTHOS_FAILED [subagent-failed]'
+anchor "empty subagent verdict renders a banner"            'MYTHOS_FAILED [empty verdict]'
+anchor "omission is correct ONLY when never attempted"      'MYTHOS_ATTEMPT=0'
 
-# Test the FORCED path, not only the default initializer. The default-0 assertion above
-# would still pass even if ultimate-council never actually forced the Mythos path — assert
-# BOTH Step 4.6 blocks (gate pre-check + gateway-fallback, separate Bash calls per the
-# "shell state does not carry over" design) declare `_forced=0` as their OWN independent
-# initializer (i.e. the placeholder exists twice, once per block, matching the "MATCHING
-# the gate snippet" / "re-declares it independently" comments in SKILL.md), and that
-# commands/ultimate-council.md documents the executor instruction to override it to 1 in
-# BOTH blocks for a forced run.
-_forced_count="$(grep -cF -- '_forced=0' "$SKILL_C")"
-if [[ "$_forced_count" -ge 2 ]]; then
-  pass "both Step 4.6 blocks (gate + fallback) independently declare _forced=0"
+# The gateway force plumbing existed only to authorize the deleted helper.
+if grep -qF -- 'ULTIMATE_COUNCIL_FORCE' "$SKILL_C"; then
+  fail "ULTIMATE_COUNCIL_FORCE plumbing survived the gateway deletion"
 else
-  fail "expected _forced=0 in BOTH Step 4.6 blocks, found $_forced_count occurrence(s)"
+  pass "ULTIMATE_COUNCIL_FORCE plumbing removed with the gateway block"
+fi
+
+# Step 4.6 is now a SINGLE Bash block (the gate pre-check). The gateway-fallback block
+# that used to re-declare `_forced=0` independently is gone, so exactly one remains.
+_forced_count="$(grep -cF -- '_forced=0' "$SKILL_C")"
+if [[ "$_forced_count" -eq 1 ]]; then
+  pass "Step 4.6 declares _forced=0 exactly once (single gate block)"
+else
+  fail "expected exactly 1 _forced=0 (single Step 4.6 gate block), found $_forced_count"
 fi
 
 CMD_ULTIMATE="$DIR/commands/ultimate-council.md"
-if [[ -f "$CMD_ULTIMATE" ]] && grep -qF -- 'setting `_forced=1` in BOTH the Step 4.6' "$CMD_ULTIMATE"; then
-  pass "ultimate-council command instructs the executor to force _forced=1 in BOTH Step 4.6 blocks"
+if [[ -f "$CMD_ULTIMATE" ]] && grep -qF -- 'setting `_forced=1` in the Step 4.6 gate pre-check block' "$CMD_ULTIMATE"; then
+  pass "ultimate-council command instructs the executor to force _forced=1 in the single gate block"
 else
-  fail "ultimate-council command missing the both-blocks _forced=1 instruction"
+  fail "ultimate-council command missing the single-block _forced=1 instruction"
 fi
 
 [[ "$FAIL" = 0 ]] && echo "PASS test-ultimate-tier" || { echo "FAIL test-ultimate-tier"; exit 1; }

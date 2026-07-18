@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # tests/test-ultimate-config.sh
-# Unit tests for scripts/lib/ultimate-config.sh (#265, ADR 0011).
+# Unit tests for scripts/lib/ultimate-config.sh (ADR 0011, as amended by ADR 0019).
 #
-# ultimate_surface_enabled <arbiter|council> gates the opt-in Claude-Fable-via-gateway
-# "ultimate" tier surfaces. The enable is SECURITY-SENSITIVE (it transmits content to an
-# external gateway), so it must come from the USER config (~/.claude/busdriver.json) ONLY —
-# never a repo-controlled project config — or from the BUSDRIVER_ULTIMATE=1 operator force.
+# ultimate_surface_enabled <arbiter|council> gates the opt-in Claude-Fable "ultimate" tier
+# surfaces, now reached via an in-harness Agent subagent (the gateway transport was removed
+# in ADR 0019, so enabling transmits nothing externally). The enable still must come from the
+# USER config (~/.claude/busdriver.json) ONLY — never a repo-controlled project config — or
+# from the BUSDRIVER_ULTIMATE=1 operator force.
 #
 # Every case ISOLATES $HOME to a throwaway dir so the developer's real
 # ~/.claude/busdriver.json can't make the suite flaky (the crit-4 requirement).

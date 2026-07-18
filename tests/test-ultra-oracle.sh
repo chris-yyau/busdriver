@@ -195,6 +195,17 @@ grep -qx -- "--browser-port" "$tmp/argv.log" && { echo "FAIL browser-port incomp
 # The serve token must not be delivered when the attach path is taken (no remoteHost on argv).
 [ -z "$(cat "$tmp/env.log")" ] || { echo "FAIL token delivered via env on attach path"; FAIL=1; }
 
+# attachRunning=true AND hideWindow=true -> --browser-hide-window must be SUPPRESSED.
+# Oracle rejects --browser-attach-running combined with --browser-hide-window outright, so
+# a user carrying over an old hideWindow=true setting would otherwise get a CLI rejection
+# instead of the new attach transport working (Codex P2, PR #409).
+printf '{ "ultraOracle": { "attachRunning": true, "hideWindow": true } }\n' > "$tmp/.claude/busdriver.json"
+: > "$tmp/argv.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/athw.md" --mode blocking)"
+[ "$st" = "ok" ] || { echo "FAIL attach+hideWindow status got '$st'"; FAIL=1; }
+grep -qx -- "--browser-attach-running" "$tmp/argv.log" || { echo "FAIL attach+hideWindow: attach flag missing"; FAIL=1; }
+grep -qx -- "--browser-hide-window" "$tmp/argv.log" && { echo "FAIL attach+hideWindow: hide-window must be suppressed under attach"; FAIL=1; }
+
 # preflight failure -> fail CLOSED ('error'), oracle NEVER invoked. Proceeding would let
 # oracle silently launch its own Chrome and walk back into the Cloudflare wall.
 _ULTRA_ORACLE_PREFLIGHT="$tmp/bin/preflight-fail.sh"

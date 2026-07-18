@@ -292,7 +292,11 @@ ultra_oracle_consult() {
   # Hide the automation Chrome window ONLY when explicitly opted in (B8). Passing
   # --browser-hide-window was root-caused as breaking oracle's ChatGPT browser engine,
   # so the window is now VISIBLE by default; set ultraOracle.hideWindow=true to restore.
-  if ultra_oracle_hide_window; then set -- "$@" --browser-hide-window; fi
+  # Skip entirely when attach mode is active: oracle documents
+  # --browser-attach-running as mutually exclusive with --browser-hide-window, so
+  # passing both is a hard CLI rejection — attach mode always reuses (and never
+  # hides) the operator's already-visible Chrome window.
+  if ! ultra_oracle_attach_running && ultra_oracle_hide_window; then set -- "$@" --browser-hide-window; fi
   local g; for g in "${ctx_arr[@]:-}"; do [[ -n "$g" ]] && set -- "$@" --file "$g"; done
   if [[ -n "$prompt_file" ]]; then
     # Fail closed if the prompt file is unreadable/empty — otherwise a silent cat

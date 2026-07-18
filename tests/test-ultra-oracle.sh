@@ -162,6 +162,7 @@ rm -f "$tmp/.claude/busdriver.json"
 # completes. Stub the preflight in-process (see _ULTRA_ORACLE_PREFLIGHT) so the test never
 # launches a real Chrome.
 export ULTRA_ORACLE_MOCK_MODE=ok
+export ULTRA_ORACLE_ENV_OUT="$tmp/env.log"
 cat > "$tmp/bin/preflight-ok.sh" <<'EOF'
 #!/bin/bash
 echo "ok 127.0.0.1:61850"

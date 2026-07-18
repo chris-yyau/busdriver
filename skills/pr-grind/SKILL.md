@@ -1141,19 +1141,40 @@ FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-
 # Codex first-engagement grace. If Codex resolved to `none` — zero reaction/
 # review on the PR — it may simply not have posted its initial 👀 on a just-
 # pushed HEAD yet; without this a Codex-ONLY repo (no registered bots forcing
-# wait-rounds) could merge in the gap before Codex starts. Give it ONE bounded
-# re-poll. This rarely fires: COMPLETION is reached only after the loop has
-# converged, by which point an active Codex has long since engaged (ack is a
-# SHA/stale, not `none`) — so on repos where Codex runs there is no wait here.
+# wait-rounds) could merge in the gap before Codex starts. Re-poll on a bounded
+# DEADLINE, early-exiting the instant Codex engages. This rarely fires: COMPLETION
+# is reached only after the loop has converged, by which point an active Codex has
+# long since engaged (ack is a SHA/stale, not `none`) — so on repos where Codex
+# runs there is no wait here.
 # Set PR_GRIND_CODEX_GRACE_SECS=0 on repos that do not use Codex to skip the
-# one-time wait. Bounded by design; never an unbounded hang.
+# wait entirely. Bounded by design; never an unbounded hang.
+#
+# DEADLINE SIZING (2026-07-19, issue #420) — the old default was a SINGLE blind
+# 20s sleep. Measured `@codex review` → Codex-review latency on this repo was
+# 3m37s / 4m58s / 6m36s / 7m27s (PRs #412/#419/#409/#390): ~15x the grace. The
+# re-poll therefore ALWAYS observed `none` and fell through, merging seconds
+# before the review landed (#419 merged 5s after its own nudge; the review
+# arrived 5min later, on a closed PR). The default is now a 480s deadline polled
+# every 30s, so a fast Codex costs ~30s and a slow one is still caught.
 # This grace handles ONLY the `none` case (Codex never engaged). The `stale` case —
 # Codex reviewed but won't re-ack an UNCHANGED HEAD — is handled earlier, in the
 # LOOP, by the codex-retrigger one-shot (ADR 0005, scripts/codex-retrigger.sh):
 # COMPLETION is unreachable while Codex is `stale` (Invariant 2 blocks `clean`), so
 # the recovery for `stale` must live in the wait-round, not here.
 CODEX_DONE=$(printf '%s' "$FRESH_ACKS" | tr ',' '\n' | awk -F= '$1=="chatgpt-codex-connector"{print $2}')
-CODEX_GRACE="${PR_GRIND_CODEX_GRACE_SECS:-20}"
+CODEX_GRACE="${PR_GRIND_CODEX_GRACE_SECS:-480}"
+CODEX_POLL="${PR_GRIND_CODEX_POLL_SECS:-30}"
+# Sanitize both: non-numeric/empty → default. A bad value must not make the
+# arithmetic below error out (this block runs without `set -e`) or spin hot.
+# The `10#` canonicalization is load-bearing, not cosmetic: `0480` passes the
+# all-digits test but `$(( ))` reads a leading zero as OCTAL, and digits 8/9 then
+# abort the whole COMPLETION shell with "value too great for base". Same guard
+# codex-active-repo.sh applies to its window.
+case "$CODEX_GRACE" in '' | *[!0-9]*) CODEX_GRACE=480 ;; esac
+case "$CODEX_POLL"  in '' | *[!0-9]*) CODEX_POLL=30  ;; esac
+CODEX_GRACE=$((10#$CODEX_GRACE))
+CODEX_POLL=$((10#$CODEX_POLL))
+[ "$CODEX_POLL" -lt 1 ] && CODEX_POLL=30
 # ADR 0013 revision (#320): the `none`-nudge + the missing-Codex warning now fire
 # when the repo is PROVEN Codex-active (auto-detect over recent reviews/reactions)
 # OR the force-on opt-in file is present — no longer gated on the manual marker.
@@ -1171,6 +1192,23 @@ if [ "$CODEX_DONE" = "none" ]; then
      && bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-active-repo.sh" "$OWNER/$REPO" >/dev/null; then
     CODEX_REPO_ACTIVE=1
   fi
+  # Force-on cold-start opt-in — a repo where Codex IS expected but has no history
+  # yet, so auto-detect reads inactive. This MUST resolve the marker byte-identically
+  # to codex-nudge-if-expected.sh:60-64, or the wrapper posts the force-on nudge while
+  # this gate caps the wait at 20s and recreates the very race being closed. So:
+  # resolve from $WORKTREE_DIR (the wrapper's CWD, not the possibly-drifted ambient
+  # one), honor BUSDRIVER_MAIN_ROOT, and use a LITERAL `.claude` — the wrapper does
+  # NOT honor BUSDRIVER_STATE_DIR here, and reading a different dir than the wrapper
+  # is exactly the mismatch. Fail-SAFE: unresolvable → 0 → short wait, never long.
+  CODEX_EXPECTED=$( cd "$WORKTREE_DIR" 2>/dev/null || { echo 0; exit 0; }
+    _MR="${BUSDRIVER_MAIN_ROOT:-}"
+    if [ -z "$_MR" ]; then
+      _G=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+      case "$_G" in /*) _MR="$(dirname "$_G")" ;; esac
+    fi
+    if [ -n "$_MR" ] && [ -f "${_MR}/.claude/pr-grind-codex-expected.local" ]; then
+      echo 1; else echo 0; fi )
+  case "$CODEX_EXPECTED" in 1) : ;; *) CODEX_EXPECTED=0 ;; esac
   if [ "${CODEX_GRACE}" -gt 0 ] 2>/dev/null; then
   # `none`-nudge (one-shot per (PR,HEAD)) — ADR 0013 (as revised). Post `@codex
   # review` ONCE, here, AFTER CI has settled (COMPLETION is post-convergence) so we
@@ -1191,8 +1229,51 @@ if [ "$CODEX_DONE" = "none" ]; then
   # path; the outer `|| true` keeps a failed nudge from ever staling the gate.
   ( cd "$WORKTREE_DIR" || exit 0
     bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-nudge-if-expected.sh" "$PR" "$HEAD_FULL_SHA" "$OWNER/$REPO" "$CODEX_REPO_ACTIVE" ) || true
-  echo "ℹ️  Codex shows no engagement on HEAD; ${CODEX_GRACE}s first-engagement grace re-poll…"
-  sleep "$CODEX_GRACE"
+  # WAIT SIZING (#420). The 480s deadline is for repos where Codex is genuinely
+  # expected — PROVEN-ACTIVE or FORCE-ON. A repo with no Codex at all must NOT
+  # start waiting 8 minutes on every merge merely because it read `none`; it keeps
+  # the historical short courtesy wait. (Raising the default without this gate
+  # would have imposed the full deadline on every Codex-less repo — caught in
+  # review.) The NUDGE above is unaffected: the wrapper applies the same
+  # force-on/active policy itself and is a no-op absent both.
+  CODEX_WAIT="$CODEX_GRACE"
+  if [ "$CODEX_REPO_ACTIVE" != "1" ] && [ "$CODEX_EXPECTED" != "1" ]; then
+    [ "$CODEX_WAIT" -gt 20 ] && CODEX_WAIT=20
+  fi
+  # The interval must never exceed the deadline, else the first sleep alone
+  # overshoots it (POLL=3600 against a 480s deadline would block for an hour).
+  [ "$CODEX_POLL" -gt "$CODEX_WAIT" ] && CODEX_POLL="$CODEX_WAIT"
+  echo "ℹ️  Codex shows no engagement on HEAD; polling every ${CODEX_POLL}s up to ${CODEX_WAIT}s for first engagement…"
+  # Bounded poll, NOT a blind sleep. Deadline computed ONCE up front so a slow
+  # refresh inside the body can never extend the SLEEP budget past CODEX_WAIT, and
+  # each sleep is clamped to the REMAINING time so a non-divisible interval cannot
+  # overrun it either. Single exit test, at the top.
+  #
+  # CEILING, stated precisely (do not upgrade this to "never hangs"): CODEX_WAIT
+  # bounds the SLEEP budget, not total wall time. The six `gh` fetches per iteration
+  # carry no explicit timeout, so a hung request stalls here — exactly as it would at
+  # every other unguarded `gh` fetch in COMPLETION (this block adds no new exposure,
+  # it just repeats an existing one up to CODEX_WAIT/CODEX_POLL times). The behavioral
+  # test covers the sleep arithmetic only; it cannot exercise a hung fetch. If gh
+  # hangs become real, wrap these in `timeout`/`gtimeout` here AND at the other
+  # COMPLETION fetches — piecemeal is not worth it.
+  # ponytail: re-fetches all 6 sources per iteration (worst case 480/30 = 16
+  # rounds x 6 calls); only runs on the rare Codex-`none`-but-expected gap, so
+  # the simple version wins. Narrow to reactions+reviews inside the loop if the
+  # API cost ever shows up.
+  CODEX_DEADLINE=$(( $(date +%s) + CODEX_WAIT ))
+  while :; do
+  _CODEX_REM=$(( CODEX_DEADLINE - $(date +%s) ))
+  if [ "$_CODEX_REM" -le 0 ]; then
+    echo "ℹ️  Codex did not engage within ${CODEX_WAIT}s; proceeding."
+    break
+  fi
+  if [ "$_CODEX_REM" -lt "$CODEX_POLL" ]; then sleep "$_CODEX_REM"; else sleep "$CODEX_POLL"; fi
+  # Fresh FETCH_OK per poll. It is sticky-on-failure by design elsewhere, but across
+  # a multi-round wait that would make ONE transient error condemn every later poll,
+  # so each iteration is judged on its own snapshot. The value that survives the loop
+  # is the LAST poll's, which is what the ledger below is entitled to trust.
+  FETCH_OK=1
   # Refresh ALL Codex-relevant sources, not just reactions: during the grace
   # Codex may post FINDINGS (inline threads → Tier A, or a /reviews entry whose
   # commit_id is HEAD → Tier B), not only a clean 👍. Refreshing reactions alone
@@ -1227,9 +1308,52 @@ if [ "$CODEX_DONE" = "none" ]; then
   ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) || FETCH_OK=0
   export ALL_REACTIONS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_THREADS FETCH_OK
   CODEX_REGRACE=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo stale)
-  # Re-fold only if Codex engaged during the grace (now `stale` or a fresh SHA);
-  # SHA → still passes, `stale` → blocks below. SHAs/stale/none are sed-safe.
-  [ "$CODEX_REGRACE" != "none" ] && FRESH_ACKS=$(printf '%s' "$FRESH_ACKS" | sed "s/chatgpt-codex-connector=none/chatgpt-codex-connector=${CODEX_REGRACE}/")
+    # Codex engaged → stop polling immediately (a fast Codex costs one interval).
+    # Otherwise loop; the top-of-loop deadline test ends it and falls through to
+    # the missing-Codex warning + merge (non-gating, exactly as before).
+    #
+    # FETCH_OK is required: a transient failure in ANY refresh above makes
+    # ack-ledger return `stale`, which is `!= none` and would otherwise be read as
+    # ENGAGEMENT — exiting the poll on a fetch glitch and blocking completion on a
+    # snapshot we know is incomplete, when a later poll would likely have recovered.
+    # Only a verdict from a COMPLETE snapshot may end the wait. (FETCH_OK is reset
+    # per-iteration at the top of the loop, so one bad poll does not poison the rest.)
+    [ "$CODEX_REGRACE" != "none" ] && [ "$FETCH_OK" = "1" ] && break
+  done
+  # Re-apply the Tier-D content-identity widening ONCE, here — not per interval.
+  # The refreshes above REPLACED ALL_CHECK_RUNS with the raw HEAD-scoped payload,
+  # discarding the augmentation augment-equiv-acks.sh added before the ledger ran;
+  # without re-sourcing, a valid metadata-only force-push loses its carried-forward
+  # Tier-D acks and the recomputation below turns them `stale`, blocking a merge
+  # that should pass. It belongs outside the loop because the in-loop verdict
+  # classifies ONLY Codex, which has no Tier D — running it per interval would add
+  # a repo view, a timeline GraphQL call and possible fetches to all 16 rounds for
+  # a value nothing in the loop reads. The full ledger below is its only consumer.
+  [ -f "$AUGMENT_SCRIPT" ] && . "$AUGMENT_SCRIPT"
+  export ALL_CHECK_RUNS FETCH_OK
+  # Recompute the ENTIRE ledger on the post-wait sources — not just Codex.
+  # The loop refreshes all six payloads, but the old code re-folded ONLY the Codex
+  # entry, leaving the five registered bots at their pre-wait values. Over the old
+  # 20s sleep that gap was narrow; at a 480s deadline it is wide enough for a bot to
+  # post CHANGES_REQUESTED (or a finding with no inline thread) during the window
+  # while FRESH_ACKS still carries its stale-but-passing SHA — authorizing the merge
+  # on data known to be out of date. Recomputing all six closes it: any bot that
+  # re-engaged now reads `stale` and blocks below, exactly as on the normal path.
+  # Same fail-CLOSED `|| echo stale` as the original computation.
+  FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),devin-ai-integration=$(bash "$ACK_SCRIPT" devin-ai-integration 2>/dev/null || echo stale),greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),chatgpt-codex-connector=${CODEX_REGRACE}"
+  # HEAD-MOVED GUARD (fail-CLOSED). Everything above classifies acks against
+  # HEAD_SHA captured BEFORE the wait, but the later `gh pr merge` targets whatever
+  # the PR points at NOW. A push landing during the window would therefore carry
+  # the old commit's acks onto a new, unreviewed head. The old 20s sleep made that
+  # a narrow race; a 480s deadline makes it reachable, so this change owns it.
+  # On ANY divergence — or an unresolvable/failed lookup — mark every ack `stale`
+  # so the existing stale-ack check blocks the merge and the loop re-converges on
+  # the new HEAD. Never proceeds on doubt.
+  CODEX_HEAD_NOW=$(gh pr view "$PR" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+  if [ -z "$CODEX_HEAD_NOW" ] || [ "$CODEX_HEAD_NOW" != "$HEAD_FULL_SHA" ]; then
+    echo "⚠️  HEAD moved during the Codex wait (was ${HEAD_FULL_SHA:0:8}, now ${CODEX_HEAD_NOW:0:8}${CODEX_HEAD_NOW:+}) — invalidating acks; the loop must re-converge on the new HEAD."
+    FRESH_ACKS="cursor=stale,cubic-dev-ai=stale,coderabbitai=stale,devin-ai-integration=stale,greptile-apps=stale,chatgpt-codex-connector=stale"
+  fi
   fi
   # Missing-Codex warning (#320 secondary ask): Codex is HISTORICALLY active here but
   # still `none` at merge. Gated on CODEX_REPO_ACTIVE (already forced to 0 by the kill

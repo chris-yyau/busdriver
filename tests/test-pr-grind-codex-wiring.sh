@@ -88,5 +88,138 @@ ORDER_OK=$(awk '
 [ "$ORDER_OK" = "OK" ] && ok "each GC call follows a MERGE_STATE==MERGED guard" \
   || fail "a GC call precedes its MERGED guard"
 
+# ── Codex first-engagement POLL loop (#420) ────────────────────────────
+# WHY: the grace was a single blind `sleep 20`, but measured @codex-review →
+# review latency on this repo is 3m37s–7m27s (PRs #412/#419/#409/#390). The
+# re-poll always observed `none` and merged seconds before the review landed.
+# These assert the blind sleep cannot come back.
+hasre 'CODEX_GRACE="\$\{PR_GRIND_CODEX_GRACE_SECS:-480\}"' \
+  && ok "grace deadline default is 480s (> measured Codex latency)" \
+  || fail "CODEX_GRACE default is not 480 — a sub-minute default re-opens #420"
+hasre 'CODEX_POLL="\$\{PR_GRIND_CODEX_POLL_SECS:-30\}"' \
+  && ok "poll interval default 30s present" || fail "missing CODEX_POLL default"
+has 'case "$CODEX_GRACE" in' && has 'case "$CODEX_POLL"' \
+  && ok "both knobs sanitized against non-numeric input" \
+  || fail "CODEX_GRACE/CODEX_POLL not sanitized"
+has 'CODEX_DEADLINE=$(( $(date +%s) + CODEX_WAIT ))' \
+  && ok "deadline computed once, before the loop" \
+  || fail "deadline missing or recomputed inside the loop (wait could extend past CODEX_WAIT)"
+has '_CODEX_REM=$(( CODEX_DEADLINE - $(date +%s) ))' \
+  && ok "deadline tested at top of loop (never an unbounded hang)" || fail "missing deadline test"
+# The long deadline must apply ONLY where Codex is expected. Without this, raising
+# the default imposed an 8-minute wait on every Codex-LESS repo's merge.
+has 'if [ "$CODEX_REPO_ACTIVE" != "1" ] && [ "$CODEX_EXPECTED" != "1" ]; then' \
+  && ok "long wait gated on proven-active OR force-on" \
+  || fail "wait not gated — Codex-less repos would pay the full deadline"
+has 'pr-grind-codex-expected.local' \
+  && ok "force-on opt-in resolved for the wait gate" || fail "force-on file not consulted"
+# The force-on marker MUST resolve identically to codex-nudge-if-expected.sh:60-64
+# (WORKTREE_DIR cwd, BUSDRIVER_MAIN_ROOT honored, LITERAL .claude) — a divergence
+# lets the wrapper nudge while this gate caps the wait at 20s.
+has '${_MR}/.claude/pr-grind-codex-expected.local' \
+  && ok "force-on marker uses literal .claude (matches the wrapper)" \
+  || fail "force-on marker path diverges from the wrapper's"
+if grep -q 'BUSDRIVER_STATE_DIR:-.claude}/pr-grind-codex-expected' "$SKILL"; then
+  fail "force-on marker honors BUSDRIVER_STATE_DIR but the wrapper does not — mismatch"
+else
+  ok "force-on marker does not diverge via BUSDRIVER_STATE_DIR"
+fi
+# After the wait, the FULL ledger must be recomputed -- not just the Codex entry.
+# Re-folding Codex alone leaves 5 bots at pre-wait values across a 480s window, so a
+# bot that posts CHANGES_REQUESTED during it would still read as passing.
+hasre 'FRESH_ACKS="cursor=\$\(bash "\$ACK_SCRIPT" cursor.*greptile-apps=\$\(bash "\$ACK_SCRIPT" greptile-apps' \
+  && ok "full 6-bot ledger recomputed after the wait" \
+  || fail "post-wait ledger not fully recomputed — stale bot acks could authorize merge"
+if grep -q 's/chatgpt-codex-connector=none/chatgpt-codex-connector=' "$SKILL"; then
+  fail "Codex-only sed re-fold still present — the other 5 bots stay stale"
+else
+  ok "Codex-only sed re-fold removed"
+fi
+# HEAD must be re-verified after the wait: acks are classified against the PRE-wait
+# HEAD_SHA while `gh pr merge` targets the live PR, so a push during the window
+# would carry old acks onto a new head.
+has 'CODEX_HEAD_NOW=$(gh pr view "$PR" --json headRefOid' \
+  && ok "HEAD re-verified after the wait" || fail "no post-wait HEAD re-verify — merge could target an unreviewed head"
+has '[ -z "$CODEX_HEAD_NOW" ] || [ "$CODEX_HEAD_NOW" != "$HEAD_FULL_SHA" ]' \
+  && ok "HEAD guard fails CLOSED on divergence AND on lookup failure" \
+  || fail "HEAD guard not fail-closed"
+# Tier-D carry-forward must survive the in-loop refresh that replaces ALL_CHECK_RUNS.
+hasre '\[ -f "\$AUGMENT_SCRIPT" \] && \. "\$AUGMENT_SCRIPT"' \
+  && ok "Tier-D augmentation re-applied after the refresh" \
+  || fail "augment-equiv-acks not re-sourced — Tier-D acks lost on force-push"
+# ...but ONCE, after the loop — the in-loop verdict is Codex-only (no Tier D), so
+# per-interval re-sourcing would add a repo view + GraphQL call to all 16 rounds.
+AUG_AFTER_DONE=$(awk '
+  /^  done$/                              { done_seen = 1 }
+  /\[ -f "\$AUGMENT_SCRIPT" \] && \. /    { print (done_seen ? "AFTER" : "BEFORE") }' "$SKILL" \
+  | tail -1)
+[ "$AUG_AFTER_DONE" = "AFTER" ] \
+  && ok "augmentation re-sourced outside the loop (not per interval)" \
+  || fail "augmentation re-sourced INSIDE the poll loop — dozens of wasted API calls"
+# A fetch glitch must not be mistaken for engagement.
+has '[ "$CODEX_REGRACE" != "none" ] && [ "$FETCH_OK" = "1" ] && break' \
+  && ok "poll exits only on a verdict from a COMPLETE snapshot" \
+  || fail "loop can exit on a transient fetch failure read as engagement"
+has 'FETCH_OK=1' \
+  && ok "FETCH_OK reset per poll (one bad round does not poison the rest)" \
+  || fail "FETCH_OK not reset per iteration — sticky failure condemns every later poll"
+# Leading zeros: `0480` passes an all-digits test but $(( )) reads it as octal.
+has 'CODEX_GRACE=$((10#$CODEX_GRACE))' && has 'CODEX_POLL=$((10#$CODEX_POLL))' \
+  && ok "both knobs canonicalized with 10# (no octal abort)" \
+  || fail "missing 10# canonicalization — PR_GRIND_CODEX_GRACE_SECS=0480 aborts the shell"
+# Prove the octal trap is real and the guard defuses it, both outcomes.
+_octal_raw() { local v="$1"; case "$v" in ''|*[!0-9]*) v=480 ;; esac; echo $(( 100 + v )); }
+_octal_fix() { local v="$1"; case "$v" in ''|*[!0-9]*) v=480 ;; esac; v=$((10#$v)); echo $(( 100 + v )); }
+if _octal_raw 0480 >/dev/null 2>&1; then
+  fail "expected bare arithmetic to reject 0480 as octal — trap assumption wrong"
+else
+  ok "unguarded arithmetic DOES abort on 0480 (the trap is real)"
+fi
+[ "$(_octal_fix 0480 2>/dev/null)" = "580" ] \
+  && ok "10# canonicalization accepts 0480 as decimal 480" || fail "10# guard did not defuse 0480"
+# Interval > deadline would overshoot on the very first sleep.
+has '[ "$CODEX_POLL" -gt "$CODEX_WAIT" ] && CODEX_POLL="$CODEX_WAIT"' \
+  && ok "poll interval clamped to the deadline" || fail "poll interval not clamped"
+has 'if [ "$_CODEX_REM" -lt "$CODEX_POLL" ]; then sleep "$_CODEX_REM"; else sleep "$CODEX_POLL"; fi' \
+  && ok "each sleep clamped to remaining time (no overrun)" || fail "sleep not clamped to remaining"
+if grep -qE '^[[:space:]]*sleep "\$CODEX_GRACE"[[:space:]]*$' "$SKILL"; then
+  fail "blind 'sleep \$CODEX_GRACE' still present — the #420 regression"
+else
+  ok "no blind full-grace sleep remains"
+fi
+
+# Behavioral check of the loop CONTROL FLOW — both outcomes, per "prove the guard
+# fires". CEILING: this is a replica of the loop skeleton, not the SKILL prose
+# itself (markdown prose is not sourceable); the greps above pin the real block to
+# this shape. It proves the deadline math terminates and the early-exit works.
+_loop() {  # $1=wait $2=poll $3=iterations-until-engagement (0 = never)
+  local CODEX_WAIT="$1" CODEX_POLL="$2" want="$3" n=0 CODEX_REGRACE=none
+  local CODEX_DEADLINE _CODEX_REM
+  [ "$CODEX_POLL" -gt "$CODEX_WAIT" ] && CODEX_POLL="$CODEX_WAIT"
+  CODEX_DEADLINE=$(( $(date +%s) + CODEX_WAIT ))
+  while :; do
+    _CODEX_REM=$(( CODEX_DEADLINE - $(date +%s) ))
+    [ "$_CODEX_REM" -le 0 ] && break
+    if [ "$_CODEX_REM" -lt "$CODEX_POLL" ]; then sleep "$_CODEX_REM"; else sleep "$CODEX_POLL"; fi
+    n=$((n + 1))
+    [ "$want" -gt 0 ] && [ "$n" -ge "$want" ] && CODEX_REGRACE=engaged
+    [ "$CODEX_REGRACE" != "none" ] && break
+  done
+  echo "$CODEX_REGRACE:$n"
+}
+# PASS outcome: engages on poll 2 → breaks early, well inside the deadline.
+[ "$(_loop 10 1 2)" = "engaged:2" ] \
+  && ok "loop exits early on engagement" || fail "loop did not early-exit on engagement"
+# FAIL outcome: never engages → terminates at the deadline rather than spinning.
+_R=$(_loop 2 1 0)
+case "$_R" in none:*) ok "loop terminates at deadline when Codex never engages" ;;
+              *) fail "loop did not terminate at deadline (got $_R)" ;; esac
+# Interval LARGER than the deadline must still respect the deadline, not the
+# interval — the PR_GRIND_CODEX_POLL_SECS=3600 / deadline=480 case from review.
+_T0=$(date +%s); _R=$(_loop 2 3600 0); _T1=$(date +%s)
+[ $(( _T1 - _T0 )) -le 4 ] \
+  && ok "poll > deadline still bounded by the deadline (took $(( _T1 - _T0 ))s)" \
+  || fail "poll > deadline overshot: took $(( _T1 - _T0 ))s for a 2s deadline"
+
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

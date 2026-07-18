@@ -155,11 +155,14 @@ git commit -m "Message"
   currently **no verified mechanism that holds the gate across it** (`run_in_background`
   returns immediately; the completion notification is a message, not a block;
   `TaskOutput` can return with the task still running). See #368 and the Execution
-  Pattern section. Until it is settled: make the pass FIT — split the change, or lower
-  `LITMUS_TIMEOUT` (default 1200s, i.e. double the cap) so the review terminates inside
-  the cap and this rule is satisfiable as written. If you background it anyway, YOU are
-  responsible for confirming the process actually EXITED before you act on anything —
-  a wait returning is not proof.
+  Pattern section. The default `LITMUS_TIMEOUT` is now **540s — under the cap** (#368),
+  leaving ~60s of headroom for startup/SAST/context/cleanup, so the review normally
+  terminates inside the cap and this rule is satisfiable as written. The tension returns
+  if `LITMUS_TIMEOUT` is RAISED above 600s, or if those setup phases eat the 60s headroom
+  on a very large diff (the reviewer timer starts only after them): then make the pass
+  FIT — split the change, or lower the timeout. If you background it anyway, YOU are
+  responsible for confirming the process actually EXITED before you act — a wait
+  returning is not proof.
 - **NO polling/sleep loops** - just use timeout=600000 (the cap); see #368 for the rest
 - **NO user interaction** between iterations - fix silently
 - **NO verbose progress** - don't narrate each step
@@ -232,11 +235,11 @@ If you are about to set `run_in_background=True` and then keep working — stagi
 
 A pass that exceeds the harness Bash cap of `timeout=600000` (10 min) has **no verified compliant path** — see #368. A longer blocking call is not honored: it is clamped and KILLED mid-review, leaving `review_status: PENDING` and no verdict. Backgrounding would only be compliant if something reliably held the gate until the process EXITED, and nothing here is proven to (`run_in_background` returns at once; the notification is a message; `TaskOutput` can return with the task still running). So make the pass FIT — split the change, or lower `LITMUS_TIMEOUT` — rather than reach for a scaffold that unblocks early.
 
-**The cap is BELOW the review's own timeout.** `run-review-loop.sh` gives the reviewer `LITMUS_TIMEOUT` seconds (default **1200 = 20 min**), so a legitimate pass in EITHER mode can outlive a blocking call. Do not assume a mode always fits.
+**The review's own timeout now sits BELOW the cap.** `run-review-loop.sh` gives the reviewer `LITMUS_TIMEOUT` seconds (default **540 = 9 min**, under the 600s cap — #368), leaving ~60s of headroom under the cap for startup, SAST, context collection, and terminal-state cleanup. `LITMUS_TIMEOUT` bounds only the reviewer, not the whole script — so on a very large diff those other phases can still eat the headroom and the harness can kill the script at 600s before it writes its terminal status. In the common case (that headroom is ample) a blocking call outlives the review and no mode orphans; the tension returns in full if `LITMUS_TIMEOUT` is RAISED above 600s. Do not raise it and then assume the mode still fits.
 
-- **Commit mode** — usually finishes well inside the cap (small diffs; a tiny diff short-circuits before the CLI runs at all). Run it blocking with `timeout=600000`. Default.
-- **PR mode (deep pass)** — routinely exceeds 10 min, which is the unsolved case above (#368). Shrink it to fit if you can; if you background it, confirm the process EXITED before acting — never treat a returning wait as the verdict.
-- **Killed at the cap in either mode** (state left `PENDING`, no verdict in the log) — that is the signal, not a failure of the review. Lower `LITMUS_TIMEOUT` or split the change so the pass fits (see #368). Discard the stale state FIRST (`init-review-loop.sh --force`, carrying `LITMUS_MODE`), or the next run silently reuses the old mode.
+- **Commit mode** — finishes well inside the cap (small diffs; a tiny diff short-circuits before the CLI runs at all). Run it blocking with `timeout=600000`. Default.
+- **PR mode (deep pass)** — runs at the same 540s default, so it too normally fits under the cap and terminates cleanly. Only if you RAISE `LITMUS_TIMEOUT` above 600s for a large diff does it become the unsolved case above (#368); shrink the diff instead, or if you background it, confirm the process EXITED before acting.
+- **Timed out at 540s** (review's own timeout fires → `exit 124` → `terminal_status: infra_failure`, gate blocks fail-CLOSED) — that is an HONEST terminal state, not the old silent kill. Split the change so the pass fits (see #368). Because the timeout fires ~60s inside the cap, the script normally reaches its handler and leaves no stale `PENDING` — but if startup/cleanup overran the headroom, or you raised the timeout above the cap and got killed there, discard the stale state FIRST (`init-review-loop.sh --force`, carrying `LITMUS_MODE`).
 
 Never treat a killed-at-the-cap call as a verdict, and never read `$?` for the result — a wrapper such as `run-review-loop.sh > log; echo done` reports the *echo's* status, not the review's. Read the log.
 </CRITICAL>
@@ -266,10 +269,11 @@ Bash(
 
 ### B. PR mode / any pass that may exceed 10 min — background-plus-block
 
-> **UNRESOLVED — see #368. Do not treat what follows as a recipe.** The deep pass
-> routinely outlives the cap (the reviewer gets `LITMUS_TIMEOUT`, default 1200s = 20
-> min), so a blocking call is killed mid-review. There is currently **no verified way to
-> hold the gate across a pass that exceeds the cap**: `run_in_background` returns
+> **PARTLY RESOLVED — see #368. Do not treat what follows as a recipe.** The default
+> `LITMUS_TIMEOUT` is now 540s (under the cap), so the deep pass fits and blocking
+> suffices — this section only bites if you RAISE `LITMUS_TIMEOUT` above 600s for a large
+> diff, at which point a blocking call is killed mid-review. There is still **no verified
+> way to hold the gate across a pass that exceeds the cap**: `run_in_background` returns
 > immediately, the completion notification is a message rather than a block, and
 > `TaskOutput` can return with the task still running. Every scaffold tried so far
 > unblocked early — the anti-pattern table below is the list, and it cost ten review
@@ -309,7 +313,7 @@ Until #368 settles, the **invariant** is what binds, not a recipe:
 |---|---|
 | `Monitor` grepping for a verdict string (or a bare `❌`) | matches mid-run output → returns while the reviewer is still working |
 | an `echo SENTINEL=$?` appended after the script, grepped for | the reviewed DIFF can contain that literal, so it can appear in the log before exit |
-| any `Monitor timeout_ms` | must exceed `LITMUS_TIMEOUT` (default 1200s) **plus** startup/cleanup, or it unblocks on a live review |
+| any `Monitor timeout_ms` | must exceed `LITMUS_TIMEOUT` (default 540s; more if you raised it) **plus** startup/cleanup, or it unblocks on a live review |
 | `LOG=$(mktemp)` in one call, `"$LOG"` in the next | shell variables do NOT persist across tool calls — `$LOG` is empty and the redirect goes nowhere |
 | the completion notification alone | it is a message, not a block — nothing prevents you acting before it arrives |
 

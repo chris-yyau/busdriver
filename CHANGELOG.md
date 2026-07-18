@@ -1,3 +1,10 @@
+## [1.93.11](https://github.com/chris-yyau/busdriver/compare/v1.93.10...v1.93.11) (2026-07-18)
+
+
+### Bug Fixes
+
+* **ultraoracle:** attach to a running Chrome instead of launching one (ADR 0020) ([#409](https://github.com/chris-yyau/busdriver/issues/409)) ([f07568e](https://github.com/chris-yyau/busdriver/commit/f07568e2e1efcf781092b481a59489e582c9e5c4))
+
 ## [1.93.10](https://github.com/chris-yyau/busdriver/compare/v1.93.9...v1.93.10) (2026-07-18)
 
 

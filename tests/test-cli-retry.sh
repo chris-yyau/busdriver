@@ -95,6 +95,18 @@ make_flaky() {
   printf '0' > "$cnt"
   cat > "$path" <<EOF
 #!/usr/bin/env bash
+# A \`--version\` call is a CAPABILITY PROBE, not a review attempt: dispatch.sh
+# and execute_review call \`agy --version\` once per process to decide whether
+# this agy takes the prompt via argv (>=1.1) or as a path (1.0.x). Counting it
+# would inflate every invocation assertion below by one and make the retry
+# counts mean "attempts + 1", which is what they must NOT mean. Answer with a
+# modern version and return WITHOUT touching the counter.
+# Match \$1 EXACTLY — never a substring of the flattened \$*. On >=1.1 the prompt
+# is delivered THROUGH argv, so a review prompt containing the text "--version"
+# (e.g. this very test file, or any diff that mentions the flag) would otherwise
+# be misread as a probe: the stub would exit 0 without counting, silently
+# invalidating every retry assertion below.
+if [ "\$1" = "--version" ]; then printf '1.1.4\n'; exit 0; fi
 n=\$(cat "$cnt" 2>/dev/null || echo 0); n=\$((n+1)); printf '%s' "\$n" > "$cnt"
 if [ "\$n" -le "$fails" ]; then printf '%s\n' "$msg" >&2; exit $exitcode; fi
 printf 'REVIEW_OK\n'
@@ -310,6 +322,9 @@ PATH="$STUB:$PATH" BUSDRIVER_CLI_RETRIES=3 BUSDRIVER_CLI_RETRY_DELAY=0 \
 C="$TMP/c6"; printf '0' > "$C"
 cat > "$STUB/agy" <<EOF
 #!/usr/bin/env bash
+# --version is a capability probe, not a review attempt — see make_flaky.
+# \$1-exact, never a \$* substring (the prompt travels in argv on >=1.1).
+if [ "\$1" = "--version" ]; then printf '1.1.4\n'; exit 0; fi
 n=\$(cat "$C" 2>/dev/null || echo 0); n=\$((n+1)); printf '%s' "\$n" > "$C"
 exit 1   # nonzero, NO output
 EOF

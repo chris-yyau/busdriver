@@ -46,6 +46,13 @@ jobs:
         # scripts/ci/run-shell-tests.sh is the full-glob gate-test runner the
         # shell-tests job executes — lint it as a required check so it can't drift.
         run: shellcheck --severity=warning scripts/ci/run-shell-tests.sh
+      - name: Lint design-clear helper
+        # scripts/design-clear.sh releases a fail-CLOSED review requirement
+        # (ADR 0017 / #405) — required, not soft.
+        run: |
+          shellcheck --severity=warning \
+            scripts/design-clear.sh \
+            tests/test-design-clear.sh
       - name: Lint hook scripts (shell only)
         run: |
           find scripts/hooks -name '*.sh' -print0 | xargs -0 shellcheck --severity=warning || true

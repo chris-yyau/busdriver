@@ -1015,13 +1015,34 @@ _agy_bytelen() {
 # 1.0.x install (it would treat the whole prompt as a filename), so probe once.
 # Unknown/unparseable version => assume modern: every current release is >=1.1,
 # and guessing "old" would reintroduce the /dev/stdin bug on a working install.
+# Cached across calls: the probe spawns a process, and both call sites may run it
+# more than once per dispatch. `_AGY_ARGV_PROMPT` holds 1 (argv) or 0 (stdin).
+#
+# NOT inherited from the environment (`=""`, never `="${_AGY_ARGV_PROMPT:-}"`).
+# An inherited value would let anything that can set env — including a committed
+# .claude/settings.json `env` block, the #325 / ADR 0016 gate-env threat — pin the
+# delivery path: a forced "1" breaks agy 1.0.x by handing it the prompt as a
+# filename, and any non-"1" value forces the stdin form that is broken on >=1.1.
+# Detection is cheap (bounded, cached per process), so there is nothing to gain by
+# letting it be overridden. Only the two assignments below ever populate it, and
+# only with a literal 1 or 0.
+_AGY_ARGV_PROMPT=""
 _agy_wants_argv_prompt() {
+    case "$_AGY_ARGV_PROMPT" in
+        1) return 0 ;;
+        0) return 1 ;;
+    esac
     local v maj min
-    v=$(agy --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
-    [[ -z "$v" ]] && return 0
+    # BOUNDED: a stalled `agy --version` must not hang the caller before its own
+    # bounded invocation begins — that would defeat the outer timeout contract.
+    # On timeout/failure the version is unknown, which falls through to "modern".
+    v=$(_portable_timeout 5 agy --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    if [[ -z "$v" ]]; then _AGY_ARGV_PROMPT=1; return 0; fi
     maj="${v%%.*}"; min="${v#*.}"
-    [[ "$maj" -gt 1 ]] && return 0
-    [[ "$maj" -eq 1 && "$min" -ge 1 ]]
+    if [[ "$maj" -gt 1 ]] || [[ "$maj" -eq 1 && "$min" -ge 1 ]]; then
+        _AGY_ARGV_PROMPT=1; return 0
+    fi
+    _AGY_ARGV_PROMPT=0; return 1
 }
 
 # Returns 0 (true) when $1 bytes exceeds the agy argv ceiling. Callers fail loudly;
@@ -1062,8 +1083,9 @@ execute_review() {
     # the prompt as a single argv element. Review prompts run ~40-100 KB, so the
     # headroom is real but modest — roughly 30% at the top end, not the 10x the old
     # comment implied. Exceeding it fails loudly (E2BIG at exec) rather than
-    # silently truncating; if blueprint prompts grow past ~120 KB, this needs a
-    # pre-flight guard like the one in dispatch.sh's agy case.
+    # silently truncating — and the agy branch below pre-flights the size via
+    # _agy_bytelen/_agy_prompt_oversize, so an oversize prompt is refused with a
+    # actionable message rather than reaching exec at all.
     # --sandbox restricts terminal capabilities (matching dispatch.sh's readonly
     # mode): review prompts emit JSON verdicts and never mutate the repo or fetch.
     # Align --print-timeout with our outer duration so agy's internal 5m default

@@ -1,3 +1,10 @@
+## [1.94.1](https://github.com/chris-yyau/busdriver/compare/v1.94.0...v1.94.1) (2026-07-18)
+
+
+### Bug Fixes
+
+* **hooks:** stop re-importing GH_REPO/GH_HOST into the codex nudge ([#416](https://github.com/chris-yyau/busdriver/issues/416)) ([#419](https://github.com/chris-yyau/busdriver/issues/419)) ([f71912d](https://github.com/chris-yyau/busdriver/commit/f71912d693edd340873581231e4f52cccdfcf235))
+
 # [1.94.0](https://github.com/chris-yyau/busdriver/compare/v1.93.11...v1.94.0) (2026-07-18)
 
 

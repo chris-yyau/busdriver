@@ -1,3 +1,10 @@
+## [1.94.2](https://github.com/chris-yyau/busdriver/compare/v1.94.1...v1.94.2) (2026-07-18)
+
+
+### Bug Fixes
+
+* **cli:** deliver agy prompts via argv — --print /dev/stdin broke on 1.1.x ([#412](https://github.com/chris-yyau/busdriver/issues/412)) ([a3049ec](https://github.com/chris-yyau/busdriver/commit/a3049ec110f203e327669989073efca273a112e2)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
 ## [1.94.1](https://github.com/chris-yyau/busdriver/compare/v1.94.0...v1.94.1) (2026-07-18)
 
 

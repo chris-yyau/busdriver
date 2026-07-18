@@ -1,3 +1,10 @@
+## [1.94.3](https://github.com/chris-yyau/busdriver/compare/v1.94.2...v1.94.3) (2026-07-18)
+
+
+### Bug Fixes
+
+* **cli:** make stdin mode an argument — env could starve every reviewer ([#422](https://github.com/chris-yyau/busdriver/issues/422)) ([4c4c97a](https://github.com/chris-yyau/busdriver/commit/4c4c97aadf8cb26ce7b58ed2beb7b3b425c2e2fb)), closes [#412](https://github.com/chris-yyau/busdriver/issues/412) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
 ## [1.94.2](https://github.com/chris-yyau/busdriver/compare/v1.94.1...v1.94.2) (2026-07-18)
 
 

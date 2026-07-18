@@ -1,3 +1,10 @@
+## [1.93.9](https://github.com/chris-yyau/busdriver/compare/v1.93.8...v1.93.9) (2026-07-18)
+
+
+### Bug Fixes
+
+* **litmus:** default review timeout under the harness Bash cap ([#368](https://github.com/chris-yyau/busdriver/issues/368)) ([#403](https://github.com/chris-yyau/busdriver/issues/403)) ([57daf34](https://github.com/chris-yyau/busdriver/commit/57daf34f22c0eccbbd296e13555efc9a86c50378)), closes [#363](https://github.com/chris-yyau/busdriver/issues/363)
+
 ## [1.93.8](https://github.com/chris-yyau/busdriver/compare/v1.93.7...v1.93.8) (2026-07-17)
 
 

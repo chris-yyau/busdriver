@@ -43,6 +43,8 @@ git -C "$REPO" config user.email t@t.t
 git -C "$REPO" config user.name t
 : >"$REPO/docs/plans/alpha-design.md"
 : >"$REPO/docs/plans/beta-design.md"
+: >"$REPO/docs/plans/gamma-design.md"
+: >"$REPO/docs/plans/delta-design.md"
 git -C "$REPO" add -A >/dev/null 2>&1 || { echo "ERROR: fixture git add failed" >&2; exit 1; }
 git -C "$REPO" commit -qm init >/dev/null 2>&1 || { echo "ERROR: fixture commit failed" >&2; exit 1; }
 
@@ -58,6 +60,54 @@ in_repo() {
 }
 
 arm() { in_repo gate_marker_arm "$1"; }
+
+# Run $CLEAR with NO controlling terminal, deterministically, whether or not the
+# suite itself was started from a tty (setsid detaches; stdin redirection does
+# not — the child would inherit /dev/tty and could block on real input).
+no_tty_run() {
+  python3 -c '
+import os, subprocess, sys
+p = subprocess.run(sys.argv[1:], cwd=os.environ["REPO"], start_new_session=True,
+                   stdin=subprocess.DEVNULL, capture_output=True, text=True)
+sys.stdout.write(p.stdout + p.stderr)
+sys.exit(p.returncode)
+' "$CLEAR" "$@"
+}
+
+# Run $CLEAR attached to a real PTY and answer the prompt, so the confirm and
+# decline branches are actually exercised instead of short-circuiting at the
+# no-terminal guard. pty.fork() is the portable primitive here: it setsid()s the
+# child AND makes the pty its CONTROLLING terminal, which is what /dev/tty
+# resolves to. (Inheriting an already-open slave fd across start_new_session
+# happens to work on macOS but is not guaranteed — notably not on Linux CI.)
+tty_run() {   # <answer> <args...>
+  ANSWER="$1"; shift
+  ANSWER="$ANSWER" python3 -c '
+import os, pty, sys
+
+answer = (os.environ["ANSWER"] + "\n").encode()
+pid, master = pty.fork()
+if pid == 0:                          # child: owns the pty as its ctty
+    os.chdir(os.environ["REPO"])
+    os.execv(sys.argv[1], sys.argv[1:])
+    os._exit(127)
+os.write(master, answer)
+chunks = []
+try:
+    while True:
+        data = os.read(master, 4096)
+        if not data:
+            break
+        chunks.append(data)
+except OSError:
+    pass                              # EIO when the child closes the pty
+_, status = os.waitpid(pid, 0)
+os.close(master)
+sys.stdout.buffer.write(b"".join(chunks))
+sys.exit(os.waitstatus_to_exitcode(status))
+' "$CLEAR" "$@"
+}
+export REPO
 tokens() { find "$MARKER_DIR" -type f 2>/dev/null | sort; }
 token_count() { tokens | grep -c . || true; }
 
@@ -79,19 +129,29 @@ esac
 # ── (3) No confirmation and no --yes -> no deletion ───────────────────────────
 # stdin is /dev/null and the confirm reads /dev/tty; under a non-interactive
 # runner there is no tty, so the helper must refuse rather than proceed.
-OUT="$( cd "$REPO" && "$CLEAR" 1 </dev/null 2>&1 )"; RC=$?
+OUT="$(no_tty_run 1 2>&1)"; RC=$?
 if [ "$RC" -eq 0 ]; then
   no "no-confirm: refuses" "exited 0 — it went ahead: $OUT"
 else
   ok "no-confirm: refuses"
 fi
+case "$OUT" in
+  *"no terminal to confirm on"*) ok "no-confirm: hits the no-terminal guard" ;;
+  *) no "no-confirm: hits the no-terminal guard" "$OUT" ;;
+esac
 check "no-confirm: nothing deleted" "2" "$(token_count)"
 
-# An explicit "n" on the tty path is covered by the same branch; simulate the
-# decline directly to prove a NEGATIVE answer also preserves state.
-OUT="$( cd "$REPO" && printf 'n\n' | "$CLEAR" 1 2>&1 )"; RC=$?
+# Answering "n" at a REAL prompt must abort. Driven over a PTY so the decline
+# branch is genuinely reached rather than short-circuiting at the tty guard.
+OUT="$(tty_run n 1 2>&1)"; RC=$?
 if [ "$RC" -eq 0 ]; then no "decline: aborts" "exited 0: $OUT"; else ok "decline: aborts"; fi
+case "$OUT" in
+  *"Aborted"*) ok "decline: reached the prompt and declined" ;;
+  *) no "decline: reached the prompt and declined" "$OUT" ;;
+esac
 check "decline: nothing deleted" "2" "$(token_count)"
+
+# ...and answering "y" at that same prompt clears, recording confirmed:tty.
 
 # ── (2) Clearing a named token removes exactly it, and logs ───────────────────
 ALPHA_TOKEN="$(grep -rl "alpha-design.md" "$MARKER_DIR" 2>/dev/null | head -1)"
@@ -264,6 +324,76 @@ check "torn-log: exits 2" "2" "$RC"
 check "torn-log: nothing deleted" "$BEFORE" "$(token_count)"
 check "torn-log: fragment not appended to" "1" \
   "$(tail -c 200 "$LOG" | grep -c 'truncated$' || true)"
+# Repair it: the guard is working as designed, so leaving the fragment would
+# (correctly) refuse every later case in this suite.
+python3 -c '
+import sys
+p = sys.argv[1]
+data = open(p, "rb").read()
+open(p, "wb").write(data[:data.rfind(b"\n") + 1])
+' "$LOG"
+
+# ── A real tty confirm clears and is recorded as tty-confirmed ────────────────
+arm "$REPO/docs/plans/gamma-design.md"
+EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+OUT="$(tty_run y "$REPO/docs/plans/gamma-design.md" 2>&1)"; RC=$?
+check "tty-confirm: exits 0" "0" "$RC"
+check "tty-confirm: event appended" "$(( EVENTS_BEFORE + 1 ))" \
+  "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+if python3 -S -c '
+import json, sys
+r = json.loads([l for l in open(sys.argv[1]) if "design-marker-cleared" in l][-1])
+assert r["confirmed"] == "tty", r
+' "$LOG" 2>/dev/null; then
+  ok "tty-confirm: recorded as confirmed:tty"
+else
+  no "tty-confirm: recorded as confirmed:tty" "$(tail -1 "$LOG")"
+fi
+
+# ── A clear from a LINKED worktree audits to the canonical root ───────────────
+# The token lives in the shared git common-dir, so a release recorded only in a
+# throwaway worktree's .claude/ would vanish with that worktree. The log must
+# anchor to the main worktree root.
+if git -C "$REPO" worktree add -q "$TMP/linked" -b linked-branch 2>/dev/null; then
+  arm "$REPO/docs/plans/delta-design.md"
+  EVENTS_BEFORE="$(grep -c 'design-marker-cleared' "$LOG" || true)"
+  OUT="$( cd "$TMP/linked" && "$CLEAR" "$REPO/docs/plans/delta-design.md" --yes 2>&1 )"; RC=$?
+  check "linked-worktree: clear succeeds" "0" "$RC"
+  check "linked-worktree: event landed in the canonical log" "$(( EVENTS_BEFORE + 1 ))" \
+    "$(grep -c 'design-marker-cleared' "$LOG" || true)"
+  check "linked-worktree: no log stranded in the linked worktree" "0" \
+    "$(find "$TMP/linked/.claude" -name bypass-log.jsonl 2>/dev/null | grep -c . || true)"
+else
+  printf "  SKIP  linked-worktree (git worktree add unavailable)\n"
+fi
+
+# ── --separate-git-dir: the audit log follows the WORKTREE, not the git dir ───
+# dirname(--git-common-dir) would name the git dir's parent, which is not the
+# worktree at all when the git dir was placed elsewhere.
+SEP="$TMP/sep"
+mkdir -p "$SEP/work/docs/plans" "$SEP/gitdir"
+if git init -q --separate-git-dir "$SEP/gitdir" "$SEP/work" 2>/dev/null; then
+  git -C "$SEP/work" config user.email t@t.t
+  git -C "$SEP/work" config user.name t
+  : >"$SEP/work/docs/plans/sep-design.md"
+  git -C "$SEP/work" add -A >/dev/null 2>&1
+  git -C "$SEP/work" commit -qm init >/dev/null 2>&1
+  sep_arm() (
+    cd "$SEP/work" || exit 2
+    # shellcheck source=hooks/gate-scripts/lib/resolve-repo-dir.sh
+    source "$LIB"
+    gate_marker_arm "$SEP/work/docs/plans/sep-design.md"
+  )
+  sep_arm
+  OUT="$( cd "$SEP/work" && "$CLEAR" "$SEP/work/docs/plans/sep-design.md" --yes 2>&1 )"; RC=$?
+  check "separate-git-dir: clear succeeds" "0" "$RC"
+  check "separate-git-dir: log in the worktree" "1" \
+    "$(grep -c 'design-marker-cleared' "$SEP/work/.claude/bypass-log.jsonl" 2>/dev/null || true)"
+  check "separate-git-dir: no log beside the git dir" "0" \
+    "$(find "$SEP/gitdir" -name bypass-log.jsonl 2>/dev/null | grep -c . || true)"
+else
+  printf "  SKIP  separate-git-dir (unsupported by this git)\n"
+fi
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

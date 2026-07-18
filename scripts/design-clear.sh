@@ -280,7 +280,40 @@ fi
 # ponytail: O_APPEND on a short line, no flock — appends under PIPE_BUF are
 # atomic and this is a single-operator interactive tool. Add locking if it ever
 # runs concurrently.
-ROOT_DIR="${SELF_ROOT:-$PWD}"
+# The marker is shared through the git COMMON dir, so a token armed anywhere
+# blocks everywhere — which means the release of that shared token must be
+# recorded in ONE canonical place. `git rev-parse --show-toplevel` names the
+# CURRENT worktree, so clearing from a linked/disposable worktree would file the
+# only audit event in that worktree's .claude/ (and vanish with it). Anchor the
+# log to the main worktree root, derived from the common dir, and fail closed if
+# that cannot be established.
+# Pick the canonical root for the audit log. Neither obvious signal is right on
+# its own, and each fails a case the other handles:
+#   * `git rev-parse --show-toplevel` names the CURRENT worktree, so a clear run
+#     from a linked/disposable worktree would file the only record there — and it
+#     vanishes with the worktree, even though the token was repo-wide.
+#   * `git worktree list --porcelain` lists the main worktree first, which fixes
+#     that — EXCEPT under `git init --separate-git-dir`, where (verified locally)
+#     it reports the GIT DIR path instead of the worktree.
+# So: take the first worktree-list entry, but only trust it if it actually looks
+# like a worktree root (has a .git entry); otherwise fall back to the toplevel.
+# A path containing a newline is emitted C-quoted as `worktree "..."` — treat it
+# as untrusted and fall back rather than mis-parse.
+_MAIN_WT="$(git -C "$PWD" worktree list --porcelain 2>/dev/null \
+            | awk '/^worktree /{print substr($0, 10); exit}' || true)"
+case "$_MAIN_WT" in
+    ""|'"'*) _MAIN_WT="" ;;
+esac
+if [ -n "$_MAIN_WT" ] && [ ! -e "$_MAIN_WT/.git" ]; then
+    _MAIN_WT=""                      # separate-git-dir: that was the git dir
+fi
+[ -n "$_MAIN_WT" ] || _MAIN_WT="$SELF_ROOT"
+if [ -z "$_MAIN_WT" ] || [ ! -d "$_MAIN_WT" ]; then
+    echo "design-clear: cannot resolve the canonical repo root for the audit log." >&2
+    echo "Refusing to clear rather than file the record somewhere unmonitored." >&2
+    exit 2
+fi
+ROOT_DIR="$_MAIN_WT"
 LOG="$ROOT_DIR/$STATE_DIR/bypass-log.jsonl"
 HEAD_SHA="$(git -C "$PWD" rev-parse HEAD 2>/dev/null || true)"
 
@@ -392,9 +425,12 @@ finally:
 '
 }
 
-if ! log_event "design-marker-cleared" 2>/dev/null; then
+# NOT 2>/dev/null: the writer prints a specific SHORT WRITE diagnostic telling
+# the operator the log must be REPAIRED, which the generic advice below would
+# contradict. The Python block exits quietly on the expected path errors.
+if ! log_event "design-marker-cleared"; then
     printf 'design-clear: could not write the audit event to %s — REFUSING to clear.\n' "$LOG" >&2
-    printf 'An unlogged release is not a sanctioned bypass. Fix the log path and retry.\n' >&2
+    printf 'An unlogged release is not a sanctioned bypass. Resolve the above, then retry.\n' >&2
     exit 2
 fi
 

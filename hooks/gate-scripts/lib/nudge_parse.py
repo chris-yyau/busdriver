@@ -82,7 +82,12 @@ VALFLAGS = {'--author-email', '-A', '--body', '-b', '--body-file', '-F',
 # — plus PATH. The real merge blocks assign only NO_WORKTREE/MERGE_STATE/LOG_*/attempt,
 # none GH_/GIT_-prefixed, so this never false-trips them.
 def is_sensitive_name(name):
-    return name == 'PATH' or name.startswith('GH_') or name.startswith('GIT_')
+    # CDPATH re-points a RELATIVE `cd` operand to a directory outside the payload cwd,
+    # so a `CDPATH=/other cd leaf` would run the merge somewhere the resolver can't
+    # predict — treat it as sensitive (defense-in-depth; the absolute-cd rule below is
+    # the primary guard, since CDPATH is ignored for absolute operands).
+    return (name == 'PATH' or name == 'CDPATH'
+            or name.startswith('GH_') or name.startswith('GIT_'))
 
 
 # assignment-name matcher: NAME= or NAME+= (Bash append). group(1) is the bare NAME.
@@ -94,8 +99,10 @@ def assign_name(tok):
     m = ASSIGN_RE.match(tok)
     return m.group(1) if m else ''
 # MERGE-FIRST invariant: nothing may EXECUTE before the merge except pure
-# non-sensitive assignments and a single captured `cd &&` prefix. This is
-# complete-by-construction — we do NOT try to denylist re-targeting commands
+# non-sensitive assignments, a captured `cd &&` prefix, and (ADR 0018) a standalone
+# PLAIN-LITERAL `cd <path>` whose target is handed to the hook's downstream
+# gh-pr-view==cwd-origin equality guard. This is complete-by-construction — we do NOT
+# try to denylist re-targeting commands
 # (a denylist can never be complete: `printf > .git/config`, `cp evil .git/config`,
 # `sed -i`, an interpreter one-liner, … all re-point origin), we simply reject ANY
 # real command word before the merge. The pr-grind DEFAULT block (and skip-bypass
@@ -161,7 +168,9 @@ def main():
     for idx, (op, seg) in enumerate(segs):
         rec = {'op': op, 'cw': '', 'base': '', 'is_cd': False, 'is_merge': False,
                'sensitive': False, 'subst_rt': subst_has_retargeter(seg),
-               'opens_loop': False, 'has_done': False}
+               'opens_loop': False, 'has_done': False,
+               'cd_literal': False, 'cd_target': '', 'subshell': False,
+               'had_reserved': False}
         if not seg.strip():
             recs.append(rec)
             continue
@@ -174,6 +183,13 @@ def main():
         if not toks:
             recs.append(rec)
             continue
+        # Subshell grouping: a bare '(' / ')' token opens/closes a SUBSHELL, whose cwd
+        # is scoped to the group — `( cd /x ) ; merge` leaves the parent cwd (and the
+        # merge) untouched. A merge-first `cd` inside such a group cannot be trusted to
+        # set the merge's runtime cwd, so PASS 2 rejects any pre-merge segment carrying
+        # one. (`$(…)` / `<(…)` keep the '(' inside a single token — never a bare '(' —
+        # so this flags only real subshell grouping, not substitutions.)
+        rec['subshell'] = any(t in ('(', ')') for t in toks)
         # Loop bookkeeping (BEFORE reserved-stripping hides the opener). A segment
         # whose first non-assignment token opens a loop, and any `done`, let PASS 2
         # decide whether the merge sits inside a loop body/condition (re-runs).
@@ -195,6 +211,7 @@ def main():
                     rec['sensitive'] = True
                 i += 1
             elif toks[i] in RESERVED:
+                rec['had_reserved'] = True   # cd behind `then`/`do`/… may be CONDITIONAL
                 i += 1
             else:
                 break
@@ -209,6 +226,32 @@ def main():
         rec['cw'] = cw
         rec['base'] = base
         rec['is_cd'] = (base == 'cd')
+        # A standalone `cd` (';'/newline-separated, NOT the &&-captured prefix that
+        # gh_pr already trusts) is a SAFE merge-first prefix ONLY when its target is a
+        # single ABSOLUTE PLAIN-LITERAL path: exactly one operand, starting with '/',
+        # not a flag, and free of any shell-expansion metachar ($ / backtick / glob /
+        # brace / ~) per the same allowlist the merge segment uses. ABSOLUTE is
+        # load-bearing: a relative operand is subject to CDPATH (which can resolve it
+        # OUTSIDE the payload cwd) and to composition with an earlier cd, so the
+        # resolver could not reliably predict the merge's runtime cwd; an absolute path
+        # ignores CDPATH and resolves identically to the downstream repo resolver. A
+        # `cd "$(git rev-parse …)"`, `cd $VAR`, or relative `cd leaf` is NOT accepted
+        # here (still covered by the &&-capture path when &&-joined, or the SKILL-prose
+        # nudge). Capturing the literal absolute target lets PASS 2 hand the merge's
+        # runtime cwd to the hook, whose gh-pr-view==origin equality is the actual
+        # wrong-repo guard (ADR 0018).
+        # Reject a `..` component: Bash's default LOGICAL `cd` cancels `..` textually
+        # (`/repo-a/link/..` → `/repo-a`) while the downstream `git -C` resolves it
+        # PHYSICALLY through symlinks (`link` → `/repo-b/…` → `/repo-b`), so the two can
+        # land in different repos. A `..`-free absolute path resolves identically under
+        # both. (A bare `..` inside a filename like `a..b` is harmless but also rejected
+        # — conservative and never a real worktree path.)
+        if rec['is_cd'] and not rec['had_reserved'] \
+                and len(rest) == 1 and rest[0].startswith('/') \
+                and '..' not in rest[0] \
+                and not MERGE_SEG_UNSAFE_RE.search(rest[0]):
+            rec['cd_literal'] = True
+            rec['cd_target'] = rest[0]
         if cw == 'gh' and 'pr' in rest:
             pri = rest.index('pr')
             after = rest[pri + 1:]
@@ -298,6 +341,31 @@ def main():
             unsafe = True
         if merge_index + 1 < len(recs) and recs[merge_index + 1]['op'] in ('&', '|'):
             unsafe = True
+        # SUCCESS-COMPOSITION: a trusted merge-first cd only sets the merge's cwd when
+        # the merge is reached by SEQUENTIAL, success-composing operators (';'/newline
+        # or '&&'). A '||' before the merge makes the merge run ONLY IF a prior step
+        # FAILED — `cd /repo-b || gh pr merge` runs the merge in the ORIGINAL cwd (or
+        # not at all if the cd succeeded) while target_dir says /repo-b. '&'/'|' break
+        # cwd inheritance the same way. Reject any such operator anywhere from the first
+        # prefix segment through the merge, so the standalone-cd target is trusted only
+        # when it truly is the merge's runtime cwd (ADR 0018). ('&&' and ';'/newline are
+        # the only operators that keep the cd and merge in one sequential cwd chain.)
+        for _i in range(1, merge_index + 1):
+            if recs[_i]['op'] in ('||', '|', '&'):
+                unsafe = True
+                break
+        # A SINGLE builtin `cd` before the merge is statically composable: it resolves
+        # against the payload cwd exactly as the downstream repo resolver does. TWO or
+        # more cannot be composed without knowing the starting cwd — a later relative
+        # `cd .` would be mis-resolved against the payload cwd instead of the earlier
+        # target — so ANY multi-cd prefix is rejected (ADR 0018). Count the `cd`
+        # BUILTIN by command word (cw == 'cd'); an external `/tmp/cd` cannot change the
+        # shell's cwd and is handled as an ordinary command word below.
+        pre_merge_cd_total = sum(
+            1 for i, rc in enumerate(recs) if i < merge_index and rc['cw'] == 'cd')
+        if pre_merge_cd_total > 1:
+            unsafe = True
+        standalone_cd = ''      # the single plain-literal `cd` before a non-&&-captured merge
         for idx, rec in enumerate(recs):
             if idx > merge_index:
                 break                                      # after-merge → cannot re-target
@@ -305,14 +373,35 @@ def main():
                 if rec['sensitive']:
                     unsafe = True                          # inline sensitive prefix ON the merge
                 continue
-            # MERGE-FIRST: before the merge, allow ONLY the captured cd prefix and
-            # pure non-sensitive assignments / reserved-only segments (cw == '').
-            # A sensitive assignment, a $(retargeter), or ANY real command word →
-            # skip (complete: no need to enumerate which commands re-target).
+            # MERGE-FIRST: before the merge, allow ONLY the captured cd prefix, a
+            # standalone PLAIN-LITERAL `cd` (its target handed to the hook's
+            # gh-pr-view==origin equality guard — ADR 0018), and pure non-sensitive
+            # assignments / reserved-only segments (cw == ''). A sensitive assignment,
+            # a $(retargeter), or ANY other real command word → skip (complete: no
+            # need to enumerate which commands re-target).
+            # A subshell-grouped pre-merge segment (`( cd /x )`) cannot set the merge's
+            # cwd — reject BEFORE the captured-cd allowance so `( cd /x ) && merge`
+            # (which gh_pr would otherwise trust) is skipped too.
+            if rec['subshell']:
+                unsafe = True
+                continue
             if idx == captured_cd_idx:
+                continue
+            # Standalone literal cd is safe ONLY when the command word is the `cd`
+            # BUILTIN (cw == 'cd', not an external `/tmp/cd`) AND the segment carries no
+            # sensitive assignment or $(retargeter) — e.g. `X="$(git remote set-url …)"
+            # cd .` must NOT be trusted just because it ends in a literal cd.
+            if rec['cw'] == 'cd' and rec['cd_literal'] \
+                    and not rec['subst_rt'] and not rec['sensitive']:
+                standalone_cd = rec['cd_target']           # single cd → the merge's runtime cwd
                 continue
             if rec['sensitive'] or rec['subst_rt'] or rec['cw'] != '':
                 unsafe = True
+        # When gh_pr did NOT capture an &&-prefix cd, the merge runs in the single
+        # standalone literal cd (if any) — surface it so the hook resolves the repo
+        # the merge actually targets, not the payload cwd.
+        if not target_dir and standalone_cd:
+            target_dir = standalone_cd
 
     print('yes')
     print(target_dir)

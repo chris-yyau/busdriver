@@ -244,10 +244,143 @@ setup_case
 run_hook "source ./retarget.sh ; gh pr merge $PR --squash" "" ""
 if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "source prefix: skipped (no nudge)"; else fail "source prefix: rc=$RC body='$B'"; fi
 
-# ── Case 8f: a ';'-joined cd (NOT captured as the merge's &&-prefix) → SKIP ──
+# ── Case 8f: a ';'-joined LITERAL cd to a DIFFERENT repo (here /tmp, not the cwd
+#    origin) → SKIP. ADR 0018 loosened the parser to ACCEPT a standalone literal cd
+#    (it is captured as target_dir), so the skip here is now enforced DOWNSTREAM by
+#    the hook's gh-pr-view==cwd-origin equality guard (/tmp has no github origin),
+#    NOT by the parser's merge-first rejection. Net effect unchanged: no wrong-repo nudge.
 setup_case
 run_hook "cd /tmp ; gh pr merge $PR --squash" "" ""
-if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "semicolon cd: skipped (no nudge)"; else fail "semicolon cd: rc=$RC body='$B'"; fi
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "semicolon cd to non-origin dir: skipped (downstream equality guard)"; else fail "semicolon cd: rc=$RC body='$B'"; fi
+
+# ── Case 8f2 (ADR 0018): a ';'-joined ABSOLUTE literal cd to the SAME repo → NUDGE.
+#    This is the shape pr-grind's CWD-reset rule makes agents emit (`cd "$WORKTREE_DIR"`
+#    template-substituted to an absolute path on its own line, then the merge). Before
+#    ADR 0018 the parser rejected it merge-first and the `none`-nudge silently no-op'd
+#    on every rule-compliant pr-grind merge. (Absolute required — see Case 8f9.)
+setup_case
+run_hook "cd $REPO ; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "semicolon absolute cd to cwd repo: nudged (ADR 0018)"; else fail "semicolon abs cd same-repo: rc=$RC N=$N body='$B'"; fi
+
+# ── Case 8f3 (ADR 0018 boundary): a standalone NON-LITERAL cd ($VAR / $(...) — a
+#    statically-unknown target) stays parser-REJECTED (only plain literals are
+#    trusted; the &&-capture path still handles the substitution form when joined).
+setup_case
+# shellcheck disable=SC2016  # the literal $DEST is the point of this case
+run_hook 'cd $DEST ; gh pr merge '"$PR"' --squash' "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "semicolon cd \$VAR (non-literal): skipped (parser)"; else fail "semicolon cd \$VAR: rc=$RC body='$B'"; fi
+
+# ── Case 8f4 (ADR 0018 finding 1): a cd segment carrying a $(retargeter) in an
+#    assignment prefix must NOT be trusted just because it ends in a literal cd — the
+#    subst_rt check gates it → SKIP. Uses an ABSOLUTE cd to the cwd repo so the ONLY
+#    thing forcing the skip is subst_rt: were that guard removed, the absolute cd would
+#    otherwise nudge, so this test genuinely isolates it (Greptile: `cd .` did not).
+setup_case
+CF8="$(mk)/cmd"
+# shellcheck disable=SC2016  # the literal $(...) is the payload under test
+printf 'X="$(git remote set-url origin https://github.com/evil/x.git)" cd %s ; gh pr merge %s --squash\n' "$REPO" "$PR" > "$CF8"
+run_hook_ml "$CF8" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "cd with \$(retargeter) assignment prefix: skipped"; else fail "cd+subst prefix: rc=$RC N=$N body='$B'"; fi
+
+# ── Case 8f5 (ADR 0018 finding 2): an EXTERNAL `/tmp/cd` (basename 'cd' but not the
+#    builtin — cannot change the shell's cwd) must NOT be treated as a cd → SKIP.
+setup_case
+run_hook "/tmp/cd /repo-b ; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "external /tmp/cd (not builtin): skipped"; else fail "external cd: rc=$RC body='$B'"; fi
+
+# ── Case 8f6 (ADR 0018 finding 3): TWO builtin cds before the merge cannot be
+#    statically composed (a trailing relative `cd .` mis-resolves) → SKIP.
+setup_case
+run_hook "cd /repo-b ; cd . ; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "double builtin cd (composition): skipped"; else fail "double cd: rc=$RC body='$B'"; fi
+
+# ── Case 8f7 (ADR 0018 finding 4): a SUBSHELL-grouped cd `( cd /repo-b )` does not
+#    change the parent (merge) cwd → SKIP. Also covers the &&-joined subshell form.
+setup_case
+run_hook "( cd /repo-b ) ; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "subshell-grouped cd (;): skipped"; else fail "subshell cd ;: rc=$RC body='$B'"; fi
+setup_case
+run_hook "( cd /repo-b ) && gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "subshell-grouped cd (&&): skipped"; else fail "subshell cd &&: rc=$RC body='$B'"; fi
+
+# ── Case 8f8 (ADR 0018 finding 5): CDPATH re-points a RELATIVE cd operand outside the
+#    payload cwd → SKIP (CDPATH is a sensitive assignment; relative cd is also rejected).
+setup_case
+run_hook "CDPATH=/repo-b cd leaf ; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "CDPATH= relative cd: skipped"; else fail "CDPATH cd: rc=$RC body='$B'"; fi
+
+# ── Case 8f9 (ADR 0018): a RELATIVE literal cd (subject to CDPATH / composition) is
+#    NOT trusted by the standalone path → SKIP (only absolute literals qualify).
+setup_case
+run_hook "cd leaf ; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "relative literal cd: skipped (absolute-only)"; else fail "relative cd: rc=$RC body='$B'"; fi
+
+# ── Case 8f10 (ADR 0018): invariant matrix over {cd prefix} × {separator}. The parser
+#    nudges IFF a single ABSOLUTE literal cd to the cwd repo reaches the merge via a
+#    sequential success-composing operator (';' or '&&') outside any subshell. Every
+#    other combination — non-origin target, relative operand, subshell grouping, or a
+#    '||'/'&' operator (merge runs in a different/original cwd, or not at all) — skips.
+#    Asserts the core property (accepted target_dir == the merge's real runtime cwd)
+#    across the grammar, not just hand-picked points.
+matrix_fail=0
+M_BAD_PREFIX=("cd /tmp" "cd leaf" "( cd $REPO )")   # non-origin / relative / subshell
+for sep in ";" "&&" "||" "&"; do
+  # absolute cd to the cwd repo: nudge ONLY for the sequential success operators
+  setup_case
+  run_hook "cd $REPO $sep gh pr merge $PR --squash" "" ""
+  want=0; [[ "$sep" == ";" || "$sep" == "&&" ]] && want=1
+  if [[ "$N" != "$want" ]]; then matrix_fail=$((matrix_fail+1)); echo "  matrix: 'cd \$REPO $sep merge' → N=$N want=$want"; fi
+  # every unsafe prefix: never nudge, regardless of separator
+  for pfx in "${M_BAD_PREFIX[@]}"; do
+    setup_case
+    run_hook "$pfx $sep gh pr merge $PR --squash" "" ""
+    if [[ "$N" != 0 ]]; then matrix_fail=$((matrix_fail+1)); echo "  matrix: '$pfx $sep merge' → N=$N want=0"; fi
+  done
+done
+if [[ "$matrix_fail" == 0 ]]; then ok "invariant matrix (prefix×separator): accept iff abs-cwd-cd + sequential op"; else fail "invariant matrix: $matrix_fail wrong verdicts"; fi
+
+# ── Case 8f11 (ADR 0018 finding 6): an absolute cd target containing a `..` component
+#    → SKIP. Logical `cd` cancels `..` textually while `git -C` resolves it physically
+#    through symlinks, so the two can land in different repos.
+setup_case
+run_hook "cd $REPO/../evil ; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "absolute cd with .. component: skipped"; else fail "dotdot cd: rc=$RC body='$B'"; fi
+
+# ── Case 8f12 (ADR 0018): a QUOTED absolute cd to the cwd repo still nudges (shlex
+#    strips the quotes; the resolved literal is unchanged). Property coverage for
+#    quoted operands alongside the bare-word matrix.
+setup_case
+CFQ="$(mk)/cmd"
+printf 'cd "%s" ; gh pr merge %s --squash\n' "$REPO" "$PR" > "$CFQ"
+run_hook_ml "$CFQ" "" ""
+if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "quoted absolute cd to cwd repo: nudged"; else fail "quoted abs cd: rc=$RC N=$N body='$B'"; fi
+
+# ── Case 8f13 (ADR 0018 cross-cwd origin guard — the standalone-cd backstop): a cd to
+#    a DIFFERENT-origin repo than the payload cwd → SKIP. This is the general closure
+#    for "the cd may not have executed as parsed" (a `cd` shell function/alias, a
+#    conditional, a failed cd, a symlink/.. divergence): the merge could run in the
+#    payload cwd (repo A) while target_dir names repo B, so unless A and B share an
+#    origin the nudge is refused. Here REPO2 has origin evil/x while payload cwd is the
+#    testowner/testrepo sandbox → guard skips before any post.
+setup_case
+REPO2=$(mk)
+( cd "$REPO2"
+  git init -q; git config user.email t@t.t; git config user.name t
+  git commit -q --allow-empty -m init
+  git remote add origin "https://github.com/evil/x.git" ) >/dev/null 2>&1
+run_hook "cd $REPO2 ; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "cross-cwd origin mismatch (target≠payload repo): skipped"; else fail "cross-cwd guard: rc=$RC N=$N body='$B'"; fi
+# same guard, but target shares the payload origin → still nudges (worktree-equivalent)
+setup_case
+run_hook "cd $REPO ; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "cross-cwd origin match (same repo): nudged"; else fail "cross-cwd match: rc=$RC N=$N body='$B'"; fi
+
+# ── Case 8f14 (ADR 0018 finding 7): a `cd` behind reserved/control-flow words is
+#    CONDITIONAL (may not execute) → the parser refuses to treat it as a trusted
+#    literal cd (had_reserved) → SKIP.
+setup_case
+run_hook "if true; then cd /repo-b; fi ; gh pr merge $PR --squash" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "conditional cd behind reserved words: skipped"; else fail "conditional cd: rc=$RC body='$B'"; fi
 
 # ── Case 8g: an inline GIT_DIR= env prefix (redirects git) → SKIP ──
 setup_case
@@ -331,11 +464,23 @@ setup_case
 run_hook_ml "$CF" "" ""
 if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "git remote set-url before merge: skipped"; else fail "git remote before merge: rc=$RC body='$B'"; fi
 
-# ── Case 19: a `cd` (uncaptured, ;-joined) BEFORE the merge in a real block → SKIP.
+# ── Case 19: a standalone literal `cd` to a DIFFERENT repo (/tmp) before the real
+#    block → SKIP via the downstream equality guard (ADR 0018 accepts the literal cd
+#    at the parser; /tmp has no matching github origin so the hook skips). No nudge.
 setup_case
 { printf 'cd /tmp\n'; emit_default_block; } > "$CF"
 run_hook_ml "$CF" "" ""
-if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "uncaptured cd before merge: skipped"; else fail "cd before merge: rc=$RC body='$B'"; fi
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "standalone cd to non-origin dir before block: skipped (downstream guard)"; else fail "cd before merge: rc=$RC body='$B'"; fi
+
+# ── Case 19b (ADR 0018 REGRESSION TEST for the #403 miss): the EXACT rule-compliant
+#    pr-grind shape — a standalone literal `cd <repo>` on its own line, then the
+#    `NO_WORKTREE=…` assignment, then the merge — must NUDGE. This is the command that
+#    silently no-op'd the `none`-nudge in session 261270ad. cd to the sandbox repo so
+#    the downstream origin equality passes.
+setup_case
+{ printf 'cd %s\n' "$REPO"; emit_default_block; } > "$CF"
+run_hook_ml "$CF" "" ""
+if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "standalone literal cd to cwd repo before block: nudged (ADR 0018 / #403 regression)"; else fail "session-shape cd before block: rc=$RC N=$N body='$B'"; fi
 
 # ── Case 20: default block whose merge operand is a shell var (`$PR` unsub'd) → SKIP.
 #    Guards the SKILL contract: the admin merge operand MUST be a literal digit.

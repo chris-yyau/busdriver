@@ -118,9 +118,12 @@ source "$DIR/lib/resolve-repo-dir.sh" || exit 0
 #      skip. Complete by construction — no denylist of re-targeting commands to keep
 #      exhaustive (`printf > .git/config`, cp, sed -i, pushd, $(git …), then GH_REPO=…
 #      all re-point origin; requiring merge-first sidesteps enumerating them).
-# The pr-grind DEFAULT block and skip/bootstrap bypass merges ARE merge-first (only
-# `NO_WORKTREE=<0|1>` precedes) → nudged. The admin approver-gap block writes bypass-log
-# jq before the merge → not merge-first → skipped here, covered by the SKILL-prose nudge.
+# The pr-grind DEFAULT block and skip/bootstrap bypass merges ARE merge-first (a leading
+# standalone `cd "$WORKTREE_DIR"` per the CWD-reset rule and `NO_WORKTREE=<0|1>` precede
+# the merge — both permitted; the literal cd is captured as target_dir and re-validated
+# by the target==cwd equality below, ADR 0018) → nudged. The admin approver-gap block
+# writes bypass-log jq before the merge → not merge-first → skipped here, covered by the
+# SKILL-prose nudge.
 # The residual (a `gh` alias / shell function / PATH this separate hook process can't see)
 # is bounded to a deduped, possibly-spurious nudge on the CWD repo's OWN PR — never a
 # cross-repo post (inherited-env skip + merge-segment checks + gh-pr-view==cwd-origin
@@ -160,6 +163,27 @@ SLUG="${CWD_CANON#github.com/}"
 OWNER="${SLUG%%/*}"; NAME="${SLUG#*/}"
 [[ -n "$OWNER" && -n "$NAME" ]] || exit 0
 printf '%s' "$OWNER$NAME" | LC_ALL=C grep -q '[^A-Za-z0-9._-]' && exit 0
+
+# ── ADR 0018 cross-cwd origin guard (the standalone-cd safety backstop) ──
+# A pre-exec hook CANNOT prove a parsed `cd` actually executed and changed the cwd:
+# a shell FUNCTION or alias named `cd`, a conditional that skipped it, a failed cd, or
+# a symlink+`..` that resolves differently under bash-logical vs git-physical rules can
+# all leave the merge running in the PAYLOAD cwd rather than TARGET_DIR. So when the
+# command changed directory (TARGET_DIR set), the merge's REAL cwd is EITHER the
+# resolved target OR the payload cwd — and we require BOTH to resolve to the SAME
+# github origin. Then whichever one the merge used, the nudge targets the correct repo;
+# a divergence is skipped (fail-safe). A git worktree shares its main checkout's origin,
+# so the real pr-grind case (payload cwd + WORKTREE_DIR of the same repo) passes. Only
+# enforced when TARGET_DIR is set — a no-cd merge already runs in the payload cwd, so
+# CWD_CANON (from REPO_DIR) is that repo and there is no divergence to guard.
+if [[ -n "$TARGET_DIR" && -n "$HOOK_CWD" ]]; then
+    PAYLOAD_URL=$(git -C "$HOOK_CWD" remote get-url origin 2>/dev/null || true)
+    PAYLOAD_CANON=$(printf '%s' "$PAYLOAD_URL" | sed -E 's#^git@#https://#; s#^https?://##; s#:#/#; s#\.git/?$##; s#/+$##' | tr '[:upper:]' '[:lower:]')
+    CWD_CANON_LC=$(printf '%s' "$CWD_CANON" | tr '[:upper:]' '[:lower:]')
+    [[ -n "$PAYLOAD_CANON" && "$PAYLOAD_CANON" == "$CWD_CANON_LC" ]] || exit 0
+elif [[ -n "$TARGET_DIR" ]]; then
+    exit 0                      # cd present but no payload cwd to cross-check → fail-safe
+fi
 
 # ── Delegate resolution to gh, then REQUIRE resolved target == cwd repo ──
 # `gh pr view` resolves exactly the PR the merge targets (honoring the inherited

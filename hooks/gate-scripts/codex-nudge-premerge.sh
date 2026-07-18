@@ -37,8 +37,10 @@
 #   (b) we DELEGATE resolution to gh (`gh pr view [<num>] --json number,headRefOid,
 #       url`) in the merge's own cwd + env, then REQUIRE the resolved
 #       host/owner/repo to EQUAL the cwd repo's `origin` (github.com only). Any
-#       divergence — inherited GH_REPO/GH_HOST, a cross-repo/cross-host URL — fails
-#       the equality check and skips.
+#       divergence — a cross-repo/cross-host URL — fails the equality check and skips.
+#   Our own gh calls can no longer be re-routed at all: GH_HOST is pinned and
+#   GH_REPO cleared at the top of this script (#416), so resolution is always
+#   "the repo this cwd's origin points at, on github.com".
 # Because the fire path is gated on target == cwd repo, the force-on marker and the
 # delegate's one-shot dedup marker (both anchored on the cwd repo) are ALWAYS the
 # target repo's own — never repo A's consent triggering a nudge on repo B. Anything
@@ -72,14 +74,32 @@
 #      runtime repo. Like #2 this is inherent to a pre-exec hook and applies equally to
 #      the pre-existing &&-captured-cd path; bounded to a deduped, possibly-mistargeted
 #      nudge on the operator's OWN machine — never a blocked or mis-routed merge.
+#   4. Same family, introduced by #416: the merge shell may carry an inherited
+#      GH_REPO/GH_HOST this hook no longer imports and therefore cannot see, so a
+#      merge that lands on repo B can still earn a nudge on the cwd repo's own PR.
+#      That is the deliberate trade — a possibly-wrong-PR nudge INSIDE the repo we
+#      already trust, in exchange for the guarantee that no repo-controlled value
+#      ever routes an outbound, credentialed `gh` call. Bounded by the per-(PR,HEAD)
+#      dedup marker and by the hook being non-gating.
 #
 # Runs under lib/sanitized-gate.sh (ADR 0016 env containment), like the gates.
-# PR_GRIND_CODEX_RETRIGGER (kill switch), BUSDRIVER_STATE_DIR, and GH_REPO/GH_HOST
-# are re-imported through the hooks.json `env -i` line: unlike the review gates,
-# disabling or re-targeting a NUDGE is not a merge/review bypass, so passing them
-# is safe — and GH_REPO/GH_HOST let `gh pr view` resolve as the merge will, which
-# the target==cwd equality check below then confirms (or rejects) anyway.
+# The hooks.json `env -i` line re-imports exactly ONE var beyond the standard
+# PATH/HOME/CLAUDE_PLUGIN_ROOT: PR_GRIND_CODEX_RETRIGGER, the documented kill
+# switch, which can only ever DISABLE the nudge. GH_REPO / GH_HOST /
+# BUSDRIVER_STATE_DIR were dropped (#416): a committed `.claude/settings.json`
+# `env` block is repo-controlled, and those three steer an OUTBOUND write —
+# GH_HOST sends credentialed `gh` requests to an arbitrary host, GH_REPO
+# re-points the comment target, BUSDRIVER_STATE_DIR misdirects the one-shot
+# dedup marker. Repo targeting is now derived from `origin` (below) and the
+# host is PINNED, so no repo-controlled value reaches any `gh` invocation.
 set -u
+
+# Pin gh's routing. `env -i` already omits these, so this is belt-and-braces
+# against a future caller that does not go through hooks.json — and it is the
+# invariant the #416 regression test anchors on. Exported so the delegate's
+# `gh pr comment` inherits the same pin.
+export GH_HOST=github.com
+unset GH_REPO
 
 # ── Read the PreToolUse payload once ───────────────────────────────────
 HOOK_DATA=$(cat 2>/dev/null || true)
@@ -145,14 +165,6 @@ HOOK_CWD=$(printf '%s' "$PARSE" | sed -n '5p')
 [[ "$IS_MERGE" == "yes" ]] || exit 0
 [[ -n "$UNSAFE" ]] && exit 0      # per-command override we can't neutralize → skip
 
-# INHERITED GH_REPO/GH_HOST re-target the merge to a repo/host our default-host gh
-# calls (and the delegate's `gh pr comment -R owner/repo`) would NOT match. They are
-# passed through the env -i line ONLY so we can detect them here: if either is set,
-# skip; otherwise clear them so EVERY gh call — ours and the delegate's — resolves
-# the same single default host, keeping resolution and the comment target consistent.
-[[ -n "${GH_REPO:-}" || -n "${GH_HOST:-}" ]] && exit 0
-unset GH_REPO GH_HOST
-
 # ── Resolve the repo dir the merge runs in ─────────────────────────────
 gate_resolve_repo_dir "$TARGET_DIR" "$HOOK_CWD"
 [[ "$GATE_RESOLVE_STATUS" == "proceed" ]] || exit 0
@@ -196,9 +208,9 @@ elif [[ -n "$TARGET_DIR" ]]; then
 fi
 
 # ── Delegate resolution to gh, then REQUIRE resolved target == cwd repo ──
-# `gh pr view` resolves exactly the PR the merge targets (honoring the inherited
-# env we passed through). We then compare its canonical url to the cwd origin: any
-# divergence (inherited GH_REPO/GH_HOST, a cross-repo/cross-host URL) → skip.
+# `gh pr view` runs with GH_HOST pinned and GH_REPO cleared, so it resolves against
+# the cwd repo's own remote. We still compare its canonical url to the cwd origin:
+# any divergence (a cross-repo/cross-host URL) → skip.
 if [[ -n "$POSITIONAL" ]]; then
     PRJSON=$( (cd "$REPO_DIR" 2>/dev/null && gh pr view "$POSITIONAL" --json number,headRefOid,url 2>/dev/null) || true)
 else

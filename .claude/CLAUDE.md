@@ -41,6 +41,8 @@ Six gates enforced by PreToolUse hooks. All fail-CLOSED (block on error). Escape
 | **Careful guard** | `careful-guard.sh` | Destructive Bash commands (rm -rf, git reset --hard, etc.) | Confirmation prompt |
 | **Freeze guard** | `freeze-guard.sh` | Write/Edit outside scoped directory during debugging | Remove `.claude/freeze-scope.local` |
 
+**Releasing ONE pending design-review token** — `scripts/design-clear.sh` (#405 / ADR 0017) is the audited alternative to a bare `rm` of a marker token: no args lists what is pending, a named selector clears exactly that `<sha>.<nonce>` file after a `y/N` confirm (or `--yes`), and every clear writes a `design-marker-cleared` event to `.claude/bypass-log.jsonl`. It does not narrow what the marker blocks — ADR 0017 settled that the repo-wide blast radius is correct fail-CLOSED behavior. It is deliberately NOT wired to a slash command. **But be precise about what that buys:** there is no operator authentication, and `--yes` is a documented **auditable self-bypass** — any Bash-holding session can pass it (as it could `rm` the token directly, so no new power is granted). The #347 anti-forge invariant is therefore **not enforced** here; what is guaranteed is that a clear is never a blanket wipe, never touches an unvalidated marker, and never happens without a durable `design-marker-cleared` event recording the doc and how it was authorized (`confirmed: tty` vs `no-tty-assumed-yes`). Detection, not prevention — see the script header.
+
 **Per-repo pr-grind opt-in files** (all gitignored `.local`; full semantics in the linked ADR / `skills/pr-grind/SKILL.md` flag table — read those before touching):
 
 | File | One-line effect | Source of truth |

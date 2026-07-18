@@ -289,7 +289,7 @@ calling session MUST:
      Agent subagent was dispatched but failed (dispatch error, invalid JSON, or the harness
      rejected `model="fable"`). Delete any bad `claude.json`, then fall through to the `opus`
      dispatch and record `model_pin_status=ultimate_arbiter_unavailable` with the loud
-     `WARNING` (step 1). A fable-subagent failure never stops arbitration `opus` can still
+     `WARNING` (step 1). A fable-subagent failure never stops arbitration that `opus` can still
      provide — and with the gateway rung gone (ADR 0019), `opus` is the only remaining rung.
    - *Opus dispatch failure:* if the subagent fails or writes invalid JSON, delete the bad
      `claude.json` and dispatch ONE fresh retry (a transient rate-limit / 529 is covered

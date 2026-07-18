@@ -56,4 +56,67 @@ _agy_prompt_oversize 0 && fail "t9: zero-size must not be oversize"
 # review silently loses its agy lens again.
 _agy_prompt_oversize 100000 && fail "t10: a realistic 100 KB review prompt was rejected"
 
-[ "$FAILED" -eq 0 ] && echo "PASS: test-agy-argv-limit" || exit 1
+
+# ── transport decision: _agy_wants_argv_prompt ───────────────────────────
+# The core of this change. Size tests can all pass while the transport decision
+# is wrong, which would silently restore the /dev/stdin bug — so cover 1.0.x,
+# >=1.1, unknown/timeout, caching, and env-override rejection explicitly.
+_probe_with() {  # $1 = script body for a fake `agy` on PATH; echoes argv|stdin
+    local d; d=$(mktemp -d) || return 1
+    printf '#!/bin/sh\n%s\n' "$1" > "$d/agy"
+    chmod +x "$d/agy"
+    if PATH="$d:$PATH" bash -c '. "'"$REPO_ROOT"'/scripts/lib/resolve-cli.sh" 2>/dev/null; _agy_wants_argv_prompt'; then
+        printf 'argv'
+    else
+        printf 'stdin'
+    fi
+    rm -rf "$d"
+}
+
+# t19: agy 1.0.x resolves --print as a PATH → must keep the stdin form
+[[ "$(_probe_with 'printf "1.0.0\n"')" == "stdin" ]] \
+    || fail "t19: agy 1.0.0 must use the stdin transport, not argv"
+
+# t20: agy 1.1.x sends --print's value verbatim → must use argv
+[[ "$(_probe_with 'printf "1.1.4\n"')" == "argv" ]] \
+    || fail "t20: agy 1.1.4 must use the argv transport"
+
+# t21: a future major must use argv (guards a naive major==1 comparison)
+[[ "$(_probe_with 'printf "2.0.0\n"')" == "argv" ]] \
+    || fail "t21: agy 2.0.0 must use the argv transport"
+
+# t22: unparseable version → assume modern. Guessing "old" would reintroduce the
+# /dev/stdin bug on a working install, which is the worse failure direction.
+[[ "$(_probe_with 'printf "weird-build\n"')" == "argv" ]] \
+    || fail "t22: unparseable version must assume modern (argv)"
+
+# t23: a hanging `agy --version` must not hang the caller — the probe is wrapped
+# in _portable_timeout 5, and a timeout falls through to modern.
+_t0=$(date +%s)
+_hang=$(_probe_with 'sleep 30')
+_elapsed=$(( $(date +%s) - _t0 ))
+[[ "$_hang" == "argv" ]] || fail "t23: a hanging probe must fall through to argv"
+[[ "$_elapsed" -lt 20 ]] || fail "t23: probe was not bounded (took ${_elapsed}s; expected <20)"
+
+# t24: env must not preselect the transport — a committed settings.json `env`
+# block could otherwise pin it and break delivery (#325 / ADR 0016).
+_envforced=$(mktemp -d)
+printf '#!/bin/sh\nprintf "1.0.0\\n"\n' > "$_envforced/agy"; chmod +x "$_envforced/agy"
+if PATH="$_envforced:$PATH" _AGY_ARGV_PROMPT=1 bash -c '. "'"$REPO_ROOT"'/scripts/lib/resolve-cli.sh" 2>/dev/null; _agy_wants_argv_prompt'; then
+    fail "t24: inherited _AGY_ARGV_PROMPT=1 overrode a 1.0.x probe (env must not preselect transport)"
+fi
+rm -rf "$_envforced"
+
+# t25: the decision is cached — one probe per process, not one per call.
+_cachedir=$(mktemp -d)
+_cnt="$_cachedir/n"; printf '0' > "$_cnt"
+# shellcheck disable=SC2016  # stub body must expand in the STUB, not here
+printf '#!/bin/sh\nn=$(cat "%s"); printf "%%s" "$((n+1))" > "%s"; printf "1.1.4\\n"\n' "$_cnt" "$_cnt" > "$_cachedir/agy"
+chmod +x "$_cachedir/agy"
+PATH="$_cachedir:$PATH" bash -c '. "'"$REPO_ROOT"'/scripts/lib/resolve-cli.sh" 2>/dev/null
+_agy_wants_argv_prompt; _agy_wants_argv_prompt; _agy_wants_argv_prompt' >/dev/null 2>&1
+_probes=$(cat "$_cnt")
+[[ "$_probes" == "1" ]] || fail "t25: expected 1 cached probe across 3 calls, got $_probes"
+rm -rf "$_cachedir"
+
+if [[ "$FAILED" -eq 0 ]]; then echo "PASS: test-agy-argv-limit"; else exit 1; fi

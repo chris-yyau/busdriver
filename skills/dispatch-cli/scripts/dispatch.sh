@@ -345,7 +345,31 @@ dispatch_one() {
             # agy 1.0.x resolves --print's value as a PATH (so /dev/stdin works);
             # >=1.1 sends it verbatim. Branch on the probe in resolve-cli.sh so a
             # 1.0.x install is not broken by the argv switch.
-            if _agy_wants_argv_prompt; then
+            # HARD REQUIREMENT: the agy transport helpers live in resolve-cli.sh.
+            # dispatch.sh tolerates that library being absent (see the
+            # `_portable_timeout` fallback near the top), but this branch cannot:
+            # with the helpers undefined, `if _agy_wants_argv_prompt` does NOT
+            # abort under `set -e` (an undefined command in an `if` CONDITION is
+            # exempt) — it silently takes the else branch, which is the agy 1.0.x
+            # `--print /dev/stdin` path. On agy >=1.1 that reintroduces the exact
+            # bug this code exists to fix, and it does so SILENTLY. Fail loudly
+            # instead. Defining local copies here was the alternative and is
+            # rejected: three duplicated helpers would drift from the originals,
+            # which is the failure this repo already paid for once (see the
+            # header of scripts/ack-ledger.sh).
+            # `declare -F`, not `type`: type also succeeds for aliases, builtins,
+            # and any same-named EXECUTABLE on PATH, so a stray file called
+            # `_agy_argv_limit` would satisfy the guard while the real helpers
+            # stayed undefined — passing the check and then silently taking the
+            # 1.0.x branch, which is exactly what this guard exists to prevent.
+            # declare -F matches shell FUNCTIONS only.
+            if ! declare -F _agy_wants_argv_prompt >/dev/null \
+               || ! declare -F _agy_prompt_oversize >/dev/null \
+               || ! declare -F _agy_argv_limit >/dev/null; then
+                printf 'Error: agy transport helpers unavailable — %s/scripts/lib/resolve-cli.sh could not be sourced. Cannot choose argv-vs-stdin prompt delivery safely; refusing rather than silently using the 1.0.x path. Use --cli codex/droid, or fix BUSDRIVER_PLUGIN_ROOT.\n' \
+                    "$_PLUGIN_ROOT" > "$outfile" 2>&1
+                exit_code=1
+            elif _agy_wants_argv_prompt; then
                 _agy_size=$(wc -c < "$PROMPT_FILE" 2>/dev/null || echo 0)
                 if _agy_prompt_oversize "$_agy_size"; then
                     echo "Error: prompt is ${_agy_size}B, over agy's argv ceiling ($(_agy_argv_limit)B). agy >=1.1 has no file-input flag; use --cli codex for prompts this large." >&2

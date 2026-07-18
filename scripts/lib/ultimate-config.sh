@@ -3,15 +3,15 @@
 # Reuses resolve-cli.sh's _read_config_value (jq preferred, python3 fallback).
 # Harness-neutral: ${BUSDRIVER_STATE_DIR:-.claude}, no bash-4-isms.
 #
-# The "ultimate" tier is the opt-in Claude-Fable-via-zenmux-gateway surface set (ADR 0011).
-# Two surfaces ship today, each config-gated independently:
-#   - arbiter  — the blueprint-review "ultimate arbiter" escalation ABOVE the default opus
-#                (SKILL.md "Ultimate-Arbiter Escalation").
+# The "ultimate" tier is the opt-in Claude-Fable surface set, reached via an in-harness
+# Agent subagent (ADR 0011 as amended by ADR 0015 and ADR 0019 — the zenmux gateway
+# transport was removed). Two surfaces ship today, each config-gated independently:
+#   - arbiter  — the blueprint-review "ultimate arbiter" escalation ABOVE the default opus.
 #   - council  — the council "Mythos Witness" (Fable expert witness, rendered separately).
-# Enabling either transmits the design/validation/question prompt to an external
-# Anthropic-API-compatible gateway, so — like the ultraOracle boundary it mirrors — the
-# enable MUST be user-local: a repo-controlled project config or reviewed branch content
-# can never opt a reviewer into the escalation.
+# Enabling either no longer transmits anything externally (the fable subagent runs
+# in-account), but the enable stays user-local — like the ultraOracle boundary it mirrors —
+# so a repo-controlled project config or reviewed branch content can never opt a reviewer
+# into the heavier escalation.
 # Portable dir resolution. BASH_SOURCE is unset under zsh (and other non-bash shells), where
 # `dirname "${BASH_SOURCE[0]}"` silently collapses to "." and mis-sources resolve-cli.sh from
 # the CWD — functions end up undefined with no error. Guard loudly: this lib is bash-only.

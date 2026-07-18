@@ -1,5 +1,5 @@
 ---
-description: Convene the 5-voice council plus BOTH expert witnesses — UltraOracle (ChatGPT Pro) AND the Mythos Witness (Claude Fable, subagent-first) — each rendered separately, never a vote.
+description: Convene the 5-voice council plus BOTH expert witnesses — UltraOracle (ChatGPT Pro) AND the Mythos Witness (Claude Fable, in-harness subagent) — each rendered separately, never a vote.
 ---
 
 # Ultimate-Council
@@ -7,9 +7,9 @@ description: Convene the 5-voice council plus BOTH expert witnesses — UltraOra
 Invoke the `council` skill in **ultimate-council** mode: run the normal 5-voice council AND force BOTH expert witnesses.
 
 - Force the UltraOracle by setting `ULTRA_ORACLE_COUNCIL_FORCE=1` (a plain, non-exported assignment) at the top of the council's single Step 4 dispatch Bash block, `unset` at the end (see Step 4.5).
-- Force the Mythos Witness by setting `_forced=1` in BOTH the Step 4.6 gate pre-check block AND the gateway-fallback block (they are separate Bash calls — shell state does not carry over). The gate then dispatches an `Agent(model="fable")` Mythos Witness — in-harness, in-account, no gateway creds — as the primary; only if that subagent fails does the gateway fallback run (see Step 4.6).
+- Force the Mythos Witness by setting `_forced=1` in the Step 4.6 gate pre-check block — a **single** block now (ADR 0019 deleted the gateway-fallback block that used to need its own copy). The gate then dispatches an `Agent(model="fable")` Mythos Witness — in-harness, in-account, no gateway creds — as the only transport (see Step 4.6).
 
-For the UltraOracle's `ULTRA_ORACLE_COUNCIL_FORCE=1`: never subshell, never `export`, never a `VAR=1 cmd` prefix (a trigger phrase alone sets no env var, and a one-command prefix would not persist to the later gate checks in the same block). The UltraOracle does NOT use gateway credentials — it dispatches via the separate `ultra_oracle_consult` adapter (the `oracle` CLI's ChatGPT Pro browser engine, see `skills/council/SKILL.md` Step 4.5). The Mythos Witness **primary is a fable subagent** (no gateway, no creds); ONLY its fallback routes through the gateway (metered API billing, creds from `BLUEPRINT_ARBITER_GATEWAY_*`), dispatching via `scripts/ultimate-dispatch.sh` (role `mythos-witness`, pinned `claude-fable-5`), fail-closed — and there `ULTIMATE_COUNCIL_FORCE="$_forced"` is passed as a narrow single-command prefix to scope the value to that one child process (see `skills/council/SKILL.md` Step 4.6).
+For the UltraOracle's `ULTRA_ORACLE_COUNCIL_FORCE=1`: never subshell, never `export`, never a `VAR=1 cmd` prefix (a trigger phrase alone sets no env var, and a one-command prefix would not persist to the later gate checks in the same block). The UltraOracle dispatches via the separate `ultra_oracle_consult` adapter (the `oracle` CLI's ChatGPT Pro browser engine, see `skills/council/SKILL.md` Step 4.5). The Mythos Witness is a **fable subagent only** — no gateway, no creds, no metered billing, and no `ULTIMATE_COUNCIL_FORCE` plumbing (that existed solely to authorize the deleted gateway helper). A failed subagent renders `MYTHOS_FAILED` directly; there is no second transport (see `skills/council/SKILL.md` Step 4.6).
 
 Render each witness in its OWN separate section — `## UltraOracle — Expert Witness [ORACLE_SUMMARY_REVIEW]` then `## Mythos Witness — Expert Witness` — AFTER the five voices and BEFORE the Verdict. Both are EXCLUDED from the vote tally; their claims are unverified-until-checked (grep/Read/run). On timeout/empty/creds-missing render a loud `ORACLE_FAILED` / `MYTHOS_FAILED` banner, never a silent omission.
 

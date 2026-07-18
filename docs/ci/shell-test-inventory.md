@@ -51,10 +51,11 @@ Re-verified under a faithful proxy — full glob under **bash 5.3 + unauthentica
 `gh` + `CI=true`**:
 
 ```
-discovered=69  pass=68  skip=1  fail=0
-skipped: test-gateway-arbiter-claude-json-residual
+discovered=67  pass=67  skip=0  fail=0
 ```
 
-The only self-skip is `test-gateway-arbiter-claude-json-residual`, gated behind
-`BLUEPRINT_ARBITER_LIVE_TEST=1` (a real-claude round-trip test) — correct to skip
-headless. It is **not** a gate suite, so the skip-masking guard permits it.
+There are now **no** permitted self-skips: the sole entry
+(`test-gateway-arbiter-claude-json-residual`, gated behind
+`BLUEPRINT_ARBITER_LIVE_TEST=1`) was deleted along with the gateway rung it
+exercised (ADR 0019), so `SKIP_ALLOWED` is empty and every discovered test must run
+to completion.

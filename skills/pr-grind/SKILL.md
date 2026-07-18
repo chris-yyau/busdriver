@@ -1200,12 +1200,14 @@ if [ "$CODEX_DONE" = "none" ]; then
   # one), honor BUSDRIVER_MAIN_ROOT, and use a LITERAL `.claude` — the wrapper does
   # NOT honor BUSDRIVER_STATE_DIR here, and reading a different dir than the wrapper
   # is exactly the mismatch. Fail-SAFE: unresolvable → 0 → short wait, never long.
-  # The kill switch governs this too. PR_GRIND_CODEX_RETRIGGER=0 already forces
-  # CODEX_REPO_ACTIVE=0 and disables the nudge wrapper; without the same guard here
-  # a leftover force-on marker would still impose the full 480s wait on a repo whose
-  # Codex integration is switched OFF — waiting for a nudge that was never sent.
-  CODEX_EXPECTED=$( [ "${PR_GRIND_CODEX_RETRIGGER:-1}" = "0" ] && { echo 0; exit 0; }
-    cd "$WORKTREE_DIR" 2>/dev/null || { echo 0; exit 0; }
+  # Deliberately NOT gated on PR_GRIND_CODEX_RETRIGGER. That switch disables
+  # NUDGING, not Codex: a repo can have the nudge off and still receive automatic
+  # Codex reviews, and those are exactly what the wait exists to catch. Gating here
+  # would hand such a repo the 20s courtesy wait and reopen #420's race. (Review
+  # round 5 asked for the opposite and was wrong on this point — the switch forces
+  # CODEX_REPO_ACTIVE=0 only to skip a GraphQL call, which is not evidence that
+  # Codex is absent. The force-on marker is the operator declaring it present.)
+  CODEX_EXPECTED=$( cd "$WORKTREE_DIR" 2>/dev/null || { echo 0; exit 0; }
     _MR="${BUSDRIVER_MAIN_ROOT:-}"
     if [ -z "$_MR" ]; then
       _G=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
@@ -1373,6 +1375,14 @@ if [ "$CODEX_DONE" = "none" ]; then
   # On ANY divergence — or an unresolvable/failed lookup — mark every ack `stale`
   # so the existing stale-ack check blocks the merge and the loop re-converges on
   # the new HEAD. Never proceeds on doubt.
+  #
+  # RESIDUAL, stated honestly (issue #427): this NARROWS the race, it does not
+  # close it. The check is non-atomic — a push can still land after this lookup
+  # returns and before the merge executes, and no amount of re-checking here fixes
+  # that. The real closure is server-side, passing the reviewed SHA to the merge's
+  # `--match-head-commit`, which makes GitHub itself refuse a moved head. That
+  # touches the merge invocations in several blocks and is tracked separately in
+  # #427; do NOT read this guard as making the merge atomic.
   CODEX_HEAD_NOW=$(gh pr view "$PR" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
   if [ -z "$CODEX_HEAD_NOW" ] || [ "$CODEX_HEAD_NOW" != "$HEAD_FULL_SHA" ]; then
     echo "⚠️  HEAD moved during the Codex wait (was ${HEAD_FULL_SHA:0:8}, now ${CODEX_HEAD_NOW:0:8}${CODEX_HEAD_NOW:+}) — invalidating acks; the loop must re-converge on the new HEAD."

@@ -157,7 +157,8 @@ is accepted; a server-stamped fallback marker is a deferred follow-up.
   the COMPLETION grace (Decision 6) → raise the default `PR_GRIND_CODEX_GRACE_SECS`
   or add a worker-side first-engagement wait.
   **FIRED 2026-07-19 (#420).** The race was observed skipping the review on PRs
-  #412/#419/#413: measured Codex latency is 3m37s–7m27s against a 20s grace. Actioned
+  #412/#419/#409/#390: measured Codex latency is 3m37s–7m27s against a 20s grace
+  (#413 is the related case where no review ever arrived). Actioned
   as prescribed — the blind sleep became a bounded poll (480s deadline, 30s interval,
   early-exit on engagement). See the ADR 0013 revision for the data and rationale.
 - A second reaction-only reviewer appears → generalize Tier F beyond the Codex

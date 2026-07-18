@@ -684,7 +684,22 @@ _run_review_with_retries() {
         break
       fi
     fi
-    output=$(printf '%s' "$prompt" | _portable_timeout "$remaining" "$@" 2>&1) || exit_code=$?
+    # STDIN MODE. Most CLIs read the prompt from fd 0, so the default pipes it in.
+    # A CLI that takes the prompt via ARGV (agy >=1.1, `--print "$prompt"`) never
+    # drains fd 0 — and under `pipefail` the upstream `printf` then dies of SIGPIPE
+    # as soon as the child exits, making the whole command substitution return 141
+    # even though the CLI produced a perfectly good review. Callers read that as a
+    # failure and degrade to droid, silently losing the reviewer.
+    # Only bites above the ~64 KB pipe buffer: a small prompt is absorbed and exits
+    # 0, so this is invisible in light testing and fires on real 40-100 KB review
+    # prompts. Verified: 1 KB → rc=0, 200 KB → rc=141 with valid output.
+    # Callers set `_RRWR_STDIN_MODE=none` (a `local` in the calling function; bash
+    # dynamic scoping makes it visible here) to hand the child /dev/null instead.
+    if [[ "${_RRWR_STDIN_MODE:-pipe}" == "none" ]]; then
+      output=$(_portable_timeout "$remaining" "$@" </dev/null 2>&1) || exit_code=$?
+    else
+      output=$(printf '%s' "$prompt" | _portable_timeout "$remaining" "$@" 2>&1) || exit_code=$?
+    fi
     # Timeout → don't retry; let the caller's droid fallback handle it.
     [[ "$exit_code" -eq 124 ]] && break
     # A clean exit with non-empty output is success — UNLESS it is a bare
@@ -1096,6 +1111,11 @@ execute_review() {
                  echo "agy: review prompt is ${_agy_psize}B, over the argv ceiling ($(_agy_argv_limit)B) — agy >=1.1 has no file-input flag. Split the diff or route this review to codex." >&2
                  return 1
                fi
+               # argv transport: the child gets the prompt as an argument and never
+               # reads fd 0, so piping it would SIGPIPE the writer under pipefail
+               # (rc=141 on a >64 KB prompt despite a valid review). See the
+               # _RRWR_STDIN_MODE contract in _run_review_with_retries.
+               local _RRWR_STDIN_MODE=none
                _run_review_with_retries agy "$prompt" "$duration" \
                  agy --sandbox --print-timeout "${duration}s" --print "$prompt"
              else

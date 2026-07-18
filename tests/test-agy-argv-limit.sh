@@ -119,4 +119,62 @@ _probes=$(cat "$_cnt")
 [[ "$_probes" == "1" ]] || fail "t25: expected 1 cached probe across 3 calls, got $_probes"
 rm -rf "$_cachedir"
 
+# ── stdin transport: no SIGPIPE on argv mode, stdin still fed on 1.0.x ────
+# _run_review_with_retries pipes the prompt into the child. A CLI that takes the
+# prompt via ARGV never drains fd 0, so under pipefail the writer dies of SIGPIPE
+# the moment the child exits and the substitution returns 141 WITH a valid review
+# attached — callers read that as failure and silently degrade to droid.
+# Only fires above the ~64 KB pipe buffer, i.e. exactly at real review-prompt
+# sizes, so a small-prompt test would miss it entirely. Both directions covered:
+# argv must NOT be piped, 1.0.x MUST still be.
+_transport_probe() {   # $1=version $2=prompt bytes; echoes "<rc> <out>"
+    local d rc out
+    d=$(mktemp -d) || return 1
+    cat > "$d/agy" <<'STUB'
+#!/bin/sh
+if [ "$1" = "--version" ]; then printf '%s\n' "$FAKE_AGY_VER"; exit 0; fi
+prev=""; tgt=""
+for a in "$@"; do
+  if [ "$prev" = "--print" ]; then tgt="$a"; fi
+  prev="$a"
+done
+if [ "$tgt" = "/dev/stdin" ]; then
+  printf 'STDIN_BYTES=%s\n' "$(cat | wc -c | tr -d ' ')"
+else
+  printf 'ARGV_MODE\n'
+fi
+STUB
+    chmod +x "$d/agy"
+    # The prompt is generated INSIDE the subshell, never passed as an argv element
+    # to `bash -c`. Passing it as an argument would hit Linux's MAX_ARG_STRLEN
+    # (131071 B) — the very ceiling this suite exists to test — so `bash` would
+    # fail before either transport ran, and the test would be green on macOS
+    # (no per-arg cap) while broken on the Linux CI runner.
+    out=$(PATH="$d:$PATH" FAKE_AGY_VER="$1" PROMPT_BYTES="$2" bash -c '
+        set -uo pipefail
+        . "'"$REPO_ROOT"'/scripts/lib/resolve-cli.sh" 2>/dev/null
+        p=$(head -c "$PROMPT_BYTES" /dev/zero | tr "\0" "a")
+        execute_review agy "$p" 10 2>&1')
+    rc=$?
+    rm -rf "$d"
+    printf '%s %s' "$rc" "$(printf '%s' "$out" | head -c 40)"
+}
+
+# Prompt size for the transport probes. Must sit ABOVE the ~64 KB pipe buffer
+# (below it, SIGPIPE never fires and the regression is invisible) and BELOW
+# Linux's 131071 B MAX_ARG_STRLEN (above it, argv delivery is correctly refused
+# by _agy_prompt_oversize and the transport is never exercised). 100 KB is inside
+# both bounds on every platform and matches real review-prompt sizes.
+_TRANSPORT_BYTES=100000
+
+# t26: argv mode + a prompt well over the pipe buffer must NOT return 141.
+_r=$(_transport_probe 1.1.4 "$_TRANSPORT_BYTES")
+[[ "${_r%% *}" == "0" ]]     || fail "t26: argv mode on a 100KB prompt returned rc=${_r%% *} (141 = SIGPIPE regression)"
+[[ "$_r" == *"ARGV_MODE"* ]]     || fail "t26: expected argv transport on 1.1.4, got [${_r#* }]"
+
+# t27: 1.0.x must STILL be fed on stdin — the SIGPIPE fix must not starve it.
+_r=$(_transport_probe 1.0.0 "$_TRANSPORT_BYTES")
+[[ "${_r%% *}" == "0" ]] || fail "t27: 1.0.x transport returned rc=${_r%% *}"
+[[ "$_r" == *"STDIN_BYTES=$_TRANSPORT_BYTES"* ]]     || fail "t27: 1.0.x must receive the full prompt on stdin, got [${_r#* }]"
+
 if [[ "$FAILED" -eq 0 ]]; then echo "PASS: test-agy-argv-limit"; else exit 1; fi

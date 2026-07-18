@@ -1320,11 +1320,16 @@ echo "🔬 Running $RESOLVED_CLI review (loop attempt $ITERATION/$MAX_ITER)..."
 echo ""
 
 REVIEW_TIMEOUT="${LITMUS_TIMEOUT:-540}"  # 9 min default — UNDER the 600s harness Bash cap so a
-                                          # blocking caller normally outlives the review (see #368).
-                                          # Configurable via env var; raising it to 600 or above
-                                          # reintroduces the kill-mid-review / orphaned-PENDING
-                                          # failure (setup/cleanup run inside the same 600s harness
-                                          # budget, so 600 exactly leaves no headroom either).
+                                          # blocking caller normally outlives the review on a clean
+                                          # single attempt (see #368). Configurable via env var;
+                                          # raising it to 600 or above reintroduces the kill-mid-review
+                                          # / orphaned-PENDING failure (setup/cleanup run inside the
+                                          # same 600s harness budget, so 600 exactly leaves no headroom
+                                          # either). NOTE: on the codex path, _execute_codex
+                                          # (scripts/lib/resolve-cli.sh) gives EVERY retry attempt this
+                                          # same full duration, not a shared/decrementing one — a quick
+                                          # transient failure + backoff + a near-full-duration retry can
+                                          # still exceed the 600s cap without raising this value.
 set +e
 REVIEW_OUTPUT=$(execute_review "$RESOLVED_CLI" "$FINAL_PROMPT" "$REVIEW_TIMEOUT")
 REVIEW_EXIT=$?

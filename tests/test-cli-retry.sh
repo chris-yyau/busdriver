@@ -120,28 +120,28 @@ echo "── _run_review_with_retries (agy/grok path) ────────�
 
 # B1: transient twice then success → retried, exit 0, 3 invocations
 C="$TMP/b1"; make_flaky 2 "Error: 503 overloaded" "$C" "$BBIN/flaky"
-out=$(BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 5 "$BBIN/flaky" 2>/dev/null); rc=$?
+out=$(BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 5 pipe "$BBIN/flaky" 2>/dev/null); rc=$?
 [[ "$rc" -eq 0 && "$out" == *REVIEW_OK* && "$(cat "$C")" == 3 ]] \
   && ok "transient x2 → retried to success (3 invocations)" \
   || bad "transient x2 → retried to success (got rc=$rc inv=$(cat "$C"))"
 
 # B2: non-transient error → NOT retried (1 invocation, exit 1)
 C="$TMP/b2"; make_flaky 9 "SyntaxError: bad token" "$C" "$BBIN/hard"
-out=$(BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 5 "$BBIN/hard" 2>/dev/null); rc=$?
+out=$(BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 5 pipe "$BBIN/hard" 2>/dev/null); rc=$?
 [[ "$rc" -ne 0 && "$(cat "$C")" == 1 ]] \
   && ok "non-transient → no retry (1 invocation)" \
   || bad "non-transient → no retry (got rc=$rc inv=$(cat "$C"))"
 
 # B3: timeout (124) → NOT retried (1 invocation, exit 124)
 C="$TMP/b3"; make_flaky 9 "irrelevant" "$C" "$BBIN/timeout" 124
-out=$(BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 5 "$BBIN/timeout" 2>/dev/null); rc=$?
+out=$(BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 5 pipe "$BBIN/timeout" 2>/dev/null); rc=$?
 [[ "$rc" -eq 124 && "$(cat "$C")" == 1 ]] \
   && ok "timeout(124) → no retry (1 invocation)" \
   || bad "timeout(124) → no retry (got rc=$rc inv=$(cat "$C"))"
 
 # B4: retries exhausted (always transient-fail) with RETRIES=2 → 3 invocations
 C="$TMP/b4"; make_flaky 9 "503 capacity" "$C" "$BBIN/always"
-out=$(BUSDRIVER_CLI_RETRIES=2 _run_review_with_retries agy p 5 "$BBIN/always" 2>/dev/null); rc=$?
+out=$(BUSDRIVER_CLI_RETRIES=2 _run_review_with_retries agy p 5 pipe "$BBIN/always" 2>/dev/null); rc=$?
 [[ "$rc" -ne 0 && "$(cat "$C")" == 3 ]] \
   && ok "exhaustion → RETRIES=2 yields 3 invocations, final exit nonzero" \
   || bad "exhaustion → RETRIES=2 yields 3 invocations (got rc=$rc inv=$(cat "$C"))"
@@ -155,7 +155,7 @@ if [ "\$n" -le 1 ]; then exit 0; fi   # first attempt: clean exit, NO output
 printf 'REVIEW_OK\n'
 EOF
 chmod +x "$BBIN/empty"
-out=$(BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 5 "$BBIN/empty" 2>/dev/null); rc=$?
+out=$(BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 5 pipe "$BBIN/empty" 2>/dev/null); rc=$?
 [[ "$rc" -eq 0 && "$out" == *REVIEW_OK* && "$(cat "$C")" == 2 ]] \
   && ok "empty-on-clean-exit → retried" \
   || bad "empty-on-clean-exit → retried (got rc=$rc inv=$(cat "$C"))"
@@ -169,7 +169,7 @@ n=\$(cat "$C" 2>/dev/null || echo 0); n=\$((n+1)); printf '%s' "\$n" > "$C"
 exit 0   # clean exit, NEVER any output
 EOF
 chmod +x "$BBIN/alwaysempty"
-out=$(BUSDRIVER_CLI_RETRIES=2 _run_review_with_retries agy p 5 "$BBIN/alwaysempty" 2>/dev/null); rc=$?
+out=$(BUSDRIVER_CLI_RETRIES=2 _run_review_with_retries agy p 5 pipe "$BBIN/alwaysempty" 2>/dev/null); rc=$?
 inv=$(cat "$C")
 [[ "$rc" -ne 0 && -z "$out" && "$inv" == 3 ]] \
   && ok "always-empty → exhausts (3 inv) and returns non-zero (not false success)" \
@@ -184,7 +184,7 @@ n=\$(cat "$C" 2>/dev/null || echo 0); n=\$((n+1)); printf '%s' "\$n" > "$C"
 exit 1   # nonzero, NO output, no transient marker in (absent) text
 EOF
 chmod +x "$BBIN/nzempty"
-out=$(BUSDRIVER_CLI_RETRIES=2 _run_review_with_retries agy p 5 "$BBIN/nzempty" 2>/dev/null); rc=$?
+out=$(BUSDRIVER_CLI_RETRIES=2 _run_review_with_retries agy p 5 pipe "$BBIN/nzempty" 2>/dev/null); rc=$?
 inv=$(cat "$C")
 [[ "$rc" -ne 0 && "$inv" == 3 ]] \
   && ok "nonzero+empty (non-transient) → retried (3 inv), non-zero exit" \
@@ -195,7 +195,7 @@ inv=$(cat "$C")
 #     before the retry count, so retries can't multiply the caller's timeout.
 C="$TMP/b8"; make_flaky 99 "Error: 503 overloaded" "$C" "$BBIN/budget"
 out=$(BUSDRIVER_CLI_RETRIES=5 BUSDRIVER_CLI_RETRY_DELAY=1 \
-      _run_review_with_retries agy p 1 "$BBIN/budget" 2>/dev/null); rc=$?
+      _run_review_with_retries agy p 1 pipe "$BBIN/budget" 2>/dev/null); rc=$?
 inv=$(cat "$C")
 # inv >= 1: the first attempt must ALWAYS run (never skipped by the budget guard);
 # inv <= 3: retries are still bounded well below RETRIES=5 by the spent budget;
@@ -213,7 +213,7 @@ n=\$(cat "$C" 2>/dev/null || echo 0); n=\$((n+1)); printf '%s' "\$n" > "$C"
 printf 'REVIEW_OK\n'
 EOF
 chmod +x "$BBIN/ok1s"
-out=$(BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 1 "$BBIN/ok1s" 2>/dev/null); rc=$?
+out=$(BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 1 pipe "$BBIN/ok1s" 2>/dev/null); rc=$?
 [[ "$rc" -eq 0 && "$out" == *REVIEW_OK* && "$(cat "$C")" == 1 ]] \
   && ok "--timeout 1 → first attempt runs and succeeds (not skipped by budget guard)" \
   || bad "--timeout 1 first attempt runs (got rc=$rc inv=$(cat "$C"))"
@@ -230,7 +230,7 @@ printf 'ECONNRESET: socket hang up\n'   # hard transient token on a CLEAN exit
 exit 0
 EOF
 chmod +x "$BBIN/zerotrans"
-out=$(BUSDRIVER_CLI_RETRIES=2 BUSDRIVER_CLI_RETRY_DELAY=0 _run_review_with_retries agy p 5 "$BBIN/zerotrans" 2>/dev/null); rc=$?
+out=$(BUSDRIVER_CLI_RETRIES=2 BUSDRIVER_CLI_RETRY_DELAY=0 _run_review_with_retries agy p 5 pipe "$BBIN/zerotrans" 2>/dev/null); rc=$?
 [[ "$rc" -ne 0 && "$(cat "$C")" == 3 ]] \
   && ok "exit-0 bare transient → retried (3 inv), exhaustion non-zero" \
   || bad "exit-0 bare transient → retried+nonzero (got rc=$rc inv=$(cat "$C"))"
@@ -244,10 +244,49 @@ n=\$(cat "$C" 2>/dev/null || echo 0); n=\$((n+1)); printf '%s' "\$n" > "$C"
 printf '%s\n' '{"status":"FAIL","issues":[{"description":"handle the 503 rate limit path"}]}'
 EOF
 chmod +x "$BBIN/jsonreview"
-out=$(BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 5 "$BBIN/jsonreview" 2>/dev/null); rc=$?
+out=$(BUSDRIVER_CLI_RETRIES=3 _run_review_with_retries agy p 5 pipe "$BBIN/jsonreview" 2>/dev/null); rc=$?
 [[ "$rc" -eq 0 && "$out" == *503* && "$(cat "$C")" == 1 ]] \
   && ok "exit-0 JSON review mentioning 5xx → success, no retry (1 inv)" \
   || bad "exit-0 JSON review → success no retry (got rc=$rc inv=$(cat "$C"))"
+
+# ── Part B2: stdin mode is an ARGUMENT, never inherited from the env ──
+# A repo-controlled .claude/settings.json `env` block can set any variable
+# (#325 / ADR 0016). When stdin mode was read from the environment, an injected
+# `_RRWR_STDIN_MODE=none` handed /dev/null to EVERY retry-wrapped CLI — grok and
+# agy 1.0.x then reviewed an EMPTY prompt, found nothing, and returned a vacuous
+# PASS, silently defeating the review gate. Measured at the time: an 11-byte
+# prompt arrived as STDIN_BYTES=0. Mode is now the 4th positional argument.
+echo ""
+echo "── stdin-mode injection resistance ─────────────────────────"
+cat > "$BBIN/stdincount" <<'STUB'
+#!/bin/sh
+printf 'STDIN_BYTES=%s\n' "$(cat | wc -c | tr -d ' ')"
+STUB
+chmod +x "$BBIN/stdincount"
+
+# pipe mode delivers the prompt (control)
+out=$(_run_review_with_retries agy ELEVENCHARS 5 pipe "$BBIN/stdincount" 2>/dev/null)
+[[ "$out" == *"STDIN_BYTES=11"* ]] \
+  && ok "pipe mode delivers the prompt on stdin" \
+  || bad "pipe mode delivers the prompt on stdin (got $out)"
+
+# an INHERITED env value must NOT be able to starve a pipe-mode call
+out=$(_RRWR_STDIN_MODE=none _run_review_with_retries agy ELEVENCHARS 5 pipe "$BBIN/stdincount" 2>/dev/null)
+[[ "$out" == *"STDIN_BYTES=11"* ]] \
+  && ok "inherited _RRWR_STDIN_MODE=none cannot starve a pipe-mode call" \
+  || bad "inherited _RRWR_STDIN_MODE=none STARVED a pipe-mode call (got $out) — env-injection fail-open"
+
+# an explicit `none` ARGUMENT does suppress stdin (the argv transport)
+out=$(_run_review_with_retries agy ELEVENCHARS 5 none "$BBIN/stdincount" 2>/dev/null)
+[[ "$out" == *"STDIN_BYTES=0"* ]] \
+  && ok "explicit none argument suppresses stdin" \
+  || bad "explicit none argument suppresses stdin (got $out)"
+
+# an unknown mode falls back to pipe — degrade toward "reviewer sees the prompt"
+out=$(_run_review_with_retries agy ELEVENCHARS 5 garbage "$BBIN/stdincount" 2>/dev/null)
+[[ "$out" == *"STDIN_BYTES=11"* ]] \
+  && ok "unknown stdin mode falls back to pipe (fail-safe direction)" \
+  || bad "unknown stdin mode did not fall back to pipe (got $out)"
 
 # ── Part C: dispatch.sh dispatch_one retry (council, PATH-stubbed) ───
 echo ""

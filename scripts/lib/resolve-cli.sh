@@ -635,7 +635,22 @@ _is_bare_transient_notice() {
 # final output to stdout and returns the final exit code.
 # Args: <label> <prompt> <duration> <cmd...>  (cmd reads the prompt from stdin)
 _run_review_with_retries() {
-  local label="$1" prompt="$2" duration="$3"; shift 3
+  # $4 = STDIN MODE, an EXPLICIT argument: `pipe` (default, prompt on fd 0) or
+  # `none` (prompt already in argv; hand the child /dev/null).
+  #
+  # It is an argument and NOT an ambient variable on purpose. Reading it from the
+  # environment — even via bash dynamic scoping from a caller's `local` — means a
+  # repo-controlled .claude/settings.json `env` block can set it (#325 / ADR 0016)
+  # and starve EVERY stdin-mode reviewer: grok and agy 1.0.x would receive an
+  # empty prompt, find nothing, and return a vacuous PASS, silently defeating the
+  # review gate. Verified before this fix: an inherited `_RRWR_STDIN_MODE=none`
+  # turned an 11-byte prompt into STDIN_BYTES=0. An argument cannot be injected.
+  #
+  # Unknown/empty values fall back to `pipe` — the mode that always delivers the
+  # prompt, so a malformed caller degrades to "reviewer sees the prompt", never to
+  # "reviewer sees nothing".
+  local label="$1" prompt="$2" duration="$3" stdin_mode="${4:-pipe}"; shift 4
+  case "$stdin_mode" in pipe|none) ;; *) stdin_mode=pipe ;; esac
   local max_retries="${BUSDRIVER_CLI_RETRIES:-3}"
   local retry_delay="${BUSDRIVER_CLI_RETRY_DELAY:-5}"
   case "$max_retries" in ''|*[!0-9]*) max_retries=3 ;; esac
@@ -693,9 +708,8 @@ _run_review_with_retries() {
     # Only bites above the ~64 KB pipe buffer: a small prompt is absorbed and exits
     # 0, so this is invisible in light testing and fires on real 40-100 KB review
     # prompts. Verified: 1 KB → rc=0, 200 KB → rc=141 with valid output.
-    # Callers set `_RRWR_STDIN_MODE=none` (a `local` in the calling function; bash
-    # dynamic scoping makes it visible here) to hand the child /dev/null instead.
-    if [[ "${_RRWR_STDIN_MODE:-pipe}" == "none" ]]; then
+    # Reads the validated $4 argument — never the environment (see the signature).
+    if [[ "$stdin_mode" == "none" ]]; then
       output=$(_portable_timeout "$remaining" "$@" </dev/null 2>&1) || exit_code=$?
     else
       output=$(printf '%s' "$prompt" | _portable_timeout "$remaining" "$@" 2>&1) || exit_code=$?
@@ -1113,15 +1127,14 @@ execute_review() {
                fi
                # argv transport: the child gets the prompt as an argument and never
                # reads fd 0, so piping it would SIGPIPE the writer under pipefail
-               # (rc=141 on a >64 KB prompt despite a valid review). See the
-               # _RRWR_STDIN_MODE contract in _run_review_with_retries.
-               local _RRWR_STDIN_MODE=none
-               _run_review_with_retries agy "$prompt" "$duration" \
+               # (rc=141 on a >64 KB prompt despite a valid review). `none` is
+               # passed as an ARGUMENT so no env can forge or clear it.
+               _run_review_with_retries agy "$prompt" "$duration" none \
                  agy --sandbox --print-timeout "${duration}s" --print "$prompt"
              else
                # agy 1.0.x resolves --print's value as a PATH, so fd 0 works and
                # the argv size ceiling and exposure do not apply on this rung.
-               _run_review_with_retries agy "$prompt" "$duration" \
+               _run_review_with_retries agy "$prompt" "$duration" pipe \
                  agy --sandbox --print-timeout "${duration}s" --print /dev/stdin
              fi ;;
     # Review path: bare `droid exec` (default read-only mode) is the tightest
@@ -1163,7 +1176,7 @@ execute_review() {
     # --prompt-file /dev/stdin: bypasses argv length limits (mirrors agy's
     # --print pattern).
     grok)    echo "Note: grok blueprint-review dispatch — safety relies on user-config 'always approve' being DISABLED. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
-             _run_review_with_retries grok "$prompt" "$duration" \
+             _run_review_with_retries grok "$prompt" "$duration" pipe \
                grok --prompt-file /dev/stdin --max-turns 150 --sandbox readonly ;;
     builtin) echo "BUILTIN_FALLBACK"; return 3 ;;
     unsupported:*)

@@ -1392,7 +1392,9 @@ if [ "$CODEX_DONE" = "none" ]; then
   # #427; do NOT read this guard as making the merge atomic.
   CODEX_HEAD_NOW=$(gh pr view "$PR" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
   if [ -z "$CODEX_HEAD_NOW" ] || [ "$CODEX_HEAD_NOW" != "$HEAD_FULL_SHA" ]; then
-    echo "⚠️  HEAD moved during the Codex wait (was ${HEAD_FULL_SHA:0:8}, now ${CODEX_HEAD_NOW:0:8}${CODEX_HEAD_NOW:+}) — invalidating acks; the loop must re-converge on the new HEAD."
+    _CODEX_HEAD_DISPLAY="${CODEX_HEAD_NOW:0:8}"
+    [ -z "$CODEX_HEAD_NOW" ] && _CODEX_HEAD_DISPLAY="<lookup failed>"
+    echo "⚠️  HEAD moved during the Codex wait (was ${HEAD_FULL_SHA:0:8}, now ${_CODEX_HEAD_DISPLAY}) — invalidating acks; the loop must re-converge on the new HEAD."
     FRESH_ACKS="cursor=stale,cubic-dev-ai=stale,coderabbitai=stale,devin-ai-integration=stale,greptile-apps=stale,chatgpt-codex-connector=stale"
   fi
   fi

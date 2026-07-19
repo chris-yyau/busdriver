@@ -121,5 +121,27 @@ TMPL_ADMIN=$(grep -c -- '--admin --match-head-commit <REVIEWED_HEAD>' "$SKILL" |
 [ "$TMPL_ADMIN" -eq 4 ] && ok "all 4 [admin] decision templates carry the head guard" \
   || fail "expected 4 guarded [admin] templates, found $TMPL_ADMIN"
 
+# (i) #427 P1 gap (PR #429 review): on a --match-head-commit rejection (HEAD moved
+# after classification, MERGE_STATE never reaches MERGED), the already-written
+# pr-grind-clean.local marker must be invalidated in BOTH merge blocks — else a
+# subsequent plain `gh pr merge` (no head guard) can sail through pre-merge-gate.sh
+# on the stale marker and merge an unclassified head.
+MARKER_RM_COUNT=$(grep -c 'rm -f "$MARKER_REPO_ROOT/.claude/pr-grind-clean.local"' "$SKILL" || true)
+[ "$MARKER_RM_COUNT" -eq 2 ] && ok "clean marker invalidated on merge-state mismatch in both blocks" \
+  || fail "expected 2 marker-invalidation sites, found $MARKER_RM_COUNT (#427 P1 gap)"
+# ordering: every marker-invalidation must be preceded (in the same failure branch)
+# by a MERGE_STATE != MERGED guard, and appear before that branch's exit 1 — so it
+# actually fires on the guard-rejection path rather than unconditionally.
+MARKER_ORDER_OK=$(awk '
+  /MERGE_STATE" != "MERGED"/ { in_branch=1 }
+  in_branch && /rm -f "\$MARKER_REPO_ROOT\/\.claude\/pr-grind-clean\.local"/ { seen_rm=1 }
+  in_branch && /exit 1/ {
+    if (!seen_rm) { found_bad=1; exit }
+    in_branch=0; seen_rm=0
+  }
+  END { print (found_bad ? "BAD" : "OK") }' "$SKILL")
+[ "$MARKER_ORDER_OK" = "OK" ] && ok "marker invalidation precedes exit 1 in its failure branch" \
+  || fail "marker invalidation missing/misordered relative to exit 1"
+
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

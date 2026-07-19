@@ -1893,6 +1893,14 @@ for attempt in 1 2 3; do
 done
 if [ "$MERGE_STATE" != "MERGED" ]; then
   echo "❌ approver-gap admin merge: PR #$PR not merged after 3 attempts (state=$MERGE_STATE); bypass-log entry was written but merge did not land."
+  # Invalidate the clean marker (#427 P1 gap, PR #429 review). --match-head-commit
+  # correctly rejected because HEAD moved after classification, but a stale
+  # pr-grind-clean.local left on disk would let a subsequent PLAIN `gh pr merge`
+  # (no head guard) sail through pre-merge-gate.sh, which only re-checks CI on a
+  # fresh same-PR marker — silently merging the newly pushed, unclassified head.
+  # Remove it so any retry is forced back through a full grind round.
+  MARKER_REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+  [ -n "$MARKER_REPO_ROOT" ] && rm -f "$MARKER_REPO_ROOT/.claude/pr-grind-clean.local"
   exit 1
 fi
 # GC the merged PR's codex-retrigger idempotency markers (#327). Runs from
@@ -2005,6 +2013,14 @@ for attempt in 1 2 3; do
 done
 if [ "$MERGE_STATE" != "MERGED" ]; then
   echo "❌ PR #<PR_NUMBER> not merged after 3 attempts (state=$MERGE_STATE); preserving worktree for inspection."
+  # Invalidate the clean marker (#427 P1 gap, PR #429 review). --match-head-commit
+  # correctly rejected because HEAD moved after classification, but a stale
+  # pr-grind-clean.local left on disk would let a subsequent PLAIN `gh pr merge`
+  # (no head guard) sail through pre-merge-gate.sh, which only re-checks CI on a
+  # fresh same-PR marker — silently merging the newly pushed, unclassified head.
+  # Remove it so any retry is forced back through a full grind round.
+  MARKER_REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+  [ -n "$MARKER_REPO_ROOT" ] && rm -f "$MARKER_REPO_ROOT/.claude/pr-grind-clean.local"
   exit 1
 fi
 # GC the merged PR's codex-retrigger idempotency markers (#327), from $WORKTREE_DIR

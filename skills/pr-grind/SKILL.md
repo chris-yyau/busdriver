@@ -111,6 +111,11 @@ START
   ├── Resolve flag-to-state translations (consumed by downstream bash blocks):
   │     ADMIN_FLAG_PASSED       = 1 if `--admin-on-approver-gap` was passed, else 0
   │     NO_WORKTREE             = 1 if `--no-worktree`             was passed, else 0
+  │     REVIEWED_HEAD           = the full 40-char HEAD_FULL_SHA captured in the
+  │                               classification block, carried forward to BOTH
+  │                               Completion merge blocks as `--match-head-commit`
+  │                               (#427). Remember the SHA the acks were classified
+  │                               against — do NOT re-derive it at merge time.
   │     # These are NOT exported as shell env vars — bash exports do NOT survive
   │     # across Claude Bash tool calls (each tool call gets a fresh shell). The
   │     # dispatcher (Claude) MUST remember each flag's resolved value in
@@ -1422,7 +1427,12 @@ Options:
                     # reignites grind — 3-5 rounds likely. Pick when bot
                     # configurations dislike merge commits OR when the PR
                     # history matters for downstream reviewers.
-  [admin]         gh pr merge <PR_NUMBER> --squash --delete-branch --admin
+  [admin]         gh pr merge <PR_NUMBER> --squash --delete-branch --admin --match-head-commit <REVIEWED_HEAD>
+                    # head guard (#427). <REVIEWED_HEAD> is substituted by the
+                    # dispatcher — same convention as <PR_NUMBER> — with the
+                    # classified HEAD_FULL_SHA. Do NOT emit $(git rev-parse HEAD):
+                    # that re-derives at merge time and blesses a post-
+                    # classification commit, defeating the guard.
                     # admin-merge bypasses the up-to-date requirement.
                     # Defensible when the PR is small + conflict-free and
                     # the base advance was unrelated. Runs outside pr-grind
@@ -1483,7 +1493,12 @@ Options:
                     # configurations dislike merge commits OR when the PR
                     # history matters for downstream reviewers.
   [wait]          exit; manually update later
-  [admin]         gh pr merge <PR_NUMBER> --squash --delete-branch --admin
+  [admin]         gh pr merge <PR_NUMBER> --squash --delete-branch --admin --match-head-commit <REVIEWED_HEAD>
+                    # head guard (#427). <REVIEWED_HEAD> is substituted by the
+                    # dispatcher — same convention as <PR_NUMBER> — with the
+                    # classified HEAD_FULL_SHA. Do NOT emit $(git rev-parse HEAD):
+                    # that re-derives at merge time and blesses a post-
+                    # classification commit, defeating the guard.
                     (no audit trail — proceed only with explicit operator authorization)
                     # verify: gh pr view <PR_NUMBER> --json state -q .state
                     # (retry up to 3x with 2s backoff — trust the API state,
@@ -1843,7 +1858,23 @@ jq -c -n \
   --arg head_sha "$HEAD_SHA" \
   '{ts:$ts, event:$event, trigger:$trigger, pr:$pr, owner:$owner, repo:$repo, branch:$branch, author:$author, author_perm:$author_perm, required_approving_review_count:$required, human_approvals:$approvals, human_admin_count:$human_admin_count, head_sha:$head_sha}' \
   >> "$REPO_ROOT/.claude/bypass-log.jsonl" || { echo "❌ failed to append bypass-log entry; aborting admin merge"; exit 1; }
-gh pr merge "$PR" --squash --delete-branch --admin || true
+# --match-head-commit closes the check-then-merge race (#427): GitHub itself
+# refuses the merge unless the PR head still equals the SHA every ack/CI
+# classification was made against.
+#
+# REVIEWED_HEAD is template-substituted by the dispatcher — the literal 40-char
+# HEAD_FULL_SHA captured in the classification block (see "HEAD_FULL_SHA=$(git
+# rev-parse HEAD)" there) is written here before bash executes. Same idiom as
+# NO_WORKTREE / ADMIN_FLAG_PASSED below, and for the same reason: bash exports
+# do not survive across Claude Bash tool calls.
+#
+# Do NOT substitute `$(git rev-parse HEAD)` and do NOT use `$HEAD_SHA` (that one
+# is the truncated 8-char display form). Re-deriving HEAD *here* would defeat the
+# whole guard — it blesses whatever local HEAD is at merge time, including a
+# commit that landed after classification, so the guard would then only catch
+# remote-only pushes rather than closing the check-then-merge race.
+REVIEWED_HEAD=<full 40-char SHA — the HEAD_FULL_SHA from the classification block>
+gh pr merge "$PR" --squash --delete-branch --admin --match-head-commit "$REVIEWED_HEAD" || true
 # Verify via authoritative source — `gh pr merge --delete-branch` can
 # exit non-zero on a post-merge local worktree-checkout conflict (e.g.,
 # "main is already used by worktree at ...") even after the remote merge
@@ -1883,7 +1914,12 @@ command below runs outside pr-grind and writes NO entry to
 it does not detect gh pr merge --admin regardless of path).
 
 Options:
-  [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin
+  [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin --match-head-commit <REVIEWED_HEAD>
+                   # head guard (#427). <REVIEWED_HEAD> is substituted by the
+                   # dispatcher — same convention as <PR_NUMBER> — with the
+                   # classified HEAD_FULL_SHA. Do NOT emit $(git rev-parse HEAD):
+                   # that re-derives at merge time and blesses a post-
+                   # classification commit, defeating the guard.
                    # verify: gh pr view <PR_NUMBER> --json state -q .state
                    # (retry up to 3x with 2s backoff — the GitHub API (queried
                    #  via gh) can briefly return state=OPEN due to post-merge
@@ -1907,7 +1943,12 @@ or [wait].
 Options:
   [wait]         exit; wait for a human reviewer
   [add-reviewer] gh pr edit <PR_NUMBER> --add-reviewer <user>; exit
-  [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin
+  [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin --match-head-commit <REVIEWED_HEAD>
+                   # head guard (#427). <REVIEWED_HEAD> is substituted by the
+                   # dispatcher — same convention as <PR_NUMBER> — with the
+                   # classified HEAD_FULL_SHA. Do NOT emit $(git rev-parse HEAD):
+                   # that re-derives at merge time and blesses a post-
+                   # classification commit, defeating the guard.
                    (no audit trail — proceed only with explicit operator authorization)
                    # verify: gh pr view <PR_NUMBER> --json state -q .state
                    # (retry up to 3x with 2s backoff — the GitHub API (queried
@@ -1935,7 +1976,12 @@ Options:
 # fallback always resolves to 0 and the cleanup branch always runs
 # (wrong when Step 0's auto-fallback engaged or --no-worktree was passed).
 NO_WORKTREE=<0|1 — see "Resolve flag-to-state translations" in START>
-gh pr merge <PR_NUMBER> --squash --delete-branch || true
+# --match-head-commit closes the check-then-merge race (#427). REVIEWED_HEAD is
+# template-substituted with the literal 40-char HEAD_FULL_SHA from the
+# classification block — NOT re-derived here; see the auto-admin block above for
+# why re-deriving at merge time defeats the guard.
+REVIEWED_HEAD=<full 40-char SHA — the HEAD_FULL_SHA from the classification block>
+gh pr merge <PR_NUMBER> --squash --delete-branch --match-head-commit "$REVIEWED_HEAD" || true
 # Verify via authoritative source — `gh pr merge` exit code is unreliable
 # when --delete-branch hits a post-merge worktree-checkout conflict (the
 # remote merge has already SUCCEEDED, but gh tries to update the local

@@ -88,5 +88,38 @@ ORDER_OK=$(awk '
 [ "$ORDER_OK" = "OK" ] && ok "each GC call follows a MERGE_STATE==MERGED guard" \
   || fail "a GC call precedes its MERGED guard"
 
+# (h) #427 head guard: BOTH executable merge invocations must pass
+# --match-head-commit bound to the CLASSIFIED head SHA. Without it the merge is
+# a non-atomic check-then-act — a push landing after classification merges an
+# unreviewed head.
+has 'gh pr merge "$PR" --squash --delete-branch --admin --match-head-commit "$REVIEWED_HEAD"' \
+  && ok "auto-admin merge carries --match-head-commit" \
+  || fail "auto-admin merge missing --match-head-commit (#427)"
+has 'gh pr merge <PR_NUMBER> --squash --delete-branch --match-head-commit "$REVIEWED_HEAD"' \
+  && ok "default merge carries --match-head-commit" \
+  || fail "default merge missing --match-head-commit (#427)"
+# REVIEWED_HEAD must be TEMPLATE-SUBSTITUTED with the classified SHA, never
+# re-derived at merge time. Re-deriving blesses whatever local HEAD is current —
+# including a commit that landed after classification — which shrinks the guard
+# to remote-only pushes instead of closing the race.
+TEMPLATE_COUNT=$(grep -c 'REVIEWED_HEAD=<full 40-char SHA' "$SKILL" || true)
+[ "$TEMPLATE_COUNT" -eq 2 ] && ok "REVIEWED_HEAD template-substituted in both merge blocks" \
+  || fail "expected 2 REVIEWED_HEAD template placeholders, found $TEMPLATE_COUNT"
+if grep -qF 'REVIEWED_HEAD=$(' "$SKILL"; then
+  fail "REVIEWED_HEAD re-derived at merge time — defeats the #427 guard"
+else
+  ok "REVIEWED_HEAD never re-derived in a merge block"
+fi
+# Same trap in the operator-facing [admin] decision templates: they must carry
+# the substituted <REVIEWED_HEAD> token, never a live rev-parse.
+if grep -qF -- '--match-head-commit $(' "$SKILL"; then
+  fail "an [admin] template re-derives the SHA inline — defeats the #427 guard"
+else
+  ok "no --match-head-commit site re-derives the SHA inline"
+fi
+TMPL_ADMIN=$(grep -c -- '--admin --match-head-commit <REVIEWED_HEAD>' "$SKILL" || true)
+[ "$TMPL_ADMIN" -eq 4 ] && ok "all 4 [admin] decision templates carry the head guard" \
+  || fail "expected 4 guarded [admin] templates, found $TMPL_ADMIN"
+
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

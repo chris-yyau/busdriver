@@ -189,11 +189,31 @@ SHIM
 done
 rm -rf "$SHIM_DIR"
 
-# --- case G: missing args --------------------------------------------------
+# --- case G: argument validation ---------------------------------------------
 run
 if [ "$RC" -ne 0 ]; then ok "G: BAILs on missing args"; else fail "G: accepted empty args"; fi
 run 421 feature
 if [ "$RC" -ne 0 ]; then ok "G: BAILs when head SHA arg is absent"; else fail "G: accepted a missing head SHA"; fi
+
+# PR_NUMBER lands in WORKTREE_DIR, which the assertion's cleanup passes to
+# `git worktree remove --force`. A traversing value must never reach it.
+cd "$REPO" || exit 1
+FEATURE_SHA=$(git rev-parse feature)
+for bad in "../escape" "4/2/1" ".." "42; rm -rf /" "4 2"; do
+  run "$bad" feature "$FEATURE_SHA"
+  if [ "$RC" -ne 0 ]; then
+    ok "G: rejects non-numeric pr-number '$bad'"
+  else
+    fail "G: ACCEPTED traversing/injecting pr-number '$bad'"
+  fi
+done
+if [ ! -e "$TMP/work/pr-grind-../escape" ] && [ ! -e "$TMP/escape" ]; then
+  ok "G: no directory created outside the intended location"
+else
+  fail "G: a traversing pr-number created a directory outside the sibling path"
+fi
+run 421 feature "not-hex-at-all"
+if [ "$RC" -ne 0 ]; then ok "G: rejects a non-hex head SHA"; else fail "G: accepted a non-hex head SHA"; fi
 
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

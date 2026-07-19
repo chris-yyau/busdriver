@@ -44,6 +44,26 @@ if [ -z "$PR_NUMBER" ] || [ -z "$PR_BRANCH" ] || [ -z "$PR_HEAD_SHA" ]; then
   exit 1
 fi
 
+# PR_NUMBER is interpolated into WORKTREE_DIR, and the assertion's cleanup path
+# runs `git worktree remove --force` against that directory. A value containing
+# `/` or `..` would redirect both outside the intended sibling location, so the
+# destructive call must never see a non-numeric one. Digits only, fail-CLOSED.
+case "$PR_NUMBER" in
+  ''|*[!0-9]*)
+    echo "❌ pr-number must be digits only, got '$(printf '%s' "$PR_NUMBER" | tr -cd '[:print:]')'." >&2
+    exit 1
+    ;;
+esac
+
+# Likewise the head SHA: it is only ever compared, never interpolated into a
+# path, but constraining it to hex keeps the comparison meaningful.
+case "$PR_HEAD_SHA" in
+  *[!0-9a-fA-F]*)
+    echo "❌ pr-head-sha must be hexadecimal." >&2
+    exit 1
+    ;;
+esac
+
 # `tr -cd '[:print:]\n\t'` strips every non-printable byte — kills CSI, OSC, and
 # any other terminal-control sequence in one pass. Used instead of sed because
 # BSD sed (macOS default) does not support the `\x1B` hex escape. Applied to

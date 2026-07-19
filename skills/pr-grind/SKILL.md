@@ -760,22 +760,33 @@ case "$PR_IS_FORK" in
   *) echo "❌ isCrossRepository for <PR_NUMBER> was '$PR_IS_FORK', not a boolean — not proceeding."; exit 1 ;;
 esac
 
-# Reconcile the local branch with the PR head BEFORE resolving, so the ordinary
-# "someone pushed to the PR" case proceeds instead of bailing.
+# FORK PRs ARE NOT SUPPORTED — refuse before touching anything. This is a hard
+# stop, not a limitation to route around.
 #
-# SAME-REPO PRs ONLY, and this restriction is load-bearing. `headRefName` is
-# chosen by the PR's source repository and is NOT globally unique: a fork can
-# name its branch `main`. Writing refs/pull/<N>/head into refs/heads/<that name>
-# would fast-forward the LOCAL `main` to untrusted PR code whenever it is not
-# checked out and the fork revision is a descendant — the resolver would then
-# validate the mutated branch and later grind commits could target upstream
-# `main`. That is the exact wrong-branch class #421 exists to prevent, so fork
-# PRs get no local-branch write at all: the SHA assertion bails and the operator
-# decides. Never relax this to cover forks "for convenience."
+# `headRefName` is chosen by the PR's source repository and is NOT
+# repository-qualified: a fork can name its branch `main`. Any path that maps
+# that name onto a LOCAL ref is the wrong-branch class #421 exists to prevent.
+# Skipping the fetch is NOT sufficient — a fork branch named `main` whose head
+# merely happens to equal the local `main` SHA would satisfy the resolver's
+# assertion, take in-place mode, and let grind commits push to the UPSTREAM
+# branch instead of the fork.
 #
-# Belt-and-braces: refuse outright if the head name equals the base branch, so a
-# malformed same-repo case cannot reach the fetch either.
-if [ "$PR_IS_FORK" = "false" ] && [ "$PR_BRANCH" != "$BASE_BRANCH" ]; then
+# Nor is this a real capability loss: a grind must push its fix commits to the
+# PR head, which requires write access to the fork — access this flow never had.
+# "Supporting" fork PRs here could only ever mean pushing somewhere wrong.
+if [ "$PR_IS_FORK" = "true" ]; then
+  echo "❌ PR <PR_NUMBER> is from a fork. pr-grind cannot grind fork PRs: it would"
+  echo "   need push access to the fork's head branch, and a fork-chosen branch"
+  echo "   name must never be resolved against a local ref (#421)."
+  echo "   Review the PR manually, or ask the author to push to a branch in this repo."
+  exit 1
+fi
+
+# Same-repo from here. Reconcile the local branch with the PR head BEFORE
+# resolving, so the ordinary "someone pushed to the PR" case proceeds instead of
+# bailing. Belt-and-braces: never fetch into the base branch, so a malformed
+# same-repo case cannot reach the fetch either.
+if [ "$PR_BRANCH" != "$BASE_BRANCH" ]; then
   # Fast-forward only — note the absence of a leading `+`. A divergent local
   # branch must NOT be silently rewritten; the fetch fails, the SHA assertion
   # bails, and the operator decides. Same outcome when the branch is currently
@@ -783,9 +794,6 @@ if [ "$PR_IS_FORK" = "false" ] && [ "$PR_BRANCH" != "$BASE_BRANCH" ]; then
   # argv element to git, never shell-evaluated, so a hostile name containing
   # `$(...)`, backticks, `;` or `|` cannot execute anything.
   git fetch -q origin "refs/heads/${PR_BRANCH}:refs/heads/${PR_BRANCH}" 2>/dev/null || true
-elif [ "$PR_IS_FORK" = "true" ]; then
-  echo "ℹ️  PR <PR_NUMBER> is from a fork — not writing any local branch. The"
-  echo "   resolver will bail unless a local '$PR_BRANCH' is already at the PR head."
 fi
 
 # Resolve the grind's working directory. The resolver (#421) owns the three-way

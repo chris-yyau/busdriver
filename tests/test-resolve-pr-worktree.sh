@@ -87,6 +87,11 @@ git checkout -q main
 # This is the #421 regression. Repo root sits on `main`; `feature` is elsewhere.
 OTHER="$TMP/work/other"
 git -C "$REPO" worktree add -q "$OTHER" feature
+# `git worktree add`/`worktree list` may report the holder at its canonicalized
+# path (e.g. macOS /var -> /private/var), so match on the resolved path, not
+# the literal $OTHER string — otherwise this assertion fails spuriously on
+# symlinked temp dirs even though the resolver's bail message is correct.
+OTHER_CANON=$(cd "$OTHER" && pwd -P)
 cd "$REPO" || exit 1
 run 421 feature "$(git -C "$REPO" rev-parse feature)"
 if [ "$RC" -ne 0 ]; then ok "C: BAILs when the branch is held by another worktree"; else fail "C: expected non-zero, got 0 — the #421 fail-open is back"; fi
@@ -95,7 +100,7 @@ if printf '%s' "$OUT" | grep -q "^WORKTREE_DIR=$REPO_CANON$"; then
 else
   ok "C: did NOT emit the repo root as WORKTREE_DIR"
 fi
-if printf '%s' "$OUT" | grep -qF "$OTHER"; then
+if printf '%s' "$OUT" | grep -qF "$OTHER_CANON"; then
   ok "C: names the holding worktree in the bail message"
 else
   fail "C: bail message does not name the holder — $OUT"

@@ -33,6 +33,14 @@ Deliberately NOT handled (tracked as a scoped follow-up):
     (the process cwd), missing the `/other` scope.
   * Process substitution `<(...)` / `>(...)`, here-strings, and dispatchers like
     `xargs` / `find -exec` are not traced.
+  * A command hidden inside a `case` arm (`case $x in a) git commit;; esac`) or
+    after a `coproc NAME` compound command. Control keywords and grouping are
+    normalized (so `if/while/for … ; do/then <cmd>` — the routine wrapper an
+    agent emits — is caught), but `case` arms are not: telling a later arm's
+    pattern label (`git) …`, `-x) …`) from an ordinary command per-segment is
+    undecidable (guarding the ')' first over-blocks `echo "x)" git commit`;
+    guarding the command first misses `git)`), and doing it correctly needs
+    cross-segment `case` tracking. Tracked as a scoped follow-up.
 These are fail-OPEN residuals accepted for the current threat model (stopping the
 agent from ROUTINE unreviewed commits). Revisit if the gate must resist a
 deliberate evader.
@@ -46,6 +54,23 @@ import shlex
 _WRAPPERS = frozenset((
     'command', 'env', 'sudo', 'doas', 'nohup', 'nice', 'time',
     'builtin', 'exec', 'stdbuf', 'setsid',
+))
+
+# Shell reserved words that PRECEDE a command inside a segment. split_segments
+# cuts `if true; then git commit; fi` into `if true` / `then git commit` / `fi`,
+# so without stripping these the command word of the middle segment is `then`
+# and no gate ever sees the commit. Measured before this fix: the fail-CLOSED
+# pre-commit gate emitted NO decision at all for that command, and the same
+# detector backs the pre-PR and pre-merge gates.
+#
+# Only words followed directly by a COMMAND belong here. `for`, `case` and
+# `select` are followed by a variable or word rather than a command, so
+# stripping them would merely expose the loop variable — deliberately absent.
+# `for`/`case`/`select` heads are followed by a word, not a command, so they
+# are NOT here; `coproc` and `case`-arm labels are out of scope (see the SCOPE
+# note in _command_argv). `!` pipeline-negation is stripped by the wrapper loop.
+_CONTROL_KEYWORDS = frozenset((
+    'if', 'then', 'elif', 'else', 'while', 'until', 'do',
 ))
 
 
@@ -182,16 +207,43 @@ def _command_argv(seg, target):
     `sudo -n` must not swallow the real command). `target` is the executable
     basename we must not skip (e.g. 'git' or 'gh')."""
     toks = _tokenize(seg)
-    # Strip leading subshell '(' / brace-group '{' punctuation so grouped
-    # commands like (git commit) or { git commit; } expose their command word.
-    while toks:
+    # Leading STRUCTURAL normalization — strip the shell constructs that can
+    # precede a command's real command word, as a FIXPOINT loop so the pieces
+    # compose. A single one-shot pass left a seam at `then { git commit` (keyword
+    # THEN a group); looping unwinds any nesting of keyword + group.
+    #
+    # In COMMAND POSITION only: a reserved word is a keyword solely as the first
+    # word of a command, so this runs BEFORE the wrapper loop. After a wrapper the
+    # same word is an ordinary command NAME (`command then` runs an exe literally
+    # called `then`), which must NOT be stripped.
+    #
+    # SCOPE: control keywords + grouping punctuation only. `case` arms and
+    # `coproc NAME` are deliberately OUT of scope here — robustly telling a later
+    # `case` arm's pattern label (`git) …`, `-x) …`) from an ordinary command
+    # needs cross-segment `case` tracking, a separate piece of work (see KNOWN
+    # LIMITATIONS). This closes the routine `if/while/for … ; do/then <cmd>`
+    # bypass, which is the class an agent actually emits.
+    changed = True
+    while changed and toks:
+        changed = False
+        # (a) leading subshell '(' / brace-group '{' punctuation, possibly fused
+        #     onto the next word ('(git' -> 'git').
         head = toks[0].lstrip('({')
-        if head == toks[0]:
-            break
-        if head:
-            toks = [head] + toks[1:]
-            break
-        toks = toks[1:]
+        if head != toks[0]:
+            toks = ([head] + toks[1:]) if head else toks[1:]
+            changed = True
+            continue
+        # (b) a leading control keyword (`then git commit`, `do gh pr merge`).
+        if toks[0] in _CONTROL_KEYWORDS and toks[0].rsplit('/', 1)[-1] != target:
+            toks = toks[1:]
+            changed = True
+            continue
+    # Fail-CLOSED residual: `_tokenize` has dropped quoting, so a quoted/escaped
+    # `"then"`/`\then` — which the shell runs as a literal command, never a
+    # keyword — is indistinguishable here and over-fires. That blocks a command
+    # running a nonexistent `then` that never reaches git: a spurious block of a
+    # no-op, the SAFE direction, same class as the line-continuation over-strip.
+
     i = 0
     saw_wrap = False
     prev_dash = False

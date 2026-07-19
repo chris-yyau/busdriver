@@ -144,6 +144,30 @@ COMMIT_YES = [
     'cat =( git commit )',               # zsh =() spaced body
     'foo; =(git commit -m x)',           # =( at a word boundary after an operator
     '=(git commit -m x)',                # =( at start of command (word boundary)
+
+    # ── CONTROL KEYWORDS. split_segments cuts `if true; then git commit; fi`
+    # into `if true` / `then git commit` / `fi`, so the middle segment's command
+    # word was `then` and NO detector-backed gate saw the commit. Measured
+    # before the fix: the fail-CLOSED pre-commit gate emitted no decision at all
+    # for these — a general bypass of pre-commit, pre-PR and pre-merge alike.
+    'if true; then git commit -m x; fi',
+    'if x; then y; else git commit; fi',
+    'if x; then y; elif z; then git commit; fi',
+    'for f in a; do git commit -m x; done',
+    'while :; do git commit; done',
+    'until false; do git commit; done',
+    'if git commit; then echo ok; fi',    # keyword before the command itself
+    'if true; then if true; then git commit; fi; fi',   # nested
+    'if true; then sudo git commit; fi',  # keyword THEN wrapper
+    'if true; then env FOO=1 git commit; fi',
+    # Keyword + grouping must COMPOSE (the fixpoint), not just fire once each:
+    'if { git commit; }',                 # keyword then brace group
+    'if true; then { git commit; }; fi',  # keyword, separator, brace group
+    # `!` pipeline negation is stripped by the wrapper loop; a keyword in front
+    # must not shadow it (regression pin — repeatedly mis-flagged as a bypass).
+    '! git commit -m x',
+    'if true; then ! git commit -m x; fi',
+    'git commit -m "x)"',                 # ')' inside an arg must NOT eat the git
 ]
 
 # ── LINE-CONTINUATION FALSE POSITIVES (deliberate, fail-CLOSED — do NOT "fix").
@@ -177,6 +201,18 @@ COMMIT_KNOWN_MISS = [
 # ── git commit: negatives (must NOT be recognized → gate allows) ──────
 COMMIT_NO = [
     'echo please git commit later',      # prose
+    # Control-keyword stripping must not over-reach: the keyword only counts as
+    # a keyword when it LEADS the segment, never as an argument to a command.
+    'echo then git commit',
+    'echo "if true; then git commit; fi"',
+    'grep -r "then git commit" .',
+    'for f in git commit; do echo $f; done',   # loop WORD, not a command
+    'case $v in a) echo hi;; esac',            # no commit in any arm
+    # A reserved word is a keyword ONLY in command position. After a wrapper it
+    # is an ordinary command NAME, so `command then`/`env then` run an
+    # executable literally called `then` — git never runs.
+    'command then git commit',
+    'env then git commit',
     'git log --grep=commit',             # different subcommand
     'printf gitcommit',
     'gitfoo commit',                     # not the git executable

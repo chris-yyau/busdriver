@@ -1276,10 +1276,23 @@ if [ "$CODEX_DONE" = "none" ]; then
   # the simple version wins. Narrow to reactions+reviews inside the loop if the
   # API cost ever shows up.
   CODEX_DEADLINE=$(( $(date +%s) + CODEX_WAIT ))
+  # Last verdict computed from a COMPLETE (FETCH_OK=1) snapshot. Seeded from
+  # CODEX_REGRACE (== CODEX_DONE == "none", the only value that gets us into this
+  # loop). Updated below ONLY when a poll's fetch succeeds, so a fetch failure
+  # never overwrites the last trustworthy observation.
+  CODEX_LAST_GOOD_VERDICT="$CODEX_REGRACE"
   while :; do
   _CODEX_REM=$(( CODEX_DEADLINE - $(date +%s) ))
   if [ "$_CODEX_REM" -le 0 ]; then
     echo "ℹ️  Codex did not engage within ${CODEX_WAIT}s; proceeding."
+    # Greptile P1: if the LAST poll ended with a fetch error (FETCH_OK=0),
+    # CODEX_REGRACE currently holds ack-ledger's fail-closed `stale` fallback for
+    # an incomplete snapshot — a transient-error artifact, not a real finding.
+    # Deadline exhaustion should fall back to the last COMPLETE observation
+    # instead, so a quota-dead/silent Codex plus a transient final fetch failure
+    # reads `none` (non-gating) rather than blocking the merge on a snapshot we
+    # already know was incomplete.
+    [ "$FETCH_OK" != "1" ] && CODEX_REGRACE="$CODEX_LAST_GOOD_VERDICT"
     break
   fi
   if [ "$_CODEX_REM" -lt "$CODEX_POLL" ]; then sleep "$_CODEX_REM"; else sleep "$CODEX_POLL"; fi
@@ -1332,6 +1345,11 @@ if [ "$CODEX_DONE" = "none" ]; then
     # snapshot we know is incomplete, when a later poll would likely have recovered.
     # Only a verdict from a COMPLETE snapshot may end the wait. (FETCH_OK is reset
     # per-iteration at the top of the loop, so one bad poll does not poison the rest.)
+    # Record this poll's verdict as the last-good observation whenever its fetch
+    # was complete — including a complete "none" (Codex still hasn't engaged) —
+    # so the deadline-exit fallback above always has the most recent trustworthy
+    # value, not just the pre-loop seed.
+    [ "$FETCH_OK" = "1" ] && CODEX_LAST_GOOD_VERDICT="$CODEX_REGRACE"
     [ "$CODEX_REGRACE" != "none" ] && [ "$FETCH_OK" = "1" ] && break
   done
   # Re-apply the Tier-D content-identity widening ONCE, here — not per interval.

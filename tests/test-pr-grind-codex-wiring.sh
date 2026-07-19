@@ -207,7 +207,10 @@ has 'CODEX_GRACE=$((10#$CODEX_GRACE))' && has 'CODEX_POLL=$((10#$CODEX_POLL))' \
 # Prove the octal trap is real and the guard defuses it, both outcomes.
 _octal_raw() { local v="$1"; case "$v" in ''|*[!0-9]*) v=480 ;; esac; echo $(( 100 + v )); }
 _octal_fix() { local v="$1"; case "$v" in ''|*[!0-9]*) v=480 ;; esac; v=$((10#$v)); echo $(( 100 + v )); }
-if _octal_raw 0480 >/dev/null 2>&1; then
+# Run in an explicit SUBSHELL: a fatal arithmetic error would otherwise be able to
+# take down this test shell before the remaining checks run, depending on bash
+# version. The subshell absorbs it and we judge on its exit status.
+if ( _octal_raw 0480 ) >/dev/null 2>&1; then
   fail "expected bare arithmetic to reject 0480 as octal — trap assumption wrong"
 else
   ok "unguarded arithmetic DOES abort on 0480 (the trap is real)"

@@ -1200,13 +1200,20 @@ if [ "$CODEX_DONE" = "none" ]; then
   # one), honor BUSDRIVER_MAIN_ROOT, and use a LITERAL `.claude` — the wrapper does
   # NOT honor BUSDRIVER_STATE_DIR here, and reading a different dir than the wrapper
   # is exactly the mismatch. Fail-SAFE: unresolvable → 0 → short wait, never long.
-  # Deliberately NOT gated on PR_GRIND_CODEX_RETRIGGER. That switch disables
-  # NUDGING, not Codex: a repo can have the nudge off and still receive automatic
-  # Codex reviews, and those are exactly what the wait exists to catch. Gating here
-  # would hand such a repo the 20s courtesy wait and reopen #420's race. (Review
-  # round 5 asked for the opposite and was wrong on this point — the switch forces
-  # CODEX_REPO_ACTIVE=0 only to skip a GraphQL call, which is not evidence that
-  # Codex is absent. The force-on marker is the operator declaring it present.)
+  # Deliberately NOT gated on PR_GRIND_CODEX_RETRIGGER, so the force-on marker keeps
+  # working under the kill switch.
+  #
+  # Be precise about what that does and does not buy, because two review rounds
+  # pulled in opposite directions here. PR_GRIND_CODEX_RETRIGGER=0 ALREADY suppresses
+  # auto-detection above (deliberately — a switched-off repo pays no GraphQL
+  # round-trip), so with the switch on and NO force-on marker the wait is the 20s
+  # courtesy one even if Codex would have auto-reviewed. That coupling is inherited,
+  # not introduced here, and it is the documented semantic of a switch named "kill":
+  # the operator turned the Codex integration off. The marker is the escape hatch —
+  # an operator who wants nudges off but the full wait ON drops
+  # .claude/pr-grind-codex-expected.local and gets exactly that. Decoupling further
+  # would mean detecting on every switched-off repo, which is the network cost the
+  # switch exists to avoid.
   CODEX_EXPECTED=$( cd "$WORKTREE_DIR" 2>/dev/null || { echo 0; exit 0; }
     _MR="${BUSDRIVER_MAIN_ROOT:-}"
     if [ -z "$_MR" ]; then

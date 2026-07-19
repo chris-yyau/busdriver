@@ -1175,6 +1175,7 @@ MD_COUNT=$(echo "$MARKDOWN_FINDINGS" | python3 -c "import sys,json; print(len(js
 # ── Short-circuit gate (commit mode only) ────────────────────────────
 # Skip Codex CLI review when ALL conditions hold:
 #   - REVIEW_MODE = commit (PR mode always needs full review)
+#   - EVERY changed path is passive prose (SC_PASSIVE_PATTERN, #415)
 #   - Weighted diff < LITMUS_SHORTCIRCUIT_MAX_LINES (default 10)
 #   - SAST findings = 0 (gitleaks, semgrep, shellcheck, trufflehog all clean)
 #   - Markdown findings = 0
@@ -1198,6 +1199,54 @@ if [ "$REVIEW_MODE" = "commit" ] && [ "${LITMUS_SHORTCIRCUIT_DISABLED:-0}" != "1
     SC_SENSITIVE_PATTERN="${SC_SENSITIVE_PATTERN}|${LITMUS_SHORTCIRCUIT_EXTRA_SENSITIVE}"
   fi
 
+  # Passive-path allowlist (#415). The weighted-line threshold alone was not a
+  # safety predicate: deletions weigh 1/4, so a 39-line pure deletion scored 9
+  # and took the fast path — removing an auth guard outright was CHEAPER to slip
+  # through unreviewed than inverting it. Size is now a secondary bound; the
+  # primary one is WHAT changed. Only prose takes the fast path. Everything not
+  # on this allowlist — source, config, workflows, and this repo's operational
+  # markdown (skills/, agents/, commands/, rules/, CLAUDE.md) — goes to full
+  # Codex review regardless of edit direction or size.
+  #
+  # Deliberately NOT "any deletion means full review": that would send every
+  # docs cleanup through Codex and there would be no fast path left.
+  # Fail-CLOSED by construction — an unrecognized path fails to match and blocks.
+  # The standard-doc names are anchored to the REPO ROOT (^NAME), NOT (^|/)NAME.
+  # This repo carries skills/<name>/README.md, and a README documenting an
+  # operational skill is not the same artifact as the root README — matching the
+  # name at any depth would have handed every one of them the fast path.
+  SC_PASSIVE_PATTERN='^(README|CHANGELOG|CONTRIBUTING|SECURITY|CODE_OF_CONDUCT|AUTHORS|NOTICE|LICENSE)(\.(md|markdown|txt|rst))?$|^docs/.+\.(md|markdown|txt|rst)$'
+  # Classify the FULL staged path set. This intentionally lists every changed
+  # path with NO review-exclusion filter and NO rename coalescing, so nothing can
+  # vanish from the fast-path predicate:
+  #   * A generated/excluded path (lockfile, etc.) is a non-prose path here and
+  #     must force full review — it does not get dropped the way it is dropped
+  #     from the review DIFF. (FILTERED_FILES is filtered and MUST NOT be reused.)
+  #   * `--no-renames` splits a detected rename into its delete + add, so
+  #     `git mv src/auth.ts docs/auth.md` cannot present as a lone passive
+  #     destination and launder the active source onto the fast path (plain
+  #     `--name-only` reports only the destination — verified against real
+  #     history).
+  SC_PATHS=$(git diff --cached --name-only --no-renames 2>/dev/null || true)
+
+  if [[ -n "$SC_PATHS" ]]; then
+    set +e
+    SC_HAS_ACTIVE=$(printf '%s\n' "$SC_PATHS" | grep -Ev "$SC_PASSIVE_PATTERN")
+    SC_ACTIVE_EXIT=$?
+    set -e
+    # grep -Ev: 0 = an active path was found, 1 = every path is passive,
+    # >=2 = the classification itself failed. Only 1 may take the fast path;
+    # a failed classifier is "unknown", which is not "safe".
+    if [[ "$SC_ACTIVE_EXIT" -ge 2 ]]; then
+      echo "⚠️  Short-circuit: path classification failed — falling through to full review"
+      SC_HAS_ACTIVE="(classification failed)"
+    fi
+  else
+    # An empty list is "could not verify what changed", not "nothing risky
+    # changed" — an empty staged set exits earlier, so reaching here is a fault.
+    SC_HAS_ACTIVE="(no file list)"
+  fi
+
   # Fail-closed on regex errors: grep -E exit 0 = match, 1 = no match (expected),
   # 2 = invalid regex (treat as "unable to verify" → skip short-circuit).
   SC_HAS_SENSITIVE=""
@@ -1207,21 +1256,22 @@ if [ "$REVIEW_MODE" = "commit" ] && [ "${LITMUS_SHORTCIRCUIT_DISABLED:-0}" != "1
     SC_HAS_SENSITIVE=$(printf '%s\n' "$FILTERED_FILES" | grep -E "$SC_SENSITIVE_PATTERN")
     SC_GREP_EXIT=$?
     set -e
-    if [ "$SC_GREP_EXIT" -eq 2 ]; then
+    if [[ "$SC_GREP_EXIT" -eq 2 ]]; then
       echo "⚠️  Short-circuit: invalid regex in LITMUS_SHORTCIRCUIT_EXTRA_SENSITIVE — falling through to full review"
       SC_REGEX_OK=false
     fi
   fi
 
-  if [ "$SC_REGEX_OK" = true ] \
-      && [ "$WEIGHTED_LINES" -lt "$SC_MAX_LINES" ] \
-      && [ "$SAST_COUNT" -eq 0 ] \
-      && [ "$MD_COUNT" -eq 0 ] \
-      && [ -z "$SC_HAS_SENSITIVE" ]; then
+  if [[ "$SC_REGEX_OK" = true ]] \
+      && [[ -z "$SC_HAS_ACTIVE" ]] \
+      && [[ "$WEIGHTED_LINES" -lt "$SC_MAX_LINES" ]] \
+      && [[ "$SAST_COUNT" -eq 0 ]] \
+      && [[ "$MD_COUNT" -eq 0 ]] \
+      && [[ -z "$SC_HAS_SENSITIVE" ]]; then
     echo ""
     echo "⚡ Short-circuit PASS — skipping Codex CLI review"
     echo "   Diff: $WEIGHTED_LINES weighted lines (< $SC_MAX_LINES threshold)"
-    echo "   SAST: 0 findings | Markdown: 0 findings | Sensitive paths: none"
+    echo "   Paths: passive prose only | SAST: 0 findings | Markdown: 0 findings | Sensitive paths: none"
     echo ""
 
     # Log metric (same schema as normal review — cli labeled as short-circuit)

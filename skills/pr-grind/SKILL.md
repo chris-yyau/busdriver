@@ -744,29 +744,49 @@ case "$BASE_BRANCH" in
 esac
 rm -f "$BASE_BRANCH_ERR"
 
-PR_META=$(gh pr view <PR_NUMBER> --json headRefName,headRefOid)
+PR_META=$(gh pr view <PR_NUMBER> --json headRefName,headRefOid,isCrossRepository)
 PR_BRANCH=$(printf '%s' "$PR_META" | jq -r '.headRefName // empty')
 PR_HEAD_SHA=$(printf '%s' "$PR_META" | jq -r '.headRefOid // empty')
+# NOT `// empty` here: jq's `//` treats `false` as absent just like `null`, so
+# the alternative would fire on every SAME-REPO PR (isCrossRepository=false) and
+# hard-exit the common path. Read the field raw and validate it as a boolean.
+PR_IS_FORK=$(printf '%s' "$PR_META" | jq -r '.isCrossRepository')
 if [ -z "$PR_BRANCH" ] || [ -z "$PR_HEAD_SHA" ]; then
   echo "❌ could not resolve PR head ref/oid for <PR_NUMBER> — not proceeding."
   exit 1
 fi
+case "$PR_IS_FORK" in
+  true|false) ;;
+  *) echo "❌ isCrossRepository for <PR_NUMBER> was '$PR_IS_FORK', not a boolean — not proceeding."; exit 1 ;;
+esac
 
 # Reconcile the local branch with the PR head BEFORE resolving, so the ordinary
 # "someone pushed to the PR" case proceeds instead of bailing.
 #
-# `refs/pull/<N>/head` is the UNIVERSAL source: it resolves fork PRs, whose head
-# branch never exists on `origin`, as well as same-repo PRs. (`git fetch origin
-# <branch>` would do neither job — it only moves FETCH_HEAD.) The branch name is
-# passed as a single argv element to git, never evaluated by a shell, so a
-# hostile PR branch name — git permits `$(...)`, backticks, `;`, `|` — cannot
-# execute anything here; git rejects malformed refs itself.
+# SAME-REPO PRs ONLY, and this restriction is load-bearing. `headRefName` is
+# chosen by the PR's source repository and is NOT globally unique: a fork can
+# name its branch `main`. Writing refs/pull/<N>/head into refs/heads/<that name>
+# would fast-forward the LOCAL `main` to untrusted PR code whenever it is not
+# checked out and the fork revision is a descendant — the resolver would then
+# validate the mutated branch and later grind commits could target upstream
+# `main`. That is the exact wrong-branch class #421 exists to prevent, so fork
+# PRs get no local-branch write at all: the SHA assertion bails and the operator
+# decides. Never relax this to cover forks "for convenience."
 #
-# Fast-forward only — note the absence of a leading `+`. A divergent local branch
-# must NOT be silently rewritten; the fetch fails, the resolver's SHA assertion
-# bails, and the operator decides. Same outcome when the branch is currently
-# checked out, which git refuses to update via fetch.
-git fetch -q origin "refs/pull/<PR_NUMBER>/head:refs/heads/${PR_BRANCH}" 2>/dev/null || true
+# Belt-and-braces: refuse outright if the head name equals the base branch, so a
+# malformed same-repo case cannot reach the fetch either.
+if [ "$PR_IS_FORK" = "false" ] && [ "$PR_BRANCH" != "$BASE_BRANCH" ]; then
+  # Fast-forward only — note the absence of a leading `+`. A divergent local
+  # branch must NOT be silently rewritten; the fetch fails, the SHA assertion
+  # bails, and the operator decides. Same outcome when the branch is currently
+  # checked out, which git refuses to update via fetch. The branch name is one
+  # argv element to git, never shell-evaluated, so a hostile name containing
+  # `$(...)`, backticks, `;` or `|` cannot execute anything.
+  git fetch -q origin "refs/heads/${PR_BRANCH}:refs/heads/${PR_BRANCH}" 2>/dev/null || true
+elif [ "$PR_IS_FORK" = "true" ]; then
+  echo "ℹ️  PR <PR_NUMBER> is from a fork — not writing any local branch. The"
+  echo "   resolver will bail unless a local '$PR_BRANCH' is already at the PR head."
+fi
 
 # Resolve the grind's working directory. The resolver (#421) owns the three-way
 # split — branch free / checked out HERE / held by ANOTHER worktree — and BAILs
@@ -875,7 +895,9 @@ fi
 
 The third row is the fail-CLOSED fix. Previously *any* `already used by worktree at` fell back to the repo root, so a branch held by another worktree pointed the whole grind at whatever the repo root was on — usually `main` — which read the wrong HEAD for the ack ledger and pushed fix commits straight onto `main`, bypassing the PR. An unusable worktree is the failure case, not the happy path.
 
-Whichever row is taken, the resolver **asserts unconditionally** that the resolved directory is on `$PR_BRANCH` before it exits 0. That assertion, not the split, is the load-bearing guard: it catches this bug class even if a fourth case ever appears.
+Whichever row is taken, the resolver **asserts unconditionally**, before it exits 0, that the resolved directory is on `$PR_BRANCH` **AND** at `$PR_HEAD_SHA`. That assertion, not the split, is the load-bearing guard: it catches this bug class even if a fourth case ever appears.
+
+**Both halves are required — do not document or implement only the name check.** Branch-name equality alone is insufficient: `headRefName` is not globally unique, so a stale or wholly unrelated local branch that merely shares the PR head's name satisfies it. That is routine for fork PRs and for a local branch that never fetched the PR's latest push. The SHA equality is what makes "this is the revision the PR is actually at" true rather than merely plausible.
 
 **When the `pr-grind-mode: no-worktree` line appears, the dispatcher MUST treat the rest of the run as if `--no-worktree` was passed** — set `NO_WORKTREE=1` in every subsequent bash block, skip the worktree cleanup at COMPLETION and BAIL, and write `pr-grind-clean.local` to the current repo root rather than copying it across worktrees. This state has to be carried by Claude across bash invocations because shell variables don't persist; treat the printed marker as the source of truth and propagate it explicitly. The final `WORKTREE_DIR=` line is the resolved path the dispatcher should pass to the subagent context block.
 

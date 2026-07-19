@@ -143,6 +143,10 @@ fi
 SHIM_DIR="$TMP/shim"
 mkdir -p "$SHIM_DIR"
 REAL_GIT=$(command -v git)
+# Holder paths are not always tidy — exercise one containing spaces so the
+# extractor's quoting is covered, not just the two diagnostic wordings.
+SPACED="$TMP/holder with spaces"
+mkdir -p "$SPACED"
 for phrasing in "is already used by worktree at" "is already checked out at"; do
   cat > "$SHIM_DIR/git" <<SHIM
 #!/usr/bin/env bash
@@ -164,6 +168,24 @@ SHIM
     fail "F: resolver mishandled '$phrasing' (rc=$RC) — $OUT"
   fi
   git checkout -q main
+
+  # Same phrasing, but the holder is a DIFFERENT worktree whose path contains
+  # spaces: the resolver must extract it intact and name it in the bail.
+  cat > "$SHIM_DIR/git" <<SHIM
+#!/usr/bin/env bash
+if [ "\$1" = "worktree" ] && [ "\$2" = "add" ]; then
+  echo "fatal: 'feature' $phrasing '$SPACED'" >&2
+  exit 128
+fi
+exec "$REAL_GIT" "\$@"
+SHIM
+  chmod +x "$SHIM_DIR/git"
+  OUT=$(PATH="$SHIM_DIR:$PATH" "$RESOLVER" 421 feature "$(git rev-parse feature)" 2>&1); RC=$?
+  if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -qF "$SPACED"; then
+    ok "F: extracts a space-containing holder path ('$phrasing')"
+  else
+    fail "F: lost the space-containing holder path (rc=$RC) — $OUT"
+  fi
 done
 rm -rf "$SHIM_DIR"
 

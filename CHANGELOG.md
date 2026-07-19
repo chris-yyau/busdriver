@@ -1,3 +1,10 @@
+## [1.94.6](https://github.com/chris-yyau/busdriver/compare/v1.94.5...v1.94.6) (2026-07-19)
+
+
+### Bug Fixes
+
+* **pr-grind:** bind merge to the classified HEAD via --match-head-commit ([#429](https://github.com/chris-yyau/busdriver/issues/429)) ([136af68](https://github.com/chris-yyau/busdriver/commit/136af6875f5148e8e6acc316796a636b2e14bda7)), closes [#420](https://github.com/chris-yyau/busdriver/issues/420) [#427](https://github.com/chris-yyau/busdriver/issues/427) [#427](https://github.com/chris-yyau/busdriver/issues/427)
+
 ## [1.94.5](https://github.com/chris-yyau/busdriver/compare/v1.94.4...v1.94.5) (2026-07-19)
 
 

@@ -1,3 +1,10 @@
+## [1.94.4](https://github.com/chris-yyau/busdriver/compare/v1.94.3...v1.94.4) (2026-07-19)
+
+
+### Bug Fixes
+
+* **pr-grind:** poll for Codex first engagement instead of a blind 20s sleep ([#420](https://github.com/chris-yyau/busdriver/issues/420)) ([#428](https://github.com/chris-yyau/busdriver/issues/428)) ([81003cb](https://github.com/chris-yyau/busdriver/commit/81003cb883db307e173e0fb53c72987598624413)), closes [409/#390](https://github.com/chris-yyau/busdriver/issues/390) [#419](https://github.com/chris-yyau/busdriver/issues/419) [#413](https://github.com/chris-yyau/busdriver/issues/413) [409/#390](https://github.com/chris-yyau/busdriver/issues/390) [#413](https://github.com/chris-yyau/busdriver/issues/413)
+
 ## [1.94.3](https://github.com/chris-yyau/busdriver/compare/v1.94.2...v1.94.3) (2026-07-18)
 
 

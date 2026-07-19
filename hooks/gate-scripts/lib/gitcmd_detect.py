@@ -885,7 +885,13 @@ def _all_chunks(cmd, _depth=0, _truncated=None):
 
     Continuations are stripped BEFORE extraction: a continuation can split the
     `$(` of a substitution, and an extractor reading the raw text would miss the
-    substitution entirely (verified — `echo $\\<newline>(git commit)` commits)."""
+    substitution entirely (verified — `echo $\\<newline>(git commit)` commits).
+
+    `_truncated`, when a list is passed, collects a marker if recursion stops at
+    the depth bound with extras STILL unexpanded (#377). It is reported from
+    inside this traversal on purpose: a parallel re-implementation of the walk
+    silently drifts from the real depth accounting, which is exactly how the
+    first two attempts at this signal went wrong."""
     cmd = strip_continuations(cmd)
     cmd, heredoc_payloads = _split_inert_heredocs(cmd)
     chunks = [cmd]
@@ -910,6 +916,31 @@ def _all_chunks(cmd, _depth=0, _truncated=None):
         # closed rather than silently report "nothing here".
         _truncated.append(True)
     return chunks
+
+
+def chunks_and_truncation(cmd):
+    """(chunks, truncated) from ONE traversal — the honest "could not fully
+    analyze" signal (#377), for callers that must not clear what they could not
+    read. `truncated` is True exactly when `_all_chunks` hit its depth bound
+    with payloads left unexpanded, so it cannot disagree with what was scanned.
+
+    One walk, not two — but not free: passing the collector makes `_all_chunks`
+    run its extractors at each depth-boundary node (to see whether anything was
+    left unexpanded), which the untracked path (`_truncated=None`) skips. The
+    common case is fast — `unsafe()` short-circuits the moment truncation is seen
+    (measured 0.07s even at 30 levels). Only a payload crafted to sit JUST under
+    the boundary pushes the probe into `_all_chunks`' exponential over-count
+    (#426's, not new here) — ~3s at 24 levels. That cost lands ONLY on this
+    advisory path, and careful-guard WALL-TIME-BOUNDS it with a 3s SIGALRM that
+    turns a slow scan into a warn (the safe direction) rather than a hung
+    PreToolUse hook. The fail-CLOSED gates pass no collector and pay nothing."""
+    flag = []
+    return _all_chunks(cmd, 0, flag), bool(flag)
+
+
+def extraction_truncated(cmd):
+    """Truncation alone, for callers that do not need the chunks."""
+    return chunks_and_truncation(cmd)[1]
 
 
 def _scan_commit(chunk, allow_cd):

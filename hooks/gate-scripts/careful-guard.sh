@@ -71,7 +71,7 @@ import shlex
 # _all_chunks is private but deliberately reused: it expands $(...), backticks
 # and `bash -c` payloads recursively, so `bash -c "rm -rf /etc"` is still seen.
 # Scanning only the literal command would miss every nested form.
-from gitcmd_detect import split_segments, _all_chunks
+from gitcmd_detect import split_segments, chunks_and_truncation
 
 SAFE = {"node_modules", ".next", "dist", "__pycache__", ".cache",
         "build", ".turbo", "coverage", "target"}
@@ -106,7 +106,15 @@ def recursive_targets(argv):
 
 
 def unsafe(cmd):
-    for chunk in _all_chunks(cmd):
+    # #377 residual 1: a recursive rm wrapped deeper than _all_chunks expands was
+    # never surfaced, so this function cleared a command it had not fully read.
+    # Warn on the truncation itself — the PRECISE fail-closed condition
+    # ("extraction hit its bound with payloads left"), reported by the traversal
+    # itself rather than guessed at from the raw text.
+    chunks, truncated = chunks_and_truncation(cmd)
+    if truncated:
+        return True
+    for chunk in chunks:
         for _op, seg in split_segments(chunk):
             try:
                 toks = shlex.split(seg, posix=True)
@@ -134,19 +142,58 @@ def unsafe(cmd):
 # SCOPE (advisory guard, fails-open by design). This judges every rm the
 # structured scan REACHES: chains, wrappers, command AND process substitutions
 # (via gitcmd_detect._all_chunks), operands before or after the flag, and a
-# targetless recursive rm. Known residual fail-opens are LEFT for a follow-up
-# rather than chased with brittle raw-text heuristics (see issue in the PR):
-#   - a recursive rm nested in shell wrappers DEEPER than _all_chunks expands;
-#   - a recursive rm carried by a NON-shell interpreter (python -c, perl -e),
-#     opaque to _all_chunks;
-#   - ANSI-C quoted spellings of the command word (the dollar-single-quote
-#     form, e.g. rm spelled as dollar-quote-rm-quote).
-# These are exotic and, being advisory, non-blocking; the grep fallback below
-# still catches many of them in the python-absent path.
+# targetless recursive rm. Plus, since #377, it warns when extraction itself was
+# TRUNCATED — a command wrapped deeper than _all_chunks expands is no longer
+# silently cleared, because "I could not read all of it" is not "it is safe".
+#
+# A payload behind a CONTROL KEYWORD (`if true; then eval '…'; fi`) is handled at
+# the detector level in _command_argv (the shell-reserved-word stripping added in
+# #426), which defeated the fail-CLOSED commit/PR/merge gates too — a far bigger
+# deal than this advisory guard. This guard shares _shell_payloads → _command_argv,
+# so it sees through keywords for free.
+#
+# PERMANENT LIMITATIONS (decided in #377, not deferred work — do not reopen as a
+# raw-text backstop; that family drew a fresh adversarial finding on all ~12
+# iterations in #376):
+#   - a recursive rm carried by a NON-shell interpreter (python -c, perl -e).
+#     This is a SHELL-structure guard; modelling arbitrary interpreter semantics
+#     is out of scope by design.
+#   - ANSI-C quoted spellings of the command word (the dollar-single-quote form,
+#     e.g. rm spelled as dollar-quote-rm-quote). shlex yields a different token.
+# Both are exotic and, this guard being advisory (it prompts, never blocks),
+# non-blocking; the grep fallback below still catches many of them in the
+# python-absent path.
 
 
 _cmd = sys.stdin.read()
-print("unsafe" if unsafe(_cmd) else "safe")
+# Bound the scan. _all_chunks expands nested command substitutions with an
+# exponential over-count (accepted in #426), and the #377 truncation collector
+# runs the boundary extractors on top — a pathologically deep `$(...)` command
+# could make this PreToolUse hook slow. Cap wall time with SIGALRM and, on
+# timeout, WARN (the safe direction for an advisory guard: "could not finish
+# analyzing" is not "safe"). Signals are Unix-only, which is fine for this hook.
+import signal
+
+
+def _on_timeout(signum, frame):
+    raise TimeoutError
+
+
+try:
+    signal.signal(signal.SIGALRM, _on_timeout)
+    signal.alarm(3)
+except (ValueError, AttributeError):
+    pass  # no SIGALRM (non-Unix / non-main-thread) — run unbounded, fail-open trap still applies
+try:
+    verdict = "unsafe" if unsafe(_cmd) else "safe"
+except TimeoutError:
+    verdict = "unsafe"
+finally:
+    try:
+        signal.alarm(0)
+    except (ValueError, AttributeError):
+        pass
+print(verdict)
 ' 2>/dev/null || true)
 fi
 

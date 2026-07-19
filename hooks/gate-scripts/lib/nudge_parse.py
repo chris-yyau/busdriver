@@ -121,6 +121,16 @@ RESERVED = {'if', 'then', 'else', 'elif', 'fi', 'while', 'until', 'for', 'do',
 # the merge segment is rejected if it contains ANY char outside this literal set —
 # a complete guard against every shell expansion injecting extra args (see use site).
 MERGE_SEG_UNSAFE_RE = re.compile(r'[^A-Za-z0-9 \t_./:=@-]')
+# #427 carve-out: pr-grind's own trusted merge templates pass the classified head SHA
+# as `--match-head-commit "$REVIEWED_HEAD"` — a double-quoted SIMPLE variable
+# reference, not a command/process substitution. Quoting prevents word-splitting and
+# globbing, so this form expands to exactly ONE argument and cannot hide extra flags
+# (unlike `$(...)`/brace/glob forms, which the allowlist above still rejects). Scoped
+# to the flag name (not any VALFLAG) and to a bare `$IDENT` — no braces, no nesting,
+# no command substitution — so it stays a narrow exception to the "reject everything"
+# rule rather than a general re-opening of expansion syntax on the merge segment.
+SAFE_MATCH_HEAD_RE = re.compile(
+    r'--match-head-commit(?:\s+|=)"\$[A-Za-z_][A-Za-z0-9_]*"')
 SUBST_RE = re.compile(r'\$\(([^()]*)\)|`([^`]*)`')
 RETARGET_WORD_RE = re.compile(
     r'\b(gh|git|cd|pushd|popd|chdir|source|eval|exec|bash|sh|zsh|ssh|env|sudo'
@@ -268,7 +278,11 @@ def main():
                 # Bash expands it into extra args, e.g. an injected --repo) — variable/
                 # command substitution ($…/`…`), process substitution <(…)/>(…), brace
                 # {a,--repo=evil}, and pathname/glob *?[]! — without enumerating them.
-                if MERGE_SEG_UNSAFE_RE.search(seg):
+                # #427: strip the one pre-approved carve-out (a quoted simple $VAR after
+                # --match-head-commit) BEFORE applying the allowlist, so pr-grind's own
+                # trusted head-guard templates still nudge while any OTHER expansion
+                # anywhere else in the segment remains caught.
+                if MERGE_SEG_UNSAFE_RE.search(SAFE_MATCH_HEAD_RE.sub('', seg)):
                     unsafe = True
                 margs = after[1:]
                 j = 0

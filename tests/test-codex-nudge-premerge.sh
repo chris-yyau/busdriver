@@ -132,12 +132,17 @@ run_hook_ml() {
 # Emit the REAL pr-grind DEFAULT merge block (template-substituted: literal PR,
 # NO_WORKTREE=0), comments and all, to stdout. The commented `gh pr merge`
 # references are the whole point — they must NOT inflate the merge count.
+# #427: carries --match-head-commit "$REVIEWED_HEAD" (classified head SHA,
+# quoted-simple-var form) — matching the real SKILL.md default block exactly, so
+# this fixture would have caught the #427/#429 nudge_parse.py regression where the
+# new flag's shell-expansion chars tripped the merge-segment allowlist.
 emit_default_block() {
   local mrg="gh pr merge"   # keep the literal out of this test file's own gate exposure
   cat <<BLK
 # NO_WORKTREE template-substituted by the dispatcher at run time
 NO_WORKTREE=0
-$mrg $PR --squash --delete-branch || true
+REVIEWED_HEAD=$HEAD
+$mrg $PR --squash --delete-branch --match-head-commit "\$REVIEWED_HEAD" || true
 # Verify via authoritative source — \`$mrg\` exit code is unreliable when
 # --delete-branch hits a post-merge worktree-checkout conflict (the remote
 # merge already SUCCEEDED). Empirical: surfaced during PR #98's grind.
@@ -162,13 +167,17 @@ BLK
 
 # Emit the REAL pr-grind ADMIN merge block: bypass-log jq write + mkdir + case
 # BEFORE the merge (audit-before-privileged-action), then merge, then retry+gc.
+# #427: also carries --match-head-commit "$REVIEWED_HEAD" for fixture accuracy;
+# this path is already SKIP (audit-before-merge disqualifies merge-first) regardless
+# of the flag, so the added flag must not change Case 15's expectation.
 emit_admin_block() {
   local mrg="gh pr merge"
   cat <<BLK
 case "\$LOG_TRIGGER" in solo-admin-auto) LOG_EVENT="x" ;; *) LOG_EVENT="y" ;; esac
 mkdir -p "\$REPO_ROOT/.claude"
 jq -c -n --arg ts "\$TS" '{ts:\$ts}' >> "\$REPO_ROOT/.claude/bypass-log.jsonl" || { echo "failed"; exit 1; }
-$mrg $PR --squash --delete-branch --admin || true
+REVIEWED_HEAD=$HEAD
+$mrg $PR --squash --delete-branch --admin --match-head-commit "\$REVIEWED_HEAD" || true
 MERGE_STATE=""
 for attempt in 1 2 3; do
   MERGE_STATE=\$(gh pr view $PR --json state -q .state 2>/dev/null || echo "")
@@ -688,6 +697,51 @@ setup_case
 ATT="$(mk)/attempts"
 run_hook "gh pr merge $PR --squash" "" "" STUB_REVIEWS_FAIL_ONCE=1 STUB_ATTEMPTS_FILE="$ATT"
 if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "transient reviews fetch: retry recovered → nudged once"; else fail "transient fetch: rc=$RC N=$N body='$B'"; fi
+
+# ── Case 41 (#427/#429 regression): --match-head-commit "$REVIEWED_HEAD" — a
+#    double-quoted SIMPLE variable reference — is the ONE pre-approved carve-out on
+#    the merge-segment allowlist. Without it, adding the #427 head guard to the
+#    default block silently stopped the `none`-nudge from firing on every default
+#    pr-grind merge (nudge_parse.py's MERGE_SEG_UNSAFE_RE saw the new `$`/`"` chars
+#    and classified the segment unsafe). Single-line form here isolates the flag
+#    itself from the rest of emit_default_block's multi-line plumbing.
+#    Uses run_hook_ml (jq-escaped payload) — these commands carry literal `"` chars
+#    that run_hook's naive printf-based JSON assembly would corrupt (mis-testing).
+setup_case
+CF41="$(mk)/cmd"
+# shellcheck disable=SC2016  # the literal $REVIEWED_HEAD is the payload under test
+printf 'gh pr merge %s --squash --delete-branch --match-head-commit "$REVIEWED_HEAD"\n' "$PR" > "$CF41"
+run_hook_ml "$CF41" "" ""
+if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "match-head-commit quoted simple var: nudged (#427 carve-out)"; else fail "match-head-commit quoted var: rc=$RC N=$N body='$B'"; fi
+
+# ── Case 42: the carve-out must stay NARROW — a command-substitution value on the
+#    SAME flag (an injection vector the flag name alone cannot vouch for) must remain
+#    SKIPPED, proving Case 41's pass isn't from a blanket re-opening of `$`/`"`.
+setup_case
+CF42="$(mk)/cmd"
+# shellcheck disable=SC2016  # the literal $(evil) is the payload under test
+printf 'gh pr merge %s --squash --delete-branch --match-head-commit "$(evil)"\n' "$PR" > "$CF42"
+run_hook_ml "$CF42" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "match-head-commit command-substitution value: skipped (carve-out stays narrow)"; else fail "match-head-commit \$(evil): rc=$RC N=$N body='$B'"; fi
+
+# ── Case 43: an UNRELATED expansion elsewhere in the same segment (after the
+#    approved match-head-commit carve-out is stripped) must still trip the allowlist
+#    → SKIPPED. Proves the carve-out only removes its own exact substring, not the
+#    whole segment's exposure to the allowlist check.
+setup_case
+CF43="$(mk)/cmd"
+# shellcheck disable=SC2016  # the literal $REVIEWED_HEAD/$(evil) are the payload under test
+printf 'gh pr merge %s --squash --delete-branch --match-head-commit "$REVIEWED_HEAD" --repo=$(evil)\n' "$PR" > "$CF43"
+run_hook_ml "$CF43" "" ""
+if [[ "$RC" == 0 && "$N" == 0 ]]; then ok "unrelated expansion alongside match-head-commit: skipped"; else fail "unrelated expansion: rc=$RC N=$N body='$B'"; fi
+
+# ── Case 44: the REAL default block (via emit_default_block, now #427-accurate with
+#    --match-head-commit "$REVIEWED_HEAD") must still nudge exactly once end-to-end —
+#    the fixture-level counterpart to Case 14, guarding against fixture/reality drift.
+setup_case
+emit_default_block > "$CF"
+run_hook_ml "$CF" "" ""
+if [[ "$RC" == 0 && "$N" == 1 ]]; then ok "real default block with head guard: nudged exactly once"; else fail "default block w/ head guard: rc=$RC N=$N body='$B'"; fi
 
 echo "Results: $passed passed, $failed failed"
 [[ "$failed" -eq 0 ]]

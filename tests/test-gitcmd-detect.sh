@@ -240,6 +240,90 @@ for c in CONTINUATION_ACCEPTED_FP:
 for c in COMMIT_KNOWN_MISS:
     check(f"commit~ (known pre-existing miss) {c!r}", g.git_commit(c)[0], False)
 
+# ── COMPOUND-COMMAND KEYWORDS (fail-OPEN) ────────────────────────────
+# Segment splitting cuts on ';', so a compound keyword lands at the head of the
+# segment and USED TO BE READ AS THE COMMAND WORD — hiding the real command from
+# every gate. Each of these was verified against real bash (stub on PATH) to
+# actually run the command, and each was missed before.
+KEYWORD_LIVE = [
+    'if true; then git commit -m x; fi',
+    'if git commit -m x; then :; fi',
+    'for f in a; do git commit -m x; done',
+    'while :; do git commit -m x; done',
+    'until git commit -m x; do :; done',
+    'if false; then :; else git commit -m x; fi',
+    'if false; then :; elif git commit -m x; then :; fi',
+    'case x in x) git commit -m x;; esac',
+    'case x in (x) git commit -m x;; esac',      # optional leading '('
+    'case x in a) :;; b) git commit -m x;; esac',  # later branch
+    "case 'a(b' in x) :;; a\\(b) git commit;; esac",  # label containing '('
+    'case "$(printf x)" in x) git commit;; esac',  # subject itself ends in ')'
+    'coproc git commit -m x',
+    'coproc NAMED { git commit -m x; }',
+    "coproc bash -c 'git commit -m x'",           # UNNAMED: next token is the cmd
+]
+for c in KEYWORD_LIVE:
+    check(f"keyword+ {c!r}", g.git_commit(c)[0], True)
+# 'in' must NOT be stripped — its operand is a list item, not a command.
+check("keyword- for-list operand is not a command",
+      g.git_commit('for x in git; do echo "$x"; done')[0], False)
+
+# ── GROUPING BEHIND A KEYWORD (fail-OPEN) ────────────────────────────
+# The pre-loop grouping strip only sees a segment's FIRST token, so a group
+# opened behind a keyword kept the command word hidden.
+GROUPED_LIVE = [
+    'if (git commit -m x); then :; fi',
+    'if { git commit -m x; }; then :; fi',
+    'while (git commit -m x); do :; done',
+    'function f { git commit -m x; }; f',
+    'f() { git commit -m x; }; f',
+    'f(){ git commit -m x; }; f',                 # no space: fuses to one token
+    'coproc JOB if git commit -m x; then :; fi',  # named coproc, keyword compound
+]
+for c in GROUPED_LIVE:
+    check(f"grouped+ {c!r}", g.git_commit(c)[0], True)
+# The case-label skip must END the subject run, or the branch BODY gets eaten.
+# The detection paths are saved by their `not is_target` guard; the target=''
+# path (interpreter/eval payload discovery) is not, so it is asserted directly.
+check("keyword+ case branch body reached on target='' path",
+      g._command_argv('case x in x) bash -c z', ''), ['bash', '-c', 'z'])
+check("keyword+ commit inside a case-branch bash -c",
+      g.git_commit('case x in x) bash -c "git commit -m x";; esac')[0], True)
+
+# ── ANSI-C $'...' QUOTING (fail-OPEN) ────────────────────────────────
+# `\'` is a LITERAL quote inside $'...', so the string ends at the FINAL quote.
+# Treating it as an ordinary quote ended the string one quote early, re-opened on
+# the real closing quote, and swallowed the next line's live command. All three
+# quote scanners (segment splitter, substitution extractor, and their nested
+# state) must agree, or the desync resurfaces in whichever one lags.
+check("ansi-c+ command after $'...' with escaped quote",
+      g.git_commit("printf %s $'a\\'b'\ngit commit -m x")[0], True)
+check("ansi-c+ substitution after an ANSI-C string",
+      g.git_commit("printf %s $'a\\'b'; echo \"$(git commit -m x)\"")[0], True)
+check("ansi-c+ ANSI-C inside a NESTED substitution",
+      g.git_commit("echo \"$(printf %s $'a\\')b'; git commit -m x)\"")[0], True)
+# An ESCAPED dollar leaves an ORDINARY quote, where \' does not escape — so the
+# string ends there and the next line is live. Both directions must hold.
+check("ansi-c+ escaped dollar is not ANSI-C",
+      g.git_commit("printf %s \\$'x\\'\ngit commit -m x")[0], True)
+
+# ── env -S / --split-string (fail-OPEN) ──────────────────────────────
+# `env -S "<whole command>"` packs a command into ONE argument that env then
+# splits and executes. The generic wrapper walk consumed it as an ordinary
+# option-argument, so the command word inside was never seen at all.
+ENV_SPLIT_LIVE = [
+    'env -S "git commit -m x"',
+    'env --split-string="git commit -m x"',
+    'env --split-string "git commit -m x"',
+    'env -S"git commit -m x"',                  # BSD/macOS attached form
+    'env -iS"git commit -m x"',                 # S later in the cluster
+    'command env -S "git commit -m x"',         # behind a launcher prefix
+    'X=1 env -S "git commit -m x"',             # behind an assignment
+    '/usr/bin/env -S "git commit -m x"',        # absolute path
+]
+for c in ENV_SPLIT_LIVE:
+    check(f"env-S+ {c!r}", g.git_commit(c)[0], True)
+
 # ── gh pr create ──────────────────────────────────────────────────────
 CREATE_YES = [
     'gh pr create --fill',

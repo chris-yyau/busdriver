@@ -154,7 +154,6 @@ COMMIT_YES = [
 # parser whose failure mode is fail-OPEN. Pinned so the tradeoff stays visible.
 #   cat <<'EOF' / git \<newline>commit / EOF   heredoc data misread as a commit
 CONTINUATION_ACCEPTED_FP = [
-    "cat <<'EOF'\ngit \\\ncommit\nEOF",
     # Process substitutions are scanned unconditionally, so a <()/>() body inside
     # double quotes — which bash/zsh keep literal — over-fires. Fail-CLOSED and
     # deliberate: a double-quote state machine to suppress it instead fails OPEN
@@ -323,6 +322,220 @@ ENV_SPLIT_LIVE = [
 ]
 for c in ENV_SPLIT_LIVE:
     check(f"env-S+ {c!r}", g.git_commit(c)[0], True)
+
+# ── QUOTED-DELIMITER HEREDOC BODIES ARE DATA (issue #426) ─────────────
+# bash expands nothing inside <<'EOF' / <<"EOF" / <<\EOF, so prose quoting a
+# gated command there must not fire. UNQUOTED <<EOF still expands $(...) and is
+# still scanned; a body fed to an interpreter still executes and is still
+# scanned. Both directions pinned — the exemption must not become a bypass.
+HEREDOC_INERT = [
+    "cat <<'EOF'\ngit commit -m x\nEOF",
+    'cat <<"EOF"\ngit commit -m x\nEOF',
+    "cat <<\\EOF\ngit commit -m x\nEOF",
+    "cat <<-'EOF'\n\tgit commit -m x\n\tEOF",
+    "cat <<'EOF'\ngit \\\ncommit\nEOF",              # was an accepted FP
+    # Backticks inside a QUOTED heredoc are literal — bash expands nothing.
+    "gh issue comment 426 --body-file - <<'EOF'\nrun `git commit` first\nEOF",
+]
+HEREDOC_LIVE = [
+    "cat <<EOF\n$(git commit -m x)\nEOF",            # unquoted: expands
+    "cat <<EOF\n`git commit -m x`\nEOF",             # unquoted: backticks expand
+    "bash <<'EOF'\ngit commit -m x\nEOF",            # interpreter executes body
+    "sh <<'EOF'\ngit commit -m x\nEOF",
+    "cat <<'EOF'\ninert\nEOF\ngit commit -m x",      # live command AFTER the body
+    # An opener inside quotes is NOT a heredoc, so nothing is stripped and the
+    # following line stays a live command — the exemption cannot be faked into
+    # swallowing real text.
+    "echo \"<<'EOF'\"\ngit commit -m x\nEOF",
+]
+for c in HEREDOC_INERT:
+    check(f"heredoc- (inert data) {c!r}", g.git_commit(c)[0], False)
+for c in HEREDOC_LIVE:
+    check(f"heredoc+ (executes) {c!r}", g.git_commit(c)[0], True)
+
+# ── gh_pr_count: merges counted by COMMAND WORD, not substring (#426) ──
+COUNT_CASES = [
+    ('gh pr merge 5 --squash', 1),
+    ('gh pr merge 5 && gh pr merge 6', 2),
+    ('bash -c "gh pr merge 1 && gh pr merge 2"', 2),   # wrapper still counted
+    ('eval "gh pr merge 1; gh pr merge 2"', 2),
+    ('echo "$(gh pr merge 3)"', 1),                     # substitution executes
+    ('(gh pr merge 1); (gh pr merge 2)', 2),
+    # NOT a false positive — verified against real bash: a backtick inside
+    # DOUBLE quotes expands, so this really does run `gh pr merge`. Counting it
+    # is correct; the inert form of the same prose is the single-quoted one below.
+    ('gh issue close 426 --comment "registered on `gh pr merge`"', 1),
+    # ── the issue #426 false positives ──
+    ("gh issue close 426 --comment 'registered on `gh pr merge`'", 0),
+    ('gh pr comment 5 --body "run gh pr merge then gh pr merge again"', 0),
+    ('gh pr view 5 --json title', 0),
+    ("gh issue comment 1 --body-file - <<'EOF'\n| gh pr merge | env gh pr merge |\n"
+     "| /usr/bin/gh pr merge | gh  pr  merge |\nEOF", 0),
+    ('for v in "gh pr merge 1" "gh pr merge 2"; do echo "$v" | ./gate.sh; done', 0),
+]
+for c, n in COUNT_CASES:
+    check(f"merge_count {c!r}", g.gh_pr_count(c, 'merge'), n)
+
+# ── HEREDOC OPENER MUST BE A COMPLETE, REAL HEREDOC (fail-OPEN regression) ──
+# Each of these really runs the merge (verified against real bash). Each used to
+# count 0: the scanner mistook the construct for a heredoc, then swallowed the
+# rest of the command hunting a terminator that never arrives. A construct we
+# cannot parse confidently must stay IN the scanned text, not be discarded.
+HEREDOC_NOT_INERT = [
+    "cat <<<'EOF'\ngh pr merge 1",              # here-string: no terminator
+    "cat <<'EOF' | bash\ngh pr merge 1\nEOF",   # consumer is downstream of a pipe
+    "cat <<'EO'F\ninert\nEOF\ngh pr merge 1",   # split-quoted delimiter
+    "cat <<\\EOF-X\ninert\nEOF-X\ngh pr merge 1",  # escaped delimiter with suffix
+]
+HEREDOC_NOT_INERT = HEREDOC_NOT_INERT + [
+    # `<<''` is a valid EMPTY delimiter, terminated by the first blank line.
+    "cat <<''\ninert\n\ngh pr merge 1",
+]
+for c in HEREDOC_NOT_INERT:
+    check(f"heredoc-open {c!r}", g.gh_pr_count(c, 'merge') > 0, True)
+
+# ── A LOOK-ALIKE OPENER MUST NOT SWALLOW LIVE TEXT (fail-OPEN regression) ──
+# Heredoc stripping is the one genuinely new discard surface in this change, so
+# an opener that turns out NOT to be a real heredoc (no terminator line: inside
+# a comment, inside an ANSI-C $'...' string) must leave the text in place. Each
+# of these really runs the merge; each counted 0 before.
+LOOKALIKE_OPENER = [
+    ": # <<'EOF'\ngh pr merge 1",
+    # ...and the harder variant, where a later line DOES match the delimiter, so
+    # the unterminated-opener fallback does not save it: a comment opens no
+    # heredoc at all.
+    ": # <<'EOF'\ngh pr merge 1\nEOF",
+    "printf %s $'x\\' <<\\EOF y'\ngh pr merge 1",
+    "case 'a(b' in x) :;; a\\(b) gh pr merge 1;; esac",
+]
+for c in LOOKALIKE_OPENER:
+    check(f"lookalike+ {c!r}", g.gh_pr_count(c, 'merge'), 1)
+# ANSI-C \' is a LITERAL quote, so the string ends at the FINAL quote and the
+# next line is a live command — the scanner must not desync by one quote.
+check("ansi-c+ commit after $'...' with escaped quote",
+      g.git_commit("printf %s $'a\\'b'\ngit commit -m x")[0], True)
+# An ESCAPED dollar leaves an ordinary quote, where \' does NOT escape — so the
+# string ends at that quote and the next line is live.
+check("ansi-c+ escaped dollar is not ANSI-C",
+      g.gh_pr_count("printf %s \\$'x\\'\ngh pr merge 1", 'merge'), 1)
+
+# A case SUBJECT may itself end in ')' — the subject/label phases are separated
+# by the `in` keyword, not by the first ')'-ending token.
+check("case+ subject ending in ) does not end subject phase",
+      g.gh_pr_count('case "$(printf x)" in x) gh pr merge 1;; esac', 'merge'), 1)
+
+# `source` / `.` run /dev/stdin, so their heredoc body is NOT inert.
+for _exe in ('source', '.'):
+    check(f"heredoc+ {_exe} /dev/stdin executes body",
+          g.gh_pr_count(f"{_exe} /dev/stdin <<'EOF'\ngh pr merge 1\nEOF", 'merge'), 1)
+
+# ── COUNT ACCURACY: must match what bash really runs, in BOTH directions ──
+# Over-counting is not "safely fail-closed" here: the pre-merge gate rejects
+# count>1 as a chained multi-merge, so double-counting one real merge blocks a
+# legitimate merge. Under-counting lets a second merge through ungated. The two
+# nested/sibling cases pin the boundary — identical chunk TEXT is not proof of a
+# duplicate, so this cannot be fixed by de-duping chunks.
+COUNT_EXACT = [
+    ('echo $(echo $(gh pr merge 1))', 1),           # nested: extracted once
+    ('echo $(gh pr merge 1) $(gh pr merge 2)', 2),  # siblings: two real merges
+    ('echo $(gh pr merge 1) $(gh pr merge 1)', 2),  # ...even with identical text
+    ("printf %s $'a\\'b'; echo \"$(gh pr merge 1)\"", 1),
+    ('function f { gh pr merge 1; }; f', 1),
+    ('f() { gh pr merge 1; }; f', 1),
+]
+for c, n in COUNT_EXACT:
+    check(f"count-exact {c!r}", g.gh_pr_count(c, 'merge'), n)
+check("count-exact git commit in a function body",
+      g.git_commit('function f { git commit -m x; }; f')[0], True)
+check("count-exact named coproc body",
+      g.gh_pr_count('coproc NAMED { gh pr merge 1; }', 'merge'), 1)
+# `env -S "<whole command>"` — env splits and executes the packed string.
+for _s in ('env -S "gh pr merge 1"', 'env --split-string="gh pr merge 1"'):
+    check(f"count-exact {_s!r}", g.gh_pr_count(_s, 'merge'), 1)
+check("count-exact env -S git commit",
+      g.git_commit('env -S "git commit -m x"')[0], True)
+# `env` sits behind launcher prefixes too — anchoring on token zero missed these.
+for _s in ('command env -S "gh pr merge 1"', 'X=1 env -S "gh pr merge 1"',
+           '/usr/bin/env -S "gh pr merge 1"'):
+    check(f"count-exact {_s!r}", g.gh_pr_count(_s, 'merge'), 1)
+# `coproc` takes a NAME only in `coproc NAME <compound>`; otherwise the next
+# token IS the command and must not be skipped as a name.
+check("count-exact unnamed coproc runs its command",
+      g.gh_pr_count("coproc bash -c 'gh pr merge 1'", 'merge'), 1)
+check("count-exact time is a wrapper, not the exe",
+      g.gh_pr_count('time gh pr merge 1', 'merge'), 1)
+# ANSI-C escapes must be honored by the NESTED substitution scanner too, or its
+# depth counter mis-balances and truncates the extracted command.
+check("count-exact ANSI-C inside a nested substitution",
+      g.gh_pr_count("echo \"$(printf %s $'a\\')b'; gh pr merge 1)\"", 'merge'), 1)
+# `env -S` can pack the INTERPRETER that runs a heredoc body.
+check("count-exact env -S bash heredoc body executes",
+      g.gh_pr_count("env -S bash <<'EOF'\ngh pr merge 1\nEOF", 'merge'), 1)
+# BSD/macOS attached form tokenizes to one `-Sgh pr merge 1`.
+check("count-exact attached env -S form",
+      g.gh_pr_count('env -S"gh pr merge 1"', 'merge'), 1)
+# ACCEPTED OVER-COUNT (fail-CLOSED, deliberate — do NOT "fix"). A substitution
+# the parent shell expands is counted once as its own chunk and again inside the
+# interpreter payload, so this scores 2 though bash runs the merge ONCE
+# (re-measured by writing the command to a FILE — an earlier revision of this
+# test wrongly claimed twice, an artifact of an extra shell layer in the
+# harness). Stripping the parent-extracted span from the payload was tried and
+# REVERTED: it also erased identical substitution text in an independently
+# single-quoted payload, so the two-REAL-merge case below counted 1 and slipped
+# past the multi-merge guard. An over-count only BLOCKS; an under-count is a
+# bypass.
+check("count~ accepted over-count in interpreter arg",
+      g.gh_pr_count('bash -c "echo $(gh pr merge 1)"', 'merge'), 2)
+check("count-exact $() in a single-quoted interpreter arg",
+      g.gh_pr_count("bash -c 'echo $(gh pr merge 1)'", 'merge'), 1)
+# Two REAL merges with IDENTICAL substitution text must still count 2 — this is
+# the case the reverted optimization broke.
+check("count-exact identical text, two real merges",
+      g.gh_pr_count("bash -c 'echo $(gh pr merge 1)'; echo \"$(gh pr merge 1)\"", 'merge'), 2)
+check("count-exact chained merges inside bash -c",
+      g.gh_pr_count('bash -c "gh pr merge 1 && gh pr merge 2"', 'merge'), 2)
+# An interpreter can hide behind an assignment + substitution opener, or be
+# spelled with quotes — the opener-line scan must see through both.
+check("heredoc+ interpreter behind an assignment/substitution",
+      g.gh_pr_count("x=$(bash <<'EOF'\ngh pr merge 1\nEOF\n)", 'merge'), 1)
+check("heredoc+ quoted interpreter name",
+      g.gh_pr_count("'bash' <<'EOF'\ngh pr merge 1\nEOF", 'merge'), 1)
+# A quoted delimiter may legally be NAMED like a gated command; the terminator
+# line is syntax, not an invocation.
+check("heredoc- delimiter named like the command is not one",
+      g.gh_pr_count("cat <<'gh pr merge 1'\ninert\ngh pr merge 1", 'merge'), 0)
+# ACCEPTED OVER-FIRE (fail-CLOSED, deliberate — do NOT "fix"). Only the FIRST
+# opener on a line is consumed, so a second quoted heredoc's body is still
+# scanned and can block. Consuming the extras was tried and REVERTED: matching
+# them needs quote/comment awareness this scanner lacks, and the two cases below
+# show what getting it wrong costs — live text discarded, which is a bypass.
+check("heredoc~ accepted over-fire on a multi-opener line",
+      g.gh_pr_count("cat <<'A' <<'B'\ninert\nA\ngh pr merge 1\nB", 'merge'), 1)
+# A fake opener inside a COMMENT opens nothing, so the merge between the two
+# delimiter lines is live and must be counted.
+check("heredoc+ fake opener in a comment does not swallow live text",
+      g.gh_pr_count("cat <<'A' # <<'B'\ninert\nA\ngh pr merge 1\nB", 'merge'), 1)
+# An UNQUOTED opener earlier on the line takes the FIRST body, so the quoted
+# delimiter cannot be associated by position — the region stays scanned.
+check("heredoc+ unquoted opener before a quoted one keeps live text",
+      g.gh_pr_count("cat <<U <<'Q'\n$(gh pr merge 1)\nU\ninert\nQ", 'merge'), 1)
+# `eval` evaluates ARGUMENTS, not stdin — its heredoc body runs nothing.
+check("heredoc- eval does not execute a heredoc body",
+      g.gh_pr_count("eval <<'EOF'\ngh pr merge 1\nEOF", 'merge'), 0)
+
+# ── HEREDOC CONSUMER x OPERATOR MATRIX (fail-OPEN regression) ─────────
+# Whether a quoted heredoc body is inert depends on the CONSUMER of the
+# redirection, which must be read from the segment owning it — not the whole
+# physical line. `true; bash <<'EOF'` and `cat x | bash <<'EOF'` both execute.
+for prefix in ('', 'true; ', 'cat /dev/null | ', 'false || ', 'true && '):
+    # `eval` is False: it evaluates ARGUMENTS and never reads stdin, so its
+    # heredoc body runs nothing (verified) — counting it was a false block.
+    for consumer, live in (('bash', True), ('sh', True), ('source /dev/stdin', True),
+                           ('eval', False), ('cat', False),
+                           ('gh issue comment 1 --body-file -', False)):
+        cmd = f"{prefix}{consumer} <<'EOF'\ngh pr merge 1\nEOF"
+        check(f"heredoc[{prefix or 'bare'}|{consumer.split()[0]}]",
+              g.gh_pr_count(cmd, 'merge') > 0, live)
 
 # ── gh pr create ──────────────────────────────────────────────────────
 CREATE_YES = [

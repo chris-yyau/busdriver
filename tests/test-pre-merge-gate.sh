@@ -235,6 +235,67 @@ echo "42" > "$CLEAN_MARKER"
 run_gate_test "blocks (...)-subshell chained merges" "block" "$WRAPPED_SUBSHELL"
 rm -f "$CLEAN_MARKER"
 
+# 7e2. Issue #426 — writing ABOUT the gate must not trip it. The merge command
+#      quoted as PROSE (an issue comment, a --body, a quoted heredoc table, a
+#      test fixture's input string) is DATA the shell never executes, so the
+#      gate must stay silent. Verified against real bash before pinning: a
+#      SINGLE-quoted / quoted-heredoc body expands nothing (0 commands run),
+#      while a double-quoted backtick genuinely does run the merge — so only
+#      the inert forms belong here. No marker present, so any block these
+#      produce is unambiguously the false positive, not a missing marker.
+rm -f "$CLEAN_MARKER"
+
+# Build a Bash-tool payload from a raw command string. Assigning the
+# substitution to a variable first (rather than inlining it into the
+# run_gate_test call) keeps its exit status visible — shellcheck SC2312.
+bash_payload() {
+    local _json
+    _json=$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]}}))' "$1") || return 1
+    printf '%s' "$_json"
+}
+
+PROSE_CASES=(
+    "gh issue close 426 --comment 'registered as a PreToolUse hook on \`gh pr merge\`'"
+    "gh pr comment 5 --body 'run gh pr merge then gh pr merge again'"
+    "gh pr view 5 --json title"
+)
+for _p in "${PROSE_CASES[@]}"; do
+    PAYLOAD=$(bash_payload "$_p")
+    run_gate_test "ignores merge quoted as prose: ${_p:0:44}..." "allow" "$PAYLOAD"
+done
+
+# 7e3. Issue #426 — a QUOTED heredoc body (the four-row evidence table that hit
+#      this three times in one session) is inert data; the gate must ignore it.
+PAYLOAD=$(bash_payload "gh issue comment 426 --body-file - <<'EOF'
+| gh pr merge | env gh pr merge |
+| /usr/bin/gh pr merge | gh  pr  merge |
+EOF")
+run_gate_test "ignores merge rows in a quoted heredoc body" "allow" "$PAYLOAD"
+
+# 7e4. The exemption must NOT become a bypass: a heredoc fed to an interpreter
+#      really executes its body (verified against real bash), so it must still
+#      block — including behind a leading command, which reads the consumer from
+#      the owning segment rather than the whole physical line.
+echo "42" > "$CLEAN_MARKER"
+PAYLOAD=$(bash_payload "bash <<'EOF'
+gh pr merge 1
+gh pr merge 2
+EOF")
+run_gate_test "still blocks merges inside an interpreter heredoc" "block" "$PAYLOAD"
+PAYLOAD=$(bash_payload "true; bash <<'EOF'
+gh pr merge 1
+EOF")
+run_gate_test "still blocks interpreter heredoc behind a leading command" "block" "$PAYLOAD"
+
+# 7e5. Compound-command keywords must not hide a merge (fail-OPEN regression
+#      caught in review — all of these really run the merge).
+# shellcheck disable=SC2016  # $x must stay literal — it is the command under test
+for _c in 'if true; then gh pr merge 1; fi' 'for x in 1; do gh pr merge "$x"; done'; do
+    PAYLOAD=$(bash_payload "$_c")
+    run_gate_test "still blocks merge behind a shell keyword: ${_c:0:30}..." "block" "$PAYLOAD"
+done
+rm -f "$CLEAN_MARKER"
+
 # 7a. Bug A: marker for PR X must NOT authorize merging PR Y. Marker holds
 #     a different PR number than the one being merged → gate blocks.
 echo "99" > "$CLEAN_MARKER"

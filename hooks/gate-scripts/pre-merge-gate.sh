@@ -98,14 +98,19 @@ esac
 # Parse tool name and command, verify gh pr merge, extract PR number AND target dir.
 # target_dir mirrors pre-pr-gate.sh: parse `cd <dir> && gh pr merge` so the gate
 # reads marker files from the user's intended repo, not Claude's CWD.
-MERGE_PARSE=$(printf '%s' "$HOOK_DATA" | python3 -S -c "
+_GATE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+MERGE_PARSE=$(printf '%s' "$HOOK_DATA" | PYTHONPATH="$_GATE_LIB" python3 -S -c "
 import sys
-# Drop CWD from sys.path (python3 -c prepends it) + -S skips site so a repo-
-# planted sitecustomize.py or shadowed stdlib (json.py) cannot run in the gate.
-# Scrub BEFORE importing json/re/os, or the shadowed module runs at import time.
+# Drop CWD from sys.path (python3 -c prepends it ahead of PYTHONPATH) + -S skips
+# site so a repo-planted sitecustomize.py, a shadowed gitcmd_detect.py, or a
+# shadowed stdlib (json.py) cannot run in the gate. Scrub BEFORE any import.
 sys.path[:] = [p for p in sys.path if p not in ('', '.')]
-import json, re, os
 try:
+    # Imports inside the try: a missing/broken gitcmd_detect must land in the
+    # 'error' branch (which BLOCKS) rather than crash to empty output, which the
+    # caller's \`[ -z ... ] && exit 0\` would read as 'not a merge' — fail-OPEN.
+    import json
+    from gitcmd_detect import gh_pr, gh_pr_count
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
@@ -115,47 +120,15 @@ try:
     if isinstance(inp, str):
         inp = json.loads(inp)
     cmd = inp.get('command', '')
-    segments = re.split(r'&&|\|\||[;\n|]', cmd)
-    target_dir = ''
-    pr_num = ''
-    # Count every 'gh pr merge' invocation in the WHOLE command string, not
-    # just per-segment. Shell-quote-unaware segment splitting misses
-    # wrappers like \`bash -c \"gh pr merge X && gh pr merge Y\"\`, \`sh -c\`,
-    # \`eval\`, \`\$(...)\`, and \`(...)\` subshells — all of which split into
-    # at most one segment matching gh-pr-merge, defeating the multi-merge
-    # guard. The substring-count approach catches every occurrence
-    # regardless of how it's wrapped.
-    merge_count = len(re.findall(r'\bgh\s+pr\s+merge\b', cmd))
-
-    # Walk segments to find target_dir (for cd-prefix support) and the
-    # first PR number — only meaningful when merge_count == 1.
-    for seg in segments:
-        seg = seg.strip()
-        cd_m = re.match(r'cd\s+(.*)', seg)
-        if cd_m:
-            # Strip outer quotes, then expand ~ (shell would expand it before
-            # cd runs; the gate sees the literal command string, so we have
-            # to mimic that expansion or git -C will fail on '~/repo' literal).
-            raw = cd_m.group(1).strip().strip('\042\047')
-            target_dir = os.path.expanduser(raw)
-            continue
-        while re.match(r'^\w+=\S*\s', seg):
-            seg = re.sub(r'^\w+=\S*\s+', '', seg, count=1)
-        m_merge = re.search(r'\bgh\s+pr\s+merge\b(.*)', seg)
-        if m_merge and not pr_num:
-            # Capture the FIRST top-level merge's PR number, parsing the args
-            # AFTER the 'gh pr merge' token (not seg.split()[3:]) so a wrapper
-            # prefix like 'command gh pr merge 5' does not shift the offset and
-            # drop the PR number. If the merge is wrapped (bash -c, eval, etc.)
-            # pr_num may remain empty — the multi-merge guard blocks on count,
-            # and a count==1 wrapped merge is gated on \`unknown\` PR (downstream
-            # PostToolUse refuses consumption on unknown-PR claims).
-            for a in m_merge.group(1).split():
-                if a.startswith('-'):
-                    break
-                if re.match(r'^\d+$', a):
-                    pr_num = a
-                    break
+    # Count merges by COMMAND WORD via the shared detector — the same parser the
+    # sibling gates and post-merge-confirm-bypass.sh use, so 'what is a merge'
+    # cannot drift between the claim and its confirmation. It still sees inside
+    # \`bash -c\`, \`sh -c\`, \`eval\`, \`\$(...)\`, backticks and subshells (each is a
+    # scanned chunk), so the multi-merge guard keeps its coverage — but prose
+    # that merely QUOTES the merge command (an issue comment, a --body, a test
+    # fixture's input string) no longer counts as a merge (issue #426).
+    merge_count = gh_pr_count(cmd, 'merge')
+    _present, target_dir, pr_num = gh_pr(cmd, 'merge')
     if merge_count >= 1:
         # Use newline separator: target_dir may contain '|' on weird paths
         print('yes' if merge_count == 1 else 'multi')

@@ -406,8 +406,8 @@ def _command_substitutions(cmd):
             # string one quote early, re-opens on the real closing quote, and
             # then suppresses a LATER genuine substitution as if it were quoted
             # — `printf %s $'a\'b'; echo "$(gh pr merge 1)"` counted 0
-            # (fail-OPEN, verified). split_segments already tracks this; this
-            # extractor was the remaining gap.
+            # (fail-OPEN, verified). split_segments and _split_inert_heredocs
+            # already track this; this extractor was the remaining gap.
             if c == '\\' and sq_ansi and i + 1 < n:
                 i += 2
                 continue
@@ -512,6 +512,197 @@ def _command_substitutions(cmd):
 
 
 _INTERPRETERS = frozenset(('sh', 'bash', 'zsh', 'dash', 'ksh', 'ash'))
+
+# Commands that EXECUTE a heredoc body rather than consuming it as data. The
+# `source` / `.` builtins run `/dev/stdin`, so `source /dev/stdin <<'EOF'` really
+# executes the body (verified) — treating it as inert was fail-OPEN.
+# `eval` is deliberately ABSENT: it evaluates its ARGUMENTS and does not read
+# commands from stdin, so `eval <<'EOF'` runs nothing (verified) and counting its
+# body was a false-positive block. eval's arguments are still scanned, via
+# _shell_payloads. `source` / `.` DO stay: they run /dev/stdin (verified).
+_BODY_EXECUTORS = _INTERPRETERS | {'source', '.'}
+
+# `<<` or `<<-` followed by a QUOTED delimiter: <<'EOF', <<"EOF", <<\EOF.
+#
+# `(?<!<)` rejects the third `<` of a HERE-STRING (`cat <<<'EOF'`), which is a
+# one-line construct with no terminator: treating it as a heredoc made the
+# scanner swallow the entire rest of the command hunting a terminator that never
+# comes, discarding any live command after it — fail-OPEN (verified).
+#
+# The trailing lookahead requires the delimiter token to END here. bash allows
+# delimiters assembled from several quoting runs (`<<'EO'F`, `<<\EOF-X`), where
+# a partial match infers the WRONG terminator and again swallows live text. Not
+# matching leaves the region in the scanned command string — fail-CLOSED, at
+# worst an over-fire on inert prose.
+_HEREDOC_QUOTED = re.compile(
+    r'(?<!<)<<-?[ \t]*(?:\'([^\']*)\'|"([^"]*)"|\\(\w+))(?=[\s;|&<>)]|$)')
+
+
+def _split_inert_heredocs(cmd):
+    r"""Separate QUOTED-delimiter heredoc bodies from the command text.
+
+    bash performs NO expansion inside a quoted-delimiter heredoc (<<'EOF',
+    <<"EOF", <<\EOF), so the body is pure DATA — prose that quotes a gated
+    command there must not trip the gate (issue #426: writing an issue comment
+    ABOUT the merge gate blocked on the merge gate). An UNQUOTED `<<EOF` body
+    does expand `$(...)`, so it is left in the text and scanned as before.
+
+    Returns (cmd_without_inert_bodies, [bodies an interpreter will execute]).
+    `bash <<'EOF'` / `eval` DO run their quoted body, so those bodies are handed
+    back as extra chunks rather than dropped — dropping them would fail OPEN.
+
+    The `<<` opener is only honored outside quotes, so `echo "<<'EOF'"` cannot
+    be used to make the scanner discard live text that follows.
+    """
+    out = []
+    payloads = []
+    i = 0
+    n = len(cmd)
+    quote = None
+    ansi_c = False
+    line_start = 0
+    while i < n:
+        c = cmd[i]
+        if quote is not None:
+            out.append(c)
+            # ANSI-C $'...' honors \' as a literal quote — see split_segments.
+            if c == '\\' and (quote == '"' or ansi_c) and i + 1 < n:
+                out.append(cmd[i + 1])
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+                ansi_c = False
+            i += 1
+            continue
+        if c in ('"', "'"):
+            quote = c
+            ansi_c = c == "'" and _is_ansi_c_dollar(cmd, i)
+            out.append(c)
+            i += 1
+            continue
+        if c == '\\' and i + 1 < n:
+            out.append(c)
+            out.append(cmd[i + 1])
+            i += 2
+            continue
+        if c == '\n':
+            out.append(c)
+            i += 1
+            line_start = i
+            continue
+        if c == '#' and (i == 0 or cmd[i - 1] in ' \t\n;|&('):
+            # A shell COMMENT runs to end of line and opens no heredoc. Without
+            # this, `: # <<'EOF'` was read as a real opener and — when some later
+            # line happened to match the delimiter — the live commands between
+            # them were removed as inert body (fail-OPEN, verified). The comment
+            # text itself is copied through: it is inert, so at worst it
+            # over-fires, which is the safe direction.
+            eol = cmd.find('\n', i)
+            if eol == -1:
+                out.append(cmd[i:])
+                break
+            out.append(cmd[i:eol])
+            i = eol
+            continue
+        m = _HEREDOC_QUOTED.match(cmd, i) if c == '<' else None
+        if m and re.search(r'(?<!<)<<-?[ \t]*[^\s\'"\\<]', cmd[line_start:i]):
+            # An UNQUOTED heredoc opened earlier on this line. Its body comes
+            # FIRST, so the text after the line is not this heredoc's body and
+            # the delimiters cannot be associated by position alone. Consuming it
+            # anyway discarded a live command out of the unquoted body — which
+            # bash DOES expand and execute (fail-OPEN, verified). Leave the whole
+            # region in the scanned text instead.
+            m = None
+        if not m:
+            out.append(c)
+            i += 1
+            continue
+        # Pick the group that MATCHED, not the first truthy one: `<<''` is a
+        # valid empty delimiter (terminated by the first blank line), and
+        # or-chaining turned that matched '' into None, so the terminator was
+        # never found and everything after it — including a live merge — was
+        # discarded as body. Fail-OPEN (verified).
+        delim = next(gr for gr in m.groups() if gr is not None)
+        strip_tabs = cmd[i:i + 3].startswith('<<-')
+        out.append(m.group(0))
+        # Body starts after the rest of the current line; the line's remainder
+        # (other redirections, further args) stays in the scanned text.
+        nl = cmd.find('\n', m.end())
+        if nl == -1:
+            i = m.end()
+            continue
+        # ACCEPTED OVER-FIRE: only the FIRST opener on a line is consumed, so a
+        # second quoted heredoc's body (`cat <<'A' <<'B'`) is still scanned as
+        # commands and can produce a false-positive block. Consuming the extra
+        # openers was tried and REVERTED — matching them needs quote- and
+        # comment-awareness this scanner does not have, and getting it wrong
+        # loses live text: a fake opener in a comment (`cat <<'A' # <<'B'`) and
+        # an UNQUOTED opener earlier on the line both made the scanner discard a
+        # body bash really executes (fail-OPEN, verified). An over-fire only
+        # blocks; discarding live text is a bypass.
+        out.append(cmd[m.end():nl + 1])
+        body_start = nl + 1
+        end = None
+        term_end = None
+        j = body_start
+        while j <= len(cmd):
+            eol = cmd.find('\n', j)
+            line = cmd[j:] if eol == -1 else cmd[j:eol]
+            if (line.lstrip('\t') if strip_tabs else line) == delim:
+                end = j
+                term_end = len(cmd) if eol == -1 else eol
+                break
+            if eol == -1:
+                break
+            j = eol + 1
+        if end is None:
+            # NO terminator line — so this was never a real heredoc. Something
+            # that merely LOOKS like an opener (inside a comment, inside an
+            # ANSI-C `$'...'` string, a construct this scanner mis-lexes) would
+            # otherwise swallow the entire rest of the command as "body",
+            # discarding any live command after it — the one genuinely new
+            # fail-OPEN surface heredoc stripping introduces (verified).
+            # Emitting the text unchanged keeps it in the scanned string, so an
+            # unrecognized opener costs at most an over-fire on inert prose.
+            out.append(cmd[body_start:])
+            i = len(cmd)
+            continue
+        body = cmd[body_start:end]
+        # A body an interpreter will run is NOT inert — keep it as a live chunk.
+        # Test EVERY command on the logical line, not just the one owning the
+        # redirection: the consumer can sit before it (`true; bash <<'EOF'`) or
+        # AFTER it, downstream of a pipe (`cat <<'EOF' | bash`), which really
+        # does execute the body (verified). Any interpreter on the line ⇒ keep
+        # the body — fail-CLOSED, since an unnecessary extra chunk can only
+        # over-fire on inert text, while missing one lets a merge through.
+        # Deliberately a LOOSE word scan rather than command-word parsing. The
+        # consumer can hide behind an assignment and a substitution opener
+        # (`x=$(bash <<'EOF'`), where _command_argv sees only the assignment and
+        # reported no interpreter, dropping a body bash really runs (fail-OPEN,
+        # verified). Splitting the opener line on shell punctuation and matching
+        # ANY word covers those shapes without parsing a truncated construct.
+        # Over-matching (a mere FILENAME called `bash`) only keeps an inert body
+        # as an extra chunk — an over-fire, the safe direction. Note this reads
+        # the OPENER line only, never the body, so heredoc PROSE is unaffected.
+        line_text = cmd[line_start:nl]
+        words = re.split(r'[\s;|&()`$=<>]+', line_text)
+        # Strip shell quoting from each word before matching: `'bash'`,
+        # `"bash"`, `\bash` and `/bin/"bash"` are all the bash executable, and a
+        # raw comparison recognized none of them, discarding a body bash really
+        # runs (fail-OPEN, verified).
+        if any(w.replace('\\', '').replace('"', '').replace("'", '')
+               .rsplit('/', 1)[-1] in _BODY_EXECUTORS
+               for w in words if w):
+            payloads.append(body)
+        # The terminator line is shell SYNTAX, not a command — emitting it back
+        # into the scanned text let a delimiter that happens to be named like a
+        # gated command (`cat <<'gh pr merge 1'`) register as a real invocation,
+        # a false-positive block. Quoted delimiters may legally contain spaces.
+        i = term_end
+    return ''.join(out), payloads
+
+
 
 def _interpreter_payloads(argv):
     """Strings an interpreter argv may execute (`bash -c '<s>'`), fail-CLOSED.
@@ -633,9 +824,21 @@ def _all_chunks(cmd, _depth=0):
     `$(` of a substitution, and an extractor reading the raw text would miss the
     substitution entirely (verified — `echo $\\<newline>(git commit)` commits)."""
     cmd = strip_continuations(cmd)
+    cmd, heredoc_payloads = _split_inert_heredocs(cmd)
     chunks = [cmd]
     if _depth < 6:
-        for extra in _command_substitutions(cmd) + _shell_payloads(cmd):
+        # ACCEPTED OVER-COUNT: a substitution the parent shell expands is counted
+        # both as its own chunk and again inside the interpreter payload, so
+        # `bash -c "echo $(gh pr merge 1)"` counts 2 though bash runs it once.
+        # Removing the parent-extracted spans from the payload was tried and
+        # REVERTED: identical substitution text in an independently
+        # single-quoted payload then got erased too, so
+        # `bash -c 'echo $(gh pr merge 1)'; echo "$(gh pr merge 1)"` — two REAL
+        # merges — counted 1 and slipped past the multi-merge guard (verified).
+        # An over-count only BLOCKS; an under-count is a bypass. Keep the
+        # over-count.
+        for extra in (_command_substitutions(cmd) + _shell_payloads(cmd)
+                      + heredoc_payloads):
             if extra:
                 chunks.extend(_all_chunks(extra, _depth + 1))
     return chunks
@@ -723,9 +926,9 @@ def git_commit(cmd):
     return False, '', False
 
 
-def _scan_gh(chunk, subcommand, allow_cd):
-    """Scan one command chunk for `gh pr <subcommand>`; return the result tuple
-    or None. allow_cd=False for substitution bodies (subshell cwd untrusted)."""
+def _iter_gh(chunk, subcommand, allow_cd):
+    """Yield one result tuple per `gh pr <subcommand>` command word in `chunk`.
+    allow_cd=False for substitution bodies (subshell cwd untrusted)."""
     pending_cd = None
     for op, seg in split_segments(chunk):
         cd = _cd_target(seg)
@@ -777,8 +980,27 @@ def _scan_gh(chunk, subcommand, allow_cd):
             if re.match(r'^\d+$', x):
                 pr_num = x
                 break
-        return True, target_dir, pr_num
-    return None
+        yield True, target_dir, pr_num
+        pending_cd = None
+
+
+def _scan_gh(chunk, subcommand, allow_cd):
+    """First `gh pr <subcommand>` in `chunk`, or None."""
+    return next(_iter_gh(chunk, subcommand, allow_cd), None)
+
+
+def gh_pr_count(cmd, subcommand):
+    """Count every `gh pr <subcommand>` COMMAND WORD the shell would run,
+    across the command plus every substitution / interpreter payload.
+
+    Used by the pre-merge gate's multi-merge guard. Counting command words
+    rather than substring occurrences is what keeps prose that merely QUOTES
+    the merge command — an issue comment, a --body, a test fixture's input
+    string — from reading as N chained merges (issue #426), while still
+    catching `bash -c "gh pr merge 1 && gh pr merge 2"` (the payload is a
+    scanned chunk, and its merges are real command words)."""
+    chunks = _all_chunks(cmd)
+    return sum(len(list(_iter_gh(c, subcommand, False))) for c in chunks)
 
 
 def gh_pr(cmd, subcommand):

@@ -18,7 +18,14 @@ fail() { echo "FAIL: $1"; failed=$((failed + 1)); }
 
 [ -x "$RESOLVER" ] || { fail "resolver missing or not executable: $RESOLVER"; echo "Results: $passed passed, $failed failed"; exit 1; }
 
-TMP=$(mktemp -d)
+# Guard the mktemp: this script does not use `set -e`, so an unchecked failure
+# would leave TMP empty, make REPO="/work/repo", and let the fixture below
+# git-init and write to that unrelated absolute path on a writable runner.
+TMP=$(mktemp -d) || { echo "FAIL: mktemp -d failed"; exit 1; }
+case "$TMP" in
+  /*) ;;
+  *) echo "FAIL: mktemp -d returned a non-absolute path: '$TMP'"; exit 1 ;;
+esac
 trap 'cd /; rm -rf "$TMP"' EXIT
 
 # --- fixture: a repo on `main` with a `feature` branch ------------------------
@@ -126,24 +133,39 @@ fi
 # --- case F: both git diagnostic phrasings are classified ---------------------
 # git ≥2.x says "already used by worktree at"; older git says "already checked
 # out at". Matching only the newer form sent an ordinary in-place case down the
-# unclassified-fatal branch. Assert the classifier regex on both literals rather
-# than trying to install an old git.
+# unclassified-fatal branch.
+#
+# Drive the REAL resolver against both phrasings via a `git` shim earlier on
+# PATH that fakes only `worktree add` and delegates everything else to the real
+# binary. Re-running the production regex inside the test would prove nothing:
+# both copies could drift together, or share a defect (an earlier revision of
+# this test did exactly that and passed while the resolver was broken on BSD).
+SHIM_DIR="$TMP/shim"
+mkdir -p "$SHIM_DIR"
+REAL_GIT=$(command -v git)
 for phrasing in "is already used by worktree at" "is already checked out at"; do
-  MSG="fatal: 'feature' $phrasing '/some/path'"
-  if printf '%s' "$MSG" | grep -qE "already (used by worktree|checked out) at"; then
-    ok "F: classifies '$phrasing'"
+  cat > "$SHIM_DIR/git" <<SHIM
+#!/usr/bin/env bash
+if [ "\$1" = "worktree" ] && [ "\$2" = "add" ]; then
+  echo "fatal: 'feature' $phrasing '$REPO_CANON'" >&2
+  exit 128
+fi
+exec "$REAL_GIT" "\$@"
+SHIM
+  chmod +x "$SHIM_DIR/git"
+  cd "$REPO" || exit 1
+  git checkout -q feature
+  # The shim reports the holder as the repo root, so the resolver must take the
+  # in-place branch — the same classification a real old git would produce.
+  OUT=$(PATH="$SHIM_DIR:$PATH" "$RESOLVER" 421 feature "$(git rev-parse feature)" 2>&1); RC=$?
+  if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q '^pr-grind-mode: no-worktree$'; then
+    ok "F: resolver classifies '$phrasing' as the in-place case"
   else
-    fail "F: does NOT classify '$phrasing'"
+    fail "F: resolver mishandled '$phrasing' (rc=$RC) — $OUT"
   fi
-  # Must mirror the resolver's extractor exactly, `sed -nE` included — a BRE
-  # here would pass on GNU sed and match nothing on BSD, hiding the real bug.
-  HOLDER=$(printf '%s' "$MSG" | sed -nE "s/.*already (used by worktree|checked out) at '(.*)'.*/\2/p" | head -1)
-  if [ "$HOLDER" = "/some/path" ]; then
-    ok "F: extracts holder path from '$phrasing'"
-  else
-    fail "F: holder extraction failed for '$phrasing' — got '$HOLDER'"
-  fi
+  git checkout -q main
 done
+rm -rf "$SHIM_DIR"
 
 # --- case G: missing args --------------------------------------------------
 run

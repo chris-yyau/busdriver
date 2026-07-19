@@ -752,13 +752,21 @@ if [ -z "$PR_BRANCH" ] || [ -z "$PR_HEAD_SHA" ]; then
   exit 1
 fi
 
-# NOTE — deliberately no fetch here. `git fetch origin <branch>` only moves
-# FETCH_HEAD, not the local branch, and a fork PR's head branch does not exist
-# on `origin` at all, so a fetch would reconcile neither case while reading as
-# though it had. The SHA assertion is the contract: if the local branch is not
-# at the PR head, the resolver BAILs and names both SHAs, and the operator
-# fetches or pushes. Rare in practice — pr-grind normally runs on the machine
-# that just pushed the branch.
+# Reconcile the local branch with the PR head BEFORE resolving, so the ordinary
+# "someone pushed to the PR" case proceeds instead of bailing.
+#
+# `refs/pull/<N>/head` is the UNIVERSAL source: it resolves fork PRs, whose head
+# branch never exists on `origin`, as well as same-repo PRs. (`git fetch origin
+# <branch>` would do neither job — it only moves FETCH_HEAD.) The branch name is
+# passed as a single argv element to git, never evaluated by a shell, so a
+# hostile PR branch name — git permits `$(...)`, backticks, `;`, `|` — cannot
+# execute anything here; git rejects malformed refs itself.
+#
+# Fast-forward only — note the absence of a leading `+`. A divergent local branch
+# must NOT be silently rewritten; the fetch fails, the resolver's SHA assertion
+# bails, and the operator decides. Same outcome when the branch is currently
+# checked out, which git refuses to update via fetch.
+git fetch -q origin "refs/pull/<PR_NUMBER>/head:refs/heads/${PR_BRANCH}" 2>/dev/null || true
 
 # Resolve the grind's working directory. The resolver (#421) owns the three-way
 # split — branch free / checked out HERE / held by ANOTHER worktree — and BAILs

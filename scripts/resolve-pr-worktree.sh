@@ -126,6 +126,20 @@ case "$REPO_ROOT" in
     ;;
 esac
 
+# canon() does `cd "$1" && pwd -P`, which follows symlinks and can therefore
+# resolve to a genuinely different physical path than the one just validated
+# above. Its output is captured via plain command substitution, which silently
+# strips trailing newlines exactly like the original --show-toplevel bug this
+# resolver fixes — so a symlink resolving to a newline/CR-bearing physical
+# path would reopen the same hazard one step later, unguarded. Re-run the
+# same fail-closed check on the post-canon value.
+case "$REPO_ROOT" in
+  *$'\n'*|*$'\r'*)
+    echo "❌ canonicalized repo path contains a newline or carriage return — cannot be emitted safely in the resolver's line-oriented output." >&2
+    exit 1
+    ;;
+esac
+
 # Anchor the ephemeral worktree beside the REPO ROOT, not beside $PWD. The old
 # `cd .. && pwd -P` was CWD-relative and only coincided with this when pr-grind
 # was invoked from the repo root.

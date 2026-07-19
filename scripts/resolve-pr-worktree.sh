@@ -75,18 +75,82 @@ SAFE_BRANCH=$(sanitize "$PR_BRANCH")
 # the callers below treat as "cannot prove equal" → BAIL.
 canon() { (cd "$1" 2>/dev/null && pwd -P) || true; }
 
-if ! REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || [ -z "$REPO_ROOT" ]; then
+# Read the repo root WITHOUT losing trailing newlines. A bare
+# `$(git rev-parse --show-toplevel)` strips every trailing newline, so a repo
+# whose last path component ends in one would silently collapse onto a
+# DIFFERENT existing directory — and the newline guard below would then see a
+# clean path and pass. The `X` sentinel preserves them: git prints `<path>\n`,
+# so RAW is `<path>\nX`; drop the sentinel, then drop git's own single
+# terminator. Anything still trailing is genuinely part of the path.
+REPO_ROOT_RAW=$(git rev-parse --show-toplevel 2>/dev/null && printf 'X')
+if [ -z "$REPO_ROOT_RAW" ]; then
   echo "❌ git rev-parse --show-toplevel failed — not in a git repo, or the repo root is unresolvable." >&2
   exit 1
 fi
+REPO_ROOT=${REPO_ROOT_RAW%X}      # strip sentinel
+REPO_ROOT=${REPO_ROOT%$'\n'}      # strip git's single trailing newline
+if [ -z "$REPO_ROOT" ]; then
+  echo "❌ git rev-parse --show-toplevel returned an empty repo root." >&2
+  exit 1
+fi
+
+# Fail CLOSED on a repo path that cannot be represented in this script's
+# line-oriented stdout protocol. Callers parse `WORKTREE_DIR=<path>` with
+# line-oriented grep/sed, so a newline (or CR) inside the path lets a repo
+# beneath such a directory inject a SECOND `WORKTREE_DIR=` record — Step 0
+# would then `cd` somewhere other than the path whose branch and SHA were
+# verified here, reopening the wrong-repo grind this resolver closes (#421).
+# Encoding the value would be the alternative; refusing is simpler and these
+# paths do not occur in practice.
+# Checked BEFORE canon() so the substitution inside canon cannot strip a
+# trailing newline and launder a bad path into a clean-looking one.
+# NOTE: $'\n' (bash ANSI-C quoting), NOT "$(printf '\n')" — command
+# substitution strips trailing newlines, so the latter yields an empty
+# pattern that matches every path and fails closed on ALL input.
+case "$REPO_ROOT" in
+  *$'\n'*|*$'\r'*)
+    echo "❌ repo path contains a newline or carriage return — cannot be emitted safely in the resolver's line-oriented output. Move the repo to a path without newlines." >&2
+    exit 1
+    ;;
+esac
+
+# canon() returns empty on an unresolvable path; an unchecked empty value would
+# reach dirname below and yield a RELATIVE `./pr-grind-N`, breaking the
+# absolute-path wire contract callers depend on across Bash calls.
 REPO_ROOT=$(canon "$REPO_ROOT")
+case "$REPO_ROOT" in
+  /*) ;;
+  *)
+    echo "❌ could not canonicalize the repo root to an absolute path (got '${REPO_ROOT}')." >&2
+    exit 1
+    ;;
+esac
+
+# canon() does `cd "$1" && pwd -P`, which follows symlinks and can therefore
+# resolve to a genuinely different physical path than the one just validated
+# above. Its output is captured via plain command substitution, which silently
+# strips trailing newlines exactly like the original --show-toplevel bug this
+# resolver fixes — so a symlink resolving to a newline/CR-bearing physical
+# path would reopen the same hazard one step later, unguarded. Re-run the
+# same fail-closed check on the post-canon value.
+case "$REPO_ROOT" in
+  *$'\n'*|*$'\r'*)
+    echo "❌ canonicalized repo path contains a newline or carriage return — cannot be emitted safely in the resolver's line-oriented output." >&2
+    exit 1
+    ;;
+esac
 
 # Anchor the ephemeral worktree beside the REPO ROOT, not beside $PWD. The old
 # `cd .. && pwd -P` was CWD-relative and only coincided with this when pr-grind
 # was invoked from the repo root.
 WORKTREE_DIR="$(dirname "$REPO_ROOT")/pr-grind-${PR_NUMBER}"
 
-WT_OUT=$(LANG=C LC_ALL=C git worktree add "$WORKTREE_DIR" "$PR_BRANCH" 2>&1)
+# `--` terminates option parsing: git ref names may legitimately begin with a
+# dash, so a branch named `--force` / `-b` / `--detach` would otherwise be read
+# as an OPTION to `worktree add`. The branch assertion further down fails closed
+# either way, but only after the mis-parsed command may have already created an
+# unintended worktree or branch.
+WT_OUT=$(LANG=C LC_ALL=C git worktree add -- "$WORKTREE_DIR" "$PR_BRANCH" 2>&1)
 WT_EXIT=$?
 
 if [ "$WT_EXIT" -eq 0 ]; then

@@ -111,6 +111,11 @@ START
   ├── Resolve flag-to-state translations (consumed by downstream bash blocks):
   │     ADMIN_FLAG_PASSED       = 1 if `--admin-on-approver-gap` was passed, else 0
   │     NO_WORKTREE             = 1 if `--no-worktree`             was passed, else 0
+  │     REVIEWED_HEAD           = the full 40-char HEAD_FULL_SHA captured in the
+  │                               classification block, carried forward to BOTH
+  │                               Completion merge blocks as `--match-head-commit`
+  │                               (#427). Remember the SHA the acks were classified
+  │                               against — do NOT re-derive it at merge time.
   │     # These are NOT exported as shell env vars — bash exports do NOT survive
   │     # across Claude Bash tool calls (each tool call gets a fresh shell). The
   │     # dispatcher (Claude) MUST remember each flag's resolved value in
@@ -1324,6 +1329,21 @@ if [ "$CODEX_DONE" = "none" ]; then
   # loop). Updated below ONLY when a poll's fetch succeeds, so a fetch failure
   # never overwrites the last trustworthy observation.
   CODEX_LAST_GOOD_VERDICT="$CODEX_REGRACE"
+  # ...and the PAYLOADS that verdict was computed from. Restoring the verdict
+  # alone is not enough: the five NON-Codex reviewers are recomputed after this
+  # loop from these same six variables plus FETCH_OK, so a failed final poll
+  # would leave them holding the incomplete snapshot and fail every one of them
+  # closed to `stale` — blocking the merge for exactly the transient reason the
+  # last-good fallback exists to absorb. CODEX_LG_OK stays 0 until a COMPLETE
+  # snapshot is observed; without one there is nothing trustworthy to restore
+  # and the deadline branch correctly leaves FETCH_OK=0 (fail-CLOSED).
+  CODEX_LG_OK=0
+  if [ "$FETCH_OK" = "1" ]; then
+    CODEX_LG_OK=1
+    CODEX_LG_REACTIONS="$ALL_REACTIONS";   CODEX_LG_REVIEWS="$ALL_REVIEWS"
+    CODEX_LG_COMMENTS="$ALL_COMMENTS";     CODEX_LG_CHECK_RUNS="$ALL_CHECK_RUNS"
+    CODEX_LG_STATUSES="$ALL_STATUSES";     CODEX_LG_THREADS="$ALL_THREADS"
+  fi
   while :; do
   _CODEX_REM=$(( CODEX_DEADLINE - $(date +%s) ))
   if [ "$_CODEX_REM" -le 0 ]; then
@@ -1335,7 +1355,18 @@ if [ "$CODEX_DONE" = "none" ]; then
     # instead, so a quota-dead/silent Codex plus a transient final fetch failure
     # reads `none` (non-gating) rather than blocking the merge on a snapshot we
     # already know was incomplete.
-    [ "$FETCH_OK" != "1" ] && CODEX_REGRACE="$CODEX_LAST_GOOD_VERDICT"
+    # Restore the verdict AND the payloads it came from, then clear FETCH_OK so
+    # the post-loop recomputation of the other five reviewers reads a snapshot
+    # that is actually complete. Only when a complete snapshot was ever seen
+    # (CODEX_LG_OK=1); otherwise leave FETCH_OK=0 and fail CLOSED.
+    if [ "$FETCH_OK" != "1" ] && [ "$CODEX_LG_OK" = "1" ]; then
+      CODEX_REGRACE="$CODEX_LAST_GOOD_VERDICT"
+      ALL_REACTIONS="$CODEX_LG_REACTIONS";   ALL_REVIEWS="$CODEX_LG_REVIEWS"
+      ALL_COMMENTS="$CODEX_LG_COMMENTS";     ALL_CHECK_RUNS="$CODEX_LG_CHECK_RUNS"
+      ALL_STATUSES="$CODEX_LG_STATUSES";     ALL_THREADS="$CODEX_LG_THREADS"
+      FETCH_OK=1
+      export ALL_REACTIONS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_THREADS FETCH_OK
+    fi
     break
   fi
   if [ "$_CODEX_REM" -lt "$CODEX_POLL" ]; then sleep "$_CODEX_REM"; else sleep "$CODEX_POLL"; fi
@@ -1392,7 +1423,13 @@ if [ "$CODEX_DONE" = "none" ]; then
     # was complete — including a complete "none" (Codex still hasn't engaged) —
     # so the deadline-exit fallback above always has the most recent trustworthy
     # value, not just the pre-loop seed.
-    [ "$FETCH_OK" = "1" ] && CODEX_LAST_GOOD_VERDICT="$CODEX_REGRACE"
+    if [ "$FETCH_OK" = "1" ]; then
+      CODEX_LAST_GOOD_VERDICT="$CODEX_REGRACE"
+      CODEX_LG_OK=1
+      CODEX_LG_REACTIONS="$ALL_REACTIONS";   CODEX_LG_REVIEWS="$ALL_REVIEWS"
+      CODEX_LG_COMMENTS="$ALL_COMMENTS";     CODEX_LG_CHECK_RUNS="$ALL_CHECK_RUNS"
+      CODEX_LG_STATUSES="$ALL_STATUSES";     CODEX_LG_THREADS="$ALL_THREADS"
+    fi
     [ "$CODEX_REGRACE" != "none" ] && [ "$FETCH_OK" = "1" ] && break
   done
   # Re-apply the Tier-D content-identity widening ONCE, here — not per interval.
@@ -1650,7 +1687,12 @@ Options:
                     # reignites grind — 3-5 rounds likely. Pick when bot
                     # configurations dislike merge commits OR when the PR
                     # history matters for downstream reviewers.
-  [admin]         gh pr merge <PR_NUMBER> --squash --delete-branch --admin
+  [admin]         gh pr merge <PR_NUMBER> --squash --delete-branch --admin --match-head-commit <REVIEWED_HEAD>
+                    # head guard (#427). <REVIEWED_HEAD> is substituted by the
+                    # dispatcher — same convention as <PR_NUMBER> — with the
+                    # classified HEAD_FULL_SHA. Do NOT emit $(git rev-parse HEAD):
+                    # that re-derives at merge time and blesses a post-
+                    # classification commit, defeating the guard.
                     # admin-merge bypasses the up-to-date requirement.
                     # Defensible when the PR is small + conflict-free and
                     # the base advance was unrelated. Runs outside pr-grind
@@ -1711,7 +1753,12 @@ Options:
                     # configurations dislike merge commits OR when the PR
                     # history matters for downstream reviewers.
   [wait]          exit; manually update later
-  [admin]         gh pr merge <PR_NUMBER> --squash --delete-branch --admin
+  [admin]         gh pr merge <PR_NUMBER> --squash --delete-branch --admin --match-head-commit <REVIEWED_HEAD>
+                    # head guard (#427). <REVIEWED_HEAD> is substituted by the
+                    # dispatcher — same convention as <PR_NUMBER> — with the
+                    # classified HEAD_FULL_SHA. Do NOT emit $(git rev-parse HEAD):
+                    # that re-derives at merge time and blesses a post-
+                    # classification commit, defeating the guard.
                     (no audit trail — proceed only with explicit operator authorization)
                     # verify: gh pr view <PR_NUMBER> --json state -q .state
                     # (retry up to 3x with 2s backoff — trust the API state,
@@ -2071,7 +2118,23 @@ jq -c -n \
   --arg head_sha "$HEAD_SHA" \
   '{ts:$ts, event:$event, trigger:$trigger, pr:$pr, owner:$owner, repo:$repo, branch:$branch, author:$author, author_perm:$author_perm, required_approving_review_count:$required, human_approvals:$approvals, human_admin_count:$human_admin_count, head_sha:$head_sha}' \
   >> "$REPO_ROOT/.claude/bypass-log.jsonl" || { echo "❌ failed to append bypass-log entry; aborting admin merge"; exit 1; }
-gh pr merge "$PR" --squash --delete-branch --admin || true
+# --match-head-commit closes the check-then-merge race (#427): GitHub itself
+# refuses the merge unless the PR head still equals the SHA every ack/CI
+# classification was made against.
+#
+# REVIEWED_HEAD is template-substituted by the dispatcher — the literal 40-char
+# HEAD_FULL_SHA captured in the classification block (see "HEAD_FULL_SHA=$(git
+# rev-parse HEAD)" there) is written here before bash executes. Same idiom as
+# NO_WORKTREE / ADMIN_FLAG_PASSED below, and for the same reason: bash exports
+# do not survive across Claude Bash tool calls.
+#
+# Do NOT substitute `$(git rev-parse HEAD)` and do NOT use `$HEAD_SHA` (that one
+# is the truncated 8-char display form). Re-deriving HEAD *here* would defeat the
+# whole guard — it blesses whatever local HEAD is at merge time, including a
+# commit that landed after classification, so the guard would then only catch
+# remote-only pushes rather than closing the check-then-merge race.
+REVIEWED_HEAD=<full 40-char SHA — the HEAD_FULL_SHA from the classification block>
+gh pr merge "$PR" --squash --delete-branch --admin --match-head-commit "$REVIEWED_HEAD" || true
 # Verify via authoritative source — `gh pr merge --delete-branch` can
 # exit non-zero on a post-merge local worktree-checkout conflict (e.g.,
 # "main is already used by worktree at ...") even after the remote merge
@@ -2090,6 +2153,14 @@ for attempt in 1 2 3; do
 done
 if [ "$MERGE_STATE" != "MERGED" ]; then
   echo "❌ approver-gap admin merge: PR #$PR not merged after 3 attempts (state=$MERGE_STATE); bypass-log entry was written but merge did not land."
+  # Invalidate the clean marker (#427 P1 gap, PR #429 review). --match-head-commit
+  # correctly rejected because HEAD moved after classification, but a stale
+  # pr-grind-clean.local left on disk would let a subsequent PLAIN `gh pr merge`
+  # (no head guard) sail through pre-merge-gate.sh, which only re-checks CI on a
+  # fresh same-PR marker — silently merging the newly pushed, unclassified head.
+  # Remove it so any retry is forced back through a full grind round.
+  MARKER_REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+  [ -n "$MARKER_REPO_ROOT" ] && rm -f "$MARKER_REPO_ROOT/.claude/pr-grind-clean.local"
   exit 1
 fi
 # GC the merged PR's codex-retrigger idempotency markers (#327). Runs from
@@ -2111,7 +2182,12 @@ command below runs outside pr-grind and writes NO entry to
 it does not detect gh pr merge --admin regardless of path).
 
 Options:
-  [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin
+  [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin --match-head-commit <REVIEWED_HEAD>
+                   # head guard (#427). <REVIEWED_HEAD> is substituted by the
+                   # dispatcher — same convention as <PR_NUMBER> — with the
+                   # classified HEAD_FULL_SHA. Do NOT emit $(git rev-parse HEAD):
+                   # that re-derives at merge time and blesses a post-
+                   # classification commit, defeating the guard.
                    # verify: gh pr view <PR_NUMBER> --json state -q .state
                    # (retry up to 3x with 2s backoff — the GitHub API (queried
                    #  via gh) can briefly return state=OPEN due to post-merge
@@ -2135,7 +2211,12 @@ or [wait].
 Options:
   [wait]         exit; wait for a human reviewer
   [add-reviewer] gh pr edit <PR_NUMBER> --add-reviewer <user>; exit
-  [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin
+  [admin]        gh pr merge <PR_NUMBER> --squash --delete-branch --admin --match-head-commit <REVIEWED_HEAD>
+                   # head guard (#427). <REVIEWED_HEAD> is substituted by the
+                   # dispatcher — same convention as <PR_NUMBER> — with the
+                   # classified HEAD_FULL_SHA. Do NOT emit $(git rev-parse HEAD):
+                   # that re-derives at merge time and blesses a post-
+                   # classification commit, defeating the guard.
                    (no audit trail — proceed only with explicit operator authorization)
                    # verify: gh pr view <PR_NUMBER> --json state -q .state
                    # (retry up to 3x with 2s backoff — the GitHub API (queried
@@ -2163,7 +2244,12 @@ Options:
 # fallback always resolves to 0 and the cleanup branch always runs
 # (wrong when Step 0's auto-fallback engaged or --no-worktree was passed).
 NO_WORKTREE=<0|1 — see "Resolve flag-to-state translations" in START>
-gh pr merge <PR_NUMBER> --squash --delete-branch || true
+# --match-head-commit closes the check-then-merge race (#427). REVIEWED_HEAD is
+# template-substituted with the literal 40-char HEAD_FULL_SHA from the
+# classification block — NOT re-derived here; see the auto-admin block above for
+# why re-deriving at merge time defeats the guard.
+REVIEWED_HEAD=<full 40-char SHA — the HEAD_FULL_SHA from the classification block>
+gh pr merge <PR_NUMBER> --squash --delete-branch --match-head-commit "$REVIEWED_HEAD" || true
 # Verify via authoritative source — `gh pr merge` exit code is unreliable
 # when --delete-branch hits a post-merge worktree-checkout conflict (the
 # remote merge has already SUCCEEDED, but gh tries to update the local
@@ -2187,6 +2273,14 @@ for attempt in 1 2 3; do
 done
 if [ "$MERGE_STATE" != "MERGED" ]; then
   echo "❌ PR #<PR_NUMBER> not merged after 3 attempts (state=$MERGE_STATE); preserving worktree for inspection."
+  # Invalidate the clean marker (#427 P1 gap, PR #429 review). --match-head-commit
+  # correctly rejected because HEAD moved after classification, but a stale
+  # pr-grind-clean.local left on disk would let a subsequent PLAIN `gh pr merge`
+  # (no head guard) sail through pre-merge-gate.sh, which only re-checks CI on a
+  # fresh same-PR marker — silently merging the newly pushed, unclassified head.
+  # Remove it so any retry is forced back through a full grind round.
+  MARKER_REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+  [ -n "$MARKER_REPO_ROOT" ] && rm -f "$MARKER_REPO_ROOT/.claude/pr-grind-clean.local"
   exit 1
 fi
 # GC the merged PR's codex-retrigger idempotency markers (#327), from $WORKTREE_DIR

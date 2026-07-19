@@ -88,6 +88,60 @@ ORDER_OK=$(awk '
 [ "$ORDER_OK" = "OK" ] && ok "each GC call follows a MERGE_STATE==MERGED guard" \
   || fail "a GC call precedes its MERGED guard"
 
+# (h) #427 head guard: BOTH executable merge invocations must pass
+# --match-head-commit bound to the CLASSIFIED head SHA. Without it the merge is
+# a non-atomic check-then-act — a push landing after classification merges an
+# unreviewed head.
+has 'gh pr merge "$PR" --squash --delete-branch --admin --match-head-commit "$REVIEWED_HEAD"' \
+  && ok "auto-admin merge carries --match-head-commit" \
+  || fail "auto-admin merge missing --match-head-commit (#427)"
+has 'gh pr merge <PR_NUMBER> --squash --delete-branch --match-head-commit "$REVIEWED_HEAD"' \
+  && ok "default merge carries --match-head-commit" \
+  || fail "default merge missing --match-head-commit (#427)"
+# REVIEWED_HEAD must be TEMPLATE-SUBSTITUTED with the classified SHA, never
+# re-derived at merge time. Re-deriving blesses whatever local HEAD is current —
+# including a commit that landed after classification — which shrinks the guard
+# to remote-only pushes instead of closing the race.
+TEMPLATE_COUNT=$(grep -c 'REVIEWED_HEAD=<full 40-char SHA' "$SKILL" || true)
+[ "$TEMPLATE_COUNT" -eq 2 ] && ok "REVIEWED_HEAD template-substituted in both merge blocks" \
+  || fail "expected 2 REVIEWED_HEAD template placeholders, found $TEMPLATE_COUNT"
+if grep -qF 'REVIEWED_HEAD=$(' "$SKILL"; then
+  fail "REVIEWED_HEAD re-derived at merge time — defeats the #427 guard"
+else
+  ok "REVIEWED_HEAD never re-derived in a merge block"
+fi
+# Same trap in the operator-facing [admin] decision templates: they must carry
+# the substituted <REVIEWED_HEAD> token, never a live rev-parse.
+if grep -qF -- '--match-head-commit $(' "$SKILL"; then
+  fail "an [admin] template re-derives the SHA inline — defeats the #427 guard"
+else
+  ok "no --match-head-commit site re-derives the SHA inline"
+fi
+TMPL_ADMIN=$(grep -c -- '--admin --match-head-commit <REVIEWED_HEAD>' "$SKILL" || true)
+[ "$TMPL_ADMIN" -eq 4 ] && ok "all 4 [admin] decision templates carry the head guard" \
+  || fail "expected 4 guarded [admin] templates, found $TMPL_ADMIN"
+
+# (i) #427 P1 gap (PR #429 review): on a --match-head-commit rejection (HEAD moved
+# after classification, MERGE_STATE never reaches MERGED), the already-written
+# pr-grind-clean.local marker must be invalidated in BOTH merge blocks — else a
+# subsequent plain `gh pr merge` (no head guard) can sail through pre-merge-gate.sh
+# on the stale marker and merge an unclassified head.
+MARKER_RM_COUNT=$(grep -c 'rm -f "$MARKER_REPO_ROOT/.claude/pr-grind-clean.local"' "$SKILL" || true)
+[ "$MARKER_RM_COUNT" -eq 2 ] && ok "clean marker invalidated on merge-state mismatch in both blocks" \
+  || fail "expected 2 marker-invalidation sites, found $MARKER_RM_COUNT (#427 P1 gap)"
+# ordering: every marker-invalidation must be preceded (in the same failure branch)
+# by a MERGE_STATE != MERGED guard, and appear before that branch's exit 1 — so it
+# actually fires on the guard-rejection path rather than unconditionally.
+MARKER_ORDER_OK=$(awk '
+  /MERGE_STATE" != "MERGED"/ { in_branch=1 }
+  in_branch && /rm -f "\$MARKER_REPO_ROOT\/\.claude\/pr-grind-clean\.local"/ { seen_rm=1 }
+  in_branch && /exit 1/ {
+    if (!seen_rm) { found_bad=1; exit }
+    in_branch=0; seen_rm=0
+  }
+  END { print (found_bad ? "BAD" : "OK") }' "$SKILL")
+[ "$MARKER_ORDER_OK" = "OK" ] && ok "marker invalidation precedes exit 1 in its failure branch" \
+  || fail "marker invalidation missing/misordered relative to exit 1"
 # ── Codex first-engagement POLL loop (#420) ────────────────────────────
 # WHY: the grace was a single blind `sleep 20`, but measured @codex-review →
 # review latency on this repo is 3m37s–7m27s (PRs #412/#419/#409/#390). The
@@ -260,6 +314,32 @@ _T0=$(date +%s); _R=$(_loop 2 3600 0); _T1=$(date +%s)
 [ $(( _T1 - _T0 )) -le 4 ] \
   && ok "poll > deadline still bounded by the deadline (took $(( _T1 - _T0 ))s)" \
   || fail "poll > deadline overshot: took $(( _T1 - _T0 ))s for a 2s deadline"
+
+# (j) deadline last-good fallback must restore the PAYLOADS + FETCH_OK, not just
+# the Codex verdict. The five non-Codex reviewers are recomputed after the poll
+# loop from those same six variables; restoring the verdict alone leaves them on
+# the incomplete snapshot and fails every one closed to `stale`, blocking a merge
+# for the transient reason the fallback exists to absorb.
+has 'CODEX_LG_OK=0' && ok "last-good payload snapshot flag initialized" \
+  || fail "CODEX_LG_OK not initialized — payload fallback missing"
+for v in CODEX_LG_REACTIONS CODEX_LG_REVIEWS CODEX_LG_COMMENTS CODEX_LG_CHECK_RUNS CODEX_LG_STATUSES CODEX_LG_THREADS; do
+  has "$v=" && ok "payload snapshot var $v present" || fail "missing payload snapshot var $v"
+done
+has '[ "$FETCH_OK" != "1" ] && [ "$CODEX_LG_OK" = "1" ]' \
+  && ok "deadline restore gated on a COMPLETE snapshot having been seen" \
+  || fail "deadline restore not gated on CODEX_LG_OK — could restore garbage or fail open"
+# The restore must clear FETCH_OK, else the post-loop recompute still fails closed.
+# Bound the search to the restore block itself (stop at its closing `fi`).
+# Unbounded, this matched the per-iteration `FETCH_OK=1` reset further down the
+# loop and passed even when the restore had none — a vacuous assertion.
+if awk '/\[ "\$FETCH_OK" != "1" \] && \[ "\$CODEX_LG_OK" = "1" \]/ { r=1; next }
+        r && /^ *fi *$/ { r=0 }
+        r && /^ *FETCH_OK=1 *$/ { found=1 }
+        END { exit !found }' "$SKILL"; then
+  ok "deadline restore resets FETCH_OK=1"
+else
+  fail "deadline restore does not reset FETCH_OK — other reviewers still fail closed"
+fi
 
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

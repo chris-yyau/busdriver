@@ -220,5 +220,75 @@ fi
 run 421 feature "not-hex-at-all"
 if [ "$RC" -ne 0 ]; then ok "G: rejects a non-hex head SHA"; else fail "G: accepted a non-hex head SHA"; fi
 
+# --- case H: repo path containing a newline → fail CLOSED --------------------
+# The resolver's stdout is line-oriented (`WORKTREE_DIR=<path>`), and Step 0
+# parses it with grep/sed. A repo under a newline-bearing path could inject a
+# second WORKTREE_DIR= record and steer Step 0 into an unverified directory.
+# The resolver must refuse rather than emit an ambiguous protocol line.
+# $'\n', NOT "$(printf '\n')" — command substitution strips the trailing
+# newline and would silently build a fixture named "nldir", leaving the guard
+# unexercised while the test still reported green.
+NL_PARENT="$TMP/nl"$'\n'"dir"
+if mkdir -p "$NL_PARENT/repo" 2>/dev/null; then
+  (
+    cd "$NL_PARENT/repo" || exit 1
+    git init -q . 2>/dev/null
+    git config user.email t@t.t; git config user.name t
+    git commit -q --allow-empty -m init 2>/dev/null
+    git branch feature 2>/dev/null
+  )
+  NL_SHA=$(git -C "$NL_PARENT/repo" rev-parse feature 2>/dev/null || echo 0000000)
+  cd "$NL_PARENT/repo" || exit 1
+  run 421 feature "$NL_SHA"
+  # Two things must hold: non-zero exit citing the newline/CR guard specifically
+  # (not just any failure — e.g. the resolver hitting an unrelated "not in a
+  # git repo" branch would also exit non-zero without exercising the guard
+  # this case targets), AND no usable WORKTREE_DIR on stdout.
+  if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -qi 'newline\|carriage return'; then
+    ok "H: refuses a repo path containing a newline"
+  else
+    fail "H: did not fail on the newline/CR guard specifically (RC=$RC) — $OUT"
+  fi
+  if printf '%s' "$OUT" | grep -q '^WORKTREE_DIR='; then
+    fail "H: emitted a WORKTREE_DIR line for a newline-bearing path"
+  else
+    ok "H: emits no WORKTREE_DIR for a newline-bearing path"
+  fi
+  cd "$TMP" || exit 1
+else
+  # Some filesystems reject newlines in names; skip rather than false-fail.
+  ok "H: skipped — filesystem rejects newline in directory names"
+fi
+
+# --- case I: repo path ENDING in a newline → must not collapse onto a decoy ---
+# Distinct from case H: here the newline is TRAILING, so a bare
+# `$(git rev-parse --show-toplevel)` silently strips it and the path becomes a
+# different, existing directory. If that decoy holds the same branch and SHA,
+# every assertion passes and pr-grind grinds the wrong checkout. The resolver
+# must preserve trailing newlines (sentinel trick) so the guard still sees them.
+DECOY="$TMP/decoy/repo"
+TRAIL="$TMP/decoy/repo"$'\n'
+if mkdir -p "$DECOY" 2>/dev/null && mkdir -p "$TRAIL" 2>/dev/null; then
+  for d in "$DECOY" "$TRAIL"; do
+    (
+      cd "$d" || exit 1
+      git init -q . 2>/dev/null
+      git config user.email t@t.t; git config user.name t
+      git commit -q --allow-empty -m init 2>/dev/null
+      git branch feature 2>/dev/null
+    )
+  done
+  cd "$TRAIL" || exit 1
+  run 421 feature "$(git -C "$TRAIL" rev-parse feature 2>/dev/null || echo 0000000)"
+  if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -qi 'newline\|carriage return'; then
+    ok "I: refuses a repo path ending in a newline (no decoy collapse)"
+  else
+    fail "I: did not fail on the newline/CR guard specifically (RC=$RC) — $OUT — collapsed onto '$DECOY'?"
+  fi
+  cd "$TMP" || exit 1
+else
+  ok "I: skipped — filesystem rejects trailing newline in directory names"
+fi
+
 echo "Results: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

@@ -537,6 +537,122 @@ for prefix in ('', 'true; ', 'cat /dev/null | ', 'false || ', 'true && '):
         check(f"heredoc[{prefix or 'bare'}|{consumer.split()[0]}]",
               g.gh_pr_count(cmd, 'merge') > 0, live)
 
+# ── UNRESOLVED HEREDOC CONSUMER MUST KEEP THE BODY (fail-OPEN) ───────
+# A command word built from a variable really does execute the body, and the
+# opener-line scan cannot resolve it. Unresolvable ⇒ keep ⇒ fail-CLOSED. This
+# also reaches careful-guard.sh, which reuses _all_chunks — a destructive
+# command behind `$runner` would otherwise go unseen.
+check("heredoc+ variable interpreter keeps the body",
+      g.gh_pr_count("runner=bash\n\"$runner\" <<'EOF'\ngh pr merge 1\ngh pr merge 2\nEOF", 'merge'), 2)
+check("heredoc+ careful-guard sees rm behind a variable interpreter",
+      any('rm -rf' in c
+          for c in g._all_chunks("runner=bash\n\"$runner\" <<'EOF'\nrm -rf /\nEOF")), True)
+# ...but a variable ARGUMENT on an otherwise literal opener stays inert, or the
+# #426 false positive comes straight back for any templated comment.
+check("heredoc- variable argument does not make the body live",
+      g.gh_pr_count("gh issue comment \"$NUM\" --body-file - <<'EOF'\ngh pr merge 1\nEOF", 'merge'), 0)
+check("heredoc- genuinely inert body stays dropped for careful-guard",
+      any('rm -rf' in c for c in g._all_chunks("cat <<'EOF'\nrm -rf /\nEOF")), False)
+
+# ── env OPTION SCAN STOPS AT THE UTILITY (false positive) ────────────
+# env's own options end at `--` or the first non-option word. Scanning past it
+# read the UTILITY's arguments as env options.
+check("env-S- prose after `env -- printf` is not a payload",
+      g.gh_pr_count("env -- printf '%s' -S 'gh pr merge 1'", 'merge'), 0)
+check("env-S+ the real split-string form still works",
+      g.gh_pr_count('env -S "gh pr merge 1"', 'merge'), 1)
+
+# ── DEPTH-CAP FLOOR (must be PROVEN to fire) ─────────────────────────
+# _all_chunks stops expanding at depth 6. Where it truncates, gh_pr_count falls
+# back to a raw occurrence count so the gate stays fail-CLOSED on what it could
+# not fully parse — the substring guard this replaced did block those.
+#
+# NESTED SUBSTITUTIONS are the witness. Naive `bash -c` nesting is NOT: past two
+# levels the escaping means bash does not execute it either (verified — detector
+# and bash both go to 0), so it never reaches the cap and the branch stays dead.
+# These assertions pin that the truncation flag really fires AND that the
+# fallback is load-bearing (the per-chunk count alone is 0 here), so a refactor
+# that silently breaks the wiring fails loudly instead of failing open.
+_deep = 'gh pr merge 1'
+for _ in range(8):
+    _deep = 'echo $(' + _deep + ')'
+_trunc = []
+_chunks = g._all_chunks(_deep, 0, _trunc)
+check("depth+ truncation flag fires at the cap", bool(_trunc), True)
+check("depth+ per-chunk count alone is 0 (fallback is load-bearing)",
+      sum(len(list(g._iter_gh(c, 'merge', False))) for c in _chunks), 0)
+check("depth+ fail-closed floor still counts the merge",
+      g.gh_pr_count(_deep, 'merge'), 1)
+# Shallow nesting must NOT take the fallback path.
+check("depth- shallow nesting counted normally",
+      g.gh_pr_count('echo $(echo $(gh pr merge 1))', 'merge'), 1)
+
+# An env-ASSIGNMENT prefix is not the command word: `X=$Y cat <<'EOF'` is still
+# an inert `cat`, or templated openers regain the #426 false positive.
+check("heredoc- env-assignment prefix does not make the body live",
+      g.gh_pr_count("X=$Y cat <<'EOF'\ngh pr merge 1\nEOF", 'merge'), 0)
+
+# ── LAUNCHER PREFIXES MUST NOT HIDE A DYNAMIC CONSUMER ───────────────
+# The command word has to be reached through wrappers and redirections, not
+# just assignments — `command "$runner" <<'EOF'` reported `command`, marked the
+# body inert, and dropped a merge that executes.
+check("heredoc+ wrapper before a variable interpreter",
+      g.gh_pr_count("runner=bash\ncommand \"$runner\" <<'EOF'\ngh pr merge 1\nEOF", 'merge'), 1)
+
+# ── env OPTIONS WITH SEPARATE VALUES ─────────────────────────────────
+# `-u FOO` consumes FOO, which is not the utility; stopping there never reached
+# the -S and let the packed command through.
+check("env-S+ value-taking option before -S",
+      g.gh_pr_count("env -u FOO -S 'gh pr merge 1'", 'merge'), 1)
+
+# ── DEPTH FALLBACK SEES QUOTED SPELLINGS ─────────────────────────────
+# The shell normalizes `g"h" p"r" merge`; a literal-only regex reported 0 on
+# exactly the deeply-nested input the fallback exists to catch.
+_dq = 'g"h" p"r" merge 1'
+for _ in range(8):
+    _dq = 'echo $(' + _dq + ')'
+check("depth+ fallback sees a quoted executable spelling",
+      g.gh_pr_count(_dq, 'merge'), 1)
+
+# ── LAUNCHER-OPTION AND env-ARITY EDGE CASES ─────────────────────────
+# A wrapper's no-arg option must not swallow the dynamic command word after it,
+# and env's own value-taking options must not be mistaken for the utility.
+check("heredoc+ env -i before a variable interpreter",
+      g.gh_pr_count("runner=/bin/sh\nenv -i \"$runner\" <<'EOF'\ngh pr merge 1\nEOF", 'merge'), 1)
+check("env-S+ -P (utility search path) before -S",
+      g.gh_pr_count("env -P /opt/homebrew/bin -S 'gh pr merge 1'", 'merge'), 1)
+# The depth fallback normalizes ANSI-C spellings too, or `$'gh' $'pr' merge`
+# survives as `$gh $pr merge` and reports 0.
+_ansi = "$'gh' $'pr' merge 2"
+for _ in range(8):
+    _ansi = 'echo $(' + _ansi + ')'
+check("depth+ fallback sees an ANSI-C executable spelling",
+      g.gh_pr_count(_ansi, 'merge'), 1)
+
+# ── PARITY WITH THE SUBSTRING GUARD THIS REPLACED ────────────────────
+# These shapes were caught INCIDENTALLY by the old substring count, so losing
+# them would be a real regression rather than an inherited gap. The command word
+# must be reached through redirections and quoted assignment VALUES, and env's
+# --argv0 takes a separate argument.
+check("heredoc+ redirection before a variable interpreter",
+      g.gh_pr_count("runner=bash\n</dev/null \"$runner\" <<'EOF'\ngh pr merge 1\nEOF", 'merge'), 1)
+check("heredoc+ quoted assignment value before a variable interpreter",
+      g.gh_pr_count("runner=bash\nX=\"a b\" \"$runner\" <<'EOF'\ngh pr merge 1\nEOF", 'merge'), 1)
+check("env-S+ --argv0 value before -S",
+      g.gh_pr_count("env -a ignored -S 'gh pr merge 1'", 'merge'), 1)
+
+# ── WRAPPER-OPTION ARITY IS AMBIGUOUS — CHECK BOTH READINGS ──────────
+# `env -i "$runner"` (no-arg -i) and `env -u FOO "$runner"` (value-taking -u)
+# put the command word in different places; either single arity guess misses
+# one (both were caught by the old substring guard, so a real regression).
+# Checking both candidate command words is fail-CLOSED without modeling env's
+# option grammar — and does NOT reintroduce the #426 false positive, because
+# both readings agree on the command word when there is no wrapper.
+check("heredoc+ env value-option before a variable interpreter",
+      g.gh_pr_count("runner=bash\nenv -u FOO \"$runner\" <<'EOF'\ngh pr merge 1\nEOF", 'merge'), 1)
+check("heredoc- variable ARGUMENT still does not make the body live",
+      g.gh_pr_count("gh issue comment \"$NUM\" --body-file - <<'EOF'\ngh pr merge 1\nEOF", 'merge'), 0)
+
 # ── gh pr create ──────────────────────────────────────────────────────
 CREATE_YES = [
     'gh pr create --fill',

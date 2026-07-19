@@ -104,7 +104,12 @@ import sys
 # Drop CWD from sys.path (python3 -c prepends it ahead of PYTHONPATH) + -S skips
 # site so a repo-planted sitecustomize.py, a shadowed gitcmd_detect.py, or a
 # shadowed stdlib (json.py) cannot run in the gate. Scrub BEFORE any import.
-sys.path[:] = [p for p in sys.path if p not in ('', '.')]
+# Also move the PYTHONPATH-injected gate lib to the END so a file named json.py
+# beside the detector cannot shadow the stdlib json (sys.path order is otherwise
+# interpreter-dependent). The detector is still importable from the tail entry.
+_gatelib = [p for p in sys.path if p.endswith('gate-scripts/lib')]
+sys.path[:] = [p for p in sys.path
+               if p not in ('', '.') and p not in _gatelib] + _gatelib
 try:
     # Imports inside the try: a missing/broken gitcmd_detect must land in the
     # 'error' branch (which BLOCKS) rather than crash to empty output, which the

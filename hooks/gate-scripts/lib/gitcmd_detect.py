@@ -691,9 +691,53 @@ def _split_inert_heredocs(cmd):
         # `"bash"`, `\bash` and `/bin/"bash"` are all the bash executable, and a
         # raw comparison recognized none of them, discarding a body bash really
         # runs (fail-OPEN, verified).
-        if any(w.replace('\\', '').replace('"', '').replace("'", '')
-               .rsplit('/', 1)[-1] in _BODY_EXECUTORS
-               for w in words if w):
+        # Keep the body when the consumer CANNOT BE RESOLVED statically — a
+        # command word built from a variable or substitution (`runner=bash;
+        # "$runner" <<'EOF'`) really does execute it (verified: two merges ran,
+        # counted 0). Dropping an unresolved consumer's body is the discard this
+        # change introduces, and it reaches `careful-guard.sh` too, which reuses
+        # _all_chunks — a destructive command behind `$runner` would have gone
+        # unseen. Unresolvable ⇒ keep ⇒ fail-CLOSED. Prose openers name a literal
+        # command (`gh issue comment … --body-file - <<'EOF'`) and are unaffected.
+        # Look at the COMMAND WORD of each segment on the opener line, not the
+        # split words: '$' is one of the split delimiters above, so a `$` never
+        # survives into `words` and this check silently never fired. Testing the
+        # command word (rather than the whole line) keeps a prose opener that
+        # merely has a variable ARGUMENT — `gh issue comment "$NUM"
+        # --body-file - <<'EOF'` — correctly inert, which is the #426 case.
+        def _consumer_words(seg):
+            # Two candidate command words for the opener segment, differing only
+            # in how a WRAPPER OPTION's arity is guessed. Arity is genuinely
+            # ambiguous statically — `env -i "$runner"` (no-arg -i) and
+            # `env -u FOO "$runner"` (value-taking -u) put the real command word
+            # in different places, and either single guess MISSES one (fail-OPEN,
+            # both verified against bash + the old substring guard). Checking
+            # BOTH is fail-CLOSED: one guess always lands on the real consumer, so
+            # a dynamic one is never missed. When there is no wrapper the two
+            # agree on the command word, so an ARGUMENT like `$NUM` in
+            # `gh issue comment "$NUM" …` does not falsely mark an inert body
+            # live (the #426 case). Tokenizing (not whitespace-split) also skips
+            # redirections and quoted assignment values that otherwise posed as
+            # the command word.
+            words = []
+            for t in _tokenize(seg):        # A: wrapper options treated as no-arg
+                if (re.match(r'^\w+=', t) or t.startswith('-')
+                        or re.match(r'^(\d*[<>]{1,2}|&>{1,2})', t)
+                        or t.rsplit('/', 1)[-1] in _WRAPPERS):
+                    continue
+                words.append(t)
+                break
+            argv = _command_argv(seg, '')   # B: wrapper option treated as arg-taking
+            if argv:
+                words.append(argv[0])
+            return words
+
+        dynamic = any('$' in w or '`' in w
+                      for _op, seg in split_segments(line_text)
+                      for w in _consumer_words(seg))
+        if dynamic or any(w.replace('\\', '').replace('"', '').replace("'", '')
+                          .rsplit('/', 1)[-1] in _BODY_EXECUTORS
+                          for w in words if w):
             payloads.append(body)
         # The terminator line is shell SYNTAX, not a command — emitting it back
         # into the scanned text let a delimiter that happens to be named like a
@@ -780,7 +824,26 @@ def _env_split_string_payloads(seg):
     if start is None:
         return []
     out = []
+    # env options that take a SEPARATE value. Without this the walk mistook that
+    # value for the utility and stopped early, so `env -u FOO -S '<cmd>'` never
+    # reached the -S and the packed command went uncounted (fail-OPEN).
+    # -P is the macOS utility-search-path option; omitting it stopped the walk
+    # on its value and the -S payload was never reached (fail-OPEN).
+    value_opts = {'-u', '--unset', '-C', '--chdir', '-P', '-a', '--argv0'}
+    skip_value = False
     for k, a in enumerate(toks[start + 1:], start=start + 1):
+        if skip_value:
+            skip_value = False
+            continue
+        # env's own options END at `--` or at the first non-option word (the
+        # utility). Scanning past that read the UTILITY's arguments as env
+        # options, so `env -- printf '%s' -S '<cmd>'` — which only prints prose
+        # — was extracted as an executable payload and blocked.
+        if a == '--' or not a.startswith('-'):
+            break
+        if a in value_opts:
+            skip_value = True
+            continue
         if a.startswith('--split-string='):
             out.append(a.split('=', 1)[1])
         elif (a.startswith('-') and not a.startswith('--') and 'S' in a[1:]):
@@ -816,7 +879,7 @@ def _shell_payloads(cmd):
     return out
 
 
-def _all_chunks(cmd, _depth=0):
+def _all_chunks(cmd, _depth=0, _truncated=None):
     """cmd plus every string the shell will additionally execute — command
     substitutions and interpreter/eval payloads — recursively (depth-bounded).
 
@@ -840,7 +903,12 @@ def _all_chunks(cmd, _depth=0):
         for extra in (_command_substitutions(cmd) + _shell_payloads(cmd)
                       + heredoc_payloads):
             if extra:
-                chunks.extend(_all_chunks(extra, _depth + 1))
+                chunks.extend(_all_chunks(extra, _depth + 1, _truncated))
+    elif _truncated is not None and (_command_substitutions(cmd)
+                                     or _shell_payloads(cmd) or heredoc_payloads):
+        # Depth cap reached with more to expand — record it so counters can fail
+        # closed rather than silently report "nothing here".
+        _truncated.append(True)
     return chunks
 
 
@@ -999,8 +1067,26 @@ def gh_pr_count(cmd, subcommand):
     string — from reading as N chained merges (issue #426), while still
     catching `bash -c "gh pr merge 1 && gh pr merge 2"` (the payload is a
     scanned chunk, and its merges are real command words)."""
-    chunks = _all_chunks(cmd)
-    return sum(len(list(_iter_gh(c, subcommand, False))) for c in chunks)
+    truncated = []
+    chunks = _all_chunks(cmd, 0, truncated)
+    count = sum(len(list(_iter_gh(c, subcommand, False))) for c in chunks)
+    if truncated:
+        # Recursion hit the depth cap, so a merge nested deeper than it expands
+        # would score 0 — and the substring guard this replaced DID block those.
+        # Restore that floor for this corner only: a raw occurrence count. Prose
+        # never sits seven interpreter payloads deep, so the #426 false positive
+        # does not come back, and the gate stays fail-CLOSED on what it cannot
+        # fully parse.
+        # Strip shell quoting first: the shell normalizes `g"h" p"r" merge` to a
+        # real invocation, and a literal-only regex found nothing there — leaving
+        # the fallback reporting 0 on exactly the input it exists to catch.
+        # Drop the `$` of an ANSI-C `$'...'` too, or the normalization leaves
+        # `$gh $pr merge` and the fallback reports 0 on the very input it is for.
+        flat = re.sub(r'\$(?=[\'"])', '', cmd)
+        flat = re.sub(r'[\'"\\]', '', flat)
+        count = max(count, len(re.findall(
+            r'\bgh\s+pr\s+' + re.escape(subcommand) + r'\b', flat)))
+    return count
 
 
 def gh_pr(cmd, subcommand):

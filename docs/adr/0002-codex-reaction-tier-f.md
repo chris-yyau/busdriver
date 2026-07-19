@@ -82,10 +82,15 @@ reaction timestamp vs the push event time (`HEAD_PUSH_DATE`).
    (all registered bots acked, Codex still reviewing) is not misread as
    no-progress and bailed. Empty/missing tag `!= stale` → prior behavior.
 7. **First-engagement grace** at the COMPLETION gate: when Codex resolves to
-   `none` (zero engagement), one bounded re-poll (`PR_GRIND_CODEX_GRACE_SECS`,
-   default 20s, `0` disables) catches a Codex that hadn't yet posted its initial
+   `none` (zero engagement), a bounded re-poll (`PR_GRIND_CODEX_GRACE_SECS`,
+   `0` disables) catches a Codex that hadn't yet posted its initial
    👀 on a just-pushed HEAD. Rarely fires — COMPLETION is reached only after the
    loop converges, by which point an active Codex has engaged.
+   *(Revised 2026-07-19, #420: the single blind 20s sleep is now a poll — a 480s
+   deadline polled every `PR_GRIND_CODEX_POLL_SECS` (30s), breaking the instant
+   Codex engages. The full deadline applies only where Codex is proven-active or
+   force-on; repos with no Codex keep the 20s courtesy wait. See the revisit
+   trigger below and the ADR 0013 revision.)*
 
 ## Alternatives
 
@@ -117,9 +122,12 @@ Codex entry → Tier F returns `none` (non-gating). Closed at the loop level by
 the COMPLETION first-engagement grace (Decision 6) plus the worker's Step 1
 check-wait + 30s grace, and — on repos with registered bots — by those bots'
 own post-push staleness forcing more rounds. The residual is a Codex-only repo
-where the grace re-poll (default 20s) still isn't enough for Codex to start; a
-larger `PR_GRIND_CODEX_GRACE_SECS` covers slower starts. `ack-ledger.sh` stays a
+where the grace re-poll still isn't enough for Codex to start; a larger
+`PR_GRIND_CODEX_GRACE_SECS` covers slower starts. `ack-ledger.sh` stays a
 pure classifier — the timing fix lives in the loop, not the tier.
+*(#420: this residual was measured, not theoretical — the old 20s default was
+~15x under Codex's real 3–7min latency, so the re-poll always fell through. The
+default is now a 480s polled deadline; see the revisit trigger below.)*
 
 **Deliberately backdated HEAD.** *(For the `+1` path this residual is now CLOSED —
 see the #189 Amendment below. The paragraph here describes the pre-#189 design, in
@@ -148,5 +156,10 @@ is accepted; a server-stamped fallback marker is a deferred follow-up.
 - The first-engagement race is observed to actually skip a Codex review despite
   the COMPLETION grace (Decision 6) → raise the default `PR_GRIND_CODEX_GRACE_SECS`
   or add a worker-side first-engagement wait.
+  **FIRED 2026-07-19 (#420).** The race was observed skipping the review on PRs
+  #412/#419/#409/#390: measured Codex latency is 3m37s–7m27s against a 20s grace
+  (#413 is the related case where no review ever arrived). Actioned
+  as prescribed — the blind sleep became a bounded poll (480s deadline, 30s interval,
+  early-exit on engagement). See the ADR 0013 revision for the data and rationale.
 - A second reaction-only reviewer appears → generalize Tier F beyond the Codex
   login guard.

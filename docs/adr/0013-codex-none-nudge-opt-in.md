@@ -84,7 +84,29 @@ new marker, so the `none` and `stale` paths share the same per-(PR,HEAD) marker:
   it adds no new wait. Quota-exhausted / uninstalled / still-silent Codex all
   degrade to non-gating `none` — the merge is never blocked waiting for a review
   that will not arrive. (An opt-in operator who wants the nudge to have more time to
-  land raises `PR_GRIND_CODEX_GRACE_SECS`, default 20.)
+  land raises `PR_GRIND_CODEX_GRACE_SECS`, default 480 — see the revision below.)
+
+  **Revision 2026-07-19 (#420) — the grace was ~15x too short.** The default was a
+  single blind `sleep 20`. Measured `@codex review` → Codex-review latency on this
+  repo: 3m37s (#412), 4m58s (#419), 6m36s (#409), 7m27s (#390). The re-poll therefore
+  always observed `none` and fell through, merging *seconds* before the review landed
+  — #419 merged 5s after its own nudge and the review arrived 5min later, on a closed
+  PR. The blind sleep is now a **bounded poll**: deadline `PR_GRIND_CODEX_GRACE_SECS`
+  (default 480s) polled every `PR_GRIND_CODEX_POLL_SECS` (default 30s), breaking the
+  instant Codex engages. A fast Codex now costs ~30s instead of 20s-and-a-miss; a slow
+  one is actually caught. `=0` still disables the wait. **Bound, stated precisely:**
+  the deadline caps the SLEEP budget, not total wall time — the per-poll `gh` fetches
+  carry no explicit timeout, exactly as every other COMPLETION fetch does, so a hung
+  request stalls here as it would there. The poll adds no new exposure of that kind;
+  it repeats an existing one up to `GRACE/POLL` times. Closing it means wrapping all
+  the COMPLETION fetches in `timeout`/`gtimeout`, which is a separate change.
+  This is precisely the action ADR 0002's own revisit trigger prescribed for this
+  symptom ("raise the default `PR_GRIND_CODEX_GRACE_SECS`").
+
+  **Not changed:** the `codex-nudge-premerge.sh` hook still posts and exits 0 with no
+  wait. It is non-gating by contract (ADR 0013 / the hook header) and a PreToolUse
+  hook must not block a merge for minutes. It remains the backstop for merge paths
+  that skip pr-grind entirely — on those, the review genuinely lands post-merge.
 - **One nudge per (PR, HEAD), logged.** Enforced by the shared codex-retrigger
   marker; codex-retrigger logs the post to stderr (`✅ codex-retrigger: posted …`).
 - **Merge authority unchanged.** Required status checks + litmus still gate. The
@@ -108,10 +130,20 @@ new marker, so the `none` and `stale` paths share the same per-(PR,HEAD) marker:
   is non-gating there. The only place a `none`-only Codex (e.g. a Codex-only repo)
   needs handling is COMPLETION, where the first-engagement grace already lives. The
   issue also requires firing "after CI settles" — COMPLETION is exactly that point.
-- **Longer / looping re-poll after the nudge.** Rejected as default: an unbounded or
+- **Longer / looping re-poll after the nudge.** ~~Rejected as default: an unbounded or
   multi-round wait for a possibly-quota-dead bot is the hang the design forbids. The
   single bounded grace + `PR_GRIND_CODEX_GRACE_SECS` knob covers operators who want
-  a longer window.
+  a longer window.~~
+  **SUPERSEDED 2026-07-19 (#420) — this alternative was adopted.** The rejection
+  conflated *looping* with *unbounded*; the objection was always to the hang, not the
+  loop. A poll on a fixed deadline (480s, 30s interval, early-exit on engagement, each
+  sleep clamped to the remaining time) is strictly MORE bounded than what it replaced,
+  because it also caps the case the single sleep handled worst — Codex answering at
+  4min against a 20s window. The quota-dead bot still falls through non-gating at the
+  deadline. Rejecting the loop as default is what left the 20s default in place and
+  produced the merges in the revision above. The "operators who want a longer window
+  can raise the knob" clause was the load-bearing error: nobody raises a knob whose
+  default silently misses, and the default is what every repo actually runs.
 - **Generalize to other auto-advisory bots (Cursor Bugbot `bugbot run`) now.**
   Deferred: Codex already has the retrigger machinery and the observed failure. The
   opt-in + bounded-fallback contract generalizes cleanly if a second bot warrants it

@@ -749,56 +749,85 @@ case "$BASE_BRANCH" in
 esac
 rm -f "$BASE_BRANCH_ERR"
 
-PR_BRANCH=$(gh pr view <PR_NUMBER> --json headRefName -q .headRefName)
-# Resolve to an absolute path so WORKTREE_DIR can be passed to the subagent
-# unambiguously — a relative path would re-anchor against whatever CWD the
-# subagent SDK happens to start in, not the dispatcher's post-`cd` CWD.
-# Use parent-pwd composition so this works even before the worktree exists
-# (BSD realpath on macOS rejects non-existent paths).
-WORKTREE_DIR="$(cd .. && pwd -P)/pr-grind-${PR_NUMBER}"
-
-# Attempt to create the ephemeral worktree. If the branch is already
-# checked out elsewhere (another worktree, or the dispatcher's own CWD —
-# the common case when running pr-grind on the branch you just pushed),
-# fall back to in-place mode automatically — equivalent to passing
-# `--no-worktree`. This avoids a hard failure on a workflow we expect.
-WT_OUT=$(LANG=C LC_ALL=C git worktree add "$WORKTREE_DIR" "$PR_BRANCH" 2>&1)
-WT_EXIT=$?
-
-# `tr -cd '[:print:]\n\t'` strips every non-printable byte — kills CSI, OSC,
-# and any other terminal-control sequence in one pass. Used here instead of
-# sed because BSD sed (macOS default) does not support the `\x1B` hex escape;
-# `tr -cd '[:print:]\n\t'` is portable across BSD and GNU. Applied to any
-# output that came from git or from the GitHub-API-supplied branch name.
-SAFE_BRANCH=$(printf '%s' "$PR_BRANCH" | tr -cd '[:print:]\n\t')
-
-if [ "$WT_EXIT" -ne 0 ]; then
-  if printf '%s' "$WT_OUT" | grep -q 'already used by worktree at'; then
-    echo "ℹ️  Branch $SAFE_BRANCH is already checked out — falling back to in-place mode (--no-worktree)."
-    # Marker line — the dispatcher scans stdout for this exact string and
-    # MUST propagate NO_WORKTREE=1 to subsequent bash blocks (shell vars
-    # don't survive across Claude tool calls; the printed marker is the
-    # cross-block source of truth).
-    echo "pr-grind-mode: no-worktree"
-    # Hard-fail if we can't resolve the repo root — without `set -e`, an
-    # empty WORKTREE_DIR would let `cd ""` silently fall through to $HOME.
-    if ! WORKTREE_DIR=$(git rev-parse --show-toplevel); then
-      echo "❌ git rev-parse --show-toplevel failed — cannot determine repo root for in-place fallback."
-      exit 1
-    fi
-    NO_WORKTREE=1
-    cd "$WORKTREE_DIR" || { echo "❌ cd to repo root '$WORKTREE_DIR' failed — cannot proceed with in-place fallback."; exit 1; }
-    # Echo the resolved path so the dispatcher can capture it deterministically
-    echo "WORKTREE_DIR=$WORKTREE_DIR"
-  else
-    SAFE_WT_OUT=$(printf '%s' "$WT_OUT" | tr -cd '[:print:]\n\t')
-    echo "❌ git worktree add failed: $SAFE_WT_OUT"
-    exit 1
-  fi
-else
-  cd "$WORKTREE_DIR" || { echo "❌ cd to worktree '$WORKTREE_DIR' failed — cannot proceed."; exit 1; }
-  echo "WORKTREE_DIR=$WORKTREE_DIR"
+PR_META=$(gh pr view <PR_NUMBER> --json headRefName,headRefOid,isCrossRepository)
+PR_BRANCH=$(printf '%s' "$PR_META" | jq -r '.headRefName // empty')
+PR_HEAD_SHA=$(printf '%s' "$PR_META" | jq -r '.headRefOid // empty')
+# NOT `// empty` here: jq's `//` treats `false` as absent just like `null`, so
+# the alternative would fire on every SAME-REPO PR (isCrossRepository=false) and
+# hard-exit the common path. Read the field raw and validate it as a boolean.
+PR_IS_FORK=$(printf '%s' "$PR_META" | jq -r '.isCrossRepository')
+if [ -z "$PR_BRANCH" ] || [ -z "$PR_HEAD_SHA" ]; then
+  echo "❌ could not resolve PR head ref/oid for <PR_NUMBER> — not proceeding."
+  exit 1
 fi
+case "$PR_IS_FORK" in
+  true|false) ;;
+  *) echo "❌ isCrossRepository for <PR_NUMBER> was '$PR_IS_FORK', not a boolean — not proceeding."; exit 1 ;;
+esac
+
+# FORK PRs ARE NOT SUPPORTED — refuse before touching anything. This is a hard
+# stop, not a limitation to route around.
+#
+# `headRefName` is chosen by the PR's source repository and is NOT
+# repository-qualified: a fork can name its branch `main`. Any path that maps
+# that name onto a LOCAL ref is the wrong-branch class #421 exists to prevent.
+# Skipping the fetch is NOT sufficient — a fork branch named `main` whose head
+# merely happens to equal the local `main` SHA would satisfy the resolver's
+# assertion, take in-place mode, and let grind commits push to the UPSTREAM
+# branch instead of the fork.
+#
+# Nor is this a real capability loss: a grind must push its fix commits to the
+# PR head, which requires write access to the fork — access this flow never had.
+# "Supporting" fork PRs here could only ever mean pushing somewhere wrong.
+if [ "$PR_IS_FORK" = "true" ]; then
+  echo "❌ PR <PR_NUMBER> is from a fork. pr-grind cannot grind fork PRs: it would"
+  echo "   need push access to the fork's head branch, and a fork-chosen branch"
+  echo "   name must never be resolved against a local ref (#421)."
+  echo "   Review the PR manually, or ask the author to push to a branch in this repo."
+  exit 1
+fi
+
+# Same-repo from here. Reconcile the local branch with the PR head BEFORE
+# resolving, so the ordinary "someone pushed to the PR" case proceeds instead of
+# bailing. Belt-and-braces: never fetch into the base branch, so a malformed
+# same-repo case cannot reach the fetch either.
+if [ "$PR_BRANCH" != "$BASE_BRANCH" ]; then
+  # Fast-forward only — note the absence of a leading `+`. A divergent local
+  # branch must NOT be silently rewritten; the fetch fails, the SHA assertion
+  # bails, and the operator decides. Same outcome when the branch is currently
+  # checked out, which git refuses to update via fetch. The branch name is one
+  # argv element to git, never shell-evaluated, so a hostile name containing
+  # `$(...)`, backticks, `;` or `|` cannot execute anything.
+  git fetch -q origin "refs/heads/${PR_BRANCH}:refs/heads/${PR_BRANCH}" 2>/dev/null || true
+fi
+
+# Resolve the grind's working directory. The resolver (#421) owns the three-way
+# split — branch free / checked out HERE / held by ANOTHER worktree — and BAILs
+# fail-CLOSED on the third rather than silently pointing the grind at the repo
+# root's branch. It also asserts unconditionally, in BOTH modes, that the
+# resolved dir is on `$PR_BRANCH` AND at `$PR_HEAD_SHA` — name alone would let a
+# stale or unrelated same-named local branch through (fork PRs especially).
+#
+# Its stdout is the cross-block source of truth (shell vars don't survive across
+# Claude tool calls): `pr-grind-mode: no-worktree` when it fell back in-place,
+# and always a final `WORKTREE_DIR=<abs path>`.
+RESOLVE_OUT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/resolve-pr-worktree.sh" "<PR_NUMBER>" "$PR_BRANCH" "$PR_HEAD_SHA" 2>&1)
+RESOLVE_EXIT=$?
+printf '%s\n' "$RESOLVE_OUT"
+if [ "$RESOLVE_EXIT" -ne 0 ]; then
+  echo "❌ Step 0 worktree resolution failed — see above. Not proceeding."
+  exit 1
+fi
+
+if printf '%s' "$RESOLVE_OUT" | grep -q '^pr-grind-mode: no-worktree$'; then
+  NO_WORKTREE=1
+fi
+WORKTREE_DIR=$(printf '%s' "$RESOLVE_OUT" | grep '^WORKTREE_DIR=' | tail -1 | sed 's/^WORKTREE_DIR=//')
+if [ -z "$WORKTREE_DIR" ]; then
+  echo "❌ resolver exited 0 but emitted no WORKTREE_DIR — refusing to guess."
+  exit 1
+fi
+cd "$WORKTREE_DIR" || { echo "❌ cd to '$WORKTREE_DIR' failed — cannot proceed."; exit 1; }
 
 # Snapshot the solo-admin opt-in file at pr-grind INVOCATION TIME, so the
 # anti-self-bypass freshness check anchors to "≥30s old at invocation start"
@@ -867,9 +896,23 @@ fi
 
 **Why a worktree:** pr-grind is a different operational mode from the pipeline. Pre-PR phases optimize for local delivery; post-PR grind optimizes for async iteration. An ephemeral worktree gives pr-grind its own branch ownership without hijacking the main workspace.
 
-**Skip with `--no-worktree`:** Optional explicit opt-in to in-place mode. The auto-fallback below now handles the common case (branch already checked out), so passing this flag is rarely required — use it when you want to suppress the info-level fallback message or skip the worktree-add attempt entirely.
+**Skip with `--no-worktree`:** Optional explicit opt-in to in-place mode. The auto-fallback below handles the common case (branch already checked out *here*), so passing this flag is rarely required — use it when you want to suppress the info-level fallback message or skip the worktree-add attempt entirely.
 
-**Auto-fallback to in-place mode:** If `git worktree add` fails with `already used by worktree at`, Step 0 automatically falls back and prints three lines: an `ℹ️` info line naming the branch, `pr-grind-mode: no-worktree`, and `WORKTREE_DIR=<repo-root>`. **When the `pr-grind-mode: no-worktree` line appears, the dispatcher MUST treat the rest of the run as if `--no-worktree` was passed** — set `NO_WORKTREE=1` in every subsequent bash block, skip the worktree cleanup at COMPLETION and BAIL, and write `pr-grind-clean.local` to the current repo root rather than copying it across worktrees. This state has to be carried by Claude across bash invocations because shell variables don't persist; treat the printed marker as the source of truth and propagate it explicitly. The `WORKTREE_DIR=<repo-root>` line is the resolved path the dispatcher should pass to the subagent context block.
+**Auto-fallback to in-place mode:** `scripts/resolve-pr-worktree.sh` splits `git worktree add`'s `already used by worktree at` failure three ways (#421):
+
+| Branch is… | Resolver does | Emits |
+|---|---|---|
+| free | creates `pr-grind-<PR_NUMBER>` beside the repo root | `WORKTREE_DIR=<new worktree>` |
+| checked out in **this** repo | falls back in-place | `ℹ️` info line, `pr-grind-mode: no-worktree`, `WORKTREE_DIR=<repo-root>` |
+| checked out in **another** worktree | **BAILs**, naming the holder | nothing on stdout; exit 1 |
+
+The third row is the fail-CLOSED fix. Previously *any* `already used by worktree at` fell back to the repo root, so a branch held by another worktree pointed the whole grind at whatever the repo root was on — usually `main` — which read the wrong HEAD for the ack ledger and pushed fix commits straight onto `main`, bypassing the PR. An unusable worktree is the failure case, not the happy path.
+
+Whichever row is taken, the resolver **asserts unconditionally**, before it exits 0, that the resolved directory is on `$PR_BRANCH` **AND** at `$PR_HEAD_SHA`. That assertion, not the split, is the load-bearing guard: it catches this bug class even if a fourth case ever appears.
+
+**Both halves are required — do not document or implement only the name check.** Branch-name equality alone is insufficient: `headRefName` is not globally unique, so a stale or wholly unrelated local branch that merely shares the PR head's name satisfies it. That is routine for fork PRs and for a local branch that never fetched the PR's latest push. The SHA equality is what makes "this is the revision the PR is actually at" true rather than merely plausible.
+
+**When the `pr-grind-mode: no-worktree` line appears, the dispatcher MUST treat the rest of the run as if `--no-worktree` was passed** — set `NO_WORKTREE=1` in every subsequent bash block, skip the worktree cleanup at COMPLETION and BAIL, and write `pr-grind-clean.local` to the current repo root rather than copying it across worktrees. This state has to be carried by Claude across bash invocations because shell variables don't persist; treat the printed marker as the source of truth and propagate it explicitly. The final `WORKTREE_DIR=` line is the resolved path the dispatcher should pass to the subagent context block.
 
 ### Dispatch a Round (default path)
 
@@ -1146,19 +1189,40 @@ FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-
 # Codex first-engagement grace. If Codex resolved to `none` — zero reaction/
 # review on the PR — it may simply not have posted its initial 👀 on a just-
 # pushed HEAD yet; without this a Codex-ONLY repo (no registered bots forcing
-# wait-rounds) could merge in the gap before Codex starts. Give it ONE bounded
-# re-poll. This rarely fires: COMPLETION is reached only after the loop has
-# converged, by which point an active Codex has long since engaged (ack is a
-# SHA/stale, not `none`) — so on repos where Codex runs there is no wait here.
+# wait-rounds) could merge in the gap before Codex starts. Re-poll on a bounded
+# DEADLINE, early-exiting the instant Codex engages. This rarely fires: COMPLETION
+# is reached only after the loop has converged, by which point an active Codex has
+# long since engaged (ack is a SHA/stale, not `none`) — so on repos where Codex
+# runs there is no wait here.
 # Set PR_GRIND_CODEX_GRACE_SECS=0 on repos that do not use Codex to skip the
-# one-time wait. Bounded by design; never an unbounded hang.
+# wait entirely. Bounded by design; never an unbounded hang.
+#
+# DEADLINE SIZING (2026-07-19, issue #420) — the old default was a SINGLE blind
+# 20s sleep. Measured `@codex review` → Codex-review latency on this repo was
+# 3m37s / 4m58s / 6m36s / 7m27s (PRs #412/#419/#409/#390): ~15x the grace. The
+# re-poll therefore ALWAYS observed `none` and fell through, merging seconds
+# before the review landed (#419 merged 5s after its own nudge; the review
+# arrived 5min later, on a closed PR). The default is now a 480s deadline polled
+# every 30s, so a fast Codex costs ~30s and a slow one is still caught.
 # This grace handles ONLY the `none` case (Codex never engaged). The `stale` case —
 # Codex reviewed but won't re-ack an UNCHANGED HEAD — is handled earlier, in the
 # LOOP, by the codex-retrigger one-shot (ADR 0005, scripts/codex-retrigger.sh):
 # COMPLETION is unreachable while Codex is `stale` (Invariant 2 blocks `clean`), so
 # the recovery for `stale` must live in the wait-round, not here.
 CODEX_DONE=$(printf '%s' "$FRESH_ACKS" | tr ',' '\n' | awk -F= '$1=="chatgpt-codex-connector"{print $2}')
-CODEX_GRACE="${PR_GRIND_CODEX_GRACE_SECS:-20}"
+CODEX_GRACE="${PR_GRIND_CODEX_GRACE_SECS:-480}"
+CODEX_POLL="${PR_GRIND_CODEX_POLL_SECS:-30}"
+# Sanitize both: non-numeric/empty → default. A bad value must not make the
+# arithmetic below error out (this block runs without `set -e`) or spin hot.
+# The `10#` canonicalization is load-bearing, not cosmetic: `0480` passes the
+# all-digits test but `$(( ))` reads a leading zero as OCTAL, and digits 8/9 then
+# abort the whole COMPLETION shell with "value too great for base". Same guard
+# codex-active-repo.sh applies to its window.
+case "$CODEX_GRACE" in '' | *[!0-9]*) CODEX_GRACE=480 ;; esac
+case "$CODEX_POLL"  in '' | *[!0-9]*) CODEX_POLL=30  ;; esac
+CODEX_GRACE=$((10#$CODEX_GRACE))
+CODEX_POLL=$((10#$CODEX_POLL))
+[ "$CODEX_POLL" -lt 1 ] && CODEX_POLL=30
 # ADR 0013 revision (#320): the `none`-nudge + the missing-Codex warning now fire
 # when the repo is PROVEN Codex-active (auto-detect over recent reviews/reactions)
 # OR the force-on opt-in file is present — no longer gated on the manual marker.
@@ -1176,6 +1240,37 @@ if [ "$CODEX_DONE" = "none" ]; then
      && bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-active-repo.sh" "$OWNER/$REPO" >/dev/null; then
     CODEX_REPO_ACTIVE=1
   fi
+  # Force-on cold-start opt-in — a repo where Codex IS expected but has no history
+  # yet, so auto-detect reads inactive. This MUST resolve the marker byte-identically
+  # to codex-nudge-if-expected.sh:60-64, or the wrapper posts the force-on nudge while
+  # this gate caps the wait at 20s and recreates the very race being closed. So:
+  # resolve from $WORKTREE_DIR (the wrapper's CWD, not the possibly-drifted ambient
+  # one), honor BUSDRIVER_MAIN_ROOT, and use a LITERAL `.claude` — the wrapper does
+  # NOT honor BUSDRIVER_STATE_DIR here, and reading a different dir than the wrapper
+  # is exactly the mismatch. Fail-SAFE: unresolvable → 0 → short wait, never long.
+  # Deliberately NOT gated on PR_GRIND_CODEX_RETRIGGER, so the force-on marker keeps
+  # working under the kill switch.
+  #
+  # Be precise about what that does and does not buy, because two review rounds
+  # pulled in opposite directions here. PR_GRIND_CODEX_RETRIGGER=0 ALREADY suppresses
+  # auto-detection above (deliberately — a switched-off repo pays no GraphQL
+  # round-trip), so with the switch on and NO force-on marker the wait is the 20s
+  # courtesy one even if Codex would have auto-reviewed. That coupling is inherited,
+  # not introduced here, and it is the documented semantic of a switch named "kill":
+  # the operator turned the Codex integration off. The marker is the escape hatch —
+  # an operator who wants nudges off but the full wait ON drops
+  # .claude/pr-grind-codex-expected.local and gets exactly that. Decoupling further
+  # would mean detecting on every switched-off repo, which is the network cost the
+  # switch exists to avoid.
+  CODEX_EXPECTED=$( cd "$WORKTREE_DIR" 2>/dev/null || { echo 0; exit 0; }
+    _MR="${BUSDRIVER_MAIN_ROOT:-}"
+    if [ -z "$_MR" ]; then
+      _G=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+      case "$_G" in /*) _MR="$(dirname "$_G")" ;; esac
+    fi
+    if [ -n "$_MR" ] && [ -f "${_MR}/.claude/pr-grind-codex-expected.local" ]; then
+      echo 1; else echo 0; fi )
+  case "$CODEX_EXPECTED" in 1) : ;; *) CODEX_EXPECTED=0 ;; esac
   if [ "${CODEX_GRACE}" -gt 0 ] 2>/dev/null; then
   # `none`-nudge (one-shot per (PR,HEAD)) — ADR 0013 (as revised). Post `@codex
   # review` ONCE, here, AFTER CI has settled (COMPLETION is post-convergence) so we
@@ -1196,8 +1291,90 @@ if [ "$CODEX_DONE" = "none" ]; then
   # path; the outer `|| true` keeps a failed nudge from ever staling the gate.
   ( cd "$WORKTREE_DIR" || exit 0
     bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-nudge-if-expected.sh" "$PR" "$HEAD_FULL_SHA" "$OWNER/$REPO" "$CODEX_REPO_ACTIVE" ) || true
-  echo "ℹ️  Codex shows no engagement on HEAD; ${CODEX_GRACE}s first-engagement grace re-poll…"
-  sleep "$CODEX_GRACE"
+  # WAIT SIZING (#420). The 480s deadline is for repos where Codex is genuinely
+  # expected — PROVEN-ACTIVE or FORCE-ON. A repo with no Codex at all must NOT
+  # start waiting 8 minutes on every merge merely because it read `none`; it keeps
+  # the historical short courtesy wait. (Raising the default without this gate
+  # would have imposed the full deadline on every Codex-less repo — caught in
+  # review.) The NUDGE above is unaffected: the wrapper applies the same
+  # force-on/active policy itself and is a no-op absent both.
+  CODEX_WAIT="$CODEX_GRACE"
+  if [ "$CODEX_REPO_ACTIVE" != "1" ] && [ "$CODEX_EXPECTED" != "1" ]; then
+    [ "$CODEX_WAIT" -gt 20 ] && CODEX_WAIT=20
+  fi
+  # The interval must never exceed the deadline, else the first sleep alone
+  # overshoots it (POLL=3600 against a 480s deadline would block for an hour).
+  [ "$CODEX_POLL" -gt "$CODEX_WAIT" ] && CODEX_POLL="$CODEX_WAIT"
+  echo "ℹ️  Codex shows no engagement on HEAD; polling every ${CODEX_POLL}s up to ${CODEX_WAIT}s for first engagement…"
+  # Bounded poll, NOT a blind sleep. Deadline computed ONCE up front so a slow
+  # refresh inside the body can never extend the SLEEP budget past CODEX_WAIT, and
+  # each sleep is clamped to the REMAINING time so a non-divisible interval cannot
+  # overrun it either. Single exit test, at the top.
+  #
+  # CEILING, stated precisely (do not upgrade this to "never hangs"): CODEX_WAIT
+  # bounds the SLEEP budget, not total wall time. The six `gh` fetches per iteration
+  # carry no explicit timeout, so a hung request stalls here — exactly as it would at
+  # every other unguarded `gh` fetch in COMPLETION (this block adds no new exposure,
+  # it just repeats an existing one up to CODEX_WAIT/CODEX_POLL times). The behavioral
+  # test covers the sleep arithmetic only; it cannot exercise a hung fetch. If gh
+  # hangs become real, wrap these in `timeout`/`gtimeout` here AND at the other
+  # COMPLETION fetches — piecemeal is not worth it.
+  # ponytail: re-fetches all 6 sources per iteration (worst case 480/30 = 16
+  # rounds x 6 calls); only runs on the rare Codex-`none`-but-expected gap, so
+  # the simple version wins. Narrow to reactions+reviews inside the loop if the
+  # API cost ever shows up.
+  CODEX_DEADLINE=$(( $(date +%s) + CODEX_WAIT ))
+  # Last verdict computed from a COMPLETE (FETCH_OK=1) snapshot. Seeded from
+  # CODEX_REGRACE (== CODEX_DONE == "none", the only value that gets us into this
+  # loop). Updated below ONLY when a poll's fetch succeeds, so a fetch failure
+  # never overwrites the last trustworthy observation.
+  CODEX_LAST_GOOD_VERDICT="$CODEX_REGRACE"
+  # ...and the PAYLOADS that verdict was computed from. Restoring the verdict
+  # alone is not enough: the five NON-Codex reviewers are recomputed after this
+  # loop from these same six variables plus FETCH_OK, so a failed final poll
+  # would leave them holding the incomplete snapshot and fail every one of them
+  # closed to `stale` — blocking the merge for exactly the transient reason the
+  # last-good fallback exists to absorb. CODEX_LG_OK stays 0 until a COMPLETE
+  # snapshot is observed; without one there is nothing trustworthy to restore
+  # and the deadline branch correctly leaves FETCH_OK=0 (fail-CLOSED).
+  CODEX_LG_OK=0
+  if [ "$FETCH_OK" = "1" ]; then
+    CODEX_LG_OK=1
+    CODEX_LG_REACTIONS="$ALL_REACTIONS";   CODEX_LG_REVIEWS="$ALL_REVIEWS"
+    CODEX_LG_COMMENTS="$ALL_COMMENTS";     CODEX_LG_CHECK_RUNS="$ALL_CHECK_RUNS"
+    CODEX_LG_STATUSES="$ALL_STATUSES";     CODEX_LG_THREADS="$ALL_THREADS"
+  fi
+  while :; do
+  _CODEX_REM=$(( CODEX_DEADLINE - $(date +%s) ))
+  if [ "$_CODEX_REM" -le 0 ]; then
+    echo "ℹ️  Codex did not engage within ${CODEX_WAIT}s; proceeding."
+    # Greptile P1: if the LAST poll ended with a fetch error (FETCH_OK=0),
+    # CODEX_REGRACE currently holds ack-ledger's fail-closed `stale` fallback for
+    # an incomplete snapshot — a transient-error artifact, not a real finding.
+    # Deadline exhaustion should fall back to the last COMPLETE observation
+    # instead, so a quota-dead/silent Codex plus a transient final fetch failure
+    # reads `none` (non-gating) rather than blocking the merge on a snapshot we
+    # already know was incomplete.
+    # Restore the verdict AND the payloads it came from, then clear FETCH_OK so
+    # the post-loop recomputation of the other five reviewers reads a snapshot
+    # that is actually complete. Only when a complete snapshot was ever seen
+    # (CODEX_LG_OK=1); otherwise leave FETCH_OK=0 and fail CLOSED.
+    if [ "$FETCH_OK" != "1" ] && [ "$CODEX_LG_OK" = "1" ]; then
+      CODEX_REGRACE="$CODEX_LAST_GOOD_VERDICT"
+      ALL_REACTIONS="$CODEX_LG_REACTIONS";   ALL_REVIEWS="$CODEX_LG_REVIEWS"
+      ALL_COMMENTS="$CODEX_LG_COMMENTS";     ALL_CHECK_RUNS="$CODEX_LG_CHECK_RUNS"
+      ALL_STATUSES="$CODEX_LG_STATUSES";     ALL_THREADS="$CODEX_LG_THREADS"
+      FETCH_OK=1
+      export ALL_REACTIONS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_THREADS FETCH_OK
+    fi
+    break
+  fi
+  if [ "$_CODEX_REM" -lt "$CODEX_POLL" ]; then sleep "$_CODEX_REM"; else sleep "$CODEX_POLL"; fi
+  # Fresh FETCH_OK per poll. It is sticky-on-failure by design elsewhere, but across
+  # a multi-round wait that would make ONE transient error condemn every later poll,
+  # so each iteration is judged on its own snapshot. The value that survives the loop
+  # is the LAST poll's, which is what the ledger below is entitled to trust.
+  FETCH_OK=1
   # Refresh ALL Codex-relevant sources, not just reactions: during the grace
   # Codex may post FINDINGS (inline threads → Tier A, or a /reviews entry whose
   # commit_id is HEAD → Tier B), not only a clean 👍. Refreshing reactions alone
@@ -1232,9 +1409,92 @@ if [ "$CODEX_DONE" = "none" ]; then
   ' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR" 2>/dev/null) || FETCH_OK=0
   export ALL_REACTIONS ALL_REVIEWS ALL_COMMENTS ALL_CHECK_RUNS ALL_STATUSES ALL_THREADS FETCH_OK
   CODEX_REGRACE=$(bash "$ACK_SCRIPT" chatgpt-codex-connector 2>/dev/null || echo stale)
-  # Re-fold only if Codex engaged during the grace (now `stale` or a fresh SHA);
-  # SHA → still passes, `stale` → blocks below. SHAs/stale/none are sed-safe.
-  [ "$CODEX_REGRACE" != "none" ] && FRESH_ACKS=$(printf '%s' "$FRESH_ACKS" | sed "s/chatgpt-codex-connector=none/chatgpt-codex-connector=${CODEX_REGRACE}/")
+    # Codex engaged → stop polling immediately (a fast Codex costs one interval).
+    # Otherwise loop; the top-of-loop deadline test ends it and falls through to
+    # the missing-Codex warning + merge (non-gating, exactly as before).
+    #
+    # FETCH_OK is required: a transient failure in ANY refresh above makes
+    # ack-ledger return `stale`, which is `!= none` and would otherwise be read as
+    # ENGAGEMENT — exiting the poll on a fetch glitch and blocking completion on a
+    # snapshot we know is incomplete, when a later poll would likely have recovered.
+    # Only a verdict from a COMPLETE snapshot may end the wait. (FETCH_OK is reset
+    # per-iteration at the top of the loop, so one bad poll does not poison the rest.)
+    # Record this poll's verdict as the last-good observation whenever its fetch
+    # was complete — including a complete "none" (Codex still hasn't engaged) —
+    # so the deadline-exit fallback above always has the most recent trustworthy
+    # value, not just the pre-loop seed.
+    if [ "$FETCH_OK" = "1" ]; then
+      CODEX_LAST_GOOD_VERDICT="$CODEX_REGRACE"
+      CODEX_LG_OK=1
+      CODEX_LG_REACTIONS="$ALL_REACTIONS";   CODEX_LG_REVIEWS="$ALL_REVIEWS"
+      CODEX_LG_COMMENTS="$ALL_COMMENTS";     CODEX_LG_CHECK_RUNS="$ALL_CHECK_RUNS"
+      CODEX_LG_STATUSES="$ALL_STATUSES";     CODEX_LG_THREADS="$ALL_THREADS"
+    fi
+    [ "$CODEX_REGRACE" != "none" ] && [ "$FETCH_OK" = "1" ] && break
+  done
+  # Re-apply the Tier-D content-identity widening ONCE, here — not per interval.
+  # The refreshes above REPLACED ALL_CHECK_RUNS with the raw HEAD-scoped payload,
+  # discarding the augmentation augment-equiv-acks.sh added before the ledger ran;
+  # without re-sourcing, a valid metadata-only force-push loses its carried-forward
+  # Tier-D acks and the recomputation below turns them `stale`, blocking a merge
+  # that should pass. It belongs outside the loop because the in-loop verdict
+  # classifies ONLY Codex, which has no Tier D — running it per interval would add
+  # a repo view, a timeline GraphQL call and possible fetches to all 16 rounds for
+  # a value nothing in the loop reads. The full ledger below is its only consumer.
+  [ -f "$AUGMENT_SCRIPT" ] && . "$AUGMENT_SCRIPT"
+  export ALL_CHECK_RUNS FETCH_OK
+  # Recompute the ENTIRE ledger on the post-wait sources — not just Codex.
+  # The loop refreshes all six payloads, but the old code re-folded ONLY the Codex
+  # entry, leaving the five registered bots at their pre-wait values. Over the old
+  # 20s sleep that gap was narrow; at a 480s deadline it is wide enough for a bot to
+  # post CHANGES_REQUESTED (or a finding with no inline thread) during the window
+  # while FRESH_ACKS still carries its stale-but-passing SHA — authorizing the merge
+  # on data known to be out of date. Recomputing all six closes it: any bot that
+  # re-engaged now reads `stale` and blocks below, exactly as on the normal path.
+  # Same fail-CLOSED `|| echo stale` as the original computation.
+  # Normalize the Codex verdict before it is folded in. CODEX_REGRACE is already
+  # seeded from CODEX_DONE above, so it cannot currently be empty — this is
+  # belt-and-braces against a future edit that moves or drops that seed: an EMPTY
+  # value would render as `chatgpt-codex-connector=` and match neither the `none`
+  # nor the `stale` check, slipping through as an unclassified ack. Anything not a
+  # recognized verdict becomes `stale` (fail-CLOSED, blocks).
+  # ack-ledger.sh's contract is exactly three outputs: `none`, `stale`, or the
+  # CURRENT $HEAD_SHA. Match that contract literally — anything else (empty, an
+  # error string, a stray hex value, a SHA that is not this HEAD) becomes `stale`
+  # and blocks, because the gate below blocks only on the literal `stale`.
+  # Two wrong ways to write this, both tried and rejected in review:
+  #   - a `?*` arm, or any "looks like hex" test, accepts arbitrary output → fail-OPEN;
+  #   - a 40-char length test rejects every REAL ack (HEAD_SHA is
+  #     `git rev-parse HEAD | cut -c1-8`, 8 chars) → blocks every Codex merge.
+  # Equality with $HEAD_SHA is both, correctly: nothing else can pass.
+  case "$CODEX_REGRACE" in
+    none | stale | "$HEAD_SHA") : ;;
+    *) CODEX_REGRACE=stale ;;
+  esac
+  FRESH_ACKS="cursor=$(bash "$ACK_SCRIPT" cursor 2>/dev/null || echo stale),cubic-dev-ai=$(bash "$ACK_SCRIPT" cubic-dev-ai 2>/dev/null || echo stale),coderabbitai=$(bash "$ACK_SCRIPT" coderabbitai 2>/dev/null || echo stale),devin-ai-integration=$(bash "$ACK_SCRIPT" devin-ai-integration 2>/dev/null || echo stale),greptile-apps=$(bash "$ACK_SCRIPT" greptile-apps 2>/dev/null || echo stale),chatgpt-codex-connector=${CODEX_REGRACE}"
+  # HEAD-MOVED GUARD (fail-CLOSED). Everything above classifies acks against
+  # HEAD_SHA captured BEFORE the wait, but the later `gh pr merge` targets whatever
+  # the PR points at NOW. A push landing during the window would therefore carry
+  # the old commit's acks onto a new, unreviewed head. The old 20s sleep made that
+  # a narrow race; a 480s deadline makes it reachable, so this change owns it.
+  # On ANY divergence — or an unresolvable/failed lookup — mark every ack `stale`
+  # so the existing stale-ack check blocks the merge and the loop re-converges on
+  # the new HEAD. Never proceeds on doubt.
+  #
+  # RESIDUAL, stated honestly (issue #427): this NARROWS the race, it does not
+  # close it. The check is non-atomic — a push can still land after this lookup
+  # returns and before the merge executes, and no amount of re-checking here fixes
+  # that. The real closure is server-side, passing the reviewed SHA to the merge's
+  # `--match-head-commit`, which makes GitHub itself refuse a moved head. That
+  # touches the merge invocations in several blocks and is tracked separately in
+  # #427; do NOT read this guard as making the merge atomic.
+  CODEX_HEAD_NOW=$(gh pr view "$PR" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+  if [ -z "$CODEX_HEAD_NOW" ] || [ "$CODEX_HEAD_NOW" != "$HEAD_FULL_SHA" ]; then
+    _CODEX_HEAD_DISPLAY="${CODEX_HEAD_NOW:0:8}"
+    [ -z "$CODEX_HEAD_NOW" ] && _CODEX_HEAD_DISPLAY="<lookup failed>"
+    echo "⚠️  HEAD moved during the Codex wait (was ${HEAD_FULL_SHA:0:8}, now ${_CODEX_HEAD_DISPLAY}) — invalidating acks; the loop must re-converge on the new HEAD."
+    FRESH_ACKS="cursor=stale,cubic-dev-ai=stale,coderabbitai=stale,devin-ai-integration=stale,greptile-apps=stale,chatgpt-codex-connector=stale"
+  fi
   fi
   # Missing-Codex warning (#320 secondary ask): Codex is HISTORICALLY active here but
   # still `none` at merge. Gated on CODEX_REPO_ACTIVE (already forced to 0 by the kill
@@ -2085,7 +2345,7 @@ PR #<N> is clean after <rounds> round(s).
 | `--max-fix N` | Maximum **fix-rounds** (dispatcher pushed a commit; `RESULT_COMMIT_SHA != "none"`) before bail. Reflects engineering iteration budget. | 5 |
 | `--max-wait N` | Maximum **wait-rounds** (worker did not push; `RESULT_COMMIT_SHA == "none"` — polling for slow bots to ack HEAD) before bail. Reflects bot-latency tolerance. | 8 |
 | `--max N` | **Deprecated alias** that sets both `--max-fix` and `--max-wait` to N. Emits a `⚠️  --max is deprecated; use --max-fix and --max-wait` warning. Cannot be combined with `--max-fix` or `--max-wait` — combining bails with `conflicting flags`. | unset |
-| `--no-worktree` | Skip worktree creation, work in current directory. Same behavior auto-engages without the flag if `git worktree add` reports the branch is already checked out elsewhere — see Step 0 fallback. | Off (creates worktree) |
+| `--no-worktree` | Skip worktree creation, work in current directory. Same behavior auto-engages without the flag if the branch is already checked out **in this repo**; if another worktree holds it, Step 0 BAILs instead of falling back (#421) — see Step 0 fallback. | Off (creates worktree) |
 | `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
 | `--admin-on-approver-gap` | Opt-in auto-escalation when the approver gap is the sole remaining merge-gate blocker. Eligibility (ALL must hold): CI green, bots ack HEAD, all threads resolved, no failing required checks; author has `admin` or `maintain` repo permission; `.github/workflows/bypass-audit.yml` exists in the repo. With all gates green, the dispatcher runs `gh pr merge <PR> --squash --delete-branch --admin` and logs the event to `.claude/bypass-log.jsonl` (`event: pr-grind-admin-on-approver-gap`). **Fail-CLOSED when no audit workflow exists** — the flag is ignored without a trail and the dispatcher surfaces the operator-decision message instead. Off by default. **Alternative — per-repo opt-in:** for repos where the operator is structurally the sole human with PR-approval capability (no other humans with write/maintain/admin could ever approve), drop `.claude/pr-grind-auto-admin-solo.local` once (gitignored, same pattern as `skip-litmus.local`) and pr-grind treats the flag as implicit. The same eligibility gates apply, plus a live structural check that `HUMAN_ADMIN_COUNT==1` (counting humans with `permissions.push==true` — write/maintain/admin) and the author is that one approval-capable human. The opt-in self-revokes if a second approval-capable human appears — a contractor with write permission alone is enough to invalidate it. **Anti-self-bypass (snapshot-anchored, three conditions):** the opt-in file must be at least 30s old AT pr-grind INVOCATION START (Step 0), not at Completion. Step 0 snapshots the file's mtime to a per-PR snapshot at `.claude/.pr-grind-solo-opt-in-snapshot-<PR>.local` (written 0600) only when the file is already ≥30s old; Completion auto-fires only when (1) the per-PR snapshot exists, (2) its recorded mtime equals the opt-in file's current mtime, AND (3) the snapshot file's own filesystem mtime is ≥30s after the opt-in file's mtime (defeats a same-NOW forge where an attacker creates both files in one action with identical mtimes). A mid-run touch (no snapshot) or mid-run replacement (mismatch) both invalidate the opt-in for the current run. The per-PR scoping prevents concurrent pr-grind runs on different PRs from racing on shared state. Snapshot and opt-in file both live in the MAIN repo's `.claude/`, not the ephemeral worktree. The audit-log event is distinct: `pr-grind-admin-on-approver-gap-solo-admin-auto` with `trigger: "solo-admin-auto"` and `human_admin_count` recorded (variable name preserved for backward compat; semantic is now "humans with PR-approval capability"). | Off (surfaces decision message) |
 

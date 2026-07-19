@@ -744,56 +744,49 @@ case "$BASE_BRANCH" in
 esac
 rm -f "$BASE_BRANCH_ERR"
 
-PR_BRANCH=$(gh pr view <PR_NUMBER> --json headRefName -q .headRefName)
-# Resolve to an absolute path so WORKTREE_DIR can be passed to the subagent
-# unambiguously — a relative path would re-anchor against whatever CWD the
-# subagent SDK happens to start in, not the dispatcher's post-`cd` CWD.
-# Use parent-pwd composition so this works even before the worktree exists
-# (BSD realpath on macOS rejects non-existent paths).
-WORKTREE_DIR="$(cd .. && pwd -P)/pr-grind-${PR_NUMBER}"
-
-# Attempt to create the ephemeral worktree. If the branch is already
-# checked out elsewhere (another worktree, or the dispatcher's own CWD —
-# the common case when running pr-grind on the branch you just pushed),
-# fall back to in-place mode automatically — equivalent to passing
-# `--no-worktree`. This avoids a hard failure on a workflow we expect.
-WT_OUT=$(LANG=C LC_ALL=C git worktree add "$WORKTREE_DIR" "$PR_BRANCH" 2>&1)
-WT_EXIT=$?
-
-# `tr -cd '[:print:]\n\t'` strips every non-printable byte — kills CSI, OSC,
-# and any other terminal-control sequence in one pass. Used here instead of
-# sed because BSD sed (macOS default) does not support the `\x1B` hex escape;
-# `tr -cd '[:print:]\n\t'` is portable across BSD and GNU. Applied to any
-# output that came from git or from the GitHub-API-supplied branch name.
-SAFE_BRANCH=$(printf '%s' "$PR_BRANCH" | tr -cd '[:print:]\n\t')
-
-if [ "$WT_EXIT" -ne 0 ]; then
-  if printf '%s' "$WT_OUT" | grep -q 'already used by worktree at'; then
-    echo "ℹ️  Branch $SAFE_BRANCH is already checked out — falling back to in-place mode (--no-worktree)."
-    # Marker line — the dispatcher scans stdout for this exact string and
-    # MUST propagate NO_WORKTREE=1 to subsequent bash blocks (shell vars
-    # don't survive across Claude tool calls; the printed marker is the
-    # cross-block source of truth).
-    echo "pr-grind-mode: no-worktree"
-    # Hard-fail if we can't resolve the repo root — without `set -e`, an
-    # empty WORKTREE_DIR would let `cd ""` silently fall through to $HOME.
-    if ! WORKTREE_DIR=$(git rev-parse --show-toplevel); then
-      echo "❌ git rev-parse --show-toplevel failed — cannot determine repo root for in-place fallback."
-      exit 1
-    fi
-    NO_WORKTREE=1
-    cd "$WORKTREE_DIR" || { echo "❌ cd to repo root '$WORKTREE_DIR' failed — cannot proceed with in-place fallback."; exit 1; }
-    # Echo the resolved path so the dispatcher can capture it deterministically
-    echo "WORKTREE_DIR=$WORKTREE_DIR"
-  else
-    SAFE_WT_OUT=$(printf '%s' "$WT_OUT" | tr -cd '[:print:]\n\t')
-    echo "❌ git worktree add failed: $SAFE_WT_OUT"
-    exit 1
-  fi
-else
-  cd "$WORKTREE_DIR" || { echo "❌ cd to worktree '$WORKTREE_DIR' failed — cannot proceed."; exit 1; }
-  echo "WORKTREE_DIR=$WORKTREE_DIR"
+PR_META=$(gh pr view <PR_NUMBER> --json headRefName,headRefOid)
+PR_BRANCH=$(printf '%s' "$PR_META" | jq -r '.headRefName // empty')
+PR_HEAD_SHA=$(printf '%s' "$PR_META" | jq -r '.headRefOid // empty')
+if [ -z "$PR_BRANCH" ] || [ -z "$PR_HEAD_SHA" ]; then
+  echo "❌ could not resolve PR head ref/oid for <PR_NUMBER> — not proceeding."
+  exit 1
 fi
+
+# NOTE — deliberately no fetch here. `git fetch origin <branch>` only moves
+# FETCH_HEAD, not the local branch, and a fork PR's head branch does not exist
+# on `origin` at all, so a fetch would reconcile neither case while reading as
+# though it had. The SHA assertion is the contract: if the local branch is not
+# at the PR head, the resolver BAILs and names both SHAs, and the operator
+# fetches or pushes. Rare in practice — pr-grind normally runs on the machine
+# that just pushed the branch.
+
+# Resolve the grind's working directory. The resolver (#421) owns the three-way
+# split — branch free / checked out HERE / held by ANOTHER worktree — and BAILs
+# fail-CLOSED on the third rather than silently pointing the grind at the repo
+# root's branch. It also asserts unconditionally, in BOTH modes, that the
+# resolved dir is on `$PR_BRANCH` AND at `$PR_HEAD_SHA` — name alone would let a
+# stale or unrelated same-named local branch through (fork PRs especially).
+#
+# Its stdout is the cross-block source of truth (shell vars don't survive across
+# Claude tool calls): `pr-grind-mode: no-worktree` when it fell back in-place,
+# and always a final `WORKTREE_DIR=<abs path>`.
+RESOLVE_OUT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/resolve-pr-worktree.sh" "<PR_NUMBER>" "$PR_BRANCH" "$PR_HEAD_SHA" 2>&1)
+RESOLVE_EXIT=$?
+printf '%s\n' "$RESOLVE_OUT"
+if [ "$RESOLVE_EXIT" -ne 0 ]; then
+  echo "❌ Step 0 worktree resolution failed — see above. Not proceeding."
+  exit 1
+fi
+
+if printf '%s' "$RESOLVE_OUT" | grep -q '^pr-grind-mode: no-worktree$'; then
+  NO_WORKTREE=1
+fi
+WORKTREE_DIR=$(printf '%s' "$RESOLVE_OUT" | grep '^WORKTREE_DIR=' | tail -1 | sed 's/^WORKTREE_DIR=//')
+if [ -z "$WORKTREE_DIR" ]; then
+  echo "❌ resolver exited 0 but emitted no WORKTREE_DIR — refusing to guess."
+  exit 1
+fi
+cd "$WORKTREE_DIR" || { echo "❌ cd to '$WORKTREE_DIR' failed — cannot proceed."; exit 1; }
 
 # Snapshot the solo-admin opt-in file at pr-grind INVOCATION TIME, so the
 # anti-self-bypass freshness check anchors to "≥30s old at invocation start"
@@ -862,9 +855,21 @@ fi
 
 **Why a worktree:** pr-grind is a different operational mode from the pipeline. Pre-PR phases optimize for local delivery; post-PR grind optimizes for async iteration. An ephemeral worktree gives pr-grind its own branch ownership without hijacking the main workspace.
 
-**Skip with `--no-worktree`:** Optional explicit opt-in to in-place mode. The auto-fallback below now handles the common case (branch already checked out), so passing this flag is rarely required — use it when you want to suppress the info-level fallback message or skip the worktree-add attempt entirely.
+**Skip with `--no-worktree`:** Optional explicit opt-in to in-place mode. The auto-fallback below handles the common case (branch already checked out *here*), so passing this flag is rarely required — use it when you want to suppress the info-level fallback message or skip the worktree-add attempt entirely.
 
-**Auto-fallback to in-place mode:** If `git worktree add` fails with `already used by worktree at`, Step 0 automatically falls back and prints three lines: an `ℹ️` info line naming the branch, `pr-grind-mode: no-worktree`, and `WORKTREE_DIR=<repo-root>`. **When the `pr-grind-mode: no-worktree` line appears, the dispatcher MUST treat the rest of the run as if `--no-worktree` was passed** — set `NO_WORKTREE=1` in every subsequent bash block, skip the worktree cleanup at COMPLETION and BAIL, and write `pr-grind-clean.local` to the current repo root rather than copying it across worktrees. This state has to be carried by Claude across bash invocations because shell variables don't persist; treat the printed marker as the source of truth and propagate it explicitly. The `WORKTREE_DIR=<repo-root>` line is the resolved path the dispatcher should pass to the subagent context block.
+**Auto-fallback to in-place mode:** `scripts/resolve-pr-worktree.sh` splits `git worktree add`'s `already used by worktree at` failure three ways (#421):
+
+| Branch is… | Resolver does | Emits |
+|---|---|---|
+| free | creates `pr-grind-<PR_NUMBER>` beside the repo root | `WORKTREE_DIR=<new worktree>` |
+| checked out in **this** repo | falls back in-place | `ℹ️` info line, `pr-grind-mode: no-worktree`, `WORKTREE_DIR=<repo-root>` |
+| checked out in **another** worktree | **BAILs**, naming the holder | nothing on stdout; exit 1 |
+
+The third row is the fail-CLOSED fix. Previously *any* `already used by worktree at` fell back to the repo root, so a branch held by another worktree pointed the whole grind at whatever the repo root was on — usually `main` — which read the wrong HEAD for the ack ledger and pushed fix commits straight onto `main`, bypassing the PR. An unusable worktree is the failure case, not the happy path.
+
+Whichever row is taken, the resolver **asserts unconditionally** that the resolved directory is on `$PR_BRANCH` before it exits 0. That assertion, not the split, is the load-bearing guard: it catches this bug class even if a fourth case ever appears.
+
+**When the `pr-grind-mode: no-worktree` line appears, the dispatcher MUST treat the rest of the run as if `--no-worktree` was passed** — set `NO_WORKTREE=1` in every subsequent bash block, skip the worktree cleanup at COMPLETION and BAIL, and write `pr-grind-clean.local` to the current repo root rather than copying it across worktrees. This state has to be carried by Claude across bash invocations because shell variables don't persist; treat the printed marker as the source of truth and propagate it explicitly. The final `WORKTREE_DIR=` line is the resolved path the dispatcher should pass to the subagent context block.
 
 ### Dispatch a Round (default path)
 
@@ -2023,7 +2028,7 @@ PR #<N> is clean after <rounds> round(s).
 | `--max-fix N` | Maximum **fix-rounds** (dispatcher pushed a commit; `RESULT_COMMIT_SHA != "none"`) before bail. Reflects engineering iteration budget. | 5 |
 | `--max-wait N` | Maximum **wait-rounds** (worker did not push; `RESULT_COMMIT_SHA == "none"` — polling for slow bots to ack HEAD) before bail. Reflects bot-latency tolerance. | 8 |
 | `--max N` | **Deprecated alias** that sets both `--max-fix` and `--max-wait` to N. Emits a `⚠️  --max is deprecated; use --max-fix and --max-wait` warning. Cannot be combined with `--max-fix` or `--max-wait` — combining bails with `conflicting flags`. | unset |
-| `--no-worktree` | Skip worktree creation, work in current directory. Same behavior auto-engages without the flag if `git worktree add` reports the branch is already checked out elsewhere — see Step 0 fallback. | Off (creates worktree) |
+| `--no-worktree` | Skip worktree creation, work in current directory. Same behavior auto-engages without the flag if the branch is already checked out **in this repo**; if another worktree holds it, Step 0 BAILs instead of falling back (#421) — see Step 0 fallback. | Off (creates worktree) |
 | `--no-merge` | Skip merge after grinding clean — just declare "Ready for merge" | Off (merges by default) |
 | `--admin-on-approver-gap` | Opt-in auto-escalation when the approver gap is the sole remaining merge-gate blocker. Eligibility (ALL must hold): CI green, bots ack HEAD, all threads resolved, no failing required checks; author has `admin` or `maintain` repo permission; `.github/workflows/bypass-audit.yml` exists in the repo. With all gates green, the dispatcher runs `gh pr merge <PR> --squash --delete-branch --admin` and logs the event to `.claude/bypass-log.jsonl` (`event: pr-grind-admin-on-approver-gap`). **Fail-CLOSED when no audit workflow exists** — the flag is ignored without a trail and the dispatcher surfaces the operator-decision message instead. Off by default. **Alternative — per-repo opt-in:** for repos where the operator is structurally the sole human with PR-approval capability (no other humans with write/maintain/admin could ever approve), drop `.claude/pr-grind-auto-admin-solo.local` once (gitignored, same pattern as `skip-litmus.local`) and pr-grind treats the flag as implicit. The same eligibility gates apply, plus a live structural check that `HUMAN_ADMIN_COUNT==1` (counting humans with `permissions.push==true` — write/maintain/admin) and the author is that one approval-capable human. The opt-in self-revokes if a second approval-capable human appears — a contractor with write permission alone is enough to invalidate it. **Anti-self-bypass (snapshot-anchored, three conditions):** the opt-in file must be at least 30s old AT pr-grind INVOCATION START (Step 0), not at Completion. Step 0 snapshots the file's mtime to a per-PR snapshot at `.claude/.pr-grind-solo-opt-in-snapshot-<PR>.local` (written 0600) only when the file is already ≥30s old; Completion auto-fires only when (1) the per-PR snapshot exists, (2) its recorded mtime equals the opt-in file's current mtime, AND (3) the snapshot file's own filesystem mtime is ≥30s after the opt-in file's mtime (defeats a same-NOW forge where an attacker creates both files in one action with identical mtimes). A mid-run touch (no snapshot) or mid-run replacement (mismatch) both invalidate the opt-in for the current run. The per-PR scoping prevents concurrent pr-grind runs on different PRs from racing on shared state. Snapshot and opt-in file both live in the MAIN repo's `.claude/`, not the ephemeral worktree. The audit-log event is distinct: `pr-grind-admin-on-approver-gap-solo-admin-auto` with `trigger: "solo-admin-auto"` and `human_admin_count` recorded (variable name preserved for backward compat; semantic is now "humans with PR-approval capability"). | Off (surfaces decision message) |
 

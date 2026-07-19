@@ -1,3 +1,10 @@
+## [1.94.5](https://github.com/chris-yyau/busdriver/compare/v1.94.4...v1.94.5) (2026-07-19)
+
+
+### Bug Fixes
+
+* **pr-grind:** fail-CLOSED worktree resolution in Step 0 ([#421](https://github.com/chris-yyau/busdriver/issues/421)) ([#430](https://github.com/chris-yyau/busdriver/issues/430)) ([6a861fd](https://github.com/chris-yyau/busdriver/commit/6a861fd5fa40bbf04f341b1b70cb81bc5b902a67))
+
 ## [1.94.4](https://github.com/chris-yyau/busdriver/compare/v1.94.3...v1.94.4) (2026-07-19)
 
 

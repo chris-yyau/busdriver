@@ -413,6 +413,12 @@ while true; do
     AGY_OUTPUT_FILE=$(get_review_file "agy.json")
     CODEX_OUTPUT_FILE=$(get_review_file "codex.json")
     GROK_OUTPUT_FILE=$(get_review_file "grok.json")
+    # Advisory Auditor: bind the path in --claude-only resume too (it is set in
+    # the normal-review branch only, but read unconditionally when the arbiter
+    # prompt is assembled — under `set -u` an unbound read aborts the resume).
+    # A prior iteration's auditor.json is reused if present; otherwise the read
+    # site falls back to an "unavailable" stub.
+    AUDITOR_OUTPUT_FILE=$(get_review_file "auditor.json")
     # Synthesize "no signal" error artifacts for any missing reviewer files so
     # downstream prompt-build cats always have a valid JSON target. Without
     # this, a missing agy.json or codex.json causes `cat "$AGY_OUTPUT_FILE"`
@@ -451,6 +457,8 @@ while true; do
         "$(get_review_file "grok.json")" \
         "$(get_review_file "grok-raw.txt")" \
         "$(get_review_file "grok.json.pending")" \
+        "$(get_review_file "auditor.json")" \
+        "$(get_review_file "auditor-raw.txt")" \
         "$(get_review_file "claude.json")" \
         "$(get_review_file "claude.json.pending")" \
         "$(get_review_file "claude-validation-prompt.txt")" \
@@ -692,11 +700,86 @@ with open(pending, "w") as f:
   ) &
   GROK_PID=$!
 
+  # ── Auditor (ADVISORY, non-converging) ───────────────────────────
+  # A 4th voice that is deliberately NOT a coverage slot. The gate condition is
+  # `coverage_status == FULL AND fulfilled_lens_count == 3`; making this a real
+  # slot would raise that to 4/4, so any Auditor stall would WITHHOLD PASS. The
+  # backing model (opencode-go/kimi-k3) was measured stalling silently on a
+  # meaningful fraction of generation-heavy prompts, which would convert model
+  # flakiness directly into blocked design reviews. Modeled on the UltraOracle
+  # advisory instead: its verdict reaches the arbiter, it never counts as a lens,
+  # and its absence is noted rather than gating.
+  #
+  # Findings are LEADS, not verdicts — measured 1 true positive / 1 confident
+  # false positive / 1 correct NOTHING-FOUND across three already-passed PRs,
+  # with inverted confidence labels. The arbiter must verify before acting.
+  AUDITOR_CLI=$(resolve_role_cli "blueprint-review.auditor")
+  AUDITOR_OUTPUT_FILE=$(get_review_file "auditor.json")
+  AUDITOR_PID=""
+  if [[ "$AUDITOR_CLI" != "none" && "$AUDITOR_CLI" != "builtin" && ! "$AUDITOR_CLI" =~ ^(missing|unsupported): ]]; then
+    (
+      _aud_raw=$(get_review_file "auditor-raw.txt")
+      _aud_exit=0
+      # EXPLICIT short duration. execute_review defaults to 1200s; inheriting
+      # that would make this "non-gating" advisory stall the whole round for up
+      # to 20 minutes before arbitration — and k3 stalls silently on a
+      # meaningful fraction of generation-heavy prompts, so that is the likely
+      # path, not the rare one. An advisory that can delay the gate is a gate.
+      execute_review "$AUDITOR_CLI" "$FULL_PROMPT" "${BLUEPRINT_AUDITOR_TIMEOUT:-300}" > "$_aud_raw" 2>&1 || _aud_exit=$?
+      # ATOMIC write: build the JSON in a temp file, then rename into place. A
+      # grace-period kill of this background job could otherwise interrupt a
+      # direct write and leave a partial auditor.json that `cat` reads happily —
+      # arbitration would then see truncated advice instead of the "unavailable"
+      # fallback. `mv` on the same filesystem is atomic: the reader sees the old
+      # file, the complete new file, or nothing — never a half-written one.
+      _aud_tmp="${AUDITOR_OUTPUT_FILE}.tmp.$$"
+      if [[ "$_aud_exit" -eq 0 ]] && [[ -s "$_aud_raw" ]]; then
+        python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$_aud_raw" > "$_aud_tmp" 2>/dev/null \
+          || create_error_json "auditor" "unparseable advisory output" > "$_aud_tmp"
+      else
+        # Empty output on a clean exit is the observed silent-stall shape — must
+        # read as "advisory absent", never as "advisory found nothing".
+        create_error_json "auditor" "advisory failed or returned empty (rc=$_aud_exit)" > "$_aud_tmp"
+      fi
+      mv -f "$_aud_tmp" "$AUDITOR_OUTPUT_FILE" 2>/dev/null || rm -f "$_aud_tmp"
+    ) &
+    AUDITOR_PID=$!
+  else
+    create_error_json "auditor" "CLI not available ($AUDITOR_CLI)" > "$AUDITOR_OUTPUT_FILE"
+  fi
+
   # Wait for all three to complete
   log_info "  Waiting for parallel reviews..."
   wait "$AGY_PID" 2>/dev/null || true
   wait "$CODEX_PID" 2>/dev/null || true
   wait "$GROK_PID" 2>/dev/null || true
+  # BOUNDED reap for the advisory Auditor — it must never act as a temporal
+  # gate. The three required reviewers have already completed here; give the
+  # Auditor only a short grace to finish, then KILL it and proceed. Its output
+  # file is either a verdict (used) or an error/absent JSON (noted), never a
+  # blocker. Without the bound, `wait` could stall arbitration for the full
+  # BLUEPRINT_AUDITOR_TIMEOUT after the real reviewers are already done.
+  if [[ -n "${AUDITOR_PID:-}" ]]; then
+    _aud_grace=0
+    while kill -0 "$AUDITOR_PID" 2>/dev/null; do
+      if [[ "$_aud_grace" -ge "${BLUEPRINT_AUDITOR_GRACE:-20}" ]]; then
+        # Kill the whole descendant TREE, not just the subshell — execute_review
+        # and opencode run as descendants and would otherwise orphan and keep
+        # using the network until their own 300s timeout. Portable recursive
+        # walk via `pgrep -P` (no process-group/setsid dependency).
+        _kill_tree() {
+          local _p="$1" _c
+          for _c in $(pgrep -P "$_p" 2>/dev/null); do _kill_tree "$_c"; done
+          kill "$_p" 2>/dev/null || true
+        }
+        _kill_tree "$AUDITOR_PID"
+        log_warning "  Auditor (advisory) exceeded ${BLUEPRINT_AUDITOR_GRACE:-20}s grace after reviewers finished — killed its process tree, proceeding without it"
+        break
+      fi
+      sleep 1; _aud_grace=$((_aud_grace + 1))
+    done
+    wait "$AUDITOR_PID" 2>/dev/null || true
+  fi
 
   REVIEW_END=$(millis)
   REVIEW_DURATION=$((REVIEW_END - REVIEW_START))
@@ -921,6 +1004,22 @@ Full output:
 $(cat "$GROK_OUTPUT_FILE")
 
 $ULTRA_ORACLE_ADVISORY_SECTION
+
+=============================================================================
+AUDITOR ADVISORY (opencode / kimi-k3) -- AUXILIARY, *NOT* A REVIEWER. There are
+still exactly THREE reviewers (Agy/Codex/Grok); do NOT count this block as a 4th
+lens or as independent agreement. Its lens is claim-vs-mechanism: places where
+the document says one thing and the cited mechanism does another.
+
+TREAT AS LEADS, NOT VERDICTS. Measured across three already-passed PRs: 1 real
+defect both Codex-xhigh and the Opus backstop missed, 1 confidently-worded false
+positive, 1 correct NOTHING FOUND -- with confidence labels INVERTED (the
+hallucination was MEDIUM, the real defect LOW). Verify each claim against the
+cited file:line before weighting it. An error/empty block below means the
+advisory was ABSENT, which is NOT evidence that nothing was found.
+=============================================================================
+
+$(cat "$AUDITOR_OUTPUT_FILE" 2>/dev/null || echo '{"status":"ERROR","note":"auditor advisory unavailable"}')
 
 =============================================================================
 VALIDATION TASK:

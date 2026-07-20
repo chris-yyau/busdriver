@@ -1200,11 +1200,43 @@ execute_review() {
     # silently truncating — and the agy branch below pre-flights the size via
     # _agy_bytelen/_agy_prompt_oversize, so an oversize prompt is refused with a
     # actionable message rather than reaching exec at all.
-    # --sandbox restricts terminal capabilities (matching dispatch.sh's readonly
-    # mode): review prompts emit JSON verdicts and never mutate the repo or fetch.
+    # SAFETY MODEL (#424) — --sandbox always; --dangerously-skip-permissions is
+    # OPT-IN PER CALLER, never a blanket default:
+    #   --sandbox                       = the CONTAINMENT layer. "Terminal
+    #     restrictions enabled": shell/writes/fetch are blocked at the sandbox
+    #     layer regardless of permission approval. This is dispatch.sh's readonly
+    #     posture, and dispatch.sh must DROP --sandbox to get a WRITE-capable agy
+    #     (its skip-permissions write path omits --sandbox) — direct in-repo
+    #     evidence that --sandbox contains terminal actions even when the
+    #     permission layer approves them.
+    #   --dangerously-skip-permissions  = removes the APPROVAL layer only. agy
+    #     drives its review through the `command`/`read_file` tools; in headless
+    #     `--print` mode agy cannot prompt for tool permission, so WITHOUT this
+    #     flag every tool request auto-denies ("no output produced — a tool
+    #     required the read_file/command permission that headless mode cannot
+    #     prompt for") and the reviewer slot dies, silently degrading blueprint
+    #     coverage below FULL (which withholds the PASS marker). agy 1.1.4 has no
+    #     per-tool --allowed-tools flag and reads permission allow-rules only from
+    #     the user-global ~/.pi/agent/settings.json (not a repo-local one), so a
+    #     scoped allow-list is not shippable plugin config — the documented remedy
+    #     is this flag.
+    # WHY OPT-IN: execute_review is SHARED by every review flow (litmus commit/PR
+    #   review of arbitrary, possibly-untrusted diffs also routes here when agy is
+    #   the CLI). Auto-approving agy's tool requests on untrusted prompt content
+    #   lets a prompt-injected diff induce reads of sensitive local files whose
+    #   contents surface in the reviewer output (--sandbox blocks writes/network,
+    #   not this read-then-report exfil). So the flag is gated on
+    #   BUSDRIVER_AGY_REVIEW_SKIP_PERMS=1, set ONLY by callers whose trust model
+    #   justifies it — blueprint-review, reviewing operator-authored design docs.
+    #   Unset (the shared default), agy stays --sandbox-only and degrades to droid
+    #   if it can't read headless — exactly today's behavior, no widened surface.
     # Align --print-timeout with our outer duration so agy's internal 5m default
     # doesn't abort before _portable_timeout does.
-    agy)     if _agy_wants_argv_prompt; then
+    agy)     local _agy_perm=()
+             if [[ "${BUSDRIVER_AGY_REVIEW_SKIP_PERMS:-0}" == "1" ]]; then
+               _agy_perm=(--dangerously-skip-permissions)
+             fi
+             if _agy_wants_argv_prompt; then
                _agy_psize=$(_agy_bytelen "$prompt")
                if _agy_prompt_oversize "$_agy_psize"; then
                  echo "agy: review prompt is ${_agy_psize}B, over the argv ceiling ($(_agy_argv_limit)B) — agy >=1.1 has no file-input flag. Split the diff or route this review to codex." >&2
@@ -1215,12 +1247,12 @@ execute_review() {
                # (rc=141 on a >64 KB prompt despite a valid review). `none` is
                # passed as an ARGUMENT so no env can forge or clear it.
                _run_review_with_retries agy "$prompt" "$duration" none \
-                 agy --sandbox --print-timeout "${duration}s" --print "$prompt"
+                 agy --sandbox ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${duration}s" --print "$prompt"
              else
                # agy 1.0.x resolves --print's value as a PATH, so fd 0 works and
                # the argv size ceiling and exposure do not apply on this rung.
                _run_review_with_retries agy "$prompt" "$duration" pipe \
-                 agy --sandbox --print-timeout "${duration}s" --print /dev/stdin
+                 agy --sandbox ${_agy_perm[@]+"${_agy_perm[@]}"} --print-timeout "${duration}s" --print /dev/stdin
              fi ;;
     # Review path: bare `droid exec` (default read-only mode) is the tightest
     # posture that works for stdin-piped review. Create/Edit are blocked at this

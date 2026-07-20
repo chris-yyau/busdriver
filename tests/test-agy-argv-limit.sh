@@ -177,4 +177,51 @@ _r=$(_transport_probe 1.0.0 "$_TRANSPORT_BYTES")
 [[ "${_r%% *}" == "0" ]] || fail "t27: 1.0.x transport returned rc=${_r%% *}"
 [[ "$_r" == *"STDIN_BYTES=$_TRANSPORT_BYTES"* ]]     || fail "t27: 1.0.x must receive the full prompt on stdin, got [${_r#* }]"
 
+# ── permission posture: skip-permissions is opt-in per caller (#424) ─────────
+# The agy reviewer runs headless (`--print`) and cannot prompt for tool
+# permission, so WITHOUT --dangerously-skip-permissions every read_file/command
+# request auto-denies and the slot dies ("no output produced"), dropping
+# blueprint coverage below FULL. But execute_review is SHARED (litmus reviews
+# arbitrary diffs through it too), and auto-approving tools on untrusted prompt
+# content is a read-then-report exfil surface --sandbox does not close. So the
+# flag is gated on BUSDRIVER_AGY_REVIEW_SKIP_PERMS=1, set only by blueprint-review
+# (operator-authored docs). Invariants: --sandbox ALWAYS; skip-permissions ONLY
+# when the opt-in is set; never skip-permissions without --sandbox (containment).
+_flags_probe() {   # $1=version, $2=opt-in value (unset if empty); echoes agy argv
+    local d out
+    d=$(mktemp -d) || return 1
+    cat > "$d/agy" <<'STUB'
+#!/bin/sh
+if [ "$1" = "--version" ]; then printf '%s\n' "$FAKE_AGY_VER"; exit 0; fi
+printf 'ARGV:%s\n' "$*"
+STUB
+    chmod +x "$d/agy"
+    out=$(PATH="$d:$PATH" FAKE_AGY_VER="$1" _OPTIN="${2-}" bash -c '
+        set -uo pipefail
+        [ -n "$_OPTIN" ] && export BUSDRIVER_AGY_REVIEW_SKIP_PERMS="$_OPTIN"
+        . "'"$REPO_ROOT"'/scripts/lib/resolve-cli.sh" 2>/dev/null
+        execute_review agy "review this plan" 10 2>&1' | grep '^ARGV:')
+    rm -rf "$d"
+    printf '%s' "$out"
+}
+
+# t28: shared default (opt-in UNSET) — --sandbox present, skip-permissions ABSENT.
+# This is the fix's blast-radius guard: litmus-via-agy must NOT auto-approve tools.
+for _v in 1.1.4 1.0.0; do
+    _fp=$(_flags_probe "$_v" "")
+    [[ "$_fp" == *"--sandbox"* ]] \
+        || fail "t28: agy $_v default review dropped --sandbox [$_fp]"
+    [[ "$_fp" != *"--dangerously-skip-permissions"* ]] \
+        || fail "t28: agy $_v default review leaked skip-permissions without opt-in [$_fp]"
+done
+
+# t29: opt-in set — BOTH --sandbox and skip-permissions (the #424 blueprint fix).
+for _v in 1.1.4 1.0.0; do
+    _fp=$(_flags_probe "$_v" "1")
+    [[ "$_fp" == *"--sandbox"* ]] \
+        || fail "t29: agy $_v opt-in review dropped --sandbox (containment) [$_fp]"
+    [[ "$_fp" == *"--dangerously-skip-permissions"* ]] \
+        || fail "t29: agy $_v opt-in review dropped skip-permissions (#424 headless auto-deny) [$_fp]"
+done
+
 if [[ "$FAILED" -eq 0 ]]; then echo "PASS: test-agy-argv-limit"; else exit 1; fi

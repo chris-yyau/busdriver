@@ -65,12 +65,12 @@ DP="$REPO_ROOT/skills/dispatch-cli/scripts/dispatch.sh"
 # shellcheck disable=SC2016  # single-quoted patterns are grep regexes, not shell expansions
 # Match actual parameter EXPANSIONS (`${BUSDRIVER_OPENCODE_CONFIG` /
 # `$BUSDRIVER_OPENCODE_BIN`), not comment mentions of the names.
-if grep -qE '\$\{?BUSDRIVER_OPENCODE_CONFIG[:}]' "$RC" "$DP"; then
+if grep -qE '\$\{?BUSDRIVER_OPENCODE_CONFIG\b' "$RC" "$DP"; then
   fail "BUSDRIVER_OPENCODE_CONFIG expanded — config path is repo-injectable"
 else
   pass "no BUSDRIVER_OPENCODE_CONFIG expansion (config not repo-injectable)"
 fi
-if grep -qE '\$\{?BUSDRIVER_OPENCODE_BIN[:}"]' "$RC" "$DP"; then
+if grep -qE '\$\{?BUSDRIVER_OPENCODE_BIN\b' "$RC" "$DP"; then
   fail "BUSDRIVER_OPENCODE_BIN expanded — binary path is repo-injectable"
 else
   pass "no BUSDRIVER_OPENCODE_BIN expansion (binary not repo-injectable)"

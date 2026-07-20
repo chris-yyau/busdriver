@@ -480,6 +480,17 @@ resolve_role_cli() {
     council.researcher)         is_cli_available grok  && echo "grok"  && return
                                 is_cli_available droid && echo "droid" && return
                                 echo "none" && return ;;
+    # Auditor roles (added 2026-07-20, "opencode" voice) are only routed
+    # explicitly in THIS repository's .claude/busdriver.json. Without this
+    # case, a repo with no busdriver.json config falls through Step 4b to
+    # Step 5's generic auto-detect (codex/agy/droid) instead of "none" —
+    # silently bypassing the opencode isolation harness while blueprint's
+    # output is still labeled "opencode / kimi-k3". No droid fallback here
+    # (unlike the other advisory roles above): a droid Auditor is explicitly
+    # documented as false corroboration for this lens (see skills/council/SKILL.md).
+    council.auditor|blueprint-review.auditor)
+                                is_cli_available opencode && echo "opencode" && return
+                                echo "none" && return ;;
   esac
 
   # Step 5: Auto-detect — grok intentionally excluded. Its safety model
@@ -1231,7 +1242,7 @@ execute_review() {
     #      probe rounds showed every ENUMERATED denylist leaking: `permission:
     #      {edit:deny}` → model shelled out; `tools:{write,edit,bash:false}` →
     #      delegated the write to a `task` SUBAGENT; +`task,webfetch:false` →
-    #      reached past built-ins to `Skill "firecrawl-scrape"` and MCP tools.
+    #      reached past built-ins to `Skill "firecrawl-scrape"` (vault) and MCP tools.
     #      Only the wildcard held.
     #   2. FILESYSTEM + PROJECT CONFIG — `--dir <empty tmpdir>`. opencode roots
     #      the project there, so the reviewed tree's files AND its config-based
@@ -1437,11 +1448,13 @@ if [[ "${BASH_SOURCE[0]}" = "$0" ]] && [[ "${1:-}" = "--json" ]]; then
 
   # Report availability for all supported CLIs
   clis_json=""
-  # grok included here for accurate availability metadata (not auto-detect);
-  # downstream consumers inspecting `clis[resolved]` get an entry when the
-  # resolved CLI is grok (e.g., via explicit BUSDRIVER_REVIEW_CLI=grok or
-  # blueprint-review.reviewer_3 route).
-  for cli in codex agy droid grok; do
+  # grok and opencode included here for accurate availability metadata (not
+  # auto-detect); downstream consumers inspecting `clis[resolved]` get an
+  # entry when the resolved CLI is grok (e.g., via explicit
+  # BUSDRIVER_REVIEW_CLI=grok or blueprint-review.reviewer_3 route) or
+  # opencode (e.g., via the council.auditor / blueprint-review.auditor
+  # routes). Neither is auto-detected — see Step 5's exclusion comment.
+  for cli in codex agy droid grok opencode; do
     avail=$(is_cli_available "$cli" && echo true || echo false)
     ver=$(get_cli_version "$cli" | _json_safe)
     clis_json="${clis_json}\"${cli}\":{\"available\":${avail},\"version\":\"${ver}\"},"

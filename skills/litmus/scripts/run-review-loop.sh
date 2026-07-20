@@ -513,7 +513,12 @@ if [[ "${1:-}" == "--run-backstop" ]]; then
   }
   # Capture the review material (this script, not the agent, runs git). The agent
   # has no Bash and reviews only what we inject.
-  DIFF=$(git diff "${MERGE_BASE}...HEAD" 2>/dev/null)
+  # #438 follow-up: pin the same deterministic flags used for the gate-binding
+  # hash (compute_pr_diff_hash / pre-pr-gate.sh) so a hostile diff.external or
+  # textconv driver can't corrupt the material actually reviewed — without
+  # --no-ext-diff --no-textconv here, the backstop could still exit on a
+  # garbled/empty diff even after the hash-divergence bug is fixed.
+  DIFF=$(git -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv "${MERGE_BASE}...HEAD" 2>/dev/null)
   NAMES=$(git diff "${MERGE_BASE}...HEAD" --name-only 2>/dev/null)
   # `|| true`: under `set -o pipefail`, head closing the pipe early can leave
   # git log killed by SIGPIPE (nonzero) and abort the script — the substitution
@@ -918,7 +923,10 @@ source "$SCRIPT_DIR/lib/markdown-checker.sh"
 if [ "$REVIEW_MODE" = "pr" ]; then
   echo "📋 Capturing branch diff (${PR_BASE_BRANCH}...HEAD)..."
   ALL_STAGED_FILES=$(git diff --name-only "${PR_BASE_BRANCH}...HEAD")
-  STAGED_DIFF=$(git diff --no-color "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
+  # #438 follow-up: same deterministic pin as compute_pr_diff_hash — a hostile
+  # diff.external/textconv config must not be able to corrupt the material the
+  # reviewer actually reads.
+  STAGED_DIFF=$(git -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
   # Capture the gate-binding diff hash NOW, before the (minutes-long) Codex review,
   # so the Codex-lead artifact binds to the diff the lead actually reviews. Using a
   # hash re-derived after the review would drift if HEAD/base moved mid-review.

@@ -1,3 +1,10 @@
+## [1.95.3](https://github.com/chris-yyau/busdriver/compare/v1.95.2...v1.95.3) (2026-07-20)
+
+
+### Bug Fixes
+
+* **litmus:** pin PR diff-hash to deterministic flags so writer/gate agree ([#438](https://github.com/chris-yyau/busdriver/issues/438)) ([#440](https://github.com/chris-yyau/busdriver/issues/440)) ([951ca47](https://github.com/chris-yyau/busdriver/commit/951ca4797045475bf789aaf25f42e398233404a6))
+
 ## [1.95.2](https://github.com/chris-yyau/busdriver/compare/v1.95.1...v1.95.2) (2026-07-20)
 
 

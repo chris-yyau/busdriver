@@ -306,6 +306,44 @@ _resolve_from_route_array() {
 
 resolve_role_cli() {
   local role_key="$1"
+  local _bd_result
+
+  # Auditor containment guard (P1 — PR #435 review). The Auditor's entire
+  # value proposition is the read-only opencode sandbox (plugin-owned config +
+  # `--dir` + XDG_CONFIG_HOME isolation, see the opencode dispatch arm below).
+  # blueprint-review runs against WHATEVER repo it is reviewing — on this
+  # public repo that is frequently an untrusted fork/branch — and Step 2 below
+  # reads project config from THAT repo's `.claude/busdriver.json`. Without
+  # this guard, a hostile branch could ship
+  # `{"routes":{"blueprint-review.auditor":["droid"]}}` and Step 2 would
+  # honor it BEFORE Step 4b's opencode-only legacy default is ever reached —
+  # silently swapping the isolated opencode arm for a normal Droid arm (which
+  # defaults to `--auto high`, i.e. real write/exec authority) while the
+  # council/blueprint output is still labeled "opencode / kimi-k3". Route the
+  # normal precedence chain through `_resolve_role_cli_impl` as before, but
+  # for the Auditor role ONLY accept its "opencode"/"none"/"builtin" outputs;
+  # anything else (a project- or user-config route naming any other CLI) is
+  # rejected and re-resolved via the Step-4b-equivalent opencode-or-none path,
+  # regardless of which source (env/project/user/defaults) produced it.
+  case "$role_key" in
+    council.auditor|blueprint-review.auditor)
+      _bd_result=$(_resolve_role_cli_impl "$role_key")
+      case "$_bd_result" in
+        opencode|none|builtin) echo "$_bd_result"; return ;;
+        *)
+          echo "busdriver: ignoring non-opencode route/override '$_bd_result' for auditor role '$role_key' (untrusted-checkout containment) — using opencode-or-none" >&2
+          is_cli_available opencode && echo "opencode" && return
+          echo "none"
+          return ;;
+      esac
+      ;;
+  esac
+
+  _resolve_role_cli_impl "$role_key"
+}
+
+_resolve_role_cli_impl() {
+  local role_key="$1"
   local env_cli="${BUSDRIVER_REVIEW_CLI:-}"
   # All function-scoped locals declared ONCE up front. Re-declaring `local`
   # for the same name within a function leaks `name=value` to stdout under

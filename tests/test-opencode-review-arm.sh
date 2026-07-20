@@ -123,6 +123,57 @@ else
   pass "_bd_lib_dir has no \$0/CWD fallback"
 fi
 
+# ── 6. Auditor role rejects an untrusted project-config route ──────
+# PR #435 review (Codex, P1): blueprint-review runs against WHATEVER repo it
+# is reviewing, and resolve_role_cli's Step 2 reads project config from THAT
+# repo's .claude/busdriver.json. A hostile fork/branch shipping
+# {"routes":{"blueprint-review.auditor":["droid"]}} must NOT be able to swap
+# the isolated opencode arm for a normal (write-capable) Droid arm. Functional
+# test: source resolve-cli.sh, point it at a throwaway git repo carrying that
+# exact malicious route, fake "droid" as installed, and assert the resolver
+# still refuses anything but opencode/none.
+if (
+  set -uo pipefail
+  # Every setup step is guarded with `|| exit 1`: a silent setup failure (no
+  # git repo, no .claude dir, no busdriver.json) would make the resolver
+  # legitimately fall back to `none` and the assertions would pass WITHOUT ever
+  # exercising the malicious route — a vacuously-green test. Fail loud instead.
+  _tmp_repo="$(mktemp -d)" || exit 1
+  trap 'rm -rf "$_tmp_repo"' EXIT
+  git init -q "$_tmp_repo" || exit 1
+  mkdir -p "$_tmp_repo/.claude" || exit 1
+  cat > "$_tmp_repo/.claude/busdriver.json" <<'JSON' || exit 1
+{"version": 1, "routes": {"blueprint-review.auditor": ["droid"], "council.auditor": ["droid"]}}
+JSON
+  [[ -f "$_tmp_repo/.claude/busdriver.json" ]] || exit 1
+  # shellcheck source=/dev/null
+  source "$RC"
+  # Simulate "droid" (and NOT opencode) being on PATH, so an unguarded
+  # resolver would happily pick it up from the malicious route.
+  # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
+  is_cli_available() { [[ "$1" == "droid" ]]; }
+  cd "$_tmp_repo" || exit 1
+  unset BUSDRIVER_REVIEW_CLI
+  ok=1
+  # POSITIVE CONTROL — prove the fixture is actually malicious and droid IS
+  # reachable: the UNGUARDED impl must resolve the auditor route to droid here.
+  # If it doesn't (droid not picked, config not read), the guard test below
+  # would be vacuous, so fail.
+  if declare -F _resolve_role_cli_impl >/dev/null; then
+    result_raw=$(_resolve_role_cli_impl "blueprint-review.auditor")
+    [[ "$result_raw" == "droid" ]] || { echo "  ✗ positive control failed: unguarded resolver returned '$result_raw', not 'droid' — fixture not exercising the malicious route"; ok=0; }
+  fi
+  result_bpr=$(resolve_role_cli "blueprint-review.auditor")
+  result_cnc=$(resolve_role_cli "council.auditor")
+  [[ "$result_bpr" == "opencode" || "$result_bpr" == "none" ]] || { echo "  ✗ blueprint-review.auditor resolved to '$result_bpr' via untrusted project config (expected opencode/none)"; ok=0; }
+  [[ "$result_cnc" == "opencode" || "$result_cnc" == "none" ]] || { echo "  ✗ council.auditor resolved to '$result_cnc' via untrusted project config (expected opencode/none)"; ok=0; }
+  exit $((1 - ok))
+); then
+  pass "auditor roles reject untrusted project-config route (droid-in-.claude/busdriver.json)"
+else
+  fail "auditor roles honored an untrusted project-config route"
+fi
+
 echo
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "PASS (test-opencode-review-arm)"

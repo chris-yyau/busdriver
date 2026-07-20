@@ -1,3 +1,10 @@
+# [1.95.0](https://github.com/chris-yyau/busdriver/compare/v1.94.7...v1.95.0) (2026-07-20)
+
+
+### Features
+
+* **voices:** add opencode/kimi-k3 "Auditor" as an advisory review voice ([#435](https://github.com/chris-yyau/busdriver/issues/435)) ([99c6101](https://github.com/chris-yyau/busdriver/commit/99c61017d486617cab3948023dfd47a8e561ab80))
+
 ## [1.94.7](https://github.com/chris-yyau/busdriver/compare/v1.94.6...v1.94.7) (2026-07-20)
 
 

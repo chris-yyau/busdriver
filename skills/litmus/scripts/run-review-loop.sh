@@ -95,16 +95,24 @@ PR_BACKSTOP_MAX_AGE="${LITMUS_PR_BACKSTOP_MAX_AGE:-3600}"
 # Echoes the 64-hex hash on stdout; returns nonzero with NO output if the
 # base/merge-base is missing or the diff is empty (never emit a hash for a
 # missing base — that would fail open).
-# Follow-up (deferred, ADR 0006): add deterministic `-c color.ui=never
-# -c diff.external= -c core.quotePath=false` flags here AND in pre-pr-gate.sh +
-# tests together, to neutralize hostile/unusual operator git config.
+# #438: pin the diff to a deterministic form so an operator's git config cannot
+# make the writer's bytes diverge from the gate's (irreproducible false block).
+#   -c color.ui=never       — no ANSI color codes in the diff body
+#   -c core.quotePath=false — stable non-ASCII path rendering
+#   --no-ext-diff           — ignore a diff.external driver. NOT `-c diff.external=`:
+#     an empty external command makes git try to exec "" and `external diff died`
+#     → EMPTY diff → wrong hash. --no-ext-diff is the flag that disables it.
+#   --no-textconv           — ignore a .gitattributes `diff.<driver>.textconv`
+#     filter, which --no-ext-diff does NOT cover and which can otherwise rewrite
+#     or fail the hashed bytes.
+# Must stay byte-identical to pre-pr-gate.sh's CURRENT_HASH computation (same formula).
 compute_pr_diff_hash() {
   local base="$1" mb diff
-  [ -z "$base" ] && return 1
+  [[ -z "$base" ]] && return 1
   mb=$(git merge-base "$base" HEAD 2>/dev/null) || return 1
-  [ -z "$mb" ] && return 1
-  diff=$(git diff "${mb}...HEAD" 2>/dev/null) || return 1
-  [ -z "$diff" ] && return 1
+  [[ -z "$mb" ]] && return 1
+  diff=$(git -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv "${mb}...HEAD" 2>/dev/null) || return 1
+  [[ -z "$diff" ]] && return 1
   printf '%s' "$diff" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1
 }
 
@@ -505,7 +513,12 @@ if [[ "${1:-}" == "--run-backstop" ]]; then
   }
   # Capture the review material (this script, not the agent, runs git). The agent
   # has no Bash and reviews only what we inject.
-  DIFF=$(git diff "${MERGE_BASE}...HEAD" 2>/dev/null)
+  # #438 follow-up: pin the same deterministic flags used for the gate-binding
+  # hash (compute_pr_diff_hash / pre-pr-gate.sh) so a hostile diff.external or
+  # textconv driver can't corrupt the material actually reviewed — without
+  # --no-ext-diff --no-textconv here, the backstop could still exit on a
+  # garbled/empty diff even after the hash-divergence bug is fixed.
+  DIFF=$(git -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv "${MERGE_BASE}...HEAD" 2>/dev/null)
   NAMES=$(git diff "${MERGE_BASE}...HEAD" --name-only 2>/dev/null)
   # `|| true`: under `set -o pipefail`, head closing the pipe early can leave
   # git log killed by SIGPIPE (nonzero) and abort the script — the substitution
@@ -910,7 +923,10 @@ source "$SCRIPT_DIR/lib/markdown-checker.sh"
 if [ "$REVIEW_MODE" = "pr" ]; then
   echo "📋 Capturing branch diff (${PR_BASE_BRANCH}...HEAD)..."
   ALL_STAGED_FILES=$(git diff --name-only "${PR_BASE_BRANCH}...HEAD")
-  STAGED_DIFF=$(git diff --no-color "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
+  # #438 follow-up: same deterministic pin as compute_pr_diff_hash — a hostile
+  # diff.external/textconv config must not be able to corrupt the material the
+  # reviewer actually reads.
+  STAGED_DIFF=$(git -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv "${PR_BASE_BRANCH}...HEAD" -- :/ "${REVIEW_EXCLUDE_ARGS[@]}")
   # Capture the gate-binding diff hash NOW, before the (minutes-long) Codex review,
   # so the Codex-lead artifact binds to the diff the lead actually reviews. Using a
   # hash re-derived after the review would drift if HEAD/base moved mid-review.

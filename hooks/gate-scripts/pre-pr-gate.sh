@@ -245,8 +245,13 @@ PR_BASE="${LITMUS_PR_BASE:-$(git -C "$REPO_DIR" symbolic-ref refs/remotes/origin
 # is behaviorally identical to the old `${PR_BASE}...HEAD` form — but pinning the
 # gate and the writer to the SAME formula keeps a single source of truth and removes
 # any chance the two drift if one side is later edited.
+# #438: deterministic diff flags — MUST stay byte-identical to the writer's
+# compute_pr_diff_hash (run-review-loop.sh). --no-ext-diff (not `-c diff.external=`)
+# disables an operator diff.external driver without breaking the diff; --no-textconv
+# disables a .gitattributes textconv filter (which --no-ext-diff does NOT cover);
+# color/quotePath pinned so operator git config cannot make writer/gate hashes diverge.
 MERGE_BASE=$(git -C "$REPO_DIR" merge-base "${PR_BASE}" HEAD 2>/dev/null || true)
-DIFF_OUTPUT=$(git -C "$REPO_DIR" diff "${MERGE_BASE}...HEAD" 2>/dev/null || true)
+DIFF_OUTPUT=$(git -C "$REPO_DIR" -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv "${MERGE_BASE}...HEAD" 2>/dev/null || true)
 CURRENT_HASH=$(printf '%s' "$DIFF_OUTPUT" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1)
 
 # Fail-closed cleanup: if a marker exists but we could NOT compute a verifiable

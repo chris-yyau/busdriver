@@ -667,11 +667,18 @@ if [ -n "$_DESIGN_FP" ]; then
     # WRITE_EDIT exemption below uses the SAME gate_design_doc_exempt check to make the
     # exit-0 decision (one physical grammar, no duplication). A symlink-escape write is not
     # pre-armed here and falls through to the normal gate → blocked if a review is pending.
-    if gate_design_doc_exempt "$_DF" "$STATE_DIR"; then
-        if ! _design_prearm_or_block "$_DF" "$_DT"; then
-            exit 0   # arm-failure block emitted on stdout
-        fi
+    # `|| _DDE=$?` (not `; _DDE=$?`): a bare non-zero return would trip `set -e` (the ERR
+    # trap) before the assignment; the OR-list form suppresses that and captures the code.
+    _DDE=0; gate_design_doc_exempt "$_DF" "$STATE_DIR" || _DDE=$?
+    if [ "$_DDE" = "0" ]; then
+        _design_prearm_or_block "$_DF" "$_DT" || exit 0   # arm-failure block on stdout
+    elif [ "$_DDE" = "2" ]; then
+        # Cannot verify design-doc-ness (marker helper unavailable) AND cannot arm →
+        # fail-CLOSED: block rather than silently lose the review requirement.
+        block_emit "BLOCKED (fail-closed): the design-review marker helper is unavailable, so this write to a possible design document can be neither verified nor armed. Restore hooks/gate-scripts/lib/marker_ops.py and python3, then retry. If the user wants to bypass: create $STATE_DIR/skip-design-review.local in their terminal."
+        exit 0
     fi
+    # _DDE=1 (not a design doc) → fall through to the normal gate.
 fi
 
 # Hot-path fast reject: a pure-shell probe (no python3 fork) approves the common
@@ -934,14 +941,13 @@ except Exception:
             # design-doc write reaching here when a review is already pending is simply
             # exempted; it was already armed up top.)
             # #347 — gate_design_doc_exempt applies the detector grammar to BOTH the lexical
-            # path AND the physically-resolved path (deepest existing ancestor via pwd -P), so
-            # a symlinked `docs/plans -> src` parent can no longer launder `docs/plans/impl.md`
-            # (physically src/impl.md) past the gate. A genuinely new doc whose parent dir does
-            # not exist yet has no symlink to follow, so its lexical location is preserved and
-            # it stays exempt (no new-doc deadlock). Single helper — no early-vs-late drift.
-            if gate_design_doc_exempt "$_NORM_FP" "$STATE_DIR"; then
-                exit 0
-            fi
+            # path AND os.path.realpath (every symlink resolved, leaf and parents) evaluated
+            # REPO-RELATIVE, so neither a symlinked `docs/plans -> src` nor an ancestor named
+            # docs/plans can launder an impl .md past the gate. A genuinely new doc keeps its
+            # lexical location and stays exempt (no deadlock). Single helper — no early-vs-late
+            # drift. Exempt ONLY on a clean 0; a 1 (not a design doc) or 2 (helper error) falls
+            # through → blocked if a review is pending (fail-CLOSED on error).
+            gate_design_doc_exempt "$_NORM_FP" "$STATE_DIR" && exit 0
             ;;
     esac
 

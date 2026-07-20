@@ -154,6 +154,18 @@ mkdir -p "$SL/docs/specs"; ln -s ../../src/impl.sh "$SL/docs/specs/DESIGN.md"
 run_gate "$PREIMPL" "$(write_payload 'docs/specs/DESIGN.md' "$SL")"
 eq "(sym) leaf-symlink DESIGN.md -> impl.sh → BLOCK" "$(is_block)" "1"
 
+echo "── ancestor named docs/plans must not launder impl .md ─────────"
+M="$ROOT/hooks/gate-scripts/lib/marker_ops.py"
+ddx(){ python3 -S "$M" dd-exempt "$1" ".claude" >/dev/null 2>&1; echo $?; }
+AN="$(mktemp -d)"; TMPS+=("$AN")
+RP="$AN/docs/plans/repo"; mkdir -p "$RP/src" "$RP/docs/plans"   # repo checked out UNDER docs/plans/
+git -C "$RP" init -q; git -C "$RP" config user.email t@t; git -C "$RP" config user.name t
+git -C "$RP" commit -q --allow-empty -m init
+eq "(anc) repo's own src/impl.md NOT exempt" "$(ddx "$RP/src/impl.md")" "1"
+eq "(anc) repo's own docs/plans/DESIGN.md exempt" "$(ddx "$RP/docs/plans/DESIGN.md")" "0"
+# gate_design_doc_exempt rc contract: 0 exempt / 1 not-a-doc / 2 error.
+eq "(err) dd-exempt on non-design → 1" "$(ddx "$RP/src/util.go")" "1"
+
 echo ""
 echo "──────────────────────────────────────────────"
 printf "  %d passed, %d failed\n" "$PASS" "$FAIL"

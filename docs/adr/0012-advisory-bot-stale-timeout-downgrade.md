@@ -9,6 +9,20 @@ downgrade in `scripts/ack-ledger.sh` and complements
 carry-forward) and [ADR 0005](./0005-codex-auto-retrigger.md) (Codex one-shot
 re-trigger). Resolves issue #295.
 
+**Superseded in part (2026-07-20, issue #418).** The Context section below lists
+`codescene-delta-analysis` among the registered advisory reviewer bots whose
+`stale` ack blocks the clean marker. That description is stale:
+`scripts/ack-ledger.sh` has no codescene branch, so codescene never reaches
+`stale` and there is nothing for this ADR's downgrade path to release. The
+mechanism-level decision (bounded, logged, fail-CLOSED timeout downgrade of
+genuinely stale advisory acks) is otherwise unchanged. Authoritative current
+behavior: `skills/pr-grind/SKILL.md` ("Asymmetry: ledger and ack registry are
+not 1:1") — codescene is enumerated in the bot LEDGER for content but is NOT in
+the ack REGISTRY, so it is structurally outside the downgrade `CANDIDATES` set.
+Its review threads still gate the clean marker via the unresolved-actionable-
+thread check (`agents/pr-grinder.md`) — a normal blocker with a clean exit, not
+a downgrade candidate.
+
 ## Date
 
 2026-07-07

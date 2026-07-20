@@ -1,3 +1,10 @@
+## [1.95.2](https://github.com/chris-yyau/busdriver/compare/v1.95.1...v1.95.2) (2026-07-20)
+
+
+### Bug Fixes
+
+* **careful-guard:** warn when rm-extraction truncates at the depth bound ([#377](https://github.com/chris-yyau/busdriver/issues/377)) ([#439](https://github.com/chris-yyau/busdriver/issues/439)) ([5a7f3a5](https://github.com/chris-yyau/busdriver/commit/5a7f3a54d91889057244bcd56971f47833140b5f)), closes [#426](https://github.com/chris-yyau/busdriver/issues/426)
+
 ## [1.95.1](https://github.com/chris-yyau/busdriver/compare/v1.95.0...v1.95.1) (2026-07-20)
 
 

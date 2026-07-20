@@ -527,6 +527,15 @@ $DESIGN_CONTENT
   export LITMUS_CODEX_RETRIES="${LITMUS_CODEX_RETRIES:-5}"
   export BUSDRIVER_CLI_RETRIES="${BUSDRIVER_CLI_RETRIES:-5}"
 
+  # agy reviews headless (--print) and cannot prompt for tool permission, so
+  # without --dangerously-skip-permissions every read_file/command request auto-
+  # denies and the agy slot dies, silently dropping coverage below FULL and
+  # withholding the PASS marker (#424). execute_review gates that flag on this
+  # opt-in so the SHARED litmus path (arbitrary/untrusted diffs) stays sandbox-
+  # only; blueprint-review opts in because the reviewed artifact is an operator-
+  # authored design doc and agy stays --sandbox-contained (writes/network blocked).
+  export BUSDRIVER_AGY_REVIEW_SKIP_PERMS="${BUSDRIVER_AGY_REVIEW_SKIP_PERMS:-1}"
+
   # Run Agy (reviewer 1) in background
   (
     if [[ "$AGY_AVAILABLE" == "true" ]]; then

@@ -1147,10 +1147,17 @@ _agy_wants_argv_prompt() {
         0) return 1 ;;
     esac
     local v maj min
-    # BOUNDED: a stalled `agy --version` must not hang the caller before its own
-    # bounded invocation begins — that would defeat the outer timeout contract.
-    # On timeout/failure the version is unknown, which falls through to "modern".
-    v=$(_portable_timeout 5 agy --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    # BOUNDED at 2s: a stalled `agy --version` must not hang the caller before its
+    # own bounded invocation begins — that would defeat the outer timeout contract.
+    # This probe runs OUTSIDE the caller's review budget (#423), so its cap is added
+    # to total wall-clock; capping it keeps that overshoot small (+2s worst case, was
+    # +5s). 2s (not 1s) leaves headroom for a working-but-slow CLI cold-starting under
+    # CPU/IO contention: a false timeout returns an empty version and routes to
+    # "modern" (argv), which MIS-delivers the prompt to a legacy 1.0.x agy — 2s makes
+    # that only fire when the CLI is genuinely broken, not merely momentarily slow.
+    # (Even then it degrades safely: the mis-route yields no valid review and the
+    # caller's droid fallback rescues it — same safe direction as a real timeout.)
+    v=$(_portable_timeout 2 agy --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
     if [[ -z "$v" ]]; then _AGY_ARGV_PROMPT=1; return 0; fi
     maj="${v%%.*}"; min="${v#*.}"
     if [[ "$maj" -gt 1 ]] || [[ "$maj" -eq 1 && "$min" -ge 1 ]]; then

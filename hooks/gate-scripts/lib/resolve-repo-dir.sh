@@ -36,6 +36,39 @@ gate_ere_escape() {
     printf '%s' "$out"
 }
 
+# #347 — the design-doc grammar (detector-lockstep) on a single path. $2 = ERE-escaped
+# STATE_DIR. Return 0 iff the path is a design doc (basename PLAN/DESIGN/ARCHITECTURE*.md,
+# case-insensitive; OR under (STATE_DIR|docs)/(…/)?(plans|specs)/*.md).
+_gate_dd_grammar() {   # <path> <state_dir_ere>
+    printf '%s' "$1" | grep -qiE '(^|/)(PLAN|DESIGN|ARCHITECTURE)[^/]*\.md$' && return 0
+    printf '%s' "$1" | grep -qE "(^|/)($2|docs)/([^/]+/)*(plans|specs)/.*\.md\$"
+}
+
+# #347 — is <lexical_abspath> a design doc SAFE to exempt from the impl-block? It must match
+# the grammar on the LEXICAL path AND on the PHYSICALLY-resolved path: the deepest EXISTING
+# ancestor directory is resolved with `cd … && pwd -P` (following symlinks) and the not-yet-
+# created tail is reappended, then re-checked. So a symlinked `docs/plans -> src` parent
+# cannot launder an impl write — `docs/plans/impl.md` resolves to `src/impl.md`, which is not
+# a design doc, so it is NOT exempted (and a pending review blocks it). A genuinely new doc
+# whose parent dir does not exist yet has no symlink to follow, so the reconstruction leaves
+# the lexical location intact and it stays exempt (no new-doc deadlock). Return 0 = exempt.
+# shellcheck disable=SC2034  # consumed by the sourcing gate
+gate_design_doc_exempt() {   # <lexical_abspath> <state_dir>
+    local p="$1" sd_esc dir base d tail phys full
+    sd_esc="$(gate_ere_escape "$2")"
+    _gate_dd_grammar "$p" "$sd_esc" || return 1        # not a design doc even lexically
+    dir="$(dirname -- "$p")"; base="$(basename -- "$p")"
+    d="$dir"; tail=""
+    # Walk up to the deepest existing directory (a symlinked dir is `-d`, so the loop STOPS
+    # there and pwd -P below resolves it — that is exactly the escape we must catch).
+    while [ ! -d "$d" ] && [ "$d" != "/" ] && [ "$d" != "." ] && [ "$d" != "$(dirname -- "$d")" ]; do
+        tail="$(basename -- "$d")${tail:+/}$tail"; d="$(dirname -- "$d")"
+    done
+    phys="$(cd "$d" 2>/dev/null && pwd -P)" || phys="$d"
+    full="$phys${tail:+/$tail}/$base"
+    _gate_dd_grammar "$full" "$sd_esc"                 # exempt iff the PHYSICAL path is a design doc too
+}
+
 # Classify a (quote-stripped, ~-expanded) cd/-C target string.
 # Echoes one of: none | literal | toplevel | unresolvable
 gate_classify_target() {

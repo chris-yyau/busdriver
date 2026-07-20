@@ -660,8 +660,18 @@ except Exception:
 ' 2>/dev/null || true)"
 if [ -n "$_DESIGN_FP" ]; then
     # "<tool> <abspath>" — tool is the first word, abspath the rest (may contain spaces).
-    _design_prearm_or_block "${_DESIGN_FP#* }" "${_DESIGN_FP%% *}"   # arm-or-block, then
-    exit 0                                    # design-doc write is exempt; block (if any) on stdout
+    _DF="${_DESIGN_FP#* }"; _DT="${_DESIGN_FP%% *}"
+    # Only PRE-ARM a path that is a design doc BOTH lexically AND physically — a symlinked
+    # `docs/plans -> src` parent must not let `docs/plans/impl.md` (physically src/impl.md)
+    # be armed/exempted. If it's a real design doc, arm-or-block, then FALL THROUGH: the
+    # WRITE_EDIT exemption below uses the SAME gate_design_doc_exempt check to make the
+    # exit-0 decision (one physical grammar, no duplication). A symlink-escape write is not
+    # pre-armed here and falls through to the normal gate → blocked if a review is pending.
+    if gate_design_doc_exempt "$_DF" "$STATE_DIR"; then
+        if ! _design_prearm_or_block "$_DF" "$_DT"; then
+            exit 0   # arm-failure block emitted on stdout
+        fi
+    fi
 fi
 
 # Hot-path fast reject: a pure-shell probe (no python3 fork) approves the common
@@ -877,16 +887,12 @@ try:
         raise ValueError("no file_path")
     cwd = d.get("cwd") or "."
     target = fp if os.path.isabs(fp) else os.path.join(cwd, fp)
-    # LEXICAL on purpose. check-design-document.sh arms reviews from the LEXICAL path,
-    # and this exemption must stay in lockstep with it: resolving physically here makes
-    # a legitimately symlinked docs/specs -> shared/specs arm as a design doc but
-    # resolve outside docs/, so the gate would refuse the write answering its own
-    # review — the deadlock this branch exists to fix. Residual (shared with the
-    # pre-existing docs/plans and docs/reviews arms, not new here): a symlinked
-    # docs/specs reads as a docs path. Not reachable through the gated toolset — `ln`
-    # is a FILE_MOD command, so creating that symlink is itself blocked while a review
-    # is pending. UPGRADE: close it in the same change that anchors these arms to a
-    # repo-relative path (see the ancestor-path note on the case block below).
+    # LEXICAL join+normpath ON PURPOSE — this is only the INPUT to gate_design_doc_exempt
+    # below, which does the physical resolution safely (deepest EXISTING ancestor via pwd -P,
+    # new tail reappended). Resolving physically HERE would fail on a not-yet-created
+    # docs/specs/ dir and deadlock a new doc; the helper avoids that while still catching a
+    # symlinked `docs/plans -> src` parent (#347 — the prior lexical-only residual is now
+    # closed, so a symlinked docs/specs no longer laundering an impl write).
     print(os.path.normpath(target))
 except Exception:
     pass
@@ -927,13 +933,13 @@ except Exception:
             # (#347 item 1 pre-arm runs EARLY — before the pending fast-reject — so a
             # design-doc write reaching here when a review is already pending is simply
             # exempted; it was already armed up top.)
-            if printf '%s' "$_NORM_FP" \
-                | grep -qiE '(^|/)(PLAN|DESIGN|ARCHITECTURE)[^/]*\.md$'; then
-                exit 0
-            fi
-            STATE_DIR_ESC="$(gate_ere_escape "$STATE_DIR")"
-            if printf '%s' "$_NORM_FP" \
-                | grep -qE "(^|/)(${STATE_DIR_ESC}|docs)/([^/]+/)*(plans|specs)/.*\.md$"; then
+            # #347 — gate_design_doc_exempt applies the detector grammar to BOTH the lexical
+            # path AND the physically-resolved path (deepest existing ancestor via pwd -P), so
+            # a symlinked `docs/plans -> src` parent can no longer launder `docs/plans/impl.md`
+            # (physically src/impl.md) past the gate. A genuinely new doc whose parent dir does
+            # not exist yet has no symlink to follow, so its lexical location is preserved and
+            # it stays exempt (no new-doc deadlock). Single helper — no early-vs-late drift.
+            if gate_design_doc_exempt "$_NORM_FP" "$STATE_DIR"; then
                 exit 0
             fi
             ;;

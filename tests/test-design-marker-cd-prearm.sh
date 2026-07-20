@@ -134,6 +134,19 @@ printf 'plan\n\n<!-- design-reviewed: PASS -->\n' >"$Rw/docs/plans/DESIGN-rw.md"
 run_gate "$PREIMPL" "$(write_payload "$Rw/docs/plans/DESIGN-rw.md" "$Rw")"
 eq "(1) Write of reviewed doc → re-armed"    "$(pending_code "$Rw")" "1"
 
+echo "── symlinked-parent exemption (physical grammar) ───────────────"
+# A symlinked `docs/plans -> src` parent must not launder an impl write past the gate.
+SL="$(mkrepo)"; mkdir -p "$SL/src" "$SL/docs"
+ln -s ../src "$SL/docs/plans"                         # docs/plans -> src
+printf 'x\n' >"$SL/realdoc.md"; arm "$SL/realdoc.md"  # a pending review exists in the repo
+eq "(sym) repo has pending review" "$(pending_code "$SL")" "1"
+# docs/plans/impl.md → physically src/impl.md (NOT a design doc) → NOT exempt → BLOCK.
+run_gate "$PREIMPL" "$(write_payload 'docs/plans/impl.md' "$SL")"
+eq "(sym) impl via symlinked docs/plans → BLOCK" "$(is_block)" "1"
+# docs/plans/DESIGN.md → physically src/DESIGN.md, still a design doc by name → exempt.
+run_gate "$PREIMPL" "$(write_payload 'docs/plans/DESIGN.md' "$SL")"
+eq "(sym) DESIGN.md via symlinked docs/plans → allow" "$(is_block)" "0"
+
 echo ""
 echo "──────────────────────────────────────────────"
 printf "  %d passed, %d failed\n" "$PASS" "$FAIL"

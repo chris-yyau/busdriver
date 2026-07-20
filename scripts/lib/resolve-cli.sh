@@ -1356,19 +1356,17 @@ execute_review() {
              local _oc_cfg="${_bd_lib_dir}/opencode-review-config.json"
              # FAIL CLOSED. opencode does NOT error on a missing OPENCODE_CONFIG —
              # it silently loads the user's default config, restoring write/bash.
-             # `-f "$_oc_cfg"` alone is the correct guard — it covers BOTH failure
-             # shapes without a separate `_bd_lib_dir` check: an empty _bd_lib_dir
-             # with no override yields a non-existent path (`/opencode-review-config.json`)
-             # → not a file → blocked; a valid BUSDRIVER_OPENCODE_CONFIG override
-             # is a file → proceeds even under the zsh empty-_bd_lib_dir case, so
-             # the documented recovery (set BUSDRIVER_OPENCODE_CONFIG) actually works.
+             # `-f "$_oc_cfg"` alone is the correct guard: an empty _bd_lib_dir
+             # yields a non-existent path (`/opencode-review-config.json`) → not
+             # a file → blocked. There is NO env override for this path (see the
+             # "NO env override" comment above) — the only recovery is repairing
+             # or reinstalling the plugin asset, NOT setting an env var.
              if [[ ! -f "$_oc_cfg" ]]; then
-               echo "busdriver: opencode review config not found at '${_oc_cfg}' — refusing to dispatch unconfined (a missing config silently restores write/bash). Set BUSDRIVER_OPENCODE_CONFIG to the plugin's opencode-review-config.json." >&2
+               echo "busdriver: opencode review config not found at '${_oc_cfg}' — refusing to dispatch unconfined (a missing config silently restores write/bash). Repair or reinstall the busdriver plugin so ${_oc_cfg} exists." >&2
                return 1
              fi
              # CANONICALIZE to absolute. We dispatch with the child CWD set to the
-             # neutral dir, so a RELATIVE OPENCODE_CONFIG (possible via a
-             # BUSDRIVER_OPENCODE_CONFIG override) would resolve against THAT dir,
+             # neutral dir, so a relative path would resolve against THAT dir,
              # not here — the file would be missing and opencode would fail OPEN to
              # the user default. Resolve it absolute now, while CWD is still here.
              _oc_cfg="$(cd "$(dirname "$_oc_cfg")" 2>/dev/null && pwd -P)/$(basename "$_oc_cfg")"

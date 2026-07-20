@@ -487,7 +487,11 @@ dispatch_one() {
                     exit_code=1
                 fi
                 _oc_trust="${_oc_home}/.opencode/bin:${_oc_home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-                _oc_bin="$(PATH="$_oc_trust" command -v opencode 2>/dev/null)"
+                # `|| true` — under `set -e`, a nonzero `command -v` inside this
+                # assignment's command substitution would exit the script
+                # immediately, skipping the "binary not found" branch below,
+                # leaving .meta unwritten and leaking the `_oc_cwd` temp dir.
+                _oc_bin="$(PATH="$_oc_trust" command -v opencode 2>/dev/null)" || true
                 if [[ "$exit_code" -ne 0 ]]; then
                     : # already failed on home derivation — skip dispatch
                 elif [[ -z "$_oc_bin" || "$_oc_bin" != /* || ! -x "$_oc_bin" ]]; then

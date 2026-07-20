@@ -1,3 +1,10 @@
+## [1.95.5](https://github.com/chris-yyau/busdriver/compare/v1.95.4...v1.95.5) (2026-07-20)
+
+
+### Performance Improvements
+
+* **cli:** cap agy --version probe at 2s so a stall adds +2s not +5s ([#423](https://github.com/chris-yyau/busdriver/issues/423)) ([#443](https://github.com/chris-yyau/busdriver/issues/443)) ([0035cf0](https://github.com/chris-yyau/busdriver/commit/0035cf06f2e1bab2080205e95aa847a91d91ed8d))
+
 ## [1.95.4](https://github.com/chris-yyau/busdriver/compare/v1.95.3...v1.95.4) (2026-07-20)
 
 

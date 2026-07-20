@@ -1,5 +1,5 @@
 #!/bin/bash
-# dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, or Grok CLI as autonomous agents
+# dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, or opencode CLI as autonomous agents
 #
 # Usage (prefer heredoc or stdin to avoid shell escaping bugs):
 #   dispatch.sh --cli codex <<'PROMPT'
@@ -119,10 +119,10 @@ while [[ $# -gt 0 ]]; do
         --prompt)  PROMPT="$2";  shift 2 ;;
         -h|--help)
             cat <<'USAGE'
-dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, or Grok CLI
+dispatch.sh — Dispatch tasks to Codex, Antigravity (agy), Droid, Grok, or opencode CLI
 
 FLAGS:
-  --cli     codex|agy|droid|grok|both|all|auto  (default: auto)
+  --cli     codex|agy|droid|grok|opencode|both|all|auto  (default: auto)
   --mode    readonly|auto           (default: readonly)
   --timeout seconds                 (default: 300)
   --model   model override          (optional)
@@ -174,8 +174,8 @@ if [[ "$CLI" == "auto" ]]; then
     # Use --cli grok explicitly (or set BUSDRIVER_REVIEW_CLI=grok) to opt in.
     # This mirrors the resolve-cli.sh auto-detect exclusion.
     else echo "Error: No supported CLI found (tried codex, agy, droid). grok is excluded from auto-selection; use --cli grok to opt in explicitly." >&2; exit 1; fi
-elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "droid" && "$CLI" != "grok" && "$CLI" != "both" && "$CLI" != "all" ]]; then
-    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|droid|grok|both|all|auto." >&2; exit 1
+elif [[ "$CLI" != "codex" && "$CLI" != "agy" && "$CLI" != "droid" && "$CLI" != "grok" && "$CLI" != "opencode" && "$CLI" != "both" && "$CLI" != "all" ]]; then
+    echo "Error: Invalid --cli value '$CLI'. Must be codex|agy|droid|grok|opencode|both|all|auto." >&2; exit 1
 fi
 
 # Validate mode
@@ -212,10 +212,15 @@ fi
 # the other CLIs had already launched in parallel.
 if [[ "$CLI" == "all" ]]; then
     ALL_CLIS=()
-    for c in codex agy droid grok; do
+    # opencode included for parity with the --cli enum. Like grok it is excluded
+    # in auto/write MODE — its read-only isolation harness (see dispatch_one's
+    # opencode) case) has no write posture, so including it in a write batch
+    # would produce a read-only voice masquerading as a write attempt.
+    for c in codex agy droid grok opencode; do
         [[ "$c" == "grok" && "$MODE" == "auto" ]] && continue
+        [[ "$c" == "opencode" && "$MODE" == "auto" ]] && continue
         _has_cli "$c" && ALL_CLIS+=("$c")
-        [[ ${#ALL_CLIS[@]} -ge 4 ]] && break
+        [[ ${#ALL_CLIS[@]} -ge 5 ]] && break
     done
     if [[ ${#ALL_CLIS[@]} -eq 0 ]]; then
         echo "Error: No CLIs found for --cli all." >&2; exit 1
@@ -417,6 +422,103 @@ dispatch_one() {
             fi
             _portable_timeout "$_budget" droid exec --auto "$_droid_level" \
                 < "$PROMPT_FILE" > "$outfile" 2>&1 || exit_code=$? ;;
+        opencode)
+            # Pin a system-only PATH for this arm's own utilities (mktemp,
+            # dirname, command, env) so a repo-injected PATH cannot trojan them.
+            # opencode's real install dir is added explicitly at resolution.
+            local PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+            # Read-only via the PLUGIN-OWNED config (deny-all tools except
+            # read/glob/grep). The four-round probe history and the accepted
+            # residual live in scripts/lib/resolve-cli.sh's opencode) arm —
+            # single source of truth for this threat model; do not fork it.
+            #
+            # FAIL CLOSED: opencode does NOT error on a missing OPENCODE_CONFIG.
+            # It silently loads the user's default config and the write/bash/task
+            # tools come back (verified — the probe wrote its file). A missing
+            # asset must therefore block, never dispatch unconfined.
+            #
+            # MODE NOTE: --mode is deliberately ignored. This arm is read-only by
+            # construction, so `--mode auto` cannot loosen it. A writing opencode
+            # agent would be a different agent definition and a different arm.
+            # NO env override for the config path — BUSDRIVER_OPENCODE_CONFIG is
+            # repo-injectable via a fork's settings.json (#325 class) and could
+            # point at a tool-restoring JSON. Always the plugin-owned file.
+            local _oc_cfg _oc_cwd
+            _oc_cfg="${_PLUGIN_ROOT}/scripts/lib/opencode-review-config.json"
+            # THREE isolation boundaries — full threat model in the opencode) arm
+            # of scripts/lib/resolve-cli.sh (single source of truth; do not fork).
+            # COUNCIL routes through THIS path, so all three are required here too:
+            #   --dir <empty>        → no reviewed-tree files or project-config
+            #                          redefinitions (.opencode/agent, opencode.json[c])
+            #   XDG_CONFIG_HOME<empty> → no global MCP servers (read_mcp_resource
+            #                          survives the tool denylist and can read them)
+            #   OPENCODE_CONFIG      → the plugin's deny-all tools config
+            # Create the temp dir ONLY after the config check passes, so a
+            # missing-config bail does not leak an empty directory.
+            if [[ ! -f "$_oc_cfg" ]]; then
+                echo "Error: opencode review config not found at '$_oc_cfg' — refusing to dispatch unconfined (a missing config silently restores write/bash)." >&2
+                exit_code=1
+            elif ! _oc_cfg="$(cd "$(dirname "$_oc_cfg")" 2>/dev/null && pwd -P)/$(basename "$_oc_cfg")" || [[ ! -f "$_oc_cfg" ]]; then
+                # Canonicalize to absolute: the child runs with CWD=neutral dir, so
+                # a relative OPENCODE_CONFIG would resolve there (missing) and
+                # opencode would fail OPEN to the user default.
+                echo "Error: could not resolve the opencode review config to an absolute path — refusing to dispatch." >&2
+                exit_code=1
+            elif ! _oc_cwd="$(mktemp -d 2>/dev/null)" || [[ -z "$_oc_cwd" || ! -d "$_oc_cwd" ]]; then
+                echo "Error: could not create a neutral working directory for opencode — refusing to dispatch from the reviewed tree (its project config could redefine the reviewer)." >&2
+                exit_code=1
+            else
+                # Resolve the binary ONLY from a FIXED trusted path (operator
+                # install dirs + system dirs), never the caller's PATH — an
+                # absolute caller-PATH entry can point into the reviewed checkout
+                # and supply a planted binary. NO env override (repo-injectable).
+                # Full rationale in resolve-cli.sh.
+                # Trusted home from the PASSWORD DATABASE, not $HOME (repo-
+                # injectable). `~user` tilde expansion reads getpwnam. Full
+                # rationale in resolve-cli.sh.
+                local _oc_path _oc_bin _oc_trust _oc_home _oc_user
+                _oc_user="$(id -un 2>/dev/null)"
+                _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)"
+                # NO $HOME fallback — fail closed if the password-DB lookup fails
+                # rather than trust the repo-injectable $HOME.
+                if [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
+                    echo "Error: could not derive a trusted home from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
+                    rmdir "$_oc_cwd" 2>/dev/null || true
+                    exit_code=1
+                fi
+                _oc_trust="${_oc_home}/.opencode/bin:${_oc_home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+                _oc_bin="$(PATH="$_oc_trust" command -v opencode 2>/dev/null)"
+                if [[ "$exit_code" -ne 0 ]]; then
+                    : # already failed on home derivation — skip dispatch
+                elif [[ -z "$_oc_bin" || "$_oc_bin" != /* || ! -x "$_oc_bin" ]]; then
+                    echo "Error: opencode binary not found on the trusted install path." >&2
+                    rmdir "$_oc_cwd" 2>/dev/null || true
+                    exit_code=1
+                else
+                _oc_path="$(CDPATH='' cd -- "$(dirname -- "$_oc_bin")" && pwd -P)"
+                _oc_path="${_oc_path}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+                # Prompt via STDIN, not argv (opencode reads fd 0 with no
+                # positional message; large prompts would otherwise hit ARG_MAX).
+                # `env -i` neutralizes OPENCODE_CONFIG_CONTENT / OPENCODE_CONFIG_DIR
+                # (they OVERRIDE OPENCODE_CONFIG and can restore tools/MCP/reads).
+                # SUBSHELL `cd` (not `env -C`, a non-portable GNU extension) pins
+                # the child process CWD to the neutral dir so startup cannot read
+                # cwd-relative files from the reviewed repo. --model honored:
+                # $MODEL (operator --model flag) wins, else kimi-k3. The EXIT/TERM
+                # trap rm -rf's the neutral dir even on a council grace-period
+                # kill, and handles the case where opencode created files in it
+                # (a bare rmdir would leak a non-empty dir).
+                ( trap 'rm -rf "$_oc_cwd" 2>/dev/null' EXIT TERM INT
+                  cd "$_oc_cwd" 2>/dev/null || exit 1
+                  _portable_timeout "$_budget" \
+                    env -i HOME="$_oc_home" PATH="$_oc_path" \
+                        OPENCODE_CONFIG="$_oc_cfg" XDG_CONFIG_HOME="$_oc_cwd" \
+                    "$_oc_bin" run --dir "$_oc_cwd" --agent busdriver-review \
+                    -m "${MODEL:-opencode-go/kimi-k3}" \
+                    < "$PROMPT_FILE" ) > "$outfile" 2>&1 || exit_code=$?
+                rm -rf "$_oc_cwd" 2>/dev/null || true
+                fi
+            fi ;;
         grok)
             # Flags actually passed (see invocation at the end of this case):
             #   --prompt-file /dev/stdin: feeds the prompt via fd 0, bypassing
@@ -536,8 +638,15 @@ dispatch_one() {
     # reporting droid-fallback "success" there would mask an unfinished change.
     # The whole resilience layer (retry above + this fallback) is read-only only.
     # `type` guard: a missing resolve-cli.sh (fallback mode) skips escalation.
+    # opencode is EXEMPT from droid fallback. It is the advisory Auditor, and a
+    # droid Auditor is a fourth copy of a model droid already backstops elsewhere
+    # — it would appear under the Auditor lens as independent corroboration while
+    # adding no independent signal, the exact false-agreement the council contract
+    # forbids. On failure the Auditor is simply absent (its arm emits an error
+    # JSON the arbiter reads as "advisory unavailable").
     local escalated=0
     if [[ "$CLI" != "all" && "$CLI" != "both" ]] \
+       && [[ "$name" != "opencode" ]] \
        && [[ "$MODE" == "readonly" ]] \
        && type should_escalate_to_droid &>/dev/null \
        && should_escalate_to_droid "$name" "$exit_code" "$outfile"; then

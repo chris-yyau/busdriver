@@ -6,6 +6,8 @@
     "blueprint-review.reviewer_3": ["grok", "droid"],
     "council.pragmatist": ["agy", "droid"],
     "council.critic": ["codex", "droid"],
-    "council.researcher": ["grok", "droid"]
+    "council.researcher": ["grok", "droid"],
+    "council.auditor": ["opencode"],
+    "blueprint-review.auditor": ["opencode"]
   }
 }

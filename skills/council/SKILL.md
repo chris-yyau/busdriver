@@ -26,11 +26,20 @@ Convene five advisors — the in-context Claude plus four fresh agents — for d
 | Configurable | dispatch-cli | Critic | Edge cases, risks, failure modes, what could go wrong | Yes: `council.critic` (default: codex) |
 | Configurable | dispatch-cli | Researcher | Evidence, prior art, current state, factual grounding | Yes: `council.researcher` (default: grok, fallback: droid) |
 
-(UltraOracle is **not** in this table — it is an optional expert witness, not a sixth fixed role. See Step 4.5.)
+(UltraOracle is **not** in this table — it is an optional expert witness, not a sixth fixed role. See Step 4.5. The **Auditor** below is likewise not a fixed role.)
 
-**CLI routing:** Pragmatist, Critic, and Researcher CLIs are resolved from `.claude/busdriver.json` via `resolve_role_cli()`. Each role accepts a route array — the resolver walks it left-to-right and returns the first available CLI (e.g., `"council.pragmatist": ["agy", "droid"]` falls back to Droid if Agy is missing). If every CLI in the chain is missing, that voice is skipped and noted in the report; other voices still fire. Changing the CLI only changes which binary receives the prompt — the role framing (Pragmatist lens, Critic lens, Researcher lens) is always the same. **Trade-off to know:** fallback preserves availability but dilutes role identity — Droid filling in as Pragmatist is no longer "Agy's strategic lens." Accept this when resilience matters more than signal purity. See README for per-role routing docs.
+**Auditor (advisory, on by default, never counted among the five voices).** Route `council.auditor`, default `opencode` → `opencode-go/kimi-k3`. Lens: *claim-vs-mechanism* — does the artifact actually do what it says it does. Rendered as its own section like the UltraOracle, never folded into the five-voice synthesis and never a vote.
 
-**Runtime retry + droid fallback (distinct from the route-array fallback above):** the route array picks a CLI by *availability* at resolve time. At *runtime*, each dispatched voice (Agy/Codex/Grok) also retries up to `BUSDRIVER_CLI_RETRIES` (default `3`) on a transient failure (rate-limit, network, 5xx) or empty output — a single flake no longer drops the voice. A timeout is never retried (re-running the full window is too costly). Only after retries are exhausted does the per-voice runtime droid fallback fire; voices fall back independently (distinct role prompts → distinct perspectives, so no cross-voice cap). Set `BUSDRIVER_CLI_RETRIES=0` to disable retries.
+Two deliberate properties:
+
+- **Not a fixed role**, because the five-voice composition is load-bearing across ADRs 0006/0011/0012/0013/0019, the ultra/ultimate council skills, and the README. Adding a sixth chair would require rewriting immutable decision records to stay honest. Advisory costs nothing and keeps the count true.
+- **No droid fallback.** Every other role falls back to droid for availability; this one does not. Droid already backstops three slots, so a droid Auditor would be a fourth copy of the same model wearing a new label — worse than an absent voice, because it reads as independent corroboration while adding no independent signal. If opencode is missing, the Auditor is absent and the report says so.
+
+**Known limitation — treat Auditor findings as leads, not verdicts.** Measured against three already-passed PRs (2026-07-20): one verified true positive that Codex xhigh and the Opus backstop both missed, one confidently-asserted false positive, one correct `NOTHING FOUND`. Its confidence labels were *inverted* on that sample — it marked the hallucination MEDIUM and the real defect LOW. Verify before acting on anything it reports.
+
+**CLI routing:** Pragmatist, Critic, and Researcher CLIs (plus the advisory Auditor) are resolved from `.claude/busdriver.json` via `resolve_role_cli()`. Each role accepts a route array — the resolver walks it left-to-right and returns the first available CLI (e.g., `"council.pragmatist": ["agy", "droid"]` falls back to Droid if Agy is missing). If every CLI in the chain is missing, that voice is skipped and noted in the report; other voices still fire. Changing the CLI only changes which binary receives the prompt — the role framing (Pragmatist lens, Critic lens, Researcher lens) is always the same. **Trade-off to know:** fallback preserves availability but dilutes role identity — Droid filling in as Pragmatist is no longer "Agy's strategic lens." Accept this when resilience matters more than signal purity. See README for per-role routing docs.
+
+**Runtime retry + droid fallback (distinct from the route-array fallback above):** the route array picks a CLI by *availability* at resolve time. At *runtime*, each dispatched fixed voice (Agy/Codex/Grok) also retries up to `BUSDRIVER_CLI_RETRIES` (default `3`) on a transient failure (rate-limit, network, 5xx) or empty output — a single flake no longer drops the voice. A timeout is never retried (re-running the full window is too costly). Only after retries are exhausted does the per-voice runtime droid fallback fire; voices fall back independently (distinct role prompts → distinct perspectives, so no cross-voice cap). Set `BUSDRIVER_CLI_RETRIES=0` to disable retries. **The advisory Auditor is exempt from the droid fallback** for the reason given in its own section — a droid Auditor is a fourth copy of an existing model masquerading as an independent lens; retries still apply, but on exhaustion the Auditor is simply absent.
 
 The Fresh Claude Skeptic has **zero conversation context** — it receives only the question and optional code snippets. Its unique value is immunity to conversational drift: it sees what the anchored council has stopped noticing. If the question itself is wrong or the answer is simpler than the council thinks, the Skeptic says so.
 
@@ -59,9 +68,9 @@ Write down:
 
 Hold this. You'll include it in the report after dispatch completes.
 
-### Step 4: Dispatch Fresh Claude + Agy + Codex + Grok
+### Step 4: Dispatch Fresh Claude + Agy + Codex + Grok (+ advisory Auditor)
 
-Launch all four external agents in parallel. Use a **single message with multiple tool calls** to maximize concurrency.
+Launch all four external agents (plus the advisory Auditor) in parallel. Use a **single message with multiple tool calls** to maximize concurrency.
 
 **4a. Fresh Claude (Skeptic)** — via Agent tool (starts with clean memory):
 
@@ -106,6 +115,7 @@ source "${PLUGIN_ROOT}/scripts/lib/resolve-cli.sh"
 PRAGMATIST_CLI=$(resolve_role_cli "council.pragmatist")
 CRITIC_CLI=$(resolve_role_cli "council.critic")
 RESEARCHER_CLI=$(resolve_role_cli "council.researcher")
+AUDITOR_CLI=$(resolve_role_cli "council.auditor")
 DISPATCH="${PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
 
 # Dispatch available voices — capture PIDs so wait blocks on the actual processes
@@ -138,20 +148,51 @@ if [[ "$RESEARCHER_CLI" != "none" && "$RESEARCHER_CLI" != "builtin" && ! "$RESEA
 RESEARCHER_PROMPT
   PIDS+=("$!")
 fi
+AUDITOR_PID=""
+if [[ "$AUDITOR_CLI" != "none" && "$AUDITOR_CLI" != "builtin" && ! "$AUDITOR_CLI" =~ ^(missing|unsupported): ]]; then
+  # Auditor runs read-only via the plugin-owned opencode config (deny-all
+  # tools except read/glob/grep). See the opencode) arm in resolve-cli.sh for
+  # the four-round probe history — enumerated denylists all leaked.
+  # A SHORTER timeout than the fixed voices (advisory must not extend the run),
+  # and its PID is kept OUT of the blocking PIDS array — see the bounded reap.
+  "$DISPATCH" --cli "$AUDITOR_CLI" --timeout "${COUNCIL_AUDITOR_TIMEOUT:-120}" <<'AUDITOR_PROMPT' &
+<Auditor prompt>
+AUDITOR_PROMPT
+  AUDITOR_PID="$!"
+fi
+# Block on the FIXED voices only. The advisory Auditor is reaped separately with
+# a bounded grace so a stall cannot gate the council: once the fixed voices are
+# in, give the Auditor a short window, then kill its process TREE and proceed
+# (execute_review + opencode are descendants; killing only $AUDITOR_PID orphans
+# them).
 (( ${#PIDS[@]} )) && wait "${PIDS[@]}"
+if [[ -n "$AUDITOR_PID" ]]; then
+  _ag=0
+  while kill -0 "$AUDITOR_PID" 2>/dev/null; do
+    if [[ "$_ag" -ge "${COUNCIL_AUDITOR_GRACE:-20}" ]]; then
+      _kt() { local p="$1" c; for c in $(pgrep -P "$p" 2>/dev/null); do _kt "$c"; done; kill "$p" 2>/dev/null || true; }
+      _kt "$AUDITOR_PID"
+      break
+    fi
+    sleep 1; _ag=$((_ag + 1))
+  done
+  wait "$AUDITOR_PID" 2>/dev/null || true
+fi
 ```
 
-This is a **single Bash call** with all three CLI dispatches as background processes. This is critical — if Agy, Codex, and Grok are separate parallel Bash tool calls, one failing cancels the others. A single call with `&` and `wait` keeps them independent.
+This is a **single Bash call** with all four CLI dispatches as background processes. This is critical — if Agy, Codex, Grok and opencode are separate parallel Bash tool calls, one failing cancels the others. A single call with `&` and `wait` keeps them independent.
 
 **NEVER wrap dispatches in subshells `()`**. The pattern `( cmd & ) && wait` does NOT work — the subshell exits immediately after backgrounding, so `wait` has nothing to wait for. Always background directly and capture PIDs with `$!`.
 
-**Prompt template** for Agy/Codex/Grok (same structure as Skeptic but with their role/lens). When the resolver falls back to Droid in any slot, the same role/lens text is sent — these labels track the *default primary* CLI per role.
+**Prompt template** for Agy/Codex/Grok/opencode (same structure as Skeptic but with their role/lens). When the resolver falls back to Droid in any slot, the same role/lens text is sent — these labels track the *default primary* CLI per role.
 
 **For Agy:** Role = "Pragmatist", Lens = "shipping speed, simplicity, user impact, practical tradeoffs"
 **For Codex:** Role = "Critic", Lens = "edge cases, risks, failure modes, what could go wrong"
+**For opencode (Auditor):** Role = "Auditor", Lens = "claim-vs-mechanism. For each load-bearing claim the proposal makes about how something works — a comment, a doc line, a guarantee, a 'this is handled by X' — check whether the mechanism cited actually produces that behavior, and say so concretely. You are not looking for better designs or missing features; you are looking for places where the stated behavior and the actual behavior diverge. Cite file:line. If you find nothing real, say NOTHING FOUND rather than manufacturing a finding — a confident false positive costs more than a missed nit. Label each finding with your confidence and be willing to say you could not verify a claim from the material available."
+
 **For Grok:** Role = "Researcher", Lens = "evidence, prior art, current state — look up similar past decisions, current code state of the repo, and external evidence relevant to the question. Provide links, quotes, and sources — NOT conclusions stated as settled fact. Your factual/empirical claims are treated as UNVERIFIED by default until checked against local evidence, so for each load-bearing claim name the cheap local check (command / file / grep) that would confirm or refute it. Cite what you find; flag claims that lack grounding."
 
-**IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing Agy + Codex + Grok as background processes) in the **same message** so all four external voices run concurrently. Do NOT use separate Bash tool calls — one failing will cancel the others.
+**IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing Agy + Codex + Grok + opencode as background processes) in the **same message** so all four external voices plus the advisory Auditor run concurrently. Do NOT use separate Bash tool calls — one failing will cancel the others.
 
 **Missing CLI handling:** Each role's route array is walked left-to-right; the first available CLI wins. If every CLI in the chain resolves to `none`, `builtin`, `missing:<cli>`, or `unsupported:<cli>` (the last fires when a stale config references a removed backend like amp/claude/aider — migration warning goes to stderr), that voice is skipped and the report notes its absence as `(unavailable)`. The remaining voices still convene. If the Skeptic Agent call fails (rate limit, timeout), same rule applies. Typical minimum is 2 voices (Architect + Skeptic, 40% of full strength); absolute floor is 1 voice (Architect alone) if the Skeptic Agent call also fails. Always note the composition in the report — and when a fallback fires (e.g., Droid serving as Pragmatist because Agy was missing), note that explicitly so the report doesn't misattribute the lens.
 
@@ -325,7 +366,7 @@ toward consensus.
 
 ### Step 5: Read Output and Synthesize
 
-Read the Fresh Claude output from the Agent tool result. Read the Agy/Codex/Grok output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`). When the resolver falls back to Droid in the Researcher slot (grok unavailable), the output filename is `dispatch-droid-*.txt` and the report should attribute "Droid (Researcher, fallback)" rather than "Grok (Researcher)".
+Read the Fresh Claude output from the Agent tool result. Read the Agy/Codex/Grok/opencode output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`). When the resolver falls back to Droid in the Researcher slot (grok unavailable), the output filename is `dispatch-droid-*.txt` and the report should attribute "Droid (Researcher, fallback)" rather than "Grok (Researcher)".
 
 If the UltraOracle escalation ran (ultra-council), the wrapper's first-line token in `$ULTRA_ORACLE_RESULT` (`VERDICT` / `NOT_ATTEMPTED` / `FAILED [status]`) is graded by the render block above; the verdict text also persists at the `--out` path (`.claude/ultra-oracle/council-$$.md`). Capture the emitted verdict (or `ORACLE_FAILED` token) and render it as the separate Expert Witness section per Step 4.5's binding directive, never as a voice and never folded into the vote. A `NOT_ATTEMPTED` token means the oracle did not run — omit the section entirely.
 
@@ -407,10 +448,10 @@ Default: **one round**. The council convenes, delivers the verdict, and dissolve
 
 If the user asks for another round ("ask them again", "what would they say to that", "follow up with the council", "another round"):
 
-1. For Agy + Codex + Grok: include prior council positions in the dispatch prompt as context
+1. For Agy + Codex + Grok + opencode: include prior council positions in the dispatch prompt as context
 2. **For Fresh Claude Skeptic: include ONLY the new follow-up question + original question — do NOT include prior council positions.** This is critical — the Skeptic's value comes from clean memory. If you anchor them on prior positions, they become a fifth confirming voice instead of an independent challenger.
 3. Add the user's follow-up question
-4. Frame for Agy/Codex/Grok: "The council previously said [positions]. The user now asks: [follow-up]. Respond to the other advisors' positions AND the new question."
+4. Frame for Agy/Codex/Grok/opencode: "The council previously said [positions]. The user now asks: [follow-up]. Respond to the other advisors' positions AND the new question."
 5. Frame for Skeptic: "[Original question]. Follow-up: [new question]." — NO prior positions, NO council output.
 6. Synthesize again with the same guardrails
 

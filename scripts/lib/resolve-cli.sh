@@ -20,6 +20,33 @@
 # from the inner command are not load-bearing here.
 # shellcheck disable=SC2312
 
+# Directory this library lives in — used to locate plugin-owned assets
+# (opencode-review-config.json) by absolute path, so a reviewed repo's CWD
+# cannot substitute its own.
+#
+# ${BASH_SOURCE[0]} is EMPTY when this file is sourced from zsh (observed
+# 2026-07-20 — the operator's login shell). A bare `dirname ""` yields `.`,
+# silently resolving the asset against the CALLER'S CWD, i.e. the reviewed
+# repo. That is fail-OPEN, not merely wrong: a missing OPENCODE_CONFIG makes
+# opencode fall back to the user's DEFAULT config, restoring the write/bash
+# tools this arm exists to remove (verified — the probe wrote its file).
+# So resolve best-effort here and have the dispatch arm ASSERT the asset
+# exists; never trust this value on its own.
+# NOTE the deliberate absence of a `$0` fallback. Under zsh $0 is `zsh`, so
+# `dirname` yields `.` and this would resolve to the REVIEWED REPO's CWD — a
+# repo-controlled opencode-review-config.json at its root would then satisfy the
+# arm's `-f` existence check and be handed to opencode as policy. Empty is the
+# correct failure value: the arm treats it as fail-closed and refuses.
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+  # Use the BUILTIN `${var%/*}` to strip the filename — NOT external `dirname`,
+  # which would resolve through a possibly repo-injected PATH at source time
+  # (before any arm can pin PATH) and could run an attacker `dirname`. `cd`/`pwd`
+  # are builtins too, so this whole computation touches no external command.
+  _bd_lib_dir="$(cd "${BASH_SOURCE[0]%/*}" 2>/dev/null && pwd -P)" || _bd_lib_dir=""
+else
+  _bd_lib_dir=""
+fi
+
 # ── Low-level utilities (used by all three systems) ──────────────
 
 is_cli_available() {
@@ -43,6 +70,7 @@ get_cli_install_hint() {
     agy)    echo "See https://antigravity.google/docs/cli/" ;;
     droid)  echo "See https://droid.dev" ;;
     grok)   echo "See xAI Grok Build documentation (https://x.ai)" ;;
+    opencode) echo "See https://opencode.ai (auth via 'opencode auth login')" ;;
     *)      echo "Install '$cli' and ensure it is in your PATH" ;;
   esac
 }
@@ -223,14 +251,14 @@ _resolve_from_route_array() {
         warned_deprecated_gemini=1
       fi
       last_rejected="gemini"
-    elif [[ "$cli" == "amp" || "$cli" == "opencode" || "$cli" == "claude" || "$cli" == "aider" ]]; then
+    elif [[ "$cli" == "amp" || "$cli" == "claude" || "$cli" == "aider" ]]; then
       # Removed in the 2026-05-21 dispatch-surface cleanup. Without this skip,
       # a stale ["codex", "amp", "droid"] route would resolve to amp if the
       # binary is still on PATH, then execute_review fails with "Unsupported
       # CLI" because the dispatch case was deleted. Treat as missing so the
       # route walker continues to the next entry.
       if [[ "$warned_deprecated_removed" -eq 0 ]]; then
-        echo "busdriver: config route '$role_key' references unsupported '$cli'; use 'codex', 'agy', 'droid', or 'grok' instead — skipping" >&2
+        echo "busdriver: config route '$role_key' references unsupported '$cli'; use 'codex', 'agy', 'droid', 'grok', or 'opencode' instead — skipping" >&2
         warned_deprecated_removed=1
         last_rejected="$cli"
       fi
@@ -241,6 +269,14 @@ _resolve_from_route_array() {
       # picking grok via auto would extend its exposure surface to contexts
       # whose threat model wasn't reviewed. Grok must be explicitly named
       # (BUSDRIVER_REVIEW_CLI=grok, route array entry, or per-role default).
+      #
+      # opencode is excluded because its read-only posture is not a property of
+      # the binary — it is assembled from a plugin-owned config + `--dir` +
+      # XDG_CONFIG_HOME isolation (see the opencode) dispatch arm). That harness
+      # only exists on the surfaces that build it explicitly (litmus/council/
+      # blueprint via execute_review + dispatch.sh). Auto-selecting opencode as a
+      # generic CLI would run it WITHOUT that harness, so it must always be named
+      # explicitly, never picked by the cascade.
       for auto_cli in codex agy droid; do
         is_cli_available "$auto_cli" && echo "$auto_cli" && return 0
       done
@@ -292,8 +328,8 @@ resolve_role_cli() {
       return
     fi
     case "$env_cli" in
-      amp|opencode|claude|aider)
-        echo "busdriver: BUSDRIVER_REVIEW_CLI=$env_cli is no longer supported; use 'codex', 'agy', 'droid', or 'grok' instead" >&2
+      amp|claude|aider)
+        echo "busdriver: BUSDRIVER_REVIEW_CLI=$env_cli is no longer supported; use 'codex', 'agy', 'droid', 'grok', or 'opencode' instead" >&2
         echo "unsupported:$env_cli"
         return ;;
     esac
@@ -348,10 +384,10 @@ resolve_role_cli() {
         # Reject deprecated CLI in defaults path — same hard-cutover as Step 1
         echo "busdriver: defaults.primary=gemini is deprecated; use 'agy' (antigravity) instead" >&2
         echo "unsupported:gemini" && return
-      elif [[ "$default_primary" == "amp" || "$default_primary" == "opencode" || "$default_primary" == "claude" || "$default_primary" == "aider" ]]; then
+      elif [[ "$default_primary" == "amp" || "$default_primary" == "claude" || "$default_primary" == "aider" ]]; then
         # Removed CLI in defaults.primary — warn and let execution fall through
         # to defaults.fallback below. Track for the all-rejected check.
-        echo "busdriver: defaults.primary=$default_primary is no longer supported; use 'codex', 'agy', 'droid', or 'grok' instead — trying defaults.fallback" >&2
+        echo "busdriver: defaults.primary=$default_primary is no longer supported; use 'codex', 'agy', 'droid', 'grok', or 'opencode' instead — trying defaults.fallback" >&2
         cfg_last_rejected="$default_primary"
       elif [[ "$default_primary" == "none" || "$default_primary" == "builtin" ]]; then
         echo "$default_primary" && return
@@ -383,9 +419,9 @@ resolve_role_cli() {
         # Reject deprecated CLI in defaults path — same hard-cutover as Step 1
         echo "busdriver: defaults.fallback=gemini is deprecated; use 'agy' (antigravity) instead" >&2
         echo "unsupported:gemini" && return
-      elif [[ "$default_fallback" == "amp" || "$default_fallback" == "opencode" || "$default_fallback" == "claude" || "$default_fallback" == "aider" ]]; then
+      elif [[ "$default_fallback" == "amp" || "$default_fallback" == "claude" || "$default_fallback" == "aider" ]]; then
         # Removed CLI in defaults.fallback — warn and continue.
-        echo "busdriver: defaults.fallback=$default_fallback is no longer supported; use 'codex', 'agy', 'droid', or 'grok' instead" >&2
+        echo "busdriver: defaults.fallback=$default_fallback is no longer supported; use 'codex', 'agy', 'droid', 'grok', or 'opencode' instead" >&2
         cfg_last_rejected="$default_fallback"
       elif [[ "$default_fallback" == "none" || "$default_fallback" == "builtin" ]]; then
         echo "$default_fallback" && return
@@ -494,7 +530,7 @@ describe_role_resolution() {
         cli=$(_read_config_value "$cfg" ".routes[\"$role_key\"][$i]")
         [[ -z "$cli" ]] && break
         case "$cli" in
-          gemini|amp|opencode|claude|aider) i=$((i + 1)); continue ;;
+          gemini|amp|claude|aider) i=$((i + 1)); continue ;;
         esac
         requested="$cli"; break
       done
@@ -1178,6 +1214,189 @@ execute_review() {
     grok)    echo "Note: grok blueprint-review dispatch — safety relies on user-config 'always approve' being DISABLED. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
              _run_review_with_retries grok "$prompt" "$duration" pipe \
                grok --prompt-file /dev/stdin --max-turns 150 --sandbox readonly ;;
+    # opencode — added 2026-07-20 as the "Auditor" voice (default model
+    # opencode-go/kimi-k3). Re-enabled after 41d31ef0 removed it; that removal
+    # cited "never used in this project / install-target sprawl", not safety,
+    # and the operator now uses opencode daily.
+    #
+    # THREAT MODEL: this repo is PUBLIC and forkers open PRs, so the reviewed
+    # tree is NOT operator-authored. A hostile branch may try to (a) redefine the
+    # reviewer to restore write/shell tools, (b) read files outside the review,
+    # or (c) reach operator-connected MCP servers. Containment is THREE isolated
+    # boundaries, each verified 2026-07-20 — none is a denylist, because every
+    # denylist tried leaked (see below):
+    #
+    #   1. TOOLS — plugin-owned config `tools:{"*":false, read/glob/grep:true}`
+    #      (scripts/lib/opencode-review-config.json). Deny-all-then-allow. Four
+    #      probe rounds showed every ENUMERATED denylist leaking: `permission:
+    #      {edit:deny}` → model shelled out; `tools:{write,edit,bash:false}` →
+    #      delegated the write to a `task` SUBAGENT; +`task,webfetch:false` →
+    #      reached past built-ins to `Skill "firecrawl-scrape"` and MCP tools.
+    #      Only the wildcard held.
+    #   2. FILESYSTEM + PROJECT CONFIG — `--dir <empty tmpdir>`. opencode roots
+    #      the project there, so the reviewed tree's files AND its config-based
+    #      redefinitions (`.opencode/agent/*.md`, `opencode.json[c]`, project
+    #      plugins) are simply not on the path. `env -C` does NOT do this
+    #      (verified: with it, the model still read a canary in the caller's cwd).
+    #      ABSOLUTE-PATH reads outside `--dir` (e.g. /etc/hosts, a /tmp canary)
+    #      are DENIED in headless mode (verified): opencode requires interactive
+    #      approval for out-of-workspace reads and there is no TTY to grant it —
+    #      and boundary 3 removes the global config where an "always approve"
+    #      could otherwise pre-grant it. So the default IS deny, and the one knob
+    #      that could flip it is not loaded.
+    #   3b. ENV — `env -i` with a minimal allowlist (HOME, PATH, the two vars
+    #      below). opencode ALSO reads `OPENCODE_CONFIG_CONTENT` (inline JSON) and
+    #      `OPENCODE_CONFIG_DIR`, which OVERRIDE `OPENCODE_CONFIG` (verified: a
+    #      hostile `OPENCODE_CONFIG_CONTENT` restored bash AND read an external
+    #      canary). Enumerating those to `-u` is the same losing game as the tool
+    #      denylist, so instead we start from an EMPTY environment and re-add only
+    #      what opencode needs — any current or future OPENCODE_* override simply
+    #      is not present. Auth lives in the DATA dir under $HOME and survives.
+    #   3. MCP — `XDG_CONFIG_HOME=<empty tmpdir>`. The `list_mcp_resources` /
+    #      `read_mcp_resource` tools SURVIVE the wildcard (they are not in the
+    #      `tools:` map) and `read_mcp_resource` genuinely reads — a confidentiality
+    #      channel to the operator's own servers. Those servers are configured in
+    #      the user's global opencode config; pointing XDG_CONFIG_HOME at an empty
+    #      dir means opencode discovers NO servers, so the tools vanish (verified:
+    #      only glob/grep/read remained). Auth lives in the DATA dir, untouched.
+    #
+    # TRADE-OFF (accepted, and why this arm is advisory-only): with `--dir` empty
+    # the voice cannot Read repository files — its entire input is the prompt.
+    # Same trade the deleted gateway arbiter documented: no free-form codebase
+    # search; validation is by what it is handed.
+    #
+    # Re-run tests/test-opencode-review-arm.sh after any opencode upgrade — this
+    # arm's safety is empirical (probed), and new tool surfaces have appeared
+    # across versions without notice.
+    #
+    # ACCEPTED RESIDUAL (operator decision, 2026-07-20) — session-env injection.
+    # A hostile repo's committed settings.json can inject EXPORTED BASH FUNCTIONS
+    # (BASH_FUNC_pwd%%, BASH_FUNC_env%%, …) that override even shell builtins and
+    # `command`, defeating any inline PATH/builtin hardening in this arm. This is
+    # NOT specific to opencode: the same injection owns codex/agy/grok, git, jq —
+    # every tool the review shells out to — so defending this one arm inline would
+    # be security theater. It is the documented domain of
+    # hooks/gate-scripts/lib/sanitized-gate.sh (#325 / ADR 0016), which wipes
+    # BASH_FUNC_*, rebuilds PATH from an allowlist, and re-derives HOME from the
+    # password DB. The review-execution path does not YET run under that wrapper
+    # (a separate, cross-voice change); until it does, this exposure is shared by
+    # ALL voices and accepted as a documented residual, exactly like grok's
+    # "not enforceable from code" note above. This arm is nonetheless the most
+    # hardened of the voices against the in-scope (data-plane) threats.
+    opencode)
+             # HARDEN THE ARM'S OWN UTILITY PATH first. Everything below runs
+             # mktemp/dirname/basename/command/env; a repo-injected PATH (a fork's
+             # settings.json, #325 class) could otherwise trojan those. Pin a
+             # system-only PATH for the duration of this arm — the operator's real
+             # opencode install dir is added explicitly via _oc_trust (HOME-based)
+             # at resolution, so a clean utility PATH costs nothing here.
+             # (HOME itself: if a fork could rewrite HOME the whole session is
+             # compromised — every tool trusts it — so that is the gate's env
+             # sanitization boundary, #325/ADR 0016, not this arm's to re-solve.)
+             local PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+             # NO env override for the config path. `BUSDRIVER_OPENCODE_CONFIG`
+             # would be repo-INJECTABLE: a reviewed fork's `.claude/settings.json`
+             # `env` block enters the operator's session (the #325 / ADR 0016
+             # class), so a hostile branch could point it at a tracked JSON that
+             # re-enables tools. The config is therefore ALWAYS the plugin-owned
+             # file, resolved from _bd_lib_dir (fail closed if that is empty).
+             if [[ -z "$_bd_lib_dir" ]]; then
+               echo "busdriver: cannot resolve the plugin lib dir — refusing to dispatch the opencode Auditor (cannot locate its read-only config)." >&2
+               return 1
+             fi
+             local _oc_cfg="${_bd_lib_dir}/opencode-review-config.json"
+             # FAIL CLOSED. opencode does NOT error on a missing OPENCODE_CONFIG —
+             # it silently loads the user's default config, restoring write/bash.
+             # `-f "$_oc_cfg"` alone is the correct guard — it covers BOTH failure
+             # shapes without a separate `_bd_lib_dir` check: an empty _bd_lib_dir
+             # with no override yields a non-existent path (`/opencode-review-config.json`)
+             # → not a file → blocked; a valid BUSDRIVER_OPENCODE_CONFIG override
+             # is a file → proceeds even under the zsh empty-_bd_lib_dir case, so
+             # the documented recovery (set BUSDRIVER_OPENCODE_CONFIG) actually works.
+             if [[ ! -f "$_oc_cfg" ]]; then
+               echo "busdriver: opencode review config not found at '${_oc_cfg}' — refusing to dispatch unconfined (a missing config silently restores write/bash). Set BUSDRIVER_OPENCODE_CONFIG to the plugin's opencode-review-config.json." >&2
+               return 1
+             fi
+             # CANONICALIZE to absolute. We dispatch with the child CWD set to the
+             # neutral dir, so a RELATIVE OPENCODE_CONFIG (possible via a
+             # BUSDRIVER_OPENCODE_CONFIG override) would resolve against THAT dir,
+             # not here — the file would be missing and opencode would fail OPEN to
+             # the user default. Resolve it absolute now, while CWD is still here.
+             _oc_cfg="$(cd "$(dirname "$_oc_cfg")" 2>/dev/null && pwd -P)/$(basename "$_oc_cfg")"
+             if [[ ! -f "$_oc_cfg" ]]; then
+               echo "busdriver: could not resolve the opencode review config to an absolute path — refusing to dispatch." >&2
+               return 1
+             fi
+             local _oc_cwd
+             _oc_cwd="$(mktemp -d 2>/dev/null)" || _oc_cwd=""
+             if [[ -z "$_oc_cwd" || ! -d "$_oc_cwd" ]]; then
+               echo "busdriver: could not create a neutral working directory for the opencode voice — refusing to dispatch from the reviewed tree (it could redefine the reviewer or expose files/MCP)." >&2
+               return 1
+             fi
+             # Binary selection and process CWD are pinned to trusted values so
+             # NOTHING the reviewed repo controls can supply the executable:
+             #   (a) resolve ONLY against a FIXED trusted lookup path (operator
+             #       install dirs + system dirs) — NOT the caller's PATH. Filtering
+             #       the caller PATH to absolute entries is not enough: an absolute
+             #       entry can still point INTO the reviewed checkout (e.g. an abs
+             #       node_modules/.bin), which would then supply a planted binary.
+             #       There is deliberately NO env override for the binary path:
+             #       BUSDRIVER_OPENCODE_BIN would be repo-injectable via a fork's
+             #       settings.json (#325 class) and could point at a planted
+             #       executable — the very thing this pin exists to prevent.
+             #   (b) the child receives the binary ABSOLUTE + a PATH of only the
+             #       binary's own dir + system dirs.
+             #   (c) a subshell `cd` pins the child's PROCESS CWD to the neutral
+             #       empty dir (see the dispatch below), before --dir applies.
+             # Derive the trusted home from the PASSWORD DATABASE, not $HOME: a
+             # repo-injected $HOME (fork settings.json) would otherwise point
+             # _oc_trust at an attacker dir. `~user` tilde expansion reads getpwnam,
+             # independent of the $HOME env var; `id` runs on the pinned system PATH.
+             local _oc_bin _oc_path _oc_trust _oc_home _oc_user
+             _oc_user="$(id -un 2>/dev/null)"
+             _oc_home="$(eval echo "~${_oc_user}" 2>/dev/null)"
+             # NO $HOME fallback — $HOME is the repo-injectable value this whole
+             # block exists to distrust. If the password-DB lookup fails (a broken
+             # system, not a normal state), fail CLOSED rather than trust $HOME.
+             if [[ -z "$_oc_home" || ! -d "$_oc_home" ]]; then
+               echo "busdriver: could not derive a trusted home from the password database — refusing to resolve opencode from a possibly-injected \$HOME." >&2
+               rmdir "$_oc_cwd" 2>/dev/null || true
+               return 1
+             fi
+             _oc_trust="${_oc_home}/.opencode/bin:${_oc_home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+             _oc_bin="$(PATH="$_oc_trust" command -v opencode 2>/dev/null)"
+             if [[ -z "$_oc_bin" || "$_oc_bin" != /* || ! -x "$_oc_bin" ]]; then
+               echo "busdriver: opencode binary not found on the trusted install path — cannot dispatch the Auditor voice." >&2
+               rmdir "$_oc_cwd" 2>/dev/null || true
+               return 1
+             fi
+             _oc_path="$(CDPATH='' cd -- "$(dirname -- "$_oc_bin")" && pwd -P)"
+             _oc_path="${_oc_path}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+             # PROMPT VIA STDIN (pipe mode), not argv. opencode reads its message
+             # from fd 0 when no positional message is given (verified). A full
+             # base...HEAD blueprint diff as one argv word can exceed ARG_MAX
+             # (1 MB) → E2BIG before opencode starts; stdin has no such ceiling.
+             # `env -i` (empty env + minimal allowlist) neutralizes the
+             # OPENCODE_CONFIG_CONTENT / OPENCODE_CONFIG_DIR overrides — see
+             # boundary 3b above. opencode is resolved via the re-added PATH.
+             # SUBSHELL `cd` sets the child's process CWD to the neutral dir. We do
+             # NOT use `env -C` — it is a GNU extension not guaranteed on every
+             # BSD/macOS `env`; a subshell cd is portable. Without a neutral CWD
+             # the process starts in the reviewed repo (--dir re-roots opencode's
+             # PROJECT, not the OS cwd), so node/opencode startup could read
+             # cwd-relative files (node_modules, local config) before --dir
+             # applies. Prompt is piped on stdin (pipe mode), inherited into the
+             # subshell; review output on stdout is captured by the caller.
+             ( trap 'rm -rf "$_oc_cwd" 2>/dev/null' EXIT TERM INT   # best-effort cleanup even on grace-kill
+               cd "$_oc_cwd" 2>/dev/null || exit 1
+               _run_review_with_retries opencode "$prompt" "$duration" pipe \
+                 env -i HOME="$_oc_home" PATH="$_oc_path" \
+                   OPENCODE_CONFIG="$_oc_cfg" XDG_CONFIG_HOME="$_oc_cwd" \
+                 "$_oc_bin" run --dir "$_oc_cwd" --agent busdriver-review \
+                   -m opencode-go/kimi-k3 )
+             local _oc_rc=$?
+             rm -rf "$_oc_cwd" 2>/dev/null || true
+             return "$_oc_rc" ;;
     builtin) echo "BUILTIN_FALLBACK"; return 3 ;;
     unsupported:*)
              # CLI was rejected upstream (deprecated/removed). Migration warning
@@ -1185,7 +1404,7 @@ execute_review() {
              # cause cleanly here instead of falling through to the wildcard
              # "Unsupported CLI: unsupported:amp" garbage.
              local _removed="${cli#unsupported:}"
-             echo "busdriver: review CLI '$_removed' is no longer supported; use codex, agy, droid, or grok" >&2
+             echo "busdriver: review CLI '$_removed' is no longer supported; use codex, agy, droid, grok, or opencode" >&2
              return 1 ;;
     missing:*)
              # CLI is configured but not installed. Same surface-clean intent as
@@ -1205,7 +1424,7 @@ if [[ "${BASH_SOURCE[0]}" = "$0" ]] && [[ "${1:-}" = "--json" ]]; then
   resolved=$(resolve_review_cli)
   version=""
   case "$resolved" in
-    codex|agy|droid|grok) version=$(get_cli_version "$resolved") ;;
+    codex|agy|droid|grok|opencode) version=$(get_cli_version "$resolved") ;;
     builtin|none|missing:*|unsupported:*) version="n/a" ;;
   esac
 

@@ -417,6 +417,11 @@ The UltraOracle expert witness (ultra-council / ultimate-council) AND the Mythos
 [1-line key reasoning + key evidence cited]
 (If grok was unavailable and Droid handled the slot, use **Droid (Researcher, fallback):** instead.)
 
+## Auditor — Advisory [claim-vs-mechanism]
+(Render this section whenever `AUDITOR_CLI` resolved to something other than `none`/`builtin`/an unsupported/missing marker and the dispatch was attempted — i.e., whenever the Auditor ran, succeeded or not. OMIT the entire section when `council.auditor` resolved to `none` (opencode unavailable — no droid fallback). It is NOT a voice and is EXCLUDED from Consensus / Strongest dissent / Recommendation below. Per the Known Limitation above, treat every finding as an unverified lead — cite file:line and independently confirm before acting.)
+[the findings text, reproduced faithfully, or **NOTHING FOUND** if the Auditor found nothing]
+(On failure/timeout render instead: **⚠ AUDITOR_FAILED [status] — Auditor verdict NOT included**.)
+
 ## UltraOracle — Expert Witness [ORACLE_SUMMARY_REVIEW]
 (Render this section whenever the UltraOracle escalation RAN — user-config enabled OR ultra-council forced; OMIT the entire section when the oracle did not run. It is NOT a voice and is EXCLUDED from Consensus / Strongest dissent / Recommendation below.)
 [the verdict text, reproduced faithfully — annotate any ungrounded repo-specific claim as ungrounded]

@@ -1,3 +1,10 @@
+## [1.94.7](https://github.com/chris-yyau/busdriver/compare/v1.94.6...v1.94.7) (2026-07-20)
+
+
+### Bug Fixes
+
+* **gates:** count merges by command word so prose about the gate stops blocking ([#426](https://github.com/chris-yyau/busdriver/issues/426)) ([#431](https://github.com/chris-yyau/busdriver/issues/431)) ([b44d71a](https://github.com/chris-yyau/busdriver/commit/b44d71a72288b8ba316dbd946ee8dff39c7a83dd))
+
 ## [1.94.6](https://github.com/chris-yyau/busdriver/compare/v1.94.5...v1.94.6) (2026-07-19)
 
 

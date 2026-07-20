@@ -31,7 +31,8 @@ trap 'exit 0' ERR
 # a missing/unreadable resolver into a silent exit-0 that arms nothing and warns
 # nothing (fail-open). Warn, then keep the pre-existing disabled-gate behavior.
 # shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
-if ! source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"; then
+_LIBDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+if ! source "$_LIBDIR/resolve-repo-dir.sh"; then
   echo "WARNING: design-review marker helpers unavailable; no marker was armed." >&2
   exit 0
 fi
@@ -46,13 +47,19 @@ INPUT=$(cat 2>/dev/null || true)
 PARSED=$(printf '%s' "$INPUT" | python3 -I -c "
 import sys
 sys.path[:] = [p for p in sys.path if p not in ('', '.')]
+sys.path.insert(0, sys.argv[1])   # trusted gate lib dir (BASH_SOURCE-derived)
 import json, re, os
+try:
+    from gitcmd_detect import effective_cwd
+except Exception:
+    effective_cwd = None
 try:
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     inp = d.get('tool_input', d.get('toolInput', {}))
     if isinstance(inp, str):
         inp = json.loads(inp)
+    payload_cwd = d.get('cwd') or '.'
     if tool in ('Write', 'Edit'):
         path = inp.get('file_path', inp.get('filePath', ''))
         print(f'{tool}|{path}')
@@ -92,7 +99,20 @@ try:
         plans_re = re.compile(r'(?:^|/)(?:' + re.escape(state_dir) + r'|docs)/(?:[^/]+/)*(?:plans|specs)/.*\.md$')
         for t in targets:
             if design_re.search(t) or plans_re.search(t):
-                print(f'Bash|{t}')
+                # #347 item 2a — resolve the redirect target to an ABSOLUTE path via the
+                # command's effective cwd (honoring a leading cd), so the arm and the
+                # anti-self-stamp PASS-strip target the repo/file the write ACTUALLY
+                # lands in, not the process cwd. An unresolvable cd or a non-cd command
+                # falls back to the payload cwd (PostToolUse cannot block anyway).
+                rt = t
+                if not os.path.isabs(rt):
+                    base = payload_cwd
+                    if effective_cwd is not None:
+                        eff, ok = effective_cwd(cmd, payload_cwd)
+                        if ok and eff:
+                            base = eff
+                    rt = os.path.join(base, rt)
+                print(f'Bash|{rt}')
                 break
         else:
             print('|')
@@ -100,7 +120,7 @@ try:
         print('|')
 except Exception:
     print('|')
-" 2>/dev/null || true)
+" "$_LIBDIR" 2>/dev/null || true)
 TOOL_NAME="${PARSED%%|*}"
 FILE_PATH="${PARSED#*|}"
 
@@ -194,28 +214,25 @@ if [ "$IS_DESIGN" = true ]; then
     # single CWD-relative design-review-needed.local.md whose per-worktree
     # divergence was the fail-open this PR closes.
     #
-    # DEFERRED (design §2/§9 — "Bash-write effective-directory resolution"): for a
-    # Bash tool call, FILE_PATH is the raw redirect/tee target. If the command
-    # changed directory inline (`cd /other && > docs/plans/X.md`), the effective
-    # dir differs from the hook CWD and the wrong repo could be armed (or, more
-    # commonly, norm() fails → best-effort miss). This is UNCHANGED from the prior
-    # append-to-file code (equally cd-blind) and NOT a regression; a correct fix
-    # needs a shell-aware cd parser, deferred to the follow-up issue. For every
-    # non-inline-cd write the hook CWD equals the command's effective dir, so
-    # arming is correct.
+    # #347 item 2a (was DEFERRED §2/§9 — "Bash-write effective-directory resolution"):
+    # for a Bash tool call, FILE_PATH is now the redirect/tee target RESOLVED to an
+    # absolute path against the command's effective cwd (a leading `cd` is honored;
+    # see the extraction block above via gitcmd_detect.effective_cwd). So an inline
+    # `cd /other && > docs/plans/X.md` arms the repo the write LANDS in, and the
+    # anti-self-stamp PASS-strip above hits the right file. An unresolvable cd falls
+    # back to the payload cwd (best-effort — PostToolUse cannot block).
     if ! gate_marker_arm "$FILE_PATH"; then
-      # Best-effort miss — this is the design-DEFERRED "fail-closed arming" item
-      # (§2). Arming lives in this PostToolUse detector, which cannot block; making
-      # it truly fail-closed means moving it into a PreToolUse gate (deferred to the
-      # follow-up issue). Some failure modes DO stay fail-CLOSED here: an
-      # unresolvable common-dir also makes the READ gates return exit 2 → block, and
-      # a partial-token write leaves an `unparseable` token → block. The residual
-      # (a pre-token mkdir/normalize failure while the common-dir is resolvable)
-      # is the accepted best-effort miss — UNCHANGED from the prior detector (which
-      # was silently fail-open on write failure; this at least warns). We do NOT
-      # write a repo-relative legacy marker fallback: a `>>`/`>` to a computed path
-      # is a symlink / TOCTOU surface for marginal coverage. The D3 legacy UNION
-      # reader still honours any pre-existing migration markers.
+      # #347 item 1 note: the FAIL-CLOSED guarantee for a Write/Edit/MultiEdit design
+      # doc now lives in the PreToolUse pre-implementation gate (_design_prearm_or_block),
+      # which arms BEFORE the write and BLOCKS if the arm fails while the marker dir is
+      # resolvable. This PostToolUse arm remains a best-effort backstop (and the sole
+      # arm for Bash-redirect design-doc creation, which the PreToolUse pre-arm does not
+      # cover — documented residual). Some failure modes stay fail-CLOSED regardless: an
+      # unresolvable common-dir makes the READ gates return exit 2 → block, and a
+      # partial-token write leaves an `unparseable` token → block. A repo-relative legacy
+      # marker fallback is deliberately NOT written (a `>>`/`>` to a computed path is a
+      # symlink / TOCTOU surface); the D3 legacy UNION reader still honours pre-existing
+      # migration markers.
       echo "WARNING: could not arm the design-review marker for $BASENAME. If the repo state is resolvable the review gate may not fire for this doc — re-save it, or run /blueprint-review before implementing." >&2
     fi
 

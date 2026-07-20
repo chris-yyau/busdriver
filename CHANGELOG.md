@@ -1,3 +1,10 @@
+## [1.95.1](https://github.com/chris-yyau/busdriver/compare/v1.95.0...v1.95.1) (2026-07-20)
+
+
+### Bug Fixes
+
+* **litmus:** gate the commit short-circuit on passive paths, not diff size ([#415](https://github.com/chris-yyau/busdriver/issues/415)) ([#437](https://github.com/chris-yyau/busdriver/issues/437)) ([dbf29c0](https://github.com/chris-yyau/busdriver/commit/dbf29c02cb4580bc79ab18e8f69b328dceb0d388))
+
 # [1.95.0](https://github.com/chris-yyau/busdriver/compare/v1.94.7...v1.95.0) (2026-07-20)
 
 

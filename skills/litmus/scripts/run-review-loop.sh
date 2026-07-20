@@ -95,16 +95,24 @@ PR_BACKSTOP_MAX_AGE="${LITMUS_PR_BACKSTOP_MAX_AGE:-3600}"
 # Echoes the 64-hex hash on stdout; returns nonzero with NO output if the
 # base/merge-base is missing or the diff is empty (never emit a hash for a
 # missing base — that would fail open).
-# Follow-up (deferred, ADR 0006): add deterministic `-c color.ui=never
-# -c diff.external= -c core.quotePath=false` flags here AND in pre-pr-gate.sh +
-# tests together, to neutralize hostile/unusual operator git config.
+# #438: pin the diff to a deterministic form so an operator's git config cannot
+# make the writer's bytes diverge from the gate's (irreproducible false block).
+#   -c color.ui=never       — no ANSI color codes in the diff body
+#   -c core.quotePath=false — stable non-ASCII path rendering
+#   --no-ext-diff           — ignore a diff.external driver. NOT `-c diff.external=`:
+#     an empty external command makes git try to exec "" and `external diff died`
+#     → EMPTY diff → wrong hash. --no-ext-diff is the flag that disables it.
+#   --no-textconv           — ignore a .gitattributes `diff.<driver>.textconv`
+#     filter, which --no-ext-diff does NOT cover and which can otherwise rewrite
+#     or fail the hashed bytes.
+# Must stay byte-identical to pre-pr-gate.sh's CURRENT_HASH computation (same formula).
 compute_pr_diff_hash() {
   local base="$1" mb diff
-  [ -z "$base" ] && return 1
+  [[ -z "$base" ]] && return 1
   mb=$(git merge-base "$base" HEAD 2>/dev/null) || return 1
-  [ -z "$mb" ] && return 1
-  diff=$(git diff "${mb}...HEAD" 2>/dev/null) || return 1
-  [ -z "$diff" ] && return 1
+  [[ -z "$mb" ]] && return 1
+  diff=$(git -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv "${mb}...HEAD" 2>/dev/null) || return 1
+  [[ -z "$diff" ]] && return 1
   printf '%s' "$diff" | (sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1
 }
 

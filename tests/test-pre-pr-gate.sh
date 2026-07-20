@@ -330,6 +330,48 @@ printf '%s' "$VALID_HASH" > "$MARKER"; run_post_hook "$in2"
 got=$(marker_state); check "post-hook leaves marker for prose (not a real create)" "present" "$got"
 rm -f "$MARKER"
 
+# ── 10. #438: hostile git diff config must not diverge writer & gate ──
+# Regression: an operator `diff.external` driver OR a .gitattributes
+# `diff.<driver>.textconv` filter makes a plain `git diff` produce bytes neither
+# the writer nor the gate can reproduce (or die → EMPTY diff). The writer's marker
+# then never matches the gate's recompute → a fully-passing review is falsely
+# blocked. The fix pins BOTH sides to
+# `git -c color.ui=never -c core.quotePath=false diff --no-ext-diff --no-textconv`.
+# For each hostile config we compute the marker the WRITER way (the pinned flags),
+# seed both artifacts, and assert the gate ACCEPTS it. Before the fix the gate's
+# diff died → empty → fail-closed block.
+echo ""
+echo "── #438 deterministic diff hash (hostile git diff config) ──"
+# case a: diff.external driver;  case b: .gitattributes textconv filter
+# shellcheck disable=SC2317  # invoked via the loop below
+assert_hostile_config_accepted() {
+    local label="$1"
+    local hardened_diff hardened_hash
+    hardened_diff=$(git -C "$TMPREPO" -c color.ui=never -c core.quotePath=false \
+        diff --no-ext-diff --no-textconv "${MERGE_BASE}...HEAD" 2>/dev/null || true)
+    if [[ -z "$hardened_diff" ]]; then
+        check "deterministic diff non-empty under $label (#438)" "nonempty" "empty"
+        return
+    fi
+    hardened_hash=$(printf '%s' "$hardened_diff" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+    printf '%s' "$hardened_hash" > "$MARKER"
+    seed_artifacts "$hardened_hash"
+    local got
+    got=$(run_gate "$(make_input_cwd 'gh pr create --fill' "$TMPREPO")")
+    check "gate accepts writer marker under $label (#438)" "allow" "$got"
+    rm -f "$MARKER"; clear_artifacts
+}
+
+git -C "$TMPREPO" config diff.external /bin/false
+assert_hostile_config_accepted "hostile diff.external"
+git -C "$TMPREPO" config --unset diff.external
+
+printf '*.txt diff=hostile\n' > "$TMPREPO/.gitattributes"
+git -C "$TMPREPO" config diff.hostile.textconv /bin/false
+assert_hostile_config_accepted "hostile textconv filter"
+git -C "$TMPREPO" config --unset diff.hostile.textconv
+rm -f "$TMPREPO/.gitattributes"
+
 # ── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "  ── $PASS/$TOTAL passed ──"

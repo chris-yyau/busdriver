@@ -36,37 +36,18 @@ gate_ere_escape() {
     printf '%s' "$out"
 }
 
-# #347 — the design-doc grammar (detector-lockstep) on a single path. $2 = ERE-escaped
-# STATE_DIR. Return 0 iff the path is a design doc (basename PLAN/DESIGN/ARCHITECTURE*.md,
-# case-insensitive; OR under (STATE_DIR|docs)/(…/)?(plans|specs)/*.md).
-_gate_dd_grammar() {   # <path> <state_dir_ere>
-    printf '%s' "$1" | grep -qiE '(^|/)(PLAN|DESIGN|ARCHITECTURE)[^/]*\.md$' && return 0
-    printf '%s' "$1" | grep -qE "(^|/)($2|docs)/([^/]+/)*(plans|specs)/.*\.md\$"
-}
-
-# #347 — is <lexical_abspath> a design doc SAFE to exempt from the impl-block? It must match
-# the grammar on the LEXICAL path AND on the PHYSICALLY-resolved path: the deepest EXISTING
-# ancestor directory is resolved with `cd … && pwd -P` (following symlinks) and the not-yet-
-# created tail is reappended, then re-checked. So a symlinked `docs/plans -> src` parent
-# cannot launder an impl write — `docs/plans/impl.md` resolves to `src/impl.md`, which is not
-# a design doc, so it is NOT exempted (and a pending review blocks it). A genuinely new doc
-# whose parent dir does not exist yet has no symlink to follow, so the reconstruction leaves
-# the lexical location intact and it stays exempt (no new-doc deadlock). Return 0 = exempt.
+# #347 — is <lexical_abspath> a design doc SAFE to exempt from the impl-block? Delegates to
+# marker_ops.py `dd-exempt`, which requires the detector grammar to match BOTH the lexical
+# path AND os.path.realpath (resolving EVERY symlink — leaf and parents — while keeping a
+# not-yet-created tail lexical). So a symlinked parent (`docs/plans -> src`) OR a symlinked
+# leaf (`docs/plans/x.md -> ../src/impl.sh`) that escapes the design-doc location is NOT
+# exempt (a pending review blocks the laundered impl write), while a genuinely new doc keeps
+# its lexical location and stays exempt (no deadlock). ONE implementation shared with the
+# detector's grammar — no bash/python divergence. Return 0 = exempt; fail-CLOSED on error.
 # shellcheck disable=SC2034  # consumed by the sourcing gate
 gate_design_doc_exempt() {   # <lexical_abspath> <state_dir>
-    local p="$1" sd_esc dir base d tail phys full
-    sd_esc="$(gate_ere_escape "$2")"
-    _gate_dd_grammar "$p" "$sd_esc" || return 1        # not a design doc even lexically
-    dir="$(dirname -- "$p")"; base="$(basename -- "$p")"
-    d="$dir"; tail=""
-    # Walk up to the deepest existing directory (a symlinked dir is `-d`, so the loop STOPS
-    # there and pwd -P below resolves it — that is exactly the escape we must catch).
-    while [ ! -d "$d" ] && [ "$d" != "/" ] && [ "$d" != "." ] && [ "$d" != "$(dirname -- "$d")" ]; do
-        tail="$(basename -- "$d")${tail:+/}$tail"; d="$(dirname -- "$d")"
-    done
-    phys="$(cd "$d" 2>/dev/null && pwd -P)" || phys="$d"
-    full="$phys${tail:+/$tail}/$base"
-    _gate_dd_grammar "$full" "$sd_esc"                 # exempt iff the PHYSICAL path is a design doc too
+    local lib; lib="$(_gate_marker_lib_dir)" || return 1
+    python3 -S "$lib/marker_ops.py" dd-exempt "$1" "$2"
 }
 
 # Classify a (quote-stripped, ~-expanded) cd/-C target string.

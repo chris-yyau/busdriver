@@ -1217,24 +1217,31 @@ def effective_cwd(cmd, payload_cwd):
         while i < len(toks) and _ASSIGN_LEAD_RE.match(toks[i]):
             i += 1  # skip leading NAME=val / NAME+=val assignments to the command word
         # `builtin cd /x` / `command cd /x` are the only wrappers that still move the
-        # PARENT shell's cwd (env/sudo/nice/… fork a child). Strip a run of them so the
-        # real `cd` is reached — else `builtin cd /pending && <write>` fast-allows.
-        while i < len(toks) and toks[i].rsplit('/', 1)[-1] in ('builtin', 'command'):
+        # PARENT shell's cwd (env/sudo/nice/… fork a child). Strip a run of them (EXACT
+        # tokens — a path-qualified `/x/command` is an external program, not the builtin)
+        # so the real `cd` is reached — else `builtin cd /pending && <write>` fast-allows.
+        while i < len(toks) and toks[i] in ('builtin', 'command'):
             i += 1
         cw = toks[i] if i < len(toks) else ''
-        base = cw.rsplit('/', 1)[-1] if cw else ''
+        # The cd command word must be EXACTLY `cd` — a path-qualified `/tmp/cd` is an
+        # EXTERNAL executable that runs in a child process and CANNOT change the parent
+        # shell's cwd, so trusting its operand would anchor the gate on a dir the write
+        # never entered (`/tmp/cd /clean && sed` writes in payload_cwd). Not-exactly-`cd`
+        # paths fall through to the stray-`cd`-token check below (endswith('/cd')).
+        is_cd = (cw == 'cd')
         # A `cd` that is NOT the clean command word we handle below — inside a conditional
-        # (`if cd /x; then …`), a loop, or a group — changes the cwd in a way we cannot
-        # attribute. Detect ANY stray `cd` token and fail closed. (`cd` as a mere argument,
-        # e.g. `grep cd f`, only reaches a FILE-MODIFYING block for the rare command that
-        # both file-mods and carries a bare `cd` word; accepted conservative over-block.)
-        handled_cd_idx = i if base == 'cd' else -1
+        # (`if cd /x; then …`), a loop, a group, or a path-qualified external — changes (or
+        # fails to change) the cwd in a way we cannot attribute. Detect ANY stray `cd`-ish
+        # token and give up. (`cd` as a mere argument, e.g. `grep cd f`, only reaches a
+        # FILE-MODIFYING block for the rare command that both file-mods and carries a bare
+        # `cd` word; accepted conservative over-block.)
+        handled_cd_idx = i if is_cd else -1
         for k, t in enumerate(toks):
             if k == handled_cd_idx:
                 continue
             if t == 'cd' or t.endswith('/cd'):
                 return payload_cwd, True   # best-effort: give up → the pre-existing cd-blind anchor
-        if base == 'cd':
+        if is_cd:
             if seen_cd or seen_cmd or subshell or op not in ('', '&&', ';'):
                 return payload_cwd, True   # best-effort: give up → the pre-existing cd-blind anchor
             # Require EXACTLY one operand — `cd /a b` / bare `cd` are ambiguous.
@@ -1253,7 +1260,7 @@ def effective_cwd(cmd, payload_cwd):
             # closing `cd /missing ; write`, `cd /unsearchable ; write`, and `cd /file ; write`.
             cwd = target if (os.path.isdir(target) and os.access(target, os.X_OK)) else cwd
             seen_cd = True
-        elif base == '':
+        elif cw == '':
             continue  # pure assignment / empty segment — no cwd change
         else:
             seen_cmd = True  # a real command word; a LATER cd can no longer compose

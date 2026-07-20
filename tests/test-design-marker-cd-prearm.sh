@@ -68,6 +68,9 @@ eq "leading assignment + cd"        "$(eff "$EB" "X=1 cd $EB/other && > f")"    
 eq "relative cd → payload (CDPATH-unsafe)" "$(eff "$EB" 'cd sub && sed -i s/a/b/ f')"  "0|$EB"
 eq "builtin cd → target"            "$(eff "$EB" "builtin cd $EB/other && > f")"      "0|$EB/other"
 eq "command cd → target"            "$(eff "$EB" "command cd $EB/other && > f")"      "0|$EB/other"
+# A path-qualified /x/cd is an EXTERNAL program (child process) — it cannot move the
+# parent shell's cwd, so its operand must NOT anchor the gate.
+eq "path-qualified /x/cd → payload"  "$(eff "$EB" "$EB/cd $EB/other && > f")"          "0|$EB"
 # Ambiguous shapes fall back to the payload cwd (BEST-EFFORT, not fail-closed).
 eq "\$var cd → payload"             "$(eff "$EB" 'cd "$D" && > f')"                   "0|$EB"
 eq ".. cd → payload"                "$(eff "$EB" 'cd /a/../b && > f')"                "0|$EB"
@@ -146,6 +149,10 @@ eq "(sym) impl via symlinked docs/plans → BLOCK" "$(is_block)" "1"
 # docs/plans/DESIGN.md → physically src/DESIGN.md, still a design doc by name → exempt.
 run_gate "$PREIMPL" "$(write_payload 'docs/plans/DESIGN.md' "$SL")"
 eq "(sym) DESIGN.md via symlinked docs/plans → allow" "$(is_block)" "0"
+# A design-named LEAF symlink pointing at an impl file → physically an impl write → BLOCK.
+mkdir -p "$SL/docs/specs"; ln -s ../../src/impl.sh "$SL/docs/specs/DESIGN.md"
+run_gate "$PREIMPL" "$(write_payload 'docs/specs/DESIGN.md' "$SL")"
+eq "(sym) leaf-symlink DESIGN.md -> impl.sh → BLOCK" "$(is_block)" "1"
 
 echo ""
 echo "──────────────────────────────────────────────"

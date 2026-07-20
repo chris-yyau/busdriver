@@ -1,3 +1,10 @@
+## [1.95.4](https://github.com/chris-yyau/busdriver/compare/v1.95.3...v1.95.4) (2026-07-20)
+
+
+### Bug Fixes
+
+* **blueprint-review:** unblock headless agy reviewer so it reaches FULL 3/3 ([#424](https://github.com/chris-yyau/busdriver/issues/424)) ([#441](https://github.com/chris-yyau/busdriver/issues/441)) ([e4ad78c](https://github.com/chris-yyau/busdriver/commit/e4ad78c20447e4029cd17d297052c0b5e9c84330))
+
 ## [1.95.3](https://github.com/chris-yyau/busdriver/compare/v1.95.2...v1.95.3) (2026-07-20)
 
 

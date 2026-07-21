@@ -2,11 +2,11 @@
 
 ## Status
 
-Accepted (2026-07-21). Closes item 3 of issue #347 (the deferred-hardening tail of
-#346, design `docs/plans/2026-07-13-task2-worktree-design-marker.md` §2/§3/§9) as an
+Accepted (2026-07-21). Closes item 3 of issue `#347` (the deferred-hardening tail of
+issue `#346`, design `docs/plans/2026-07-13-task2-worktree-design-marker.md` §2/§3/§9) as an
 **accepted residual, not a bug** — a *preventive* content-bound anchor is impossible
 under this repo's threat model. Items 4–6 and the CodeScene advisory remain open on
-#347.
+issue `#347`.
 
 ## Context
 
@@ -18,9 +18,12 @@ This PR neither closed nor widened the deferred content-anchor hole."
 
 Since #346, the shipped architecture is:
 
-- **Existence-keyed tokens (ADR-C).** A token in the shared marker dir means "pending";
-  the reader NEVER opens the doc. A forged `<!-- design-reviewed: PASS -->` comment
-  therefore cannot clear a token on the block path — already a strengthening.
+- **Existence-keyed tokens (ADR-C).** For new tokens, the pending classifier
+  (`_classify_tokens`) treats token existence as "pending" and never opens the doc.
+  The separate legacy compatibility path (`_classify_legacy`, PASS-keyed) still reads
+  the doc to check for a `<!-- design-reviewed: PASS -->` marker. A forged marker
+  therefore cannot clear a token on the new-token block path — already a
+  strengthening — but can still clear a legacy marker as before.
 - **Trusted-loop-only prune (ADR-D).** A token is retired ONLY by the review loop's
   inline snapshot-guarded `rm` (`run-design-review-loop.sh:1418`) on a confirmed
   FULL PASS, or a manual operator `rm`.
@@ -65,11 +68,14 @@ verdict* cannot exist in this system, for three independent reasons:
      certifies nothing against the actor item 3 names; (b) it covers only the in-review
      window, and the same arming miss one moment *after* the prune is invisible to it —
      that residual is closed completely by fixing arming (reason 3), not partially by a
-     prune-time digest; and (c) a prune-time drift check that never gates the block path
-     is exactly the **advisory (warn-only) drift detector** in Alternatives, which the
-     maintainer deliberately scoped OUT of this decision. So the loop-side check is a
-     deferred optional nicety, not the forge-proof anchor — item 3's asked-for property
-     remains unreachable (reason 1).
+     prune-time digest; and (c) unlike the truly warn-only detector in Alternatives
+     (which never withholds anything — it only warns after the fact), this loop-side
+     check *does* withhold the prune on a mismatch. But that preventive effect is still
+     bounded by (a) and (b) above — a same-UID-forgeable check whose window is limited
+     to the review period — so it is a narrower, buildable variant of the same advisory
+     idea the maintainer deliberately scoped OUT of this decision, not a promotion to a
+     forge-proof anchor. So the loop-side check is a deferred optional nicety —
+     item 3's asked-for property remains unreachable (reason 1).
 
 3. **The residual it targets is an *arming* gap, closed by arming, not by an anchor.**
    After items 1&2, the only way content drifts without re-arming is a narrow set of
@@ -86,9 +92,10 @@ pretending to a guarantee it cannot make.
 
 ## Why this does not weaken the gate
 
-- Nothing changes in code. The block path stays existence-keyed and doc-read-free; the
-  only trust delta remains the #346 strengthening (the reader no longer consults the
-  editable PASS comment).
+- Nothing changes in code. The new-token block path stays existence-keyed and
+  doc-read-free; the legacy compatibility path retains its existing reviewed-document
+  check. The only trust delta remains the #346 strengthening (the new-token reader no
+  longer consults the editable PASS comment).
 - The forge surface item 3 named — the editable PASS comment — is **already** neutralized
   on the block path by existence-keying. What item 3 additionally wanted (binding the
   *loop's PASS decision* to content) is unreachable without an unforgeable key, which

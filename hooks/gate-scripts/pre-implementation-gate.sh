@@ -959,12 +959,21 @@ except Exception:
     # can't be resolved, do NOT exempt (fall through to the marker check).
     # (The unconditional marker-forge guard at the top already ran, so the marker
     # files themselves stay protected regardless.)
-    # FAIL-CLOSED: gate_marker_relpath resolves FILE_PATH's PHYSICAL repo-relative
-    # path. A relative FILE_PATH is resolved against the gate CWD, which for an impl
-    # file yields e.g. `src/…` (not `$STATE_DIR/…`) → not exempted → the marker
-    # check runs. It can only ever FAIL to exempt (block), never wrongly exempt, so
-    # the payload-cwd nicety is deferred rather than plumb a newline-unsafe abspath.
-    _REL="$(gate_marker_relpath "$FILE_PATH" 2>/dev/null || true)"
+    # #347 item 4 (ADR 0023): resolve this allowlist against the PAYLOAD-cwd-joined,
+    # normalized target ($_NORM_FP) — NOT the raw $FILE_PATH. gate_marker_relpath
+    # resolves a *relative* path against the GATE PROCESS cwd, so when the payload cwd
+    # is a repo SUBDIR (e.g. /repo/src) and the gate cwd is /repo, a relative
+    # `.claude/impl.py` resolves gate-cwd-relative to `.claude/impl.py` → EXEMPT, while
+    # the write actually lands at /repo/src/.claude/impl.py — an impl file wrongly
+    # exempted: a design-review fail-OPEN (Codex litmus HIGH; issue #347's original
+    # "fail-closed-safe" read only saw the opposite over-block direction). Feeding the
+    # already-payload-cwd-joined $_NORM_FP makes this arm consistent with the sibling
+    # design-doc arm above (which resolves $_NORM_FP too) and keys on the write's REAL
+    # repo/dir. $_NORM_FP is normpath'd + newline-rejected above, so this carries none
+    # of the newline-truncation fail-open that reverted the #346 attempt. FAIL-CLOSED:
+    # an empty $_NORM_FP (python failure) or an out-of-repo target makes
+    # gate_marker_relpath return non-zero → no exemption → the marker check runs.
+    _REL="$(gate_marker_relpath "$_NORM_FP" 2>/dev/null || true)"
     case "$_REL" in
         "$STATE_DIR"/*) exit 0 ;;
     esac

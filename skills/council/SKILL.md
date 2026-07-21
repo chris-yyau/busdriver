@@ -153,23 +153,37 @@ if [[ "$AUDITOR_CLI" != "none" && "$AUDITOR_CLI" != "builtin" && ! "$AUDITOR_CLI
   # Auditor runs read-only via the plugin-owned opencode config (deny-all
   # tools except read/glob/grep). See the opencode) arm in resolve-cli.sh for
   # the four-round probe history — enumerated denylists all leaked.
-  # A SHORTER timeout than the fixed voices (advisory must not extend the run),
-  # and its PID is kept OUT of the blocking PIDS array — see the bounded reap.
-  "$DISPATCH" --cli "$AUDITOR_CLI" --timeout "${COUNCIL_AUDITOR_TIMEOUT:-120}" <<'AUDITOR_PROMPT' &
+  # Its own budget (default 120s); PID kept OUT of the blocking PIDS array — see
+  # the bounded reap. The reap waits for THIS budget (+10s), like the UltraOracle
+  # and fable advisories, not a stingy tail after the fixed voices finish.
+  _AUD_TO="${COUNCIL_AUDITOR_TIMEOUT:-120}"; case "$_AUD_TO" in ''|*[!0-9]*) _AUD_TO=120 ;; esac
+  _AUD_TO="${_AUD_TO#"${_AUD_TO%%[!0]*}"}"; [[ -z "$_AUD_TO" ]] && _AUD_TO=0   # strip leading zeros (00000600 → 600); all-zeros → 0
+  [[ "${#_AUD_TO}" -ge 4 ]] && _AUD_TO=600   # >3 sig digits (>999) → clamp to max, keeping 10# off any oversized input (never octal, never 64-bit overflow)
+  _AUD_TO=$((10#$_AUD_TO))
+  [[ "$_AUD_TO" -lt 1 ]] && _AUD_TO=120; [[ "$_AUD_TO" -gt 600 ]] && _AUD_TO=600   # clamp: a repo-injected value must not stall the council for minutes+
+  "$DISPATCH" --cli "$AUDITOR_CLI" --timeout "$_AUD_TO" <<'AUDITOR_PROMPT' &
 <Auditor prompt>
 AUDITOR_PROMPT
   AUDITOR_PID="$!"
 fi
-# Block on the FIXED voices only. The advisory Auditor is reaped separately with
-# a bounded grace so a stall cannot gate the council: once the fixed voices are
-# in, give the Auditor a short window, then kill its process TREE and proceed
+# Block on the FIXED voices only. The advisory Auditor is reaped separately, but
+# it waits for its OWN budget (_AUD_TO + 10s) — k3 is a slow reasoning model and
+# a 20s tail after the fixed voices reaped it mid-flight. dispatch's own timeout
+# hard-stops the process at _AUD_TO, so this loop only POLLS to that ceiling and
+# still cannot stall the council unboundedly; the +10 is slack to finish writing
 # (execute_review + opencode are descendants; killing only $AUDITOR_PID orphans
-# them).
+# them). Override with COUNCIL_AUDITOR_GRACE to force an earlier reap.
 (( ${#PIDS[@]} )) && wait "${PIDS[@]}"
 if [[ -n "$AUDITOR_PID" ]]; then
+  _ag_cap="${COUNCIL_AUDITOR_GRACE:-$(( _AUD_TO + 10 ))}"; case "$_ag_cap" in ''|*[!0-9]*) _ag_cap=$(( _AUD_TO + 10 )) ;; esac
+  _ag_cap="${_ag_cap#"${_ag_cap%%[!0]*}"}"; [[ -z "$_ag_cap" ]] && _ag_cap=0   # strip leading zeros; all-zeros → 0
+  [[ "${#_ag_cap}" -ge 4 ]] && _ag_cap=$(( _AUD_TO + 10 ))   # >3 sig digits → default, keeping 10# off any oversized input
+  _ag_cap=$((10#$_ag_cap))   # base-10 on a ≤3-digit value: never octal, never overflow
+  # The override may only SHORTEN the reap, never extend past budget+10 (also corrals any wrapped value).
+  [[ "$_ag_cap" -gt $(( _AUD_TO + 10 )) ]] && _ag_cap=$(( _AUD_TO + 10 )); [[ "$_ag_cap" -lt 1 ]] && _ag_cap=1
   _ag=0
   while kill -0 "$AUDITOR_PID" 2>/dev/null; do
-    if [[ "$_ag" -ge "${COUNCIL_AUDITOR_GRACE:-20}" ]]; then
+    if [[ "$_ag" -ge "$_ag_cap" ]]; then
       _kt() { local p="$1" c; for c in $(pgrep -P "$p" 2>/dev/null); do _kt "$c"; done; kill "$p" 2>/dev/null || true; }
       _kt "$AUDITOR_PID"
       break

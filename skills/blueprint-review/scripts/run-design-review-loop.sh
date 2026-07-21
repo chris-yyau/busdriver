@@ -725,16 +725,37 @@ with open(pending, "w") as f:
   AUDITOR_CLI=$(resolve_role_cli "blueprint-review.auditor")
   AUDITOR_OUTPUT_FILE=$(get_review_file "auditor.json")
   AUDITOR_PID=""
+  # Auditor's own budget — the ceiling on how long its dispatch may run AND the
+  # bound the post-reviewer reap waits for (see the reap below). Sanitize: it is
+  # arithmetic input for the reap's `+10` margin, and a non-numeric env value
+  # (repo-injectable via settings.json) would otherwise break `$(( ))`.
+  _AUD_TIMEOUT="${BLUEPRINT_AUDITOR_TIMEOUT:-300}"
+  case "$_AUD_TIMEOUT" in ''|*[!0-9]*) _AUD_TIMEOUT=300 ;; esac       # non-numeric → default
+  # Strip leading zeros so a zero-padded value (00000600 → 600) is measured by
+  # its SIGNIFICANT digits, then cap the length BEFORE `$((10#…))` so an
+  # oversized digit string can never reach the arithmetic (where it would wrap
+  # 64-bit to some in-range garbage the clamp can't distinguish). Max legal is
+  # 600 (3 digits), so ≥4 significant digits is already >600 → clamp to the max.
+  _AUD_TIMEOUT="${_AUD_TIMEOUT#"${_AUD_TIMEOUT%%[!0]*}"}"
+  [[ -z "$_AUD_TIMEOUT" ]] && _AUD_TIMEOUT=0                          # all-zeros → 0 (→ default below)
+  [[ "${#_AUD_TIMEOUT}" -ge 4 ]] && _AUD_TIMEOUT=600                  # >3 sig digits (>999) → clamp to max
+  _AUD_TIMEOUT=$((10#$_AUD_TIMEOUT))                                  # base-10 on a ≤3-digit value: never octal, never overflow
+  # CLAMP — this value gates the reap below, so an unbounded (repo-injectable)
+  # BLUEPRINT_AUDITOR_TIMEOUT is a DoS: 9999999 would stall arbitration for
+  # ~115 days. 600s is generous for a slow k3 pass, bounded.
+  [[ "$_AUD_TIMEOUT" -lt 1 ]] && _AUD_TIMEOUT=300
+  [[ "$_AUD_TIMEOUT" -gt 600 ]] && _AUD_TIMEOUT=600
   if [[ "$AUDITOR_CLI" != "none" && "$AUDITOR_CLI" != "builtin" && ! "$AUDITOR_CLI" =~ ^(missing|unsupported): ]]; then
     (
       _aud_raw=$(get_review_file "auditor-raw.txt")
       _aud_exit=0
-      # EXPLICIT short duration. execute_review defaults to 1200s; inheriting
-      # that would make this "non-gating" advisory stall the whole round for up
-      # to 20 minutes before arbitration — and k3 stalls silently on a
-      # meaningful fraction of generation-heavy prompts, so that is the likely
-      # path, not the rare one. An advisory that can delay the gate is a gate.
-      execute_review "$AUDITOR_CLI" "$FULL_PROMPT" "${BLUEPRINT_AUDITOR_TIMEOUT:-300}" > "$_aud_raw" 2>&1 || _aud_exit=$?
+      # EXPLICIT budget (default 300s, NOT execute_review's 1200s default). This
+      # is the advisory's own ceiling — the reap below waits for exactly this,
+      # not a stingy tail after the reviewers finish, so a slow reasoning model
+      # (opencode-go/kimi-k3) gets its full budget just like the UltraOracle and
+      # fable advisories do. execute_review's internal _portable_timeout still
+      # hard-stops the process at this cap, so it can never actually run longer.
+      execute_review "$AUDITOR_CLI" "$FULL_PROMPT" "$_AUD_TIMEOUT" > "$_aud_raw" 2>&1 || _aud_exit=$?
       # ATOMIC write: build the JSON in a temp file, then rename into place. A
       # grace-period kill of this background job could otherwise interrupt a
       # direct write and leave a partial auditor.json that `cat` reads happily —
@@ -762,16 +783,30 @@ with open(pending, "w") as f:
   wait "$AGY_PID" 2>/dev/null || true
   wait "$CODEX_PID" 2>/dev/null || true
   wait "$GROK_PID" 2>/dev/null || true
-  # BOUNDED reap for the advisory Auditor — it must never act as a temporal
-  # gate. The three required reviewers have already completed here; give the
-  # Auditor only a short grace to finish, then KILL it and proceed. Its output
-  # file is either a verdict (used) or an error/absent JSON (noted), never a
-  # blocker. Without the bound, `wait` could stall arbitration for the full
-  # BLUEPRINT_AUDITOR_TIMEOUT after the real reviewers are already done.
+  # BOUNDED reap for the advisory Auditor. It waits the Auditor's OWN budget
+  # (_AUD_TIMEOUT + a 10s margin — the same shape as the UltraOracle's `cap+10`
+  # poll), NOT a 20s tail after the reviewers finish. k3 is a slow reasoning
+  # model; on a real generation-heavy prompt it needs minutes, and the old 20s
+  # tail reaped it mid-flight on every run (zero auditor.json ever produced).
+  # This still can't stall arbitration unboundedly: execute_review's internal
+  # _portable_timeout hard-stops the process at _AUD_TIMEOUT, so this loop only
+  # POLLS to that ceiling; the +10 is slack for the child to finish its atomic
+  # write. Override with BLUEPRINT_AUDITOR_GRACE to force an earlier reap.
   if [[ -n "${AUDITOR_PID:-}" ]]; then
+    _aud_grace_cap="${BLUEPRINT_AUDITOR_GRACE:-$(( _AUD_TIMEOUT + 10 ))}"
+    case "$_aud_grace_cap" in ''|*[!0-9]*) _aud_grace_cap=$(( _AUD_TIMEOUT + 10 )) ;; esac
+    _aud_grace_cap="${_aud_grace_cap#"${_aud_grace_cap%%[!0]*}"}"          # strip leading zeros
+    [[ -z "$_aud_grace_cap" ]] && _aud_grace_cap=0                          # all-zeros → 0
+    [[ "${#_aud_grace_cap}" -ge 4 ]] && _aud_grace_cap=$(( _AUD_TIMEOUT + 10 ))  # >3 sig digits → default (keeps 10# off oversized input; upper bound re-clamps below)
+    _aud_grace_cap=$((10#$_aud_grace_cap))   # base-10 on a ≤3-digit value: never octal, never overflow
+    # The override may only SHORTEN the reap, never extend it past the budget+10
+    # — a repo-injected BLUEPRINT_AUDITOR_GRACE must not lengthen the stall (this
+    # upper bound also corrals any >64-bit wrapped value to <= budget+10).
+    [[ "$_aud_grace_cap" -gt $(( _AUD_TIMEOUT + 10 )) ]] && _aud_grace_cap=$(( _AUD_TIMEOUT + 10 ))
+    [[ "$_aud_grace_cap" -lt 1 ]] && _aud_grace_cap=1
     _aud_grace=0
     while kill -0 "$AUDITOR_PID" 2>/dev/null; do
-      if [[ "$_aud_grace" -ge "${BLUEPRINT_AUDITOR_GRACE:-20}" ]]; then
+      if [[ "$_aud_grace" -ge "$_aud_grace_cap" ]]; then
         # Kill the whole descendant TREE, not just the subshell — execute_review
         # and opencode run as descendants and would otherwise orphan and keep
         # using the network until their own 300s timeout. Portable recursive
@@ -782,7 +817,7 @@ with open(pending, "w") as f:
           kill "$_p" 2>/dev/null || true
         }
         _kill_tree "$AUDITOR_PID"
-        log_warning "  Auditor (advisory) exceeded ${BLUEPRINT_AUDITOR_GRACE:-20}s grace after reviewers finished — killed its process tree, proceeding without it"
+        log_warning "  Auditor (advisory) exceeded its ${_aud_grace_cap}s budget — killed its process tree, proceeding without it"
         break
       fi
       sleep 1; _aud_grace=$((_aud_grace + 1))

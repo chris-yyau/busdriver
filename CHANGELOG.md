@@ -1,3 +1,10 @@
+## [1.95.7](https://github.com/chris-yyau/busdriver/compare/v1.95.6...v1.95.7) (2026-07-21)
+
+
+### Bug Fixes
+
+* **design-review:** unify detector onto gate's physical (realpath) grammar ([#446](https://github.com/chris-yyau/busdriver/issues/446)) ([#448](https://github.com/chris-yyau/busdriver/issues/448)) ([cafbb1b](https://github.com/chris-yyau/busdriver/commit/cafbb1bb91429f58c31973fe4901d97fe581fbc7))
+
 ## [1.95.6](https://github.com/chris-yyau/busdriver/compare/v1.95.5...v1.95.6) (2026-07-21)
 
 

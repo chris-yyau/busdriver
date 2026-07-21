@@ -1,3 +1,10 @@
+## [1.95.9](https://github.com/chris-yyau/busdriver/compare/v1.95.8...v1.95.9) (2026-07-21)
+
+
+### Bug Fixes
+
+* **voices:** give advisory Auditor (k3) its own budget, not a 20s tail ([#453](https://github.com/chris-yyau/busdriver/issues/453)) ([9660d98](https://github.com/chris-yyau/busdriver/commit/9660d98912642e9dd40d2a2d51d00c5517d340ad)), closes [#435](https://github.com/chris-yyau/busdriver/issues/435)
+
 ## [1.95.8](https://github.com/chris-yyau/busdriver/compare/v1.95.7...v1.95.8) (2026-07-21)
 
 

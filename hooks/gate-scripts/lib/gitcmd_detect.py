@@ -1136,3 +1136,155 @@ def gh_pr(cmd, subcommand):
         if r:
             return r
     return False, '', ''
+
+
+# ── Effective cwd of a file-write in a Bash command (#347 item 2) ──────────────
+# The design-review marker gates must anchor on the directory a write LANDS in, not
+# the payload cwd, when the command changes directory inline (`cd /repo && > f`).
+# The prior gates were cd-blind: the read gate anchored on the payload cwd and the
+# detector armed against the process cwd, so `cd /pending-repo && > src/impl.sh`
+# checked/armed the WRONG repo (design §2/§9, confirmed HIGH in #346).
+#
+# effective_cwd() resolves a leading single ABSOLUTE PLAIN-LITERAL `cd` and is BEST-EFFORT
+# (the second tuple element is always True): a shape it cannot resolve falls back to the
+# payload cwd — the pre-existing cd-blind anchor — so the result is never WORSE than before,
+# only better in the confident case (see the effective_cwd docstring and ADR 0021). It is NOT
+# a fail-closed contract. The constraints mirror ADR 0018's standalone-cd rule (the
+# merge-time nudge parser): an absolute, `..`-free literal resolves identically under bash's
+# default logical `cd` and the downstream `git -C`, while a relative operand is subject to
+# CDPATH and a `..` diverges through symlinks.
+_CD_UNSAFE_RE = re.compile(r'[$`*?\[\]{}~\s]')
+_ASSIGN_LEAD_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*\+?=')
+
+
+def _abs_cd_target(target):
+    """Return an ABSOLUTE plain-literal `cd` operand we can trust, else ''. Only
+    absolute literals are resolved: a RELATIVE operand is subject to CDPATH (which can
+    send `cd sub` outside the payload cwd), so it is left to the best-effort payload
+    anchor instead. Rejects '..' (diverges through symlinks under logical vs physical
+    cd) and any shell-expansion/glob/whitespace metachar."""
+    if (target and target.startswith('/')
+            and '..' not in target.split('/')
+            and not _CD_UNSAFE_RE.search(target)):
+        return target
+    return ''
+
+
+def effective_cwd(cmd, payload_cwd):
+    """Return (cwd, ok) — the directory a file-write in `cmd` runs in, given the
+    shell starts in `payload_cwd`. The anchor only needs to identify the WRITE's
+    REPOSITORY (the gate keys markers on the git-common-dir), not the exact subdir.
+
+    BEST-EFFORT (not fail-closed): the second tuple element is always True — a caller
+    never blocks on this. When the write's cwd cannot be resolved confidently, it returns
+    the PAYLOAD cwd, i.e. the pre-existing cd-blind anchor, so the result is never WORSE
+    than before this parser existed. It only IMPROVES the confident case:
+
+      * No `cd` → payload_cwd (behavior unchanged).
+      * A single builtin `cd` (optionally `builtin`/`command`-wrapped) to an ABSOLUTE
+        plain literal, reached before any real command word via ''/';'/newline/'&&' → the
+        target, but ONLY when it is a searchable DIRECTORY (`isdir` AND `os.access` X_OK —
+        both, since X_OK alone passes an executable file like `cd /bin/ls`): a `cd` into a
+        missing, non-searchable, or non-directory target fails, leaving the
+        write in the prior cwd (`;`) or short-circuiting it (`&&`), so the prior cwd is
+        kept. Absolute-only is deliberate — a RELATIVE operand is subject to CDPATH
+        (`cd sub` can land outside the payload cwd), so it is left to the payload anchor
+        rather than mis-resolved.
+      * ANY ambiguous shape — relative/opaque target, >1 cd, a cd AFTER a real command, a
+        cd behind '||'/'|'/'&', a subshell-grouped cd, or a stray `cd` token inside
+        `if`/`while`/a group → falls back to payload_cwd.
+
+    Statically resolving every shell cd is undecidable (a `cd` in a function/alias, an
+    interpreter one-liner, `xargs`, ambient CDPATH…); those stay the ADR 0006
+    hostile-dispatcher residual. The design-review gate is cooperative-mis-fire
+    protection, so a best-effort accuracy bump is the right posture — see ADR 0021."""
+    cwd = payload_cwd
+    seen_cd = False
+    seen_cmd = False
+    for op, seg in split_segments(cmd):
+        # '&' is NOT like '||'/'|': it BACKGROUNDS the preceding list in a subshell, so its
+        # `cd` never moved the FOREGROUND shell — the write after '&' runs in payload_cwd
+        # regardless of seen_cmd (`cd /x && true & > f` writes in payload, not /x). Give up
+        # unconditionally, else we'd anchor to the wrong repo (a real fail-open).
+        if seen_cd and op == '&':
+            return payload_cwd, True
+        # '||'/'|' after a cd need care. If a command has ALREADY run in the cd's target
+        # (seen_cmd), the cd stuck (it moved this same shell) and this branch runs there
+        # too — `cd /x && false || w` leaves the write in /x — so keep the resolved cwd. If
+        # the operator is DIRECTLY after the cd (no intervening command), the cd's own
+        # success gates it — `cd /x || w` runs the write only if the cd FAILED, i.e. in
+        # payload — so payload.
+        if seen_cd and op in ('||', '|'):
+            return (cwd if seen_cmd else payload_cwd), True   # best-effort give-up anchor
+        if not seg:
+            continue
+        toks = _tokenize(seg)
+        if not toks:
+            continue
+        # A bare '(' / ')' token is real subshell grouping (substitutions keep their
+        # paren inside one token), so this flags only true grouping.
+        subshell = any(t in ('(', ')') for t in toks)
+        i = 0
+        while i < len(toks) and _ASSIGN_LEAD_RE.match(toks[i]):
+            i += 1  # skip leading NAME=val / NAME+=val assignments to the command word
+        # `builtin cd /x` / `command cd /x` are the only wrappers that still move the
+        # PARENT shell's cwd (env/sudo/nice/… fork a child). Strip a run of them (EXACT
+        # tokens — a path-qualified `/x/command` is an external program, not the builtin)
+        # so the real `cd` is reached — else `builtin cd /pending && <write>` fast-allows.
+        while i < len(toks) and toks[i] in ('builtin', 'command'):
+            i += 1
+        cw = toks[i] if i < len(toks) else ''
+        # The cd command word must be EXACTLY `cd` — a path-qualified `/tmp/cd` is an
+        # EXTERNAL executable that runs in a child process and CANNOT change the parent
+        # shell's cwd, so trusting its operand would anchor the gate on a dir the write
+        # never entered (`/tmp/cd /clean && sed` writes in payload_cwd). Not-exactly-`cd`
+        # paths fall through to the stray-`cd`-token check below (endswith('/cd')).
+        is_cd = (cw == 'cd')
+        # A `cd` that is NOT the clean command word we handle below — inside a conditional
+        # (`if cd /x; then …`), a loop, a group, or a path-qualified external — changes (or
+        # fails to change) the cwd in a way we cannot attribute. Detect ANY stray `cd`-ish
+        # token and give up. (`cd` as a mere argument, e.g. `grep cd f`, only reaches a
+        # FILE-MODIFYING block for the rare command that both file-mods and carries a bare
+        # `cd` word; accepted conservative over-block.)
+        handled_cd_idx = i if is_cd else -1
+        for k, t in enumerate(toks):
+            if k == handled_cd_idx:
+                continue
+            if t == 'cd' or t.endswith('/cd'):
+                return payload_cwd, True   # best-effort: give up → the pre-existing cd-blind anchor
+        if is_cd:
+            if seen_cd or seen_cmd or subshell or op not in ('', '&&', ';'):
+                return payload_cwd, True   # best-effort: give up → the pre-existing cd-blind anchor
+            # Require EXACTLY one operand — `cd /a b` / bare `cd` are ambiguous.
+            rest = toks[i + 1:]
+            if len(rest) != 1:
+                return payload_cwd, True   # best-effort: give up → pre-existing cd-blind anchor
+            target = _abs_cd_target(rest[0])
+            if not target:
+                return payload_cwd, True   # relative (CDPATH-unsafe) / opaque → payload anchor
+            # Trust the absolute target only if bash could actually ENTER it: it must be a
+            # DIRECTORY (isdir) AND searchable (os.access X_OK). Both are needed — isdir
+            # alone passes an unsearchable dir (cd fails), and X_OK alone passes an
+            # executable regular file like `cd /bin/ls` (cd fails, "not a directory"). A
+            # `cd` that fails leaves the write in the PRIOR cwd (`;`/newline) or
+            # short-circuits it (`&&`), so keeping the prior cwd is correct either way —
+            # closing `cd /missing ; write`, `cd /unsearchable ; write`, and `cd /file ; write`.
+            cwd = target if (os.path.isdir(target) and os.access(target, os.X_OK)) else cwd
+            seen_cd = True
+        elif cw == '':
+            continue  # pure assignment / empty segment — no cwd change
+        else:
+            seen_cmd = True  # a real command word; a LATER cd can no longer compose
+    return cwd, True
+
+
+if __name__ == '__main__':
+    # Debug/test CLI (the gate consumers import effective_cwd directly). Reads the
+    # command from stdin; prints the best-effort resolved cwd (never fails — the
+    # second tuple element is always True). exit 0 always, 2 = bad usage.
+    import sys as _sys
+    if _sys.argv[1:2] == ['effective-cwd']:
+        _sys.stdout.write(effective_cwd(_sys.stdin.read(),
+                                        _sys.argv[2] if len(_sys.argv) > 2 else '')[0])
+        _sys.exit(0)
+    _sys.exit(2)

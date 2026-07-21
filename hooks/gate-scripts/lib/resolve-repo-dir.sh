@@ -36,6 +36,26 @@ gate_ere_escape() {
     printf '%s' "$out"
 }
 
+# #347 — is <lexical_abspath> a design doc SAFE to exempt from the impl-block? Delegates to
+# marker_ops.py `dd-exempt`, which requires the detector grammar to match BOTH the lexical
+# path AND os.path.realpath (resolving EVERY symlink — leaf and parents — while keeping a
+# not-yet-created tail lexical). So a symlinked parent (`docs/plans -> src`) OR a symlinked
+# leaf (`docs/plans/x.md -> ../src/impl.sh`) that escapes the design-doc location is NOT
+# exempt (a pending review blocks the laundered impl write), while a genuinely new doc keeps
+# its lexical location and stays exempt (no deadlock). ONE implementation shared with the
+# detector's grammar — no bash/python divergence. Return 0 = exempt; fail-CLOSED on error.
+# Returns: 0 = exempt (a real design doc), 1 = NOT a design doc, 2 = ERROR (helper
+# unavailable / unreadable / crashed). The caller MUST treat 2 as fail-CLOSED — an
+# operational failure that silently read as "not a design doc" would skip arming and
+# lose the review requirement (a fail-OPEN this gate exists to prevent).
+# shellcheck disable=SC2034  # consumed by the sourcing gate
+gate_design_doc_exempt() {   # <lexical_abspath> <state_dir>
+    local lib rc
+    lib="$(_gate_marker_lib_dir)" || return 2
+    python3 -S "$lib/marker_ops.py" dd-exempt "$1" "$2"; rc=$?
+    case "$rc" in 0|1) return "$rc" ;; *) return 2 ;; esac  # any non-0/1 → error → fail-CLOSED
+}
+
 # Classify a (quote-stripped, ~-expanded) cd/-C target string.
 # Echoes one of: none | literal | toplevel | unresolvable
 gate_classify_target() {

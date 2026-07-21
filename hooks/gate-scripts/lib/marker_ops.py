@@ -323,8 +323,73 @@ def cmd_classify(argv):
     return 1 if em.pending else 0
 
 
+# #347 — design-doc grammar, in lockstep with the detector (check-design-document.sh)
+# and the pre-implementation exemption. Basename PLAN/DESIGN/ARCHITECTURE*.md
+# (case-insensitive) OR under (STATE_DIR|docs)/(…/)?(plans|specs)/*.md.
+_DD_BASENAME_RE = re.compile(r"(^|/)(PLAN|DESIGN|ARCHITECTURE)[^/]*\.md$", re.I)
+
+
+def _is_design_doc(path, state_dir):
+    if _DD_BASENAME_RE.search(path):
+        return True
+    return bool(re.search(
+        r"(^|/)(" + re.escape(state_dir) + r"|docs)/([^/]+/)*(plans|specs)/.*\.md$", path))
+
+
+def _repo_relative(abspath):
+    """Path of abspath relative to its git worktree root, or abspath unchanged when it
+    is not inside a repo. Used so the design-doc grammar is applied to the REPO-RELATIVE
+    path — a repo checked out under an ancestor like /x/docs/plans/repo/ must not have its
+    own src/impl.md classified a design doc just because the ANCESTOR chain says docs/plans."""
+    import subprocess
+    d = os.path.dirname(abspath) or "."
+    # Walk up to the deepest EXISTING dir: a new nested doc's immediate parent may not exist
+    # yet, and `git -C <missing>` fails → we'd fall back to the absolute path and re-expose
+    # the ancestor-docs/plans bypass for not-yet-created parents.
+    while d and not os.path.isdir(d) and d != os.path.dirname(d):
+        d = os.path.dirname(d)
+    if not d:
+        d = "."
+    try:
+        r = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"],
+                           capture_output=True)
+        if r.returncode == 0:
+            root = r.stdout.decode("utf-8", "surrogateescape").strip()
+            if root:
+                root = os.path.realpath(root)
+                if abspath == root:
+                    return os.path.basename(abspath)
+                if abspath.startswith(root + "/"):
+                    return abspath[len(root) + 1:]
+    except Exception:
+        pass
+    return abspath  # not in a repo / git error → absolute (the basename arm still applies)
+
+
+def cmd_dd_exempt(argv):
+    # exit 0 iff <lexical_path> is a design doc BOTH lexically AND after os.path.realpath
+    # — which resolves EVERY symlink on the path (leaf AND parents) while keeping a
+    # not-yet-created tail lexical, so it never fails on a new doc. A symlinked parent
+    # (`docs/plans -> src`) OR a symlinked leaf (`docs/plans/x.md -> ../src/impl.sh`) that
+    # escapes the design-doc location is therefore NOT exempt, and a pending review blocks
+    # the impl write it was laundering. A genuinely new doc keeps its lexical location and
+    # stays exempt (no deadlock). The physical grammar runs on the REPO-RELATIVE path so an
+    # ancestor named docs/plans cannot launder an impl .md. Return 0=exempt, 1=not a design
+    # doc, 2=usage error (the caller fails CLOSED on 2).
+    if len(argv) != 2:
+        return 2
+    path, state_dir = argv
+    if not _is_design_doc(path, state_dir):
+        return 1
+    try:
+        phys = os.path.realpath(path)
+    except OSError:
+        return 1
+    return 0 if _is_design_doc(_repo_relative(phys), state_dir) else 1
+
+
 _DISPATCH = {"sha": cmd_sha, "arm": cmd_arm, "classify": cmd_classify,
-             "reviewed": cmd_reviewed}
+             "reviewed": cmd_reviewed, "dd-exempt": cmd_dd_exempt}
 
 
 def main(argv):

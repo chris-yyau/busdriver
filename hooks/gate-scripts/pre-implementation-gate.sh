@@ -49,8 +49,58 @@ block_emit() {
 # ── Shared marker helpers (Task 2) ────────────────────────────────────
 # Sourced BEFORE the python3 pre-check so its pure-shell fallback is available,
 # and before the read-gate below uses gate_marker_pending.
+_GATE_LIBDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 # shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
+source "$_GATE_LIBDIR/resolve-repo-dir.sh"
+
+# #347 item 1 — fail-closed pre-arm. Called just before a Write/Edit/MultiEdit design
+# doc is EXEMPTED below. The PostToolUse detector arms the review marker AFTER the
+# write but structurally cannot block, so a post-resolution arm failure (marker dir
+# resolvable, token write fails) used to silently lose the review requirement — a
+# fail-OPEN (design §2/§9, confirmed HIGH in #346). Here, PRE-write, we arm and BLOCK
+# when the arm fails while the infra IS resolvable. It returns 0 (proceed to exempt)
+# or emits a block decision and returns 1; the caller `exit 0`s either way (an emitted
+# block on stdout is what the harness acts on).
+#
+# It ARMS only for a doc that is neither already honorably-reviewed nor already armed —
+# i.e. a genuinely new/unreviewed design doc, the exact initial-arm the residual could
+# lose. blueprint-review stamps PASS + prunes via its OWN script (guard-invisible), so
+# this never re-arms a doc mid-review. A NEW doc in a NOT-yet-created dir has no norm
+# yet → pre-existing §2 best-effort miss (NOT the residual we close) → proceed, and the
+# PostToolUse detector best-efforts. Bash-redirect design-doc creation also stays
+# PostToolUse best-effort (documented residual — this branch is Write/Edit only).
+_design_prearm_or_block() {   # <abspath> <tool>   ; 0 = proceed, 1 = block emitted
+    local doc="$1" tool="$2" norm dir sha lib t dcode
+    # Mirror the PostToolUse detector's flag logic so the two never disagree on WHETHER a
+    # doc needs (re)arming: a Write REWRITES the doc → re-open review even if it currently
+    # carries PASS (a rewrite that removes/replaces PASS must not slip through unarmed —
+    # #347 round-3 finding); an Edit/MultiEdit is a small change, so a doc that is already
+    # honorably reviewed is left alone (blueprint-review's own PASS edits go through its
+    # script, not this tool). A NEW doc has no honored PASS under either branch → armed.
+    case "$tool" in
+        Edit|MultiEdit) gate_design_pass_honored "$doc" && return 0 ;;
+    esac
+    norm="$(gate_marker_norm_path "$doc")" || return 0   # parent dir absent → §2 best-effort miss
+    # Resolve the marker dir. ENOREPO (exit 3) → nothing to arm here (the read gate allows
+    # too), proceed. ANY OTHER failure (common-dir unresolvable, exit 1) must NOT proceed:
+    # fall through to the arm attempt, which also fails → BLOCK (fail-CLOSED). Proceeding
+    # would re-open the exact residual this closes on a transient unreadable common-dir.
+    dcode=0; dir="$(gate_marker_dir "$(dirname -- "$norm")")" || dcode=$?
+    [ "$dcode" = "3" ] && return 0
+    # "Already armed for THIS doc?" is a best-effort spam-avoidance check; only trust it
+    # when the dir AND the sha helper both resolved. If either is unavailable, SKIP it and
+    # fall through to the arm attempt — never treat an unresolvable helper as "armed".
+    if [ "$dcode" = "0" ] && lib="$(_gate_marker_lib_dir)" \
+        && sha="$(python3 -S "$lib/marker_ops.py" sha "$norm" 2>/dev/null)"; then
+        for t in "$dir/$sha".*; do [ -e "$t" ] && return 0; done   # already armed → skip re-arm
+    fi
+    gate_marker_arm "$doc" && return 0                   # armed durably → proceed
+    # Arm failed while the marker dir was resolvable: THIS is the item-1 residual.
+    block_emit "BLOCKED (fail-closed): could not arm the design-review marker for this document, but its marker directory IS resolvable — so allowing the write would silently lose the review requirement (the PostToolUse detector cannot block).
+
+The usual cause is the marker directory under the repo's git dir being unwritable (permissions, a full disk, or a plain file where a directory is expected). Fix that, then re-save the document. Escape hatch: create $STATE_DIR/skip-design-review.local in your terminal."
+    return 1
+}
 
 # ── python3 pre-check (F5 fix) ────────────────────────────────────────
 # python3 is REQUIRED for tool type parsing and command detection. If missing,
@@ -504,34 +554,53 @@ fi
 # a Write in a linked worktree sees the shared marker), else the hook cwd. All
 # linked worktrees share one common-dir, so any in-repo anchor yields the same set.
 #
-# DEFERRED (design §2/§9 — "Bash-write effective-directory resolution"): a Bash
-# tool call has no file_path, so the anchor is the payload cwd. A command that
-# changes directory inline (`cd /other-repo && > src/impl.sh`) is checked against
-# the payload cwd, not the repo actually receiving the write. This is UNCHANGED
-# from the prior gate (which read the CWD-relative marker, equally cd-blind) and
-# NOT a regression; a correct anchor needs a shell-aware cd parser, deferred to
-# the follow-up issue. Symmetric with the detector-side note in check-design-document.sh.
+# #347 item 2b — "Bash-write effective-directory resolution" (was DEFERRED §2/§9):
+# a Bash tool call has no file_path, so the anchor was the payload cwd. A command that
+# changes directory inline (`cd /other-repo && > src/impl.sh`) then wrote in the WRONG
+# repo relative to the checked anchor. The inline python imports the shared best-effort
+# effective_cwd() parser (gitcmd_detect.py) and anchors the Bash case on the directory
+# the write LANDS in, honoring a leading `cd` when it can resolve one confidently. This
+# is BEST-EFFORT accuracy, NOT fail-closed: an unresolvable/ambiguous cd falls back to
+# the payload cwd (the pre-existing cd-blind anchor — never worse). Perfect static cd
+# resolution is undecidable, so a fail-closed promise here is an unwinnable arms race
+# (ADR 0021); item 1's fail-closed is on the ARM, a filesystem fact, not cd parsing.
 # shellcheck disable=SC2016  # python3 -c program; $/quotes are literal code
 _MK_ANCHOR="$(printf '%s' "$INPUT" | python3 -I -c '
 import sys
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+# argv[1] is the TRUSTED gate lib dir (BASH_SOURCE-derived). Prepend it AFTER the
+# CWD scrub so a repo-planted gitcmd_detect.py cannot hijack the import; -I already
+# ignores PYTHONPATH and site.
+sys.path.insert(0, sys.argv[1])
 import json, os
 try:
+    from gitcmd_detect import effective_cwd
+except Exception:
+    effective_cwd = None
+try:
     d = json.load(sys.stdin)
+    tool = d.get("tool_name", d.get("toolName", ""))
     inp = d.get("tool_input", d.get("toolInput", {}))
     if isinstance(inp, str):
         inp = json.loads(inp)
-    fp = inp.get("file_path", inp.get("filePath", "")) if isinstance(inp, dict) else ""
     cwd = d.get("cwd") or "."
-    # Resolve a RELATIVE file_path against the PAYLOAD cwd (where the write lands),
-    # NOT the gate process CWD — otherwise a write with cwd=/other/repo and a
-    # relative path would inspect the wrong repo and fast-allow despite that repo
-    # having pending markers (litmus HIGH).
-    if fp:
-        target = fp if os.path.isabs(fp) else os.path.join(cwd, fp)
-        anchor = os.path.dirname(target)
+    if tool == "Bash":
+        cmd = inp.get("command", "") if isinstance(inp, dict) else ""
+        # Best-effort: honor a resolvable leading `cd`, else the payload cwd. A missing
+        # parser just means the pre-existing cd-blind anchor — no worse than before.
+        eff = effective_cwd(cmd, cwd)[0] if effective_cwd is not None else cwd
+        anchor = eff or cwd
     else:
-        anchor = cwd
+        fp = inp.get("file_path", inp.get("filePath", "")) if isinstance(inp, dict) else ""
+        # Resolve a RELATIVE file_path against the PAYLOAD cwd (where the write lands),
+        # NOT the gate process CWD — otherwise a write with cwd=/other/repo and a
+        # relative path would inspect the wrong repo and fast-allow despite that repo
+        # having pending markers (litmus HIGH).
+        if fp:
+            target = fp if os.path.isabs(fp) else os.path.join(cwd, fp)
+            anchor = os.path.dirname(target)
+        else:
+            anchor = cwd
     anchor = os.path.abspath(anchor)
     # The target file (and its parent dirs) may not exist yet — walk up to the
     # deepest EXISTING ancestor so git -C can resolve the repo (§11 / ADR-B). A
@@ -541,8 +610,76 @@ try:
     print(anchor or ".")
 except Exception:
     print(".")
-' 2>/dev/null || echo ".")"
+' "$_GATE_LIBDIR" 2>/dev/null || echo ".")"
 [ -n "$_MK_ANCHOR" ] || _MK_ANCHOR="."
+
+# #347 item 1 — fail-closed PRE-ARM, BEFORE the pending fast-reject. A NEW design doc
+# is written into a repo where nothing is pending yet, so the "nothing pending → exit 0"
+# fast-reject below would allow it WITHOUT arming (the arm would fall to the PostToolUse
+# detector, which cannot block — the residual we close). So detect a Write/Edit/MultiEdit
+# design-doc target here and arm-or-block it up front. The doc's own write is always
+# exempt from the impl-block, so this branch exits after arming either way. The grammar
+# mirrors the detector (check-design-document.sh) VERBATIM — a mismatch would deadlock a
+# review on the doc it waits for. Bash-redirect design-doc creation is NOT handled here
+# (stays PostToolUse best-effort — documented residual).
+# shellcheck disable=SC2016  # python3 -c program; $ and quotes are literal code
+_DESIGN_FP="$(printf '%s' "$INPUT" | python3 -I -c '
+import sys
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import json, os, re
+try:
+    d = json.load(sys.stdin)
+    tool = d.get("tool_name", d.get("toolName", ""))
+    if tool not in ("Write", "Edit", "MultiEdit"):
+        raise SystemExit
+    inp = d.get("tool_input", d.get("toolInput", {}))
+    if isinstance(inp, str):
+        inp = json.loads(inp)
+    if not isinstance(inp, dict):
+        raise SystemExit
+    fp = inp.get("file_path", inp.get("filePath", ""))
+    if not fp and tool == "MultiEdit":
+        eds = inp.get("edits", [])
+        if isinstance(eds, list) and eds and isinstance(eds[0], dict):
+            fp = eds[0].get("file_path", eds[0].get("filePath", ""))
+    if not fp:
+        raise SystemExit
+    cwd = d.get("cwd") or "."
+    norm = os.path.normpath(fp if os.path.isabs(fp) else os.path.join(cwd, fp))
+    sd = os.environ.get("BUSDRIVER_STATE_DIR", ".claude")
+    if (re.search(r"(^|/)(PLAN|DESIGN|ARCHITECTURE)[^/]*\.md$", norm, re.I)
+            or re.search(r"(^|/)(" + re.escape(sd) + r"|docs)/([^/]+/)*(plans|specs)/.*\.md$", norm)):
+        # Emit "<tool> <abspath>". The abspath is the payload-cwd-resolved `norm` (NOT the
+        # raw fp): _design_prearm_or_block re-resolves via gate_marker_norm_path (cd+pwd -P),
+        # which for a RELATIVE fp would use the gate PROCESS cwd — a possibly different repo.
+        # The tool lets the pre-arm mirror the detector: a Write RE-ARMS even a reviewed doc
+        # (a rewrite re-opens review), while an Edit/MultiEdit of a reviewed doc is left alone.
+        sys.stdout.write(tool + " " + norm)
+except Exception:
+    pass
+' 2>/dev/null || true)"
+if [ -n "$_DESIGN_FP" ]; then
+    # "<tool> <abspath>" — tool is the first word, abspath the rest (may contain spaces).
+    _DF="${_DESIGN_FP#* }"; _DT="${_DESIGN_FP%% *}"
+    # Only PRE-ARM a path that is a design doc BOTH lexically AND physically — a symlinked
+    # `docs/plans -> src` parent must not let `docs/plans/impl.md` (physically src/impl.md)
+    # be armed/exempted. If it's a real design doc, arm-or-block, then FALL THROUGH: the
+    # WRITE_EDIT exemption below uses the SAME gate_design_doc_exempt check to make the
+    # exit-0 decision (one physical grammar, no duplication). A symlink-escape write is not
+    # pre-armed here and falls through to the normal gate → blocked if a review is pending.
+    # `|| _DDE=$?` (not `; _DDE=$?`): a bare non-zero return would trip `set -e` (the ERR
+    # trap) before the assignment; the OR-list form suppresses that and captures the code.
+    _DDE=0; gate_design_doc_exempt "$_DF" "$STATE_DIR" || _DDE=$?
+    if [ "$_DDE" = "0" ]; then
+        _design_prearm_or_block "$_DF" "$_DT" || exit 0   # arm-failure block on stdout
+    elif [ "$_DDE" = "2" ]; then
+        # Cannot verify design-doc-ness (marker helper unavailable) AND cannot arm →
+        # fail-CLOSED: block rather than silently lose the review requirement.
+        block_emit "BLOCKED (fail-closed): the design-review marker helper is unavailable, so this write to a possible design document can be neither verified nor armed. Restore hooks/gate-scripts/lib/marker_ops.py and python3, then retry. If the user wants to bypass: create $STATE_DIR/skip-design-review.local in their terminal."
+        exit 0
+    fi
+    # _DDE=1 (not a design doc) → fall through to the normal gate.
+fi
 
 # Hot-path fast reject: a pure-shell probe (no python3 fork) approves the common
 # "nothing pending" case immediately, keeping benign edits cheap on the 5s budget.
@@ -757,16 +894,12 @@ try:
         raise ValueError("no file_path")
     cwd = d.get("cwd") or "."
     target = fp if os.path.isabs(fp) else os.path.join(cwd, fp)
-    # LEXICAL on purpose. check-design-document.sh arms reviews from the LEXICAL path,
-    # and this exemption must stay in lockstep with it: resolving physically here makes
-    # a legitimately symlinked docs/specs -> shared/specs arm as a design doc but
-    # resolve outside docs/, so the gate would refuse the write answering its own
-    # review — the deadlock this branch exists to fix. Residual (shared with the
-    # pre-existing docs/plans and docs/reviews arms, not new here): a symlinked
-    # docs/specs reads as a docs path. Not reachable through the gated toolset — `ln`
-    # is a FILE_MOD command, so creating that symlink is itself blocked while a review
-    # is pending. UPGRADE: close it in the same change that anchors these arms to a
-    # repo-relative path (see the ancestor-path note on the case block below).
+    # LEXICAL join+normpath ON PURPOSE — this is only the INPUT to gate_design_doc_exempt
+    # below, which does the physical resolution safely (deepest EXISTING ancestor via pwd -P,
+    # new tail reappended). Resolving physically HERE would fail on a not-yet-created
+    # docs/specs/ dir and deadlock a new doc; the helper avoids that while still catching a
+    # symlinked `docs/plans -> src` parent (#347 — the prior lexical-only residual is now
+    # closed, so a symlinked docs/specs no longer laundering an impl write).
     print(os.path.normpath(target))
 except Exception:
     pass
@@ -804,15 +937,17 @@ except Exception:
             #      brainstorming actually emits).
             # Safe despite being wider than the globs: the `.md` requirement means
             # neither arm can launder implementation code. A test pins the lockstep.
-            if printf '%s' "$_NORM_FP" \
-                | grep -qiE '(^|/)(PLAN|DESIGN|ARCHITECTURE)[^/]*\.md$'; then
-                exit 0
-            fi
-            STATE_DIR_ESC="$(gate_ere_escape "$STATE_DIR")"
-            if printf '%s' "$_NORM_FP" \
-                | grep -qE "(^|/)(${STATE_DIR_ESC}|docs)/([^/]+/)*(plans|specs)/.*\.md$"; then
-                exit 0
-            fi
+            # (#347 item 1 pre-arm runs EARLY — before the pending fast-reject — so a
+            # design-doc write reaching here when a review is already pending is simply
+            # exempted; it was already armed up top.)
+            # #347 — gate_design_doc_exempt applies the detector grammar to BOTH the lexical
+            # path AND os.path.realpath (every symlink resolved, leaf and parents) evaluated
+            # REPO-RELATIVE, so neither a symlinked `docs/plans -> src` nor an ancestor named
+            # docs/plans can launder an impl .md past the gate. A genuinely new doc keeps its
+            # lexical location and stays exempt (no deadlock). Single helper — no early-vs-late
+            # drift. Exempt ONLY on a clean 0; a 1 (not a design doc) or 2 (helper error) falls
+            # through → blocked if a review is pending (fail-CLOSED on error).
+            gate_design_doc_exempt "$_NORM_FP" "$STATE_DIR" && exit 0
             ;;
     esac
 

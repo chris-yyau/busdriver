@@ -26,7 +26,7 @@ DO NOT rationalize skipping reviewers. These thoughts are violations:
 
 EVERY design review MUST:
 1. Run `run-design-review-loop.sh` as a BLOCKING bash call
-2. Wait for ALL reviewer outputs (agy.json, codex.json, grok.json, plus claude.json from the arbiter) — grok.json is always written by the loop, even when grok was unavailable (it contains an error-status JSON in that case)
+2. Wait for ALL reviewer outputs (agy.json, codex.json, grok.json, plus claude.json from the arbiter) — grok.json is always written by the loop, even when grok was unavailable (it contains an error-status JSON in that case). An advisory `auditor.json` (opencode/kimi-k3, claim-vs-mechanism lens) may also be written and is injected into the arbiter prompt as AUXILIARY context — it is NOT a reviewer and never counts toward the three-voice coverage (see Advisory Auditor below)
 3. Dispatch a FRESH Claude arbiter subagent (see Arbiter Dispatch Protocol) to validate Agy/Codex/Grok findings against the codebase — the session that authored the plan must NOT write claude.json itself
 4. Mark PASS ONLY when the arbiter's verdict has no HIGH/MEDIUM issues (confidence >= 0.5)
 </EXTREMELY-IMPORTANT>
@@ -37,6 +37,9 @@ Three-tier model with Claude as arbiter:
 1. **Agy + Codex + Grok**: Run in parallel as independent comprehensive reviewers (Grok added 2026-05-26 to extend voice-lineage diversity into design review; falls back to Droid if grok is unavailable, matching the existing reviewer_1/_2 droid-fallback pattern across all three slots)
 2. **Claude arbiter (fresh subagent)**: A freshly dispatched Claude subagent — pinned `model: opus` — validates their findings against the codebase. Never the plan-authoring session itself (v3.3; see Arbiter Dispatch Protocol)
 3. **The arbiter's verdict**: The sole convergence signal
+
+Plus one **advisory** voice that is deliberately NOT a coverage slot:
+- **Advisory Auditor** (opencode/kimi-k3, added #435): a 4th voice with a single claim-vs-mechanism lens — does the document actually do what it says. It runs in parallel, writes `auditor.json`, and is injected into the arbiter prompt as AUXILIARY context (like the UltraOracle advisory). It is **never** counted among the three reviewers, never affects `coverage_status`, and its findings are LEADS not verdicts (measured: 1 real defect / 1 confident false positive / 1 correct NOTHING-FOUND across three passed PRs, with inverted confidence). It waits its own budget (`BLUEPRINT_AUDITOR_TIMEOUT`, default 300s) and its absence is noted, never gating. No droid fallback — if opencode is unavailable the Auditor is simply absent.
 
 **Key features:**
 - Author/arbiter separation (the session that wrote the plan never judges it — fresh subagent arbiter)
@@ -155,7 +158,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/init-design-review.s
 
 **Creates state file** (`docs/reviews/<slug>/state.md`) tracking:
 - Current iteration (1 to max_iterations, default 5)
-- Review statuses (Agy, Codex, Claude)
+- Review statuses (Agy, Codex, Grok, Claude) — the advisory Auditor is not tracked here (it never gates; its status lives only in `auditor.json`)
 - Progress model (high/medium/low issue counts)
 
 ### 2. Run Review Loop

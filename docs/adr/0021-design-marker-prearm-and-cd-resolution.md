@@ -108,9 +108,13 @@ its own script (guard-invisible), so the pre-arm never re-arms a doc mid-review.
 - **Item 2b is best-effort, so it never regresses.** Every ambiguous cd falls back to the
   payload cwd (the pre-existing anchor); the only behavior change is that a *confidently
   resolvable* leading `cd` now anchors on the write's real repo. No new blocks.
-- **Single source of truth.** `effective_cwd` is one tested parser; the design-doc
-  grammar is duplicated only where it already was (detector python + gate bash), each
-  carrying the lockstep comment.
+- **Single source of truth.** `effective_cwd` is one tested parser. The design-doc
+  grammar is now **physically unified** (#446): the PostToolUse detector classifies via
+  the same `gate_design_doc_exempt` → `marker_ops.py dd-exempt` the pre-implementation
+  gate uses, so both require a match BOTH lexically AND after `os.path.realpath`. A
+  symlinked `docs/plans -> ../src` no longer arms a spurious review for an impl write the
+  gate treats as impl. (Originally the detector matched lexically in bash while the gate
+  resolved physically — an over-block, never a bypass, closed by #446.)
 
 ## Accepted residuals (NOT closed — see #347)
 

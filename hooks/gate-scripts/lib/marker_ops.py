@@ -388,8 +388,68 @@ def cmd_dd_exempt(argv):
     return 0 if _is_design_doc(_repo_relative(phys), state_dir) else 1
 
 
+# #449 — downgrade every honorable whole-line PASS marker to PENDING, in the SAME
+# engine that reads it (cmd_reviewed / _PASS_LINE_RE), so the strip and the honored-set
+# can never diverge. A shell grep/sed strip cannot: it is byte-level and LF-only, while
+# _doc_reviewed reads in TEXT mode where Python universal-newline translation makes `\r`,
+# `\n`, AND `\r\n` all line boundaries — so a CRLF or bare-CR doc's marker is honored but
+# a shell strip misses it, recreating the stale-PASS-with-armed-token bug. We split on
+# the SAME three boundaries, match each line with the reader's `[ \t]`-padded whole-line
+# grammar (capturing leading/trailing padding so only the token changes), and rejoin with
+# the ORIGINAL separators via newline='' — preserving every byte and line ending except
+# PASS→PENDING. Best-effort (the caller is a fail-open PostToolUse hook): unreadable /
+# unwritable → return 1 so the caller's post-check can warn.
+_PASS_LINE_SUB_RE = re.compile(r"^([ \t]*)<!-- design-reviewed: PASS -->([ \t]*)$")
+
+
+def cmd_downgrade_pass(argv):
+    if len(argv) != 1:
+        return 2
+    path = argv[0]
+    try:
+        with open(path, "r", newline="", errors="surrogateescape") as fh:
+            content = fh.read()
+    except OSError:
+        return 1
+    parts = re.split(r"(\r\n|\r|\n)", content)  # even idx = line text, odd = separators
+    changed = False
+    for i in range(0, len(parts), 2):
+        m = _PASS_LINE_SUB_RE.match(parts[i])
+        if m:
+            parts[i] = m.group(1) + "<!-- design-reviewed: PENDING -->" + m.group(2)
+            changed = True
+    if not changed:
+        return 0
+    # Atomic replace: write a sibling temp then os.replace over the original, so a
+    # disk-full / interrupted / partial write can never truncate or corrupt the doc —
+    # the original is untouched until the rename (open("w") would truncate first: Codex
+    # PR review). Preserve the original mode. Any failure leaves the doc intact and
+    # returns 1 so the caller's post-check warns.
+    import tempfile
+    import stat as _stat
+    d = os.path.dirname(path) or "."
+    try:
+        orig_mode = _stat.S_IMODE(os.stat(path).st_mode)
+        fd, tmp = tempfile.mkstemp(prefix=".dr-dg-", dir=d)
+    except OSError:
+        return 1
+    try:
+        with os.fdopen(fd, "w", newline="", errors="surrogateescape") as fh:
+            fh.write("".join(parts))
+        os.chmod(tmp, orig_mode)
+        os.replace(tmp, path)
+        return 0
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return 1
+
+
 _DISPATCH = {"sha": cmd_sha, "arm": cmd_arm, "classify": cmd_classify,
-             "reviewed": cmd_reviewed, "dd-exempt": cmd_dd_exempt}
+             "reviewed": cmd_reviewed, "dd-exempt": cmd_dd_exempt,
+             "downgrade-pass": cmd_downgrade_pass}
 
 
 def main(argv):

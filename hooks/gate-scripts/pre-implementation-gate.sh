@@ -892,8 +892,25 @@ try:
     fp = inp.get("file_path", inp.get("filePath", "")) if isinstance(inp, dict) else ""
     if not fp:
         raise ValueError("no file_path")
-    cwd = d.get("cwd") or "."
-    target = fp if os.path.isabs(fp) else os.path.join(cwd, fp)
+    cwd = d.get("cwd")
+    if os.path.isabs(fp):
+        target = fp
+    elif cwd and os.path.isabs(cwd):
+        target = os.path.join(cwd, fp)
+    else:
+        # Greptile P1 (#451): a relative fp with a MISSING/empty payload cwd, OR a
+        # payload cwd that is itself relative (e.g. a literal "."), must NOT be
+        # resolved here. A relative cwd is not an anchor by itself -- "." only means
+        # something once resolved against SOME real directory, and the two consumers
+        # below (the design-doc exemption arm and the STATE_DIR arm further down) would
+        # do that resolution via the GATE PROCESS own cwd (gate_marker_relpath uses
+        # git -C / cd), not the payload real effective directory -- reproducing the
+        # exact fail-open this ADR closes, just gated on "cwd missing/relative" instead
+        # of "cwd present but wrong". Absent an absolute cwd, the target is
+        # UNRESOLVABLE; raise so the outer except leaves _NORM_FP empty, so no
+        # exemption fires on either arm (fail-CLOSED, matching the documented
+        # unparseable-payload contract just below).
+        raise ValueError("relative file_path with no absolute payload cwd, cannot resolve safely")
     # LEXICAL join+normpath ON PURPOSE — this is only the INPUT to gate_design_doc_exempt
     # below, which does the physical resolution safely (deepest EXISTING ancestor via pwd -P,
     # new tail reappended). Resolving physically HERE would fail on a not-yet-created
@@ -959,12 +976,27 @@ except Exception:
     # can't be resolved, do NOT exempt (fall through to the marker check).
     # (The unconditional marker-forge guard at the top already ran, so the marker
     # files themselves stay protected regardless.)
-    # FAIL-CLOSED: gate_marker_relpath resolves FILE_PATH's PHYSICAL repo-relative
-    # path. A relative FILE_PATH is resolved against the gate CWD, which for an impl
-    # file yields e.g. `src/…` (not `$STATE_DIR/…`) → not exempted → the marker
-    # check runs. It can only ever FAIL to exempt (block), never wrongly exempt, so
-    # the payload-cwd nicety is deferred rather than plumb a newline-unsafe abspath.
-    _REL="$(gate_marker_relpath "$FILE_PATH" 2>/dev/null || true)"
+    # #347 item 4 (ADR 0023): resolve this allowlist against the PAYLOAD-cwd-joined,
+    # normalized target ($_NORM_FP) — NOT the raw $FILE_PATH. gate_marker_relpath
+    # resolves a *relative* path against the GATE PROCESS cwd, so when the payload cwd
+    # is a repo SUBDIR (e.g. /repo/src) and the gate cwd is /repo, a relative
+    # `.claude/impl.py` resolves gate-cwd-relative to `.claude/impl.py` → EXEMPT, while
+    # the write actually lands at /repo/src/.claude/impl.py — an impl file wrongly
+    # exempted: a design-review fail-OPEN (Codex litmus HIGH; issue #347's original
+    # "fail-closed-safe" read only saw the opposite over-block direction). Feeding the
+    # already-payload-cwd-joined $_NORM_FP makes this arm consistent with the sibling
+    # design-doc arm above (which resolves $_NORM_FP too) and keys on the write's REAL
+    # repo/dir. $_NORM_FP is normpath'd + newline-rejected above, so this carries none
+    # of the newline-truncation fail-open that reverted the #346 attempt. FAIL-CLOSED:
+    # an empty $_NORM_FP (python failure) or an out-of-repo target makes
+    # gate_marker_relpath return non-zero → no exemption → the marker check runs.
+    # This includes a MISSING/empty payload cwd on a relative file_path (Greptile P1,
+    # PR #451): the $_NORM_FP block above now raises (leaving $_NORM_FP empty) rather
+    # than defaulting cwd to "." — a bare "." is a lexical no-op that would otherwise
+    # leave the relative path to be resolved against the GATE PROCESS's own cwd right
+    # here (gate_marker_relpath's `git -C`), reopening the exact bypass this arm exists
+    # to close, just triggered by an absent cwd instead of a present-but-different one.
+    _REL="$(gate_marker_relpath "$_NORM_FP" 2>/dev/null || true)"
     case "$_REL" in
         "$STATE_DIR"/*) exit 0 ;;
     esac

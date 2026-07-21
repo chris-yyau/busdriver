@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for #347 — design-review marker hardening (items 1 + 2).
+# Tests for #347 — design-review marker hardening (items 1 + 2 + 4).
 #
 #   item 1  — fail-closed PRE-ARM: pre-implementation-gate.sh arms a new/unreviewed
 #             design doc BEFORE the write and BLOCKS when the arm fails while the
@@ -7,6 +7,9 @@
 #   item 2  — Bash-write EFFECTIVE-DIRECTORY resolution: gitcmd_detect.effective_cwd
 #             honors a leading `cd`, so the read gate anchors (2b) and the detector
 #             arms (2a) against the repo a Bash write actually lands in.
+#   item 4  — STATE_DIR write-allowlist resolves against the PAYLOAD cwd (ADR 0023):
+#             a relative `.claude/impl.py` sent with payload cwd = <repo>/src and gate
+#             cwd = <repo> must NOT be exempted as a repo-root `.claude/` config write.
 #
 # All marker/git manipulation happens INSIDE this script, so the PreToolUse marker
 # guard sees only the top-level `bash tests/...` invocation (same property that makes
@@ -188,6 +191,57 @@ eq "(anc) new nested src/new/impl.md NOT exempt" "$(ddx "$RP/src/new/impl.md")" 
 eq "(anc) new nested docs/plans/n/DESIGN.md exempt" "$(ddx "$RP/docs/plans/n/DESIGN.md")" "0"
 # gate_design_doc_exempt rc contract: 0 exempt / 1 not-a-doc / 2 error.
 eq "(err) dd-exempt on non-design → 1" "$(ddx "$RP/src/util.go")" "1"
+
+echo "── item 4 · STATE_DIR allowlist keys on the PAYLOAD cwd ────────"
+# gate_marker_relpath resolves a RELATIVE path against the GATE PROCESS cwd. Pre-fix,
+# a relative `.claude/impl.py` sent with payload cwd = <repo>/src and gate cwd = <repo>
+# resolved gate-cwd-relative to `.claude/impl.py` → matched the STATE_DIR allowlist →
+# EXEMPT, while the write actually lands at <repo>/src/.claude/impl.py — an impl file
+# wrongly exempted (a design-review fail-OPEN, Codex litmus HIGH). The fix keys the arm
+# on the payload-cwd-joined $_NORM_FP, matching the sibling design-doc arm. Both
+# <repo>/.claude AND <repo>/src/.claude exist so gate_marker_relpath resolves either
+# spelling physically — isolating the fix from a dir-missing confound (which would
+# block for the wrong reason and hide a regression).
+F="$(mkrepo)"; mkdir -p "$F/.claude" "$F/src/.claude"
+printf 'x\n' >"$F/doc.md"; arm "$F/doc.md"
+eq "(4) repo has pending review" "$(pending_code "$F")" "1"
+# Run the gate FROM $F (gate process cwd = $F) with payload cwd = $F/src — the
+# divergence the bug needs. Pass-after: BLOCK. Fail-before (raw $FILE_PATH): would
+# resolve `.claude/impl.py` against $F → exempt → allow (the bypass).
+OUT="$(cd "$F" && printf '%s' "$(write_payload '.claude/impl.py' "$F/src")" | bash "$PREIMPL" 2>/dev/null)"
+eq "(4) relative .claude/impl.py from src cwd → BLOCK (no bypass)" "$(is_block)" "1"
+# No false positive: a genuine repo-root `.claude/` config write (payload cwd = repo
+# root) stays EXEMPT despite the pending review — the fix must not over-block.
+OUT="$(cd "$F" && printf '%s' "$(write_payload '.claude/settings.json' "$F")" | bash "$PREIMPL" 2>/dev/null)"
+eq "(4) genuine .claude/settings.json at repo root → allow (still exempt)" "$(is_block)" "0"
+# Absolute impl path is unaffected (common case): resolves physically to src/… → BLOCK.
+OUT="$(cd "$F" && printf '%s' "$(write_payload "$F/src/impl.py" "$F")" | bash "$PREIMPL" 2>/dev/null)"
+eq "(4) absolute src/impl.py → BLOCK (unchanged)" "$(is_block)" "1"
+
+echo "── item 4 (Greptile P1, #451) · missing/relative payload cwd fails CLOSED ──"
+# A relative file_path with NO payload cwd field (or an empty one) must NOT fall back
+# to a bare "." — that lexical no-op would leave $_NORM_FP relative, which both the
+# design-doc arm and the STATE_DIR arm then resolve against the GATE PROCESS's own cwd
+# (gate_marker_relpath's `git -C`/`cd`) instead of the payload's real effective
+# directory — reopening the exact bypass item 4 closes, just triggered by an absent
+# cwd instead of a present-but-different one. Gate process cwd = $F (repo root), so a
+# pre-fix gate would resolve `.claude/impl.py` root-relative → EXEMPT → allow.
+NO_CWD_PAYLOAD='{"tool_name":"Write","tool_input":{"file_path":".claude/impl.py"}}'
+OUT="$(cd "$F" && printf '%s' "$NO_CWD_PAYLOAD" | bash "$PREIMPL" 2>/dev/null)"
+eq "(4b) relative .claude/impl.py, cwd OMITTED → BLOCK (no bypass)" "$(is_block)" "1"
+# An explicit empty-string cwd is the same falsy shape as omission — same fail-closed
+# outcome.
+OUT="$(cd "$F" && printf '%s' "$(write_payload '.claude/impl.py' '')" | bash "$PREIMPL" 2>/dev/null)"
+eq "(4c) relative .claude/impl.py, cwd='' → BLOCK (no bypass)" "$(is_block)" "1"
+# A literal "." payload cwd is not an anchor by itself either — same fail-closed
+# outcome as omission (Greptile's report named this shape explicitly).
+OUT="$(cd "$F" && printf '%s' "$(write_payload '.claude/impl.py' '.')" | bash "$PREIMPL" 2>/dev/null)"
+eq "(4d) relative .claude/impl.py, cwd='.' → BLOCK (no bypass)" "$(is_block)" "1"
+# No regression on the already-covered absolute-cwd divergence case (4) above, and no
+# new false positive: an absolute-cwd genuine root config write still stays exempt —
+# re-asserted here for clarity that the missing-cwd fix didn't touch that arm.
+OUT="$(cd "$F" && printf '%s' "$(write_payload '.claude/settings.json' "$F")" | bash "$PREIMPL" 2>/dev/null)"
+eq "(4e) genuine .claude/settings.json, absolute cwd=root → allow (still exempt)" "$(is_block)" "0"
 
 echo ""
 echo "──────────────────────────────────────────────"

@@ -159,19 +159,19 @@ if echo "$_EXCL_TARGET" | grep -qE '(^|/)(agents|commands|scripts|hooks|tests|sr
 fi
 
 BASENAME=$(basename "$FILE_PATH")
+# #446 — classify via the SAME physical grammar the pre-implementation gate's
+# exemption uses (gate_design_doc_exempt → marker_ops.py dd-exempt): a design doc
+# iff it matches the detector grammar BOTH lexically AND after os.path.realpath
+# (every symlink on the path resolved). Previously this used two lexical greps, so
+# a symlinked `docs/plans -> ../src` armed a spurious repo-wide review for an impl
+# write the gate then treated as impl (ADR 0021 claimed "one physical grammar" that
+# did not exist). Routing through the shared function makes detector and gate agree.
+# rc: 0=design doc → arm; 1=not a design doc → skip; 2=helper error → arm
+# (fail-CLOSED for a review gate: an over-block beats a silently skipped review,
+# matching the gate's own treatment of rc 2, and the pre-existing lexical arm).
+_DDE=0; gate_design_doc_exempt "$FILE_PATH" "$STATE_DIR" || _DDE=$?
 IS_DESIGN=false
-if echo "$BASENAME" | grep -qiE '^(PLAN|DESIGN|ARCHITECTURE).*\.md$'; then
-  IS_DESIGN=true
-fi
-# `docs`/`$STATE_DIR` must START a path segment — a bare `docs/` alternative also
-# matches the suffix of `notdocs/specs/x.md`, arming a review for a non-docs dir.
-# `$STATE_DIR` is regex-escaped via gate_ere_escape (parity with the Python
-# arm's re.escape) so the two treat it as a literal identically — kept VERBATIM
-# in lockstep with the exemption in pre-implementation-gate.sh.
-STATE_DIR_ESC="$(gate_ere_escape "$STATE_DIR")"
-if echo "$FILE_PATH" | grep -qE "(^|/)(${STATE_DIR_ESC}|docs)/([^/]+/)*(plans|specs)/.*\\.md\$"; then
-  IS_DESIGN=true
-fi
+case "$_DDE" in 0|2) IS_DESIGN=true ;; esac
 if [ "$IS_DESIGN" = true ]; then
   # Determine if file needs flagging:
   # - Write/Bash on NEW file: flag + strip PASS (anti-self-stamp)

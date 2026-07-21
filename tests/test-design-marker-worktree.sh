@@ -196,6 +196,29 @@ t="$(mkrepo)"; mkdir -p "$t/docs/plans"; printf '# plan\n' >"$t/docs/plans/DESIG
 printf '{"tool_name":"Write","tool_input":{"file_path":"%s/docs/plans/DESIGN-x.md"}}' "$t" | bash "$CHECKDOC" >/dev/null 2>&1
 pending "$t"; eq "(Step2) detector armed a token → pending exit 1" "$PEXIT" "1"
 
+echo "── (#446) detector uses the gate's PHYSICAL grammar (no lexical divergence) ─"
+# The detector once classified redirect/file targets LEXICALLY while the gate's
+# exemption resolved them via realpath. A symlinked docs/plans -> src armed a
+# spurious repo-wide review for an impl write the gate then treated as impl. The
+# detector now shares gate_design_doc_exempt, so a path that escapes the design-doc
+# location through a symlinked PARENT or LEAF must NOT arm a review.
+# (446a) symlinked PARENT: docs/plans -> ../build → write lands at build/impl.md.
+# `build/` is NOT in the structural-dir exclusion list, so this exercises the
+# physical (realpath) grammar itself, not the incidental src/ exclusion.
+t="$(mkrepo)"; mkdir -p "$t/build" "$t/docs"; ln -s ../build "$t/docs/plans"
+printf 'impl\n' >"$t/docs/plans/impl.md"
+printf '{"tool_name":"Write","tool_input":{"file_path":"%s/docs/plans/impl.md"}}' "$t" | bash "$CHECKDOC" >/dev/null 2>&1
+pending "$t"; eq "(446a) symlinked-parent impl.md NOT armed (physical grammar)" "$PEXIT" "0"
+# (446b) symlinked LEAF: docs/plans/x.md -> ../../src/impl.sh (real docs/plans dir).
+t="$(mkrepo)"; mkdir -p "$t/src" "$t/docs/plans"; printf 'code\n' >"$t/src/impl.sh"
+ln -s ../../src/impl.sh "$t/docs/plans/x.md"
+printf '{"tool_name":"Write","tool_input":{"file_path":"%s/docs/plans/x.md"}}' "$t" | bash "$CHECKDOC" >/dev/null 2>&1
+pending "$t"; eq "(446b) symlinked-leaf x.md→src/impl.sh NOT armed" "$PEXIT" "0"
+# (446c) control: a GENUINE doc in the same real docs/plans dir still arms (no over-suppression).
+printf '# d\n' >"$t/docs/plans/DESIGN-real.md"
+printf '{"tool_name":"Write","tool_input":{"file_path":"%s/docs/plans/DESIGN-real.md"}}' "$t" | bash "$CHECKDOC" >/dev/null 2>&1
+pending "$t"; eq "(446c) genuine docs/plans design doc still arms" "$PEXIT" "1"
+
 echo "── (specs) design-doc paths stay writable while a review pends ──"
 # c0bdaf7f moved docs/superpowers/{plans,specs} → docs/{plans,specs}, but the
 # gate's exemption list still named the old dir. A lowercase *-design.md under

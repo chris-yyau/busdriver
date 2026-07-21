@@ -281,6 +281,18 @@ if python3 "$ROOT/hooks/gate-scripts/lib/marker_ops.py" reviewed "$t/docs/plans/
 else
     ok "(449-cr) bare-CR PASS stripped → reader no longer honors it"
 fi
+# (449-meta) the atomic downgrade preserves the file MODE (Codex P2) but bumps mtime so
+# watchers see the change (Codex — copystat restored the stale mtime).
+t="$(mkrepo)"; mkdir -p "$t/docs/plans"
+printf '# plan\n<!-- design-reviewed: PASS -->\n' >"$t/docs/plans/DESIGN-meta.md"
+chmod 0640 "$t/docs/plans/DESIGN-meta.md"
+touch -t 202001010000 "$t/docs/plans/DESIGN-meta.md"   # backdate to 2020
+_old_mt="$(stat -f %m "$t/docs/plans/DESIGN-meta.md" 2>/dev/null || stat -c %Y "$t/docs/plans/DESIGN-meta.md")"
+dpay "$t/docs/plans/DESIGN-meta.md" "$t" | bash "$CHECKDOC" >/dev/null 2>&1
+_mode="$(stat -f %Lp "$t/docs/plans/DESIGN-meta.md" 2>/dev/null || stat -c %a "$t/docs/plans/DESIGN-meta.md")"
+_new_mt="$(stat -f %m "$t/docs/plans/DESIGN-meta.md" 2>/dev/null || stat -c %Y "$t/docs/plans/DESIGN-meta.md")"
+[ "$_mode" = 640 ] && ok "(449-meta) file mode 0640 preserved through downgrade" || no "(449-meta) mode must be preserved" "got=$_mode"
+[ "$_new_mt" -gt "$_old_mt" ] && ok "(449-meta) mtime bumped so watchers see the change" || no "(449-meta) mtime must advance" "old=$_old_mt new=$_new_mt"
 # (449-symlink) an IN-repo symlinked design doc: the strip edits the resolved TARGET
 # (in this repo, contained under the payload-cwd repo top), not the link — so the
 # target's PASS→PENDING and the symlink survives (sed on the resolved regular file

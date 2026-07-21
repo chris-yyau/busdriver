@@ -402,6 +402,58 @@ def cmd_dd_exempt(argv):
 _PASS_LINE_SUB_RE = re.compile(r"^([ \t]*)<!-- design-reviewed: PASS -->([ \t]*)$")
 
 
+def _substitute_pass_lines(content):
+    """Downgrade every whole-line PASS marker to PENDING. Returns (new_content, changed)."""
+    parts = re.split(r"(\r\n|\r|\n)", content)  # even idx = line text, odd = separators
+    changed = False
+    for i in range(0, len(parts), 2):
+        m = _PASS_LINE_SUB_RE.match(parts[i])
+        if m:
+            parts[i] = m.group(1) + "<!-- design-reviewed: PENDING -->" + m.group(2)
+            changed = True
+    return "".join(parts), changed
+
+
+def _atomic_write_preserving_metadata(path, content):
+    """Write `content` to `path` via a sibling temp + os.replace, preserving the
+    original file's mode/flags (and, on POSIX filesystems that support it, extended
+    attributes) via shutil.copystat — so a disk-full / interrupted / partial write can
+    never truncate or corrupt the doc (the original is untouched until the rename;
+    open("w") would truncate first: Codex PR review) AND a downgrade never silently
+    drops metadata like xattrs (Codex PR review, #452). copystat also carries the
+    original TIMESTAMPS, which we then deliberately bump to now (os.utime): the content
+    DID change, so an unchanged mtime would let polling file-watchers / incremental
+    tools miss the PASS→PENDING edit (Codex PR review). copystat does not carry
+    ownership/ACLs; that residual gap is a deliberate, narrower scope. Returns True on
+    success.
+    """
+    import tempfile
+    import shutil
+    d = os.path.dirname(path) or "."
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=".dr-dg-", dir=d)
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, "w", newline="", errors="surrogateescape") as fh:
+            fh.write(content)
+        shutil.copystat(path, tmp)
+        os.replace(tmp, path)
+        # The file was just rewritten — reflect that in its mtime (copystat restored
+        # the original). Best-effort: a stale mtime is cosmetic, never a failure.
+        try:
+            os.utime(path, None)
+        except OSError:
+            pass
+        return True
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+
+
 def cmd_downgrade_pass(argv):
     if len(argv) != 1:
         return 2
@@ -411,40 +463,10 @@ def cmd_downgrade_pass(argv):
             content = fh.read()
     except OSError:
         return 1
-    parts = re.split(r"(\r\n|\r|\n)", content)  # even idx = line text, odd = separators
-    changed = False
-    for i in range(0, len(parts), 2):
-        m = _PASS_LINE_SUB_RE.match(parts[i])
-        if m:
-            parts[i] = m.group(1) + "<!-- design-reviewed: PENDING -->" + m.group(2)
-            changed = True
+    new_content, changed = _substitute_pass_lines(content)
     if not changed:
         return 0
-    # Atomic replace: write a sibling temp then os.replace over the original, so a
-    # disk-full / interrupted / partial write can never truncate or corrupt the doc —
-    # the original is untouched until the rename (open("w") would truncate first: Codex
-    # PR review). Preserve the original mode. Any failure leaves the doc intact and
-    # returns 1 so the caller's post-check warns.
-    import tempfile
-    import stat as _stat
-    d = os.path.dirname(path) or "."
-    try:
-        orig_mode = _stat.S_IMODE(os.stat(path).st_mode)
-        fd, tmp = tempfile.mkstemp(prefix=".dr-dg-", dir=d)
-    except OSError:
-        return 1
-    try:
-        with os.fdopen(fd, "w", newline="", errors="surrogateescape") as fh:
-            fh.write("".join(parts))
-        os.chmod(tmp, orig_mode)
-        os.replace(tmp, path)
-        return 0
-    except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        return 1
+    return 0 if _atomic_write_preserving_metadata(path, new_content) else 1
 
 
 _DISPATCH = {"sha": cmd_sha, "arm": cmd_arm, "classify": cmd_classify,

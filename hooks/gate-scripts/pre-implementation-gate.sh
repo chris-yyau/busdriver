@@ -49,8 +49,8 @@ block_emit() {
 # ── Shared marker helpers (Task 2) ────────────────────────────────────
 # Sourced BEFORE the python3 pre-check so its pure-shell fallback is available,
 # and before the read-gate below uses gate_marker_pending.
-# shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
 _GATE_LIBDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+# shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
 source "$_GATE_LIBDIR/resolve-repo-dir.sh"
 
 # #347 item 1 — fail-closed pre-arm. Called just before a Write/Edit/MultiEdit design

@@ -42,7 +42,8 @@ trap cleanup EXIT
 arm(){ bash "$R" arm "$1" >/dev/null 2>&1; }
 # gate_marker_pending exit: 0 none / 1 pending / 2 failure.
 pending_code(){ local c=0; bash "$R" pending "$1" >/dev/null 2>&1 || c=$?; echo "$c"; }
-# effective_cwd CLI: prints cwd + exit 0, or exit 4 (unresolvable).
+# effective_cwd CLI: always exits 0 and prints the best-effort resolved cwd
+# (exit 2 is reserved for bad CLI usage, e.g. a missing "effective-cwd" arg).
 eff(){ local out c; out="$(printf '%s' "$2" | python3 -S "$G" effective-cwd "$1" 2>/dev/null)"; c=$?; printf '%s|%s' "$c" "$out"; }
 
 # Run a gate with a JSON payload on stdin; sets OUT (stdout) and blocked? via grep.
@@ -115,6 +116,20 @@ mkdir -p "$Rr/docs/plans"; printf 'plan\n' >"$Rr/docs/plans/DESIGN-x.md"
 run_gate "$CHECKDOC" "$(bash_payload "cd $Rr && > docs/plans/DESIGN-x.md" "$O")"
 eq "(2a) detector armed R (the cd target)"  "$(pending_code "$Rr")" "1"
 eq "(2a) detector did NOT arm O (payload cwd)" "$(pending_code "$O")" "0"
+# Cross-repo forged-PASS: the anti-self-stamp's `git show HEAD:<rel>` must read the
+# repo the write LANDS in, not the hook's process cwd. HR has a legit reviewed
+# DESIGN-forge.md at HEAD; a Bash write `cd TR && > docs/plans/DESIGN-forge.md`
+# plants a FORGED PASS in TR (never reviewed there). A cwd-bound `git show` would
+# borrow HR's review and PRESERVE the forgery (fail-open); the target-repo-bound
+# lookup finds nothing in TR → strips PASS→PENDING (PR #444 review).
+HR="$(mkrepo)"; TR="$(mkrepo)"
+mkdir -p "$HR/docs/plans"; printf 'plan\n<!-- design-reviewed: PASS -->\n' >"$HR/docs/plans/DESIGN-forge.md"
+git -C "$HR" add -A >/dev/null 2>&1; git -C "$HR" commit -q -m reviewed
+mkdir -p "$TR/docs/plans"; printf 'plan\n<!-- design-reviewed: PASS -->\n' >"$TR/docs/plans/DESIGN-forge.md"
+( cd "$HR" && printf '%s' "$(bash_payload "cd $TR && > docs/plans/DESIGN-forge.md" "$HR")" | bash "$CHECKDOC" >/dev/null 2>&1 )
+grep -q '<!-- design-reviewed: PENDING -->' "$TR/docs/plans/DESIGN-forge.md" \
+    && ok "(2a) cross-repo forged PASS stripped (no review borrow)" \
+    || no "(2a) cross-repo forged PASS stripped" "target PASS survived — cross-repo git-show borrow"
 
 echo "── item 1 · fail-closed pre-arm (Write/Edit design docs) ────────"
 # New unreviewed design doc → pre-arm arms it and ALLOWS the write.

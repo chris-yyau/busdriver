@@ -30,8 +30,8 @@ trap 'exit 0' ERR
 # Guard the source explicitly: the `trap 'exit 0' ERR` above would otherwise turn
 # a missing/unreadable resolver into a silent exit-0 that arms nothing and warns
 # nothing (fail-open). Warn, then keep the pre-existing disabled-gate behavior.
-# shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
 _LIBDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+# shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
 if ! source "$_LIBDIR/resolve-repo-dir.sh"; then
   echo "WARNING: design-review marker helpers unavailable; no marker was armed." >&2
   exit 0
@@ -188,7 +188,25 @@ if [ "$IS_DESIGN" = true ]; then
     # reviewed file — preserve the marker to avoid infinite review loops.
     if grep -q "<!-- design-reviewed: PASS -->" "$FILE_PATH" 2>/dev/null; then
       PREVIOUSLY_REVIEWED=false
-      if git show "HEAD:$FILE_PATH" 2>/dev/null | grep -q "<!-- design-reviewed: PASS -->"; then
+      # #347 item 2a made FILE_PATH absolute for Bash-redirect writes (previously
+      # it could be the raw, often repo-relative, redirect-target string) — but
+      # `git show HEAD:<path>` requires a path relative to the repo root, not an
+      # absolute filesystem path. Reviewer finding (PR #444): resolve to
+      # repo-relative via the shared gate_marker_relpath helper before the git
+      # show lookup. An unresolvable path (not inside a repo, or escapes the
+      # root) leaves PREVIOUSLY_REVIEWED=false — same as "git show found nothing".
+      _FILE_PATH_REL="$(gate_marker_relpath "$FILE_PATH" 2>/dev/null || true)"
+      # Bind the git-show lookup to the repo CONTAINING the target file, not the
+      # hook's process cwd. #347 item 2a resolves a cross-repo Bash write
+      # (`cd /other && > docs/plans/DESIGN.md`) to an ABSOLUTE FILE_PATH; a plain
+      # `git show HEAD:<rel>` would read HEAD from the ORIGINAL repo, so a reviewed
+      # file at the same relative path there could bless a FORGED PASS in the target
+      # repo and skip arming it (fail-open, PR #444 review). git -C on a missing
+      # parent (a new nested file) yields an empty root → the && short-circuits →
+      # PREVIOUSLY_REVIEWED stays false → the PASS is stripped (fail-closed).
+      _FILE_REPO_ROOT="$(git -C "$(dirname "$FILE_PATH")" rev-parse --show-toplevel 2>/dev/null || true)"
+      if [[ -n "$_FILE_PATH_REL" && -n "$_FILE_REPO_ROOT" ]] \
+         && git -C "$_FILE_REPO_ROOT" show "HEAD:$_FILE_PATH_REL" 2>/dev/null | grep -q "<!-- design-reviewed: PASS -->"; then
         PREVIOUSLY_REVIEWED=true
       fi
       if [ "$PREVIOUSLY_REVIEWED" = false ]; then

@@ -1,3 +1,10 @@
+## [1.95.6](https://github.com/chris-yyau/busdriver/compare/v1.95.5...v1.95.6) (2026-07-21)
+
+
+### Bug Fixes
+
+* **design-review:** fail-closed pre-arm + best-effort Bash cd resolution ([#347](https://github.com/chris-yyau/busdriver/issues/347) items 1&2) ([#444](https://github.com/chris-yyau/busdriver/issues/444)) ([1849434](https://github.com/chris-yyau/busdriver/commit/1849434e1a4a227a07f1d3275a28fbcc271d5677)), closes [#346](https://github.com/chris-yyau/busdriver/issues/346)
+
 ## [1.95.5](https://github.com/chris-yyau/busdriver/compare/v1.95.4...v1.95.5) (2026-07-20)
 
 

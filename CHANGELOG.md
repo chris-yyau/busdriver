@@ -1,3 +1,10 @@
+## [1.95.8](https://github.com/chris-yyau/busdriver/compare/v1.95.7...v1.95.8) (2026-07-21)
+
+
+### Bug Fixes
+
+* **design-review:** close [#347](https://github.com/chris-yyau/busdriver/issues/347) items 4/5/6 (item 4 payload-cwd fail-open) ([#451](https://github.com/chris-yyau/busdriver/issues/451)) ([a731c6d](https://github.com/chris-yyau/busdriver/commit/a731c6df04835733394e220a08c3222ac4cfab4d)), closes [#346](https://github.com/chris-yyau/busdriver/issues/346)
+
 ## [1.95.7](https://github.com/chris-yyau/busdriver/compare/v1.95.6...v1.95.7) (2026-07-21)
 
 

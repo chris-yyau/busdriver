@@ -1145,12 +1145,14 @@ def gh_pr(cmd, subcommand):
 # detector armed against the process cwd, so `cd /pending-repo && > src/impl.sh`
 # checked/armed the WRONG repo (design §2/§9, confirmed HIGH in #346).
 #
-# effective_cwd() resolves a leading single ABSOLUTE PLAIN-LITERAL `cd`; every harder
-# cd shape returns ok=False so the CALLER fails closed (the read gate blocks; the
-# detector best-efforts against the payload cwd). The constraints mirror ADR 0018's
-# standalone-cd rule (the merge-time nudge parser): an absolute, `..`-free literal
-# resolves identically under bash's default logical `cd` and the downstream `git -C`,
-# while a relative operand is subject to CDPATH and a `..` diverges through symlinks.
+# effective_cwd() resolves a leading single ABSOLUTE PLAIN-LITERAL `cd` and is BEST-EFFORT
+# (the second tuple element is always True): a shape it cannot resolve falls back to the
+# payload cwd — the pre-existing cd-blind anchor — so the result is never WORSE than before,
+# only better in the confident case (see the effective_cwd docstring and ADR 0021). It is NOT
+# a fail-closed contract. The constraints mirror ADR 0018's standalone-cd rule (the
+# merge-time nudge parser): an absolute, `..`-free literal resolves identically under bash's
+# default logical `cd` and the downstream `git -C`, while a relative operand is subject to
+# CDPATH and a `..` diverges through symlinks.
 _CD_UNSAFE_RE = re.compile(r'[$`*?\[\]{}~\s]')
 _ASSIGN_LEAD_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*\+?=')
 
@@ -1200,11 +1202,20 @@ def effective_cwd(cmd, payload_cwd):
     seen_cd = False
     seen_cmd = False
     for op, seg in split_segments(cmd):
-        # Once a cd has set the anchor, a non-success-composing operator BEFORE the
-        # write breaks the cd→write cwd chain: `cd /a || > f` runs the write only if
-        # the cd FAILED (so in payload_cwd, not /a); '|' / '&' break inheritance too.
-        if seen_cd and op in ('||', '|', '&'):
-            return payload_cwd, True   # best-effort: give up → the pre-existing cd-blind anchor
+        # '&' is NOT like '||'/'|': it BACKGROUNDS the preceding list in a subshell, so its
+        # `cd` never moved the FOREGROUND shell — the write after '&' runs in payload_cwd
+        # regardless of seen_cmd (`cd /x && true & > f` writes in payload, not /x). Give up
+        # unconditionally, else we'd anchor to the wrong repo (a real fail-open).
+        if seen_cd and op == '&':
+            return payload_cwd, True
+        # '||'/'|' after a cd need care. If a command has ALREADY run in the cd's target
+        # (seen_cmd), the cd stuck (it moved this same shell) and this branch runs there
+        # too — `cd /x && false || w` leaves the write in /x — so keep the resolved cwd. If
+        # the operator is DIRECTLY after the cd (no intervening command), the cd's own
+        # success gates it — `cd /x || w` runs the write only if the cd FAILED, i.e. in
+        # payload — so payload.
+        if seen_cd and op in ('||', '|'):
+            return (cwd if seen_cmd else payload_cwd), True   # best-effort give-up anchor
         if not seg:
             continue
         toks = _tokenize(seg)

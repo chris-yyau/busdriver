@@ -77,6 +77,11 @@ eq ".. cd → payload"                "$(eff "$EB" 'cd /a/../b && > f')"        
 eq "two cds → payload"              "$(eff "$EB" "cd $EB/other && cd $EB/sub && > f")" "0|$EB"
 eq "cd after command → payload"     "$(eff "$EB" "ls && cd $EB/other && > f")"        "0|$EB"
 eq "cd behind || → payload"         "$(eff "$EB" "cd $EB/other || > f")"              "0|$EB"
+# A command ran in the cd target before the ||, so the write lands there → keep the cd.
+eq "cd && cmd || write → keeps cd"  "$(eff "$EB" "cd $EB/other && false || sed -i x f")" "0|$EB/other"
+# '&' backgrounds `cd && cmd` in a subshell → the FOREGROUND write lands in payload, NOT
+# the cd target, even though a command ran (seen_cmd). Must give up unconditionally.
+eq "cd && cmd & write → payload"    "$(eff "$EB" "cd $EB/other && true & > f")"        "0|$EB"
 eq "if-conditional cd → payload"    "$(eff "$EB" "if cd $EB/other ; then > f ; fi")"  "0|$EB"
 eq "subshell cd → payload"          "$(eff "$EB" "( cd $EB/other ) && > f")"          "0|$EB"
 
@@ -163,6 +168,9 @@ git -C "$RP" init -q; git -C "$RP" config user.email t@t; git -C "$RP" config us
 git -C "$RP" commit -q --allow-empty -m init
 eq "(anc) repo's own src/impl.md NOT exempt" "$(ddx "$RP/src/impl.md")" "1"
 eq "(anc) repo's own docs/plans/DESIGN.md exempt" "$(ddx "$RP/docs/plans/DESIGN.md")" "0"
+# NOT-yet-created nested parent must still resolve repo-relative (walk up to existing dir).
+eq "(anc) new nested src/new/impl.md NOT exempt" "$(ddx "$RP/src/new/impl.md")" "1"
+eq "(anc) new nested docs/plans/n/DESIGN.md exempt" "$(ddx "$RP/docs/plans/n/DESIGN.md")" "0"
 # gate_design_doc_exempt rc contract: 0 exempt / 1 not-a-doc / 2 error.
 eq "(err) dd-exempt on non-design → 1" "$(ddx "$RP/src/util.go")" "1"
 

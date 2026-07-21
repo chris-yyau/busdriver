@@ -343,6 +343,13 @@ def _repo_relative(abspath):
     own src/impl.md classified a design doc just because the ANCESTOR chain says docs/plans."""
     import subprocess
     d = os.path.dirname(abspath) or "."
+    # Walk up to the deepest EXISTING dir: a new nested doc's immediate parent may not exist
+    # yet, and `git -C <missing>` fails → we'd fall back to the absolute path and re-expose
+    # the ancestor-docs/plans bypass for not-yet-created parents.
+    while d and not os.path.isdir(d) and d != os.path.dirname(d):
+        d = os.path.dirname(d)
+    if not d:
+        d = "."
     try:
         r = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"],
                            capture_output=True)

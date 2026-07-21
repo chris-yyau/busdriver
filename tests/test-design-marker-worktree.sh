@@ -287,12 +287,38 @@ t="$(mkrepo)"; mkdir -p "$t/docs/plans"
 printf '# plan\n<!-- design-reviewed: PASS -->\n' >"$t/docs/plans/DESIGN-meta.md"
 chmod 0640 "$t/docs/plans/DESIGN-meta.md"
 touch -t 202001010000 "$t/docs/plans/DESIGN-meta.md"   # backdate to 2020
-_old_mt="$(stat -f %m "$t/docs/plans/DESIGN-meta.md" 2>/dev/null || stat -c %Y "$t/docs/plans/DESIGN-meta.md")"
+_old_mt="$(stat -c %Y "$t/docs/plans/DESIGN-meta.md" 2>/dev/null || stat -f %m "$t/docs/plans/DESIGN-meta.md")"
 dpay "$t/docs/plans/DESIGN-meta.md" "$t" | bash "$CHECKDOC" >/dev/null 2>&1
-_mode="$(stat -f %Lp "$t/docs/plans/DESIGN-meta.md" 2>/dev/null || stat -c %a "$t/docs/plans/DESIGN-meta.md")"
-_new_mt="$(stat -f %m "$t/docs/plans/DESIGN-meta.md" 2>/dev/null || stat -c %Y "$t/docs/plans/DESIGN-meta.md")"
+_mode="$(stat -c %a "$t/docs/plans/DESIGN-meta.md" 2>/dev/null || stat -f %Lp "$t/docs/plans/DESIGN-meta.md")"
+_new_mt="$(stat -c %Y "$t/docs/plans/DESIGN-meta.md" 2>/dev/null || stat -f %m "$t/docs/plans/DESIGN-meta.md")"
 [ "$_mode" = 640 ] && ok "(449-meta) file mode 0640 preserved through downgrade" || no "(449-meta) mode must be preserved" "got=$_mode"
 [ "$_new_mt" -gt "$_old_mt" ] && ok "(449-meta) mtime bumped so watchers see the change" || no "(449-meta) mtime must advance" "old=$_old_mt new=$_new_mt"
+# (449-hardlink) KEYSTONE: an in-repo design doc HARD-LINKED to a file OUTSIDE the repo.
+# A hard link is a second path to the same inode that realpath containment cannot see,
+# so an in-place truncate+rewrite would modify the external alias too — an out-of-repo
+# write primitive (Codex HIGH). The atomic temp+os.replace repoints ONLY the in-repo
+# path (new inode), never touching the external alias: the external file keeps its
+# content byte-for-byte. The in-repo path is downgraded. A hard-linked alias not being
+# synced is the accepted, safe residual — containment strictly outranks it.
+if command -v ln >/dev/null 2>&1; then
+    ext="$(mktemp -d)"; TMPS+=("$ext")
+    printf 'EXTERNAL PAYLOAD do not touch\n<!-- design-reviewed: PASS -->\n' >"$ext/victim.md"
+    _ext_before="$(cat "$ext/victim.md")"
+    t="$(mkrepo)"; mkdir -p "$t/docs/plans"
+    if ln "$ext/victim.md" "$t/docs/plans/DESIGN-hl.md" 2>/dev/null; then
+        dpay "$t/docs/plans/DESIGN-hl.md" "$t" | bash "$CHECKDOC" >/dev/null 2>&1
+        [ "$(cat "$ext/victim.md")" = "$_ext_before" ] \
+            && ok "(449-hardlink) external hard-link alias NOT modified (no out-of-repo write)" \
+            || no "(449-hardlink) external alias must be untouched" "$(cat "$ext/victim.md")"
+        grep -q '<!-- design-reviewed: PENDING -->' "$t/docs/plans/DESIGN-hl.md" \
+            && ok "(449-hardlink) in-repo path downgraded to PENDING (new inode)" \
+            || no "(449-hardlink) in-repo path must be downgraded" "$(cat "$t/docs/plans/DESIGN-hl.md")"
+    else
+        ok "(449-hardlink) cross-device hard link unsupported here [skipped]"
+    fi
+else
+    ok "(449-hardlink) ln unavailable [skipped]"
+fi
 # (449-symlink) an IN-repo symlinked design doc: the strip edits the resolved TARGET
 # (in this repo, contained under the payload-cwd repo top), not the link — so the
 # target's PASS→PENDING and the symlink survives (sed on the resolved regular file

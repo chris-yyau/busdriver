@@ -424,8 +424,19 @@ def _atomic_write_preserving_metadata(path, content):
     original TIMESTAMPS, which we then deliberately bump to now (os.utime): the content
     DID change, so an unchanged mtime would let polling file-watchers / incremental
     tools miss the PASS→PENDING edit (Codex PR review). copystat does not carry
-    ownership/ACLs; that residual gap is a deliberate, narrower scope. Returns True on
-    success.
+    ownership/ACLs; that residual gap is a deliberate, narrower scope.
+
+    Hard-linked aliases (Codex PR review, #452): os.replace() installs the new inode
+    only at `path`, so any OTHER hard link to the same inode keeps the old content.
+    That is DELIBERATE and the safe direction: a hard link is a second path to the
+    same inode that realpath containment CANNOT see (hard links are not symlinks), so
+    an in-place truncate+rewrite — which we do NOT do — would rewrite an alias OUTSIDE
+    the repo, an out-of-repository write primitive (Codex HIGH). os.replace repoints
+    only the in-repo `path` and never touches any alias, in or out of the repo. The
+    cost is that a hard-linked in-repo alias is not synced to PENDING here; that is an
+    accepted residual (design docs are hard-linked essentially never, each tracked
+    path is armed/checked on its own, and never writing outside the repo takes strict
+    priority over syncing a shared inode). Returns True on success.
     """
     import tempfile
     import shutil

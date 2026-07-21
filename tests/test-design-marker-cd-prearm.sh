@@ -218,6 +218,31 @@ eq "(4) genuine .claude/settings.json at repo root → allow (still exempt)" "$(
 OUT="$(cd "$F" && printf '%s' "$(write_payload "$F/src/impl.py" "$F")" | bash "$PREIMPL" 2>/dev/null)"
 eq "(4) absolute src/impl.py → BLOCK (unchanged)" "$(is_block)" "1"
 
+echo "── item 4 (Greptile P1, #451) · missing/relative payload cwd fails CLOSED ──"
+# A relative file_path with NO payload cwd field (or an empty one) must NOT fall back
+# to a bare "." — that lexical no-op would leave $_NORM_FP relative, which both the
+# design-doc arm and the STATE_DIR arm then resolve against the GATE PROCESS's own cwd
+# (gate_marker_relpath's `git -C`/`cd`) instead of the payload's real effective
+# directory — reopening the exact bypass item 4 closes, just triggered by an absent
+# cwd instead of a present-but-different one. Gate process cwd = $F (repo root), so a
+# pre-fix gate would resolve `.claude/impl.py` root-relative → EXEMPT → allow.
+NO_CWD_PAYLOAD='{"tool_name":"Write","tool_input":{"file_path":".claude/impl.py"}}'
+OUT="$(cd "$F" && printf '%s' "$NO_CWD_PAYLOAD" | bash "$PREIMPL" 2>/dev/null)"
+eq "(4b) relative .claude/impl.py, cwd OMITTED → BLOCK (no bypass)" "$(is_block)" "1"
+# An explicit empty-string cwd is the same falsy shape as omission — same fail-closed
+# outcome.
+OUT="$(cd "$F" && printf '%s' "$(write_payload '.claude/impl.py' '')" | bash "$PREIMPL" 2>/dev/null)"
+eq "(4c) relative .claude/impl.py, cwd='' → BLOCK (no bypass)" "$(is_block)" "1"
+# A literal "." payload cwd is not an anchor by itself either — same fail-closed
+# outcome as omission (Greptile's report named this shape explicitly).
+OUT="$(cd "$F" && printf '%s' "$(write_payload '.claude/impl.py' '.')" | bash "$PREIMPL" 2>/dev/null)"
+eq "(4d) relative .claude/impl.py, cwd='.' → BLOCK (no bypass)" "$(is_block)" "1"
+# No regression on the already-covered absolute-cwd divergence case (4) above, and no
+# new false positive: an absolute-cwd genuine root config write still stays exempt —
+# re-asserted here for clarity that the missing-cwd fix didn't touch that arm.
+OUT="$(cd "$F" && printf '%s' "$(write_payload '.claude/settings.json' "$F")" | bash "$PREIMPL" 2>/dev/null)"
+eq "(4e) genuine .claude/settings.json, absolute cwd=root → allow (still exempt)" "$(is_block)" "0"
+
 echo ""
 echo "──────────────────────────────────────────────"
 printf "  %d passed, %d failed\n" "$PASS" "$FAIL"

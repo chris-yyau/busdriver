@@ -1,3 +1,10 @@
+## [1.95.10](https://github.com/chris-yyau/busdriver/compare/v1.95.9...v1.95.10) (2026-07-22)
+
+
+### Bug Fixes
+
+* **design-review:** strip PASS on Write of a reviewed doc — no stale-PASS-with-token ([#449](https://github.com/chris-yyau/busdriver/issues/449)) ([#452](https://github.com/chris-yyau/busdriver/issues/452)) ([0594830](https://github.com/chris-yyau/busdriver/commit/059483024a9c9e423556715016d44b93237e4474)), closes [#347](https://github.com/chris-yyau/busdriver/issues/347)
+
 ## [1.95.9](https://github.com/chris-yyau/busdriver/compare/v1.95.8...v1.95.9) (2026-07-21)
 
 

@@ -465,15 +465,23 @@ def _atomic_write_preserving_metadata(path, content):
         return False
 
 
+def _walk_to_existing_dir(d):
+    """Walk <d> up to its nearest existing ancestor directory, or "." if none
+    exists (e.g. a relative path with no cwd-resolvable prefix). Shared by
+    _git_common_dir/_git_toplevel — both need an existing directory to hand to
+    `git -C` since git can't -C into a path that doesn't exist yet (a
+    not-yet-created write target)."""
+    while d and not os.path.isdir(d) and d != os.path.dirname(d):
+        d = os.path.dirname(d)
+    return d or "."
+
+
 def _git_common_dir(d):
     """Realpath of the git COMMON dir owning <d> (shared by a repo + all its linked
     worktrees), or None outside a repo. Used to prove two paths belong to the SAME
     repository — linked worktrees share it, a different repo does not."""
     import subprocess
-    while d and not os.path.isdir(d) and d != os.path.dirname(d):
-        d = os.path.dirname(d)
-    if not d:
-        d = "."
+    d = _walk_to_existing_dir(d)
     try:
         r = subprocess.run(["git", "-C", d, "rev-parse", "--git-common-dir"],
                            capture_output=True)
@@ -495,10 +503,7 @@ def _git_toplevel(d):
     or physically nested beneath it (see the nested-vs-sibling distinction in
     cmd_repo_rel)."""
     import subprocess
-    while d and not os.path.isdir(d) and d != os.path.dirname(d):
-        d = os.path.dirname(d)
-    if not d:
-        d = "."
+    d = _walk_to_existing_dir(d)
     try:
         r = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"],
                            capture_output=True)
@@ -518,7 +523,9 @@ def _repo_rel_bound(phys, anchor_dir):
     Greptile P1 rationale). False on any unresolvable input — caller fails CLOSED."""
     tcommon = _git_common_dir(phys)
     acommon = _git_common_dir(anchor_dir)
-    if not tcommon or not acommon or tcommon != acommon:
+    if not tcommon or not acommon:
+        return False
+    if tcommon != acommon:
         return False
     atop = _git_toplevel(anchor_dir)
     ttop = _git_toplevel(phys)

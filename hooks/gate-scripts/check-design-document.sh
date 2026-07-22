@@ -60,9 +60,23 @@ try:
     if isinstance(inp, str):
         inp = json.loads(inp)
     payload_cwd = d.get('cwd') or '.'
+    def _abs(p):
+        # #448 — resolve a RELATIVE file_path against the payload's authoritative
+        # cwd (NOT the hook process cwd) before the shared classifier's realpath
+        # runs. Without this, gate_design_doc_exempt's realpath anchors on the hook
+        # process cwd; when that differs from the payload cwd (e.g. a symlinked
+        # docs/plans at the hook cwd) a genuine design doc could be classified
+        # non-design and armed no marker (fail-OPEN). Mirrors the Bash branch below
+        # and the pre-implementation gate's payload-cwd join.
+        # ponytail: absolute payload_cwd only — a relative/'.' payload cwd is left
+        # as-is (best-effort, same ceiling as the Bash branch); upgrade to the
+        # sibling gate's ValueError-and-arm if a non-absolute cwd is ever observed.
+        if p and not os.path.isabs(p) and os.path.isabs(payload_cwd):
+            return os.path.normpath(os.path.join(payload_cwd, p))
+        return p
     if tool in ('Write', 'Edit'):
         path = inp.get('file_path', inp.get('filePath', ''))
-        print(f'{tool}|{path}')
+        print(f'{tool}|{_abs(path)}')
     elif tool == 'MultiEdit':
         # MultiEdit's tool_input carries file_path at the top level in the
         # common case, but mirror the sibling hooks (post-edit-accumulator.js,
@@ -73,7 +87,7 @@ try:
             edits = inp.get('edits', [])
             if isinstance(edits, list) and edits and isinstance(edits[0], dict):
                 path = edits[0].get('file_path', edits[0].get('filePath', ''))
-        print(f'{tool}|{path}')
+        print(f'{tool}|{_abs(path)}')
     elif tool == 'Bash':
         # Extract file paths from Bash commands that create design docs
         # Patterns: echo/cat/printf > file, tee file, cp ... file

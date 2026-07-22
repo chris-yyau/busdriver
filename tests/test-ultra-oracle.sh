@@ -491,4 +491,252 @@ first_line="${out%%$'\n'*}"
 printf '%s\n' "$first_line" | grep -qi "sign in to the" || { echo "FAIL wrapper timeout banner missing hint"; FAIL=1; }
 rm -f "$twp" "$tmp/.claude/busdriver.json"
 
+# --- #458 salvage: harvest a completed-but-hung / empty-verdict response via `oracle session --harvest` ---
+# oracle 0.16.0's browser engine can wait out its whole --timeout on a fast response that
+# already FINISHED (completion-detection bug). In ATTACH mode the answer is still in the live
+# tab, so `oracle session <id> --harvest` recovers it. Salvage must NOT fire outside attach
+# mode (no live tab). A self-contained mock that also serves the `session` harvest subcommand.
+cat > "$tmp/bin/oracle" <<'STUB'
+#!/bin/bash
+# Harvest subcommand: `oracle session <id> --harvest --write-output <out>` re-reads the tab.
+if [ "${1:-}" = "session" ]; then
+  out=""
+  while [ $# -gt 0 ]; do case "$1" in --write-output) out="$2"; shift 2;; *) shift;; esac; done
+  case "${ULTRA_ORACLE_SALVAGE_MODE:-ok}" in
+    ok)          [ -n "$out" ] && printf 'SALVAGED VERDICT: recovered from live tab\n' > "$out"; exit 0;;
+    fail)        exit 1;;          # dead tab ("No ChatGPT tab matched") -> nothing harvested
+    partialfail) [ -n "$out" ] && printf 'harvest fragment truncated mid-stream\n' > "$out"; exit 1;;  # wrote >8 bytes THEN failed
+  esac
+fi
+# Main run: announce the session id (parsed by _ultra_oracle_salvage from "Session: <id>"),
+# then reproduce a completion signature or exit empty per mode. The id is overridable so a test
+# can feed a MALFORMED one (leading dash / internal space) and assert salvage fails closed.
+echo "Session: ${ULTRA_ORACLE_TEST_SID:-sess-458}"
+mout=""
+while [ $# -gt 0 ]; do case "$1" in --write-output) mout="$2"; shift 2;; *) shift;; esac; done
+_hungsig() {
+  # A streaming tick reporting content STABLE for 3m (matches the #458 real-world log), then the
+  # heartbeat stuck in the waiting branch — BOTH signals the watchdog requires.
+  echo "[browser] ChatGPT thinking - status=response streaming; last change 3m 0s ago; source=inline"
+  echo "[browser] Waiting for ChatGPT response - no thinking status detected yet."
+  echo "[browser] Waiting for ChatGPT response - no thinking status detected yet."
+}
+case "${ULTRA_ORACLE_MOCK_MODE:-empty}" in
+  empty)        exit 0;;           # exit 0, no verdict written (browser extraction no-op)
+  hung)         _hungsig; sleep 30;;   # completed-but-hung: stream, then stuck in the waiting branch
+  hungwrote)    # oracle wrote something to --write-output (possibly a NON-atomic partial), THEN
+                # the heartbeat still shows the hung signature. Salvage must DISCARD this and
+                # re-harvest the tab — never trust oracle's $out.
+                [ -n "$mout" ] && printf 'ORACLE PARTIAL WRITE do not trust\n' > "$mout"
+                _hungsig; sleep 30;;
+  hungnostream) sleep 30;;         # hangs WITHOUT ever streaming -> no hung signature -> hard cap only
+  hungactive)   # ACTIVE stream: the streaming indicator keeps returning, with only single transient
+                # null polls between streaming lines. Each streaming line resets the waiting counter,
+                # so it never reaches 2 sustained ticks -> the watchdog must NOT early-exit.
+                for _ in 1 2 3 4 5; do
+                  echo "[browser] ChatGPT thinking - status=response streaming; last change 1s ago; source=inline"
+                  echo "[browser] Waiting for ChatGPT response - no thinking status detected yet."
+                done
+                sleep 30;;
+esac
+STUB
+chmod +x "$tmp/bin/oracle"
+_ULTRA_ORACLE_PREFLIGHT="$tmp/bin/preflight-ok.sh"
+printf '{ "ultraOracle": { "attachRunning": true } }\n' > "$tmp/.claude/busdriver.json"
+
+# blocking, exit-0-but-empty verdict + attach -> salvage harvests (oracle concluded, safe) -> 'ok'
+export ULTRA_ORACLE_MOCK_MODE=empty ULTRA_ORACLE_SALVAGE_MODE=ok
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv1.md" --mode blocking)"
+[ "$st" = "ok" ] || { echo "FAIL salvage empty->ok got '$st'"; FAIL=1; }
+grep -q "SALVAGED VERDICT" "$tmp/sv1.md" || { echo "FAIL salvage empty: harvested body missing"; FAIL=1; }
+
+# blocking TIMEOUT must NOT salvage (ambiguous: could be mid-stream) -> stays 'timeout'.
+export ULTRA_ORACLE_MOCK_MODE=hung ULTRA_ORACLE_SALVAGE_MODE=ok
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv2.md" --mode blocking --timeout-cap-seconds 1)"
+[ "$st" = "timeout" ] || { echo "FAIL blocking timeout must not salvage got '$st'"; FAIL=1; }
+grep -q "SALVAGED" "$tmp/sv2.md" 2>/dev/null && { echo "FAIL blocking timeout salvaged (should not)"; FAIL=1; }
+
+# HIGH#1 (harvest exit 0 but wrote nothing = dead tab): exit-0-empty + failed harvest -> 'error'.
+export ULTRA_ORACLE_MOCK_MODE=empty ULTRA_ORACLE_SALVAGE_MODE=fail
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv3.md" --mode blocking)"
+[ "$st" = "error" ] || { echo "FAIL empty + failed-harvest should be 'error' got '$st'"; FAIL=1; }
+
+# HIGH#1 (round 2): the harvest writes a >8-byte fragment then EXITS NON-ZERO. The harvest-rc
+# guard must reject it despite the fragment passing the byte floor -> 'error', fragment cleared.
+export ULTRA_ORACLE_MOCK_MODE=empty ULTRA_ORACLE_SALVAGE_MODE=partialfail
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv3c.md" --mode blocking)"
+[ "$st" = "error" ] || { echo "FAIL harvest-fragment-then-nonzero must be 'error' got '$st'"; FAIL=1; }
+grep -q "harvest fragment" "$tmp/sv3c.md" 2>/dev/null && { echo "FAIL harvest fragment falsely accepted despite non-zero rc"; FAIL=1; }
+
+# NON-attach: salvage must NOT fire (no discoverable live tab). empty-verdict -> 'error' as before.
+rm -f "$tmp/.claude/busdriver.json"
+export ULTRA_ORACLE_MOCK_MODE=empty ULTRA_ORACLE_SALVAGE_MODE=ok
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv4.md" --mode blocking)"
+[ "$st" = "error" ] || { echo "FAIL non-attach empty must not salvage got '$st'"; FAIL=1; }
+
+# background watchdog (#458): attach + hung signature -> EARLY exit (rc 125, not full cap) ->
+# salvage -> .rc=0. Cap 120s but the watchdog must fire in seconds; HUNG_GRACE=0 arms it as soon
+# as the signature is captured. No .rc within 30s would mean the watchdog failed to early-exit.
+printf '{ "ultraOracle": { "attachRunning": true } }\n' > "$tmp/.claude/busdriver.json"
+export ULTRA_ORACLE_MOCK_MODE=hung ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv5.md" --mode background --timeout-cap-seconds 120)"
+[ "$st" = "dispatched" ] || { echo "FAIL bg salvage dispatch got '$st'"; FAIL=1; }
+_w=0; while [ ! -f "$tmp/sv5.md.rc" ] && [ "$_w" -lt 30 ]; do sleep 1; _w=$((_w + 1)); done
+if [ -f "$tmp/sv5.md.rc" ]; then
+  [ "$(cat "$tmp/sv5.md.rc" 2>/dev/null)" = "0" ] || { echo "FAIL bg salvage .rc not 0 got '$(cat "$tmp/sv5.md.rc" 2>/dev/null)'"; FAIL=1; }
+  grep -q "SALVAGED VERDICT" "$tmp/sv5.md" || { echo "FAIL bg salvage harvested body missing"; FAIL=1; }
+else
+  echo "FAIL bg watchdog did not early-exit within 30s (would have waited the 120s cap)"; FAIL=1
+fi
+
+# background hung + harvest FAILS -> confirmed-hung (125) that salvage can't recover normalizes
+# to timeout -> .rc=124, and $out is left clean (no partial).
+export ULTRA_ORACLE_MOCK_MODE=hung ULTRA_ORACLE_SALVAGE_MODE=partialfail ULTRA_ORACLE_HUNG_GRACE=0
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv5b.md" --mode background --timeout-cap-seconds 120)"
+_w=0; while [ ! -f "$tmp/sv5b.md.rc" ] && [ "$_w" -lt 30 ]; do sleep 1; _w=$((_w + 1)); done
+if [ -f "$tmp/sv5b.md.rc" ]; then
+  [ "$(cat "$tmp/sv5b.md.rc" 2>/dev/null)" = "124" ] || { echo "FAIL bg hung+failed-harvest .rc should be 124 got '$(cat "$tmp/sv5b.md.rc" 2>/dev/null)'"; FAIL=1; }
+  grep -q "harvest fragment" "$tmp/sv5b.md" 2>/dev/null && { echo "FAIL bg hung+failed-harvest left a partial in \$out"; FAIL=1; }
+else
+  echo "FAIL bg hung+failed-harvest never wrote .rc"; FAIL=1
+fi
+
+# NON-ATOMIC WRITE GUARD (PR-review HIGH): oracle left a partial in $out just before termination.
+# Salvage must DISCARD it and re-harvest — never promote oracle's possibly-truncated $out. With a
+# working harvest the tab's complete answer replaces the partial (.rc=0, harvest body, NOT the
+# partial); with a FAILED harvest it fails CLOSED to timeout (.rc=124) and the partial is cleared.
+export ULTRA_ORACLE_MOCK_MODE=hungwrote ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv6r.md" --mode background --timeout-cap-seconds 120)"
+_w=0; while [ ! -f "$tmp/sv6r.md.rc" ] && [ "$_w" -lt 30 ]; do sleep 1; _w=$((_w + 1)); done
+if [ -f "$tmp/sv6r.md.rc" ]; then
+  [ "$(cat "$tmp/sv6r.md.rc" 2>/dev/null)" = "0" ] || { echo "FAIL non-atomic-write .rc should be 0 got '$(cat "$tmp/sv6r.md.rc" 2>/dev/null)'"; FAIL=1; }
+  grep -q "SALVAGED VERDICT" "$tmp/sv6r.md" || { echo "FAIL non-atomic-write: harvest body missing"; FAIL=1; }
+  grep -q "ORACLE PARTIAL WRITE" "$tmp/sv6r.md" && { echo "FAIL non-atomic-write: oracle partial was NOT discarded"; FAIL=1; }
+else
+  echo "FAIL non-atomic-write never wrote .rc"; FAIL=1
+fi
+# ...and with a failing harvest the partial is discarded and it fails closed to timeout.
+export ULTRA_ORACLE_MOCK_MODE=hungwrote ULTRA_ORACLE_SALVAGE_MODE=fail ULTRA_ORACLE_HUNG_GRACE=0
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv6f.md" --mode background --timeout-cap-seconds 120)"
+_w=0; while [ ! -f "$tmp/sv6f.md.rc" ] && [ "$_w" -lt 30 ]; do sleep 1; _w=$((_w + 1)); done
+if [ -f "$tmp/sv6f.md.rc" ]; then
+  [ "$(cat "$tmp/sv6f.md.rc" 2>/dev/null)" = "124" ] || { echo "FAIL non-atomic-write+failed-harvest .rc should be 124 got '$(cat "$tmp/sv6f.md.rc" 2>/dev/null)'"; FAIL=1; }
+  grep -q "ORACLE PARTIAL WRITE" "$tmp/sv6f.md" 2>/dev/null && { echo "FAIL non-atomic-write+failed-harvest: partial not cleared"; FAIL=1; }
+else
+  echo "FAIL non-atomic-write+failed-harvest never wrote .rc"; FAIL=1
+fi
+
+# SID VALIDATION (PR-review MEDIUM, option-injection): a malformed "Session: -danger" id must be
+# REJECTED (leading '-' would be parsed as an oracle option) — salvage fails closed, so a confirmed
+# hung run normalizes to timeout .rc=124 rather than harvesting with an injected argument.
+export ULTRA_ORACLE_MOCK_MODE=hung ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0 ULTRA_ORACLE_TEST_SID="-danger"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/svsid.md" --mode background --timeout-cap-seconds 120)"
+_w=0; while [ ! -f "$tmp/svsid.md.rc" ] && [ "$_w" -lt 30 ]; do sleep 1; _w=$((_w + 1)); done
+if [ -f "$tmp/svsid.md.rc" ]; then
+  [ "$(cat "$tmp/svsid.md.rc" 2>/dev/null)" = "124" ] || { echo "FAIL malformed sid should reject -> 124 got '$(cat "$tmp/svsid.md.rc" 2>/dev/null)'"; FAIL=1; }
+  grep -q "SALVAGED" "$tmp/svsid.md" 2>/dev/null && { echo "FAIL malformed sid was harvested"; FAIL=1; }
+else
+  echo "FAIL malformed sid never wrote .rc"; FAIL=1
+fi
+unset ULTRA_ORACLE_TEST_SID
+
+# HIGH#1 CORE: background ATTACH hard cap with NO hung signature (hungnostream) must NOT salvage
+# -> runs to the cap and reports .rc=124 (a still-streaming response is never harvested as a
+# partial). cap=6, HUNG_GRACE=0: an over-eager salvage would flip this to 0.
+export ULTRA_ORACLE_MOCK_MODE=hungnostream ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0
+_t0="$(date +%s)"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv7.md" --mode background --timeout-cap-seconds 6)"
+_w=0; while [ ! -f "$tmp/sv7.md.rc" ] && [ "$_w" -lt 20 ]; do sleep 1; _w=$((_w + 1)); done
+_elapsed=$(( $(date +%s) - _t0 ))
+if [ -f "$tmp/sv7.md.rc" ]; then
+  [ "$(cat "$tmp/sv7.md.rc" 2>/dev/null)" = "124" ] || { echo "FAIL bg attach hard-cap should be 124 got '$(cat "$tmp/sv7.md.rc" 2>/dev/null)'"; FAIL=1; }
+  grep -q "SALVAGED" "$tmp/sv7.md" 2>/dev/null && { echo "FAIL bg attach hard-cap salvaged an ambiguous timeout"; FAIL=1; }
+  [ "$_elapsed" -ge 5 ] || { echo "FAIL bg attach hard-cap exited early (${_elapsed}s, expected ~cap 6s)"; FAIL=1; }
+else
+  echo "FAIL bg attach hard-cap never wrote .rc"; FAIL=1
+fi
+# CONTENT-STABILITY GUARD (PR-review HIGH): a waiting heartbeat that follows RECENT content change
+# (last change 2s) is a transient null, NOT completion — the watchdog must NOT early-exit. cap=6,
+# HUNG_GRACE=0: an over-eager watchdog would flip this to a fast 125/salvage; correct behavior runs
+# to the cap (.rc=124, ~6s) because the stability floor (default 45s) is not met.
+export ULTRA_ORACLE_MOCK_MODE=hungactive ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0
+_t0="$(date +%s)"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv8.md" --mode background --timeout-cap-seconds 6)"
+_w=0; while [ ! -f "$tmp/sv8.md.rc" ] && [ "$_w" -lt 20 ]; do sleep 1; _w=$((_w + 1)); done
+_elapsed=$(( $(date +%s) - _t0 ))
+if [ -f "$tmp/sv8.md.rc" ]; then
+  [ "$(cat "$tmp/sv8.md.rc" 2>/dev/null)" = "124" ] || { echo "FAIL active-stream should hard-cap 124 got '$(cat "$tmp/sv8.md.rc" 2>/dev/null)'"; FAIL=1; }
+  grep -q "SALVAGED" "$tmp/sv8.md" 2>/dev/null && { echo "FAIL active-stream early-killed + salvaged a still-changing response"; FAIL=1; }
+  [ "$_elapsed" -ge 5 ] || { echo "FAIL active-stream exited early (${_elapsed}s, expected ~cap 6s)"; FAIL=1; }
+else
+  echo "FAIL active-stream never wrote .rc"; FAIL=1
+fi
+unset ULTRA_ORACLE_MOCK_MODE ULTRA_ORACLE_SALVAGE_MODE ULTRA_ORACLE_HUNG_GRACE
+_ULTRA_ORACLE_PREFLIGHT="$DIR/scripts/ultra-oracle-attach-preflight.sh"
+rm -f "$tmp/.claude/busdriver.json"
+
+# early-kill GATING (PR-review HIGH): the hung-signature early-exit must fire ONLY when salvage
+# can recover (attach mode). In NON-attach background mode the same hung signature must NOT cut
+# the consult early — there is no live tab to harvest, so it would only truncate a slow
+# response. Prove it runs to the hard cap instead of exiting at ~grace. cap=6, grace=0: an
+# early-kill bug would land .rc at ~3s; correct gating lands it at ~cap (>=5s).
+export ULTRA_ORACLE_MOCK_MODE=hung ULTRA_ORACLE_HUNG_GRACE=0
+rm -f "$tmp/.claude/busdriver.json"                        # non-attach (no attachRunning)
+_t0="$(date +%s)"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv6.md" --mode background --timeout-cap-seconds 6)"
+[ "$st" = "dispatched" ] || { echo "FAIL non-attach bg dispatch got '$st'"; FAIL=1; }
+_w=0; while [ ! -f "$tmp/sv6.md.rc" ] && [ "$_w" -lt 20 ]; do sleep 1; _w=$((_w + 1)); done
+_elapsed=$(( $(date +%s) - _t0 ))
+[ -f "$tmp/sv6.md.rc" ] || { echo "FAIL non-attach bg never wrote .rc"; FAIL=1; }
+[ "$_elapsed" -ge 5 ] || { echo "FAIL non-attach hung was early-killed (ran ${_elapsed}s, expected ~cap 6s)"; FAIL=1; }
+[ "$(cat "$tmp/sv6.md.rc" 2>/dev/null)" = "124" ] || { echo "FAIL non-attach hung .rc should be 124 got '$(cat "$tmp/sv6.md.rc" 2>/dev/null)'"; FAIL=1; }
+unset ULTRA_ORACLE_MOCK_MODE ULTRA_ORACLE_HUNG_GRACE
+
+# HIGH#2 (watchdog signal): assert the REAL primitive (_ultra_oracle_hung_signal, sourced from the
+# lib — the SAME awk the watchdog calls, so the test cannot drift from the code — CodeRabbit #460)
+# directly on crafted heartbeat fixtures. It prints "<waits> <laststable> <laststream>". Covers the
+# reset-on-ANY-active-heartbeat behavior (streaming AND reasoning/tool use), which is what prevents
+# an active stream from being cut and a partial harvested.
+_sig() { local f; f="$(mktemp)"; printf '%s\n' "$1" > "$f"; _ultra_oracle_hung_signal "$f"; rm -f "$f"; }
+# Two waiting ticks BEFORE any active heartbeat, then streaming that keeps going -> waits 0, laststream 1.
+[ "$(_sig 'Waiting no thinking status detected yet
+Waiting no thinking status detected yet
+[browser] ChatGPT thinking - status=response streaming; last change 5s ago
+[browser] ChatGPT thinking - status=response streaming; last change 5s ago')" = "0 5 1" ] \
+  || { echo "FAIL hung-signal counts pre-stream waiting ticks"; FAIL=1; }
+# Streaming (stable 3m), then two waiting ticks after -> waits 2, laststable 180, laststream 1 (hung).
+[ "$(_sig '[browser] ChatGPT thinking - status=response streaming; last change 3m 0s ago
+Waiting no thinking status detected yet
+Waiting no thinking status detected yet')" = "2 180 1" ] \
+  || { echo "FAIL hung-signal misses post-stream waiting ticks"; FAIL=1; }
+# A later streaming tick RESETS waits -> a response that resumed streaming is not cut (waits 1).
+[ "$(_sig '[browser] ChatGPT thinking - status=response streaming; last change 3m 0s ago
+Waiting no thinking status detected yet
+Waiting no thinking status detected yet
+[browser] ChatGPT thinking - status=response streaming; last change 1s ago
+Waiting no thinking status detected yet')" = "1 1 1" ] \
+  || { echo "FAIL hung-signal does not reset on resumed streaming"; FAIL=1; }
+# A REASONING/tool-use heartbeat between two waiting ticks ALSO resets waits (regression guard for
+# the reset-on-any-active-line fix) AND sets laststream=0 (most recent activity was not streaming).
+[ "$(_sig '[browser] ChatGPT thinking - status=response streaming; last change 3m 0s ago
+Waiting no thinking status detected yet
+[browser] ChatGPT thinking - status=reasoning
+Waiting no thinking status detected yet')" = "1 180 0" ] \
+  || { echo "FAIL hung-signal does not reset on reasoning/tool-use heartbeat"; FAIL=1; }
+
+# P2 (Codex #460): the watched-run signal trap must be bash-3.2-safe — NO BASHPID (unset on macOS
+# bash 3.2, aborts under `set -u`). Run a watched `sleep` UNDER `set -u`, TERM it, and assert it
+# exits with the signal's conventional code (143) and reaps its child rather than aborting on an
+# unbound variable. HUNG_GRACE huge so the early-kill path can't fire — this exercises the SIGNAL arm.
+( set -u; ULTRA_ORACLE_HUNG_GRACE=99999 _ultra_oracle_run_watched 60 "$tmp/sigtrap.err" sleep 30 ) &
+_sig_wpid=$!
+sleep 1                                   # let the trap install + the child start
+_sig_child="$(pgrep -P "$_sig_wpid" 2>/dev/null | head -1)"
+kill -TERM "$_sig_wpid" 2>/dev/null
+_sig_rc=0; wait "$_sig_wpid" || _sig_rc=$?
+[ "$_sig_rc" = "143" ] || { echo "FAIL signal trap not bash-3.2-safe / wrong exit under set -u (got '$_sig_rc', want 143)"; FAIL=1; }
+if [ -n "$_sig_child" ]; then
+  kill -0 "$_sig_child" 2>/dev/null && { echo "FAIL signal trap orphaned the watched child ($_sig_child)"; FAIL=1; }
+fi
+
 [[ "$FAIL" = 0 ]] && echo "PASS test-ultra-oracle" || exit 1

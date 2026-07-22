@@ -952,8 +952,11 @@ with open(pending, "w") as f:
       # Grace margin BEYOND the oracle cap: on a real timeout the background child writes
       # .rc/.hint only AFTER _portable_timeout kills oracle at t=cap, so waiting exactly
       # cap races the child and reads no .rc (banner falls to "timeout (no completion)"
-      # and drops the #340 hint). +10s lets the marker + hint land.
-      _uora_wait=0; _uora_cap=$(( $(ultra_oracle_timeout_cap) + 10 ))
+      # and drops the #340 hint). +90s lets the marker + hint land AND covers the #458
+      # post-cap salvage harvest (ULTRA_ORACLE_SALVAGE_CAP, default 30s) that can run after
+      # a full-cap watched run. The common #458 case early-kills in seconds, so this only
+      # raises the rare worst-case ceiling, not the typical wait.
+      _uora_wait=0; _uora_cap=$(( $(ultra_oracle_timeout_cap) + 90 ))
       while [ ! -f "$ULTRA_ORACLE_ADVISORY_FILE.rc" ] && [ "$_uora_wait" -lt "$_uora_cap" ]; do
         sleep 2; _uora_wait=$((_uora_wait + 2))
       done

@@ -196,6 +196,184 @@ t="$(mkrepo)"; mkdir -p "$t/docs/plans"; printf '# plan\n' >"$t/docs/plans/DESIG
 printf '{"tool_name":"Write","tool_input":{"file_path":"%s/docs/plans/DESIGN-x.md"}}' "$t" | bash "$CHECKDOC" >/dev/null 2>&1
 pending "$t"; eq "(Step2) detector armed a token → pending exit 1" "$PEXIT" "1"
 
+echo "── (#449) Write of a reviewed doc strips PASS→PENDING (no stale-PASS-with-token) ─"
+# Emit a Write payload carrying cwd (production always does) — the strip's symlink-
+# containment anchors on the payload cwd (the operator's session repo).
+dpay(){ printf '{"tool_name":"Write","tool_input":{"file_path":"%s"},"cwd":"%s"}' "$1" "$2"; }
+# A Write re-opens review (arms a token). Older code PRESERVED a committed-HEAD PASS,
+# leaving the doc reading PASS while the armed token blocked every worktree — a stale
+# lie the operator never knew to re-review out of. The detector must strip PASS→PENDING
+# so the doc's marker matches the re-armed token.
+t="$(mkrepo)"; mkdir -p "$t/docs/plans"
+printf '# plan\n\n<!-- design-reviewed: PASS -->\n' >"$t/docs/plans/DESIGN-rev.md"
+git -C "$t" add -A && git -C "$t" commit -q -m 'reviewed doc'   # HEAD now carries PASS
+dpay "$t/docs/plans/DESIGN-rev.md" "$t" | bash "$CHECKDOC" >/dev/null 2>&1
+grep -q '<!-- design-reviewed: PENDING -->' "$t/docs/plans/DESIGN-rev.md" \
+    && ok "(449) Write of HEAD-PASS doc → marker downgraded to PENDING" \
+    || no "(449) Write of HEAD-PASS doc → PENDING" "still: $(grep -o 'design-reviewed: [A-Z]*' "$t/docs/plans/DESIGN-rev.md")"
+grep -q '<!-- design-reviewed: PASS -->' "$t/docs/plans/DESIGN-rev.md" \
+    && no "(449) stale PASS must not survive the Write" \
+    || ok "(449) no stale PASS left in the doc"
+pending "$t"; eq "(449) token armed → doc+token both PENDING (consistent)" "$PEXIT" "1"
+# (449-inline) strip ONLY the WHOLE-LINE PASS (the only form _doc_reviewed honors) —
+# an inline-prose marker the reader deliberately ignores must NOT be corrupted. Codex
+# PR-review finding: an unanchored/`g` strip would mangle a doc that discusses markers.
+t="$(mkrepo)"; mkdir -p "$t/docs/plans"
+printf '# plan\nExample: the <!-- design-reviewed: PASS --> marker authorizes impl.\n<!-- design-reviewed: PASS -->\n' >"$t/docs/plans/DESIGN-in.md"
+dpay "$t/docs/plans/DESIGN-in.md" "$t" | bash "$CHECKDOC" >/dev/null 2>&1
+grep -qxE '[[:space:]]*<!-- design-reviewed: PENDING -->[[:space:]]*' "$t/docs/plans/DESIGN-in.md" \
+    && ok "(449-inline) whole-line PASS downgraded to PENDING" \
+    || no "(449-inline) whole-line PASS → PENDING" "$(cat "$t/docs/plans/DESIGN-in.md")"
+grep -qF 'the <!-- design-reviewed: PASS --> marker authorizes' "$t/docs/plans/DESIGN-in.md" \
+    && ok "(449-inline) inline-prose marker left intact (reader ignores it)" \
+    || no "(449-inline) inline prose must not be mutated"
+# (449-warn) a fail-open hook can't block, but a SILENT strip failure would leave a
+# stale PASS beside the armed token. Force sed failure (read-only parent dir → no temp)
+# and assert the operator is warned. Codex PR-review finding.
+if [ "$(id -u)" != "0" ]; then
+    t="$(mkrepo)"; mkdir -p "$t/docs/plans"
+    printf '# plan\n<!-- design-reviewed: PASS -->\n' >"$t/docs/plans/DESIGN-ro.md"
+    chmod 0555 "$t/docs/plans"   # read-only DIR → atomic mkstemp can't create the temp → downgrade fails
+    _warn="$(dpay "$t/docs/plans/DESIGN-ro.md" "$t" | bash "$CHECKDOC" 2>&1 >/dev/null)"
+    chmod 0755 "$t/docs/plans"
+    case "$_warn" in *"still reads PASS"*) ok "(449-warn) silent strip failure warns operator" ;; *) no "(449-warn) strip failure must warn" "got=$_warn" ;; esac
+else
+    ok "(449-warn) strip-failure warning [skipped as root]"
+fi
+# (449-tab) a TAB-indented whole-line PASS must strip too — the reader honors `[ \t]`
+# padding, so the strip must match space+tab portably. `[ \t]` in an ERE bracket is
+# literal on BSD sed, so a tab marker would survive on macOS; `[[:blank:]]` fixes it.
+t="$(mkrepo)"; mkdir -p "$t/docs/plans"
+printf '# plan\n\t<!-- design-reviewed: PASS -->\n' >"$t/docs/plans/DESIGN-tab.md"
+dpay "$t/docs/plans/DESIGN-tab.md" "$t" | bash "$CHECKDOC" >/dev/null 2>&1
+grep -q '<!-- design-reviewed: PASS -->' "$t/docs/plans/DESIGN-tab.md" \
+    && no "(449-tab) tab-indented PASS must be stripped" "$(cat "$t/docs/plans/DESIGN-tab.md")" \
+    || ok "(449-tab) tab-indented whole-line PASS stripped (portable [[:blank:]])"
+# (449-crlf) a CRLF doc: the reader reads in TEXT mode, so \r\n→\n and the marker IS
+# honored; a byte-level strip that ignores the trailing \r would leave an honored PASS
+# beside the armed token — the #449 lie for CRLF docs. Assert via the reader itself.
+t="$(mkrepo)"; mkdir -p "$t/docs/plans"
+printf '# plan\r\n<!-- design-reviewed: PASS -->\r\n' >"$t/docs/plans/DESIGN-crlf.md"
+dpay "$t/docs/plans/DESIGN-crlf.md" "$t" | bash "$CHECKDOC" >/dev/null 2>&1
+if python3 "$ROOT/hooks/gate-scripts/lib/marker_ops.py" reviewed "$t/docs/plans/DESIGN-crlf.md" >/dev/null 2>&1; then
+    no "(449-crlf) CRLF PASS must be stripped (reader still honors it)" "$(cat "$t/docs/plans/DESIGN-crlf.md")"
+else
+    ok "(449-crlf) CRLF PASS stripped → reader no longer honors it"
+fi
+# ...and the strip preserves the CRLF line ending (only PASS→PENDING changes, no LF
+# conversion / mixed endings). Codex finding.
+if command -v xxd >/dev/null 2>&1; then
+    xxd "$t/docs/plans/DESIGN-crlf.md" | grep -q '2d2d 3e0d 0a' \
+        && ok "(449-crlf) PENDING line keeps its CRLF ending (no formatting churn)" \
+        || no "(449-crlf) CRLF ending must be preserved on downgrade" "$(xxd "$t/docs/plans/DESIGN-crlf.md" | tail -2)"
+else
+    ok "(449-crlf) CRLF-preservation check [xxd unavailable — skipped]"
+fi
+# (449-cr) bare-CR (classic-Mac) line endings: the reader reads in TEXT mode where a lone
+# \r is a line boundary, so it honors the marker; a byte-level LF-only shell strip could
+# not see the marker as a whole line. The shared-engine downgrade handles it — this is the
+# case that motivated moving the strip into marker_ops. Codex finding.
+t="$(mkrepo)"; mkdir -p "$t/docs/plans"
+printf '# plan\r<!-- design-reviewed: PASS -->\rnext line\r' >"$t/docs/plans/DESIGN-cr.md"
+dpay "$t/docs/plans/DESIGN-cr.md" "$t" | bash "$CHECKDOC" >/dev/null 2>&1
+if python3 "$ROOT/hooks/gate-scripts/lib/marker_ops.py" reviewed "$t/docs/plans/DESIGN-cr.md" >/dev/null 2>&1; then
+    no "(449-cr) bare-CR PASS must be stripped (reader still honors it)" "$(cat "$t/docs/plans/DESIGN-cr.md")"
+else
+    ok "(449-cr) bare-CR PASS stripped → reader no longer honors it"
+fi
+# (449-meta) the atomic downgrade preserves the file MODE (Codex P2) but bumps mtime so
+# watchers see the change (Codex — copystat restored the stale mtime).
+t="$(mkrepo)"; mkdir -p "$t/docs/plans"
+printf '# plan\n<!-- design-reviewed: PASS -->\n' >"$t/docs/plans/DESIGN-meta.md"
+chmod 0640 "$t/docs/plans/DESIGN-meta.md"
+touch -t 202001010000 "$t/docs/plans/DESIGN-meta.md"   # backdate to 2020
+_old_mt="$(stat -c %Y "$t/docs/plans/DESIGN-meta.md" 2>/dev/null || stat -f %m "$t/docs/plans/DESIGN-meta.md")"
+dpay "$t/docs/plans/DESIGN-meta.md" "$t" | bash "$CHECKDOC" >/dev/null 2>&1
+_mode="$(stat -c %a "$t/docs/plans/DESIGN-meta.md" 2>/dev/null || stat -f %Lp "$t/docs/plans/DESIGN-meta.md")"
+_new_mt="$(stat -c %Y "$t/docs/plans/DESIGN-meta.md" 2>/dev/null || stat -f %m "$t/docs/plans/DESIGN-meta.md")"
+[ "$_mode" = 640 ] && ok "(449-meta) file mode 0640 preserved through downgrade" || no "(449-meta) mode must be preserved" "got=$_mode"
+[ "$_new_mt" -gt "$_old_mt" ] && ok "(449-meta) mtime bumped so watchers see the change" || no "(449-meta) mtime must advance" "old=$_old_mt new=$_new_mt"
+# (449-hardlink) KEYSTONE: an in-repo design doc HARD-LINKED to a file OUTSIDE the repo.
+# A hard link is a second path to the same inode that realpath containment cannot see,
+# so an in-place truncate+rewrite would modify the external alias too — an out-of-repo
+# write primitive (Codex HIGH). The atomic temp+os.replace repoints ONLY the in-repo
+# path (new inode), never touching the external alias: the external file keeps its
+# content byte-for-byte. The in-repo path is downgraded. A hard-linked alias not being
+# synced is the accepted, safe residual — containment strictly outranks it.
+if command -v ln >/dev/null 2>&1; then
+    ext="$(mktemp -d)"; TMPS+=("$ext")
+    printf 'EXTERNAL PAYLOAD do not touch\n<!-- design-reviewed: PASS -->\n' >"$ext/victim.md"
+    _ext_before="$(cat "$ext/victim.md")"
+    t="$(mkrepo)"; mkdir -p "$t/docs/plans"
+    if ln "$ext/victim.md" "$t/docs/plans/DESIGN-hl.md" 2>/dev/null; then
+        dpay "$t/docs/plans/DESIGN-hl.md" "$t" | bash "$CHECKDOC" >/dev/null 2>&1
+        [ "$(cat "$ext/victim.md")" = "$_ext_before" ] \
+            && ok "(449-hardlink) external hard-link alias NOT modified (no out-of-repo write)" \
+            || no "(449-hardlink) external alias must be untouched" "$(cat "$ext/victim.md")"
+        grep -q '<!-- design-reviewed: PENDING -->' "$t/docs/plans/DESIGN-hl.md" \
+            && ok "(449-hardlink) in-repo path downgraded to PENDING (new inode)" \
+            || no "(449-hardlink) in-repo path must be downgraded" "$(cat "$t/docs/plans/DESIGN-hl.md")"
+    else
+        ok "(449-hardlink) cross-device hard link unsupported here [skipped]"
+    fi
+else
+    ok "(449-hardlink) ln unavailable [skipped]"
+fi
+# (449-symlink) an IN-repo symlinked design doc: the strip edits the resolved TARGET
+# (in this repo, contained under the payload-cwd repo top), not the link — so the
+# target's PASS→PENDING and the symlink survives (sed on the resolved regular file
+# never severs the link). Codex finding.
+t="$(mkrepo)"; mkdir -p "$t/docs/plans" "$t/real"
+printf '# plan\n<!-- design-reviewed: PASS -->\n' >"$t/real/DESIGN.md"
+ln -s ../../real/DESIGN.md "$t/docs/plans/DESIGN-link.md"
+dpay "$t/docs/plans/DESIGN-link.md" "$t" | bash "$CHECKDOC" >/dev/null 2>&1
+[ -L "$t/docs/plans/DESIGN-link.md" ] \
+    && ok "(449-symlink) in-repo symlink survives (not severed)" \
+    || no "(449-symlink) symlink must not be replaced by a regular file"
+grep -q '<!-- design-reviewed: PENDING -->' "$t/real/DESIGN.md" \
+    && ok "(449-symlink) in-repo target's PASS downgraded to PENDING" \
+    || no "(449-symlink) in-repo target must be stripped" "$(cat "$t/real/DESIGN.md")"
+# (449-symlink-parent) a symlinked PARENT dir escaping to a NON-repo dir: the leaf is a
+# regular file (leaf `-L` would miss it), but sed would write OUTSIDE the repo (Codex
+# HIGH). The physical path is not under the payload-cwd repo top → skip + warn.
+ext="$(mktemp -d)"; TMPS+=("$ext")
+t="$(mkrepo)"; mkdir -p "$t/docs"
+ln -s "$ext" "$t/docs/plans"                 # docs/plans -> external dir (outside the repo)
+printf '# plan\n<!-- design-reviewed: PASS -->\n' >"$t/docs/plans/DESIGN.md"   # lands in $ext/DESIGN.md
+_ppwarn="$(dpay "$t/docs/plans/DESIGN.md" "$t" | bash "$CHECKDOC" 2>&1 >/dev/null)"
+grep -q '<!-- design-reviewed: PASS -->' "$ext/DESIGN.md" \
+    && ok "(449-symlink-parent) external file via symlinked PARENT NOT rewritten" \
+    || no "(449-symlink-parent) must not write outside the repo" "$(cat "$ext/DESIGN.md")"
+case "$_ppwarn" in *"still reads PASS"*) ok "(449-symlink-parent) operator warned" ;; *) no "(449-symlink-parent) must warn" "got=$_ppwarn" ;; esac
+# (449-xrepo) KEYSTONE: a symlinked PARENT pointing into a DIFFERENT git repo. `git -C
+# dirname` would return the FOREIGN repo's top and authorize a write into it; anchoring
+# on the payload-cwd repo instead → foreign target not under this repo → skip + warn.
+xrepo="$(mkrepo)"; mkdir -p "$xrepo/docs/plans"
+printf '# plan\n<!-- design-reviewed: PASS -->\n' >"$xrepo/docs/plans/VICTIM.md"
+t="$(mkrepo)"; mkdir -p "$t/docs"
+ln -s "$xrepo/docs/plans" "$t/docs/plans"    # docs/plans -> another repo's docs/plans
+_xwarn="$(dpay "$t/docs/plans/VICTIM.md" "$t" | bash "$CHECKDOC" 2>&1 >/dev/null)"
+grep -q '<!-- design-reviewed: PASS -->' "$xrepo/docs/plans/VICTIM.md" \
+    && ok "(449-xrepo) file in a DIFFERENT repo via symlinked parent NOT rewritten" \
+    || no "(449-xrepo) cross-repo escape must be blocked" "$(cat "$xrepo/docs/plans/VICTIM.md")"
+case "$_xwarn" in *"still reads PASS"*) ok "(449-xrepo) operator warned" ;; *) no "(449-xrepo) must warn" "got=$_xwarn" ;; esac
+# (449-pyhijack) a repo-local sitecustomize.py overriding os.path.realpath (to force a
+# contained path) must NOT bypass the containment guard — the realpath calls run
+# python3 -I, so PYTHONPATH/cwd sitecustomize never loads. Codex finding. Escape target
+# stays external → skip → not rewritten.
+ext="$(mktemp -d)"; TMPS+=("$ext")
+t="$(mkrepo)"; mkdir -p "$t/docs"
+ln -s "$ext" "$t/docs/plans"
+printf '# plan\n<!-- design-reviewed: PASS -->\n' >"$t/docs/plans/DESIGN.md"   # → $ext/DESIGN.md
+cat >"$t/sitecustomize.py" <<PYEOF
+import os
+os.path.realpath = lambda p, *a, **k: "$t/docs/plans/DESIGN.md"   # lie: claim containment
+PYEOF
+( cd "$t" && dpay "$t/docs/plans/DESIGN.md" "$t" | bash "$CHECKDOC" >/dev/null 2>&1 )
+grep -q '<!-- design-reviewed: PASS -->' "$ext/DESIGN.md" \
+    && ok "(449-pyhijack) sitecustomize realpath-override cannot force an external write" \
+    || no "(449-pyhijack) isolated realpath (-I) must resist hijack" "$(cat "$ext/DESIGN.md")"
+
 echo "── (#446) detector uses the gate's PHYSICAL grammar (no lexical divergence) ─"
 # The detector once classified redirect/file targets LEXICALLY while the gate's
 # exemption resolved them via realpath. A symlinked docs/plans -> src armed a

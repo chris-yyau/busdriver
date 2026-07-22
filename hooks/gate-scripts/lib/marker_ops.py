@@ -388,8 +388,101 @@ def cmd_dd_exempt(argv):
     return 0 if _is_design_doc(_repo_relative(phys), state_dir) else 1
 
 
+# #449 — downgrade every honorable whole-line PASS marker to PENDING, in the SAME
+# engine that reads it (cmd_reviewed / _PASS_LINE_RE), so the strip and the honored-set
+# can never diverge. A shell grep/sed strip cannot: it is byte-level and LF-only, while
+# _doc_reviewed reads in TEXT mode where Python universal-newline translation makes `\r`,
+# `\n`, AND `\r\n` all line boundaries — so a CRLF or bare-CR doc's marker is honored but
+# a shell strip misses it, recreating the stale-PASS-with-armed-token bug. We split on
+# the SAME three boundaries, match each line with the reader's `[ \t]`-padded whole-line
+# grammar (capturing leading/trailing padding so only the token changes), and rejoin with
+# the ORIGINAL separators via newline='' — preserving every byte and line ending except
+# PASS→PENDING. Best-effort (the caller is a fail-open PostToolUse hook): unreadable /
+# unwritable → return 1 so the caller's post-check can warn.
+_PASS_LINE_SUB_RE = re.compile(r"^([ \t]*)<!-- design-reviewed: PASS -->([ \t]*)$")
+
+
+def _substitute_pass_lines(content):
+    """Downgrade every whole-line PASS marker to PENDING. Returns (new_content, changed)."""
+    parts = re.split(r"(\r\n|\r|\n)", content)  # even idx = line text, odd = separators
+    changed = False
+    for i in range(0, len(parts), 2):
+        m = _PASS_LINE_SUB_RE.match(parts[i])
+        if m:
+            parts[i] = m.group(1) + "<!-- design-reviewed: PENDING -->" + m.group(2)
+            changed = True
+    return "".join(parts), changed
+
+
+def _atomic_write_preserving_metadata(path, content):
+    """Write `content` to `path` via a sibling temp + os.replace, preserving the
+    original file's mode/flags (and, on POSIX filesystems that support it, extended
+    attributes) via shutil.copystat — so a disk-full / interrupted / partial write can
+    never truncate or corrupt the doc (the original is untouched until the rename;
+    open("w") would truncate first: Codex PR review) AND a downgrade never silently
+    drops metadata like xattrs (Codex PR review, #452). copystat also carries the
+    original TIMESTAMPS, which we then deliberately bump to now (os.utime): the content
+    DID change, so an unchanged mtime would let polling file-watchers / incremental
+    tools miss the PASS→PENDING edit (Codex PR review). copystat does not carry
+    ownership/ACLs; that residual gap is a deliberate, narrower scope.
+
+    Hard-linked aliases (Codex PR review, #452): os.replace() installs the new inode
+    only at `path`, so any OTHER hard link to the same inode keeps the old content.
+    That is DELIBERATE and the safe direction: a hard link is a second path to the
+    same inode that realpath containment CANNOT see (hard links are not symlinks), so
+    an in-place truncate+rewrite — which we do NOT do — would rewrite an alias OUTSIDE
+    the repo, an out-of-repository write primitive (Codex HIGH). os.replace repoints
+    only the in-repo `path` and never touches any alias, in or out of the repo. The
+    cost is that a hard-linked in-repo alias is not synced to PENDING here; that is an
+    accepted residual (design docs are hard-linked essentially never, each tracked
+    path is armed/checked on its own, and never writing outside the repo takes strict
+    priority over syncing a shared inode). Returns True on success.
+    """
+    import tempfile
+    import shutil
+    d = os.path.dirname(path) or "."
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=".dr-dg-", dir=d)
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, "w", newline="", errors="surrogateescape") as fh:
+            fh.write(content)
+        shutil.copystat(path, tmp)
+        os.replace(tmp, path)
+        # The file was just rewritten — reflect that in its mtime (copystat restored
+        # the original). Best-effort: a stale mtime is cosmetic, never a failure.
+        try:
+            os.utime(path, None)
+        except OSError:
+            pass
+        return True
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def cmd_downgrade_pass(argv):
+    if len(argv) != 1:
+        return 2
+    path = argv[0]
+    try:
+        with open(path, "r", newline="", errors="surrogateescape") as fh:
+            content = fh.read()
+    except OSError:
+        return 1
+    new_content, changed = _substitute_pass_lines(content)
+    if not changed:
+        return 0
+    return 0 if _atomic_write_preserving_metadata(path, new_content) else 1
+
+
 _DISPATCH = {"sha": cmd_sha, "arm": cmd_arm, "classify": cmd_classify,
-             "reviewed": cmd_reviewed, "dd-exempt": cmd_dd_exempt}
+             "reviewed": cmd_reviewed, "dd-exempt": cmd_dd_exempt,
+             "downgrade-pass": cmd_downgrade_pass}
 
 
 def main(argv):

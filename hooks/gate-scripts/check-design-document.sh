@@ -174,49 +174,93 @@ IS_DESIGN=false
 case "$_DDE" in 0|2) IS_DESIGN=true ;; esac
 if [ "$IS_DESIGN" = true ]; then
   # Determine if file needs flagging:
-  # - Write/Bash on NEW file: flag + strip PASS (anti-self-stamp)
-  #   Claude can embed <!-- design-reviewed: PASS --> at creation time to bypass review.
-  # - Write/Bash on PREVIOUSLY REVIEWED file: flag but PRESERVE PASS marker.
-  #   Rewrites of already-reviewed files (e.g. applying review findings) should not
-  #   reset review status. "Previously reviewed" = git committed version has PASS.
-  # - Edit: Only flag if PASS marker is ABSENT (blueprint-review adds it via Edit)
+  # - Write/Bash on a design doc: flag (re-open review) AND strip any PASS→PENDING.
+  #   A Write is a wholesale rewrite, so it re-opens review — matching the PreToolUse
+  #   pre-arm, which arms a token on any Write of a design doc (#347;
+  #   test-design-marker-cd-prearm "(1) Write of reviewed doc → re-armed"). The doc's
+  #   marker must therefore read PENDING, consistent with that armed token. Older code
+  #   PRESERVED a git-HEAD-committed PASS here — but the pre-arm still armed a token,
+  #   so the doc read PASS while every worktree stayed blocked: a stale-PASS-with-live-
+  #   token lie the operator (seeing PASS) never knew to re-review out of (#449).
+  #   Stripping unconditionally makes the marker match the review state and doubles as
+  #   the anti-self-stamp (a forged PASS embedded at creation time never survives).
+  #   Strictly fail-CLOSED: it can only ADD a PENDING, never bless a PASS a Write could
+  #   have changed. A genuine prior PASS is re-earned by re-running blueprint-review,
+  #   whose inline loop prunes the token and re-stamps PASS (invisible to this hook).
+  # - Edit: Only flag if PASS marker is ABSENT (blueprint-review adds it via Edit; a
+  #   small Edit preserves review status — test-design-marker-cd-prearm).
   NEEDS_FLAG=false
   if [ "$TOOL_NAME" = "Write" ] || [ "$TOOL_NAME" = "Bash" ]; then
     NEEDS_FLAG=true
-    # Anti-self-stamp: strip PASS only for truly new or unreviewed files.
-    # If git's committed version already has PASS, this is a rewrite of a
-    # reviewed file — preserve the marker to avoid infinite review loops.
-    if grep -q "<!-- design-reviewed: PASS -->" "$FILE_PATH" 2>/dev/null; then
-      PREVIOUSLY_REVIEWED=false
-      # #347 item 2a made FILE_PATH absolute for Bash-redirect writes (previously
-      # it could be the raw, often repo-relative, redirect-target string) — but
-      # `git show HEAD:<path>` requires a path relative to the repo root, not an
-      # absolute filesystem path. Reviewer finding (PR #444): resolve to
-      # repo-relative via the shared gate_marker_relpath helper before the git
-      # show lookup. An unresolvable path (not inside a repo, or escapes the
-      # root) leaves PREVIOUSLY_REVIEWED=false — same as "git show found nothing".
-      _FILE_PATH_REL="$(gate_marker_relpath "$FILE_PATH" 2>/dev/null || true)"
-      # Bind the git-show lookup to the repo CONTAINING the target file, not the
-      # hook's process cwd. #347 item 2a resolves a cross-repo Bash write
-      # (`cd /other && > docs/plans/DESIGN.md`) to an ABSOLUTE FILE_PATH; a plain
-      # `git show HEAD:<rel>` would read HEAD from the ORIGINAL repo, so a reviewed
-      # file at the same relative path there could bless a FORGED PASS in the target
-      # repo and skip arming it (fail-open, PR #444 review). git -C on a missing
-      # parent (a new nested file) yields an empty root → the && short-circuits →
-      # PREVIOUSLY_REVIEWED stays false → the PASS is stripped (fail-closed).
-      _FILE_REPO_ROOT="$(git -C "$(dirname "$FILE_PATH")" rev-parse --show-toplevel 2>/dev/null || true)"
-      if [[ -n "$_FILE_PATH_REL" && -n "$_FILE_REPO_ROOT" ]] \
-         && git -C "$_FILE_REPO_ROOT" show "HEAD:$_FILE_PATH_REL" 2>/dev/null | grep -q "<!-- design-reviewed: PASS -->"; then
-        PREVIOUSLY_REVIEWED=true
-      fi
-      if [ "$PREVIOUSLY_REVIEWED" = false ]; then
-        # New or unreviewed file with embedded PASS — strip (anti-self-stamp)
-        if [[ "$(uname)" == "Darwin" ]]; then
-          sed -i '' 's/<!-- design-reviewed: PASS -->/<!-- design-reviewed: PENDING -->/' "$FILE_PATH" 2>/dev/null || true
-        else
-          sed -i 's/<!-- design-reviewed: PASS -->/<!-- design-reviewed: PENDING -->/' "$FILE_PATH" 2>/dev/null || true
-        fi
-      fi
+    # #449: a Write re-opens review, so downgrade the doc's honorable PASS→PENDING so its
+    # marker matches the (re-)armed token — no HEAD lookup, no preserve branch. The
+    # downgrade runs in marker_ops.py `downgrade-pass`, the SAME engine that READS the
+    # marker (cmd_reviewed), so strip and honored-set can never diverge: it rewrites only
+    # WHOLE-LINE PASS markers (an inline/prose occurrence is ignored by both reader and
+    # writer by design), across LF / CRLF / bare-CR endings (cmd_reviewed reads in TEXT
+    # mode where all three are line boundaries — a shell grep/sed strip is byte-level and
+    # LF-only and silently missed CRLF/CR docs, recreating the lie: repeated Codex PR
+    # findings), preserving every other byte and each line's ending.
+    #
+    # SYMLINK CONTAINMENT: downgrade-pass rewrites in place, so it must never follow a
+    # symlink OUT of the repo and rewrite an external file (arbitrary-file-write via a
+    # hostile symlink — Codex PR review). Resolve the physical file and downgrade it ONLY
+    # when contained in the OPERATOR'S repo — the git top of the EFFECTIVE cwd (payload
+    # cwd for Write/Edit, or a leading-`cd` target for a Bash redirect, #347 item 2a).
+    # The anchor is the session cwd (harness-set), NOT `git -C "$(dirname FILE_PATH)"`,
+    # which a symlinked parent would resolve into a foreign repo (a trivial cross-repo
+    # escape); a leaf `-L` test is likewise insufficient (a symlinked PARENT leaves the
+    # leaf a regular file). Both anchors are realpath'd via isolated `python3 -I`, so a
+    # repo-local sitecustomize.py cannot override realpath to fake containment, while a
+    # benign ancestor symlink above the repo (macOS /var→/private/var) is tolerated. On
+    # skip, the reader-based post-check below fires and warns; the token is armed anyway.
+    _CWD="$(printf '%s' "$INPUT" | python3 -I -c '
+import sys, json
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+sys.path.insert(0, sys.argv[1])
+try:
+    from gitcmd_detect import effective_cwd
+except Exception:
+    effective_cwd = None
+try:
+    d = json.load(sys.stdin)
+    cwd = d.get("cwd") or "."
+    tool = d.get("tool_name", d.get("toolName", ""))
+    inp = d.get("tool_input", d.get("toolInput", {}))
+    if isinstance(inp, str):
+        inp = json.loads(inp)
+    base = cwd
+    if tool == "Bash" and effective_cwd is not None:
+        eff, ok = effective_cwd(inp.get("command", ""), cwd)
+        if ok and eff:
+            base = eff
+    print(base)
+except Exception:
+    print(".")
+' "$_LIBDIR" 2>/dev/null || printf '.')"
+    _iso_realpath() {
+      python3 -I -c 'import sys
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import os
+print(os.path.realpath(sys.argv[1]) if len(sys.argv) > 1 else "")' "$1" 2>/dev/null || true
+    }
+    _PHYS="$(_iso_realpath "$FILE_PATH")"
+    _TOP="$(git -C "$_CWD" rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -n "$_TOP" ] && _TOP="$(_iso_realpath "$_TOP")"
+    _DG_TARGET=""
+    if [ -n "$_PHYS" ] && [ -n "$_TOP" ] && [ -f "$_PHYS" ]; then
+      case "$_PHYS" in "$_TOP"/*) _DG_TARGET="$_PHYS" ;; esac
+    fi
+    if [ -n "$_DG_TARGET" ]; then
+      # -I: same interpreter-hijack isolation as the realpath calls (a repo-local
+      # re.py/os.py on cwd/PYTHONPATH cannot subvert the trusted lib script).
+      python3 -I "$_LIBDIR/marker_ops.py" downgrade-pass "$_DG_TARGET" 2>/dev/null || true
+    fi
+    # Fail-open hook: if the downgrade was skipped (symlink escape out of the repo) or
+    # failed (unwritable), an honored PASS may remain beside the armed token — the #449
+    # lie. Re-check via the reader itself (exit 0 = still honorably reviewed) and warn.
+    if python3 -I "$_LIBDIR/marker_ops.py" reviewed "$FILE_PATH" >/dev/null 2>&1; then
+      echo "WARNING: $BASENAME still reads PASS (a reviewed 'design-reviewed: PASS' marker) but its review token is armed (this write re-opened review). Run /blueprint-review before implementing, or re-save the doc to retry the downgrade." >&2
     fi
   else
     # Edit — trust the marker (blueprint-review adds it legitimately via Edit),

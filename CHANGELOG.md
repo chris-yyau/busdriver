@@ -1,3 +1,10 @@
+## [1.95.11](https://github.com/chris-yyau/busdriver/compare/v1.95.10...v1.95.11) (2026-07-22)
+
+
+### Bug Fixes
+
+* **resolve-cli:** restrict opencode to Auditor-only roles ([#436](https://github.com/chris-yyau/busdriver/issues/436)) ([#455](https://github.com/chris-yyau/busdriver/issues/455)) ([1fc85e4](https://github.com/chris-yyau/busdriver/commit/1fc85e46e2892ba219fd685bff20d611a75846bf)), closes [#435](https://github.com/chris-yyau/busdriver/issues/435)
+
 ## [1.95.10](https://github.com/chris-yyau/busdriver/compare/v1.95.9...v1.95.10) (2026-07-22)
 
 

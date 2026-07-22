@@ -1,4 +1,4 @@
-# ADR 0024 — Deterministic warn-only (not fail-CLOSED block) when a Codex-active repo merges with `none` Codex
+# ADR 0024 — Deterministic warn-only (not fail-CLOSED block) when a Codex-active-or-force-on repo merges with `none` Codex
 
 ## Status
 
@@ -33,8 +33,8 @@ it to. Two firing points:
    PreToolUse hook on `gh pr merge`: posts the nudge, then `exit 0`; the merge
    proceeds immediately.
 
-**The measured problem.** Firing at merge-intent and proceeding is too late. PR
-#419 (GitHub-API-verified): nudge `18:43:26Z` → merged `18:43:31Z` → Codex review
+**The measured problem.** Firing at merge-intent and proceeding is too late.
+PR #419 (GitHub-API-verified): nudge `18:43:26Z` → merged `18:43:31Z` → Codex review
 `18:48:24Z` — ~5 min after merge, on a closed PR. A post-merge review gates
 nothing.
 
@@ -63,9 +63,14 @@ external, flaky signal). The two must not be conflated.
 
 The gate has **three substantive allow sites** — operator skip, pr-grind-clean
 marker + CI, and the bootstrap bypass. `--admin` is not a distinct site; it is a
-merge *shape* that still exits through one of the three. All three route through a
-**single allow epilogue**, which is where the warning is emitted (deny paths never
-reach it), so a future allow site inherits it and no branch double-emits.
+merge *shape* that still exits through one of the three. Today each of these sites
+is an independent `exit 0` with no shared code path (`pre-merge-gate.sh` has over a
+dozen separate allow exits). The implementation MUST first consolidate the three
+substantive allow sites into a **single allow epilogue** — a shared code path all
+three fall through to before their `exit 0` — and emit the warning **there** (deny
+paths never reach it), so a future allow site inherits it and no branch
+double-emits. This consolidation is part of the implementation's scope, not
+existing infrastructure the implementation can assume.
 
 On a Codex-active-or-force-on repo, when best-effort detection returns **`none`**
 (zero Codex engagement on the PR) and the kill switch is unset, the epilogue
@@ -130,11 +135,17 @@ verified against live code — not pinned in this ADR.
    needs `<owner/repo> <pr> <head>`, none of which the gate's parsed command yields
    authoritatively (`gitcmd_detect.py` exposes only a cwd-anchored numeric PR and
    value-skips `-R`/`--repo`). Resolution MUST derive **owner/repo from the base
-   repo** (`git remote get-url origin`), **not** from a PR's
+   repository the gate is running against**, **not** from a PR's
    `headRepositoryOwner`/`headRepository`, which on a **fork PR return the
-   contributor's fork** and would query the wrong repo (false `none`). HEAD comes
-   from `headRefOid`. Any repo override / non-numeric positional / resolution
-   failure → `unknown` → silent (which also covers the un-surfaced `-R` case).
+   contributor's fork** and would query the wrong repo (false `none`). `git remote
+   get-url origin` is the base repo only when the gate's checkout is anchored on it
+   (true for this solo-admin repo's merge flow, per project CLAUDE.md); the
+   implementation MUST NOT assume this holds unconditionally — if `origin` cannot
+   be confirmed to point at the base repo (e.g. a checkout whose `origin` is a
+   contributor's fork), resolution MUST fall to `unknown` → silent rather than
+   query the wrong repo. HEAD comes from `headRefOid`. Any repo override /
+   non-numeric positional / resolution failure → `unknown` → silent (which also
+   covers the un-surfaced `-R` case).
 
 6. **PR-level engagement; HEAD is label-only.** Reuse the existing paginated
    presence check (bot login across reviews + PR-level reactions). This is
@@ -161,13 +172,15 @@ verified against live code — not pinned in this ADR.
    the allow response carries an operator-visible message and **no**
    `decision`/`permissionDecision`.
 
-9. **Idempotent, not exactly-once.** PreToolUse fires once per **Bash tool
-   invocation** that contains the `gh pr merge` — not once per runtime merge (a
-   shell loop running the command N times under one invocation warns once; only
-   merges submitted as separate Bash calls re-warn). The gate keeps no dedup state,
-   so those separate-call retries re-warn. Acceptable (message-only, no side
-   effect); a per-`(PR,HEAD)` dedup marker is an optional future refinement, not
-   required.
+9. **Repeatable, not exactly-once — deduplication is optional, not required.**
+   PreToolUse fires once per **Bash tool invocation** that contains the
+   `gh pr merge` — not once per runtime merge (a shell loop running the command
+   N times under one invocation warns once; only merges submitted as separate
+   Bash calls re-warn). The gate keeps no dedup state, so those separate-call
+   retries deliberately re-warn — this is not idempotent output, since distinct
+   invocations re-emit the same warning by design. Acceptable (message-only, no
+   side effect); a per-`(PR,HEAD)` dedup marker is an optional future
+   refinement, not required.
 
 ## Why warn-only, not a fail-CLOSED block
 
@@ -202,7 +215,10 @@ here.
 ## Alternatives
 
 - **C — status quo, no warning.** Rejected: the miss stays silent and unauditable
-  at decision time (#444). D-lite closes that at zero risk.
+  at decision time (#444). D-lite closes that with no additional merge-blocking
+  risk (its bounded external reads can still consume runtime budget or fail
+  silently on timeout — see invariant constraints 1-3 — but never gate the
+  merge).
 - **D — fail-CLOSED block with auto-release.** Rejected (see "Why warn-only"):
   advisory-not-required, ambiguous `none`, fail-open gate-fatigue. Unanimously
   rejected by the council.

@@ -470,9 +470,18 @@ def _walk_to_existing_dir(d):
     exists (e.g. a relative path with no cwd-resolvable prefix). Shared by
     _git_common_dir/_git_toplevel — both need an existing directory to hand to
     `git -C` since git can't -C into a path that doesn't exist yet (a
-    not-yet-created write target)."""
-    while d and not os.path.isdir(d) and d != os.path.dirname(d):
-        d = os.path.dirname(d)
+    not-yet-created write target).
+
+    Split into single-condition guards (CodeScene: Complex Conditional) rather
+    than one compound `while` boolean — same walk-up behavior, lower branch
+    count per check."""
+    while d:
+        if os.path.isdir(d):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
     return d or "."
 
 

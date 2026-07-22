@@ -1,3 +1,10 @@
+## [1.95.13](https://github.com/chris-yyau/busdriver/compare/v1.95.12...v1.95.13) (2026-07-22)
+
+
+### Bug Fixes
+
+* **design-review:** resolve relative file_path against payload cwd in detector ([#448](https://github.com/chris-yyau/busdriver/issues/448)) ([#456](https://github.com/chris-yyau/busdriver/issues/456)) ([039e681](https://github.com/chris-yyau/busdriver/commit/039e681cd32858b8b90b31251e574c900efe6da6))
+
 ## [1.95.12](https://github.com/chris-yyau/busdriver/compare/v1.95.11...v1.95.12) (2026-07-22)
 
 

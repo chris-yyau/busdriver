@@ -66,7 +66,7 @@ T="$(mktemp -d)"
 # the guard's realpath-based resolution agree on the same physical root.
 T="$(cd "$T" && pwd -P)"
 [[ -n "$T" && -d "$T" ]] || { echo "FATAL: could not resolve temp dir"; exit 1; }
-trap 'git -C "$T" worktree remove --force "$T/.claude/worktrees/wt" 2>/dev/null || true; rm -rf "$T"' EXIT
+trap 'git -C "$T" worktree remove --force "$T/.claude/worktrees/wt" 2>/dev/null || true; git -C "$T" worktree remove --force "$T-siblingB" 2>/dev/null || true; rm -rf "$T" "$T-siblingB"' EXIT
 
 git -C "$T" init -q
 git -C "$T" config user.email t@t.t
@@ -136,6 +136,22 @@ require "cross-repo O is a distinct work tree" git -C "$O" rev-parse --is-inside
 run_case "cross-repo same-relative-path write NOT aliased into scope" "block" "$T" \
     "{\"tool_name\":\"Write\",\"cwd\":\"$T\",\"tool_input\":{\"file_path\":\"$O/src/auth/x.js\"}}"
 rm -rf "$O"
+
+# ── E. A genuinely SIBLING (non-nested) linked worktree's own docs/specs/.claude
+#      files must NOT gain the always-allow infra exemption just because they
+#      resolve relative to THAT worktree's own root (Greptile P1, PR #457). Unlike
+#      case A's worktree (physically nested under $T/.claude/worktrees/), $S here
+#      is a separate top-level directory linked to the same repo — same
+#      git-common-dir, but NOT nested under $T's own tree.
+S="$T-siblingB"
+git -C "$T" worktree add -q -b wtSibling "$S" >/dev/null 2>&1
+require "sibling linked worktree created" git -C "$S" rev-parse --is-inside-work-tree
+mkdir -p "$S/docs/specs"
+echo "plan" > "$S/docs/specs/plan.md"
+run_case "sibling (non-nested) worktree's own docs/specs NOT blanket-exempt" "block" "$T" \
+    "{\"tool_name\":\"Write\",\"cwd\":\"$T\",\"tool_input\":{\"file_path\":\"$S/docs/specs/plan.md\"}}"
+git -C "$T" worktree remove --force "$S" 2>/dev/null || true
+rm -rf "$S"
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"

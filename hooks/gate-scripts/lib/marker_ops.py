@@ -465,6 +465,130 @@ def _atomic_write_preserving_metadata(path, content):
         return False
 
 
+def _walk_to_existing_dir(d):
+    """Walk <d> up to its nearest existing ancestor directory, or "." if none
+    exists (e.g. a relative path with no cwd-resolvable prefix). Shared by
+    _git_common_dir/_git_toplevel — both need an existing directory to hand to
+    `git -C` since git can't -C into a path that doesn't exist yet (a
+    not-yet-created write target).
+
+    Split into single-condition guards (CodeScene: Complex Conditional) rather
+    than one compound `while` boolean — same walk-up behavior, lower branch
+    count per check."""
+    while d:
+        if os.path.isdir(d):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return d or "."
+
+
+def _git_common_dir(d):
+    """Realpath of the git COMMON dir owning <d> (shared by a repo + all its linked
+    worktrees), or None outside a repo. Used to prove two paths belong to the SAME
+    repository — linked worktrees share it, a different repo does not."""
+    import subprocess
+    d = _walk_to_existing_dir(d)
+    try:
+        r = subprocess.run(["git", "-C", d, "rev-parse", "--git-common-dir"],
+                           capture_output=True)
+        if r.returncode == 0:
+            p = r.stdout.decode("utf-8", "surrogateescape").strip()
+            if p:
+                if not os.path.isabs(p):
+                    p = os.path.join(d, p)
+                return os.path.realpath(p)
+    except Exception:
+        pass
+    return None
+
+
+def _git_toplevel(d):
+    """Realpath of the git worktree TOPLEVEL owning <d>, or None outside a repo.
+    Unlike _git_common_dir (shared by every linked worktree of a repo), this is
+    per-worktree — used to prove a target's OWN worktree is the anchor's worktree,
+    or physically nested beneath it (see the nested-vs-sibling distinction in
+    cmd_repo_rel)."""
+    import subprocess
+    d = _walk_to_existing_dir(d)
+    try:
+        r = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"],
+                           capture_output=True)
+        if r.returncode == 0:
+            p = r.stdout.decode("utf-8", "surrogateescape").strip()
+            if p:
+                return os.path.realpath(p)
+    except Exception:
+        pass
+    return None
+
+
+def _repo_rel_bound(phys, anchor_dir):
+    """True iff <phys> may be resolved repo-relative to its OWN worktree for the
+    purpose of cmd_repo_rel's anchor bind: same repo (git-common-dir) AND same-or-
+    nested worktree toplevel as <anchor_dir> (see cmd_repo_rel's docstring for the
+    Greptile P1 rationale). False on any unresolvable input — caller fails CLOSED."""
+    tcommon = _git_common_dir(phys)
+    acommon = _git_common_dir(anchor_dir)
+    if not tcommon or not acommon:
+        return False
+    if tcommon != acommon:
+        return False
+    atop = _git_toplevel(anchor_dir)
+    ttop = _git_toplevel(phys)
+    if not atop or not ttop:
+        return False
+    atop_sep = atop if atop.endswith("/") else atop + "/"
+    return ttop == atop or ttop.startswith(atop_sep)
+
+
+def cmd_repo_rel(argv):
+    # Print the REPO-RELATIVE, symlink-resolved path of <lexical_abspath>: run
+    # os.path.realpath (resolving EVERY existing symlink, leaf and parents, while
+    # keeping a not-yet-created tail lexical), then make it relative to the owning
+    # git worktree root. General-purpose sibling of dd-exempt's inner resolution
+    # (freeze-guard.sh anchors its exemption arms + scope check on this — #375).
+    #
+    # Optional <anchor_dir> BINDS the result to the anchor's repository: the target
+    # must share the anchor's git-common-dir (same repo, linked worktrees included),
+    # else it is a DIFFERENT repo and we print the absolute realpath'd path so the
+    # caller's repo-relative arms match none → fail-CLOSED. Without this bind, a write
+    # into /other/repo/src/auth/x would relativize to src/auth/x and alias into this
+    # repo's freeze scope (cross-repo fail-open, litmus HIGH). A target outside any
+    # repo likewise prints the absolute path.
+    #
+    # Same-repo alone is NOT enough (Greptile P1, PR #457): a genuinely SIBLING
+    # linked worktree (not physically nested under the anchor's own tree) shares the
+    # anchor's git-common-dir, so without a further check its OWN docs/specs or
+    # .claude/ files would resolve relative to ITS OWN root and hit freeze-guard's
+    # always-allow infra exemptions — bypassing the anchor's scope check for a write
+    # that lands in a completely unrelated worktree. We additionally require the
+    # target's own worktree TOPLEVEL to be the anchor's toplevel, or NESTED beneath
+    # it (this repo's own convention homes linked worktrees under
+    # <main>/.claude/worktrees/<name>, so a nested worktree's infra files are still
+    # physically part of the anchor's tree). A genuinely sibling worktree's toplevel
+    # is neither, so it prints the absolute path and its own infra paths correctly
+    # fall through to the scope check instead of a blanket cross-worktree bypass.
+    # Return 0 on success, 2 on usage/OS error.
+    if len(argv) not in (1, 2):
+        return 2
+    try:
+        phys = os.path.realpath(argv[0])
+    except OSError:
+        return 2
+    if len(argv) == 2:
+        # From `phys` itself (not dirname): _git_common_dir/_git_toplevel walk up to
+        # the deepest existing dir, so a phys that IS a directory (e.g. a worktree
+        # root) is attributed to its OWN repo, not its parent (litmus PR finding).
+        if not _repo_rel_bound(phys, argv[1]):
+            print(phys)   # different repo, or sibling/unresolvable worktree → absolute
+            return 0
+    print(_repo_relative(phys))
+    return 0
+
+
 def cmd_downgrade_pass(argv):
     if len(argv) != 1:
         return 2
@@ -482,7 +606,7 @@ def cmd_downgrade_pass(argv):
 
 _DISPATCH = {"sha": cmd_sha, "arm": cmd_arm, "classify": cmd_classify,
              "reviewed": cmd_reviewed, "dd-exempt": cmd_dd_exempt,
-             "downgrade-pass": cmd_downgrade_pass}
+             "repo-rel": cmd_repo_rel, "downgrade-pass": cmd_downgrade_pass}
 
 
 def main(argv):

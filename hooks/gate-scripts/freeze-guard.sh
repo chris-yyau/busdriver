@@ -64,14 +64,23 @@ Install python3 to restore scope checking, or unfreeze via Bash: rm .claude/free
     exit 0
 fi
 
-# ── Parse tool name and file path ────────────────────────────────────
-TOOL_NAME=""
-FILE_PATH=""
-if command -v python3 &>/dev/null; then
-    PARSED=$(printf '%s' "$INPUT" | python3 -I -c '
+# ── Shared repo-relative resolver (#375) ─────────────────────────────
+# gate_repo_rel_phys anchors the infra-exemption arms AND the scope check to the
+# write's OWNING worktree: realpath resolves every symlink and repo-relativity
+# strips the worktree/ancestor prefix. This closes two fail-opens the LEXICAL
+# match had — an absolute worktree path was blanket-exempt by `*.claude/*` (busdriver
+# homes worktrees under <main>/.claude/worktrees/), and a symlinked `docs/specs -> src`
+# laundered impl writes past the docs arm.
+_GATE_LIBDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+# shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
+source "$_GATE_LIBDIR/resolve-repo-dir.sh"
+
+# ── Parse tool name and file path, join a relative path to the payload cwd ──
+# shellcheck disable=SC2016  # python3 -c program; $/quotes are literal code
+PARSED=$(printf '%s' "$INPUT" | python3 -I -c '
 import sys
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
-import json
+import json, os
 try:
     d = json.load(sys.stdin)
     tool = d.get("tool_name", d.get("toolName", ""))
@@ -82,18 +91,41 @@ try:
     if not fp and tool == "MultiEdit":
         # MultiEdit carries file_path at the top level in the common case;
         # fall back to the first edits[] entry, mirroring the sibling hooks
-        # (post-edit-accumulator.js, gateguard-fact-force.js) that handle
-        # the same MultiEdit shape.
+        # (post-edit-accumulator.js, gateguard-fact-force.js).
         edits = inp.get("edits", [])
         if isinstance(edits, list) and edits and isinstance(edits[0], dict):
             fp = edits[0].get("file_path", edits[0].get("filePath", ""))
-    print(tool + "|" + fp)
+    # Coerce non-string fp/cwd to their empty forms BEFORE any os.path call. A truthy
+    # non-string cwd (malformed payload) would make os.path.isabs(cwd) raise, and the
+    # broad except would print "|" — erasing TOOL_NAME so the tool switch fast-ALLOWS
+    # a Write without a scope check (fail-open). Coercing keeps the tool gated.
+    if not isinstance(fp, str):
+        fp = ""
+    if not fp:
+        print(tool + "|")
+    else:
+        # #375 residual 2 — join a RELATIVE file_path to the PAYLOAD cwd (where the
+        # write lands) so `../docs/specs/x.md` from a subdir cwd resolves into the repo
+        # instead of tripping the traversal fail-closed arm. Absolute fp is used as-is.
+        # Fall back to the gate process cwd (== repo root while a freeze is active — the
+        # FREEZE_FILE is found relative to it) only when the payload gives no absolute
+        # cwd; that matches the pre-fix behavior, never worse. LEFT UN-normalized so
+        # realpath (in gate_repo_rel_phys) resolves symlinks BEFORE any `..` collapse.
+        cwd = d.get("cwd")
+        if not isinstance(cwd, str):
+            cwd = None
+        if os.path.isabs(fp):
+            target = fp
+        elif cwd and os.path.isabs(cwd):
+            target = os.path.join(cwd, fp)
+        else:
+            target = os.path.join(os.getcwd(), fp)
+        print(tool + "|" + target)
 except Exception:
     print("|")
 ' 2>/dev/null || echo "|")
-    TOOL_NAME="${PARSED%%|*}"
-    FILE_PATH="${PARSED#*|}"
-fi
+TOOL_NAME="${PARSED%%|*}"
+TARGET="${PARSED#*|}"
 
 # Only gate Write, Edit, and MultiEdit tools
 case "$TOOL_NAME" in
@@ -102,96 +134,74 @@ case "$TOOL_NAME" in
 esac
 
 # No file path → approve
-[ -z "$FILE_PATH" ] && exit 0
+[[ -z "$TARGET" ]] && exit 0
 
-# ── Normalize paths for comparison ───────────────────────────────────
-# Strip trailing slashes, collapse . and .. segments
-#
-# LEXICAL on purpose (see UPGRADE below). realpath would additionally close a
-# symlink-laundering gap — a symlinked docs/specs -> src reads as a docs path
-# here — but it CANNOT land until the `*.claude/*` arm below is repo-anchored:
-# realpath makes every path absolute, and busdriver homes worktrees at
-# <main>/.claude/worktrees/<name>/, so every absolute path in a worktree session
-# would match `*.claude/*` and be exempted — turning the freeze into a no-op
-# instead of closing a hole. (Verified: swapping in realpath alone fails 9 of
-# this file's own scope assertions for exactly that reason.)
-# UPGRADE: anchor `*.claude/*` to a repo-relative path (as
-# pre-implementation-gate.sh does via gate_marker_relpath / ADR-E), THEN switch
-# this to realpath in the same change. Both belong in one PR — that arm is
-# already a live fail-open independent of symlinks.
-normalize() {
-    local p="$1"
-    p="${p%/}"
-    # Resolve . and .. via python3 if available (stdin to avoid injection), else basic strip
-    if command -v python3 &>/dev/null; then
-        p=$(printf '%s' "$p" | python3 -I -c 'import sys
-sys.path[:] = [p for p in sys.path if p not in ("", ".")]
-import os.path
-print(os.path.normpath(sys.stdin.read()))' 2>/dev/null || echo "$p")
-    fi
-    echo "$p"
-}
-
-NORM_SCOPE=$(normalize "$ALLOWED_SCOPE")
-NORM_FILE=$(normalize "$FILE_PATH")
+# Repo-relative, symlink-resolved write target, BOUND to this freeze's own repo
+# (anchor "." = the gate cwd, where .claude/freeze-scope.local was found). A target
+# in a DIFFERENT repo that happens to share the frozen relative path (e.g.
+# /other/repo/src/auth/x) resolves to an ABSOLUTE path here, not `src/auth/x`, so it
+# cannot alias into this repo's scope. Empty/absolute/traversing → fail-CLOSED below.
+REPO_REL="$(gate_repo_rel_phys "$TARGET" "." 2>/dev/null || true)"
 
 # ── Always allow writes to infrastructure paths ──────────────────────
-# Matched against the NORMALIZED path. Against the raw path,
-# `docs/specs/../../src/impl.sh` matches the docs glob but resolves to
-# `src/impl.sh` — the exemption would hand an impl write a free pass.
-#
-# The docs/ arms require `docs` to START a path segment — a bare `*docs/specs/*`
-# also matches `notdocs/specs/runtime.sh`, which is not a docs dir at all. Kept
-# segment-start rather than repo-root-anchored so nested docs (packages/foo/docs/
-# specs/) still resolve — check-design-document.sh arms reviews for those, so a
-# narrower exemption here would refuse the write that answers the review. See
-# pre-implementation-gate.sh for the full rationale; both gates share this shape.
-FILE_LOWER=$(echo "$NORM_FILE" | tr '[:upper:]' '[:lower:]')
-case "$FILE_LOWER" in
-    # FAIL-CLOSED: normalize() returns its input unchanged when python3 is absent,
-    # so a surviving `..` segment means traversal was NOT resolved. Grant no
-    # exemption — fall through to the scope check rather than trust the glob.
-    ../*|*/../*|*/..) ;;
-    *.claude/*) exit 0 ;;
-    *claude.md|*notes.md) exit 0 ;;
+# Matched against the REPO-RELATIVE, symlink-resolved target (#375), so:
+#   - an absolute worktree path resolves to `src/…` (its worktree root strips the
+#     <main>/.claude/worktrees/<name>/ prefix) and is NO LONGER blanket-exempt by
+#     `*.claude/*` — the pre-existing fail-open;
+#   - a symlinked `docs/specs -> src` resolves to `src/…` and cannot launder an
+#     impl write past the docs arm.
+# The docs/ arms keep `docs` at a segment start so nested monorepo docs
+# (packages/foo/docs/specs/) still resolve, matching the design-doc detector.
+# FAIL-CLOSED: an unresolved (empty), out-of-repo (absolute, leading-/), or still-
+# traversing REPO_REL grants NO exemption — fall through to the scope check.
+FILE_LOWER=$(printf '%s' "$REPO_REL" | tr '[:upper:]' '[:lower:]')
+case "$REPO_REL" in
+    ""|/*|../*|*/../*|*/..) ;;
+    *)
+        case "$FILE_LOWER" in
+            *.claude/*) exit 0 ;;
+            *claude.md|*notes.md) exit 0 ;;
+        esac
+        case "$FILE_LOWER" in
+            docs/plans/*|*/docs/plans/*) exit 0 ;;
+            docs/specs/*|*/docs/specs/*) exit 0 ;;
+            docs/reviews/*|*/docs/reviews/*) exit 0 ;;
+        esac
+        ;;
 esac
 
-# ── docs/ arms ────────────────────────────────────────────────────────
-# Matched LEXICALLY (NORM_FILE), like the paired detector. Two known residuals,
-# both SHARED with the pre-existing docs/plans and docs/reviews arms rather than new
-# to docs/specs, and both needing the same repo-relative anchoring to fix:
-#   1. A symlinked docs/specs -> src reads as a docs path. Not reachable through the
-#      gated toolset — `ln` is a FILE_MOD command, so creating that symlink is itself
-#      blocked. Resolving physically is NOT the fix: it diverges from the LEXICAL
-#      detector (a legitimately symlinked docs dir would arm a review and then be
-#      refused the write answering it) and it makes every path absolute, which trips
-#      residual 2 and the `*.claude/*` arm above — verified, that turns the freeze
-#      into a no-op and fails 9 of this file's own scope assertions.
-#   2. A checkout under an ancestor named docs/specs (e.g. /srv/docs/specs/proj/)
-#      matches every target. Same class as `*.claude/*` matching every file in a
-#      worktree homed at <main>/.claude/worktrees/<name>/ — already a live fail-open
-#      today, independent of this change.
-# UPGRADE: anchor these arms to a repo-relative path (as pre-implementation-gate.sh
-# does via gate_marker_relpath / ADR-E) in one change; that closes 1 and 2 together
-# and lets the docs and `.claude` arms share a single resolver.
-case "$FILE_LOWER" in
-    docs/plans/*|*/docs/plans/*) exit 0 ;;
-    docs/specs/*|*/docs/specs/*) exit 0 ;;
-    docs/reviews/*|*/docs/reviews/*) exit 0 ;;
-esac
-
-# Check if file is within allowed scope
-# Match: exact scope path OR scope path followed by / (directory boundary)
-# Only match at the START of the path — prevents /tmp/src/auth/ from matching scope src/auth
-if [[ "$NORM_FILE" == "$NORM_SCOPE" ]] || [[ "$NORM_FILE" == "$NORM_SCOPE"/* ]]; then
-    exit 0
-fi
+# ── Check if file is within allowed scope — ABSOLUTE physical containment ──
+# Both the target and the scope are realpath-resolved and compared as absolute
+# paths (exact, or a `/`-bounded prefix). This is robust where a repo-relative
+# compare is brittle: a symlinked scope (`src-link -> src/auth`), an absolute scope,
+# or a scope equal to a worktree root all resolve to the same physical frame as the
+# target, and a target in a DIFFERENT repo has a different absolute prefix so it can
+# never satisfy this repo's scope (cross-repo aliasing). A relative scope resolves
+# against the gate cwd (== repo root while a freeze is active). FAIL-CLOSED: any
+# resolution error prints "out" → block.
+# shellcheck disable=SC2016  # python3 -c program; $/quotes are literal code
+IN_SCOPE=$(TARGET="$TARGET" SCOPE="$ALLOWED_SCOPE" python3 -I -c '
+import sys
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import os
+try:
+    t = os.path.realpath(os.environ["TARGET"])
+    s = os.path.realpath(os.environ["SCOPE"])
+    # realpath returns a trailing "/" only for root; use it as-is so a root scope
+    # ("/") does not become "//" and reject every descendant. Any other scope gets
+    # one boundary "/" appended so a sibling prefix (src/authx vs src/auth) cannot match.
+    sep = s if s.endswith("/") else s + "/"
+    print("in" if (t == s or t.startswith(sep)) else "out")
+except Exception:
+    print("out")
+' 2>/dev/null || echo "out")
+[[ "$IN_SCOPE" == "in" ]] && exit 0
 
 # ── Block: file is outside frozen scope ──────────────────────────────
 REASON="FREEZE/GUARD: Edit blocked — file is outside the investigation scope.
 
 Allowed scope: $ALLOWED_SCOPE
-Blocked file:  $FILE_PATH
+Blocked file:  ${REPO_REL:-$TARGET}
 
 During debugging, edits are restricted to the investigation directory to prevent
 accidental changes to unrelated code. This is enforced by .claude/freeze-scope.local.

@@ -465,6 +465,62 @@ def _atomic_write_preserving_metadata(path, content):
         return False
 
 
+def _git_common_dir(d):
+    """Realpath of the git COMMON dir owning <d> (shared by a repo + all its linked
+    worktrees), or None outside a repo. Used to prove two paths belong to the SAME
+    repository — linked worktrees share it, a different repo does not."""
+    import subprocess
+    while d and not os.path.isdir(d) and d != os.path.dirname(d):
+        d = os.path.dirname(d)
+    if not d:
+        d = "."
+    try:
+        r = subprocess.run(["git", "-C", d, "rev-parse", "--git-common-dir"],
+                           capture_output=True)
+        if r.returncode == 0:
+            p = r.stdout.decode("utf-8", "surrogateescape").strip()
+            if p:
+                if not os.path.isabs(p):
+                    p = os.path.join(d, p)
+                return os.path.realpath(p)
+    except Exception:
+        pass
+    return None
+
+
+def cmd_repo_rel(argv):
+    # Print the REPO-RELATIVE, symlink-resolved path of <lexical_abspath>: run
+    # os.path.realpath (resolving EVERY existing symlink, leaf and parents, while
+    # keeping a not-yet-created tail lexical), then make it relative to the owning
+    # git worktree root. General-purpose sibling of dd-exempt's inner resolution
+    # (freeze-guard.sh anchors its exemption arms + scope check on this — #375).
+    #
+    # Optional <anchor_dir> BINDS the result to the anchor's repository: the target
+    # must share the anchor's git-common-dir (same repo, linked worktrees included),
+    # else it is a DIFFERENT repo and we print the absolute realpath'd path so the
+    # caller's repo-relative arms match none → fail-CLOSED. Without this bind, a write
+    # into /other/repo/src/auth/x would relativize to src/auth/x and alias into this
+    # repo's freeze scope (cross-repo fail-open, litmus HIGH). A target outside any
+    # repo likewise prints the absolute path. Return 0 on success, 2 on usage/OS error.
+    if len(argv) not in (1, 2):
+        return 2
+    try:
+        phys = os.path.realpath(argv[0])
+    except OSError:
+        return 2
+    if len(argv) == 2:
+        # From `phys` itself (not dirname): _git_common_dir walks up to the deepest
+        # existing dir, so a phys that IS a directory (e.g. a worktree root) is
+        # attributed to its OWN repo, not its parent (litmus PR finding).
+        tcommon = _git_common_dir(phys)
+        acommon = _git_common_dir(argv[1])
+        if not tcommon or not acommon or tcommon != acommon:
+            print(phys)   # different/absent repo → absolute → caller fails closed
+            return 0
+    print(_repo_relative(phys))
+    return 0
+
+
 def cmd_downgrade_pass(argv):
     if len(argv) != 1:
         return 2
@@ -482,7 +538,7 @@ def cmd_downgrade_pass(argv):
 
 _DISPATCH = {"sha": cmd_sha, "arm": cmd_arm, "classify": cmd_classify,
              "reviewed": cmd_reviewed, "dd-exempt": cmd_dd_exempt,
-             "downgrade-pass": cmd_downgrade_pass}
+             "repo-rel": cmd_repo_rel, "downgrade-pass": cmd_downgrade_pass}
 
 
 def main(argv):

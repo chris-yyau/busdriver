@@ -253,6 +253,31 @@ gate_marker_relpath() {
     esac
 }
 
+# Repo-relative, symlink-resolved path of <lexical_abspath> [<anchor_dir>] —
+# DELEGATES to marker_ops.py `repo-rel` (os.path.realpath + repo-relative, keeping a
+# not-yet-created tail lexical). Unlike gate_marker_relpath above (which fails when
+# the immediate parent dir does not yet exist and never resolves the leaf symlink),
+# this walks up to the deepest existing ancestor and physically resolves every
+# symlink, so a symlinked `docs/specs -> src` reads as its real location. Used by
+# freeze-guard.sh to anchor its infra-exemption arms + scope check to the write's
+# OWNING worktree (#375). Pass <anchor_dir> to BIND the result to the anchor's
+# repository — a target in a DIFFERENT repo (or outside any repo, or realpath-
+# escaped) then prints an ABSOLUTE (leading-/) path so the caller's repo-relative
+# arms match none and it falls through fail-CLOSED (closes the cross-repo alias).
+# Non-zero only on helper/usage failure.
+# shellcheck disable=SC2034  # consumed by the sourcing gate
+gate_repo_rel_phys() {   # <lexical_abspath> [<anchor_dir>]
+    local lib
+    lib="$(_gate_marker_lib_dir)" || return 1
+    # -I (isolated), NOT -S: this resolver feeds freeze-guard's infra-exemption
+    # decision, so it must ignore PYTHONPATH/PYTHONHOME and keep CWD off sys.path —
+    # otherwise a shadow `subprocess.py`/`os.py` on PYTHONPATH could forge a
+    # repo-relative path (e.g. `docs/specs/x`) and buy an exemption. Matches the
+    # `python3 -I` the inline gate parsers already use. marker_ops.py is invoked by
+    # absolute path, so -I does not disturb its import of its own trusted lib/.
+    python3 -I "$lib/marker_ops.py" repo-rel "$@"
+}
+
 # ADR-A · The shared marker directory <git-common-dir>/busdriver/…local.d/.
 # Exit 0 = resolved (path on stdout); 3 = ENOREPO carve-out (§5 — not inside a
 # work tree; caller ALLOWs, matching today); 1 = in-repo but common-dir
@@ -453,6 +478,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     case "$_sub" in
         norm)        gate_marker_norm_path "$@" ;;
         relpath)     gate_marker_relpath "$@" ;;
+        repo-rel)    gate_repo_rel_phys "$@" ;;
         dir)         gate_marker_dir "$@" ;;
         arm)         gate_marker_arm "$@" ;;
         pending)     gate_marker_pending "$@" ;;

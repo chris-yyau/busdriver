@@ -397,6 +397,19 @@ printf '# d\n' >"$t/docs/plans/DESIGN-real.md"
 printf '{"tool_name":"Write","tool_input":{"file_path":"%s/docs/plans/DESIGN-real.md"}}' "$t" | bash "$CHECKDOC" >/dev/null 2>&1
 pending "$t"; eq "(446c) genuine docs/plans design doc still arms" "$PEXIT" "1"
 
+echo "── (#448) relative file_path resolves against payload cwd, not hook cwd ─"
+# Codex P2 on #448: a Write/Edit with a RELATIVE file_path passed the raw string to
+# gate_design_doc_exempt, whose realpath then anchored on the HOOK PROCESS cwd, not
+# the payload's authoritative cwd. When they differ and the hook cwd has a symlinked
+# docs/plans, a genuine design doc could be classified non-design and armed no marker
+# (fail-OPEN). Use a DIRECTORY-qualified doc (docs/plans/notes.md) — a DESIGN*/PLAN*
+# basename would pass on name alone and never exercise the realpath anchor.
+t="$(mkrepo)"; mkdir -p "$t/docs/plans"; printf '# genuine plan\n' >"$t/docs/plans/notes.md"
+decoy="$(mktemp -d)"; TMPS+=("$decoy"); mkdir -p "$decoy/docs" "$decoy/build"
+ln -s ../build "$decoy/docs/plans"   # process-cwd realpath would escape docs/plans/ → non-design
+( cd "$decoy" && printf '{"tool_name":"Write","tool_input":{"file_path":"docs/plans/notes.md"},"cwd":"%s"}' "$t" | bash "$CHECKDOC" >/dev/null 2>&1 )
+pending "$t"; eq "(448) relative doc armed against payload cwd, not hook cwd" "$PEXIT" "1"
+
 echo "── (specs) design-doc paths stay writable while a review pends ──"
 # c0bdaf7f moved docs/superpowers/{plans,specs} → docs/{plans,specs}, but the
 # gate's exemption list still named the old dir. A lowercase *-design.md under

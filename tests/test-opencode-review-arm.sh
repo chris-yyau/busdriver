@@ -174,6 +174,70 @@ else
   fail "auditor roles honored an untrusted project-config route"
 fi
 
+# ── 7. NON-auditor roles reject opencode (symmetric guard, #436) ───
+# Inverse of section 6: opencode is Auditor-ONLY. The execute_review opencode
+# arm always launches the fixed read-only Auditor harness, so any other role
+# resolving to opencode would run the Auditor lens while its output is labeled
+# as that role's reviewer. Assert opencode is refused via EVERY entry point —
+# env override, route array (with fallback preserved), and defaults — while the
+# Auditor role itself is NOT over-blocked.
+if (
+  set -uo pipefail
+  _tmp_repo="$(mktemp -d)" || exit 1
+  # Isolate HOME to an empty dir so the OPERATOR's real ~/.claude/busdriver.json
+  # (which routes council.critic → ["codex","droid"]) cannot resolve via Step 3
+  # before the Step 4 defaults guard runs — that leak made the defaults case (d)
+  # pass vacuously (droid from user config, never exercising the guard).
+  HOME="$(mktemp -d)" || exit 1
+  trap 'rm -rf "$_tmp_repo" "$HOME"' EXIT
+  git init -q "$_tmp_repo" || exit 1
+  mkdir -p "$_tmp_repo/.claude" || exit 1
+  # shellcheck source=/dev/null
+  source "$RC"
+  # Both droid AND opencode "installed" — the guard must skip opencode BEFORE
+  # the availability check, so faking it present proves the refusal isn't just a
+  # missing-binary artifact; droid present proves route/defaults fallback works.
+  # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
+  is_cli_available() { [[ "$1" == "droid" || "$1" == "opencode" ]]; }
+  cd "$_tmp_repo" || exit 1
+  ok=1
+
+  _write_cfg() { printf '%s\n' "$1" > "$_tmp_repo/.claude/busdriver.json" || exit 1; }
+
+  # (a) env override for a normal role → unsupported:opencode
+  rm -f "$_tmp_repo/.claude/busdriver.json"
+  r=$(BUSDRIVER_REVIEW_CLI=opencode resolve_role_cli "council.critic")
+  [[ "$r" == "unsupported:opencode" ]] || { echo "  ✗ (a) env opencode for council.critic → '$r' (expected unsupported:opencode)"; ok=0; }
+
+  # (b) route ["opencode","droid"] for a normal role → droid (fallback preserved)
+  unset BUSDRIVER_REVIEW_CLI
+  _write_cfg '{"version":1,"routes":{"council.critic":["opencode","droid"]}}'
+  r=$(resolve_role_cli "council.critic")
+  [[ "$r" == "droid" ]] || { echo "  ✗ (b) route [opencode,droid] for council.critic → '$r' (expected droid)"; ok=0; }
+
+  # (c) pure ["opencode"] route for a normal role → unsupported:opencode
+  _write_cfg '{"version":1,"routes":{"council.critic":["opencode"]}}'
+  r=$(resolve_role_cli "council.critic")
+  [[ "$r" == "unsupported:opencode" ]] || { echo "  ✗ (c) route [opencode] for council.critic → '$r' (expected unsupported:opencode)"; ok=0; }
+
+  # (d) defaults.primary=opencode with a working fallback → fallback, not opencode
+  _write_cfg '{"version":1,"defaults":{"primary":"opencode","fallback":"droid"}}'
+  r=$(resolve_role_cli "council.critic")
+  [[ "$r" == "droid" ]] || { echo "  ✗ (d) defaults.primary=opencode/fallback=droid for council.critic → '$r' (expected droid)"; ok=0; }
+
+  # (e) POSITIVE CONTROL — the Auditor role must still accept opencode; the guard
+  # must not over-block the one role opencode is FOR.
+  _write_cfg '{"version":1,"routes":{"blueprint-review.auditor":["opencode"]}}'
+  r=$(resolve_role_cli "blueprint-review.auditor")
+  [[ "$r" == "opencode" ]] || { echo "  ✗ (e) auditor role over-blocked: route [opencode] → '$r' (expected opencode)"; ok=0; }
+
+  exit $((1 - ok))
+); then
+  pass "non-auditor roles reject opencode via env/route/defaults; auditor role unaffected"
+else
+  fail "non-auditor opencode guard failed (see assertions above)"
+fi
+
 echo
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "PASS (test-opencode-review-arm)"

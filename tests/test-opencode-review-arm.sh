@@ -174,6 +174,141 @@ else
   fail "auditor roles honored an untrusted project-config route"
 fi
 
+# ── 7. NON-auditor roles reject opencode (symmetric guard, #436) ───
+# Inverse of section 6: opencode is Auditor-ONLY. The execute_review opencode
+# arm always launches the fixed read-only Auditor harness, so any other role
+# resolving to opencode would run the Auditor lens while its output is labeled
+# as that role's reviewer. Assert opencode is refused via EVERY entry point —
+# env override, route array (with fallback preserved), and defaults — while the
+# Auditor role itself is NOT over-blocked.
+if (
+  set -uo pipefail
+  _tmp_repo="$(mktemp -d)" || exit 1
+  # Isolate HOME to an empty dir so the OPERATOR's real ~/.claude/busdriver.json
+  # (which routes council.critic → ["codex","droid"]) cannot resolve via Step 3
+  # before the Step 4 defaults guard runs — that leak made the defaults case (d)
+  # pass vacuously (droid from user config, never exercising the guard).
+  HOME="$(mktemp -d)" || exit 1
+  trap 'rm -rf "$_tmp_repo" "$HOME"' EXIT
+  git init -q "$_tmp_repo" || exit 1
+  mkdir -p "$_tmp_repo/.claude" || exit 1
+  # shellcheck source=/dev/null
+  source "$RC"
+  # Both droid AND opencode "installed" — the guard must skip opencode BEFORE
+  # the availability check, so faking it present proves the refusal isn't just a
+  # missing-binary artifact; droid present proves route/defaults fallback works.
+  # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
+  is_cli_available() { [[ "$1" == "droid" || "$1" == "opencode" ]]; }
+  cd "$_tmp_repo" || exit 1
+  ok=1
+
+  _write_cfg() { printf '%s\n' "$1" > "$_tmp_repo/.claude/busdriver.json" || exit 1; }
+
+  # (a) env override for a normal role → unsupported:opencode
+  rm -f "$_tmp_repo/.claude/busdriver.json"
+  r=$(BUSDRIVER_REVIEW_CLI=opencode resolve_role_cli "council.critic")
+  [[ "$r" == "unsupported:opencode" ]] || { echo "  ✗ (a) env opencode for council.critic → '$r' (expected unsupported:opencode)"; ok=0; }
+
+  # (b) route ["opencode","droid"] for a normal role → droid (fallback preserved)
+  unset BUSDRIVER_REVIEW_CLI
+  _write_cfg '{"version":1,"routes":{"council.critic":["opencode","droid"]}}'
+  r=$(resolve_role_cli "council.critic")
+  [[ "$r" == "droid" ]] || { echo "  ✗ (b) route [opencode,droid] for council.critic → '$r' (expected droid)"; ok=0; }
+
+  # (c) pure ["opencode"] route for a normal role → unsupported:opencode
+  _write_cfg '{"version":1,"routes":{"council.critic":["opencode"]}}'
+  r=$(resolve_role_cli "council.critic")
+  [[ "$r" == "unsupported:opencode" ]] || { echo "  ✗ (c) route [opencode] for council.critic → '$r' (expected unsupported:opencode)"; ok=0; }
+
+  # (d) defaults.primary=opencode with a working fallback → fallback, not opencode
+  _write_cfg '{"version":1,"defaults":{"primary":"opencode","fallback":"droid"}}'
+  r=$(resolve_role_cli "council.critic")
+  [[ "$r" == "droid" ]] || { echo "  ✗ (d) defaults.primary=opencode/fallback=droid for council.critic → '$r' (expected droid)"; ok=0; }
+
+  # (e) POSITIVE CONTROL — the Auditor role must still accept opencode; the guard
+  # must not over-block the one role opencode is FOR.
+  _write_cfg '{"version":1,"routes":{"blueprint-review.auditor":["opencode"]}}'
+  r=$(resolve_role_cli "blueprint-review.auditor")
+  [[ "$r" == "opencode" ]] || { echo "  ✗ (e) auditor role over-blocked: route [opencode] → '$r' (expected opencode)"; ok=0; }
+
+  exit $((1 - ok))
+); then
+  pass "non-auditor roles reject opencode via env/route/defaults; auditor role unaffected"
+else
+  fail "non-auditor opencode guard failed (see assertions above)"
+fi
+
+# ── 8. describe_role_resolution reports the FILTERED entry, not the
+#      rejected opencode one (Greptile finding, PR #455) ───────────────
+# resolve_role_cli's route walker (_resolve_from_route_array) skips a
+# non-Auditor "opencode" entry and falls through to the next route
+# entry — but describe_role_resolution's own route-array scan (used only
+# for coverage/provenance metadata) didn't apply the same filter, so it
+# recorded "requested=opencode" even though the resolver actually
+# honored/attributed the NEXT entry. Assert requested/actual/reason all
+# agree with what resolve_role_cli really did.
+if (
+  set -uo pipefail
+  _tmp_repo="$(mktemp -d)" || exit 1
+  HOME="$(mktemp -d)" || exit 1
+  trap 'rm -rf "$_tmp_repo" "$HOME"' EXIT
+  git init -q "$_tmp_repo" || exit 1
+  mkdir -p "$_tmp_repo/.claude" || exit 1
+  # shellcheck source=/dev/null
+  source "$RC"
+  # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
+  is_cli_available() { [[ "$1" == "droid" || "$1" == "opencode" ]]; }
+  cd "$_tmp_repo" || exit 1
+  ok=1
+
+  _write_cfg() { printf '%s\n' "$1" > "$_tmp_repo/.claude/busdriver.json" || exit 1; }
+
+  # (a) route ["opencode","droid"] for a normal role: resolver falls through
+  # to droid, so provenance metadata must say requested=droid (NOT the
+  # rejected "opencode" entry), actual=droid, reason=ok.
+  _write_cfg '{"version":1,"routes":{"council.critic":["opencode","droid"]}}'
+  line=$(describe_role_resolution "council.critic" 2>/dev/null)
+  req=$(printf '%s' "$line" | cut -f1); act=$(printf '%s' "$line" | cut -f2); rsn=$(printf '%s' "$line" | cut -f3)
+  [[ "$req" == "droid" && "$act" == "droid" && "$rsn" == "ok" ]] \
+    || { echo "  ✗ (a) route [opencode,droid] metadata → requested=$req actual=$act reason=$rsn (expected droid/droid/ok)"; ok=0; }
+
+  # (b) defaults.primary=opencode with a fallback for a normal role: same
+  # requirement via the defaults path.
+  _write_cfg '{"version":1,"defaults":{"primary":"opencode","fallback":"droid"}}'
+  line=$(describe_role_resolution "council.critic" 2>/dev/null)
+  req=$(printf '%s' "$line" | cut -f1); act=$(printf '%s' "$line" | cut -f2); rsn=$(printf '%s' "$line" | cut -f3)
+  [[ "$req" == "droid" && "$act" == "droid" && "$rsn" == "ok" ]] \
+    || { echo "  ✗ (b) defaults.primary=opencode metadata → requested=$req actual=$act reason=$rsn (expected droid/droid/ok)"; ok=0; }
+
+  # (c) POSITIVE CONTROL — the Auditor role's opencode entry must still be
+  # reported as requested=opencode (the guard must not over-filter the one
+  # role opencode is FOR).
+  _write_cfg '{"version":1,"routes":{"blueprint-review.auditor":["opencode"]}}'
+  line=$(describe_role_resolution "blueprint-review.auditor" 2>/dev/null)
+  req=$(printf '%s' "$line" | cut -f1); act=$(printf '%s' "$line" | cut -f2); rsn=$(printf '%s' "$line" | cut -f3)
+  [[ "$req" == "opencode" && "$act" == "opencode" && "$rsn" == "ok" ]] \
+    || { echo "  ✗ (c) auditor role metadata over-filtered → requested=$req actual=$act reason=$rsn (expected opencode/opencode/ok)"; ok=0; }
+
+  # (d) BOTH defaults.primary AND defaults.fallback = opencode for a normal role.
+  # The defaults.fallback path must apply the same Auditor-only filter as
+  # defaults.primary — otherwise requested=opencode is recorded while
+  # resolve_role_cli rejects both and resolves elsewhere (litmus PR #455 finding).
+  # HOME isolated to an empty dir so the operator's real user config can't supply
+  # a competing route before the defaults path is reached.
+  ( HOME="$(mktemp -d)"; export HOME; trap 'rm -rf "$HOME"' EXIT
+    _write_cfg '{"version":1,"defaults":{"primary":"opencode","fallback":"opencode"}}'
+    line=$(describe_role_resolution "council.critic" 2>/dev/null)
+    req=$(printf '%s' "$line" | cut -f1)
+    [[ "$req" != "opencode" ]] || { echo "  ✗ (d) defaults primary+fallback both opencode → requested=opencode (must be filtered)"; exit 1; }
+  ) || ok=0
+
+  exit $((1 - ok))
+); then
+  pass "describe_role_resolution reports the filtered route entry, not rejected opencode"
+else
+  fail "describe_role_resolution opencode provenance metadata mismatch (see assertions above)"
+fi
+
 echo
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "PASS (test-opencode-review-arm)"

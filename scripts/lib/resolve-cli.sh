@@ -232,6 +232,21 @@ should_escalate_to_droid() {
 # Precedence: env var > project config > user config > defaults > auto-detect
 # Returns: CLI name, "builtin", "none", or "missing:<cli>"
 
+# Is this the Auditor role — the ONLY role opencode may serve? The opencode
+# dispatch arm in execute_review always launches the fixed read-only Auditor
+# harness (plugin-owned config, --dir empty, XDG/env isolation) regardless of
+# which role asked for it, so an "opencode" resolution for any OTHER role would
+# silently run the Auditor lens while the output is still labeled as that role's
+# reviewer (misleading coverage + arbitration — #436, symmetric to the auditor
+# containment guard in resolve_role_cli). Single source of truth for the
+# opencode-role restriction used by the non-auditor guards below.
+_is_auditor_role() {
+  case "$1" in
+    council.auditor|blueprint-review.auditor) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 _resolve_from_route_array() {
   local config_path="$1" role_key="$2"
   local i=0 cli
@@ -262,6 +277,14 @@ _resolve_from_route_array() {
         warned_deprecated_removed=1
         last_rejected="$cli"
       fi
+    elif [[ "$cli" == "opencode" ]] && ! _is_auditor_role "$role_key"; then
+      # opencode is Auditor-ONLY (#436). The opencode dispatch arm always runs the
+      # fixed read-only Auditor harness, so honoring it for a normal role would
+      # mislabel an Auditor lens as that role's reviewer. Skip it like a removed
+      # CLI so ["opencode","droid"] still degrades to droid; a pure ["opencode"]
+      # route resolves to unsupported:opencode via the all-rejected check below.
+      echo "busdriver: config route '$role_key' references 'opencode', which is only valid for the Auditor role (it always runs the fixed read-only Auditor harness) — skipping" >&2
+      last_rejected="opencode"
     elif [[ "$cli" == "auto" ]]; then
       # grok is INTENTIONALLY excluded from the auto-detect cascade: its
       # safety model (--sandbox readonly + user-config "always approve"
@@ -371,6 +394,16 @@ _resolve_role_cli_impl() {
         echo "unsupported:$env_cli"
         return ;;
     esac
+    # opencode via env override is Auditor-ONLY (#436). For any other role it
+    # would run the fixed read-only Auditor harness while the output is labeled
+    # as that role's reviewer — reject rather than mislabel. (Auditor roles are
+    # handled by resolve_role_cli's containment guard, which calls this impl and
+    # accepts opencode; they never reach here for a non-auditor key.)
+    if [[ "$env_cli" == "opencode" ]] && ! _is_auditor_role "$role_key"; then
+      echo "busdriver: BUSDRIVER_REVIEW_CLI=opencode is only valid for the Auditor role (it always runs the fixed read-only Auditor harness), not '$role_key'" >&2
+      echo "unsupported:opencode"
+      return
+    fi
     if [[ "$env_cli" == "none" || "$env_cli" == "builtin" ]]; then
       echo "$env_cli" && return
     fi
@@ -427,6 +460,11 @@ _resolve_role_cli_impl() {
         # to defaults.fallback below. Track for the all-rejected check.
         echo "busdriver: defaults.primary=$default_primary is no longer supported; use 'codex', 'agy', 'droid', 'grok', or 'opencode' instead — trying defaults.fallback" >&2
         cfg_last_rejected="$default_primary"
+      elif [[ "$default_primary" == "opencode" ]] && ! _is_auditor_role "$role_key"; then
+        # opencode is Auditor-ONLY (#436) — see _is_auditor_role. Track as
+        # rejected and let defaults.fallback / legacy defaults resolve instead.
+        echo "busdriver: defaults.primary=opencode is only valid for the Auditor role (it always runs the fixed read-only Auditor harness), not '$role_key' — trying defaults.fallback" >&2
+        cfg_last_rejected="opencode"
       elif [[ "$default_primary" == "none" || "$default_primary" == "builtin" ]]; then
         echo "$default_primary" && return
       elif is_cli_available "$default_primary"; then
@@ -461,6 +499,12 @@ _resolve_role_cli_impl() {
         # Removed CLI in defaults.fallback — warn and continue.
         echo "busdriver: defaults.fallback=$default_fallback is no longer supported; use 'codex', 'agy', 'droid', 'grok', or 'opencode' instead" >&2
         cfg_last_rejected="$default_fallback"
+      elif [[ "$default_fallback" == "opencode" ]] && ! _is_auditor_role "$role_key"; then
+        # opencode is Auditor-ONLY (#436) — see _is_auditor_role. Track as
+        # rejected; the all-rejected check below emits unsupported:opencode when
+        # nothing else in this cfg's defaults chain resolved.
+        echo "busdriver: defaults.fallback=opencode is only valid for the Auditor role (it always runs the fixed read-only Auditor harness), not '$role_key'" >&2
+        cfg_last_rejected="opencode"
       elif [[ "$default_fallback" == "none" || "$default_fallback" == "builtin" ]]; then
         echo "$default_fallback" && return
       elif is_cli_available "$default_fallback"; then
@@ -581,11 +625,35 @@ describe_role_resolution() {
         case "$cli" in
           gemini|amp|claude|aider) i=$((i + 1)); continue ;;
         esac
+        # opencode is Auditor-ONLY (#436) — mirror _resolve_from_route_array's
+        # filtering (line ~280) so a rejected opencode route entry isn't
+        # recorded as "requested" while resolve_role_cli actually falls
+        # through to the NEXT entry (e.g. droid). Without this, coverage/
+        # provenance metadata attributes the review to a CLI the resolver
+        # rejected (Greptile finding, PR #455).
+        if [[ "$cli" == "opencode" ]] && ! _is_auditor_role "$role_key"; then
+          i=$((i + 1)); continue
+        fi
         requested="$cli"; break
       done
       [[ -n "$requested" ]] && break
       cli=$(_read_config_value "$cfg" ".defaults.primary")
-      if [[ -n "$cli" ]]; then requested="$cli"; break; fi
+      if [[ -n "$cli" ]]; then
+        if [[ "$cli" != "opencode" ]] || _is_auditor_role "$role_key"; then
+          requested="$cli"; break
+        fi
+        # defaults.primary=opencode rejected for a non-Auditor role — mirror
+        # _resolve_role_cli_impl's Step 4 (line ~463): it tries
+        # defaults.fallback next within the SAME cfg rather than stopping.
+        # Apply the SAME Auditor-only filter to the fallback — otherwise a
+        # {"defaults":{"primary":"opencode","fallback":"opencode"}} config for a
+        # non-Auditor role would report requested=opencode while resolve_role_cli
+        # rejects both and resolves elsewhere, recreating the provenance mismatch.
+        cli=$(_read_config_value "$cfg" ".defaults.fallback")
+        if [[ -n "$cli" ]] && { [[ "$cli" != "opencode" ]] || _is_auditor_role "$role_key"; }; then
+          requested="$cli"; break
+        fi
+      fi
     done
     [[ -z "$requested" ]] && requested="auto"
   fi

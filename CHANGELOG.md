@@ -1,3 +1,10 @@
+## [1.95.12](https://github.com/chris-yyau/busdriver/compare/v1.95.11...v1.95.12) (2026-07-22)
+
+
+### Bug Fixes
+
+* **freeze-guard:** repo-relative anchoring for docs/ and .claude/ arms (+ cwd join) ([#375](https://github.com/chris-yyau/busdriver/issues/375)) ([#457](https://github.com/chris-yyau/busdriver/issues/457)) ([2c8638f](https://github.com/chris-yyau/busdriver/commit/2c8638fcec356f0c743362be71b8a5d8485b8ea5)), closes [170/#126](https://github.com/chris-yyau/busdriver/issues/126) [#369](https://github.com/chris-yyau/busdriver/issues/369)
+
 ## [1.95.11](https://github.com/chris-yyau/busdriver/compare/v1.95.10...v1.95.11) (2026-07-22)
 
 

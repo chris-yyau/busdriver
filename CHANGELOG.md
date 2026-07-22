@@ -1,3 +1,10 @@
+## [1.95.14](https://github.com/chris-yyau/busdriver/compare/v1.95.13...v1.95.14) (2026-07-22)
+
+
+### Bug Fixes
+
+* **ultra-oracle:** salvage + watchdog for completed-but-hung oracle browser consults ([#458](https://github.com/chris-yyau/busdriver/issues/458)) ([#460](https://github.com/chris-yyau/busdriver/issues/460)) ([fdb84c1](https://github.com/chris-yyau/busdriver/commit/fdb84c1fee729133e6ed0484924f24b0665e0418))
+
 ## [1.95.13](https://github.com/chris-yyau/busdriver/compare/v1.95.12...v1.95.13) (2026-07-22)
 
 

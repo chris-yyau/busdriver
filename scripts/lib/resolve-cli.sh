@@ -625,11 +625,35 @@ describe_role_resolution() {
         case "$cli" in
           gemini|amp|claude|aider) i=$((i + 1)); continue ;;
         esac
+        # opencode is Auditor-ONLY (#436) — mirror _resolve_from_route_array's
+        # filtering (line ~280) so a rejected opencode route entry isn't
+        # recorded as "requested" while resolve_role_cli actually falls
+        # through to the NEXT entry (e.g. droid). Without this, coverage/
+        # provenance metadata attributes the review to a CLI the resolver
+        # rejected (Greptile finding, PR #455).
+        if [[ "$cli" == "opencode" ]] && ! _is_auditor_role "$role_key"; then
+          i=$((i + 1)); continue
+        fi
         requested="$cli"; break
       done
       [[ -n "$requested" ]] && break
       cli=$(_read_config_value "$cfg" ".defaults.primary")
-      if [[ -n "$cli" ]]; then requested="$cli"; break; fi
+      if [[ -n "$cli" ]]; then
+        if [[ "$cli" != "opencode" ]] || _is_auditor_role "$role_key"; then
+          requested="$cli"; break
+        fi
+        # defaults.primary=opencode rejected for a non-Auditor role — mirror
+        # _resolve_role_cli_impl's Step 4 (line ~463): it tries
+        # defaults.fallback next within the SAME cfg rather than stopping.
+        # Apply the SAME Auditor-only filter to the fallback — otherwise a
+        # {"defaults":{"primary":"opencode","fallback":"opencode"}} config for a
+        # non-Auditor role would report requested=opencode while resolve_role_cli
+        # rejects both and resolves elsewhere, recreating the provenance mismatch.
+        cli=$(_read_config_value "$cfg" ".defaults.fallback")
+        if [[ -n "$cli" ]] && { [[ "$cli" != "opencode" ]] || _is_auditor_role "$role_key"; }; then
+          requested="$cli"; break
+        fi
+      fi
     done
     [[ -z "$requested" ]] && requested="auto"
   fi

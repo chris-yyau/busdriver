@@ -238,6 +238,77 @@ else
   fail "non-auditor opencode guard failed (see assertions above)"
 fi
 
+# ── 8. describe_role_resolution reports the FILTERED entry, not the
+#      rejected opencode one (Greptile finding, PR #455) ───────────────
+# resolve_role_cli's route walker (_resolve_from_route_array) skips a
+# non-Auditor "opencode" entry and falls through to the next route
+# entry — but describe_role_resolution's own route-array scan (used only
+# for coverage/provenance metadata) didn't apply the same filter, so it
+# recorded "requested=opencode" even though the resolver actually
+# honored/attributed the NEXT entry. Assert requested/actual/reason all
+# agree with what resolve_role_cli really did.
+if (
+  set -uo pipefail
+  _tmp_repo="$(mktemp -d)" || exit 1
+  HOME="$(mktemp -d)" || exit 1
+  trap 'rm -rf "$_tmp_repo" "$HOME"' EXIT
+  git init -q "$_tmp_repo" || exit 1
+  mkdir -p "$_tmp_repo/.claude" || exit 1
+  # shellcheck source=/dev/null
+  source "$RC"
+  # shellcheck disable=SC2329  # invoked indirectly by the sourced resolver
+  is_cli_available() { [[ "$1" == "droid" || "$1" == "opencode" ]]; }
+  cd "$_tmp_repo" || exit 1
+  ok=1
+
+  _write_cfg() { printf '%s\n' "$1" > "$_tmp_repo/.claude/busdriver.json" || exit 1; }
+
+  # (a) route ["opencode","droid"] for a normal role: resolver falls through
+  # to droid, so provenance metadata must say requested=droid (NOT the
+  # rejected "opencode" entry), actual=droid, reason=ok.
+  _write_cfg '{"version":1,"routes":{"council.critic":["opencode","droid"]}}'
+  line=$(describe_role_resolution "council.critic" 2>/dev/null)
+  req=$(printf '%s' "$line" | cut -f1); act=$(printf '%s' "$line" | cut -f2); rsn=$(printf '%s' "$line" | cut -f3)
+  [[ "$req" == "droid" && "$act" == "droid" && "$rsn" == "ok" ]] \
+    || { echo "  ✗ (a) route [opencode,droid] metadata → requested=$req actual=$act reason=$rsn (expected droid/droid/ok)"; ok=0; }
+
+  # (b) defaults.primary=opencode with a fallback for a normal role: same
+  # requirement via the defaults path.
+  _write_cfg '{"version":1,"defaults":{"primary":"opencode","fallback":"droid"}}'
+  line=$(describe_role_resolution "council.critic" 2>/dev/null)
+  req=$(printf '%s' "$line" | cut -f1); act=$(printf '%s' "$line" | cut -f2); rsn=$(printf '%s' "$line" | cut -f3)
+  [[ "$req" == "droid" && "$act" == "droid" && "$rsn" == "ok" ]] \
+    || { echo "  ✗ (b) defaults.primary=opencode metadata → requested=$req actual=$act reason=$rsn (expected droid/droid/ok)"; ok=0; }
+
+  # (c) POSITIVE CONTROL — the Auditor role's opencode entry must still be
+  # reported as requested=opencode (the guard must not over-filter the one
+  # role opencode is FOR).
+  _write_cfg '{"version":1,"routes":{"blueprint-review.auditor":["opencode"]}}'
+  line=$(describe_role_resolution "blueprint-review.auditor" 2>/dev/null)
+  req=$(printf '%s' "$line" | cut -f1); act=$(printf '%s' "$line" | cut -f2); rsn=$(printf '%s' "$line" | cut -f3)
+  [[ "$req" == "opencode" && "$act" == "opencode" && "$rsn" == "ok" ]] \
+    || { echo "  ✗ (c) auditor role metadata over-filtered → requested=$req actual=$act reason=$rsn (expected opencode/opencode/ok)"; ok=0; }
+
+  # (d) BOTH defaults.primary AND defaults.fallback = opencode for a normal role.
+  # The defaults.fallback path must apply the same Auditor-only filter as
+  # defaults.primary — otherwise requested=opencode is recorded while
+  # resolve_role_cli rejects both and resolves elsewhere (litmus PR #455 finding).
+  # HOME isolated to an empty dir so the operator's real user config can't supply
+  # a competing route before the defaults path is reached.
+  ( HOME="$(mktemp -d)"; export HOME; trap 'rm -rf "$HOME"' EXIT
+    _write_cfg '{"version":1,"defaults":{"primary":"opencode","fallback":"opencode"}}'
+    line=$(describe_role_resolution "council.critic" 2>/dev/null)
+    req=$(printf '%s' "$line" | cut -f1)
+    [[ "$req" != "opencode" ]] || { echo "  ✗ (d) defaults primary+fallback both opencode → requested=opencode (must be filtered)"; exit 1; }
+  ) || ok=0
+
+  exit $((1 - ok))
+); then
+  pass "describe_role_resolution reports the filtered route entry, not rejected opencode"
+else
+  fail "describe_role_resolution opencode provenance metadata mismatch (see assertions above)"
+fi
+
 echo
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "PASS (test-opencode-review-arm)"

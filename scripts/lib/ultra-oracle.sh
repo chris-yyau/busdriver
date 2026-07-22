@@ -47,6 +47,264 @@ _ultra_oracle_verdict_ok() {
   [ "$nonws" -ge "$min" ]
 }
 
+# _ultra_oracle_salvage <out> <cap> <attach-target> -> exit 0 iff a usable verdict was
+# harvested into <out>. Attach-mode-only recovery for oracle 0.16.0's browser
+# completion-detection bug (#458): a fast gpt-5.5-pro response FINISHES but oracle's engine
+# never concludes "done" (the streaming shimmer/Stop-button vanish is indistinguishable from
+# "not started"), so the run waits out its whole --timeout and writes NO verdict — while the
+# completed answer sits in the still-live attached ChatGPT tab. `oracle session <id>
+# --harvest` re-reads exactly that tab. Only attempted in ATTACH mode: a non-attach run's
+# Chrome is oracle-launched and dies with the SIGKILLed process, so there is no live tab to
+# re-read (and --no-recover keeps us from relaunching one and walking back into Cloudflare).
+_ultra_oracle_salvage() {
+  local out="$1" cap="$2" target="$3" sid err="${1}.err" hcap
+  ultra_oracle_attach_running || return 1        # live-tab recovery needs the attached browser
+  [[ -n "$target" ]] || return 1                 # no pinned CDP target -> nothing to harvest from
+  [[ -r "$err" ]] || return 1
+  # oracle prints "Session: <id>" as its first output line (and "Reattach: oracle session <id>");
+  # that id names the stored session whose bound tab still holds the answer. Capture the WHOLE
+  # remainder (leading space trimmed by sed) and trim only TRAILING whitespace/CR — do NOT truncate
+  # to a first token or `tr -d [:space:]`: both silently turn a MALFORMED "sess -458" into some
+  # other valid-looking id ("sess" / "sess-458") that could harvest an unrelated session. Keeping
+  # the internal space makes the allowlist below REJECT it (fail closed).
+  sid="$(sed -n 's/^Session:[[:space:]]*//p' "$err" 2>/dev/null | head -1)"
+  sid="${sid%"${sid##*[![:space:]]}"}"   # strip trailing whitespace (incl. CR), keep any internal
+  # Validate as an oracle slug id and FAIL CLOSED otherwise — it becomes an `oracle session <sid>`
+  # argv operand. Reject empty, a leading '-' (would be parsed as an OPTION — injection), and any
+  # char outside the slug allowlist (alnum . _ - internally — a space, quote, etc. is rejected).
+  case "$sid" in ''|-*|*[!A-Za-z0-9._-]*) return 1;; esac
+  # NEVER trust whatever oracle left in $out — always re-harvest the tab, the source of truth for
+  # #458 (the complete answer lives there). oracle writes --write-output with a NON-atomic
+  # fs.writeFile, so a run terminated mid-write can leave a PARTIAL longer than the 8-byte floor;
+  # accepting that would promote an incomplete advisory. `oracle session --harvest` instead reads
+  # the settled DOM fresh. Truncate $out FIRST so the verdict check below reflects ONLY what
+  # harvest wrote: if harvest fails, we fail CLOSED (report timeout) rather than accept a
+  # leftover. A verdict oracle genuinely finished is re-read intact by the harvest.
+  : > "$out" 2>/dev/null || return 1
+  # Bounded harvest; a live-tab DOM read is quick. --no-recover so a dead tab fails FAST
+  # (~instant "No ChatGPT tab matched") instead of relaunching Chrome. Pin the SAME attached
+  # browser the run drove via --remote-chrome (attach discovery defaults to :9222; our Chrome
+  # uses a dynamic port). Append to $err so the harvest log joins the run log. Keep the cap
+  # small (ULTRA_ORACLE_SALVAGE_CAP, default 30s) AND clamped to 30s AND below the run cap. The
+  # .rc waiters (run-design-review-loop.sh / ultra-oracle-run.sh) allow +90s beyond
+  # timeoutCapSeconds; the worst-case subshell tail — cap detection (≤3s) + terminate (≤5s) +
+  # a 30s harvest + verdict/.rc write — fits inside that with wide margin for scheduler jitter.
+  hcap="${ULTRA_ORACLE_SALVAGE_CAP:-30}"; case "$hcap" in ''|*[!0-9]*|0) hcap=30;; esac
+  # Strip leading zeros FIRST so a value like "001" reads as 1, not a 3-digit over-clamp ("00"
+  # collapses to "" -> default). Then a length guard BEFORE the numeric `-gt`: the ceiling is 30 (2
+  # digits), so any 3+ digit value is over it — clamped by length so an oversized string can't
+  # overflow the shell integer parser and slip past `-gt 30` unbounded (defeating the 30s ceiling).
+  hcap="${hcap#"${hcap%%[!0]*}"}"; case "$hcap" in '') hcap=30;; esac
+  [ "${#hcap}" -gt 2 ] && hcap=30
+  [ "$hcap" -gt 30 ] && hcap=30           # bound so watched-run + salvage stays under the waiters' +90s grace
+  [ "$cap" -lt "$hcap" ] && hcap="$cap"
+  # Capture the harvest's exit status — do NOT discard it. verdict_ok alone is insufficient:
+  # a harvest that streams a >8-byte fragment and then CRASHES or TIMES OUT (rc!=0) would
+  # otherwise be accepted as a complete verdict. Require a clean exit AND a usable body. (The
+  # dead-tab case exits 0 but writes nothing, so verdict_ok still rejects it.)
+  local hrc=0
+  _portable_timeout "$hcap" oracle session "$sid" --harvest --no-recover \
+    --browser-attach-running --remote-chrome "$target" --write-output "$out" >>"$err" 2>&1 || hrc=$?
+  # On a non-clean harvest, clear any fragment it left so a rejected partial can never linger
+  # in $out for a downstream reader, then fail closed.
+  [ "$hrc" -eq 0 ] || { : > "$out" 2>/dev/null; return 1; }
+  _ultra_oracle_verdict_ok "$out" || return 1
+  # Self-label the recovery. Completed-but-hung detection is a HEURISTIC over oracle's own
+  # heartbeat (the streaming indicator vanishing + oracle's "last change" stability report) — and
+  # oracle itself cannot reliably tell "done" from "still working" (that ambiguity IS the #458
+  # bug), so no signal we derive can *prove* completion. In the rare case the response was still
+  # generating, the harvested DOM could be incomplete. Prepending this caveat means a salvaged
+  # result is never presented as a COMPLETE verdict — it enters the arbiter prompt as an
+  # explicitly best-effort, possibly-partial auxiliary note (the advisory is non-gating anyway).
+  #
+  # Write via an mktemp SIBLING (fresh O_EXCL file — a plain `> "$out.sv"` would follow a symlink
+  # planted at that predictable path and clobber an arbitrary file), then atomic mv. The label is
+  # MANDATORY, not best-effort: if it cannot be applied we FAIL CLOSED (return 1, salvage rejected)
+  # rather than emit an unlabelled heuristic recovery that a downstream reader could mistake for a
+  # complete verdict. A rejected salvage just surfaces as the timeout it recovered from.
+  local _svtmp
+  _svtmp="$(mktemp "${out}.sv.XXXXXX" 2>/dev/null)" || { : > "$out" 2>/dev/null; return 1; }
+  if { printf '_[#458 best-effort recovery of a hung ultra-oracle consult — may be incomplete; auxiliary only]_\n\n'; cat "$out"; } > "$_svtmp" 2>/dev/null && mv -f "$_svtmp" "$out" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$_svtmp" 2>/dev/null; : > "$out" 2>/dev/null; return 1
+}
+
+# _uora_terminate <pid> -> reap <pid> and RETURN a code the caller uses to tell "we killed it"
+# from "it exited on its own first" (the race where oracle finishes in the window between the
+# watchdog's liveness check and this call):
+#   * 143 — WE terminated it. Reported UNIFORMLY whenever the process was still alive when this
+#           began, regardless of the child's actual exit code — a process can CATCH SIGTERM and
+#           exit 0 during cleanup, so the raw exit status cannot distinguish "killed" from "clean".
+#   * else — it had ALREADY exited before we signalled (raced completion); its real wait status is
+#           returned so the caller can honor that natural finish.
+# Bounded TERM->KILL: an ignored TERM degrades to a kill after ~5s, never an indefinite hang, so
+# the background .rc marker always lands. Signals the watched PID only. Called ONLY on the
+# ATTACH-mode watched run, where oracle attaches to an already-running Chrome and forks NO browser
+# — so the node process is its whole footprint and killing that pid is complete. Non-attach modes
+# never reach this: they run under the unchanged `_portable_timeout` (timeout(1)'s teardown).
+_uora_terminate() {
+  local p="$1" st=0
+  # The TERM `kill` ITSELF is the ONLY classifier used: it atomically fails with ESRCH only when
+  # the pid is FULLY GONE (already exited AND reaped) — a clean natural finish we report as its own
+  # wait status — and succeeds otherwise. We deliberately do NOT try to further distinguish a live
+  # process from an unreaped zombie or a TERM-catcher that exits 0: every such probe is a
+  # check-then-act race with no atomic primitive in portable shell, AND it is unnecessary — the
+  # salvage path NEVER trusts oracle's own $out (it always truncates and RE-HARVESTS the live tab),
+  # so a run that raced to completion after we signalled is still recovered correctly by the
+  # subsequent harvest, not misread as a partial. So on any successful kill we return 143 ("we
+  # terminated it") uniformly and let salvage do the right thing.
+  if ! kill "$p" 2>/dev/null; then wait "$p" 2>/dev/null || st=$?; return "$st"; fi
+  # Signalled a live/zombie pid -> we own the termination. Escalate to KILL if TERM is ignored so
+  # this is bounded, then report 143.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$p" 2>/dev/null || { wait "$p" 2>/dev/null || true; return 143; }
+    sleep 0.5
+  done
+  kill -9 "$p" 2>/dev/null || true; wait "$p" 2>/dev/null || true; return 143
+}
+
+# _ultra_oracle_run_watched <cap> <errfile> <cmd...> -> run <cmd> (oracle) in the background,
+# capturing stdout+stderr to <errfile>. Distinguishes THREE outcomes by exit code so the caller
+# salvages ONLY on positive evidence the response completed:
+#   * <cmd>'s own rc — it finished on its own.
+#   * 125 — CONFIRMED completed-but-hung (#458): the heartbeat streamed and then sat in the
+#           "no thinking status detected yet" waiting branch. The stream ENDED, so the tab holds
+#           a COMPLETE answer -> caller salvages.
+#   * 124 — plain hard cap with NO hung signature: the response may still be mid-stream (a
+#           genuinely slow consult), so the tab could hold a PARTIAL -> caller must NOT salvage
+#           (harvesting a partial and promoting it to a verdict is the bug this split prevents).
+# ONLY used for the ATTACH path — the sole mode where salvage can recover and where oracle forks
+# no Chrome to orphan. Non-attach background stays on `_portable_timeout` (unchanged teardown).
+#
+# Runs oracle DIRECTLY (`"$@" &`) so `$!` is oracle's OWN pid: backgrounding a shell FUNCTION
+# (`_portable_timeout … &`) forks a subshell and buries oracle two levels down with no signalable
+# pid, and the perl fallback would not forward a TERM to it. We therefore enforce the cap here
+# via a wall-clock deadline (`date`, not accumulated sleeps — scheduler delays and the growing
+# awk rescans would drift the count below real time).
+# _ultra_oracle_hung_signal <errfile> -> print "<waits> <laststable> <laststream>" for the
+# completed-but-hung heuristic, computed from oracle's OWN heartbeat log. Extracted so the watchdog
+# AND its unit test invoke the SAME awk — the two can never drift (CodeRabbit, PR #460). Tracks the
+# state AFTER the LAST active heartbeat:
+#   * laststream = 1 iff the MOST RECENT active heartbeat was "response streaming" (not reasoning /
+#                  tool use) — the RESPONSE was the last thing happening before the indicator
+#                  vanished. If the model went back to reasoning/tool use after streaming it is 0,
+#                  and we do NOT salvage (it may not be done).
+#   * waits      = consecutive "no thinking status detected yet" idle ticks since the last ACTIVE
+#                  heartbeat. Reset on ANY "ChatGPT thinking" line (streaming OR reasoning OR tool
+#                  use — all mean work), so a single transient null between active ticks never
+#                  accrues; only a SUSTAINED-gone indicator does.
+#   * laststable = seconds the FINAL streaming line reported content unchanged ("last change Ns
+#                  ago") — INDEPENDENT stability evidence, computed ONLY from streaming lines (a
+#                  reasoning line's "last change" is not response-body stability).
+# The caller salvages iff laststream AND waits>=2 AND laststable>=$stable — a deliberately
+# CONSERVATIVE heuristic biased toward NOT cutting an active stream: oracle's own ambiguity (it
+# cannot tell "done" from "working" — the #458 bug) means no signal can prove completion, so we
+# accept rare MISSED recoveries (fall through to the hard cap) rather than risk a partial. In
+# oracle's observed behavior a finished response keeps emitting streaming heartbeats with a GROWING
+# "last change" for minutes before the indicator vanishes, so laststable is large in practice.
+_ultra_oracle_hung_signal() {
+  awk '
+    /ChatGPT thinking/ {
+      w = 0; seen = 1
+      if ($0 ~ /status=response streaming/) {
+        laststream = 1; laststable = 0
+        mm = 0; ss = 0
+        if (match($0, /last change [0-9]+m/)) { seg = substr($0, RSTART, RLENGTH); gsub(/[^0-9]/, "", seg); mm = seg + 0 }
+        if (match($0, /[0-9]+s ago/))         { seg = substr($0, RSTART, RLENGTH); gsub(/[^0-9]/, "", seg); ss = seg + 0 }
+        if (index($0, "last change") > 0)     { laststable = mm * 60 + ss }
+      } else {
+        laststream = 0   # reasoning / tool use was the most recent activity, not streaming
+      }
+    }
+    /no thinking status detected yet/ { if (seen) w++ }
+    END { print (w + 0) " " (laststable + 0) " " (laststream + 0) }
+  ' "$1" 2>/dev/null
+}
+
+_ultra_oracle_run_watched() {
+  local cap="$1" errf="$2"; shift 2
+  local pid grace stable sig waits laststable streamed start now elapsed ownrc _sig _signame _sigcode
+  "$@" >"$errf" 2>&1 &
+  pid=$!
+  # If this subshell is interrupted (INT/TERM/HUP) or exits before the watchdog reaches its own
+  # terminate, clean up the oracle child so it can't keep driving the browser consult orphaned.
+  # Each signal arm runs the BOUNDED `_uora_terminate` (TERM->KILL, never an indefinite wait even if
+  # oracle ignores TERM), clears the traps, then EXITS with that signal's conventional status
+  # (128+signum: INT->130, TERM->143, HUP->129) — preserving interruption identity WITHOUT re-raising.
+  # We deliberately avoid `kill -s <sig> $BASHPID`: BASHPID is a bash-4 builtin, UNSET on the repo's
+  # supported macOS bash 3.2, so under an inherited `set -u` it would abort the trap with an
+  # unbound-variable error before cleanup completes (Codex P2, PR #460). Encoding the identity in the
+  # exit code is bash-3.2-safe and equivalent for a disowned background subshell (nothing waits on
+  # its signal disposition). The EXIT arm handles a non-signal abnormal exit. All are cleared
+  # (`trap - …`) before every NORMAL return below so none fire on an already-reaped pid.
+  for _sig in INT:130 TERM:143 HUP:129; do
+    _signame="${_sig%%:*}"; _sigcode="${_sig##*:}"
+    # shellcheck disable=SC2064  # $_signame/$_sigcode expanded NOW (per-signal identity); $pid deferred
+    # `|| true` keeps the handler errexit-safe: _uora_terminate returns 143 on a normal kill, which
+    # under a caller's `set -e` would otherwise abort the trap before it clears traps / exits.
+    trap "_uora_terminate \"\$pid\" >/dev/null 2>&1 || true; trap - INT TERM HUP EXIT; exit $_sigcode" "$_signame"
+  done
+  trap '_uora_terminate "$pid" >/dev/null 2>&1 || true' EXIT
+  grace="${ULTRA_ORACLE_HUNG_GRACE:-45}";  case "$grace"  in ''|*[!0-9]*) grace=45;;  esac
+  # Minimum seconds the LAST streaming line must have reported content unchanged ("last change Ns
+  # ago") before a vanished indicator counts as completion — INDEPENDENT stability evidence (see
+  # the three-condition gate below). Guards against cutting an active stream.
+  stable="${ULTRA_ORACLE_HUNG_STABLE:-45}"
+  case "$stable" in ''|*[!0-9]*) stable=45;; esac
+  stable="${stable#"${stable%%[!0]*}"}"            # strip leading zeros ("045"->"45", "00"->"")
+  case "$stable" in '') stable=45;; esac           # 0/all-zero must NOT disable the stability guard
+  start="$(date +%s)"
+  # Iteration backstop: `date +%s` is WALL-CLOCK, so a backward system-clock adjustment could keep
+  # `elapsed` below cap and extend the run unbounded. The loop sleeps ~3s per turn, so a monotonic
+  # count bounds it regardless of clock: cap/3 turns for the cap itself + a SMALL slack (+10 ≈ 30s)
+  # for per-iteration work. Kept small on purpose — the .rc waiters give only cap+90s, and the
+  # subshell still needs its salvage harvest (<=30s) + write afterward, so a larger backstop could
+  # push .rc past the waiters' window. Whichever bound (elapsed OR iters) trips first ends the run.
+  local iters=0 maxiters
+  maxiters=$(( cap / 3 + 10 ))
+  while :; do
+    # Finished on its own: return oracle's rc — but REMAP a genuine 125 to 1 so the 125 sentinel
+    # below is produced EXCLUSIVELY by our own confirmed-hung exit and can never be forged by
+    # oracle happening to exit 125.
+    if ! kill -0 "$pid" 2>/dev/null; then
+      # errexit-safe: capture via `|| ownrc=$?` so a non-zero oracle exit under a caller's
+      # `set -e` cannot abort before ownrc is read (which would skip the .rc marker).
+      ownrc=0; wait "$pid" || ownrc=$?; [ "$ownrc" = 125 ] && ownrc=1
+      trap - INT TERM HUP EXIT; return "$ownrc"
+    fi
+    iters=$(( iters + 1 ))
+    now="$(date +%s)"; elapsed=$(( now - start ))
+    [ "$elapsed" -lt 0 ] && elapsed=0                 # clock went backward -> lean on the iters backstop
+    # Check the hung signature BEFORE the hard cap: if the confirmed-hung signature lands in the
+    # same interval the cap fires, the recoverable answer must win (125), not be misread as an
+    # ambiguous timeout (124).
+    if [ "$elapsed" -ge "$grace" ]; then
+      # Completed-but-hung detection over oracle's OWN heartbeat — the SHARED primitive
+      # _ultra_oracle_hung_signal (below), so the watchdog and its unit test can never drift.
+      sig="$(_ultra_oracle_hung_signal "$errf")"
+      waits="${sig%% *}"; streamed="${sig##* }"; laststable="${sig#* }"; laststable="${laststable%% *}"
+      case "$waits"      in ''|*[!0-9]*) waits=0;;      esac
+      case "$laststable" in ''|*[!0-9]*) laststable=0;; esac
+      case "$streamed"   in ''|*[!0-9]*) streamed=0;;   esac
+      if [ "$streamed" = 1 ] && [ "$waits" -ge 2 ] && [ "$laststable" -ge "$stable" ]; then
+        # Confirmed hung (indicator gone + content stable) -> salvage. But oracle may have exited
+        # NATURALLY in the window before this call; _uora_terminate returns its real status, so a
+        # raced-to-completion run is honored (its own rc) rather than forced to the 125 sentinel.
+        # errexit-safe: _uora_terminate returns 143 on a normal kill (non-zero), so capture via
+        # `|| ownrc=$?` lest a caller's `set -e` abort before the sentinel is translated.
+        ownrc=0; _uora_terminate "$pid" || ownrc=$?; trap - INT TERM HUP EXIT
+        case "$ownrc" in 143) return 125;; *) [ "$ownrc" = 125 ] && ownrc=1; return "$ownrc";; esac
+      fi
+    fi
+    if [ "$elapsed" -ge "$cap" ] || [ "$iters" -ge "$maxiters" ]; then   # hard cap (elapsed OR monotonic backstop); ambiguous -> no salvage
+      ownrc=0; _uora_terminate "$pid" || ownrc=$?; trap - INT TERM HUP EXIT
+      case "$ownrc" in 143) return 124;; *) [ "$ownrc" = 125 ] && ownrc=1; return "$ownrc";; esac
+    fi
+    sleep 3
+  done
+}
+
 # _ultra_oracle_diagnose_hint <err-file> -> print ONE human-actionable line (no
 # trailing newline) naming the operator's next step for a KNOWN oracle failure
 # signature, else print nothing. Matches the ABE / login / Cloudflare cases from
@@ -175,6 +433,10 @@ ultra_oracle_consult() {
   # destination busdriver did not pin: the confidentiality guarantee holds only because we
   # both pass --remote-host AND supply the credential exclusively in that same branch.
   local _uora_env_token=""
+  # Declared here (not only inside the attach branch) so the #458 salvage calls in the
+  # blocking/background paths can reference it in NON-attach runs without tripping `set -u`.
+  # The attach branch assigns it; salvage no-ops when it stays empty.
+  local _uora_target=""
   model="$(ultra_oracle_model)"; profile="$(ultra_oracle_chrome_profile)"
   cookie_path="$(ultra_oracle_cookie_path)"
   remote_host="$(ultra_oracle_remote_host)"; remote_token="$(ultra_oracle_remote_token)"
@@ -220,7 +482,7 @@ ultra_oracle_consult() {
     # the file when it picks its own), so it is resolved per-run and never pinned.
     # Fail CLOSED: without a live attach target oracle would silently fall back to
     # launching its own Chrome and walk straight back into the Cloudflare wall.
-    local _uora_pf _uora_target
+    local _uora_pf   # _uora_target hoisted above (referenced by #458 salvage in non-attach runs too)
     _uora_pf="$("$_ULTRA_ORACLE_PREFLIGHT" "$(ultra_oracle_attach_profile_dir)" 2>&1)" || {
       echo "ultra-oracle: attach preflight failed — ${_uora_pf}" >&2
       printf 'error'; return 1
@@ -321,10 +583,33 @@ ultra_oracle_consult() {
       # Capture oracle STDOUT+STDERR to "$out.err" (B8): oracle emits its failure
       # diagnostics on STDOUT, so the old >/dev/null 2>&1 discarded them and every
       # failure looked silent. Keep the file on failure for diagnosis; remove on success.
-      ORACLE_REMOTE_TOKEN="$_uora_env_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" 2>&1; _uora_bg_rc=$?
+      # #458: ONLY the attach path gets the completed-but-hung watchdog + salvage — it is the
+      # sole mode where the answer survives in a live tab AND where oracle forks no Chrome to
+      # orphan. Non-attach modes run under `_portable_timeout` EXACTLY as the pre-#458 background
+      # path did — this PR does not alter their teardown (whatever `timeout(1)`/the perl fallback
+      # do about oracle's launched Chrome is unchanged, in or out of scope of #458), and no
+      # salvage is possible there without a live tab.
+      if ultra_oracle_attach_running && [[ -n "$_uora_target" ]]; then
+        ORACLE_REMOTE_TOKEN="$_uora_env_token" _ultra_oracle_run_watched "${cap}" "$out.err" oracle "$@"; _uora_bg_rc=$?
+        # Salvage ONLY on positive completion evidence: 125 = confirmed completed-but-hung (stream
+        # ended), or exit-0-but-empty (oracle concluded, extraction raced). NOT on a plain 124
+        # hard cap — that response may still be mid-stream, and harvesting a partial would promote
+        # an incomplete answer to a verdict. Harvest re-reads the live tab and normalizes to 0.
+        if [[ "$_uora_bg_rc" = 125 ]] || { [[ "$_uora_bg_rc" = 0 ]] && ! _ultra_oracle_verdict_ok "$out"; }; then
+          _ultra_oracle_salvage "$out" "$cap" "$_uora_target" && _uora_bg_rc=0
+        fi
+        # A confirmed-hung run that salvage did NOT recover is still a timeout to the caller.
+        [[ "$_uora_bg_rc" = 125 ]] && _uora_bg_rc=124
+      else
+        ORACLE_REMOTE_TOKEN="$_uora_env_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" 2>&1; _uora_bg_rc=$?
+      fi
       # Map exit-0-but-empty-verdict to failure so the .rc matches blocking mode's
-      # fail-closed contract (timeout already surfaces as rc 124).
+      # fail-closed contract (timeout already surfaces as rc 124). Salvage may have fixed it.
       [[ "$_uora_bg_rc" = 0 ]] && ! _ultra_oracle_verdict_ok "$out" && _uora_bg_rc=1
+      # On ANY non-success, clear $out: a hard-capped/killed oracle can leave a PARTIAL verdict
+      # there (it writes --write-output directly), and though the waiters gate on .rc=0, a stale
+      # partial next to a 124 marker is a latent misread. Success keeps the (salvaged/normal) body.
+      [[ "$_uora_bg_rc" != 0 ]] && : > "$out" 2>/dev/null
       if [[ "$_uora_bg_rc" = 0 ]]; then
         rm -f "$out.err" "$out.hint"   # success: drop the captured stdout + any stale hint
       else
@@ -353,10 +638,19 @@ ultra_oracle_consult() {
   local rc=0 _hint=""
   ORACLE_REMOTE_TOKEN="$_uora_env_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" || rc=$?
   if [[ "$rc" = 124 ]]; then
+    # #458 NOTE: blocking mode does NOT salvage on a bare timeout. Without the background
+    # watchdog's heartbeat analysis a blocking timeout is ambiguous — the response could be
+    # completed-but-hung OR genuinely still streaming — and harvesting a mid-stream tab would
+    # promote a PARTIAL to a verdict. Blocking still recovers the safe case (exit-0-but-empty,
+    # where oracle concluded) below. The completed-but-hung recovery is a background-mode
+    # (blueprint-review / council) feature, which is where #458 actually bites.
     # A login/Cloudflare wall that never clears also manifests AS a timeout — the
     # partial page oracle wrote to $out.err before the cap fired can still carry the
     # signature, so name the operator's next step here too, not only on hard errors.
     _hint="$(_ultra_oracle_diagnose_hint "$out.err")"; [[ -n "$_hint" ]] && echo "ultra-oracle: $_hint" >&2
+    # Clear any PARTIAL a killed oracle wrote to $out via --write-output — a timeout must leave no
+    # misleading verdict artifact behind (the caller ignores $out on non-ok status, but be tidy).
+    : > "$out" 2>/dev/null
     echo "ultra-oracle: timed out after ${cap}s — oracle STDOUT captured at $out.err" >&2; printf 'timeout'; return 124
   fi
   if [[ "$rc" != 0 ]]; then
@@ -365,10 +659,13 @@ ultra_oracle_consult() {
     _hint="$(_ultra_oracle_diagnose_hint "$out.err")"; [[ -n "$_hint" ]] && echo "ultra-oracle: $_hint" >&2
     echo "ultra-oracle: oracle exited $rc — STDOUT/diagnostics captured at $out.err" >&2; printf 'error'; return 1
   fi
-  _ultra_oracle_verdict_ok "$out" || {
+  if ! _ultra_oracle_verdict_ok "$out"; then
+    # exit 0 but empty/degenerate verdict — extraction can race the stream (#458). Re-read
+    # the stable tab once (attach mode) before failing closed.
+    if _ultra_oracle_salvage "$out" "$cap" "$_uora_target"; then rm -f "$out.err"; printf 'ok'; return 0; fi
     _hint="$(_ultra_oracle_diagnose_hint "$out.err")"; [[ -n "$_hint" ]] && echo "ultra-oracle: $_hint" >&2
     echo "ultra-oracle: exit 0 but missing/degenerate verdict — oracle STDOUT at $out.err" >&2; printf 'error'; return 1
-  }   # exit 0 but missing/degenerate verdict = fail-closed
+  fi   # exit 0 but missing/degenerate verdict = fail-closed (unless salvaged)
   rm -f "$out.err"   # success: drop the captured stdout
   printf 'ok'; return 0
 }

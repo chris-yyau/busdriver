@@ -78,9 +78,12 @@ fi
 # Poll a grace margin BEYOND the oracle timeout cap: on a REAL timeout the background
 # child writes .rc (and .hint) only AFTER _portable_timeout kills oracle at t=cap, so a
 # wait that stops at exactly cap races the child and reads both files empty — emitting a
-# generic "FAILED [timeout]" with no hint. The +10s slack lets the completion marker and
-# the actionable hint land first.
-_n=0; _cap=$(( $(ultra_oracle_timeout_cap) + 10 ))
+# generic "FAILED [timeout]" with no hint. The +90s slack lets the completion marker and
+# the actionable hint land first — and covers the #458 post-cap salvage harvest
+# (ULTRA_ORACLE_SALVAGE_CAP, default 30s) that can run after a full-cap watched run before
+# the .rc is written. The common #458 case early-kills in seconds, so this only widens the
+# rare worst-case ceiling, not the typical wait.
+_n=0; _cap=$(( $(ultra_oracle_timeout_cap) + 90 ))
 while [[ ! -f "$OUT.rc" && "$_n" -lt "$_cap" ]]; do sleep 2; _n=$((_n + 2)); done
 _rc="$(cat "$OUT.rc" 2>/dev/null)"
 # A human-actionable hint (#340) the adapter persisted for a known failure (cookie

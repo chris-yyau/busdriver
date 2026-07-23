@@ -63,15 +63,17 @@ not a real boundary:
    a compromised session.
 
 4. **The mitigating controls (detection + a bounded threat), not a proof of safety:**
-   - **Contained upstream gates give a detection opportunity — not immunity.** litmus
-     (pre-commit / pre-PR) and the pre-merge gate run under `env -i` (ADR 0016) and
-     review the PR diff *before* the dispatcher merges, so a malicious
-     `.claude/settings.json` `env` block is a diff line those contained reviews put in
-     front of the operator. That raises the odds the injection is *seen*. It does
-     **not** make the merge safe: a PreToolUse gate inspects a command *before* it
-     runs, so once the session is already poisoned (a prior Bash call sourced
-     `BASH_ENV` / hit a shimmed `PATH`), a later credentialed call can act or forge
-     review state without a fresh hook firing. The gates reduce, they do not eliminate.
+   - **Contained upstream review gives a detection opportunity — not immunity.** The
+     litmus gates (pre-commit / pre-PR) run under `env -i` (ADR 0016) and *review the PR
+     diff* before the dispatcher merges, so a malicious `.claude/settings.json` `env`
+     block is a diff line litmus puts in front of the operator. (The pre-merge gate does
+     **not** review the diff — it only enforces the resulting marker + required-check
+     state; the diff-level detection is litmus's.) That raises the odds the injection is
+     *seen*. It does **not** make the merge safe: a PreToolUse gate still fires on a later
+     credentialed Bash call, but it runs *before* that command executes and neither
+     sanitizes the already-poisoned dispatcher session nor controls which `gh`/`git`
+     child a shimmed `PATH` / sourced `BASH_ENV` then selects — so the call can still act
+     or forge review state. The gates reduce, they do not eliminate.
    - **The dispatcher is not itself a review boundary.** Its safety rests on the human
      reading the contained review above, plus the operational bound below — not on any
      containment of its own calls.

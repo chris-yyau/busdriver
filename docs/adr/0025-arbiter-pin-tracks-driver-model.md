@@ -60,7 +60,10 @@ resilience fallback.
    `model_pin_status=driver_fable`.
 3. **Ultimate-arbiter opt-in is retained, re-scoped to "force fable when driving
    `opus`."** The USER-level opt-in (and the "ultimate arbiter" trigger phrase)
-   still force-pin `fable` regardless of driver. `model_pin_status=ultimate_arbiter_fable`.
+   force-pin `fable` when the driver is not already `fable`, recording
+   `model_pin_status=ultimate_arbiter_fable`. When the driver IS `fable`, the
+   automatic driver-fable trigger (step 2) already pins `fable`, and the status
+   stays `model_pin_status=driver_fable` — the opt-in has nothing left to force.
 4. **Degrade-to-opus is fail-closed and loud on both fable triggers.** If the
    fable subagent fails, fall back to `opus`, record the matching degraded status
    (`driver_fable_unavailable` or `ultimate_arbiter_unavailable`, + `run_degraded=true`),

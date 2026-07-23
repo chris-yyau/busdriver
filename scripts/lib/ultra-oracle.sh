@@ -337,14 +337,19 @@ _ultra_oracle_hung_signal() {
 # BOTH the --browser-tab handle AND the answer preview the stability guard compares across probes.
 _ultra_oracle_tab_ref() {
   awk -v sid="$2" '
-    # Accumulate matches; emit ONLY if EXACTLY ONE completed tab carries this session. If two tabs
-    # ever share the session (a nonce collision, or oracle transiently double-binding), fail CLOSED —
-    # ambiguous state must not pick an arbitrary tab to kill/harvest (PR #460 HIGH).
-    function flush() { if (sess == sid && status == "completed" && haslast && tid ~ /^[A-Za-z0-9]+$/) { n++; out = tid "\t" lastv } }
+    # Accumulate ANY block bound to this session (n), regardless of status, and separately remember
+    # whether one of them is the completed match (out/completed_match). Emit ONLY if EXACTLY ONE tab
+    # total shares this session AND it is the completed one. Counting by status alone (completed-only)
+    # missed the case of a stale completed tab plus a CURRENT running tab sharing the same session —
+    # that split is the reused-session ambiguity too (an in-flight consult under the same session
+    # would have its still-running tab masked, and the stale completed tab wrongly harvested as the
+    # answer). Any second tab on the same session — completed or not — must fail CLOSED, not just a
+    # second completed one (Greptile P1, PR #465).
+    function flush() { if (sess == sid) { n++; if (status == "completed" && haslast && tid ~ /^[A-Za-z0-9]+$/) { out = tid "\t" lastv; completed_match = 1 } } }
     /^- / { flush(); tid = $2; status = $3; sess = ""; haslast = 0; lastv = "" }   # new tab block: "- <TARGET-ID> <status> …"
     /^[[:space:]]*session=/ { s = $0; sub(/^[[:space:]]*session=/, "", s); sess = s }
     /^[[:space:]]*last=/    { l = $0; sub(/^[[:space:]]*last=/, "", l); if (length(l) > 0) { haslast = 1; lastv = l } }
-    END { flush(); if (n == 1) print out }
+    END { flush(); if (n == 1 && completed_match) print out }
   ' "$1" 2>/dev/null
 }
 

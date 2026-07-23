@@ -905,6 +905,16 @@ Browser Tabs 127.0.0.1:55022' 'verify-458-fix')" ] || { echo "FAIL tab-ref fired
 - BBBB completed model=Pro turns=1 stop=no send=no
   session=verify-458-fix
   last=other answer' 'verify-458-fix')" ] || { echo "FAIL tab-ref did not fail closed on duplicate-session tabs"; FAIL=1; }
+# AMBIGUOUS (Greptile P1, PR #465): ONE completed + ONE running tab share the session -> FAIL CLOSED
+# (empty). Counting only completed tabs previously let this through and returned the stale completed
+# tab's target-id even though the SAME session has a tab still `running` — the reused-session failure
+# mode this guard exists for, just split across statuses instead of two `completed` tabs.
+[ -z "$(_tab '- AAAA completed model=Pro turns=1 stop=no send=no
+  session=verify-458-fix
+  last=stale prior answer
+- BBBB running model=Pro turns=1 stop=no send=no
+  session=verify-458-fix
+  last=' 'verify-458-fix')" ] || { echo "FAIL tab-ref did not fail closed on completed+running duplicate-session tabs"; FAIL=1; }
 
 # P2 (Codex #460): the watched-run signal trap must be bash-3.2-safe — NO BASHPID (unset on macOS
 # bash 3.2, aborts under `set -u`). Run a watched `sleep` UNDER `set -u`, TERM it, and assert it

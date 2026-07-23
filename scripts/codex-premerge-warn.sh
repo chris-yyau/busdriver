@@ -42,7 +42,7 @@ emit() { printf '%s\n' "$1"; exit 0; }
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACTIVE_REPO="$DIR/codex-active-repo.sh"
 PROBE="$DIR/codex-engagement-probe.sh"
-[ -f "$ACTIVE_REPO" ] && [ -f "$PROBE" ] || emit silent
+if [ ! -f "$ACTIVE_REPO" ] || [ ! -f "$PROBE" ]; then emit silent; fi
 
 # ── Force-on marker (checked before the active-repo lookup) ──────────────
 # Resolved EXACTLY where codex-nudge-premerge.sh resolves it: the MAIN repo root

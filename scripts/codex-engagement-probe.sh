@@ -74,10 +74,19 @@ gh_api_logins() {
     return 1
 }
 
-REVIEW_LOGINS=$(gh_api_logins "repos/$OWNER/$NAME/pulls/$PR/reviews") || {
-    echo "ℹ️  codex-engagement-probe: reviews fetch failed → unknown." >&2; emit unknown; }
-REACTION_LOGINS=$(gh_api_logins "repos/$OWNER/$NAME/issues/$PR/reactions") || {
-    echo "ℹ️  codex-engagement-probe: reactions fetch failed → unknown." >&2; emit unknown; }
+# Fetched in parallel — the caller wraps this whole script (plus
+# codex-active-repo.sh) in a single shrinking outer budget (as low as 2s,
+# default 8s), so sequential retries here would consume a disproportionate
+# share of an already-tight window.
+TMP_REV=$(mktemp) TMP_REACT=$(mktemp)
+trap 'rm -f "$TMP_REV" "$TMP_REACT"' EXIT
+gh_api_logins "repos/$OWNER/$NAME/pulls/$PR/reviews" >"$TMP_REV" & pid_rev=$!
+gh_api_logins "repos/$OWNER/$NAME/issues/$PR/reactions" >"$TMP_REACT" & pid_react=$!
+wait "$pid_rev";   rc_rev=$?
+wait "$pid_react"; rc_react=$?
+REVIEW_LOGINS=$(cat "$TMP_REV"); REACTION_LOGINS=$(cat "$TMP_REACT")
+[ "$rc_rev" -eq 0 ]   || { echo "ℹ️  codex-engagement-probe: reviews fetch failed → unknown." >&2; emit unknown; }
+[ "$rc_react" -eq 0 ] || { echo "ℹ️  codex-engagement-probe: reactions fetch failed → unknown." >&2; emit unknown; }
 
 # Bare OR [bot]-suffixed login (ADR 0002 / ack-ledger.sh) — GitHub returns either.
 if printf '%s\n%s\n' "$REVIEW_LOGINS" "$REACTION_LOGINS" \

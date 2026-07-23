@@ -148,18 +148,31 @@ into spurious blocks (a DoS) — exactly the silent channel this ADR closes. An 
 settable only via `hooks.json` (review-visible code), never that env channel. The bare
 non-gate registrations do not pass the arg, so their historical fail-open is unchanged.
 
-**Accepted residual — `mcp-health-check`.** Its exit-2 paths are env-DRIVEN
-(`exitCode: shouldFailOpen() ? 0 : 2`, gated on `ECC_MCP_HEALTH_FAIL_OPEN`, plus ≥4
-other behavior-affecting vars), so `env -i` would *change* its behavior, not merely
-strip the injection flag — containing it needs those legit vars re-imported, a separate
-scoped task. Note the default is fail-CLOSED but that does NOT bound the PR-injection
-risk: a committed settings `env` block can set `ECC_MCP_HEALTH_FAIL_OPEN` and force the
-`? 0 : 2` fail-OPEN branch. What bounds it instead is IMPACT — `mcp-health-check` gates
-MCP server *connectivity/health*, not code-review or commit/PR/merge enforcement. An
-injected fail-open degrades health-gating availability; it does NOT bypass any of the
-review/enforcement gates this ADR protects. It is left uncontained as documented residual. The remaining
-reminder/logger/telemetry node hooks make no allow/block decision and stay out of
-scope. `tests/test-node-hook-containment.sh` guards this split: a NEW node hook whose
+**`mcp-health-check` — was accepted residual, now CONTAINED (#351).** Originally
+deferred: its exit-2 paths are env-DRIVEN (`exitCode: shouldFailOpen() ? 0 : 2`, gated
+on `ECC_MCP_HEALTH_FAIL_OPEN`, plus ≥4 other behavior-affecting vars), so `env -i` was
+thought to require re-importing those "legit" vars. #351 resolved this differently — and
+more securely — by removing the dependency instead of re-importing it:
+
+- The one env var the hook genuinely needed for correctness under `env -i` + `cd /` was
+  the repo cwd (to find project-scoped `.claude.json`). It now reads that from the hook
+  **payload** `cwd` (same pattern as `config-protection.js`), so `process.cwd()` being
+  `/` no longer blinds config resolution. `tests/test-mcp-health-payload-cwd.sh` pins it.
+- The other `ECC_MCP_*` vars turned out to be pure attack surface on the sanitized
+  production path: they are intentionally not re-imported there (the repo's own test
+  harness sets `ECC_MCP_HEALTH_STATE_PATH`, and direct (non-sanitized) launches still
+  support environment-based configuration), but nothing on the `env -i` production path
+  sets them, and two are outright dangerous —
+  `ECC_MCP_HEALTH_FAIL_OPEN` (a committed settings `env` block flips the `? 0 : 2` branch
+  fail-OPEN) and **`ECC_MCP_RECONNECT_COMMAND` / `ECC_MCP_RECONNECT_*`**, which flow into
+  `spawnSync(cmd, {shell: true})` — a repo-injectable **shell-exec** vector this ADR's
+  original residual note did not credit. `env -i` wipes all of them for free. The
+  operator loses env-var tunability of the health check (deliberate; re-import selectively
+  if a real need appears). The `mcp__.*` matcher (narrowed from `*`) also stops the hook
+  launching node on every non-MCP tool call.
+
+The remaining reminder/logger/telemetry node hooks make no allow/block decision and
+stay out of scope. `tests/test-node-hook-containment.sh` guards this split: a NEW node hook whose
 exit-2 uses a *recognized* form (`process.exit(2)`, `exitCode: 2` / `= 2`, or the
 `? 0 : 2` ternary) and is neither contained nor listed as residual fails the suite.
 The discovery grep is a heuristic, not a proof of completeness — a hook that hides
@@ -222,16 +235,18 @@ a solo repo whose hook set changes rarely.
   `BASH_ENV` that `bash -c` *does* source (a `BASH_ENV` script that `exit 0`s suppresses
   the command only under `bash -c`). The single way this reopens is an upstream change to
   invoke hooks via `bash -c` — recorded as a revisit trigger.
-- The three pure-block `node` gate hooks are now CONTAINED via `sanitized-node.sh`
-  (Task 3, see Scope). `mcp-health-check` (env-driven exit-2, defaults fail-closed) is
-  accepted residual; the remaining `node` reminder/logger/telemetry hooks make no
-  allow/block decision and stay env-exposed (out of scope).
+- Four `node` gate hooks are now CONTAINED via `sanitized-node.sh`: the three pure-block
+  hooks (Task 3, see Scope) plus `mcp-health-check` (#351 — it reads its repo cwd from the
+  hook payload instead of `process.cwd()`, so `env -i` no longer changes its behavior and
+  also wipes its `ECC_MCP_RECONNECT_COMMAND` shell-exec + `ECC_MCP_HEALTH_FAIL_OPEN`
+  channels). The remaining `node` reminder/logger/telemetry hooks make no allow/block
+  decision and stay env-exposed (out of scope).
 
 ## Revisit trigger
 
 - A second approval-capable human is added (repo stops being solo-operator) → tighten
-  the residuals above (pin `CLAUDE_PLUGIN_ROOT`, contain `mcp-health-check` by
-  re-importing its legitimate vars, re-examine `HOME`).
+  the residuals above (pin `CLAUDE_PLUGIN_ROOT`, re-examine `HOME`). (`mcp-health-check`
+  is already contained — #351.)
 - Claude Code gains a first-class "don't honor project-`settings.json` `env` for
   security-relevant keys" control → prefer it and simplify this wrapper.
 - Claude Code changes hook execution from `sh -c` to `bash -c` (or any bash-named shell)

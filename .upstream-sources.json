@@ -1265,7 +1265,7 @@
     {
       "path": "scripts/hooks/mcp-health-check.js",
       "source": "ecc",
-      "status": "sync",
+      "status": "custom",
       "upstream_path": "scripts/hooks/mcp-health-check.js"
     },
     {

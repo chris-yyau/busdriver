@@ -449,6 +449,55 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        legitimate grinds; loosening them silently allows the
   │        relabel-as-out-of-scope failure mode the rails exist to catch.
   │
+  ├── Codex first-engagement nudge on the CLEAN path (one-shot per HEAD) — issue #467.
+  │     # Fire the `none`-case nudge the INSTANT a round converges to clean, decoupled
+  │     # from the COMPLETION merge machinery. Be precise about the gap this closes:
+  │     # within a faithful top-to-bottom COMPLETION run the nudge ALREADY precedes the
+  │     # Branch-Currency (BEHIND) and Approver-Gap bails (COMPLETION nudge ~L1328 <
+  │     # BEHIND ~L1642 < approver-gap ~L1805), so ordering-within-COMPLETION is not the
+  │     # bug. The bug is that COMPLETION can be SKIPPED WHOLESALE: a dispatcher that
+  │     # front-runs a cheap read-only merge-state probe (`gh pr view --json
+  │     # mergeStateStatus` + relevant-check-status.sh) to pick the merge path, sees a
+  │     # terminal BEHIND / approver-gap, and surfaces that decision WITHOUT ever entering
+  │     # COMPLETION — so COMPLETION's nudge never runs and a never-engaged Codex is
+  │     # silently skipped on exactly the PRs that end in an operator bail. Firing here,
+  │     # before any merge-path branching, makes the nudge independent of that shortcut;
+  │     # the bounded grace POLL stays in COMPLETION (it only matters right before merge).
+  │     # Safe against the COMPLETION re-nudge: codex-retrigger.sh's one-shot per-(PR,HEAD)
+  │     # marker dedupes the POST, so at most one `@codex review` is ever posted per HEAD.
+  │     # COST (stated honestly, per the #467 review): on a clean `none` round this block runs
+  │     # the wrapper's detection (`gh repo view` + the Codex-active GraphQL probe) ONCE, and
+  │     # COMPLETION later re-derives active-ness independently — so a Codex-active / force-on
+  │     # repo pays ONE extra codex-active probe per clean-none merge vs. pre-#467. This is a
+  │     # deliberate, bounded tradeoff: the marker dedupes the POST (never a double `@codex
+  │     # review`), but NOT the detection, because COMPLETION needs genuine active-ness for its
+  │     # "engaged on recent PRs" warning + full-grace wait and a nudge-marker cannot supply
+  │     # that (it conflates force-on/kill-switched with historical activity). A detection-result
+  │     # breadcrumb WOULD remove the extra probe but is not worth another per-HEAD state
+  │     # artifact + arg plumbing on an already network-heavy merge path (codex-rescue concurred).
+  │     # The kill-switch gate below zeros BOTH probes for a Codex-less repo that sets
+  │     # PR_GRIND_CODEX_RETRIGGER=0 (Codex integration off) — the same switch gates COMPLETION's
+  │     # detection. Force-on repos under the kill switch are still covered by COMPLETION's
+  │     # force-on path when it is reached.
+  │     # Guard uses the worker-emitted RESULT_CODEX_ACK: on the clean path Invariant 2
+  │     # already proved it is not `stale`, so it is a <short-sha> (Codex engaged — no
+  │     # nudge) or `none` (never engaged — nudge). Empty (legacy worker) is `!= none`,
+  │     # so old-contract workers no-op exactly as before.
+  │     If RESULT_STATUS == clean AND RESULT_CODEX_ACK == "none" AND the Codex kill switch
+  │        is off (`${PR_GRIND_CODEX_RETRIGGER:-1}` != "0"), run this block BEFORE
+  │        proceeding to COMPLETION. Per the "CWD Reset Across Bash Calls" contract it
+  │        MUST open with `cd "$WORKTREE_DIR"` (template-substituted Step 0 path; the repo
+  │        root under --no-worktree) so the wrapper's CWD-derived force-on root and the
+  │        delegated CWD-relative marker resolve against the PR's own repo. `$PR_NUMBER`
+  │        is the Step 0 literal; HEAD and owner/repo are read inside the correct worktree
+  │        after the cd (owner/repo is passed so codex-active-repo.sh can auto-detect —
+  │        it treats an empty repo arg as inactive, which would silently drop auto-detect
+  │        to force-on-only). The subshell ABORTS on a bad worktree (`|| exit 0`); the
+  │        outer `|| true` keeps a failed nudge from ever blocking the clean path:
+  │          ( cd "$WORKTREE_DIR" || exit 0
+  │            bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-nudge-if-expected.sh" "$PR_NUMBER" \
+  │              "$(git rev-parse HEAD)" "$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo)" || true )
+  │
   ├── Classify round and increment the appropriate counter:
   │     # ONLY runs on RESULT_STATUS=needs_more — bail and clean rounds skip this
   │     # block via the earlier branch in "Parse subagent output". This is
@@ -1236,6 +1285,16 @@ if [ "$CODEX_DONE" = "none" ]; then
   # call entirely when the nudge is kill-switched off (PR_GRIND_CODEX_RETRIGGER=0) —
   # a disabled repo pays no network round-trip and gets no warning. Stdout is
   # discarded; the detector's stderr diagnostic still reaches the transcript.
+  # Detection here is INDEPENDENT of the clean-path hoist's own probe (issue #467). We do
+  # NOT reuse the hoist's one-shot nudge marker to short-circuit this: marker presence means
+  # "a nudge was posted" (force-on OR active), which is NOT the same as "historically active"
+  # — CODEX_REPO_ACTIVE gates the "engaged on recent PRs" warning and the full-grace wait, so
+  # deriving it from the marker would emit a false warning for force-on repos and would honor
+  # a marker written before the kill switch was set. So COMPLETION re-derives active-ness from
+  # scratch. The accepted consequence: on a clean `none` round a Codex-active/force-on repo
+  # pays ONE extra codex-active probe (the hoist's), on top of this one — a deliberate, bounded
+  # tradeoff for firing the nudge before any merge-path shortcut. A Codex-less repo zeros BOTH
+  # probes with PR_GRIND_CODEX_RETRIGGER=0 (the same kill switch gates the hoist and this call).
   if [ "${PR_GRIND_CODEX_RETRIGGER:-1}" != "0" ] \
      && bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-active-repo.sh" "$OWNER/$REPO" >/dev/null; then
     CODEX_REPO_ACTIVE=1
@@ -1272,10 +1331,14 @@ if [ "$CODEX_DONE" = "none" ]; then
       echo 1; else echo 0; fi )
   case "$CODEX_EXPECTED" in 1) : ;; *) CODEX_EXPECTED=0 ;; esac
   if [ "${CODEX_GRACE}" -gt 0 ] 2>/dev/null; then
-  # `none`-nudge (one-shot per (PR,HEAD)) — ADR 0013 (as revised). Post `@codex
-  # review` ONCE, here, AFTER CI has settled (COMPLETION is post-convergence) so we
-  # never race normal auto-trigger latency, then let the bounded grace re-poll below
-  # observe the result. The wrapper nudges on force-on OR the auto-detect bit, passed
+  # `none`-nudge (one-shot per (PR,HEAD)) — ADR 0013 (as revised). Idempotent BACKSTOP:
+  # the clean-path hoist in the LOOP (issue #467) already posted this the instant the
+  # round converged, so on the normal path the shared one-shot marker makes this call a
+  # no-op. It still runs here to (a) cover COMPLETION reached via the ADR 0012 downgrade
+  # path (which bypasses the clean-path hoist) and (b) seed the grace re-poll below with
+  # a guaranteed-posted nudge. Post `@codex review` AFTER CI has settled (COMPLETION is
+  # post-convergence) so we never race normal auto-trigger latency, then let the bounded
+  # grace re-poll below observe the result. The wrapper nudges on force-on OR the auto-detect bit, passed
   # POSITIONALLY as $CODEX_REPO_ACTIVE (arg #4) — NOT an env var, which a committed
   # .claude/settings.json env block could inject (#325 / ADR 0016). Absent both it is
   # a no-op (non-gating `none`, exactly as before). Shared one-shot marker → at most

@@ -43,6 +43,118 @@ block_emit() {
     fi
 }
 
+# ── ADR 0024: non-gating missing-Codex advisory ──────────────────────
+# Returns the operator-facing warning STRING on stdout when the repo is
+# Codex-active-or-force-on AND Codex has not engaged on the PR; empty otherwise.
+#
+# NEVER propagates a failure to the gate's ERR trap (constraint 1): the entire
+# detection runs in an ISOLATED subshell (ERR trap cleared, errexit/pipefail/
+# nounset off) whose only stdout is the message, with a hard `|| true` backstop.
+# Bounded by ONE outer `timeout` shared across BOTH network sub-checks — active
+# detection and the engagement probe (constraint 2); if no bounding tool is
+# present at runtime, stays silent (constraint 2 — verify, don't assume). Fails
+# toward silence on every error/timeout/ambiguity (constraint 3). Read-only:
+# delegates to read-only helpers, posts nothing (constraint 7).
+codex_none_warning() {
+    local repo_dir="$1" pr="$2" override="${3:-yes}" helper_dir
+    # Kill switch: zero network, zero output (constraint 4).
+    [ "${PR_GRIND_CODEX_RETRIGGER:-1}" = "0" ] && return 0
+    # Repo/host override on the merge command → the origin-derived target may be
+    # wrong, so stay silent rather than warn about the wrong repo (constraint 5).
+    [ "$override" = "yes" ] && return 0
+    case "$pr" in ''|*[!0-9]*) return 0 ;; esac
+    # Resolve the TRUSTED plugin scripts dir from the gate's own location
+    # ($CLAUDE_PLUGIN_ROOT/scripts), never a repo/worktree copy (constraint 10).
+    helper_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/../../scripts" || return 0
+
+    (
+        trap - ERR
+        set +eo pipefail 2>/dev/null || true
+        set +u
+
+        warn_script="$helper_dir/codex-premerge-warn.sh"
+        [ -f "$warn_script" ] || exit 0
+
+        # Resolve owner/repo from the BASE repo's origin (constraint 5). Fall to
+        # silence if origin can't be confirmed a plain github.com owner/repo
+        # (fork checkout, GHE host, > owner/repo) — querying the wrong repo would
+        # yield a false none. Same canonicalization as codex-nudge-premerge.sh,
+        # PLUS a userinfo strip (`s#^[^/@]*@##`) so credentialed HTTPS origins
+        # (token-auth checkouts, e.g. `https://x-access-token:TOKEN@github.com/…`)
+        # don't leave the token's `:` mistaken for the git@ scp-style separator —
+        # without it, canon starts with the credential prefix instead of
+        # `github.com/` and the match below silently exits, suppressing the
+        # advisory on common CI/token-auth checkouts (Greptile #461).
+        url=$(git -C "$repo_dir" remote get-url origin 2>/dev/null)
+        canon=$(printf '%s' "$url" | sed -E 's#^git@#https://#; s#^https?://##; s#^[^/@]*@##; s#:#/#; s#\.git/?$##; s#/+$##')
+        case "$canon" in github.com/*/*) : ;; *) exit 0 ;; esac
+        case "$canon" in github.com/*/*/*) exit 0 ;; esac
+        slug="${canon#github.com/}"
+        owner="${slug%%/*}"; name="${slug#*/}"
+        [ -n "$owner" ] && [ -n "$name" ] || exit 0
+        printf '%s' "$owner$name" | LC_ALL=C grep -q '[^A-Za-z0-9._-]' && exit 0
+
+        # Bounding tool — VERIFY present, do not assume (constraint 2). Homebrew
+        # coreutils supplies gtimeout; GNU timeout elsewhere. Absent → silent.
+        bound=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+        [ -n "$bound" ] || exit 0
+
+        # RESERVE the advisory budget inside the outer hook timeout (constraint 2).
+        # The gate already did unbounded work before this point (notably a
+        # `gh pr checks` network call on the marker path), so a fixed budget could
+        # still push total wall-time past the outer cap and let the harness kill an
+        # AUTHORIZED merge. Instead, cap the advisory to whatever time remains:
+        #   remaining = outer_cap - elapsed(SECONDS) - margin(kill-after + emit).
+        # If too little remains, skip entirely (silent) — the advisory NEVER
+        # extends the gate past the cap. SECONDS is whole-second elapsed since the
+        # gate started; coarse but conservative (rounds elapsed down → smaller,
+        # safer budget). hooks.json passes CODEX_WARN_OUTER_BUDGET explicitly,
+        # co-located with its own "timeout" value on the same command line, so
+        # the two numbers can't silently drift apart (CodeRabbit PR #461); the
+        # :-20 fallback only covers direct/manual invocation outside the hook.
+        outer=${CODEX_WARN_OUTER_BUDGET:-20}
+        budget=${CODEX_WARN_BUDGET:-8}
+        remaining=$(( outer - SECONDS - 4 ))
+        [ "$remaining" -lt "$budget" ] && budget="$remaining"
+        [ "$budget" -lt 2 ] && exit 0    # not enough headroom → silent
+
+        # ONE budget over the entire predicate (active detection + probe).
+        # --kill-after gives a hard stop; on timeout the child exits nonzero →
+        # state stays empty → silent.
+        state=$("$bound" -k 2 "$budget" bash "$warn_script" "$owner/$name" "$pr" "$repo_dir" 2>/dev/null | head -n1) || state=""
+        [ "$state" = "warn" ] || exit 0
+
+        # shellcheck disable=SC2016  # backticks are LITERAL message text, not a substitution
+        printf '⚠️ Codex is ACTIVE on this repo but has not engaged on PR #%s — merging without Codex engagement. To wait for one: post `@codex review` and re-run /pr-grind.' "$pr"
+    ) 2>/dev/null || true
+}
+
+# ── ADR 0024: single allow epilogue ──────────────────────────────────
+# The ONE terminal all three substantive allow sites route through (operator
+# skip, pr-grind-clean marker + CI, bootstrap bypass). Emits the non-gating
+# missing-Codex advisory as a top-level `systemMessage` — operator-visible and
+# carrying NO decision/permissionDecision, so it never gates (constraint 8) —
+# then runs the pre-existing approve (bare exit 0). When silent, stdout is empty:
+# byte-for-byte identical to the old bare `exit 0` on every allow path. Deny
+# paths never reach here, so they never emit the advisory and never run any
+# Codex command.
+allow_merge() {
+    # $1 = reason label (readability/telemetry only; not emitted).
+    local _msg=""
+    _msg=$(codex_none_warning "${REPO_DIR:-}" "${MERGE_PR_NUM:-}" "${REPO_OVERRIDE:-yes}") || _msg=""
+    if [ -n "$_msg" ]; then
+        if command -v jq &>/dev/null; then
+            jq -n --arg m "$_msg" '{systemMessage:$m}' 2>/dev/null || true
+        elif command -v python3 &>/dev/null; then
+            { printf '%s' "$_msg" | python3 -I -c 'import json,sys; sys.stdout.write(json.dumps({"systemMessage": sys.stdin.read()}))'; printf '\n'; } 2>/dev/null || true
+        fi
+        # No lossy last-resort tier: the gate already hard-requires python3, so a
+        # jq-and-python3-less host is unreachable. A garbled systemMessage would
+        # be worse than none for an advisory — stay silent instead.
+    fi
+    exit 0
+}
+
 # ── Shared repo-dir resolver ──────────────────────────────────────────
 # shellcheck source=lib/resolve-repo-dir.sh disable=SC1091
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/resolve-repo-dir.sh"
@@ -134,6 +246,29 @@ try:
     # fixture's input string) no longer counts as a merge (issue #426).
     merge_count = gh_pr_count(cmd, 'merge')
     _present, target_dir, pr_num = gh_pr(cmd, 'merge')
+    # ADR 0024 constraint 5: a per-command repo/host override means the merge may
+    # target a DIFFERENT repo than the checkout's origin, so the origin-derived
+    # missing-Codex advisory would name the wrong repo. Surface its presence so
+    # the allow epilogue falls to SILENT (never a wrong-repo warning). Advisory-
+    # only — it does NOT gate. gitcmd_detect.gh_pr value-skips -R/--repo, so it is
+    # detected here from the raw command (same override set the nudge rejects).
+    # Coarse, fail-safe-SILENT override detection (constraint 5). Err toward
+    # silence: any repo/host selector suppresses the advisory. First strip the
+    # three shell quote/escape chars (chr(34)=doublequote, chr(39)=singlequote,
+    # chr(92)=backslash -- referenced by code point so no literal quote/backslash
+    # lands in this bash-wrapped python) so quote/backslash-split forms collapse
+    # back to a plain -R substring before the test. Then a substring test covers
+    # detached (-R other), attached (-Rother), quoted, and long (--repo) forms,
+    # AND inline GH_REPO=/GH_HOST= assignments -- all four checked against the
+    # NORMALIZED command so a split GH_\REPO= evades none. Over-broad
+    # ONLY toward silence (a legit advisory skipped), never toward a wrong-repo
+    # warning. Real gh pr merge flags (--squash/--rebase/--admin/
+    # --match-head-commit) contain no -R substring. Truly exotic obfuscation
+    # (ANSI-C quoting, variable indirection) stays out of scope per ADR 0024 --
+    # the advisory is non-gating, so the residual is at worst a misleading warning.
+    _cmd_norm = cmd.replace(chr(34), '').replace(chr(39), '').replace(chr(92), '')
+    repo_override = 'yes' if ('-R' in _cmd_norm or '--repo' in _cmd_norm
+                              or 'GH_REPO=' in _cmd_norm or 'GH_HOST=' in _cmd_norm) else 'no'
     if merge_count >= 1:
         # Use newline separator: target_dir may contain '|' on weird paths
         print('yes' if merge_count == 1 else 'multi')
@@ -141,12 +276,14 @@ try:
         print(target_dir)
         print(merge_count)
         print(cwd)
+        print(repo_override)
 except Exception:
     print('error')
     print('')
     print('')
     print('0')
     print('')
+    print('yes')
 " 2>/dev/null || true)
 
 IS_GH_PR_MERGE=$(echo "$MERGE_PARSE" | sed -n '1p')
@@ -154,6 +291,10 @@ MERGE_PR_NUM=$(echo "$MERGE_PARSE" | sed -n '2p')
 TARGET_DIR=$(echo "$MERGE_PARSE" | sed -n '3p')
 MERGE_COUNT=$(echo "$MERGE_PARSE" | sed -n '4p')
 HOOK_CWD=$(echo "$MERGE_PARSE" | sed -n '5p')
+# ADR 0024: 'yes' → suppress the missing-Codex advisory (constraint 5). Defaults
+# to 'yes' (silent) on any parse anomaly — fail toward silence.
+REPO_OVERRIDE=$(echo "$MERGE_PARSE" | sed -n '6p')
+case "$REPO_OVERRIDE" in yes|no) ;; *) REPO_OVERRIDE=yes ;; esac
 
 [ -z "$IS_GH_PR_MERGE" ] && exit 0
 
@@ -228,7 +369,7 @@ if [ -f "$SKIP_FILE" ] \
         printf '{"ts":"%s","event":"skip-pr-grind-claimed","gate":"pre-merge","pr":"%s"}\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${MERGE_PR_NUM:-unknown}" \
             >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
-        exit 0
+        allow_merge "skip-pr-grind"
     else
         rm -f "$SKIP_FILE"
     fi
@@ -321,7 +462,7 @@ if [ -f "$MARKER_FILE" ]; then
                 exit 0
             fi
         fi
-        exit 0
+        allow_merge "pr-grind-clean+ci"
     else
         # Stale marker — remove and require fresh grind
         rm -f "$MARKER_FILE"
@@ -371,7 +512,7 @@ if [ -n "$MERGE_PR_NUM" ] && command -v gh &>/dev/null; then
                 printf '{"ts":"%s","event":"bootstrap-merge","gate":"pre-merge","pr":%s,"gate_files":%s}\n' \
                     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MERGE_PR_NUM" "$GATE_FILES_CHANGED" \
                     >> "$REPO_DIR/$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
-                exit 0
+                allow_merge "bootstrap-merge"
             fi
         fi
     fi

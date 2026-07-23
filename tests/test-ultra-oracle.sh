@@ -119,6 +119,26 @@ grep -qx -- "--browser-hide-window" "$tmp/argv.log" && { echo "FAIL window hidde
 # stale phantom "running" session can't permanently block future same-prompt dispatches.
 grep -qx -- "--force" "$tmp/argv.log" || { echo "FAIL --force missing (#333 dup-guard)"; FAIL=1; }
 
+# #458 GAP 1 root cause — per-dispatch UNIQUE slug. oracle 0.16.0 truncates each slug word to 10
+# chars and keeps only the first 5 words, so the nonce is TWO <=10-char words PREPENDED (both survive).
+# Assert: the --slug value's first two words are "x"+8hex and "y"+8hex (each <=10 chars), the caller
+# slug follows, and two consecutive dispatches get DIFFERENT nonce prefixes (no reuse -> no stale tab).
+_slug_of() { awk '/^--slug$/{getline; print; exit}' "$1"; }
+: > "$tmp/argv.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/n1.md" --mode blocking --slug "ultra oracle plan review")"
+[ "$st" = "ok" ] || { echo "FAIL nonce d1 status got '$st'"; FAIL=1; }
+_slug1="$(_slug_of "$tmp/argv.log")"
+_w1="${_slug1%% *}"; _rest1="${_slug1#* }"; _w2="${_rest1%% *}"
+_nonce1="$_w1 $_w2"
+[[ "$_w1" =~ ^x[0-9a-f]{8}$ ]] || { echo "FAIL nonce word1 not x+8hex: '$_w1'"; FAIL=1; }
+[[ "$_w2" =~ ^y[0-9a-f]{8}$ ]] || { echo "FAIL nonce word2 not y+8hex: '$_w2'"; FAIL=1; }
+{ [ "${#_w1}" -le 10 ] && [ "${#_w2}" -le 10 ]; } || { echo "FAIL nonce word exceeds 10 chars: '$_nonce1'"; FAIL=1; }
+[ "$_slug1" = "$_nonce1 ultra oracle plan review" ] || { echo "FAIL nonce not prepended to caller slug: '$_slug1'"; FAIL=1; }
+: > "$tmp/argv.log"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/n2.md" --mode blocking --slug "ultra oracle plan review")"
+_slug2="$(_slug_of "$tmp/argv.log")"; _w1b="${_slug2%% *}"; _rest2="${_slug2#* }"; _w2b="${_rest2%% *}"
+[ "$_w1 $_w2" != "$_w1b $_w2b" ] || { echo "FAIL two dispatches got the SAME nonce (collision -> tab reuse): '$_nonce1'"; FAIL=1; }
+
 # hideWindow=true (opt-in) -> argv carries --browser-hide-window
 printf '{ "ultraOracle": { "hideWindow": true } }\n' > "$tmp/.claude/busdriver.json"
 : > "$tmp/argv.log"
@@ -498,10 +518,31 @@ rm -f "$twp" "$tmp/.claude/busdriver.json"
 # mode (no live tab). A self-contained mock that also serves the `session` harvest subcommand.
 cat > "$tmp/bin/oracle" <<'STUB'
 #!/bin/bash
-# Harvest subcommand: `oracle session <id> --harvest --write-output <out>` re-reads the tab.
+# Status subcommand: `oracle status --browser-tabs` lists live tabs for the #458 GAP 1 probe.
+# Controlled by ULTRA_ORACLE_TABS_MODE (default none). Output mirrors oracle 0.16.0's REAL
+# multi-line-block-per-tab shape (verified live): a `- <TABID> <status> …` header followed by
+# indented title=/url=/session=/last= lines.
+if [ "${1:-}" = "status" ]; then
+  _sid="${ULTRA_ORACLE_TEST_SID:-sess-458}"
+  _last="recovered from live tab"
+  # UNSTABLE: make last= change every second so two consecutive probes never agree -> the stability
+  # guard must NEVER fire (models a mid-render completed+partial flit).
+  [ "${ULTRA_ORACLE_TABS_UNSTABLE:-0}" = 1 ] && _last="rendering-$(date +%s)"
+  case "${ULTRA_ORACLE_TABS_MODE:-none}" in
+    completed) printf -- '- CD7A completed model=Pro turns=1 stop=no send=no\n  title=Q\n  url=https://chatgpt.com/c/WEB:abc\n  session=%s\n  last=%s\n' "$_sid" "$_last";;
+    running)   printf -- '- CD7A running model=Pro turns=1 stop=no send=no\n  title=Q\n  url=https://chatgpt.com/c/WEB:abc\n  session=%s\n  last=\n' "$_sid";;
+    none)      printf '🧿 oracle 0.16.0\nBrowser Tabs 127.0.0.1:55022\n';;   # header only, no tabs
+  esac
+  exit 0
+fi
+# Harvest subcommand: `oracle session <id> --harvest [--browser-tab <ref>] --write-output <out>`.
 if [ "${1:-}" = "session" ]; then
-  out=""
-  while [ $# -gt 0 ]; do case "$1" in --write-output) out="$2"; shift 2;; *) shift;; esac; done
+  out=""; hastab=0
+  while [ $# -gt 0 ]; do case "$1" in --write-output) out="$2"; shift 2;; --browser-tab) hastab=1; shift 2;; *) shift;; esac; done
+  # #458 GAP 2: model the REAL oracle behavior — a plain `--harvest` (no --browser-tab) can't match
+  # the live tab via its WEB: placeholder URL and FAILS; only `--harvest --browser-tab <target-id>`
+  # binds and recovers. Under this flag the harvest fails UNLESS the ref was threaded through.
+  if [ "${ULTRA_ORACLE_HARVEST_NEEDS_TAB:-0}" = 1 ] && [ "$hastab" = 0 ]; then exit 1; fi
   case "${ULTRA_ORACLE_SALVAGE_MODE:-ok}" in
     ok)          [ -n "$out" ] && printf 'SALVAGED VERDICT: recovered from live tab\n' > "$out"; exit 0;;
     fail)        exit 1;;          # dead tab ("No ChatGPT tab matched") -> nothing harvested
@@ -530,6 +571,8 @@ case "${ULTRA_ORACLE_MOCK_MODE:-empty}" in
                 [ -n "$mout" ] && printf 'ORACLE PARTIAL WRITE do not trust\n' > "$mout"
                 _hungsig; sleep 30;;
   hungnostream) sleep 30;;         # hangs WITHOUT ever streaming -> no hung signature -> hard cap only
+  hungnostreamlong) sleep 300;;    # #458 GAP 1: no streaming AND outlives the test window, so ONLY the
+                                   # tab-status probe (not a self-exit / empty-salvage race) can recover it
   hungactive)   # ACTIVE stream: the streaming indicator keeps returning, with only single transient
                 # null polls between streaming lines. Each streaming line resets the waiting counter,
                 # so it never reaches 2 sustained ticks -> the watchdog must NOT early-exit.
@@ -588,6 +631,79 @@ if [ -f "$tmp/sv5.md.rc" ]; then
 else
   echo "FAIL bg watchdog did not early-exit within 30s (would have waited the 120s cap)"; FAIL=1
 fi
+
+# #458 GAP 1 (the merged fix's blind spot): a FAST response that NEVER streams -> zero
+# "response streaming" heartbeats -> the streaming heuristic can never fire. The tab-status probe
+# (oracle's OWN `status --browser-tabs` reporting the tab `completed`) MUST early-exit (125) ->
+# salvage -> .rc=0. hungnostreamlong sleeps 300s WITHOUT emitting any heartbeat (so it can neither
+# self-exit into the empty-salvage path nor trip the streaming heuristic within the window — ONLY the
+# tab probe can recover it); TABS_MODE=completed makes oracle's tab listing report our session done.
+# HARVEST_NEEDS_TAB=1 additionally proves GAP 2 end-to-end: the harvest fails UNLESS salvage threaded
+# the tab's target-id through as --browser-tab. So .rc=0 iff BOTH gaps are fixed (probe fires AND ref
+# binds). Cap 120s but recovery must land within ~30s. (Verified failing when the probe is disabled.)
+export ULTRA_ORACLE_MOCK_MODE=hungnostreamlong ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0 ULTRA_ORACLE_TABS_MODE=completed ULTRA_ORACLE_HARVEST_NEEDS_TAB=1
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv5t.md" --mode background --timeout-cap-seconds 120)"
+_w=0; while [ ! -f "$tmp/sv5t.md.rc" ] && [ "$_w" -lt 30 ]; do sleep 1; _w=$((_w + 1)); done
+if [ -f "$tmp/sv5t.md.rc" ]; then
+  [ "$(cat "$tmp/sv5t.md.rc" 2>/dev/null)" = "0" ] || { echo "FAIL bg tab-status salvage .rc not 0 got '$(cat "$tmp/sv5t.md.rc" 2>/dev/null)'"; FAIL=1; }
+  grep -q "SALVAGED VERDICT" "$tmp/sv5t.md" || { echo "FAIL bg tab-status salvage harvested body missing"; FAIL=1; }
+else
+  echo "FAIL bg tab-status watchdog did not early-exit within 30s (fast-response GAP 1 unfixed)"; FAIL=1
+fi
+unset ULTRA_ORACLE_TABS_MODE ULTRA_ORACLE_HARVEST_NEEDS_TAB
+
+# NEGATIVE guard for the tab-status probe: a fast NO-stream hang whose tab is NOT completed
+# (TABS_MODE=running) must NOT early-exit — it runs to the hard cap (.rc=124), no salvage. Proves
+# the probe only fires on oracle's authoritative `completed`, never on any live-tab presence.
+export ULTRA_ORACLE_MOCK_MODE=hungnostream ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0 ULTRA_ORACLE_TABS_MODE=running
+_t0="$(date +%s)"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv5n.md" --mode background --timeout-cap-seconds 6)"
+_w=0; while [ ! -f "$tmp/sv5n.md.rc" ] && [ "$_w" -lt 20 ]; do sleep 1; _w=$((_w + 1)); done
+_elapsed=$(( $(date +%s) - _t0 ))
+if [ -f "$tmp/sv5n.md.rc" ]; then
+  [ "$(cat "$tmp/sv5n.md.rc" 2>/dev/null)" = "124" ] || { echo "FAIL bg tab-status running should hard-cap 124 got '$(cat "$tmp/sv5n.md.rc" 2>/dev/null)'"; FAIL=1; }
+  grep -q "SALVAGED" "$tmp/sv5n.md" 2>/dev/null && { echo "FAIL bg tab-status running salvaged a non-completed tab"; FAIL=1; }
+  [ "$_elapsed" -ge 5 ] || { echo "FAIL bg tab-status running exited early (${_elapsed}s, expected ~cap 6s)"; FAIL=1; }
+else
+  echo "FAIL bg tab-status running never wrote .rc"; FAIL=1
+fi
+unset ULTRA_ORACLE_TABS_MODE
+
+# STABILITY GUARD (PR #460 review, HIGH): a `completed` tab whose last= CHANGES every probe (a
+# mid-render partial flit) must NOT early-exit — the guard requires two consecutive probes to agree.
+# TABS_UNSTABLE makes the mock's last= differ each second, so stability is never reached -> hard cap
+# .rc=124, no salvage. cap=20 gives several ~15s-apart probes without agreement.
+export ULTRA_ORACLE_MOCK_MODE=hungnostreamlong ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0 ULTRA_ORACLE_TABS_MODE=completed ULTRA_ORACLE_TABS_UNSTABLE=1
+_t0="$(date +%s)"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv5s.md" --mode background --timeout-cap-seconds 20)"
+_w=0; while [ ! -f "$tmp/sv5s.md.rc" ] && [ "$_w" -lt 40 ]; do sleep 1; _w=$((_w + 1)); done
+if [ -f "$tmp/sv5s.md.rc" ]; then
+  [ "$(cat "$tmp/sv5s.md.rc" 2>/dev/null)" = "124" ] || { echo "FAIL unstable-last should hard-cap 124 got '$(cat "$tmp/sv5s.md.rc" 2>/dev/null)'"; FAIL=1; }
+  grep -q "SALVAGED" "$tmp/sv5s.md" 2>/dev/null && { echo "FAIL unstable-last early-killed on a flickering answer"; FAIL=1; }
+else
+  echo "FAIL unstable-last never wrote .rc"; FAIL=1
+fi
+unset ULTRA_ORACLE_TABS_MODE ULTRA_ORACLE_TABS_UNSTABLE
+
+# NO-STREAM GATE (PR #460 review, HIGH — truncated preview trap): the tab probe is confined to the
+# never-streamed signature (streamed==0). A response that DID stream must be left to the streaming
+# heuristic even if its tab reports `completed`, because oracle's ~120-char `last=` preview can look
+# stable while a long answer is still growing. hungactive streams (laststream=1) with only 1s
+# stability, so the streaming heuristic does NOT fire; TABS_MODE=completed would make an UNGATED tab
+# probe fire and harvest a still-growing answer. Correct behavior: gated out -> hard cap .rc=124.
+export ULTRA_ORACLE_MOCK_MODE=hungactive ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0 ULTRA_ORACLE_TABS_MODE=completed
+_t0="$(date +%s)"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv5g.md" --mode background --timeout-cap-seconds 8)"
+_w=0; while [ ! -f "$tmp/sv5g.md.rc" ] && [ "$_w" -lt 20 ]; do sleep 1; _w=$((_w + 1)); done
+_elapsed=$(( $(date +%s) - _t0 ))
+if [ -f "$tmp/sv5g.md.rc" ]; then
+  [ "$(cat "$tmp/sv5g.md.rc" 2>/dev/null)" = "124" ] || { echo "FAIL no-stream-gate streaming+completed should hard-cap 124 got '$(cat "$tmp/sv5g.md.rc" 2>/dev/null)'"; FAIL=1; }
+  grep -q "SALVAGED" "$tmp/sv5g.md" 2>/dev/null && { echo "FAIL no-stream-gate tab-probe fired on a streaming response"; FAIL=1; }
+  [ "$_elapsed" -ge 7 ] || { echo "FAIL no-stream-gate exited early (${_elapsed}s, expected ~cap 8s)"; FAIL=1; }
+else
+  echo "FAIL no-stream-gate never wrote .rc"; FAIL=1
+fi
+unset ULTRA_ORACLE_TABS_MODE
 
 # background hung + harvest FAILS -> confirmed-hung (125) that salvage can't recover normalizes
 # to timeout -> .rc=124, and $out is left clean (no partial).
@@ -694,35 +810,111 @@ unset ULTRA_ORACLE_MOCK_MODE ULTRA_ORACLE_HUNG_GRACE
 
 # HIGH#2 (watchdog signal): assert the REAL primitive (_ultra_oracle_hung_signal, sourced from the
 # lib — the SAME awk the watchdog calls, so the test cannot drift from the code — CodeRabbit #460)
-# directly on crafted heartbeat fixtures. It prints "<waits> <laststable> <laststream>". Covers the
-# reset-on-ANY-active-heartbeat behavior (streaming AND reasoning/tool use), which is what prevents
-# an active stream from being cut and a partial harvested.
+# directly on crafted heartbeat fixtures. It prints "<waits> <laststable> <laststream> <everstreamed>".
+# Covers the reset-on-ANY-active-heartbeat behavior (streaming AND reasoning/tool use), which is what
+# prevents an active stream from being cut and a partial harvested, PLUS the MONOTONIC everstreamed.
 _sig() { local f; f="$(mktemp)"; printf '%s\n' "$1" > "$f"; _ultra_oracle_hung_signal "$f"; rm -f "$f"; }
-# Two waiting ticks BEFORE any active heartbeat, then streaming that keeps going -> waits 0, laststream 1.
+# Two waiting ticks BEFORE any active heartbeat, then streaming that keeps going -> waits 0, laststream 1, everstreamed 1.
 [ "$(_sig 'Waiting no thinking status detected yet
 Waiting no thinking status detected yet
 [browser] ChatGPT thinking - status=response streaming; last change 5s ago
-[browser] ChatGPT thinking - status=response streaming; last change 5s ago')" = "0 5 1" ] \
+[browser] ChatGPT thinking - status=response streaming; last change 5s ago')" = "0 5 1 1" ] \
   || { echo "FAIL hung-signal counts pre-stream waiting ticks"; FAIL=1; }
 # Streaming (stable 3m), then two waiting ticks after -> waits 2, laststable 180, laststream 1 (hung).
 [ "$(_sig '[browser] ChatGPT thinking - status=response streaming; last change 3m 0s ago
 Waiting no thinking status detected yet
-Waiting no thinking status detected yet')" = "2 180 1" ] \
+Waiting no thinking status detected yet')" = "2 180 1 1" ] \
   || { echo "FAIL hung-signal misses post-stream waiting ticks"; FAIL=1; }
 # A later streaming tick RESETS waits -> a response that resumed streaming is not cut (waits 1).
 [ "$(_sig '[browser] ChatGPT thinking - status=response streaming; last change 3m 0s ago
 Waiting no thinking status detected yet
 Waiting no thinking status detected yet
 [browser] ChatGPT thinking - status=response streaming; last change 1s ago
-Waiting no thinking status detected yet')" = "1 1 1" ] \
+Waiting no thinking status detected yet')" = "1 1 1 1" ] \
   || { echo "FAIL hung-signal does not reset on resumed streaming"; FAIL=1; }
 # A REASONING/tool-use heartbeat between two waiting ticks ALSO resets waits (regression guard for
-# the reset-on-any-active-line fix) AND sets laststream=0 (most recent activity was not streaming).
+# the reset-on-any-active-line fix) AND sets laststream=0 (most recent activity was not streaming) —
+# BUT everstreamed stays 1 (it streamed earlier). This is the monotonic-flag guard: the tab probe
+# gates on everstreamed==0, so this stream->reasoning->idle case must NOT be treated as never-streamed.
 [ "$(_sig '[browser] ChatGPT thinking - status=response streaming; last change 3m 0s ago
 Waiting no thinking status detected yet
 [browser] ChatGPT thinking - status=reasoning
-Waiting no thinking status detected yet')" = "1 180 0" ] \
-  || { echo "FAIL hung-signal does not reset on reasoning/tool-use heartbeat"; FAIL=1; }
+Waiting no thinking status detected yet')" = "1 180 0 1" ] \
+  || { echo "FAIL hung-signal everstreamed not monotonic after reasoning"; FAIL=1; }
+# Never streamed at all (reasoning only) -> everstreamed 0 (the tab probe's eligible signature).
+[ "$(_sig '[browser] ChatGPT thinking - status=reasoning
+Waiting no thinking status detected yet
+Waiting no thinking status detected yet')" = "2 0 0 0" ] \
+  || { echo "FAIL hung-signal everstreamed should be 0 when never streamed"; FAIL=1; }
+
+# GAP 1/2 primitive (_ultra_oracle_tab_ref): parse oracle's REAL multi-line-block `status
+# --browser-tabs` output (verified live 2026-07-23) and return the target-id of the session's
+# COMPLETED tab (empty = not completed). Same primitive the watchdog probe AND the salvage call, so
+# the test cannot drift from code. Blocks are `- <TARGET-ID> <status> …` headers with indented
+# title=/url=/session=/last= lines. Non-empty return = completion signal AND the --browser-tab handle.
+# _ultra_oracle_tab_ref returns "<tid>\t<last>"; this helper checks the tid (field 1).
+_tab() { local f; f="$(mktemp)"; printf '%s\n' "$1" > "$f"; _ultra_oracle_tab_ref "$f" "$2" | cut -f1; rm -f "$f"; }
+# our session `completed` with a non-empty last= -> its target-id (the fast-response recovery
+# trigger). Uses the exact real shape incl. the WEB: placeholder URL that motivated GAP 2.
+[ "$(_tab '- CD7A completed model=Pro turns=1 stop=no send=no
+  title=Confirmation Request
+  url=https://chatgpt.com/c/WEB:b207ce9f
+  session=verify-458-fix
+  last=I received this.' 'verify-458-fix')" = "CD7A" ] \
+  || { echo "FAIL tab-ref misses a completed multi-line block"; FAIL=1; }
+# same tab but `running` header -> empty (only oracle's authoritative `completed` yields a ref).
+[ -z "$(_tab '- CD7A running model=Pro turns=1 stop=no send=no
+  session=verify-458-fix
+  last=partial so far' 'verify-458-fix')" ] \
+  || { echo "FAIL tab-ref fired on a running tab"; FAIL=1; }
+# completed but EMPTY last= -> empty (no answer preview yet; don't salvage an empty tab).
+[ -z "$(_tab '- CD7A completed model=Pro turns=1 stop=no send=no
+  session=verify-458-fix
+  last=' 'verify-458-fix')" ] \
+  || { echo "FAIL tab-ref fired on an empty last="; FAIL=1; }
+# session matched EXACTLY, not by prefix: session=verify-458-fix-2 must NOT match sid verify-458-fix.
+[ -z "$(_tab '- CD7A completed model=Pro turns=1 stop=no send=no
+  session=verify-458-fix-2
+  last=other answer' 'verify-458-fix')" ] \
+  || { echo "FAIL tab-ref prefix-matched a different session"; FAIL=1; }
+# TWO blocks: a completed tab for a DIFFERENT session, ours only `running` -> empty (status/session
+# must come from the SAME block — the core multi-line-block cross-contamination regression guard).
+[ -z "$(_tab '- AAAA completed model=Pro turns=1 stop=no send=no
+  session=someone-else
+  last=their answer
+- BBBB running model=Pro turns=1 stop=no send=no
+  session=verify-458-fix
+  last=' 'verify-458-fix')" ] \
+  || { echo "FAIL tab-ref cross-matched status from another block"; FAIL=1; }
+# TWO blocks, ours is the completed one (second block) -> ITS target-id (BBBB), not the other's.
+[ "$(_tab '- AAAA running model=Pro turns=1 stop=no send=no
+  session=someone-else
+  last=
+- BBBB completed model=Pro turns=1 stop=no send=no
+  session=verify-458-fix
+  last=here it is' 'verify-458-fix')" = "BBBB" ] \
+  || { echo "FAIL tab-ref misses our completed block among several"; FAIL=1; }
+# header-only listing (no tabs) -> empty.
+[ -z "$(_tab '🧿 oracle 0.16.0
+Browser Tabs 127.0.0.1:55022' 'verify-458-fix')" ] || { echo "FAIL tab-ref fired on empty listing"; FAIL=1; }
+# AMBIGUOUS (PR #460 HIGH): TWO completed tabs share the session -> FAIL CLOSED (empty), never pick
+# one arbitrarily to kill/harvest. Guards the nonce-collision / transient-double-bind case.
+[ -z "$(_tab '- AAAA completed model=Pro turns=1 stop=no send=no
+  session=verify-458-fix
+  last=one answer
+- BBBB completed model=Pro turns=1 stop=no send=no
+  session=verify-458-fix
+  last=other answer' 'verify-458-fix')" ] || { echo "FAIL tab-ref did not fail closed on duplicate-session tabs"; FAIL=1; }
+# AMBIGUOUS (Greptile P1, PR #465): ONE completed + ONE running tab share the session -> FAIL CLOSED
+# (empty). Counting only completed tabs previously let this through and returned the stale completed
+# tab's target-id even though the SAME session has a tab still `running` — the reused-session failure
+# mode this guard exists for, just split across statuses instead of two `completed` tabs.
+[ -z "$(_tab '- AAAA completed model=Pro turns=1 stop=no send=no
+  session=verify-458-fix
+  last=stale prior answer
+- BBBB running model=Pro turns=1 stop=no send=no
+  session=verify-458-fix
+  last=' 'verify-458-fix')" ] || { echo "FAIL tab-ref did not fail closed on completed+running duplicate-session tabs"; FAIL=1; }
 
 # P2 (Codex #460): the watched-run signal trap must be bash-3.2-safe — NO BASHPID (unset on macOS
 # bash 3.2, aborts under `set -u`). Run a watched `sleep` UNDER `set -u`, TERM it, and assert it

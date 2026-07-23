@@ -25,7 +25,8 @@ bad()  { printf "  FAIL  %s\n" "$1"; FAIL=$((FAIL+1)); TOTAL=$((TOTAL+1)); }
 PROBE="scripts/codex-engagement-probe.sh"
 WARN="scripts/codex-premerge-warn.sh"
 GATE="hooks/gate-scripts/pre-merge-gate.sh"
-MARKER=".claude/pr-grind-clean.local"
+# MARKER / SKIP_FILE / BYP_FILE are set to the throwaway gate fixture repo's
+# .claude/ once GATEREPO exists (below) — the gate cases never touch this checkout.
 
 # ── Hermetic gh stub ──────────────────────────────────────────────────
 # One stub covers all three consumers, branching on argv:
@@ -76,34 +77,26 @@ STUB
 chmod +x "$STUBDIR/gh"
 export PATH="$STUBDIR:$PATH"
 
-# ── Save/restore the gate scratch markers this test writes (pr-grind-clean /
-#    skip / bypass), which live under the gate's resolved REPO_DIR (this cwd).
-#    We deliberately do NOT touch the force-on marker: it lives at the
-#    git-common-dir parent (the MAIN repo root, shared across worktrees), so
-#    mutating it would open a cross-worktree window and risk stranding operator
-#    state on a SIGKILL. Instead the gate cases are driven by STUB_ACTIVE — and
-#    they are force-on-AGNOSTIC: force-on and active both route to the same
-#    engagement probe, so each case's expected result holds whether or not the
-#    operator's force-on marker happens to be present. The force-on BRANCH itself
-#    is covered hermetically at the adapter level above (throwaway repo).
-SKIP_FILE=".claude/skip-pr-grind.local"
-BYP_FILE=".claude/.merge-bypass-pending.local"
-STASH=$(mktemp -d)
-for f in "$MARKER" "$SKIP_FILE" "$BYP_FILE"; do
-  [ -f "$f" ] && cp -p "$f" "$STASH/$(basename "$f")"
-done
-restore_markers() {
-  for f in "$MARKER" "$SKIP_FILE" "$BYP_FILE"; do
-    b="$STASH/$(basename "$f")"
-    if [ -f "$b" ]; then cp -p "$b" "$f"; else rm -f "$f"; fi
-  done
-}
-# Restore markers FIRST, then remove the backup dir — reversing this deletes
-# $STASH before restore_markers reads it, stranding every backup.
-cleanup() { restore_markers; rm -rf "$STUBDIR" "$STASH"; }
+# ── Gate fixture repo (#463) ──────────────────────────────────────────
+# The gate-integration cases below drive `bash "$GATE"` against a throwaway git
+# repo passed via the PreToolUse `cwd` field, NOT this checkout. That makes them
+# hermetic: the ADR 0024 advisory resolves owner/repo from the REPO_DIR's origin
+# and falls SILENT when `git remote get-url origin` yields no github.com slug —
+# so running the suite from a checkout without an origin used to fail cases 1/8.
+# The fixture gives a KNOWN github.com origin, and its .claude/ holds every
+# scratch marker the gate writes, so we no longer save/restore this checkout's
+# real markers (and never touch the operator's force-on marker: the cases are
+# force-on-AGNOSTIC — STUB_ACTIVE drives the same engagement probe force-on would).
+GATEREPO=$(mktemp -d)
+git -C "$GATEREPO" init -q
+git -C "$GATEREPO" remote add origin https://github.com/chris-yyau/busdriver.git
+mkdir -p "$GATEREPO/.claude"
+MARKER="$GATEREPO/.claude/pr-grind-clean.local"
+SKIP_FILE="$GATEREPO/.claude/skip-pr-grind.local"
+BYP_FILE="$GATEREPO/.claude/.merge-bypass-pending.local"
+
+cleanup() { rm -rf "$STUBDIR" "$GATEREPO"; }
 trap cleanup EXIT
-mkdir -p .claude
-rm -f "$MARKER" "$SKIP_FILE" "$BYP_FILE"
 
 # ═══════════════════════════════════════════════════════════════════════
 echo "── codex-engagement-probe (engaged|none|unknown) ───────────"
@@ -179,7 +172,7 @@ rm -rf "$TMPREPO"
 echo ""
 echo "── pre-merge-gate integration (allow_merge epilogue) ───────"
 
-MERGE_INPUT='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"gh pr merge 459 --squash"}}'
+MERGE_INPUT='{"tool_name":"Bash","toolName":"Bash","cwd":"'"$GATEREPO"'","tool_input":{"command":"gh pr merge 459 --squash"}}'
 # Fresh marker for PR 459 → hits the pr-grind-clean + CI allow path.
 gate_out() { echo "459" > "$MARKER"; printf '%s' "$MERGE_INPUT" | STUB_ACTIVE="$1" STUB_ENGAGEMENT="$2" bash "$GATE" 2>/dev/null; rm -f "$MARKER"; }
 
@@ -230,7 +223,7 @@ fi
 
 # 8. Advisory fires on the SKIP allow path too (not only the marker path). Age a
 #    skip file >30s and merge with no marker → skip path → active+none warns.
-#    SKIP_FILE/BYP_FILE are saved+restored by Setup, so this owns them safely.
+#    SKIP_FILE/BYP_FILE live in the throwaway GATEREPO fixture, so this owns them.
 rm -f "$MARKER"
 touch "$SKIP_FILE"
 touch -t "$(date -v-2M '+%Y%m%d%H%M.%S')" "$SKIP_FILE" 2>/dev/null || touch -d "2 minutes ago" "$SKIP_FILE" 2>/dev/null || true
@@ -246,7 +239,7 @@ rm -f "$SKIP_FILE" "$BYP_FILE"
 # 9. Repo/host override (-R other/repo) → advisory SILENT even on active+none
 #    (constraint 5 — origin-derived target may be the wrong repo).
 echo "459" > "$MARKER"
-OVERRIDE_INPUT='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"gh pr merge 459 -R other/repo --squash"}}'
+OVERRIDE_INPUT='{"tool_name":"Bash","toolName":"Bash","cwd":"'"$GATEREPO"'","tool_input":{"command":"gh pr merge 459 -R other/repo --squash"}}'
 OUT=$(printf '%s' "$OVERRIDE_INPUT" | STUB_ACTIVE=1 STUB_ENGAGEMENT=none bash "$GATE" 2>/dev/null)
 rm -f "$MARKER"
 # The gate blocks a marker-PR≠merge-PR mismatch, but -R 459 still parses PR 459
@@ -259,7 +252,7 @@ fi
 
 # 9b. Attached short-option form (-Rother/repo, no space) must ALSO suppress.
 echo "459" > "$MARKER"
-ATTACHED_INPUT='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"gh pr merge 459 -Rother/repo --squash"}}'
+ATTACHED_INPUT='{"tool_name":"Bash","toolName":"Bash","cwd":"'"$GATEREPO"'","tool_input":{"command":"gh pr merge 459 -Rother/repo --squash"}}'
 OUT=$(printf '%s' "$ATTACHED_INPUT" | STUB_ACTIVE=1 STUB_ENGAGEMENT=none bash "$GATE" 2>/dev/null)
 rm -f "$MARKER"
 if printf '%s' "$OUT" | grep -q '"systemMessage"'; then
@@ -271,7 +264,7 @@ fi
 # 9c. Token-splitting quoted form (-"R"other) must ALSO suppress — the detector
 #     normalizes away quote/backslash chars before the substring test.
 echo "459" > "$MARKER"
-SPLITQ_INPUT='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"gh pr merge 459 -\"R\"other/repo --squash"}}'
+SPLITQ_INPUT='{"tool_name":"Bash","toolName":"Bash","cwd":"'"$GATEREPO"'","tool_input":{"command":"gh pr merge 459 -\"R\"other/repo --squash"}}'
 OUT=$(printf '%s' "$SPLITQ_INPUT" | STUB_ACTIVE=1 STUB_ENGAGEMENT=none bash "$GATE" 2>/dev/null)
 rm -f "$MARKER"
 if printf '%s' "$OUT" | grep -q '"systemMessage"'; then
@@ -283,7 +276,7 @@ fi
 # 9d. Inline GH_REPO= host/repo assignment (checked against the normalized cmd
 #     like the flags) must ALSO suppress.
 echo "459" > "$MARKER"
-GHREPO_INPUT='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"GH_REPO=other/repo gh pr merge 459 --squash"}}'
+GHREPO_INPUT='{"tool_name":"Bash","toolName":"Bash","cwd":"'"$GATEREPO"'","tool_input":{"command":"GH_REPO=other/repo gh pr merge 459 --squash"}}'
 OUT=$(printf '%s' "$GHREPO_INPUT" | STUB_ACTIVE=1 STUB_ENGAGEMENT=none bash "$GATE" 2>/dev/null)
 rm -f "$MARKER"
 if printf '%s' "$OUT" | grep -q '"systemMessage"'; then

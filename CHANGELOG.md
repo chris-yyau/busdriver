@@ -1,3 +1,10 @@
+## [1.97.1](https://github.com/chris-yyau/busdriver/compare/v1.97.0...v1.97.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* **pr-grind:** contain gh routing in the clean-path Codex nudge ([#470](https://github.com/chris-yyau/busdriver/issues/470) P1) ([#474](https://github.com/chris-yyau/busdriver/issues/474)) ([8506e05](https://github.com/chris-yyau/busdriver/commit/8506e0583723f8c210fe8c7285f379fa9acc1a80)), closes [#467](https://github.com/chris-yyau/busdriver/issues/467) [#473](https://github.com/chris-yyau/busdriver/issues/473)
+
 # [1.97.0](https://github.com/chris-yyau/busdriver/compare/v1.96.3...v1.97.0) (2026-07-23)
 
 

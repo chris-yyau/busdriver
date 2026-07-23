@@ -1,3 +1,10 @@
+## [1.96.1](https://github.com/chris-yyau/busdriver/compare/v1.96.0...v1.96.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* **ultra-oracle:** tab-status probe + target-id harvest for completed-but-hung consults ([#458](https://github.com/chris-yyau/busdriver/issues/458)) ([#465](https://github.com/chris-yyau/busdriver/issues/465)) ([6695c49](https://github.com/chris-yyau/busdriver/commit/6695c49cdb697c0eede5291a66ce183ecee09bd7)), closes [#460](https://github.com/chris-yyau/busdriver/issues/460)
+
 # [1.96.0](https://github.com/chris-yyau/busdriver/compare/v1.95.14...v1.96.0) (2026-07-23)
 
 

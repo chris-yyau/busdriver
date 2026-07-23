@@ -1,3 +1,10 @@
+# [1.97.0](https://github.com/chris-yyau/busdriver/compare/v1.96.3...v1.97.0) (2026-07-23)
+
+
+### Features
+
+* **blueprint-review:** arbiter pin tracks driver model, opus floor (ADR 0025) ([#472](https://github.com/chris-yyau/busdriver/issues/472)) ([c756618](https://github.com/chris-yyau/busdriver/commit/c756618cee3c83c0af5ed34d88e4ee95618a5ee0))
+
 ## [1.96.3](https://github.com/chris-yyau/busdriver/compare/v1.96.2...v1.96.3) (2026-07-23)
 
 

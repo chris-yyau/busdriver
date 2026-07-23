@@ -72,6 +72,55 @@ has '[ "${PR_GRIND_CODEX_RETRIGGER:-1}" != "0" ]' \
 has 'has engaged on recent PRs of this repo' && ok 'warning copy says "engaged" (not "reviewed")' \
   || fail "warning copy missing / not engagement-accurate"
 
+# (f2) Clean-path hoist (#467): the `none`-nudge must fire the instant a round
+# converges to clean, DECOUPLED from COMPLETION — so a dispatcher that front-runs a
+# merge-state probe and skips COMPLETION wholesale can never drop the nudge. Assert
+# (1) the hoisted call exists with its clean guard, (2) the wrapper call sits INSIDE
+# that guarded block (between the guard and the next `├──` sibling — not merely present
+# somewhere in the file), and (3) the block is ORDERED BEFORE the COMPLETION FRESH_ACKS
+# re-query (else it's re-buried in COMPLETION).
+if has 'If RESULT_STATUS == clean AND RESULT_CODEX_ACK == "none"'; then
+  ok "clean-path Codex nudge guard present (#467)"
+else
+  fail "clean-path Codex nudge guard missing (#467 regression — nudge re-buried in COMPLETION)"
+fi
+# (2) the wrapper invocation must live BETWEEN the guard line and the next `├──` node,
+# proving it is inside the guarded clean-path block rather than orphaned elsewhere.
+# shellcheck disable=SC2016  # $PR_NUMBER is matched literally, not expanded
+HOIST_IN_BLOCK=$(awk '
+  /If RESULT_STATUS == clean AND RESULT_CODEX_ACK == "none"/ { inblk=1; next }
+  inblk && /^  ├──/                                          { inblk=0 }
+  inblk && /codex-nudge-if-expected\.sh" "\$PR_NUMBER"/      { found=1 }
+  END { print found ? "OK" : "BAD" }' "$SKILL")
+if [[ "$HOIST_IN_BLOCK" == OK ]]; then
+  ok "clean-path hoist call is inside the guarded block, using \$PR_NUMBER (#467)"
+else
+  fail "clean-path hoist call not inside the guarded block (#467 — guard/call decoupled)"
+fi
+# (3) ordering: guard must precede the COMPLETION FRESH_ACKS re-query.
+HOIST_ORDER=$(awk '
+  /If RESULT_STATUS == clean AND RESULT_CODEX_ACK == "none"/ { if (!hoist) hoist=NR }
+  /^FRESH_ACKS="cursor=/                                     { if (!fresh) fresh=NR }
+  END { print (hoist && fresh && hoist < fresh) ? "OK" : "BAD" }' "$SKILL")
+if [[ "$HOIST_ORDER" == OK ]]; then
+  ok "clean-path hoist ordered before COMPLETION FRESH_ACKS (#467)"
+else
+  fail "clean-path hoist NOT before COMPLETION nudge — ordering regression (#467)"
+fi
+# (4) the hoisted guard must ALSO include the kill-switch check — otherwise the
+# nudge would post while PR_GRIND_CODEX_RETRIGGER=0, violating the documented
+# off-switch behavior (cubic finding, PR #470).
+HOIST_KILLSWITCH=$(awk '
+  /If RESULT_STATUS == clean AND RESULT_CODEX_ACK == "none"/ { inblk=1; next }
+  inblk && /^  ├──/                                          { inblk=0 }
+  inblk && /PR_GRIND_CODEX_RETRIGGER:-1.*!= "0"/              { found=1 }
+  END { print found ? "OK" : "BAD" }' "$SKILL")
+if [[ "$HOIST_KILLSWITCH" == OK ]]; then
+  ok "clean-path hoist guard includes kill-switch check (#470)"
+else
+  fail "clean-path hoist guard missing kill-switch check — nudge could post while PR_GRIND_CODEX_RETRIGGER=0 (#470)"
+fi
+
 # (g) GC wired into BOTH merge blocks after a MERGED guard; correct PR token per block
 GC_COUNT=$(grep -c 'codex-retrigger-gc.sh' "$SKILL" || true)
 [ "$GC_COUNT" -eq 2 ] && ok "codex-retrigger-gc.sh wired exactly twice" \

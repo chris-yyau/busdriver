@@ -107,6 +107,19 @@ if [[ "$HOIST_ORDER" == OK ]]; then
 else
   fail "clean-path hoist NOT before COMPLETION nudge — ordering regression (#467)"
 fi
+# (4) the hoisted guard must ALSO include the kill-switch check — otherwise the
+# nudge would post while PR_GRIND_CODEX_RETRIGGER=0, violating the documented
+# off-switch behavior (cubic finding, PR #470).
+HOIST_KILLSWITCH=$(awk '
+  /If RESULT_STATUS == clean AND RESULT_CODEX_ACK == "none"/ { inblk=1; next }
+  inblk && /^  ├──/                                          { inblk=0 }
+  inblk && /PR_GRIND_CODEX_RETRIGGER:-1.*!= "0"/              { found=1 }
+  END { print found ? "OK" : "BAD" }' "$SKILL")
+if [[ "$HOIST_KILLSWITCH" == OK ]]; then
+  ok "clean-path hoist guard includes kill-switch check (#470)"
+else
+  fail "clean-path hoist guard missing kill-switch check — nudge could post while PR_GRIND_CODEX_RETRIGGER=0 (#470)"
+fi
 
 # (g) GC wired into BOTH merge blocks after a MERGED guard; correct PR token per block
 GC_COUNT=$(grep -c 'codex-retrigger-gc.sh' "$SKILL" || true)

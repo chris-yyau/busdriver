@@ -59,6 +59,21 @@ esac
 
 chrome_bin() {
   local c
+  # Test seam: an explicit override wins over the fixed search paths so the
+  # command-mocked harness (tests/test-ultra-oracle-attach-preflight.sh) can point
+  # the launch at a fake Chrome and never risk starting a real browser — the real
+  # /Applications binary exists on the maintainer's Mac and would otherwise be
+  # picked first. Underscore-prefixed, test-only, like the other _UORA_* internals.
+  # If it is SET but not usable, FAIL (return 1) rather than fall through to the real
+  # browser search — a botched harness setup must not silently launch real Chrome.
+  # `+x` tests SET-ness (not emptiness), so an empty `_UORA_CHROME_BIN=` also fails
+  # closed instead of falling through.
+  if [[ -n "${_UORA_CHROME_BIN+x}" ]]; then
+    # -f as well as -x: a directory is executable/searchable, so `-x` alone would
+    # accept a directory here and only fail later at launch. Require a regular file.
+    [[ -n "$_UORA_CHROME_BIN" && -f "$_UORA_CHROME_BIN" && -x "$_UORA_CHROME_BIN" ]] && { printf '%s' "$_UORA_CHROME_BIN"; return 0; }
+    return 1
+  fi
   for c in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
            "$HOME/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"; do
     [[ -x "$c" ]] && { printf '%s' "$c"; return 0; }

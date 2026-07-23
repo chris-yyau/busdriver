@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # tests/test-blueprint-arbiter-default-pin.sh
-# Static contract test (#265) locking the opus-default arbiter migration
-# (ADR 0008 / SKILL.md v3.5) into the live spec: a future refactor must not silently
-# regress the default pin back to fable, drop the ultimate-arbiter opt-in, or resurrect the
-# retired `model_pin_status` fallback tokens.
+# Static contract test (#265) locking the arbiter pin policy into the live spec.
+# ADR 0025 (SKILL.md v3.9) amends the flat opus-default of ADR 0008 (v3.5): the pin now
+# TRACKS the calling session's model, clamped to an `opus` floor —
+#   opus / any non-fable driver → opus  [model_pin_status=pinned]              (default, unchanged)
+#   fable driver                → fable [model_pin_status=driver_fable]        (NEW, automatic)
+#   USER opt-in "ultimate arbiter" → fable [model_pin_status=ultimate_arbiter_fable] (retained)
+# A future refactor must not silently regress the opus default/floor, drop the driver-fable
+# auto-track or the ultimate-arbiter opt-in, or resurrect the retired `model_pin_status`
+# fallback tokens.
 #
 # The retired tokens (gateway_fable_fallback / opus_fallback / inherited_fallback) legitimately
 # survive in the APPEND-ONLY Version History. The negative checks therefore scan the BODY ONLY —
@@ -46,6 +51,11 @@ present "opus success status recorded" 'model_pin_status=pinned'
 # the old blanket `absent 'model: fable'` no longer holds): the DEFAULT dispatch pins opus, tied
 # to the subscription-tier rationale that fable cannot satisfy.
 present "opus is the DEFAULT (subscription) pin" 'the strongest available *subscription* model'
+present "opus floor — non-fable/non-opus driver still pins opus (never inherits down)" 'inherits down'
+
+echo "── driver-fable auto-track (ADR 0025) ──"
+present "fable driver auto-pins fable" 'model_pin_status=driver_fable'
+present "driver-fable degrade status recorded" 'model_pin_status=driver_fable_unavailable'
 
 echo "── ultimate-arbiter is the opt-in escalation ──"
 present "ultimate-arbiter opt-in key documented (USER config)" '.ultimate.surfaces.arbiter'
@@ -82,8 +92,8 @@ present "ultimate escalation ran status" 'model_pin_status=ultimate_arbiter_fabl
 present "ultimate unavailable status (opt-in set, ran opus)" 'model_pin_status=ultimate_arbiter_unavailable'
 
 echo "── unavailable → expect opus + caller-side loudness (crit 5/6) ──"
-present "pin check expects opus for the unavailable case" 'the expected pin is `opus`'
-present "loud caller-side warning banner" 'WARNING: ULTIMATE-ARBITER UNAVAILABLE'
+present "pin check expects opus for the degraded case" 'the expected pin is `opus`'
+present "loud caller-side warning banner" 'WARNING: FABLE ARBITER UNAVAILABLE'
 
 echo "── retired fallback statuses gone from the live spec (Version-History-excluded) ──"
 absent "gateway_fable_fallback retired" 'gateway_fable_fallback'

@@ -78,9 +78,15 @@ codex_none_warning() {
         # Resolve owner/repo from the BASE repo's origin (constraint 5). Fall to
         # silence if origin can't be confirmed a plain github.com owner/repo
         # (fork checkout, GHE host, > owner/repo) — querying the wrong repo would
-        # yield a false none. Same canonicalization as codex-nudge-premerge.sh.
+        # yield a false none. Same canonicalization as codex-nudge-premerge.sh,
+        # PLUS a userinfo strip (`s#^[^/@]*@##`) so credentialed HTTPS origins
+        # (token-auth checkouts, e.g. `https://x-access-token:TOKEN@github.com/…`)
+        # don't leave the token's `:` mistaken for the git@ scp-style separator —
+        # without it, canon starts with the credential prefix instead of
+        # `github.com/` and the match below silently exits, suppressing the
+        # advisory on common CI/token-auth checkouts (Greptile #461).
         url=$(git -C "$repo_dir" remote get-url origin 2>/dev/null)
-        canon=$(printf '%s' "$url" | sed -E 's#^git@#https://#; s#^https?://##; s#:#/#; s#\.git/?$##; s#/+$##')
+        canon=$(printf '%s' "$url" | sed -E 's#^git@#https://#; s#^https?://##; s#^[^/@]*@##; s#:#/#; s#\.git/?$##; s#/+$##')
         case "$canon" in github.com/*/*) : ;; *) exit 0 ;; esac
         case "$canon" in github.com/*/*/*) exit 0 ;; esac
         slug="${canon#github.com/}"

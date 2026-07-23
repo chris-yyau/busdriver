@@ -140,6 +140,23 @@ warn() { local active="$1" eng="$2"; STUB_ACTIVE="$active" STUB_ENGAGEMENT="$eng
 [ "$(warn 1 unknown)" = "silent" ] && ok "active + unknown → silent (fail toward silence)" || bad "active+unknown"
 [ "$(warn 0 none)"    = "silent" ] && ok "inactive + none → silent (nothing to warn)" || bad "inactive+none"
 
+# ── Origin canonicalization (the `canon=...` sed in codex_none_warning) ─────
+# Greptile #461 P1: credentialed HTTPS origins (token-auth checkouts, e.g.
+# `https://x-access-token:TOKEN@github.com/owner/repo.git`) must still
+# canonicalize to `github.com/owner/repo` — the userinfo `:` must not be
+# mistaken for the git@ scp-style host/path separator. Exercised directly
+# against the same sed expression the gate uses (not via the gh-stubbed
+# `warn()` helper, which bypasses origin resolution entirely).
+canon_of() {
+  printf '%s' "$1" | sed -E 's#^git@#https://#; s#^https?://##; s#^[^/@]*@##; s#:#/#; s#\.git/?$##; s#/+$##'
+}
+[ "$(canon_of 'https://x-access-token:ghp_abc123@github.com/chris-yyau/busdriver.git')" = "github.com/chris-yyau/busdriver" ] \
+  && ok "credentialed HTTPS origin canonicalizes past userinfo" || bad "credentialed HTTPS origin canon"
+[ "$(canon_of 'https://github.com/chris-yyau/busdriver.git')" = "github.com/chris-yyau/busdriver" ] \
+  && ok "plain HTTPS origin unaffected by userinfo strip" || bad "plain HTTPS origin canon regressed"
+[ "$(canon_of 'git@github.com:chris-yyau/busdriver.git')" = "github.com/chris-yyau/busdriver" ] \
+  && ok "scp-style git@ origin unaffected by userinfo strip" || bad "scp-style git@ origin canon regressed"
+
 # Kill switch → silent, zero network (constraint 4). Verified by pointing gh at a
 # stub that HARD-FAILS if called: kill switch must short-circuit before any gh.
 FAILGH=$(mktemp -d); cat > "$FAILGH/gh" <<'S'

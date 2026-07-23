@@ -27,14 +27,18 @@ assert() {  # assert <rc:0/1> <message>
 }
 
 # ── The authoritative classification (maintained by humans, verified below) ──
-# CONTAINED: exit-2 is a PURE gate decision from stdin/filePath — must be wrapped.
-CONTAINED=(block-no-verify.js config-protection.js pre-bash-dev-server-block.js)
-# ACCEPTED RESIDUAL: exit-2 is env-DRIVEN (reads behavior-affecting vars), so
-# `env -i` would change behavior, not just strip the injection flag; defaults
-# fail-closed. Documented in docs/adr/0016-gate-env-containment.md.
-RESIDUAL=(mcp-health-check.js)
-# The full known exit-2 universe = CONTAINED ∪ RESIDUAL.
-KNOWN_EXIT2=("${CONTAINED[@]}" "${RESIDUAL[@]}")
+# CONTAINED: exit-2 is a gate decision that must be wrapped in sanitized-node.sh.
+# mcp-health-check.js joined this set in #351: it reads MCP config from the hook
+# PAYLOAD cwd (not process.cwd()), so it no longer needs its env re-imported, and
+# `env -i` also wipes its ECC_MCP_RECONNECT_COMMAND shell-exec + ECC_MCP_HEALTH_FAIL_OPEN
+# injection channels. See docs/adr/0016-gate-env-containment.md.
+CONTAINED=(block-no-verify.js config-protection.js pre-bash-dev-server-block.js mcp-health-check.js)
+# ACCEPTED RESIDUAL: exit-2 hooks left uncontained because `env -i` would change
+# behavior, not just strip the injection flag. Empty since #351.
+RESIDUAL=()
+# The full known exit-2 universe = CONTAINED ∪ RESIDUAL. The `${RESIDUAL[@]+…}`
+# guard keeps an empty RESIDUAL from tripping `set -u` on bash 3.2 (macOS default).
+KNOWN_EXIT2=("${CONTAINED[@]}" ${RESIDUAL[@]+"${RESIDUAL[@]}"})
 
 in_list() {  # in_list <needle> <list...>
     local n="$1"; shift

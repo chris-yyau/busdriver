@@ -1,3 +1,10 @@
+## [1.96.2](https://github.com/chris-yyau/busdriver/compare/v1.96.1...v1.96.2) (2026-07-23)
+
+
+### Bug Fixes
+
+* **deps:** bump js-yaml 4.2.0 → 4.3.0 (ReDoS, dev-only) ([#471](https://github.com/chris-yyau/busdriver/issues/471)) ([509a6f0](https://github.com/chris-yyau/busdriver/commit/509a6f0bf5e3d5c687d89cfb93339a7126aed164)), closes [#2](https://github.com/chris-yyau/busdriver/issues/2)
+
 ## [1.96.1](https://github.com/chris-yyau/busdriver/compare/v1.96.0...v1.96.1) (2026-07-23)
 
 

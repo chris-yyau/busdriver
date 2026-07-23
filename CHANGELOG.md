@@ -1,3 +1,10 @@
+# [1.96.0](https://github.com/chris-yyau/busdriver/compare/v1.95.14...v1.96.0) (2026-07-23)
+
+
+### Features
+
+* **pre-merge:** ADR 0024 — non-gating missing-Codex advisory on allow paths ([#461](https://github.com/chris-yyau/busdriver/issues/461)) ([e1376a9](https://github.com/chris-yyau/busdriver/commit/e1376a97206373824141836e53abea38c7624646)), closes [#450](https://github.com/chris-yyau/busdriver/issues/450) [#444](https://github.com/chris-yyau/busdriver/issues/444) [#native](https://github.com/chris-yyau/busdriver/issues/native)
+
 ## [1.95.14](https://github.com/chris-yyau/busdriver/compare/v1.95.13...v1.95.14) (2026-07-22)
 
 

@@ -102,7 +102,10 @@ codex_none_warning() {
         # If too little remains, skip entirely (silent) — the advisory NEVER
         # extends the gate past the cap. SECONDS is whole-second elapsed since the
         # gate started; coarse but conservative (rounds elapsed down → smaller,
-        # safer budget). outer_cap mirrors hooks.json's pre-merge timeout (20s).
+        # safer budget). hooks.json passes CODEX_WARN_OUTER_BUDGET explicitly,
+        # co-located with its own "timeout" value on the same command line, so
+        # the two numbers can't silently drift apart (CodeRabbit PR #461); the
+        # :-20 fallback only covers direct/manual invocation outside the hook.
         outer=${CODEX_WARN_OUTER_BUDGET:-20}
         budget=${CODEX_WARN_BUDGET:-8}
         remaining=$(( outer - SECONDS - 4 ))

@@ -129,10 +129,14 @@ fi
 HOIST_CONTAIN=$(awk '
   /If RESULT_STATUS == clean AND RESULT_CODEX_ACK == "none"/ { inblk=1; next }
   inblk && /^  ├──/                                          { inblk=0 }
-  inblk && /export GH_HOST=github\.com/                      { pin=1 }
-  inblk && /unset GH_REPO/                                   { clr=1 }
-  inblk && /\$\(gh repo view/                                { ambient=1 }
-  END { print (pin && clr && !ambient) ? "OK" : "BAD" }' "$SKILL")
+  inblk && /export GH_HOST=github\.com/    && !pin { pin=NR }
+  inblk && /unset GH_REPO/                 && !clr { clr=NR }
+  inblk && /codex-nudge-if-expected\.sh/   && !inv { inv=NR }
+  inblk && /\$\(gh repo view/                       { ambient=1 }
+  # both guards must PRECEDE the credentialed wrapper invocation, not merely
+  # appear somewhere in the block (Codex P2, PR #474): a reorder that drops the
+  # pin/unset below the gh call would otherwise still pass while containment breaks.
+  END { print (pin && clr && inv && pin<inv && clr<inv && !ambient) ? "OK" : "BAD" }' "$SKILL")
 if [[ "$HOIST_CONTAIN" == OK ]]; then
   ok "clean-path hoist pins GH_HOST + clears GH_REPO, no ambient gh repo view (#470 P1)"
 else

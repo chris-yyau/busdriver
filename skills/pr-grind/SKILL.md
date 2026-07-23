@@ -495,7 +495,11 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        `gh` calls — GH_HOST sends them to an arbitrary host, GH_REPO re-points the target
   │        repo. So the subshell PINS the host and CLEARS the repo override before any `gh`
   │        runs (covering the wrapper's delegated codex-active-repo.sh / codex-retrigger `gh`
-  │        calls too), exactly as codex-nudge-premerge.sh:85-102 does. Do NOT derive the repo
+  │        calls too), exactly as codex-nudge-premerge.sh:85-102 does. This routing pin is
+  │        deliberately scoped to the nudge, NOT extended dispatcher-wide: the dispatcher runs
+  │        in the operator session's ambient env, which a poisoned settings.json compromises
+  │        wholesale (PATH/BASH_ENV, every Bash call), so a broad env wrapper would be false
+  │        assurance — accepted residual, ADR 0026 (#475). Do NOT derive the repo
   │        from an ambient `gh repo view` — that call is itself routable by GH_REPO/GH_HOST;
   │        pass the dispatcher-resolved `<owner>/<repo>` PR metadata (same template values the
   │        context block and COMPLETION use). owner/repo is passed so codex-active-repo.sh can

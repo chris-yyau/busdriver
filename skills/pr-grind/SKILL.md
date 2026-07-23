@@ -489,14 +489,23 @@ LOOP (terminates when fix_round >= MAX_FIX OR wait_round >= MAX_WAIT):
   │        MUST open with `cd "$WORKTREE_DIR"` (template-substituted Step 0 path; the repo
   │        root under --no-worktree) so the wrapper's CWD-derived force-on root and the
   │        delegated CWD-relative marker resolve against the PR's own repo. `$PR_NUMBER`
-  │        is the Step 0 literal; HEAD and owner/repo are read inside the correct worktree
-  │        after the cd (owner/repo is passed so codex-active-repo.sh can auto-detect —
-  │        it treats an empty repo arg as inactive, which would silently drop auto-detect
-  │        to force-on-only). The subshell ABORTS on a bad worktree (`|| exit 0`); the
-  │        outer `|| true` keeps a failed nudge from ever blocking the clean path:
+  │        is the Step 0 literal; HEAD is read inside the correct worktree after the cd.
+  │        CONTAIN gh routing FIRST (issue #470 P1 / #416): a committed .claude/settings.json
+  │        `env` block is repo-controlled, and GH_HOST / GH_REPO steer OUTBOUND credentialed
+  │        `gh` calls — GH_HOST sends them to an arbitrary host, GH_REPO re-points the target
+  │        repo. So the subshell PINS the host and CLEARS the repo override before any `gh`
+  │        runs (covering the wrapper's delegated codex-active-repo.sh / codex-retrigger `gh`
+  │        calls too), exactly as codex-nudge-premerge.sh:85-102 does. Do NOT derive the repo
+  │        from an ambient `gh repo view` — that call is itself routable by GH_REPO/GH_HOST;
+  │        pass the dispatcher-resolved `<owner>/<repo>` PR metadata (same template values the
+  │        context block and COMPLETION use). owner/repo is passed so codex-active-repo.sh can
+  │        auto-detect — an empty repo arg is treated as inactive, silently dropping auto-detect
+  │        to force-on-only. The subshell ABORTS on a bad worktree (`|| exit 0`); the outer
+  │        `|| true` keeps a failed nudge from ever blocking the clean path:
   │          ( cd "$WORKTREE_DIR" || exit 0
+  │            export GH_HOST=github.com; unset GH_REPO
   │            bash "${CLAUDE_PLUGIN_ROOT}/scripts/codex-nudge-if-expected.sh" "$PR_NUMBER" \
-  │              "$(git rev-parse HEAD)" "$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo)" || true )
+  │              "$(git rev-parse HEAD)" "<owner>/<repo>" || true )
   │
   ├── Classify round and increment the appropriate counter:
   │     # ONLY runs on RESULT_STATUS=needs_more — bail and clean rounds skip this

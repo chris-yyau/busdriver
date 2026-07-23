@@ -121,6 +121,24 @@ else
   fail "clean-path hoist guard missing kill-switch check — nudge could post while PR_GRIND_CODEX_RETRIGGER=0 (#470)"
 fi
 
+# (5) gh-routing containment (#470 P1 / #416): the hoisted subshell makes credentialed
+# `gh` calls, so a repo-controlled GH_HOST/GH_REPO could redirect them to an attacker
+# host/repo. The block MUST pin the host + clear the repo override, and MUST NOT derive
+# the repo from an ambient `gh repo view` (itself routable). Scope both checks to the
+# hoisted block so they can't be satisfied by an unrelated site elsewhere in the file.
+HOIST_CONTAIN=$(awk '
+  /If RESULT_STATUS == clean AND RESULT_CODEX_ACK == "none"/ { inblk=1; next }
+  inblk && /^  ├──/                                          { inblk=0 }
+  inblk && /export GH_HOST=github\.com/                      { pin=1 }
+  inblk && /unset GH_REPO/                                   { clr=1 }
+  inblk && /\$\(gh repo view/                                { ambient=1 }
+  END { print (pin && clr && !ambient) ? "OK" : "BAD" }' "$SKILL")
+if [[ "$HOIST_CONTAIN" == OK ]]; then
+  ok "clean-path hoist pins GH_HOST + clears GH_REPO, no ambient gh repo view (#470 P1)"
+else
+  fail "clean-path hoist missing gh-routing containment (GH_HOST pin / GH_REPO unset) or still uses ambient gh repo view (#470 P1 / #416)"
+fi
+
 # (g) GC wired into BOTH merge blocks after a MERGED guard; correct PR token per block
 GC_COUNT=$(grep -c 'codex-retrigger-gc.sh' "$SKILL" || true)
 [ "$GC_COUNT" -eq 2 ] && ok "codex-retrigger-gc.sh wired exactly twice" \

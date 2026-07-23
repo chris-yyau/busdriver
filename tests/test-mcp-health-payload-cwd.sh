@@ -17,8 +17,8 @@ assert() { if [[ "$1" -eq 0 ]]; then PASS=$((PASS+1)); printf '  ok   %s\n' "$2"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-CONFIG_DIR="$TMP/repo"; OTHER_DIR="$TMP/elsewhere"
-mkdir -p "$CONFIG_DIR" "$OTHER_DIR"
+CONFIG_DIR="$TMP/repo"; OTHER_DIR="$TMP/elsewhere"; HOME_DIR="$TMP/home"
+mkdir -p "$CONFIG_DIR" "$OTHER_DIR" "$HOME_DIR"
 # An http server on port 1 (ECONNREFUSED, no network, instant) — a resolved config
 # means the hook PROBES it, finds it unreachable, and BLOCKS (exit 2). An unresolved
 # config means "skip probe" (exit 0). Exit code is the discriminator.
@@ -28,7 +28,7 @@ run() {  # run <payload-cwd-json-fragment>  → prints exit code; always launche
   local frag="$1"
   ( cd "$OTHER_DIR" \
     && printf '{"tool_name":"mcp__testsrv__ping"%s}' "$frag" \
-       | CLAUDE_HOOK_EVENT_NAME=PreToolUse \
+       | HOME="$HOME_DIR" CLAUDE_HOOK_EVENT_NAME=PreToolUse \
          ECC_MCP_HEALTH_STATE_PATH="$TMP/state-$RANDOM.json" \
          node "$HOOK" >/dev/null 2>&1 )
   printf '%s' "$?"
@@ -52,7 +52,7 @@ else assert 1 "no payload cwd: falls back to process.cwd() (no config there), sk
 # config → block (2). So exit 0 is the proof the relative value was refused.
 rc_c="$( cd "$TMP" \
   && printf '{"tool_name":"mcp__testsrv__ping","cwd":"repo"}' \
-     | CLAUDE_HOOK_EVENT_NAME=PreToolUse ECC_MCP_HEALTH_STATE_PATH="$TMP/state-c.json" \
+     | HOME="$HOME_DIR" CLAUDE_HOOK_EVENT_NAME=PreToolUse ECC_MCP_HEALTH_STATE_PATH="$TMP/state-c.json" \
        node "$HOOK" >/dev/null 2>&1; printf '%s' "$?" )"
 if [[ "$rc_c" == "0" ]]; then assert 0 "relative payload cwd rejected by absolute-only guard, skips probe (exit 0, got $rc_c)"
 else assert 1 "relative payload cwd rejected by absolute-only guard, skips probe (exit 0, got $rc_c)"; fi

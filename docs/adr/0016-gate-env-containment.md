@@ -158,8 +158,11 @@ more securely — by removing the dependency instead of re-importing it:
   the repo cwd (to find project-scoped `.claude.json`). It now reads that from the hook
   **payload** `cwd` (same pattern as `config-protection.js`), so `process.cwd()` being
   `/` no longer blinds config resolution. `tests/test-mcp-health-payload-cwd.sh` pins it.
-- The other `ECC_MCP_*` vars turned out to be pure attack surface here: nothing in-repo
-  or in the operator's shell/settings sets any of them, and two are outright dangerous —
+- The other `ECC_MCP_*` vars turned out to be pure attack surface on the sanitized
+  production path: they are intentionally not re-imported there (the repo's own test
+  harness sets `ECC_MCP_HEALTH_STATE_PATH`, and direct (non-sanitized) launches still
+  support environment-based configuration), but nothing on the `env -i` production path
+  sets them, and two are outright dangerous —
   `ECC_MCP_HEALTH_FAIL_OPEN` (a committed settings `env` block flips the `? 0 : 2` branch
   fail-OPEN) and **`ECC_MCP_RECONNECT_COMMAND` / `ECC_MCP_RECONNECT_*`**, which flow into
   `spawnSync(cmd, {shell: true})` — a repo-injectable **shell-exec** vector this ADR's

@@ -152,7 +152,7 @@ def subst_has_retargeter(seg):
     return False
 
 
-def _scan_segment(idx, op, seg):
+def _scan_segment(op, seg):
     # PASS 1 — parse one segment into a position-INDEPENDENT record. Merge-intrinsic
     # faults (count, -R, $-operand, non-numeric PR) set rec['seg_unsafe'] here because
     # they are about the merge itself, not about ordering. rec['positional'] carries the
@@ -418,7 +418,7 @@ def main():
     merge_index = -1
     recs = []
     for idx, (op, seg) in enumerate(segs):
-        rec = _scan_segment(idx, op, seg)
+        rec = _scan_segment(op, seg)
         recs.append(rec)
         if rec['seg_unsafe']:
             unsafe = True

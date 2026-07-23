@@ -51,16 +51,30 @@ function stateFilePath() {
   return path.join(os.homedir(), '.claude', 'mcp-health-cache.json');
 }
 
-function configPaths() {
+// `payloadCwd` is the repo dir from the hook stdin JSON, NOT process.cwd():
+// under sanitized-node.sh the process runs from `/` (its `cd /` neutral-cwd
+// step), so process.cwd() no longer points at the repo and would miss the
+// project-scoped .claude.json. Same payload-cwd pattern config-protection.js
+// uses. Falls back to process.cwd() for the uncontained/legacy launch.
+function configPaths(payloadCwd) {
   if (process.env.ECC_MCP_CONFIG_PATH) {
     return process.env.ECC_MCP_CONFIG_PATH
       .split(path.delimiter)
       .map(entry => entry.trim())
       .filter(Boolean)
+      // ECC_MCP_CONFIG_PATH is operator config (and is WIPED under the sanitized-node.sh
+      // env -i containment, so it only applies to a direct/uncontained launch). Each
+      // entry is resolved to an absolute path and only READ as JSON to locate MCP config.
+      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       .map(entry => path.resolve(entry));
   }
 
-  const cwd = process.cwd();
+  // Accept payloadCwd only as an ABSOLUTE path: a relative/`..`-laden value falls
+  // back to process.cwd(). The result is joined with FIXED basenames and only READ
+  // as JSON to locate MCP server config — the exact files the uncontained hook read
+  // from process.cwd(), so this restores prior behavior under `cd /` without widening
+  // access.
+  const cwd = (typeof payloadCwd === 'string' && path.isAbsolute(payloadCwd)) ? payloadCwd : process.cwd();
   const home = os.homedir();
 
   return [
@@ -178,8 +192,8 @@ function extractMcpTargetFromRaw(raw) {
   });
 }
 
-function resolveServerConfig(serverName) {
-  for (const filePath of configPaths()) {
+function resolveServerConfig(serverName, payloadCwd) {
+  for (const filePath of configPaths(payloadCwd)) {
     const data = readJsonFile(filePath);
     const server = data?.mcpServers?.[serverName]
       || data?.mcp_servers?.[serverName]
@@ -566,6 +580,7 @@ function emitLogs(logs) {
 
 async function handlePreToolUse(rawInput, input, target, statePathValue, now) {
   const logs = [];
+  const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : undefined;
   const state = loadState(statePathValue);
   const previous = state.servers[target.server] || {};
 
@@ -580,7 +595,7 @@ async function handlePreToolUse(rawInput, input, target, statePathValue, now) {
     return { rawInput, exitCode: shouldFailOpen() ? 0 : 2, logs };
   }
 
-  const resolvedConfig = resolveServerConfig(target.server);
+  const resolvedConfig = resolveServerConfig(target.server, cwd);
   if (!resolvedConfig) {
     logs.push(`[MCPHealthCheck] No MCP config found for ${target.server}; skipping preflight probe`);
     return { rawInput, exitCode: 0, logs };
@@ -655,7 +670,8 @@ async function handlePostToolUseFailure(rawInput, input, target, statePathValue,
     return { rawInput, exitCode: 0, logs };
   }
 
-  const resolvedConfig = resolveServerConfig(target.server);
+  const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : undefined;
+  const resolvedConfig = resolveServerConfig(target.server, cwd);
   if (!resolvedConfig) {
     logs.push(`[MCPHealthCheck] ${target.server} reconnect completed but no config was available for a follow-up probe`);
     return { rawInput, exitCode: 0, logs };

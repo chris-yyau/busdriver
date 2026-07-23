@@ -1,3 +1,10 @@
+## [1.96.3](https://github.com/chris-yyau/busdriver/compare/v1.96.2...v1.96.3) (2026-07-23)
+
+
+### Bug Fixes
+
+* **pr-grind:** hoist Codex none-grace nudge to the clean path ([#467](https://github.com/chris-yyau/busdriver/issues/467)) ([#470](https://github.com/chris-yyau/busdriver/issues/470)) ([5c6b409](https://github.com/chris-yyau/busdriver/commit/5c6b4097c1265fa21cab87e5cd3359f2ecca627b))
+
 ## [1.96.2](https://github.com/chris-yyau/busdriver/compare/v1.96.1...v1.96.2) (2026-07-23)
 
 

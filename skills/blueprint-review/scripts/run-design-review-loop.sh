@@ -961,10 +961,10 @@ with open(pending, "w") as f:
       _mw_err=$(jq -r '.error // "unknown"' "$AUDITOR_OUTPUT_FILE" 2>/dev/null || echo "unknown")
       case "$_mw_err" in
         *"not available"*) log_info "  Mechanism Witness (k3): absent — opencode unavailable (no fallback)" ;;
-        *)                 log_info "  Mechanism Witness (k3): FAILED — $_mw_err (advisory; review unaffected)" ;;
+        *)                 log_info "  Mechanism Witness (k3): FAILED — $_mw_err (auxiliary; review unaffected)" ;;
       esac
     elif [[ "$_mw_status" == "UNREADABLE" ]]; then
-      log_info "  Mechanism Witness (k3): FAILED — auditor.json present but corrupt/unparseable (advisory; review unaffected)"
+      log_info "  Mechanism Witness (k3): FAILED — auditor.json present but corrupt/unparseable (auxiliary; review unaffected)"
     else
       _mw_n=$(jq '(.issues // .findings // []) | length' "$AUDITOR_OUTPUT_FILE" 2>/dev/null || echo "?")
       log_info "  Mechanism Witness (k3): ran ($_mw_n findings — LEADS not verdicts, arbiter verifies)"

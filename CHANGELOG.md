@@ -1,3 +1,10 @@
+# [1.99.0](https://github.com/chris-yyau/busdriver/compare/v1.98.4...v1.99.0) (2026-07-24)
+
+
+### Features
+
+* **council:** rename k3 auditor to Mechanism Witness, move to ultimate tier ([#494](https://github.com/chris-yyau/busdriver/issues/494)) ([71e7868](https://github.com/chris-yyau/busdriver/commit/71e7868fc053c52ccbe2057cc72b828e3a3307b5)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
 ## [1.98.4](https://github.com/chris-yyau/busdriver/compare/v1.98.3...v1.98.4) (2026-07-24)
 
 

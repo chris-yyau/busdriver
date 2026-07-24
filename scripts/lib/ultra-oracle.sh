@@ -526,6 +526,139 @@ _ultra_oracle_diagnose_hint() {
   fi
 }
 
+# ---- concurrent-consult browser mutex (issue #477 Cause 2) --------------------------------
+# The attach and remoteHost transports drive ONE shared browser instance (the attached Chrome, or the
+# single browser behind a — documented as loopback — `oracle serve`). Two consults at once — e.g. a
+# council in one session and a plan-review in another, on the SAME machine — drive that same browser
+# concurrently; one hangs or harvests the other's tab. Serialize them with a portable, $HOME-anchored
+# file mutex (macOS ships no flock(1)). This serializes SAME-MACHINE consults, which is #477's scope
+# (a solo operator's overlapping council/plan-review); a serve shared across machines/accounts is a
+# KNOWN limitation the local lock can't cover — cross-client serialization is the serve's job (see the
+# remoteHost branch). cookiePath/copy-profile each launch their OWN Chrome, so there is nothing to
+# serialize. The lock is published ATOMICALLY WITH its
+# metadata via ln(1) — a hardlink from a fully-written temp file, which fails if the target exists
+# (O_EXCL) — so a visible lock ALWAYS carries valid holder metadata; there is no create-then-write
+# window that could wedge it. Acquire is a plain atomic `ln` (hardlink support probed once up-front;
+# if the dir can't support it, the mutex degrades to UNLOCKED rather than block). ONLY the
+# owner ever removes its lock, and it does so nonce-checked — there is DELIBERATELY no auto-reclaim.
+# Why: no portable, suspension-safe liveness signal exists here. bash 3.2 exposes no $BASHPID, so a
+# disowned consult's real pid is unknowable ($$ is the parent wrapper's); and "the deadline passed" is
+# equally true of a merely SUSPENDED holder, so any age/deadline-based reclaim (even one behind an
+# exclusive reclaim-right) can remove a lock a stopped holder still owns and later have it resume and
+# delete a successor — concurrent drive (#477 review, rounds 3-8). With no reclaimer, no party can
+# mutate a held lock, so both acquire and release are race-free under arbitrary suspension. The one
+# cost is a CRASHED holder's lock persists: contenders wait, surface it ONCE with a manual `rm -f`
+# pointer, then fail closed — a stuck advisory consult (non-gating), never a silent double-drive. The
+# recorded deadline is used only to label that diagnostic. Best-effort serialization, not a security
+# gate — the shared browser is a soft resource; this hardens the unlocked status quo without ever
+# trading safety for automatic crash recovery that portable shell cannot provide correctly.
+_ultra_oracle_lock_file() {
+  # Deterministic PER-USER lock path for <key>, anchored at $HOME — NOT $TMPDIR, which varies per
+  # process (two sessions sharing one browser could get $TMPDIR vs /tmp and never meet, bypassing
+  # serialization). Consults sharing an attached browser share $HOME. cksum is POSIX; hashing keeps
+  # odd characters (profile paths, hostnames) out of the filename.
+  local root h
+  root="${HOME:-/tmp}/.cache/busdriver"; mkdir -p "$root" 2>/dev/null
+  h="$(printf '%s' "$1" | cksum 2>/dev/null | tr -dc '0-9')"; [[ -n "$h" ]] || h=0
+  printf '%s/ultra-oracle.%s.lock' "$root" "$h"
+}
+# _ultra_oracle_lock_stale <deadline-field> <now> -> 0 if empty/corrupt or past deadline (stale).
+_ultra_oracle_lock_stale() {
+  local d="$1" now="$2"; case "$d" in ''|*[!0-9]*) return 0 ;; esac; [ "$now" -gt "$d" ]
+}
+# _ultra_oracle_lk_waited <start-epoch> <cap> -> seconds waited since <start-epoch>, clamped to
+# [0,cap]. Returns <cap> (fail-CLOSED) if either timestamp is unreadable — a broken `date +%s` must
+# never yield waited=0 and re-grant a full fresh budget (which would let lock-wait + oracle exceed the
+# wrapper's cap+90 poll). Both-zero, one-sided-zero, and a negative/huge delta all resolve safely.
+_ultra_oracle_lk_waited() {
+  local start="$1" cap="$2" now w
+  now="$(date +%s 2>/dev/null || echo 0)"
+  case "$start" in ''|*[!0-9]*) start=0 ;; esac
+  case "$now" in ''|*[!0-9]*) now=0 ;; esac
+  if [ "$now" -le 0 ] || [ "$start" -le 0 ]; then printf '%s' "$cap"; return 0; fi
+  w=$(( now - start ))
+  # A NEGATIVE elapsed means the wall clock jumped backward during the wait. Treat it as fully
+  # consumed (return cap, fail-CLOSED) — same as the unreadable-clock branch above — NOT as 0, which
+  # would restore the full budget and let lock-wait + oracle exceed the wrapper's cap+90 poll (cubic P2).
+  [ "$w" -lt 0 ] && { printf '%s' "$cap"; return 0; }
+  [ "$w" -gt "$cap" ] && w="$cap"
+  printf '%s' "$w"
+}
+_ultra_oracle_browser_lock() {
+  # <key> <wait-secs> <holder-cap> -> print "<lockfile>\t<nonce>" and return 0, or return 1 if not
+  # acquired within <wait-secs>. Prints an EMPTY handle + returns 0 when the lock dir cannot support
+  # atomic locking (degrade to UNLOCKED — never block an advisory consult on broken lock infra).
+  # <holder-cap> sizes the deadline recorded for the stale-lock DIAGNOSTIC only (see below).
+  local key="$1" wait="$2" hcap="$3" lf now waited=0 tmp nonce deadline holder _warned=0
+  case "$wait" in ''|*[!0-9]*) wait=600 ;; esac
+  case "$hcap" in ''|*[!0-9]*|0) hcap=600 ;; esac
+  lf="$(_ultra_oracle_lock_file "$key")"
+  printf -v nonce '%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM"
+  # Probe hardlink support ONCE: the atomic publish needs ln(1), which some filesystems reject. If it
+  # is unsupported (or the dir is unwritable), degrade to UNLOCKED immediately rather than spin — and
+  # AFTER this probe an in-loop `ln` failure unambiguously means the target EXISTS (contention), never
+  # an infra fault, so the loop below never mistakes "can't hardlink" for "someone holds the lock".
+  tmp="$(mktemp "${lf}.XXXXXX" 2>/dev/null)" || tmp=""
+  if [[ -z "$tmp" ]] || ! ln "$tmp" "${tmp}.lnk" 2>/dev/null; then
+    [[ -n "$tmp" ]] && rm -f "$tmp" "${tmp}.lnk" 2>/dev/null
+    echo "ultra-oracle: lock dir cannot support atomic locking — proceeding WITHOUT the concurrency mutex" >&2
+    printf ''; return 0
+  fi
+  rm -f "$tmp" "${tmp}.lnk" 2>/dev/null
+  while :; do
+    now="$(date +%s 2>/dev/null || echo 0)"
+    deadline=$(( now + hcap + 120 ))
+    tmp="$(mktemp "${lf}.XXXXXX" 2>/dev/null)" || {
+      echo "ultra-oracle: lock dir became unwritable — proceeding WITHOUT the concurrency mutex" >&2
+      printf ''; return 0
+    }
+    # Race-free acquire: write metadata, VERIFY it landed (a short/failed write must not be published
+    # as an empty lock), then publish atomically WITH that content via ln (fails iff $lf exists).
+    if printf '%s %s' "$nonce" "$deadline" > "$tmp" 2>/dev/null && [[ -s "$tmp" ]] \
+       && ln "$tmp" "$lf" 2>/dev/null; then
+      rm -f "$tmp" 2>/dev/null
+      printf '%s\t%s' "$lf" "$nonce"; return 0
+    fi
+    rm -f "$tmp" 2>/dev/null
+    if [[ ! -e "$lf" ]]; then                         # target vanished (holder released) -> retry ln
+      [ "$waited" -ge "$wait" ] && return 1
+      sleep 1; waited=$(( waited + 1 )); continue
+    fi
+    # A lock exists — WAIT for it; deliberately NO auto-reclaim. There is no portable, suspension-safe
+    # way to prove a holder is dead vs merely stopped: bash 3.2 exposes no $BASHPID, so a disowned
+    # consult's real pid is unknowable, and "the deadline passed" is true of a SUSPENDED holder too —
+    # so any age/deadline-based reclaim could remove a lock a stopped holder still owns and then have
+    # it resume and delete a successor (concurrent drive). Only the owner ever removes its lock; a
+    # holder that truly CRASHED leaves a lock past its deadline, surfaced ONCE with a manual-cleanup
+    # pointer, then failing closed — a stuck advisory consult, never a silent double-drive.
+    if [ "$_warned" -eq 0 ]; then
+      holder="$(cat "$lf" 2>/dev/null)"
+      if _ultra_oracle_lock_stale "${holder##* }" "$now"; then
+        # Instruct the operator to CONFIRM no consult still owns it before removing: a merely
+        # SUSPENDED (not crashed) owner would resume and could then delete a successor's lock. Removal
+        # is safe only once no oracle process exists.
+        echo "ultra-oracle: a browser consult lock is past its deadline (a prior consult likely crashed). ONLY if no consult is still running — verify with 'pgrep -fl oracle' — remove it to unblock: rm -f '$lf'" >&2
+        _warned=1
+      fi
+    fi
+    [ "$waited" -ge "$wait" ] && return 1
+    sleep 1; waited=$(( waited + 1 ))
+  done
+}
+_ultra_oracle_browser_unlock() {
+  # "<lockfile>\t<nonce>" -> release the lock IF it still records OUR nonce. Race-free with NO
+  # coordination primitive precisely because there is NO reclaimer: only the owner ever removes its
+  # lock, so no other party can mutate $lf between our read and our rm, and a holder suspended for any
+  # length of time simply removes its own still-present lock on resume (nothing could have replaced
+  # it). No-op on an empty/degraded handle.
+  local h="${1:-}" lf nonce cur
+  lf="${h%%$'\t'*}"; nonce="${h#*$'\t'}"
+  [[ -n "$lf" && "$nonce" != "$h" ]] || return 0     # no TAB -> empty/degraded handle -> nothing to do
+  cur="$(cat "$lf" 2>/dev/null)"; cur="${cur%% *}"
+  [[ "$cur" == "$nonce" ]] && rm -f "$lf" 2>/dev/null
+  return 0
+}
+
 # ultra_oracle_consult --prompt <t> | --prompt-file <p>  [--context <glob>]... \
 #   --out <path> [--mode blocking|background] [--timeout-cap-seconds <n>] [--slug <words>]
 # Prints exactly one of: ok | skipped:unavailable | skipped:user | timeout | error | dispatched
@@ -622,6 +755,12 @@ ultra_oracle_consult() {
   # blocking/background paths can reference it in NON-attach runs without tripping `set -u`.
   # The attach branch assigns it; salvage no-ops when it stays empty.
   local _uora_target=""
+  # #477 Cause 2: non-empty only for the SHARED-browser transports (attach / remoteHost); the mutex
+  # serializes concurrent consults on that one browser. _uora_lockdir holds a blocking-mode lock
+  # handle ("<lockfile>\t<nonce>") the RETURN trap releases on any exit; background mode locks inside
+  # its own subshell. _uora_lk_* track how long acquisition waited so it can be deducted from the
+  # consult budget (lock-wait + run must stay within cap, not sum to ~2*cap).
+  local _uora_lock_key="" _uora_lockdir="" _uora_lk_start="" _uora_lk_waited=""
   model="$(ultra_oracle_model)"; profile="$(ultra_oracle_chrome_profile)"
   cookie_path="$(ultra_oracle_cookie_path)"
   remote_host="$(ultra_oracle_remote_host)"; remote_token="$(ultra_oracle_remote_token)"
@@ -724,6 +863,10 @@ ultra_oracle_consult() {
     # (oracle rejects the combination outright) and with the remoteHost/cookiePath/profile
     # session sources — attach mode reuses a browser rather than configuring one.
     set -- "$@" --browser-attach-running --remote-chrome "$_uora_target"
+    # #477 Cause 2: key the shared-browser mutex to the transport ACTUALLY chosen here (not a second
+    # ultra_oracle_attach_running probe below, which could disagree if Chrome starts/exits between).
+    # The attach profile dir is the stable identity of the one Chrome this reuses.
+    _uora_lock_key="attach:$(ultra_oracle_attach_profile_dir 2>/dev/null)"
   elif [[ -n "$remote_host" ]]; then
     # remoteToken is REQUIRED with remoteHost — fail CLOSED if empty. Empty would leave the
     # consult to fail auth against a token-protected serve; refuse up front with guidance.
@@ -750,6 +893,13 @@ ultra_oracle_consult() {
     # symlink-physical CWD) config discovery to detect an ambient token.
     _uora_env_token="$remote_token"
     set -- "$@" --remote-host "$remote_host"
+    # #477 Cause 2: lock remoteHost too. The documented setup pins a LOOPBACK serve (127.0.0.1), so a
+    # solo operator's concurrent council + plan-review consults hit the SAME local serve browser —
+    # exactly the same-machine collision #477 addresses, and a $HOME-anchored lock serializes them.
+    # KNOWN LIMITATION (accepted): if a serve is shared across machines/accounts, clients keep
+    # independent $HOME locks and are NOT serialized — cross-client coordination is the serve's
+    # responsibility, which a local lock cannot provide. Keyed by host so distinct serves don't block.
+    _uora_lock_key="remote:$remote_host"
   elif [[ -n "$cookie_path" ]]; then
     if [[ -r "$cookie_path" ]]; then
       set -- "$@" --browser-cookie-path "$cookie_path"
@@ -760,6 +910,14 @@ ultra_oracle_consult() {
   elif [[ -n "$profile" ]] && [[ -d "$profile" ]]; then
     set -- "$@" --copy-profile "$profile"
   fi
+  # #477 Cause 2: _uora_lock_key was set in the transport branch above (attach / remoteHost only —
+  # cookiePath/copy-profile launch a fresh Chrome per run, no shared instance, so no key, no lock).
+  # TEST-ONLY isolation: the #458 watched-run/salvage unit suite fires many rapid same-key background
+  # consults whose timing assertions assume independent runtimes; the mutex would (correctly)
+  # serialize them and skew those timings. The mutex's OWN behavior is covered by
+  # tests/test-ultra-oracle-lock.sh, so that suite sets this to opt out. Advisory mutex only — opting
+  # out just restores the pre-#477 unlocked behavior, no security surface.
+  [[ -n "${ULTRA_ORACLE_TEST_NO_LOCK:-}" ]] && _uora_lock_key=""
   # Hide the automation Chrome window ONLY when explicitly opted in (B8). Passing
   # --browser-hide-window was root-caused as breaking oracle's ChatGPT browser engine,
   # so the window is now VISIBLE by default; set ultraOracle.hideWindow=true to restore.
@@ -789,6 +947,36 @@ ultra_oracle_consult() {
     # Emit an .rc marker on completion so the caller can bounded-wait + read status.
     # disown so an early parent exit cannot orphan/kill it before the .rc lands.
     ( set +e   # a caller's errexit must NOT abort the subshell before "$out.rc" is written
+      # #477 Cause 2: serialize on the shared browser BEFORE launching oracle. If another consult
+      # holds it past our wait budget, fail closed as a timeout (rc 124) — the caller surfaces it,
+      # never a silent skip — rather than colliding on the attached tab. Locked inside the subshell
+      # (not the parent) so the lock's lifetime is the disowned consult's, released before the .rc
+      # write below. If this subshell is KILLED before releasing, the lock persists until manually
+      # cleared (there is no auto-reclaim — see _ultra_oracle_browser_lock's header for why).
+      _uora_sub_lock=""
+      # Effective run budget. Kept as a SEPARATE var (never a `cap=` reassignment inside this `(..)`
+      # subshell) so shellcheck's flow analysis doesn't flag the whole function SC2030/SC2031 — the
+      # reduction is meant to be subshell-local, and cap itself must read unchanged elsewhere.
+      _uora_eff_cap="$cap"
+      if [[ -n "$_uora_lock_key" ]]; then
+        _uora_lk_start="$(date +%s 2>/dev/null || echo 0)"
+        if ! _uora_sub_lock="$(_ultra_oracle_browser_lock "$_uora_lock_key" "$cap" "$cap")"; then
+          : > "$out" 2>/dev/null
+          printf '124' > "$out.rc.partial" && mv -f "$out.rc.partial" "$out.rc"
+          exit 0
+        fi
+        # Deduct the wait from the run budget so lock-wait + oracle never exceeds cap (the wrapper
+        # only polls cap+90). Too little left to run a meaningful consult -> fail closed as timeout.
+        _uora_lk_waited="$(_ultra_oracle_lk_waited "$_uora_lk_start" "$cap")"
+        _uora_eff_cap=$(( cap - _uora_lk_waited ))
+        # Only the wait-consumed-most-of-the-budget case fails closed; a genuinely small caller cap
+        # with no contention (lk_waited=0) runs normally.
+        if [ "$_uora_lk_waited" -gt 0 ] && [ "$_uora_eff_cap" -lt 30 ]; then
+          _ultra_oracle_browser_unlock "$_uora_sub_lock"; : > "$out" 2>/dev/null
+          printf '124' > "$out.rc.partial" && mv -f "$out.rc.partial" "$out.rc"
+          exit 0
+        fi
+      fi
       # Capture oracle STDOUT+STDERR to "$out.err" (B8): oracle emits its failure
       # diagnostics on STDOUT, so the old >/dev/null 2>&1 discarded them and every
       # failure looked silent. Keep the file on failure for diagnosis; remove on success.
@@ -799,18 +987,18 @@ ultra_oracle_consult() {
       # do about oracle's launched Chrome is unchanged, in or out of scope of #458), and no
       # salvage is possible there without a live tab.
       if ultra_oracle_attach_running && [[ -n "$_uora_target" ]]; then
-        ORACLE_REMOTE_TOKEN="$_uora_env_token" _ultra_oracle_run_watched "${cap}" "$out.err" oracle "$@"; _uora_bg_rc=$?
+        ORACLE_REMOTE_TOKEN="$_uora_env_token" _ultra_oracle_run_watched "${_uora_eff_cap}" "$out.err" oracle "$@"; _uora_bg_rc=$?
         # Salvage ONLY on positive completion evidence: 125 = confirmed completed-but-hung (stream
         # ended), or exit-0-but-empty (oracle concluded, extraction raced). NOT on a plain 124
         # hard cap — that response may still be mid-stream, and harvesting a partial would promote
         # an incomplete answer to a verdict. Harvest re-reads the live tab and normalizes to 0.
         if [[ "$_uora_bg_rc" = 125 ]] || { [[ "$_uora_bg_rc" = 0 ]] && ! _ultra_oracle_verdict_ok "$out"; }; then
-          _ultra_oracle_salvage "$out" "$cap" "$_uora_target" && _uora_bg_rc=0
+          _ultra_oracle_salvage "$out" "$_uora_eff_cap" "$_uora_target" && _uora_bg_rc=0
         fi
         # A confirmed-hung run that salvage did NOT recover is still a timeout to the caller.
         [[ "$_uora_bg_rc" = 125 ]] && _uora_bg_rc=124
       else
-        ORACLE_REMOTE_TOKEN="$_uora_env_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" 2>&1; _uora_bg_rc=$?
+        ORACLE_REMOTE_TOKEN="$_uora_env_token" _portable_timeout "${_uora_eff_cap}" oracle "$@" >"$out.err" 2>&1; _uora_bg_rc=$?
       fi
       # Map exit-0-but-empty-verdict to failure so the .rc matches blocking mode's
       # fail-closed contract (timeout already surfaces as rc 124). Salvage may have fixed it.
@@ -827,6 +1015,9 @@ ultra_oracle_consult() {
         _uora_hint="$(_ultra_oracle_diagnose_hint "$out.err")"
         if [[ -n "$_uora_hint" ]]; then printf '%s' "$_uora_hint" > "$out.hint"; else rm -f "$out.hint"; fi
       fi
+      # #477 Cause 2: release the shared-browser mutex now that oracle (and any salvage) is done,
+      # BEFORE the .rc write hands the result to the waiter — so the next consult acquires promptly.
+      _ultra_oracle_browser_unlock "$_uora_sub_lock"
       # Write .rc ATOMICALLY and LAST: the waiters treat .rc's existence as completion, so a
       # created-but-not-yet-written .rc could be read empty (reported as a spurious timeout,
       # no hint). Rename is atomic on one filesystem, and it lands after .err/.hint are
@@ -845,6 +1036,28 @@ ultra_oracle_consult() {
   # the caller (this lib may be sourced under `set -e`) before the status token is
   # printed — the fail-closed 'error'/'timeout' tokens below depend on reaching them.
   local rc=0 _hint=""
+  # #477 Cause 2: serialize on the shared browser. Released by an EXPLICIT unlock at EVERY exit below
+  # (NOT a RETURN trap — a RETURN trap is process-global: it clobbers any caller trap, is never
+  # restored, and under `set -T` fires on nested helper returns, releasing the mutex mid-consult). The
+  # unlock is a no-op on an empty handle, so the non-locked path may call it harmlessly. Fail closed
+  # (as a timeout) if the browser stays busy past the wait budget rather than collide on the tab.
+  if [[ -n "$_uora_lock_key" ]]; then
+    _uora_lk_start="$(date +%s 2>/dev/null || echo 0)"
+    if ! _uora_lockdir="$(_ultra_oracle_browser_lock "$_uora_lock_key" "$cap" "$cap")"; then
+      : > "$out" 2>/dev/null                          # lock not held on this path — no unlock needed
+      echo "ultra-oracle: browser busy with a concurrent consult after ${cap}s — failing closed" >&2
+      printf 'timeout'; return 124
+    fi
+    # Deduct the wait from the run budget so lock-wait + oracle stays within cap.
+    _uora_lk_waited="$(_ultra_oracle_lk_waited "$_uora_lk_start" "$cap")"
+    cap=$(( cap - _uora_lk_waited ))
+    # Only fail closed when the wait itself ate the budget; a small caller cap with no contention runs.
+    if [ "$_uora_lk_waited" -gt 0 ] && [ "$cap" -lt 30 ]; then
+      _ultra_oracle_browser_unlock "$_uora_lockdir"; : > "$out" 2>/dev/null
+      echo "ultra-oracle: browser contention left <30s of budget — failing closed" >&2
+      printf 'timeout'; return 124
+    fi
+  fi
   ORACLE_REMOTE_TOKEN="$_uora_env_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" || rc=$?
   if [[ "$rc" = 124 ]]; then
     # #458 NOTE: blocking mode does NOT salvage on a bare timeout. Without the background
@@ -860,21 +1073,26 @@ ultra_oracle_consult() {
     # Clear any PARTIAL a killed oracle wrote to $out via --write-output — a timeout must leave no
     # misleading verdict artifact behind (the caller ignores $out on non-ok status, but be tidy).
     : > "$out" 2>/dev/null
+    _ultra_oracle_browser_unlock "$_uora_lockdir"
     echo "ultra-oracle: timed out after ${cap}s — oracle STDOUT captured at $out.err" >&2; printf 'timeout'; return 124
   fi
   if [[ "$rc" != 0 ]]; then
     # Name the operator's next step for a known failure (ABE / login / Cloudflare, #340)
     # before the generic pointer, so a failed consult is actionable, not just 'error'.
     _hint="$(_ultra_oracle_diagnose_hint "$out.err")"; [[ -n "$_hint" ]] && echo "ultra-oracle: $_hint" >&2
+    _ultra_oracle_browser_unlock "$_uora_lockdir"
     echo "ultra-oracle: oracle exited $rc — STDOUT/diagnostics captured at $out.err" >&2; printf 'error'; return 1
   fi
   if ! _ultra_oracle_verdict_ok "$out"; then
     # exit 0 but empty/degenerate verdict — extraction can race the stream (#458). Re-read
-    # the stable tab once (attach mode) before failing closed.
-    if _ultra_oracle_salvage "$out" "$cap" "$_uora_target"; then rm -f "$out.err"; printf 'ok'; return 0; fi
+    # the stable tab once (attach mode) before failing closed. Salvage drives the SAME browser tab,
+    # so the mutex is still held here and released only after it completes.
+    if _ultra_oracle_salvage "$out" "$cap" "$_uora_target"; then _ultra_oracle_browser_unlock "$_uora_lockdir"; rm -f "$out.err"; printf 'ok'; return 0; fi
     _hint="$(_ultra_oracle_diagnose_hint "$out.err")"; [[ -n "$_hint" ]] && echo "ultra-oracle: $_hint" >&2
+    _ultra_oracle_browser_unlock "$_uora_lockdir"
     echo "ultra-oracle: exit 0 but missing/degenerate verdict — oracle STDOUT at $out.err" >&2; printf 'error'; return 1
   fi   # exit 0 but missing/degenerate verdict = fail-closed (unless salvaged)
+  _ultra_oracle_browser_unlock "$_uora_lockdir"
   rm -f "$out.err"   # success: drop the captured stdout
   printf 'ok'; return 0
 }

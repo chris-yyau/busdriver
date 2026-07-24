@@ -21,6 +21,10 @@ case "${ULTRA_ORACLE_MOCK_MODE:-ok}" in
 esac
 EOF
 chmod +x "$tmp/bin/oracle"; export PATH="$tmp/bin:$PATH"
+# This suite exercises the #458 watched-run/salvage timing, firing many rapid same-key background
+# consults; opt out of the #477 browser mutex so it doesn't (correctly) serialize them and skew the
+# elapsed-time assertions. The mutex itself is covered by tests/test-ultra-oracle-lock.sh.
+export ULTRA_ORACLE_TEST_NO_LOCK=1
 # shellcheck source=/dev/null
 source "$DIR/scripts/lib/ultra-oracle.sh"
 

@@ -1,3 +1,10 @@
+## [1.98.1](https://github.com/chris-yyau/busdriver/compare/v1.98.0...v1.98.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* **council:** harden UltraOracle consult — long-timeout doc + concurrency mutex ([#477](https://github.com/chris-yyau/busdriver/issues/477)) ([#483](https://github.com/chris-yyau/busdriver/issues/483)) ([0c6c971](https://github.com/chris-yyau/busdriver/commit/0c6c971676d48c7aba2f405c6e2729b450788d6f)), closes [#458](https://github.com/chris-yyau/busdriver/issues/458)
+
 # [1.98.0](https://github.com/chris-yyau/busdriver/compare/v1.97.1...v1.98.0) (2026-07-24)
 
 

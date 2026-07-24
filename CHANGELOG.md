@@ -1,3 +1,10 @@
+## [1.98.3](https://github.com/chris-yyau/busdriver/compare/v1.98.2...v1.98.3) (2026-07-24)
+
+
+### Bug Fixes
+
+* **gate:** exempt deliberation dispatchers from design gate by path ([#484](https://github.com/chris-yyau/busdriver/issues/484)) ([#488](https://github.com/chris-yyau/busdriver/issues/488)) ([4788985](https://github.com/chris-yyau/busdriver/commit/478898564c032a45d4df8881b83cfe8fe1c5399b))
+
 ## [1.98.2](https://github.com/chris-yyau/busdriver/compare/v1.98.1...v1.98.2) (2026-07-24)
 
 

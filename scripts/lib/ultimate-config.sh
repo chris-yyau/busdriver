@@ -10,7 +10,7 @@
 # ultimate_surface_enabled is SURFACE-GENERIC (it reads `.ultimate.surfaces.<name>`, and the
 # BUSDRIVER_ULTIMATE force, for whatever surface arg it is CALLED with), but `council` is the
 # only LIVE surface with a caller. The blueprint-review arbiter also elevates to Fable, but as
-# of ADR 0027 that is the in-band "ultimate arbiter" trigger phrase ONLY: no arbiter code path
+# of ADR 0028 that is the in-band "ultimate arbiter" trigger phrase ONLY: no arbiter code path
 # calls `ultimate_surface_enabled arbiter`, so neither `.ultimate.surfaces.arbiter` NOR
 # BUSDRIVER_ULTIMATE has any effect on the arbiter pin — the executor chooses the arbiter model
 # at dispatch. (The generic reader is unchanged — it would resolve either signal if some future

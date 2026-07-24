@@ -40,21 +40,21 @@ else
   pass "blueprint-review SKILL.md body uses the ultimate-* names"
 fi
 
-# ── (a2) arbiter has NO persistent config opt-in (ADR 0027) ───────────────
-# The `.ultimate.surfaces.arbiter` flag was prose-gated only and never fired; ADR 0027
+# ── (a2) arbiter has NO persistent config opt-in (ADR 0028) ───────────────
+# The `.ultimate.surfaces.arbiter` flag was prose-gated only and never fired; ADR 0028
 # drops it, leaving the in-band "ultimate arbiter" trigger phrase as the only arbiter path.
 # Guard the positive contract AND the absence of the old USER-config granting sentence.
 # (The body may still NAME `.ultimate.surfaces.arbiter` as historical record of the drop;
 #  what must be gone is any live sentence that GRANTS the arbiter that opt-in.)
-echo "── (a2) arbiter config opt-in dropped (ADR 0027) ──"
+echo "── (a2) arbiter config opt-in dropped (ADR 0028) ──"
 if grep -qF -- 'no persistent config opt-in' <<<"$BODY"; then
   pass "arbiter body states elevation is trigger-phrase only (no persistent config opt-in)"
 else
-  fail "arbiter body missing the 'no persistent config opt-in' contract (ADR 0027)"
+  fail "arbiter body missing the 'no persistent config opt-in' contract (ADR 0028)"
 fi
 # shellcheck disable=SC2016  # literal backticks/dots are intentional — matching prose verbatim, no expansion wanted
 if grep -qF -- 'top-level `.ultimate.surfaces.arbiter` in USER' <<<"$BODY"; then
-  fail "arbiter body still GRANTS the dropped USER-config opt-in (ADR 0027 regression)"
+  fail "arbiter body still GRANTS the dropped USER-config opt-in (ADR 0028 regression)"
 else
   pass "no live USER-config opt-in grant for the arbiter"
 fi

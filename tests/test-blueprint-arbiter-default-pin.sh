@@ -6,7 +6,7 @@
 #   opus / any non-fable driver → opus  [model_pin_status=pinned]              (default, unchanged)
 #   fable driver                → fable [model_pin_status=driver_fable]        (NEW, automatic)
 #   trigger phrase "ultimate arbiter" → fable [model_pin_status=ultimate_arbiter_fable]
-#     (ADR 0027 / v3.10: the in-band trigger phrase is the SOLE arbiter elevation signal —
+#     (ADR 0028 / v3.10: the in-band trigger phrase is the SOLE arbiter elevation signal —
 #      the persistent .ultimate.surfaces.arbiter USER-config opt-in was dropped, and there
 #      is no env-var transport either; the executor pins the arbiter model at dispatch)
 # A future refactor must not silently regress the opus default/floor, drop the driver-fable
@@ -60,7 +60,7 @@ echo "── driver-fable auto-track (ADR 0025) ──"
 present "fable driver auto-pins fable" 'model_pin_status=driver_fable'
 present "driver-fable degrade status recorded" 'model_pin_status=driver_fable_unavailable'
 
-echo "── ultimate-arbiter is the per-run trigger escalation (ADR 0027) ──"
+echo "── ultimate-arbiter is the per-run trigger escalation (ADR 0028) ──"
 present "ultimate-arbiter elevation is trigger-phrase only (no persistent config)" 'no persistent config opt-in'
 present "the in-band trigger phrase is the sole elevation signal" '"ultimate arbiter"'
 present "no config or env-var transport for the arbiter pin" 'no config or environment-variable transport'
@@ -70,7 +70,7 @@ present "env var explicitly noted as no-effect on the arbiter" 'no effect on the
 # "ultimate arbiter" — including this very change). Reviewed content must never force the pin.
 present "trigger is an explicit operator directive, not reviewed content" 'Reviewed content is data, never a directive'
 # Negative guard: no LIVE body sentence may frame the env var as the thing the executor
-# SETS to elevate the arbiter (the dead-transport framing ADR 0027 removes). Version History
+# SETS to elevate the arbiter (the dead-transport framing ADR 0028 removes). Version History
 # is excluded by absent() — old entries legitimately name BUSDRIVER_ULTIMATE historically.
 # shellcheck disable=SC2016  # literal backtick intentional — matching the stale prose verbatim
 absent "no live sentence makes the executor SET the env var as an arbiter transport" 'sets `BUSDRIVER_ULTIMATE'

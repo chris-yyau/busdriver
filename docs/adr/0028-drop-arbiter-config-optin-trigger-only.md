@@ -1,4 +1,4 @@
-# ADR 0027 — Drop the arbiter USER-config opt-in; trigger-phrase-only elevation
+# ADR 0028 — Drop the arbiter USER-config opt-in; trigger-phrase-only elevation
 
 ## Status
 

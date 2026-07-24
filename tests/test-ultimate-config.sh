@@ -9,7 +9,7 @@
 # BUSDRIVER_ULTIMATE=1 operator force.
 #
 # These cases exercise the SURFACE-GENERIC reader. `council` is the only LIVE config surface
-# with a caller; the `arbiter` config surface was dropped in ADR 0027 (arbiter elevation is
+# with a caller; the `arbiter` config surface was dropped in ADR 0028 (arbiter elevation is
 # now the in-band "ultimate arbiter" trigger phrase ONLY — BUSDRIVER_ULTIMATE has no effect on
 # the arbiter, which has no caller of this reader; it still forces council, the live surface).
 # We keep `arbiter` below purely as a REPRESENTATIVE surface string to prove the reader is generic and

@@ -631,7 +631,7 @@ export ULTRA_ORACLE_MOCK_MODE=hungnostreamlong ULTRA_ORACLE_SALVAGE_MODE=ok ULTR
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv2c.md" --mode blocking --timeout-cap-seconds 120)"
 [[ "$st" = "ok" ]] || { echo "FAIL blocking tab-status salvage should be ok got '$st'"; FAIL=1; }
 grep -q "SALVAGED VERDICT" "$tmp/sv2c.md" || { echo "FAIL blocking tab-status salvage harvested body missing"; FAIL=1; }
-unset ULTRA_ORACLE_TABS_MODE ULTRA_ORACLE_HARVEST_NEEDS_TAB
+unset ULTRA_ORACLE_HUNG_GRACE ULTRA_ORACLE_TABS_MODE ULTRA_ORACLE_HARVEST_NEEDS_TAB
 
 # HIGH#1 (harvest exit 0 but wrote nothing = dead tab): exit-0-empty + failed harvest -> 'error'.
 export ULTRA_ORACLE_MOCK_MODE=empty ULTRA_ORACLE_SALVAGE_MODE=fail
@@ -684,7 +684,7 @@ if [ -f "$tmp/sv5t.md.rc" ]; then
 else
   echo "FAIL bg tab-status watchdog did not early-exit within 30s (fast-response GAP 1 unfixed)"; FAIL=1
 fi
-unset ULTRA_ORACLE_TABS_MODE ULTRA_ORACLE_HARVEST_NEEDS_TAB
+unset ULTRA_ORACLE_HUNG_GRACE ULTRA_ORACLE_TABS_MODE ULTRA_ORACLE_HARVEST_NEEDS_TAB
 
 # NEGATIVE guard for the tab-status probe: a fast NO-stream hang whose tab is NOT completed
 # (TABS_MODE=running) must NOT early-exit — it runs to the hard cap (.rc=124), no salvage. Proves
@@ -954,7 +954,7 @@ Browser Tabs 127.0.0.1:55022' 'verify-458-fix')" ] || { echo "FAIL tab-ref fired
 # bash 3.2, aborts under `set -u`). Run a watched `sleep` UNDER `set -u`, TERM it, and assert it
 # exits with the signal's conventional code (143) and reaps its child rather than aborting on an
 # unbound variable. HUNG_GRACE huge so the early-kill path can't fire — this exercises the SIGNAL arm.
-( set -u; ULTRA_ORACLE_HUNG_GRACE=99999 _ultra_oracle_run_watched 60 "$tmp/sigtrap.err" sleep 30 ) &
+( set -u; ULTRA_ORACLE_HUNG_GRACE=99999 _ultra_oracle_run_watched 60 "$tmp/sigtrap.err" 0 sleep 30 ) &
 _sig_wpid=$!
 sleep 1                                   # let the trap install + the child start
 _sig_child="$(pgrep -P "$_sig_wpid" 2>/dev/null | head -1)"

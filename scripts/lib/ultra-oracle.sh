@@ -576,7 +576,12 @@ _ultra_oracle_lk_waited() {
   case "$start" in ''|*[!0-9]*) start=0 ;; esac
   case "$now" in ''|*[!0-9]*) now=0 ;; esac
   if [ "$now" -le 0 ] || [ "$start" -le 0 ]; then printf '%s' "$cap"; return 0; fi
-  w=$(( now - start )); [ "$w" -lt 0 ] && w=0; [ "$w" -gt "$cap" ] && w="$cap"
+  w=$(( now - start ))
+  # A NEGATIVE elapsed means the wall clock jumped backward during the wait. Treat it as fully
+  # consumed (return cap, fail-CLOSED) — same as the unreadable-clock branch above — NOT as 0, which
+  # would restore the full budget and let lock-wait + oracle exceed the wrapper's cap+90 poll (cubic P2).
+  [ "$w" -lt 0 ] && { printf '%s' "$cap"; return 0; }
+  [ "$w" -gt "$cap" ] && w="$cap"
   printf '%s' "$w"
 }
 _ultra_oracle_browser_lock() {

@@ -185,7 +185,16 @@ _ultra_oracle_salvage() {
 # — so the node process is its whole footprint and killing that pid is complete. Non-attach modes
 # never reach this: they run under the unchanged `_portable_timeout` (timeout(1)'s teardown).
 _uora_terminate() {
-  local p="$1" st=0
+  # <pid> [max-half-secs=10] -> TERM, then poll up to <max-half-secs> * 0.5s before escalating to
+  # KILL. Default (10 -> ~5s) is the general-purpose grace used by signal traps and the
+  # confirmed-hung salvage path, where a few extra seconds of teardown is harmless. The HARD-CAP
+  # caller (blocking mode's advertised --timeout-cap-seconds boundary) passes 0 instead — at that
+  # point the budget is already exhausted, so waiting even 5s for a TERM-ignoring oracle to exit
+  # would overshoot the caller's advertised cap by the same amount every time (Codex, PR #485:
+  # reproduced a 1s-cap consult against a TERM-ignoring stub taking ~7s to return 'timeout'). A
+  # max of 0 sends TERM then escalates to KILL immediately — no poll wait — bounding the overshoot
+  # to the KILL round-trip itself rather than the full grace window.
+  local p="$1" maxhalf="${2:-10}" st=0 _i=0
   # The TERM `kill` ITSELF is the ONLY classifier used: it atomically fails with ESRCH only when
   # the pid is FULLY GONE (already exited AND reaped) — a clean natural finish we report as its own
   # wait status — and succeeds otherwise. We deliberately do NOT try to further distinguish a live
@@ -197,10 +206,12 @@ _uora_terminate() {
   # terminated it") uniformly and let salvage do the right thing.
   if ! kill "$p" 2>/dev/null; then wait "$p" 2>/dev/null || st=$?; return "$st"; fi
   # Signalled a live/zombie pid -> we own the termination. Escalate to KILL if TERM is ignored so
-  # this is bounded, then report 143.
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
+  # this is bounded, then report 143. maxhalf=0 (hard-cap caller) skips the poll loop entirely.
+  case "$maxhalf" in ''|*[!0-9]*) maxhalf=10 ;; esac
+  while [ "$_i" -lt "$maxhalf" ]; do
     kill -0 "$p" 2>/dev/null || { wait "$p" 2>/dev/null || true; return 143; }
     sleep 0.5
+    _i=$(( _i + 1 ))
   done
   kill -9 "$p" 2>/dev/null || true; wait "$p" 2>/dev/null || true; return 143
 }
@@ -354,11 +365,35 @@ _ultra_oracle_tab_ref() {
 }
 
 _ultra_oracle_run_watched() {
-  local cap="$1" errf="$2"; shift 2
+  # <cap> <errfile> <tee-stderr:0|1> <cmd...> -> tee-stderr=1 additionally streams oracle's stderr
+  # (its --heartbeat progress) to the CALLER's own stderr while still capturing it to <errfile> for
+  # the hung-signal awk. Background dispatch passes 0 (no terminal to write to; a bare 2>&1 into the
+  # file is correct there). The blocking-attach caller passes 1: pre-#481 blocking ran a bare
+  # `_portable_timeout ... >"$out.err"` — stdout only redirected, stderr passed through to the
+  # terminal untouched — so the operator saw live heartbeat during a synchronous, human-facing wait.
+  # Merging stderr into errf unconditionally (Codex, PR #485) silently dropped that visibility,
+  # making a long attach-mode blocking consult LOOK hung even though the watchdog this PR adds is
+  # actively tracking it — exactly the confusion #458/#481 exist to eliminate.
+  local cap="$1" errf="$2" tee_stderr="${3:-0}"; shift 3
   local pid grace stable sig waits laststable streamed everstreamed start now elapsed ownrc _sig _signame _sigcode
   local sidw tabsnap tabstate ref curlast prev_last="" last_probe_at=0
   _UORA_CONFIRMED_REF=""   # fresh per run; only OUR confirmed tab-probe sets it (below)
-  "$@" >"$errf" 2>&1 &
+  if [[ "$tee_stderr" = 1 ]] && command -v tee >/dev/null 2>&1; then
+    # process substitution (bash-only, available on the repo's supported bash 3.2): stderr is
+    # teed to the caller's own stderr (terminal) AND appended to errf; $! below still captures
+    # the launched command's OWN pid (the tee subshell is not part of job control).
+    # Truncate errf ONCE up front, then have BOTH writers APPEND (stdout `>>`, tee `-a`): with two
+    # independent fds a truncating `>"$errf"` on stdout keeps its own offset at 0 and would overwrite
+    # any bytes the O_APPEND tee already wrote, corrupting the heartbeat log the hung-signal awk reads
+    # (litmus MEDIUM, PR #485). O_APPEND on both makes each write atomically extend the file, so
+    # stdout and stderr lines interleave cleanly instead of clobbering.
+    : >"$errf"
+    # shellcheck disable=SC2094  # intentional: both writers only APPEND to $errf after the single
+    # truncate above — not a read+write race on one fd; oracle's own stdout content is never read back.
+    "$@" >>"$errf" 2> >(tee -a "$errf" >&2) &
+  else
+    "$@" >"$errf" 2>&1 &
+  fi
   pid=$!
   # If this subshell is interrupted (INT/TERM/HUP) or exits before the watchdog reaches its own
   # terminate, clean up the oracle child so it can't keep driving the browser consult orphaned.
@@ -483,10 +518,21 @@ _ultra_oracle_run_watched() {
       fi
     fi
     if [ "$elapsed" -ge "$cap" ] || [ "$iters" -ge "$maxiters" ]; then   # hard cap (elapsed OR monotonic backstop); ambiguous -> no salvage
-      ownrc=0; _uora_terminate "$pid" || ownrc=$?; trap - INT TERM HUP EXIT
+      # maxhalf=0 (Codex, PR #485): the advertised cap is ALREADY exhausted here, so give the
+      # TERM no poll grace before escalating to KILL — the default 5s grace (used elsewhere for
+      # non-deadline-critical teardown) would let a TERM-ignoring oracle push the caller's
+      # observed return time well past its --timeout-cap-seconds every time.
+      ownrc=0; _uora_terminate "$pid" 0 || ownrc=$?; trap - INT TERM HUP EXIT
       case "$ownrc" in 143) return 124;; *) [ "$ownrc" = 125 ] && ownrc=1; return "$ownrc";; esac
     fi
-    sleep 3
+    # Bound the poll sleep by the remaining budget so a small --timeout-cap-seconds
+    # (e.g. 1s) can't overrun by a whole sleep interval (cubic/Codex P2): the hard-cap
+    # check above already returned when `cap - elapsed <= 0`, so `remaining` here is
+    # guaranteed > 0 — clamp the floor to 1 defensively (never a busy-loop 0-second sleep).
+    local remaining=$(( cap - elapsed )) sleep_for=3
+    [ "$remaining" -lt "$sleep_for" ] && sleep_for="$remaining"
+    [ "$sleep_for" -lt 1 ] && sleep_for=1
+    sleep "$sleep_for"
   done
 }
 
@@ -987,7 +1033,7 @@ ultra_oracle_consult() {
       # do about oracle's launched Chrome is unchanged, in or out of scope of #458), and no
       # salvage is possible there without a live tab.
       if ultra_oracle_attach_running && [[ -n "$_uora_target" ]]; then
-        ORACLE_REMOTE_TOKEN="$_uora_env_token" _ultra_oracle_run_watched "${_uora_eff_cap}" "$out.err" oracle "$@"; _uora_bg_rc=$?
+        ORACLE_REMOTE_TOKEN="$_uora_env_token" _ultra_oracle_run_watched "${_uora_eff_cap}" "$out.err" 0 oracle "$@"; _uora_bg_rc=$?
         # Salvage ONLY on positive completion evidence: 125 = confirmed completed-but-hung (stream
         # ended), or exit-0-but-empty (oracle concluded, extraction raced). NOT on a plain 124
         # hard cap — that response may still be mid-stream, and harvesting a partial would promote
@@ -1058,14 +1104,46 @@ ultra_oracle_consult() {
       printf 'timeout'; return 124
     fi
   fi
-  ORACLE_REMOTE_TOKEN="$_uora_env_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" || rc=$?
+  # #481: attach-mode blocking consults (brainstorming / writing-plans / ultraoracle) get the SAME
+  # completed-but-hung watchdog as background mode. The reason blocking "couldn't" salvage was never
+  # a property of blocking — it was that a BARE _portable_timeout has no heartbeat analysis, so a
+  # timeout is ambiguous. _ultra_oracle_run_watched IS that analysis: it returns 125 ONLY on the
+  # confirmed signature (stream ended + content stable, OR tab reports completed on two probes), so
+  # the salvage below fires on positive completion evidence, never a mid-stream guess. Runs
+  # synchronously in the foreground (background merely wraps it in `( ) &`); its INT/TERM/HUP/EXIT
+  # traps are self-cleared on every return, and it publishes _UORA_CONFIRMED_REF for the salvage to
+  # bind the exact tab — so it must NOT be nested in its own subshell. Non-attach blocking keeps the
+  # bare _portable_timeout (no live tab -> nothing to harvest), stderr heartbeat still on-terminal.
+  if ultra_oracle_attach_running && [[ -n "$_uora_target" ]]; then
+    # Run the watchdog in a SUBSHELL so its INT/TERM/HUP/EXIT traps stay isolated from THIS (the
+    # caller's) shell. Background mode gets that isolation for free from its `( ) &`; blocking mode
+    # must add it explicitly, else the helper — which installs then self-clears those traps — would
+    # wipe any cleanup traps the caller had, and a signal during the run could exit before the
+    # explicit browser-lock unlocks below run. Use a COMMAND SUBSTITUTION (not a bare `( )`) so the
+    # tab-probe's confirmed target-id survives the subshell: the helper writes it to
+    # _UORA_CONFIRMED_REF, which cannot cross a subshell boundary by variable, so the subshell prints
+    # it on stdout (the helper sends oracle's own output to $out.err, never stdout) and the parent
+    # re-captures it — otherwise the never-streamed tab-probe salvage would lose its exact
+    # `--browser-tab` handle and a status re-query that failed could drop a confirmed-completed
+    # consult to timeout. `exit $_wrc` carries the watchdog's rc out; `|| rc=$?` reads it (salvage
+    # validates the ref as alnum, so any stray stdout degrades to re-discovery, never a bad handle).
+    _UORA_CONFIRMED_REF="$(
+      ORACLE_REMOTE_TOKEN="$_uora_env_token" _ultra_oracle_run_watched "${cap}" "$out.err" 1 oracle "$@"
+      _wrc=$?; printf '%s' "$_UORA_CONFIRMED_REF"; exit "$_wrc"
+    )" || rc=$?
+    # 125 = confirmed completed-but-hung -> salvage the live tab. A salvage that CANNOT recover is
+    # still a timeout (124) to the caller, exactly as background mode maps it (line ~999).
+    if [[ "$rc" = 125 ]]; then
+      if _ultra_oracle_salvage "$out" "$cap" "$_uora_target"; then rc=0; else rc=124; fi
+    fi
+  else
+    ORACLE_REMOTE_TOKEN="$_uora_env_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" || rc=$?
+  fi
   if [[ "$rc" = 124 ]]; then
-    # #458 NOTE: blocking mode does NOT salvage on a bare timeout. Without the background
-    # watchdog's heartbeat analysis a blocking timeout is ambiguous — the response could be
-    # completed-but-hung OR genuinely still streaming — and harvesting a mid-stream tab would
-    # promote a PARTIAL to a verdict. Blocking still recovers the safe case (exit-0-but-empty,
-    # where oracle concluded) below. The completed-but-hung recovery is a background-mode
-    # (blueprint-review / council) feature, which is where #458 actually bites.
+    # #458/#481 NOTE: a bare 124 is a genuine hard-cap timeout (elapsed reached cap before any hung
+    # signature was confirmed) — ambiguous (could still be mid-stream), so it does NOT salvage. The
+    # completed-but-hung case is caught ABOVE as 125 before the cap fires. Blocking still recovers
+    # the safe exit-0-but-empty case (where oracle concluded) below.
     # A login/Cloudflare wall that never clears also manifests AS a timeout — the
     # partial page oracle wrote to $out.err before the cap fired can still carry the
     # signature, so name the operator's next step here too, not only on hard errors.

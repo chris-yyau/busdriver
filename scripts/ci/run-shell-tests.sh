@@ -26,7 +26,7 @@
 # any FAIL or skip-masking violation.
 #
 # Env:
-#   SHELL_TEST_TIMEOUT   per-test timeout in seconds (default 120)
+#   SHELL_TEST_TIMEOUT   per-test timeout in seconds (default 180)
 set -uo pipefail   # NOT -e: each test's exit is handled explicitly below.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,7 +41,11 @@ cd "$REPO_ROOT" || exit 1
 # shellcheck disable=SC1091  # sourced at runtime; path is not statically followable without -x
 source "$REPO_ROOT/scripts/lib/resolve-cli.sh"
 
-PER_TEST_TIMEOUT="${SHELL_TEST_TIMEOUT:-120}"
+# Default 180s (was 120): test-ultra-oracle.sh legitimately runs ~130s — several
+# #458/#481 salvage tests sleep ~30s each to simulate hung/streamed-then-hung
+# consults, and the tab-status probe needs two stability probes ≥15s apart. The
+# suite outgrew the old 120s budget; 180 restores headroom without masking a hang.
+PER_TEST_TIMEOUT="${SHELL_TEST_TIMEOUT:-180}"
 
 # The ONLY tests permitted to SKIP. Everything else — every gate/security suite
 # included — must run to completion; an unexpected SKIP fails the job (see the

@@ -594,14 +594,44 @@ printf '{ "ultraOracle": { "attachRunning": true } }\n' > "$tmp/.claude/busdrive
 # blocking, exit-0-but-empty verdict + attach -> salvage harvests (oracle concluded, safe) -> 'ok'
 export ULTRA_ORACLE_MOCK_MODE=empty ULTRA_ORACLE_SALVAGE_MODE=ok
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv1.md" --mode blocking)"
-[ "$st" = "ok" ] || { echo "FAIL salvage empty->ok got '$st'"; FAIL=1; }
+[[ "$st" = "ok" ]] || { echo "FAIL salvage empty->ok got '$st'"; FAIL=1; }
 grep -q "SALVAGED VERDICT" "$tmp/sv1.md" || { echo "FAIL salvage empty: harvested body missing"; FAIL=1; }
 
-# blocking TIMEOUT must NOT salvage (ambiguous: could be mid-stream) -> stays 'timeout'.
+# blocking HARD-CAP timeout must NOT salvage (cap fires before the hung signature is confirmed ->
+# ambiguous, could be mid-stream) -> stays 'timeout'. A 1s cap is reached (rc 124) well before the
+# 45s default HUNG_GRACE, so the #481 watchdog can never confirm-hung here.
 export ULTRA_ORACLE_MOCK_MODE=hung ULTRA_ORACLE_SALVAGE_MODE=ok
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv2.md" --mode blocking --timeout-cap-seconds 1)"
-[ "$st" = "timeout" ] || { echo "FAIL blocking timeout must not salvage got '$st'"; FAIL=1; }
+[[ "$st" = "timeout" ]] || { echo "FAIL blocking timeout must not salvage got '$st'"; FAIL=1; }
 grep -q "SALVAGED" "$tmp/sv2.md" 2>/dev/null && { echo "FAIL blocking timeout salvaged (should not)"; FAIL=1; }
+
+# #481: blocking + attach + CONFIRMED completed-but-hung (streamed then stuck) MUST salvage -> 'ok'.
+# This is the exact failure #458 fixed for background mode but MISSED for the blocking consult path
+# (brainstorming / writing-plans / ultraoracle). HUNG_GRACE=0 arms the watchdog as soon as the
+# stream-then-wait signature is captured, so the 120s cap is never approached — a 'timeout' here
+# would mean the watchdog is still not wired into blocking mode. Salvage re-reads the live tab.
+export ULTRA_ORACLE_MOCK_MODE=hung ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv2b.md" --mode blocking --timeout-cap-seconds 120)"
+[[ "$st" = "ok" ]] || { echo "FAIL blocking attach completed-but-hung should salvage->ok got '$st'"; FAIL=1; }
+grep -q "SALVAGED VERDICT" "$tmp/sv2b.md" || { echo "FAIL blocking salvage harvested body missing"; FAIL=1; }
+unset ULTRA_ORACLE_HUNG_GRACE
+
+# #481, tab-status probe variant of the sv2b case: sv2b above exercises the STREAMING heuristic
+# (_hungsig lines), which never sets _UORA_CONFIRMED_REF. This covers the OTHER completed-but-hung
+# signal — the tab-status probe (#458 GAP 1) — in BLOCKING mode specifically, proving the confirmed
+# tab reference survives the command-substitution SUBSHELL this PR introduces for blocking attach
+# runs (_UORA_CONFIRMED_REF cannot cross a subshell by variable; the subshell prints it on stdout,
+# see the watched-run invocation below `unset ULTRA_ORACLE_HUNG_GRACE` further down). hungnostreamlong
+# never streams (no heartbeat), so only the tab probe can recover it; HARVEST_NEEDS_TAB=1 makes the
+# harvest FAIL unless salvage receives the propagated --browser-tab ref (fallback rediscovery would
+# also need TABS_MODE=completed to succeed, so this alone doesn't distinguish propagation from
+# rediscovery — the point is the subshell path is reachable and produces the same 'ok'/SALVAGED
+# outcome as the background GAP1 case above).
+export ULTRA_ORACLE_MOCK_MODE=hungnostreamlong ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0 ULTRA_ORACLE_TABS_MODE=completed ULTRA_ORACLE_HARVEST_NEEDS_TAB=1
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv2c.md" --mode blocking --timeout-cap-seconds 120)"
+[[ "$st" = "ok" ]] || { echo "FAIL blocking tab-status salvage should be ok got '$st'"; FAIL=1; }
+grep -q "SALVAGED VERDICT" "$tmp/sv2c.md" || { echo "FAIL blocking tab-status salvage harvested body missing"; FAIL=1; }
+unset ULTRA_ORACLE_HUNG_GRACE ULTRA_ORACLE_TABS_MODE ULTRA_ORACLE_HARVEST_NEEDS_TAB
 
 # HIGH#1 (harvest exit 0 but wrote nothing = dead tab): exit-0-empty + failed harvest -> 'error'.
 export ULTRA_ORACLE_MOCK_MODE=empty ULTRA_ORACLE_SALVAGE_MODE=fail
@@ -654,7 +684,7 @@ if [ -f "$tmp/sv5t.md.rc" ]; then
 else
   echo "FAIL bg tab-status watchdog did not early-exit within 30s (fast-response GAP 1 unfixed)"; FAIL=1
 fi
-unset ULTRA_ORACLE_TABS_MODE ULTRA_ORACLE_HARVEST_NEEDS_TAB
+unset ULTRA_ORACLE_HUNG_GRACE ULTRA_ORACLE_TABS_MODE ULTRA_ORACLE_HARVEST_NEEDS_TAB
 
 # NEGATIVE guard for the tab-status probe: a fast NO-stream hang whose tab is NOT completed
 # (TABS_MODE=running) must NOT early-exit — it runs to the hard cap (.rc=124), no salvage. Proves
@@ -924,7 +954,7 @@ Browser Tabs 127.0.0.1:55022' 'verify-458-fix')" ] || { echo "FAIL tab-ref fired
 # bash 3.2, aborts under `set -u`). Run a watched `sleep` UNDER `set -u`, TERM it, and assert it
 # exits with the signal's conventional code (143) and reaps its child rather than aborting on an
 # unbound variable. HUNG_GRACE huge so the early-kill path can't fire — this exercises the SIGNAL arm.
-( set -u; ULTRA_ORACLE_HUNG_GRACE=99999 _ultra_oracle_run_watched 60 "$tmp/sigtrap.err" sleep 30 ) &
+( set -u; ULTRA_ORACLE_HUNG_GRACE=99999 _ultra_oracle_run_watched 60 "$tmp/sigtrap.err" 0 sleep 30 ) &
 _sig_wpid=$!
 sleep 1                                   # let the trap install + the child start
 _sig_child="$(pgrep -P "$_sig_wpid" 2>/dev/null | head -1)"

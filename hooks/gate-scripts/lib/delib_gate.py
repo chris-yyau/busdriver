@@ -39,10 +39,33 @@ import sys
 # Literal plugin script paths that only the deliberation dispatchers invoke.
 # Any one present marks the command as a deliberation dispatch. (litmus /
 # blueprint-review are intentionally absent — they have their own F8 exemption.)
+#
+# `/scripts/lib/resolve-cli.sh` is deliberately EXCLUDED (#484 review): it is
+# a plugin-wide shared library sourced by litmus, blueprint-review, CI tests
+# (e.g. tests/test-agy-argv-limit.sh), and council/ultraoracle alike — so
+# matching on it alone over-exempts any command that merely sources the
+# helper for unrelated reasons (`source .../resolve-cli.sh; rm -rf src` would
+# read as a "deliberation dispatch"). It adds no real detection power: every
+# actual dispatcher command already reaches a CLI voice via
+# `skills/dispatch-cli/scripts/dispatch.sh` (matched below) or
+# `scripts/ultra-oracle-run.sh` (matched below) — council's own inline
+# dispatch block sources resolve-cli.sh only to resolve role→CLI names, then
+# invokes the voice through `$DISPATCH`, which is dispatch.sh.
 _DISPATCHER = re.compile(
     r"skills/(?:dispatch-cli|ultraoracle|council)/scripts/"
-    r"|/scripts/ultra-oracle-run\.sh"
-    r"|/scripts/lib/resolve-cli\.sh")
+    r"|/scripts/ultra-oracle-run\.sh")
+
+# Shell comments (`#` to end of line). Stripped before matching so a
+# dispatcher path mentioned only in inert commentary — not as a command/source
+# operand — doesn't trigger the exemption (#484 review: `rm -rf src #
+# skills/dispatch-cli/scripts/dispatch.sh` must not read as SAFE). This is a
+# conservative, line-based strip — it can occasionally over-strip a `#`
+# embedded in a quoted string, but that only makes recognition MORE
+# conservative (a possible false block), never less — consistent with this
+# module's fail-CLOSED philosophy elsewhere. Full shell-aware comment
+# detection is the same "unachievable" static-parsing problem the module
+# docstring already declines to solve for command substitution.
+_COMMENT = re.compile(r"#[^\n]*")
 
 
 def is_exempt(command):
@@ -51,8 +74,10 @@ def is_exempt(command):
     Recognition is by dispatcher path only — see the module docstring for why
     operand validation is deliberately absent (unsound to attempt statically,
     and the residual equals the gate's pre-existing `python -c` residual).
+    Shell comments are stripped first so a path mentioned only in commentary
+    does not itself trigger the exemption.
     """
-    return bool(_DISPATCHER.search(command))
+    return bool(_DISPATCHER.search(_COMMENT.sub("", command)))
 
 
 def _demo():
@@ -64,7 +89,6 @@ def _demo():
         'bash "$R/scripts/ultra-oracle-run.sh" council 0 "$P" out.md > "$RES"; rm -f "$P"',
         "source skills/council/scripts/convene.sh",
         'LABEL="$(bash skills/ultraoracle/scripts/build-evidence-pack.sh --mode repo)"',
-        'bash "$R/scripts/lib/resolve-cli.sh" agy',
         # ACCEPTED RESIDUAL (#484): a dispatcher command is exempt even with a
         # destructive tail — the SAME residual as `python -c os.remove`. Pinned
         # here so re-adding a static "operand safety" scanner is a deliberate,
@@ -80,6 +104,17 @@ def _demo():
         "bash scripts/other.sh; rm -rf src",
         "sed -i s/a/b/ lib/core.py",
         "bash skills/litmus/scripts/run-review-loop.sh",  # litmus = F8, not this
+        # resolve-cli.sh alone is NOT a dispatcher signal (#484 review,
+        # Greptile/Codex P1) — it's a shared library sourced by litmus,
+        # blueprint-review, and unrelated tests; matching on it over-exempts.
+        'source "$R/scripts/lib/resolve-cli.sh"; rm -rf src',
+        'bash "$R/scripts/lib/resolve-cli.sh" agy',
+        # tests/test-agy-argv-limit.sh's real invocation shape — must not
+        # read as a deliberation dispatch.
+        '. "$REPO_ROOT/scripts/lib/resolve-cli.sh"; _agy_wants_argv_prompt',
+        # A dispatcher path mentioned only in a comment is not an invocation
+        # (#484 review, Codex P1) — the command actually run is a bare rm.
+        "rm -rf src  # skills/dispatch-cli/scripts/dispatch.sh",
     ]
     for c in allow:
         assert is_exempt(c), "should ALLOW:\n" + c

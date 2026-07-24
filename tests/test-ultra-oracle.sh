@@ -616,6 +616,23 @@ st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv2b.md" --mode blocking --ti
 grep -q "SALVAGED VERDICT" "$tmp/sv2b.md" || { echo "FAIL blocking salvage harvested body missing"; FAIL=1; }
 unset ULTRA_ORACLE_HUNG_GRACE
 
+# #481, tab-status probe variant of the sv2b case: sv2b above exercises the STREAMING heuristic
+# (_hungsig lines), which never sets _UORA_CONFIRMED_REF. This covers the OTHER completed-but-hung
+# signal — the tab-status probe (#458 GAP 1) — in BLOCKING mode specifically, proving the confirmed
+# tab reference survives the command-substitution SUBSHELL this PR introduces for blocking attach
+# runs (_UORA_CONFIRMED_REF cannot cross a subshell by variable; the subshell prints it on stdout,
+# see the watched-run invocation below `unset ULTRA_ORACLE_HUNG_GRACE` further down). hungnostreamlong
+# never streams (no heartbeat), so only the tab probe can recover it; HARVEST_NEEDS_TAB=1 makes the
+# harvest FAIL unless salvage receives the propagated --browser-tab ref (fallback rediscovery would
+# also need TABS_MODE=completed to succeed, so this alone doesn't distinguish propagation from
+# rediscovery — the point is the subshell path is reachable and produces the same 'ok'/SALVAGED
+# outcome as the background GAP1 case above).
+export ULTRA_ORACLE_MOCK_MODE=hungnostreamlong ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0 ULTRA_ORACLE_TABS_MODE=completed ULTRA_ORACLE_HARVEST_NEEDS_TAB=1
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv2c.md" --mode blocking --timeout-cap-seconds 120)"
+[[ "$st" = "ok" ]] || { echo "FAIL blocking tab-status salvage should be ok got '$st'"; FAIL=1; }
+grep -q "SALVAGED VERDICT" "$tmp/sv2c.md" || { echo "FAIL blocking tab-status salvage harvested body missing"; FAIL=1; }
+unset ULTRA_ORACLE_TABS_MODE ULTRA_ORACLE_HARVEST_NEEDS_TAB
+
 # HIGH#1 (harvest exit 0 but wrote nothing = dead tab): exit-0-empty + failed harvest -> 'error'.
 export ULTRA_ORACLE_MOCK_MODE=empty ULTRA_ORACLE_SALVAGE_MODE=fail
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv3.md" --mode blocking)"

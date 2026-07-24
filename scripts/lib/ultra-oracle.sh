@@ -486,7 +486,14 @@ _ultra_oracle_run_watched() {
       ownrc=0; _uora_terminate "$pid" || ownrc=$?; trap - INT TERM HUP EXIT
       case "$ownrc" in 143) return 124;; *) [ "$ownrc" = 125 ] && ownrc=1; return "$ownrc";; esac
     fi
-    sleep 3
+    # Bound the poll sleep by the remaining budget so a small --timeout-cap-seconds
+    # (e.g. 1s) can't overrun by a whole sleep interval (cubic/Codex P2): the hard-cap
+    # check above already returned when `cap - elapsed <= 0`, so `remaining` here is
+    # guaranteed > 0 — clamp the floor to 1 defensively (never a busy-loop 0-second sleep).
+    local remaining=$(( cap - elapsed )) sleep_for=3
+    [ "$remaining" -lt "$sleep_for" ] && sleep_for="$remaining"
+    [ "$sleep_for" -lt 1 ] && sleep_for=1
+    sleep "$sleep_for"
   done
 }
 

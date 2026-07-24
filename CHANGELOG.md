@@ -1,3 +1,10 @@
+# [1.98.0](https://github.com/chris-yyau/busdriver/compare/v1.97.1...v1.98.0) (2026-07-24)
+
+
+### Features
+
+* **pr-grind:** post [@codex](https://github.com/codex) review at PR-create for Codex's full pre-merge window ([#473](https://github.com/chris-yyau/busdriver/issues/473)) ([#482](https://github.com/chris-yyau/busdriver/issues/482)) ([4d472d7](https://github.com/chris-yyau/busdriver/commit/4d472d7bbd1a75ed17701ae7a5271d9d5f84206f)), closes [#1](https://github.com/chris-yyau/busdriver/issues/1) [#416](https://github.com/chris-yyau/busdriver/issues/416)
+
 ## [1.97.1](https://github.com/chris-yyau/busdriver/compare/v1.97.0...v1.97.1) (2026-07-23)
 
 

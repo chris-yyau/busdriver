@@ -764,7 +764,18 @@ fi
 PARSED=$(printf '%s' "$INPUT" | python3 -I -c '
 import sys
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+# argv[1] is the TRUSTED gate lib dir (BASH_SOURCE-derived; -I already ignores
+# PYTHONPATH/site). The deliberation-dispatcher exemption (#484) lives there —
+# it recognizes a dispatcher by its literal plugin script path (see delib_gate.py
+# for why operand validation is deliberately NOT attempted). Import failure
+# leaves is_exempt=None → the dispatcher falls through to BASH_MOD (fail-CLOSED:
+# a missing lib blocks, never allows).
+sys.path.insert(0, sys.argv[1])
 import json, re, os
+try:
+    from delib_gate import is_exempt
+except Exception:
+    is_exempt = None
 try:
     d = json.load(sys.stdin)
     tool = d.get("tool_name", d.get("toolName", ""))
@@ -804,6 +815,23 @@ try:
         # blocked because rm triggers has_explicit_mod.
         if is_mod and not has_explicit_mod and re.search(r"(?:^|[\s;|&])(?:ba)?sh\s+\S*(?:blueprint-review|litmus)/(?:scripts|config)/", cmd):
             print("SAFE|")
+        # F10 (#484): deliberation-tool dispatchers (council / ultra-council /
+        # ultimate-council, ultraoracle, dispatch-cli) legitimately create and
+        # clean up their OWN temp/state files in a single pasted dispatch block
+        # (mktemp prompt files, a captured result, $STATE_DIR/ultra-oracle
+        # output). Those rm/redirects trip has_explicit_mod, so the F8 exemption
+        # (NOT has_explicit_mod) can never cover them, and the council convened
+        # to fix a pending design would be blocked BY the design gate. delib_gate
+        # (imported above) exempts a command that invokes a recognized dispatcher
+        # by its literal plugin script path. It does NOT validate the rest of the
+        # command: the dispatch blocks use $(...) and heredocs, so $(mktemp) and
+        # $(rm -rf src) are statically indistinguishable — no scan can separate
+        # them. This is a COOPERATIVE gate (any session bypasses via python -c),
+        # so exempting a dispatcher command wholesale adds no residual the gate
+        # did not already carry; an ACCIDENTAL bare `rm -rf src` has no dispatcher
+        # path and is still blocked. See delib_gate.py + #484 review history.
+        elif is_mod and is_exempt is not None and is_exempt(cmd):
+            print("SAFE|")
         elif is_mod:
             # F9 fix: Allow rm/mkdir targeting only $STATE_DIR/ infrastructure.
             # Prevents circular dependency where gate blocks cleanup of its
@@ -822,7 +850,7 @@ try:
         print("SAFE|")
 except Exception:
     print("SAFE|")
-' 2>/dev/null || echo "SAFE|")
+' "$_GATE_LIBDIR" 2>/dev/null || echo "SAFE|")
 
 TOOL_TYPE="${PARSED%%|*}"
 TOOL_VALUE="${PARSED#*|}"

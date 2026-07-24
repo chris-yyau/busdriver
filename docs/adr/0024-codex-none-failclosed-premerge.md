@@ -252,6 +252,37 @@ here.
   **PreToolUse** hook — it fires *before* `gh pr create`, so the PR doesn't exist
   yet; the nudge needs a **PostToolUse hook on successful `gh pr create`**
   (success-only, authoritative resolution from the created PR, dedup, non-gating).
+  - **IMPLEMENTED 2026-07-24 (issue #473 — this exact trigger fired on PR #470, a
+    warned-but-merged PR whose Codex review carried a P1 that landed ~4 min
+    post-merge).** `hooks/gate-scripts/codex-nudge-precreate.sh` is that PostToolUse
+    hook: success-only (shared `gitcmd_detect.gh_pr` + URL/exit/failure-signature
+    detection, mirroring `post-pr-consume-marker.sh`, reading output from both the
+    `tool_output` and `tool_response` payload shapes), target **bounded to the
+    operator's own current-branch PR** via `gh pr view` (the PR number is NOT
+    scraped from output; resolved PR must be OPEN and in the cwd origin repo — the
+    operator's own PR in the common case), gated on gh having printed
+    THAT PR's URL, AND fired ONLY on a LONE `gh pr create` (`precreate_parse.py`:
+    only a plain `cd <literal>`/assignments before it, nothing after, no
+    `-R`/substitution — so a compound that moves cwd/origin around the create,
+    `… && cd B`, `git remote set-url … && gh pr create`, `-R other`, is a fail-safe
+    MISS, closing the post-command-state mistarget). The residual is only what a
+    parser inherently cannot see — a `cd`/`gh`/`git` shell function/alias or
+    inherited GH_*/GIT_* env — the identical limit `codex-nudge-premerge.sh` accepts
+    (ACCEPTED LIMITS #2–4),
+    delegating to the SAME `codex-nudge-if-expected.sh` → `codex-retrigger.sh` chain
+    as the premerge nudge, sharing codex-retrigger's per-`(PR,HEAD)` marker so the
+    create + merge + SKILL paths dedup to one `@codex review` per HEAD WITHIN a
+    checkout (pr-grind creates and merges in one worktree; the marker is
+    worktree-local, so create and merge from DIFFERENT linked worktrees could each
+    post once — a bounded, benign double-nudge on the same PR). Non-gating,
+    kill-switch–respecting (`PR_GRIND_CODEX_RETRIGGER=0`), fail-safe-SKIP. Test:
+    `tests/test-codex-nudge-precreate.sh`. The fail-CLOSED **block** (issue #473
+    direction #1) was **re-rejected on unchanged facts** — `none` is still ambiguous
+    (quota-exhausted vs webhook-dropped vs idle), a block on it still fails open on a
+    timer, and its only escape (a skip file the same dispatcher can write) is
+    self-bypass with ceremony. The PR-open nudge *deletes* the latency race instead
+    of gating on the ambiguous signal. Basis: 2026-07-24 ultimate-council (unanimous
+    A — 5 voices + Mythos Witness).
 - **Codex gains a reliable pre-merge first-engagement signal** the gate can observe
   → the nudge/warn dance becomes unnecessary.
 - **`docs/degraded-modes.md` lets an advisory bot block merge** → the

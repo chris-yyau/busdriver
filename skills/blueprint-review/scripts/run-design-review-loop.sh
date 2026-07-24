@@ -228,6 +228,22 @@ if [[ "$CLAUDE_ONLY" == "true" ]]; then
     log_error "Run without --claude-only first to generate them."
     exit 1
   fi
+  # Path-traversal guard (Codex #487): RUN_ID is interpolated into
+  # "$STATE_DIR/ultra-oracle/${RUN_ID}-plan-review.md" below (line ~971) to
+  # locate the salvaged ultra-oracle advisory. Since RUN_ID here comes from
+  # an on-disk reviewer JSON rather than generate_run_id() (which always
+  # emits 8 lowercase hex chars, but other callers/tests use looser
+  # alphanumeric IDs), an attacker-influenced or corrupted metadata.run_id
+  # containing path separators (e.g. "../../../secret") could make the
+  # advisory path resolve outside the state directory and get its contents
+  # read into the Claude prompt. Allowlist to filename-safe characters
+  # (alphanumeric, underscore, hyphen) rather than the stricter generated-ID
+  # shape, so this still accepts any legitimately-shaped run_id while
+  # rejecting path separators, "..", and other traversal-capable input.
+  if [[ ! "$RUN_ID" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    log_error "Recovered run_id '$RUN_ID' contains characters unsafe for use as a path component; refusing to use it."
+    exit 1
+  fi
   log_info "Mode: CLAUDE-ONLY (Phase 3-5 only)"
   log_info "Recovered run ID: $RUN_ID"
   AGY_AVAILABLE=false

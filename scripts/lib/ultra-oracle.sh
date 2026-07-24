@@ -1058,14 +1058,46 @@ ultra_oracle_consult() {
       printf 'timeout'; return 124
     fi
   fi
-  ORACLE_REMOTE_TOKEN="$_uora_env_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" || rc=$?
+  # #481: attach-mode blocking consults (brainstorming / writing-plans / ultraoracle) get the SAME
+  # completed-but-hung watchdog as background mode. The reason blocking "couldn't" salvage was never
+  # a property of blocking — it was that a BARE _portable_timeout has no heartbeat analysis, so a
+  # timeout is ambiguous. _ultra_oracle_run_watched IS that analysis: it returns 125 ONLY on the
+  # confirmed signature (stream ended + content stable, OR tab reports completed on two probes), so
+  # the salvage below fires on positive completion evidence, never a mid-stream guess. Runs
+  # synchronously in the foreground (background merely wraps it in `( ) &`); its INT/TERM/HUP/EXIT
+  # traps are self-cleared on every return, and it publishes _UORA_CONFIRMED_REF for the salvage to
+  # bind the exact tab — so it must NOT be nested in its own subshell. Non-attach blocking keeps the
+  # bare _portable_timeout (no live tab -> nothing to harvest), stderr heartbeat still on-terminal.
+  if ultra_oracle_attach_running && [[ -n "$_uora_target" ]]; then
+    # Run the watchdog in a SUBSHELL so its INT/TERM/HUP/EXIT traps stay isolated from THIS (the
+    # caller's) shell. Background mode gets that isolation for free from its `( ) &`; blocking mode
+    # must add it explicitly, else the helper — which installs then self-clears those traps — would
+    # wipe any cleanup traps the caller had, and a signal during the run could exit before the
+    # explicit browser-lock unlocks below run. Use a COMMAND SUBSTITUTION (not a bare `( )`) so the
+    # tab-probe's confirmed target-id survives the subshell: the helper writes it to
+    # _UORA_CONFIRMED_REF, which cannot cross a subshell boundary by variable, so the subshell prints
+    # it on stdout (the helper sends oracle's own output to $out.err, never stdout) and the parent
+    # re-captures it — otherwise the never-streamed tab-probe salvage would lose its exact
+    # `--browser-tab` handle and a status re-query that failed could drop a confirmed-completed
+    # consult to timeout. `exit $_wrc` carries the watchdog's rc out; `|| rc=$?` reads it (salvage
+    # validates the ref as alnum, so any stray stdout degrades to re-discovery, never a bad handle).
+    _UORA_CONFIRMED_REF="$(
+      ORACLE_REMOTE_TOKEN="$_uora_env_token" _ultra_oracle_run_watched "${cap}" "$out.err" oracle "$@"
+      _wrc=$?; printf '%s' "$_UORA_CONFIRMED_REF"; exit "$_wrc"
+    )" || rc=$?
+    # 125 = confirmed completed-but-hung -> salvage the live tab. A salvage that CANNOT recover is
+    # still a timeout (124) to the caller, exactly as background mode maps it (line ~999).
+    if [[ "$rc" = 125 ]]; then
+      if _ultra_oracle_salvage "$out" "$cap" "$_uora_target"; then rc=0; else rc=124; fi
+    fi
+  else
+    ORACLE_REMOTE_TOKEN="$_uora_env_token" _portable_timeout "${cap}" oracle "$@" >"$out.err" || rc=$?
+  fi
   if [[ "$rc" = 124 ]]; then
-    # #458 NOTE: blocking mode does NOT salvage on a bare timeout. Without the background
-    # watchdog's heartbeat analysis a blocking timeout is ambiguous — the response could be
-    # completed-but-hung OR genuinely still streaming — and harvesting a mid-stream tab would
-    # promote a PARTIAL to a verdict. Blocking still recovers the safe case (exit-0-but-empty,
-    # where oracle concluded) below. The completed-but-hung recovery is a background-mode
-    # (blueprint-review / council) feature, which is where #458 actually bites.
+    # #458/#481 NOTE: a bare 124 is a genuine hard-cap timeout (elapsed reached cap before any hung
+    # signature was confirmed) — ambiguous (could still be mid-stream), so it does NOT salvage. The
+    # completed-but-hung case is caught ABOVE as 125 before the cap fires. Blocking still recovers
+    # the safe exit-0-but-empty case (where oracle concluded) below.
     # A login/Cloudflare wall that never clears also manifests AS a timeout — the
     # partial page oracle wrote to $out.err before the cap fired can still carry the
     # signature, so name the operator's next step here too, not only on hard errors.

@@ -594,14 +594,27 @@ printf '{ "ultraOracle": { "attachRunning": true } }\n' > "$tmp/.claude/busdrive
 # blocking, exit-0-but-empty verdict + attach -> salvage harvests (oracle concluded, safe) -> 'ok'
 export ULTRA_ORACLE_MOCK_MODE=empty ULTRA_ORACLE_SALVAGE_MODE=ok
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv1.md" --mode blocking)"
-[ "$st" = "ok" ] || { echo "FAIL salvage empty->ok got '$st'"; FAIL=1; }
+[[ "$st" = "ok" ]] || { echo "FAIL salvage empty->ok got '$st'"; FAIL=1; }
 grep -q "SALVAGED VERDICT" "$tmp/sv1.md" || { echo "FAIL salvage empty: harvested body missing"; FAIL=1; }
 
-# blocking TIMEOUT must NOT salvage (ambiguous: could be mid-stream) -> stays 'timeout'.
+# blocking HARD-CAP timeout must NOT salvage (cap fires before the hung signature is confirmed ->
+# ambiguous, could be mid-stream) -> stays 'timeout'. A 1s cap is reached (rc 124) well before the
+# 45s default HUNG_GRACE, so the #481 watchdog can never confirm-hung here.
 export ULTRA_ORACLE_MOCK_MODE=hung ULTRA_ORACLE_SALVAGE_MODE=ok
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv2.md" --mode blocking --timeout-cap-seconds 1)"
-[ "$st" = "timeout" ] || { echo "FAIL blocking timeout must not salvage got '$st'"; FAIL=1; }
+[[ "$st" = "timeout" ]] || { echo "FAIL blocking timeout must not salvage got '$st'"; FAIL=1; }
 grep -q "SALVAGED" "$tmp/sv2.md" 2>/dev/null && { echo "FAIL blocking timeout salvaged (should not)"; FAIL=1; }
+
+# #481: blocking + attach + CONFIRMED completed-but-hung (streamed then stuck) MUST salvage -> 'ok'.
+# This is the exact failure #458 fixed for background mode but MISSED for the blocking consult path
+# (brainstorming / writing-plans / ultraoracle). HUNG_GRACE=0 arms the watchdog as soon as the
+# stream-then-wait signature is captured, so the 120s cap is never approached — a 'timeout' here
+# would mean the watchdog is still not wired into blocking mode. Salvage re-reads the live tab.
+export ULTRA_ORACLE_MOCK_MODE=hung ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv2b.md" --mode blocking --timeout-cap-seconds 120)"
+[[ "$st" = "ok" ]] || { echo "FAIL blocking attach completed-but-hung should salvage->ok got '$st'"; FAIL=1; }
+grep -q "SALVAGED VERDICT" "$tmp/sv2b.md" || { echo "FAIL blocking salvage harvested body missing"; FAIL=1; }
+unset ULTRA_ORACLE_HUNG_GRACE
 
 # HIGH#1 (harvest exit 0 but wrote nothing = dead tab): exit-0-empty + failed harvest -> 'error'.
 export ULTRA_ORACLE_MOCK_MODE=empty ULTRA_ORACLE_SALVAGE_MODE=fail

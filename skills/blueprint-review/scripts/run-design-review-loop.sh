@@ -945,6 +945,34 @@ with open(pending, "w") as f:
   CODEX_ISSUES=$(jq -r '.issues[] | "- [\(.severity)] \(.section): \(.description)"' "$CODEX_OUTPUT_FILE" 2>/dev/null || echo "No issues")
   GROK_ISSUES=$(jq -r '.issues[] | "- [\(.severity)] \(.section): \(.description)"' "$GROK_OUTPUT_FILE" 2>/dev/null || echo "No issues")
 
+  # ── In --claude-only, re-point at the advisory the ORIGINAL pass landed on disk (#486) ──
+  # The Phase 1-2 dispatch (incl. ultra-oracle) is skipped in claude-only mode, so
+  # ULTRA_ORACLE_ADVISORY_FILE is empty here — but the finalizing re-run REBUILDS the
+  # arbiter prompt, and without this the whole advisory section is dropped SILENTLY (the
+  # inject branch needs the file var set; the warning fallback below is gated off in
+  # claude-only). A salvaged (#458) or normal advisory persists at the deterministic
+  # RUN_ID path; re-point at it so the inject-or-warn logic runs instead of vanishing.
+  # DISPATCH_STATUS != "dispatched" so the wait loop is skipped (the file already landed
+  # or never will) — a missing/empty file falls through to the visible WARNING banner.
+  #
+  # Resolve enablement from USER config DIRECTLY via _read_config_value (always loaded from
+  # resolve-cli.sh), NOT the optional adapter's ultra_oracle_surface_enabled — so an adapter
+  # that failed to source cannot turn a persisted advisory into a silent drop (the adapter
+  # is not needed to just READ the on-disk file). USER config ONLY, mirroring the enablement
+  # probe in the warning fallback below: a repo-controlled project config must not flip it.
+  if [[ "$CLAUDE_ONLY" == "true" ]] && [[ -z "${ULTRA_ORACLE_ADVISORY_FILE:-}" ]]; then
+    _uora_co_cfg="$HOME/$STATE_DIR/busdriver.json"
+    _uora_co_en=""
+    if [[ -f "$_uora_co_cfg" ]]; then
+      _uora_co_en="$(_read_config_value "$_uora_co_cfg" '.ultraOracle.blueprintReview.enabled' 2>/dev/null || true)"
+    fi
+    case "$(printf '%s' "$_uora_co_en" | tr '[:upper:]' '[:lower:]')" in
+      true|1)
+        ULTRA_ORACLE_ADVISORY_FILE="$STATE_DIR/ultra-oracle/${RUN_ID}-plan-review.md"
+        ULTRA_ORACLE_DISPATCH_STATUS="advisory not harvested before arbiter re-run" ;;
+    esac
+  fi
+
   # ── Build the ultra-oracle advisory section (status-aware; only wait if dispatched) ──
   ULTRA_ORACLE_ADVISORY_SECTION=""
   if [ -n "${ULTRA_ORACLE_ADVISORY_FILE:-}" ]; then

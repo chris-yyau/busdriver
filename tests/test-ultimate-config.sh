@@ -2,11 +2,20 @@
 # tests/test-ultimate-config.sh
 # Unit tests for scripts/lib/ultimate-config.sh (ADR 0011, as amended by ADR 0019).
 #
-# ultimate_surface_enabled <arbiter|council> gates the opt-in Claude-Fable "ultimate" tier
-# surfaces, now reached via an in-harness Agent subagent (the gateway transport was removed
-# in ADR 0019, so enabling transmits nothing externally). The enable still must come from the
-# USER config (~/.claude/busdriver.json) ONLY — never a repo-controlled project config — or
-# from the BUSDRIVER_ULTIMATE=1 operator force.
+# ultimate_surface_enabled <surface> gates the opt-in Claude-Fable "ultimate" tier surfaces,
+# now reached via an in-harness Agent subagent (the gateway transport was removed in ADR 0019,
+# so enabling transmits nothing externally). The enable still must come from the USER config
+# (~/.claude/busdriver.json) ONLY — never a repo-controlled project config — or from the
+# BUSDRIVER_ULTIMATE=1 operator force.
+#
+# These cases exercise the SURFACE-GENERIC reader. `council` is the only LIVE config surface
+# with a caller; the `arbiter` config surface was dropped in ADR 0027 (arbiter elevation is
+# now the in-band "ultimate arbiter" trigger phrase ONLY — BUSDRIVER_ULTIMATE has no effect on
+# the arbiter, which has no caller of this reader; it still forces council, the live surface).
+# We keep
+# `arbiter` below purely as a REPRESENTATIVE surface string to prove the reader is generic and
+# its USER-only / precedence / normalization guarantees hold for any `.ultimate.surfaces.<name>`
+# — NOT as an assertion that `arbiter` is a live config opt-in (it is not).
 #
 # Every case ISOLATES $HOME to a throwaway dir so the developer's real
 # ~/.claude/busdriver.json can't make the suite flaky (the crit-4 requirement).

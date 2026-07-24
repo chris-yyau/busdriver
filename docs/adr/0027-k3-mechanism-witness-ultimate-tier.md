@@ -113,7 +113,7 @@ to `_AUD_TO + 10` ≤ **910s**. Two facts keep this from surprising the operator
   operator — blueprint is already slow and the claim-vs-mechanism lens is useful
   there on every design doc; there is no tier to gate it behind.
 - **Rename internal identifiers as well (`council.mechanism`, `mechanism.json`).**
-  Rejected — breaks the live config route and the arbiter-prompt/​resume wiring for
+  Rejected — breaks the live config route and the arbiter-prompt/resume wiring for
   no user-visible benefit; `auditor` does not collide with "Advisor".
 - **Keep the name "Auditor", drop only "advisory".** Viable, but "Mechanism
   Witness" names the actual lens (claim-vs-mechanism) and slots cleanly beside the

@@ -5,10 +5,17 @@
 #
 # The "ultimate" tier is the opt-in Claude-Fable surface set, reached via an in-harness
 # Agent subagent (ADR 0011 as amended by ADR 0015 and ADR 0019 — the zenmux gateway
-# transport was removed). Two surfaces ship today, each config-gated independently:
-#   - arbiter  — the blueprint-review "ultimate arbiter" escalation ABOVE the default opus.
+# transport was removed). One config-gated surface ships today:
 #   - council  — the council "Mythos Witness" (Fable expert witness, rendered separately).
-# Enabling either no longer transmits anything externally (the fable subagent runs
+# ultimate_surface_enabled is SURFACE-GENERIC (it reads `.ultimate.surfaces.<name>`, and the
+# BUSDRIVER_ULTIMATE force, for whatever surface arg it is CALLED with), but `council` is the
+# only LIVE surface with a caller. The blueprint-review arbiter also elevates to Fable, but as
+# of ADR 0028 that is the in-band "ultimate arbiter" trigger phrase ONLY: no arbiter code path
+# calls `ultimate_surface_enabled arbiter`, so neither `.ultimate.surfaces.arbiter` NOR
+# BUSDRIVER_ULTIMATE has any effect on the arbiter pin — the executor chooses the arbiter model
+# at dispatch. (The generic reader is unchanged — it would resolve either signal if some future
+# caller passed "arbiter" — but today nothing does; only the arbiter's caller was dropped.)
+# Enabling council no longer transmits anything externally (the fable subagent runs
 # in-account), but the enable stays user-local — like the ultraOracle boundary it mirrors —
 # so a repo-controlled project config or reviewed branch content can never opt a reviewer
 # into the heavier escalation.

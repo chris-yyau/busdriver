@@ -429,7 +429,7 @@ while true; do
     AGY_OUTPUT_FILE=$(get_review_file "agy.json")
     CODEX_OUTPUT_FILE=$(get_review_file "codex.json")
     GROK_OUTPUT_FILE=$(get_review_file "grok.json")
-    # Advisory Auditor: bind the path in --claude-only resume too (it is set in
+    # Mechanism Witness: bind the path in --claude-only resume too (it is set in
     # the normal-review branch only, but read unconditionally when the arbiter
     # prompt is assembled — under `set -u` an unbound read aborts the resume).
     # A prior iteration's auditor.json is reused if present; otherwise the read
@@ -725,15 +725,17 @@ with open(pending, "w") as f:
   ) &
   GROK_PID=$!
 
-  # ── Auditor (ADVISORY, non-converging) ───────────────────────────
+  # ── Mechanism Witness (AUXILIARY, non-converging) ────────────────
   # A 4th voice that is deliberately NOT a coverage slot. The gate condition is
   # `coverage_status == FULL AND fulfilled_lens_count == 3`; making this a real
-  # slot would raise that to 4/4, so any Auditor stall would WITHHOLD PASS. The
+  # slot would raise that to 4/4, so any witness stall would WITHHOLD PASS. The
   # backing model (opencode-go/kimi-k3) was measured stalling silently on a
   # meaningful fraction of generation-heavy prompts, which would convert model
   # flakiness directly into blocked design reviews. Modeled on the UltraOracle
-  # advisory instead: its verdict reaches the arbiter, it never counts as a lens,
-  # and its absence is noted rather than gating.
+  # witness instead: its verdict reaches the arbiter, it never counts as a lens,
+  # and its absence is noted rather than gating. (Internal identifiers keep the
+  # `auditor` name — the config route key `blueprint-review.auditor`, auditor.json,
+  # AUDITOR_*; only the surface framing is the Mechanism Witness. See ADR 0027.)
   #
   # Findings are LEADS, not verdicts — measured 1 true positive / 1 confident
   # false positive / 1 correct NOTHING-FOUND across three already-passed PRs,
@@ -745,31 +747,41 @@ with open(pending, "w") as f:
   # bound the post-reviewer reap waits for (see the reap below). Sanitize: it is
   # arithmetic input for the reap's `+10` margin, and a non-numeric env value
   # (repo-injectable via settings.json) would otherwise break `$(( ))`.
-  _AUD_TIMEOUT="${BLUEPRINT_AUDITOR_TIMEOUT:-300}"
-  case "$_AUD_TIMEOUT" in ''|*[!0-9]*) _AUD_TIMEOUT=300 ;; esac       # non-numeric → default
-  # Strip leading zeros so a zero-padded value (00000600 → 600) is measured by
+  # DEFAULT AND CLAMP 600s (2x the old 300s). NOT 3600s like the council Mechanism
+  # Witness: in blueprint this reap sits ON THE CRITICAL PATH before the arbiter
+  # (Phase 3), so a slow k3 could starve arbitration under the Bash-tool cap the
+  # loop runs beneath. And BLUEPRINT_AUDITOR_TIMEOUT is repo-injectable (a fork's
+  # settings.json `env`, #325), so the clamp is HARD 600 — a higher ceiling would
+  # let a hostile branch delay every always-on blueprint arbitration by up to an
+  # hour. 600s is a generous, bounded pass for a slow k3. See ADR 0027 + the
+  # run-command timeout note in SKILL.md.
+  _AUD_TIMEOUT="${BLUEPRINT_AUDITOR_TIMEOUT:-600}"
+  case "$_AUD_TIMEOUT" in ''|*[!0-9]*) _AUD_TIMEOUT=600 ;; esac       # non-numeric → default
+  # Strip leading zeros so a zero-padded value (0000600 → 600) is measured by
   # its SIGNIFICANT digits, then cap the length BEFORE `$((10#…))` so an
   # oversized digit string can never reach the arithmetic (where it would wrap
   # 64-bit to some in-range garbage the clamp can't distinguish). Max legal is
-  # 600 (3 digits), so ≥4 significant digits is already >600 → clamp to the max.
+  # 600 (3 digits); ≥8 significant digits (>9,999,999) is well past it AND the
+  # 64-bit danger zone → clamp to the max before the arithmetic.
   _AUD_TIMEOUT="${_AUD_TIMEOUT#"${_AUD_TIMEOUT%%[!0]*}"}"
   [[ -z "$_AUD_TIMEOUT" ]] && _AUD_TIMEOUT=0                          # all-zeros → 0 (→ default below)
-  [[ "${#_AUD_TIMEOUT}" -ge 4 ]] && _AUD_TIMEOUT=600                  # >3 sig digits (>999) → clamp to max
-  _AUD_TIMEOUT=$((10#$_AUD_TIMEOUT))                                  # base-10 on a ≤3-digit value: never octal, never overflow
+  [[ "${#_AUD_TIMEOUT}" -ge 8 ]] && _AUD_TIMEOUT=600                  # >7 sig digits → clamp to max
+  _AUD_TIMEOUT=$((10#$_AUD_TIMEOUT))                                  # base-10 on a ≤7-digit value: never octal, never overflow
   # CLAMP — this value gates the reap below, so an unbounded (repo-injectable)
   # BLUEPRINT_AUDITOR_TIMEOUT is a DoS: 9999999 would stall arbitration for
-  # ~115 days. 600s is generous for a slow k3 pass, bounded.
-  [[ "$_AUD_TIMEOUT" -lt 1 ]] && _AUD_TIMEOUT=300
+  # ~115 days. Hard 600s ceiling: generous for a slow k3, fits the loop's blocking
+  # window, and not repo-raisable past the safe bound.
+  [[ "$_AUD_TIMEOUT" -lt 1 ]] && _AUD_TIMEOUT=600
   [[ "$_AUD_TIMEOUT" -gt 600 ]] && _AUD_TIMEOUT=600
   if [[ "$AUDITOR_CLI" != "none" && "$AUDITOR_CLI" != "builtin" && ! "$AUDITOR_CLI" =~ ^(missing|unsupported): ]]; then
     (
       _aud_raw=$(get_review_file "auditor-raw.txt")
       _aud_exit=0
-      # EXPLICIT budget (default 300s, NOT execute_review's 1200s default). This
-      # is the advisory's own ceiling — the reap below waits for exactly this,
+      # EXPLICIT budget (default 600s, NOT execute_review's 1200s default). This
+      # is the witness's own ceiling — the reap below waits for exactly this,
       # not a stingy tail after the reviewers finish, so a slow reasoning model
       # (opencode-go/kimi-k3) gets its full budget just like the UltraOracle and
-      # fable advisories do. execute_review's internal _portable_timeout still
+      # fable witnesses do. execute_review's internal _portable_timeout still
       # hard-stops the process at this cap, so it can never actually run longer.
       execute_review "$AUDITOR_CLI" "$FULL_PROMPT" "$_AUD_TIMEOUT" > "$_aud_raw" 2>&1 || _aud_exit=$?
       # ATOMIC write: build the JSON in a temp file, then rename into place. A
@@ -781,11 +793,11 @@ with open(pending, "w") as f:
       _aud_tmp="${AUDITOR_OUTPUT_FILE}.tmp.$$"
       if [[ "$_aud_exit" -eq 0 ]] && [[ -s "$_aud_raw" ]]; then
         python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$_aud_raw" > "$_aud_tmp" 2>/dev/null \
-          || create_error_json "auditor" "unparseable advisory output" > "$_aud_tmp"
+          || create_error_json "auditor" "unparseable witness output" > "$_aud_tmp"
       else
         # Empty output on a clean exit is the observed silent-stall shape — must
-        # read as "advisory absent", never as "advisory found nothing".
-        create_error_json "auditor" "advisory failed or returned empty (rc=$_aud_exit)" > "$_aud_tmp"
+        # read as "witness absent", never as "witness found nothing".
+        create_error_json "auditor" "witness failed or returned empty (rc=$_aud_exit)" > "$_aud_tmp"
       fi
       mv -f "$_aud_tmp" "$AUDITOR_OUTPUT_FILE" 2>/dev/null || rm -f "$_aud_tmp"
     ) &
@@ -799,7 +811,7 @@ with open(pending, "w") as f:
   wait "$AGY_PID" 2>/dev/null || true
   wait "$CODEX_PID" 2>/dev/null || true
   wait "$GROK_PID" 2>/dev/null || true
-  # BOUNDED reap for the advisory Auditor. It waits the Auditor's OWN budget
+  # BOUNDED reap for the Mechanism Witness. It waits the witness's OWN budget
   # (_AUD_TIMEOUT + a 10s margin — the same shape as the UltraOracle's `cap+10`
   # poll), NOT a 20s tail after the reviewers finish. k3 is a slow reasoning
   # model; on a real generation-heavy prompt it needs minutes, and the old 20s
@@ -813,8 +825,8 @@ with open(pending, "w") as f:
     case "$_aud_grace_cap" in ''|*[!0-9]*) _aud_grace_cap=$(( _AUD_TIMEOUT + 10 )) ;; esac
     _aud_grace_cap="${_aud_grace_cap#"${_aud_grace_cap%%[!0]*}"}"          # strip leading zeros
     [[ -z "$_aud_grace_cap" ]] && _aud_grace_cap=0                          # all-zeros → 0
-    [[ "${#_aud_grace_cap}" -ge 4 ]] && _aud_grace_cap=$(( _AUD_TIMEOUT + 10 ))  # >3 sig digits → default (keeps 10# off oversized input; upper bound re-clamps below)
-    _aud_grace_cap=$((10#$_aud_grace_cap))   # base-10 on a ≤3-digit value: never octal, never overflow
+    [[ "${#_aud_grace_cap}" -ge 8 ]] && _aud_grace_cap=$(( _AUD_TIMEOUT + 10 ))  # >7 sig digits → default (keeps 10# off oversized input; upper bound re-clamps below)
+    _aud_grace_cap=$((10#$_aud_grace_cap))   # base-10 on a ≤7-digit value: never octal, never overflow
     # The override may only SHORTEN the reap, never extend it past the budget+10
     # — a repo-injected BLUEPRINT_AUDITOR_GRACE must not lengthen the stall (this
     # upper bound also corrals any >64-bit wrapped value to <= budget+10).
@@ -833,12 +845,21 @@ with open(pending, "w") as f:
           kill "$_p" 2>/dev/null || true
         }
         _kill_tree "$AUDITOR_PID"
-        log_warning "  Auditor (advisory) exceeded its ${_aud_grace_cap}s budget — killed its process tree, proceeding without it"
+        log_warning "  Mechanism Witness exceeded its ${_aud_grace_cap}s budget — killed its process tree, proceeding without it"
         break
       fi
       sleep 1; _aud_grace=$((_aud_grace + 1))
     done
     wait "$AUDITOR_PID" 2>/dev/null || true
+    # A reap-kill (or a crash before the atomic mv) can leave NO auditor.json even
+    # though the witness WAS dispatched. Without this, the status summary below reads
+    # a missing file as "absent — not dispatched", contradicting the timeout warning
+    # just logged and the ran/absent/FAILED contract. Record an explicit failure so
+    # the summary reports FAILED (dispatched → timed out/killed), never "not
+    # dispatched". Non-gating; the arbiter reads it as an unavailable auxiliary.
+    if [[ ! -s "$AUDITOR_OUTPUT_FILE" ]]; then
+      create_error_json "auditor" "witness killed at reap limit or produced no output (dispatched, no auditor.json written)" > "$AUDITOR_OUTPUT_FILE"
+    fi
   fi
 
   REVIEW_END=$(millis)
@@ -927,6 +948,30 @@ with open(pending, "w") as f:
   log_info "  Agy:    $AGY_STATUS ($(jq '.issues | length' "$AGY_OUTPUT_FILE") issues)"
   log_info "  Codex:  $CODEX_STATUS ($(jq '.issues | length' "$CODEX_OUTPUT_FILE") issues)"
   log_info "  Grok:   $GROK_STATUS ($(jq '.issues | length' "$GROK_OUTPUT_FILE") issues)"
+
+  # Mechanism Witness (k3) — AUXILIARY, never gates coverage. A one-line status so
+  # the operator can always see whether the claim-vs-mechanism voice actually fired
+  # (it was silently invisible before — its output only ever reaches the arbiter's
+  # context, never a report section). Derived from auditor.json: ERROR shape means
+  # absent (opencode unavailable) or failed/timed-out; anything else means it ran,
+  # with a best-effort finding count (.issues or .findings).
+  if [[ -f "$AUDITOR_OUTPUT_FILE" ]]; then
+    _mw_status=$(jq -r '.status // "OK"' "$AUDITOR_OUTPUT_FILE" 2>/dev/null || echo "UNREADABLE")
+    if [[ "$_mw_status" == "ERROR" ]]; then
+      _mw_err=$(jq -r '.error // "unknown"' "$AUDITOR_OUTPUT_FILE" 2>/dev/null || echo "unknown")
+      case "$_mw_err" in
+        *"not available"*) log_info "  Mechanism Witness (k3): absent — opencode unavailable (no fallback)" ;;
+        *)                 log_info "  Mechanism Witness (k3): FAILED — $_mw_err (advisory; review unaffected)" ;;
+      esac
+    elif [[ "$_mw_status" == "UNREADABLE" ]]; then
+      log_info "  Mechanism Witness (k3): FAILED — auditor.json present but corrupt/unparseable (advisory; review unaffected)"
+    else
+      _mw_n=$(jq '(.issues // .findings // []) | length' "$AUDITOR_OUTPUT_FILE" 2>/dev/null || echo "?")
+      log_info "  Mechanism Witness (k3): ran ($_mw_n findings — LEADS not verdicts, arbiter verifies)"
+    fi
+  else
+    log_info "  Mechanism Witness (k3): absent — no output file (not dispatched)"
+  fi
 
   # Coverage provenance: capture which slots actually ran (non-claude-only only)
   persist_dispatch_provenance
@@ -1097,7 +1142,7 @@ $(cat "$GROK_OUTPUT_FILE")
 $ULTRA_ORACLE_ADVISORY_SECTION
 
 =============================================================================
-AUDITOR ADVISORY (opencode / kimi-k3) -- AUXILIARY, *NOT* A REVIEWER. There are
+MECHANISM WITNESS (opencode / kimi-k3) -- AUXILIARY, *NOT* A REVIEWER. There are
 still exactly THREE reviewers (Agy/Codex/Grok); do NOT count this block as a 4th
 lens or as independent agreement. Its lens is claim-vs-mechanism: places where
 the document says one thing and the cited mechanism does another.
@@ -1107,10 +1152,10 @@ defect both Codex-xhigh and the Opus backstop missed, 1 confidently-worded false
 positive, 1 correct NOTHING FOUND -- with confidence labels INVERTED (the
 hallucination was MEDIUM, the real defect LOW). Verify each claim against the
 cited file:line before weighting it. An error/empty block below means the
-advisory was ABSENT, which is NOT evidence that nothing was found.
+witness was ABSENT, which is NOT evidence that nothing was found.
 =============================================================================
 
-$(cat "$AUDITOR_OUTPUT_FILE" 2>/dev/null || echo '{"status":"ERROR","note":"auditor advisory unavailable"}')
+$(cat "$AUDITOR_OUTPUT_FILE" 2>/dev/null || echo '{"status":"ERROR","note":"mechanism witness unavailable"}')
 
 =============================================================================
 VALIDATION TASK:

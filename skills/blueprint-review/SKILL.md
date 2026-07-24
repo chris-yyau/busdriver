@@ -26,7 +26,7 @@ DO NOT rationalize skipping reviewers. These thoughts are violations:
 
 EVERY design review MUST:
 1. Run `run-design-review-loop.sh` as a BLOCKING bash call
-2. Wait for ALL reviewer outputs (agy.json, codex.json, grok.json, plus claude.json from the arbiter) — grok.json is always written by the loop, even when grok was unavailable (it contains an error-status JSON in that case). An advisory `auditor.json` (opencode/kimi-k3, claim-vs-mechanism lens) may also be written and is injected into the arbiter prompt as AUXILIARY context — it is NOT a reviewer and never counts toward the three-voice coverage (see Advisory Auditor below)
+2. Wait for ALL reviewer outputs (agy.json, codex.json, grok.json, plus claude.json from the arbiter) — grok.json is always written by the loop, even when grok was unavailable (it contains an error-status JSON in that case). A `auditor.json` from the **Mechanism Witness** (opencode/kimi-k3, claim-vs-mechanism lens) may also be written and is injected into the arbiter prompt as AUXILIARY context — it is NOT a reviewer and never counts toward the three-voice coverage (see Mechanism Witness below)
 3. Dispatch a FRESH Claude arbiter subagent (see Arbiter Dispatch Protocol) to validate Agy/Codex/Grok findings against the codebase — the session that authored the plan must NOT write claude.json itself
 4. Mark PASS ONLY when the arbiter's verdict has no HIGH/MEDIUM issues (confidence >= 0.5)
 </EXTREMELY-IMPORTANT>
@@ -39,7 +39,7 @@ Three-tier model with Claude as arbiter:
 3. **The arbiter's verdict**: The sole convergence signal
 
 Plus one **advisory** voice that is deliberately NOT a coverage slot:
-- **Advisory Auditor** (opencode/kimi-k3, added #435): a 4th voice with a single claim-vs-mechanism lens — does the document actually do what it says. It runs in parallel, writes `auditor.json`, and is injected into the arbiter prompt as AUXILIARY context (like the UltraOracle advisory). It is **never** counted among the three reviewers, never affects `coverage_status`, and its findings are LEADS not verdicts (measured: 1 real defect / 1 confident false positive / 1 correct NOTHING-FOUND across three passed PRs, with inverted confidence). It waits its own budget (`BLUEPRINT_AUDITOR_TIMEOUT`, default 300s) and its absence is noted, never gating. No droid fallback — if opencode is unavailable the Auditor is simply absent.
+- **Mechanism Witness** (opencode/kimi-k3, added #435, renamed from "advisory Auditor" in ADR 0027): a 4th voice with a single claim-vs-mechanism lens — does the document actually do what it says. It runs in parallel, writes `auditor.json` (the internal route key stays `blueprint-review.auditor`), and is injected into the arbiter prompt as AUXILIARY context (like the UltraOracle witness). It is **never** counted among the three reviewers, never affects `coverage_status`, and its findings are LEADS not verdicts (measured: 1 real defect / 1 confident false positive / 1 correct NOTHING-FOUND across three passed PRs, with inverted confidence). It waits its own budget (`BLUEPRINT_AUDITOR_TIMEOUT`, default **AND hard-clamped at 600s** — 2x the old 300s, since kimi-k3 is a slow reasoning model that silently timed out at 300s; NOT the council witness's larger budget because this reap is on the critical path before the arbiter and the env var is repo-injectable (#325), so a higher clamp could let a fork delay every arbitration or starve it under the Bash-tool cap) and its absence is noted, never gating. No droid fallback — if opencode is unavailable the witness is simply absent.
 
 **Key features:**
 - Author/arbiter separation (the session that wrote the plan never judges it — fresh subagent arbiter)
@@ -159,14 +159,18 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/init-design-review.s
 
 **Creates state file** (`docs/reviews/<slug>/state.md`) tracking:
 - Current iteration (1 to max_iterations, default 5)
-- Review statuses (Agy, Codex, Grok, Claude) — the advisory Auditor is not tracked here (it never gates; its status lives only in `auditor.json`)
+- Review statuses (Agy, Codex, Grok, Claude)
 - Progress model (high/medium/low issue counts)
+
+The review **log** (via `log_info`, not the state file) additionally prints a one-line **Mechanism Witness (k3)** status — `ran (N findings)` / `absent` / `FAILED` — during a normal review pass. It is not emitted on `--claude-only` resumes and is never tracked in `state.md`. The witness never gates; its full findings live only in `auditor.json` and reach the arbiter as auxiliary context.
 
 ### 2. Run Review Loop
 
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/run-design-review-loop.sh"
 ```
+
+> **Bash-tool timeout:** run this as a BLOCKING call with an explicit `timeout`. The Mechanism Witness reap is **on the critical path before the arbiter**, and it runs concurrently with the reviewers but can outlast them — so the loop's wall time is roughly *(slowest of: reviewers, or the witness reap up to `BLUEPRINT_AUDITOR_TIMEOUT + 10`s, hard-clamped to 610s)* **plus** the arbiter. Size the `timeout` for that sum, not for the reviewers alone; an under-sized `timeout` can kill the loop mid-reap, before arbitration writes a verdict. The witness budget is hard-clamped at 600s specifically so this tail stays bounded and a repo-injected `BLUEPRINT_AUDITOR_TIMEOUT` can't extend it.
 
 **Automated workflow:**
 1. **Clean stale artifacts** from previous iteration

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015,SC2016  # grep patterns intentionally hold literal ${...}/backticks; A&&pass||fail is the intended report idiom
 # tests/test-ultimate-tier.sh
 # Static contract for the "ultimate" tier (Claude Fable via an in-harness Agent
 # subagent) — ADR 0011, as amended by ADR 0015 and ADR 0019. Locks in the rename,
@@ -128,6 +129,34 @@ if [[ -f "$CMD_ULTIMATE" ]] && grep -qF -- 'setting `_forced=1` in the Step 4.6 
   pass "ultimate-council command instructs the executor to force _forced=1 in the single gate block"
 else
   fail "ultimate-council command missing the single-block _forced=1 instruction"
+fi
+
+# ── Mechanism Witness (kimi-k3) authorization boundary (ADR 0027) ────────────
+# The k3 witness transmits the council prompt + pasted snippets externally, so its
+# ultimate-only gate must be injection-proof and share the Mythos authorization.
+
+# 1. A LITERAL `MECHANISM_WITNESS=0` must exist in the Step 4b preamble — it shadows
+#    any repo-injected ambient value (a committed settings.json `env` block, #325).
+mw_lit="$(grep -cE '^MECHANISM_WITNESS=0' "$SKILL_C")"
+if [[ "$mw_lit" -ge 1 ]]; then
+  pass "council Step 4b pins a literal MECHANISM_WITNESS=0 (shadows repo-injected env)"
+else
+  fail "council SKILL.md missing the literal MECHANISM_WITNESS=0 injection guard"
+fi
+
+# 2. The dispatch guard must read that var (default 0) — never dispatch k3 on an
+#    unset/0 value, so a plain/ultra council or BUSDRIVER_ULTIMATE=0 run skips it.
+anchor "council k3 dispatch is guarded on MECHANISM_WITNESS=1" '[ "${MECHANISM_WITNESS:-0}" = 1 ]'
+
+# 3. Enabling k3 is conditioned on MYTHOS_ATTEMPT=1 (same gate as the fable witness,
+#    so BUSDRIVER_ULTIMATE=0 / a disabled surface suppress k3 too) and is a LITERAL FLIP.
+anchor "council k3 enable is gated on MYTHOS_ATTEMPT=1" 'change that literal to `MECHANISM_WITNESS=1`'
+
+# 4. The command must condition the flip on MYTHOS_ATTEMPT=1, not force it unconditionally.
+if grep -qF -- 'ONLY when the Step 4.6 gate returned `MYTHOS_ATTEMPT=1`' "$CMD_ULTIMATE"; then
+  pass "ultimate-council command conditions the k3 flip on MYTHOS_ATTEMPT=1 (respects BUSDRIVER_ULTIMATE=0)"
+else
+  fail "ultimate-council command forces MECHANISM_WITNESS unconditionally (bypasses the ultimate gate)"
 fi
 
 [[ "$FAIL" = 0 ]] && echo "PASS test-ultimate-tier" || { echo "FAIL test-ultimate-tier"; exit 1; }

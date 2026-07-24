@@ -5,16 +5,16 @@ description: >-
   Researcher) for ambiguous decisions needing multiple lenses — design,
   tradeoffs, architecture, strategy. Triggers include council, roundtable,
   perspectives, group wisdom, ideas/feedback/advice; "ultra-council" adds the
-  UltraOracle (ChatGPT Pro) expert witness; "ultimate-council" adds BOTH the
-  UltraOracle AND the Mythos Witness (Claude Fable, subagent-first),
-  each rendered separately, never a vote. Not for simple tasks with clear
-  answers.
+  UltraOracle (ChatGPT Pro) expert witness; "ultimate-council" adds three expert
+  witnesses — the UltraOracle, the Mythos Witness (Claude Fable, subagent), and
+  the Mechanism Witness (kimi-k3, claim-vs-mechanism) — each rendered
+  separately, never a vote. Not for simple tasks with clear answers.
 origin: custom
 ---
 
 # Council
 
-Convene five advisors — the in-context Claude plus four fresh agents — for diverse perspectives. Each gives an independent perspective, then synthesize into a compressed verdict. (An **ultra-council** run adds an optional UltraOracle expert witness — see Step 4.5 — rendered as its own section, never counted among the five voices. An **ultimate-council** run adds BOTH the UltraOracle AND a **Mythos Witness** — Claude Fable, dispatched as an in-harness subagent; see Step 4.6 — each rendered as its own section, neither counted among the five voices.)
+Convene five advisors — the in-context Claude plus four fresh agents — for diverse perspectives. Each gives an independent perspective, then synthesize into a compressed verdict. (An **ultra-council** run adds an optional UltraOracle expert witness — see Step 4.5 — rendered as its own section, never counted among the five voices. An **ultimate-council** run adds THREE expert witnesses — the UltraOracle, a **Mythos Witness** (Claude Fable, dispatched as an in-harness subagent; see Step 4.6), and a **Mechanism Witness** (kimi-k3, claim-vs-mechanism; see Step 4.7) — each rendered as its own section, none counted among the five voices.)
 
 ## Roles (Fixed)
 
@@ -26,20 +26,20 @@ Convene five advisors — the in-context Claude plus four fresh agents — for d
 | Configurable | dispatch-cli | Critic | Edge cases, risks, failure modes, what could go wrong | Yes: `council.critic` (default: codex) |
 | Configurable | dispatch-cli | Researcher | Evidence, prior art, current state, factual grounding | Yes: `council.researcher` (default: grok, fallback: droid) |
 
-(UltraOracle is **not** in this table — it is an optional expert witness, not a sixth fixed role. See Step 4.5. The **Auditor** below is likewise not a fixed role.)
+(UltraOracle is **not** in this table — it is an optional expert witness, not a sixth fixed role. See Step 4.5. The **Mechanism Witness** below is likewise not a fixed role — it is an ultimate-council expert witness, see Step 4.7.)
 
-**Auditor (advisory, on by default, never counted among the five voices).** Route `council.auditor`, default `opencode` → `opencode-go/kimi-k3`. Lens: *claim-vs-mechanism* — does the artifact actually do what it says it does. Rendered as its own section like the UltraOracle, never folded into the five-voice synthesis and never a vote.
+**Mechanism Witness (expert witness, ultimate-council only, never counted among the five voices).** Route `council.auditor`, default `opencode` → `opencode-go/kimi-k3`. Lens: *claim-vs-mechanism* — does the artifact actually do what it says it does. Rendered as its own section like the UltraOracle and the Mythos Witness, never folded into the five-voice synthesis and never a vote. **It runs ONLY in an ultimate-council** (gated on the same `MYTHOS_ATTEMPT` signal as the fable Mythos Witness — see Step 4.6/4.7); a plain or ultra-council does NOT dispatch it. (It was previously an always-on advisory in every council under the name "Auditor"; kimi-k3 is a slow reasoning model that timed out silently at the old 120s budget, so it moved to the already-slow ultimate tier where it gets a full 900s — UltraOracle-parity, matching the oracle's own default cap — see ADR 0027.)
 
 Two deliberate properties:
 
-- **Not a fixed role**, because the five-voice composition is load-bearing across ADRs 0006/0011/0012/0013/0019, the ultra/ultimate council skills, and the README. Adding a sixth chair would require rewriting immutable decision records to stay honest. Advisory costs nothing and keeps the count true.
-- **No droid fallback.** Every other role falls back to droid for availability; this one does not. Droid already backstops three slots, so a droid Auditor would be a fourth copy of the same model wearing a new label — worse than an absent voice, because it reads as independent corroboration while adding no independent signal. If opencode is missing, the Auditor is absent and the report says so.
+- **Not a fixed role**, because the five-voice composition is load-bearing across ADRs 0006/0011/0012/0013/0019, the ultra/ultimate council skills, and the README. Adding a sixth chair would require rewriting immutable decision records to stay honest. An expert witness — like the UltraOracle and Mythos Witness — keeps the count true.
+- **No droid fallback.** Every other role falls back to droid for availability; this one does not. Droid already backstops three slots, so a droid Mechanism Witness would be a fourth copy of the same model wearing a new label — worse than an absent voice, because it reads as independent corroboration while adding no independent signal. If opencode is missing, the witness is absent and the report says so.
 
-**Known limitation — treat Auditor findings as leads, not verdicts.** Measured against three already-passed PRs (2026-07-20): one verified true positive that Codex xhigh and the Opus backstop both missed, one confidently-asserted false positive, one correct `NOTHING FOUND`. Its confidence labels were *inverted* on that sample — it marked the hallucination MEDIUM and the real defect LOW. Verify before acting on anything it reports.
+**Known limitation — treat Mechanism Witness findings as leads, not verdicts.** Measured against three already-passed PRs (2026-07-20): one verified true positive that Codex xhigh and the Opus backstop both missed, one confidently-asserted false positive, one correct `NOTHING FOUND`. Its confidence labels were *inverted* on that sample — it marked the hallucination MEDIUM and the real defect LOW. Verify before acting on anything it reports.
 
-**CLI routing:** Pragmatist, Critic, and Researcher CLIs (plus the advisory Auditor) are resolved from `.claude/busdriver.json` via `resolve_role_cli()`. Each role accepts a route array — the resolver walks it left-to-right and returns the first available CLI (e.g., `"council.pragmatist": ["agy", "droid"]` falls back to Droid if Agy is missing). If every CLI in the chain is missing, that voice is skipped and noted in the report; other voices still fire. Changing the CLI only changes which binary receives the prompt — the role framing (Pragmatist lens, Critic lens, Researcher lens) is always the same. **Trade-off to know:** fallback preserves availability but dilutes role identity — Droid filling in as Pragmatist is no longer "Agy's strategic lens." Accept this when resilience matters more than signal purity. See README for per-role routing docs.
+**CLI routing:** Pragmatist, Critic, and Researcher CLIs (plus the Mechanism Witness, ultimate-council only) are resolved from `.claude/busdriver.json` via `resolve_role_cli()`. Each role accepts a route array — the resolver walks it left-to-right and returns the first available CLI (e.g., `"council.pragmatist": ["agy", "droid"]` falls back to Droid if Agy is missing). If every CLI in the chain is missing, that voice is skipped and noted in the report; other voices still fire. Changing the CLI only changes which binary receives the prompt — the role framing (Pragmatist lens, Critic lens, Researcher lens) is always the same. **Trade-off to know:** fallback preserves availability but dilutes role identity — Droid filling in as Pragmatist is no longer "Agy's strategic lens." Accept this when resilience matters more than signal purity. See README for per-role routing docs.
 
-**Runtime retry + droid fallback (distinct from the route-array fallback above):** the route array picks a CLI by *availability* at resolve time. At *runtime*, each dispatched fixed voice (Agy/Codex/Grok) also retries up to `BUSDRIVER_CLI_RETRIES` (default `3`) on a transient failure (rate-limit, network, 5xx) or empty output — a single flake no longer drops the voice. A timeout is never retried (re-running the full window is too costly). Only after retries are exhausted does the per-voice runtime droid fallback fire; voices fall back independently (distinct role prompts → distinct perspectives, so no cross-voice cap). Set `BUSDRIVER_CLI_RETRIES=0` to disable retries. **The advisory Auditor is exempt from the droid fallback** for the reason given in its own section — a droid Auditor is a fourth copy of an existing model masquerading as an independent lens; retries still apply, but on exhaustion the Auditor is simply absent.
+**Runtime retry + droid fallback (distinct from the route-array fallback above):** the route array picks a CLI by *availability* at resolve time. At *runtime*, each dispatched fixed voice (Agy/Codex/Grok) also retries up to `BUSDRIVER_CLI_RETRIES` (default `3`) on a transient failure (rate-limit, network, 5xx) or empty output — a single flake no longer drops the voice. A timeout is never retried (re-running the full window is too costly). Only after retries are exhausted does the per-voice runtime droid fallback fire; voices fall back independently (distinct role prompts → distinct perspectives, so no cross-voice cap). Set `BUSDRIVER_CLI_RETRIES=0` to disable retries. **The Mechanism Witness is exempt from the droid fallback** for the reason given in its own section — a droid Mechanism Witness is a fourth copy of an existing model masquerading as an independent lens; retries still apply, but on exhaustion the witness is simply absent.
 
 The Fresh Claude Skeptic has **zero conversation context** — it receives only the question and optional code snippets. Its unique value is immunity to conversational drift: it sees what the anchored council has stopped noticing. If the question itself is wrong or the answer is simpler than the council thinks, the Skeptic says so.
 
@@ -68,9 +68,9 @@ Write down:
 
 Hold this. You'll include it in the report after dispatch completes.
 
-### Step 4: Dispatch Fresh Claude + Agy + Codex + Grok (+ advisory Auditor)
+### Step 4: Dispatch Fresh Claude + Agy + Codex + Grok (+ Mechanism Witness in ultimate-council)
 
-Launch all four external agents (plus the advisory Auditor) in parallel. Use a **single message with multiple tool calls** to maximize concurrency.
+Launch all four external agents in parallel. Use a **single message with multiple tool calls** to maximize concurrency. In an **ultimate-council only**, the Mechanism Witness (kimi-k3) joins this same dispatch block — see Step 4.7; a plain or ultra-council omits it.
 
 **4a. Fresh Claude (Skeptic)** — via Agent tool (starts with clean memory):
 
@@ -118,6 +118,16 @@ RESEARCHER_CLI=$(resolve_role_cli "council.researcher")
 AUDITOR_CLI=$(resolve_role_cli "council.auditor")
 DISPATCH="${PLUGIN_ROOT}/skills/dispatch-cli/scripts/dispatch.sh"
 
+# Mechanism Witness authorization (ultimate-council ONLY). This LITERAL 0 shadows
+# any repo-injected ambient MECHANISM_WITNESS — a committed `.claude/settings.json`
+# `env` block can set env vars (#325 / ADR 0016 class), so the dispatch guard below
+# must NOT trust an inherited value or a plain council could be forced to transmit
+# its prompt to opencode/kimi-k3. For an ultimate-council where the Step 4.6 gate
+# returned MYTHOS_ATTEMPT=1, change this literal to `MECHANISM_WITNESS=1` (Step 4.7);
+# a plain or ultra-council leaves it 0. Same injection-proofing as the Step 4.6
+# `_forced` literal default.
+MECHANISM_WITNESS=0
+
 # Dispatch available voices — capture PIDs so wait blocks on the actual processes
 # IMPORTANT: Use heredocs (<<'DELIM') NOT --prompt "..." to avoid shell escaping bugs
 # with quotes, backticks, $, and newlines in prompt text.
@@ -149,24 +159,38 @@ RESEARCHER_PROMPT
   PIDS+=("$!")
 fi
 AUDITOR_PID=""
-if [[ "$AUDITOR_CLI" != "none" && "$AUDITOR_CLI" != "builtin" && ! "$AUDITOR_CLI" =~ ^(missing|unsupported): ]]; then
-  # Auditor runs read-only via the plugin-owned opencode config (deny-all
-  # tools except read/glob/grep). See the opencode) arm in resolve-cli.sh for
-  # the four-round probe history — enumerated denylists all leaked.
-  # Its own budget (default 120s); PID kept OUT of the blocking PIDS array — see
-  # the bounded reap. The reap waits for THIS budget (+10s), like the UltraOracle
-  # and fable advisories, not a stingy tail after the fixed voices finish.
-  _AUD_TO="${COUNCIL_AUDITOR_TIMEOUT:-120}"; case "$_AUD_TO" in ''|*[!0-9]*) _AUD_TO=120 ;; esac
-  _AUD_TO="${_AUD_TO#"${_AUD_TO%%[!0]*}"}"; [[ -z "$_AUD_TO" ]] && _AUD_TO=0   # strip leading zeros (00000600 → 600); all-zeros → 0
-  [[ "${#_AUD_TO}" -ge 4 ]] && _AUD_TO=600   # >3 sig digits (>999) → clamp to max, keeping 10# off any oversized input (never octal, never 64-bit overflow)
+# Mechanism Witness (kimi-k3) — ULTIMATE-COUNCIL ONLY. Gated on the LITERAL
+# MECHANISM_WITNESS=0/1 set in the preamble above (NOT an inherited env value —
+# that literal shadows any repo-injected MECHANISM_WITNESS). Claude flips it to 1
+# iff the Step 4.6 gate printed MYTHOS_ATTEMPT=1 (see Step 4.7 — same authorization
+# as the fable Mythos Witness). 0 in a plain or ultra-council → the witness never
+# dispatches. Fail-SAFE: the literal default is 0.
+if [ "${MECHANISM_WITNESS:-0}" = 1 ] && [[ "$AUDITOR_CLI" != "none" && "$AUDITOR_CLI" != "builtin" && ! "$AUDITOR_CLI" =~ ^(missing|unsupported): ]]; then
+  # Runs read-only via the plugin-owned opencode config (deny-all tools except
+  # read/glob/grep). See the opencode) arm in resolve-cli.sh for the four-round
+  # probe history — enumerated denylists all leaked. Its own budget (default
+  # AND clamp 900s — TRUE UltraOracle-parity: the oracle's own cap
+  # `ultra_oracle_timeout_cap` DEFAULTS to 900s too, so k3 rides that window
+  # instead of extending it; the old 120s silently timed out; see ADR 0027). PID
+  # kept OUT of the blocking PIDS array — see the bounded reap. The reap waits for
+  # THIS budget (+10s), like the fable witness, not a stingy tail after the fixed
+  # voices. k3 runs CONCURRENTLY with the oracle (both start at t=0) and its own
+  # dispatch --timeout hard-kills it at _AUD_TO ≤ 900s, so the block finishes
+  # within the oracle's own budget+90s window — no serial addition. The clamp is
+  # HARD 900 (not the oracle's 3600 ceiling): COUNCIL_AUDITOR_TIMEOUT is
+  # repo-injectable (#325), so a higher ceiling would let a fork extend an
+  # ultimate-council past the Bash-tool timeout. k3 is advisory; 900s is ample.
+  _AUD_TO="${COUNCIL_AUDITOR_TIMEOUT:-900}"; case "$_AUD_TO" in ''|*[!0-9]*) _AUD_TO=900 ;; esac
+  _AUD_TO="${_AUD_TO#"${_AUD_TO%%[!0]*}"}"; [[ -z "$_AUD_TO" ]] && _AUD_TO=0   # strip leading zeros (000900 → 900); all-zeros → 0
+  [[ "${#_AUD_TO}" -ge 8 ]] && _AUD_TO=900   # >7 digits → clamp to max, keeping 10# off any oversized input (never octal, never 64-bit overflow)
   _AUD_TO=$((10#$_AUD_TO))
-  [[ "$_AUD_TO" -lt 1 ]] && _AUD_TO=120; [[ "$_AUD_TO" -gt 600 ]] && _AUD_TO=600   # clamp: a repo-injected value must not stall the council for minutes+
+  [[ "$_AUD_TO" -lt 1 ]] && _AUD_TO=900; [[ "$_AUD_TO" -gt 900 ]] && _AUD_TO=900   # clamp: a repo-injected value must not stall the ultimate-council past the oracle window
   "$DISPATCH" --cli "$AUDITOR_CLI" --timeout "$_AUD_TO" <<'AUDITOR_PROMPT' &
-<Auditor prompt>
+<Mechanism Witness prompt>
 AUDITOR_PROMPT
   AUDITOR_PID="$!"
 fi
-# Block on the FIXED voices only. The advisory Auditor is reaped separately, but
+# Block on the FIXED voices only. The Mechanism Witness is reaped separately, but
 # it waits for its OWN budget (_AUD_TO + 10s) — k3 is a slow reasoning model and
 # a 20s tail after the fixed voices reaped it mid-flight. dispatch's own timeout
 # hard-stops the process at _AUD_TO, so this loop only POLLS to that ceiling and
@@ -177,8 +201,8 @@ fi
 if [[ -n "$AUDITOR_PID" ]]; then
   _ag_cap="${COUNCIL_AUDITOR_GRACE:-$(( _AUD_TO + 10 ))}"; case "$_ag_cap" in ''|*[!0-9]*) _ag_cap=$(( _AUD_TO + 10 )) ;; esac
   _ag_cap="${_ag_cap#"${_ag_cap%%[!0]*}"}"; [[ -z "$_ag_cap" ]] && _ag_cap=0   # strip leading zeros; all-zeros → 0
-  [[ "${#_ag_cap}" -ge 4 ]] && _ag_cap=$(( _AUD_TO + 10 ))   # >3 sig digits → default, keeping 10# off any oversized input
-  _ag_cap=$((10#$_ag_cap))   # base-10 on a ≤3-digit value: never octal, never overflow
+  [[ "${#_ag_cap}" -ge 8 ]] && _ag_cap=$(( _AUD_TO + 10 ))   # >7 digits → default, keeping 10# off any oversized input
+  _ag_cap=$((10#$_ag_cap))   # base-10 on a bounded value: never octal, never overflow
   # The override may only SHORTEN the reap, never extend past budget+10 (also corrals any wrapped value).
   [[ "$_ag_cap" -gt $(( _AUD_TO + 10 )) ]] && _ag_cap=$(( _AUD_TO + 10 )); [[ "$_ag_cap" -lt 1 ]] && _ag_cap=1
   _ag=0
@@ -194,7 +218,7 @@ if [[ -n "$AUDITOR_PID" ]]; then
 fi
 ```
 
-This is a **single Bash call** with all four CLI dispatches as background processes. This is critical — if Agy, Codex, Grok and opencode are separate parallel Bash tool calls, one failing cancels the others. A single call with `&` and `wait` keeps them independent.
+This is a **single Bash call** with all CLI dispatches as background processes. This is critical — if Agy, Codex, Grok (and opencode, in an ultimate-council) are separate parallel Bash tool calls, one failing cancels the others. A single call with `&` and `wait` keeps them independent.
 
 **NEVER wrap dispatches in subshells `()`**. The pattern `( cmd & ) && wait` does NOT work — the subshell exits immediately after backgrounding, so `wait` has nothing to wait for. Always background directly and capture PIDs with `$!`.
 
@@ -202,13 +226,13 @@ This is a **single Bash call** with all four CLI dispatches as background proces
 
 **For Agy:** Role = "Pragmatist", Lens = "shipping speed, simplicity, user impact, practical tradeoffs"
 **For Codex:** Role = "Critic", Lens = "edge cases, risks, failure modes, what could go wrong"
-**For opencode (Auditor):** Role = "Auditor", Lens = "claim-vs-mechanism. For each load-bearing claim the proposal makes about how something works — a comment, a doc line, a guarantee, a 'this is handled by X' — check whether the mechanism cited actually produces that behavior, and say so concretely. You are not looking for better designs or missing features; you are looking for places where the stated behavior and the actual behavior diverge. Cite file:line. If you find nothing real, say NOTHING FOUND rather than manufacturing a finding — a confident false positive costs more than a missed nit. Label each finding with your confidence and be willing to say you could not verify a claim from the material available."
+**For opencode (Mechanism Witness, ultimate-council only):** Role = "Mechanism Witness", Lens = "claim-vs-mechanism. For each load-bearing claim the proposal makes about how something works — a comment, a doc line, a guarantee, a 'this is handled by X' — check whether the mechanism cited actually produces that behavior, and say so concretely. You are not looking for better designs or missing features; you are looking for places where the stated behavior and the actual behavior diverge. Cite file:line. If you find nothing real, say NOTHING FOUND rather than manufacturing a finding — a confident false positive costs more than a missed nit. Label each finding with your confidence and be willing to say you could not verify a claim from the material available."
 
-> **Auditor is snippet-only — you MUST paste the code it audits.** opencode runs sandboxed in a neutral temp dir with `external_directory: deny` (so a reviewed repo can't redefine the reviewer), which means it **cannot read the repo** — its `read`/`glob`/`grep` see an empty dir. Handing it bare paths ("audit `hooks/gate-scripts/pre-merge-gate.sh`…") wastes the voice: it correctly returns `UNABLE TO VERIFY — repo material not present`. Paste the exact `file:line` snippets you want audited into the prompt, exactly like the UltraOracle. Do NOT reference bare paths, and do NOT try to grant repo access — that reopens the injection boundary the denylist exists to close.
+> **Mechanism Witness is snippet-only — you MUST paste the code it audits.** opencode runs sandboxed in a neutral temp dir with `external_directory: deny` (so a reviewed repo can't redefine the reviewer), which means it **cannot read the repo** — its `read`/`glob`/`grep` see an empty dir. Handing it bare paths ("audit `hooks/gate-scripts/pre-merge-gate.sh`…") wastes the voice: it correctly returns `UNABLE TO VERIFY — repo material not present`. Paste the exact `file:line` snippets you want audited into the prompt, exactly like the UltraOracle. Do NOT reference bare paths, and do NOT try to grant repo access — that reopens the injection boundary the denylist exists to close.
 
 **For Grok:** Role = "Researcher", Lens = "evidence, prior art, current state — look up similar past decisions, current code state of the repo, and external evidence relevant to the question. Provide links, quotes, and sources — NOT conclusions stated as settled fact. Your factual/empirical claims are treated as UNVERIFIED by default until checked against local evidence, so for each load-bearing claim name the cheap local check (command / file / grep) that would confirm or refute it. Cite what you find; flag claims that lack grounding."
 
-**IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing Agy + Codex + Grok + opencode as background processes) in the **same message** so all four external voices plus the advisory Auditor run concurrently. Do NOT use separate Bash tool calls — one failing will cancel the others.
+**IMPORTANT:** Launch the Agent tool call AND the single Bash dispatch call (containing Agy + Codex + Grok as background processes — plus opencode only in an ultimate-council) in the **same message** so all external voices run concurrently. Do NOT use separate Bash tool calls — one failing will cancel the others.
 
 **Missing CLI handling:** Each role's route array is walked left-to-right; the first available CLI wins. If every CLI in the chain resolves to `none`, `builtin`, `missing:<cli>`, or `unsupported:<cli>` (the last fires when a stale config references a removed backend like amp/claude/aider — migration warning goes to stderr), that voice is skipped and the report notes its absence as `(unavailable)`. The remaining voices still convene. If the Skeptic Agent call fails (rate limit, timeout), same rule applies. Typical minimum is 2 voices (Architect + Skeptic, 40% of full strength); absolute floor is 1 voice (Architect alone) if the Skeptic Agent call also fails. Always note the composition in the report — and when a fallback fires (e.g., Droid serving as Pragmatist because Agy was missing), note that explicitly so the report doesn't misattribute the lens.
 
@@ -382,6 +406,43 @@ must NOT flip a hard recommendation without independent local evidence (grep/Rea
 banner in that slot — never silently omit it. Never place the Mythos Witness in a voice slot or count it
 toward consensus.
 
+### Step 4.7: Optional Mechanism Witness — kimi-k3 ("ultimate-council", off by default)
+
+The **Mechanism Witness** is the council's third expert witness — **opencode-go/kimi-k3** with the
+*claim-vs-mechanism* lens (does the artifact actually do what it says). It shares the ultimate tier with
+the Mythos Witness and is authorized by the **same `MYTHOS_ATTEMPT` gate** (Step 4.6) — so an
+ultimate-council runs all three witnesses (UltraOracle + Mythos + Mechanism); a plain or ultra-council
+runs none of the Mechanism Witness.
+
+- **Was the always-on "advisory Auditor".** Until ADR 0027 this k3 voice dispatched in *every* council at a
+  120s budget. kimi-k3 is a slow reasoning model that routinely timed out silently at 120s (no droid
+  fallback → it just vanished from the report), so it moved to the already-slow ultimate tier and got a
+  **900s** budget (UltraOracle-parity — the oracle's `ultra_oracle_timeout_cap` also defaults to 900s, so
+  k3 rides that window rather than extending it; hard-clamped at 900 since the env is repo-injectable). The internal route key stays `council.auditor` and the
+  `auditor.json`/`AUDITOR_*` identifiers are unchanged — only the surface framing (Mechanism Witness) and
+  the tier changed.
+- **Transport = the Step 4b opencode dispatch block**, already written above and self-gated on
+  `MECHANISM_WITNESS`. There is no separate adapter — unlike the Mythos fable subagent (an Agent call),
+  the Mechanism Witness IS one of the Step 4 background dispatches, just conditionally included.
+- **No droid fallback** (see the Roles section) — if opencode is unavailable the witness is absent and the
+  report says so. Its findings are **leads, not verdicts** (measured inverted-confidence limitation above).
+
+**Enable it:** the Step 4b preamble already contains a **literal `MECHANISM_WITNESS=0`** (which shadows any
+repo-injected ambient value — see that line's comment). When the Step 4.6 gate printed `MYTHOS_ATTEMPT=1`,
+**change that literal to `MECHANISM_WITNESS=1`** (do NOT add a separate assignment that an injected env var
+could pre-empt — edit the literal in place). The Step 4b dispatch block self-gates on it. Keep it a plain,
+non-exported literal (never `export` — it would leak into a later council in a persistent shell). A plain
+or ultra-council **leaves the literal at 0**, so the block skips k3. This is the
+same force-var pattern as the UltraOracle — the ultimate tier just sets both.
+
+> **Bash-tool timeout:** the Mechanism Witness is one of the Step 4 background dispatches; its reap can
+> block the closing `wait` for up to **`_AUD_TO + 10` ≤ 910s**. Do NOT assume the UltraOracle covers this —
+> an ultimate-council can have `MYTHOS_ATTEMPT=1` (via `ultimate.surfaces.council`) while the oracle is
+> disabled, or the oracle's `timeoutCapSeconds` can be set below 900 — so k3 is NOT always hidden behind an
+> oracle window. Size the Step 4 Bash-tool `timeout` to cover **`max(oracle budget + 90s, 910s)`** whenever
+> `MECHANISM_WITNESS=1`. k3's clamp is hard-pinned to 900s (the oracle's *default* cap) so this bound stays
+> ~equal to the oracle's own #477 requirement in the common both-run case; a 3600s k3 would blow past it.
+
 ### Step 5: Read Output and Synthesize
 
 Read the Fresh Claude output from the Agent tool result. Read the Agy/Codex/Grok/opencode output from the path printed by dispatch.sh to stderr (typically `${TMPDIR:-/tmp}/dispatch-{cli}-*.txt`; on macOS, TMPDIR is `/var/folders/...`, not `/tmp`). When the resolver falls back to Droid in the Researcher slot (grok unavailable), the output filename is `dispatch-droid-*.txt` and the report should attribute "Droid (Researcher, fallback)" rather than "Grok (Researcher)".
@@ -409,7 +470,7 @@ You are both a council member AND the synthesizer. This is a conflict of interes
 7. **Researcher claims are UNVERIFIED by default (taint by source-class, not self-report).** A factual/empirical claim or citation from the Researcher (Grok/Droid) may NOT justify a **hard** recommendation on its own. To promote it, verify it IN THIS REPORT against pasted local evidence — a grep/Read/run output, the cited source text, or user-provided data — OR route it to a fresh clean-memory verifier (a second Skeptic-style Agent call). If you cannot cheaply verify a load-bearing Researcher claim, mark it `[unverified]` and downgrade any recommendation that rests on it to **exploratory**. Rule 1's "state why" does NOT satisfy this — for a Researcher fact, paste the evidence or mark it unverified. (Both documented Researcher failures — a fabricated quantitative claim and real-but-off-task citations — happened while the narrated "flag claims that lack grounding" guidance was already present; narration alone is insufficient.)
 8. **Settling check (mandatory).** Every **hard** recommendation in the Verdict must name a settling check — the cheapest concrete local command / file / test / data whose result would confirm or refute it, plus the expected disconfirming outcome. If no cheap local check can be named, the item ships as **exploratory**, not a hard recommendation. Run the check in-turn when it is cheap and local; do NOT force a "command" onto questions that have none (strategy/naming/product) — for those, the honest settling check is the evidence or experiment that would decide, and absent that they stay exploratory.
 
-The UltraOracle expert witness (ultra-council / ultimate-council) AND the Mythos Witness (ultimate-council only) are advisory and are NOT among the voices above — keep BOTH out of the vote tally and the consensus/dissent counts; treat each witness's claims like a Researcher's (unverified until checked against local evidence).
+The expert witnesses — the UltraOracle (ultra-council / ultimate-council), the Mythos Witness AND the Mechanism Witness (both ultimate-council only) — are NOT among the voices above; keep ALL of them out of the vote tally and the consensus/dissent counts, and treat each witness's claims like a Researcher's (unverified until checked against local evidence).
 </CRITICAL>
 
 ### Step 6: Present the Report
@@ -435,11 +496,6 @@ The UltraOracle expert witness (ultra-council / ultimate-council) AND the Mythos
 [1-line key reasoning + key evidence cited]
 (If grok was unavailable and Droid handled the slot, use **Droid (Researcher, fallback):** instead.)
 
-## Auditor — Advisory [claim-vs-mechanism]
-(Render this section whenever `AUDITOR_CLI` resolved to something other than `none`/`builtin`/an unsupported/missing marker and the dispatch was attempted — i.e., whenever the Auditor ran, succeeded or not. OMIT the entire section when `council.auditor` resolved to `none` (opencode unavailable — no droid fallback). It is NOT a voice and is EXCLUDED from Consensus / Strongest dissent / Recommendation below. Per the Known Limitation above, treat every finding as an unverified lead — cite file:line and independently confirm before acting.)
-[the findings text, reproduced faithfully, or **NOTHING FOUND** if the Auditor found nothing]
-(On failure/timeout render instead: **⚠ AUDITOR_FAILED [status] — Auditor verdict NOT included**.)
-
 ## UltraOracle — Expert Witness [ORACLE_SUMMARY_REVIEW]
 (Render this section whenever the UltraOracle escalation RAN — user-config enabled OR ultra-council forced; OMIT the entire section when the oracle did not run. It is NOT a voice and is EXCLUDED from Consensus / Strongest dissent / Recommendation below.)
 [the verdict text, reproduced faithfully — annotate any ungrounded repo-specific claim as ungrounded]
@@ -449,6 +505,11 @@ The UltraOracle expert witness (ultra-council / ultimate-council) AND the Mythos
 (Render this section whenever the Mythos Witness RAN — user-config `ultimate.surfaces.council` enabled OR ultimate-council forced; OMIT the entire section when it did not run. Place it AFTER the UltraOracle section and BEFORE the Verdict. It is Claude Fable (dispatched as an in-harness subagent), NOT a voice, and is EXCLUDED from Consensus / Strongest dissent / Recommendation below.)
 [the verdict text, reproduced faithfully — annotate any ungrounded repo-specific claim as ungrounded; treat claims as unverified until checked]
 (On failure render instead: **⚠ MYTHOS_FAILED [status] — Mythos Witness verdict NOT included**.)
+
+## Mechanism Witness — Expert Witness [claim-vs-mechanism]
+(Render this section whenever this is an ultimate-council — `MECHANISM_WITNESS=1`. OMIT the entire section ONLY when `MECHANISM_WITNESS≠1` (a plain or ultra-council — the witness was never attempted). Place it AFTER the Mythos Witness and BEFORE the Verdict. It is kimi-k3, NOT a voice, and is EXCLUDED from Consensus / Strongest dissent / Recommendation below. Per the Known Limitation above, treat every finding as an unverified lead — cite file:line and independently confirm before acting. Like the Mythos Witness, an *attempted* witness is NEVER silently omitted — an ultimate-council that renders only two witness sections reads as "k3 ran and found nothing," a fail-OPEN.)
+[the findings text, reproduced faithfully, or **NOTHING FOUND** if the witness found nothing]
+(On failure/timeout render instead: **⚠ MECHANISM_FAILED [status] — Mechanism Witness verdict NOT included**. When `council.auditor` resolved to `none` — opencode unavailable, no droid fallback — render **⚠ MECHANISM_ABSENT [opencode unavailable] — Mechanism Witness NOT included** so an ultimate-council never silently drops a witness.)
 
 ### Verdict
 - **Consensus:** [where they agree]

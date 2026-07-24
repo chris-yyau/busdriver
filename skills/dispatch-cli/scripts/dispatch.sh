@@ -642,12 +642,13 @@ dispatch_one() {
     # reporting droid-fallback "success" there would mask an unfinished change.
     # The whole resilience layer (retry above + this fallback) is read-only only.
     # `type` guard: a missing resolve-cli.sh (fallback mode) skips escalation.
-    # opencode is EXEMPT from droid fallback. It is the advisory Auditor, and a
-    # droid Auditor is a fourth copy of a model droid already backstops elsewhere
-    # — it would appear under the Auditor lens as independent corroboration while
-    # adding no independent signal, the exact false-agreement the council contract
-    # forbids. On failure the Auditor is simply absent (its arm emits an error
-    # JSON the arbiter reads as "advisory unavailable").
+    # opencode is EXEMPT from droid fallback. It serves the Mechanism Witness
+    # (council ultimate tier) / the auditor role, and a droid stand-in is a fourth
+    # copy of a model droid already backstops elsewhere — it would appear under the
+    # claim-vs-mechanism lens as independent corroboration while adding no
+    # independent signal, the exact false-agreement the council contract forbids.
+    # On failure the witness is simply absent (its arm emits an error JSON the
+    # arbiter reads as an unavailable auxiliary).
     local escalated=0
     if [[ "$CLI" != "all" && "$CLI" != "both" ]] \
        && [[ "$name" != "opencode" ]] \

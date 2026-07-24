@@ -568,7 +568,7 @@ _resolve_role_cli_impl() {
     # Step 5's generic auto-detect (codex/agy/droid) instead of "none" —
     # silently bypassing the opencode isolation harness while blueprint's
     # output is still labeled "opencode / kimi-k3". No droid fallback here
-    # (unlike the other advisory roles above): a droid Auditor is explicitly
+    # (unlike the fixed voices above): a droid Mechanism Witness is explicitly
     # documented as false corroboration for this lens (see skills/council/SKILL.md).
     council.auditor|blueprint-review.auditor)
                                 is_cli_available opencode && echo "opencode" && return

@@ -1742,20 +1742,25 @@ Options:
                     # merge commits (check-run conclusion=skipped) and Ack-ledger
                     # Case 3 maps that to `none`, so [update-merge] converges
                     # (cubic shows `none`, not HEAD-acked, in the final ledger).
-                    # devin-ai-integration ALSO skips merge commits but registers
-                    # NO check-run at all — no `skipped` artifact for Case 3 to
-                    # key on — so a Devin HEAD-ack strands `stale` PERMANENTLY and
-                    # blocks Invariant 2 on an otherwise-green PR (evidence: #354,
-                    # helmet #81). Before [update-merge] on a repo with Devin (or
-                    # any bot lacking a Case-3-style downgrade), enroll the ADR
-                    # 0012 opt-in `.claude/pr-grind-advisory-downgrade.local`. That
-                    # only makes the stranded ack ELIGIBLE for a stale→none
-                    # downgrade at --max-wait exhaustion, and only when every ADR
-                    # 0012 fail-closed precondition holds (CI + litmus green; the
-                    # bot enumerated a body with 0 findings — a 0/0:none bot is
-                    # refused; no re-engagement) — NOT a guarantee. If the
-                    # downgrade is correctly refused, this path still dead-ends in
-                    # a manual skip-pr-grind.local.
+                    # devin-ai-integration reviews ONLY the PR-create commit and
+                    # does not re-review later pushes; it registers NO check-run, so
+                    # its clean COMMENTED review strands `stale` on the pre-fix SHA.
+                    # Ack-ledger Case 4 (login-gated to devin; issue #489 / ADR 0027)
+                    # maps it to `none` when the review body matches a known Devin
+                    # clean template (fail-CLOSED anchored whitelist — a finding in
+                    # the summary, a thread (Tier A -> stale), or CHANGES_REQUESTED
+                    # (ever_approved>0) all keep it `stale`), so [update-merge]
+                    # converges without an opt-in for the recognized-clean case.
+                    # cursor is NOT covered by Case 4 (its clean-body string is
+                    # unconfirmed). For cursor, or any OTHER bot lacking a
+                    # Case-3/Case-4 downgrade that strands stale, the ADR 0012 opt-in
+                    # `.claude/pr-grind-advisory-downgrade.local` makes the stranded
+                    # ack ELIGIBLE for a stale→none downgrade at --max-wait
+                    # exhaustion, and only when every ADR 0012 fail-closed
+                    # precondition holds (CI + litmus green; the bot enumerated a
+                    # body with 0 findings — a 0/0:none bot is refused; no
+                    # re-engagement) — NOT a guarantee. If correctly refused, that
+                    # path still dead-ends in a manual skip-pr-grind.local.
                     # If a positive cubic HEAD-ack matters (e.g., for audit), use
                     # [update-rebase] instead — it forces a fresh review at the
                     # cost of 3-5 wait-rounds.
@@ -1807,20 +1812,25 @@ Options:
                     # merge commits (check-run conclusion=skipped) and Ack-ledger
                     # Case 3 maps that to `none`, so [update-merge] converges
                     # (cubic shows `none`, not HEAD-acked, in the final ledger).
-                    # devin-ai-integration ALSO skips merge commits but registers
-                    # NO check-run at all — no `skipped` artifact for Case 3 to
-                    # key on — so a Devin HEAD-ack strands `stale` PERMANENTLY and
-                    # blocks Invariant 2 on an otherwise-green PR (evidence: #354,
-                    # helmet #81). Before [update-merge] on a repo with Devin (or
-                    # any bot lacking a Case-3-style downgrade), enroll the ADR
-                    # 0012 opt-in `.claude/pr-grind-advisory-downgrade.local`. That
-                    # only makes the stranded ack ELIGIBLE for a stale→none
-                    # downgrade at --max-wait exhaustion, and only when every ADR
-                    # 0012 fail-closed precondition holds (CI + litmus green; the
-                    # bot enumerated a body with 0 findings — a 0/0:none bot is
-                    # refused; no re-engagement) — NOT a guarantee. If the
-                    # downgrade is correctly refused, this path still dead-ends in
-                    # a manual skip-pr-grind.local.
+                    # devin-ai-integration reviews ONLY the PR-create commit and
+                    # does not re-review later pushes; it registers NO check-run, so
+                    # its clean COMMENTED review strands `stale` on the pre-fix SHA.
+                    # Ack-ledger Case 4 (login-gated to devin; issue #489 / ADR 0027)
+                    # maps it to `none` when the review body matches a known Devin
+                    # clean template (fail-CLOSED anchored whitelist — a finding in
+                    # the summary, a thread (Tier A -> stale), or CHANGES_REQUESTED
+                    # (ever_approved>0) all keep it `stale`), so [update-merge]
+                    # converges without an opt-in for the recognized-clean case.
+                    # cursor is NOT covered by Case 4 (its clean-body string is
+                    # unconfirmed). For cursor, or any OTHER bot lacking a
+                    # Case-3/Case-4 downgrade that strands stale, the ADR 0012 opt-in
+                    # `.claude/pr-grind-advisory-downgrade.local` makes the stranded
+                    # ack ELIGIBLE for a stale→none downgrade at --max-wait
+                    # exhaustion, and only when every ADR 0012 fail-closed
+                    # precondition holds (CI + litmus green; the bot enumerated a
+                    # body with 0 findings — a 0/0:none bot is refused; no
+                    # re-engagement) — NOT a guarantee. If correctly refused, that
+                    # path still dead-ends in a manual skip-pr-grind.local.
                     # If a positive cubic HEAD-ack matters (e.g., for audit), use
                     # [update-rebase] instead — it forces a fresh review at the
                     # cost of 3-5 wait-rounds.

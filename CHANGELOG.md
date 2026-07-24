@@ -1,3 +1,11 @@
+## [1.98.2](https://github.com/chris-yyau/busdriver/compare/v1.98.1...v1.98.2) (2026-07-24)
+
+
+### Bug Fixes
+
+* **blueprint-review:** inject [#458](https://github.com/chris-yyau/busdriver/issues/458)-salvaged ultra-oracle advisory on --claude-only re-run ([#486](https://github.com/chris-yyau/busdriver/issues/486)) ([#487](https://github.com/chris-yyau/busdriver/issues/487)) ([9ac3b7b](https://github.com/chris-yyau/busdriver/commit/9ac3b7b0944ab7d0421d1e6539201a39fbbfff25)), closes [#458-salvaged](https://github.com/chris-yyau/busdriver/issues/458-salvaged) [#458-salvaged](https://github.com/chris-yyau/busdriver/issues/458-salvaged) [#458-salvaged](https://github.com/chris-yyau/busdriver/issues/458-salvaged)
+* **oracle:** wire completed-but-hung salvage into blocking consults ([#481](https://github.com/chris-yyau/busdriver/issues/481)) ([#485](https://github.com/chris-yyau/busdriver/issues/485)) ([40e3049](https://github.com/chris-yyau/busdriver/commit/40e3049daca37da44f2c1989ccbe0205e65aa2cb)), closes [#458](https://github.com/chris-yyau/busdriver/issues/458) [#458](https://github.com/chris-yyau/busdriver/issues/458)
+
 ## [1.98.1](https://github.com/chris-yyau/busdriver/compare/v1.98.0...v1.98.1) (2026-07-24)
 
 

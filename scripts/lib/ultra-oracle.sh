@@ -462,6 +462,13 @@ _ultra_oracle_run_watched() {
       # stderr belongs to the disowned subshell that no caller reads, while $errf is what
       # `_ultra_oracle_diagnose_hint` (and the operator) inspect afterwards.
       if [ "$ownrc" = 143 ]; then
+        # Do NOT trust oracle's --write-output here (Codex P2 was mis-scoped; litmus PR #497 HIGH):
+        # this branch fires ONLY after submitgrace seconds with NO heartbeat line, i.e. the
+        # submission flow never returned and no turn was generated — so there is no legitimate
+        # verdict to recover, and oracle writes --write-output NON-ATOMICALLY, so any bytes present
+        # after a TERM are a partial that would pass the 8-byte floor yet be incomplete. The salvage
+        # path elsewhere NEVER trusts $out for exactly this reason (it truncates and re-harvests the
+        # live tab). Keep the ambiguous 124 and never salvage a never-submitted run.
         if [ "$_uora_had_file" -eq 1 ]; then
           echo "ultra-oracle: no ChatGPT turn started within ${submitgrace}s — the prompt was never submitted (#490, typically a stalled attachment upload); failing fast instead of waiting out the ${cap}s cap" | tee -a "$errf" >&2
         else
@@ -1031,7 +1038,7 @@ ultra_oracle_consult() {
   local _uora_inline_ceil=120000
   [ "${#inline_cap}" -ge 19 ] && inline_cap="$_uora_inline_ceil"
   [ "$inline_cap" -gt "$_uora_inline_ceil" ] && inline_cap="$_uora_inline_ceil"
-  local prompt_text="" pf_attached=0
+  local prompt_text=""
   if [[ -n "$prompt_file" ]]; then
     # Fail closed if the prompt file is unreadable/empty — otherwise a silent cat
     # failure would invoke oracle with an empty prompt.
@@ -1050,13 +1057,11 @@ ultra_oracle_consult() {
     if [[ -z "$_pf_snapdir" ]]; then
       set -- "$@" --file "$prompt_file"
       prompt_text="Follow the instructions in the attached file: $(basename "$prompt_file")"
-      pf_attached=1
     else
       _pf_snap="$_pf_snapdir/pf"
       if ! head -c "$_pf_lim" < "$prompt_file" > "$_pf_snap" 2>/dev/null; then
         set -- "$@" --file "$prompt_file"
         prompt_text="Follow the instructions in the attached file: $(basename "$prompt_file")"
-        pf_attached=1
       else
         _pf_size="$(set -o pipefail; wc -c < "$_pf_snap" 2>/dev/null | tr -dc '0-9')" || _pf_size=""
         _pf_nul="$(set -o pipefail; LC_ALL=C tr -cd '\000' < "$_pf_snap" 2>/dev/null | wc -c | tr -dc '0-9')" || _pf_nul=""
@@ -1065,7 +1070,6 @@ ultra_oracle_consult() {
           # Over budget (source > inline_cap), binary, or a read/measure failure -> attach the source.
           set -- "$@" --file "$prompt_file"
           prompt_text="Follow the instructions in the attached file: $(basename "$prompt_file")"
-          pf_attached=1
         fi
       fi
       rm -rf "$_pf_snapdir" 2>/dev/null
@@ -1103,7 +1107,13 @@ ultra_oracle_consult() {
   running="$(set -o pipefail; printf '%s' "$prompt_text" | wc -c | tr -dc '0-9')" || running=""
   # Fail CLOSED if the base prompt size can't be measured — don't risk under-counting the payload.
   [[ -n "$running" ]] || { running=0; ctx_inlinable=0; }
-  if [ "$pf_attached" -eq 0 ] && [ "$ctx_inlinable" -eq 1 ] && [ "${#ctx_arr[@]}" -gt 0 ]; then
+  # Gate on the CURRENT prompt_text budget alone, not on pf_attached (CodeRabbit, PR #497 review):
+  # when the prompt file itself didn't fit and got --file-attached, prompt_text is replaced with a
+  # short fallback line ("Follow the instructions in the attached file: ...") that leaves most of
+  # inline_cap free — skipping context inlining here forced a SECOND upload (the fragile step this
+  # whole #490 rework exists to avoid) even when the fallback text plus every context file fit
+  # comfortably under budget. Sizing below already fails closed to attach on any overage.
+  if [ "$ctx_inlinable" -eq 1 ] && [ "${#ctx_arr[@]}" -gt 0 ]; then
     snapdir="$(mktemp -d 2>/dev/null)" || snapdir=""
     [[ -n "$snapdir" ]] || ctx_inlinable=0        # no temp dir -> can't snapshot -> attach
   fi
@@ -1140,7 +1150,7 @@ ultra_oracle_consult() {
   else
     ctx_inlinable=0
   fi
-  if [ "$pf_attached" -eq 1 ] || [ "$ctx_inlinable" -eq 0 ]; then
+  if [ "$ctx_inlinable" -eq 0 ]; then
     for g in "${ctx_arr[@]:-}"; do [[ -n "$g" ]] && set -- "$@" --file "$g"; done
   else
     # Assemble from the IMMUTABLE snapshots — no source file is re-read here, so nothing can change

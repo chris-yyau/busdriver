@@ -483,6 +483,27 @@ grep -qF -- "MARKER-CTX-A" "$tmp/cr_argv.log" && {
 
 rm -f "$ctx" "$ctxbig" "$ctxbin" "$ctxa" "$ctxb"; unset ULTRA_ORACLE_ARGV_OUT
 
+# ...and when the --prompt-file itself is OVER-budget (so IT gets --file-attached), a small
+# --context set must still be inlined into --prompt alongside it — attaching the prompt file must
+# not force a second upload for context that independently fits the fallback-prompt budget
+# (CodeRabbit, PR #497 review: previously any prompt-file attachment unconditionally attached every
+# context file too, regardless of whether the fallback prompt + context actually fit).
+: > "$tmp/cr_argv.log" 2>/dev/null || true
+export ULTRA_ORACLE_ARGV_OUT="$tmp/cr_argv.log"
+cwpbig="$(mktemp)"; head -c 4096 /dev/zero | tr '\0' 'y' > "$cwpbig"
+ctxsmall="$(mktemp)"; printf 'EVIDENCE-MARKER-ALONGSIDE-ATTACH' > "$ctxsmall"
+ULTRA_ORACLE_INLINE_BYTES=2048 bash "$CWRAP" --prompt-file "$cwpbig" --context "$ctxsmall" \
+  --out "$tmp/cr_pfattach_ctx.md" --mode blocking >/dev/null
+grep -qxF -- "--file" "$tmp/cr_argv.log" || {
+  echo "FAIL over-budget prompt-file did not attach via --file"; FAIL=1; }
+grep -qxF -- "$cwpbig" "$tmp/cr_argv.log" || {
+  echo "FAIL over-budget prompt-file path not passed to --file"; FAIL=1; }
+grep -qxF -- "$ctxsmall" "$tmp/cr_argv.log" && {
+  echo "FAIL small --context was ALSO attached despite fitting the fallback-prompt budget (#497)"; FAIL=1; }
+grep -qF -- "EVIDENCE-MARKER-ALONGSIDE-ATTACH" "$tmp/cr_argv.log" || {
+  echo "FAIL small --context not inlined into --prompt alongside an attached --prompt-file (#497)"; FAIL=1; }
+rm -f "$cwpbig" "$ctxsmall"; unset ULTRA_ORACLE_ARGV_OUT
+
 # ---- litmus PR-review hardening (#490): the three findings, each with a DISCRIMINATING probe -----
 # These call ultra_oracle_consult directly (sourced above) with `--prompt hi` so the payload sizes
 # are known exactly and the cap can be placed to separate old-vs-new behavior. Each is chosen to

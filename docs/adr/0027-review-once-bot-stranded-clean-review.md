@@ -88,6 +88,30 @@ validated only against a hand-written sample is indistinguishable from a disable
 one — tests 7d/7e pin the **verbatim shipped body**, badge HTML included, so a
 future template refresh fails loudly instead of silently going inert again.
 
+**Follow-up amendment (P1, Codex + cubic on #498, 2026-07-26) — counting marker
+pairs is not the same as validating the payload.** The exactly-one-pair guard
+above proves the strip can't span *across* two badge blocks, but it says nothing
+about *what* sits inside a single pair — a finding placed there (e.g. `<!--
+devin-review-badge-begin -->Critical: unsanitized input enables SQL
+injection.<!-- devin-review-badge-end -->`) would be discarded right along with
+the markers, the same fail-open class one layer deeper. The strip now also
+requires the between-markers content to be **markup only** — a sequence of
+`<…>` tags separated by whitespace, nothing else. That is the whole distinction
+that matters: the badge is markup, a finding is prose. Prose leaves a non-tag
+token, fails the check, skips the strip, and the residual markers+text keep `$`
+from matching, so the review stays `stale`. Pinned by test 7g
+(finding-inside-a-single-marker-pair), verified to fail without the check.
+
+A first draft pinned the exact devin.ai badge shape instead (anchor to
+`app.devin.ai/review/…` wrapping a `<picture>` with `<source>`/`<img>` on
+`static.devin.ai/assets/…`, fixed attribute order). Rejected: that re-creates the
+defect this whole amendment exists to fix — an over-narrow pattern that goes inert
+the moment Devin refreshes its badge markup, this time failing silently to `stale`
+forever. Markup-vs-prose closes the identical fail-open and survives a refresh.
+Findings smuggled into an attribute value (`alt="critical: …"`) are out of scope by
+construction: they were stripped under every prior design too, and an alt attribute
+is not a channel any bot posts findings through.
+
 **Defense in depth.** Devin's findings also arrive through channels gated *above*
 Case 4 — inline threads (Tier A → `stale`) and CHANGES_REQUESTED (`ever_approved >
 0`, never enters the block) — so the whitelist is the last of three independent

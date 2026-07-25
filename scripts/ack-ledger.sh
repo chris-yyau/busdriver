@@ -1017,12 +1017,36 @@ if [ "$ever_approved" -eq 0 ]; then
   # — a fail-OPEN. With a single pair greedy and non-greedy coincide, so the guard is
   # exact. Any other count (0, 2+, or an unbalanced marker) skips the strip; the
   # residual HTML then breaks the anchored match and the review stays `stale`.
+  #
+  # Issue #496 follow-up (P1, Codex + cubic): counting marker pairs alone does NOT
+  # prove the enclosed payload IS the machine-generated badge — a finding placed
+  # INSIDE a single marker pair (e.g. "Critical: unsanitized input enables SQL
+  # injection.") would be silently discarded right along with it, same fail-open
+  # class the marker-count guard above was built to prevent, just one layer in.
+  # So before stripping, extract the between-markers content and require it to be
+  # MARKUP ONLY — a sequence of `<...>` tags separated by whitespace, nothing else.
+  # That is the whole distinction that matters here: the badge is markup, a finding
+  # is prose. Prose leaves a non-tag token, fails the check, skips the strip, and the
+  # residual markers+text keep the anchored `$` below from matching, so the review
+  # correctly stays `stale`.
+  #
+  # Deliberately NOT a pattern pinning devin.ai URLs, attribute order, or the exact
+  # anchor/picture/source/img nesting (a draft did — rejected in review). That would
+  # re-create the very defect #496 exists to fix: an over-narrow pattern that goes
+  # inert the moment Devin refreshes its badge markup, this time failing silently to
+  # `stale` forever. Markup-vs-prose closes the same fail-open and survives a badge
+  # refresh. Findings smuggled INTO an attribute value (`alt="critical: ..."`) are
+  # out of scope by construction — they were stripped under every prior design too,
+  # and an alt attribute is not a finding channel any bot posts through.
   if [[ "$login" == "devin-ai-integration" && "$last_state" == "COMMENTED" && -z "$body_sha" ]]; then
     body_norm=$(printf '%s' "$last_body" | tr '[:upper:]' '[:lower:]' | sed 's/[*_`#]//g' | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//')
     badge_begins=$(printf '%s' "$body_norm" | grep -oF '<!-- devin-review-badge-begin -->' | wc -l | tr -d '[:space:]')
     badge_ends=$(printf '%s' "$body_norm" | grep -oF '<!-- devin-review-badge-end -->' | wc -l | tr -d '[:space:]')
     if [[ "$badge_begins" == "1" && "$badge_ends" == "1" ]]; then
-      body_norm=$(printf '%s' "$body_norm" | sed 's/<!-- devin-review-badge-begin -->.*<!-- devin-review-badge-end -->//; s/^ *//; s/ *$//')
+      badge_inner=$(printf '%s' "$body_norm" | sed -n 's/.*<!-- devin-review-badge-begin -->\(.*\)<!-- devin-review-badge-end -->.*/\1/p' | sed 's/^ *//; s/ *$//')
+      if printf '%s' "$badge_inner" | grep -Eq '^(<[^<>]*> *)+$'; then
+        body_norm=$(printf '%s' "$body_norm" | sed 's/<!-- devin-review-badge-begin -->.*<!-- devin-review-badge-end -->//; s/^ *//; s/ *$//')
+      fi
     fi
     if printf '%s' "$body_norm" | grep -qE '^(✅ ?)?(devin review:? )?no issues? found[.!]* ?(devin review analyzed this pr and found no bugs or issues to report[.!]*)?$'; then
       echo "none"; exit 0

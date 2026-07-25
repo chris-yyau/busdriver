@@ -221,6 +221,21 @@ for b in "${badge_abuse_bodies[@]}"; do
 done
 [[ "$badge_abuse_fail" -eq 0 ]] && ok "badge marker-count abuse (2 pairs / unbalanced) -> stale (#496 strip needs exactly one pair)"
 
+# --- Test 7g: finding INSIDE a single marker pair -> stale (P1 follow-up to #496) ---
+# Codex + cubic flagged that counting marker pairs alone doesn't prove the
+# enclosed payload IS the badge — a finding placed inside exactly one begin/end
+# pair would be silently discarded along with it. The badge content must
+# structurally match the known devin.ai badge shape (anchor -> picture ->
+# source/img referencing static.devin.ai/app.devin.ai) before the strip fires;
+# arbitrary prose inside the marker pair must leave residual text and stay stale.
+DEVIN_FINDING_INSIDE_BADGE='"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\nCritical: unsanitized input enables SQL injection.\n<!-- devin-review-badge-end -->"'
+got=$(run devin-ai-integration "$EMPTY_THREADS" "$(mk_devin_body "$DEVIN_FINDING_INSIDE_BADGE")" "$EMPTY_STATUSES")
+if [[ "$got" == "stale" ]]; then
+  ok "finding inside single marker pair -> stale (P1 follow-up to #496; badge content structurally validated)"
+else
+  fail "finding inside single marker pair expected 'stale', got '$got'"
+fi
+
 # --- Test 8: Devin finding as an UNRESOLVED THREAD -> stale (Tier A gates it) ---
 # Even with a clean summary on the ancestor, an open thread keeps Devin `stale`
 # — Case 4 never overrides Tier A.

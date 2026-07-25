@@ -38,7 +38,7 @@ To review design/plan documents, INVOKE `blueprint-review` skill (via Skill tool
 
 ## Advisor Fallback
 
-The harness `advisor()` tool is fable-backed and currently disabled in-account (`fable_advisor_temporarily_disabled` / `unavailable` — every call errors). When you would consult the advisor, or it returns any error, **dispatch a `fable` Agent subagent instead** — hand it the task, your current approach, and the relevant transcript context (a subagent gets none of it automatically, unlike advisor), and ask it to play the same skeptical stronger-reviewer role. Fall back to `opus` only if fable is unavailable (loud WARNING), per the subagent-only fable convention (ADR 0019).
+`advisor()` is fable-backed and has been erroring in-account (`fable_advisor_temporarily_disabled` / `unavailable`). Still call it normally — the outage is transient, so trying it lets it recover. **Only when a call returns an error**, fall back once for that consult: dispatch a `fable` Agent subagent, hand it the task, your current approach, and the relevant transcript context (a subagent gets none automatically, unlike advisor), and ask it to play the same skeptical stronger-reviewer role. If the fable subagent is unavailable, run `opus` and print `WARNING: FABLE ADVISOR UNAVAILABLE — ran opus` so the degradation is never silent (subagent-only fable convention, ADR 0019). This is a **failure-triggered degraded fallback for a harness tool that is itself fable-backed** — not a proactive opt-in judge surface, so it is outside the ADR 0011 two-surface scope.
 
 ## Emergency Gate Recovery
 

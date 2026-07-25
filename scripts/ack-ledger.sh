@@ -969,6 +969,43 @@ if [ "$ever_approved" -eq 0 ]; then
        printf '%s' "$last_body" | grep -qiE '(no issues? found|no concerns|all good|looks good|lgtm|nothing to (add|report)\b)'; }; then
     echo "none"; exit 0
   fi
+  # Case 4: review-once-at-create bot (devin-ai-integration). Devin reviews ONLY
+  # the PR-create commit and structurally does NOT re-review later pushes
+  # (evidence: issue #489, Dive-And-Dev/jikdak PR #270). So the moment pr-grind
+  # pushes any fix-round commit, Devin's clean COMMENTED review strands on the
+  # pre-fix SHA — Tier B misses (commit_id != HEAD), and unlike cubic Devin
+  # registers NO check-run to key Case 3 on. It falls through to `echo stale`
+  # below and deadlocks Invariant 2 forever on a bot that will never re-ack,
+  # forcing a --max-wait bail or a skip-pr-grind.local bypass.
+  #
+  # Downgrade to `none` (non-gating) — NOT a HEAD-ack SHA: Devin never reviewed
+  # HEAD's diff, so we do not fabricate an approval. `none` records "non-gating
+  # for HEAD"; required status checks + litmus + Codex remain the merge authority.
+  #
+  # FAIL-CLOSED body check (anchored whitelist, not a substring/denylist): release
+  # ONLY when the normalized review body is EXACTLY one of Devin's known clean
+  # templates. Any extra prose — a finding placed in the summary body — leaves
+  # residual text after normalization, so the exact-match fails and the review
+  # correctly stays `stale`. This closes the body-only-finding fail-open a
+  # substring/denylist could not (e.g. "No issues found. Critical: SQL injection"
+  # normalizes to a longer string that matches no template). Cursor is deliberately
+  # NOT included: its exact clean-body string is unconfirmed, and fail-CLOSED means
+  # an unknown template stays `stale` rather than guessing. (ADR 0027.)
+  #
+  # Normalize + match with an ANCHORED regex (^...$). Critically it does NOT strip
+  # the complement of [a-z0-9]: `tr -c 'a-z0-9' ' '` would replace every non-ASCII
+  # byte with a space, so a body-only finding in a non-Latin script
+  # ("No issues found. 存在严重漏洞") would collapse to the whitelisted phrase and
+  # fail OPEN. Instead we lowercase, remove only a SPECIFIC ASCII markdown set
+  # (* _ ` #), collapse+trim whitespace, then require the WHOLE body to match a
+  # known Devin clean template. The trailing `$` rejects any residual text —
+  # Latin, CJK, Cyrillic, emoji — so extra prose always keeps the review `stale`.
+  if [[ "$login" == "devin-ai-integration" && "$last_state" == "COMMENTED" && -z "$body_sha" ]]; then
+    body_norm=$(printf '%s' "$last_body" | tr '[:upper:]' '[:lower:]' | sed 's/[*_`#]//g' | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//')
+    if printf '%s' "$body_norm" | grep -qE '^(✅ ?)?(devin review:? )?no issues? found[.!]*$'; then
+      echo "none"; exit 0
+    fi
+  fi
 fi
 
 echo "stale"

@@ -1,4 +1,4 @@
-# ADR 0027 — UltraOracle: inline context by default, and bound the pre-submission phase
+# ADR 0029 — UltraOracle: inline context by default, and bound the pre-submission phase
 
 ## Status
 
@@ -141,23 +141,30 @@ operator action, not a bare `timeout` token.
   `_ultra_oracle_tab_ref`'s fail-closed "exactly one tab per session" rule mean a sibling
   tab's stale answer can never be harvested as ours. Worth reporting upstream, not worth
   re-implementing here.
-- **Extend the fail-fast bound to blocking mode.** Deferred. Blocking mode runs under
-  `_portable_timeout` with no watchdog, and adding one there means reproducing the whole
-  background watched-run machinery for a foreground path where the operator watches the
-  heartbeat live and can Ctrl-C. The inline-by-default change already removes the
-  triggering condition for blocking callers (council, evidence pack, retrieval loop).
+- **Extend the fail-fast bound to blocking mode.** Partly resolved by the merge, not by this
+  ADR's original code. ADR-0027/#481 routed **attach + blocking** consults through
+  `_ultra_oracle_run_watched`, so they inherit this pre-submission bound automatically. Only
+  **non-attach blocking** (cookiePath / remoteHost / copy-profile) still runs under a bare
+  `_portable_timeout` — a foreground path where the operator watches the heartbeat live and can
+  Ctrl-C, and with no live tab to harvest, so reproducing the watched-run machinery there buys
+  little. The inline-by-default change already removes the triggering condition for those
+  callers below the budget.
 
 ## Consequences
 
 - The reported failure mode is **structurally absent** for any payload under the inline
   budget, which covers every in-tree caller's normal case (the #490 design doc was
   ~19k tokens / well under 100 KB).
-- Large payloads still attach. In **attach + background** runs — blueprint-review and the
-  council, the surfaces where #490 was observed — a stall now costs at most
-  `ULTRA_ORACLE_SUBMIT_GRACE` (~5 min) instead of the full cap. **Blocking consults are
-  not covered**: they run under `_portable_timeout` with no watchdog (see the deferral
-  under Alternatives), so the ultraoracle evidence pack and the retrieval loop can still
-  spend the whole cap on an over-budget payload. Their protection is the inline default,
+- Large payloads still attach. Because `_ultra_oracle_run_watched` carries the pre-submission
+  bound, every path that runs *through* it gets it: **attach + background** runs
+  (blueprint-review, council — where #490 was observed) and, after the ADR-0027/#481 merge that
+  wired the completed-but-hung watchdog into **attach + blocking** consults, those too. A stall
+  on any of them now costs at most `ULTRA_ORACLE_SUBMIT_GRACE` (~5 min) instead of the full cap;
+  a never-submitted run returns the ambiguous 124 there and #481's blocking-salvage correctly
+  does not fire on it. **Only NON-attach blocking** (cookiePath / remoteHost / copy-profile) is
+  uncovered: it runs under a bare `_portable_timeout` with no heartbeat analysis (no live tab to
+  harvest anyway), so the ultraoracle evidence pack / retrieval loop on those transports can
+  still spend the whole cap on an over-budget payload. Their protection is the inline default,
   which keeps them off the upload path entirely below the budget.
 - oracle sees context as prompt text rather than as an attachment. For review-style
   consults this is the shape that already worked most reliably; models handle very long

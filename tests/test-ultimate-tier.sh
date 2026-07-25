@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015,SC2016  # grep patterns intentionally hold literal ${...}/backticks; A&&pass||fail is the intended report idiom
 # tests/test-ultimate-tier.sh
 # Static contract for the "ultimate" tier (Claude Fable via an in-harness Agent
 # subagent) — ADR 0011, as amended by ADR 0015 and ADR 0019. Locks in the rename,
@@ -38,6 +39,25 @@ if grep -qE 'BLUEPRINT_ARBITER_ULTRA|ultraArbiter|ultra_arbiter_(fable|unavailab
   fail "dropped ultra-arbiter key present in blueprint-review SKILL.md BODY (must be renamed)"
 else
   pass "blueprint-review SKILL.md body uses the ultimate-* names"
+fi
+
+# ── (a2) arbiter has NO persistent config opt-in (ADR 0028) ───────────────
+# The `.ultimate.surfaces.arbiter` flag was prose-gated only and never fired; ADR 0028
+# drops it, leaving the in-band "ultimate arbiter" trigger phrase as the only arbiter path.
+# Guard the positive contract AND the absence of the old USER-config granting sentence.
+# (The body may still NAME `.ultimate.surfaces.arbiter` as historical record of the drop;
+#  what must be gone is any live sentence that GRANTS the arbiter that opt-in.)
+echo "── (a2) arbiter config opt-in dropped (ADR 0028) ──"
+if grep -qF -- 'no persistent config opt-in' <<<"$BODY"; then
+  pass "arbiter body states elevation is trigger-phrase only (no persistent config opt-in)"
+else
+  fail "arbiter body missing the 'no persistent config opt-in' contract (ADR 0028)"
+fi
+# shellcheck disable=SC2016  # literal backticks/dots are intentional — matching prose verbatim, no expansion wanted
+if grep -qF -- 'top-level `.ultimate.surfaces.arbiter` in USER' <<<"$BODY"; then
+  fail "arbiter body still GRANTS the dropped USER-config opt-in (ADR 0028 regression)"
+else
+  pass "no live USER-config opt-in grant for the arbiter"
 fi
 
 # ── (b) gateway rung removed (ADR 0019) ───────────────────────────────────
@@ -128,6 +148,34 @@ if [[ -f "$CMD_ULTIMATE" ]] && grep -qF -- 'setting `_forced=1` in the Step 4.6 
   pass "ultimate-council command instructs the executor to force _forced=1 in the single gate block"
 else
   fail "ultimate-council command missing the single-block _forced=1 instruction"
+fi
+
+# ── Mechanism Witness (kimi-k3) authorization boundary (ADR 0027) ────────────
+# The k3 witness transmits the council prompt + pasted snippets externally, so its
+# ultimate-only gate must be injection-proof and share the Mythos authorization.
+
+# 1. A LITERAL `MECHANISM_WITNESS=0` must exist in the Step 4b preamble — it shadows
+#    any repo-injected ambient value (a committed settings.json `env` block, #325).
+mw_lit="$(grep -cE '^MECHANISM_WITNESS=0' "$SKILL_C")"
+if [[ "$mw_lit" -ge 1 ]]; then
+  pass "council Step 4b pins a literal MECHANISM_WITNESS=0 (shadows repo-injected env)"
+else
+  fail "council SKILL.md missing the literal MECHANISM_WITNESS=0 injection guard"
+fi
+
+# 2. The dispatch guard must read that var (default 0) — never dispatch k3 on an
+#    unset/0 value, so a plain/ultra council or BUSDRIVER_ULTIMATE=0 run skips it.
+anchor "council k3 dispatch is guarded on MECHANISM_WITNESS=1" '[ "${MECHANISM_WITNESS:-0}" = 1 ]'
+
+# 3. Enabling k3 is conditioned on MYTHOS_ATTEMPT=1 (same gate as the fable witness,
+#    so BUSDRIVER_ULTIMATE=0 / a disabled surface suppress k3 too) and is a LITERAL FLIP.
+anchor "council k3 enable is gated on MYTHOS_ATTEMPT=1" 'change that literal to `MECHANISM_WITNESS=1`'
+
+# 4. The command must condition the flip on MYTHOS_ATTEMPT=1, not force it unconditionally.
+if grep -qF -- 'ONLY when the Step 4.6 gate returned `MYTHOS_ATTEMPT=1`' "$CMD_ULTIMATE"; then
+  pass "ultimate-council command conditions the k3 flip on MYTHOS_ATTEMPT=1 (respects BUSDRIVER_ULTIMATE=0)"
+else
+  fail "ultimate-council command forces MECHANISM_WITNESS unconditionally (bypasses the ultimate gate)"
 fi
 
 [[ "$FAIL" = 0 ]] && echo "PASS test-ultimate-tier" || { echo "FAIL test-ultimate-tier"; exit 1; }

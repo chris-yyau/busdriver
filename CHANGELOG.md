@@ -1,3 +1,39 @@
+# [1.99.0](https://github.com/chris-yyau/busdriver/compare/v1.98.4...v1.99.0) (2026-07-24)
+
+
+### Features
+
+* **council:** rename k3 auditor to Mechanism Witness, move to ultimate tier ([#494](https://github.com/chris-yyau/busdriver/issues/494)) ([71e7868](https://github.com/chris-yyau/busdriver/commit/71e7868fc053c52ccbe2057cc72b828e3a3307b5)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
+## [1.98.4](https://github.com/chris-yyau/busdriver/compare/v1.98.3...v1.98.4) (2026-07-24)
+
+
+### Bug Fixes
+
+* **pr-grind:** release stranded Devin review-once acks to none ([#489](https://github.com/chris-yyau/busdriver/issues/489)) ([#492](https://github.com/chris-yyau/busdriver/issues/492)) ([ff3c20a](https://github.com/chris-yyau/busdriver/commit/ff3c20a279785448c96728087faf73b2601e5c66))
+
+## [1.98.3](https://github.com/chris-yyau/busdriver/compare/v1.98.2...v1.98.3) (2026-07-24)
+
+
+### Bug Fixes
+
+* **gate:** exempt deliberation dispatchers from design gate by path ([#484](https://github.com/chris-yyau/busdriver/issues/484)) ([#488](https://github.com/chris-yyau/busdriver/issues/488)) ([4788985](https://github.com/chris-yyau/busdriver/commit/478898564c032a45d4df8881b83cfe8fe1c5399b))
+
+## [1.98.2](https://github.com/chris-yyau/busdriver/compare/v1.98.1...v1.98.2) (2026-07-24)
+
+
+### Bug Fixes
+
+* **blueprint-review:** inject [#458](https://github.com/chris-yyau/busdriver/issues/458)-salvaged ultra-oracle advisory on --claude-only re-run ([#486](https://github.com/chris-yyau/busdriver/issues/486)) ([#487](https://github.com/chris-yyau/busdriver/issues/487)) ([9ac3b7b](https://github.com/chris-yyau/busdriver/commit/9ac3b7b0944ab7d0421d1e6539201a39fbbfff25)), closes [#458-salvaged](https://github.com/chris-yyau/busdriver/issues/458-salvaged) [#458-salvaged](https://github.com/chris-yyau/busdriver/issues/458-salvaged) [#458-salvaged](https://github.com/chris-yyau/busdriver/issues/458-salvaged)
+* **oracle:** wire completed-but-hung salvage into blocking consults ([#481](https://github.com/chris-yyau/busdriver/issues/481)) ([#485](https://github.com/chris-yyau/busdriver/issues/485)) ([40e3049](https://github.com/chris-yyau/busdriver/commit/40e3049daca37da44f2c1989ccbe0205e65aa2cb)), closes [#458](https://github.com/chris-yyau/busdriver/issues/458) [#458](https://github.com/chris-yyau/busdriver/issues/458)
+
+## [1.98.1](https://github.com/chris-yyau/busdriver/compare/v1.98.0...v1.98.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* **council:** harden UltraOracle consult — long-timeout doc + concurrency mutex ([#477](https://github.com/chris-yyau/busdriver/issues/477)) ([#483](https://github.com/chris-yyau/busdriver/issues/483)) ([0c6c971](https://github.com/chris-yyau/busdriver/commit/0c6c971676d48c7aba2f405c6e2729b450788d6f)), closes [#458](https://github.com/chris-yyau/busdriver/issues/458)
+
 # [1.98.0](https://github.com/chris-yyau/busdriver/compare/v1.97.1...v1.98.0) (2026-07-24)
 
 

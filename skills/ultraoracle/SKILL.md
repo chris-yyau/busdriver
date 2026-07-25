@@ -46,7 +46,7 @@ The label is whatever `build-evidence-pack.sh` prints — it is determined by wh
 files were **actually sent**, so a summary-only consult can never masquerade as a repo
 review (ADR settling check #2). Never relabel by hand.
 
-**Transport is not the label.** Since [ADR 0027](../../docs/adr/0027-ultraoracle-inline-context-and-submit-watchdog.md)
+**Transport is not the label.** Since [ADR 0029](../../docs/adr/0029-ultraoracle-inline-context-and-submit-watchdog.md)
 (#490) the adapter carries `--context` files **inline in the prompt** whenever the whole
 set fits under `ULTRA_ORACLE_INLINE_BYTES` (default 100000), falling back to oracle
 `--file` uploads only for larger or binary payloads — the ChatGPT upload path can stall

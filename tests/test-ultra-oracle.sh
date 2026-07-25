@@ -532,19 +532,23 @@ ULTRA_ORACLE_INLINE_BYTES=2000000 ultra_oracle_consult --prompt hi --context "$c
 grep -qxF -- "--file" "$tmp/ceil_argv.log" || {
   echo "FAIL ARG_MAX ceiling: 150KB context inlined despite override (E2BIG risk) (#490)"; FAIL=1; }
 
-# 5. TOCTOU on the assembly cat (litmus PR review, MEDIUM): a small text file that passes the sizing
-#    pass but is UNREADABLE at cat time must fall back to attaching the whole set, never inline empty
-#    content. Simulate by making the file readable for sizing, then chmod 000 before the run can't be
-#    timed — instead use a file whose CONTENT reads fine but that we replace with an unreadable one
-#    mid-flight is impractical in a black-box test; approximate with an unreadable file: it fails the
-#    early `-r` guard AND (if that were bypassed) the cat check. Either way it must attach.
+# 5. TOCTOU on the assembly cat (litmus PR review, MEDIUM): a non-regular/unreadable context that
+#    passes (or would bypass) the sizing pass must fall back to attaching the whole set, never inline
+#    empty content. Simulate by making the file readable for sizing, then chmod 000 before the run
+#    can't be timed — instead use a file whose CONTENT reads fine but that we replace with an
+#    unreadable one mid-flight is impractical in a black-box test. A `chmod 000` regular file was
+#    tried here first, but that only fails the guard's `-r` check, which root does NOT observe
+#    (CAP_DAC_OVERRIDE lets root read a 000-mode file, so the test silently passed under a root CI
+#    container instead of exercising the fail-closed path — root-portability gap flagged in review).
+#    A directory is unreadable-as-content under EVERY uid, including root: `[[ -f "$g" ]]` is false
+#    for a directory regardless of privilege, so the guard's non-regular-file branch fires
+#    deterministically. Either way it must attach.
 export ULTRA_ORACLE_ARGV_OUT="$tmp/toctou_argv.log"; : > "$ULTRA_ORACLE_ARGV_OUT"
-ctxnr="$(mktemp)"; printf 'unreadable body\n' > "$ctxnr"; chmod 000 "$ctxnr"
+ctxnr="$tmp/toctou_dir"; mkdir -p "$ctxnr"
 ultra_oracle_consult --prompt hi --context "$ctxnr" --out "$tmp/toctou.md" --mode blocking >/dev/null 2>&1
 grep -qxF -- "--file" "$tmp/toctou_argv.log" || {
-  echo "FAIL unreadable --context inlined instead of attached (fail-closed) (#490)"; FAIL=1; }
-chmod 644 "$ctxnr" 2>/dev/null || true
-rm -f "$ctxa" "$ctxlate" "$ctxhuge" "$ctxceil" "$ctxnr"; rm -rf "$longdir"; unset ULTRA_ORACLE_ARGV_OUT ULTRA_ORACLE_INLINE_BYTES
+  echo "FAIL non-regular --context inlined instead of attached (fail-closed) (#490)"; FAIL=1; }
+rm -f "$ctxa" "$ctxlate" "$ctxhuge" "$ctxceil"; rm -rf "$longdir" "$ctxnr"; unset ULTRA_ORACLE_ARGV_OUT ULTRA_ORACLE_INLINE_BYTES
 
 # failing oracle -> raw `error` token (drives caller's ORACLE_FAILED / block-and-ask)
 export ULTRA_ORACLE_MOCK_MODE=fail

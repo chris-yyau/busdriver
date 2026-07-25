@@ -573,10 +573,12 @@ _ultra_oracle_diagnose_hint() {
       printf 'Cloudflare "Just a moment" challenge: oracle-launched Chrome is fingerprinted — set ultraOracle.attachRunning=true in ~/.claude/busdriver.json (ADR 0020) to attach to an ordinary browser instead'
     fi
   elif grep -qiE 'did not finish uploading|never reached a clickable send button|attachment-send-not-ready|no ChatGPT turn started' "$f" 2>/dev/null; then
-    # #490: the file attached but the message was never sent. Only payloads OVER
-    # ULTRA_ORACLE_INLINE_BYTES take the upload path at all (everything smaller is inlined into
-    # the prompt), so reaching this means the payload was genuinely large.
-    printf 'attachment upload stalled — the file attached to ChatGPT but the message was never sent (#490). Payloads under ULTRA_ORACLE_INLINE_BYTES (default 100000) bytes are inlined into the prompt and avoid this path entirely: shrink the doc/evidence pack, or raise ULTRA_ORACLE_INLINE_BYTES if argv can carry it'
+    # #490: the file attached but the message was never sent. Reaching this means the payload
+    # took the upload path — either because it was genuinely over ULTRA_ORACLE_INLINE_BYTES, or
+    # because it (or one of a --context set) is binary/non-regular/unreadable, which always
+    # attaches regardless of size (litmus/Codex PR #497 review: the size-only wording below used
+    # to tell an operator to shrink/raise the cap even when size was never the blocker).
+    printf 'attachment upload stalled — the file attached to ChatGPT but the message was never sent (#490). Payloads under ULTRA_ORACLE_INLINE_BYTES (default 100000) bytes are inlined into the prompt and avoid this path entirely — shrink the doc/evidence pack, or raise ULTRA_ORACLE_INLINE_BYTES if argv can carry it — UNLESS the payload is binary, non-regular, or unreadable, which always attaches regardless of size; in that case convert it to plain text or check file permissions/existence instead'
   fi
 }
 
@@ -1014,14 +1016,39 @@ ultra_oracle_consult() {
     # Fail closed if the prompt file is unreadable/empty — otherwise a silent cat
     # failure would invoke oracle with an empty prompt.
     if [[ ! -r "$prompt_file" ]] || [[ ! -s "$prompt_file" ]]; then printf 'error'; return 1; fi
-    local pf_size; pf_size="$(wc -c < "$prompt_file" 2>/dev/null || echo 0)"
-    if [ "$pf_size" -gt "$inline_cap" ]; then
-      # Too large to safely inline into argv (ARG_MAX) — attach as a file instead.
+    # SNAPSHOT-FIRST, exactly like the --context path below (litmus/CodeRabbit PR #497 review). The
+    # size check, the binary NUL scan, and the content read all operate on ONE immutable snapshot —
+    # never three separate live-path reopens — so a prompt_file that changes between them (a
+    # NUL-bearing swap that `$(cat)` would silently corrupt, or a grown-past-cap swap that would
+    # bypass the size guard and blow ARG_MAX at exec) cannot slip through. The snapshot is bounded to
+    # inline_cap+1 via `head -c`, so it can neither exhaust memory nor be mis-sized; reaching the +1
+    # byte proves the source exceeds the budget -> attach. ATTACH always passes the ORIGINAL path to
+    # --file (oracle reads it later); any failure (mktemp, read/measure error, NUL present, cat
+    # failure) falls closed to attaching.
+    local _pf_snapdir="" _pf_snap _pf_size _pf_nul _pf_lim=$(( inline_cap + 1 ))
+    _pf_snapdir="$(mktemp -d 2>/dev/null)" || _pf_snapdir=""
+    if [[ -z "$_pf_snapdir" ]]; then
       set -- "$@" --file "$prompt_file"
       prompt_text="Follow the instructions in the attached file: $(basename "$prompt_file")"
       pf_attached=1
     else
-      prompt_text="$(cat "$prompt_file")"
+      _pf_snap="$_pf_snapdir/pf"
+      if ! head -c "$_pf_lim" < "$prompt_file" > "$_pf_snap" 2>/dev/null; then
+        set -- "$@" --file "$prompt_file"
+        prompt_text="Follow the instructions in the attached file: $(basename "$prompt_file")"
+        pf_attached=1
+      else
+        _pf_size="$(set -o pipefail; wc -c < "$_pf_snap" 2>/dev/null | tr -dc '0-9')" || _pf_size=""
+        _pf_nul="$(set -o pipefail; LC_ALL=C tr -cd '\000' < "$_pf_snap" 2>/dev/null | wc -c | tr -dc '0-9')" || _pf_nul=""
+        if [[ -z "$_pf_size" ]] || [ "$_pf_size" -ge "$_pf_lim" ] || [[ -z "$_pf_nul" ]] \
+           || [ "$_pf_nul" -gt 0 ] || ! prompt_text="$(cat "$_pf_snap" 2>/dev/null)"; then
+          # Over budget (source > inline_cap), binary, or a read/measure failure -> attach the source.
+          set -- "$@" --file "$prompt_file"
+          prompt_text="Follow the instructions in the attached file: $(basename "$prompt_file")"
+          pf_attached=1
+        fi
+      fi
+      rm -rf "$_pf_snapdir" 2>/dev/null
     fi
   else prompt_text="$prompt"; fi
   # --context files: inline them into the prompt when the WHOLE set fits alongside it, else attach

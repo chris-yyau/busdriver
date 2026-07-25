@@ -36,6 +36,10 @@ Any task beyond trivial Q&A: INVOKE `busdriver:orchestrator` for full routing, o
 To review design/plan documents, INVOKE `blueprint-review` skill (via Skill tool). Do NOT use `code-reviewer` agent — it cannot write the `<!-- design-reviewed: PASS -->` marker.
 </CRITICAL>
 
+## Advisor Fallback
+
+The harness `advisor()` tool is fable-backed and currently disabled in-account (`fable_advisor_temporarily_disabled` / `unavailable` — every call errors). When you would consult the advisor, or it returns any error, **dispatch a `fable` Agent subagent instead** — hand it the task, your current approach, and the relevant transcript context (a subagent gets none of it automatically, unlike advisor), and ask it to play the same skeptical stronger-reviewer role. Fall back to `opus` only if fable is unavailable (loud WARNING), per the subagent-only fable convention (ADR 0019).
+
 ## Emergency Gate Recovery
 
 When a gate blocks and the user needs to bypass, follow the full procedure in `references/gate-recovery.md` (in this skill's directory). **Hard rules — never violate:**

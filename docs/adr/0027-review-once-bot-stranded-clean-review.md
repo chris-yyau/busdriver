@@ -68,6 +68,109 @@ so a body-only finding in a non-Latin script ("No issues found. 存在严重漏�
 collapsed onto the whitelist and failed OPEN (caught in review). The anchored regex
 never strips non-ASCII, so CJK/Cyrillic/emoji trailing text all break the match.
 
+**Amendment (issue #496, 2026-07-26) — the whitelist must cover the *shipped*
+template, not a minimal paraphrase.** As first written the regex matched only the
+one-sentence `no issues found` form. Devin's actual clean review is two sentences
+plus a machine-generated HTML badge block, so the anchored `$` rejected every real
+review and Case 4 was **inert** — the #489 deadlock persisted unchanged. Two narrow
+widenings, both preserving `^…$`: (a) strip the badge, delimited on **both** sides
+by its stable `<!-- devin-review-badge-begin/end -->` markers — deliberately *not*
+`begin.*$`, which would swallow a finding appended after the badge and fail OPEN —
+and gated on **exactly one** begin/end pair, because sed BRE has no lazy quantifier
+so `begin.*end` across *two* badge blocks spans first-begin to last-end and would
+delete a finding between them (a second fail-OPEN, caught in review; with a single
+pair greedy and non-greedy coincide, and every other marker count skips the strip
+so the residual HTML keeps the review `stale`); (b) admit the template's second sentence ("devin review analyzed this pr and found
+no bugs or issues to report") as an optional exact alternation. Prose outside the
+badge markers is untouched, so a summary finding still leaves residual text and
+still stays `stale` (tests 7d/7e/7f). The lesson generalizes: a fail-closed whitelist
+validated only against a hand-written sample is indistinguishable from a disabled
+one — tests 7d/7e pin the **verbatim shipped body**, badge HTML included, so a
+future template refresh fails loudly instead of silently going inert again.
+
+**Follow-up amendment (P1, Codex + cubic on #498, 2026-07-26) — counting marker
+pairs is not the same as validating the payload.** The exactly-one-pair guard
+above proves the strip can't span *across* two badge blocks, but it says nothing
+about *what* sits inside a single pair — a finding placed there (e.g. `<!--
+devin-review-badge-begin -->Critical: unsanitized input enables SQL
+injection.<!-- devin-review-badge-end -->`) would be discarded right along with
+the markers, the same fail-open class one layer deeper. The strip now also
+requires the between-markers content to be **markup only** — a sequence of
+`<…>` tags separated by whitespace, nothing else. That is the whole distinction
+that matters: the badge is markup, a finding is prose. Prose leaves a non-tag
+token, fails the check, skips the strip, and the residual markers+text keep `$`
+from matching, so the review stays `stale`. Pinned by test 7g
+(finding-inside-a-single-marker-pair), verified to fail without the check.
+
+The payload must be the badge and nothing else: only the badge's own **elements**
+(`a`, `picture`, `source`, `img`), only their own **attribute names**, with the
+URL-bearing ones pinned to the devin.ai hosts and no attributes at all on a closing
+tag (`source`/`img` are void, so only `a`/`picture` close). Attribute order and the
+URL paths stay free.
+
+**Four** progressively weaker drafts each reached review and each failed OPEN. This
+is the part worth remembering, because every one of them *looked* structural:
+
+| draft | accepted, and stripped |
+|---|---|
+| `<[^<>]*>` | `< critical: unsanitized input … >` — no inner angle brackets |
+| `</?[a-z][^<>]*>` | `<critical: unsanitized input … >` — starts with a letter |
+| element name + free-form attributes | `<a critical unsanitized input>` — bare boolean attributes |
+| + quoted `name="value"` | `<a critical="unsanitized input …">` — arbitrary attribute *name* |
+
+The progression is the finding, not any single draft: an HTML tag is a roomy hiding
+place, and each fix closed only the room it was pointed at. A grammar-only rule can
+never work (`<critical unsanitized input>` is a well-formed tag), and nothing short
+of naming the permitted attributes leaves a sentence nowhere to sit.
+
+**The cost, stated plainly — this reverses an earlier position in this same
+amendment.** The first draft deliberately refused to pin URLs and attributes,
+arguing that doing so re-creates #496's inert-on-refresh defect. That reasoning was
+sound and the outcome still overrides it: four demonstrated bypasses showed the
+loose forms do not hold. So the pinning is now the explicit **brittleness budget**
+rather than an accident — a badge that grows a new element or attribute stops
+matching and every clean review strands `stale`. That is the fail-CLOSED direction,
+and it is named in the revisit trigger below so the next occurrence is a one-line
+whitelist edit instead of a rediscovery.
+
+Attribute **values** are pinned as well, not only names — the fifth bypass was
+`alt="critical: unsanitized input enables sql injection"`, and `target`, `media` and
+the URL paths were the same hole left unclosed. `alt` and `target` are literals,
+`media` is the color-scheme form, and URL paths admit no whitespace.
+
+All fifteen rejected shapes are pinned in test 7g, each verified to fail without the
+specific check that rejects it. The check itself is assembled one alternative per
+line rather than as a single dense ERE, so a badge refresh edits one clause in
+isolation — this is the expression that went fail-open five times.
+
+**Where this stops, and why it stops there.** A sixth bypass exists and is *not*
+closed: `href="https://app.devin.ai/critical-unsanitized-input-enables-sql-injection"`
+encodes the prose as hyphenated path text, inside a host-pinned, whitespace-free URL.
+Closing it means pinning the URL *path* shape; but the path necessarily contains a
+free `owner/repo` segment, and any such segment accepts hyphenated words. **The
+regress does not terminate** — each round narrows the pattern and the next round
+re-encodes the sentence into whatever field is still free.
+
+So the line is drawn on the threat model instead of on the pattern. The body is
+generated by Devin's own template engine. Every one of these bypasses presupposes an
+*adversarial Devin* — and an adversarial Devin defeats the ack ledger far more simply
+by omitting the finding entirely, which no whitelist can ever detect. What Case 4
+must actually catch is a finding **incidentally** placed in the summary body by a
+template change or an unusual review, and the eleven pinned shapes cover that
+comprehensively. Chasing the residual buys no real safety and costs real
+brittleness — each narrowing moves the check closer to the inert state that #496 was
+filed about. Defense in depth is what carries the remainder: inline threads (Tier A)
+and CHANGES_REQUESTED (`ever_approved > 0`) both gate *above* Case 4, so a Devin with
+a genuine finding is blocked through channels this whitelist never sees.
+
+*(Superseded draft note: an earlier revision of this amendment argued the opposite —
+that pinning hosts and attributes must be avoided because it re-creates #496's
+inert-on-refresh defect, and that a generic markup-vs-prose test both closed the hole
+and survived a badge refresh. Issue #498 disproved the second half: five demonstrated
+bypasses walked through every generic form. The reasoning about brittleness was
+correct and is retained above as the stated budget; the conclusion it led to was
+wrong and is superseded by the host + attribute-name + attribute-value whitelist.)*
+
 **Defense in depth.** Devin's findings also arrive through channels gated *above*
 Case 4 — inline threads (Tier A → `stale`) and CHANGES_REQUESTED (`ever_approved >
 0`, never enters the block) — so the whitelist is the last of three independent
@@ -132,6 +235,13 @@ the safe direction to err, and new templates are cheap to add once observed.
 - Devin begins re-reviewing later pushes (then it no longer needs Case 4 and should
   be removed).
 - A genuinely-clean Devin body with an unrecognized phrasing is observed stranding
-  `stale` — add that normalized template to the whitelist.
+  `stale` — add that normalized template to the whitelist (fired once already:
+  issue #496; capture the verbatim body in a test alongside it).
+- Devin's badge grows a **new element** (beyond `a` / `picture` / `source` / `img`),
+  a **new attribute name**, or moves to a **new host** — the payload check stops
+  matching and every clean review strands `stale`. This is the known brittleness
+  budget: add the element/attribute/host to the whitelist. Do NOT relax the check
+  back to a name-agnostic tag pattern or free-form attributes — those are the four
+  shapes that failed open on #498, all pinned in test 7g.
 - Cursor's exact clean-body string is confirmed and its review-once behavior
   verified — add it (login + template) under the same fail-closed pattern.

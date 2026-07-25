@@ -1000,9 +1000,96 @@ if [ "$ever_approved" -eq 0 ]; then
   # (* _ ` #), collapse+trim whitespace, then require the WHOLE body to match a
   # known Devin clean template. The trailing `$` rejects any residual text —
   # Latin, CJK, Cyrillic, emoji — so extra prose always keeps the review `stale`.
+  #
+  # Issue #496: the shipped template is TWO sentences plus a machine-generated
+  # HTML badge block, so the original one-sentence whitelist never matched a real
+  # Devin review and Case 4 was inert. Two narrow widenings, both keeping `^…$`:
+  #   (a) strip ONLY the badge, delimited on BOTH sides by its stable HTML-comment
+  #       markers (never `begin.*$`, which would swallow a finding appended after
+  #       the badge). Prose outside the markers is untouched.
+  #   (b) allow the template's second sentence as an OPTIONAL exact alternation.
+  # A finding smuggled into the summary still leaves residual text, so `$` still
+  # rejects it — the fail-open guard is preserved.
+  #
+  # The strip fires ONLY on EXACTLY ONE begin/end pair. sed's `.*` is greedy and BRE
+  # has no lazy quantifier, so with TWO badge blocks `begin.*end` would span from the
+  # first begin to the last end and delete an actionable finding sitting between them
+  # — a fail-OPEN. With a single pair greedy and non-greedy coincide, so the guard is
+  # exact. Any other count (0, 2+, or an unbalanced marker) skips the strip; the
+  # residual HTML then breaks the anchored match and the review stays `stale`.
+  #
+  # Issue #496 follow-up (P1, Codex + cubic): counting marker pairs alone does NOT
+  # prove the enclosed payload IS the machine-generated badge — a finding placed
+  # INSIDE a single marker pair (e.g. "Critical: unsanitized input enables SQL
+  # injection.") would be silently discarded right along with it, same fail-open
+  # class the marker-count guard above was built to prevent, just one layer in.
+  # So before stripping, extract the between-markers content and require it to be
+  # MARKUP ONLY — a sequence of `<...>` tags separated by whitespace, nothing else.
+  # That is the whole distinction that matters here: the badge is markup, a finding
+  # is prose. Prose leaves a non-tag token, fails the check, skips the strip, and the
+  # residual markers+text keep the anchored `$` below from matching, so the review
+  # correctly stays `stale`.
+  #
+  # The payload check below DOES pin the devin.ai hosts, the element names, and the
+  # attribute names and values. An earlier revision of this comment argued the exact
+  # opposite — that pinning must be avoided because it re-creates #496's
+  # inert-on-refresh defect, and that a generic markup-vs-prose test both closed the
+  # hole and survived a badge refresh. Five demonstrated bypasses (#498) disproved the
+  # second half; see the table at the check itself. Do NOT relax the whitelist back
+  # toward a generic pattern on the strength of the brittleness argument alone — that
+  # argument is real, is accounted for as an explicit budget, and is handled by the
+  # ADR 0027 revisit trigger.
   if [[ "$login" == "devin-ai-integration" && "$last_state" == "COMMENTED" && -z "$body_sha" ]]; then
     body_norm=$(printf '%s' "$last_body" | tr '[:upper:]' '[:lower:]' | sed 's/[*_`#]//g' | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//')
-    if printf '%s' "$body_norm" | grep -qE '^(✅ ?)?(devin review:? )?no issues? found[.!]*$'; then
+    badge_begins=$(printf '%s' "$body_norm" | grep -oF '<!-- devin-review-badge-begin -->' | wc -l | tr -d '[:space:]')
+    badge_ends=$(printf '%s' "$body_norm" | grep -oF '<!-- devin-review-badge-end -->' | wc -l | tr -d '[:space:]')
+    if [[ "$badge_begins" == "1" && "$badge_ends" == "1" ]]; then
+      badge_inner=$(printf '%s' "$body_norm" | sed -n 's/.*<!-- devin-review-badge-begin -->\(.*\)<!-- devin-review-badge-end -->.*/\1/p' | sed 's/^ *//; s/ *$//')
+      # The payload must be the Devin badge and nothing else: only the badge's own
+      # elements, only their own attribute NAMES, URLs pinned to the devin.ai hosts,
+      # and no attributes at all on a closing tag (`source`/`img` are void, so only
+      # `a`/`picture` close). Attribute ORDER and the URL paths stay free.
+      #
+      # FOUR progressively weaker drafts each reached review and each failed OPEN
+      # (#498). Recorded because every one of them *looked* structural:
+      #   `<[^<>]*>`                 accepted `< critical: ... >`  (no inner brackets)
+      #   `</?[a-z][^<>]*>`          accepted `<critical: ... >`   (starts w/ a letter)
+      #   element name + free attrs  accepted `<a critical unsanitized input>`
+      #   + quoted `name="value"`    accepted `<a critical="unsanitized input ...">`
+      # The progression is the lesson: a tag is a roomy hiding place, and each fix
+      # only closed the room it was pointed at. Nothing short of naming the allowed
+      # attributes leaves a sentence nowhere to sit.
+      #
+      # The cost is stated plainly: this DOES pin the devin.ai hosts and the attribute
+      # names, so a badge that grows a new element or attribute stops matching and the
+      # review stays `stale` — the #496 inert-on-refresh symptom, now as the explicit
+      # brittleness budget rather than an accident. It is the fail-CLOSED direction and
+      # it is named in the ADR's revisit trigger.
+      #
+      # Attribute VALUES are pinned too, not just names — the fifth bypass was
+      # `alt="critical: unsanitized input enables sql injection"`, and `target`,
+      # `media` and the URL paths were the same hole unclosed. So: `alt` and `target`
+      # are literals, `media` is the color-scheme form, and the URL paths admit no
+      # whitespace, which is what a sentence needs. Nothing in a badge tag can hold
+      # prose any more; the class is closed rather than closed one field at a time.
+      # Body is already lowercased above (and `_` stripped, hence `target="blank"`).
+      #
+      # Built one alternative per line rather than as a single ~700-char inline ERE:
+      # this is the expression that went fail-open five times, so a future refresh
+      # edits ONE clause in isolation instead of hunting inside a dense one-liner.
+      _bp_host_a='https://app\.devin\.ai/[^"<>[:space:]]*'      # anchor target
+      _bp_host_s='https://static\.devin\.ai/[^"<>[:space:]]*'   # image assets
+      _bp_a="<a( (href=\"${_bp_host_a}\"|target=\"blank\"))*>"
+      _bp_picture='<picture>'
+      _bp_source="<source( (media=\"\\(prefers-color-scheme: [a-z]+\\)\"|srcset=\"${_bp_host_s}\"))*>"
+      _bp_img="<img( (src=\"${_bp_host_s}\"|alt=\"open in devin review\"))*>"
+      _bp_close='</a>|</picture>'          # source/img are void — they never close
+      _badge_re="^((${_bp_a}|${_bp_picture}|${_bp_source}|${_bp_img}|${_bp_close}) *)+$"
+      if printf '%s' "$badge_inner" | grep -Eq "$_badge_re"; then
+        body_norm=$(printf '%s' "$body_norm" | sed 's/<!-- devin-review-badge-begin -->.*<!-- devin-review-badge-end -->//; s/^ *//; s/ *$//')
+      fi
+    fi
+    if printf '%s' "$body_norm" | grep -qE '^(✅ ?)?(devin review:? )?no issues? found[.!]* ?(devin review analyzed this pr and found no bugs or issues to report[.!]*)?$'; then
       echo "none"; exit 0
     fi
   fi

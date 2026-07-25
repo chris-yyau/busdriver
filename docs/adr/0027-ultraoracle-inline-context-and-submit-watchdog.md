@@ -61,8 +61,15 @@ within `ULTRA_ORACLE_INLINE_BYTES` (default 100000 — the budget that already g
 **text** file, the whole set falls back to `--file` exactly as before.
 
 - **All-or-nothing** on purpose: a mixed payload still stalls on the one attachment it kept.
-- **Binary and non-regular contexts always attach.** `$(cat …)` strips NUL bytes, so
-  inlining a binary would silently truncate it — a correctness bug worse than the stall.
+- **NUL-bearing and non-regular contexts always attach.** `$(cat …)` strips NUL bytes, so
+  inlining such a file would silently truncate it — a correctness bug worse than the stall.
+  Detection is a whole-file NUL scan (not `grep -Iq .`, which short-circuits on the first
+  text line before a later NUL, and mis-rejects a newline-only text file). **Scope:** NUL is
+  the dominant binary marker and catches every artifact this plugin's callers pass (source,
+  markdown, git diffs, evidence-pack files). A NUL-*free* yet non-UTF-8 file (latin-1,
+  UTF-16-without-nulls) is an accepted residual — it would inline and could be transcoded to
+  U+FFFD by the consumer's UTF-8 argv decode; a stricter iconv check would also reject
+  legitimate non-UTF-8 text and isn't worth it for callers that only ever pass UTF-8.
 - **The evidence-pack label stays truthful.** `build-evidence-pack.sh` labels a consult
   `ORACLE_REPO_ATTACHED_REVIEW` based on whether raw repo files were *sent*, not on the
   transport used to send them. Inlining sends the same bytes.

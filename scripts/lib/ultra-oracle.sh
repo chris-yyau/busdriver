@@ -388,7 +388,11 @@ _ultra_oracle_run_watched() {
   stable="${stable#"${stable%%[!0]*}"}"            # strip leading zeros ("045"->"45", "00"->"")
   case "$stable" in '') stable=45;; esac           # 0/all-zero must NOT disable the stability guard
   # #490 — seconds the PRE-SUBMISSION phase may take before we give up on it (see the check in the
-  # loop below). 0/invalid falls back to the default so the bound can be raised but never disabled.
+  # loop below). 0/invalid falls back to the default. Note a grace >= the run cap means the fast
+  # pre-submission exit cannot fire before the hard cap does — the hard cap then ends the run at the
+  # SAME ambiguous 124, just later. So raising the grace past the cap doesn't change the OUTCOME, only
+  # the latency; it is not a hidden disable of the fail-closed behavior, and 0/invalid can't disable
+  # it at all (clamped up to the default).
   submitgrace="${ULTRA_ORACLE_SUBMIT_GRACE:-300}"
   case "$submitgrace" in ''|*[!0-9]*|0) submitgrace=300;; esac
   submitgrace="${submitgrace#"${submitgrace%%[!0]*}"}"   # strip leading zeros ("0300"->"300", "00"->"")
@@ -1022,9 +1026,19 @@ ultra_oracle_consult() {
   else prompt_text="$prompt"; fi
   # --context files: inline them into the prompt when the WHOLE set fits alongside it, else attach
   # them all (the pre-#490 behavior). All-or-nothing on purpose — a mixed payload would still stall
-  # on the one attachment it kept, so splitting buys nothing. Any context that is not a readable
-  # REGULAR TEXT file (directory, device, unmatched glob, binary) drops the whole set back to
-  # attachments: `$(cat …)` strips NUL bytes, so inlining a binary would SILENTLY truncate it.
+  # on the one attachment it kept, so splitting buys nothing. Non-regular / unreadable contexts and
+  # NUL-bearing files drop the whole set back to attachments: `$(cat …)` strips NUL bytes, so inlining
+  # such a file would SILENTLY truncate it.
+  #
+  # SCOPE OF THE BINARY GUARD (litmus PR review, MEDIUM): the guard equates "no NUL byte" with
+  # "safe to inline", which is exact for text but NOT a full binary test — a NUL-free yet non-UTF-8
+  # file (e.g. latin-1 / UTF-16-without-nulls) would inline and could be transcoded to U+FFFD by the
+  # consumer's UTF-8 argv decode (Node). This is an ACCEPTED residual: NUL is the dominant binary
+  # marker and catches every artifact this plugin's callers actually pass (source, markdown, git
+  # diffs, evidence-pack files — all UTF-8 text; real binaries carry NULs). A NUL-free non-UTF-8
+  # context is out of scope by construction, not a silent guarantee that "every binary attaches".
+  # A stricter iconv/UTF-8 validation would also reject legitimate non-UTF-8 text and is not worth it
+  # here — see ADR 0027.
   #
   # SIZE-FIRST, then assemble (litmus PR review, two MEDIUMs). Two constraints pull against each
   # other: (a) the fence repeats the path TWICE, so a FLAT per-file overhead under-counts long paths

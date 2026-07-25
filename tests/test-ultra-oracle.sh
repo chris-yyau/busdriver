@@ -826,11 +826,14 @@ fi
 unset ULTRA_ORACLE_TABS_MODE
 
 # #490 PRE-SUBMISSION WATCHDOG (positive): a run that NEVER emits a heartbeat line never submitted
-# the prompt (oracle starts its thinking-status monitor only AFTER submission), which is the
-# attachment-upload stall — file attached, message unsent, oracle burning its whole --timeout.
+# the prompt (oracle starts its thinking-status monitor only AFTER submission). This case is a
+# bare `--prompt hi` with no --file/--context — i.e. a fully inlined payload — so per the #497
+# Codex review fix this must NOT be diagnosed as an attachment-upload stall (nothing was ever
+# queued for upload); it is the Send click or post-click DOM verification that stalled.
 # hungnostreamlong sleeps 300s emitting nothing; with SUBMIT_GRACE=1 the watchdog must terminate it
 # in seconds, report the AMBIGUOUS 124 (never salvage — nothing was submitted, so no tab holds an
-# answer), and leave an actionable .hint. TABS_MODE unset so the tab probe cannot recover it.
+# answer), and leave an actionable, transport-accurate .hint. TABS_MODE unset so the tab probe
+# cannot recover it.
 export ULTRA_ORACLE_MOCK_MODE=hungnostreamlong ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0 ULTRA_ORACLE_SUBMIT_GRACE=1
 _t0="$(date +%s)"
 st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv490.md" --mode background --timeout-cap-seconds 60)"
@@ -840,10 +843,28 @@ if [ -f "$tmp/sv490.md.rc" ]; then
   [ "$(cat "$tmp/sv490.md.rc" 2>/dev/null)" = "124" ] || { echo "FAIL #490 submit-watchdog .rc should be 124 got '$(cat "$tmp/sv490.md.rc" 2>/dev/null)'"; FAIL=1; }
   [ "$_elapsed" -lt 30 ] || { echo "FAIL #490 submit-watchdog did not fail fast (${_elapsed}s of a 60s cap)"; FAIL=1; }
   grep -q "SALVAGED" "$tmp/sv490.md" 2>/dev/null && { echo "FAIL #490 submit-watchdog salvaged a never-submitted consult"; FAIL=1; }
-  grep -q "attachment upload stalled" "$tmp/sv490.md.hint" 2>/dev/null || { echo "FAIL #490 submit-watchdog left no actionable hint"; FAIL=1; }
+  grep -q "send/verification stalled" "$tmp/sv490.md.hint" 2>/dev/null || { echo "FAIL #490 submit-watchdog (no attachment) left the wrong hint"; FAIL=1; }
+  grep -q "attachment upload stalled" "$tmp/sv490.md.hint" 2>/dev/null && { echo "FAIL #497 submit-watchdog mislabeled a no-attachment stall as an attachment stall"; FAIL=1; }
 else
   echo "FAIL #490 submit-watchdog never wrote .rc (would have waited the 60s cap)"; FAIL=1
 fi
+
+# #497 companion (positive, WITH an attachment): same watchdog stall, but this run's payload is
+# forced over ULTRA_ORACLE_INLINE_BYTES, so it genuinely takes the --file upload path. The hint
+# must still say "attachment upload stalled" — proving the #497 fix only redirects the NO-attachment
+# case and leaves the real attachment-stall diagnosis intact.
+ctx497="$tmp/ctx497.md"; printf 'x%.0s' $(seq 1 5000) > "$ctx497"
+_t0="$(date +%s)"
+st="$(ULTRA_ORACLE_INLINE_BYTES=10 ultra_oracle_consult --prompt hi --context "$ctx497" --out "$tmp/sv497.md" --mode background --timeout-cap-seconds 60)"
+_w=0; while [ ! -f "$tmp/sv497.md.rc" ] && [ "$_w" -lt 30 ]; do sleep 1; _w=$((_w + 1)); done
+_elapsed=$(( $(date +%s) - _t0 ))
+if [ -f "$tmp/sv497.md.rc" ]; then
+  [ "$(cat "$tmp/sv497.md.rc" 2>/dev/null)" = "124" ] || { echo "FAIL #497 submit-watchdog(attached) .rc should be 124 got '$(cat "$tmp/sv497.md.rc" 2>/dev/null)'"; FAIL=1; }
+  grep -q "attachment upload stalled" "$tmp/sv497.md.hint" 2>/dev/null || { echo "FAIL #497 submit-watchdog(attached) lost the attachment-stall hint"; FAIL=1; }
+else
+  echo "FAIL #497 submit-watchdog(attached) never wrote .rc (would have waited the 60s cap)"; FAIL=1
+fi
+rm -f "$ctx497"
 
 # #490 NEGATIVE guard: a run that DID emit heartbeats HAS submitted — the submit watchdog must
 # never touch it, even with SUBMIT_GRACE=1. hungactive streams then sleeps, and its 1s stability

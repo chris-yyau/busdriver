@@ -357,6 +357,15 @@ _ultra_oracle_run_watched() {
   local cap="$1" errf="$2"; shift 2
   local pid grace stable submitgrace sig waits laststable streamed everstreamed start now elapsed ownrc _sig _signame _sigcode
   local sidw tabsnap tabstate ref curlast prev_last="" last_probe_at=0
+  # Transport-neutral watchdog diagnosis (Codex PR #497 review): a stall past submitgrace can mean
+  # EITHER a stalled attachment upload OR a stalled post-click Send/DOM-verification step on a fully
+  # inlined prompt with nothing attached — the PRECISION comment below already documents this
+  # ambiguity, but until now the fired message and _ultra_oracle_diagnose_hint both assumed
+  # attachment unconditionally. Detect up front (from the actual oracle argv, not a guess) whether
+  # this run attached a file, so the marker we write — and the hint that later greps for it — can
+  # tell the two apart instead of always blaming "the file attached".
+  local _uora_had_file=0 _uora_arg
+  for _uora_arg in "$@"; do [ "$_uora_arg" = "--file" ] && { _uora_had_file=1; break; }; done
   _UORA_CONFIRMED_REF=""   # fresh per run; only OUR confirmed tab-probe sets it (below)
   "$@" >"$errf" 2>&1 &
   pid=$!
@@ -453,7 +462,11 @@ _ultra_oracle_run_watched() {
       # stderr belongs to the disowned subshell that no caller reads, while $errf is what
       # `_ultra_oracle_diagnose_hint` (and the operator) inspect afterwards.
       if [ "$ownrc" = 143 ]; then
-        echo "ultra-oracle: no ChatGPT turn started within ${submitgrace}s — the prompt was never submitted (#490, typically a stalled attachment upload); failing fast instead of waiting out the ${cap}s cap" | tee -a "$errf" >&2
+        if [ "$_uora_had_file" -eq 1 ]; then
+          echo "ultra-oracle: no ChatGPT turn started within ${submitgrace}s — the prompt was never submitted (#490, typically a stalled attachment upload); failing fast instead of waiting out the ${cap}s cap" | tee -a "$errf" >&2
+        else
+          echo "ultra-oracle: no ChatGPT turn started within ${submitgrace}s — the prompt was never submitted (#497: no file was attached this run, so this is a stalled Send click or post-click verification, not an attachment upload); failing fast instead of waiting out the ${cap}s cap" | tee -a "$errf" >&2
+        fi
         return 124
       fi
       [ "$ownrc" = 125 ] && ownrc=1; return "$ownrc"
@@ -572,6 +585,13 @@ _ultra_oracle_diagnose_hint() {
     else
       printf 'Cloudflare "Just a moment" challenge: oracle-launched Chrome is fingerprinted — set ultraOracle.attachRunning=true in ~/.claude/busdriver.json (ADR 0020) to attach to an ordinary browser instead'
     fi
+  elif grep -qiE 'no file was attached this run' "$f" 2>/dev/null; then
+    # Codex PR #497 review: `_ultra_oracle_run_watched` proved (from the actual oracle argv, not a
+    # guess) that this run attached nothing — the prompt+context all fit inline. So the marker below
+    # cannot be an attachment-upload stall; it is the Send click or the post-click DOM verification
+    # (verifyPromptCommitted / readConversationTurnCount) that stalled instead. Telling the operator
+    # to touch ULTRA_ORACLE_INLINE_BYTES here would be a no-op — nothing was ever queued for upload.
+    printf 'send/verification stalled — nothing was attached this run (the whole payload was inlined), so this is NOT an attachment-upload issue (#497). Re-run, or if it recurs, check the ChatGPT tab/session manually — ULTRA_ORACLE_INLINE_BYTES will not help here'
   elif grep -qiE 'did not finish uploading|never reached a clickable send button|attachment-send-not-ready|no ChatGPT turn started' "$f" 2>/dev/null; then
     # #490: the file attached but the message was never sent. Reaching this means the payload
     # took the upload path — either because it was genuinely over ULTRA_ORACLE_INLINE_BYTES, or

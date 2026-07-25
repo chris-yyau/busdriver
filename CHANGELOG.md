@@ -1,3 +1,10 @@
+## [1.99.2](https://github.com/chris-yyau/busdriver/compare/v1.99.1...v1.99.2) (2026-07-25)
+
+
+### Bug Fixes
+
+* **ack-ledger:** match Devin's real clean template so Case 4 stops being inert ([#496](https://github.com/chris-yyau/busdriver/issues/496)) ([#498](https://github.com/chris-yyau/busdriver/issues/498)) ([b68218a](https://github.com/chris-yyau/busdriver/commit/b68218abc30d7bfa33b4b98cd16d019fcecb7968)), closes [#489](https://github.com/chris-yyau/busdriver/issues/489) [#282](https://github.com/chris-yyau/busdriver/issues/282) [#489](https://github.com/chris-yyau/busdriver/issues/489)
+
 ## [1.99.1](https://github.com/chris-yyau/busdriver/compare/v1.99.0...v1.99.1) (2026-07-25)
 
 

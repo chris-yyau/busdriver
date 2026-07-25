@@ -480,7 +480,58 @@ if ! grep -qxF -- "$ctxa" "$tmp/cr_argv.log" || ! grep -qxF -- "$ctxb" "$tmp/cr_
 fi
 grep -qF -- "MARKER-CTX-A" "$tmp/cr_argv.log" && {
   echo "FAIL multi --context: inlined a member despite a non-inlinable sibling (#490)"; FAIL=1; }
+
 rm -f "$ctx" "$ctxbig" "$ctxbin" "$ctxa" "$ctxb"; unset ULTRA_ORACLE_ARGV_OUT
+
+# ---- litmus PR-review hardening (#490): the three findings, each with a DISCRIMINATING probe -----
+# These call ultra_oracle_consult directly (sourced above) with `--prompt hi` so the payload sizes
+# are known exactly and the cap can be placed to separate old-vs-new behavior. Each is chosen to
+# FAIL against the pre-hardening lib (verified by reverting), not merely pass against the new one.
+
+# 1. LATE-NUL binary: a text line BEFORE the NUL. `grep -Iq .` short-circuits on the first text match
+#    under GNU grep and never reaches the NUL (classifying a binary as text); the whole-file NUL
+#    count does not. MUST attach — inlining would let $(cat) strip the NUL and corrupt the payload.
+#    (Discriminates on GNU grep / CI; BSD grep already scans far enough, so this may pass on both
+#    locally — kept because CI is the gate of record.)
+export ULTRA_ORACLE_ARGV_OUT="$tmp/nul_argv.log"; : > "$ULTRA_ORACLE_ARGV_OUT"
+ctxlate="$(mktemp)"; printf 'plenty of leading text\n\000trailing nul\n' > "$ctxlate"
+ultra_oracle_consult --prompt hi --context "$ctxlate" --out "$tmp/nul.md" --mode blocking >/dev/null 2>&1
+grep -qxF -- "--file" "$tmp/nul_argv.log" || {
+  echo "FAIL late-NUL binary --context was inlined instead of attached (#490)"; FAIL=1; }
+
+# 2. LONG-PATH over-budget: the fence repeats the path TWICE (~58 fixed + 2*len(path) overhead). The
+#    OLD lib estimated a flat +128/file, which UNDER-counts for long paths. Sizes chosen so the flat
+#    estimate lands UNDER cap (old lib inlines) but the REAL assembled bytes exceed it (new lib
+#    attaches): content 90 + prompt 2 + flat 128 = 220 < 300; real = 2 + 90 + ~58 + 2*~210 ≈ 570 > 300.
+export ULTRA_ORACLE_ARGV_OUT="$tmp/long_argv.log"; : > "$ULTRA_ORACLE_ARGV_OUT"
+longdir="$tmp/$(printf 'd%.0s' $(seq 1 200))"; mkdir -p "$longdir"; ctxlong="$longdir/ctx.md"
+head -c 90 /dev/zero | tr '\0' 'x' > "$ctxlong"
+ULTRA_ORACLE_INLINE_BYTES=300 ultra_oracle_consult --prompt hi --context "$ctxlong" \
+  --out "$tmp/long.md" --mode blocking >/dev/null 2>&1
+grep -qxF -- "--file" "$tmp/long_argv.log" || {
+  echo "FAIL long-path payload inlined despite assembled size over cap (#490)"; FAIL=1; }
+
+# 3. inline-cap OVERFLOW: a 20-digit ULTRA_ORACLE_INLINE_BYTES. The OLD lib kept it verbatim, so the
+#    numeric `-gt` returned status 2 (read as false -> fail OPEN), inlining a genuinely over-ARG_MAX
+#    payload. With the clamp, a >100000-byte context now correctly ATTACHES. A ~120 KB file makes the
+#    two libs diverge: old inlines it (blows argv), new attaches it.
+export ULTRA_ORACLE_ARGV_OUT="$tmp/ovf_argv.log"; : > "$ULTRA_ORACLE_ARGV_OUT"
+ctxhuge="$(mktemp)"; head -c 120000 /dev/zero | tr '\0' 'H' > "$ctxhuge"
+ULTRA_ORACLE_INLINE_BYTES=99999999999999999999 ultra_oracle_consult --prompt hi --context "$ctxhuge" \
+  --out "$tmp/ovf.md" --mode blocking >/dev/null 2>&1
+grep -qxF -- "--file" "$tmp/ovf_argv.log" || {
+  echo "FAIL overflow inline-cap failed OPEN: 120KB context inlined instead of attached (#490)"; FAIL=1; }
+
+# 4. ARG_MAX HARD CEILING: a single argv string is capped at MAX_ARG_STRLEN=131072 on Linux,
+#    independent of total ARG_MAX. An operator override like INLINE_BYTES=2000000 must NOT let a
+#    150 KB context inline (it would exec-fail E2BIG); the ceiling clamps to 120000 -> attach.
+export ULTRA_ORACLE_ARGV_OUT="$tmp/ceil_argv.log"; : > "$ULTRA_ORACLE_ARGV_OUT"
+ctxceil="$(mktemp)"; head -c 150000 /dev/zero | tr '\0' 'z' > "$ctxceil"
+ULTRA_ORACLE_INLINE_BYTES=2000000 ultra_oracle_consult --prompt hi --context "$ctxceil" \
+  --out "$tmp/ceil.md" --mode blocking >/dev/null 2>&1
+grep -qxF -- "--file" "$tmp/ceil_argv.log" || {
+  echo "FAIL ARG_MAX ceiling: 150KB context inlined despite override (E2BIG risk) (#490)"; FAIL=1; }
+rm -f "$ctxa" "$ctxlate" "$ctxhuge" "$ctxceil"; rm -rf "$longdir"; unset ULTRA_ORACLE_ARGV_OUT ULTRA_ORACLE_INLINE_BYTES
 
 # failing oracle -> raw `error` token (drives caller's ORACLE_FAILED / block-and-ask)
 export ULTRA_ORACLE_MOCK_MODE=fail

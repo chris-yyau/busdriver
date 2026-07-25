@@ -993,6 +993,18 @@ ultra_oracle_consult() {
   # ARG_MAX (macOS 1 MiB, Linux ~2 MiB/arg) with room for the rest of argv and the environment.
   local inline_cap; inline_cap="${ULTRA_ORACLE_INLINE_BYTES:-100000}"
   case "$inline_cap" in ''|*[!0-9]*|0) inline_cap=100000;; esac
+  inline_cap="${inline_cap#"${inline_cap%%[!0]*}"}"   # strip leading zeros ("0100000"->"100000", "00"->"")
+  case "$inline_cap" in '') inline_cap=100000;; esac
+  # HARD CEILING (litmus PR review, MEDIUM). The assembled prompt becomes ONE `--prompt` argv string,
+  # and on Linux a single argv string is capped at MAX_ARG_STRLEN = 131072 bytes (128 KiB) INDEPENDENT
+  # of total ARG_MAX — so an operator override like ULTRA_ORACLE_INLINE_BYTES=2000000 would inline a
+  # payload that then fails exec with E2BIG. Clamp to a value safely under that limit regardless of
+  # the override (the 100000 default is already under it). The length guard runs FIRST: a value with
+  # 19+ digits overflows bash's signed-64-bit `-gt`, which returns status 2 (read as FALSE) and would
+  # let the numeric clamp FAIL OPEN — so collapse any such over-long value before the comparison.
+  local _uora_inline_ceil=120000
+  [ "${#inline_cap}" -ge 19 ] && inline_cap="$_uora_inline_ceil"
+  [ "$inline_cap" -gt "$_uora_inline_ceil" ] && inline_cap="$_uora_inline_ceil"
   local prompt_text="" pf_attached=0
   if [[ -n "$prompt_file" ]]; then
     # Fail closed if the prompt file is unreadable/empty — otherwise a silent cat
@@ -1013,19 +1025,54 @@ ultra_oracle_consult() {
   # on the one attachment it kept, so splitting buys nothing. Any context that is not a readable
   # REGULAR TEXT file (directory, device, unmatched glob, binary) drops the whole set back to
   # attachments: `$(cat …)` strips NUL bytes, so inlining a binary would SILENTLY truncate it.
-  local g used ctx_total=0 ctx_inlinable=1 sz
-  used="$(printf '%s' "$prompt_text" | wc -c | tr -dc '0-9')"; [[ -n "$used" ]] || used=0
+  #
+  # SIZE-FIRST, then assemble (litmus PR review, two MEDIUMs). Two constraints pull against each
+  # other: (a) the fence repeats the path TWICE, so a FLAT per-file overhead under-counts long paths
+  # and could inline an over-budget set; (b) buffering every file's content into a shell var just to
+  # measure it risks OOM on a large text context before we ever decide to attach. Resolve both by
+  # sizing with `wc -c` (which streams — O(1) shell memory) plus an EXACTLY-measured frame overhead,
+  # and only cat-ing content into memory in the second pass, once the running total is proven under
+  # the ~100 KB cap. Any file that pushes the total over cap short-circuits the whole set to attach.
+  local g ctx_inlinable=1 running sz frame fbytes
+  running="$(set -o pipefail; printf '%s' "$prompt_text" | wc -c | tr -dc '0-9')" || running=""
+  # Fail CLOSED, consistent with the per-file checks below: if the base prompt size can't be
+  # measured, don't risk under-counting the combined payload — attach the whole context set. Keep
+  # `running` numeric so the loop's arithmetic stays well-formed even though it won't inline.
+  [[ -n "$running" ]] || { running=0; ctx_inlinable=0; }
   for g in "${ctx_arr[@]:-}"; do
     [[ -n "$g" ]] || continue
-    if [[ ! -f "$g" ]] || [[ ! -r "$g" ]] || { [[ -s "$g" ]] && ! grep -Iq . "$g" 2>/dev/null; }; then
-      ctx_inlinable=0; break
+    if [[ ! -f "$g" ]] || [[ ! -r "$g" ]]; then ctx_inlinable=0; break; fi
+    # SIZE FIRST — cheap (wc -c fstats a regular file), and it lets a file that ALONE blows the
+    # budget short-circuit to attach WITHOUT the whole-file NUL read below. pipefail so a masked wc
+    # failure (upstream error, final tr still exits 0 on "") fails closed, not silently to a wrong size.
+    sz="$(set -o pipefail; wc -c < "$g" 2>/dev/null | tr -dc '0-9')" || { ctx_inlinable=0; break; }
+    [[ -n "$sz" ]] || { ctx_inlinable=0; break; }
+    # Exact non-content frame bytes for THIS file: header + footer with an empty body, MEASURED (not
+    # estimated) so the twice-repeated path is counted correctly regardless of its length.
+    frame="$(printf '\n\n--- BEGIN CONTEXT FILE: %s ---\n\n--- END CONTEXT FILE: %s ---' "$g" "$g")"
+    fbytes="$(set -o pipefail; printf '%s' "$frame" | wc -c | tr -dc '0-9')" || { ctx_inlinable=0; break; }
+    [[ -n "$fbytes" ]] || { ctx_inlinable=0; break; }
+    running=$(( running + sz + fbytes ))
+    [ "$running" -gt "$inline_cap" ] && { ctx_inlinable=0; break; }   # over budget -> attach; NO NUL read
+    # WITHIN budget (so this file is <= cap, ~100 KB) — now a bounded binary check: detect a NUL by
+    # reading the whole (small) file. NOT `grep -Iq .`: with -q, GNU grep exits on the first matching
+    # (text) line and can return before a LATER NUL — classifying a binary as text, the exact case
+    # $(cat)'s NUL-stripping then corrupts — and it mis-rejects a legitimate newline-only text file
+    # (`.` matches no newline). `tr -cd` counting is unambiguous, portable (BSD/GNU), and treats a
+    # newline-only file as the text it is. pipefail so a mid-read tr/wc failure fails CLOSED (attach)
+    # rather than emitting "0" and mislabelling an incompletely-read file as text.
+    if [ "$sz" -gt 0 ]; then
+      local _nul
+      _nul="$(set -o pipefail; LC_ALL=C tr -cd '\000' < "$g" 2>/dev/null | wc -c | tr -dc '0-9')" \
+        || { ctx_inlinable=0; break; }
+      [[ -n "$_nul" ]] || { ctx_inlinable=0; break; }        # unreadable/masked -> fail closed to attach
+      [ "$_nul" -gt 0 ] && { ctx_inlinable=0; break; }        # contains NUL -> binary -> attach
     fi
-    sz="$(wc -c < "$g" 2>/dev/null | tr -dc '0-9')"; [[ -n "$sz" ]] || { ctx_inlinable=0; break; }
-    ctx_total=$(( ctx_total + sz + 128 ))    # + per-file BEGIN/END header overhead
   done
-  if [ "$pf_attached" -eq 1 ] || [ "$ctx_inlinable" -eq 0 ] || [ $(( used + ctx_total )) -gt "$inline_cap" ]; then
+  if [ "$pf_attached" -eq 1 ] || [ "$ctx_inlinable" -eq 0 ]; then
     for g in "${ctx_arr[@]:-}"; do [[ -n "$g" ]] && set -- "$@" --file "$g"; done
   else
+    # Proven under cap above, so cat-ing content into the prompt is bounded by the cap.
     for g in "${ctx_arr[@]:-}"; do
       [[ -n "$g" ]] || continue
       prompt_text="${prompt_text}

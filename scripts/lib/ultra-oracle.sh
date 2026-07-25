@@ -259,8 +259,10 @@ _uora_status_snapshot() {
   return 0
 }
 
-# _ultra_oracle_run_watched <cap> <errfile> <cmd...> -> run <cmd> (oracle) in the background,
-# capturing stdout+stderr to <errfile>. Distinguishes THREE outcomes by exit code so the caller
+# _ultra_oracle_run_watched <cap> <errfile> <tee-stderr:0|1> <cmd...> -> run <cmd> (oracle) in the
+# background, capturing stdout+stderr to <errfile> (tee-stderr=1 also streams oracle's stderr to the
+# caller's terminal for a human-facing blocking wait; see the signature comment on the function).
+# Distinguishes THREE outcomes by exit code so the caller
 # salvages ONLY on positive evidence the response completed:
 #   * <cmd>'s own rc — it finished on its own.
 #   * 125 — CONFIRMED completed-but-hung (#458): the heartbeat streamed and then sat in the
@@ -374,9 +376,19 @@ _ultra_oracle_run_watched() {
   # Merging stderr into errf unconditionally (Codex, PR #485) silently dropped that visibility,
   # making a long attach-mode blocking consult LOOK hung even though the watchdog this PR adds is
   # actively tracking it — exactly the confusion #458/#481 exist to eliminate.
+  # (#490) submitgrace is declared here too — the pre-submission-phase bound this PR adds.
   local cap="$1" errf="$2" tee_stderr="${3:-0}"; shift 3
-  local pid grace stable sig waits laststable streamed everstreamed start now elapsed ownrc _sig _signame _sigcode
+  local pid grace stable submitgrace sig waits laststable streamed everstreamed start now elapsed ownrc _sig _signame _sigcode
   local sidw tabsnap tabstate ref curlast prev_last="" last_probe_at=0
+  # Transport-neutral watchdog diagnosis (Codex PR #497 review): a stall past submitgrace can mean
+  # EITHER a stalled attachment upload OR a stalled post-click Send/DOM-verification step on a fully
+  # inlined prompt with nothing attached — the PRECISION comment below already documents this
+  # ambiguity, but until now the fired message and _ultra_oracle_diagnose_hint both assumed
+  # attachment unconditionally. Detect up front (from the actual oracle argv, not a guess) whether
+  # this run attached a file, so the marker we write — and the hint that later greps for it — can
+  # tell the two apart instead of always blaming "the file attached".
+  local _uora_had_file=0 _uora_arg
+  for _uora_arg in "$@"; do [ "$_uora_arg" = "--file" ] && { _uora_had_file=1; break; }; done
   _UORA_CONFIRMED_REF=""   # fresh per run; only OUR confirmed tab-probe sets it (below)
   if [[ "$tee_stderr" = 1 ]] && command -v tee >/dev/null 2>&1; then
     # process substitution (bash-only, available on the repo's supported bash 3.2): stderr is
@@ -422,6 +434,23 @@ _ultra_oracle_run_watched() {
   case "$stable" in ''|*[!0-9]*) stable=45;; esac
   stable="${stable#"${stable%%[!0]*}"}"            # strip leading zeros ("045"->"45", "00"->"")
   case "$stable" in '') stable=45;; esac           # 0/all-zero must NOT disable the stability guard
+  # #490 — seconds the PRE-SUBMISSION phase may take before we give up on it (see the check in the
+  # loop below). 0/invalid falls back to the default. Note a grace >= the run cap means the fast
+  # pre-submission exit cannot fire before the hard cap does — the hard cap then ends the run at the
+  # SAME ambiguous 124, just later. So raising the grace past the cap doesn't change the OUTCOME, only
+  # the latency; it is not a hidden disable of the fail-closed behavior, and 0/invalid can't disable
+  # it at all (clamped up to the default).
+  submitgrace="${ULTRA_ORACLE_SUBMIT_GRACE:-300}"
+  case "$submitgrace" in ''|*[!0-9]*|0) submitgrace=300;; esac
+  submitgrace="${submitgrace#"${submitgrace%%[!0]*}"}"   # strip leading zeros ("0300"->"300", "00"->"")
+  case "$submitgrace" in '') submitgrace=300;; esac
+  # Length guard BEFORE the numeric `-ge` below (same reasoning as the timeout cap): a value with
+  # 19+ digits overflows bash's signed-64-bit integer test, which then returns status 2 — the `if`
+  # reads FALSE on every iteration and the watchdog is silently disabled for the whole run. The cap
+  # ceiling is 3600 (4 digits), so anything longer is nonsensical here; clamp by LENGTH so an
+  # oversized string can never reach the comparison at all.
+  [ "${#submitgrace}" -gt 4 ] && submitgrace=3600
+  [ "$submitgrace" -gt 3600 ] && submitgrace=3600
   start="$(date +%s)"
   # Iteration backstop: `date +%s` is WALL-CLOCK, so a backward system-clock adjustment could keep
   # `elapsed` below cap and extend the run unbounded. The loop sleeps ~3s per turn, so a monotonic
@@ -444,6 +473,49 @@ _ultra_oracle_run_watched() {
     iters=$(( iters + 1 ))
     now="$(date +%s)"; elapsed=$(( now - start ))
     [ "$elapsed" -lt 0 ] && elapsed=0                 # clock went backward -> lean on the iters backstop
+    # #490 — BOUNDED PRE-SUBMISSION PHASE. oracle starts its thinking-status monitor only AFTER
+    # `runSubmissionWithRecovery` returns (oracle 0.16.1 `browser/index.js`), so the total ABSENCE of
+    # a heartbeat line means that call never returned. That is exactly #490: an attach-mode file
+    # upload stalls, the doc sits attached in the composer, the message is never sent, and oracle
+    # burns its whole --timeout (30 min observed) before erroring. Fail FAST instead of waiting out
+    # the cap.
+    #
+    # PRECISION (litmus PR #4xx, MEDIUM): this proves the MONITOR never started, which is NOT quite
+    # the same as "nothing was sent". The submit path clicks Send and THEN runs verifyPromptCommitted
+    # / readConversationTurnCount before returning, so a stall in that post-click DOM verification
+    # also lands here — a turn that really was accepted and may be generating. Two things bound that
+    # residual. First, the tab-status probe above has already had ~17 chances (every ~15s from
+    # ULTRA_ORACLE_HUNG_GRACE) to spot a `completed` tab for this session and salvage it, so the
+    # COMPLETED case is recovered long before this fires; what survives to here is at worst a
+    # still-GENERATING turn. Second, that is precisely the case where salvage must not run — so we
+    # report 124, the AMBIGUOUS hard-cap code, and the caller NEVER salvages. Harvesting a
+    # mid-generation tab would promote a partial to a verdict, the failure this whole split exists to
+    # prevent; losing a recoverable advisory (non-gating) is the cheaper error.
+    if [ "$elapsed" -ge "$submitgrace" ] \
+       && ! grep -qE 'ChatGPT thinking|no thinking status detected yet' "$errf" 2>/dev/null; then
+      ownrc=0; _uora_terminate "$pid" || ownrc=$?; trap - INT TERM HUP EXIT
+      # Log AFTER the terminate (oracle no longer holds $errf open at its own write offset) and ONLY
+      # when we actually killed it — a run that raced to completion in this window gets its own rc and
+      # must not be labelled unsent. Record in the RUN LOG as well as on stderr: background mode's
+      # stderr belongs to the disowned subshell that no caller reads, while $errf is what
+      # `_ultra_oracle_diagnose_hint` (and the operator) inspect afterwards.
+      if [ "$ownrc" = 143 ]; then
+        # Do NOT trust oracle's --write-output here (Codex P2 was mis-scoped; litmus PR #497 HIGH):
+        # this branch fires ONLY after submitgrace seconds with NO heartbeat line, i.e. the
+        # submission flow never returned and no turn was generated — so there is no legitimate
+        # verdict to recover, and oracle writes --write-output NON-ATOMICALLY, so any bytes present
+        # after a TERM are a partial that would pass the 8-byte floor yet be incomplete. The salvage
+        # path elsewhere NEVER trusts $out for exactly this reason (it truncates and re-harvests the
+        # live tab). Keep the ambiguous 124 and never salvage a never-submitted run.
+        if [ "$_uora_had_file" -eq 1 ]; then
+          echo "ultra-oracle: no ChatGPT turn started within ${submitgrace}s — the prompt was never submitted (#490, typically a stalled attachment upload); failing fast instead of waiting out the ${cap}s cap" | tee -a "$errf" >&2
+        else
+          echo "ultra-oracle: no ChatGPT turn started within ${submitgrace}s — the prompt was never submitted (#497: no file was attached this run, so this is a stalled Send click or post-click verification, not an attachment upload); failing fast instead of waiting out the ${cap}s cap" | tee -a "$errf" >&2
+        fi
+        return 124
+      fi
+      [ "$ownrc" = 125 ] && ownrc=1; return "$ownrc"
+    fi
     # Check the hung signature BEFORE the hard cap: if the confirmed-hung signature lands in the
     # same interval the cap fires, the recoverable answer must win (125), not be misread as an
     # ambiguous timeout (124).
@@ -569,6 +641,20 @@ _ultra_oracle_diagnose_hint() {
     else
       printf 'Cloudflare "Just a moment" challenge: oracle-launched Chrome is fingerprinted — set ultraOracle.attachRunning=true in ~/.claude/busdriver.json (ADR 0020) to attach to an ordinary browser instead'
     fi
+  elif grep -qiE 'no file was attached this run' "$f" 2>/dev/null; then
+    # Codex PR #497 review: `_ultra_oracle_run_watched` proved (from the actual oracle argv, not a
+    # guess) that this run attached nothing — the prompt+context all fit inline. So the marker below
+    # cannot be an attachment-upload stall; it is the Send click or the post-click DOM verification
+    # (verifyPromptCommitted / readConversationTurnCount) that stalled instead. Telling the operator
+    # to touch ULTRA_ORACLE_INLINE_BYTES here would be a no-op — nothing was ever queued for upload.
+    printf 'send/verification stalled — nothing was attached this run (the whole payload was inlined), so this is NOT an attachment-upload issue (#497). Re-run, or if it recurs, check the ChatGPT tab/session manually — ULTRA_ORACLE_INLINE_BYTES will not help here'
+  elif grep -qiE 'did not finish uploading|never reached a clickable send button|attachment-send-not-ready|no ChatGPT turn started' "$f" 2>/dev/null; then
+    # #490: the file attached but the message was never sent. Reaching this means the payload
+    # took the upload path — either because it was genuinely over ULTRA_ORACLE_INLINE_BYTES, or
+    # because it (or one of a --context set) is binary/non-regular/unreadable, which always
+    # attaches regardless of size (litmus/Codex PR #497 review: the size-only wording below used
+    # to tell an operator to shrink/raise the cap even when size was never the blocker).
+    printf 'attachment upload stalled — the file attached to ChatGPT but the message was never sent (#490). Payloads under ULTRA_ORACLE_INLINE_BYTES (default 100000) bytes are inlined into the prompt and avoid this path entirely — shrink the doc/evidence pack, or raise ULTRA_ORACLE_INLINE_BYTES if argv can carry it — UNLESS the payload is binary, non-regular, or unreadable, which always attaches regardless of size; in that case convert it to plain text or check file permissions/existence instead'
   fi
 }
 
@@ -713,6 +799,12 @@ _ultra_oracle_browser_unlock() {
 # oracle v0.15.0 has no --prompt-file flag, so the file content is passed via
 # --prompt "$(cat ...)". Command-substitution output is NOT re-parsed by the
 # shell, so backticks/$()/$VAR in the file stay literal.
+#
+# --context files are carried the SAME way — INLINE in the prompt — whenever the whole set fits
+# alongside it within ULTRA_ORACLE_INLINE_BYTES (default 100000). They become oracle `--file`
+# uploads only above that budget, or when any of them is not a readable regular TEXT file. See
+# ADR 0029 / #490: the ChatGPT upload path can leave the file attached with the message never
+# sent, burning the entire --timeout, while an inline prompt of the same content sends in seconds.
 ultra_oracle_consult() {
   # oracle requires a 3-5 word --slug; default accordingly (callers override).
   local prompt="" prompt_file="" mode="blocking" out="" slug="ultra oracle consult" cap=""
@@ -972,21 +1064,170 @@ ultra_oracle_consult() {
   # passing both is a hard CLI rejection — attach mode always reuses (and never
   # hides) the operator's already-visible Chrome window.
   if ! ultra_oracle_attach_running && ultra_oracle_hide_window; then set -- "$@" --browser-hide-window; fi
-  local g; for g in "${ctx_arr[@]:-}"; do [[ -n "$g" ]] && set -- "$@" --file "$g"; done
+  # ---- payload assembly: prefer INLINE over attachments (#490) ------------------------------
+  # The ChatGPT file upload is the most fragile step of a browser consult. Verified live (#490,
+  # oracle 0.16.1, attach mode): a --file payload lands in the composer, the message is NEVER SENT,
+  # and oracle burns its whole --timeout (30 min observed) before failing with "Attachments did not
+  # finish uploading before timeout" — while a prompt-only consult of the SAME content sends in
+  # seconds on the SAME setup. So build the prompt FIRST and carry every --context file INLINE
+  # whenever the combined payload fits, touching the upload path only for payloads too large for
+  # argv. ULTRA_ORACLE_INLINE_BYTES (default 100000) is the ONE combined budget — comfortably under
+  # ARG_MAX (macOS 1 MiB, Linux ~2 MiB/arg) with room for the rest of argv and the environment.
+  local inline_cap; inline_cap="${ULTRA_ORACLE_INLINE_BYTES:-100000}"
+  case "$inline_cap" in ''|*[!0-9]*|0) inline_cap=100000;; esac
+  inline_cap="${inline_cap#"${inline_cap%%[!0]*}"}"   # strip leading zeros ("0100000"->"100000", "00"->"")
+  case "$inline_cap" in '') inline_cap=100000;; esac
+  # HARD CEILING (litmus PR review, MEDIUM). The assembled prompt becomes ONE `--prompt` argv string,
+  # and on Linux a single argv string is capped at MAX_ARG_STRLEN = 131072 bytes (128 KiB) INDEPENDENT
+  # of total ARG_MAX — so an operator override like ULTRA_ORACLE_INLINE_BYTES=2000000 would inline a
+  # payload that then fails exec with E2BIG. Clamp to a value safely under that limit regardless of
+  # the override (the 100000 default is already under it). The length guard runs FIRST: a value with
+  # 19+ digits overflows bash's signed-64-bit `-gt`, which returns status 2 (read as FALSE) and would
+  # let the numeric clamp FAIL OPEN — so collapse any such over-long value before the comparison.
+  local _uora_inline_ceil=120000
+  [ "${#inline_cap}" -ge 19 ] && inline_cap="$_uora_inline_ceil"
+  [ "$inline_cap" -gt "$_uora_inline_ceil" ] && inline_cap="$_uora_inline_ceil"
+  local prompt_text=""
   if [[ -n "$prompt_file" ]]; then
     # Fail closed if the prompt file is unreadable/empty — otherwise a silent cat
     # failure would invoke oracle with an empty prompt.
     if [[ ! -r "$prompt_file" ]] || [[ ! -s "$prompt_file" ]]; then printf 'error'; return 1; fi
-    local pf_size; pf_size="$(wc -c < "$prompt_file" 2>/dev/null || echo 0)"
-    if [ "$pf_size" -gt "${ULTRA_ORACLE_INLINE_BYTES:-100000}" ]; then
-      # Too large to safely inline into argv (ARG_MAX) — attach as a file instead.
-      set -- "$@" --file "$prompt_file" \
-        --prompt "Follow the instructions in the attached file: $(basename "$prompt_file")"
+    # SNAPSHOT-FIRST, exactly like the --context path below (litmus/CodeRabbit PR #497 review). The
+    # size check, the binary NUL scan, and the content read all operate on ONE immutable snapshot —
+    # never three separate live-path reopens — so a prompt_file that changes between them (a
+    # NUL-bearing swap that `$(cat)` would silently corrupt, or a grown-past-cap swap that would
+    # bypass the size guard and blow ARG_MAX at exec) cannot slip through. The snapshot is bounded to
+    # inline_cap+1 via `head -c`, so it can neither exhaust memory nor be mis-sized; reaching the +1
+    # byte proves the source exceeds the budget -> attach. ATTACH always passes the ORIGINAL path to
+    # --file (oracle reads it later); any failure (mktemp, read/measure error, NUL present, cat
+    # failure) falls closed to attaching.
+    local _pf_snapdir="" _pf_snap _pf_size _pf_nul _pf_lim=$(( inline_cap + 1 ))
+    _pf_snapdir="$(mktemp -d 2>/dev/null)" || _pf_snapdir=""
+    if [[ -z "$_pf_snapdir" ]]; then
+      set -- "$@" --file "$prompt_file"
+      prompt_text="Follow the instructions in the attached file: $(basename "$prompt_file")"
     else
-      local pf_content; pf_content="$(cat "$prompt_file")"
-      set -- "$@" --prompt "$pf_content"
+      _pf_snap="$_pf_snapdir/pf"
+      if ! head -c "$_pf_lim" < "$prompt_file" > "$_pf_snap" 2>/dev/null; then
+        set -- "$@" --file "$prompt_file"
+        prompt_text="Follow the instructions in the attached file: $(basename "$prompt_file")"
+      else
+        _pf_size="$(set -o pipefail; wc -c < "$_pf_snap" 2>/dev/null | tr -dc '0-9')" || _pf_size=""
+        _pf_nul="$(set -o pipefail; LC_ALL=C tr -cd '\000' < "$_pf_snap" 2>/dev/null | wc -c | tr -dc '0-9')" || _pf_nul=""
+        if [[ -z "$_pf_size" ]] || [ "$_pf_size" -ge "$_pf_lim" ] || [[ -z "$_pf_nul" ]] \
+           || [ "$_pf_nul" -gt 0 ] || ! prompt_text="$(cat "$_pf_snap" 2>/dev/null)"; then
+          # Over budget (source > inline_cap), binary, or a read/measure failure -> attach the source.
+          set -- "$@" --file "$prompt_file"
+          prompt_text="Follow the instructions in the attached file: $(basename "$prompt_file")"
+        fi
+      fi
+      rm -rf "$_pf_snapdir" 2>/dev/null
     fi
-  else set -- "$@" --prompt "$prompt"; fi
+  else prompt_text="$prompt"; fi
+  # --context files: inline them into the prompt when the WHOLE set fits alongside it, else attach
+  # them all (the pre-#490 behavior). All-or-nothing on purpose — a mixed payload would still stall
+  # on the one attachment it kept, so splitting buys nothing. Non-regular / unreadable contexts and
+  # NUL-bearing files drop the whole set back to attachments: `$(cat …)` strips NUL bytes, so inlining
+  # such a file would SILENTLY truncate it.
+  #
+  # SCOPE OF THE BINARY GUARD (litmus PR review, MEDIUM): the guard equates "no NUL byte" with
+  # "safe to inline", which is exact for text but NOT a full binary test — a NUL-free yet non-UTF-8
+  # file (e.g. latin-1 / UTF-16-without-nulls) would inline and could be transcoded to U+FFFD by the
+  # consumer's UTF-8 argv decode (Node). This is an ACCEPTED residual: NUL is the dominant binary
+  # marker and catches every artifact this plugin's callers actually pass (source, markdown, git
+  # diffs, evidence-pack files — all UTF-8 text; real binaries carry NULs). A NUL-free non-UTF-8
+  # context is out of scope by construction, not a silent guarantee that "every binary attaches".
+  # A stricter iconv/UTF-8 validation would also reject legitimate non-UTF-8 text and is not worth it
+  # here — see ADR 0029.
+  #
+  # SNAPSHOT-FIRST (litmus PR review, TOCTOU class). Every check (size, binary scan) and the inline
+  # read all operate on an IMMUTABLE per-file snapshot taken up front, not on the live path — so the
+  # object being validated cannot change under the checks. This is what makes the unavoidably-separate
+  # binary scan safe (a shell var cannot hold a NUL byte, so the scan MUST be its own read; snapshots
+  # are what let that read and the sizing read and the content read all see the SAME bytes). Each
+  # snapshot is bounded to inline_cap+1 via `head -c`, so a huge or growing source can neither exhaust
+  # memory (snapshots land on disk; the running total short-circuits at the cap) nor be mis-sized —
+  # a snapshot that reaches the +1 byte proves its source exceeds the budget, so the set attaches.
+  # ATTACH always passes the ORIGINAL path to oracle `--file` (oracle reads it later, exactly as
+  # pre-#490); the snapshot is used ONLY to decide inlining and to supply inlined bytes. Any failure
+  # (mktemp, non-regular/unreadable source, a read/measure error) fails CLOSED to attaching the set.
+  local g ctx_inlinable=1 running snapdir="" _lim=$(( inline_cap + 1 ))
+  local -a snaps=()   # index-aligned with the non-empty entries of ctx_arr, in order
+  running="$(set -o pipefail; printf '%s' "$prompt_text" | wc -c | tr -dc '0-9')" || running=""
+  # Fail CLOSED if the base prompt size can't be measured — don't risk under-counting the payload.
+  [[ -n "$running" ]] || { running=0; ctx_inlinable=0; }
+  # Gate on the CURRENT prompt_text budget alone, not on pf_attached (CodeRabbit, PR #497 review):
+  # when the prompt file itself didn't fit and got --file-attached, prompt_text is replaced with a
+  # short fallback line ("Follow the instructions in the attached file: ...") that leaves most of
+  # inline_cap free — skipping context inlining here forced a SECOND upload (the fragile step this
+  # whole #490 rework exists to avoid) even when the fallback text plus every context file fit
+  # comfortably under budget. Sizing below already fails closed to attach on any overage.
+  if [ "$ctx_inlinable" -eq 1 ] && [ "${#ctx_arr[@]}" -gt 0 ]; then
+    snapdir="$(mktemp -d 2>/dev/null)" || snapdir=""
+    [[ -n "$snapdir" ]] || ctx_inlinable=0        # no temp dir -> can't snapshot -> attach
+  fi
+  if [[ -n "$snapdir" ]] && [ "$ctx_inlinable" -eq 1 ]; then
+    local _i=0 _snap sz frame fbytes _nul
+    for g in "${ctx_arr[@]:-}"; do
+      [[ -n "$g" ]] || continue
+      if [[ ! -f "$g" ]] || [[ ! -r "$g" ]]; then ctx_inlinable=0; break; fi
+      _snap="$snapdir/c.$_i"; _i=$(( _i + 1 ))
+      # Immutable bounded copy. Redirect form (`< "$g"`) so a "-"-leading path can't be read as a
+      # head option. head returns non-zero only on an open/read error -> fail closed to attach.
+      head -c "$_lim" < "$g" > "$_snap" 2>/dev/null || { ctx_inlinable=0; break; }
+      sz="$(set -o pipefail; wc -c < "$_snap" 2>/dev/null | tr -dc '0-9')" || { ctx_inlinable=0; break; }
+      [[ -n "$sz" ]] || { ctx_inlinable=0; break; }
+      [ "$sz" -ge "$_lim" ] && { ctx_inlinable=0; break; }   # source exceeded the budget -> attach
+      # Binary check on the SNAPSHOT: count NUL bytes (not `grep -Iq .`, which short-circuits on the
+      # first text line before a later NUL and mis-rejects a newline-only text file). pipefail so a
+      # masked tr/wc failure fails CLOSED rather than emitting "0" and mislabelling it text.
+      if [ "$sz" -gt 0 ]; then
+        _nul="$(set -o pipefail; LC_ALL=C tr -cd '\000' < "$_snap" 2>/dev/null | wc -c | tr -dc '0-9')" \
+          || { ctx_inlinable=0; break; }
+        [[ -n "$_nul" ]] || { ctx_inlinable=0; break; }
+        [ "$_nul" -gt 0 ] && { ctx_inlinable=0; break; }      # contains NUL -> binary -> attach
+      fi
+      # Exact non-content frame bytes for THIS file: header + footer with an empty body, MEASURED (the
+      # fence repeats the path TWICE, so a flat estimate would under-count a long path).
+      frame="$(printf '\n\n--- BEGIN CONTEXT FILE: %s ---\n\n--- END CONTEXT FILE: %s ---' "$g" "$g")"
+      fbytes="$(set -o pipefail; printf '%s' "$frame" | wc -c | tr -dc '0-9')" || { ctx_inlinable=0; break; }
+      [[ -n "$fbytes" ]] || { ctx_inlinable=0; break; }
+      running=$(( running + sz + fbytes ))
+      [ "$running" -gt "$inline_cap" ] && { ctx_inlinable=0; break; }   # cumulative over budget -> attach
+      snaps+=("$_snap")
+    done
+  else
+    ctx_inlinable=0
+  fi
+  if [ "$ctx_inlinable" -eq 0 ]; then
+    for g in "${ctx_arr[@]:-}"; do [[ -n "$g" ]] && set -- "$@" --file "$g"; done
+  else
+    # Assemble from the IMMUTABLE snapshots — no source file is re-read here, so nothing can change
+    # between validation and inlining (this is what closes the TOCTOU class). `$(cat)` strips trailing
+    # newlines (irrelevant to a review); the snapshots were sized above so the total stays under cap.
+    # Build into a LOCAL and CHECK each snapshot read: `cat` returns non-zero only on a read error of
+    # our own temp file (rare — no concurrent writer), and on any such failure we fall back to
+    # attaching the whole set rather than dispatch truncated context (fail-closed, consistent with the
+    # sizing pass). Committed to prompt_text only once every read succeeded.
+    local _asm="$prompt_text" _body _asm_ok=1 _j=0
+    for g in "${ctx_arr[@]:-}"; do
+      [[ -n "$g" ]] || continue
+      _body="$(cat "${snaps[$_j]}" 2>/dev/null)" || { _asm_ok=0; break; }
+      _asm="${_asm}
+
+--- BEGIN CONTEXT FILE: ${g} ---
+${_body}
+--- END CONTEXT FILE: ${g} ---"
+      _j=$(( _j + 1 ))
+    done
+    if [ "$_asm_ok" -eq 1 ]; then
+      prompt_text="$_asm"
+    else
+      for g in "${ctx_arr[@]:-}"; do [[ -n "$g" ]] && set -- "$@" --file "$g"; done
+    fi
+  fi
+  [[ -n "$snapdir" ]] && rm -rf "$snapdir" 2>/dev/null
+  set -- "$@" --prompt "$prompt_text"
 
   if [[ "$mode" = "background" ]]; then
     # RUN_ID-scoped output is the CALLER's responsibility (--out includes RUN_ID).

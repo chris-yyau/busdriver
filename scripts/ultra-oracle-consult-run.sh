@@ -28,6 +28,8 @@
 #     remaining args    forwarded verbatim to ultra_oracle_consult, e.g.
 #                       --mode blocking --prompt-file <p> --out <o>
 #                       [--context <glob>]... --slug <words>
+#                       (--context files are carried INLINE in the prompt when they fit under
+#                        ULTRA_ORACLE_INLINE_BYTES, else uploaded as oracle --file; ADR 0029)
 #
 # Prints ultra_oracle_consult's raw token on stdout; the verdict lands at --out.
 # stderr (oracle's --heartbeat progress) flows to the terminal, as it did when the

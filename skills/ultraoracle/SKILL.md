@@ -42,9 +42,16 @@ not gate anything and does not feed blueprint-review yet (that is Phase 4).
 | `upstream-audit` | repo evidence + inventory of upstream paths | `ORACLE_REPO_ATTACHED_REVIEW` if raw files attached, else `ORACLE_SUMMARY_REVIEW` |
 | `retrieval-loop` | two-round Oracle-directed retrieval | Implemented as the **separate** `run-retrieval-loop.sh` (default-OFF — see "Phase 5 retrieval loop" below), which emits `ORACLE_RETRIEVAL_REVIEW` only via the validated wrapper. It is **not** a `build-evidence-pack.sh` mode: that script still rejects `--mode retrieval-loop`. |
 
-The label is whatever `build-evidence-pack.sh` prints — it is determined by what was
-**actually attached**, so a summary-only consult can never masquerade as a repo review
-(ADR settling check #2). Never relabel by hand.
+The label is whatever `build-evidence-pack.sh` prints — it is determined by which raw repo
+files were **actually sent**, so a summary-only consult can never masquerade as a repo
+review (ADR settling check #2). Never relabel by hand.
+
+**Transport is not the label.** Since [ADR 0029](../../docs/adr/0029-ultraoracle-inline-context-and-submit-watchdog.md)
+(#490) the adapter carries `--context` files **inline in the prompt** whenever the whole
+set fits under `ULTRA_ORACLE_INLINE_BYTES` (default 100000), falling back to oracle
+`--file` uploads only for larger or binary payloads — the ChatGPT upload path can stall
+with the file attached and the message never sent. The same bytes reach the oracle either
+way, so `ORACLE_REPO_ATTACHED_REVIEW` stays accurate regardless of which transport ran.
 
 ## Procedure
 

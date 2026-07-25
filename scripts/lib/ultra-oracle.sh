@@ -355,7 +355,7 @@ _ultra_oracle_tab_ref() {
 
 _ultra_oracle_run_watched() {
   local cap="$1" errf="$2"; shift 2
-  local pid grace stable sig waits laststable streamed everstreamed start now elapsed ownrc _sig _signame _sigcode
+  local pid grace stable submitgrace sig waits laststable streamed everstreamed start now elapsed ownrc _sig _signame _sigcode
   local sidw tabsnap tabstate ref curlast prev_last="" last_probe_at=0
   _UORA_CONFIRMED_REF=""   # fresh per run; only OUR confirmed tab-probe sets it (below)
   "$@" >"$errf" 2>&1 &
@@ -387,6 +387,19 @@ _ultra_oracle_run_watched() {
   case "$stable" in ''|*[!0-9]*) stable=45;; esac
   stable="${stable#"${stable%%[!0]*}"}"            # strip leading zeros ("045"->"45", "00"->"")
   case "$stable" in '') stable=45;; esac           # 0/all-zero must NOT disable the stability guard
+  # #490 — seconds the PRE-SUBMISSION phase may take before we give up on it (see the check in the
+  # loop below). 0/invalid falls back to the default so the bound can be raised but never disabled.
+  submitgrace="${ULTRA_ORACLE_SUBMIT_GRACE:-300}"
+  case "$submitgrace" in ''|*[!0-9]*|0) submitgrace=300;; esac
+  submitgrace="${submitgrace#"${submitgrace%%[!0]*}"}"   # strip leading zeros ("0300"->"300", "00"->"")
+  case "$submitgrace" in '') submitgrace=300;; esac
+  # Length guard BEFORE the numeric `-ge` below (same reasoning as the timeout cap): a value with
+  # 19+ digits overflows bash's signed-64-bit integer test, which then returns status 2 — the `if`
+  # reads FALSE on every iteration and the watchdog is silently disabled for the whole run. The cap
+  # ceiling is 3600 (4 digits), so anything longer is nonsensical here; clamp by LENGTH so an
+  # oversized string can never reach the comparison at all.
+  [ "${#submitgrace}" -gt 4 ] && submitgrace=3600
+  [ "$submitgrace" -gt 3600 ] && submitgrace=3600
   start="$(date +%s)"
   # Iteration backstop: `date +%s` is WALL-CLOCK, so a backward system-clock adjustment could keep
   # `elapsed` below cap and extend the run unbounded. The loop sleeps ~3s per turn, so a monotonic
@@ -409,6 +422,38 @@ _ultra_oracle_run_watched() {
     iters=$(( iters + 1 ))
     now="$(date +%s)"; elapsed=$(( now - start ))
     [ "$elapsed" -lt 0 ] && elapsed=0                 # clock went backward -> lean on the iters backstop
+    # #490 — BOUNDED PRE-SUBMISSION PHASE. oracle starts its thinking-status monitor only AFTER
+    # `runSubmissionWithRecovery` returns (oracle 0.16.1 `browser/index.js`), so the total ABSENCE of
+    # a heartbeat line means that call never returned. That is exactly #490: an attach-mode file
+    # upload stalls, the doc sits attached in the composer, the message is never sent, and oracle
+    # burns its whole --timeout (30 min observed) before erroring. Fail FAST instead of waiting out
+    # the cap.
+    #
+    # PRECISION (litmus PR #4xx, MEDIUM): this proves the MONITOR never started, which is NOT quite
+    # the same as "nothing was sent". The submit path clicks Send and THEN runs verifyPromptCommitted
+    # / readConversationTurnCount before returning, so a stall in that post-click DOM verification
+    # also lands here — a turn that really was accepted and may be generating. Two things bound that
+    # residual. First, the tab-status probe above has already had ~17 chances (every ~15s from
+    # ULTRA_ORACLE_HUNG_GRACE) to spot a `completed` tab for this session and salvage it, so the
+    # COMPLETED case is recovered long before this fires; what survives to here is at worst a
+    # still-GENERATING turn. Second, that is precisely the case where salvage must not run — so we
+    # report 124, the AMBIGUOUS hard-cap code, and the caller NEVER salvages. Harvesting a
+    # mid-generation tab would promote a partial to a verdict, the failure this whole split exists to
+    # prevent; losing a recoverable advisory (non-gating) is the cheaper error.
+    if [ "$elapsed" -ge "$submitgrace" ] \
+       && ! grep -qE 'ChatGPT thinking|no thinking status detected yet' "$errf" 2>/dev/null; then
+      ownrc=0; _uora_terminate "$pid" || ownrc=$?; trap - INT TERM HUP EXIT
+      # Log AFTER the terminate (oracle no longer holds $errf open at its own write offset) and ONLY
+      # when we actually killed it — a run that raced to completion in this window gets its own rc and
+      # must not be labelled unsent. Record in the RUN LOG as well as on stderr: background mode's
+      # stderr belongs to the disowned subshell that no caller reads, while $errf is what
+      # `_ultra_oracle_diagnose_hint` (and the operator) inspect afterwards.
+      if [ "$ownrc" = 143 ]; then
+        echo "ultra-oracle: no ChatGPT turn started within ${submitgrace}s — the prompt was never submitted (#490, typically a stalled attachment upload); failing fast instead of waiting out the ${cap}s cap" | tee -a "$errf" >&2
+        return 124
+      fi
+      [ "$ownrc" = 125 ] && ownrc=1; return "$ownrc"
+    fi
     # Check the hung signature BEFORE the hard cap: if the confirmed-hung signature lands in the
     # same interval the cap fires, the recoverable answer must win (125), not be misread as an
     # ambiguous timeout (124).
@@ -523,6 +568,11 @@ _ultra_oracle_diagnose_hint() {
     else
       printf 'Cloudflare "Just a moment" challenge: oracle-launched Chrome is fingerprinted — set ultraOracle.attachRunning=true in ~/.claude/busdriver.json (ADR 0020) to attach to an ordinary browser instead'
     fi
+  elif grep -qiE 'did not finish uploading|never reached a clickable send button|attachment-send-not-ready|no ChatGPT turn started' "$f" 2>/dev/null; then
+    # #490: the file attached but the message was never sent. Only payloads OVER
+    # ULTRA_ORACLE_INLINE_BYTES take the upload path at all (everything smaller is inlined into
+    # the prompt), so reaching this means the payload was genuinely large.
+    printf 'attachment upload stalled — the file attached to ChatGPT but the message was never sent (#490). Payloads under ULTRA_ORACLE_INLINE_BYTES (default 100000) bytes are inlined into the prompt and avoid this path entirely: shrink the doc/evidence pack, or raise ULTRA_ORACLE_INLINE_BYTES if argv can carry it'
   fi
 }
 
@@ -667,6 +717,12 @@ _ultra_oracle_browser_unlock() {
 # oracle v0.15.0 has no --prompt-file flag, so the file content is passed via
 # --prompt "$(cat ...)". Command-substitution output is NOT re-parsed by the
 # shell, so backticks/$()/$VAR in the file stay literal.
+#
+# --context files are carried the SAME way — INLINE in the prompt — whenever the whole set fits
+# alongside it within ULTRA_ORACLE_INLINE_BYTES (default 100000). They become oracle `--file`
+# uploads only above that budget, or when any of them is not a readable regular TEXT file. See
+# ADR 0027 / #490: the ChatGPT upload path can leave the file attached with the message never
+# sent, burning the entire --timeout, while an inline prompt of the same content sends in seconds.
 ultra_oracle_consult() {
   # oracle requires a 3-5 word --slug; default accordingly (callers override).
   local prompt="" prompt_file="" mode="blocking" out="" slug="ultra oracle consult" cap=""
@@ -926,21 +982,60 @@ ultra_oracle_consult() {
   # passing both is a hard CLI rejection — attach mode always reuses (and never
   # hides) the operator's already-visible Chrome window.
   if ! ultra_oracle_attach_running && ultra_oracle_hide_window; then set -- "$@" --browser-hide-window; fi
-  local g; for g in "${ctx_arr[@]:-}"; do [[ -n "$g" ]] && set -- "$@" --file "$g"; done
+  # ---- payload assembly: prefer INLINE over attachments (#490) ------------------------------
+  # The ChatGPT file upload is the most fragile step of a browser consult. Verified live (#490,
+  # oracle 0.16.1, attach mode): a --file payload lands in the composer, the message is NEVER SENT,
+  # and oracle burns its whole --timeout (30 min observed) before failing with "Attachments did not
+  # finish uploading before timeout" — while a prompt-only consult of the SAME content sends in
+  # seconds on the SAME setup. So build the prompt FIRST and carry every --context file INLINE
+  # whenever the combined payload fits, touching the upload path only for payloads too large for
+  # argv. ULTRA_ORACLE_INLINE_BYTES (default 100000) is the ONE combined budget — comfortably under
+  # ARG_MAX (macOS 1 MiB, Linux ~2 MiB/arg) with room for the rest of argv and the environment.
+  local inline_cap; inline_cap="${ULTRA_ORACLE_INLINE_BYTES:-100000}"
+  case "$inline_cap" in ''|*[!0-9]*|0) inline_cap=100000;; esac
+  local prompt_text="" pf_attached=0
   if [[ -n "$prompt_file" ]]; then
     # Fail closed if the prompt file is unreadable/empty — otherwise a silent cat
     # failure would invoke oracle with an empty prompt.
     if [[ ! -r "$prompt_file" ]] || [[ ! -s "$prompt_file" ]]; then printf 'error'; return 1; fi
     local pf_size; pf_size="$(wc -c < "$prompt_file" 2>/dev/null || echo 0)"
-    if [ "$pf_size" -gt "${ULTRA_ORACLE_INLINE_BYTES:-100000}" ]; then
+    if [ "$pf_size" -gt "$inline_cap" ]; then
       # Too large to safely inline into argv (ARG_MAX) — attach as a file instead.
-      set -- "$@" --file "$prompt_file" \
-        --prompt "Follow the instructions in the attached file: $(basename "$prompt_file")"
+      set -- "$@" --file "$prompt_file"
+      prompt_text="Follow the instructions in the attached file: $(basename "$prompt_file")"
+      pf_attached=1
     else
-      local pf_content; pf_content="$(cat "$prompt_file")"
-      set -- "$@" --prompt "$pf_content"
+      prompt_text="$(cat "$prompt_file")"
     fi
-  else set -- "$@" --prompt "$prompt"; fi
+  else prompt_text="$prompt"; fi
+  # --context files: inline them into the prompt when the WHOLE set fits alongside it, else attach
+  # them all (the pre-#490 behavior). All-or-nothing on purpose — a mixed payload would still stall
+  # on the one attachment it kept, so splitting buys nothing. Any context that is not a readable
+  # REGULAR TEXT file (directory, device, unmatched glob, binary) drops the whole set back to
+  # attachments: `$(cat …)` strips NUL bytes, so inlining a binary would SILENTLY truncate it.
+  local g used ctx_total=0 ctx_inlinable=1 sz
+  used="$(printf '%s' "$prompt_text" | wc -c | tr -dc '0-9')"; [[ -n "$used" ]] || used=0
+  for g in "${ctx_arr[@]:-}"; do
+    [[ -n "$g" ]] || continue
+    if [[ ! -f "$g" ]] || [[ ! -r "$g" ]] || { [[ -s "$g" ]] && ! grep -Iq . "$g" 2>/dev/null; }; then
+      ctx_inlinable=0; break
+    fi
+    sz="$(wc -c < "$g" 2>/dev/null | tr -dc '0-9')"; [[ -n "$sz" ]] || { ctx_inlinable=0; break; }
+    ctx_total=$(( ctx_total + sz + 128 ))    # + per-file BEGIN/END header overhead
+  done
+  if [ "$pf_attached" -eq 1 ] || [ "$ctx_inlinable" -eq 0 ] || [ $(( used + ctx_total )) -gt "$inline_cap" ]; then
+    for g in "${ctx_arr[@]:-}"; do [[ -n "$g" ]] && set -- "$@" --file "$g"; done
+  else
+    for g in "${ctx_arr[@]:-}"; do
+      [[ -n "$g" ]] || continue
+      prompt_text="${prompt_text}
+
+--- BEGIN CONTEXT FILE: ${g} ---
+$(cat "$g")
+--- END CONTEXT FILE: ${g} ---"
+    done
+  fi
+  set -- "$@" --prompt "$prompt_text"
 
   if [[ "$mode" = "background" ]]; then
     # RUN_ID-scoped output is the CALLER's responsibility (--out includes RUN_ID).

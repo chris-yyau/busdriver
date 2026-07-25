@@ -32,6 +32,8 @@ The existing ultraOracle adapter is valuable and already provides an important s
 - bounded timeout handling;
 - user-config-only enablement through `~/.claude/busdriver.json` rather than repo-controlled config;
 - support for `--prompt-file` and `--context` paths, which are passed to the `oracle` CLI as files.
+  *(Amended by [ADR 0027](./0027-ultraoracle-inline-context-and-submit-watchdog.md): these are now
+  carried inline in the prompt when they fit, and passed as `--file` only above the inline budget.)*
 
 However, the current architecture can still create an authority problem: a high-status Oracle verdict may only have seen a Claude-written design/summary. That is useful as an advisory summary review, but it is not a repo-grounded expert review. If the system does not label this distinction, humans and arbiters may overweight Oracle output.
 

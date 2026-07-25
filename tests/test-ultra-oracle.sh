@@ -425,14 +425,62 @@ grep -q "ULTRA-ORACLE VERDICT" "$tmp/cr_ok.md" || { echo "FAIL consult-run verdi
 out="$(bash "$CWRAP" --mode blocking --prompt-file "$cwp" --out "$tmp/cr_noguard.md")"
 [[ "$out" == "ok" ]] || { echo "FAIL consult-run no-surface ok got '$out'"; FAIL=1; }
 
-# --context globs (ultraoracle evidence pack) must reach oracle as --file args
+# #490 — --context files (ultraoracle evidence pack, blueprint-review design doc) must be INLINED
+# into --prompt when they fit, NEVER uploaded: the ChatGPT attachment path can stall with the file
+# attached and the message unsent, burning the whole --timeout. Small context -> no --file at all,
+# and the file's own text present in the --prompt value.
 export ULTRA_ORACLE_ARGV_OUT="$tmp/cr_argv.log"
-ctx="$(mktemp)"; printf 'evidence' > "$ctx"
+ctx="$(mktemp)"; printf 'EVIDENCE-MARKER-SMALL' > "$ctx"
 bash "$CWRAP" --prompt-file "$cwp" --context "$ctx" --out "$tmp/cr_ctx.md" --mode blocking >/dev/null
-if ! grep -qxF -- "--file" "$tmp/cr_argv.log" || ! grep -qxF -- "$ctx" "$tmp/cr_argv.log"; then
-  echo "FAIL consult-run --context not forwarded to oracle --file"; FAIL=1
+grep -qxF -- "--file" "$tmp/cr_argv.log" && {
+  echo "FAIL consult-run inlinable --context still went through oracle --file (#490)"; FAIL=1; }
+grep -qF -- "EVIDENCE-MARKER-SMALL" "$tmp/cr_argv.log" || {
+  echo "FAIL consult-run --context body not inlined into --prompt (#490)"; FAIL=1; }
+
+# ...and the OVER-budget case must still attach: an inline payload past ULTRA_ORACLE_INLINE_BYTES
+# would blow argv, so --file remains the fallback (now bounded by the pre-submission watchdog).
+: > "$tmp/cr_argv.log"
+ctxbig="$(mktemp)"; head -c 4096 /dev/zero | tr '\0' 'x' > "$ctxbig"
+ULTRA_ORACLE_INLINE_BYTES=2048 bash "$CWRAP" --prompt-file "$cwp" --context "$ctxbig" \
+  --out "$tmp/cr_ctxbig.md" --mode blocking >/dev/null
+if ! grep -qxF -- "--file" "$tmp/cr_argv.log" || ! grep -qxF -- "$ctxbig" "$tmp/cr_argv.log"; then
+  echo "FAIL consult-run over-budget --context not forwarded to oracle --file"; FAIL=1
 fi
-rm -f "$ctx"; unset ULTRA_ORACLE_ARGV_OUT
+
+# ...and a BINARY context must never be inlined ($(cat) strips NULs -> silent truncation).
+: > "$tmp/cr_argv.log"
+ctxbin="$(mktemp)"; printf 'bin\000ary' > "$ctxbin"
+bash "$CWRAP" --prompt-file "$cwp" --context "$ctxbin" --out "$tmp/cr_ctxbin.md" --mode blocking >/dev/null
+if ! grep -qxF -- "--file" "$tmp/cr_argv.log" || ! grep -qxF -- "$ctxbin" "$tmp/cr_argv.log"; then
+  echo "FAIL consult-run binary --context was inlined instead of attached (#490)"; FAIL=1
+fi
+# ...and the MULTI-file shape, which is what the ultraoracle evidence pack and the retrieval loop
+# actually pass (both build an array of one --context per pack file). The inline/attach decision is
+# all-or-nothing across the SET, so both directions need covering. Two small text contexts -> BOTH
+# inlined, nothing uploaded.
+: > "$tmp/cr_argv.log"
+ctxa="$(mktemp)"; ctxb="$(mktemp)"
+printf 'MARKER-CTX-A' > "$ctxa"; printf 'MARKER-CTX-B' > "$ctxb"
+bash "$CWRAP" --prompt-file "$cwp" --context "$ctxa" --context "$ctxb" \
+  --out "$tmp/cr_ctx2.md" --mode blocking >/dev/null
+grep -qxF -- "--file" "$tmp/cr_argv.log" && {
+  echo "FAIL multi --context set went through oracle --file (#490)"; FAIL=1; }
+for _m in MARKER-CTX-A MARKER-CTX-B; do
+  grep -qF -- "$_m" "$tmp/cr_argv.log" || { echo "FAIL multi --context: $_m not inlined (#490)"; FAIL=1; }
+done
+
+# ...and ONE non-inlinable member must drop the WHOLE set back to attachments — a mixed payload
+# would still stall on the single attachment it kept, so partial inlining buys nothing.
+: > "$tmp/cr_argv.log"
+printf 'bin\000ary' > "$ctxb"
+bash "$CWRAP" --prompt-file "$cwp" --context "$ctxa" --context "$ctxb" \
+  --out "$tmp/cr_ctx3.md" --mode blocking >/dev/null
+if ! grep -qxF -- "$ctxa" "$tmp/cr_argv.log" || ! grep -qxF -- "$ctxb" "$tmp/cr_argv.log"; then
+  echo "FAIL multi --context all-or-nothing: not every member attached (#490)"; FAIL=1
+fi
+grep -qF -- "MARKER-CTX-A" "$tmp/cr_argv.log" && {
+  echo "FAIL multi --context: inlined a member despite a non-inlinable sibling (#490)"; FAIL=1; }
+rm -f "$ctx" "$ctxbig" "$ctxbin" "$ctxa" "$ctxb"; unset ULTRA_ORACLE_ARGV_OUT
 
 # failing oracle -> raw `error` token (drives caller's ORACLE_FAILED / block-and-ask)
 export ULTRA_ORACLE_MOCK_MODE=fail
@@ -708,6 +756,55 @@ else
   echo "FAIL no-stream-gate never wrote .rc"; FAIL=1
 fi
 unset ULTRA_ORACLE_TABS_MODE
+
+# #490 PRE-SUBMISSION WATCHDOG (positive): a run that NEVER emits a heartbeat line never submitted
+# the prompt (oracle starts its thinking-status monitor only AFTER submission), which is the
+# attachment-upload stall — file attached, message unsent, oracle burning its whole --timeout.
+# hungnostreamlong sleeps 300s emitting nothing; with SUBMIT_GRACE=1 the watchdog must terminate it
+# in seconds, report the AMBIGUOUS 124 (never salvage — nothing was submitted, so no tab holds an
+# answer), and leave an actionable .hint. TABS_MODE unset so the tab probe cannot recover it.
+export ULTRA_ORACLE_MOCK_MODE=hungnostreamlong ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0 ULTRA_ORACLE_SUBMIT_GRACE=1
+_t0="$(date +%s)"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv490.md" --mode background --timeout-cap-seconds 60)"
+_w=0; while [ ! -f "$tmp/sv490.md.rc" ] && [ "$_w" -lt 30 ]; do sleep 1; _w=$((_w + 1)); done
+_elapsed=$(( $(date +%s) - _t0 ))
+if [ -f "$tmp/sv490.md.rc" ]; then
+  [ "$(cat "$tmp/sv490.md.rc" 2>/dev/null)" = "124" ] || { echo "FAIL #490 submit-watchdog .rc should be 124 got '$(cat "$tmp/sv490.md.rc" 2>/dev/null)'"; FAIL=1; }
+  [ "$_elapsed" -lt 30 ] || { echo "FAIL #490 submit-watchdog did not fail fast (${_elapsed}s of a 60s cap)"; FAIL=1; }
+  grep -q "SALVAGED" "$tmp/sv490.md" 2>/dev/null && { echo "FAIL #490 submit-watchdog salvaged a never-submitted consult"; FAIL=1; }
+  grep -q "attachment upload stalled" "$tmp/sv490.md.hint" 2>/dev/null || { echo "FAIL #490 submit-watchdog left no actionable hint"; FAIL=1; }
+else
+  echo "FAIL #490 submit-watchdog never wrote .rc (would have waited the 60s cap)"; FAIL=1
+fi
+
+# #490 NEGATIVE guard: a run that DID emit heartbeats HAS submitted — the submit watchdog must
+# never touch it, even with SUBMIT_GRACE=1. hungactive streams then sleeps, and its 1s stability
+# keeps the streaming heuristic from firing, so the ONLY correct outcome is the full 8s hard cap.
+# Distinguished from the positive case by elapsed: fail-fast there, cap-bound here.
+export ULTRA_ORACLE_MOCK_MODE=hungactive ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0 ULTRA_ORACLE_SUBMIT_GRACE=1
+_t0="$(date +%s)"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv490n.md" --mode background --timeout-cap-seconds 8)"
+_w=0; while [ ! -f "$tmp/sv490n.md.rc" ] && [ "$_w" -lt 20 ]; do sleep 1; _w=$((_w + 1)); done
+_elapsed=$(( $(date +%s) - _t0 ))
+if [ -f "$tmp/sv490n.md.rc" ]; then
+  [ "$_elapsed" -ge 7 ] || { echo "FAIL #490 submit-watchdog killed a SUBMITTED consult (${_elapsed}s, expected ~cap 8s)"; FAIL=1; }
+else
+  echo "FAIL #490 submit-watchdog negative case never wrote .rc"; FAIL=1
+fi
+# #490 CONTROL: the SAME never-submitting mock with the grace raised past the cap must run to the
+# full cap. This is what proves the fast exit above is caused by the watchdog and not by some other
+# early-exit path — i.e. that the guard can both fire AND not fire.
+export ULTRA_ORACLE_MOCK_MODE=hungnostreamlong ULTRA_ORACLE_SALVAGE_MODE=ok ULTRA_ORACLE_HUNG_GRACE=0 ULTRA_ORACLE_SUBMIT_GRACE=99999
+_t0="$(date +%s)"
+st="$(ultra_oracle_consult --prompt hi --out "$tmp/sv490c.md" --mode background --timeout-cap-seconds 8)"
+_w=0; while [ ! -f "$tmp/sv490c.md.rc" ] && [ "$_w" -lt 20 ]; do sleep 1; _w=$((_w + 1)); done
+_elapsed=$(( $(date +%s) - _t0 ))
+if [ -f "$tmp/sv490c.md.rc" ]; then
+  [ "$_elapsed" -ge 7 ] || { echo "FAIL #490 control exited early with the watchdog disarmed (${_elapsed}s, expected ~cap 8s)"; FAIL=1; }
+else
+  echo "FAIL #490 control never wrote .rc"; FAIL=1
+fi
+unset ULTRA_ORACLE_SUBMIT_GRACE
 
 # background hung + harvest FAILS -> confirmed-hung (125) that salvage can't recover normalizes
 # to timeout -> .rc=124, and $out is left clean (no partial).

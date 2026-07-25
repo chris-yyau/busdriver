@@ -1,3 +1,10 @@
+## [1.99.1](https://github.com/chris-yyau/busdriver/compare/v1.99.0...v1.99.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* **ultraoracle:** inline --context instead of uploading, bound the pre-submission phase ([#490](https://github.com/chris-yyau/busdriver/issues/490)) ([#497](https://github.com/chris-yyau/busdriver/issues/497)) ([0bd0c5d](https://github.com/chris-yyau/busdriver/commit/0bd0c5dfe05c11492fca4fa9c55d1424e8722dc4)), closes [#458](https://github.com/chris-yyau/busdriver/issues/458)
+
 # [1.99.0](https://github.com/chris-yyau/busdriver/compare/v1.98.4...v1.99.0) (2026-07-24)
 
 

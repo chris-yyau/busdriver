@@ -224,17 +224,51 @@ done
 # --- Test 7g: finding INSIDE a single marker pair -> stale (P1 follow-up to #496) ---
 # Codex + cubic flagged that counting marker pairs alone doesn't prove the
 # enclosed payload IS the badge — a finding placed inside exactly one begin/end
-# pair would be silently discarded along with it. The badge content must
-# structurally match the known devin.ai badge shape (anchor -> picture ->
-# source/img referencing static.devin.ai/app.devin.ai) before the strip fires;
-# arbitrary prose inside the marker pair must leave residual text and stay stale.
-DEVIN_FINDING_INSIDE_BADGE='"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\nCritical: unsanitized input enables SQL injection.\n<!-- devin-review-badge-end -->"'
-got=$(run devin-ai-integration "$EMPTY_THREADS" "$(mk_devin_body "$DEVIN_FINDING_INSIDE_BADGE")" "$EMPTY_STATUSES")
-if [[ "$got" == "stale" ]]; then
-  ok "finding inside single marker pair -> stale (P1 follow-up to #496; badge content structurally validated)"
-else
-  fail "finding inside single marker pair expected 'stale', got '$got'"
-fi
+# pair would be silently discarded along with it. The content between the markers
+# must therefore be MARKUP ONLY before the strip fires; prose must leave residual
+# text and keep the review stale.
+#
+# The second case is Codex's follow-up P1 on #498: angle-bracketed prose holds no
+# inner angle brackets, so a bare `<[^<>]*>` accepted it as markup and stripped it.
+# Each token must open like a real tag (`<`, optional `/`, then a letter).
+finding_in_badge_bodies=(
+  # bare prose
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\nCritical: unsanitized input enables SQL injection.\n<!-- devin-review-badge-end -->"'
+  # angle-bracketed prose, leading space — defeats `<[^<>]*>`
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n< Critical: unsanitized input enables SQL injection. >\n<!-- devin-review-badge-end -->"'
+  # angle-bracketed prose starting with a letter — defeats `</?[a-z][^<>]*>`
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n<critical: unsanitized input enables SQL injection. >\n<!-- devin-review-badge-end -->"'
+  # valid tag GRAMMAR (bare boolean attributes) but not a badge element — only the
+  # element-name whitelist rejects this one
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n<critical unsanitized input>\n<!-- devin-review-badge-end -->"'
+  # closing-tag prefix on a non-badge element
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n</critical>\n<!-- devin-review-badge-end -->"'
+  # WHITELISTED element name, prose smuggled as bare boolean attributes — defeats an
+  # element-name whitelist that leaves attributes free-form. Only requiring quoted
+  # name="value" attributes rejects this.
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n<a critical unsanitized input>\n<!-- devin-review-badge-end -->"'
+  # same, on a CLOSING tag — closing tags must carry no attributes at all
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n</a critical unsanitized input>\n<!-- devin-review-badge-end -->"'
+  # whitelisted element, prose as a QUOTED attribute VALUE under an arbitrary attribute
+  # NAME — defeats a quoted-name="value" grammar. Only the attribute-name whitelist
+  # rejects this.
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n<a critical=\"unsanitized input enables SQL injection\">\n<!-- devin-review-badge-end -->"'
+  # whitelisted element + whitelisted attribute name, but the URL is off-host
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n<a href=\"https://evil.example/critical-sql-injection\">\n<!-- devin-review-badge-end -->"'
+  # whitelisted element AND attribute name, prose as the attribute VALUE — defeats an
+  # attribute-name whitelist that leaves values free-form. Values are pinned too.
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n<img src=\"https://static.devin.ai/assets/review.svg\" alt=\"Critical: unsanitized input enables SQL injection\">\n<!-- devin-review-badge-end -->"'
+  # same via target=
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n<a target=\"Critical: unsanitized input enables SQL injection\">\n<!-- devin-review-badge-end -->"'
+  # same via a whitespace-bearing URL path
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n<img src=\"https://static.devin.ai/assets/Critical: unsanitized input enables SQL injection\">\n<!-- devin-review-badge-end -->"'
+)
+finding_in_badge_fail=0
+for b in "${finding_in_badge_bodies[@]}"; do
+  got=$(run devin-ai-integration "$EMPTY_THREADS" "$(mk_devin_body "$b")" "$EMPTY_STATUSES")
+  [[ "$got" == "stale" ]] || { fail "finding inside single marker pair expected 'stale', got '$got' for $b"; finding_in_badge_fail=1; }
+done
+[[ "$finding_in_badge_fail" -eq 0 ]] && ok "finding inside single marker pair (plain + angle-bracketed prose) -> stale (#496/#498 markup-only strip)"
 
 # --- Test 8: Devin finding as an UNRESOLVED THREAD -> stale (Tier A gates it) ---
 # Even with a clean summary on the ancestor, an open thread keeps Devin `stale`

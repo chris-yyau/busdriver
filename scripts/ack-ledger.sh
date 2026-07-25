@@ -1044,7 +1044,35 @@ if [ "$ever_approved" -eq 0 ]; then
     badge_ends=$(printf '%s' "$body_norm" | grep -oF '<!-- devin-review-badge-end -->' | wc -l | tr -d '[:space:]')
     if [[ "$badge_begins" == "1" && "$badge_ends" == "1" ]]; then
       badge_inner=$(printf '%s' "$body_norm" | sed -n 's/.*<!-- devin-review-badge-begin -->\(.*\)<!-- devin-review-badge-end -->.*/\1/p' | sed 's/^ *//; s/ *$//')
-      if printf '%s' "$badge_inner" | grep -Eq '^(<[^<>]*> *)+$'; then
+      # The payload must be the Devin badge and nothing else: only the badge's own
+      # elements, only their own attribute NAMES, URLs pinned to the devin.ai hosts,
+      # and no attributes at all on a closing tag (`source`/`img` are void, so only
+      # `a`/`picture` close). Attribute ORDER and the URL paths stay free.
+      #
+      # FOUR progressively weaker drafts each reached review and each failed OPEN
+      # (#498). Recorded because every one of them *looked* structural:
+      #   `<[^<>]*>`                 accepted `< critical: ... >`  (no inner brackets)
+      #   `</?[a-z][^<>]*>`          accepted `<critical: ... >`   (starts w/ a letter)
+      #   element name + free attrs  accepted `<a critical unsanitized input>`
+      #   + quoted `name="value"`    accepted `<a critical="unsanitized input ...">`
+      # The progression is the lesson: a tag is a roomy hiding place, and each fix
+      # only closed the room it was pointed at. Nothing short of naming the allowed
+      # attributes leaves a sentence nowhere to sit.
+      #
+      # The cost is stated plainly: this DOES pin the devin.ai hosts and the attribute
+      # names, so a badge that grows a new element or attribute stops matching and the
+      # review stays `stale` — the #496 inert-on-refresh symptom, now as the explicit
+      # brittleness budget rather than an accident. It is the fail-CLOSED direction and
+      # it is named in the ADR's revisit trigger.
+      #
+      # Attribute VALUES are pinned too, not just names — the fifth bypass was
+      # `alt="critical: unsanitized input enables sql injection"`, and `target`,
+      # `media` and the URL paths were the same hole unclosed. So: `alt` and `target`
+      # are literals, `media` is the color-scheme form, and the URL paths admit no
+      # whitespace, which is what a sentence needs. Nothing in a badge tag can hold
+      # prose any more; the class is closed rather than closed one field at a time.
+      # Body is already lowercased above (and `_` stripped, hence `target="blank"`).
+      if printf '%s' "$badge_inner" | grep -Eq '^((<a( (href="https://app\.devin\.ai/[^"<>[:space:]]*"|target="blank"))*>|<picture>|<source( (media="\(prefers-color-scheme: [a-z]+\)"|srcset="https://static\.devin\.ai/[^"<>[:space:]]*"))*>|<img( (src="https://static\.devin\.ai/[^"<>[:space:]]*"|alt="open in devin review"))*>|</a>|</picture>) *)+$'; then
         body_norm=$(printf '%s' "$body_norm" | sed 's/<!-- devin-review-badge-begin -->.*<!-- devin-review-badge-end -->//; s/^ *//; s/ *$//')
       fi
     fi

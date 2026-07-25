@@ -138,8 +138,10 @@ Attribute **values** are pinned as well, not only names — the fifth bypass was
 the URL paths were the same hole left unclosed. `alt` and `target` are literals,
 `media` is the color-scheme form, and URL paths admit no whitespace.
 
-All eleven rejected shapes are pinned in test 7g, each verified to fail without the
-specific check that rejects it.
+All fifteen rejected shapes are pinned in test 7g, each verified to fail without the
+specific check that rejects it. The check itself is assembled one alternative per
+line rather than as a single dense ERE, so a badge refresh edits one clause in
+isolation — this is the expression that went fail-open five times.
 
 **Where this stops, and why it stops there.** A sixth bypass exists and is *not*
 closed: `href="https://app.devin.ai/critical-unsanitized-input-enables-sql-injection"`

@@ -1030,14 +1030,15 @@ if [ "$ever_approved" -eq 0 ]; then
   # residual markers+text keep the anchored `$` below from matching, so the review
   # correctly stays `stale`.
   #
-  # Deliberately NOT a pattern pinning devin.ai URLs, attribute order, or the exact
-  # anchor/picture/source/img nesting (a draft did — rejected in review). That would
-  # re-create the very defect #496 exists to fix: an over-narrow pattern that goes
-  # inert the moment Devin refreshes its badge markup, this time failing silently to
-  # `stale` forever. Markup-vs-prose closes the same fail-open and survives a badge
-  # refresh. Findings smuggled INTO an attribute value (`alt="critical: ..."`) are
-  # out of scope by construction — they were stripped under every prior design too,
-  # and an alt attribute is not a finding channel any bot posts through.
+  # The payload check below DOES pin the devin.ai hosts, the element names, and the
+  # attribute names and values. An earlier revision of this comment argued the exact
+  # opposite — that pinning must be avoided because it re-creates #496's
+  # inert-on-refresh defect, and that a generic markup-vs-prose test both closed the
+  # hole and survived a badge refresh. Five demonstrated bypasses (#498) disproved the
+  # second half; see the table at the check itself. Do NOT relax the whitelist back
+  # toward a generic pattern on the strength of the brittleness argument alone — that
+  # argument is real, is accounted for as an explicit budget, and is handled by the
+  # ADR 0027 revisit trigger.
   if [[ "$login" == "devin-ai-integration" && "$last_state" == "COMMENTED" && -z "$body_sha" ]]; then
     body_norm=$(printf '%s' "$last_body" | tr '[:upper:]' '[:lower:]' | sed 's/[*_`#]//g' | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//')
     badge_begins=$(printf '%s' "$body_norm" | grep -oF '<!-- devin-review-badge-begin -->' | wc -l | tr -d '[:space:]')
@@ -1072,7 +1073,19 @@ if [ "$ever_approved" -eq 0 ]; then
       # whitespace, which is what a sentence needs. Nothing in a badge tag can hold
       # prose any more; the class is closed rather than closed one field at a time.
       # Body is already lowercased above (and `_` stripped, hence `target="blank"`).
-      if printf '%s' "$badge_inner" | grep -Eq '^((<a( (href="https://app\.devin\.ai/[^"<>[:space:]]*"|target="blank"))*>|<picture>|<source( (media="\(prefers-color-scheme: [a-z]+\)"|srcset="https://static\.devin\.ai/[^"<>[:space:]]*"))*>|<img( (src="https://static\.devin\.ai/[^"<>[:space:]]*"|alt="open in devin review"))*>|</a>|</picture>) *)+$'; then
+      #
+      # Built one alternative per line rather than as a single ~700-char inline ERE:
+      # this is the expression that went fail-open five times, so a future refresh
+      # edits ONE clause in isolation instead of hunting inside a dense one-liner.
+      _bp_host_a='https://app\.devin\.ai/[^"<>[:space:]]*'      # anchor target
+      _bp_host_s='https://static\.devin\.ai/[^"<>[:space:]]*'   # image assets
+      _bp_a="<a( (href=\"${_bp_host_a}\"|target=\"blank\"))*>"
+      _bp_picture='<picture>'
+      _bp_source="<source( (media=\"\\(prefers-color-scheme: [a-z]+\\)\"|srcset=\"${_bp_host_s}\"))*>"
+      _bp_img="<img( (src=\"${_bp_host_s}\"|alt=\"open in devin review\"))*>"
+      _bp_close='</a>|</picture>'          # source/img are void — they never close
+      _badge_re="^((${_bp_a}|${_bp_picture}|${_bp_source}|${_bp_img}|${_bp_close}) *)+$"
+      if printf '%s' "$badge_inner" | grep -Eq "$_badge_re"; then
         body_norm=$(printf '%s' "$body_norm" | sed 's/<!-- devin-review-badge-begin -->.*<!-- devin-review-badge-end -->//; s/^ *//; s/ *$//')
       fi
     fi

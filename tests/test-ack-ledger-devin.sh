@@ -262,6 +262,12 @@ finding_in_badge_bodies=(
   '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n<a target=\"Critical: unsanitized input enables SQL injection\">\n<!-- devin-review-badge-end -->"'
   # same via a whitespace-bearing URL path
   '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n<img src=\"https://static.devin.ai/assets/Critical: unsanitized input enables SQL injection\">\n<!-- devin-review-badge-end -->"'
+  # off-host src on <img> — the host pin must hold on every URL attribute, not just href
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n<img src=\"https://evil.example/critical-sql-injection.svg\">\n<!-- devin-review-badge-end -->"'
+  # off-host srcset on <source>
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n<source srcset=\"https://evil.example/critical-sql-injection.svg\">\n<!-- devin-review-badge-end -->"'
+  # arbitrary media value — the color-scheme literal must hold too
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n<source media=\"Critical: unsanitized input enables SQL injection\" srcset=\"https://static.devin.ai/assets/a.svg\">\n<!-- devin-review-badge-end -->"'
 )
 finding_in_badge_fail=0
 for b in "${finding_in_badge_bodies[@]}"; do

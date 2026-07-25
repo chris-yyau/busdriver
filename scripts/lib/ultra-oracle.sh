@@ -1040,62 +1040,87 @@ ultra_oracle_consult() {
   # A stricter iconv/UTF-8 validation would also reject legitimate non-UTF-8 text and is not worth it
   # here — see ADR 0027.
   #
-  # SIZE-FIRST, then assemble (litmus PR review, two MEDIUMs). Two constraints pull against each
-  # other: (a) the fence repeats the path TWICE, so a FLAT per-file overhead under-counts long paths
-  # and could inline an over-budget set; (b) buffering every file's content into a shell var just to
-  # measure it risks OOM on a large text context before we ever decide to attach. Resolve both by
-  # sizing with `wc -c` (which streams — O(1) shell memory) plus an EXACTLY-measured frame overhead,
-  # and only cat-ing content into memory in the second pass, once the running total is proven under
-  # the ~100 KB cap. Any file that pushes the total over cap short-circuits the whole set to attach.
-  local g ctx_inlinable=1 running sz frame fbytes
+  # SNAPSHOT-FIRST (litmus PR review, TOCTOU class). Every check (size, binary scan) and the inline
+  # read all operate on an IMMUTABLE per-file snapshot taken up front, not on the live path — so the
+  # object being validated cannot change under the checks. This is what makes the unavoidably-separate
+  # binary scan safe (a shell var cannot hold a NUL byte, so the scan MUST be its own read; snapshots
+  # are what let that read and the sizing read and the content read all see the SAME bytes). Each
+  # snapshot is bounded to inline_cap+1 via `head -c`, so a huge or growing source can neither exhaust
+  # memory (snapshots land on disk; the running total short-circuits at the cap) nor be mis-sized —
+  # a snapshot that reaches the +1 byte proves its source exceeds the budget, so the set attaches.
+  # ATTACH always passes the ORIGINAL path to oracle `--file` (oracle reads it later, exactly as
+  # pre-#490); the snapshot is used ONLY to decide inlining and to supply inlined bytes. Any failure
+  # (mktemp, non-regular/unreadable source, a read/measure error) fails CLOSED to attaching the set.
+  local g ctx_inlinable=1 running snapdir="" _lim=$(( inline_cap + 1 ))
+  local -a snaps=()   # index-aligned with the non-empty entries of ctx_arr, in order
   running="$(set -o pipefail; printf '%s' "$prompt_text" | wc -c | tr -dc '0-9')" || running=""
-  # Fail CLOSED, consistent with the per-file checks below: if the base prompt size can't be
-  # measured, don't risk under-counting the combined payload — attach the whole context set. Keep
-  # `running` numeric so the loop's arithmetic stays well-formed even though it won't inline.
+  # Fail CLOSED if the base prompt size can't be measured — don't risk under-counting the payload.
   [[ -n "$running" ]] || { running=0; ctx_inlinable=0; }
-  for g in "${ctx_arr[@]:-}"; do
-    [[ -n "$g" ]] || continue
-    if [[ ! -f "$g" ]] || [[ ! -r "$g" ]]; then ctx_inlinable=0; break; fi
-    # SIZE FIRST — cheap (wc -c fstats a regular file), and it lets a file that ALONE blows the
-    # budget short-circuit to attach WITHOUT the whole-file NUL read below. pipefail so a masked wc
-    # failure (upstream error, final tr still exits 0 on "") fails closed, not silently to a wrong size.
-    sz="$(set -o pipefail; wc -c < "$g" 2>/dev/null | tr -dc '0-9')" || { ctx_inlinable=0; break; }
-    [[ -n "$sz" ]] || { ctx_inlinable=0; break; }
-    # Exact non-content frame bytes for THIS file: header + footer with an empty body, MEASURED (not
-    # estimated) so the twice-repeated path is counted correctly regardless of its length.
-    frame="$(printf '\n\n--- BEGIN CONTEXT FILE: %s ---\n\n--- END CONTEXT FILE: %s ---' "$g" "$g")"
-    fbytes="$(set -o pipefail; printf '%s' "$frame" | wc -c | tr -dc '0-9')" || { ctx_inlinable=0; break; }
-    [[ -n "$fbytes" ]] || { ctx_inlinable=0; break; }
-    running=$(( running + sz + fbytes ))
-    [ "$running" -gt "$inline_cap" ] && { ctx_inlinable=0; break; }   # over budget -> attach; NO NUL read
-    # WITHIN budget (so this file is <= cap, ~100 KB) — now a bounded binary check: detect a NUL by
-    # reading the whole (small) file. NOT `grep -Iq .`: with -q, GNU grep exits on the first matching
-    # (text) line and can return before a LATER NUL — classifying a binary as text, the exact case
-    # $(cat)'s NUL-stripping then corrupts — and it mis-rejects a legitimate newline-only text file
-    # (`.` matches no newline). `tr -cd` counting is unambiguous, portable (BSD/GNU), and treats a
-    # newline-only file as the text it is. pipefail so a mid-read tr/wc failure fails CLOSED (attach)
-    # rather than emitting "0" and mislabelling an incompletely-read file as text.
-    if [ "$sz" -gt 0 ]; then
-      local _nul
-      _nul="$(set -o pipefail; LC_ALL=C tr -cd '\000' < "$g" 2>/dev/null | wc -c | tr -dc '0-9')" \
-        || { ctx_inlinable=0; break; }
-      [[ -n "$_nul" ]] || { ctx_inlinable=0; break; }        # unreadable/masked -> fail closed to attach
-      [ "$_nul" -gt 0 ] && { ctx_inlinable=0; break; }        # contains NUL -> binary -> attach
-    fi
-  done
+  if [ "$pf_attached" -eq 0 ] && [ "$ctx_inlinable" -eq 1 ] && [ "${#ctx_arr[@]}" -gt 0 ]; then
+    snapdir="$(mktemp -d 2>/dev/null)" || snapdir=""
+    [[ -n "$snapdir" ]] || ctx_inlinable=0        # no temp dir -> can't snapshot -> attach
+  fi
+  if [[ -n "$snapdir" ]] && [ "$ctx_inlinable" -eq 1 ]; then
+    local _i=0 _snap sz frame fbytes _nul
+    for g in "${ctx_arr[@]:-}"; do
+      [[ -n "$g" ]] || continue
+      if [[ ! -f "$g" ]] || [[ ! -r "$g" ]]; then ctx_inlinable=0; break; fi
+      _snap="$snapdir/c.$_i"; _i=$(( _i + 1 ))
+      # Immutable bounded copy. Redirect form (`< "$g"`) so a "-"-leading path can't be read as a
+      # head option. head returns non-zero only on an open/read error -> fail closed to attach.
+      head -c "$_lim" < "$g" > "$_snap" 2>/dev/null || { ctx_inlinable=0; break; }
+      sz="$(set -o pipefail; wc -c < "$_snap" 2>/dev/null | tr -dc '0-9')" || { ctx_inlinable=0; break; }
+      [[ -n "$sz" ]] || { ctx_inlinable=0; break; }
+      [ "$sz" -ge "$_lim" ] && { ctx_inlinable=0; break; }   # source exceeded the budget -> attach
+      # Binary check on the SNAPSHOT: count NUL bytes (not `grep -Iq .`, which short-circuits on the
+      # first text line before a later NUL and mis-rejects a newline-only text file). pipefail so a
+      # masked tr/wc failure fails CLOSED rather than emitting "0" and mislabelling it text.
+      if [ "$sz" -gt 0 ]; then
+        _nul="$(set -o pipefail; LC_ALL=C tr -cd '\000' < "$_snap" 2>/dev/null | wc -c | tr -dc '0-9')" \
+          || { ctx_inlinable=0; break; }
+        [[ -n "$_nul" ]] || { ctx_inlinable=0; break; }
+        [ "$_nul" -gt 0 ] && { ctx_inlinable=0; break; }      # contains NUL -> binary -> attach
+      fi
+      # Exact non-content frame bytes for THIS file: header + footer with an empty body, MEASURED (the
+      # fence repeats the path TWICE, so a flat estimate would under-count a long path).
+      frame="$(printf '\n\n--- BEGIN CONTEXT FILE: %s ---\n\n--- END CONTEXT FILE: %s ---' "$g" "$g")"
+      fbytes="$(set -o pipefail; printf '%s' "$frame" | wc -c | tr -dc '0-9')" || { ctx_inlinable=0; break; }
+      [[ -n "$fbytes" ]] || { ctx_inlinable=0; break; }
+      running=$(( running + sz + fbytes ))
+      [ "$running" -gt "$inline_cap" ] && { ctx_inlinable=0; break; }   # cumulative over budget -> attach
+      snaps+=("$_snap")
+    done
+  else
+    ctx_inlinable=0
+  fi
   if [ "$pf_attached" -eq 1 ] || [ "$ctx_inlinable" -eq 0 ]; then
     for g in "${ctx_arr[@]:-}"; do [[ -n "$g" ]] && set -- "$@" --file "$g"; done
   else
-    # Proven under cap above, so cat-ing content into the prompt is bounded by the cap.
+    # Assemble from the IMMUTABLE snapshots — no source file is re-read here, so nothing can change
+    # between validation and inlining (this is what closes the TOCTOU class). `$(cat)` strips trailing
+    # newlines (irrelevant to a review); the snapshots were sized above so the total stays under cap.
+    # Build into a LOCAL and CHECK each snapshot read: `cat` returns non-zero only on a read error of
+    # our own temp file (rare — no concurrent writer), and on any such failure we fall back to
+    # attaching the whole set rather than dispatch truncated context (fail-closed, consistent with the
+    # sizing pass). Committed to prompt_text only once every read succeeded.
+    local _asm="$prompt_text" _body _asm_ok=1 _j=0
     for g in "${ctx_arr[@]:-}"; do
       [[ -n "$g" ]] || continue
-      prompt_text="${prompt_text}
+      _body="$(cat "${snaps[$_j]}" 2>/dev/null)" || { _asm_ok=0; break; }
+      _asm="${_asm}
 
 --- BEGIN CONTEXT FILE: ${g} ---
-$(cat "$g")
+${_body}
 --- END CONTEXT FILE: ${g} ---"
+      _j=$(( _j + 1 ))
     done
+    if [ "$_asm_ok" -eq 1 ]; then
+      prompt_text="$_asm"
+    else
+      for g in "${ctx_arr[@]:-}"; do [[ -n "$g" ]] && set -- "$@" --file "$g"; done
+    fi
   fi
+  [[ -n "$snapdir" ]] && rm -rf "$snapdir" 2>/dev/null
   set -- "$@" --prompt "$prompt_text"
 
   if [[ "$mode" = "background" ]]; then

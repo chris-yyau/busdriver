@@ -61,6 +61,31 @@ within `ULTRA_ORACLE_INLINE_BYTES` (default 100000 — the budget that already g
 **text** file, the whole set falls back to `--file` exactly as before.
 
 - **All-or-nothing** on purpose: a mixed payload still stalls on the one attachment it kept.
+- **Snapshot-first, so the sizing/scan/read are TOCTOU-safe.** Each context is first copied to an
+  immutable temp snapshot (bounded to `inline_cap + 1` bytes via `head -c`), and every check —
+  size, the NUL binary scan — plus the inlined bytes all come from that snapshot, never a second
+  live read of the path. A shell variable cannot hold a NUL byte, so the binary scan is
+  unavoidably a separate read from the content read; snapshotting is what makes those separate
+  reads see the *same* bytes, closing the whole class of "the file changed between the check and
+  the use" races (a NUL swapped in after the scan, a file grown past the cap, a partial read).
+  The `head -c` bound also caps peak memory at the budget regardless of source size, and a
+  snapshot that reaches the `+1` byte proves its source is over budget → attach. `mktemp`
+  failure, a non-regular/unreadable source, or any measure error all fail **closed** to attaching
+  the set. Attach still passes the *original* path to `--file` (oracle reads it later, as before);
+  the snapshot is purely the inlining decision + inlined content, and the temp dir is removed
+  before dispatch. These callers have no concurrent writer, so the race is theoretical — but the
+  snapshot closes the *content-mutation* class (a NUL swapped in after the scan, a grown/partial
+  read) structurally rather than as a residual.
+  - **Accepted residual (blocking-open on a swapped non-regular source).** The `[[ -f "$g" ]]`
+    check and the snapshot's `< "$g"` open are separate path lookups, so an adversary who could
+    replace the path with a FIFO or device between them could make the open *block* (the block is
+    in the shell's redirect, before any timeout could arm, so it is not cheaply bounded in portable
+    shell). This is explicitly **out of scope**: every `--context` here is a session-local file the
+    same busdriver run just wrote (the design doc, `build-evidence-pack.sh` output, retrieval-loop
+    evidence), with no concurrent writer and no path by which an attacker reaches them mid-consult.
+    Closing it would require per-file background-read-with-timeout machinery guarding a race that
+    cannot occur for these callers — a cost the threat model does not justify. Revisit only if a
+    caller ever passes a `--context` path from an untrusted or externally-writable location.
 - **NUL-bearing and non-regular contexts always attach.** `$(cat …)` strips NUL bytes, so
   inlining such a file would silently truncate it — a correctness bug worse than the stall.
   Detection is a whole-file NUL scan (not `grep -Iq .`, which short-circuits on the first
@@ -72,7 +97,8 @@ within `ULTRA_ORACLE_INLINE_BYTES` (default 100000 — the budget that already g
   legitimate non-UTF-8 text and isn't worth it for callers that only ever pass UTF-8.
 - **The evidence-pack label stays truthful.** `build-evidence-pack.sh` labels a consult
   `ORACLE_REPO_ATTACHED_REVIEW` based on whether raw repo files were *sent*, not on the
-  transport used to send them. Inlining sends the same bytes.
+  transport used to send them. Inlining sends the same content (modulo trailing newlines, which
+  command substitution strips — semantically irrelevant to the review).
 
 ### 2. Bound the pre-submission phase (attach + background watched runs)
 

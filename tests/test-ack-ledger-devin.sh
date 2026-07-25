@@ -175,6 +175,52 @@ for b in "${clean_variants[@]}"; do
 done
 [[ "$clean_ok" -eq 0 ]] && ok "decorated clean templates -> none (#489 whitelist tolerates markdown/emoji)"
 
+# --- Test 7d: Devin's ACTUAL shipped body -> none (issue #496) ---
+# The template is two sentences + an HTML badge block. The original one-sentence
+# whitelist never matched it, so Case 4 was inert on every real review. Captured
+# verbatim from Dive-And-Dev/jikdak PR #282 (2026-07-25); if Devin refreshes the
+# template this test fails loudly instead of the fix silently going inert again.
+DEVIN_REAL_CLEAN='"## ✅ Devin Review: No Issues Found\n\nDevin Review analyzed this PR and found no bugs or issues to report.\n\n<!-- devin-review-badge-begin -->\n<a href=\"https://app.devin.ai/review/org/repo/pull/282\" target=\"_blank\">\n  <picture>\n    <source media=\"(prefers-color-scheme: dark)\" srcset=\"https://static.devin.ai/assets/gh-open-in-devin-review-dark.svg?v=1\">\n    <img src=\"https://static.devin.ai/assets/gh-open-in-devin-review-light.svg?v=1\" alt=\"Open in Devin Review\">\n  </picture>\n</a>\n<!-- devin-review-badge-end -->"'
+got=$(run devin-ai-integration "$EMPTY_THREADS" "$(mk_devin_body "$DEVIN_REAL_CLEAN")" "$EMPTY_STATUSES")
+if [[ "$got" == "none" ]]; then
+  ok "Devin real shipped clean body (2 sentences + badge HTML) -> none (#496)"
+else
+  fail "Devin real shipped clean body expected 'none', got '$got'"
+fi
+
+# --- Test 7e: real body with a finding appended AFTER the badge -> stale ---
+# The badge strip is delimited on BOTH sides, so it cannot swallow trailing prose;
+# the residual text keeps `$` from matching. Guards the #496 widening against a
+# `begin.*$` strip that would have failed OPEN here.
+DEVIN_REAL_PLUS_FINDING="${DEVIN_REAL_CLEAN%\"}"'\n\nCritical: unsanitized input enables SQL injection."'
+got=$(run devin-ai-integration "$EMPTY_THREADS" "$(mk_devin_body "$DEVIN_REAL_PLUS_FINDING")" "$EMPTY_STATUSES")
+if [[ "$got" == "stale" ]]; then
+  ok "Devin real body + post-badge finding -> stale (#496 badge strip is delimited, no fail-open)"
+else
+  fail "Devin real body + post-badge finding expected 'stale', got '$got'"
+fi
+
+# --- Test 7f: marker-count abuse -> stale (greedy-span fail-open closed) ---
+# sed BRE has no lazy quantifier, so `begin.*end` over TWO badge blocks spans from
+# the FIRST begin to the LAST end and would delete a finding sitting between them.
+# The strip is gated on exactly one begin/end pair; every other shape (two pairs,
+# unbalanced begin, unbalanced end) skips the strip, leaving residual HTML that the
+# anchored `$` rejects.
+badge_abuse_bodies=(
+  # two pairs with a finding between them — the greedy-span fail-open itself
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n<img src=\"a.svg\">\n<!-- devin-review-badge-end -->\n\nCritical: unsanitized input enables SQL injection.\n\n<!-- devin-review-badge-begin -->\n<img src=\"b.svg\">\n<!-- devin-review-badge-end -->"'
+  # unbalanced: begin with no end
+  '"## ✅ Devin Review: No Issues Found\n\n<!-- devin-review-badge-begin -->\n<img src=\"a.svg\">"'
+  # unbalanced: end with no begin
+  '"## ✅ Devin Review: No Issues Found\n\n<img src=\"a.svg\">\n<!-- devin-review-badge-end -->"'
+)
+badge_abuse_fail=0
+for b in "${badge_abuse_bodies[@]}"; do
+  got=$(run devin-ai-integration "$EMPTY_THREADS" "$(mk_devin_body "$b")" "$EMPTY_STATUSES")
+  [[ "$got" == "stale" ]] || { fail "badge marker-count abuse expected 'stale', got '$got' for $b"; badge_abuse_fail=1; }
+done
+[[ "$badge_abuse_fail" -eq 0 ]] && ok "badge marker-count abuse (2 pairs / unbalanced) -> stale (#496 strip needs exactly one pair)"
+
 # --- Test 8: Devin finding as an UNRESOLVED THREAD -> stale (Tier A gates it) ---
 # Even with a clean summary on the ancestor, an open thread keeps Devin `stale`
 # — Case 4 never overrides Tier A.

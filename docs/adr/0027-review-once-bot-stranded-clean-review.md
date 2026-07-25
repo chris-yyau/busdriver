@@ -68,6 +68,26 @@ so a body-only finding in a non-Latin script ("No issues found. 存在严重漏�
 collapsed onto the whitelist and failed OPEN (caught in review). The anchored regex
 never strips non-ASCII, so CJK/Cyrillic/emoji trailing text all break the match.
 
+**Amendment (issue #496, 2026-07-26) — the whitelist must cover the *shipped*
+template, not a minimal paraphrase.** As first written the regex matched only the
+one-sentence `no issues found` form. Devin's actual clean review is two sentences
+plus a machine-generated HTML badge block, so the anchored `$` rejected every real
+review and Case 4 was **inert** — the #489 deadlock persisted unchanged. Two narrow
+widenings, both preserving `^…$`: (a) strip the badge, delimited on **both** sides
+by its stable `<!-- devin-review-badge-begin/end -->` markers — deliberately *not*
+`begin.*$`, which would swallow a finding appended after the badge and fail OPEN —
+and gated on **exactly one** begin/end pair, because sed BRE has no lazy quantifier
+so `begin.*end` across *two* badge blocks spans first-begin to last-end and would
+delete a finding between them (a second fail-OPEN, caught in review; with a single
+pair greedy and non-greedy coincide, and every other marker count skips the strip
+so the residual HTML keeps the review `stale`); (b) admit the template's second sentence ("devin review analyzed this pr and found
+no bugs or issues to report") as an optional exact alternation. Prose outside the
+badge markers is untouched, so a summary finding still leaves residual text and
+still stays `stale` (tests 7d/7e/7f). The lesson generalizes: a fail-closed whitelist
+validated only against a hand-written sample is indistinguishable from a disabled
+one — tests 7d/7e pin the **verbatim shipped body**, badge HTML included, so a
+future template refresh fails loudly instead of silently going inert again.
+
 **Defense in depth.** Devin's findings also arrive through channels gated *above*
 Case 4 — inline threads (Tier A → `stale`) and CHANGES_REQUESTED (`ever_approved >
 0`, never enters the block) — so the whitelist is the last of three independent
@@ -132,6 +152,7 @@ the safe direction to err, and new templates are cheap to add once observed.
 - Devin begins re-reviewing later pushes (then it no longer needs Case 4 and should
   be removed).
 - A genuinely-clean Devin body with an unrecognized phrasing is observed stranding
-  `stale` — add that normalized template to the whitelist.
+  `stale` — add that normalized template to the whitelist (fired once already:
+  issue #496; capture the verbatim body in a test alongside it).
 - Cursor's exact clean-body string is confirmed and its review-once behavior
   verified — add it (login + template) under the same fail-closed pattern.

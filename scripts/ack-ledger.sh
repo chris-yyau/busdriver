@@ -1000,9 +1000,31 @@ if [ "$ever_approved" -eq 0 ]; then
   # (* _ ` #), collapse+trim whitespace, then require the WHOLE body to match a
   # known Devin clean template. The trailing `$` rejects any residual text —
   # Latin, CJK, Cyrillic, emoji — so extra prose always keeps the review `stale`.
+  #
+  # Issue #496: the shipped template is TWO sentences plus a machine-generated
+  # HTML badge block, so the original one-sentence whitelist never matched a real
+  # Devin review and Case 4 was inert. Two narrow widenings, both keeping `^…$`:
+  #   (a) strip ONLY the badge, delimited on BOTH sides by its stable HTML-comment
+  #       markers (never `begin.*$`, which would swallow a finding appended after
+  #       the badge). Prose outside the markers is untouched.
+  #   (b) allow the template's second sentence as an OPTIONAL exact alternation.
+  # A finding smuggled into the summary still leaves residual text, so `$` still
+  # rejects it — the fail-open guard is preserved.
+  #
+  # The strip fires ONLY on EXACTLY ONE begin/end pair. sed's `.*` is greedy and BRE
+  # has no lazy quantifier, so with TWO badge blocks `begin.*end` would span from the
+  # first begin to the last end and delete an actionable finding sitting between them
+  # — a fail-OPEN. With a single pair greedy and non-greedy coincide, so the guard is
+  # exact. Any other count (0, 2+, or an unbalanced marker) skips the strip; the
+  # residual HTML then breaks the anchored match and the review stays `stale`.
   if [[ "$login" == "devin-ai-integration" && "$last_state" == "COMMENTED" && -z "$body_sha" ]]; then
     body_norm=$(printf '%s' "$last_body" | tr '[:upper:]' '[:lower:]' | sed 's/[*_`#]//g' | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//')
-    if printf '%s' "$body_norm" | grep -qE '^(✅ ?)?(devin review:? )?no issues? found[.!]*$'; then
+    badge_begins=$(printf '%s' "$body_norm" | grep -oF '<!-- devin-review-badge-begin -->' | wc -l | tr -d '[:space:]')
+    badge_ends=$(printf '%s' "$body_norm" | grep -oF '<!-- devin-review-badge-end -->' | wc -l | tr -d '[:space:]')
+    if [[ "$badge_begins" == "1" && "$badge_ends" == "1" ]]; then
+      body_norm=$(printf '%s' "$body_norm" | sed 's/<!-- devin-review-badge-begin -->.*<!-- devin-review-badge-end -->//; s/^ *//; s/ *$//')
+    fi
+    if printf '%s' "$body_norm" | grep -qE '^(✅ ?)?(devin review:? )?no issues? found[.!]* ?(devin review analyzed this pr and found no bugs or issues to report[.!]*)?$'; then
       echo "none"; exit 0
     fi
   fi

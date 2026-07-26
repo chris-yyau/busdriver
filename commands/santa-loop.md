@@ -90,13 +90,22 @@ Use the first available CLI:
 
 **Codex CLI** (if installed)
 ```bash
-codex exec --sandbox read-only -m gpt-5.4 -C "$(pwd)" - < "$PROMPT_FILE"
+# No hardcoded model pin — the codex CLI config default wins (as litmus and
+# orchestrate-codex-worker.sh do); override with CODEX_MODEL. A pinned version
+# silently runs stale (#331).
+# Array, not ${VAR:+...} — zsh does not word-split unquoted expansions, so the
+# terser form would pass `-m <id>` as ONE argument and codex would reject it.
+CODEX_ARGS=()
+[ -n "${CODEX_MODEL:-}" ] && CODEX_ARGS=(-m "$CODEX_MODEL")
+codex exec --sandbox read-only "${CODEX_ARGS[@]}" -C "$(pwd)" - < "$PROMPT_FILE"
 rm -f "$PROMPT_FILE"
 ```
 
 **Gemini CLI** (if installed and codex is not)
 ```bash
-gemini -p "$(cat "$PROMPT_FILE")" -m gemini-2.5-pro
+GEMINI_ARGS=()
+[ -n "${GEMINI_MODEL:-}" ] && GEMINI_ARGS=(-m "$GEMINI_MODEL")
+gemini -p "$(cat "$PROMPT_FILE")" "${GEMINI_ARGS[@]}"
 rm -f "$PROMPT_FILE"
 ```
 

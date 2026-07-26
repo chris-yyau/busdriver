@@ -47,9 +47,24 @@ describe('resolveContextWindowTokens', () => {
     expect(resolveContextWindowTokens(1000, 'claude-opus-4-8[1m]')).toBe(LARGE_CONTEXT_WINDOW_TOKENS)
   })
 
-  // Anchored family match: "claude-opus-40" is a different model, not opus-4.
-  it('does not false-match substring ids like claude-opus-40', () => {
-    expect(resolveContextWindowTokens(50000, 'claude-opus-40')).toBe(STANDARD_CONTEXT_WINDOW_TOKENS)
+  // The regression this file now guards: #343/#345 pinned "claude-opus-4", so the
+  // hook broke the day Opus 5 shipped and reported ~5x real usage below 200k. Match
+  // the FAMILY so the next model release cannot repeat it.
+  it('resolves Opus 5 to the 1M window (the id #343/#345 did not anticipate)', () => {
+    expect(resolveContextWindowTokens(164000, 'claude-opus-5')).toBe(LARGE_CONTEXT_WINDOW_TOKENS)
+  })
+
+  it('resolves any future Opus id to the 1M window', () => {
+    for (const id of ['claude-opus-6', 'claude-opus-40', 'claude-opus-7-2', 'claude-opus-next']) {
+      expect(resolveContextWindowTokens(50000, id)).toBe(LARGE_CONTEXT_WINDOW_TOKENS)
+    }
+  })
+
+  // Anchored at the start: only an Opus id qualifies, not a look-alike.
+  it('does not match non-Opus or embedded-Opus ids', () => {
+    for (const id of ['claude-sonnet-5', 'claude-haiku-4-5', 'my-claude-opus-5', 'opus-5']) {
+      expect(resolveContextWindowTokens(50000, id)).toBe(STANDARD_CONTEXT_WINDOW_TOKENS)
+    }
   })
 
   it('keeps the 200k default for non-family models below the token heuristic', () => {

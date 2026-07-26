@@ -1114,8 +1114,32 @@ _execute_codex() {
 
     # Timeout (124) — retrying burns the whole window again, so don't; but a
     # timeout IS droid-eligible (a different backend may still answer in time).
+    #
+    # Classify a 124 by the window the attempt was actually GRANTED, not by its
+    # attempt index. An attempt that ran with the FULL "$duration" timed out
+    # honestly — Codex couldn't finish in the configured window — so preserve
+    # the timeout signal (droid-eligible via timed_out; if droid can't rescue
+    # it, the caller sees exit 124 and correctly reads "split the diff"). An
+    # attempt granted only a TRUNCATED "$remaining" (the budget is shared across
+    # every attempt plus every backoff sleep) hit the shared budget, not a real
+    # Codex limit: treat it as budget exhaustion — droid-eligible via
+    # last_was_transient (same as the explicit budget-exhaustion breaks above),
+    # but NOT timed_out, so a droid-less path falls through to BUILTIN_FALLBACK
+    # (return 3) rather than a misleading "genuine timeout" exit 124.
+    #
+    # Keying on `remaining == duration` rather than `attempt == 0` matters at
+    # the edges: with LITMUS_CODEX_RETRY_DELAY=0 and a first attempt that fails
+    # fast, date's 1s resolution can leave a RETRY holding the full window — and
+    # that retry's 124 is a genuine timeout, which an attempt-index test would
+    # have downgraded and silently discarded.
     if [[ "$exit_code" -eq 124 ]]; then
-      timed_out=1
+      if [[ "$remaining" -eq "$duration" ]]; then
+        timed_out=1
+      else
+        echo "⟳ Codex: retry timed out on truncated remaining budget (${remaining}s of ${duration}s) — treating as budget exhaustion, not a genuine timeout" >&2
+        last_was_transient=1
+        exit_code=1
+      fi
       break
     fi
 

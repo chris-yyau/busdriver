@@ -125,6 +125,54 @@ else
   fail "_execute_codex: success path broken by the bound (rc=$rc, ${elapsed}s) — a first attempt must get the FULL duration, not a truncated remainder"
 fi
 
+# (iii) TIMEOUT CLASSIFICATION. A genuine first-attempt timeout (the reviewer
+# had the FULL "$duration" and still couldn't finish) must preserve the honest
+# exit 124 signal so the caller correctly reads "split the diff". A RETRY
+# timeout — where "$remaining" was only a truncated fraction of "$duration" —
+# must NOT be misreported as the same genuine-timeout signal; with droid
+# disabled it must fall through to BUILTIN_FALLBACK (exit 3) instead.
+BUDGET3=4
+write_stub_empty 10   # sleeps far past the whole budget on the very first attempt
+reset_calls
+result=$(run_timed '_execute_codex "p" '"$BUDGET3"' >/dev/null 2>&1' \
+  LITMUS_CODEX_RETRIES=3 LITMUS_CODEX_RETRY_DELAY=1 LITMUS_CODEX_DROID_FALLBACK_DISABLED=1)
+read -r rc elapsed <<<"$result"
+if [[ "$rc" -eq 124 ]]; then
+  ok "_execute_codex: genuine first-attempt timeout preserves exit 124 (elapsed ${elapsed}s)"
+else
+  fail "_execute_codex: genuine first-attempt timeout returned rc=$rc (expected 124)"
+fi
+
+# Stub: call 1 fails fast with a transient (rate-limit) error so the engine
+# retries; call 2 sleeps far longer than the truncated remaining budget it
+# will be given, so _portable_timeout kills it and returns 124 for THAT call.
+write_stub_transient_then_timeout() {
+  cat > "$STUB_DIR/codex" <<EOF
+#!/bin/sh
+echo x >> "$CALLS"
+n=\$(wc -l < "$CALLS" | tr -d ' ')
+if [ "\$n" -eq 1 ]; then
+  sleep 1
+  echo "429 rate limit exceeded" >&2
+  exit 1
+else
+  sleep 10
+fi
+EOF
+  chmod +x "$STUB_DIR/codex"
+}
+BUDGET4=6
+write_stub_transient_then_timeout
+reset_calls
+result=$(run_timed '_execute_codex "p" '"$BUDGET4"' >/dev/null 2>&1' \
+  LITMUS_CODEX_RETRIES=3 LITMUS_CODEX_RETRY_DELAY=1 LITMUS_CODEX_DROID_FALLBACK_DISABLED=1)
+read -r rc elapsed <<<"$result"
+if [[ "$rc" -eq 3 ]]; then
+  ok "_execute_codex: retry timeout on truncated remaining budget falls to BUILTIN_FALLBACK (rc=3), not a false genuine-timeout 124 (elapsed ${elapsed}s)"
+else
+  fail "_execute_codex: retry timeout on truncated remaining budget returned rc=$rc (expected 3/BUILTIN_FALLBACK) — misclassified as a genuine timeout"
+fi
+
 # ── Engine 2: _run_review_with_retries ──────────────────────────────────────
 # Already compliant; asserted so it stays that way.
 write_stub_empty 3

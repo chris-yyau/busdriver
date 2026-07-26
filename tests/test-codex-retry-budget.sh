@@ -71,16 +71,21 @@ write_stub_ok() {
   chmod +x "$STUB_DIR/codex"
 }
 
-# Run a snippet against the lib in a scrubbed env. PATH deliberately EXCLUDES
-# node so _execute_codex takes the direct-CLI arm and hits our stub (the
-# companion arm would need a node runtime we are not testing here).
+# Run a snippet against the lib in a scrubbed env.
+#
+# `_CODEX_COMPANION=none` pins _execute_codex to the direct-CLI arm so it hits
+# our stub `codex`. Do NOT rely on node being absent from PATH instead: node
+# lives in /usr/bin on many Linux images, so a PATH-based assumption would
+# silently route the test through the companion arm (and could invoke a REAL
+# companion). _resolve_codex_companion returns early when the var is already
+# set, so this is a supported override rather than a monkey-patch.
 # Echoes: "<rc> <elapsed_seconds>"
 run_timed() {
   local snippet="$1"; shift
   local start end rc=0
   start=$(date +%s)
   env -i HOME="$HOME" PATH="$STUB_DIR:/usr/bin:/bin" "$@" \
-    bash -c "cd '$SCRIPT_DIR'; source '$LIB' >/dev/null 2>&1; $snippet" >/dev/null 2>&1 || rc=$?
+    bash -c "cd '$SCRIPT_DIR'; source '$LIB' >/dev/null 2>&1; _CODEX_COMPANION=none; $snippet" >/dev/null 2>&1 || rc=$?
   end=$(date +%s)
   echo "$rc $((end - start))"
 }

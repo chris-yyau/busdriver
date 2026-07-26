@@ -175,8 +175,8 @@ Result:     [PUSHED / ESCALATED TO USER]
 ## Notes
 
 - Reviewer A (Claude Opus) always runs — guarantees at least one strong reviewer regardless of tooling.
-- Model diversity is the goal for Reviewer B. GPT-5.4 or Gemini 2.5 Pro gives true independence — different training data, different biases, different blind spots. The Claude-only fallback still provides value via context isolation but loses model diversity.
-- Strongest available models are used: Opus for Reviewer A, GPT-5.4 or Gemini 2.5 Pro for Reviewer B.
+- Model diversity is the goal for Reviewer B. Codex or Gemini gives true independence — different training data, different biases, different blind spots. Each CLI's own configured default model is used (overridable via `CODEX_MODEL` / `GEMINI_MODEL`; a hardcoded version pin drifts silently — #331). The Claude-only fallback still provides value via context isolation but loses model diversity.
+- Strongest available models are used: Opus for Reviewer A, each CLI's own configured default (Codex or Gemini) for Reviewer B.
 - External reviewers run with `--sandbox read-only` (Codex) to prevent repo mutation during review.
 - Fresh reviewers each round prevents anchoring bias from prior findings.
 - The rubric is the most important input. Tighten it if reviewers rubber-stamp or flag subjective style issues.

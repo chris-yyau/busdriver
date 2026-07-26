@@ -84,7 +84,7 @@ run_timed() {
   local snippet="$1"; shift
   local start end rc=0
   start=$(date +%s)
-  env -i HOME="$HOME" PATH="$STUB_DIR:/usr/bin:/bin" "$@" \
+  env -i HOME="$HOME" PATH="$STUB_DIR:$PATH" "$@" \
     bash -c "cd '$SCRIPT_DIR'; source '$LIB' >/dev/null 2>&1; _CODEX_COMPANION=none; $snippet" >/dev/null 2>&1 || rc=$?
   end=$(date +%s)
   echo "$rc $((end - start))"

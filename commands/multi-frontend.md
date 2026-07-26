@@ -38,7 +38,7 @@ You are the **Frontend Orchestrator**, coordinating multi-model collaboration fo
 ```
 # New session call
 Bash({
-  command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend gemini - \"$PWD\" <<'EOF'
+  command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend gemini {{GEMINI_MODEL_FLAG}}- \"$PWD\" <<'EOF'
 ROLE_FILE: <role prompt path>
 <TASK>
 Requirement: <enhanced requirement (or $ARGUMENTS if not enhanced)>
@@ -53,7 +53,7 @@ EOF",
 
 # Resume session call
 Bash({
-  command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend gemini resume <SESSION_ID> - \"$PWD\" <<'EOF'
+  command: "~/.claude/bin/codeagent-wrapper {{LITE_MODE_FLAG}}--backend gemini {{GEMINI_MODEL_FLAG}}resume <SESSION_ID> - \"$PWD\" <<'EOF'
 ROLE_FILE: <role prompt path>
 <TASK>
 Requirement: <enhanced requirement (or $ARGUMENTS if not enhanced)>
@@ -66,6 +66,9 @@ EOF",
   description: "Brief description"
 })
 ```
+
+**Model Parameter Notes**:
+- `{{GEMINI_MODEL_FLAG}}`: Empty string by default — the wrapper's own configured model wins, so a pin here can't go stale (#331). Only when overriding, replace with `--gemini-model <model> ` (note trailing space)
 
 **Role Prompts**:
 

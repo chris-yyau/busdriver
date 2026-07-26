@@ -778,6 +778,41 @@ _is_bare_transient_notice() {
   printf '%s' "$out" | _is_hard_transient_signal
 }
 
+# ── Shared duration validator (retry engines) ────────────────────
+# $duration feeds `$(( ))` budget arithmetic in both retry engines below, and
+# bash evaluates arithmetic operands RECURSIVELY — a numeric-prefixed string
+# such as `1+x[$(cmd)]` would execute `cmd` during expansion. Callers derive
+# it from repo-injectable env (#325 / ADR 0016), so validate BEFORE any
+# arithmetic touches it — fail closed, not guess. Also strips leading zeros,
+# since `$(( ))` reads a leading-zero operand as OCTAL (`0600` → 384s
+# silently, `08` → "value too great for base"). One copy shared by
+# `_run_review_with_retries` and `_execute_codex` so a future fix can't be
+# applied to one call path and silently missed in the other (this exact
+# arithmetic-injection guard is security-relevant).
+# Prints the normalized duration on stdout and returns 0, or prints nothing
+# and returns 1 with an error on stderr.
+_validate_positive_duration() {
+  local label="$1" duration="$2"
+  case "$duration" in
+    ''|*[!0-9]*)
+      echo "busdriver: ${label} duration must be a non-negative integer (got: $duration)" >&2
+      return 1
+      ;;
+  esac
+  duration="${duration#"${duration%%[!0]*}"}"
+  [[ -z "$duration" ]] && duration=0
+  if [[ "${#duration}" -ge 8 ]]; then
+    echo "busdriver: ${label} duration is implausibly large (got: $duration)" >&2
+    return 1
+  fi
+  duration=$((10#$duration))
+  if [[ "$duration" -lt 1 ]]; then
+    echo "busdriver: ${label} duration must be >= 1 second" >&2
+    return 1
+  fi
+  printf '%s' "$duration"
+}
+
 # ── Retry wrapper for non-codex review CLIs (agy / grok) ────────
 # Codex has its own richer retry loop in _execute_codex. agy and grok were
 # single-shot until now, so one transient hiccup dropped the voice straight to
@@ -808,29 +843,7 @@ _run_review_with_retries() {
   local retry_delay="${BUSDRIVER_CLI_RETRY_DELAY:-5}"
   case "$max_retries" in ''|*[!0-9]*) max_retries=3 ;; esac
   case "$retry_delay" in ''|*[!0-9]*) retry_delay=5 ;; esac
-  # $duration feeds the `$(( ))` budget arithmetic below and bash evaluates
-  # arithmetic operands RECURSIVELY, so a numeric-prefixed string such as
-  # `1+x[$(cmd)]` would execute `cmd` during expansion. Callers derive it from
-  # repo-injectable env (#325). Fail closed — see the same guard in _execute_codex.
-  case "$duration" in
-    ''|*[!0-9]*)
-      echo "busdriver: ${label} review duration must be a non-negative integer (got: $duration)" >&2
-      return 1
-      ;;
-  esac
-  # Leading zeros would be read as OCTAL by `$(( ))` — see the same normalization
-  # in _execute_codex (0600 → 384s silently, 08 → "value too great for base").
-  duration="${duration#"${duration%%[!0]*}"}"
-  [[ -z "$duration" ]] && duration=0
-  if [[ "${#duration}" -ge 8 ]]; then
-    echo "busdriver: ${label} review duration is implausibly large (got: $duration)" >&2
-    return 1
-  fi
-  duration=$((10#$duration))
-  if [[ "$duration" -lt 1 ]]; then
-    echo "busdriver: ${label} review duration must be >= 1 second" >&2
-    return 1
-  fi
+  duration=$(_validate_positive_duration "${label} review" "$duration") || return 1
   # The WHOLE retry sequence — every attempt PLUS all backoff sleeps — is bounded
   # to ~"$duration" (the caller's total budget): each attempt's timeout is the
   # REMAINING budget (equals "$duration" on the first attempt), and each backoff
@@ -968,34 +981,10 @@ _execute_codex() {
     esac
   done
 
-  # $duration reaches `$(( ))` in the budget arithmetic below, and bash evaluates
-  # arithmetic operands RECURSIVELY — a numeric-prefixed string like
-  # `1+x[$(cmd)]` executes `cmd` during expansion. Callers pass it from
-  # LITMUS_TIMEOUT, which is repo-injectable via a fork's settings.json `env`
-  # (#325), so validate BEFORE any arithmetic touches it. Fail closed: a review
-  # gate with an unparseable budget must not run, not guess.
-  case "$duration" in
-    ''|*[!0-9]*)
-      echo "busdriver: codex review duration must be a non-negative integer (got: $duration)" >&2
-      return 1
-      ;;
-  esac
-  # Digits alone are not enough: `$(( ))` reads a leading-zero operand as OCTAL,
-  # so `0600` would silently become 384s (a 3.5x shorter budget) and `08` would
-  # abort with "value too great for base". Strip leading zeros, refuse an
-  # oversized digit string before it can reach the arithmetic at all, then pin
-  # base 10. Same normalization the auditor clamps use.
-  duration="${duration#"${duration%%[!0]*}"}"
-  [[ -z "$duration" ]] && duration=0
-  if [[ "${#duration}" -ge 8 ]]; then
-    echo "busdriver: codex review duration is implausibly large (got: $duration)" >&2
-    return 1
-  fi
-  duration=$((10#$duration))
-  if [[ "$duration" -lt 1 ]]; then
-    echo "busdriver: codex review duration must be >= 1 second" >&2
-    return 1
-  fi
+  # LITMUS_TIMEOUT is repo-injectable via a fork's settings.json `env` (#325),
+  # so validate BEFORE any arithmetic touches it. See _validate_positive_duration
+  # for the full rationale (shared with _run_review_with_retries).
+  duration=$(_validate_positive_duration "codex review" "$duration") || return 1
 
   case "$codex_effort" in
     ''|minimal|low|medium|high|xhigh) ;;

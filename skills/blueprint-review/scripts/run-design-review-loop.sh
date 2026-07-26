@@ -543,6 +543,17 @@ $DESIGN_CONTENT
   export LITMUS_CODEX_RETRIES="${LITMUS_CODEX_RETRIES:-5}"
   export BUSDRIVER_CLI_RETRIES="${BUSDRIVER_CLI_RETRIES:-5}"
 
+  # Same argument for the reasoning tier: a gate of record declares its own tier
+  # rather than inheriting whatever `~/.codex/config.toml` says this week (it said
+  # `high` on 2026-07-27 while the sibling PR gate's message claimed xhigh — the
+  # drift that motivated this pin). Mirrors litmus PR mode; the pre-commit path is
+  # deliberately left on the CLI default.
+  #
+  # FORCED, NOT `:-xhigh`: an ambient value is repo-injectable via a committed
+  # `.claude/settings.json` `env` block (#325 / ADR 0016), and the design document
+  # under review must not get to weaken its own reviewer to `minimal`.
+  export LITMUS_CODEX_EFFORT=xhigh
+
   # agy reviews headless (--print) and cannot prompt for tool permission, so
   # without --dangerously-skip-permissions every read_file/command request auto-
   # denies and the agy slot dies, silently dropping coverage below FULL and

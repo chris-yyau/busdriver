@@ -794,6 +794,19 @@ if [ "$REVIEW_MODE" = "pr" ]; then
   # override exported in the parent shell.
   export LITMUS_CODEX_RETRIES="${LITMUS_CODEX_RETRIES:-5}"
 
+  # Same reasoning for the reasoning tier: the PR lead is the gate of record, so
+  # it declares its own tier instead of inheriting whatever `~/.codex/config.toml`
+  # happens to say this week (it said `high` on 2026-07-27, while this gate's
+  # message claimed xhigh — the drift that motivated this pin). Explicit here and
+  # nowhere else: the pre-commit path still rides the CLI default.
+  #
+  # FORCED, NOT `:-xhigh`. An ambient value is repo-injectable — a committed
+  # `.claude/settings.json` `env` block sets session env (#325 / ADR 0016), so a
+  # reviewed fork could export LITMUS_CODEX_EFFORT=minimal and weaken the very
+  # reviewer that gates it. The artifact under review must never get to choose how
+  # hard its reviewer thinks. Operators change the tier by editing this line.
+  export LITMUS_CODEX_EFFORT=xhigh
+
   # PR mode: check for branch diff against base
   PR_BASE_BRANCH="${LITMUS_PR_BASE:-$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || echo "origin/main")}"
   # Auto-prefix origin/ if user provided a branch name without remote prefix

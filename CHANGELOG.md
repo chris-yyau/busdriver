@@ -1,3 +1,10 @@
+## [1.99.3](https://github.com/chris-yyau/busdriver/compare/v1.99.2...v1.99.3) (2026-07-26)
+
+
+### Bug Fixes
+
+* drop stale model pins, replace codex effort ladder with an explicit tier, bound retry budgets ([#500](https://github.com/chris-yyau/busdriver/issues/500)) ([9321020](https://github.com/chris-yyau/busdriver/commit/932102011382ae32f3395d55737b0e156aefa86f)), closes [#331](https://github.com/chris-yyau/busdriver/issues/331) [#331](https://github.com/chris-yyau/busdriver/issues/331) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
 ## [1.99.2](https://github.com/chris-yyau/busdriver/compare/v1.99.1...v1.99.2) (2026-07-25)
 
 

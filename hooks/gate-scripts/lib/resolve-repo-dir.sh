@@ -92,20 +92,111 @@ gate_classify_target() {
     # paths -- remain a documented residual; the goal is to close
     # common/accidental skips, not to reimplement a shell. See the council
     # lesson and PR description.)
+    # Parentheses cover the EXTGLOB family — @(a|b), +(a), !(a), ?(a) — which expands
+    # under `shopt -s extglob` / `bash -O extglob` exactly like the globs above, so
+    # `cd /repo/@(other)` is not the literal directory it appears to be. A real path
+    # containing parens is legal but rare, and treating it as unresolvable is the
+    # fail-CLOSED direction, consistent with '{'/'[' here.
     case "$t" in
-        -*|*'*'*|*'?'*|*'['*|*']'*|*'{'*|*'}'*) printf 'unresolvable\n'; return 0 ;;
+        -*|*'*'*|*'?'*|*'['*|*']'*|*'{'*|*'}'*|*'('*|*')'*) printf 'unresolvable\n'; return 0 ;;
     esac
     printf 'literal\n'
 }
 
 # Resolve REPO_DIR from the parsed target + the PreToolUse cwd field.
+#
+# $3 (untrusted_cd, OPTIONAL) is the cd operand that did NOT '&&'-gate the command;
+# gitcmd_detect.git_commit/gh_pr surface it via with_untrusted_cd=True. ONLY the
+# MARKER-SCOPED gates pass it. Omitting it preserves the previous behaviour exactly,
+# which is what the non-gating nudges rely on (ADR 0018 treats such a cd as no cd and
+# substitutes its own validated standalone-cd instead).
+#
+# Why it must be consulted: an unconfirmed `cd /other-repo` on its own line (or
+# ';'-joined) usually DOES execute, so the command lands in /other-repo while this
+# resolver would anchor on the payload cwd. Marker existence is the sole check, and
+# both the marker and skip-*.local are $REPO_DIR-scoped, so a fresh marker or a live
+# skip file in the SESSION repo would authorize an unreviewed change in /other-repo.
+# We therefore proceed only when the cd PROVABLY cannot leave the cwd repo, and block
+# otherwise — never guess.
+#
+# RESIDUAL (inherent, pre-existing, NOT introduced by the $3 check): this runs BEFORE
+# the command does, so any path it resolves is a time-of-check value. A command that
+# retargets its own destination mid-flight —
+# `ln -sfn /other-repo /tmp/link; cd /tmp/link; git commit` — passes the same-repo
+# comparison and then commits elsewhere. That is the pre-exec hook's standing limit,
+# identical for the '&&'-TRUSTED path this function has always had (which resolves
+# `cd /tmp/link && git commit` the same way) and for the cwd anchor itself; it is the
+# same class the gates document as a `cd` shell function/alias sending the command to
+# a third directory. Closing it needs a post-exec check or an exec-time sandbox, not a
+# better parser. What $3 removes is the far more reachable case: an ordinary,
+# non-adversarial `cd /other-repo` on its own line.
+#
 # Sets globals:
 #   GATE_REPO_DIR        resolved repo root (or anchor); valid for proceed/outside-repo
 #   GATE_RESOLVE_STATUS  proceed | outside-repo | block-unresolvable
 # shellcheck disable=SC2034  # globals consumed by the sourcing gate scripts
 gate_resolve_repo_dir() {
-    local target="$1" hook_cwd="$2" kind anchor
+    local target="$1" hook_cwd="$2" untrusted_cd="${3:-}" kind anchor cd_root cwd_root
     kind=$(gate_classify_target "$target")
+
+    # The parser reports an unconfirmed cd only when the resolved target is NOT
+    # absolute (an absolute target alone fixes the repo). A target that is still
+    # present here is therefore RELATIVE — `git -C .` after a `cd /other` — which git
+    # resolves against the RUNTIME cwd while the anchor below uses the payload cwd.
+    # Those two disagree and nothing static can reconcile them → block.
+    if [ -n "$untrusted_cd" ] && [ "$kind" != "none" ]; then
+        if [ "$kind" = "toplevel" ] && [ "$(gate_classify_target "$untrusted_cd")" = "toplevel" ]; then
+            # `$(git rev-parse --show-toplevel)` IS the cwd's own repo root — but only
+            # when it is the ONLY directory change. The substitution runs at EXEC time,
+            # so in `cd /other; git -C "\$(git rev-parse --show-toplevel)" commit` it
+            # evaluates to /other's root, not the cwd's. Requiring the unconfirmed
+            # operand to be that same idiom keeps the single-cd case (which the parser
+            # cannot mark authoritative, the operand not being '/'-prefixed) while
+            # blocking the composed one.
+            untrusted_cd=""
+        else
+            GATE_REPO_DIR=""
+            GATE_RESOLVE_STATUS="block-unresolvable"
+            return 0
+        fi
+    fi
+
+    if [ "$kind" = "none" ] && [ -n "$untrusted_cd" ]; then
+        # `cd "$(git rev-parse --show-toplevel)"` IS the cwd's own repo root, so it
+        # cannot leave the repo however it fared — the cwd anchor already names the
+        # right markers. Recognised without evaluating the substitution.
+        if [ "$(gate_classify_target "$untrusted_cd")" = "toplevel" ]; then
+            untrusted_cd=""
+        fi
+    fi
+
+    if [ "$kind" = "none" ] && [ -n "$untrusted_cd" ]; then
+        # Compare ONLY an ABSOLUTE, '..'-free, metachar-free literal — the operand
+        # class _abs_cd_target()/ADR 0018 accept, for the same reasons: a RELATIVE
+        # operand is subject to CDPATH (which can send `cd sub` outside the payload
+        # cwd entirely), and a '..' resolves differently under bash's logical cd than
+        # under the physical `git -C` used below. Neither can be compared faithfully,
+        # so neither can prove confinement → block.
+        case "$untrusted_cd" in
+            /*) : ;;
+            *) GATE_REPO_DIR=""; GATE_RESOLVE_STATUS="block-unresolvable"; return 0 ;;
+        esac
+        case "/$untrusted_cd/" in
+            */../*) GATE_REPO_DIR=""; GATE_RESOLVE_STATUS="block-unresolvable"; return 0 ;;
+        esac
+        if [ "$(gate_classify_target "$untrusted_cd")" != "literal" ]; then
+            GATE_REPO_DIR=""; GATE_RESOLVE_STATUS="block-unresolvable"; return 0
+        fi
+        cd_root=$(git -C "$untrusted_cd" rev-parse --show-toplevel 2>/dev/null || printf '')
+        cwd_root=$(git -C "${hook_cwd:-.}" rev-parse --show-toplevel 2>/dev/null || printf '')
+        # An EMPTY cd_root is NOT proof the cd failed — the directory may simply sit
+        # outside every repo, and `gh pr merge` still resolves a PR from there (via a
+        # remote or -R) even where `git commit` would not. Unprovable → block.
+        if [ -z "$cd_root" ] || [ -z "$cwd_root" ] || [ "$cd_root" != "$cwd_root" ]; then
+            GATE_REPO_DIR=""; GATE_RESOLVE_STATUS="block-unresolvable"; return 0
+        fi
+        # Same repo: wherever the cd landed, the cwd anchor names the right markers.
+    fi
 
     if [ "$kind" = "unresolvable" ]; then
         GATE_REPO_DIR=""

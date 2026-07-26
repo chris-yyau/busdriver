@@ -370,6 +370,59 @@ def _cd_target(seg):
     return os.path.expanduser(m.group(1).strip().strip('\047\042'))
 
 
+_CD_LEAD_WORDS = ('if', 'then', 'else', 'elif', 'while', 'until', 'do', '!', 'time')
+
+
+def _cd_target_loose(seg):
+    """The operand of a `cd` that changes the CURRENT shell's directory, else None.
+
+    Delegates command-word resolution to _command_argv — the SAME tokenizer that
+    finds `git`/`gh` — so it inherits, rather than re-implements, that function's
+    handling of env assignments, `builtin`/`command`/`time` wrappers and their
+    options, `--` end-of-options, leading redirections, reserved words
+    (`if cd /x; then …`), `case` branch labels, and quoted command words. An earlier
+    hand-rolled prefix-stripper here leaked a new shape on every review round; this
+    has one source of truth.
+
+    Used ONLY to accumulate operands for the untrusted channel, never for
+    _trusted_cd: a keyword- or case-guarded cd may be CONDITIONAL, so it must never
+    be TRUSTED as the repo scope — but it may well have RUN, so it must be SEEN.
+    The strict _cd_target is untouched, so the trusted path is byte-identical.
+
+    A `cd` with no usable operand (bare `cd`, `cd --`) goes to $HOME, a destination
+    this parser cannot know, so it reports AMBIGUOUS_CD and the caller fails CLOSED.
+
+    RESIDUAL, deliberately: forms only an executing shell can see — a `cd` inside a
+    FUNCTION body invoked later, `pushd`/`popd`, `(cd x)` subshells — and DECODED
+    obfuscation of the command word, e.g. `$'\\x63\\x64' /other` or `$'c\\144'`.
+    The literal `$'cd'` spelling is caught above; decoding arbitrary ANSI-C escapes
+    (and variable indirection behind them) is the same "truly exotic obfuscation"
+    that ADR 0024 already places out of scope for the merge gate's override
+    detection, and it is the boundary gate_classify_target states as well: close the
+    common and accidental skips, do not reimplement a shell. None of these shapes is
+    more exposed than before this function existed — each one already defeated the
+    strict detector that has always fed the trusted path.
+    """
+    argv = _command_argv(seg, 'cd')
+    # `$'cd'` (ANSI-C quoting) survives tokenization as `$cd`; bash still runs the
+    # builtin. Strip ONE leading '$' so that spelling is seen, while a genuine
+    # variable command word (`$cmd`) still does not match.
+    if not argv or argv[0].lstrip('$') != 'cd':
+        return None
+    for a in argv[1:]:
+        if a == '--' or (a.startswith('-') and len(a) > 1 and a != '-'):
+            continue            # cd options (-L/-P/-e/-@); '-' IS the OLDPWD operand
+        if a.startswith('~'):
+            # `cd ~` expands to $HOME but `cd "~"` / `cd \~` is a LITERAL directory
+            # named '~'. Tokenization has already discarded which one this was, so
+            # the destination is genuinely unknown -> fail CLOSED rather than guess
+            # (the strict detector's expanduser only feeds the pre-existing trusted
+            # path and is left alone).
+            return AMBIGUOUS_CD
+        return a
+    return AMBIGUOUS_CD
+
+
 def _trusted_cd(pending_cd, op):
     """A pending cd is the repo scope ONLY if it was the segment immediately
     before this command AND joined by '&&' (so it ran and its success gated the
@@ -377,6 +430,96 @@ def _trusted_cd(pending_cd, op):
     may not have executed (e.g. `false && cd /x; git commit`) — fall back to ''
     (process CWD) rather than trust a marker in the wrong repository."""
     return pending_cd if (pending_cd is not None and op == '&&') else ''
+
+
+AMBIGUOUS_CD = '-ambiguous-cd-operands'
+
+# Operators under which a `cd` segment is guaranteed to be REACHED. Bash groups
+# '&&'/'||' left-to-right at equal precedence, so in `A || cd /x && commit` the shell
+# runs (A || cd) && commit -- the commit can execute with the cd SKIPPED. An adjacent
+# '&&' is therefore proof only when the cd was itself unconditional or '&&'-gated.
+_CD_REACHED_OPS = ('', ';', '&&')
+
+
+def _untrusted_cd(cds):
+    """The cd destination that may be in effect when the command runs, else ''.
+
+    Reported OUT OF BAND — deliberately NOT folded into target_dir. target_dir is
+    a PATH field, so encoding "unconfirmed" into it via a sentinel prefix is
+    in-band signalling: a real directory can be named to imitate the sentinel, and
+    since any target containing '$' is classified unresolvable (→ BLOCK),
+    overloading the field silently DOWNGRADED `cd '$untrusted-cd:x' && git commit`
+    from block to proceed. A separate field cannot be forged by a path.
+
+    Why callers need it at all: '' alone conflates "no cd" with "a cd whose
+    execution I could not confirm", and both readings are wrong in a reachable
+    case —
+
+      * trust it  -> `false && cd /x; git commit` runs in the ORIGINAL cwd while
+                     the gate would check /x's markers.
+      * ignore it -> `cd /x`<newline>`git commit` — the cd succeeds, which is the
+                     common shape — runs in /x while the gate checks cwd. Marker
+                     existence is the sole check, and both the marker and the skip
+                     file are $REPO_DIR-scoped, so a fresh marker or a live
+                     skip-*.local in the SESSION repo authorizes an UNREVIEWED
+                     commit in /x. A gate bypass, not a mis-addressed message.
+
+    So the operand is surfaced verbatim and each MARKER-SCOPED gate decides: it
+    proceeds only when the cd provably cannot leave the cwd repo, and blocks
+    otherwise. Non-gating consumers keep unpacking 3-tuples and see no change.
+
+    ADJACENCY IS THE WRONG RULE HERE. _trusted_cd requires the cd to be the
+    IMMEDIATELY preceding segment, because only then does '&&' prove it ran. The
+    untrusted channel asks the opposite question — "might the cwd have moved?" — and
+    an intervening command does NOT undo a cd, so `cd /other; :; git commit` still
+    runs in /other. Callers therefore pass EVERY cd operand seen before the command.
+
+    Nor is the operator a shortcut: in `cd /other; : && git commit` the '&&' joins
+    the NO-OP to the commit and says nothing about the cd, so keying off `op` here
+    would wrongly report "no cd". Suppression is decided by the caller instead, and
+    only for an ABSOLUTE resolved target — which fixes the repo by itself.
+
+    AND THE LAST cd IS NOT NECESSARILY THE ONE THAT RAN. Conditionals break lexical
+    order: in `cd /other || cd /session; git commit` the second cd executes only if
+    the first FAILED, so the command may run in either. When the operands are not
+    all identical we cannot say which took effect, so we return AMBIGUOUS_CD — a
+    leading-dash token that gate_classify_target rules unresolvable, making the
+    resolver fail CLOSED. It is never a valid absolute path, so it cannot be
+    mistaken for one."""
+    if not cds:
+        return ''
+    return cds[-1] if len(set(cds)) == 1 else AMBIGUOUS_CD
+
+
+def _all_cds(chunk):
+    """Every `cd` operand in `chunk`, in order — keyword-prefixed ones included
+    (_cd_target_loose), since this feeds the untrusted channel only."""
+    return [c for _op, seg in split_segments(chunk)
+            for c in (_cd_target_loose(seg),) if c is not None]
+
+
+def _nested_cds(chunks):
+    """The cd operands that can be in effect for a match found INSIDE a nested chunk
+    (`bash -c '...'`, `$(...)`).
+
+    ORDER IS DELIBERATELY NOT MODELLED HERE. Inside the main chunk, segments are a
+    flat ordered list, so the scanner can say exactly which cds precede the command.
+    Across interpreter payloads it cannot: locating the payload inside its parent by
+    substring picks inert text just as happily as the segment that runs it
+    (`echo 'git commit'; cd /x; bash -c 'git commit'`), and payloads nest
+    arbitrarily deep. Ordering them faithfully means reimplementing the shell, which
+    this module deliberately does not do.
+
+    So we take EVERY cd in the whole command and let the caller's "all operands
+    identical" rule decide. That is order-INDEPENDENT and therefore sound: if every
+    cd names the same directory, the command runs there whichever ones executed and
+    in whatever order; if they differ, the destination is genuinely unknown and the
+    caller fails CLOSED.
+
+    The accepted cost is a false block on a nested command whose only cd runs AFTER
+    it (`bash -c 'git commit; cd /other'`). That is the fail-CLOSED direction, the
+    shape is rare, and `&&` or `git -C` clears it."""
+    return [c for chunk in chunks for c in _all_cds(chunk)]
 
 
 def _is_sub_opener(cmd, i, n):
@@ -987,10 +1130,22 @@ def _scan_commit(chunk, allow_cd):
     """Scan one command chunk for a real `git commit`; return the result tuple
     or None. allow_cd=False for substitution bodies (subshell cwd is untrusted)."""
     pending_cd = None
+    pending_cd_op = ''
+    # EVERY cd seen, never reset by intervening commands — see _untrusted_cd.
+    cds = []
     for op, seg in split_segments(chunk):
+        # The untrusted channel always records the TOKENIZED operand: the strict
+        # regex keeps everything after `cd `, so `cd /x >/dev/null` would otherwise
+        # be compared as the literal path `/x >/dev/null` — a string an attacker can
+        # create as a symlink into the session repo while bash strips the
+        # redirection and moves somewhere else entirely.
+        loose_cd = _cd_target_loose(seg)
+        if loose_cd is not None:
+            cds.append(loose_cd)      # seen but never trusted -- _cd_target_loose
         cd = _cd_target(seg)
         if cd is not None:
-            pending_cd = cd
+            pending_cd = cd           # strict form only: feeds the TRUSTED path
+            pending_cd_op = op
             continue
         argv = _command_argv(seg, 'git')
         if not argv or not _is_exe(argv[0], 'git'):
@@ -1019,6 +1174,17 @@ def _scan_commit(chunk, allow_cd):
             pending_cd = None
             continue
         base = _trusted_cd(pending_cd, op) if allow_cd else ''
+        # '' unless an adjacent '&&' PROVED the cd ran -- which also requires the cd
+        # itself to have been reachable (see _CD_REACHED_OPS).
+        trusted_cd = base if pending_cd_op in _CD_REACHED_OPS else ''
+        # Authoritative only when the trusted cd is ABSOLUTE *and* the strict regex
+        # agrees with the TOKENIZED operand. `cd /other; cd sub && commit` runs in
+        # /other/sub (relative -> not authoritative); `cd "~" && commit` enters a
+        # LITERAL '~' dir though the regex expands it to $HOME; and
+        # `cd /other >/dev/null && commit` leaves the redirection inside the raw
+        # value. In each mismatch the raw value is the untrustworthy one.
+        authoritative = (trusted_cd.startswith('/')
+                         and bool(cds) and cds[-1] == trusted_cd)
         if allow_cd:
             # git applies every GLOBAL -C in order; a relative value resolves from
             # the directory established so far (cd base, then each preceding -C).
@@ -1028,9 +1194,20 @@ def _scan_commit(chunk, allow_cd):
             k = 0
             while k < sub_idx:
                 if argv[k] == '-C' and k + 1 < sub_idx:
-                    v = os.path.expanduser(argv[k + 1])
+                    raw = argv[k + 1]
+                    v = os.path.expanduser(raw)
                     if os.path.isabs(v):
                         base = v
+                        # An absolute `-C` fixes the repo on its own, whatever any
+                        # preceding cd did -- but only when it really is absolute.
+                        # Tokenization has discarded the tilde's quoting, so
+                        # `git -C "~"` is a LITERAL RELATIVE dir that git resolves
+                        # against the runtime cwd (`/other/~`) even though
+                        # expanduser turned it into an absolute $HOME here.
+                        # A later tilde operand must also INVALIDATE authority an
+                        # earlier absolute -C established (`-C /session -C "~"`
+                        # resolves against /session at runtime, not $HOME).
+                        authoritative = not raw.startswith('~')
                     elif base:
                         base = os.path.join(base, v)
                     else:
@@ -1041,14 +1218,33 @@ def _scan_commit(chunk, allow_cd):
         target_dir = base
         opt_words = argv[:argv.index('--')] if '--' in argv else argv
         is_amend = '--amend' in opt_words
-        return True, target_dir, is_amend
+        # Suppress only when the resolved target is ABSOLUTE — then it alone fixes
+        # the repo and a preceding cd cannot change it. A RELATIVE target (`git -C .`
+        # after a `cd /other`) is resolved by git against the RUNTIME cwd but by the
+        # gate against the payload cwd, so the cd must still be reported or the two
+        # silently disagree.
+        # Report the unconfirmed cd EXCEPT where it cannot matter: an adjacent
+        # '&&' already PROVED the cd ran (so target_dir is that cd, confirmed), or
+        # the resolved target is ABSOLUTE and fixes the repo by itself.
+        # Report the unconfirmed cd unless the target is AUTHORITATIVE: either an
+        # adjacent-and-reachable '&&' proved the cd ran, or an absolute `git -C`
+        # fixed the repo regardless. An absolute target_dir alone is NOT enough --
+        # it may itself have come from an unproven cd (`cd /a || cd /b && commit`).
+        untrusted = _untrusted_cd(cds) if allow_cd else ''
+        if authoritative:
+            untrusted = ''
+        return True, target_dir, is_amend, untrusted
     return None
 
 
-def git_commit(cmd):
+def git_commit(cmd, with_untrusted_cd=False):
     """Detect a real `git commit` invocation via command-word analysis.
 
-    Returns (is_commit: bool, target_dir: str, is_amend: bool). target_dir is
+    Returns (is_commit: bool, target_dir: str, is_amend: bool), plus a 4th element
+    (untrusted_cd: str) when with_untrusted_cd=True — the cd operand that did NOT
+    '&&'-gate the commit, for the marker-scoped gates to prove confinement (see
+    _untrusted_cd). Default stays a 3-tuple so every existing caller is unaffected.
+    target_dir is
     the cd/`git -C` target that scopes the repo (cd trusted only when it '&&'-
     gates the commit — see _trusted_cd); is_amend is True only when --amend
     appears in the option portion (before any `--` pathspec separator). Command
@@ -1057,12 +1253,26 @@ def git_commit(cmd):
     chunks = _all_chunks(cmd)
     r = _scan_commit(chunks[0], True)
     if r:
-        return r
-    for chunk in chunks[1:]:
-        r = _scan_commit(chunk, False)
-        if r:
-            return r
-    return False, '', False
+        # A CURRENT-SHELL payload (`eval 'cd /other'`, `source`) changes the cwd of
+        # the very chunk we matched in, so its cds count for a main-chunk match too.
+        # We cannot tell those apart from a subshell `bash -c` payload here, so all
+        # nested chunks are folded in: over-blocking a subshell cd is fail-CLOSED,
+        # missing an eval cd is not.
+        # An ABSOLUTE target (an absolute `git -C`, or an '&&'-proved absolute cd)
+        # fixes the repo no matter what any payload did, so it is never overridden.
+        nested = [] if r[1].startswith('/') else [c for chunk in chunks[1:] for c in _all_cds(chunk)]
+        if nested:
+            r = (r[0], r[1], r[2], _untrusted_cd(([r[3]] if r[3] else []) + nested))
+    if not r:
+        for chunk in chunks[1:]:
+            r = _scan_commit(chunk, False)
+            if r:
+                # Every cd in the whole command, order-independent -- _nested_cds.
+                r = (r[0], r[1], r[2], _untrusted_cd(_nested_cds(chunks)))
+                break
+    if not r:
+        r = (False, '', False, '')
+    return r if with_untrusted_cd else r[:3]
 
 
 def _gh_find_pr_sub(rest, subcommand):
@@ -1113,10 +1323,21 @@ def _iter_gh(chunk, subcommand, allow_cd):
     """Yield one result tuple per `gh pr <subcommand>` command word in `chunk`.
     allow_cd=False for substitution bodies (subshell cwd untrusted)."""
     pending_cd = None
+    pending_cd_op = ''
+    cds = []            # every cd seen, never reset -- see _untrusted_cd
     for op, seg in split_segments(chunk):
+        # The untrusted channel always records the TOKENIZED operand: the strict
+        # regex keeps everything after `cd `, so `cd /x >/dev/null` would otherwise
+        # be compared as the literal path `/x >/dev/null` — a string an attacker can
+        # create as a symlink into the session repo while bash strips the
+        # redirection and moves somewhere else entirely.
+        loose_cd = _cd_target_loose(seg)
+        if loose_cd is not None:
+            cds.append(loose_cd)      # seen but never trusted -- _cd_target_loose
         cd = _cd_target(seg)
         if cd is not None:
-            pending_cd = cd
+            pending_cd = cd           # strict form only: feeds the TRUSTED path
+            pending_cd_op = op
             continue
         argv = _command_argv(seg, 'gh')
         if not argv or not _is_exe(argv[0], 'gh'):
@@ -1129,7 +1350,15 @@ def _iter_gh(chunk, subcommand, allow_cd):
             continue
         target_dir = _trusted_cd(pending_cd, op) if allow_cd else ''
         pr_num = _gh_pr_number(rest[j + 2:])
-        yield True, target_dir, pr_num
+        # As in _scan_commit: an adjacent '&&' proved the cd ran (target_dir IS that
+        # cd here -- gh has no `-C`), and an absolute target fixes the repo alone.
+        untrusted = _untrusted_cd(cds) if allow_cd else ''
+        # Same rule as _scan_commit: absolute, reachable, and the raw value must
+        # agree with the tokenized operand.
+        if (target_dir.startswith('/') and pending_cd_op in _CD_REACHED_OPS
+                and cds and cds[-1] == target_dir):
+            untrusted = ''
+        yield True, target_dir, pr_num, untrusted
         pending_cd = None
 
 
@@ -1170,9 +1399,11 @@ def gh_pr_count(cmd, subcommand):
     return count
 
 
-def gh_pr(cmd, subcommand):
+def gh_pr(cmd, subcommand, with_untrusted_cd=False):
     """Detect a real `gh pr <subcommand>` (create/merge) via command-word
-    analysis. Returns (present: bool, target_dir: str, pr_num: str). gh global
+    analysis. Returns (present: bool, target_dir: str, pr_num: str), plus a 4th
+    element (untrusted_cd: str) when with_untrusted_cd=True — see _untrusted_cd and
+    git_commit. Default stays a 3-tuple so every existing caller is unaffected. gh global
     flags before the subcommand (gh --repo owner/repo pr create, gh --hostname h
     pr merge 5) are skipped, including a single value token after each flag. cd
     trust is operator-aware; command substitutions ($(...), backticks) are
@@ -1180,12 +1411,22 @@ def gh_pr(cmd, subcommand):
     chunks = _all_chunks(cmd)
     r = _scan_gh(chunks[0], subcommand, True)
     if r:
-        return r
-    for chunk in chunks[1:]:
-        r = _scan_gh(chunk, subcommand, False)
-        if r:
-            return r
-    return False, '', ''
+        # Current-shell payload cds count for a main-chunk match too -- see git_commit.
+        # An ABSOLUTE target (an absolute `git -C`, or an '&&'-proved absolute cd)
+        # fixes the repo no matter what any payload did, so it is never overridden.
+        nested = [] if r[1].startswith('/') else [c for chunk in chunks[1:] for c in _all_cds(chunk)]
+        if nested:
+            r = (r[0], r[1], r[2], _untrusted_cd(([r[3]] if r[3] else []) + nested))
+    if not r:
+        for chunk in chunks[1:]:
+            r = _scan_gh(chunk, subcommand, False)
+            if r:
+                # Every cd in the whole command, order-independent -- _nested_cds.
+                r = (r[0], r[1], r[2], _untrusted_cd(_nested_cds(chunks)))
+                break
+    if not r:
+        r = (False, '', '', '')
+    return r if with_untrusted_cd else r[:3]
 
 
 # ── Effective cwd of a file-write in a Bash command (#347 item 2) ──────────────

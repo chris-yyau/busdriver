@@ -101,16 +101,24 @@ try:
     if isinstance(inp, str):
         inp = json.loads(inp)
     cmd = inp.get('command', '')
-    is_commit, target_dir, is_amend = git_commit(cmd)
+    is_commit, target_dir, is_amend, untrusted_cd = git_commit(cmd, with_untrusted_cd=True)
+    # A cd operand containing a NEWLINE cannot survive this hook's line-based
+    # framing, so emit a leading-dash token instead: gate_classify_target() rules
+    # any '-*' operand unresolvable, which makes the resolver BLOCK. Never a real
+    # absolute path, so it cannot be mistaken for one.
+    if chr(10) in untrusted_cd:
+        untrusted_cd = '-newline-in-cd-operand'
     if is_commit:
         print('yes')
         print(target_dir)
         print('1' if is_amend else '0')
         print(cwd)
+        print(untrusted_cd)
 except Exception:
     # Fail-CLOSED: fast pre-filter matched git commit pattern but parser
     # failed. Print sentinel so bash can block rather than silently approve.
     print('error')
+    print('')
     print('')
     print('')
     print('')
@@ -120,6 +128,8 @@ IS_GIT_COMMIT=$(echo "$PARSE_RESULT" | sed -n '1p')
 TARGET_DIR=$(echo "$PARSE_RESULT" | sed -n '2p')
 IS_AMEND=$(echo "$PARSE_RESULT" | sed -n '3p')
 HOOK_CWD=$(echo "$PARSE_RESULT" | sed -n '4p')
+# The cd operand that did NOT '&&'-gate the commit (see gitcmd_detect._untrusted_cd).
+UNTRUSTED_CD=$(echo "$PARSE_RESULT" | sed -n '5p')
 
 # Fail-closed: parser error after fast pre-filter matched → block as precaution
 if [ "$IS_GIT_COMMIT" = "error" ]; then
@@ -131,9 +141,9 @@ fi
 
 # Resolve REPO_DIR (cwd-anchored; cd/-C target only as a safe refinement).
 # Fail-CLOSED on command-substitution targets the gate cannot evaluate.
-gate_resolve_repo_dir "$TARGET_DIR" "$HOOK_CWD"
+gate_resolve_repo_dir "$TARGET_DIR" "$HOOK_CWD" "$UNTRUSTED_CD"
 if [ "$GATE_RESOLVE_STATUS" = "block-unresolvable" ]; then
-    block_emit "Pre-commit gate: the command's cd target uses command substitution the gate cannot resolve statically (e.g. cd \"\$(...)\"). Commit from the repo root, or use cd \"\$(git rev-parse --show-toplevel)\" which the gate recognizes. Blocking as precaution (fail-closed)."
+    block_emit "Pre-commit gate: the command's cd target cannot be resolved statically. Either it uses a substitution or variable (cd \"\$(...)\", cd \$DIR, cd -, a glob), or it is a plain 'cd <dir>' that is NOT '&&'-joined to the git commit and resolves to a DIFFERENT repo than the session cwd -- so the gate cannot tell which repo receives it, and checking the wrong one would let an unreviewed change through. Commit from the repo root, join the cd with '&&' (cd /repo && git commit), use git -C /repo, or use cd \"\$(git rev-parse --show-toplevel)\" which the gate recognizes. Blocking as precaution (fail-closed)."
     exit 0
 fi
 # Genuinely not in a git repo → nothing to review (git commit fails on its own).

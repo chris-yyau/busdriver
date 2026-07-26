@@ -707,6 +707,23 @@ for c in MERGE_NO:
 check("cd target_dir (&&-gated)", g.git_commit('cd /tmp/r && git commit')[1], '/tmp/r')
 check("cd NOT trusted (short-circuit)", g.git_commit('false && cd /tmp/r; git commit')[1], '')
 check("cd NOT trusted (semicolon)", g.git_commit('cd /tmp/r; git commit')[1], '')
+# An unconfirmed cd is reported OUT OF BAND (opt-in 4th element) so target_dir stays
+# a pure path field -- folding a sentinel into it would be forgeable by a real
+# directory and would downgrade the '$'-in-target BLOCK. Default stays a 3-tuple, so
+# the non-gating nudge parsers are untouched. Resolver matrix:
+# tests/test-gate-untrusted-cd.sh.
+check("untrusted_cd absent by default (3-tuple)", len(g.git_commit('cd /tmp/r; git commit')), 3)
+check("untrusted_cd opt-in (semicolon)", g.git_commit('cd /tmp/r; git commit', with_untrusted_cd=True)[3], '/tmp/r')
+check("untrusted_cd opt-in (newline)", g.git_commit('cd /tmp/r\ngit commit', with_untrusted_cd=True)[3], '/tmp/r')
+check("untrusted_cd empty when '&&'-trusted", g.git_commit('cd /tmp/r && git commit', with_untrusted_cd=True)[3], '')
+check("untrusted_cd empty when no cd", g.git_commit('git commit', with_untrusted_cd=True)[3], '')
+check("untrusted_cd empty on no match", g.git_commit('ls', with_untrusted_cd=True)[3], '')
+# `git -C` already scoped the repo authoritatively -- do not also report a stale
+# pending operand the caller might second-guess it with.
+check("untrusted_cd suppressed by git -C", g.git_commit('cd /tmp/r; git -C /other commit', with_untrusted_cd=True)[3], '')
+check("gh_pr untrusted_cd opt-in", g.gh_pr('cd /tmp/r; gh pr merge 5', 'merge', with_untrusted_cd=True)[3], '/tmp/r')
+check("gh_pr 3-tuple by default", len(g.gh_pr('cd /tmp/r; gh pr merge 5', 'merge')), 3)
+check("gh_pr untrusted_cd empty on '&&'", g.gh_pr('cd /tmp/r && gh pr merge 5', 'merge', with_untrusted_cd=True)[3], '')
 check("git -C target_dir", g.git_commit('git -C /tmp/r commit')[1], '/tmp/r')
 check("cd + relative -C", g.git_commit('cd /repoA && git -C nested commit')[1], '/repoA/nested')
 check("sequential -C", g.git_commit('git -C /repoA -C nested commit')[1], '/repoA/nested')

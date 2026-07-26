@@ -245,7 +245,13 @@ try:
     # that merely QUOTES the merge command (an issue comment, a --body, a test
     # fixture's input string) no longer counts as a merge (issue #426).
     merge_count = gh_pr_count(cmd, 'merge')
-    _present, target_dir, pr_num = gh_pr(cmd, 'merge')
+    _present, target_dir, pr_num, untrusted_cd = gh_pr(cmd, 'merge', with_untrusted_cd=True)
+    # A cd operand containing a NEWLINE cannot survive this hook's line-based
+    # framing, so emit a leading-dash token instead: gate_classify_target() rules
+    # any '-*' operand unresolvable, which makes the resolver BLOCK. Never a real
+    # absolute path, so it cannot be mistaken for one.
+    if chr(10) in untrusted_cd:
+        untrusted_cd = '-newline-in-cd-operand'
     # ADR 0024 constraint 5: a per-command repo/host override means the merge may
     # target a DIFFERENT repo than the checkout's origin, so the origin-derived
     # missing-Codex advisory would name the wrong repo. Surface its presence so
@@ -277,6 +283,7 @@ try:
         print(merge_count)
         print(cwd)
         print(repo_override)
+        print(untrusted_cd)
 except Exception:
     print('error')
     print('')
@@ -284,6 +291,7 @@ except Exception:
     print('0')
     print('')
     print('yes')
+    print('')
 " 2>/dev/null || true)
 
 IS_GH_PR_MERGE=$(echo "$MERGE_PARSE" | sed -n '1p')
@@ -294,6 +302,8 @@ HOOK_CWD=$(echo "$MERGE_PARSE" | sed -n '5p')
 # ADR 0024: 'yes' → suppress the missing-Codex advisory (constraint 5). Defaults
 # to 'yes' (silent) on any parse anomaly — fail toward silence.
 REPO_OVERRIDE=$(echo "$MERGE_PARSE" | sed -n '6p')
+# The cd operand that did NOT '&&'-gate the merge (see gitcmd_detect._untrusted_cd).
+UNTRUSTED_CD=$(echo "$MERGE_PARSE" | sed -n '7p')
 case "$REPO_OVERRIDE" in yes|no) ;; *) REPO_OVERRIDE=yes ;; esac
 
 [ -z "$IS_GH_PR_MERGE" ] && exit 0
@@ -323,9 +333,9 @@ fi
 # `gh pr merge` supports `-R owner/repo` and can operate from a non-repo cwd,
 # so an unresolved anchor falls through to the existing marker-not-found block
 # rather than approving.
-gate_resolve_repo_dir "$TARGET_DIR" "$HOOK_CWD"
+gate_resolve_repo_dir "$TARGET_DIR" "$HOOK_CWD" "$UNTRUSTED_CD"
 if [ "$GATE_RESOLVE_STATUS" = "block-unresolvable" ]; then
-    block_emit "Pre-merge gate: the command's cd target uses command substitution the gate cannot resolve statically (e.g. cd \"\$(...)\"). Merge from the repo root, or use cd \"\$(git rev-parse --show-toplevel)\" which the gate recognizes. Blocking as precaution (fail-closed)."
+    block_emit "Pre-merge gate: the command's cd target cannot be resolved statically. Either it uses a substitution or variable (cd \"\$(...)\", cd \$DIR, cd -, a glob), or it is a plain 'cd <dir>' that is NOT '&&'-joined to the gh pr merge and resolves to a DIFFERENT repo than the session cwd -- so the gate cannot tell which repo receives it, and checking the wrong one would let an unreviewed change through. Merge from the repo root, join the cd with '&&' (cd /repo && gh pr merge), use git -C /repo, or use cd \"\$(git rev-parse --show-toplevel)\" which the gate recognizes. Blocking as precaution (fail-closed)."
     exit 0
 fi
 REPO_DIR="$GATE_REPO_DIR"

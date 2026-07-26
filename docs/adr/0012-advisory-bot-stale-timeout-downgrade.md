@@ -84,8 +84,9 @@ cannot enable it).
 Downgrade emits `stale → none` (**never** `stale → approved`): the ledger records
 "this advisory signal expired cleanly," not "the bot approved HEAD." Anti-laundering
 lives in the **audit trail**, not the marker: the `pr-grind-clean.local` marker must
-stay a bare PR number (`pre-merge-gate.sh` parses it with `tr -d '[:space:]'` and
-treats any non-digit as corrupt), so the released-bot list is recorded in
+stay exactly `<PR_NUMBER> <HEAD_SHA>` (`pre-merge-gate.sh` reads field 1 as the PR
+and treats any non-digit as corrupt; field 2 is the reviewed commit, checked against
+the PR's live `headRefOid` — #505), so the released-bot list is recorded in
 `bypass-log.jsonl` (one event per bot) and surfaced to the operator in the
 completion message — `clean` is never silently equated with "all advisors approved
 HEAD."

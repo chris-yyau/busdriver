@@ -239,7 +239,13 @@ def _command_argv(seg, target):
         t = toks[i]
         base = t.rsplit('/', 1)[-1]
         is_target = base == target
-        if re.match(r'^\w+=', t):
+        # Covers the APPEND (`A+=1`) and INDEXED (`A[0]=1`, `A[0]+=1`) forms as well
+        # as plain `A=1`. Bash runs `A+=1 git commit` and `A[0]+=1 git commit` exactly
+        # like `A=1 git commit`; with the old `^\w+=` the assignment stayed in argv,
+        # argv[0] was not the target executable, and the whole command went undetected
+        # — a fail-OPEN in every gate sharing this detector (pre-commit, pre-pr,
+        # pre-merge). Found via #505.
+        if _ASSIGN_TOK_RE.match(t):
             i += 1
             prev_dash = False
         elif t == '!':
@@ -661,7 +667,7 @@ def _consume_heredoc(cmd, i, m, line_start):
         # the command word.
         words = []
         for t in _tokenize(seg):        # A: wrapper options treated as no-arg
-            if (re.match(r'^\w+=', t) or t.startswith('-')
+            if (_ASSIGN_TOK_RE.match(t) or t.startswith('-')   # append/indexed forms
                     or re.match(r'^(\d*[<>]{1,2}|&>{1,2})', t)
                     or t.rsplit('/', 1)[-1] in _WRAPPERS):
                 continue
@@ -1136,6 +1142,218 @@ def _iter_gh(chunk, subcommand, allow_cd):
 def _scan_gh(chunk, subcommand, allow_cd):
     """First `gh pr <subcommand>` in `chunk`, or None."""
     return next(_iter_gh(chunk, subcommand, allow_cd), None)
+
+
+# Matched against a TOKEN, not raw text, so it is anchored: shlex has already
+# dequoted and joined continuations, so `env GH_RE"PO"=o/r` and `env GH_RE\PO=o/r`
+# both arrive here as the single token `GH_REPO=o/r`. `\+?=` matches the append form,
+# which EXPORTS the selector when the variable is unset (`GH_REPO+=o/r`).
+_GH_ENV_ASSIGN_RE = re.compile(r'^(?:GH_REPO|GH_HOST)\+?=')
+
+# A token that is an assignment WORD (`A=1`, `A+=1`, `A[0]+=1`) rather than a command.
+# The subscript is `.*` (greedy), not `[^]]*`: a subscript may itself contain brackets
+# (`A[foo[0]]=1`), and stopping at the first `]` left that token in argv, so the
+# command after it went undetected by every gate using _command_argv.
+_ASSIGN_TOK_RE = re.compile(r'^\w+(?:\[.*\])?\+?=')
+
+
+def _env_selector_in_prefix(seg):
+    """True iff `seg` carries a `GH_REPO=` / `GH_HOST=` assignment in its PREFIX.
+
+    Two opposed review findings settle the design between them:
+
+    * Reach must be command-WIDE, not "same segment as the merge". Bash preserves a
+      variable's export attribute across re-assignment, so if the caller's shell had
+      already exported GH_REPO, then `GH_REPO=o/r; gh pr merge 31` really does
+      retarget a merge in a LATER segment — and whether it did is ambient state no
+      parse can observe. The caller therefore ORs this across every segment.
+    * Position must still be the assignment PREFIX. Scanning every token instead made
+      ordinary operands look like selectors (`--body 'GH_REPO=o/r'`, `printf %s
+      GH_HOST=x`), false-blocking legitimate merges.
+
+    So: scan only the leading run of assignment words, wrappers, options and option
+    arguments — the one place the shell accepts an environment assignment — and stop
+    at the first real command word. Prefix position, command-wide reach.
+
+    Matching is on TOKENS and rejects any with whitespace, so prose never matches:
+    `--body 'Document GH_REPO=owner/repo'` is one argument token, not a prefix.
+    """
+    prev_dash = False
+    for t in _tokenize(seg):
+        # Strip subshell / brace-group punctuation, as _command_argv does, so
+        # `(GH_REPO=o/r gh …)` and `{ GH_REPO=o/r gh …; }` expose the assignment.
+        t = t.lstrip('({')
+        if not t:
+            continue
+        if _GH_ENV_ASSIGN_RE.match(t) and not _WS_RE.search(t):
+            return True
+        if _ASSIGN_TOK_RE.match(t):
+            prev_dash = False
+            continue
+        if t.startswith('-'):
+            prev_dash = True
+            continue
+        if prev_dash:
+            prev_dash = False       # a wrapper option's ARGUMENT (`env -u FOO …`)
+            continue
+        # `!` is pipeline negation — the command still runs, so it is not the
+        # command word. _command_argv skips it too; diverging here fails OPEN.
+        if t == '!' or t in _SHELL_KEYWORDS or t.rsplit('/', 1)[-1] in _WRAPPERS:
+            continue
+        return False        # a real command word — the assignment prefix is over
+    return False
+
+
+def _exports_selector(seg):
+    """True iff `seg` is an `export`/`declare -x`/`typeset -x` of GH_REPO/GH_HOST.
+
+    Distinct from a bare assignment PREFIX, and the distinction is the shell's, not
+    ours: `GH_REPO=o/r; gh pr merge 31` sets a shell variable the child never sees,
+    while `export GH_REPO=o/r; gh pr merge 31` puts it in the child's environment.
+    Only the exported form reaches a merge in a LATER segment.
+
+    DELIBERATELY COARSE, and it is the end of a line of hardening rather than a step
+    in it. Any export-family word plus any mention of the selector counts -- the word
+    need not lead the segment (`if export GH_REPO=o/r; then …`), and the name may be
+    exported a step apart from its assignment (`GH_REPO=o/r; export GH_REPO; …`).
+    Modelling those precisely means tracking shell variable state, which is
+    interpreting a command this hook never runs. So the residue is spent on the SAFE
+    side: `declare GH_REPO=o/r` and `export -n GH_REPO=o/r` do NOT export, yet both
+    return True here and produce a FALSE BLOCK. That is fail-CLOSED and the operator
+    can reword; the opposite error authorizes a cross-repo merge. See ADR 0030.
+    """
+    toks = [t.lstrip('({') for t in _tokenize(seg)]
+    toks = [t for t in toks if t]
+    # `local -x` exports too (inside a function), as do declare/typeset.
+    if not any(t.rsplit('/', 1)[-1] in ('export', 'declare', 'typeset', 'local')
+               for t in toks):
+        return False
+    return any(_GH_ENV_ASSIGN_RE.match(t) or t in ('GH_REPO', 'GH_HOST')
+               for t in toks)
+
+# Shorthands on `gh pr merge` that CONSUME a value: -R/--repo, -b/--body,
+# -F/--body-file, -t/--subject. Under pflag, the rest of a cluster after one of
+# these is that flag's VALUE, not more shorthands -- so `-tRelease` is subject
+# "Release", NOT a repo selector. Scanning past them would false-block on any
+# attached value containing an R.
+_GH_VALUE_SHORTHANDS = frozenset('bFtA')
+
+# A PR argument given as a URL rather than a number — it carries its own owner/repo.
+_GH_PR_URL_RE = re.compile(r'^(?:https?://|git@|ssh://)', re.I)
+
+_WS_RE = re.compile(r'\s')
+
+# The same flags in the forms that take their value as the NEXT token. Their operand
+# must be skipped, or `gh pr merge 31 --subject -R` reads the subject VALUE `-R` as a
+# repo selector and false-blocks a legitimate merge.
+_GH_VALUE_FLAGS = frozenset({
+    '-b', '--body', '-F', '--body-file', '-t', '--subject',
+    '-A', '--author-email', '--match-head-commit',
+})
+
+
+def _cluster_scan(tok):
+    """Classify a single-dash pflag shorthand cluster.
+
+    Returns 'repo' if it really carries `-R`, 'value' if it ENDS in a value-taking
+    shorthand with no attached value (so the NEXT token is that value and must be
+    consumed -- `-st -R` is subject "-R", not a repo selector), else None.
+
+    gh uses spf13/pflag, which accepts clustered shorthands: `gh pr merge 31
+    -sRother/repo` and `-sR other/repo` both set --repo. Matching only `-R` or
+    `tok.startswith('-R')` missed every cluster where R was not first. pflag scans a
+    cluster left to right and stops at the first value-taking shorthand, so this does
+    the same -- anything after one of those, in the same token, is a value.
+    """
+    if not tok.startswith('-') or tok.startswith('--') or len(tok) < 2:
+        return None
+    body = tok[1:]
+    for idx, ch in enumerate(body):
+        if ch == 'R':
+            return 'repo'
+        if ch in _GH_VALUE_SHORTHANDS:
+            # Last char => the value is the next TOKEN; otherwise it is attached here.
+            return 'value' if idx == len(body) - 1 else None
+    return None
+
+
+def gh_pr_repo_override(cmd, subcommand):
+    """True iff a command containing a real `gh pr <subcommand>` invocation steers it
+    at another repo/host. The two selector forms get DIFFERENT scopes, because they
+    have different reach:
+
+    * **Flag form** (`-R` / `-Rowner/repo` / `--repo` / `--repo=...`) -- scoped to the
+      matching invocation's OWN argv, gh global flags before `pr` included (since
+      `gh -R x pr merge 5` really does retarget). It cannot reach a sibling command,
+      so a wider scope would only produce false blocks. ADR 0024's coarse
+      whole-command substring test is right for its non-gating advisory but wrong as
+      a gate: pr-grind's own auto-admin merge runs `gh -R "$OWNER/$REPO" pr view` and
+      `gh pr merge --admin` inside ONE Bash call, so a whole-command test rejects the
+      entire call and the merge never runs (reproduced in-tree before this was added).
+
+    * **Env form** (`GH_REPO=` / `GH_HOST=`) -- scoped to the WHOLE command. An
+      assignment is ambient: it survives quoting (`env "GH_REPO=o/r" gh …`), grouping
+      (`(GH_REPO=o/r gh …)`), and interpreter wrapping (`GH_REPO=o/r bash -c 'gh pr
+      merge 31'`, where the merge lands in a nested chunk the assignment's segment
+      never contains). Segment-scoping it missed all three. Widening is safe for the
+      pr-grind case above, which uses the flag form -- no in-tree command shape puts a
+      literal `GH_REPO=`/`GH_HOST=` in a merge-bearing call.
+
+    Detection is incomplete by nature -- a GH_REPO exported by an EARLIER Bash call,
+    or a selector assembled by shell expansion (`sel=R; gh pr merge 31 -"$sel" o/r`),
+    is invisible to a hook that never runs the command. That is acceptable HERE, and
+    only here, because the direction of failure is safe: a miss returns to the
+    pre-existing behaviour (the gate validates REPO_DIR's PR, as it always did), while
+    a hit blocks. Defense-in-depth against the literal form -- never a boundary.
+    Contrast the head-pin requirement, which was reverted precisely because a miss
+    there would have failed OPEN.
+    """
+    found = False
+    env_selector = False
+    for chunk in _all_chunks(cmd):
+        for _op, seg in split_segments(chunk):
+            # Command-wide, not segment-scoped: see _env_selector_in_prefix. An
+            # assignment anywhere may reach a merge anywhere, and which one it
+            # reaches depends on ambient export state the hook cannot observe.
+            if _env_selector_in_prefix(seg) or _exports_selector(seg):
+                env_selector = True
+            argv = _command_argv(seg, 'gh')
+            if not argv or not _is_exe(argv[0], 'gh'):
+                continue
+            rest = argv[1:]
+            if _gh_find_pr_sub(rest, subcommand) is None:
+                continue
+            found = True
+            skip_value = False
+            for tok in rest:
+                if skip_value:
+                    skip_value = False
+                    continue        # this token is the previous flag's VALUE
+                if tok in ('-R', '--repo') or tok.startswith('--repo='):
+                    return True
+                if tok in _GH_VALUE_FLAGS:
+                    skip_value = True
+                    continue
+                if _GH_PR_URL_RE.match(tok):
+                    # `gh pr merge https://github.com/other/repo/pull/31` selects the
+                    # repo positionally — same effect as -R, no flag involved. A URL
+                    # for THIS repo is over-blocked; that is fail-CLOSED and rare
+                    # (the normal form is a bare PR number).
+                    return True
+                kind = _cluster_scan(tok)
+                if kind == 'repo':
+                    return True
+                if kind == 'value':
+                    skip_value = True
+    # Env form last, and only once we know there IS such an invocation to steer --
+    # otherwise a bare `GH_REPO=o/r gh pr view 5` would report a merge override.
+    #
+    # Both forms are token-based: tokenization has already dequoted and joined line
+    # continuations, so every literal spelling the shell reassembles -- `env
+    # GH_RE"PO"=o/r`, `env GH_RE\PO=o/r`, `GH_RE\<newline>PO=o/r` -- reaches the
+    # matcher as one `GH_REPO=o/r` token, without a text-normalization pass that
+    # would also match inert prose.
+    return found and env_selector
 
 
 def gh_pr_count(cmd, subcommand):

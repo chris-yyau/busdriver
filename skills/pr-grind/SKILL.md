@@ -114,8 +114,11 @@ START
   │     REVIEWED_HEAD           = the full 40-char HEAD_FULL_SHA captured in the
   │                               classification block, carried forward to BOTH
   │                               Completion merge blocks as `--match-head-commit`
-  │                               (#427). Remember the SHA the acks were classified
-  │                               against — do NOT re-derive it at merge time.
+  │                               (#427) AND written as the second field of the
+  │                               pr-grind-clean marker (#505). Remember the SHA the
+  │                               acks were classified against — do NOT re-derive it
+  │                               at merge time or at marker-write time; re-deriving
+  │                               stamps a post-classification push as reviewed.
   │     # These are NOT exported as shell env vars — bash exports do NOT survive
   │     # across Claude Bash tool calls (each tool call gets a fresh shell). The
   │     # dispatcher (Claude) MUST remember each flag's resolved value in
@@ -681,9 +684,9 @@ ON_LOOP_EXHAUSTED — two flavors, branch on which counter overflowed.
                              COMPLETION's ack-recompute honors the release instead of re-deriving `stale`
                              (see COMPLETION) and so the released list is surfaced in the operator-facing
                              completion message and audit trail. ⚠ The `pr-grind-clean.local` marker itself
-                             MUST stay a bare PR number regardless — it does NOT carry DOWNGRADED_BOTS or
-                             any other non-digit content (see COMPLETION's marker note; the durable record
-                             of the release lives in `bypass-log.jsonl`, not the marker). Otherwise fall
+                             MUST stay exactly `<PR_NUMBER> <HEAD_SHA>` regardless — it does NOT carry
+                             DOWNGRADED_BOTS or any other content (see COMPLETION's marker note; the durable
+                             record of the release lives in `bypass-log.jsonl`, not the marker). Otherwise fall
                              through to BAIL — a bot with live findings, a failed green gate, or the missing
                              opt-in all keep the PR blocked exactly as before.
 
@@ -716,9 +719,12 @@ COMPLETION:
   │   naive recompute would re-derive `stale` (the bot's posted state is
   │   unchanged) and falsely re-block. A bot NOT in DOWNGRADED_BOTS that is now
   │   `stale` still blocks (it re-posted or was never released) → back to BAIL.
-  ├── Write .claude/pr-grind-clean.local at repo root. ⚠ The marker MUST stay a
-  │   BARE PR number — `pre-merge-gate.sh` does `PR_NUM=$(tr -d '[:space:]' < marker)`
-  │   and treats ANY non-digit as corrupt (deletes the marker, blocks the merge).
+  ├── Write .claude/pr-grind-clean.local at repo root. ⚠ The marker MUST stay exactly
+  │   TWO whitespace-separated fields — `<PR_NUMBER> <HEAD_SHA>` (#505). `pre-merge-gate.sh`
+  │   reads field 1 as the PR (any non-digit ⇒ corrupt: marker deleted, merge blocked) and
+  │   field 2 as the 40-hex commit the grind actually validated, which it compares against
+  │   the PR's live `headRefOid` (mismatch or missing ⇒ blocked). Adding a third field is
+  │   harmless to the parser but the SHA must never move off field 2.
   │   So NEVER write the released-bot list into the marker. ADR 0012 anti-laundering
   │   instead lives in the audit trail: advisory-stale-downgrade.sh has already
   │   written one `advisory_stale_timeout_downgrade` event per released bot to
@@ -1679,7 +1685,21 @@ The pre-merge gate anchors its marker lookup (`REPO_DIR`) on the hook's `cwd` �
 # NO `cd` above this line — the ambient cwd must stay the session cwd (= gate anchor).
 REPO_ROOT=$(git rev-parse --show-toplevel)
 mkdir -p "$REPO_ROOT/.claude"
-echo "<PR_NUMBER>" > "$REPO_ROOT/.claude/pr-grind-clean.local"
+# The marker asserts "<PR> AT THIS COMMIT is clean" — the SHA is load-bearing,
+# not decoration (#505). It MUST be REVIEWED_HEAD (the same value already
+# substituted into `--match-head-commit` below, #427): the commit the ack ledger
+# actually classified against. Do NOT re-query `gh pr view --json headRefOid`
+# here — that re-derives HEAD at marker-write time, so a push landing between
+# classification and this line would stamp a NEW, UNREVIEWED commit as clean and
+# the gate would then faithfully authorize it. Re-deriving launders exactly the
+# commit #505 exists to catch. (`git rev-parse HEAD` is wrong for a second
+# reason: this block runs at the ambient session cwd, routinely on another branch.)
+REVIEWED_HEAD=<full 40-char SHA — the HEAD_FULL_SHA from the classification block>
+if [ "${#REVIEWED_HEAD}" -ne 40 ]; then
+  echo "ABORT: REVIEWED_HEAD is not a full 40-char SHA — marker NOT written. Do not merge; re-run /pr-grind." >&2
+  exit 1
+fi
+printf '%s %s\n' "<PR_NUMBER>" "$REVIEWED_HEAD" > "$REPO_ROOT/.claude/pr-grind-clean.local"
 rm -f "$REPO_ROOT/.claude/pr-pending-grind.local"
 ```
 
@@ -2397,7 +2417,14 @@ NO_WORKTREE=<0|1 — see "Resolve flag-to-state translations" in START>
 if [ "$NO_WORKTREE" = "1" ]; then
   REPO_ROOT=$(git rev-parse --show-toplevel)
   mkdir -p "$REPO_ROOT/.claude"
-  echo "<PR_NUMBER>" > "$REPO_ROOT/.claude/pr-grind-clean.local"
+  # Same `<PR> <HEAD_SHA>` contract as the marker-write block above (#505): the
+  # CLASSIFIED head (REVIEWED_HEAD), never a fresh headRefOid query.
+  REVIEWED_HEAD=<full 40-char SHA — the HEAD_FULL_SHA from the classification block>
+  if [ "${#REVIEWED_HEAD}" -ne 40 ]; then
+    echo "ABORT: REVIEWED_HEAD is not a full 40-char SHA — marker NOT written. Do not merge; re-run /pr-grind." >&2
+    exit 1
+  fi
+  printf '%s %s\n' "<PR_NUMBER>" "$REVIEWED_HEAD" > "$REPO_ROOT/.claude/pr-grind-clean.local"
   rm -f "$REPO_ROOT/.claude/pr-pending-grind.local"
 else
   ORIGINAL_REPO_ROOT=$(git -C <original-worktree-path> rev-parse --show-toplevel)

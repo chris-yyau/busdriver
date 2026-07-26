@@ -227,7 +227,7 @@ try:
     # 'error' branch (which BLOCKS) rather than crash to empty output, which the
     # caller's \`[ -z ... ] && exit 0\` would read as 'not a merge' — fail-OPEN.
     import json
-    from gitcmd_detect import gh_pr, gh_pr_count
+    from gitcmd_detect import gh_pr, gh_pr_count, gh_pr_repo_override
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
@@ -269,6 +269,26 @@ try:
     _cmd_norm = cmd.replace(chr(34), '').replace(chr(39), '').replace(chr(92), '')
     repo_override = 'yes' if ('-R' in _cmd_norm or '--repo' in _cmd_norm
                               or 'GH_REPO=' in _cmd_norm or 'GH_HOST=' in _cmd_norm) else 'no'
+    # #505: the same question, but scoped to the MERGE invocation's own argv. The
+    # whole-command value above stays as-is for ADR 0024's non-gating advisory; only
+    # this narrower one gates, because the coarse test also matches a sibling
+    # \`gh -R ... pr view\` in the same call and would block pr-grind's auto-admin
+    # merge. (Backticks MUST stay escaped: this block is a double-quoted shell string,
+    # so a bare backtick pair is command substitution — an unescaped one here really
+    # did run a stray \`gh\` on every merge-gate invocation.)
+    merge_repo_override = 'yes' if gh_pr_repo_override(cmd, 'merge') else 'no'
+    # NOTE (#505): an earlier revision also tried to REQUIRE a head-pin flag here,
+    # to close the preflight-to-merge window for a hand-typed merge. It was removed.
+    # Deciding whether a flag is really on the merge argv means parsing a command
+    # this hook never executes, and review found a fresh evasion every round: prose,
+    # comments, redirect targets, heredoc delimiters, fd-name redirections, and a SHA
+    # supplied by an unrelated assignment while the real operand was a command
+    # substitution. That is the documented anti-pattern -- a regex over an un-run
+    # command is not a security boundary -- and each patch added complexity to
+    # something that could never become one. The window is handled where it can be:
+    # pr-grind own merges pass the pin from a template-substituted REVIEWED_HEAD
+    # (#427, no parsing), and the marker-vs-live-HEAD check below reads authoritative
+    # GitHub state rather than the command string. See ADR 0030 Residual risk.
     if merge_count >= 1:
         # Use newline separator: target_dir may contain '|' on weird paths
         print('yes' if merge_count == 1 else 'multi')
@@ -277,12 +297,14 @@ try:
         print(merge_count)
         print(cwd)
         print(repo_override)
+        print(merge_repo_override)
 except Exception:
     print('error')
     print('')
     print('')
     print('0')
     print('')
+    print('yes')
     print('yes')
 " 2>/dev/null || true)
 
@@ -295,6 +317,9 @@ HOOK_CWD=$(echo "$MERGE_PARSE" | sed -n '5p')
 # to 'yes' (silent) on any parse anomaly — fail toward silence.
 REPO_OVERRIDE=$(echo "$MERGE_PARSE" | sed -n '6p')
 case "$REPO_OVERRIDE" in yes|no) ;; *) REPO_OVERRIDE=yes ;; esac
+# #505 merge-scoped override (gates); fail-safe 'yes' on any parse anomaly.
+MERGE_REPO_OVERRIDE=$(echo "$MERGE_PARSE" | sed -n '7p')
+case "$MERGE_REPO_OVERRIDE" in yes|no) ;; *) MERGE_REPO_OVERRIDE=yes ;; esac
 
 [ -z "$IS_GH_PR_MERGE" ] && exit 0
 
@@ -375,6 +400,36 @@ if [ -f "$SKIP_FILE" ] \
     fi
 fi
 
+# ── Cross-repo guard (covers BOTH evidence-based allow paths) ────────
+# Every check the allow paths below perform — the marker's head SHA, `gh pr checks`,
+# and the bootstrap path's `gh pr diff` — resolves against REPO_DIR's origin. A
+# repo/host selector on the MERGE makes it target a different repo, where "PR #N" is
+# an unrelated pull request none of that evidence covers.
+#
+# Gates on gitcmd_detect.gh_pr_repo_override, not ADR 0024's whole-command substring.
+# That function scopes the FLAG form (-R/--repo) to the merge's own argv and the ENV
+# form (GH_REPO=/GH_HOST=) to the whole command — a flag cannot reach a sibling, an
+# assignment can (it survives quoting, grouping and `bash -c` wrapping). ADR 0024's
+# coarse form matches a sibling `gh -R ... pr view` in the same Bash call, which
+# blocked pr-grind's OWN auto-admin merge (that block runs the view and the merge in
+# one fenced call) — verified in-tree before this was scoped.
+#
+# Placed ABOVE both branches deliberately: guarding only the marker path would leave
+# the bootstrap path able to authorize `gh pr merge N -R other/repo` off this
+# checkout's diff and CI. Sibling gates get unified, never special-cased. The operator
+# skip path is intentionally NOT covered — it exits earlier and is an explicit human
+# bypass, not an evidence-based authorization.
+#
+# Defense-in-depth, NOT a boundary: a selector built by shell expansion, or an
+# exported GH_REPO, is invisible to a hook that never runs the command. Safe here
+# because a miss just returns to the PRE-EXISTING behaviour (before #505 this path
+# already validated `gh pr checks` against REPO_DIR with no repo guard at all), while
+# a hit blocks. See ADR 0030 Residual risk.
+if [ "$MERGE_REPO_OVERRIDE" = "yes" ]; then
+    block_emit "Pre-merge gate: the merge command carries a repo/host override (-R/--repo/GH_REPO=/GH_HOST=), so PR #${MERGE_PR_NUM:-?} may not be the PR verified in this checkout — the marker, CI results and diff all come from ${REPO_DIR:-this repo}'s origin. Run \`/pr-grind\` in a checkout of the target repo and merge from there, or drop the override. Marker (if any) preserved."
+    exit 0
+fi
+
 # ── Check for pr-grind-clean marker ──────────────────────────────────
 # pr-grind writes $STATE_DIR/pr-grind-clean.local when it declares a PR clean.
 # Marker expires after 2 hours (stale marker from a different PR session).
@@ -389,7 +444,15 @@ if [ -f "$MARKER_FILE" ]; then
     if [ "$MARKER_AGE" -lt 7200 ]; then
         # Marker is fresh — pr-grind completed recently.
         # But verify CI checks actually passed (don't trust marker alone).
-        PR_NUM=$(tr -d '[:space:]' < "$MARKER_FILE" 2>/dev/null || true)
+        #
+        # Marker contract: `<PR_NUMBER> <HEAD_FULL_SHA>` on line 1. The SHA field
+        # is what makes the marker an assertion about a SPECIFIC COMMIT rather
+        # than about a PR number for the next 2 hours. Do NOT collapse this back
+        # to `tr -d '[:space:]'` over the whole file: that concatenated the two
+        # fields into one non-digit blob.
+        MARKER_RAW=$(tr -d '\r' < "$MARKER_FILE" 2>/dev/null || true)
+        PR_NUM=$(printf '%s\n' "$MARKER_RAW" | awk 'NR==1{print $1}')
+        MARKER_SHA=$(printf '%s\n' "$MARKER_RAW" | awk 'NR==1{print $2}')
         case "$PR_NUM" in
             ''|*[!0-9]*)
                 rm -f "$MARKER_FILE"
@@ -417,6 +480,83 @@ if [ -f "$MARKER_FILE" ]; then
             block_emit "Pre-merge gate: pr-grind-clean marker is for PR #$PR_NUM but the merge targets PR #$MERGE_PR_NUM. Marker removed (per-PR, cannot cross-authorize). Run \`/pr-grind\` for PR #$MERGE_PR_NUM before merging."
             exit 0
         fi
+        # ── Marker must authorize the COMMIT being merged, not just the PR ──
+        # The marker is per-PR AND fresh-for-2-hours, but until #505 it carried no
+        # commit identity. A push landing AFTER pr-grind converged left the marker
+        # valid, so `gh pr merge <same-PR>` merged a HEAD no reviewer had cleared.
+        # Observed (chrisyau.me#181): grind converged on 866eb7d4 → operator pushed
+        # 10090de5 at 09:11:56Z → Codex posted 3 P2s at 09:17:21Z and Greptile 2 P1s
+        # at 09:21:10Z on that new HEAD → merged 09:56:27Z with all five unresolved.
+        # The wrap-up's "all threads on the prior HEAD resolved" was true of the SHA
+        # the grind actually validated, which is precisely the bug: the ack ledger
+        # (scripts/ack-ledger.sh Tier A returns `stale` on unresolved non-outdated
+        # threads) had never seen the merged commit at all.
+        #
+        # Fail-CLOSED throughout: a marker with no/!40-hex SHA (pre-#505 writer), a
+        # missing `gh`, or an unresolvable head OID all BLOCK. Unresolvable commit
+        # identity is the failure case, not the happy path.
+        case "$MARKER_SHA" in
+            *[!0-9a-fA-F]*|'')
+                rm -f "$MARKER_FILE"
+                block_emit "Pre-merge gate: pr-grind-clean marker carries no valid head SHA (it must be \`<PR_NUMBER> <HEAD_SHA>\`). Marker removed — it cannot prove which commit was reviewed. Run \`/pr-grind $MERGE_PR_NUM\` before merging."
+                exit 0
+                ;;
+        esac
+        if [ "${#MARKER_SHA}" -ne 40 ]; then
+            rm -f "$MARKER_FILE"
+            block_emit "Pre-merge gate: pr-grind-clean marker head SHA is not a full 40-char OID (got '${MARKER_SHA}'). Marker removed. Run \`/pr-grind $MERGE_PR_NUM\` before merging."
+            exit 0
+        fi
+        if ! command -v gh &>/dev/null; then
+            block_emit "Pre-merge gate: \`gh\` is unavailable, so the pr-grind marker's head SHA cannot be checked against PR #$PR_NUM's current HEAD. Blocking as precaution (fail-closed)."
+            exit 0
+        fi
+        # `|| LIVE_HEAD_OID=""` is load-bearing under `set -euo pipefail`: without it a
+        # failing gh (auth/network/unknown PR) makes the assignment non-zero and fires
+        # the ERR trap, emitting the GENERIC gate-error block instead of the tailored
+        # "unable to resolve ... Marker preserved" message below — i.e. the branch this
+        # diff adds would be unreachable for the most common real failure. Same shape as
+        # the `gh pr checks` call further down.
+        LIVE_HEAD_OID=$(cd "$REPO_DIR" && gh pr view "$PR_NUM" --json headRefOid -q .headRefOid 2>/dev/null | tr -d '[:space:]') || LIVE_HEAD_OID=""
+        # Require a FULL 40-char hex OID, not merely "hex or empty". A truncated but
+        # all-hex value (partial read, an abbreviated id) would otherwise pass this
+        # check and then be compared as authoritative below, deleting a perfectly
+        # valid marker on a bogus "HEAD moved". Anything short of a full OID is a
+        # VERIFICATION failure — which preserves the marker — not a staleness verdict.
+        LIVE_OID_OK=1
+        [ "${#LIVE_HEAD_OID}" -eq 40 ] || LIVE_OID_OK=0
+        case "$LIVE_HEAD_OID" in *[!0-9a-fA-F]*|'') LIVE_OID_OK=0 ;; esac
+        if [ "$LIVE_OID_OK" -eq 0 ]; then
+            block_emit "Pre-merge gate: unable to resolve PR #$PR_NUM's current head SHA as a full 40-char OID (\`gh pr view --json headRefOid\` returned '${LIVE_HEAD_OID:-<empty>}'). Resolve GitHub CLI/auth/network issues and retry. Marker preserved."
+            exit 0
+        fi
+        # Both sides are validated as case-INsensitive hex, so compare case-insensitively
+        # too: an uppercase marker would otherwise read as "HEAD moved" and delete a
+        # valid marker for a commit that never changed.
+        MARKER_SHA=$(printf '%s' "$MARKER_SHA" | tr 'A-F' 'a-f')
+        LIVE_HEAD_OID=$(printf '%s' "$LIVE_HEAD_OID" | tr 'A-F' 'a-f')
+        # SCOPE (ADR 0030, Residual risk item 2 — accepted, do not "fix" here): this
+        # is a PreToolUse hook, so the comparison is a PREFLIGHT. It cannot pin a
+        # hand-typed merge, and a push landing between here and GitHub processing the
+        # merge is still possible. pr-grind's OWN merges are unaffected — they carry
+        # --match-head-commit "$REVIEWED_HEAD" (#427) by template substitution, so
+        # GitHub itself refuses a moved head. REQUIRING that flag on arbitrary
+        # operator commands was implemented and REVERTED: it means parsing a command
+        # this hook never executes, and review defeated every version of that parse.
+        # Closing this window belongs SERVER-side (branch protection), not here.
+        # Scale: seconds, against the ~45 min the unpinned 2-hour marker allowed.
+        if [ "$LIVE_HEAD_OID" != "$MARKER_SHA" ]; then
+            rm -f "$MARKER_FILE"
+            block_emit "Pre-merge gate: PR #$PR_NUM HEAD moved since pr-grind declared it clean — marker cleared ${MARKER_SHA:0:9}, current HEAD is ${LIVE_HEAD_OID:0:9}. The new commit has not been through the reviewer-ack ledger, and bots may have posted findings on it that no round ever triaged. Marker removed. Run \`/pr-grind $MERGE_PR_NUM\` on the current HEAD before merging."
+            exit 0
+        fi
+        # The comparison above is a PREFLIGHT: this hook fires before the command
+        # runs, so a push landing between here and GitHub processing the merge is
+        # still possible. Requiring the merge itself to carry --match-head-commit was
+        # tried and REVERTED (see the NOTE in the parse block above and ADR 0030):
+        # proving a flag is on the merge argv means parsing a command this hook never
+        # executes. pr-grind's own merges pin via a template-substituted REVIEWED_HEAD
+        # (#427), and closing the window for hand-typed merges belongs server-side.
         if command -v gh &>/dev/null; then
             # gh pr checks exits 1 when any check has failed — capture output
             # and exit code separately to distinguish "check failed" from "CLI error".

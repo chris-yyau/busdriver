@@ -173,9 +173,14 @@ has 'gh pr merge <PR_NUMBER> --squash --delete-branch --match-head-commit "$REVI
 # re-derived at merge time. Re-deriving blesses whatever local HEAD is current —
 # including a commit that landed after classification — which shrinks the guard
 # to remote-only pushes instead of closing the race.
+# FOUR sites since #505: the two merge blocks (--match-head-commit, #427) plus the
+# two pr-grind-clean marker writes (default + --no-worktree), which record the same
+# classified SHA as the marker's second field. The marker sites carry the identical
+# no-re-derive requirement — a fresh headRefOid query there would stamp a
+# post-classification push as reviewed, which is the bug #505 exists to catch.
 TEMPLATE_COUNT=$(grep -c 'REVIEWED_HEAD=<full 40-char SHA' "$SKILL" || true)
-[ "$TEMPLATE_COUNT" -eq 2 ] && ok "REVIEWED_HEAD template-substituted in both merge blocks" \
-  || fail "expected 2 REVIEWED_HEAD template placeholders, found $TEMPLATE_COUNT"
+[ "$TEMPLATE_COUNT" -eq 4 ] && ok "REVIEWED_HEAD template-substituted in both merge blocks + both marker writes" \
+  || fail "expected 4 REVIEWED_HEAD template placeholders, found $TEMPLATE_COUNT"
 if grep -qF 'REVIEWED_HEAD=$(' "$SKILL"; then
   fail "REVIEWED_HEAD re-derived at merge time — defeats the #427 guard"
 else

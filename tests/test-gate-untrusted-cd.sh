@@ -53,14 +53,21 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 CWD_REPO="$TMP_ROOT/session-repo"
 OTHER_REPO="$TMP_ROOT/other-repo"
 for r in "$CWD_REPO" "$OTHER_REPO"; do
-    mkdir -p "$r"
-    git -C "$r" init -q 2>/dev/null
+    mkdir -p "$r" || { echo "mkdir $r failed" >&2; exit 1; }
+    git -C "$r" init -q 2>/dev/null || { echo "git init $r failed" >&2; exit 1; }
 done
 # Compare against what `rev-parse --show-toplevel` actually reports: on macOS mktemp
 # yields /var/... while git resolves the symlink to /private/var/..., so raw mktemp
 # paths would fail on path shape alone and mask the real statuses.
-CWD_REPO=$(git -C "$CWD_REPO" rev-parse --show-toplevel)
-OTHER_REPO=$(git -C "$OTHER_REPO" rev-parse --show-toplevel)
+# Guard the reassignments: without `set -e`, a failed rev-parse would blank these
+# and the mkdir below would build fixtures at the filesystem root, outside the trap.
+CWD_REPO=$(git -C "$CWD_REPO" rev-parse --show-toplevel) || { echo "rev-parse failed" >&2; exit 1; }
+OTHER_REPO=$(git -C "$OTHER_REPO" rev-parse --show-toplevel) || { echo "rev-parse failed" >&2; exit 1; }
+# Absolute-and-non-empty is the property that matters; do NOT compare against
+# $TMP_ROOT, which on macOS is the /var symlink while git reports /private/var.
+for _r in "$CWD_REPO" "$OTHER_REPO"; do
+    case "$_r" in /?*) ;; *) echo "unusable fixture path: '$_r'" >&2; exit 1 ;; esac
+done
 mkdir -p "$CWD_REPO/sub/dir"
 NON_REPO="$TMP_ROOT/plain-dir"
 mkdir -p "$NON_REPO"

@@ -518,7 +518,15 @@ def _nested_cds(chunks):
 
     The accepted cost is a false block on a nested command whose only cd runs AFTER
     it (`bash -c 'git commit; cd /other'`). That is the fail-CLOSED direction, the
-    shape is rare, and `&&` or `git -C` clears it."""
+    shape is rare, and `&&` or `git -C` clears it.
+
+    A second, narrower false block: `cd /other; bash -c 'git -C /session commit'`.
+    An absolute `git -C` really does fix the repo, but the `-C` walk runs only under
+    allow_cd, which nested chunks do not get, so no target is available here to
+    recognise as authoritative. Teaching the scanner to honour `-C` inside payloads
+    would change how nested operations are SCOPED — a wider change than this fix, and
+    one that moves a gate's repo choice — so it is left alone: blocking is the
+    fail-CLOSED direction and `&&` clears it."""
     return [c for chunk in chunks for c in _all_cds(chunk)]
 
 

@@ -42,6 +42,18 @@ LIB_DIR="$(pwd)/hooks/gate-scripts/lib"
 
 fails=0
 
+# Direct resolver check, for cases whose input is a raw operand rather than a
+# command string (the parser is not involved).
+resolve_case() {  # $1 label  $2 want-status  $3 target  $4 untrusted_cd
+    gate_resolve_repo_dir "$3" "$CWD_REPO" "$4"
+    if [ "$GATE_RESOLVE_STATUS" = "$2" ]; then
+        printf '  PASS  %-50s status=%s\n' "$1" "$GATE_RESOLVE_STATUS"
+    else
+        fails=$((fails + 1))
+        printf '  FAIL  %-50s want=%s got=%s\n' "$1" "$2" "$GATE_RESOLVE_STATUS"
+    fi
+}
+
 # Real repos: the resolver compares `rev-parse --show-toplevel` of the cd target
 # against the cwd's, so throwaway git repos keep this self-contained and independent
 # of the host layout.
@@ -50,6 +62,24 @@ TMP_ROOT=$(mktemp -d) || { echo "mktemp -d failed" >&2; exit 1; }
 # (/session-repo, /other-repo) and the trap would not clean them up. Refuse.
 case "$TMP_ROOT" in /?*) ;; *) echo "unusable TMP_ROOT: '$TMP_ROOT'" >&2; exit 1 ;; esac
 trap 'rm -rf "$TMP_ROOT"' EXIT
+
+# A typo'd or deleted helper must FAIL the suite, never silently skip a case.
+# `set -e` is deliberately off here (every case must run), so a command-not-found
+# would otherwise print to stderr, leave `fails` untouched, and let the suite report
+# ALL PASS. Not hypothetical: the trailing-newline case below called a helper that
+# had been renamed out from under it and was dead for a whole review round while the
+# suite stayed green.
+# Recorded on DISK, not by incrementing `fails`: bash may run this handler in a
+# SUBSHELL, so an increment here does not survive -- verified, the FAIL line printed
+# while the suite still exited 0. The tally reads this file.
+UNDEFINED_HELPERS="$TMP_ROOT/.undefined-helpers"
+# SC2329: bash invokes this hook itself; there is no explicit call site.
+# shellcheck disable=SC2329
+command_not_found_handle() {
+    printf '%s\n' "$1" >> "$UNDEFINED_HELPERS"
+    printf '  FAIL  undefined helper called: %s\n' "$1"
+    return 127
+}
 CWD_REPO="$TMP_ROOT/session-repo"
 OTHER_REPO="$TMP_ROOT/other-repo"
 for r in "$CWD_REPO" "$OTHER_REPO"; do
@@ -76,12 +106,20 @@ mkdir -p "$NON_REPO"
 # either side's contract fails here instead of passing against a stale mock.
 expect() { # $1=label  $2=command  $3=expected status  [$4=expected repo]
     local label="$1" cmd="$2" exp_status="$3" exp_repo="${4:-}" parsed target untrusted
-    parsed=$(PYTHONPATH="$LIB_DIR" python3 -c '
+    # A parser crash must FAIL the case, not pass it vacuously: without this the
+    # empty target/untrusted fall through to the plain cwd anchor, which returns
+    # `proceed` -- so every expected-proceed case would still "pass" while the
+    # parser it is meant to exercise was broken.
+    if ! parsed=$(PYTHONPATH="$LIB_DIR" python3 -c '
 import sys
 from gitcmd_detect import git_commit
 _c, target, _a, untrusted = git_commit(sys.argv[1], with_untrusted_cd=True)
 print(target)
-print(untrusted)' "$cmd")
+print(untrusted)' "$cmd"); then
+        fails=$((fails + 1))
+        printf '  FAIL  %-50s (parser invocation failed)\n' "$label"
+        return
+    fi
     target=$(printf '%s' "$parsed" | sed -n '1p')
     untrusted=$(printf '%s' "$parsed" | sed -n '2p')
     gate_resolve_repo_dir "$target" "$CWD_REPO" "$untrusted"
@@ -330,7 +368,7 @@ NL_REPO="$TMP_ROOT/nlrepo"$'\n'
 if ! mkdir -p "$NL_REPO"; then echo "nl mkdir failed" >&2; exit 1; fi
 if ! git -C "$NL_REPO" init -q 2>/dev/null; then echo "nl git init failed" >&2; exit 1; fi
 ln -s "$NL_REPO" "$TMP_ROOT/nllink" || { echo "nl symlink failed" >&2; exit 1; }
-res "newline-suffixed repo via symlink operand" block-unresolvable "" "$TMP_ROOT/nllink"
+resolve_case "newline-suffixed repo via symlink operand" block-unresolvable "" "$TMP_ROOT/nllink"
 
 echo
 echo "── line framing: a NEWLINE in any emitted field must fail CLOSED ───────"
@@ -373,6 +411,11 @@ frame_case pre-pr-gate.sh     no "plain pr create → no parse error" "gh pr cre
 frame_case pre-merge-gate.sh  no "plain pr merge → no parse error" "gh pr merge 1"
 
 echo
+# Fold in anything the command-not-found handler recorded (see its comment: the
+# handler's own increment cannot survive its subshell).
+if [ -s "$UNDEFINED_HELPERS" ]; then
+    fails=$((fails + $(wc -l < "$UNDEFINED_HELPERS")))
+fi
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
     exit 0

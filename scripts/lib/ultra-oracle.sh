@@ -1233,6 +1233,15 @@ ${_body}
     # RUN_ID-scoped output is the CALLER's responsibility (--out includes RUN_ID).
     # Emit an .rc marker on completion so the caller can bounded-wait + read status.
     # disown so an early parent exit cannot orphan/kill it before the .rc lands.
+    #
+    # Start the dispatch's stderr sidecar EMPTY: it is opened append-only below so a
+    # crash can never truncate a pointer mid-write, which means a previous dispatch's
+    # text would otherwise accumulate and be re-reported as current.
+    : > "$out.dispatch.err" 2>/dev/null || true
+    # Enable job control so the background job becomes a process-group LEADER
+    # (see the block comment at the launch line). Saved/restored around the launch.
+    _uora_had_m=0; case "$-" in *m*) _uora_had_m=1 ;; esac
+    set -m 2>/dev/null || true
     ( set +e   # a caller's errexit must NOT abort the subshell before "$out.rc" is written
       # #477 Cause 2: serialize on the shared browser BEFORE launching oracle. If another consult
       # holds it past our wait budget, fail closed as a timeout (rc 124) — the caller surfaces it,
@@ -1309,8 +1318,53 @@ ${_body}
       # created-but-not-yet-written .rc could be read empty (reported as a spurious timeout,
       # no hint). Rename is atomic on one filesystem, and it lands after .err/.hint are
       # already in place, so once a waiter sees .rc every sibling file is fully written.
-      printf '%s' "$_uora_bg_rc" > "$out.rc.partial" && mv -f "$out.rc.partial" "$out.rc" ) &
+      #
+      # STDOUT REDIRECT ON THE SUBSHELL ITSELF (#501) — load-bearing, do not drop.
+      # Without it the disowned child inherits the CALLER's stdout, and every
+      # caller captures this function in `$( )` (run-design-review-loop.sh:495,
+      # ultra-oracle-run.sh:71). Command substitution reads until ALL writers close
+      # the pipe, so the "background" dispatch blocked for the consult's entire
+      # lifetime — measured at 4-31 min of pure serialization before the blueprint
+      # reviewers even launched. Redirecting the SUBSHELL (not just the commands
+      # inside it, which already write to $out/$out.err/$out.hint/$out.rc) is what
+      # releases the capture.
+      # ALL THREE fds must leave the caller, but stderr goes to a FILE, not away:
+      #   stdout -> /dev/null   releases the `$( )` capture (the #501 fix itself)
+      #   stdin  -> /dev/null   blueprint-review runs with piped stdin under agent
+      #                         invocation (run-design-review-loop.sh:1192)
+      #   stderr -> "$out.err"  NOT inherited, NOT discarded
+      # Inheriting stderr would reintroduce the same defect one level up: the
+      # enclosing Bash TOOL call captures stderr as well as stdout, so a child
+      # still running when the loop exits would hold that capture open — the very
+      # stall this fix removes. Discarding it instead would lose the child's only
+      # operator-actionable message, the stale-browser-lock recovery pointer
+      # ("... remove it to unblock: rm -f '<lockfile>'", line ~772) for a shared
+      # mutex that has NO auto-reclaim. A dedicated "$out.dispatch.err" keeps the
+      # pointer durable on disk without colliding with "$out.err", which the
+      # watched/blocking paths truncate for oracle's own output.
+      #
+      # KNOWN RESIDUAL (measured, not fixed here): redirecting these three fds
+      # releases the `$( )` capture of THIS function — the #501 defect — but does
+      # NOT release an enclosing tool call that captures stdout+stderr of the whole
+      # invoking shell. Measured with a 6s stub child: stderr->file, stderr->
+      # /dev/null, and no redirect at all ALL hold such a capture for the child's
+      # full 6s, so the holder is some other descriptor on the attach/watched path,
+      # not the subshell's own std fds. Out of scope for #501; recorded in ADR 0030.
+      #
+      # OWN PROCESS GROUP. `disown` only drops the job-table entry — measured, the
+      # child otherwise keeps the parent's pgid — so a harness group SIGTERM reaches
+      # it and can kill it mid-consult while it holds the shared browser mutex,
+      # which has NO auto-reclaim (see _ultra_oracle_browser_lock). `set -m` makes
+      # the background job a process-group leader, so a group signal no longer
+      # reaches it. Trade-off, deliberate: an interrupted review now leaves the
+      # consult running to its own cap instead of stranding a lock that wedges
+      # EVERY oracle surface until cleared by hand. Job control is restored right
+      # after the launch so monitor-mode job notices cannot corrupt the `dispatched`
+      # token this function prints on stdout.
+      printf '%s' "$_uora_bg_rc" > "$out.rc.partial" && mv -f "$out.rc.partial" "$out.rc" ) </dev/null >/dev/null 2>>"$out.dispatch.err" &
     disown 2>/dev/null || true
+    # Restore the caller's job-control setting immediately (see `set -m` above).
+    [ "${_uora_had_m:-0}" = "1" ] || set +m 2>/dev/null || true
     printf 'dispatched'; return 0
   fi
 

@@ -1,3 +1,10 @@
+## [1.100.1](https://github.com/chris-yyau/busdriver/compare/v1.100.0...v1.100.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* **gates:** close eight cross-repo fail-opens in the marker-scoped gates ([#509](https://github.com/chris-yyau/busdriver/issues/509)) ([47bdb63](https://github.com/chris-yyau/busdriver/commit/47bdb6341548a42ea11e4806e3362c6ea7d3cccc))
+
 # [1.100.0](https://github.com/chris-yyau/busdriver/compare/v1.99.4...v1.100.0) (2026-07-27)
 
 

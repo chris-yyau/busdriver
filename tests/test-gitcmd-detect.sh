@@ -823,8 +823,12 @@ check("ANSI-C $cd behind a wrapper is still a target",
       g.git_commit("command -p $\'cd\' /other; git commit", with_untrusted_cd=True)[3], '/other')
 check("ANSI-C $popd is still unknowable",
       g.git_commit("$\'popd\'; git commit", with_untrusted_cd=True)[3], '-ambiguous-cd-operands')
-# ...but a genuine variable command word must NOT be read as a builtin.
-check("a variable command word is not a builtin",
+# A DYNAMIC command word is an ACCEPTED residual, not an oversight: `cmd=cd;
+# $cmd /other` really moves the shell, but closing it means treating every
+# `$VAR <operand>` as a possible cd, which blocks ordinary `$EDITOR file; git commit`.
+# Behaviour matches the pre-untrusted_cd parser, so the channel does not open this gap.
+# Pinned so the trade-off is explicit and cannot be changed silently either way.
+check("a dynamic command word is an accepted residual",
       g.git_commit('$cmd /other; git commit', with_untrusted_cd=True)[3], '')
 # The query scan MUST stay bounded to the leading wrapper run. Scanning the whole
 # token list also matched a `command -v` sitting AFTER an interpreter payload, so

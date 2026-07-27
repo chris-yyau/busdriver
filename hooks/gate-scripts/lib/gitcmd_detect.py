@@ -505,8 +505,19 @@ def _cd_target_loose(seg):
     this parser cannot know, so it reports AMBIGUOUS_CD and the caller fails CLOSED.
 
     `pushd`/`popd` ARE recognised (see below) — they move the current shell just as
-    `cd` does. RESIDUAL, deliberately: forms only an executing shell can see — a
-    `cd` inside a FUNCTION body invoked later, `(cd x)` subshells — and DECODED
+    `cd` does.
+
+    RESIDUAL, deliberately — a DYNAMIC command word. `cmd=cd; $cmd /other-repo` really
+    does change the directory, and no static parser can know what `$cmd` holds. Closing
+    it means treating EVERY `$VAR <operand>` as a possible cd, which blocks the ordinary
+    `$EDITOR file; git commit` and `$PYTHON x.py; git commit` — an unacceptable
+    false-block rate to buy an exotic bypass. Behaviour here is identical to the
+    pre-`untrusted_cd` parser (verified against origin/main), so this is a gap the
+    channel does not close, not one it opens. Pinned by a test so the decision is
+    explicit rather than accidental.
+
+    Also RESIDUAL: forms only an executing shell can see — a `cd` inside a FUNCTION
+    body invoked later, `(cd x)` subshells — and DECODED
     obfuscation of the command word, e.g. `$'\\x63\\x64' /other` or `$'c\\144'`.
     The literal `$'cd'` spelling is caught above; decoding arbitrary ANSI-C escapes
     (and variable indirection behind them) is the same "truly exotic obfuscation"

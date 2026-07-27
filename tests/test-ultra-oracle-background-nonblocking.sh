@@ -250,7 +250,7 @@ _PAT='\) </dev/null >/dev/null 2>&9 &[[:space:]]*$'
 if grep -qE "$_PAT" "$ADAPTER"; then
   echo "OK:   background subshell closes with all three fds redirected"
 else
-  echo "FAIL: subshell no longer closes with \`) </dev/null >/dev/null 2>>\"\$out.err\" &\` (#501 regression)"
+  echo "FAIL: subshell no longer closes with \`) </dev/null >/dev/null 2>&9 &\` (#501 regression)"
   FAIL=1
 fi
 

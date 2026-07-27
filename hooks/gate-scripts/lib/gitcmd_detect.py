@@ -213,7 +213,7 @@ def _is_exe(tok, name):
     return tok == name or tok.endswith('/' + name)
 
 
-def _command_argv(seg, target, with_offset=False):
+def _command_argv(seg, target, with_raw=False):
     """Return the argv beginning at the command word, after stripping a leading
     run of launcher tokens: env-assignments, wrapper words (basename-matched),
     wrapper dash-options, and a SINGLE option-argument after a dash-option — but
@@ -221,6 +221,16 @@ def _command_argv(seg, target, with_offset=False):
     `sudo -n` must not swallow the real command). `target` is the executable
     basename we must not skip (e.g. 'git' or 'gh')."""
     toks = _tokenize(seg)
+    # Original per-token spellings, carried alongside and mutated IN LOCKSTEP with
+    # `toks`. An INDEX into `toks` cannot be handed to a caller: the branches below
+    # DELETE tokens, so a position in the returned argv no longer names the same
+    # token in the untouched stream -- and the deletions happen mid-stream, so no
+    # single offset can correct for them. Carrying the spellings keeps `raw_argv[j]`
+    # the spelling of `argv[j]` by construction. None when the raw stream cannot be
+    # aligned at all (see _raw_tokens); callers then fail CLOSED.
+    # Only when the caller asked: _raw_tokens re-lexes the segment, so computing
+    # it unconditionally made every ordinary _command_argv call ~2x slower.
+    raw_toks = _raw_tokens(seg) if with_raw else None
     # Strip leading subshell '(' / brace-group '{' punctuation so grouped
     # commands like (git commit) or { git commit; } expose their command word.
     while toks:
@@ -228,9 +238,11 @@ def _command_argv(seg, target, with_offset=False):
         if head == toks[0]:
             break
         if head:
-            toks = [head] + toks[1:]
+            toks = [head] + toks[1:]   # content edit only -- position preserved
             break
         toks = toks[1:]
+        if raw_toks is not None:
+            raw_toks = raw_toks[1:]
     i = 0
     saw_wrap = False
     prev_dash = False
@@ -331,9 +343,11 @@ def _command_argv(seg, target, with_offset=False):
             # (verified). Strip here too and re-examine the same position.
             stripped = t.lstrip('({')
             if stripped:
-                toks = toks[:i] + [stripped] + toks[i + 1:]
+                toks = toks[:i] + [stripped] + toks[i + 1:]   # position preserved
             else:
                 toks = toks[:i] + toks[i + 1:]
+                if raw_toks is not None:
+                    raw_toks = raw_toks[:i] + raw_toks[i + 1:]
             prev_dash = False
         elif re.match(r'^(\d*[<>]{1,2}|&>{1,2})', t):
             # redirection prefix (>, >>, 2>, &>, N<, >file, 2>/dev/null, ...).
@@ -356,7 +370,9 @@ def _command_argv(seg, target, with_offset=False):
             prev_dash = False
         else:
             break
-    return (toks[i:], i) if with_offset else toks[i:]
+    if with_raw:
+        return toks[i:], (raw_toks[i:] if raw_toks is not None else None)
+    return toks[i:]
 
 
 def _mask_literal_substitution(operand, raw_spelling):
@@ -462,7 +478,7 @@ def _cd_target_loose(seg):
     more exposed than before this function existed — each one already defeated the
     strict detector that has always fed the trusted path.
     """
-    argv, argv_off = _command_argv(seg, 'cd', with_offset=True)
+    argv, raw_argv = _command_argv(seg, 'cd', with_raw=True)
     # `$'cd'` (ANSI-C quoting) survives tokenization as `$cd`; bash still runs the
     # builtin. Strip ONE leading '$' so that spelling is seen, while a genuine
     # variable command word (`$cmd`) still does not match.
@@ -478,14 +494,13 @@ def _cd_target_loose(seg):
             # (the strict detector's expanduser only feeds the pre-existing trusted
             # path and is left alone).
             return AMBIGUOUS_CD
-        # argv started at argv_off in _tokenize(seg), so this operand's original
-        # spelling is at the SAME index in the raw stream. Position matters: a
-        # segment-wide search was satisfied by a decoy copy elsewhere (a comment,
-        # another argument) while the real operand stayed quoted.
-        raw_toks = _raw_tokens(seg)
-        idx = argv_off + j
+        # raw_argv is aligned with argv by construction, so this is THIS operand's
+        # own spelling. Position matters: a segment-wide search was satisfied by a
+        # decoy copy elsewhere (a comment, another argument) while the real operand
+        # stayed quoted -- and an offset into the argv could not survive the token
+        # deletions _command_argv performs.
         return _mask_literal_substitution(
-            a, raw_toks[idx] if raw_toks is not None and idx < len(raw_toks) else None)
+            a, raw_argv[j] if raw_argv is not None and j < len(raw_argv) else None)
     return AMBIGUOUS_CD
 
 
@@ -1222,7 +1237,7 @@ def _scan_commit(chunk, allow_cd):
             pending_cd = cd           # strict form only: feeds the TRUSTED path
             pending_cd_op = op
             continue
-        argv, argv_off = _command_argv(seg, 'git', with_offset=True)
+        argv, raw_argv = _command_argv(seg, 'git', with_raw=True)
         if not argv or not _is_exe(argv[0], 'git'):
             pending_cd = None
             continue
@@ -1270,19 +1285,17 @@ def _scan_commit(chunk, allow_cd):
         # Only pre-subcommand -C changes directory; `git commit -C <ref>` (after
         # the subcommand) is the reuse-message flag, not a cd — so bound the
         # walk to sub_idx or it mis-scopes the marker check to the wrong repo.
-        # Tokenized ONCE per segment, not once per operand: re-lexing the whole
-        # segment inside the loop made a segment with N `-C` operands quadratic.
-        raw_toks = _raw_tokens(seg) if allow_cd else None
         k = 0
         while k < sub_idx:
             if argv[k] == '-C' and k + 1 < sub_idx:
-                # Same index in the raw stream as in argv, shifted by where argv
-                # began -- so the spelling checked is THIS operand's, not a
-                # lookalike elsewhere in the segment.
-                _ri = argv_off + k + 1
+                # raw_argv is aligned with argv, so this is THIS operand's own
+                # spelling -- not a lookalike elsewhere in the segment. Tokenized
+                # once per segment (inside _command_argv), so N `-C` operands stay
+                # linear rather than re-lexing the segment N times.
+                _rk = k + 1
                 raw = _mask_literal_substitution(
-                    argv[k + 1],
-                    raw_toks[_ri] if raw_toks is not None and _ri < len(raw_toks) else None)
+                    argv[_rk],
+                    raw_argv[_rk] if raw_argv is not None and _rk < len(raw_argv) else None)
                 if allow_cd:
                     v = os.path.expanduser(raw)
                     if raw.startswith('~'):

@@ -749,6 +749,35 @@ check("tilde -C keeps the 3-tuple default",
 # A `-C` inside a payload is not resolved for scoping, but silence there was not
 # neutral: it returned the same ('', '') as "no cd at all", so the gate anchored on
 # the session cwd while git committed in the -C target. It must BLOCK instead.
+# `_command_argv` DELETES leading/embedded grouping tokens, so an INDEX into the
+# argv it returns does not name the same token in the untouched stream -- and the
+# deletions are mid-stream, so no single offset corrects for them. It now carries the
+# aligned raw spellings instead. The shape below is the one that got through: two
+# brace groups shift the stream by 2, landing the spelling check on a double-quoted
+# REDIRECTION TARGET decoy, so the single-quoted operand was read as the live idiom
+# and the gate proceeded on the session cwd while bash cd'd into a literal directory.
+# A brace group runs in the CURRENT shell, so the cd really does take effect.
+check("brace-shifted decoy does not vouch for a quoted cd",
+      g.git_commit('{ { > "$(git rev-parse --show-toplevel)" cd \'$(git rev-parse --show-toplevel)\'; }; }; git commit -m x',
+                   with_untrusted_cd=True)[3],
+      "'$(git rev-parse --show-toplevel)'")
+check("brace-shifted decoy does not vouch for a quoted -C",
+      g.git_commit('{ { > "$(git rev-parse --show-toplevel)" git -C \'$(git rev-parse --show-toplevel)\' commit; }; }',
+                   with_untrusted_cd=True)[1],
+      "'$(git rev-parse --show-toplevel)'")
+# ...and a genuinely live operand inside a brace group must NOT be masked.
+check("live -C inside a brace group stays live",
+      g.git_commit('{ git -C "$(git rev-parse --show-toplevel)" commit; }',
+                   with_untrusted_cd=True)[1],
+      '$(git rev-parse --show-toplevel)')
+# gh_pr still suppresses the nested fold on `target_dir.startswith("/")`, the test the
+# commit path abandoned as unsound. It is not exploitable there only because _iter_gh
+# INDEPENDENTLY requires cds[-1] == target_dir, which an expanduser'd tilde fails. That
+# invariant lives in a different function from the test depending on it, so pin it here:
+# if the agreement check is ever loosened, this fails instead of silently fail-opening.
+check("gh: tilde cd still blocks despite the absolute-looking target",
+      g.gh_pr('eval \'cd /other\'; cd "~" && gh pr create', 'create', with_untrusted_cd=True)[3],
+      '-ambiguous-cd-operands')
 check("nested -C blocks (eval, tilde)",
       g.git_commit('eval \'git -C "~" commit\'', with_untrusted_cd=True)[3], '-nested-c-operand')
 check("nested -C blocks (bash -c, absolute)",

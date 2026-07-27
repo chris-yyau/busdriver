@@ -245,6 +245,94 @@ else
 fi
 
 echo
+echo "── the toplevel idiom is only the idiom when it is not SINGLE-quoted ───"
+# gate_classify_target recognises `$(git rev-parse --show-toplevel)` without
+# evaluating it, but tokenization drops the quoting: `cd "$(...)"` RUNS the
+# substitution (the cwd's own root -- safe) while `cd '$(...)'` enters a LITERAL
+# directory of that name, which may be a symlink into another repo. Both used to
+# arrive as the same string, so the gate said proceed on the SESSION repo while bash
+# cd'd elsewhere. _mask_literal_substitution re-quotes the single-quoted form so it
+# falls to the '$'-is-unresolvable arm. Driven through the real parser: the fix is
+# there, not in the resolver (an earlier attempt tested whether the literal
+# directory EXISTS -- rejected, because the gated command can create it itself:
+# `ln -s /other '$(...)'; git -C '$(...)' commit`).
+qcase() {  # $1 label  $2 want-status  $3 command
+    local td ucd
+    # A parser crash must FAIL the case, never skip it: this script runs without
+    # `set -e`, so an unchecked non-zero here would let the suite report success
+    # while silently dropping a regression case.
+    if ! td=$(PYTHONPATH="$LIB_DIR" python3 -c 'import sys,gitcmd_detect as g; print(g.git_commit(sys.argv[1], with_untrusted_cd=True)[1])' "$3") ||
+       ! ucd=$(PYTHONPATH="$LIB_DIR" python3 -c 'import sys,gitcmd_detect as g; print(g.git_commit(sys.argv[1], with_untrusted_cd=True)[3])' "$3"); then
+        fails=$((fails + 1))
+        printf '  FAIL  %-50s (parser invocation failed)\n' "$1"
+        return
+    fi
+    gate_resolve_repo_dir "$td" "$CWD_REPO" "$ucd"
+    if [ "$GATE_RESOLVE_STATUS" = "$2" ]; then
+        printf '  PASS  %-50s status=%s\n' "$1" "$GATE_RESOLVE_STATUS"
+    else
+        fails=$((fails + 1))
+        printf '  FAIL  %-50s want=%s got=%s\n' "$1" "$2" "$GATE_RESOLVE_STATUS"
+    fi
+}
+# The documented escape hatch must keep working -- these are NOT false blocks.
+# SC2016: the un-expanded substitution text IS the operand under test.
+# shellcheck disable=SC2016
+qcase "double-quoted cd idiom"     proceed 'cd "$(git rev-parse --show-toplevel)" && git commit'
+# shellcheck disable=SC2016
+qcase "double-quoted git -C idiom" proceed 'git -C "$(git rev-parse --show-toplevel)" commit'
+# UNQUOTED is a live substitution too, but it blocks for an unrelated, PRE-EXISTING
+# reason (verified identical against the parser at HEAD): word-splitting leaves the
+# loose channel holding the fragment '$(git', which never matches the trusted target,
+# so the operand is reported unconfirmed. Pinned as-is so a future change to the
+# masking cannot quietly turn this into a PROCEED.
+# shellcheck disable=SC2016
+qcase "unquoted cd idiom (pre-existing block)" block-unresolvable 'cd $(git rev-parse --show-toplevel) && git commit'
+# ...while EVERY literal-directory spelling must block. Enumerating quotings is what
+# a substring search got wrong: these three tokenize to the same bare idiom, so the
+# check asks shlex(posix=False) -- which preserves each token's original spelling --
+# rather than pattern-matching the raw text.
+# shellcheck disable=SC2016
+qcase "single-quoted cd"      block-unresolvable "cd '\$(git rev-parse --show-toplevel)' && git commit"
+# shellcheck disable=SC2016
+qcase "single-quoted cd, ;-joined" block-unresolvable "cd '\$(git rev-parse --show-toplevel)'; git commit"
+# shellcheck disable=SC2016
+qcase "adjacent-quote cd"     block-unresolvable "cd '\$('\"'\"'git rev-parse --show-toplevel)' && git commit"
+qcase "backslash-escaped cd"  block-unresolvable 'cd \$\(git\ rev-parse\ --show-toplevel\) && git commit'
+# shellcheck disable=SC2016
+qcase "single-quoted git -C"  block-unresolvable "git -C '\$(git rev-parse --show-toplevel)' commit"
+# shellcheck disable=SC2016
+qcase "adjacent-quote git -C" block-unresolvable "git -C '\$('\"'\"'git rev-parse --show-toplevel)' commit"
+qcase "backslash-escaped git -C" block-unresolvable 'git -C \$\(git\ rev-parse\ --show-toplevel\) commit'
+# A DECOY copy elsewhere in the segment must not vouch for the real argument. shlex
+# keeps comment text as ordinary tokens, so a whole-segment scan for a live-looking
+# copy was satisfied by the trailing comment while the actual operand stayed quoted.
+# Each occurrence is now checked at its own token position.
+# shellcheck disable=SC2016
+qcase "quoted -C, live decoy in comment" block-unresolvable "git -C '\$(git rev-parse --show-toplevel)' commit # \$(git rev-parse --show-toplevel)"
+# shellcheck disable=SC2016
+qcase "quoted -C, live decoy in an arg" block-unresolvable "git -C '\$(git rev-parse --show-toplevel)' commit -m \$(git rev-parse --show-toplevel)"
+# shellcheck disable=SC2016
+qcase "quoted cd, live decoy in comment" block-unresolvable "cd '\$(git rev-parse --show-toplevel)' && git commit # \$(git rev-parse --show-toplevel)"
+# ...and the mirror image: a LITERAL copy elsewhere must not condemn a genuinely
+# live operand. Checking every occurrence instead of the operand's own position
+# made this a FALSE BLOCK -- the -C really does run the substitution; only the
+# commit MESSAGE contains the literal.
+# shellcheck disable=SC2016
+qcase "live -C, literal copy in -m" proceed "git -C \"\$(git rev-parse --show-toplevel)\" commit -m '\$(git rev-parse --show-toplevel)'"
+
+echo
+echo "── same-repo comparison must survive a trailing NEWLINE in a repo path ──"
+# `$(...)` strips ALL trailing newlines, so a repo at "<p>\n" and one at "<p>" both
+# captured as "<p>" and compared EQUAL -- a newline-free symlink operand pointing at
+# the former slipped past the parser's newline guard and was approved as "same repo".
+NL_REPO="$TMP_ROOT/nlrepo"$'\n'
+if ! mkdir -p "$NL_REPO"; then echo "nl mkdir failed" >&2; exit 1; fi
+if ! git -C "$NL_REPO" init -q 2>/dev/null; then echo "nl git init failed" >&2; exit 1; fi
+ln -s "$NL_REPO" "$TMP_ROOT/nllink" || { echo "nl symlink failed" >&2; exit 1; }
+res "newline-suffixed repo via symlink operand" block-unresolvable "" "$TMP_ROOT/nllink"
+
+echo
 echo "── line framing: a NEWLINE in any emitted field must fail CLOSED ───────"
 # The gates hand their python parse back to bash as LINES (sed -n '2p', '3p', ...).
 # A directory name may legally contain a newline on POSIX, so a crafted operand

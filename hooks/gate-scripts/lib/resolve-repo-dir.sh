@@ -103,6 +103,7 @@ gate_classify_target() {
     printf 'literal\n'
 }
 
+
 # Resolve REPO_DIR from the parsed target + the PreToolUse cwd field.
 #
 # $3 (untrusted_cd, OPTIONAL) is the cd operand that did NOT '&&'-gate the command;
@@ -187,8 +188,13 @@ gate_resolve_repo_dir() {
         if [ "$(gate_classify_target "$untrusted_cd")" != "literal" ]; then
             GATE_REPO_DIR=""; GATE_RESOLVE_STATUS="block-unresolvable"; return 0
         fi
-        cd_root=$(git -C "$untrusted_cd" rev-parse --show-toplevel 2>/dev/null || printf '')
-        cwd_root=$(git -C "${hook_cwd:-.}" rev-parse --show-toplevel 2>/dev/null || printf '')
+        # `$(...)` strips ALL trailing newlines, and a directory name may legally end
+        # in one on POSIX: a repo at "/r\n" and one at "/r" both captured as "/r" and
+        # compared EQUAL, so a newline-free symlink operand pointing at the former
+        # slipped past the parser's newline guard and was approved as "same repo".
+        # The sentinel byte keeps the strip away from the real output.
+        cd_root=$(git -C "$untrusted_cd" rev-parse --show-toplevel 2>/dev/null && printf 'x' || printf '')
+        cwd_root=$(git -C "${hook_cwd:-.}" rev-parse --show-toplevel 2>/dev/null && printf 'x' || printf '')
         # An EMPTY cd_root is NOT proof the cd failed — the directory may simply sit
         # outside every repo, and `gh pr merge` still resolves a PR from there (via a
         # remote or -R) even where `git commit` would not. Unprovable → block.

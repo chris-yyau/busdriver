@@ -213,7 +213,7 @@ def _is_exe(tok, name):
     return tok == name or tok.endswith('/' + name)
 
 
-def _command_argv(seg, target):
+def _command_argv(seg, target, with_offset=False):
     """Return the argv beginning at the command word, after stripping a leading
     run of launcher tokens: env-assignments, wrapper words (basename-matched),
     wrapper dash-options, and a SINGLE option-argument after a dash-option — but
@@ -356,7 +356,64 @@ def _command_argv(seg, target):
             prev_dash = False
         else:
             break
-    return toks[i:]
+    return (toks[i:], i) if with_offset else toks[i:]
+
+
+def _mask_literal_substitution(operand, raw_spelling):
+    """Re-quote an operand that was SINGLE-quoted in `seg`, so a LITERAL path is
+    never mistaken downstream for a live command substitution.
+
+    Tokenization discards quoting, so `cd "$(git rev-parse --show-toplevel)"` (the
+    substitution RUNS, yielding the cwd's own repo root -- the idiom
+    gate_classify_target recognises and exempts) and `cd '$(git rev-parse
+    --show-toplevel)'` (bash enters a LITERAL directory of that name, which may be a
+    symlink into another repo) arrive downstream as the SAME string. Only the first
+    may be treated as the idiom. Restoring the quotes makes the second fail the
+    anchored idiom regex and fall to the '$'-is-unresolvable arm, i.e. BLOCK.
+
+    Two shapes were tried and rejected before this one:
+
+    * A filesystem check for whether the literal directory exists. The gated command
+      can create it itself (`ln -s /other '$(...)'; git -C '$(...)' commit`), so it
+      scoped the gate by state the gated party controls.
+    * A substring search for "'<operand>'" in the raw text. It recognised exactly one
+      spelling, and shell has many: `'$('"'"'git rev-parse --show-toplevel)'` and
+      `\\$\\(git\\ rev-parse\\ --show-toplevel\\)` both tokenize to the bare idiom
+      while containing no such substring. Enumerating quotings is the whack-a-mole
+      the loose-cd parser already learned to avoid.
+
+    Instead ask the tokenizer. shlex(posix=False) preserves each token's ORIGINAL
+    spelling, so the operand is a live substitution only if it appears there either
+    double-quoted as one token, or unquoted as a contiguous run of plain tokens.
+    Every literal spelling -- single quotes, adjacent-quote concatenation, backslash
+    escapes -- fails both tests, because posix=False keeps the very characters that
+    made it a literal. Fail-CLOSED: unbalanced quoting cannot be tokenized at all, so
+    it too is treated as not-live."""
+    if not operand or ('$' not in operand and '`' not in operand):
+        return operand
+    # `raw_spelling` is the ORIGINAL text of THIS argument. Bash runs the
+    # substitution only for the bare or exactly-double-quoted spelling; every literal
+    # spelling (single quotes, adjacent-quote concatenation, backslash escapes)
+    # differs from both, and an unavailable spelling proves nothing. Fail CLOSED.
+    if raw_spelling is not None and raw_spelling in (operand, '"' + operand + '"'):
+        return operand
+    return "'" + operand + "'"
+
+
+def _raw_tokens(seg):
+    """Original per-token spellings, aligned 1:1 with `_tokenize(seg)`, or None when
+    they cannot be aligned.
+
+    shlex(posix=False) keeps the characters that made a token a literal, which is the
+    only reliable way to tell `"$(...)"` (bash runs it) from `'$(...)'` (a literal
+    directory of that name) after posix tokenization has erased the difference. A
+    differing token count means adjacent-quote concatenation or escaping restructured
+    the segment, so positions no longer correspond -- callers must fail CLOSED."""
+    try:
+        raw = shlex.split(seg, posix=False)
+    except ValueError:
+        return None
+    return raw if len(raw) == len(_tokenize(seg)) else None
 
 
 def _cd_target(seg):
@@ -367,7 +424,9 @@ def _cd_target(seg):
     m = re.match(r'cd\s+(.*)', seg.lstrip('({ \t'))
     if not m:
         return None
-    return os.path.expanduser(m.group(1).strip().strip('\047\042'))
+    raw_arg = m.group(1).strip()
+    return _mask_literal_substitution(
+        os.path.expanduser(raw_arg.strip('\047\042')), raw_arg)
 
 
 _CD_LEAD_WORDS = ('if', 'then', 'else', 'elif', 'while', 'until', 'do', '!', 'time')
@@ -403,13 +462,13 @@ def _cd_target_loose(seg):
     more exposed than before this function existed — each one already defeated the
     strict detector that has always fed the trusted path.
     """
-    argv = _command_argv(seg, 'cd')
+    argv, argv_off = _command_argv(seg, 'cd', with_offset=True)
     # `$'cd'` (ANSI-C quoting) survives tokenization as `$cd`; bash still runs the
     # builtin. Strip ONE leading '$' so that spelling is seen, while a genuine
     # variable command word (`$cmd`) still does not match.
     if not argv or argv[0].lstrip('$') != 'cd':
         return None
-    for a in argv[1:]:
+    for j, a in enumerate(argv[1:], start=1):
         if a == '--' or (a.startswith('-') and len(a) > 1 and a != '-'):
             continue            # cd options (-L/-P/-e/-@); '-' IS the OLDPWD operand
         if a.startswith('~'):
@@ -419,7 +478,14 @@ def _cd_target_loose(seg):
             # (the strict detector's expanduser only feeds the pre-existing trusted
             # path and is left alone).
             return AMBIGUOUS_CD
-        return a
+        # argv started at argv_off in _tokenize(seg), so this operand's original
+        # spelling is at the SAME index in the raw stream. Position matters: a
+        # segment-wide search was satisfied by a decoy copy elsewhere (a comment,
+        # another argument) while the real operand stayed quoted.
+        raw_toks = _raw_tokens(seg)
+        idx = argv_off + j
+        return _mask_literal_substitution(
+            a, raw_toks[idx] if raw_toks is not None and idx < len(raw_toks) else None)
     return AMBIGUOUS_CD
 
 
@@ -1156,7 +1222,7 @@ def _scan_commit(chunk, allow_cd):
             pending_cd = cd           # strict form only: feeds the TRUSTED path
             pending_cd_op = op
             continue
-        argv = _command_argv(seg, 'git')
+        argv, argv_off = _command_argv(seg, 'git', with_offset=True)
         if not argv or not _is_exe(argv[0], 'git'):
             pending_cd = None
             continue
@@ -1204,10 +1270,19 @@ def _scan_commit(chunk, allow_cd):
         # Only pre-subcommand -C changes directory; `git commit -C <ref>` (after
         # the subcommand) is the reuse-message flag, not a cd — so bound the
         # walk to sub_idx or it mis-scopes the marker check to the wrong repo.
+        # Tokenized ONCE per segment, not once per operand: re-lexing the whole
+        # segment inside the loop made a segment with N `-C` operands quadratic.
+        raw_toks = _raw_tokens(seg) if allow_cd else None
         k = 0
         while k < sub_idx:
             if argv[k] == '-C' and k + 1 < sub_idx:
-                raw = argv[k + 1]
+                # Same index in the raw stream as in argv, shifted by where argv
+                # began -- so the spelling checked is THIS operand's, not a
+                # lookalike elsewhere in the segment.
+                _ri = argv_off + k + 1
+                raw = _mask_literal_substitution(
+                    argv[k + 1],
+                    raw_toks[_ri] if raw_toks is not None and _ri < len(raw_toks) else None)
                 if allow_cd:
                     v = os.path.expanduser(raw)
                     if raw.startswith('~'):

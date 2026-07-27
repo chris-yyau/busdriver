@@ -219,7 +219,20 @@ def _command_argv(seg, target, with_raw=False):
     wrapper dash-options, and a SINGLE option-argument after a dash-option — but
     NEVER the `target` executable token (fail-closed: a no-arg option like
     `sudo -n` must not swallow the real command). `target` is the executable
-    basename we must not skip (e.g. 'git' or 'gh')."""
+    basename we must not skip (e.g. 'git' or 'gh'), or a TUPLE of them when a
+    caller recognises several command words -- `_cd_target_loose` protects
+    cd/pushd/popd, since protecting only 'cd' let `command -p pushd /other`
+    consume `pushd` as the option's argument and report no directory change."""
+    targets = (target,) if isinstance(target, str) else tuple(target)
+    # NOTE: no `command -v NAME` shortcut here, deliberately. Such a query only
+    # PRINTS a resolution, so recognising it would avoid one false block --
+    # `command -v pushd; git commit`, which now reports an unknowable cd and stalls.
+    # But `command` is not reliably the builtin: a shell function
+    # (`command() { shift; "$@"; }`) or an executable (`./command`) can override it,
+    # and both really do run their arguments. Any shortcut that returns "nothing
+    # executed" therefore HIDES a real commit or merge from the gate -- trading a
+    # visible, rewordable stall for a silent bypass, which is backwards here. The
+    # over-block is the accepted cost; see the gate_classify_target boundary.
     toks = _tokenize(seg)
     # Original per-token spellings, carried alongside and mutated IN LOCKSTEP with
     # `toks`. An INDEX into `toks` cannot be handed to a caller: the branches below
@@ -250,7 +263,22 @@ def _command_argv(seg, target, with_raw=False):
     while i < len(toks):
         t = toks[i]
         base = t.rsplit('/', 1)[-1]
-        is_target = base == target
+        # `$'pushd'` / `$'cd'` (ANSI-C quoting) survive tokenization as `$pushd` /
+        # `$cd`, and bash still runs the builtin. Without stripping, the guard did
+        # not recognise them as the target, so `command -p $'pushd' /other` consumed
+        # the command word as the wrapper option's argument and reported no cd --
+        # fail-OPEN.
+        #
+        # `$'pushd'` and a VARIABLE named `pushd` are byte-identical after
+        # tokenization, so this necessarily also matches `pushd=echo; $pushd /other`,
+        # where nothing moves. That direction is chosen deliberately: matching
+        # over-blocks (a visible, rewordable stall), while not matching lets a real
+        # ANSI-C-spelled builtin through unrecorded. Fail-CLOSED, consistent with the
+        # `$'cd'` handling `_cd_target_loose` has always had. A variable whose NAME is
+        # not a target (`$cmd`) still does not match.
+        _stripped = base.lstrip('$')
+        is_target = base in targets or (_stripped in targets
+                                        and _stripped in _ANSIC_BUILTINS)
         if re.match(r'^\w+=', t):
             i += 1
             prev_dash = False
@@ -301,7 +329,9 @@ def _command_argv(seg, target, with_raw=False):
                              and (toks[i + 1][:1] in ('{', '(')
                                   or toks[i + 1].rsplit('/', 1)[-1] in _SHELL_KEYWORDS))
             if ((base == 'function' or _named_coproc) and i < len(toks)
-                    and toks[i].rsplit('/', 1)[-1] != target):
+                    and toks[i].rsplit('/', 1)[-1] not in targets
+                    and not (toks[i].rsplit('/', 1)[-1].lstrip('$') in targets
+                             and toks[i].rsplit('/', 1)[-1].lstrip('$') in _ANSIC_BUILTINS)):
                 # `function f { git commit; }` and `coproc NAME { git commit; }`
                 # — the declaration/coproc NAME follows the keyword and would
                 # otherwise be read as the command word, hiding the body
@@ -445,6 +475,13 @@ def _cd_target(seg):
         os.path.expanduser(raw_arg.strip('\047\042')), raw_arg)
 
 
+# Builtins whose ANSI-C spelling (`$'cd'` -> `$cd`) must still be recognised as
+# the command word. Deliberately NOT `git`/`gh`: those are external executables
+# reached through wrappers, and treating a wrapper ARGUMENT named `$git` as the
+# protected target stopped it being consumed -- `env -u $git git commit` then
+# started argv at `$git`, matched no executable, and went UNDETECTED (fail-OPEN).
+_ANSIC_BUILTINS = ('cd', 'pushd', 'popd')
+
 _CD_LEAD_WORDS = ('if', 'then', 'else', 'elif', 'while', 'until', 'do', '!', 'time')
 
 
@@ -467,8 +504,9 @@ def _cd_target_loose(seg):
     A `cd` with no usable operand (bare `cd`, `cd --`) goes to $HOME, a destination
     this parser cannot know, so it reports AMBIGUOUS_CD and the caller fails CLOSED.
 
-    RESIDUAL, deliberately: forms only an executing shell can see — a `cd` inside a
-    FUNCTION body invoked later, `pushd`/`popd`, `(cd x)` subshells — and DECODED
+    `pushd`/`popd` ARE recognised (see below) — they move the current shell just as
+    `cd` does. RESIDUAL, deliberately: forms only an executing shell can see — a
+    `cd` inside a FUNCTION body invoked later, `(cd x)` subshells — and DECODED
     obfuscation of the command word, e.g. `$'\\x63\\x64' /other` or `$'c\\144'`.
     The literal `$'cd'` spelling is caught above; decoding arbitrary ANSI-C escapes
     (and variable indirection behind them) is the same "truly exotic obfuscation"
@@ -478,15 +516,46 @@ def _cd_target_loose(seg):
     more exposed than before this function existed — each one already defeated the
     strict detector that has always fed the trusted path.
     """
-    argv, raw_argv = _command_argv(seg, 'cd', with_raw=True)
+    argv, raw_argv = _command_argv(seg, ('cd', 'pushd', 'popd'), with_raw=True)
     # `$'cd'` (ANSI-C quoting) survives tokenization as `$cd`; bash still runs the
     # builtin. Strip ONE leading '$' so that spelling is seen, while a genuine
     # variable command word (`$cmd`) still does not match.
-    if not argv or argv[0].lstrip('$') != 'cd':
+    if not argv:
         return None
+    cmd0 = argv[0].lstrip('$')
+    # `pushd DIR` changes the CURRENT shell's directory exactly like `cd DIR`, and
+    # `popd` returns to a stack entry this parser cannot know. Both reported '' --
+    # the same value as "no cd at all" -- so `pushd /other-repo; git commit` landed
+    # the commit in /other-repo while the gate validated the SESSION repo's marker.
+    # They are recorded here (seen, never trusted) like every other loose cd; popd
+    # and a bare pushd (which SWAPS the top two stack entries) have no statically
+    # knowable destination, so they report AMBIGUOUS_CD and the caller fails CLOSED.
+    if cmd0 not in ('cd', 'pushd', 'popd'):
+        return None
+    # `-n` suppresses the directory change for BOTH stack builtins (`pushd -n /other`
+    # only pushes onto the stack; `popd -n` only drops an entry), so recording them
+    # would block a commit whose cwd never moved. It counts ONLY in option position:
+    # a scan of the whole argv also matched it as an OPERAND or a redirection target
+    # (`pushd -- -n`, `pushd /other > -n`) and reported "no cd" while the shell
+    # really moved -- fail-OPEN. So the walk below stops treating tokens as options
+    # at `--` or at the first operand, and `-n` is honoured only before that point.
+    # `cd` has no `-n`, hence the cmd0 guard.
+    no_chdir = False
+    opts_done = False
     for j, a in enumerate(argv[1:], start=1):
-        if a == '--' or (a.startswith('-') and len(a) > 1 and a != '-'):
+        if not opts_done and a == '--':
+            opts_done = True
+            continue
+        if not opts_done and a.startswith('-') and len(a) > 1 and a != '-':
+            if a == '-n' and cmd0 in ('pushd', 'popd'):
+                no_chdir = True
             continue            # cd options (-L/-P/-e/-@); '-' IS the OLDPWD operand
+        # First operand reached -- decide the stack builtins here, where `-n` has
+        # been seen if and only if it was a real option.
+        if no_chdir:
+            return None
+        if cmd0 == 'popd':
+            return AMBIGUOUS_CD   # destination is a stack entry, not this operand
         if a.startswith('~'):
             # `cd ~` expands to $HOME but `cd "~"` / `cd \~` is a LITERAL directory
             # named '~'. Tokenization has already discarded which one this was, so
@@ -501,7 +570,10 @@ def _cd_target_loose(seg):
         # deletions _command_argv performs.
         return _mask_literal_substitution(
             a, raw_argv[j] if raw_argv is not None and j < len(raw_argv) else None)
-    return AMBIGUOUS_CD
+    # No operand: bare `cd` goes to $HOME, bare `pushd` SWAPS the top two stack
+    # entries, bare `popd` pops one -- none of them statically knowable. But `-n`
+    # still means nothing moved.
+    return None if no_chdir else AMBIGUOUS_CD
 
 
 def _trusted_cd(pending_cd, op):

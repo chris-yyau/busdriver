@@ -95,8 +95,8 @@ try:
         # chosen HOOK_CWD anchor, and a BLANK untrusted_cd that erases this very
         # defense. No emitted field can legitimately contain a newline, so treat
         # it as unparseable and fail CLOSED rather than trying to re-frame.
-        if any(chr(10) in v for v in (target_dir, cwd, untrusted_cd)):
-            raise ValueError('newline in an emitted field')
+        if any(not isinstance(v, str) or chr(10) in v for v in (target_dir, cwd, untrusted_cd)):
+            raise ValueError('non-string or newline in an emitted field')
         print('yes')
         print(target_dir)
         print(cwd)

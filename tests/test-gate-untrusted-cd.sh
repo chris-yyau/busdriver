@@ -239,6 +239,46 @@ else
 fi
 
 echo
+echo "── line framing: a NEWLINE in any emitted field must fail CLOSED ───────"
+# The gates hand their python parse back to bash as LINES (sed -n '2p', '3p', ...).
+# A directory name may legally contain a newline on POSIX, so a crafted operand
+# shifts every field after it. Guarding only the cd operand was NOT enough:
+# `git -C '/tmp/evil\n0\n/decoy\n' commit` emits a well-formed 5-line frame whose
+# target_dir is a decoy, whose cwd anchor is attacker-chosen, and whose
+# untrusted_cd is BLANK — erasing the defense everything above pins. Each gate
+# must refuse to emit such a frame and take its fail-CLOSED parse-error path.
+# Driven through the real gate scripts: the guard lives in their inline python,
+# not in the parser or resolver the cases above exercise.
+frame_case() {  # $1 script  $2 fires(yes|no)  $3 label  $4 command
+    local payload out
+    payload=$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","cwd":sys.argv[1],"tool_input":{"command":sys.argv[2]}}))' \
+        "$CWD_REPO" "$4") || { fails=$((fails + 1)); printf '  FAIL  %-50s (payload build failed)\n' "$3"; return; }
+    out=$(printf '%s' "$payload" | bash "hooks/gate-scripts/$1" 2>&1)
+    local got=no
+    case "$out" in *'failed to parse tool input'*) got=yes ;; esac
+    if [ "$got" = "$2" ]; then
+        printf '  PASS  %-50s\n' "$3"
+    else
+        fails=$((fails + 1))
+        printf '  FAIL  %-50s want-parse-error=%s got=%s\n' "$3" "$2" "$got"
+    fi
+}
+# Fires: the newline reaches an emitted field.
+frame_case pre-commit-gate.sh yes "newline in git -C target → block" \
+    "git -C '/tmp/evil"$'\n'"0"$'\n'"/decoy"$'\n'"' commit -m x"
+frame_case pre-commit-gate.sh yes "newline in cd operand → block" \
+    "cd '/tmp/evil"$'\n'"decoy'"$'\n'"git commit -m x"
+frame_case pre-pr-gate.sh yes "newline in cd operand → block (pr create)" \
+    "cd '/tmp/evil"$'\n'"decoy' && gh pr create"
+frame_case pre-merge-gate.sh yes "newline in cd operand → block (pr merge)" \
+    "cd '/tmp/evil"$'\n'"decoy' && gh pr merge 1"
+# Does NOT fire: a guard that cannot stay silent blocks everything, which is the
+# same as no guard. These must reach their gates' NORMAL paths instead.
+frame_case pre-commit-gate.sh no "plain commit → no parse error" "git commit -m x"
+frame_case pre-pr-gate.sh     no "plain pr create → no parse error" "gh pr create"
+frame_case pre-merge-gate.sh  no "plain pr merge → no parse error" "gh pr merge 1"
+
+echo
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
     exit 0

@@ -87,13 +87,16 @@ try:
         inp = json.loads(inp)
     cmd = inp.get('command', '')
     is_create, target_dir, _pr, untrusted_cd = gh_pr(cmd, 'create', with_untrusted_cd=True)
-    # A cd operand containing a NEWLINE cannot survive this hook's line-based
-    # framing, so emit a leading-dash token instead: gate_classify_target() rules
-    # any '-*' operand unresolvable, which makes the resolver BLOCK. Never a real
-    # absolute path, so it cannot be mistaken for one.
-    if chr(10) in untrusted_cd:
-        untrusted_cd = '-newline-in-cd-operand'
     if is_create:
+        # This hook frames its fields as LINES, so a NEWLINE in ANY emitted value
+        # shifts every field after it. Directory names may legally contain one on
+        # POSIX, so guarding only the cd operand was not enough: 'git -C' on a
+        # crafted path forges the WHOLE frame -- a decoy target_dir, an attacker-
+        # chosen HOOK_CWD anchor, and a BLANK untrusted_cd that erases this very
+        # defense. No emitted field can legitimately contain a newline, so treat
+        # it as unparseable and fail CLOSED rather than trying to re-frame.
+        if any(chr(10) in v for v in (target_dir, cwd, untrusted_cd)):
+            raise ValueError('newline in an emitted field')
         print('yes')
         print(target_dir)
         print(cwd)
@@ -124,7 +127,7 @@ fi
 # Fail-CLOSED on command-substitution targets the gate cannot evaluate.
 gate_resolve_repo_dir "$TARGET_DIR" "$HOOK_CWD" "$UNTRUSTED_CD"
 if [ "$GATE_RESOLVE_STATUS" = "block-unresolvable" ]; then
-    block_emit "Pre-PR gate: the command's cd target cannot be resolved statically. Either it uses a substitution or variable (cd \"\$(...)\", cd \$DIR, cd -, a glob), or it is a plain 'cd <dir>' that is NOT '&&'-joined to the gh pr create and resolves to a DIFFERENT repo than the session cwd -- so the gate cannot tell which repo receives it, and checking the wrong one would let an unreviewed change through. Run gh pr create from the repo root, join the cd with '&&' (cd /repo && gh pr create), use git -C /repo, or use cd \"\$(git rev-parse --show-toplevel)\" which the gate recognizes. Blocking as precaution (fail-closed)."
+    block_emit "Pre-PR gate: the command's cd target cannot be resolved statically. Either it uses a substitution or variable (cd \"\$(...)\", cd \$DIR, cd -, a glob), or it is a plain 'cd <dir>' that is NOT '&&'-joined to the gh pr create and resolves to a DIFFERENT repo than the session cwd -- so the gate cannot tell which repo receives it, and checking the wrong one would let an unreviewed change through. Run gh pr create from the repo root, join the cd with '&&' (cd /repo && gh pr create), or use cd \"\$(git rev-parse --show-toplevel)\" which the gate recognizes. Blocking as precaution (fail-closed)."
     exit 0
 fi
 # Genuinely not in a git repo → approve (gh pr create fails on its own).

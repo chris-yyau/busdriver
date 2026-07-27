@@ -102,13 +102,16 @@ try:
         inp = json.loads(inp)
     cmd = inp.get('command', '')
     is_commit, target_dir, is_amend, untrusted_cd = git_commit(cmd, with_untrusted_cd=True)
-    # A cd operand containing a NEWLINE cannot survive this hook's line-based
-    # framing, so emit a leading-dash token instead: gate_classify_target() rules
-    # any '-*' operand unresolvable, which makes the resolver BLOCK. Never a real
-    # absolute path, so it cannot be mistaken for one.
-    if chr(10) in untrusted_cd:
-        untrusted_cd = '-newline-in-cd-operand'
     if is_commit:
+        # This hook frames its fields as LINES, so a NEWLINE in ANY emitted value
+        # shifts every field after it. Directory names may legally contain one on
+        # POSIX, so guarding only the cd operand was not enough: 'git -C' on a
+        # crafted path forges the WHOLE frame -- a decoy target_dir, an attacker-
+        # chosen HOOK_CWD anchor, and a BLANK untrusted_cd that erases this very
+        # defense. No emitted field can legitimately contain a newline, so treat
+        # it as unparseable and fail CLOSED rather than trying to re-frame.
+        if any(chr(10) in v for v in (target_dir, cwd, untrusted_cd)):
+            raise ValueError('newline in an emitted field')
         print('yes')
         print(target_dir)
         print('1' if is_amend else '0')

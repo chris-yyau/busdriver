@@ -67,6 +67,30 @@ arbiter either way. Restoring parallelism recovers only the **overlap**.
    folding the pointer in there would have left it invisible — the first attempt
    at this fix did exactly that and was caught in review.
 
+   The sidecar is opened **once**, with `exec 9>|"$out.dispatch.err"` inside a forked
+   **launcher subshell**, and the dispatch's fail-closed decision is keyed on that
+   single open; the grandchild inherits it as `2>&9`. Three review rounds pinned the
+   shape, and each rejected alternative is a real defect:
+
+   - *Opening it twice* — truncate up front, redirect at launch — is a TOCTOU: the
+     path can become unopenable in between and the dispatch would still report
+     `dispatched`, leaving every waiter to burn the full cap + grace polling for a
+     `.rc` that can never land.
+   - *A redirect on the launch itself* cannot carry the check. Measured on bash 3.2,
+     `{ ( … ) & } 2>>file` establishes the redirect in the **forked child**, so the
+     launcher is handed rc 0 even for an unopenable path — a silent fail-**open**.
+   - *`exec` on this function's own shell* is wrong because `ultra_oracle_consult` is
+     **sourced**: that shell is the caller's, so the open would seize and then destroy
+     whatever the caller held on fd 9 (`BASH_XTRACEFD=9`, say). `exec`'s redirect list
+     also applies to the current shell permanently, so a `2>/dev/null` on it would gag
+     the caller's stderr for the rest of the process on every successful dispatch.
+
+   The forked subshell satisfies all three: the `exec` is synchronous, its failure
+   becomes the subshell's exit status and so reaches the `if !` in the parent, and
+   both the descriptor and the `set -m` needed for the child's own process group stay
+   confined to a private fd table — no save/restore, nothing seized from the caller.
+   `>|` keeps the open truncating under a caller's `set -C` (noclobber).
+
 3. **Anchor the `.rc` poll to an absolute deadline captured at dispatch**, keeping
    the existing iteration counter as a clock-independent backstop. Both bounds are
    required: the deadline credits the concurrent reviewer time (without it a

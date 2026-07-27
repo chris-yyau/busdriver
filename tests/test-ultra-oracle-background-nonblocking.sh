@@ -135,8 +135,9 @@ _pg_out="$( bash -c '
   cpg=$(ps -o pgid= -p "$cpid" 2>/dev/null | tr -d " ")
   printf "%s %s %s" "$st" "$ppg" "$cpg"
 ' 2>/dev/null )"
+# shellcheck disable=SC2086  # word-splitting is the point: three space-separated fields
 set -- $_pg_out
-if [ "${1:-}" != "dispatched" ]; then
+if [[ "${1:-}" != "dispatched" ]]; then
   echo "FAIL: status token corrupted to '${1:-}' — job-control notices leaked onto stdout"
   FAIL=1
 elif [ -n "${3:-}" ] && [ "${2:-}" != "${3:-}" ]; then
@@ -146,11 +147,71 @@ else
   FAIL=1
 fi
 
+# ── Layer 1d: an unopenable stderr sidecar must FAIL CLOSED ──
+# The sidecar is opened ONCE, in the parent, via `exec 9>|`. If that open fails
+# the dispatch must report `error`, never `dispatched`: a `dispatched` token for a
+# child that could not launch makes every waiter burn the full oracle cap + grace
+# polling for a `.rc` that can never appear.
+#
+# This is NOT satisfiable by a redirect on the launch itself. Measured on bash 3.2,
+# `{ ( … ) & } 2>>file` establishes the redirect in the FORKED CHILD, so the parent
+# is handed rc 0 even when the path is unopenable — a silent fail-OPEN. Hence the
+# parent-held descriptor, and hence this test.
+_ro="$tmp/ro"; mkdir -p "$_ro"; chmod 500 "$_ro"
+_fc="$( ultra_oracle_consult --mode background --prompt p \
+          --slug "ultra oracle plan review" --out "$_ro/blocked.md" 2>/dev/null )"
+chmod 700 "$_ro"
+if [[ "$_fc" = "error" ]]; then
+  echo "OK:   unopenable \$out.dispatch.err fails closed (status 'error')"
+else
+  echo "FAIL: unopenable \$out.dispatch.err returned '$_fc' — waiters would poll a \`.rc\` that can never land"
+  FAIL=1
+fi
+
+# ...and the descriptor it opens must belong to the LAUNCHER SUBSHELL, never to the
+# caller. This function is SOURCED, so its shell is the caller's: an `exec 9>|` run
+# there seizes and then destroys whatever the caller already had on fd 9 (e.g.
+# `BASH_XTRACEFD=9`). Model that exactly — hold fd 9 open across a dispatch and
+# require it to still be the caller's file afterwards.
+_fd9="$( bash -c '
+  export ULTRA_ORACLE_TEST_NO_LOCK=1
+  # shellcheck source=/dev/null
+  source "'"$DIR"'/scripts/lib/ultra-oracle.sh"
+  exec 9>"'"$tmp"'/caller-fd9.txt"
+  echo BEFORE >&9
+  ultra_oracle_consult --mode background --prompt p --slug "ultra oracle plan review" \
+    --out "'"$tmp"'/fd9.md" >/dev/null
+  echo AFTER >&9 2>/dev/null || echo "fd9-destroyed"
+  exec 9>&-
+' 2>/dev/null )"
+if [[ "$_fd9" != *fd9-destroyed* ]] && grep -q AFTER "$tmp/caller-fd9.txt" 2>/dev/null; then
+  echo "OK:   caller's fd 9 survives the dispatch (descriptor is subshell-local)"
+else
+  echo "FAIL: dispatch seized the caller's fd 9 — a sourced function must not \`exec\` on the caller's shell"
+  FAIL=1
+fi
+
+# ...and the success path must not permanently silence the caller's stderr. `exec`
+# applies its redirect list to the CURRENT shell, so `exec 9>|f 2>/dev/null` would
+# gag the rest of the process on every successful dispatch.
+_gag="$( bash -c '
+  export ULTRA_ORACLE_TEST_NO_LOCK=1
+  # shellcheck source=/dev/null
+  source "'"$DIR"'/scripts/lib/ultra-oracle.sh"
+  ultra_oracle_consult --mode background --prompt p --slug "ultra oracle plan review" \
+    --out "'"$tmp"'/gag.md" >/dev/null
+  echo CALLER-STDERR-ALIVE >&2
+' 2>&1 )"
+case "$_gag" in
+  *CALLER-STDERR-ALIVE*) echo "OK:   caller stderr survives a successful dispatch" ;;
+  *) echo "FAIL: caller stderr silenced by the dispatch — \`exec\` redirect list leaked to the shell"; FAIL=1 ;;
+esac
+
 # ── Layer 2: golden-grep — the subshell redirect itself ──
 ADAPTER="$DIR/scripts/lib/ultra-oracle.sh"
 # The `)` closes on the same line as the final statement, so anchor on the
 # redirect + `&` tail rather than the line start.
-_PAT='\) </dev/null >/dev/null 2>>"\$out\.dispatch\.err" &[[:space:]]*$'
+_PAT='\) </dev/null >/dev/null 2>&9 &[[:space:]]*$'
 if grep -qE "$_PAT" "$ADAPTER"; then
   echo "OK:   background subshell closes with all three fds redirected"
 else
@@ -173,7 +234,7 @@ fi
 # the redirect stripped must not match. A grep assertion that has never been seen
 # to fail is not a guard.
 _probe="$tmp/adapter-noredir.sh"
-sed 's|) </dev/null >/dev/null 2>>"$out.dispatch.err" &|) \&|' "$ADAPTER" > "$_probe"
+sed 's|) </dev/null >/dev/null 2>&9 &|) \&|' "$ADAPTER" > "$_probe"
 if grep -qE "$_PAT" "$_probe"; then
   echo "FAIL: golden-grep still matches after the redirect was stripped — it cannot detect a regression"
   FAIL=1

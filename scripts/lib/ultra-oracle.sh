@@ -1237,12 +1237,47 @@ ${_body}
     # Start the dispatch's stderr sidecar EMPTY: it is opened append-only below so a
     # crash can never truncate a pointer mid-write, which means a previous dispatch's
     # text would otherwise accumulate and be re-reported as current.
-    : >| "$out.dispatch.err" 2>/dev/null || true
-    # Enable job control so the background job becomes a process-group LEADER
-    # (see the block comment at the launch line). Saved/restored around the launch.
-    _uora_had_m=0; case "$-" in *m*) _uora_had_m=1 ;; esac
-    set -m 2>/dev/null || true
-    ( set +e   # a caller's errexit must NOT abort the subshell before "$out.rc" is written
+    #
+    # `>|` (not `>`) so the truncation still happens under a caller's `set -C`
+    # (noclobber), which would otherwise leave a previous dispatch's diagnostics in
+    # place to be re-reported as current.
+    #
+    # ONE open, and the fail-closed decision keyed on it. Truncating here and letting
+    # the launch open the path a second time would be a TOCTOU: the path can be
+    # replaced or become unopenable in between, the async redirect then fails, and we
+    # would still have printed `dispatched` — leaving every waiter to burn the full
+    # oracle cap + grace polling for a `.rc` that can never appear.
+    #
+    # It must be an `exec`-held descriptor, not a redirect on the launch itself.
+    # Measured on bash 3.2: with `{ (...) & } 2>>file` the `&` means bash establishes
+    # the redirect in the FORKED CHILD, so an unopenable path still returns rc 0 to
+    # the launcher — a silent fail-OPEN. `exec` opens synchronously before the fork.
+    #
+    # LAUNCHER SUBSHELL, not this function's own shell. `ultra_oracle_consult` is
+    # SOURCED, so its shell is the CALLER's: an `exec 9>|` here would seize and then
+    # destroy whatever the caller already had on fd 9 (e.g. `BASH_XTRACEFD=9`), and
+    # `exec`'s redirect list applies to the current shell PERMANENTLY — so a stray
+    # `2>/dev/null` on it would also gag the caller's stderr for the rest of the
+    # process. Doing it in a forked `( … )` confines both to a private fd table while
+    # still satisfying every requirement: the `exec` runs synchronously, its failure
+    # becomes the subshell's exit status (hence `|| exit 1`) and so reaches this
+    # `if !` in the parent, and the background grandchild inherits the descriptor via
+    # `2>&9`. The subshell exits immediately after launching — it never waits — so it
+    # adds no latency and holds no capture; the orphaned grandchild is reparented and
+    # runs to completion. Its stdout goes to /dev/null so a job-control notice can
+    # never corrupt the status token this function prints below.
+    #
+    # `>|` (not `>`) so the open still truncates under a caller's `set -C` (noclobber),
+    # which would otherwise leave a previous dispatch's diagnostics in place to be
+    # re-reported as current. No `2>/dev/null` on it either: bash abandons a redirect
+    # list at the first failure, so its "Permission denied" prints on the real stderr
+    # and names the unwritable path next to the `error` token returned here.
+    #
+    # `set -m` lives inside the subshell too — see the process-group note at the
+    # launch line. No save/restore is needed precisely because it is subshell-local.
+    if ! ( exec 9>|"$out.dispatch.err" || exit 1
+      set -m 2>/dev/null || true
+      ( set +e   # a caller's errexit must NOT abort the subshell before "$out.rc" is written
       # #477 Cause 2: serialize on the shared browser BEFORE launching oracle. If another consult
       # holds it past our wait budget, fail closed as a timeout (rc 124) — the caller surfaces it,
       # never a silent skip — rather than colliding on the attached tab. Locked inside the subshell
@@ -1332,7 +1367,8 @@ ${_body}
       #   stdout -> /dev/null   releases the `$( )` capture (the #501 fix itself)
       #   stdin  -> /dev/null   blueprint-review runs with piped stdin under agent
       #                         invocation (run-design-review-loop.sh:1192)
-      #   stderr -> "$out.err"  NOT inherited, NOT discarded
+      #   stderr -> fd 9        the parent-opened "$out.dispatch.err" (see the `exec
+      #                         9>|` above): NOT inherited, NOT discarded
       # Inheriting stderr would reintroduce the same defect one level up: the
       # enclosing Bash TOOL call captures stderr as well as stdout, so a child
       # still running when the loop exits would hold that capture open — the very
@@ -1358,13 +1394,15 @@ ${_body}
       # the background job a process-group leader, so a group signal no longer
       # reaches it. Trade-off, deliberate: an interrupted review now leaves the
       # consult running to its own cap instead of stranding a lock that wedges
-      # EVERY oracle surface until cleared by hand. Job control is restored right
-      # after the launch so monitor-mode job notices cannot corrupt the `dispatched`
-      # token this function prints on stdout.
-      printf '%s' "$_uora_bg_rc" > "$out.rc.partial" && mv -f "$out.rc.partial" "$out.rc" ) </dev/null >/dev/null 2>>"$out.dispatch.err" &
-    disown 2>/dev/null || true
-    # Restore the caller's job-control setting immediately (see `set -m` above).
-    [ "${_uora_had_m:-0}" = "1" ] || set +m 2>/dev/null || true
+      # EVERY oracle surface until cleared by hand. `set -m` needs no restore: it is
+      # scoped to the launcher subshell, whose stdout is /dev/null, so a monitor-mode
+      # job notice can never corrupt the status token this function prints on stdout.
+      printf '%s' "$_uora_bg_rc" > "$out.rc.partial" && mv -f "$out.rc.partial" "$out.rc" ) </dev/null >/dev/null 2>&9 &
+      disown 2>/dev/null || true
+      exit 0
+    ) >/dev/null; then
+      printf 'error'; return 1
+    fi
     printf 'dispatched'; return 0
   fi
 

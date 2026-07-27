@@ -1,3 +1,10 @@
+## [1.99.4](https://github.com/chris-yyau/busdriver/compare/v1.99.3...v1.99.4) (2026-07-27)
+
+
+### Bug Fixes
+
+* **ultra-oracle:** make --mode background actually non-blocking ([#501](https://github.com/chris-yyau/busdriver/issues/501)) ([#504](https://github.com/chris-yyau/busdriver/issues/504)) ([a3a5108](https://github.com/chris-yyau/busdriver/commit/a3a5108d92b27731f98929280502e65eb2e8499a)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325) [#499](https://github.com/chris-yyau/busdriver/issues/499) [#499](https://github.com/chris-yyau/busdriver/issues/499) [#502](https://github.com/chris-yyau/busdriver/issues/502)
+
 ## [1.99.3](https://github.com/chris-yyau/busdriver/compare/v1.99.2...v1.99.3) (2026-07-26)
 
 

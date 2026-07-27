@@ -365,15 +365,49 @@ def _command_argv(seg, target):
     return toks[i:]
 
 
+def _reject_crlf(target, what):
+    """Fail CLOSED on a CR/LF-bearing directory target.
+
+    Every gate emits `target_dir` through a positional, newline-delimited
+    protocol, so a value carrying a CR or LF SHIFTS the fields after it and lands
+    a different flag on the wrong line. Both derivations of that value -- a `cd`
+    argument and `git -C` -- route through here, and the gates each wrap their
+    parse in `except Exception` → fail-CLOSED block, so raising blocks in ALL of
+    them. Validating in one caller is the special-case that leaves the siblings
+    exposed. No legitimate directory target contains a newline.
+    """
+    if '\n' in target or '\r' in target:
+        raise ValueError('CR/LF in %s' % what)
+    return target
+
+
 def _cd_target(seg):
     """If seg is `cd <dir>`, return the quote-stripped, ~-expanded target; else
     None. The raw segment (not the tokenized form) is used so command-
     substitution idioms like cd "$(git rev-parse --show-toplevel)" survive for
-    the downstream repo resolver."""
-    m = re.match(r'cd\s+(.*)', seg.lstrip('({ \t'))
+    the downstream repo resolver.
+
+    Raises ValueError when the target carries a CR or LF.
+
+    Both halves are load-bearing. Without DOTALL, `(.*)` stopped at the first
+    newline, so `cd "/safe<LF>other" && gh pr merge 31` produced the TRUNCATED
+    target `/safe`: the gate then resolved markers against `/safe` while bash ran
+    the merge from the distinct `/safe<LF>other` repo. But merely capturing the
+    rest is worse on its own — every gate prints `target_dir` through a positional,
+    newline-delimited protocol, so a CR/LF-bearing value SHIFTS the fields after it
+    and lands a different flag on the wrong line.
+
+    Rejecting here, in the shared detector, is what makes that safe for all of
+    them at once: pre-commit, pre-pr and pre-merge each wrap their parse in
+    `except Exception` → fail-CLOSED block, so this raise blocks in every gate
+    rather than only the one that remembered to check. (Validating in a single
+    caller is the special-case that leaves its siblings exposed.) No legitimate
+    target contains a newline, so no valid input reaches this path."""
+    m = re.match(r'cd\s+(.*)', seg.lstrip('({ \t'), re.S)
     if not m:
         return None
-    return os.path.expanduser(m.group(1).strip().strip('\047\042'))
+    return _reject_crlf(
+        os.path.expanduser(m.group(1).strip().strip('\047\042')), 'cd target')
 
 
 def _trusted_cd(pending_cd, op):
@@ -1034,7 +1068,10 @@ def _scan_commit(chunk, allow_cd):
             k = 0
             while k < sub_idx:
                 if argv[k] == '-C' and k + 1 < sub_idx:
-                    v = os.path.expanduser(argv[k + 1])
+                    # Same fail-CLOSED rule as _cd_target: `git -C` is the OTHER
+                    # way a target_dir is derived, and every gate prints it through
+                    # a positional newline-delimited protocol.
+                    v = os.path.expanduser(_reject_crlf(argv[k + 1], 'git -C target'))
                     if os.path.isabs(v):
                         base = v
                     elif base:

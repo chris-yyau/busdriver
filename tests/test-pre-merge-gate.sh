@@ -47,7 +47,11 @@ BYPASS_PENDING="$MARKER_DIR/.merge-bypass-pending.local"
 # GH_STUB_HEAD_OID so a test can simulate "HEAD moved" by changing that env var
 # rather than by needing a real remote. Leaving it EMPTY simulates an
 # unresolvable head, which the gate must fail-closed on.
-GH_STUB_HEAD_OID_DEFAULT="1111111111222222222233333333334444444444"
+# Contains hex letters (a-f) deliberately — test 2e1 below exercises the
+# case-insensitive compare via `tr 'a-f' 'A-F'`, which is a no-op on an
+# all-digit SHA and would silently skip testing the uppercase path (cubic
+# review, PR #511).
+GH_STUB_HEAD_OID_DEFAULT="deadbeef00112233445566778899aabbccddeeff"
 export GH_STUB_HEAD_OID="$GH_STUB_HEAD_OID_DEFAULT"
 GH_STUBDIR=$(mktemp -d)
 cat > "$GH_STUBDIR/gh" <<'STUB'

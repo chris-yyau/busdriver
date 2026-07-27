@@ -718,6 +718,20 @@ check("cd target_dir (&&-gated)", g.git_commit('cd /tmp/r && git commit')[1], '/
 check("cd NOT trusted (short-circuit)", g.git_commit('false && cd /tmp/r; git commit')[1], '')
 check("cd NOT trusted (semicolon)", g.git_commit('cd /tmp/r; git commit')[1], '')
 check("git -C target_dir", g.git_commit('git -C /tmp/r commit')[1], '/tmp/r')
+# A newline inside a quoted cd target must NOT be silently truncated away: callers
+# reject a CR/LF-bearing target, and a truncated one gave them nothing to reject
+# while bash still ran from the real (different) directory.
+def _raises(fn):
+    try:
+        fn(); return False
+    except ValueError:
+        return True
+check("cd target with LF raises (fail-closed)", _raises(lambda: g._cd_target('cd "/safe\nother"')), True)
+check("cd target with CR raises (fail-closed)", _raises(lambda: g._cd_target('cd "/safe\rother"')), True)
+check("ordinary cd target still resolves", g._cd_target('cd /tmp/r'), '/tmp/r')
+# `git -C` is the OTHER derivation of target_dir and must reject identically.
+check("git -C target with LF raises", _raises(lambda: g.git_commit('git -C "/safe\nother" commit')), True)
+check("git -C target with CR raises", _raises(lambda: g.git_commit('git -C "/safe\rother" commit')), True)
 check("cd + relative -C", g.git_commit('cd /repoA && git -C nested commit')[1], '/repoA/nested')
 check("sequential -C", g.git_commit('git -C /repoA -C nested commit')[1], '/repoA/nested')
 check("commit -C is reuse-msg not cd", g.git_commit('git commit -C HEAD')[1], '')

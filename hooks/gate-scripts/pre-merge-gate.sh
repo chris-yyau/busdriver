@@ -277,6 +277,19 @@ try:
     # so a bare backtick pair is command substitution — an unescaped one here really
     # did run a stray \`gh\` on every merge-gate invocation.)
     merge_repo_override = 'yes' if gh_pr_repo_override(cmd, 'merge') else 'no'
+    # cubic review (#511): the fields below are emitted one per line and read back
+    # by the caller via \`sed -n 'Np'\` — a positional line protocol. pr_num,
+    # target_dir, and cwd are the only fields whose content is not a fixed literal
+    # ('yes'/'no'/an int), so they are the only ones that could smuggle an embedded
+    # newline (a CR/LF-bearing target_dir from a crafted \`cd\` argument, or an
+    # unusual hook-supplied cwd) and shift every later line — including
+    # merge_repo_override on line 7, the guard this PR added. Reject any embedded
+    # CR/LF in those fields by routing into the SAME except-Exception fail-closed
+    # branch as a genuine parse error, rather than printing a field that could
+    # desynchronize the line protocol.
+    for _f in (pr_num, target_dir, cwd):
+        if '\n' in _f or '\r' in _f:
+            raise ValueError('embedded CR/LF in emitted hook field')
     # NOTE (#505): an earlier revision also tried to REQUIRE a head-pin flag here,
     # to close the preflight-to-merge window for a hand-typed merge. It was removed.
     # Deciding whether a flag is really on the merge argv means parsing a command

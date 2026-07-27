@@ -1,0 +1,281 @@
+#!/bin/bash
+# tests/test-ultra-oracle-background-nonblocking.sh
+#
+# Guard for #501: `ultra_oracle_consult --mode background` must RETURN BEFORE its
+# child exits.
+#
+# The disowned subshell used to close with a bare `) &`, so it inherited the
+# caller's stdout. Every caller captures this function in `$( )`
+# (run-design-review-loop.sh, ultra-oracle-run.sh), and command substitution reads
+# until ALL writers close the pipe — so the "background" dispatch actually blocked
+# for the consult's entire lifetime (measured: 4-31 min of serialization before the
+# blueprint reviewers even launched).
+#
+# WHY THIS TEST IS NEW despite ~21 existing `--mode background` call sites in
+# tests/test-ultra-oracle*.sh: every one of those polls `.rc` with a bounded wait
+# and measures elapsed time TO THE `.rc` LANDING. That is satisfied whether the
+# dispatch blocked or not, so none of them can observe this defect. A regression
+# that drops the redirect leaves them all green.
+#
+# Layer 1 is behavioral (the property itself); layer 2 is a golden-grep so the
+# specific mechanism cannot be silently reshaped.
+
+set -u
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FAIL=0
+SLOW=6   # stub oracle's runtime; the dispatch must return in a small fraction of it
+
+tmp="$(mktemp -d)"; export HOME="$tmp"; mkdir -p "$tmp/.claude" "$tmp/bin"; cd "$tmp" || exit 1
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
+# Stub oracle: writes the verdict only AFTER sleeping, so "child still running"
+# is observable as "verdict not yet on disk".
+cat > "$tmp/bin/oracle" <<EOF
+#!/bin/bash
+out=""
+while [ \$# -gt 0 ]; do case "\$1" in --write-output) out="\$2"; shift 2;; *) shift;; esac; done
+# PID, written BEFORE sleeping so callers can probe this exact dispatch's
+# process group without racing other concurrently-running instances of this
+# same stub (a system-wide \`pgrep -f "^sleep N$"\` could match either).
+[ -n "\$out" ] && printf '%s\n' "\$\$" > "\$out.pid"
+sleep $SLOW
+[ -n "\$out" ] && printf 'ADVISORY: slow but sound\n' > "\$out"
+exit 0
+EOF
+chmod +x "$tmp/bin/oracle"; export PATH="$tmp/bin:$PATH"
+export ULTRA_ORACLE_TEST_NO_LOCK=1   # no shared-browser mutex in unit context
+
+# shellcheck source=/dev/null
+source "$DIR/scripts/lib/ultra-oracle.sh"
+
+# ── Layer 1: behavioral — the capture must return while the child still runs ──
+t0=$(date +%s)
+st="$(ultra_oracle_consult --mode background --prompt "review the plan" \
+        --slug "ultra oracle plan review" --out "$tmp/nb.md")"
+t1=$(date +%s)
+elapsed=$(( t1 - t0 ))
+
+[ "$st" = "dispatched" ] || { echo "FAIL: status got '$st', want 'dispatched'"; FAIL=1; }
+
+# The whole point. Allow generous slack for a loaded CI box but stay well under
+# the child's own runtime, so a blocking regression cannot slip through.
+if [ "$elapsed" -ge $(( SLOW - 2 )) ]; then
+  echo "FAIL: dispatch blocked ${elapsed}s against a ${SLOW}s child — \`\$( )\` held by the child's inherited stdout (#501)"
+  FAIL=1
+else
+  echo "OK:   dispatch returned in ${elapsed}s while the ${SLOW}s child ran"
+fi
+
+# Corroborate that the child really was still working when we were handed control,
+# rather than the stub having finished early.
+if [ -f "$tmp/nb.md.rc" ]; then
+  echo "FAIL: .rc already present at return — child finished, so the timing above proves nothing"
+  FAIL=1
+else
+  echo "OK:   child still in flight at return (.rc absent)"
+fi
+
+# ...and that it does complete afterwards: non-blocking must not mean lost.
+n=0
+while [ ! -f "$tmp/nb.md.rc" ] && [ "$n" -lt 100 ]; do sleep 0.2; n=$((n + 1)); done
+if [ "$(cat "$tmp/nb.md.rc" 2>/dev/null)" = "0" ]; then
+  echo "OK:   child completed after the dispatch returned (.rc=0)"
+else
+  echo "FAIL: child never completed (.rc missing or non-zero)"; FAIL=1
+fi
+grep -q 'ADVISORY' "$tmp/nb.md" 2>/dev/null \
+  || { echo "FAIL: verdict body not written"; FAIL=1; }
+
+# ── Layer 1b: the child must not hold the CALLER's stderr either ──
+# The `$( )` capture above only proves stdout was released. The enclosing Bash
+# TOOL call captures stdout AND stderr, so a child that inherits stderr keeps that
+# capture open after the loop exits — the same stall, one level up. Model it
+# exactly: run a whole dispatching shell and capture both streams, then exit while
+# the child is still working.
+_both="$( bash -c '
+  export ULTRA_ORACLE_TEST_NO_LOCK=1
+  # shellcheck source=/dev/null
+  source "'"$DIR"'/scripts/lib/ultra-oracle.sh"
+  ultra_oracle_consult --mode background --prompt p --slug "ultra oracle plan review" \
+    --out "'"$tmp"'/fd.md" >/dev/null
+' 2>&1 )"
+n=0; while [ ! -f "$tmp/fd.md.rc" ] && [ "$n" -lt 100 ]; do sleep 0.2; n=$((n + 1)); done
+
+# The child's stderr must be PRESERVED on disk, not discarded: it is the only
+# carrier of the stale-browser-lock recovery pointer, and "$out.err" is truncated
+# by the watched/blocking paths for oracle's own output. Existence-only check,
+# deliberately: "$out.dispatch.err" (fd 9) carries diagnostics from the LAUNCHER
+# SUBSHELL itself (e.g. the browser-lock staleness message at
+# ultra-oracle.sh:772) — the oracle subprocess's own stdout/stderr is captured
+# separately into "$out.err" via `>"$out.err" 2>&1`. With
+# ULTRA_ORACLE_TEST_NO_LOCK=1 (set above) the lock path never fires in this
+# test, so there is no content that can ever land in dispatch.err here; a
+# content assertion against it would be untestable by construction, not a
+# stronger guard.
+if [ -f "$tmp/fd.md.dispatch.err" ]; then
+  echo "OK:   child stderr routed to \$out.dispatch.err (recovery pointer survives)"
+else
+  echo "FAIL: no \$out.dispatch.err — child stderr inherited or discarded"
+  FAIL=1
+fi
+[ -z "$_both" ] || echo "note: outer capture carried: $_both"
+
+# NOT asserted, deliberately: that the ENCLOSING tool capture (stdout+stderr of
+# the whole invoking shell) is released. Measured with this same 6s stub, the hold
+# is identical for stderr->file, stderr->/dev/null, and no redirect at all — so
+# the holder is another descriptor on the attach/watched path, not the subshell's
+# own std fds, and no redirect here can fix it. Asserting it would be a guard that
+# fails for a reason the code under test cannot control. Residual in ADR 0030.
+
+# ── Layer 1c: the child must be in its OWN process group ──
+# `disown` only drops the job-table entry — the child otherwise keeps the parent's
+# pgid, so a harness group SIGTERM kills it mid-consult and strands the shared
+# browser mutex, which has NO auto-reclaim. `set -m` at the launch makes it a
+# process-group leader.
+#
+# The PGID probe is bound to THIS dispatch via the stub's own PID file
+# ("$out.pid", written before it sleeps) rather than a system-wide
+# `pgrep -f "^sleep N$"` — the pattern could match an unrelated process or a
+# concurrently-running instance of this same stub, producing a flaky PGID read.
+_pg_out="$( bash -c '
+  export ULTRA_ORACLE_TEST_NO_LOCK=1
+  # shellcheck source=/dev/null
+  source "'"$DIR"'/scripts/lib/ultra-oracle.sh"
+  ppg=$(ps -o pgid= -p $$ | tr -d " ")
+  st=$(ultra_oracle_consult --mode background --prompt p --slug "ultra oracle plan review" --out "'"$tmp"'/pg.md")
+  cpid=""
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    [ -f "'"$tmp"'/pg.md.pid" ] && cpid=$(cat "'"$tmp"'/pg.md.pid" 2>/dev/null)
+    [ -n "$cpid" ] && break
+    sleep 0.1
+  done
+  cpg=$(ps -o pgid= -p "$cpid" 2>/dev/null | tr -d " ")
+  printf "%s %s %s" "$st" "$ppg" "$cpg"
+' 2>/dev/null )"
+# shellcheck disable=SC2086  # word-splitting is the point: three space-separated fields
+set -- $_pg_out
+if [[ "${1:-}" != "dispatched" ]]; then
+  echo "FAIL: status token corrupted to '${1:-}' — job-control notices leaked onto stdout"
+  FAIL=1
+elif [ -n "${3:-}" ] && [ "${2:-}" != "${3:-}" ]; then
+  echo "OK:   child runs in its own process group (${2} vs ${3}) — group SIGTERM cannot strand the mutex"
+else
+  echo "FAIL: child shares the parent process group (${2:-?} vs ${3:-?}) — a group SIGTERM strands the browser lock"
+  FAIL=1
+fi
+
+# ── Layer 1d: an unopenable stderr sidecar must FAIL CLOSED ──
+# The sidecar is opened ONCE, in the parent, via `exec 9>|`. If that open fails
+# the dispatch must report `error`, never `dispatched`: a `dispatched` token for a
+# child that could not launch makes every waiter burn the full oracle cap + grace
+# polling for a `.rc` that can never appear.
+#
+# This is NOT satisfiable by a redirect on the launch itself. Measured on bash 3.2,
+# `{ ( … ) & } 2>>file` establishes the redirect in the FORKED CHILD, so the parent
+# is handed rc 0 even when the path is unopenable — a silent fail-OPEN. Hence the
+# launcher subshell's `exec 9>|`, and hence this test.
+#
+# HOW THE PATH IS MADE UNOPENABLE — two constraints, and only one construction
+# satisfies both:
+#
+#   1. It must defeat ROOT. `chmod 500` on the parent directory does not: root
+#      bypasses directory permission bits, so a root-run suite would launch
+#      successfully and fail here for an environment reason, not a behavioral one.
+#   2. It must still REACH the sidecar open. `ultra_oracle_consult` runs
+#      `mkdir -p "$(dirname "$out")" || { printf 'error'; return 1; }` (~:860) long
+#      before the dispatch. Any construction that breaks the PARENT DIRECTORY —
+#      a regular file used as an intermediate path component, say — makes that
+#      mkdir fail and returns `error` from :860, so the assertion below passes
+#      while never executing the line it exists to guard. Verified directly: with
+#      a file-as-directory path, bash emits no diagnostic naming `.dispatch.err`
+#      at all. That is a guard certifying safety it never checked.
+#
+# Making `"$out.dispatch.err"` ITSELF a directory satisfies both: the parent
+# directory is ordinary so the `mkdir -p` succeeds and the dispatch is reached,
+# and opening a directory for writing is EISDIR for root and non-root alike.
+mkdir -p "$tmp/fc" "$tmp/fc/blocked.md.dispatch.err"
+_fc="$( ultra_oracle_consult --mode background --prompt p \
+          --slug "ultra oracle plan review" --out "$tmp/fc/blocked.md" 2>/dev/null )"
+if [[ "$_fc" = "error" ]]; then
+  echo "OK:   unopenable \$out.dispatch.err fails closed (status 'error')"
+else
+  echo "FAIL: unopenable \$out.dispatch.err returned '$_fc' — waiters would poll a \`.rc\` that can never land"
+  FAIL=1
+fi
+
+# ...and the descriptor it opens must belong to the LAUNCHER SUBSHELL, never to the
+# caller. This function is SOURCED, so its shell is the caller's: an `exec 9>|` run
+# there seizes and then destroys whatever the caller already had on fd 9 (e.g.
+# `BASH_XTRACEFD=9`). Model that exactly — hold fd 9 open across a dispatch and
+# require it to still be the caller's file afterwards.
+_fd9="$( bash -c '
+  export ULTRA_ORACLE_TEST_NO_LOCK=1
+  # shellcheck source=/dev/null
+  source "'"$DIR"'/scripts/lib/ultra-oracle.sh"
+  exec 9>"'"$tmp"'/caller-fd9.txt"
+  echo BEFORE >&9
+  ultra_oracle_consult --mode background --prompt p --slug "ultra oracle plan review" \
+    --out "'"$tmp"'/fd9.md" >/dev/null
+  echo AFTER >&9 2>/dev/null || echo "fd9-destroyed"
+  exec 9>&-
+' 2>/dev/null )"
+if [[ "$_fd9" != *fd9-destroyed* ]] && grep -q AFTER "$tmp/caller-fd9.txt" 2>/dev/null; then
+  echo "OK:   caller's fd 9 survives the dispatch (descriptor is subshell-local)"
+else
+  echo "FAIL: dispatch seized the caller's fd 9 — a sourced function must not \`exec\` on the caller's shell"
+  FAIL=1
+fi
+
+# ...and the success path must not permanently silence the caller's stderr. `exec`
+# applies its redirect list to the CURRENT shell, so `exec 9>|f 2>/dev/null` would
+# gag the rest of the process on every successful dispatch.
+_gag="$( bash -c '
+  export ULTRA_ORACLE_TEST_NO_LOCK=1
+  # shellcheck source=/dev/null
+  source "'"$DIR"'/scripts/lib/ultra-oracle.sh"
+  ultra_oracle_consult --mode background --prompt p --slug "ultra oracle plan review" \
+    --out "'"$tmp"'/gag.md" >/dev/null
+  echo CALLER-STDERR-ALIVE >&2
+' 2>&1 )"
+case "$_gag" in
+  *CALLER-STDERR-ALIVE*) echo "OK:   caller stderr survives a successful dispatch" ;;
+  *) echo "FAIL: caller stderr silenced by the dispatch — \`exec\` redirect list leaked to the shell"; FAIL=1 ;;
+esac
+
+# ── Layer 2: golden-grep — the subshell redirect itself ──
+ADAPTER="$DIR/scripts/lib/ultra-oracle.sh"
+# The `)` closes on the same line as the final statement, so anchor on the
+# redirect + `&` tail rather than the line start.
+_PAT='\) </dev/null >/dev/null 2>&9 &[[:space:]]*$'
+if grep -qE "$_PAT" "$ADAPTER"; then
+  echo "OK:   background subshell closes with all three fds redirected"
+else
+  echo "FAIL: subshell no longer closes with \`) </dev/null >/dev/null 2>&9 &\` (#501 regression)"
+  FAIL=1
+fi
+
+# stderr must go to a FILE — never inherited (holds the tool capture open) and
+# never /dev/null (loses the stale-lock recovery pointer).
+if grep -qE '\) </dev/null >/dev/null &[[:space:]]*$' "$ADAPTER"; then
+  echo "FAIL: stderr left inherited — a live child holds the enclosing tool capture open"
+  FAIL=1
+fi
+if grep -qE '\) </dev/null >/dev/null 2>(&1|/dev/null) &' "$ADAPTER"; then
+  echo "FAIL: stderr merged or discarded — the stale-lock 'rm -f' recovery pointer is lost"
+  FAIL=1
+fi
+
+# Prove the guard can FAIL, not just pass: the same pattern against a copy with
+# the redirect stripped must not match. A grep assertion that has never been seen
+# to fail is not a guard.
+_probe="$tmp/adapter-noredir.sh"
+sed 's|) </dev/null >/dev/null 2>&9 &|) \&|' "$ADAPTER" > "$_probe"
+if grep -qE "$_PAT" "$_probe"; then
+  echo "FAIL: golden-grep still matches after the redirect was stripped — it cannot detect a regression"
+  FAIL=1
+else
+  echo "OK:   golden-grep rejects a stripped-redirect copy (guard fires)"
+fi
+
+[ "$FAIL" -eq 0 ] && echo "PASS: ultra-oracle background dispatch is non-blocking" || echo "FAILED"
+exit "$FAIL"

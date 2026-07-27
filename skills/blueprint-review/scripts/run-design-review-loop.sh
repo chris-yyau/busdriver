@@ -1085,6 +1085,19 @@ with open(pending, "w") as f:
 
   # ── Build the ultra-oracle advisory section (status-aware; only wait if dispatched) ──
   ULTRA_ORACLE_ADVISORY_SECTION=""
+  # One-line operator status for the oracle (#502), set by each branch below and
+  # emitted once after the section is built. Everything the oracle produces
+  # otherwise lands ONLY in the arbiter's prompt file, so "did the oracle fire?"
+  # was answerable only by opening claude-validation-prompt.txt — the exact gap
+  # ADR 0027 closed for the Mechanism Witness.
+  #
+  # EMPTY MEANS SILENT, and that is the one deliberate divergence from k3's line.
+  # k3 is always-on, so its "absent" carries information. The oracle is a
+  # default-OFF USER-config opt-in, so a line on every review would be noise for
+  # everyone who never enabled it. The surrounding code already draws exactly this
+  # boundary (disabled -> silent, enabled-but-unloadable -> warn); this inherits
+  # it rather than introducing a second rule.
+  _uora_status_line=""
   if [ -n "${ULTRA_ORACLE_ADVISORY_FILE:-}" ]; then
     if [ "$ULTRA_ORACLE_DISPATCH_STATUS" = "dispatched" ]; then
       # Grace margin BEYOND the oracle cap: on a real timeout the background child writes
@@ -1121,6 +1134,17 @@ OPTIONAL ULTRA-ORACLE (ChatGPT Pro) ADVISORY -- AUXILIARY, *NOT* A REVIEWER. The
 =============================================================================
 
 $(cat "$ULTRA_ORACLE_ADVISORY_FILE")"
+      # Size the verdict in LINES, not findings: unlike k3's auditor.json the oracle
+      # advisory is free prose with no countable schema, so a finding count would be
+      # invented.
+      #
+      # `awk END{print NR}`, not `wc -l`: wc counts NEWLINES, so a verdict whose last
+      # line has no trailing newline is under-counted — a single-line advisory written
+      # without one reports "ran (0 lines)", which reads as an empty verdict. awk's NR
+      # counts the final partial line too.
+      _uora_n="$(awk 'END{print NR}' "$ULTRA_ORACLE_ADVISORY_FILE" 2>/dev/null | tr -dc '0-9')"
+      [ -n "$_uora_n" ] || _uora_n="?"
+      _uora_status_line="UltraOracle (ChatGPT Pro): ran ($_uora_n lines -- AUXILIARY, not a reviewer)"
     else
       _uora_rc="$(cat "$ULTRA_ORACLE_ADVISORY_FILE.rc" 2>/dev/null || true)"
       if [ "$ULTRA_ORACLE_DISPATCH_STATUS" != "dispatched" ]; then _uora_term="$ULTRA_ORACLE_DISPATCH_STATUS"
@@ -1149,6 +1173,31 @@ $(cat "$ULTRA_ORACLE_ADVISORY_FILE")"
       ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
 WARNING: ULTRA-ORACLE ADVISORY FAILED [$_uora_term]$_uora_suffix -- verdict NOT included (visible best-effort; the gate converges on the THREE reviewers Agy/Codex/Grok).
 ============================================================================="
+      # ABSENT vs FAILED, the distinction ADR 0027 drew for k3: "never ran" must
+      # never be reported as a failure, nor a failure as "nothing found".
+      #
+      # THREE statuses reach here without the oracle ever having run. The advisory
+      # FILE variable is assigned BEFORE the consult (see the dispatch site), so a
+      # skip does NOT skip this branch — it lands here with no .rc, and a naive
+      # `FAILED -- $_uora_term` would report a deliberate operator opt-out as a
+      # failure. `ultra_oracle_consult`'s contract (ultra-oracle.sh ~:796) is
+      # `ok | skipped:unavailable | skipped:user | timeout | error | dispatched`.
+      #
+      # Deliberately NOT unified with the arbiter-prompt banner above, which still
+      # renders these as FAILED: its wording is asserted by
+      # tests/test-blueprint-review-claude-only-oracle-inject.sh and documented in
+      # SKILL.md, so correcting it is a wider change than this status line. Tracked
+      # separately; the log line is the operator-facing surface and is correct here.
+      case "$ULTRA_ORACLE_DISPATCH_STATUS" in
+        skipped:user)
+          _uora_status_line="UltraOracle (ChatGPT Pro): absent -- operator opt-out ($STATE_DIR/skip-ultra-oracle.local)" ;;
+        skipped:unavailable)
+          _uora_status_line="UltraOracle (ChatGPT Pro): absent -- oracle CLI not available" ;;
+        "advisory not harvested before arbiter re-run")
+          _uora_status_line="UltraOracle (ChatGPT Pro): absent -- $ULTRA_ORACLE_DISPATCH_STATUS" ;;
+        *)
+          _uora_status_line="UltraOracle (ChatGPT Pro): FAILED -- ${_uora_term}${_uora_suffix} (auxiliary; review unaffected)" ;;
+      esac
     fi
   elif [ "${CLAUDE_ONLY:-false}" != "true" ]; then
     # The advisory file was never set. Either the surface is disabled (stay silent)
@@ -1168,9 +1217,17 @@ WARNING: ULTRA-ORACLE ADVISORY FAILED [$_uora_term]$_uora_suffix -- verdict NOT 
       true|1)
         ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
 WARNING: ULTRA-ORACLE ADVISORY enabled but the adapter could not be loaded -- verdict NOT included (visible best-effort; gate converges on the THREE reviewers).
-=============================================================================" ;;
+============================================================================="
+        _uora_status_line="UltraOracle (ChatGPT Pro): FAILED -- adapter could not be loaded (auxiliary; review unaffected)" ;;
     esac
+    # No `else` on purpose: surface disabled -> no section AND no status line.
   fi
+
+  # Emit the oracle's one-line status. Unlike the k3 line (Phase 2), this sits in
+  # Phase 3 because the oracle's outcome is not known until the advisory section is
+  # built. Consequence, documented in SKILL.md: it DOES print on --claude-only
+  # resumes, where the k3 line does not.
+  [ -n "$_uora_status_line" ] && log_info "  $_uora_status_line"
 
   cat > "$CLAUDE_PROMPT_FILE" <<EOF
 $CLAUDE_PROMPT

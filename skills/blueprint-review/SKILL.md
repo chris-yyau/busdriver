@@ -165,6 +165,13 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/blueprint-review/scripts/init-design-review.s
 
 The review **log** (via `log_info`, not the state file) additionally prints a one-line **Mechanism Witness (k3)** status — `ran (N findings)` / `absent` / `FAILED` — during a normal review pass. It is not emitted on `--claude-only` resumes and is never tracked in `state.md`. The witness never gates; its full findings live only in `auditor.json` and reach the arbiter as auxiliary context.
 
+The **UltraOracle** prints a matching one-line status (#502) — `ran (N lines)` / `absent` / `FAILED -- <reason>` — so a run is no longer invisible in the log. Two deliberate differences from the k3 line:
+
+- **Silent when the surface is disabled.** k3 is always-on, so its `absent` carries information; the oracle is a default-OFF user opt-in, so a line on every review would be noise for everyone who never enabled it. Enabled-but-broken still warns — only *disabled* is silent.
+- **It IS emitted on `--claude-only` resumes**, where the k3 line is not. The oracle's outcome is not known until the Phase 3 advisory section is assembled, so its status line lives there rather than in the Phase 2 status block. On a resume it reports `absent — advisory not harvested before arbiter re-run`.
+
+Like k3's, it never gates and carries the `AUXILIARY, not a reviewer` tag so neither auxiliary can be miscounted as a fourth lens.
+
 ### 2. Run Review Loop
 
 ```bash

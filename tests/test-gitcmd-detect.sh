@@ -728,6 +728,14 @@ def _raises(fn):
         return True
 check("cd target with LF raises (fail-closed)", _raises(lambda: g._cd_target('cd "/safe\nother"')), True)
 check("cd target with CR raises (fail-closed)", _raises(lambda: g._cd_target('cd "/safe\rother"')), True)
+# Trailing, UNQUOTED CR/LF: str.strip() treats \r/\n as whitespace and would
+# silently drop a trailing CR before the check ever ran if the check ran on
+# the already-stripped value — the gate would then approve the marker for
+# the CR-less path while bash actually `cd`s into the distinct CR-suffixed
+# directory. Checking the raw captured group before stripping closes this
+# (cubic P1, PR #511).
+check("cd target with trailing unquoted CR raises (fail-closed)", _raises(lambda: g._cd_target('cd /safe\r')), True)
+check("cd target with trailing unquoted LF raises (fail-closed)", _raises(lambda: g._cd_target('cd /safe\n')), True)
 check("ordinary cd target still resolves", g._cd_target('cd /tmp/r'), '/tmp/r')
 # `git -C` is the OTHER derivation of target_dir and must reject identically.
 check("git -C target with LF raises", _raises(lambda: g.git_commit('git -C "/safe\nother" commit')), True)

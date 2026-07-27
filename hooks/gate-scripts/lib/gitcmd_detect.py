@@ -376,7 +376,7 @@ def _reject_crlf(target, what):
     them. Validating in one caller is the special-case that leaves the siblings
     exposed. No legitimate directory target contains a newline.
     """
-    if '\n' in target or '\r' in target:
+    if re.search(r'[\r\n]', target):
         raise ValueError('CR/LF in %s' % what)
     return target
 
@@ -406,8 +406,15 @@ def _cd_target(seg):
     m = re.match(r'cd\s+(.*)', seg.lstrip('({ \t'), re.S)
     if not m:
         return None
-    return _reject_crlf(
-        os.path.expanduser(m.group(1).strip().strip('\047\042')), 'cd target')
+    # Validate CR/LF on the RAW captured group, before any whitespace
+    # normalization. str.strip() treats \r as whitespace and silently
+    # removes a trailing CR, which would make _reject_crlf() see a clean
+    # value even though bash still executes `cd /repo<CR>` against a
+    # DIFFERENT (CR-suffixed) directory than the one the gate just
+    # approved the marker for. Checking pre-strip closes that gap.
+    raw = m.group(1)
+    _reject_crlf(raw, 'cd target')
+    return os.path.expanduser(raw.strip().strip('\047\042'))
 
 
 def _trusted_cd(pending_cd, op):

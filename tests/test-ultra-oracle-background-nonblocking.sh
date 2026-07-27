@@ -34,6 +34,10 @@ cat > "$tmp/bin/oracle" <<EOF
 #!/bin/bash
 out=""
 while [ \$# -gt 0 ]; do case "\$1" in --write-output) out="\$2"; shift 2;; *) shift;; esac; done
+# PID, written BEFORE sleeping so callers can probe this exact dispatch's
+# process group without racing other concurrently-running instances of this
+# same stub (a system-wide \`pgrep -f "^sleep N$"\` could match either).
+[ -n "\$out" ] && printf '%s\n' "\$\$" > "\$out.pid"
 sleep $SLOW
 [ -n "\$out" ] && printf 'ADVISORY: slow but sound\n' > "\$out"
 exit 0
@@ -99,7 +103,15 @@ n=0; while [ ! -f "$tmp/fd.md.rc" ] && [ "$n" -lt 100 ]; do sleep 0.2; n=$((n + 
 
 # The child's stderr must be PRESERVED on disk, not discarded: it is the only
 # carrier of the stale-browser-lock recovery pointer, and "$out.err" is truncated
-# by the watched/blocking paths for oracle's own output.
+# by the watched/blocking paths for oracle's own output. Existence-only check,
+# deliberately: "$out.dispatch.err" (fd 9) carries diagnostics from the LAUNCHER
+# SUBSHELL itself (e.g. the browser-lock staleness message at
+# ultra-oracle.sh:772) — the oracle subprocess's own stdout/stderr is captured
+# separately into "$out.err" via `>"$out.err" 2>&1`. With
+# ULTRA_ORACLE_TEST_NO_LOCK=1 (set above) the lock path never fires in this
+# test, so there is no content that can ever land in dispatch.err here; a
+# content assertion against it would be untestable by construction, not a
+# stronger guard.
 if [ -f "$tmp/fd.md.dispatch.err" ]; then
   echo "OK:   child stderr routed to \$out.dispatch.err (recovery pointer survives)"
 else
@@ -120,6 +132,11 @@ fi
 # pgid, so a harness group SIGTERM kills it mid-consult and strands the shared
 # browser mutex, which has NO auto-reclaim. `set -m` at the launch makes it a
 # process-group leader.
+#
+# The PGID probe is bound to THIS dispatch via the stub's own PID file
+# ("$out.pid", written before it sleeps) rather than a system-wide
+# `pgrep -f "^sleep N$"` — the pattern could match an unrelated process or a
+# concurrently-running instance of this same stub, producing a flaky PGID read.
 _pg_out="$( bash -c '
   export ULTRA_ORACLE_TEST_NO_LOCK=1
   # shellcheck source=/dev/null
@@ -128,7 +145,7 @@ _pg_out="$( bash -c '
   st=$(ultra_oracle_consult --mode background --prompt p --slug "ultra oracle plan review" --out "'"$tmp"'/pg.md")
   cpid=""
   for _i in 1 2 3 4 5 6 7 8 9 10; do
-    cpid=$(pgrep -f "^sleep '"$SLOW"'$" | head -1)
+    [ -f "'"$tmp"'/pg.md.pid" ] && cpid=$(cat "'"$tmp"'/pg.md.pid" 2>/dev/null)
     [ -n "$cpid" ] && break
     sleep 0.1
   done
@@ -156,11 +173,29 @@ fi
 # This is NOT satisfiable by a redirect on the launch itself. Measured on bash 3.2,
 # `{ ( … ) & } 2>>file` establishes the redirect in the FORKED CHILD, so the parent
 # is handed rc 0 even when the path is unopenable — a silent fail-OPEN. Hence the
-# parent-held descriptor, and hence this test.
-_ro="$tmp/ro"; mkdir -p "$_ro"; chmod 500 "$_ro"
+# launcher subshell's `exec 9>|`, and hence this test.
+#
+# HOW THE PATH IS MADE UNOPENABLE — two constraints, and only one construction
+# satisfies both:
+#
+#   1. It must defeat ROOT. `chmod 500` on the parent directory does not: root
+#      bypasses directory permission bits, so a root-run suite would launch
+#      successfully and fail here for an environment reason, not a behavioral one.
+#   2. It must still REACH the sidecar open. `ultra_oracle_consult` runs
+#      `mkdir -p "$(dirname "$out")" || { printf 'error'; return 1; }` (~:860) long
+#      before the dispatch. Any construction that breaks the PARENT DIRECTORY —
+#      a regular file used as an intermediate path component, say — makes that
+#      mkdir fail and returns `error` from :860, so the assertion below passes
+#      while never executing the line it exists to guard. Verified directly: with
+#      a file-as-directory path, bash emits no diagnostic naming `.dispatch.err`
+#      at all. That is a guard certifying safety it never checked.
+#
+# Making `"$out.dispatch.err"` ITSELF a directory satisfies both: the parent
+# directory is ordinary so the `mkdir -p` succeeds and the dispatch is reached,
+# and opening a directory for writing is EISDIR for root and non-root alike.
+mkdir -p "$tmp/fc" "$tmp/fc/blocked.md.dispatch.err"
 _fc="$( ultra_oracle_consult --mode background --prompt p \
-          --slug "ultra oracle plan review" --out "$_ro/blocked.md" 2>/dev/null )"
-chmod 700 "$_ro"
+          --slug "ultra oracle plan review" --out "$tmp/fc/blocked.md" 2>/dev/null )"
 if [[ "$_fc" = "error" ]]; then
   echo "OK:   unopenable \$out.dispatch.err fails closed (status 'error')"
 else

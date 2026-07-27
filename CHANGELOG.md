@@ -1,3 +1,10 @@
+# [1.100.0](https://github.com/chris-yyau/busdriver/compare/v1.99.4...v1.100.0) (2026-07-27)
+
+
+### Features
+
+* **blueprint-review:** add UltraOracle operator status line ([#502](https://github.com/chris-yyau/busdriver/issues/502)) ([#507](https://github.com/chris-yyau/busdriver/issues/507)) ([8dbec89](https://github.com/chris-yyau/busdriver/commit/8dbec895fcc4d7c9037bbfa20ebb52d0555b19ab))
+
 ## [1.99.4](https://github.com/chris-yyau/busdriver/compare/v1.99.3...v1.99.4) (2026-07-27)
 
 

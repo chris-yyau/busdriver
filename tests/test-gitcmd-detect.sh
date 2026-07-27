@@ -707,6 +707,211 @@ for c in MERGE_NO:
 check("cd target_dir (&&-gated)", g.git_commit('cd /tmp/r && git commit')[1], '/tmp/r')
 check("cd NOT trusted (short-circuit)", g.git_commit('false && cd /tmp/r; git commit')[1], '')
 check("cd NOT trusted (semicolon)", g.git_commit('cd /tmp/r; git commit')[1], '')
+# An unconfirmed cd is reported OUT OF BAND (opt-in 4th element) so target_dir stays
+# a pure path field -- folding a sentinel into it would be forgeable by a real
+# directory and would downgrade the '$'-in-target BLOCK. Default stays a 3-tuple, so
+# the non-gating nudge parsers are untouched. Resolver matrix:
+# tests/test-gate-untrusted-cd.sh.
+check("untrusted_cd absent by default (3-tuple)", len(g.git_commit('cd /tmp/r; git commit')), 3)
+check("untrusted_cd opt-in (semicolon)", g.git_commit('cd /tmp/r; git commit', with_untrusted_cd=True)[3], '/tmp/r')
+check("untrusted_cd opt-in (newline)", g.git_commit('cd /tmp/r\ngit commit', with_untrusted_cd=True)[3], '/tmp/r')
+check("untrusted_cd empty when '&&'-trusted", g.git_commit('cd /tmp/r && git commit', with_untrusted_cd=True)[3], '')
+check("untrusted_cd empty when no cd", g.git_commit('git commit', with_untrusted_cd=True)[3], '')
+check("untrusted_cd empty on no match", g.git_commit('ls', with_untrusted_cd=True)[3], '')
+# `git -C` already scoped the repo authoritatively -- do not also report a stale
+# pending operand the caller might second-guess it with.
+check("untrusted_cd suppressed by git -C", g.git_commit('cd /tmp/r; git -C /other commit', with_untrusted_cd=True)[3], '')
+# ...but ONLY when that -C is AUTHORITATIVE. Tokenization discards the tilde's
+# quoting, so `git -C "~"` is a LITERAL RELATIVE dir git resolves against the runtime
+# cwd (/other/~), even though expanduser makes target_dir look absolute here.
+# Suppressing the payload's cd on "target_dir starts with /" therefore aimed the gate
+# at $HOME while the commit landed elsewhere -- and blanked untrusted_cd, so nothing
+# blocked. Pin both halves plus the arity the 5th internal element must not leak.
+check("tilde -C alone emits a blocking token",
+      g.git_commit('git -C "~" commit', with_untrusted_cd=True)[3], '-tilde-c-operand')
+check("tilde -C with a path too",
+      g.git_commit('git -C ~/sub commit', with_untrusted_cd=True)[3], '-tilde-c-operand')
+check("tilde -C does NOT suppress a payload cd",
+      g.git_commit('eval \'cd /other\'; git -C "~" commit', with_untrusted_cd=True)[3],
+      '-ambiguous-cd-operands')
+# A LATER absolute -C re-establishes authority; an EARLIER one does not survive a
+# later tilde (git resolves the literal '~' against /session, not $HOME).
+check("later absolute -C wins (no false block)",
+      g.git_commit('git -C "~" -C /session commit', with_untrusted_cd=True)[3], '')
+check("earlier absolute -C does not survive a tilde",
+      g.git_commit('git -C /session -C "~" commit', with_untrusted_cd=True)[3], '-tilde-c-operand')
+check("absolute -C still suppresses payload cd",
+      g.git_commit("eval 'cd /other'; git -C /session commit", with_untrusted_cd=True)[3], '')
+check("authoritative flag does not leak into the tuple",
+      len(g.git_commit('git -C "~" commit', with_untrusted_cd=True)), 4)
+check("tilde -C keeps the 3-tuple default",
+      len(g.git_commit('git -C "~" commit')), 3)
+# A `-C` inside a payload is not resolved for scoping, but silence there was not
+# neutral: it returned the same ('', '') as "no cd at all", so the gate anchored on
+# the session cwd while git committed in the -C target. It must BLOCK instead.
+# `_command_argv` DELETES leading/embedded grouping tokens, so an INDEX into the
+# argv it returns does not name the same token in the untouched stream -- and the
+# deletions are mid-stream, so no single offset corrects for them. It now carries the
+# aligned raw spellings instead. The shape below is the one that got through: two
+# brace groups shift the stream by 2, landing the spelling check on a double-quoted
+# REDIRECTION TARGET decoy, so the single-quoted operand was read as the live idiom
+# and the gate proceeded on the session cwd while bash cd'd into a literal directory.
+# A brace group runs in the CURRENT shell, so the cd really does take effect.
+# `pushd DIR` moves the CURRENT shell exactly like `cd DIR`, and `popd` returns to a
+# stack entry no static parser can know. Both reported '' -- byte-identical to "no cd
+# at all" -- so `pushd /other-repo; git commit` committed in /other-repo while the
+# gate validated the SESSION repo's marker. Recorded now, seen but never trusted.
+check("pushd is recorded like cd",
+      g.git_commit('pushd /other-repo; git commit -m x', with_untrusted_cd=True)[3], '/other-repo')
+check("pushd behind && is still untrusted",
+      g.git_commit('pushd /other-repo && git commit -m x', with_untrusted_cd=True)[3], '/other-repo')
+check("popd has no knowable destination",
+      g.git_commit('popd; git commit -m x', with_untrusted_cd=True)[3], '-ambiguous-cd-operands')
+check("bare pushd swaps the stack -- also unknowable",
+      g.git_commit('pushd; git commit -m x', with_untrusted_cd=True)[3], '-ambiguous-cd-operands')
+# ...and a commit with no directory change at all must stay clean.
+# _command_argv protects the `target` token from being eaten as a wrapper option's
+# argument. It took ONE name, so protecting 'cd' left `command -p pushd /other` and
+# `time -p pushd /other` consuming `pushd` as the option value -- argv became just
+# ['/other'], the loose channel saw no command word, and untrusted_cd came back
+# empty. It now takes a tuple, so all three builtins are protected.
+check("command -p does not swallow pushd",
+      g.git_commit('command -p pushd /other; git commit', with_untrusted_cd=True)[3], '/other')
+check("time -p does not swallow pushd",
+      g.git_commit('time -p pushd /other; git commit', with_untrusted_cd=True)[3], '/other')
+check("wrapper does not swallow popd",
+      g.git_commit('command -p popd; git commit', with_untrusted_cd=True)[3], '-ambiguous-cd-operands')
+check("wrapper still does not swallow cd",
+      g.git_commit('command -p cd /other; git commit', with_untrusted_cd=True)[3], '/other')
+# The multi-target change must not make a wrapped COMMIT look like a cd.
+# `-n` suppresses the directory change for BOTH stack builtins -- but ONLY as an
+# OPTION. A scan of the whole argv also matched it as an operand or a redirection
+# target, reporting "no cd" while the shell really moved (fail-OPEN), so the walk
+# stops treating tokens as options at `--` or at the first operand.
+check("-n option suppresses pushd",
+      g.git_commit('pushd -n /other; git commit', with_untrusted_cd=True)[3], '')
+check("-n option suppresses popd",
+      g.git_commit('popd -n; git commit', with_untrusted_cd=True)[3], '')
+check("-n after -- is an OPERAND, not the option",
+      g.git_commit('pushd -- -n; git commit', with_untrusted_cd=True)[3], '-n')
+check("-n as a redirection target is not the option",
+      g.git_commit('pushd /other > -n; git commit', with_untrusted_cd=True)[3], '/other')
+# A rotation operand DOES move, to a stack entry no static parser can name. It is
+# reported verbatim and the RESOLVER blocks it (relative operand) -- what must not
+# happen is it coming back clean.
+check("pushd rotation is not reported clean",
+      g.git_commit('pushd +1; git commit', with_untrusted_cd=True)[3], '+1')
+check("popd rotation is unknowable",
+      g.git_commit('popd +1; git commit', with_untrusted_cd=True)[3], '-ambiguous-cd-operands')
+# `command -v NAME` / `-V NAME` only PRINT a resolution; nothing executes. Protecting
+# pushd as a target name made the query look like an executed bare pushd.
+# ANSI-C quoting survives tokenization with the leading `$` attached (`$\'pushd\'` ->
+# `$pushd`), and bash still runs the builtin. The target guard compared the raw token,
+# so `command -p $\'pushd\' /other` consumed the command word as the wrapper option\'s
+# argument and reported no directory change -- fail-OPEN. Same gap applied to `cd`.
+# The ANSI-C leniency is scoped to the cd BUILTINS. Applying it to `git`/`gh` made a
+# wrapper ARGUMENT named `$git` look like the protected executable, so it was not
+# consumed: argv started at `$git`, matched no executable, and the commit went
+# UNDETECTED. Same for `$gh` and the merge detector.
+check("a wrapper argument named $git is still consumed",
+      g.git_commit('env -u $git git commit')[0], True)
+check("a wrapper argument named $gh is still consumed",
+      g.gh_pr('env -u $gh gh pr merge 1', 'merge')[0], True)
+check("ANSI-C $pushd behind a wrapper is still a target",
+      g.git_commit("command -p $\'pushd\' /other; git commit", with_untrusted_cd=True)[3], '/other')
+check("ANSI-C $cd behind a wrapper is still a target",
+      g.git_commit("command -p $\'cd\' /other; git commit", with_untrusted_cd=True)[3], '/other')
+check("ANSI-C $popd is still unknowable",
+      g.git_commit("$\'popd\'; git commit", with_untrusted_cd=True)[3], '-ambiguous-cd-operands')
+# A DYNAMIC command word is an ACCEPTED residual, not an oversight: `cmd=cd;
+# $cmd /other` really moves the shell, but closing it means treating every
+# `$VAR <operand>` as a possible cd, which blocks ordinary `$EDITOR file; git commit`.
+# Behaviour matches the pre-untrusted_cd parser, so the channel does not open this gap.
+# Pinned so the trade-off is explicit and cannot be changed silently either way.
+check("a dynamic command word is an accepted residual",
+      g.git_commit('$cmd /other; git commit', with_untrusted_cd=True)[3], '')
+# The query scan MUST stay bounded to the leading wrapper run. Scanning the whole
+# token list also matched a `command -v` sitting AFTER an interpreter payload, so
+# the target='' discovery path returned [] and hid a real commit -- fail-OPEN.
+check("a trailing query does not hide an interpreter payload",
+      g.git_commit('bash -c "git commit" command -v')[0], True)
+check("a trailing query does not hide a preceding cd",
+      g.git_commit('cd /other; bash -c "git commit" command -v', with_untrusted_cd=True)[3], '/other')
+# bash accepts clustered and repeated options, so these are queries too and must not
+# be read as an executed bare pushd (which would block a commit that never moved).
+# The query scan has to walk past the SAME prefixes the main parser strips, or a
+# redirection / keyword / group in front of the query made it look like an executed
+# bare pushd and blocked a commit that never moved.
+# There is deliberately NO `command -v NAME` shortcut. Such a query only PRINTS a
+# resolution, so recognising it would avoid one false block -- but `command` is not
+# reliably the builtin: a shell FUNCTION or an executable `./command` can override it
+# and really does run its arguments. A shortcut that returns "nothing executed"
+# therefore HIDES a real commit or merge. These pin that detection survives every
+# override form, and that the query itself over-blocks rather than fails open.
+check("a function override of command still runs the commit",
+      g.git_commit('command() { shift; "$@"; }; command -v git commit')[0], True)
+check("an executable ./command still runs the commit",
+      g.git_commit('./command -v git commit')[0], True)
+check("a redirection target named -v hides nothing",
+      g.git_commit('command > -v git commit')[0], True)
+check("...and hides no merge either",
+      g.gh_pr('command > -v gh pr merge 1', 'merge')[0], True)
+check("a genuine query over-blocks (accepted, never fails open)",
+      g.git_commit('command -v pushd; git commit', with_untrusted_cd=True)[3], '-ambiguous-cd-operands')
+check("wrapped commit with no cd stays clean",
+      g.git_commit('command -p git commit', with_untrusted_cd=True)[3], '')
+check("no cd/pushd stays clean",
+      g.git_commit('git commit -m x', with_untrusted_cd=True)[3], '')
+check("brace-shifted decoy does not vouch for a quoted cd",
+      g.git_commit('{ { > "$(git rev-parse --show-toplevel)" cd \'$(git rev-parse --show-toplevel)\'; }; }; git commit -m x',
+                   with_untrusted_cd=True)[3],
+      "'$(git rev-parse --show-toplevel)'")
+check("brace-shifted decoy does not vouch for a quoted -C",
+      g.git_commit('{ { > "$(git rev-parse --show-toplevel)" git -C \'$(git rev-parse --show-toplevel)\' commit; }; }',
+                   with_untrusted_cd=True)[1],
+      "'$(git rev-parse --show-toplevel)'")
+# ...and a genuinely live operand inside a brace group must NOT be masked.
+check("live -C inside a brace group stays live",
+      g.git_commit('{ git -C "$(git rev-parse --show-toplevel)" commit; }',
+                   with_untrusted_cd=True)[1],
+      '$(git rev-parse --show-toplevel)')
+# gh_pr still suppresses the nested fold on `target_dir.startswith("/")`, the test the
+# commit path abandoned as unsound. It is not exploitable there only because _iter_gh
+# INDEPENDENTLY requires cds[-1] == target_dir, which an expanduser'd tilde fails. That
+# invariant lives in a different function from the test depending on it, so pin it here:
+# if the agreement check is ever loosened, this fails instead of silently fail-opening.
+check("gh: tilde cd still blocks despite the absolute-looking target",
+      g.gh_pr('eval \'cd /other\'; cd "~" && gh pr create', 'create', with_untrusted_cd=True)[3],
+      '-ambiguous-cd-operands')
+check("nested -C blocks (eval, tilde)",
+      g.git_commit('eval \'git -C "~" commit\'', with_untrusted_cd=True)[3], '-nested-c-operand')
+check("nested -C blocks (bash -c, absolute)",
+      g.git_commit("bash -c 'git -C /other commit'", with_untrusted_cd=True)[3], '-nested-c-operand')
+check("nested -C folds in with an outer cd",
+      g.git_commit("cd /other; bash -c 'git -C /session commit'", with_untrusted_cd=True)[3],
+      '-ambiguous-cd-operands')
+# ...and a payload with NO -C must stay clean, or the token is just a blanket block.
+check("nested commit without -C stays clean",
+      g.git_commit("bash -c 'git commit'", with_untrusted_cd=True)[3], '')
+# `git commit -C HEAD` is the reuse-message flag, AFTER the subcommand -- the walk is
+# bounded by sub_idx, so it must not be mistaken for a directory change.
+check("commit -C HEAD is not a -C operand",
+      g.git_commit('git commit -C HEAD', with_untrusted_cd=True)[3], '')
+# '~+'/'~-' are bash-only ($PWD/$OLDPWD); expanduser leaves them RELATIVE, so they
+# skipped the authority-revoking branch and an earlier trusted cd kept authority --
+# `cd /repo && git -C ~+ commit` scoped to a nonexistent /repo/~+ with an EMPTY
+# untrusted_cd while bash committed in /repo. Every tilde form must revoke it.
+check("~+ revokes an earlier cd's authority",
+      g.git_commit('cd /repo && git -C ~+ commit', with_untrusted_cd=True)[3], '-tilde-c-operand')
+check("~- revokes an earlier cd's authority",
+      g.git_commit('cd /repo && git -C ~- commit', with_untrusted_cd=True)[3], '-tilde-c-operand')
+check("cd && commit with no -C stays clean",
+      g.git_commit('cd /repo && git commit', with_untrusted_cd=True)[3], '')
+check("cd && absolute -C stays clean",
+      g.git_commit('cd /repo && git -C /other commit', with_untrusted_cd=True)[3], '')
+check("gh_pr untrusted_cd opt-in", g.gh_pr('cd /tmp/r; gh pr merge 5', 'merge', with_untrusted_cd=True)[3], '/tmp/r')
+check("gh_pr 3-tuple by default", len(g.gh_pr('cd /tmp/r; gh pr merge 5', 'merge')), 3)
+check("gh_pr untrusted_cd empty on '&&'", g.gh_pr('cd /tmp/r && gh pr merge 5', 'merge', with_untrusted_cd=True)[3], '')
 check("git -C target_dir", g.git_commit('git -C /tmp/r commit')[1], '/tmp/r')
 check("cd + relative -C", g.git_commit('cd /repoA && git -C nested commit')[1], '/repoA/nested')
 check("sequential -C", g.git_commit('git -C /repoA -C nested commit')[1], '/repoA/nested')

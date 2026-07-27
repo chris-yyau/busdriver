@@ -227,6 +227,12 @@ expect "git -C wins over pending cd" "cd $OTHER_REPO"$'\n'"git -C $CWD_REPO comm
 # unresolvable BLOCK — the reason the flag is a separate parameter (limitation 1).
 # shellcheck disable=SC2016
 expect "sentinel-lookalike dir + &&" 'cd "$untrusted-cd:/x" && git commit' block-unresolvable
+# Tokenization loses the tilde's quoting, so `git -C ~` (git gets $HOME) and
+# `git -C "~"` (git gets a LITERAL relative dir) are indistinguishable here while
+# expanduser commits to the first reading. The parser emits '-tilde-c-operand';
+# this pins that the RESOLVER actually blocks on it rather than proceeding.
+expect "tilde -C target"           'git -C "~" commit'                    block-unresolvable
+expect "tilde -C with subpath"     'git -C ~/sub commit'                  block-unresolvable
 # Omitting $3 must reproduce the pre-fix behaviour exactly — the contract the
 # non-gating nudges depend on (ADR 0018 substitutes its own standalone-cd instead).
 gate_resolve_repo_dir "" "$CWD_REPO"

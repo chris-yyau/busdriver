@@ -520,13 +520,14 @@ def _nested_cds(chunks):
     it (`bash -c 'git commit; cd /other'`). That is the fail-CLOSED direction, the
     shape is rare, and `&&` or `git -C` clears it.
 
-    A second, narrower false block: `cd /other; bash -c 'git -C /session commit'`.
-    An absolute `git -C` really does fix the repo, but the `-C` walk runs only under
-    allow_cd, which nested chunks do not get, so no target is available here to
-    recognise as authoritative. Teaching the scanner to honour `-C` inside payloads
-    would change how nested operations are SCOPED — a wider change than this fix, and
-    one that moves a gate's repo choice — so it is left alone: blocking is the
-    fail-CLOSED direction and `&&` clears it."""
+    A `-C` inside a payload (`bash -c 'git -C /other commit'`) is still not honoured
+    for SCOPING — the walk resolves targets only under allow_cd, and teaching it to
+    resolve them inside payloads would change how nested operations are scoped, a
+    wider change than this fix. But silence there was NOT the fail-CLOSED direction it
+    was once described as: an unresolved nested `-C` returned the same ('', '') as "no
+    cd at all", so the gate anchored on the session cwd while git committed in the -C
+    target. _scan_commit now raises a '-nested-c-operand' token for it, so the case
+    BLOCKS instead of proceeding; `cd /repo && git commit` clears it."""
     return [c for chunk in chunks for c in _all_cds(chunk)]
 
 
@@ -1193,17 +1194,34 @@ def _scan_commit(chunk, allow_cd):
         # value. In each mismatch the raw value is the untrustworthy one.
         authoritative = (trusted_cd.startswith('/')
                          and bool(cds) and cds[-1] == trusted_cd)
-        if allow_cd:
-            # git applies every GLOBAL -C in order; a relative value resolves from
-            # the directory established so far (cd base, then each preceding -C).
-            # Only pre-subcommand -C changes directory; `git commit -C <ref>` (after
-            # the subcommand) is the reuse-message flag, not a cd — so bound the
-            # walk to sub_idx or it mis-scopes the marker check to the wrong repo.
-            k = 0
-            while k < sub_idx:
-                if argv[k] == '-C' and k + 1 < sub_idx:
-                    raw = argv[k + 1]
+        # Set by any tilde `-C` operand: target_dir then DISAGREES with what git will
+        # do, so it cannot be handed to the gate as an anchor (see the emit below).
+        tilde_c = False
+        # Set by a `-C` seen in a NESTED chunk, where the walk below does not run.
+        nested_c = False
+        # git applies every GLOBAL -C in order; a relative value resolves from
+        # the directory established so far (cd base, then each preceding -C).
+        # Only pre-subcommand -C changes directory; `git commit -C <ref>` (after
+        # the subcommand) is the reuse-message flag, not a cd — so bound the
+        # walk to sub_idx or it mis-scopes the marker check to the wrong repo.
+        k = 0
+        while k < sub_idx:
+            if argv[k] == '-C' and k + 1 < sub_idx:
+                raw = argv[k + 1]
+                if allow_cd:
                     v = os.path.expanduser(raw)
+                    if raw.startswith('~'):
+                        # EVERY tilde form, not just the ones expanduser resolves.
+                        # '~'/'~user' come back absolute and are handled below, but
+                        # the shell-only '~+' and '~-' (bash: $PWD / $OLDPWD) stay
+                        # RELATIVE here, so they fell through to the join and left an
+                        # earlier trusted cd's authority intact -- `cd /repo && git
+                        # -C ~+ commit` scoped the gate to a nonexistent /repo/~+
+                        # with an EMPTY untrusted_cd while bash committed in /repo.
+                        # Bash resolves all of these from runtime state we do not
+                        # have, so none of them may be authoritative.
+                        tilde_c = True
+                        authoritative = False
                     if os.path.isabs(v):
                         base = v
                         # An absolute `-C` fixes the repo on its own, whatever any
@@ -1220,9 +1238,17 @@ def _scan_commit(chunk, allow_cd):
                         base = os.path.join(base, v)
                     else:
                         base = v
-                    k += 2
                 else:
-                    k += 1
+                    # Nested chunk: this scanner deliberately does NOT honour `-C`
+                    # for SCOPING (that would change how nested operations resolve
+                    # -- out of scope here). But staying silent is not neutral: it
+                    # returned the same ('', '') as "no cd at all", so the gate
+                    # anchored on the session cwd while git committed in the -C
+                    # target. Record its presence so the emit below can BLOCK.
+                    nested_c = True
+                k += 2
+            else:
+                k += 1
         target_dir = base
         opt_words = argv[:argv.index('--')] if '--' in argv else argv
         is_amend = '--amend' in opt_words
@@ -1241,7 +1267,25 @@ def _scan_commit(chunk, allow_cd):
         untrusted = _untrusted_cd(cds) if allow_cd else ''
         if authoritative:
             untrusted = ''
-        return True, target_dir, is_amend, untrusted
+        elif tilde_c:
+            # A tilde `-C` makes target_dir itself a LIE, with or without any cd to
+            # report: tokenization has already discarded the quoting, so we cannot
+            # tell `git -C ~` (git really does get $HOME) from `git -C "~"` (git gets
+            # a LITERAL relative '~', resolved against the runtime cwd). expanduser
+            # commits to the first reading, so the gate would validate $HOME's marker
+            # while the commit lands in <cwd>/~. Since the two are indistinguishable
+            # here, emit a leading-dash token: gate_classify_target() rules any '-*'
+            # operand unresolvable, so the resolver BLOCKS. Fail-CLOSED, and never a
+            # real absolute path that could be mistaken for one.
+            untrusted = '-tilde-c-operand'
+        elif nested_c:
+            # Same out-of-band blocking token, for a `-C` this scanner saw but did
+            # not resolve (see the nested branch above).
+            untrusted = '-nested-c-operand'
+        # `authoritative` is surfaced as a 5th element for git_commit's nested-payload
+        # suppression, which must NOT re-derive it from target_dir (see there). This
+        # scanner is private and both call sites re-pack a 4-tuple, so no caller sees it.
+        return True, target_dir, is_amend, untrusted, authoritative
     return None
 
 
@@ -1266,17 +1310,28 @@ def git_commit(cmd, with_untrusted_cd=False):
         # We cannot tell those apart from a subshell `bash -c` payload here, so all
         # nested chunks are folded in: over-blocking a subshell cd is fail-CLOSED,
         # missing an eval cd is not.
-        # An ABSOLUTE target (an absolute `git -C`, or an '&&'-proved absolute cd)
-        # fixes the repo no matter what any payload did, so it is never overridden.
-        nested = [] if r[1].startswith('/') else [c for chunk in chunks[1:] for c in _all_cds(chunk)]
-        if nested:
-            r = (r[0], r[1], r[2], _untrusted_cd(([r[3]] if r[3] else []) + nested))
+        # An AUTHORITATIVE target (an absolute `git -C` whose quoting survived, or an
+        # '&&'-proved absolute cd) fixes the repo no matter what any payload did, so
+        # it is never overridden. Testing `target_dir.startswith('/')` instead is NOT
+        # equivalent and was fooled by `eval 'cd /other'; git -C "~" commit`:
+        # expanduser makes the operand look absolute here, while bash treats the
+        # quoted tilde as a LITERAL relative dir resolved against the payload's cwd
+        # (/other/~). That discarded the nested cd AND left untrusted_cd blank, so the
+        # gate inspected $HOME while the commit landed elsewhere. _scan_commit already
+        # computes the honest flag; use it rather than re-deriving a weaker one.
+        nested = [] if r[4] else [c for chunk in chunks[1:] for c in _all_cds(chunk)]
+        # Re-pack to the 4-tuple contract unconditionally — r is 5 long here.
+        r = (r[0], r[1], r[2],
+             _untrusted_cd(([r[3]] if r[3] else []) + nested) if nested else r[3])
     if not r:
         for chunk in chunks[1:]:
             r = _scan_commit(chunk, False)
             if r:
                 # Every cd in the whole command, order-independent -- _nested_cds.
-                r = (r[0], r[1], r[2], _untrusted_cd(_nested_cds(chunks)))
+                # r[3] carries any blocking token the nested scan raised (an
+                # unresolved `-C`); fold it in rather than overwrite it.
+                r = (r[0], r[1], r[2],
+                     _untrusted_cd(([r[3]] if r[3] else []) + _nested_cds(chunks)))
                 break
     if not r:
         r = (False, '', False, '')

@@ -721,6 +721,60 @@ check("untrusted_cd empty on no match", g.git_commit('ls', with_untrusted_cd=Tru
 # `git -C` already scoped the repo authoritatively -- do not also report a stale
 # pending operand the caller might second-guess it with.
 check("untrusted_cd suppressed by git -C", g.git_commit('cd /tmp/r; git -C /other commit', with_untrusted_cd=True)[3], '')
+# ...but ONLY when that -C is AUTHORITATIVE. Tokenization discards the tilde's
+# quoting, so `git -C "~"` is a LITERAL RELATIVE dir git resolves against the runtime
+# cwd (/other/~), even though expanduser makes target_dir look absolute here.
+# Suppressing the payload's cd on "target_dir starts with /" therefore aimed the gate
+# at $HOME while the commit landed elsewhere -- and blanked untrusted_cd, so nothing
+# blocked. Pin both halves plus the arity the 5th internal element must not leak.
+check("tilde -C alone emits a blocking token",
+      g.git_commit('git -C "~" commit', with_untrusted_cd=True)[3], '-tilde-c-operand')
+check("tilde -C with a path too",
+      g.git_commit('git -C ~/sub commit', with_untrusted_cd=True)[3], '-tilde-c-operand')
+check("tilde -C does NOT suppress a payload cd",
+      g.git_commit('eval \'cd /other\'; git -C "~" commit', with_untrusted_cd=True)[3],
+      '-ambiguous-cd-operands')
+# A LATER absolute -C re-establishes authority; an EARLIER one does not survive a
+# later tilde (git resolves the literal '~' against /session, not $HOME).
+check("later absolute -C wins (no false block)",
+      g.git_commit('git -C "~" -C /session commit', with_untrusted_cd=True)[3], '')
+check("earlier absolute -C does not survive a tilde",
+      g.git_commit('git -C /session -C "~" commit', with_untrusted_cd=True)[3], '-tilde-c-operand')
+check("absolute -C still suppresses payload cd",
+      g.git_commit("eval 'cd /other'; git -C /session commit", with_untrusted_cd=True)[3], '')
+check("authoritative flag does not leak into the tuple",
+      len(g.git_commit('git -C "~" commit', with_untrusted_cd=True)), 4)
+check("tilde -C keeps the 3-tuple default",
+      len(g.git_commit('git -C "~" commit')), 3)
+# A `-C` inside a payload is not resolved for scoping, but silence there was not
+# neutral: it returned the same ('', '') as "no cd at all", so the gate anchored on
+# the session cwd while git committed in the -C target. It must BLOCK instead.
+check("nested -C blocks (eval, tilde)",
+      g.git_commit('eval \'git -C "~" commit\'', with_untrusted_cd=True)[3], '-nested-c-operand')
+check("nested -C blocks (bash -c, absolute)",
+      g.git_commit("bash -c 'git -C /other commit'", with_untrusted_cd=True)[3], '-nested-c-operand')
+check("nested -C folds in with an outer cd",
+      g.git_commit("cd /other; bash -c 'git -C /session commit'", with_untrusted_cd=True)[3],
+      '-ambiguous-cd-operands')
+# ...and a payload with NO -C must stay clean, or the token is just a blanket block.
+check("nested commit without -C stays clean",
+      g.git_commit("bash -c 'git commit'", with_untrusted_cd=True)[3], '')
+# `git commit -C HEAD` is the reuse-message flag, AFTER the subcommand -- the walk is
+# bounded by sub_idx, so it must not be mistaken for a directory change.
+check("commit -C HEAD is not a -C operand",
+      g.git_commit('git commit -C HEAD', with_untrusted_cd=True)[3], '')
+# '~+'/'~-' are bash-only ($PWD/$OLDPWD); expanduser leaves them RELATIVE, so they
+# skipped the authority-revoking branch and an earlier trusted cd kept authority --
+# `cd /repo && git -C ~+ commit` scoped to a nonexistent /repo/~+ with an EMPTY
+# untrusted_cd while bash committed in /repo. Every tilde form must revoke it.
+check("~+ revokes an earlier cd's authority",
+      g.git_commit('cd /repo && git -C ~+ commit', with_untrusted_cd=True)[3], '-tilde-c-operand')
+check("~- revokes an earlier cd's authority",
+      g.git_commit('cd /repo && git -C ~- commit', with_untrusted_cd=True)[3], '-tilde-c-operand')
+check("cd && commit with no -C stays clean",
+      g.git_commit('cd /repo && git commit', with_untrusted_cd=True)[3], '')
+check("cd && absolute -C stays clean",
+      g.git_commit('cd /repo && git -C /other commit', with_untrusted_cd=True)[3], '')
 check("gh_pr untrusted_cd opt-in", g.gh_pr('cd /tmp/r; gh pr merge 5', 'merge', with_untrusted_cd=True)[3], '/tmp/r')
 check("gh_pr 3-tuple by default", len(g.gh_pr('cd /tmp/r; gh pr merge 5', 'merge')), 3)
 check("gh_pr untrusted_cd empty on '&&'", g.gh_pr('cd /tmp/r && gh pr merge 5', 'merge', with_untrusted_cd=True)[3], '')

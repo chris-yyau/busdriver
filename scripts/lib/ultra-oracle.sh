@@ -1237,7 +1237,7 @@ ${_body}
     # Start the dispatch's stderr sidecar EMPTY: it is opened append-only below so a
     # crash can never truncate a pointer mid-write, which means a previous dispatch's
     # text would otherwise accumulate and be re-reported as current.
-    : > "$out.dispatch.err" 2>/dev/null || true
+    : >| "$out.dispatch.err" 2>/dev/null || true
     # Enable job control so the background job becomes a process-group LEADER
     # (see the block comment at the launch line). Saved/restored around the launch.
     _uora_had_m=0; case "$-" in *m*) _uora_had_m=1 ;; esac

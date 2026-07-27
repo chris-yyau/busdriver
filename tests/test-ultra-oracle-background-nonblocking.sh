@@ -126,7 +126,12 @@ _pg_out="$( bash -c '
   source "'"$DIR"'/scripts/lib/ultra-oracle.sh"
   ppg=$(ps -o pgid= -p $$ | tr -d " ")
   st=$(ultra_oracle_consult --mode background --prompt p --slug "ultra oracle plan review" --out "'"$tmp"'/pg.md")
-  cpid=$(pgrep -f "sleep '"$SLOW"'" | head -1)
+  cpid=""
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    cpid=$(pgrep -f "^sleep '"$SLOW"'$" | head -1)
+    [ -n "$cpid" ] && break
+    sleep 0.1
+  done
   cpg=$(ps -o pgid= -p "$cpid" 2>/dev/null | tr -d " ")
   printf "%s %s %s" "$st" "$ppg" "$cpg"
 ' 2>/dev/null )"

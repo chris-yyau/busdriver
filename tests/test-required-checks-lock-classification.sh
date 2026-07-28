@@ -70,6 +70,9 @@ assert_mentions() {
   fi
 }
 
+[[ -d "$REPO_ROOT/node_modules/js-yaml" ]] || {
+  echo "FAIL: node_modules/js-yaml missing — run 'npm ci' first" >&2; exit 1; }
+
 WF_TWO_JOBS='jobs:
   alpha:
     runs-on: ubuntu-latest
@@ -401,6 +404,25 @@ assert_exit "raw control character in lock name rejected" 2 "$D"
 assert_mentions "explains the separator hazard" "control character" "$D"
 
 
+echo "== E28b: a control character in a WORKFLOW job name is rejected =="
+# E28 covers a raw U+001E in the *lock*; this covers the same byte in
+# jobs.<id>.name — the enumerator must refuse it with the same rule the lock
+# validator applies ([[:cntrl:]]), or a job named this way is demanded by
+# surface (e) yet can never be satisfied by any lock entry. A raw control
+# byte can't be used directly here (YAML itself refuses it in a scalar
+# before the enumerator ever sees it) — a \u-escaped double-quoted scalar is
+# how YAML represents the character, and js-yaml decodes it to the same
+# U+001E the enumerator's regex must catch.
+D="$TMPROOT/e28b"
+mkrepo "$D" '{"required":[],"advisory":[]}' 'jobs:
+  alpha:
+    name: "zzz\u001Ealpha"
+    runs-on: ubuntu-latest
+'
+assert_exit "control character in workflow job name rejected" 2 "$D"
+assert_mentions "explains the control character" "control character" "$D"
+
+
 echo "== E29: an EMPTY job name is refused, not silently skipped =="
 # An empty name emits a row with an empty first field, and both (d) and (e) skip
 # empty names — so the job would bypass the collision check AND the
@@ -522,6 +544,136 @@ mkrepo "$D" '{"required":[{"name":"Dup","source_app":"gitguardian"}],"advisory":
 '
 assert_exit "cross-app duplicate name rejected" 2 "$D"
 assert_mentions "explains one-reporter-per-context" "one reporter" "$D"
+
+
+echo "== E35: the enumerator's control-char rule matches the lock validator's, every codepoint =="
+# E28/E28b prove the rule fires on ONE example each. That is exactly the kind of
+# coverage that let the bug this case exists for ship: the enumerator used an
+# ASCII-only `[\x00-\x1f\x7f]` while the lock validator uses jq's `[[:cntrl:]]`,
+# which is the Unicode Cc category and therefore ALSO covers C1 (U+0080-U+009F).
+# A job named with U+0085 was accepted into the inventory but rejected from the
+# lock — surface (e) demanding an entry surface (a) can never validate, i.e. an
+# UNSATISFIABLE lock: CI red with no state that satisfies both.
+#
+# An example-based test cannot catch a whole-range disagreement, so sweep the
+# entire byte domain (U+0000-U+00FF, which spans both control blocks and the
+# printable region above them) and require the two predicates to agree EXACTLY,
+# in both directions. Both sides are the real implementations — jq for the
+# validator, the actual enumerator for the inventory — so neither can drift
+# from a copy kept here.
+#
+# Cost ~2s: the accept side batches into a single run, but the reject side
+# cannot, because the enumerator stops at the first offending job.
+D="$TMPROOT/e35"
+mkdir -p "$D/.github/workflows"
+ln -sfn "$REPO_ROOT/node_modules" "$D/node_modules"
+cat > "$D/sweep.cjs" <<'SWEEP'
+const { execFileSync } = require("child_process");
+const fs = require("fs");
+const path = require("path");
+
+const [, , repoRoot, D] = process.argv;
+const enumerator = path.join(repoRoot, "scripts", "lib", "list-workflow-checks.mjs");
+const wf = path.join(D, ".github", "workflows", "w.yml");
+
+const cps = [];
+for (let i = 0; i <= 0xff; i++) cps.push(i);
+
+// The lock validator's own predicate, one jq process. JSON.stringify emits the
+// control characters as \u escapes, so the payload itself stays plain ASCII.
+const jqIn = JSON.stringify(cps.map((i) => "x" + String.fromCodePoint(i) + "y"));
+const rejects = JSON.parse(
+  execFileSync("jq", ["-c", '[.[] | test("[[:cntrl:]]")]'], { input: jqIn, encoding: "utf8" }),
+);
+
+// A \u-escaped double-quoted scalar: YAML refuses a raw control byte before the
+// enumerator sees it, and js-yaml decodes this to the real character.
+const esc = (i) => "x\\u" + i.toString(16).padStart(4, "0") + "y";
+const accept = cps.filter((i) => !rejects[i]);
+const reject = cps.filter((i) => rejects[i]);
+const fail = [];
+
+// Accept side: everything jq tolerates must survive the enumerator. None of
+// these should refuse, so they all fit in one workflow.
+fs.writeFileSync(
+  wf,
+  "jobs:\n" + accept.map((i, n) => `  j${n}:\n    name: "${esc(i)}"\n`).join(""),
+);
+try {
+  const rows = execFileSync("node", [enumerator, D], { encoding: "utf8" })
+    .split("\n").filter(Boolean).length;
+  if (rows !== accept.length) {
+    fail.push(`accept batch: emitted ${rows} rows, expected ${accept.length}`);
+  }
+} catch (e) {
+  fail.push(
+    "accept batch: enumerator refused a codepoint jq tolerates — " +
+      String(e.stderr || "").split("\n")[0],
+  );
+}
+
+// Reject side, one per run. A refusal for a DIFFERENT reason (js-yaml declining
+// the escape outright) still satisfies the invariant: what must never happen is
+// the enumerator admitting a name the lock can never carry.
+for (const i of reject) {
+  fs.writeFileSync(wf, `jobs:\n  a:\n    name: "${esc(i)}"\n`);
+  let refused = false;
+  try {
+    execFileSync("node", [enumerator, D], { stdio: "ignore" });
+  } catch {
+    refused = true;
+  }
+  if (!refused) {
+    fail.push(
+      `U+${i.toString(16).padStart(4, "0").toUpperCase()}: jq rejects it but the ` +
+        "enumerator accepts it — unsatisfiable lock",
+    );
+  }
+}
+
+if (fail.length) {
+  console.error(fail.join("\n"));
+  process.exit(1);
+}
+console.log(`agreed on ${cps.length} codepoints (${accept.length} accepted, ${reject.length} refused)`);
+SWEEP
+if node "$D/sweep.cjs" "$REPO_ROOT" "$D" >"$D/out.txt" 2>&1; then
+  PASS=$((PASS + 1)); echo "  ok   enumerator and lock validator agree ($(cat "$D/out.txt"))"
+else
+  FAIL=$((FAIL + 1)); echo "  FAIL control-char predicates disagree"; sed 's/^/       /' "$D/out.txt"
+fi
+
+
+echo "== E36: a YAML scalar that parses to an object is not read as an absent key =="
+# js-yaml resolves `2026-01-01` to a Date and `!!binary` to a Uint8Array. Both
+# satisfy `typeof v === "object" && !Array.isArray(v)` while carrying none of the
+# keys the caller reads, so a malformed `strategy:` of that shape read as "no
+# matrix" and the job emitted its bare name — a fail-OPEN in a file where every
+# other unresolvable shape refuses.
+#
+# The lock below deliberately CLASSIFIES `alpha`, so the malformed job is
+# invisible to every other surface: before the fix this repo exited 0, fully
+# green, with the enumerator having silently guessed a name for a job whose
+# strategy it could not read. An empty lock would have caught it as ordinary
+# (e) drift and proved nothing about this hole.
+LOCK_ALPHA='{"required":[],"advisory":[{"name":"alpha","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"}]}'
+D="$TMPROOT/e36"
+mkrepo "$D" "$LOCK_ALPHA" 'jobs:
+  alpha:
+    strategy: 2026-01-01
+    runs-on: ubuntu-latest
+'
+assert_exit "date-valued strategy rejected" 2 "$D"
+assert_mentions "explains the non-mapping strategy" "non-mapping" "$D"
+
+D="$TMPROOT/e36b"
+mkrepo "$D" "$LOCK_ALPHA" 'jobs:
+  alpha:
+    strategy:
+      matrix: 2026-01-01
+    runs-on: ubuntu-latest
+'
+assert_exit "date-valued matrix rejected" 2 "$D"
 
 
 echo

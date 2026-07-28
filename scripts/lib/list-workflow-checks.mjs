@@ -44,6 +44,20 @@ try {
   process.exit(2);
 }
 
+// js-yaml resolves several YAML scalars to OBJECTS: `2026-01-01` becomes a
+// Date, `!!binary SGVsbG8=` a Uint8Array. Every one of them satisfies a
+// `typeof v === "object" && !Array.isArray(v)` test while carrying none of the
+// keys the caller then reads — so a malformed `strategy:` of that shape read as
+// "no matrix" and the job emitted its bare name. That is a fail-OPEN in a file
+// where every other unresolvable shape refuses, and the same hole existed for
+// `jobs:`, an individual job, and `matrix:`. Require a genuine mapping at all
+// four, from one predicate, so they cannot drift apart.
+const isPlainMapping = (v) => {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+};
+
 const rows = [];
 for (const file of files) {
   const rel = join(".github", "workflows", file);
@@ -58,13 +72,13 @@ for (const file of files) {
   if (doc == null || typeof doc !== "object") continue;
   const jobs = doc.jobs;
   if (jobs == null) continue; // a workflow with no jobs block emits no checks
-  if (typeof jobs !== "object" || Array.isArray(jobs)) {
+  if (!isPlainMapping(jobs)) {
     process.stderr.write(`error: ${rel}: 'jobs' is not a mapping\n`);
     process.exit(2);
   }
   for (const [key, job] of Object.entries(jobs)) {
     // A non-mapping job is malformed; refuse rather than guess its check name.
-    if (job == null || typeof job !== "object" || Array.isArray(job)) {
+    if (!isPlainMapping(job)) {
       process.stderr.write(`error: ${rel}: job '${key}' is not a mapping\n`);
       process.exit(2);
     }
@@ -113,12 +127,22 @@ for (const file of files) {
       );
       process.exit(2);
     }
-    // The inventory is TSV and is field-split by awk. A tab or newline inside a
+    // The inventory is TSV and is field-split by awk. A control character in a
     // name would shift every downstream field, so (a) would compare the wrong
     // column and (e) could read a job as classified that never was. Refuse.
-    if (/[\t\r\n]/.test(name)) {
+    //
+    // `\p{Cc}` matches the lock validator BY CONSTRUCTION, not by eye:
+    // check-required-checks.sh rejects lock names matching jq's `[[:cntrl:]]`,
+    // and jq's `[[:cntrl:]]` is exactly the Unicode Cc category — U+0000-U+001F
+    // AND U+007F-U+009F. An ASCII-only range silently accepts the C1 block, so
+    // a job name containing U+0085 would enter the inventory while its lock
+    // entry was rejected: an UNSATISFIABLE lock, (e) demanding an entry that
+    // (a) can never validate. The two predicates are asserted equal over every codepoint by
+    // tests/test-required-checks-lock-classification.sh rather than trusted to
+    // this comment.
+    if (/\p{Cc}/u.test(name)) {
       process.stderr.write(
-        `error: ${rel}: job '${key}' name contains a tab or newline\n`,
+        `error: ${rel}: job '${key}' name contains a control character\n`,
       );
       process.exit(2);
     }
@@ -151,19 +175,24 @@ for (const file of files) {
       );
       process.exit(2);
     }
+    const refuse = (why) => {
+      process.stderr.write(`error: ${rel}: job '${key}' matrix ${why}\n`);
+      process.exit(2);
+    };
+    // A non-mapping `strategy` must not be silently read as "no matrix" —
+    // `job.strategy?.matrix` yields undefined for a string, array, number AND
+    // for a Date or Uint8Array (see isPlainMapping), letting the job through
+    // with its bare name while every other unresolvable shape here fails closed.
+    if (job.strategy !== undefined && !isPlainMapping(job.strategy)) {
+      refuse("has a non-mapping 'strategy'");
+    }
     const matrix = job.strategy?.matrix;
     if (matrix === undefined) {
       rows.push(`${name}\t${rel}\t${key}`);
       continue;
     }
-    const refuse = (why) => {
-      process.stderr.write(`error: ${rel}: job '${key}' matrix ${why}\n`);
-      process.exit(2);
-    };
     if (typeof matrix === "string") refuse("is an expression, not a literal mapping");
-    if (matrix === null || typeof matrix !== "object" || Array.isArray(matrix)) {
-      refuse("is not a mapping");
-    }
+    if (!isPlainMapping(matrix)) refuse("is not a mapping");
     if ("include" in matrix || "exclude" in matrix) {
       refuse("uses include/exclude, whose rendered names are not derivable here");
     }
@@ -173,11 +202,11 @@ for (const file of files) {
       const labels = values.map((v) => {
         if (typeof v === "string") {
           if (v.includes("${{")) refuse(`dimension '${dim}' contains an expression`);
-          // Same rule as the job name: a tab or newline would shift TSV fields
-          // downstream, letting a surface read the wrong column or ingest an
-          // injected row.
-          if (/[\t\r\n]/.test(v)) {
-            refuse(`dimension '${dim}' has a value containing a tab or newline`);
+          // Same rule, same predicate as the job name above: a control
+          // character would shift TSV fields downstream, letting a surface read
+          // the wrong column or ingest an injected row.
+          if (/\p{Cc}/u.test(v)) {
+            refuse(`dimension '${dim}' has a value containing a control character`);
           }
           return v;
         }

@@ -28,6 +28,12 @@
 #           filter out all checks (kept=0) and trip a spurious bootstrap block.
 #
 # OUTPUT (stdout)
+#   In `required` mode `pending` ALSO counts every lock-required check with no
+#   row at all (#515) — a non-reporting required check is unarrived evidence,
+#   not an absent requirement. `kept` stays a count of ROWS, so it remains the
+#   nothing-reported bootstrap signal. In `all` mode there is no known required
+#   set, so this cannot apply and behavior is unchanged.
+#
 #   line 1     : "<failed> <pending> <mode> <kept>"  (space-separated;
 #                mode ∈ {required, all}). Identical SHAPE to the original
 #                function, so the gate's `read -r FAILED PENDING MODE KEPT
@@ -134,6 +140,14 @@ else:
     kept = [ln for ln in lines if not advisory_pat.search(ln.split("\t", 1)[0])]
 failed_rows = [ln for ln in kept if _status(ln) in ("fail", "failure", "cancel", "cancelled")]
 pending = sum(1 for ln in kept if _status(ln) in ("pending", "queued", "in_progress", "expected"))
+# #515: a required check that posted NO row is not absent — it is evidence that
+# has not arrived. Counting only the rows that DID report reads a PR whose CI
+# never ran (GitHub stops firing pull_request workflows once the PR goes
+# CONFLICTING) as green off the one or two checks that still posted. KEPT>0
+# does not catch it: plenty reported, just not the ones that matter.
+if required is not None:
+    reported = {ln.split("\t", 1)[0].strip() for ln in kept}
+    pending += len(required - reported)
 # line 1: counts (4 fields, identical to the original). lines 2..N: failing rows.
 print(f"{len(failed_rows)} {pending} {mode} {len(kept)}")
 for ln in failed_rows:

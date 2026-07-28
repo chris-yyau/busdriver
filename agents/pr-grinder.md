@@ -59,6 +59,31 @@ Before Step 1, run `Read skills/pr-grind/SKILL.md` once. The full Step 1–6 pro
 Inline copy of SKILL.md Step 1 — execute verbatim:
 
 ```bash
+# Phase 0 (#515): a PR that CANNOT run CI must never be evaluated for greenness.
+# Once a PR goes CONFLICTING/DIRTY, GitHub stops firing pull_request workflows,
+# so the required checks never post for this HEAD. Phase 2/2.5 now count those
+# non-reporters as pending (relevant-check-status.sh), which is correct but only
+# tells you "still pending" after five minutes of waiting. Asking merge state
+# first names the actual cause and skips the pointless 900s --watch.
+# `mergeable` (MergeableState: CONFLICTING|MERGEABLE|UNKNOWN) and
+# `mergeStateStatus` (MergeStateStatus: BEHIND|BLOCKED|CLEAN|DIRTY|DRAFT|
+# HAS_HOOKS|UNKNOWN|UNSTABLE) are DISTINCT fields — CONFLICTING is a value of
+# `mergeable`, never of `mergeStateStatus`, so matching "CONFLICTING" against
+# mergeStateStatus alone was dead code. Fetch both, and treat a `gh` failure
+# as a loud env bail instead of silently swallowing it to an empty string
+# (which would fall through the case and mask a real conflict/API outage).
+if ! MERGE_JSON=$(gh pr view "$PR_NUMBER" --json mergeable,mergeStateStatus 2>&1); then
+  echo "❌ Unable to determine PR #$PR_NUMBER merge state (gh pr view failed): $MERGE_JSON"
+  exit 1
+fi
+MERGEABLE=$(printf '%s' "$MERGE_JSON" | jq -r '.mergeable // ""' 2>/dev/null)
+MERGE_STATE=$(printf '%s' "$MERGE_JSON" | jq -r '.mergeStateStatus // ""' 2>/dev/null)
+if [ "$MERGEABLE" = "CONFLICTING" ] || [ "$MERGE_STATE" = "DIRTY" ]; then
+  echo "❌ PR #$PR_NUMBER is mergeable=$MERGEABLE / mergeStateStatus=$MERGE_STATE — the branch conflicts with its base."
+  echo "   GitHub will not run CI in this state; any green check is from an older HEAD."
+  exit 1
+fi
+
 # Phase 1: Wait for all GitHub-registered checks (CI + automated reviewers).
 # --watch waits for the FULL check set (no allowlist knob); lock-aware
 # filtering applies to the DECISION below, not this wait.
@@ -72,8 +97,36 @@ REPO_DIR="${WORKTREE_DIR:-$(git rev-parse --show-toplevel)}"
 RCS="${CLAUDE_PLUGIN_ROOT}/scripts/relevant-check-status.sh"
 
 # Phase 2: Verify no REQUIRED checks are still pending (lock-aware; defensive).
+# #515 side effect: relevant-check-status.sh now counts a lock-required check
+# with NO row as pending (not absent). That's correct when gh genuinely
+# reported a partial set, but if `gh pr checks` itself fails (auth/rate-limit/
+# network), its output is empty/garbled too — and the OLD behavior (empty
+# input -> kept=0, pending=0) would have broken this loop immediately and let
+# Phase 2.5's explicit GH_EXIT check bail cleanly. Post-#515, that same empty
+# input now counts every required check as "pending", so a genuine CLI
+# failure gets masked as "still pending" for 5 whole retries before any error
+# surfaces. Classify the gh failure explicitly, inside the loop, before it
+# ever reaches the check-status parser.
+# Classifier: a genuine `gh pr checks` tabular row carries a KNOWN status
+# token (pass/fail/pending/...) as its OWN tab-separated column, never as a
+# loose substring. A CLI error line like "failed to connect to api.github.com"
+# contains the substring "fail" but is not a status column — a plain
+# `grep -qE "pass|fail|pending"` misclassifies that error text as valid check
+# output (Codex finding on #522), swallowing a real `gh` failure into 5
+# misleading pending retries instead of the immediate env bail below.
+# Require the token to occupy the whole second field instead of matching
+# anywhere in the raw text.
+_looks_like_check_table() {
+  printf '%s\n' "$1" | awk -F'\t' 'NF>=2 { s=tolower($2); gsub(/^[ \t]+|[ \t]+$/,"",s); if (s ~ /^(pass|fail|failure|pending|queued|in_progress|expected|cancel|cancelled|skipping|neutral)$/) f=1 } END{exit !f}'
+}
 for i in 1 2 3 4 5; do
-  COUNTS=$(gh pr checks "$PR_NUMBER" 2>&1 | bash "$RCS" "$REPO_DIR" 2>/dev/null || printf '1 0 all 0\n')
+  GH_EXIT=0
+  CHECKS_RAW=$(gh pr checks "$PR_NUMBER" 2>&1) || GH_EXIT=$?
+  if [ "$GH_EXIT" -ne 0 ] && ! _looks_like_check_table "$CHECKS_RAW"; then
+    echo "❌ gh pr checks failed (exit $GH_EXIT) — cannot verify check status: $CHECKS_RAW"
+    exit 1
+  fi
+  COUNTS=$(printf '%s\n' "$CHECKS_RAW" | bash "$RCS" "$REPO_DIR" 2>/dev/null || printf '1 0 all 0\n')
   read -r _F PENDING _M _K <<<"$COUNTS"
   [ "${PENDING:-1}" -eq 0 ] && break
   echo "⏳ $PENDING required checks still pending — waiting 60s (attempt $i/5)..."
@@ -87,7 +140,7 @@ fi
 # Phase 2.5: Verify all REQUIRED checks PASSED (advisory checks like CodeScene are non-blocking).
 GH_EXIT=0
 CHECKS_RAW=$(gh pr checks "$PR_NUMBER" 2>&1) || GH_EXIT=$?
-if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_RAW" | grep -qE "pass|fail|pending"; then
+if [ "$GH_EXIT" -ne 0 ] && ! _looks_like_check_table "$CHECKS_RAW"; then
   echo "❌ gh pr checks failed (exit $GH_EXIT)."; exit 1
 fi
 COUNTS=$(printf '%s\n' "$CHECKS_RAW" | bash "$RCS" "$REPO_DIR" 2>/dev/null || printf '1 0 all 0\n')
@@ -104,6 +157,11 @@ ADVISORY_FAILED=$(printf '%s\n' "$CHECKS_RAW" | grep -iE "CodeScene" | grep -cE 
 # Phase 3: Grace period for late-arriving comments (some bots flip check to pass, then post)
 sleep 30
 ```
+
+If Phase 0 exits non-zero, stop the round immediately and return `RESULT_STATUS: bail` — but the category depends on WHICH Phase 0 branch fired, per the Bail Triggers table below:
+
+- **`mergeable=CONFLICTING` or `mergeStateStatus=DIRTY`** (the conflict branch): `RESULT_BAIL_CATEGORY: judgment`, with a reason naming the merge state. This is a design/scope-adjacent decision — do NOT resolve the conflict yourself. Merging base into the PR branch moves HEAD, strands every bot ack, and forces a full CI re-run; that is the operator's call, same as the `BEHIND` branch-currency path in SKILL.md.
+- **`gh pr view` itself fails** (the fetch branch — auth, rate-limit, or network outage): `RESULT_BAIL_CATEGORY: env`, per the Bail Triggers table's "`gh` CLI auth or rate-limit errors that you can't resolve" row. This is a recoverable environment problem, not a scope/design question — do not conflate it with the CONFLICTING/DIRTY branch.
 
 If `$FAILED -gt 0`, the failures are real CI breakage — fold the failing job names (from `$FAILED_ROWS`, the helper's lines 2..N) into `RESULT_REMAINING` and continue to Step 2 to collect details. If `$ADVISORY_FAILED -gt 0`, note it but proceed; CodeScene's pass/fail status is non-blocking, but its **review threads still must be triaged in Step 2** (advisory ≠ ignored — see triage table).
 
@@ -664,6 +722,7 @@ Stop the round and return `RESULT_STATUS: bail` with the appropriate `RESULT_BAI
 | Same flaky CI check name appears in `PRIOR_ATTEMPTS` `failures=` field for 2 prior rounds AND fails again now (3 total) | `judgment` |
 | Fix would require rewriting published git history — commitlint `header-max-length` on an already-pushed commit, oversized commits that need splitting via `git rebase` (interactive or otherwise), anything that needs `git commit --amend` on a pushed SHA, `git filter-branch`, or `git push --force(-with-lease)` | `judgment` |
 | **Local commitlint check fails on commits BASE..HEAD before push** (Step 6 pre-push pre-flight catches subject/body violations while the bad commit is still local-only — the operator can amend locally without force-pushing a published SHA) | **`judgment`** |
+| **Step 1 Phase 0: `mergeable` is `CONFLICTING` or `mergeStateStatus` is `DIRTY`** — CI cannot run, so no check result covers this HEAD (#515) | **`judgment`** |
 | `gh` CLI auth or rate-limit errors that you can't resolve | `env` |
 | `WORKTREE_DIR` missing or unreadable | `env` |
 | Skipped Step 0 mandatory Read of SKILL.md | `env` |

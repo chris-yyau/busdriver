@@ -167,6 +167,22 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Validate agent/skill/command/hook/rule schemas + workflow + unicode safety
         run: npm run validate
+      # Deliberately a STEP in an already-required job, not a job of its own
+      # (#530). A separate job would post a new check name that branch
+      # protection does not require, so a drift failure could be merged past —
+      # a guard that certifies safety it never enforced. Folding it into
+      # `validate` makes drift block merge today, and adds no name for surface
+      # (b) to reconcile against branch protection.
+      #
+      # --local-only runs surfaces (a), (d) and (e). Surfaces (b) and (c) need
+      # `administration: read` / check-run reads, which GITHUB_TOKEN cannot be
+      # granted, so they cannot run in CI at all. Surface (e) is the token-free
+      # stand-in: it fails when a workflow posts a check the lock does not
+      # classify, which is how (b) drift gets introduced in the first place.
+      # Run the full five surfaces locally with an admin-scoped gh login:
+      #   bash scripts/check-required-checks.sh
+      - name: Check required-checks.lock for drift
+        run: bash scripts/check-required-checks.sh --local-only
 
   coverage:
     needs: shellcheck

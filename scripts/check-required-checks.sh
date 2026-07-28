@@ -2,7 +2,7 @@
 #
 # check-required-checks.sh — verify required-checks.lock matches reality.
 #
-# Drift surfaces in four places, all of which can silently break merge:
+# Drift surfaces in five places, all of which can silently break merge:
 #
 #   (a) Lock vs workflow source:  a required check's `name:` (or job key
 #       when no name is set) was renamed in a .yml without updating the
@@ -26,14 +26,28 @@
 #       collisions, copy-paste duplicates, and matrix template clashes
 #       across workflows.
 #
-# Runtime order: (a) and (d) are local (no API) and run first; (b) and
-# (c) require gh API calls and run after. Output labels appear in the
-# order they ran — `[a]`, `[d]`, `[b]`, `[c]` — not alphabetically.
-# `--local-only` runs (a) and (d) only.
+#   (e) Lock classification completeness: a workflow posts a status check
+#       that the lock knows nothing about — neither `required` nor
+#       `advisory`. (a) cannot see this (it walks lock → workflows, so an
+#       absent entry is never looked up) and (b) only catches it once the
+#       server already requires the name. Because `relevant-check-status.sh`
+#       treats lock.required as an ALLOWLIST, an unclassified-but-required
+#       check is filtered out of the merge decision entirely — invisible,
+#       not pending — so failing required checks can report as green (#530).
+#
+# Runtime order: (a), (d) and (e) are local (no API) and run first; (b)
+# and (c) require gh API calls and run after. Output labels appear in the
+# order they ran — `[a]`, `[d]`, `[e]`, `[b]`, `[c]` — not alphabetically.
+# `--local-only` runs (a), (d) and (e).
+#
+# Only (a), (d) and (e) can run in CI on this repo: (b) and (c) need
+# `administration: read` / check-run reads that GITHUB_TOKEN cannot be
+# granted, so tests.yml invokes `--local-only`. (e) exists precisely so the
+# token-free subset still guards the failure mode (b) was meant to catch.
 #
 # Modes:
-#   ./check-required-checks.sh                      # all 4 checks (default)
-#   ./check-required-checks.sh --local-only         # skip API calls; runs (a) and (d)
+#   ./check-required-checks.sh                      # all 5 surfaces (default)
+#   ./check-required-checks.sh --local-only         # skip API calls; runs (a), (d), (e)
 #   ./check-required-checks.sh --strict-remote      # turn (b)/(c) "couldn't verify" into drift
 #   ./check-required-checks.sh --owner OWNER --repo REPO
 #                                                    # override repo (default
@@ -87,7 +101,10 @@ while [[ $# -gt 0 ]]; do
       fi
       REPO="$2"; shift 2 ;;
     -h|--help)
-      sed -n '3,42p' "$0" | sed 's/^# \{0,1\}//'
+      # Range must cover the header block through "Exit codes" — it grew when
+      # surface (e) was added, and a stale upper bound silently truncates
+      # --help mid-sentence.
+      sed -n '3,59p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) echo "error: unknown arg '$1'" >&2; exit 2 ;;
@@ -113,8 +130,23 @@ fi
 # so operators see a clear error instead of a fail-OPEN green light.
 # `jq -e` exits non-zero on `false`/`null` results, so this rejects all
 # three malformation modes in one probe.
-if ! jq -e '.required | type == "array"' "$LOCK" >/dev/null 2>&1; then
-  echo "error: $LOCK is malformed JSON or missing the .required array" >&2
+#
+# `.advisory` is validated to the same standard because surface (e) reads it
+# as the other half of the classification set. jq iterates an OBJECT's values
+# just as happily as an array's, so an object-shaped `advisory` would still
+# yield every expected name and let (e) report "ok" on a malformed lock —
+# the same fail-OPEN this block exists to prevent, one key over. Names are
+# required to be strings for both lists: a non-string name renders through
+# `jq -r` as `null`/`123` and would silently fail to match any workflow check.
+# `.advisory` may be absent entirely (treated as empty), but if present it
+# must be a well-formed array.
+if ! jq -e '(.required | type == "array")
+            and (all(.required[]; .name | type == "string"))
+            and ((.advisory // []) | type == "array")
+            and (all((.advisory // [])[]; .name | type == "string"))' \
+     "$LOCK" >/dev/null 2>&1; then
+  echo "error: $LOCK is malformed — .required must be an array, .advisory (if" >&2
+  echo "       present) must be an array, and every entry needs a string .name" >&2
   exit 2
 fi
 
@@ -281,10 +313,17 @@ while IFS= read -r entry; do
     # Job key line: exactly two-space indent, identifier, then ":", optionally
     # followed by a trailing `# comment`. Capture the key with sub() since
     # BSD awk lacks 3-arg match().
-    in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
+    #
+    # Quoted job IDs (`"build":` / `'build':`) are legal YAML and accepted by
+    # Actions, so they are matched and the quotes stripped. This parser and the
+    # (d)/(e) collector MUST agree on which keys exist: if only one recognized
+    # quoted keys, (e) would demand a lock entry for a job that (a) then could
+    # not find in the workflow — CI red with no satisfiable lock state.
+    in_jobs && /^  ("[A-Za-z0-9_-]+"|\047[A-Za-z0-9_-]+\047|[A-Za-z0-9_-]+):[[:space:]]*(#.*)?$/ {
       cur = $0
       sub(/^  /, "", cur)
       sub(/:[[:space:]]*(#.*)?$/, "", cur)
+      gsub(/^["\047]|["\047]$/, "", cur)
       seen[cur] = 1
       jname[cur] = ""           # default: no explicit name
       next
@@ -445,9 +484,14 @@ for wf in "$REPO_ROOT"/.github/workflows/*.yml "$REPO_ROOT"/.github/workflows/*.
     # See (a)-parser comment for why `#` is excluded — column-0 comment
     # lines must not terminate the in_jobs scan (false-negative risk).
     in_jobs && /^[^[:space:]#]/ { in_jobs = 0 }
-    in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
+    # Quoted job IDs matched here too — kept deliberately identical to the
+    # (a) parser above. A job this collector misses is a job surface (e)
+    # never demands a classification for, which is a silent fail-OPEN in the
+    # guard itself.
+    in_jobs && /^  ("[A-Za-z0-9_-]+"|\047[A-Za-z0-9_-]+\047|[A-Za-z0-9_-]+):[[:space:]]*(#.*)?$/ {
       emit()
       cur = $0; sub(/^  /, "", cur); sub(/:[[:space:]]*(#.*)?$/, "", cur)
+      gsub(/^["\047]|["\047]$/, "", cur)
       named[cur] = 0
       jname[cur] = ""
       next
@@ -494,6 +538,97 @@ if [[ -n "$duplicates" ]]; then
   drift=1
 else
   echo "  ok: every workflow job has a unique effective check name"
+fi
+
+# ────────────────────────────────────────────────────────────────────
+# (e) Lock classification completeness — every status check a workflow
+#     posts must appear in lock.required OR lock.advisory.
+# ────────────────────────────────────────────────────────────────────
+# This is the surface that catches a check being ADDED without the lock
+# learning about it — the direction (a) and (b) both miss. (a) walks the
+# lock outward to the workflows, so a check absent from the lock is never
+# looked up; (b) would catch it, but only once branch protection already
+# requires it, and only when it can reach the API.
+#
+# That gap is not hypothetical (#530): `coverage`, `shell-tests`,
+# `validate`, and `version-drift` were required by branch protection while
+# absent from the lock. Because `relevant-check-status.sh` treats
+# lock.required as an ALLOWLIST, the four were filtered out of the merge
+# decision entirely — neither pending nor failed, simply invisible — so a
+# PR with two FAILING required checks reported `0 0 required 8`, fully
+# green, to both the pre-merge gate and pr-grind.
+#
+# Deliberately local: no API, no token, so it runs on fork PRs and is the
+# only server-drift guard that can. Surface (b) is the authoritative
+# comparison but needs `administration: read`, which GITHUB_TOKEN cannot
+# be granted — see the CI job in tests.yml. (e) does not replace (b); it
+# makes the common cause of (b) drift impossible to introduce silently,
+# because adding a job now forces a classification decision in the lock.
+#
+# Reads `collected` from (d) — the same (name, workflow, job) tuples — so
+# the two surfaces cannot disagree about what a workflow emits.
+echo "[e] Checking every workflow check is classified in the lock…"
+
+# \036 (RS) as the delimiter: check names legitimately contain spaces
+# ("Actions security", "Dormant CVE sweep"), so a whitespace split would
+# shatter them into fragments and report false drift.
+# Only `github-actions` entries can classify a WORKFLOW check. An external-app
+# entry (gitguardian, codecov, …) names a context this repo's workflows do not
+# post, so honouring it here would let an Actions job take the name of an
+# externally reported required context and still read as classified — a
+# workflow-vs-app collision that no other surface catches: (a) skips external
+# entries (they have no workflow/job to resolve) and (d) only compares
+# workflow names against each other.
+#
+# Hoisted out of the `awk -v` so jq's exit status is not masked by the
+# surrounding substitution (SC2312). The lock's shape was validated at
+# startup, so a jq failure here is a genuine fault — fail loudly rather than
+# proceed with an empty set, which would report every check as unclassified.
+if ! known_names=$(jq -r '(.required[]?, .advisory[]?)
+                          | select(.source_app == "github-actions")
+                          | select(has("matrix_value") | not)
+                          | .name' "$LOCK"); then
+  echo "error: could not read check names from $LOCK" >&2
+  exit 2
+fi
+# Matrix entries are keyed by (workflow, job) instead of by name. GitHub renders
+# them as `<base> (<label>)`, so the lock holds `test (ubuntu-latest)` while the
+# workflow contributes the bare base `test` — comparing names would report every
+# correctly-classified matrix job as unclassified and wedge CI. \037 (US)
+# separates the tuple fields; \036 (RS) separates records. Both are control
+# characters that cannot occur in a YAML job key or a file path.
+if ! known_tuples=$(jq -r '(.required[]?, .advisory[]?)
+                           | select(.source_app == "github-actions")
+                           | select(has("matrix_value"))
+                           | "\(.workflow)\u001f\(.job)"' "$LOCK"); then
+  echo "error: could not read matrix entries from $LOCK" >&2
+  exit 2
+fi
+known_names=$(printf '%s' "$known_names" | tr '\n' '\036')
+known_tuples=$(printf '%s' "$known_tuples" | tr '\n' '\036')
+
+unclassified=$(printf '%s' "$collected" \
+  | awk -F'\t' -v known="$known_names" -v tuples="$known_tuples" '
+  BEGIN {
+    n = split(known, a, "\036");  for (i = 1; i <= n; i++) if (a[i] != "") seen[a[i]] = 1
+    m = split(tuples, b, "\036"); for (i = 1; i <= m; i++) if (b[i] != "") tup[b[i]] = 1
+  }
+  $1 == "" { next }
+  ($1 in seen) { next }
+  (($2 "\037" $3) in tup) { next }
+  { printf("%s\t%s:%s\n", $1, $2, $3) }
+' | LC_ALL=C sort -u)
+
+if [[ -n "$unclassified" ]]; then
+  echo "  DRIFT: workflow check(s) in neither lock.required nor lock.advisory:"
+  while IFS=$'\t' read -r e_name e_loc; do
+    echo "    - '$e_name' ($e_loc)"
+  done <<< "$unclassified"
+  echo "  fix: add each to .github/required-checks.lock — 'required' if branch"
+  echo "       protection gates on it, 'advisory' if it must never gate merge."
+  drift=1
+else
+  echo "  ok: every workflow check name is classified in the lock"
 fi
 
 # ────────────────────────────────────────────────────────────────────

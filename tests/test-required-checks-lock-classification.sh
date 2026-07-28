@@ -38,8 +38,14 @@ mkrepo() {
   printf '%s' "$2" > "$1/.github/required-checks.lock"
   printf '%s' "$3" > "$1/.github/workflows/tests.yml"
   # (e) is reached via the script's own SCRIPT_DIR/.. resolution, so the
-  # script must live inside the synthetic repo.
+  # script must live inside the synthetic repo — along with the YAML
+  # enumerator it shells out to.
+  mkdir -p "$1/scripts/lib"
   cp "$SCRIPT" "$1/scripts/check-required-checks.sh"
+  cp "$REPO_ROOT/scripts/lib/list-workflow-checks.mjs" "$1/scripts/lib/"
+  # js-yaml must resolve from the synthetic repo. Node walks up from the
+  # script's directory, so one symlink at the repo root is enough.
+  ln -sfn "$REPO_ROOT/node_modules" "$1/node_modules"
 }
 
 # assert_exit <name> <expected-exit> <dir>
@@ -143,6 +149,163 @@ mkrepo "$D" '{"required":[{"name":"alpha (ubuntu-latest)","source_app":"github-a
 assert_exit "rendered-only lock still fails closed" 1 "$D"
 assert_mentions "names the unclassified matrix job" "'alpha'" "$D"
 
+echo "== E11: quoted job IDs are seen identically by (a) and (e) =="
+# The two parsers MUST agree on which keys exist. If only one recognized a
+# quoted key, (e) would demand a lock entry for a job (a) cannot resolve —
+# CI red with no satisfiable lock state. \047 is a single quote; embedding one
+# literally inside this file's quoting would be a footgun.
+WF_QUOTED=$(printf 'jobs:\n  "alpha":\n    runs-on: ubuntu-latest\n  \047beta\047:\n    name: Beta Check\n    runs-on: ubuntu-latest\n')
+D="$TMPROOT/e11"
+mkrepo "$D" '{"required":[{"name":"alpha","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"}],"advisory":[{"name":"Beta Check","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"beta"}]}' "$WF_QUOTED"
+assert_exit "quoted job IDs agree across parsers" 0 "$D"
+
+echo "== E12: a step-level name: is not mistaken for the job name =="
+# A `with: name: <artifact>` key sits far deeper than the job body. Reading it
+# as the job name would make (e) demand a lock entry for a check never posted.
+WF_STEP_NAME=$(printf 'jobs:\n  alpha:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/upload-artifact@v4\n        with:\n          name: build-artifacts\n')
+D="$TMPROOT/e12"
+mkrepo "$D" '{"required":[{"name":"alpha","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"}],"advisory":[]}' "$WF_STEP_NAME"
+assert_exit "step-level name ignored" 0 "$D"
+
+echo "== E13: null .advisory is rejected, not silently treated as empty =="
+# `// []` accepts null/false as empty, contradicting "if present, must be an
+# array". A null advisory is a malformed lock, not an empty one.
+D="$TMPROOT/e13"
+mkrepo "$D" '{"required":[{"name":"alpha","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"}],"advisory":null}' "$WF_TWO_JOBS"
+assert_exit "null advisory rejected" 2 "$D"
+
+echo "== E14: job keys are found at ANY consistent indent, not just two spaces =="
+# YAML permits any consistent indent, and Actions accepts a four-space-indented
+# job. A collector hardcoded to /^  / silently omits it, so surface (e) never
+# demands a classification for that job and an unclassified required check
+# sails through — a fail-OPEN in the guard itself. Also pins that a deeper
+# body key does not get mistaken for a second job.
+D="$TMPROOT/e14"
+WF_FOUR_SPACE='jobs:
+    alpha:
+        runs-on: ubuntu-latest
+    beta:
+        name: Beta Check
+        runs-on: ubuntu-latest
+'
+mkrepo "$D" '{"required":[{"name":"alpha","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"}],"advisory":[]}' "$WF_FOUR_SPACE"
+assert_exit "four-space job is collected and fails closed" 1 "$D"
+assert_mentions "names the four-space job" "'Beta Check'" "$D"
+
+echo "== E15: a fully classified four-space workflow passes =="
+D="$TMPROOT/e15"
+mkrepo "$D" '{"required":[{"name":"alpha","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"},{"name":"Beta Check","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"beta"}],"advisory":[]}' "$WF_FOUR_SPACE"
+assert_exit "four-space workflow satisfies both parsers" 0 "$D"
+
+
+echo "== E16: a flow-style jobs block is PARSED, and its jobs demanded =="
+# Flow style (`jobs: {alpha: {...}}`) is valid YAML that Actions accepts. The
+# regex scanner this replaced could not read it at all and had to refuse the
+# whole file; a real parser sees the jobs and holds them to the same rule.
+D="$TMPROOT/e16"
+mkrepo "$D" '{"required":[],"advisory":[]}' 'jobs: {alpha: {runs-on: ubuntu-latest}}
+'
+assert_exit "flow-style job is seen and unclassified" 1 "$D"
+assert_mentions "names the flow-style job" "'alpha'" "$D"
+echo "== E17: a STALE advisory entry is caught by (a), not left to widen (e) =="
+# (e) classifies by name, so an advisory entry whose job no longer exists would
+# keep classifying whatever new job later posts that name — satisfying the guard
+# for a job nobody reviewed. Validating advisory in (a) catches it at source.
+D="$TMPROOT/e17"
+mkrepo "$D" '{"required":[{"name":"alpha","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"}],"advisory":[{"name":"Beta Check","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"ghost"}]}' "$WF_TWO_JOBS"
+assert_exit "stale advisory entry is drift" 1 "$D"
+
+
+echo "== E18: a lock name cannot inject a record separator into the classifier =="
+# Lock content is repo-controlled. `awk -v` processes backslash escapes, so a
+# name holding the literal four characters \036 would be split into TWO names
+# inside awk, smuggling an extra entry into the classified set and passing a job
+# nobody listed. Passing via ENVIRON hands the bytes over verbatim.
+D="$TMPROOT/e18"
+mkrepo "$D" '{"required":[{"name":"zzz\\036alpha","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"beta"}],"advisory":[]}' 'jobs:
+  alpha:
+    runs-on: ubuntu-latest
+  beta:
+    name: zzz\036alpha
+    runs-on: ubuntu-latest
+'
+assert_exit "separator injection does not classify alpha" 1 "$D"
+assert_mentions "alpha still reported unclassified" "'alpha'" "$D"
+
+
+echo "== E19: a job whose FIRST body key is a mapping still resolves its name =="
+# `permissions:` matches the job-key pattern too. Consuming such deeper keys with
+# `next` let a CHILD (`contents: read`) set the body indent, so the job-level
+# `name:` was read at the wrong level and silently ignored — the job then
+# classified under its key instead of its real check name.
+D="$TMPROOT/e19"
+mkrepo "$D" '{"required":[{"name":"Cov","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"coverage"}],"advisory":[]}' 'jobs:
+  coverage:
+    permissions:
+      contents: read
+    name: Cov
+    runs-on: ubuntu-latest
+'
+assert_exit "mapping-first job resolves its name" 0 "$D"
+
+
+echo "== E20: a MIXED block+flow workflow has BOTH jobs demanded =="
+# The dangerous shape for a line-oriented scanner: the block job made the file
+# look non-empty while the flow job was silently dropped, so (e) never demanded
+# it. Parsing the document removes the asymmetry entirely.
+D="$TMPROOT/e20"
+mkrepo "$D" '{"required":[{"name":"alpha","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"}],"advisory":[]}' 'jobs:
+  alpha:
+    runs-on: ubuntu-latest
+  beta: {runs-on: ubuntu-latest}
+'
+assert_exit "flow job in a mixed workflow is seen" 1 "$D"
+assert_mentions "names the flow job" "'beta'" "$D"
+echo "== E21: flow-style FIRST is seen too, not just flow-style later =="
+D="$TMPROOT/e21"
+mkrepo "$D" '{"required":[{"name":"alpha","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"}],"advisory":[]}' 'jobs:
+  beta: {runs-on: ubuntu-latest}
+  alpha:
+    runs-on: ubuntu-latest
+'
+assert_exit "flow-style first job is seen" 1 "$D"
+assert_mentions "names the flow-style first job" "'beta'" "$D"
+echo "== E22: an anchored job key is block style, not flow style =="
+# `alpha: &base` is valid YAML whose mapping continues on the indented lines
+# below, so it parses fine here. Treating "any token after the colon" as flow
+# style rejected it outright; the job key must also be stripped of the anchor.
+D="$TMPROOT/e22"
+mkrepo "$D" '{"required":[{"name":"alpha","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"}],"advisory":[]}' 'jobs:
+  alpha: &base
+    runs-on: ubuntu-latest
+'
+assert_exit "anchored job key accepted and stripped" 0 "$D"
+
+
+echo "== E23: an ALIAS job is resolved, not refused =="
+# `beta: *base` has no inline body — its content lives at the anchor. A real
+# parser resolves it to a genuine job that posts a real check, so it must be
+# classified like any other rather than skipped or refused.
+D="$TMPROOT/e23"
+mkrepo "$D" '{"required":[{"name":"alpha","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"}],"advisory":[]}' 'jobs:
+  alpha: &base
+    runs-on: ubuntu-latest
+  beta: *base
+'
+assert_exit "alias job is resolved and demanded" 1 "$D"
+assert_mentions "names the alias job" "'beta'" "$D"
+
+echo "== E24: genuinely malformed YAML still fails CLOSED =="
+# The fail-closed path must survive the parser swap: a document that cannot be
+# parsed at all must error, never yield an empty inventory that reads as
+# "this repo has no checks" (#530 in miniature).
+D="$TMPROOT/e24"
+mkrepo "$D" '{"required":[],"advisory":[]}' 'jobs:
+  alpha:
+   - this: [is
+'
+assert_exit "malformed YAML rejected" 2 "$D"
+assert_mentions "explains the parse failure" "cannot parse" "$D"
 echo
 echo "passed: $PASS   failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]

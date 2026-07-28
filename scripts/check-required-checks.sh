@@ -140,10 +140,18 @@ fi
 # `jq -r` as `null`/`123` and would silently fail to match any workflow check.
 # `.advisory` may be absent entirely (treated as empty), but if present it
 # must be a well-formed array.
+#
+# Presence-aware, NOT `.advisory // []`: that alternative fires on `null` and
+# `false` too, so an explicitly-null advisory would be accepted as an empty
+# array — contradicting the very invariant being asserted, and downgrading a
+# malformed lock (exit 2) to ordinary drift (exit 1). Absent is fine; present
+# must be a well-formed array.
 if ! jq -e '(.required | type == "array")
             and (all(.required[]; .name | type == "string"))
-            and ((.advisory // []) | type == "array")
-            and (all((.advisory // [])[]; .name | type == "string"))' \
+            and (if has("advisory")
+                 then (.advisory | type == "array")
+                      and (all(.advisory[]; .name | type == "string"))
+                 else true end)' \
      "$LOCK" >/dev/null 2>&1; then
   echo "error: $LOCK is malformed — .required must be an array, .advisory (if" >&2
   echo "       present) must be an array, and every entry needs a string .name" >&2
@@ -216,10 +224,39 @@ c_drift=0
 # (a) Lock vs workflow source — every required entry's workflow file
 #     must contain a job whose name (or key when no name) matches.
 # ────────────────────────────────────────────────────────────────────
+# ── Workflow inventory (single source of truth for (a), (d) and (e)) ────────
+#
+# Enumerated ONCE, by a real YAML parser, and shared by every surface. The three
+# surfaces must agree on which jobs exist: while (a) walked the lock outward with
+# one hand-written scanner and (d)/(e) collected with another, any disagreement
+# produced an unsatisfiable lock — (e) demanding an entry for a job (a) could not
+# resolve. One inventory makes that class of bug unrepresentable.
+#
+# Fails CLOSED. `node` or js-yaml missing is an ERROR, never a silent fallback to
+# a weaker scan: an inventory that quietly under-reports is exactly the #530
+# failure (a check nobody can see is a check nobody classifies).
+if ! command -v node >/dev/null 2>&1; then
+  echo "error: node is required to enumerate workflow checks" >&2
+  echo "       (surfaces (a), (d) and (e) parse workflow YAML with js-yaml)" >&2
+  exit 2
+fi
+if ! collected=$(node "$SCRIPT_DIR/lib/list-workflow-checks.mjs" "$REPO_ROOT"); then
+  echo "error: could not enumerate workflow checks — refusing to report drift-free" >&2
+  echo "       (run 'npm ci' if js-yaml is not installed)" >&2
+  exit 2
+fi
+
 echo "[a] Checking lock entries against workflow source files…"
 
-# Iterate required entries. Use `jq -c` so the entire object stays on one
-# line — multi-line outputs would break the read loop.
+# Iterate required AND advisory entries. Use `jq -c` so the entire object stays
+# on one line — multi-line outputs would break the read loop.
+#
+# Advisory entries are validated too, not just required ones. Surface (e)
+# classifies a workflow check by NAME, so a STALE advisory entry — one whose
+# job was renamed or deleted — keeps on classifying whatever new job later
+# happens to post that name, silently satisfying the guard for a job nobody
+# ever reviewed. Validating advisory here means a stale entry is caught as
+# drift at its source instead of quietly widening (e).
 while IFS= read -r entry; do
   name=$(echo "$entry" | jq -r '.name')
   workflow=$(echo "$entry" | jq -r '.workflow')
@@ -298,87 +335,18 @@ while IFS= read -r entry; do
   # is metacharacter-safe.
   # Use POSIX-portable awk (no gawk-only 3-arg `match()` or `gensub()`).
   # `cur` holds the most recent job key we entered.
-  actual_name=$(awk -v key="$job_key" '
-    # Top-level "jobs:" header. Track depth so nested keys (env:, with:, etc.)
-    # in mappings under jobs.* do not get mistaken for top-level job keys.
-    # Allow a trailing inline `# comment` on the header line — YAML permits it
-    # and an over-strict match would silently produce false drift.
-    /^jobs:[[:space:]]*(#.*)?$/ { in_jobs = 1; next }
-    # Exit on the next top-level YAML key. Exclude `#` so a column-0
-    # comment line between job entries (legal YAML) does not silently
-    # terminate parsing — that would yield false-negative drift on
-    # any job declared after the comment.
-    in_jobs && /^[^[:space:]#]/ { in_jobs = 0 }   # left jobs block
-
-    # Job key line: exactly two-space indent, identifier, then ":", optionally
-    # followed by a trailing `# comment`. Capture the key with sub() since
-    # BSD awk lacks 3-arg match().
-    #
-    # Quoted job IDs (`"build":` / `'build':`) are legal YAML and accepted by
-    # Actions, so they are matched and the quotes stripped. This parser and the
-    # (d)/(e) collector MUST agree on which keys exist: if only one recognized
-    # quoted keys, (e) would demand a lock entry for a job that (a) then could
-    # not find in the workflow — CI red with no satisfiable lock state.
-    in_jobs && /^  ("[A-Za-z0-9_-]+"|\047[A-Za-z0-9_-]+\047|[A-Za-z0-9_-]+):[[:space:]]*(#.*)?$/ {
-      cur = $0
-      sub(/^  /, "", cur)
-      sub(/:[[:space:]]*(#.*)?$/, "", cur)
-      gsub(/^["\047]|["\047]$/, "", cur)
-      seen[cur] = 1
-      jname[cur] = ""           # default: no explicit name
-      next
-    }
-
-    # Inside the current job. The first `    name: <value>` line at the
-    # four-space level wins. Use sub() to peel the prefix, strip an inline
-    # YAML comment (a real ` #...` to end-of-line, NOT mid-token `#`), then
-    # peel optional surrounding quotes so the stored value matches the
-    # rendered check name.
-    in_jobs && cur != "" && /^    name:[[:space:]]+/ {
-      val = $0
-      sub(/^    name:[[:space:]]+/, "", val)
-      # Strip inline comment (space-then-hash to end-of-line). The YAML
-      # comment syntax requires whitespace before the `#`, so a value like
-      # `name: foo#bar` keeps the literal `#bar`. This is lossy on quoted
-      # values containing ` #` literally (rare in GitHub Actions check
-      # names — none in the fleet today). If that becomes a concern,
-      # switch to a quote-aware parser; the simple form covers every
-      # case we hit.
-      sub(/[[:space:]]+#.*$/, "", val)
-      sub(/^["'\'']/, "", val)
-      sub(/["'\'']$/, "", val)
-      if (jname[cur] == "") jname[cur] = val
-    }
-
-    END {
-      if (key in seen) {
-        # Sentinel-prefix the value so we can distinguish "found, name empty"
-        # (bare-key job) from "key not found at all".
-        printf("FOUND:%s", jname[key])
-      } else {
-        printf("MISSING")
-      }
-    }
-  ' "$wf")
-
-  # Use `[[ == ]]` for literal string equality. The awk extraction above is
-  # metacharacter-safe (no shell→regex interpolation), but `case` patterns are
-  # glob-matched after variable expansion — a check name containing `*`, `?`,
-  # `[`, or `]` would re-introduce the same metacharacter class. `[[ == ]]`
-  # without quotes-on-RHS would still glob-match, so we quote the right-hand
-  # side to force literal-string comparison.
-  #
-  # `matrix_suffix` is empty for non-matrix entries (preserving v1.18.x
-  # behavior) and ` (<value>)` for matrix entries. It's appended to whichever
-  # base — explicit `name:` value or bare job key — the workflow declares,
-  # so a lock entry like {"name":"test (ubuntu-latest)","job":"test",
-  # "matrix_value":"ubuntu-latest"} aligns with a workflow job key `test:`
-  # (no explicit name) under a `strategy.matrix` block.
+  # GitHub renders a matrix combination as `<base> (<label>)`. Non-matrix
+  # entries carry no suffix, so this is the empty string for them.
   if [[ -n "$matrix_value" ]]; then
     matrix_suffix=" ($matrix_value)"
   else
     matrix_suffix=""
   fi
+  # Look the job up in the shared inventory instead of re-scanning the file.
+  actual_name=$(printf '%s\n' "$collected" | awk -F'\t' -v w="$workflow" -v j="$job_key" '
+    $2 == w && $3 == j { print "FOUND:" $1; found = 1; exit }
+    END { if (!found) print "MISSING" }
+  ')
   if [[ "$actual_name" == "MISSING" ]]; then
     echo "  DRIFT: $name expected in $workflow as job '$job_key' — job key not found"
     drift=1
@@ -414,7 +382,7 @@ while IFS= read -r entry; do
       a_drift=1
     fi
   fi
-done < <(jq -c '.required[]' "$LOCK")
+done < <(jq -c '(.required[]?, .advisory[]?) | select(.source_app == "github-actions")' "$LOCK")
 
 if [[ "$a_drift" -eq 0 ]]; then
   echo "  ok: every lock entry maps to a workflow job"
@@ -452,68 +420,9 @@ fi
 # ────────────────────────────────────────────────────────────────────
 echo "[d] Checking workflow check-name uniqueness…"
 
-# Collect (effective_name, workflow, job_key) tuples from every workflow.
-# Awk walks each file once; the END block emits the final job in the file.
-collected=""
-# Walk both .yml and .yaml — GitHub Actions accepts either extension, so a
-# `.yaml` workflow that collides with a `.yml` workflow would otherwise slip
-# through (d). `nullglob` keeps the loop quiet when one extension is absent.
-# We save and restore the prior setting so callers that source this script
-# don't see their globbing behavior changed.
-#
-# `shopt -p nullglob` exits 1 when nullglob is off (default), which would
-# trip `set -e` in an assignment context. The if-condition suppresses set -e
-# for `shopt -q`, letting us record state without aborting.
-__nullglob_was_off=1
-if shopt -q nullglob; then __nullglob_was_off=0; fi
-shopt -s nullglob
-for wf in "$REPO_ROOT"/.github/workflows/*.yml "$REPO_ROOT"/.github/workflows/*.yaml; do
-  [[ -f "$wf" ]] || continue
-  # Quote $REPO_ROOT inside the parameter expansion (SC2295) — without the
-  # inner quotes any glob metacharacters in the resolved repo path would be
-  # treated as a pattern and produce a wrong `rel` value.
-  rel="${wf#"$REPO_ROOT"/}"
-  collected+=$(awk -v wf="$rel" '
-    function emit(   ) {
-      if (cur != "") {
-        n = (named[cur] ? jname[cur] : cur)
-        printf("%s\t%s\t%s\n", n, wf, cur)
-      }
-    }
-    /^jobs:[[:space:]]*(#.*)?$/ { in_jobs = 1; next }
-    # See (a)-parser comment for why `#` is excluded — column-0 comment
-    # lines must not terminate the in_jobs scan (false-negative risk).
-    in_jobs && /^[^[:space:]#]/ { in_jobs = 0 }
-    # Quoted job IDs matched here too — kept deliberately identical to the
-    # (a) parser above. A job this collector misses is a job surface (e)
-    # never demands a classification for, which is a silent fail-OPEN in the
-    # guard itself.
-    in_jobs && /^  ("[A-Za-z0-9_-]+"|\047[A-Za-z0-9_-]+\047|[A-Za-z0-9_-]+):[[:space:]]*(#.*)?$/ {
-      emit()
-      cur = $0; sub(/^  /, "", cur); sub(/:[[:space:]]*(#.*)?$/, "", cur)
-      gsub(/^["\047]|["\047]$/, "", cur)
-      named[cur] = 0
-      jname[cur] = ""
-      next
-    }
-    in_jobs && cur != "" && /^    name:[[:space:]]+/ && !named[cur] {
-      val = $0
-      sub(/^    name:[[:space:]]+/, "", val)
-      sub(/[[:space:]]+#.*$/, "", val)
-      sub(/^["'\'']/, "", val); sub(/["'\'']$/, "", val)
-      jname[cur] = val
-      named[cur] = 1
-    }
-    END { emit() }
-  ' "$wf")
-  collected+=$'\n'
-done
-# Restore prior nullglob setting (no-op if it was already on). Use `if`
-# rather than `[ ... ] && shopt -u`: when the condition is false the `&&`
-# chain returns non-zero and trips `set -e`, exactly the trap the
-# save-state block above sidesteps.
-if [ "$__nullglob_was_off" = "1" ]; then shopt -u nullglob; fi
-unset __nullglob_was_off
+# `collected` is the shared inventory built above by the YAML enumerator —
+# (d) and (e) both read it, so they cannot disagree with (a) about what a
+# workflow emits.
 
 # Aggregate by effective name. Anything appearing more than once is drift.
 # Use printf to feed a clean list (drops the trailing blank line from the
@@ -614,12 +523,27 @@ fi
 # actually surfaces.
 known_names=$(printf '%s' "$known_names" | tr '\n' '\036')
 
-unclassified=$(printf '%s' "$collected" | awk -F'\t' -v known="$known_names" '
-  BEGIN { n = split(known, a, "\036"); for (i = 1; i <= n; i++) if (a[i] != "") seen[a[i]] = 1 }
+# Split the awk from the sort and check awk's status explicitly. Relying on the
+# pipeline status alone is fragile here: if awk ever fails while `sort` succeeds,
+# `unclassified` comes back EMPTY and (e) reports "ok" — the guard silently
+# certifying a repo it never actually inspected. An empty result must mean
+# "nothing unclassified", never "the check did not run".
+# Passed through the ENVIRONMENT, never `awk -v`. `-v` processes backslash
+# escapes in the value, so a lock name containing the literal four characters
+# `\036` would be turned into a real record separator by awk and split into TWO
+# names — smuggling an extra entry into `seen` and classifying a job nobody
+# listed. Lock content is repo-controlled, so that is an injection into the
+# guard. `ENVIRON[]` hands the bytes over verbatim.
+if ! unclassified_raw=$(printf '%s' "$collected" | BD_KNOWN_NAMES="$known_names" awk -F'\t' '
+  BEGIN { n = split(ENVIRON["BD_KNOWN_NAMES"], a, "\036"); for (i = 1; i <= n; i++) if (a[i] != "") seen[a[i]] = 1 }
   $1 == "" { next }
   ($1 in seen) { next }
   { printf("%s\t%s:%s\n", $1, $2, $3) }
-' | LC_ALL=C sort -u)
+'); then
+  echo "error: classification scan failed — refusing to report (e) as clean" >&2
+  exit 2
+fi
+unclassified=$(printf '%s' "$unclassified_raw" | LC_ALL=C sort -u)
 
 if [[ -n "$unclassified" ]]; then
   echo "  DRIFT: workflow check(s) in neither lock.required nor lock.advisory:"

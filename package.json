@@ -13,6 +13,7 @@
     "@commitlint/config-conventional": "^19.8.1",
     "@vitest/coverage-v8": "^4.1.9",
     "ajv": "^8.20.0",
+    "js-yaml": "^4.1.0",
     "vitest": "^4.1.8"
   }
 }

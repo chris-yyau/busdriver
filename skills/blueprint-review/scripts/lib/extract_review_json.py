@@ -85,9 +85,17 @@ def _embedded_in_a_line(raw: str, start: int) -> bool:
 # Known CLI log framings that echo a TRUNCATED preview of the verdict into the
 # transcript. Deliberately an allowlist of observed, fully-anchored phrasings —
 # not a shape heuristic. See _is_log_echo_fragment for why nothing weaker is
-# sound. Add a line here only with a real transcript to justify it.
+# sound. Add a producer to the alternation only with a real transcript to
+# justify it.
+#
+# The producer label is pinned, NOT a wildcard. A `[^\]]{1,32}` label would let
+# any transcript line spell its own way past the allowlist — `[not-codex]
+# Assistant message captured: {…` would be trusted as a CLI echo, the fragment
+# skipped, and a PASS nested behind it promoted to the verdict. The framing is
+# only evidence because the CLI is the sole thing that emits it, so who may
+# write the label is the whole security property.
 _LOG_ECHO_PREFIX_RE = re.compile(
-    r"^\s*\[[^\]\n]{1,32}\]\s+Assistant message captured:\s*$"
+    r"^\s*\[(?:codex)\]\s+Assistant message captured:\s*$"
 )
 
 
@@ -104,8 +112,18 @@ def _is_log_echo_fragment(raw: str, start: int, exc: json.JSONDecodeError) -> bo
     below it (#524).
 
     Identification is by the LOG FRAMING, positively matched against
-    `_LOG_ECHO_PREFIX_RE`, plus the decode dying on a newline (an untruncated
-    payload after the same prefix decodes fine and never reaches here).
+    `_LOG_ECHO_PREFIX_RE`, plus the decode dying WITHIN the echo's own line (an
+    untruncated payload after the same prefix decodes fine and never reaches
+    here).
+
+    Line-confinement, not newline-equality, is the right test. The preview is cut
+    to a fixed length, so where it stops depends on content: a cut inside a string
+    (`… "issues": [ { "sect...`) makes raw_decode report the raw newline, but a cut
+    between tokens (`… "issues": [...`) reports the offending `.` instead. Testing
+    `raw[exc.pos] in "\\r\\n"` recognizes only the first, so for the second the
+    allowlisted framing was rejected, the generic truncated-region path treated the
+    preview as an unclosed verdict, and it borrowed the real verdict's keys — the
+    exact review loss #524 exists to fix, merely at a different cutoff length.
 
     **Why nothing more general is sound.** The first fix here inferred "log echo"
     from geometry alone — starts mid-line AND died on a newline — reasoning that a
@@ -128,7 +146,13 @@ def _is_log_echo_fragment(raw: str, start: int, exc: json.JSONDecodeError) -> bo
     pre-#524 behavior) — never to accepting a forged PASS. That is the correct
     direction to break in.
     """
-    if exc.pos >= len(raw) or raw[exc.pos] not in "\r\n":
+    line_end = raw.find("\n", start)
+    if line_end < 0:
+        line_end = len(raw)
+    # Confined to its own line: the failure is at or before that line's newline.
+    # A decode that got PAST the newline is a real multi-line payload, not an
+    # echo, and must fall through to the truncated-region path.
+    if exc.pos > line_end:
         return False
     line_start = raw.rfind("\n", 0, start) + 1
     return _LOG_ECHO_PREFIX_RE.match(raw[line_start:start]) is not None
@@ -380,9 +404,22 @@ def try_last_review_object(raw: str):
         except ValueError:
             i = start + 1
             continue
+        embedded = _embedded_in_a_line(raw, start)
         if isinstance(obj, dict) and _is_review(obj):
-            if not (own_line_only and _embedded_in_a_line(raw, start)):
+            if not (own_line_only and embedded):
                 best, best_pos = obj, start
+        if not embedded:
+            # A cleanly decoded OWN-LINE value proves the sweep resynced to top
+            # level, so the skipped echo can no longer be parenting what follows
+            # and the mid-line restriction has done its job.
+            #
+            # Without this reset own_line_only stayed set for the rest of the
+            # transcript, so every later prefixed verdict was silently dropped:
+            # echo, then an own-line PASS, then `Final answer: {…"status":"FAIL"…}`
+            # returned the stale PASS. That breaks last-verdict-wins in the
+            # dangerous direction — promoting a PASS over a later FAIL is the
+            # fabricated-PASS failure #503 hardened against.
+            own_line_only = False
         i = max(end, start + 1)  # step over the decoded value; children can't win
 
     if malformed_pos > best_pos:

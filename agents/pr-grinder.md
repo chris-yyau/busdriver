@@ -158,7 +158,10 @@ ADVISORY_FAILED=$(printf '%s\n' "$CHECKS_RAW" | grep -iE "CodeScene" | grep -cE 
 sleep 30
 ```
 
-If Phase 0 exits non-zero, stop the round immediately and return `RESULT_STATUS: bail` with `RESULT_BAIL_CATEGORY: judgment` and a reason naming the merge state. Do NOT resolve the conflict yourself — merging base into the PR branch moves HEAD, strands every bot ack, and forces a full CI re-run; that is the operator's call, same as the `BEHIND` branch-currency path in SKILL.md.
+If Phase 0 exits non-zero, stop the round immediately and return `RESULT_STATUS: bail` — but the category depends on WHICH Phase 0 branch fired, per the Bail Triggers table below:
+
+- **`mergeable=CONFLICTING` or `mergeStateStatus=DIRTY`** (the conflict branch): `RESULT_BAIL_CATEGORY: judgment`, with a reason naming the merge state. This is a design/scope-adjacent decision — do NOT resolve the conflict yourself. Merging base into the PR branch moves HEAD, strands every bot ack, and forces a full CI re-run; that is the operator's call, same as the `BEHIND` branch-currency path in SKILL.md.
+- **`gh pr view` itself fails** (the fetch branch — auth, rate-limit, or network outage): `RESULT_BAIL_CATEGORY: env`, per the Bail Triggers table's "`gh` CLI auth or rate-limit errors that you can't resolve" row. This is a recoverable environment problem, not a scope/design question — do not conflate it with the CONFLICTING/DIRTY branch.
 
 If `$FAILED -gt 0`, the failures are real CI breakage — fold the failing job names (from `$FAILED_ROWS`, the helper's lines 2..N) into `RESULT_REMAINING` and continue to Step 2 to collect details. If `$ADVISORY_FAILED -gt 0`, note it but proceed; CodeScene's pass/fail status is non-blocking, but its **review threads still must be triaged in Step 2** (advisory ≠ ignored — see triage table).
 
@@ -719,7 +722,7 @@ Stop the round and return `RESULT_STATUS: bail` with the appropriate `RESULT_BAI
 | Same flaky CI check name appears in `PRIOR_ATTEMPTS` `failures=` field for 2 prior rounds AND fails again now (3 total) | `judgment` |
 | Fix would require rewriting published git history — commitlint `header-max-length` on an already-pushed commit, oversized commits that need splitting via `git rebase` (interactive or otherwise), anything that needs `git commit --amend` on a pushed SHA, `git filter-branch`, or `git push --force(-with-lease)` | `judgment` |
 | **Local commitlint check fails on commits BASE..HEAD before push** (Step 6 pre-push pre-flight catches subject/body violations while the bad commit is still local-only — the operator can amend locally without force-pushing a published SHA) | **`judgment`** |
-| **Step 1 Phase 0: `mergeStateStatus` is `CONFLICTING`/`DIRTY`** — CI cannot run, so no check result covers this HEAD (#515) | **`judgment`** |
+| **Step 1 Phase 0: `mergeable` is `CONFLICTING` or `mergeStateStatus` is `DIRTY`** — CI cannot run, so no check result covers this HEAD (#515) | **`judgment`** |
 | `gh` CLI auth or rate-limit errors that you can't resolve | `env` |
 | `WORKTREE_DIR` missing or unreadable | `env` |
 | Skipped Step 0 mandatory Read of SKILL.md | `env` |

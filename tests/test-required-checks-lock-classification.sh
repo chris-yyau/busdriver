@@ -464,6 +464,51 @@ assert_exit "oversized matrix refused" 2 "$D"
 assert_mentions "cites GitHub's 256 limit" "limit of 256" "$D"
 
 
+echo "== E32: a static name on a matrix job is refused, not collapsed =="
+# GitHub uses an explicit name verbatim, so every leg posts the SAME context.
+# Appending the combination would invent contexts that are never posted;
+# collapsing to one row would hide several check runs competing for one context
+# name — the exact ambiguity surface (d) exists to catch. Neither is honest.
+D="$TMPROOT/e32"
+mkrepo "$D" '{"required":[],"advisory":[]}' 'jobs:
+  build:
+    name: Test
+    strategy:
+      matrix:
+        node: [18, 20]
+    runs-on: x
+'
+assert_exit "static name + matrix refused" 2 "$D"
+assert_mentions "suggests the achievable remedy" "drop the" "$D"
+
+echo "== E33: a reusable-workflow caller is refused, not named after the caller =="
+# It posts one check per job of the CALLED workflow, `<caller> / <called job>`,
+# and nothing under the caller name. Emitting the caller name would invent a
+# context that is never posted while leaving the real ones unlisted.
+D="$TMPROOT/e33"
+mkrepo "$D" '{"required":[],"advisory":[]}' 'jobs:
+  call:
+    uses: ./.github/workflows/other.yml
+'
+assert_exit "reusable-workflow caller refused" 2 "$D"
+assert_mentions "explains the caller/callee naming" "called job" "$D"
+
+
+echo "== E32b: a SINGLE-leg named matrix is representable, not refused =="
+# One combination means one check under that name — no competing contexts, so
+# the enumerator can represent it exactly. Refusing it would be over-strict.
+D="$TMPROOT/e32b"
+mkrepo "$D" '{"required":[{"name":"Test","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"build"}],"advisory":[]}' 'jobs:
+  build:
+    name: Test
+    strategy:
+      matrix:
+        node: [20]
+    runs-on: x
+'
+assert_exit "single-leg named matrix accepted" 0 "$D"
+
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -138,6 +138,19 @@ for (const file of files) {
     // include/exclude reshaping rules — is REFUSED rather than guessed at.
     // Enumerating those would mean reimplementing Actions expression
     // evaluation inside a merge gate; refusing keeps the failure visible.
+    // A reusable-workflow caller (`jobs.<id>.uses:`) posts one check per job of
+    // the CALLED workflow, named `<caller> / <called job>`, and nothing under
+    // the caller name itself. Emitting `<name>` here would invent a context that
+    // is never posted while leaving the real ones unlisted. Resolving them means
+    // following the callee (and remote callers are not on disk at all), so this
+    // refuses rather than guessing.
+    if (job.uses !== undefined) {
+      process.stderr.write(
+        `error: ${rel}: job '${key}' calls a reusable workflow; its checks are ` +
+          `named '<caller> / <called job>' and cannot be resolved from this file\n`,
+      );
+      process.exit(2);
+    }
     const matrix = job.strategy?.matrix;
     if (matrix === undefined) {
       rows.push(`${name}\t${rel}\t${key}`);
@@ -200,6 +213,31 @@ for (const file of files) {
     let combos = [[]];
     for (const labels of dims) {
       combos = combos.flatMap((c) => labels.map((l) => [...c, l]));
+    }
+    // An explicit `name:` is used VERBATIM by GitHub — the `(values)` suffix is
+    // synthesized only for a job with no name of its own. Expression-bearing
+    // names are refused above, so a named matrix job here has a STATIC name and
+    // every leg posts that same context.
+    //
+    // With ONE combination that is unambiguous: a single check under that name,
+    // representable exactly. With more, several check runs compete for one
+    // context name — the ambiguity surface (d) exists to catch — and neither
+    // available shape is honest (appending the combination invents contexts
+    // that are never posted; collapsing to one row hides the competition). So
+    // only the many-leg case is refused.
+    if (job.name !== undefined) {
+      if (combos.length === 1) {
+        rows.push(`${name}\t${rel}\t${key}`);
+        continue;
+      }
+      // The remedy is ONLY "drop the name": suggesting an expression would be
+      // self-contradictory, since expression-bearing names are refused above.
+      process.stderr.write(
+        `error: ${rel}: job '${key}' has a ${combos.length}-leg matrix and a ` +
+          `static name ('${name}'), so every leg posts that same context — ` +
+          `drop the name: and GitHub will render '<job-key> (<values>)'\n`,
+      );
+      process.exit(2);
     }
     for (const combo of combos) {
       rows.push(`${name} (${combo.join(", ")})\t${rel}\t${key}`);

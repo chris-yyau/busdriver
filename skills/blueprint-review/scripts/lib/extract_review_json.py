@@ -5,6 +5,8 @@ The raw output from these CLIs often contains:
 - Non-JSON preamble (config warnings, session info, loading messages)
 - Conversational prose around the payload ("My review is complete. ...")
 - Interleaved exec command outputs with code snippets (unmatched braces!)
+- A truncated one-line echo of the payload itself, e.g. codex's
+  `[codex] Assistant message captured: { "status": "FAIL", … "issues": [ { "sect...`
 - Token usage stats
 - The actual review JSON — on one line, or pretty-printed inside a ```json fence
 
@@ -68,6 +70,47 @@ def _opens_like_json(raw: str, start: int) -> bool:
     if not rest:
         return False
     return rest[0] == '"' if raw[start] == "{" else rest[0] in '"{['
+
+
+def _embedded_in_a_line(raw: str, start: int) -> bool:
+    """Is there non-whitespace before `start` on its own line?
+
+    A top-level payload begins its own line; `[codex] Assistant message captured:
+    {…` does not. Leading whitespace still counts as line start, so an indented
+    fenced payload is not disqualified.
+    """
+    return raw[raw.rfind("\n", 0, start) + 1 : start].strip() != ""
+
+
+def _is_line_confined_fragment(raw: str, start: int, exc: json.JSONDecodeError) -> bool:
+    """Is this unclosed region a one-line log echo rather than a real payload?
+
+    Codex streams a ~100-char preview of its own verdict into the log:
+
+        [codex] Assistant message captured: { "status": "FAIL", … "issues": [ { "sect...
+
+    By shape that is indistinguishable from a verdict, so region detection anchors
+    on it, sweeps forward past the intervening log lines looking for a close it
+    will never find, and fails closed — discarding the complete verdict printed
+    below it (#524). Two signals together say "log echo", and both are needed:
+
+    1. The region starts MID-LINE, after a log prefix. A real payload opens its
+       own line. Without this, a genuine multi-line verdict carrying a raw newline
+       inside a string value would also qualify, and skipping past it would expose
+       its nested {"status": "PASS"} — a forged PASS.
+    2. The decode died ON a newline, i.e. a string literal ran off the end of the
+       line. JSON strings cannot contain raw newlines, so the region provably
+       cannot extend past that line: unlike a generically truncated region, its
+       extent IS knowable, and what follows cannot be its nested content.
+
+    The `const cfg = {"enabled": true;` residual is untouched — that dies on `;`,
+    not on a newline, so its extent stays unknowable and it still fails closed.
+    """
+    return (
+        _embedded_in_a_line(raw, start)
+        and exc.pos < len(raw)
+        and raw[exc.pos] in "\r\n"
+    )
 
 
 def _looks_like_verdict(text: str) -> bool:
@@ -210,6 +253,7 @@ def try_last_review_object(raw: str):
     malformed_pos = -1
     broken_pos = -1
     unbalanced_scans = 0
+    own_line_only = False
     i = 0
     while True:
         start = _next_region(raw, i)
@@ -220,6 +264,20 @@ def try_last_review_object(raw: str):
         except json.JSONDecodeError as exc:
             region_end, _, mismatched = _region_end(raw, start)
             if region_end is None and not mismatched:
+                if _is_line_confined_fragment(raw, start, exc):
+                    # A log echo, bounded by its own line (#524) — the one
+                    # truncated shape whose extent IS knowable. Classify it on
+                    # that line alone; scanning to EOF would let it borrow the
+                    # real verdict's keys, which is how it came to outrank one.
+                    if _looks_like_verdict(raw[start : exc.pos]):
+                        malformed_pos = start
+                        _PARSE_ERRORS.append(str(exc))
+                    # Nothing nested can follow a region that ends at this newline,
+                    # but a MID-LINE object after it could still be some other
+                    # region's child, so from here only own-line objects can win.
+                    own_line_only = True
+                    i = max(exc.pos, start + 1)
+                    continue
                 # TRUNCATED: no closing bracket anywhere. Its extent is unknowable,
                 # so anything decoded later may be its own nested content.
                 #
@@ -302,7 +360,8 @@ def try_last_review_object(raw: str):
             i = start + 1
             continue
         if isinstance(obj, dict) and _is_review(obj):
-            best, best_pos = obj, start
+            if not (own_line_only and _embedded_in_a_line(raw, start)):
+                best, best_pos = obj, start
         i = max(end, start + 1)  # step over the decoded value; children can't win
 
     if malformed_pos > best_pos:

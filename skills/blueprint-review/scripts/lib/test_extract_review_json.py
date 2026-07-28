@@ -494,3 +494,58 @@ def test_trailing_unclosed_fragment_after_a_verdict_is_tolerated():
     """
     raw = f'{json.dumps(VERDICT)}\ntrace: {{"debug":\n'
     assert ex.extract_from_text(raw) == VERDICT
+
+
+# --- #524: codex echoes a truncated preview of its own verdict into the log ---
+
+PREVIEW = (
+    '[codex] Assistant message captured: { "status": "FAIL", "reviewer_id": '
+    '"codex", "review_duration_ms": 420430, "issues": [ { "sect...\n'
+    "[codex] Turn completion inferred after the main thread finished.\n"
+)
+
+
+def test_log_echoed_verdict_preview_does_not_discard_the_real_verdict():
+    """The observed #524 shape: ~100-char preview, then the real verdict below.
+
+    Region detection anchored on the preview, swept forward for a close that never
+    came, and failed closed — throwing away a complete codex review and burning a
+    second budget on a droid rescue.
+    """
+    assert ex.extract_from_text(f"{PREVIEW}{PRETTY}\n") == VERDICT
+
+
+def test_log_echoed_preview_with_no_real_verdict_still_fails_closed():
+    """The preview alone is not a review — never report a verdict from it."""
+    assert ex.extract_from_text(PREVIEW) is None
+    assert ex.failure_reason().startswith("found a review block but it is malformed")
+
+
+def test_log_echoed_preview_does_not_promote_a_stale_earlier_pass():
+    """FAIL-OPEN GUARD: skipping the echo must not resurrect a superseded PASS."""
+    stale = dict(VERDICT, status="PASS", issues=[])
+    assert ex.extract_from_text(f"{json.dumps(stale)}\n{PREVIEW}") is None
+
+
+def test_own_line_verdict_broken_by_a_raw_newline_still_fails_closed():
+    """FAIL-OPEN GUARD: same newline error, but the region owns its line.
+
+    That is a real multi-line verdict with a stray newline inside a string value,
+    not a log echo — its extent is unknowable, so its nested PASS must stay
+    unreachable.
+    """
+    raw = (
+        '{"reviewer_id": "codex", "issues": [{"d": "oops\n'
+        'wrapped"}], "metadata": {"status": "PASS", "issues": []}}\n'
+    )
+    assert ex.extract_from_text(raw) is None
+
+
+def test_mid_line_object_after_a_log_echo_cannot_win():
+    """FAIL-OPEN GUARD: after skipping an echo, only own-line objects qualify.
+
+    A mid-line object may be some other region's child, so a nested PASS trailing
+    the echo must not be promoted to the verdict.
+    """
+    raw = f'{PREVIEW}wrapper: {{"a": 1, "metadata": {{"status": "PASS", "issues": []}}}}\n'
+    assert ex.extract_from_text(raw) is None

@@ -205,10 +205,13 @@ arbiter either way. Restoring parallelism recovers only the **overlap**.
 - If the witness absence rate is re-measured on real design documents and is high,
   reopen #499 — measure first, and prefer dropping the witness from blueprint over
   the detach machinery.
-- The k3 reap has the **same defect the oracle poll had**: its counter is
+- ~~The k3 reap has the **same defect the oracle poll had**: its counter is
   initialised *after* the reviewer `wait`s, so a slow witness charges a fresh ≤610s
-  budget on top of the reviewer window. Deliberately out of scope here; the same
-  deadline treatment would fix it.
+  budget on top of the reviewer window.~~ **FIXED in [#506](https://github.com/chris-yyau/busdriver/issues/506)**
+  with the same deadline treatment: `AUDITOR_DEADLINE` is captured at dispatch and
+  the reap exits on deadline OR counter, whichever fires first. The counter stays as
+  the clock-independent backstop and is what a shortening `BLUEPRINT_AUDITOR_GRACE`
+  still binds. Guard: `tests/test-blueprint-auditor-deadline.sh`.
 - If deadline expiry is observed stranding the browser mutex in practice, Residual
   1 needs an owner rather than a log line.
 - If a `--mode background` caller appears that does not capture stdout, re-check

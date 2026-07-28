@@ -399,15 +399,15 @@ fi
 #     collision before it gets promoted into the lock.
 #
 # Effective check name = the job's explicit `name:` value, or the bare
-# job key when no `name:` is declared. Matrix `name:` templates that
-# include `${{ matrix.* }}` interpolation are stored as their literal
-# template; two jobs sharing the same template will be flagged because
-# their rendered names will collide for matching matrix values.
+# job key when no `name:` is declared — as resolved by the shared inventory.
+# The former note about `${{ matrix.* }}` name TEMPLATES being stored
+# literally no longer describes anything reachable: the enumerator now
+# hard-errors on an expression-bearing name rather than recording a context
+# GitHub never posts, so no template ever reaches this comparison.
 #
-# (d) reads workflow YAML directly — it does NOT consult the lock at all,
-# and therefore does not consider the optional `matrix_value` lock field.
-# Uniqueness is checked against effective workflow names (template form
-# for matrix jobs), not against per-matrix-combination rendered names.
+# (d) does NOT consult the lock at all, and therefore does not consider the
+# optional `matrix_value` field. Uniqueness is checked against effective
+# workflow names, not against per-matrix-combination rendered names.
 # That's intentional: collisions across the rendered space already
 # manifest as collisions in template form, so checking templates catches
 # every real collision without false positives from harmless cases where

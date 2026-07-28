@@ -321,6 +321,40 @@ assert_exit "expression job name rejected" 2 "$D"
 assert_mentions "explains why it cannot resolve" "cannot be resolved statically" "$D"
 
 
+echo "== E26: an UNQUOTED numeric job name is refused; the quoted form works =="
+# GitHub formats numeric job names with .NET G15 (`1e20` -> `1E+20`), which
+# String() does not reproduce — coercing would record a context never posted.
+# Quoting is unambiguous and is what the lock must contain anyway.
+D="$TMPROOT/e26a"
+mkrepo "$D" '{"required":[{"name":"2024","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"}],"advisory":[]}' 'jobs:
+  alpha:
+    name: 2024
+    runs-on: ubuntu-latest
+'
+assert_exit "unquoted numeric name refused" 2 "$D"
+assert_mentions "tells the author to quote it" "quote it" "$D"
+
+D="$TMPROOT/e26b"
+mkrepo "$D" '{"required":[{"name":"2024","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"}],"advisory":[]}' 'jobs:
+  alpha:
+    name: "2024"
+    runs-on: ubuntu-latest
+'
+assert_exit "quoted numeric name resolves" 0 "$D"
+
+echo "== E27: a non-scalar job name is refused, not guessed at =="
+# A bare `name:` parses as null. Silently using the job key there would invent a
+# context; refuse instead.
+D="$TMPROOT/e27"
+mkrepo "$D" '{"required":[],"advisory":[]}' 'jobs:
+  alpha:
+    name:
+    runs-on: ubuntu-latest
+'
+assert_exit "null name rejected" 2 "$D"
+assert_mentions "explains the non-string name" "non-string name" "$D"
+
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]

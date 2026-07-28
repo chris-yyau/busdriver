@@ -81,7 +81,37 @@ for (const file of files) {
       );
       process.exit(2);
     }
-    const name = typeof job.name === "string" ? job.name : key;
+    // A non-string `name:` is REFUSED — including numbers and booleans.
+    //
+    // Coercing them looked reasonable and is wrong: GitHub formats numeric job
+    // names with .NET's G15, so `name: 1e20` posts the context `1E+20` while
+    // js-yaml + String() yields `100000000000000000000`. Reproducing that
+    // formatting means embedding another runtime's number rendering inside a
+    // merge gate, and any mismatch records a context that is never posted.
+    // Quoting (`name: "2024"`) is unambiguous, is what the lock must contain
+    // anyway, and is what the error tells the author to do.
+    let name;
+    if (job.name === undefined) {
+      name = key;
+    } else if (typeof job.name === "string") {
+      name = job.name;
+    } else {
+      process.stderr.write(
+        `error: ${rel}: job '${key}' has a non-string name: ` +
+          `${JSON.stringify(job.name)} — quote it so the rendered check name is ` +
+          `unambiguous (e.g. name: "2024")\n`,
+      );
+      process.exit(2);
+    }
+    // The inventory is TSV and is field-split by awk. A tab or newline inside a
+    // name would shift every downstream field, so (a) would compare the wrong
+    // column and (e) could read a job as classified that never was. Refuse.
+    if (/[\t\r\n]/.test(name)) {
+      process.stderr.write(
+        `error: ${rel}: job '${key}' name contains a tab or newline\n`,
+      );
+      process.exit(2);
+    }
     // Matrix jobs are emitted under their BARE BASE name. GitHub renders each
     // combination as `<base> (<label>)`, and enumerating those statically means
     // evaluating include/exclude and ${{ }} products — a YAML evaluator inside

@@ -726,3 +726,27 @@ def test_short_echo_with_no_verdict_key_still_fails_closed():
         '[codex] Assistant message captured: { "rev...\n',
     ):
         assert ex.extract_from_text(f"{stale}\n{echo}") is None, echo
+
+
+def test_the_offending_character_counts_as_intervening_content():
+    """FAIL-OPEN GUARD: a multi-line malformed region is not an echo.
+
+    Confinement is disproved by content between the echo's newline and the decode
+    error. The offending character is itself such content, but a half-open slice
+    stopping AT `exc.pos` excluded it — so when the first non-whitespace past the
+    newline WAS the error position, the window held only the newline and read as
+    "nothing intervened", admitting a genuine multi-line region to the echo path.
+    """
+    raw = (
+        "[codex] Assistant message captured: {\n"
+        'X "reviewer_id": "codex", "issues": ["a",\n'
+        '{"status": "PASS", "reviewer_id": "codex", "issues": []}\n'
+    )
+    start = raw.index("{")
+    try:
+        ex._DECODER.raw_decode(raw, start)
+    except json.JSONDecodeError as exc:
+        assert ex._is_log_echo_fragment(raw, start, exc) is False
+    else:  # pragma: no cover - the region is malformed by construction
+        raise AssertionError("expected a decode error")
+    assert ex.extract_from_text(raw) is None

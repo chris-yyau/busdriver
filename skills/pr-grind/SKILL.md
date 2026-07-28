@@ -1646,7 +1646,12 @@ fi
 ```bash
 GH_EXIT=0
 CHECKS_RAW=$(gh pr checks <PR_NUMBER> 2>&1) || GH_EXIT=$?
-if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_RAW" | grep -qE "pass|fail|pending"; then
+# A genuine `gh pr checks` row carries a KNOWN status token (pass/fail/pending/...)
+# as its OWN tab-separated column, never as a loose substring. A CLI error line
+# like "failed to connect to api.github.com" contains "fail" but is not a status
+# column — a plain `grep -qE "pass|fail|pending"` misclassifies that error text
+# as valid check output (Codex finding on #522), masking a real `gh` failure.
+if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_RAW" | awk -F'\t' 'NF>=2 { s=tolower($2); gsub(/^[ \t]+|[ \t]+$/,"",s); if (s ~ /^(pass|fail|failure|pending|queued|in_progress|expected|cancel|cancelled|skipping|neutral)$/) f=1 } END{exit !f}'; then
   echo "❌ gh pr checks failed (exit $GH_EXIT). Resolve CLI/auth issues."
   exit 1
 fi

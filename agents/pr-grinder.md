@@ -107,10 +107,22 @@ RCS="${CLAUDE_PLUGIN_ROOT}/scripts/relevant-check-status.sh"
 # failure gets masked as "still pending" for 5 whole retries before any error
 # surfaces. Classify the gh failure explicitly, inside the loop, before it
 # ever reaches the check-status parser.
+# Classifier: a genuine `gh pr checks` tabular row carries a KNOWN status
+# token (pass/fail/pending/...) as its OWN tab-separated column, never as a
+# loose substring. A CLI error line like "failed to connect to api.github.com"
+# contains the substring "fail" but is not a status column — a plain
+# `grep -qE "pass|fail|pending"` misclassifies that error text as valid check
+# output (Codex finding on #522), swallowing a real `gh` failure into 5
+# misleading pending retries instead of the immediate env bail below.
+# Require the token to occupy the whole second field instead of matching
+# anywhere in the raw text.
+_looks_like_check_table() {
+  printf '%s\n' "$1" | awk -F'\t' 'NF>=2 { s=tolower($2); gsub(/^[ \t]+|[ \t]+$/,"",s); if (s ~ /^(pass|fail|failure|pending|queued|in_progress|expected|cancel|cancelled|skipping|neutral)$/) f=1 } END{exit !f}'
+}
 for i in 1 2 3 4 5; do
   GH_EXIT=0
   CHECKS_RAW=$(gh pr checks "$PR_NUMBER" 2>&1) || GH_EXIT=$?
-  if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_RAW" | grep -qE "pass|fail|pending"; then
+  if [ "$GH_EXIT" -ne 0 ] && ! _looks_like_check_table "$CHECKS_RAW"; then
     echo "❌ gh pr checks failed (exit $GH_EXIT) — cannot verify check status: $CHECKS_RAW"
     exit 1
   fi
@@ -128,7 +140,7 @@ fi
 # Phase 2.5: Verify all REQUIRED checks PASSED (advisory checks like CodeScene are non-blocking).
 GH_EXIT=0
 CHECKS_RAW=$(gh pr checks "$PR_NUMBER" 2>&1) || GH_EXIT=$?
-if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_RAW" | grep -qE "pass|fail|pending"; then
+if [ "$GH_EXIT" -ne 0 ] && ! _looks_like_check_table "$CHECKS_RAW"; then
   echo "❌ gh pr checks failed (exit $GH_EXIT)."; exit 1
 fi
 COUNTS=$(printf '%s\n' "$CHECKS_RAW" | bash "$RCS" "$REPO_DIR" 2>/dev/null || printf '1 0 all 0\n')

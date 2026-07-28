@@ -15,7 +15,7 @@
     "matched by any check, blocking PRs without obvious cause.",
     "",
     "The same script also enforces an independent fourth surface that does",
-    "not depend on this file at all — it runs even when `required` is empty:",
+    "not depend on this file at all \u2014 it runs even when `required` is empty:",
     "  (d) workflow check-name uniqueness across .github/workflows/*.yml.",
     "Two jobs posting status checks under the same effective name (explicit",
     "`name:` or bare job key) cause GitHub to non-deterministically pick one",
@@ -26,7 +26,7 @@
     "  2. Update the workflow's job `name:` (or key) to match.",
     "  3. Update branch-protection contexts via gh api PATCH",
     "     repos/OWNER/REPO/branches/main/protection/required_status_checks",
-    "     (PATCH not PUT — see helmet SKILL.md B4b for the idempotent pattern).",
+    "     (PATCH not PUT \u2014 see helmet SKILL.md B4b for the idempotent pattern).",
     "  4. Run scripts/check-required-checks.sh to confirm zero drift.",
     "",
     "source_app values:",
@@ -44,14 +44,43 @@
     "label content (e.g. \"ubuntu-latest\" for 1-dim, \"ubuntu-latest, 18\" for",
     "multi-dim). Surface (a) appends ` (<matrix_value>)` to the bare-key or",
     "explicit-name match before comparing against `name`. Surface (a) does",
-    "NOT parse the workflow's strategy block — it only verifies that `name`",
+    "NOT parse the workflow's strategy block \u2014 it only verifies that `name`",
     "equals `<base> (<matrix_value>)`, regardless of whether the job actually",
     "uses a matrix. Omit `matrix_value` on non-matrix jobs: setting it on a",
     "job that lacks strategy.matrix and writing a self-consistent `name` will",
     "pass surface (a) but eventually hang PRs (branch protection ends up",
     "requiring a context that no check posts), and the drift detector will",
     "not surface that misuse directly. Surface (a) is the only consumer of",
-    "this field; (b)/(c)/(d) ignore it. See helmet SKILL.md B1c for full examples."
+    "this field as documentation only. The workflow inventory expands strategy.matrix into one row per rendered combination, so every surface matches a matrix entry by its rendered `name` like any other entry \u2014 and EVERY combination needs its own entry. An unrenderable matrix (expressions, fromJSON, include/exclude) is refused outright rather than classified under a base name. See helmet SKILL.md B1c for full examples.",
+    "",
+    "`advisory` is NOT decorative \u2014 surface (e) consumes it. Every status",
+    "check a workflow posts must appear in `required` OR `advisory`, and a",
+    "check in neither is drift (exit 1). That is the token-free guard against",
+    "the #530 failure: `coverage`, `shell-tests`, `validate` and",
+    "`version-drift` were required by branch protection but absent here, and",
+    "because relevant-check-status.sh treats `required` as an ALLOWLIST they",
+    "were filtered out of the merge decision entirely \u2014 invisible rather than",
+    "pending \u2014 so two FAILING required checks reported as green.",
+    "",
+    "Which list a check belongs in:",
+    "  required  \u2014 branch protection gates on it. Surface (b) enforces SET",
+    "              EQUALITY with the server's required_status_checks.contexts,",
+    "              so adding a name here without also adding it to branch",
+    "              protection is itself drift.",
+    "  advisory  \u2014 must never gate merge (informational, scheduled, or",
+    "              post-merge jobs). Listing a check here is an assertion that",
+    "              its failure is safe to merge past.",
+    "",
+    "Matrix jobs and surface (e): matrix entries classify NORMALLY, by their",
+    "rendered `<base> (<label>)` name \u2014 the same as any other entry. Every",
+    "rendered combination needs its own lock entry (in `required` or",
+    "`advisory`); there is no bare-base-name shortcut. Do NOT add a bare base",
+    "name entry \u2014 it satisfies nothing and surface (a) would report it as",
+    "drift, since the workflow inventory never emits an unrendered base name",
+    "for a matrix job. An earlier design classified a matrix job by its bare",
+    "base name and left matrix entries classifying nothing for (e); that was",
+    "a fail-OPEN \u2014 one entry blessed every value, so a matrix that gained a",
+    "value never had to declare it."
   ],
   "required": [
     {
@@ -99,7 +128,92 @@
     {
       "name": "GitGuardian Security Checks",
       "source_app": "gitguardian"
+    },
+    {
+      "name": "coverage",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/tests.yml",
+      "job": "coverage"
+    },
+    {
+      "name": "shell-tests",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/tests.yml",
+      "job": "shell-tests"
+    },
+    {
+      "name": "validate",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/tests.yml",
+      "job": "validate"
+    },
+    {
+      "name": "version-drift",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/tests.yml",
+      "job": "version-drift"
     }
   ],
-  "advisory": []
+  "advisory": [
+    {
+      "name": "compliance",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/tests.yml",
+      "job": "compliance"
+    },
+    {
+      "name": "changes",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/security.yml",
+      "job": "changes"
+    },
+    {
+      "name": "reports",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/security.yml",
+      "job": "reports"
+    },
+    {
+      "name": "Shell script quality",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/security.yml",
+      "job": "shellcheck-ci"
+    },
+    {
+      "name": "Dormant CVE sweep",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/scheduled-cve-scan.yml",
+      "job": "trivy-scheduled"
+    },
+    {
+      "name": "Enqueue Dependabot auto-merge",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/dependabot-auto-merge.yml",
+      "job": "auto-merge"
+    },
+    {
+      "name": "audit",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/bypass-audit.yml",
+      "job": "audit"
+    },
+    {
+      "name": "pin",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/pinact.yml",
+      "job": "pin"
+    },
+    {
+      "name": "release",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/release.yml",
+      "job": "release"
+    },
+    {
+      "name": "scorecard",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/scorecard.yml",
+      "job": "scorecard"
+    }
+  ]
 }

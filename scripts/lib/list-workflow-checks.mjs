@@ -68,12 +68,20 @@ for (const file of files) {
       process.stderr.write(`error: ${rel}: job '${key}' is not a mapping\n`);
       process.exit(2);
     }
-    // Effective check name: explicit `name:` when it is a plain string, else
-    // the job key. A `name:` carrying a ${{ }} expression cannot be resolved
-    // statically, so it is NOT treated as a literal — the base key is used and
-    // surface (b) remains the authority on the rendered context.
-    const named = typeof job.name === "string" && !job.name.includes("${{");
-    const name = named ? job.name : key;
+    // A `name:` carrying a ${{ }} expression is REFUSED, not silently replaced
+    // by the job key. GitHub evaluates the expression and posts the rendered
+    // name, so falling back to the key would have every surface inspect a
+    // context that is never posted — (e) could then report a repo fully
+    // classified while the real check went unlisted, which is #530 exactly.
+    // "I cannot resolve this" must never read as "this is fine".
+    if (typeof job.name === "string" && job.name.includes("${{")) {
+      process.stderr.write(
+        `error: ${rel}: job '${key}' has an expression-bearing name ` +
+          `(${job.name}) that cannot be resolved statically\n`,
+      );
+      process.exit(2);
+    }
+    const name = typeof job.name === "string" ? job.name : key;
     // Matrix jobs are emitted under their BARE BASE name. GitHub renders each
     // combination as `<base> (<label>)`, and enumerating those statically means
     // evaluating include/exclude and ${{ }} products — a YAML evaluator inside

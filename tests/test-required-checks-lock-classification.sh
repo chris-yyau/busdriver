@@ -306,6 +306,21 @@ mkrepo "$D" '{"required":[],"advisory":[]}' 'jobs:
 '
 assert_exit "malformed YAML rejected" 2 "$D"
 assert_mentions "explains the parse failure" "cannot parse" "$D"
+echo "== E25: an expression-bearing job name is REFUSED, not swapped for the key =="
+# GitHub evaluates ${{ }} in jobs.<id>.name and posts the RENDERED name. Falling
+# back to the job key would have every surface inspect a context that is never
+# posted — (e) reporting a repo fully classified while the real check went
+# unlisted. That is #530 exactly, so it must error instead.
+D="$TMPROOT/e25"
+mkrepo "$D" '{"required":[],"advisory":[]}' 'jobs:
+  alpha:
+    name: build-${{ matrix.os }}
+    runs-on: ubuntu-latest
+'
+assert_exit "expression job name rejected" 2 "$D"
+assert_mentions "explains why it cannot resolve" "cannot be resolved statically" "$D"
+
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]

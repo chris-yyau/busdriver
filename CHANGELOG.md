@@ -1,3 +1,10 @@
+## [1.100.4](https://github.com/chris-yyau/busdriver/compare/v1.100.3...v1.100.4) (2026-07-28)
+
+
+### Bug Fixes
+
+* **blueprint-review:** extract the last top-level reviewer verdict ([#503](https://github.com/chris-yyau/busdriver/issues/503)) ([#517](https://github.com/chris-yyau/busdriver/issues/517)) ([4901db4](https://github.com/chris-yyau/busdriver/commit/4901db4d52724b6addfa57192d5b42332c53c235)), closes [#355](https://github.com/chris-yyau/busdriver/issues/355)
+
 ## [1.100.3](https://github.com/chris-yyau/busdriver/compare/v1.100.2...v1.100.3) (2026-07-28)
 
 

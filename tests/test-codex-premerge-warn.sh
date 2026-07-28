@@ -53,6 +53,13 @@ for n in (names or ["shellcheck"]):
 PY
   exit 0
 fi
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+  # #505: the gate checks the marker's head SHA against the PR's live headRefOid.
+  # Echo the SHA the fixture marker is written with so these Codex-warning cases
+  # exercise the marker+CI allow path, not the SHA-mismatch block.
+  case "$*" in *headRefOid*) printf '%s\n' "${STUB_HEAD_OID:-}" ;; esac
+  exit 0
+fi
 if [ "${1:-}" = "api" ] && [ "${2:-}" = "graphql" ]; then
   # codex-active-repo.sh graphql. Emit one PR node; include a Codex review when
   # STUB_ACTIVE=1, else an empty node → HIT=0 → inactive.
@@ -94,6 +101,12 @@ mkdir -p "$GATEREPO/.claude"
 MARKER="$GATEREPO/.claude/pr-grind-clean.local"
 SKIP_FILE="$GATEREPO/.claude/skip-pr-grind.local"
 BYP_FILE="$GATEREPO/.claude/.merge-bypass-pending.local"
+
+# #505 marker contract: `<PR_NUMBER> <HEAD_SHA>`. The gh stub echoes STUB_HEAD_OID
+# for `pr view --json headRefOid`, so marker and "live" HEAD agree by construction
+# here — SHA-mismatch behaviour is pinned in tests/test-pre-merge-gate.sh, not here.
+export STUB_HEAD_OID="1111111111222222222233333333334444444444"
+write_marker() { printf '%s %s\n' "$1" "$STUB_HEAD_OID" > "$MARKER"; }
 
 cleanup() { rm -rf "$STUBDIR" "$GATEREPO"; }
 trap cleanup EXIT
@@ -174,7 +187,7 @@ echo "── pre-merge-gate integration (allow_merge epilogue) ─────�
 
 MERGE_INPUT='{"tool_name":"Bash","toolName":"Bash","cwd":"'"$GATEREPO"'","tool_input":{"command":"gh pr merge 459 --squash"}}'
 # Fresh marker for PR 459 → hits the pr-grind-clean + CI allow path.
-gate_out() { echo "459" > "$MARKER"; printf '%s' "$MERGE_INPUT" | STUB_ACTIVE="$1" STUB_ENGAGEMENT="$2" bash "$GATE" 2>/dev/null; rm -f "$MARKER"; }
+gate_out() { write_marker 459; printf '%s' "$MERGE_INPUT" | STUB_ACTIVE="$1" STUB_ENGAGEMENT="$2" bash "$GATE" 2>/dev/null; rm -f "$MARKER"; }
 
 # 1. active + none → allow path emits a systemMessage advisory...
 OUT=$(gate_out 1 none)
@@ -206,7 +219,7 @@ OUT=$(gate_out 1 engaged)
 #  force-on marker; the gate→adapter→warn wiring is already proven by case 1.)
 
 # 6. Kill switch → silent even when active+none (constraint 4)
-echo "459" > "$MARKER"
+write_marker 459
 OUT=$(printf '%s' "$MERGE_INPUT" | PR_GRIND_CODEX_RETRIGGER=0 STUB_ACTIVE=1 STUB_ENGAGEMENT=none bash "$GATE" 2>/dev/null)
 rm -f "$MARKER"
 [ -z "$OUT" ] && ok "kill switch → silent allow even on active+none" || bad "kill switch at gate (got: $OUT)"
@@ -238,7 +251,7 @@ rm -f "$SKIP_FILE" "$BYP_FILE"
 
 # 9. Repo/host override (-R other/repo) → advisory SILENT even on active+none
 #    (constraint 5 — origin-derived target may be the wrong repo).
-echo "459" > "$MARKER"
+write_marker 459
 OVERRIDE_INPUT='{"tool_name":"Bash","toolName":"Bash","cwd":"'"$GATEREPO"'","tool_input":{"command":"gh pr merge 459 -R other/repo --squash"}}'
 OUT=$(printf '%s' "$OVERRIDE_INPUT" | STUB_ACTIVE=1 STUB_ENGAGEMENT=none bash "$GATE" 2>/dev/null)
 rm -f "$MARKER"
@@ -251,7 +264,7 @@ else
 fi
 
 # 9b. Attached short-option form (-Rother/repo, no space) must ALSO suppress.
-echo "459" > "$MARKER"
+write_marker 459
 ATTACHED_INPUT='{"tool_name":"Bash","toolName":"Bash","cwd":"'"$GATEREPO"'","tool_input":{"command":"gh pr merge 459 -Rother/repo --squash"}}'
 OUT=$(printf '%s' "$ATTACHED_INPUT" | STUB_ACTIVE=1 STUB_ENGAGEMENT=none bash "$GATE" 2>/dev/null)
 rm -f "$MARKER"
@@ -263,7 +276,7 @@ fi
 
 # 9c. Token-splitting quoted form (-"R"other) must ALSO suppress — the detector
 #     normalizes away quote/backslash chars before the substring test.
-echo "459" > "$MARKER"
+write_marker 459
 SPLITQ_INPUT='{"tool_name":"Bash","toolName":"Bash","cwd":"'"$GATEREPO"'","tool_input":{"command":"gh pr merge 459 -\"R\"other/repo --squash"}}'
 OUT=$(printf '%s' "$SPLITQ_INPUT" | STUB_ACTIVE=1 STUB_ENGAGEMENT=none bash "$GATE" 2>/dev/null)
 rm -f "$MARKER"
@@ -275,7 +288,7 @@ fi
 
 # 9d. Inline GH_REPO= host/repo assignment (checked against the normalized cmd
 #     like the flags) must ALSO suppress.
-echo "459" > "$MARKER"
+write_marker 459
 GHREPO_INPUT='{"tool_name":"Bash","toolName":"Bash","cwd":"'"$GATEREPO"'","tool_input":{"command":"GH_REPO=other/repo gh pr merge 459 --squash"}}'
 OUT=$(printf '%s' "$GHREPO_INPUT" | STUB_ACTIVE=1 STUB_ENGAGEMENT=none bash "$GATE" 2>/dev/null)
 rm -f "$MARKER"
@@ -289,7 +302,7 @@ fi
 #     outer hook timeout, the advisory is SKIPPED (silent) rather than risking a
 #     harness kill of an authorized merge. Force it by shrinking the outer cap so
 #     remaining = outer - elapsed - 4 < 2 → skip. Active+none would normally warn.
-echo "459" > "$MARKER"
+write_marker 459
 OUT=$(printf '%s' "$MERGE_INPUT" | CODEX_WARN_OUTER_BUDGET=4 STUB_ACTIVE=1 STUB_ENGAGEMENT=none bash "$GATE" 2>/dev/null)
 rm -f "$MARKER"
 [ -z "$OUT" ] && ok "tiny remaining budget → advisory skipped (silent, never overruns cap)" || bad "should skip advisory when no headroom (got: $OUT)"

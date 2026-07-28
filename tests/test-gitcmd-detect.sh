@@ -34,6 +34,16 @@ COMMIT_YES = [
     'command git commit -m x',
     'env FOO=1 git commit',
     'env -i FOO=1 git commit',           # env option
+    # APPEND-form assignment prefix. `A+=1 git commit` runs the commit exactly like
+    # `A=1 git commit`, but the assignment regex was `^\w+=` — no `+` — so the
+    # assignment stayed in argv, argv[0] was not `git`, and the command went
+    # UNDETECTED in every gate sharing this detector. Fail-open, found via #505.
+    'A+=1 git commit -m x',
+    'A+=1 B=2 git commit',               # mixed append + plain prefixes
+    'env A+=1 git commit',               # append form behind a wrapper
+    'A[0]=1 git commit -m x',            # INDEXED assignment word
+    'A[0]+=1 git commit -m x',           # indexed + append
+    'A[foo[0]]=1 git commit -m x',       # NESTED subscript — must not stop at first ]
     '/usr/bin/git commit',               # absolute-path exe
     '/usr/bin/env -i git commit',        # absolute-path wrapper
     'sudo -u nobody git commit',         # arg-taking option
@@ -913,6 +923,48 @@ check("gh_pr untrusted_cd opt-in", g.gh_pr('cd /tmp/r; gh pr merge 5', 'merge', 
 check("gh_pr 3-tuple by default", len(g.gh_pr('cd /tmp/r; gh pr merge 5', 'merge')), 3)
 check("gh_pr untrusted_cd empty on '&&'", g.gh_pr('cd /tmp/r && gh pr merge 5', 'merge', with_untrusted_cd=True)[3], '')
 check("git -C target_dir", g.git_commit('git -C /tmp/r commit')[1], '/tmp/r')
+# A newline inside a quoted cd target must NOT be silently truncated away: callers
+# reject a CR/LF-bearing target, and a truncated one gave them nothing to reject
+# while bash still ran from the real (different) directory.
+def _raises(fn):
+    try:
+        fn(); return False
+    except ValueError:
+        return True
+check("cd target with LF raises (fail-closed)", _raises(lambda: g._cd_target('cd "/safe\nother"')), True)
+# split_segments must not strip a trailing CR either — bash keeps it and cds into a
+# DIFFERENT directory, so stripping it here hid the whole attack from _cd_target.
+check("segment keeps trailing CR", _raises(
+    lambda: g._cd_target(g.split_segments('cd /reviewed\r && gh pr merge 31')[0][1])), True)
+check("cd target with CR raises (fail-closed)", _raises(lambda: g._cd_target('cd "/safe\rother"')), True)
+# Trailing, UNQUOTED CR/LF: str.strip() treats \r/\n as whitespace and would
+# silently drop a trailing CR before the check ever ran if the check ran on
+# the already-stripped value — the gate would then approve the marker for
+# the CR-less path while bash actually `cd`s into the distinct CR-suffixed
+# directory. Checking the raw captured group before stripping closes this
+# (cubic P1, PR #511).
+check("cd target with trailing unquoted CR raises (fail-closed)", _raises(lambda: g._cd_target('cd /safe\r')), True)
+check("cd target with trailing unquoted LF raises (fail-closed)", _raises(lambda: g._cd_target('cd /safe\n')), True)
+check("ordinary cd target still resolves", g._cd_target('cd /tmp/r'), '/tmp/r')
+# `git -C` is the OTHER derivation of target_dir and must reject identically.
+check("git -C target with LF raises", _raises(lambda: g.git_commit('git -C "/safe\nother" commit')), True)
+check("git -C target with CR raises", _raises(lambda: g.git_commit('git -C "/safe\rother" commit')), True)
+# UNQUOTED trailing CR on a `-C` operand: shlex's default whitespace is
+# ' \t\r\n', so `shlex.split` silently treats a raw CR the same as a space --
+# `-C /safe<CR> commit` tokenized to `-C /safe` `commit` with the CR just
+# dropped as a separator, instead of `-C` `/safe<CR>` -- hiding it from
+# `_reject_crlf` entirely (the "RAW operand" comment above that call was only
+# true after tokenization, not after shlex had already eaten the CR). Bash's
+# own IFS does not include CR, so bash keeps `/safe<CR>` as ONE word and
+# scopes git to a directory the gate never validated (coderabbit #511).
+check("git -C target with UNQUOTED trailing CR raises (fail-closed)",
+      _raises(lambda: g.git_commit('git -C /safe\r commit')), True)
+check("git -C target with UNQUOTED embedded CR raises (fail-closed)",
+      _raises(lambda: g.git_commit('git -C /safe\rother commit')), True)
+# ...and the ordinary (no CR/LF) unquoted case must still resolve normally --
+# excluding \r from shlex's whitespace must not break plain `-C` parsing.
+check("git -C target with no CR/LF still resolves",
+      g.git_commit('git -C /safe commit')[1], '/safe')
 check("cd + relative -C", g.git_commit('cd /repoA && git -C nested commit')[1], '/repoA/nested')
 check("sequential -C", g.git_commit('git -C /repoA -C nested commit')[1], '/repoA/nested')
 check("commit -C is reuse-msg not cd", g.git_commit('git commit -C HEAD')[1], '')
@@ -925,6 +977,148 @@ check("merge pr_num", g.gh_pr('command gh pr merge 5 --squash', 'merge')[2], '5'
 check("merge pr_num flag-first", g.gh_pr('gh pr merge --squash 5', 'merge')[2], '5')
 check("merge pr_num after -R flag", g.gh_pr('gh pr merge -R owner/repo 5', 'merge')[2], '5')
 check("merge pr_num skips value-flag arg", g.gh_pr('gh pr merge --subject 123 5', 'merge')[2], '5')
+
+# ── gh_pr_repo_override: cross-repo selector on a merge (#505) ────────
+# Two scopes on purpose — flag form is argv-scoped, env form is whole-command.
+# See the docstring; the asymmetry is the whole point of the function.
+OVERRIDE_YES = [
+    'gh pr merge 31 --squash -R other/repo',        # separate -R
+    'gh pr merge 31 --squash -Rother/repo',         # attached -R
+    'gh pr merge 31 --squash --repo other/repo',    # separate --repo
+    'gh pr merge 31 --squash --repo=other/repo',    # = form
+    'gh -R other/repo pr merge 31',                 # gh GLOBAL flag really retargets
+    'GH_REPO=other/repo gh pr merge 31',            # bare env assignment
+    'GH_HOST=ghe.corp gh pr merge 31',              # host selector too
+    'env "GH_REPO=other/repo" gh pr merge 31',      # quoted → no whitespace before it
+    '(GH_REPO=other/repo gh pr merge 31)',          # grouped → `(` before it
+    "GH_REPO=other/repo bash -c 'gh pr merge 31'",  # merge lands in a NESTED chunk
+    "bash -c 'gh -R other/repo pr merge 31'",       # flag form inside a payload
+    # The shell reassembles a name split by quoting or escaping; both of these
+    # really export GH_REPO, so a regex over RAW text would miss them.
+    'env GH_RE"PO"=other/repo gh pr merge 31',      # quote-split name
+    'env GH_RE\\PO=other/repo gh pr merge 31',      # backslash-split name
+    "GH_REPO''=other/repo gh pr merge 31",          # empty quotes inside the name
+    'GH_RE\\\nPO=other/repo gh pr merge 31',        # continuation-split name
+    'GH_REPO+=other/repo gh pr merge 31',           # append form EXPORTS when unset
+    'GH_HOST+=ghe.corp gh pr merge 31',
+    # pflag shorthand CLUSTERS — gh accepts these and they really set --repo.
+    'gh pr merge 31 -sRother/repo',                 # R mid-cluster, attached value
+    'gh pr merge 31 -sR other/repo',                # R last, separate value
+    'gh pr merge 31 -adR other/repo',               # several bools then R
+    'if GH_REPO=other/repo gh pr merge 31; then :; fi',   # behind a shell keyword
+    'env -u FOO GH_REPO=other/repo gh pr merge 31',      # after a wrapper option ARG
+    '! GH_REPO=other/repo gh pr merge 31',               # pipeline negation still runs
+    # `export` puts it in the CHILD's environment, so it reaches a later segment.
+    'export GH_REPO=other/repo; gh pr merge 31',
+    'export GH_REPO=other/repo && gh pr merge 31',
+    'declare -x GH_HOST=ghe.corp; gh pr merge 31',
+    'GH_REPO=other/repo; export GH_REPO; gh pr merge 31',   # exported a step apart
+    'export GH_REPO; GH_REPO=other/repo; gh pr merge 31',   # ...and in either order
+    'if export GH_REPO=other/repo; then gh pr merge 31; fi',  # export not leading
+    "bash -c 'f(){ local -x GH_REPO=other/repo; gh pr merge 31; }; f'",  # local -x
+    # Deliberate OVER-blocks: neither actually exports, but distinguishing them means
+    # interpreting the command. Fail-CLOSED is the correct residue here.
+    'declare GH_REPO=other/repo; gh pr merge 31',
+    'export -n GH_REPO=other/repo; gh pr merge 31',
+    # A BARE assignment in another segment. It looks inert — a shell variable the
+    # child never sees — but bash preserves the export attribute across
+    # re-assignment, so if the caller's shell already exported GH_REPO this DOES
+    # retarget the merge. That is ambient state no parse can see, so it fails closed.
+    'GH_REPO=other/repo; gh pr merge 31',
+    'GH_REPO=other/repo gh pr view 31 && gh pr merge 31',
+    # A PR URL carries its own owner/repo — a positional selector, no flag involved.
+    'gh pr merge https://github.com/other/repo/pull/31',
+    'gh pr merge https://github.com/other/repo/pull/31 --squash --admin',
+]
+OVERRIDE_NO = [
+    'gh pr merge 31 --squash',                      # plain merge
+    'gh pr merge 31 --squash --admin --delete-branch',
+    # THE regression case: pr-grind's auto-admin block runs a `-R` view and an
+    # unselected merge in ONE call. A whole-command test blocks this and pr-grind
+    # can never merge — that is why the flag form is argv-scoped.
+    'gh -R "$OWNER/$REPO" pr view 31 --json mergeStateStatus && gh pr merge 31 --squash --admin',
+    'gh pr view 31 -R other/repo && gh pr merge 31',  # selector on the VIEW only
+    'MY_GH_REPO=other/repo gh pr merge 31',         # word-char before it → not ours
+    'GH_REPO=other/repo gh pr view 31',             # no merge at all → nothing to steer
+    'GH_REPO=other/repo git commit -m x',           # not gh
+    # An R inside a value-taking shorthand's ATTACHED VALUE is not a selector:
+    # pflag stops cluster-scanning at -t/-b/-F, so these are subjects/bodies.
+    'gh pr merge 31 -tRefactor',                    # subject "Refactor"
+    'gh pr merge 31 -stReview --squash',            # -s bool, then -t value "Review"
+    'gh pr merge 31 -bReported by R',               # body containing R
+    'gh pr merge 31 --squash --delete-branch',      # long bools only
+    # A value-taking flag's SEPARATE operand is not a selector either — consuming it
+    # is what stops `--subject -R` from false-blocking a legitimate merge.
+    'gh pr merge 31 --subject -R',                  # -R is the subject VALUE
+    'gh pr merge 31 -t -R --squash',                # short form, same shape
+    'gh pr merge 31 --body-file -R',
+    # Inert look-alikes: text that merely CONTAINS an assignment exports nothing.
+    "gh pr merge 31 --body 'Document GH_REPO=owner/repo'",
+    "gh pr merge 31 --subject 'set GH_HOST=ghe.corp first'",
+    # Prose that BEGINS with the assignment: still one argument token, and a real
+    # assignment word never contains unquoted whitespace.
+    "gh pr merge 31 --body 'GH_REPO=owner/repo is the default'",
+    "echo 'GH_REPO=owner/repo is the default' && gh pr merge 31",
+    # -A/--author-email takes a value; an R inside that email is not a selector.
+    'gh pr merge 31 -AfooR@example.com',
+    'gh pr merge 31 -A foo@example.com --squash',
+    # Cluster ENDING in a value-taking shorthand: the next token is that value.
+    'gh pr merge 31 -st -R',                        # -s bool, -t subject "-R"
+    'gh pr merge 31 -db -R',                        # -d bool, -b body "-R"
+]
+for c in OVERRIDE_YES:
+    check(f"override+ {c!r}", g.gh_pr_repo_override(c, 'merge'), True)
+for c in OVERRIDE_NO:
+    check(f"override- {c!r}", g.gh_pr_repo_override(c, 'merge'), False)
+
+# ── gh_pr_auto_merge: --auto QUEUES the merge past the gate's check (#505) ──
+# pflag accepts `--auto=<bool>` for booleans, so an exact-token match alone let
+# `--auto=true` through. False spellings genuinely disable auto and must NOT
+# match; an unrecognized value fails CLOSED (gh would reject it anyway).
+AUTO_YES = [
+    'gh pr merge 31 --auto',
+    'gh pr merge 31 --auto=true', 'gh pr merge 31 --auto=1',
+    'gh pr merge 31 --auto=t', 'gh pr merge 31 --auto=True',
+    'gh pr merge 31 --auto=TRUE',
+    'gh pr merge 31 --auto=bogus',          # unparseable → fail CLOSED
+    'gh pr merge 31 --squash --auto --delete-branch',
+    "bash -c 'gh pr merge 31 --auto'",      # nested payload
+]
+AUTO_NO = [
+    'gh pr merge 31 --squash',
+    'gh pr merge 31 --auto=false', 'gh pr merge 31 --auto=0',
+    'gh pr merge 31 --auto=f', 'gh pr merge 31 --auto=False',
+    'gh pr merge 31 --auto=FALSE',
+    'gh pr merge 31 --disable-auto',        # a DIFFERENT flag, not a prefix match
+    'gh pr view 31 --auto && gh pr merge 31',   # flag is on the VIEW, not the merge
+    "gh pr merge 31 --body 'use --auto next time'",  # inert prose in an operand
+]
+# Deliberate OVER-blocks: a `--auto` inside a bash COMMENT is inert, but shlex has
+# already stripped quoting by the time we see the token, so a comment `#` cannot be
+# told apart from a legitimate hash-prefixed ARGUMENT. Skipping at `#` was tried and
+# reverted — `gh pr merge '#feature' --auto` would then hide a live flag (fail-OPEN).
+# A false block is visible and reworded; a bypass is not.
+AUTO_OVERBLOCK = [
+    'gh pr merge 31 --squash # do not use --auto',
+    "gh pr merge '#feature' --auto",     # the case that makes skipping unsafe
+]
+for c in AUTO_OVERBLOCK:
+    check(f"auto-overblock {c!r}", g.gh_pr_auto_merge(c, 'merge'), True)
+for c in AUTO_YES:
+    check(f"auto+ {c!r}", g.gh_pr_auto_merge(c, 'merge'), True)
+for c in AUTO_NO:
+    check(f"auto- {c!r}", g.gh_pr_auto_merge(c, 'merge'), False)
+
+# Property sweep: the env form must survive every quoting/grouping/wrapper shape,
+# since an assignment is ambient and reaches the merge however it is nested.
+for _q in ('', '"', "'"):
+    for _tpl in ('{a} gh pr merge 31',
+                 '({a} gh pr merge 31)',
+                 '{{ {a} gh pr merge 31; }}',
+                 'env {a} gh pr merge 31',
+                 "{a} bash -c 'gh pr merge 31'"):
+        _c = _tpl.format(a=f'{_q}GH_REPO=other/repo{_q}')
+        check(f"gen override+ {_c!r}", g.gh_pr_repo_override(_c, 'merge'), True)
 
 # ── Property-based: {leading operators} × {wrappers} × git-commit should ALL
 #    detect; the same form as an ARGUMENT to a non-git command must NOT. ──────

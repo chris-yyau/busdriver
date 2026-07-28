@@ -65,7 +65,7 @@ exit (deleting the gate's audit trail).
 
 - **Item 3 — the skip file is a lease.** One operator `touch` now authorizes 20 gated
   writes inside a 3600s window instead of exactly one, and **every use appends to
-  `bypass-log.jsonl`** with its remaining count. That is enforced, not merely stated: a
+  `bypass-log.jsonl`** recording the slot it claimed and the ceiling. That is enforced, not merely stated: a
   use whose audit append fails is refused and its slot returned, the same rule
   `design-clear.sh` applies ("an unlogged release is not a sanctioned bypass"). Uses are
   immutable `<mtime>.<n>` slots claimed with `mkdir`, never a mutable counter, so

@@ -332,8 +332,13 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
     # survives. Same command-word-only treatment and same rationale as #290 above — a
     # cooperative agent reaching for the easy path is the realistic threat, and the
     # wrapper-hidden / eval forms stay in the documented ADR 0006 residual.
+    # rmdir and dd join them: rmdir deletes an EMPTY spent lease slot, which would let
+    # that slot be reclaimed and the 20-use ceiling extended indefinitely, and dd is the
+    # obvious remaining way to blank the audit log. dd was previously an accepted ADR
+    # 0006 residual; it stops being acceptable once bypass-log.jsonl is protected state,
+    # since a residual that is the EASIEST path is not a residual, it is the door.
     if cmd_word is not None and _bn(cmd_word) in ("touch", "cp", "mv", "ln", "install",
-                                                  "truncate", "unlink"):
+                                                  "truncate", "unlink", "rmdir", "dd"):
         for w in seg:
             m = _match_marker(w, markers, simple_vars)
             if m:
@@ -360,8 +365,9 @@ def _writes_marker(cmd, markers):
     #     evaluation (python -c, perl -e, ruby -e, node -e, awk, xargs,
     #     find -exec/-delete)
     #   - command substitution: backticks and $(...)
-    #   - indirect writers NOT enumerated as command words: dd, and other
-    #     copy/convert tools (cp/mv/ln/install ARE now blocked — see #290 below)
+    #   - indirect writers NOT enumerated as command words: other copy/convert tools
+    #     (cp/mv/ln/install ARE blocked — see #290 below; truncate/unlink/rmdir/dd
+    #     joined them in #519 once the lease ledger and audit log became gate state)
     #   - runtime name synthesis: pathname globbing (* ? [ ]) and brace expansion
     #     ({a,b}) that expand to the marker (rm ...loca?, tee ...loca{l,})
     #   - environment / nested / computed shell variables, ANSI-C escape
@@ -776,7 +782,7 @@ _LEASE_DIR="$STATE_DIR/.skip-design-review-lease.d"
 #       1 = no usable skip file (fall through to the normal block)
 #       2 = a block decision has ALREADY been emitted on stdout (caller exits)
 _skip_lease_consume() {
-    local mtime age used remaining now claimed n _d
+    local mtime age used now claimed n _d
     [ -f "$_SKIP_FILE" ] || return 1
     # A git-tracked (git add -f'd) skip file is repo-controlled, not operator consent
     # (#325). Anchor the guard on the SAME path the `-f` check tests — that check is
@@ -881,10 +887,15 @@ $STATE_DIR/skip-design-review.local in their terminal."
     # The slot is already durable on disk (mkdir succeeded), so the use is recorded
     # BEFORE it is granted — a crash here loses the write, never the accounting.
     used="$claimed"
-    remaining=$(( LEASE_MAX_USES - used ))
     rm -f "$STATE_DIR/.impl-gate-block-count.local" 2>/dev/null || true
-    # ── Bypass telemetry — one event PER USE, with the remaining count so the lease
-    # state is observable from the log without consuming a use to check it.
+    # ── Bypass telemetry — one event PER USE, recording the SLOT claimed and the
+    # ceiling, so lease state is observable from the log without consuming a use to
+    # check it. Deliberately NOT a "remaining" count: the slot number is what this
+    # process actually knows. Under concurrency (or after a refused use left a hole that
+    # is later reclaimed) a computed remaining would be wrong in a way the reader could
+    # not detect — two processes could log remaining=18 then remaining=19. The slot
+    # number is always a truthful lower bound on uses spent; count the events, or the
+    # slot dirs, for the live figure.
     #
     # FAIL-CLOSED on a failed append, matching design-clear.sh: an unlogged release is
     # not a sanctioned bypass. A `|| true` here would let an unwritable log silently
@@ -901,8 +912,8 @@ $STATE_DIR/skip-design-review.local in their terminal."
     # non-regular target, refuses to append onto a pre-existing torn line, and requires
     # the full write plus fsync. Same reasoning as the writer in design-clear.sh.
     if ! python3 -I "$_GATE_LIBDIR/audit_append.py" "$STATE_DIR" \
-         "$(printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-implementation","lease_use":%s,"lease_remaining":%s}' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$used" "$remaining")" 2>/dev/null; then
+         "$(printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-implementation","lease_slot":%s,"lease_max":%s}' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$used" "$LEASE_MAX_USES")" 2>/dev/null; then
         rmdir "$_LEASE_DIR/$mtime.$claimed" 2>/dev/null || true
         return 1
     fi

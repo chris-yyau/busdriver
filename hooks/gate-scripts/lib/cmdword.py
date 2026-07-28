@@ -55,6 +55,14 @@ FILE_MOD_PATTERNS = [
     r"\brm\s",
     r"\bln\s",
     r"\binstall\s",
+    # #519 additions must appear here too. This list is the UNPARSEABLE-command
+    # fallback, so a verb missing from it fails OPEN on exactly the inputs the token
+    # scan cannot judge — e.g. `dd if=/dev/zero of=src/x <<EOF` with an apostrophe in
+    # the heredoc body would parse-fail and then classify as read-only.
+    r"\btruncate\s",
+    r"\bunlink\s",
+    r"\brmdir\s",
+    r"\bdd\s",
 ]
 
 # Verbs that modify files by themselves. `sed` is absent — it only modifies with -i,
@@ -63,7 +71,7 @@ FILE_MOD_PATTERNS = [
 # `truncate -s 0 f` classified as a read. Token equality makes them safe to add: the
 # `grep -nE 'rm |mv |truncate'` case from #519 keeps its pattern as ONE token.
 _MOD_VERBS = frozenset(("tee", "patch", "cp", "mv", "rm", "ln", "install",
-                        "truncate", "unlink"))
+                        "truncate", "unlink", "rmdir", "dd"))
 
 # Interpreters that EXECUTE a string operand. Tokenizing reduces `bash -c 'rm -rf src'`
 # to the single token `rm -rf src`, which equals no verb — so without recursing into the
@@ -84,6 +92,16 @@ _MAX_DEPTH = 4
 # `mv() {`, `rm ( ) {`. Group 1 keeps the leading separator/whitespace so the segment
 # structure around it is preserved.
 _FUNC_DEF_RE = re.compile(r"(^|[;&|]\s*)[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)")
+
+# Preambles that RUN the command that follows them. Peeling these finds the real verb
+# without scanning every token: scanning all tokens catches `sudo rm -rf src` but also
+# misreads `grep dd notes.txt` and `echo rmdir`, where the verb is plain data. Peeling
+# gets both right, which pinning the command word alone does not.
+_WRAPPERS = frozenset(("sudo", "doas", "env", "nohup", "timeout", "nice", "ionice",
+                       "setsid", "stdbuf", "command", "exec", "xargs", "time"))
+_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
+# A bare duration/number operand belonging to a wrapper (`timeout 5 rm x`, `nice 10 mv`).
+_NUMERIC_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$")
 
 
 def _split_simple_commands(s):
@@ -273,18 +291,45 @@ def _executed_operands(toks):
     return out
 
 
+def _effective_command_word(toks):
+    """The verb this simple command actually RUNS, with wrapper preambles peeled.
+
+    Leading `NAME=VALUE` assignments, flags, wrapper commands, and a wrapper numeric
+    operand are skipped; the first token that survives is what executes.
+    """
+    for t in toks:
+        if _ASSIGN_RE.match(t) or t.startswith("-") or _NUMERIC_RE.match(t):
+            continue
+        b = _basename(t)
+        if b in _WRAPPERS:
+            continue
+        return b
+    return None
+
+
 def _segment_is_mod(toks):
-    """True iff this simple command's tokens contain a file-modifying verb."""
+    """True iff this simple command RUNS a file-modifying verb."""
     names = [_basename(t) for t in toks]
-    if any(n in _MOD_VERBS for n in names):
+    if _effective_command_word(toks) in _MOD_VERBS:
         return True
+    # find runs its own commands. `-delete` writes by itself; `-exec`/`-execdir`/`-ok`
+    # take a command whose verb sits in the very next token. Without this, switching
+    # from an all-token scan to wrapper peeling would regress `find . -exec rm {} \;`,
+    # which the original regexes did catch.
+    if _effective_command_word(toks) == "find":
+        if any(n in ("-delete",) for n in names):
+            return True
+        for i, t in enumerate(toks):
+            if t in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(toks):
+                if _basename(toks[i + 1]) in _MOD_VERBS:
+                    return True
     # sed modifies only in-place, so require BOTH the verb and an -i flag. The flag
     # must come AFTER the sed token: in `grep -i sed notes.txt` the -i belongs to
     # grep and sed is its search string, which is read-only. Checking order rather
     # than command-word position keeps `sudo sed -i ...` blocked. `-i` may carry a
     # suffix (BSD `sed -i ''`, GNU `sed -i.bak`) or be bundled (`-ni`), so match any
     # leading-dash token whose flag letters include i.
-    if "sed" in names:
+    if _effective_command_word(toks) == "sed":
         after = toks[names.index("sed") + 1:]
         return any(re.match(r"^-[A-Za-z]*i", t) for t in after)
     return False
@@ -343,6 +388,12 @@ def _demo():
     """Self-check: the #519 false positives must be allowed, real writes still caught."""
     allowed = [
         "grep -nE 'rm |mv |truncate' script.sh",
+        # Verbs as plain DATA in a read-only command — the class that made an
+        # all-token scan untenable.
+        "grep dd notes.txt",
+        "echo rmdir",
+        "echo cp this line",
+        "git log --oneline | grep rm",
         # #519 false positive 3: a probe DEFINING functions named mv / [.
         "mv() { echo harmless; }",
         "rm () { echo harmless; }",
@@ -352,6 +403,12 @@ def _demo():
         "sed -n '1,10p' file.txt",
         "grep -i sed notes.txt",
         "grep -nE 'rm |mv |truncate' script.sh",
+        # Verbs as plain DATA in a read-only command — the class that made an
+        # all-token scan untenable.
+        "grep dd notes.txt",
+        "echo rmdir",
+        "echo cp this line",
+        "git log --oneline | grep rm",
         # #519 false positive 3: a probe DEFINING functions named mv / [.
         "mv() { echo harmless; }",
         "rm () { echo harmless; }",
@@ -394,6 +451,12 @@ def _demo():
         "env -S'rm -rf x'",
         "truncate -s 0 notes.txt",
         "unlink notes.txt",
+        "rmdir stale.d",
+        "dd if=/dev/null of=notes.txt",
+        "find . -exec rm {} ;",
+        "find . -delete",
+        "timeout 5 rm x",
+        "echo hi | xargs rm",
     ]
     for c in allowed:
         assert not is_file_mod(c), "should be allowed: " + c

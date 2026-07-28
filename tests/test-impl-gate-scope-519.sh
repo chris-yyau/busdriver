@@ -79,6 +79,12 @@ check "read-only sed -n" allow "$(bash_decision "sed -n '1,10p' file.txt")"
 check "grep -i with 'sed' as the search string" allow \
     "$(bash_decision "grep -i sed notes.txt")"
 check "plain listing" allow "$(bash_decision "ls -la")"
+# A verb as plain DATA in a read-only command. This is why the classifier peels wrapper
+# preambles instead of scanning every token: an all-token scan catches `sudo rm -rf src`
+# but also misreads these.
+check "grep with a verb as the search string" allow "$(bash_decision "grep dd notes.txt")"
+check "echo naming a verb" allow "$(bash_decision "echo rmdir")"
+check "piping into grep for a verb" allow "$(bash_decision "git log --oneline | grep rm")"
 # #519 false positive 3: a probe DEFINING a function named mv. The paren split leaves
 # a bare `mv` segment that reads as an invocation unless the header is stripped.
 check "defining a shell function named mv" allow \
@@ -99,6 +105,10 @@ check "sed -i in place" block "$(bash_decision "sed -i 's/a/b/' f")"
 check "sed -i.bak in place" block "$(bash_decision "sed -i.bak 's/a/b/' f")"
 check "tee" block "$(bash_decision "cat x | tee out.txt")"
 check "second segment writes" block "$(bash_decision "ls && rm x")"
+check "timeout wrapper hiding rm" block "$(bash_decision "timeout 5 rm x")"
+check "xargs running rm" block "$(bash_decision "echo hi | xargs rm")"
+check "find -exec rm" block "$(bash_decision "find . -exec rm {} ;")"
+check "find -delete" block "$(bash_decision "find . -delete")"
 # Executed-string operands. Tokenizing alone reduces these to inert single tokens, so
 # each was a live fail-open in the first cut of this change — caught by codex review.
 # Note the shape is IDENTICAL to the allowed `bash -c 'echo "(mv FAILS)"'` above; only
@@ -229,6 +239,11 @@ check "truncate on the audit log is blocked" block \
     "$(bash_decision "truncate -s 0 .claude/bypass-log.jsonl")"
 check "unlink on the audit log is blocked" block \
     "$(bash_decision "unlink .claude/bypass-log.jsonl")"
+check "dd blanking the audit log is blocked" block \
+    "$(bash_decision "dd if=/dev/null of=.claude/bypass-log.jsonl")"
+# rmdir on a spent slot would let it be reclaimed, extending the ceiling indefinitely.
+check "rmdir on a spent lease slot is blocked" block \
+    "$(bash_decision "rmdir .claude/.skip-design-review-lease.d/1.1")"
 
 echo "── item 2: block message points at the audited release path ────────"
 

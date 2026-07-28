@@ -583,7 +583,7 @@ When the user wants to bypass design review (e.g., plan already validated out-of
 4. When all 20 uses are spent → gate deletes the file and blocks, naming the exhaustion.
 5. If no file → gate falls through to its normal allow/block rules (Write/Edit of implementation code → block; file-modifying Bash → block; SAFE tool uses → allow).
 
-The lease is keyed to the file's mtime, so re-`touch`ing to extend one starts a fresh lease — and also resets the 30s clock, so an agent cannot self-extend. Every use appends to `.claude/bypass-log.jsonl` with its remaining count, so lease state is observable from the log without spending a use to check it.
+The lease is keyed to the file's mtime, so re-`touch`ing to extend one starts a fresh lease — and also resets the 30s clock, so an agent cannot self-extend. Every use appends to `.claude/bypass-log.jsonl` recording the slot it claimed and the ceiling, so lease state is observable from the log without spending a use to check it. (The slot number, not a "remaining" count — under concurrency a computed remaining would be wrong in a way the reader could not detect. Count the events for the live figure.)
 
 **A use is spent only by a genuinely gated operation.** The check runs *after* tool-type discrimination and every allowlist (also #519 — it used to run before), so a read-only `ls`, a `git status`, or a write to an already-exempt path (a design doc, `docs/reviews/`, `.claude/`) no longer burns the hatch. During the **<30s window** the file is still destroyed by any gated call, so the "don't fire tool calls while waiting" rule below still holds for that window.
 
@@ -629,7 +629,7 @@ Monitor(command: "sleep 35 && echo READY", timeout: 45)
 - **NEVER ask the user to wait** — Claude does the wait via `Monitor`.
 - **Use `Monitor(command: "sleep 35 && echo READY")`**, not `sleep 32` directly.
 - **Leased, not single-use** (#519 / ADR 0031) — one `touch` authorizes **20 gated writes within 3600s**, so a whole approved sub-plan can be implemented without re-arming per write. Only a genuinely gated operation spends a use. When the lease exhausts or expires the gate deletes the file and says so; the user must `touch` it again (and Claude waits another 35s).
-- **Audit trail** — every use is logged to `.claude/bypass-log.jsonl` with its remaining count.
+- **Audit trail** — every use is logged to `.claude/bypass-log.jsonl` with the slot it claimed. A use whose audit append fails is REFUSED, not granted silently.
 - **Prefer the recorded release for a stuck token** — to clear ONE pending design-review token with a durable audit event instead of leaning on the hatch, run `scripts/design-clear.sh` (no args lists what is pending). The block message names it. The event records the doc's review-coverage marker, so a release under DEGRADED coverage says which lenses were absent.
 - **If the file gets rejected-and-deleted** (e.g., Claude fat-fingered a tool call during the window), ask the user to `touch` it again and start the wait over.
 

@@ -660,3 +660,20 @@ def test_an_own_line_non_verdict_value_does_not_re_enable_mid_line_objects():
         'wrapper: {"status": "PASS", "reviewer_id": "codex", "issues": []}\n'
     )
     assert ex.extract_from_text(raw) is None
+
+
+def test_log_echo_recognized_even_when_the_real_verdict_desyncs_the_bracket_scan():
+    """FAIL-OPEN GUARD (Codex, PR #525): echo recognition must not depend on
+    what the REAL verdict below happens to contain.
+
+    Echo recognition was gated behind `_region_end`'s full-transcript scan for
+    a close. That scan runs past the echo's own line into the real verdict
+    below it, and a `]` inside an issue description desyncs the bracket stack
+    there, making `_region_end` report `mismatched=True` for a region whose
+    OWN line is an unambiguous, positively-framed echo. Gating recognition on
+    that unrelated downstream outcome silently disabled the allowlist and
+    discarded a complete, valid review over ordinary issue text.
+    """
+    verdict = dict(VERDICT, issues=[{"description": "]", "severity": "HIGH"}])
+    raw = f"{PREVIEW}{json.dumps(verdict)}\n"
+    assert ex.extract_from_text(raw) == verdict

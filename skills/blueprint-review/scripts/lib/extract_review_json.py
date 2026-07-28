@@ -307,22 +307,34 @@ def try_last_review_object(raw: str):
         try:
             obj, end = _DECODER.raw_decode(raw, start)
         except json.JSONDecodeError as exc:
+            if _is_log_echo_fragment(raw, start, exc):
+                # A recognized CLI log echo (#524) — not a payload at all.
+                # Classify it on its own line; scanning to EOF would let it
+                # borrow the real verdict's keys, which is how it came to
+                # outrank one.
+                #
+                # Checked BEFORE _region_end, not gated behind its result
+                # (Codex, PR #525). _region_end scans the WHOLE remaining
+                # transcript looking for a close, so when the real verdict
+                # below contains a `]` or an escaped quote that desyncs the
+                # bracket stack, it can report `mismatched=True` for a region
+                # whose OWN line is an unambiguous, positively-framed echo.
+                # Gating recognition on that scan's outcome let unrelated
+                # content deep in the real verdict silently disable the
+                # allowlist, discarding the very review #524 exists to keep.
+                # Line-confinement + the pinned framing already fully proves
+                # the classification; nothing downstream can un-prove it.
+                if _looks_like_verdict(raw[start : exc.pos]):
+                    malformed_pos = start
+                    _PARSE_ERRORS.append(str(exc))
+                # Defense in depth behind the allowlist: past a skipped
+                # region, a MID-LINE object could still be some other
+                # region's child, so from here only own-line objects can win.
+                own_line_only = True
+                i = max(exc.pos, start + 1)
+                continue
             region_end, _, mismatched = _region_end(raw, start)
             if region_end is None and not mismatched:
-                if _is_log_echo_fragment(raw, start, exc):
-                    # A recognized CLI log echo (#524) — not a payload at all.
-                    # Classify it on its own line; scanning to EOF would let it
-                    # borrow the real verdict's keys, which is how it came to
-                    # outrank one.
-                    if _looks_like_verdict(raw[start : exc.pos]):
-                        malformed_pos = start
-                        _PARSE_ERRORS.append(str(exc))
-                    # Defense in depth behind the allowlist: past a skipped
-                    # region, a MID-LINE object could still be some other
-                    # region's child, so from here only own-line objects can win.
-                    own_line_only = True
-                    i = max(exc.pos, start + 1)
-                    continue
                 # TRUNCATED: no closing bracket anywhere. Its extent is unknowable,
                 # so anything decoded later may be its own nested content.
                 #

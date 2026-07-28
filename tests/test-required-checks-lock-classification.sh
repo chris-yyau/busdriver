@@ -312,6 +312,8 @@ echo "== E25: an expression-bearing job name is REFUSED, not swapped for the key
 # posted — (e) reporting a repo fully classified while the real check went
 # unlisted. That is #530 exactly, so it must error instead.
 D="$TMPROOT/e25"
+# shellcheck disable=SC2016  # the ${{ }} must stay LITERAL — it is the
+# GitHub expression syntax under test, not a shell expansion.
 mkrepo "$D" '{"required":[],"advisory":[]}' 'jobs:
   alpha:
     name: build-${{ matrix.os }}
@@ -353,6 +355,18 @@ mkrepo "$D" '{"required":[],"advisory":[]}' 'jobs:
 '
 assert_exit "null name rejected" 2 "$D"
 assert_mentions "explains the non-string name" "non-string name" "$D"
+
+
+echo "== E28: a RAW control character in a lock name is rejected =="
+# E18 covers the literal four characters \036. This is the real U+001E byte,
+# which the classifier uses as its record separator — a name carrying one splits
+# into two known names and classifies a job nobody listed. The lock is
+# repo-controlled, so this is an injection into the guard.
+D="$TMPROOT/e28"
+RS_CHAR=$(printf '\036')
+mkrepo "$D" "{\"required\":[{\"name\":\"zzz${RS_CHAR}alpha\",\"source_app\":\"github-actions\",\"workflow\":\".github/workflows/tests.yml\",\"job\":\"beta\"}],\"advisory\":[]}" "$WF_TWO_JOBS"
+assert_exit "raw control character in lock name rejected" 2 "$D"
+assert_mentions "explains the separator hazard" "control character" "$D"
 
 
 echo

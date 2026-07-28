@@ -151,10 +151,15 @@ if ! jq -e '(.required | type == "array")
             and (if has("advisory")
                  then (.advisory | type == "array")
                       and (all(.advisory[]; .name | type == "string"))
-                 else true end)' \
+                 else true end)
+            and (all(((.required // [])[], (.advisory // [])[]);
+                     (.name // "") | test("[[:cntrl:]]") | not))' \
      "$LOCK" >/dev/null 2>&1; then
   echo "error: $LOCK is malformed — .required must be an array, .advisory (if" >&2
-  echo "       present) must be an array, and every entry needs a string .name" >&2
+  echo "       present) must be an array, every entry needs a string .name, and" >&2
+  echo "       no name may contain a control character — the classifier joins" >&2
+  echo "       names with U+001E, so a name carrying one would split into two" >&2
+  echo "       and classify a job nobody listed" >&2
   exit 2
 fi
 

@@ -124,44 +124,24 @@ mkrepo "$D" '{"required":[{"name":"alpha","source_app":"github-actions","workflo
 assert_exit "external-app name does not classify a workflow job" 1 "$D"
 assert_mentions "names the colliding check" "'Beta Check'" "$D"
 
-echo "== E9: matrix entries classify by (workflow, job), not by rendered name =="
-# GitHub renders a matrix job as `<base> (<label>)`, so the lock holds
-# `alpha (ubuntu-latest)` while the workflow contributes the bare base
-# `alpha`. Comparing names would report a correctly-classified matrix job as
-# unclassified and wedge CI on every matrix repo.
+echo "== E9: a matrix job is classified by its BARE BASE name =="
+# Rendered entries (`alpha (ubuntu-latest)`) are surface (a)/(b)'s business.
+# (e) only asks whether the JOB is known to the lock, which the base entry
+# answers — and which stays true no matter how many values the matrix gains.
 D="$TMPROOT/e9"
-mkrepo "$D" '{"required":[{"name":"alpha (ubuntu-latest)","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha","matrix_value":"ubuntu-latest"},{"name":"alpha (macos-latest)","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha","matrix_value":"macos-latest"},{"name":"Beta Check","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"beta"}],"advisory":[]}' "$WF_TWO_JOBS"
-assert_exit "matrix job classified via tuple" 0 "$D"
+mkrepo "$D" '{"required":[{"name":"alpha (ubuntu-latest)","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha","matrix_value":"ubuntu-latest"}],"advisory":[{"name":"alpha","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"},{"name":"Beta Check","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"beta"}]}' "$WF_TWO_JOBS"
+assert_exit "matrix job classified by base name" 0 "$D"
 
-echo "== E10: a matrix entry only classifies ITS OWN job =="
-# The tuple must be (workflow, job) — keying on workflow alone would let one
-# matrix entry blanket-classify every job in the same file.
+echo "== E10: matrix entries alone do NOT classify their job =="
+# FAIL-OPEN GUARD. Letting a (workflow, job) tuple from a matrix entry cover
+# the job means one entry blesses every rendered value, so a matrix that gains
+# a value never has to declare it — the #530 hole one level in. Only the bare
+# base name classifies, so a lock holding rendered entries but no base entry
+# must still fail.
 D="$TMPROOT/e10"
-mkrepo "$D" '{"required":[{"name":"alpha (ubuntu-latest)","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha","matrix_value":"ubuntu-latest"}],"advisory":[]}' "$WF_TWO_JOBS"
-assert_exit "sibling job still unclassified" 1 "$D"
-assert_mentions "names only the sibling" "'Beta Check'" "$D"
-
-echo "== E11: quoted job IDs are collected, not skipped =="
-# `"quoted-job":` is legal YAML that Actions accepts. A collector that skips it
-# never demands a classification for that job — a fail-OPEN in the guard itself.
-D="$TMPROOT/e11"
-WF_QUOTED='jobs:
-  alpha:
-    runs-on: ubuntu-latest
-  "quoted-job":
-    runs-on: ubuntu-latest
-'
-mkrepo "$D" '{"required":[{"name":"alpha","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"}],"advisory":[]}' "$WF_QUOTED"
-assert_exit "unclassified quoted job fails closed" 1 "$D"
-assert_mentions "names the quoted job" "quoted-job" "$D"
-
-echo "== E12: a classified quoted job passes BOTH (a) and (e) =="
-# Pins the parser-agreement invariant: if only one collector understood quoted
-# keys, this lock would be unsatisfiable — (e) demands the entry, (a) then
-# cannot find the job in the workflow.
-D="$TMPROOT/e12"
-mkrepo "$D" '{"required":[{"name":"alpha","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"},{"name":"quoted-job","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"quoted-job"}],"advisory":[]}' "$WF_QUOTED"
-assert_exit "classified quoted job satisfies both parsers" 0 "$D"
+mkrepo "$D" '{"required":[{"name":"alpha (ubuntu-latest)","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha","matrix_value":"ubuntu-latest"},{"name":"alpha (macos-latest)","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha","matrix_value":"macos-latest"}],"advisory":[{"name":"Beta Check","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"beta"}]}' "$WF_TWO_JOBS"
+assert_exit "rendered-only lock still fails closed" 1 "$D"
+assert_mentions "names the unclassified matrix job" "'alpha'" "$D"
 
 echo
 echo "passed: $PASS   failed: $FAIL"

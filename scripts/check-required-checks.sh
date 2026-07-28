@@ -591,31 +591,33 @@ if ! known_names=$(jq -r '(.required[]?, .advisory[]?)
   echo "error: could not read check names from $LOCK" >&2
   exit 2
 fi
-# Matrix entries are keyed by (workflow, job) instead of by name. GitHub renders
-# them as `<base> (<label>)`, so the lock holds `test (ubuntu-latest)` while the
-# workflow contributes the bare base `test` — comparing names would report every
-# correctly-classified matrix job as unclassified and wedge CI. \037 (US)
-# separates the tuple fields; \036 (RS) separates records. Both are control
-# characters that cannot occur in a YAML job key or a file path.
-if ! known_tuples=$(jq -r '(.required[]?, .advisory[]?)
-                           | select(.source_app == "github-actions")
-                           | select(has("matrix_value"))
-                           | "\(.workflow)\u001f\(.job)"' "$LOCK"); then
-  echo "error: could not read matrix entries from $LOCK" >&2
-  exit 2
-fi
+# MATRIX JOBS are classified by their BARE BASE name; matrix entries (those
+# carrying `matrix_value`) deliberately classify NOTHING here.
+#
+# The tempting shortcut — let any matrix entry for a (workflow, job) tuple
+# cover that job — is a fail-OPEN, caught in review before this shipped. One
+# entry would bless every rendered value of the job, so a matrix that GAINS a
+# value (`os: [ubuntu, macos]` -> `+ windows`) keeps matching on the stale
+# tuple and the new `<base> (windows-latest)` check is never demanded in the
+# lock: the #530 hole again, one level in. Closing it properly means
+# statically enumerating strategy.matrix — multi-dimensional products,
+# include/exclude, `${{ }}` expressions — and failing closed on anything
+# unenumerable. That is a YAML evaluator living inside a guard, far more
+# failure surface than the gap it closes.
+#
+# So (e) asks only what it can answer soundly: is this JOB known to the lock at
+# all? A matrix job earns that by listing its bare base name (in `advisory`,
+# since the server requires the rendered names, not the base). Completeness of
+# the rendered VALUES belongs to the surfaces built for it: (a) verifies each
+# `matrix_value` entry resolves to a real job, and (b) set-compares the lock
+# against the server contexts — which is where a newly-protected matrix value
+# actually surfaces.
 known_names=$(printf '%s' "$known_names" | tr '\n' '\036')
-known_tuples=$(printf '%s' "$known_tuples" | tr '\n' '\036')
 
-unclassified=$(printf '%s' "$collected" \
-  | awk -F'\t' -v known="$known_names" -v tuples="$known_tuples" '
-  BEGIN {
-    n = split(known, a, "\036");  for (i = 1; i <= n; i++) if (a[i] != "") seen[a[i]] = 1
-    m = split(tuples, b, "\036"); for (i = 1; i <= m; i++) if (b[i] != "") tup[b[i]] = 1
-  }
+unclassified=$(printf '%s' "$collected" | awk -F'\t' -v known="$known_names" '
+  BEGIN { n = split(known, a, "\036"); for (i = 1; i <= n; i++) if (a[i] != "") seen[a[i]] = 1 }
   $1 == "" { next }
   ($1 in seen) { next }
-  (($2 "\037" $3) in tup) { next }
   { printf("%s\t%s:%s\n", $1, $2, $3) }
 ' | LC_ALL=C sort -u)
 

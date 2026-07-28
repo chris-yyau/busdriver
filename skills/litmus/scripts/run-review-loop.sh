@@ -1062,8 +1062,9 @@ echo "   Diff lines: $STAGED_DIFF_LINES (added: $ADDITION_LINES, removed: $DELET
 #   Primary metric: weighted lines (additions + deletions/4)
 #   Safety ceiling: total raw lines > 2000 regardless of weighting
 #   Single-file diffs get a higher threshold since they can't be split further
-#   Override: LITMUS_MAX_WEIGHTED_LINES / LITMUS_MAX_TOTAL_LINES /
-#             LITMUS_MAX_STAGED_FILES env vars (per-project tuning)
+#   Override: LITMUS_MAX_WEIGHTED_LINES / LITMUS_MAX_WEIGHTED_LINES_SINGLE_FILE /
+#             LITMUS_MAX_TOTAL_LINES / LITMUS_MAX_STAGED_FILES env vars
+#             (per-project tuning)
 if [ "$REVIEW_MODE" = "pr" ]; then
   # PR mode: soft warning only — large PR diffs may be slow or hit context limits,
   # but blocking them defeats the safety net. The REVIEW_TIMEOUT (default 540s below)
@@ -1083,7 +1084,12 @@ if [ "$REVIEW_MODE" = "pr" ]; then
 else
   # Commit mode: hard size gate with env var override
   MAX_WEIGHTED_LINES="${LITMUS_MAX_WEIGHTED_LINES:-800}"
-  MAX_WEIGHTED_LINES_SINGLE_FILE=2000
+  # #523 review: the single-file ceiling used to be a bare literal with no
+  # override at all, so raising LITMUS_MAX_WEIGHTED_LINES (which only affects
+  # the multi-file default) could never clear a large single-file diff — the
+  # doc claim that "each of the three [triggers] is an independent trigger
+  # with its own override" was false for this case. Give it the same knob.
+  MAX_WEIGHTED_LINES_SINGLE_FILE="${LITMUS_MAX_WEIGHTED_LINES_SINGLE_FILE:-2000}"
   # #514: a merge commit's diff-vs-HEAD is by definition everything the merge
   # brings in, so it cannot be subdivided — and neither sibling override reaches
   # this trigger. Without an override the only exit is skip-litmus.local, which
@@ -1097,6 +1103,9 @@ else
   # fire in a condition context), so the threshold silently fails OPEN.
   case "$MAX_WEIGHTED_LINES" in
     ''|*[!0-9]*) echo "⚠️  LITMUS_MAX_WEIGHTED_LINES='$MAX_WEIGHTED_LINES' is not numeric, using default 800"; MAX_WEIGHTED_LINES=800 ;;
+  esac
+  case "$MAX_WEIGHTED_LINES_SINGLE_FILE" in
+    ''|*[!0-9]*) echo "⚠️  LITMUS_MAX_WEIGHTED_LINES_SINGLE_FILE='$MAX_WEIGHTED_LINES_SINGLE_FILE' is not numeric, using default 2000"; MAX_WEIGHTED_LINES_SINGLE_FILE=2000 ;;
   esac
   case "$MAX_TOTAL_LINES_CEILING" in
     ''|*[!0-9]*) echo "⚠️  LITMUS_MAX_TOTAL_LINES='$MAX_TOTAL_LINES_CEILING' is not numeric, using default 2000"; MAX_TOTAL_LINES_CEILING=2000 ;;
@@ -1133,7 +1142,11 @@ else
     echo ""
     echo "⚠️  Diff too large for single review ($TOO_LARGE_REASON)"
     echo "   Thresholds: weighted >$EFFECTIVE_MAX OR total >$MAX_TOTAL_LINES_CEILING OR files >$MAX_STAGED_FILES"
-    echo "   Override to raise: LITMUS_MAX_WEIGHTED_LINES=$((WEIGHTED_LINES + 100))"
+    if [ "$STAGED_FILE_COUNT" -eq 1 ]; then
+      echo "   Override to raise: LITMUS_MAX_WEIGHTED_LINES_SINGLE_FILE=$((WEIGHTED_LINES + 100))"
+    else
+      echo "   Override to raise: LITMUS_MAX_WEIGHTED_LINES=$((WEIGHTED_LINES + 100))"
+    fi
     echo "                      LITMUS_MAX_TOTAL_LINES=$((ADDITION_LINES + DELETION_LINES + 100))"
     echo "                      LITMUS_MAX_STAGED_FILES=$((STAGED_FILE_COUNT + 2))"
     echo ""

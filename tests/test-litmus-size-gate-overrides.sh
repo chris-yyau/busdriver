@@ -50,7 +50,13 @@ assert_absent  "$LOOP" '^\s*MAX_TOTAL_LINES_CEILING=2000\s*$' \
 assert_present "$LOOP" 'MAX_TOTAL_LINES_CEILING="\$\{LITMUS_MAX_TOTAL_LINES:-2000\}"' \
   "raw-lines ceiling reads LITMUS_MAX_TOTAL_LINES" \
   "raw-lines ceiling has no LITMUS_MAX_TOTAL_LINES override (#514)"
-for v in LITMUS_MAX_WEIGHTED_LINES LITMUS_MAX_TOTAL_LINES LITMUS_MAX_STAGED_FILES; do
+assert_absent  "$LOOP" '^\s*MAX_WEIGHTED_LINES_SINGLE_FILE=2000\s*$' \
+  "single-file ceiling is no longer a bare literal" \
+  "MAX_WEIGHTED_LINES_SINGLE_FILE reverted to a hardcoded literal (regressed #523 review)"
+assert_present "$LOOP" 'MAX_WEIGHTED_LINES_SINGLE_FILE="\$\{LITMUS_MAX_WEIGHTED_LINES_SINGLE_FILE:-2000\}"' \
+  "single-file ceiling reads LITMUS_MAX_WEIGHTED_LINES_SINGLE_FILE" \
+  "single-file ceiling has no LITMUS_MAX_WEIGHTED_LINES_SINGLE_FILE override (#523 review)"
+for v in LITMUS_MAX_WEIGHTED_LINES LITMUS_MAX_WEIGHTED_LINES_SINGLE_FILE LITMUS_MAX_TOTAL_LINES LITMUS_MAX_STAGED_FILES; do
   assert_present "$LOOP" "$v='\\\$" \
     "$v is numeric-validated" \
     "$v has no numeric validation — non-numeric fails the size gate OPEN"
@@ -61,24 +67,26 @@ assert_present "$LOOP" 'LITMUS_MAX_TOTAL_LINES=\$\(\(ADDITION_LINES \+ DELETION_
 
 # ── Layer 2: execute the REAL assignment + validation block ───────────
 # Extract from the first threshold assignment through the third `esac`.
-thresholds() {  # <weighted> <total> <staged> -> "<weighted> <total> <staged>"
-  local LITMUS_MAX_WEIGHTED_LINES="$1" LITMUS_MAX_TOTAL_LINES="$2" LITMUS_MAX_STAGED_FILES="$3"
-  local MAX_WEIGHTED_LINES MAX_TOTAL_LINES_CEILING MAX_STAGED_FILES code
-  export LITMUS_MAX_WEIGHTED_LINES LITMUS_MAX_TOTAL_LINES LITMUS_MAX_STAGED_FILES
+thresholds() {  # <weighted> <single-file> <total> <staged> -> "<weighted> <single-file> <total> <staged>"
+  local LITMUS_MAX_WEIGHTED_LINES="$1" LITMUS_MAX_WEIGHTED_LINES_SINGLE_FILE="$2" LITMUS_MAX_TOTAL_LINES="$3" LITMUS_MAX_STAGED_FILES="$4"
+  local MAX_WEIGHTED_LINES MAX_WEIGHTED_LINES_SINGLE_FILE MAX_TOTAL_LINES_CEILING MAX_STAGED_FILES code
+  export LITMUS_MAX_WEIGHTED_LINES LITMUS_MAX_WEIGHTED_LINES_SINGLE_FILE LITMUS_MAX_TOTAL_LINES LITMUS_MAX_STAGED_FILES
   # Bounded on both ends: EFFECTIVE_MAX is the first line after the threshold
   # block, so a source that lost an `esac` extracts nothing instead of eval'ing
-  # unrelated gate code with unbound variables.
-  code="$(awk '/MAX_WEIGHTED_LINES="\$\{LITMUS_MAX_WEIGHTED_LINES:-800\}"/{p=1} p&&/^  EFFECTIVE_MAX=/{exit} p{print} p&&/^  esac$/{n++; if(n==3) exit}' "$LOOP")"
+  # unrelated gate code with unbound variables. Four `case` blocks now (weighted,
+  # single-file, total, staged) — n==4 marks the end of the block.
+  code="$(awk '/MAX_WEIGHTED_LINES="\$\{LITMUS_MAX_WEIGHTED_LINES:-800\}"/{p=1} p&&/^  EFFECTIVE_MAX=/{exit} p{print} p&&/^  esac$/{n++; if(n==4) exit}' "$LOOP")"
   [[ -z "$code" ]] && { echo "EXTRACT-FAILED"; return 0; }
   eval "$code" >/dev/null
-  echo "$MAX_WEIGHTED_LINES $MAX_TOTAL_LINES_CEILING $MAX_STAGED_FILES"
+  echo "$MAX_WEIGHTED_LINES $MAX_WEIGHTED_LINES_SINGLE_FILE $MAX_TOTAL_LINES_CEILING $MAX_STAGED_FILES"
 }
 
-eq "$(thresholds 800 2000 8)"    "800 2000 8"    "defaults pass through"
-eq "$(thresholds 4000 6000 40)"  "4000 6000 40"  "all three overrides honoured"
-eq "$(thresholds abc abc abc)"   "800 2000 8"    "non-numeric falls back to defaults"
-eq "$(thresholds 800 -5 8)"      "800 2000 8"    "negative is non-numeric → default"
-eq "$(thresholds 800 3.5 8)"     "800 2000 8"    "decimal is non-numeric → default"
+eq "$(thresholds 800 2000 2000 8)"    "800 2000 2000 8"    "defaults pass through"
+eq "$(thresholds 4000 5000 6000 40)"  "4000 5000 6000 40"  "all four overrides honoured"
+eq "$(thresholds abc abc abc abc)"    "800 2000 2000 8"    "non-numeric falls back to defaults"
+eq "$(thresholds 800 2000 -5 8)"      "800 2000 2000 8"    "negative is non-numeric → default"
+eq "$(thresholds 800 2000 3.5 8)"     "800 2000 2000 8"    "decimal is non-numeric → default"
+eq "$(thresholds 800 abc 2000 8)"     "800 2000 2000 8"    "non-numeric single-file override falls back to default"
 
 # ── Layer 2b: the fail-open the validation exists to prevent ──────────
 # Run the REAL comparison shape against a garbage override. Without the `case`
@@ -87,7 +95,7 @@ gate_fires() {  # <observed> <threshold> -> fired|SILENTLY-SKIPPED
   local observed="$1" threshold="$2"
   if [ "$observed" -gt "$threshold" ] 2>/dev/null; then echo "fired"; else echo "SILENTLY-SKIPPED"; fi
 }
-read -r _w t s <<<"$(thresholds 800 abc abc)"
+read -r _w _sf t s <<<"$(thresholds 800 2000 abc abc)"
 eq "$(gate_fires 5000 "$t")" "fired" "garbage LITMUS_MAX_TOTAL_LINES still trips the ceiling"
 eq "$(gate_fires 40 "$s")"   "fired" "garbage LITMUS_MAX_STAGED_FILES still trips the file count"
 

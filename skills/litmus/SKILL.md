@@ -194,7 +194,7 @@ When the review script exits with code **2** (TOO LARGE) or **124** (TIMEOUT), t
 - Better git history with meaningful commit messages
 - Prevents crashes from oversized prompts
 
-**Thresholds (commit mode only — PR mode skips size check):** Weighted lines use additions at 1x + deletions at 0.25x (deleted code needs minimal review). Triggers: >800 weighted lines (>2000 for single-file) OR >2000 total raw lines OR >8 staged files. Each of the three is an independent trigger with its own override: `LITMUS_MAX_WEIGHTED_LINES`, `LITMUS_MAX_TOTAL_LINES`, `LITMUS_MAX_STAGED_FILES`. A non-numeric value is rejected with a warning and the default is used.
+**Thresholds (commit mode only — PR mode skips size check):** Weighted lines use additions at 1x + deletions at 0.25x (deleted code needs minimal review). Triggers: >800 weighted lines (>2000 for single-file) OR >2000 total raw lines OR >8 staged files. Each of the three is an independent trigger with its own override: `LITMUS_MAX_WEIGHTED_LINES` (the >800 weighted-lines default; single-file diffs use `LITMUS_MAX_WEIGHTED_LINES_SINGLE_FILE` instead — raising the former alone does not clear a single-file diff), `LITMUS_MAX_TOTAL_LINES`, `LITMUS_MAX_STAGED_FILES`. A non-numeric value is rejected with a warning and the default is used.
 
 **Merge commits (#514):** a merge's diff-vs-HEAD is everything the merge brings in, so "split into smaller commits" does not apply and raising `LITMUS_MAX_WEIGHTED_LINES` alone will not clear the independent raw-lines ceiling. Raise `LITMUS_MAX_TOTAL_LINES` instead of reaching for `.claude/skip-litmus.local` — the skip would also skip the conflict resolutions, which are the only genuinely new content in a merge.
 

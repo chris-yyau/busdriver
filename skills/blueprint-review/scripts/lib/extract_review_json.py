@@ -312,6 +312,7 @@ class _Sweep:
     of positions — one shared record beats five in/out parameters per call.
     """
 
+    raw: str
     best: object = None
     best_pos: int = -1
     malformed_pos: int = -1
@@ -320,7 +321,7 @@ class _Sweep:
     own_line_only: bool = False
 
 
-def _skip_log_echo(st: "_Sweep", raw: str, start: int, exc: json.JSONDecodeError) -> int:
+def _skip_log_echo(st: "_Sweep", start: int, exc: json.JSONDecodeError) -> int:
     """Record a recognized CLI log echo (#524) and step past its whole line."""
     # Recorded UNCONDITIONALLY — no verdict-shape sniff at all. Widening the
     # window from exc.pos to the whole line closed the case cubic reported, but
@@ -347,10 +348,10 @@ def _skip_log_echo(st: "_Sweep", raw: str, start: int, exc: json.JSONDecodeError
     # let it borrow the real verdict's keys: `{ "status": ... "issues": [ { "sect`
     # above a complete verdict returned None. The #524 loss again, one path
     # further in.
-    return max(_line_end(raw, start), start + 1)
+    return max(_line_end(st.raw, start), start + 1)
 
 
-def _handle_truncated(st: "_Sweep", raw: str, start: int, exc: json.JSONDecodeError):
+def _handle_truncated(st: "_Sweep", start: int, exc: json.JSONDecodeError):
     """A region with no closing bracket anywhere. Next index, or None to refuse.
 
     Its extent is unknowable, so anything decoded later may be its own nested
@@ -388,7 +389,7 @@ def _handle_truncated(st: "_Sweep", raw: str, start: int, exc: json.JSONDecodeEr
     verdict wrapping a nested one" are textually indistinguishable, so this
     refuses rather than guess: a withheld rescue, never a forged PASS.
     """
-    if _opens_like_json(raw, start) and _looks_like_verdict(raw[start:]):
+    if _opens_like_json(st.raw, start) and _looks_like_verdict(st.raw[start:]):
         _PARSE_ERRORS.append(str(exc))
         return None
     st.unbalanced_scans += 1
@@ -399,7 +400,7 @@ def _handle_truncated(st: "_Sweep", raw: str, start: int, exc: json.JSONDecodeEr
 
 
 def _record_broken_region(
-    st: "_Sweep", raw: str, start: int, exc: json.JSONDecodeError, region_end, mismatched
+    st: "_Sweep", start: int, exc: json.JSONDecodeError, region
 ) -> int:
     """Note a malformed region whose extent IS known, and step over it."""
     # Classification window. A resolved region is bounded by its own end; an
@@ -414,7 +415,8 @@ def _record_broken_region(
     # set, and an earlier PASS is returned in place of this malformed FAIL.
     # Diagnostic precision is not worth a forged verdict; the window stays wide,
     # and being wide only ever costs a fail-CLOSED refusal.
-    stop = len(raw) if region_end is None else region_end + 1
+    region_end, mismatched = region
+    stop = len(st.raw) if region_end is None else region_end + 1
     if mismatched and st.broken_pos < 0:
         # Structurally broken: we cannot say where this region ends, so anything
         # decoded AFTER it may be its nested content rather than a top-level
@@ -424,7 +426,7 @@ def _record_broken_region(
         # Only what follows the break is in doubt, and that is resolved after the
         # sweep.
         st.broken_pos = start
-    if _looks_like_verdict(raw[start:stop]):
+    if _looks_like_verdict(st.raw[start:stop]):
         st.malformed_pos = start
         _PARSE_ERRORS.append(str(exc))
     # Step over the whole region when it is known, so anything nested inside a
@@ -432,9 +434,9 @@ def _record_broken_region(
     return max(exc.pos, start + 1) if region_end is None else region_end + 1
 
 
-def _handle_malformed(st: "_Sweep", raw: str, start: int, exc: json.JSONDecodeError):
+def _handle_malformed(st: "_Sweep", start: int, exc: json.JSONDecodeError):
     """Route a region that failed to decode. Next index, or None to refuse."""
-    if _is_log_echo_fragment(raw, start):
+    if _is_log_echo_fragment(st.raw, start):
         # A recognized CLI log echo (#524) — not a payload at all. Classify it on
         # its own line; scanning to EOF would let it borrow the real verdict's
         # keys, which is how it came to outrank one.
@@ -448,14 +450,15 @@ def _handle_malformed(st: "_Sweep", raw: str, start: int, exc: json.JSONDecodeEr
         # real verdict silently disable the allowlist, discarding the very review
         # #524 exists to keep. The pinned framing already fully proves the
         # classification; nothing downstream can un-prove it.
-        return _skip_log_echo(st, raw, start, exc)
-    region_end, mismatched = _region_end(raw, start)
+        return _skip_log_echo(st, start, exc)
+    region = _region_end(st.raw, start)
+    region_end, mismatched = region
     if region_end is None and not mismatched:
-        return _handle_truncated(st, raw, start, exc)
-    return _record_broken_region(st, raw, start, exc, region_end, mismatched)
+        return _handle_truncated(st, start, exc)
+    return _record_broken_region(st, start, exc, region)
 
 
-def _handle_decoded(st: "_Sweep", raw: str, start: int, obj, end: int) -> int:
+def _handle_decoded(st: "_Sweep", start: int, obj, end: int) -> int:
     """Consider a cleanly decoded value as the verdict, and step over it."""
     # NOT RELAXED FOR #527, deliberately. Codex reports that its real shape puts
     # the verdict behind prose on one line — `Final answer: {…}` — which
@@ -467,7 +470,7 @@ def _handle_decoded(st: "_Sweep", raw: str, start: int, obj, end: int) -> int:
     # that PASS. A phrase allowlist would need a real transcript pinning the
     # wording, and none is in hand — #527 records exactly this. Withholding a
     # review is the correct direction to break in; fabricating a PASS is not.
-    embedded = _embedded_in_a_line(raw, start)
+    embedded = _embedded_in_a_line(st.raw, start)
     if not (isinstance(obj, dict) and _is_review(obj)):
         return max(end, start + 1)
     if not (st.own_line_only and embedded):
@@ -549,7 +552,7 @@ def try_last_review_object(raw: str):
     The per-branch reasoning lives on the helpers this delegates to; each one
     encodes a specific adversarial case with a pinned regression test.
     """
-    st = _Sweep()
+    st = _Sweep(raw)
     i = 0
     while True:
         start = _next_region(raw, i)
@@ -558,7 +561,7 @@ def try_last_review_object(raw: str):
         try:
             obj, end = _DECODER.raw_decode(raw, start)
         except json.JSONDecodeError as exc:
-            nxt = _handle_malformed(st, raw, start, exc)
+            nxt = _handle_malformed(st, start, exc)
             if nxt is None:
                 return None
             i = nxt
@@ -566,7 +569,7 @@ def try_last_review_object(raw: str):
         except ValueError:
             i = start + 1
             continue
-        i = _handle_decoded(st, raw, start, obj, end)
+        i = _handle_decoded(st, start, obj, end)
 
     return _resolve(st)
 

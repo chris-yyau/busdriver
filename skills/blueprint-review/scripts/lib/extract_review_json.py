@@ -405,13 +405,22 @@ def try_last_review_object(raw: str):
             i = start + 1
             continue
         embedded = _embedded_in_a_line(raw, start)
-        if isinstance(obj, dict) and _is_review(obj):
+        is_review_obj = isinstance(obj, dict) and _is_review(obj)
+        if is_review_obj:
             if not (own_line_only and embedded):
                 best, best_pos = obj, start
-        if not embedded:
-            # A cleanly decoded OWN-LINE value proves the sweep resynced to top
-            # level, so the skipped echo can no longer be parenting what follows
-            # and the mid-line restriction has done its job.
+        if is_review_obj and not embedded:
+            # An own-line REVIEW resynced the sweep to top level, so the skipped
+            # echo can no longer be parenting what follows.
+            #
+            # It must be a REVIEW, not merely any decodable own-line value. An
+            # unclosed echo swallows everything after it lexically, and
+            # _embedded_in_a_line only inspects the physical line — so a
+            # pretty-printed child starting at column 0 is "own-line" while
+            # still nested. An arbitrary log value is therefore not proof the
+            # echo ended; clearing on one let `wrapper: {"status":"PASS"}` be
+            # promoted from inside it. A verdict-shaped own-line object is the
+            # narrowest thing that does carry the proof.
             #
             # Without this reset own_line_only stayed set for the rest of the
             # transcript, so every later prefixed verdict was silently dropped:

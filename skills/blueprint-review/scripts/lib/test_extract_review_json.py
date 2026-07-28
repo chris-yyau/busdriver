@@ -643,3 +643,20 @@ def test_a_prefixed_verdict_after_a_log_echo_still_wins():
         f"Final answer: {json.dumps(VERDICT)}\n"
     )
     assert ex.extract_from_text(raw) == VERDICT
+
+
+def test_an_own_line_non_verdict_value_does_not_re_enable_mid_line_objects():
+    """FAIL-OPEN GUARD: only an own-line REVIEW clears the nesting guard.
+
+    An unclosed echo swallows what follows it lexically, and `_embedded_in_a_line`
+    inspects only the physical line — so a pretty-printed child at column 0 reads
+    as "own-line" while still nested. Clearing the guard on any decodable value
+    therefore let an ordinary JSON log line vouch for the echo having ended, and a
+    mid-line `wrapper: {…PASS…}` behind it was promoted to the verdict.
+    """
+    raw = (
+        f"{PREVIEW}"
+        '{"unrelated": 1, "note": "an ordinary json log line"}\n'
+        'wrapper: {"status": "PASS", "reviewer_id": "codex", "issues": []}\n'
+    )
+    assert ex.extract_from_text(raw) is None

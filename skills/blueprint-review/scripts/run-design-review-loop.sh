@@ -94,10 +94,10 @@ _bp_droid_rescue() {
   # Keep the extractor's stderr reason: "never found the JSON" and "found it and
   # it is malformed" were indistinguishable in the log while a fence-shaped
   # payload silently lost every rescue for four sessions (#503).
-  local _xerr=""
-  if ! _xerr=$(python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$raw" 2>&1 > "${out}.pending"); then
+  local _x_err=""
+  if ! _x_err=$(python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$raw" 2>&1 > "${out}.pending"); then
     rm -f "${out}.pending"
-    log_warning "  droid rescue ${slot}: ${_xerr:-extraction failed} — keeping error entry"; return 1
+    log_warning "  droid rescue ${slot}: ${_x_err:-extraction failed} — keeping error entry"; return 1
   fi
   if ! jq -e '(.status=="PASS" or .status=="FAIL") and (.issues|type=="array")' "${out}.pending" >/dev/null 2>&1; then
     rm -f "${out}.pending"; log_warning "  droid rescue ${slot}: no usable verdict — keeping error entry"; return 1

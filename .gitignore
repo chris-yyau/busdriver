@@ -69,3 +69,4 @@ scripts/codex/.runs/
 # Local agent tooling files (per-developer, not part of the plugin)
 /.agents/
 /WARP.md
+.impeccable/

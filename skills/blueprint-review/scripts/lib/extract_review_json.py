@@ -106,6 +106,12 @@ _DECODER = json.JSONDecoder()
 def _region_end(raw: str, start: int):
     """End index of the {…} or […] region at `start`, chars consumed, mismatch?
 
+    Returns (int|None, int, bool). Deliberately UNANNOTATED: a `tuple[int | None,
+    int, bool]` return annotation is evaluated at import time and raises
+    TypeError on Python 3.9 (PEP 604 landed in 3.10), and this module is invoked
+    through an unversioned `python3`. Annotating it would make the extractor die
+    before reading a single review on any 3.9 install.
+
     The third value separates the two ways this fails, which must be handled
     differently. TRUNCATED (ran to EOF still open) is what a stray `{` in prose
     looks like, and is tolerated — treating it as fatal would discard a good
@@ -149,7 +155,7 @@ def _region_end(raw: str, start: int):
     return None, limit - start, False  # ran to EOF still open — truncated
 
 
-def _next_region(raw: str, i: int):
+def _next_region(raw: str, i: int) -> int:
     """Index of the next '{' or '[' at or after `i`, or -1."""
     brace = raw.find("{", i)
     bracket = raw.find("[", i)
@@ -235,6 +241,19 @@ def try_last_review_object(raw: str):
                     return None  # fail closed rather than guess at nesting
                 i = max(exc.pos, start + 1)
                 continue
+            # Classification window. A resolved region is bounded by its own end;
+            # an UNRESOLVED one is scanned to EOF.
+            #
+            # Narrowing the unresolved window to the bytes _region_end consumed
+            # looks tidier — it keeps the recorded REASON from picking up keys
+            # that belong to a later verdict — but it is a fail-open, so the
+            # tidiness is not available. Scanning stops at the mismatched closer,
+            # so in `{"x": ], "reviewer_id":"codex", "status":"FAIL", "issues":[]}`
+            # the verdict keys fall OUTSIDE the window, is_verdict reads false,
+            # malformed_pos is never set, and an earlier PASS is returned in place
+            # of this malformed FAIL. Diagnostic precision is not worth a forged
+            # verdict; the window stays wide, and being wide only ever costs a
+            # fail-CLOSED refusal.
             stop = region_end + 1 if region_end is not None else len(raw)
             is_verdict = _looks_like_verdict(raw[start:stop])
             if mismatched and broken_pos < 0:

@@ -96,7 +96,7 @@ def test_missing_payload_reports_not_found():
 
 def test_failure_reason_resets_between_runs():
     """A stale error from a prior file must not leak into the next reason."""
-    ex.extract_from_text(f"```json\n{{,}}\n```\n")
+    ex.extract_from_text("```json\n{,}\n```\n")
     assert ex.extract_from_text("nothing\n") is None
     assert ex.failure_reason() == "no review JSON found in output"
 
@@ -430,3 +430,18 @@ def test_mismatched_noise_without_a_verdict_reports_not_found():
     """`trace: {"a":1]` alone is not a broken review — the reason must say so."""
     assert ex.extract_from_text('trace: {"a":1]\n') is None
     assert ex.failure_reason() == "no review JSON found in output"
+
+
+def test_verdict_keys_after_a_mismatched_closer_still_fail_closed():
+    """FAIL-OPEN GUARD: verdict keys sit AFTER the mismatch, inside the region.
+
+    Bounding the classification window at the mismatched closer puts
+    reviewer_id/status/issues outside it, so the malformed replacement reads as
+    incidental noise and the earlier PASS is handed back in its place.
+    """
+    stale = dict(VERDICT, status="PASS", issues=[])
+    raw = (
+        f"{json.dumps(stale)}\nreplacement\n"
+        '{"x": ], "reviewer_id":"codex", "status":"FAIL", "issues":[]}\n'
+    )
+    assert ex.extract_from_text(raw) is None

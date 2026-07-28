@@ -95,19 +95,28 @@ create_error_json() {
   local reviewer="$1"
   local error_message="$2"
 
-  cat <<EOF
-{
-  "status": "ERROR",
-  "reviewer_id": "$reviewer",
-  "review_duration_ms": 0,
-  "error": "$error_message",
-  "issues": [],
-  "metadata": {
-    "total_sections_reviewed": 0,
-    "review_timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  }
-}
-EOF
+  # error_message often carries captured CLI/decoder stderr (quotes, backslashes,
+  # occasionally a multi-line traceback). Building the object via `jq -n --arg`
+  # instead of interpolating it into a heredoc guarantees valid JSON regardless
+  # of what the message contains — the previous unescaped interpolation could
+  # emit invalid JSON, destroying the artifact meant to report the failure.
+  local ts
+  ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")   # separate assignment: SC2312
+  jq -n \
+    --arg reviewer "$reviewer" \
+    --arg error "$error_message" \
+    --arg ts "$ts" \
+    '{
+      status: "ERROR",
+      reviewer_id: $reviewer,
+      review_duration_ms: 0,
+      error: $error,
+      issues: [],
+      metadata: {
+        total_sections_reviewed: 0,
+        review_timestamp: $ts
+      }
+    }'
 }
 
 # Validate review output has required fields

@@ -674,6 +674,11 @@ mkrepo "$D" "$LOCK_ALPHA" 'jobs:
     runs-on: ubuntu-latest
 '
 assert_exit "date-valued matrix rejected" 2 "$D"
+# NOTE: the matrix refuse() message is "is not a mapping" (line ~205), not
+# "non-mapping" like the sibling strategy check's "has a non-mapping
+# 'strategy'" (line ~197) — different literal wording for the same defect
+# class. Assert on the text the code actually emits.
+assert_mentions "explains the non-mapping matrix" "not a mapping" "$D"
 
 
 echo

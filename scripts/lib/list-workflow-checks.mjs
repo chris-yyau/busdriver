@@ -24,6 +24,13 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { load } from "js-yaml";
 
+// Shared by the job-name check and the matrix dimension-value check below —
+// see the rationale at the job-name call site. A single constant makes it
+// structurally impossible for the two sites to drift onto different
+// predicates; two independent literals would only be caught by convention
+// plus a test.
+const CONTROL_CHAR_RE = /\p{Cc}/u;
+
 const root = process.argv[2];
 if (!root) {
   process.stderr.write("usage: list-workflow-checks.mjs <repo-root>\n");
@@ -133,7 +140,7 @@ for (const file of files) {
     // name would shift every downstream field, so (a) would compare the wrong
     // column and (e) could read a job as classified that never was. Refuse.
     //
-    // `\p{Cc}` matches the lock validator BY CONSTRUCTION, not by eye:
+    // `CONTROL_CHAR_RE` matches the lock validator BY CONSTRUCTION, not by eye:
     // check-required-checks.sh rejects lock names matching jq's `[[:cntrl:]]`,
     // and jq's `[[:cntrl:]]` is exactly the Unicode Cc category — U+0000-U+001F
     // AND U+007F-U+009F. An ASCII-only range silently accepts the C1 block, so
@@ -141,8 +148,9 @@ for (const file of files) {
     // entry was rejected: an UNSATISFIABLE lock, (e) demanding an entry that
     // (a) can never validate. The two predicates are asserted equal over every codepoint by
     // tests/test-required-checks-lock-classification.sh rather than trusted to
-    // this comment.
-    if (/\p{Cc}/u.test(name)) {
+    // this comment. Shared as a single constant (used again for matrix dimension
+    // values below) so the two sites can never drift apart.
+    if (CONTROL_CHAR_RE.test(name)) {
       process.stderr.write(
         `error: ${rel}: job '${key}' name contains a control character\n`,
       );
@@ -207,7 +215,7 @@ for (const file of files) {
           // Same rule, same predicate as the job name above: a control
           // character would shift TSV fields downstream, letting a surface read
           // the wrong column or ingest an injected row.
-          if (/\p{Cc}/u.test(v)) {
+          if (CONTROL_CHAR_RE.test(v)) {
             refuse(`dimension '${dim}' has a value containing a control character`);
           }
           return v;

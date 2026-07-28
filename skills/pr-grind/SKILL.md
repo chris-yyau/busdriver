@@ -21,7 +21,7 @@ origin: custom
 ## Authority Hierarchy
 
 **Merge gate (authoritative — all must be satisfied):**
-- Required status checks: green — per `.github/required-checks.lock` `required[]` when present (allowlist mode: only those names block); otherwise all checks except `ADVISORY_PATTERN`/CodeScene (advisory-fallback mode). The lock is the single source of truth for both the pre-merge gate and pr-grind, computed by `scripts/relevant-check-status.sh`.
+- Required status checks: green — per `.github/required-checks.lock` `required[]` when present (allowlist mode: only those names block); otherwise all checks except `ADVISORY_PATTERN`/CodeScene (advisory-fallback mode). The lock is the single source of truth for both the pre-merge gate and pr-grind, computed by `scripts/relevant-check-status.sh`. **In allowlist mode, "green" means every lock-required check REPORTED green** — a required check with no run on this HEAD counts as pending, not as absent (#515). Non-reporting is the normal state of a `CONFLICTING` PR (GitHub stops firing `pull_request` workflows), and counting only the checks that did report let one still-posting app check certify a PR whose CI had never run. Consequence to know about: a required check that is legitimately never posted (a `paths`-filtered workflow with no dummy job) now blocks pr-grind rather than being ignored — which is what branch protection does anyway.
 - Actionable findings on YOUR PR's changed lines: addressed (fix or justified reply)
 - PR title/body: conventional commit + scope
 

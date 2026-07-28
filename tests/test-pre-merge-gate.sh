@@ -1204,16 +1204,19 @@ rm -rf "$REPO_R7C"
 # R8. Empty stdin → kept count is 0. Bootstrap path uses this to refuse a
 #     bootstrap-merge when no relevant checks ran at all (defends against
 #     a gate-modifying PR that also disables CI).
+#     pending=1 (not 0) since #515: the lock's one required check reported no
+#     row, and a non-reporting required check is unarrived evidence. kept=0 —
+#     the signal this case actually asserts — is unchanged.
 REPO_R8=$(mktemp -d)
 mkdir -p "$REPO_R8/.github"
 printf '%s' '{"required":[{"name":"shellcheck"}]}' > "$REPO_R8/.github/required-checks.lock"
 OUT=$(printf '' | _relevant_check_counts "$REPO_R8")
 TOTAL=$((TOTAL + 1))
-if [[ "$OUT" = "0 0 required 0" ]]; then
+if [[ "$OUT" = "0 1 required 0" ]]; then
     printf "  PASS  empty stdin → kept=0 (bootstrap fail-safe signal)\n"
     PASS=$((PASS + 1))
 else
-    printf "  FAIL  empty-stdin kept count (got '%s', want '0 0 required 0')\n" "$OUT"
+    printf "  FAIL  empty-stdin kept count (got '%s', want '0 1 required 0')\n" "$OUT"
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$REPO_R8"

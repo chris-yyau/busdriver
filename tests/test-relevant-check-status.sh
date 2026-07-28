@@ -114,6 +114,28 @@ D=$(mktemp -d "$TMPROOT/c10d.XXXX"); mklock "$D" '{"required":[{"name":"ci"}]}'
 assert_line1 "10d cancel status counted as failure" "1 0 required 1" "$D" \
   "$(printf 'ci\tcancel\t0\thttps://x\n')"
 
+# 12 (#515): required checks that posted NO row count as pending, not absent.
+# This is the conflicted-PR case: GitHub stops running pull_request workflows,
+# only the always-on app check reports, and "0 failed / 0 pending" off that one
+# row used to read as green.
+D=$(mktemp -d "$TMPROOT/c12a.XXXX")
+mklock "$D" '{"required":[{"name":"shellcheck"},{"name":"Tests"},{"name":"Security"}]}'
+assert_line1 "12a non-reporting required checks counted as pending" "0 2 required 1" "$D" \
+  "$(printf 'shellcheck\tpass\t5s\thttps://x\nCodeScene\tpass\t1s\thttps://x\n')"
+
+# 12b: all required present → no phantom pending (guards against off-by-one)
+D=$(mktemp -d "$TMPROOT/c12b.XXXX")
+mklock "$D" '{"required":[{"name":"shellcheck"},{"name":"commitlint"}]}'
+assert_line1 "12b all required reported → pending unchanged" "1 0 required 2" "$D" "$SYNTH"
+
+# 12c: whitespace-padded lock name must not read as a missing check
+D=$(mktemp -d "$TMPROOT/c12c.XXXX"); mklock "$D" '{"required":[{"name":"  shellcheck  "}]}'
+assert_line1 "12c padded lock name matches reported row (no phantom pending)" "0 0 required 1" "$D" "$SYNTH"
+
+# 12d: `all` mode has no known required set → unchanged
+D=$(mktemp -d "$TMPROOT/c12d.XXXX")
+assert_line1 "12d no lock → missing-check logic does not apply" "1 1 all 3" "$D" "$SYNTH"
+
 # 11: row emission — failing case emits verbatim rows on lines 2..N; no-fail case does not
 D=$(mktemp -d "$TMPROOT/c11.XXXX"); mklock "$D" '{"required":[{"name":"commitlint"}]}'
 rows=$(printf '%s\n' "$SYNTH" | bash "$SCRIPT" "$D" 2>/dev/null | tail -n +2)

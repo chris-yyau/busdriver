@@ -227,7 +227,7 @@ try:
     # 'error' branch (which BLOCKS) rather than crash to empty output, which the
     # caller's \`[ -z ... ] && exit 0\` would read as 'not a merge' — fail-OPEN.
     import json
-    from gitcmd_detect import gh_pr, gh_pr_count, gh_pr_repo_override
+    from gitcmd_detect import gh_pr, gh_pr_count, gh_pr_repo_override, gh_pr_auto_merge
     d = json.load(sys.stdin)
     tool = d.get('tool_name', d.get('toolName', ''))
     if tool != 'Bash':
@@ -277,6 +277,14 @@ try:
     # so a bare backtick pair is command substitution — an unescaped one here really
     # did run a stray \`gh\` on every merge-gate invocation.)
     merge_repo_override = 'yes' if gh_pr_repo_override(cmd, 'merge') else 'no'
+    # Codex (#511): \`--auto\` queues the merge for whenever GitHub's required
+    # checks/protections clear instead of merging immediately, so the head-SHA
+    # / CI verification this gate performs at hook time can be stale by minutes
+    # or hours when GitHub actually merges -- far past the few-second window
+    # ADR 0030 Residual risk item 2 accepts. Scoped to the merge invocation's
+    # own argv, same reasoning as merge_repo_override above.
+    # (Backticks MUST stay escaped here too -- see the note above this block.)
+    merge_auto = 'yes' if gh_pr_auto_merge(cmd, 'merge') else 'no'
     # cubic review (#511): the fields below are emitted one per line and read back
     # by the caller via \`sed -n 'Np'\` — a positional line protocol. pr_num,
     # target_dir, cwd, and untrusted_cd are the only fields whose content is not a
@@ -327,6 +335,7 @@ try:
         print(repo_override)
         print(merge_repo_override)
         print(untrusted_cd)
+        print(merge_auto)
 except Exception:
     print('error')
     print('')
@@ -336,6 +345,7 @@ except Exception:
     print('yes')
     print('yes')
     print('')
+    print('yes')
 " 2>/dev/null || true)
 
 IS_GH_PR_MERGE=$(echo "$MERGE_PARSE" | sed -n '1p')
@@ -352,6 +362,10 @@ case "$MERGE_REPO_OVERRIDE" in yes|no) ;; *) MERGE_REPO_OVERRIDE=yes ;; esac
 case "$REPO_OVERRIDE" in yes|no) ;; *) REPO_OVERRIDE=yes ;; esac
 # The cd operand that did NOT '&&'-gate the merge (see gitcmd_detect._untrusted_cd).
 UNTRUSTED_CD=$(echo "$MERGE_PARSE" | sed -n '8p')
+# Codex (#511): 'yes' -> the merge invocation carries --auto. Fail-safe 'yes'
+# (blocks) on any parse anomaly, same posture as MERGE_REPO_OVERRIDE.
+MERGE_AUTO_FLAG=$(echo "$MERGE_PARSE" | sed -n '9p')
+case "$MERGE_AUTO_FLAG" in yes|no) ;; *) MERGE_AUTO_FLAG=yes ;; esac
 
 [ -z "$IS_GH_PR_MERGE" ] && exit 0
 
@@ -459,6 +473,31 @@ fi
 # a hit blocks. See ADR 0030 Residual risk.
 if [ "$MERGE_REPO_OVERRIDE" = "yes" ]; then
     block_emit "Pre-merge gate: the merge command carries a repo/host override (-R/--repo/GH_REPO=/GH_HOST=), so PR #${MERGE_PR_NUM:-?} may not be the PR verified in this checkout — the marker, CI results and diff all come from ${REPO_DIR:-this repo}'s origin. Run \`/pr-grind\` in a checkout of the target repo and merge from there, or drop the override. Marker (if any) preserved."
+    exit 0
+fi
+
+# ── Auto-merge queuing guard (Codex #511) ─────────────────────────────
+# `gh pr merge --auto` does not merge immediately — GitHub QUEUES it and
+# merges automatically once required checks/protections clear, which can be
+# minutes to hours later, not the few-second window ADR 0030 Residual risk
+# item 2 accepts ("A push landing between the head-SHA check and GitHub
+# processing a hand-typed `gh pr merge`... Scale: the window is the seconds
+# between hook and API call"). Both evidence-based allow paths below (marker
+# and bootstrap) verify the CURRENT head SHA / CI state at HOOK time; a
+# `--auto` queue defers the actual merge past that verification with no
+# re-check, so a push landing in the (now unbounded) gap is queued through
+# unreviewed. Placed above both branches, same as MERGE_REPO_OVERRIDE above —
+# unify sibling gates, don't special-case one allow path.
+#
+# This is NOT the reverted "require --match-head-commit on the merge argv"
+# fight: that required PROVING a flag's presence, so a parser miss failed
+# OPEN (an unpinned merge looked identical to a compliant one). This detects
+# --auto's PRESENCE and blocks, so a parser miss fails safe — the merge just
+# proceeds exactly as it would have before this guard existed, never worse.
+# The operator re-runs a normal (non-queued) `gh pr merge` once checks are
+# green, which they already must be for either allow path to authorize.
+if [ "$MERGE_AUTO_FLAG" = "yes" ]; then
+    block_emit "Pre-merge gate: \`gh pr merge --auto\` queues the merge for whenever GitHub's required checks/protections clear rather than merging immediately, so the head-SHA / CI verification this gate performs right now can be minutes or hours stale by the time GitHub actually merges — a push landing in that window would be queued through unreviewed. Re-run \`gh pr merge ${MERGE_PR_NUM:-<PR_NUMBER>}\` (with --squash/--rebase/--admin as appropriate) WITHOUT --auto once checks are green. Marker (if any) preserved."
     exit 0
 fi
 

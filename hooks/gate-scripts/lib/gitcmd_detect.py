@@ -142,7 +142,7 @@ def split_segments(cmd):
     n = len(cmd)
 
     def flush(next_op):
-        out.append((op, ''.join(buf).strip()))
+        out.append((op, ''.join(buf).strip(' \t\n')))
         return next_op
 
     while i < n:
@@ -193,7 +193,7 @@ def split_segments(cmd):
             continue
         buf.append(c)
         i += 1
-    out.append((op, ''.join(buf).strip()))
+    out.append((op, ''.join(buf).strip(' \t\n')))
     return out
 
 
@@ -201,9 +201,26 @@ def _tokenize(seg):
     """Tokenize a segment honoring quotes, with surrounding quotes stripped from
     each token. Falls back to a quote-stripping whitespace split when the
     segment cannot be lexed (e.g. unbalanced quotes) — fail-closed toward still
-    finding the command word."""
+    finding the command word.
+
+    Excludes CR from shlex's whitespace set (coderabbit #511). shlex's default
+    whitespace is ' \\t\\r\\n', so `shlex.split` silently treats an UNQUOTED raw
+    CR the same as a space: `git -C /repo<CR> commit` tokenizes to `-C /repo`
+    with the CR simply dropped as a separator, instead of `-C` `/repo<CR>` --
+    hiding it from every caller that validates the RETURNED token (e.g.
+    `_reject_crlf` on a `git -C` operand at the top of this file) even though
+    bash's own IFS does not include CR, so bash keeps `/repo<CR>` as ONE word
+    and scopes git to a directory the gate never saw. An unquoted LF never
+    reaches this function -- `split_segments` above already treats a bare `\\n`
+    as a segment terminator -- so only `\\r` needs excluding here; a QUOTED
+    CR/LF (`"/repo<CR>sub"`) was already preserved correctly by shlex, since
+    whitespace only splits OUTSIDE quotes."""
     try:
-        return shlex.split(seg, posix=True)
+        lex = shlex.shlex(seg, posix=True)
+        lex.whitespace = ' \t\n'
+        lex.whitespace_split = True
+        lex.commenters = ''
+        return list(lex)
     except ValueError:
         return [t.strip('\047\042') for t in seg.split()]
 
@@ -1865,6 +1882,72 @@ def gh_pr_repo_override(cmd, subcommand):
     # matcher as one `GH_REPO=o/r` token, without a text-normalization pass that
     # would also match inert prose.
     return found and env_selector
+
+
+def gh_pr_auto_merge(cmd, subcommand):
+    """True iff a real `gh pr <subcommand>` invocation carries `--auto`.
+
+    `--auto` is a boolean flag with no short form, but pflag DOES accept the
+    `--auto=<bool>` assignment form for booleans, so an exact-token match alone
+    missed `gh pr merge 31 --auto=true` and let the queued merge through. Both
+    spellings are matched. `--auto=false` (and pflag's other false spellings)
+    genuinely disables auto-merge and is NOT matched -- blocking it would be a
+    pure false block. An UNRECOGNIZED value fails CLOSED: gh rejects it
+    outright, so treating it as auto costs nothing, while guessing the other
+    way would hand over a bypass primitive. `--disable-auto` is a DIFFERENT
+    flag name under pflag (full-name match, not prefix), so it is left alone.
+
+    Scoped to the matching invocation's OWN argv, same as the flag form of
+    `gh_pr_repo_override` above and for the same reason: `--auto` cannot
+    reach a sibling command in the same Bash call, so a wider scope would
+    only produce false blocks (e.g. a `gh pr view` earlier in the call whose
+    unrelated text happens to contain the substring).
+
+    Detection is incomplete by nature -- an evasion invisible to this
+    tokenizer (shell expansion building the flag, a wrapper script) is not
+    caught. That is acceptable here, and asymmetric with the reverted
+    `--match-head-commit`-presence requirement in a load-bearing way: a miss
+    on a REQUIRED flag fails OPEN (the merge proceeds unpinned, looking
+    identical to a compliant one); a miss on a flag we REJECT fails safe (the
+    merge proceeds exactly as it would have before this guard existed --
+    never worse than the pre-existing behavior). See ADR 0030 Residual risk.
+    """
+    for chunk in _all_chunks(cmd):
+        for _op, seg in split_segments(chunk):
+            argv = _command_argv(seg, 'gh')
+            if not argv or not _is_exe(argv[0], 'gh'):
+                continue
+            rest = argv[1:]
+            if _gh_find_pr_sub(rest, subcommand) is None:
+                continue
+            skip_value = False
+            for tok in rest:
+                if skip_value:
+                    skip_value = False
+                    continue        # this token is the previous flag's VALUE
+                # NOTE: no `#`-comment skip here, deliberately. _tokenize retains
+                # comments, so `gh pr merge 31 --squash # do not use --auto`
+                # false-BLOCKS. Stopping the scan at a `#` token was tried and
+                # REVERTED: shlex has already removed quoting, so a legitimate
+                # hash-prefixed ARGUMENT is indistinguishable from a comment --
+                # `gh pr merge '#feature' --auto` would stop the scan and hide a
+                # live `--auto`, turning a false block into a fail-OPEN bypass.
+                # Unknowable ⇒ keep the false block: it is visible and the
+                # operator can reword; the bypass would not be.
+                if tok == '--auto':
+                    return True
+                if tok.startswith('--auto='):
+                    # pflag's ParseBool false spellings; anything else fails CLOSED.
+                    if tok[len('--auto='):] not in ('0', 'f', 'F',
+                                                    'false', 'FALSE', 'False'):
+                        return True
+                if tok in _GH_VALUE_FLAGS:
+                    skip_value = True
+                    continue
+                kind = _cluster_scan(tok)
+                if kind == 'value':
+                    skip_value = True
+    return False
 
 
 def gh_pr_count(cmd, subcommand):

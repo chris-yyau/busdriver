@@ -932,6 +932,10 @@ def _raises(fn):
     except ValueError:
         return True
 check("cd target with LF raises (fail-closed)", _raises(lambda: g._cd_target('cd "/safe\nother"')), True)
+# split_segments must not strip a trailing CR either — bash keeps it and cds into a
+# DIFFERENT directory, so stripping it here hid the whole attack from _cd_target.
+check("segment keeps trailing CR", _raises(
+    lambda: g._cd_target(g.split_segments('cd /reviewed\r && gh pr merge 31')[0][1])), True)
 check("cd target with CR raises (fail-closed)", _raises(lambda: g._cd_target('cd "/safe\rother"')), True)
 # Trailing, UNQUOTED CR/LF: str.strip() treats \r/\n as whitespace and would
 # silently drop a trailing CR before the check ever ran if the check ran on
@@ -945,6 +949,22 @@ check("ordinary cd target still resolves", g._cd_target('cd /tmp/r'), '/tmp/r')
 # `git -C` is the OTHER derivation of target_dir and must reject identically.
 check("git -C target with LF raises", _raises(lambda: g.git_commit('git -C "/safe\nother" commit')), True)
 check("git -C target with CR raises", _raises(lambda: g.git_commit('git -C "/safe\rother" commit')), True)
+# UNQUOTED trailing CR on a `-C` operand: shlex's default whitespace is
+# ' \t\r\n', so `shlex.split` silently treats a raw CR the same as a space --
+# `-C /safe<CR> commit` tokenized to `-C /safe` `commit` with the CR just
+# dropped as a separator, instead of `-C` `/safe<CR>` -- hiding it from
+# `_reject_crlf` entirely (the "RAW operand" comment above that call was only
+# true after tokenization, not after shlex had already eaten the CR). Bash's
+# own IFS does not include CR, so bash keeps `/safe<CR>` as ONE word and
+# scopes git to a directory the gate never validated (coderabbit #511).
+check("git -C target with UNQUOTED trailing CR raises (fail-closed)",
+      _raises(lambda: g.git_commit('git -C /safe\r commit')), True)
+check("git -C target with UNQUOTED embedded CR raises (fail-closed)",
+      _raises(lambda: g.git_commit('git -C /safe\rother commit')), True)
+# ...and the ordinary (no CR/LF) unquoted case must still resolve normally --
+# excluding \r from shlex's whitespace must not break plain `-C` parsing.
+check("git -C target with no CR/LF still resolves",
+      g.git_commit('git -C /safe commit')[1], '/safe')
 check("cd + relative -C", g.git_commit('cd /repoA && git -C nested commit')[1], '/repoA/nested')
 check("sequential -C", g.git_commit('git -C /repoA -C nested commit')[1], '/repoA/nested')
 check("commit -C is reuse-msg not cd", g.git_commit('git commit -C HEAD')[1], '')
@@ -1050,6 +1070,44 @@ for c in OVERRIDE_YES:
     check(f"override+ {c!r}", g.gh_pr_repo_override(c, 'merge'), True)
 for c in OVERRIDE_NO:
     check(f"override- {c!r}", g.gh_pr_repo_override(c, 'merge'), False)
+
+# ── gh_pr_auto_merge: --auto QUEUES the merge past the gate's check (#505) ──
+# pflag accepts `--auto=<bool>` for booleans, so an exact-token match alone let
+# `--auto=true` through. False spellings genuinely disable auto and must NOT
+# match; an unrecognized value fails CLOSED (gh would reject it anyway).
+AUTO_YES = [
+    'gh pr merge 31 --auto',
+    'gh pr merge 31 --auto=true', 'gh pr merge 31 --auto=1',
+    'gh pr merge 31 --auto=t', 'gh pr merge 31 --auto=True',
+    'gh pr merge 31 --auto=TRUE',
+    'gh pr merge 31 --auto=bogus',          # unparseable → fail CLOSED
+    'gh pr merge 31 --squash --auto --delete-branch',
+    "bash -c 'gh pr merge 31 --auto'",      # nested payload
+]
+AUTO_NO = [
+    'gh pr merge 31 --squash',
+    'gh pr merge 31 --auto=false', 'gh pr merge 31 --auto=0',
+    'gh pr merge 31 --auto=f', 'gh pr merge 31 --auto=False',
+    'gh pr merge 31 --auto=FALSE',
+    'gh pr merge 31 --disable-auto',        # a DIFFERENT flag, not a prefix match
+    'gh pr view 31 --auto && gh pr merge 31',   # flag is on the VIEW, not the merge
+    "gh pr merge 31 --body 'use --auto next time'",  # inert prose in an operand
+]
+# Deliberate OVER-blocks: a `--auto` inside a bash COMMENT is inert, but shlex has
+# already stripped quoting by the time we see the token, so a comment `#` cannot be
+# told apart from a legitimate hash-prefixed ARGUMENT. Skipping at `#` was tried and
+# reverted — `gh pr merge '#feature' --auto` would then hide a live flag (fail-OPEN).
+# A false block is visible and reworded; a bypass is not.
+AUTO_OVERBLOCK = [
+    'gh pr merge 31 --squash # do not use --auto',
+    "gh pr merge '#feature' --auto",     # the case that makes skipping unsafe
+]
+for c in AUTO_OVERBLOCK:
+    check(f"auto-overblock {c!r}", g.gh_pr_auto_merge(c, 'merge'), True)
+for c in AUTO_YES:
+    check(f"auto+ {c!r}", g.gh_pr_auto_merge(c, 'merge'), True)
+for c in AUTO_NO:
+    check(f"auto- {c!r}", g.gh_pr_auto_merge(c, 'merge'), False)
 
 # Property sweep: the env form must survive every quoting/grouping/wrapper shape,
 # since an assignment is ambient and reaches the merge however it is nested.

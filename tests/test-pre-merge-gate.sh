@@ -299,6 +299,65 @@ fi
 rm -rf "$_SPYDIR"
 rm -f "$CLEAN_MARKER"
 
+# ── 2h. Auto-merge queuing guard is MERGE-SCOPED (Codex #511) ────────────
+# `--auto` queues the merge for whenever GitHub's required checks/protections
+# clear rather than merging immediately, so the marker's head-SHA check can be
+# minutes/hours stale by the time GitHub actually merges. Block on presence,
+# regardless of a valid marker. The marker is PRESERVED — this is a queuing
+# refusal, not marker staleness.
+for auto_shape in \
+    'gh pr merge 31 --squash --auto' \
+    'gh pr merge 31 --auto --delete-branch' \
+    'gh pr merge 31 --admin --auto'
+do
+    write_marker 31
+    run_gate_test "blocks auto-merge queuing: $auto_shape" "block" \
+        "{\"tool_name\":\"Bash\",\"toolName\":\"Bash\",\"tool_input\":{\"command\":\"$auto_shape\"}}"
+    TOTAL=$((TOTAL + 1))
+    if [ -f "$CLEAN_MARKER" ]; then
+        PASS=$((PASS + 1))
+        printf "  PASS  preserves marker on auto-merge refusal (%s)\n" "$auto_shape"
+    else
+        FAIL=$((FAIL + 1))
+        printf "  FAIL  preserves marker on auto-merge refusal (%s)\n" "$auto_shape"
+    fi
+    rm -f "$CLEAN_MARKER"
+done
+
+# 2h2. `--disable-auto` is a DIFFERENT pflag flag name (cancels a previously
+#      queued auto-merge), not a prefix/substring of `--auto` — it must NOT
+#      trip the guard. A matching marker should allow normally.
+write_marker 31
+run_gate_test "does not block --disable-auto (distinct flag, not --auto)" "allow" \
+    "{\"tool_name\":\"Bash\",\"toolName\":\"Bash\",\"tool_input\":{\"command\":\"gh pr merge 31 --squash --disable-auto\"}}"
+rm -f "$CLEAN_MARKER"
+
+# 2h3. `--auto` on a SIBLING command (not the merge itself) must not false-block —
+#      same scoping requirement as the 2f2 auto-admin case above.
+AUTO_SIBLING_SHAPE='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"gh pr view 31 --json title -q .title --auto && gh pr merge 31 --squash"}}'
+write_marker 31
+run_gate_test "allows merge when --auto sits on a sibling gh command, not the merge" "allow" \
+    "$AUTO_SIBLING_SHAPE"
+rm -f "$CLEAN_MARKER"
+
+# 2h4. Same backtick-safety regression as 2g, for the new auto-merge comment
+#      block: assert no stray gh call fires from an unescaped backtick.
+TOTAL=$((TOTAL + 1))
+_SPYDIR=$(mktemp -d)
+printf '#!/bin/sh\necho "$*" >> %s/hits\nexit 0\n' "$_SPYDIR" > "$_SPYDIR/gh"
+chmod +x "$_SPYDIR/gh"
+write_marker 31
+printf '%s' "$MERGE_INPUT" | PATH="$_SPYDIR:$PATH" bash "$GATE_SCRIPT" >/dev/null 2>&1 || true
+if grep -q -- '--auto' "$_SPYDIR/hits" 2>/dev/null; then
+    FAIL=$((FAIL + 1))
+    printf "  FAIL  no stray gh call from an unescaped backtick in the auto-merge comment\n"
+else
+    PASS=$((PASS + 1))
+    printf "  PASS  no stray gh call from an unescaped backtick in the auto-merge comment\n"
+fi
+rm -rf "$_SPYDIR"
+rm -f "$CLEAN_MARKER"
+
 # 3. Allow with skip file (must be > 30s old to pass anti-self-bypass).
 #    Bug B deferred-consumption: gate should ALSO leave skip file in place
 #    and write .merge-bypass-pending.local so PostToolUse can consume only on

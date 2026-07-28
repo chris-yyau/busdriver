@@ -177,6 +177,39 @@ deliberately out of scope:
    manual merges, it belongs **server-side** (branch protection requiring the pin, or
    a required status check), not in a hook parser.
 
+   **Sub-case NARROWED (#511): an explicit `gh pr merge --auto`.** The "seconds" scale above
+   assumes GitHub processes the merge essentially immediately after the API call.
+   `--auto` breaks that assumption — GitHub *queues* the merge for whenever
+   required checks/protections clear, which can be minutes to hours later, during
+   which a push landing on the PR is queued through with no re-check at all. Unlike
+   the reverted require-a-flag approach, detecting `--auto`'s *presence* and
+   blocking it is a safe parse: a miss just returns to pre-existing behavior
+   (never worse), where a miss on a *required*-flag check would have failed open
+   (an unpinned merge indistinguishable from a compliant one). `gh_pr_auto_merge()`
+   in `gitcmd_detect.py`, scoped to the merge invocation's own argv exactly like
+   `gh_pr_repo_override()`, rejects `--auto` on both evidence-based allow paths
+   (marker and bootstrap); the explicit skip-file bypass is untouched, same as the
+   cross-repo guard.
+
+   It **over-blocks a `--auto` mentioned inside a bash comment**, and that is the
+   correct residual: `_tokenize` retains comments, and shlex has already stripped
+   quoting by the time the scan runs, so a comment `#` is indistinguishable from a
+   legitimate hash-prefixed argument. Stopping the scan at `#` was tried and
+   reverted — `gh pr merge '#feature' --auto` would then hide a live flag, turning
+   a visible false block into a fail-OPEN bypass.
+
+   **What this does NOT close.** Only the *explicit flag* is detected. `gh pr
+   merge` also enters the queue **implicitly** when the target branch requires a
+   merge queue (`cli/cli` `pkg/cmd/pr/merge/merge.go`), and that carries the same
+   unbounded delay with no flag on the argv to detect. Recognizing it would mean
+   querying branch protection from inside a PreToolUse hook — a network call on
+   the gate path — and it would still be a property of the *branch*, not the
+   command. So the queued-merge exposure is narrowed for the spelling an operator
+   actually types, not eliminated. Repos that enable a merge queue on the base
+   branch should treat this residual as fully open and close it server-side.
+   The general manual-merge race (no queue involved, still seconds-scale) remains
+   the accepted residual above.
+
    Scale: the window is the seconds between hook and API call, against the ~45 minutes
    the un-pinned 2-hour marker allowed before this ADR.
 

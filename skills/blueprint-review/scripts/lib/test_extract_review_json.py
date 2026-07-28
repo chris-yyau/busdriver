@@ -693,3 +693,19 @@ def test_a_framed_echo_is_classified_on_its_whole_line_not_to_the_error():
         '[codex] Assistant message captured: { "status": ... "issues": [ { "sect\n'
     )
     assert ex.extract_from_text(raw) is None
+
+
+def test_a_recognized_echo_line_is_skipped_whole_not_up_to_the_error():
+    """#524 regression: the sweep must not re-enter the line it just dismissed.
+
+    `exc.pos` is only where the decode died. For a preview cut between tokens the
+    line continues past it, so resuming there walked back into the fragment
+    already ruled a non-payload, took a later `[` on that same line as a fresh
+    unresolved region, and let it borrow the real verdict's keys — discarding the
+    complete review below.
+    """
+    raw = (
+        '[codex] Assistant message captured: { "status": ... "issues": [ { "sect\n'
+        f"{PRETTY}\n"
+    )
+    assert ex.extract_from_text(raw) == VERDICT

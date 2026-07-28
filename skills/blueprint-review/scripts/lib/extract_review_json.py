@@ -72,6 +72,19 @@ def _opens_like_json(raw: str, start: int) -> bool:
     return rest[0] == '"' if raw[start] == "{" else rest[0] in '"{['
 
 
+def _line_end(raw: str, start: int) -> int:
+    """Index of the newline ending `start`'s line, or len(raw) if it is the last.
+
+    Single source for the echo's extent. Confinement, classification, and the
+    skip-ahead all have to mean the SAME line — the classification window is only
+    sound because it is the line the confinement test accepted, and the skip is
+    only sound because it clears the line that was classified — so they share one
+    definition rather than three copies that can drift apart.
+    """
+    end = raw.find("\n", start)
+    return len(raw) if end < 0 else end
+
+
 def _embedded_in_a_line(raw: str, start: int) -> bool:
     """Is there non-whitespace before `start` on its own line?
 
@@ -146,9 +159,7 @@ def _is_log_echo_fragment(raw: str, start: int, exc: json.JSONDecodeError) -> bo
     pre-#524 behavior) — never to accepting a forged PASS. That is the correct
     direction to break in.
     """
-    line_end = raw.find("\n", start)
-    if line_end < 0:
-        line_end = len(raw)
+    line_end = _line_end(raw, start)
     # Confined to its own line: the failure is at or before that line's newline.
     # A decode that got PAST the newline is a real multi-line payload, not an
     # echo, and must fall through to the truncated-region path.
@@ -331,9 +342,7 @@ def try_last_review_object(raw: str):
                 # EARLIER PASS stayed selected even though a later framed verdict
                 # was unreadable. Fail-open, and the reverse of what the comment
                 # above promises.
-                echo_line_end = raw.find("\n", start)
-                if echo_line_end < 0:
-                    echo_line_end = len(raw)
+                echo_line_end = _line_end(raw, start)
                 if _looks_like_verdict(raw[start:echo_line_end]):
                     malformed_pos = start
                     _PARSE_ERRORS.append(str(exc))
@@ -341,7 +350,16 @@ def try_last_review_object(raw: str):
                 # region, a MID-LINE object could still be some other
                 # region's child, so from here only own-line objects can win.
                 own_line_only = True
-                i = max(exc.pos, start + 1)
+                # Skip the WHOLE classified line, not just to exc.pos. The echo's
+                # extent was established as its line, and exc.pos is only where
+                # the decode happened to die — for a cut between tokens, later
+                # `[`/`{` on that same line sit beyond it. Resuming at exc.pos
+                # re-entered the very fragment just ruled a non-payload, took one
+                # of those brackets as a fresh unresolved region, and let it
+                # borrow the real verdict's keys: `{ "status": ... "issues": [ {
+                # "sect` above a complete verdict returned None. The #524 loss
+                # again, one path further in.
+                i = max(echo_line_end, start + 1)
                 continue
             region_end, _, mismatched = _region_end(raw, start)
             if region_end is None and not mismatched:
@@ -428,9 +446,8 @@ def try_last_review_object(raw: str):
             continue
         embedded = _embedded_in_a_line(raw, start)
         is_review_obj = isinstance(obj, dict) and _is_review(obj)
-        if is_review_obj:
-            if not (own_line_only and embedded):
-                best, best_pos = obj, start
+        if is_review_obj and not (own_line_only and embedded):
+            best, best_pos = obj, start
         if is_review_obj and not embedded:
             # An own-line REVIEW resynced the sweep to top level, so the skipped
             # echo can no longer be parenting what follows.

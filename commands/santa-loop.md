@@ -90,13 +90,22 @@ Use the first available CLI:
 
 **Codex CLI** (if installed)
 ```bash
-codex exec --sandbox read-only -m gpt-5.4 -C "$(pwd)" - < "$PROMPT_FILE"
+# No hardcoded model pin — the codex CLI config default wins (as litmus and
+# orchestrate-codex-worker.sh do); override with CODEX_MODEL. A pinned version
+# silently runs stale (#331).
+# Array, not ${VAR:+...} — zsh does not word-split unquoted expansions, so the
+# terser form would pass `-m <id>` as ONE argument and codex would reject it.
+CODEX_ARGS=()
+[ -n "${CODEX_MODEL:-}" ] && CODEX_ARGS=(-m "$CODEX_MODEL")
+codex exec --sandbox read-only "${CODEX_ARGS[@]}" -C "$(pwd)" - < "$PROMPT_FILE"
 rm -f "$PROMPT_FILE"
 ```
 
 **Gemini CLI** (if installed and codex is not)
 ```bash
-gemini -p "$(cat "$PROMPT_FILE")" -m gemini-2.5-pro
+GEMINI_ARGS=()
+[ -n "${GEMINI_MODEL:-}" ] && GEMINI_ARGS=(-m "$GEMINI_MODEL")
+gemini -p "$(cat "$PROMPT_FILE")" "${GEMINI_ARGS[@]}"
 rm -f "$PROMPT_FILE"
 ```
 
@@ -166,8 +175,8 @@ Result:     [PUSHED / ESCALATED TO USER]
 ## Notes
 
 - Reviewer A (Claude Opus) always runs — guarantees at least one strong reviewer regardless of tooling.
-- Model diversity is the goal for Reviewer B. GPT-5.4 or Gemini 2.5 Pro gives true independence — different training data, different biases, different blind spots. The Claude-only fallback still provides value via context isolation but loses model diversity.
-- Strongest available models are used: Opus for Reviewer A, GPT-5.4 or Gemini 2.5 Pro for Reviewer B.
+- Model diversity is the goal for Reviewer B. Codex or Gemini gives true independence — different training data, different biases, different blind spots. Each CLI's own configured default model is used (overridable via `CODEX_MODEL` / `GEMINI_MODEL`; a hardcoded version pin drifts silently — #331). The Claude-only fallback still provides value via context isolation but loses model diversity.
+- Strongest available models are used: Opus for Reviewer A, each CLI's own configured default (Codex or Gemini) for Reviewer B.
 - External reviewers run with `--sandbox read-only` (Codex) to prevent repo mutation during review.
 - Fresh reviewers each round prevents anchoring bias from prior findings.
 - The rubric is the most important input. Tighten it if reviewers rubber-stamp or flag subjective style issues.

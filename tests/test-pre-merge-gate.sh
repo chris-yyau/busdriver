@@ -41,6 +41,18 @@ BYPASS_PENDING="$MARKER_DIR/.merge-bypass-pending.local"
 # from the lock in the gate's cwd, so it can't drift) as passing — making these
 # tests hermetic (no network/auth dependency). Only `gh pr checks` is exercised
 # by the gate; any other subcommand exits 0.
+#
+# The gate ALSO resolves the PR's live head OID (`gh pr view --json headRefOid`)
+# to check it against the marker's SHA field (#505). The stub answers from
+# GH_STUB_HEAD_OID so a test can simulate "HEAD moved" by changing that env var
+# rather than by needing a real remote. Leaving it EMPTY simulates an
+# unresolvable head, which the gate must fail-closed on.
+# Contains hex letters (a-f) deliberately — test 2e1 below exercises the
+# case-insensitive compare via `tr 'a-f' 'A-F'`, which is a no-op on an
+# all-digit SHA and would silently skip testing the uppercase path (cubic
+# review, PR #511).
+GH_STUB_HEAD_OID_DEFAULT="deadbeef00112233445566778899aabbccddeeff"
+export GH_STUB_HEAD_OID="$GH_STUB_HEAD_OID_DEFAULT"
 GH_STUBDIR=$(mktemp -d)
 cat > "$GH_STUBDIR/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -56,10 +68,21 @@ for n in (names or ["shellcheck"]):
 PY
   exit 0
 fi
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+  # Only the headRefOid projection is exercised by the gate.
+  case "$*" in *headRefOid*) printf '%s\n' "${GH_STUB_HEAD_OID:-}" ;; esac
+  exit 0
+fi
 exit 0
 STUB
 chmod +x "$GH_STUBDIR/gh"
 export PATH="$GH_STUBDIR:$PATH"
+
+# Write a marker in the current `<PR_NUMBER> <HEAD_SHA>` contract (#505).
+# Second arg overrides the SHA (to simulate a marker written for another commit).
+write_marker() {
+    printf '%s %s\n' "$1" "${2:-$GH_STUB_HEAD_OID_DEFAULT}" > "$CLEAN_MARKER"
+}
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -145,8 +168,194 @@ echo "── pre-merge-gate ─────────────────�
 run_gate_test "blocks gh pr merge without marker" "block" "$MERGE_INPUT"
 
 # 2. Allow with fresh marker
-echo "31" > "$CLEAN_MARKER"
+write_marker 31
 run_gate_test "allows gh pr merge with fresh marker" "allow" "$MERGE_INPUT"
+rm -f "$CLEAN_MARKER"
+
+# ── 2b-2e. Marker must authorize the COMMIT, not just the PR (#505) ──────
+# Regression: a marker written when the grind converged stayed valid for 2h, so a
+# push landing after convergence let `gh pr merge <same PR>` merge a commit no
+# reviewer ack had covered (chrisyau.me#181 merged 5 unresolved bot threads that
+# were posted on a HEAD pushed 6 min AFTER the grind's last validated commit).
+# All four arms below must BLOCK; test 2 above is the matching-SHA allow arm, so
+# the guard is pinned in both directions.
+
+# 2b. Marker SHA is for a different commit than the PR's current HEAD.
+write_marker 31 "9999999999888888888877777777776666666666"
+run_gate_test "blocks when PR HEAD moved since grind (marker SHA != live HEAD)" "block" "$MERGE_INPUT"
+# ...and the now-worthless marker must be removed, not left to authorize a retry.
+TOTAL=$((TOTAL + 1))
+if [ ! -f "$CLEAN_MARKER" ]; then
+    PASS=$((PASS + 1)); printf "  PASS  removes marker whose SHA no longer matches HEAD\n"
+else
+    FAIL=$((FAIL + 1)); printf "  FAIL  removes marker whose SHA no longer matches HEAD\n"
+fi
+rm -f "$CLEAN_MARKER"
+
+# 2c. Pre-#505 marker (bare PR number, no SHA) cannot prove which commit was
+#     reviewed → fail-closed rather than grandfathered in.
+echo "31" > "$CLEAN_MARKER"
+run_gate_test "blocks legacy bare-PR-number marker (no head SHA)" "block" "$MERGE_INPUT"
+rm -f "$CLEAN_MARKER"
+
+# 2d. Truncated/short SHA is not accepted as a commit identity.
+write_marker 31 "10090de5"
+run_gate_test "blocks marker with abbreviated (non-40-char) head SHA" "block" "$MERGE_INPUT"
+rm -f "$CLEAN_MARKER"
+
+# 2e1. Hex is accepted case-insensitively, so it must COMPARE case-insensitively —
+#      an uppercase marker must not read as "HEAD moved" and delete a valid marker.
+printf '31 %s\n' "$(printf '%s' "$GH_STUB_HEAD_OID_DEFAULT" | tr 'a-f' 'A-F')" > "$CLEAN_MARKER"
+run_gate_test "allows an uppercase-hex marker matching the same head" "allow" "$MERGE_INPUT"
+rm -f "$CLEAN_MARKER"
+
+# 2e2. A truncated-but-hex live OID is a VERIFICATION failure, not a staleness
+#      verdict. It must not reach the authoritative comparison, which would delete
+#      a perfectly valid marker on a bogus "HEAD moved".
+GH_STUB_HEAD_OID="1111111" write_marker 31
+GH_STUB_HEAD_OID="1111111" run_gate_test "blocks on a truncated (non-40-char) live head OID" "block" "$MERGE_INPUT"
+TOTAL=$((TOTAL + 1))
+if [ -f "$CLEAN_MARKER" ]; then
+    PASS=$((PASS + 1)); printf "  PASS  preserves marker when live OID is truncated (verification failure)\n"
+else
+    FAIL=$((FAIL + 1)); printf "  FAIL  preserves marker when live OID is truncated\n"
+fi
+rm -f "$CLEAN_MARKER"
+
+# 2e. Head OID unresolvable (auth/network failure) → block, and PRESERVE the
+#     marker: the grind was valid, only the verification call failed.
+GH_STUB_HEAD_OID="" write_marker 31
+GH_STUB_HEAD_OID="" run_gate_test "blocks when PR head SHA cannot be resolved" "block" "$MERGE_INPUT"
+TOTAL=$((TOTAL + 1))
+if [ -f "$CLEAN_MARKER" ]; then
+    PASS=$((PASS + 1)); printf "  PASS  preserves marker when head-SHA lookup fails (verification error, not staleness)\n"
+else
+    FAIL=$((FAIL + 1)); printf "  FAIL  preserves marker when head-SHA lookup fails\n"
+fi
+rm -f "$CLEAN_MARKER"
+
+# ── 2f. Cross-repo guard is MERGE-SCOPED (#505) ──────────────────────────
+# A repo/host selector on the merge itself means "PR #31" may be a different
+# repo's PR, which none of this checkout's evidence (marker SHA, `gh pr checks`,
+# `gh pr diff`) covers. One shape per branch of gh_pr_repo_override(): separate
+# and attached -R, separate and = forms of --repo, a gh GLOBAL flag placed before
+# `pr` (which really does retarget), and an env-assignment prefix.
+# The marker is PRESERVED — this is a targeting refusal, not marker staleness.
+for xrepo_shape in \
+    'gh pr merge 31 --squash -R other/repo' \
+    'gh pr merge 31 --squash -Rother/repo' \
+    'gh pr merge 31 --squash --repo other/repo' \
+    'gh pr merge 31 --squash --repo=other/repo' \
+    'gh -R other/repo pr merge 31 --squash' \
+    'GH_REPO=other/repo gh pr merge 31 --squash'
+do
+    write_marker 31
+    run_gate_test "blocks cross-repo merge: $xrepo_shape" "block" \
+        "{\"tool_name\":\"Bash\",\"toolName\":\"Bash\",\"tool_input\":{\"command\":\"$xrepo_shape\"}}"
+    TOTAL=$((TOTAL + 1))
+    if [ -f "$CLEAN_MARKER" ]; then
+        PASS=$((PASS + 1))
+        printf "  PASS  preserves marker on cross-repo refusal (%s)\n" "$xrepo_shape"
+    else
+        FAIL=$((FAIL + 1))
+        printf "  FAIL  preserves marker on cross-repo refusal (%s)\n" "$xrepo_shape"
+    fi
+    rm -f "$CLEAN_MARKER"
+done
+
+# 2f2. ...and the guard must stay scoped to the MERGE's own argv. pr-grind's
+#      auto-admin block runs `gh -R "$OWNER/$REPO" pr view` and `gh pr merge`
+#      inside ONE fenced Bash call (skills/pr-grind/SKILL.md). ADR 0024's
+#      whole-command substring test matched that sibling `-R` and rejected the
+#      entire call, so pr-grind could never merge — the regression this case pins.
+AUTO_ADMIN_SHAPE='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"gh -R \"$OWNER/$REPO\" pr view 31 --json mergeStateStatus -q .mergeStateStatus && gh pr merge 31 --squash --delete-branch --admin"}}'
+write_marker 31
+run_gate_test "allows pr-grind auto-admin shape (sibling gh -R pr view, unselected merge)" "allow" \
+    "$AUTO_ADMIN_SHAPE"
+rm -f "$CLEAN_MARKER"
+# ...and that allow must be an authorization, not a failure to SEE the merge: the
+# gate exits 0 when it recognizes no merge at all, so without the marker the very
+# same command must block. Otherwise the case above passes for the wrong reason.
+run_gate_test "recognizes the merge inside the auto-admin shape (blocks with no marker)" "block" \
+    "$AUTO_ADMIN_SHAPE"
+
+# 2g. The MERGE_PARSE block is a double-quoted shell string, so an unescaped
+#     backtick pair inside it is COMMAND SUBSTITUTION, not prose. A comment
+#     mentioning `gh -R ... pr view` really did run a stray credentialed gh on every
+#     merge-gate invocation. Assert the gate never calls gh with that literal.
+TOTAL=$((TOTAL + 1))
+_SPYDIR=$(mktemp -d)
+printf '#!/bin/sh\necho "$*" >> %s/hits\nexit 0\n' "$_SPYDIR" > "$_SPYDIR/gh"
+chmod +x "$_SPYDIR/gh"
+write_marker 31
+printf '%s' "$MERGE_INPUT" | PATH="$_SPYDIR:$PATH" bash "$GATE_SCRIPT" >/dev/null 2>&1 || true
+if grep -q -- '-R \.\.\.' "$_SPYDIR/hits" 2>/dev/null; then
+    FAIL=$((FAIL + 1))
+    printf "  FAIL  no stray gh call from an unescaped backtick in MERGE_PARSE\n"
+else
+    PASS=$((PASS + 1))
+    printf "  PASS  no stray gh call from an unescaped backtick in MERGE_PARSE\n"
+fi
+rm -rf "$_SPYDIR"
+rm -f "$CLEAN_MARKER"
+
+# ── 2h. Auto-merge queuing guard is MERGE-SCOPED (Codex #511) ────────────
+# `--auto` queues the merge for whenever GitHub's required checks/protections
+# clear rather than merging immediately, so the marker's head-SHA check can be
+# minutes/hours stale by the time GitHub actually merges. Block on presence,
+# regardless of a valid marker. The marker is PRESERVED — this is a queuing
+# refusal, not marker staleness.
+for auto_shape in \
+    'gh pr merge 31 --squash --auto' \
+    'gh pr merge 31 --auto --delete-branch' \
+    'gh pr merge 31 --admin --auto'
+do
+    write_marker 31
+    run_gate_test "blocks auto-merge queuing: $auto_shape" "block" \
+        "{\"tool_name\":\"Bash\",\"toolName\":\"Bash\",\"tool_input\":{\"command\":\"$auto_shape\"}}"
+    TOTAL=$((TOTAL + 1))
+    if [ -f "$CLEAN_MARKER" ]; then
+        PASS=$((PASS + 1))
+        printf "  PASS  preserves marker on auto-merge refusal (%s)\n" "$auto_shape"
+    else
+        FAIL=$((FAIL + 1))
+        printf "  FAIL  preserves marker on auto-merge refusal (%s)\n" "$auto_shape"
+    fi
+    rm -f "$CLEAN_MARKER"
+done
+
+# 2h2. `--disable-auto` is a DIFFERENT pflag flag name (cancels a previously
+#      queued auto-merge), not a prefix/substring of `--auto` — it must NOT
+#      trip the guard. A matching marker should allow normally.
+write_marker 31
+run_gate_test "does not block --disable-auto (distinct flag, not --auto)" "allow" \
+    "{\"tool_name\":\"Bash\",\"toolName\":\"Bash\",\"tool_input\":{\"command\":\"gh pr merge 31 --squash --disable-auto\"}}"
+rm -f "$CLEAN_MARKER"
+
+# 2h3. `--auto` on a SIBLING command (not the merge itself) must not false-block —
+#      same scoping requirement as the 2f2 auto-admin case above.
+AUTO_SIBLING_SHAPE='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"gh pr view 31 --json title -q .title --auto && gh pr merge 31 --squash"}}'
+write_marker 31
+run_gate_test "allows merge when --auto sits on a sibling gh command, not the merge" "allow" \
+    "$AUTO_SIBLING_SHAPE"
+rm -f "$CLEAN_MARKER"
+
+# 2h4. Same backtick-safety regression as 2g, for the new auto-merge comment
+#      block: assert no stray gh call fires from an unescaped backtick.
+TOTAL=$((TOTAL + 1))
+_SPYDIR=$(mktemp -d)
+printf '#!/bin/sh\necho "$*" >> %s/hits\nexit 0\n' "$_SPYDIR" > "$_SPYDIR/gh"
+chmod +x "$_SPYDIR/gh"
+write_marker 31
+printf '%s' "$MERGE_INPUT" | PATH="$_SPYDIR:$PATH" bash "$GATE_SCRIPT" >/dev/null 2>&1 || true
+if grep -q -- '--auto' "$_SPYDIR/hits" 2>/dev/null; then
+    FAIL=$((FAIL + 1))
+    printf "  FAIL  no stray gh call from an unescaped backtick in the auto-merge comment\n"
+else
+    PASS=$((PASS + 1))
+    printf "  PASS  no stray gh call from an unescaped backtick in the auto-merge comment\n"
+fi
+rm -rf "$_SPYDIR"
 rm -f "$CLEAN_MARKER"
 
 # 3. Allow with skip file (must be > 30s old to pass anti-self-bypass).
@@ -199,12 +408,33 @@ run_gate_test "ignores non-merge commands" "allow" "$NON_MERGE_INPUT"
 # 5. Block with merge + cd prefix (no marker)
 run_gate_test "blocks cd + gh pr merge without marker" "block" "$MERGE_WITH_CD"
 
+# 5b. A LEADING LF embedded in an UNTRUSTED (loose-parsed) cd operand must fail
+# closed even with a fresh, valid marker present. `pushd` (unlike `cd`) is only
+# ever seen by the LOOSE cd parser (_cd_target_loose) feeding the untrusted_cd
+# channel -- _cd_target's strict _reject_crlf guard never runs on it.
+# untrusted_cd is the LAST field this hook prints, so an embedded LF cannot
+# shift a LATER field, but it still SPLITS the field's own `print()` into two
+# lines: `sed -n '8p'` then captures only the text BEFORE the first LF. A LF
+# at the very START of the operand truncates UNTRUSTED_CD to the EMPTY STRING
+# -- and gate_resolve_repo_dir treats an empty untrusted_cd exactly like "no
+# untrusted cd happened at all" ([ -n "$untrusted_cd" ] guards every check),
+# so the untrusted-cd defense is SILENTLY SKIPPED while bash really did `pushd`
+# into an attacker-chosen directory. Verified this is a real bypass, not just
+# defense-in-depth: with the untrusted_cd LF/CR guard reverted, this exact
+# input flips from block to ALLOW with a fresh marker present. Zero test
+# coverage for this existed prior to #511's merge with #509 (which introduced
+# the untrusted_cd field and its LF-only `chr(10)` emission guard).
+MERGE_WITH_LEADING_LF=$(printf '%s' '{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"pushd \"' && printf '\\n' && printf '%s' 'Q\"; gh pr merge 42 --squash --delete-branch"}}')
+write_marker 42
+run_gate_test "blocks leading-LF untrusted (pushd) cd operand even with fresh marker" "block" "$MERGE_WITH_LEADING_LF"
+rm -f "$CLEAN_MARKER"
+
 # 6. Non-Bash tool name → allow (not our concern)
 run_gate_test "ignores non-Bash tool" "allow" \
     '{"tool_name":"Write","tool_input":{"file_path":"test.js"}}'
 
 # 7. Stale marker (simulate by touching with old timestamp)
-echo "31" > "$CLEAN_MARKER"
+write_marker 31
 # Touch with timestamp 3 hours ago (macOS or GNU)
 TOUCH_OK=false
 touch -t "$(date -v-3H '+%Y%m%d%H%M.%S')" "$CLEAN_MARKER" 2>/dev/null && TOUCH_OK=true
@@ -220,18 +450,18 @@ rm -f "$CLEAN_MARKER"
 
 # 7c. Multi-merge guard: refuse Bash commands chaining more than one
 #     gh pr merge invocation, regardless of marker/skip state.
-echo "42" > "$CLEAN_MARKER"  # marker WOULD authorize PR 42, but multi-merge blocks anyway
+write_marker 42  # marker WOULD authorize PR 42, but multi-merge blocks anyway
 run_gate_test "blocks chained gh pr merge (multi-merge guard)" "block" "$MULTI_MERGE_INPUT"
 rm -f "$CLEAN_MARKER"
 
 # 7d. Multi-merge guard MUST also catch wrapper bypasses (bash -c, sh -c,
 #     eval, subshell). Substring-count over the whole cmd, not per-segment.
-echo "42" > "$CLEAN_MARKER"
+write_marker 42
 run_gate_test "blocks bash -c wrapped chained merges" "block" "$WRAPPED_BASH_C"
 rm -f "$CLEAN_MARKER"
 
 # 7e. Subshell-wrapped chained merges.
-echo "42" > "$CLEAN_MARKER"
+write_marker 42
 run_gate_test "blocks (...)-subshell chained merges" "block" "$WRAPPED_SUBSHELL"
 rm -f "$CLEAN_MARKER"
 
@@ -276,7 +506,7 @@ run_gate_test "ignores merge rows in a quoted heredoc body" "allow" "$PAYLOAD"
 #      really executes its body (verified against real bash), so it must still
 #      block — including behind a leading command, which reads the consumer from
 #      the owning segment rather than the whole physical line.
-echo "42" > "$CLEAN_MARKER"
+write_marker 42
 PAYLOAD=$(bash_payload "bash <<'EOF'
 gh pr merge 1
 gh pr merge 2
@@ -298,13 +528,13 @@ rm -f "$CLEAN_MARKER"
 
 # 7a. Bug A: marker for PR X must NOT authorize merging PR Y. Marker holds
 #     a different PR number than the one being merged → gate blocks.
-echo "99" > "$CLEAN_MARKER"
+write_marker 99
 run_gate_test "blocks when marker PR != merge PR (cross-PR mismatch)" "block" "$MERGE_INPUT"
 rm -f "$CLEAN_MARKER"
 
 # 7b. Bug A: when the mismatch fires, the stale marker is removed so the
 #     next attempt does not silently re-authorize.
-echo "99" > "$CLEAN_MARKER"
+write_marker 99
 printf '%s' "$MERGE_INPUT" | bash "$GATE_SCRIPT" 2>/dev/null || true
 TOTAL=$((TOTAL + 1))
 if [ ! -f "$CLEAN_MARKER" ]; then
@@ -321,7 +551,7 @@ rm -f "$CLEAN_MARKER"
 #     authorizes the merge (previously this spurious-blocked). Shares the
 #     gh-availability precondition with case 2 above.
 SUBST_MERGE='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"cd \"$(git rev-parse --show-toplevel)\" && gh pr merge 31 --squash"}}'
-echo "31" > "$CLEAN_MARKER"
+write_marker 31
 run_gate_test "allows toplevel-idiom cd prefix with fresh marker" "allow" "$SUBST_MERGE"
 rm -f "$CLEAN_MARKER"
 
@@ -329,7 +559,7 @@ rm -f "$CLEAN_MARKER"
 #     even with a marker that would otherwise authorize the merge (the block
 #     fires during resolution, before the marker check).
 UNRESOLV_MERGE='{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"cd \"$(echo /x)\" && gh pr merge 31 --squash"}}'
-echo "31" > "$CLEAN_MARKER"
+write_marker 31
 run_gate_test "blocks unresolvable cd substitution target" "block" "$UNRESOLV_MERGE"
 rm -f "$CLEAN_MARKER"
 

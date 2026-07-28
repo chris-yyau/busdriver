@@ -34,6 +34,16 @@ COMMIT_YES = [
     'command git commit -m x',
     'env FOO=1 git commit',
     'env -i FOO=1 git commit',           # env option
+    # APPEND-form assignment prefix. `A+=1 git commit` runs the commit exactly like
+    # `A=1 git commit`, but the assignment regex was `^\w+=` — no `+` — so the
+    # assignment stayed in argv, argv[0] was not `git`, and the command went
+    # UNDETECTED in every gate sharing this detector. Fail-open, found via #505.
+    'A+=1 git commit -m x',
+    'A+=1 B=2 git commit',               # mixed append + plain prefixes
+    'env A+=1 git commit',               # append form behind a wrapper
+    'A[0]=1 git commit -m x',            # INDEXED assignment word
+    'A[0]+=1 git commit -m x',           # indexed + append
+    'A[foo[0]]=1 git commit -m x',       # NESTED subscript — must not stop at first ]
     '/usr/bin/git commit',               # absolute-path exe
     '/usr/bin/env -i git commit',        # absolute-path wrapper
     'sudo -u nobody git commit',         # arg-taking option
@@ -707,7 +717,254 @@ for c in MERGE_NO:
 check("cd target_dir (&&-gated)", g.git_commit('cd /tmp/r && git commit')[1], '/tmp/r')
 check("cd NOT trusted (short-circuit)", g.git_commit('false && cd /tmp/r; git commit')[1], '')
 check("cd NOT trusted (semicolon)", g.git_commit('cd /tmp/r; git commit')[1], '')
+# An unconfirmed cd is reported OUT OF BAND (opt-in 4th element) so target_dir stays
+# a pure path field -- folding a sentinel into it would be forgeable by a real
+# directory and would downgrade the '$'-in-target BLOCK. Default stays a 3-tuple, so
+# the non-gating nudge parsers are untouched. Resolver matrix:
+# tests/test-gate-untrusted-cd.sh.
+check("untrusted_cd absent by default (3-tuple)", len(g.git_commit('cd /tmp/r; git commit')), 3)
+check("untrusted_cd opt-in (semicolon)", g.git_commit('cd /tmp/r; git commit', with_untrusted_cd=True)[3], '/tmp/r')
+check("untrusted_cd opt-in (newline)", g.git_commit('cd /tmp/r\ngit commit', with_untrusted_cd=True)[3], '/tmp/r')
+check("untrusted_cd empty when '&&'-trusted", g.git_commit('cd /tmp/r && git commit', with_untrusted_cd=True)[3], '')
+check("untrusted_cd empty when no cd", g.git_commit('git commit', with_untrusted_cd=True)[3], '')
+check("untrusted_cd empty on no match", g.git_commit('ls', with_untrusted_cd=True)[3], '')
+# `git -C` already scoped the repo authoritatively -- do not also report a stale
+# pending operand the caller might second-guess it with.
+check("untrusted_cd suppressed by git -C", g.git_commit('cd /tmp/r; git -C /other commit', with_untrusted_cd=True)[3], '')
+# ...but ONLY when that -C is AUTHORITATIVE. Tokenization discards the tilde's
+# quoting, so `git -C "~"` is a LITERAL RELATIVE dir git resolves against the runtime
+# cwd (/other/~), even though expanduser makes target_dir look absolute here.
+# Suppressing the payload's cd on "target_dir starts with /" therefore aimed the gate
+# at $HOME while the commit landed elsewhere -- and blanked untrusted_cd, so nothing
+# blocked. Pin both halves plus the arity the 5th internal element must not leak.
+check("tilde -C alone emits a blocking token",
+      g.git_commit('git -C "~" commit', with_untrusted_cd=True)[3], '-tilde-c-operand')
+check("tilde -C with a path too",
+      g.git_commit('git -C ~/sub commit', with_untrusted_cd=True)[3], '-tilde-c-operand')
+check("tilde -C does NOT suppress a payload cd",
+      g.git_commit('eval \'cd /other\'; git -C "~" commit', with_untrusted_cd=True)[3],
+      '-ambiguous-cd-operands')
+# A LATER absolute -C re-establishes authority; an EARLIER one does not survive a
+# later tilde (git resolves the literal '~' against /session, not $HOME).
+check("later absolute -C wins (no false block)",
+      g.git_commit('git -C "~" -C /session commit', with_untrusted_cd=True)[3], '')
+check("earlier absolute -C does not survive a tilde",
+      g.git_commit('git -C /session -C "~" commit', with_untrusted_cd=True)[3], '-tilde-c-operand')
+check("absolute -C still suppresses payload cd",
+      g.git_commit("eval 'cd /other'; git -C /session commit", with_untrusted_cd=True)[3], '')
+check("authoritative flag does not leak into the tuple",
+      len(g.git_commit('git -C "~" commit', with_untrusted_cd=True)), 4)
+check("tilde -C keeps the 3-tuple default",
+      len(g.git_commit('git -C "~" commit')), 3)
+# A `-C` inside a payload is not resolved for scoping, but silence there was not
+# neutral: it returned the same ('', '') as "no cd at all", so the gate anchored on
+# the session cwd while git committed in the -C target. It must BLOCK instead.
+# `_command_argv` DELETES leading/embedded grouping tokens, so an INDEX into the
+# argv it returns does not name the same token in the untouched stream -- and the
+# deletions are mid-stream, so no single offset corrects for them. It now carries the
+# aligned raw spellings instead. The shape below is the one that got through: two
+# brace groups shift the stream by 2, landing the spelling check on a double-quoted
+# REDIRECTION TARGET decoy, so the single-quoted operand was read as the live idiom
+# and the gate proceeded on the session cwd while bash cd'd into a literal directory.
+# A brace group runs in the CURRENT shell, so the cd really does take effect.
+# `pushd DIR` moves the CURRENT shell exactly like `cd DIR`, and `popd` returns to a
+# stack entry no static parser can know. Both reported '' -- byte-identical to "no cd
+# at all" -- so `pushd /other-repo; git commit` committed in /other-repo while the
+# gate validated the SESSION repo's marker. Recorded now, seen but never trusted.
+check("pushd is recorded like cd",
+      g.git_commit('pushd /other-repo; git commit -m x', with_untrusted_cd=True)[3], '/other-repo')
+check("pushd behind && is still untrusted",
+      g.git_commit('pushd /other-repo && git commit -m x', with_untrusted_cd=True)[3], '/other-repo')
+check("popd has no knowable destination",
+      g.git_commit('popd; git commit -m x', with_untrusted_cd=True)[3], '-ambiguous-cd-operands')
+check("bare pushd swaps the stack -- also unknowable",
+      g.git_commit('pushd; git commit -m x', with_untrusted_cd=True)[3], '-ambiguous-cd-operands')
+# ...and a commit with no directory change at all must stay clean.
+# _command_argv protects the `target` token from being eaten as a wrapper option's
+# argument. It took ONE name, so protecting 'cd' left `command -p pushd /other` and
+# `time -p pushd /other` consuming `pushd` as the option value -- argv became just
+# ['/other'], the loose channel saw no command word, and untrusted_cd came back
+# empty. It now takes a tuple, so all three builtins are protected.
+check("command -p does not swallow pushd",
+      g.git_commit('command -p pushd /other; git commit', with_untrusted_cd=True)[3], '/other')
+check("time -p does not swallow pushd",
+      g.git_commit('time -p pushd /other; git commit', with_untrusted_cd=True)[3], '/other')
+check("wrapper does not swallow popd",
+      g.git_commit('command -p popd; git commit', with_untrusted_cd=True)[3], '-ambiguous-cd-operands')
+check("wrapper still does not swallow cd",
+      g.git_commit('command -p cd /other; git commit', with_untrusted_cd=True)[3], '/other')
+# The multi-target change must not make a wrapped COMMIT look like a cd.
+# `-n` suppresses the directory change for BOTH stack builtins -- but ONLY as an
+# OPTION. A scan of the whole argv also matched it as an operand or a redirection
+# target, reporting "no cd" while the shell really moved (fail-OPEN), so the walk
+# stops treating tokens as options at `--` or at the first operand.
+check("-n option suppresses pushd",
+      g.git_commit('pushd -n /other; git commit', with_untrusted_cd=True)[3], '')
+check("-n option suppresses popd",
+      g.git_commit('popd -n; git commit', with_untrusted_cd=True)[3], '')
+check("-n after -- is an OPERAND, not the option",
+      g.git_commit('pushd -- -n; git commit', with_untrusted_cd=True)[3], '-n')
+check("-n as a redirection target is not the option",
+      g.git_commit('pushd /other > -n; git commit', with_untrusted_cd=True)[3], '/other')
+# A rotation operand DOES move, to a stack entry no static parser can name. It is
+# reported verbatim and the RESOLVER blocks it (relative operand) -- what must not
+# happen is it coming back clean.
+check("pushd rotation is not reported clean",
+      g.git_commit('pushd +1; git commit', with_untrusted_cd=True)[3], '+1')
+check("popd rotation is unknowable",
+      g.git_commit('popd +1; git commit', with_untrusted_cd=True)[3], '-ambiguous-cd-operands')
+# `command -v NAME` / `-V NAME` only PRINT a resolution; nothing executes. Protecting
+# pushd as a target name made the query look like an executed bare pushd.
+# ANSI-C quoting survives tokenization with the leading `$` attached (`$\'pushd\'` ->
+# `$pushd`), and bash still runs the builtin. The target guard compared the raw token,
+# so `command -p $\'pushd\' /other` consumed the command word as the wrapper option\'s
+# argument and reported no directory change -- fail-OPEN. Same gap applied to `cd`.
+# The ANSI-C leniency is scoped to the cd BUILTINS. Applying it to `git`/`gh` made a
+# wrapper ARGUMENT named `$git` look like the protected executable, so it was not
+# consumed: argv started at `$git`, matched no executable, and the commit went
+# UNDETECTED. Same for `$gh` and the merge detector.
+check("a wrapper argument named $git is still consumed",
+      g.git_commit('env -u $git git commit')[0], True)
+check("a wrapper argument named $gh is still consumed",
+      g.gh_pr('env -u $gh gh pr merge 1', 'merge')[0], True)
+check("ANSI-C $pushd behind a wrapper is still a target",
+      g.git_commit("command -p $\'pushd\' /other; git commit", with_untrusted_cd=True)[3], '/other')
+check("ANSI-C $cd behind a wrapper is still a target",
+      g.git_commit("command -p $\'cd\' /other; git commit", with_untrusted_cd=True)[3], '/other')
+check("ANSI-C $popd is still unknowable",
+      g.git_commit("$\'popd\'; git commit", with_untrusted_cd=True)[3], '-ambiguous-cd-operands')
+# A DYNAMIC command word is an ACCEPTED residual, not an oversight: `cmd=cd;
+# $cmd /other` really moves the shell, but closing it means treating every
+# `$VAR <operand>` as a possible cd, which blocks ordinary `$EDITOR file; git commit`.
+# Behaviour matches the pre-untrusted_cd parser, so the channel does not open this gap.
+# Pinned so the trade-off is explicit and cannot be changed silently either way.
+check("a dynamic command word is an accepted residual",
+      g.git_commit('$cmd /other; git commit', with_untrusted_cd=True)[3], '')
+# The query scan MUST stay bounded to the leading wrapper run. Scanning the whole
+# token list also matched a `command -v` sitting AFTER an interpreter payload, so
+# the target='' discovery path returned [] and hid a real commit -- fail-OPEN.
+check("a trailing query does not hide an interpreter payload",
+      g.git_commit('bash -c "git commit" command -v')[0], True)
+check("a trailing query does not hide a preceding cd",
+      g.git_commit('cd /other; bash -c "git commit" command -v', with_untrusted_cd=True)[3], '/other')
+# bash accepts clustered and repeated options, so these are queries too and must not
+# be read as an executed bare pushd (which would block a commit that never moved).
+# The query scan has to walk past the SAME prefixes the main parser strips, or a
+# redirection / keyword / group in front of the query made it look like an executed
+# bare pushd and blocked a commit that never moved.
+# There is deliberately NO `command -v NAME` shortcut. Such a query only PRINTS a
+# resolution, so recognising it would avoid one false block -- but `command` is not
+# reliably the builtin: a shell FUNCTION or an executable `./command` can override it
+# and really does run its arguments. A shortcut that returns "nothing executed"
+# therefore HIDES a real commit or merge. These pin that detection survives every
+# override form, and that the query itself over-blocks rather than fails open.
+check("a function override of command still runs the commit",
+      g.git_commit('command() { shift; "$@"; }; command -v git commit')[0], True)
+check("an executable ./command still runs the commit",
+      g.git_commit('./command -v git commit')[0], True)
+check("a redirection target named -v hides nothing",
+      g.git_commit('command > -v git commit')[0], True)
+check("...and hides no merge either",
+      g.gh_pr('command > -v gh pr merge 1', 'merge')[0], True)
+check("a genuine query over-blocks (accepted, never fails open)",
+      g.git_commit('command -v pushd; git commit', with_untrusted_cd=True)[3], '-ambiguous-cd-operands')
+check("wrapped commit with no cd stays clean",
+      g.git_commit('command -p git commit', with_untrusted_cd=True)[3], '')
+check("no cd/pushd stays clean",
+      g.git_commit('git commit -m x', with_untrusted_cd=True)[3], '')
+check("brace-shifted decoy does not vouch for a quoted cd",
+      g.git_commit('{ { > "$(git rev-parse --show-toplevel)" cd \'$(git rev-parse --show-toplevel)\'; }; }; git commit -m x',
+                   with_untrusted_cd=True)[3],
+      "'$(git rev-parse --show-toplevel)'")
+check("brace-shifted decoy does not vouch for a quoted -C",
+      g.git_commit('{ { > "$(git rev-parse --show-toplevel)" git -C \'$(git rev-parse --show-toplevel)\' commit; }; }',
+                   with_untrusted_cd=True)[1],
+      "'$(git rev-parse --show-toplevel)'")
+# ...and a genuinely live operand inside a brace group must NOT be masked.
+check("live -C inside a brace group stays live",
+      g.git_commit('{ git -C "$(git rev-parse --show-toplevel)" commit; }',
+                   with_untrusted_cd=True)[1],
+      '$(git rev-parse --show-toplevel)')
+# gh_pr still suppresses the nested fold on `target_dir.startswith("/")`, the test the
+# commit path abandoned as unsound. It is not exploitable there only because _iter_gh
+# INDEPENDENTLY requires cds[-1] == target_dir, which an expanduser'd tilde fails. That
+# invariant lives in a different function from the test depending on it, so pin it here:
+# if the agreement check is ever loosened, this fails instead of silently fail-opening.
+check("gh: tilde cd still blocks despite the absolute-looking target",
+      g.gh_pr('eval \'cd /other\'; cd "~" && gh pr create', 'create', with_untrusted_cd=True)[3],
+      '-ambiguous-cd-operands')
+check("nested -C blocks (eval, tilde)",
+      g.git_commit('eval \'git -C "~" commit\'', with_untrusted_cd=True)[3], '-nested-c-operand')
+check("nested -C blocks (bash -c, absolute)",
+      g.git_commit("bash -c 'git -C /other commit'", with_untrusted_cd=True)[3], '-nested-c-operand')
+check("nested -C folds in with an outer cd",
+      g.git_commit("cd /other; bash -c 'git -C /session commit'", with_untrusted_cd=True)[3],
+      '-ambiguous-cd-operands')
+# ...and a payload with NO -C must stay clean, or the token is just a blanket block.
+check("nested commit without -C stays clean",
+      g.git_commit("bash -c 'git commit'", with_untrusted_cd=True)[3], '')
+# `git commit -C HEAD` is the reuse-message flag, AFTER the subcommand -- the walk is
+# bounded by sub_idx, so it must not be mistaken for a directory change.
+check("commit -C HEAD is not a -C operand",
+      g.git_commit('git commit -C HEAD', with_untrusted_cd=True)[3], '')
+# '~+'/'~-' are bash-only ($PWD/$OLDPWD); expanduser leaves them RELATIVE, so they
+# skipped the authority-revoking branch and an earlier trusted cd kept authority --
+# `cd /repo && git -C ~+ commit` scoped to a nonexistent /repo/~+ with an EMPTY
+# untrusted_cd while bash committed in /repo. Every tilde form must revoke it.
+check("~+ revokes an earlier cd's authority",
+      g.git_commit('cd /repo && git -C ~+ commit', with_untrusted_cd=True)[3], '-tilde-c-operand')
+check("~- revokes an earlier cd's authority",
+      g.git_commit('cd /repo && git -C ~- commit', with_untrusted_cd=True)[3], '-tilde-c-operand')
+check("cd && commit with no -C stays clean",
+      g.git_commit('cd /repo && git commit', with_untrusted_cd=True)[3], '')
+check("cd && absolute -C stays clean",
+      g.git_commit('cd /repo && git -C /other commit', with_untrusted_cd=True)[3], '')
+check("gh_pr untrusted_cd opt-in", g.gh_pr('cd /tmp/r; gh pr merge 5', 'merge', with_untrusted_cd=True)[3], '/tmp/r')
+check("gh_pr 3-tuple by default", len(g.gh_pr('cd /tmp/r; gh pr merge 5', 'merge')), 3)
+check("gh_pr untrusted_cd empty on '&&'", g.gh_pr('cd /tmp/r && gh pr merge 5', 'merge', with_untrusted_cd=True)[3], '')
 check("git -C target_dir", g.git_commit('git -C /tmp/r commit')[1], '/tmp/r')
+# A newline inside a quoted cd target must NOT be silently truncated away: callers
+# reject a CR/LF-bearing target, and a truncated one gave them nothing to reject
+# while bash still ran from the real (different) directory.
+def _raises(fn):
+    try:
+        fn(); return False
+    except ValueError:
+        return True
+check("cd target with LF raises (fail-closed)", _raises(lambda: g._cd_target('cd "/safe\nother"')), True)
+# split_segments must not strip a trailing CR either — bash keeps it and cds into a
+# DIFFERENT directory, so stripping it here hid the whole attack from _cd_target.
+check("segment keeps trailing CR", _raises(
+    lambda: g._cd_target(g.split_segments('cd /reviewed\r && gh pr merge 31')[0][1])), True)
+check("cd target with CR raises (fail-closed)", _raises(lambda: g._cd_target('cd "/safe\rother"')), True)
+# Trailing, UNQUOTED CR/LF: str.strip() treats \r/\n as whitespace and would
+# silently drop a trailing CR before the check ever ran if the check ran on
+# the already-stripped value — the gate would then approve the marker for
+# the CR-less path while bash actually `cd`s into the distinct CR-suffixed
+# directory. Checking the raw captured group before stripping closes this
+# (cubic P1, PR #511).
+check("cd target with trailing unquoted CR raises (fail-closed)", _raises(lambda: g._cd_target('cd /safe\r')), True)
+check("cd target with trailing unquoted LF raises (fail-closed)", _raises(lambda: g._cd_target('cd /safe\n')), True)
+check("ordinary cd target still resolves", g._cd_target('cd /tmp/r'), '/tmp/r')
+# `git -C` is the OTHER derivation of target_dir and must reject identically.
+check("git -C target with LF raises", _raises(lambda: g.git_commit('git -C "/safe\nother" commit')), True)
+check("git -C target with CR raises", _raises(lambda: g.git_commit('git -C "/safe\rother" commit')), True)
+# UNQUOTED trailing CR on a `-C` operand: shlex's default whitespace is
+# ' \t\r\n', so `shlex.split` silently treats a raw CR the same as a space --
+# `-C /safe<CR> commit` tokenized to `-C /safe` `commit` with the CR just
+# dropped as a separator, instead of `-C` `/safe<CR>` -- hiding it from
+# `_reject_crlf` entirely (the "RAW operand" comment above that call was only
+# true after tokenization, not after shlex had already eaten the CR). Bash's
+# own IFS does not include CR, so bash keeps `/safe<CR>` as ONE word and
+# scopes git to a directory the gate never validated (coderabbit #511).
+check("git -C target with UNQUOTED trailing CR raises (fail-closed)",
+      _raises(lambda: g.git_commit('git -C /safe\r commit')), True)
+check("git -C target with UNQUOTED embedded CR raises (fail-closed)",
+      _raises(lambda: g.git_commit('git -C /safe\rother commit')), True)
+# ...and the ordinary (no CR/LF) unquoted case must still resolve normally --
+# excluding \r from shlex's whitespace must not break plain `-C` parsing.
+check("git -C target with no CR/LF still resolves",
+      g.git_commit('git -C /safe commit')[1], '/safe')
 check("cd + relative -C", g.git_commit('cd /repoA && git -C nested commit')[1], '/repoA/nested')
 check("sequential -C", g.git_commit('git -C /repoA -C nested commit')[1], '/repoA/nested')
 check("commit -C is reuse-msg not cd", g.git_commit('git commit -C HEAD')[1], '')
@@ -720,6 +977,148 @@ check("merge pr_num", g.gh_pr('command gh pr merge 5 --squash', 'merge')[2], '5'
 check("merge pr_num flag-first", g.gh_pr('gh pr merge --squash 5', 'merge')[2], '5')
 check("merge pr_num after -R flag", g.gh_pr('gh pr merge -R owner/repo 5', 'merge')[2], '5')
 check("merge pr_num skips value-flag arg", g.gh_pr('gh pr merge --subject 123 5', 'merge')[2], '5')
+
+# ── gh_pr_repo_override: cross-repo selector on a merge (#505) ────────
+# Two scopes on purpose — flag form is argv-scoped, env form is whole-command.
+# See the docstring; the asymmetry is the whole point of the function.
+OVERRIDE_YES = [
+    'gh pr merge 31 --squash -R other/repo',        # separate -R
+    'gh pr merge 31 --squash -Rother/repo',         # attached -R
+    'gh pr merge 31 --squash --repo other/repo',    # separate --repo
+    'gh pr merge 31 --squash --repo=other/repo',    # = form
+    'gh -R other/repo pr merge 31',                 # gh GLOBAL flag really retargets
+    'GH_REPO=other/repo gh pr merge 31',            # bare env assignment
+    'GH_HOST=ghe.corp gh pr merge 31',              # host selector too
+    'env "GH_REPO=other/repo" gh pr merge 31',      # quoted → no whitespace before it
+    '(GH_REPO=other/repo gh pr merge 31)',          # grouped → `(` before it
+    "GH_REPO=other/repo bash -c 'gh pr merge 31'",  # merge lands in a NESTED chunk
+    "bash -c 'gh -R other/repo pr merge 31'",       # flag form inside a payload
+    # The shell reassembles a name split by quoting or escaping; both of these
+    # really export GH_REPO, so a regex over RAW text would miss them.
+    'env GH_RE"PO"=other/repo gh pr merge 31',      # quote-split name
+    'env GH_RE\\PO=other/repo gh pr merge 31',      # backslash-split name
+    "GH_REPO''=other/repo gh pr merge 31",          # empty quotes inside the name
+    'GH_RE\\\nPO=other/repo gh pr merge 31',        # continuation-split name
+    'GH_REPO+=other/repo gh pr merge 31',           # append form EXPORTS when unset
+    'GH_HOST+=ghe.corp gh pr merge 31',
+    # pflag shorthand CLUSTERS — gh accepts these and they really set --repo.
+    'gh pr merge 31 -sRother/repo',                 # R mid-cluster, attached value
+    'gh pr merge 31 -sR other/repo',                # R last, separate value
+    'gh pr merge 31 -adR other/repo',               # several bools then R
+    'if GH_REPO=other/repo gh pr merge 31; then :; fi',   # behind a shell keyword
+    'env -u FOO GH_REPO=other/repo gh pr merge 31',      # after a wrapper option ARG
+    '! GH_REPO=other/repo gh pr merge 31',               # pipeline negation still runs
+    # `export` puts it in the CHILD's environment, so it reaches a later segment.
+    'export GH_REPO=other/repo; gh pr merge 31',
+    'export GH_REPO=other/repo && gh pr merge 31',
+    'declare -x GH_HOST=ghe.corp; gh pr merge 31',
+    'GH_REPO=other/repo; export GH_REPO; gh pr merge 31',   # exported a step apart
+    'export GH_REPO; GH_REPO=other/repo; gh pr merge 31',   # ...and in either order
+    'if export GH_REPO=other/repo; then gh pr merge 31; fi',  # export not leading
+    "bash -c 'f(){ local -x GH_REPO=other/repo; gh pr merge 31; }; f'",  # local -x
+    # Deliberate OVER-blocks: neither actually exports, but distinguishing them means
+    # interpreting the command. Fail-CLOSED is the correct residue here.
+    'declare GH_REPO=other/repo; gh pr merge 31',
+    'export -n GH_REPO=other/repo; gh pr merge 31',
+    # A BARE assignment in another segment. It looks inert — a shell variable the
+    # child never sees — but bash preserves the export attribute across
+    # re-assignment, so if the caller's shell already exported GH_REPO this DOES
+    # retarget the merge. That is ambient state no parse can see, so it fails closed.
+    'GH_REPO=other/repo; gh pr merge 31',
+    'GH_REPO=other/repo gh pr view 31 && gh pr merge 31',
+    # A PR URL carries its own owner/repo — a positional selector, no flag involved.
+    'gh pr merge https://github.com/other/repo/pull/31',
+    'gh pr merge https://github.com/other/repo/pull/31 --squash --admin',
+]
+OVERRIDE_NO = [
+    'gh pr merge 31 --squash',                      # plain merge
+    'gh pr merge 31 --squash --admin --delete-branch',
+    # THE regression case: pr-grind's auto-admin block runs a `-R` view and an
+    # unselected merge in ONE call. A whole-command test blocks this and pr-grind
+    # can never merge — that is why the flag form is argv-scoped.
+    'gh -R "$OWNER/$REPO" pr view 31 --json mergeStateStatus && gh pr merge 31 --squash --admin',
+    'gh pr view 31 -R other/repo && gh pr merge 31',  # selector on the VIEW only
+    'MY_GH_REPO=other/repo gh pr merge 31',         # word-char before it → not ours
+    'GH_REPO=other/repo gh pr view 31',             # no merge at all → nothing to steer
+    'GH_REPO=other/repo git commit -m x',           # not gh
+    # An R inside a value-taking shorthand's ATTACHED VALUE is not a selector:
+    # pflag stops cluster-scanning at -t/-b/-F, so these are subjects/bodies.
+    'gh pr merge 31 -tRefactor',                    # subject "Refactor"
+    'gh pr merge 31 -stReview --squash',            # -s bool, then -t value "Review"
+    'gh pr merge 31 -bReported by R',               # body containing R
+    'gh pr merge 31 --squash --delete-branch',      # long bools only
+    # A value-taking flag's SEPARATE operand is not a selector either — consuming it
+    # is what stops `--subject -R` from false-blocking a legitimate merge.
+    'gh pr merge 31 --subject -R',                  # -R is the subject VALUE
+    'gh pr merge 31 -t -R --squash',                # short form, same shape
+    'gh pr merge 31 --body-file -R',
+    # Inert look-alikes: text that merely CONTAINS an assignment exports nothing.
+    "gh pr merge 31 --body 'Document GH_REPO=owner/repo'",
+    "gh pr merge 31 --subject 'set GH_HOST=ghe.corp first'",
+    # Prose that BEGINS with the assignment: still one argument token, and a real
+    # assignment word never contains unquoted whitespace.
+    "gh pr merge 31 --body 'GH_REPO=owner/repo is the default'",
+    "echo 'GH_REPO=owner/repo is the default' && gh pr merge 31",
+    # -A/--author-email takes a value; an R inside that email is not a selector.
+    'gh pr merge 31 -AfooR@example.com',
+    'gh pr merge 31 -A foo@example.com --squash',
+    # Cluster ENDING in a value-taking shorthand: the next token is that value.
+    'gh pr merge 31 -st -R',                        # -s bool, -t subject "-R"
+    'gh pr merge 31 -db -R',                        # -d bool, -b body "-R"
+]
+for c in OVERRIDE_YES:
+    check(f"override+ {c!r}", g.gh_pr_repo_override(c, 'merge'), True)
+for c in OVERRIDE_NO:
+    check(f"override- {c!r}", g.gh_pr_repo_override(c, 'merge'), False)
+
+# ── gh_pr_auto_merge: --auto QUEUES the merge past the gate's check (#505) ──
+# pflag accepts `--auto=<bool>` for booleans, so an exact-token match alone let
+# `--auto=true` through. False spellings genuinely disable auto and must NOT
+# match; an unrecognized value fails CLOSED (gh would reject it anyway).
+AUTO_YES = [
+    'gh pr merge 31 --auto',
+    'gh pr merge 31 --auto=true', 'gh pr merge 31 --auto=1',
+    'gh pr merge 31 --auto=t', 'gh pr merge 31 --auto=True',
+    'gh pr merge 31 --auto=TRUE',
+    'gh pr merge 31 --auto=bogus',          # unparseable → fail CLOSED
+    'gh pr merge 31 --squash --auto --delete-branch',
+    "bash -c 'gh pr merge 31 --auto'",      # nested payload
+]
+AUTO_NO = [
+    'gh pr merge 31 --squash',
+    'gh pr merge 31 --auto=false', 'gh pr merge 31 --auto=0',
+    'gh pr merge 31 --auto=f', 'gh pr merge 31 --auto=False',
+    'gh pr merge 31 --auto=FALSE',
+    'gh pr merge 31 --disable-auto',        # a DIFFERENT flag, not a prefix match
+    'gh pr view 31 --auto && gh pr merge 31',   # flag is on the VIEW, not the merge
+    "gh pr merge 31 --body 'use --auto next time'",  # inert prose in an operand
+]
+# Deliberate OVER-blocks: a `--auto` inside a bash COMMENT is inert, but shlex has
+# already stripped quoting by the time we see the token, so a comment `#` cannot be
+# told apart from a legitimate hash-prefixed ARGUMENT. Skipping at `#` was tried and
+# reverted — `gh pr merge '#feature' --auto` would then hide a live flag (fail-OPEN).
+# A false block is visible and reworded; a bypass is not.
+AUTO_OVERBLOCK = [
+    'gh pr merge 31 --squash # do not use --auto',
+    "gh pr merge '#feature' --auto",     # the case that makes skipping unsafe
+]
+for c in AUTO_OVERBLOCK:
+    check(f"auto-overblock {c!r}", g.gh_pr_auto_merge(c, 'merge'), True)
+for c in AUTO_YES:
+    check(f"auto+ {c!r}", g.gh_pr_auto_merge(c, 'merge'), True)
+for c in AUTO_NO:
+    check(f"auto- {c!r}", g.gh_pr_auto_merge(c, 'merge'), False)
+
+# Property sweep: the env form must survive every quoting/grouping/wrapper shape,
+# since an assignment is ambient and reaches the merge however it is nested.
+for _q in ('', '"', "'"):
+    for _tpl in ('{a} gh pr merge 31',
+                 '({a} gh pr merge 31)',
+                 '{{ {a} gh pr merge 31; }}',
+                 'env {a} gh pr merge 31',
+                 "{a} bash -c 'gh pr merge 31'"):
+        _c = _tpl.format(a=f'{_q}GH_REPO=other/repo{_q}')
+        check(f"gen override+ {_c!r}", g.gh_pr_repo_override(_c, 'merge'), True)
 
 # ── Property-based: {leading operators} × {wrappers} × git-commit should ALL
 #    detect; the same form as an ARGUMENT to a non-git command must NOT. ──────

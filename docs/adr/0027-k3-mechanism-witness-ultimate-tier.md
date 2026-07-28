@@ -80,7 +80,14 @@ Three coupled changes.
    ~45 min past that timeout. `BLUEPRINT_AUDITOR_TIMEOUT` default 300→**600**,
    clamp→**600**: in blueprint the auditor reap sits ON THE CRITICAL PATH before the
    arbiter (Phase 3), so a longer budget could starve arbitration under the Bash-tool
-   cap the loop runs beneath. Both clamps are HARD (not the oracle's 3600s ceiling)
+   cap the loop runs beneath. **⚠ SUPERSEDED IN PART by [ADR 0030](./0030-blueprint-blocking-window.md)
+   (2026-07-27): the "starve it under the Bash-tool cap" half of this rationale is
+   retired — that cap is a foreground-wait boundary, not a kill boundary (an
+   over-long call is backgrounded and runs to completion), and the binding term on
+   the blueprint critical path was measured to be the UltraOracle poll, not the k3
+   reap. The 600s clamp itself STANDS, unchanged, on the repo-injection ground
+   stated in the next sentence — which is independent and sufficient.** Both clamps
+   are HARD (not the oracle's 3600s ceiling)
    because a fork's committed `settings.json` `env` block can inject these vars — an
    unbounded ceiling would let a hostile branch delay arbitration by up to an hour.
    Blueprint **keeps** k3 always-on (it is already a multi-minute review) — only its

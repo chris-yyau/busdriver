@@ -778,6 +778,41 @@ _is_bare_transient_notice() {
   printf '%s' "$out" | _is_hard_transient_signal
 }
 
+# ── Shared duration validator (retry engines) ────────────────────
+# $duration feeds `$(( ))` budget arithmetic in both retry engines below, and
+# bash evaluates arithmetic operands RECURSIVELY — a numeric-prefixed string
+# such as `1+x[$(cmd)]` would execute `cmd` during expansion. Callers derive
+# it from repo-injectable env (#325 / ADR 0016), so validate BEFORE any
+# arithmetic touches it — fail closed, not guess. Also strips leading zeros,
+# since `$(( ))` reads a leading-zero operand as OCTAL (`0600` → 384s
+# silently, `08` → "value too great for base"). One copy shared by
+# `_run_review_with_retries` and `_execute_codex` so a future fix can't be
+# applied to one call path and silently missed in the other (this exact
+# arithmetic-injection guard is security-relevant).
+# Prints the normalized duration on stdout and returns 0, or prints nothing
+# and returns 1 with an error on stderr.
+_validate_positive_duration() {
+  local label="$1" duration="$2"
+  case "$duration" in
+    ''|*[!0-9]*)
+      echo "busdriver: ${label} duration must be a non-negative integer (got: $duration)" >&2
+      return 1
+      ;;
+  esac
+  duration="${duration#"${duration%%[!0]*}"}"
+  [[ -z "$duration" ]] && duration=0
+  if [[ "${#duration}" -ge 8 ]]; then
+    echo "busdriver: ${label} duration is implausibly large (got: $duration)" >&2
+    return 1
+  fi
+  duration=$((10#$duration))
+  if [[ "$duration" -lt 1 ]]; then
+    echo "busdriver: ${label} duration must be >= 1 second" >&2
+    return 1
+  fi
+  printf '%s' "$duration"
+}
+
 # ── Retry wrapper for non-codex review CLIs (agy / grok) ────────
 # Codex has its own richer retry loop in _execute_codex. agy and grok were
 # single-shot until now, so one transient hiccup dropped the voice straight to
@@ -808,6 +843,7 @@ _run_review_with_retries() {
   local retry_delay="${BUSDRIVER_CLI_RETRY_DELAY:-5}"
   case "$max_retries" in ''|*[!0-9]*) max_retries=3 ;; esac
   case "$retry_delay" in ''|*[!0-9]*) retry_delay=5 ;; esac
+  duration=$(_validate_positive_duration "${label} review" "$duration") || return 1
   # The WHOLE retry sequence — every attempt PLUS all backoff sleeps — is bounded
   # to ~"$duration" (the caller's total budget): each attempt's timeout is the
   # REMAINING budget (equals "$duration" on the first attempt), and each backoff
@@ -904,29 +940,59 @@ _execute_codex() {
   local prompt="$1"
   local duration="${2:-1200}"
   # Defaults sized for codex rate-limit windows. At the default 3 retries the
-  # backoff sequence is 30, 60, 120 seconds — ~3.5 min total wait before
+  # backoff sequence is 30, 60, 120 seconds — ~3.5 min of waiting before
   # exhausting and escalating to droid. From retry 2 onward (t≥90s) the
   # sequence clears OpenAI's per-minute (60s) window. The MOST IMPORTANT review
   # paths raise this to 5: blueprint-review and litmus PR mode both export
-  # LITMUS_CODEX_RETRIES=5 (backoff 30,60,120,240,480 ≈ 15.5 min, also clearing
-  # the per-5min window) because those reviews are the gate of record and have
-  # no/limited droid net. Sustained outages still fall through to droid as the
-  # external-voice safety net. Override via env vars for faster bail or longer
-  # patience.
+  # LITMUS_CODEX_RETRIES=5 (backoff 30,60,120,240,480) because those reviews are
+  # the gate of record and have no/limited droid net. Sustained outages still
+  # fall through to droid as the external-voice safety net. Override via env vars
+  # for faster bail or longer patience.
+  #
+  # THE BACKOFF LADDER IS AN UPPER BOUND, NOT A SCHEDULE. Since the sequence is
+  # budget-bounded (see the loop below), those sleeps only run while "$duration"
+  # lasts — the 5-retry ladder cannot actually spend 15.5 min inside a 540s
+  # LITMUS_TIMEOUT. That mostly preserves the intent it was sized for (#160):
+  # rate-limited attempts FAIL FAST, so nearly the whole budget goes to sleeping
+  # and 540s still outwaits the per-minute and per-5min windows. What it does cut
+  # short is the pathological case — slow attempts that each burn most of the
+  # timeout — which is precisely the case that used to blow the 600s harness cap.
+  # If a path genuinely needs to outwait an hourly quota, raise ITS duration
+  # (LITMUS_TIMEOUT); raising retries alone can no longer buy wall-clock.
   local max_retries="${LITMUS_CODEX_RETRIES:-3}"
   local retry_delay="${LITMUS_CODEX_RETRY_DELAY:-30}"
-  local high_from="${LITMUS_CODEX_HIGH_FROM:-3}"  # switch to high reasoning from this attempt
+  # Reasoning effort. Unset (the default) = whatever the codex CLI's own config
+  # says — deliberately NOT restated here, because a hardcoded claim about the
+  # default drifts silently (#331). Set LITMUS_CODEX_EFFORT to pin a tier for a
+  # run; it then applies to EVERY attempt, retries included. There is no effort
+  # ladder: retries here fire on rate-limits/5xx/timeouts, which lowering
+  # reasoning does not fix — it only makes the attempt that finally succeeds the
+  # weakest one, on the gate-of-record review path.
+  local codex_effort="${LITMUS_CODEX_EFFORT:-}"
 
   # Validate env vars are non-negative integers
   local _v
-  for _v in "$max_retries" "$retry_delay" "$high_from"; do
+  for _v in "$max_retries" "$retry_delay"; do
     case "$_v" in
       ''|*[!0-9]*)
-        echo "busdriver: LITMUS_CODEX_RETRIES, LITMUS_CODEX_RETRY_DELAY, and LITMUS_CODEX_HIGH_FROM must be non-negative integers" >&2
+        echo "busdriver: LITMUS_CODEX_RETRIES and LITMUS_CODEX_RETRY_DELAY must be non-negative integers" >&2
         return 1
         ;;
     esac
   done
+
+  # LITMUS_TIMEOUT is repo-injectable via a fork's settings.json `env` (#325),
+  # so validate BEFORE any arithmetic touches it. See _validate_positive_duration
+  # for the full rationale (shared with _run_review_with_retries).
+  duration=$(_validate_positive_duration "codex review" "$duration") || return 1
+
+  case "$codex_effort" in
+    ''|minimal|low|medium|high|xhigh) ;;
+    *)
+      echo "busdriver: LITMUS_CODEX_EFFORT must be one of: minimal|low|medium|high|xhigh (got: $codex_effort)" >&2
+      return 1
+      ;;
+  esac
 
   _resolve_codex_companion
 
@@ -959,25 +1025,66 @@ _execute_codex() {
   local output=""
   local last_was_transient=0  # narrows droid fallback to rate-limit/network exhaustion
   local timed_out=0           # a single full-duration timeout is droid-eligible (not retried)
+  # The WHOLE retry sequence — every attempt PLUS all backoff sleeps — is bounded
+  # to ~"$duration", the same arithmetic _run_review_with_retries uses: each
+  # attempt's timeout is the REMAINING budget (equal to "$duration" on the first),
+  # and each backoff is capped to the remaining budget so the sleep itself cannot
+  # overrun. Before this, EVERY attempt got the full "$duration" — at the PR
+  # path's 5 retries that is up to 6x the timeout of wall-clock against a 600s
+  # harness cap, and pinned xhigh lengthens each attempt further.
+  # SCOPE: this bounds the retry LOOP. The droid escalation below still gets its
+  # own "$duration" (it is the safety net, and a droid handed 0s is no net at
+  # all), so a droid-eligible failure can still reach ~2x — never 6x. The PR lead
+  # disables droid entirely, so that path is bounded at exactly "$duration".
+  local start now remaining cap
+  start=$(date +%s)
 
   while [[ "$attempt" -le "$max_retries" ]]; do
+    # Budget gate + backoff FIRST, before the per-attempt state resets below — the
+    # bail-outs here must still see the PREVIOUS attempt's exit_code and
+    # last_was_transient so a budget-exhausted sequence stays droid-eligible.
+    if [[ "$attempt" -eq 0 ]]; then
+      # The FIRST attempt always runs with the full budget — set it directly (not
+      # via now-start) so a sub-second clock tick can never zero it out and skip
+      # the only invocation. Only RETRIES are budget-gated.
+      remaining="$duration"
+    else
+      now=$(date +%s); remaining=$(( duration - (now - start) ))
+      # A retry needs budget for the backoff PLUS at least a 1s attempt; if the
+      # remaining budget can't fund a 1s attempt, escalate now instead of
+      # sleeping the rest of the budget away for a retry that can't run.
+      if [[ "$remaining" -le 1 ]]; then
+        echo "⟳ Codex: retry budget (${duration}s) spent — escalating instead of retrying" >&2
+        # Budget exhaustion is a CLI FAILURE, not a real timeout — use a generic
+        # non-zero (1), never 124, so callers don't trip their timeout/split path.
+        [[ "$exit_code" -eq 0 ]] && exit_code=1
+        break
+      fi
+      # Cap backoff to leave >= 1s for the attempt — never sleep the whole budget.
+      cap=$(( remaining - 1 ))
+      [[ "$retry_delay" -gt "$cap" ]] && retry_delay="$cap"
+      if [[ "$retry_delay" -gt 0 ]]; then
+        echo "⟳ Codex retry $attempt/$max_retries (waiting ${retry_delay}s)..." >&2
+        sleep "$retry_delay"
+      fi
+      # Exponential backoff: double delay each retry
+      retry_delay=$((retry_delay * 2))
+      now=$(date +%s); remaining=$(( duration - (now - start) ))
+      if [[ "$remaining" -le 0 ]]; then
+        echo "⟳ Codex: retry budget (${duration}s) spent — escalating instead of retrying" >&2
+        [[ "$exit_code" -eq 0 ]] && exit_code=1
+        break
+      fi
+    fi
+
     exit_code=0
     # Reflect only THIS attempt's classification — never carry a prior attempt's
     # transience into the post-loop droid decision. A timeout escalates via its
     # own `timed_out` flag, so resetting here does not weaken timeout handling.
     last_was_transient=0
     local effort_args=()
-    if [[ "$attempt" -gt 0 ]]; then
-      # No --effort flag = codex config default (xhigh in config.toml)
-      local effort_label="xhigh"
-      if [[ "$attempt" -ge "$high_from" ]]; then
-        effort_args=(--effort high)
-        effort_label="high"
-      fi
-      echo "⟳ Codex retry $attempt/$max_retries (reasoning: $effort_label, waiting ${retry_delay}s)..." >&2
-      sleep "$retry_delay"
-      # Exponential backoff: double delay each retry
-      retry_delay=$((retry_delay * 2))
+    if [[ -n "$codex_effort" ]]; then
+      effort_args=(--effort "$codex_effort")
     fi
 
     if [[ "$_CODEX_COMPANION" != "none" ]] && command -v node &>/dev/null; then
@@ -987,14 +1094,14 @@ _execute_codex() {
       # extract_review_json.py parsing).
       # ${effort_args[@]+...} guards against "unbound variable" when array is
       # empty under set -u (macOS bash 3.2).
-      output=$(_portable_timeout "$duration" node "$_CODEX_COMPANION" task --prompt-file "$_prompt_file" ${effort_args[@]+"${effort_args[@]}"} 2>&1) || exit_code=$?
+      output=$(_portable_timeout "$remaining" node "$_CODEX_COMPANION" task --prompt-file "$_prompt_file" ${effort_args[@]+"${effort_args[@]}"} 2>&1) || exit_code=$?
     else
       # Fallback: direct CLI invocation
       local config_args=()
-      if [[ ${#effort_args[@]} -gt 0 ]]; then
-        config_args=(-c 'model_reasoning_effort="high"')
+      if [[ -n "$codex_effort" ]]; then
+        config_args=(-c "model_reasoning_effort=\"$codex_effort\"")
       fi
-      output=$(printf '%s' "$prompt" | _portable_timeout "$duration" codex exec -s read-only ${config_args[@]+"${config_args[@]}"} - 2>&1) || exit_code=$?
+      output=$(printf '%s' "$prompt" | _portable_timeout "$remaining" codex exec -s read-only ${config_args[@]+"${config_args[@]}"} - 2>&1) || exit_code=$?
     fi
 
     # Success — a clean exit WITH a real review payload. An exit-0 that is empty
@@ -1007,8 +1114,32 @@ _execute_codex() {
 
     # Timeout (124) — retrying burns the whole window again, so don't; but a
     # timeout IS droid-eligible (a different backend may still answer in time).
+    #
+    # Classify a 124 by the window the attempt was actually GRANTED, not by its
+    # attempt index. An attempt that ran with the FULL "$duration" timed out
+    # honestly — Codex couldn't finish in the configured window — so preserve
+    # the timeout signal (droid-eligible via timed_out; if droid can't rescue
+    # it, the caller sees exit 124 and correctly reads "split the diff"). An
+    # attempt granted only a TRUNCATED "$remaining" (the budget is shared across
+    # every attempt plus every backoff sleep) hit the shared budget, not a real
+    # Codex limit: treat it as budget exhaustion — droid-eligible via
+    # last_was_transient (same as the explicit budget-exhaustion breaks above),
+    # but NOT timed_out, so a droid-less path falls through to BUILTIN_FALLBACK
+    # (return 3) rather than a misleading "genuine timeout" exit 124.
+    #
+    # Keying on `remaining == duration` rather than `attempt == 0` matters at
+    # the edges: with LITMUS_CODEX_RETRY_DELAY=0 and a first attempt that fails
+    # fast, date's 1s resolution can leave a RETRY holding the full window — and
+    # that retry's 124 is a genuine timeout, which an attempt-index test would
+    # have downgraded and silently discarded.
     if [[ "$exit_code" -eq 124 ]]; then
-      timed_out=1
+      if [[ "$remaining" -eq "$duration" ]]; then
+        timed_out=1
+      else
+        echo "⟳ Codex: retry timed out on truncated remaining budget (${remaining}s of ${duration}s) — treating as budget exhaustion, not a genuine timeout" >&2
+        last_was_transient=1
+        exit_code=1
+      fi
       break
     fi
 

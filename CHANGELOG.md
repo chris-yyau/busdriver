@@ -1,3 +1,10 @@
+## [1.100.10](https://github.com/chris-yyau/busdriver/compare/v1.100.9...v1.100.10) (2026-07-28)
+
+
+### Bug Fixes
+
+* **ci:** close the required-checks.lock drift fail-open ([#530](https://github.com/chris-yyau/busdriver/issues/530)) ([#534](https://github.com/chris-yyau/busdriver/issues/534)) ([a95f6d5](https://github.com/chris-yyau/busdriver/commit/a95f6d597e2d10250b34a1f4537cb7f6984788d4))
+
 ## [1.100.9](https://github.com/chris-yyau/busdriver/compare/v1.100.8...v1.100.9) (2026-07-28)
 
 

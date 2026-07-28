@@ -1,3 +1,10 @@
+## [1.100.2](https://github.com/chris-yyau/busdriver/compare/v1.100.1...v1.100.2) (2026-07-28)
+
+
+### Bug Fixes
+
+* **pre-merge-gate:** bind pr-grind-clean marker to the reviewed commit ([#505](https://github.com/chris-yyau/busdriver/issues/505)) ([#511](https://github.com/chris-yyau/busdriver/issues/511)) ([7f1c26f](https://github.com/chris-yyau/busdriver/commit/7f1c26fcf0f78eb8b6f1fa5cf90f36c1add5b4f8))
+
 ## [1.100.1](https://github.com/chris-yyau/busdriver/compare/v1.100.0...v1.100.1) (2026-07-27)
 
 

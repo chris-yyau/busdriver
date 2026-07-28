@@ -82,8 +82,17 @@ def _embedded_in_a_line(raw: str, start: int) -> bool:
     return raw[raw.rfind("\n", 0, start) + 1 : start].strip() != ""
 
 
-def _is_line_confined_fragment(raw: str, start: int, exc: json.JSONDecodeError) -> bool:
-    """Is this unclosed region a one-line log echo rather than a real payload?
+# Known CLI log framings that echo a TRUNCATED preview of the verdict into the
+# transcript. Deliberately an allowlist of observed, fully-anchored phrasings —
+# not a shape heuristic. See _is_log_echo_fragment for why nothing weaker is
+# sound. Add a line here only with a real transcript to justify it.
+_LOG_ECHO_PREFIX_RE = re.compile(
+    r"^\s*\[[^\]\n]{1,32}\]\s+Assistant message captured:\s*$"
+)
+
+
+def _is_log_echo_fragment(raw: str, start: int, exc: json.JSONDecodeError) -> bool:
+    """Is this unclosed region a known CLI log echo rather than a real payload?
 
     Codex streams a ~100-char preview of its own verdict into the log:
 
@@ -92,25 +101,37 @@ def _is_line_confined_fragment(raw: str, start: int, exc: json.JSONDecodeError) 
     By shape that is indistinguishable from a verdict, so region detection anchors
     on it, sweeps forward past the intervening log lines looking for a close it
     will never find, and fails closed — discarding the complete verdict printed
-    below it (#524). Two signals together say "log echo", and both are needed:
+    below it (#524).
 
-    1. The region starts MID-LINE, after a log prefix. A real payload opens its
-       own line. Without this, a genuine multi-line verdict carrying a raw newline
-       inside a string value would also qualify, and skipping past it would expose
-       its nested {"status": "PASS"} — a forged PASS.
-    2. The decode died ON a newline, i.e. a string literal ran off the end of the
-       line. JSON strings cannot contain raw newlines, so the region provably
-       cannot extend past that line: unlike a generically truncated region, its
-       extent IS knowable, and what follows cannot be its nested content.
+    Identification is by the LOG FRAMING, positively matched against
+    `_LOG_ECHO_PREFIX_RE`, plus the decode dying on a newline (an untruncated
+    payload after the same prefix decodes fine and never reaches here).
 
-    The `const cfg = {"enabled": true;` residual is untouched — that dies on `;`,
-    not on a newline, so its extent stays unknowable and it still fails closed.
+    **Why nothing more general is sound.** The first fix here inferred "log echo"
+    from geometry alone — starts mid-line AND died on a newline — reasoning that a
+    raw newline inside a string proves the region cannot extend past that line.
+    That reasoning is wrong, and two independent reviewers caught it. A newline
+    breaks the region as *valid JSON*, but the following text is still lexically
+    inside the unclosed braces, so it may be the region's CHILD. Confirmed:
+
+        log: {"status":"FAIL","issues":["x
+        {"status":"PASS","issues":[]}
+
+    A genuine mid-line FAIL, broken by a stray newline, was read as noise and its
+    nested PASS promoted to the verdict — the exact forged PASS #503 hardened
+    against. Geometry cannot separate "noise then a verdict" from "a broken
+    verdict wrapping a nested one"; only positive recognition of the log framing
+    can, because only the CLI emits it.
+
+    The allowlist is brittle by design. If codex changes its wording this stops
+    matching and the extractor reverts to failing closed (a withheld rescue, the
+    pre-#524 behavior) — never to accepting a forged PASS. That is the correct
+    direction to break in.
     """
-    return (
-        _embedded_in_a_line(raw, start)
-        and exc.pos < len(raw)
-        and raw[exc.pos] in "\r\n"
-    )
+    if exc.pos >= len(raw) or raw[exc.pos] not in "\r\n":
+        return False
+    line_start = raw.rfind("\n", 0, start) + 1
+    return _LOG_ECHO_PREFIX_RE.match(raw[line_start:start]) is not None
 
 
 def _looks_like_verdict(text: str) -> bool:
@@ -264,16 +285,16 @@ def try_last_review_object(raw: str):
         except json.JSONDecodeError as exc:
             region_end, _, mismatched = _region_end(raw, start)
             if region_end is None and not mismatched:
-                if _is_line_confined_fragment(raw, start, exc):
-                    # A log echo, bounded by its own line (#524) — the one
-                    # truncated shape whose extent IS knowable. Classify it on
-                    # that line alone; scanning to EOF would let it borrow the
-                    # real verdict's keys, which is how it came to outrank one.
+                if _is_log_echo_fragment(raw, start, exc):
+                    # A recognized CLI log echo (#524) — not a payload at all.
+                    # Classify it on its own line; scanning to EOF would let it
+                    # borrow the real verdict's keys, which is how it came to
+                    # outrank one.
                     if _looks_like_verdict(raw[start : exc.pos]):
                         malformed_pos = start
                         _PARSE_ERRORS.append(str(exc))
-                    # Nothing nested can follow a region that ends at this newline,
-                    # but a MID-LINE object after it could still be some other
+                    # Defense in depth behind the allowlist: past a skipped
+                    # region, a MID-LINE object could still be some other
                     # region's child, so from here only own-line objects can win.
                     own_line_only = True
                     i = max(exc.pos, start + 1)

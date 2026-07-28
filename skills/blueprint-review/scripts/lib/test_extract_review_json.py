@@ -802,6 +802,40 @@ def test_a_prefixed_verdict_immediately_after_an_echo_still_fails_closed():
     assert ex.extract_from_text(f"{PREVIEW}wrapper: {forged}\n") is None
 
 
+def test_no_preview_cut_point_changes_the_outcome():
+    """#529, exhaustively: the cut point must never decide the verdict.
+
+    Four hand-picked cut points are not coverage for this class — every reported
+    variant so far was a *different* cut position hitting a different decoder
+    stopping point, and the boundary fixes each closed one while opening another.
+    So this sweeps EVERY truncation of the payload, against payloads carrying the
+    features that move `raw_decode`'s stopping point: an escaped quote, a stray
+    `]`, and a `{`.
+
+    Two invariants, both universal over the cut position:
+
+    1. The real verdict below is always extracted.
+    2. The nested PASS in the second payload's metadata is NEVER promoted — the
+       #503 forgery direction, checked at every cut rather than at one.
+
+    Any decoder-position-dependent regression lands here as a specific k.
+    """
+    tricky = dict(
+        VERDICT,
+        issues=[{"description": 'has a " quote, a ] bracket and a { brace', "severity": "HIGH"}],
+    )
+    with_nested_pass = dict(
+        tricky, metadata={"total_sections_reviewed": 14, "status": "PASS", "issues": []}
+    )
+    for verdict in (tricky, with_nested_pass):
+        payload = json.dumps(verdict)
+        pretty = json.dumps(verdict, indent=2)
+        for k in range(len(payload) + 1):
+            raw = f"[codex] Assistant message captured: {payload[:k]}\n{pretty}\n"
+            got = ex.extract_from_text(raw)
+            assert got == verdict, f"cut at {k}: {json.dumps(got)[:80]}"
+
+
 def test_short_echo_with_no_verdict_key_still_fails_closed():
     """FAIL-OPEN GUARD: the sniff leaked for previews too short to carry a key.
 

@@ -1,3 +1,10 @@
+## [1.100.8](https://github.com/chris-yyau/busdriver/compare/v1.100.7...v1.100.8) (2026-07-28)
+
+
+### Bug Fixes
+
+* **blueprint-review:** anchor the k3 reap budget at dispatch, not at the reviewer wait ([#506](https://github.com/chris-yyau/busdriver/issues/506)) ([#531](https://github.com/chris-yyau/busdriver/issues/531)) ([7ddd4bf](https://github.com/chris-yyau/busdriver/commit/7ddd4bfa7ad86d452532c5fa13c8529a0c0c7397)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325) [#499](https://github.com/chris-yyau/busdriver/issues/499)
+
 ## [1.100.7](https://github.com/chris-yyau/busdriver/compare/v1.100.6...v1.100.7) (2026-07-28)
 
 

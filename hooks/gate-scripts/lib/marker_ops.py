@@ -127,6 +127,35 @@ def cmd_reviewed(argv):
     return 0 if _doc_reviewed(content) else 1
 
 
+def cmd_coverage(argv):
+    """Print the doc's own-line review-coverage marker(s), one per line, for the audit
+    trail (#519 item 2).
+
+    A design doc approved under DEGRADED coverage keeps its PASS withheld, so the only
+    way forward is an operator release — and the release record must say WHAT was
+    accepted, not merely that something was. This reports the marker lines verbatim
+    (they already carry the lens detail, e.g. `DEGRADED 1/3`) so design-clear.sh can
+    embed them in its bypass-log event.
+
+    Advisory, NOT a gate: it never decides anything. Prints `none` when the doc carries
+    no coverage marker and `unreadable` when it cannot be read, so the audit field is
+    always populated with something truthful rather than silently empty. Always exit 0
+    — an unreadable doc must not abort a clear that is otherwise authorized.
+    """
+    if len(argv) != 1:
+        return 2
+    try:
+        with open(argv[0], "r", errors="surrogateescape") as fh:
+            content = fh.read()
+    except OSError:
+        sys.stdout.write("unreadable")
+        return 0
+    lines = [ln.strip() for ln in content.splitlines()
+             if _COVERAGE_LINE_START_RE.match(ln)]
+    sys.stdout.write("\n".join(lines) if lines else "none")
+    return 0
+
+
 def cmd_arm(argv):
     if len(argv) != 2:
         return 1
@@ -606,7 +635,8 @@ def cmd_downgrade_pass(argv):
 
 _DISPATCH = {"sha": cmd_sha, "arm": cmd_arm, "classify": cmd_classify,
              "reviewed": cmd_reviewed, "dd-exempt": cmd_dd_exempt,
-             "repo-rel": cmd_repo_rel, "downgrade-pass": cmd_downgrade_pass}
+             "repo-rel": cmd_repo_rel, "downgrade-pass": cmd_downgrade_pass,
+             "coverage": cmd_coverage}
 
 
 def main(argv):

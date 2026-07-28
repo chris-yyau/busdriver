@@ -543,9 +543,21 @@ gate_marker_owner_note() {   # <doc_abspath> <self_worktree_root>
 # Extracted from the byte-identical loops in pre-implementation-gate.sh and
 # pre-commit-gate.sh so the annotation lives in ONE place and the two cannot drift.
 gate_render_pending_records() {   # <recs_file> <anchor>
-    local recs="$1" anchor="$2" out="" self_root
+    local recs="$1" anchor="$2" out="" self_root clear_sh
     self_root="$(git -C "$anchor" rev-parse --show-toplevel 2>/dev/null || true)"
-    local _sp="" _dp="" _reason="" _i=0 _field _sp_q _note
+    # #519 item 2 — point the drain hint at the AUDITED release path, not a bare `rm`.
+    # A control that forces you to destroy its own audit trail in order to proceed is
+    # strictly worse for auditability than one that lets you proceed with a recorded
+    # caveat. design-clear.sh (ADR 0017 / #405) clears exactly one validated token
+    # after a confirm and writes a durable design-marker-cleared event; the `rm` this
+    # replaces left no record at all. Resolved from THIS file's location (lib/ is
+    # <root>/hooks/gate-scripts/lib) rather than $BUSDRIVER_PLUGIN_ROOT so the hint is
+    # correct even when the gate runs with no plugin env set. Falls back to the old
+    # `rm` hint only if the helper cannot be located — a hint that names a missing
+    # script is worse than a blunt one.
+    clear_sh="$(cd "$(_gate_marker_lib_dir)/../../.." 2>/dev/null && pwd -P)/scripts/design-clear.sh"
+    [ -f "$clear_sh" ] || clear_sh=""
+    local _sp="" _dp="" _reason="" _i=0 _field _sp_q _dp_q _note
     while IFS= read -r -d '' _field; do
         _i=$((_i + 1))
         case $(( _i % 4 )) in
@@ -553,9 +565,14 @@ gate_render_pending_records() {   # <recs_file> <anchor>
             3) _dp="$_field" ;;                      # doc_path (validated abspath, or empty)
             0) _reason="$_field"
                if [ -n "$_dp" ]; then
-                   _sp_q="${_sp//\'/\'\\\'\'}"       # shell-escape single quotes for the rm hint
                    _note="$(gate_marker_owner_note "$_dp" "$self_root")"
-                   out="${out}  - ${_dp}${_note}  (drain if abandoned: rm '${_sp_q}')\n"
+                   if [ -n "$clear_sh" ]; then
+                       _dp_q="${_dp//\'/\'\\\'\'}"   # shell-escape for the hint
+                       out="${out}  - ${_dp}${_note}  (release with an audit record: bash '${clear_sh}' '${_dp_q}')\n"
+                   else
+                       _sp_q="${_sp//\'/\'\\\'\'}"
+                       out="${out}  - ${_dp}${_note}  (drain if abandoned: rm '${_sp_q}')\n"
+                   fi
                else
                    out="${out}  - ${_sp}  [${_reason}]\n"
                fi

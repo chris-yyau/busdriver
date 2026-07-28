@@ -321,12 +321,19 @@ LOG="$ROOT_DIR/$STATE_DIR/bypass-log.jsonl"
 HEAD_SHA="$(git -C "$PWD" rev-parse HEAD 2>/dev/null || true)"
 
 log_event() {   # <event>
+    # #519 item 2 — record WHAT was accepted, not just that something was. A doc
+    # approved under DEGRADED reviewer coverage has its PASS withheld (#355), so an
+    # operator release is the only way forward; the trail must name the coverage the
+    # release accepted. Advisory read, never a gate: `|| true` because a doc that
+    # cannot be inspected must not abort an otherwise-authorized clear — the helper
+    # already prints `none`/`unreadable` rather than failing.
+    COVERAGE="$(python3 -I "$_SELF_DIR/../hooks/gate-scripts/lib/marker_ops.py" coverage "$DOC" 2>/dev/null || true)"
     # shellcheck disable=SC2016 # the whole python3 -I -c '...' body below is
     # intentionally single-quoted (it's Python source, not shell) and passes
     # values in via the env vars above, not shell interpolation; the embedded
     # '"'"' quote-escape trick later in the block re-triggers this per segment.
     EVENT="$1" DOC="$DOC" TOKEN_SHA="$TOKEN_SHA" HEAD_SHA="$HEAD_SHA" \
-    ROOT_DIR="$ROOT_DIR" CONFIRM="$CONFIRM_MODE" \
+    ROOT_DIR="$ROOT_DIR" CONFIRM="$CONFIRM_MODE" COVERAGE="${COVERAGE:-unknown}" \
     python3 -I -c '
 import datetime, fcntl, json, os, stat, sys
 
@@ -395,6 +402,10 @@ try:
             # Distinguishes a human who answered the prompt from an unattended
             # --yes caller, so the trail says HOW the release was authorized.
             "confirmed": os.environ["CONFIRM"],
+            # The doc own-line review-coverage marker(s) at release time, verbatim
+            # (e.g. "<!-- design-review-coverage: DEGRADED 1/3 -->"), or
+            # none/unreadable/unknown. Says WHAT residual the release accepted.
+            "coverage": os.environ.get("COVERAGE", "unknown"),
         }
         # A pre-existing torn line poisons every later append: this record would
         # concatenate onto the fragment and the joined line is not valid JSONL.

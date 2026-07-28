@@ -440,6 +440,18 @@ try:
         "pr-backstop-verdict.local.json",
         "skip-litmus.local",
         "skip-design-review.local",
+        # #519 — the skip LEASE ledger. Its per-use slots are what bound the bypass to
+        # 20 writes, so it is gate state exactly like the skip file itself. Unprotected,
+        # the ceiling is trivially resettable BY the agent it constrains: the gate grants
+        # a use for `rm -rf .claude/.skip-design-review-lease.d`, that command erases
+        # every slot, and the next write starts again at slot 1 — an unbounded lease
+        # that merely looks bounded. (No apostrophes in this block: it is a
+        # single-quoted shell string, so one would terminate the Python source.)
+        # Listed here so the unconditional forge guard
+        # (which runs before the F9 $STATE_DIR rm/mkdir exemption could allow it) blocks
+        # the delete outright. The cleanup done by this gate is script code, not a
+        # tool call, so it is unaffected.
+        ".skip-design-review-lease.d",
         "reviewed-commits.local",
         "design-review-needed.local",
     ]
@@ -714,43 +726,148 @@ fi
 # SessionStart (load-orchestrator.sh) still warns about stale state for UX.
 # Escape hatch: $STATE_DIR/skip-design-review.local (user-created only).
 
-# Skip overrides — unified with pre-commit-gate.sh behavior
-# Both gates use the same pattern: single-use consumption + self-bypass detection
-# A git-tracked (git add -f'd) skip file is repo-controlled, not operator consent
-# (issue #325) — resolve the repo root and refuse it. FAIL-CLOSED via the helper.
-# (resolve-repo-dir.sh is already sourced near the top of this script.)
-# Anchor the guard on the SAME path the `-f` check tests. That check is relative to
-# the hook CWD, so resolve the guard against the CWD too (git -C ".") — otherwise a
-# committed subdir/.claude skip file could satisfy one check and evade the other.
-# FAIL-CLOSED: outside a git repo the helper returns "repo-controlled" → skip ignored.
-if [ -f "$STATE_DIR/skip-design-review.local" ] \
-   && ! gate_skip_file_repo_controlled "." "$STATE_DIR/skip-design-review.local"; then
-    # Reject skip files created within the last 30 seconds — likely Claude self-bypass.
-    # A human-created skip file (via terminal) will typically be older.
-    FILE_AGE=999
-    _MTIME=$(stat -f %m "$STATE_DIR/skip-design-review.local" 2>/dev/null) \
-        || _MTIME=$(stat -c %Y "$STATE_DIR/skip-design-review.local" 2>/dev/null) \
-        || _MTIME=""
-    [ -n "$_MTIME" ] && FILE_AGE=$(( $(date +%s) - _MTIME ))
-    if [ "$FILE_AGE" -lt 30 ]; then
-        # Likely self-bypass — reject and warn
-        rm -f "$STATE_DIR/skip-design-review.local"
-        REASON="BLOCKED: skip-design-review.local was created moments ago (likely self-bypass).
+# ── Skip override: a LEASE, not a single use (#519 item 3) ────────────
+# Defined here (where the old single-use block lived) but INVOKED far below, only
+# once a write is known to be genuinely gated. Two changes from the old block:
+#
+#   1. LEASED, not consumed-on-first-use. The unit of work is a PLAN, not a write:
+#      implementing one approved sub-plan takes ~10 gated writes, so a single-use
+#      hatch cost ~10 operator `touch` cycles with a mandatory 30s wait each. That
+#      pressure pushed operators toward the WORSE exit — deleting marker tokens,
+#      i.e. destroying the gate's own audit trail. An escape hatch too expensive to
+#      use correctly is one that gets used incorrectly. One `touch` now authorizes
+#      $LEASE_MAX_USES gated writes inside a $LEASE_MAX_AGE window, and EVERY use
+#      appends to bypass-log.jsonl — strictly MORE audit signal than before, where
+#      the pressure-release valve was an unlogged `rm`.
+#
+#   2. Bounded in time as well as count. The old file had no maximum age, so a
+#      forgotten skip stayed armed indefinitely (the hazard #516 records for the
+#      sibling litmus skip). The lease now expires.
+#
+# UNCHANGED, deliberately: the >=30s anti-self-bypass check and the #325
+# repo-controlled rejection. Both are sound; #519 explicitly did not propose
+# weakening either, and a lease does not need them relaxed — it re-checks the
+# ORIGINAL file's mtime on every use, so an agent cannot extend a lease by
+# re-touching (that resets the counter but also resets the 30s clock, which then
+# rejects). Only a genuine operator touch, waited out, opens a new lease.
+LEASE_MAX_USES=20
+LEASE_MAX_AGE=3600
+_SKIP_FILE="$STATE_DIR/skip-design-review.local"
+# Per-use lease slots live as immutable <mtime>.<n> directories in here, never
+# as a mutable counter file — see the claim block below for why.
+_LEASE_DIR="$STATE_DIR/.skip-design-review-lease.d"
+
+# Exit: 0 = a lease use was granted (allow the write)
+#       1 = no usable skip file (fall through to the normal block)
+#       2 = a block decision has ALREADY been emitted on stdout (caller exits)
+_skip_lease_consume() {
+    local mtime age used remaining now claimed n _d
+    [ -f "$_SKIP_FILE" ] || return 1
+    # A git-tracked (git add -f'd) skip file is repo-controlled, not operator consent
+    # (#325). Anchor the guard on the SAME path the `-f` check tests — that check is
+    # relative to the hook CWD, so resolve against the CWD too, or a committed
+    # subdir/.claude skip file could satisfy one check and evade the other.
+    # FAIL-CLOSED: outside a git repo the helper reports repo-controlled → refuse.
+    # `if`, not `&& return`: under `set -e` a naked `cmd && return 1` whose cmd fails
+    # makes the whole list non-zero and trips the ERR trap before the next line runs.
+    if gate_skip_file_repo_controlled "." "$_SKIP_FILE"; then return 1; fi
+
+    mtime=$(stat -f %m "$_SKIP_FILE" 2>/dev/null) \
+        || mtime=$(stat -c %Y "$_SKIP_FILE" 2>/dev/null) \
+        || mtime=""
+    # FAIL-CLOSED: an unreadable mtime means the age checks cannot run, so neither
+    # the self-bypass floor nor the expiry ceiling can be enforced. Refuse the skip
+    # rather than grant an unbounded one. (The old code defaulted FILE_AGE=999 here,
+    # which treated an unstattable file as safely old — the wrong direction.)
+    [ -n "$mtime" ] || return 1
+    now=$(date +%s)
+    age=$(( now - mtime ))
+
+    if [ "$age" -lt 30 ]; then
+        # Created moments ago — likely a self-bypass, not operator consent.
+        rm -f "$_SKIP_FILE" 2>/dev/null || true; rm -rf "$_LEASE_DIR" 2>/dev/null || true
+        block_emit "BLOCKED: skip-design-review.local was created moments ago (likely self-bypass).
 
 Do NOT create $STATE_DIR/skip-design-review.local yourself. Run /blueprint-review instead.
 If the user wants to skip, they should create the file manually in their terminal."
-        block_emit "$REASON"
-        exit 0
+        return 2
     fi
-    # Single-use: consume the skip file after allowing one bypass.
-    # This prevents stale skip files from permanently disabling review gates.
-    rm -f "$STATE_DIR/skip-design-review.local"
+    if [ "$age" -gt "$LEASE_MAX_AGE" ]; then
+        rm -f "$_SKIP_FILE" 2>/dev/null || true; rm -rf "$_LEASE_DIR" 2>/dev/null || true
+        block_emit "BLOCKED: the design-review skip lease has EXPIRED (created ${age}s ago; the limit is ${LEASE_MAX_AGE}s).
+
+The file has been removed so it cannot stay armed and silently authorize a later session.
+Run /blueprint-review to clear the review properly. If the user still wants to bypass,
+they can create $STATE_DIR/skip-design-review.local again in their terminal."
+        return 2
+    fi
+
+    # ── Claim ONE use, atomically ────────────────────────────────────────────
+    # Uses are IMMUTABLE, uniquely-named entries (`<mtime>.<n>` directories), never a
+    # mutable counter file. A counter is a read-modify-write: two concurrent gate
+    # processes both read `used=k`, both grant, and both write `k+1` — so the advertised
+    # ceiling silently overshoots. `mkdir` is atomic and fails if the name exists, so
+    # exactly one process can ever own slot n. Same reasoning as the marker-token design
+    # (ADR-D) and the repo's stated preference for per-arming tokens over per-key files.
+    #
+    # Keyed by the skip file's mtime, so a fresh operator `touch` changes every slot name
+    # and therefore starts a NEW lease at zero; stale slots from a previous file are
+    # ignored by construction rather than trusted, and pruned below.
+    if ! mkdir -p "$_LEASE_DIR" 2>/dev/null; then
+        # FAIL-CLOSED. If uses cannot be recorded they cannot be bounded, and an
+        # unrecordable lease is an UNLIMITED one until expiry — the exact fail-open
+        # a `|| true` here would create. Refuse the bypass instead.
+        return 1
+    fi
+    # Prune slots belonging to a previous lease (different mtime prefix). Best-effort:
+    # a failed prune only leaves inert entries that no longer match the current key.
+    for _d in "$_LEASE_DIR"/*; do
+        [ -d "$_d" ] || continue
+        case "${_d##*/}" in "$mtime".*) ;; *) rm -rf "$_d" 2>/dev/null || true ;; esac
+    done
+
+    claimed=0 n=1
+    while [ "$n" -le "$LEASE_MAX_USES" ]; do
+        if mkdir "$_LEASE_DIR/$mtime.$n" 2>/dev/null; then claimed="$n"; break; fi
+        n=$(( n + 1 ))
+    done
+
+    if [ "$claimed" = "0" ]; then
+        # Every mkdir failed. Distinguish "budget spent" from "cannot write" — they need
+        # different messages, but BOTH must refuse. Count what actually exists rather
+        # than inferring from the loop, so a concurrent claimer cannot be miscounted.
+        used=0
+        for _d in "$_LEASE_DIR/$mtime".*; do [ -d "$_d" ] && used=$(( used + 1 )); done
+        if [ "$used" -lt "$LEASE_MAX_USES" ]; then
+            return 1   # FAIL-CLOSED: could not record a use → grant none
+        fi
+        rm -f "$_SKIP_FILE" 2>/dev/null || true
+        rm -rf "$_LEASE_DIR" 2>/dev/null || true
+        block_emit "BLOCKED: the design-review skip lease is EXHAUSTED (all $LEASE_MAX_USES uses spent).
+
+One \`touch\` authorizes $LEASE_MAX_USES gated writes so a whole approved plan can be
+implemented without re-arming per write — but not an unbounded number. The file has
+been removed.
+
+Run /blueprint-review to clear the pending review properly. To release ONE specific
+pending token with a recorded audit event instead, run scripts/design-clear.sh with no
+arguments to list what is pending. If the user wants another lease, they can re-create
+$STATE_DIR/skip-design-review.local in their terminal."
+        return 2
+    fi
+
+    # The slot is already durable on disk (mkdir succeeded), so the use is recorded
+    # BEFORE it is granted — a crash here loses the write, never the accounting.
+    used="$claimed"
+    remaining=$(( LEASE_MAX_USES - used ))
     rm -f "$STATE_DIR/.impl-gate-block-count.local" 2>/dev/null || true
-    # ── Bypass telemetry ──────────────────────────────────────────────
-    mkdir -p "$STATE_DIR"
-    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-implementation"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
-    exit 0
-fi
+    # ── Bypass telemetry — one event PER USE, with the remaining count so the
+    # lease state is observable from the log without consuming a use to check it.
+    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-implementation","lease_use":%s,"lease_remaining":%s}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$used" "$remaining" \
+        >>"$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
+    return 0
+}
 # (env-based SKIP_DESIGN_REVIEW removed — issue #325; use the .local skip file. ADR 0016.)
 
 # ── Parse tool type and relevant input ─────────────────────────────────
@@ -776,6 +893,13 @@ try:
     from delib_gate import is_exempt
 except Exception:
     is_exempt = None
+# #519 item 4 — token-level file-mod classification. Import failure leaves it None
+# and the raw-string regexes below run instead, i.e. the pre-#519 behaviour, which
+# is strictly WIDER (blocks more). A missing lib can therefore never fail-OPEN here.
+try:
+    from cmdword import is_file_mod
+except Exception:
+    is_file_mod = None
 try:
     d = json.load(sys.stdin)
     tool = d.get("tool_name", d.get("toolName", ""))
@@ -796,7 +920,15 @@ try:
             r"\bln\s",
             r"\binstall\s",
         ]
-        has_explicit_mod = any(re.search(p, cmd) for p in FILE_MOD_PATTERNS)
+        # #519 item 4: these raw-string regexes match INSIDE quoted operands, so a
+        # read-only `grep -nE "rm |mv " f` or `echo "(mv FAILS)"` read as file-modifying
+        # and got blocked. cmdword.is_file_mod tokenizes first and compares token
+        # basenames for equality — a verb inside a quoted string is one token that
+        # equals no verb, while `sudo rm -rf src` still matches. It falls back to these
+        # same regexes on an unparseable command, so the failure mode is the old
+        # behaviour, never a new over-block. Kept here as the import-failure fallback.
+        has_explicit_mod = (is_file_mod(cmd) if is_file_mod is not None
+                            else any(re.search(p, cmd) for p in FILE_MOD_PATTERNS))
         is_mod = has_explicit_mod
         # Check for shell redirects (>, >>) not targeting /dev/null.
         # Strip single-quoted strings first (literal text like jq .x > 0).
@@ -1040,6 +1172,21 @@ fi
 # No file-path allowlist needed — Bash command parsing is unreliable for
 # extracting target paths, and the patterns (sed -i, tee, patch) are
 # unambiguous file-modification operations.
+
+# ── Spend a skip-lease use, if one is armed (#519 item 3) ──────────────
+# Invoked HERE, not before the classifier, and that placement is the fix for the
+# "any intervening tool call can consume it" sharp edge. The old block ran ahead of
+# the tool-type parse and every allowlist, so a read-only `ls`, a `git status`, or a
+# write to an already-EXEMPT path (a design doc, docs/reviews/, $STATE_DIR/) burned
+# the single use before the operator's intended write ever arrived. By this line the
+# operation is known to be genuinely gated — a real implementation write with a real
+# pending review — so a use is spent only on the thing the operator armed it for.
+_LEASE_RC=0; _skip_lease_consume || _LEASE_RC=$?
+case "$_LEASE_RC" in
+    0) exit 0 ;;   # lease use granted → allow this write
+    2) exit 0 ;;   # self-bypass / expired / exhausted — block already on stdout
+esac
+# 1 = no usable skip file → fall through and block normally.
 
 # ── Render the pending records (ADR-C) into the block message ──────────
 # _MK_CODE is 1 (>=1 pending) or 2 (enumerate/list failure) — this write is gated

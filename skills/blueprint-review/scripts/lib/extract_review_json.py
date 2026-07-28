@@ -36,6 +36,7 @@ log for four review sessions).
 import json
 import re
 import sys
+from dataclasses import dataclass
 
 # Parse errors from candidate blocks that LOOKED like a review payload, kept for
 # the failure message only.
@@ -112,7 +113,7 @@ _LOG_ECHO_PREFIX_RE = re.compile(
 )
 
 
-def _is_log_echo_fragment(raw: str, start: int, exc: json.JSONDecodeError) -> bool:
+def _is_log_echo_fragment(raw: str, start: int) -> bool:
     """Is this unclosed region a known CLI log echo rather than a real payload?
 
     Codex streams a ~100-char preview of its own verdict into the log:
@@ -124,26 +125,50 @@ def _is_log_echo_fragment(raw: str, start: int, exc: json.JSONDecodeError) -> bo
     will never find, and fails closed — discarding the complete verdict printed
     below it (#524).
 
-    Identification is by the LOG FRAMING, positively matched against
-    `_LOG_ECHO_PREFIX_RE`, plus the decode dying WITHIN the echo's own line (an
-    untruncated payload after the same prefix decodes fine and never reaches
-    here).
+    Identification is the LOG FRAMING and nothing else, positively matched against
+    `_LOG_ECHO_PREFIX_RE`. An untruncated payload after the same prefix decodes
+    fine and never reaches here, so arriving here with the framing present means
+    codex emitted a preview it could not finish.
 
-    Line-confinement, not newline-equality, is the right test. The preview is cut
-    to a fixed length, so where it stops depends on content: a cut inside a string
-    (`… "issues": [ { "sect...`) makes raw_decode report the raw newline, but a cut
-    between tokens (`… "issues": [...`) reports the offending `.` instead. Testing
-    `raw[exc.pos] in "\\r\\n"` recognizes only the first, so for the second the
-    allowlisted framing was rejected, the generic truncated-region path treated the
-    preview as an unclosed verdict, and it borrowed the real verdict's keys — the
-    exact review loss #524 exists to fix, merely at a different cutoff length.
+    **The decoder's stopping point is not consulted, and must not be** (#529).
+    Three shapes were reported where a cross-check on `exc.pos` misfired, and they
+    have one root cause: `exc.pos` is not a proxy for "did this region extend past
+    its line." raw_decode stops wherever it stops, and after an incomplete opening
+    token it will happily consume valid next-line JSON first:
 
-    **Why nothing more general is sound.** The first fix here inferred "log echo"
-    from geometry alone — starts mid-line AND died on a newline — reasoning that a
-    raw newline inside a string proves the region cannot extend past that line.
-    That reasoning is wrong, and two independent reviewers caught it. A newline
-    breaks the region as *valid JSON*, but the following text is still lexically
-    inside the unclosed braces, so it may be the region's CHILD. Confirmed:
+        [codex] Assistant message captured: {"status":"FAIL","issues":[
+        { …the real verdict… }
+
+    Measured on the reported transcript: the decode ran 143 characters past the
+    line's end, with the entire real verdict inside the intervening slice. Any
+    "did content intervene" test therefore reads the REAL VERDICT as proof the
+    echo was not an echo, rejects the allowlisted framing, and discards the review
+    — #524 reinstated at a different cut point. Every attempt to fix one variant
+    by moving the window boundary broke another (`342dec8` closed one and opened
+    another; reverted in `e7e28a0`).
+
+    The framing alone is the whole identification, and it is complete: the echo's
+    extent IS its line, by construction, because that is how the producer emits
+    it. Re-deriving that from where the decoder happened to stop can only LOSE the
+    fact, never establish it. (Same argument `db6386d` used to drop the
+    verdict-shape sniff on this path.)
+
+    **What the dropped cross-check was worth: nothing.** Its only claimed value was
+    keeping a genuinely broken MULTI-LINE payload from being read as an echo, so
+    its nested PASS stayed unreachable. It never did that — it caught the hazard
+    only when the decoder happened to stop past the line. The identical hazard cut
+    one character earlier (a raw newline inside a string, so the decode dies ON the
+    line) was recognized as an echo and its nested PASS promoted, on `main`, before
+    this change. Measured both ways before removing it. The guard that actually
+    holds this line is `_LOG_ECHO_PREFIX_RE`.
+
+    **Why nothing weaker than the pinned framing is sound.** The first fix here
+    inferred "log echo" from geometry alone — starts mid-line AND died on a newline
+    — reasoning that a raw newline inside a string proves the region cannot extend
+    past that line. That reasoning is wrong, and two independent reviewers caught
+    it. A newline breaks the region as *valid JSON*, but the following text is
+    still lexically inside the unclosed braces, so it may be the region's CHILD.
+    Confirmed:
 
         log: {"status":"FAIL","issues":["x
         {"status":"PASS","issues":[]}
@@ -159,21 +184,6 @@ def _is_log_echo_fragment(raw: str, start: int, exc: json.JSONDecodeError) -> bo
     pre-#524 behavior) — never to accepting a forged PASS. That is the correct
     direction to break in.
     """
-    line_end = _line_end(raw, start)
-    # Confined to its own line: the failure is at or before that line's newline.
-    # A decode that got PAST the newline is a real multi-line payload, not an
-    # echo, and must fall through to the truncated-region path.
-    #
-    # Past-the-line means past the line's CONTENT. json skips whitespace before
-    # reporting, so a preview cut exactly at a token boundary (`… captured: {`)
-    # reports at EOF with only the newline in between — no payload was consumed,
-    # yet a bare `exc.pos > line_end` read that as multi-line and dropped the
-    # echo out of recognition. It then took the generic truncated path, which
-    # (opening on nothing) is not verdict-shaped either, so an earlier
-    # superseded PASS was returned. Only INTERVENING CONTENT disproves
-    # confinement.
-    if exc.pos > line_end and raw[line_end : exc.pos].strip():
-        return False
     line_start = raw.rfind("\n", 0, start) + 1
     return _LOG_ECHO_PREFIX_RE.match(raw[line_start:start]) is not None
 
@@ -211,16 +221,44 @@ _MAX_UNBALANCED_SCANS = 64
 _DECODER = json.JSONDecoder()
 
 
+def _advance_string(ch: str, esc: bool):
+    """Next (still_in_string, escaped) after `ch` while inside a JSON string.
+
+    Split out of _region_end purely to keep that scan under the complexity
+    threshold (#518); the escape rule is unchanged — a backslash arms the next
+    character, an armed character never closes the string.
+    """
+    if esc:
+        return True, False
+    if ch == "\\":
+        return True, True
+    return ch != '"', False
+
+
+def _apply_bracket(stack: list, ch: str) -> bool:
+    """Push or pop `ch` on `stack`; True if it closed the wrong KIND.
+
+    Split out of _region_end for the complexity budget (#518). Bracket kinds are
+    matched, not merely counted: a shared depth counter treats `{"a": 1]` as a
+    closed region, and the nested object after it then reads as top-level — a
+    fabricated PASS.
+    """
+    if ch in "{[":
+        stack.append("}" if ch == "{" else "]")
+        return False
+    return not stack or stack.pop() != ch
+
+
 def _region_end(raw: str, start: int):
-    """End index of the {…} or […] region at `start`, chars consumed, mismatch?
+    """End index of the {…} or […] region at `start`, and whether it MISMATCHED.
 
-    Returns (int|None, int, bool). Deliberately UNANNOTATED: a `tuple[int | None,
-    int, bool]` return annotation is evaluated at import time and raises
-    TypeError on Python 3.9 (PEP 604 landed in 3.10), and this module is invoked
-    through an unversioned `python3`. Annotating it would make the extractor die
-    before reading a single review on any 3.9 install.
+    Returns (int|None, bool). Deliberately UNANNOTATED: a `tuple[int | None,
+    bool]` return annotation is evaluated at import time and raises TypeError on
+    Python 3.9 (PEP 604 landed in 3.10), and this module is invoked through an
+    unversioned `python3`. Annotating it would make the extractor die before
+    reading a single review on any 3.9 install.
 
-    The third value separates the two ways this fails, which must be handled
+    The second value separates the two ways this fails, which must be handled
     differently. TRUNCATED (ran to EOF still open) is what a stray `{` in prose
     looks like, and is tolerated — treating it as fatal would discard a good
     verdict for incidental noise. MISMATCHED (a `]` closing a `{`) means the
@@ -239,28 +277,18 @@ def _region_end(raw: str, start: int):
     stack = []
     in_str = False
     esc = False
-    limit = len(raw)
-    for i in range(start, limit):
+    for i in range(start, len(raw)):
         ch = raw[i]
         if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
+            in_str, esc = _advance_string(ch, esc)
+        elif ch == '"':
             in_str = True
-        elif ch in "{[":
-            stack.append("}" if ch == "{" else "]")
-        elif ch in "}]":
-            if not stack or stack[-1] != ch:
-                return None, i - start + 1, True  # mismatched kinds
-            stack.pop()
+        elif ch in "{[}]":
+            if _apply_bracket(stack, ch):
+                return None, True  # mismatched kinds
             if not stack:
-                return i, i - start + 1, False
-    return None, limit - start, False  # ran to EOF still open — truncated
+                return i, False  # a push never empties the stack, so this is a close
+    return None, False  # ran to EOF still open — truncated
 
 
 def _next_region(raw: str, i: int) -> int:
@@ -272,6 +300,211 @@ def _next_region(raw: str, i: int) -> int:
     if bracket < 0:
         return brace
     return min(brace, bracket)
+
+
+@dataclass
+class _Sweep:
+    """Mutable state threaded through one forward sweep of a transcript.
+
+    A plain record, not an abstraction. The sweep's branches were extracted into
+    helpers to bring `try_last_review_object` back under the complexity threshold
+    (#518, CCN 23 vs 9), and every one of those helpers updates the same handful
+    of positions — one shared record beats five in/out parameters per call.
+    """
+
+    best: object = None
+    best_pos: int = -1
+    malformed_pos: int = -1
+    broken_pos: int = -1
+    unbalanced_scans: int = 0
+    own_line_only: bool = False
+
+
+def _skip_log_echo(st: "_Sweep", raw: str, start: int, exc: json.JSONDecodeError) -> int:
+    """Record a recognized CLI log echo (#524) and step past its whole line."""
+    # Recorded UNCONDITIONALLY — no verdict-shape sniff at all. Widening the
+    # window from exc.pos to the whole line closed the case cubic reported, but
+    # not the class: the preview is cut to a fixed length, so a short one carries
+    # NO verdict key to find (`[codex] Assistant message captured: {`), sniffs as
+    # not-a-verdict, leaves malformed_pos unset, and hands back an earlier
+    # superseded PASS. The sniff was never load-bearing here —
+    # `_LOG_ECHO_PREFIX_RE` has already positively identified this line as codex
+    # echoing its OWN verdict, so a verdict demonstrably existed. Re-deriving that
+    # fact from the truncated preview's keys can only LOSE it, never establish it.
+    # If the real verdict is found below, best_pos outranks this and the echo
+    # costs nothing; if it is not, refusing is correct.
+    st.malformed_pos = start
+    _PARSE_ERRORS.append(str(exc))
+    # Defense in depth behind the allowlist: past a skipped region, a MID-LINE
+    # object could still be some other region's child, so from here only own-line
+    # objects can win. See _handle_decoded for why #527 does not relax this.
+    st.own_line_only = True
+    # Skip the WHOLE classified line, not just to exc.pos. The echo's extent was
+    # established as its line, and exc.pos is only where the decode happened to
+    # die — for a cut between tokens, later `[`/`{` on that same line sit beyond
+    # it. Resuming at exc.pos re-entered the very fragment just ruled a
+    # non-payload, took one of those brackets as a fresh unresolved region, and
+    # let it borrow the real verdict's keys: `{ "status": ... "issues": [ { "sect`
+    # above a complete verdict returned None. The #524 loss again, one path
+    # further in.
+    return max(_line_end(raw, start), start + 1)
+
+
+def _handle_truncated(st: "_Sweep", raw: str, start: int, exc: json.JSONDecodeError):
+    """A region with no closing bracket anywhere. Next index, or None to refuse.
+
+    Its extent is unknowable, so anything decoded later may be its own nested
+    content.
+
+    Which of the two truncated shapes this is decides everything, and the syntax
+    error's position cannot tell them apart — an error before `reviewer_id` makes
+    a real verdict look like noise. Two signals separate them, and BOTH are
+    needed:
+
+    1. How the region OPENS. A JSON object opens with a quoted key, whereas
+       `trace: if (x) {` is prose that merely ends in a brace.
+    2. Whether verdict keys appear before the NEXT complete verdict. Testing
+       raw[start:] instead — the whole remaining transcript — lets an unclosed
+       code fragment like `const cfg = {"enabled": true;` borrow the keys of a
+       later, unrelated verdict and fail closed on it, discarding a perfectly
+       readable review. That is the #503 loss re-created, on exactly the
+       interleaved-code input this module's docstring calls routine.
+
+    The window is the whole remaining transcript, and every attempt to narrow it
+    has been worse:
+
+      - Bounding at the next decoded verdict is a FAIL-OPEN. In
+        `{"a":1,, "metadata":{"reviewer_id":..,"status":"PASS"}}` the nested PASS
+        IS that next verdict, so the window stops short of the keys that would
+        have condemned it.
+      - Rejecting on ANY unresolved JSON-ish region over-rejects: a complete
+        verdict followed by trailing `trace: {"debug":` is perfectly readable, and
+        the trailing fragment carries no verdict keys, so scanning to EOF already
+        tolerates it.
+
+    KNOWN RESIDUAL: a fragment that opens like JSON, never closes, and PRECEDES
+    the verdict (`const cfg = {"enabled": true;`) does borrow the verdict's keys
+    and fails closed on a readable review. "Noise then a verdict" and "a truncated
+    verdict wrapping a nested one" are textually indistinguishable, so this
+    refuses rather than guess: a withheld rescue, never a forged PASS.
+    """
+    if _opens_like_json(raw, start) and _looks_like_verdict(raw[start:]):
+        _PARSE_ERRORS.append(str(exc))
+        return None
+    st.unbalanced_scans += 1
+    if st.unbalanced_scans > _MAX_UNBALANCED_SCANS:
+        _PARSE_ERRORS.append("transcript structure unresolvable")
+        return None  # fail closed rather than guess at nesting
+    return max(exc.pos, start + 1)
+
+
+def _record_broken_region(
+    st: "_Sweep", raw: str, start: int, exc: json.JSONDecodeError, region_end, mismatched
+) -> int:
+    """Note a malformed region whose extent IS known, and step over it."""
+    # Classification window. A resolved region is bounded by its own end; an
+    # UNRESOLVED one is scanned to EOF.
+    #
+    # Narrowing the unresolved window to the bytes _region_end consumed looks
+    # tidier — it keeps the recorded REASON from picking up keys that belong to a
+    # later verdict — but it is a fail-open, so the tidiness is not available.
+    # Scanning stops at the mismatched closer, so in
+    # `{"x": ], "reviewer_id":"codex", "status":"FAIL", "issues":[]}` the verdict
+    # keys fall OUTSIDE the window, is_verdict reads false, malformed_pos is never
+    # set, and an earlier PASS is returned in place of this malformed FAIL.
+    # Diagnostic precision is not worth a forged verdict; the window stays wide,
+    # and being wide only ever costs a fail-CLOSED refusal.
+    stop = len(raw) if region_end is None else region_end + 1
+    if mismatched and st.broken_pos < 0:
+        # Structurally broken: we cannot say where this region ends, so anything
+        # decoded AFTER it may be its nested content rather than a top-level
+        # verdict. Record the position instead of returning: returning `best` here
+        # hands back a STALE verdict when a later one exists, and returning None
+        # discards a good verdict over trailing noise like `trace: {"issues":[}`.
+        # Only what follows the break is in doubt, and that is resolved after the
+        # sweep.
+        st.broken_pos = start
+    if _looks_like_verdict(raw[start:stop]):
+        st.malformed_pos = start
+        _PARSE_ERRORS.append(str(exc))
+    # Step over the whole region when it is known, so anything nested inside a
+    # malformed payload stays unreachable.
+    return max(exc.pos, start + 1) if region_end is None else region_end + 1
+
+
+def _handle_malformed(st: "_Sweep", raw: str, start: int, exc: json.JSONDecodeError):
+    """Route a region that failed to decode. Next index, or None to refuse."""
+    if _is_log_echo_fragment(raw, start):
+        # A recognized CLI log echo (#524) — not a payload at all. Classify it on
+        # its own line; scanning to EOF would let it borrow the real verdict's
+        # keys, which is how it came to outrank one.
+        #
+        # Checked BEFORE _region_end, not gated behind its result (Codex, PR
+        # #525). _region_end scans the WHOLE remaining transcript looking for a
+        # close, so when the real verdict below contains a `]` or an escaped quote
+        # that desyncs the bracket stack, it can report `mismatched=True` for a
+        # region whose OWN line is an unambiguous, positively-framed echo. Gating
+        # recognition on that scan's outcome let unrelated content deep in the
+        # real verdict silently disable the allowlist, discarding the very review
+        # #524 exists to keep. The pinned framing already fully proves the
+        # classification; nothing downstream can un-prove it.
+        return _skip_log_echo(st, raw, start, exc)
+    region_end, mismatched = _region_end(raw, start)
+    if region_end is None and not mismatched:
+        return _handle_truncated(st, raw, start, exc)
+    return _record_broken_region(st, raw, start, exc, region_end, mismatched)
+
+
+def _handle_decoded(st: "_Sweep", raw: str, start: int, obj, end: int) -> int:
+    """Consider a cleanly decoded value as the verdict, and step over it."""
+    # NOT RELAXED FOR #527, deliberately. Codex reports that its real shape puts
+    # the verdict behind prose on one line — `Final answer: {…}` — which
+    # own_line_only discards, losing the review. Every rule that accepts it is
+    # POSITIONAL ("the first payload after the echo is the one it previewed"),
+    # because the prose is arbitrary; and a positional rule cannot authenticate
+    # the object it admits, so `wrapper: {"status":"PASS",…}` in that slot is
+    # admitted on identical evidence. Measured: the first-payload form returns
+    # that PASS. A phrase allowlist would need a real transcript pinning the
+    # wording, and none is in hand — #527 records exactly this. Withholding a
+    # review is the correct direction to break in; fabricating a PASS is not.
+    embedded = _embedded_in_a_line(raw, start)
+    if not (isinstance(obj, dict) and _is_review(obj)):
+        return max(end, start + 1)
+    if not (st.own_line_only and embedded):
+        st.best, st.best_pos = obj, start
+    if not embedded:
+        # An own-line REVIEW resynced the sweep to top level, so the skipped echo
+        # can no longer be parenting what follows.
+        #
+        # It must be a REVIEW, not merely any decodable own-line value. An
+        # unclosed echo swallows everything after it lexically, and
+        # _embedded_in_a_line only inspects the physical line — so a
+        # pretty-printed child starting at column 0 is "own-line" while still
+        # nested. An arbitrary log value is therefore not proof the echo ended;
+        # clearing on one let `wrapper: {"status":"PASS"}` be promoted from inside
+        # it. A verdict-shaped own-line object is the narrowest thing that does
+        # carry the proof.
+        #
+        # Without this reset own_line_only stayed set for the rest of the
+        # transcript, so every later prefixed verdict was silently dropped: echo,
+        # then an own-line PASS, then `Final answer: {…"status":"FAIL"…}` returned
+        # the stale PASS. That breaks last-verdict-wins in the dangerous direction
+        # — promoting a PASS over a later FAIL is the fabricated-PASS failure #503
+        # hardened against.
+        st.own_line_only = False
+    return max(end, start + 1)  # step over the decoded value; children can't win
+
+
+def _resolve(st: "_Sweep"):
+    """The operative verdict at the end of a sweep, or None."""
+    if st.malformed_pos > st.best_pos:
+        return None  # the operative verdict is the unreadable one — fail closed
+    if 0 <= st.broken_pos < st.best_pos:
+        # The verdict was decoded after a region whose extent is unknowable, so it
+        # may be that region's nested content. Refuse rather than guess.
+        _PARSE_ERRORS.append("verdict follows an unresolvable region")
+        return None
+    return st.best
 
 
 def try_last_review_object(raw: str):
@@ -304,21 +537,19 @@ def try_last_review_object(raw: str):
     corrected verdict is never examined; ignoring one because its syntax error
     happens to precede reviewer_id leaves an earlier stale PASS standing in for
     it. So the sweep runs to the end and compares: a malformed verdict AFTER the
-    last clean one fails CLOSED, an earlier one is superseded. Classification
-    uses the region's full text, not just the bytes consumed before the error,
-    so where in the payload the syntax error falls no longer decides it.
+    last clean one fails CLOSED, an earlier one is superseded. Classification uses
+    the region's full text, not just the bytes consumed before the error, so where
+    in the payload the syntax error falls no longer decides it.
 
     Cost stays linear-ish: each region is decoded at most once, a '{' opening
     prose fails immediately, and the skip scan is capped by a global budget. The
     backward scan it replaces re-scanned the remaining text per candidate — ~4.2s
     on 20KB of unmatched braces, on a call sitting unbounded in the review path.
+
+    The per-branch reasoning lives on the helpers this delegates to; each one
+    encodes a specific adversarial case with a pinned regression test.
     """
-    best = None
-    best_pos = -1
-    malformed_pos = -1
-    broken_pos = -1
-    unbalanced_scans = 0
-    own_line_only = False
+    st = _Sweep()
     i = 0
     while True:
         start = _next_region(raw, i)
@@ -327,178 +558,17 @@ def try_last_review_object(raw: str):
         try:
             obj, end = _DECODER.raw_decode(raw, start)
         except json.JSONDecodeError as exc:
-            if _is_log_echo_fragment(raw, start, exc):
-                # A recognized CLI log echo (#524) — not a payload at all.
-                # Classify it on its own line; scanning to EOF would let it
-                # borrow the real verdict's keys, which is how it came to
-                # outrank one.
-                #
-                # Checked BEFORE _region_end, not gated behind its result
-                # (Codex, PR #525). _region_end scans the WHOLE remaining
-                # transcript looking for a close, so when the real verdict
-                # below contains a `]` or an escaped quote that desyncs the
-                # bracket stack, it can report `mismatched=True` for a region
-                # whose OWN line is an unambiguous, positively-framed echo.
-                # Gating recognition on that scan's outcome let unrelated
-                # content deep in the real verdict silently disable the
-                # allowlist, discarding the very review #524 exists to keep.
-                # Line-confinement + the pinned framing already fully proves
-                # the classification; nothing downstream can un-prove it.
-                # Classify against the echo's WHOLE line, not `raw[start:exc.pos]`.
-                # exc.pos is wherever the decode happened to die, which for a cut
-                # between tokens lands well before the line's end — `{ "status": `
-                # alone is not verdict-shaped, so malformed_pos went unset and an
-                # EARLIER PASS stayed selected even though a later framed verdict
-                # was unreadable. Fail-open, and the reverse of what the comment
-                # above promises.
-                echo_line_end = _line_end(raw, start)
-                # Recorded UNCONDITIONALLY — no verdict-shape sniff at all.
-                # Widening the window from exc.pos to the whole line closed the
-                # case cubic reported, but not the class: the preview is cut to a
-                # fixed length, so a short one carries NO verdict key to find
-                # (`[codex] Assistant message captured: {`), sniffs as
-                # not-a-verdict, leaves malformed_pos unset, and hands back an
-                # earlier superseded PASS. The sniff was never load-bearing here
-                # — `_LOG_ECHO_PREFIX_RE` has already positively identified this
-                # line as codex echoing its OWN verdict, so a verdict
-                # demonstrably existed. Re-deriving that fact from the truncated
-                # preview's keys can only LOSE it, never establish it. If the
-                # real verdict is found below, best_pos outranks this and the
-                # echo costs nothing; if it is not, refusing is correct.
-                malformed_pos = start
-                _PARSE_ERRORS.append(str(exc))
-                # Defense in depth behind the allowlist: past a skipped
-                # region, a MID-LINE object could still be some other
-                # region's child, so from here only own-line objects can win.
-                own_line_only = True
-                # Skip the WHOLE classified line, not just to exc.pos. The echo's
-                # extent was established as its line, and exc.pos is only where
-                # the decode happened to die — for a cut between tokens, later
-                # `[`/`{` on that same line sit beyond it. Resuming at exc.pos
-                # re-entered the very fragment just ruled a non-payload, took one
-                # of those brackets as a fresh unresolved region, and let it
-                # borrow the real verdict's keys: `{ "status": ... "issues": [ {
-                # "sect` above a complete verdict returned None. The #524 loss
-                # again, one path further in.
-                i = max(echo_line_end, start + 1)
-                continue
-            region_end, _, mismatched = _region_end(raw, start)
-            if region_end is None and not mismatched:
-                # TRUNCATED: no closing bracket anywhere. Its extent is unknowable,
-                # so anything decoded later may be its own nested content.
-                #
-                # Which of the two truncated shapes this is decides everything, and
-                # the syntax error's position cannot tell them apart — an error
-                # before `reviewer_id` makes a real verdict look like noise. Two
-                # signals separate them, and BOTH are needed:
-                #
-                # 1. How the region OPENS. A JSON object opens with a quoted key,
-                #    whereas `trace: if (x) {` is prose that merely ends in a brace.
-                # 2. Whether verdict keys appear before the NEXT complete verdict.
-                #    Testing raw[start:] instead — the whole remaining transcript —
-                #    lets an unclosed code fragment like `const cfg = {"enabled":
-                #    true;` borrow the keys of a later, unrelated verdict and fail
-                #    closed on it, discarding a perfectly readable review. That is
-                #    the #503 loss re-created, on exactly the interleaved-code input
-                #    this module's docstring calls routine.
-                #
-                # The window is the whole remaining transcript, and every attempt
-                # to narrow it has been worse:
-                #
-                #   - Bounding at the next decoded verdict is a FAIL-OPEN. In
-                #     `{"a":1,, "metadata":{"reviewer_id":..,"status":"PASS"}}` the
-                #     nested PASS IS that next verdict, so the window stops short
-                #     of the keys that would have condemned it.
-                #   - Rejecting on ANY unresolved JSON-ish region over-rejects: a
-                #     complete verdict followed by trailing `trace: {"debug":` is
-                #     perfectly readable, and the trailing fragment carries no
-                #     verdict keys, so scanning to EOF already tolerates it.
-                #
-                # KNOWN RESIDUAL: a fragment that opens like JSON, never closes,
-                # and PRECEDES the verdict (`const cfg = {"enabled": true;`) does
-                # borrow the verdict's keys and fails closed on a readable review.
-                # "Noise then a verdict" and "a truncated verdict wrapping a nested
-                # one" are textually indistinguishable, so this refuses rather than
-                # guess: a withheld rescue, never a forged PASS.
-                if _opens_like_json(raw, start) and _looks_like_verdict(raw[start:]):
-                    _PARSE_ERRORS.append(str(exc))
-                    return None
-                unbalanced_scans += 1
-                if unbalanced_scans > _MAX_UNBALANCED_SCANS:
-                    _PARSE_ERRORS.append("transcript structure unresolvable")
-                    return None  # fail closed rather than guess at nesting
-                i = max(exc.pos, start + 1)
-                continue
-            # Classification window. A resolved region is bounded by its own end;
-            # an UNRESOLVED one is scanned to EOF.
-            #
-            # Narrowing the unresolved window to the bytes _region_end consumed
-            # looks tidier — it keeps the recorded REASON from picking up keys
-            # that belong to a later verdict — but it is a fail-open, so the
-            # tidiness is not available. Scanning stops at the mismatched closer,
-            # so in `{"x": ], "reviewer_id":"codex", "status":"FAIL", "issues":[]}`
-            # the verdict keys fall OUTSIDE the window, is_verdict reads false,
-            # malformed_pos is never set, and an earlier PASS is returned in place
-            # of this malformed FAIL. Diagnostic precision is not worth a forged
-            # verdict; the window stays wide, and being wide only ever costs a
-            # fail-CLOSED refusal.
-            stop = region_end + 1 if region_end is not None else len(raw)
-            is_verdict = _looks_like_verdict(raw[start:stop])
-            if mismatched and broken_pos < 0:
-                # Structurally broken: we cannot say where this region ends, so
-                # anything decoded AFTER it may be its nested content rather than
-                # a top-level verdict. Record the position instead of returning:
-                # returning `best` here hands back a STALE verdict when a later
-                # one exists, and returning None discards a good verdict over
-                # trailing noise like `trace: {"issues":[}`. Only what follows the
-                # break is in doubt, and that is resolved after the sweep.
-                broken_pos = start
-                if is_verdict:
-                    _PARSE_ERRORS.append(str(exc))
-            if is_verdict:
-                malformed_pos = start
-                _PARSE_ERRORS.append(str(exc))
-            # Step over the whole region when it is known, so anything nested
-            # inside a malformed payload stays unreachable.
-            i = region_end + 1 if region_end is not None else max(exc.pos, start + 1)
+            nxt = _handle_malformed(st, raw, start, exc)
+            if nxt is None:
+                return None
+            i = nxt
             continue
         except ValueError:
             i = start + 1
             continue
-        embedded = _embedded_in_a_line(raw, start)
-        is_review_obj = isinstance(obj, dict) and _is_review(obj)
-        if is_review_obj and not (own_line_only and embedded):
-            best, best_pos = obj, start
-        if is_review_obj and not embedded:
-            # An own-line REVIEW resynced the sweep to top level, so the skipped
-            # echo can no longer be parenting what follows.
-            #
-            # It must be a REVIEW, not merely any decodable own-line value. An
-            # unclosed echo swallows everything after it lexically, and
-            # _embedded_in_a_line only inspects the physical line — so a
-            # pretty-printed child starting at column 0 is "own-line" while
-            # still nested. An arbitrary log value is therefore not proof the
-            # echo ended; clearing on one let `wrapper: {"status":"PASS"}` be
-            # promoted from inside it. A verdict-shaped own-line object is the
-            # narrowest thing that does carry the proof.
-            #
-            # Without this reset own_line_only stayed set for the rest of the
-            # transcript, so every later prefixed verdict was silently dropped:
-            # echo, then an own-line PASS, then `Final answer: {…"status":"FAIL"…}`
-            # returned the stale PASS. That breaks last-verdict-wins in the
-            # dangerous direction — promoting a PASS over a later FAIL is the
-            # fabricated-PASS failure #503 hardened against.
-            own_line_only = False
-        i = max(end, start + 1)  # step over the decoded value; children can't win
+        i = _handle_decoded(st, raw, start, obj, end)
 
-    if malformed_pos > best_pos:
-        return None  # the operative verdict is the unreadable one — fail closed
-    if 0 <= broken_pos < best_pos:
-        # The verdict was decoded after a region whose extent is unknowable, so
-        # it may be that region's nested content. Refuse rather than guess.
-        _PARSE_ERRORS.append("verdict follows an unresolvable region")
-        return None
-    return best
+    return _resolve(st)
 
 
 def extract_from_text(raw: str):

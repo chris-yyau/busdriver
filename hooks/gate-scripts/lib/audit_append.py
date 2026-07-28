@@ -39,40 +39,45 @@ _LOCK_TRIES = 10
 _LOCK_WAIT = 0.05
 
 
+def open_state_dir(state_dir):
+    """Open <cwd>/<state_dir> as a dir fd, creating components, with NO symlink or
+    parent traversal anywhere in the path. Returns the fd, or None on refusal.
+
+    Shared with lease_slot.py so both gate-state writers contain the path identically —
+    a `-L` test in shell checks only the FINAL name, passes a nested `link/state` whose
+    PREFIX is a symlink, and is separated from the later use by a TOCTOU window.
+    """
+    if state_dir.startswith("/"):
+        return None
+    parts = [p for p in state_dir.split("/") if p and p != "."]
+    if any(p == ".." for p in parts):
+        return None
+    dfd = os.open(".", os.O_RDONLY | os.O_DIRECTORY)
+    for part in parts:
+        try:
+            os.mkdir(part, 0o755, dir_fd=dfd)
+        except FileExistsError:
+            pass
+        except OSError:
+            os.close(dfd)
+            return None
+        try:
+            nfd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dfd)
+        except OSError:
+            os.close(dfd)
+            return None               # symlinked or not a directory
+        os.close(dfd)
+        dfd = nfd
+    return dfd
+
+
 def append(state_dir, record_line):
     """Append record_line (no trailing newline) under <cwd>/<state_dir>/bypass-log.jsonl.
     Returns True only when the whole line is durably written."""
-    # O_NOFOLLOW stops SYMLINK traversal; it does nothing about PARENT traversal. Since
-    # state_dir is attacker-influenced, a value like "../outside" would otherwise create
-    # directories and append the log outside the repo while still reporting success —
-    # an audit record written somewhere nobody monitors is indistinguishable from none.
-    # Reject absolute paths and any ".." component outright rather than try to contain
-    # them. (The gates sanitize BUSDRIVER_STATE_DIR too; this is the library holding its
-    # own invariant rather than trusting every future caller to.)
-    if state_dir.startswith("/"):
+    dfd = open_state_dir(state_dir)
+    if dfd is None:
         return False
-    parts = [p for p in state_dir.split("/") if p and p != "."]
-    if any(p == ".." for p in parts):
-        return False
-    dfd = os.open(".", os.O_RDONLY | os.O_DIRECTORY)
     try:
-        # Walk every component, not just the last: O_NOFOLLOW on the final name alone
-        # would still let a symlinked PREFIX (state_dir "a/b" with "a" symlinked)
-        # redirect the append outside the repo.
-        for part in parts:
-            try:
-                os.mkdir(part, 0o755, dir_fd=dfd)
-            except FileExistsError:
-                pass
-            except OSError:
-                return False
-            try:
-                nfd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                              dir_fd=dfd)
-            except OSError:
-                return False          # symlinked or not a directory
-            os.close(dfd)
-            dfd = nfd
         try:
             # O_RDWR, not O_WRONLY: the torn-line check below pread()s the last byte,
             # which a write-only fd cannot do. O_APPEND still lands every write at EOF.

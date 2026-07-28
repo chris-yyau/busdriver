@@ -102,6 +102,23 @@ _WRAPPERS = frozenset(("sudo", "doas", "env", "nohup", "timeout", "nice", "ionic
 _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 # A bare duration/number operand belonging to a wrapper (`timeout 5 rm x`, `nice 10 mv`).
 _NUMERIC_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$")
+# Shell reserved words and grouping punctuation. These occupy the first token position
+# without being the command: `{ rm -rf src; }` and `if true; then rm -rf src; fi` split
+# into segments whose first token is `{` or `then`, so stopping there would return a
+# non-verb and ALLOW the write behind it.
+# Keywords/punctuation that PRECEDE a command — skip them and judge what follows.
+_RESERVED = frozenset(("if", "then", "else", "elif", "fi", "do", "done", "esac",
+                       "while", "until", "time",
+                       "{", "}", "!", ")"))
+# Test-expression openers. Everything inside is an OPERAND, never a command, so these
+# terminate the search instead of being skipped — skipping `[[` made `[[ rm = value ]]`
+# and `[[ -f rm ]]` resolve to `rm` and classify as writes, recreating the very
+# false-positive class this parser removes.
+_TEST_OPEN = frozenset(("[[", "["))
+# Keywords that introduce a NAME or a WORD rather than a command. The token after these
+# is data, so skipping only the keyword misreads `function mv { ... }`, `for rm in a b`,
+# and `case rm in ...` as invocations of mv/rm. Skip the keyword AND its operand.
+_NAME_INTRO = frozenset(("function", "for", "select", "case"))
 
 
 def _split_simple_commands(s):
@@ -291,32 +308,91 @@ def _executed_operands(toks):
     return out
 
 
-def _effective_command_word(toks):
-    """The verb this simple command actually RUNS, with wrapper preambles peeled.
+def _starts_with_wrapper(toks):
+    """Does this simple command BEGIN with a wrapper (after assignments/flags/keywords)?
 
-    Leading `NAME=VALUE` assignments, flags, wrapper commands, and a wrapper numeric
-    operand are skipped; the first token that survives is what executes.
+    Position matters: scanning every token for a wrapper name meant `grep sudo rm` and
+    `printf sudo rm` flipped to the conservative all-token scan and blocked, which is
+    the same false-positive class #519 exists to remove. A wrapper only wraps when it
+    is in command position.
     """
+    skip_next = False
     for t in toks:
+        if skip_next:
+            skip_next = False
+            continue
         if _ASSIGN_RE.match(t) or t.startswith("-") or _NUMERIC_RE.match(t):
             continue
         b = _basename(t)
-        if b in _WRAPPERS:
+        if b in _TEST_OPEN:
+            return False              # a test expression wraps nothing
+        if b in _NAME_INTRO:
+            skip_next = True
+            continue
+        if b in _RESERVED:
+            continue
+        return b in _WRAPPERS
+    return False
+
+
+def _effective_command_word(toks):
+    """The verb this simple command RUNS, with the preamble peeled.
+
+    Skips leading `NAME=VALUE` assignments, flags, reserved words, grouping punctuation,
+    and bare numeric operands; the first token that survives is what executes. Returns
+    None if nothing does.
+
+    NOTE this is only consulted for WRAPPER-FREE commands — see _segment_is_mod. Peeling
+    a wrapper preamble precisely would mean knowing which of its flags take an operand
+    (`sudo -u root rm -rf src` must not stop at `root`), and getting that table wrong
+    fails OPEN. So wrappers are handled by the conservative branch instead.
+    """
+    skip_next = False
+    for t in toks:
+        if skip_next:
+            skip_next = False
+            continue
+        if _ASSIGN_RE.match(t) or t.startswith("-") or _NUMERIC_RE.match(t):
+            continue
+        b = _basename(t)
+        if b in _TEST_OPEN:
+            return None               # a test expression runs no command
+        if b in _NAME_INTRO:
+            skip_next = True          # the following token is a NAME, not a command
+            continue
+        if b in _RESERVED or b in _WRAPPERS:
             continue
         return b
     return None
 
 
 def _segment_is_mod(toks):
-    """True iff this simple command RUNS a file-modifying verb."""
+    """True iff this simple command RUNS a file-modifying verb.
+
+    Two regimes, split on whether a wrapper is present:
+
+    - NO wrapper: judge the command word alone. Everything after it is data, so
+      `grep dd notes.txt` and `echo rmdir` stay allowed — the false positives #519 is
+      about.
+    - Wrapper present: scan EVERY token. A wrapper can carry flags with operands
+      (`sudo -u root rm -rf src`), and enumerating which flags consume an operand is a
+      table that fails OPEN when it is wrong or incomplete. Scanning all tokens cannot
+      fail open; it only over-blocks the rare `sudo grep dd f`, which is the safe
+      direction for a security gate.
+    """
     names = [_basename(t) for t in toks]
-    if _effective_command_word(toks) in _MOD_VERBS:
+    wrapped = _starts_with_wrapper(toks)
+    cw = _effective_command_word(toks)
+    if wrapped:
+        if any(n in _MOD_VERBS for n in names):
+            return True
+    elif cw in _MOD_VERBS:
         return True
     # find runs its own commands. `-delete` writes by itself; `-exec`/`-execdir`/`-ok`
     # take a command whose verb sits in the very next token. Without this, switching
     # from an all-token scan to wrapper peeling would regress `find . -exec rm {} \;`,
     # which the original regexes did catch.
-    if _effective_command_word(toks) == "find":
+    if cw == "find" or (wrapped and "find" in names):
         if any(n in ("-delete",) for n in names):
             return True
         for i, t in enumerate(toks):
@@ -329,7 +405,9 @@ def _segment_is_mod(toks):
     # than command-word position keeps `sudo sed -i ...` blocked. `-i` may carry a
     # suffix (BSD `sed -i ''`, GNU `sed -i.bak`) or be bundled (`-ni`), so match any
     # leading-dash token whose flag letters include i.
-    if _effective_command_word(toks) == "sed":
+    # Index-based so a wrapped `sudo sed -i ...` still matches, but anchored on command
+    # position so `echo sed -i` does not.
+    if cw == "sed" or (wrapped and "sed" in names):
         after = toks[names.index("sed") + 1:]
         return any(re.match(r"^-[A-Za-z]*i", t) for t in after)
     return False
@@ -394,6 +472,18 @@ def _demo():
         "echo rmdir",
         "echo cp this line",
         "git log --oneline | grep rm",
+        # Keywords that introduce a NAME, and wrapper names used as plain data.
+        "function mv { echo harmless; }",
+        "for rm in a b; do echo hi; done",
+        "case rm in x) echo hi;; esac",
+        "grep sudo rm",
+        "printf sudo rm",
+        "echo find -delete",
+        "echo sed -i",
+        # Test-expression operands are data, never commands.
+        "[[ rm = value ]]",
+        "[[ -f rm ]]",
+        "[ -f rm ]",
         # #519 false positive 3: a probe DEFINING functions named mv / [.
         "mv() { echo harmless; }",
         "rm () { echo harmless; }",
@@ -409,6 +499,18 @@ def _demo():
         "echo rmdir",
         "echo cp this line",
         "git log --oneline | grep rm",
+        # Keywords that introduce a NAME, and wrapper names used as plain data.
+        "function mv { echo harmless; }",
+        "for rm in a b; do echo hi; done",
+        "case rm in x) echo hi;; esac",
+        "grep sudo rm",
+        "printf sudo rm",
+        "echo find -delete",
+        "echo sed -i",
+        # Test-expression operands are data, never commands.
+        "[[ rm = value ]]",
+        "[[ -f rm ]]",
+        "[ -f rm ]",
         # #519 false positive 3: a probe DEFINING functions named mv / [.
         "mv() { echo harmless; }",
         "rm () { echo harmless; }",
@@ -457,6 +559,12 @@ def _demo():
         "find . -delete",
         "timeout 5 rm x",
         "echo hi | xargs rm",
+        # Wrapper flag operands and shell reserved words: stopping the peel at the
+        # first plausible token returned `root`, `{` and `then` here, allowing the write.
+        "sudo -u root rm -rf src",
+        "{ rm -rf src; }",
+        "if true; then rm -rf src; fi",
+        "sudo sed -i 's/a/b/' f",
     ]
     for c in allowed:
         assert not is_file_mod(c), "should be allowed: " + c

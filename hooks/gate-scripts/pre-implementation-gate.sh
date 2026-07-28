@@ -776,13 +776,15 @@ LEASE_MAX_AGE=3600
 _SKIP_FILE="$STATE_DIR/skip-design-review.local"
 # Per-use lease slots live as immutable <mtime>.<n> directories in here, never
 # as a mutable counter file — see the claim block below for why.
+# Slot names/paths for the release-on-unloggable-use path below; the CLAIM itself goes
+# through lease_slot.py, which resolves this path safely rather than by string join.
 _LEASE_DIR="$STATE_DIR/.skip-design-review-lease.d"
 
 # Exit: 0 = a lease use was granted (allow the write)
 #       1 = no usable skip file (fall through to the normal block)
 #       2 = a block decision has ALREADY been emitted on stdout (caller exits)
 _skip_lease_consume() {
-    local mtime age used now claimed n _d
+    local mtime age used now claimed
     [ -f "$_SKIP_FILE" ] || return 1
     # A git-tracked (git add -f'd) skip file is repo-controlled, not operator consent
     # (#325). Anchor the guard on the SAME path the `-f` check tests — that check is
@@ -825,53 +827,32 @@ they can create $STATE_DIR/skip-design-review.local again in their terminal."
         return 2
     fi
 
-    # ── Claim ONE use, atomically ────────────────────────────────────────────
-    # Uses are IMMUTABLE, uniquely-named entries (`<mtime>.<n>` directories), never a
-    # mutable counter file. A counter is a read-modify-write: two concurrent gate
-    # processes both read `used=k`, both grant, and both write `k+1` — so the advertised
-    # ceiling silently overshoots. `mkdir` is atomic and fails if the name exists, so
-    # exactly one process can ever own slot n. Same reasoning as the marker-token design
-    # (ADR-D) and the repo's stated preference for per-arming tokens over per-key files.
+    # ── Claim ONE use, atomically and inside the repo ────────────────────────
+    # Delegated to lease_slot.py: every path component is opened with dir_fd +
+    # O_NOFOLLOW and every operation happens AT that fd, so the directory validated is
+    # the one written to. The shell version could not hold that — `-L "$STATE_DIR"`
+    # tests only the final name (a nested `link/state` with a symlinked PREFIX passes),
+    # the check was separated from the use by a TOCTOU window, and a glob + `rm -rf`
+    # prune would follow such a symlink into a tree outside the repo. Slots placed
+    # outside the repo are also outside the protected-marker guard, so they could be
+    # erased through the external name and the ceiling reset indefinitely.
     #
-    # Keyed by the skip file's mtime, so a fresh operator `touch` changes every slot name
-    # and therefore starts a NEW lease at zero; stale slots from a previous file are
-    # ignored by construction rather than trusted, and pruned below.
-    if ! mkdir -p "$_LEASE_DIR" 2>/dev/null; then
-        # FAIL-CLOSED. If uses cannot be recorded they cannot be bounded, and an
-        # unrecordable lease is an UNLIMITED one until expiry — the exact fail-open
-        # a `|| true` here would create. Refuse the bypass instead.
-        return 1
-    fi
-    # Prune slots belonging to a previous lease (different mtime prefix). Best-effort:
-    # a failed prune only leaves inert entries that no longer match the current key.
-    for _d in "$_LEASE_DIR"/*; do
-        [ -d "$_d" ] || continue
-        case "${_d##*/}" in "$mtime".*) ;; *) rm -rf "$_d" 2>/dev/null || true ;; esac
-    done
-
-    claimed=0 n=1
-    while [ "$n" -le "$LEASE_MAX_USES" ]; do
-        if mkdir "$_LEASE_DIR/$mtime.$n" 2>/dev/null; then claimed="$n"; break; fi
-        n=$(( n + 1 ))
-    done
-
-    if [ "$claimed" = "0" ]; then
-        # Every mkdir failed. Distinguish "budget spent" from "cannot write" — they need
-        # different messages, but BOTH must refuse. Count what actually exists rather
-        # than inferring from the loop, so a concurrent claimer cannot be miscounted.
-        used=0
-        for _d in "$_LEASE_DIR/$mtime".*; do [ -d "$_d" ] && used=$(( used + 1 )); done
-        if [ "$used" -lt "$LEASE_MAX_USES" ]; then
-            return 1   # FAIL-CLOSED: could not record a use → grant none
-        fi
-        # Remove ONLY the skip file. Deleting the slot directory here is a TOCTOU: a
-        # concurrent gate that already passed the skip-file/mtime checks would then
-        # mkdir -p a FRESH directory, claim slot 1 under the same mtime, and be granted
-        # a 21st use. The slots are the exhaustion proof, so they must outlive the file
-        # that spent them; a later touch changes the mtime and the prune above clears
-        # them. (The ledger is a protected marker, so it cannot be wiped to reset this.)
-        rm -f "$_SKIP_FILE" 2>/dev/null || true
-        block_emit "BLOCKED: the design-review skip lease is EXHAUSTED (all $LEASE_MAX_USES uses spent).
+    # Exit 0 = claimed (slot on stdout); 2 = exhausted; anything else = could not
+    # record, which must REFUSE the bypass — unbounded-because-unrecordable is the
+    # fail-open this whole block exists to avoid.
+    _CLAIM_RC=0
+    claimed="$(python3 -I "$_GATE_LIBDIR/lease_slot.py" "$STATE_DIR" "$mtime" "$LEASE_MAX_USES" 2>/dev/null)" || _CLAIM_RC=$?
+    case "$_CLAIM_RC" in
+        0) : ;;
+        2)
+            # Remove ONLY the skip file. Deleting the slots here is a TOCTOU: a
+            # concurrent gate that already passed the skip-file/mtime checks would
+            # recreate the directory, claim slot 1 under the same mtime, and be granted
+            # a 21st use. The slots are the exhaustion proof and must outlive the file
+            # that spent them; a later touch changes the mtime and lease_slot prunes
+            # them. (The ledger is a protected marker, so it cannot be wiped to reset.)
+            rm -f "$_SKIP_FILE" 2>/dev/null || true
+            block_emit "BLOCKED: the design-review skip lease is EXHAUSTED (all $LEASE_MAX_USES uses spent).
 
 One \`touch\` authorizes $LEASE_MAX_USES gated writes so a whole approved plan can be
 implemented without re-arming per write — but not an unbounded number. The file has
@@ -881,8 +862,10 @@ Run /blueprint-review to clear the pending review properly. To release ONE speci
 pending token with a recorded audit event instead, run scripts/design-clear.sh with no
 arguments to list what is pending. If the user wants another lease, they can re-create
 $STATE_DIR/skip-design-review.local in their terminal."
-        return 2
-    fi
+            return 2 ;;
+        *) return 1 ;;   # FAIL-CLOSED: could not record a use → grant none
+    esac
+    case "$claimed" in ''|*[!0-9]*) return 1 ;; esac
 
     # The slot is already durable on disk (mkdir succeeded), so the use is recorded
     # BEFORE it is granted — a crash here loses the write, never the accounting.
@@ -914,6 +897,8 @@ $STATE_DIR/skip-design-review.local in their terminal."
     if ! python3 -I "$_GATE_LIBDIR/audit_append.py" "$STATE_DIR" \
          "$(printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-implementation","lease_slot":%s,"lease_max":%s}' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$used" "$LEASE_MAX_USES")" 2>/dev/null; then
+        # Best-effort: hand the slot back so the accounting stays truthful about what
+        # was actually granted. If it fails, the slot stays spent — conservative.
         rmdir "$_LEASE_DIR/$mtime.$claimed" 2>/dev/null || true
         return 1
     fi

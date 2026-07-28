@@ -85,6 +85,18 @@ check "plain listing" allow "$(bash_decision "ls -la")"
 check "grep with a verb as the search string" allow "$(bash_decision "grep dd notes.txt")"
 check "echo naming a verb" allow "$(bash_decision "echo rmdir")"
 check "piping into grep for a verb" allow "$(bash_decision "git log --oneline | grep rm")"
+# Keywords that introduce a NAME (not a command), and wrapper names used as plain data.
+check "for loop whose VARIABLE is named rm" allow \
+    "$(bash_decision "for rm in a b; do echo hi; done")"
+check "function definition via the function keyword" allow \
+    "$(bash_decision "function mv { echo harmless; }")"
+check "grep whose ARGS name a wrapper and a verb" allow "$(bash_decision "grep sudo rm")"
+check "echo naming find -delete" allow "$(bash_decision "echo find -delete")"
+# Test-expression operands are data. Skipping [[ resolved these to `rm`.
+check "test expression comparing against rm" allow "$(bash_decision "[[ rm = value ]]")"
+check "test expression checking a file named rm" allow "$(bash_decision "[[ -f rm ]]")"
+check "test guarding a real rm still blocks" block \
+    "$(bash_decision "if [[ -f x ]]; then rm y; fi")"
 # #519 false positive 3: a probe DEFINING a function named mv. The paren split leaves
 # a bare `mv` segment that reads as an invocation unless the header is stripped.
 check "defining a shell function named mv" allow \
@@ -109,6 +121,13 @@ check "timeout wrapper hiding rm" block "$(bash_decision "timeout 5 rm x")"
 check "xargs running rm" block "$(bash_decision "echo hi | xargs rm")"
 check "find -exec rm" block "$(bash_decision "find . -exec rm {} ;")"
 check "find -delete" block "$(bash_decision "find . -delete")"
+# Wrapper flag OPERANDS and shell reserved words. Peeling to the first plausible token
+# returned `root`, `{` and `then` respectively, allowing the write behind them.
+check "sudo with a flag operand before rm" block \
+    "$(bash_decision "sudo -u root rm -rf src")"
+check "brace group around rm" block "$(bash_decision "{ rm -rf src; }")"
+check "if/then around rm" block "$(bash_decision "if true; then rm -rf src; fi")"
+check "wrapped sed -i" block "$(bash_decision "sudo sed -i 's/a/b/' f")"
 # Executed-string operands. Tokenizing alone reduces these to inert single tokens, so
 # each was a live fail-open in the first cut of this change — caught by codex review.
 # Note the shape is IDENTICAL to the allowed `bash -c 'echo "(mv FAILS)"'` above; only
@@ -295,6 +314,11 @@ if python3 -I "$REPO_ROOT/hooks/gate-scripts/lib/audit_append.py" --self-check >
     ok "audit_append self-check (symlinked log / symlinked prefix / torn line all refuse)"
 else
     no "audit_append self-check" "see: python3 hooks/gate-scripts/lib/audit_append.py --self-check"
+fi
+if python3 -I "$REPO_ROOT/hooks/gate-scripts/lib/lease_slot.py" --self-check >/dev/null 2>&1; then
+    ok "lease_slot self-check (slots increment/exhaust/reset; symlinked ledger + prefix refuse)"
+else
+    no "lease_slot self-check" "see: python3 hooks/gate-scripts/lib/lease_slot.py --self-check"
 fi
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"

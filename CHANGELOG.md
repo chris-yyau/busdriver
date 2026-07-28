@@ -1,3 +1,10 @@
+## [1.100.3](https://github.com/chris-yyau/busdriver/compare/v1.100.2...v1.100.3) (2026-07-28)
+
+
+### Bug Fixes
+
+* **hooks:** match the Opus family for the 1M window, not a pinned id ([#512](https://github.com/chris-yyau/busdriver/issues/512)) ([e2a2c16](https://github.com/chris-yyau/busdriver/commit/e2a2c16f346cdb1cda6bc380f019b7785500d1e5))
+
 ## [1.100.2](https://github.com/chris-yyau/busdriver/compare/v1.100.1...v1.100.2) (2026-07-28)
 
 

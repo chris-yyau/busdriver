@@ -53,7 +53,9 @@ try {
 // `jobs:`, an individual job, and `matrix:`. Require a genuine mapping at all
 // four, from one predicate, so they cannot drift apart.
 const isPlainMapping = (v) => {
-  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+  if (typeof v !== "object") return false;
+  if (v === null) return false;
+  if (Array.isArray(v)) return false;
   const proto = Object.getPrototypeOf(v);
   return proto === Object.prototype || proto === null;
 };

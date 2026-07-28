@@ -51,7 +51,7 @@
     "pass surface (a) but eventually hang PRs (branch protection ends up",
     "requiring a context that no check posts), and the drift detector will",
     "not surface that misuse directly. Surface (a) is the only consumer of",
-    "this field for NAME matching; (b)/(c)/(d) ignore it. Surface (e) reads only its PRESENCE \u2014 a matrix entry classifies nothing, so a matrix job must also list its bare base name. See helmet SKILL.md B1c for full examples.",
+    "this field as documentation only. The workflow inventory expands strategy.matrix into one row per rendered combination, so every surface matches a matrix entry by its rendered `name` like any other entry \u2014 and EVERY combination needs its own entry. An unrenderable matrix (expressions, fromJSON, include/exclude) is refused outright rather than classified under a base name. See helmet SKILL.md B1c for full examples.",
     "",
     "`advisory` is NOT decorative \u2014 surface (e) consumes it. Every status",
     "check a workflow posts must appear in `required` OR `advisory`, and a",

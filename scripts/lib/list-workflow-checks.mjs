@@ -122,12 +122,88 @@ for (const file of files) {
       );
       process.exit(2);
     }
-    // Matrix jobs are emitted under their BARE BASE name. GitHub renders each
-    // combination as `<base> (<label>)`, and enumerating those statically means
-    // evaluating include/exclude and ${{ }} products — a YAML evaluator inside
-    // a guard. Completeness of rendered values stays with surface (b), which
-    // set-compares the lock against the server's actual contexts.
-    rows.push(`${name}\t${rel}\t${key}`);
+    // Matrix jobs: emit one row per RENDERED combination, `<base> (<label>)`.
+    //
+    // The bare base name is not enough. Surface (e) would accept one advisory
+    // entry for the base while a newly required rendered context — `build
+    // (windows-latest)` — stayed absent from the lock, and (d) would miss
+    // collisions between rendered names. Surface (b) does catch that, but (b)
+    // needs `administration: read` and therefore cannot run in CI, so in CI the
+    // gap is unguarded. That is #530's shape exactly.
+    //
+    // Only the statically determinable subset is enumerated: literal scalar
+    // lists, multiplied across dimensions in declaration order (which is the
+    // order GitHub joins the label in). Anything whose values cannot be known
+    // from the file alone — a ${{ }} expression, fromJSON(), or the
+    // include/exclude reshaping rules — is REFUSED rather than guessed at.
+    // Enumerating those would mean reimplementing Actions expression
+    // evaluation inside a merge gate; refusing keeps the failure visible.
+    const matrix = job.strategy?.matrix;
+    if (matrix === undefined) {
+      rows.push(`${name}\t${rel}\t${key}`);
+      continue;
+    }
+    const refuse = (why) => {
+      process.stderr.write(`error: ${rel}: job '${key}' matrix ${why}\n`);
+      process.exit(2);
+    };
+    if (typeof matrix === "string") refuse("is an expression, not a literal mapping");
+    if (matrix === null || typeof matrix !== "object" || Array.isArray(matrix)) {
+      refuse("is not a mapping");
+    }
+    if ("include" in matrix || "exclude" in matrix) {
+      refuse("uses include/exclude, whose rendered names are not derivable here");
+    }
+    const dims = [];
+    for (const [dim, values] of Object.entries(matrix)) {
+      if (!Array.isArray(values)) refuse(`dimension '${dim}' is not a literal list`);
+      const labels = values.map((v) => {
+        if (typeof v === "string") {
+          if (v.includes("${{")) refuse(`dimension '${dim}' contains an expression`);
+          // Same rule as the job name: a tab or newline would shift TSV fields
+          // downstream, letting a surface read the wrong column or ingest an
+          // injected row.
+          if (/[\t\r\n]/.test(v)) {
+            refuse(`dimension '${dim}' has a value containing a tab or newline`);
+          }
+          return v;
+        }
+        if (typeof v === "boolean") return String(v);
+        if (typeof v === "number") {
+          // GitHub formats numbers with .NET G15. For an integer of at most 15
+          // significant digits that is exactly String(v), so the common
+          // `node: [18, 20]` is safe. Beyond that they diverge — 1e20 renders
+          // as `1E+20`, and 1.10 as `1.1` — and a mismatch names a context that
+          // is never posted. Refuse those and let the author quote instead.
+          if (Number.isInteger(v) && Math.abs(v) < 1e15) return String(v);
+          refuse(
+            `dimension '${dim}' has a number (${v}) whose rendered form is ` +
+              `ambiguous — quote it (e.g. "${v}")`,
+          );
+        }
+        refuse(`dimension '${dim}' has a non-scalar value`);
+        return "";
+      });
+      if (labels.length === 0) refuse(`dimension '${dim}' is empty`);
+      dims.push(labels);
+    }
+    if (dims.length === 0) refuse("declares no dimensions");
+    // Size the product BEFORE expanding it. Twenty dimensions of twenty values
+    // is 20^20 combinations — enough to exhaust memory inside the gate long
+    // before any per-row check could reject it. GitHub caps a matrix at 256
+    // jobs, so anything larger is not a workflow this repo could run anyway.
+    const total = dims.reduce((n, labels) => n * labels.length, 1);
+    if (total > 256) {
+      refuse(`expands to ${total} combinations, above GitHub's limit of 256`);
+    }
+    // Cartesian product in declaration order; GitHub joins the label with ", ".
+    let combos = [[]];
+    for (const labels of dims) {
+      combos = combos.flatMap((c) => labels.map((l) => [...c, l]));
+    }
+    for (const combo of combos) {
+      rows.push(`${name} (${combo.join(", ")})\t${rel}\t${key}`);
+    }
   }
 }
 

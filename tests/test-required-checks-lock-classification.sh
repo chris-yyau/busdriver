@@ -130,24 +130,56 @@ mkrepo "$D" '{"required":[{"name":"alpha","source_app":"github-actions","workflo
 assert_exit "external-app name does not classify a workflow job" 1 "$D"
 assert_mentions "names the colliding check" "'Beta Check'" "$D"
 
-echo "== E9: a matrix job is classified by its BARE BASE name =="
-# Rendered entries (`alpha (ubuntu-latest)`) are surface (a)/(b)'s business.
-# (e) only asks whether the JOB is known to the lock, which the base entry
-# answers — and which stays true no matter how many values the matrix gains.
-D="$TMPROOT/e9"
-mkrepo "$D" '{"required":[{"name":"alpha (ubuntu-latest)","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha","matrix_value":"ubuntu-latest"}],"advisory":[{"name":"alpha","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha"},{"name":"Beta Check","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"beta"}]}' "$WF_TWO_JOBS"
-assert_exit "matrix job classified by base name" 0 "$D"
+WF_MATRIX='jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: x
+'
+MX_UBUNTU='{"name":"build (ubuntu-latest)","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"build","matrix_value":"ubuntu-latest"}'
+MX_MACOS='{"name":"build (macos-latest)","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"build","matrix_value":"macos-latest"}'
 
-echo "== E10: matrix entries alone do NOT classify their job =="
-# FAIL-OPEN GUARD. Letting a (workflow, job) tuple from a matrix entry cover
-# the job means one entry blesses every rendered value, so a matrix that gains
-# a value never has to declare it — the #530 hole one level in. Only the bare
-# base name classifies, so a lock holding rendered entries but no base entry
-# must still fail.
+echo "== E9: EVERY rendered matrix combination must be classified =="
+# The enumerator expands strategy.matrix into one row per combination, so each
+# rendered context needs its own lock entry — matching branch protection, which
+# lists contexts one per name.
+D="$TMPROOT/e9"
+mkrepo "$D" "{\"required\":[$MX_UBUNTU,$MX_MACOS],\"advisory\":[]}" "$WF_MATRIX"
+assert_exit "complete matrix lock passes" 0 "$D"
+
+echo "== E10: a MISSING matrix variant is caught — the #530 gap, one level in =="
+# Classifying a matrix job by its bare base name let ONE entry satisfy (e) while
+# a newly required `build (windows-latest)` stayed absent from the lock. Surface
+# (b) catches that, but (b) needs admin scope and cannot run in CI — so nothing
+# did. Enumerating the combinations closes it in the token-free subset.
 D="$TMPROOT/e10"
-mkrepo "$D" '{"required":[{"name":"alpha (ubuntu-latest)","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha","matrix_value":"ubuntu-latest"},{"name":"alpha (macos-latest)","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"alpha","matrix_value":"macos-latest"}],"advisory":[{"name":"Beta Check","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"beta"}]}' "$WF_TWO_JOBS"
-assert_exit "rendered-only lock still fails closed" 1 "$D"
-assert_mentions "names the unclassified matrix job" "'alpha'" "$D"
+mkrepo "$D" "{\"required\":[$MX_UBUNTU],\"advisory\":[]}" "$WF_MATRIX"
+assert_exit "missing matrix variant is drift" 1 "$D"
+assert_mentions "names the unclassified variant" "build (macos-latest)" "$D"
+
+echo "== E10b: a bare BASE-name entry no longer classifies a matrix job =="
+D="$TMPROOT/e10b"
+mkrepo "$D" '{"required":[{"name":"build","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"build"}],"advisory":[]}' "$WF_MATRIX"
+assert_exit "bare base name does not classify" 1 "$D"
+
+echo "== E10c: an unrenderable matrix is REFUSED, not classified under a base =="
+# Expressions, fromJSON and include/exclude cannot be resolved from the file, so
+# the enumerator refuses rather than guessing — computing them would mean
+# reimplementing Actions expression evaluation inside a merge gate.
+for shape in 'os: [ubuntu-latest, "${{ env.X }}"]' 'os: [ubuntu-latest]
+        include:
+          - os: windows-latest'; do
+  D="$TMPROOT/e10c-$RANDOM"
+  mkrepo "$D" '{"required":[],"advisory":[]}' "jobs:
+  build:
+    strategy:
+      matrix:
+        $shape
+    runs-on: x
+"
+  assert_exit "unrenderable matrix refused" 2 "$D"
+done
 
 echo "== E11: quoted job IDs are seen identically by (a) and (e) =="
 # The two parsers MUST agree on which keys exist. If only one recognized a
@@ -381,6 +413,55 @@ mkrepo "$D" '{"required":[],"advisory":[]}' 'jobs:
 '
 assert_exit "empty job name rejected" 2 "$D"
 assert_mentions "explains the empty name" "empty name" "$D"
+
+
+echo "== E30: matrix VALUES get the same rules as the job name =="
+# The control-char and numeric-rendering rules were applied to the base name but
+# not to matrix values — a value can shift TSV fields or name a context that is
+# never posted just as easily.
+D="$TMPROOT/e30a"
+mkrepo "$D" '{"required":[{"name":"build (18)","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"build"},{"name":"build (20)","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"build"}],"advisory":[]}' 'jobs:
+  build:
+    strategy:
+      matrix:
+        node: [18, 20]
+    runs-on: x
+'
+assert_exit "plain integer matrix values render exactly" 0 "$D"
+
+# GitHub uses .NET G15: 1e20 posts `1E+20`, 1.10 posts `1.1`. String() matches
+# neither, so both are refused rather than naming a phantom context.
+for badnum in '1e20' '1.10'; do
+  D="$TMPROOT/e30-$RANDOM"
+  mkrepo "$D" '{"required":[],"advisory":[]}' "jobs:
+  build:
+    strategy:
+      matrix:
+        n: [$badnum]
+    runs-on: x
+"
+  assert_exit "ambiguous numeric matrix value refused" 2 "$D"
+done
+
+
+echo "== E31: an oversized matrix is rejected BEFORE it is expanded =="
+# Twenty dimensions of twenty values is 20^20 combinations — enough to exhaust
+# memory inside the gate before any per-row check could reject it. GitHub caps a
+# matrix at 256 jobs, so anything larger is not a runnable workflow anyway.
+D="$TMPROOT/e31"
+BIG=""
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  BIG="${BIG}        d${i}: [\"a\", \"b\", \"c\", \"d\", \"e\", \"f\", \"g\", \"h\", \"i\", \"j\", \"k\", \"l\", \"m\", \"n\", \"o\", \"p\", \"q\", \"r\", \"s\", \"t\"]
+"
+done
+mkrepo "$D" '{"required":[],"advisory":[]}' "jobs:
+  build:
+    strategy:
+      matrix:
+${BIG}    runs-on: x
+"
+assert_exit "oversized matrix refused" 2 "$D"
+assert_mentions "cites GitHub's 256 limit" "limit of 256" "$D"
 
 
 echo

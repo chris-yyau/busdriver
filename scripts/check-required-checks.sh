@@ -285,7 +285,6 @@ while IFS= read -r entry; do
   # required name has no posting check). Document this in the lock _doc
   # and SKILL.md B1c so users know to omit matrix_value on non-matrix jobs;
   # do not rely on this surface to flag the mistake.
-  matrix_value=$(echo "$entry" | jq -r '.matrix_value // ""')
 
   wf="$REPO_ROOT/$workflow"
   if [[ ! -f "$wf" ]]; then
@@ -340,52 +339,23 @@ while IFS= read -r entry; do
   # is metacharacter-safe.
   # Use POSIX-portable awk (no gawk-only 3-arg `match()` or `gensub()`).
   # `cur` holds the most recent job key we entered.
-  # GitHub renders a matrix combination as `<base> (<label>)`. Non-matrix
-  # entries carry no suffix, so this is the empty string for them.
-  if [[ -n "$matrix_value" ]]; then
-    matrix_suffix=" ($matrix_value)"
-  else
-    matrix_suffix=""
-  fi
-  # Look the job up in the shared inventory instead of re-scanning the file.
-  actual_name=$(printf '%s\n' "$collected" | awk -F'\t' -v w="$workflow" -v j="$job_key" '
-    $2 == w && $3 == j { print "FOUND:" $1; found = 1; exit }
-    END { if (!found) print "MISSING" }
-  ')
-  if [[ "$actual_name" == "MISSING" ]]; then
+  # Match the lock entry against the RENDERED names the inventory reports for
+  # this (workflow, job). The enumerator already expands a matrix into one row
+  # per combination, so appending `matrix_value` here would double-render it
+  # (`build (ubuntu-latest) (ubuntu-latest)`). `matrix_value` is now purely
+  # documentary in the lock — the inventory is the authority on what a job posts.
+  #
+  # Set membership, not first-row comparison: a matrix job legitimately reports
+  # several names, and each gets its own lock entry.
+  job_rows=$(printf '%s\n' "$collected" | awk -F'\t' -v w="$workflow" -v j="$job_key" '$2 == w && $3 == j { print $1 }')
+  if [[ -z "$job_rows" ]]; then
     echo "  DRIFT: $name expected in $workflow as job '$job_key' — job key not found"
     drift=1
     a_drift=1
-  elif [[ "$actual_name" == "FOUND:" ]]; then
-    # Job exists with no explicit name — GitHub uses the job key as the
-    # check name (plus matrix suffix for matrix jobs), so the lock entry's
-    # `name` must equal `<job_key><matrix_suffix>`.
-    expected="${job_key}${matrix_suffix}"
-    if [[ "$name" != "$expected" ]]; then
-      if [[ -n "$matrix_value" ]]; then
-        echo "  DRIFT: lock says name='$name' but $workflow:$job_key has no 'name:' field (GitHub will report '$expected' for matrix_value='$matrix_value')"
-      else
-        echo "  DRIFT: lock says name='$name' but $workflow:$job_key has no 'name:' field (GitHub will report '$job_key')"
-      fi
-      drift=1
-      a_drift=1
-    fi
-  else
-    # FOUND with explicit name. Strip the FOUND: sentinel and append the
-    # matrix suffix (empty for non-matrix entries) before comparing.
-    observed="${actual_name#FOUND:}"
-    expected="${observed}${matrix_suffix}"
-    if [[ "$name" == "$expected" ]]; then
-      : # explicit name match (with matrix suffix when present)
-    else
-      if [[ -n "$matrix_value" ]]; then
-        echo "  DRIFT: lock says '$name' but $workflow:$job_key renders as '$expected' (name='$observed', matrix_value='$matrix_value')"
-      else
-        echo "  DRIFT: lock says '$name' but $workflow:$job_key has name '$observed'"
-      fi
-      drift=1
-      a_drift=1
-    fi
+  elif ! printf '%s\n' "$job_rows" | grep -qxF -- "$name"; then
+    echo "  DRIFT: lock says '$name' but $workflow:$job_key posts: $(printf '%s' "$job_rows" | paste -sd'|' - | tr '|' ', ')"
+    drift=1
+    a_drift=1
   fi
 done < <(jq -c '(.required[]?, .advisory[]?) | select(.source_app == "github-actions")' "$LOCK")
 
@@ -500,32 +470,24 @@ echo "[e] Checking every workflow check is classified in the lock…"
 # proceed with an empty set, which would report every check as unclassified.
 if ! known_names=$(jq -r '(.required[]?, .advisory[]?)
                           | select(.source_app == "github-actions")
-                          | select(has("matrix_value") | not)
                           | .name' "$LOCK"); then
   echo "error: could not read check names from $LOCK" >&2
   exit 2
 fi
-# MATRIX JOBS are classified by their BARE BASE name; matrix entries (those
-# carrying `matrix_value`) deliberately classify NOTHING here.
+# MATRIX ENTRIES CLASSIFY NORMALLY, by their rendered name. The enumerator
+# expands `strategy.matrix` into one row per combination (`build (ubuntu-latest,
+# 20)`), so a matrix lock entry matches the row it describes like any other.
 #
-# The tempting shortcut — let any matrix entry for a (workflow, job) tuple
-# cover that job — is a fail-OPEN, caught in review before this shipped. One
-# entry would bless every rendered value of the job, so a matrix that GAINS a
-# value (`os: [ubuntu, macos]` -> `+ windows`) keeps matching on the stale
-# tuple and the new `<base> (windows-latest)` check is never demanded in the
-# lock: the #530 hole again, one level in. Closing it properly means
-# statically enumerating strategy.matrix — multi-dimensional products,
-# include/exclude, `${{ }}` expressions — and failing closed on anything
-# unenumerable. That is a YAML evaluator living inside a guard, far more
-# failure surface than the gap it closes.
+# The previous design classified a matrix job by its BARE BASE name and had
+# matrix entries classify nothing. That left the exact #530 gap one level in: a
+# single base entry satisfied (e) while a newly required rendered context —
+# `build (windows-latest)` — stayed absent from lock.required, and (d) could not
+# see collisions between rendered names either. Surface (b) does catch it, but
+# (b) needs `administration: read` and cannot run in CI, so in CI nothing did.
 #
-# So (e) asks only what it can answer soundly: is this JOB known to the lock at
-# all? A matrix job earns that by listing its bare base name (in `advisory`,
-# since the server requires the rendered names, not the base). Completeness of
-# the rendered VALUES belongs to the surfaces built for it: (a) verifies each
-# `matrix_value` entry resolves to a real job, and (b) set-compares the lock
-# against the server contexts — which is where a newly-protected matrix value
-# actually surfaces.
+# What is NOT enumerated is refused outright by the enumerator (expressions,
+# fromJSON, include/exclude) rather than guessed at, so an unrenderable matrix
+# fails closed instead of silently classifying under a base name.
 known_names=$(printf '%s' "$known_names" | tr '\n' '\036')
 
 # Split the awk from the sort and check awk's status explicitly. Relying on the

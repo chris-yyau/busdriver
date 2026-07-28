@@ -1,3 +1,10 @@
+## [1.100.7](https://github.com/chris-yyau/busdriver/compare/v1.100.6...v1.100.7) (2026-07-28)
+
+
+### Bug Fixes
+
+* **blueprint-review:** don't let a log-echoed verdict preview outrank the real verdict ([#524](https://github.com/chris-yyau/busdriver/issues/524)) ([#525](https://github.com/chris-yyau/busdriver/issues/525)) ([514ad40](https://github.com/chris-yyau/busdriver/commit/514ad409753e3e2b7234191a26e032b24a168ec9)), closes [#517](https://github.com/chris-yyau/busdriver/issues/517) [#503](https://github.com/chris-yyau/busdriver/issues/503) [#503](https://github.com/chris-yyau/busdriver/issues/503) [#503](https://github.com/chris-yyau/busdriver/issues/503) [#503](https://github.com/chris-yyau/busdriver/issues/503) [#503](https://github.com/chris-yyau/busdriver/issues/503) [#503](https://github.com/chris-yyau/busdriver/issues/503) [#503](https://github.com/chris-yyau/busdriver/issues/503) [#503](https://github.com/chris-yyau/busdriver/issues/503) [#503](https://github.com/chris-yyau/busdriver/issues/503)
+
 ## [1.100.6](https://github.com/chris-yyau/busdriver/compare/v1.100.5...v1.100.6) (2026-07-28)
 
 

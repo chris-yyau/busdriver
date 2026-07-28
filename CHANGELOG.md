@@ -1,3 +1,10 @@
+## [1.100.9](https://github.com/chris-yyau/busdriver/compare/v1.100.8...v1.100.9) (2026-07-28)
+
+
+### Bug Fixes
+
+* **blueprint-review:** stop deriving echo confinement from exc.pos ([#529](https://github.com/chris-yyau/busdriver/issues/529), [#518](https://github.com/chris-yyau/busdriver/issues/518)) ([#532](https://github.com/chris-yyau/busdriver/issues/532)) ([771f9e2](https://github.com/chris-yyau/busdriver/commit/771f9e2b5f50aa0992274a07b0acc2034ba1f0b9)), closes [#524](https://github.com/chris-yyau/busdriver/issues/524) [#503](https://github.com/chris-yyau/busdriver/issues/503)
+
 ## [1.100.8](https://github.com/chris-yyau/busdriver/compare/v1.100.7...v1.100.8) (2026-07-28)
 
 

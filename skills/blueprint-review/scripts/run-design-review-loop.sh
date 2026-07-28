@@ -37,6 +37,28 @@ source "$_PLUGIN_ROOT/scripts/lib/resolve-cli.sh"
 source "$_PLUGIN_ROOT/scripts/lib/ultra-oracle.sh" 2>/dev/null || true
 ULTRA_ORACLE_ADVISORY_FILE=""        # set only when a fresh dispatch happens (non-claude-only)
 ULTRA_ORACLE_DISPATCH_STATUS=""      # dispatched | skipped:* | error
+ULTRA_ORACLE_DEADLINE=0              # epoch secs; set at dispatch, 0 = nothing in flight
+
+# Grace margin added to the oracle cap for the .rc poll. Overridable ONLY to
+# shorten (the tests need single-digit waits; a real run must not be extendable).
+# ULTRA_ORACLE_RC_GRACE is repo-injectable via a committed settings.json `env`
+# block (#325 / ADR 0016) and it bounds a wait, so it gets the same treatment the
+# sibling BLUEPRINT_AUDITOR_GRACE already has below: non-numeric -> default,
+# leading zeros stripped so a padded value is measured by significant digits,
+# length-capped BEFORE $((10#…)) so an oversized digit string can never reach the
+# arithmetic and wrap, floor 1, and an UPPER clamp at the default.
+_UORA_RC_GRACE_DEFAULT=90
+_uora_rc_grace() {
+  local g="${ULTRA_ORACLE_RC_GRACE:-$_UORA_RC_GRACE_DEFAULT}"
+  case "$g" in ''|*[!0-9]*) g="$_UORA_RC_GRACE_DEFAULT" ;; esac
+  g="${g#"${g%%[!0]*}"}"
+  [ -z "$g" ] && g=0
+  [ "${#g}" -ge 8 ] && g="$_UORA_RC_GRACE_DEFAULT"
+  g=$((10#$g))
+  [ "$g" -lt 1 ] && g="$_UORA_RC_GRACE_DEFAULT"
+  [ "$g" -gt "$_UORA_RC_GRACE_DEFAULT" ] && g="$_UORA_RC_GRACE_DEFAULT"
+  printf '%s' "$g"
+}
 source "$SCRIPT_DIR/lib/state_management.sh"
 
 # Ensure output directory exists (namespaced per design doc)
@@ -491,10 +513,26 @@ while true; do
   # Never in --claude-only mode (no design re-transmitted when the operator chose Claude-only).
   if [ "$CLAUDE_ONLY" != "true" ] && command -v ultra_oracle_surface_enabled >/dev/null 2>&1 && ultra_oracle_surface_enabled blueprintReview; then
     ULTRA_ORACLE_ADVISORY_FILE="$STATE_DIR/ultra-oracle/${RUN_ID}-plan-review.md"
-    rm -f "$ULTRA_ORACLE_ADVISORY_FILE" "$ULTRA_ORACLE_ADVISORY_FILE.rc" "$ULTRA_ORACLE_ADVISORY_FILE.hint" 2>/dev/null || true
+    rm -f "$ULTRA_ORACLE_ADVISORY_FILE" "$ULTRA_ORACLE_ADVISORY_FILE.rc" "$ULTRA_ORACLE_ADVISORY_FILE.hint" \
+          "$ULTRA_ORACLE_ADVISORY_FILE.dispatch.err" 2>/dev/null || true
+    # stderr is deliberately NOT discarded here (#501). It is the only carrier of
+    # the adapter's stale-browser-lock recovery pointer ("... remove it to unblock:
+    # rm -f '<lockfile>'", ultra-oracle.sh ~:772). The shared lock has no
+    # auto-reclaim, so swallowing that message left the operator with a wedged
+    # surface and no instruction. Adapter noise on stderr is the price.
     ULTRA_ORACLE_DISPATCH_STATUS="$(ultra_oracle_consult --mode background --slug "ultra oracle plan review" \
       --out "$ULTRA_ORACLE_ADVISORY_FILE" --context "$DESIGN_FILE" \
-      --prompt "You are an auxiliary design reviewer. Review this implementation plan for architectural risks, missing decomposition, and underspecified steps. Be concise." 2>/dev/null || true)"
+      --prompt "You are an auxiliary design reviewer. Review this implementation plan for architectural risks, missing decomposition, and underspecified steps. Be concise." || true)"
+    # Absolute deadline for the .rc poll below, anchored at DISPATCH (#501).
+    # The poll used to start a FRESH `cap + 90` after the reviewers finished. That
+    # was harmless while the dispatch blocked (the child wrote .rc as its last act,
+    # so .rc always existed by then and the poll was a no-op). Now that the dispatch
+    # returns immediately, the consult runs concurrently with the reviewers, and a
+    # fresh budget would ADD to the reviewer window — worst case reviewers + cap + 90,
+    # i.e. worse than before. Anchoring at dispatch credits the concurrent time.
+    if [ "$ULTRA_ORACLE_DISPATCH_STATUS" = "dispatched" ]; then
+      ULTRA_ORACLE_DEADLINE=$(( $(date +%s) + $(ultra_oracle_timeout_cap) + $(_uora_rc_grace) ))
+    fi
   fi
 
   # Read design file content and build prompt
@@ -542,6 +580,17 @@ $DESIGN_CONTENT
   # override exported in the parent shell.
   export LITMUS_CODEX_RETRIES="${LITMUS_CODEX_RETRIES:-5}"
   export BUSDRIVER_CLI_RETRIES="${BUSDRIVER_CLI_RETRIES:-5}"
+
+  # Same argument for the reasoning tier: a gate of record declares its own tier
+  # rather than inheriting whatever `~/.codex/config.toml` says this week (it said
+  # `high` on 2026-07-27 while the sibling PR gate's message claimed xhigh — the
+  # drift that motivated this pin). Mirrors litmus PR mode; the pre-commit path is
+  # deliberately left on the CLI default.
+  #
+  # FORCED, NOT `:-xhigh`: an ambient value is repo-injectable via a committed
+  # `.claude/settings.json` `env` block (#325 / ADR 0016), and the design document
+  # under review must not get to weaken its own reviewer to `minimal`.
+  export LITMUS_CODEX_EFFORT=xhigh
 
   # agy reviews headless (--print) and cannot prompt for tool permission, so
   # without --dangerously-skip-permissions every read_file/command request auto-
@@ -1036,6 +1085,19 @@ with open(pending, "w") as f:
 
   # ── Build the ultra-oracle advisory section (status-aware; only wait if dispatched) ──
   ULTRA_ORACLE_ADVISORY_SECTION=""
+  # One-line operator status for the oracle (#502), set by each branch below and
+  # emitted once after the section is built. Everything the oracle produces
+  # otherwise lands ONLY in the arbiter's prompt file, so "did the oracle fire?"
+  # was answerable only by opening claude-validation-prompt.txt — the exact gap
+  # ADR 0027 closed for the Mechanism Witness.
+  #
+  # EMPTY MEANS SILENT, and that is the one deliberate divergence from k3's line.
+  # k3 is always-on, so its "absent" carries information. The oracle is a
+  # default-OFF USER-config opt-in, so a line on every review would be noise for
+  # everyone who never enabled it. The surrounding code already draws exactly this
+  # boundary (disabled -> silent, enabled-but-unloadable -> warn); this inherits
+  # it rather than introducing a second rule.
+  _uora_status_line=""
   if [ -n "${ULTRA_ORACLE_ADVISORY_FILE:-}" ]; then
     if [ "$ULTRA_ORACLE_DISPATCH_STATUS" = "dispatched" ]; then
       # Grace margin BEYOND the oracle cap: on a real timeout the background child writes
@@ -1045,8 +1107,24 @@ with open(pending, "w") as f:
       # post-cap salvage harvest (ULTRA_ORACLE_SALVAGE_CAP, default 30s) that can run after
       # a full-cap watched run. The common #458 case early-kills in seconds, so this only
       # raises the rare worst-case ceiling, not the typical wait.
-      _uora_wait=0; _uora_cap=$(( $(ultra_oracle_timeout_cap) + 90 ))
-      while [ ! -f "$ULTRA_ORACLE_ADVISORY_FILE.rc" ] && [ "$_uora_wait" -lt "$_uora_cap" ]; do
+      #
+      # TWO bounds, exit on whichever fires first (#501):
+      #   - ULTRA_ORACLE_DEADLINE — absolute, anchored at DISPATCH, so the time the
+      #     reviewers already spent counts against the oracle's budget instead of
+      #     being added to it. This is the bound that matters now the dispatch is
+      #     genuinely non-blocking.
+      #   - _uora_wait counter — retained as a backstop. The deadline uses
+      #     `date +%s`, which is WALL-CLOCK (see the same hazard noted at
+      #     ultra-oracle.sh ~:455): a backward NTP step during the window would
+      #     otherwise stall this loop. $SECONDS is not monotonic either, so a
+      #     counter is the only clock-independent bound available in portable bash.
+      # A zero/unset deadline (adapter absent, or a status other than "dispatched")
+      # cannot reach here — the enclosing branch requires "dispatched" — but the
+      # `-gt 0` guard keeps the loop correct if that ever changes.
+      _uora_wait=0; _uora_cap=$(( $(ultra_oracle_timeout_cap) + $(_uora_rc_grace) ))
+      while [ ! -f "$ULTRA_ORACLE_ADVISORY_FILE.rc" ] \
+         && [ "$_uora_wait" -lt "$_uora_cap" ] \
+         && { [ "$ULTRA_ORACLE_DEADLINE" -le 0 ] || [ "$(date +%s)" -lt "$ULTRA_ORACLE_DEADLINE" ]; }; do
         sleep 2; _uora_wait=$((_uora_wait + 2))
       done
     fi
@@ -1056,6 +1134,17 @@ OPTIONAL ULTRA-ORACLE (ChatGPT Pro) ADVISORY -- AUXILIARY, *NOT* A REVIEWER. The
 =============================================================================
 
 $(cat "$ULTRA_ORACLE_ADVISORY_FILE")"
+      # Size the verdict in LINES, not findings: unlike k3's auditor.json the oracle
+      # advisory is free prose with no countable schema, so a finding count would be
+      # invented.
+      #
+      # `awk END{print NR}`, not `wc -l`: wc counts NEWLINES, so a verdict whose last
+      # line has no trailing newline is under-counted — a single-line advisory written
+      # without one reports "ran (0 lines)", which reads as an empty verdict. awk's NR
+      # counts the final partial line too.
+      _uora_n="$(awk 'END{print NR}' "$ULTRA_ORACLE_ADVISORY_FILE" 2>/dev/null | tr -dc '0-9')"
+      [ -n "$_uora_n" ] || _uora_n="?"
+      _uora_status_line="UltraOracle (ChatGPT Pro): ran ($_uora_n lines -- AUXILIARY, not a reviewer)"
     else
       _uora_rc="$(cat "$ULTRA_ORACLE_ADVISORY_FILE.rc" 2>/dev/null || true)"
       if [ "$ULTRA_ORACLE_DISPATCH_STATUS" != "dispatched" ]; then _uora_term="$ULTRA_ORACLE_DISPATCH_STATUS"
@@ -1069,9 +1158,46 @@ $(cat "$ULTRA_ORACLE_ADVISORY_FILE")"
       # than via ultra-oracle-run.sh — names the next step, not just a status code.
       _uora_hint="$(cat "$ULTRA_ORACLE_ADVISORY_FILE.hint" 2>/dev/null || true)"
       _uora_suffix=""; [ -n "$_uora_hint" ] && _uora_suffix=" -- $_uora_hint"
+      # Surface the dispatch sidecar ON THE CONSOLE. The child writes its own stderr
+      # there (adapter `2>>"$out.dispatch.err"`), and its most important payload is
+      # the stale-browser-lock recovery pointer — a shared mutex with NO auto-reclaim,
+      # so an unseen strand wedges every oracle surface until cleared by hand. The
+      # banner above only ever reaches the ARBITER PROMPT (#502), never the operator,
+      # so writing the sidecar into it would keep the instruction invisible. log_warning
+      # is the one channel the operator actually reads during a run.
+      if [ -s "$ULTRA_ORACLE_ADVISORY_FILE.dispatch.err" ]; then
+        log_warning "  UltraOracle dispatch stderr ($ULTRA_ORACLE_ADVISORY_FILE.dispatch.err):"
+        while IFS= read -r _uora_l; do log_warning "    $_uora_l"; done \
+          < <(head -c 4000 "$ULTRA_ORACLE_ADVISORY_FILE.dispatch.err" | head -20)
+      fi
       ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
 WARNING: ULTRA-ORACLE ADVISORY FAILED [$_uora_term]$_uora_suffix -- verdict NOT included (visible best-effort; the gate converges on the THREE reviewers Agy/Codex/Grok).
 ============================================================================="
+      # ABSENT vs FAILED, the distinction ADR 0027 drew for k3: "never ran" must
+      # never be reported as a failure, nor a failure as "nothing found".
+      #
+      # THREE statuses reach here without the oracle ever having run. The advisory
+      # FILE variable is assigned BEFORE the consult (see the dispatch site), so a
+      # skip does NOT skip this branch — it lands here with no .rc, and a naive
+      # `FAILED -- $_uora_term` would report a deliberate operator opt-out as a
+      # failure. `ultra_oracle_consult`'s contract (ultra-oracle.sh ~:796) is
+      # `ok | skipped:unavailable | skipped:user | timeout | error | dispatched`.
+      #
+      # Deliberately NOT unified with the arbiter-prompt banner above, which still
+      # renders these as FAILED: its wording is asserted by
+      # tests/test-blueprint-review-claude-only-oracle-inject.sh and documented in
+      # SKILL.md, so correcting it is a wider change than this status line. Tracked
+      # separately; the log line is the operator-facing surface and is correct here.
+      case "$ULTRA_ORACLE_DISPATCH_STATUS" in
+        skipped:user)
+          _uora_status_line="UltraOracle (ChatGPT Pro): absent -- operator opt-out ($STATE_DIR/skip-ultra-oracle.local)" ;;
+        skipped:unavailable)
+          _uora_status_line="UltraOracle (ChatGPT Pro): absent -- oracle CLI not available" ;;
+        "advisory not harvested before arbiter re-run")
+          _uora_status_line="UltraOracle (ChatGPT Pro): absent -- $ULTRA_ORACLE_DISPATCH_STATUS" ;;
+        *)
+          _uora_status_line="UltraOracle (ChatGPT Pro): FAILED -- ${_uora_term}${_uora_suffix} (auxiliary; review unaffected)" ;;
+      esac
     fi
   elif [ "${CLAUDE_ONLY:-false}" != "true" ]; then
     # The advisory file was never set. Either the surface is disabled (stay silent)
@@ -1091,9 +1217,17 @@ WARNING: ULTRA-ORACLE ADVISORY FAILED [$_uora_term]$_uora_suffix -- verdict NOT 
       true|1)
         ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
 WARNING: ULTRA-ORACLE ADVISORY enabled but the adapter could not be loaded -- verdict NOT included (visible best-effort; gate converges on the THREE reviewers).
-=============================================================================" ;;
+============================================================================="
+        _uora_status_line="UltraOracle (ChatGPT Pro): FAILED -- adapter could not be loaded (auxiliary; review unaffected)" ;;
     esac
+    # No `else` on purpose: surface disabled -> no section AND no status line.
   fi
+
+  # Emit the oracle's one-line status. Unlike the k3 line (Phase 2), this sits in
+  # Phase 3 because the oracle's outcome is not known until the advisory section is
+  # built. Consequence, documented in SKILL.md: it DOES print on --claude-only
+  # resumes, where the k3 line does not.
+  [ -n "$_uora_status_line" ] && log_info "  $_uora_status_line"
 
   cat > "$CLAUDE_PROMPT_FILE" <<EOF
 $CLAUDE_PROMPT

@@ -349,6 +349,27 @@ run_gate_test "ignores non-merge commands" "allow" "$NON_MERGE_INPUT"
 # 5. Block with merge + cd prefix (no marker)
 run_gate_test "blocks cd + gh pr merge without marker" "block" "$MERGE_WITH_CD"
 
+# 5b. A LEADING LF embedded in an UNTRUSTED (loose-parsed) cd operand must fail
+# closed even with a fresh, valid marker present. `pushd` (unlike `cd`) is only
+# ever seen by the LOOSE cd parser (_cd_target_loose) feeding the untrusted_cd
+# channel -- _cd_target's strict _reject_crlf guard never runs on it.
+# untrusted_cd is the LAST field this hook prints, so an embedded LF cannot
+# shift a LATER field, but it still SPLITS the field's own `print()` into two
+# lines: `sed -n '8p'` then captures only the text BEFORE the first LF. A LF
+# at the very START of the operand truncates UNTRUSTED_CD to the EMPTY STRING
+# -- and gate_resolve_repo_dir treats an empty untrusted_cd exactly like "no
+# untrusted cd happened at all" ([ -n "$untrusted_cd" ] guards every check),
+# so the untrusted-cd defense is SILENTLY SKIPPED while bash really did `pushd`
+# into an attacker-chosen directory. Verified this is a real bypass, not just
+# defense-in-depth: with the untrusted_cd LF/CR guard reverted, this exact
+# input flips from block to ALLOW with a fresh marker present. Zero test
+# coverage for this existed prior to #511's merge with #509 (which introduced
+# the untrusted_cd field and its LF-only `chr(10)` emission guard).
+MERGE_WITH_LEADING_LF=$(printf '%s' '{"tool_name":"Bash","toolName":"Bash","tool_input":{"command":"pushd \"' && printf '\\n' && printf '%s' 'Q\"; gh pr merge 42 --squash --delete-branch"}}')
+write_marker 42
+run_gate_test "blocks leading-LF untrusted (pushd) cd operand even with fresh marker" "block" "$MERGE_WITH_LEADING_LF"
+rm -f "$CLEAN_MARKER"
+
 # 6. Non-Bash tool name → allow (not our concern)
 run_gate_test "ignores non-Bash tool" "allow" \
     '{"tool_name":"Write","tool_input":{"file_path":"test.js"}}'

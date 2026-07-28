@@ -5,11 +5,12 @@
 # See docs/adr/0009-agent-effort-tiers.md for the rationale.
 #
 # WHY THIS IS A TEST, NOT PROSE: an agent with NO `effort:` line inherits the
-# session/global default (which is `xhigh` in this operator's setup). So a sync
-# from upstream that clobbers or drops an effort line does NOT fail loudly — it
-# silently reverts that agent to xhigh, a HIDDEN COST regression no other check
-# catches. This guard is the durable part of the policy; the frontmatter edits
-# just make it pass.
+# session/global default — whatever each consumer's config happens to say, which
+# is exactly why this file never restates a value for it (a hardcoded claim about
+# a default drifts silently; #331). So a sync from upstream that clobbers or drops
+# an effort line does NOT fail loudly — it silently reverts that agent to the
+# inherited default, a HIDDEN COST regression no other check catches. This guard
+# is the durable part of the policy; the frontmatter edits just make it pass.
 #
 # Invariants:
 #   (i)   every agents/*.md has exactly ONE valid effort value

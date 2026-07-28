@@ -245,7 +245,7 @@ try:
     # that merely QUOTES the merge command (an issue comment, a --body, a test
     # fixture's input string) no longer counts as a merge (issue #426).
     merge_count = gh_pr_count(cmd, 'merge')
-    _present, target_dir, pr_num = gh_pr(cmd, 'merge')
+    _present, target_dir, pr_num, untrusted_cd = gh_pr(cmd, 'merge', with_untrusted_cd=True)
     # ADR 0024 constraint 5: a per-command repo/host override means the merge may
     # target a DIFFERENT repo than the checkout's origin, so the origin-derived
     # missing-Codex advisory would name the wrong repo. Surface its presence so
@@ -279,14 +279,17 @@ try:
     merge_repo_override = 'yes' if gh_pr_repo_override(cmd, 'merge') else 'no'
     # cubic review (#511): the fields below are emitted one per line and read back
     # by the caller via \`sed -n 'Np'\` — a positional line protocol. pr_num,
-    # target_dir, and cwd are the only fields whose content is not a fixed literal
-    # ('yes'/'no'/an int), so they are the only ones that could smuggle an embedded
-    # newline (a CR/LF-bearing target_dir from a crafted \`cd\` argument, or an
-    # unusual hook-supplied cwd) and shift every later line — including
-    # merge_repo_override on line 7, the guard this PR added. Reject any embedded
-    # CR/LF in those fields by routing into the SAME except-Exception fail-closed
-    # branch as a genuine parse error, rather than printing a field that could
-    # desynchronize the line protocol.
+    # target_dir, cwd, and untrusted_cd are the only fields whose content is not a
+    # fixed literal ('yes'/'no'/an int), so they are the only ones that could
+    # smuggle an embedded CR/LF (a CR/LF-bearing target_dir from a crafted \`cd\`
+    # argument, an unusual hook-supplied cwd, or a CR/LF-bearing untrusted-cd
+    # operand recorded by the loose-cd tracker -- #509) and shift every later
+    # line — including merge_repo_override on line 7 and untrusted_cd on line 8,
+    # the guards this PR and #509 each added. Reject any embedded CR/LF in those
+    # fields by routing into the SAME except-Exception fail-closed branch as a
+    # genuine parse error, rather than printing a field that could desynchronize
+    # the line protocol. untrusted_cd is validated separately below, in the
+    # merge_count>=1 branch, since it is only ever printed there.
     for _f in (pr_num, target_dir, cwd):
         if '\n' in _f or '\r' in _f:
             raise ValueError('embedded CR/LF in emitted hook field')
@@ -303,6 +306,18 @@ try:
     # (#427, no parsing), and the marker-vs-live-HEAD check below reads authoritative
     # GitHub state rather than the command string. See ADR 0030 Residual risk.
     if merge_count >= 1:
+        # This hook frames its fields as LINES, so a NEWLINE in ANY emitted value
+        # shifts every field after it. Directory names may legally contain one on
+        # POSIX, so guarding only the cd operand was not enough: 'git -C' on a
+        # crafted path forges the WHOLE frame -- a decoy target_dir, an attacker-
+        # chosen HOOK_CWD anchor, and a BLANK untrusted_cd that erases this very
+        # defense. No emitted field can legitimately contain a CR or LF, so treat
+        # one as unparseable and fail CLOSED rather than trying to re-frame.
+        # untrusted_cd is populated unconditionally by gh_pr() above but only ever
+        # printed here, so it is validated here rather than in the earlier loop
+        # (which runs even when merge_count == 0 and nothing is printed).
+        if not isinstance(untrusted_cd, str) or '\n' in untrusted_cd or '\r' in untrusted_cd:
+            raise ValueError('non-string or embedded CR/LF in untrusted_cd')
         # Use newline separator: target_dir may contain '|' on weird paths
         print('yes' if merge_count == 1 else 'multi')
         print(pr_num)
@@ -311,6 +326,7 @@ try:
         print(cwd)
         print(repo_override)
         print(merge_repo_override)
+        print(untrusted_cd)
 except Exception:
     print('error')
     print('')
@@ -319,6 +335,7 @@ except Exception:
     print('')
     print('yes')
     print('yes')
+    print('')
 " 2>/dev/null || true)
 
 IS_GH_PR_MERGE=$(echo "$MERGE_PARSE" | sed -n '1p')
@@ -329,10 +346,12 @@ HOOK_CWD=$(echo "$MERGE_PARSE" | sed -n '5p')
 # ADR 0024: 'yes' → suppress the missing-Codex advisory (constraint 5). Defaults
 # to 'yes' (silent) on any parse anomaly — fail toward silence.
 REPO_OVERRIDE=$(echo "$MERGE_PARSE" | sed -n '6p')
-case "$REPO_OVERRIDE" in yes|no) ;; *) REPO_OVERRIDE=yes ;; esac
 # #505 merge-scoped override (gates); fail-safe 'yes' on any parse anomaly.
 MERGE_REPO_OVERRIDE=$(echo "$MERGE_PARSE" | sed -n '7p')
 case "$MERGE_REPO_OVERRIDE" in yes|no) ;; *) MERGE_REPO_OVERRIDE=yes ;; esac
+case "$REPO_OVERRIDE" in yes|no) ;; *) REPO_OVERRIDE=yes ;; esac
+# The cd operand that did NOT '&&'-gate the merge (see gitcmd_detect._untrusted_cd).
+UNTRUSTED_CD=$(echo "$MERGE_PARSE" | sed -n '8p')
 
 [ -z "$IS_GH_PR_MERGE" ] && exit 0
 
@@ -361,9 +380,9 @@ fi
 # `gh pr merge` supports `-R owner/repo` and can operate from a non-repo cwd,
 # so an unresolved anchor falls through to the existing marker-not-found block
 # rather than approving.
-gate_resolve_repo_dir "$TARGET_DIR" "$HOOK_CWD"
+gate_resolve_repo_dir "$TARGET_DIR" "$HOOK_CWD" "$UNTRUSTED_CD"
 if [ "$GATE_RESOLVE_STATUS" = "block-unresolvable" ]; then
-    block_emit "Pre-merge gate: the command's cd target uses command substitution the gate cannot resolve statically (e.g. cd \"\$(...)\"). Merge from the repo root, or use cd \"\$(git rev-parse --show-toplevel)\" which the gate recognizes. Blocking as precaution (fail-closed)."
+    block_emit "Pre-merge gate: the command's cd target cannot be resolved statically. Either it uses a substitution or variable (cd \"\$(...)\", cd \$DIR, cd -, a glob), or it is a plain 'cd <dir>' that is NOT '&&'-joined to the gh pr merge and resolves to a DIFFERENT repo than the session cwd -- so the gate cannot tell which repo receives it, and checking the wrong one would let an unreviewed change through. Merge from the repo root, join the cd with '&&' (cd /repo && gh pr merge), or use cd \"\$(git rev-parse --show-toplevel)\" which the gate recognizes. Blocking as precaution (fail-closed)."
     exit 0
 fi
 REPO_DIR="$GATE_REPO_DIR"

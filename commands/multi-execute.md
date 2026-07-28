@@ -84,7 +84,7 @@ EOF",
 ```
 
 **Model Parameter Notes**:
-- `{{GEMINI_MODEL_FLAG}}`: When using `--backend gemini`, replace with `--gemini-model gemini-3-pro-preview` (note trailing space); use empty string for codex
+- `{{GEMINI_MODEL_FLAG}}`: Empty string by default for BOTH backends — the wrapper's own configured model wins, so a pin here can't go stale (#331). This placeholder is Gemini-specific: when overriding gemini's model, replace with `--gemini-model <model> ` (note trailing space); codex has no per-invocation model override here — leave the placeholder empty for `--backend codex`.
 
 **Role Prompts**:
 

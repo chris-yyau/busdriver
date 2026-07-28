@@ -1,3 +1,31 @@
+## [1.100.1](https://github.com/chris-yyau/busdriver/compare/v1.100.0...v1.100.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* **gates:** close eight cross-repo fail-opens in the marker-scoped gates ([#509](https://github.com/chris-yyau/busdriver/issues/509)) ([47bdb63](https://github.com/chris-yyau/busdriver/commit/47bdb6341548a42ea11e4806e3362c6ea7d3cccc))
+
+# [1.100.0](https://github.com/chris-yyau/busdriver/compare/v1.99.4...v1.100.0) (2026-07-27)
+
+
+### Features
+
+* **blueprint-review:** add UltraOracle operator status line ([#502](https://github.com/chris-yyau/busdriver/issues/502)) ([#507](https://github.com/chris-yyau/busdriver/issues/507)) ([8dbec89](https://github.com/chris-yyau/busdriver/commit/8dbec895fcc4d7c9037bbfa20ebb52d0555b19ab))
+
+## [1.99.4](https://github.com/chris-yyau/busdriver/compare/v1.99.3...v1.99.4) (2026-07-27)
+
+
+### Bug Fixes
+
+* **ultra-oracle:** make --mode background actually non-blocking ([#501](https://github.com/chris-yyau/busdriver/issues/501)) ([#504](https://github.com/chris-yyau/busdriver/issues/504)) ([a3a5108](https://github.com/chris-yyau/busdriver/commit/a3a5108d92b27731f98929280502e65eb2e8499a)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325) [#499](https://github.com/chris-yyau/busdriver/issues/499) [#499](https://github.com/chris-yyau/busdriver/issues/499) [#502](https://github.com/chris-yyau/busdriver/issues/502)
+
+## [1.99.3](https://github.com/chris-yyau/busdriver/compare/v1.99.2...v1.99.3) (2026-07-26)
+
+
+### Bug Fixes
+
+* drop stale model pins, replace codex effort ladder with an explicit tier, bound retry budgets ([#500](https://github.com/chris-yyau/busdriver/issues/500)) ([9321020](https://github.com/chris-yyau/busdriver/commit/932102011382ae32f3395d55737b0e156aefa86f)), closes [#331](https://github.com/chris-yyau/busdriver/issues/331) [#331](https://github.com/chris-yyau/busdriver/issues/331) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
 ## [1.99.2](https://github.com/chris-yyau/busdriver/compare/v1.99.1...v1.99.2) (2026-07-25)
 
 

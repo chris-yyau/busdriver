@@ -1,3 +1,10 @@
+## [1.100.6](https://github.com/chris-yyau/busdriver/compare/v1.100.5...v1.100.6) (2026-07-28)
+
+
+### Bug Fixes
+
+* **pr-grind:** count non-reporting required checks as pending ([#515](https://github.com/chris-yyau/busdriver/issues/515)) ([#522](https://github.com/chris-yyau/busdriver/issues/522)) ([a11a5be](https://github.com/chris-yyau/busdriver/commit/a11a5be8c6a468b08ce1bd29036930c1e12176fa)), closes [#511](https://github.com/chris-yyau/busdriver/issues/511) [#failure](https://github.com/chris-yyau/busdriver/issues/failure)
+
 ## [1.100.5](https://github.com/chris-yyau/busdriver/compare/v1.100.4...v1.100.5) (2026-07-28)
 
 

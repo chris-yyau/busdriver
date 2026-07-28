@@ -128,9 +128,9 @@ D=$(mktemp -d "$TMPROOT/c12b.XXXX")
 mklock "$D" '{"required":[{"name":"shellcheck"},{"name":"commitlint"}]}'
 assert_line1 "12b all required reported → pending unchanged" "1 0 required 2" "$D" "$SYNTH"
 
-# 12c: whitespace-padded lock name must not read as a missing check
-D=$(mktemp -d "$TMPROOT/c12c.XXXX"); mklock "$D" '{"required":[{"name":"  shellcheck  "}]}'
-assert_line1 "12c padded lock name matches reported row (no phantom pending)" "0 0 required 1" "$D" "$SYNTH"
+# 12c: dropped — was a byte-for-byte duplicate of R7a (same lock, same
+# $SYNTH input, same expected "0 0 required 1"); no coverage of the #515
+# missing-check logic that R7a doesn't already exercise (cubic-dev-ai, PR #522).
 
 # 12d: `all` mode has no known required set → unchanged
 D=$(mktemp -d "$TMPROOT/c12d.XXXX")

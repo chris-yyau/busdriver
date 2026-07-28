@@ -65,14 +65,24 @@ Inline copy of SKILL.md Step 1 — execute verbatim:
 # non-reporters as pending (relevant-check-status.sh), which is correct but only
 # tells you "still pending" after five minutes of waiting. Asking merge state
 # first names the actual cause and skips the pointless 900s --watch.
-MERGE_STATE=$(gh pr view "$PR_NUMBER" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null || echo "")
-case "$MERGE_STATE" in
-  CONFLICTING|DIRTY)
-    echo "❌ PR #$PR_NUMBER is $MERGE_STATE — the branch conflicts with its base."
-    echo "   GitHub will not run CI in this state; any green check is from an older HEAD."
-    exit 1
-    ;;
-esac
+# `mergeable` (MergeableState: CONFLICTING|MERGEABLE|UNKNOWN) and
+# `mergeStateStatus` (MergeStateStatus: BEHIND|BLOCKED|CLEAN|DIRTY|DRAFT|
+# HAS_HOOKS|UNKNOWN|UNSTABLE) are DISTINCT fields — CONFLICTING is a value of
+# `mergeable`, never of `mergeStateStatus`, so matching "CONFLICTING" against
+# mergeStateStatus alone was dead code. Fetch both, and treat a `gh` failure
+# as a loud env bail instead of silently swallowing it to an empty string
+# (which would fall through the case and mask a real conflict/API outage).
+if ! MERGE_JSON=$(gh pr view "$PR_NUMBER" --json mergeable,mergeStateStatus 2>&1); then
+  echo "❌ Unable to determine PR #$PR_NUMBER merge state (gh pr view failed): $MERGE_JSON"
+  exit 1
+fi
+MERGEABLE=$(printf '%s' "$MERGE_JSON" | jq -r '.mergeable // ""' 2>/dev/null)
+MERGE_STATE=$(printf '%s' "$MERGE_JSON" | jq -r '.mergeStateStatus // ""' 2>/dev/null)
+if [ "$MERGEABLE" = "CONFLICTING" ] || [ "$MERGE_STATE" = "DIRTY" ]; then
+  echo "❌ PR #$PR_NUMBER is mergeable=$MERGEABLE / mergeStateStatus=$MERGE_STATE — the branch conflicts with its base."
+  echo "   GitHub will not run CI in this state; any green check is from an older HEAD."
+  exit 1
+fi
 
 # Phase 1: Wait for all GitHub-registered checks (CI + automated reviewers).
 # --watch waits for the FULL check set (no allowlist knob); lock-aware
@@ -87,8 +97,24 @@ REPO_DIR="${WORKTREE_DIR:-$(git rev-parse --show-toplevel)}"
 RCS="${CLAUDE_PLUGIN_ROOT}/scripts/relevant-check-status.sh"
 
 # Phase 2: Verify no REQUIRED checks are still pending (lock-aware; defensive).
+# #515 side effect: relevant-check-status.sh now counts a lock-required check
+# with NO row as pending (not absent). That's correct when gh genuinely
+# reported a partial set, but if `gh pr checks` itself fails (auth/rate-limit/
+# network), its output is empty/garbled too — and the OLD behavior (empty
+# input -> kept=0, pending=0) would have broken this loop immediately and let
+# Phase 2.5's explicit GH_EXIT check bail cleanly. Post-#515, that same empty
+# input now counts every required check as "pending", so a genuine CLI
+# failure gets masked as "still pending" for 5 whole retries before any error
+# surfaces. Classify the gh failure explicitly, inside the loop, before it
+# ever reaches the check-status parser.
 for i in 1 2 3 4 5; do
-  COUNTS=$(gh pr checks "$PR_NUMBER" 2>&1 | bash "$RCS" "$REPO_DIR" 2>/dev/null || printf '1 0 all 0\n')
+  GH_EXIT=0
+  CHECKS_RAW=$(gh pr checks "$PR_NUMBER" 2>&1) || GH_EXIT=$?
+  if [ "$GH_EXIT" -ne 0 ] && ! printf '%s\n' "$CHECKS_RAW" | grep -qE "pass|fail|pending"; then
+    echo "❌ gh pr checks failed (exit $GH_EXIT) — cannot verify check status: $CHECKS_RAW"
+    exit 1
+  fi
+  COUNTS=$(printf '%s\n' "$CHECKS_RAW" | bash "$RCS" "$REPO_DIR" 2>/dev/null || printf '1 0 all 0\n')
   read -r _F PENDING _M _K <<<"$COUNTS"
   [ "${PENDING:-1}" -eq 0 ] && break
   echo "⏳ $PENDING required checks still pending — waiting 60s (attempt $i/5)..."

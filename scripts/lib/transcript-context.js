@@ -30,12 +30,19 @@ const MAX_TOKEN_SETTING = 10000000;
 // session (ECC_CONTEXT_WINDOW_TOKENS=400000); not the family default (see below).
 const EXTENDED_CONTEXT_WINDOW_TOKENS = 400000;
 const LARGE_WINDOW_MODEL_MARKER = '[1m]';
-// The harness surfaces "claude-opus-4-8[1m]" but the transcript's message.model
-// logs the bare "claude-opus-4-8", so the [1m] marker check never matches. This
-// is a solo, always-1M operator (see CLAUDE.md), so the family resolves straight
-// to the 1M window. Anchored so "claude-opus-40"/substring ids don't false-match.
-// ponytail: opus-4 only; add families here if their bare ids also fall through.
-const EXTENDED_WINDOW_MODEL_FAMILY = /^claude-opus-4(?![0-9])/i;
+// The harness surfaces "claude-opus-5[1m]" but the transcript's message.model logs
+// the bare "claude-opus-5", so the [1m] marker check never matches. This is a solo,
+// always-1M operator (see CLAUDE.md), so ANY Opus resolves straight to the 1M window.
+//
+// Matches the FAMILY, not a version. #343 and #345 each pinned a specific id
+// ("claude-opus-4"), so the hook silently regressed the day Opus 5 shipped: the
+// transcript logged "claude-opus-5", the regex missed, and the only thing left was
+// the `tokens > 200k` fallback — which cannot fire below 200k. The result was every
+// session under 200k reporting ~5x its real usage (164k read as "82% of 200k"
+// instead of 16% of 1M) and compacting against a 160k threshold instead of 250k.
+// Enumerating ids re-introduces that bug on every model release; matching the family
+// does not. ECC_CONTEXT_WINDOW_TOKENS remains the escape hatch for a non-1M session.
+const EXTENDED_WINDOW_MODEL_FAMILY = /^claude-opus-/i;
 
 /**
  * Read the trailing `tailBytes` of a file as UTF-8.

@@ -103,6 +103,16 @@ for (const file of files) {
       );
       process.exit(2);
     }
+    // An empty or whitespace-only name is REFUSED. It would be emitted as a row
+    // with an empty first field, and both (d) and (e) skip empty names — so the
+    // job would bypass the collision check AND the classification check at once,
+    // which is the widest fail-open in this file.
+    if (name.trim() === "") {
+      process.stderr.write(
+        `error: ${rel}: job '${key}' has an empty name:\n`,
+      );
+      process.exit(2);
+    }
     // The inventory is TSV and is field-split by awk. A tab or newline inside a
     // name would shift every downstream field, so (a) would compare the wrong
     // column and (e) could read a job as classified that never was. Refuse.

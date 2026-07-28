@@ -369,6 +369,20 @@ assert_exit "raw control character in lock name rejected" 2 "$D"
 assert_mentions "explains the separator hazard" "control character" "$D"
 
 
+echo "== E29: an EMPTY job name is refused, not silently skipped =="
+# An empty name emits a row with an empty first field, and both (d) and (e) skip
+# empty names — so the job would bypass the collision check AND the
+# classification check at once. The widest fail-open available here.
+D="$TMPROOT/e29"
+mkrepo "$D" '{"required":[],"advisory":[]}' 'jobs:
+  alpha:
+    name: ""
+    runs-on: ubuntu-latest
+'
+assert_exit "empty job name rejected" 2 "$D"
+assert_mentions "explains the empty name" "empty name" "$D"
+
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]

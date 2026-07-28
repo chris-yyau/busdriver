@@ -163,7 +163,16 @@ def _is_log_echo_fragment(raw: str, start: int, exc: json.JSONDecodeError) -> bo
     # Confined to its own line: the failure is at or before that line's newline.
     # A decode that got PAST the newline is a real multi-line payload, not an
     # echo, and must fall through to the truncated-region path.
-    if exc.pos > line_end:
+    #
+    # Past-the-line means past the line's CONTENT. json skips whitespace before
+    # reporting, so a preview cut exactly at a token boundary (`… captured: {`)
+    # reports at EOF with only the newline in between — no payload was consumed,
+    # yet a bare `exc.pos > line_end` read that as multi-line and dropped the
+    # echo out of recognition. It then took the generic truncated path, which
+    # (opening on nothing) is not verdict-shaped either, so an earlier
+    # superseded PASS was returned. Only INTERVENING CONTENT disproves
+    # confinement.
+    if exc.pos > line_end and raw[line_end : exc.pos].strip():
         return False
     line_start = raw.rfind("\n", 0, start) + 1
     return _LOG_ECHO_PREFIX_RE.match(raw[line_start:start]) is not None
@@ -343,9 +352,21 @@ def try_last_review_object(raw: str):
                 # was unreadable. Fail-open, and the reverse of what the comment
                 # above promises.
                 echo_line_end = _line_end(raw, start)
-                if _looks_like_verdict(raw[start:echo_line_end]):
-                    malformed_pos = start
-                    _PARSE_ERRORS.append(str(exc))
+                # Recorded UNCONDITIONALLY — no verdict-shape sniff at all.
+                # Widening the window from exc.pos to the whole line closed the
+                # case cubic reported, but not the class: the preview is cut to a
+                # fixed length, so a short one carries NO verdict key to find
+                # (`[codex] Assistant message captured: {`), sniffs as
+                # not-a-verdict, leaves malformed_pos unset, and hands back an
+                # earlier superseded PASS. The sniff was never load-bearing here
+                # — `_LOG_ECHO_PREFIX_RE` has already positively identified this
+                # line as codex echoing its OWN verdict, so a verdict
+                # demonstrably existed. Re-deriving that fact from the truncated
+                # preview's keys can only LOSE it, never establish it. If the
+                # real verdict is found below, best_pos outranks this and the
+                # echo costs nothing; if it is not, refusing is correct.
+                malformed_pos = start
+                _PARSE_ERRORS.append(str(exc))
                 # Defense in depth behind the allowlist: past a skipped
                 # region, a MID-LINE object could still be some other
                 # region's child, so from here only own-line objects can win.

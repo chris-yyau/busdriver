@@ -709,3 +709,20 @@ def test_a_recognized_echo_line_is_skipped_whole_not_up_to_the_error():
         f"{PRETTY}\n"
     )
     assert ex.extract_from_text(raw) == VERDICT
+
+
+def test_short_echo_with_no_verdict_key_still_fails_closed():
+    """FAIL-OPEN GUARD: the sniff leaked for previews too short to carry a key.
+
+    Widening the classification window to the echo's whole line closed the case
+    cubic reported but not its class — the preview is cut to a fixed length, so a
+    short one names nothing, sniffs as not-a-verdict, and an earlier superseded
+    PASS is returned as operative. The framing already proves codex emitted a
+    verdict, so the sniff is gone entirely.
+    """
+    stale = json.dumps(dict(VERDICT, status="PASS", issues=[]))
+    for echo in (
+        "[codex] Assistant message captured: {\n",
+        '[codex] Assistant message captured: { "rev...\n',
+    ):
+        assert ex.extract_from_text(f"{stale}\n{echo}") is None, echo

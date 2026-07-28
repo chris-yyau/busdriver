@@ -225,13 +225,37 @@ def try_last_review_object(raw: str):
                 #
                 # Which of the two truncated shapes this is decides everything, and
                 # the syntax error's position cannot tell them apart — an error
-                # before `reviewer_id` makes a real verdict look like noise. What
-                # separates them is how the region OPENS: a JSON object opens with
-                # a quoted key, whereas `trace: if (x) {` is prose that merely ends
-                # in a brace. Prose openers are tolerated (bounded by the scan cap);
-                # a truncated JSON object naming verdict keys fails CLOSED, because
-                # its nested {"status": "PASS"} decodes at a later offset and would
-                # otherwise win on position.
+                # before `reviewer_id` makes a real verdict look like noise. Two
+                # signals separate them, and BOTH are needed:
+                #
+                # 1. How the region OPENS. A JSON object opens with a quoted key,
+                #    whereas `trace: if (x) {` is prose that merely ends in a brace.
+                # 2. Whether verdict keys appear before the NEXT complete verdict.
+                #    Testing raw[start:] instead — the whole remaining transcript —
+                #    lets an unclosed code fragment like `const cfg = {"enabled":
+                #    true;` borrow the keys of a later, unrelated verdict and fail
+                #    closed on it, discarding a perfectly readable review. That is
+                #    the #503 loss re-created, on exactly the interleaved-code input
+                #    this module's docstring calls routine.
+                #
+                # The window is the whole remaining transcript, and every attempt
+                # to narrow it has been worse:
+                #
+                #   - Bounding at the next decoded verdict is a FAIL-OPEN. In
+                #     `{"a":1,, "metadata":{"reviewer_id":..,"status":"PASS"}}` the
+                #     nested PASS IS that next verdict, so the window stops short
+                #     of the keys that would have condemned it.
+                #   - Rejecting on ANY unresolved JSON-ish region over-rejects: a
+                #     complete verdict followed by trailing `trace: {"debug":` is
+                #     perfectly readable, and the trailing fragment carries no
+                #     verdict keys, so scanning to EOF already tolerates it.
+                #
+                # KNOWN RESIDUAL: a fragment that opens like JSON, never closes,
+                # and PRECEDES the verdict (`const cfg = {"enabled": true;`) does
+                # borrow the verdict's keys and fails closed on a readable review.
+                # "Noise then a verdict" and "a truncated verdict wrapping a nested
+                # one" are textually indistinguishable, so this refuses rather than
+                # guess: a withheld rescue, never a forged PASS.
                 if _opens_like_json(raw, start) and _looks_like_verdict(raw[start:]):
                     _PARSE_ERRORS.append(str(exc))
                     return None

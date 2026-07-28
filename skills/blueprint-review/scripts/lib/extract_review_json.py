@@ -172,12 +172,7 @@ def _is_log_echo_fragment(raw: str, start: int, exc: json.JSONDecodeError) -> bo
     # (opening on nothing) is not verdict-shaped either, so an earlier
     # superseded PASS was returned. Only INTERVENING CONTENT disproves
     # confinement.
-    # `exc.pos + 1` — the offending character is itself intervening content. A
-    # half-open slice stopping AT exc.pos excludes it, so when the first
-    # non-whitespace past the newline IS the error position the window held only
-    # the newline, read as "nothing intervened", and a genuine multi-line
-    # malformed region was classified as an echo.
-    if exc.pos > line_end and raw[line_end : exc.pos + 1].strip():
+    if exc.pos > line_end and raw[line_end : exc.pos].strip():
         return False
     line_start = raw.rfind("\n", 0, start) + 1
     return _LOG_ECHO_PREFIX_RE.match(raw[line_start:start]) is not None

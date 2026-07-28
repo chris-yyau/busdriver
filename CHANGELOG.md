@@ -1,3 +1,10 @@
+## [1.100.5](https://github.com/chris-yyau/busdriver/compare/v1.100.4...v1.100.5) (2026-07-28)
+
+
+### Bug Fixes
+
+* **litmus:** give the raw-lines ceiling an env override ([#514](https://github.com/chris-yyau/busdriver/issues/514)) ([#523](https://github.com/chris-yyau/busdriver/issues/523)) ([02608be](https://github.com/chris-yyau/busdriver/commit/02608bebd336b1de89dc1896a8ca5c9b113ae1cc)), closes [#511](https://github.com/chris-yyau/busdriver/issues/511)
+
 ## [1.100.4](https://github.com/chris-yyau/busdriver/compare/v1.100.3...v1.100.4) (2026-07-28)
 
 

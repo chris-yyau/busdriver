@@ -808,7 +808,9 @@ If the user wants to skip, they should create the file manually in their termina
         return 2
     fi
     if [ "$age" -gt "$LEASE_MAX_AGE" ]; then
-        rm -f "$_SKIP_FILE" 2>/dev/null || true; rm -rf "$_LEASE_DIR" 2>/dev/null || true
+        # Slots are left in place for the same anti-TOCTOU reason as the exhausted
+        # branch below; the mtime-keyed prune clears them when a new lease is armed.
+        rm -f "$_SKIP_FILE" 2>/dev/null || true
         block_emit "BLOCKED: the design-review skip lease has EXPIRED (created ${age}s ago; the limit is ${LEASE_MAX_AGE}s).
 
 The file has been removed so it cannot stay armed and silently authorize a later session.
@@ -856,8 +858,13 @@ they can create $STATE_DIR/skip-design-review.local again in their terminal."
         if [ "$used" -lt "$LEASE_MAX_USES" ]; then
             return 1   # FAIL-CLOSED: could not record a use → grant none
         fi
+        # Remove ONLY the skip file. Deleting the slot directory here is a TOCTOU: a
+        # concurrent gate that already passed the skip-file/mtime checks would then
+        # mkdir -p a FRESH directory, claim slot 1 under the same mtime, and be granted
+        # a 21st use. The slots are the exhaustion proof, so they must outlive the file
+        # that spent them; a later touch changes the mtime and the prune above clears
+        # them. (The ledger is a protected marker, so it cannot be wiped to reset this.)
         rm -f "$_SKIP_FILE" 2>/dev/null || true
-        rm -rf "$_LEASE_DIR" 2>/dev/null || true
         block_emit "BLOCKED: the design-review skip lease is EXHAUSTED (all $LEASE_MAX_USES uses spent).
 
 One \`touch\` authorizes $LEASE_MAX_USES gated writes so a whole approved plan can be

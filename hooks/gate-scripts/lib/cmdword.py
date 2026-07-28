@@ -80,6 +80,11 @@ _SHELLS = frozenset(("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash"))
 # hook. Hitting the cap returns the regex verdict (wider), never "allow".
 _MAX_DEPTH = 4
 
+# A function-definition header at the start of a command or right after a separator:
+# `mv() {`, `rm ( ) {`. Group 1 keeps the leading separator/whitespace so the segment
+# structure around it is preserved.
+_FUNC_DEF_RE = re.compile(r"(^|[;&|]\s*)[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)")
+
 
 def _split_simple_commands(s):
     """Split into simple-command segments on UNQUOTED, UNESCAPED control operators.
@@ -134,7 +139,17 @@ def _normalize(cmd):
     norm = cmd.replace("\r\n", "\n").replace("\r", "\n")
     norm = norm.replace(chr(92) + chr(10), "").replace("\n", " ; ")
     norm = norm.replace("$" + _SQ, _SQ).replace("$" + _DQ, _DQ)
-    return re.sub(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])", " ", norm)
+    norm = re.sub(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])", " ", norm)
+    # Drop shell FUNCTION-DEFINITION headers (`mv() {`, `rm ( ) {`). _split_simple_commands
+    # splits on parens, so `mv() { echo harmless; }` leaves a bare `mv` segment that reads
+    # as an invocation — the third #519 false positive (a probe defining functions named
+    # `mv` and `[`), which this module claimed to fix but did not.
+    #
+    # Not a fail-open: a definition does not RUN the body, and removing only the
+    # `name()` header leaves that body in place to be classified anyway. What is dropped
+    # is a NAME, never a verb in command position — `rm x` is an invocation and has no
+    # parens, so it cannot be laundered into this shape.
+    return _FUNC_DEF_RE.sub(r"\1", norm)
 
 
 def _basename(tok):
@@ -328,11 +343,19 @@ def _demo():
     """Self-check: the #519 false positives must be allowed, real writes still caught."""
     allowed = [
         "grep -nE 'rm |mv |truncate' script.sh",
+        # #519 false positive 3: a probe DEFINING functions named mv / [.
+        "mv() { echo harmless; }",
+        "rm () { echo harmless; }",
+        "mv() { echo hi; } ; ls",
         'bash -c \'echo "T3 (mv FAILS): ..."\'',
         "ls -la",
         "sed -n '1,10p' file.txt",
         "grep -i sed notes.txt",
         "grep -nE 'rm |mv |truncate' script.sh",
+        # #519 false positive 3: a probe DEFINING functions named mv / [.
+        "mv() { echo harmless; }",
+        "rm () { echo harmless; }",
+        "mv() { echo hi; } ; ls",
         "echo 'cp this line'",
         "git log --oneline | head -20",
     ]

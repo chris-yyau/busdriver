@@ -42,12 +42,24 @@ _LOCK_WAIT = 0.05
 def append(state_dir, record_line):
     """Append record_line (no trailing newline) under <cwd>/<state_dir>/bypass-log.jsonl.
     Returns True only when the whole line is durably written."""
+    # O_NOFOLLOW stops SYMLINK traversal; it does nothing about PARENT traversal. Since
+    # state_dir is attacker-influenced, a value like "../outside" would otherwise create
+    # directories and append the log outside the repo while still reporting success —
+    # an audit record written somewhere nobody monitors is indistinguishable from none.
+    # Reject absolute paths and any ".." component outright rather than try to contain
+    # them. (The gates sanitize BUSDRIVER_STATE_DIR too; this is the library holding its
+    # own invariant rather than trusting every future caller to.)
+    if state_dir.startswith("/"):
+        return False
+    parts = [p for p in state_dir.split("/") if p and p != "."]
+    if any(p == ".." for p in parts):
+        return False
     dfd = os.open(".", os.O_RDONLY | os.O_DIRECTORY)
     try:
         # Walk every component, not just the last: O_NOFOLLOW on the final name alone
         # would still let a symlinked PREFIX (state_dir "a/b" with "a" symlinked)
         # redirect the append outside the repo.
-        for part in [p for p in state_dir.split("/") if p and p != "."]:
+        for part in parts:
             try:
                 os.mkdir(part, 0o755, dir_fd=dfd)
             except FileExistsError:
@@ -132,6 +144,13 @@ def _demo():
             os.mkdir("real")
             os.symlink("real", "link")
             assert not append("link/inner", '{"a":5}')
+
+            # Parent traversal is a separate escape from symlinks; O_NOFOLLOW does not
+            # cover it, so it is rejected explicitly.
+            assert not append("../outside", '{"a":6}')
+            assert not append("a/../../outside", '{"a":7}')
+            assert not append("/tmp/outside", '{"a":8}')
+            assert not os.path.exists(os.path.join("..", "outside"))
         finally:
             os.chdir(cwd)
     print("audit_append self-check OK")

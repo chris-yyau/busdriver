@@ -79,6 +79,12 @@ check "read-only sed -n" allow "$(bash_decision "sed -n '1,10p' file.txt")"
 check "grep -i with 'sed' as the search string" allow \
     "$(bash_decision "grep -i sed notes.txt")"
 check "plain listing" allow "$(bash_decision "ls -la")"
+# #519 false positive 3: a probe DEFINING a function named mv. The paren split leaves
+# a bare `mv` segment that reads as an invocation unless the header is stripped.
+check "defining a shell function named mv" allow \
+    "$(bash_decision "mv() { echo harmless; }")"
+check "defining mv then calling rm still blocks" block \
+    "$(bash_decision "mv() { echo hi; } ; rm x")"
 # -c is a COUNT flag for grep, not "execute this string" — recursing on every -c
 # operand would resurrect the quoted-operand false positive this change removes.
 check "grep -c whose pattern contains 'rm '" allow "$(bash_decision "grep -c 'rm ' file.txt")"
@@ -160,6 +166,11 @@ i=0; while [ "$i" -lt 20 ]; do write_decision >/dev/null; i=$((i + 1)); done
 check "write 21 blocks (lease exhausted)" block "$(write_decision)"
 if [ -f "$WORK/.claude/skip-design-review.local" ]; then no "exhausted lease removes the skip file" "file still present"
 else ok "exhausted lease removes the skip file"; fi
+# ...but the SLOTS must survive. Deleting them here is a TOCTOU: a concurrent gate that
+# already passed the skip-file/mtime checks would mkdir -p a fresh directory, claim slot
+# 1 under the same mtime, and be granted a 21st use.
+if [ "$(lease_uses)" = "20" ]; then ok "exhausted lease KEEPS its slots (anti-TOCTOU)"
+else no "exhausted lease KEEPS its slots (anti-TOCTOU)" "got $(lease_uses)"; fi
 
 # FAIL-CLOSED: if a use cannot be RECORDED it cannot be BOUNDED, so an unwritable
 # lease dir must refuse the bypass rather than grant an unlimited one until expiry.

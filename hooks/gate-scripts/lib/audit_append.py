@@ -1,0 +1,146 @@
+"""Hardened append of ONE record to the bypass audit log (#519).
+
+Usage:  python3 -I audit_append.py <state_dir> <json_record>
+Exit:   0 = the record is durably on disk; 1 = it is NOT (caller must fail closed).
+
+WHY A HELPER AND NOT `>>`
+A shell redirect follows symlinks at EVERY path component, so a repo-writable
+`.claude/bypass-log.jsonl -> /dev/null` — or a symlinked `.claude/`, or a symlinked
+intermediate when BUSDRIVER_STATE_DIR is nested like `a/b` — makes the write "succeed"
+while retaining nothing. Any caller that treats a successful `>>` as proof of a durable
+audit record is then trusting a write that never landed. That matters here because the
+gate REFUSES a skip-lease use whose audit append fails: the guarantee is only worth as
+much as the check behind it.
+
+The path is attacker-influenced (the state dir is repo-relative and repo-controlled),
+so every component is walked from the CWD with dir_fd + O_NOFOLLOW, creating as needed,
+refusing the moment one is a symlink or not a directory. Same reasoning, and the same
+shape, as the writer in scripts/design-clear.sh.
+
+TORN LINES
+A pre-existing partial line poisons every later append: this record would concatenate
+onto the fragment and the joined line is not valid JSONL. Refuse rather than compound
+it — and deliberately do NOT ftruncate a rollback, because other gate scripts append to
+this same log with unlocked `>>` and do not honor our flock; rolling back could erase an
+unrelated writer's event. The fragment stays, this append refuses, and the next one
+refuses too, so an operator is forced to repair the log rather than accumulate silent
+corruption. Fail-closed, never destructive.
+"""
+
+import fcntl
+import os
+import stat
+import sys
+import time
+
+
+# ~0.5s ceiling total — comfortably inside the 5s PreToolUse hook budget.
+_LOCK_TRIES = 10
+_LOCK_WAIT = 0.05
+
+
+def append(state_dir, record_line):
+    """Append record_line (no trailing newline) under <cwd>/<state_dir>/bypass-log.jsonl.
+    Returns True only when the whole line is durably written."""
+    dfd = os.open(".", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        # Walk every component, not just the last: O_NOFOLLOW on the final name alone
+        # would still let a symlinked PREFIX (state_dir "a/b" with "a" symlinked)
+        # redirect the append outside the repo.
+        for part in [p for p in state_dir.split("/") if p and p != "."]:
+            try:
+                os.mkdir(part, 0o755, dir_fd=dfd)
+            except FileExistsError:
+                pass
+            except OSError:
+                return False
+            try:
+                nfd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                              dir_fd=dfd)
+            except OSError:
+                return False          # symlinked or not a directory
+            os.close(dfd)
+            dfd = nfd
+        try:
+            # O_RDWR, not O_WRONLY: the torn-line check below pread()s the last byte,
+            # which a write-only fd cannot do. O_APPEND still lands every write at EOF.
+            fd = os.open("bypass-log.jsonl",
+                         os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
+                         0o644, dir_fd=dfd)
+        except OSError:
+            return False              # symlinked log, or unwritable
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return False          # fifo/device posing as the log
+            # BOUNDED lock. A blocking flock has no deadline, and this runs inside a
+            # PreToolUse hook with a 5s budget — a hook that times out emits no block
+            # and therefore fails OPEN, so any process holding this advisory lock could
+            # turn a gated write into a free one. Poll briefly, then give up and refuse:
+            # a refused lease is safe, a stalled hook is not.
+            for _ in range(_LOCK_TRIES):
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    time.sleep(_LOCK_WAIT)
+            else:
+                return False
+            size = os.fstat(fd).st_size
+            if size and os.pread(fd, 1, size - 1) != b"\n":
+                return False          # pre-existing torn line — refuse, never repair
+            data = (record_line + "\n").encode()
+            if os.write(fd, data) != len(data):
+                return False          # short write (storage exhausted)
+            os.fsync(fd)
+            # ...and the directory entry. fsync of a file persists its CONTENTS, never
+            # its name, so a freshly created log could vanish on a crash and leave a
+            # granted lease with no record. design-clear.sh fsyncs the parent for the
+            # same reason.
+            try:
+                os.fsync(dfd)
+            except OSError:
+                return False
+            return True
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dfd)
+
+
+def _demo():
+    """Self-check: a real file accepts, a symlink and a torn line refuse."""
+    import tempfile
+    cwd = os.getcwd()
+    with tempfile.TemporaryDirectory() as t:
+        os.chdir(t)
+        try:
+            assert append(".claude", '{"a":1}')
+            assert open(".claude/bypass-log.jsonl").read() == '{"a":1}\n'
+            assert append(".claude", '{"a":2}')          # clean append onto a full line
+
+            # A torn trailing line must refuse rather than concatenate.
+            with open(".claude/bypass-log.jsonl", "a") as fh:
+                fh.write('{"partial"')
+            assert not append(".claude", '{"a":3}')
+
+            # A symlinked log must refuse (a plain >> would happily "succeed").
+            os.mkdir("s")
+            os.symlink("/dev/null", "s/bypass-log.jsonl")
+            assert not append("s", '{"a":4}')
+
+            # A symlinked INTERMEDIATE component must refuse too.
+            os.mkdir("real")
+            os.symlink("real", "link")
+            assert not append("link/inner", '{"a":5}')
+        finally:
+            os.chdir(cwd)
+    print("audit_append self-check OK")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] == "--self-check":
+        _demo()
+        raise SystemExit(0)
+    if len(sys.argv) != 3:
+        raise SystemExit(2)
+    raise SystemExit(0 if append(sys.argv[1], sys.argv[2]) else 1)

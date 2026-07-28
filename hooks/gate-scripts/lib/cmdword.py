@@ -59,7 +59,11 @@ FILE_MOD_PATTERNS = [
 
 # Verbs that modify files by themselves. `sed` is absent — it only modifies with -i,
 # and is handled separately below so a read-only `sed -n ...` stays allowed.
-_MOD_VERBS = frozenset(("tee", "patch", "cp", "mv", "rm", "ln", "install"))
+# truncate/unlink were in NEITHER the old regexes nor the first cut of this module, so
+# `truncate -s 0 f` classified as a read. Token equality makes them safe to add: the
+# `grep -nE 'rm |mv |truncate'` case from #519 keeps its pattern as ONE token.
+_MOD_VERBS = frozenset(("tee", "patch", "cp", "mv", "rm", "ln", "install",
+                        "truncate", "unlink"))
 
 # Interpreters that EXECUTE a string operand. Tokenizing reduces `bash -c 'rm -rf src'`
 # to the single token `rm -rf src`, which equals no verb — so without recursing into the
@@ -328,6 +332,7 @@ def _demo():
         "ls -la",
         "sed -n '1,10p' file.txt",
         "grep -i sed notes.txt",
+        "grep -nE 'rm |mv |truncate' script.sh",
         "echo 'cp this line'",
         "git log --oneline | head -20",
     ]
@@ -364,6 +369,8 @@ def _demo():
         # env -S splits its operand into an argv and executes it.
         "env -S 'rm -rf x'",
         "env -S'rm -rf x'",
+        "truncate -s 0 notes.txt",
+        "unlink notes.txt",
     ]
     for c in allowed:
         assert not is_file_mod(c), "should be allowed: " + c

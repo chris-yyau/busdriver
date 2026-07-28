@@ -327,7 +327,13 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
     # AND leading redirects (>/dev/null touch <marker>) are already excluded — a naive
     # first-non-assignment scan of seg would mis-pick the redirect target as the verb.
     cmd_word = seg_cmd_word
-    if cmd_word is not None and _bn(cmd_word) in ("touch", "cp", "mv", "ln", "install"):
+    # #519 adds truncate/unlink: both erase content with a bare, ordinary command, and
+    # the gate now protects bypass-log.jsonl, whose whole value is that the record
+    # survives. Same command-word-only treatment and same rationale as #290 above — a
+    # cooperative agent reaching for the easy path is the realistic threat, and the
+    # wrapper-hidden / eval forms stay in the documented ADR 0006 residual.
+    if cmd_word is not None and _bn(cmd_word) in ("touch", "cp", "mv", "ln", "install",
+                                                  "truncate", "unlink"):
         for w in seg:
             m = _match_marker(w, markers, simple_vars)
             if m:
@@ -452,6 +458,15 @@ try:
         # the delete outright. The cleanup done by this gate is script code, not a
         # tool call, so it is unaffected.
         ".skip-design-review-lease.d",
+        # #519 — the bypass audit log. Hardening the APPEND is worth nothing if the
+        # FILE can be erased for free: writes under $STATE_DIR classify as SAFE and a
+        # bare rm of a $STATE_DIR path hits the F9 exemption, so a session could delete
+        # bypass-log.jsonl without even spending a lease use, wiping every recorded
+        # bypass — and the next use simply recreates the file and is granted. The whole
+        # design-clear/lease story is detection rather than prevention, which only holds
+        # while the record survives. Reads (cat/grep) are unaffected: the forge detector
+        # blocks only redirect/tee/rm/touch/cp/mv/ln/install positions.
+        "bypass-log.jsonl",
         "reviewed-commits.local",
         "design-review-needed.local",
     ]
@@ -861,11 +876,29 @@ $STATE_DIR/skip-design-review.local in their terminal."
     used="$claimed"
     remaining=$(( LEASE_MAX_USES - used ))
     rm -f "$STATE_DIR/.impl-gate-block-count.local" 2>/dev/null || true
-    # ── Bypass telemetry — one event PER USE, with the remaining count so the
-    # lease state is observable from the log without consuming a use to check it.
-    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-implementation","lease_use":%s,"lease_remaining":%s}\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$used" "$remaining" \
-        >>"$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
+    # ── Bypass telemetry — one event PER USE, with the remaining count so the lease
+    # state is observable from the log without consuming a use to check it.
+    #
+    # FAIL-CLOSED on a failed append, matching design-clear.sh: an unlogged release is
+    # not a sanctioned bypass. A `|| true` here would let an unwritable log silently
+    # convert an audited hatch into an unaudited one — and the docs promise every use is
+    # recorded, so the promise has to be enforced rather than merely stated. Give the
+    # slot back so the accounting stays truthful about what was actually granted.
+    # Appended via the hardened helper, NOT a plain `>>`. A shell redirect follows
+    # symlinks at EVERY component, so a repo-writable `.claude/bypass-log.jsonl ->
+    # /dev/null` (or a symlinked `.claude/`, or a symlinked intermediate when the state
+    # dir is nested) makes the write "succeed" while retaining nothing — and this branch
+    # would read that as proof of a durable audit record and grant the lease. Since the
+    # whole point of the check is that an unlogged use is REFUSED, the write has to be
+    # verifiable. audit_append.py walks each component with O_NOFOLLOW, rejects a
+    # non-regular target, refuses to append onto a pre-existing torn line, and requires
+    # the full write plus fsync. Same reasoning as the writer in design-clear.sh.
+    if ! python3 -I "$_GATE_LIBDIR/audit_append.py" "$STATE_DIR" \
+         "$(printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-implementation","lease_use":%s,"lease_remaining":%s}' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$used" "$remaining")" 2>/dev/null; then
+        rmdir "$_LEASE_DIR/$mtime.$claimed" 2>/dev/null || true
+        return 1
+    fi
     return 0
 }
 # (env-based SKIP_DESIGN_REVIEW removed — issue #325; use the .local skip file. ADR 0016.)

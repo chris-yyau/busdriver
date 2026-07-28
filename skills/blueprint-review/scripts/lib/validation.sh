@@ -73,19 +73,10 @@ validate_json_file() {
   return 0
 }
 
-# Extract JSON from markdown code blocks if wrapped
-extract_json_from_markdown() {
-  local input="$1"
-
-  # Check if wrapped in markdown code blocks
-  if echo "$input" | grep -q '```json'; then
-    echo "$input" | sed -n '/```json/,/```/p' | sed '1d;$d'
-  elif echo "$input" | grep -q '```'; then
-    echo "$input" | sed -n '/```/,/```/p' | sed '1d;$d'
-  else
-    echo "$input"
-  fi
-}
+# NOTE: extract_json_from_markdown() lived here and was the only fence-aware
+# extraction in the tree — with zero callers, while the Python extractor that
+# superseded it had no fence strategy at all (#503). Removed rather than revived:
+# lib/extract_review_json.py owns fence handling now, for every caller.
 
 # Validate CLI is available
 # DEPRECATED: Use is_cli_available() from scripts/lib/resolve-cli.sh instead.

@@ -91,8 +91,13 @@ _bp_droid_rescue() {
   if [[ "$droid_exit" -ne 0 ]]; then
     log_warning "  droid rescue ${slot}: exit $droid_exit — keeping error entry"; return 1
   fi
-  if ! python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$raw" > "${out}.pending" 2>/dev/null; then
-    rm -f "${out}.pending"; log_warning "  droid rescue ${slot}: invalid JSON — keeping error entry"; return 1
+  # Keep the extractor's stderr reason: "never found the JSON" and "found it and
+  # it is malformed" were indistinguishable in the log while a fence-shaped
+  # payload silently lost every rescue for four sessions (#503).
+  local _xerr=""
+  if ! _xerr=$(python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$raw" 2>&1 > "${out}.pending"); then
+    rm -f "${out}.pending"
+    log_warning "  droid rescue ${slot}: ${_xerr:-extraction failed} — keeping error entry"; return 1
   fi
   if ! jq -e '(.status=="PASS" or .status=="FAIL") and (.issues|type=="array")' "${out}.pending" >/dev/null 2>&1; then
     rm -f "${out}.pending"; log_warning "  droid rescue ${slot}: no usable verdict — keeping error entry"; return 1
@@ -615,7 +620,10 @@ $DESIGN_CONTENT
         AGY_END=$(millis)
         AGY_DURATION=$((AGY_END - AGY_START))
 
-        if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$AGY_RAW_FILE" > "${AGY_OUTPUT_FILE}.pending" 2>/dev/null; then
+        # Surface the extractor's reason instead of discarding it: "never found
+        # the JSON" and "found it and it is malformed" were indistinguishable in
+        # the log, which is how #503 stayed invisible for four sessions.
+        if _x_err=$(python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$AGY_RAW_FILE" 2>&1 > "${AGY_OUTPUT_FILE}.pending"); then
           # Inject freshness metadata (Critic #2)
           # Validates JSON has expected structure before injecting.
           # All values are passed via env vars (single-quoted python -c source
@@ -645,7 +653,7 @@ with open(pending, "w") as f:
 ' 2>/dev/null || true
           mv "${AGY_OUTPUT_FILE}.pending" "$AGY_OUTPUT_FILE"
         else
-          create_error_json "agy" "Output was not valid JSON" > "$AGY_OUTPUT_FILE"
+          create_error_json "agy" "Output was not valid JSON: ${_x_err:-no detail}" > "$AGY_OUTPUT_FILE"
         fi
       elif [[ "$REVIEWER_EXIT" -eq 3 ]]; then
         # BUILTIN_FALLBACK: CLI retry exhaustion — degraded mode, not hard error.
@@ -674,7 +682,10 @@ with open(pending, "w") as f:
         CODEX_END=$(millis)
         CODEX_DURATION=$((CODEX_END - CODEX_START))
 
-        if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$CODEX_RAW_FILE" > "${CODEX_OUTPUT_FILE}.pending" 2>/dev/null; then
+        # Surface the extractor's reason instead of discarding it: "never found
+        # the JSON" and "found it and it is malformed" were indistinguishable in
+        # the log, which is how #503 stayed invisible for four sessions.
+        if _x_err=$(python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$CODEX_RAW_FILE" 2>&1 > "${CODEX_OUTPUT_FILE}.pending"); then
           # Inject freshness metadata (Critic #2)
           # Validates JSON has expected structure before injecting.
           # All values are passed via env vars (single-quoted python -c source
@@ -704,7 +715,7 @@ with open(pending, "w") as f:
 ' 2>/dev/null || true
           mv "${CODEX_OUTPUT_FILE}.pending" "$CODEX_OUTPUT_FILE"
         else
-          create_error_json "codex" "Output was not valid JSON" > "$CODEX_OUTPUT_FILE"
+          create_error_json "codex" "Output was not valid JSON: ${_x_err:-no detail}" > "$CODEX_OUTPUT_FILE"
         fi
       elif [[ "$REVIEWER_EXIT" -eq 3 ]]; then
         # BUILTIN_FALLBACK: CLI retry exhaustion — degraded mode, not hard error.
@@ -735,7 +746,10 @@ with open(pending, "w") as f:
         GROK_END=$(millis)
         GROK_DURATION=$((GROK_END - GROK_START))
 
-        if python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$GROK_RAW_FILE" > "${GROK_OUTPUT_FILE}.pending" 2>/dev/null; then
+        # Surface the extractor's reason instead of discarding it: "never found
+        # the JSON" and "found it and it is malformed" were indistinguishable in
+        # the log, which is how #503 stayed invisible for four sessions.
+        if _x_err=$(python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$GROK_RAW_FILE" 2>&1 > "${GROK_OUTPUT_FILE}.pending"); then
           _MIM_PENDING="${GROK_OUTPUT_FILE}.pending" \
           _MIM_RUN_ID="$RUN_ID" \
           _MIM_ITERATION="$CURRENT_ITERATION" \
@@ -759,7 +773,7 @@ with open(pending, "w") as f:
 ' 2>/dev/null || true
           mv "${GROK_OUTPUT_FILE}.pending" "$GROK_OUTPUT_FILE"
         else
-          create_error_json "grok" "Output was not valid JSON" > "$GROK_OUTPUT_FILE"
+          create_error_json "grok" "Output was not valid JSON: ${_x_err:-no detail}" > "$GROK_OUTPUT_FILE"
         fi
       elif [[ "$REVIEWER_EXIT" -eq 3 ]]; then
         # BUILTIN_FALLBACK: CLI retry exhaustion — degraded mode, not hard error.
@@ -841,8 +855,9 @@ with open(pending, "w") as f:
       # file, the complete new file, or nothing — never a half-written one.
       _aud_tmp="${AUDITOR_OUTPUT_FILE}.tmp.$$"
       if [[ "$_aud_exit" -eq 0 ]] && [[ -s "$_aud_raw" ]]; then
-        python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$_aud_raw" > "$_aud_tmp" 2>/dev/null \
-          || create_error_json "auditor" "unparseable witness output" > "$_aud_tmp"
+        if ! _x_err=$(python3 "$SCRIPT_DIR/lib/extract_review_json.py" "$_aud_raw" 2>&1 > "$_aud_tmp"); then
+          create_error_json "auditor" "unparseable witness output: ${_x_err:-no detail}" > "$_aud_tmp"
+        fi
       else
         # Empty output on a clean exit is the observed silent-stall shape — must
         # read as "witness absent", never as "witness found nothing".

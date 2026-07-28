@@ -677,3 +677,19 @@ def test_log_echo_recognized_even_when_the_real_verdict_desyncs_the_bracket_scan
     verdict = dict(VERDICT, issues=[{"description": "]", "severity": "HIGH"}])
     raw = f"{PREVIEW}{json.dumps(verdict)}\n"
     assert ex.extract_from_text(raw) == verdict
+
+
+def test_a_framed_echo_is_classified_on_its_whole_line_not_to_the_error():
+    """FAIL-OPEN GUARD: a stale earlier PASS must not survive an unreadable echo.
+
+    `exc.pos` is wherever the decode happened to die, and for a preview cut
+    between tokens that is well before the line ends — `{ "status": ` on its own
+    is not verdict-shaped. Classifying only up to it left `malformed_pos` unset,
+    so an EARLIER PASS stayed selected even though a later framed verdict could
+    not be read. The echo's whole line carries the evidence.
+    """
+    raw = (
+        '{"status": "PASS", "reviewer_id": "codex", "issues": []}\n'
+        '[codex] Assistant message captured: { "status": ... "issues": [ { "sect\n'
+    )
+    assert ex.extract_from_text(raw) is None

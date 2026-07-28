@@ -324,7 +324,17 @@ def try_last_review_object(raw: str):
                 # allowlist, discarding the very review #524 exists to keep.
                 # Line-confinement + the pinned framing already fully proves
                 # the classification; nothing downstream can un-prove it.
-                if _looks_like_verdict(raw[start : exc.pos]):
+                # Classify against the echo's WHOLE line, not `raw[start:exc.pos]`.
+                # exc.pos is wherever the decode happened to die, which for a cut
+                # between tokens lands well before the line's end — `{ "status": `
+                # alone is not verdict-shaped, so malformed_pos went unset and an
+                # EARLIER PASS stayed selected even though a later framed verdict
+                # was unreadable. Fail-open, and the reverse of what the comment
+                # above promises.
+                echo_line_end = raw.find("\n", start)
+                if echo_line_end < 0:
+                    echo_line_end = len(raw)
+                if _looks_like_verdict(raw[start:echo_line_end]):
                     malformed_pos = start
                     _PARSE_ERRORS.append(str(exc))
                 # Defense in depth behind the allowlist: past a skipped

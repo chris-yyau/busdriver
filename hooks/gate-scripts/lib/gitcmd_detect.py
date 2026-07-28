@@ -230,6 +230,150 @@ def _is_exe(tok, name):
     return tok == name or tok.endswith('/' + name)
 
 
+def _is_target_word(word, targets):
+    """True iff basename `word` names one of the protected `targets`.
+
+    Also matches the ANSI-C spelling of a protected BUILTIN: `$'pushd'` / `$'cd'`
+    survive tokenization as `$pushd` / `$cd`, and bash still runs the builtin. Without
+    stripping, the guard did not recognise them as the target, so
+    `command -p $'pushd' /other` consumed the command word as the wrapper option's
+    argument and reported no cd -- fail-OPEN.
+
+    `$'pushd'` and a VARIABLE named `pushd` are byte-identical after tokenization, so
+    this necessarily also matches `pushd=echo; $pushd /other`, where nothing moves.
+    That direction is chosen deliberately: matching over-blocks (a visible, rewordable
+    stall), while not matching lets a real ANSI-C-spelled builtin through unrecorded.
+    Fail-CLOSED, consistent with the `$'cd'` handling `_cd_target_loose` has always
+    had. A variable whose NAME is not a target (`$cmd`) still does not match, and
+    _ANSIC_BUILTINS deliberately excludes `git`/`gh` (see its comment).
+
+    Extracted from _command_argv -- which spelled this twice, once inline and once
+    expanded inside the declared-name guard -- purely to reduce its branch count
+    (CodeScene "Complex Method", #510); behavior unchanged."""
+    stripped = word.lstrip('$')
+    return word in targets or (stripped in targets
+                               and stripped in _ANSIC_BUILTINS)
+
+
+def _is_case_label(t, is_target, toks, i, case_state):
+    """True iff `t` is a `case` branch PATTERN LABEL -- `x)` in
+    `case x in x) git commit;;`.
+
+    It heads its own segment for EVERY branch (';;' splits), not just the first, so
+    matching the label shape covers them all without tracking case-statement state. An
+    unquoted command word can never end in ')', so this cannot swallow a real command.
+    A label may legally CONTAIN a paren once quoted or escaped (`a\\(b)`), so only a
+    LEADING '(' is excluded -- that form is a group, handled by the grouping arm.
+
+    Extracted from _command_argv as a named predicate purely to reduce its branch
+    count (CodeScene "Complex Conditional", #510); behavior unchanged."""
+    return (t.endswith(')') and not t.startswith('(') and not is_target
+            and len(toks) > i + 1 and case_state != 'subject')
+
+
+def _skips_declared_name(toks, i, base, targets):
+    """True iff `toks[i]` is a DECLARED NAME to skip past rather than the command word
+    -- `function f { git commit; }` or `coproc NAME { git commit; }`.
+
+    The name follows the keyword and would otherwise be read as the command word,
+    hiding the body (verified: `function f { gh pr merge 1; }; f` runs the merge but
+    counted 0). The POSIX form `f() { … }` is already covered: `f()` matches the
+    label-shape rule. Skipping the body's commands is fail-CLOSED -- a
+    declared-but-never-called function only over-fires.
+
+    `coproc` takes a NAME only in the form `coproc NAME <compound>`; in
+    `coproc bash -c '…'` the very next token IS the command, so an unconditional skip
+    hid it (fail-OPEN regression). Require the name-then-compound shape, whose
+    compound may open with '{' / '(' OR with a KEYWORD (`coproc JOB if git commit;
+    then :; fi`) -- both shapes are accepted.
+
+    Never skips the target executable itself, so a program legitimately named e.g.
+    `f` cannot hide one. Split out of _command_argv purely to reduce its complexity
+    (#510); behavior unchanged (the conjuncts are all pure, so hoisting the bounds and
+    target guards ahead of the shape test only short-circuits earlier)."""
+    if i >= len(toks) or _is_target_word(toks[i].rsplit('/', 1)[-1], targets):
+        return False
+    if base == 'function':
+        return True
+    return bool(base == 'coproc' and i + 1 < len(toks)
+                and re.match(r'^[A-Za-z_]\w*$', toks[i])
+                and (toks[i + 1][:1] in ('{', '(')
+                     or toks[i + 1].rsplit('/', 1)[-1] in _SHELL_KEYWORDS))
+
+
+def _next_case_state(case_state, base, t):
+    """The case-statement state after consuming token `t`.
+
+    The case SUBJECT and first pattern label share a segment with the branch body:
+    `case <subject> in <label>) git commit;;`. Later branches head their own segment
+    (';;' splits) and are caught by the label-shape rule; only the first needs state.
+
+    The two phases must be distinguished by the `in` keyword, not by "first token
+    ending in ')'": a subject can itself end in ')' (`case "$(printf x)" in x) …`),
+    which ended subject-tracking early and left `in` as the detected command word --
+    fail-OPEN (verified).
+
+    Split out of _command_argv purely to reduce its complexity (#510); behavior
+    unchanged."""
+    if case_state == 'subject':
+        return 'label' if base == 'in' else 'subject'
+    return None if t.endswith(')') else case_state
+
+
+_REDIR_RE = re.compile(r'^(\d*[<>]{1,2}|&>{1,2})')
+_REDIR_BARE_RE = re.compile(r'^(\d*[<>]{1,2}|&>{1,2})$')
+
+
+def _redirection_span(t, toks, i):
+    """How many tokens a redirection at `toks[i]` occupies: 2 when `t` is a BARE
+    operator ('>', '2>') that consumes the target FILENAME after it, else 1 (a fused
+    token like '>file' / '2>&1' is self-contained).
+
+    Split out of _command_argv purely to reduce its complexity (#510); behavior
+    unchanged."""
+    return 2 if _REDIR_BARE_RE.match(t) and i + 1 < len(toks) else 1
+
+
+def _strip_leading_groups(toks, raw_toks):
+    """Strip leading subshell '(' / brace-group '{' punctuation from the segment's
+    FIRST token, so grouped commands like `(git commit)` or `{ git commit; }` expose
+    their command word. Returns the new (toks, raw_toks).
+
+    Split out of _command_argv purely to reduce its complexity (#510); behavior
+    unchanged."""
+    while toks:
+        head = toks[0].lstrip('({')
+        if head == toks[0]:
+            break
+        if head:
+            return [head] + toks[1:], raw_toks   # content edit -- position preserved
+        toks = toks[1:]
+        if raw_toks is not None:
+            raw_toks = raw_toks[1:]
+    return toks, raw_toks
+
+
+def _strip_group_punct(toks, raw_toks, i):
+    """Strip grouping punctuation from `toks[i]`, returning the new (toks, raw_toks).
+
+    Grouping reached AFTER a keyword was skipped: `if (git commit); then` /
+    `if { git commit; }; then`. The pre-loop strip only sees the segment's FIRST
+    token, so a group opened behind a keyword kept the command word hidden --
+    fail-OPEN (verified). The caller re-examines the same position.
+
+    Split out of _command_argv purely to reduce its complexity (#510); behavior
+    unchanged -- including that a content-only edit preserves the position (so
+    raw_toks stays aligned untouched), while a whole-token deletion must drop the
+    matching raw entry too."""
+    stripped = toks[i].lstrip('({')
+    if stripped:
+        return toks[:i] + [stripped] + toks[i + 1:], raw_toks   # position preserved
+    toks = toks[:i] + toks[i + 1:]
+    if raw_toks is not None:
+        raw_toks = raw_toks[:i] + raw_toks[i + 1:]
+    return toks, raw_toks
+
+
 def _command_argv(seg, target, with_raw=False):
     """Return the argv beginning at the command word, after stripping a leading
     run of launcher tokens: env-assignments, wrapper words (basename-matched),
@@ -261,18 +405,7 @@ def _command_argv(seg, target, with_raw=False):
     # Only when the caller asked: _raw_tokens re-lexes the segment, so computing
     # it unconditionally made every ordinary _command_argv call ~2x slower.
     raw_toks = _raw_tokens(seg) if with_raw else None
-    # Strip leading subshell '(' / brace-group '{' punctuation so grouped
-    # commands like (git commit) or { git commit; } expose their command word.
-    while toks:
-        head = toks[0].lstrip('({')
-        if head == toks[0]:
-            break
-        if head:
-            toks = [head] + toks[1:]   # content edit only -- position preserved
-            break
-        toks = toks[1:]
-        if raw_toks is not None:
-            raw_toks = raw_toks[1:]
+    toks, raw_toks = _strip_leading_groups(toks, raw_toks)
     i = 0
     saw_wrap = False
     prev_dash = False
@@ -280,22 +413,7 @@ def _command_argv(seg, target, with_raw=False):
     while i < len(toks):
         t = toks[i]
         base = t.rsplit('/', 1)[-1]
-        # `$'pushd'` / `$'cd'` (ANSI-C quoting) survive tokenization as `$pushd` /
-        # `$cd`, and bash still runs the builtin. Without stripping, the guard did
-        # not recognise them as the target, so `command -p $'pushd' /other` consumed
-        # the command word as the wrapper option's argument and reported no cd --
-        # fail-OPEN.
-        #
-        # `$'pushd'` and a VARIABLE named `pushd` are byte-identical after
-        # tokenization, so this necessarily also matches `pushd=echo; $pushd /other`,
-        # where nothing moves. That direction is chosen deliberately: matching
-        # over-blocks (a visible, rewordable stall), while not matching lets a real
-        # ANSI-C-spelled builtin through unrecorded. Fail-CLOSED, consistent with the
-        # `$'cd'` handling `_cd_target_loose` has always had. A variable whose NAME is
-        # not a target (`$cmd`) still does not match.
-        _stripped = base.lstrip('$')
-        is_target = base in targets or (_stripped in targets
-                                        and _stripped in _ANSIC_BUILTINS)
+        is_target = _is_target_word(base, targets)
         # Covers the APPEND (`A+=1`) and INDEXED (`A[0]=1`, `A[0]+=1`) forms as well
         # as plain `A=1`. Bash runs `A+=1 git commit` and `A[0]+=1 git commit` exactly
         # like `A=1 git commit`; with the old `^\w+=` the assignment stayed in argv,
@@ -309,16 +427,7 @@ def _command_argv(seg, target, with_raw=False):
             # pipeline negation — the command still runs
             i += 1
             prev_dash = False
-        elif (t.endswith(')') and not t.startswith('(') and not is_target
-              and len(toks) > i + 1 and case_state != 'subject'):
-            # `case` branch pattern label — `x)` in `case x in x) git commit;;`.
-            # It heads its own segment for EVERY branch (';;' splits), not just
-            # the first, so matching the label shape covers them all without
-            # tracking case-statement state. An unquoted command word can never
-            # end in ')', so this cannot swallow a real command.
-            # A label may legally CONTAIN a paren once quoted or escaped
-            # (`a\(b)`), so only a leading '(' is excluded here — that form is a
-            # group and is handled by the grouping branch below.
+        elif _is_case_label(t, is_target, toks, i, case_state):
             # Consuming the label ENDS the subject run: without this the
             # subject-skipping branch below keeps eating the branch BODY. The
             # detection paths pass a target and are saved by its `not is_target`
@@ -341,44 +450,10 @@ def _command_argv(seg, target, with_raw=False):
                 case_state = 'subject'
             i += 1
             prev_dash = False
-            # `coproc` takes a NAME only in the form `coproc NAME <compound>`;
-            # in `coproc bash -c '…'` the very next token IS the command, so an
-            # unconditional skip hid it (fail-OPEN regression). Require the
-            # name-then-compound shape before skipping.
-            # The compound may open with '{' / '(' OR with a KEYWORD
-            # (`coproc JOB if git commit; then :; fi`) — accept both shapes.
-            _named_coproc = (base == 'coproc' and i + 1 < len(toks)
-                             and re.match(r'^[A-Za-z_]\w*$', toks[i] if i < len(toks) else '')
-                             and (toks[i + 1][:1] in ('{', '(')
-                                  or toks[i + 1].rsplit('/', 1)[-1] in _SHELL_KEYWORDS))
-            if ((base == 'function' or _named_coproc) and i < len(toks)
-                    and toks[i].rsplit('/', 1)[-1] not in targets
-                    and not (toks[i].rsplit('/', 1)[-1].lstrip('$') in targets
-                             and toks[i].rsplit('/', 1)[-1].lstrip('$') in _ANSIC_BUILTINS)):
-                # `function f { git commit; }` and `coproc NAME { git commit; }`
-                # — the declaration/coproc NAME follows the keyword and would
-                # otherwise be read as the command word, hiding the body
-                # (verified: `function f { gh pr merge 1; }; f` runs the merge
-                # but counted 0). The POSIX form `f() { … }` is already covered:
-                # `f()` matches the label-shape rule. Skipping the body's
-                # commands is fail-CLOSED — a declared-but-never-called function
-                # only over-fires.
+            if _skips_declared_name(toks, i, base, targets):
                 i += 1
         elif case_state and not is_target:
-            # The case SUBJECT and first pattern label, which share a segment
-            # with the branch body: `case <subject> in <label>) git commit;;`.
-            # Later branches head their own segment (';;' splits) and are caught
-            # by the label-shape rule above; only the first needs this state.
-            #
-            # The two phases must be distinguished by the `in` keyword, not by
-            # "first token ending in ')'": a subject can itself end in ')'
-            # (`case "$(printf x)" in x) …`), which ended subject-tracking early
-            # and left `in` as the detected command word — fail-OPEN (verified).
-            if case_state == 'subject':
-                if base == 'in':
-                    case_state = 'label'
-            elif t.endswith(')'):
-                case_state = None
+            case_state = _next_case_state(case_state, base, t)
             i += 1
             prev_dash = False
         elif re.match(r'^[A-Za-z_]\w*\(\)\{?$', t) and len(toks) > i + 1:
@@ -389,27 +464,13 @@ def _command_argv(seg, target, with_raw=False):
             i += 1
             prev_dash = False
         elif t[:1] in ('(', '{'):
-            # Grouping punctuation reached AFTER a keyword was skipped:
-            # `if (git commit); then` / `if { git commit; }; then`. The pre-loop
-            # strip only sees the segment's first token, so a group opened
-            # behind a keyword kept the command word hidden — fail-OPEN
-            # (verified). Strip here too and re-examine the same position.
-            stripped = t.lstrip('({')
-            if stripped:
-                toks = toks[:i] + [stripped] + toks[i + 1:]   # position preserved
-            else:
-                toks = toks[:i] + toks[i + 1:]
-                if raw_toks is not None:
-                    raw_toks = raw_toks[:i] + raw_toks[i + 1:]
+            # Strip it and re-examine the SAME position — see _strip_group_punct.
+            toks, raw_toks = _strip_group_punct(toks, raw_toks, i)
             prev_dash = False
-        elif re.match(r'^(\d*[<>]{1,2}|&>{1,2})', t):
-            # redirection prefix (>, >>, 2>, &>, N<, >file, 2>/dev/null, ...).
-            # A bare operator token ('>', '2>') consumes the target filename
-            # that follows; a fused token ('>file', '2>&1') is self-contained.
-            i += 1
+        elif _REDIR_RE.match(t):
+            # redirection prefix (>, >>, 2>, &>, N<, >file, 2>/dev/null, ...)
+            i += _redirection_span(t, toks, i)
             prev_dash = False
-            if re.match(r'^(\d*[<>]{1,2}|&>{1,2})$', t) and i < len(toks):
-                i += 1
         elif base in _WRAPPERS:
             saw_wrap = True
             i += 1
@@ -444,6 +505,27 @@ def _reject_crlf(target, what):
     return target
 
 
+def _may_be_substitution(operand):
+    """True iff `operand` carries a character that could OPEN a live substitution.
+
+    Extracted from _mask_literal_substitution as a named predicate purely to reduce
+    that function's branch count (CodeScene "Complex Conditional", #510); behavior
+    unchanged (this is the De Morgan complement of its former early-return test)."""
+    return bool(operand) and ('$' in operand or '`' in operand)
+
+
+def _spelled_live(operand, raw_spelling):
+    """True iff `raw_spelling` is a spelling bash actually RUNS the substitution for
+    -- the bare operand, or its exactly-double-quoted form.
+
+    Extracted from _mask_literal_substitution as a named predicate purely to reduce
+    that function's branch count (#510); behavior unchanged. Every literal spelling
+    (single quotes, adjacent-quote concatenation, backslash escapes) differs from
+    both, and an unavailable spelling (None) proves nothing -- fail CLOSED."""
+    return (raw_spelling is not None
+            and raw_spelling in (operand, '"' + operand + '"'))
+
+
 def _mask_literal_substitution(operand, raw_spelling):
     """Re-quote an operand that was SINGLE-quoted in `seg`, so a LITERAL path is
     never mistaken downstream for a live command substitution.
@@ -474,13 +556,13 @@ def _mask_literal_substitution(operand, raw_spelling):
     escapes -- fails both tests, because posix=False keeps the very characters that
     made it a literal. Fail-CLOSED: unbalanced quoting cannot be tokenized at all, so
     it too is treated as not-live."""
-    if not operand or ('$' not in operand and '`' not in operand):
+    if not _may_be_substitution(operand):
         return operand
     # `raw_spelling` is the ORIGINAL text of THIS argument. Bash runs the
     # substitution only for the bare or exactly-double-quoted spelling; every literal
     # spelling (single quotes, adjacent-quote concatenation, backslash escapes)
     # differs from both, and an unavailable spelling proves nothing. Fail CLOSED.
-    if raw_spelling is not None and raw_spelling in (operand, '"' + operand + '"'):
+    if _spelled_live(operand, raw_spelling):
         return operand
     return "'" + operand + "'"
 
@@ -548,6 +630,85 @@ _ANSIC_BUILTINS = ('cd', 'pushd', 'popd')
 
 _CD_LEAD_WORDS = ('if', 'then', 'else', 'elif', 'while', 'until', 'do', '!', 'time')
 
+# The directory-stack builtins. Unlike `cd` they accept `-n` (change the stack
+# without changing the directory), and `popd`'s destination is a stack entry.
+_CD_STACK_BUILTINS = ('pushd', 'popd')
+
+
+def _raw_spelling(raw_argv, idx):
+    """The ORIGINAL spelling of `argv[idx]`, or None when the raw stream is
+    unavailable or too short -- callers then fail CLOSED (see _raw_tokens).
+
+    raw_argv is aligned with argv by construction, so this is THIS operand's own
+    spelling. Position matters: a segment-wide search was satisfied by a decoy copy
+    elsewhere (a comment, another argument) while the real operand stayed quoted --
+    and an offset into the argv could not survive the token deletions _command_argv
+    performs.
+
+    Extracted from _cd_target_loose and _scan_commit -- which carried identical
+    inline copies -- purely to reduce their branch counts (#510); behavior
+    unchanged."""
+    if raw_argv is None or idx >= len(raw_argv):
+        return None
+    return raw_argv[idx]
+
+
+def _is_cd_option(a, opts_done):
+    """True iff argv word `a` is an OPTION of a cd/pushd/popd invocation rather than
+    its operand: before any `--`, dash-prefixed, and not the bare `-` (which IS the
+    OLDPWD operand).
+
+    Extracted from _cd_target_loose as a named predicate purely to reduce its branch
+    count (CodeScene "Complex Conditional", #510); behavior unchanged."""
+    return not opts_done and a.startswith('-') and len(a) > 1 and a != '-'
+
+
+def _cd_operand_index(argv, cmd0):
+    """(index of the first OPERAND in `argv`, no_chdir) for a cd/pushd/popd argv; the
+    index is None when there is no operand at all.
+
+    `-n` suppresses the directory change for BOTH stack builtins (`pushd -n /other`
+    only pushes onto the stack; `popd -n` only drops an entry), so recording them
+    would block a commit whose cwd never moved. It counts ONLY in option position: a
+    scan of the whole argv also matched it as an OPERAND or a redirection target
+    (`pushd -- -n`, `pushd /other > -n`) and reported "no cd" while the shell really
+    moved -- fail-OPEN. So this walk stops treating tokens as options at `--` or at
+    the first operand, and `-n` is honoured only before that point. `cd` has no `-n`,
+    hence the cmd0 guard.
+
+    Split out of _cd_target_loose purely to reduce its complexity (CodeScene "Complex
+    Method" / "Bumpy Road Ahead", #510); behavior unchanged."""
+    no_chdir = False
+    opts_done = False
+    for j, a in enumerate(argv[1:], start=1):
+        if not opts_done and a == '--':
+            opts_done = True
+            continue
+        if _is_cd_option(a, opts_done):
+            if a == '-n' and cmd0 in _CD_STACK_BUILTINS:
+                no_chdir = True
+            continue            # cd options (-L/-P/-e/-@); '-' IS the OLDPWD operand
+        return j, no_chdir
+    return None, no_chdir
+
+
+def _loose_cd_destination(cmd0, operand, raw_spelling):
+    """The recorded destination for `cmd0`'s first operand, or AMBIGUOUS_CD when it
+    is not statically knowable.
+
+    Split out of _cd_target_loose purely to reduce its complexity (#510); behavior
+    unchanged."""
+    if cmd0 == 'popd':
+        return AMBIGUOUS_CD   # destination is a stack entry, not this operand
+    if operand.startswith('~'):
+        # `cd ~` expands to $HOME but `cd "~"` / `cd \~` is a LITERAL directory
+        # named '~'. Tokenization has already discarded which one this was, so
+        # the destination is genuinely unknown -> fail CLOSED rather than guess
+        # (the strict detector's expanduser only feeds the pre-existing trusted
+        # path and is left alone).
+        return AMBIGUOUS_CD
+    return _mask_literal_substitution(operand, raw_spelling)
+
 
 def _cd_target_loose(seg):
     """The operand of a `cd` that changes the CURRENT shell's directory, else None.
@@ -605,50 +766,18 @@ def _cd_target_loose(seg):
     # They are recorded here (seen, never trusted) like every other loose cd; popd
     # and a bare pushd (which SWAPS the top two stack entries) have no statically
     # knowable destination, so they report AMBIGUOUS_CD and the caller fails CLOSED.
-    if cmd0 not in ('cd', 'pushd', 'popd'):
+    if cmd0 not in ('cd',) + _CD_STACK_BUILTINS:
         return None
-    # `-n` suppresses the directory change for BOTH stack builtins (`pushd -n /other`
-    # only pushes onto the stack; `popd -n` only drops an entry), so recording them
-    # would block a commit whose cwd never moved. It counts ONLY in option position:
-    # a scan of the whole argv also matched it as an OPERAND or a redirection target
-    # (`pushd -- -n`, `pushd /other > -n`) and reported "no cd" while the shell
-    # really moved -- fail-OPEN. So the walk below stops treating tokens as options
-    # at `--` or at the first operand, and `-n` is honoured only before that point.
-    # `cd` has no `-n`, hence the cmd0 guard.
-    no_chdir = False
-    opts_done = False
-    for j, a in enumerate(argv[1:], start=1):
-        if not opts_done and a == '--':
-            opts_done = True
-            continue
-        if not opts_done and a.startswith('-') and len(a) > 1 and a != '-':
-            if a == '-n' and cmd0 in ('pushd', 'popd'):
-                no_chdir = True
-            continue            # cd options (-L/-P/-e/-@); '-' IS the OLDPWD operand
-        # First operand reached -- decide the stack builtins here, where `-n` has
-        # been seen if and only if it was a real option.
-        if no_chdir:
-            return None
-        if cmd0 == 'popd':
-            return AMBIGUOUS_CD   # destination is a stack entry, not this operand
-        if a.startswith('~'):
-            # `cd ~` expands to $HOME but `cd "~"` / `cd \~` is a LITERAL directory
-            # named '~'. Tokenization has already discarded which one this was, so
-            # the destination is genuinely unknown -> fail CLOSED rather than guess
-            # (the strict detector's expanduser only feeds the pre-existing trusted
-            # path and is left alone).
-            return AMBIGUOUS_CD
-        # raw_argv is aligned with argv by construction, so this is THIS operand's
-        # own spelling. Position matters: a segment-wide search was satisfied by a
-        # decoy copy elsewhere (a comment, another argument) while the real operand
-        # stayed quoted -- and an offset into the argv could not survive the token
-        # deletions _command_argv performs.
-        return _mask_literal_substitution(
-            a, raw_argv[j] if raw_argv is not None and j < len(raw_argv) else None)
+    j, no_chdir = _cd_operand_index(argv, cmd0)
+    # `-n` means nothing moved -- with or without an operand.
+    if no_chdir:
+        return None
     # No operand: bare `cd` goes to $HOME, bare `pushd` SWAPS the top two stack
-    # entries, bare `popd` pops one -- none of them statically knowable. But `-n`
-    # still means nothing moved.
-    return None if no_chdir else AMBIGUOUS_CD
+    # entries, bare `popd` pops one -- none of them statically knowable.
+    if j is None:
+        return AMBIGUOUS_CD
+    # Decided here, where `-n` has been seen if and only if it was a real option.
+    return _loose_cd_destination(cmd0, argv[j], _raw_spelling(raw_argv, j))
 
 
 def _trusted_cd(pending_cd, op):
@@ -667,6 +796,49 @@ AMBIGUOUS_CD = '-ambiguous-cd-operands'
 # runs (A || cd) && commit -- the commit can execute with the cd SKIPPED. An adjacent
 # '&&' is therefore proof only when the cd was itself unconditional or '&&'-gated.
 _CD_REACHED_OPS = ('', ';', '&&')
+
+
+def _cd_authoritative(target_dir, pending_cd_op, cds):
+    """True iff `target_dir` fixes the repo on its own, so an unconfirmed cd need not
+    be reported alongside it.
+
+    All three conjuncts are load-bearing. The target must be ABSOLUTE -- `cd /other;
+    cd sub && commit` runs in /other/sub, and a RELATIVE target is resolved by
+    git/bash against the RUNTIME cwd but by the gate against the payload cwd, so the
+    two would silently disagree. The cd must have been REACHED (_CD_REACHED_OPS), so
+    an adjacent '&&' really is proof it ran. And the strict regex's value must AGREE
+    with the TOKENIZED operand: `cd "~" && commit` enters a LITERAL '~' dir though the
+    regex expands it to $HOME, and `cd /other >/dev/null && commit` leaves the
+    redirection inside the raw value. In each mismatch the raw value is the
+    untrustworthy one.
+
+    Extracted from _iter_gh and _scan_commit -- which spelled the same predicate two
+    different ways -- purely to reduce their branch counts (CodeScene "Complex
+    Conditional", #510). Behavior is unchanged in both: _scan_commit's former
+    `trusted_cd = base if pending_cd_op in _CD_REACHED_OPS else ''` followed by
+    `trusted_cd.startswith('/')` is exactly this conjunction, since '' is never
+    absolute."""
+    return (target_dir.startswith('/') and pending_cd_op in _CD_REACHED_OPS
+            and bool(cds) and cds[-1] == target_dir)
+
+
+def _record_cds(seg, cds):
+    """Append `seg`'s LOOSE cd operand to `cds` (the untrusted channel) and return its
+    STRICT cd target, or None when `seg` is not a plain `cd`.
+
+    The untrusted channel always records the TOKENIZED operand: the strict regex keeps
+    everything after `cd `, so `cd /x >/dev/null` would otherwise be compared as the
+    literal path `/x >/dev/null` -- a string an attacker can create as a symlink into
+    the session repo while bash strips the redirection and moves somewhere else
+    entirely. The strict form alone feeds the TRUSTED path.
+
+    Extracted from _scan_commit and _iter_gh -- which carried identical copies -- purely
+    to reduce their branch counts (CodeScene "Complex Method", #510); behavior
+    unchanged in both."""
+    loose_cd = _cd_target_loose(seg)
+    if loose_cd is not None:
+        cds.append(loose_cd)      # seen but never trusted -- _cd_target_loose
+    return _cd_target(seg)
 
 
 def _untrusted_cd(cds):
@@ -1363,6 +1535,145 @@ def extraction_truncated(cmd):
     return chunks_and_truncation(cmd)[1]
 
 
+# git GLOBAL options that take a SEPARATE value token. The value must be skipped, or
+# it is mistaken for the subcommand (`git --git-dir /d --work-tree /r commit`).
+_GIT_VALUE_OPTS = ('-C', '-c', '--git-dir', '--work-tree', '--namespace',
+                   '--super-prefix', '--config-env')
+
+
+def _git_subcommand(argv):
+    """(subcommand, its index) for a `git` argv -- the first non-flag token after
+    `git`, with each global option's SEPARATE value skipped. (None, len(argv)) when
+    there is no subcommand at all.
+
+    Split out of _scan_commit purely to reduce its complexity (CodeScene "Complex
+    Method", #510); behavior unchanged."""
+    skip = False
+    for i, a in enumerate(argv[1:], start=1):
+        if skip:
+            skip = False
+            continue
+        if a in _GIT_VALUE_OPTS:
+            skip = True
+            continue
+        if a.startswith('-'):
+            continue
+        return a, i
+    return None, len(argv)
+
+
+def _resolve_c_operand(raw, base, authoritative, tilde_c):
+    """Fold ONE global `git -C <raw>` into (base, authoritative, tilde_c).
+
+    EVERY tilde form invalidates authority, not just the ones expanduser resolves.
+    '~'/'~user' come back absolute and are handled by the isabs arm, but the
+    shell-only '~+' and '~-' (bash: $PWD / $OLDPWD) stay RELATIVE here, so they fell
+    through to the join and left an earlier trusted cd's authority intact -- `cd /repo
+    && git -C ~+ commit` scoped the gate to a nonexistent /repo/~+ with an EMPTY
+    untrusted_cd while bash committed in /repo. Bash resolves all of these from
+    runtime state we do not have, so none of them may be authoritative.
+
+    An absolute `-C` fixes the repo on its own, whatever any preceding cd did -- but
+    only when it really is absolute. Tokenization has discarded the tilde's quoting,
+    so `git -C "~"` is a LITERAL RELATIVE dir that git resolves against the runtime
+    cwd (`/other/~`) even though expanduser turned it into an absolute $HOME here. A
+    later tilde operand must also INVALIDATE authority an earlier absolute `-C`
+    established (`-C /session -C "~"` resolves against /session at runtime, not
+    $HOME).
+
+    Split out of _scan_commit purely to reduce its complexity (#510); behavior
+    unchanged."""
+    v = os.path.expanduser(raw)
+    if raw.startswith('~'):
+        tilde_c = True
+        authoritative = False
+    if os.path.isabs(v):
+        return v, not raw.startswith('~'), tilde_c
+    if base:
+        return os.path.join(base, v), authoritative, tilde_c
+    return v, authoritative, tilde_c
+
+
+def _apply_global_c(argv, raw_argv, sub_idx, base, authoritative, allow_cd):
+    """Resolve every PRE-SUBCOMMAND global `git -C`, returning
+    (base, authoritative, tilde_c, nested_c).
+
+    git applies every global `-C` in order; a relative value resolves from the
+    directory established so far (the cd base, then each preceding `-C`). Only
+    pre-subcommand `-C` changes directory -- `git commit -C <ref>` (AFTER the
+    subcommand) is the reuse-message flag, not a cd -- so the walk is bounded by
+    `sub_idx` or it mis-scopes the marker check to the wrong repo.
+
+    `tilde_c` is set by any tilde operand and `nested_c` by a `-C` seen in a NESTED
+    chunk; the caller turns each into an out-of-band blocking token (see
+    _commit_untrusted).
+
+    Split out of _scan_commit purely to reduce its complexity (CodeScene "Complex
+    Method" / "Bumpy Road Ahead", #510); behavior unchanged."""
+    tilde_c = False
+    nested_c = False
+    k = 0
+    while k < sub_idx:
+        if argv[k] != '-C' or k + 1 >= sub_idx:
+            k += 1
+            continue
+        # raw_argv is aligned with argv, so this is THIS operand's own spelling --
+        # not a lookalike elsewhere in the segment. Tokenized once per segment
+        # (inside _command_argv), so N `-C` operands stay linear rather than
+        # re-lexing the segment N times.
+        #
+        # Same fail-CLOSED rule as _cd_target: `git -C` is the OTHER way a
+        # target_dir is derived, and every gate prints it through a positional
+        # newline-delimited protocol (#511). Validate the RAW operand, before
+        # _mask_literal_substitution's re-quoting, so a CR/LF cannot hide behind
+        # either the quoted or the masked spelling.
+        rk = k + 1
+        _reject_crlf(argv[rk], 'git -C target')
+        raw = _mask_literal_substitution(argv[rk], _raw_spelling(raw_argv, rk))
+        if allow_cd:
+            base, authoritative, tilde_c = _resolve_c_operand(
+                raw, base, authoritative, tilde_c)
+        else:
+            # Nested chunk: this scanner deliberately does NOT honour `-C` for
+            # SCOPING (that would change how nested operations resolve -- out of
+            # scope here). But staying silent is not neutral: it returned the same
+            # ('', '') as "no cd at all", so the gate anchored on the session cwd
+            # while git committed in the `-C` target. Record its presence so the
+            # caller can BLOCK.
+            nested_c = True
+        k += 2
+    return base, authoritative, tilde_c, nested_c
+
+
+def _commit_untrusted(cds, allow_cd, authoritative, tilde_c, nested_c):
+    """The unconfirmed-cd field for a `git commit` match.
+
+    Report the unconfirmed cd unless the target is AUTHORITATIVE: either an
+    adjacent-and-reachable '&&' proved the cd ran, or an absolute `git -C` fixed the
+    repo regardless. An absolute target_dir alone is NOT enough -- it may itself have
+    come from an unproven cd (`cd /a || cd /b && commit`).
+
+    A tilde `-C` makes target_dir itself a LIE, with or without any cd to report:
+    tokenization has already discarded the quoting, so we cannot tell `git -C ~` (git
+    really does get $HOME) from `git -C "~"` (git gets a LITERAL relative '~',
+    resolved against the runtime cwd). expanduser commits to the first reading, so the
+    gate would validate $HOME's marker while the commit lands in <cwd>/~. Since the
+    two are indistinguishable here, emit a leading-dash token: gate_classify_target()
+    rules any '-*' operand unresolvable, so the resolver BLOCKS. Fail-CLOSED, and
+    never a real absolute path that could be mistaken for one. `nested_c` gets the
+    same out-of-band blocking token, for a `-C` this scanner saw but did not resolve.
+
+    Split out of _scan_commit purely to reduce its complexity (#510); behavior
+    unchanged."""
+    if authoritative:
+        return ''
+    if tilde_c:
+        return '-tilde-c-operand'
+    if nested_c:
+        return '-nested-c-operand'
+    return _untrusted_cd(cds) if allow_cd else ''
+
+
 def _scan_commit(chunk, allow_cd):
     """Scan one command chunk for a real `git commit`; return the result tuple
     or None. allow_cd=False for substitution bodies (subshell cwd is untrusted)."""
@@ -1371,15 +1682,7 @@ def _scan_commit(chunk, allow_cd):
     # EVERY cd seen, never reset by intervening commands — see _untrusted_cd.
     cds = []
     for op, seg in split_segments(chunk):
-        # The untrusted channel always records the TOKENIZED operand: the strict
-        # regex keeps everything after `cd `, so `cd /x >/dev/null` would otherwise
-        # be compared as the literal path `/x >/dev/null` — a string an attacker can
-        # create as a symlink into the session repo while bash strips the
-        # redirection and moves somewhere else entirely.
-        loose_cd = _cd_target_loose(seg)
-        if loose_cd is not None:
-            cds.append(loose_cd)      # seen but never trusted -- _cd_target_loose
-        cd = _cd_target(seg)
+        cd = _record_cds(seg, cds)
         if cd is not None:
             pending_cd = cd           # strict form only: feeds the TRUSTED path
             pending_cd_op = op
@@ -1388,146 +1691,21 @@ def _scan_commit(chunk, allow_cd):
         if not argv or not _is_exe(argv[0], 'git'):
             pending_cd = None
             continue
-        # subcommand = first non-flag token after git. git global options that
-        # take a SEPARATE value token must have that value skipped, or it is
-        # mistaken for the subcommand (git --git-dir /d --work-tree /r commit).
-        skip = False
-        sub = None
-        sub_idx = len(argv)
-        for i, a in enumerate(argv[1:], start=1):
-            if skip:
-                skip = False
-                continue
-            if a in ('-C', '-c', '--git-dir', '--work-tree', '--namespace',
-                     '--super-prefix', '--config-env'):
-                skip = True
-                continue
-            if a.startswith('-'):
-                continue
-            sub = a
-            sub_idx = i
-            break
+        sub, sub_idx = _git_subcommand(argv)
         if sub != 'commit':
             pending_cd = None
             continue
         base = _trusted_cd(pending_cd, op) if allow_cd else ''
-        # '' unless an adjacent '&&' PROVED the cd ran -- which also requires the cd
-        # itself to have been reachable (see _CD_REACHED_OPS).
-        trusted_cd = base if pending_cd_op in _CD_REACHED_OPS else ''
-        # Authoritative only when the trusted cd is ABSOLUTE *and* the strict regex
-        # agrees with the TOKENIZED operand. `cd /other; cd sub && commit` runs in
-        # /other/sub (relative -> not authoritative); `cd "~" && commit` enters a
-        # LITERAL '~' dir though the regex expands it to $HOME; and
-        # `cd /other >/dev/null && commit` leaves the redirection inside the raw
-        # value. In each mismatch the raw value is the untrustworthy one.
-        authoritative = (trusted_cd.startswith('/')
-                         and bool(cds) and cds[-1] == trusted_cd)
-        # Set by any tilde `-C` operand: target_dir then DISAGREES with what git will
-        # do, so it cannot be handed to the gate as an anchor (see the emit below).
-        tilde_c = False
-        # Set by a `-C` seen in a NESTED chunk, where the walk below does not run.
-        nested_c = False
-        # git applies every GLOBAL -C in order; a relative value resolves from
-        # the directory established so far (cd base, then each preceding -C).
-        # Only pre-subcommand -C changes directory; `git commit -C <ref>` (after
-        # the subcommand) is the reuse-message flag, not a cd — so bound the
-        # walk to sub_idx or it mis-scopes the marker check to the wrong repo.
-        k = 0
-        while k < sub_idx:
-            if argv[k] == '-C' and k + 1 < sub_idx:
-                # raw_argv is aligned with argv, so this is THIS operand's own
-                # spelling -- not a lookalike elsewhere in the segment. Tokenized
-                # once per segment (inside _command_argv), so N `-C` operands stay
-                # linear rather than re-lexing the segment N times.
-                #
-                # Same fail-CLOSED rule as _cd_target: `git -C` is the OTHER way a
-                # target_dir is derived, and every gate prints it through a
-                # positional newline-delimited protocol (#511). Validate the RAW
-                # operand, before _mask_literal_substitution's re-quoting, so a
-                # CR/LF cannot hide behind either the quoted or masked spelling.
-                _rk = k + 1
-                _reject_crlf(argv[_rk], 'git -C target')
-                raw = _mask_literal_substitution(
-                    argv[_rk],
-                    raw_argv[_rk] if raw_argv is not None and _rk < len(raw_argv) else None)
-                if allow_cd:
-                    v = os.path.expanduser(raw)
-                    if raw.startswith('~'):
-                        # EVERY tilde form, not just the ones expanduser resolves.
-                        # '~'/'~user' come back absolute and are handled below, but
-                        # the shell-only '~+' and '~-' (bash: $PWD / $OLDPWD) stay
-                        # RELATIVE here, so they fell through to the join and left an
-                        # earlier trusted cd's authority intact -- `cd /repo && git
-                        # -C ~+ commit` scoped the gate to a nonexistent /repo/~+
-                        # with an EMPTY untrusted_cd while bash committed in /repo.
-                        # Bash resolves all of these from runtime state we do not
-                        # have, so none of them may be authoritative.
-                        tilde_c = True
-                        authoritative = False
-                    if os.path.isabs(v):
-                        base = v
-                        # An absolute `-C` fixes the repo on its own, whatever any
-                        # preceding cd did -- but only when it really is absolute.
-                        # Tokenization has discarded the tilde's quoting, so
-                        # `git -C "~"` is a LITERAL RELATIVE dir that git resolves
-                        # against the runtime cwd (`/other/~`) even though
-                        # expanduser turned it into an absolute $HOME here.
-                        # A later tilde operand must also INVALIDATE authority an
-                        # earlier absolute -C established (`-C /session -C "~"`
-                        # resolves against /session at runtime, not $HOME).
-                        authoritative = not raw.startswith('~')
-                    elif base:
-                        base = os.path.join(base, v)
-                    else:
-                        base = v
-                else:
-                    # Nested chunk: this scanner deliberately does NOT honour `-C`
-                    # for SCOPING (that would change how nested operations resolve
-                    # -- out of scope here). But staying silent is not neutral: it
-                    # returned the same ('', '') as "no cd at all", so the gate
-                    # anchored on the session cwd while git committed in the -C
-                    # target. Record its presence so the emit below can BLOCK.
-                    nested_c = True
-                k += 2
-            else:
-                k += 1
-        target_dir = base
+        base, authoritative, tilde_c, nested_c = _apply_global_c(
+            argv, raw_argv, sub_idx, base,
+            _cd_authoritative(base, pending_cd_op, cds), allow_cd)
         opt_words = argv[:argv.index('--')] if '--' in argv else argv
-        is_amend = '--amend' in opt_words
-        # Suppress only when the resolved target is ABSOLUTE — then it alone fixes
-        # the repo and a preceding cd cannot change it. A RELATIVE target (`git -C .`
-        # after a `cd /other`) is resolved by git against the RUNTIME cwd but by the
-        # gate against the payload cwd, so the cd must still be reported or the two
-        # silently disagree.
-        # Report the unconfirmed cd EXCEPT where it cannot matter: an adjacent
-        # '&&' already PROVED the cd ran (so target_dir is that cd, confirmed), or
-        # the resolved target is ABSOLUTE and fixes the repo by itself.
-        # Report the unconfirmed cd unless the target is AUTHORITATIVE: either an
-        # adjacent-and-reachable '&&' proved the cd ran, or an absolute `git -C`
-        # fixed the repo regardless. An absolute target_dir alone is NOT enough --
-        # it may itself have come from an unproven cd (`cd /a || cd /b && commit`).
-        untrusted = _untrusted_cd(cds) if allow_cd else ''
-        if authoritative:
-            untrusted = ''
-        elif tilde_c:
-            # A tilde `-C` makes target_dir itself a LIE, with or without any cd to
-            # report: tokenization has already discarded the quoting, so we cannot
-            # tell `git -C ~` (git really does get $HOME) from `git -C "~"` (git gets
-            # a LITERAL relative '~', resolved against the runtime cwd). expanduser
-            # commits to the first reading, so the gate would validate $HOME's marker
-            # while the commit lands in <cwd>/~. Since the two are indistinguishable
-            # here, emit a leading-dash token: gate_classify_target() rules any '-*'
-            # operand unresolvable, so the resolver BLOCKS. Fail-CLOSED, and never a
-            # real absolute path that could be mistaken for one.
-            untrusted = '-tilde-c-operand'
-        elif nested_c:
-            # Same out-of-band blocking token, for a `-C` this scanner saw but did
-            # not resolve (see the nested branch above).
-            untrusted = '-nested-c-operand'
         # `authoritative` is surfaced as a 5th element for git_commit's nested-payload
         # suppression, which must NOT re-derive it from target_dir (see there). This
         # scanner is private and both call sites re-pack a 4-tuple, so no caller sees it.
-        return True, target_dir, is_amend, untrusted, authoritative
+        return (True, base, '--amend' in opt_words,
+                _commit_untrusted(cds, allow_cd, authoritative, tilde_c, nested_c),
+                authoritative)
     return None
 
 
@@ -1624,6 +1802,25 @@ def _gh_pr_number(tokens):
     return ''
 
 
+def _gh_cd_fields(pending_cd, op, pending_cd_op, cds, allow_cd):
+    """(target_dir, untrusted_cd) for one `gh pr` match.
+
+    As in _scan_commit: an adjacent '&&' proves the cd ran (target_dir IS that cd
+    here -- gh has no `-C`), and an authoritative target fixes the repo alone, so
+    there is no unconfirmed cd left to report. allow_cd=False is a substitution body,
+    whose subshell cwd is untrusted -- both fields are then empty.
+
+    Split out of _iter_gh purely to reduce its complexity (CodeScene "Complex Method"
+    / "Complex Conditional", #510); behavior unchanged (with allow_cd False the old
+    code reached _cd_authoritative with target_dir '', which is never absolute)."""
+    if not allow_cd:
+        return '', ''
+    target_dir = _trusted_cd(pending_cd, op)
+    if _cd_authoritative(target_dir, pending_cd_op, cds):
+        return target_dir, ''
+    return target_dir, _untrusted_cd(cds)
+
+
 def _iter_gh(chunk, subcommand, allow_cd):
     """Yield one result tuple per `gh pr <subcommand>` command word in `chunk`.
     allow_cd=False for substitution bodies (subshell cwd untrusted)."""
@@ -1631,15 +1828,7 @@ def _iter_gh(chunk, subcommand, allow_cd):
     pending_cd_op = ''
     cds = []            # every cd seen, never reset -- see _untrusted_cd
     for op, seg in split_segments(chunk):
-        # The untrusted channel always records the TOKENIZED operand: the strict
-        # regex keeps everything after `cd `, so `cd /x >/dev/null` would otherwise
-        # be compared as the literal path `/x >/dev/null` — a string an attacker can
-        # create as a symlink into the session repo while bash strips the
-        # redirection and moves somewhere else entirely.
-        loose_cd = _cd_target_loose(seg)
-        if loose_cd is not None:
-            cds.append(loose_cd)      # seen but never trusted -- _cd_target_loose
-        cd = _cd_target(seg)
+        cd = _record_cds(seg, cds)
         if cd is not None:
             pending_cd = cd           # strict form only: feeds the TRUSTED path
             pending_cd_op = op
@@ -1653,17 +1842,9 @@ def _iter_gh(chunk, subcommand, allow_cd):
         if j is None:
             pending_cd = None
             continue
-        target_dir = _trusted_cd(pending_cd, op) if allow_cd else ''
-        pr_num = _gh_pr_number(rest[j + 2:])
-        # As in _scan_commit: an adjacent '&&' proved the cd ran (target_dir IS that
-        # cd here -- gh has no `-C`), and an absolute target fixes the repo alone.
-        untrusted = _untrusted_cd(cds) if allow_cd else ''
-        # Same rule as _scan_commit: absolute, reachable, and the raw value must
-        # agree with the tokenized operand.
-        if (target_dir.startswith('/') and pending_cd_op in _CD_REACHED_OPS
-                and cds and cds[-1] == target_dir):
-            untrusted = ''
-        yield True, target_dir, pr_num, untrusted
+        target_dir, untrusted = _gh_cd_fields(
+            pending_cd, op, pending_cd_op, cds, allow_cd)
+        yield True, target_dir, _gh_pr_number(rest[j + 2:]), untrusted
         pending_cd = None
 
 
@@ -1732,6 +1913,22 @@ def _env_selector_in_prefix(seg):
     return False
 
 
+# Words that can put a variable in the CHILD's environment. `local -x` exports too
+# (inside a function), as do declare/typeset.
+_EXPORT_WORDS = frozenset(('export', 'declare', 'typeset', 'local'))
+
+
+def _names_gh_selector(tok):
+    """True iff `tok` names GH_REPO/GH_HOST -- either as an assignment word
+    (`GH_REPO=o/r`, `GH_REPO+=o/r`) or as the bare NAME (`export GH_REPO`, which
+    exports a value assigned a step earlier).
+
+    Extracted from _exports_selector as a named predicate purely to reduce that
+    function's branch count (CodeScene "Complex Conditional", #513); behavior
+    unchanged."""
+    return bool(_GH_ENV_ASSIGN_RE.match(tok)) or tok in ('GH_REPO', 'GH_HOST')
+
+
 def _exports_selector(seg):
     """True iff `seg` is an `export`/`declare -x`/`typeset -x` of GH_REPO/GH_HOST.
 
@@ -1752,12 +1949,9 @@ def _exports_selector(seg):
     """
     toks = [t.lstrip('({') for t in _tokenize(seg)]
     toks = [t for t in toks if t]
-    # `local -x` exports too (inside a function), as do declare/typeset.
-    if not any(t.rsplit('/', 1)[-1] in ('export', 'declare', 'typeset', 'local')
-               for t in toks):
+    if not any(t.rsplit('/', 1)[-1] in _EXPORT_WORDS for t in toks):
         return False
-    return any(_GH_ENV_ASSIGN_RE.match(t) or t in ('GH_REPO', 'GH_HOST')
-               for t in toks)
+    return any(_names_gh_selector(t) for t in toks)
 
 # Shorthands on `gh pr merge` that CONSUME a value: -R/--repo, -b/--body,
 # -F/--body-file, -t/--subject. Under pflag, the rest of a cluster after one of
@@ -1780,6 +1974,16 @@ _GH_VALUE_FLAGS = frozenset({
 })
 
 
+def _is_shorthand_cluster(tok):
+    """True iff `tok` is a SINGLE-dash pflag shorthand cluster with a body (`-sR`,
+    `-R`) rather than a long option (`--repo`), a bare `-`, or a non-option word.
+
+    Extracted from _cluster_scan as a named predicate purely to reduce that
+    function's branch count (CodeScene "Complex Conditional", #513); behavior
+    unchanged."""
+    return tok.startswith('-') and not tok.startswith('--') and len(tok) >= 2
+
+
 def _cluster_scan(tok):
     """Classify a single-dash pflag shorthand cluster.
 
@@ -1793,7 +1997,7 @@ def _cluster_scan(tok):
     cluster left to right and stops at the first value-taking shorthand, so this does
     the same -- anything after one of those, in the same token, is a value.
     """
-    if not tok.startswith('-') or tok.startswith('--') or len(tok) < 2:
+    if not _is_shorthand_cluster(tok):
         return None
     body = tok[1:]
     for idx, ch in enumerate(body):
@@ -1803,6 +2007,79 @@ def _cluster_scan(tok):
             # Last char => the value is the next TOKEN; otherwise it is attached here.
             return 'value' if idx == len(body) - 1 else None
     return None
+
+
+def _gh_scan_tokens(rest):
+    """Yield each word of a `gh pr` argv that is NOT consumed as a preceding flag's
+    VALUE.
+
+    `gh pr merge 31 --subject -R` must read `-R` as the subject's VALUE, not a repo
+    selector, or a legitimate merge false-blocks; likewise `-st -R`, a cluster ENDING
+    in a value-taking shorthand. Both shapes -- a `_GH_VALUE_FLAGS` word and a
+    `_cluster_scan` 'value' cluster -- are skipped here.
+
+    Extracted from gh_pr_repo_override and gh_pr_auto_merge, which carried identical
+    skip loops, purely to reduce their complexity and nesting depth (CodeScene
+    "Complex Method" / "Bumpy Road Ahead" / "Deep Nested Complexity", #513). Behavior
+    is unchanged in both: the value-taking words are now YIELDED before being marked
+    (rather than `continue`d past), which is inert because no `_GH_VALUE_FLAGS` word
+    matches any selector test either caller applies -- none is `-R`/`--repo`, none
+    matches _GH_PR_URL_RE, none is `--auto`, and each single-dash one classifies as
+    'value', never 'repo'."""
+    skip_value = False
+    for tok in rest:
+        if skip_value:
+            skip_value = False
+            continue        # this token is the previous flag's VALUE
+        yield tok
+        if tok in _GH_VALUE_FLAGS or _cluster_scan(tok) == 'value':
+            skip_value = True
+
+
+def _argv_selects_other_repo(rest):
+    """True iff a `gh pr` argv (the words after `gh`) carries a repo/host selector.
+
+    Split out of gh_pr_repo_override purely to reduce its complexity and nesting
+    depth (#513); behavior unchanged."""
+    for tok in _gh_scan_tokens(rest):
+        if tok in ('-R', '--repo') or tok.startswith('--repo='):
+            return True
+        if _GH_PR_URL_RE.match(tok):
+            # `gh pr merge https://github.com/other/repo/pull/31` selects the
+            # repo positionally — same effect as -R, no flag involved. A URL
+            # for THIS repo is over-blocked; that is fail-CLOSED and rare
+            # (the normal form is a bare PR number).
+            return True
+        if _cluster_scan(tok) == 'repo':
+            return True
+    return False
+
+
+def _iter_segments(cmd):
+    """Yield every segment of `cmd` and of every string the shell will ADDITIONALLY
+    execute (substitutions, interpreter payloads).
+
+    Extracted purely to flatten the chunk-by-segment nesting in gh_pr_repo_override /
+    gh_pr_auto_merge (CodeScene "Deep Nested Complexity", #513); behavior unchanged.
+    The segment OPERATOR is dropped because neither caller consults it."""
+    for chunk in _all_chunks(cmd):
+        for _op, seg in split_segments(chunk):
+            yield seg
+
+
+def _gh_pr_argv(seg, subcommand):
+    """The argv AFTER `gh` for a real `gh pr <subcommand>` invocation in `seg`, else
+    None.
+
+    Split out of gh_pr_repo_override / gh_pr_auto_merge purely to reduce their branch
+    count and nesting depth (#513); behavior unchanged."""
+    argv = _command_argv(seg, 'gh')
+    if not argv or not _is_exe(argv[0], 'gh'):
+        return None
+    rest = argv[1:]
+    if _gh_find_pr_sub(rest, subcommand) is None:
+        return None
+    return rest
 
 
 def gh_pr_repo_override(cmd, subcommand):
@@ -1838,41 +2115,18 @@ def gh_pr_repo_override(cmd, subcommand):
     """
     found = False
     env_selector = False
-    for chunk in _all_chunks(cmd):
-        for _op, seg in split_segments(chunk):
-            # Command-wide, not segment-scoped: see _env_selector_in_prefix. An
-            # assignment anywhere may reach a merge anywhere, and which one it
-            # reaches depends on ambient export state the hook cannot observe.
-            if _env_selector_in_prefix(seg) or _exports_selector(seg):
-                env_selector = True
-            argv = _command_argv(seg, 'gh')
-            if not argv or not _is_exe(argv[0], 'gh'):
-                continue
-            rest = argv[1:]
-            if _gh_find_pr_sub(rest, subcommand) is None:
-                continue
-            found = True
-            skip_value = False
-            for tok in rest:
-                if skip_value:
-                    skip_value = False
-                    continue        # this token is the previous flag's VALUE
-                if tok in ('-R', '--repo') or tok.startswith('--repo='):
-                    return True
-                if tok in _GH_VALUE_FLAGS:
-                    skip_value = True
-                    continue
-                if _GH_PR_URL_RE.match(tok):
-                    # `gh pr merge https://github.com/other/repo/pull/31` selects the
-                    # repo positionally — same effect as -R, no flag involved. A URL
-                    # for THIS repo is over-blocked; that is fail-CLOSED and rare
-                    # (the normal form is a bare PR number).
-                    return True
-                kind = _cluster_scan(tok)
-                if kind == 'repo':
-                    return True
-                if kind == 'value':
-                    skip_value = True
+    for seg in _iter_segments(cmd):
+        # Command-wide, not segment-scoped: see _env_selector_in_prefix. An
+        # assignment anywhere may reach a merge anywhere, and which one it
+        # reaches depends on ambient export state the hook cannot observe.
+        if _env_selector_in_prefix(seg) or _exports_selector(seg):
+            env_selector = True
+        rest = _gh_pr_argv(seg, subcommand)
+        if rest is None:
+            continue
+        found = True
+        if _argv_selects_other_repo(rest):
+            return True
     # Env form last, and only once we know there IS such an invocation to steer --
     # otherwise a bare `GH_REPO=o/r gh pr view 5` would report a merge override.
     #
@@ -1882,6 +2136,26 @@ def gh_pr_repo_override(cmd, subcommand):
     # matcher as one `GH_REPO=o/r` token, without a text-normalization pass that
     # would also match inert prose.
     return found and env_selector
+
+
+# pflag's ParseBool FALSE spellings. `--auto=false` genuinely disables auto-merge, so
+# blocking it would be a pure false block; anything NOT here fails CLOSED (gh rejects
+# an unrecognized value outright, so treating it as auto costs nothing, while guessing
+# the other way would hand over a bypass primitive).
+_PFLAG_FALSE = ('0', 'f', 'F', 'false', 'FALSE', 'False')
+
+
+def _is_auto_flag(tok):
+    """True iff `tok` turns auto-merge ON -- bare `--auto`, or `--auto=<true-ish>`.
+
+    Extracted from gh_pr_auto_merge as a named predicate purely to reduce its branch
+    count and nesting depth (#513); behavior unchanged. `--disable-auto` is a
+    DIFFERENT flag name under pflag (full-name match, not prefix), so it is left
+    alone."""
+    if tok == '--auto':
+        return True
+    return (tok.startswith('--auto=')
+            and tok[len('--auto='):] not in _PFLAG_FALSE)
 
 
 def gh_pr_auto_merge(cmd, subcommand):
@@ -1912,41 +2186,21 @@ def gh_pr_auto_merge(cmd, subcommand):
     merge proceeds exactly as it would have before this guard existed --
     never worse than the pre-existing behavior). See ADR 0030 Residual risk.
     """
-    for chunk in _all_chunks(cmd):
-        for _op, seg in split_segments(chunk):
-            argv = _command_argv(seg, 'gh')
-            if not argv or not _is_exe(argv[0], 'gh'):
-                continue
-            rest = argv[1:]
-            if _gh_find_pr_sub(rest, subcommand) is None:
-                continue
-            skip_value = False
-            for tok in rest:
-                if skip_value:
-                    skip_value = False
-                    continue        # this token is the previous flag's VALUE
-                # NOTE: no `#`-comment skip here, deliberately. _tokenize retains
-                # comments, so `gh pr merge 31 --squash # do not use --auto`
-                # false-BLOCKS. Stopping the scan at a `#` token was tried and
-                # REVERTED: shlex has already removed quoting, so a legitimate
-                # hash-prefixed ARGUMENT is indistinguishable from a comment --
-                # `gh pr merge '#feature' --auto` would stop the scan and hide a
-                # live `--auto`, turning a false block into a fail-OPEN bypass.
-                # Unknowable ⇒ keep the false block: it is visible and the
-                # operator can reword; the bypass would not be.
-                if tok == '--auto':
-                    return True
-                if tok.startswith('--auto='):
-                    # pflag's ParseBool false spellings; anything else fails CLOSED.
-                    if tok[len('--auto='):] not in ('0', 'f', 'F',
-                                                    'false', 'FALSE', 'False'):
-                        return True
-                if tok in _GH_VALUE_FLAGS:
-                    skip_value = True
-                    continue
-                kind = _cluster_scan(tok)
-                if kind == 'value':
-                    skip_value = True
+    for seg in _iter_segments(cmd):
+        rest = _gh_pr_argv(seg, subcommand)
+        if rest is None:
+            continue
+        # NOTE: no `#`-comment skip here, deliberately. _tokenize retains
+        # comments, so `gh pr merge 31 --squash # do not use --auto`
+        # false-BLOCKS. Stopping the scan at a `#` token was tried and
+        # REVERTED: shlex has already removed quoting, so a legitimate
+        # hash-prefixed ARGUMENT is indistinguishable from a comment --
+        # `gh pr merge '#feature' --auto` would stop the scan and hide a
+        # live `--auto`, turning a false block into a fail-OPEN bypass.
+        # Unknowable ⇒ keep the false block: it is visible and the
+        # operator can reword; the bypass would not be.
+        if any(_is_auto_flag(tok) for tok in _gh_scan_tokens(rest)):
+            return True
     return False
 
 
@@ -1982,6 +2236,34 @@ def gh_pr_count(cmd, subcommand):
     return count
 
 
+def _gh_fold_main(r, chunks):
+    """Fold every nested chunk's cds into a MAIN-chunk `gh pr` match.
+
+    Split out of gh_pr purely to reduce its complexity (CodeScene "Complex Method" /
+    "Bumpy Road Ahead", #510); behavior unchanged."""
+    # An ABSOLUTE target (an absolute `git -C`, or an '&&'-proved absolute cd) fixes
+    # the repo no matter what any payload did, so it is never overridden.
+    if r[1].startswith('/'):
+        return r
+    # Current-shell payload cds count for a main-chunk match too -- see git_commit.
+    nested = [c for chunk in chunks[1:] for c in _all_cds(chunk)]
+    if not nested:
+        return r
+    return (r[0], r[1], r[2], _untrusted_cd(([r[3]] if r[3] else []) + nested))
+
+
+def _gh_scan_nested(chunks, subcommand):
+    """First `gh pr <subcommand>` found in a NESTED chunk, or None.
+
+    Split out of gh_pr purely to reduce its complexity (#510); behavior unchanged."""
+    for chunk in chunks[1:]:
+        r = _scan_gh(chunk, subcommand, False)
+        if r:
+            # Every cd in the whole command, order-independent -- _nested_cds.
+            return (r[0], r[1], r[2], _untrusted_cd(_nested_cds(chunks)))
+    return None
+
+
 def gh_pr(cmd, subcommand, with_untrusted_cd=False):
     """Detect a real `gh pr <subcommand>` (create/merge) via command-word
     analysis. Returns (present: bool, target_dir: str, pr_num: str), plus a 4th
@@ -1993,20 +2275,7 @@ def gh_pr(cmd, subcommand, with_untrusted_cd=False):
     scanned (subshell cwd → target_dir '')."""
     chunks = _all_chunks(cmd)
     r = _scan_gh(chunks[0], subcommand, True)
-    if r:
-        # Current-shell payload cds count for a main-chunk match too -- see git_commit.
-        # An ABSOLUTE target (an absolute `git -C`, or an '&&'-proved absolute cd)
-        # fixes the repo no matter what any payload did, so it is never overridden.
-        nested = [] if r[1].startswith('/') else [c for chunk in chunks[1:] for c in _all_cds(chunk)]
-        if nested:
-            r = (r[0], r[1], r[2], _untrusted_cd(([r[3]] if r[3] else []) + nested))
-    if not r:
-        for chunk in chunks[1:]:
-            r = _scan_gh(chunk, subcommand, False)
-            if r:
-                # Every cd in the whole command, order-independent -- _nested_cds.
-                r = (r[0], r[1], r[2], _untrusted_cd(_nested_cds(chunks)))
-                break
+    r = _gh_fold_main(r, chunks) if r else _gh_scan_nested(chunks, subcommand)
     if not r:
         r = (False, '', '', '')
     return r if with_untrusted_cd else r[:3]

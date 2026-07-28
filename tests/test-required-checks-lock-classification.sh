@@ -509,6 +509,21 @@ mkrepo "$D" '{"required":[{"name":"Test","source_app":"github-actions","workflow
 assert_exit "single-leg named matrix accepted" 0 "$D"
 
 
+echo "== E34: two lock entries may not share a name, even across apps =="
+# A context has exactly ONE reporter. An external required entry and a
+# github-actions advisory entry sharing a name let an Actions job classify
+# itself against the external app's required context — (a), (d), (e) and even
+# (b)'s name-set comparison all pass while the wrong producer owns the context.
+D="$TMPROOT/e34"
+mkrepo "$D" '{"required":[{"name":"Dup","source_app":"gitguardian"}],"advisory":[{"name":"Dup","source_app":"github-actions","workflow":".github/workflows/tests.yml","job":"beta"}]}' 'jobs:
+  beta:
+    name: Dup
+    runs-on: x
+'
+assert_exit "cross-app duplicate name rejected" 2 "$D"
+assert_mentions "explains one-reporter-per-context" "one reporter" "$D"
+
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]

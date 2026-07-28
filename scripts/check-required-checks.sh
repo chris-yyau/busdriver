@@ -153,13 +153,18 @@ if ! jq -e '(.required | type == "array")
                       and (all(.advisory[]; .name | type == "string"))
                  else true end)
             and (all(((.required // [])[], (.advisory // [])[]);
-                     (.name // "") | test("[[:cntrl:]]") | not))' \
+                     (.name // "") | test("[[:cntrl:]]") | not))
+            and ([(.required // [])[], (.advisory // [])[] | .name]
+                 | (length == (unique | length)))' \
      "$LOCK" >/dev/null 2>&1; then
   echo "error: $LOCK is malformed — .required must be an array, .advisory (if" >&2
   echo "       present) must be an array, every entry needs a string .name, and" >&2
   echo "       no name may contain a control character — the classifier joins" >&2
   echo "       names with U+001E, so a name carrying one would split into two" >&2
-  echo "       and classify a job nobody listed" >&2
+  echo "       and classify a job nobody listed. Every name must also be UNIQUE" >&2
+  echo "       across required+advisory: a context has exactly one reporter, so" >&2
+  echo "       two entries sharing a name let an Actions job classify itself" >&2
+  echo "       against an external app's required context (and vice versa)" >&2
   exit 2
 fi
 

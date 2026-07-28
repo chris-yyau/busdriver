@@ -806,6 +806,7 @@ with open(pending, "w") as f:
   AUDITOR_CLI=$(resolve_role_cli "blueprint-review.auditor")
   AUDITOR_OUTPUT_FILE=$(get_review_file "auditor.json")
   AUDITOR_PID=""
+  AUDITOR_DEADLINE=0                   # epoch secs; set at dispatch, 0 = nothing in flight
   # Auditor's own budget — the ceiling on how long its dispatch may run AND the
   # bound the post-reviewer reap waits for (see the reap below). Sanitize: it is
   # arithmetic input for the reap's `+10` margin, and a non-numeric env value
@@ -866,6 +867,13 @@ with open(pending, "w") as f:
       mv -f "$_aud_tmp" "$AUDITOR_OUTPUT_FILE" 2>/dev/null || rm -f "$_aud_tmp"
     ) &
     AUDITOR_PID=$!
+    # Absolute deadline for the reap below, anchored at DISPATCH (#506). k3 runs
+    # CONCURRENTLY with the three reviewers, but `_aud_grace` starts counting only
+    # after their `wait`s — so a counter-only bound charges a fresh budget+10 on
+    # top of the reviewer window (worst case R + T + 10 on the critical path ahead
+    # of the arbiter). Anchoring here credits the concurrent time. Same fix the
+    # UltraOracle poll got in #501 (ULTRA_ORACLE_DEADLINE, ~:539).
+    AUDITOR_DEADLINE=$(( $(date +%s) + _AUD_TIMEOUT + 10 ))
   else
     create_error_json "auditor" "CLI not available ($AUDITOR_CLI)" > "$AUDITOR_OUTPUT_FILE"
   fi
@@ -884,6 +892,22 @@ with open(pending, "w") as f:
   # _portable_timeout hard-stops the process at _AUD_TIMEOUT, so this loop only
   # POLLS to that ceiling; the +10 is slack for the child to finish its atomic
   # write. Override with BLUEPRINT_AUDITOR_GRACE to force an earlier reap.
+  #
+  # TWO bounds, whichever fires first (#506):
+  #   - AUDITOR_DEADLINE — absolute, anchored at DISPATCH, so the time the
+  #     reviewers already spent counts against the witness's budget instead of
+  #     being added to it. This is the bound that matters when the primary
+  #     _portable_timeout fails to reap (its perl fallback reparents the child to
+  #     init, so the `pgrep -P` tree-kill below cannot reach a TERM-ignoring
+  #     process — found during #504 review).
+  #   - _aud_grace counter — retained as a backstop. The deadline uses `date +%s`,
+  #     which is WALL-CLOCK: a backward NTP step during the window would otherwise
+  #     stall this loop. $SECONDS is not monotonic either, so a counter is the only
+  #     clock-independent bound available in portable bash. It is also what makes a
+  #     shortening BLUEPRINT_AUDITOR_GRACE bite.
+  # A zero deadline (nothing dispatched) cannot reach here — the enclosing branch
+  # requires a live AUDITOR_PID — but the `-gt 0` guard keeps the loop correct if
+  # that ever changes.
   if [[ -n "${AUDITOR_PID:-}" ]]; then
     _aud_grace_cap="${BLUEPRINT_AUDITOR_GRACE:-$(( _AUD_TIMEOUT + 10 ))}"
     case "$_aud_grace_cap" in ''|*[!0-9]*) _aud_grace_cap=$(( _AUD_TIMEOUT + 10 )) ;; esac
@@ -898,7 +922,8 @@ with open(pending, "w") as f:
     [[ "$_aud_grace_cap" -lt 1 ]] && _aud_grace_cap=1
     _aud_grace=0
     while kill -0 "$AUDITOR_PID" 2>/dev/null; do
-      if [[ "$_aud_grace" -ge "$_aud_grace_cap" ]]; then
+      if [[ "$_aud_grace" -ge "$_aud_grace_cap" ]] \
+         || { [[ "$AUDITOR_DEADLINE" -gt 0 ]] && [[ "$(date +%s)" -ge "$AUDITOR_DEADLINE" ]]; }; then
         # Kill the whole descendant TREE, not just the subshell — execute_review
         # and opencode run as descendants and would otherwise orphan and keep
         # using the network until their own 300s timeout. Portable recursive
@@ -909,7 +934,7 @@ with open(pending, "w") as f:
           kill "$_p" 2>/dev/null || true
         }
         _kill_tree "$AUDITOR_PID"
-        log_warning "  Mechanism Witness exceeded its ${_aud_grace_cap}s budget — killed its process tree, proceeding without it"
+        log_warning "  Mechanism Witness exceeded its budget (${_aud_grace_cap}s reap cap or its dispatch-anchored deadline) — killed its process tree, proceeding without it"
         break
       fi
       sleep 1; _aud_grace=$((_aud_grace + 1))

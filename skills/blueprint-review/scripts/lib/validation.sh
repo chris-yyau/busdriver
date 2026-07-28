@@ -73,19 +73,10 @@ validate_json_file() {
   return 0
 }
 
-# Extract JSON from markdown code blocks if wrapped
-extract_json_from_markdown() {
-  local input="$1"
-
-  # Check if wrapped in markdown code blocks
-  if echo "$input" | grep -q '```json'; then
-    echo "$input" | sed -n '/```json/,/```/p' | sed '1d;$d'
-  elif echo "$input" | grep -q '```'; then
-    echo "$input" | sed -n '/```/,/```/p' | sed '1d;$d'
-  else
-    echo "$input"
-  fi
-}
+# NOTE: extract_json_from_markdown() lived here and was the only fence-aware
+# extraction in the tree — with zero callers, while the Python extractor that
+# superseded it had no fence strategy at all (#503). Removed rather than revived:
+# lib/extract_review_json.py owns fence handling now, for every caller.
 
 # Validate CLI is available
 # DEPRECATED: Use is_cli_available() from scripts/lib/resolve-cli.sh instead.
@@ -104,19 +95,28 @@ create_error_json() {
   local reviewer="$1"
   local error_message="$2"
 
-  cat <<EOF
-{
-  "status": "ERROR",
-  "reviewer_id": "$reviewer",
-  "review_duration_ms": 0,
-  "error": "$error_message",
-  "issues": [],
-  "metadata": {
-    "total_sections_reviewed": 0,
-    "review_timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  }
-}
-EOF
+  # error_message often carries captured CLI/decoder stderr (quotes, backslashes,
+  # occasionally a multi-line traceback). Building the object via `jq -n --arg`
+  # instead of interpolating it into a heredoc guarantees valid JSON regardless
+  # of what the message contains — the previous unescaped interpolation could
+  # emit invalid JSON, destroying the artifact meant to report the failure.
+  local ts
+  ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")   # separate assignment: SC2312
+  jq -n \
+    --arg reviewer "$reviewer" \
+    --arg error "$error_message" \
+    --arg ts "$ts" \
+    '{
+      status: "ERROR",
+      reviewer_id: $reviewer,
+      review_duration_ms: 0,
+      error: $error,
+      issues: [],
+      metadata: {
+        total_sections_reviewed: 0,
+        review_timestamp: $ts
+      }
+    }'
 }
 
 # Validate review output has required fields

@@ -51,4 +51,8 @@ run_suite "agent-self-evaluation" \
   uv run --quiet --with 'pytest==9.0.3' \
     pytest skills/agent-self-evaluation/scripts/test_evaluate.py -q
 
+run_suite "blueprint-review/extract_review_json" \
+  uv run --quiet --with 'pytest==9.0.3' \
+    pytest skills/blueprint-review/scripts/lib/test_extract_review_json.py -q
+
 exit "$fail"

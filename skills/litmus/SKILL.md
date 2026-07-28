@@ -194,7 +194,9 @@ When the review script exits with code **2** (TOO LARGE) or **124** (TIMEOUT), t
 - Better git history with meaningful commit messages
 - Prevents crashes from oversized prompts
 
-**Thresholds (commit mode only — PR mode skips size check):** Weighted lines use additions at 1x + deletions at 0.25x (deleted code needs minimal review). Triggers: >800 weighted lines (>2000 for single-file) OR >2000 total raw lines OR >8 staged files. Override with `LITMUS_MAX_WEIGHTED_LINES` and `LITMUS_MAX_STAGED_FILES` env vars.
+**Thresholds (commit mode only — PR mode skips size check):** Weighted lines use additions at 1x + deletions at 0.25x (deleted code needs minimal review). Triggers: >800 weighted lines (>2000 for single-file) OR >2000 total raw lines OR >8 staged files. Each of the three is an independent trigger with its own override: `LITMUS_MAX_WEIGHTED_LINES`, `LITMUS_MAX_TOTAL_LINES`, `LITMUS_MAX_STAGED_FILES`. A non-numeric value is rejected with a warning and the default is used.
+
+**Merge commits (#514):** a merge's diff-vs-HEAD is everything the merge brings in, so "split into smaller commits" does not apply and raising `LITMUS_MAX_WEIGHTED_LINES` alone will not clear the independent raw-lines ceiling. Raise `LITMUS_MAX_TOTAL_LINES` instead of reaching for `.claude/skip-litmus.local` — the skip would also skip the conflict resolutions, which are the only genuinely new content in a merge.
 
 **Example:**
 ```
@@ -613,7 +615,7 @@ Both gates use the same skip file (`.claude/skip-litmus.local`) and both enforce
    the review runs; a pass that exceeds the cap is unsolved — see CRITICAL RULES / #368
 5. **Structured output** - Parse JSON for status and issues
 6. **Test after pass** - Run test suite before committing
-7. **Split large commits** - If >800 weighted lines (override: `LITMUS_MAX_WEIGHTED_LINES`), split into logical commits FIRST. PR mode skips size check.
+7. **Split large commits** - If >800 weighted lines (override: `LITMUS_MAX_WEIGHTED_LINES`), split into logical commits FIRST. Merge commits can't be split — raise `LITMUS_MAX_TOTAL_LINES` (#514). PR mode skips size check.
 8. **Staged-only scope** - Reviews only `git diff --cached`, not unstaged/untracked files
 9. **Iteration memory** - Previous findings are injected into the next pass to prevent re-reporting
 10. **Convergence cap** - Max 3 new issues per iteration to ensure the loop converges

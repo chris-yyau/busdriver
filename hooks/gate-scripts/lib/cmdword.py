@@ -316,6 +316,11 @@ def _executed_operands(toks):
             i += 1
             continue
         base = _basename(t)
+        # Reserved words and grouping occupy the preamble without being the command, so
+        # `{ sh -c "rm x"` must not stop at `{` — a function body reaches this shape.
+        if base in _RESERVED:
+            i += 1
+            continue
         if base in _DASH_C_RUNNERS:
             # The program follows the flag bundle CONTAINING `c`, or a long
             # --command form. NOT --rcfile: that names a FILE to source, not inline
@@ -440,6 +445,35 @@ def _effective_command_word(toks):
     return None
 
 
+def _sed_inplace(toks):
+    """`sed -i` edits in place. The -i must come AFTER the sed token: in
+    `grep -i sed notes.txt` the -i belongs to grep and sed is its search string."""
+    names = [_basename(t) for t in toks]
+    if "sed" not in names:
+        return False
+    after = toks[names.index("sed") + 1:]
+    return any(re.match(r"^-[A-Za-z]*i", t) for t in after)
+
+
+def _payload_is_mod(toks, depth):
+    """Full verdict for a token list that is itself a command — used for the find -exec
+    payload and a function body.
+
+    _runs_mod_verb alone checks only DIRECT verbs, so it missed both an executed shell
+    operand (`-exec sh -c "rm \"$1\"" _ {} ;`) and the sed -i rule
+    (`-exec sudo sed -i "s/a/b/" {} ;`). The old raw regexes caught the embedded `rm `
+    and `sed -i`, so leaving those out was a fail-open regression.
+    """
+    if _runs_mod_verb(toks):
+        return True
+    if _sed_inplace(toks):
+        return True
+    for prog in _executed_operands(toks):
+        if is_file_mod(prog, depth + 1):
+            return True
+    return False
+
+
 def _runs_mod_verb(toks):
     """Two-regime verdict for a token list that is itself a command.
 
@@ -454,7 +488,7 @@ def _runs_mod_verb(toks):
     return _effective_command_word(toks) in _MOD_VERBS
 
 
-def _segment_is_mod(toks):
+def _segment_is_mod(toks, depth=0):
     """True iff this simple command RUNS a file-modifying verb."""
     names = [_basename(t) for t in toks]
     cw = _effective_command_word(toks)
@@ -472,7 +506,7 @@ def _segment_is_mod(toks):
     # only prints the word -- stays allowed.
     if _first_word(toks) == "function":
         after_name = toks[2:] if len(toks) > 2 else []
-        if after_name and _runs_mod_verb(after_name):
+        if after_name and _payload_is_mod(after_name, depth):
             return True
     # find runs its own commands: -delete writes by itself, -exec/-execdir/-ok take a
     # command. The payload goes through _runs_mod_verb so a WRAPPED payload
@@ -488,14 +522,13 @@ def _segment_is_mod(toks):
                     if t2 in (";", "+"):
                         break
                     payload.append(t2)
-                if payload and _runs_mod_verb(payload):
+                if payload and _payload_is_mod(payload, depth):
                     return True
     # sed modifies only in-place, and the -i must come AFTER the sed token: in
     # `grep -i sed notes.txt` the -i belongs to grep and sed is its search string.
     # Anchored on command position so `echo sed -i` is not a write.
     if cw == "sed" or (wrapped and "sed" in names):
-        after = toks[names.index("sed") + 1:]
-        return any(re.match(r"^-[A-Za-z]*i", t) for t in after)
+        return _sed_inplace(toks)
     return False
 
 
@@ -536,7 +569,7 @@ def is_file_mod(cmd, _depth=0):
             # fallback rather than silently dropping the segment — dropping it is the
             # only outcome here that could be a fail-OPEN.
             return _regex_fallback(cmd)
-        if _segment_is_mod(toks):
+        if _segment_is_mod(toks, _depth):
             return True
         for prog in _executed_operands(toks):
             if is_file_mod(prog, _depth + 1):
@@ -666,6 +699,11 @@ def _demo():
         "find . -exec sudo -u root rm {} ;",
         "sudo env -S 'rm x'",
         "sudo -u root bash -c 'rm x'",
+        # An -exec payload can run a shell, or be an in-place sed.
+        'find . -exec sh -c \'rm "$1"\' _ {} ;',
+        "find . -exec sudo sed -i 's/a/b/' {} ;",
+        'function f { sh -c "rm x"; }',
+        '{ sh -c "rm x"; }',
         "env --split-string='rm x'",
     ]
     for c in allowed:

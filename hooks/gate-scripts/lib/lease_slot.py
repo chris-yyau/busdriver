@@ -99,6 +99,31 @@ def claim(state_dir, mtime, max_uses):
         os.close(sfd)
 
 
+def unlink_in_state(state_dir, name):
+    """Unlink <cwd>/<state_dir>/<name> with the same O_NOFOLLOW component walk.
+
+    A shell `rm -f "$STATE_DIR/skip-design-review.local"` resolves the path afresh and
+    follows a symlinked INTERMEDIATE component, so it can delete outside the repository
+    — and it runs BEFORE lease_slot.py ever validates anything. Routing the unlink
+    through the validated dir fd removes that window. Returns True if the file is gone.
+    """
+    if "/" in name:
+        return False
+    sfd = open_state_dir(state_dir)
+    if sfd is None:
+        return False
+    try:
+        try:
+            os.unlink(name, dir_fd=sfd)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return True
+    finally:
+        os.close(sfd)
+
+
 def _demo():
     """Self-check: slots increment, exhaust, reset on a new mtime, and refuse escapes."""
     import tempfile
@@ -129,6 +154,15 @@ def _demo():
 
             assert claim("../outside", "111", 3) is None
             assert claim("/tmp/outside", "111", 3) is None
+
+            # unlink_in_state: removes a real file, refuses a symlinked prefix and a
+            # path separator, and treats an already-absent file as success.
+            open(os.path.join(".claude", "skipf"), "w").close()
+            assert unlink_in_state(".claude", "skipf")
+            assert not os.path.exists(os.path.join(".claude", "skipf"))
+            assert unlink_in_state(".claude", "skipf")          # already gone
+            assert not unlink_in_state("link/state", "skipf")   # symlinked prefix
+            assert not unlink_in_state(".claude", "a/b")        # no separators
         finally:
             os.chdir(cwd)
     print("lease_slot self-check OK")
@@ -138,6 +172,8 @@ if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "--self-check":
         _demo()
         raise SystemExit(0)
+    if len(sys.argv) == 4 and sys.argv[1] == "--unlink":
+        raise SystemExit(0 if unlink_in_state(sys.argv[2], sys.argv[3]) else 1)
     if len(sys.argv) != 4:
         raise SystemExit(1)
     try:

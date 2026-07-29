@@ -103,6 +103,43 @@ exit (deleting the gate's audit trail).
   false positives were training a bypass reflex (reword until the regex stops matching)
   that the gate exists to suppress.
 
+### Amendment to ADR 0006's wrapper residual
+
+ADR 0006 documented wrapper-hidden indirect writes (`sudo touch <marker>`) as an
+accepted residual of the marker-forge detector, on the reasoning that a cooperative
+agent has no reason to reach for them. **#519 closes that half of the residual** — the
+detector now peels wrapper preambles before choosing the command word.
+
+The reasoning did not survive the new gate state this ADR introduces. Once the skip
+LEASE ledger and `bypass-log.jsonl` are themselves protected, `command rmdir <slot>`
+resets the 20-use ceiling and `env truncate <log>` erases the audit trail, and both were
+reachable by exactly that wrapper shape while the classifier downstream still called
+them modifications. A residual that is the *easiest* path is not a residual.
+
+Concretely, the detector now peels wrapper preambles (`sudo`/`env`/`command`/`builtin`/
+`timeout`/`xargs`/...), shell reserved words and grouping (`if`, `{`, `coproc`), and it
+recognises `find -exec`/`-delete` plus verbs embedded in an `env -S` program (separated,
+attached, and quoted spellings). Where a wrapper is present it scans every word rather
+than pinning the command word, because enumerating which wrapper flags take an operand
+is a table that fails OPEN wherever it is wrong.
+
+**Where the line now sits.** The **execute-a-string class remains the documented ADR 0006
+residual**: `eval`, `sh -c`, `python -c`/`perl -e`/`node -e`, command substitution, and
+runtime name synthesis (globs, brace expansion). Anything that can `eval` can forge a
+marker directly, so blocking a subset is theater against that actor — and the file
+already records that building a shell parser *inside* the forge detector was tried and
+rejected, because every iteration opened a new segment-split bypass.
+
+What changed is only the *cost/benefit at the easy end*: the wrapper forms are one token
+away from an ordinary command and became reachable paths to reset the lease ceiling or
+erase the audit trail, so they are no longer residual. The eval class is unchanged, and
+future reports of the shape "verb X reachable through arbitrary-string interpreter Y"
+should be closed as ADR 0006 residual rather than chased.
+
+`tests/test-pre-implementation-gate.sh` pins the new behaviour where it previously pinned
+the residual; the quoted-`env -S` case lives in `tests/test-impl-gate-scope-519.sh`,
+whose harness builds payloads with `json.dumps`.
+
 ## Consequences
 
 - The repo-wide block stands. Editing any `docs/plans|specs/*.md` or `*-design.md`

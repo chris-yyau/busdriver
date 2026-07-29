@@ -274,9 +274,161 @@ run_test "#290 allow mv non-marker files" "allow"  "$(bash_input "mv old.js new.
 # This is the read-only contract the command-word-position check preserves.
 run_test "#290 allow grep 'touch' pattern over marker (read)" "allow" "$(bash_input "grep touch $MARKER")"
 run_test "#290 allow read marker piped to grep cp" "allow" "$(bash_input "cat $MARKER | grep cp")"
-# Documented residual (ADR 0006 addendum): a wrapper-hidden indirect write
-# (sudo/env prefix) is NOT caught — out of scope for the cooperative-agent threat.
-run_test "#290 wrapper sudo touch is residual (allow)" "allow" "$(bash_input "sudo touch $SKIPF")"
+# #519 CLOSES the former ADR 0006 residual: a wrapper-hidden indirect write is now
+# caught, because the detector peels wrapper preambles before picking the command word.
+# The residual was acceptable while the only wrapper-reachable targets were markers a
+# cooperative agent had no reason to forge. It stopped being acceptable once the skip
+# LEASE ledger and the bypass audit log became gate state: `command rmdir <slot>` resets
+# the 20-use ceiling and `env truncate <log>` erases the trail, and both were reachable
+# by exactly this shape. A residual that is the EASIEST path is not a residual.
+run_test "#519 wrapper sudo touch is now BLOCKED (was an ADR 0006 residual)" "block" "$(bash_input "sudo touch $SKIPF")"
+run_test "#519 wrapper env touch is blocked" "block" "$(bash_input "env touch $SKIPF")"
+run_test "#519 wrapper command touch is blocked" "block" "$(bash_input "command touch $SKIPF")"
+# The read-only contract above still holds under peeling: a wrapper name appearing as
+# an ARGUMENT to a read must not flip the decision.
+run_test "#519 read whose args name a wrapper stays allowed" "allow" "$(bash_input "grep sudo $MARKER")"
+# A wrapper flag that takes an OPERAND: peeling to the first non-flag word picks `root`
+# / `FOO` and misses the verb, so a WRAPPED command has all its words scanned instead.
+run_test "#519 sudo -u root touch is blocked" "block" "$(bash_input "sudo -u root touch $SKIPF")"
+run_test "#519 env -u FOO touch is blocked" "block" "$(bash_input "env -u FOO touch $SKIPF")"
+run_test "#519 timeout 5 touch is blocked" "block" "$(bash_input "timeout 5 touch $SKIPF")"
+# Reserved words and builtin/command occupy the first position without being the verb.
+run_test "#519 builtin command touch is blocked" "block" "$(bash_input "builtin command touch $SKIPF")"
+run_test "#519 if touch ...; then is blocked" "block" "$(bash_input "if touch $SKIPF; then :; fi")"
+run_test "#519 brace-grouped touch is blocked" "block" "$(bash_input "{ touch $SKIPF; }")"
+# env -S keeps the whole program in ONE operand, so basename equality never sees it.
+run_test "#519 env -S embedded touch is blocked" "block" "$(bash_input "env -S 'touch $SKIPF'")"
+# The ATTACHED spelling puts the verb right after the flag letter, so the whitespace
+# boundary never matches unless the flag cluster is stripped first.
+run_test "#519 env -S attached embedded touch is blocked" "block" "$(bash_input "env -S'touch $SKIPF'")"
+# find EXECUTES its own commands, and coproc precedes one.
+run_test "#519 find -exec truncate on a marker is blocked" "block" \
+    "$(bash_input "find .claude -name x -exec truncate -s 0 $MARKER ;")"
+run_test "#519 coproc touch is blocked" "block" "$(bash_input "coproc touch $SKIPF")"
+# The -exec payload can itself be wrapped, so the whole payload is scanned.
+run_test "#519 find -exec env truncate is blocked" "block" \
+    "$(bash_input "find .claude -name x -exec env truncate -s 0 $MARKER ;")"
+run_test "#519 find -exec command rmdir is blocked" "block" \
+    "$(bash_input "find .claude -exec command rmdir $MARKER ;")"
+# ...but find named only as DATA keeps the read-only contract.
+run_test "#519 echo naming find -delete over a marker stays allowed" "allow" \
+    "$(bash_input "echo find -delete $MARKER")"
+# coproc takes an OPTIONAL name, so the command word cannot be located reliably.
+run_test "#519 coproc with a NAME before touch is blocked" "block" \
+    "$(bash_input "coproc worker touch $SKIPF")"
+run_test "#519 echo naming coproc over a marker stays allowed" "allow" \
+    "$(bash_input "echo coproc touch $MARKER")"
+# env long form puts the verb right after `=`, and platform launchers wrap like sudo.
+run_test "#519 env --split-string= embedded truncate is blocked" "block" \
+    "$(bash_input "env --split-string='truncate -s 0' $MARKER")"
+run_test "#519 caffeinate wrapper before truncate is blocked" "block" \
+    "$(bash_input "caffeinate truncate -s 0 $MARKER")"
+# An embedded program in ONE token hides rm/tee from basename equality.
+run_test "#519 env -S embedded rm is blocked" "block" "$(bash_input "env -S 'rm -f $MARKER'")"
+run_test "#519 env -S embedded tee is blocked" "block" "$(bash_input "env -S 'tee $MARKER'")"
+# A function BODY executes when the name is called later.
+run_test "#519 function definition hiding touch is blocked" "block" \
+    "$(bash_input "function f { touch $SKIPF; }; f")"
+run_test "#519 echo naming function stays allowed" "allow" \
+    "$(bash_input "echo function touch $MARKER")"
+# time/script/flock run a following command BUT can also write a file themselves, so
+# they are verbs rather than wrappers: as wrappers the payload scan found no verb.
+run_test "#519 time -o writing a marker is blocked" "block" \
+    "$(bash_input "/usr/bin/time -o $MARKER /usr/bin/true")"
+run_test "#519 script writing a marker is blocked" "block" "$(bash_input "script $MARKER")"
+run_test "#519 flock on a marker is blocked" "block" "$(bash_input "flock $MARKER true")"
+run_test "#519 echo naming time stays allowed" "allow" "$(bash_input "echo time $MARKER")"
+# An embedded program in ONE token hides rm/tee from basename equality.
+run_test "#519 env -S embedded rm is blocked" "block" "$(bash_input "env -S 'rm -f $MARKER'")"
+run_test "#519 env -S embedded tee is blocked" "block" "$(bash_input "env -S 'tee $MARKER'")"
+# A function BODY executes when the name is called later.
+run_test "#519 function definition hiding touch is blocked" "block" \
+    "$(bash_input "function f { touch $SKIPF; }; f")"
+run_test "#519 echo naming function stays allowed" "allow" \
+    "$(bash_input "echo function touch $MARKER")"
+# time/script/flock run a following command BUT can also write a file themselves, so
+# they are verbs rather than wrappers: as wrappers the payload scan found no verb.
+run_test "#519 time -o writing a marker is blocked" "block" \
+    "$(bash_input "/usr/bin/time -o $MARKER /usr/bin/true")"
+run_test "#519 script writing a marker is blocked" "block" "$(bash_input "script $MARKER")"
+run_test "#519 flock on a marker is blocked" "block" "$(bash_input "flock $MARKER true")"
+run_test "#519 echo naming time stays allowed" "allow" "$(bash_input "echo time $MARKER")"
+# An embedded program in ONE token hides rm/tee from basename equality.
+run_test "#519 env -S embedded rm is blocked" "block" "$(bash_input "env -S 'rm -f $MARKER'")"
+run_test "#519 env -S embedded tee is blocked" "block" "$(bash_input "env -S 'tee $MARKER'")"
+# A function BODY executes when the name is called later.
+run_test "#519 function definition hiding touch is blocked" "block" \
+    "$(bash_input "function f { touch $SKIPF; }; f")"
+run_test "#519 echo naming function stays allowed" "allow" \
+    "$(bash_input "echo function touch $MARKER")"
+# time/script/flock run a following command BUT can also write a file themselves, so
+# they are verbs rather than wrappers: as wrappers the payload scan found no verb.
+run_test "#519 time -o writing a marker is blocked" "block" \
+    "$(bash_input "/usr/bin/time -o $MARKER /usr/bin/true")"
+run_test "#519 script writing a marker is blocked" "block" "$(bash_input "script $MARKER")"
+run_test "#519 flock on a marker is blocked" "block" "$(bash_input "flock $MARKER true")"
+run_test "#519 echo naming time stays allowed" "allow" "$(bash_input "echo time $MARKER")"
+# env long form puts the verb right after `=`, and platform launchers wrap like sudo.
+run_test "#519 env --split-string= embedded truncate is blocked" "block" \
+    "$(bash_input "env --split-string='truncate -s 0' $MARKER")"
+run_test "#519 caffeinate wrapper before truncate is blocked" "block" \
+    "$(bash_input "caffeinate truncate -s 0 $MARKER")"
+# An embedded program in ONE token hides rm/tee from basename equality.
+run_test "#519 env -S embedded rm is blocked" "block" "$(bash_input "env -S 'rm -f $MARKER'")"
+run_test "#519 env -S embedded tee is blocked" "block" "$(bash_input "env -S 'tee $MARKER'")"
+# A function BODY executes when the name is called later.
+run_test "#519 function definition hiding touch is blocked" "block" \
+    "$(bash_input "function f { touch $SKIPF; }; f")"
+run_test "#519 echo naming function stays allowed" "allow" \
+    "$(bash_input "echo function touch $MARKER")"
+# time/script/flock run a following command BUT can also write a file themselves, so
+# they are verbs rather than wrappers: as wrappers the payload scan found no verb.
+run_test "#519 time -o writing a marker is blocked" "block" \
+    "$(bash_input "/usr/bin/time -o $MARKER /usr/bin/true")"
+run_test "#519 script writing a marker is blocked" "block" "$(bash_input "script $MARKER")"
+run_test "#519 flock on a marker is blocked" "block" "$(bash_input "flock $MARKER true")"
+run_test "#519 echo naming time stays allowed" "allow" "$(bash_input "echo time $MARKER")"
+# An embedded program in ONE token hides rm/tee from basename equality.
+run_test "#519 env -S embedded rm is blocked" "block" "$(bash_input "env -S 'rm -f $MARKER'")"
+run_test "#519 env -S embedded tee is blocked" "block" "$(bash_input "env -S 'tee $MARKER'")"
+# A function BODY executes when the name is called later.
+run_test "#519 function definition hiding touch is blocked" "block" \
+    "$(bash_input "function f { touch $SKIPF; }; f")"
+run_test "#519 echo naming function stays allowed" "allow" \
+    "$(bash_input "echo function touch $MARKER")"
+# time/script/flock run a following command BUT can also write a file themselves, so
+# they are verbs rather than wrappers: as wrappers the payload scan found no verb.
+run_test "#519 time -o writing a marker is blocked" "block" \
+    "$(bash_input "/usr/bin/time -o $MARKER /usr/bin/true")"
+run_test "#519 script writing a marker is blocked" "block" "$(bash_input "script $MARKER")"
+run_test "#519 flock on a marker is blocked" "block" "$(bash_input "flock $MARKER true")"
+run_test "#519 echo naming time stays allowed" "allow" "$(bash_input "echo time $MARKER")"
+# An embedded program in ONE token hides rm/tee from basename equality.
+run_test "#519 env -S embedded rm is blocked" "block" "$(bash_input "env -S 'rm -f $MARKER'")"
+run_test "#519 env -S embedded tee is blocked" "block" "$(bash_input "env -S 'tee $MARKER'")"
+# A function BODY executes when the name is called later.
+run_test "#519 function definition hiding touch is blocked" "block" \
+    "$(bash_input "function f { touch $SKIPF; }; f")"
+run_test "#519 echo naming function stays allowed" "allow" \
+    "$(bash_input "echo function touch $MARKER")"
+# time/script/flock run a following command BUT can also write a file themselves, so
+# they are verbs rather than wrappers: as wrappers the payload scan found no verb.
+run_test "#519 time -o writing a marker is blocked" "block" \
+    "$(bash_input "/usr/bin/time -o $MARKER /usr/bin/true")"
+run_test "#519 script writing a marker is blocked" "block" "$(bash_input "script $MARKER")"
+run_test "#519 flock on a marker is blocked" "block" "$(bash_input "flock $MARKER true")"
+run_test "#519 echo naming time stays allowed" "allow" "$(bash_input "echo time $MARKER")"
+# A wrapper before find hides -delete from a command-word anchor.
+run_test "#519 sudo -u root find -delete is blocked" "block" \
+    "$(bash_input "sudo -u root find .claude -name x -delete $MARKER")"
+# An -exec payload can carry the verb embedded in an env -S program.
+run_test "#519 find -exec env -S embedded truncate is blocked" "block" \
+    "$(bash_input "find .claude -exec env -S 'truncate -s 0 $MARKER' ;")"
+# (The quoted-verb-inside-env-S case lives in tests/test-impl-gate-scope-519.sh, whose
+# harness builds the payload with json.dumps -- bash_input here is printf-based, so a
+# raw double quote in the command would break the JSON rather than reach the gate.)
+# ...while a test EXPRESSION over a marker is still a read.
+run_test "#519 test expression over a marker stays allowed" "allow" "$(bash_input "[ -f $MARKER ]")"
 # Leading redirect + a genuine READ command word stays allowed (no false positive).
 run_test "#290 allow leading redirect + read (>/dev/null cat marker)" "allow" "$(bash_input ">/dev/null cat $MARKER")"
 

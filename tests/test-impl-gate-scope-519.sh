@@ -258,6 +258,20 @@ check "truncate on the audit log is blocked" block \
     "$(bash_decision "truncate -s 0 .claude/bypass-log.jsonl")"
 check "unlink on the audit log is blocked" block \
     "$(bash_decision "unlink .claude/bypass-log.jsonl")"
+# Wrapper-hidden destruction. The forge detector matched only the RAW first word, so
+# these slipped past it while the classifier still called them modifications — and the
+# F9 state-directory exemption then allowed them through.
+check "command-wrapped rmdir of a lease slot is blocked" block \
+    "$(bash_decision "command rmdir .claude/.skip-design-review-lease.d/1.1")"
+check "env-wrapped truncate of the audit log is blocked" block \
+    "$(bash_decision "env truncate -s 0 .claude/bypass-log.jsonl")"
+check "sudo-wrapped unlink of the audit log is blocked" block \
+    "$(bash_decision "sudo unlink .claude/bypass-log.jsonl")"
+# A QUOTED verb inside an executed string — the inner shell strips those quotes, so the
+# detector must too. Needs a json.dumps-built payload, hence this suite rather than the
+# printf-based harness in test-pre-implementation-gate.sh.
+check "env -S with a quoted verb is blocked" block \
+    "$(bash_decision 'env -S "\"truncate\" -s 0 .claude/bypass-log.jsonl"')"
 check "dd blanking the audit log is blocked" block \
     "$(bash_decision "dd if=/dev/null of=.claude/bypass-log.jsonl")"
 # rmdir on a spent slot would let it be reclaimed, extending the ceiling indefinitely.

@@ -224,6 +224,96 @@ def _split_simple_commands(s):
     return segs, not (in_s or in_d or esc)
 
 
+# Commands that RUN the command that follows them. Open-ended by nature: a launcher not
+# listed here is treated as an ordinary command, so its payload is judged by the strict
+# rule. That is a known limit of an allowlist, not a claim of completeness -- see the
+# RESIDUAL note in _scan_segment. Platform launchers are included because they are
+# ordinary, discoverable commands rather than obfuscation.
+_WRAPPER_CMDS = ("sudo", "doas", "su", "runuser", "env", "nohup", "timeout", "nice",
+                 "ionice", "setsid", "stdbuf", "unbuffer", "command", "builtin", "exec",
+                 "xargs", "caffeinate", "chroot", "arch", "torify", "proxychains",
+                 "proxychains4")
+# Reserved words that PRECEDE a command. Without these, `if touch <marker>; then :; fi`
+# and `{ touch <marker>; }` pick `if` / `{` as the command word and are allowed.
+_RESERVED_SH = ("if", "then", "else", "elif", "fi", "do", "done", "while", "until",
+                "esac", "coproc", "{", "}", "!", ")", "(")
+# Test-expression openers: everything after is an OPERAND, never a command, so a read
+# such as `[ -f <marker> ]` must not be read as an invocation.
+_TEST_OPEN_SH = ("[[", "[")
+# A verb embedded INSIDE one operand — `env -S "touch <marker>"` keeps the whole program
+# in a single token, so basename equality never matches it. Only consulted in the
+# wrapper regime, which already tolerates over-blocking.
+# time/script/flock are listed as VERBS, not wrappers, even though they also run a
+# following command: each can write a file ITSELF via a flag or operand
+# (`time -o <log> true`, `script <log>`, `flock <log> cmd`). Treating them as pure
+# wrappers meant the conservative scan looked for a verb in the payload, found none, and
+# allowed a direct overwrite of the protected audit log. As verbs they block whenever a
+# marker is also an operand, which is exactly the condition that matters here — and they
+# are deliberately NOT in cmdword.py _MOD_VERBS, where there is no marker requirement and
+# `time npm test` would become a false positive.
+_INDIRECT_CMDS = ("touch", "cp", "mv", "ln", "install", "truncate", "unlink",
+                  "rmdir", "dd", "time", "script", "flock")
+# rm and tee are included HERE even though the scan above matches them by basename:
+# when a wrapper embeds the whole program in one token (env -S "rm -f <log>"), basename
+# equality never sees the verb, so the embedded form needs them too.
+_INDIRECT_VERBS_RE = r"(?:touch|cp|mv|ln|install|truncate|unlink|rmdir|dd|rm|tee)"
+# `=` is a separator too: env accepts the long form --split-string=<program>, which puts
+# the verb immediately after the equals sign rather than after whitespace.
+_INDIRECT_EMBEDDED = re.compile(r"(?:^|[\s;&|/=])" + _INDIRECT_VERBS_RE + r"(?:\s|$)")
+# The ATTACHED spelling of env -S glues the program to the flag letters, so the token
+# reads as -Stouch <marker> and the verb is preceded by a letter rather than whitespace.
+# Non-greedy so the flag cluster is consumed but the verb is not -- a greedy strip eats
+# the verb along with the flag and matches nothing.
+_INDIRECT_ATTACHED = re.compile(r"^-[A-Za-z]*?" + _INDIRECT_VERBS_RE + r"(?:\s|$)")
+
+
+def _dequote(w):
+    return w.replace(chr(34), "").replace(chr(39), "")
+
+
+def _skippable(w):
+    # A leading assignment, a flag, or a bare numeric wrapper operand (timeout 5 ...).
+    return (re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", w) is not None
+            or w.startswith("-")
+            or re.match(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$", w) is not None)
+
+
+def _peel_wrappers(words):
+    # First word that actually EXECUTES: skip leading assignments, flags, bare numeric
+    # wrapper operands, and wrapper commands themselves. Returns None when nothing
+    # survives, so the caller falls back to its raw first word.
+    for w in words:
+        if _skippable(w) or _bn(w) in _WRAPPER_CMDS or _bn(w) in _RESERVED_SH:
+            continue
+        if _bn(w) in _TEST_OPEN_SH:
+            return None
+        return w
+    return None
+
+
+def _first_word(words):
+    # The first word in COMMAND position, ignoring leading assignments/flags/numeric
+    # wrapper operands. Reserved words are NOT skipped here: callers that care about a
+    # specific keyword (coproc) need to see it exactly where it sits.
+    for w in words:
+        if _skippable(w):
+            continue
+        return _bn(w)
+    return ""
+
+
+def _starts_with_wrapper(words):
+    # Is the COMMAND-POSITION word a wrapper? Position matters: a wrapper name appearing
+    # only as an ARGUMENT to a read (grep sudo <marker>) must not change the decision.
+    for w in words:
+        if _skippable(w) or _bn(w) in _RESERVED_SH:
+            continue
+        if _bn(w) in _TEST_OPEN_SH:
+            return False
+        return _bn(w) in _WRAPPER_CMDS
+    return False
+
+
 def _scan_segment(segtext, markers, simple_vars, flags=None):
     # Tokenize ONE already-separated simple command and decide block/allow.
     # commenters is cleared because the newline->";" normalization (in
@@ -253,6 +343,7 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
             flags["unparseable"] = True
         return next((mf for mf in markers if _bn(mf) in segtext), None)
     seg = []
+    seg_words = []   # command-position candidates: redirect operators/targets excluded
     seg_has_cmd = False
     seg_cmd_word = None  # first real command word (redirect ops/targets excluded)
     i, n = 0, len(toks)
@@ -304,6 +395,7 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
                 seg_cmd_word = t
             seg_has_cmd = True
         seg.append(t)
+        seg_words.append(t)
         i += 1
     # A bare rm/tee co-occurring with a marker operand in THIS simple command is a
     # delete / tee-write of the marker. Scanning ALL words (not a pinned command
@@ -326,19 +418,59 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
     # seg_cmd_word is captured in the token loop, so leading assignments (NAME=/NAME+=)
     # AND leading redirects (>/dev/null touch <marker>) are already excluded — a naive
     # first-non-assignment scan of seg would mis-pick the redirect target as the verb.
-    cmd_word = seg_cmd_word
-    # #519 adds truncate/unlink: both erase content with a bare, ordinary command, and
-    # the gate now protects bypass-log.jsonl, whose whole value is that the record
-    # survives. Same command-word-only treatment and same rationale as #290 above — a
-    # cooperative agent reaching for the easy path is the realistic threat, and the
-    # wrapper-hidden / eval forms stay in the documented ADR 0006 residual.
-    # rmdir and dd join them: rmdir deletes an EMPTY spent lease slot, which would let
-    # that slot be reclaimed and the 20-use ceiling extended indefinitely, and dd is the
-    # obvious remaining way to blank the audit log. dd was previously an accepted ADR
-    # 0006 residual; it stops being acceptable once bypass-log.jsonl is protected state,
-    # since a residual that is the EASIEST path is not a residual, it is the door.
-    if cmd_word is not None and _bn(cmd_word) in ("touch", "cp", "mv", "ln", "install",
-                                                  "truncate", "unlink", "rmdir", "dd"):
+    # Peel wrapper preambles before deciding the verb. Matching the RAW first word let
+    # `command rmdir <slot>` and `env truncate <log>` slip past this check, while the
+    # wrapper-aware classifier downstream still called them modifications — and the F9
+    # state-directory exemption then allowed them. A spent lease slot could therefore be
+    # removed and reclaimed without bound, and the protected audit log destroyed.
+    # #519: the indirect-write verbs. touch/cp/mv/ln/install come from #290 (the
+    # realistic threat is a cooperative agent taking the easy path); truncate/unlink/
+    # rmdir/dd were added once the lease ledger and bypass-log.jsonl became gate state,
+    # since rmdir on a spent slot resets the 20-use ceiling and truncate/dd erase the
+    # audit trail. A residual that is the EASIEST path is not a residual.
+    # ── Does this simple command RUN an indirect-write verb? ──────────────────
+    # One conservative rule rather than a patch per shape. Chasing each variant found a
+    # new one every round (coproc with an optional NAME, sudo before find, a verb
+    # embedded in an -exec payload), which is the segment-split arms race this file
+    # already warns about.
+    #
+    # CONSERVATIVE regime when the command executes something it does not name directly:
+    # a wrapper in command position, a coproc or function DEFINITION in command position
+    # (coproc takes an optional NAME, and a function body executes when the name is later
+    # called -- `function f { touch <marker>; }; f`), or find (which runs its own
+    # commands). All three are anchored on POSITION -- an any-occurrence test blocked
+    # `echo coproc touch <marker>` and `echo find -delete <marker>`, where the marker is
+    # only data, breaking the read/mention contract this check exists to preserve.
+    # There, EVERY word is checked -- by basename equality, by embedded-verb regex on the
+    # dequoted word, and for the -delete action. That cannot fail open; it only
+    # over-blocks a wrapped read, which is the right direction for a marker guard.
+    #
+    # RESIDUAL, deliberately NOT chased: a verb assembled at RUNTIME rather than written
+    # literally -- `V=truncate env -S "${V} -s 0 <log>"`, globs, brace expansion. That is
+    # the ADR 0006 execute-a-string/computed-name class: the value exists only in the
+    # executing shell, so no static scan can see it, and anything able to do it can also
+    # `python3 -c` the write directly. Blocking a subset is theater against that actor.
+    # The literal spellings above are closed because they are ONE TOKEN away from an
+    # ordinary command; this one is not.
+    #
+    # STRICT regime otherwise: the command word alone decides, so a verb appearing only
+    # as an ARGUMENT to a read (grep touch <marker>, echo find -delete <marker>) stays
+    # allowed. That read-only contract is the whole point of the position check.
+    _INDIRECT = _INDIRECT_CMDS
+    _peeled = _peel_wrappers(seg_words)
+    _conservative = (_starts_with_wrapper(seg_words)
+                     or _first_word(seg_words) in ("coproc", "function")
+                     or _bn(_peeled or "") == "find")
+    if _conservative:
+        verb_present = (any(_bn(w) in _INDIRECT for w in seg_words)
+                        or any(_INDIRECT_EMBEDDED.search(_dequote(w))
+                               or _INDIRECT_ATTACHED.match(_dequote(w))
+                               for w in seg_words)
+                        or any(w == "-delete" for w in seg_words))
+    else:
+        cmd_word = _peeled if _peeled is not None else seg_cmd_word
+        verb_present = cmd_word is not None and _bn(cmd_word) in _INDIRECT
+    if verb_present:
         for w in seg:
             m = _match_marker(w, markers, simple_vars)
             if m:
@@ -379,9 +511,19 @@ def _writes_marker(cmd, markers):
     # words) anyway, because the realistic threat is an accidental/lazy self-bypass
     # by a COOPERATIVE agent (a bare `touch .claude/skip-litmus.local`); blocking the
     # bare-command indirect-write forms removes the easy path and forces any bypass
-    # to be a deliberate wrapper-hidden or eval-forge a cooperative agent will not
-    # build. A human touch typed in a real terminal is unaffected — this hook only
-    # sees the Claude tool calls. See #227 and the ADR 0006 residual addendum.
+    # to be a deliberate eval-forge a cooperative agent will not build. A human touch
+    # typed in a real terminal is unaffected — this hook only sees the Claude tool
+    # calls. See #227 and the ADR 0006 residual addendum.
+    #
+    # #519 CLOSED the wrapper-hidden half of that residual (`sudo touch <marker>`,
+    # `command rmdir <slot>`, `env truncate <log>`): the command word is now chosen
+    # after peeling wrapper preambles. The residual was tolerable while the only
+    # wrapper-reachable targets were markers a cooperative agent had no reason to
+    # forge; it stopped being tolerable once the skip LEASE ledger and the bypass
+    # audit log became gate state, since those two shapes reset the use ceiling and
+    # erase the trail respectively. A residual that is the EASIEST path is not a
+    # residual. The execute-a-string class (eval, sh -c, python -c) is UNCHANGED and
+    # remains the documented residual.
     norm = cmd.replace("\r\n", "\n").replace("\r", "\n")
     # Bash removes an unquoted backslash-newline (line continuation) before
     # execution; mirror that BEFORE splitting on newlines so a marker write or
@@ -774,10 +916,19 @@ fi
 LEASE_MAX_USES=20
 LEASE_MAX_AGE=3600
 _SKIP_FILE="$STATE_DIR/skip-design-review.local"
+_SKIP_NAME="skip-design-review.local"
+# Remove the skip file through the O_NOFOLLOW component walk rather than `rm -f`. A
+# shell rm resolves the path afresh and follows a symlinked INTERMEDIATE component of
+# the repo-influenced state dir, so it could delete outside the repository — and it runs
+# BEFORE lease_slot.py validates anything, so the later safe resolution cannot undo it.
+_skip_unlink() {
+    python3 -I "$_GATE_LIBDIR/lease_slot.py" --unlink "$STATE_DIR" "$_SKIP_NAME" 2>/dev/null || true
+}
 # Per-use lease slots live as immutable <mtime>.<n> directories in here, never
 # as a mutable counter file — see the claim block below for why.
-# Slot names/paths for the release-on-unloggable-use path below; the CLAIM itself goes
-# through lease_slot.py, which resolves this path safely rather than by string join.
+# Referenced only in messages/tests; every real operation on the ledger goes through
+# lease_slot.py, which resolves the path with O_NOFOLLOW at each component rather than
+# by string join.
 _LEASE_DIR="$STATE_DIR/.skip-design-review-lease.d"
 
 # Exit: 0 = a lease use was granted (allow the write)
@@ -808,7 +959,9 @@ _skip_lease_consume() {
 
     if [ "$age" -lt 30 ]; then
         # Created moments ago — likely a self-bypass, not operator consent.
-        rm -f "$_SKIP_FILE" 2>/dev/null || true; rm -rf "$_LEASE_DIR" 2>/dev/null || true
+        # Only the skip file: stale slots are inert (their mtime prefix no longer
+        # matches) and are pruned by the next claim.
+        _skip_unlink
         block_emit "BLOCKED: skip-design-review.local was created moments ago (likely self-bypass).
 
 Do NOT create $STATE_DIR/skip-design-review.local yourself. Run /blueprint-review instead.
@@ -818,7 +971,7 @@ If the user wants to skip, they should create the file manually in their termina
     if [ "$age" -gt "$LEASE_MAX_AGE" ]; then
         # Slots are left in place for the same anti-TOCTOU reason as the exhausted
         # branch below; the mtime-keyed prune clears them when a new lease is armed.
-        rm -f "$_SKIP_FILE" 2>/dev/null || true
+        _skip_unlink
         block_emit "BLOCKED: the design-review skip lease has EXPIRED (created ${age}s ago; the limit is ${LEASE_MAX_AGE}s).
 
 The file has been removed so it cannot stay armed and silently authorize a later session.
@@ -851,7 +1004,7 @@ they can create $STATE_DIR/skip-design-review.local again in their terminal."
             # a 21st use. The slots are the exhaustion proof and must outlive the file
             # that spent them; a later touch changes the mtime and lease_slot prunes
             # them. (The ledger is a protected marker, so it cannot be wiped to reset.)
-            rm -f "$_SKIP_FILE" 2>/dev/null || true
+            _skip_unlink
             block_emit "BLOCKED: the design-review skip lease is EXHAUSTED (all $LEASE_MAX_USES uses spent).
 
 One \`touch\` authorizes $LEASE_MAX_USES gated writes so a whole approved plan can be
@@ -897,9 +1050,11 @@ $STATE_DIR/skip-design-review.local in their terminal."
     if ! python3 -I "$_GATE_LIBDIR/audit_append.py" "$STATE_DIR" \
          "$(printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-implementation","lease_slot":%s,"lease_max":%s}' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$used" "$LEASE_MAX_USES")" 2>/dev/null; then
-        # Best-effort: hand the slot back so the accounting stays truthful about what
-        # was actually granted. If it fails, the slot stays spent — conservative.
-        rmdir "$_LEASE_DIR/$mtime.$claimed" 2>/dev/null || true
+        # The slot stays SPENT. Handing it back would mean a second unvalidated path
+        # operation on a repo-influenced directory, and spending a slot on a refused use
+        # is the conservative direction: it can only make the lease shorter, never
+        # longer. (Refusing to grant while keeping the slot is exactly what a
+        # fail-closed gate should do with an unrecordable use.)
         return 1
     fi
     return 0

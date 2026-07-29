@@ -1101,6 +1101,9 @@ try:
         print("WRITE_EDIT|" + inp.get("file_path", inp.get("filePath", "")))
     elif tool == "Bash":
         cmd = inp.get("command", "")
+        # MUST stay in step with cmdword.FILE_MOD_PATTERNS: this list is the
+        # import-failure fallback, so a verb missing here fails OPEN on exactly the
+        # damaged-installation path the comment below promises is fail-CLOSED.
         FILE_MOD_PATTERNS = [
             r"\bsed\s+-i",
             r"\btee\s",
@@ -1110,6 +1113,10 @@ try:
             r"\brm\s",
             r"\bln\s",
             r"\binstall\s",
+            r"\btruncate\s",
+            r"\bunlink\s",
+            r"\brmdir\s",
+            r"\bdd\s",
         ]
         # #519 item 4: these raw-string regexes match INSIDE quoted operands, so a
         # read-only `grep -nE "rm |mv " f` or `echo "(mv FAILS)"` read as file-modifying

@@ -302,6 +302,13 @@ def _executed_operands(toks):
     any-position scan turned both into blocked writes.
     """
     out = []
+    # When the command STARTS with a wrapper, do not stop at the first non-wrapper word:
+    # a wrapper flag can take an operand (`sudo -u root bash -c "rm x"`), so breaking at
+    # `root` never reaches the `bash -c` behind it, and the conservative token scan does
+    # not catch it either because `rm x` is one token. In that regime scan every token —
+    # over-blocking a wrapped read is the safe direction. Unwrapped commands keep the
+    # strict preamble-only walk, which is what keeps `echo su -c "rm x"` allowed.
+    scan_all = _starts_with_wrapper(toks)
     i, n = 0, len(toks)
     while i < n:
         t = toks[i]
@@ -350,6 +357,9 @@ def _executed_operands(toks):
             i += 1
             continue
         if base in _WRAPPERS:
+            i += 1
+            continue
+        if scan_all:
             i += 1
             continue
         break          # a real command word: everything after it is data
@@ -655,6 +665,7 @@ def _demo():
         "function f { coproc rm x; }; f",
         "find . -exec sudo -u root rm {} ;",
         "sudo env -S 'rm x'",
+        "sudo -u root bash -c 'rm x'",
         "env --split-string='rm x'",
     ]
     for c in allowed:

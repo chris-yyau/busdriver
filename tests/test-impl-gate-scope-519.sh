@@ -331,6 +331,30 @@ case "$EVT" in
 esac
 rm -rf "$CLEARWORK"
 
+echo "── fallback parity ────────────────────────────────────────────────"
+
+# The gate carries an INLINE copy of FILE_MOD_PATTERNS as the cmdword-import-failure
+# fallback. A verb present in one list and not the other fails OPEN on exactly the
+# damaged-installation path the fallback exists to cover. Asserted, not documented:
+# a comment saying "keep these in sync" survives until the next edit; this does not.
+if python3 - "$REPO_ROOT" <<'PYEOF'
+import re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+sys.path.insert(0, str(root / "hooks/gate-scripts/lib"))
+from cmdword import FILE_MOD_PATTERNS
+gate = (root / "hooks/gate-scripts/pre-implementation-gate.sh").read_text()
+block = re.search(r"FILE_MOD_PATTERNS = \[(.*?)\]", gate, re.S)
+if not block:
+    sys.exit(1)
+inline = set(re.findall(r'r"([^"]+)"', block.group(1)))
+sys.exit(0 if inline == set(FILE_MOD_PATTERNS) else 1)
+PYEOF
+then
+    ok "gate inline FILE_MOD_PATTERNS matches cmdword.FILE_MOD_PATTERNS"
+else
+    no "gate inline FILE_MOD_PATTERNS matches cmdword.FILE_MOD_PATTERNS" "the two lists have drifted"
+fi
+
 echo "── the hardened audit appender ────────────────────────────────────"
 if python3 -I "$REPO_ROOT/hooks/gate-scripts/lib/audit_append.py" --self-check >/dev/null 2>&1; then
     ok "audit_append self-check (symlinked log / symlinked prefix / torn line all refuse)"

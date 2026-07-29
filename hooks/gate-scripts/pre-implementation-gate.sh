@@ -500,7 +500,47 @@ def _norm_for_scan(cmd):
 _MUTATING_HELPERS = ("lease_slot.py", "audit_append.py")
 
 
-def _helper_invoked(cmd):
+def _exec_payloads(words):
+    # Sub-programs this simple command hands to something else to RUN: a find -exec
+    # payload (already tokens) and an executed STRING (env -S / a shell -c), which has
+    # to be re-tokenized. Without following these, the helper guard only saw the top
+    # level, so `find . -exec python3 .../lease_slot.py .claude fake 1 ;` and the same
+    # payload inside env -S reached the helper unblocked.
+    tok_payloads, str_payloads = [], []
+    for i, w in enumerate(words):
+        if w in ("-exec", "-execdir", "-ok", "-okdir"):
+            payload = []
+            for w2 in words[i + 1:]:
+                if w2 in (";", "+"):
+                    break
+                payload.append(w2)
+            if payload:
+                tok_payloads.append(payload)
+            continue
+        base = _bn(w)
+        if base == "env":
+            for j in range(i + 1, len(words)):
+                t2 = words[j]
+                if t2.startswith("--split-string="):
+                    str_payloads.append(t2.split("=", 1)[1]); break
+                if t2 in ("-S", "--split-string") and j + 1 < len(words):
+                    str_payloads.append(words[j + 1]); break
+                if t2.startswith("-S") and len(t2) > 2:
+                    str_payloads.append(t2[2:]); break
+        elif base in ("sh", "bash", "zsh", "dash", "ksh", "su", "runuser"):
+            for j in range(i + 1, len(words)):
+                t2 = words[j]
+                if t2.startswith("--command="):
+                    str_payloads.append(t2.split("=", 1)[1]); break
+                if t2 == "--command" and j + 1 < len(words):
+                    str_payloads.append(words[j + 1]); break
+                if (t2.startswith("-") and not t2.startswith("--")
+                        and "c" in t2[1:] and j + 1 < len(words)):
+                    str_payloads.append(words[j + 1]); break
+    return tok_payloads, str_payloads
+
+
+def _helper_invoked(cmd, _depth=0):
     # Which gate-state helper does this command RUN, if any? Token-level, per simple
     # command -- a raw substring test over the whole string was defeated two ways:
     # quote concatenation (lease_"slot.py" contains no matching substring, yet the shell
@@ -508,6 +548,8 @@ def _helper_invoked(cmd):
     # while the FIRST segment mutated the real ledger. Segmenting and tokenizing makes
     # both spellings resolve to the same token, and scopes the exemption to the segment
     # that actually carries it.
+    if _depth > 3:
+        return next((h for h in _MUTATING_HELPERS if h in cmd), None)
     segs, ok = _split_simple_commands(_norm_for_scan(cmd))
     if not ok:
         # Unparseable: fall back to the raw substring, which is WIDER (it blocks more).
@@ -520,6 +562,18 @@ def _helper_invoked(cmd):
             toks = list(lex)
         except ValueError:
             return next((h for h in _MUTATING_HELPERS if h in segtext), None)
+        # Follow sub-programs FIRST: a payload handed to find -exec, env -S or a shell
+        # -c is executed just as surely as the top level, and looking only at the top
+        # level let `find . -exec python3 .../lease_slot.py .claude fake 1 ;` through.
+        _tokp, _strp = _exec_payloads([t for t in toks if not _is_redir(t)])
+        for _p in _tokp:
+            _hit = _helper_invoked(" ".join(_p), _depth + 1)
+            if _hit:
+                return _hit
+        for _p in _strp:
+            _hit = _helper_invoked(_p, _depth + 1)
+            if _hit:
+                return _hit
         # The helper must be EXECUTED, not merely named. Naming one is an ordinary read
         # -- `cat .../lease_slot.py`, `git diff -- .../audit_append.py`,
         # `echo lease_slot.py`, `python3 safe.py lease_slot.py` -- and blocking those

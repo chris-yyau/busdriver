@@ -353,6 +353,11 @@ def _executed_operands(toks):
                 if t2.startswith("--split-string="):
                     out.append(t2.split("=", 1)[1])
                     break
+                # The two-argument long form is equally valid and was omitted, so the
+                # program stayed one token and matched no verb.
+                if t2 == "--split-string" and j + 1 < n:
+                    out.append(toks[j + 1])
+                    break
                 if t2 == "-S" and j + 1 < n:
                     out.append(toks[j + 1])
                     break
@@ -705,6 +710,7 @@ def _demo():
         'function f { sh -c "rm x"; }',
         '{ sh -c "rm x"; }',
         "env --split-string='rm x'",
+        "env --split-string 'rm -rf src'",
     ]
     for c in allowed:
         assert not is_file_mod(c), "should be allowed: " + c

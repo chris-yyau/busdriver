@@ -374,6 +374,14 @@ check "helper in a comment after python -c is allowed" allow \
     "$(bash_decision "python3 -c 'print(1)' # lease_slot.py")"
 check "echo naming python and a helper is allowed" allow \
     "$(bash_decision "echo python3 lease_slot.py")"
+# A payload handed to find -exec / env -S / sh -c is executed just as surely as the top
+# level, so the guard follows those too.
+check "find -exec running the helper is blocked" block \
+    "$(bash_decision "find . -maxdepth 0 -exec python3 -I hooks/gate-scripts/lib/lease_slot.py .claude fake 1 ;")"
+check "env -S running the helper is blocked" block \
+    "$(bash_decision "env -S 'python3 -I hooks/gate-scripts/lib/lease_slot.py .claude fake 1'")"
+check "sh -c running the helper is blocked" block \
+    "$(bash_decision "sh -c 'python3 -I hooks/gate-scripts/lib/audit_append.py .claude {}'")"
 
 echo "── fallback parity ────────────────────────────────────────────────"
 

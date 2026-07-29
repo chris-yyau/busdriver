@@ -1,7 +1,7 @@
 """Hardened append of ONE record to the bypass audit log (#519).
 
-Usage:  python3 -I audit_append.py <state_dir> <json_record>
-Exit:   0 = the record is durably on disk; 1 = it is NOT (caller must fail closed).
+Imported by lease_slot.py; `--self-check` is its only command line. There is no CLI that
+writes a record — see the `__main__` block for why that entry point was removed.
 
 WHY A HELPER AND NOT `>>`
 A shell redirect follows symlinks at EVERY path component, so a repo-writable
@@ -162,24 +162,17 @@ def _demo():
 
 
 if __name__ == "__main__":
+    # THERE IS NO WRITING CLI, deliberately. This module is imported by lease_slot.py,
+    # which mints the audit event in the same call that creates the slot. A CLI that
+    # wrote a record — even one built from fixed fields, taking only integers — let any
+    # caller reaching it forge a `skip-review-consumed` line with no lease behind it,
+    # and post-commit-consume-marker.sh reads a recent one of those as proof that a
+    # bypass was sanctioned, suppressing a genuine unreviewed-commit entry. The Bash
+    # invocation detector in the gate would then have been the ONLY thing in the way,
+    # which is exactly the guess-every-spelling arms race this design is trying to
+    # leave. No entry point, nothing to guess.
     if len(sys.argv) == 2 and sys.argv[1] == "--self-check":
         _demo()
         raise SystemExit(0)
-    if len(sys.argv) != 3:
-        raise SystemExit(2)
-    # Validate before anything can reach the log. A newline would split one event into
-    # two half-records and destroy the JSONL framing for every later reader; a
-    # non-object is syntactically valid JSONL but meaningless as an audit event. Cheap,
-    # and it means a malformed caller corrupts nothing. (Direct invocation from a Claude
-    # Bash call is separately blocked by the gate — this is the defence for everything
-    # else that might reach the CLI.)
-    import json
-    rec = sys.argv[2]
-    if "\n" in rec or "\r" in rec:
-        raise SystemExit(2)
-    try:
-        if not isinstance(json.loads(rec), dict):
-            raise ValueError
-    except ValueError:
-        raise SystemExit(2)
-    raise SystemExit(0 if append(sys.argv[1], rec) else 1)
+    sys.stderr.write("audit_append: library only; use --self-check\n")
+    raise SystemExit(2)

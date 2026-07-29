@@ -414,10 +414,27 @@ else
     no "audit_append self-check" "see: python3 hooks/gate-scripts/lib/audit_append.py --self-check"
 fi
 if python3 -I "$REPO_ROOT/hooks/gate-scripts/lib/lease_slot.py" --self-check >/dev/null 2>&1; then
-    ok "lease_slot self-check (slots increment/exhaust/reset; symlinked ledger + prefix refuse)"
+    ok "lease_slot self-check (slots increment/exhaust/reset; age boundaries; every use logged)"
 else
     no "lease_slot self-check" "see: python3 hooks/gate-scripts/lib/lease_slot.py --self-check"
 fi
+
+# THE AUDIT EVENT HAS NO STANDALONE ENTRY POINT. A CLI that writes a record -- even one
+# built from fixed fields, taking only integers -- mints `skip-review-consumed` with no
+# lease behind it, and post-commit-consume-marker.sh reads a recent one of those as proof
+# that a bypass was sanctioned, suppressing a genuine unreviewed-commit entry. Such a
+# command names no protected path and no modification verb, so the Bash detector above
+# would be the ONLY thing in the way. Pin that the entry point stays absent: the gate's
+# detector is defence in depth here, never the sole defence.
+_forge_dir="$(mktemp -d)"
+if (cd "$_forge_dir" && mkdir -p .claude &&
+    ! python3 -I "$REPO_ROOT/hooks/gate-scripts/lib/audit_append.py" .claude 1 20 2>/dev/null &&
+    [ ! -e .claude/bypass-log.jsonl ]); then
+    ok "audit_append has no record-writing CLI (a forged event exits non-zero, writes nothing)"
+else
+    no "audit_append has no record-writing CLI" "a standalone invocation minted an event"
+fi
+rm -rf "$_forge_dir"
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

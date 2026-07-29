@@ -769,11 +769,15 @@ try:
         # #519 helpers that MUTATE gate state (lease slots, the audit log). They are
         # internal to this gate, which runs them as a subprocess -- never as a Claude
         # Bash tool call -- so a Bash call naming them is either a mistake or a bypass.
-        # Unguarded they are bypass primitives in their own right: lease_slot.py with a
-        # fabricated mtime PRUNES the genuine slots (resetting the 20-use ceiling), and
-        # audit_append.py writes an arbitrary record into the protected log. Neither
-        # command needs to name a protected path or a modification verb, so nothing else
-        # in this detector would notice it. Same treatment as the marker writer below.
+        # DEFENCE IN DEPTH, not the only defence. The helpers are also safe by
+        # construction now: lease_slot.py reads the skip file mtime ITSELF rather than
+        # accepting it (a caller-supplied mtime was forgeable, and a fabricated one
+        # prunes the genuine slots and resets the ceiling), and audit_append.py builds
+        # its record from fixed fields rather than accepting arbitrary JSON. That
+        # matters because neither command has to name a protected path or a
+        # modification verb, so nothing else in this detector would notice it — and
+        # guessing every invocation spelling is the arms race this file already warns
+        # about. Same treatment as the marker writer below.
         # --self-check is exempt: it runs entirely in a temp dir, mutates no real state,
         # and the test suite invokes it through Bash.
         _blocked_helper = _helper_invoked(cmd)
@@ -1087,8 +1091,8 @@ _LEASE_DIR="$STATE_DIR/.skip-design-review-lease.d"
 #       1 = no usable skip file (fall through to the normal block)
 #       2 = a block decision has ALREADY been emitted on stdout (caller exits)
 _skip_lease_consume() {
-    local mtime age used now claimed
-    [ -f "$_SKIP_FILE" ] || return 1
+    local claimed
+    [[ -f "$_SKIP_FILE" ]] || return 1
     # A git-tracked (git add -f'd) skip file is repo-controlled, not operator consent
     # (#325). Anchor the guard on the SAME path the `-f` check tests — that check is
     # relative to the hook CWD, so resolve against the CWD too, or a committed
@@ -1098,57 +1102,45 @@ _skip_lease_consume() {
     # makes the whole list non-zero and trips the ERR trap before the next line runs.
     if gate_skip_file_repo_controlled "." "$_SKIP_FILE"; then return 1; fi
 
-    mtime=$(stat -f %m "$_SKIP_FILE" 2>/dev/null) \
-        || mtime=$(stat -c %Y "$_SKIP_FILE" 2>/dev/null) \
-        || mtime=""
-    # FAIL-CLOSED: an unreadable mtime means the age checks cannot run, so neither
-    # the self-bypass floor nor the expiry ceiling can be enforced. Refuse the skip
-    # rather than grant an unbounded one. (The old code defaulted FILE_AGE=999 here,
-    # which treated an unstattable file as safely old — the wrong direction.)
-    [ -n "$mtime" ] || return 1
-    now=$(date +%s)
-    age=$(( now - mtime ))
-
-    if [ "$age" -lt 30 ]; then
-        # Created moments ago — likely a self-bypass, not operator consent.
-        # Only the skip file: stale slots are inert (their mtime prefix no longer
-        # matches) and are pruned by the next claim.
-        _skip_unlink
-        block_emit "BLOCKED: skip-design-review.local was created moments ago (likely self-bypass).
+    # ── Age checks AND the claim, from ONE stat ─────────────────────────────
+    # Both live in lease_slot.py. The shell used to stat the file for the 30s floor and
+    # the 3600s ceiling and then let the helper stat it AGAIN for the lease key, so a
+    # touch or replacement between the two produced a lease whose new mtime had passed
+    # neither check. One read, one decision.
+    #
+    # Every path component is opened with dir_fd + O_NOFOLLOW and every operation happens
+    # AT that fd, so the directory validated is the one written to. The shell version
+    # could not hold that: `-L "$STATE_DIR"` tests only the final name (a nested
+    # `link/state` with a symlinked PREFIX passes), the check was separated from the use,
+    # and a glob + `rm -rf` prune would follow such a symlink into a tree outside the
+    # repo — where slots are also outside the protected-marker guard, so they could be
+    # erased through the external name and the ceiling reset indefinitely.
+    #
+    # Exit 0 = claimed (slot on stdout); 2 = exhausted; 3 = too new; 4 = expired;
+    # anything else = could not record, which must REFUSE the bypass —
+    # unbounded-because-unrecordable is the fail-open this whole block exists to avoid.
+    _CLAIM_RC=0
+    claimed="$(python3 -I "$_GATE_LIBDIR/lease_slot.py" "$STATE_DIR" "$LEASE_MAX_USES" 30 "$LEASE_MAX_AGE" 2>/dev/null)" || _CLAIM_RC=$?
+    case "$_CLAIM_RC" in
+        0) : ;;
+        3)
+            # Created moments ago — likely a self-bypass, not operator consent.
+            _skip_unlink
+            block_emit "BLOCKED: skip-design-review.local was created moments ago (likely self-bypass).
 
 Do NOT create $STATE_DIR/skip-design-review.local yourself. Run /blueprint-review instead.
 If the user wants to skip, they should create the file manually in their terminal."
-        return 2
-    fi
-    if [ "$age" -gt "$LEASE_MAX_AGE" ]; then
-        # Slots are left in place for the same anti-TOCTOU reason as the exhausted
-        # branch below; the mtime-keyed prune clears them when a new lease is armed.
-        _skip_unlink
-        block_emit "BLOCKED: the design-review skip lease has EXPIRED (created ${age}s ago; the limit is ${LEASE_MAX_AGE}s).
+            return 2 ;;
+        4)
+            # Slots are left in place for the same anti-TOCTOU reason as the exhausted
+            # branch; the mtime-keyed prune clears them when a new lease is armed.
+            _skip_unlink
+            block_emit "BLOCKED: the design-review skip lease has EXPIRED (the limit is ${LEASE_MAX_AGE}s).
 
 The file has been removed so it cannot stay armed and silently authorize a later session.
 Run /blueprint-review to clear the review properly. If the user still wants to bypass,
 they can create $STATE_DIR/skip-design-review.local again in their terminal."
-        return 2
-    fi
-
-    # ── Claim ONE use, atomically and inside the repo ────────────────────────
-    # Delegated to lease_slot.py: every path component is opened with dir_fd +
-    # O_NOFOLLOW and every operation happens AT that fd, so the directory validated is
-    # the one written to. The shell version could not hold that — `-L "$STATE_DIR"`
-    # tests only the final name (a nested `link/state` with a symlinked PREFIX passes),
-    # the check was separated from the use by a TOCTOU window, and a glob + `rm -rf`
-    # prune would follow such a symlink into a tree outside the repo. Slots placed
-    # outside the repo are also outside the protected-marker guard, so they could be
-    # erased through the external name and the ceiling reset indefinitely.
-    #
-    # Exit 0 = claimed (slot on stdout); 2 = exhausted; anything else = could not
-    # record, which must REFUSE the bypass — unbounded-because-unrecordable is the
-    # fail-open this whole block exists to avoid.
-    _CLAIM_RC=0
-    claimed="$(python3 -I "$_GATE_LIBDIR/lease_slot.py" "$STATE_DIR" "$mtime" "$LEASE_MAX_USES" 2>/dev/null)" || _CLAIM_RC=$?
-    case "$_CLAIM_RC" in
-        0) : ;;
+            return 2 ;;
         2)
             # Remove ONLY the skip file. Deleting the slots here is a TOCTOU: a
             # concurrent gate that already passed the skip-file/mtime checks would
@@ -1172,43 +1164,14 @@ $STATE_DIR/skip-design-review.local in their terminal."
     esac
     case "$claimed" in ''|*[!0-9]*) return 1 ;; esac
 
-    # The slot is already durable on disk (mkdir succeeded), so the use is recorded
-    # BEFORE it is granted — a crash here loses the write, never the accounting.
-    used="$claimed"
+    # Exit 0 means the slot is durable on disk AND the bypass-telemetry event for it is
+    # durably logged — lease_slot.py mints that event inside the same call that created
+    # the slot, and reports ERROR (refuse, slot stays spent) if the append did not land.
+    # It is NOT a second command here, because a record-writing CLI is a forge primitive:
+    # it needs no protected path and no modification verb, so nothing else in the Bash
+    # detector would notice one, and post-commit-consume-marker.sh reads a recent
+    # `skip-review-consumed` line as proof that a bypass was sanctioned.
     rm -f "$STATE_DIR/.impl-gate-block-count.local" 2>/dev/null || true
-    # ── Bypass telemetry — one event PER USE, recording the SLOT claimed and the
-    # ceiling, so lease state is observable from the log without consuming a use to
-    # check it. Deliberately NOT a "remaining" count: the slot number is what this
-    # process actually knows. Under concurrency (or after a refused use left a hole that
-    # is later reclaimed) a computed remaining would be wrong in a way the reader could
-    # not detect — two processes could log remaining=18 then remaining=19. The slot
-    # number is always a truthful lower bound on uses spent; count the events, or the
-    # slot dirs, for the live figure.
-    #
-    # FAIL-CLOSED on a failed append, matching design-clear.sh: an unlogged release is
-    # not a sanctioned bypass. A `|| true` here would let an unwritable log silently
-    # convert an audited hatch into an unaudited one — and the docs promise every use is
-    # recorded, so the promise has to be enforced rather than merely stated. Give the
-    # slot back so the accounting stays truthful about what was actually granted.
-    # Appended via the hardened helper, NOT a plain `>>`. A shell redirect follows
-    # symlinks at EVERY component, so a repo-writable `.claude/bypass-log.jsonl ->
-    # /dev/null` (or a symlinked `.claude/`, or a symlinked intermediate when the state
-    # dir is nested) makes the write "succeed" while retaining nothing — and this branch
-    # would read that as proof of a durable audit record and grant the lease. Since the
-    # whole point of the check is that an unlogged use is REFUSED, the write has to be
-    # verifiable. audit_append.py walks each component with O_NOFOLLOW, rejects a
-    # non-regular target, refuses to append onto a pre-existing torn line, and requires
-    # the full write plus fsync. Same reasoning as the writer in design-clear.sh.
-    if ! python3 -I "$_GATE_LIBDIR/audit_append.py" "$STATE_DIR" \
-         "$(printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-implementation","lease_slot":%s,"lease_max":%s}' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$used" "$LEASE_MAX_USES")" 2>/dev/null; then
-        # The slot stays SPENT. Handing it back would mean a second unvalidated path
-        # operation on a repo-influenced directory, and spending a slot on a refused use
-        # is the conservative direction: it can only make the lease shorter, never
-        # longer. (Refusing to grant while keeping the slot is exactly what a
-        # fail-closed gate should do with an unrecordable use.)
-        return 1
-    fi
     return 0
 }
 # (env-based SKIP_DESIGN_REVIEW removed — issue #325; use the .local skip file. ADR 0016.)

@@ -209,32 +209,42 @@ for (const file of files) {
     const dims = [];
     for (const [dim, values] of Object.entries(matrix)) {
       if (!Array.isArray(values)) refuse(`dimension '${dim}' is not a literal list`);
+      // One flat guard per rejected shape, accepted shapes returning early.
+      // Deliberately NOT nested by type (`if string { if expression … }`): the
+      // types are mutually exclusive, so nesting bought no precision while
+      // hiding each refusal one level deeper than the shape it names. Read it
+      // as a list of "which values are refusable, and why" — every branch is
+      // one line and no branch is reachable through another (#536).
       const labels = values.map((v) => {
-        if (typeof v === "string") {
-          if (v.includes("${{")) refuse(`dimension '${dim}' contains an expression`);
-          // Same rule, same predicate as the job name above: a control
-          // character would shift TSV fields downstream, letting a surface read
-          // the wrong column or ingest an injected row.
-          if (CONTROL_CHAR_RE.test(v)) {
-            refuse(`dimension '${dim}' has a value containing a control character`);
-          }
-          return v;
-        }
         if (typeof v === "boolean") return String(v);
+        // GitHub formats numbers with .NET G15. For an integer of at most 15
+        // significant digits that is exactly String(v), so the common
+        // `node: [18, 20]` is safe. Beyond that they diverge — 1e20 renders
+        // as `1E+20`, and 1.10 as `1.1` — and a mismatch names a context that
+        // is never posted. Refuse those and let the author quote instead.
+        // NaN and ±Infinity are numbers too, and fail Number.isInteger, so
+        // they land on the same refusal rather than rendering as labels.
+        if (typeof v === "number" && Number.isInteger(v) && Math.abs(v) < 1e15) {
+          return String(v);
+        }
         if (typeof v === "number") {
-          // GitHub formats numbers with .NET G15. For an integer of at most 15
-          // significant digits that is exactly String(v), so the common
-          // `node: [18, 20]` is safe. Beyond that they diverge — 1e20 renders
-          // as `1E+20`, and 1.10 as `1.1` — and a mismatch names a context that
-          // is never posted. Refuse those and let the author quote instead.
-          if (Number.isInteger(v) && Math.abs(v) < 1e15) return String(v);
           refuse(
             `dimension '${dim}' has a number (${v}) whose rendered form is ` +
               `ambiguous — quote it (e.g. "${v}")`,
           );
         }
-        refuse(`dimension '${dim}' has a non-scalar value`);
-        return "";
+        // Anything still here is neither boolean nor number, so a non-string is
+        // a nested list/mapping, null, or a js-yaml object scalar (Date,
+        // Uint8Array) — none of which has a rendered form to emit.
+        if (typeof v !== "string") refuse(`dimension '${dim}' has a non-scalar value`);
+        if (v.includes("${{")) refuse(`dimension '${dim}' contains an expression`);
+        // Same rule, same predicate as the job name above: a control
+        // character would shift TSV fields downstream, letting a surface read
+        // the wrong column or ingest an injected row.
+        if (CONTROL_CHAR_RE.test(v)) {
+          refuse(`dimension '${dim}' has a value containing a control character`);
+        }
+        return v;
       });
       if (labels.length === 0) refuse(`dimension '${dim}' is empty`);
       dims.push(labels);

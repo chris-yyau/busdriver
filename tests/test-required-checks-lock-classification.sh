@@ -681,6 +681,52 @@ assert_exit "date-valued matrix rejected" 2 "$D"
 assert_mentions "explains the non-mapping matrix" "not a mapping" "$D"
 
 
+echo "== E37: a matrix VALUE that is not a scalar refuses, it does not render =="
+# E36 covers an object-valued `strategy:`/`matrix:`; this covers an object-valued
+# entry INSIDE a dimension list, which reaches a different guard — the non-string
+# check in the labels() value mapper.
+#
+# That guard is load-bearing and was untested: the 68 assertions before this
+# block ALL passed against a build with the `typeof v !== "string"` line deleted.
+# Deleting it does not merely crash — for a value carrying its own `.includes`
+# (a nested list, or the Uint8Array from `!!binary`) the mapper falls through to
+# `return v` and JS stringifies it into the rendered name, emitting
+# `alpha (a,b)` / `alpha (72,101,108,108,111)`. Those are contexts no workflow
+# ever posts.
+#
+# Each case therefore gets a lock naming EXACTLY what the regressed build would
+# emit (4th arg). That is the same trick as E36 and it is load-bearing here:
+# with any other lock, surface (a) catches the phantom name as ordinary drift
+# and the regression exits 1 — caught, but by a different guard, which would
+# make this block pass for a reason unrelated to what it claims to test. With
+# the phantom name classified, (a) and (e) are both satisfied and the regressed
+# build exits 0, FULLY GREEN, on a repo whose real check name it never saw.
+# That is #530's shape exactly, and it is what the exit-2 assertion pins down.
+#
+# The mapping/null/date cases have no rendered form to classify — the regressed
+# build dies on `v.includes` instead. They keep the default lock and assert the
+# same refusal; a crash is not a fail-open, but it is not a refusal either.
+e37_case() {
+  local label="$1" value="$2" slug="$3" phantom="${4:-alpha}" dir
+  dir="$TMPROOT/e37-$slug"
+  mkrepo "$dir" "{\"required\":[],\"advisory\":[{\"name\":\"$phantom\",\"source_app\":\"github-actions\",\"workflow\":\".github/workflows/tests.yml\",\"job\":\"alpha\"}]}" "jobs:
+  alpha:
+    runs-on: x
+    strategy:
+      matrix:
+        os: [$value]
+"
+  assert_exit "$label" 2 "$dir"
+  assert_mentions "explains the non-scalar $slug" "non-scalar value" "$dir"
+}
+
+e37_case "nested-list matrix value refused"    '[a, b]'            "list"    'alpha (a,b)'
+e37_case "binary-scalar matrix value refused"  '!!binary SGVsbG8=' "binary"  'alpha (72,101,108,108,111)'
+e37_case "nested-mapping matrix value refused" '{a: b}'            "mapping"
+e37_case "null matrix value refused"           'null'              "null"
+e37_case "date-scalar matrix value refused"    '2026-01-01'        "date"
+
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]

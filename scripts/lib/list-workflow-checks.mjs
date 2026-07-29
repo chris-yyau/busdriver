@@ -67,6 +67,17 @@ const isPlainMapping = (v) => {
   return proto === Object.prototype || proto === null;
 };
 
+// GitHub formats numbers with .NET G15. For an integer of at most 15
+// significant digits that is exactly String(v), so the common `node: [18, 20]`
+// is safe. Beyond that they diverge — 1e20 renders as `1E+20`, and 1.10 as
+// `1.1` — and a mismatch names a context that is never posted. NaN and
+// ±Infinity are numbers too, and fail Number.isInteger, so they're excluded
+// here rather than rendering as labels. Named and extracted (not an inline
+// `&&` chain) to keep the matrix-dimension guard below at one condition per
+// branch (#536).
+const isRenderableMatrixInteger = (v) =>
+  typeof v === "number" && Number.isInteger(v) && Math.abs(v) < 1e15;
+
 const rows = [];
 for (const file of files) {
   const rel = join(".github", "workflows", file);
@@ -217,16 +228,9 @@ for (const file of files) {
       // one line and no branch is reachable through another (#536).
       const labels = values.map((v) => {
         if (typeof v === "boolean") return String(v);
-        // GitHub formats numbers with .NET G15. For an integer of at most 15
-        // significant digits that is exactly String(v), so the common
-        // `node: [18, 20]` is safe. Beyond that they diverge — 1e20 renders
-        // as `1E+20`, and 1.10 as `1.1` — and a mismatch names a context that
-        // is never posted. Refuse those and let the author quote instead.
-        // NaN and ±Infinity are numbers too, and fail Number.isInteger, so
-        // they land on the same refusal rather than rendering as labels.
-        if (typeof v === "number" && Number.isInteger(v) && Math.abs(v) < 1e15) {
-          return String(v);
-        }
+        // See isRenderableMatrixInteger above for why this range is safe and
+        // everything outside it is refused rather than rendered.
+        if (isRenderableMatrixInteger(v)) return String(v);
         if (typeof v === "number") {
           refuse(
             `dimension '${dim}' has a number (${v}) whose rendered form is ` +

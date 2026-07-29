@@ -121,6 +121,14 @@ check "timeout wrapper hiding rm" block "$(bash_decision "timeout 5 rm x")"
 check "xargs running rm" block "$(bash_decision "echo hi | xargs rm")"
 check "find -exec rm" block "$(bash_decision "find . -exec rm {} ;")"
 check "find -delete" block "$(bash_decision "find . -delete")"
+# Launchers/keywords that RUN a following command. Each was a fail-open while this
+# module's wrapper list was narrower than the forge detector's.
+check "coproc running rm" block "$(bash_decision "coproc rm src/x")"
+check "caffeinate running rm" block "$(bash_decision "caffeinate rm src/x")"
+check "su -c running rm" block "$(bash_decision "su -c 'rm src/x'")"
+check "function body containing rm" block "$(bash_decision "function f { rm src/x; }; f")"
+check "find -exec with a WRAPPED verb" block "$(bash_decision "find . -exec sudo rm {} ;")"
+check "echo naming coproc stays allowed" allow "$(bash_decision "echo coproc rm x")"
 # Wrapper flag OPERANDS and shell reserved words. Peeling to the first plausible token
 # returned `root`, `{` and `then` respectively, allowing the write behind them.
 check "sudo with a flag operand before rm" block \

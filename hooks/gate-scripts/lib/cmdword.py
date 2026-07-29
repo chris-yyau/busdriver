@@ -83,6 +83,9 @@ _MOD_VERBS = frozenset(("tee", "patch", "cp", "mv", "rm", "ln", "install",
 # string" only for a shell. `grep -c 'rm ' f` is a COUNT flag, and recursing there would
 # resurrect exactly the quoted-operand false positive this module exists to remove.
 _SHELLS = frozenset(("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash"))
+# su/runuser also take `-c <program>` and hand it to a shell, so their operand is
+# executable text too. Kept separate from _SHELLS because they are wrappers first.
+_DASH_C_RUNNERS = _SHELLS | frozenset(("su", "runuser"))
 # Bound the recursion. Depth is only reached by genuinely nested `bash -c 'bash -c ...'`
 # or nested substitutions; the cap stops a hand-crafted bomb from stalling a PreToolUse
 # hook. Hitting the cap returns the regex verdict (wider), never "allow".
@@ -97,8 +100,16 @@ _FUNC_DEF_RE = re.compile(r"(^|[;&|]\s*)[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)")
 # without scanning every token: scanning all tokens catches `sudo rm -rf src` but also
 # misreads `grep dd notes.txt` and `echo rmdir`, where the verb is plain data. Peeling
 # gets both right, which pinning the command word alone does not.
-_WRAPPERS = frozenset(("sudo", "doas", "env", "nohup", "timeout", "nice", "ionice",
-                       "setsid", "stdbuf", "command", "exec", "xargs", "time"))
+# Kept in step with _WRAPPER_CMDS in pre-implementation-gate.sh: a launcher missing
+# from ONE of the two lists is a fail-open in that half. `coproc` and `function` are
+# handled separately below (they are keywords whose command word cannot be located
+# reliably), and `time`/`script`/`flock` are absent on purpose — they are self-writing
+# verbs in the forge detector, but there the marker operand is also required, whereas
+# here `time npm test` would become a false positive.
+_WRAPPERS = frozenset(("sudo", "doas", "su", "runuser", "env", "nohup", "timeout",
+                       "nice", "ionice", "setsid", "stdbuf", "unbuffer", "command",
+                       "builtin", "exec", "xargs", "caffeinate", "chroot", "arch",
+                       "torify", "proxychains", "proxychains4"))
 _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 # A bare duration/number operand belonging to a wrapper (`timeout 5 rm x`, `nice 10 mv`).
 _NUMERIC_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$")
@@ -110,6 +121,14 @@ _NUMERIC_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$")
 _RESERVED = frozenset(("if", "then", "else", "elif", "fi", "do", "done", "esac",
                        "while", "until", "time",
                        "{", "}", "!", ")"))
+# coproc takes an OPTIONAL name, so its command word cannot be located reliably — force
+# the conservative all-token scan. Anchored on command POSITION so a mention stays a
+# mention (`echo coproc rm x` is data).
+#
+# `function` is deliberately NOT here: its NAME is data but its BODY is code, so an
+# all-token scan would block `function mv { echo harmless; }` — one of the three #519
+# false positives. It is handled by scanning the tokens AFTER the name instead.
+_OPAQUE_INTRO = frozenset(("coproc",))
 # Test-expression openers. Everything inside is an OPERAND, never a command, so these
 # terminate the search instead of being skipped — skipping `[[` made `[[ rm = value ]]`
 # and `[[ -f rm ]]` resolve to `rm` and classify as writes, recreating the very
@@ -274,47 +293,92 @@ def _command_substitutions(s):
 
 
 def _executed_operands(toks):
-    """Token operands this simple command hands to a shell to EXECUTE."""
+    """Token operands this simple command hands to a shell to EXECUTE.
+
+    The runner must appear in the PREAMBLE — the leading run of assignments, flags,
+    wrappers and runners — not anywhere in the token list. Once a real command word is
+    reached, everything after it is that command's data: `echo su -c "rm x"` and
+    `echo runuser --command="rm x" root` print text, they do not execute it, and an
+    any-position scan turned both into blocked writes.
+    """
     out = []
-    for i, t in enumerate(toks):
+    i, n = 0, len(toks)
+    while i < n:
+        t = toks[i]
+        if _ASSIGN_RE.match(t) or t.startswith("-") or _NUMERIC_RE.match(t):
+            i += 1
+            continue
         base = _basename(t)
-        if base in _SHELLS:
-            # The program follows the flag bundle CONTAINING `c` — not only a bare `-c`
-            # or a bundle ENDING in c. Bash and sh happily execute `bash -cl 'rm x'` and
-            # `sh -ce 'rm x'`, so anchoring on the last letter misses live write paths.
-            # Any single-dash bundle with a `c` in it consumes the next word as the
-            # command string; `--`-prefixed long options never do.
-            for j in range(i + 1, len(toks) - 1):
+        if base in _DASH_C_RUNNERS:
+            # The program follows the flag bundle CONTAINING `c`, or a long
+            # --command form. NOT --rcfile: that names a FILE to source, not inline
+            # source, so treating its value as a program was simply wrong.
+            for j in range(i + 1, n):
                 t2 = toks[j]
-                if t2.startswith("-") and not t2.startswith("--") and "c" in t2[1:]:
+                if t2.startswith("--command="):
+                    out.append(t2.split("=", 1)[1])
+                    break
+                if t2 == "--command" and j + 1 < n:
                     out.append(toks[j + 1])
                     break
-        elif base == "eval":
-            # eval concatenates its operands and executes the result.
-            if i + 1 < len(toks):
+                if (t2.startswith("-") and not t2.startswith("--")
+                        and "c" in t2[1:] and j + 1 < n):
+                    out.append(toks[j + 1])
+                    break
+            i += 1
+            continue
+        if base == "eval":
+            if i + 1 < n:
                 out.append(" ".join(toks[i + 1:]))
-        elif base == "env":
-            # `env -S "rm -rf x"` splits its string operand into an argv and runs it,
-            # so the operand is executable text just like `sh -c`. Both the separated
-            # (`-S`, `cmd`) and attached (`-Srm -rf x`) spellings occur.
-            for j in range(i + 1, len(toks)):
+            i += 1
+            continue
+        if base == "env":
+            # `env -S <program>` splits its operand into an argv and runs it. Both the
+            # separated (-S, prog), attached (-Sprog) and long (--split-string=prog)
+            # spellings occur.
+            for j in range(i + 1, n):
                 t2 = toks[j]
-                if t2 == "-S" and j + 1 < len(toks):
+                if t2.startswith("--split-string="):
+                    out.append(t2.split("=", 1)[1])
+                    break
+                if t2 == "-S" and j + 1 < n:
                     out.append(toks[j + 1])
                     break
                 if t2.startswith("-S") and len(t2) > 2:
                     out.append(t2[2:])
                     break
+            i += 1
+            continue
+        if base in _WRAPPERS:
+            i += 1
+            continue
+        break          # a real command word: everything after it is data
     return out
+
+
+def _first_word(toks):
+    """First token in COMMAND position: assignments, flags, numeric operands and shell
+    reserved words are skipped, so `then coproc rm x` and `{ coproc rm x` both report
+    `coproc`. coproc/function are NOT in _RESERVED, so they are reported exactly where
+    they sit, while a mere mention (`echo coproc rm x`) still reports `echo`."""
+    for t in toks:
+        if _ASSIGN_RE.match(t) or t.startswith("-") or _NUMERIC_RE.match(t):
+            continue
+        b = _basename(t)
+        if b in _RESERVED:
+            continue
+        if b in _TEST_OPEN:
+            return ""
+        return b
+    return ""
 
 
 def _starts_with_wrapper(toks):
     """Does this simple command BEGIN with a wrapper (after assignments/flags/keywords)?
 
     Position matters: scanning every token for a wrapper name meant `grep sudo rm` and
-    `printf sudo rm` flipped to the conservative all-token scan and blocked, which is
-    the same false-positive class #519 exists to remove. A wrapper only wraps when it
-    is in command position.
+    `printf sudo rm` flipped to the conservative all-token scan and blocked, which is the
+    same false-positive class #519 exists to remove.
     """
     skip_next = False
     for t in toks:
@@ -338,14 +402,14 @@ def _starts_with_wrapper(toks):
 def _effective_command_word(toks):
     """The verb this simple command RUNS, with the preamble peeled.
 
-    Skips leading `NAME=VALUE` assignments, flags, reserved words, grouping punctuation,
-    and bare numeric operands; the first token that survives is what executes. Returns
-    None if nothing does.
+    Skips leading assignments, flags, reserved words, grouping punctuation, wrappers and
+    bare numeric operands; keywords that introduce a NAME consume their operand too.
+    Returns None if nothing executes.
 
-    NOTE this is only consulted for WRAPPER-FREE commands — see _segment_is_mod. Peeling
-    a wrapper preamble precisely would mean knowing which of its flags take an operand
+    Only consulted for WRAPPER-FREE commands (see _runs_mod_verb): peeling a wrapper
+    preamble precisely would mean knowing which of its flags take an operand
     (`sudo -u root rm -rf src` must not stop at `root`), and getting that table wrong
-    fails OPEN. So wrappers are handled by the conservative branch instead.
+    fails OPEN.
     """
     skip_next = False
     for t in toks:
@@ -366,47 +430,59 @@ def _effective_command_word(toks):
     return None
 
 
-def _segment_is_mod(toks):
-    """True iff this simple command RUNS a file-modifying verb.
+def _runs_mod_verb(toks):
+    """Two-regime verdict for a token list that is itself a command.
 
-    Two regimes, split on whether a wrapper is present:
+    Wrapper (or opaque intro) present -> scan EVERY token, because a wrapper flag can
+    take an operand and enumerating which flags do is a table that fails OPEN.
+    Otherwise -> the command word alone, so data operands stay data.
 
-    - NO wrapper: judge the command word alone. Everything after it is data, so
-      `grep dd notes.txt` and `echo rmdir` stay allowed — the false positives #519 is
-      about.
-    - Wrapper present: scan EVERY token. A wrapper can carry flags with operands
-      (`sudo -u root rm -rf src`), and enumerating which flags consume an operand is a
-      table that fails OPEN when it is wrong or incomplete. Scanning all tokens cannot
-      fail open; it only over-blocks the rare `sudo grep dd f`, which is the safe
-      direction for a security gate.
+    Shared by the segment check, the find -exec payload and the function body.
     """
+    if _starts_with_wrapper(toks) or _first_word(toks) in _OPAQUE_INTRO:
+        return any(_basename(t) in _MOD_VERBS for t in toks)
+    return _effective_command_word(toks) in _MOD_VERBS
+
+
+def _segment_is_mod(toks):
+    """True iff this simple command RUNS a file-modifying verb."""
     names = [_basename(t) for t in toks]
-    wrapped = _starts_with_wrapper(toks)
     cw = _effective_command_word(toks)
+    # `find` is deliberately NOT a conservative trigger: forcing the all-token scan for
+    # it made read-only `find . -name rm` and `find . -exec echo rm {} +` classify as
+    # writes. It gets its own block below.
+    wrapped = _starts_with_wrapper(toks) or _first_word(toks) in _OPAQUE_INTRO
     if wrapped:
         if any(n in _MOD_VERBS for n in names):
             return True
     elif cw in _MOD_VERBS:
         return True
-    # find runs its own commands. `-delete` writes by itself; `-exec`/`-execdir`/`-ok`
-    # take a command whose verb sits in the very next token. Without this, switching
-    # from an all-token scan to wrapper peeling would regress `find . -exec rm {} \;`,
-    # which the original regexes did catch.
+    # `function NAME { body }`: the NAME is data, the BODY is code (it executes when the
+    # name is called later). Judged by command word so `function f { echo rm; }` -- which
+    # only prints the word -- stays allowed.
+    if _first_word(toks) == "function":
+        after_name = toks[2:] if len(toks) > 2 else []
+        if after_name and _runs_mod_verb(after_name):
+            return True
+    # find runs its own commands: -delete writes by itself, -exec/-execdir/-ok take a
+    # command. The payload goes through _runs_mod_verb so a WRAPPED payload
+    # (`-exec sudo -u root rm {} ;`) is caught and a DATA operand (`-exec echo rm {} +`)
+    # is not.
     if cw == "find" or (wrapped and "find" in names):
-        if any(n in ("-delete",) for n in names):
+        if "-delete" in names:
             return True
         for i, t in enumerate(toks):
-            if t in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(toks):
-                if _basename(toks[i + 1]) in _MOD_VERBS:
+            if t in ("-exec", "-execdir", "-ok", "-okdir"):
+                payload = []
+                for t2 in toks[i + 1:]:
+                    if t2 in (";", "+"):
+                        break
+                    payload.append(t2)
+                if payload and _runs_mod_verb(payload):
                     return True
-    # sed modifies only in-place, so require BOTH the verb and an -i flag. The flag
-    # must come AFTER the sed token: in `grep -i sed notes.txt` the -i belongs to
-    # grep and sed is its search string, which is read-only. Checking order rather
-    # than command-word position keeps `sudo sed -i ...` blocked. `-i` may carry a
-    # suffix (BSD `sed -i ''`, GNU `sed -i.bak`) or be bundled (`-ni`), so match any
-    # leading-dash token whose flag letters include i.
-    # Index-based so a wrapped `sudo sed -i ...` still matches, but anchored on command
-    # position so `echo sed -i` does not.
+    # sed modifies only in-place, and the -i must come AFTER the sed token: in
+    # `grep -i sed notes.txt` the -i belongs to grep and sed is its search string.
+    # Anchored on command position so `echo sed -i` is not a write.
     if cw == "sed" or (wrapped and "sed" in names):
         after = toks[names.index("sed") + 1:]
         return any(re.match(r"^-[A-Za-z]*i", t) for t in after)
@@ -565,6 +641,21 @@ def _demo():
         "{ rm -rf src; }",
         "if true; then rm -rf src; fi",
         "sudo sed -i 's/a/b/' f",
+        # Launchers/keywords that run a following command. Each was a fail-open while
+        # the list here was narrower than the forge detector's.
+        "coproc rm src/x",
+        "caffeinate rm src/x",
+        "su -c 'rm src/x'",
+        "function f { rm src/x; }; f",
+        "find . -exec sudo rm {} ;",
+        "runuser --command='rm src/x' root",
+        # coproc behind a reserved word, and a WRAPPED -exec payload.
+        "if true; then coproc rm x; fi",
+        "{ coproc rm x; }",
+        "function f { coproc rm x; }; f",
+        "find . -exec sudo -u root rm {} ;",
+        "sudo env -S 'rm x'",
+        "env --split-string='rm x'",
     ]
     for c in allowed:
         assert not is_file_mod(c), "should be allowed: " + c

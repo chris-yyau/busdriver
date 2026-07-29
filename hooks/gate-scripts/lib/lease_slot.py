@@ -58,6 +58,15 @@ def claim(state_dir, mtime, max_uses):
             pass
         except OSError:
             return None
+        else:
+            # fsync the STATE dir as well: fsyncing the ledger persists entries INSIDE
+            # it, never the ledger's own directory entry. A crash could otherwise lose
+            # the whole ledger while the audit event survived, letting the same lease
+            # reclaim its slots and exceed the ceiling.
+            try:
+                os.fsync(sfd)
+            except OSError:
+                return None
         try:
             lfd = os.open(LEASE_DIRNAME, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                           dir_fd=sfd)
@@ -81,11 +90,21 @@ def claim(state_dir, mtime, max_uses):
             for n in range(1, max_uses + 1):
                 try:
                     os.mkdir("%s%d" % (prefix, n), 0o755, dir_fd=lfd)
-                    return n
                 except FileExistsError:
                     continue
                 except OSError:
                     return None       # cannot record ⇒ refuse
+                # fsync the LEDGER directory before reporting the claim. mkdir returning
+                # success does not make the directory ENTRY durable, so a crash could
+                # lose the slot while the skip file and the fsynced audit event survive —
+                # the next run would then reclaim it and exceed the ceiling. Treat an
+                # unsyncable claim as unrecorded and refuse, rather than granting a use
+                # whose accounting might evaporate.
+                try:
+                    os.fsync(lfd)
+                except OSError:
+                    return None
+                return n
             # Every slot exists. Distinguish exhausted from unwritable by re-counting,
             # so a permissions failure is never reported as a spent budget.
             try:

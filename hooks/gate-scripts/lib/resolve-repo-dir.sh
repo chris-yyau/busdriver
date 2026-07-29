@@ -557,6 +557,11 @@ gate_render_pending_records() {   # <recs_file> <anchor>
     # script is worse than a blunt one.
     clear_sh="$(cd "$(_gate_marker_lib_dir)/../../.." 2>/dev/null && pwd -P)/scripts/design-clear.sh"
     [ -f "$clear_sh" ] || clear_sh=""
+    # Escape it the same way as the doc path below. A checkout or worktree path
+    # containing an apostrophe would otherwise close the single quote in the printed
+    # command, so an operator (or agent) copying the hint would run something other
+    # than what was intended.
+    clear_sh="${clear_sh//\'/\'\\\'\'}"
     local _sp="" _dp="" _reason="" _i=0 _field _sp_q _dp_q _note
     while IFS= read -r -d '' _field; do
         _i=$((_i + 1))

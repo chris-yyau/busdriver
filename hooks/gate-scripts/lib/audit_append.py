@@ -167,4 +167,19 @@ if __name__ == "__main__":
         raise SystemExit(0)
     if len(sys.argv) != 3:
         raise SystemExit(2)
-    raise SystemExit(0 if append(sys.argv[1], sys.argv[2]) else 1)
+    # Validate before anything can reach the log. A newline would split one event into
+    # two half-records and destroy the JSONL framing for every later reader; a
+    # non-object is syntactically valid JSONL but meaningless as an audit event. Cheap,
+    # and it means a malformed caller corrupts nothing. (Direct invocation from a Claude
+    # Bash call is separately blocked by the gate — this is the defence for everything
+    # else that might reach the CLI.)
+    import json
+    rec = sys.argv[2]
+    if "\n" in rec or "\r" in rec:
+        raise SystemExit(2)
+    try:
+        if not isinstance(json.loads(rec), dict):
+            raise ValueError
+    except ValueError:
+        raise SystemExit(2)
+    raise SystemExit(0 if append(sys.argv[1], rec) else 1)

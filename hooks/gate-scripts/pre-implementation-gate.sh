@@ -478,6 +478,103 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
     return None
 
 
+def _norm_for_scan(cmd):
+    # Pre-tokenization normalization shared by the marker scan and the helper guard, so
+    # the two cannot disagree on what a token is.
+    norm = cmd.replace("\r\n", "\n").replace("\r", "\n")
+    # Bash removes an unquoted backslash-newline (line continuation) before execution;
+    # mirror that BEFORE splitting on newlines so a marker write or basename split
+    # across a continuation is rejoined, not broken into pieces.
+    norm = norm.replace(chr(92) + chr(10), "").replace("\n", " ; ")
+    # Bash ANSI-C ($...) and locale quoting: shlex does not model the leading $, so
+    # strip that prefix and let the quote tokenize to the literal path. (Escape
+    # SEQUENCES such as \x6c remain undecodable by shlex and stay out of scope per the
+    # residual note above.)
+    norm = norm.replace("$" + _SQ, _SQ).replace("$" + _DQ, _DQ)
+    # ${IFS}/$IFS expand to whitespace -- a classic field-splitting obfuscation
+    # (rm${IFS}<marker>); normalize to a separator so the command word and redirect
+    # operands are recognized rather than glued into one token.
+    return re.sub(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])", " ", norm)
+
+
+_MUTATING_HELPERS = ("lease_slot.py", "audit_append.py")
+
+
+def _helper_invoked(cmd):
+    # Which gate-state helper does this command RUN, if any? Token-level, per simple
+    # command -- a raw substring test over the whole string was defeated two ways:
+    # quote concatenation (lease_"slot.py" contains no matching substring, yet the shell
+    # runs it), and a trailing `; : --self-check` that satisfied a whole-string exemption
+    # while the FIRST segment mutated the real ledger. Segmenting and tokenizing makes
+    # both spellings resolve to the same token, and scopes the exemption to the segment
+    # that actually carries it.
+    segs, ok = _split_simple_commands(_norm_for_scan(cmd))
+    if not ok:
+        # Unparseable: fall back to the raw substring, which is WIDER (it blocks more).
+        return next((h for h in _MUTATING_HELPERS if h in cmd), None)
+    for segtext in segs:
+        try:
+            lex = shlex.shlex(segtext, posix=True, punctuation_chars=True)
+            lex.whitespace_split = True
+            lex.commenters = ""
+            toks = list(lex)
+        except ValueError:
+            return next((h for h in _MUTATING_HELPERS if h in segtext), None)
+        # The helper must be EXECUTED, not merely named. Naming one is an ordinary read
+        # -- `cat .../lease_slot.py`, `git diff -- .../audit_append.py`,
+        # `echo lease_slot.py`, `python3 safe.py lease_slot.py` -- and blocking those
+        # contradicts the read/mention contract the rest of this detector maintains.
+        words = [t for t in toks if not _is_redir(t)]
+        # Locate the interpreter. Two regimes, same reasoning as the verb scan above: a
+        # wrapper can carry flags that take an OPERAND (`env -u FOO python3 ...`,
+        # `sudo -u root python3 ...`), so peeling to the first non-flag word picks the
+        # operand and misses the interpreter behind it. When the segment STARTS with a
+        # wrapper, look for the interpreter anywhere; otherwise require it in command
+        # position, which is what keeps `echo python3 lease_slot.py` a mention.
+        pyi = None
+        if _starts_with_wrapper(words):
+            pyi = next((i for i, t in enumerate(words)
+                        if _bn(t).startswith("python")), None)
+        else:
+            cw = _peel_wrappers(words)
+            if cw is not None and _bn(cw).startswith("python"):
+                pyi = words.index(cw)
+            elif cw is not None and _bn(cw) in _MUTATING_HELPERS:
+                # The script itself is the command word (executable bit set).
+                i = words.index(cw)
+                if not (i + 1 < len(words) and words[i + 1] == "--self-check"):
+                    return _bn(cw)
+                continue
+        if pyi is None:
+            continue
+        # The EXECUTED script is the interpreter first non-flag argument. Anything later
+        # is that script own argument, so `python3 safe.py lease_slot.py` runs safe.py,
+        # and `python3 -c ... # lease_slot.py` runs a -c program.
+        script = None
+        j = pyi + 1
+        while j < len(words):
+            w = words[j]
+            if w.startswith("-"):
+                # A flag that takes an operand consumes the next word (-c PROG, -m MOD).
+                if w in ("-c", "-m", "-W", "-X", "--check-hash-based-pycs"):
+                    j += 2
+                    continue
+                j += 1
+                continue
+            script = w
+            break
+        if script is None or _bn(script) not in _MUTATING_HELPERS:
+            continue
+        # Exempt ONLY the exact `<helper> --self-check` shape: the flag must be the
+        # helper FIRST argument. A looser any-token test was satisfied by a trailing
+        # `# --self-check`, which bash treats as a comment but this parser (with
+        # commenters disabled) tokenizes -- so the real, mutating invocation ran.
+        if j + 1 < len(words) and words[j + 1] == "--self-check":
+            continue
+        return _bn(script)
+    return None
+
+
 def _writes_marker(cmd, markers):
     # Decide block/allow by SEGMENTING then TOKENIZING the command instead of
     # regex: a marker basename that is a redirect (>) target or a tee/rm operand
@@ -524,20 +621,7 @@ def _writes_marker(cmd, markers):
     # erase the trail respectively. A residual that is the EASIEST path is not a
     # residual. The execute-a-string class (eval, sh -c, python -c) is UNCHANGED and
     # remains the documented residual.
-    norm = cmd.replace("\r\n", "\n").replace("\r", "\n")
-    # Bash removes an unquoted backslash-newline (line continuation) before
-    # execution; mirror that BEFORE splitting on newlines so a marker write or
-    # basename split across a continuation is rejoined, not broken into pieces.
-    norm = norm.replace(chr(92) + chr(10), "").replace("\n", " ; ")
-    # Bash ANSI-C ($'...') and locale ($"...") quoting: shlex does not model the
-    # leading $, so strip that prefix and let the quote tokenize to the literal
-    # path. (Escape SEQUENCES inside $'...' such as \x6c remain undecodable by
-    # shlex and stay out of scope per the residual note above.)
-    norm = norm.replace("$" + _SQ, _SQ).replace("$" + _DQ, _DQ)
-    # ${IFS}/$IFS expand to whitespace — a classic field-splitting obfuscation
-    # (rm${IFS}<marker>); normalize to a separator so the rm/tee command word and
-    # redirect operands are recognized rather than glued into one token.
-    norm = re.sub(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])", " ", norm)
+    norm = _norm_for_scan(cmd)
     # Returns (marker_or_None, unparseable). `unparseable` is TRUE only for the
     # fail-CLOSED raw-substring path below, where the command could not be parsed
     # at all and a marker WRITE is therefore indistinguishable from a mere MENTION.
@@ -628,7 +712,21 @@ try:
 
     elif tool == "Bash":
         cmd = inp.get("command", "")
-        # Block direct invocation of write-review-marker.sh UNLESS called via
+        # #519 helpers that MUTATE gate state (lease slots, the audit log). They are
+        # internal to this gate, which runs them as a subprocess -- never as a Claude
+        # Bash tool call -- so a Bash call naming them is either a mistake or a bypass.
+        # Unguarded they are bypass primitives in their own right: lease_slot.py with a
+        # fabricated mtime PRUNES the genuine slots (resetting the 20-use ceiling), and
+        # audit_append.py writes an arbitrary record into the protected log. Neither
+        # command needs to name a protected path or a modification verb, so nothing else
+        # in this detector would notice it. Same treatment as the marker writer below.
+        # --self-check is exempt: it runs entirely in a temp dir, mutates no real state,
+        # and the test suite invokes it through Bash.
+        _blocked_helper = _helper_invoked(cmd)
+        if _blocked_helper:
+            print("BLOCK_MARKER_SCRIPT|" + _blocked_helper)
+            sys.exit(0)
+        # Block direct invocation of the marker writer UNLESS called via
         # the canonical litmus plugin path. The script validates internally that
         # a builtin review was actually triggered (checks handoff file existence).
         # Without this allowlist, builtin fallback (exit 3) creates a catch-22:

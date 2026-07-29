@@ -331,6 +331,50 @@ case "$EVT" in
 esac
 rm -rf "$CLEARWORK"
 
+echo "── the mutating helpers are not callable from Bash ───────────────"
+
+# lease_slot.py and audit_append.py MUTATE gate state, and neither needs to name a
+# protected path or a modification verb to do it — so nothing else in the detector
+# would notice. Unguarded they are bypass primitives: a fabricated mtime prunes the
+# genuine slots (resetting the ceiling), and an arbitrary record forges audit events.
+check "direct lease_slot.py invocation is blocked" block \
+    "$(bash_decision "python3 -I hooks/gate-scripts/lib/lease_slot.py .claude fake 1")"
+check "direct audit_append.py invocation is blocked" block \
+    "$(bash_decision "python3 -I hooks/gate-scripts/lib/audit_append.py .claude '{\"forged\":1}'")"
+# ...but --self-check stays callable: temp dir only, mutates no real state, and the
+# test suite below invokes it through Bash.
+check "helper --self-check stays allowed" allow \
+    "$(bash_decision "python3 -I hooks/gate-scripts/lib/lease_slot.py --self-check")"
+# The guard is TOKEN-level: a raw substring test was defeated by quote concatenation,
+# and a whole-string --self-check exemption was satisfied by a trailing no-op segment
+# while the FIRST segment mutated the real ledger.
+check "quote-concatenated helper name is blocked" block \
+    "$(bash_decision 'python3 -I hooks/gate-scripts/lib/lease_"slot.py" .claude fake 1')"
+check "trailing --self-check in another segment does not exempt" block \
+    "$(bash_decision "python3 -I hooks/gate-scripts/lib/lease_slot.py .claude fake 1; : --self-check")"
+# bash treats this as a COMMENT; the parser (commenters disabled) tokenizes it, so an
+# any-token exemption let the real, mutating invocation through.
+check "commented --self-check does not exempt" block \
+    "$(bash_decision "python3 -I hooks/gate-scripts/lib/lease_slot.py .claude fake 1 # --self-check")"
+# ...and merely NAMING a helper is an ordinary read.
+check "cat of a helper is allowed" allow \
+    "$(bash_decision "cat hooks/gate-scripts/lib/lease_slot.py")"
+check "git diff naming a helper is allowed" allow \
+    "$(bash_decision "git diff -- hooks/gate-scripts/lib/audit_append.py")"
+check "echo naming a helper is allowed" allow "$(bash_decision "echo lease_slot.py")"
+# A wrapper flag OPERAND hid the interpreter from a command-word anchor.
+check "env -u wrapper before the helper is blocked" block \
+    "$(bash_decision "env -u FOO python3 -I hooks/gate-scripts/lib/lease_slot.py .claude fake 1")"
+check "sudo -u wrapper before the helper is blocked" block \
+    "$(bash_decision "sudo -u root python3 -I hooks/gate-scripts/lib/lease_slot.py .claude fake 1")"
+# ...and the helper as an ARGUMENT to another script is not the executed one.
+check "helper passed as an arg to another script is allowed" allow \
+    "$(bash_decision "python3 safe.py lease_slot.py")"
+check "helper in a comment after python -c is allowed" allow \
+    "$(bash_decision "python3 -c 'print(1)' # lease_slot.py")"
+check "echo naming python and a helper is allowed" allow \
+    "$(bash_decision "echo python3 lease_slot.py")"
+
 echo "── fallback parity ────────────────────────────────────────────────"
 
 # The gate carries an INLINE copy of FILE_MOD_PATTERNS as the cmdword-import-failure

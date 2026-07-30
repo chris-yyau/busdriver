@@ -221,6 +221,34 @@ for c in 'git push --force origin main' 'git reset --hard HEAD~1' 'git checkout 
   check "no-python3, auto: $c" ask "$got"
 done
 
+# ── 9. malformed tool_input must not disarm auto (cubic, PR #543) ───────────
+# The mode token and the command extractor read the SAME payload but disagreed:
+# python bailed on a malformed tool_input while the raw-text grep fallback still
+# produced a command, so `auto` stood the guard down on a command python never
+# validated. Measured before the fix: tool_input as a LIST made `auto` return
+# allow for `rm -rf /etc` while `default` returned ask.
+echo "── malformed tool_input does not disarm auto ──"
+verdict_raw() { # <raw json> -> ask|allow|guard-error(rc=N)
+  local out rc=0
+  out=$(bash "$GUARD" <<<"$1" 2>/dev/null) || rc=$?
+  if [[ "$rc" -ne 0 ]]; then echo "guard-error(rc=$rc)"; return 0; fi
+  if grep -q '"permissionDecision":"ask"' <<<"$out"; then echo ask; else echo allow; fi
+}
+check_raw() { # name expected <raw json>
+  local got
+  got=$(verdict_raw "$3")
+  check "$1" "$2" "$got"
+}
+for m in auto bypassPermissions default; do
+  # tool_input is a LIST: python's isinstance(inp, dict) guard bails, but the raw
+  # text carries an unescaped "command" the grep fallback happily extracts.
+  check_raw "list tool_input, $m" ask \
+    "{\"tool_name\":\"Bash\",\"permission_mode\":\"$m\",\"tool_input\":[{\"command\":\"rm -rf /etc\"}]}"
+  # tool_input null, destructive command sitting at top level for the grep path.
+  check_raw "null tool_input, $m" ask \
+    "{\"tool_name\":\"Bash\",\"permission_mode\":\"$m\",\"tool_input\":null,\"command\":\"rm -rf /etc\"}"
+done
+
 echo
 echo "passed: $pass  failed: $fail"
 [[ "$fail" -eq 0 ]]

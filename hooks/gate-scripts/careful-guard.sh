@@ -109,11 +109,21 @@ sys.path[:] = [p for p in sys.path if p not in ("", ".")]
 import json
 try:
     d = json.loads(sys.stdin.read() or "{}")
+    # Stand down ONLY when the payload yields the SAME valid command shape the
+    # extractor above requires. The two read one payload but used to disagree:
+    # python could bail on a malformed tool_input while the raw-text grep
+    # fallback still produced a command, so `auto` stood the guard down on a
+    # command python never validated (measured: tool_input as a LIST made `auto`
+    # allow `rm -rf /etc` that `default` warned on).
+    inp = d.get("tool_input", d.get("toolInput", {}))
+    if isinstance(inp, str):
+        inp = json.loads(inp or "{}")
+    shape_ok = isinstance(inp, dict) and isinstance(inp.get("command"), str)
     # Compare HERE, and emit a fixed token. Printing the raw value and matching
     # in bash was unsafe: $( ) strips trailing newlines, so a permission_mode of
     # "auto\n" collapsed to "auto" and stood the guard down. A non-str never
     # equals "auto", so this also subsumes the isinstance check.
-    print("1" if d.get("permission_mode") == "auto" else "0")
+    print("1" if shape_ok and d.get("permission_mode") == "auto" else "0")
 except Exception:
     pass
 ' 2>/dev/null || true)

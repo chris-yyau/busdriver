@@ -113,7 +113,9 @@ _DISPATCHERS = {
             # Ref/index/remote plumbing that does not touch working-tree FILES, which is
             # the only thing this classifier judges.
             "add", "commit", "push", "fetch", "remote", "branch", "tag",
-            "init", "gc", "prune", "repack", "maintenance", "notes", "update-ref",
+            "gc", "prune", "repack", "maintenance", "notes", "update-ref",
+            # NOT `init`: `git init src/generated` creates a directory tree and files
+            # under a path it takes as a plain operand.
             # NOT `config`, `bundle` or `archive`: each takes a destination path as a
             # plain operand (`git config --file src/x k v`, `git bundle create src/x`),
             # so they write working-tree files without matching any writeflag. A read
@@ -213,6 +215,9 @@ _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 # A redirection operator, with or without a leading fd and with or without an attached
 # target: `<`, `>`, `2>`, `>>`, `&>`, `</dev/null`.
 _REDIR_RE = re.compile(r"^[0-9]*(?:<|>)[>&]?")
+# A WRITE redirection, with the target attached or in the next token. The `(?!&)` keeps
+# fd duplications (`2>&1`, `>&2`) out: those redirect a stream, they do not open a file.
+_WRITE_REDIR_RE = re.compile(r"^(?:[0-9]*|&)(?:>>|>\|?)(?!&)(.*)$")
 # The joined-numeric option shapes (`-5`, `-n5`, `-U3`, `-M90`). Only these letters are
 # decomposed: each takes a numeric argument and names no program.
 _NUM_OPT_RE = re.compile(r"^-[nUMC]?[0-9]+$")
@@ -796,9 +801,33 @@ def is_file_mod(cmd, _depth=0):
             return _regex_fallback(cmd)
         if _segment_is_mod(toks, _depth):
             return True
+        # A REDIRECT inside an executed string writes just as surely as a verb does.
+        # The caller checks redirects on the raw command, but it strips single-quoted
+        # text first (so a literal `jq .x > 0` is not a write), which is exactly the
+        # text a payload lives in: `bash -c 'printf x > src/impl.py'` survived both
+        # checks. Only applied at depth, because at the top level the caller's own
+        # check already runs -- and it carries exemptions this one does not know about.
+        if _depth and _writes_via_redirect(toks):
+            return True
         for prog in _executed_operands(toks):
             if is_file_mod(prog, _depth + 1):
                 return True
+    return False
+
+
+def _writes_via_redirect(toks):
+    """True iff a write redirection in this simple command targets a real file.
+
+    `/dev/null` and fd duplications (`2>&1`, `>&2`) are not file writes; everything
+    else is, including the clobber form `>|` and the append form `>>`.
+    """
+    for k, t in enumerate(toks):
+        m = _WRITE_REDIR_RE.match(t)
+        if not m:
+            continue
+        target = m.group(1) or (toks[k + 1] if k + 1 < len(toks) else "")
+        if target and target != "/dev/null":
+            return True
     return False
 
 

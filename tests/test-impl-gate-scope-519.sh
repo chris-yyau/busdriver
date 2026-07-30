@@ -284,6 +284,15 @@ check "env -S with a quoted verb is blocked" block \
     "$(bash_decision 'env -S "\"truncate\" -s 0 .claude/bypass-log.jsonl"')"
 check "dd blanking the audit log is blocked" block \
     "$(bash_decision "dd if=/dev/null of=.claude/bypass-log.jsonl")"
+# The EMBEDDED-verb pattern must cover every name treated as an indirect verb.
+# time/script/flock were listed as verbs but left out of the embedded pattern, so the
+# one shape it exists for — the whole program inside a single token — let them past.
+check "env -S with an embedded script is blocked" block \
+    "$(bash_decision "env -S 'script .claude/bypass-log.jsonl'")"
+check "env -S with an embedded flock is blocked" block \
+    "$(bash_decision "env -S 'flock .claude/bypass-log.jsonl true'")"
+check "env -S with an embedded time -o is blocked" block \
+    "$(bash_decision "env -S 'time -o .claude/bypass-log.jsonl true'")"
 # rmdir on a spent slot would let it be reclaimed, extending the ceiling indefinitely.
 check "rmdir on a spent lease slot is blocked" block \
     "$(bash_decision "rmdir .claude/.skip-design-review-lease.d/1.1")"
@@ -557,6 +566,22 @@ check "a pathspec after -- is not an option" allow \
     "$(bash_decision "git diff -- --tool")"
 check "a pathspec after -- is not a writeflag either" allow \
     "$(bash_decision "git diff -- --output=x")"
+check "git init writes the tree it is given" block \
+    "$(bash_decision "git init src/generated")"
+# A REDIRECT inside an executed string is a write. The caller's own redirect check
+# strips single-quoted text first, which is exactly where a payload lives.
+check "a redirect inside bash -c is a write" block \
+    "$(bash_decision "bash -c 'printf hi > src/impl.py'")"
+check "a redirect inside eval is a write" block \
+    "$(bash_decision "eval 'echo hi > src/impl.py'")"
+check "an append inside sh -c is a write" block \
+    "$(bash_decision "sh -c 'cat a >> src/b'")"
+check "a redirect inside a wrapped payload is a write" block \
+    "$(bash_decision "sudo -u root bash -c 'printf hi > src/impl.py'")"
+check "a payload redirect to /dev/null stays a read" allow \
+    "$(bash_decision "bash -c 'grep x file 2>/dev/null'")"
+check "a payload fd duplication stays a read" allow \
+    "$(bash_decision "bash -c 'diff a b 2>&1'")"
 # A JOINED SHORT is not decomposed: `-Orm` is not `-O rm` without per-letter arity git
 # does not expose, so it is simply not cleared.
 check "a joined -c is a write" block \

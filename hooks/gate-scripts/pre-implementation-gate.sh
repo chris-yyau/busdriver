@@ -259,7 +259,11 @@ _INDIRECT_CMDS = ("touch", "cp", "mv", "ln", "install", "truncate", "unlink",
 # rm and tee are included HERE even though the scan above matches them by basename:
 # when a wrapper embeds the whole program in one token (env -S "rm -f <log>"), basename
 # equality never sees the verb, so the embedded form needs them too.
-_INDIRECT_VERBS_RE = r"(?:touch|cp|mv|ln|install|truncate|unlink|rmdir|dd|rm|tee)"
+# MUST cover every name in _INDIRECT_CMDS. time/script/flock were listed there and
+# omitted here, so the one shape this regex exists for -- the whole program inside a
+# single token -- let `env -S "script <log>"` through both checks.
+_INDIRECT_VERBS_RE = (r"(?:touch|cp|mv|ln|install|truncate|unlink|rmdir|dd|rm|tee"
+                      r"|time|script|flock)")
 # `=` is a separator too: env accepts the long form --split-string=<program>, which puts
 # the verb immediately after the equals sign rather than after whitespace.
 _INDIRECT_EMBEDDED = re.compile(r"(?:^|[\s;&|/=])" + _INDIRECT_VERBS_RE + r"(?:\s|$)")

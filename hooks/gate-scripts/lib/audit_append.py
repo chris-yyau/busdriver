@@ -78,50 +78,62 @@ def append(state_dir, record_line):
     if dfd is None:
         return False
     try:
-        try:
-            # O_RDWR, not O_WRONLY: the torn-line check below pread()s the last byte,
-            # which a write-only fd cannot do. O_APPEND still lands every write at EOF.
-            fd = os.open("bypass-log.jsonl",
-                         os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
-                         0o644, dir_fd=dfd)
-        except OSError:
-            return False              # symlinked log, or unwritable
-        try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                return False          # fifo/device posing as the log
-            # BOUNDED lock. A blocking flock has no deadline, and this runs inside a
-            # PreToolUse hook with a 5s budget — a hook that times out emits no block
-            # and therefore fails OPEN, so any process holding this advisory lock could
-            # turn a gated write into a free one. Poll briefly, then give up and refuse:
-            # a refused lease is safe, a stalled hook is not.
-            for _ in range(_LOCK_TRIES):
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except OSError:
-                    time.sleep(_LOCK_WAIT)
-            else:
-                return False
-            size = os.fstat(fd).st_size
-            if size and os.pread(fd, 1, size - 1) != b"\n":
-                return False          # pre-existing torn line — refuse, never repair
-            data = (record_line + "\n").encode()
-            if os.write(fd, data) != len(data):
-                return False          # short write (storage exhausted)
-            os.fsync(fd)
-            # ...and the directory entry. fsync of a file persists its CONTENTS, never
-            # its name, so a freshly created log could vanish on a crash and leave a
-            # granted lease with no record. design-clear.sh fsyncs the parent for the
-            # same reason.
-            try:
-                os.fsync(dfd)
-            except OSError:
-                return False
-            return True
-        finally:
-            os.close(fd)
+        return append_at(dfd, record_line)
     finally:
         os.close(dfd)
+
+
+def append_at(dfd, record_line):
+    """append() against an ALREADY-VALIDATED state dir fd. Does not close dfd.
+
+    Callers that have opened the state dir once should use this rather than resolving the
+    repo-controlled path a second time. lease_slot creates the slot at its own validated
+    fd; if it then logged by pathname, a rename or replacement between the two could put
+    the slot and its audit event in different directory inodes — reporting a granted use
+    whose accounting is not in the ledger anyone will read.
+    """
+    try:
+        # O_RDWR, not O_WRONLY: the torn-line check below pread()s the last byte,
+        # which a write-only fd cannot do. O_APPEND still lands every write at EOF.
+        fd = os.open("bypass-log.jsonl",
+                     os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
+                     0o644, dir_fd=dfd)
+    except OSError:
+        return False              # symlinked log, or unwritable
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return False          # fifo/device posing as the log
+        # BOUNDED lock. A blocking flock has no deadline, and this runs inside a
+        # PreToolUse hook with a 5s budget — a hook that times out emits no block
+        # and therefore fails OPEN, so any process holding this advisory lock could
+        # turn a gated write into a free one. Poll briefly, then give up and refuse:
+        # a refused lease is safe, a stalled hook is not.
+        for _ in range(_LOCK_TRIES):
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                time.sleep(_LOCK_WAIT)
+        else:
+            return False
+        size = os.fstat(fd).st_size
+        if size and os.pread(fd, 1, size - 1) != b"\n":
+            return False          # pre-existing torn line — refuse, never repair
+        data = (record_line + "\n").encode()
+        if os.write(fd, data) != len(data):
+            return False          # short write (storage exhausted)
+        os.fsync(fd)
+        # ...and the directory entry. fsync of a file persists its CONTENTS, never
+        # its name, so a freshly created log could vanish on a crash and leave a
+        # granted lease with no record. design-clear.sh fsyncs the parent for the
+        # same reason.
+        try:
+            os.fsync(dfd)
+        except OSError:
+            return False
+        return True
+    finally:
+        os.close(fd)
 
 
 def _demo():

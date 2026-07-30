@@ -48,7 +48,7 @@ _LOCK_WAIT = 0.05
 # else can shadow the import.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from audit_append import append, open_state_dir  # noqa: E402  (needs the path fix above)
+from audit_append import append_at, open_state_dir  # noqa: E402  (path fix above)
 
 LEASE_DIRNAME = ".skip-design-review-lease.d"
 # The skip file name is a CONSTANT, not an argument. Accepting any slash-free name let a
@@ -61,8 +61,13 @@ SKIP_NAME = "skip-design-review.local"
 OK, ERROR, EXHAUSTED, TOO_NEW, EXPIRED = 0, 1, 2, 3, 4
 
 
-def _log_use(state_dir, slot, max_uses):
+def _log_use(sfd, slot, max_uses):
     """Append the bypass-telemetry event for ONE granted use. True only when durable.
+
+    Written at the ALREADY-VALIDATED state dir fd, never by pathname. The slot was created
+    through sfd; resolving the repo-controlled path a second time meant a rename between
+    the two could put the slot and its audit event in different directory inodes, and this
+    would report a granted use whose accounting is not in the ledger anyone reads.
 
     One event per use, recording the SLOT claimed and the ceiling, so lease state is
     observable from the log without consuming a use to check it. Deliberately NOT a
@@ -85,7 +90,7 @@ def _log_use(state_dir, slot, max_uses):
         "lease_slot": slot,
         "lease_max": max_uses,
     }, separators=(",", ":"))
-    return append(state_dir, rec)
+    return append_at(sfd, rec)
 
 
 POISON_SUFFIX = ".poison"
@@ -226,14 +231,14 @@ def claim(state_dir, max_uses, min_age, max_age, now):
         if lfd is None:
             return (ERROR, 0)
         try:
-            return _claim_locked(sfd, lfd, state_dir, max_uses, min_age, max_age, now)
+            return _claim_locked(sfd, lfd, max_uses, min_age, max_age, now)
         finally:
             os.close(lfd)
     finally:
         os.close(sfd)
 
 
-def _claim_locked(sfd, lfd, state_dir, max_uses, min_age, max_age, now):
+def _claim_locked(sfd, lfd, max_uses, min_age, max_age, now):
     """The body of claim(), under the ledger lock. Closes neither fd."""
     try:
         st = os.stat(SKIP_NAME, dir_fd=sfd, follow_symlinks=False)
@@ -344,7 +349,7 @@ def _claim_locked(sfd, lfd, state_dir, max_uses, min_age, max_age, now):
             # sanctioned bypass -- the docs promise every use is recorded, so the
             # promise is enforced rather than merely stated. Keeping the slot can
             # only make the lease shorter, never longer.
-            if not _log_use(state_dir, n, max_uses):
+            if not _log_use(sfd, n, max_uses):
                 return (ERROR, 0)
             return (OK, n)
         # Every slot exists. Distinguish exhausted from unwritable by re-counting,

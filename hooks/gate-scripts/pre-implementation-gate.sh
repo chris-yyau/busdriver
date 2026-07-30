@@ -229,10 +229,13 @@ def _split_simple_commands(s):
 # rule. That is a known limit of an allowlist, not a claim of completeness -- see the
 # RESIDUAL note in _scan_segment. Platform launchers are included because they are
 # ordinary, discoverable commands rather than obfuscation.
+# KEEP IN STEP WITH cmdword._WRAPPERS -- a launcher missing from either list is a hole
+# in that half. `watch` was missing from both: `watch --exec rm -rf src` resolved its
+# command word to `watch` and read as a plain observation.
 _WRAPPER_CMDS = ("sudo", "doas", "su", "runuser", "env", "nohup", "timeout", "nice",
                  "ionice", "setsid", "stdbuf", "unbuffer", "command", "builtin", "exec",
                  "xargs", "caffeinate", "chroot", "arch", "torify", "proxychains",
-                 "proxychains4")
+                 "proxychains4", "watch")
 # Reserved words that PRECEDE a command. Without these, `if touch <marker>; then :; fi`
 # and `{ touch <marker>; }` pick `if` / `{` as the command word and are allowed.
 _RESERVED_SH = ("if", "then", "else", "elif", "fi", "do", "done", "while", "until",
@@ -570,7 +573,9 @@ def _exec_payloads(words):
                     str_payloads.append(words[j + 1]); break
                 if t2.startswith("-S") and len(t2) > 2:
                     str_payloads.append(t2[2:]); break
-        elif base in ("sh", "bash", "zsh", "dash", "ksh", "su", "runuser"):
+        # KEEP IN STEP WITH cmdword._DASH_C_RUNNERS. ash and mksh were listed there and
+        # missing here, so `ash -c "<helper>"` walked straight past this guard.
+        elif base in ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "su", "runuser"):
             for j in range(i + 1, len(words)):
                 t2 = words[j]
                 if t2.startswith("--command="):

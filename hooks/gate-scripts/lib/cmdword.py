@@ -106,10 +106,14 @@ _FUNC_DEF_RE = re.compile(r"(^|[;&|]\s*)[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)")
 # reliably), and `time`/`script`/`flock` are absent on purpose — they are self-writing
 # verbs in the forge detector, but there the marker operand is also required, whereas
 # here `time npm test` would become a false positive.
+# KEEP IN STEP WITH the gate's _WRAPPER_CMDS -- a launcher missing from either list is a
+# hole in that half. `watch` was missing from both: `watch --exec rm -rf src` resolved its
+# command word to `watch` and read as a plain observation, which the raw regex it replaced
+# had caught.
 _WRAPPERS = frozenset(("sudo", "doas", "su", "runuser", "env", "nohup", "timeout",
                        "nice", "ionice", "setsid", "stdbuf", "unbuffer", "command",
                        "builtin", "exec", "xargs", "caffeinate", "chroot", "arch",
-                       "torify", "proxychains", "proxychains4"))
+                       "torify", "proxychains", "proxychains4", "watch"))
 _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 # A bare duration/number operand belonging to a wrapper (`timeout 5 rm x`, `nice 10 mv`).
 _NUMERIC_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$")

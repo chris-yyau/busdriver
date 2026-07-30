@@ -416,6 +416,16 @@ check "a leading assignment before bash -c is blocked" block \
     "$(bash_decision "X=1 bash -c 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600'")"
 check "sudo env -S running the helper is blocked" block \
     "$(bash_decision "sudo env -S 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600'")"
+# ash and mksh were in cmdword._SHELLS but missing from the gate's own list, so their
+# -c payload walked straight past the helper guard. `watch` was missing from BOTH wrapper
+# lists, so `watch --exec rm -rf src` resolved to `watch` and read as an observation.
+check "ash -c running the helper is blocked" block \
+    "$(bash_decision "ash -c 'python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 0 3600'")"
+check "mksh -c running the helper is blocked" block \
+    "$(bash_decision "mksh -c 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 0 3600'")"
+check "watch --exec hiding rm is blocked" block \
+    "$(bash_decision "watch --exec rm -rf src")"
+check "watch of a read stays allowed" allow "$(bash_decision "watch ls -la")"
 check "wrapped find -exec running the helper is blocked" block \
     "$(bash_decision "sudo find . -maxdepth 0 -exec python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600 ;")"
 # RUNNERS ARE MATCHED AT ANY INDEX, on purpose. Requiring command position means knowing

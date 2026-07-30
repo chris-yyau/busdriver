@@ -57,6 +57,7 @@ LEASE_DIRNAME = ".skip-design-review-lease.d"
 # restarting the ceiling.
 SKIP_NAME = "skip-design-review.local"
 
+NS = 10 ** 9   # `now` and every age in this module are integer NANOSECONDS.
 # Verdicts. Distinct codes so the caller can emit the right message from ONE mtime read.
 OK, ERROR, EXHAUSTED, TOO_NEW, EXPIRED = 0, 1, 2, 3, 4
 
@@ -244,7 +245,11 @@ def _claim_locked(sfd, lfd, max_uses, min_age, max_age, now):
         st = os.stat(SKIP_NAME, dir_fd=sfd, follow_symlinks=False)
     except OSError:
         return (ERROR, 0)             # no skip file ⇒ no lease to claim
-    age = now - int(st.st_mtime)
+    # INTEGER NANOSECONDS on both sides. Whole seconds let a file 29.1s old measure as
+    # 30 and clear the anti-self-bypass floor; binary floats then left a ~238ns window at
+    # contemporary timestamps where 29.9999999 rounds up to exactly 30.0. Neither side
+    # is a float now, so both boundaries are exact at every epoch.
+    age = now - st.st_mtime_ns
     # NANOSECOND lease key. Truncating to whole seconds meant a poisoned lease and a
     # genuine re-`touch` inside the same second shared a key, so the fresh lease matched
     # the old poison and reported EXHAUSTED -- contradicting the ADR promise that a real
@@ -252,7 +257,7 @@ def _claim_locked(sfd, lfd, max_uses, min_age, max_age, now):
     # indistinguishable at the syscall level and the collision remains; the operator waits
     # a second. Every filesystem this runs on in practice stores sub-second times.)
     mtime = str(st.st_mtime_ns)
-    if age < min_age or age > max_age:
+    if age < min_age * NS or age > max_age * NS:
         # DISARM HERE, at the fd already validated, rather than leaving it to the caller.
         # The shell ran a second `--unlink <dir> <name>` command that swallowed failures
         # with `|| true`, so a skip file that could not be removed (immutable file in a
@@ -265,9 +270,9 @@ def _claim_locked(sfd, lfd, max_uses, min_age, max_age, now):
         # the unlink's failure branch made the enforcement conditional on a syscall that
         # can fail transiently. Poisoning a lease that then gets removed anyway costs one
         # inert directory, which the next operator touch prunes.
-        sealed = _poison(lfd, sfd, mtime) if age < min_age else False
+        sealed = _poison(lfd, sfd, mtime) if age < min_age * NS else False
         gone = _disarm(sfd, st)
-        if age > max_age:
+        if age > max_age * NS:
             return (EXPIRED, 0)       # age only grows; it can never come back
         if not sealed and not gone:
             # Neither enforcement landed, so this process could not make the floor stick.
@@ -302,7 +307,7 @@ def _claim_locked(sfd, lfd, max_uses, min_age, max_age, now):
                     # exactly `now - max_age` is still VALID. Dropping its sentinel one
                     # second early let a restore at that timestamp claim a slot.
                     # Keys are ns since #519 review round 9; compare in ns.
-                    if int(name[:-len(POISON_SUFFIX)]) >= (now - max_age) * 10**9:
+                    if int(name[:-len(POISON_SUFFIX)]) >= now - max_age * NS:
                         continue
                 except ValueError:
                     pass          # not a timestamp we wrote; treat as prunable
@@ -384,6 +389,11 @@ def _demo():
             os.mkdir(".claude")
             skip = os.path.join(".claude", SKIP_NAME)
 
+            def _ns(sec):
+                """Readable seconds -> the integer nanoseconds claim() takes. Rounded,
+                not truncated, so a case written as 29.1 is the age it reads as."""
+                return round(sec * NS)
+
             def arm(t, where=".claude"):
                 """(Re-)create the skip file with mtime t. Needed after every refusal:
                 claim() disarms the file itself on TOO_NEW / EXPIRED / EXHAUSTED."""
@@ -393,10 +403,10 @@ def _demo():
 
             arm(1000)
             NOW = 1000 + 120                      # 120s old: past the floor, inside the cap
-            assert claim(".claude", 3, 30, 3600, NOW) == (OK, 1)
-            assert claim(".claude", 3, 30, 3600, NOW) == (OK, 2)
-            assert claim(".claude", 3, 30, 3600, NOW) == (OK, 3)
-            assert claim(".claude", 3, 30, 3600, NOW) == (EXHAUSTED, 0)
+            assert claim(".claude", 3, 30, 3600, _ns(NOW)) == (OK, 1)
+            assert claim(".claude", 3, 30, 3600, _ns(NOW)) == (OK, 2)
+            assert claim(".claude", 3, 30, 3600, _ns(NOW)) == (OK, 3)
+            assert claim(".claude", 3, 30, 3600, _ns(NOW)) == (EXHAUSTED, 0)
             # ...and each refusal DISARMED the file, so it cannot stay armed and silently
             # authorize a later session.
             assert not os.path.exists(skip)
@@ -417,28 +427,47 @@ def _demo():
                 # design) still dead.
                 t0 = 3000 + 2 * base
                 arm(t0)
-                assert claim(".claude", cap, floor, 3600, t0 + floor - 1)[0] == TOO_NEW
+                assert claim(".claude", cap, floor, 3600, _ns(t0 + floor - 1))[0] == TOO_NEW
                 t0 += 1
                 arm(t0)
-                assert claim(".claude", cap, floor, 3600, t0 + floor) == (OK, 1)
-                assert claim(".claude", cap, floor, 3600, t0 + 3600) == (OK, 2)
-                assert claim(".claude", cap, floor, 3600, t0 + 3601)[0] == EXPIRED
+                assert claim(".claude", cap, floor, 3600, _ns(t0 + floor)) == (OK, 1)
+                assert claim(".claude", cap, floor, 3600, _ns(t0 + 3600)) == (OK, 2)
+                assert claim(".claude", cap, floor, 3600, _ns(t0 + 3601))[0] == EXPIRED
                 arm(t0)
                 # ...and the ceiling holds at exactly cap uses, for every cap.
                 for n in range(3, cap + 1):
-                    assert claim(".claude", cap, floor, 3600, t0 + floor) == (OK, n)
-                assert claim(".claude", cap, floor, 3600, t0 + floor)[0] == EXHAUSTED
+                    assert claim(".claude", cap, floor, 3600, _ns(t0 + floor)) == (OK, n)
+                assert claim(".claude", cap, floor, 3600, _ns(t0 + floor))[0] == EXHAUSTED
+
+            # ...and SUB-SECOND ages land on the right side of both boundaries, to the
+            # nanosecond. Whole seconds let a file 29.1s old measure as 30 and clear the
+            # anti-self-bypass floor -- the one number this control exists to enforce --
+            # and binary floats then left a ~238ns window at contemporary timestamps
+            # where 29.9999999 rounded up to exactly 30.0. Run at BOTH a tiny epoch and a
+            # present-day one: float spacing grows with the epoch, so a test pinned near
+            # zero cannot see the failure that only appears in production.
+            _CASES = ((29 * NS + NS // 10, TOO_NEW),    # 29.1s
+                      (30 * NS - 1, TOO_NEW),           # one nanosecond short of the floor
+                      (30 * NS, OK),                    # exactly the floor passes
+                      (3600 * NS, OK),                  # exactly the ceiling is still valid
+                      (3600 * NS + 1, EXPIRED))         # one nanosecond past it
+            for epoch in (5000, 1_780_000_000):
+                for k, (age_ns, want) in enumerate(_CASES):
+                    t0 = epoch + k          # distinct mtime: TOO_NEW poisons its key
+                    arm(t0)
+                    got = claim(".claude", 3, 30, 3600, t0 * NS + age_ns)[0]
+                    assert got == want, (epoch, age_ns, got, want)
 
             # A too-new lease is POISONED, so a file that survives its own rejection
             # (immutable file in a writable dir) is dead however old it later becomes.
             # Re-armed at the SAME mtime here, which is what an unremovable file amounts
             # to; a genuine new touch gets a new mtime and a clean lease (below).
             arm(9000)
-            assert claim(".claude", 3, 30, 3600, 9000 + 5)[0] == TOO_NEW
+            assert claim(".claude", 3, 30, 3600, _ns(9000 + 5))[0] == TOO_NEW
             assert os.path.exists(os.path.join(".claude", LEASE_DIRNAME,
                                                str(9000 * 10**9) + POISON_SUFFIX))
             arm(9000)
-            assert claim(".claude", 3, 30, 3600, 9000 + 120)[0] == EXHAUSTED
+            assert claim(".claude", 3, 30, 3600, _ns(9000 + 120))[0] == EXHAUSTED
             assert not os.path.exists(skip)      # ...and disarmed again on the way out
 
             # _disarm declines to remove a DIFFERENT file than the one it statted, so an
@@ -455,7 +484,7 @@ def _demo():
 
             # A new operator touch (new mtime) starts a fresh lease and prunes the old.
             arm(2000)
-            assert claim(".claude", 3, 30, 3600, 2000 + 120) == (OK, 1)
+            assert claim(".claude", 3, 30, 3600, _ns(2000 + 120)) == (OK, 1)
             names = os.listdir(os.path.join(".claude", LEASE_DIRNAME))
             assert all(n.startswith(str(2000 * 10**9) + ".") or n.endswith(POISON_SUFFIX)
                        for n in names), names
@@ -465,27 +494,27 @@ def _demo():
             # restored at the poisoned one.
             assert str(9000 * 10**9) + POISON_SUFFIX in names, names
             arm(9000)
-            assert claim(".claude", 3, 30, 3600, 9000 + 200)[0] == EXHAUSTED
+            assert claim(".claude", 3, 30, 3600, _ns(9000 + 200))[0] == EXHAUSTED
 
             # No skip file at all: nothing to claim.
             os.mkdir("empty")
-            assert claim("empty", 3, 30, 3600, NOW)[0] == ERROR
+            assert claim("empty", 3, 30, 3600, _ns(NOW))[0] == ERROR
 
             # A symlinked ledger must refuse rather than place slots outside the repo.
             os.makedirs("s")
             arm(1000, "s")
             os.symlink("/tmp", os.path.join("s", LEASE_DIRNAME))
-            assert claim("s", 3, 30, 3600, NOW)[0] == ERROR
+            assert claim("s", 3, 30, 3600, _ns(NOW))[0] == ERROR
 
             # A symlinked PREFIX of a nested state dir must refuse too — the case a
             # shell `-L "$STATE_DIR"` test silently passes.
             os.mkdir("real")
             os.symlink("real", "link")
-            assert claim("link/state", 3, 30, 3600, NOW)[0] == ERROR
+            assert claim("link/state", 3, 30, 3600, _ns(NOW))[0] == ERROR
             assert not os.path.exists(os.path.join("real", "state"))
 
-            assert claim("../outside", 3, 30, 3600, NOW)[0] == ERROR
-            assert claim("/tmp/outside", 3, 30, 3600, NOW)[0] == ERROR
+            assert claim("../outside", 3, 30, 3600, _ns(NOW))[0] == ERROR
+            assert claim("/tmp/outside", 3, 30, 3600, _ns(NOW))[0] == ERROR
 
         finally:
             os.chdir(cwd)
@@ -508,7 +537,7 @@ if __name__ == "__main__":
         raise SystemExit(ERROR)
     try:
         verdict, slot = claim(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]),
-                              int(sys.argv[4]), int(time.time()))
+                              int(sys.argv[4]), time.time_ns())
     except Exception:
         raise SystemExit(ERROR)
     if verdict == OK:

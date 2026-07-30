@@ -217,7 +217,10 @@ _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 _REDIR_RE = re.compile(r"^[0-9]*(?:<|>)[>&]?")
 # A WRITE redirection, with the target attached or in the next token. The `(?!&)` keeps
 # fd duplications (`2>&1`, `>&2`) out: those redirect a stream, they do not open a file.
-_WRITE_REDIR_RE = re.compile(r"^(?:[0-9]*|&)(?:>>|>\|?)(?!&)(.*)$")
+# `<>` opens for READING AND WRITING and creates the file if absent, so it belongs here
+# even though it starts like a read: `exec 3<>src/impl.py; printf PWN >&3` writes through
+# a descriptor, and the `>&3` half is indistinguishable from an ordinary fd dup.
+_WRITE_REDIR_RE = re.compile(r"^(?:[0-9]*|&)(?:>>|<>|>\|?)(?!&)(.*)$")
 # The joined-numeric option shapes (`-5`, `-n5`, `-U3`, `-M90`). Only these letters are
 # decomposed: each takes a numeric argument and names no program.
 _NUM_OPT_RE = re.compile(r"^-[nUMC]?[0-9]+$")

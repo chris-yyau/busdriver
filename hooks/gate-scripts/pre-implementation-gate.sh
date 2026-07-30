@@ -132,7 +132,7 @@ INPUT=$(cat 2>/dev/null || true)
 MARKER_CHECK=$(printf '%s' "$INPUT" | python3 -I -c '
 import sys
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
-import json, re, shlex
+import json, posixpath, re, shlex
 
 _SQ = chr(39)
 _DQ = chr(34)
@@ -256,6 +256,32 @@ _TEST_OPEN_SH = ("[[", "[")
 # `time npm test` would become a false positive.
 _INDIRECT_CMDS = ("touch", "cp", "mv", "ln", "install", "truncate", "unlink",
                   "rmdir", "dd", "time", "script", "flock")
+# Interpreter operands naming a DESCRIPTOR rather than a file on disk: `-` (the
+# documented stdin spelling) and the /dev and /proc descriptor directories. Matched as
+# a family, not as a list of spellings -- a list covered descriptor 0 only, and
+# `exec 3<helper.py; python3 /dev/fd/3` reads the same program through descriptor 3.
+# What any of them carries is decided elsewhere in the command, so none can be resolved
+# by looking at the operand.
+# Leading slashes are `/+` because POSIX keeps exactly two of them meaningful, so
+# normpath("//dev/fd/0") stays "//dev/fd/0" while opening the same descriptor.
+# The /proc arm matches any process directory (`self`, `thread-self`, a pid, a
+# task path), because listing the ones that exist is the enumeration this file keeps
+# losing: `self` and a pid were listed, and `thread-self` reached the same descriptor.
+_FD_SCRIPT_RE = re.compile(
+    r"^(?:-|/+dev/stdin|/+dev/fd/[0-9]+"
+    r"|/+proc/[^/]+/(?:task/[^/]+/)?fd/[0-9]+)$")
+# A token this scanner cannot resolve to a filename: the shell rewrites it before the
+# interpreter sees it. Variable and command substitution (`FD=/dev/fd/0; python3
+# "$FD"`) and PATHNAME EXPANSION (`/dev/f?/0`) both land on a descriptor at run time
+# while reading here as an ordinary path.
+_UNRESOLVED_OPERAND_RE = re.compile(r"[$`*?\[]")
+# PROCESS SUBSTITUTION hands its reader a generated descriptor, so `python3 <(cat
+# .../lease_slot.py)` runs the helper through /dev/fd/N. The segment splitter dismantles
+# `<(...)` before the interpreter-operand walk can see it, so this pairing is decided on
+# the raw text instead. The interpreter test keeps an ordinary read out of it: `diff
+# <(cat .../lease_slot.py) old.py` compares the file, it does not execute it.
+_PROC_SUBST_RE = re.compile(r"[<>]\(")
+_INTERP_RE = re.compile(r"(?:^|[\s;&|(])(?:python[0-9.]*|(?:ba|da|k|mk|z|a)?sh)\b")
 # rm and tee are included HERE even though the scan above matches them by basename:
 # when a wrapper embeds the whole program in one token (env -S "rm -f <log>"), basename
 # equality never sees the verb, so the embedded form needs them too.
@@ -465,9 +491,13 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
     # allowed. That read-only contract is the whole point of the position check.
     _INDIRECT = _INDIRECT_CMDS
     _peeled = _peel_wrappers(seg_words)
+    # Tested on the PEELED word as well as the first: a reserved word can sit in front
+    # of the definition (`if true; then function f { touch <marker>; }; f; fi`), and
+    # _first_word then reports `then`, which is neither a wrapper nor a definition.
+    # _peel_wrappers already skips reserved words, so it reaches the real introducer.
     _conservative = (_starts_with_wrapper(seg_words)
                      or _first_word(seg_words) in ("coproc", "function")
-                     or _bn(_peeled or "") == "find")
+                     or _bn(_peeled or "") in ("coproc", "function", "find"))
     if _conservative:
         verb_present = (any(_bn(w) in _INDIRECT for w in seg_words)
                         or any(_INDIRECT_EMBEDDED.search(_dequote(w))
@@ -592,7 +622,36 @@ def _exec_payloads(words):
     return tok_payloads, str_payloads
 
 
-def _helper_invoked(cmd, _depth=0):
+def _names_helper(text):
+    # Which mutating helper does this text NAME, quotes resolved? A raw substring test
+    # is defeated by quote concatenation -- the shell runs `lease_"slot.py"`, but the
+    # text holds no contiguous `lease_slot.py` -- which is the same defeat that made
+    # the rest of this detector tokenize. Tokenizing first resolves it; the substring
+    # test stays as the backstop, since it is WIDER and only ever adds a block.
+    try:
+        lex = shlex.shlex(text, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        lex.commenters = ""
+        hit = next((t for t in lex if _bn(t) in _MUTATING_HELPERS), None)
+        if hit:
+            return _bn(hit)
+    except ValueError:
+        pass
+    hit = next((h for h in _MUTATING_HELPERS if h in text), None)
+    if hit:
+        return hit
+    # SQUEEZED backstop: the shell joins a name across ANSI-C quoting
+    # (`lease_$'slot.py'`), which shlex does not implement, and across PATHNAME
+    # EXPANSION (`lease_slo[t].py`), which no static reader can evaluate. Dropping the
+    # quoting and glob characters can only make more text match, never less, so it
+    # adds blocks and never removes one.
+    squeezed = text
+    for _ch in ("$", chr(39), chr(34), "*", "?", "[", "]"):
+        squeezed = squeezed.replace(_ch, "")
+    return next((h for h in _MUTATING_HELPERS if h in squeezed), None)
+
+
+def _helper_invoked(cmd, _depth=0, _full=None):
     # Which gate-state helper does this command RUN, if any? Token-level, per simple
     # command -- a raw substring test over the whole string was defeated two ways:
     # quote concatenation (lease_"slot.py" contains no matching substring, yet the shell
@@ -600,6 +659,22 @@ def _helper_invoked(cmd, _depth=0):
     # while the FIRST segment mutated the real ledger. Segmenting and tokenizing makes
     # both spellings resolve to the same token, and scopes the exemption to the segment
     # that actually carries it.
+    # RESIDUAL, same class the verb scan above declares out of scope: a name the shell
+    # ASSEMBLES at run time. Quote concatenation, ANSI-C quoting and globbing are
+    # squeezed out below because that is cheap; a brace RANGE is not
+    # (`lease_slo{t..t}.py` yields the name only by expanding it), and neither is a name
+    # built from variables. Closing one spelling would not close the class -- the same
+    # actor writes `python3 -c "$(cat lease_slo{t..t}.py)"`, where the name is equally
+    # invisible -- so this stays documented rather than half-chased. See ADR 0006.
+    #
+    # The command as the OPERATOR typed it. A payload is re-entered on its own, so the
+    # stdin check below -- which needs the redirect that feeds the payload, and that
+    # redirect lives OUTSIDE it -- has to read the outer text, not this fragment.
+    _whole = cmd if _full is None else _full
+    if _PROC_SUBST_RE.search(_whole) and _INTERP_RE.search(_whole):
+        hit = _names_helper(_whole)
+        if hit:
+            return hit
     if _depth > 3:
         return next((h for h in _MUTATING_HELPERS if h in cmd), None)
     # A COMMAND SUBSTITUTION runs before the command that consumes its output, so the
@@ -616,7 +691,7 @@ def _helper_invoked(cmd, _depth=0):
         _flat = cmd.replace(chr(34), "").replace(chr(39), "")
         _flat = (_flat.replace("$(", " ; ").replace(chr(96), " ; ")
                       .replace(")", " ; "))
-        _hit = _helper_invoked(_flat, _depth + 1)
+        _hit = _helper_invoked(_flat, _depth + 1, _full=_whole)
         if _hit:
             return _hit
     # INDIRECTION WITHDRAWS THE MENTION CONTRACT. Normally a helper NAMED in an operand
@@ -661,11 +736,12 @@ def _helper_invoked(cmd, _depth=0):
             # re-lexed as `sh -c python3 -I .../lease_slot.py ...` -- and the -c handler
             # then reads only `python3` as the program, with the helper demoted to $0/$1
             # and never scanned. Requoting round-trips the token list exactly.
-            _hit = _helper_invoked(" ".join(shlex.quote(_t) for _t in _p), _depth + 1)
+            _hit = _helper_invoked(" ".join(shlex.quote(_t) for _t in _p),
+                                   _depth + 1, _full=_whole)
             if _hit:
                 return _hit
         for _p in _strp:
-            _hit = _helper_invoked(_p, _depth + 1)
+            _hit = _helper_invoked(_p, _depth + 1, _full=_whole)
             if _hit:
                 return _hit
         # The helper must be EXECUTED, not merely named. Naming one is an ordinary read
@@ -702,6 +778,25 @@ def _helper_invoked(cmd, _depth=0):
         j = pyi + 1
         while j < len(words):
             w = words[j]
+            # Normalized first: `/dev/fd/./0`, `/dev//fd/0` and `/dev/fd/../fd/0` all
+            # open descriptor 0, and matching the canonical spelling alone let each of
+            # them read as an ordinary script name.
+            if (_FD_SCRIPT_RE.match(posixpath.normpath(w))
+                    or _UNRESOLVED_OPERAND_RE.search(w)):
+                # The PROGRAM comes from stdin, so it is not an argument at all and the
+                # operand walk picked the next plain operand as the script:
+                # `python3 - .claude 20 0 3600 < .../lease_slot.py` ran the helper while
+                # the parser judged `.claude`. What stdin carries is not statically
+                # visible -- it arrives by redirect, by pipe from an earlier segment, or
+                # by heredoc -- so the WHOLE command is searched, not this segment.
+                # That over-blocks a contrived `python3 - lease_slot.py </dev/null`,
+                # where the helper is only an argument and stdin is empty. Accepted:
+                # `python3 -` is an execution context, not a mention, and enumerating
+                # the empty-stdin spellings is the allowlist this file keeps deleting.
+                hit = _names_helper(_whole)
+                if hit:
+                    return hit
+                break
             if w.startswith("-"):
                 # A flag that takes an operand consumes the next word (-c PROG, -m MOD).
                 if w in ("-c", "-m", "-W", "-X", "--check-hash-based-pycs"):

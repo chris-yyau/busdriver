@@ -582,6 +582,59 @@ check "a payload redirect to /dev/null stays a read" allow \
     "$(bash_decision "bash -c 'grep x file 2>/dev/null'")"
 check "a payload fd duplication stays a read" allow \
     "$(bash_decision "bash -c 'diff a b 2>&1'")"
+# `<>` opens for reading AND writing, and creates the file. The write then happens
+# through a descriptor, where `>&3` is indistinguishable from an ordinary fd dup.
+check "a read-write redirect inside a payload is a write" block \
+    "$(bash_decision "bash -c 'exec 3<>src/impl.py; printf PWN >&3'")"
+# A DEFINITION behind a reserved word: the first word is `then`, so the conservative
+# regime has to be decided on the peeled word or the body is never scanned.
+check "a function definition after a reserved word is scanned" block \
+    "$(bash_decision 'if true; then function f { touch .claude/skip-design-review.local; }; f; fi')"
+# `python3 -` reads the PROGRAM from stdin, so the executed script is not an argument
+# and the operand walk picked the first plain operand as the script.
+check "python3 - with the helper on stdin is blocked" block \
+    "$(bash_decision 'PYTHONPATH=hooks/gate-scripts/lib python3 - .claude 20 0 3600 < hooks/gate-scripts/lib/lease_slot.py')"
+# ── generated: the stdin-program shape across alias x transport ───
+# What stdin carries is not statically visible, so the WHOLE command is searched --
+# a per-segment scan missed the pipe transport entirely.
+_SI_FAIL=0 _SI_PASS=0
+# Descriptors are matched as a FAMILY. A list of spellings covered descriptor 0 only,
+# and `exec 3<helper.py; python3 /dev/fd/3` reads the same program through another one.
+# The name is resolved by TOKENIZING, so quote concatenation cannot split it.
+for alias in - /dev/stdin /dev/fd/0 /dev/fd/3 /proc/self/fd/0 /proc/self/fd/7 /proc/1/fd/2 \
+             /dev/fd/./0 /dev//fd/0 /dev/fd/../fd/0 //dev/fd/0 '"$FD"' \
+             /proc/thread-self/fd/0 /proc/self/task/12/fd/0 '/dev/f?/0'; do
+    for form in "python3 $alias .claude 20 0 3600 < hooks/gate-scripts/lib/lease_slot.py" \
+                "cat hooks/gate-scripts/lib/lease_slot.py | python3 $alias .claude 20" \
+                "sudo python3 $alias .claude < hooks/gate-scripts/lib/audit_append.py" \
+                "env -S 'python3 $alias .claude' < hooks/gate-scripts/lib/lease_slot.py" \
+                "exec 3<hooks/gate-scripts/lib/lease_slot.py; python3 $alias .claude 20" \
+                "python3 $alias .claude 20 < hooks/gate-scripts/lib/lease_\"slot.py\"" \
+                "python3 $alias .claude 20 < 'hooks/gate-scripts/lib/lease_slot.py'" \
+                "python3 $alias .claude 20 < hooks/gate-scripts/lib/lease_\$'slot.py'" \
+                "python3 $alias .claude 20 < hooks/gate-scripts/lib/lease_slo[t].py"; do
+        got="allow"
+        case "$(bash_decision "$form")" in *'"block"'*) got="block" ;; esac
+        if [[ "$got" == "block" ]]; then _SI_PASS=$((_SI_PASS + 1))
+        else _SI_FAIL=$((_SI_FAIL + 1)); printf "  FAIL  stdin: %s\n" "$form"; fi
+    done
+done
+if [[ "$_SI_FAIL" -eq 0 ]]; then
+    ok "the helper reaches no interpreter through stdin ($_SI_PASS spellings)"
+else
+    no "stdin-program spellings" "$_SI_FAIL of $((_SI_PASS + _SI_FAIL)) allowed"
+fi
+# PROCESS SUBSTITUTION hands its reader a generated descriptor, and the segment splitter
+# dismantles `<(...)` before the operand walk sees it.
+check "an interpreter reading a process substitution is blocked" block \
+    "$(bash_decision 'python3 <(cat hooks/gate-scripts/lib/lease_slot.py) .claude 20')"
+check "a shell reading a process substitution is blocked" block \
+    "$(bash_decision 'bash <(cat hooks/gate-scripts/lib/lease_slot.py)')"
+check "diffing the helper through a substitution stays a read" allow \
+    "$(bash_decision 'diff <(cat hooks/gate-scripts/lib/lease_slot.py) old.py')"
+# ...and naming the helper without an interpreter stays a read.
+check "reading the helper next to a python mention stays allowed" allow \
+    "$(bash_decision 'echo python3 hooks/gate-scripts/lib/lease_slot.py')"
 # A JOINED SHORT is not decomposed: `-Orm` is not `-O rm` without per-letter arity git
 # does not expose, so it is simply not cleared.
 check "a joined -c is a write" block \

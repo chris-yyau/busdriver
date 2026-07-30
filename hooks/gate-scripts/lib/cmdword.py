@@ -73,6 +73,52 @@ FILE_MOD_PATTERNS = [
 _MOD_VERBS = frozenset(("tee", "patch", "cp", "mv", "rm", "ln", "install",
                         "truncate", "unlink", "rmdir", "dd"))
 
+# Commands whose behaviour is decided by a SUBCOMMAND rather than by the command word.
+#
+# THE LIST IS OF READS, NOT OF WRITES. Listing the writing subcommands was tried and is
+# an allowlist in a fail-CLOSED gate: anything unrecognised reads as safe, so a shell
+# alias (`git -c alias.nuke="!rm -rf src" nuke`), an external `git-<helper>` on PATH, and
+# a redirection token landing where the subcommand was expected all sailed through.
+# Inverted, the unknown case blocks, which is the direction this gate exists to fail in.
+# The cost is that a genuinely read-only subcommand missing from the list over-blocks --
+# visible, and fixed by adding one name.
+#
+# `writeflags` are options that make even a listed read produce a file
+# (`git diff --output=src/x`); `argflags` are the dispatcher global options that take a
+# separate operand, so the operand is not mistaken for the subcommand (`git -C repo rm x`).
+# Enumerating those is safe here in a way it is not for wrappers: one command documented
+# global option list, short and stable, rather than every flag of every launcher.
+_DISPATCHERS = {
+    "git": {
+        "reads": frozenset((
+            # Inspection.
+            "status", "log", "show", "blame", "annotate", "grep", "shortlog",
+            "reflog", "whatchanged", "describe", "cherry", "range-diff", "difftool",
+            "diff", "diff-tree", "diff-index",
+            "ls-files", "ls-tree", "ls-remote", "cat-file", "for-each-ref",
+            "count-objects", "rev-parse", "rev-list", "merge-base", "name-rev",
+            "symbolic-ref", "var", "help", "version", "fsck",
+            "verify-pack", "verify-commit", "verify-tag",
+            "check-ignore", "check-attr", "check-ref-format", "check-mailmap",
+            # Ref/index/remote plumbing that does not touch working-tree FILES, which is
+            # the only thing this classifier judges.
+            "add", "commit", "push", "fetch", "remote", "branch", "tag",
+            "init", "gc", "prune", "repack", "maintenance", "notes", "update-ref",
+            # NOT `config`, `bundle` or `archive`: each takes a destination path as a
+            # plain operand (`git config --file src/x k v`, `git bundle create src/x`),
+            # so they write working-tree files without matching any writeflag. A read
+            # subcommand has to be read-only in EVERY mode, not just its common one.
+        )),
+        "writeflags": frozenset(("-o", "--output", "--output-directory")),
+        "argflags": frozenset((
+            "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path",
+            "--super-prefix", "--config-env",
+        )),
+    },
+}
+# Every READ subcommand of every dispatcher, for the wrapped all-token regime.
+_DISPATCH_READS = frozenset(v for d in _DISPATCHERS.values() for v in d["reads"])
+
 # Interpreters that EXECUTE a string operand. Tokenizing reduces `bash -c 'rm -rf src'`
 # to the single token `rm -rf src`, which equals no verb — so without recursing into the
 # operand this classifier would ALLOW a real write that the old regexes caught. That is
@@ -115,6 +161,9 @@ _WRAPPERS = frozenset(("sudo", "doas", "su", "runuser", "env", "nohup", "timeout
                        "builtin", "exec", "xargs", "caffeinate", "chroot", "arch",
                        "torify", "proxychains", "proxychains4", "watch"))
 _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
+# A redirection operator, with or without a leading fd and with or without an attached
+# target: `<`, `>`, `2>`, `>>`, `&>`, `</dev/null`.
+_REDIR_RE = re.compile(r"^[0-9]*(?:<|>)[>&]?")
 # A bare duration/number operand belonging to a wrapper (`timeout 5 rm x`, `nice 10 mv`).
 _NUMERIC_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$")
 # Shell reserved words and grouping punctuation. These occupy the first token position
@@ -440,6 +489,14 @@ def _effective_command_word(toks):
         if skip_next:
             skip_next = False
             continue
+        # A LEADING REDIRECTION is legal shell: `</dev/null git clean -fd` runs git.
+        # Resolving the command word to `<` classified it as an unknown non-verb and
+        # allowed the write behind it. A BARE operator takes the next token as its
+        # target; an attached one (`</dev/null`) does not.
+        m = _REDIR_RE.match(t)
+        if m:
+            skip_next = m.group(0) == t
+            continue
         if _ASSIGN_RE.match(t) or t.startswith("-") or _NUMERIC_RE.match(t):
             continue
         b = _basename(t)
@@ -492,9 +549,83 @@ def _runs_mod_verb(toks):
 
     Shared by the segment check, the find -exec payload and the function body.
     """
+    names = [_basename(t) for t in toks]
     if _starts_with_wrapper(toks) or _first_word(toks) in _OPAQUE_INTRO:
-        return any(_basename(t) in _MOD_VERBS for t in toks)
-    return _effective_command_word(toks) in _MOD_VERBS
+        if any(n in _MOD_VERBS for n in names):
+            return True
+        # A dispatcher behind a wrapper (`sudo git clean -fd`, `env git stash`) cannot use
+        # the positional lookup below, because locating the command word past a wrapper
+        # preamble needs per-flag arity and every approximation of that fails OPEN. The
+        # wrapped regime is already "scan every token", so the subcommand is matched the
+        # same way. This lives HERE and only here -- _segment_is_mod and _payload_is_mod
+        # both route through this function, and a second copy is how the two regimes
+        # drifted apart before (`find . -exec sudo git clean -fd ;` was allowed).
+        # ...and a dispatcher is judged by the SAME positional rule as below. Scanning
+        # for a read-subcommand name anywhere was wrong twice over: a pathspec supplies
+        # one (`sudo git clean -fd status` looked safe) and writeflags never applied
+        # (`sudo git diff --output=src/x`). Locating `git` by basename and reading
+        # forward needs no wrapper-flag arity, so it works under a preamble too.
+        applies, writes = _dispatcher_verdict(toks)
+        return applies and writes
+    word = _effective_command_word(toks)
+    if word in _MOD_VERBS:
+        return True
+    # SUBCOMMAND DISPATCHERS. `git rm src/x` and `git mv a b` really do delete and rename
+    # working-tree files, but the verb sits one token in, so a command-word test reads it
+    # as data and allows it -- a fail-open against the raw regexes this replaced, which
+    # matched the literal `rm `. The verb is looked up at its actual POSITION rather than
+    # by scanning every token, so `git log --grep rm` and `git diff -- rm.py` stay reads.
+    # Gated on the COMMAND WORD being the dispatcher, unlike the wrapped branch: with no
+    # wrapper, a `git` token elsewhere is an operand (`echo git clean`), and judging it
+    # would resurrect the mention-as-invocation false positive.
+    if _basename(word or "") in _DISPATCHERS:
+        applies, writes = _dispatcher_verdict(toks)
+        return applies and writes
+    return False
+
+
+def _dispatcher_verdict(toks):
+    """(is a dispatcher command, does it write) for the first dispatcher named in toks.
+
+    The subcommand is located POSITIONALLY -- the first operand after the dispatcher that
+    is neither a global option nor the operand of one -- so a pathspec that happens to
+    share a subcommand name cannot vouch for the command.
+    """
+    for name, spec in _DISPATCHERS.items():
+        if not any(_basename(t) == name and not _ASSIGN_RE.match(t) for t in toks):
+            continue
+        sub = _subcommand(toks, name)
+        if not sub:
+            return True, False        # bare `git` prints usage
+        if sub not in spec["reads"]:
+            return True, True         # unknown/aliased/writing subcommand -> fail closed
+        # A listed read can still be told to produce a file.
+        return True, any(t.split("=", 1)[0] in spec["writeflags"] for t in toks)
+    return False, False
+
+
+def _subcommand(toks, name):
+    """The subcommand `name` dispatches to: the first operand that is not a global option
+    and not the operand OF one. Matched on BASENAME, so `/usr/bin/git rm x` resolves."""
+    argflags = _DISPATCHERS[name]["argflags"]
+    # Skip assignments: `GIT_DIR=/tmp/git git rm x` has an assignment whose VALUE
+    # basenames to `git`, and matching it first selected `rm` from the wrong position.
+    i = next((k for k, t in enumerate(toks)
+              if not _ASSIGN_RE.match(t) and _basename(t) == name), None)
+    if i is None:
+        return ""
+    skip = False
+    for t in toks[i + 1:]:
+        if skip:
+            skip = False              # this token is the operand of the previous flag
+            continue
+        if t in argflags:
+            skip = True               # separated form: `-C repo`, `--git-dir repo/.git`
+            continue
+        if t.startswith("-"):
+            continue                  # a bare switch, or the attached `--git-dir=repo`
+        return _basename(t)
+    return ""
 
 
 def _segment_is_mod(toks, depth=0):
@@ -505,10 +636,10 @@ def _segment_is_mod(toks, depth=0):
     # it made read-only `find . -name rm` and `find . -exec echo rm {} +` classify as
     # writes. It gets its own block below.
     wrapped = _starts_with_wrapper(toks) or _first_word(toks) in _OPAQUE_INTRO
-    if wrapped:
-        if any(n in _MOD_VERBS for n in names):
-            return True
-    elif cw in _MOD_VERBS:
+    # Both regimes live in _runs_mod_verb; this used to re-implement them inline and the
+    # copies drifted. _payload_is_mod calls the same function, so a find -exec payload and
+    # a top-level command are judged identically.
+    if _runs_mod_verb(toks):
         return True
     # `function NAME { body }`: the NAME is data, the BODY is code (it executes when the
     # name is called later). Judged by command word so `function f { echo rm; }` -- which

@@ -426,6 +426,91 @@ check "mksh -c running the helper is blocked" block \
 check "watch --exec hiding rm is blocked" block \
     "$(bash_decision "watch --exec rm -rf src")"
 check "watch of a read stays allowed" allow "$(bash_decision "watch ls -la")"
+# SUBCOMMAND DISPATCHERS: `git rm` / `git mv` really do delete and rename working-tree
+# files, but the verb sits one token in, so a command-word test read it as data. The raw
+# regexes this replaced matched the literal `rm `, so missing it was a fail-open.
+check "git rm is a write" block "$(bash_decision "git rm src/x")"
+check "git mv is a write" block "$(bash_decision "git mv a b")"
+check "git clean is a write" block "$(bash_decision "git clean -fd")"
+check "git restore is a write" block "$(bash_decision "git restore .")"
+check "git checkout -- is a write" block "$(bash_decision "git checkout -- .")"
+# ...looked up at its POSITION, so the read subcommands stay reads.
+check "git status stays a read" allow "$(bash_decision "git status")"
+check "git log stays a read" allow "$(bash_decision "git log --oneline")"
+check "git log --grep rm stays a read" allow "$(bash_decision "git log --grep rm")"
+check "git diff naming rm.py stays a read" allow "$(bash_decision "git diff -- rm.py")"
+check "echo of git rm stays a read" allow "$(bash_decision "echo git rm x")"
+check "git rm inside bash -c is a write" block "$(bash_decision "bash -c 'git rm x'")"
+# A dispatcher BEHIND A WRAPPER never reached the positional lookup, because the wrapped
+# branch returns first. In that regime the subcommand is matched by scan, like every
+# other token.
+check "sudo git clean is a write" block "$(bash_decision "sudo git clean -fd")"
+check "env git stash is a write" block "$(bash_decision "env git stash")"
+# The dispatcher is matched on BASENAME, and its global flag OPERANDS are skipped so they
+# are not mistaken for the subcommand.
+check "an absolute git path is still a dispatcher" block \
+    "$(bash_decision "/usr/bin/git rm x")"
+check "git -C repo rm is a write" block "$(bash_decision "git -C repo rm x")"
+check "git --git-dir <dir> clean is a write" block \
+    "$(bash_decision "git --git-dir repo/.git clean -fd")"
+check "git -C repo status stays a read" allow "$(bash_decision "git -C repo status")"
+# ...and the set covers the other working-tree writers, not just rm/mv.
+check "git reset --hard is a write" block "$(bash_decision "git reset --hard")"
+check "git switch is a write" block "$(bash_decision "git switch main")"
+check "git apply is a write" block "$(bash_decision "git apply patch.diff")"
+check "git merge is a write" block "$(bash_decision "git merge topic")"
+check "git clone is a write" block "$(bash_decision "git clone https://x /tmp/y")"
+check "git worktree add is a write" block "$(bash_decision "git worktree add ../w")"
+check "git submodule update is a write" block \
+    "$(bash_decision "git submodule update --init")"
+# A leading ASSIGNMENT whose value basenames to the dispatcher must not be matched as the
+# dispatcher itself, or the subcommand is read from the wrong position.
+check "an assignment shadowing the dispatcher name is not the dispatcher" block \
+    "$(bash_decision "GIT_DIR=/tmp/git git rm x")"
+# BOTH regimes live in _runs_mod_verb, so a find -exec payload is judged like a top-level
+# command. The wrapped-dispatcher rule used to exist only on the segment path.
+check "find -exec sudo git clean is a write" block \
+    "$(bash_decision "find . -exec sudo git clean -fd ;")"
+check "find -exec env git stash is a write" block \
+    "$(bash_decision "find . -exec env git stash ;")"
+# THE SUBCOMMAND LIST IS OF READS, NOT WRITES. Listing the writers is an allowlist in a
+# fail-CLOSED gate: anything unrecognised reads as safe, so an alias, an external
+# git-<helper>, and a redirection token landing where the subcommand was expected all
+# sailed through. Inverted, the unknown case blocks.
+check "a git alias running a shell is a write" block \
+    "$(bash_decision "git -c alias.nuke='!rm -rf src' nuke")"
+check "a redirection before the subcommand does not hide it" block \
+    "$(bash_decision "git </dev/null clean -fd")"
+check "an unknown git subcommand is a write" block \
+    "$(bash_decision "git some-unknown-subcmd")"
+# ...and a listed READ that is told to produce a file is still a write.
+check "git diff --output= is a write" block \
+    "$(bash_decision "git diff --output=src/x")"
+check "git diff -o is a write" block "$(bash_decision "git diff -o src/x")"
+# The reads that matter day to day must stay reads.
+check "git add stays a read" allow "$(bash_decision "git add -A")"
+check "git push stays a read" allow "$(bash_decision "git push")"
+check "git show stays a read" allow "$(bash_decision "git show HEAD")"
+check "git diff --stat stays a read" allow "$(bash_decision "git diff --stat")"
+check "bare git stays a read" allow "$(bash_decision "git")"
+check "sudo git status stays a read" allow "$(bash_decision "sudo git status")"
+# The subcommand is located POSITIONALLY in BOTH regimes. Scanning for a read name
+# anywhere let a PATHSPEC vouch for the command, and skipped the writeflag check.
+check "a pathspec named like a read subcommand does not vouch" block \
+    "$(bash_decision "sudo git clean -fd status")"
+check "wrapped git diff --output= is a write" block \
+    "$(bash_decision "sudo git diff --output=src/x")"
+# A LEADING REDIRECTION is legal shell; resolving the command word to `<` allowed the
+# write behind it.
+check "a leading redirection does not hide the command word" block \
+    "$(bash_decision "</dev/null git clean -fd")"
+check "a leading fd redirection does not hide it either" block \
+    "$(bash_decision "2>/dev/null git rm x")"
+# A read subcommand has to be read-only in EVERY mode, not just its common one.
+check "git config --file is a write" block \
+    "$(bash_decision "git config --file src/x k v")"
+check "git bundle create is a write" block \
+    "$(bash_decision "git bundle create src/x HEAD")"
 check "wrapped find -exec running the helper is blocked" block \
     "$(bash_decision "sudo find . -maxdepth 0 -exec python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600 ;")"
 # RUNNERS ARE MATCHED AT ANY INDEX, on purpose. Requiring command position means knowing

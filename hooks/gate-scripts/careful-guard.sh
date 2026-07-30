@@ -49,6 +49,35 @@ fi
 
 CMD_LOWER=$(printf '%s' "$CMD" | tr '[:upper:]' '[:lower:]')
 
+# --- Auto mode: stand down on what the classifier already owns ---
+# In `auto`, a classifier model judges every non-read action and blocks force-push,
+# git reset --hard, checkout/restore ., clean -fd, and "irreversibly destroying files
+# that existed before the session" — against the ACTUAL request, which a regex cannot
+# do. Re-asking there is pure prompt noise, and an unattended overnight run has nobody
+# awake to answer it. SQL DROP/TRUNCATE is the one pattern the classifier does not
+# name, so it stays live in EVERY mode.
+#
+# `bypassPermissions` gets no exemption: it has no classifier at all, so this guard is
+# the only thing left besides the rm -rf / and rm -rf ~ circuit breaker.
+#
+# PARSED, never grepped off the raw JSON: `"permission_mode":"auto"` can also appear
+# INSIDE tool_input.command, so a raw-text match would let a crafted command disarm
+# the guard. No python3, unparseable input, or any other mode leaves AUTO_MODE=0 and
+# every check runs — over-warning stays the safe direction.
+AUTO_MODE=0
+if command -v python3 &>/dev/null; then
+  PERM_MODE=$(printf '%s' "$INPUT" | python3 -c '
+import sys, json
+try:
+    d = json.loads(sys.stdin.read() or "{}")
+    m = d.get("permission_mode", "")
+    print(m if isinstance(m, str) else "")
+except Exception:
+    pass
+' 2>/dev/null || true)
+  if [[ "$PERM_MODE" == "auto" ]]; then AUTO_MODE=1; fi
+fi
+
 # --- Recursive rm: judge EVERY rm in the chain, not just the last one ---
 # `rm -rf /etc && rm -rf node_modules` must warn about /etc even though the last
 # rm targets a safe artifact. The previous greedy sed stripped to the final rm,
@@ -59,7 +88,7 @@ CMD_LOWER=$(printf '%s' "$CMD" | tr '[:upper:]' '[:lower:]')
 # Prints exactly "unsafe" or "safe"; ANY other output (including empty) means
 # the scanner itself did not run, which falls through to the grep fallback below.
 RM_VERDICT=""
-if command -v python3 &>/dev/null; then
+if [[ "$AUTO_MODE" == 0 ]] && command -v python3 &>/dev/null; then
   _GUARD_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
   # shellcheck disable=SC2016  # python source: $-expansion must not happen in bash
   RM_VERDICT=$(printf '%s' "$CMD" | PYTHONPATH="$_GUARD_LIB" python3 -S -c '
@@ -197,7 +226,7 @@ print(verdict)
 ' 2>/dev/null || true)
 fi
 
-if [[ "$RM_VERDICT" != "unsafe" && "$RM_VERDICT" != "safe" ]]; then
+if [[ "$AUTO_MODE" == 0 && "$RM_VERDICT" != "unsafe" && "$RM_VERDICT" != "safe" ]]; then
   # The scanner did not run (no python3, import failure, crash). Do NOT treat a
   # missing verdict as safe — drop the safe-artifact carve-out and warn on any
   # recursive rm. Over-warning is the safe direction for an advisory guard.
@@ -231,23 +260,27 @@ if [[ -z "$WARN" ]] && printf '%s' "$CMD_LOWER" | grep -qE '\btruncate\b' 2>/dev
   WARN="Destructive: SQL TRUNCATE detected. This deletes all rows from a table."
 fi
 
+# The four git patterns below are all named in auto mode's own default block list,
+# so each is gated on AUTO_MODE=0 — see the stand-down note above. The SQL checks
+# are deliberately NOT gated: the classifier does not name DROP/TRUNCATE.
+
 # git push --force / git push -f (but NOT --force-with-lease which is the safe alternative)
-if [[ -z "$WARN" ]] && printf '%s' "$CMD" | grep -qE 'git\s+push\s+.*(-f\b|--force\b)' 2>/dev/null && ! printf '%s' "$CMD" | grep -qE -- '--force-with-lease' 2>/dev/null; then
+if [[ -z "$WARN" && "$AUTO_MODE" == 0 ]] && printf '%s' "$CMD" | grep -qE 'git\s+push\s+.*(-f\b|--force\b)' 2>/dev/null && ! printf '%s' "$CMD" | grep -qE -- '--force-with-lease' 2>/dev/null; then
   WARN="Destructive: git force-push rewrites remote history."
 fi
 
 # git reset --hard
-if [[ -z "$WARN" ]] && printf '%s' "$CMD" | grep -qE 'git\s+reset\s+--hard' 2>/dev/null; then
+if [[ -z "$WARN" && "$AUTO_MODE" == 0 ]] && printf '%s' "$CMD" | grep -qE 'git\s+reset\s+--hard' 2>/dev/null; then
   WARN="Destructive: git reset --hard discards all uncommitted changes."
 fi
 
 # git checkout . / git restore . (standalone . only, not .gitignore etc)
-if [[ -z "$WARN" ]] && printf '%s' "$CMD" | grep -qE 'git\s+(checkout|restore)\s+\.(\s|$)' 2>/dev/null; then
+if [[ -z "$WARN" && "$AUTO_MODE" == 0 ]] && printf '%s' "$CMD" | grep -qE 'git\s+(checkout|restore)\s+\.(\s|$)' 2>/dev/null; then
   WARN="Destructive: discards all uncommitted changes in the working tree."
 fi
 
 # git clean -f (removes untracked files)
-if [[ -z "$WARN" ]] && printf '%s' "$CMD" | grep -qE 'git\s+clean\s+.*-[a-zA-Z]*f' 2>/dev/null; then
+if [[ -z "$WARN" && "$AUTO_MODE" == 0 ]] && printf '%s' "$CMD" | grep -qE 'git\s+clean\s+.*-[a-zA-Z]*f' 2>/dev/null; then
   WARN="Destructive: git clean -f removes untracked files permanently."
 fi
 

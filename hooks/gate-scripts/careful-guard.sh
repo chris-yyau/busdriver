@@ -86,12 +86,15 @@ sys.path[:] = [p for p in sys.path if p not in ("", ".")]
 import json
 try:
     d = json.loads(sys.stdin.read() or "{}")
-    m = d.get("permission_mode", "")
-    print(m if isinstance(m, str) else "")
+    # Compare HERE, and emit a fixed token. Printing the raw value and matching
+    # in bash was unsafe: $( ) strips trailing newlines, so a permission_mode of
+    # "auto\n" collapsed to "auto" and stood the guard down. A non-str never
+    # equals "auto", so this also subsumes the isinstance check.
+    print("1" if d.get("permission_mode") == "auto" else "0")
 except Exception:
     pass
 ' 2>/dev/null || true)
-  if [[ "$PERM_MODE" == "auto" ]]; then AUTO_MODE=1; fi
+  if [[ "$PERM_MODE" == "1" ]]; then AUTO_MODE=1; fi
 fi
 
 # --- Recursive rm: judge EVERY rm in the chain, not just the last one ---

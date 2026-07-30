@@ -26,7 +26,7 @@ check() { # name expected actual
 
 # <mode|--nomode> <command> -> ask|allow
 verdict() {
-  local payload out
+  local payload out rc
   # --json=<literal> injects a RAW JSON value, so non-string permission_mode types
   # are genuinely exercised. Passing 12345 as argv would only ever yield the STRING
   # "12345" and never reach the guard's `isinstance(m, str)` else-branch.
@@ -40,12 +40,21 @@ elif m != "--nomode":
     d["permission_mode"] = m
 print(json.dumps(d))' "$1" "$2")
   # Here-string, not a pipeline: $( ) around a pipeline reports only the LAST
-  # command's status (SC2312), so a crashing guard would silently read as "allow".
-  out=$(bash "$GUARD" <<<"$payload")
+  # command's status (SC2312). But that alone was not enough -- the guard's own
+  # status still has to be READ, or a syntax/startup failure yields empty output,
+  # matches no "ask", and reports a clean "allow". Emit a third token instead, so
+  # every call site fails loudly rather than silently reading as permissive.
+  local rc=0
+  out=$(bash "$GUARD" <<<"$payload") || rc=$?
+  if [[ "$rc" -ne 0 ]]; then echo "guard-error(rc=$rc)"; return 0; fi
   if grep -q '"permissionDecision":"ask"' <<<"$out"; then echo ask; else echo allow; fi
 }
 check_v() { # name expected mode command
-  check "$1" "$2" "$(verdict "$3" "$4")"
+  # Assigned, not inlined as an argument: $( ) in argument position masks
+  # verdict()'s exit status (SC2312).
+  local got
+  got=$(verdict "$3" "$4")
+  check "$1" "$2" "$got"
 }
 
 # ── 1. auto: stand down on what the classifier owns ──────────────────────────
@@ -83,11 +92,34 @@ check_v "unknown mode string"      ask sudo-mode         'git reset --hard HEAD~
 # Property: across JSON value types and near-miss strings, NOTHING except the
 # exact string "auto" may stand the guard down. Fixed examples proved too weak.
 for lit in 'null' 'true' 'false' '0' '1' '3.14' '[]' '{}' '["auto"]' \
-           '{"mode":"auto"}' '"AUTO"' '"Auto"' '" auto"' '"auto "' '"autox"' '""'; do
+           '{"mode":"auto"}' '"AUTO"' '"Auto"' '" auto"' '"auto "' '"autox"' '""' \
+           '"auto\n"' '"auto\n\n"' '"auto\r"' '"auto\t"'; do
   check_v "non-auto permission_mode $lit" ask "--json=$lit" 'git reset --hard HEAD~1'
 done
-# Positive control — without this the loop above would also pass on a guard that
-# never stands down at all.
+# Generated arm of the same property, seeded so any failure reproduces exactly:
+# random strings, whitespace/control-padded "auto", homoglyphs, and non-string
+# JSON values. The enumerated list above stays as named regression cases.
+while IFS= read -r lit; do
+  check_v "generated non-auto $lit" ask "--json=$lit" 'git reset --hard HEAD~1'
+done < <(python3 -c '
+import json, random, string
+random.seed(20260731)
+alphabet = string.ascii_letters + string.digits + " \t\n\r_-."
+vals = []
+for _ in range(30):
+    s = "".join(random.choice(alphabet) for _ in range(random.randint(0, 8)))
+    if s != "auto":
+        vals.append(s)
+for pad in (" ", "\t", "\n", "\r", "\x00", "\u00a0"):
+    vals += [pad + "auto", "auto" + pad]
+vals += ["AUTO", "Auto", "aut", "autoo", "\u0430uto"]
+vals += [None, True, False, 0, 1, -1, 3.14, [], {}, ["auto"], {"a": "auto"}]
+for v in vals:
+    print(json.dumps(v))
+')
+
+# Positive control — without this every loop above would also pass on a guard
+# that never stands down at all.
 check_v "exact string auto stands down" allow '--json="auto"' 'git reset --hard HEAD~1'
 
 # ── 5. the mode is PARSED, not grepped off the raw JSON ──────────────────────

@@ -81,6 +81,16 @@ exit (deleting the gate's audit trail).
   That closes the "any intervening tool call can consume it" sharp edge, which was the
   most surprising part of the original report.
 
+  One operator-visible tightening came out of review: a skip file rejected as too-new is
+  now **permanently dead**, not merely deleted. Deletion alone was conditional on a
+  syscall that can fail — an immutable file in a writable directory survived its own
+  rejection and then aged past the floor into a perfectly valid lease, which is the
+  self-bypass the floor exists to stop. Rejection therefore also writes a
+  `<mtime>.poison` sentinel into the ledger, and any later claim keyed to that same mtime
+  reports EXHAUSTED. A genuine operator `touch` produces a new mtime and a clean lease,
+  so the only workflow this changes is re-arming with the timestamp preserved (`touch -r`,
+  or restoring the file from a copy), which now needs a real touch instead.
+
 - **Item 2 — a recorded exit, not a destroyed trail.** `design-clear.sh` already was
   the sanctioned audited release (ADR 0017's stated follow-up), but the gate's own
   block message still invited `rm '<token>'`, so operators followed the message. The

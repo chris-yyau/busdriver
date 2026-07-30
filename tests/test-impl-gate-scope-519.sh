@@ -18,7 +18,9 @@
 # Exit: 0 if all pass, 1 if any fail.
 
 # SC2312: decisions are read from captured stdout, not pipeline status.
-# shellcheck disable=SC2312
+# SC2016: the single-quoted cases pass LITERAL command text to the gate -- a `$(...)` in
+# them is the input under test and must NOT be expanded by this script.
+# shellcheck disable=SC2312,SC2016
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 REPO_ROOT="$PWD"
@@ -382,6 +384,109 @@ check "env -S running the helper is blocked" block \
     "$(bash_decision "env -S 'python3 -I hooks/gate-scripts/lib/lease_slot.py .claude fake 1'")"
 check "sh -c running the helper is blocked" block \
     "$(bash_decision "sh -c 'python3 -I hooks/gate-scripts/lib/audit_append.py .claude {}'")"
+# NESTED payloads: a runner inside a find -exec. The payload tokens are requoted before
+# the recursive scan, because a bare space-join loses the boundary the quoted `-c` string
+# carried -- `sh -c "python3 -I .../lease_slot.py ..."` re-lexed as `sh -c python3 -I
+# .../lease_slot.py ...`, whose -c handler reads only `python3` as the program and never
+# scans the helper demoted to $0/$1.
+check "find -exec sh -c running the helper is blocked" block \
+    "$(bash_decision "find . -maxdepth 0 -exec sh -c 'python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600' {} ;")"
+check "find -exec env -S sh -c running the helper is blocked" block \
+    "$(bash_decision "find . -maxdepth 0 -exec env -S sh -c 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600' ;")"
+check "a helper after a ; INSIDE a find -exec payload is blocked" block \
+    "$(bash_decision "find . -maxdepth 0 -exec bash -c 'cd /tmp && python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600' ;")"
+# ...and requoting must not over-block a payload that merely NAMES one.
+check "find -exec sh -c echoing a helper name is allowed" allow \
+    "$(bash_decision "find . -maxdepth 0 -exec sh -c 'echo lease_slot.py' ;")"
+# A RUNNER NAMED IN AN ARGUMENT LIST IS DATA. Both payload scans used to fire at any
+# index, so printing a command that would invoke a helper counted as invoking it.
+# `-exec` now needs the segment to actually run find (it is a find predicate, not a
+# general convention), and a shell/env runner needs to still be in the wrapper preamble.
+check "echo of a find -exec helper payload over-blocks (documented)" block \
+    "$(bash_decision "echo -exec sh -c 'python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600' ';'")"
+check "echo of an sh -c helper payload over-blocks (documented)" block \
+    "$(bash_decision "echo sh -c 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600'")"
+# The mention contract still holds for a plain read -- these are the cases that matter.
+check "cat of a helper stays allowed" allow \
+    "$(bash_decision "cat hooks/gate-scripts/lib/lease_slot.py")"
+# ...while every genuine preamble spelling still executes, and still blocks.
+check "nohup wrapper before sh -c is blocked" block \
+    "$(bash_decision "nohup sh -c 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600'")"
+check "a leading assignment before bash -c is blocked" block \
+    "$(bash_decision "X=1 bash -c 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600'")"
+check "sudo env -S running the helper is blocked" block \
+    "$(bash_decision "sudo env -S 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600'")"
+check "wrapped find -exec running the helper is blocked" block \
+    "$(bash_decision "sudo find . -maxdepth 0 -exec python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600 ;")"
+# RUNNERS ARE MATCHED AT ANY INDEX, on purpose. Requiring command position means knowing
+# where the wrapper preamble ends, which means knowing which wrapper flags take an
+# operand -- and every approximation of that is a fail-open. A rule that consumed one
+# operand per flag ate the `find` in `sudo -E find . -exec ...`, because -E is boolean,
+# and the payload behind it went unscanned. Same for `env -i` and `sudo -n`. These four
+# are the shapes that rule got wrong.
+check "sudo -u root sh -c running the helper is blocked" block \
+    "$(bash_decision "sudo -u root sh -c 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600'")"
+check "sudo -E find -exec running the helper is blocked" block \
+    "$(bash_decision "sudo -E find . -maxdepth 0 -exec sh -c 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600' ;")"
+check "env -i sh -c running the helper is blocked" block \
+    "$(bash_decision "env -i sh -c 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600'")"
+check "sudo -n sh -c running the helper is blocked" block \
+    "$(bash_decision "sudo -n sh -c 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600'")"
+check "timeout 5 env -S running the helper is blocked" block \
+    "$(bash_decision "timeout 5 env -S 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600'")"
+# There is NO reader-exemption list. One was tried -- commands that "only print their
+# arguments" skipped payload extraction -- and every entry turned out to be another way to
+# execute: `less "+!<cmd>"` runs a shell, `alias echo=eval` re-points the name, a function
+# definition shadows it outright. The list is gone and the scan is unconditional; the
+# price is one documented over-block, pinned here so it stays deliberate.
+check "echo of an sh -c helper payload over-blocks (documented, fail-CLOSED)" block \
+    "$(bash_decision "echo -n sh -c 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600'")"
+# `-exec` is anchored to a preceding `find`, so a bare -exec operand is not a payload.
+check "grep with an -exec operand is allowed" allow \
+    "$(bash_decision "grep -exec notes.txt")"
+check "a non-find command with an -exec operand is allowed" allow \
+    "$(bash_decision "printf '%s\\n' -exec notes.txt")"
+# INDIRECTION withdraws the mention contract: a command that defines a function, defines
+# an alias, or calls eval can re-point a name so an operand becomes what runs.
+check "a pager startup command (+!) is an executed payload" block \
+    "$(bash_decision "less '+!python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 0 3600' /dev/null")"
+check "an alias re-pointing a name is caught" block \
+    "$(bash_decision 'shopt -s expand_aliases; alias echo=eval; echo "python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 0 3600"')"
+check "a bare eval of the helper is caught" block \
+    "$(bash_decision 'eval "python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 0 3600"')"
+# ...matched on a DEQUOTED copy, because the shell concatenates adjacent quoted runs.
+check "quote-split eval is caught" block \
+    "$(bash_decision 'ev"al" "python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 0 3600"')"
+check "quote-split alias is caught" block \
+    "$(bash_decision "al''ias echo=eval; echo 'python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 0 3600'")"
+# A COMMAND SUBSTITUTION runs before the command consuming its output, so a harmless
+# consumer proves nothing: this claims a slot and logs a sanctioned-bypass event, then
+# prints the slot number.
+check "helper inside a command substitution is blocked" block \
+    "$(bash_decision 'echo "$(python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 0 3600)"')"
+check "helper inside a backtick substitution is blocked" block \
+    "$(bash_decision 'echo `python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 0 3600`')"
+check "helper in a substitution assigned to a variable is blocked" block \
+    "$(bash_decision 'X=$(python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 0 3600); echo $X')"
+check "an ordinary substitution stays allowed" allow \
+    "$(bash_decision 'echo "today is $(date)"')"
+check "grepping for a helper under a substituted path is allowed" allow \
+    "$(bash_decision 'grep -rn lease_slot.py $(git rev-parse --show-toplevel)')"
+# QUOTES ARE REMOVED, NOT SPACED OUT, when flattening a substitution: the shell
+# concatenates adjacent quoted runs, so lease_"slot.py" is one word.
+check "quote-split helper inside a substitution is blocked" block \
+    "$(bash_decision 'echo "$(python3 -I hooks/gate-scripts/lib/lease_"slot.py" .claude 999 0 3600)"')"
+# git READS like a reader but an alias runs a shell, so it is deliberately NOT exempt.
+check "git alias forwarding to sh -c is blocked" block \
+    "$(bash_decision 'git -c "alias.x=!f(){ \"\$@\"; }; f" x sh -c "python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 999 0 3600"')"
+check "git diff naming a helper stays allowed" allow \
+    "$(bash_decision "git diff -- hooks/gate-scripts/lib/audit_append.py")"
+# A FUNCTION DEFINITION CAN SHADOW A NAME, so the mention contract is withdrawn
+# wholesale whenever the command defines one -- withdrawing it only ever blocks more.
+check "a function shadowing echo cannot launder a payload" block \
+    "$(bash_decision 'echo() { "\$@"; }; echo sh -c "python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 0 3600"')"
+check "the function keyword form is caught too" block \
+    "$(bash_decision 'function echo { "\$@"; }; echo sh -c "python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 0 3600"')"
 
 echo "── fallback parity ────────────────────────────────────────────────"
 
@@ -435,6 +540,57 @@ else
     no "audit_append has no record-writing CLI" "a standalone invocation minted an event"
 fi
 rm -rf "$_forge_dir"
+
+echo "── generated: the helper guard across combined spellings ──────────"
+# PROPERTY-STYLE COVERAGE, not one more hand-picked example. The guard has to hold across
+# the CROSS PRODUCT of the things that independently defeated it during review: how the
+# helper name is spelled (plain / split across quoted runs), what hands it to a runner
+# (direct / a shell -c / env -S / a find -exec / eval), and what sits in front (nothing /
+# a wrapper / a wrapper with a flag operand / a leading assignment). Fixed examples kept
+# passing while a neighbouring spelling did not.
+_SPELL=(
+  "python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 0 3600"
+  "python3 -I hooks/gate-scripts/lib/lease_\"slot.py\" .claude 20 0 3600"
+  "python3 -I hooks/gate-scripts/lib/audit_append.py .claude 1 20"
+)
+_PREFIX=("" "sudo " "sudo -u root " "sudo -E " "nohup " "timeout 5 " "X=1 ")
+_GEN_PASS=0; _GEN_FAIL=0
+for pre in "${_PREFIX[@]}"; do
+  for sp in "${_SPELL[@]}"; do
+    for form in direct sh env find eval; do
+      case "$form" in
+        direct) cmd="${pre}${sp}" ;;
+        sh)     cmd="${pre}sh -c '${sp}'" ;;
+        env)    cmd="${pre}env -S '${sp}'" ;;
+        find)   cmd="${pre}find . -maxdepth 0 -exec sh -c '${sp}' ;" ;;
+        eval)   cmd="${pre}eval '${sp}'" ;;
+      esac
+      out="$(bash_decision "$cmd")"
+      case "$out" in
+        *'"block"'*) _GEN_PASS=$((_GEN_PASS + 1)) ;;
+        *) _GEN_FAIL=$((_GEN_FAIL + 1)); printf "  FAIL  generated: %s\n" "$cmd" ;;
+      esac
+    done
+  done
+done
+if [ "$_GEN_FAIL" -eq 0 ]; then
+    ok "every generated helper invocation blocks ($_GEN_PASS spellings)"
+else
+    no "generated helper invocations" "$_GEN_FAIL of $((_GEN_PASS + _GEN_FAIL)) allowed"
+fi
+
+# ...and the mention contract holds across the same axes for a plain READ of the file.
+_READ=("cat" "head -5" "wc -l" "grep -n import" "git diff --")
+_RD_FAIL=0
+for r in "${_READ[@]}"; do
+    out="$(bash_decision "$r hooks/gate-scripts/lib/lease_slot.py")"
+    case "$out" in *'"block"'*) _RD_FAIL=$((_RD_FAIL + 1)); printf "  FAIL  generated read: %s\n" "$r" ;; esac
+done
+if [ "$_RD_FAIL" -eq 0 ]; then
+    ok "every generated READ of a helper stays allowed (${#_READ[@]} forms)"
+else
+    no "generated helper reads" "$_RD_FAIL blocked"
+fi
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

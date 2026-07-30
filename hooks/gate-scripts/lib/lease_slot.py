@@ -32,9 +32,14 @@ overshooting the ceiling. Keying on the skip file mtime means a fresh operator t
 starts a new lease, and slots from a previous one are pruned rather than trusted.
 """
 
+import fcntl
 import os
 import sys
 import time
+
+# ~0.5s ceiling, same shape as the audit appender: bounded, never blocking.
+_LOCK_TRIES = 10
+_LOCK_WAIT = 0.05
 
 # `python3 -I` implies -P, which strips the script's own directory from sys.path, so the
 # sibling import below needs it back. Inserting THIS FILE's resolved directory is safe
@@ -83,6 +88,111 @@ def _log_use(state_dir, slot, max_uses):
     return append(state_dir, rec)
 
 
+POISON_SUFFIX = ".poison"
+
+
+def _poison(lfd, sfd, mtime):
+    """Mark the lease keyed to `mtime` permanently refused, so a skip file that survived
+    its own rejection is dead the moment it would otherwise become acceptable.
+
+    ONE sentinel directory, not max_uses filled slots. Filling slots one at a time was
+    only best-effort: a transient ENOSPC partway through — or a crash before the parent
+    fsync — left unused slots behind, and a later claim happily granted them. A single
+    atomic mkdir either exists or does not.
+
+    Returns True only when the sentinel is durably on disk. An UNSYNCED sentinel is
+    reported as failure, not success: a crash could lose it while the still-armed skip
+    file survived, which is precisely the state the seal exists to prevent.
+    """
+    try:
+        os.mkdir(mtime + POISON_SUFFIX, 0o755, dir_fd=lfd)
+    except FileExistsError:
+        pass
+    except OSError:
+        return False
+    try:
+        os.fsync(lfd)
+        os.fsync(sfd)
+    except OSError:
+        return False
+    return True
+
+
+def _open_locked_ledger(sfd):
+    """Open the lease ledger and hold an EXCLUSIVE lock on it. None on refusal.
+
+    THE LOCK IS ON THE LEDGER, not on the skip file. flock attaches to an inode, and the
+    skip file is the one object here that is *expected* to be replaced — re-arming is
+    exactly `rm && touch`. Locking it meant two claimants could hold locks on two
+    different inodes and mutate the same ledger at once, and one could then prune the
+    other`s just-created slot so it was reclaimed and the ceiling exceeded. The ledger is
+    created by this module, is a protected marker, and is never replaced in normal
+    operation, so every claimant serializes on the same inode.
+
+    Bounded acquisition, like the audit appender: a blocking flock has no deadline, and a
+    PreToolUse hook that overruns its 5s budget emits no decision and therefore fails
+    OPEN, so a process squatting the lock could turn a gated write into a free one.
+    """
+    try:
+        try:
+            os.mkdir(LEASE_DIRNAME, 0o755, dir_fd=sfd)
+        except FileExistsError:
+            pass
+        else:
+            # fsync the STATE dir: fsyncing the ledger persists entries INSIDE it, never
+            # the ledger`s own directory entry. A crash could otherwise lose the whole
+            # ledger while an audit event survived, letting the lease reclaim its slots.
+            os.fsync(sfd)
+        lfd = os.open(LEASE_DIRNAME, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                      dir_fd=sfd)
+    except OSError:
+        return None                   # symlinked ledger, not a directory, or unwritable
+    for _ in range(_LOCK_TRIES):
+        try:
+            fcntl.flock(lfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return lfd
+        except OSError:
+            time.sleep(_LOCK_WAIT)
+    os.close(lfd)
+    return None                       # contended ⇒ refuse; never proceed unserialized
+
+
+def _disarm(sfd, st):
+    """Unlink the skip file, but only while it is still the one `st` describes.
+
+    unlinkat() takes a name, not an inode, so a bare unlink races an operator who
+    re-touches between the stat and the removal — destroying a freshly armed lease and
+    making them arm it twice. Re-stating first closes that for a REPLACED file (a new
+    inode, the `rm && touch` and copy-restore spellings).
+
+    It does NOT close a same-inode `touch` landing between the comparison and the unlink;
+    unlinkat has no by-inode form, so nothing here can. That residual costs the operator
+    one extra `touch` and can never grant a use, which is the direction to err in.
+    """
+    try:
+        cur = os.stat(SKIP_NAME, dir_fd=sfd, follow_symlinks=False)
+    except FileNotFoundError:
+        return True                   # genuinely gone
+    except OSError:
+        return False                  # EACCES/EIO -- unknown is NOT gone
+    # st_mtime_ns, matching the lease key. Comparing whole seconds let a same-inode
+    # re-touch inside one second change the key while still looking identical here, so a
+    # freshly armed lease was unlinked as if it were the rejected one.
+    if (cur.st_ino, cur.st_mtime_ns) != (st.st_ino, st.st_mtime_ns):
+        return True                   # a different file now — not ours to remove
+    try:
+        os.unlink(SKIP_NAME, dir_fd=sfd)
+        # fsync the STATE dir: an unlink is a directory-entry change, and until the
+        # parent is synced a crash can bring the file back. The TOO_NEW path accepts a
+        # successful disarm as an ALTERNATIVE to a durable poison sentinel, so an
+        # unsynced removal would let a rejected file reappear with no sentinel behind it
+        # and go valid once it aged past the floor.
+        os.fsync(sfd)
+    except OSError:
+        return False
+    return True
+
+
 def claim(state_dir, max_uses, min_age, max_age, now):
     """Claim one slot for the lease keyed to <state_dir>/<skip_name>.
 
@@ -99,129 +209,162 @@ def claim(state_dir, max_uses, min_age, max_age, now):
     genuine slots below, resetting the ceiling no matter how the helper was reached.
     Blocking direct invocation from a Bash call is still done, but it is defence in depth
     now rather than the only thing in the way.
+
+    The whole decision — stat, age verdict, poison, prune, slot claim, audit append — is
+    SERIALIZED under an exclusive lock on the LEDGER. Without it, a process could classify
+    mtime M as too-new and be descheduled before writing the poison, while a second
+    process past the age boundary listed the ledger, saw no poison, and granted a slot;
+    and a claim could act on an `entries` snapshot that a concurrent poison had already
+    invalidated. Immutable slots make the COUNTING race-free on their own, but the
+    age/poison decision spans several syscalls and needs the lock.
     """
     sfd = open_state_dir(state_dir)
     if sfd is None:
         return (ERROR, 0)
     try:
-        st = os.stat(SKIP_NAME, dir_fd=sfd, follow_symlinks=False)
-    except OSError:
-        os.close(sfd)
-        return (ERROR, 0)             # no skip file ⇒ no lease to claim
-    age = now - int(st.st_mtime)
-    if age < min_age:
-        os.close(sfd)
-        return (TOO_NEW, 0)
-    if age > max_age:
-        os.close(sfd)
-        return (EXPIRED, 0)
-    mtime = str(int(st.st_mtime))
-    try:
-        try:
-            os.mkdir(LEASE_DIRNAME, 0o755, dir_fd=sfd)
-        except FileExistsError:
-            pass
-        except OSError:
+        lfd = _open_locked_ledger(sfd)
+        if lfd is None:
             return (ERROR, 0)
-        else:
-            # fsync the STATE dir as well: fsyncing the ledger persists entries INSIDE
-            # it, never the ledger's own directory entry. A crash could otherwise lose
-            # the whole ledger while the audit event survived, letting the same lease
-            # reclaim its slots and exceed the ceiling.
-            try:
-                os.fsync(sfd)
-            except OSError:
-                return (ERROR, 0)
         try:
-            lfd = os.open(LEASE_DIRNAME, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                          dir_fd=sfd)
-        except OSError:
-            return (ERROR, 0)         # symlinked ledger, or not a directory
-        try:
-            # Prune slots from a PREVIOUS lease (different mtime prefix). rmdir, not a
-            # recursive delete: slots are empty directories, so this both suffices and
-            # cannot walk into a tree if something unexpected is present.
-            prefix = mtime + "."
-            try:
-                entries = os.listdir(lfd)
-            except OSError:
-                return (ERROR, 0)     # cannot enumerate ⇒ cannot bound ⇒ refuse
-            for name in entries:
-                if not name.startswith(prefix):
-                    try:
-                        os.rmdir(name, dir_fd=lfd)
-                    except OSError:
-                        pass          # best effort; a stale name is inert anyway
-            for n in range(1, max_uses + 1):
-                try:
-                    os.mkdir("%s%d" % (prefix, n), 0o755, dir_fd=lfd)
-                except FileExistsError:
-                    continue
-                except OSError:
-                    return (ERROR, 0)  # cannot record ⇒ refuse
-                # fsync the LEDGER directory before reporting the claim. mkdir returning
-                # success does not make the directory ENTRY durable, so a crash could
-                # lose the slot while the skip file and the fsynced audit event survive —
-                # the next run would then reclaim it and exceed the ceiling. Treat an
-                # unsyncable claim as unrecorded and refuse, rather than granting a use
-                # whose accounting might evaporate.
-                try:
-                    os.fsync(lfd)
-                except OSError:
-                    return (ERROR, 0)
-                # The audit event is minted HERE, in the same call that created the
-                # slot, and never from a CLI. A standalone `audit_append.py <dir> 1 20`
-                # could forge a `skip-review-consumed` record with no lease behind it —
-                # and post-commit-consume-marker.sh treats a recent one of those as
-                # proof that a bypass was sanctioned, so the forged line suppressed a
-                # genuine unreviewed-commit entry. Binding the write to the mkdir that
-                # just succeeded means an event exists only where a use was really
-                # spent, instead of leaving the Bash invocation detector as the only
-                # thing standing between a caller and the protected log.
-                #
-                # FAIL-CLOSED, and the slot stays SPENT. An unlogged use is not a
-                # sanctioned bypass -- the docs promise every use is recorded, so the
-                # promise is enforced rather than merely stated. Keeping the slot can
-                # only make the lease shorter, never longer.
-                if not _log_use(state_dir, n, max_uses):
-                    return (ERROR, 0)
-                return (OK, n)
-            # Every slot exists. Distinguish exhausted from unwritable by re-counting,
-            # so a permissions failure is never reported as a spent budget.
-            try:
-                used = sum(1 for e in os.listdir(lfd) if e.startswith(prefix))
-            except OSError:
-                return (ERROR, 0)
-            return (EXHAUSTED, 0) if used >= max_uses else (ERROR, 0)
+            return _claim_locked(sfd, lfd, state_dir, max_uses, min_age, max_age, now)
         finally:
             os.close(lfd)
     finally:
         os.close(sfd)
 
 
-def unlink_in_state(state_dir, name):
-    """Unlink <cwd>/<state_dir>/<name> with the same O_NOFOLLOW component walk.
-
-    A shell `rm -f "$STATE_DIR/skip-design-review.local"` resolves the path afresh and
-    follows a symlinked INTERMEDIATE component, so it can delete outside the repository
-    — and it runs BEFORE lease_slot.py ever validates anything. Routing the unlink
-    through the validated dir fd removes that window. Returns True if the file is gone.
-    """
-    if "/" in name:
-        return False
-    sfd = open_state_dir(state_dir)
-    if sfd is None:
-        return False
+def _claim_locked(sfd, lfd, state_dir, max_uses, min_age, max_age, now):
+    """The body of claim(), under the ledger lock. Closes neither fd."""
     try:
+        st = os.stat(SKIP_NAME, dir_fd=sfd, follow_symlinks=False)
+    except OSError:
+        return (ERROR, 0)             # no skip file ⇒ no lease to claim
+    age = now - int(st.st_mtime)
+    # NANOSECOND lease key. Truncating to whole seconds meant a poisoned lease and a
+    # genuine re-`touch` inside the same second shared a key, so the fresh lease matched
+    # the old poison and reported EXHAUSTED -- contradicting the ADR promise that a real
+    # touch always starts clean. (On a filesystem with 1s mtime granularity the two are
+    # indistinguishable at the syscall level and the collision remains; the operator waits
+    # a second. Every filesystem this runs on in practice stores sub-second times.)
+    mtime = str(st.st_mtime_ns)
+    if age < min_age or age > max_age:
+        # DISARM HERE, at the fd already validated, rather than leaving it to the caller.
+        # The shell ran a second `--unlink <dir> <name>` command that swallowed failures
+        # with `|| true`, so a skip file that could not be removed (immutable file in a
+        # writable dir) simply survived its own rejection — and a TOO_NEW one then aged
+        # past the floor and became a perfectly valid lease, which is exactly the
+        # self-bypass the floor exists to stop.
+        #
+        # A TOO_NEW lease is poisoned FIRST and unconditionally, before the unlink is even
+        # attempted: poisoning is what actually enforces the floor, and doing it only in
+        # the unlink's failure branch made the enforcement conditional on a syscall that
+        # can fail transiently. Poisoning a lease that then gets removed anyway costs one
+        # inert directory, which the next operator touch prunes.
+        sealed = _poison(lfd, sfd, mtime) if age < min_age else False
+        gone = _disarm(sfd, st)
+        if age > max_age:
+            return (EXPIRED, 0)       # age only grows; it can never come back
+        if not sealed and not gone:
+            # Neither enforcement landed, so this process could not make the floor stick.
+            # The two failures are complementary rather than independent: sealing needs a
+            # writable ledger, and if the ledger is NOT writable the claim path below
+            # cannot mkdir or fsync either, so every later claim returns ERROR anyway.
+            # Report ERROR rather than TOO_NEW so the caller emits a hard refusal instead
+            # of a self-bypass message describing a file it says it removed.
+            return (ERROR, 0)
+        return (TOO_NEW, 0)
+    try:
+        # Prune slots from a PREVIOUS lease (different mtime prefix). rmdir, not a
+        # recursive delete: slots are empty directories, so this both suffices and
+        # cannot walk into a tree if something unexpected is present.
+        prefix = mtime + "."
         try:
-            os.unlink(name, dir_fd=sfd)
-        except FileNotFoundError:
-            return True
+            entries = os.listdir(lfd)
         except OSError:
-            return False
-        return True
-    finally:
-        os.close(sfd)
+            return (ERROR, 0)     # cannot enumerate ⇒ cannot bound ⇒ refuse
+        for name in entries:
+            if name.startswith(prefix):
+                continue
+            # A POISON SENTINEL FROM ANOTHER LEASE IS NOT STALE. Pruning it broke the
+            # permanently-dead guarantee outright: reject mtime M, claim once under
+            # M+1 to sweep `M.poison` away, then restore the file at M and the seal is
+            # gone. Sentinels are kept until their own mtime falls outside the expiry
+            # window, past which a restored file is EXPIRED anyway -- so they cannot
+            # accumulate without bound either.
+            if name.endswith(POISON_SUFFIX):
+                try:
+                    # >=, not >: expiry is `age > max_age`, so a file whose mtime is
+                    # exactly `now - max_age` is still VALID. Dropping its sentinel one
+                    # second early let a restore at that timestamp claim a slot.
+                    # Keys are ns since #519 review round 9; compare in ns.
+                    if int(name[:-len(POISON_SUFFIX)]) >= (now - max_age) * 10**9:
+                        continue
+                except ValueError:
+                    pass          # not a timestamp we wrote; treat as prunable
+            try:
+                os.rmdir(name, dir_fd=lfd)
+            except OSError:
+                pass              # best effort; a stale name is inert anyway
+        # POISONED: this lease was rejected as too-new earlier and could not be
+        # removed, so it is dead however old it has since become. Reported as
+        # exhausted because that is what it is — a lease with nothing left to give.
+        # The sentinel shares the mtime prefix, so the prune above keeps it for THIS
+        # lease and clears it for any other.
+        if mtime + POISON_SUFFIX in entries:
+            _disarm(sfd, st)
+            return (EXHAUSTED, 0)
+        for n in range(1, max_uses + 1):
+            try:
+                os.mkdir("%s%d" % (prefix, n), 0o755, dir_fd=lfd)
+            except FileExistsError:
+                continue
+            except OSError:
+                return (ERROR, 0)  # cannot record ⇒ refuse
+            # fsync the LEDGER directory before reporting the claim. mkdir returning
+            # success does not make the directory ENTRY durable, so a crash could
+            # lose the slot while the skip file and the fsynced audit event survive —
+            # the next run would then reclaim it and exceed the ceiling. Treat an
+            # unsyncable claim as unrecorded and refuse, rather than granting a use
+            # whose accounting might evaporate.
+            try:
+                os.fsync(lfd)
+            except OSError:
+                return (ERROR, 0)
+            # The audit event is minted HERE, in the same call that created the
+            # slot, and never from a CLI. A standalone `audit_append.py <dir> 1 20`
+            # could forge a `skip-review-consumed` record with no lease behind it —
+            # and post-commit-consume-marker.sh treats a recent one of those as
+            # proof that a bypass was sanctioned, so the forged line suppressed a
+            # genuine unreviewed-commit entry. Binding the write to the mkdir that
+            # just succeeded means an event exists only where a use was really
+            # spent, instead of leaving the Bash invocation detector as the only
+            # thing standing between a caller and the protected log.
+            #
+            # FAIL-CLOSED, and the slot stays SPENT. An unlogged use is not a
+            # sanctioned bypass -- the docs promise every use is recorded, so the
+            # promise is enforced rather than merely stated. Keeping the slot can
+            # only make the lease shorter, never longer.
+            if not _log_use(state_dir, n, max_uses):
+                return (ERROR, 0)
+            return (OK, n)
+        # Every slot exists. Distinguish exhausted from unwritable by re-counting,
+        # so a permissions failure is never reported as a spent budget.
+        try:
+            used = sum(1 for e in os.listdir(lfd) if e.startswith(prefix))
+        except OSError:
+            return (ERROR, 0)
+        if used < max_uses:
+            return (ERROR, 0)
+        # Disarm the spent file here too. The SLOTS deliberately stay: they are the
+        # exhaustion proof and must outlive the file that spent them, or a concurrent
+        # gate that already passed the mtime checks would recreate the ledger, claim
+        # slot 1 under the same mtime, and be granted a use past the ceiling.
+        # _disarm, not a bare unlink: an operator who re-touches while this process is
+        # between the stat and the removal would otherwise lose their fresh lease.
+        _disarm(sfd, st)
+        return (EXHAUSTED, 0)
+    except OSError:
+        return (ERROR, 0)             # fail-closed catch-all; never a free pass
 
 
 def _demo():
@@ -235,13 +378,23 @@ def _demo():
         try:
             os.mkdir(".claude")
             skip = os.path.join(".claude", SKIP_NAME)
-            open(skip, "w").close()
-            os.utime(skip, (1000, 1000))
+
+            def arm(t, where=".claude"):
+                """(Re-)create the skip file with mtime t. Needed after every refusal:
+                claim() disarms the file itself on TOO_NEW / EXPIRED / EXHAUSTED."""
+                p = os.path.join(where, SKIP_NAME)
+                open(p, "w").close()
+                os.utime(p, (t, t))
+
+            arm(1000)
             NOW = 1000 + 120                      # 120s old: past the floor, inside the cap
             assert claim(".claude", 3, 30, 3600, NOW) == (OK, 1)
             assert claim(".claude", 3, 30, 3600, NOW) == (OK, 2)
             assert claim(".claude", 3, 30, 3600, NOW) == (OK, 3)
             assert claim(".claude", 3, 30, 3600, NOW) == (EXHAUSTED, 0)
+            # ...and each refusal DISARMED the file, so it cannot stay armed and silently
+            # authorize a later session.
+            assert not os.path.exists(skip)
 
             # Every granted use logged exactly one event; a refused one logged none.
             log = open(os.path.join(".claude", "bypass-log.jsonl")).read().splitlines()
@@ -254,24 +407,60 @@ def _demo():
             # age <= max_age passes, age > max_age expires. Off-by-one either way
             # would widen the self-bypass floor or the expiry window silently.
             for base, (cap, floor) in enumerate(((3, 30), (5, 30), (5, 120))):
-                t0 = 3000 + base          # a distinct mtime = a distinct lease per case
-                os.utime(skip, (t0, t0))
+                # A distinct mtime per sub-case AND per too-new probe: a TOO_NEW verdict
+                # poisons the lease it rejected, so re-arming at the same mtime is (by
+                # design) still dead.
+                t0 = 3000 + 2 * base
+                arm(t0)
                 assert claim(".claude", cap, floor, 3600, t0 + floor - 1)[0] == TOO_NEW
+                t0 += 1
+                arm(t0)
                 assert claim(".claude", cap, floor, 3600, t0 + floor) == (OK, 1)
                 assert claim(".claude", cap, floor, 3600, t0 + 3600) == (OK, 2)
                 assert claim(".claude", cap, floor, 3600, t0 + 3601)[0] == EXPIRED
+                arm(t0)
                 # ...and the ceiling holds at exactly cap uses, for every cap.
                 for n in range(3, cap + 1):
                     assert claim(".claude", cap, floor, 3600, t0 + floor) == (OK, n)
                 assert claim(".claude", cap, floor, 3600, t0 + floor)[0] == EXHAUSTED
 
-            os.utime(skip, (1000, 1000))
+            # A too-new lease is POISONED, so a file that survives its own rejection
+            # (immutable file in a writable dir) is dead however old it later becomes.
+            # Re-armed at the SAME mtime here, which is what an unremovable file amounts
+            # to; a genuine new touch gets a new mtime and a clean lease (below).
+            arm(9000)
+            assert claim(".claude", 3, 30, 3600, 9000 + 5)[0] == TOO_NEW
+            assert os.path.exists(os.path.join(".claude", LEASE_DIRNAME,
+                                               str(9000 * 10**9) + POISON_SUFFIX))
+            arm(9000)
+            assert claim(".claude", 3, 30, 3600, 9000 + 120)[0] == EXHAUSTED
+            assert not os.path.exists(skip)      # ...and disarmed again on the way out
+
+            # _disarm declines to remove a DIFFERENT file than the one it statted, so an
+            # operator re-touch mid-decision is not destroyed.
+            arm(4000)
+            _sfd = open_state_dir(".claude")
+            _st = os.stat(SKIP_NAME, dir_fd=_sfd, follow_symlinks=False)
+            arm(4500)                            # the operator re-touches: new mtime
+            assert _disarm(_sfd, _st)            # reports done...
+            assert os.path.exists(skip)          # ...without taking the new lease
+            assert _disarm(_sfd, os.stat(SKIP_NAME, dir_fd=_sfd, follow_symlinks=False))
+            assert not os.path.exists(skip)      # ...but does remove a matching one
+            os.close(_sfd)
 
             # A new operator touch (new mtime) starts a fresh lease and prunes the old.
-            os.utime(skip, (2000, 2000))
+            arm(2000)
             assert claim(".claude", 3, 30, 3600, 2000 + 120) == (OK, 1)
             names = os.listdir(os.path.join(".claude", LEASE_DIRNAME))
-            assert all(n.startswith("2000.") for n in names), names
+            assert all(n.startswith(str(2000 * 10**9) + ".") or n.endswith(POISON_SUFFIX)
+                       for n in names), names
+
+            # ...but a POISON SENTINEL survives another lease's prune, or the seal could
+            # be swept away by claiming once under any other mtime and the file then
+            # restored at the poisoned one.
+            assert str(9000 * 10**9) + POISON_SUFFIX in names, names
+            arm(9000)
+            assert claim(".claude", 3, 30, 3600, 9000 + 200)[0] == EXHAUSTED
 
             # No skip file at all: nothing to claim.
             os.mkdir("empty")
@@ -279,8 +468,7 @@ def _demo():
 
             # A symlinked ledger must refuse rather than place slots outside the repo.
             os.makedirs("s")
-            open(os.path.join("s", SKIP_NAME), "w").close()
-            os.utime(os.path.join("s", SKIP_NAME), (1000, 1000))
+            arm(1000, "s")
             os.symlink("/tmp", os.path.join("s", LEASE_DIRNAME))
             assert claim("s", 3, 30, 3600, NOW)[0] == ERROR
 
@@ -294,14 +482,6 @@ def _demo():
             assert claim("../outside", 3, 30, 3600, NOW)[0] == ERROR
             assert claim("/tmp/outside", 3, 30, 3600, NOW)[0] == ERROR
 
-            # unlink_in_state: removes a real file, refuses a symlinked prefix and a
-            # path separator, and treats an already-absent file as success.
-            open(os.path.join(".claude", "skipf"), "w").close()
-            assert unlink_in_state(".claude", "skipf")
-            assert not os.path.exists(os.path.join(".claude", "skipf"))
-            assert unlink_in_state(".claude", "skipf")          # already gone
-            assert not unlink_in_state("link/state", "skipf")   # symlinked prefix
-            assert not unlink_in_state(".claude", "a/b")        # no separators
         finally:
             os.chdir(cwd)
     print("lease_slot self-check OK")
@@ -311,8 +491,12 @@ if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "--self-check":
         _demo()
         raise SystemExit(0)
-    if len(sys.argv) == 4 and sys.argv[1] == "--unlink":
-        raise SystemExit(0 if unlink_in_state(sys.argv[2], sys.argv[3]) else 1)
+    # NO `--unlink <dir> <name>` SUBCOMMAND. It accepted any slash-free basename, so
+    # anything that reached it could delete `bypass-log.jsonl` — the protected audit log
+    # — and it needed no modification verb, so the gate's Bash detector was the only
+    # thing in its way. claim() disarms the skip file itself, at the dir fd it has
+    # already validated, which is both the only caller this ever had and one fewer
+    # entry point to guard.
     #   lease_slot.py <state_dir> <max_uses> <min_age> <max_age>
     # Exit: 0 claimed (slot on stdout) / 1 error / 2 exhausted / 3 too new / 4 expired.
     if len(sys.argv) != 5:

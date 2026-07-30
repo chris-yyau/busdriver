@@ -500,15 +500,58 @@ def _norm_for_scan(cmd):
 _MUTATING_HELPERS = ("lease_slot.py", "audit_append.py")
 
 
+# A function definition, an alias definition, or eval can re-point a command name, so a
+# helper sitting in an operand may be what actually runs. See _helper_invoked.
+_INDIRECTION_RE = re.compile(
+    r"(?:^|[;&|{(]|\bfunction\s)\s*[A-Za-z_][A-Za-z0-9_]*\s*(?:\(\s*\)|\s*\{)"
+    r"|(?:^|[;&|(]|\s)\s*alias\s+[A-Za-z_]"
+    r"|(?:^|[;&|(]|\s)\s*eval(?:\s|$)")
+
+
 def _exec_payloads(words):
     # Sub-programs this simple command hands to something else to RUN: a find -exec
     # payload (already tokens) and an executed STRING (env -S / a shell -c), which has
     # to be re-tokenized. Without following these, the helper guard only saw the top
     # level, so `find . -exec python3 .../lease_slot.py .claude fake 1 ;` and the same
     # payload inside env -S reached the helper unblocked.
+    # A shell/env introducer is matched at ANY index, deliberately, and there is NO
+    # exemption list. Requiring command position means knowing where the wrapper preamble
+    # ends, which means knowing which wrapper flags take an operand -- and every
+    # approximation of that is a fail-open: consuming one operand per flag eats the `find`
+    # in `sudo -E find . -exec ...` (-E is boolean), leaving the payload unscanned, and
+    # the same holds for `env -i` and `sudo -n`.
+    #
+    # Exempting commands that "only print their arguments" was tried and REMOVED. Every
+    # entry turned out to be another way to execute: `less "+!<cmd>"` runs a shell,
+    # `alias echo=eval` re-points the name, a function definition shadows it outright.
+    # Patching the list per spelling is the arms race this file exists to avoid, and an
+    # exemption in a security detector has to be justified rather than assumed -- so the
+    # list is gone and the scan is unconditional.
+    #
+    # The price is a documented over-block: `echo -exec sh -c "... lease_slot.py ..."`
+    # prints a string and is read as an invocation. That is the fail-CLOSED direction on a
+    # command nobody writes, and both helpers are safe by construction anyway (lease_slot
+    # reads the mtime itself under a lock; audit_append has no writing CLI), so this
+    # detector is defence in depth rather than the thing holding the line.
     tok_payloads, str_payloads = [], []
+    # `-exec` is a find PREDICATE, so it only introduces a payload when some earlier word
+    # in the segment is `find`. Treating it as a general convention read the -exec in
+    # `bash -c "printf ..." -- -exec sh -c "..."` -- a print -- as an invocation.
+    _seen_find = False
     for i, w in enumerate(words):
-        if w in ("-exec", "-execdir", "-ok", "-okdir"):
+        # `less "+!<cmd>"` / `more "+!<cmd>"`: the pager runs the rest as a shell command.
+        # A startup-command operand is an executed STRING wherever it appears, so it is
+        # matched by its own shape rather than by knowing which pagers accept it.
+        if w.startswith("+!") and len(w) > 2:
+            str_payloads.append(w[2:])
+        # ANY earlier token, not command position. Resolving command position needs the
+        # end of the wrapper preamble, which needs per-flag arity -- and every
+        # approximation of that was a fail-open (see above). So this over-blocks a read
+        # that happens to name both, e.g. `printf "%s" find -exec <helper> ";"`. Accepted:
+        # fail-CLOSED on a contrived string beats a miss on `sudo -u root find -exec`.
+        if _bn(w) == "find":
+            _seen_find = True
+        if _seen_find and w in ("-exec", "-execdir", "-ok", "-okdir"):
             payload = []
             for w2 in words[i + 1:]:
                 if w2 in (";", "+"):
@@ -550,6 +593,43 @@ def _helper_invoked(cmd, _depth=0):
     # that actually carries it.
     if _depth > 3:
         return next((h for h in _MUTATING_HELPERS if h in cmd), None)
+    # A COMMAND SUBSTITUTION runs before the command that consumes its output, so the
+    # consumer being harmless proves nothing: `echo "$(... lease_slot.py ...)"` claims a
+    # slot and logs a sanctioned-bypass event, then prints the slot number. Flatten the
+    # substitution markers into separators and re-scan, so the body is judged as the
+    # command it is. Deliberately crude rather than a second parser: dropping quotes and
+    # turning `$(`/backtick/`)` into `;` can only ADD segments, so it errs toward
+    # blocking. The one over-block it admits is a command that both substitutes AND names
+    # a helper in the same breath, e.g. echo "see $(ls) lease_slot.py".
+    if _depth <= 2 and ("$(" in cmd or chr(96) in cmd):
+        # Quotes are removed, NOT replaced with a space: the shell CONCATENATES adjacent
+        # quoted runs, so `lease_"slot.py"` is one word and spacing it out unmatched it.
+        _flat = cmd.replace(chr(34), "").replace(chr(39), "")
+        _flat = (_flat.replace("$(", " ; ").replace(chr(96), " ; ")
+                      .replace(")", " ; "))
+        _hit = _helper_invoked(_flat, _depth + 1)
+        if _hit:
+            return _hit
+    # INDIRECTION WITHDRAWS THE MENTION CONTRACT. Normally a helper NAMED in an operand
+    # is data -- that is what keeps `cat .../lease_slot.py` and `echo lease_slot.py`
+    # allowed. But a command that defines a function, defines an alias, or calls eval can
+    # re-point a name so an operand becomes the thing that runs:
+    #   echo() { "$@"; }; echo sh -c "<payload>"
+    #   shopt -s expand_aliases; alias echo=eval; echo "<payload>"
+    # Rather than model the rebinding (or keep an exemption list and lose to the next
+    # spelling), the contract is dropped WHOLESALE for such a command and every token is
+    # examined. It only ever blocks more, and only for commands that asked for it by
+    # introducing indirection in the first place.
+    # Matched on a DEQUOTED copy: the shell concatenates adjacent quoted runs, so
+    # `ev"al" "<payload>"` runs eval while the raw text contains no contiguous `eval`.
+    # Both the trigger AND the search run on the dequoted copy. Dequoting only one of
+    # them left `eval "... lease_""slot.py ..."` -- eval detected, helper name split
+    # across two quoted runs and therefore not found in the raw text.
+    _dq = _dequote(cmd)
+    if _INDIRECTION_RE.search(_dq):
+        _hit = next((h for h in _MUTATING_HELPERS if h in _dq), None)
+        if _hit:
+            return _hit
     segs, ok = _split_simple_commands(_norm_for_scan(cmd))
     if not ok:
         # Unparseable: fall back to the raw substring, which is WIDER (it blocks more).
@@ -567,7 +647,12 @@ def _helper_invoked(cmd, _depth=0):
         # level let `find . -exec python3 .../lease_slot.py .claude fake 1 ;` through.
         _tokp, _strp = _exec_payloads([t for t in toks if not _is_redir(t)])
         for _p in _tokp:
-            _hit = _helper_invoked(" ".join(_p), _depth + 1)
+            # shlex.quote per token, NOT a bare join. A bare join loses the boundary a
+            # quoted token carried, so `-exec sh -c "python3 -I .../lease_slot.py ..."`
+            # re-lexed as `sh -c python3 -I .../lease_slot.py ...` -- and the -c handler
+            # then reads only `python3` as the program, with the helper demoted to $0/$1
+            # and never scanned. Requoting round-trips the token list exactly.
+            _hit = _helper_invoked(" ".join(shlex.quote(_t) for _t in _p), _depth + 1)
             if _hit:
                 return _hit
         for _p in _strp:
@@ -1072,14 +1157,13 @@ fi
 LEASE_MAX_USES=20
 LEASE_MAX_AGE=3600
 _SKIP_FILE="$STATE_DIR/skip-design-review.local"
-_SKIP_NAME="skip-design-review.local"
-# Remove the skip file through the O_NOFOLLOW component walk rather than `rm -f`. A
-# shell rm resolves the path afresh and follows a symlinked INTERMEDIATE component of
-# the repo-influenced state dir, so it could delete outside the repository — and it runs
+# DISARMING IS NOT DONE HERE. lease_slot.py removes a refused skip file itself, through
+# the O_NOFOLLOW component walk, at the dir fd it has already validated. A shell `rm -f`
+# resolves the path afresh and follows a symlinked INTERMEDIATE component of the
+# repo-influenced state dir, so it could delete outside the repository — and it runs
 # BEFORE lease_slot.py validates anything, so the later safe resolution cannot undo it.
-_skip_unlink() {
-    python3 -I "$_GATE_LIBDIR/lease_slot.py" --unlink "$STATE_DIR" "$_SKIP_NAME" 2>/dev/null || true
-}
+# A `--unlink <dir> <name>` subcommand was the first fix and was worse: it took any
+# slash-free basename, so anything reaching it could delete the protected audit log.
 # Per-use lease slots live as immutable <mtime>.<n> directories in here, never
 # as a mutable counter file — see the claim block below for why.
 # Referenced only in messages/tests; every real operation on the ledger goes through
@@ -1125,16 +1209,18 @@ _skip_lease_consume() {
         0) : ;;
         3)
             # Created moments ago — likely a self-bypass, not operator consent.
-            _skip_unlink
+            # lease_slot.py has already disarmed it, and if it could NOT (an immutable
+            # file in a writable dir) it poisoned the lease instead, so aging past the
+            # floor buys nothing.
             block_emit "BLOCKED: skip-design-review.local was created moments ago (likely self-bypass).
 
 Do NOT create $STATE_DIR/skip-design-review.local yourself. Run /blueprint-review instead.
 If the user wants to skip, they should create the file manually in their terminal."
             return 2 ;;
         4)
-            # Slots are left in place for the same anti-TOCTOU reason as the exhausted
-            # branch; the mtime-keyed prune clears them when a new lease is armed.
-            _skip_unlink
+            # Disarmed by lease_slot.py. Slots are left in place for the same anti-TOCTOU
+            # reason as the exhausted branch; the mtime-keyed prune clears them when a new
+            # lease is armed.
             block_emit "BLOCKED: the design-review skip lease has EXPIRED (the limit is ${LEASE_MAX_AGE}s).
 
 The file has been removed so it cannot stay armed and silently authorize a later session.
@@ -1142,13 +1228,12 @@ Run /blueprint-review to clear the review properly. If the user still wants to b
 they can create $STATE_DIR/skip-design-review.local again in their terminal."
             return 2 ;;
         2)
-            # Remove ONLY the skip file. Deleting the slots here is a TOCTOU: a
-            # concurrent gate that already passed the skip-file/mtime checks would
-            # recreate the directory, claim slot 1 under the same mtime, and be granted
-            # a 21st use. The slots are the exhaustion proof and must outlive the file
-            # that spent them; a later touch changes the mtime and lease_slot prunes
+            # lease_slot.py removed ONLY the skip file. Deleting the slots would be a
+            # TOCTOU: a concurrent gate that already passed the skip-file/mtime checks
+            # would recreate the directory, claim slot 1 under the same mtime, and be
+            # granted a 21st use. The slots are the exhaustion proof and must outlive the
+            # file that spent them; a later touch changes the mtime and lease_slot prunes
             # them. (The ledger is a protected marker, so it cannot be wiped to reset.)
-            _skip_unlink
             block_emit "BLOCKED: the design-review skip lease is EXHAUSTED (all $LEASE_MAX_USES uses spent).
 
 One \`touch\` authorizes $LEASE_MAX_USES gated writes so a whole approved plan can be

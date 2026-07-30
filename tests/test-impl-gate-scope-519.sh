@@ -511,6 +511,89 @@ check "git config --file is a write" block \
     "$(bash_decision "git config --file src/x k v")"
 check "git bundle create is a write" block \
     "$(bash_decision "git bundle create src/x HEAD")"
+# ...and a read that is handed an external PROGRAM to run is a write of whatever that
+# program touches. THE OPTION LIST IS OF INERT OPTIONS: listing the dangerous ones was
+# tried and never finished (`--output`, `-c`, `--paginate`, `--textconv`, `--filters`,
+# and the joined `-ccore.x=y` that no exact match catches), because git's exec surface is
+# config-driven and unbounded. Unrecognised is not cleared.
+check "git -c setting an external diff command is a write" block \
+    "$(bash_decision "git -c diff.x.command='rm -rf src' diff --ext-diff")"
+check "git -c is a write on its own" block \
+    "$(bash_decision "git -c core.pager='rm -rf src' log")"
+check "difftool is not a read" block "$(bash_decision "git difftool")"
+check "difftool --extcmd is a write" block \
+    "$(bash_decision "git difftool --extcmd='rm -rf src'")"
+check "wrapped git -c is a write" block \
+    "$(bash_decision "sudo git -c core.pager='rm -rf src' log")"
+check "git grep -O is a write" block "$(bash_decision "git grep -O rm pattern")"
+check "git log --ext-diff is a write" block \
+    "$(bash_decision "git log --ext-diff")"
+# An ASSIGNMENT PREFIX is the same config channel by another route.
+check "GIT_EXTERNAL_DIFF= before git is a write" block \
+    "$(bash_decision "GIT_EXTERNAL_DIFF='rm -rf src' git diff --ext-diff")"
+check "any assignment before git is a write" block \
+    "$(bash_decision "GIT_PAGER=cat git log")"
+# An OPTION token carrying an expansion has no fixed spelling to match, so it cannot be
+# cleared. A token that is WHOLLY an expansion is read as an operand -- documented
+# residual: it is indistinguishable from `git diff "\$FILE"`, which must stay a read.
+check "an expansion inside an option token is a write" block \
+    "$(bash_decision 'git diff --ext${EMPTY}-diff')"
+check "an expansion inside a global option NAME is a write" block \
+    "$(bash_decision 'git --pag${E}inate log')"
+# An expansion in an option VALUE is cleared when the NAME is inert: `--git-dir` selects
+# a directory, not a program, whatever the path turns out to be.
+check "an expansion in an inert option value stays a read" allow \
+    "$(bash_decision 'git --git-dir=${D} log')"
+check "an expansion as a plain operand stays a read" allow \
+    "$(bash_decision 'git diff "$FILE"')"
+check "an expansion as a -C operand stays a read" allow \
+    "$(bash_decision 'git -C "$repo" status')"
+# OPTIONS ARE SCANNED IN THEIR OWN REGION. One list scanned over every token conflated
+# the global `-c key=val` with the subcommand `git grep -c`, and read the pathspec in
+# `git diff -- --tool` as an option.
+check "git grep -c is a count, not config injection" allow \
+    "$(bash_decision "git grep -c pattern")"
+check "a pathspec after -- is not an option" allow \
+    "$(bash_decision "git diff -- --tool")"
+check "a pathspec after -- is not a writeflag either" allow \
+    "$(bash_decision "git diff -- --output=x")"
+# A JOINED SHORT is not decomposed: `-Orm` is not `-O rm` without per-letter arity git
+# does not expose, so it is simply not cleared.
+check "a joined -c is a write" block \
+    "$(bash_decision "git -ccore.fsmonitor='touch src/x' status")"
+check "a joined -O is a write" block "$(bash_decision "git grep -Orm pattern")"
+check "--paginate runs the configured pager" block \
+    "$(bash_decision "git --paginate log")"
+check "--textconv runs a configured program" block \
+    "$(bash_decision "git cat-file --textconv HEAD:x")"
+check "--filters runs a configured program" block \
+    "$(bash_decision "git cat-file --filters HEAD:x")"
+# The joined NUMERIC shapes are cleared, because each names a count, not a program.
+check "git log -5 stays a read" allow "$(bash_decision "git log -5")"
+check "git log -n5 stays a read" allow "$(bash_decision "git log -n5")"
+check "git diff -U3 stays a read" allow "$(bash_decision "git diff -U3")"
+# ── generated: exec-capable options by REGION ────────────────────
+_RG_FAIL=0 _RG_PASS=0
+_rg() {  # <expected> <command>
+    local got="allow"
+    case "$(bash_decision "$2")" in *'"block"'*) got="block" ;; esac
+    if [[ "$got" == "$1" ]]; then _RG_PASS=$((_RG_PASS + 1))
+    else _RG_FAIL=$((_RG_FAIL + 1)); printf "  FAIL  region: %s (want %s)\n" "$2" "$1"; fi
+}
+for f in --ext-diff --extcmd --tool --exec --upload-pack --receive-pack \
+         -O --open-files-in-pager --textconv --filters --output=x -o; do
+    _rg block "git log $f"       # not cleared in the subcommand region
+    _rg allow "git log -- $f"    # behind `--` the same spelling is a pathspec
+done
+for f in -c --config-env --exec-path --paginate -p; do
+    _rg block "git $f x=y log"   # not cleared in the global region
+    _rg allow "git log -- $f"
+done
+if [[ "$_RG_FAIL" -eq 0 ]]; then
+    ok "exec-capable options fire only in their own region ($_RG_PASS spellings)"
+else
+    no "exec-capable options by region" "$_RG_FAIL of $((_RG_PASS + _RG_FAIL)) wrong"
+fi
 check "wrapped find -exec running the helper is blocked" block \
     "$(bash_decision "sudo find . -maxdepth 0 -exec python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600 ;")"
 # RUNNERS ARE MATCHED AT ANY INDEX, on purpose. Requiring command position means knowing

@@ -83,17 +83,27 @@ _MOD_VERBS = frozenset(("tee", "patch", "cp", "mv", "rm", "ln", "install",
 # The cost is that a genuinely read-only subcommand missing from the list over-blocks --
 # visible, and fixed by adding one name.
 #
-# `writeflags` are options that make even a listed read produce a file
-# (`git diff --output=src/x`); `argflags` are the dispatcher global options that take a
-# separate operand, so the operand is not mistaken for the subcommand (`git -C repo rm x`).
-# Enumerating those is safe here in a way it is not for wrappers: one command documented
-# global option list, short and stable, rather than every flag of every launcher.
+# THE OPTION LISTS ARE OF INERT OPTIONS, FOR THE SAME REASON. Listing the dangerous ones
+# was tried too, and every round of review found another: `--output`, then `-c`, then
+# `--paginate`, then `--textconv` and `--filters`, then the joined short `-ccore.x=y` that
+# no exact match catches. Git's exec surface is config-driven and unbounded -- pager,
+# external diff, textconv, clean/smudge filters, aliases, difftool, credential and ssh
+# helpers -- so no list of dangerous spellings can ever be finished. Listing what is INERT
+# terminates: an unrecognised option means the command is not cleared, and a genuinely
+# harmless option missing from the list over-blocks visibly and is fixed by adding a name.
+#
+# The lists are split by REGION because the same spelling means different things either
+# side of the subcommand: `-p` before it is `--paginate` (runs the configured pager),
+# after it is `--patch`; `-c` before it injects config, after it is `git grep --count`.
+#
+# `argflags` are the global options taking a SEPARATE operand, so the operand is not
+# mistaken for the subcommand (`git -C repo rm x`).
 _DISPATCHERS = {
     "git": {
         "reads": frozenset((
             # Inspection.
             "status", "log", "show", "blame", "annotate", "grep", "shortlog",
-            "reflog", "whatchanged", "describe", "cherry", "range-diff", "difftool",
+            "reflog", "whatchanged", "describe", "cherry", "range-diff",
             "diff", "diff-tree", "diff-index",
             "ls-files", "ls-tree", "ls-remote", "cat-file", "for-each-ref",
             "count-objects", "rev-parse", "rev-list", "merge-base", "name-rev",
@@ -108,17 +118,56 @@ _DISPATCHERS = {
             # plain operand (`git config --file src/x k v`, `git bundle create src/x`),
             # so they write working-tree files without matching any writeflag. A read
             # subcommand has to be read-only in EVERY mode, not just its common one.
+            # NOT `difftool`/`mergetool` either: running a configured external program IS
+            # what they are for, so no flag inspection can make them read-only.
         )),
-        "writeflags": frozenset(("-o", "--output", "--output-directory")),
+        # Global options that neither name a program nor write a file. NOT `-c`,
+        # `--config-env`, `--exec-path`, `-p`/`--paginate`.
+        "globalopts": frozenset((
+            "-C", "--git-dir", "--work-tree", "--namespace", "--no-pager", "-P",
+            "--bare", "--no-replace-objects", "--no-optional-locks",
+            "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs",
+            "--icase-pathspecs", "--version", "--help",
+        )),
+        # Subcommand options that only shape or select output. NOT `-o`/`--output`
+        # (writes a file), NOT `--ext-diff`/`--textconv`/`--filters`/`--extcmd`/`--tool`/
+        # `--exec`/`--upload-pack`/`--receive-pack`/`-O` (each runs a configured program).
+        "subopts": frozenset((
+            # Shaping.
+            "-p", "--patch", "-u", "--stat", "--numstat", "--shortstat", "--dirstat",
+            "--summary", "--raw", "--name-only", "--name-status", "--oneline",
+            "--graph", "--decorate", "--no-decorate", "--abbrev", "--abbrev-commit",
+            "--no-abbrev-commit", "--pretty", "--format", "--date", "--color",
+            "--no-color", "--column", "--porcelain", "-s", "--short", "--long",
+            "-b", "--branch", "-v", "--verbose", "-q", "--quiet", "-z", "--null",
+            "--word-diff", "--unified", "-U", "--no-prefix", "--src-prefix",
+            "--dst-prefix", "--show-signature", "--stat-width", "--full-index",
+            # Selection.
+            "--cached", "--staged", "--merged", "--no-merged", "-a", "--all",
+            "--follow", "-n", "--max-count", "--skip", "--since", "--until",
+            "--author", "--committer", "--grep", "--reverse", "--first-parent",
+            "--merges", "--no-merges", "--diff-filter", "--relative", "-M",
+            "--find-renames", "-C", "--find-copies", "-w", "--ignore-all-space",
+            "--ignore-space-change", "--ignore-blank-lines", "-R", "--exit-code",
+            "-i", "--ignore-case", "-E", "--extended-regexp", "-F", "--fixed-strings",
+            "-l", "--list", "--line-number", "--count", "-c", "-h", "-r", "-t",
+            "-d", "-D", "--delete", "--contains", "--points-at", "--sort",
+            "--show-current", "--show-toplevel", "--git-path", "--abbrev-ref",
+            "--verify", "--symbolic", "--symbolic-full-name", "--show-prefix",
+            "--is-inside-work-tree", "--is-bare-repository", "--sq", "--default",
+            "-e", "--batch", "--batch-check", "--stdin",
+            # Ref/index/remote operations that this classifier already calls reads.
+            "-m", "--message", "--amend", "--no-edit", "--allow-empty", "--no-verify",
+            "-A", "--update", "-f", "--force", "--force-with-lease", "--set-upstream",
+            "--tags", "--prune", "--dry-run", "--depth", "--recurse-submodules",
+            "--no-ff", "--ff-only", "--track", "--no-track", "-S", "--gpg-sign",
+        )),
         "argflags": frozenset((
             "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path",
             "--super-prefix", "--config-env",
         )),
     },
 }
-# Every READ subcommand of every dispatcher, for the wrapped all-token regime.
-_DISPATCH_READS = frozenset(v for d in _DISPATCHERS.values() for v in d["reads"])
-
 # Interpreters that EXECUTE a string operand. Tokenizing reduces `bash -c 'rm -rf src'`
 # to the single token `rm -rf src`, which equals no verb — so without recursing into the
 # operand this classifier would ALLOW a real write that the old regexes caught. That is
@@ -164,6 +213,9 @@ _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 # A redirection operator, with or without a leading fd and with or without an attached
 # target: `<`, `>`, `2>`, `>>`, `&>`, `</dev/null`.
 _REDIR_RE = re.compile(r"^[0-9]*(?:<|>)[>&]?")
+# The joined-numeric option shapes (`-5`, `-n5`, `-U3`, `-M90`). Only these letters are
+# decomposed: each takes a numeric argument and names no program.
+_NUM_OPT_RE = re.compile(r"^-[nUMC]?[0-9]+$")
 # A bare duration/number operand belonging to a wrapper (`timeout 5 rm x`, `nice 10 mv`).
 _NUMERIC_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$")
 # Shell reserved words and grouping punctuation. These occupy the first token position
@@ -592,40 +644,73 @@ def _dispatcher_verdict(toks):
     share a subcommand name cannot vouch for the command.
     """
     for name, spec in _DISPATCHERS.items():
-        if not any(_basename(t) == name and not _ASSIGN_RE.match(t) for t in toks):
+        i = next((k for k, t in enumerate(toks)
+                  if not _ASSIGN_RE.match(t) and _basename(t) == name), None)
+        if i is None:
             continue
-        sub = _subcommand(toks, name)
+        # An ASSIGNMENT PREFIX is a second config channel with the same reach as `-c`:
+        # `GIT_EXTERNAL_DIFF="rm -rf src" git diff` runs it. Naming the dangerous
+        # variables would be an allowlist of safe ones, so any assignment counts.
+        if any(_ASSIGN_RE.match(t) for t in toks[:i]):
+            return True, True
+        sub, gopts, sargs = _dispatch_regions(toks, name, i)
+        # Everything after a bare `--` is a pathspec, however option-shaped it looks.
+        if "--" in sargs:
+            sargs = sargs[:sargs.index("--")]
+        # Options are cleared in THEIR OWN REGION, and only if they are recognised as
+        # inert. One list scanned over every token conflated the global `-c key=val`
+        # with the subcommand `git grep -c` and read `git diff -- --tool` as an option.
+        if not _all_inert(gopts, spec["globalopts"]):
+            return True, True
         if not sub:
             return True, False        # bare `git` prints usage
         if sub not in spec["reads"]:
             return True, True         # unknown/aliased/writing subcommand -> fail closed
-        # A listed read can still be told to produce a file.
-        return True, any(t.split("=", 1)[0] in spec["writeflags"] for t in toks)
+        return True, not _all_inert(sargs, spec["subopts"])
     return False, False
 
 
-def _subcommand(toks, name):
-    """The subcommand `name` dispatches to: the first operand that is not a global option
-    and not the operand OF one. Matched on BASENAME, so `/usr/bin/git rm x` resolves."""
+def _all_inert(toks, inert):
+    """True iff every OPTION-shaped token is recognised as inert.
+
+    An option is cleared in three shapes: bare (`--stat`), attached-value
+    (`--pretty=oneline`) and joined-numeric (`-n5`, `-U3`). Any other joined short is
+    NOT decomposed, because deciding that `-Orm` is `-O rm` needs per-letter arity that
+    git does not expose; unrecognised means not cleared, which is the safe direction.
+    A token carrying an expansion never matches, so `git diff --ext${EMPTY}-diff` is not
+    cleared either. A token that is WHOLLY an expansion is not option-shaped and is read
+    as an operand -- indistinguishable from `git diff "$FILE"`, which must stay a read.
+    Documented residual, not an oversight.
+    """
+    return all(t.split("=", 1)[0] in inert or _NUM_OPT_RE.match(t)
+               for t in toks if t.startswith("-"))
+
+
+def _dispatch_regions(toks, name, i):
+    """(subcommand, global option tokens, subcommand tokens), splitting at `toks[i]`.
+
+    The subcommand is located POSITIONALLY -- the first operand after the dispatcher that
+    is neither a global option nor the operand of one -- so a pathspec that happens to
+    share a subcommand name cannot vouch for the command. Matched on BASENAME, so
+    `/usr/bin/git rm x` resolves. Operands of global options are dropped from the
+    returned globals: `git -C "$repo" status` must not read as an unresolvable option.
+    """
     argflags = _DISPATCHERS[name]["argflags"]
-    # Skip assignments: `GIT_DIR=/tmp/git git rm x` has an assignment whose VALUE
-    # basenames to `git`, and matching it first selected `rm` from the wrong position.
-    i = next((k for k, t in enumerate(toks)
-              if not _ASSIGN_RE.match(t) and _basename(t) == name), None)
-    if i is None:
-        return ""
-    skip = False
-    for t in toks[i + 1:]:
+    gopts, skip = [], False
+    for j in range(i + 1, len(toks)):
+        t = toks[j]
         if skip:
             skip = False              # this token is the operand of the previous flag
             continue
         if t in argflags:
+            gopts.append(t)
             skip = True               # separated form: `-C repo`, `--git-dir repo/.git`
             continue
         if t.startswith("-"):
-            continue                  # a bare switch, or the attached `--git-dir=repo`
-        return _basename(t)
-    return ""
+            gopts.append(t)           # a bare switch, or the attached `--git-dir=repo`
+            continue
+        return _basename(t), gopts, list(toks[j + 1:])
+    return "", gopts, []
 
 
 def _segment_is_mod(toks, depth=0):

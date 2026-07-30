@@ -61,12 +61,35 @@ CMD_LOWER=$(printf '%s' "$CMD" | tr '[:upper:]' '[:lower:]')
 # In `auto`, a classifier model judges every non-read action and blocks force-push,
 # git reset --hard, checkout/restore ., clean -fd, and "irreversibly destroying files
 # that existed before the session" — against the ACTUAL request, which a regex cannot
-# do. Re-asking there is pure prompt noise, and an unattended overnight run has nobody
-# awake to answer it. SQL DROP/TRUNCATE is the one pattern the classifier does not
-# name, so it stays live in EVERY mode.
+# do. SQL DROP/TRUNCATE is the one pattern the classifier does not name, so it stays
+# live in EVERY mode.
+#
+# BE PRECISE ABOUT WHAT THIS BUYS. The stand-down is belt-and-braces plus a real cost
+# win; it is NOT what prevents a duplicate prompt, because in `auto` there was never
+# a prompt to duplicate. Measured across a live session per mode (hooks and settings
+# load at session START, so this can only be probed from a FRESH session in the mode
+# under test — probing in-session reads the old config and returns a false negative):
+#
+#     mode      guard "ask"   hook block   operator prompt
+#     auto      DISCARDED     honored      suppressed
+#     bypass    HONORED       honored      delivered
+#     default   HONORED       honored      delivered
+#
+# So in `auto`, emitting `ask` and standing down are behaviourally identical. What the
+# stand-down actually saves is the work: the python rm scanner (and its interpreter
+# spawn) is skipped on every Bash call. The load-bearing half of this block is the
+# other direction — `bypassPermissions` is where the guard's `ask` IS honored and no
+# classifier exists, so nothing there may ever stand down.
 #
 # `bypassPermissions` gets no exemption: it has no classifier at all, so this guard is
 # the only thing left besides the rm -rf / and rm -rf ~ circuit breaker.
+#
+# EXTERNAL DEPENDENCY (CodeRabbit, PR #543): this stand-down's safety hinges on
+# Anthropic's `auto`-mode classifier continuing to block exactly these patterns
+# (force-push, reset --hard, checkout/restore ., clean -fd, pre-existing-file
+# deletion) — a probabilistic model behavior this repo cannot verify or pin.
+# Re-check tests/test-careful-guard-auto-mode.sh's six classifier-covered cases
+# whenever the Claude Code version pin changes, not just at initial review.
 #
 # PARSED, never grepped off the raw JSON: `"permission_mode":"auto"` can also appear
 # INSIDE tool_input.command, so a raw-text match would let a crafted command disarm

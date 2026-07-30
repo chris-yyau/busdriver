@@ -26,14 +26,23 @@ check() { # name expected actual
 
 # <mode|--nomode> <command> -> ask|allow
 verdict() {
-  python3 -c '
+  local payload out
+  # --json=<literal> injects a RAW JSON value, so non-string permission_mode types
+  # are genuinely exercised. Passing 12345 as argv would only ever yield the STRING
+  # "12345" and never reach the guard's `isinstance(m, str)` else-branch.
+  payload=$(python3 -c '
 import json, sys
 d = {"tool_name": "Bash", "tool_input": {"command": sys.argv[2]}}
-if sys.argv[1] != "--nomode":
-    d["permission_mode"] = sys.argv[1]
-print(json.dumps(d))' "$1" "$2" \
-    | bash "$GUARD" \
-    | grep -q '"permissionDecision":"ask"' && echo ask || echo allow
+m = sys.argv[1]
+if m.startswith("--json="):
+    d["permission_mode"] = json.loads(m[7:])
+elif m != "--nomode":
+    d["permission_mode"] = m
+print(json.dumps(d))' "$1" "$2")
+  # Here-string, not a pipeline: $( ) around a pipeline reports only the LAST
+  # command's status (SC2312), so a crashing guard would silently read as "allow".
+  out=$(bash "$GUARD" <<<"$payload")
+  if grep -q '"permissionDecision":"ask"' <<<"$out"; then echo ask; else echo allow; fi
 }
 check_v() { # name expected mode command
   check "$1" "$2" "$(verdict "$3" "$4")"
@@ -71,7 +80,15 @@ check_v "default"                  ask default           'git reset --hard HEAD~
 check_v "acceptEdits"              ask acceptEdits       'rm -rf /etc'
 check_v "plan"                     ask plan              'git push --force origin main'
 check_v "unknown mode string"      ask sudo-mode         'git reset --hard HEAD~1'
-check_v "mode is not a string"     ask 12345             'git reset --hard HEAD~1'
+# Property: across JSON value types and near-miss strings, NOTHING except the
+# exact string "auto" may stand the guard down. Fixed examples proved too weak.
+for lit in 'null' 'true' 'false' '0' '1' '3.14' '[]' '{}' '["auto"]' \
+           '{"mode":"auto"}' '"AUTO"' '"Auto"' '" auto"' '"auto "' '"autox"' '""'; do
+  check_v "non-auto permission_mode $lit" ask "--json=$lit" 'git reset --hard HEAD~1'
+done
+# Positive control — without this the loop above would also pass on a guard that
+# never stands down at all.
+check_v "exact string auto stands down" allow '--json="auto"' 'git reset --hard HEAD~1'
 
 # ── 5. the mode is PARSED, not grepped off the raw JSON ──────────────────────
 # A command whose own text carries the auto marker must NOT disarm the guard —

@@ -22,8 +22,16 @@ CMD=""
 # Supports both tool_input and toolInput keys, and string payloads
 # Fall back to grep only when Python is unavailable
 if command -v python3 &>/dev/null; then
-  CMD=$(printf '%s' "$INPUT" | python3 -c '
-import sys, json
+  # shellcheck disable=SC2016  # python source: $ / backticks must not expand in bash
+  CMD=$(printf '%s' "$INPUT" | python3 -E -S -c '
+import sys
+# -E + -S + this scrub for the same reason the rm scanner below does it: `python3 -c`
+# prepends the CWD to sys.path, so a repo shipping its own json.py would execute
+# inside this hook -- and here it could print "auto" and disarm the checks.
+# -E also drops PYTHONPATH, which could otherwise smuggle the CWD back in as an
+# ABSOLUTE path that this relative-only scrub would not catch.
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import json
 try:
     d = json.loads(sys.stdin.read() or "{}")
     inp = d.get("tool_input", d.get("toolInput", {}))
@@ -66,8 +74,16 @@ CMD_LOWER=$(printf '%s' "$CMD" | tr '[:upper:]' '[:lower:]')
 # every check runs — over-warning stays the safe direction.
 AUTO_MODE=0
 if command -v python3 &>/dev/null; then
-  PERM_MODE=$(printf '%s' "$INPUT" | python3 -c '
-import sys, json
+  # shellcheck disable=SC2016  # python source: $ / backticks must not expand in bash
+  PERM_MODE=$(printf '%s' "$INPUT" | python3 -E -S -c '
+import sys
+# -E + -S + this scrub for the same reason the rm scanner below does it: `python3 -c`
+# prepends the CWD to sys.path, so a repo shipping its own json.py would execute
+# inside this hook -- and here it could print "auto" and disarm the checks.
+# -E also drops PYTHONPATH, which could otherwise smuggle the CWD back in as an
+# ABSOLUTE path that this relative-only scrub would not catch.
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import json
 try:
     d = json.loads(sys.stdin.read() or "{}")
     m = d.get("permission_mode", "")

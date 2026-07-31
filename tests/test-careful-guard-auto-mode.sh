@@ -240,6 +240,14 @@ check_raw() { # name expected <raw json>
   check "$1" "$2" "$got"
 }
 for m in auto bypassPermissions default; do
+  # The parse SUCCEEDS here — an empty tool_input.command passes the shape check,
+  # so the auto token may already be 1 — and CMD still falls through to the grep
+  # fallback, which picks the top-level "command" the parse never validated.
+  check_raw "empty tool_input.command + top-level command, $m" ask \
+    "{\"permission_mode\":\"$m\",\"command\":\"rm -rf /etc\",\"tool_input\":{\"command\":\"\"}}"
+  # Same shape, a git pattern rather than rm.
+  check_raw "empty tool_input.command + top-level git reset, $m" ask \
+    "{\"permission_mode\":\"$m\",\"command\":\"git reset --hard HEAD~1\",\"tool_input\":{\"command\":\"\"}}"
   # tool_input is a LIST: python's isinstance(inp, dict) guard bails, but the raw
   # text carries an unescaped "command" the grep fallback happily extracts.
   check_raw "list tool_input, $m" ask \

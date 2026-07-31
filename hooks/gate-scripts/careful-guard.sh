@@ -108,6 +108,17 @@ fi
 
 # Grep fallback when Python is not available (AUTO_MODE stays 0 — see above)
 if [[ -z "$CMD" ]]; then
+  # Reset, do not merely leave at 0. The parse can SUCCEED and still land here:
+  # a valid but EMPTY tool_input.command satisfies the shape check, so the token
+  # may already be 1 while CMD is empty. The grep then takes the first "command"
+  # match anywhere in the payload — possibly from OUTSIDE tool_input — and that
+  # string was never validated by the parse the auto decision was made on.
+  # Measured (coderabbitai + cubic, PR #543), before this reset:
+  #   {"permission_mode":"auto","command":"rm -rf /etc","tool_input":{"command":""}}
+  #   auto -> {} (allowed)   default -> ask
+  # Whatever supplies CMD here did not come from the validated parse, so the auto
+  # decision cannot apply to it: run every check.
+  AUTO_MODE=0
   CMD=$(printf '%s' "$INPUT" | grep -o '"command"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*:[[:space:]]*"//;s/"$//' || true)
 fi
 

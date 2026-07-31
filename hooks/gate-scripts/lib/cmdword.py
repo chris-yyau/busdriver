@@ -63,6 +63,15 @@ FILE_MOD_PATTERNS = [
     r"\bunlink\s",
     r"\brmdir\s",
     r"\bdd\s",
+    # `git` WHOLE, not per-subcommand: this list stands in for the token classifier
+    # when a command cannot be parsed, so it has to be WIDER than that classifier --
+    # which blocks `git clean -fd`, `git restore .` and every unknown subcommand.
+    r"\bgit\s",
+    # A verb at END OF STRING (`echo hi | xargs rm`) and find -delete. The `\s` in
+    # every pattern above requires something to follow the verb, and -delete names
+    # no verb at all, so the classifier blocked both while this list allowed them.
+    r"\b(?:tee|patch|cp|mv|rm|ln|install|truncate|unlink|rmdir|dd)$",
+    r"-delete\b",
 ]
 
 # Verbs that modify files by themselves. `sed` is absent — it only modifies with -i,
@@ -95,6 +104,17 @@ _MOD_VERBS = frozenset(("tee", "patch", "cp", "mv", "rm", "ln", "install",
 # The lists are split by REGION because the same spelling means different things either
 # side of the subcommand: `-p` before it is `--paginate` (runs the configured pager),
 # after it is `--patch`; `-c` before it injects config, after it is `git grep --count`.
+#
+# BOUNDARY, accepted deliberately: this judges what the COMMAND does, not what the
+# repository is ALREADY configured to do. A clean/smudge filter in .gitattributes, a
+# pre-commit hook, an fsmonitor hook or a `core.pager` in .git/config all run programs
+# during a nominally read subcommand, and no option inspection sees them. Blocking every
+# git command instead would take `git status` and `git diff` away for the whole time a
+# review is pending without closing the class -- any program on the line could equally
+# be a wrapper for a configured hook. What keeps this a boundary rather than a hole is
+# that ARRANGING that configuration is itself a write this gate blocks: `git config` is
+# not a read, and writing .gitattributes, .git/config or .git/hooks/* is a file
+# modification by redirect or by verb.
 #
 # `argflags` are the global options taking a SEPARATE operand, so the operand is not
 # mistaken for the subcommand (`git -C repo rm x`).
@@ -778,6 +798,14 @@ def is_file_mod(cmd, _depth=0):
         return False
     if _depth >= _MAX_DEPTH:
         return _regex_fallback(cmd)
+    # Bash decodes the escapes in `$'...'` and drops the `$` BEFORE it resolves the
+    # command word, so `g$'\x69't clean -fd` runs git. shlex knows nothing of ANSI-C
+    # quoting and handed back `g$\x69t`, a token that equals no verb, so the tokenized
+    # path allowed it while only the fallback saw it. Classify the resolved spelling as
+    # well; it is additive, so it can only add a block.
+    resolved = _ansi_c(cmd)
+    if resolved != cmd and is_file_mod(resolved, _depth + 1):
+        return True
     # Command substitutions execute regardless of where they sit in the command.
     bodies, subst_ok = _command_substitutions(cmd)
     if not subst_ok:
@@ -835,7 +863,63 @@ def _writes_via_redirect(toks):
 
 
 def _regex_fallback(cmd):
-    return any(re.search(p, cmd) for p in FILE_MOD_PATTERNS)
+    """The raw patterns, run on the command AND on a quote-squeezed copy of it.
+
+    This path exists for commands that will not tokenize, so the quote structure it is
+    handed is by definition broken -- and `g"it" clean -fd` and `g\\it clean -fd` are both
+    valid commands whose verb no contiguous pattern matches. Quoting, escaping, the
+    ANSI-C `$` prefix and a backslash-newline continuation are all removed by the shell
+    before it resolves the command word, so removing them here reproduces what bash will
+    run. It can only make more text match, so it adds blocks and never removes one.
+    """
+    return any(any(re.search(p, v) for v in _shell_variants(cmd))
+               for p in FILE_MOD_PATTERNS)
+
+
+_ESC_RE = re.compile(
+    r"\\(?:x([0-9A-Fa-f]{1,2})"      # \xH, \xHH
+    r"|u([0-9A-Fa-f]{1,4})"          # \uH .. \uHHHH
+    r"|U([0-9A-Fa-f]{1,8})"          # \UH .. \UHHHHHHHH
+    r"|0?([0-7]{1,3}))")             # \ooo, \0ooo
+
+
+def _decode_escapes(text):
+    """Decode the ANSI-C escapes bash decodes, at bash's digit widths.
+
+    Python's `unicode_escape` codec is NOT a stand-in: it demands exactly four digits
+    after `\\u` and eight after `\\U`, so bash's short forms -- `g$'\\u69't` is `git` --
+    survived it unchanged and the fallback never saw the verb. Over-decoding here can
+    only make more text match, so it adds blocks and never removes one.
+    """
+    def _sub(m):
+        hexit = m.group(1) or m.group(2) or m.group(3)
+        try:
+            return chr(int(hexit, 16) if hexit else int(m.group(4), 8))
+        except ValueError:
+            return ""
+    return _ESC_RE.sub(_sub, text)
+
+
+def _ansi_c(text):
+    """`$'...'` as bash resolves it: escapes decoded, the `$` prefix dropped."""
+    return _decode_escapes(text).replace("$" + _SQ, _SQ)
+
+
+def _shell_variants(text):
+    """The text as written, and as the shell will have rewritten it before running it.
+
+    Quoting, escaping, the ANSI-C `$` prefix and a backslash-newline continuation are
+    all removed by the shell before it resolves the command word; ANSI-C escapes are
+    DECODED by it, so `g$'\\x69't` is `git`. Every variant is additive -- matching any of
+    them blocks -- so this only ever adds a block.
+    """
+    out = [text, _decode_escapes(text)]
+    for base in list(out):
+        squeezed = base.replace(chr(92) + chr(10), "")
+        for _ch in (_SQ, _DQ, chr(92), "$"):
+            squeezed = squeezed.replace(_ch, "")
+        out.append(squeezed)
+    return out
 
 
 def _demo():
@@ -966,8 +1050,24 @@ def _demo():
     ]
     for c in allowed:
         assert not is_file_mod(c), "should be allowed: " + c
+    # The GIT cases are here so the superset assertion below actually exercises the
+    # git fallback pattern: without them, deleting it left this self-check passing.
+    blocked = blocked + [
+        "git clean -fd",
+        "git restore .",
+        "git switch main",
+        "git some-unknown-subcmd",
+        "git checkout -- src/x",
+    ]
     for c in blocked:
         assert is_file_mod(c), "should be blocked: " + c
+        # THE FALLBACK MUST BE WIDER, asserted rather than claimed in prose. It stands in
+        # for this classifier whenever a command will not parse -- and, in the gate, when
+        # this module will not import at all -- so anything the classifier blocks it must
+        # block too. It silently was not: no verb pattern matched `git clean -fd`,
+        # `git restore .` or `git switch main`, which made a damaged installation of a
+        # fail-CLOSED gate fail OPEN.
+        assert _regex_fallback(c), "fallback narrower than the classifier: " + c
     # Unparseable (apostrophe in prose) falls back to the regexes, never to "allow".
     unbalanced = "git commit -m \"the operator's skip file\" && rm x"
     assert is_file_mod(unbalanced), "unparseable + rm must fall back to blocking"

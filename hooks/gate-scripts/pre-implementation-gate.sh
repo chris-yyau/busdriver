@@ -132,7 +132,7 @@ INPUT=$(cat 2>/dev/null || true)
 MARKER_CHECK=$(printf '%s' "$INPUT" | python3 -I -c '
 import sys
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
-import json, posixpath, re, shlex
+import fnmatch, json, posixpath, re, shlex
 
 _SQ = chr(39)
 _DQ = chr(34)
@@ -275,6 +275,11 @@ _FD_SCRIPT_RE = re.compile(
 # "$FD"`) and PATHNAME EXPANSION (`/dev/f?/0`) both land on a descriptor at run time
 # while reading here as an ordinary path.
 _UNRESOLVED_OPERAND_RE = re.compile(r"[$`*?\[]")
+# A module operand spelled as a plain importable name. Anything else -- an escape, a
+# brace, a leftover expansion -- is a name the shell will rewrite, and the operand this
+# walk sees has already lost some of that syntax, so testing for the UNRESOLVED
+# characters alone missed `-m lease_\x73lot` once the `$` had been stripped.
+_PLAIN_MODULE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 # PROCESS SUBSTITUTION hands its reader a generated descriptor, so `python3 <(cat
 # .../lease_slot.py)` runs the helper through /dev/fd/N. The segment splitter dismantles
 # `<(...)` before the interpreter-operand walk can see it, so this pairing is decided on
@@ -535,6 +540,33 @@ def _norm_for_scan(cmd):
 
 
 _MUTATING_HELPERS = ("lease_slot.py", "audit_append.py")
+# The same helpers as MODULE names. `python3 -m lease_slot` runs the file without
+# ever naming it, and `-m` was on the list of flags whose operand gets skipped.
+_MUTATING_MODULES = tuple(h[:-3] for h in _MUTATING_HELPERS)
+
+
+def _module_helper(mod):
+    """The helper FILE this `-m` module operand runs, or None. Dotted paths resolve to
+    their last component, since `-m gate.lib.audit_append` runs the same file."""
+    if not mod:
+        return None
+    stem = _bn(mod).split(".")[-1]
+    return stem + ".py" if stem in _MUTATING_MODULES else None
+
+
+def _glob_helper(word):
+    """The helper FILE a GLOB operand can expand to, or None.
+
+    The shell resolves `lease_slo?.py` against the filesystem, so the question is not
+    whether the literal spelling names a helper -- it never does -- but whether the
+    PATTERN can. Asking that directly beats searching the command text for a helper
+    stem, which a single wildcard in the middle of the name defeats.
+    """
+    try:
+        pat = re.compile(fnmatch.translate(_bn(word)))
+    except (re.error, TypeError):
+        return _MUTATING_HELPERS[0]      # unparseable pattern: fail closed
+    return next((h for h in _MUTATING_HELPERS if pat.match(h)), None)
 
 
 # A function definition, an alias definition, or eval can re-point a command name, so a
@@ -622,6 +654,52 @@ def _exec_payloads(words):
     return tok_payloads, str_payloads
 
 
+_ESC_RE = re.compile(
+    r"\\(?:x([0-9A-Fa-f]{1,2})"      # \xH, \xHH
+    r"|u([0-9A-Fa-f]{1,4})"          # \uH .. \uHHHH
+    r"|U([0-9A-Fa-f]{1,8})"          # \UH .. \UHHHHHHHH
+    r"|0?([0-7]{1,3}))")             # \ooo, \0ooo
+
+
+def _decode_escapes(text):
+    # Decode the ANSI-C escapes bash decodes, at bash digit widths. Python
+    # `unicode_escape` codec is NOT a stand-in: it demands exactly four digits after
+    # \u and eight after \U, so bash short forms survived it unchanged and a module
+    # name spelled lease_$-quoted-\u73-lot read as an unrelated string. Over-decoding
+    # can only make more text match, so it adds blocks and never removes one.
+    def _sub(m):
+        hexit = m.group(1) or m.group(2) or m.group(3)
+        try:
+            return chr(int(hexit, 16) if hexit else int(m.group(4), 8))
+        except ValueError:
+            return ""
+    return _ESC_RE.sub(_sub, text)
+
+
+def _ansi_c(text):
+    # ANSI-C quoting as bash resolves it: escapes decoded, the dollar prefix dropped.
+    # shlex knows
+    # nothing of ANSI-C quoting, so EVERY token it hands back may still be encoded --
+    # the interpreter name, the option letter, the operand. Resolving the whole command
+    # text before it is tokenized is what makes the token comparisons downstream see
+    # what bash will see, instead of only the operands one call site remembered to decode.
+    return _decode_escapes(text).replace("$" + chr(39), chr(39))
+
+
+def _shell_variants(text):
+    # The text as written, and as the shell will have rewritten it before running it.
+    # Quoting, escaping, the ANSI-C `$` prefix and a backslash-newline continuation are
+    # removed before the command word is resolved; ANSI-C escapes are DECODED, so a
+    # hex-escaped module name resolves to lease_slot. Additive: any variant blocks.
+    out = [text, _decode_escapes(text)]
+    for base in list(out):
+        sq = base.replace(chr(92) + chr(10), "")
+        for _ch in (chr(39), chr(34), chr(92), "$"):
+            sq = sq.replace(_ch, "")
+        out.append(sq)
+    return out
+
+
 def _names_helper(text):
     # Which mutating helper does this text NAME, quotes resolved? A raw substring test
     # is defeated by quote concatenation -- the shell runs `lease_"slot.py"`, but the
@@ -637,7 +715,8 @@ def _names_helper(text):
             return _bn(hit)
     except ValueError:
         pass
-    hit = next((h for h in _MUTATING_HELPERS if h in text), None)
+    hit = next((h for h in _MUTATING_HELPERS
+                for v in _shell_variants(text) if h in v), None)
     if hit:
         return hit
     # SQUEEZED backstop: the shell joins a name across ANSI-C quoting
@@ -663,7 +742,10 @@ def _helper_invoked(cmd, _depth=0, _full=None):
     # ASSEMBLES at run time. Quote concatenation, ANSI-C quoting and globbing are
     # squeezed out below because that is cheap; a brace RANGE is not
     # (`lease_slo{t..t}.py` yields the name only by expanding it), and neither is a name
-    # built from variables. Closing one spelling would not close the class -- the same
+    # built from variables. It reaches the `-m` operand on the same terms: an
+    # unresolvable operand is answered by searching the command for a helper STEM, which
+    # finds `M=lease_slot` but not `A=lease; B=slot; python3 -m "${A}_${B}"` or
+    # `-m lease_{slot,x}`. Closing one spelling would not close the class -- the same
     # actor writes `python3 -c "$(cat lease_slo{t..t}.py)"`, where the name is equally
     # invisible -- so this stays documented rather than half-chased. See ADR 0006.
     #
@@ -677,6 +759,16 @@ def _helper_invoked(cmd, _depth=0, _full=None):
             return hit
     if _depth > 3:
         return next((h for h in _MUTATING_HELPERS if h in cmd), None)
+    # Bash resolves ANSI-C quoting BEFORE it resolves the command word, so any token can
+    # reach shlex still encoded -- not just the operand. A hex-escaped SWITCH resolves to
+    # -m, and a scan for a literal `m` in the option token missed it entirely.
+    # Re-entering on the resolved text puts every downstream comparison on what bash will
+    # actually see; additive, so it can only add a block.
+    _resolved = _ansi_c(cmd)
+    if _resolved != cmd:
+        hit = _helper_invoked(_resolved, _depth + 1, _full=_ansi_c(_whole))
+        if hit:
+            return hit
     # A COMMAND SUBSTITUTION runs before the command that consumes its output, so the
     # consumer being harmless proves nothing: `echo "$(... lease_slot.py ...)"` claims a
     # slot and logs a sanctioned-bypass event, then prints the slot number. Flatten the
@@ -793,16 +885,64 @@ def _helper_invoked(cmd, _depth=0, _full=None):
                 # where the helper is only an argument and stdin is empty. Accepted:
                 # `python3 -` is an execution context, not a mention, and enumerating
                 # the empty-stdin spellings is the allowlist this file keeps deleting.
-                hit = _names_helper(_whole)
+                hit = _glob_helper(w) or _names_helper(_whole)
                 if hit:
                     return hit
                 break
             if w.startswith("-"):
                 # A flag that takes an operand consumes the next word (-c PROG, -m MOD).
-                if w in ("-c", "-m", "-W", "-X", "--check-hash-based-pycs"):
-                    j += 2
+                # `-m MODULE` runs the helper without ever naming the FILE, and `-m`
+                # was on the list of flags whose operand is skipped as an option value.
+                # Matched inside a short-flag CLUSTER, the same way the -c handler
+                # reads its program: CPython accepts `-Bm mod` and `-Bmmod`, so
+                # anchoring on a leading `-m` caught only the simplest spelling.
+                # `--` ends option parsing: the NEXT word is the script, and a word that
+                # merely looks like an option is a filename from here on.
+                if w == "--":
+                    script = words[j + 1] if j + 1 < len(words) else None
+                    break
+                if w == "--module" and j + 1 < len(words):
+                    if _module_helper(words[j + 1]):
+                        return _module_helper(words[j + 1])
+                    if not _PLAIN_MODULE_RE.match(words[j + 1]):
+                        stem = next((m for m in _MUTATING_MODULES
+                                     for v in _shell_variants(_whole) if m in v), None)
+                        if stem:
+                            return stem + ".py"
+                    break
+                if w.startswith("--"):
+                    j += 2 if w == "--check-hash-based-pycs" else 1
                     continue
-                j += 1
+                # A short-option CLUSTER is consumed left to right, and the FIRST
+                # option taking an operand swallows the cluster remainder -- or the
+                # next word when the cluster ends there. Testing for an `m` ANYWHERE
+                # read `-Wm` (which is `-W m`) as a module switch, then skipped the
+                # script word that followed it as if it were the module name.
+                k = next((i for i, ch in enumerate(w[1:]) if ch in "cmWXQ"), None)
+                if k is None:
+                    j += 1
+                    continue
+                tail = w[2 + k:]
+                if w[1 + k] == "m":
+                    mod = tail if tail else (words[j + 1] if j + 1 < len(words) else "")
+                    if _module_helper(mod):
+                        return _module_helper(mod)
+                    # An operand the shell rewrites (`M=lease_slot; python3 -m "$M"`)
+                    # names its module only at run time, so the whole command is
+                    # searched for a helper STEM -- the module spelling, which carries
+                    # no `.py` for _names_helper to find.
+                    if not _PLAIN_MODULE_RE.match(mod):
+                        stem = next((m for m in _MUTATING_MODULES
+                                     for v in _shell_variants(_whole) if m in v), None)
+                        if stem:
+                            return stem + ".py"
+                if w[1 + k] in ("c", "m"):
+                    # CPython STOPS parsing options at -c and -m; everything after is
+                    # argv for the program it already chose. Walking on read the next
+                    # operand as a second module or as a script, so `python3 -m json.tool
+                    # lease_slot.py` -- which only READS the helper -- was blocked.
+                    break
+                j += 1 if tail else 2
                 continue
             script = w
             break
@@ -1421,6 +1561,17 @@ try:
             r"\bunlink\s",
             r"\brmdir\s",
             r"\bdd\s",
+            # `git` WHOLE, not per-subcommand. This list is the damaged-installation
+            # fallback and its one job is to be WIDER than the classifier it stands in
+            # for; the classifier blocks `git clean -fd`, `git restore .` and every
+            # unknown subcommand, and no verb pattern here matched any of them, so a
+            # missing cmdword.py made the fail-CLOSED gate fail OPEN.
+            r"\bgit\s",
+        # A verb at END OF STRING (`echo hi | xargs rm`) and find -delete. The `\s` in
+        # every pattern above requires something to follow the verb, and -delete names
+        # no verb at all, so the classifier blocked both while this list allowed them.
+        r"\b(?:tee|patch|cp|mv|rm|ln|install|truncate|unlink|rmdir|dd)$",
+        r"-delete\b",
         ]
         # #519 item 4: these raw-string regexes match INSIDE quoted operands, so a
         # read-only `grep -nE "rm |mv " f` or `echo "(mv FAILS)"` read as file-modifying
@@ -1429,8 +1580,34 @@ try:
         # equals no verb, while `sudo rm -rf src` still matches. It falls back to these
         # same regexes on an unparseable command, so the failure mode is the old
         # behaviour, never a new over-block. Kept here as the import-failure fallback.
+        # SQUEEZED as well as raw, matching cmdword._regex_fallback. Quotes and
+        # backslashes are the word-concatenation characters bash removes before it
+        # resolves the command word, so `g"it" clean -fd` matched no contiguous pattern
+        # while running git -- in the one path that exists for a damaged installation.
+        # Escapes are decoded at BASH digit widths, not Python ones: `unicode_escape`
+        # demands four digits after \u and eight after \U, so bash short forms passed
+        # through it untouched and a hex-spelled verb matched nothing.
+        _esc = re.compile(r"\\(?:x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})"
+                          r"|U([0-9A-Fa-f]{1,8})|0?([0-7]{1,3}))")
+
+        def _dec(m):
+            hexit = m.group(1) or m.group(2) or m.group(3)
+            try:
+                return chr(int(hexit, 16) if hexit else int(m.group(4), 8))
+            except ValueError:
+                return ""
+
+        def _variants(t):
+            out = [t, _esc.sub(_dec, t)]
+            for base in list(out):
+                sq = base.replace(chr(92) + chr(10), "")
+                for _ch in (chr(39), chr(34), chr(92), "$"):
+                    sq = sq.replace(_ch, "")
+                out.append(sq)
+            return out
         has_explicit_mod = (is_file_mod(cmd) if is_file_mod is not None
-                            else any(re.search(p, cmd) for p in FILE_MOD_PATTERNS))
+                            else any(re.search(p, v) for p in FILE_MOD_PATTERNS
+                                     for v in _variants(cmd)))
         is_mod = has_explicit_mod
         # Check for shell redirects (>, >>) not targeting /dev/null.
         # Strip single-quoted strings first (literal text like jq .x > 0).

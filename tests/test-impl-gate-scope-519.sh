@@ -356,6 +356,141 @@ check "direct audit_append.py invocation is blocked" block \
 # test suite below invokes it through Bash.
 check "helper --self-check stays allowed" allow \
     "$(bash_decision "python3 -I hooks/gate-scripts/lib/lease_slot.py --self-check")"
+# `-m` runs the helper without ever naming the FILE, and `-m` was on the list of flags
+# whose operand is skipped as an option value.
+check "python3 -m running the helper is blocked" block \
+    "$(bash_decision 'PYTHONPATH=hooks/gate-scripts/lib python3 -m lease_slot .claude 999 0 3600')"
+check "the attached -m spelling is blocked" block \
+    "$(bash_decision 'python3 -mlease_slot .claude 999 0 3600')"
+check "a dotted module path to the helper is blocked" block \
+    "$(bash_decision 'python3 -m gate.lib.audit_append')"
+check "-m on an unrelated module stays allowed" allow \
+    "$(bash_decision 'python3 -m json.tool file.json')"
+# CPython accepts -m inside a short-flag CLUSTER, both spaced and attached.
+check "a clustered -Bm running the helper is blocked" block \
+    "$(bash_decision 'python3 -Bm lease_slot .claude 999 0 3600')"
+check "a clustered attached -Bmlease_slot is blocked" block \
+    "$(bash_decision 'python3 -Bmlease_slot .claude 999')"
+check "the long --module spelling is blocked" block \
+    "$(bash_decision 'python3 --module audit_append .claude')"
+check "a clustered -B before an unrelated -m stays allowed" allow \
+    "$(bash_decision 'python3 -B -m pytest tests/')"
+# A short-option CLUSTER stops at the first option that takes an operand: `-Wm` is
+# `-W m`, NOT a module switch. Reading the `m` as one skipped the script behind it.
+check "-Wm does not shadow the script it precedes" block \
+    "$(bash_decision 'python3 -Wm hooks/gate-scripts/lib/lease_slot.py .claude 999 0 3600')"
+check "-Xm does not shadow the script it precedes" block \
+    "$(bash_decision 'python3 -Xm hooks/gate-scripts/lib/audit_append.py .claude')"
+check "-Wm before an unrelated script stays allowed" allow \
+    "$(bash_decision 'python3 -Wm tools/report.py --out /dev/null')"
+# A GLOB in script position is resolved by the shell, so the question is whether the
+# PATTERN can name a helper — searching the text for a helper stem cannot answer it.
+check "a glob that can expand to the helper is blocked" block \
+    "$(bash_decision 'python3 hooks/gate-scripts/lib/lease_slo?.py .claude 999 0 3600')"
+check "a star glob over the helper directory is blocked" block \
+    "$(bash_decision 'python3 hooks/gate-scripts/lib/audit_*.py .claude')"
+check "a glob that cannot name a helper stays allowed" allow \
+    "$(bash_decision 'python3 tools/repor?.py --out /dev/null')"
+# Bash accepts SHORT \u escapes (1-4 digits); Python unicode_escape demands four, so
+# the old decoder passed `$'\u73'` through untouched and the name never resolved.
+_SQ_="'"
+check "a short \\u escape in the module name is blocked" block \
+    "$(bash_decision "python3 -m lease_\$$_SQ_\\u73${_SQ_}lot .claude 999 0 3600")"
+check "a short \\u escape in a git verb is blocked" block \
+    "$(bash_decision "g\$$_SQ_\\u69${_SQ_}t clean -fd")"
+check "an octal escape in a git verb is blocked" block \
+    "$(bash_decision "g\$$_SQ_\\151${_SQ_}t clean -fd")"
+# The SWITCH and the INTERPRETER are tokens too, so both can arrive still encoded.
+check "an escaped -m switch is blocked" block \
+    "$(bash_decision "python3 -\$$_SQ_\\x6d${_SQ_} lease_slot .claude 999 0 3600")"
+check "an escaped interpreter name is blocked" block \
+    "$(bash_decision "p\$$_SQ_\\x79${_SQ_}thon3 -m lease_slot .claude 999")"
+# CPython stops parsing options at -c and -m: what follows is argv, not a second
+# module and not a script. Walking past them blocked ordinary READS of the helper.
+check "argv after -c that names the helper stays allowed" allow \
+    "$(bash_decision "python3 -c 'pass' -m lease_slot")"
+check "the helper as a -m json.tool operand stays allowed" allow \
+    "$(bash_decision 'python3 -m json.tool hooks/gate-scripts/lib/lease_slot.py')"
+check "a script after -- is still resolved" block \
+    "$(bash_decision 'python3 -- hooks/gate-scripts/lib/lease_slot.py .claude 999 0 3600')"
+# ── generated: the -m module shape across cluster x binding x operand ─
+_MM_FAIL=0 _MM_PASS=0
+_mm() {  # <expected> <command>
+    local got="allow"
+    case "$(bash_decision "$2")" in *'"block"'*) got="block" ;; esac
+    if [[ "$got" == "$1" ]]; then _MM_PASS=$((_MM_PASS + 1))
+    else _MM_FAIL=$((_MM_FAIL + 1)); printf "  FAIL  -m: %s (want %s)\n" "$2" "$1"; fi
+}
+for flag in -m -Bm -BSm --module; do
+    for mod in lease_slot audit_append gate.lib.lease_slot; do
+        _mm block "python3 $flag $mod .claude 999 0 3600"          # spaced operand
+        _mm block "M=$mod; python3 $flag \"\$M\" .claude 999"      # expanded at run time
+        # ANSI-C escapes are DECODED by the shell, so the name is assembled from hex.
+        _mm block "python3 $flag ${mod%?}\$'$(printf '%s' "\\x$(printf '%x' "'${mod: -1}")")' .claude" 
+        [[ "$flag" == "--module" ]] && continue                    # long form takes no tail
+        _mm block "python3 $flag$mod .claude 999"                  # attached to the cluster
+    done
+    # ...and an unrelated module keeps the same spellings allowed.
+    _mm allow "python3 $flag pytest tests/"
+done
+# Every token bash resolves can arrive ENCODED, not just the operand: the interpreter
+# name, the switch, and the module. Encoding only the operand is what let an escaped
+# `-m` through, so each position is exercised in turn, in each escape width bash takes.
+for _esc in '\x6d' '\u6d' '\155'; do
+    _mm block "python3 -\$$_SQ_$_esc${_SQ_} lease_slot .claude 999 0 3600"
+done
+for _esc in '\x79' '\u79' '\171'; do
+    _mm block "p\$$_SQ_$_esc${_SQ_}thon3 -m lease_slot .claude 999 0 3600"
+    _mm allow "p\$$_SQ_$_esc${_SQ_}thon3 -m pytest tests/"
+done
+for _esc in '\x73' '\u73' '\163'; do
+    _mm block "python3 -m lease_\$$_SQ_$_esc${_SQ_}lot .claude 999 0 3600"
+done
+if [[ "$_MM_FAIL" -eq 0 ]]; then
+    ok "no -m spelling reaches a mutating helper ($_MM_PASS spellings)"
+else
+    no "-m module spellings" "$_MM_FAIL of $((_MM_PASS + _MM_FAIL)) wrong"
+fi
+# ── generated: word-concatenation on an UNPARSEABLE command ──────────
+# The fallback exists for commands that will not tokenize, so the quote structure it is
+# handed is broken by definition. Quotes AND backslashes are the characters bash removes
+# before it resolves the command word, so the fallback runs on a squeezed copy too.
+_WC_FAIL=0 _WC_PASS=0
+for verb in 'g"it" clean -fd' "g'it' clean -fd" 'g\it clean -fd' \
+            'r"m" -rf src' "r'm' -rf src" 'r\m -rf src' \
+            '"git" clean -fd' '\git clean -fd' \
+            "g''it clean -fd" '$'"'"'g'"'"'it clean -fd' \
+            "$(printf 'g\\\nit clean -fd')"; do
+    # An apostrophe in the heredoc body is the #365 shape that forces the fallback.
+    _cmd="$(printf '%s <<EOF\nthe operator%ss note\nEOF' "$verb" "'")"
+    got="allow"
+    case "$(bash_decision "$_cmd")" in *'"block"'*) got="block" ;; esac
+    if [[ "$got" == "block" ]]; then _WC_PASS=$((_WC_PASS + 1))
+    else _WC_FAIL=$((_WC_FAIL + 1)); printf "  FAIL  concat: %s\n" "$verb"; fi
+done
+if [[ "$_WC_FAIL" -eq 0 ]]; then
+    ok "word-concatenated verbs block on the fallback path ($_WC_PASS spellings)"
+else
+    no "word-concatenated verbs" "$_WC_FAIL of $((_WC_PASS + _WC_FAIL)) allowed"
+fi
+# THE FALLBACK MUST BE WIDER than the classifier it stands in for, asserted in the
+# module self-check rather than claimed in prose -- and proven to FAIL without the git
+# pattern, since a guard whose failure branch is never observed is not a guard.
+_FB="$(python3 - <<'PY' 2>&1
+import sys
+sys.path.insert(0, "hooks/gate-scripts/lib")
+import cmdword as c
+c.FILE_MOD_PATTERNS = [p for p in c.FILE_MOD_PATTERNS if p != r"\bgit\s"]
+try:
+    c._demo()
+except AssertionError:
+    print("FIRES")
+PY
+)"
+case "$_FB" in
+    *FIRES*) ok "the fallback-superset invariant fails without the git pattern" ;;
+    *) no "the fallback-superset invariant" "did not fire with the git pattern removed" ;;
+esac
 # The guard is TOKEN-level: a raw substring test was defeated by quote concatenation,
 # and a whole-string --self-check exemption was satisfied by a trailing no-op segment
 # while the FIRST segment mutated the real ledger.

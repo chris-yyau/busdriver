@@ -16,46 +16,7 @@ trap 'echo "{}"; exit 0' ERR
 
 INPUT=$(cat)
 CMD=""
-
-# Extract the "command" field from tool_input JSON
-# Prefer Python for correct JSON parsing (handles escaped quotes, multiline commands)
-# Supports both tool_input and toolInput keys, and string payloads
-# Fall back to grep only when Python is unavailable
-if command -v python3 &>/dev/null; then
-  # shellcheck disable=SC2016  # python source: $ / backticks must not expand in bash
-  CMD=$(printf '%s' "$INPUT" | python3 -E -S -c '
-import sys
-# -E + -S + this scrub for the same reason the rm scanner below does it: `python3 -c`
-# prepends the CWD to sys.path, so a repo shipping its own json.py would execute
-# inside this hook -- and here it could print "auto" and disarm the checks.
-# -E also drops PYTHONPATH, which could otherwise smuggle the CWD back in as an
-# ABSOLUTE path that this relative-only scrub would not catch.
-sys.path[:] = [p for p in sys.path if p not in ("", ".")]
-import json
-try:
-    d = json.loads(sys.stdin.read() or "{}")
-    inp = d.get("tool_input", d.get("toolInput", {}))
-    if isinstance(inp, str):
-        inp = json.loads(inp or "{}")
-    if isinstance(inp, dict):
-        print(inp.get("command", ""))
-except Exception:
-    pass
-' 2>/dev/null || true)
-fi
-
-# Grep fallback when Python is not available
-if [[ -z "$CMD" ]]; then
-  CMD=$(printf '%s' "$INPUT" | grep -o '"command"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*:[[:space:]]*"//;s/"$//' || true)
-fi
-
-# No command extracted — allow
-if [[ -z "$CMD" ]]; then
-  echo '{}'
-  exit 0
-fi
-
-CMD_LOWER=$(printf '%s' "$CMD" | tr '[:upper:]' '[:lower:]')
+AUTO_MODE=0
 
 # --- Auto mode: stand down on what the classifier already owns ---
 # In `auto`, a classifier model judges every non-read action and blocks force-push,
@@ -95,40 +56,68 @@ CMD_LOWER=$(printf '%s' "$CMD" | tr '[:upper:]' '[:lower:]')
 # INSIDE tool_input.command, so a raw-text match would let a crafted command disarm
 # the guard. No python3, unparseable input, or any other mode leaves AUTO_MODE=0 and
 # every check runs — over-warning stays the safe direction.
-AUTO_MODE=0
+# SINGLE PASS. The command extraction and the auto decision come from ONE python
+# invocation. Two passes cost a second interpreter spawn on EVERY Bash command
+# (measured by Codex on PR #543: ~1.54-1.61s vs ~1.02-1.06s at the parent commit,
+# against the 3s budget hooks.json gives this whole guard) — and splitting them is
+# also what let the two disagree (cubic, same PR): a malformed tool_input made
+# python bail on the command while the raw-text grep fallback still produced one,
+# so `auto` stood the guard down on a command python never validated. One parse
+# cannot contradict itself.
+#
+# Prefer python for correct JSON parsing (escaped quotes, multiline commands);
+# both tool_input and toolInput keys, dict or JSON-string payloads. The grep
+# fallback below covers python being absent — AUTO_MODE stays 0 on that path.
 if command -v python3 &>/dev/null; then
   # shellcheck disable=SC2016  # python source: $ / backticks must not expand in bash
-  PERM_MODE=$(printf '%s' "$INPUT" | python3 -E -S -c '
+  _GUARD_PAYLOAD=$(printf '%s' "$INPUT" | python3 -E -S -c '
 import sys
 # -E + -S + this scrub for the same reason the rm scanner below does it: `python3 -c`
 # prepends the CWD to sys.path, so a repo shipping its own json.py would execute
-# inside this hook -- and here it could print "auto" and disarm the checks.
+# inside this hook -- and here it could emit the auto token and disarm the checks.
 # -E also drops PYTHONPATH, which could otherwise smuggle the CWD back in as an
 # ABSOLUTE path that this relative-only scrub would not catch.
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
 import json
 try:
     d = json.loads(sys.stdin.read() or "{}")
-    # Stand down ONLY when the payload yields the SAME valid command shape the
-    # extractor above requires. The two read one payload but used to disagree:
-    # python could bail on a malformed tool_input while the raw-text grep
-    # fallback still produced a command, so `auto` stood the guard down on a
-    # command python never validated (measured: tool_input as a LIST made `auto`
-    # allow `rm -rf /etc` that `default` warned on).
     inp = d.get("tool_input", d.get("toolInput", {}))
     if isinstance(inp, str):
         inp = json.loads(inp or "{}")
-    shape_ok = isinstance(inp, dict) and isinstance(inp.get("command"), str)
-    # Compare HERE, and emit a fixed token. Printing the raw value and matching
-    # in bash was unsafe: $( ) strips trailing newlines, so a permission_mode of
-    # "auto\n" collapsed to "auto" and stood the guard down. A non-str never
-    # equals "auto", so this also subsumes the isinstance check.
-    print("1" if shape_ok and d.get("permission_mode") == "auto" else "0")
+    cmd = inp.get("command") if isinstance(inp, dict) else None
+    shape_ok = isinstance(cmd, str)
+    # Line 1 is the auto token; the command follows verbatim and MUST come last,
+    # because it may itself be multiline. The mode is compared HERE rather than in
+    # bash: $( ) strips trailing newlines, so a permission_mode of "auto\n" would
+    # collapse to "auto" and stand the guard down. A non-str never equals "auto",
+    # so this also subsumes an isinstance check.
+    sys.stdout.write("1\n" if shape_ok and d.get("permission_mode") == "auto" else "0\n")
+    if shape_ok:
+        sys.stdout.write(cmd)
 except Exception:
     pass
 ' 2>/dev/null || true)
-  if [[ "$PERM_MODE" == "1" ]]; then AUTO_MODE=1; fi
+  # $( ) stripped the trailing newline, so a token-only payload has no newline left.
+  if [[ "$_GUARD_PAYLOAD" == *$'\n'* ]]; then
+    [[ "${_GUARD_PAYLOAD%%$'\n'*}" == 1 ]] && AUTO_MODE=1
+    CMD=${_GUARD_PAYLOAD#*$'\n'}
+  elif [[ "$_GUARD_PAYLOAD" == 1 ]]; then
+    AUTO_MODE=1
+  fi
 fi
+
+# Grep fallback when Python is not available (AUTO_MODE stays 0 — see above)
+if [[ -z "$CMD" ]]; then
+  CMD=$(printf '%s' "$INPUT" | grep -o '"command"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*:[[:space:]]*"//;s/"$//' || true)
+fi
+
+# No command extracted — allow
+if [[ -z "$CMD" ]]; then
+  echo '{}'
+  exit 0
+fi
+
+CMD_LOWER=$(printf '%s' "$CMD" | tr '[:upper:]' '[:lower:]')
 
 # --- Recursive rm: judge EVERY rm in the chain, not just the last one ---
 # `rm -rf /etc && rm -rf node_modules` must warn about /etc even though the last

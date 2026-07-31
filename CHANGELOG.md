@@ -1,3 +1,10 @@
+## [1.100.11](https://github.com/chris-yyau/busdriver/compare/v1.100.10...v1.100.11) (2026-07-31)
+
+
+### Bug Fixes
+
+* **careful-guard:** stand down in auto mode, keep SQL live everywhere ([#543](https://github.com/chris-yyau/busdriver/issues/543)) ([f847be8](https://github.com/chris-yyau/busdriver/commit/f847be806b5d906ae5f0aff093ce4a4765eb99fa))
+
 ## [1.100.10](https://github.com/chris-yyau/busdriver/compare/v1.100.9...v1.100.10) (2026-07-28)
 
 

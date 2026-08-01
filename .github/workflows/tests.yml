@@ -232,6 +232,11 @@ jobs:
           pytest -q skills/blueprint-review/scripts/lib/test_extract_review_json.py \
             --cov=skills/blueprint-review/scripts/lib \
             --cov-report=xml:coverage-extract-review-json.xml
+      - name: Coverage — litmus parse_narrative
+        run: |
+          pytest -q skills/litmus/scripts/lib/test_parse_narrative.py \
+            --cov=skills/litmus/scripts/lib \
+            --cov-report=xml:coverage-parse-narrative.xml
       # Token is passed only to this step (never job-level env, so checked-out
       # PR code in earlier steps cannot read it). continue-on-error is scoped to
       # the two cases that legitimately lack the secret: fork PRs and Dependabot
@@ -243,7 +248,7 @@ jobs:
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./coverage/lcov.info,./coverage-skill-comply.xml,./coverage-clv2.xml,./coverage-agent-self-evaluation.xml,./coverage-extract-review-json.xml
+          files: ./coverage/lcov.info,./coverage-skill-comply.xml,./coverage-clv2.xml,./coverage-agent-self-evaluation.xml,./coverage-extract-review-json.xml,./coverage-parse-narrative.xml
 
   shell-tests:
     # Full tests/test-*.sh gate/security suite (#265, then broadened to full-glob in

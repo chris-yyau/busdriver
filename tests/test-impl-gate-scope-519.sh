@@ -120,6 +120,188 @@ check "sed -i.bak in place" block "$(bash_decision "sed -i.bak 's/a/b/' f")"
 check "tee" block "$(bash_decision "cat x | tee out.txt")"
 check "second segment writes" block "$(bash_decision "ls && rm x")"
 check "timeout wrapper hiding rm" block "$(bash_decision "timeout 5 rm x")"
+# ── generated: launcher x payload, over EVERY wrapper ────────────────
+# flock and script were recorded as deliberately-omitted wrappers; both run the command
+# that follows them, so the omission resolved the command word to the launcher and read
+# a real write as read-only — the write the raw regex they replaced had caught. Hand-
+# picking cases for the two that were missing is how the list got wrong in the first
+# place, so the whole set is driven instead: every launcher, against a write payload, a
+# read payload, and (where the launcher has one) the -c STRING form, which is a second
+# spelling a wrapper entry alone does not cover.
+_WR_FAIL=0 _WR_PASS=0
+_wr() {  # <expected> <command>
+    local got="allow"
+    case "$(bash_decision "$2")" in *'"block"'*) got="block" ;; esac
+    if [[ "$got" == "$1" ]]; then _WR_PASS=$((_WR_PASS + 1))
+    else _WR_FAIL=$((_WR_FAIL + 1)); printf "  FAIL  wrapper: %s (want %s)\n" "$2" "$1"; fi
+}
+# Each entry is `<basename>:<launcher as invoked>` so the PARITY check below can prove
+# the matrix covers every launcher the classifier knows, instead of trusting that
+# whoever last edited _WRAPPERS remembered to add a case here.
+_WR_CASES=(
+    "sudo:sudo" "sudo:sudo -u root" "doas:doas" "su:su root" "runuser:runuser -u root"
+    "nohup:nohup" "timeout:timeout 5" "nice:nice -n 5" "ionice:ionice -c3"
+    "setsid:setsid" "stdbuf:stdbuf -o0" "unbuffer:unbuffer" "command:command"
+    "builtin:builtin" "exec:exec" "xargs:xargs" "caffeinate:caffeinate"
+    "chroot:chroot /jail" "arch:arch -arm64" "env:env" "env:env -u FOO" "torify:torify"
+    "proxychains:proxychains" "proxychains4:proxychains4" "watch:watch -n1"
+    "flock:flock /tmp/x.lock" "flock:flock -x .lock" "script:script -q /dev/null"
+)
+for _e in "${_WR_CASES[@]}"; do
+    _w="${_e#*:}"
+    for _p in "rm -rf src" "tee src/impl.py" "truncate -s 0 src/impl.py" "sed -i s/a/b/ f"; do
+        _wr block "$_w $_p"
+    done
+    for _p in "npm test" "ls -la" "cat README.md" "grep -n TODO src/impl.py"; do
+        _wr allow "$_w $_p"
+    done
+done
+# The -c STRING form is a SECOND spelling: the whole program is one token that equals no
+# verb, so a launcher can be a known wrapper and still pass its payload through unread.
+# ATTACHED as well as separated -- `sh -c'rm -rf src'` dequotes to a single token, which
+# is what let the attached spelling through after the separated one was closed.
+_DC_CASES=("sh:sh" "bash:bash" "zsh:zsh" "dash:dash" "ksh:ksh" "mksh:mksh" "ash:ash"
+           "su:su" "runuser:runuser" "flock:flock /tmp/x.lock" "script:script -q /dev/null")
+for _e in "${_DC_CASES[@]}"; do
+    _c="${_e#*:}"
+    _wr block "$_c -c 'rm -rf src'"
+    _wr block "$_c -c'rm -rf src'"
+    _wr allow "$_c -c 'npm test'"
+    _wr allow "$_c -c'npm test'"
+done
+_wr block "script -c 'rm -rf src' /dev/null"
+_wr block "script -c'rm -rf src' /dev/null"
+# getopt_long takes any UNAMBIGUOUS ABBREVIATION, so every prefix of --command runs what
+# --command runs. Matching only the full spelling left the shorter ones unread.
+for _a in "--c" "--co" "--com" "--comm" "--comman" "--command"; do
+    _wr block "flock /tmp/x.lock $_a 'rm -rf src'"
+    _wr block "flock /tmp/x.lock $_a='rm -rf src'"
+    _wr allow "flock /tmp/x.lock $_a='npm test'"
+done
+# ...but --rcfile names a FILE to source, not inline source, and must stay unread.
+_wr allow "bash --rcfile setup.sh -c 'npm test'"
+# A LEADING REDIRECTION must not disable the conservative regime. `<` is not a wrapper
+# name, so _starts_with_wrapper answered False and the launcher was then peeled by
+# _effective_command_word -- which stops at the launcher's OWN operand. That resolved
+# `</dev/null sudo -u root rm -rf src` to `root` and the script form to `null`, reading
+# both as read-only while they executed rm. One leading character turned the regime off.
+# Driven across every launcher that TAKES an operand (the ones where peeling lands on it)
+# and every redirection spelling, because the defect was in the regime choice, not in any
+# one launcher.
+_LAUNCH_OPERAND=("sudo -u root" "chroot /jail" "env -u FOO" "script -q /dev/null"
+                 "flock /tmp/x.lock" "nice -n 5" "timeout 5" "su root")
+# NON-WRITING redirections: the verb behind them decides, both ways.
+for _r in "</dev/null" "< in.txt" "2>&1" "2>/dev/null"; do
+    for _l in "${_LAUNCH_OPERAND[@]}"; do
+        _wr block "$_r $_l rm -rf src"
+        _wr block "$_r $_l truncate -s 0 src/impl.py"
+        # ...and the over-block side stays where it was: a read behind one of these is
+        # still a read.
+        _wr allow "$_r $_l npm test"
+        _wr allow "$_r $_l grep -n TODO src/impl.py"
+    done
+done
+# The operator has to be matched WHOLE, longest-first. A here-string `<<< data` read as a
+# bare `<` left `data` unskipped and in command position, so the wrapper regime was never
+# selected -- the same failure as the missing redirect skip, one spelling further along.
+for _r in "<<< data" "<< EOF" "<> f" "<& 3" ">| out.txt" "&> log.txt"; do
+    for _l in "sudo -u root" "chroot /jail" "script -q /dev/null"; do
+        _wr block "$_r $_l rm -rf src"
+    done
+    _wr block "$_r rm -rf src"
+done
+_wr allow "<<< data npm test"
+_wr allow "<<< data grep -n TODO src/impl.py"
+# KNOWN RESIDUAL, pinned so it stays visible rather than being rediscovered: the
+# tab-stripping heredoc opener written SEPARATED from its delimiter (`<<- EOF cmd`) still
+# resolves to the delimiter and reads as a non-verb. It predates this branch -- HEAD
+# behaves identically -- and the ATTACHED spelling (`<<-EOF cmd`) is caught. Asserted as
+# the CURRENT behaviour so that closing it later trips this line deliberately.
+_wr allow "<<- EOF rm -rf src"
+
+# A WRITING redirection is itself the modification, so the payload cannot rescue it --
+# `>out.txt sudo -u root npm test` creates out.txt whatever npm does. Asserted separately
+# rather than folded into the loop above, where an `allow` expectation for the read
+# payloads was simply wrong and the suite caught it.
+for _r in ">out.txt" ">>out.txt"; do
+    for _l in "${_LAUNCH_OPERAND[@]}"; do
+        _wr block "$_r $_l rm -rf src"
+        _wr block "$_r $_l npm test"
+    done
+done
+# GENERATED: the -c payload across option BUNDLES and both boundaries. The bundle is
+# where the two shapes stop being distinguishable -- after dequoting, `-cl PROG` (the
+# tail is more FLAGS, program in the next word) and `-cPROG` (program attached) are both
+# a `c` plus a tail -- so the whole grid is driven rather than sampled. `c` is placed at
+# the head, the middle and the tail of the bundle in turn.
+for _b in "-c" "-lc" "-ic" "-ilc" "-cl" "-ci" "-cil" "-lci"; do
+    for _sh in sh bash zsh dash; do
+        _wr block "$_sh $_b 'rm -rf src'"
+        _wr allow "$_sh $_b 'npm test'"
+    done
+done
+# A -c-LOOKING token can belong to an EARLIER option that takes a filename, so the real
+# payload sits further right. Knowing which option that was is the arity table this gate
+# refuses to keep; the walk therefore never stops at the first `c`. Decoys are placed
+# before, between, and after the genuine -c.
+for _d in "-O -cfoo" "-O-cfoo" "-T -cbar -O -cbaz" "--log-out=-cfoo"; do
+    _wr block "script $_d -c 'rm -rf src' /dev/null"
+    _wr allow "script $_d -c 'npm test' /dev/null"
+done
+_wr block "flock -o -cx /tmp/l --com='rm -rf src'"
+_wr allow "flock -o -cx /tmp/l --com='npm test'"
+# su/runuser also execute --session-command, documented as equivalent to -c, so every
+# prefix of THAT long option runs a program too.
+for _a in "--s" "--sess" "--session-command"; do
+    _wr block "su $_a='rm -rf src' root"
+    _wr block "runuser $_a 'rm -rf src' root"
+    _wr allow "su $_a='npm test' root"
+done
+# ...and the ATTACHED boundary, only meaningful when `c` ends the bundle.
+for _b in "-c" "-lc" "-ilc"; do
+    for _sh in sh bash zsh dash; do
+        _wr block "$_sh $_b'rm -rf src'"
+        _wr allow "$_sh $_b'npm test'"
+    done
+done
+# REFUTED BY TEST, recorded so it is not "fixed" again on the next reading: a whole
+# command quoted into ONE token after `--` does NOT execute. script execvp()s that token
+# as a program NAME, so `script -q /dev/null -- 'rm -f canary'` exits 1 with the canary
+# intact (checked against the real binary), and util-linux errors on the extra operand.
+# The spelling that DOES run is the unquoted argv form, which the all-token scan blocks.
+_wr block "script -q /dev/null -- rm -rf src"
+# PARITY, mechanical rather than prose: a launcher added to either set without a case
+# here is a lane this suite silently stops covering, which is exactly how `flock` and
+# `script` stayed missing. Asserted against the module, so the test fails on the ADD.
+_WR_UNCOVERED="$(python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
+import cmdword
+tested = set(sys.argv[2:])
+gaps = []
+for name, want in (("_WRAPPERS", cmdword._WRAPPERS),
+                   ("_DASH_C_RUNNERS", cmdword._DASH_C_RUNNERS)):
+    missing = sorted(set(want) - tested)
+    if missing:
+        gaps.append("%s: %s" % (name, " ".join(missing)))
+print("; ".join(gaps))' "$REPO_ROOT" \
+    "${_WR_CASES[@]%%:*}" "${_DC_CASES[@]%%:*}")"
+if [[ -z "$_WR_UNCOVERED" ]]; then
+    ok "every launcher the classifier knows has a case in this matrix"
+else
+    no "launcher matrix parity" "$_WR_UNCOVERED"
+fi
+# The PRICE of the wrapped regime, asserted so it stays deliberate rather than accidental:
+# every token is scanned, so a verb NAME in a wrapped command's DATA reads as the verb.
+# Uniform across launchers — it is not a flock/script quirk.
+for _w in "sudo" "timeout 5" "nohup" "flock /tmp/x.lock" "script -q /dev/null"; do
+    _wr block "$_w grep rm notes.txt"
+done
+if [[ "$_WR_FAIL" -eq 0 ]]; then
+    ok "every launcher resolves its payload ($_WR_PASS spellings)"
+else
+    no "launcher payload spellings" "$_WR_FAIL of $((_WR_PASS + _WR_FAIL)) wrong"
+fi
 check "xargs running rm" block "$(bash_decision "echo hi | xargs rm")"
 check "find -exec rm" block "$(bash_decision "find . -exec rm {} ;")"
 check "find -delete" block "$(bash_decision "find . -delete")"
@@ -981,6 +1163,110 @@ if [ "$_RD_FAIL" -eq 0 ]; then
     ok "every generated READ of a helper stays allowed (${#_READ[@]} forms)"
 else
     no "generated helper reads" "$_RD_FAIL blocked"
+fi
+
+# ── An ABANDONED helper scan is not a clean scan ────────────────────────────
+# The helper guard runs on EVERY command, not only while a design review is pending. The
+# token budget that stops it burning the hook timeout therefore cannot degrade to "no
+# helper found": with nothing pending, nothing else covers the gap. It degraded twice.
+#
+#   * The fallback probe searched for `lease_slot.py` / `audit_append.py` only, and
+#     `python3 -m lease_slot` never writes either string -- so a real invocation read as
+#     absent. The probe now searches the module stems, which subsume the file names.
+#   * Exhaustion then returned that probe alone, so a command that named no helper at all
+#     was ALLOWED even though the scan never finished. It now fails CLOSED.
+#
+# The reasoning that justified the old behaviour -- that the cmdword budget blocks the
+# same shape anyway -- is exactly what did not hold, so the padded cases below are run
+# with NOTHING pending, which is the state in which the two guards do not overlap.
+_PAD="$(python3 -c 'print(" ".join(["-x"] * 4100))')"
+_BUD_FAIL=0
+_bud() {   # <expected> <command> <label>
+    local got="allow"
+    case "$(bash_decision "$2")" in *'"block"'*) got="block" ;; esac
+    [[ "$got" == "$1" ]] || { _BUD_FAIL=$((_BUD_FAIL + 1))
+                              printf "  FAIL  budget: %s (want %s, got %s)\n" "$3" "$1" "$got"; }
+}
+_bud block "python3 $_PAD -m lease_slot .claude fake 1"   "padded + module lease_slot"
+_bud block "python3 $_PAD -m audit_append .claude x"      "padded + module audit_append"
+_bud block "python3 -m lease_slot .claude fake 1"         "module, unpadded (control)"
+_bud block "python3 -m gate.lib.lease_slot .claude f 1"   "dotted module path"
+# A scan cut short by an unbalanced quote lands on the same probe, so the module spelling
+# has to be covered there too -- this is the shape that isolates the probe from the
+# fail-closed branch, since the budget is never reached.
+_bud block 'python3 -m lease_slot .claude f 1 "unbalanced' "unparseable + module"
+# Exhaustion with NO helper named anywhere still blocks: not-knowing is not not-found.
+_bud block "echo $(python3 -c 'print("y " * 4100)')"      "budget exhausted, no helper named"
+# ...and the price is bounded to genuinely absurd shapes. A long SINGLE token is not
+# thousands of words, so it never reaches the budget.
+_bud allow "echo $(python3 -c 'print("y" * 60000)')"      "one long token stays allowed"
+_bud allow "npm test"                                     "ordinary command stays allowed"
+if [ "$_BUD_FAIL" -eq 0 ]; then
+    ok "an abandoned helper scan fails closed, and the module spelling is covered"
+else
+    no "helper scan budget" "$_BUD_FAIL wrong"
+fi
+
+# ── The helper guard, behind a leading redirection and behind nesting ───────
+# Two escapes from the UNCONDITIONAL helper guard, both found after the wrapper regime
+# was believed fixed in cmdword.py. They are asserted HERE, against the gate, because the
+# gate keeps its OWN copy of the scan and the two tokenize differently: cmdword uses a
+# plain shlex, so `</dev/null` stays one token; this file uses punctuation_chars, which
+# splits it into `<` plus `/dev/null`. Filtering only the OPERATOR left the target in
+# command position, `basename /dev/null` is `null`, no wrapper was seen, and the launcher
+# was peeled to its own operand. Fixing the library copy alone left this one open.
+_BUD_FAIL=0          # own accumulator: the block above already reported on its own
+_HLP="python3 hooks/gate-scripts/lib/lease_slot.py .claude fake 1"
+for _r in "</dev/null" "< in.txt" "2>&1" "2>/dev/null" "> out.txt"; do
+    for _l in "sudo -u root" "script -q /dev/null" "flock /tmp/x.lock" "chroot /jail" \
+              "env -u FOO" ""; do
+        _bud block "$_r $_l $_HLP" "redirect [$_r] + launcher [$_l] + helper"
+    done
+done
+# ...and the read/mention contract survives the same stripping: naming the file is not
+# running it, redirection or no redirection.
+_bud allow "</dev/null cat hooks/gate-scripts/lib/lease_slot.py"  "redirect + READ of helper"
+_bud allow "2>&1 grep -n import hooks/gate-scripts/lib/lease_slot.py" "redirect + grep helper"
+_bud allow "</dev/null echo lease_slot.py"                        "redirect + mention"
+# Nesting past the depth cap must block rather than fall through to a substring probe
+# that a GLOBBED name defeats -- the shell expands `lease_slo[t].py`, the probe does not.
+_NEST="$_HLP"
+for _i in 1 2 3 4; do _NEST="sh -c $(printf '%q' "$_NEST")"; done
+_bud block "$_NEST" "4x nested sh -c + helper"
+_GNEST="python3 hooks/gate-scripts/lib/lease_slo[t].py .claude fake 1"
+for _i in 1 2 3 4; do _GNEST="sh -c $(printf '%q' "$_GNEST")"; done
+_bud block "$_GNEST" "4x nested sh -c + GLOBBED helper name"
+# A QUOTED redirect character handed to a wrapper as an OPERAND is not syntax. shlex
+# dequotes before this scan sees it, so `>` as a value is byte-identical to `>` as an
+# operator -- and the redirect stripper that fixed the case above then consumed it AND the
+# interpreter behind it. Both directions are wrong in opposite ways, so both are pinned:
+# strip in command position (a leftover target hides the verb), never strip under a
+# wrapper (the wrapper regime reads every token, and stripping eats real ones).
+for _q in ">" "<" ">>" "2>&1" "<<" ">|"; do
+    _bud block "env -u '$_q' $_HLP"      "wrapper operand is a literal [$_q]"
+    _bud block "sudo -u '$_q' $_HLP"     "sudo operand is a literal [$_q]"
+done
+# When the SEGMENTER gives up, the probe has to squeeze quoting and GLOB characters, not
+# just look for the literal filename. A Bash-VALID heredoc whose body contains an
+# apostrophe defeats this parser (a documented limitation -- the body is data to bash and
+# source to this gate), and `lease_slo[t].py` names no helper literally while the shell
+# expands it to one. Those two together were a bypass.
+#
+# The matching over-block is asserted in the same breath, because the obvious fix -- block
+# whenever the parse fails -- costs far more than it buys: heredocs carrying prose are
+# ordinary, and blocking every one containing an apostrophe is a constant benign failure.
+_GLOB_HLP="python3 hooks/gate-scripts/lib/lease_slo[t].py .claude fake 1"
+_bud block "$(printf '%s <<%sEOF%s\nit%ss a body\nEOF' "$_GLOB_HLP" "'" "'" "'")" \
+           "heredoc + apostrophe + globbed helper"
+_bud block "$_HLP \"unbalanced"                      "unbalanced quote + helper"
+_bud block "$_GLOB_HLP"                              "globbed helper, parseable"
+_bud allow "$(printf 'echo hi <<%sEOF%s\nit%ss fine\nEOF' "'" "'" "'")" \
+           "benign heredoc carrying an apostrophe"
+_bud allow "git commit -m \"it's a message\""        "apostrophe in a quoted -m"
+if [ "$_BUD_FAIL" -eq 0 ]; then
+    ok "the helper guard holds behind leading redirections and past the depth cap"
+else
+    no "helper guard redirect/nesting" "$_BUD_FAIL wrong"
 fi
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"

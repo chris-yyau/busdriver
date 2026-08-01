@@ -235,7 +235,7 @@ def _split_simple_commands(s):
 _WRAPPER_CMDS = ("sudo", "doas", "su", "runuser", "env", "nohup", "timeout", "nice",
                  "ionice", "setsid", "stdbuf", "unbuffer", "command", "builtin", "exec",
                  "xargs", "caffeinate", "chroot", "arch", "torify", "proxychains",
-                 "proxychains4", "watch")
+                 "proxychains4", "watch", "flock", "script")
 # Reserved words that PRECEDE a command. Without these, `if touch <marker>; then :; fi`
 # and `{ touch <marker>; }` pick `if` / `{` as the command word and are allowed.
 _RESERVED_SH = ("if", "then", "else", "elif", "fi", "do", "done", "while", "until",
@@ -340,10 +340,70 @@ def _first_word(words):
     return ""
 
 
+# A leading redirection, ATTACHED or bare, with an optional leading fd: `<`, `2>`, `>>`,
+# `</dev/null`, `2>&1`. KEEP IN STEP WITH cmdword._REDIR_RE.
+#
+# Needed because the two copies of this scan tokenize DIFFERENTLY. cmdword uses a plain
+# shlex, so `</dev/null` survives as ONE token and only this regex can see it. This file
+# uses punctuation_chars=True, which splits it into `<` + `/dev/null` -- so here the
+# operator is visible to _is_redir but its OPERAND is what lands in command position. Both
+# halves have to be handled, and handling only one is what left the guard open twice.
+# Every COMPLETE redirection operator, longest-first so `<<<` is not read as `<`. The
+# first version matched a single leading `<` only, so a here-string `<<< data` looked
+# like an ATTACHED redirect whose own text was `<`, its operand was never skipped, and
+# `data` became the command word -- the same regime failure this regex exists to stop.
+_REDIR_PREFIX_RE = re.compile(r"^(?:[0-9]+|&)?(?:<<<|<<-?|<>|<&|>>|>\||>&|<|>)")
+
+
+def _strip_redirs(toks):
+    """Drop redirect operators AND the operand each one consumes.
+
+    Filtering on _is_redir alone removed the operator and left the TARGET behind, so
+    `</dev/null sudo -u root python3 .../lease_slot.py` reduced to
+    `[/dev/null, sudo, ...]`. The basename of `/dev/null` is `null`, which is not a
+    wrapper, so the wrapper regime was never selected, the launcher was then peeled to its
+    OWN operand, and the interpreter behind it was never located -- the UNCONDITIONAL
+    helper guard measured ALLOW for the sudo, script and flock forms alike.
+
+    A leading file descriptor (`2` in `2>&1`) stays, and is already _skippable.
+    """
+    out, skip = [], False
+    for t in toks:
+        if skip:
+            skip = False
+            continue
+        if _is_redir(t):
+            skip = True          # the following token is this redirect TARGET, not a verb
+            continue
+        out.append(t)
+    return out
+
+
 def _starts_with_wrapper(words):
     # Is the COMMAND-POSITION word a wrapper? Position matters: a wrapper name appearing
     # only as an ARGUMENT to a read (grep sudo <marker>) must not change the decision.
+    #
+    # A LEADING REDIRECTION has to be stepped over first. `</dev/null` is not pure
+    # punctuation, so _is_redir does not strip it and it arrived here as a word whose
+    # basename is `null` -- not a wrapper, so this returned False, the conservative
+    # all-token regime was never selected, and the launcher preamble was then peeled up to
+    # its OWN operand. That allowed the UNCONDITIONAL helper guard to be walked past:
+    # `</dev/null script -q /dev/null python3 .../lease_slot.py` and the sudo and flock
+    # forms all measured ALLOW. Same defect as cmdword._starts_with_wrapper, and it has to
+    # be fixed in BOTH copies -- fixing only the library left this one open, because this
+    # is the copy the helper guard consults.
+    skip_next = False
     for w in words:
+        if skip_next:
+            skip_next = False
+            continue
+        m = _REDIR_PREFIX_RE.match(w)
+        if m:
+            # A BARE operator takes the FOLLOWING token as its target (`< in.txt cmd`);
+            # an attached one (`</dev/null`) carries its own. Without this the target
+            # became the command word and the answer was False all the same.
+            skip_next = m.group(0) == w
+            continue
         if _skippable(w) or _bn(w) in _RESERVED_SH:
             continue
         if _bn(w) in _TEST_OPEN_SH:
@@ -540,9 +600,51 @@ def _norm_for_scan(cmd):
 
 
 _MUTATING_HELPERS = ("lease_slot.py", "audit_append.py")
+
+# Bound the WIDTH of the helper scan. KEEP IN STEP WITH cmdword._MAX_SCAN_TOKENS, which
+# carries the full reasoning. The short version: the -c scan is O(tokens^2) because it
+# refuses the per-flag arity table, and this hook is registered with a 5s timeout that on
+# expiry kills it with NO decision on stdout -- which the harness reads as allow. Measured
+# before this bound existed, 128KB of padding cost 34s here. Tokens rather than bytes, so
+# a legitimately long single-token payload is untouched. Charged cumulatively across every
+# segment and recursion level.
+#
+# Exhaustion fails CLOSED, via _HELPER_UNSCANNED. An earlier version degraded to the
+# substring probe instead, arguing that any command big enough to exhaust this budget also
+# exhausts the cmdword budget, where exhaustion blocks. That argument does not hold, and
+# the gap it left was measured: this guard is UNCONDITIONAL, while the cmdword budget only
+# decides is_file_mod, which blocks solely WHILE a design review is pending. With nothing
+# pending the two do not overlap, so 4001 filler flags followed by `-m lease_slot` was
+# ALLOWED. A scan that was abandoned has not found "no helper" -- it has found nothing at
+# all, and nothing at all is the fail-CLOSED case.
+_HELPER_MAX_TOKENS = 4000
+_helper_budget = [0]
 # The same helpers as MODULE names. `python3 -m lease_slot` runs the file without
 # ever naming it, and `-m` was on the list of flags whose operand gets skipped.
 _MUTATING_MODULES = tuple(h[:-3] for h in _MUTATING_HELPERS)
+
+# Sentinel for a scan that was ABANDONED rather than completed. Not a helper name: it
+# means the walk ran out of budget or the command was too large to walk, so this file
+# cannot say whether a helper runs. The caller blocks on it, through its OWN action so
+# the operator gets an accurate message instead of being told to stop calling a script
+# named after a sentinel. Plain ASCII with no pipe: it crosses into shell through a
+# pipe-delimited line, and a NUL would be dropped or truncate the field.
+_HELPER_UNSCANNED = "UNSCANNABLE"
+
+
+def _helper_substring(text):
+    """Cheap probe: does `text` NAME a mutating helper anywhere, file OR module spelling?
+
+    Every fallback in this file that abandons the structured walk lands here, so the
+    MODULE spelling has to be covered: `python3 -m lease_slot` never writes the string
+    `lease_slot.py`, so probing the FILE names alone read a real invocation as absent.
+    That is the gap a padded command walked through once the token budget cut the walk
+    short -- measured ALLOW with nothing pending, against an UNCONDITIONAL guard.
+
+    The module stems subsume the file names (`lease_slot` is a substring of
+    `lease_slot.py`), so one pass over the stems answers both spellings.
+    """
+    return next((m + ".py" for m in _MUTATING_MODULES if m in text), None)
 
 
 def _module_helper(mod):
@@ -602,7 +704,23 @@ def _exec_payloads(words):
     # command nobody writes, and both helpers are safe by construction anyway (lease_slot
     # reads the mtime itself under a lock; audit_append has no writing CLI), so this
     # detector is defence in depth rather than the thing holding the line.
+    # Deduped ON INSERT. KEEP IN STEP WITH cmdword._executed_operands, which carries the
+    # reasoning: deduping at the END still materializes every duplicate first, and the
+    # no-break rescan builds them quadratically -- measured near 203 MiB for a 65KB input
+    # whose TIME was already bounded by the token budget.
     tok_payloads, str_payloads = [], []
+    _seen_t, _seen_s = set(), set()
+
+    def _add_tok(payload):
+        _k = tuple(payload)
+        if _k not in _seen_t:
+            _seen_t.add(_k)
+            tok_payloads.append(payload)
+
+    def _add_str(payload):
+        if payload not in _seen_s:
+            _seen_s.add(payload)
+            str_payloads.append(payload)
     # `-exec` is a find PREDICATE, so it only introduces a payload when some earlier word
     # in the segment is `find`. Treating it as a general convention read the -exec in
     # `bash -c "printf ..." -- -exec sh -c "..."` -- a print -- as an invocation.
@@ -612,7 +730,7 @@ def _exec_payloads(words):
         # A startup-command operand is an executed STRING wherever it appears, so it is
         # matched by its own shape rather than by knowing which pagers accept it.
         if w.startswith("+!") and len(w) > 2:
-            str_payloads.append(w[2:])
+            _add_str(w[2:])
         # ANY earlier token, not command position. Resolving command position needs the
         # end of the wrapper preamble, which needs per-flag arity -- and every
         # approximation of that was a fail-open (see above). So this over-blocks a read
@@ -627,30 +745,65 @@ def _exec_payloads(words):
                     break
                 payload.append(w2)
             if payload:
-                tok_payloads.append(payload)
+                _add_tok(payload)
             continue
         base = _bn(w)
         if base == "env":
             for j in range(i + 1, len(words)):
                 t2 = words[j]
                 if t2.startswith("--split-string="):
-                    str_payloads.append(t2.split("=", 1)[1]); break
+                    _add_str(t2.split("=", 1)[1]); break
                 if t2 in ("-S", "--split-string") and j + 1 < len(words):
-                    str_payloads.append(words[j + 1]); break
+                    _add_str(words[j + 1]); break
                 if t2.startswith("-S") and len(t2) > 2:
-                    str_payloads.append(t2[2:]); break
+                    _add_str(t2[2:]); break
         # KEEP IN STEP WITH cmdword._DASH_C_RUNNERS. ash and mksh were listed there and
         # missing here, so `ash -c "<helper>"` walked straight past this guard.
-        elif base in ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "su", "runuser"):
+        elif base in ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "su", "runuser",
+                      "flock", "script"):
             for j in range(i + 1, len(words)):
                 t2 = words[j]
-                if t2.startswith("--command="):
-                    str_payloads.append(t2.split("=", 1)[1]); break
-                if t2 == "--command" and j + 1 < len(words):
-                    str_payloads.append(words[j + 1]); break
-                if (t2.startswith("-") and not t2.startswith("--")
-                        and "c" in t2[1:] and j + 1 < len(words)):
-                    str_payloads.append(words[j + 1]); break
+                if t2.startswith("--"):
+                    # getopt_long accepts any UNAMBIGUOUS ABBREVIATION, so a shortened
+                    # --command runs exactly what the full spelling runs. Comparing
+                    # against the full spelling left every shorter one unread.
+                    name, eq, val = t2.partition("=")
+                    _LONG_RUN = ("command", "session-command")
+                    # su and runuser also execute --session-command, documented as
+                    # equivalent to -c, so the abbreviation test covers both spellings.
+                    if len(name) > 2 and any(l.startswith(name[2:]) for l in _LONG_RUN):
+                        if eq:
+                            _add_str(val)
+                        elif j + 1 < len(words):
+                            _add_str(words[j + 1])
+                    continue          # NO break, for the reason given below
+                if t2.startswith("-") and not t2.startswith("--") and "c" in t2[1:]:
+                    # ATTACHED or separated, and NOT decidable from the spelling: after
+                    # dequoting, a bundle whose tail is MORE FLAGS (bash takes the next
+                    # word as the program) and a payload written flush against the -c
+                    # are both a -c plus a tail. Both candidates are taken; each is
+                    # re-classified alone, so a tail that is really a flag letter
+                    # classifies as nothing and the extra one only ever adds a block.
+                    tail = t2[t2.index("c", 1) + 1:]
+                    if tail:
+                        _add_str(tail)
+                    if j + 1 < len(words):
+                        _add_str(words[j + 1])
+                    # NO break. Stopping at the first `c` assumed this token IS the -c,
+                    # which needs to know whether an EARLIER flag took it as an operand:
+                    # a log-file option hands the -c-looking token to itself as a
+                    # FILENAME, and stopping there missed the real program behind it.
+                    # That arity table is the one this gate refuses to keep, because it
+                    # fails OPEN when wrong. Every token that COULD be a -c operand is a
+                    # candidate instead; each is judged alone, so a filename is inert.
+                    continue
+    # Dedupe, order-preserving. KEEP IN STEP WITH cmdword._executed_operands, which
+    # carries the full reasoning: dropping the break makes every runner rescan every later
+    # c-looking option, so N repeated option pairs yield O(N^2) candidates but only O(N)
+    # distinct ones. Each candidate is judged alone and the verdicts are OR-ed, so a
+    # repeat can only re-derive the answer, never change it. Unbounded re-derivation here
+    # is not merely slow: this hook is registered with a 5s timeout, and a timeout kills
+    # it with NO decision on stdout, which the harness reads as allow.
     return tok_payloads, str_payloads
 
 
@@ -727,7 +880,25 @@ def _names_helper(text):
     squeezed = text
     for _ch in ("$", chr(39), chr(34), "*", "?", "[", "]"):
         squeezed = squeezed.replace(_ch, "")
-    return next((h for h in _MUTATING_HELPERS if h in squeezed), None)
+    return _helper_substring(squeezed)
+
+
+def _abandoned_scan_probe(text):
+    """Widest cheap probe for a helper NAME, for the paths where the walk cannot run.
+
+    _names_helper alone is not enough. Its squeezed backstop DELETES glob characters, so
+    `lease_slo[t].py` collapses to `lease_slot.py` and hits, while `lease_slo?.py`
+    collapses to `lease_slo.py` and misses: the `?` stands FOR a character rather than
+    beside one, and deleting it removes the very character that has to be there. So each
+    whitespace-separated word is also asked, as a PATTERN, whether the shell could expand
+    it onto a helper -- which is the question _glob_helper already answers for the
+    parseable path.
+    """
+    hit = _names_helper(text)
+    if hit:
+        return hit
+    return next((h for w in text.split() if any(c in w for c in "*?[")
+                 for h in [_glob_helper(w)] if h), None)
 
 
 def _helper_invoked(cmd, _depth=0, _full=None):
@@ -753,12 +924,20 @@ def _helper_invoked(cmd, _depth=0, _full=None):
     # stdin check below -- which needs the redirect that feeds the payload, and that
     # redirect lives OUTSIDE it -- has to read the outer text, not this fragment.
     _whole = cmd if _full is None else _full
+    if _depth == 0:
+        _helper_budget[0] = _HELPER_MAX_TOKENS
     if _PROC_SUBST_RE.search(_whole) and _INTERP_RE.search(_whole):
         hit = _names_helper(_whole)
         if hit:
             return hit
     if _depth > 3:
-        return next((h for h in _MUTATING_HELPERS if h in cmd), None)
+        # Fail CLOSED, for the same reason the token budget does. This was left returning
+        # the bare probe when the other two abandonment paths were converted, which is an
+        # inconsistency an attacker only has to find once: four nested `sh -c` layers
+        # around a GLOBBED helper name (`lease_slo[t].py`) reach here, match no literal
+        # stem, and measured ALLOW against the unconditional guard. Depth exhaustion is
+        # not "no helper found" any more than budget exhaustion is.
+        return _helper_substring(cmd) or _HELPER_UNSCANNED
     # Bash resolves ANSI-C quoting BEFORE it resolves the command word, so any token can
     # reach shlex still encoded -- not just the operand. A hex-escaped SWITCH resolves to
     # -m, and a scan for a literal `m` in the option token missed it entirely.
@@ -803,13 +982,25 @@ def _helper_invoked(cmd, _depth=0, _full=None):
     # across two quoted runs and therefore not found in the raw text.
     _dq = _dequote(cmd)
     if _INDIRECTION_RE.search(_dq):
-        _hit = next((h for h in _MUTATING_HELPERS if h in _dq), None)
+        _hit = _helper_substring(_dq)
         if _hit:
             return _hit
     segs, ok = _split_simple_commands(_norm_for_scan(cmd))
     if not ok:
-        # Unparseable: fall back to the raw substring, which is WIDER (it blocks more).
-        return next((h for h in _MUTATING_HELPERS if h in cmd), None)
+        # Unparseable -- most often a Bash-VALID heredoc whose BODY contains an
+        # apostrophe, which this segmenter models as shell source (a known limitation the
+        # block message below names). Probed with _names_helper, not the plain substring:
+        # it also squeezes quoting and GLOB characters, so `lease_slo[t].py` -- which the
+        # shell expands to a helper while naming none literally -- is caught here.
+        #
+        # NOT fail-closed, deliberately, and this is the one abandonment path where that
+        # is right. The others (budget, oversize, depth) are reached only by shapes with
+        # no honest form. This one is reached by a heredoc carrying prose,
+        # which is ordinary; blocking every heredoc containing an apostrophe trades a
+        # narrow bypass for a constant, benign failure. The squeezed probe closes the
+        # bypass without that cost. Residual: a name assembled at RUN time still escapes,
+        # which is the accepted ADR 0006 limitation, not a new one.
+        return _abandoned_scan_probe(cmd)
     for segtext in segs:
         try:
             lex = shlex.shlex(segtext, posix=True, punctuation_chars=True)
@@ -817,11 +1008,38 @@ def _helper_invoked(cmd, _depth=0, _full=None):
             lex.commenters = ""
             toks = list(lex)
         except ValueError:
-            return next((h for h in _MUTATING_HELPERS if h in segtext), None)
+            # Unbalanced quoting inside ONE segment: same reasoning and same probe as the
+            # segmenter above -- squeezed, so a globbed helper name is still caught.
+            return _abandoned_scan_probe(segtext)
+        # Charge before scanning: the O(tokens^2) walk below is what this bounds.
+        _helper_budget[0] -= len(toks)
+        if _helper_budget[0] < 0:
+            # Fail CLOSED. The earlier version returned only the substring probe, on the
+            # reasoning that the cmdword budget blocks the same shape anyway -- and that
+            # reasoning was WRONG in the one way that matters. This guard is
+            # UNCONDITIONAL: it blocks whether or not a design review is pending. The
+            # cmdword budget only decides is_file_mod, which blocks solely WHILE a review
+            # is pending. So with nothing pending the two do not overlap at all, and a
+            # command of 4001 filler flags followed by `-m lease_slot` measured ALLOW.
+            # Abandoning the scan cannot report "no helper" -- it can only report that it
+            # does not know, and not-knowing blocks here.
+            return _helper_substring(cmd) or _HELPER_UNSCANNED
         # Follow sub-programs FIRST: a payload handed to find -exec, env -S or a shell
         # -c is executed just as surely as the top level, and looking only at the top
         # level let `find . -exec python3 .../lease_slot.py .claude fake 1 ;` through.
-        _tokp, _strp = _exec_payloads([t for t in toks if not _is_redir(t)])
+        # WHICH token list, decided once and used for both scans below. Stripping is only
+        # safe in the command-position regime. After shlex has dequoted, a literal `>`
+        # handed to a wrapper as an OPERAND is byte-identical to a redirect operator --
+        # the case _is_redir warns about above -- so _strip_redirs would drop it AND the
+        # token after it. That is the interpreter: `env -u ">" python3 .../lease_slot.py`
+        # runs the helper and measured ALLOW. The wrapper regime scans EVERY token and so
+        # needs no stripping at all; the command-position regime needs it, because there a
+        # redirect TARGET left in place (</dev/null -> /dev/null) becomes the command
+        # word and hides the interpreter behind it. Two different failures, one on each
+        # side, which is why the choice is conditional rather than either one alone.
+        _wrapped = _starts_with_wrapper(toks)
+        _scan_toks = toks if _wrapped else _strip_redirs(toks)
+        _tokp, _strp = _exec_payloads(_scan_toks)
         for _p in _tokp:
             # shlex.quote per token, NOT a bare join. A bare join loses the boundary a
             # quoted token carried, so `-exec sh -c "python3 -I .../lease_slot.py ..."`
@@ -840,7 +1058,7 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         # -- `cat .../lease_slot.py`, `git diff -- .../audit_append.py`,
         # `echo lease_slot.py`, `python3 safe.py lease_slot.py` -- and blocking those
         # contradicts the read/mention contract the rest of this detector maintains.
-        words = [t for t in toks if not _is_redir(t)]
+        words = _scan_toks
         # Locate the interpreter. Two regimes, same reasoning as the verb scan above: a
         # wrapper can carry flags that take an OPERAND (`env -u FOO python3 ...`,
         # `sudo -u root python3 ...`), so peeling to the first non-flag word picks the
@@ -848,7 +1066,7 @@ def _helper_invoked(cmd, _depth=0, _full=None):
         # wrapper, look for the interpreter anywhere; otherwise require it in command
         # position, which is what keeps `echo python3 lease_slot.py` a mention.
         pyi = None
-        if _starts_with_wrapper(words):
+        if _wrapped:
             pyi = next((i for i, t in enumerate(words)
                         if _bn(t).startswith("python")), None)
         else:
@@ -1109,7 +1327,17 @@ try:
         # about. Same treatment as the marker writer below.
         # --self-check is exempt: it runs entirely in a temp dir, mutates no real state,
         # and the test suite invokes it through Bash.
-        _blocked_helper = _helper_invoked(cmd)
+        # Oversized commands skip the full walk, which is what the 5s hook timeout cannot
+        # afford; a substring probe stays cheap at any length. But NOT scanning is not the
+        # same as finding nothing, and the note that used to sit here -- that a command
+        # this large is independently called BASH_MOD by the classifier below -- does not
+        # rescue it: BASH_MOD only blocks WHILE a design review is pending, and this guard
+        # is unconditional. So an unscannable command fails CLOSED here too.
+        _blocked_helper = (_helper_invoked(cmd) if len(cmd) <= 65536
+                           else (_helper_substring(cmd) or _HELPER_UNSCANNED))
+        if _blocked_helper == _HELPER_UNSCANNED:
+            print("BLOCK_UNSCANNABLE|")
+            sys.exit(0)
         if _blocked_helper:
             print("BLOCK_MARKER_SCRIPT|" + _blocked_helper)
             sys.exit(0)
@@ -1199,6 +1427,13 @@ This is the PR Codex-lead artifact. It is written ONLY by the litmus PR review, 
 Gate markers are written by review infrastructure after a genuine review pass.
 Writing them manually forges compliance. Run /litmus or /blueprint-review instead.${WRITER_HINT}
 If you need to skip review, ask the user to run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/$STATE_DIR/skip-litmus.local"
+    exit 0
+fi
+
+if [ "$MARKER_ACTION" = "BLOCK_UNSCANNABLE" ]; then
+    block_emit "BLOCKED: this command is too large or too deeply nested for the gate to determine whether it invokes a gate-state helper.
+The check that guards those helpers runs on EVERY command, not only while a review is pending, so a scan it could not finish is refused rather than assumed safe.
+Split the command into smaller ones, or write long content to a file instead of passing it inline."
     exit 0
 fi
 
@@ -1545,6 +1780,15 @@ try:
         print("WRITE_EDIT|" + inp.get("file_path", inp.get("filePath", "")))
     elif tool == "Bash":
         cmd = inp.get("command", "")
+        # KEEP IN STEP WITH cmdword._MAX_CMD_CHARS. Classifying a command costs time
+        # linear in its length even after the token budgets bound the quadratic part, and
+        # this hook is registered with a 5s timeout whose expiry emits NO decision -- read
+        # by the harness as allow. So size is checked FIRST, before any parsing, and an
+        # oversized command is called a modification without being read. Fail CLOSED: the
+        # padding is attacker-chosen, so anything cleverer here can be aimed.
+        if len(cmd) > 65536:
+            print("BASH_MOD|" + cmd[:500])
+            sys.exit(0)
         # MUST stay in step with cmdword.FILE_MOD_PATTERNS: this list is the
         # import-failure fallback, so a verb missing here fails OPEN on exactly the
         # damaged-installation path the comment below promises is fail-CLOSED.

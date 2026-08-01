@@ -202,11 +202,55 @@ _DISPATCHERS = {
 _SHELLS = frozenset(("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash"))
 # su/runuser also take `-c <program>` and hand it to a shell, so their operand is
 # executable text too. Kept separate from _SHELLS because they are wrappers first.
-_DASH_C_RUNNERS = _SHELLS | frozenset(("su", "runuser"))
+# flock and script belong here for the SAME reason and were missed when they were added
+# as wrappers: a wrapper entry only covers the argv form. util-linux spells the other
+# half `flock FILE -c 'rm -rf src'` and `script -c 'rm -rf src' /dev/null`, where the
+# whole command is ONE token that equals no verb -- so closing the argv form alone left
+# the string form open. Any launcher added to _WRAPPERS must be checked for a -c form.
+_DASH_C_RUNNERS = _SHELLS | frozenset(("su", "runuser", "flock", "script"))
 # Bound the recursion. Depth is only reached by genuinely nested `bash -c 'bash -c ...'`
 # or nested substitutions; the cap stops a hand-crafted bomb from stalling a PreToolUse
 # hook. Hitting the cap returns the regex verdict (wider), never "allow".
 _MAX_DEPTH = 4
+
+# Bound the WIDTH, the sibling of the depth cap above and for the same reason. The -c scan
+# is O(tokens^2) by construction: it refuses the per-flag arity table (that table fails
+# OPEN when wrong), so every runner rescans every later c-looking option. Deduping the
+# candidates removes the repeated RE-classification but not the rescan, and the residual
+# still crosses the hook timeout -- 100KB of `sh -cx` pairs takes ~7s against a 5s
+# PreToolUse timeout, and a timeout kills the hook with NO decision on stdout, which the
+# harness reads as allow. Budgeting tokens rather than bytes is what keeps a legitimately
+# long command safe: a 20KB `python3 -c '<script>'` is THREE tokens, because the script is
+# one quoted word; only thousands of SEPARATE words reach this bound. Charged cumulatively
+# across every segment and every recursion level, so many small segments cannot sum past
+# it the way a per-segment cap allowed.
+#
+# Exhaustion returns True (BLOCK), and deliberately NOT the regex verdict the depth cap
+# returns. The depth cap is reachable by honest nesting, so degrading to a wider verdict
+# fits. 4000 separate words in one command is not honest shape, and "wider" is not "safe"
+# here: the padding is attacker-chosen, so a payload spelled to miss the regexes and
+# padded past the budget would be waved through. Blocking is the only branch that cannot
+# be aimed. Worst measured cost at this bound is ~0.35s, a 14x margin under the timeout.
+_MAX_SCAN_TOKENS = 4000
+
+# And bound the raw SIZE, because the token budget alone does not terminate the attack --
+# it only reprices it. Below the token bound the remaining cost is linear (normalize,
+# tokenize, regex), so padding still buys time without ever reaching the token cap. One
+# O(1) length test closes that, and it has to come FIRST -- every later bound charges for
+# work already done. 256K is ~1000x the longest command this repo has ever issued.
+#
+# CHARACTERS, not bytes, and the name says so. Every cost this bounds is per-character:
+# Python strings index by character, so shlex, the regexes and the segment walk all scale
+# with len(), and a 4-byte character costs exactly what a 1-byte one costs here. Bytes are
+# the right unit only for the pre-parse guard in pre-implementation-gate.sh, whose cost is
+# JSON decoding of the raw payload -- it uses wc -c for exactly that reason. Naming this
+# one BYTES while comparing len() invited the conclusion that multi-byte padding slips
+# past a 4x wider door than intended; worst measured shape at this bound is 0.7s.
+_MAX_CMD_CHARS = 65536
+
+# Reset by every _depth == 0 entry, so the public entry point is self-contained; the gate
+# runs as a one-shot subprocess and the test suite drives it through is_file_mod().
+_scan_budget = [0]
 
 # A function-definition header at the start of a command or right after a separator:
 # `mv() {`, `rm ( ) {`. Group 1 keeps the leading separator/whitespace so the segment
@@ -220,21 +264,46 @@ _FUNC_DEF_RE = re.compile(r"(^|[;&|]\s*)[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)")
 # Kept in step with _WRAPPER_CMDS in pre-implementation-gate.sh: a launcher missing
 # from ONE of the two lists is a fail-open in that half. `coproc` and `function` are
 # handled separately below (they are keywords whose command word cannot be located
-# reliably), and `time`/`script`/`flock` are absent on purpose — they are self-writing
-# verbs in the forge detector, but there the marker operand is also required, whereas
-# here `time npm test` would become a false positive.
+# reliably).
 # KEEP IN STEP WITH the gate's _WRAPPER_CMDS -- a launcher missing from either list is a
 # hole in that half. `watch` was missing from both: `watch --exec rm -rf src` resolved its
 # command word to `watch` and read as a plain observation, which the raw regex it replaced
-# had caught.
+# had caught. `flock` and `script` were missing for a REASON THAT DID NOT HOLD: they were
+# recorded as omitted to avoid a false positive, but membership here selects the
+# conservative all-token regime (see _runs_mod_verb), which needs no per-flag arity and
+# leaves `flock lock npm test` allowed -- while their absence made
+# `flock /tmp/x.lock rm -rf src` resolve to `flock` and read as read-only, a write the
+# raw regex they replaced had caught. A wrapper omitted on a stated rationale is still an
+# allowlist entry, and this is the fourth one in this file to have been a fail-open.
+#
+# The PRICE of membership, uniform and pre-existing: the wrapped regime scans every
+# token, so a verb NAME sitting in a wrapped command's data is read as the verb --
+# `flock lock grep rm notes.txt` blocks, exactly as `sudo grep rm notes.txt` and
+# `timeout 5 grep rm notes.txt` already did. It is not a flock/script quirk and it is not
+# fixable by a narrower regime for these two: locating the command word past a launcher
+# preamble needs per-flag arity, and that table fails OPEN (see _runs_mod_verb). The
+# over-block is the fail-CLOSED side, it is asserted in the tests so it stays deliberate,
+# and it costs one `--` or one shell quote to work around.
+#
+# RESIDUAL, stated rather than half-chased: this is an enumeration, so a launcher nobody
+# has listed still resolves to itself and reads as read-only. The family does not close
+# (`chpst`, `setpriv`, `eatmydata`, `systemd-run`, `uv run`, `poetry run`, ...), and the
+# fail-closed inversion -- treat an UNKNOWN command word as conservative -- is exactly
+# the all-token scan #519 removed, because it re-blocks `grep dd notes.txt`. The
+# containment is that a launcher only helps an actor who already has Bash, and every
+# gated WRITE still needs a lease that is logged. See ADR 0006 for the same call on
+# run-time-assembled names.
 _WRAPPERS = frozenset(("sudo", "doas", "su", "runuser", "env", "nohup", "timeout",
                        "nice", "ionice", "setsid", "stdbuf", "unbuffer", "command",
                        "builtin", "exec", "xargs", "caffeinate", "chroot", "arch",
-                       "torify", "proxychains", "proxychains4", "watch"))
+                       "torify", "proxychains", "proxychains4", "watch",
+                       "flock", "script"))
 _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 # A redirection operator, with or without a leading fd and with or without an attached
 # target: `<`, `>`, `2>`, `>>`, `&>`, `</dev/null`.
-_REDIR_RE = re.compile(r"^[0-9]*(?:<|>)[>&]?")
+# Every COMPLETE redirection operator, longest-first so `<<<` is not read as a bare `<`
+# (which left the here-string WORD in command position). KEEP IN STEP WITH the gate.
+_REDIR_RE = re.compile(r"^(?:[0-9]+|&)?(?:<<<|<<-?|<>|<&|>>|>\||>&|<|>)")
 # A WRITE redirection, with the target attached or in the next token. The `(?!&)` keeps
 # fd duplications (`2>&1`, `>&2`) out: those redirect a stream, they do not open a file.
 # `<>` opens for READING AND WRITING and creates the file if absent, so it belongs here
@@ -434,7 +503,19 @@ def _executed_operands(toks):
     `echo runuser --command="rm x" root` print text, they do not execute it, and an
     any-position scan turned both into blocked writes.
     """
-    out = []
+    # Deduped ON INSERT, not at the end. Collecting first and deduping after still
+    # MATERIALIZES every duplicate: dropping the break makes each runner rescan every
+    # later c-looking option, so N repeated pairs build O(N^2) entries before the set
+    # ever sees them -- a 65,008-character, 4,000-token input peaked near 203 MiB even
+    # though the token budget bounded the TIME. The membership test is the same test,
+    # moved to where it stops the growth instead of tidying up after it.
+    out, _seen = [], set()
+
+    def _add(cand):
+        if cand not in _seen:
+            _seen.add(cand)
+            out.append(cand)
+
     # When the command STARTS with a wrapper, do not stop at the first non-wrapper word:
     # a wrapper flag can take an operand (`sudo -u root bash -c "rm x"`), so breaking at
     # `root` never reaches the `bash -c` behind it, and the conservative token scan does
@@ -460,21 +541,49 @@ def _executed_operands(toks):
             # source, so treating its value as a program was simply wrong.
             for j in range(i + 1, n):
                 t2 = toks[j]
-                if t2.startswith("--command="):
-                    out.append(t2.split("=", 1)[1])
-                    break
-                if t2 == "--command" and j + 1 < n:
-                    out.append(toks[j + 1])
-                    break
-                if (t2.startswith("-") and not t2.startswith("--")
-                        and "c" in t2[1:] and j + 1 < n):
-                    out.append(toks[j + 1])
-                    break
+                if t2.startswith("--"):
+                    # getopt_long accepts any UNAMBIGUOUS ABBREVIATION, so `--com=PROG`
+                    # and `--c PROG` run exactly what `--command PROG` runs. Comparing
+                    # against the full spelling left every shorter one unread. NOT
+                    # --rcfile: that names a FILE to source, not inline source, and
+                    # `"command".startswith("rcfile")` is false, so it stays excluded.
+                    name, eq, val = t2.partition("=")
+                    _LONG_RUN = ("command", "session-command")
+                    # su and runuser also execute --session-command, documented as
+                    # equivalent to -c, so the abbreviation test covers both spellings.
+                    if len(name) > 2 and any(l.startswith(name[2:]) for l in _LONG_RUN):
+                        if eq:
+                            _add(val)
+                        elif j + 1 < n:
+                            _add(toks[j + 1])
+                    continue          # NO break, for the reason given below
+                if t2.startswith("-") and not t2.startswith("--") and "c" in t2[1:]:
+                    # ATTACHED or separated -- and, unlike the -m walk, NOT decidable
+                    # from the spelling. After dequoting, `bash -cl 'rm x'` (bash reads
+                    # the tail as MORE FLAGS and takes the next word) and
+                    # `sh -c'rm -rf src'` (program attached) are both `-c` plus a tail.
+                    # So both candidates are taken: each is re-classified on its own, a
+                    # tail that is really a flag letter classifies as nothing, and the
+                    # extra candidate can therefore only ever add a block.
+                    tail = t2[t2.index("c", 1) + 1:]
+                    if tail:
+                        _add(tail)
+                    if j + 1 < n:
+                        _add(toks[j + 1])
+                    # NO break. Stopping at the first `c` assumed this token IS the -c,
+                    # which needs to know whether an EARLIER flag consumed it as an
+                    # operand -- `script -O -cfoo -c PROG` hands `-cfoo` to -O as a
+                    # filename, and stopping there missed the real PROG behind it. That
+                    # arity table is the one this module refuses to keep (it fails OPEN
+                    # when wrong), so the question is inverted instead: every token that
+                    # COULD be a -c operand becomes a candidate, each is classified on
+                    # its own, and one that is really a filename classifies as nothing.
+                    continue
             i += 1
             continue
         if base == "eval":
             if i + 1 < n:
-                out.append(" ".join(toks[i + 1:]))
+                _add(" ".join(toks[i + 1:]))
             i += 1
             continue
         if base == "env":
@@ -484,18 +593,18 @@ def _executed_operands(toks):
             for j in range(i + 1, n):
                 t2 = toks[j]
                 if t2.startswith("--split-string="):
-                    out.append(t2.split("=", 1)[1])
+                    _add(t2.split("=", 1)[1])
                     break
                 # The two-argument long form is equally valid and was omitted, so the
                 # program stayed one token and matched no verb.
                 if t2 == "--split-string" and j + 1 < n:
-                    out.append(toks[j + 1])
+                    _add(toks[j + 1])
                     break
                 if t2 == "-S" and j + 1 < n:
-                    out.append(toks[j + 1])
+                    _add(toks[j + 1])
                     break
                 if t2.startswith("-S") and len(t2) > 2:
-                    out.append(t2[2:])
+                    _add(t2[2:])
                     break
             i += 1
             continue
@@ -506,6 +615,13 @@ def _executed_operands(toks):
             i += 1
             continue
         break          # a real command word: everything after it is data
+    # Dedupe, order-preserving. Dropping the break above made every runner rescan every
+    # later c-looking option, so a command repeating one option pair N times yields O(N^2)
+    # candidates -- but only O(N) DISTINCT ones. Each candidate is classified on its own
+    # and the verdicts are OR-ed, so a repeat can never change the answer, only re-derive
+    # it: 800 `-O sh -O -cecho` pairs cost 4.9s of pure recopying, past the 5s PreToolUse
+    # timeout that kills the hook WITHOUT a decision on stdout -- a fail-OPEN reachable
+    # from the command string alone. Same verdict, without the re-derivation.
     return out
 
 
@@ -537,6 +653,23 @@ def _starts_with_wrapper(toks):
     for t in toks:
         if skip_next:
             skip_next = False
+            continue
+        # A LEADING REDIRECTION is legal shell and must be stepped over here for the same
+        # reason _effective_command_word steps over it -- but the consequence of missing
+        # it is the opposite and worse. There, resolving the command word to `<` allowed
+        # the write behind it. HERE, `<` is simply not a wrapper name, so the answer was
+        # False: the conservative all-token regime was never selected, and the launcher
+        # was then peeled by _effective_command_word, which stops at the launcher's OWN
+        # operand. `</dev/null sudo -u root rm -rf src` resolved to `root` and
+        # `</dev/null script -q /dev/null rm -rf src` to `null` -- both read as read-only
+        # while executing rm. One leading character disabled the regime that exists
+        # precisely because a launcher preamble cannot be peeled without an arity table.
+        #
+        # Only the two callers of this function decide the REGIME, so an extra True here
+        # can only widen the scan, never narrow it -- the fail-CLOSED direction.
+        m = _REDIR_RE.match(t)
+        if m:
+            skip_next = m.group(0) == t   # a BARE operator takes the next token as target
             continue
         if _ASSIGN_RE.match(t) or t.startswith("-") or _NUMERIC_RE.match(t):
             continue
@@ -796,6 +929,10 @@ def is_file_mod(cmd, _depth=0):
     """
     if not cmd:
         return False
+    if len(cmd) > _MAX_CMD_CHARS:
+        return True                       # fail CLOSED -- see _MAX_CMD_CHARS
+    if _depth == 0:
+        _scan_budget[0] = _MAX_SCAN_TOKENS
     if _depth >= _MAX_DEPTH:
         return _regex_fallback(cmd)
     # Bash decodes the escapes in `$'...'` and drops the `$` BEFORE it resolves the
@@ -830,6 +967,10 @@ def is_file_mod(cmd, _depth=0):
             # fallback rather than silently dropping the segment — dropping it is the
             # only outcome here that could be a fail-OPEN.
             return _regex_fallback(cmd)
+        # Charge before scanning: the O(tokens^2) walk is what this bounds.
+        _scan_budget[0] -= len(toks)
+        if _scan_budget[0] < 0:
+            return True                   # fail CLOSED -- see _MAX_SCAN_TOKENS
         if _segment_is_mod(toks, _depth):
             return True
         # A REDIRECT inside an executed string writes just as surely as a verb does.

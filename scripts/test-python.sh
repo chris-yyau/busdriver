@@ -55,4 +55,8 @@ run_suite "blueprint-review/extract_review_json" \
   uv run --quiet --with 'pytest==9.0.3' \
     pytest skills/blueprint-review/scripts/lib/test_extract_review_json.py -q
 
+run_suite "litmus/parse_narrative" \
+  uv run --quiet --with 'pytest==9.0.3' \
+    pytest skills/litmus/scripts/lib/test_parse_narrative.py -q
+
 exit "$fail"

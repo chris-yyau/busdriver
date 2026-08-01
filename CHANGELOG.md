@@ -1,3 +1,10 @@
+## [1.100.12](https://github.com/chris-yyau/busdriver/compare/v1.100.11...v1.100.12) (2026-08-01)
+
+
+### Bug Fixes
+
+* **litmus:** refuse a verdict when the review is unreadable ([#546](https://github.com/chris-yyau/busdriver/issues/546)) ([cee3c7e](https://github.com/chris-yyau/busdriver/commit/cee3c7eb9807c6dbb916932d1638ef7d4aa450af)), closes [hi#severity](https://github.com/hi/issues/severity)
+
 ## [1.100.11](https://github.com/chris-yyau/busdriver/compare/v1.100.10...v1.100.11) (2026-07-31)
 
 

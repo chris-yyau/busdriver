@@ -48,7 +48,7 @@ _LOCK_WAIT = 0.05
 # else can shadow the import.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from audit_append import append_at, open_state_dir  # noqa: E402  (path fix above)
+from audit_append import append_at, open_state_dir, state_dir_unchanged  # noqa: E402  (path fix above)
 
 LEASE_DIRNAME = ".skip-design-review-lease.d"
 # The skip file name is a CONSTANT, not an argument. Accepting any slash-free name let a
@@ -232,7 +232,14 @@ def claim(state_dir, max_uses, min_age, max_age, now):
         if lfd is None:
             return (ERROR, 0)
         try:
-            return _claim_locked(sfd, lfd, max_uses, min_age, max_age, now)
+            res = _claim_locked(sfd, lfd, max_uses, min_age, max_age, now)
+            # A GRANT is a promise that the slot and its audit event are in the ledger a
+            # reader will open. If the state dir was renamed out from under us mid-claim
+            # they are in a detached tree instead, where every check still passes, so the
+            # grant is withdrawn rather than reported against a ledger nobody reads.
+            if res[0] == OK and not state_dir_unchanged(sfd, state_dir):
+                return (ERROR, 0)
+            return res
         finally:
             os.close(lfd)
     finally:

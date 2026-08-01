@@ -233,6 +233,34 @@ _wr allow "<<< data grep -n TODO src/impl.py"
 # the CURRENT behaviour so that closing it later trips this line deliberately.
 _wr allow "<<- EOF rm -rf src"
 
+# The same leading redirection, but in front of a RUNNER rather than a launcher. The
+# matrix above drives launchers only, and every launcher in it IS a wrapper -- so the
+# all-token regime fired and covered for the missing redirect skip. A runner is not a
+# wrapper, so that regime was never selected and the payload walk stopped ON the operator
+# instead, before the -c it exists to read. `</dev/null bash -c "rm -rf src"` therefore
+# yielded no operands at all and ran; the READ redirection does not trip the write-
+# redirect check either, so nothing downstream caught it. Two adjacent parser states,
+# one covered and one not, which is why this is driven as its own cross-product rather
+# than added as a single case. Found by the PR-mode deep review of this branch.
+for _r in "</dev/null" "< in.txt" "2>/dev/null" "0< /dev/null" "3</dev/null" \
+          "&>/dev/null" "<<< data" "<& 3"; do
+    for _c in "bash -c" "sh -c" "su -c" "flock -c" "script -c"; do
+        _wr block "$_r $_c 'rm -rf src'"
+    done
+    _wr block "$_r eval 'rm -rf src'"
+    # coproc reaches this through _first_word rather than the payload walk: it is
+    # deliberately NOT in _RESERVED, so an unskipped operator was reported as the first
+    # word and the _OPAQUE_INTRO test missed.
+    _wr block "$_r coproc rm -rf src"
+    # The over-block side must not move: a read payload behind the same operator is
+    # still a read, and an operator MENTIONED as data is not a redirection at all.
+    _wr allow "$_r bash -c 'npm test'"
+    _wr allow "$_r eval 'grep -n TODO src/impl.py'"
+done
+_wr allow "echo bash -c 'rm -rf src'"
+_wr allow "printf 'coproc rm -rf src'"
+_wr allow "grep -n '<' src/impl.py"
+
 # A WRITING redirection is itself the modification, so the payload cannot rescue it --
 # `>out.txt sudo -u root npm test` creates out.txt whatever npm does. Asserted separately
 # rather than folded into the loop above, where an `allow` expectation for the read
@@ -442,6 +470,22 @@ else ok "expired lease removes the skip file"; fi
 # The >=30s anti-self-bypass floor must survive the change to a lease.
 arm_skip 2
 check "a just-created skip file is refused (self-bypass floor intact)" block "$(write_decision)"
+
+# ...and the refusal must be reachable ONLY from a genuinely gated operation. The
+# rejection-and-poison lives inside _skip_lease_consume, which is invoked once, after
+# tool classification and every allowlist -- so a read-only command issued during the
+# window never reaches it and cannot destroy the operator's file. That is the recovery
+# protocol's load-bearing claim ("wait 35s, do not verify"), and it was documented in
+# prose on both sides of the change while only the pre-lease half was ever pinned.
+arm_skip 2
+check "a read-only command during the window is not gated" allow "$(bash_decision "ls -la")"
+if [ -f "$WORK/.claude/skip-design-review.local" ]; then
+    ok "a read-only command does not destroy a young skip file"
+else
+    no "a read-only command does not destroy a young skip file" "the gate consumed it"
+fi
+# The floor still bites the moment a gated operation arrives, young file and all.
+check "the floor still refuses the young file on a real write" block "$(write_decision)"
 
 # The ledger is what BOUNDS the lease, so it is gate state like the skip file itself.
 # Unprotected, the agent could spend one use on `rm -rf <ledger>` and reset the ceiling

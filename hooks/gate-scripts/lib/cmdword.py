@@ -237,7 +237,7 @@ _MAX_SCAN_TOKENS = 4000
 # it only reprices it. Below the token bound the remaining cost is linear (normalize,
 # tokenize, regex), so padding still buys time without ever reaching the token cap. One
 # O(1) length test closes that, and it has to come FIRST -- every later bound charges for
-# work already done. 256K is ~1000x the longest command this repo has ever issued.
+# work already done. 64K is ~250x the longest command this repo has ever issued.
 #
 # CHARACTERS, not bytes, and the name says so. Every cost this bounds is per-character:
 # Python strings index by character, so shlex, the regexes and the segment walk all scale
@@ -524,8 +524,35 @@ def _executed_operands(toks):
     # strict preamble-only walk, which is what keeps `echo su -c "rm x"` allowed.
     scan_all = _starts_with_wrapper(toks)
     i, n = 0, len(toks)
+    skip_next = False
     while i < n:
         t = toks[i]
+        if skip_next:
+            skip_next = False
+            i += 1
+            continue
+        # A LEADING REDIRECTION is legal shell and sits in the preamble, so it must be
+        # stepped over here exactly as _starts_with_wrapper and _effective_command_word
+        # step over it. Without this the walk fell through to the `break` below, treating
+        # `<` as a real command word and stopping BEFORE the runner behind it:
+        # `</dev/null bash -c "rm -rf src"` yielded NO operands at all, so the -c payload
+        # was never classified. Nothing downstream caught it either -- a READ redirection
+        # does not trip the write-redirect check, and `bash` is a runner rather than a
+        # wrapper, so _starts_with_wrapper had already returned False. One leading
+        # character disabled the only inspection that reads an executed payload. Same
+        # family as the _effective_command_word and _starts_with_wrapper cases: seven
+        # spellings leaked, including `2>/dev/null eval ...`, `<<<x sh -c ...` and the
+        # numeric-fd form `3</dev/null bash -c ...`.
+        #
+        # The target skip is suppressed under scan_all: that regime means "inspect every
+        # token" precisely because a wrapper flag can take an operand, so consuming a
+        # token as a redirection target there could step OVER a runner. Skipping the
+        # operator alone is enough, and never narrows the wrapped scan.
+        m = _REDIR_RE.match(t)
+        if m:
+            skip_next = (not scan_all) and m.group(0) == t
+            i += 1
+            continue
         if _ASSIGN_RE.match(t) or t.startswith("-") or _NUMERIC_RE.match(t):
             i += 1
             continue
@@ -629,8 +656,23 @@ def _first_word(toks):
     """First token in COMMAND position: assignments, flags, numeric operands and shell
     reserved words are skipped, so `then coproc rm x` and `{ coproc rm x` both report
     `coproc`. coproc/function are NOT in _RESERVED, so they are reported exactly where
-    they sit, while a mere mention (`echo coproc rm x`) still reports `echo`."""
+    they sit, while a mere mention (`echo coproc rm x`) still reports `echo`.
+
+    A LEADING REDIRECTION is stepped over for the same reason as in the three sibling
+    walks: without it `</dev/null coproc rm -rf src` reported `<`, the _OPAQUE_INTRO test
+    missed, the conservative all-token regime was never selected, and the write ran. Both
+    callers use this only to WIDEN the scan, so an extra name here can only add a block.
+    A mention is still safe: the walk returns at the first real command word, so
+    `grep -n "<" notes.txt` reports `grep` and never reaches the operand."""
+    skip_next = False
     for t in toks:
+        if skip_next:
+            skip_next = False
+            continue
+        m = _REDIR_RE.match(t)
+        if m:
+            skip_next = m.group(0) == t   # a BARE operator takes the next token as target
+            continue
         if _ASSIGN_RE.match(t) or t.startswith("-") or _NUMERIC_RE.match(t):
             continue
         b = _basename(t)

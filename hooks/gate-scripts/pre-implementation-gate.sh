@@ -120,6 +120,104 @@ fi
 INPUT=$(cat 2>/dev/null || true)
 [ -z "$INPUT" ] && exit 0
 
+# ── Oversized Bash payload: block without parsing ─────────────────────
+# This hook is registered with a 5s timeout, and a timeout kills it with NO decision on
+# stdout — which the harness reads as ALLOW. So cost is a correctness property here, not
+# just a latency one. The python-side budgets (cmdword._MAX_SCAN_TOKENS / _MAX_CMD_CHARS
+# and _HELPER_MAX_TOKENS) bound the O(tokens^2) scans, but the gate decodes this payload
+# in several separate python3 blocks, and that per-block JSON cost alone reached ~7s at
+# 8MB. One length test before any of them bounds every downstream stage at once.
+#
+# TOOL-AGNOSTIC, and measured in BYTES. Both properties are deliberate, and the first
+# version of this guard got both wrong:
+#
+#   * It matched two literal spellings of `"tool_name":"Bash"` to scope itself to Bash.
+#     But the parsers below accept `d.get("tool_name", d.get("toolName", ""))`, and JSON
+#     permits whitespace before the colon and \u escapes in the key -- so `toolName`
+#     alone walked past the guard. The defect was not that it matched a spelling -- it is
+#     that an UNRECOGNIZED spelling relaxed the guard. The scoping is inverted below: the
+#     strict ceiling is the default, and only a recognized Write/Edit raises it. An
+#     unknown spelling now gets the STRICT limit, so guessing wrong over-blocks instead of
+#     waving through, and a Bash payload dressed as a Write buys nothing -- the Write path
+#     is gated on file_path and executes no command.
+#   * It compared ${#INPUT}, which counts CHARACTERS under a UTF-8 locale, against a
+#     threshold justified by per-byte cost. Four-byte characters make those differ by 4x.
+#     LC_ALL=C makes the SAME expansion count bytes.
+#
+# Counted with builtins only, deliberately. The obvious spelling is `wc -c`, and it was
+# tried: it fails-CLOSED-by-accident on the python3-missing path, where the gate runs
+# under a deliberately stripped PATH that carries no wc and no tr. The substitution came
+# back empty, `[ "" -gt N ]` raised, and the ERR trap turned "nothing pending" into a
+# block. printf and ${#} are builtins, so this survives an empty PATH.
+#
+# TWO ceilings, because the two payload shapes have genuinely different honest sizes. A
+# Write/Edit carries file CONTENT and is legitimately megabytes; the gate reads only its
+# file_path and never scans the body. Everything else -- a Bash COMMAND above all -- has
+# no honest form at 256KB, and the per-command budgets below cannot save it: they
+# short-circuit CLASSIFICATION, but the gate still JSON-decodes this payload in several
+# separate python3 blocks, and that alone measured 3.9s at 1MB. A single flat 4MB ceiling
+# was tried and is what let a 262130-character command sit at 7.8s, past the timeout.
+#
+# Sizes are of the RAW payload, so the Write ceiling is generous enough to cover JSON
+# escaping of the content (ensure_ascii turns one 4-byte character into 12 bytes).
+_INPUT_BYTES=$(LC_ALL=C; printf '%s' "${#INPUT}")
+# Unmeasurable is the failure case, not the happy path. A `${_INPUT_BYTES:-0}` default
+# would SKIP the guard on an empty value, which is a silent fail-open in the one branch
+# that exists to stop one. Builtins cannot actually return a non-number here; this is the
+# branch being pointed in the correct direction rather than a reachable path.
+case "$_INPUT_BYTES" in
+    ''|*[!0-9]*)
+        block_emit "Pre-implementation gate could not measure its own input size — blocking as precaution. If stuck, create $STATE_DIR/skip-design-review.local in your terminal."
+        exit 0
+        ;;
+esac
+# HARD cap first, applied to every payload with no discriminator at all, so the parse
+# below is itself bounded: nothing legitimate exceeds the most generous ceiling, and a
+# payload that does is refused before anything reads it.
+if [ "$_INPUT_BYTES" -gt 8388608 ]; then
+    block_emit "Tool input too large to classify ($_INPUT_BYTES bytes, hard limit 8388608). The pre-implementation gate must read this payload to decide whether it modifies files, and one this size cannot be scanned within the hook timeout — so it is refused rather than waved through. Split the command, or write the content to a file in smaller pieces."
+    exit 0
+fi
+# Which tool this is, from the TOP-LEVEL discriminator only. Substring matching over the
+# raw payload was tried twice and spoofed twice: `*'"Write"'*` matches the string anywhere,
+# so a Bash request carrying tool_input.description="Write" raised its own ceiling from
+# 256KB to 8MB and reached the marker and effective-CWD parsers with a megabyte of
+# command -- measured at 5.5s, past the timeout. Before that, matching two literal
+# `"tool_name":"Bash"` spellings missed the `toolName` alias. There is no glob that
+# reliably locates a top-level key in JSON (whitespace, key order, \u escapes), so this
+# stops guessing and asks the parser. One decode of an already-capped payload, and it is
+# the SAME accessor the classifier blocks below use, so the two cannot disagree.
+#
+# Anything that is not positively identified as Write/Edit/MultiEdit keeps the strict
+# ceiling: unparseable input, a missing python3, an unexpected shape. Each of those is a
+# large NON-write being refused, which is the safe direction; the cost is that a large
+# legitimate write is refused too while python3 is missing, and in that state the gate is
+# already degraded to its pure-shell path.
+_INPUT_CEILING=262144
+# -I (isolated), like every other stdin parser below. Without it the process CWD lands on
+# sys.path, and this gate runs with its CWD inside the repo it is gating -- so a repo-root
+# json.py would both execute inside the gate and be free to return tool_name "Write",
+# lifting a Bash payload from 256KB to 8MB and restoring the timeout fail-open this ceiling
+# exists to close. Pinned by a sentinel test; a convention alone did not hold it.
+if command -v python3 >/dev/null 2>&1; then
+    _TOOL="$(printf '%s' "$INPUT" | python3 -I -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    t = d.get("tool_name", d.get("toolName", "")) if isinstance(d, dict) else ""
+except Exception:
+    t = ""
+sys.stdout.write(t if isinstance(t, str) else "")
+' 2>/dev/null || true)"
+    case "$_TOOL" in
+        Write|Edit|MultiEdit) _INPUT_CEILING=8388608 ;;
+    esac
+fi
+if [ "$_INPUT_BYTES" -gt "$_INPUT_CEILING" ]; then
+    block_emit "Tool input too large to classify ($_INPUT_BYTES bytes, limit $_INPUT_CEILING). The pre-implementation gate must read this payload to decide whether it modifies files, and one this size cannot be scanned within the hook timeout — so it is refused rather than waved through. Split the command, or write the content to a file in smaller pieces."
+    exit 0
+fi
+
 # ── Unconditional gate marker protection ──────────────────────────────
 # These files control review gate bypass. Protect them ALWAYS, not just
 # when design review is pending. Without this, Claude can forge a review

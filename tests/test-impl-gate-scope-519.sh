@@ -63,6 +63,20 @@ case "$BASE" in
        printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"; exit 1 ;;
 esac
 
+# The gate embeds its parsers as SINGLE-QUOTED python blocks, so one apostrophe in one
+# comment inside them closes the block: the text after it is read as shell, a stray
+# `<word>` becomes a redirect, and the parser silently stops running. `bash -n` passes
+# on it (the result is valid syntax, just not the intended program), so the invariant is
+# pinned HERE instead: a clean run writes nothing to stderr. This has regressed three
+# times; it is a test rather than a comment for exactly that reason.
+GATE_NOISE="$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"ls -la"}}' "$WORK" \
+              | (cd "$WORK" && bash "$GATE") 2>&1 >/dev/null)"
+if [[ -z "$GATE_NOISE" ]]; then
+    ok "the gate runs with an empty stderr (embedded python blocks are intact)"
+else
+    no "gate stderr" "$GATE_NOISE"
+fi
+
 bash_decision() {   # <command>  -> gate stdout
     python3 -c '
 import json,sys
@@ -1267,6 +1281,192 @@ if [ "$_BUD_FAIL" -eq 0 ]; then
     ok "the helper guard holds behind leading redirections and past the depth cap"
 else
     no "helper guard redirect/nesting" "$_BUD_FAIL wrong"
+fi
+
+# ── The gate must DECIDE within its own hook timeout ────────────────────────
+# Cost is a correctness property for this hook, not a latency one: hooks.json registers
+# it at timeout 5, and a timeout kills it with NO decision on stdout, which the harness
+# reads as ALLOW. So a command that merely takes long enough to classify IS a bypass, and
+# it is reachable from the command string alone.
+#
+# The -c scan is O(tokens^2) by construction (it refuses the per-flag arity table, which
+# fails OPEN when wrong), so padding a command with repeated runner/option pairs used to
+# buy that time: 12.8KB cost 4.9s in is_file_mod alone, and 128KB cost 34s end to end.
+# Bounded now by cmdword._MAX_SCAN_TOKENS/_MAX_CMD_CHARS, _HELPER_MAX_TOKENS, and the
+# split pre-parse ceiling. Each case must still come back BLOCK -- fast-and-allowed would
+# be the same bypass with extra steps.
+#
+# Asserted at 2.5s, HALF the 5s hook timeout, deliberately. Asserting at the timeout
+# itself accepts any margin down to zero: a variant measured at 3.92s here passes a 5s
+# assertion while being one slow CI box away from the fail-open it is supposed to
+# prevent. The budget is a property of the slowest machine that will ever run this hook,
+# not of this one, so the test demands room rather than a bare pass.
+#
+# The payload is built and piped INSIDE python, never passed as an argv word: the gate
+# reads its command from stdin JSON and is not bound by ARG_MAX, but bash_decision passes
+# argv, so routing the megabyte case through it fails with E2BIG and tests the harness
+# rather than the gate.
+_padded_decision() {   # <kb> -> gate stdout
+    python3 -c '
+import json, sys
+n = int(sys.argv[2]) * 1024 // 7
+cmd = "script " + "sh -cx " * n + "-- env -S " + chr(39) + "rm -rf src" + chr(39)
+sys.stdout.write(json.dumps({"tool_name": "Bash", "cwd": sys.argv[1],
+                             "tool_input": {"command": cmd}}))' "$WORK" "$1" \
+    | (cd "$WORK" && bash "$GATE") 2>/dev/null
+}
+_TIMED_FAIL=0
+for _kb in 16 128 2048; do
+    _T0="$(python3 -c 'import time; print(time.time())')"
+    _OUT="$(_padded_decision "$_kb")"
+    _EL="$(python3 -c "import time; print('%.2f' % (time.time() - $_T0))")"
+    case "$_OUT" in
+        *'"block"'*) ;;
+        *) _TIMED_FAIL=$((_TIMED_FAIL + 1))
+           printf "  FAIL  %sKB padded command was ALLOWED\n" "$_kb" ;;
+    esac
+    if [ "$(python3 -c "print(1 if $_EL >= 2.5 else 0)")" = "1" ]; then
+        _TIMED_FAIL=$((_TIMED_FAIL + 1))
+        printf "  FAIL  %sKB padded command took %ss (budget is 2.5s = half the 5s hook timeout)\n" "$_kb" "$_EL"
+    fi
+done
+if [ "$_TIMED_FAIL" -eq 0 ]; then
+    ok "padded commands still block, inside the 5s hook timeout (16KB/128KB/2MB)"
+else
+    no "padded-command timing" "$_TIMED_FAIL assertion(s) failed"
+fi
+
+# The same bound must not be escapable by how the payload SPELLS itself. The first cut of
+# the pre-parse guard scoped itself to two literal `"tool_name":"Bash"` spellings and
+# measured ${#INPUT}, which counts characters; the parsers accept `toolName` as well, and
+# four-byte characters make characters and bytes differ by 4x. Both are caller-chosen, so
+# both are pinned here: a guard scoped by a spelling the caller picks is not a guard.
+#
+# Three things this has to get right, each of which a previous cut got wrong:
+#
+#  1. The payload must be big enough to REACH the guard. A first cut used ~1MB of many
+#     small tokens and passed even with the guard defeated, because the TOKEN budget
+#     disposes of that shape on its own -- a test certifying a guard it never reached.
+#     The padding here is ONE long token, so the token budget cannot be what stops it.
+#  2. ensure_ascii must be FALSE. json.dumps defaults to True, which ships a 4-byte
+#     character as a 12-byte ASCII surrogate escape -- so the "4-byte padding" case was
+#     never actually putting multibyte bytes on the wire, and the shape that genuinely
+#     cost 7.8s went untested. Written as bytes for the same reason.
+#  3. Sizes must straddle the ceiling. Below it the deep path runs and the per-command
+#     budgets must hold; above it the pre-parse guard must short-circuit. Testing only
+#     one side leaves the other free to regress.
+_SPELL_FAIL=0
+_spelled_decision() {   # <key> <pad-char-codepoint> <chars> -> gate stdout
+    python3 -c '
+import json, sys
+key, cp, n = sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+cmd = chr(cp) * n + "; rm -rf src"
+sys.stdout.buffer.write(json.dumps(
+    {key: "Bash", "cwd": sys.argv[1], "tool_input": {"command": cmd}},
+    ensure_ascii=False).encode("utf-8"))' "$WORK" "$1" "$2" "$3" \
+    | (cd "$WORK" && bash "$GATE") 2>/dev/null
+}
+for _key in "tool_name" "toolName"; do
+    for _cp in 120 65536; do          # 1-byte and 4-byte padding characters
+        # 60000 chars sits under both ceilings (the deep path RUNS); 262130 is the exact
+        # width from the review that cost 7.8s end to end before the ceiling was split.
+        for _n in 60000 262130; do
+            _T0="$(python3 -c 'import time; print(time.time())')"
+            _OUT="$(_spelled_decision "$_key" "$_cp" "$_n")"
+            _EL="$(python3 -c "import time; print('%.2f' % (time.time() - $_T0))")"
+            case "$_OUT" in
+                *'"block"'*) ;;
+                *) _SPELL_FAIL=$((_SPELL_FAIL + 1))
+                   printf "  FAIL  key=%s cp%s n=%s was ALLOWED\n" "$_key" "$_cp" "$_n" ;;
+            esac
+            if [ "$(python3 -c "print(1 if $_EL >= 2.5 else 0)")" = "1" ]; then
+                _SPELL_FAIL=$((_SPELL_FAIL + 1))
+                printf "  FAIL  key=%s cp%s n=%s took %ss (budget is 2.5s = half the 5s hook timeout)\n" \
+                       "$_key" "$_cp" "$_n" "$_EL"
+            fi
+        done
+    done
+done
+# A Write/Edit gets the generous ceiling by design -- its payload is file CONTENT and the
+# gate reads only file_path. Pinned so that raising the strict limit to "fix" a large
+# write, or dropping the Write exemption, both show up here rather than in production.
+_BIG_WRITE="$(python3 -c '
+import json, sys
+sys.stdout.buffer.write(json.dumps(
+    {"tool_name": "Write", "cwd": sys.argv[1],
+     "tool_input": {"file_path": sys.argv[1] + "/src/impl.py", "content": "x" * 3000000}}
+).encode())' "$WORK" | (cd "$WORK" && bash "$GATE") 2>/dev/null)"
+case "$_BIG_WRITE" in
+    *'"block"'*) ;;
+    *) _SPELL_FAIL=$((_SPELL_FAIL + 1))
+       printf "  FAIL  a 3MB Write to an impl path was ALLOWED (design gate bypassed)\n" ;;
+esac
+# The generous ceiling must key off the TOP-LEVEL tool discriminator, never off the string
+# appearing somewhere in the payload. A Bash request that puts "Write" in a sibling field
+# (description is a real, supported field) raised its own ceiling 256KB -> 8MB and reached
+# the marker and effective-CWD parsers with a megabyte of command: measured at 5.5s
+# against a 5s timeout, i.e. a fail-open bought with one word of attacker-chosen text.
+for _decoy in Write Edit MultiEdit; do
+    for _key in tool_name toolName; do
+        _T0="$(python3 -c 'import time; print(time.time())')"
+        _OUT="$(python3 -c '
+import json, sys
+key, decoy = sys.argv[2], sys.argv[3]
+cmd = chr(0x10000) * 262130 + "; rm -rf src"
+sys.stdout.buffer.write(json.dumps(
+    {key: "Bash", "cwd": sys.argv[1],
+     "tool_input": {"command": cmd, "description": decoy}},
+    ensure_ascii=False).encode("utf-8"))' "$WORK" "$_key" "$_decoy" \
+        | (cd "$WORK" && bash "$GATE") 2>/dev/null)"
+        _EL="$(python3 -c "import time; print('%.2f' % (time.time() - $_T0))")"
+        case "$_OUT" in
+            *'"block"'*) ;;
+            *) _SPELL_FAIL=$((_SPELL_FAIL + 1))
+               printf "  FAIL  %s=Bash with description=%s was ALLOWED\n" "$_key" "$_decoy" ;;
+        esac
+        if [ "$(python3 -c "print(1 if $_EL >= 2.5 else 0)")" = "1" ]; then
+            _SPELL_FAIL=$((_SPELL_FAIL + 1))
+            printf "  FAIL  %s=Bash description=%s took %ss (budget 2.5s)\n" \
+                   "$_key" "$_decoy" "$_EL"
+        fi
+    done
+done
+if [ "$_SPELL_FAIL" -eq 0 ]; then
+    ok "the size bound holds across tool_name/toolName and 1-byte/4-byte padding"
+else
+    no "size-bound spelling independence" "$_SPELL_FAIL assertion(s) failed"
+fi
+
+# The discriminator must not import from the repo it is gating ─────────────
+# The ceiling above is chosen from the parsed tool_name, so whatever parses that name
+# is part of the boundary. A bare `python3 -c` puts the process CWD on sys.path, and the
+# gate runs with CWD inside the repo -- so a repo-root json.py both executes arbitrary
+# code inside the gate and can return {"tool_name": "Write"}, lifting a Bash payload from
+# the 256KB ceiling to 8MB and restoring the timeout fail-open the ceiling exists to close.
+# Every other stdin parser in the gate already spells this `python3 -I -c`; this one did
+# not, which is exactly the kind of drift a convention cannot enforce on its own.
+#
+# Asserted by SENTINEL, not by the decision. The first cut of this test sent a 300KB
+# benign command and asserted "block" -- and passed against the KNOWN-BROKEN gate, because
+# 300KB also exceeds cmdword._MAX_CMD_CHARS, which fails closed on its own. The verdict was
+# identical with and without the hijack, so the assertion certified nothing. What the
+# hijack actually buys is the SLOW path (a timeout yields no decision, which reads as
+# allow) and arbitrary execution inside the gate. Importing is the boundary, so importing
+# is what gets asserted -- directly, with no timing flake.
+#
+# The gate's other stdin parsers already pass -I, so a tripped sentinel implicates this
+# discriminator specifically.
+printf 'import pathlib\npathlib.Path("%s/PWNED").write_text("x")\ndef load(f):\n    return {"tool_name": "Write"}\n' \
+       "$WORK" > "$WORK/json.py"
+rm -f "$WORK/PWNED"
+printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"ls -la"}}' "$WORK" \
+    | (cd "$WORK" && bash "$GATE") >/dev/null 2>&1
+rm -f "$WORK/json.py"
+if [ -e "$WORK/PWNED" ]; then
+    rm -f "$WORK/PWNED"
+    no "discriminator import isolation" "the gate imported a repo-root json.py — needs python3 -I"
+else
+    ok "the gate does not import a repo-root json.py (isolated mode)"
 fi
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"

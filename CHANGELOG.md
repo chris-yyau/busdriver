@@ -1,3 +1,24 @@
+## [1.100.12](https://github.com/chris-yyau/busdriver/compare/v1.100.11...v1.100.12) (2026-08-01)
+
+
+### Bug Fixes
+
+* **litmus:** refuse a verdict when the review is unreadable ([#546](https://github.com/chris-yyau/busdriver/issues/546)) ([cee3c7e](https://github.com/chris-yyau/busdriver/commit/cee3c7eb9807c6dbb916932d1638ef7d4aa450af)), closes [hi#severity](https://github.com/hi/issues/severity)
+
+## [1.100.11](https://github.com/chris-yyau/busdriver/compare/v1.100.10...v1.100.11) (2026-07-31)
+
+
+### Bug Fixes
+
+* **careful-guard:** stand down in auto mode, keep SQL live everywhere ([#543](https://github.com/chris-yyau/busdriver/issues/543)) ([f847be8](https://github.com/chris-yyau/busdriver/commit/f847be806b5d906ae5f0aff093ce4a4765eb99fa))
+
+## [1.100.10](https://github.com/chris-yyau/busdriver/compare/v1.100.9...v1.100.10) (2026-07-28)
+
+
+### Bug Fixes
+
+* **ci:** close the required-checks.lock drift fail-open ([#530](https://github.com/chris-yyau/busdriver/issues/530)) ([#534](https://github.com/chris-yyau/busdriver/issues/534)) ([a95f6d5](https://github.com/chris-yyau/busdriver/commit/a95f6d597e2d10250b34a1f4537cb7f6984788d4))
+
 ## [1.100.9](https://github.com/chris-yyau/busdriver/compare/v1.100.8...v1.100.9) (2026-07-28)
 
 

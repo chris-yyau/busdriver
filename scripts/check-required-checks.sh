@@ -2,7 +2,7 @@
 #
 # check-required-checks.sh — verify required-checks.lock matches reality.
 #
-# Drift surfaces in four places, all of which can silently break merge:
+# Drift surfaces in five places, all of which can silently break merge:
 #
 #   (a) Lock vs workflow source:  a required check's `name:` (or job key
 #       when no name is set) was renamed in a .yml without updating the
@@ -26,14 +26,28 @@
 #       collisions, copy-paste duplicates, and matrix template clashes
 #       across workflows.
 #
-# Runtime order: (a) and (d) are local (no API) and run first; (b) and
-# (c) require gh API calls and run after. Output labels appear in the
-# order they ran — `[a]`, `[d]`, `[b]`, `[c]` — not alphabetically.
-# `--local-only` runs (a) and (d) only.
+#   (e) Lock classification completeness: a workflow posts a status check
+#       that the lock knows nothing about — neither `required` nor
+#       `advisory`. (a) cannot see this (it walks lock → workflows, so an
+#       absent entry is never looked up) and (b) only catches it once the
+#       server already requires the name. Because `relevant-check-status.sh`
+#       treats lock.required as an ALLOWLIST, an unclassified-but-required
+#       check is filtered out of the merge decision entirely — invisible,
+#       not pending — so failing required checks can report as green (#530).
+#
+# Runtime order: (a), (d) and (e) are local (no API) and run first; (b)
+# and (c) require gh API calls and run after. Output labels appear in the
+# order they ran — `[a]`, `[d]`, `[e]`, `[b]`, `[c]` — not alphabetically.
+# `--local-only` runs (a), (d) and (e).
+#
+# Only (a), (d) and (e) can run in CI on this repo: (b) and (c) need
+# `administration: read` / check-run reads that GITHUB_TOKEN cannot be
+# granted, so tests.yml invokes `--local-only`. (e) exists precisely so the
+# token-free subset still guards the failure mode (b) was meant to catch.
 #
 # Modes:
-#   ./check-required-checks.sh                      # all 4 checks (default)
-#   ./check-required-checks.sh --local-only         # skip API calls; runs (a) and (d)
+#   ./check-required-checks.sh                      # all 5 surfaces (default)
+#   ./check-required-checks.sh --local-only         # skip API calls; runs (a), (d), (e)
 #   ./check-required-checks.sh --strict-remote      # turn (b)/(c) "couldn't verify" into drift
 #   ./check-required-checks.sh --owner OWNER --repo REPO
 #                                                    # override repo (default
@@ -87,7 +101,10 @@ while [[ $# -gt 0 ]]; do
       fi
       REPO="$2"; shift 2 ;;
     -h|--help)
-      sed -n '3,42p' "$0" | sed 's/^# \{0,1\}//'
+      # Range must cover the header block through "Exit codes" — it grew when
+      # surface (e) was added, and a stale upper bound silently truncates
+      # --help mid-sentence.
+      sed -n '3,59p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) echo "error: unknown arg '$1'" >&2; exit 2 ;;
@@ -113,8 +130,41 @@ fi
 # so operators see a clear error instead of a fail-OPEN green light.
 # `jq -e` exits non-zero on `false`/`null` results, so this rejects all
 # three malformation modes in one probe.
-if ! jq -e '.required | type == "array"' "$LOCK" >/dev/null 2>&1; then
-  echo "error: $LOCK is malformed JSON or missing the .required array" >&2
+#
+# `.advisory` is validated to the same standard because surface (e) reads it
+# as the other half of the classification set. jq iterates an OBJECT's values
+# just as happily as an array's, so an object-shaped `advisory` would still
+# yield every expected name and let (e) report "ok" on a malformed lock —
+# the same fail-OPEN this block exists to prevent, one key over. Names are
+# required to be strings for both lists: a non-string name renders through
+# `jq -r` as `null`/`123` and would silently fail to match any workflow check.
+# `.advisory` may be absent entirely (treated as empty), but if present it
+# must be a well-formed array.
+#
+# Presence-aware, NOT `.advisory // []`: that alternative fires on `null` and
+# `false` too, so an explicitly-null advisory would be accepted as an empty
+# array — contradicting the very invariant being asserted, and downgrading a
+# malformed lock (exit 2) to ordinary drift (exit 1). Absent is fine; present
+# must be a well-formed array.
+if ! jq -e '(.required | type == "array")
+            and (all(.required[]; .name | type == "string"))
+            and (if has("advisory")
+                 then (.advisory | type == "array")
+                      and (all(.advisory[]; .name | type == "string"))
+                 else true end)
+            and (all(((.required // [])[], (.advisory // [])[]);
+                     (.name // "") | test("[[:cntrl:]]") | not))
+            and ([(.required // [])[], (.advisory // [])[] | .name]
+                 | (length == (unique | length)))' \
+     "$LOCK" >/dev/null 2>&1; then
+  echo "error: $LOCK is malformed — .required must be an array, .advisory (if" >&2
+  echo "       present) must be an array, every entry needs a string .name, and" >&2
+  echo "       no name may contain a control character — the classifier joins" >&2
+  echo "       names with U+001E, so a name carrying one would split into two" >&2
+  echo "       and classify a job nobody listed. Every name must also be UNIQUE" >&2
+  echo "       across required+advisory: a context has exactly one reporter, so" >&2
+  echo "       two entries sharing a name let an Actions job classify itself" >&2
+  echo "       against an external app's required context (and vice versa)" >&2
   exit 2
 fi
 
@@ -184,10 +234,39 @@ c_drift=0
 # (a) Lock vs workflow source — every required entry's workflow file
 #     must contain a job whose name (or key when no name) matches.
 # ────────────────────────────────────────────────────────────────────
+# ── Workflow inventory (single source of truth for (a), (d) and (e)) ────────
+#
+# Enumerated ONCE, by a real YAML parser, and shared by every surface. The three
+# surfaces must agree on which jobs exist: while (a) walked the lock outward with
+# one hand-written scanner and (d)/(e) collected with another, any disagreement
+# produced an unsatisfiable lock — (e) demanding an entry for a job (a) could not
+# resolve. One inventory makes that class of bug unrepresentable.
+#
+# Fails CLOSED. `node` or js-yaml missing is an ERROR, never a silent fallback to
+# a weaker scan: an inventory that quietly under-reports is exactly the #530
+# failure (a check nobody can see is a check nobody classifies).
+if ! command -v node >/dev/null 2>&1; then
+  echo "error: node is required to enumerate workflow checks" >&2
+  echo "       (surfaces (a), (d) and (e) parse workflow YAML with js-yaml)" >&2
+  exit 2
+fi
+if ! collected=$(node "$SCRIPT_DIR/lib/list-workflow-checks.mjs" "$REPO_ROOT"); then
+  echo "error: could not enumerate workflow checks — refusing to report drift-free" >&2
+  echo "       (run 'npm ci' if js-yaml is not installed)" >&2
+  exit 2
+fi
+
 echo "[a] Checking lock entries against workflow source files…"
 
-# Iterate required entries. Use `jq -c` so the entire object stays on one
-# line — multi-line outputs would break the read loop.
+# Iterate required AND advisory entries. Use `jq -c` so the entire object stays
+# on one line — multi-line outputs would break the read loop.
+#
+# Advisory entries are validated too, not just required ones. Surface (e)
+# classifies a workflow check by NAME, so a STALE advisory entry — one whose
+# job was renamed or deleted — keeps on classifying whatever new job later
+# happens to post that name, silently satisfying the guard for a job nobody
+# ever reviewed. Validating advisory here means a stale entry is caught as
+# drift at its source instead of quietly widening (e).
 while IFS= read -r entry; do
   name=$(echo "$entry" | jq -r '.name')
   workflow=$(echo "$entry" | jq -r '.workflow')
@@ -211,7 +290,6 @@ while IFS= read -r entry; do
   # required name has no posting check). Document this in the lock _doc
   # and SKILL.md B1c so users know to omit matrix_value on non-matrix jobs;
   # do not rely on this surface to flag the mistake.
-  matrix_value=$(echo "$entry" | jq -r '.matrix_value // ""')
 
   wf="$REPO_ROOT/$workflow"
   if [[ ! -f "$wf" ]]; then
@@ -266,116 +344,25 @@ while IFS= read -r entry; do
   # is metacharacter-safe.
   # Use POSIX-portable awk (no gawk-only 3-arg `match()` or `gensub()`).
   # `cur` holds the most recent job key we entered.
-  actual_name=$(awk -v key="$job_key" '
-    # Top-level "jobs:" header. Track depth so nested keys (env:, with:, etc.)
-    # in mappings under jobs.* do not get mistaken for top-level job keys.
-    # Allow a trailing inline `# comment` on the header line — YAML permits it
-    # and an over-strict match would silently produce false drift.
-    /^jobs:[[:space:]]*(#.*)?$/ { in_jobs = 1; next }
-    # Exit on the next top-level YAML key. Exclude `#` so a column-0
-    # comment line between job entries (legal YAML) does not silently
-    # terminate parsing — that would yield false-negative drift on
-    # any job declared after the comment.
-    in_jobs && /^[^[:space:]#]/ { in_jobs = 0 }   # left jobs block
-
-    # Job key line: exactly two-space indent, identifier, then ":", optionally
-    # followed by a trailing `# comment`. Capture the key with sub() since
-    # BSD awk lacks 3-arg match().
-    in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
-      cur = $0
-      sub(/^  /, "", cur)
-      sub(/:[[:space:]]*(#.*)?$/, "", cur)
-      seen[cur] = 1
-      jname[cur] = ""           # default: no explicit name
-      next
-    }
-
-    # Inside the current job. The first `    name: <value>` line at the
-    # four-space level wins. Use sub() to peel the prefix, strip an inline
-    # YAML comment (a real ` #...` to end-of-line, NOT mid-token `#`), then
-    # peel optional surrounding quotes so the stored value matches the
-    # rendered check name.
-    in_jobs && cur != "" && /^    name:[[:space:]]+/ {
-      val = $0
-      sub(/^    name:[[:space:]]+/, "", val)
-      # Strip inline comment (space-then-hash to end-of-line). The YAML
-      # comment syntax requires whitespace before the `#`, so a value like
-      # `name: foo#bar` keeps the literal `#bar`. This is lossy on quoted
-      # values containing ` #` literally (rare in GitHub Actions check
-      # names — none in the fleet today). If that becomes a concern,
-      # switch to a quote-aware parser; the simple form covers every
-      # case we hit.
-      sub(/[[:space:]]+#.*$/, "", val)
-      sub(/^["'\'']/, "", val)
-      sub(/["'\'']$/, "", val)
-      if (jname[cur] == "") jname[cur] = val
-    }
-
-    END {
-      if (key in seen) {
-        # Sentinel-prefix the value so we can distinguish "found, name empty"
-        # (bare-key job) from "key not found at all".
-        printf("FOUND:%s", jname[key])
-      } else {
-        printf("MISSING")
-      }
-    }
-  ' "$wf")
-
-  # Use `[[ == ]]` for literal string equality. The awk extraction above is
-  # metacharacter-safe (no shell→regex interpolation), but `case` patterns are
-  # glob-matched after variable expansion — a check name containing `*`, `?`,
-  # `[`, or `]` would re-introduce the same metacharacter class. `[[ == ]]`
-  # without quotes-on-RHS would still glob-match, so we quote the right-hand
-  # side to force literal-string comparison.
+  # Match the lock entry against the RENDERED names the inventory reports for
+  # this (workflow, job). The enumerator already expands a matrix into one row
+  # per combination, so appending `matrix_value` here would double-render it
+  # (`build (ubuntu-latest) (ubuntu-latest)`). `matrix_value` is now purely
+  # documentary in the lock — the inventory is the authority on what a job posts.
   #
-  # `matrix_suffix` is empty for non-matrix entries (preserving v1.18.x
-  # behavior) and ` (<value>)` for matrix entries. It's appended to whichever
-  # base — explicit `name:` value or bare job key — the workflow declares,
-  # so a lock entry like {"name":"test (ubuntu-latest)","job":"test",
-  # "matrix_value":"ubuntu-latest"} aligns with a workflow job key `test:`
-  # (no explicit name) under a `strategy.matrix` block.
-  if [[ -n "$matrix_value" ]]; then
-    matrix_suffix=" ($matrix_value)"
-  else
-    matrix_suffix=""
-  fi
-  if [[ "$actual_name" == "MISSING" ]]; then
+  # Set membership, not first-row comparison: a matrix job legitimately reports
+  # several names, and each gets its own lock entry.
+  job_rows=$(printf '%s\n' "$collected" | awk -F'\t' -v w="$workflow" -v j="$job_key" '$2 == w && $3 == j { print $1 }')
+  if [[ -z "$job_rows" ]]; then
     echo "  DRIFT: $name expected in $workflow as job '$job_key' — job key not found"
     drift=1
     a_drift=1
-  elif [[ "$actual_name" == "FOUND:" ]]; then
-    # Job exists with no explicit name — GitHub uses the job key as the
-    # check name (plus matrix suffix for matrix jobs), so the lock entry's
-    # `name` must equal `<job_key><matrix_suffix>`.
-    expected="${job_key}${matrix_suffix}"
-    if [[ "$name" != "$expected" ]]; then
-      if [[ -n "$matrix_value" ]]; then
-        echo "  DRIFT: lock says name='$name' but $workflow:$job_key has no 'name:' field (GitHub will report '$expected' for matrix_value='$matrix_value')"
-      else
-        echo "  DRIFT: lock says name='$name' but $workflow:$job_key has no 'name:' field (GitHub will report '$job_key')"
-      fi
-      drift=1
-      a_drift=1
-    fi
-  else
-    # FOUND with explicit name. Strip the FOUND: sentinel and append the
-    # matrix suffix (empty for non-matrix entries) before comparing.
-    observed="${actual_name#FOUND:}"
-    expected="${observed}${matrix_suffix}"
-    if [[ "$name" == "$expected" ]]; then
-      : # explicit name match (with matrix suffix when present)
-    else
-      if [[ -n "$matrix_value" ]]; then
-        echo "  DRIFT: lock says '$name' but $workflow:$job_key renders as '$expected' (name='$observed', matrix_value='$matrix_value')"
-      else
-        echo "  DRIFT: lock says '$name' but $workflow:$job_key has name '$observed'"
-      fi
-      drift=1
-      a_drift=1
-    fi
+  elif ! printf '%s\n' "$job_rows" | grep -qxF -- "$name"; then
+    echo "  DRIFT: lock says '$name' but $workflow:$job_key posts: $(printf '%s' "$job_rows" | paste -sd'|' - | tr '|' ', ')"
+    drift=1
+    a_drift=1
   fi
-done < <(jq -c '.required[]' "$LOCK")
+done < <(jq -c '(.required[]?, .advisory[]?) | select(.source_app == "github-actions")' "$LOCK")
 
 if [[ "$a_drift" -eq 0 ]]; then
   echo "  ok: every lock entry maps to a workflow job"
@@ -392,15 +379,15 @@ fi
 #     collision before it gets promoted into the lock.
 #
 # Effective check name = the job's explicit `name:` value, or the bare
-# job key when no `name:` is declared. Matrix `name:` templates that
-# include `${{ matrix.* }}` interpolation are stored as their literal
-# template; two jobs sharing the same template will be flagged because
-# their rendered names will collide for matching matrix values.
+# job key when no `name:` is declared — as resolved by the shared inventory.
+# The former note about `${{ matrix.* }}` name TEMPLATES being stored
+# literally no longer describes anything reachable: the enumerator now
+# hard-errors on an expression-bearing name rather than recording a context
+# GitHub never posts, so no template ever reaches this comparison.
 #
-# (d) reads workflow YAML directly — it does NOT consult the lock at all,
-# and therefore does not consider the optional `matrix_value` lock field.
-# Uniqueness is checked against effective workflow names (template form
-# for matrix jobs), not against per-matrix-combination rendered names.
+# (d) does NOT consult the lock at all, and therefore does not consider the
+# optional `matrix_value` field. Uniqueness is checked against effective
+# workflow names, not against per-matrix-combination rendered names.
 # That's intentional: collisions across the rendered space already
 # manifest as collisions in template form, so checking templates catches
 # every real collision without false positives from harmless cases where
@@ -413,63 +400,9 @@ fi
 # ────────────────────────────────────────────────────────────────────
 echo "[d] Checking workflow check-name uniqueness…"
 
-# Collect (effective_name, workflow, job_key) tuples from every workflow.
-# Awk walks each file once; the END block emits the final job in the file.
-collected=""
-# Walk both .yml and .yaml — GitHub Actions accepts either extension, so a
-# `.yaml` workflow that collides with a `.yml` workflow would otherwise slip
-# through (d). `nullglob` keeps the loop quiet when one extension is absent.
-# We save and restore the prior setting so callers that source this script
-# don't see their globbing behavior changed.
-#
-# `shopt -p nullglob` exits 1 when nullglob is off (default), which would
-# trip `set -e` in an assignment context. The if-condition suppresses set -e
-# for `shopt -q`, letting us record state without aborting.
-__nullglob_was_off=1
-if shopt -q nullglob; then __nullglob_was_off=0; fi
-shopt -s nullglob
-for wf in "$REPO_ROOT"/.github/workflows/*.yml "$REPO_ROOT"/.github/workflows/*.yaml; do
-  [[ -f "$wf" ]] || continue
-  # Quote $REPO_ROOT inside the parameter expansion (SC2295) — without the
-  # inner quotes any glob metacharacters in the resolved repo path would be
-  # treated as a pattern and produce a wrong `rel` value.
-  rel="${wf#"$REPO_ROOT"/}"
-  collected+=$(awk -v wf="$rel" '
-    function emit(   ) {
-      if (cur != "") {
-        n = (named[cur] ? jname[cur] : cur)
-        printf("%s\t%s\t%s\n", n, wf, cur)
-      }
-    }
-    /^jobs:[[:space:]]*(#.*)?$/ { in_jobs = 1; next }
-    # See (a)-parser comment for why `#` is excluded — column-0 comment
-    # lines must not terminate the in_jobs scan (false-negative risk).
-    in_jobs && /^[^[:space:]#]/ { in_jobs = 0 }
-    in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
-      emit()
-      cur = $0; sub(/^  /, "", cur); sub(/:[[:space:]]*(#.*)?$/, "", cur)
-      named[cur] = 0
-      jname[cur] = ""
-      next
-    }
-    in_jobs && cur != "" && /^    name:[[:space:]]+/ && !named[cur] {
-      val = $0
-      sub(/^    name:[[:space:]]+/, "", val)
-      sub(/[[:space:]]+#.*$/, "", val)
-      sub(/^["'\'']/, "", val); sub(/["'\'']$/, "", val)
-      jname[cur] = val
-      named[cur] = 1
-    }
-    END { emit() }
-  ' "$wf")
-  collected+=$'\n'
-done
-# Restore prior nullglob setting (no-op if it was already on). Use `if`
-# rather than `[ ... ] && shopt -u`: when the condition is false the `&&`
-# chain returns non-zero and trips `set -e`, exactly the trap the
-# save-state block above sidesteps.
-if [ "$__nullglob_was_off" = "1" ]; then shopt -u nullglob; fi
-unset __nullglob_was_off
+# `collected` is the shared inventory built above by the YAML enumerator —
+# (d) and (e) both read it, so they cannot disagree with (a) about what a
+# workflow emits.
 
 # Aggregate by effective name. Anything appearing more than once is drift.
 # Use printf to feed a clean list (drops the trailing blank line from the
@@ -494,6 +427,106 @@ if [[ -n "$duplicates" ]]; then
   drift=1
 else
   echo "  ok: every workflow job has a unique effective check name"
+fi
+
+# ────────────────────────────────────────────────────────────────────
+# (e) Lock classification completeness — every status check a workflow
+#     posts must appear in lock.required OR lock.advisory.
+# ────────────────────────────────────────────────────────────────────
+# This is the surface that catches a check being ADDED without the lock
+# learning about it — the direction (a) and (b) both miss. (a) walks the
+# lock outward to the workflows, so a check absent from the lock is never
+# looked up; (b) would catch it, but only once branch protection already
+# requires it, and only when it can reach the API.
+#
+# That gap is not hypothetical (#530): `coverage`, `shell-tests`,
+# `validate`, and `version-drift` were required by branch protection while
+# absent from the lock. Because `relevant-check-status.sh` treats
+# lock.required as an ALLOWLIST, the four were filtered out of the merge
+# decision entirely — neither pending nor failed, simply invisible — so a
+# PR with two FAILING required checks reported `0 0 required 8`, fully
+# green, to both the pre-merge gate and pr-grind.
+#
+# Deliberately local: no API, no token, so it runs on fork PRs and is the
+# only server-drift guard that can. Surface (b) is the authoritative
+# comparison but needs `administration: read`, which GITHUB_TOKEN cannot
+# be granted — see the CI job in tests.yml. (e) does not replace (b); it
+# makes the common cause of (b) drift impossible to introduce silently,
+# because adding a job now forces a classification decision in the lock.
+#
+# Reads `collected` from (d) — the same (name, workflow, job) tuples — so
+# the two surfaces cannot disagree about what a workflow emits.
+echo "[e] Checking every workflow check is classified in the lock…"
+
+# \036 (RS) as the delimiter: check names legitimately contain spaces
+# ("Actions security", "Dormant CVE sweep"), so a whitespace split would
+# shatter them into fragments and report false drift.
+# Only `github-actions` entries can classify a WORKFLOW check. An external-app
+# entry (gitguardian, codecov, …) names a context this repo's workflows do not
+# post, so honouring it here would let an Actions job take the name of an
+# externally reported required context and still read as classified — a
+# workflow-vs-app collision that no other surface catches: (a) skips external
+# entries (they have no workflow/job to resolve) and (d) only compares
+# workflow names against each other.
+#
+# Hoisted out of the `awk -v` so jq's exit status is not masked by the
+# surrounding substitution (SC2312). The lock's shape was validated at
+# startup, so a jq failure here is a genuine fault — fail loudly rather than
+# proceed with an empty set, which would report every check as unclassified.
+if ! known_names=$(jq -r '(.required[]?, .advisory[]?)
+                          | select(.source_app == "github-actions")
+                          | .name' "$LOCK"); then
+  echo "error: could not read check names from $LOCK" >&2
+  exit 2
+fi
+# MATRIX ENTRIES CLASSIFY NORMALLY, by their rendered name. The enumerator
+# expands `strategy.matrix` into one row per combination (`build (ubuntu-latest,
+# 20)`), so a matrix lock entry matches the row it describes like any other.
+#
+# The previous design classified a matrix job by its BARE BASE name and had
+# matrix entries classify nothing. That left the exact #530 gap one level in: a
+# single base entry satisfied (e) while a newly required rendered context —
+# `build (windows-latest)` — stayed absent from lock.required, and (d) could not
+# see collisions between rendered names either. Surface (b) does catch it, but
+# (b) needs `administration: read` and cannot run in CI, so in CI nothing did.
+#
+# What is NOT enumerated is refused outright by the enumerator (expressions,
+# fromJSON, include/exclude) rather than guessed at, so an unrenderable matrix
+# fails closed instead of silently classifying under a base name.
+known_names=$(printf '%s' "$known_names" | tr '\n' '\036')
+
+# Split the awk from the sort and check awk's status explicitly. Relying on the
+# pipeline status alone is fragile here: if awk ever fails while `sort` succeeds,
+# `unclassified` comes back EMPTY and (e) reports "ok" — the guard silently
+# certifying a repo it never actually inspected. An empty result must mean
+# "nothing unclassified", never "the check did not run".
+# Passed through the ENVIRONMENT, never `awk -v`. `-v` processes backslash
+# escapes in the value, so a lock name containing the literal four characters
+# `\036` would be turned into a real record separator by awk and split into TWO
+# names — smuggling an extra entry into `seen` and classifying a job nobody
+# listed. Lock content is repo-controlled, so that is an injection into the
+# guard. `ENVIRON[]` hands the bytes over verbatim.
+if ! unclassified_raw=$(printf '%s' "$collected" | BD_KNOWN_NAMES="$known_names" awk -F'\t' '
+  BEGIN { n = split(ENVIRON["BD_KNOWN_NAMES"], a, "\036"); for (i = 1; i <= n; i++) if (a[i] != "") seen[a[i]] = 1 }
+  $1 == "" { next }
+  ($1 in seen) { next }
+  { printf("%s\t%s:%s\n", $1, $2, $3) }
+'); then
+  echo "error: classification scan failed — refusing to report (e) as clean" >&2
+  exit 2
+fi
+unclassified=$(printf '%s' "$unclassified_raw" | LC_ALL=C sort -u)
+
+if [[ -n "$unclassified" ]]; then
+  echo "  DRIFT: workflow check(s) in neither lock.required nor lock.advisory:"
+  while IFS=$'\t' read -r e_name e_loc; do
+    echo "    - '$e_name' ($e_loc)"
+  done <<< "$unclassified"
+  echo "  fix: add each to .github/required-checks.lock — 'required' if branch"
+  echo "       protection gates on it, 'advisory' if it must never gate merge."
+  drift=1
+else
+  echo "  ok: every workflow check name is classified in the lock"
 fi
 
 # ────────────────────────────────────────────────────────────────────

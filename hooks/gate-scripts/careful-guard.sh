@@ -16,28 +16,109 @@ trap 'echo "{}"; exit 0' ERR
 
 INPUT=$(cat)
 CMD=""
+AUTO_MODE=0
 
-# Extract the "command" field from tool_input JSON
-# Prefer Python for correct JSON parsing (handles escaped quotes, multiline commands)
-# Supports both tool_input and toolInput keys, and string payloads
-# Fall back to grep only when Python is unavailable
+# --- Auto mode: stand down on what the classifier already owns ---
+# In `auto`, a classifier model judges every non-read action and blocks force-push,
+# git reset --hard, checkout/restore ., clean -fd, and "irreversibly destroying files
+# that existed before the session" — against the ACTUAL request, which a regex cannot
+# do. SQL DROP/TRUNCATE is the one pattern the classifier does not name, so it stays
+# live in EVERY mode.
+#
+# BE PRECISE ABOUT WHAT THIS BUYS. The stand-down is belt-and-braces plus a real cost
+# win; it is NOT what prevents a duplicate prompt, because in `auto` there was never
+# a prompt to duplicate. Measured across a live session per mode (hooks and settings
+# load at session START, so this can only be probed from a FRESH session in the mode
+# under test — probing in-session reads the old config and returns a false negative):
+#
+#     mode      guard "ask"   hook block   operator prompt
+#     auto      DISCARDED     honored      suppressed
+#     bypass    HONORED       honored      delivered
+#     default   HONORED       honored      delivered
+#
+# So in `auto`, emitting `ask` and standing down are behaviourally identical. What the
+# stand-down actually saves is the work: the python rm scanner (and its interpreter
+# spawn) is skipped on every Bash call. The load-bearing half of this block is the
+# other direction — `bypassPermissions` is where the guard's `ask` IS honored and no
+# classifier exists, so nothing there may ever stand down.
+#
+# `bypassPermissions` gets no exemption: it has no classifier at all, so this guard is
+# the only thing left besides the rm -rf / and rm -rf ~ circuit breaker.
+#
+# EXTERNAL DEPENDENCY (CodeRabbit, PR #543): this stand-down's safety hinges on
+# Anthropic's `auto`-mode classifier continuing to block exactly these patterns
+# (force-push, reset --hard, checkout/restore ., clean -fd, pre-existing-file
+# deletion) — a probabilistic model behavior this repo cannot verify or pin.
+# Re-check tests/test-careful-guard-auto-mode.sh's six classifier-covered cases
+# whenever the Claude Code version pin changes, not just at initial review.
+#
+# PARSED, never grepped off the raw JSON: `"permission_mode":"auto"` can also appear
+# INSIDE tool_input.command, so a raw-text match would let a crafted command disarm
+# the guard. No python3, unparseable input, or any other mode leaves AUTO_MODE=0 and
+# every check runs — over-warning stays the safe direction.
+# SINGLE PASS. The command extraction and the auto decision come from ONE python
+# invocation. Two passes cost a second interpreter spawn on EVERY Bash command
+# (measured by Codex on PR #543: ~1.54-1.61s vs ~1.02-1.06s at the parent commit,
+# against the 3s budget hooks.json gives this whole guard) — and splitting them is
+# also what let the two disagree (cubic, same PR): a malformed tool_input made
+# python bail on the command while the raw-text grep fallback still produced one,
+# so `auto` stood the guard down on a command python never validated. One parse
+# cannot contradict itself.
+#
+# Prefer python for correct JSON parsing (escaped quotes, multiline commands);
+# both tool_input and toolInput keys, dict or JSON-string payloads. The grep
+# fallback below covers python being absent — AUTO_MODE stays 0 on that path.
 if command -v python3 &>/dev/null; then
-  CMD=$(printf '%s' "$INPUT" | python3 -c '
-import sys, json
+  # shellcheck disable=SC2016  # python source: $ / backticks must not expand in bash
+  _GUARD_PAYLOAD=$(printf '%s' "$INPUT" | python3 -E -S -c '
+import sys
+# -E + -S + this scrub for the same reason the rm scanner below does it: `python3 -c`
+# prepends the CWD to sys.path, so a repo shipping its own json.py would execute
+# inside this hook -- and here it could emit the auto token and disarm the checks.
+# -E also drops PYTHONPATH, which could otherwise smuggle the CWD back in as an
+# ABSOLUTE path that this relative-only scrub would not catch.
+sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import json
 try:
     d = json.loads(sys.stdin.read() or "{}")
     inp = d.get("tool_input", d.get("toolInput", {}))
     if isinstance(inp, str):
         inp = json.loads(inp or "{}")
-    if isinstance(inp, dict):
-        print(inp.get("command", ""))
+    cmd = inp.get("command") if isinstance(inp, dict) else None
+    shape_ok = isinstance(cmd, str)
+    # Line 1 is the auto token; the command follows verbatim and MUST come last,
+    # because it may itself be multiline. The mode is compared HERE rather than in
+    # bash: $( ) strips trailing newlines, so a permission_mode of "auto\n" would
+    # collapse to "auto" and stand the guard down. A non-str never equals "auto",
+    # so this also subsumes an isinstance check.
+    sys.stdout.write("1\n" if shape_ok and d.get("permission_mode") == "auto" else "0\n")
+    if shape_ok:
+        sys.stdout.write(cmd)
 except Exception:
     pass
 ' 2>/dev/null || true)
+  # $( ) stripped the trailing newline, so a token-only payload has no newline left.
+  if [[ "$_GUARD_PAYLOAD" == *$'\n'* ]]; then
+    [[ "${_GUARD_PAYLOAD%%$'\n'*}" == 1 ]] && AUTO_MODE=1
+    CMD=${_GUARD_PAYLOAD#*$'\n'}
+  elif [[ "$_GUARD_PAYLOAD" == 1 ]]; then
+    AUTO_MODE=1
+  fi
 fi
 
-# Grep fallback when Python is not available
+# Grep fallback when Python is not available (AUTO_MODE stays 0 — see above)
 if [[ -z "$CMD" ]]; then
+  # Reset, do not merely leave at 0. The parse can SUCCEED and still land here:
+  # a valid but EMPTY tool_input.command satisfies the shape check, so the token
+  # may already be 1 while CMD is empty. The grep then takes the first "command"
+  # match anywhere in the payload — possibly from OUTSIDE tool_input — and that
+  # string was never validated by the parse the auto decision was made on.
+  # Measured (coderabbitai + cubic, PR #543), before this reset:
+  #   {"permission_mode":"auto","command":"rm -rf /etc","tool_input":{"command":""}}
+  #   auto -> {} (allowed)   default -> ask
+  # Whatever supplies CMD here did not come from the validated parse, so the auto
+  # decision cannot apply to it: run every check.
+  AUTO_MODE=0
   CMD=$(printf '%s' "$INPUT" | grep -o '"command"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*:[[:space:]]*"//;s/"$//' || true)
 fi
 
@@ -59,7 +140,7 @@ CMD_LOWER=$(printf '%s' "$CMD" | tr '[:upper:]' '[:lower:]')
 # Prints exactly "unsafe" or "safe"; ANY other output (including empty) means
 # the scanner itself did not run, which falls through to the grep fallback below.
 RM_VERDICT=""
-if command -v python3 &>/dev/null; then
+if [[ "$AUTO_MODE" == 0 ]] && command -v python3 &>/dev/null; then
   _GUARD_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
   # shellcheck disable=SC2016  # python source: $-expansion must not happen in bash
   RM_VERDICT=$(printf '%s' "$CMD" | PYTHONPATH="$_GUARD_LIB" python3 -S -c '
@@ -197,7 +278,7 @@ print(verdict)
 ' 2>/dev/null || true)
 fi
 
-if [[ "$RM_VERDICT" != "unsafe" && "$RM_VERDICT" != "safe" ]]; then
+if [[ "$AUTO_MODE" == 0 && "$RM_VERDICT" != "unsafe" && "$RM_VERDICT" != "safe" ]]; then
   # The scanner did not run (no python3, import failure, crash). Do NOT treat a
   # missing verdict as safe — drop the safe-artifact carve-out and warn on any
   # recursive rm. Over-warning is the safe direction for an advisory guard.
@@ -231,23 +312,27 @@ if [[ -z "$WARN" ]] && printf '%s' "$CMD_LOWER" | grep -qE '\btruncate\b' 2>/dev
   WARN="Destructive: SQL TRUNCATE detected. This deletes all rows from a table."
 fi
 
+# The four git patterns below are all named in auto mode's own default block list,
+# so each is gated on AUTO_MODE=0 — see the stand-down note above. The SQL checks
+# are deliberately NOT gated: the classifier does not name DROP/TRUNCATE.
+
 # git push --force / git push -f (but NOT --force-with-lease which is the safe alternative)
-if [[ -z "$WARN" ]] && printf '%s' "$CMD" | grep -qE 'git\s+push\s+.*(-f\b|--force\b)' 2>/dev/null && ! printf '%s' "$CMD" | grep -qE -- '--force-with-lease' 2>/dev/null; then
+if [[ -z "$WARN" && "$AUTO_MODE" == 0 ]] && printf '%s' "$CMD" | grep -qE 'git\s+push\s+.*(-f\b|--force\b)' 2>/dev/null && ! printf '%s' "$CMD" | grep -qE -- '--force-with-lease' 2>/dev/null; then
   WARN="Destructive: git force-push rewrites remote history."
 fi
 
 # git reset --hard
-if [[ -z "$WARN" ]] && printf '%s' "$CMD" | grep -qE 'git\s+reset\s+--hard' 2>/dev/null; then
+if [[ -z "$WARN" && "$AUTO_MODE" == 0 ]] && printf '%s' "$CMD" | grep -qE 'git\s+reset\s+--hard' 2>/dev/null; then
   WARN="Destructive: git reset --hard discards all uncommitted changes."
 fi
 
 # git checkout . / git restore . (standalone . only, not .gitignore etc)
-if [[ -z "$WARN" ]] && printf '%s' "$CMD" | grep -qE 'git\s+(checkout|restore)\s+\.(\s|$)' 2>/dev/null; then
+if [[ -z "$WARN" && "$AUTO_MODE" == 0 ]] && printf '%s' "$CMD" | grep -qE 'git\s+(checkout|restore)\s+\.(\s|$)' 2>/dev/null; then
   WARN="Destructive: discards all uncommitted changes in the working tree."
 fi
 
 # git clean -f (removes untracked files)
-if [[ -z "$WARN" ]] && printf '%s' "$CMD" | grep -qE 'git\s+clean\s+.*-[a-zA-Z]*f' 2>/dev/null; then
+if [[ -z "$WARN" && "$AUTO_MODE" == 0 ]] && printf '%s' "$CMD" | grep -qE 'git\s+clean\s+.*-[a-zA-Z]*f' 2>/dev/null; then
   WARN="Destructive: git clean -f removes untracked files permanently."
 fi
 

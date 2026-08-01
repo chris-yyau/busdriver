@@ -167,6 +167,22 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Validate agent/skill/command/hook/rule schemas + workflow + unicode safety
         run: npm run validate
+      # Deliberately a STEP in an already-required job, not a job of its own
+      # (#530). A separate job would post a new check name that branch
+      # protection does not require, so a drift failure could be merged past —
+      # a guard that certifies safety it never enforced. Folding it into
+      # `validate` makes drift block merge today, and adds no name for surface
+      # (b) to reconcile against branch protection.
+      #
+      # --local-only runs surfaces (a), (d) and (e). Surfaces (b) and (c) need
+      # `administration: read` / check-run reads, which GITHUB_TOKEN cannot be
+      # granted, so they cannot run in CI at all. Surface (e) is the token-free
+      # stand-in: it fails when a workflow posts a check the lock does not
+      # classify, which is how (b) drift gets introduced in the first place.
+      # Run the full five surfaces locally with an admin-scoped gh login:
+      #   bash scripts/check-required-checks.sh
+      - name: Check required-checks.lock for drift
+        run: bash scripts/check-required-checks.sh --local-only
 
   coverage:
     needs: shellcheck
@@ -216,6 +232,11 @@ jobs:
           pytest -q skills/blueprint-review/scripts/lib/test_extract_review_json.py \
             --cov=skills/blueprint-review/scripts/lib \
             --cov-report=xml:coverage-extract-review-json.xml
+      - name: Coverage — litmus parse_narrative
+        run: |
+          pytest -q skills/litmus/scripts/lib/test_parse_narrative.py \
+            --cov=skills/litmus/scripts/lib \
+            --cov-report=xml:coverage-parse-narrative.xml
       # Token is passed only to this step (never job-level env, so checked-out
       # PR code in earlier steps cannot read it). continue-on-error is scoped to
       # the two cases that legitimately lack the secret: fork PRs and Dependabot
@@ -227,7 +248,7 @@ jobs:
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./coverage/lcov.info,./coverage-skill-comply.xml,./coverage-clv2.xml,./coverage-agent-self-evaluation.xml,./coverage-extract-review-json.xml
+          files: ./coverage/lcov.info,./coverage-skill-comply.xml,./coverage-clv2.xml,./coverage-agent-self-evaluation.xml,./coverage-extract-review-json.xml,./coverage-parse-narrative.xml
 
   shell-tests:
     # Full tests/test-*.sh gate/security suite (#265, then broadened to full-glob in
@@ -254,6 +275,14 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
+      # The gate-test suite now includes tests/test-required-checks-lock-classification.sh,
+      # which drives scripts/lib/list-workflow-checks.mjs and therefore needs js-yaml.
+      # Installed here rather than letting the suite skip: run-shell-tests.sh enforces a
+      # skip-masking guard precisely so a suite cannot quietly stop covering anything.
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 20
+      - run: npm ci --ignore-scripts
       - name: Full shell gate-test suite
         # jq + python3 + git are preinstalled on ubuntu-latest. The runner distinguishes
         # PASS/SKIP/FAIL, enforces that the gate suites never SKIP (skip-masking guard),

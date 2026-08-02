@@ -561,7 +561,7 @@ This section is the **canonical protocol** for the user-created skip files acros
 
 | Gate | Skip file | Trigger | <30s rejection | Freshness | Tool-call fragility |
 |------|-----------|---------|----------------|-----------|---------------------|
-| **Pre-implementation (design review)** | `.claude/skip-design-review.local` | Write/Edit/MultiEdit/Bash while design unreviewed | gate deletes file | unbounded | **High** — gate fires on any of those tool calls, so any intervening Bash (incl. `test -f`/`ls`/`stat`) destroys the file |
+| **Pre-implementation (design review)** | `.claude/skip-design-review.local` | Write/Edit/MultiEdit/Bash while design unreviewed | gate deletes file, **and the rejected lease stays permanently poisoned** — a too-new file is never retroactively honored even once it ages past 30s | **30s..3600s** — a **LEASE** (#519 / ADR 0031), not unbounded: expires at 3600s, and only a genuinely gated call (not a read-only `ls`/`git status`/`test -f`, and not a write to an already-exempt path) spends one of its 20 uses | **Low, within the window** — the check runs *after* tool-type discrimination and every allowlist, so a read-only Bash call no longer destroys the file; **High during the <30s self-bypass window**, where any gated call still destroys it |
 | **Pre-commit (litmus)** | `.claude/skip-litmus.local` | `git commit` | gate **preserves** file (ages naturally) | unbounded | Low — gate only fires on `git commit` |
 | **Pre-PR (litmus)** | `.claude/skip-litmus.local` (same file as pre-commit) | `gh pr create` | gate deletes file (re-touch required) | unbounded | Low — gate only fires on `gh pr create` |
 | **Pre-merge (pr-grind)** \* | `.claude/skip-pr-grind.local` | `gh pr merge` | gate deletes file | **30s..3600s** — files ≥1h old silently deleted | Low — gate only fires on `gh pr merge` |
@@ -591,7 +591,7 @@ The lease is keyed to the file's mtime, so re-`touch`ing to extend one starts a 
 
 When Claude needs a skip file, it must emit this exact message, with three substitutions:
 - `<PROJECT_ROOT>` → the absolute path of the current git repo root (from `git rev-parse --show-toplevel` — not the CWD of the Claude session, which may be a subdirectory or worktree).
-- `<STATE_DIR>` → the gate's state directory: the value of `${BUSDRIVER_STATE_DIR:-.claude}` (default `.claude`). **Resolve it — NEVER hardcode `.claude`.** The gate also names this directory verbatim in its own block message, so when reacting to a gate block you can read it from there.
+- `<STATE_DIR>` → the gate's state directory: the value of `${BUSDRIVER_STATE_DIR:-.claude}` (default `.claude`). **Resolve it — NEVER hardcode `.claude`.** The gate also names this directory verbatim in its own block message, so when reacting to a gate block you can read it from there. Note this is the value as the GATE resolves it, read from its block message — not the value in your own shell: `hooks.json` launches the gate through `env -i`, which strips `BUSDRIVER_STATE_DIR`, so an override exported in a terminal does not reach it (pinned by `tests/test-gate-env-containment.sh`). That is exactly why operator-facing `touch` instructions elsewhere in this file name `.claude` literally.
 - `<GATE>` → one of: `design-review`, `litmus`, `pr-grind` (matches the row in the per-gate-differences table above).
 
 > I need a skip file to bypass the `<GATE>` gate. Please run this in **your terminal** (not in this session):
@@ -630,7 +630,7 @@ Monitor(command: "sleep 35 && echo READY", timeout: 45)
 - **Use `Monitor(command: "sleep 35 && echo READY")`**, not `sleep 32` directly.
 - **Leased, not single-use** (#519 / ADR 0031) — one `touch` authorizes **20 gated writes within 3600s**, so a whole approved sub-plan can be implemented without re-arming per write. Only a genuinely gated operation spends a use. When the lease exhausts or expires the gate deletes the file and says so; the user must `touch` it again (and Claude waits another 35s).
 - **Audit trail** — every use is logged to `.claude/bypass-log.jsonl` with the slot it claimed. A use whose audit append fails is REFUSED, not granted silently.
-- **Prefer the recorded release for a stuck token** — to clear ONE pending design-review token with a durable audit event instead of leaning on the hatch, run `scripts/design-clear.sh` (no args lists what is pending). The block message names it. The event records the doc's review-coverage marker, so a release under DEGRADED coverage says which lenses were absent.
+- **Prefer the recorded release for a stuck token** — to clear ONE pending design-review token with a durable audit event instead of leaning on the hatch, run `scripts/design-clear.sh` (no args lists what is pending) — this path is root-relative and does not change with `BUSDRIVER_STATE_DIR`. The block message names it. The event records the doc's review-coverage marker, so a release under DEGRADED coverage says which lenses were absent.
 - **If the file gets rejected-and-deleted** (e.g., Claude fat-fingered a tool call during the window), ask the user to `touch` it again and start the wait over.
 
 ## Version History

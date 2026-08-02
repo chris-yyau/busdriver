@@ -46,11 +46,11 @@ To review design/plan documents, INVOKE `blueprint-review` skill (via Skill tool
 ## Emergency Gate Recovery
 
 When a gate blocks and the user needs to bypass, follow the full procedure in `references/gate-recovery.md` (in this skill's directory). **Hard rules — never violate:**
-- NEVER create the skip file yourself — gates reject/delete skip files <30s old (anti-self-bypass). The user must `touch <PROJECT_ROOT>/<STATE_DIR>/skip-<GATE>.local` in their own terminal (`<STATE_DIR>` = `${BUSDRIVER_STATE_DIR:-.claude}` — defaults to `.claude`; the gate names it verbatim in its block message. Resolve it, NEVER hardcode `.claude`, and give the user the absolute path).
+- NEVER create the skip file yourself — gates reject/delete skip files <30s old (anti-self-bypass). The user must `touch <PROJECT_ROOT>/<STATE_DIR>/skip-<GATE>.local` in their own terminal (`<STATE_DIR>` = `.claude` — defaults to `.claude`; the gate names it verbatim in its block message. Resolve it, NEVER hardcode `.claude`, and give the user the absolute path).
 - NEVER `sleep` directly via Bash — wait via `Monitor(command: "sleep 35 && echo READY", timeout: 45)`.
 - NEVER verify the skip file (`test -f`/`ls`/`stat`/`cat`/`find`) before retrying. During the 30s anti-self-bypass window any gated tool call still destroys it; past that window `skip-design-review.local` is a lease (#519 / ADR 0031) that read-only calls no longer spend, but verifying still tells you nothing useful. Just wait and retry the blocked action directly.
 - NEVER ask the user to wait — Claude waits via Monitor.
-- After the user confirms "done", make NO tool calls except `Monitor` before retrying — any intervening call consumes the skip file. If the retry still blocks, the file was consumed mid-wait; ask the user to `touch` it again and restart the wait.
+- After the user confirms "done", make NO tool calls except `Monitor` before retrying — an intervening call that reaches the gate's skip-file logic (the design-review gate's genuinely-gated calls; litmus/pr-grind's own trigger command) consumes the skip file. If the retry still blocks, the file was consumed mid-wait; ask the user to `touch` it again and restart the wait.
 
 All bypasses logged to `.claude/bypass-log.jsonl`. Full procedure + failure-mode taxonomy: `references/gate-recovery.md`.
 

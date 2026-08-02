@@ -45,9 +45,16 @@ import shlex
 _SQ = chr(39)
 _DQ = chr(34)
 
-# The original patterns, kept verbatim as the unparseable-command fallback.
+# The original patterns, kept as the unparseable-command fallback.
 FILE_MOD_PATTERNS = [
-    r"\bsed\s+-i",
+    # `sed` WHOLE, not just the `-i` spelling, for the same reason `git` below is
+    # whole: this list stands in for the classifier, so it has to be WIDER than it.
+    # The classifier blocks `sed -f -- -i file` (the `--` is -f's script operand, so
+    # the `-i` behind it writes in place) and every other arrangement that puts -i
+    # somewhere `\bsed\s+-i` cannot see. A narrower fallback is a fail-OPEN on exactly
+    # the damaged-installation path this list exists for, and the self-check asserts
+    # the superset relation rather than trusting this comment.
+    r"\bsed\s",
     r"\btee\s",
     r"\bpatch\s",
     r"\bcp\s",
@@ -732,6 +739,47 @@ def _executed_operands(toks):
                     break
             i += 1
             continue
+        if base == "watch":
+            # `watch COMMAND` joins every remaining non-option argument with a single
+            # space and runs the result through `sh -c` (procps-ng behavior, and true
+            # of every non-`--exec` invocation, quoted or not) -- so `watch 'rm -f
+            # src/file'` executes `rm -f src/file` as SHELL SOURCE, not as one opaque
+            # word. The generic scan_all path below only re-checks each TOKEN against
+            # _MOD_VERBS, which is exactly right for `watch rm -f src/file` (three
+            # tokens, `rm` matches directly) but blind to the quoted-string spelling,
+            # where shlex hands back one token (`"rm -f src/file"`) that matches no
+            # verb name at all. Recursing through is_file_mod (the same path every
+            # other runner in this function uses) re-tokenizes that string and catches
+            # the embedded verb either way.
+            #
+            # `--exec`/`-x` bypasses the shell (execvp on the raw argv), so treating
+            # its payload the same way is a deliberate over-read, not an exact model:
+            # shell metacharacters in an --exec argument are literal there but would be
+            # re-interpreted here. That is the safe direction for this module -- an
+            # over-block, never a miss.
+            #
+            # ONLY multi-word tokens are recursed, and there is deliberately NO
+            # option-arity table. Locating the command start means knowing which watch
+            # flags take a value, and every approximation of that fails OPEN: the first
+            # draft of this branch skipped one token per flag bar -n/--interval, and any
+            # OTHER value-taking option (procps keeps adding them -- --equexit and
+            # --shotsdir postdate that list) shifts the start, so the payload joined from
+            # the wrong index and went unclassified. Whitespace needs no such table. A
+            # single-word option value (`-n 5`, `--shotsdir logs`) carries none, so it is
+            # inert here, and `watch` is in _WRAPPERS, so the generic all-token scan below
+            # judges every bare word anyway -- which is what already caught the unquoted
+            # `watch rm -f src/file`. The gap this closes is exactly the quoted spelling,
+            # where shlex returns ONE token matching no verb name.
+            #
+            # Price: `watch grep 'rm -rf' f` over-blocks. watch does not preserve those
+            # quotes -- it joins its arguments and re-parses, so what actually runs is a
+            # read-only grep -- but judging the fragment alone is the fail-CLOSED
+            # direction, and that shape is far rarer than the payload it protects.
+            for t2 in toks[i + 1:]:
+                if len(t2.split()) > 1:
+                    _add(t2)
+            i += 1
+            continue
         if base in _WRAPPERS:
             i += 1
             continue
@@ -884,6 +932,16 @@ def _sed_inplace(toks):
         return False
     after = toks[names.index("sed") + 1:]
     for t in after:
+        # NO `--` terminator handling here, deliberately. Honouring it needs to know
+        # whether the `--` is itself the operand of an earlier value-taking option:
+        # `sed -f -- -i file` reads its script from a file named `--`, so the `-i`
+        # AFTER it is a live in-place write. Stopping the scan at the first `--` reads
+        # that as a filename and allows the write, and the option set that would make
+        # the distinction (-e, -f, -l, --expression, --file, --line-length, and
+        # whatever a BSD or future GNU sed adds) is the arity table this module refuses
+        # to keep -- every gap in it fails OPEN. The cost of leaving `--` unhandled is a
+        # read-only `sed -n -- --in` over-blocking on a file literally named `--in`.
+        # Over-block versus missed write is not a close call.
         if re.match(r"^-[A-Za-z]*i", t):
             return True
         if t.startswith("--"):
@@ -1269,108 +1327,23 @@ def _shell_variants(text):
 
 
 def _demo():
-    """Self-check: the #519 false positives must be allowed, real writes still caught."""
-    allowed = [
-        "grep -nE 'rm |mv |truncate' script.sh",
-        # Verbs as plain DATA in a read-only command — the class that made an
-        # all-token scan untenable.
-        "grep dd notes.txt",
-        "echo rmdir",
-        "echo cp this line",
-        "git log --oneline | grep rm",
-        # Keywords that introduce a NAME, and wrapper names used as plain data.
-        "function mv { echo harmless; }",
-        "for rm in a b; do echo hi; done",
-        "case rm in x) echo hi;; esac",
-        "grep sudo rm",
-        "printf sudo rm",
-        "echo find -delete",
-        "echo sed -i",
-        # Test-expression operands are data, never commands.
-        "[[ rm = value ]]",
-        "[[ -f rm ]]",
-        "[ -f rm ]",
-        # #519 false positive 3: a probe DEFINING functions named mv / [.
-        "mv() { echo harmless; }",
-        "rm () { echo harmless; }",
-        "mv() { echo hi; } ; ls",
-        'bash -c \'echo "T3 (mv FAILS): ..."\'',
-        "ls -la",
-        "sed -n '1,10p' file.txt",
-        "grep -i sed notes.txt",
-        "echo 'cp this line'",
-        "git log --oneline | head -20",
-    ]
-    blocked = [
-        "rm -rf src",
-        "sudo rm -rf src",
-        "env FOO=1 rm x",
-        "nohup mv a b",
-        "sed -i 's/a/b/' f",
-        "sed -i.bak 's/a/b/' f",
-        "cat x | tee out.txt",
-        "cp a b",
-        "ls && rm x",
-        "echo hi > f ; mv f g",
-        "xargs rm < list.txt",
-        # Executed-string operands — these are the shapes tokenization alone would
-        # reduce to inert single tokens. Each was a live fail-open before recursion.
-        "bash -c 'rm -rf src'",
-        "sh -c \"rm -rf src\"",
-        "sudo bash -c 'rm x'",
-        "bash -lc 'rm x'",
-        "eval 'rm -rf src'",
-        'echo "$(rm -rf src)"',
-        "echo `rm -rf src`",
-        "bash -c 'bash -c \"rm x\"'",
-        # Quote-aware paren matching: a `(` inside quotes must not unbalance the scan.
-        "echo \"$(printf '('; rm x)\"",
-        "echo \"$(printf ')'; rm x)\"",
-        # Flag bundles that still execute a command string.
-        "bash -cl 'rm x'",
-        "sh -ce 'rm x'",
-        # A single quote is literal INSIDE double quotes, so this substitution runs.
-        "echo \"'$(rm x)'\"",
-        # env -S splits its operand into an argv and executes it.
-        "env -S 'rm -rf x'",
-        "env -S'rm -rf x'",
-        "truncate -s 0 notes.txt",
-        "unlink notes.txt",
-        "rmdir stale.d",
-        "dd if=/dev/null of=notes.txt",
-        "find . -exec rm {} ;",
-        "find . -delete",
-        "timeout 5 rm x",
-        "echo hi | xargs rm",
-        # Wrapper flag operands and shell reserved words: stopping the peel at the
-        # first plausible token returned `root`, `{` and `then` here, allowing the write.
-        "sudo -u root rm -rf src",
-        "{ rm -rf src; }",
-        "if true; then rm -rf src; fi",
-        "sudo sed -i 's/a/b/' f",
-        # Launchers/keywords that run a following command. Each was a fail-open while
-        # the list here was narrower than the forge detector's.
-        "coproc rm src/x",
-        "caffeinate rm src/x",
-        "su -c 'rm src/x'",
-        "function f { rm src/x; }; f",
-        "find . -exec sudo rm {} ;",
-        "runuser --command='rm src/x' root",
-        # coproc behind a reserved word, and a WRAPPED -exec payload.
-        "if true; then coproc rm x; fi",
-        "{ coproc rm x; }",
-        "function f { coproc rm x; }; f",
-        "find . -exec sudo -u root rm {} ;",
-        "sudo env -S 'rm x'",
-        "sudo -u root bash -c 'rm x'",
-        # An -exec payload can run a shell, or be an in-place sed.
-        'find . -exec sh -c \'rm "$1"\' _ {} ;',
-        "find . -exec sudo sed -i 's/a/b/' {} ;",
-        'function f { sh -c "rm x"; }',
-        '{ sh -c "rm x"; }',
-        "env --split-string='rm x'",
-        "env --split-string 'rm -rf src'",
-    ]
+    """Self-check: the #519 false positives must be allowed, real writes still caught.
+
+    Fixture data (the `allowed`/`blocked` command lists) lives in the sibling
+    cmdword_demo_fixtures.py, imported HERE rather than at module scope, so the
+    production import path (`from cmdword import is_file_mod`) never depends on
+    that file's presence -- only running this self-check does. Moved out after
+    CodeScene flagged this module's Lines-of-Code health (#548 review): the ~90
+    lines of literal fixture strings counted toward the file's LOC threshold
+    without being classifier logic, so relocating them (pure data, no behavior
+    change) addresses the metric without touching anything the gate evaluates.
+    """
+    import os
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from cmdword_demo_fixtures import DEMO_ALLOWED, DEMO_BLOCKED
+    allowed = DEMO_ALLOWED
+    blocked = DEMO_BLOCKED
     for c in allowed:
         assert not is_file_mod(c), "should be allowed: " + c
     # The GIT cases are here so the superset assertion below actually exercises the

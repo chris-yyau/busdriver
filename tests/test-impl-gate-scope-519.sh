@@ -350,6 +350,44 @@ if [[ "$_WR_FAIL" -eq 0 ]]; then
 else
     no "launcher payload spellings" "$_WR_FAIL of $((_WR_PASS + _WR_FAIL)) wrong"
 fi
+# ── watch: the payload must be found WITHOUT locating the command start ─────
+# `watch CMD` joins its non-option arguments and runs them through `sh -c`, so the
+# QUOTED spelling reaches the classifier as ONE token matching no verb name -- the
+# all-token wrapper scan above cannot see it. The interesting half is the option
+# spellings: the first draft skipped one token per flag except -n/--interval, and any
+# OTHER value-taking option shifted the command start so the payload went unscanned.
+# --shotsdir and --equexit are real procps options that broke it; --some-future-option
+# is here to pin the actual invariant, which is that an option NOBODY has heard of
+# must behave identically. A regression that reintroduces an arity table fails on that
+# line specifically, which is the point of it.
+_WATCH_FAIL=0 _WATCH_PASS=0
+_wa() {   # <expected> <command>
+    local got="allow"
+    case "$(bash_decision "$2")" in *'"block"'*) got="block" ;; esac
+    if [[ "$got" == "$1" ]]; then _WATCH_PASS=$((_WATCH_PASS + 1))
+    else _WATCH_FAIL=$((_WATCH_FAIL + 1)); printf "  FAIL  watch: %s (want %s)\n" "$2" "$1"; fi
+}
+for _opt in "" "-d" "-n 1" "-n1" "-dn 1" "--interval=1" "--shotsdir logs" \
+            "-s logs" "--equexit 5" "--some-future-option val"; do
+    _wa block  "watch $_opt 'rm -f src/file'"
+    _wa block  "watch $_opt 'git clean -fd'"
+    _wa allow  "watch $_opt 'git status'"
+done
+_wa block "watch rm -f src/file"          # unquoted: the plain token scan covers it
+_wa block "watch -x rm -f src/file"       # --exec skips the shell; over-read on purpose
+_wa allow "watch -d ls -la"
+_wa allow "echo watch rm -rf src"         # `watch` as plain DATA stays inert
+if [[ "$_WATCH_FAIL" -eq 0 ]]; then
+    ok "watch resolves its payload under every option spelling ($_WATCH_PASS cases)"
+else
+    no "watch payload spellings" "$_WATCH_FAIL of $((_WATCH_PASS + _WATCH_FAIL)) wrong"
+fi
+# `--` is NOT honoured as sed's option terminator: deciding whether it is an option
+# OPERAND needs the same arity table, and here it is -f's script file, so the -i behind
+# it writes in place. The price is the over-block on the next line, which is correct.
+check "sed -f -- -i writes in place" block "$(bash_decision "sed -f -- -i file")"
+check "read-only sed on a file named --in over-blocks (deliberate)" block \
+    "$(bash_decision "sed -n -- --in")"
 check "xargs running rm" block "$(bash_decision "echo hi | xargs rm")"
 check "find -exec rm" block "$(bash_decision "find . -exec rm {} ;")"
 check "find -delete" block "$(bash_decision "find . -delete")"

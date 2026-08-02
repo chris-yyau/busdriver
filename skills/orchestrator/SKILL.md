@@ -46,7 +46,7 @@ To review design/plan documents, INVOKE `blueprint-review` skill (via Skill tool
 ## Emergency Gate Recovery
 
 When a gate blocks and the user needs to bypass, follow the full procedure in `references/gate-recovery.md` (in this skill's directory). **Hard rules — never violate:**
-- NEVER create the skip file yourself — gates reject/delete skip files <30s old (anti-self-bypass). The user must `touch <PROJECT_ROOT>/<STATE_DIR>/skip-<GATE>.local` in their own terminal (`<STATE_DIR>` = `.claude` — defaults to `.claude`; the gate names it verbatim in its block message. Resolve it, NEVER hardcode `.claude`, and give the user the absolute path).
+- NEVER create the skip file yourself — gates reject/delete skip files <30s old (anti-self-bypass). The user must `touch <PROJECT_ROOT>/<STATE_DIR>/skip-<GATE>.local` in their own terminal (`<STATE_DIR>` is always `.claude` here — `hooks.json` launches the gate through `env -i`, which strips any `BUSDRIVER_STATE_DIR` an operator terminal exported, so the gate itself always resolves `.claude`; give the user the absolute path).
 - NEVER `sleep` directly via Bash — wait via `Monitor(command: "sleep 35 && echo READY", timeout: 45)`.
 - NEVER verify the skip file (`test -f`/`ls`/`stat`/`cat`/`find`) before retrying. During the 30s anti-self-bypass window any gated tool call still destroys it; past that window `skip-design-review.local` is a lease (#519 / ADR 0031) that read-only calls no longer spend, but verifying still tells you nothing useful. Just wait and retry the blocked action directly.
 - NEVER ask the user to wait — Claude waits via Monitor.

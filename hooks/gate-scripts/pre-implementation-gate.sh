@@ -835,6 +835,15 @@ _INDIRECTION_RE = re.compile(
 
 
 def _exec_payloads(words):
+    # SCOPE, because the KEEP IN STEP notes further down have been misread as a wider
+    # promise than they make: this feeds the HELPER guard only -- can this command
+    # reach lease_slot.py or audit_append. It is NOT the file-mod classifier. That
+    # decision has exactly ONE implementation, cmdword.is_file_mod, imported below, so
+    # a verb-runner taught to cmdword needs no twin here. The KEEP IN STEP notes pin
+    # the dedup, budget and tokenization details this function shares with
+    # cmdword._executed_operands -- never the operand set, which answers a different
+    # question and is deliberately wider (no exemption list, any index).
+    #
     # Sub-programs this simple command hands to something else to RUN: a find -exec
     # payload (already tokens) and an executed STRING (env -S / a shell -c), which has
     # to be re-tokenized. Without following these, the helper guard only saw the top
@@ -2009,7 +2018,11 @@ try:
         # import-failure fallback, so a verb missing here fails OPEN on exactly the
         # damaged-installation path the comment below promises is fail-CLOSED.
         FILE_MOD_PATTERNS = [
-            r"\bsed\s+-i",
+            # `sed` WHOLE, matching cmdword.FILE_MOD_PATTERNS. The classifier blocks
+            # arrangements `\bsed\s+-i` cannot see -- `sed -f -- -i file` writes in
+            # place, because the `--` is the script operand of -f -- and this list is
+            # the import-failure stand-in, so it has to be the WIDER of the two.
+            r"\bsed\s",
             r"\btee\s",
             r"\bpatch\s",
             r"\bcp\s",

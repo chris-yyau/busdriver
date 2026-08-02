@@ -47,6 +47,41 @@ source "$REPO_ROOT/scripts/lib/resolve-cli.sh"
 # suite outgrew the old 120s budget; 180 restores headroom without masking a hang.
 PER_TEST_TIMEOUT="${SHELL_TEST_TIMEOUT:-180}"
 
+# Per-test timeout OVERRIDES (basename → seconds), for a specific suite that
+# legitimately needs more than the shared default without loosening the
+# 180s budget for the other ~100 tests (which would mask a genuine hang in
+# any of THEM for an extra minute-plus). Keep this list minimal and justify
+# each entry, same discipline as SKIP_ALLOWED above. A `case` lookup (not
+# `declare -A`) — this script's own #519 sibling proved `env bash` resolves
+# to macOS's system /bin/bash 3.2 whenever PATH is stripped, which has no
+# associative arrays; a case statement is portable to 3.2 and 5.x alike.
+#
+# test-impl-gate-scope-519: #519's classifier-parity matrices (wrapper x
+# payload x boundary, -m module x cluster x escape-width, …) are driven
+# rather than sampled by design (see the file's own header — a hand-picked
+# case is how launchers like flock/script went missing before), and that
+# breadth is >300 `bash_decision` calls, each forking python3 twice (JSON
+# construction + the gate's own embedded parser) plus the gate's bash
+# process itself. Measured 190-230s wall on a dev machine — already past
+# 180s before accounting for CI's slower/shared CPUs. Splitting the file
+# would just move the same subprocess count across file boundaries; the
+# cost is inherent to per-case subprocess isolation, which is what makes
+# each case an honest end-to-end run of the real gate rather than a stub.
+# Takes the MAX of the override and PER_TEST_TIMEOUT, not the override
+# alone — an operator-set SHELL_TEST_TIMEOUT larger than the override must
+# still win, otherwise this floor would silently shrink an explicit ask.
+test_timeout() {   # <basename> -> prints the effective per-test timeout
+  local override=0
+  case "$1" in
+    test-impl-gate-scope-519) override=420 ;;
+  esac
+  if [ "$override" -gt "$PER_TEST_TIMEOUT" ]; then
+    printf '%s\n' "$override"
+  else
+    printf '%s\n' "$PER_TEST_TIMEOUT"
+  fi
+}
+
 # The ONLY tests permitted to SKIP. Everything else — every gate/security suite
 # included — must run to completion; an unexpected SKIP fails the job (see the
 # skip-masking guard above). Keep this list minimal and justify each entry.
@@ -86,12 +121,13 @@ if [[ "${#tests[@]}" -eq 0 ]]; then
   exit 1
 fi
 
-echo "Discovered ${#tests[@]} shell tests (per-test timeout ${PER_TEST_TIMEOUT}s)"
+echo "Discovered ${#tests[@]} shell tests (per-test timeout ${PER_TEST_TIMEOUT}s, per-test overrides may extend individual suites)"
 echo
 
 for t in "${tests[@]}"; do
   base="$(basename "$t" .sh)"
-  _portable_timeout "$PER_TEST_TIMEOUT" bash "$t" >"$out_file" 2>&1
+  this_timeout="$(test_timeout "$base")"
+  _portable_timeout "$this_timeout" bash "$t" >"$out_file" 2>&1
   rc=$?
   last="$(grep -vE '^[[:space:]]*$' "$out_file" | tail -n1)"
 
@@ -111,7 +147,7 @@ for t in "${tests[@]}"; do
     pass=$((pass + 1))
   else
     if [[ "$rc" -eq 124 ]]; then
-      echo "FAIL (timeout ${PER_TEST_TIMEOUT}s): $base"
+      echo "FAIL (timeout ${this_timeout}s): $base"
     else
       echo "FAIL (rc=$rc): $base"
     fi

@@ -117,8 +117,125 @@ if ! command -v python3 &>/dev/null; then
 fi
 
 # ── Read stdin once (shared by marker protection and design review) ───
-INPUT=$(cat 2>/dev/null || true)
+# BOUNDED. `INPUT=$(cat)` read the whole stream before any ceiling could look at it, and
+# then command substitution stripped every trailing newline -- so a small valid object
+# followed by an arbitrarily large newline run was READ in full and MEASURED as just the
+# object. The ceilings below all sit downstream of that read, which made them guards over
+# work already paid for; a large enough suffix re-creates the very timeout fail-open they
+# exist to close (a timeout kills this hook with NO decision on stdout, which the harness
+# reads as ALLOW). Measured: 256MB of trailing newlines cost 1.92s and reported 63 bytes.
+#
+# One byte past the HARD cap is all that ever needs reading -- anything longer is refused
+# by that cap regardless of tool, so reading further can only cost time. A payload that
+# fills the buffer is therefore over the hard cap by construction and blocks below.
+#
+# `-n`, not `-N`: -N arrived in bash 4.1 and this script runs under `env bash`, which on
+# macOS resolves to /bin/bash 3.2 whenever PATH is stripped -- and an unsupported option
+# would leave INPUT empty, which the next line turns into exit 0. That is a fail-OPEN in
+# the one place that must not have one. `-d ''` makes NUL the delimiter and JSON carries
+# no NUL, so -n stops only on the byte count or EOF. Verified identical on 3.2 and 5.3.
+# LC_ALL=C so the count is bytes, matching ${#INPUT} below.
+INPUT=""
+LC_ALL=C IFS= read -r -d '' -n 8388609 INPUT 2>/dev/null || true
 [ -z "$INPUT" ] && exit 0
+
+# ── Oversized Bash payload: block without parsing ─────────────────────
+# This hook is registered with a 5s timeout, and a timeout kills it with NO decision on
+# stdout — which the harness reads as ALLOW. So cost is a correctness property here, not
+# just a latency one. The python-side budgets (cmdword._MAX_SCAN_TOKENS / _MAX_CMD_CHARS
+# and _HELPER_MAX_TOKENS) bound the O(tokens^2) scans, but the gate decodes this payload
+# in several separate python3 blocks, and that per-block JSON cost alone reached ~7s at
+# 8MB. One length test before any of them bounds every downstream stage at once.
+#
+# TOOL-AGNOSTIC, and measured in BYTES. Both properties are deliberate, and the first
+# version of this guard got both wrong:
+#
+#   * It matched two literal spellings of `"tool_name":"Bash"` to scope itself to Bash.
+#     But the parsers below accept `d.get("tool_name", d.get("toolName", ""))`, and JSON
+#     permits whitespace before the colon and \u escapes in the key -- so `toolName`
+#     alone walked past the guard. The defect was not that it matched a spelling -- it is
+#     that an UNRECOGNIZED spelling relaxed the guard. The scoping is inverted below: the
+#     strict ceiling is the default, and only a recognized Write/Edit raises it. An
+#     unknown spelling now gets the STRICT limit, so guessing wrong over-blocks instead of
+#     waving through, and a Bash payload dressed as a Write buys nothing -- the Write path
+#     is gated on file_path and executes no command.
+#   * It compared ${#INPUT}, which counts CHARACTERS under a UTF-8 locale, against a
+#     threshold justified by per-byte cost. Four-byte characters make those differ by 4x.
+#     LC_ALL=C makes the SAME expansion count bytes.
+#
+# Counted with builtins only, deliberately. The obvious spelling is `wc -c`, and it was
+# tried: it fails-CLOSED-by-accident on the python3-missing path, where the gate runs
+# under a deliberately stripped PATH that carries no wc and no tr. The substitution came
+# back empty, `[ "" -gt N ]` raised, and the ERR trap turned "nothing pending" into a
+# block. printf and ${#} are builtins, so this survives an empty PATH.
+#
+# TWO ceilings, because the two payload shapes have genuinely different honest sizes. A
+# Write/Edit carries file CONTENT and is legitimately megabytes; the gate reads only its
+# file_path and never scans the body. Everything else -- a Bash COMMAND above all -- has
+# no honest form at 256KB, and the per-command budgets below cannot save it: they
+# short-circuit CLASSIFICATION, but the gate still JSON-decodes this payload in several
+# separate python3 blocks, and that alone measured 3.9s at 1MB. A single flat 4MB ceiling
+# was tried and is what let a 262130-character command sit at 7.8s, past the timeout.
+#
+# Sizes are of the RAW payload, so the Write ceiling is generous enough to cover JSON
+# escaping of the content (ensure_ascii turns one 4-byte character into 12 bytes).
+_INPUT_BYTES=$(LC_ALL=C; printf '%s' "${#INPUT}")
+# Unmeasurable is the failure case, not the happy path. A `${_INPUT_BYTES:-0}` default
+# would SKIP the guard on an empty value, which is a silent fail-open in the one branch
+# that exists to stop one. Builtins cannot actually return a non-number here; this is the
+# branch being pointed in the correct direction rather than a reachable path.
+case "$_INPUT_BYTES" in
+    ''|*[!0-9]*)
+        block_emit "Pre-implementation gate could not measure its own input size — blocking as precaution. If stuck, create $STATE_DIR/skip-design-review.local in your terminal."
+        exit 0
+        ;;
+esac
+# HARD cap first, applied to every payload with no discriminator at all, so the parse
+# below is itself bounded: nothing legitimate exceeds the most generous ceiling, and a
+# payload that does is refused before anything reads it.
+if [ "$_INPUT_BYTES" -gt 8388608 ]; then
+    block_emit "Tool input too large to classify ($_INPUT_BYTES bytes, hard limit 8388608). The pre-implementation gate must read this payload to decide whether it modifies files, and one this size cannot be scanned within the hook timeout — so it is refused rather than waved through. Split the command, or write the content to a file in smaller pieces."
+    exit 0
+fi
+# Which tool this is, from the TOP-LEVEL discriminator only. Substring matching over the
+# raw payload was tried twice and spoofed twice: `*'"Write"'*` matches the string anywhere,
+# so a Bash request carrying tool_input.description="Write" raised its own ceiling from
+# 256KB to 8MB and reached the marker and effective-CWD parsers with a megabyte of
+# command -- measured at 5.5s, past the timeout. Before that, matching two literal
+# `"tool_name":"Bash"` spellings missed the `toolName` alias. There is no glob that
+# reliably locates a top-level key in JSON (whitespace, key order, \u escapes), so this
+# stops guessing and asks the parser. One decode of an already-capped payload, and it is
+# the SAME accessor the classifier blocks below use, so the two cannot disagree.
+#
+# Anything that is not positively identified as Write/Edit/MultiEdit keeps the strict
+# ceiling: unparseable input, a missing python3, an unexpected shape. Each of those is a
+# large NON-write being refused, which is the safe direction; the cost is that a large
+# legitimate write is refused too while python3 is missing, and in that state the gate is
+# already degraded to its pure-shell path.
+_INPUT_CEILING=262144
+# -I (isolated), like every other stdin parser below. Without it the process CWD lands on
+# sys.path, and this gate runs with its CWD inside the repo it is gating -- so a repo-root
+# json.py would both execute inside the gate and be free to return tool_name "Write",
+# lifting a Bash payload from 256KB to 8MB and restoring the timeout fail-open this ceiling
+# exists to close. Pinned by a sentinel test; a convention alone did not hold it.
+if command -v python3 >/dev/null 2>&1; then
+    _TOOL="$(printf '%s' "$INPUT" | python3 -I -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    t = d.get("tool_name", d.get("toolName", "")) if isinstance(d, dict) else ""
+except Exception:
+    t = ""
+sys.stdout.write(t if isinstance(t, str) else "")
+' 2>/dev/null || true)"
+    case "$_TOOL" in
+        Write|Edit|MultiEdit) _INPUT_CEILING=8388608 ;;
+    esac
+fi
+if [ "$_INPUT_BYTES" -gt "$_INPUT_CEILING" ]; then
+    block_emit "Tool input too large to classify ($_INPUT_BYTES bytes, limit $_INPUT_CEILING). The pre-implementation gate must read this payload to decide whether it modifies files, and one this size cannot be scanned within the hook timeout — so it is refused rather than waved through. Split the command, or write the content to a file in smaller pieces."
+    exit 0
+fi
 
 # ── Unconditional gate marker protection ──────────────────────────────
 # These files control review gate bypass. Protect them ALWAYS, not just
@@ -132,7 +249,7 @@ INPUT=$(cat 2>/dev/null || true)
 MARKER_CHECK=$(printf '%s' "$INPUT" | python3 -I -c '
 import sys
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
-import json, re, shlex
+import fnmatch, json, posixpath, re, shlex
 
 _SQ = chr(39)
 _DQ = chr(34)
@@ -224,6 +341,194 @@ def _split_simple_commands(s):
     return segs, not (in_s or in_d or esc)
 
 
+# Commands that RUN the command that follows them. Open-ended by nature: a launcher not
+# listed here is treated as an ordinary command, so its payload is judged by the strict
+# rule. That is a known limit of an allowlist, not a claim of completeness -- see the
+# RESIDUAL note in _scan_segment. Platform launchers are included because they are
+# ordinary, discoverable commands rather than obfuscation.
+# KEEP IN STEP WITH cmdword._WRAPPERS -- a launcher missing from either list is a hole
+# in that half. `watch` was missing from both: `watch --exec rm -rf src` resolved its
+# command word to `watch` and read as a plain observation.
+_WRAPPER_CMDS = ("sudo", "doas", "su", "runuser", "env", "nohup", "timeout", "nice",
+                 "ionice", "setsid", "stdbuf", "unbuffer", "command", "builtin", "exec",
+                 "xargs", "caffeinate", "chroot", "arch", "torify", "proxychains",
+                 "proxychains4", "watch", "flock", "script")
+# Reserved words that PRECEDE a command. Without these, `if touch <marker>; then :; fi`
+# and `{ touch <marker>; }` pick `if` / `{` as the command word and are allowed.
+_RESERVED_SH = ("if", "then", "else", "elif", "fi", "do", "done", "while", "until",
+                "esac", "coproc", "{", "}", "!", ")", "(")
+# Test-expression openers: everything after is an OPERAND, never a command, so a read
+# such as `[ -f <marker> ]` must not be read as an invocation.
+_TEST_OPEN_SH = ("[[", "[")
+# A verb embedded INSIDE one operand — `env -S "touch <marker>"` keeps the whole program
+# in a single token, so basename equality never matches it. Only consulted in the
+# wrapper regime, which already tolerates over-blocking.
+# time/script/flock are listed as VERBS, not wrappers, even though they also run a
+# following command: each can write a file ITSELF via a flag or operand
+# (`time -o <log> true`, `script <log>`, `flock <log> cmd`). Treating them as pure
+# wrappers meant the conservative scan looked for a verb in the payload, found none, and
+# allowed a direct overwrite of the protected audit log. As verbs they block whenever a
+# marker is also an operand, which is exactly the condition that matters here — and they
+# are deliberately NOT in cmdword.py _MOD_VERBS, where there is no marker requirement and
+# `time npm test` would become a false positive.
+_INDIRECT_CMDS = ("touch", "cp", "mv", "ln", "install", "truncate", "unlink",
+                  "rmdir", "dd", "time", "script", "flock")
+# Interpreter operands naming a DESCRIPTOR rather than a file on disk: `-` (the
+# documented stdin spelling) and the /dev and /proc descriptor directories. Matched as
+# a family, not as a list of spellings -- a list covered descriptor 0 only, and
+# `exec 3<helper.py; python3 /dev/fd/3` reads the same program through descriptor 3.
+# What any of them carries is decided elsewhere in the command, so none can be resolved
+# by looking at the operand.
+# Leading slashes are `/+` because POSIX keeps exactly two of them meaningful, so
+# normpath("//dev/fd/0") stays "//dev/fd/0" while opening the same descriptor.
+# The /proc arm matches any process directory (`self`, `thread-self`, a pid, a
+# task path), because listing the ones that exist is the enumeration this file keeps
+# losing: `self` and a pid were listed, and `thread-self` reached the same descriptor.
+_FD_SCRIPT_RE = re.compile(
+    r"^(?:-|/+dev/stdin|/+dev/fd/[0-9]+"
+    r"|/+proc/[^/]+/(?:task/[^/]+/)?fd/[0-9]+)$")
+# A token this scanner cannot resolve to a filename: the shell rewrites it before the
+# interpreter sees it. Variable and command substitution (`FD=/dev/fd/0; python3
+# "$FD"`) and PATHNAME EXPANSION (`/dev/f?/0`) both land on a descriptor at run time
+# while reading here as an ordinary path.
+_UNRESOLVED_OPERAND_RE = re.compile(r"[$`*?\[]")
+# A module operand spelled as a plain importable name. Anything else -- an escape, a
+# brace, a leftover expansion -- is a name the shell will rewrite, and the operand this
+# walk sees has already lost some of that syntax, so testing for the UNRESOLVED
+# characters alone missed `-m lease_\x73lot` once the `$` had been stripped.
+_PLAIN_MODULE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
+# PROCESS SUBSTITUTION hands its reader a generated descriptor, so `python3 <(cat
+# .../lease_slot.py)` runs the helper through /dev/fd/N. The segment splitter dismantles
+# `<(...)` before the interpreter-operand walk can see it, so this pairing is decided on
+# the raw text instead. The interpreter test keeps an ordinary read out of it: `diff
+# <(cat .../lease_slot.py) old.py` compares the file, it does not execute it.
+_PROC_SUBST_RE = re.compile(r"[<>]\(")
+_INTERP_RE = re.compile(r"(?:^|[\s;&|(])(?:python[0-9.]*|(?:ba|da|k|mk|z|a)?sh)\b")
+# rm and tee are included HERE even though the scan above matches them by basename:
+# when a wrapper embeds the whole program in one token (env -S "rm -f <log>"), basename
+# equality never sees the verb, so the embedded form needs them too.
+# MUST cover every name in _INDIRECT_CMDS. time/script/flock were listed there and
+# omitted here, so the one shape this regex exists for -- the whole program inside a
+# single token -- let `env -S "script <log>"` through both checks.
+_INDIRECT_VERBS_RE = (r"(?:touch|cp|mv|ln|install|truncate|unlink|rmdir|dd|rm|tee"
+                      r"|time|script|flock)")
+# `=` is a separator too: env accepts the long form --split-string=<program>, which puts
+# the verb immediately after the equals sign rather than after whitespace.
+_INDIRECT_EMBEDDED = re.compile(r"(?:^|[\s;&|/=])" + _INDIRECT_VERBS_RE + r"(?:\s|$)")
+# The ATTACHED spelling of env -S glues the program to the flag letters, so the token
+# reads as -Stouch <marker> and the verb is preceded by a letter rather than whitespace.
+# Non-greedy so the flag cluster is consumed but the verb is not -- a greedy strip eats
+# the verb along with the flag and matches nothing.
+_INDIRECT_ATTACHED = re.compile(r"^-[A-Za-z]*?" + _INDIRECT_VERBS_RE + r"(?:\s|$)")
+
+
+def _dequote(w):
+    return w.replace(chr(34), "").replace(chr(39), "")
+
+
+def _skippable(w):
+    # A leading assignment, a flag, or a bare numeric wrapper operand (timeout 5 ...).
+    return (re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", w) is not None
+            or w.startswith("-")
+            or re.match(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$", w) is not None)
+
+
+def _peel_wrappers(words):
+    # First word that actually EXECUTES: skip leading assignments, flags, bare numeric
+    # wrapper operands, and wrapper commands themselves. Returns None when nothing
+    # survives, so the caller falls back to its raw first word.
+    for w in words:
+        if _skippable(w) or _bn(w) in _WRAPPER_CMDS or _bn(w) in _RESERVED_SH:
+            continue
+        if _bn(w) in _TEST_OPEN_SH:
+            return None
+        return w
+    return None
+
+
+def _first_word(words):
+    # The first word in COMMAND position, ignoring leading assignments/flags/numeric
+    # wrapper operands. Reserved words are NOT skipped here: callers that care about a
+    # specific keyword (coproc) need to see it exactly where it sits.
+    for w in words:
+        if _skippable(w):
+            continue
+        return _bn(w)
+    return ""
+
+
+# A leading redirection, ATTACHED or bare, with an optional leading fd: `<`, `2>`, `>>`,
+# `</dev/null`, `2>&1`. KEEP IN STEP WITH cmdword._REDIR_RE.
+#
+# Needed because the two copies of this scan tokenize DIFFERENTLY. cmdword uses a plain
+# shlex, so `</dev/null` survives as ONE token and only this regex can see it. This file
+# uses punctuation_chars=True, which splits it into `<` + `/dev/null` -- so here the
+# operator is visible to _is_redir but its OPERAND is what lands in command position. Both
+# halves have to be handled, and handling only one is what left the guard open twice.
+# Every COMPLETE redirection operator, longest-first so `<<<` is not read as `<`. The
+# first version matched a single leading `<` only, so a here-string `<<< data` looked
+# like an ATTACHED redirect whose own text was `<`, its operand was never skipped, and
+# `data` became the command word -- the same regime failure this regex exists to stop.
+_REDIR_PREFIX_RE = re.compile(r"^(?:[0-9]+|&)?(?:<<<|<<-?|<>|<&|>>|>\||>&|<|>)")
+
+
+def _strip_redirs(toks):
+    """Drop redirect operators AND the operand each one consumes.
+
+    Filtering on _is_redir alone removed the operator and left the TARGET behind, so
+    `</dev/null sudo -u root python3 .../lease_slot.py` reduced to
+    `[/dev/null, sudo, ...]`. The basename of `/dev/null` is `null`, which is not a
+    wrapper, so the wrapper regime was never selected, the launcher was then peeled to its
+    OWN operand, and the interpreter behind it was never located -- the UNCONDITIONAL
+    helper guard measured ALLOW for the sudo, script and flock forms alike.
+
+    A leading file descriptor (`2` in `2>&1`) stays, and is already _skippable.
+    """
+    out, skip = [], False
+    for t in toks:
+        if skip:
+            skip = False
+            continue
+        if _is_redir(t):
+            skip = True          # the following token is this redirect TARGET, not a verb
+            continue
+        out.append(t)
+    return out
+
+
+def _starts_with_wrapper(words):
+    # Is the COMMAND-POSITION word a wrapper? Position matters: a wrapper name appearing
+    # only as an ARGUMENT to a read (grep sudo <marker>) must not change the decision.
+    #
+    # A LEADING REDIRECTION has to be stepped over first. `</dev/null` is not pure
+    # punctuation, so _is_redir does not strip it and it arrived here as a word whose
+    # basename is `null` -- not a wrapper, so this returned False, the conservative
+    # all-token regime was never selected, and the launcher preamble was then peeled up to
+    # its OWN operand. That allowed the UNCONDITIONAL helper guard to be walked past:
+    # `</dev/null script -q /dev/null python3 .../lease_slot.py` and the sudo and flock
+    # forms all measured ALLOW. Same defect as cmdword._starts_with_wrapper, and it has to
+    # be fixed in BOTH copies -- fixing only the library left this one open, because this
+    # is the copy the helper guard consults.
+    skip_next = False
+    for w in words:
+        if skip_next:
+            skip_next = False
+            continue
+        m = _REDIR_PREFIX_RE.match(w)
+        if m:
+            # A BARE operator takes the FOLLOWING token as its target (`< in.txt cmd`);
+            # an attached one (`</dev/null`) carries its own. Without this the target
+            # became the command word and the answer was False all the same.
+            skip_next = m.group(0) == w
+            continue
+        if _skippable(w) or _bn(w) in _RESERVED_SH:
+            continue
+        if _bn(w) in _TEST_OPEN_SH:
+            return False
+        return _bn(w) in _WRAPPER_CMDS
+    return False
+
+
 def _scan_segment(segtext, markers, simple_vars, flags=None):
     # Tokenize ONE already-separated simple command and decide block/allow.
     # commenters is cleared because the newline->";" normalization (in
@@ -253,6 +558,7 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
             flags["unparseable"] = True
         return next((mf for mf in markers if _bn(mf) in segtext), None)
     seg = []
+    seg_words = []   # command-position candidates: redirect operators/targets excluded
     seg_has_cmd = False
     seg_cmd_word = None  # first real command word (redirect ops/targets excluded)
     i, n = 0, len(toks)
@@ -304,6 +610,7 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
                 seg_cmd_word = t
             seg_has_cmd = True
         seg.append(t)
+        seg_words.append(t)
         i += 1
     # A bare rm/tee co-occurring with a marker operand in THIS simple command is a
     # delete / tee-write of the marker. Scanning ALL words (not a pinned command
@@ -326,12 +633,876 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
     # seg_cmd_word is captured in the token loop, so leading assignments (NAME=/NAME+=)
     # AND leading redirects (>/dev/null touch <marker>) are already excluded — a naive
     # first-non-assignment scan of seg would mis-pick the redirect target as the verb.
-    cmd_word = seg_cmd_word
-    if cmd_word is not None and _bn(cmd_word) in ("touch", "cp", "mv", "ln", "install"):
+    # Peel wrapper preambles before deciding the verb. Matching the RAW first word let
+    # `command rmdir <slot>` and `env truncate <log>` slip past this check, while the
+    # wrapper-aware classifier downstream still called them modifications — and the F9
+    # state-directory exemption then allowed them. A spent lease slot could therefore be
+    # removed and reclaimed without bound, and the protected audit log destroyed.
+    # #519: the indirect-write verbs. touch/cp/mv/ln/install come from #290 (the
+    # realistic threat is a cooperative agent taking the easy path); truncate/unlink/
+    # rmdir/dd were added once the lease ledger and bypass-log.jsonl became gate state,
+    # since rmdir on a spent slot resets the 20-use ceiling and truncate/dd erase the
+    # audit trail. A residual that is the EASIEST path is not a residual.
+    # ── Does this simple command RUN an indirect-write verb? ──────────────────
+    # One conservative rule rather than a patch per shape. Chasing each variant found a
+    # new one every round (coproc with an optional NAME, sudo before find, a verb
+    # embedded in an -exec payload), which is the segment-split arms race this file
+    # already warns about.
+    #
+    # CONSERVATIVE regime when the command executes something it does not name directly:
+    # a wrapper in command position, a coproc or function DEFINITION in command position
+    # (coproc takes an optional NAME, and a function body executes when the name is later
+    # called -- `function f { touch <marker>; }; f`), or find (which runs its own
+    # commands). All three are anchored on POSITION -- an any-occurrence test blocked
+    # `echo coproc touch <marker>` and `echo find -delete <marker>`, where the marker is
+    # only data, breaking the read/mention contract this check exists to preserve.
+    # There, EVERY word is checked -- by basename equality, by embedded-verb regex on the
+    # dequoted word, and for the -delete action. That cannot fail open; it only
+    # over-blocks a wrapped read, which is the right direction for a marker guard.
+    #
+    # RESIDUAL, deliberately NOT chased: a verb assembled at RUNTIME rather than written
+    # literally -- `V=truncate env -S "${V} -s 0 <log>"`, globs, brace expansion. That is
+    # the ADR 0006 execute-a-string/computed-name class: the value exists only in the
+    # executing shell, so no static scan can see it, and anything able to do it can also
+    # `python3 -c` the write directly. Blocking a subset is theater against that actor.
+    # The literal spellings above are closed because they are ONE TOKEN away from an
+    # ordinary command; this one is not.
+    #
+    # STRICT regime otherwise: the command word alone decides, so a verb appearing only
+    # as an ARGUMENT to a read (grep touch <marker>, echo find -delete <marker>) stays
+    # allowed. That read-only contract is the whole point of the position check.
+    _INDIRECT = _INDIRECT_CMDS
+    _peeled = _peel_wrappers(seg_words)
+    # Tested on the PEELED word as well as the first: a reserved word can sit in front
+    # of the definition (`if true; then function f { touch <marker>; }; f; fi`), and
+    # _first_word then reports `then`, which is neither a wrapper nor a definition.
+    # _peel_wrappers already skips reserved words, so it reaches the real introducer.
+    _conservative = (_starts_with_wrapper(seg_words)
+                     or _first_word(seg_words) in ("coproc", "function")
+                     or _bn(_peeled or "") in ("coproc", "function", "find"))
+    if _conservative:
+        verb_present = (any(_bn(w) in _INDIRECT for w in seg_words)
+                        or any(_INDIRECT_EMBEDDED.search(_dequote(w))
+                               or _INDIRECT_ATTACHED.match(_dequote(w))
+                               for w in seg_words)
+                        or any(w == "-delete" for w in seg_words))
+    else:
+        cmd_word = _peeled if _peeled is not None else seg_cmd_word
+        verb_present = cmd_word is not None and _bn(cmd_word) in _INDIRECT
+    if verb_present:
         for w in seg:
             m = _match_marker(w, markers, simple_vars)
             if m:
                 return m
+    return None
+
+
+def _norm_for_scan(cmd):
+    # Pre-tokenization normalization shared by the marker scan and the helper guard, so
+    # the two cannot disagree on what a token is.
+    norm = cmd.replace("\r\n", "\n").replace("\r", "\n")
+    # Bash removes an unquoted backslash-newline (line continuation) before execution;
+    # mirror that BEFORE splitting on newlines so a marker write or basename split
+    # across a continuation is rejoined, not broken into pieces.
+    norm = norm.replace(chr(92) + chr(10), "").replace("\n", " ; ")
+    # Bash ANSI-C ($...) and locale quoting: shlex does not model the leading $, so
+    # strip that prefix and let the quote tokenize to the literal path. (Escape
+    # SEQUENCES such as \x6c remain undecodable by shlex and stay out of scope per the
+    # residual note above.)
+    norm = norm.replace("$" + _SQ, _SQ).replace("$" + _DQ, _DQ)
+    # ${IFS}/$IFS expand to whitespace -- a classic field-splitting obfuscation
+    # (rm${IFS}<marker>); normalize to a separator so the command word and redirect
+    # operands are recognized rather than glued into one token.
+    return re.sub(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])", " ", norm)
+
+
+_MUTATING_HELPERS = ("lease_slot.py", "audit_append.py")
+
+# Bound the WIDTH of the helper scan. KEEP IN STEP WITH cmdword._MAX_SCAN_TOKENS, which
+# carries the full reasoning. The short version: the -c scan is O(tokens^2) because it
+# refuses the per-flag arity table, and this hook is registered with a 5s timeout that on
+# expiry kills it with NO decision on stdout -- which the harness reads as allow. Measured
+# before this bound existed, 128KB of padding cost 34s here. Tokens rather than bytes, so
+# a legitimately long single-token payload is untouched. Charged cumulatively across every
+# segment and recursion level.
+#
+# Exhaustion fails CLOSED, via _HELPER_UNSCANNED. An earlier version degraded to the
+# substring probe instead, arguing that any command big enough to exhaust this budget also
+# exhausts the cmdword budget, where exhaustion blocks. That argument does not hold, and
+# the gap it left was measured: this guard is UNCONDITIONAL, while the cmdword budget only
+# decides is_file_mod, which blocks solely WHILE a design review is pending. With nothing
+# pending the two do not overlap, so 4001 filler flags followed by `-m lease_slot` was
+# ALLOWED. A scan that was abandoned has not found "no helper" -- it has found nothing at
+# all, and nothing at all is the fail-CLOSED case.
+_HELPER_MAX_TOKENS = 4000
+_helper_budget = [0]
+# Total BYTES of watch suffix candidates materialized per scan. The cost of that
+# expansion is copying, not token count, so it is bounded in the unit it actually spends.
+# Exceeding it forces _helper_budget negative, which fails CLOSED -- see _exec_payloads.
+_WATCH_MAX_PAYLOAD_BYTES = 1 << 20
+# The same helpers as MODULE names. `python3 -m lease_slot` runs the file without
+# ever naming it, and `-m` was on the list of flags whose operand gets skipped.
+_MUTATING_MODULES = tuple(h[:-3] for h in _MUTATING_HELPERS)
+
+# Modules that CONSUME a following path as data rather than executing it, keyed by the
+# first dotted component. Deliberately an allowlist and deliberately short: the inverse
+# list (modules that RUN their argument -- cProfile, profile, pdb, trace, timeit, runpy,
+# ...) fails OPEN on the one nobody enumerated, and stdlib gains modules. Anything absent
+# here is assumed to execute what follows, so an unlisted read-only module costs a false
+# block, not a bypass. Add to this list when one shows up; never add to its inverse.
+_READONLY_MODULES = frozenset((
+    "json",        # json.tool pretty-prints its operand
+    "tokenize", "ast", "dis", "pydoc", "pyclbr", "inspect",
+    "py_compile", "compileall",   # compile to bytecode; they do not run module level
+    "base64", "gzip", "zipfile", "tarfile", "hashlib", "mimetypes",
+))
+
+# Isolated-mode flags. `-I` implies `-P` and `-E`; `-P` alone is enough for the question
+# asked below, since it is the one that drops the CWD from sys.path.
+_ISOLATED_RE = re.compile(r"^-[A-Za-z]*[IP]")
+
+
+def _readonly_module_trusted(mod, words):
+    """Is the READ-ONLY reputation of this -m module actually trustworthy here?
+
+    The name alone is not evidence. For -m, CPython puts the CURRENT DIRECTORY on
+    sys.path, and this gate runs with its CWD inside the repository it is gating -- so a
+    repo-root `json/` package shadows the stdlib and `python3 -m json.tool <helper>`
+    executes whatever the repo says json.tool is. PYTHONPATH does the same from the
+    environment. Trusting the spelling is the exact shape ADR 0016 / #325 rejected:
+    consent authenticated by content that the gated party controls.
+
+    So the allowlist counts only when the interpreter runs ISOLATED, which is what
+    actually removes the CWD -- and, for -I, the environment -- from the module search
+    path. A bare `python3 -m json.tool <helper>` is now treated as unknown and scanned,
+    which costs a false block on a genuine read. That is recoverable through the skip
+    lease; the alternative is not.
+    """
+    if _bn(mod).split(".")[0] not in _READONLY_MODULES:
+        return False
+    return any(_ISOLATED_RE.match(t) for t in words)
+
+# Sentinel for a scan that was ABANDONED rather than completed. Not a helper name: it
+# means the walk ran out of budget or the command was too large to walk, so this file
+# cannot say whether a helper runs. The caller blocks on it, through its OWN action so
+# the operator gets an accurate message instead of being told to stop calling a script
+# named after a sentinel. Plain ASCII with no pipe: it crosses into shell through a
+# pipe-delimited line, and a NUL would be dropped or truncate the field.
+_HELPER_UNSCANNED = "UNSCANNABLE"
+
+
+def _helper_substring(text):
+    """Cheap probe: does `text` NAME a mutating helper anywhere, file OR module spelling?
+
+    Every fallback in this file that abandons the structured walk lands here, so the
+    MODULE spelling has to be covered: `python3 -m lease_slot` never writes the string
+    `lease_slot.py`, so probing the FILE names alone read a real invocation as absent.
+    That is the gap a padded command walked through once the token budget cut the walk
+    short -- measured ALLOW with nothing pending, against an UNCONDITIONAL guard.
+
+    The module stems subsume the file names (`lease_slot` is a substring of
+    `lease_slot.py`), so one pass over the stems answers both spellings.
+    """
+    return next((m + ".py" for m in _MUTATING_MODULES if m in text), None)
+
+
+def _module_helper(mod):
+    """The helper FILE this `-m` module operand runs, or None. Dotted paths resolve to
+    their last component, since `-m gate.lib.audit_append` runs the same file."""
+    if not mod:
+        return None
+    stem = _bn(mod).split(".")[-1]
+    return stem + ".py" if stem in _MUTATING_MODULES else None
+
+
+def _glob_helper(word):
+    """The helper FILE a GLOB operand can expand to, or None.
+
+    The shell resolves `lease_slo?.py` against the filesystem, so the question is not
+    whether the literal spelling names a helper -- it never does -- but whether the
+    PATTERN can. Asking that directly beats searching the command text for a helper
+    stem, which a single wildcard in the middle of the name defeats.
+    """
+    try:
+        pat = re.compile(fnmatch.translate(_bn(word)))
+    except (re.error, TypeError):
+        return _MUTATING_HELPERS[0]      # unparseable pattern: fail closed
+    return next((h for h in _MUTATING_HELPERS if pat.match(h)), None)
+
+
+# A function definition, an alias definition, or eval can re-point a command name, so a
+# helper sitting in an operand may be what actually runs. See _helper_invoked.
+_INDIRECTION_RE = re.compile(
+    r"(?:^|[;&|{(]|\bfunction\s)\s*[A-Za-z_][A-Za-z0-9_]*\s*(?:\(\s*\)|\s*\{)"
+    r"|(?:^|[;&|(]|\s)\s*alias\s+[A-Za-z_]"
+    r"|(?:^|[;&|(]|\s)\s*eval(?:\s|$)")
+
+
+def _exec_payloads(words):
+    # SCOPE, because the KEEP IN STEP notes further down have been misread in BOTH
+    # directions: this feeds the HELPER guard only -- can this command reach
+    # lease_slot.py or audit_append. It is NOT the file-mod classifier, which has
+    # exactly ONE implementation, cmdword.is_file_mod, imported below.
+    #
+    # The distinction that matters when editing either file:
+    #   - a new file-mod VERB belongs in cmdword._MOD_VERBS alone. It needs no twin
+    #     here, because whether a command WRITES is not a question this function asks.
+    #   - a new RUNNER -- anything that hands a payload to a shell -- belongs in BOTH,
+    #     for different reasons: cmdword so the payload is classified for writes, here
+    #     so the payload is searched for a helper. Teaching only one of them leaves the
+    #     other blind. That is not hypothetical: `watch` with a quoted payload was added
+    #     to cmdword first and reached the helper guard unseen until the branch below
+    #     was added.
+    #
+    # The KEEP IN STEP notes pin the dedup, budget and tokenization details this
+    # function shares with cmdword._executed_operands -- never the operand set, which
+    # answers a different question and is deliberately wider (no exemption list, any
+    # index).
+    #
+    # Sub-programs this simple command hands to something else to RUN: a find -exec
+    # payload (already tokens) and an executed STRING (env -S / a shell -c), which has
+    # to be re-tokenized. Without following these, the helper guard only saw the top
+    # level, so `find . -exec python3 .../lease_slot.py .claude fake 1 ;` and the same
+    # payload inside env -S reached the helper unblocked.
+    # A shell/env introducer is matched at ANY index, deliberately, and there is NO
+    # exemption list. Requiring command position means knowing where the wrapper preamble
+    # ends, which means knowing which wrapper flags take an operand -- and every
+    # approximation of that is a fail-open: consuming one operand per flag eats the `find`
+    # in `sudo -E find . -exec ...` (-E is boolean), leaving the payload unscanned, and
+    # the same holds for `env -i` and `sudo -n`.
+    #
+    # Exempting commands that "only print their arguments" was tried and REMOVED. Every
+    # entry turned out to be another way to execute: `less "+!<cmd>"` runs a shell,
+    # `alias echo=eval` re-points the name, a function definition shadows it outright.
+    # Patching the list per spelling is the arms race this file exists to avoid, and an
+    # exemption in a security detector has to be justified rather than assumed -- so the
+    # list is gone and the scan is unconditional.
+    #
+    # The price is a documented over-block: `echo -exec sh -c "... lease_slot.py ..."`
+    # prints a string and is read as an invocation. That is the fail-CLOSED direction on a
+    # command nobody writes, and both helpers are safe by construction anyway (lease_slot
+    # reads the mtime itself under a lock; audit_append has no writing CLI), so this
+    # detector is defence in depth rather than the thing holding the line.
+    # Deduped ON INSERT. KEEP IN STEP WITH cmdword._executed_operands, which carries the
+    # reasoning: deduping at the END still materializes every duplicate first, and the
+    # no-break rescan builds them quadratically -- measured near 203 MiB for a 65KB input
+    # whose TIME was already bounded by the token budget.
+    tok_payloads, str_payloads = [], []
+    _seen_t, _seen_s = set(), set()
+
+    def _add_tok(payload):
+        _k = tuple(payload)
+        if _k not in _seen_t:
+            _seen_t.add(_k)
+            tok_payloads.append(payload)
+
+    def _add_str(payload):
+        if payload not in _seen_s:
+            _seen_s.add(payload)
+            str_payloads.append(payload)
+    # `-exec` is a find PREDICATE, so it only introduces a payload when some earlier word
+    # in the segment is `find`. Treating it as a general convention read the -exec in
+    # `bash -c "printf ..." -- -exec sh -c "..."` -- a print -- as an invocation.
+    _seen_find = False
+    # Only the FIRST watch word is expanded; see the branch below for why.
+    _seen_watch = False
+    for i, w in enumerate(words):
+        # `less "+!<cmd>"` / `more "+!<cmd>"`: the pager runs the rest as a shell command.
+        # A startup-command operand is an executed STRING wherever it appears, so it is
+        # matched by its own shape rather than by knowing which pagers accept it.
+        if w.startswith("+!") and len(w) > 2:
+            _add_str(w[2:])
+        # ANY earlier token, not command position. Resolving command position needs the
+        # end of the wrapper preamble, which needs per-flag arity -- and every
+        # approximation of that was a fail-open (see above). So this over-blocks a read
+        # that happens to name both, e.g. `printf "%s" find -exec <helper> ";"`. Accepted:
+        # fail-CLOSED on a contrived string beats a miss on `sudo -u root find -exec`.
+        if _bn(w) == "find":
+            _seen_find = True
+        if _seen_find and w in ("-exec", "-execdir", "-ok", "-okdir"):
+            payload = []
+            for w2 in words[i + 1:]:
+                if w2 in (";", "+"):
+                    break
+                payload.append(w2)
+            if payload:
+                _add_tok(payload)
+            continue
+        base = _bn(w)
+        if base == "env":
+            for j in range(i + 1, len(words)):
+                t2 = words[j]
+                if t2.startswith("--split-string="):
+                    _add_str(t2.split("=", 1)[1]); break
+                if t2 in ("-S", "--split-string") and j + 1 < len(words):
+                    _add_str(words[j + 1]); break
+                if t2.startswith("-S") and len(t2) > 2:
+                    _add_str(t2[2:]); break
+        elif base == "watch" and not _seen_watch:
+            # `watch COMMAND` joins its non-option arguments and runs the result through
+            # sh -c, so a QUOTED payload is executed shell SOURCE that arrives here as one
+            # word. Without this branch the quoted spelling reached the helper unseen while
+            # every other one was caught -- sh -c, env -S, find -exec, and even UNQUOTED
+            # watch, whose payload is separate words the scan already reads. That gap was
+            # real: the guard is introduced by this change set, so it shipped with a hole in
+            # the exact shape it exists to catch.
+            #
+            # Deliberately NO option-arity table. Locating the command start means knowing
+            # which watch flags take a value, and every gap in such a list fails OPEN --
+            # procps keeps adding options, and spellings that postdate any list we could
+            # write here already broke an earlier draft of the sibling rule in cmdword.
+            #
+            # EVERYTHING after the watch word goes in as one payload, which the sibling rule
+            # in cmdword cannot do. cmdword needs the command START, because whether a
+            # command writes depends on which word is the verb; this guard does not -- it
+            # searches the payload for a helper at ANY index, per the no-exemption-list
+            # design above. The option words just ride along at the front as inert tokens,
+            # so no arithmetic is needed to step over them.
+            #
+            # It goes in as a TOKEN payload, not a string, so the call site requotes it. A
+            # bare space-join was tried and is wrong for the reason already documented at
+            # the -exec requote: it drops the boundary a quoted token carried, so
+            # `watch -- " sh" -c "python3 -I <helper> ..."` re-lexes as `sh -c python3 -I
+            # <helper>`, whose -c handler reads only `python3` and never scans the helper
+            # demoted to $0/$1.
+            #
+            # Each token is STRIPPED first. Scanning tokens individually was the first fix
+            # here and was itself defeated by `watch -- " python3" -I <helper>`: one word
+            # plus a leading space, so a multi-word test skips it while the shell ignores the
+            # space and runs it. Padding is attacker-chosen, so it is normalized away rather
+            # than matched against a whitespace list.
+            # BOTH payload kinds, because the two shapes need opposite handling and each
+            # candidate is judged alone anyway. The token payload keeps quoting boundaries
+            # so an inner `-c` operand survives; but requoting also stops a payload that is
+            # ITSELF one quoted command from being re-lexed, which is the common
+            # `watch "python3 <helper> ..."` spelling. So each shell-source token is added
+            # as a STRING too. Fixing only one of these swaps which spelling gets through --
+            # it was measured in both directions before landing both.
+            # The token payload is added only for a real ARGV of two or more words. A lone
+            # token is not an argv -- it is one word the shell re-parses -- so requoting it
+            # asserts a boundary that does not exist, and the requoted result is a single
+            # word whose basename is the tail of the path INSIDE it. That made
+            # `watch "grep -n x <helper>"` read as a bare helper invocation and block, while
+            # the identical `sh -c "grep -n x <helper>"` correctly allowed. The string
+            # branch below already covers the lone-token case faithfully.
+            if len(words[i + 1:]) > 1:
+                _add_tok([_t.strip() for _t in words[i + 1:]])
+            # The JOIN, not the individual arguments. watch really does join its arguments
+            # into one sh -c string, so the joined text is the faithful model AND it keeps
+            # operand position: `watch grep -n x <helper>` joins back to the read it started
+            # as. Adding each argument separately was tried and promotes every atom to
+            # command position, so that same read blocked as a bare helper invocation.
+            #
+            # Joining also needs no test for which arguments are "really" shell source --
+            # the detector that failed three times, first missing ` python3` (one word plus
+            # a leading space), then missing `>src/file` (one bare word that redirects).
+            # Stripping each token first keeps the padding from surviving the join.
+            # A SUFFIX from each argument position, as far as the token budget allows, so the
+            # command word is covered wherever the options happen to end. Five narrower
+            # formulations were measured first and every one of them fixed one spelling and
+            # opened the next -- multi-word arguments only missed a space-padded ` python3`;
+            # adding a padding test still missed a lone `>src/file`; the whole-argument join
+            # missed a payload behind a value-taking option. All three were fail-OPEN, and
+            # the common cause is that telling an OPERAND from a COMMAND WORD is precisely
+            # what needs the option-arity table this file refuses to keep.
+            #
+            # So the trade is taken in the other direction, which is the direction this repo
+            # already chose: a suffix set resolves the command word without any arity
+            # knowledge, at the cost of also promoting operands, so `watch cat <helper>`
+            # reads as an invocation and blocks. That is a FALSE BLOCK on a contrived read,
+            # against a FAIL-OPEN on a real invocation, in a fail-CLOSED gate -- and it is
+            # the same trade already documented two branches up for `echo -exec sh -c
+            # <helper>` and for the helper passed as ARGV to another script.
+            #
+            # Two bounds. Only the FIRST watch word is expanded: doing it per occurrence made
+            # `watch watch watch ...` materialize a suffix per token -- O(tokens^2) bytes,
+            # measured near 218 MB -- in a hook whose 5s timeout kills it with NO decision on
+            # stdout, which the harness reads as ALLOW. A nested watch is still reached, one
+            # recursion later, inside an emitted suffix. And the suffix set is charged to
+            # the shared token budget, so a long argv cannot outrun it -- and exhausting it
+            # blocks rather than quietly searching less.
+            _starts = words[i + 1:]
+            if _starts:
+                # The full join goes in first and unconditionally, so there is always
+                # something to scan no matter what the budget does below.
+                _add_str(" ".join(_t.strip() for _t in _starts if _t.strip()))
+            _bytes_left = _WATCH_MAX_PAYLOAD_BYTES
+            for _k in range(1, len(_starts)):
+                # Bounded by BYTES, not by a token count and not by a fixed position cap.
+                # Each was tried and each was wrong in its own way. A fixed cap stops
+                # searching silently -- a fail-OPEN dressed as a limit, walked past by six
+                # repeated value-taking options. Charging token COUNT misses that the cost
+                # is the copying: one ~8 MiB argument re-joined into ~88 suffixes is ~700 MB
+                # against a budget that only ever saw 88 tokens.
+                #
+                # Running out does NOT quietly stop the search. The budget is forced
+                # negative, so every payload already emitted fails CLOSED the moment it is
+                # re-entered, exactly as budget exhaustion does everywhere else here.
+                # Not-knowing blocks; it never allows.
+                _suffix = " ".join(_t.strip() for _t in _starts[_k:] if _t.strip())
+                _bytes_left -= len(_suffix)
+                if _bytes_left < 0:
+                    _helper_budget[0] = -1
+                    break
+                if _suffix:
+                    _add_str(_suffix)
+            _seen_watch = True
+        # KEEP IN STEP WITH cmdword._DASH_C_RUNNERS. ash and mksh were listed there and
+        # missing here, so `ash -c "<helper>"` walked straight past this guard.
+        elif base in ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "su", "runuser",
+                      "flock", "script"):
+            for j in range(i + 1, len(words)):
+                t2 = words[j]
+                if t2.startswith("--"):
+                    # getopt_long accepts any UNAMBIGUOUS ABBREVIATION, so a shortened
+                    # --command runs exactly what the full spelling runs. Comparing
+                    # against the full spelling left every shorter one unread.
+                    name, eq, val = t2.partition("=")
+                    _LONG_RUN = ("command", "session-command")
+                    # su and runuser also execute --session-command, documented as
+                    # equivalent to -c, so the abbreviation test covers both spellings.
+                    if len(name) > 2 and any(l.startswith(name[2:]) for l in _LONG_RUN):
+                        if eq:
+                            _add_str(val)
+                        elif j + 1 < len(words):
+                            _add_str(words[j + 1])
+                    continue          # NO break, for the reason given below
+                if t2.startswith("-") and not t2.startswith("--") and "c" in t2[1:]:
+                    # ATTACHED or separated, and NOT decidable from the spelling: after
+                    # dequoting, a bundle whose tail is MORE FLAGS (bash takes the next
+                    # word as the program) and a payload written flush against the -c
+                    # are both a -c plus a tail. Both candidates are taken; each is
+                    # re-classified alone, so a tail that is really a flag letter
+                    # classifies as nothing and the extra one only ever adds a block.
+                    tail = t2[t2.index("c", 1) + 1:]
+                    if tail:
+                        _add_str(tail)
+                    if j + 1 < len(words):
+                        _add_str(words[j + 1])
+                    # NO break. Stopping at the first `c` assumed this token IS the -c,
+                    # which needs to know whether an EARLIER flag took it as an operand:
+                    # a log-file option hands the -c-looking token to itself as a
+                    # FILENAME, and stopping there missed the real program behind it.
+                    # That arity table is the one this gate refuses to keep, because it
+                    # fails OPEN when wrong. Every token that COULD be a -c operand is a
+                    # candidate instead; each is judged alone, so a filename is inert.
+                    continue
+    # Dedupe, order-preserving. KEEP IN STEP WITH cmdword._executed_operands, which
+    # carries the full reasoning: dropping the break makes every runner rescan every later
+    # c-looking option, so N repeated option pairs yield O(N^2) candidates but only O(N)
+    # distinct ones. Each candidate is judged alone and the verdicts are OR-ed, so a
+    # repeat can only re-derive the answer, never change it. Unbounded re-derivation here
+    # is not merely slow: this hook is registered with a 5s timeout, and a timeout kills
+    # it with NO decision on stdout, which the harness reads as allow.
+    return tok_payloads, str_payloads
+
+
+_ESC_RE = re.compile(
+    r"\\(?:x([0-9A-Fa-f]{1,2})"      # \xH, \xHH
+    r"|u([0-9A-Fa-f]{1,4})"          # \uH .. \uHHHH
+    r"|U([0-9A-Fa-f]{1,8})"          # \UH .. \UHHHHHHHH
+    r"|0?([0-7]{1,3}))")             # \ooo, \0ooo
+
+
+def _decode_escapes(text):
+    # Decode the ANSI-C escapes bash decodes, at bash digit widths. Python
+    # `unicode_escape` codec is NOT a stand-in: it demands exactly four digits after
+    # \u and eight after \U, so bash short forms survived it unchanged and a module
+    # name spelled lease_$-quoted-\u73-lot read as an unrelated string. Over-decoding
+    # can only make more text match, so it adds blocks and never removes one.
+    def _sub(m):
+        hexit = m.group(1) or m.group(2) or m.group(3)
+        try:
+            return chr(int(hexit, 16) if hexit else int(m.group(4), 8))
+        except ValueError:
+            return ""
+    return _ESC_RE.sub(_sub, text)
+
+
+def _ansi_c(text):
+    # ANSI-C quoting as bash resolves it: escapes decoded, the dollar prefix dropped.
+    # shlex knows
+    # nothing of ANSI-C quoting, so EVERY token it hands back may still be encoded --
+    # the interpreter name, the option letter, the operand. Resolving the whole command
+    # text before it is tokenized is what makes the token comparisons downstream see
+    # what bash will see, instead of only the operands one call site remembered to decode.
+    return _decode_escapes(text).replace("$" + chr(39), chr(39))
+
+
+def _shell_variants(text):
+    # The text as written, and as the shell will have rewritten it before running it.
+    # Quoting, escaping, the ANSI-C `$` prefix and a backslash-newline continuation are
+    # removed before the command word is resolved; ANSI-C escapes are DECODED, so a
+    # hex-escaped module name resolves to lease_slot. Additive: any variant blocks.
+    out = [text, _decode_escapes(text)]
+    for base in list(out):
+        sq = base.replace(chr(92) + chr(10), "")
+        for _ch in (chr(39), chr(34), chr(92), "$"):
+            sq = sq.replace(_ch, "")
+        out.append(sq)
+    return out
+
+
+def _names_helper(text):
+    # Which mutating helper does this text NAME, quotes resolved? A raw substring test
+    # is defeated by quote concatenation -- the shell runs `lease_"slot.py"`, but the
+    # text holds no contiguous `lease_slot.py` -- which is the same defeat that made
+    # the rest of this detector tokenize. Tokenizing first resolves it; the substring
+    # test stays as the backstop, since it is WIDER and only ever adds a block.
+    try:
+        lex = shlex.shlex(text, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        lex.commenters = ""
+        hit = next((t for t in lex if _bn(t) in _MUTATING_HELPERS), None)
+        if hit:
+            return _bn(hit)
+    except ValueError:
+        pass
+    hit = next((h for h in _MUTATING_HELPERS
+                for v in _shell_variants(text) if h in v), None)
+    if hit:
+        return hit
+    # SQUEEZED backstop: the shell joins a name across ANSI-C quoting
+    # (`lease_$'slot.py'`), which shlex does not implement, and across PATHNAME
+    # EXPANSION (`lease_slo[t].py`), which no static reader can evaluate. Dropping the
+    # quoting and glob characters can only make more text match, never less, so it
+    # adds blocks and never removes one.
+    squeezed = text
+    for _ch in ("$", chr(39), chr(34), "*", "?", "[", "]"):
+        squeezed = squeezed.replace(_ch, "")
+    return _helper_substring(squeezed)
+
+
+def _abandoned_scan_probe(text):
+    """Widest cheap probe for a helper NAME, for the paths where the walk cannot run.
+
+    _names_helper alone is not enough. Its squeezed backstop DELETES glob characters, so
+    `lease_slo[t].py` collapses to `lease_slot.py` and hits, while `lease_slo?.py`
+    collapses to `lease_slo.py` and misses: the `?` stands FOR a character rather than
+    beside one, and deleting it removes the very character that has to be there. So each
+    whitespace-separated word is also asked, as a PATTERN, whether the shell could expand
+    it onto a helper -- which is the question _glob_helper already answers for the
+    parseable path.
+    """
+    hit = _names_helper(text)
+    if hit:
+        return hit
+    return next((h for w in text.split() if any(c in w for c in "*?[")
+                 for h in [_glob_helper(w)] if h), None)
+
+
+def _helper_invoked(cmd, _depth=0, _full=None):
+    # Which gate-state helper does this command RUN, if any? Token-level, per simple
+    # command -- a raw substring test over the whole string was defeated two ways:
+    # quote concatenation (lease_"slot.py" contains no matching substring, yet the shell
+    # runs it), and a trailing `; : --self-check` that satisfied a whole-string exemption
+    # while the FIRST segment mutated the real ledger. Segmenting and tokenizing makes
+    # both spellings resolve to the same token, and scopes the exemption to the segment
+    # that actually carries it.
+    # RESIDUAL, same class the verb scan above declares out of scope: a name the shell
+    # ASSEMBLES at run time. Quote concatenation, ANSI-C quoting and globbing are
+    # squeezed out below because that is cheap; a brace RANGE is not
+    # (`lease_slo{t..t}.py` yields the name only by expanding it), and neither is a name
+    # built from variables. It reaches the `-m` operand on the same terms: an
+    # unresolvable operand is answered by searching the command for a helper STEM, which
+    # finds `M=lease_slot` but not `A=lease; B=slot; python3 -m "${A}_${B}"` or
+    # `-m lease_{slot,x}`. Closing one spelling would not close the class -- the same
+    # actor writes `python3 -c "$(cat lease_slo{t..t}.py)"`, where the name is equally
+    # invisible -- so this stays documented rather than half-chased. See ADR 0006.
+    #
+    # The command as the OPERATOR typed it. A payload is re-entered on its own, so the
+    # stdin check below -- which needs the redirect that feeds the payload, and that
+    # redirect lives OUTSIDE it -- has to read the outer text, not this fragment.
+    _whole = cmd if _full is None else _full
+    if _depth == 0:
+        _helper_budget[0] = _HELPER_MAX_TOKENS
+    if _PROC_SUBST_RE.search(_whole) and _INTERP_RE.search(_whole):
+        hit = _names_helper(_whole)
+        if hit:
+            return hit
+    if _depth > 3:
+        # Fail CLOSED, for the same reason the token budget does. This was left returning
+        # the bare probe when the other two abandonment paths were converted, which is an
+        # inconsistency an attacker only has to find once: four nested `sh -c` layers
+        # around a GLOBBED helper name (`lease_slo[t].py`) reach here, match no literal
+        # stem, and measured ALLOW against the unconditional guard. Depth exhaustion is
+        # not "no helper found" any more than budget exhaustion is.
+        return _helper_substring(cmd) or _HELPER_UNSCANNED
+    # Bash resolves ANSI-C quoting BEFORE it resolves the command word, so any token can
+    # reach shlex still encoded -- not just the operand. A hex-escaped SWITCH resolves to
+    # -m, and a scan for a literal `m` in the option token missed it entirely.
+    # Re-entering on the resolved text puts every downstream comparison on what bash will
+    # actually see; additive, so it can only add a block.
+    _resolved = _ansi_c(cmd)
+    if _resolved != cmd:
+        hit = _helper_invoked(_resolved, _depth + 1, _full=_ansi_c(_whole))
+        if hit:
+            return hit
+    # A COMMAND SUBSTITUTION runs before the command that consumes its output, so the
+    # consumer being harmless proves nothing: `echo "$(... lease_slot.py ...)"` claims a
+    # slot and logs a sanctioned-bypass event, then prints the slot number. Flatten the
+    # substitution markers into separators and re-scan, so the body is judged as the
+    # command it is. Deliberately crude rather than a second parser: dropping quotes and
+    # turning `$(`/backtick/`)` into `;` can only ADD segments, so it errs toward
+    # blocking. The one over-block it admits is a command that both substitutes AND names
+    # a helper in the same breath, e.g. echo "see $(ls) lease_slot.py".
+    if _depth <= 2 and ("$(" in cmd or chr(96) in cmd):
+        # Quotes are removed, NOT replaced with a space: the shell CONCATENATES adjacent
+        # quoted runs, so `lease_"slot.py"` is one word and spacing it out unmatched it.
+        _flat = cmd.replace(chr(34), "").replace(chr(39), "")
+        _flat = (_flat.replace("$(", " ; ").replace(chr(96), " ; ")
+                      .replace(")", " ; "))
+        _hit = _helper_invoked(_flat, _depth + 1, _full=_whole)
+        if _hit:
+            return _hit
+    # INDIRECTION WITHDRAWS THE MENTION CONTRACT. Normally a helper NAMED in an operand
+    # is data -- that is what keeps `cat .../lease_slot.py` and `echo lease_slot.py`
+    # allowed. But a command that defines a function, defines an alias, or calls eval can
+    # re-point a name so an operand becomes the thing that runs:
+    #   echo() { "$@"; }; echo sh -c "<payload>"
+    #   shopt -s expand_aliases; alias echo=eval; echo "<payload>"
+    # Rather than model the rebinding (or keep an exemption list and lose to the next
+    # spelling), the contract is dropped WHOLESALE for such a command and every token is
+    # examined. It only ever blocks more, and only for commands that asked for it by
+    # introducing indirection in the first place.
+    # Matched on a DEQUOTED copy: the shell concatenates adjacent quoted runs, so
+    # `ev"al" "<payload>"` runs eval while the raw text contains no contiguous `eval`.
+    # Both the trigger AND the search run on the dequoted copy. Dequoting only one of
+    # them left `eval "... lease_""slot.py ..."` -- eval detected, helper name split
+    # across two quoted runs and therefore not found in the raw text.
+    _dq = _dequote(cmd)
+    if _INDIRECTION_RE.search(_dq):
+        _hit = _helper_substring(_dq)
+        if _hit:
+            return _hit
+    segs, ok = _split_simple_commands(_norm_for_scan(cmd))
+    if not ok:
+        # Unparseable -- most often a Bash-VALID heredoc whose BODY contains an
+        # apostrophe, which this segmenter models as shell source (a known limitation the
+        # block message below names). Probed with _names_helper, not the plain substring:
+        # it also squeezes quoting and GLOB characters, so `lease_slo[t].py` -- which the
+        # shell expands to a helper while naming none literally -- is caught here.
+        #
+        # NOT fail-closed, deliberately, and this is the one abandonment path where that
+        # is right. The others (budget, oversize, depth) are reached only by shapes with
+        # no honest form. This one is reached by a heredoc carrying prose,
+        # which is ordinary; blocking every heredoc containing an apostrophe trades a
+        # narrow bypass for a constant, benign failure. The squeezed probe closes the
+        # bypass without that cost. Residual: a name assembled at RUN time still escapes,
+        # which is the accepted ADR 0006 limitation, not a new one.
+        return _abandoned_scan_probe(cmd)
+    for segtext in segs:
+        try:
+            lex = shlex.shlex(segtext, posix=True, punctuation_chars=True)
+            lex.whitespace_split = True
+            lex.commenters = ""
+            toks = list(lex)
+        except ValueError:
+            # Unbalanced quoting inside ONE segment: same reasoning and same probe as the
+            # segmenter above -- squeezed, so a globbed helper name is still caught.
+            return _abandoned_scan_probe(segtext)
+        # Charge before scanning: the O(tokens^2) walk below is what this bounds.
+        _helper_budget[0] -= len(toks)
+        if _helper_budget[0] < 0:
+            # Fail CLOSED. The earlier version returned only the substring probe, on the
+            # reasoning that the cmdword budget blocks the same shape anyway -- and that
+            # reasoning was WRONG in the one way that matters. This guard is
+            # UNCONDITIONAL: it blocks whether or not a design review is pending. The
+            # cmdword budget only decides is_file_mod, which blocks solely WHILE a review
+            # is pending. So with nothing pending the two do not overlap at all, and a
+            # command of 4001 filler flags followed by `-m lease_slot` measured ALLOW.
+            # Abandoning the scan cannot report "no helper" -- it can only report that it
+            # does not know, and not-knowing blocks here.
+            return _helper_substring(cmd) or _HELPER_UNSCANNED
+        # Follow sub-programs FIRST: a payload handed to find -exec, env -S or a shell
+        # -c is executed just as surely as the top level, and looking only at the top
+        # level let `find . -exec python3 .../lease_slot.py .claude fake 1 ;` through.
+        # WHICH token list, decided once and used for both scans below. Stripping is only
+        # safe in the command-position regime. After shlex has dequoted, a literal `>`
+        # handed to a wrapper as an OPERAND is byte-identical to a redirect operator --
+        # the case _is_redir warns about above -- so _strip_redirs would drop it AND the
+        # token after it. That is the interpreter: `env -u ">" python3 .../lease_slot.py`
+        # runs the helper and measured ALLOW. The wrapper regime scans EVERY token and so
+        # needs no stripping at all; the command-position regime needs it, because there a
+        # redirect TARGET left in place (</dev/null -> /dev/null) becomes the command
+        # word and hides the interpreter behind it. Two different failures, one on each
+        # side, which is why the choice is conditional rather than either one alone.
+        _wrapped = _starts_with_wrapper(toks)
+        _scan_toks = toks if _wrapped else _strip_redirs(toks)
+        _tokp, _strp = _exec_payloads(_scan_toks)
+        for _p in _tokp:
+            # shlex.quote per token, NOT a bare join. A bare join loses the boundary a
+            # quoted token carried, so `-exec sh -c "python3 -I .../lease_slot.py ..."`
+            # re-lexed as `sh -c python3 -I .../lease_slot.py ...` -- and the -c handler
+            # then reads only `python3` as the program, with the helper demoted to $0/$1
+            # and never scanned. Requoting round-trips the token list exactly.
+            _hit = _helper_invoked(" ".join(shlex.quote(_t) for _t in _p),
+                                   _depth + 1, _full=_whole)
+            if _hit:
+                return _hit
+        for _p in _strp:
+            _hit = _helper_invoked(_p, _depth + 1, _full=_whole)
+            if _hit:
+                return _hit
+        # The helper must be EXECUTED, not merely named. Naming one is an ordinary read
+        # -- `cat .../lease_slot.py`, `git diff -- .../audit_append.py`,
+        # `echo lease_slot.py`, `python3 safe.py lease_slot.py` -- and blocking those
+        # contradicts the read/mention contract the rest of this detector maintains.
+        words = _scan_toks
+        # Locate the interpreter. Two regimes, same reasoning as the verb scan above: a
+        # wrapper can carry flags that take an OPERAND (`env -u FOO python3 ...`,
+        # `sudo -u root python3 ...`), so peeling to the first non-flag word picks the
+        # operand and misses the interpreter behind it. When the segment STARTS with a
+        # wrapper, look for the interpreter anywhere; otherwise require it in command
+        # position, which is what keeps `echo python3 lease_slot.py` a mention.
+        pyi = None
+        if _wrapped:
+            pyi = next((i for i, t in enumerate(words)
+                        if _bn(t).startswith("python")), None)
+        else:
+            cw = _peel_wrappers(words)
+            if cw is not None and _bn(cw).startswith("python"):
+                pyi = words.index(cw)
+            elif cw is not None and _bn(cw) in _MUTATING_HELPERS:
+                # The script itself is the command word (executable bit set).
+                i = words.index(cw)
+                if not (i + 1 < len(words) and words[i + 1] == "--self-check"):
+                    return _bn(cw)
+                continue
+        if pyi is None:
+            continue
+        # The EXECUTED script is the interpreter first non-flag argument. Anything later
+        # is that script own argument, so `python3 safe.py lease_slot.py` runs safe.py,
+        # and `python3 -c ... # lease_slot.py` runs a -c program.
+        script = None
+        j = pyi + 1
+        while j < len(words):
+            w = words[j]
+            # Normalized first: `/dev/fd/./0`, `/dev//fd/0` and `/dev/fd/../fd/0` all
+            # open descriptor 0, and matching the canonical spelling alone let each of
+            # them read as an ordinary script name.
+            if (_FD_SCRIPT_RE.match(posixpath.normpath(w))
+                    or _UNRESOLVED_OPERAND_RE.search(w)):
+                # The PROGRAM comes from stdin, so it is not an argument at all and the
+                # operand walk picked the next plain operand as the script:
+                # `python3 - .claude 20 0 3600 < .../lease_slot.py` ran the helper while
+                # the parser judged `.claude`. What stdin carries is not statically
+                # visible -- it arrives by redirect, by pipe from an earlier segment, or
+                # by heredoc -- so the WHOLE command is searched, not this segment.
+                # That over-blocks a contrived `python3 - lease_slot.py </dev/null`,
+                # where the helper is only an argument and stdin is empty. Accepted:
+                # `python3 -` is an execution context, not a mention, and enumerating
+                # the empty-stdin spellings is the allowlist this file keeps deleting.
+                hit = _glob_helper(w) or _names_helper(_whole)
+                if hit:
+                    return hit
+                break
+            if w.startswith("-"):
+                # A flag that takes an operand consumes the next word (-c PROG, -m MOD).
+                # `-m MODULE` runs the helper without ever naming the FILE, and `-m`
+                # was on the list of flags whose operand is skipped as an option value.
+                # Matched inside a short-flag CLUSTER, the same way the -c handler
+                # reads its program: CPython accepts `-Bm mod` and `-Bmmod`, so
+                # anchoring on a leading `-m` caught only the simplest spelling.
+                # `--` ends option parsing: the NEXT word is the script, and a word that
+                # merely looks like an option is a filename from here on.
+                if w == "--":
+                    script = words[j + 1] if j + 1 < len(words) else None
+                    break
+                if w == "--module" and j + 1 < len(words):
+                    if _module_helper(words[j + 1]):
+                        return _module_helper(words[j + 1])
+                    if not _PLAIN_MODULE_RE.match(words[j + 1]):
+                        stem = next((m for m in _MUTATING_MODULES
+                                     for v in _shell_variants(_whole) if m in v), None)
+                        if stem:
+                            return stem + ".py"
+                    break
+                if w.startswith("--"):
+                    j += 2 if w == "--check-hash-based-pycs" else 1
+                    continue
+                # A short-option CLUSTER is consumed left to right, and the FIRST
+                # option taking an operand swallows the cluster remainder -- or the
+                # next word when the cluster ends there. Testing for an `m` ANYWHERE
+                # read `-Wm` (which is `-W m`) as a module switch, then skipped the
+                # script word that followed it as if it were the module name.
+                k = next((i for i, ch in enumerate(w[1:]) if ch in "cmWXQ"), None)
+                if k is None:
+                    j += 1
+                    continue
+                tail = w[2 + k:]
+                if w[1 + k] == "m":
+                    mod = tail if tail else (words[j + 1] if j + 1 < len(words) else "")
+                    if _module_helper(mod):
+                        return _module_helper(mod)
+                    # An operand the shell rewrites (`M=lease_slot; python3 -m "$M"`)
+                    # names its module only at run time, so the whole command is
+                    # searched for a helper STEM -- the module spelling, which carries
+                    # no `.py` for _names_helper to find.
+                    if not _PLAIN_MODULE_RE.match(mod):
+                        stem = next((m for m in _MUTATING_MODULES
+                                     for v in _shell_variants(_whole) if m in v), None)
+                        if stem:
+                            return stem + ".py"
+                if w[1 + k] in ("c", "m"):
+                    # CPython STOPS parsing options at -c and -m; everything after is
+                    # argv for the program it already chose. Walking on read the next
+                    # operand as a second module or as a script, so `python3 -m json.tool
+                    # lease_slot.py` -- which only READS the helper -- was blocked.
+                    #
+                    # But stopping OUTRIGHT was a fail-open: several stdlib modules take a
+                    # SCRIPT PATH and run it. `python3 -m cProfile <helper>.py .claude 20
+                    # 0 3600` executes the helper -- claiming a real lease slot and
+                    # minting a skip-review-consumed event -- while this walk classified
+                    # only `cProfile` and allowed it. Confirmed for cProfile, profile,
+                    # pdb, trace, timeit and runpy, which is already too many spellings to
+                    # chase one at a time.
+                    #
+                    # So the question is INVERTED, the way it is everywhere else in this
+                    # file: an executes-its-argument list fails OPEN on the module nobody
+                    # thought of, while a READS-ONLY list fails CLOSED on it. Only the
+                    # handful of modules that provably just read their operand let the
+                    # walk stop; for anything else the remaining words are still searched
+                    # for a protected helper. The cost of being wrong is a false block on
+                    # an unlisted read-only module, which is the safe direction and is
+                    # cleared by adding it to the list.
+                    # Both spellings of "the helper", because a runner module accepts
+                    # both. _glob_helper resolves a FILE operand, including the expanded
+                    # forms `lease_slo[t].py` and `lease_slot*.py` -- an equality test on
+                    # the literal spelling never matches those while the command still
+                    # runs the helper, and the direct-script path below already resolves
+                    # operands this way. _module_helper resolves a MODULE operand:
+                    # `python3 -m cProfile -m lease_slot` hands cProfile its OWN -m, which
+                    # runs the helper as __main__ without the name ever carrying `.py`.
+                    #
+                    # EVERY later word is scanned, with no stop. A stop at the first `.py`
+                    # operand was tried, to spare the one false positive where the helper
+                    # is merely argv to another profiled script -- and it was a bad trade:
+                    # an option operand can itself end in `.py`, so `-o out.py <helper>`
+                    # broke at out.py while cProfile still executed the helper. That
+                    # exchanged a false BLOCK for a fail-OPEN. Any narrowing here needs
+                    # per-option arity, the table this file refuses everywhere because it
+                    # fails open wherever it is wrong. The residual false positive is
+                    # deliberate and recoverable through the skip lease.
+                    if w[1 + k] == "m" and not _readonly_module_trusted(mod, words):
+                        for later in words[j + 1:]:
+                            _g = _glob_helper(later) or _module_helper(later)
+                            if _g:
+                                return _g
+                    break
+                j += 1 if tail else 2
+                continue
+            script = w
+            break
+        if script is None or _bn(script) not in _MUTATING_HELPERS:
+            continue
+        # Exempt ONLY the exact `<helper> --self-check` shape: the flag must be the
+        # helper FIRST argument. A looser any-token test was satisfied by a trailing
+        # `# --self-check`, which bash treats as a comment but this parser (with
+        # commenters disabled) tokenizes -- so the real, mutating invocation ran.
+        if j + 1 < len(words) and words[j + 1] == "--self-check":
+            continue
+        return _bn(script)
     return None
 
 
@@ -354,8 +1525,9 @@ def _writes_marker(cmd, markers):
     #     evaluation (python -c, perl -e, ruby -e, node -e, awk, xargs,
     #     find -exec/-delete)
     #   - command substitution: backticks and $(...)
-    #   - indirect writers NOT enumerated as command words: dd, and other
-    #     copy/convert tools (cp/mv/ln/install ARE now blocked — see #290 below)
+    #   - indirect writers NOT enumerated as command words: other copy/convert tools
+    #     (cp/mv/ln/install ARE blocked — see #290 below; truncate/unlink/rmdir/dd
+    #     joined them in #519 once the lease ledger and audit log became gate state)
     #   - runtime name synthesis: pathname globbing (* ? [ ]) and brace expansion
     #     ({a,b}) that expand to the marker (rm ...loca?, tee ...loca{l,})
     #   - environment / nested / computed shell variables, ANSI-C escape
@@ -367,23 +1539,20 @@ def _writes_marker(cmd, markers):
     # words) anyway, because the realistic threat is an accidental/lazy self-bypass
     # by a COOPERATIVE agent (a bare `touch .claude/skip-litmus.local`); blocking the
     # bare-command indirect-write forms removes the easy path and forces any bypass
-    # to be a deliberate wrapper-hidden or eval-forge a cooperative agent will not
-    # build. A human touch typed in a real terminal is unaffected — this hook only
-    # sees the Claude tool calls. See #227 and the ADR 0006 residual addendum.
-    norm = cmd.replace("\r\n", "\n").replace("\r", "\n")
-    # Bash removes an unquoted backslash-newline (line continuation) before
-    # execution; mirror that BEFORE splitting on newlines so a marker write or
-    # basename split across a continuation is rejoined, not broken into pieces.
-    norm = norm.replace(chr(92) + chr(10), "").replace("\n", " ; ")
-    # Bash ANSI-C ($'...') and locale ($"...") quoting: shlex does not model the
-    # leading $, so strip that prefix and let the quote tokenize to the literal
-    # path. (Escape SEQUENCES inside $'...' such as \x6c remain undecodable by
-    # shlex and stay out of scope per the residual note above.)
-    norm = norm.replace("$" + _SQ, _SQ).replace("$" + _DQ, _DQ)
-    # ${IFS}/$IFS expand to whitespace — a classic field-splitting obfuscation
-    # (rm${IFS}<marker>); normalize to a separator so the rm/tee command word and
-    # redirect operands are recognized rather than glued into one token.
-    norm = re.sub(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])", " ", norm)
+    # to be a deliberate eval-forge a cooperative agent will not build. A human touch
+    # typed in a real terminal is unaffected — this hook only sees the Claude tool
+    # calls. See #227 and the ADR 0006 residual addendum.
+    #
+    # #519 CLOSED the wrapper-hidden half of that residual (`sudo touch <marker>`,
+    # `command rmdir <slot>`, `env truncate <log>`): the command word is now chosen
+    # after peeling wrapper preambles. The residual was tolerable while the only
+    # wrapper-reachable targets were markers a cooperative agent had no reason to
+    # forge; it stopped being tolerable once the skip LEASE ledger and the bypass
+    # audit log became gate state, since those two shapes reset the use ceiling and
+    # erase the trail respectively. A residual that is the EASIEST path is not a
+    # residual. The execute-a-string class (eval, sh -c, python -c) is UNCHANGED and
+    # remains the documented residual.
+    norm = _norm_for_scan(cmd)
     # Returns (marker_or_None, unparseable). `unparseable` is TRUE only for the
     # fail-CLOSED raw-substring path below, where the command could not be parsed
     # at all and a marker WRITE is therefore indistinguishable from a mere MENTION.
@@ -440,6 +1609,27 @@ try:
         "pr-backstop-verdict.local.json",
         "skip-litmus.local",
         "skip-design-review.local",
+        # #519 — the skip LEASE ledger. Its per-use slots are what bound the bypass to
+        # 20 writes, so it is gate state exactly like the skip file itself. Unprotected,
+        # the ceiling is trivially resettable BY the agent it constrains: the gate grants
+        # a use for `rm -rf .claude/.skip-design-review-lease.d`, that command erases
+        # every slot, and the next write starts again at slot 1 — an unbounded lease
+        # that merely looks bounded. (No apostrophes in this block: it is a
+        # single-quoted shell string, so one would terminate the Python source.)
+        # Listed here so the unconditional forge guard
+        # (which runs before the F9 $STATE_DIR rm/mkdir exemption could allow it) blocks
+        # the delete outright. The cleanup done by this gate is script code, not a
+        # tool call, so it is unaffected.
+        ".skip-design-review-lease.d",
+        # #519 — the bypass audit log. Hardening the APPEND is worth nothing if the
+        # FILE can be erased for free: writes under $STATE_DIR classify as SAFE and a
+        # bare rm of a $STATE_DIR path hits the F9 exemption, so a session could delete
+        # bypass-log.jsonl without even spending a lease use, wiping every recorded
+        # bypass — and the next use simply recreates the file and is granted. The whole
+        # design-clear/lease story is detection rather than prevention, which only holds
+        # while the record survives. Reads (cat/grep) are unaffected: the forge detector
+        # blocks only redirect/tee/rm/touch/cp/mv/ln/install positions.
+        "bypass-log.jsonl",
         "reviewed-commits.local",
         "design-review-needed.local",
     ]
@@ -453,7 +1643,35 @@ try:
 
     elif tool == "Bash":
         cmd = inp.get("command", "")
-        # Block direct invocation of write-review-marker.sh UNLESS called via
+        # #519 helpers that MUTATE gate state (lease slots, the audit log). They are
+        # internal to this gate, which runs them as a subprocess -- never as a Claude
+        # Bash tool call -- so a Bash call naming them is either a mistake or a bypass.
+        # DEFENCE IN DEPTH, not the only defence. The helpers are also safe by
+        # construction now: lease_slot.py reads the skip file mtime ITSELF rather than
+        # accepting it (a caller-supplied mtime was forgeable, and a fabricated one
+        # prunes the genuine slots and resets the ceiling), and audit_append.py builds
+        # its record from fixed fields rather than accepting arbitrary JSON. That
+        # matters because neither command has to name a protected path or a
+        # modification verb, so nothing else in this detector would notice it — and
+        # guessing every invocation spelling is the arms race this file already warns
+        # about. Same treatment as the marker writer below.
+        # --self-check is exempt: it runs entirely in a temp dir, mutates no real state,
+        # and the test suite invokes it through Bash.
+        # Oversized commands skip the full walk, which is what the 5s hook timeout cannot
+        # afford; a substring probe stays cheap at any length. But NOT scanning is not the
+        # same as finding nothing, and the note that used to sit here -- that a command
+        # this large is independently called BASH_MOD by the classifier below -- does not
+        # rescue it: BASH_MOD only blocks WHILE a design review is pending, and this guard
+        # is unconditional. So an unscannable command fails CLOSED here too.
+        _blocked_helper = (_helper_invoked(cmd) if len(cmd) <= 65536
+                           else (_helper_substring(cmd) or _HELPER_UNSCANNED))
+        if _blocked_helper == _HELPER_UNSCANNED:
+            print("BLOCK_UNSCANNABLE|")
+            sys.exit(0)
+        if _blocked_helper:
+            print("BLOCK_MARKER_SCRIPT|" + _blocked_helper)
+            sys.exit(0)
+        # Block direct invocation of the marker writer UNLESS called via
         # the canonical litmus plugin path. The script validates internally that
         # a builtin review was actually triggered (checks handoff file existence).
         # Without this allowlist, builtin fallback (exit 3) creates a catch-22:
@@ -539,6 +1757,13 @@ This is the PR Codex-lead artifact. It is written ONLY by the litmus PR review, 
 Gate markers are written by review infrastructure after a genuine review pass.
 Writing them manually forges compliance. Run /litmus or /blueprint-review instead.${WRITER_HINT}
 If you need to skip review, ask the user to run: touch $(git rev-parse --show-toplevel 2>/dev/null || echo '.')/$STATE_DIR/skip-litmus.local"
+    exit 0
+fi
+
+if [ "$MARKER_ACTION" = "BLOCK_UNSCANNABLE" ]; then
+    block_emit "BLOCKED: this command is too large or too deeply nested for the gate to determine whether it invokes a gate-state helper.
+The check that guards those helpers runs on EVERY command, not only while a review is pending, so a scan it could not finish is refused rather than assumed safe.
+Split the command into smaller ones, or write long content to a file instead of passing it inline."
     exit 0
 fi
 
@@ -714,43 +1939,156 @@ fi
 # SessionStart (load-orchestrator.sh) still warns about stale state for UX.
 # Escape hatch: $STATE_DIR/skip-design-review.local (user-created only).
 
-# Skip overrides — unified with pre-commit-gate.sh behavior
-# Both gates use the same pattern: single-use consumption + self-bypass detection
-# A git-tracked (git add -f'd) skip file is repo-controlled, not operator consent
-# (issue #325) — resolve the repo root and refuse it. FAIL-CLOSED via the helper.
-# (resolve-repo-dir.sh is already sourced near the top of this script.)
-# Anchor the guard on the SAME path the `-f` check tests. That check is relative to
-# the hook CWD, so resolve the guard against the CWD too (git -C ".") — otherwise a
-# committed subdir/.claude skip file could satisfy one check and evade the other.
-# FAIL-CLOSED: outside a git repo the helper returns "repo-controlled" → skip ignored.
-if [ -f "$STATE_DIR/skip-design-review.local" ] \
-   && ! gate_skip_file_repo_controlled "." "$STATE_DIR/skip-design-review.local"; then
-    # Reject skip files created within the last 30 seconds — likely Claude self-bypass.
-    # A human-created skip file (via terminal) will typically be older.
-    FILE_AGE=999
-    _MTIME=$(stat -f %m "$STATE_DIR/skip-design-review.local" 2>/dev/null) \
-        || _MTIME=$(stat -c %Y "$STATE_DIR/skip-design-review.local" 2>/dev/null) \
-        || _MTIME=""
-    [ -n "$_MTIME" ] && FILE_AGE=$(( $(date +%s) - _MTIME ))
-    if [ "$FILE_AGE" -lt 30 ]; then
-        # Likely self-bypass — reject and warn
-        rm -f "$STATE_DIR/skip-design-review.local"
-        REASON="BLOCKED: skip-design-review.local was created moments ago (likely self-bypass).
+# ── Skip override: a LEASE, not a single use (#519 item 3) ────────────
+# Defined here (where the old single-use block lived) but INVOKED far below, only
+# once a write is known to be genuinely gated. Two changes from the old block:
+#
+#   1. LEASED, not consumed-on-first-use. The unit of work is a PLAN, not a write:
+#      implementing one approved sub-plan takes ~10 gated writes, so a single-use
+#      hatch cost ~10 operator `touch` cycles with a mandatory 30s wait each. That
+#      pressure pushed operators toward the WORSE exit — deleting marker tokens,
+#      i.e. destroying the gate's own audit trail. An escape hatch too expensive to
+#      use correctly is one that gets used incorrectly. One `touch` now authorizes
+#      $LEASE_MAX_USES gated writes inside a $LEASE_MAX_AGE window, and EVERY use
+#      appends to bypass-log.jsonl — strictly MORE audit signal than before, where
+#      the pressure-release valve was an unlogged `rm`.
+#
+#   2. Bounded in time as well as count. The old file had no maximum age, so a
+#      forgotten skip stayed armed indefinitely (the hazard #516 records for the
+#      sibling litmus skip). The lease now expires.
+#
+# UNCHANGED, deliberately: the >=30s anti-self-bypass check and the #325
+# repo-controlled rejection. Both are sound; #519 explicitly did not propose
+# weakening either, and a lease does not need them relaxed — it re-checks the
+# ORIGINAL file's mtime on every use, so an agent cannot extend a lease by
+# re-touching (that resets the counter but also resets the 30s clock, which then
+# rejects). Only a genuine operator touch, waited out, opens a new lease.
+LEASE_MAX_USES=20
+LEASE_MAX_AGE=3600
+_SKIP_FILE="$STATE_DIR/skip-design-review.local"
+# DISARMING IS NOT DONE HERE. lease_slot.py removes a refused skip file itself, through
+# the O_NOFOLLOW component walk, at the dir fd it has already validated. A shell `rm -f`
+# resolves the path afresh and follows a symlinked INTERMEDIATE component of the
+# repo-influenced state dir, so it could delete outside the repository — and it runs
+# BEFORE lease_slot.py validates anything, so the later safe resolution cannot undo it.
+# A `--unlink <dir> <name>` subcommand was the first fix and was worse: it took any
+# slash-free basename, so anything reaching it could delete the protected audit log.
+# Per-use lease slots live as immutable <mtime>.<n> directories in here, never
+# as a mutable counter file — see the claim block below for why.
+# Referenced only in messages/tests; every real operation on the ledger goes through
+# lease_slot.py, which resolves the path with O_NOFOLLOW at each component rather than
+# by string join.
+_LEASE_DIR="$STATE_DIR/.skip-design-review-lease.d"
+
+# Exit: 0 = a lease use was granted (allow the write)
+#       1 = no usable skip file (fall through to the normal block)
+#       2 = a block decision has ALREADY been emitted on stdout (caller exits)
+_skip_lease_consume() {
+    local claimed
+    [[ -f "$_SKIP_FILE" ]] || return 1
+    # A git-tracked (git add -f'd) skip file is repo-controlled, not operator consent
+    # (#325). Anchor the guard on the SAME path the `-f` check tests — that check is
+    # relative to the hook CWD, so resolve against the CWD too, or a committed
+    # subdir/.claude skip file could satisfy one check and evade the other.
+    # FAIL-CLOSED: outside a git repo the helper reports repo-controlled → refuse.
+    # `if`, not `&& return`: under `set -e` a naked `cmd && return 1` whose cmd fails
+    # makes the whole list non-zero and trips the ERR trap before the next line runs.
+    if gate_skip_file_repo_controlled "." "$_SKIP_FILE"; then return 1; fi
+
+    # ── Age checks AND the claim, from ONE stat ─────────────────────────────
+    # Both live in lease_slot.py. The shell used to stat the file for the 30s floor and
+    # the 3600s ceiling and then let the helper stat it AGAIN for the lease key, so a
+    # touch or replacement between the two produced a lease whose new mtime had passed
+    # neither check. One read, one decision.
+    #
+    # Every path component is opened with dir_fd + O_NOFOLLOW and every operation happens
+    # AT that fd, so the directory validated is the one written to. The shell version
+    # could not hold that: `-L "$STATE_DIR"` tests only the final name (a nested
+    # `link/state` with a symlinked PREFIX passes), the check was separated from the use,
+    # and a glob + `rm -rf` prune would follow such a symlink into a tree outside the
+    # repo — where slots are also outside the protected-marker guard, so they could be
+    # erased through the external name and the ceiling reset indefinitely.
+    #
+    # Exit 0 = claimed (slot on stdout); 2 = exhausted; 3 = too new; 4 = expired;
+    # anything else = could not record, which must REFUSE the bypass —
+    # unbounded-because-unrecordable is the fail-open this whole block exists to avoid.
+    _CLAIM_RC=0
+    # A missing/unreadable helper also exits 2 (CPython's own "can't open file"
+    # exit code), which the `2)` branch below would misreport as a spent lease --
+    # naming a use that was never granted and a file that was never removed. Route
+    # that case to the generic fail-closed refusal (`*)`) instead, before invoking
+    # python3, so exit code 2 stays exclusively the helper's own spent-lease signal.
+    [ -f "$_GATE_LIBDIR/lease_slot.py" ] || _CLAIM_RC=1
+    if [ "$_CLAIM_RC" -eq 0 ]; then
+        claimed="$(python3 -I "$_GATE_LIBDIR/lease_slot.py" "$STATE_DIR" "$LEASE_MAX_USES" 30 "$LEASE_MAX_AGE" 2>/dev/null)" || _CLAIM_RC=$?
+    fi
+    # The `-f` test above is a cheap early exit, NOT the discriminator: it cannot see an
+    # UNREADABLE regular file, and the helper can be removed between the test and the
+    # interpreter opening it. Both still exit 2. So exit 2 is re-verified rather than
+    # trusted -- if the helper is not openable now, that 2 was CPython refusing to open
+    # a file, not the helper reporting a spent lease. Costs one probe, and only on the
+    # exhausted path. Both branches BLOCK either way; what this buys is that the operator
+    # is told the truth, instead of being sent to re-touch a lease that was never spent
+    # and hunting for a skip file that was never removed.
+    if [ "$_CLAIM_RC" -eq 2 ] \
+       && ! python3 -I -c 'import sys; open(sys.argv[1], "rb").close()' \
+                    "$_GATE_LIBDIR/lease_slot.py" 2>/dev/null; then
+        _CLAIM_RC=1
+    fi
+    case "$_CLAIM_RC" in
+        0) : ;;
+        3)
+            # Created moments ago — likely a self-bypass, not operator consent.
+            # lease_slot.py has already disarmed it, and if it could NOT (an immutable
+            # file in a writable dir) it poisoned the lease instead, so aging past the
+            # floor buys nothing.
+            block_emit "BLOCKED: skip-design-review.local was created moments ago (likely self-bypass).
 
 Do NOT create $STATE_DIR/skip-design-review.local yourself. Run /blueprint-review instead.
 If the user wants to skip, they should create the file manually in their terminal."
-        block_emit "$REASON"
-        exit 0
-    fi
-    # Single-use: consume the skip file after allowing one bypass.
-    # This prevents stale skip files from permanently disabling review gates.
-    rm -f "$STATE_DIR/skip-design-review.local"
+            return 2 ;;
+        4)
+            # Disarmed by lease_slot.py. Slots are left in place for the same anti-TOCTOU
+            # reason as the exhausted branch; the mtime-keyed prune clears them when a new
+            # lease is armed.
+            block_emit "BLOCKED: the design-review skip lease has EXPIRED (the limit is ${LEASE_MAX_AGE}s).
+
+The file has been removed so it cannot stay armed and silently authorize a later session.
+Run /blueprint-review to clear the review properly. If the user still wants to bypass,
+they can create $STATE_DIR/skip-design-review.local again in their terminal."
+            return 2 ;;
+        2)
+            # lease_slot.py removed ONLY the skip file. Deleting the slots would be a
+            # TOCTOU: a concurrent gate that already passed the skip-file/mtime checks
+            # would recreate the directory, claim slot 1 under the same mtime, and be
+            # granted a 21st use. The slots are the exhaustion proof and must outlive the
+            # file that spent them; a later touch changes the mtime and lease_slot prunes
+            # them. (The ledger is a protected marker, so it cannot be wiped to reset.)
+            block_emit "BLOCKED: the design-review skip lease is EXHAUSTED (all $LEASE_MAX_USES uses spent).
+
+One \`touch\` authorizes $LEASE_MAX_USES gated writes so a whole approved plan can be
+implemented without re-arming per write — but not an unbounded number. The file has
+been removed.
+
+Run /blueprint-review to clear the pending review properly. To release ONE specific
+pending token with a recorded audit event instead, run scripts/design-clear.sh with no
+arguments to list what is pending. If the user wants another lease, they can re-create
+$STATE_DIR/skip-design-review.local in their terminal."
+            return 2 ;;
+        *) return 1 ;;   # FAIL-CLOSED: could not record a use → grant none
+    esac
+    case "$claimed" in ''|*[!0-9]*) return 1 ;; esac
+
+    # Exit 0 means the slot is durable on disk AND the bypass-telemetry event for it is
+    # durably logged — lease_slot.py mints that event inside the same call that created
+    # the slot, and reports ERROR (refuse, slot stays spent) if the append did not land.
+    # It is NOT a second command here, because a record-writing CLI is a forge primitive:
+    # it needs no protected path and no modification verb, so nothing else in the Bash
+    # detector would notice one, and post-commit-consume-marker.sh reads a recent
+    # `skip-review-consumed` line as proof that a bypass was sanctioned.
     rm -f "$STATE_DIR/.impl-gate-block-count.local" 2>/dev/null || true
-    # ── Bypass telemetry ──────────────────────────────────────────────
-    mkdir -p "$STATE_DIR"
-    printf '{"ts":"%s","event":"skip-review-consumed","gate":"pre-implementation"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$STATE_DIR/bypass-log.jsonl" 2>/dev/null || true
-    exit 0
-fi
+    return 0
+}
 # (env-based SKIP_DESIGN_REVIEW removed — issue #325; use the .local skip file. ADR 0016.)
 
 # ── Parse tool type and relevant input ─────────────────────────────────
@@ -776,6 +2114,13 @@ try:
     from delib_gate import is_exempt
 except Exception:
     is_exempt = None
+# #519 item 4 — token-level file-mod classification. Import failure leaves it None
+# and the raw-string regexes below run instead, i.e. the pre-#519 behaviour, which
+# is strictly WIDER (blocks more). A missing lib can therefore never fail-OPEN here.
+try:
+    from cmdword import is_file_mod
+except Exception:
+    is_file_mod = None
 try:
     d = json.load(sys.stdin)
     tool = d.get("tool_name", d.get("toolName", ""))
@@ -786,8 +2131,24 @@ try:
         print("WRITE_EDIT|" + inp.get("file_path", inp.get("filePath", "")))
     elif tool == "Bash":
         cmd = inp.get("command", "")
+        # KEEP IN STEP WITH cmdword._MAX_CMD_CHARS. Classifying a command costs time
+        # linear in its length even after the token budgets bound the quadratic part, and
+        # this hook is registered with a 5s timeout whose expiry emits NO decision -- read
+        # by the harness as allow. So size is checked FIRST, before any parsing, and an
+        # oversized command is called a modification without being read. Fail CLOSED: the
+        # padding is attacker-chosen, so anything cleverer here can be aimed.
+        if len(cmd) > 65536:
+            print("BASH_MOD|" + cmd[:500])
+            sys.exit(0)
+        # MUST stay in step with cmdword.FILE_MOD_PATTERNS: this list is the
+        # import-failure fallback, so a verb missing here fails OPEN on exactly the
+        # damaged-installation path the comment below promises is fail-CLOSED.
         FILE_MOD_PATTERNS = [
-            r"\bsed\s+-i",
+            # `sed` WHOLE, matching cmdword.FILE_MOD_PATTERNS. The classifier blocks
+            # arrangements `\bsed\s+-i` cannot see -- `sed -f -- -i file` writes in
+            # place, because the `--` is the script operand of -f -- and this list is
+            # the import-failure stand-in, so it has to be the WIDER of the two.
+            r"\bsed\s",
             r"\btee\s",
             r"\bpatch\s",
             r"\bcp\s",
@@ -795,8 +2156,57 @@ try:
             r"\brm\s",
             r"\bln\s",
             r"\binstall\s",
+            r"\btruncate\s",
+            r"\bunlink\s",
+            r"\brmdir\s",
+            r"\bdd\s",
+            # `git` WHOLE, not per-subcommand. This list is the damaged-installation
+            # fallback and its one job is to be WIDER than the classifier it stands in
+            # for; the classifier blocks `git clean -fd`, `git restore .` and every
+            # unknown subcommand, and no verb pattern here matched any of them, so a
+            # missing cmdword.py made the fail-CLOSED gate fail OPEN.
+            r"\bgit\s",
+        # A verb at END OF STRING (`echo hi | xargs rm`) and find -delete. The `\s` in
+        # every pattern above requires something to follow the verb, and -delete names
+        # no verb at all, so the classifier blocked both while this list allowed them.
+        r"\b(?:tee|patch|cp|mv|rm|ln|install|truncate|unlink|rmdir|dd)$",
+        r"-delete\b",
         ]
-        has_explicit_mod = any(re.search(p, cmd) for p in FILE_MOD_PATTERNS)
+        # #519 item 4: these raw-string regexes match INSIDE quoted operands, so a
+        # read-only `grep -nE "rm |mv " f` or `echo "(mv FAILS)"` read as file-modifying
+        # and got blocked. cmdword.is_file_mod tokenizes first and compares token
+        # basenames for equality — a verb inside a quoted string is one token that
+        # equals no verb, while `sudo rm -rf src` still matches. It falls back to these
+        # same regexes on an unparseable command, so the failure mode is the old
+        # behaviour, never a new over-block. Kept here as the import-failure fallback.
+        # SQUEEZED as well as raw, matching cmdword._regex_fallback. Quotes and
+        # backslashes are the word-concatenation characters bash removes before it
+        # resolves the command word, so `g"it" clean -fd` matched no contiguous pattern
+        # while running git -- in the one path that exists for a damaged installation.
+        # Escapes are decoded at BASH digit widths, not Python ones: `unicode_escape`
+        # demands four digits after \u and eight after \U, so bash short forms passed
+        # through it untouched and a hex-spelled verb matched nothing.
+        _esc = re.compile(r"\\(?:x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})"
+                          r"|U([0-9A-Fa-f]{1,8})|0?([0-7]{1,3}))")
+
+        def _dec(m):
+            hexit = m.group(1) or m.group(2) or m.group(3)
+            try:
+                return chr(int(hexit, 16) if hexit else int(m.group(4), 8))
+            except ValueError:
+                return ""
+
+        def _variants(t):
+            out = [t, _esc.sub(_dec, t)]
+            for base in list(out):
+                sq = base.replace(chr(92) + chr(10), "")
+                for _ch in (chr(39), chr(34), chr(92), "$"):
+                    sq = sq.replace(_ch, "")
+                out.append(sq)
+            return out
+        has_explicit_mod = (is_file_mod(cmd) if is_file_mod is not None
+                            else any(re.search(p, v) for p in FILE_MOD_PATTERNS
+                                     for v in _variants(cmd)))
         is_mod = has_explicit_mod
         # Check for shell redirects (>, >>) not targeting /dev/null.
         # Strip single-quoted strings first (literal text like jq .x > 0).
@@ -1040,6 +2450,21 @@ fi
 # No file-path allowlist needed — Bash command parsing is unreliable for
 # extracting target paths, and the patterns (sed -i, tee, patch) are
 # unambiguous file-modification operations.
+
+# ── Spend a skip-lease use, if one is armed (#519 item 3) ──────────────
+# Invoked HERE, not before the classifier, and that placement is the fix for the
+# "any intervening tool call can consume it" sharp edge. The old block ran ahead of
+# the tool-type parse and every allowlist, so a read-only `ls`, a `git status`, or a
+# write to an already-EXEMPT path (a design doc, docs/reviews/, $STATE_DIR/) burned
+# the single use before the operator's intended write ever arrived. By this line the
+# operation is known to be genuinely gated — a real implementation write with a real
+# pending review — so a use is spent only on the thing the operator armed it for.
+_LEASE_RC=0; _skip_lease_consume || _LEASE_RC=$?
+case "$_LEASE_RC" in
+    0) exit 0 ;;   # lease use granted → allow this write
+    2) exit 0 ;;   # self-bypass / expired / exhausted — block already on stdout
+esac
+# 1 = no usable skip file → fall through and block normally.
 
 # ── Render the pending records (ADR-C) into the block message ──────────
 # _MK_CODE is 1 (>=1 pending) or 2 (enumerate/list failure) — this write is gated

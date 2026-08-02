@@ -77,7 +77,7 @@ Plus one **advisory** voice that is deliberately NOT a coverage slot:
 
 **Default max iterations:** 5. (Briefly lowered to 3 after the v3.1 cascades-11-12 incident; raised back to 5 once MEDIUM-trajectory protection landed in v3.2 — see Version History. The trajectory early-stops are the real circuit breakers; max-iter is just a final cap.)
 
-**Escape hatch:** If the review loop does not converge, the user can create `.claude/skip-design-review.local` in their terminal to bypass the gate (single-use, 30s self-bypass detection — see orchestrator SKILL.md for protocol).
+**Escape hatch:** If the review loop does not converge, the user can create `.claude/skip-design-review.local` in their terminal to bypass the gate (a **lease**: 20 gated writes within 3600s, 30s self-bypass detection — see orchestrator SKILL.md for protocol, ADR 0031 for why).
 
 ## Configuration
 
@@ -561,7 +561,7 @@ This section is the **canonical protocol** for the user-created skip files acros
 
 | Gate | Skip file | Trigger | <30s rejection | Freshness | Tool-call fragility |
 |------|-----------|---------|----------------|-----------|---------------------|
-| **Pre-implementation (design review)** | `.claude/skip-design-review.local` | Write/Edit/MultiEdit/Bash while design unreviewed | gate deletes file | unbounded | **High** — gate fires on any of those tool calls, so any intervening Bash (incl. `test -f`/`ls`/`stat`) destroys the file |
+| **Pre-implementation (design review)** | `.claude/skip-design-review.local` | Write/Edit/MultiEdit/Bash while design unreviewed | gate deletes file, **and the rejected lease stays permanently poisoned** — a too-new file is never retroactively honored even once it ages past 30s | **30s..3600s** — a **LEASE** (#519 / ADR 0031), not unbounded: expires at 3600s, and only a genuinely gated call (not a read-only `ls`/`git status`/`test -f`, and not a write to an already-exempt path) spends one of its 20 uses | **Low, within the window** — the check runs *after* tool-type discrimination and every allowlist, so a read-only Bash call no longer destroys the file; **High during the <30s self-bypass window**, where any gated call still destroys it |
 | **Pre-commit (litmus)** | `.claude/skip-litmus.local` | `git commit` | gate **preserves** file (ages naturally) | unbounded | Low — gate only fires on `git commit` |
 | **Pre-PR (litmus)** | `.claude/skip-litmus.local` (same file as pre-commit) | `gh pr create` | gate deletes file (re-touch required) | unbounded | Low — gate only fires on `gh pr create` |
 | **Pre-merge (pr-grind)** \* | `.claude/skip-pr-grind.local` | `gh pr merge` | gate deletes file | **30s..3600s** — files ≥1h old silently deleted | Low — gate only fires on `gh pr merge` |
@@ -576,18 +576,22 @@ The remainder of this section (verbatim message template, Monitor wait, hard rul
 
 When the user wants to bypass design review (e.g., plan already validated out-of-band, or the review is blocking legitimate exploration), they create `.claude/skip-design-review.local` manually in their terminal. The skip file is consumed by the **pre-implementation gate only** (it does not bypass the pre-commit or pre-PR gates). The gate has a **30-second timing heuristic** that rejects and deletes skip files created "moments ago" to prevent Claude from self-bypassing.
 
-**How the skip-file check behaves on every tool call the gate sees while design review is pending:**
+**How the skip-file check behaves while design review is pending** (a **LEASE** since #519 / ADR 0031 — it was single-use before):
 1. If `.claude/skip-design-review.local` exists and is **<30s old** → gate deletes it and blocks (treated as self-bypass).
-2. If the file exists and is **≥30s old** → gate deletes it (single-use) and allows the blocked action through.
-3. If no file → gate falls through to its normal allow/block rules (Write/Edit of implementation code → block; file-modifying Bash → block; SAFE tool uses → allow).
+2. If it is **older than 3600s** → the lease has expired; gate deletes it and blocks.
+3. If it is **≥30s old and within the window** → gate spends **one of 20 lease uses** and allows the blocked action through. One `touch` therefore covers a whole approved sub-plan's implementation (~10 gated writes), not one write.
+4. When all 20 uses are spent → gate deletes the file and blocks, naming the exhaustion.
+5. If no file → gate falls through to its normal allow/block rules (Write/Edit of implementation code → block; file-modifying Bash → block; SAFE tool uses → allow).
 
-Critically, the skip-file check in steps 1–2 runs **before** tool-type discrimination — so any tool call that reaches the gate while a skip file exists will consume it, even ostensibly "harmless" Bash like `test -f`, `ls`, or `stat` on the skip file itself. Verification counts. Polling counts. If Claude fires any tool call during the <30s window, the file is destroyed and must be re-created.
+The lease is keyed to the file's mtime, so re-`touch`ing to extend one starts a fresh lease — and also resets the 30s clock, so an agent cannot self-extend. Every use appends to `.claude/bypass-log.jsonl` recording the slot it claimed and the ceiling, so lease state is observable from the log without spending a use to check it. (The slot number, not a "remaining" count — under concurrency a computed remaining would be wrong in a way the reader could not detect. Count the events for the live figure.)
+
+**A use is spent only by a genuinely gated operation.** The check runs *after* tool-type discrimination and every allowlist (also #519 — it used to run before), so a read-only `ls`, a `git status`, or a write to an already-exempt path (a design doc, `docs/reviews/`, `.claude/`) no longer burns the hatch. During the **<30s window** the file is still destroyed by any gated call, so the "don't fire tool calls while waiting" rule below still holds for that window.
 
 ### Verbatim message template (required)
 
 When Claude needs a skip file, it must emit this exact message, with three substitutions:
 - `<PROJECT_ROOT>` → the absolute path of the current git repo root (from `git rev-parse --show-toplevel` — not the CWD of the Claude session, which may be a subdirectory or worktree).
-- `<STATE_DIR>` → the gate's state directory: the value of `${BUSDRIVER_STATE_DIR:-.claude}` (default `.claude`). **Resolve it — NEVER hardcode `.claude`.** The gate also names this directory verbatim in its own block message, so when reacting to a gate block you can read it from there.
+- `<STATE_DIR>` → the gate's state directory: the value of `${BUSDRIVER_STATE_DIR:-.claude}` (default `.claude`). **Resolve it — NEVER hardcode `.claude`.** The gate also names this directory verbatim in its own block message, so when reacting to a gate block you can read it from there. Note this is the value as the GATE resolves it, read from its block message — not the value in your own shell: `hooks.json` launches the gate through `env -i`, which strips `BUSDRIVER_STATE_DIR`, so an override exported in a terminal does not reach it (pinned by `tests/test-gate-env-containment.sh`). That is exactly why operator-facing `touch` instructions elsewhere in this file name `.claude` literally.
 - `<GATE>` → one of: `design-review`, `litmus`, `pr-grind` (matches the row in the per-gate-differences table above).
 
 > I need a skip file to bypass the `<GATE>` gate. Please run this in **your terminal** (not in this session):
@@ -618,14 +622,15 @@ Monitor(command: "sleep 35 && echo READY", timeout: 45)
 
 - **NEVER create the skip file yourself** — the gate will detect self-bypass, delete the file, and log an audit event.
 - **NEVER verify the skip file via Bash** (`test -f`, `ls`, `stat`, `cat`, `find`). The reasoning differs by gate, but the rule is the same in all cases:
-   - **Pre-implementation (design-review)** — verification is **destructive**. The gate fires on every Write/Edit/MultiEdit/Bash call, so any intervening Bash during the <30s self-bypass window consumes the file (the gate's skip-file age check runs before tool-type discrimination).
+   - **Pre-implementation (design-review)** — verification is **pointless, and no longer destructive** (#519 / ADR 0031). The lease is evaluated once, *after* tool classification and every allowlist, so a read-only `test -f`/`ls`/`stat` returns before the gate ever looks at the skip file: it neither spends a use nor trips the <30s floor. What still bites is a genuinely **gated** call during the window — a Write/Edit, or a Bash command classified as a file modification — which is refused as a suspected self-bypass and leaves that file **permanently dead** (a `<mtime>.poison` sentinel, so it cannot merely age into validity). So the rule stands, for the ordinary reason: verifying tells you nothing, and one mis-aimed tool call during the wait costs the user another `touch`.
    - **Pre-commit / Pre-PR (litmus) and Pre-merge (pr-grind)** — verification is **pointless** (not destructive). Those gates short-circuit unless the Bash command matches their trigger (`git commit`, `gh pr create`, `gh pr merge`), so `test -f` never reaches the skip-file logic — but it also tells you nothing useful and only wastes the wait budget.
 
    In all cases: don't verify, trust the user's "done" confirmation, and retry the originally blocked action directly.
 - **NEVER ask the user to wait** — Claude does the wait via `Monitor`.
 - **Use `Monitor(command: "sleep 35 && echo READY")`**, not `sleep 32` directly.
-- **Single-use** — the skip file is consumed after one bypass. If more writes are needed, the user must `touch` it again and Claude must wait another 35s.
-- **Audit trail** — every consumption is logged to `.claude/bypass-log.jsonl`.
+- **Leased, not single-use** (#519 / ADR 0031) — one `touch` authorizes **20 gated writes within 3600s**, so a whole approved sub-plan can be implemented without re-arming per write. Only a genuinely gated operation spends a use. When the lease exhausts or expires the gate deletes the file and says so; the user must `touch` it again (and Claude waits another 35s).
+- **Audit trail** — every use is logged to `.claude/bypass-log.jsonl` with the slot it claimed. A use whose audit append fails is REFUSED, not granted silently.
+- **Prefer the recorded release for a stuck token** — to clear ONE pending design-review token with a durable audit event instead of leaning on the hatch, run `scripts/design-clear.sh` (no args lists what is pending) — this path is root-relative and does not change with `BUSDRIVER_STATE_DIR`. The block message names it. The event records the doc's review-coverage marker, so a release under DEGRADED coverage says which lenses were absent.
 - **If the file gets rejected-and-deleted** (e.g., Claude fat-fingered a tool call during the window), ask the user to `touch` it again and start the wait over.
 
 ## Version History

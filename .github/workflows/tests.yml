@@ -264,7 +264,16 @@ jobs:
     # pull_request trigger rather than a job-scoped `paths:` list.)
     needs: shellcheck
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    # Job-level ceiling, not a per-test budget (that's run-shell-tests.sh's
+    # per-test timeout, see the "Full shell gate-test suite" step below).
+    # 103 discovered suites now legitimately run ~12m wall-clock (observed
+    # PR #548 round 2: 11m52s, all 103 PASS, but the job was hard-canceled
+    # by GitHub Actions at the old 12-minute ceiling before the runner could
+    # even report the already-green result). Raised with headroom above the
+    # observed runtime rather than tuned to the exact measurement, so normal
+    # variance (runner contention, a slightly slower suite) doesn't reproduce
+    # the same false-failure on the next PR.
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:

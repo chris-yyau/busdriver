@@ -830,7 +830,15 @@ with open(pending, "w") as f:
   # design docs and the auxiliary lens was lost on every such round. Accepted for
   # a single-operator repo where the maintainer alone chooses when to run the
   # gate and on which branch; on a multi-contributor repo this belongs at 600.
-  # Still NOT 3600s like the council Mechanism Witness, which is off this path.
+  # Sizing vs the council Mechanism Witness: council clamps at 900s
+  # (skills/council/SKILL.md `COUNCIL_AUDITOR_TIMEOUT`), so at 1800 this is now
+  # 2x council, INVERTING the original relationship — blueprint used to be the
+  # SMALLER of the two precisely because this reap is on the arbiter's critical
+  # path while council's witness runs concurrently with the oracle and adds no
+  # serial time. (An earlier version of this comment claimed council was 3600s;
+  # that was wrong — 3600 is the ultra-oracle's `timeoutCapSeconds` ceiling, a
+  # different budget entirely.) The inversion is deliberate, not harmonization:
+  # k3 needs the time here and council does not have the evidence to justify it.
   #
   # HARNESS BUDGET: the operator's BASH_MAX_TIMEOUT_MS must exceed the serial
   # worst case, which is a FORMULA, not a fixed number — it moves with the

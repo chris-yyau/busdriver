@@ -249,6 +249,23 @@ UNTRUSTED = re.compile(
     r"|\.\s|eval\b|alias\s|PATH=|-v\s*[\"\x27]?PATH\b)"
     # ...plus an INDIRECT write target, whose name this scan cannot resolve:
     r"|-v\s*[\"\x27]?\$")
+#
+# ACCEPTED LIMIT, and a CLOSED question - do not reopen it. These patterns are
+# matched as TEXT, so a quote-constructed spelling defeats each one (`tr"ap"`,
+# `sou"rce"`, `mk"temp"()`), and a bash NAMEREF evades them all: after
+# `R=T; declare -n R`, writing R writes through to T, so the rebind never names
+# T at all. Closing that was attempted and REVERTED. It cannot be done by
+# matching spellings - the ladder ran `declare -n` -> `declare -"n"` ->
+# `builtin declare` -> `O=-n; declare "$O"` -> `B=declare; "$B"` -> `d"$B"` ->
+# `command -- "$B"` -> `{ "$B"; }` -> `> /dev/null "$B"` -> `trap ... DEBUG` ->
+# `tr"ap"` -> `mktemp ()` -> `re"ad"`, fourteen rungs with no top - and closing
+# it structurally instead (require every command word to be READABLE) cost 9
+# points of the measured 59% prompt reduction, which is the entire point of the
+# carve-out. Reaching it needs a command that writes the mktemp assignment, the
+# nameref indirection AND the rm in one string: this session attacking its own
+# advisory guard, which merely prompts. Same call as the variable-command-name
+# resolution removed above, for the same reason.
+#
 # Not in UNTRUSTED (which voids the whole chunk): a block only makes assignments
 # that FOLLOW it conditional. `T=$(mktemp -d); for f in *; do ...; done` is fine.
 BLOCK_KEYWORD = re.compile(

@@ -137,29 +137,218 @@ CMD_LOWER=$(printf '%s' "$CMD" | tr '[:upper:]' '[:lower:]')
 # every other check below (git reset --hard, DROP TABLE, ...).
 # Segment splitting is delegated to gitcmd_detect.split_segments (quote-aware);
 # the safe-artifact carve-out stays here because it is this guard's own policy.
-# Prints exactly "unsafe" or "safe"; ANY other output (including empty) means
-# the scanner itself did not run, which falls through to the grep fallback below.
+# Prints "<rm> <truncate>": rm is exactly "unsafe" or "safe", truncate exactly
+# "truncate" or "notruncate". ANY other output (including empty) means the
+# scanner itself did not run, which falls through to the grep fallbacks below.
 RM_VERDICT=""
+TRUNC_VERDICT=""
 if [[ "$AUTO_MODE" == 0 ]] && command -v python3 &>/dev/null; then
   _GUARD_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
   # shellcheck disable=SC2016  # python source: $-expansion must not happen in bash
-  RM_VERDICT=$(printf '%s' "$CMD" | PYTHONPATH="$_GUARD_LIB" python3 -S -c '
+  # ONE line, TWO verdicts: "<rm> <truncate>". Split below rather than spawning
+  # a second interpreter — see the SINGLE PASS note at the top of the file.
+  _SCAN_OUT=$(printf '%s' "$CMD" | PYTHONPATH="$_GUARD_LIB" python3 -S -c '
 import sys
 # Drop CWD from sys.path (python3 -c prepends it ahead of PYTHONPATH) so a
 # repo-controlled gitcmd_detect.py or shadowed stdlib cannot run in the guard.
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+import re
 import shlex
 # _all_chunks is private but deliberately reused: it expands $(...), backticks
 # and `bash -c` payloads recursively, so `bash -c "rm -rf /etc"` is still seen.
 # Scanning only the literal command would miss every nested form.
 from gitcmd_detect import split_segments, chunks_and_truncation
 
+# Build artifacts a rebuild reproduces. `out` is Next.js static export (and the
+# `distDir`/output convention generally): measured over ~/.claude/watch-hooks.log,
+# `rm -rf out && npm run build` was 24% of ALL Bash permission prompts — the single
+# largest interruption source, and every one of them regenerable. Matching is by
+# BASENAME, same as every other entry here, so `output/` is untouched.
 SAFE = {"node_modules", ".next", "dist", "__pycache__", ".cache",
-        "build", ".turbo", "coverage", "target"}
+        "build", ".turbo", "coverage", "target", "out"}
+
+# `out` is the one SAFE name generic enough to be somebody real data: `./out` in
+# a Next.js project is a build artifact, but `/important/out` is not, and this
+# guard cannot tell them apart from the basename alone. So it is safe only as a
+# RELATIVE target — the shape actually observed (`rm -rf out && npm run build`).
+# An absolute or ~-anchored path falls through and warns.
+SAFE_RELATIVE_ONLY = {"out"}
 
 
 def is_safe(target):
-    return target.rstrip("/").rsplit("/", 1)[-1] in SAFE
+    base = target.rstrip("/").rsplit("/", 1)[-1]
+    if base not in SAFE:
+        return False
+    if base not in SAFE_RELATIVE_ONLY:
+        return True
+    # `out` clears ONLY as a bare name in the current directory — `out`, `./out`,
+    # `out/`. Anything carrying a path falls through and warns: absolute, `~`,
+    # `../out`, `sub/out`, and `$VAR/out` (unexpanded, so its target is unknown).
+    # `cd /elsewhere && rm -rf out` still clears, because this guard cannot see
+    # cwd — that residual is the pre-existing semantics of every SAFE entry
+    # (`build`, `dist`, `target` behave identically), not something `out` adds.
+    stripped = target.rstrip("/")
+    if stripped.startswith("./"):
+        stripped = stripped[2:]
+    return stripped == base and "$" not in stripped
+
+
+# A name THIS SAME command string bound to mktemp points at a directory the
+# command itself just created, so removing it cannot destroy anything that
+# existed beforehand. Measured over ~/.claude/watch-hooks.log, `rm -rf "$T"`
+# after a `T=$(mktemp -d)` was 45 of 209 Bash permission prompts (22%) - the
+# second largest interruption source after `out`, and every one self-created.
+#
+# Clearing the WRONG name is a fail-OPEN, so attribution is strict: quotes are
+# stripped by shlex, so the RHS reaching here is bare. The apostrophe below is
+# spelled \x27 because this whole block is embedded in a bash single-quoted
+# string and a literal one would terminate it.
+MKTEMP_BIN = r"(?:/bin/|/usr/bin/|/usr/local/bin/|/opt/homebrew/bin/)?mktemp"
+MKTEMP_RHS = re.compile(r"^[\"]?[$`]\(?\s*" + MKTEMP_BIN + r"(?![\w.-])")
+ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
+# shlex reports where an assignment SITS but not where its RHS ENDS - it splits
+# an unquoted `$(mktemp -d)` in two, so a prefix match alone also accepts
+# `T=$(mktemp -d)x` and `T=$(mktemp -d 2>/dev/null || echo /etc)`, whose real
+# values are not temp dirs at all. So the RHS is re-read from the raw text and
+# must be ONE complete, plain mktemp substitution: the substitution has to close
+# its own parenthesis or backtick, and the body may not contain a nested
+# expansion, a quote, or another command.
+SIMPLE_MKTEMP = re.compile(
+    r"[\"]?(?:\$\(\s*" + MKTEMP_BIN + r"(?![\w.-])[^()`$\"\x27;&|]*\)"
+    r"|`\s*" + MKTEMP_BIN + r"(?![\w.-])[^()`$\"\x27;&|]*`)[\"]?\s*$")
+# Routes that rebind a name WITHOUT a command-prefix assignment. The first is the
+# ${VAR:=default} expansion; the second is any word-binding builtin, whose
+# operands are read out and disqualified.
+REBIND_EXPANSION = re.compile(r"\$\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*:?=")
+REBIND_BUILTIN = re.compile(
+    r"\b(?:for|select|read|export|unset|declare|local|typeset|getopts"
+    r"|mapfile|readarray)"
+    r"\b([^;&|\n]*)")
+# ONLY the bare expansions `$V` and `${V}` - nothing appended. A suffix cannot be
+# proven to stay inside the directory: it can carry its own expansion
+# (backtick, brace) and, more basically, if mktemp FAILED then V is empty and
+# `"$V/etc"` is `/etc` while `"$V/"` is `/`. Every cleared target measured in
+# ~/.claude/watch-hooks.log was already the bare form, so this costs nothing.
+# `${V%/*}` names the PARENT and must not match either - it does not, because
+# anything after the name fails the anchor.
+TEMP_TARGET = re.compile(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$")
+
+
+# Anything that can rebind a name, or redefine mktemp itself, from outside the
+# text this function can read. Any of these voids the carve-out for the whole
+# chunk - there is no way to prove what the name holds afterwards.
+#   mktemp(){ echo /etc; }   a shell function shadows the binary
+#   PATH=... / printf -v PATH so does a prepended directory
+#   alias mktemp=...         and so does an alias, expanded on a later line
+#   source f / . f           the sourced file runs in THIS shell and can assign
+#   eval                     builds the assignment out of unreadable text
+#   if/while/case/...        the assignment may sit in a branch that never runs,
+#                            and the segment walk cannot see block nesting
+UNTRUSTED = re.compile(
+    r"(?:^|[\s;&|(])(?:mktemp\s*\(\s*\)|function\s+mktemp\b|source\s"
+    r"|\.\s|eval\b|alias\s|PATH=|-v\s*[\"\x27]?PATH\b)"
+    # ...plus an INDIRECT write target, whose name this scan cannot resolve:
+    r"|-v\s*[\"\x27]?\$")
+# Not in UNTRUSTED (which voids the whole chunk): a block only makes assignments
+# that FOLLOW it conditional. `T=$(mktemp -d); for f in *; do ...; done` is fine.
+BLOCK_KEYWORD = re.compile(
+    r"(?:^|[\s;&|(])(?:if|then|elif|else|fi|while|until|case|esac|do|done)"
+    r"(?=[\s;&|]|$)")
+
+
+def temp_vars(chunk):
+    """name -> index of the segment binding it to a fresh mktemp path.
+
+    The index matters: `rm -rf "$T"; T=$(mktemp -d)` deletes the INHERITED T,
+    so an assignment only clears deletions in a LATER segment.
+
+    Deliberately per-chunk, never across them. chunks_and_truncation expands a
+    child shell (`bash -c ...`) into its own chunk, and an assignment there
+    cannot change the parent: in `bash -c \x27T=$(mktemp -d)\x27; rm -rf "$T"`
+    the rm still sees whatever T the parent inherited.
+    """
+    if UNTRUSTED.search(chunk):
+        return {}
+    from_mktemp = {}
+    from_other = set()
+    segs = split_segments(chunk)
+    # First segment that opens or continues a block; assignments from there on
+    # may sit in a branch that never runs.
+    block_at = next((i for i, (_o, sg) in enumerate(segs)
+                     if BLOCK_KEYWORD.search(sg)), len(segs))
+    for idx, (op, seg) in enumerate(segs):
+        # The assignment has to be UNCONDITIONAL and in THIS shell, or the
+        # `rm` that follows can still see an inherited value:
+        #   `true || T=$(mktemp -d); rm -rf "$T"`  - never assigned
+        #   `false && T=$(mktemp -d); rm -rf "$T"` - never assigned
+        #   `T=$(mktemp -d) | cat;   rm -rf "$T"`  - assigned in a subshell
+        #   `T=$(mktemp -d) & wait;   rm -rf "$T"`  - backgrounded, same thing
+        # so only a segment that leads, or follows a plain separator, counts.
+        if op not in ("", ";", "\n"):
+            continue
+        if idx + 1 < len(segs) and segs[idx + 1][0] in ("|", "&"):
+            continue
+        try:
+            toks = shlex.split(seg, posix=True)
+        except ValueError:
+            toks = seg.split()
+        # bash requires assignment prefixes to PRECEDE the command word, so
+        # the walk stops at the first token that is not one. That is what
+        # keeps `echo "T=$(mktemp -d)"` from arming the carve-out: there the
+        # assignment is an operand of echo and never runs.
+        #
+        # It does NOT need to reject `T=$(mktemp -d) true` here (an assignment
+        # PREFIX, which sets T only in the environment of that one command): the
+        # raw-RHS check below already does, because the text after the closing
+        # paren fails the end anchor in SIMPLE_MKTEMP. Doing it in THIS walk
+        # anyway - shlex splits an unquoted `$(mktemp -d)` into two tokens, so
+        # "the segment is assignments only" is not decidable here.
+        for tok in toks:
+            m = ASSIGN.match(tok)
+            if not m:
+                break
+            if MKTEMP_RHS.match(m.group(2)) and idx < block_at:
+                from_mktemp.setdefault(m.group(1), idx)
+            else:
+                from_other.add(m.group(1))
+    # Order is not tracked, so ANY non-mktemp assignment to the name disqualifies
+    # it - `T=/etc; T=$(mktemp -d)` reads the same here as the reverse.
+    names = {n: i for n, i in from_mktemp.items() if n not in from_other}
+    if names:
+        for m in REBIND_EXPANSION.finditer(chunk):
+            names.pop(m.group(1), None)
+        for m in REBIND_BUILTIN.finditer(chunk):
+            for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", m.group(1)):
+                names.pop(word, None)
+    for name in list(names):
+        # Spellings that rebind a name WITHOUT producing a plain `NAME=` token,
+        # so neither the prefix walk nor the builtin scan above sees them:
+        #   T+=/etc        append
+        #   T[0]=/etc      array element
+        #   printf -v T    print INTO the variable
+        esc = re.escape(name)
+        if (re.search(r"\b%s(?:\[|\+=)" % esc, chunk)
+                or re.search(r"-v\s*[\"\x27]?%s\b" % esc, chunk)):
+            names.pop(name, None)
+            continue
+        for m in re.finditer(r"\b%s=" % esc, chunk):
+            # The RHS runs to the next command boundary. Anything the operators
+            # below can reach is a second command, so it is outside the RHS and
+            # the substitution must already have closed before it.
+            rhs = m.string[m.end():]
+            for sep in ";&|\n":
+                cut = rhs.find(sep)
+                if cut >= 0:
+                    rhs = rhs[:cut]
+            if not SIMPLE_MKTEMP.match(rhs):
+                names.pop(name, None)
+                break
+    return names
+
+
+def is_temp(target, tmpvars, seg_idx):
+    m = TEMP_TARGET.match(target)
+    return bool(m) and tmpvars.get(m.group(1), seg_idx) < seg_idx
 
 
 def recursive_targets(argv):
@@ -186,17 +375,195 @@ def recursive_targets(argv):
     return recursive, targets
 
 
-def unsafe(cmd):
+# KNOWN LIMIT, same shape as the SQL client list below: an allowlist of launcher
+# binaries is never complete, so an unlisted one puts itself in the command slot
+# and the truncate behind it reads as an operand. Add names here as they come up.
+# The alternative — treating every unrecognized command word as a wrapper — is
+# the any-token scan, which is what cost 11% of ALL prompts in false positives.
+WRAPPERS = {"sudo", "doas", "su", "runuser", "env", "xargs", "nohup", "timeout",
+            "command", "time", "stdbuf", "nice", "ionice", "exec", "setsid",
+            "chroot", "unshare", "flock", "script", "watch", "parallel",
+            "caffeinate", "arch", "xcrun"}
+
+
+# `if`/`while`/`until` introduce a CONDITION, which is an executed command:
+# `if truncate -s 0 audit.log; then :; fi` runs truncate. They belong here with
+# `then`/`do`, not treated as command words in their own right.
+CONTROL = {"if", "while", "until", "then", "do", "else", "elif", "!", "{", "(",
+           "&&", "||", ";", "|", "&", "eval", "coproc"}
+# find/xargs style dispatch: the token AFTER these is a command word.
+DISPATCH = {"-exec", "-execdir", "-ok", "-okdir", "--exec"}
+
+
+DYN_FD = re.compile(r"^\{[A-Za-z_][A-Za-z0-9_]*\}[<>]")
+DYN_FD_NAME = re.compile(r"^\{[A-Za-z_][A-Za-z0-9_]*\}")
+# A redirection operator carrying no target takes the NEXT token as its target.
+BARE_REDIRECT = ("<", ">", ">>", "<<", "<<<", "&>", ">|", "<>", "&>>")
+
+
+def _is_redirect(tok):
+    """A leading redirection is not the command word: `</dev/null truncate ...`.
+
+    Covers the numeric form (`2>f`) and bash dynamic-FD allocation (`{fd}>f`),
+    which likewise runs the command that follows it.
+    """
+    return (tok.lstrip("0123456789")[:1] in ("<", ">")
+            or tok.startswith("&>") or bool(DYN_FD.match(tok)))
+
+
+ASSIGN_BUILTINS = {"export", "declare", "local", "typeset", "readonly"}
+# The optional subscript is deliberate: bash expands `$cmd` as `${cmd[0]}`, so
+# `cmd[0]=truncate` binds the very name a later `"$cmd"` runs.
+LITERAL_ASSIGN = re.compile(
+    r"^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^]]*\])?=([^$`\s]*)$")
+# `$V`, `${V}`, and the parameter expansions that still yield V when V is set
+# (`${V:-echo}`, `${V:+x}`, `${V#p}`, ...). TEMP_TARGET deliberately stays
+# stricter: there an expansion can name a DIFFERENT path, not just a fallback.
+VAR_REF = re.compile(r"^\$(?:([A-Za-z_][A-Za-z0-9_]*)"
+                     r"|\{([A-Za-z_][A-Za-z0-9_]*)(?:[-+=?#%^,/:][^}]*)?\})$")
+
+
+def _ref_name(m):
+    return m.group(1) or m.group(2)
+
+
+def literal_bindings(chunk):
+    """name -> SET of basenames plainly assigned to it in this chunk.
+
+    A set, not the last value: `cmd=truncate; false && cmd=echo; "$cmd" ...`
+    still runs truncate, so a later assignment must not erase an earlier one.
+
+    Only the simple spelling `V=word`: enough to resolve `cmd=truncate; $cmd -s 0`,
+    which is otherwise an ordinary bypass. Names built by concatenation stay
+    unresolved and fall through - see the LIMITATIONS note below.
+    """
+    out = {}
+    for _op, seg in split_segments(chunk):
+        try:
+            toks = shlex.split(seg, posix=True)
+        except ValueError:
+            toks = seg.split()
+        # `export cmd=truncate` binds the name just as a bare prefix does.
+        while toks and toks[0] in ASSIGN_BUILTINS:
+            toks = toks[1:]
+        for tok in toks:
+            m = LITERAL_ASSIGN.match(tok)
+            if not m:
+                break
+            out.setdefault(m.group(1), set()).add(
+                m.group(2).rsplit("/", 1)[-1].lower())
+    return out
+
+
+def has_truncate(chunks):
+    """True iff coreutils `truncate` appears as a COMMAND WORD.
+
+    NOTE: this whole block is embedded in a bash single-quoted string, so it
+    must contain no apostrophe anywhere, comments included.
+
+    Regex over the raw string cannot do this: it either misses an operand-first
+    invocation (`truncate audit.log -s 0`, legal under GNU option permutation)
+    or fires on the word inside a quoted literal (a grep -F for the same text).
+    Those two demands are contradictory for a text match and were the whole
+    reason the bare-word rule mis-fired. shlex settles both — a quoted literal
+    collapses into ONE token, so it is never a command word, while wrappers and
+    absolute paths (`sudo truncate`, `env truncate`, `/usr/bin/truncate`) still
+    expose theirs. Same walk the rm scanner below uses, same reasons.
+    """
+    for chunk in chunks:
+        bound = literal_bindings(chunk)
+        for _op, seg in split_segments(chunk):
+            try:
+                toks = shlex.split(seg, posix=True)
+            except ValueError:
+                toks = seg.split()
+            # COMMAND WORD only, not any token: `truncate` is an ordinary
+            # operand in `grep -F truncate script.sh` and `echo truncate`, so an
+            # any-token scan fires on both. But "first token of the segment" is
+            # not the command word either — bash puts assignments, redirections,
+            # control keywords, negation and dispatch flags ahead of it. Tracking
+            # command POSITION closes that whole class at once, instead of
+            # enumerating one more prefix each time another is found.
+            cmd_pos = True      # the next non-prefix token runs
+            skip_next = False   # ...unless it is a redirection target
+            for j, tok in enumerate(toks):
+                if skip_next:
+                    skip_next = False
+                    continue
+                word = tok.lstrip("({").rsplit("/", 1)[-1].lower()
+                ref = VAR_REF.match(tok)
+                if ref and "truncate" in bound.get(_ref_name(ref), ()) and cmd_pos:
+                    return True                  # `cmd=truncate; $cmd -s 0 f`
+                if word == "truncate" and cmd_pos:
+                    return True
+                if _is_redirect(tok):
+                    # `>x` carries its target; a bare `>` takes the next token.
+                    skip_next = (DYN_FD_NAME.sub("", tok).lstrip("0123456789")
+                                 in BARE_REDIRECT)
+                    continue                     # position is unchanged
+                if word in CONTROL or tok in DISPATCH:
+                    cmd_pos = True               # `then truncate`, `-exec truncate`
+                    continue
+                # A token CLOSING a construct is followed by a command word: a
+                # case pattern (`x) truncate`), a function header (`f(){
+                # truncate`), a group (`{ truncate`). Catching the shape rather
+                # than naming each keyword also covers `esac`/`;;` spellings.
+                if tok.endswith(("{", ")", ";;")):
+                    cmd_pos = True
+                    continue
+                if "=" in word and not word.startswith("-"):
+                    continue                     # VAR=val prefix
+                if ref and bound.get(_ref_name(ref), set()) & WRAPPERS:
+                    word = "env"                 # `w=env; "$w" truncate ...`
+                if word in WRAPPERS:
+                    # A wrapper hides the command word behind its own options AND
+                    # THEIR ARGUMENTS (`sudo -u root`, `env -u FOO`, `timeout 5`,
+                    # `nice -n 10`). Skipping that correctly needs an arity table
+                    # per wrapper, which fails OPEN wherever it is wrong — so once
+                    # a wrapper holds the slot, ANY later token in the segment
+                    # counts. `sudo grep -F truncate f` then over-warns: the safe
+                    # direction, and rare next to a wrapped truncate.
+                    # `break`, never `return False`: chunks_and_truncation
+                    # expands nested payloads (`env -S`, `bash -c`) into FURTHER
+                    # chunks, and returning here would abandon them unexamined —
+                    # which is exactly how the #519 `env -S` case slipped through.
+                    # A later token can also CARRY a command string rather than
+                    # be one: `xargs sh -c "truncate -s 0 f"` is one quoted token
+                    # after shlex, so an exact-token match reads it as an operand.
+                    # Re-enter on any token holding whitespace — that is a payload
+                    # to parse, and the recursion terminates because a token
+                    # without whitespace never re-enters.
+                    for t in toks[j + 1:]:
+                        if t.lstrip("({").rsplit("/", 1)[-1].lower() == "truncate":
+                            return True
+                        tref = VAR_REF.match(t)
+                        if tref and "truncate" in bound.get(_ref_name(tref), ()):
+                            return True         # `cmd=truncate; sudo "$cmd" ...`
+                        if (" " in t or "\t" in t) and has_truncate([t]):
+                            return True
+                    break
+                cmd_pos = False                  # a real command word, not truncate
+    return False
+
+
+def unsafe(chunks, truncated):
+    # Takes the ALREADY-EXPANDED chunks: chunks_and_truncation is documented
+    # below as potentially exponential and shares the 3s alarm with everything
+    # else here, so it runs exactly once per command and both scanners read the
+    # same result.
+    #
     # #377 residual 1: a recursive rm wrapped deeper than _all_chunks expands was
     # never surfaced, so this function cleared a command it had not fully read.
     # Warn on the truncation itself — the PRECISE fail-closed condition
     # ("extraction hit its bound with payloads left"), reported by the traversal
     # itself rather than guessed at from the raw text.
-    chunks, truncated = chunks_and_truncation(cmd)
     if truncated:
         return True
     for chunk in chunks:
-        for _op, seg in split_segments(chunk):
+        # Scoped to THIS chunk: an assignment in an expanded child shell never
+        # reaches an rm in the parent.
+        tmpvars = temp_vars(chunk)
+        for seg_idx, (_op, seg) in enumerate(split_segments(chunk)):
             try:
                 toks = shlex.split(seg, posix=True)
             except ValueError:
@@ -215,7 +582,9 @@ def unsafe(cmd):
                 # `... | xargs rm -rf` — we cannot prove those are safe artifacts,
                 # so warn. Otherwise warn iff any listed target is non-safe.
                 if recursive and (not targets
-                                  or any(not is_safe(t) for t in targets)):
+                                  or any(not is_safe(t)
+                                         and not is_temp(t, tmpvars, seg_idx)
+                                         for t in targets)):
                     return True
     return False
 
@@ -227,7 +596,7 @@ def unsafe(cmd):
 # TRUNCATED — a command wrapped deeper than _all_chunks expands is no longer
 # silently cleared, because "I could not read all of it" is not "it is safe".
 #
-# A payload behind a CONTROL KEYWORD (`if true; then eval '…'; fi`) is handled at
+# A payload behind a CONTROL KEYWORD (`if true; then eval <payload>; fi`) is at
 # the detector level in _command_argv (the shell-reserved-word stripping added in
 # #426), which defeated the fail-CLOSED commit/PR/merge gates too — a far bigger
 # deal than this advisory guard. This guard shares _shell_payloads → _command_argv,
@@ -266,16 +635,21 @@ try:
 except (ValueError, AttributeError):
     pass  # no SIGALRM (non-Unix / non-main-thread) — run unbounded, fail-open trap still applies
 try:
-    verdict = "unsafe" if unsafe(_cmd) else "safe"
+    _chunks, _truncated = chunks_and_truncation(_cmd)
+    verdict = "unsafe" if unsafe(_chunks, _truncated) else "safe"
+    # Same single pass, same bound: a second interpreter spawn on every Bash
+    # call is what the SINGLE PASS note above exists to avoid.
+    trunc = "truncate" if has_truncate(_chunks) else "notruncate"
 except TimeoutError:
-    verdict = "unsafe"
+    verdict, trunc = "unsafe", "truncate"
 finally:
     try:
         signal.alarm(0)
     except (ValueError, AttributeError):
         pass
-print(verdict)
+print(verdict, trunc)
 ' 2>/dev/null || true)
+  read -r RM_VERDICT TRUNC_VERDICT <<<"$_SCAN_OUT" || true
 fi
 
 if [[ "$AUTO_MODE" == 0 && "$RM_VERDICT" != "unsafe" && "$RM_VERDICT" != "safe" ]]; then
@@ -307,9 +681,57 @@ if [[ -z "$WARN" ]] && printf '%s' "$CMD_LOWER" | grep -qE 'drop\s+(table|databa
   WARN="Destructive: SQL DROP detected. This permanently deletes database objects."
 fi
 
-# TRUNCATE
-if [[ -z "$WARN" ]] && printf '%s' "$CMD_LOWER" | grep -qE '\btruncate\b' 2>/dev/null; then
-  WARN="Destructive: SQL TRUNCATE detected. This deletes all rows from a table."
+# TRUNCATE — the OPERATION, never the english word.
+# A bare `\btruncate\b` over the whole command matched the word wherever it
+# appeared: in a grep pattern, in a python string literal, in prose inside an
+# echo. Measured over ~/.claude/watch-hooks.log (176 real Bash permission
+# prompts, six days) this rule fired 20 times — 11% of EVERY prompt — and not
+# one of the 20 was SQL. All 20 were this repo's own gate tests naming the word.
+#
+# The fix is precision, not relaxation: the rule keeps warning on both things it
+# can legitimately mean, and goes silent only where it meant nothing at all.
+#   SQL       -> `TRUNCATE TABLE`, or `truncate` alongside a SQL client
+#   coreutils -> `truncate` at command-word position (erases a file in place)
+#
+# KNOWN LIMIT, accepted: the client list is an allowlist and allowlists of
+# third-party binaries are never complete — a bare `TRUNCATE users` through a
+# client not named here goes unwarned, where the old bare-word rule warned.
+# `TRUNCATE TABLE` is the client-independent backstop and covers the spelling
+# most tools emit; the residual is bare-TRUNCATE through an unlisted client.
+# Add names here as they come up rather than reverting to the bare word, which
+# cost 11% of ALL prompts in false positives.
+#
+# `truncate table` is matched WHEREVER it appears, including inside a quoted
+# string, and that is deliberate: it is the operation phrase, not the english
+# word, and `psql -c "TRUNCATE TABLE t"` puts real SQL inside quotes too. So
+# `echo "do not truncate table users"` over-warns. Accepted — over-warning is
+# this guard's safe direction, the phrase is rare in prose (0 of the 20 measured
+# false positives were it, all 20 were the bare word), and the alternative —
+# requiring a client — would go silent on a bare `TRUNCATE TABLE users;`.
+# Deliberately NOT gated on AUTO_MODE, same as DROP above: the classifier does
+# not name either, so both stay live in every mode.
+if [[ -z "$WARN" ]]; then
+  if printf '%s' "$CMD_LOWER" | grep -qE 'truncate[[:space:]]+table\b' 2>/dev/null \
+     || { printf '%s' "$CMD_LOWER" | grep -qE '\btruncate\b' 2>/dev/null \
+          && printf '%s' "$CMD_LOWER" \
+             | grep -qE '\b(psql|pgcli|mysql|mysqlsh|mycli|mariadb|sqlite3|litecli|sqlcmd|sqlplus|snowsql|usql|clickhouse-client|clickhouse|duckdb|cockroach|cqlsh|beeline|trino|presto|impala-shell|spark-sql|bq)\b' 2>/dev/null; }; then
+    WARN="Destructive: SQL TRUNCATE detected. This deletes all rows from a table."
+  # Command-word detection is delegated to the quote-aware scanner above
+  # (has_truncate), not grepped. Every regex attempt here was bypassable in one
+  # direction or false-positive in the other: keying on flags missed
+  # `truncate audit.log -s 0` (GNU permutes options after operands), and keying
+  # on position missed `sudo truncate` / `/usr/bin/truncate` / the `env -S`
+  # audit-log erasure #519 tests for — while any text match fired on
+  # `grep -F 'truncate -s'`. shlex resolves both at once.
+  #
+  # The fallback fires only when the scanner did NOT run (no python3, AUTO_MODE):
+  # there, the original broad bare-word match is restored deliberately, because a
+  # degraded path must over-warn rather than under-detect.
+  elif [[ "$TRUNC_VERDICT" == "truncate" ]] \
+       || { [[ "$TRUNC_VERDICT" != "notruncate" ]] \
+            && printf '%s' "$CMD_LOWER" | grep -qE '\btruncate\b' 2>/dev/null; }; then
+    WARN="Destructive: truncate empties a file in place."
+  fi
 fi
 
 # The four git patterns below are all named in auto mode's own default block list,

@@ -775,9 +775,28 @@ def _executed_operands(toks):
             # quotes -- it joins its arguments and re-parses, so what actually runs is a
             # read-only grep -- but judging the fragment alone is the fail-CLOSED
             # direction, and that shape is far rarer than the payload it protects.
+            # EVERY argument, unconditionally. Not multi-word ones, not padded ones, not
+            # ones bearing shell metacharacters -- every one. watch joins its arguments and
+            # runs the result through sh -c, so there is no such thing as an inert argument
+            # here, and any test for which tokens are "really" shell source is a detector
+            # that fails OPEN on the spelling it has not met yet. Three drafts of this line
+            # proved that: a multi-word test missed `watch -- " python3" ...` (one word plus
+            # a leading space), and adding a padding test still missed `watch ">src/file"`
+            # (one bare word that is a redirect). Recursing everything ends the sequence
+            # rather than extending it.
+            #
+            # The cost is bounded and the direction is safe: each candidate is judged alone,
+            # so an option value or a filename simply classifies as nothing, and a bare verb
+            # was already caught by the all-token scan below.
             for t2 in toks[i + 1:]:
-                if len(t2.split()) > 1:
-                    _add(t2)
+                _add(t2)
+            # ...and the JOIN, because the operator can split one command ACROSS arguments.
+            # `watch ">" src/file` is two inert-looking tokens that watch concatenates into
+            # a redirect, so neither one classifies alone while the pair truncates the file.
+            # Per-argument recursion and the join each catch what the other misses.
+            _joined = " ".join(t2.strip() for t2 in toks[i + 1:] if t2.strip())
+            if _joined:
+                _add(_joined)
             i += 1
             continue
         if base in _WRAPPERS:

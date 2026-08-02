@@ -374,6 +374,16 @@ for _opt in "" "-d" "-n 1" "-n1" "-dn 1" "--interval=1" "--shotsdir logs" \
     _wa allow  "watch $_opt 'git status'"
 done
 _wa block "watch rm -f src/file"          # unquoted: the plain token scan covers it
+# Space-padded verb: one word to a multi-word test, but a live command to the shell.
+_wa block "watch -- ' rm' -rf src"
+_wa block "watch -- ' sh' -c 'rm -rf src'"
+# A LONE BARE WORD that is still shell source. These are why the rule recurses every
+# argument rather than testing which ones "look like" a command: each spelling below is
+# one token with no whitespace, and each one writes.
+_wa block "watch '>src/file'"
+_wa block "watch '>>src/file'"
+_wa block "watch 'x;rm y'"
+_wa block "watch 'a|rm x'"
 _wa block "watch -x rm -f src/file"       # --exec skips the shell; over-read on purpose
 _wa allow "watch -d ls -la"
 _wa allow "echo watch rm -rf src"         # `watch` as plain DATA stays inert
@@ -381,6 +391,59 @@ if [[ "$_WATCH_FAIL" -eq 0 ]]; then
     ok "watch resolves its payload under every option spelling ($_WATCH_PASS cases)"
 else
     no "watch payload spellings" "$_WATCH_FAIL of $((_WATCH_PASS + _WATCH_FAIL)) wrong"
+fi
+# THE INVARIANT ITSELF, rather than another list of spellings. `watch X` runs X, so its
+# verdict must EQUAL the verdict on X alone -- no more, no less. Three separate drafts of
+# the watch rule each passed the example list of their day and still let a new spelling
+# through, because an example list only ever proves the examples. This compares the pair
+# directly, so any payload whose wrapped verdict drifts from its bare one fails here
+# whatever its spelling. The generator stays small and fixed rather than random: a seeded
+# fuzz would make CI failures depend on the seed.
+# Compared at the GATE decision, not at cmdword.is_file_mod. The classifier is only one
+# rung: bare redirects are judged above it, so `>src/file` is False to is_file_mod while
+# the gate still blocks it. Comparing the rung instead of the decision reports a mismatch
+# that is not one -- measured, which is why this reads the real verdict.
+_PROP="$(python3 - "$WORK" "$GATE" <<'PY'
+import json, subprocess, sys
+WORK, GATE = sys.argv[1], sys.argv[2]
+
+def decision(cmd):
+    p = subprocess.run(["bash", GATE], cwd=WORK, capture_output=True, text=True,
+                       input=json.dumps({"tool_name": "Bash", "cwd": WORK,
+                                         "tool_input": {"command": cmd}}))
+    return '"block"' in p.stdout
+
+PAYLOADS = [
+    "rm -f src/file", "grep -n x src/file", "ls -la", "git status", "git clean -fd",
+    ">src/file", "x;rm y", "a|rm x", "sed -i s/a/b/ f", "sed -n 1p f",
+    "truncate -s 0 f", "echo rm",
+]
+OPTS = ["", "-n 1 ", "--shotsdir logs ", "--some-future-option v "]
+# Quoting/padding shapes of the SAME payload. The bare split-argv spelling is deliberately
+# excluded: it over-blocks by design (see the helper-guard cases below), so it is not
+# verdict-transparent and asserting that it is would contradict a decision made on purpose.
+WRAPS = [
+    lambda p: "'" + p + "'",            # the spelling watch users actually write
+    lambda p: "'  " + p + "'",          # leading padding the shell ignores
+    lambda p: "'" + p + "  '",          # trailing padding
+]
+bad = []
+for p in PAYLOADS:
+    bare = decision(p)
+    for o in OPTS:
+        for w in WRAPS:
+            if decision("watch " + o + w(p)) != bare:
+                bad.append("watch %s%s disagrees with bare (bare=%s)" % (o, w(p), bare))
+print(len(PAYLOADS) * len(OPTS) * len(WRAPS))
+for b in bad[:6]:
+    print("MISMATCH " + b)
+PY
+)"
+_PROP_N="$(printf '%s\n' "$_PROP" | head -1)"
+if ! printf '%s\n' "$_PROP" | grep -q MISMATCH; then
+    ok "watch is verdict-transparent: wrapped == bare for all $_PROP_N payload x option pairs"
+else
+    no "watch verdict transparency" "$(printf '%s\n' "$_PROP" | grep MISMATCH | head -3 | tr '\n' ' ')"
 fi
 # `--` is NOT honoured as sed's option terminator: deciding whether it is an option
 # OPERAND needs the same arity table, and here it is -f's script file, so the -i behind
@@ -839,6 +902,61 @@ check "env -S running the helper is blocked" block \
     "$(bash_decision "env -S 'python3 -I hooks/gate-scripts/lib/lease_slot.py .claude fake 1'")"
 check "sh -c running the helper is blocked" block \
     "$(bash_decision "sh -c 'python3 -I hooks/gate-scripts/lib/audit_append.py .claude {}'")"
+# `watch` with a QUOTED payload. This one SHIPPED as a hole: watch was taught to the
+# file-mod classifier without a matching payload extraction in the helper guard, so the
+# quoted spelling reached the helper unseen while sh -c, env -S, find -exec and even
+# UNQUOTED watch were all caught. The unquoted control is here deliberately -- it passed
+# throughout, so testing only that spelling would have certified a guard with a hole in it.
+check "watch running the helper is blocked (unquoted control)" block \
+    "$(bash_decision "watch python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600")"
+check "watch with a QUOTED helper payload is blocked" block \
+    "$(bash_decision "watch 'python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600'")"
+check "watch -n with a quoted helper payload is blocked" block \
+    "$(bash_decision "watch -n 1 'python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600'")"
+# An option this list has never heard of must not shift where the payload is found --
+# the whole reason neither watch rule keeps an option-arity table.
+check "watch with an unknown value-taking option still finds the helper" block \
+    "$(bash_decision "watch --some-future-option val 'python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600'")"
+# WHITESPACE PADDING. This defeated the FIRST fix here, which scanned tokens individually
+# and skipped any that was not multi-word: ` python3` is one word plus a leading space, so
+# it was skipped, while the shell ignores the space and runs it. The padding is
+# attacker-chosen, so both spellings are pinned rather than trusting a whitespace list.
+check "watch hiding the runner in a space-padded token is blocked" block \
+    "$(bash_decision "watch -- ' python3' -I hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600")"
+check "watch hiding a space-padded shell before the helper is blocked" block \
+    "$(bash_decision "watch -- ' sh' -c 'python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600'")"
+# ...and the recursion must not turn NAMING a helper into invoking it. The payload is
+# re-classified as its own command, so a read that merely mentions the path stays a read.
+check "watch of a read that merely NAMES the helper is allowed" allow \
+    "$(bash_decision "watch 'grep -n x hooks/gate-scripts/lib/lease_slot.py'")"
+# The SEPARATE-ARGV spelling over-blocks, DELIBERATELY. Resolving the command word inside
+# a watch invocation without an option-arity table means treating each argument position as
+# a possible start, which necessarily promotes operands too -- so a bare helper pathname
+# reads as an invocation. Five narrower rules were measured and each was fail-OPEN instead;
+# the trade is the same one already made two blocks down for `echo -exec sh -c <helper>`.
+# Pinned so the over-block stays a decision rather than becoming a surprise.
+check "watch NAMING the helper as separate argv over-blocks (deliberate)" block \
+    "$(bash_decision "watch grep -n x hooks/gate-scripts/lib/lease_slot.py")"
+check "watch cat NAMING the helper as separate argv over-blocks (deliberate)" block \
+    "$(bash_decision "watch cat hooks/gate-scripts/lib/lease_slot.py")"
+# (The QUOTED spelling of that same read stays allowed -- asserted just above. There the
+# payload is one token and needs no position guessing, so the over-block is the price of
+# the argv spelling only, not of watching a read in general.)
+# The spelling that motivated the whole trade: a value-taking option whose value displaces
+# the command word, with a space-padded runner behind it. Fail-open in every narrower rule.
+check "watch with an option VALUE before a padded runner is blocked" block \
+    "$(bash_decision "watch --shotsdir logs ' python3' -I hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600")"
+# Enough repeated value-taking options to push the payload past any FIXED candidate cap.
+# An earlier draft capped candidates at twelve positions and stopped there SILENTLY, which
+# is a fail-open wearing a limit: the search simply never reached the command. The bound is
+# now the shared token budget, and draining it makes every emitted payload fail CLOSED.
+check "watch payload beyond a fixed candidate cap is still blocked" block \
+    "$(bash_decision "watch --shotsdir log0 --shotsdir log1 --shotsdir log2 --shotsdir log3 --shotsdir log4 --shotsdir log5 'python3 -I hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600'")"
+# A command SPLIT ACROSS arguments. watch concatenates before handing to sh -c, so neither
+# `>` nor `src/file` classifies alone while the pair truncates the file. This is why the
+# classifier scans the join as well as each argument.
+check "watch with a redirect split across arguments is blocked" block \
+    "$(bash_decision "watch '>' src/file")"
 # NESTED payloads: a runner inside a find -exec. The payload tokens are requoted before
 # the recursive scan, because a bare space-join loses the boundary the quoted `-c` string
 # carried -- `sh -c "python3 -I .../lease_slot.py ..."` re-lexed as `sh -c python3 -I

@@ -736,6 +736,10 @@ _MUTATING_HELPERS = ("lease_slot.py", "audit_append.py")
 # all, and nothing at all is the fail-CLOSED case.
 _HELPER_MAX_TOKENS = 4000
 _helper_budget = [0]
+# Total BYTES of watch suffix candidates materialized per scan. The cost of that
+# expansion is copying, not token count, so it is bounded in the unit it actually spends.
+# Exceeding it forces _helper_budget negative, which fails CLOSED -- see _exec_payloads.
+_WATCH_MAX_PAYLOAD_BYTES = 1 << 20
 # The same helpers as MODULE names. `python3 -m lease_slot` runs the file without
 # ever naming it, and `-m` was on the list of flags whose operand gets skipped.
 _MUTATING_MODULES = tuple(h[:-3] for h in _MUTATING_HELPERS)
@@ -835,14 +839,25 @@ _INDIRECTION_RE = re.compile(
 
 
 def _exec_payloads(words):
-    # SCOPE, because the KEEP IN STEP notes further down have been misread as a wider
-    # promise than they make: this feeds the HELPER guard only -- can this command
-    # reach lease_slot.py or audit_append. It is NOT the file-mod classifier. That
-    # decision has exactly ONE implementation, cmdword.is_file_mod, imported below, so
-    # a verb-runner taught to cmdword needs no twin here. The KEEP IN STEP notes pin
-    # the dedup, budget and tokenization details this function shares with
-    # cmdword._executed_operands -- never the operand set, which answers a different
-    # question and is deliberately wider (no exemption list, any index).
+    # SCOPE, because the KEEP IN STEP notes further down have been misread in BOTH
+    # directions: this feeds the HELPER guard only -- can this command reach
+    # lease_slot.py or audit_append. It is NOT the file-mod classifier, which has
+    # exactly ONE implementation, cmdword.is_file_mod, imported below.
+    #
+    # The distinction that matters when editing either file:
+    #   - a new file-mod VERB belongs in cmdword._MOD_VERBS alone. It needs no twin
+    #     here, because whether a command WRITES is not a question this function asks.
+    #   - a new RUNNER -- anything that hands a payload to a shell -- belongs in BOTH,
+    #     for different reasons: cmdword so the payload is classified for writes, here
+    #     so the payload is searched for a helper. Teaching only one of them leaves the
+    #     other blind. That is not hypothetical: `watch` with a quoted payload was added
+    #     to cmdword first and reached the helper guard unseen until the branch below
+    #     was added.
+    #
+    # The KEEP IN STEP notes pin the dedup, budget and tokenization details this
+    # function shares with cmdword._executed_operands -- never the operand set, which
+    # answers a different question and is deliberately wider (no exemption list, any
+    # index).
     #
     # Sub-programs this simple command hands to something else to RUN: a find -exec
     # payload (already tokens) and an executed STRING (env -S / a shell -c), which has
@@ -889,6 +904,8 @@ def _exec_payloads(words):
     # in the segment is `find`. Treating it as a general convention read the -exec in
     # `bash -c "printf ..." -- -exec sh -c "..."` -- a print -- as an invocation.
     _seen_find = False
+    # Only the FIRST watch word is expanded; see the branch below for why.
+    _seen_watch = False
     for i, w in enumerate(words):
         # `less "+!<cmd>"` / `more "+!<cmd>"`: the pager runs the rest as a shell command.
         # A startup-command operand is an executed STRING wherever it appears, so it is
@@ -921,6 +938,115 @@ def _exec_payloads(words):
                     _add_str(words[j + 1]); break
                 if t2.startswith("-S") and len(t2) > 2:
                     _add_str(t2[2:]); break
+        elif base == "watch" and not _seen_watch:
+            # `watch COMMAND` joins its non-option arguments and runs the result through
+            # sh -c, so a QUOTED payload is executed shell SOURCE that arrives here as one
+            # word. Without this branch the quoted spelling reached the helper unseen while
+            # every other one was caught -- sh -c, env -S, find -exec, and even UNQUOTED
+            # watch, whose payload is separate words the scan already reads. That gap was
+            # real: the guard is introduced by this change set, so it shipped with a hole in
+            # the exact shape it exists to catch.
+            #
+            # Deliberately NO option-arity table. Locating the command start means knowing
+            # which watch flags take a value, and every gap in such a list fails OPEN --
+            # procps keeps adding options, and spellings that postdate any list we could
+            # write here already broke an earlier draft of the sibling rule in cmdword.
+            #
+            # EVERYTHING after the watch word goes in as one payload, which the sibling rule
+            # in cmdword cannot do. cmdword needs the command START, because whether a
+            # command writes depends on which word is the verb; this guard does not -- it
+            # searches the payload for a helper at ANY index, per the no-exemption-list
+            # design above. The option words just ride along at the front as inert tokens,
+            # so no arithmetic is needed to step over them.
+            #
+            # It goes in as a TOKEN payload, not a string, so the call site requotes it. A
+            # bare space-join was tried and is wrong for the reason already documented at
+            # the -exec requote: it drops the boundary a quoted token carried, so
+            # `watch -- " sh" -c "python3 -I <helper> ..."` re-lexes as `sh -c python3 -I
+            # <helper>`, whose -c handler reads only `python3` and never scans the helper
+            # demoted to $0/$1.
+            #
+            # Each token is STRIPPED first. Scanning tokens individually was the first fix
+            # here and was itself defeated by `watch -- " python3" -I <helper>`: one word
+            # plus a leading space, so a multi-word test skips it while the shell ignores the
+            # space and runs it. Padding is attacker-chosen, so it is normalized away rather
+            # than matched against a whitespace list.
+            # BOTH payload kinds, because the two shapes need opposite handling and each
+            # candidate is judged alone anyway. The token payload keeps quoting boundaries
+            # so an inner `-c` operand survives; but requoting also stops a payload that is
+            # ITSELF one quoted command from being re-lexed, which is the common
+            # `watch "python3 <helper> ..."` spelling. So each shell-source token is added
+            # as a STRING too. Fixing only one of these swaps which spelling gets through --
+            # it was measured in both directions before landing both.
+            # The token payload is added only for a real ARGV of two or more words. A lone
+            # token is not an argv -- it is one word the shell re-parses -- so requoting it
+            # asserts a boundary that does not exist, and the requoted result is a single
+            # word whose basename is the tail of the path INSIDE it. That made
+            # `watch "grep -n x <helper>"` read as a bare helper invocation and block, while
+            # the identical `sh -c "grep -n x <helper>"` correctly allowed. The string
+            # branch below already covers the lone-token case faithfully.
+            if len(words[i + 1:]) > 1:
+                _add_tok([_t.strip() for _t in words[i + 1:]])
+            # The JOIN, not the individual arguments. watch really does join its arguments
+            # into one sh -c string, so the joined text is the faithful model AND it keeps
+            # operand position: `watch grep -n x <helper>` joins back to the read it started
+            # as. Adding each argument separately was tried and promotes every atom to
+            # command position, so that same read blocked as a bare helper invocation.
+            #
+            # Joining also needs no test for which arguments are "really" shell source --
+            # the detector that failed three times, first missing ` python3` (one word plus
+            # a leading space), then missing `>src/file` (one bare word that redirects).
+            # Stripping each token first keeps the padding from surviving the join.
+            # A SUFFIX from each argument position, as far as the token budget allows, so the
+            # command word is covered wherever the options happen to end. Five narrower
+            # formulations were measured first and every one of them fixed one spelling and
+            # opened the next -- multi-word arguments only missed a space-padded ` python3`;
+            # adding a padding test still missed a lone `>src/file`; the whole-argument join
+            # missed a payload behind a value-taking option. All three were fail-OPEN, and
+            # the common cause is that telling an OPERAND from a COMMAND WORD is precisely
+            # what needs the option-arity table this file refuses to keep.
+            #
+            # So the trade is taken in the other direction, which is the direction this repo
+            # already chose: a suffix set resolves the command word without any arity
+            # knowledge, at the cost of also promoting operands, so `watch cat <helper>`
+            # reads as an invocation and blocks. That is a FALSE BLOCK on a contrived read,
+            # against a FAIL-OPEN on a real invocation, in a fail-CLOSED gate -- and it is
+            # the same trade already documented two branches up for `echo -exec sh -c
+            # <helper>` and for the helper passed as ARGV to another script.
+            #
+            # Two bounds. Only the FIRST watch word is expanded: doing it per occurrence made
+            # `watch watch watch ...` materialize a suffix per token -- O(tokens^2) bytes,
+            # measured near 218 MB -- in a hook whose 5s timeout kills it with NO decision on
+            # stdout, which the harness reads as ALLOW. A nested watch is still reached, one
+            # recursion later, inside an emitted suffix. And the suffix set is charged to
+            # the shared token budget, so a long argv cannot outrun it -- and exhausting it
+            # blocks rather than quietly searching less.
+            _starts = words[i + 1:]
+            if _starts:
+                # The full join goes in first and unconditionally, so there is always
+                # something to scan no matter what the budget does below.
+                _add_str(" ".join(_t.strip() for _t in _starts if _t.strip()))
+            _bytes_left = _WATCH_MAX_PAYLOAD_BYTES
+            for _k in range(1, len(_starts)):
+                # Bounded by BYTES, not by a token count and not by a fixed position cap.
+                # Each was tried and each was wrong in its own way. A fixed cap stops
+                # searching silently -- a fail-OPEN dressed as a limit, walked past by six
+                # repeated value-taking options. Charging token COUNT misses that the cost
+                # is the copying: one ~8 MiB argument re-joined into ~88 suffixes is ~700 MB
+                # against a budget that only ever saw 88 tokens.
+                #
+                # Running out does NOT quietly stop the search. The budget is forced
+                # negative, so every payload already emitted fails CLOSED the moment it is
+                # re-entered, exactly as budget exhaustion does everywhere else here.
+                # Not-knowing blocks; it never allows.
+                _suffix = " ".join(_t.strip() for _t in _starts[_k:] if _t.strip())
+                _bytes_left -= len(_suffix)
+                if _bytes_left < 0:
+                    _helper_budget[0] = -1
+                    break
+                if _suffix:
+                    _add_str(_suffix)
+            _seen_watch = True
         # KEEP IN STEP WITH cmdword._DASH_C_RUNNERS. ash and mksh were listed there and
         # missing here, so `ash -c "<helper>"` walked straight past this guard.
         elif base in ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "su", "runuser",

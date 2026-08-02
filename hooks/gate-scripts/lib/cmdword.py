@@ -178,10 +178,24 @@ _DISPATCHERS = {
             "--verify", "--symbolic", "--symbolic-full-name", "--show-prefix",
             "--is-inside-work-tree", "--is-bare-repository", "--sq", "--default",
             "-e", "--batch", "--batch-check", "--stdin",
-            # `git diff --no-index a b` is documented read-only inspection outside a
-            # repo; `--no-ext-diff` disables a CONFIGURED external diff driver, which
-            # only narrows what runs, never widens it into a write.
-            "--no-index", "--no-ext-diff",
+            # NEITHER `--no-index` NOR `--no-ext-diff` is listed, deliberately.
+            #
+            # Both were added during PR #548 to clear a false block on
+            # `git diff --no-index a b`, and the attempt walked down three rungs before
+            # being abandoned: `--no-index` alone still lets a configured
+            # `diff.external` driver run, so it was gated behind a co-required
+            # `--no-ext-diff` -- and `--no-ext-diff` disables only EXTERNAL DRIVERS,
+            # while git additionally enables TEXTCONV by default for no-index diffs, so
+            # repository attributes plus a configured `diff.<driver>.textconv` still
+            # execute an external command (builtin/diff.c). Each fix uncovered the next
+            # escape hatch in the same feature.
+            #
+            # A false block on a read costs one lease use and is recoverable; a
+            # classifier that calls an arbitrary-command path read-only is not. Whoever
+            # revisits this needs to enumerate EVERY git mechanism that can execute a
+            # configured program from a diff -- external drivers, textconv, and any
+            # future sibling -- not just the one the last report named. Tracked as a
+            # follow-up rather than guessed at again here.
             # Ref/index/remote operations that this classifier already calls reads.
             "-m", "--message", "--amend", "--no-edit", "--allow-empty", "--no-verify",
             "-A", "--update", "-f", "--force", "--force-with-lease", "--set-upstream",

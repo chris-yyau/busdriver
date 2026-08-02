@@ -178,6 +178,10 @@ _DISPATCHERS = {
             "--verify", "--symbolic", "--symbolic-full-name", "--show-prefix",
             "--is-inside-work-tree", "--is-bare-repository", "--sq", "--default",
             "-e", "--batch", "--batch-check", "--stdin",
+            # `git diff --no-index a b` is documented read-only inspection outside a
+            # repo; `--no-ext-diff` disables a CONFIGURED external diff driver, which
+            # only narrows what runs, never widens it into a write.
+            "--no-index", "--no-ext-diff",
             # Ref/index/remote operations that this classifier already calls reads.
             "-m", "--message", "--amend", "--no-edit", "--allow-empty", "--no-verify",
             "-A", "--update", "-f", "--force", "--force-with-lease", "--set-upstream",
@@ -625,8 +629,18 @@ def _executed_operands(toks):
                     if len(name) > 2 and any(l.startswith(name[2:]) for l in _LONG_RUN):
                         if eq:
                             _add(val)
-                        elif j + 1 < n:
-                            _add(toks[j + 1])
+                        else:
+                            k = j + 1
+                            # `bash -c -- 'rm -rf src'` consumes a bare `--` as the
+                            # getopt end-of-options marker BEFORE the command string,
+                            # not as the string itself -- verified against the real
+                            # binary (`bash -c -- 'echo x'` runs `echo x`, not `--`).
+                            # Adding toks[j+1] unconditionally classified the inert
+                            # `--` and never reached the real payload one token later.
+                            if k < n and toks[k] == "--":
+                                k += 1
+                            if k < n:
+                                _add(toks[k])
                     continue          # NO break, for the reason given below
                 if t2.startswith("-") and not t2.startswith("--") and "c" in t2[1:]:
                     # ATTACHED or separated -- and, unlike the -m walk, NOT decidable
@@ -639,8 +653,12 @@ def _executed_operands(toks):
                     tail = t2[t2.index("c", 1) + 1:]
                     if tail:
                         _add(tail)
-                    if j + 1 < n:
-                        _add(toks[j + 1])
+                    k = j + 1
+                    # Same `--` end-of-options skip as the long-option form above.
+                    if k < n and toks[k] == "--":
+                        k += 1
+                    if k < n:
+                        _add(toks[k])
                     # NO break. Stopping at the first `c` assumed this token IS the -c,
                     # which needs to know whether an EARLIER flag consumed it as an
                     # operand -- `script -O -cfoo -c PROG` hands `-cfoo` to -O as a
@@ -649,6 +667,27 @@ def _executed_operands(toks):
                     # when wrong), so the question is inverted instead: every token that
                     # COULD be a -c operand becomes a candidate, each is classified on
                     # its own, and one that is really a filename classifies as nothing.
+                    continue
+                # Stdin-fed shell source: with no -c/--command operand and no script
+                # FILE operand, a shell reads its script from STDIN -- so
+                # `bash <<< 'rm -rf src'` (here-string) executes the redirected text
+                # exactly as -c would. The old raw regexes caught the literal `rm`;
+                # tokenizing without this branch classified nothing, because the outer
+                # walk's generic redirect-skip treats the operator's target as an inert
+                # redirection operand and steps past it.
+                #
+                # Scoped to `<<<` alone, and to genuine shells (not su/runuser/flock/
+                # script, whose stdin behavior under this shape is not verified here).
+                # KNOWN RESIDUAL, pinned so it stays visible rather than rediscovered:
+                # `bash <<EOF` / `bash << EOF` (real heredoc) is NOT covered by this
+                # branch -- the delimiter word sits where the payload would, and the
+                # actual heredoc BODY is not this token's target, so re-classifying
+                # `toks[j + 1]` here would only ever inspect the delimiter, never the
+                # body. Closing that shape needs heredoc-body extraction this module
+                # does not attempt.
+                if base in _SHELLS and t2 == "<<<":
+                    if j + 1 < n:
+                        _add(toks[j + 1])
                     continue
             i += 1
             continue
@@ -696,20 +735,14 @@ def _executed_operands(toks):
     return out
 
 
-def _first_word(toks):
-    """First token in COMMAND position: assignments, flags, numeric operands and shell
-    reserved words are skipped, so `then coproc rm x` and `{ coproc rm x` both report
-    `coproc`. coproc/function are NOT in _RESERVED, so they are reported exactly where
-    they sit, while a mere mention (`echo coproc rm x`) still reports `echo`.
-
-    A LEADING REDIRECTION is stepped over for the same reason as in the three sibling
-    walks: without it `</dev/null coproc rm -rf src` reported `<`, the _OPAQUE_INTRO test
-    missed, the conservative all-token regime was never selected, and the write ran. Both
-    callers use this only to WIDEN the scan, so an extra name here can only add a block.
-    A mention is still safe: the walk returns at the first real command word, so
-    `grep -n "<" notes.txt` reports `grep` and never reaches the operand."""
+def _first_word_index(toks):
+    """Index of the first token in COMMAND position, or None. Same preamble walk as
+    `_first_word` (assignments, flags, numeric operands, redirections and shell
+    reserved words are skipped) but returns WHERE the word sits rather than the word
+    itself, so a caller that needs to slice past a preamble it does not control the
+    length of (e.g. the NAME after `function`) does not have to assume position 0."""
     skip_next = False
-    for t in toks:
+    for idx, t in enumerate(toks):
         if skip_next:
             skip_next = False
             continue
@@ -723,9 +756,25 @@ def _first_word(toks):
         if b in _RESERVED:
             continue
         if b in _TEST_OPEN:
-            return ""
-        return b
-    return ""
+            return None
+        return idx
+    return None
+
+
+def _first_word(toks):
+    """First token in COMMAND position: assignments, flags, numeric operands and shell
+    reserved words are skipped, so `then coproc rm x` and `{ coproc rm x` both report
+    `coproc`. coproc/function are NOT in _RESERVED, so they are reported exactly where
+    they sit, while a mere mention (`echo coproc rm x`) still reports `echo`.
+
+    A LEADING REDIRECTION is stepped over for the same reason as in the three sibling
+    walks: without it `</dev/null coproc rm -rf src` reported `<`, the _OPAQUE_INTRO test
+    missed, the conservative all-token regime was never selected, and the write ran. Both
+    callers use this only to WIDEN the scan, so an extra name here can only add a block.
+    A mention is still safe: the walk returns at the first real command word, so
+    `grep -n "<" notes.txt` reports `grep` and never reaches the operand."""
+    idx = _first_word_index(toks)
+    return _basename(toks[idx]) if idx is not None else ""
 
 
 def _starts_with_wrapper(toks):
@@ -811,13 +860,26 @@ def _effective_command_word(toks):
 
 
 def _sed_inplace(toks):
-    """`sed -i` edits in place. The -i must come AFTER the sed token: in
-    `grep -i sed notes.txt` the -i belongs to grep and sed is its search string."""
+    """`sed -i` edits in place, in the short-bundle spelling (`-i`, `-i.bak`) or the
+    GNU long spelling (`--in-place`, `--in-place=SUFFIX`, and any unambiguous
+    getopt_long abbreviation such as `--in-pl`). The -i must come AFTER the sed
+    token: in `grep -i sed notes.txt` the -i belongs to grep and sed is its search
+    string."""
     names = [_basename(t) for t in toks]
     if "sed" not in names:
         return False
     after = toks[names.index("sed") + 1:]
-    return any(re.match(r"^-[A-Za-z]*i", t) for t in after)
+    for t in after:
+        if re.match(r"^-[A-Za-z]*i", t):
+            return True
+        if t.startswith("--"):
+            name = t.partition("=")[0][2:]
+            # Guard the abbreviation to a minimum length so this stays anchored on
+            # "in-place" specifically rather than matching every long flag that
+            # happens to start with the same first couple of letters.
+            if len(name) >= 3 and "in-place".startswith(name):
+                return True
+    return False
 
 
 def _payload_is_mod(toks, depth):
@@ -977,7 +1039,16 @@ def _segment_is_mod(toks, depth=0):
     # name is called later). Judged by command word so `function f { echo rm; }` -- which
     # only prints the word -- stays allowed.
     if _first_word(toks) == "function":
-        after_name = toks[2:] if len(toks) > 2 else []
+        # `toks[2:]` assumed `function` sits at toks[0] and the NAME follows it
+        # immediately at toks[1] -- but _first_word tolerates a preamble (leading
+        # redirections, assignments, flags, reserved words), so a segment like
+        # `if true; then function mv { echo harmless; }; fi` puts `function` deeper
+        # in the token list. Slicing from a fixed index then started ON the NAME
+        # instead of past it, scanning the name itself as code. Locate the real
+        # index instead of assuming position 0.
+        fn_idx = _first_word_index(toks)
+        after_name = (toks[fn_idx + 2:]
+                      if fn_idx is not None and len(toks) > fn_idx + 2 else [])
         if after_name and _payload_is_mod(after_name, depth):
             return True
     # find runs its own commands: -delete writes by itself, -exec/-execdir/-ok take a

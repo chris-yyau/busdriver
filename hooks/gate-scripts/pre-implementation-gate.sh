@@ -1878,7 +1878,28 @@ _skip_lease_consume() {
     # anything else = could not record, which must REFUSE the bypass —
     # unbounded-because-unrecordable is the fail-open this whole block exists to avoid.
     _CLAIM_RC=0
-    claimed="$(python3 -I "$_GATE_LIBDIR/lease_slot.py" "$STATE_DIR" "$LEASE_MAX_USES" 30 "$LEASE_MAX_AGE" 2>/dev/null)" || _CLAIM_RC=$?
+    # A missing/unreadable helper also exits 2 (CPython's own "can't open file"
+    # exit code), which the `2)` branch below would misreport as a spent lease --
+    # naming a use that was never granted and a file that was never removed. Route
+    # that case to the generic fail-closed refusal (`*)`) instead, before invoking
+    # python3, so exit code 2 stays exclusively the helper's own spent-lease signal.
+    [ -f "$_GATE_LIBDIR/lease_slot.py" ] || _CLAIM_RC=1
+    if [ "$_CLAIM_RC" -eq 0 ]; then
+        claimed="$(python3 -I "$_GATE_LIBDIR/lease_slot.py" "$STATE_DIR" "$LEASE_MAX_USES" 30 "$LEASE_MAX_AGE" 2>/dev/null)" || _CLAIM_RC=$?
+    fi
+    # The `-f` test above is a cheap early exit, NOT the discriminator: it cannot see an
+    # UNREADABLE regular file, and the helper can be removed between the test and the
+    # interpreter opening it. Both still exit 2. So exit 2 is re-verified rather than
+    # trusted -- if the helper is not openable now, that 2 was CPython refusing to open
+    # a file, not the helper reporting a spent lease. Costs one probe, and only on the
+    # exhausted path. Both branches BLOCK either way; what this buys is that the operator
+    # is told the truth, instead of being sent to re-touch a lease that was never spent
+    # and hunting for a skip file that was never removed.
+    if [ "$_CLAIM_RC" -eq 2 ] \
+       && ! python3 -I -c 'import sys; open(sys.argv[1], "rb").close()' \
+                    "$_GATE_LIBDIR/lease_slot.py" 2>/dev/null; then
+        _CLAIM_RC=1
+    fi
     case "$_CLAIM_RC" in
         0) : ;;
         3)

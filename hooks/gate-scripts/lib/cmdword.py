@@ -888,10 +888,17 @@ def _sed_inplace(toks):
             return True
         if t.startswith("--"):
             name = t.partition("=")[0][2:]
-            # Guard the abbreviation to a minimum length so this stays anchored on
-            # "in-place" specifically rather than matching every long flag that
-            # happens to start with the same first couple of letters.
-            if len(name) >= 3 and "in-place".startswith(name):
+            # GNU getopt_long accepts ANY non-empty unambiguous prefix of a long
+            # option -- there is no minimum-length floor, and no way to disable
+            # this in getopt_long itself. `--in-place` has no other GNU sed long
+            # option sharing its prefix (verified: --binary, --debug, --expression,
+            # --file, --follow-symlinks, --help, --line-length, --posix,
+            # --quiet/--silent, --regexp-extended, --separate, --sandbox,
+            # --unbuffered, --version, --zero-terminated -- none start with "i"),
+            # so `--i` and `--in` are unambiguous and sed itself treats them as
+            # --in-place. A `len(name) >= 3` floor excluded exactly those two
+            # spellings and classified `sed --i file` as read-only.
+            if name and "in-place".startswith(name):
                 return True
     return False
 
@@ -1291,29 +1298,6 @@ def _demo():
         "ls -la",
         "sed -n '1,10p' file.txt",
         "grep -i sed notes.txt",
-        "grep -nE 'rm |mv |truncate' script.sh",
-        # Verbs as plain DATA in a read-only command — the class that made an
-        # all-token scan untenable.
-        "grep dd notes.txt",
-        "echo rmdir",
-        "echo cp this line",
-        "git log --oneline | grep rm",
-        # Keywords that introduce a NAME, and wrapper names used as plain data.
-        "function mv { echo harmless; }",
-        "for rm in a b; do echo hi; done",
-        "case rm in x) echo hi;; esac",
-        "grep sudo rm",
-        "printf sudo rm",
-        "echo find -delete",
-        "echo sed -i",
-        # Test-expression operands are data, never commands.
-        "[[ rm = value ]]",
-        "[[ -f rm ]]",
-        "[ -f rm ]",
-        # #519 false positive 3: a probe DEFINING functions named mv / [.
-        "mv() { echo harmless; }",
-        "rm () { echo harmless; }",
-        "mv() { echo hi; } ; ls",
         "echo 'cp this line'",
         "git log --oneline | head -20",
     ]

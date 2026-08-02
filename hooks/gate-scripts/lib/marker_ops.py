@@ -150,7 +150,11 @@ def cmd_coverage(argv):
     except OSError:
         sys.stdout.write("unreadable")
         return 0
-    lines = [ln.strip() for ln in content.splitlines()
+    # str.splitlines() already removes the line separator; a further .strip()
+    # was ALSO removing leading/trailing whitespace from the matched line
+    # itself, so an indented marker was not recorded verbatim as documented
+    # (ADR 0031). Only the separator is removed here now.
+    lines = [ln for ln in content.splitlines()
              if _COVERAGE_LINE_START_RE.match(ln)]
     sys.stdout.write("\n".join(lines) if lines else "none")
     return 0

@@ -131,6 +131,12 @@ check "wrapper-hidden mv (nohup)" block "$(bash_decision "nohup mv a b")"
 check "leading assignment then rm" block "$(bash_decision "FOO=1 rm x")"
 check "sed -i in place" block "$(bash_decision "sed -i 's/a/b/' f")"
 check "sed -i.bak in place" block "$(bash_decision "sed -i.bak 's/a/b/' f")"
+# GNU getopt_long accepts any unambiguous abbreviation of a long option, and
+# no other GNU sed long option shares the "in-place" prefix -- so `--i` and
+# `--in` are exactly as file-modifying as the full `--in-place` spelling.
+check "sed --i in place (short abbreviation)" block "$(bash_decision "sed --i 's/a/b/' f")"
+check "sed --in in place (short abbreviation)" block "$(bash_decision "sed --in 's/a/b/' f")"
+check "sed --in-place=bak in place (long form)" block "$(bash_decision "sed --in-place=bak 's/a/b/' f")"
 check "tee" block "$(bash_decision "cat x | tee out.txt")"
 check "second segment writes" block "$(bash_decision "ls && rm x")"
 check "timeout wrapper hiding rm" block "$(bash_decision "timeout 5 rm x")"
@@ -1201,15 +1207,19 @@ fi
 # command names no protected path and no modification verb, so the Bash detector above
 # would be the ONLY thing in the way. Pin that the entry point stays absent: the gate's
 # detector is defence in depth here, never the sole defence.
-_forge_dir="$(mktemp -d)"
-if (cd "$_forge_dir" && mkdir -p .claude &&
-    ! python3 -I "$REPO_ROOT/hooks/gate-scripts/lib/audit_append.py" .claude 1 20 2>/dev/null &&
-    [ ! -e .claude/bypass-log.jsonl ]); then
-    ok "audit_append has no record-writing CLI (a forged event exits non-zero, writes nothing)"
+_forge_dir="$(mktemp -d)" || _forge_dir=""
+if [ -z "$_forge_dir" ] || [ ! -d "$_forge_dir" ]; then
+    no "audit_append has no record-writing CLI" "could not create a temp dir"
 else
-    no "audit_append has no record-writing CLI" "a standalone invocation minted an event"
+    if (cd "$_forge_dir" && mkdir -p .claude &&
+        ! python3 -I "$REPO_ROOT/hooks/gate-scripts/lib/audit_append.py" .claude 1 20 2>/dev/null &&
+        [ ! -e .claude/bypass-log.jsonl ]); then
+        ok "audit_append has no record-writing CLI (a forged event exits non-zero, writes nothing)"
+    else
+        no "audit_append has no record-writing CLI" "a standalone invocation minted an event"
+    fi
+    rm -rf "$_forge_dir"
 fi
-rm -rf "$_forge_dir"
 
 echo "── generated: the helper guard across combined spellings ──────────"
 # PROPERTY-STYLE COVERAGE, not one more hand-picked example. The guard has to hold across

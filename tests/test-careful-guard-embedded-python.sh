@@ -18,8 +18,10 @@ GUARD="hooks/gate-scripts/careful-guard.sh"
 
 pass=0 fail=0
 
-# Extract every `python3 ... -c '<block>'` payload and compile it.
-mapfile -t results < <(python3 - "$GUARD" <<'PY'
+# Extract every `python3 ... -c '<block>'` payload and compile it. The extractor
+# runs on its own line so its exit status is checked: a crash there would
+# otherwise read as "no findings", which is a false PASS.
+extract_out=$(python3 - "$GUARD" <<'PY'
 import re, sys
 
 src = open(sys.argv[1]).read()
@@ -44,7 +46,8 @@ for i, block in enumerate(blocks, 1):
         continue
     print(f"PASS block {i} compiles and is apostrophe-free")
 PY
-)
+) || { echo "FAIL extractor crashed"; echo; echo "passed=0 failed=1"; exit 1; }
+mapfile -t results <<<"$extract_out"
 
 for line in "${results[@]}"; do
   echo "$line"
@@ -57,8 +60,19 @@ payload=$(python3 -c '
 import json
 print(json.dumps({"permission_mode": "bypassPermissions", "tool_name": "Bash",
                   "tool_input": {"command": "rm -rf node_modules"}}))')
-if [[ "$("$GUARD" <<<"$payload")" == *'"permissionDecision":"ask"'* ]]; then
+# Check the exit status AND require the allow shape explicitly. This script does
+# not run under `set -e`, so a guard that died before printing anything would
+# leave guard_out empty — which matches no "ask" and would report a clean PASS,
+# the very false-PASS this file exists to prevent.
+guard_out=$("$GUARD" <<<"$payload"); guard_rc=$?
+if [[ $guard_rc -ne 0 ]]; then
+  echo "FAIL guard exited $guard_rc"
+  fail=$((fail+1))
+elif [[ "$guard_out" == *'"permissionDecision":"ask"'* ]]; then
   echo "FAIL scanner did not run — safe artifact warned (degraded grep path)"
+  fail=$((fail+1))
+elif [[ "$guard_out" != "{}" ]]; then
+  echo "FAIL unexpected guard output: ${guard_out:-<empty>}"
   fail=$((fail+1))
 else
   echo "PASS scanner ran — safe artifact cleared"

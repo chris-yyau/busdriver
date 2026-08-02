@@ -318,6 +318,11 @@ def temp_vars(chunk):
         for m in REBIND_EXPANSION.finditer(chunk):
             names.pop(m.group(1), None)
         for m in REBIND_BUILTIN.finditer(chunk):
+            # Chosen at runtime and therefore unreadable here: an expansion, a
+            # substitution, or a GLOB - bash expands `read d*` against filenames
+            # before running it, so a `docs` directory makes it `read docs`.
+            if any(ch in m.group(1) for ch in "$`*?["):
+                return {}
             for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", m.group(1)):
                 names.pop(word, None)
     for name in list(names):
@@ -411,50 +416,6 @@ def _is_redirect(tok):
             or tok.startswith("&>") or bool(DYN_FD.match(tok)))
 
 
-ASSIGN_BUILTINS = {"export", "declare", "local", "typeset", "readonly"}
-# The optional subscript is deliberate: bash expands `$cmd` as `${cmd[0]}`, so
-# `cmd[0]=truncate` binds the very name a later `"$cmd"` runs.
-LITERAL_ASSIGN = re.compile(
-    r"^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^]]*\])?=([^$`\s]*)$")
-# `$V`, `${V}`, and the parameter expansions that still yield V when V is set
-# (`${V:-echo}`, `${V:+x}`, `${V#p}`, ...). TEMP_TARGET deliberately stays
-# stricter: there an expansion can name a DIFFERENT path, not just a fallback.
-VAR_REF = re.compile(r"^\$(?:([A-Za-z_][A-Za-z0-9_]*)"
-                     r"|\{([A-Za-z_][A-Za-z0-9_]*)(?:[-+=?#%^,/:][^}]*)?\})$")
-
-
-def _ref_name(m):
-    return m.group(1) or m.group(2)
-
-
-def literal_bindings(chunk):
-    """name -> SET of basenames plainly assigned to it in this chunk.
-
-    A set, not the last value: `cmd=truncate; false && cmd=echo; "$cmd" ...`
-    still runs truncate, so a later assignment must not erase an earlier one.
-
-    Only the simple spelling `V=word`: enough to resolve `cmd=truncate; $cmd -s 0`,
-    which is otherwise an ordinary bypass. Names built by concatenation stay
-    unresolved and fall through - see the LIMITATIONS note below.
-    """
-    out = {}
-    for _op, seg in split_segments(chunk):
-        try:
-            toks = shlex.split(seg, posix=True)
-        except ValueError:
-            toks = seg.split()
-        # `export cmd=truncate` binds the name just as a bare prefix does.
-        while toks and toks[0] in ASSIGN_BUILTINS:
-            toks = toks[1:]
-        for tok in toks:
-            m = LITERAL_ASSIGN.match(tok)
-            if not m:
-                break
-            out.setdefault(m.group(1), set()).add(
-                m.group(2).rsplit("/", 1)[-1].lower())
-    return out
-
-
 def has_truncate(chunks):
     """True iff coreutils `truncate` appears as a COMMAND WORD.
 
@@ -471,7 +432,6 @@ def has_truncate(chunks):
     expose theirs. Same walk the rm scanner below uses, same reasons.
     """
     for chunk in chunks:
-        bound = literal_bindings(chunk)
         for _op, seg in split_segments(chunk):
             try:
                 toks = shlex.split(seg, posix=True)
@@ -491,9 +451,6 @@ def has_truncate(chunks):
                     skip_next = False
                     continue
                 word = tok.lstrip("({").rsplit("/", 1)[-1].lower()
-                ref = VAR_REF.match(tok)
-                if ref and "truncate" in bound.get(_ref_name(ref), ()) and cmd_pos:
-                    return True                  # `cmd=truncate; $cmd -s 0 f`
                 if word == "truncate" and cmd_pos:
                     return True
                 if _is_redirect(tok):
@@ -513,8 +470,6 @@ def has_truncate(chunks):
                     continue
                 if "=" in word and not word.startswith("-"):
                     continue                     # VAR=val prefix
-                if ref and bound.get(_ref_name(ref), set()) & WRAPPERS:
-                    word = "env"                 # `w=env; "$w" truncate ...`
                 if word in WRAPPERS:
                     # A wrapper hides the command word behind its own options AND
                     # THEIR ARGUMENTS (`sudo -u root`, `env -u FOO`, `timeout 5`,
@@ -536,9 +491,6 @@ def has_truncate(chunks):
                     for t in toks[j + 1:]:
                         if t.lstrip("({").rsplit("/", 1)[-1].lower() == "truncate":
                             return True
-                        tref = VAR_REF.match(t)
-                        if tref and "truncate" in bound.get(_ref_name(tref), ()):
-                            return True         # `cmd=truncate; sudo "$cmd" ...`
                         if (" " in t or "\t" in t) and has_truncate([t]):
                             return True
                     break
@@ -610,7 +562,15 @@ def unsafe(chunks, truncated):
 #     is out of scope by design.
 #   - ANSI-C quoted spellings of the command word (the dollar-single-quote form,
 #     e.g. rm spelled as dollar-quote-rm-quote). shlex yields a different token.
-# Both are exotic and, this guard being advisory (it prompts, never blocks),
+#   - a command word held in a VARIABLE, e.g. cmd=truncate then "$cmd" -s 0 f.
+#     Resolution for this WAS built and then removed deliberately: it means
+#     emulating bash assignment semantics (export/declare/typeset/readonly,
+#     stacked and interleaved, both option polarities, which options assign
+#     versus print), and every rung of that ladder produced a fresh adversarial
+#     finding while silencing none of the 237 measured prompts. Do not reopen it
+#     for the same reason #377 closed the raw-text backstop: the scanner reads
+#     command POSITION, not values.
+# All are exotic and, this guard being advisory (it prompts, never blocks),
 # non-blocking; the grep fallback below still catches many of them in the
 # python-absent path.
 

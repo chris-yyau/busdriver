@@ -179,6 +179,18 @@ check "select rebinds the name"     ask   'T=$(mktemp -d); select T in /etc; do 
 # shellcheck disable=SC2016
 check "for-loop rebinds the name"   ask   'T=$(mktemp -d); for T in /etc /usr; do rm -rf "$T"; done'
 # shellcheck disable=SC2016
+# The builtin operand can be an EXPANSION, choosing its target at runtime.
+# shellcheck disable=SC2016
+# shellcheck disable=SC2016
+# bash expands a GLOB against filenames before running the builtin, so with a
+# `docs` directory present `read d*` becomes `read docs`.
+# shellcheck disable=SC2016
+check "read with a glob name"       ask   'docs=$(mktemp -d); read d* <<< /etc; rm -rf "$docs"'
+# shellcheck disable=SC2016
+check "read with a backtick name"   ask   'T=$(mktemp -d); read "`printf T`" <<< /etc; rm -rf "$T"'
+# shellcheck disable=SC2016
+check "read with a computed name"   ask   'T=$(mktemp -d); N=T; read "$N" <<< /etc; rm -rf "$T"'
+# shellcheck disable=SC2016
 check "read rebinds the name"       ask   'T=$(mktemp -d); read T < paths.txt; rm -rf "$T"'
 # shellcheck disable=SC2016
 check "default-assign expansion"    ask   'T=$(mktemp -d); rm -rf "${T:=/etc}"'

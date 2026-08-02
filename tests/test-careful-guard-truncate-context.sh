@@ -123,31 +123,7 @@ check "redirect pair before command"     ask  '< /dev/null truncate -s 0 audit.l
 check "dynamic fd redirect"              ask  '{fd}>/tmp/log truncate -s 0 audit.log'
 check "dynamic fd, separated target"     ask  '{fd}> /tmp/log truncate -s 0 audit.log'
 check "combined &> redirect"             ask  '&>/tmp/log truncate -s 0 audit.log'
-# The command word can be a VARIABLE holding the name.
 # shellcheck disable=SC2016
-check "variable command name"            ask  'cmd=truncate; "$cmd" -s 0 audit.log'
-# shellcheck disable=SC2016
-check "braced variable command name"     ask  'cmd=/usr/bin/truncate; ${cmd} -s 0 audit.log'
-# ...but a variable holding something else must stay silent.
-# shellcheck disable=SC2016
-check "variable holding another cmd"     allow 'cmd=echo; "$cmd" truncate'
-# A later CONDITIONAL assignment must not erase the dangerous earlier one.
-# shellcheck disable=SC2016
-check "conflicting bindings"             ask  'cmd=truncate; false && cmd=echo; "$cmd" -s 0 audit.log'
-# ...and a wrapper must resolve the variable too.
-# shellcheck disable=SC2016
-check "wrapper plus variable name"       ask  'cmd=truncate; sudo "$cmd" -s 0 audit.log'
-# shellcheck disable=SC2016
-check "export binds the name too"        ask  'export cmd=truncate; "$cmd" -s 0 audit.log'
-# A default-value expansion still yields the variable when it is set.
-# shellcheck disable=SC2016
-check "default-value expansion"          ask  'cmd=truncate; "${cmd:-echo}" -s 0 audit.log'
-# A variable can hold the WRAPPER name rather than the command itself.
-# shellcheck disable=SC2016
-check "variable holding a wrapper"       ask  'w=env; "$w" truncate -s 0 audit.log'
-# bash expands $cmd as ${cmd[0]}, so an array-element write binds it too.
-# shellcheck disable=SC2016
-check "array element command name"       ask  'cmd[0]=truncate; "$cmd" -s 0 audit.log'
 check "control keyword then"             ask  'if true; then truncate -s 0 audit.log; fi'
 # The CONDITION of if/while/until is an executed command too — these run truncate.
 check "if condition"                     ask  'if truncate -s 0 audit.log; then :; fi'
@@ -171,6 +147,17 @@ echo "--- other launchers in the command slot (must warn) ---"
 check "setsid"                           ask  'setsid truncate -s 0 audit.log'
 check "flock"                            ask  'flock /tmp/l truncate -s 0 audit.log'
 check "unshare"                          ask  'unshare -r truncate -s 0 audit.log'
+
+# ACCEPTED LIMIT, pinned so the trade stays visible: a command word held in a
+# VARIABLE is not resolved. Detecting it means emulating bash assignment
+# semantics - `export`/`declare`/`typeset`/`readonly`, stacked and interleaved,
+# their option polarities, and which options assign versus print - and every
+# rung of that ladder produced a fresh bypass without silencing a single one of
+# the 237 measured prompts. This shape has never appeared in the log; the
+# scanner reads command POSITION, not values.
+echo "--- a command word held in a variable is NOT resolved (known limit) ---"
+# shellcheck disable=SC2016
+check "variable command name"            allow 'cmd=truncate; "$cmd" -s 0 audit.log'
 
 echo "--- bare operand, no quotes: command-word position is what decides ---"
 check "bare operand to grep"             allow 'grep -F truncate script.sh'

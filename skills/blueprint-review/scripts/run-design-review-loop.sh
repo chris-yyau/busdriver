@@ -835,8 +835,16 @@ with open(pending, "w") as f:
   # HARNESS BUDGET: the operator's BASH_MAX_TIMEOUT_MS must exceed the serial
   # worst case, which is a FORMULA, not a fixed number — it moves with the
   # oracle's configured cap:
-  #     max( reviewers(≤1200) + this reap's marginal add + droid rescue(≤1200),
-  #          ultraOracle.timeoutCapSeconds + 90 )
+  #     attach_preflight + max( reviewers(≤1200) + this reap's marginal add
+  #                             + droid rescue(≤1200),
+  #                             ultraOracle.timeoutCapSeconds + 90 )
+  # attach_preflight is NOT inside either term. In oracle ATTACH mode with a cold
+  # Chrome, ultra_oracle_consult runs scripts/ultra-oracle-attach-preflight.sh
+  # SYNCHRONOUSLY, and ULTRA_ORACLE_DEADLINE is only anchored AFTER dispatch
+  # returns — so the preflight elapses before the oracle's own budget starts
+  # counting and is invisible to both terms. Bounded but non-zero: the launch wait
+  # is LAUNCH_WAIT_SECONDS=15 plus Chrome teardown, so budget ~20-30s. Zero when
+  # Chrome is already warm or attach mode is off.
   # At the shipped oracle cap the left term binds (~3010s ⇒ ~3.0e6 ms); at the
   # documented oracle ceiling of 3600 the RIGHT term binds instead (3690s ⇒
   # ~3.7e6 ms). Size the harness budget from whichever term is larger for YOUR

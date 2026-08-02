@@ -203,10 +203,19 @@ Blueprint `BLUEPRINT_AUDITOR_TIMEOUT` default and hard clamp both move to
   **On a multi-contributor repo this belongs back at 600.**
 - **Requires operator harness budget.** `BASH_MAX_TIMEOUT_MS` must exceed the
   serial worst case, which is a formula rather than a constant:
-  `max(reviewers(≤1200) + this reap's marginal add + droid rescue(≤1200),
-  ultraOracle.timeoutCapSeconds + 90)`. At the shipped oracle cap the left term
-  binds (~3010s); at the documented 3600 ceiling the right term binds (3690s).
-  Set to 3600000 for this operator's `timeoutCapSeconds: 1800`.
+  `attach_preflight + max(reviewers(≤1200) + this reap's marginal add +
+  droid rescue(≤1200), ultraOracle.timeoutCapSeconds + 90)`. At the shipped
+  oracle cap the left term binds (~3010s); at the documented 3600 ceiling the
+  right term binds (3690s). Set to 3600000 for this operator's
+  `timeoutCapSeconds: 1800`.
+- **`attach_preflight` sits outside both terms** (raised independently by cubic
+  and Codex on #559). In oracle attach mode with a cold Chrome,
+  `ultra_oracle_consult` runs `scripts/ultra-oracle-attach-preflight.sh`
+  synchronously, and `ULTRA_ORACLE_DEADLINE` is anchored only *after* dispatch
+  returns — so that time elapses before the oracle's own budget starts counting
+  and neither term accounts for it. Bounded (`LAUNCH_WAIT_SECONDS=15` plus Chrome
+  teardown, so ~20-30s) and zero when Chrome is warm or attach mode is off, but it
+  is real headroom the earlier revision of this formula silently omitted.
 - The reap does **not** add a full 1800s to a round: `AUDITOR_DEADLINE` is
   anchored at dispatch (#506), T0 alongside the reviewers, so it adds only ~610s
   past a worst-case reviewer wait. Deriving the budget as

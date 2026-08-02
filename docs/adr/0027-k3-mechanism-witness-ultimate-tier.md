@@ -155,7 +155,7 @@ to `_AUD_TO + 10` ≤ **910s**. Two facts keep this from surprising the operator
 
 ---
 
-## Revision 2026-08-03 — blueprint clamp raised 600s → 1800s
+## Revision 2026-08-03 (+08:00) — blueprint clamp raised 600s → 1800s
 
 **Status:** Accepted (amends the "blueprint 600s" decision above; council 900s unchanged)
 

@@ -102,12 +102,11 @@ eq "$(cn_norm 12345678)" 900  "council 12345678 (>7 digits → length guard → 
 eq "$(cn_norm 0)"        900  "council 0 (→ default)"
 eq "$(cn_norm 9999999)"  900  "council 9999999 (DoS bound)"
 
-# Actual >64-bit overflow-sized digit strings must land on EXACTLY that source's
-# ceiling — bp 600 (env-supplied, so the untrusted bound), cn 900. Asserting an
-# exact value rather than a 1..max range is deliberate: a range accepts a
-# regression that normalizes the oversized input to any in-range garbage (42
-# would pass), which is precisely the 64-bit-wrap failure this guard exists to
-# catch.
+# Actual >64-bit overflow-sized digit strings must land on EXACTLY each
+# normalizer's ceiling — bp 1800, cn 900. Asserting an exact value rather than a
+# 1..max range is deliberate: a range accepts a regression that normalizes the
+# oversized input to any in-range garbage (42 would pass), which is precisely the
+# 64-bit-wrap failure this guard exists to catch.
 eq "$(bp_norm 999999999999999999999)" 1800 "bp_norm overflow-sized input → ceiling"
 eq "$(cn_norm 999999999999999999999)" 900 "cn_norm overflow-sized input → ceiling"
 

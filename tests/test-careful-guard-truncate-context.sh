@@ -79,8 +79,9 @@ check "truncate after a separator"       ask  'cd /tmp && truncate -s 0 audit.lo
 # it is the audit-log erasure shape #519 exists to block.
 check "env -S wrapped truncate"          ask  "env -S'truncate -s 0 .claude/bypass-log.jsonl' true"
 check "xargs-fed truncate"               ask  'echo log | xargs truncate -s 0'
-# Command-word position also misses sudo, an absolute path, and long options, so
-# the destructive FLAGS are matched independently of who occupies that slot.
+# A wrapper or an absolute path occupies the command slot, so the scanner
+# resolves the basename and scans past a known wrapper. Long options are
+# irrelevant to the match.
 check "sudo + long --size="              ask  'sudo truncate --size=0 audit.log'
 check "absolute path + long --size"      ask  '/usr/bin/truncate --size 0 audit.log'
 check "env wrapper + --reference"        ask  'env truncate --reference=empty audit.log'
@@ -140,6 +141,48 @@ check "find -exec dispatch"              ask  "find . -name '*.log' -exec trunca
 echo "--- constructs that close before a command word (must warn) ---"
 check "case pattern"                     ask  'case x in x) truncate -s 0 audit.log;; esac'
 check "function body"                    ask  'f(){ truncate -s 0 audit.log; }; f'
+# A standalone grouping token is ONLY punctuation, so the lstrip("({") that
+# normalises a command word empties it — it then matched nothing and consumed
+# the command slot. The bare-word rule this file replaced caught these as text,
+# so losing them was a REGRESSION, not a pre-existing limit.
+check "subshell group"                   ask  '( truncate -s 0 audit.log )'
+check "nested subshell"                  ask  '( ( truncate -s 0 audit.log ) )'
+check "subshell after a cd"              ask  '(cd /tmp; truncate -s 0 audit.log)'
+check "brace group, spaced"              ask  '{ truncate -s 0 audit.log; }'
+# bash allows a LEADING paren on a case pattern, so `(x)` is parenthesis-
+# balanced and a balance test misreads it as a command substitution.
+check "parenthesised case pattern"       ask  'case x in (x) truncate -s 0 audit.log;; esac'
+# CONTAINING a substitution is not being one: this is still a case pattern.
+# shellcheck disable=SC2016
+# A token may START with a substitution and still end in a case delimiter, so
+# the test is whether the token IS one, not whether it begins with one.
+# shellcheck disable=SC2016
+# An UNQUOTED substitution can expand to NOTHING, leaving the next token as the
+# command word — so it must preserve command position, not consume it.
+# shellcheck disable=SC2016
+# Quoted text spelling a bare opener collapses to an EMPTY substitution once
+# shlex drops the quotes; that must not read as a real one.
+# shellcheck disable=SC2016
+# shellcheck disable=SC2016
+check "quoted pattern with a body" ask 'case '"'"'$(x'"'"' in '"'"'$(x'"'"') truncate -s 0 audit.log;; esac'
+# shellcheck disable=SC2016
+check "quoted opener is not a substitution" ask 'case '"'"'$('"'"' in '"'"'$('"'"') truncate -s 0 audit.log;; esac'
+# shellcheck disable=SC2016
+check "empty substitution keeps position" ask '$(true) truncate -s 0 audit.log'
+# shlex drops quote provenance, so a LITERAL paren inside a substitution counts
+# the same as a syntactic one. The test is deliberately strict (exactly one
+# paren pair) and over-warns on anything more complex.
+# shellcheck disable=SC2016
+check "literal paren inside a substitution" ask 'case "(" in $(echo${IFS}'"'"'('"'"')) truncate -s 0 audit.log;; esac'
+# shellcheck disable=SC2016
+check "pattern that opens with a substitution" ask 'case "x(" in $(echo${IFS}x)\() truncate -s 0 audit.log;; esac'
+# shellcheck disable=SC2016
+check "case pattern with a substitution" ask 'case x in x$(true)) truncate -s 0 audit.log;; esac'
+# ACCEPTED OVER-WARN: shlex strips quote provenance, so a quoted `(` operand is
+# indistinguishable from grouping punctuation. Warning is the safe direction —
+# same trade as the wrapped-grep case pinned above.
+# shellcheck disable=SC2016
+check "quoted paren operand over-warns"  ask  'echo "(" truncate'
 check "macos caffeinate launcher"        ask  'caffeinate truncate -s 0 audit.log'
 check "coproc launcher"                  ask  'coproc truncate -s 0 audit.log'
 

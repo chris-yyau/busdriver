@@ -83,11 +83,10 @@ check "reassigned after mktemp"     ask   'T=$(mktemp -d); T=/etc; rm -rf "$T"'
 # the name disqualifies it.
 # shellcheck disable=SC2016
 check "assigned both ways"          ask   'T=/etc; T=$(mktemp -d); rm -rf "$T"'
-# The assignment is an ARGUMENT to echo, not a command prefix — it never runs.
-# shellcheck disable=SC2016
 # An assignment PREFIX to a command sets it only in that command environment.
 # shellcheck disable=SC2016
 check "assignment prefixes a command" ask 'T="$(mktemp -d)" true; rm -rf "$T"'
+# The assignment is an ARGUMENT to echo, not a command prefix — it never runs.
 # shellcheck disable=SC2016
 check "assignment inside a literal" ask   'echo "T=$(mktemp -d)"; rm -rf "$T"'
 # shellcheck disable=SC2016
@@ -106,6 +105,55 @@ check "second command in the RHS"   ask   'T=$(mktemp -d; echo /etc); rm -rf "$T
 check "nested expansion in the RHS" ask   'T=$(mktemp -d --tmpdir="$EVIL"); rm -rf "$T"'
 # shellcheck disable=SC2016
 check "copied into another name"    ask   'A=$(mktemp -d); B=$A; rm -rf "$B"'
+# `-u`/`--dry-run` PRINTS a candidate name without creating it, so another
+# process can occupy that path before the rm runs - it never establishes the
+# name is self-created.
+# shellcheck disable=SC2016
+check "mktemp -u is not a creation"  ask   'T=$(mktemp -u); rm -rf "$T"'
+# shellcheck disable=SC2016
+check "mktemp --dry-run"            ask   'T=$(mktemp --dry-run); rm -rf "$T"'
+# shellcheck disable=SC2016
+check "bundled short -qu"           ask   'T=$(mktemp -qu); rm -rf "$T"'
+# Bash strips quoting/escapes before mktemp reads its options, and a bundle can
+# carry an attached argument, so these are all just `-u` and a text match sees
+# none of them. GNU also accepts unambiguous long-option abbreviations.
+# shellcheck disable=SC2016
+check "escaped -\\u"                 ask   'T=$(mktemp -\u); rm -rf "$T"'
+# shellcheck disable=SC2016
+check "bundle with attached arg"    ask   'T=$(mktemp -up/tmp); rm -rf "$T"'
+# shellcheck disable=SC2016
+check "abbreviated --dr"            ask   'T=$(mktemp --dr); rm -rf "$T"'
+# ...but a -p argument that merely contains the letter u must stay silent.
+# shellcheck disable=SC2016
+check "-p path containing u"        allow 'T=$(mktemp -p /usr/local/tmp -d); rm -rf "$T"'
+# The check is INVERTED and fail-CLOSED: it proves the invocation CREATES.
+# A form this parser cannot read - here brace expansion, which bash resolves
+# to `-u -d` long after the scan - is refused rather than assumed safe.
+# shellcheck disable=SC2016
+check "brace-expanded options"      ask   'T=$(mktemp -{u,d} XXXXXX); rm -rf "$T"'
+# ...and an ATTACHED -p argument is the option argument, not more option
+# letters, so a `u` inside it must not read as `-u`.
+# shellcheck disable=SC2016
+check "attached -p argument"        allow 'T=$(mktemp -puser-tmp -d); rm -rf "$T"'
+# An OPERAND can smuggle an option through brace expansion too.
+# shellcheck disable=SC2016
+check "brace-expanded operand"      ask   'T=$(mktemp {,-u} XXXXXX); rm -rf "$T"'
+# --tmpdir takes an OPTIONAL argument that GNU requires be ATTACHED with `=`,
+# so a separate token after it is NOT its argument and must still be scanned.
+# shellcheck disable=SC2016
+check "--tmpdir does not eat -u"    ask   'T=$(mktemp --tmpdir -u); rm -rf "$T"'
+# ...but --suffix REQUIRES its argument and takes it as a separate token.
+# shellcheck disable=SC2016
+check "--suffix takes its argument" allow 'T=$(mktemp -d --suffix .bak); rm -rf "$T"'
+# The metacharacter refusal covers option ARGUMENTS too, not just operands.
+# shellcheck disable=SC2016
+check "brace inside an option arg"  ask   'T=$(mktemp -p {/tmp,-u} XXXXXX); rm -rf "$T"'
+# macOS `-t prefix` and GNU `-t` both preserve creation.
+# shellcheck disable=SC2016
+check "macos -t prefix"             allow 'T=$(mktemp -d -t guard); rm -rf "$T"'
+# `--` terminates options, so a template that merely LOOKS like one is an operand.
+# shellcheck disable=SC2016
+check "option terminator --"        allow 'T=$(mktemp -- -u.XXXXXX); rm -rf "$T"'
 
 echo "--- the assignment must actually reach the rm (must warn) ---"
 # ORDER matters: this rm runs against the INHERITED T, before any assignment.
@@ -178,16 +226,13 @@ check "printf -v into the name"     ask   'T=$(mktemp -d); printf -v T /etc; rm 
 check "select rebinds the name"     ask   'T=$(mktemp -d); select T in /etc; do rm -rf "$T"; break; done <<<1'
 # shellcheck disable=SC2016
 check "for-loop rebinds the name"   ask   'T=$(mktemp -d); for T in /etc /usr; do rm -rf "$T"; done'
-# shellcheck disable=SC2016
-# The builtin operand can be an EXPANSION, choosing its target at runtime.
-# shellcheck disable=SC2016
-# shellcheck disable=SC2016
 # bash expands a GLOB against filenames before running the builtin, so with a
 # `docs` directory present `read d*` becomes `read docs`.
 # shellcheck disable=SC2016
 check "read with a glob name"       ask   'docs=$(mktemp -d); read d* <<< /etc; rm -rf "$docs"'
 # shellcheck disable=SC2016
 check "read with a backtick name"   ask   'T=$(mktemp -d); read "`printf T`" <<< /etc; rm -rf "$T"'
+# The builtin operand can be an EXPANSION, choosing its target at runtime.
 # shellcheck disable=SC2016
 check "read with a computed name"   ask   'T=$(mktemp -d); N=T; read "$N" <<< /etc; rm -rf "$T"'
 # shellcheck disable=SC2016

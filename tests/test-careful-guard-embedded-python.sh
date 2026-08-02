@@ -30,7 +30,7 @@ src = open(sys.argv[1]).read()
 blocks = re.findall(r"python3(?:\s+-\w+)*\s+-c\s+'\n(.*?)\n'", src, re.S)
 if not blocks:
     print("FAIL no embedded python block found - has the quoting style changed?")
-    raise SystemExit
+    raise SystemExit(1)
 
 for i, block in enumerate(blocks, 1):
     if "'" in block:
@@ -60,6 +60,13 @@ payload=$(python3 -c '
 import json
 print(json.dumps({"permission_mode": "bypassPermissions", "tool_name": "Bash",
                   "tool_input": {"command": "rm -rf node_modules"}}))')
+if [[ -z "$payload" ]]; then
+  echo "FAIL could not build the guard payload"
+  fail=$((fail+1))
+  echo
+  echo "passed=$pass failed=$fail"
+  exit 1
+fi
 # Check the exit status AND require the allow shape explicitly. This script does
 # not run under `set -e`, so a guard that died before printing anything would
 # leave guard_out empty — which matches no "ask" and would report a clean PASS,

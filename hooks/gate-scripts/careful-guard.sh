@@ -216,6 +216,79 @@ ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
 SIMPLE_MKTEMP = re.compile(
     r"[\"]?(?:\$\(\s*" + MKTEMP_BIN + r"(?![\w.-])[^()`$\"\x27;&|]*\)"
     r"|`\s*" + MKTEMP_BIN + r"(?![\w.-])[^()`$\"\x27;&|]*`)[\"]?\s*$")
+# The carve-out may arm ONLY when the invocation PROVABLY creates the path.
+# `-u`/`--dry-run` print a name without creating it, so another process can take
+# that path before the `rm -rf` runs. Enumerating the no-create spellings lost:
+# quoting and escapes (`-\u`), attached bundles (`-up/tmp`), long-option
+# abbreviation (`--dr`), brace expansion (`-{u,d}`) - a ladder with no top.
+# So this is INVERTED and fail-CLOSED: list the options that keep the create
+# semantics, and refuse anything unrecognised, including a form this parser
+# cannot read. Parsed with shlex, never text-matched.
+SAFE_SHORT = set("dqt")                # -d directory, -q quiet, -t prefix
+ARG_SHORT = set("p")                   # -p DIR (attached or separate)
+SAFE_LONG = ("--directory", "--quiet", "--tmpdir", "--suffix")
+ALL_LONG = SAFE_LONG + ("--dry-run", "--help", "--version")
+# --suffix REQUIRES its argument and accepts it as a separate token; --tmpdir
+# takes an OPTIONAL one, which GNU requires be attached with `=`. Treating a
+# separate token as the argument of --tmpdir would skip it, and `--tmpdir -u`
+# would then hide the -u.
+ARG_LONG = ("--suffix",)
+
+
+def _mktemp_creates(rhs):
+    body = rhs.strip().strip(chr(34))
+    for pre in ("$(", chr(96)):
+        if body.startswith(pre):
+            body = body[len(pre):]
+            break
+    body = body.rstrip(chr(96)).rstrip(")")
+    try:
+        toks = shlex.split(body, posix=True)
+    except ValueError:
+        return False
+    expect_arg = False
+    end_of_options = False
+    for t in toks[1:]:
+        # EVERY token, arguments included: bash resolves brace expansion long
+        # after this scan, and `-p {/tmp,-u}` becomes `-p /tmp -u`. A token
+        # carrying shell metacharacters is not readable here, so refuse.
+        if any(ch in t for ch in "{}*?[]"):
+            return False
+        if expect_arg:
+            expect_arg = False
+            continue
+        if end_of_options:
+            continue                   # an operand, whatever it looks like
+        if t == "--":
+            end_of_options = True      # POSIX option terminator
+            continue
+        if t.startswith("--"):
+            name = t.split("=", 1)[0]
+            # GNU accepts an unambiguous abbreviation; an ambiguous one is an
+            # ERROR, so refuse it rather than guess which option was meant.
+            hits = [l for l in ALL_LONG if l.startswith(name)]
+            if len(hits) != 1 or hits[0] not in SAFE_LONG:
+                return False
+            if hits[0] in ARG_LONG and "=" not in t:
+                expect_arg = True
+            continue
+        if t.startswith("-") and len(t) > 1:
+            rest = t[1:]
+            i = 0
+            while i < len(rest):
+                ch = rest[i]
+                if ch in ARG_SHORT:
+                    if i == len(rest) - 1:
+                        expect_arg = True
+                    break              # whatever follows is its argument
+                if ch not in SAFE_SHORT:
+                    return False       # -u, a brace, anything unrecognised
+                i += 1
+            continue
+        # anything else is the TEMPLATE operand
+    return True
+
+
 # Routes that rebind a name WITHOUT a command-prefix assignment. The first is the
 # ${VAR:=default} expansion; the second is any word-binding builtin, whose
 # operands are read out and disqualified.
@@ -362,7 +435,7 @@ def temp_vars(chunk):
                 cut = rhs.find(sep)
                 if cut >= 0:
                     rhs = rhs[:cut]
-            if not SIMPLE_MKTEMP.match(rhs):
+            if not SIMPLE_MKTEMP.match(rhs) or not _mktemp_creates(rhs):
                 names.pop(name, None)
                 break
     return names
@@ -411,8 +484,12 @@ WRAPPERS = {"sudo", "doas", "su", "runuser", "env", "xargs", "nohup", "timeout",
 # `if`/`while`/`until` introduce a CONDITION, which is an executed command:
 # `if truncate -s 0 audit.log; then :; fi` runs truncate. They belong here with
 # `then`/`do`, not treated as command words in their own right.
+# `case`/`in`/`esac` belong here for the same reason if/then do: `in` introduces
+# a case PATTERN, and the token after that pattern is a command word. Relying on
+# the pattern token ending in `)` instead was fragile - a pattern that is (or
+# merely looks like) a command substitution does not present as a closer.
 CONTROL = {"if", "while", "until", "then", "do", "else", "elif", "!", "{", "(",
-           "&&", "||", ";", "|", "&", "eval", "coproc"}
+           "case", "in", "esac", "&&", "||", ";", "|", "&", "eval", "coproc"}
 # find/xargs style dispatch: the token AFTER these is a command word.
 DISPATCH = {"-exec", "-execdir", "-ok", "-okdir", "--exec"}
 
@@ -431,6 +508,31 @@ def _is_redirect(tok):
     """
     return (tok.lstrip("0123456789")[:1] in ("<", ">")
             or tok.startswith("&>") or bool(DYN_FD.match(tok)))
+
+
+def _whole_substitution(tok):
+    """True iff tok is ENTIRELY one `$(...)` - not merely starting with one.
+
+    Balance alone is not enough: `$(echo x)()` is balanced and starts with `$(`
+    yet its final `)` is a case delimiter. Track depth and require it to reach
+    zero exactly at the last character.
+    """
+    # Exactly one `(` (the leading one) and exactly one `)` (the last char).
+    # Depth-tracking is not enough: shlex has already dropped quote provenance,
+    # so a LITERAL paren inside the substitution counts the same as a syntactic
+    # one and can balance a case delimiter. Anything more complex is treated as
+    # a closer, which over-warns - the safe direction.
+    # A non-empty body is required: quoted TEXT spelling a bare opener collapses to the
+    # empty `$()` once shlex drops the quotes, and treating that as a real
+    # substitution would hand a case pattern the command position.
+    #
+    # KNOWN LIMIT, same family as the ANSI-C quoting one below: shlex removes
+    # quote provenance entirely, so quoted text spelling a NON-empty
+    # substitution is indistinguishable from the real thing. The
+    # alternative - treating every such token as a closer - over-warns on the
+    # ordinary `echo "$(cmd)" ...` operand this change exists to keep silent.
+    return (tok.startswith("$(") and tok.endswith(")") and len(tok) > 3
+            and tok.count("(") == 1 and tok.count(")") == 1)
 
 
 def has_truncate(chunks):
@@ -482,7 +584,43 @@ def has_truncate(chunks):
                 # case pattern (`x) truncate`), a function header (`f(){
                 # truncate`), a group (`{ truncate`). Catching the shape rather
                 # than naming each keyword also covers `esac`/`;;` spellings.
-                if tok.endswith(("{", ")", ";;")):
+                #
+                # A trailing `)` alone is ambiguous: `$(printf x)` (a completed
+                # command substitution, already ONE token after shlex) also ends
+                # in `)`, but is not a construct closer - the token that follows
+                # it is an ordinary OPERAND, not a command word. A genuine closer
+                # like `x)` carries an unmatched `)` (no earlier `(` in the same
+                # token); a self-contained substitution is parenthesis-balanced.
+                #
+                # A token that is ONLY grouping punctuation is checked FIRST and
+                # by identity: `word` is computed with lstrip("({"), which turns
+                # a standalone `(` into the EMPTY string - matching nothing above
+                # and then falling through to consume the command slot. That is
+                # how `( truncate -s 0 f )` escaped: a REGRESSION against the
+                # bare-word rule this file replaced, which caught it as text.
+                if tok in ("(", ")", "{", "}", ";;"):
+                    cmd_pos = True
+                    continue
+                # A trailing `)` closes a construct UNLESS the token is a
+                # command SUBSTITUTION, which is self-contained and yields an
+                # OPERAND. Parenthesis BALANCE cannot tell them apart: bash
+                # allows a leading `(` on a case pattern, so `(x)` is balanced
+                # and is still a closer. Presence of a substitution opener is
+                # what actually distinguishes them.
+                # A trailing `)` closes a construct UNLESS the whole token IS
+                # a complete command substitution, which yields an OPERAND.
+                # Merely CONTAINING one is not enough - `x$(true))` is a case
+                # pattern - and parenthesis balance alone is not either, since
+                # bash allows a leading `(` on a pattern.
+                # A whole substitution leaves the position UNCHANGED rather
+                # than consuming it: unquoted, it can expand to nothing at all,
+                # and then the NEXT token is the command word - `$(true)
+                # truncate -s 0 f` really does run truncate. At an operand
+                # position it is simply an operand, so preserving is right in
+                # both directions.
+                if _whole_substitution(tok):
+                    continue
+                if tok.endswith(("{", ";;", ")")):
                     cmd_pos = True
                     continue
                 if "=" in word and not word.startswith("-"):

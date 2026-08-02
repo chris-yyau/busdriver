@@ -1,3 +1,10 @@
+## [1.100.13](https://github.com/chris-yyau/busdriver/compare/v1.100.12...v1.100.13) (2026-08-02)
+
+
+### Bug Fixes
+
+* **gate:** lease the design-review skip, classify file-mods by token ([#519](https://github.com/chris-yyau/busdriver/issues/519)) ([#548](https://github.com/chris-yyau/busdriver/issues/548)) ([fbb64bb](https://github.com/chris-yyau/busdriver/commit/fbb64bb52fe89f6a66773b0e59c0d984084f6b9c)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325) [#325](https://github.com/chris-yyau/busdriver/issues/325)
+
 ## [1.100.12](https://github.com/chris-yyau/busdriver/compare/v1.100.11...v1.100.12) (2026-08-01)
 
 

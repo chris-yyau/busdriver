@@ -117,7 +117,26 @@ if ! command -v python3 &>/dev/null; then
 fi
 
 # ── Read stdin once (shared by marker protection and design review) ───
-INPUT=$(cat 2>/dev/null || true)
+# BOUNDED. `INPUT=$(cat)` read the whole stream before any ceiling could look at it, and
+# then command substitution stripped every trailing newline -- so a small valid object
+# followed by an arbitrarily large newline run was READ in full and MEASURED as just the
+# object. The ceilings below all sit downstream of that read, which made them guards over
+# work already paid for; a large enough suffix re-creates the very timeout fail-open they
+# exist to close (a timeout kills this hook with NO decision on stdout, which the harness
+# reads as ALLOW). Measured: 256MB of trailing newlines cost 1.92s and reported 63 bytes.
+#
+# One byte past the HARD cap is all that ever needs reading -- anything longer is refused
+# by that cap regardless of tool, so reading further can only cost time. A payload that
+# fills the buffer is therefore over the hard cap by construction and blocks below.
+#
+# `-n`, not `-N`: -N arrived in bash 4.1 and this script runs under `env bash`, which on
+# macOS resolves to /bin/bash 3.2 whenever PATH is stripped -- and an unsupported option
+# would leave INPUT empty, which the next line turns into exit 0. That is a fail-OPEN in
+# the one place that must not have one. `-d ''` makes NUL the delimiter and JSON carries
+# no NUL, so -n stops only on the byte count or EOF. Verified identical on 3.2 and 5.3.
+# LC_ALL=C so the count is bytes, matching ${#INPUT} below.
+INPUT=""
+LC_ALL=C IFS= read -r -d '' -n 8388609 INPUT 2>/dev/null || true
 [ -z "$INPUT" ] && exit 0
 
 # ── Oversized Bash payload: block without parsing ─────────────────────
@@ -721,6 +740,44 @@ _helper_budget = [0]
 # ever naming it, and `-m` was on the list of flags whose operand gets skipped.
 _MUTATING_MODULES = tuple(h[:-3] for h in _MUTATING_HELPERS)
 
+# Modules that CONSUME a following path as data rather than executing it, keyed by the
+# first dotted component. Deliberately an allowlist and deliberately short: the inverse
+# list (modules that RUN their argument -- cProfile, profile, pdb, trace, timeit, runpy,
+# ...) fails OPEN on the one nobody enumerated, and stdlib gains modules. Anything absent
+# here is assumed to execute what follows, so an unlisted read-only module costs a false
+# block, not a bypass. Add to this list when one shows up; never add to its inverse.
+_READONLY_MODULES = frozenset((
+    "json",        # json.tool pretty-prints its operand
+    "tokenize", "ast", "dis", "pydoc", "pyclbr", "inspect",
+    "py_compile", "compileall",   # compile to bytecode; they do not run module level
+    "base64", "gzip", "zipfile", "tarfile", "hashlib", "mimetypes",
+))
+
+# Isolated-mode flags. `-I` implies `-P` and `-E`; `-P` alone is enough for the question
+# asked below, since it is the one that drops the CWD from sys.path.
+_ISOLATED_RE = re.compile(r"^-[A-Za-z]*[IP]")
+
+
+def _readonly_module_trusted(mod, words):
+    """Is the READ-ONLY reputation of this -m module actually trustworthy here?
+
+    The name alone is not evidence. For -m, CPython puts the CURRENT DIRECTORY on
+    sys.path, and this gate runs with its CWD inside the repository it is gating -- so a
+    repo-root `json/` package shadows the stdlib and `python3 -m json.tool <helper>`
+    executes whatever the repo says json.tool is. PYTHONPATH does the same from the
+    environment. Trusting the spelling is the exact shape ADR 0016 / #325 rejected:
+    consent authenticated by content that the gated party controls.
+
+    So the allowlist counts only when the interpreter runs ISOLATED, which is what
+    actually removes the CWD -- and, for -I, the environment -- from the module search
+    path. A bare `python3 -m json.tool <helper>` is now treated as unknown and scanned,
+    which costs a false block on a genuine read. That is recoverable through the skip
+    lease; the alternative is not.
+    """
+    if _bn(mod).split(".")[0] not in _READONLY_MODULES:
+        return False
+    return any(_ISOLATED_RE.match(t) for t in words)
+
 # Sentinel for a scan that was ABANDONED rather than completed. Not a helper name: it
 # means the walk ran out of budget or the command was too large to walk, so this file
 # cannot say whether a helper runs. The caller blocks on it, through its OWN action so
@@ -1257,6 +1314,46 @@ def _helper_invoked(cmd, _depth=0, _full=None):
                     # argv for the program it already chose. Walking on read the next
                     # operand as a second module or as a script, so `python3 -m json.tool
                     # lease_slot.py` -- which only READS the helper -- was blocked.
+                    #
+                    # But stopping OUTRIGHT was a fail-open: several stdlib modules take a
+                    # SCRIPT PATH and run it. `python3 -m cProfile <helper>.py .claude 20
+                    # 0 3600` executes the helper -- claiming a real lease slot and
+                    # minting a skip-review-consumed event -- while this walk classified
+                    # only `cProfile` and allowed it. Confirmed for cProfile, profile,
+                    # pdb, trace, timeit and runpy, which is already too many spellings to
+                    # chase one at a time.
+                    #
+                    # So the question is INVERTED, the way it is everywhere else in this
+                    # file: an executes-its-argument list fails OPEN on the module nobody
+                    # thought of, while a READS-ONLY list fails CLOSED on it. Only the
+                    # handful of modules that provably just read their operand let the
+                    # walk stop; for anything else the remaining words are still searched
+                    # for a protected helper. The cost of being wrong is a false block on
+                    # an unlisted read-only module, which is the safe direction and is
+                    # cleared by adding it to the list.
+                    # Both spellings of "the helper", because a runner module accepts
+                    # both. _glob_helper resolves a FILE operand, including the expanded
+                    # forms `lease_slo[t].py` and `lease_slot*.py` -- an equality test on
+                    # the literal spelling never matches those while the command still
+                    # runs the helper, and the direct-script path below already resolves
+                    # operands this way. _module_helper resolves a MODULE operand:
+                    # `python3 -m cProfile -m lease_slot` hands cProfile its OWN -m, which
+                    # runs the helper as __main__ without the name ever carrying `.py`.
+                    #
+                    # EVERY later word is scanned, with no stop. A stop at the first `.py`
+                    # operand was tried, to spare the one false positive where the helper
+                    # is merely argv to another profiled script -- and it was a bad trade:
+                    # an option operand can itself end in `.py`, so `-o out.py <helper>`
+                    # broke at out.py while cProfile still executed the helper. That
+                    # exchanged a false BLOCK for a fail-OPEN. Any narrowing here needs
+                    # per-option arity, the table this file refuses everywhere because it
+                    # fails open wherever it is wrong. The residual false positive is
+                    # deliberate and recoverable through the skip lease.
+                    if w[1 + k] == "m" and not _readonly_module_trusted(mod, words):
+                        for later in words[j + 1:]:
+                            _g = _glob_helper(later) or _module_helper(later)
+                            if _g:
+                                return _g
                     break
                 j += 1 if tail else 2
                 continue

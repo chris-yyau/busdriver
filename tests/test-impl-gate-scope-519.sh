@@ -649,8 +649,21 @@ check "an escaped interpreter name is blocked" block \
 # module and not a script. Walking past them blocked ordinary READS of the helper.
 check "argv after -c that names the helper stays allowed" allow \
     "$(bash_decision "python3 -c 'pass' -m lease_slot")"
-check "the helper as a -m json.tool operand stays allowed" allow \
+# TIGHTENED. This previously asserted `allow`, on the reasoning that json.tool only reads
+# its operand. The module NAME is not evidence of that: for -m, CPython puts the current
+# directory on sys.path, and this gate runs with its CWD inside the repo it is gating, so
+# a repo-root `json/` package makes json.tool whatever the repo says it is -- no
+# PYTHONPATH required. Consent authenticated by content the gated party controls is the
+# shape ADR 0016 / #325 rejects. The read-only allowlist now counts only under isolated
+# mode, which is what actually drops the CWD from the search path.
+check "a bare -m json.tool naming the helper is blocked (name is not evidence)" block \
     "$(bash_decision 'python3 -m json.tool hooks/gate-scripts/lib/lease_slot.py')"
+check "the same read under isolated mode is allowed" allow \
+    "$(bash_decision 'python3 -I -m json.tool hooks/gate-scripts/lib/lease_slot.py')"
+check "-P alone is enough, since it is the flag that drops CWD" allow \
+    "$(bash_decision 'python3 -P -m json.tool hooks/gate-scripts/lib/lease_slot.py')"
+check "a PYTHONPATH-shadowed read-only module is blocked" block \
+    "$(bash_decision 'PYTHONPATH=/tmp/evil python3 -m json.tool hooks/gate-scripts/lib/lease_slot.py')"
 check "a script after -- is still resolved" block \
     "$(bash_decision 'python3 -- hooks/gate-scripts/lib/lease_slot.py .claude 999 0 3600')"
 # ── generated: the -m module shape across cluster x binding x operand ─
@@ -1512,6 +1525,212 @@ if [ -e "$WORK/PWNED" ]; then
 else
     ok "the gate does not import a repo-root json.py (isolated mode)"
 fi
+
+# ── Three fail-opens found by the PR-mode deep review of this branch ────────
+
+# 1. A redirect-only write, nested past the recursion cap. The cap degrades to
+# _regex_fallback, which is VERB patterns only -- so it cannot see a redirect, and the
+# tokenized pass that WOULD have run _writes_via_redirect never happens. The caller
+# strips single-quoted text before its own redirect check (so a literal `jq .x > 0` is
+# not a write), which is exactly where a payload lives. Both halves of the verdict have
+# to survive the cap, not just the verb half.
+#
+# Quoted with shlex.quote, and each level is syntax-checked with `bash -n`: a repr-style
+# nesting is NOT valid shell (`\'` inside single quotes), and an invalid command proves
+# nothing because it takes the unparseable path instead of the one under test.
+# Driven over every WRITE spelling, not just the spaced one. A redirection needs no
+# whitespace in front of it (`printf x>f`), `<>` opens for reading AND writing despite
+# starting with `<`, and `>|` overrides noclobber -- the first regex here required a
+# leading delimiter and omitted `<>`, so three valid writes walked through it.
+# Asserted against cmdword DIRECTLY, not through the gate, and that is load-bearing. The
+# gate carries its own fail-closed depth cap ABOVE this one: at four nested `sh -c` layers
+# it blocks every command, including `grep -n TODO src/impl.py`, which contains no
+# redirection at all. Verified identical before and after this change, so it is not a
+# behaviour this branch introduced -- but it means a GATE-level assertion at the depths
+# this fix targets passes no matter what the regex does. Testing the blunter layer would
+# have certified nothing, in both directions at once.
+#
+# Same reason the suite already reaches into cmdword for the FILE_MOD_PATTERNS parity
+# check: the property under test lives there.
+_NEST_OUT="$(python3 - <<'PYEOF' 2>&1
+import shlex, subprocess, sys
+sys.path.insert(0, "hooks/gate-scripts/lib")
+import cmdword
+
+# A redirection needs no whitespace in front of it, `<>` opens for reading AND writing
+# despite starting with `<`, and `>|` overrides noclobber. The first regex here required
+# a leading delimiter and omitted `<>`, so three valid writes walked through it.
+WRITES = ['printf x > src/impl.py', 'printf x>src/impl.py', 'printf x>>src/impl.py',
+          'printf x 1<>src/impl.py', 'printf x >|src/impl.py', 'printf x 2>src/impl.py',
+          # `>&word` creates a FILE whenever the target is not a number or `-`. Both the
+          # raw depth-cap pattern and the token-level _writes_via_redirect decide this by
+          # the TARGET, because punctuation_chars tokenization gives `>&2` and `>& out`
+          # the same two-token shape.
+          'printf x >&src/impl.py', 'printf x >& src/impl.py', 'printf x &>src/impl.py']
+# A descriptor DUPLICATION is not a write. Without these the rule above is satisfiable by
+# a regex that blocks every `>`, turning the depth path into a blanket block wearing a
+# redirect test.
+#
+# NOT listed: a `/dev/null` target. The token path exempts it, the raw depth-cap path
+# deliberately does not (past the cap there are no exemptions to honor), so the two
+# disagree there BY DESIGN. It is unobservable through the gate, which blocks every
+# command at four nested layers regardless -- but asserting it here would be asserting a
+# disagreement rather than a property.
+NOT_WRITES = ['npm test 2>&1', 'echo hi >&2', 'cat < in.txt', 'grep -n TODO src/impl.py',
+              'printf x 2>&-', 'printf x >&2', 'printf x 1>&2', 'ls -la']
+
+bad = []
+for depth in range(1, 7):
+    for inner, want in [(c, True) for c in WRITES] + [(c, False) for c in NOT_WRITES]:
+        cmd = inner
+        for _ in range(depth):
+            cmd = "sh -c " + shlex.quote(cmd)
+        # A repr-style nesting is NOT valid shell, and an invalid command takes the
+        # unparseable path instead of the one under test -- so each fixture is checked.
+        if subprocess.run(["bash", "-n", "-c", cmd], capture_output=True).returncode:
+            bad.append("depth %d fixture is not valid shell: %s" % (depth, inner))
+            continue
+        if cmdword.is_file_mod(cmd) != want:
+            bad.append("depth %d %s: %s" % (depth, "allowed" if want else "blocked", inner))
+print("\n".join(bad) if bad else "CLEAN")
+PYEOF
+)"
+if [ "$_NEST_OUT" = "CLEAN" ]; then
+    ok "every write spelling blocks past the cap, and no descriptor dup is read as one"
+else
+    no "nested redirect classification" "$(printf '%s' "$_NEST_OUT" | tr '\n' ';')"
+fi
+
+# The depth-cap redirect pattern is checked against BASH ITSELF rather than against a list
+# someone maintained by hand. Each spelling runs in a throwaway directory and the question
+# asked is the only one that matters -- did a file appear? -- then compared with the
+# pattern's verdict. Three successive rounds of review found a missing spelling in this
+# one regex (attached `x>f`, then `<>`, then the legacy `>&f`, which bash treats as a
+# WRITE whenever the target is not a number or `-`), which is exactly the signal that a
+# hand-maintained list is the wrong instrument. An oracle cannot be short a case that bash
+# supports, and it fails the moment the two disagree in EITHER direction.
+_ORACLE_OUT="$(python3 - <<'PYEOF' 2>&1
+import os, subprocess, sys, tempfile
+sys.path.insert(0, "hooks/gate-scripts/lib")
+import cmdword
+
+SPELLINGS = [
+    "printf x > T", "printf x >T", "printf x >> T", "printf x >>T",
+    "printf x >| T", "printf x >|T", "printf x 2> T", "printf x 2>T",
+    "printf x 1>> T", "printf x &> T", "printf x &>T", "printf x &>> T",
+    "printf x >& T", "printf x >&T", "printf x 1>& T",
+    "printf x <> T", "printf x 1<> T", "printf x 1<>T",
+    "printf x >&2", "printf x >& 2", "printf x 2>&1", "printf x 1>&2",
+    "printf x 2>&-", "printf x >&-", "printf x < T", "printf x <T",
+    "printf x", "npm test 2>&1", "grep -n TODO T",
+]
+bad = []
+for s in SPELLINGS:
+    d = tempfile.mkdtemp()
+    cmd = s.replace("T", "target.txt")
+    subprocess.run(["bash", "-c", cmd], cwd=d, capture_output=True)
+    creates = os.path.exists(os.path.join(d, "target.txt"))
+    if bool(cmdword._RAW_WRITE_REDIR_RE.search(cmd)) != creates:
+        bad.append("%s: bash_creates=%s regex=%s" % (s, creates, not creates))
+print("\n".join(bad) if bad else "CLEAN")
+PYEOF
+)"
+if [ "$_ORACLE_OUT" = "CLEAN" ]; then
+    ok "the depth-cap redirect pattern agrees with bash on every spelling (29 forms)"
+else
+    no "redirect pattern vs bash" "$(printf '%s' "$_ORACLE_OUT" | tr '\n' ';')"
+fi
+
+# 2. The pre-parse size ceiling measured INPUT AFTER `$(cat)` had read the whole stream
+# and command substitution had stripped every trailing newline -- so a small valid object
+# followed by a large newline run was read in full and measured as only the object. Every
+# ceiling sat downstream of that read, guarding work already paid for.
+#
+# The COMMAND here is deliberately innocuous. A payload carrying `rm -rf src` blocks
+# either way -- on the classifier rather than the size -- so it cannot tell the versions
+# apart and would certify nothing. With `ls -la`, the old gate measures 63 bytes and
+# ALLOWS, while an honest measurement puts the stream past the Bash ceiling and refuses
+# it. Verified against the pre-fix gate, which allows both sizes below.
+#
+# Asserted on the VERDICT, not on elapsed time: the wall clock here is dominated by the
+# producer generating the suffix, so a timing threshold separated the two versions by
+# only 0.3s on this machine and would invert on another.
+for _mb in 1 16; do
+    _SUFFIX_OUT="$(python3 -c '
+import sys
+sys.stdout.write("{\"tool_name\":\"Bash\",\"cwd\":\"" + sys.argv[1] +
+                 "\",\"tool_input\":{\"command\":\"ls -la\"}}")
+try:
+    sys.stdout.write("\n" * (int(sys.argv[2]) * 1024 * 1024))
+    sys.stdout.flush()
+except BrokenPipeError:
+    pass          # the gate stopped reading early, which is the point
+' "$WORK" "$_mb" 2>/dev/null | (cd "$WORK" && bash "$GATE") 2>/dev/null)"
+    case "$_SUFFIX_OUT" in
+        *'too large'*) ok "a ${_mb}MB trailing suffix is measured and refused, not read past" ;;
+        *) no "trailing-suffix measurement (${_mb}MB)" \
+              "the stream was measured as just its leading object" ;;
+    esac
+done
+
+# 3. `python3 -m <mod> <helper>` -- the walk stopped at the module and never looked at the
+# operand, so any stdlib module that RUNS a script path executed the protected helper
+# while the gate classified only the module name. The list of such modules is exactly the
+# kind that fails OPEN on the one nobody enumerated, so the test drives the fail-closed
+# direction: an UNKNOWN module must block.
+for _m in cProfile profile pdb trace timeit runpy coverage totally_unknown_module; do
+    check "python3 -m $_m running the helper is blocked" block \
+        "$(bash_decision "python3 -m $_m hooks/gate-scripts/lib/lease_slot.py .claude 20 0 3600")"
+done
+# ...and the read-only modules the allowlist exists to protect stay allowed UNDER
+# ISOLATED MODE, or the fix above is just a blanket block wearing a list. Both halves are
+# asserted: bare blocks (the module name can be shadowed from the CWD), isolated allows.
+for _m in json.tool tokenize ast dis py_compile; do
+    check "python3 -I -m $_m only READING the helper stays allowed" allow \
+        "$(bash_decision "python3 -I -m $_m hooks/gate-scripts/lib/lease_slot.py")"
+    check "the same module WITHOUT isolation is not trusted" block \
+        "$(bash_decision "python3 -m $_m hooks/gate-scripts/lib/lease_slot.py")"
+done
+# The operand is matched as a GLOB, because the shell expands it before python sees it.
+# An exact-basename test never matches these spellings while the command still runs the
+# helper -- the direct-script path already resolved operands this way, so an equality
+# test here would have been a second, weaker matcher for the same question.
+for _g in 'lease_slo[t].py' 'lease_slot*.py' 'lease_slo?.py' 'audit_appen[d].py'; do
+    check "a glob-spelled helper behind -m is blocked ($_g)" block \
+        "$(bash_decision "python3 -m cProfile hooks/gate-scripts/lib/$_g .claude 20 0 3600")"
+done
+check "a glob matching no helper stays allowed" allow \
+    "$(bash_decision "python3 -m cProfile scripts/other*.py")"
+check "a glob under an ISOLATED read-only module stays allowed" allow \
+    "$(bash_decision "python3 -I -m json.tool hooks/gate-scripts/lib/lease_slo[t].py")"
+# A runner module accepts its OWN -m, so the helper can be named as a MODULE and never
+# carry a `.py` for the filename matcher to find.
+check "a runner module re-dispatching -m to the helper is blocked" block \
+    "$(bash_decision "PYTHONPATH=hooks/gate-scripts/lib python3 -m cProfile -m lease_slot .claude 20 0 3600")"
+check "the same shape via pdb and audit_append is blocked" block \
+    "$(bash_decision "PYTHONPATH=hooks/gate-scripts/lib python3 -m pdb -m audit_append")"
+check "a runner module re-dispatching -m elsewhere stays allowed" allow \
+    "$(bash_decision "python3 -m cProfile -m json.tool foo.json")"
+# A runner takes ONE target and passes the rest through as argv, so the scan stops at the
+# first script it would execute. Without that stop the helper was blocked while being mere
+# data. The stop must not be reachable by an option OPERAND, or `-o out.prof <helper>`
+# walks free -- which is why it keys on the `.py` suffix rather than on "first word after
+# the module", and why both shapes are pinned here.
+# The helper merely passed as ARGV to another profiled script is a KNOWN false block, and
+# a deliberate one. Stopping the scan at the first `.py` operand would spare it, and was
+# tried -- but an option operand can itself end in `.py`, so `-o out.py <helper>` then
+# broke at out.py while cProfile still executed the helper. That trades a false block for
+# a fail-OPEN. Any narrowing needs per-option arity, the table this file refuses because
+# it fails open wherever it is wrong. Pinned as CURRENT behaviour so that changing it
+# trips this line deliberately.
+check "the helper as ARGV to another script over-blocks (deliberate)" block \
+    "$(bash_decision "python3 -m cProfile safe.py hooks/gate-scripts/lib/lease_slot.py")"
+check "the helper BEHIND an option operand is still blocked" block \
+    "$(bash_decision "python3 -m cProfile -o out.prof hooks/gate-scripts/lib/lease_slot.py")"
+check "...including when that operand itself ends in .py" block \
+    "$(bash_decision "python3 -m cProfile -o out.py hooks/gate-scripts/lib/lease_slot.py")"
+check "the helper as the profiled script itself is still blocked" block \
+    "$(bash_decision "python3 -m pdb hooks/gate-scripts/lib/lease_slot.py")"
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -304,12 +304,56 @@ _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 # Every COMPLETE redirection operator, longest-first so `<<<` is not read as a bare `<`
 # (which left the here-string WORD in command position). KEEP IN STEP WITH the gate.
 _REDIR_RE = re.compile(r"^(?:[0-9]+|&)?(?:<<<|<<-?|<>|<&|>>|>\||>&|<|>)")
+
+# Raw-text twin of _WRITE_REDIR_RE, for the ONE path that has no tokens to test: the
+# depth cap. Matches a WRITE redirection with a target -- `>f`, `>> f`, `2>f`, `&>f`,
+# `>|f`, `1<>f` -- and not `>&2` or `2>&1`, which duplicate a descriptor rather than
+# naming a file, nor a bare `<` read.
+#
+# Deliberately NOT anchored to a preceding space or control character. A redirection
+# needs no whitespace in front of it: `printf x>src/impl.py` and `printf x 1<>src/impl.py`
+# are both ordinary shell, and requiring a leading delimiter let exactly those spellings
+# through. `<>` opens the target for READING AND WRITING, so it belongs here despite
+# starting with `<`.
+#
+# Applied only at depth, where there are no exemptions to honor and four nested executed
+# strings are already not honest shape -- so the blunt reading is the right one, and an
+# incidental `->` inside a payload costing a block is the safe direction.
+#
+# `>&word` is the trap, and it is why this is spelled as explicit alternatives rather than
+# one clever pattern: bash treats `>&` as descriptor duplication ONLY when the target is a
+# number or `-`. `printf x >&out` creates a file called out, exactly like `&>out`.
+# Excluding every `>&` form as a dup therefore lost three real writes. Verified against
+# bash itself -- tests/test-impl-gate-scope-519.sh runs each spelling in a sandbox and
+# compares "did a file appear" with this pattern, so the two cannot drift apart silently.
+_RAW_WRITE_REDIR_RE = re.compile(
+    r"(?:"
+    r"[0-9]*>{1,2}\|?(?![&>])\s*[^\s;&|()<>]"          # > f   >> f   >| f   2> f
+    r"|&>{1,2}\s*[^\s;&|()<>]"                          # &> f  &>> f
+    # `>& f`, but not `>&2` / `>&-`. The "is a descriptor" lookahead must count QUOTE AND
+    # BACKSLASH as a boundary, because this pattern runs on the quote-SQUEEZED variants:
+    # stripping the quoting from a deeply nested payload leaves `2>&1` butted against the
+    # escaping debris, and without these characters in the class the `1` read as the first
+    # letter of a filename. Only reachable past the depth cap, so it cost a false BLOCK
+    # rather than a miss -- but a rule that reports a descriptor dup as a write is wrong in
+    # the direction that erodes trust in the gate.
+    r"|[0-9]*>&\s*(?!-?[0-9]*(?:[\s;&|()\\'\"]|$))[^\s;&|()<>]"
+    r"|[0-9]*<>\s*[^\s;&|()<>]"                         # <> f  1<> f (opens for WRITING too)
+    r")")
 # A WRITE redirection, with the target attached or in the next token. The `(?!&)` keeps
 # fd duplications (`2>&1`, `>&2`) out: those redirect a stream, they do not open a file.
 # `<>` opens for READING AND WRITING and creates the file if absent, so it belongs here
 # even though it starts like a read: `exec 3<>src/impl.py; printf PWN >&3` writes through
 # a descriptor, and the `>&3` half is indistinguishable from an ordinary fd dup.
 _WRITE_REDIR_RE = re.compile(r"^(?:[0-9]*|&)(?:>>|<>|>\|?)(?!&)(.*)$")
+
+# `>&` is the one operator whose meaning depends on its TARGET rather than its spelling:
+# bash duplicates a descriptor for `>&2` and `>&-`, and CREATES A FILE for `>&out`. It
+# cannot be settled in _WRITE_REDIR_RE because punctuation_chars tokenization splits the
+# operator from its target, so `>&2` and `>& out` arrive as the same two-token shape and
+# only the second token tells them apart. Handled in _writes_via_redirect instead.
+_REDIR_DUP_OP_RE = re.compile(r"^[0-9]*>&$")
+_REDIR_DUP_TARGET_RE = re.compile(r"^-?[0-9]*$")
 # The joined-numeric option shapes (`-5`, `-n5`, `-U3`, `-M90`). Only these letters are
 # decomposed: each takes a numeric argument and names no program.
 _NUM_OPT_RE = re.compile(r"^-[nUMC]?[0-9]+$")
@@ -976,7 +1020,22 @@ def is_file_mod(cmd, _depth=0):
     if _depth == 0:
         _scan_budget[0] = _MAX_SCAN_TOKENS
     if _depth >= _MAX_DEPTH:
-        return _regex_fallback(cmd)
+        # _regex_fallback is VERB patterns only, so it cannot see a redirect-only write --
+        # and the cap returns before the tokenized pass that would have run
+        # _writes_via_redirect. Nesting executed strings past the cap therefore hid
+        # `printf x > src/impl.py` behind three `sh -c` layers: the caller strips
+        # single-quoted text before its own redirect check (so a literal `jq .x > 0` is
+        # not a write), which is exactly where a payload lives, and the depth fallback
+        # then found no listed verb. Both halves of the verdict have to survive the cap,
+        # not just the verb half.
+        #
+        # Depth-gated for the same reason as the token-level check below: at depth there
+        # are no redirect EXEMPTIONS to honor (the caller owns those, and /dev/null and
+        # friends never reach here), so this is deliberately the blunt rule. Reaching it
+        # at all means four nested executed strings, which is not honest shape.
+        if _regex_fallback(cmd):
+            return True
+        return any(_RAW_WRITE_REDIR_RE.search(v) for v in _shell_variants(cmd))
     # Bash decodes the escapes in `$'...'` and drops the `$` BEFORE it resolves the
     # command word, so `g$'\x69't clean -fd` runs git. shlex knows nothing of ANSI-C
     # quoting and handed back `g$\x69t`, a token that equals no verb, so the tokenized
@@ -1036,10 +1095,22 @@ def _writes_via_redirect(toks):
     else is, including the clobber form `>|` and the append form `>>`.
     """
     for k, t in enumerate(toks):
+        nxt = toks[k + 1] if k + 1 < len(toks) else ""
+        # Decided by the TARGET: `>&2` and `>&-` duplicate or close a descriptor, while
+        # `>&out` creates a file exactly as `&>out` does. The raw depth-cap twin was
+        # corrected for this first; leaving the token path behind would have left the two
+        # siblings disagreeing about one spelling at different depths, which is how they
+        # drifted apart before. Not a live fail-open when found -- the gate carries its
+        # own redirect check and blocked `printf x >&src/impl.py` at the top level either
+        # way -- so this is a consistency fix, and it can only add blocks.
+        if _REDIR_DUP_OP_RE.match(t):
+            if nxt and not _REDIR_DUP_TARGET_RE.match(nxt) and nxt != "/dev/null":
+                return True
+            continue
         m = _WRITE_REDIR_RE.match(t)
         if not m:
             continue
-        target = m.group(1) or (toks[k + 1] if k + 1 < len(toks) else "")
+        target = m.group(1) or nxt
         if target and target != "/dev/null":
             return True
     return False

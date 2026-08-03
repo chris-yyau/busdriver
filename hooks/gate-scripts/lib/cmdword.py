@@ -377,7 +377,7 @@ _FUNC_DEF_RE = re.compile(r"(^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)"
 # valid 59KB command against a 5s hook timeout whose failure mode is ALLOW, so the REGEX was
 # the fail-open. Bounded to 120 characters it was defeated by 121 spaces, because bash
 # ignores horizontal whitespace. Any bound in CHARACTERS is a guess at how far an option may
-# sit from its verb. Matching the word alone costs 69 over-blocks (1,509 against 1,440,
+# sit from its verb. Matching the word alone costs 69 over-blocks (1,509 against 1,440 at the round it was measured,
 # measured on the same corpus), has no bound to defeat and nothing to backtrack.
 # `\b` keeps `hashlib` out; `git hash-object` is in, and is part of that 69.
 _HASH_REMAP = r"\bhash\b"
@@ -716,6 +716,13 @@ _EXTGLOB_RE = re.compile(r"[+@*?]\(([^()]*)\)")
 # its contents, and `@(s|z)` names two things at once -- resolving either to its inner
 # text picks one spelling, and for `ba@(s|z)h` that is `bas|zh`, the harmless-looking
 # one. Naming more than one thing is exactly the unresolved case, which fails CLOSED.
+# The BODY of a command substitution, either spelling. A substitution is executed by
+# definition, so an unresolved command word inside one is an unresolved command word --
+# `| echo "$($SHELL)"` runs whatever $SHELL names, on the pipeline stdin, while the stage
+# command word is `echo`. The shell-NAME test already saw literal names here; this is the
+# same question asked of the spellings that resolve at run time. Costs 52 over-blocks,
+# including the nested-substitution fail-closed below.
+_SUBST_BODY_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
 _EXTGLOB_NEG_RE = re.compile(r"!\([^()]*\)|[+@*?!]\([^()]*\|[^()]*\)")
 
 _UNRESOLVED_CW_CHARS = "$*?[{(" + chr(96)  # `(` is extglob: `ba+(s)h` expands to `bash`
@@ -729,7 +736,7 @@ def _group_delta(words):
     A compound keyword is one only in command position, and segments are already split on
     separators, so the openers/closers of a segment are exactly its leading words -- `{ if
     true` opens twice, `fi` closes once. Counting the keyword ANYWHERE instead was measured
-    at 1,161 over-blocks against the 1,509 this shape costs, because `if`, `for` and `done` are
+    at 1,161 over-blocks against the 1,561 this shape costs, because `if`, `for` and `done` are
     ordinary words in ordinary commands (`grep -n done log`) and a stray one opened a depth
     nothing closed. Both figures are against the same corpus and the same final code.
 
@@ -763,7 +770,7 @@ def _carries_no_command(segtext):
     return stripped == "" or stripped.startswith("#")
 
 
-def _may_read_program_from_stdin(segtext):
+def _may_read_program_from_stdin(segtext, _depth=0):
     """Could this pipeline stage be a shell, running whatever the producer wrote?
 
     Deliberately WIDE, and free of any option-arity table. Deciding this from the flags
@@ -822,6 +829,40 @@ def _may_read_program_from_stdin(segtext):
         return True
     # Last: the extglob spelling, resolved. Guarded by the substitution actually changing
     # something, so this cannot recurse -- `_EXTGLOB_RE` only ever shortens the text.
+    _flat_dollar = 0
+    for _m in _SUBST_BODY_RE.finditer(segtext):
+        # Only the `$(` spelling is counted, because only `$(` openers are counted below.
+        # A shared counter let an unrelated backtick substitution pay for a `$(` opener --
+        # one backtick match plus one `$(` opener reached one-for-one and read as fully
+        # resolved, while the nested `$( ( . /dev/stdin ) )` the flat pattern could not
+        # cross ran the piped payload.
+        _flat_dollar += _m.group(1) is not None
+        _body = _m.group(1) or _m.group(2) or ""
+        # The body is a COMPOUND command, so it gets the same treatment the outer command
+        # got: SPLIT, then every segment asked. Asking the body as one stage reads only its
+        # first command word, and `$(true; . /dev/stdin)` hides the `.` behind a harmless
+        # `true` -- verified running the piped payload in real bash. The unresolved-character
+        # test alone is likewise too weak, because `. /dev/stdin` is a literal name this
+        # function knows and the outer stage (`echo`) does not. Recursion terminates because
+        # a segment is no longer than the body and the body is strictly shorter than the text
+        # it came from (the parens are gone); the depth cap is belt-and-braces, and reaching
+        # it means a nest this cannot read, which is the fail-CLOSED case.
+        if _depth >= 4:
+            return True
+        _segs, _split_ok = _split_simple_commands(_body)
+        if not _split_ok:
+            return True                   # unsplittable body: assume the worst
+        if any(_may_read_program_from_stdin(_s, _depth + 1) for _s in _segs):
+            return True
+        if any(ch in _body for ch in _UNRESOLVED_CW_CHARS):
+            return True
+    # NESTED, and not guessed at: `$( ($SHELL) )` has inner parens the flat pattern cannot
+    # cross, so counting openers against matches is how this notices it cannot read the
+    # text. Same exit as nested extglob -- unresolved fails CLOSED. The regex is also blind
+    # to QUOTING, so an inert `echo '$($SHELL)'` reads as a receiver; that is an over-block
+    # in the safe direction, and making it quote-aware means a second parser here.
+    if segtext.count("$(") > _flat_dollar:
+        return True
     if _EXTGLOB_NEG_RE.search(segtext):
         return True                       # a negated pattern names anything: fail closed
     deglob = _EXTGLOB_RE.sub(r"\1", segtext)
@@ -883,7 +924,7 @@ def _piped_shell_producers(pairs):
     scan to the PRODUCER rather than to the whole command is what keeps it cheap --
     measured over 34,758 real commands, scanning the whole command on any shell name
     over-blocked 2,693 of them (7.7%, mostly `bash tests/foo.sh` beside an unrelated `git`)
-    while the producer scan over-blocks 1,509 (4.34%). Both figures are against the SAME
+    while the producer scan over-blocks 1,561 (4.49%). Both figures are against the SAME
     corpus and the SAME final code; ADR 0032 carries the full table and the per-rule
     isolation, and any number quoted here must match it.
 
@@ -908,7 +949,7 @@ def _piped_shell_producers(pairs):
     any of this, and was measured mid-development at 559 over-blocks (1.61%) against 43 for
     the pipeline scope at that same commit, because a multi-line command drags every earlier
     line into the scan. The scope decision is what that comparison settled; the FINAL total
-    for the pipeline scope is 1,509, the rest being the grouping, indirection and newline rules
+    for the pipeline scope is 1,561, the rest being the grouping, indirection and newline rules
     afterwards (isolated in ADR 0032).
 
     ONE producer per pipeline, from its LAST candidate stage. Every earlier candidate's

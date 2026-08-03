@@ -746,7 +746,8 @@ check "a bare . as an argument is not a receiver" allow \
 # A WRAPPER hides the real program among its operands, and peeling it can land on the wrong
 # word: `env -u X …` peels to `X`, the operand of `-u`, so the globbed receiver behind it
 # was never tested. Scoped to wrapper-led stages -- asking every stage costs 8.63%, worse
-# than the option the issue rejected, while this costs ZERO (1,440 either way).
+# than the option the issue rejected, while this costs ZERO (1,440 either way at the round
+# it was measured; the shipped total is 1,561).
 check "a globbed receiver behind a wrapper OPTION is caught" block \
     "$(bash_decision "printf 'rm -rf src' | env -u X /bin/[b]ash")"
 check "a glob in an ordinary argument is still not a receiver" allow \
@@ -938,6 +939,37 @@ check "a BASH_CMDS assignment is indirection" block \
 # resolves to runs the payload while the stage command word is something harmless.
 check "a shell inside a command substitution is a receiver" block \
     "$(bash_decision 'printf "rm -rf src" | echo "$(bash)"')"
+# ...and an UNRESOLVED word inside one, for the same reason: a substitution is executed by
+# definition, so `$SHELL` there is an unresolved command word however the outer stage reads.
+check "an unresolved word inside a substitution is a receiver" block \
+    "$(bash_decision 'printf "rm -rf src" | echo "$($SHELL)"')"
+check "...including the backtick spelling" block \
+    "$(bash_decision 'printf "rm -rf src" | echo "`$X`"')"
+# NESTED substitutions have inner parens the flat pattern cannot cross, so openers are
+# counted against matches and a shortfall fails CLOSED -- the same exit nested extglob takes.
+check "a NESTED substitution receiver fails closed" block \
+    "$(bash_decision 'printf "rm -rf src" | echo "$( ($SHELL) )"')"
+# ...and the two spellings are counted SEPARATELY, because only `$(` openers are counted.
+# One shared counter let an unrelated backtick substitution pay for the `$(` opener, so the
+# nested `$( ( . /dev/stdin ) )` beside it read as fully resolved and ran the piped payload.
+check "a flat backtick cannot pay for a nested \$( opener" block \
+    "$(bash_decision 'printf "rm -rf src" | echo "`true` $( ( . /dev/stdin ) )"')"
+# A substitution BODY is a command, so it gets the same receiver questions the stage got --
+# not a weaker unresolved-characters test. `. /dev/stdin` names no shell and holds no
+# unresolved character, and it runs the piped payload.
+check "a . receiver inside a substitution is caught" block \
+    "$(bash_decision 'printf "rm -rf src" | echo "$(. /dev/stdin)"')"
+check "...including the backtick spelling of that" block \
+    "$(bash_decision 'printf "rm -rf src" | echo "`. /dev/stdin`"')"
+# ...and the body is a COMPOUND command, so every segment is asked, not just the first. A
+# harmless leading `true` is what the effective-command-word test would otherwise read.
+# Verified running the piped payload in real bash.
+check "a receiver BEHIND a first command in the body is caught" block \
+    "$(bash_decision 'printf "rm -rf src" | echo "$(true; . /dev/stdin)"')"
+check "...including the backtick spelling of that" block \
+    "$(bash_decision 'printf "rm -rf src" | echo "`true; . /dev/stdin`"')"
+check "...and a shell NAME behind a first command too" block \
+    "$(bash_decision 'printf "rm -rf src" | echo "$(true; bash)"')"
 # Not shells, but they run a PROGRAM READ FROM STDIN exactly as one does. Costs 95 further
 # over-blocks; the list is an enumeration and adding a name is free.
 check "python3 reads its program from stdin too" block \
@@ -1003,9 +1035,20 @@ check "the pipe is found inside an executed string too" block \
 # `bash -c` and allowed through a pipe.
 check "the helper piped into a stdin shell is blocked" block \
     "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600' | bash")"
+# ...and the gate's own substitution counter has to agree with cmdword's: a flat backtick
+# must not pay for a nested `$(` opener, or the nested receiver beside it reads as resolved
+# and sources the helper payload off the pipe. Verified executing in real bash.
+check "a flat backtick cannot pay for a nested opener at the gate" block \
+    "$(bash_decision 'printf "python3 hooks/gate-scripts/lib/lease_slot.py x" | echo "`true` $( ( . /dev/stdin ) )"')"
+# ...and the gate splits a COMPOUND body too, so a leading `true` cannot hide the receiver
+# that sources the helper payload off the pipe. Both substitution spellings.
+check "a receiver behind a first command in the body blocks at the gate" block \
+    "$(bash_decision 'printf "python3 hooks/gate-scripts/lib/lease_slot.py x" | echo "$(true; . /dev/stdin)"')"
+check "...including the backtick spelling of that at the gate" block \
+    "$(bash_decision 'printf "python3 hooks/gate-scripts/lib/lease_slot.py x" | echo "`true; . /dev/stdin`"')"
 # ...and the precision this keeps. Scanning the WHOLE command on any shell name was
 # measured against 34,758 real commands and over-blocked 2,693 of them (7.7%); scoping the
-# scan to the PRODUCER costs 1,509 (4.34%) as shipped -- ADR 0032 carries the breakdown and
+# scan to the PRODUCER costs 1,561 (4.49%) as shipped -- ADR 0032 carries the breakdown and
 # supersedes every earlier figure. These four are the shapes that difference is made
 # of -- a shell with a script operand on the receiving end of a pipe, a genuine -c, a
 # non-shell consumer, and `||`, which feeds the next segment nothing.
@@ -2607,6 +2650,9 @@ SHELL = ["bash", "sh", "zsh", "/bin/bash", "$SHELL", "env -S bash", "env -Sbash"
          # unresolvable (a negation names all but its contents; an alternation names two
          # things) so they must reach the same verdict by the fail-CLOSED path instead.
          "/bin/ba+(s)h", "/bin/ba@(s)h", "ba!(x)h", "/bin/ba@(s|z)h",
+         # ...and the SUBSTITUTION spellings, flat and nested, which the flat pattern
+         # resolves or fails closed on respectively
+         'echo "$(bash)"', 'echo "$($SHELL)"', 'echo "$( ($SHELL) )"',
          # ...and the receivers that are not shells but run what they read
          "python3", "perl", "tclsh", "awk -f -", "source /dev/stdin", ". /dev/stdin",
          "xargs", "make -f -", "sqlite3"]

@@ -468,6 +468,10 @@ _EXTGLOB_RE = re.compile(r"[+@*?]\(([^()]*)\)")
 # Unresolvable: a NEGATION, or an ALTERNATION. `!(x)` matches all but its contents and
 # `@(s|z)` names two things, so resolving either to its inner text picks one spelling --
 # for `ba@(s|z)h` the harmless-looking one. KEEP IN STEP WITH cmdword._EXTGLOB_NEG_RE.
+# The BODY of a command substitution, either spelling. A substitution is executed by
+# definition, so an unresolved command word inside one is an unresolved command word.
+# KEEP IN STEP WITH cmdword._SUBST_BODY_RE.
+_SUBST_BODY_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
 _EXTGLOB_NEG_RE = re.compile(r"!\([^()]*\)|[+@*?!]\([^()]*\|[^()]*\)")
 _UNRESOLVED_CW_RE = re.compile(r"[$`*?\[{(]")   # `(` is extglob: ba+(s)h expands to bash
 # A module operand spelled as a plain importable name. Anything else -- an escape, a
@@ -1561,6 +1565,54 @@ def _piped_shell_producers(pairs):
                 # putting it in _SHELL_NAMES -- matched against every word -- cost 100
                 # over-blocks. KEEP IN STEP WITH cmdword._may_read_program_from_stdin.
                 if cw and _bn(cw) == ".":
+                    last = i
+                    kdepth = max(0, kdepth + _group_delta(_words))
+                    continue
+                # A SUBSTITUTION is executed, so an unresolved word inside one is an
+                # unresolved command word. KEEP IN STEP WITH cmdword.
+                _sub_unres = False
+                _flat_dollar = 0
+                for _m in _SUBST_BODY_RE.finditer(seg):
+                    # Only the `$(` spelling counts, because only `$(` openers are counted
+                    # below -- a shared counter let an unrelated backtick substitution pay
+                    # for a `$(` opener, so a nested `$( ( . /dev/stdin ) )` read as fully
+                    # resolved. KEEP IN STEP WITH cmdword.
+                    _flat_dollar += _m.group(1) is not None
+                    _body = _m.group(1) or _m.group(2) or ""
+                    # A body is a COMPOUND command, so it is SPLIT and every segment gets the
+                    # receiver questions the stage got, not a weaker one asked of the body as
+                    # a whole: `$(. /dev/stdin)` runs the piped payload while the outer command
+                    # word is `echo`, and `$(true; . /dev/stdin)` hides the `.` behind a
+                    # harmless first command that _peel_wrappers would read instead.
+                    # KEEP IN STEP WITH cmdword.
+                    _bsegs, _bok = _split_simple_commands(_body)
+                    if not _bok or _UNRESOLVED_CW_RE.search(_body):
+                        _sub_unres = True
+                        break
+                    for _bseg in _bsegs:
+                        _bt = None
+                        try:
+                            _bl = shlex.shlex(_bseg, posix=True, punctuation_chars=True)
+                            _bl.whitespace_split = True
+                            _bl.commenters = ""
+                            _bt = list(_bl)
+                        except ValueError:
+                            _bt = None
+                        _bw = [] if _bt is None else list(_stage_words(_bt))
+                        _bcw = None if _bt is None else _peel_wrappers(_bt)
+                        if _bt is None \
+                           or any(_bn(w) in _SHELL_NAMES for w in _bw) \
+                           or (_bcw and _bn(_bcw) == "."):
+                            _sub_unres = True
+                            break
+                    if _sub_unres:
+                        break
+                # NESTED substitutions have inner parens the flat pattern cannot cross, so
+                # counting openers against matches is how this notices it cannot read the
+                # text. Unresolved fails CLOSED. KEEP IN STEP WITH cmdword.
+                if seg.count("$(") > _flat_dollar:
+                    _sub_unres = True
+                if _sub_unres:
                     last = i
                     kdepth = max(0, kdepth + _group_delta(_words))
                     continue

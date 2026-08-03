@@ -61,17 +61,17 @@ counting commands that the current classifier allows and the candidate would blo
 | Issue option 1 — any shell name anywhere ⇒ raw-scan whole command | **2,693 (7.7%)** | Mostly `bash tests/foo.sh` beside an unrelated `git` |
 | Raw-scan whole command, but only for a pipe-fed shell | 625 (1.8%) | Mostly `gh pr checks N \| bash "$RCS" "$(git rev-parse …)"` |
 | Producer = the whole command PREFIX before the receiver | 559 (1.61%) *(see note)* | Closes grouping without any grouping rules, but a multi-line command drags every earlier line into the scan |
-| **Chosen — producer scoped to the receiver's own pipeline** | **1,509 (4.34%)** | Almost all are gate self-tests piping `rm -rf` text into a gate script |
+| **Chosen — producer scoped to the receiver's own pipeline** | **1,561 (4.49%)** | Almost all are gate self-tests piping `rm -rf` text into a gate script |
 | Issue option 3 — accept the regression | 0 | Rejected: a regression is a weaker position than a documented pre-existing limit |
 
 *Note on the 559 row:* that figure and the pipeline-scoped result it was measured against
 (**43** at the time) are a **mid-development pair**, taken when the SCOPE decision was
 made and before nineteen further rounds of widening. It is listed because the ratio
-between the pair is what settled the scope, and it must NOT be read against the 1,509
+between the pair is what settled the scope, and it must NOT be read against the 1,561
 below it — they share no baseline. Rows one, two and four were measured against the
 shipped code.
 
-Against the final implementation the whole-corpus diff is **1,509 newly blocked** and
+Against the final implementation the whole-corpus diff is **1,561 newly blocked** and
 **one** command newly allowed. Every earlier round held the diff at zero newly allowed, and
 that is still the rule; the single exception is named rather than rounded away.
 
@@ -161,8 +161,8 @@ extends both; and **both halves of the verdict** — verbs *and* redirects — a
 producer, exactly as the depth cap above already had to learn.
 
 Each widening rule was measured by disabling it, rather than argued. Against the **shipped**
-code and the same 34,758-command corpus: **1,509** total, of which the indirection rule
-accounts for **914**, group depth for **73**, and the newline/comment rule for **21**. Those
+code and the same 34,758-command corpus: **1,561** total, of which the indirection rule
+accounts for **909**, group depth for **112**, and the newline/comment rule for **25**. Those
 do not sum to the total and are not meant to — a command caught by two rules is counted by
 each in isolation and once in the total. Every figure in this paragraph comes from one
 measurement run against the commit this ADR ships with; the per-round totals in the
@@ -187,7 +187,7 @@ counting is what keeps `grep -n done log` allowed.
 
 Those two comparisons are **paired historical measurements**: each was taken against the
 code as it stood at that round, and only the ratio between the pair is meaningful. The
-shipped total is the 1,509 above — **56% of issue option 1's 2,693**, which is the only
+shipped total is the 1,561 above — **58% of issue option 1's 2,693**, which is the only
 comparison that should be quoted.
 
 **Two characters in the `name()` anchor accounted for 698 of the 1,105 total at round 14.**
@@ -215,7 +215,7 @@ csh/fish do not need to inherit that.
 - **But the indirection rule is an exception, and it is the expensive one.** A command that
   BOTH introduces indirection (a function or alias definition, `hash -p`, `BASH_CMDS`,
   `eval`) AND contains a pipe is raw-scanned WHOLE, which does reinstate the #519 false
-  positives for that command. It accounts for **914** of the 1,509 over-blocks. The
+  positives for that command. It accounts for **909** of the 1,561 over-blocks. The
   narrowing is described under "The precision trajectory" and is deliberately not built
   here.
 - `_split_simple_commands` now delegates to `_split_with_ops`, which records the operator
@@ -313,14 +313,14 @@ bypass, and each of those three rounds was that guess being wrong in a new place
 | 23 | 1,413 (4.07%) | `source`, `.` and `xargs` as receivers — 64 |
 | 25 | 1,439 (4.14%) | extglob receivers, `make`, and the unresolvable pattern forms — 26 |
 | 27 | 1,440 (4.14%) | the `hash` prefix grammar deleted, nested extglob unresolved — 1 |
-| pre-PR | 1,509 (4.34%) | wrapper-option receiver closed (0); the `hash` option search deleted (69) |
+| pre-PR | 1,561 (4.49%) | wrapper-option receiver (0); `hash` option search deleted (69); substitution bodies given the full receiver test (52) |
 
 Every step closed a fail-open that was **verified executing**, and only one step ever moved
 a command from block to allow (named above). But the cost is now five times what the design
 was argued on, and the majority of it lands in ONE rule: the indirection trigger raw-scans
 the WHOLE command whenever the text contains any indirection AND any pipe, which reinstates
-the pre-#519 false positives for that command. It accounts for **914 of the 1,509**, or
-60.6% — a majority, not all of it.
+the pre-#519 false positives for that command. It accounts for **909 of the 1,561**, or
+58.2% — a majority, not all of it.
 
 The narrowing is known and NOT built here: trigger the whole-command scan only when a
 pipeline stage resolves to a name this command actually **binds** — collect the names from

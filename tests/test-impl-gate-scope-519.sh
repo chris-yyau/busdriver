@@ -843,6 +843,31 @@ check "a hash spelled with \${IFS} is indirection" block \
 # the shell VARIANTS, not just the dequoted text.
 check "an escape-split hash is still indirection" block \
     "$(bash_decision 'h\a\s\h -p /bin/bash f; printf "rm -rf src" | f')"
+# Bash accepts a redirection straight after a command name, so requiring whitespace after
+# `eval` missed it. The classifier had always used the word boundary; the gate had not.
+check "eval followed immediately by a redirect is indirection" block \
+    "$(bash_decision 'eval</dev/null "f(){ bash; }"; printf "rm -rf src" | f')"
+# ...asserted against the HELPER guard too, with no write verb anywhere in the command, so
+# the assertion depends on the gate's own indirection regex rather than on the classifier
+# reaching the same verdict by a different route.
+check "...and the helper guard sees it, with no verb to help" block \
+    "$(bash_decision 'eval</dev/null "python3 hooks/gate-scripts/lib/lease_slot.py .claude fake 1"')"
+# The suffix is the REDIRECT characters, not a bare word boundary: a match here enables the
+# wholesale helper-name scan, so `\beval\b` would block an innocent read that merely names
+# a file called eval.md beside a helper path.
+check "a file named eval.md beside a helper path stays allowed" allow \
+    "$(bash_decision 'cat docs/eval.md hooks/gate-scripts/lib/lease_slot.py')"
+# The redirect family must be COMPLETE, because missing one is the unsafe direction.
+check "eval followed immediately by &> is indirection" block \
+    "$(bash_decision 'eval&>/dev/null "python3 hooks/gate-scripts/lib/lease_slot.py .claude fake 1"')"
+check "...and the &>> spelling too" block \
+    "$(bash_decision 'eval&>>/dev/null "python3 hooks/gate-scripts/lib/lease_slot.py .claude fake 1"')"
+# KNOWN over-block, and a deliberate one. This layer sees TEXT, not a parsed command word,
+# so an `eval` that is an ARGUMENT followed by a redirect matches too. Telling the two apart
+# needs the command word, which is a different layer; an over-block is the safe direction
+# and the shape is contrived. Pinned as CURRENT behaviour so changing it trips this line.
+check "eval as an ARGUMENT before a redirect over-blocks (deliberate)" block \
+    "$(bash_decision 'cat eval</dev/null hooks/gate-scripts/lib/lease_slot.py')"
 # NESTED extglob needs more than one substitution pass, and passes are guesses at a
 # grammar. Same exit as the negation and the alternation: unresolved, fail CLOSED.
 check "a NESTED extglob receiver fails closed" block \

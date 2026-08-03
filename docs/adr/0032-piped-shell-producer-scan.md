@@ -60,9 +60,16 @@ counting commands that the current classifier allows and the candidate would blo
 |---|---|---|
 | Issue option 1 — any shell name anywhere ⇒ raw-scan whole command | **2,693 (7.7%)** | Mostly `bash tests/foo.sh` beside an unrelated `git` |
 | Raw-scan whole command, but only for a pipe-fed shell | 625 (1.8%) | Mostly `gh pr checks N \| bash "$RCS" "$(git rev-parse …)"` |
-| Producer = the whole command PREFIX before the receiver | 559 (1.61%) | Closes grouping without any grouping rules, but a multi-line command drags every earlier line into the scan |
+| Producer = the whole command PREFIX before the receiver | 559 (1.61%) *(see note)* | Closes grouping without any grouping rules, but a multi-line command drags every earlier line into the scan |
 | **Chosen — producer scoped to the receiver's own pipeline** | **1,509 (4.34%)** | Almost all are gate self-tests piping `rm -rf` text into a gate script |
 | Issue option 3 — accept the regression | 0 | Rejected: a regression is a weaker position than a documented pre-existing limit |
+
+*Note on the 559 row:* that figure and the pipeline-scoped result it was measured against
+(**43** at the time) are a **mid-development pair**, taken when the SCOPE decision was
+made and before nineteen further rounds of widening. It is listed because the ratio
+between the pair is what settled the scope, and it must NOT be read against the 1,509
+below it — they share no baseline. Rows one, two and four were measured against the
+shipped code.
 
 Against the final implementation the whole-corpus diff is **1,509 newly blocked** and
 **one** command newly allowed. Every earlier round held the diff at zero newly allowed, and

@@ -1062,7 +1062,22 @@ _INDIRECTION_RE = re.compile(
     # form. KEEP IN STEP WITH cmdword, whose eval/alias branch matches the WORD and so never
     # had this narrowing.
     + r"|(?:^|[\n;&|(]|\s)\s*alias\s+(?:--\s+)?" + _FUNC_NAME
-    + r"|(?:^|[;&|(]|\s)\s*eval(?:\s|$)"
+    # A redirection may follow a command name immediately, so `eval</dev/null <definition>`
+    # runs eval while a whitespace-only suffix does not match it. The suffix is widened to
+    # the redirect characters rather than to a bare word boundary: a match HERE enables
+    # the wholesale helper-name scan, so `\beval\b` would block an innocent
+    # `cat docs/eval.md <helper>` and break the read-versus-mention contract. cmdword can
+    # afford the bare boundary because a match there only widens WHICH TEXT is scanned.
+    # That asymmetry is deliberate; do not "sync" it away.
+    #
+    # RESIDUAL, and a deliberate over-block: this layer sees TEXT, not a parsed command
+    # word, so `cat eval</dev/null <helper>` -- where eval is an ARGUMENT that happens to
+    # be followed by a redirect -- matches too. Telling the two apart needs the command
+    # word, which is a different layer. An over-block is the safe direction and the shape
+    # is contrived; it is pinned in the suite so the choice stays visible. The redirect
+    # family is complete -- `<`, `>`, `&>` and `&>>` -- because MISSING one is the unsafe
+    # direction, and `&>` was missing.
+    + r"|(?:^|[;&|(]|\s)\s*eval(?=\s|$|[<>]|&>>?)"
     # `BASH_CMDS` is the hash table exposed as a writable array: assigning to it binds a
     # NAME to a path exactly as `hash -p` does, without naming the builtin.
     # KEEP IN STEP WITH cmdword._BASH_CMDS_RE.

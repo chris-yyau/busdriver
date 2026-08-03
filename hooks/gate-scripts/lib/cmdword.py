@@ -277,10 +277,136 @@ _MAX_CMD_CHARS = 65536
 # runs as a one-shot subprocess and the test suite drives it through is_file_mod().
 _scan_budget = [0]
 
-# A function-definition header at the start of a command or right after a separator:
-# `mv() {`, `rm ( ) {`. Group 1 keeps the leading separator/whitespace so the segment
-# structure around it is preserved.
-_FUNC_DEF_RE = re.compile(r"(^|[;&|]\s*)[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)")
+# Set by _defuse_comments when it meets a `#` immediately after a `)` -- see there.
+# Read and cleared by is_file_mod, which answers the ambiguity by fail-CLOSED fallback
+# rather than by a fourth guess about what the paren was.
+_paren_hash_ambiguous = [False]
+
+# A shell function NAME is any word free of the metacharacters that would end it -- bash
+# accepts `f-x`, `f.x`, `my:fn`, none of which an identifier charset matches, and all of
+# which run. The charset below is stated as the exclusion so it cannot drift behind the
+# next punctuation someone puts in a function name; over-matching only ever widens a
+# fail-CLOSED test. Quotes and `$` are deliberately left INSIDE it (so `function "f" {`
+# and `function $n {` match) and it therefore contains no quote character -- the gate's
+# twin lives inside a single-quoted shell block where an apostrophe would end the program.
+# Words that OPEN and CLOSE a compound command. A compound command is ONE pipeline stage no
+# matter how many separators live inside it, so `printf 'rm -rf src' | if true; then bash; fi`
+# and `... | for x in 1; do bash; done` both run the piped program -- verified -- while their
+# internal `;` looked like the end of the pipeline. `{`/`}` are the same idea and were the
+# first spelling found; braces alone were not the family. Counted as whole WORDS, so
+# `"${VAR}"` and a file named `done` are not read as grouping.
+_GROUP_OPEN = frozenset(("{", "if", "for", "while", "until", "case", "select"))
+_GROUP_CLOSE = frozenset(("}", "fi", "done", "esac"))
+# Words that occupy command position without being a command, so the leading-run walk must
+# step OVER them to reach a nested opener behind one.
+# ...and the PIPELINE PREFIXES, for the same reason: bash allows `time`, `time -p` and `!`
+# in front of a compound command, and stopping on one left `time if true; then ...; fi | bash`
+# counting no opener while its `fi` still closed.
+_GROUP_CONNECT = frozenset(("then", "do", "else", "elif", "time", "-p", "!"))
+
+# COMMAND POSITION, derived from the compound-command keyword sets rather than hand-listed,
+# because a hand-listed subset is exactly how `if function f { bash; }; then ...` slipped:
+# `then`, `do` and `else` were listed while `if`, `while`, `until`, `!` and `time` were not.
+# Anything that can precede a command WITHOUT being one belongs here, and the two sets
+# already enumerate that for the depth walk -- so they are the single source, and adding a
+# keyword to them extends this too. The trailing repetition covers stacked prefixes
+# (`time -p function f { ... }`, `! if ...`).
+_CMD_POS_LEAD = (r"(?:\b(?:"
+                 + "|".join(sorted(w for w in _GROUP_OPEN | _GROUP_CONNECT if w.isalpha()))
+                 + r")\b|!|(?<![\w-])-p\b)")
+# ONE prefix, not a repeated group. The `(?:\s*LEAD)*` this used to carry was redundant --
+# any single preceding prefix already establishes command position, and `-p` and `!` are
+# themselves LEAD alternatives, so `time -p function f` and `! if ...` still match -- and
+# it was CATASTROPHIC: 4,000 valid `!` prefixes took 5.4s, past the 5s hook timeout whose
+# failure mode is ALLOW. A regex that is correct but too slow is indistinguishable from a
+# regex that is wrong, at this boundary.
+_CMD_POS = r"(?:^|[\n;&|(){}]|" + _CMD_POS_LEAD + r")\s*"
+# The same idea for the `name()` form, which cannot sit behind a group CLOSER or a
+# pipeline prefix -- `} f(){` and `! f(){` are not definitions, and admitting them cost
+# extra over-blocks and closed nothing. Openers, the case-pattern terminator, and reserved
+# words only.
+_CMD_POS_WORDS = (r"\b(?:"
+                  + "|".join(sorted(w for w in _GROUP_OPEN | _GROUP_CONNECT if w.isalpha()))
+                  + r")\b")
+
+_FUNC_NAME = r"[^\s;&|()<>{}]+"
+
+# A function-definition header in COMMAND POSITION: `mv() {`, `rm ( ) {`, and the same
+# behind a reserved word, a group opener, or a case PATTERN terminator -- the bare `)`
+# of `case x in x) f(){ bash; };; esac` puts the next word in command position just as
+# `;` does. `if true; then f(){ bash; }; ...` and
+# `{ f(){ bash; }; ... }` define one just as a leading `;` would, and anchoring on separators
+# alone missed every such spelling. Shares _CMD_POS_WORDS with the keyword form so the two
+# cannot drift apart again. Group 1 keeps the
+# whole leading prefix, so the `\1` substitution in _normalize still preserves the segment
+# structure around the header it strips.
+_FUNC_DEF_RE = re.compile(r"(^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)"
+                          + _FUNC_NAME + r"\s*\(\s*\)")
+
+# Constructs that let a NAME stand for something other than itself, IN THIS COMMAND.
+# `source` is deliberately absent: it costs 162 over-blocks against the 85 the rest of this
+# rule costs, and it does not close the family it belongs to -- a function can equally arrive
+# from ~/.bashrc or an exported environment function, neither of which any command text
+# reveals. A definition made OUTSIDE the command is the ADR 0006 residual, stated not chased.
+# The `function` KEYWORD form defines a function without any `()`, so _FUNC_DEF_RE alone
+# missed `function f { bash; }`. Matched against the QUOTE-SQUEEZED copies too, because the
+# shell concatenates adjacent quoted runs -- `ev"al" ...` runs eval while the raw text holds
+# no contiguous `eval`. The keyword branch requires only the KEYWORD and a name, not a `{`:
+# a function body is any compound command, so `function f (( ... ))` and `function f [[ ... ]]`
+# define one just as `function f { ... }` does, and enumerating the body shapes is the same
+# arity guess this module refuses elsewhere. `function` followed by a word is already a
+# definition; the body shape adds nothing.
+#
+# What the branch DOES require is that the keyword sit in COMMAND POSITION, because
+# `function` is also an ordinary word: matching it anywhere costs 95 over-blocks against
+# a real 34,758-command corpus (`grep function file | ...`), and this anchor brings that
+# to 33 while closing every shape above. That is a STRUCTURAL restriction, not a guess
+# about the body -- the shell decides command position, and the separators are finite.
+# KEEP IN STEP WITH the gate's _INDIRECTION_RE.
+# `hash -p PATH NAME` binds NAME to PATH for the rest of the shell, which is the same
+# re-pointing `alias` does and was simply missing: `hash -p /bin/bash f; printf <payload> | f`
+# runs bash from the pipe -- verified. Anchored in command position, and tolerant of the
+# `builtin`/`command` prefixes that reach the same builtin.
+# `command` and `builtin` take their OWN options before the builtin they run, and both
+# accept `--`, so `command -- hash -p ...` and `command -p hash -p ...` reach the same
+# builtin. The prefix therefore skips any dash-words rather than matching the bare word.
+_RUN_PREFIX = r"(?:(?:builtin|command)\s+(?:-\S*\s+)*)*"
+# `-p` is not required to stand alone: bash takes `hash -rp/bin/bash f`, where the option
+# is BUNDLED and its operand ATTACHED. Matching a bare `-p` token missed that, so the
+# test is for a `p` anywhere in a dash-word -- the same shape the receiver scan already
+# uses for attached option values, and for the same reason.
+# ASSIGNMENT PREFIX: `FOO=x hash -p …` is still a `hash` in command position, and bash
+# allows any number of them. BOUNDED repetition, both here and in the option search:
+# the unbounded `[^;&|()\n]*?` backtracked catastrophically -- a valid 59KB command
+# padded with `if hash x` took 7.2s against a 5s hook timeout whose failure mode is
+# ALLOW, so the regex WAS the fail-open. An option this far from its verb does not
+# occur in an honest command.
+_ASSIGN_PREFIX = r"(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|()]{0,200}\s+){0,20}"
+_HASH_REMAP = _ASSIGN_PREFIX + _RUN_PREFIX + r"hash\b[^;&|()\n]{0,120}?\s-[A-Za-z]{0,20}p"
+# `BASH_CMDS` is the hash table itself, exposed as a writable associative array: assigning
+# to it binds a NAME to a path exactly as `hash -p` does, without ever naming the builtin.
+# Verified executing. The subscript is not parsed -- an assignment to this array at all is
+# the signal, and there is no read-only spelling of it worth distinguishing.
+_BASH_CMDS_RE = r"\bBASH_CMDS\s*\["
+_INDIRECTION_RE = re.compile(r"\b(?:eval|alias)\b"
+                             r"|" + _CMD_POS + r"function\s+" + _FUNC_NAME
+                             + r"|" + _HASH_REMAP
+                             + r"|" + _BASH_CMDS_RE)
+
+
+def _has_indirection(cmd):
+    """Does this command let a NAME stand for something other than itself?"""
+    return any(_INDIRECTION_RE.search(v) or _FUNC_DEF_RE.search(v)
+               for v in _shell_variants(cmd))
+
+
+# NOT CLOSED, deliberately: a producer that ASSEMBLES its payload rather than stating it --
+# `P='rm -rf src'; printf '%s' "$P" | bash`, and the split-operand `printf '%s%s' r
+# 'm -rf src' | bash` the issue itself calls unrecoverable. A rule keyed on "the producer
+# expands a variable this command assigns" was written and measured: it closes the first
+# spelling and costs 386 over-blocks (1.1% of a real 34,758-command corpus), while leaving
+# the second -- and every runtime-assembled spelling -- open. Closing the CLASS needs an
+# interpreter, not a tokenizer. Stated as an ADR 0006 residual instead. See ADR 0032.
 
 # Preambles that RUN the command that follows them. Peeling these finds the real verb
 # without scanning every token: scanning all tokens catches `sudo rm -rf src` but also
@@ -411,58 +537,524 @@ _TEST_OPEN = frozenset(("[[", "["))
 _NAME_INTRO = frozenset(("function", "for", "select", "case"))
 
 
-def _split_simple_commands(s):
-    """Split into simple-command segments on UNQUOTED, UNESCAPED control operators.
+def _split_with_ops(s):
+    """Split into simple-command segments, each paired with the operator run before it.
 
     Copied from the anti-forge detector in pre-implementation-gate.sh, where the
     reasoning is documented at length: this MUST happen before shlex, because posix
     shlex strips quoting and would make a quoted separator indistinguishable from a
-    real one. Returns (segments, ok); ok is False on an unterminated quote or dangling
+    real one. Returns (pairs, ok); ok is False on an unterminated quote or dangling
     escape so the caller can fall back rather than trust a half-parse.
+
+    The operator is kept as a RUN rather than a single character so `|` can be told from
+    `||`: one feeds a segment its stdin, the other feeds it nothing. Consecutive operator
+    characters join into one run only when no segment text sits between them, which is
+    exactly the difference between `a || b` (run `||`) and `a | ; b`.
     """
-    segs, buf = [], []
+    pairs, buf, op = [], [], []
     in_s = in_d = esc = False
+    # Did the PREVIOUS character open a redirect -- an unquoted, unescaped `<` or `>`?
+    # Tracked rather than read back off buf[-1], because the buffer cannot tell an
+    # OPERATOR `<` from a literal one: bash runs `printf <payload> \<|bash` as a real
+    # pipeline, since the escaped `<` is an argument and the `|` that follows is the pipe.
+    # The inferred version glued that `|` into the segment and lost the pipeline entirely.
+    redir = False
+    xglob = 0                             # open EXTGLOB parens -- see the branch below
     for ch in s:
         if esc:
             buf.append(ch)
-            esc = False
+            esc = redir = False
         elif in_s:
             buf.append(ch)
             if ch == _SQ:
                 in_s = False
+            redir = False
         elif in_d:
             buf.append(ch)
             if ch == "\\":
                 esc = True
             elif ch == _DQ:
                 in_d = False
+            redir = False
         elif ch == "\\":
             buf.append(ch)
             esc = True
+            redir = False
         elif ch == _SQ:
             buf.append(ch)
             in_s = True
+            redir = False
         elif ch == _DQ:
             buf.append(ch)
             in_d = True
-        elif ch in "|&" and buf and buf[-1] == ">":
-            buf.append(ch)  # >| (clobber) or >& (dup) -> part of the redirect
+            redir = False
+        elif ch in "|&" and redir:
+            # `>|` (clobber), `>&` and `<&` (descriptor duplication). `<&` was missed while
+            # its output twin was handled, and it splits the segment mid-redirect: the
+            # producer of `printf <payload> <&0 | bash` became the bare `0`. Keyed on the
+            # REDIRECT CHARACTER rather than on a list of operators, so the next spelling
+            # cannot reintroduce the asymmetry.
+            buf.append(ch)
+            redir = False
+        elif ch == "(" and buf and buf[-1] in "+*?@!":
+            # EXTGLOB, not a group: with `shopt -s extglob`, `+(s)`, `*(…)`, `?(…)`, `@(…)`
+            # and `!(…)` are pathname patterns, so `/bin/ba+(s)h` expands to `/bin/bash`.
+            # Split on the paren, the receiver command word came apart and the shell name
+            # vanished. The lead character is what distinguishes them, and it is finite.
+            buf.append(ch)
+            xglob += 1
+            redir = False
+        elif xglob and ch in ";|&":
+            # INSIDE a pattern, every control character is pattern text: `@(s|z)` holds a
+            # real `|` that separates alternatives, not pipeline stages. Keeping the parens
+            # while still splitting on that `|` left the receiver in pieces again.
+            buf.append(ch)
+            redir = False
+        elif ch == ")" and xglob:
+            # its matching close -- kept with it, or the command word still comes apart on
+            # the other half of the pattern.
+            buf.append(ch)
+            xglob -= 1
+            redir = False
         elif ch in ";|&()":
-            segs.append("".join(buf))
-            buf = []
+            if buf or not op:
+                pairs.append(("".join(op), "".join(buf)))
+                buf, op = [], [ch]
+            else:
+                op.append(ch)           # the run continues: ||, &&, |&
+            redir = False
         else:
             buf.append(ch)
-    segs.append("".join(buf))
-    return segs, not (in_s or in_d or esc)
+            redir = ch in "<>"
+    pairs.append(("".join(op), "".join(buf)))
+    return pairs, not (in_s or in_d or esc)
+
+
+def _split_simple_commands(s):
+    """The segments alone, for callers that do not care what separated them."""
+    pairs, ok = _split_with_ops(s)
+    return [seg for _op, seg in pairs], ok
+
+
+def _is_pipe(op):
+    """Does this operator run FEED the segment after it? `|` and bash's `|&` do; `||`,
+    `&&`, `;` and grouping do not."""
+    # GROUPING punctuation joins the run when no segment text separates it, so a valid
+    # `cmd ||(sub)` arrives as `||(` and read as a pipe -- an over-block the spaced
+    # `|| (sub)` never had. Parens carry no pipeline meaning here (the depth walk
+    # owns them), so they are dropped before the test rather than special-cased.
+    bare = op.replace("(", "").replace(")", "")
+    return bare in ("|", "|&")
+
+
+def _lex(text):
+    """Tokenize one segment the way this module does everywhere else, or None."""
+    try:
+        lex = shlex.shlex(text, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        lex.commenters = ""
+        return list(lex)
+    except ValueError:
+        return None
+
+
+# Shells that run a program fed to them on STDIN. A SUPERSET of _SHELLS, and kept separate
+# from it deliberately: _SHELLS answers "does `-c` mean execute-this-string", which is a
+# claim about option semantics this module acts on by RECURSING into the operand. This set
+# answers only "could this consume stdin as a program", which is a weaker claim with a
+# cheaper failure mode -- so csh/tcsh/fish belong here without dragging their -c handling,
+# their `<<<` handling, or their wrapper semantics along with them. Verified by running
+# each: `printf 'echo X\n' | csh` executes.
+# RESIDUAL, stated rather than pretended away: this is an ENUMERATION, so a shell nobody has
+# listed still reads as a non-shell. The family does not close (yash, posh, bosh, osh, oil,
+# elvish, xonsh, nu are here; the next one will not be). Same call as ADR 0006 -- an unlisted
+# name only helps an actor who already has Bash, and every gated write still needs a logged
+# lease. Adding a name is free, so add rather than argue when one is found.
+# The last six are not shells at all, but they RUN A PROGRAM READ FROM STDIN exactly as a
+# shell does -- `printf <program> | python3` runs it, and so do perl, ruby and node --
+# and that is the only question this set answers. Kept separate from _SHELLS for the
+# reason below: _SHELLS asserts that `-c` means execute-this-string, which is a claim
+# this module ACTS on by recursing into the operand, and none of these inherit it.
+# Measured at 95 further over-blocks. KEEP IN STEP WITH the gate's _SHELL_NAMES.
+_STDIN_SHELLS = _SHELLS | frozenset(("csh", "tcsh", "fish", "yash", "posh", "bosh",
+                                     "osh", "oil", "elvish", "xonsh", "nu",
+                                     "python", "python2", "python3",
+                                     "perl", "ruby", "node",
+                                     "tclsh", "wish", "lua", "php",
+                                     "awk", "gawk", "mawk", "nawk",
+                                     "sqlite3", "ed", "ex", "psql", "gdb",
+                                     "source", "xargs", "make"))
+
+# Characters that mean a command word is not what it LOOKS like. `$` is expansion
+# (`| $SHELL`), the BACKTICK is the older substitution spelling (`| `printf bash``, which
+# really does run bash), and the glob characters matter for the same reason they do in the
+# helper guard: the shell expands `/bin/[b]ash` onto bash, so a literal-name test reads a
+# command word that no set contains and calls it a non-shell.
+# An EXTGLOB group, resolved to the text it wraps. shlex splits `/bin/ba+(s)h` into five
+# tokens, so the command word reads as `ba+` and no shell name survives -- but bash
+# expands it to `/bin/bash` and runs it. Substituting the group away puts the resolved
+# spelling in front of the SAME name test, rather than adding a second rule.
+#
+# `!( )` is NOT in this set, and cannot be: it matches everything EXCEPT its contents,
+# so `ba!(x)h` expands to `bash` among others and resolving it to the inner text gives
+# `baxh` -- the one spelling that would read as harmless. A negation is unresolvable,
+# and unresolvable is the fail-CLOSED case, handled separately below.
+_EXTGLOB_RE = re.compile(r"[+@*?]\(([^()]*)\)")
+# UNRESOLVABLE extglob: a negation, or an ALTERNATION. `!(x)` matches everything except
+# its contents, and `@(s|z)` names two things at once -- resolving either to its inner
+# text picks one spelling, and for `ba@(s|z)h` that is `bas|zh`, the harmless-looking
+# one. Naming more than one thing is exactly the unresolved case, which fails CLOSED.
+_EXTGLOB_NEG_RE = re.compile(r"!\([^()]*\)|[+@*?!]\([^()]*\|[^()]*\)")
+
+_UNRESOLVED_CW_CHARS = "$*?[{(" + chr(96)  # `(` is extglob: `ba+(s)h` expands to `bash`
+
+# Compound-command keyword sets -- see the definitions above _FUNC_NAME.
+
+
+def _group_delta(words):
+    """How much this segment opens or closes, counting only the LEADING run.
+
+    A compound keyword is one only in command position, and segments are already split on
+    separators, so the openers/closers of a segment are exactly its leading words -- `{ if
+    true` opens twice, `fi` closes once. Counting the keyword ANYWHERE instead was measured
+    at 1,161 over-blocks against the 1,440 this shape costs, because `if`, `for` and `done` are
+    ordinary words in ordinary commands (`grep -n done log`) and a stray one opened a depth
+    nothing closed. Both figures are against the same corpus and the same final code.
+
+    CONNECTORS are stepped over rather than ended on. `then`, `do`, `else` and `elif` sit in
+    command position without being commands, so stopping at them made the walk asymmetric:
+    the inner `if` of `if true; then if true; then ...; fi; fi` went uncounted while its `fi`
+    still closed, driving the depth to zero a whole compound early.
+    """
+    delta = 0
+    for w in words:
+        if w in _GROUP_CONNECT:
+            continue                      # in command position, but not a command
+        if w in _GROUP_OPEN:
+            delta += 1
+        elif w in _GROUP_CLOSE:
+            delta -= 1
+        else:
+            break                         # past the preamble; the rest is this command's data
+    return delta
+
+
+def _carries_no_command(segtext):
+    """True for a stage that holds no command at all: empty, or only a comment.
+
+    `_normalize` turns a NEWLINE into `;`, so `printf 'rm -rf src' |` + newline + `bash` --
+    one ordinary pipeline, and one bash accepts -- arrives here as a `|` feeding an empty
+    stage, then a `;` before the shell. Reading that `;` as the end of the pipeline dropped
+    the fed state one stage before the receiver. A comment after the pipe does the same.
+    """
+    stripped = segtext.strip()
+    return stripped == "" or stripped.startswith("#")
+
+
+def _may_read_program_from_stdin(segtext):
+    """Could this pipeline stage be a shell, running whatever the producer wrote?
+
+    Deliberately WIDE, and free of any option-arity table. Deciding this from the flags
+    -- is there a `-c`? does `-s` mean stdin? -- is the arity question this module refuses
+    to answer, and it failed OPEN four different ways when tried (`bash --norc` read as
+    "-c is present", `bash --rcfile -c` read the option's VALUE as the option). It is not
+    needed: the pipeline STRUCTURE already says the stage is being fed, so the only
+    remaining question is whether the thing being fed might be a shell.
+
+    So: a shell name anywhere in the stage counts, tokens are re-split on whitespace first
+    (`env -S 'bash -s'` arrives as ONE token), and a command word carrying an expansion or a
+    glob (`| $SHELL`, `| /bin/[b]ash`) counts too. This only decides whether to ALSO scan the
+    producer, so a false positive costs precision on one command while a false negative is a
+    fail-OPEN.
+    """
+    toks = _lex(segtext)
+    if toks is None:
+        return True                       # unparseable stage: assume the worst
+    words = list(_stage_words(toks))
+    if any(_basename(w) in _STDIN_SHELLS for w in words):
+        return True
+    # An option BUNDLE with its value attached. `env -iS'bash -s'` lexes to `-iSbash -s`,
+    # whose first word is `-iSbash`: peeling ONE option letter leaves `Sbash`, and peeling a
+    # fixed number never terminates, because the bundle length is the caller's to choose.
+    # Asking whether a dash-word ENDS WITH a shell name is O(names) instead of O(length^2),
+    # which matters in a file that has already been bitten twice by quadratic scans.
+    if any(w.startswith("-") and any(w.endswith(n) for n in _STDIN_SHELLS) for w in words):
+        return True
+    # A stage can RUN a shell without naming one in command position: `eval "$A"` resolves to
+    # bash at run time, and its command word is `eval`. So the operands this stage EXECUTES
+    # are asked the same two questions the stage itself was.
+    for prog in _executed_operands(toks):
+        if any(ch in prog for ch in _UNRESOLVED_CW_CHARS):
+            return True
+        if any(_basename(w) in _STDIN_SHELLS for w in prog.split()):
+            return True
+    cw = _effective_command_word(toks)
+    # `.` is the POSIX spelling of `source`, and `. /dev/stdin` runs the piped text. It is
+    # tested in COMMAND POSITION only, unlike every other name here: a bare `.` is an
+    # ordinary argument (`find . -name x`), and putting it in the name set -- which matches
+    # any word in the stage -- cost 100 over-blocks for a shape that is always a command
+    # word when it means anything.
+    if cw and _basename(cw) == ".":
+        return True
+    if cw and any(ch in cw for ch in _UNRESOLVED_CW_CHARS):
+        return True
+    # Last: the extglob spelling, resolved. Guarded by the substitution actually changing
+    # something, so this cannot recurse -- `_EXTGLOB_RE` only ever shortens the text.
+    if _EXTGLOB_NEG_RE.search(segtext):
+        return True                       # a negated pattern names anything: fail closed
+    deglob = _EXTGLOB_RE.sub(r"\1", segtext)
+    if _EXTGLOB_RE.search(deglob) or _EXTGLOB_NEG_RE.search(deglob):
+        # NESTED, and one substitution pass does not reach it: `ba@(+(s))h` still holds a
+        # group after the inner one is resolved. Iterating to a fixed point is just a slower
+        # guess at a grammar, so this takes the same exit the negation and the alternation
+        # take -- unresolved, and unresolved fails CLOSED.
+        return True
+    if deglob != segtext:
+        toks = _lex(deglob)
+        if toks is None:
+            return True
+        return any(_basename(w) in _STDIN_SHELLS for w in _stage_words(toks))
+    return False
+
+
+def _stage_words(toks):
+    """Every word this stage could resolve to a command NAME.
+
+    Whitespace-splitting each token is not enough, because an option can carry its value
+    ATTACHED: BSD/macOS `env -S'bash -s'` lexes to the single token `-Sbash -s`, whose first
+    word is `-Sbash` and matches no shell. That is the third attached-operand miss in this
+    family, so the peel is general rather than env-specific -- drop the leading dashes and
+    one option letter, and take everything past a long option's `=`. Over-generating here
+    is free: these words only decide whether to ALSO scan the producer.
+    """
+    for t in toks:
+        forms = [t]
+        # A COMMAND SUBSTITUTION inside an argument inherits the pipeline stdin, so
+        # `printf <payload> | echo "$(bash)"` runs the payload while the stage command word
+        # is `echo`. Splitting the substitution punctuation into whitespace hands the body
+        # to the SAME shell-name test the stage itself gets, rather than adding a second
+        # rule -- so a substitution counts only when it actually names a shell.
+        if "$(" in t or chr(96) in t or "(" in t:
+            forms.append(t.replace("$(", " ").replace(chr(96), " ")
+                          .replace("(", " ").replace(")", " "))
+        if t.startswith("-"):
+            forms.append(t.lstrip("-")[1:])       # value glued behind a short option
+            forms.append(t.partition("=")[2])     # ...or behind a long one
+        for f in forms:
+            for w in f.split():
+                yield w
+
+
+def _piped_shell_producers(pairs):
+    """Text feeding each pipeline stage that might be a shell.
+
+    A shell given neither `-c` nor a script operand runs whatever stdin produced, so
+    `printf 'rm -f src/impl.py' | bash` performs the write even though NO segment holds a
+    verb in command position: the payload is quoted DATA to printf, and the bash stage has
+    no operand at all. The `<<<` transport was closed by an operand branch a pipe never
+    reaches, and the pre-#519 raw regex caught this one -- so leaving it is a REGRESSION of
+    this module, not a gap inherited from it.
+
+    What the producer WRITES is not recoverable by parsing (`printf '%s%s' r 'm -rf src'`
+    assembles the verb from two individually inert operands), so the answer is not a better
+    parse but the older, wider one: hand the producer text to the raw regexes. Scoping the
+    scan to the PRODUCER rather than to the whole command is what keeps it cheap --
+    measured over 34,758 real commands, scanning the whole command on any shell name
+    over-blocked 2,693 of them (7.7%, mostly `bash tests/foo.sh` beside an unrelated `git`)
+    while the producer scan over-blocks 1,440 (4.14%). Both figures are against the SAME
+    corpus and the SAME final code; ADR 0032 carries the full table and the per-rule
+    isolation, and any number quoted here must match it.
+
+    RESIDUAL, inherited rather than introduced: the raw scan misses a verb the producer
+    assembles from separate operands, and it always did. `bash < payload.sh` carries no
+    producer text at all, and the pre-#519 regex could not see that file either.
+
+    GROUPING IS TRANSPARENT, and getting that wrong was a live fail-open in two successive
+    cuts of this function. The splitter breaks on `(`, `)` and on every `;`, so the payload
+    -- or the shell -- can sit behind what merely LOOKS like a pipeline boundary:
+    `(printf 'rm -rf src') | bash`, `{ printf 'rm -rf src'; } | bash`,
+    `printf 'rm -rf src' | (bash)`, `printf 'rm -rf src' | { :; bash; }` and its
+    parenthesised twin were each measured executing the write while classifying as a read.
+
+    So a GROUP DEPTH is tracked, and inside a group a separator separates nothing that
+    matters here: only a `;`/`&`/`&&`/`||` at depth 0 starts a new pipeline. Counting `{`
+    and `}` as whole WORDS is what keeps `"${VAR}"` from being read as a group. This
+    subsumes the narrower "a segment that is only `}`" rule that closed the producer half
+    but left the receiver half open.
+
+    Widening the producer to the whole command prefix would close the same family without
+    any of this, and was measured mid-development at 559 over-blocks (1.61%) against 43 for
+    the pipeline scope at that same commit, because a multi-line command drags every earlier
+    line into the scan. The scope decision is what that comparison settled; the FINAL total
+    for the pipeline scope is 1,440, the rest being the grouping, indirection and newline rules
+    afterwards (isolated in ADR 0032).
+
+    ONE producer per pipeline, from its LAST candidate stage. Every earlier candidate's
+    producer is a prefix of that one, so the regexes see the same text either way -- and
+    building them all is O(stages^2) BYTES, which is how the `watch` scan above reached
+    218 MB inside a hook whose timeout reads as allow. Pipelines partition the command, so
+    the emitted slices are disjoint and this stays linear.
+    """
+    # TWO depths, each clamped at zero, never one sum. A `case` pattern terminator is a bare
+    # `)` with no opener -- `case x in x) printf 'rm -rf src';; esac | bash` -- so a single
+    # counter let that `)` cancel the `case` keyword's depth, and the `;;` behind it then
+    # discarded the producer. Kept apart, an unmatched `)` clamps its own counter at zero and
+    # cannot reach into the keyword one.
+    out, start, last, fed, bare = [], 0, None, False, False
+    pdepth = kdepth = 0
+    for i, (op, seg) in enumerate(pairs):
+        pdepth = max(0, pdepth + op.count("(") - op.count(")"))
+        depth = pdepth + kdepth
+        # A PIPE FEEDS AT ANY DEPTH, and this test has to come first. Folding it into the
+        # in-a-group branch meant a pipeline written entirely inside a group --
+        # `(printf 'rm -rf src' | bash)`, `{ printf 'rm -rf src' | bash; }` -- had its pipe
+        # ignored, so the shell was never seen as fed. Depth suppresses only the SEPARATOR,
+        # which is the single thing it is there for.
+        if _is_pipe(op):
+            fed = True
+        elif (op and all(ch in "()" for ch in op)) or depth > 0:
+            pass                          # grouping: does not terminate the pipeline
+        elif fed and bare:
+            pass                          # a normalized newline/comment between | and the shell
+        else:                             # `;`, `&`, `&&`, `||` start a new pipeline
+            if last is not None:
+                out.append(" ; ".join(p[1] for p in pairs[start:last]))
+            start, last, fed = i, None, False
+        if fed:
+            # CHARGE FIRST. _may_read_program_from_stdin walks the operands this stage
+            # EXECUTES, which is the same potentially quadratic walk the budget charged at
+            # the end of is_file_mod exists to bound -- and this loop reached it once per
+            # stage without paying. A 60,004-character command took about 3.8s, and the
+            # hook it backs has a 5s timeout after which NO decision is written, which the
+            # harness reads as ALLOW. Overrunning leaves the budget negative, so the charge
+            # downstream fails CLOSED. The gate copy already charged here.
+            _scan_budget[0] -= len(seg.split())
+            if _scan_budget[0] < 0:
+                break
+            if _may_read_program_from_stdin(seg):
+                last = i
+        bare = _carries_no_command(seg)
+        # Counted loosely, and safe BECAUSE of the ordering above. A literal `{` argument
+        # (`echo { ; printf ... | bash`) leaves a depth this reader never closes, but with
+        # the pipe branch first the only consequence is that a separator stops resetting --
+        # which WIDENS the producer. Depth can never hide a pipe, so an over-count costs
+        # precision and never opens a hole; the clamp keeps a stray `}` from going negative.
+        words = seg.split()
+        kdepth = max(0, kdepth + _group_delta(words))
+    if last is not None:
+        out.append(" ; ".join(p[1] for p in pairs[start:last]))
+    return out
+
+
+def _defuse_comments(s):
+    """Blank the SEPARATOR characters inside shell comments, quote-aware, leaving all other
+    text -- and the newlines that end the comments -- exactly where they were.
+
+    A comment runs from an unquoted `#` in word position to the end of its LINE, and it can
+    contain anything, including `;`. _normalize rewrites newlines to `;` a moment later, so
+    a comment reaching the splitter intact arrives as ordinary segments: `printf <payload> |
+    # ; ignored` + newline + `bash` split into a comment segment AND a bare `ignored`, which
+    read as a real command and ended the pipeline one stage before its shell.
+
+    DEFUSING rather than DELETING is the whole point, and deleting was tried first: it moved
+    14 real commands from block to ALLOW, because a comment holding an apostrophe (`# the
+    caller's copy`) had been making the whole command unparseable, and unparseable is the
+    fail-CLOSED path. Removing the comment removed the apostrophe, the command parsed, and
+    the gate honestly allowed it. A change to a fail-closed classifier may only ever ADD
+    blocks; blanking in place keeps every byte of length and every scannable word where the
+    raw regexes already saw them.
+
+    QUOTES inside the comment are blanked too, and that is the one thing keeping them would
+    cost: bash ignores quoting in a comment entirely, so a comment holding an apostrophe
+    changes the quote state of everything AFTER it. Two of them balance -- `# '` + newline +
+    `rm -rf src` + newline + `# '` -- and the write in between reads as quoted text; one of
+    them unbalances, and `# the caller's copy` + newline + `cat > src/impl.py` measured
+    ALLOW at the gate for exactly that reason. Both are fail-OPENS, and both close here.
+
+    Word position matters -- bash treats `a#b` and `sed 's#a#b#'` as ordinary text, so a `#`
+    only opens a comment after whitespace, a separator, or at the start of the command. It
+    is tracked as explicit STATE rather than read back off the previous output character,
+    because that character does not say whether it was escaped or quoted, and two spellings
+    turn on exactly that: `)` can close a substitution INSIDE the current word, so
+    `echo $(true)#x` is one word; and an ESCAPED space is an ordinary character, so
+    `echo foo\\ #notcomment` is one word too. Both were read as comments, and both blanked
+    the real separator that followed.
+    """
+    out, in_s, in_d, esc = [], False, False, False
+    word = True                           # a `#` HERE would open a comment
+    group = []                            # one bit per open paren: subshell or substitution
+    i, n = 0, len(s)
+    while i < n:
+        ch = s[i]
+        if esc:
+            out.append(ch); esc = False; word = False
+        elif in_s:
+            out.append(ch)
+            if ch == _SQ:
+                in_s = False
+            word = False
+        elif in_d:
+            out.append(ch)
+            if ch == chr(92):
+                esc = True
+            elif ch == _DQ:
+                in_d = False
+            word = False
+        elif ch == chr(92):
+            out.append(ch); esc = True; word = False
+        elif ch == _SQ:
+            out.append(ch); in_s = True; word = False
+        elif ch == _DQ:
+            out.append(ch); in_d = True; word = False
+        elif ch == "#" and out and out[-1] == ")":
+            # AMBIGUOUS, and deliberately not guessed at. Whether this `)` delimited a
+            # command -- making the `#` a comment -- depends on what its `(` opened, and
+            # bash has four answers: a SUBSHELL and a case PATTERN delimit, a SUBSTITUTION
+            # and a FUNCTION HEADER do not. Three successive review rounds each closed one
+            # spelling and opened another, which is the signature of a question that should
+            # not be answered by refinement. So it is not answered: the text is left exactly
+            # as it stands, and the command is flagged for the raw whole-command scan, which
+            # is the fail-CLOSED reading. One command in a 34,758-command corpus contains
+            # this shape at all, so the precision cost is nil.
+            _paren_hash_ambiguous[0] = True
+            out.append(ch)
+            word = False
+        elif ch == "#" and word:
+            while i < n and s[i] != "\n":
+                out.append(" " if s[i] in ";&|()" + _SQ + _DQ else s[i])
+                i += 1
+            continue                      # the newline itself stays: it is the separator
+        elif ch == "(":
+            out.append(ch)
+            # WHICH kind of paren, because their closers differ. A bare `(` in word position
+            # opens a SUBSHELL, and its `)` ends a command -- so `(true)# x` really is a
+            # comment. A `$(` (or one inside a word) opens a SUBSTITUTION, and its `)` sits
+            # mid-word -- so `echo $(true)#x` is not. One bit per paren is enough, and both
+            # spellings were fail-opens in successive rounds: first `)` always delimited,
+            # then `)` never did.
+            group.append(word and not (len(out) > 1 and out[-2] == "$"))
+            word = True
+        elif ch == ")":
+            out.append(ch)
+            word = group.pop() if group else False
+        else:
+            out.append(ch)
+            word = ch in " \t\n;&|"
+        i += 1
+    return "".join(out)
 
 
 def _normalize(cmd):
     """Apply the same pre-tokenization normalization the anti-forge detector uses, so
-    the two agree on what a 'token' is: line continuations rejoined, newlines treated
-    as command separators, ANSI-C/locale quote prefixes dropped so shlex sees the
-    quote, and ${IFS} field-splitting obfuscation restored to real whitespace."""
+    the two agree on what a 'token' is: line continuations rejoined, separators inside
+    COMMENTS blanked while the newlines ending them still exist, newlines treated as
+    command separators,
+    ANSI-C/locale quote prefixes dropped so shlex sees the quote, and ${IFS}
+    field-splitting obfuscation restored to real whitespace."""
     norm = cmd.replace("\r\n", "\n").replace("\r", "\n")
-    norm = norm.replace(chr(92) + chr(10), "").replace("\n", " ; ")
+    norm = norm.replace(chr(92) + chr(10), "")
+    norm = _defuse_comments(norm)  # BEFORE newlines become separators -- see the docstring
+    norm = norm.replace("\n", " ; ")
     norm = norm.replace("$" + _SQ, _SQ).replace("$" + _DQ, _DQ)
     norm = re.sub(r"\$\{IFS\}|\$IFS(?![A-Za-z0-9_])", " ", norm)
     # Drop shell FUNCTION-DEFINITION headers (`mv() {`, `rm ( ) {`). _split_simple_commands
@@ -1220,10 +1812,46 @@ def is_file_mod(cmd, _depth=0):
     for body in bodies:
         if is_file_mod(body, _depth + 1):
             return True
-    segs, ok = _split_simple_commands(_normalize(cmd))
+    _paren_hash_ambiguous[0] = False
+    pairs, ok = _split_with_ops(_normalize(cmd))
     if not ok:
         return _regex_fallback(cmd)
-    for segtext in segs:
+    # `)#` -- the comment defuser could not tell whether that paren delimited a command, so
+    # it refused to guess and said so. Unresolved is the fail-CLOSED case here exactly as it
+    # is for an unparseable command above: fall back to the raw whole-command scan.
+    if _paren_hash_ambiguous[0]:
+        if _regex_fallback(cmd):
+            return True
+        if any(_RAW_WRITE_REDIR_RE.search(v) for v in _shell_variants(cmd)):
+            return True
+    # A shell on the RECEIVING end of a pipe executes what the producer wrote, and this
+    # scan can only see that payload as data. Degrade to the pre-#519 raw scan over the
+    # producer -- see _piped_shell_producers for why the pipe is not modelled instead.
+    #
+    # BOTH halves of the verdict, exactly as the depth cap above learned to do: the verb
+    # regexes cannot see a redirect-only write, so `printf 'echo x > src/impl.py' | bash`
+    # performed the write and classified as a read. The caller's own redirect check does not
+    # cover it either -- it strips single-quoted text first, which is where a payload lives.
+    _producers = _piped_shell_producers(pairs)
+    for producer in _producers:
+        if _regex_fallback(producer):
+            return True
+        if any(_RAW_WRITE_REDIR_RE.search(v) for v in _shell_variants(producer)):
+            return True
+    # INDIRECTION WITHDRAWS THE STAGE CONTRACT, the same way it does in the helper guard.
+    # A NAME can stand for either end of the transport: `f(){ bash; }; printf <payload> | f`
+    # hides the shell, and `g(){ printf <payload>; }; g | bash` hides the payload -- and the
+    # definition sits in a DIFFERENT pipeline from the use, so no producer slice contains it.
+    # Rather than resolve functions and aliases (and lose to the next spelling), a command
+    # that BOTH introduces indirection AND feeds a candidate stage is scanned whole.
+    # Keyed on ANY pipe, not on a candidate stage: the whole point is that the receiver may
+    # be a NAME (`... | f`), which no candidate test can recognise as a shell.
+    if any(_is_pipe(_o) for _o, _ in pairs) and _has_indirection(cmd):
+        if _regex_fallback(cmd):
+            return True
+        if any(_RAW_WRITE_REDIR_RE.search(v) for v in _shell_variants(cmd)):
+            return True
+    for _op, segtext in pairs:
         try:
             lex = shlex.shlex(segtext, posix=True, punctuation_chars=True)
             lex.whitespace_split = True

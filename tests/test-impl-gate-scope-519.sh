@@ -451,6 +451,580 @@ fi
 check "sed -f -- -i writes in place" block "$(bash_decision "sed -f -- -i file")"
 check "read-only sed on a file named --in over-blocks (deliberate)" block \
     "$(bash_decision "sed -n -- --in")"
+# ── #557: shell source arriving over a PIPE, not just via <<< ───────────────
+# A shell given neither -c nor a script operand runs whatever stdin produced, so the
+# payload is quoted DATA in the producer and the executing stage has no operand at all.
+# The `<<<` spelling was closed by an operand branch a pipe never reaches, and the
+# pre-#519 raw regex caught this one -- a REGRESSION, not an inherited gap.
+check "printf piped into bash runs its payload" block \
+    "$(bash_decision "printf 'rm -f src/impl.py' | bash")"
+check "echo piped into sh runs its payload" block \
+    "$(bash_decision "echo 'rm -rf src' | sh")"
+check "explicit -s stdin form runs its payload" block \
+    "$(bash_decision "printf 'rm -f src/impl.py' | sh -s")"
+check "a payload piped through a middle stage still reaches the shell" block \
+    "$(bash_decision "printf 'rm -rf src' | cat | bash")"
+# Spellings that a "which flag means stdin" test would each miss individually. The stage
+# test carries NO arity table: it asks only whether the fed stage might be a shell, so
+# every one of these lands in the same branch.
+check "a WRAPPED stdin shell runs its payload" block \
+    "$(bash_decision "printf 'rm -rf src' | env sh")"
+check "a shell hidden inside an env -S operand runs its payload" block \
+    "$(bash_decision "printf 'rm -rf src' | env -S 'bash -s'")"
+check "bash --norc still reads its payload from stdin" block \
+    "$(bash_decision "printf 'rm -rf src' | bash --norc")"
+check "bash --rcfile still reads its payload from stdin" block \
+    "$(bash_decision "printf 'rm -rf src' | bash --rcfile /dev/null")"
+check "a -c AFTER -- is an operand, not the option" block \
+    "$(bash_decision "printf 'rm -rf src' | bash -s -- -c")"
+check "an UNRESOLVABLE command word on the receiving end still blocks" block \
+    "$(bash_decision 'printf "rm -rf src" | $SHELL')"
+# GROUPING is transparent, in both directions. The segmenter splits on parens and on the
+# `;` inside a brace group, so each of these three put the payload -- or the shell -- behind
+# what LOOKS like a pipeline boundary, and each was measured executing the write while
+# classifying as a read.
+check "a parenthesised PRODUCER still reaches the shell" block \
+    "$(bash_decision "(printf 'rm -rf src') | bash")"
+check "a brace-grouped PRODUCER still reaches the shell" block \
+    "$(bash_decision "{ printf 'rm -rf src'; } | bash")"
+check "NESTED brace groups still reach the shell" block \
+    "$(bash_decision "{ { printf 'rm -rf src'; }; } | bash")"
+check "a parenthesised RECEIVER is still a shell" block \
+    "$(bash_decision "printf 'rm -rf src' | (bash)")"
+# A group with its OWN separator inside it. The `}`-segment rule closed the producer half
+# and left this open: every `;` reset the pipe-fed state, so the shell behind one was never
+# seen as fed. Depth tracking is what makes the two halves agree.
+check "a brace RECEIVER containing a separator is still fed" block \
+    "$(bash_decision "printf 'rm -rf src' | { :; bash; }")"
+check "a paren RECEIVER containing a separator is still fed" block \
+    "$(bash_decision "printf 'rm -rf src' | ( :; bash )")"
+# ...and the brace counting must be by WORD, or a ${VAR} reference reads as an open group
+# and swallows every separator after it.
+check "a \${VAR} reference is not a brace group" allow \
+    "$(bash_decision 'echo "${VAR}" | bash scripts/x.sh')"
+# An option value ATTACHED to its flag. shlex hands back ONE token whose first word is
+# `-Sbash`, which matches no shell -- the third attached-operand miss in this family, so the
+# peel is general rather than env-specific.
+check "an ATTACHED env -S operand still names a shell" block \
+    "$(bash_decision "printf 'rm -rf src' | env -S'bash -s'")"
+check "a long --split-string operand still names a shell" block \
+    "$(bash_decision "printf 'rm -rf src' | env --split-string='bash -s'")"
+# A REDIRECT-ONLY payload. The verb regexes cannot see a write with no verb in it, and the
+# gate's own redirect check strips single-quoted text first -- which is exactly where a
+# piped payload lives. Both halves of the verdict have to survive the transport.
+check "a redirect-only payload piped into bash still writes" block \
+    "$(bash_decision "printf 'echo x > src/impl.py' | bash")"
+# The WHOLE pipeline inside one group. Depth must suppress the SEPARATOR only -- folding
+# the pipe test into the in-a-group branch made these two ignore their own pipe, so the
+# shell was never seen as fed at all.
+check "a pipeline written wholly inside parens still feeds its shell" block \
+    "$(bash_decision "(printf 'rm -rf src' | bash)")"
+check "a pipeline written wholly inside braces still feeds its shell" block \
+    "$(bash_decision "{ printf 'rm -rf src' | bash; }")"
+check "a grouped harmless pipeline stays allowed" allow \
+    "$(bash_decision "(printf 'hello' | bash)")"
+# A LITERAL brace argument leaves a depth this reader never closes. Ordering is what makes
+# that safe: a stale depth only stops a separator from resetting, which WIDENS the
+# producer, and can never hide a pipe.
+check "a literal brace argument cannot hide a later pipeline" block \
+    "$(bash_decision "echo { ; printf 'rm -rf src' | bash")"
+# Command substitution as the RECEIVER, in both spellings. Each resolves to a shell that
+# this reader cannot see, so an unresolvable command word has to count.
+check "a backtick-substituted receiver still blocks" block \
+    "$(bash_decision 'printf "rm -rf src" | `printf bash`')"
+check "a \$()-substituted receiver still blocks" block \
+    "$(bash_decision 'printf "rm -rf src" | $(printf bash)')"
+# A pipeline broken across LINES. The normalizer turns a newline into a separator, so this
+# ordinary two-line pipeline -- which bash runs as one -- arrived as a pipe feeding an empty
+# stage, then a separator before the shell. Same for a comment sitting after the pipe.
+check "a pipeline broken across lines still feeds its shell" block \
+    "$(bash_decision "$(printf 'printf %s | \nbash' "'rm -rf src'")")"
+check "a comment after the pipe does not break the pipeline" block \
+    "$(bash_decision "$(printf 'printf %s | # note\nbash' "'rm -rf src'")")"
+check "a harmless two-line pipeline stays allowed" allow \
+    "$(bash_decision "$(printf 'printf %s | \nbash' "'hello'")")"
+# COMPOUND commands are one pipeline stage however many separators sit inside them. Braces
+# were only the first spelling of this family; `if`, `for`, `while` and `case` are the rest,
+# and each was verified running the piped program.
+check "an if-receiver still runs the piped program" block \
+    "$(bash_decision "printf 'rm -rf src' | if true; then bash; fi")"
+check "a for-receiver still runs the piped program" block \
+    "$(bash_decision "printf 'rm -rf src' | for x in 1; do bash; done")"
+check "a while-receiver still runs the piped program" block \
+    "$(bash_decision "printf 'rm -rf src' | while read l; do bash; done")"
+check "a case-receiver still runs the piped program" block \
+    "$(bash_decision "printf 'rm -rf src' | case x in x) bash;; esac")"
+check "a compound PRODUCER is not truncated at its own separator" block \
+    "$(bash_decision "if true; then printf 'rm -rf src'; fi | bash")"
+check "a harmless if-receiver stays allowed" allow \
+    "$(bash_decision "printf 'hello' | if true; then bash; fi")"
+# ...and the keywords count only in COMMAND position, or every `done` in a grep argument
+# would open a group that nothing closes.
+check "a compound keyword as plain data opens no group" allow \
+    "$(bash_decision "grep -n done log ; git status")"
+# NESTED compounds. The leading-run walk has to step OVER `then`/`do`/`else`/`elif`, or the
+# inner opener goes uncounted while its closer still closes -- driving the depth to zero a
+# whole compound early, which discards the producer.
+check "a nested compound PRODUCER is not truncated" block \
+    "$(bash_decision "if true; then if true; then printf 'rm -rf src'; fi; fi | bash")"
+check "a nested compound RECEIVER still runs the piped program" block \
+    "$(bash_decision "printf 'rm -rf src' | if true; then if true; then bash; fi; fi")"
+# A `case` PATTERN terminator is a bare `)` with no opener. Counting parens and keywords in
+# ONE depth let that `)` cancel the `case`, and the `;;` behind it then discarded the
+# producer -- so the two are counted separately, each clamped at zero.
+check "a case PRODUCER survives its pattern terminator" block \
+    "$(bash_decision "case x in x) printf 'rm -rf src';; esac | bash")"
+check "a case RECEIVER with a leading command still gets fed" block \
+    "$(bash_decision "printf 'rm -rf src' | case x in x) :; bash;; esac")"
+check "an ordinary case beside a git read stays allowed" allow \
+    "$(bash_decision "case x in x) echo hi;; esac ; git status")"
+# PIPELINE PREFIXES. bash allows `time`, `time -p` and `!` in front of a compound command,
+# and stopping the leading-run walk on one counted no opener while its closer still closed.
+check "a time-prefixed compound PRODUCER is not truncated" block \
+    "$(bash_decision "time if true; then printf 'rm -rf src'; fi | bash")"
+check "a !-prefixed compound PRODUCER is not truncated" block \
+    "$(bash_decision "! if false; then :; else printf 'rm -rf src'; fi | bash")"
+# A BUNDLED option carrying the program. Peeling one option letter leaves `Sbash`, and
+# peeling a fixed number never terminates -- the bundle length is the caller choice -- so the
+# test asks whether a dash-word ENDS WITH a shell name instead.
+check "a BUNDLED env option still names a shell" block \
+    "$(bash_decision "printf 'rm -rf src' | env -iS'bash -s'")"
+check "a longer option bundle still names a shell" block \
+    "$(bash_decision "printf 'rm -rf src' | env -uXS'bash -s'")"
+check "a bundled env option with a harmless payload stays allowed" allow \
+    "$(bash_decision "printf 'hello' | env -iS'bash -s'")"
+# INDIRECTION: a NAME can stand for either end of the transport, and the definition sits in a
+# DIFFERENT pipeline from the use, so no producer slice contains it. A command that both
+# introduces indirection and contains a pipe is therefore scanned whole.
+check "an eval receiver resolving to a shell blocks" block \
+    "$(bash_decision 'A=bash; printf "rm -rf src" | eval "$A"')"
+check "a FUNCTION receiver hiding the shell blocks" block \
+    "$(bash_decision 'f(){ bash; }; printf "rm -rf src" | f')"
+check "a FUNCTION producer hiding the payload blocks" block \
+    "$(bash_decision 'g(){ printf "rm -rf src"; }; g | bash')"
+check "a function receiver with a harmless payload stays allowed" allow \
+    "$(bash_decision 'f(){ bash; }; printf "hello" | f')"
+# One more listed stdin shell. The list is an ENUMERATION with a stated residual -- adding a
+# name is free, so it is added rather than argued about.
+check "yash reads its program from stdin too" block \
+    "$(bash_decision "printf 'rm -rf src' | yash")"
+# The `function` KEYWORD form defines a function with no `()` at all, and the shell
+# concatenates adjacent quoted runs -- so `ev"al"` runs eval while the raw text holds no
+# contiguous `eval`. Both are matched, the second on the quote-squeezed copy.
+check "the function KEYWORD form is indirection too" block \
+    "$(bash_decision 'function f { bash; }; printf "rm -rf src" | f')"
+check "a quote-split eval is still eval" block \
+    "$(bash_decision 'ev"al" '"'"'g(){ printf "rm -rf src"; }'"'"'; g | bash')"
+check "merely MENTIONING a function stays allowed" allow \
+    "$(bash_decision "grep -n 'function foo' src.js ; git status")"
+# A shell function NAME is any word free of the metacharacters that end it: bash runs
+# `f-x`, `f.x` and `my:fn`, none of which an identifier charset matches. Both definition
+# forms carried that charset, so both were bypassable by a hyphen.
+check "a hyphenated function name is still indirection (keyword form)" block \
+    "$(bash_decision 'function f-x { bash; }; printf "rm -rf src" | f-x')"
+check "a hyphenated function name is still indirection (POSIX form)" block \
+    "$(bash_decision 'f-x() { bash; }; printf "rm -rf src" | f-x')"
+check "a dotted function name is still indirection" block \
+    "$(bash_decision 'function f.x { bash; }; printf "rm -rf src" | f.x')"
+# A function BODY is any compound command, so requiring a `{` after the name missed
+# `function f while ...; do ...; done` and `function f [[ ... ]]`. Enumerating body shapes
+# is the arity guess this file refuses; the branch keys on the KEYWORD IN COMMAND POSITION
+# instead, which is what keeps `grep function file` (the line above) allowed.
+check "a brace-less loop body still defines a function" block \
+    "$(bash_decision 'function fz while false; do bash; done; printf "rm -rf src" | fz')"
+check "a brace-less [[ ]] body still defines a function" block \
+    "$(bash_decision 'function fz [[ 1 ]]; printf "rm -rf src" | fz')"
+check "a function defined inside an if is still indirection" block \
+    "$(bash_decision 'if true; then function f { bash; }; fi; printf "rm -rf src" | f')"
+# `env -S` hands its OPERAND to execvp, and the operand can be an expansion -- so the
+# stage runs a shell while its command word never names one, and peeling options returns
+# nothing at all. The executed operands are asked the same questions the stage was.
+check "an executed operand that expands to a shell is a receiver" block \
+    "$(bash_decision 'A=bash; printf "python3 hooks/gate-scripts/lib/lease_slot.py x" | env -S"$A"')"
+# `<&` duplicates a descriptor exactly as `>&` does, but only the OUTPUT spelling was joined
+# to its redirect -- so the splitter cut mid-redirect and the producer became the bare `0`.
+check "an input fd duplication does not split the producer" block \
+    "$(bash_decision "printf 'rm -rf src' <&0 | bash")"
+check "...and the same shape reaching the helper guard" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' <&0 | bash")"
+# COMMAND POSITION is the whole reserved-word set, not the three words that happened to be
+# listed: `if`, `while`, `until`, `!` and `time` all put the next word in command position.
+# The anchor is derived from _GROUP_OPEN | _GROUP_CONNECT so adding a keyword extends it.
+check "a function defined as the if CONDITION is indirection" block \
+    "$(bash_decision 'if function f { bash; }; then printf "rm -rf src" | f; fi')"
+check "a function defined as the while CONDITION is indirection" block \
+    "$(bash_decision 'while function f { bash; }; do printf "rm -rf src" | f; done')"
+check "a function behind the time prefix is indirection" block \
+    "$(bash_decision 'time -p function f { bash; }; printf "rm -rf src" | f')"
+check "a function behind the ! prefix is indirection" block \
+    "$(bash_decision '! function f { bash; }; printf "rm -rf src" | f')"
+# The `name()` form needed the same treatment, and had only separators. It cannot sit behind
+# a group CLOSER or a pipeline prefix (`} f(){` and `! f(){` are not definitions), so its
+# anchor takes openers and reserved words only -- admitting the closers cost 698 further
+# over-blocks and closed nothing.
+check "an explicit fd input duplication does not split either" block \
+    "$(bash_decision "printf 'rm -rf src' 3<&0 | bash")"
+check "a closing input duplication does not split either" block \
+    "$(bash_decision "printf 'rm -rf src' <&- | bash")"
+check "a name() definition after then is indirection" block \
+    "$(bash_decision 'if true; then f(){ bash; }; printf "rm -rf src" | f; fi')"
+check "a name() definition inside a brace group is indirection" block \
+    "$(bash_decision '{ f(){ bash; }; printf "rm -rf src" | f; }')"
+check "a name() definition inside a subshell is indirection" block \
+    "$(bash_decision '( f(){ bash; }; printf "rm -rf src" | f )')"
+check "a name() definition inside a do body is indirection" block \
+    "$(bash_decision 'while true; do f(){ bash; }; printf "rm -rf src" | f; break; done')"
+# The PIPED-producer probe used the plain name test while its siblings used the glob-aware
+# one, so a helper named through a glob in a piped payload walked through.
+check "a globbed helper in a PIPED payload is caught" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slo?.py x' | bash")"
+check "...and the bracket spelling of the same" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slo[t].py x' | bash")"
+check "a glob in a piped payload matching NO helper stays allowed" allow \
+    "$(bash_decision "printf 'python3 scripts/harmles?.py x' | bash")"
+# A COMMENT runs to the end of its line and may contain `;`. `_normalize` rewrites newlines
+# to `;` a moment later, so an intact comment split into a comment segment plus a bare word
+# that read as a real command and ended the pipeline one stage early. The separators inside
+# the comment are BLANKED rather than the comment deleted -- deleting also removed
+# apostrophes, which moved 14 real commands from block to ALLOW by making them parseable.
+check "a comment containing a separator does not end the pipeline" block \
+    "$(bash_decision "printf 'rm -rf src' | # ; ignored
+bash")"
+check "...and the same shape reaching the helper guard" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | # ; ignored
+bash")"
+check "a comment before a harmless receiver stays allowed" allow \
+    "$(bash_decision "printf 'hello' | # ; ignored
+cat")"
+check "a # that is not in word position is not a comment" allow \
+    "$(bash_decision "sed 's#a#b#' f | head")"
+# `)` is not word position either: it can close a substitution INSIDE the current word, so
+# `echo $(true)#x` is one word and the `;` after it is a real separator. Treating it as a
+# comment opener blanked that separator and hid everything after it.
+check "a # after a closing substitution is not a comment" block \
+    "$(bash_decision 'echo $(true)#x; rm -rf src')"
+# Nor is a `#` after an ESCAPED space: the escape makes it an ordinary character, so the
+# word continues. Both spellings turn on state the previous OUTPUT character cannot carry,
+# which is why word position is tracked explicitly rather than inferred.
+check "a # after an escaped space is not a comment" block \
+    "$(bash_decision 'echo foo\ #notcomment; rm -rf src')"
+# The same class in the splitter: an escaped `<` is an argument, not a redirect, so the `|`
+# after it is a real pipe. Inferring from the buffered character lost the pipeline.
+check "an escaped < does not swallow the pipe after it" block \
+    "$(bash_decision "printf 'rm -rf src' \\<|bash")"
+# The two paren spellings close differently and were fail-opens in SUCCESSIVE rounds --
+# first `)` always delimited (so `echo $(true)#x` mis-read as a comment), then `)` never
+# did (so `(true)# x` mis-read as a word). One bit per open paren distinguishes them.
+check "a # after a closing SUBSHELL is a comment" block \
+    "$(bash_decision "(true)# '
+rm -rf src
+(true)# '")"
+check "...while a # after a closing SUBSTITUTION still is not" block \
+    "$(bash_decision 'echo $(true)#x; rm -rf src')"
+check "an ordinary substitution in a pipeline stays allowed" allow \
+    "$(bash_decision 'echo "$(date)" | cat')"
+# One more stdin-reading interpreter. The list is an enumeration with a stated residual --
+# adding a name is free, so it is added rather than argued about.
+check "tclsh reads its program from stdin too" block \
+    "$(bash_decision "printf 'exec rm -rf src' | tclsh")"
+check "awk reads its program from stdin with -f -" block \
+    "$(bash_decision "printf 'BEGIN { system(\"rm -rf src\") }' | awk -f -")"
+# sqlite3 reads DOT-COMMANDS from stdin and `.shell` runs one. Same for the editors and
+# clients that take a command stream and can shell out. The list is an enumeration with a
+# stated residual: adding a name is free, so it is added rather than argued about, and the
+# residual is that a name nobody has listed still reads as a non-receiver.
+check "sqlite3 executes a stdin command stream too" block \
+    "$(bash_decision "printf '.shell rm -rf src' | sqlite3")"
+check "source /dev/stdin runs the piped text" block \
+    "$(bash_decision "printf 'rm -rf src' | source /dev/stdin")"
+check "the POSIX . spelling does too" block \
+    "$(bash_decision "printf 'rm -rf src' | . /dev/stdin")"
+# `.` is tested in COMMAND POSITION only: a bare `.` is an ordinary argument, and matching
+# it as a name anywhere in the stage cost 100 over-blocks for nothing.
+check "a bare . as an argument is not a receiver" allow \
+    "$(bash_decision 'find . -name x | head')"
+check "xargs executes what it reads from stdin" block \
+    "$(bash_decision "printf 'rm -rf src' | xargs")"
+check "make runs a stdin Makefile with -f -" block \
+    "$(bash_decision "printf 'all:
+	rm -rf src
+' | make -f -")"
+# EXTGLOB changes the GRAMMAR, not just a name: `+(s)` is a pathname pattern, so
+# `/bin/ba+(s)h` expands to `/bin/bash`. The splitter kept the parens as a group and the
+# receiver came apart; shlex then reads the command word as `ba+`, which names no shell.
+check "an extglob receiver still resolves to a shell" block \
+    "$(bash_decision "printf 'rm -rf src' | /bin/ba+(s)h")"
+check "...for the @ spelling too" block \
+    "$(bash_decision "printf 'rm -rf src' | /bin/ba@(s)h")"
+# `!( )` matches everything EXCEPT its contents, so resolving it to the inner text gives
+# `baxh` -- the one spelling that reads as harmless. A negation is unresolvable, and
+# unresolvable is the fail-CLOSED case.
+check "a NEGATED extglob receiver fails closed" block \
+    "$(bash_decision "printf 'rm -rf src' | ba!(x)h")"
+check "an ordinary subshell receiver is still not an extglob" allow \
+    "$(bash_decision 'echo "$(date)" | cat')"
+# An ALTERNATION names two things at once, so resolving it to its inner text picks one
+# spelling -- and for `ba@(s|z)h` that is `bas|zh`, the harmless-looking one. Naming more
+# than one thing is the unresolved case, which fails CLOSED, exactly as a negation does.
+check "an ALTERNATING extglob receiver fails closed" block \
+    "$(bash_decision "printf 'rm -rf src' | /bin/ba@(s|z)h")"
+# `&>` and `&>>` redirect BOTH streams: the `&` belongs to the redirect, not the pipeline.
+# Read as a control operator it cut the segment and threw the real producer away.
+check "an &> redirect does not split the producer off" block \
+    "$(bash_decision "printf 'rm -rf src' &>/dev/stdout | bash")"
+check "...and the same shape reaching the helper guard" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' &>/dev/stdout | bash")"
+# THE AMBIGUITY IS NOT GUESSED AT. Whether a `)` delimited a command depends on what its
+# `(` opened, and bash has four answers: a subshell and a case pattern delimit, a
+# substitution and a FUNCTION HEADER do not. Three review rounds each closed one spelling
+# and opened another, so `)#` is now flagged unresolved and answered by the raw
+# whole-command scan -- the same fail-CLOSED reading an unparseable command gets. One
+# command in a 34,758-command corpus contains the shape at all.
+check "a function-header paren before # falls back, not through" block \
+    "$(bash_decision "f()# '
+{
+rm -rf src
+}
+# '
+f")"
+check "a case-pattern paren before # falls back, not through" block \
+    "$(bash_decision "case x in x)# '
+rm -rf src
+;; esac")"
+check "the fallback does not fire on a harmless )# command" allow \
+    "$(bash_decision 'echo $(date)#tag; ls')"
+check "...and the same shape reaching the helper guard" block \
+    "$(bash_decision 'echo $(true)#x; python3 hooks/gate-scripts/lib/lease_slot.py x')"
+# `hash -p PATH NAME` binds NAME to PATH for the rest of the shell -- the same re-pointing
+# `alias` does, and simply absent from the indirection set. Verified executing.
+check "hash -p remapping is indirection" block \
+    "$(bash_decision 'hash -p /bin/bash f; printf "rm -rf src" | f')"
+check "...including behind the builtin prefix" block \
+    "$(bash_decision 'builtin hash -p /bin/bash f; printf "rm -rf src" | f')"
+check "hash without -p stays allowed" allow \
+    "$(bash_decision 'hash f; printf "hello" | f')"
+# `command` and `builtin` take their OWN options before the builtin they run, so matching the
+# bare word left `command -- hash -p …` open.
+check "hash -p behind command -- is indirection" block \
+    "$(bash_decision 'command -- hash -p /bin/bash f; printf "rm -rf src" | f')"
+check "hash -p behind command -p is indirection" block \
+    "$(bash_decision 'command -p hash -p /bin/bash f; printf "rm -rf src" | f')"
+# An ASSIGNMENT PREFIX is still command position, and bash allows any number of them.
+check "hash -p behind an assignment prefix is indirection" block \
+    "$(bash_decision 'FOO=x hash -p /bin/bash f; printf "rm -rf src" | f')"
+# THE PREFIX GRAMMAR IS NOT MODELLED. Three rounds each closed one prefix and left the
+# next -- `FOO=x`, then `A+=x`, then a leading redirection, then >20 assignments -- while
+# dropping the anchor entirely measured ZERO further over-blocks. These pin that.
+check "hash -p behind an append assignment is indirection" block \
+    "$(bash_decision 'A+=x hash -p /bin/bash f; printf "rm -rf src" | f')"
+check "hash -p behind a leading redirection is indirection" block \
+    "$(bash_decision '</dev/null hash -p /bin/bash f; printf "rm -rf src" | f')"
+# NESTED extglob needs more than one substitution pass, and passes are guesses at a
+# grammar. Same exit as the negation and the alternation: unresolved, fail CLOSED.
+check "a NESTED extglob receiver fails closed" block \
+    "$(bash_decision "printf 'rm -rf src' | /bin/ba@(+(s))h")"
+# ...and the search for the option is BOUNDED, because the unbounded form backtracked
+# catastrophically: 7.2s on a valid 59KB command, against a 5s hook timeout that fails
+# OPEN. The regex WAS the fail-open, which is not a shape review usually looks for.
+HASH_CMD="$(python3 -c 'print("if hash x " * 5900 + "| cat; rm -rf src")')"
+HASH_T0=$(python3 -c 'import time; print(time.time())')
+HASH_OUT="$(bash_decision "$HASH_CMD")"
+HASH_EL=$(python3 -c 'import sys, time; print(time.time() - float(sys.argv[1]))' "$HASH_T0")
+check "a 59KB command padded with hash still blocks" block "$HASH_OUT"
+if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 3.0 else 1)' "$HASH_EL"; then
+    ok "...and returns well inside the 5s hook timeout ($(printf '%.2f' "$HASH_EL")s)"
+else
+    no "...and returns well inside the 5s hook timeout" "took ${HASH_EL}s"
+fi
+# A NEWLINE is a command separator exactly as `;` is -- `_normalize` rewrites one to the
+# other -- so a definition on its own line sits in command position. This one line is the
+# most expensive in the change (465 of 872 over-blocks) and is kept because the shape is
+# ordinary: a multi-line command defining a helper function. See ADR 0032.
+check "a name() definition on its own LINE is indirection" block \
+    "$(bash_decision "true
+f(){ bash; }
+printf 'rm -rf src' | f")"
+# A bash ALIAS NAME is not an identifier: `alias 1x=bash` is valid and runs.
+check "a numeric-leading alias receiver is caught" block \
+    "$(bash_decision 'shopt -s expand_aliases; alias 1x=bash; printf "python3 hooks/gate-scripts/lib/lease_slot.py x" | 1x')"
+# A case PATTERN ends with a bare `)`, which puts the next word in command position exactly
+# as `;` does. Costs 233 of the 1,105 over-blocks; kept because it is a closable fail-open
+# and declining a closable one inverts the fail-CLOSED principle. See ADR 0032.
+check "a name() definition after a case pattern is indirection" block \
+    "$(bash_decision 'case x in x) f(){ bash; };; esac; printf "rm -rf src" | f')"
+# Bash ignores QUOTING inside a comment, so a quote left there changes the quote state of
+# everything after it. Two balanced ones wrap a real write in apparent quotes; one
+# unbalanced one made the whole command unparseable. Both are fail-opens, so the defuser
+# blanks quotes as well as separators.
+check "balanced quotes in comments cannot wrap a write" block \
+    "$(bash_decision "# '
+rm -rf src
+# '")"
+check "a comment holding an apostrophe does not hide the next command" block \
+    "$(bash_decision "# the caller's copy
+rm -rf src")"
+# `hash` takes BUNDLED options with an ATTACHED operand, so a bare `-p` token was the wrong
+# test: `hash -rp/bin/bash f` remaps just as `hash -p /bin/bash f` does.
+check "a bundled hash -rp with an attached operand is indirection" block \
+    "$(bash_decision 'hash -rp/bin/bash f; printf "rm -rf src" | f')"
+# BASH_CMDS is the hash table itself, exposed as a writable array: assigning to it binds a
+# name to a path exactly as `hash -p` does, without ever naming the builtin.
+check "a BASH_CMDS assignment is indirection" block \
+    "$(bash_decision 'BASH_CMDS[f]=/bin/bash; printf "rm -rf src" | f')"
+# A COMMAND SUBSTITUTION inside an argument inherits the pipeline stdin, so the shell it
+# resolves to runs the payload while the stage command word is something harmless.
+check "a shell inside a command substitution is a receiver" block \
+    "$(bash_decision 'printf "rm -rf src" | echo "$(bash)"')"
+# Not shells, but they run a PROGRAM READ FROM STDIN exactly as one does. Costs 95 further
+# over-blocks; the list is an enumeration and adding a name is free.
+check "python3 reads its program from stdin too" block \
+    "$(bash_decision 'printf "rm -rf src" | python3')"
+check "perl reads its program from stdin too" block \
+    "$(bash_decision 'printf "rm -rf src" | perl')"
+# PRECISION, not a fail-open: grouping punctuation joins the operator run when no segment
+# text separates it, so `||(` read as a pipe and over-blocked where `|| (` did not.
+check "|| followed immediately by a group is not a pipe" allow \
+    "$(bash_decision 'printf "rm -rf src" ||(bash)')"
+check "...matching the spaced spelling, which never was" allow \
+    "$(bash_decision 'printf "rm -rf src" || (bash)')"
+check "a real |& pipe still feeds its receiver" block \
+    "$(bash_decision 'printf "rm -rf src" |& bash')"
+# A guard that is correct but too SLOW is a fail-open with extra steps: the hook has a 5s
+# timeout, and a timed-out hook writes no decision, which the harness reads as allow. The
+# command-position prefix used to carry a repeated group that went quadratic on a valid
+# command of stacked `!` prefixes -- 5.4s, measured -- and the repetition was redundant.
+BANG_CMD="$(python3 -c 'print("! " * 4000 + "true | cat; rm -rf src")')"
+BANG_T0=$(python3 -c 'import time; print(time.time())')
+BANG_OUT="$(bash_decision "$BANG_CMD")"
+BANG_EL=$(python3 -c 'import sys, time; print(time.time() - float(sys.argv[1]))' "$BANG_T0")
+check "4000 stacked ! prefixes still block" block "$BANG_OUT"
+if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 3.0 else 1)' "$BANG_EL"; then
+    ok "...and return well inside the 5s hook timeout ($(printf '%.2f' "$BANG_EL")s)"
+else
+    no "...and return well inside the 5s hook timeout" "took ${BANG_EL}s"
+fi
+# A hook that TIMES OUT writes no decision, and the harness reads no decision as ALLOW --
+# so an unbounded walk is a fail-open with extra steps. The per-stage payload walk now
+# charges the same token budget the rest of the guard does; exhausting it fails CLOSED.
+PERF_CMD=": | $(python3 -c 'print("env " * 16000)')"
+PERF_T0=$(python3 -c 'import time; print(time.time())')
+PERF_OUT="$(bash_decision "$PERF_CMD")"
+PERF_EL=$(python3 -c 'import sys, time; print(time.time() - float(sys.argv[1]))' "$PERF_T0")
+check "a 64KB pipeline of receivers still fails CLOSED" block "$PERF_OUT"
+if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 3.0 else 1)' "$PERF_EL"; then
+    ok "...and returns well inside the 5s hook timeout ($(printf '%.2f' "$PERF_EL")s)"
+else
+    no "...and returns well inside the 5s hook timeout" "took ${PERF_EL}s"
+fi
+# STATED RESIDUAL, asserted so it stays deliberate rather than being rediscovered as a bug.
+# A producer that ASSEMBLES its payload instead of stating it is not recoverable by parsing
+# -- issue #557 says so of the split-operand spelling, and the variable spelling is the same
+# class. A rule for the variable form was written and measured at 386 over-blocks (1.1%)
+# while still leaving the split-operand form open, so it was declined. See ADR 0032.
+check "an ASSEMBLED payload is a documented residual, not a block" allow \
+    "$(bash_decision 'P='"'"'rm -rf src'"'"'; printf "%s" "$P" | bash')"
+check "the split-operand assembly is the same residual" allow \
+    "$(bash_decision "printf '%s%s' r 'm -rf src' | bash")"
+# Receiver spellings a literal seven-name list misses. csh/tcsh/fish were each verified
+# EXECUTING a piped program, and the shell expands `/bin/[b]ash` onto bash before the
+# command word exists, so a literal-name test reads a name no list contains.
+check "csh reads its program from stdin too" block \
+    "$(bash_decision "printf 'rm -rf src' | csh")"
+check "fish reads its program from stdin too" block \
+    "$(bash_decision "printf 'rm -rf src' | fish")"
+check "a GLOBBED shell path on the receiving end still blocks" block \
+    "$(bash_decision "printf 'rm -rf src' | /bin/[b]ash")"
+check "the pipe is found inside an executed string too" block \
+    "$(bash_decision "bash -c \"printf 'rm -rf src' | bash\"")"
+# The helper guard has to agree: the same invocation one transport apart was blocked as
+# `bash -c` and allowed through a pipe.
+check "the helper piped into a stdin shell is blocked" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600' | bash")"
+# ...and the precision this keeps. Scanning the WHOLE command on any shell name was
+# measured against 34,758 real commands and over-blocked 2,693 of them (7.7%); scoping the
+# scan to the PRODUCER costs 39 (0.11%). These four are the shapes that difference is made
+# of -- a shell with a script operand on the receiving end of a pipe, a genuine -c, a
+# non-shell consumer, and `||`, which feeds the next segment nothing.
+check "a script-operand shell fed by a pipe stays allowed" allow \
+    "$(bash_decision 'gh pr checks 1 | bash scripts/x.sh "$(git rev-parse HEAD)"')"
+check "a genuine bash -c with a harmless payload stays allowed" allow \
+    "$(bash_decision "bash -c 'git status'")"
+check "the same quoted verb piped into grep stays allowed" allow \
+    "$(bash_decision "echo 'rm -rf src' | grep rm")"
+check "a harmless payload piped into bash stays allowed" allow \
+    "$(bash_decision "printf 'hello' | bash")"
+check "|| is not a pipe, so it feeds the shell nothing" allow \
+    "$(bash_decision "git status || bash")"
+check "running a test script beside an unrelated git read stays allowed" allow \
+    "$(bash_decision "bash tests/foo.sh && git status")"
+# A GENERATED matrix over the composition the hand-picked cases above sample. The grouped
+# and expanded spellings were found by review, not by these tests, precisely because
+# examples do not compose -- so the invariant is asserted over the product instead:
+# grouping and receiver spelling must not change the verdict. Run against the classifier
+# directly (not the gate) so the product stays affordable; the gate-level cases above pin
+# that the two agree on the same shapes.
+_STDIN_PROP="$(python3 - "$REPO_ROOT" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1] + "/hooks/gate-scripts/lib")
+import cmdword
+
+# Producer spellings, each of which really emits the verb.
+PRODUCERS = ["printf 'rm -rf src'", "echo 'rm -rf src'", "printf '%s' 'rm -rf src'",
+             "printf 'echo x > src/impl.py'",
+             "if true; then printf 'rm -rf src'; fi",
+             "case x in x) printf 'rm -rf src';; esac",
+             "time if true; then printf 'rm -rf src'; fi",
+             "! if false; then :; else printf 'rm -rf src'; fi"]
+# Grouping applied to the producer. Every one of these runs the same program.
+GROUPS = [lambda p: p, lambda p: "(" + p + ")", lambda p: "{ " + p + "; }"]
+# Receiver spellings. Everything from `csh` on was missed by some earlier cut of the
+# candidate test -- literal names, grouping, a separator inside the group, an attached
+# option value, a glob, an expansion.
+RECEIVERS = ["bash", "sh", "sh -s", "bash --norc", "env sh", "(bash)", "csh", "fish",
+             "{ :; bash; }", "( :; bash )", "env -S'bash -s'",
+             "env --split-string='bash -s'", "/bin/[b]ash", "$SHELL",
+             chr(96) + "printf bash" + chr(96), "$(printf bash)",
+             "\nbash", "# note\nbash", "if true; then bash; fi",
+             "for x in 1; do bash; done", "while read l; do bash; done",
+             "case x in x) :; bash;; esac", "if true; then if true; then bash; fi; fi",
+             "env -iS'bash -s'", "env -uXS'bash -s'", "yash", "posh"]
+# ...and grouping applied to the WHOLE pipeline rather than to either end. Grouping only
+# the producer is what let `(producer | bash)` through: its pipe sat inside a group.
+WHOLE = [lambda c: c, lambda c: "(" + c + ")", lambda c: "{ " + c + "; }"]
+bad = []
+for p in PRODUCERS:
+    for g in GROUPS:
+        for r in RECEIVERS:
+            for w in WHOLE:
+                cmd = w(g(p) + " | " + r)
+                if not cmdword.is_file_mod(cmd):
+                    bad.append(cmd)
+# The other half of the invariant: the same shapes around a HARMLESS producer must stay
+# allowed -- otherwise "block everything" would pass the above.
+for g in GROUPS:
+    for r in RECEIVERS:
+        for w in WHOLE:
+            cmd = w(g("printf 'hello'") + " | " + r)
+            if cmdword.is_file_mod(cmd):
+                bad.append("OVERBLOCK " + cmd)
+print((len(PRODUCERS) + 1) * len(GROUPS) * len(RECEIVERS) * len(WHOLE))
+for b in bad[:6]:
+    print("MISMATCH " + b)
+PY
+)"
+_STDIN_RC=$?
+# The python must have SUCCEEDED and reported a positive combination count. Searching stdout
+# for MISMATCH alone passes when the process dies -- an import error or an exception produces
+# no MISMATCH either, and a matrix that never ran certifies nothing.
+_STDIN_N="$(printf '%s\n' "$_STDIN_PROP" | head -1)"
+case "$_STDIN_N" in ''|*[!0-9]*) _STDIN_N=0 ;; esac
+if [[ "$_STDIN_RC" -eq 0 ]] && [[ "$_STDIN_N" -gt 0 ]] \
+   && ! printf '%s\n' "$_STDIN_PROP" | grep -q MISMATCH; then
+    ok "stdin-shell verdict survives grouping x receiver spelling ($_STDIN_N combinations)"
+else
+    no "stdin-shell composition matrix" \
+       "rc=$_STDIN_RC n=$_STDIN_N $(printf '%s\n' "$_STDIN_PROP" | grep MISMATCH | head -3 | tr '\n' ' ')"
+fi
 check "xargs running rm" block "$(bash_decision "echo hi | xargs rm")"
 check "find -exec rm" block "$(bash_decision "find . -exec rm {} ;")"
 check "find -delete" block "$(bash_decision "find . -delete")"
@@ -1923,6 +2497,84 @@ check "...including when that operand itself ends in .py" block \
     "$(bash_decision "python3 -m cProfile -o out.py hooks/gate-scripts/lib/lease_slot.py")"
 check "the helper as the profiled script itself is still blocked" block \
     "$(bash_decision "python3 -m pdb hooks/gate-scripts/lib/lease_slot.py")"
+
+echo "── property checks over the splitter and the producer scan ──"
+# Everything above is a FIXED case, generated or hand-written, so it only ever probes the
+# shapes someone thought of. These two properties quantify over a grammar instead, which
+# is what the parser rewrite -- operator runs, quote state, grouping depth -- actually
+# needs: the failures it produced were all compositions nobody had listed.
+#
+# The generator is SEEDED, so a failure reproduces exactly and a green run means the same
+# thing twice. Randomness without a fixed seed would make this suite flaky, which is worse
+# than the gap it closes.
+PROP_OUT="$(python3 - "$REPO_ROOT" <<'PY' 2>&1
+import random, sys, os
+sys.path.insert(0, os.path.join(sys.argv[1], "hooks", "gate-scripts", "lib"))
+import cmdword
+
+rnd = random.Random(20260803)
+ATOM = ["ls", "git status", "echo hi", "printf 'a;b'", 'grep "x|y" f', "cat f",
+        "rm -rf src", "sed -i s/a/b/ f", "true", "# note", "", "f() { :; }",
+        "function g { :; }", 'A="1;2"', "eval ls"]
+OPS = [" | ", " || ", " && ", " ; ", " & ", "\n", " |& "]
+WRAP = [("", ""), ("( ", " )"), ("{ ", " ; }"), ("if true; then ", "; fi"),
+        ("for i in 1; do ", "; done"), ("while false; do ", "; done")]
+
+# P1 -- the splitter is LOSSLESS. Operator runs and segments must concatenate back to the
+# normalized input: a dropped byte is a segment boundary the scan will read wrongly, and
+# the quote-state and operator-run bugs this rewrite fixed all showed up as lost text.
+p1 = 0
+for _ in range(3000):
+    pre, post = rnd.choice(WRAP)
+    body = rnd.choice(OPS).join(rnd.choice(ATOM) for _ in range(rnd.randint(1, 5)))
+    src = cmdword._normalize(pre + body + post)
+    pairs, _ok = cmdword._split_with_ops(src)
+    if "".join(o + g for o, g in pairs) != src:
+        print("P1-FAIL", repr(src)); break
+    p1 += 1
+print("P1", "ok" if p1 == 3000 else "FAIL", p1)
+
+# P2 -- a stated write handed to a shell always blocks, however the pipeline is dressed.
+# This is the fail-OPEN direction: every regression in this file was a composition that
+# made a real write read as inert, so it is quantified over rather than enumerated.
+SHELL = ["bash", "sh", "zsh", "/bin/bash", "$SHELL", "env -S bash", "env -Sbash",
+         "bash -s", "xargs -0 bash", "yash", "bash -",
+         # EXTGLOB spellings: the parens are a PATTERN, not a group, and the last two are
+         # unresolvable (a negation names all but its contents; an alternation names two
+         # things) so they must reach the same verdict by the fail-CLOSED path instead.
+         "/bin/ba+(s)h", "/bin/ba@(s)h", "ba!(x)h", "/bin/ba@(s|z)h",
+         # ...and the receivers that are not shells but run what they read
+         "python3", "perl", "tclsh", "awk -f -", "source /dev/stdin", ". /dev/stdin",
+         "xargs", "make -f -", "sqlite3"]
+LEAD = ["", "time ", "! ", "nohup ", "command "]
+p2 = 0
+for _ in range(3000):
+    pre, post = rnd.choice(WRAP)
+    # A COMMENT atom must be closed by a NEWLINE. Joined with `;` it swallows the rest of
+    # the line -- including the payload -- and bash then executes nothing, so asserting a
+    # block there would assert a false positive. This property found that itself once the
+    # comment handling landed, which is the argument for having it.
+    parts = []
+    for _ in range(rnd.randint(0, 2)):
+        atom = rnd.choice(ATOM)
+        sep = "\n" if atom.lstrip().startswith("#") else rnd.choice([" ; ", " && ", "\n"])
+        parts.append(atom + sep)
+    noise = "".join(parts)
+    cmd = pre + noise + "printf 'rm -rf src' | " + rnd.choice(LEAD) + rnd.choice(SHELL) + post
+    if not cmdword.is_file_mod(cmd):
+        print("P2-FAIL", repr(cmd)); break
+    p2 += 1
+print("P2", "ok" if p2 == 3000 else "FAIL", p2)
+PY
+)"
+case "$PROP_OUT" in
+    *"P1 ok 3000"*) ok "property: the splitter is lossless over 3000 seeded compositions" ;;
+    *) no "property: the splitter is lossless" "$PROP_OUT" ;;
+esac
+case "$PROP_OUT" in
+    *"P2 ok 3000"*) ok "property: a written payload piped to a shell always blocks (3000 seeded)" ;;
+    *) no "property: a written payload piped to a shell always blocks" "$PROP_OUT" ;;
+esac
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

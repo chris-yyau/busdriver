@@ -296,6 +296,98 @@ def _is_redir(t):
     return len(t) > 0 and all(c in "<>|&" for c in t) and ("<" in t or ">" in t)
 
 
+def _split_with_ops(s):
+    # _split_simple_commands, but each segment carries the operator RUN that preceded it,
+    # so a pipe-fed stage can be told from a `||` one. Consecutive operator characters
+    # join into a single run only when no segment text sits between them, which is exactly
+    # what separates `a || b` from `a | ; b`.
+    # KEEP IN STEP WITH cmdword._split_with_ops.
+    pairs, buf, op = [], [], []
+    in_s = in_d = esc = False
+    # Did the PREVIOUS character open a redirect -- an unquoted, unescaped `<` or `>`? State,
+    # not inference: buf[-1] cannot say whether it was escaped, and bash runs
+    # `printf <payload> \<|bash` as a real pipeline because the escaped `<` is an argument.
+    redir = False
+    xglob = 0                             # open EXTGLOB parens -- see the branch below
+    for _i, ch in enumerate(s):
+        if esc:
+            buf.append(ch)
+            esc = redir = False
+        elif in_s:
+            buf.append(ch)
+            if ch == _SQ:
+                in_s = False
+            redir = False
+        elif in_d:
+            buf.append(ch)
+            if ch == "\\":
+                esc = True
+            elif ch == _DQ:
+                in_d = False
+            redir = False
+        elif ch == "\\":
+            buf.append(ch)
+            esc = True
+            redir = False
+        elif ch == _SQ:
+            buf.append(ch)
+            in_s = True
+            redir = False
+        elif ch == _DQ:
+            buf.append(ch)
+            in_d = True
+            redir = False
+        elif ch in "|&" and redir:
+            # `>|` (clobber), `>&` and `<&` (descriptor duplication). `<&` was missed while
+            # its output twin was handled, splitting the segment mid-redirect so the producer
+            # of `printf <payload> <&0 | bash` became the bare `0`. Keyed on the REDIRECT
+            # CHARACTER, so the next spelling cannot reintroduce the asymmetry.
+            # KEEP IN STEP WITH cmdword._split_with_ops.
+            buf.append(ch)
+            redir = False
+        elif ch == "&" and s[_i + 1:_i + 2] == ">":
+            # `&>` / `&>>` redirect BOTH streams -- the `&` belongs to the redirect, not to
+            # the pipeline. Read as a control operator it cut the segment in two and threw
+            # the real producer away: `printf <payload> &>/dev/stdout | bash` kept only the
+            # `>/dev/stdout` half. KEEP IN STEP WITH cmdword._split_with_ops.
+            buf.append(ch)
+            redir = False
+        elif ch == "(" and buf and buf[-1] in "+*?@!":
+            # EXTGLOB, not a group: with `shopt -s extglob`, `+(s)`, `*(…)`, `?(…)`, `@(…)`
+            # and `!(…)` are pathname patterns, so `/bin/ba+(s)h` expands to `/bin/bash`.
+            # Split on the paren, the receiver command word came apart and the shell name
+            # vanished. The lead character is what distinguishes them, and it is finite.
+            # KEEP IN STEP WITH cmdword._split_with_ops.
+            buf.append(ch)
+            xglob += 1
+            redir = False
+        elif xglob and ch in ";|&":
+            # INSIDE a pattern, every control character is pattern text: `@(s|z)` holds a
+            # real `|` that separates alternatives, not pipeline stages. Keeping the parens
+            # while still splitting on that `|` left the receiver in pieces again. KEEP IN STEP WITH cmdword._split_with_ops.
+            buf.append(ch)
+            redir = False
+        elif ch == ")" and xglob:
+            # its matching close -- kept with it, or the command word still comes apart on
+            # the other half of the pattern.
+            # KEEP IN STEP WITH cmdword._split_with_ops.
+            buf.append(ch)
+            xglob -= 1
+            redir = False
+        elif ch in ";|&()":
+            if buf or not op:
+                pairs.append(("".join(op), "".join(buf)))
+                buf, op = [], [ch]
+            else:
+                op.append(ch)
+            redir = False
+        else:
+            buf.append(ch)
+            redir = ch in "<>"
+    pairs.append(("".join(op), "".join(buf)))
+    return pairs, not (in_s or in_d or esc)
+
+
 def _split_simple_commands(s):
     # Split into simple-command segments on UNQUOTED, UNESCAPED control operators
     # (; | & and grouping parens) with an explicit quote/escape state machine.
@@ -305,40 +397,11 @@ def _split_simple_commands(s):
     # embed | / & but are part of the redirect, so a | or & directly after > is
     # kept attached rather than treated as a split. Returns (segments, ok); ok is
     # False on an unterminated quote or dangling escape so the caller fails closed.
-    segs, buf = [], []
-    in_s = in_d = esc = False
-    for ch in s:
-        if esc:
-            buf.append(ch)
-            esc = False
-        elif in_s:
-            buf.append(ch)
-            if ch == _SQ:
-                in_s = False
-        elif in_d:
-            buf.append(ch)
-            if ch == "\\":
-                esc = True
-            elif ch == _DQ:
-                in_d = False
-        elif ch == "\\":
-            buf.append(ch)
-            esc = True
-        elif ch == _SQ:
-            buf.append(ch)
-            in_s = True
-        elif ch == _DQ:
-            buf.append(ch)
-            in_d = True
-        elif ch in "|&" and buf and buf[-1] == ">":
-            buf.append(ch)  # >| (clobber) or >& (dup) -> part of the redirect
-        elif ch in ";|&()":
-            segs.append("".join(buf))
-            buf = []
-        else:
-            buf.append(ch)
-    segs.append("".join(buf))
-    return segs, not (in_s or in_d or esc)
+    # Clobber >| and dup >& embed | / & but are part of the redirect, so a | or & directly
+    # after > is kept attached rather than treated as a split -- see _split_with_ops,
+    # which does the scanning for both.
+    pairs, ok = _split_with_ops(s)
+    return [seg for _op, seg in pairs], ok
 
 
 # Commands that RUN the command that follows them. Open-ended by nature: a launcher not
@@ -392,6 +455,21 @@ _FD_SCRIPT_RE = re.compile(
 # "$FD"`) and PATHNAME EXPANSION (`/dev/f?/0`) both land on a descriptor at run time
 # while reading here as an ordinary path.
 _UNRESOLVED_OPERAND_RE = re.compile(r"[$`*?\[]")
+# The same question asked of a COMMAND WORD rather than a filename operand, so brace
+# expansion joins the set: `| /bin/{ba,z}sh` resolves to a shell the text never spells.
+# KEEP IN STEP WITH cmdword._UNRESOLVED_CW_CHARS.
+# An EXTGLOB group, resolved to the text it wraps: shlex splits `/bin/ba+(s)h` into five
+# tokens so the command word reads as `ba+`, while bash expands it to `/bin/bash`.
+# `!( )` is excluded and cannot be included -- it matches everything EXCEPT its
+# contents, so resolving it to the inner text yields the one harmless-looking spelling.
+# A negation is unresolvable, and unresolvable fails CLOSED.
+# KEEP IN STEP WITH cmdword._EXTGLOB_RE / _EXTGLOB_NEG_RE.
+_EXTGLOB_RE = re.compile(r"[+@*?]\(([^()]*)\)")
+# Unresolvable: a NEGATION, or an ALTERNATION. `!(x)` matches all but its contents and
+# `@(s|z)` names two things, so resolving either to its inner text picks one spelling --
+# for `ba@(s|z)h` the harmless-looking one. KEEP IN STEP WITH cmdword._EXTGLOB_NEG_RE.
+_EXTGLOB_NEG_RE = re.compile(r"!\([^()]*\)|[+@*?!]\([^()]*\|[^()]*\)")
+_UNRESOLVED_CW_RE = re.compile(r"[$`*?\[{(]")   # `(` is extglob: ba+(s)h expands to bash
 # A module operand spelled as a plain importable name. Anything else -- an escape, a
 # brace, a leftover expansion -- is a name the shell will rewrite, and the operand this
 # walk sees has already lost some of that syntax, so testing for the UNRESOLVED
@@ -697,6 +775,86 @@ def _scan_segment(segtext, markers, simple_vars, flags=None):
     return None
 
 
+def _defuse_comments(s):
+    # Blank the SEPARATOR characters inside shell comments, quote-aware, leaving every other
+    # byte -- and the newlines that end the comments -- in place. A comment runs from an
+    # unquoted `#` in word position to the end of its LINE and can contain `;`, so a comment
+    # reaching the splitter intact turns `printf <payload> | #  ; ignored` + newline + `bash`
+    # into a comment segment plus a bare `ignored` that reads as a real command and ends the
+    # pipeline one stage before its shell.
+    #
+    # DEFUSING rather than DELETING: deleting was tried and moved 14 real commands from block
+    # to ALLOW, because a comment holding an apostrophe had been making the whole command
+    # unparseable, which is the fail-CLOSED path. Blanking in place keeps every byte.
+    # QUOTES are blanked too: bash ignores quoting inside a comment, so leaving them
+    # let a comment change the quote state of everything after it -- two balanced ones
+    # wrap a write in apparent quotes, one unbalanced one hid a redirect write.
+    # KEEP IN STEP WITH cmdword._defuse_comments.
+    # WORD POSITION as explicit state, not read back off the previous output character:
+    # that character does not say whether it was escaped or quoted, and two spellings turn
+    # on exactly that. `)` can close a substitution INSIDE the current word, so
+    # `echo $(true)#x` is one word; an ESCAPED space is an ordinary character, so
+    # `echo foo\ #notcomment` is one word too. Both read as comments and blanked the real
+    # separator that followed. `(` does open word position.
+    out, in_s, in_d, esc = [], False, False, False
+    word = True
+    group = []          # one bit per open paren: subshell (delimits) or substitution
+    i, n = 0, len(s)
+    while i < n:
+        ch = s[i]
+        if esc:
+            out.append(ch); esc = False; word = False
+        elif in_s:
+            out.append(ch)
+            if ch == _SQ:
+                in_s = False
+            word = False
+        elif in_d:
+            out.append(ch)
+            if ch == chr(92):
+                esc = True
+            elif ch == _DQ:
+                in_d = False
+            word = False
+        elif ch == chr(92):
+            out.append(ch); esc = True; word = False
+        elif ch == _SQ:
+            out.append(ch); in_s = True; word = False
+        elif ch == _DQ:
+            out.append(ch); in_d = True; word = False
+        elif ch == "#" and out and out[-1] == ")":
+            # AMBIGUOUS and deliberately not guessed at: whether this `)` delimited a command
+            # depends on what its `(` opened, and bash has four answers -- a SUBSHELL and a
+            # case PATTERN delimit, a SUBSTITUTION and a FUNCTION HEADER do not. Three review
+            # rounds each closed one spelling and opened another. Left exactly as it stands
+            # and flagged, so the caller falls back to the unconditional probe.
+            # KEEP IN STEP WITH cmdword._defuse_comments.
+            _paren_hash_ambiguous[0] = True
+            out.append(ch)
+            word = False
+        elif ch == "#" and word:
+            while i < n and s[i] != "\n":
+                out.append(" " if s[i] in ";&|()" + _SQ + _DQ else s[i])
+                i += 1
+            continue
+        elif ch == "(":
+            out.append(ch)
+            # WHICH kind of paren: a bare `(` in word position opens a SUBSHELL whose `)`
+            # ends a command, so `(true)# x` is a comment; a `$(` opens a SUBSTITUTION whose
+            # `)` sits mid-word, so `echo $(true)#x` is not. Both were fail-opens in
+            # successive rounds. KEEP IN STEP WITH cmdword._defuse_comments.
+            group.append(word and not (len(out) > 1 and out[-2] == "$"))
+            word = True
+        elif ch == ")":
+            out.append(ch)
+            word = group.pop() if group else False
+        else:
+            out.append(ch)
+            word = ch in " \t\n;&|"
+        i += 1
+    return "".join(out)
+
+
 def _norm_for_scan(cmd):
     # Pre-tokenization normalization shared by the marker scan and the helper guard, so
     # the two cannot disagree on what a token is.
@@ -704,7 +862,10 @@ def _norm_for_scan(cmd):
     # Bash removes an unquoted backslash-newline (line continuation) before execution;
     # mirror that BEFORE splitting on newlines so a marker write or basename split
     # across a continuation is rejoined, not broken into pieces.
-    norm = norm.replace(chr(92) + chr(10), "").replace("\n", " ; ")
+    norm = norm.replace(chr(92) + chr(10), "")
+    # Comments are defused BEFORE the newlines that end them become separators.
+    norm = _defuse_comments(norm)
+    norm = norm.replace("\n", " ; ")
     # Bash ANSI-C ($...) and locale quoting: shlex does not model the leading $, so
     # strip that prefix and let the quote tokenize to the literal path. (Escape
     # SEQUENCES such as \x6c remain undecodable by shlex and stay out of scope per the
@@ -736,6 +897,9 @@ _MUTATING_HELPERS = ("lease_slot.py", "audit_append.py")
 # all, and nothing at all is the fail-CLOSED case.
 _HELPER_MAX_TOKENS = 4000
 _helper_budget = [0]
+# Set by _defuse_comments on a `)#`, whose meaning it refuses to guess. Read by
+# _helper_invoked, which answers it by fail-CLOSED probe.
+_paren_hash_ambiguous = [False]
 # Total BYTES of watch suffix candidates materialized per scan. The cost of that
 # expansion is copying, not token count, so it is bounded in the unit it actually spends.
 # Exceeding it forces _helper_budget negative, which fails CLOSED -- see _exec_payloads.
@@ -832,10 +996,74 @@ def _glob_helper(word):
 
 # A function definition, an alias definition, or eval can re-point a command name, so a
 # helper sitting in an operand may be what actually runs. See _helper_invoked.
+#
+# A function NAME is any word free of the metacharacters that would end it: bash accepts
+# f-x, f.x and my:fn, none of which an identifier charset matches, and all of which run.
+# The keyword branch requires the KEYWORD in command position and a name, NOT a brace --
+# a function body is any compound command, so `function f while ...; do ...; done` and
+# `function f [[ ... ]]` both define one. Command position is what keeps the branch from
+# firing on the ordinary word (grep function file), and it is structural rather than a
+# guess about the body. KEEP IN STEP WITH cmdword._FUNC_NAME / _FUNC_DEF_RE /
+# _INDIRECTION_RE, which carry the corpus measurements behind this shape.
+# Words that OPEN and CLOSE a compound command. A compound command is ONE pipeline stage no
+# matter how many separators sit inside it, so an `if`/`for`/`while` receiver runs the piped
+# program while its internal separator looked like the end of the pipeline. Braces were only
+# the first spelling of that family, not the family. Counted as whole WORDS.
+# KEEP IN STEP WITH cmdword._GROUP_OPEN / _GROUP_CLOSE.
+_GROUP_OPEN = ("{", "if", "for", "while", "until", "case", "select")
+_GROUP_CLOSE = ("}", "fi", "done", "esac")
+# Words in command position that are NOT commands. The leading-run walk steps OVER them, or
+# a nested opener behind one goes uncounted while its closer still closes.
+# ...and the PIPELINE PREFIXES `time`, `time -p` and `!`, which bash allows in front of a
+# compound command and which otherwise stopped the walk before its opener.
+_GROUP_CONNECT = ("then", "do", "else", "elif", "time", "-p", "!")
+
+# COMMAND POSITION, derived from the compound-command keyword sets rather than hand-listed,
+# because a hand-listed subset is how `if function f { bash; }; then ...` slipped: `then`,
+# `do` and `else` were listed while `if`, `while`, `until`, `!` and `time` were not. Anything
+# that can precede a command WITHOUT being one belongs here, and those sets already enumerate
+# it for the depth walk -- so they are the single source. The trailing repetition covers
+# stacked prefixes (`time -p function f { ... }`, `! if ...`).
+# KEEP IN STEP WITH cmdword._CMD_POS.
+_CMD_POS_LEAD = (r"(?:\b(?:"
+                 + "|".join(sorted(w for w in set(_GROUP_OPEN) | set(_GROUP_CONNECT)
+                                   if w.isalpha()))
+                 + r")\b|!|(?<![\w-])-p\b)")
+# ONE prefix, not a repeated group: the repetition was redundant (a single preceding prefix
+# already establishes command position, and `-p` and `!` are themselves alternatives) and
+# CATASTROPHIC -- 4,000 valid `!` prefixes took 5.4s against a 5s hook timeout that fails
+# open. KEEP IN STEP WITH cmdword._CMD_POS.
+_CMD_POS = r"(?:^|[\n;&|(){}]|" + _CMD_POS_LEAD + r")\s*"
+# The `name()` form cannot sit behind a group CLOSER or a pipeline prefix, so it takes
+# openers and reserved words only. KEEP IN STEP WITH cmdword._CMD_POS_WORDS.
+_CMD_POS_WORDS = (r"\b(?:"
+                  + "|".join(sorted(w for w in set(_GROUP_OPEN) | set(_GROUP_CONNECT)
+                                    if w.isalpha()))
+                  + r")\b")
+
+_FUNC_NAME = r"[^\s;&|()<>{}]+"
 _INDIRECTION_RE = re.compile(
-    r"(?:^|[;&|{(]|\bfunction\s)\s*[A-Za-z_][A-Za-z0-9_]*\s*(?:\(\s*\)|\s*\{)"
-    r"|(?:^|[;&|(]|\s)\s*alias\s+[A-Za-z_]"
-    r"|(?:^|[;&|(]|\s)\s*eval(?:\s|$)")
+    r"(?:^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)" + _FUNC_NAME + r"\s*\(\s*\)"
+    r"|" + _CMD_POS + r"function\s+" + _FUNC_NAME
+    # `hash -p PATH NAME` binds NAME to PATH for the rest of the shell -- the same
+    # re-pointing `alias` does. NO PREFIX GRAMMAR: modelling what bash allows in front of a
+    # builtin (`FOO=x`, `A+=x`, any number, a leading redirection, `builtin`, `command --`,
+    # `command -p`) cost three review rounds and left a new prefix open each time, while
+    # dropping the anchor measured ZERO further over-blocks. BOUNDED repetition, because the
+    # unbounded form backtracked catastrophically -- 7.2s on a valid 59KB command against a
+    # 5s hook timeout that fails OPEN, so the regex WAS the fail-open.
+    # KEEP IN STEP WITH cmdword._HASH_REMAP.
+    + r"|\bhash\b[^;&|()\n]{0,120}?\s-[A-Za-z]{0,20}p"
+    # A bash ALIAS NAME is not an identifier -- `alias 1x=bash` is valid and runs -- so the
+    # branch takes the same word shape the function branches use, plus the end-of-options
+    # form. KEEP IN STEP WITH cmdword, whose eval/alias branch matches the WORD and so never
+    # had this narrowing.
+    + r"|(?:^|[\n;&|(]|\s)\s*alias\s+(?:--\s+)?" + _FUNC_NAME
+    + r"|(?:^|[;&|(]|\s)\s*eval(?:\s|$)"
+    # `BASH_CMDS` is the hash table exposed as a writable array: assigning to it binds a
+    # NAME to a path exactly as `hash -p` does, without naming the builtin.
+    # KEEP IN STEP WITH cmdword._BASH_CMDS_RE.
+    + r"|\bBASH_CMDS\s*\[")
 
 
 def _exec_payloads(words):
@@ -1143,6 +1371,220 @@ def _shell_variants(text):
     return out
 
 
+# Shells that run a program fed to them on STDIN -- a SUPERSET of the -c runner list above,
+# and separate from it on purpose: that list drives RECURSION into a -c operand, while this
+# one answers only "could this consume stdin as a program". csh/tcsh/fish belong here (each
+# verified executing a piped program) without dragging their -c semantics along.
+# KEEP IN STEP WITH cmdword._STDIN_SHELLS.
+# RESIDUAL: an ENUMERATION, so a shell nobody listed still reads as a non-shell. The family
+# does not close; adding a name is free, so add rather than argue when one is found.
+# The last six are not shells, but they read a PROGRAM from stdin exactly as one does --
+# `printf <program> | python3` runs it -- and this list answers only that question.
+# KEEP IN STEP WITH cmdword._STDIN_SHELLS.
+_SHELL_NAMES = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "csh", "tcsh", "fish",
+                "yash", "posh", "bosh", "osh", "oil", "elvish", "xonsh", "nu",
+                "python", "python2", "python3", "perl", "ruby", "node",
+                "tclsh", "wish", "lua", "php",
+                "awk", "gawk", "mawk", "nawk",
+                "sqlite3", "ed", "ex", "psql", "gdb",
+                "source", "xargs", "make")
+
+
+# Compound-command keyword sets -- see the definitions above _FUNC_NAME.
+
+
+def _group_delta(words):
+    # How much this segment opens or closes, counting only the LEADING run: a compound
+    # keyword is one only in command position, and segments are already split on separators.
+    # Counting the keyword ANYWHERE was measured far wider, because `if`, `for` and `done`
+    # are ordinary words in ordinary commands and a stray one opened a depth nothing closed.
+    # KEEP IN STEP WITH cmdword._group_delta.
+    delta = 0
+    for w in words:
+        if w in _GROUP_CONNECT:
+            continue
+        if w in _GROUP_OPEN:
+            delta += 1
+        elif w in _GROUP_CLOSE:
+            delta -= 1
+        else:
+            break
+    return delta
+
+
+def _carries_no_command(segtext):
+    # A stage holding no command at all: empty, or only a comment. _norm_for_scan turns a
+    # NEWLINE into a separator, so an ordinary pipeline broken across lines arrives as a pipe
+    # feeding an empty stage followed by a separator -- and reading that as the end of the
+    # pipeline dropped the fed state one stage before the receiver.
+    # KEEP IN STEP WITH cmdword._carries_no_command.
+    stripped = segtext.strip()
+    return stripped == "" or stripped.startswith("#")
+
+
+def _stage_words(toks):
+    # Every word a stage could resolve to a command NAME. Whitespace-splitting each token is
+    # not enough: an option can carry its value ATTACHED, and BSD/macOS `env -S` + a quoted
+    # program lexes to ONE token whose first word matches no shell. General rather than
+    # env-specific -- drop the leading dashes and one option letter, and take everything past
+    # a long option separator. Over-generating is free here.
+    # KEEP IN STEP WITH cmdword._stage_words.
+    for t in toks:
+        forms = [t]
+        # A COMMAND SUBSTITUTION inside an argument inherits the pipeline stdin, so
+        # `printf <payload> | echo "$(bash)"` runs the payload while the stage command word
+        # is `echo`. Splitting the substitution punctuation into whitespace hands the body to
+        # the SAME shell-name test the stage gets. KEEP IN STEP WITH cmdword._stage_words.
+        if "$(" in t or chr(96) in t or "(" in t:
+            forms.append(t.replace("$(", " ").replace(chr(96), " ")
+                          .replace("(", " ").replace(")", " "))
+        if t.startswith("-"):
+            forms.append(t.lstrip("-")[1:])
+            forms.append(t.partition("=")[2])
+        for f in forms:
+            for w in f.split():
+                yield w
+
+
+def _piped_shell_producers(pairs):
+    # Text feeding each pipeline stage that might be a shell reading its PROGRAM from
+    # stdin. `bash -c "<helper> ..."` was blocked while `printf "<helper> ..." | bash` was
+    # allowed -- the same invocation, one transport apart. What the producer WRITES is not
+    # recoverable by parsing (a split printf assembles the name from operands that are each
+    # inert), so the producer text is handed to the wider name probe instead.
+    #
+    # The stage test is deliberately WIDE and carries no option-arity table: deciding
+    # whether a shell reads stdin from its FLAGS is the arity question this file refuses to
+    # answer, and it failed open four ways when tried (`bash --norc` read as "-c present",
+    # `bash --rcfile -c` read the VALUE of --rcfile as the option). The pipeline structure
+    # already says the stage is fed; all that is left is whether it might be a shell. So a
+    # shell name anywhere counts, tokens are re-split on whitespace (a quoted `env -S`
+    # operand arrives as ONE token), and a command word carrying an expansion or a glob
+    # counts too -- the shell expands /bin/[b]ash onto bash, and a literal-name test reads a
+    # command word that no set contains.
+    #
+    # GROUPING IS TRANSPARENT. This splitter breaks on parens and on every `;`, so a
+    # grouped producer, a parenthesised receiver, and a receiver whose group holds its own
+    # separator all hide behind an apparent pipeline boundary -- each measured as an
+    # executing write that classified as a read. A group DEPTH is tracked instead: only a
+    # separator at depth 0 starts a new pipeline. Braces are counted as whole WORDS, so
+    # a ${VAR} reference is not read as a group.
+    #
+    # ONE producer per pipeline, from its LAST candidate stage: every earlier candidate
+    # produces a PREFIX of that text, so the probe sees the same thing either way, and
+    # building one per stage is O(stages^2) bytes -- the shape that put the watch scan
+    # above near 218 MB inside a hook whose timeout reads as allow.
+    # KEEP IN STEP WITH cmdword._piped_shell_producers.
+    # TWO depths, each clamped at zero, never one sum: a `case` pattern terminator is a bare
+    # `)` with no opener, so a single counter let it cancel the `case` keyword depth and the
+    # `;;` behind it then discarded the producer.
+    out, start, last, fed, bare = [], 0, None, False, False
+    pdepth = kdepth = 0
+    for i, (op, seg) in enumerate(pairs):
+        pdepth = max(0, pdepth + op.count("(") - op.count(")"))
+        depth = pdepth + kdepth
+        # A PIPE FEEDS AT ANY DEPTH, and this test comes FIRST. Folding it into the
+        # in-a-group branch meant a pipeline written wholly inside a group had its pipe
+        # ignored and its shell never seen as fed. Depth suppresses only the SEPARATOR.
+        # Brace counting is therefore loose-but-safe: an over-count only stops a separator
+        # from resetting, which WIDENS the producer, and can never hide a pipe.
+        # Grouping punctuation joins the run when no segment text separates it, so a
+        # valid `cmd ||(sub)` arrived as `||(` and read as a pipe. Parens carry no
+        # pipeline meaning here. KEEP IN STEP WITH cmdword._is_pipe.
+        if op.replace("(", "").replace(")", "") in ("|", "|&"):
+            fed = True
+        elif (op and all(ch in "()" for ch in op)) or depth > 0:
+            pass                          # grouping: does not terminate the pipeline
+        elif fed and bare:
+            pass                          # a normalized newline/comment between | and the shell
+        else:
+            if last is not None:
+                out.append(" ; ".join(p[1] for p in pairs[start:last]))
+            start, last, fed = i, None, False
+        _words = seg.split()
+        bare = _carries_no_command(seg)
+        if fed:
+            try:
+                lex = shlex.shlex(seg, posix=True, punctuation_chars=True)
+                lex.whitespace_split = True
+                lex.commenters = ""
+                toks = list(lex)
+            except ValueError:
+                toks = None               # unparseable stage: assume the worst
+            _sw = None if toks is None else list(_stage_words(toks))
+            # The third disjunct is the option BUNDLE with its value attached: peeling one
+            # option letter leaves `Sbash`, and peeling a fixed number never terminates
+            # because the caller chooses the bundle length. endswith is O(names), not O(len^2).
+            # CHARGE FIRST. _exec_payloads below is the same potentially quadratic walk
+            # the budget at the end of _helper_invoked exists to bound, and this loop
+            # reached it once per stage without paying. A permitted 64,004-character
+            # command (`: | ` then `env ` sixteen thousand times) took 5.4s -- past the
+            # hook timeout, and a timed-out hook writes NO decision, which the harness
+            # reads as ALLOW. Overrunning the budget leaves it negative, so the charge at
+            # the end of _helper_invoked fails CLOSED on the very first segment.
+            _helper_budget[0] -= len(toks) if toks is not None else len(seg.split())
+            if _helper_budget[0] < 0:
+                break
+            if toks is None or any(_bn(w) in _SHELL_NAMES for w in _sw) \
+               or any(w.startswith("-") and any(w.endswith(n) for n in _SHELL_NAMES)
+                      for w in _sw):
+                last = i
+            else:
+                # A stage can RUN a shell without ever NAMING one in command position:
+                # `env -S"$A"` hands its operand to execvp, and _peel_wrappers skips
+                # `-S$A` as an option and returns None, so the command word alone can
+                # never see it. The operands this stage EXECUTES are therefore asked the
+                # same two questions the stage itself was. KEEP IN STEP WITH
+                # cmdword._may_read_program_from_stdin, whose _executed_operands loop
+                # this mirrors -- the gate lacking it was a live fail-OPEN.
+                cw = _peel_wrappers(toks)
+                # `.` is the POSIX `source`, and `. /dev/stdin` runs the piped text. Command
+                # position ONLY: a bare `.` is an ordinary argument (`find . -name x`), and
+                # putting it in _SHELL_NAMES -- matched against every word -- cost 100
+                # over-blocks. KEEP IN STEP WITH cmdword._may_read_program_from_stdin.
+                if cw and _bn(cw) == ".":
+                    last = i
+                    kdepth = max(0, kdepth + _group_delta(_words))
+                    continue
+                # The EXTGLOB spelling, resolved, in front of the same name test.
+                if _EXTGLOB_NEG_RE.search(seg):
+                    last = i
+                    kdepth = max(0, kdepth + _group_delta(_words))
+                    continue
+                _deglob = _EXTGLOB_RE.sub(r"\1", seg)
+                if _EXTGLOB_RE.search(_deglob) or _EXTGLOB_NEG_RE.search(_deglob):
+                    # NESTED: `ba@(+(s))h` still holds a group after the inner one resolves,
+                    # and iterating to a fixed point is a slower guess at a grammar. Same
+                    # exit the negation and the alternation take -- unresolved, fail CLOSED.
+                    last = i
+                    kdepth = max(0, kdepth + _group_delta(_words))
+                    continue
+                if _deglob != seg:
+                    _dtoks = None
+                    try:
+                        _dlex = shlex.shlex(_deglob, posix=True, punctuation_chars=True)
+                        _dlex.whitespace_split = True
+                        _dlex.commenters = ""
+                        _dtoks = list(_dlex)
+                    except ValueError:
+                        _dtoks = None
+                    if _dtoks is None or any(_bn(w) in _SHELL_NAMES
+                                             for w in _stage_words(_dtoks)):
+                        last = i
+                        kdepth = max(0, kdepth + _group_delta(_words))
+                        continue
+                _tokp, _strp = _exec_payloads(toks)
+                _progs = [" ".join(p) for p in _tokp] + list(_strp)
+                if (cw and _UNRESOLVED_CW_RE.search(cw)) \
+                   or any(_UNRESOLVED_CW_RE.search(p) for p in _progs) \
+                   or any(_bn(w) in _SHELL_NAMES for p in _progs for w in p.split()):
+                    last = i
+        kdepth = max(0, kdepth + _group_delta(_words))
+    if last is not None:
+        out.append(" ; ".join(p[1] for p in pairs[start:last]))
+    return out
+
+
 def _names_helper(text):
     # Which mutating helper does this text NAME, quotes resolved? A raw substring test
     # is defeated by quote concatenation -- the shell runs `lease_"slot.py"`, but the
@@ -1216,6 +1658,7 @@ def _helper_invoked(cmd, _depth=0, _full=None):
     _whole = cmd if _full is None else _full
     if _depth == 0:
         _helper_budget[0] = _HELPER_MAX_TOKENS
+        _paren_hash_ambiguous[0] = False
     if _PROC_SUBST_RE.search(_whole) and _INTERP_RE.search(_whole):
         hit = _names_helper(_whole)
         if hit:
@@ -1272,10 +1715,35 @@ def _helper_invoked(cmd, _depth=0, _full=None):
     # across two quoted runs and therefore not found in the raw text.
     _dq = _dequote(cmd)
     if _INDIRECTION_RE.search(_dq):
-        _hit = _helper_substring(_dq)
+        # _abandoned_scan_probe, NOT the plain substring test: it also squeezes quoting and
+        # GLOB characters, so an indirect receiver carrying a globbed helper name
+        # (`eval "$A"` fed `lease_slo[t].py`) is caught. The substring test saw no literal
+        # name and allowed it -- and this guard is UNCONDITIONAL, so that was a live hole.
+        _hit = _abandoned_scan_probe(_dq)
         if _hit:
             return _hit
-    segs, ok = _split_simple_commands(_norm_for_scan(cmd))
+    _pairs, ok = _split_with_ops(_norm_for_scan(cmd))
+    # `)#` -- the comment defuser could not tell whether that paren delimited a command and
+    # said so instead of guessing. Unresolved is the fail-CLOSED case, the same as an
+    # unparseable command below, so the squeezed probe answers it.
+    if _paren_hash_ambiguous[0]:
+        _hit = _abandoned_scan_probe(cmd)
+        if _hit:
+            return _hit
+    segs = [_s for _op, _s in _pairs]
+    if ok:
+        # A shell on the RECEIVING end of a pipe runs whatever the producer wrote, and the
+        # walk below can only see that payload as data. Same condition and same reason as
+        # cmdword._piped_shell_producers -- keep the two in step.
+        for _prod in _piped_shell_producers(_pairs):
+            # _abandoned_scan_probe, NOT the plain _names_helper: the probe also squeezes
+            # GLOB characters, so a payload naming `lease_slo?.py` -- which the shell
+            # expands to the helper while the text names none literally -- is caught. The
+            # sibling call sites already used the probe; this one did not, and a glob in a
+            # PIPED payload walked through.
+            _hit = _abandoned_scan_probe(_prod)
+            if _hit:
+                return _hit
     if not ok:
         # Unparseable -- most often a Bash-VALID heredoc whose BODY contains an
         # apostrophe, which this segmenter models as shell source (a known limitation the

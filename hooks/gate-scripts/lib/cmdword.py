@@ -863,6 +863,29 @@ def _may_read_program_from_stdin(segtext, _depth=0):
     # in the safe direction, and making it quote-aware means a second parser here.
     if segtext.count("$(") > _flat_dollar:
         return True
+    # UNBALANCED, and not guessed at either. The flat pattern assumes the first `)` closes
+    # the substitution, and a `case` PATTERN breaks that assumption without nesting anything:
+    # `$(case x in x) $SHELL;; esac)` extracts the body `case x in x` and never sees the
+    # `$SHELL` receiver behind it -- verified running the piped payload in real bash. Which
+    # `)` bash treats as a close is context-sensitive (a depth counter reads the case pattern
+    # as the close too, and lands on the same wrong body), so this is the third construct the
+    # module refuses to resolve rather than model: when the parens in a substitution-bearing
+    # stage do not balance, the extraction above cannot be trusted and unresolved fails
+    # CLOSED. Scoped to stages that actually HOLD a substitution, because an ordinary `case`
+    # is not relying on the extraction and pays nothing.
+    # Scoped to `$(` alone, NOT backticks: a paren cannot terminate a backtick substitution,
+    # so an imbalance says nothing about how a backtick body was extracted, and including
+    # them only over-blocked (``| echo "`date` ("`` was read as a receiver for no reason).
+    # KNOWN BYPASS, left open deliberately: the count is QUOTE-BLIND, so an inert `(` inside
+    # the body re-balances it -- `$(case x in x) echo "("; . /dev/stdin;; esac)` counts equal
+    # and is NOT caught. A `case`/`esac` NAME tripwire was tried and reverted: segments are
+    # split on `;` before this runs, so `esac` lands in a different segment than the `$(` and
+    # the tripwire never fires on the very shape it was written for. Making the count
+    # quote-aware means a second parser here. This rule is kept because it costs zero measured
+    # over-blocks and does catch the unquoted spelling; the quoted one is recorded with the
+    # rest of the residual family in ADR 0032 rather than chased with a fourth refinement.
+    if "$(" in segtext and segtext.count("(") != segtext.count(")"):
+        return True
     if _EXTGLOB_NEG_RE.search(segtext):
         return True                       # a negated pattern names anything: fail closed
     deglob = _EXTGLOB_RE.sub(r"\1", segtext)

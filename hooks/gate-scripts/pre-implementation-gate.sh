@@ -1612,6 +1612,19 @@ def _piped_shell_producers(pairs):
                 # text. Unresolved fails CLOSED. KEEP IN STEP WITH cmdword.
                 if seg.count("$(") > _flat_dollar:
                     _sub_unres = True
+                # UNBALANCED parens break the flat extraction without nesting anything: a
+                # `case` PATTERN closes it early, so `$(case x in x) $SHELL;; esac)` yields
+                # the body `case x in x` and the `$SHELL` receiver behind it is never seen.
+                # Which `)` bash treats as the close is context-sensitive, so this refuses to
+                # resolve it rather than model it. Scoped to substitution-bearing stages, so
+                # an ordinary `case` pays nothing. KEEP IN STEP WITH cmdword.
+                # KNOWN BYPASS, same as cmdword: the count is QUOTE-BLIND, so an inert
+                # `echo "("` re-balances it and the truncation is exploitable again. An
+                # `esac` NAME tripwire was tried and reverted -- segments split on `;`
+                # first, so `esac` never lands in the `$(` segment. Recorded in ADR 0032
+                # with the rest of the residual family. KEEP IN STEP WITH cmdword.
+                if "$(" in seg and seg.count("(") != seg.count(")"):
+                    _sub_unres = True
                 if _sub_unres:
                     last = i
                     kdepth = max(0, kdepth + _group_delta(_words))

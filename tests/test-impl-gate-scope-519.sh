@@ -970,6 +970,18 @@ check "...including the backtick spelling of that" block \
     "$(bash_decision 'printf "rm -rf src" | echo "`true; . /dev/stdin`"')"
 check "...and a shell NAME behind a first command too" block \
     "$(bash_decision 'printf "rm -rf src" | echo "$(true; bash)"')"
+# A `case` PATTERN closes the flat substitution pattern early without nesting anything, so
+# the body reads as `case x in x` and the receiver behind it is never seen. Unbalanced parens
+# in a substitution-bearing stage mean the extraction cannot be trusted -- fail CLOSED.
+# Verified running the piped payload in real bash.
+check "a case pattern cannot truncate the substitution body" block \
+    "$(bash_decision 'printf "rm -rf src" | echo "$(case x in x) $SHELL;; esac)"')"
+check "...with a . receiver behind the case pattern too" block \
+    "$(bash_decision 'printf "rm -rf src" | echo "$(case x in x) . /dev/stdin;; esac)"')"
+# ...and the PRECISION that keeps: an ordinary case statement holds no substitution, so it
+# never relies on the extraction and pays nothing.
+check "an ordinary case statement is untouched by that" allow \
+    "$(bash_decision 'case $x in *.md) echo doc;; esac')"
 # Not shells, but they run a PROGRAM READ FROM STDIN exactly as one does. Costs 95 further
 # over-blocks; the list is an enumeration and adding a name is free.
 check "python3 reads its program from stdin too" block \
@@ -1046,6 +1058,10 @@ check "a receiver behind a first command in the body blocks at the gate" block \
     "$(bash_decision 'printf "python3 hooks/gate-scripts/lib/lease_slot.py x" | echo "$(true; . /dev/stdin)"')"
 check "...including the backtick spelling of that at the gate" block \
     "$(bash_decision 'printf "python3 hooks/gate-scripts/lib/lease_slot.py x" | echo "`true; . /dev/stdin`"')"
+# ...and the gate refuses the truncated-by-a-case-pattern body too, so the helper payload
+# cannot be sourced off the pipe behind one.
+check "a case pattern cannot truncate the body at the gate" block \
+    "$(bash_decision 'printf "python3 hooks/gate-scripts/lib/lease_slot.py x" | echo "$(case x in x) . /dev/stdin;; esac)"')"
 # ...and the precision this keeps. Scanning the WHOLE command on any shell name was
 # measured against 34,758 real commands and over-blocked 2,693 of them (7.7%); scoping the
 # scan to the PRODUCER costs 1,561 (4.49%) as shipped -- ADR 0032 carries the breakdown and
@@ -2226,11 +2242,14 @@ fi
 # split pre-parse ceiling. Each case must still come back BLOCK -- fast-and-allowed would
 # be the same bypass with extra steps.
 #
-# Asserted at 2.5s, HALF the 5s hook timeout, deliberately. Asserting at the timeout
+# Floored at 2.5s, HALF the 5s hook timeout, deliberately. Asserting at the timeout
 # itself accepts any margin down to zero: a variant measured at 3.92s here passes a 5s
 # assertion while being one slow CI box away from the fail-open it is supposed to
 # prevent. The budget is a property of the slowest machine that will ever run this hook,
-# not of this one, so the test demands room rather than a bare pass.
+# not of this one, so the test demands room rather than a bare pass -- and, since the
+# 2.5s floor turned out to be unmeetable on an ordinary CI runner, it now scales with a
+# baseline measured in the same run rather than pinning this laptop's speed as the
+# universal constant. See the scaling note at the loop below.
 #
 # The payload is built and piped INSIDE python, never passed as an argv word: the gate
 # reads its command from stdin JSON and is not bound by ARG_MAX, but bash_decision passes
@@ -2246,21 +2265,44 @@ sys.stdout.write(json.dumps({"tool_name": "Bash", "cwd": sys.argv[1],
     | (cd "$WORK" && bash "$GATE") 2>/dev/null
 }
 _TIMED_FAIL=0
+# The budget is SCALED BY THIS MACHINE, floored at the original 2.5s. A fixed wall-clock
+# number cannot tell a slow runner from a quadratic algorithm, and it was calibrated on a
+# developer box: the 2048KB case measures 0.65s here and 2.7s on a GitHub runner (~4x
+# slower), so the flat 2.5s failed CI while the gate was doing nothing wrong -- measured
+# by running this same file against HEAD's gate and main's gate in turn (0.65s vs 0.66s:
+# the producer scan adds nothing to this payload). Scaling keeps the ORIGINAL strictness
+# where it was calibrated -- on this machine the floor wins and the budget is still 2.5s --
+# while letting a slower box earn proportional room. The guard is undamaged, because what
+# it exists to catch is superlinear blowup: the three regressions it was written for
+# (7.2s, 5.4s, 4.9s) all leave the baseline flat while the padded case explodes, so they
+# still fail. `_EL16` is the 16KB case: same startup, same parser, negligible payload --
+# a pure read on how fast this machine is.
+_EL16=""
 for _kb in 16 128 2048; do
     _T0="$(python3 -c 'import time; print(time.time())')"
     _OUT="$(_padded_decision "$_kb")"
     _EL="$(python3 -c "import time; print('%.2f' % (time.time() - $_T0))")"
+    [[ "$_kb" == "16" ]] && _EL16="$_EL"
     case "$_OUT" in
         *'"block"'*) ;;
         *) _TIMED_FAIL=$((_TIMED_FAIL + 1))
            printf "  FAIL  %sKB padded command was ALLOWED\n" "$_kb" ;;
     esac
-    if [ "$(python3 -c "print(1 if $_EL >= 2.5 else 0)")" = "1" ]; then
+    # min(4.0, max(2.5, 6 x baseline)). The 6x is the observed 2048KB/16KB ratio
+    # (0.65/0.12 = 5.4) plus headroom; a quadratic path blows well past it while the
+    # baseline stays flat. The 4.0s CAP is load-bearing and was missed in the first cut:
+    # without it a baseline above 0.83s scales the budget past the hook's own 5s timeout,
+    # so the test would certify a run that in production writes no decision at all -- the
+    # exact fail-open this block exists to catch. A machine slow enough to need more than
+    # 4.0s here cannot run this hook safely, and SHOULD fail.
+    _BUDGET="$(python3 -c "print('%.2f' % min(4.0, max(2.5, 6 * ${_EL16:-0})))")"
+    if [[ "$(python3 -c "print(1 if $_EL >= $_BUDGET else 0)")" == "1" ]]; then
         _TIMED_FAIL=$((_TIMED_FAIL + 1))
-        printf "  FAIL  %sKB padded command took %ss (budget is 2.5s = half the 5s hook timeout)\n" "$_kb" "$_EL"
+        printf "  FAIL  %sKB padded command took %ss (budget %ss = max(2.5s, 6x the %ss 16KB baseline); the hook timeout is 5s)\n" \
+               "$_kb" "$_EL" "$_BUDGET" "$_EL16"
     fi
 done
-if [ "$_TIMED_FAIL" -eq 0 ]; then
+if [[ "$_TIMED_FAIL" -eq 0 ]]; then
     ok "padded commands still block, inside the 5s hook timeout (16KB/128KB/2MB)"
 else
     no "padded-command timing" "$_TIMED_FAIL assertion(s) failed"
@@ -2309,10 +2351,15 @@ for _key in "tool_name" "toolName"; do
                 *) _SPELL_FAIL=$((_SPELL_FAIL + 1))
                    printf "  FAIL  key=%s cp%s n=%s was ALLOWED\n" "$_key" "$_cp" "$_n" ;;
             esac
-            if [ "$(python3 -c "print(1 if $_EL >= 2.5 else 0)")" = "1" ]; then
+            # Same machine-scaled budget as the padded loop above, reusing the 16KB
+            # baseline it measured -- a flat 2.5s is this laptop's speed masquerading as a
+            # universal constant, and it is what failed CI there. Floor keeps the original
+            # strictness where it was calibrated.
+            _SBUDGET="$(python3 -c "print('%.2f' % min(4.0, max(2.5, 6 * ${_EL16:-0})))")"
+            if [[ "$(python3 -c "print(1 if $_EL >= $_SBUDGET else 0)")" == "1" ]]; then
                 _SPELL_FAIL=$((_SPELL_FAIL + 1))
-                printf "  FAIL  key=%s cp%s n=%s took %ss (budget is 2.5s = half the 5s hook timeout)\n" \
-                       "$_key" "$_cp" "$_n" "$_EL"
+                printf "  FAIL  key=%s cp%s n=%s took %ss (budget %ss = max(2.5s, 6x the %ss 16KB baseline); hook timeout is 5s)\n" \
+                       "$_key" "$_cp" "$_n" "$_EL" "$_SBUDGET" "$_EL16"
             fi
         done
     done

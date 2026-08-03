@@ -374,8 +374,22 @@ before being declined:
 | producer expands a variable this command assigns | `P='rm -rf src'; printf '%s' "$P" \| bash` | **386** over-blocks (1.1%) | leaves the split-operand spelling — and every other runtime assembly — open |
 | `source` in the indirection set | a function defined in a sourced file | **162** over-blocks | leaves `~/.bashrc` and exported environment functions open |
 
-Both are stated as residuals instead, and both are asserted as *allow* in the test suite so
-the choice stays deliberate rather than being rediscovered as a bug. The line drawn is:
+A third was written and then **reverted during the post-PR grind**, and it is worth recording
+why, because it is the clearest example of the rule this ADR keeps re-deriving. The
+paren-balance check that catches `$(case x in x) $SHELL;; esac)` is quote-blind, so an inert
+`(` re-balances it: `$(case x in x) echo "("; . /dev/stdin;; esac)` is **not** caught. The
+obvious repair — trip on the `case`/`esac` reserved word, which a case construct can never
+omit — *does not work*, and only running it showed that: segments are split on `;` before the
+producer scan sees them, so `esac` lands in a different segment than the `$(` and the tripwire
+never fires on the very shape it was written for. Matching `\bcase\b` instead would have fired
+on the English word (`echo "$(date) fixed an edge case"`), and by then the 34,758-command
+corpus this ADR is measured against was no longer available, so that cost could not be
+quantified. An unmeasured rule that does not work is worse than a recorded residual, so the
+balance check stays (it costs zero measured over-blocks and does close the unquoted spelling)
+and the quoted one joins the list below.
+
+These are stated as residuals instead, and the first two are asserted as *allow* in the test
+suite so the choice stays deliberate rather than being rediscovered as a bug. The line drawn is:
 **close what the command text reveals; document what only an interpreter could recover.**
 That is the same call ADR 0006 made, and the containment is unchanged — an unlisted shell or
 an assembled name only helps an actor who already holds Bash, and every gated write still

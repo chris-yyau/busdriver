@@ -364,10 +364,6 @@ _FUNC_DEF_RE = re.compile(r"(^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)"
 # about the body -- the shell decides command position, and the separators are finite.
 # KEEP IN STEP WITH the gate's _INDIRECTION_RE.
 # `hash -p PATH NAME` binds NAME to PATH for the rest of the shell, which is the same
-# re-pointing `alias` does and was simply missing: `hash -p /bin/bash f; printf <payload> | f`
-# runs bash from the pipe -- verified. Anchored in command position, and tolerant of the
-# `builtin`/`command` prefixes that reach the same builtin.
-# `hash -p PATH NAME` binds NAME to PATH for the rest of the shell, which is the same
 # re-pointing `alias` does. NO PREFIX GRAMMAR AND NO OPTION SEARCH -- both were written,
 # both were defeated repeatedly, and both were DELETED rather than refined again.
 #

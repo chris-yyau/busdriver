@@ -345,6 +345,22 @@ operands — it costs **zero**: 1,440 either way at the round it was measured.
 So it is closed rather than carried, and the shape is pinned in the suite alongside an
 `allow` for a glob in an ordinary argument (`grep -- *.py`), which is what the scoping buys.
 
+### Two deliberate over-blocks, pinned rather than chased
+
+Both are in the SAFE direction, and closing either needs state whose failure mode is a
+fail-open — which is the trade this whole change refuses to make.
+
+| Shape | Why it over-blocks | Why it stays |
+|---|---|---|
+| `cat eval</dev/null <helper>` | the gate's indirection layer sees text, not a parsed command word, so an `eval` that is an ARGUMENT followed by a redirect matches | telling them apart needs the command word, a different layer |
+| `case foo in 'rm -rf src'\|bash) :;; esac` | inside a `case`, `\|` separates pattern ALTERNATIVES, not pipeline stages | closing it needs case-pattern state, and getting that wrong turns a real pipe into an inert pattern |
+
+The second is narrow by construction: it needs a pattern that both contains a write verb
+and names a shell in an alternative, so `case x in a|b)` and `case $x in *.py|*.sh)` are
+untouched — both verified and asserted. (`case $x in *.py|*.sh)` IS blocked, but by the
+unconditional helper guard, because `*.py` can expand to a protected helper — nothing to do
+with the pipe. Asserted separately so the two reasons are not conflated.)
+
 ## Where this stops
 
 Rounds 7 and 8 crossed from *"the segmenter mis-parses shell grammar"* — closable, and

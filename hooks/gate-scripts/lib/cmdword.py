@@ -916,6 +916,17 @@ def _piped_shell_producers(pairs):
     building them all is O(stages^2) BYTES, which is how the `watch` scan above reached
     218 MB inside a hook whose timeout reads as allow. Pipelines partition the command, so
     the emitted slices are disjoint and this stays linear.
+    
+
+    RESIDUAL, deliberate, and an OVER-block: inside a `case` a `|` separates PATTERN
+    ALTERNATIVES rather than pipeline stages, so `case foo in 'rm -rf src'|bash) :;; esac`
+    reads as a pipe feeding `bash` and the quoted pattern is raw-scanned. Closing it needs
+    case-pattern state -- where the `in` ended, where the `)` closes -- and getting THAT
+    wrong in the other direction turns a real pipe into an inert pattern, which is a
+    fail-OPEN. An over-block is the safe error and this one is narrow: it needs a pattern
+    that BOTH contains a write verb AND names a shell in an alternative, so ordinary
+    `case x in a|b)` and `case $x in *.py|*.sh)` are untouched -- both verified. Pinned in
+    the suite so the trade stays visible rather than being rediscovered as a bug.
     """
     # TWO depths, each clamped at zero, never one sum. A `case` pattern terminator is a bare
     # `)` with no opener -- `case x in x) printf 'rm -rf src';; esac | bash` -- so a single

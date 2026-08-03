@@ -868,6 +868,20 @@ check "...and the &>> spelling too" block \
 # and the shape is contrived. Pinned as CURRENT behaviour so changing it trips this line.
 check "eval as an ARGUMENT before a redirect over-blocks (deliberate)" block \
     "$(bash_decision 'cat eval</dev/null hooks/gate-scripts/lib/lease_slot.py')"
+# Inside a `case`, a `|` separates PATTERN ALTERNATIVES rather than pipeline stages. Closing
+# that needs case-pattern state, and getting it wrong the other way turns a real pipe into
+# an inert pattern -- a fail-OPEN. An over-block is the safe error, and this one needs a
+# pattern that BOTH holds a write verb AND names a shell, so ordinary patterns are untouched.
+check "a case pattern alternative reads as a pipe (deliberate over-block)" block \
+    "$(bash_decision "case foo in 'rm -rf src'|bash) :;; esac")"
+check "...while an ordinary case pattern is unaffected" allow \
+    "$(bash_decision 'case foo in a|b) echo hi;; esac')"
+check "...including a globbed one" allow \
+    "$(bash_decision 'case $x in *.md|*.txt) ls;; esac')"
+# `*.py` is deliberately NOT used above: that glob can expand to a protected helper, and the
+# unconditional helper guard blocks it for that reason alone -- nothing to do with the pipe.
+check "a case pattern globbing .py is blocked by the HELPER guard, not the pipe" block \
+    "$(bash_decision 'case $x in *.py|*.sh) ls;; esac')"
 # NESTED extglob needs more than one substitution pass, and passes are guesses at a
 # grammar. Same exit as the negation and the alternation: unresolved, fail CLOSED.
 check "a NESTED extglob receiver fails closed" block \

@@ -61,10 +61,10 @@ counting commands that the current classifier allows and the candidate would blo
 | Issue option 1 — any shell name anywhere ⇒ raw-scan whole command | **2,693 (7.7%)** | Mostly `bash tests/foo.sh` beside an unrelated `git` |
 | Raw-scan whole command, but only for a pipe-fed shell | 625 (1.8%) | Mostly `gh pr checks N \| bash "$RCS" "$(git rev-parse …)"` |
 | Producer = the whole command PREFIX before the receiver | 559 (1.61%) | Closes grouping without any grouping rules, but a multi-line command drags every earlier line into the scan |
-| **Chosen — producer scoped to the receiver's own pipeline** | **1,440 (4.14%)** | Almost all are gate self-tests piping `rm -rf` text into a gate script |
+| **Chosen — producer scoped to the receiver's own pipeline** | **1,509 (4.34%)** | Almost all are gate self-tests piping `rm -rf` text into a gate script |
 | Issue option 3 — accept the regression | 0 | Rejected: a regression is a weaker position than a documented pre-existing limit |
 
-Against the final implementation the whole-corpus diff is **1,440 newly blocked** and
+Against the final implementation the whole-corpus diff is **1,509 newly blocked** and
 **one** command newly allowed. Every earlier round held the diff at zero newly allowed, and
 that is still the rule; the single exception is named rather than rounded away.
 
@@ -154,8 +154,8 @@ extends both; and **both halves of the verdict** — verbs *and* redirects — a
 producer, exactly as the depth cap above already had to learn.
 
 Each widening rule was measured by disabling it, rather than argued. Against the **shipped**
-code and the same 34,758-command corpus: **1,440** total, of which the indirection rule
-accounts for **845**, group depth for **74**, and the newline/comment rule for **22**. Those
+code and the same 34,758-command corpus: **1,509** total, of which the indirection rule
+accounts for **914**, group depth for **73**, and the newline/comment rule for **21**. Those
 do not sum to the total and are not meant to — a command caught by two rules is counted by
 each in isolation and once in the total. Every figure in this paragraph comes from one
 measurement run against the commit this ADR ships with; the per-round totals in the
@@ -180,7 +180,7 @@ counting is what keeps `grep -n done log` allowed.
 
 Those two comparisons are **paired historical measurements**: each was taken against the
 code as it stood at that round, and only the ratio between the pair is meaningful. The
-shipped total is the 1,440 above — **53.5% of issue option 1's 2,693**, which is the only
+shipped total is the 1,509 above — **56% of issue option 1's 2,693**, which is the only
 comparison that should be quoted.
 
 **Two characters in the `name()` anchor accounted for 698 of the 1,105 total at round 14.**
@@ -208,7 +208,7 @@ csh/fish do not need to inherit that.
 - **But the indirection rule is an exception, and it is the expensive one.** A command that
   BOTH introduces indirection (a function or alias definition, `hash -p`, `BASH_CMDS`,
   `eval`) AND contains a pipe is raw-scanned WHOLE, which does reinstate the #519 false
-  positives for that command. It accounts for **845** of the 1,440 over-blocks. The
+  positives for that command. It accounts for **914** of the 1,509 over-blocks. The
   narrowing is described under "The precision trajectory" and is deliberately not built
   here.
 - `_split_simple_commands` now delegates to `_split_with_ops`, which records the operator
@@ -306,13 +306,14 @@ bypass, and each of those three rounds was that guess being wrong in a new place
 | 23 | 1,413 (4.07%) | `source`, `.` and `xargs` as receivers — 64 |
 | 25 | 1,439 (4.14%) | extglob receivers, `make`, and the unresolvable pattern forms — 26 |
 | 27 | 1,440 (4.14%) | the `hash` prefix grammar deleted, nested extglob unresolved — 1 |
+| pre-PR | 1,509 (4.34%) | wrapper-option receiver closed (0); the `hash` option search deleted (69) |
 
 Every step closed a fail-open that was **verified executing**, and only one step ever moved
 a command from block to allow (named above). But the cost is now five times what the design
 was argued on, and the majority of it lands in ONE rule: the indirection trigger raw-scans
 the WHOLE command whenever the text contains any indirection AND any pipe, which reinstates
-the pre-#519 false positives for that command. It accounts for **845 of the 1,440**, or
-58.7% — a majority, not all of it.
+the pre-#519 false positives for that command. It accounts for **914 of the 1,509**, or
+60.6% — a majority, not all of it.
 
 The narrowing is known and NOT built here: trigger the whole-command scan only when a
 pipeline stage resolves to a name this command actually **binds** — collect the names from
@@ -321,22 +322,21 @@ against the stage command words. `eval` keeps the broad behaviour, since it bind
 That is a new mechanism rather than a fix to an existing one, so it is follow-up work with
 this measurement attached rather than a twenty-ninth round of the same review.
 
-## Open at the time of writing
+## Closed during the pre-PR review
 
-Review round 28 reported one further fail-open, **verified executing and NOT fixed here**:
+The deep pre-PR pass reported the one gap this ADR had recorded as open:
 
     printf 'rm -rf src' | env -u X /bin/[b]ash
 
-`_effective_command_word` selects `X` — the operand of `env -u` — rather than the glob that
-follows it, so the unresolved-command-word test never sees `/bin/[b]ash`. The general fix is
-to apply that test to every stage word rather than only the command word; it was not taken
-here because it is the same shape as the wrapper-arity question this module refuses, and
-because it needs its own measurement (globs in ordinary arguments — `grep foo *.py` — would
-start triggering producer scans).
+`_effective_command_word` peels the wrapper and lands on `X` — the operand of `-u` — so the
+globbed receiver behind it was never tested. The note said the general fix (test every stage
+word, not only the command word) needed its own measurement first. It got one: asking it of
+**every** stage costs **8.63%**, worse than the 7.7% option the issue rejected. Scoped to
+stages whose first word is a **wrapper** — where the real program is by definition among the
+operands — it costs **zero**: 1,440 either way at the round it was measured.
 
-It is recorded rather than quietly carried: the containment argument is unchanged — the
-actor needs Bash already, and every gated write still needs a logged lease — but this is a
-known gap, not a closed one.
+So it is closed rather than carried, and the shape is pinned in the suite alongside an
+`allow` for a glob in an ordinary argument (`grep -- *.py`), which is what the scoping buys.
 
 ## Where this stops
 

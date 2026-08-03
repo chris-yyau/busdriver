@@ -1053,7 +1053,10 @@ _INDIRECTION_RE = re.compile(
     # unbounded form backtracked catastrophically -- 7.2s on a valid 59KB command against a
     # 5s hook timeout that fails OPEN, so the regex WAS the fail-open.
     # KEEP IN STEP WITH cmdword._HASH_REMAP.
-    + r"|\bhash\b[^;&|()\n]{0,120}?\s-[A-Za-z]{0,20}p"
+    # NO OPTION SEARCH either: unbounded it backtracked at 7.2s against a 5s hook timeout,
+    # and bounded to 120 characters it was defeated by 121 spaces. Any CHARACTER bound is
+    # a guess. The word alone costs 69. KEEP IN STEP WITH cmdword._HASH_REMAP.
+    + r"|\bhash\b"
     # A bash ALIAS NAME is not an identifier -- `alias 1x=bash` is valid and runs -- so the
     # branch takes the same word shape the function branches use, plus the end-of-options
     # form. KEEP IN STEP WITH cmdword, whose eval/alias branch matches the WORD and so never
@@ -1575,7 +1578,15 @@ def _piped_shell_producers(pairs):
                         continue
                 _tokp, _strp = _exec_payloads(toks)
                 _progs = [" ".join(p) for p in _tokp] + list(_strp)
+                # A WRAPPER hides the real program among its operands, and peeling can land
+                # on the wrong word: `env -u X /bin/[b]ash` peels to `X`, the operand of
+                # `-u`, so the globbed receiver behind it is never tested. Asking the whole
+                # stage is the arity-free answer, scoped to wrapper-led stages because
+                # asking it of EVERY stage measured 8.63% against ZERO for this.
+                # KEEP IN STEP WITH cmdword._may_read_program_from_stdin.
                 if (cw and _UNRESOLVED_CW_RE.search(cw)) \
+                   or (_starts_with_wrapper(toks)
+                       and any(_UNRESOLVED_CW_RE.search(w) for w in _sw)) \
                    or any(_UNRESOLVED_CW_RE.search(p) for p in _progs) \
                    or any(_bn(w) in _SHELL_NAMES for p in _progs for w in p.split()):
                     last = i
@@ -1713,8 +1724,19 @@ def _helper_invoked(cmd, _depth=0, _full=None):
     # Both the trigger AND the search run on the dequoted copy. Dequoting only one of
     # them left `eval "... lease_""slot.py ..."` -- eval detected, helper name split
     # across two quoted runs and therefore not found in the raw text.
+    # ...and against the NORMALIZED copy as well, where a backslash-newline continuation has
+    # been rejoined and `${IFS}` restored to whitespace. `ha\<newline>sh -p ...` and
+    # `hash${IFS}-p${IFS}...` are indirection that the raw text spells neither of.
+    # KEEP IN STEP WITH cmdword._has_indirection.
     _dq = _dequote(cmd)
-    if _INDIRECTION_RE.search(_dq):
+    # _shell_variants, not just _dequote: the shell strips ESCAPES before it resolves a
+    # command word, so `h\a\s\h -p ...` runs the builtin while neither the raw text nor the
+    # dequoted copy spells it. cmdword._has_indirection already asked the variants; this
+    # copy asked only the dequoted text, which is the same defect one layer down.
+    # KEEP IN STEP WITH cmdword._has_indirection.
+    if any(_INDIRECTION_RE.search(_v)
+           for _text in (cmd, _norm_for_scan(cmd))
+           for _v in _shell_variants(_text)):
         # _abandoned_scan_probe, NOT the plain substring test: it also squeezes quoting and
         # GLOB characters, so an indirect receiver carrying a globbed helper name
         # (`eval "$A"` fed `lease_slo[t].py`) is caught. The substring test saw no literal

@@ -367,22 +367,24 @@ _FUNC_DEF_RE = re.compile(r"(^|[\n;&|{()]\s*|" + _CMD_POS_WORDS + r"\s*)"
 # re-pointing `alias` does and was simply missing: `hash -p /bin/bash f; printf <payload> | f`
 # runs bash from the pipe -- verified. Anchored in command position, and tolerant of the
 # `builtin`/`command` prefixes that reach the same builtin.
-# `command` and `builtin` take their OWN options before the builtin they run, and both
-# accept `--`, so `command -- hash -p ...` and `command -p hash -p ...` reach the same
-# builtin. The prefix therefore skips any dash-words rather than matching the bare word.
-_RUN_PREFIX = r"(?:(?:builtin|command)\s+(?:-\S*\s+)*)*"
-# `-p` is not required to stand alone: bash takes `hash -rp/bin/bash f`, where the option
-# is BUNDLED and its operand ATTACHED. Matching a bare `-p` token missed that, so the
-# test is for a `p` anywhere in a dash-word -- the same shape the receiver scan already
-# uses for attached option values, and for the same reason.
-# ASSIGNMENT PREFIX: `FOO=x hash -p …` is still a `hash` in command position, and bash
-# allows any number of them. BOUNDED repetition, both here and in the option search:
-# the unbounded `[^;&|()\n]*?` backtracked catastrophically -- a valid 59KB command
-# padded with `if hash x` took 7.2s against a 5s hook timeout whose failure mode is
-# ALLOW, so the regex WAS the fail-open. An option this far from its verb does not
-# occur in an honest command.
-_ASSIGN_PREFIX = r"(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|()]{0,200}\s+){0,20}"
-_HASH_REMAP = _ASSIGN_PREFIX + _RUN_PREFIX + r"hash\b[^;&|()\n]{0,120}?\s-[A-Za-z]{0,20}p"
+# `hash -p PATH NAME` binds NAME to PATH for the rest of the shell, which is the same
+# re-pointing `alias` does. NO PREFIX GRAMMAR AND NO OPTION SEARCH -- both were written,
+# both were defeated repeatedly, and both were DELETED rather than refined again.
+#
+# The prefix went first. Anchoring on command position meant modelling everything bash
+# allows in front of a builtin -- `FOO=x`, `A+=x`, any number of them, a leading
+# redirection, `builtin`, `command`, `command --`, `command -p` -- and three consecutive
+# review rounds each closed one and left the next. Removing the anchor measured ZERO
+# further over-blocks: the grammar had been buying bypasses and nothing else.
+#
+# The `-p` search went the same way. Unbounded it backtracked catastrophically -- 7.2s on a
+# valid 59KB command against a 5s hook timeout whose failure mode is ALLOW, so the REGEX was
+# the fail-open. Bounded to 120 characters it was defeated by 121 spaces, because bash
+# ignores horizontal whitespace. Any bound in CHARACTERS is a guess at how far an option may
+# sit from its verb. Matching the word alone costs 69 over-blocks (1,509 against 1,440,
+# measured on the same corpus), has no bound to defeat and nothing to backtrack.
+# `\b` keeps `hashlib` out; `git hash-object` is in, and is part of that 69.
+_HASH_REMAP = r"\bhash\b"
 # `BASH_CMDS` is the hash table itself, exposed as a writable associative array: assigning
 # to it binds a NAME to a path exactly as `hash -p` does, without ever naming the builtin.
 # Verified executing. The subscript is not parsed -- an assignment to this array at all is
@@ -396,8 +398,14 @@ _INDIRECTION_RE = re.compile(r"\b(?:eval|alias)\b"
 
 def _has_indirection(cmd):
     """Does this command let a NAME stand for something other than itself?"""
+    # BOTH the raw text and the NORMALIZED text. The pipeline walk runs on the normalized
+    # copy, where a backslash-newline continuation has been rejoined and `${IFS}` restored to
+    # whitespace -- so `ha\<newline>sh -p ...` and `hash${IFS}-p${IFS}...` are indirection the
+    # walk can see while the raw text spells neither. Asking only the raw text left both
+    # open; asking both cannot subtract a match and measured no further cost.
     return any(_INDIRECTION_RE.search(v) or _FUNC_DEF_RE.search(v)
-               for v in _shell_variants(cmd))
+               for text in (cmd, _normalize(cmd))
+               for v in _shell_variants(text))
 
 
 # NOT CLOSED, deliberately: a producer that ASSEMBLES its payload rather than stating it --
@@ -560,7 +568,8 @@ def _split_with_ops(s):
     # The inferred version glued that `|` into the segment and lost the pipeline entirely.
     redir = False
     xglob = 0                             # open EXTGLOB parens -- see the branch below
-    for ch in s:
+    for _i, ch in enumerate(s):
+        _nxt = s[_i + 1:_i + 2]
         if esc:
             buf.append(ch)
             esc = redir = False
@@ -615,6 +624,13 @@ def _split_with_ops(s):
             # the other half of the pattern.
             buf.append(ch)
             xglob -= 1
+            redir = False
+        elif ch == "&" and _nxt == ">":
+            # `&>` / `&>>` redirect BOTH streams -- the `&` belongs to the redirect, not to
+            # the pipeline. Read as a control operator it cuts the segment in two and throws
+            # the real producer away. KEEP IN STEP WITH the gate's _split_with_ops, which
+            # carried this while this copy did not.
+            buf.append(ch)
             redir = False
         elif ch in ";|&()":
             if buf or not op:
@@ -717,7 +733,7 @@ def _group_delta(words):
     A compound keyword is one only in command position, and segments are already split on
     separators, so the openers/closers of a segment are exactly its leading words -- `{ if
     true` opens twice, `fi` closes once. Counting the keyword ANYWHERE instead was measured
-    at 1,161 over-blocks against the 1,440 this shape costs, because `if`, `for` and `done` are
+    at 1,161 over-blocks against the 1,509 this shape costs, because `if`, `for` and `done` are
     ordinary words in ordinary commands (`grep -n done log`) and a stray one opened a depth
     nothing closed. Both figures are against the same corpus and the same final code.
 
@@ -798,6 +814,16 @@ def _may_read_program_from_stdin(segtext):
         return True
     if cw and any(ch in cw for ch in _UNRESOLVED_CW_CHARS):
         return True
+    # A WRAPPER hides the real program among its operands, and peeling it can land on the
+    # wrong word: `env -u X /bin/[b]ash` peels to `X` -- the operand of `-u` -- so the
+    # globbed receiver behind it was never tested. Asking the whole stage instead is the
+    # arity-free answer, and it is scoped to wrapper-led stages because asking it of EVERY
+    # stage costs 8.63% (worse than the option the issue rejected) while this costs ZERO:
+    # 1,440 either way, measured. A glob in an ordinary argument (`grep foo *.py`) is
+    # untouched; a glob in a wrapper's operands is exactly the thing that runs.
+    if _starts_with_wrapper(toks) and any(
+            any(ch in w for ch in _UNRESOLVED_CW_CHARS) for w in words):
+        return True
     # Last: the extglob spelling, resolved. Guarded by the substitution actually changing
     # something, so this cannot recurse -- `_EXTGLOB_RE` only ever shortens the text.
     if _EXTGLOB_NEG_RE.search(segtext):
@@ -861,7 +887,7 @@ def _piped_shell_producers(pairs):
     scan to the PRODUCER rather than to the whole command is what keeps it cheap --
     measured over 34,758 real commands, scanning the whole command on any shell name
     over-blocked 2,693 of them (7.7%, mostly `bash tests/foo.sh` beside an unrelated `git`)
-    while the producer scan over-blocks 1,440 (4.14%). Both figures are against the SAME
+    while the producer scan over-blocks 1,509 (4.34%). Both figures are against the SAME
     corpus and the SAME final code; ADR 0032 carries the full table and the per-rule
     isolation, and any number quoted here must match it.
 
@@ -886,7 +912,7 @@ def _piped_shell_producers(pairs):
     any of this, and was measured mid-development at 559 over-blocks (1.61%) against 43 for
     the pipeline scope at that same commit, because a multi-line command drags every earlier
     line into the scan. The scope decision is what that comparison settled; the FINAL total
-    for the pipeline scope is 1,440, the rest being the grouping, indirection and newline rules
+    for the pipeline scope is 1,509, the rest being the grouping, indirection and newline rules
     afterwards (isolated in ADR 0032).
 
     ONE producer per pipeline, from its LAST candidate stage. Every earlier candidate's

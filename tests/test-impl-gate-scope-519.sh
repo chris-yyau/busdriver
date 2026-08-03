@@ -743,6 +743,14 @@ check "the POSIX . spelling does too" block \
 # it as a name anywhere in the stage cost 100 over-blocks for nothing.
 check "a bare . as an argument is not a receiver" allow \
     "$(bash_decision 'find . -name x | head')"
+# A WRAPPER hides the real program among its operands, and peeling it can land on the wrong
+# word: `env -u X …` peels to `X`, the operand of `-u`, so the globbed receiver behind it
+# was never tested. Scoped to wrapper-led stages -- asking every stage costs 8.63%, worse
+# than the option the issue rejected, while this costs ZERO (1,440 either way).
+check "a globbed receiver behind a wrapper OPTION is caught" block \
+    "$(bash_decision "printf 'rm -rf src' | env -u X /bin/[b]ash")"
+check "a glob in an ordinary argument is still not a receiver" allow \
+    "$(bash_decision 'git log --oneline | grep -- *.py')"
 check "xargs executes what it reads from stdin" block \
     "$(bash_decision "printf 'rm -rf src' | xargs")"
 check "make runs a stdin Makefile with -f -" block \
@@ -819,6 +827,22 @@ check "hash -p behind an append assignment is indirection" block \
     "$(bash_decision 'A+=x hash -p /bin/bash f; printf "rm -rf src" | f')"
 check "hash -p behind a leading redirection is indirection" block \
     "$(bash_decision '</dev/null hash -p /bin/bash f; printf "rm -rf src" | f')"
+# NOR IS THE OPTION SEARCH. Unbounded it backtracked at 7.2s against a 5s hook timeout;
+# bounded to 120 characters it was defeated by 121 spaces, because bash ignores horizontal
+# whitespace. Any CHARACTER bound is a guess at how far an option sits from its verb.
+check "hash with 121 spaces before -p is still indirection" block \
+    "$(bash_decision "hash$(python3 -c 'print(" " * 121, end="")')-p /bin/bash f; printf 'rm -rf src' | f")"
+# Indirection is asked of the NORMALIZED text too, where a line continuation is rejoined
+# and \${IFS} is restored to whitespace -- the raw text spells neither of these.
+check "a hash split across a line continuation is indirection" block \
+    "$(bash_decision 'ha\
+sh -p /bin/bash f; printf "rm -rf src" | f')"
+check "a hash spelled with \${IFS} is indirection" block \
+    "$(bash_decision 'hash${IFS}-p${IFS}/bin/bash${IFS}f; printf "rm -rf src" | f')"
+# The shell strips ESCAPES before it resolves a command word, so the indirection test asks
+# the shell VARIANTS, not just the dequoted text.
+check "an escape-split hash is still indirection" block \
+    "$(bash_decision 'h\a\s\h -p /bin/bash f; printf "rm -rf src" | f')"
 # NESTED extglob needs more than one substitution pass, and passes are guesses at a
 # grammar. Same exit as the negation and the alternation: unresolved, fail CLOSED.
 check "a NESTED extglob receiver fails closed" block \
@@ -942,7 +966,8 @@ check "the helper piped into a stdin shell is blocked" block \
     "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py .claude 20 30 3600' | bash")"
 # ...and the precision this keeps. Scanning the WHOLE command on any shell name was
 # measured against 34,758 real commands and over-blocked 2,693 of them (7.7%); scoping the
-# scan to the PRODUCER costs 39 (0.11%). These four are the shapes that difference is made
+# scan to the PRODUCER costs 1,509 (4.34%) as shipped -- ADR 0032 carries the breakdown and
+# supersedes every earlier figure. These four are the shapes that difference is made
 # of -- a shell with a script operand on the receiving end of a pipe, a genuine -c, a
 # non-shell consumer, and `||`, which feeds the next segment nothing.
 check "a script-operand shell fed by a pipe stays allowed" allow \
@@ -2577,4 +2602,4 @@ case "$PROP_OUT" in
 esac
 
 printf "\n%d passed, %d failed\n" "$PASS" "$FAIL"
-[ "$FAIL" -eq 0 ]
+[[ "$FAIL" -eq 0 ]]

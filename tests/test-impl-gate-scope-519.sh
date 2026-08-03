@@ -2242,14 +2242,24 @@ fi
 # split pre-parse ceiling. Each case must still come back BLOCK -- fast-and-allowed would
 # be the same bypass with extra steps.
 #
-# Floored at 2.5s, HALF the 5s hook timeout, deliberately. Asserting at the timeout
-# itself accepts any margin down to zero: a variant measured at 3.92s here passes a 5s
-# assertion while being one slow CI box away from the fail-open it is supposed to
-# prevent. The budget is a property of the slowest machine that will ever run this hook,
-# not of this one, so the test demands room rather than a bare pass -- and, since the
-# 2.5s floor turned out to be unmeetable on an ordinary CI runner, it now scales with a
-# baseline measured in the same run rather than pinning this laptop's speed as the
-# universal constant. See the scaling note at the loop below.
+# Asserted at 3.5s against the hook's real 5s timeout. Asserting AT the timeout accepts
+# any margin down to zero: a variant measured at 3.92s here passes a 5s assertion while
+# being one slow box away from the fail-open it is meant to prevent. So the test demands
+# room -- but the room has to be a number a real machine can meet.
+#
+# It was 2.5s (half the timeout), calibrated on a developer machine, and that is what
+# failed CI: this payload costs 0.65s here and 2.71s on a GitHub runner. A baseline-SCALED
+# budget was tried next and was worse than useless -- the 16KB case it scaled from is
+# dominated by process startup, which CI does at roughly local speed (0.19s), while the
+# 2048KB case is dominated by parse throughput, which CI does far slower. The two ratios
+# are 5.4x locally and 14.3x on CI, so scaling from the small case mis-models the workload
+# and the floor simply won on both machines. A flat number honest about the slow case is
+# the simpler and correct instrument.
+#
+# 3.5s keeps the guard whole. What it exists to catch is superlinear blowup, and all three
+# regressions it was written for -- 7.2s, 5.4s, 4.9s -- are above 3.5s. It also still fails
+# BEFORE production does: a machine 30% slower than that CI runner trips this at 3.5s while
+# the hook itself is still inside its 5s timeout, which is the direction a warning points.
 #
 # The payload is built and piped INSIDE python, never passed as an argv word: the gate
 # reads its command from stdin JSON and is not bound by ARG_MAX, but bash_decision passes
@@ -2265,41 +2275,20 @@ sys.stdout.write(json.dumps({"tool_name": "Bash", "cwd": sys.argv[1],
     | (cd "$WORK" && bash "$GATE") 2>/dev/null
 }
 _TIMED_FAIL=0
-# The budget is SCALED BY THIS MACHINE, floored at the original 2.5s. A fixed wall-clock
-# number cannot tell a slow runner from a quadratic algorithm, and it was calibrated on a
-# developer box: the 2048KB case measures 0.65s here and 2.7s on a GitHub runner (~4x
-# slower), so the flat 2.5s failed CI while the gate was doing nothing wrong -- measured
-# by running this same file against HEAD's gate and main's gate in turn (0.65s vs 0.66s:
-# the producer scan adds nothing to this payload). Scaling keeps the ORIGINAL strictness
-# where it was calibrated -- on this machine the floor wins and the budget is still 2.5s --
-# while letting a slower box earn proportional room. The guard is undamaged, because what
-# it exists to catch is superlinear blowup: the three regressions it was written for
-# (7.2s, 5.4s, 4.9s) all leave the baseline flat while the padded case explodes, so they
-# still fail. `_EL16` is the 16KB case: same startup, same parser, negligible payload --
-# a pure read on how fast this machine is.
-_EL16=""
 for _kb in 16 128 2048; do
     _T0="$(python3 -c 'import time; print(time.time())')"
     _OUT="$(_padded_decision "$_kb")"
     _EL="$(python3 -c "import time; print('%.2f' % (time.time() - $_T0))")"
-    [[ "$_kb" == "16" ]] && _EL16="$_EL"
     case "$_OUT" in
         *'"block"'*) ;;
         *) _TIMED_FAIL=$((_TIMED_FAIL + 1))
            printf "  FAIL  %sKB padded command was ALLOWED\n" "$_kb" ;;
     esac
-    # min(4.0, max(2.5, 6 x baseline)). The 6x is the observed 2048KB/16KB ratio
-    # (0.65/0.12 = 5.4) plus headroom; a quadratic path blows well past it while the
-    # baseline stays flat. The 4.0s CAP is load-bearing and was missed in the first cut:
-    # without it a baseline above 0.83s scales the budget past the hook's own 5s timeout,
-    # so the test would certify a run that in production writes no decision at all -- the
-    # exact fail-open this block exists to catch. A machine slow enough to need more than
-    # 4.0s here cannot run this hook safely, and SHOULD fail.
-    _BUDGET="$(python3 -c "print('%.2f' % min(4.0, max(2.5, 6 * ${_EL16:-0})))")"
+    _BUDGET=3.5
     if [[ "$(python3 -c "print(1 if $_EL >= $_BUDGET else 0)")" == "1" ]]; then
         _TIMED_FAIL=$((_TIMED_FAIL + 1))
-        printf "  FAIL  %sKB padded command took %ss (budget %ss = max(2.5s, 6x the %ss 16KB baseline); the hook timeout is 5s)\n" \
-               "$_kb" "$_EL" "$_BUDGET" "$_EL16"
+        printf "  FAIL  %sKB padded command took %ss (budget %ss; the hook timeout is 5s)\n" \
+               "$_kb" "$_EL" "$_BUDGET"
     fi
 done
 if [[ "$_TIMED_FAIL" -eq 0 ]]; then
@@ -2351,15 +2340,13 @@ for _key in "tool_name" "toolName"; do
                 *) _SPELL_FAIL=$((_SPELL_FAIL + 1))
                    printf "  FAIL  key=%s cp%s n=%s was ALLOWED\n" "$_key" "$_cp" "$_n" ;;
             esac
-            # Same machine-scaled budget as the padded loop above, reusing the 16KB
-            # baseline it measured -- a flat 2.5s is this laptop's speed masquerading as a
-            # universal constant, and it is what failed CI there. Floor keeps the original
-            # strictness where it was calibrated.
-            _SBUDGET="$(python3 -c "print('%.2f' % min(4.0, max(2.5, 6 * ${_EL16:-0})))")"
+            # Same 3.5s budget as the padded loop above, for the same reason: a flat 2.5s
+            # was this laptop's speed masquerading as a universal constant.
+            _SBUDGET=3.5
             if [[ "$(python3 -c "print(1 if $_EL >= $_SBUDGET else 0)")" == "1" ]]; then
                 _SPELL_FAIL=$((_SPELL_FAIL + 1))
-                printf "  FAIL  key=%s cp%s n=%s took %ss (budget %ss = max(2.5s, 6x the %ss 16KB baseline); hook timeout is 5s)\n" \
-                       "$_key" "$_cp" "$_n" "$_EL" "$_SBUDGET" "$_EL16"
+                printf "  FAIL  key=%s cp%s n=%s took %ss (budget %ss; hook timeout is 5s)\n" \
+                       "$_key" "$_cp" "$_n" "$_EL" "$_SBUDGET"
             fi
         done
     done

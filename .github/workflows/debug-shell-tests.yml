@@ -56,6 +56,41 @@ jobs:
             | bash hooks/gate-scripts/pre-implementation-gate.sh
           echo "exit=$?"
 
+      - name: Helper-guard probe (the guard that is actually inert)
+        # The earlier single-gate probe used `rm -rf ...`, which never exercises
+        # the helper guard — so it proved nothing. These are the EXACT generated
+        # forms the suite reports as "105 of 105 allowed" on Linux; all six BLOCK
+        # locally on macOS. Expect: {"decision":"block"} six times.
+        run: |
+          H='hooks/gate-scripts/lib/lease_'"slot.py"
+          i=0
+          for cmd in \
+            "python3 -I $H .claude 20 0 3600" \
+            "timeout 5 python3 -I $H .claude 20 0 3600" \
+            "X=1 python3 -I $H .claude 20 0 3600" \
+            "sudo python3 -I $H .claude 20 0 3600" \
+            "sh -c 'python3 -I $H .claude 20 0 3600'" \
+            "eval 'python3 -I $H .claude 20 0 3600'"; do
+            i=$((i+1))
+            out=$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","cwd":sys.argv[1],"tool_input":{"command":sys.argv[2]}}))' "$PWD" "$cmd" \
+                  | bash hooks/gate-scripts/pre-implementation-gate.sh)
+            case "$out" in
+              *'"block"'*) verdict=BLOCK ;;
+              "")          verdict='allow(EMPTY STDOUT)' ;;
+              *)           verdict=allow ;;
+            esac
+            printf '%-22s %s\n' "$verdict" "$cmd"
+          done
+
+      - name: Shell trace of one inert helper invocation
+        # If the step above shows `allow`, this trace shows WHERE the shell half
+        # diverges. Tail only — the gate is ~2400 lines and the full trace is huge.
+        run: |
+          H='hooks/gate-scripts/lib/lease_'"slot.py"
+          python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","cwd":sys.argv[1],"tool_input":{"command":sys.argv[2]}}))' \
+            "$PWD" "python3 -I $H .claude 20 0 3600" \
+            | bash -x hooks/gate-scripts/pre-implementation-gate.sh 2>&1 | tail -80
+
       - name: cmdword.py import + classify probe
         # Isolates the library half of the security twin from the shell half.
         # `is_file_mod` is cmdword's ONLY public entry point — probing for any

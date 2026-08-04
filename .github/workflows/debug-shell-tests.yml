@@ -56,6 +56,20 @@ jobs:
             | bash hooks/gate-scripts/pre-implementation-gate.sh
           echo "exit=$?"
 
+      - name: Code identity — is the runner executing the same gate?
+        # macOS and Linux return opposite MARKER_CHECK values for identical input
+        # (BLOCK_MARKER_SCRIPT|lease_slot.py vs OK|). Before instrumenting further,
+        # rule out the runner executing different bytes. Expected local sha256:
+        #   pre-implementation-gate.sh 3a2ce68626b2b03ec3c58a097435e0cb351c4d81e94f546f7db709a25285c420
+        #   lib/cmdword.py             c10a4113538da61d15e5e8f4f4be5d0f8baabd29c1ee22a9eb86f24c9d41b568
+        # Expected symbol counts (from 4d00d13): 3 / 4 / 6 / 8.
+        run: |
+          sha256sum hooks/gate-scripts/pre-implementation-gate.sh hooks/gate-scripts/lib/cmdword.py
+          for s in _lexed_words _launcher_in_any_simple_command _exec_payloads _helper_budget; do
+            printf '%-34s %s\n' "$s" "$(grep -c "$s" hooks/gate-scripts/pre-implementation-gate.sh)"
+          done
+          echo "git HEAD: $(git rev-parse HEAD)"
+
       - name: Helper-guard probe (the guard that is actually inert)
         # The earlier single-gate probe used `rm -rf ...`, which never exercises
         # the helper guard — so it proved nothing. These are the EXACT generated

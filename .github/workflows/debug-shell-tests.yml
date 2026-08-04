@@ -83,13 +83,35 @@ jobs:
           done
 
       - name: Shell trace of one inert helper invocation
-        # If the step above shows `allow`, this trace shows WHERE the shell half
-        # diverges. Tail only — the gate is ~2400 lines and the full trace is huge.
+        # The Bash helper guard lives inside the MARKER_CHECK python launched at
+        # ~line 249 — i.e. near the START of the run. A `tail` shows only the
+        # design-fingerprint python at ~2641 and misses it entirely (that mistake
+        # cost an iteration). Capture the whole trace, then report the head plus
+        # the MARKER_CHECK decision specifically.
         run: |
           H='hooks/gate-scripts/lib/lease_'"slot.py"
+          # mktemp, not a predictable shared path: on a persistent/self-hosted
+          # runner a pre-created symlink at a fixed name would redirect this write.
+          TRACE="$(mktemp)"
           python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","cwd":sys.argv[1],"tool_input":{"command":sys.argv[2]}}))' \
             "$PWD" "python3 -I $H .claude 20 0 3600" \
-            | bash -x hooks/gate-scripts/pre-implementation-gate.sh 2>&1 | tail -80
+            | bash -x hooks/gate-scripts/pre-implementation-gate.sh > "$TRACE" 2>&1 && rc=0 || rc=$?
+          # Report the gate's exit status rather than swallowing it: a crash or an
+          # unexpected nonzero here is itself a finding, not noise to discard.
+          echo "gate exit: $rc   trace lines: $(wc -l < "$TRACE")"
+          echo "::group::MARKER_CHECK / _TOOL decision"
+          grep -nE "MARKER_CHECK|_TOOL=|_BLOCKED|blocked_helper|command -v python3" "$TRACE" | head -30
+          echo "::endgroup::"
+          echo "::group::first 120 trace lines"
+          head -120 "$TRACE"
+          echo "::endgroup::"
+          # Diagnostics are printed first, then the gate's status decides the step.
+          # The gate emits its decision as JSON and exits 0 for both allow and
+          # block, so a nonzero here is a genuine fault and must fail the step.
+          if [ "$rc" -ne 0 ]; then
+            echo "gate exited $rc — unexpected; failing the step"
+            exit "$rc"
+          fi
 
       - name: cmdword.py import + classify probe
         # Isolates the library half of the security twin from the shell half.

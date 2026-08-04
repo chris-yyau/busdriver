@@ -316,7 +316,7 @@ bypass, and each of those three rounds was that guess being wrong in a new place
 | 25 | 1,439 (4.14%) | extglob receivers, `make`, and the unresolvable pattern forms — 26 |
 | 27 | 1,440 (4.14%) | the `hash` prefix grammar deleted, nested extglob unresolved — 1 |
 | pre-PR | 1,561 (4.49%) | wrapper-option receiver (0); `hash` option search deleted (69); substitution bodies given the full receiver test (52) |
-| post-PR | **unmeasured** | no-command shell LAUNCHERS (`script`, `su`, `runuser`, `chroot`, `unshare`, `nsenter`) in command position |
+| post-PR | **unmeasured** | no-command shell LAUNCHERS (`script`, `su`, `runuser`, `chroot`, `unshare`, `nsenter`, `newgrp`, `sg`) in command position |
 | post-PR | **unmeasured** | the command-position walk in front of them: prefixes, assignments, redirections, compound stages, and an unknown-arity option marking the stage unresolved |
 
 Finding the launcher meant finding COMMAND POSITION, and several review rounds each found a

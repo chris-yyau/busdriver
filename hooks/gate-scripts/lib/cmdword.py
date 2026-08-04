@@ -697,6 +697,23 @@ _STDIN_SHELLS = _SHELLS | frozenset(("csh", "tcsh", "fish", "yash", "posh", "bos
                                      "sqlite3", "ed", "ex", "psql", "gdb",
                                      "source", "xargs", "make"))
 
+# VERSION-QUALIFIED spellings of the interpreters above: `/usr/bin/python3.12` is a real
+# executable name (`python3.12 --help` documents stdin as a program source, `[-c cmd |
+# -m mod | file | -]`), so `printf 'os.system(...)' | python3.12` runs it, and the exact-name
+# set above does not match it. Raised by Codex on #562, verified against a real
+# `python3.12` binary. Scoped to python for now, the same scope marker_check.py's sibling
+# `_INTERP_RE` already carries (`python[0-9.]*`) -- a name this exact-name set already
+# knows, wearing a version suffix, not a new interpreter family.
+# UNANCHORED on purpose: the attached-option-bundle check below asks whether a dash-word
+# ENDS WITH an interpreter name (`env -iSpython3.12`), which needs a search rather than a
+# whole-string match. Callers wanting the whole-name question use fullmatch.
+_VERSIONED_INTERP_RE = re.compile(r"python[0-9]+(?:\.[0-9]+)*$")
+
+
+def _is_stdin_shell(name):
+    """Does this basename read a program from stdin -- exactly, or version-qualified?"""
+    return name in _STDIN_SHELLS or bool(_VERSIONED_INTERP_RE.fullmatch(name))
+
 # LAUNCHERS that exec a shell when given NO program operand, so a pipe feeds that shell:
 # util-linux `script`, and `su` / `runuser` / `chroot` / `unshare` / `nsenter`, all of which
 # drop to `$SHELL` absent a command. Raised by Codex on #562 (verified there against
@@ -952,7 +969,7 @@ def _group_delta(words):
     A compound keyword is one only in command position, and segments are already split on
     separators, so the openers/closers of a segment are exactly its leading words -- `{ if
     true` opens twice, `fi` closes once. Counting the keyword ANYWHERE instead was measured
-    at 1,161 over-blocks against the 1,561 this shape costs, because `if`, `for` and `done` are
+    at 1,161 over-blocks against the 1,105 this shape costs at its own round, because `if`, `for` and `done` are
     ordinary words in ordinary commands (`grep -n done log`) and a stray one opened a depth
     nothing closed. Both figures are against the same corpus, but they are a HISTORICAL
     PAIR -- taken at the round the alternative was measured, not against the final code.
@@ -1011,14 +1028,19 @@ def _may_read_program_from_stdin(segtext, _depth=0):
     if toks is None:
         return True                       # unparseable stage: assume the worst
     words = list(_stage_words(toks))
-    if any(_basename(w) in _STDIN_SHELLS for w in words):
+    if any(_is_stdin_shell(_basename(w)) for w in words):
         return True
     # An option BUNDLE with its value attached. `env -iS'bash -s'` lexes to `-iSbash -s`,
     # whose first word is `-iSbash`: peeling ONE option letter leaves `Sbash`, and peeling a
     # fixed number never terminates, because the bundle length is the caller's to choose.
     # Asking whether a dash-word ENDS WITH a shell name is O(names) instead of O(length^2),
     # which matters in a file that has already been bitten twice by quadratic scans.
-    if any(w.startswith("-") and any(w.endswith(n) for n in _STDIN_SHELLS) for w in words):
+    # The version-qualified spelling has to be asked here too, not only on the ordinary-word
+    # path above: `env -iSpython3.12` bundles the interpreter into a dash-word, and an
+    # exact-suffix test alone answers False for it while `env -iSpython3` answers True.
+    if any(w.startswith("-")
+           and (any(w.endswith(n) for n in _STDIN_SHELLS) or _VERSIONED_INTERP_RE.search(w))
+           for w in words):
         return True
     # A stage can RUN a shell without naming one in command position: `eval "$A"` resolves to
     # bash at run time, and its command word is `eval`. So the operands this stage EXECUTES
@@ -1032,7 +1054,7 @@ def _may_read_program_from_stdin(segtext, _depth=0):
         # the wider of the two.
         _pt = _lex(prog)
         _pw = prog.split() if _pt is None else list(_stage_words(_pt))
-        if any(_basename(w) in _STDIN_SHELLS for w in _pw):
+        if any(_is_stdin_shell(_basename(w)) for w in _pw):
             return True
         # ...and the LAUNCHER question, which the first cut asked only of the stage.
         # `find . -maxdepth 0 -exec unshare \;` does not read stdin itself, so the pipe
@@ -1075,13 +1097,27 @@ def _may_read_program_from_stdin(segtext, _depth=0):
     # -e -exec -e unshare` names all three as PATTERNS and executes none of them. Same
     # anchor the write-verb -exec extraction uses, for the same reason.
     _fcw = _basename(cw) if cw else ""
-    if _depth < 4 and (_fcw == "find"
-                       or (_starts_with_wrapper(toks)
-                           and any(_basename(w) == "find" for w in words))
-                       # ...and through a MULTI-CALL dispatcher, whose find applet is the
-                       # same find: `busybox find . -exec unshare ;`.
-                       or (_fcw in ("busybox", "toybox")
-                           and any(_basename(w) == "find" for w in words))):
+    _is_find_exec = (_fcw == "find"
+                     or (_starts_with_wrapper(toks)
+                         and any(_basename(w) == "find" for w in words))
+                     # ...and through a MULTI-CALL dispatcher, whose find applet is the
+                     # same find: `busybox find . -exec unshare ;`.
+                     or (_fcw in ("busybox", "toybox")
+                         and any(_basename(w) == "find" for w in words)))
+    # `_is_find_exec` says only that the command IS find, not that it carries an execution
+    # predicate. Returning True at the cap on that alone turned a benign four-deep
+    # `find . -name x` -- which has no payload to examine -- into a block. Require an
+    # actual exec predicate, so the fail-closed answer covers only genuinely unexamined
+    # payloads.
+    if _is_find_exec and _depth >= 4 \
+       and any(t in ("-exec", "-execdir", "-ok", "-okdir") for t in toks):
+        # DEPTH-CAPPED, and not silently skipped. The condition below used to gate on
+        # `_depth < 4` alone, so reaching the cap fell through this branch entirely --
+        # unlike the substitution recursion further down, which already fails CLOSED
+        # at its own cap. A `find -exec` payload nested this deep is UNEXAMINED, not
+        # checked-and-clean, so it gets the same fail-closed answer.
+        return True
+    if _is_find_exec and _depth < 4:
         # INDEX-controlled, so a payload is never rescanned as predicates. Restarting the
         # search from the token after each `-exec` re-read every operand of the payload
         # just collected, so N `-exec`-looking OPERANDS cost O(N^2): a 1,400-operand
@@ -1192,7 +1228,7 @@ def _may_read_program_from_stdin(segtext, _depth=0):
         toks = _lex(deglob)
         if toks is None:
             return True
-        return any(_basename(w) in _STDIN_SHELLS for w in _stage_words(toks))
+        return any(_is_stdin_shell(_basename(w)) for w in _stage_words(toks))
     return False
 
 
@@ -1378,7 +1414,9 @@ def _defuse_comments(s):
     while i < n:
         ch = s[i]
         if esc:
-            out.append(ch); esc = False; word = False
+            out.append(ch)
+            esc = False
+            word = False
         elif in_s:
             out.append(ch)
             if ch == _SQ:
@@ -1392,11 +1430,17 @@ def _defuse_comments(s):
                 in_d = False
             word = False
         elif ch == chr(92):
-            out.append(ch); esc = True; word = False
+            out.append(ch)
+            esc = True
+            word = False
         elif ch == _SQ:
-            out.append(ch); in_s = True; word = False
+            out.append(ch)
+            in_s = True
+            word = False
         elif ch == _DQ:
-            out.append(ch); in_d = True; word = False
+            out.append(ch)
+            in_d = True
+            word = False
         elif ch == "#" and out and out[-1] == ")":
             # AMBIGUOUS, and deliberately not guessed at. Whether this `)` delimited a
             # command -- making the `#` a comment -- depends on what its `(` opened, and

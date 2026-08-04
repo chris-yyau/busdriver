@@ -42,11 +42,22 @@ trap 'rm -rf "$WORK"' EXIT
 git -C "$WORK" init -q
 mkdir -p "$WORK/.claude"
 
-verdict() { # <command> <gate-path> -> BLOCK | allow
-    local out
+verdict() { # <command> <gate-path> -> BLOCK | allow | ERROR
+    local out status
     out=$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","cwd":sys.argv[1],"tool_input":{"command":sys.argv[2]}}))' \
         "$WORK" "$1" 2>/dev/null | (cd "$WORK" && bash "$2") 2>/dev/null)
-    if printf '%s' "$out" | grep -q '"block"'; then printf 'BLOCK'; else printf 'allow'; fi
+    status=$?
+    # A block decision always wins, even if the pipeline's exit status is noisy. Absent
+    # one, a NON-ZERO exit means the gate invocation itself failed before it could emit a
+    # decision -- that must not read as "allow", or Section C's normal-operation
+    # assertions can pass while the gate silently never ran.
+    if printf '%s' "$out" | grep -q '"block"'; then
+        printf 'BLOCK'
+    elif [[ "$status" -ne 0 ]]; then
+        printf 'ERROR'
+    else
+        printf 'allow'
+    fi
 }
 
 # Deliberately if/then/else rather than `cond && ok || no`: with the && || form a
@@ -100,7 +111,11 @@ else
         "${BIGGEST}B >= ${BUDGET}B (half of MAX_ARG_STRLEN) — move it to a file before execve starts failing with E2BIG"
 fi
 
-if python3 -m py_compile "$CLASSIFIER" 2>/dev/null; then
+# Compile a COPY inside $WORK, not the real file: py_compile can drop a __pycache__
+# next to whatever it compiles, and the real lib/ tree sits outside $WORK's EXIT trap.
+COMPILE_COPY="$WORK/marker_check_compile_check.py"
+cp "$CLASSIFIER" "$COMPILE_COPY"
+if python3 -m py_compile "$COMPILE_COPY" 2>/dev/null; then
     ok "classifier compiles"
 else
     no "classifier compiles" "syntax error in lib/marker_check.py"

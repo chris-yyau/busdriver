@@ -336,7 +336,7 @@ if [ "$MARKER_ACTION" = "BLOCK_CLASSIFIER_ERROR" ] \
 
 This is an infrastructure fault in the gate, NOT a judgement about your command.
 
-The classifier is hooks/gate-scripts/lib/marker_check.py. A fault of 'exec' means python could not run it (check the file exists and is readable); 'empty' means it produced no verdict at all (a truncated or damaged copy). Any other value is the exception class it raised — re-run the gate with the '2>/dev/null' removed from that invocation to see the traceback.
+The classifier is hooks/gate-scripts/lib/marker_check.py. A fault of 'exec' means python could not run it (check the file exists and is readable); 'partial' means it produced no verdict at all (a truncated or damaged copy). Any other value is the exception class it raised — re-run the gate with the '2>/dev/null' removed from that invocation to see the traceback.
 
 Do NOT work around this by creating a skip file: it is a user-only escape hatch, and the gate is currently blind rather than merely strict."
     # Same single-decision contract the sibling fail-closed branch observes: emit ONE

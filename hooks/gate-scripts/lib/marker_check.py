@@ -1187,6 +1187,20 @@ _SHELL_NAMES = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "csh", "tcsh"
                 "awk", "gawk", "mawk", "nawk",
                 "sqlite3", "ed", "ex", "psql", "gdb",
                 "source", "xargs", "make")
+
+
+# A name this set already knows, wearing a version suffix: `python3.12` is python3. Without
+# this the two classifiers DESYNC -- cmdword blocks a helper payload piped to python3.12
+# while this guard returned OK for the identical command, which is the keep-in-step defect
+# this pair exists to avoid. UNANCHORED so the attached-option-bundle check can use search
+# (`env -iSpython3.12`); whole-name callers use fullmatch.
+# KEEP IN STEP WITH cmdword._VERSIONED_INTERP_RE / cmdword._is_stdin_shell.
+_VERSIONED_INTERP_RE = re.compile(r"python[0-9]+(?:\.[0-9]+)*$")
+
+
+def _is_shell_name(name):
+    """Exact shell/interpreter name, or a version-qualified spelling of one."""
+    return name in _SHELL_NAMES or bool(_VERSIONED_INTERP_RE.fullmatch(name))
 # LAUNCHERS that exec a shell when given NO program operand, so a pipe feeds that shell.
 # Matched in COMMAND POSITION only -- these are ordinary words, and the any-word test would
 # flip `grep script`. KEEP IN STEP WITH cmdword._LAUNCHER_SHELLS.
@@ -1497,8 +1511,8 @@ def _piped_shell_producers(pairs):
             _helper_budget[0] -= len(toks) if toks is not None else len(seg.split())
             if _helper_budget[0] < 0:
                 break
-            if toks is None or any(_bn(w) in _SHELL_NAMES for w in _sw) \
-               or any(w.startswith("-") and any(w.endswith(n) for n in _SHELL_NAMES)
+            if toks is None or any(_is_shell_name(_bn(w)) for w in _sw) \
+               or any(w.startswith("-") and (any(w.endswith(n) for n in _SHELL_NAMES) or _VERSIONED_INTERP_RE.search(w))
                       for w in _sw):
                 last = i
             else:
@@ -1573,10 +1587,10 @@ def _piped_shell_producers(pairs):
                         _bprogs = [" ".join(shlex.quote(_x) for _x in _p)
                                    for _p in _btp] + list(_bsp)
                         if _bt is None \
-                           or any(_bn(w) in _SHELL_NAMES for w in _bw) \
+                           or any(_is_shell_name(_bn(w)) for w in _bw) \
                            or (_bcw and _bn(_bcw) == ".") \
                            or _leads_with_launcher(_bt, _bw) \
-                           or any(_bn(w) in _SHELL_NAMES
+                           or any(_is_shell_name(_bn(w))
                                   for _p in _bprogs for w in _lexed_words(_p)) \
                            or any(_launcher_in_any_simple_command(_p)
                                   for _p in _bprogs):
@@ -1628,7 +1642,7 @@ def _piped_shell_producers(pairs):
                         _dtoks = list(_dlex)
                     except ValueError:
                         _dtoks = None
-                    if _dtoks is None or any(_bn(w) in _SHELL_NAMES
+                    if _dtoks is None or any(_is_shell_name(_bn(w))
                                              for w in _stage_words(_dtoks)):
                         last = i
                         kdepth = max(0, kdepth + _group_delta(_words))
@@ -1649,7 +1663,7 @@ def _piped_shell_producers(pairs):
                    or (_starts_with_wrapper(toks)
                        and any(_UNRESOLVED_CW_RE.search(w) for w in _sw)) \
                    or any(_UNRESOLVED_CW_RE.search(p) for p in _progs) \
-                   or any(_bn(w) in _SHELL_NAMES
+                   or any(_is_shell_name(_bn(w))
                           for p in _progs for w in _lexed_words(p)) \
                    or any(_launcher_in_any_simple_command(p) for p in _progs):
                     last = i

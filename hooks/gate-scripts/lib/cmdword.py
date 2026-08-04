@@ -699,13 +699,18 @@ def _lex(text):
 # (an unlisted or defaulted receiver blocks rather than reads clean) -- narrowing it here
 # would regress a decision the suite already locked in, not fix a bug. KEEP IN STEP WITH
 # marker_check._SHELL_NAMES.
+# `lldb` alongside `gdb`: when installed, LLDB treats piped stdin as debugger commands and
+# its `platform shell` command runs an arbitrary shell command on the current platform
+# (its own built-in help: "Run a shell command on the current platform"). Verified against
+# a real `lldb` binary (`printf 'platform shell touch <marker>\nquit\n' | lldb` executes
+# the marker touch). Raised by Codex on #562. KEEP IN STEP WITH marker_check._SHELL_NAMES.
 _STDIN_SHELLS = _SHELLS | frozenset(("csh", "tcsh", "fish", "yash", "posh", "bosh",
                                      "osh", "oil", "elvish", "xonsh", "nu",
                                      "python", "python2", "python3",
                                      "perl", "ruby", "node",
                                      "tclsh", "wish", "lua", "php",
                                      "awk", "gawk", "mawk", "nawk",
-                                     "sqlite3", "ed", "ex", "psql", "gdb",
+                                     "sqlite3", "ed", "ex", "psql", "gdb", "lldb",
                                      "xargs", "make"))
 
 # VERSION-QUALIFIED spellings of the interpreters above: `/usr/bin/python3.12` is a real
@@ -727,8 +732,84 @@ _STDIN_SHELLS = _SHELLS | frozenset(("csh", "tcsh", "fish", "yash", "posh", "bos
 # UNANCHORED on purpose: the attached-option-bundle check below asks whether a dash-word
 # ENDS WITH an interpreter name (`env -iSpython3.12`), which needs a search rather than a
 # whole-string match. Callers wanting the whole-name question use fullmatch.
+# ATTACHED versions only (`python3.12`, `python3.13t` -- the free-threaded build wears a
+# trailing `t`). This pattern is asked of EVERY WORD in a stage, so it may only accept
+# shapes ordinary data never has: an interpreter name glued to digits is one, a
+# DASH-separated version is not. `lldb-19` and `gdb-14` are real packaged spellings, but
+# `grep lldb-19` is an equally real grep, so they belong to the command-position class
+# tracked in #565 -- the bare names `lldb`/`gdb` are in the exact-name set and unaffected.
+# The numeric requirement is what keeps the rest safe to ask
+# of every word: `python3-report` and `python3-report-final-copy` are ordinary hyphenated
+# data, and matching them read a word `grep` merely searches for as an interpreter.
+#
+# KNOWN RESIDUAL (#565): a MULTIARCH name carries the platform triplet on the versioned
+# name itself (`perl5.36-x86_64-linux-gnu`), which this deliberately does not match. It
+# cannot be admitted here -- the suffix is non-numeric, so any pattern loose enough to
+# accept it also accepts hyphenated data -- and matching it in command position instead
+# means threading a new receiver class through every receiver site in BOTH files (command
+# word, wrapper run, executed operands, substitution bodies, find -exec payloads). That
+# was attempted on #562 and each partial threading was itself a fail-OPEN at the sites not
+# yet reached, so it is tracked as its own change rather than half-landed here.
+# KEEP IN STEP WITH marker_check._VERSIONED_INTERP_RE.
 _VERSIONED_INTERP_RE = re.compile(
-    r"(?:python|perl|ruby|node|tclsh|wish|lua|php)[0-9]+(?:\.[0-9]+)*$")
+    r"(?:python[0-9]+(?:\.[0-9]+)*t?"
+    r"|(?:perl|ruby|node|tclsh|wish|lua|php)[0-9]+(?:\.[0-9]+)*)$")
+
+# The same names for the ATTACHED-bundle question -- does a dash-word END WITH an
+# interpreter (`env -iSpython3.12`) -- which is a SEARCH, not a whole-name match. The
+# dash-separated version is deliberately absent here: `--label=issue-lldb-19` ends with
+# one, and searching for it turned an option's DATA into a receiver. A whole name can
+# afford the dash because nothing precedes it; a suffix search cannot.
+# KEEP IN STEP WITH marker_check._ATTACHED_INTERP_RE.
+_ATTACHED_INTERP_RE = re.compile(
+    r"(?:python[0-9]+(?:\.[0-9]+)*t?"
+    r"|(?:perl|ruby|node|tclsh|wish|lua|php)[0-9]+(?:\.[0-9]+)*)$")
+
+
+
+# `env` under BOTH its spellings: Homebrew installs GNU coreutils with a `g` prefix, so
+# `genv -S` on macOS is the same command with the same re-parsing semantics.
+# KEEP IN STEP WITH the twin.
+_ENV_NAMES = frozenset(("env", "genv"))
+
+
+def _env_names_split_string(w):
+    """Does this `env` option word carry `-S` / `--split-string`, in ANY spelling?
+
+    CONTENTS are deliberately not examined. env RE-PARSES a split-string operand as a
+    fresh argument vector, and that result can be another env option word, to any depth
+    (`-S "-i -S '-iSlldb-19'"`). Every attempt to answer "does the operand name a shell"
+    had to unwrap one more layer than the last -- across attached bundles, separated
+    operands, abbreviated long options, and shell quoting, each of which erases a boundary
+    the next layer needs. So the ANSWER is the presence of the option: `env -S` hands the
+    rest to execvp with this pipe still on stdin, and what it hands over is not
+    reliably knowable from the un-run text. The residual is an over-block on an env -S
+    running something inert, which is the direction this module chooses everywhere else.
+
+    Env's SHORT options are still parsed rather than pattern-matched, because `u` and `C`
+    take the remainder of the word as their OWN operand -- an `S` inside one is data, and
+    matching it read `env -uFOOSlldb-19 grep x`, which merely unsets a variable, as a
+    receiver. Long options may be ABBREVIATED to any unambiguous prefix, attached or
+    separated. KEEP IN STEP WITH the twin.
+    """
+    _name = w.partition("=")[0]
+    if _name.startswith("--") and len(_name) > 2 and "split-string".startswith(_name[2:]):
+        return True
+    if w == "-S":
+        return True
+    if not w.startswith("-") or w.startswith("--"):
+        return False
+    for c in w[1:]:
+        if c == "S":
+            return True
+        if c in ("u", "C"):
+            return False               # the rest is THIS option's operand
+        if c not in ("i", "0", "v"):
+            return False               # not an env option bundle
+    return False
+
+
+
 
 
 def _is_stdin_shell(name):
@@ -1093,8 +1174,28 @@ def _may_read_program_from_stdin(segtext, _depth=0):
     # path above: `env -iSpython3.12` bundles the interpreter into a dash-word, and an
     # exact-suffix test alone answers False for it while `env -iSpython3` answers True.
     if any(w.startswith("-")
-           and (any(w.endswith(n) for n in _STDIN_SHELLS) or _VERSIONED_INTERP_RE.search(w))
+           and (any(w.endswith(n) for n in _STDIN_SHELLS) or _ATTACHED_INTERP_RE.search(w))
            for w in words):
+        return True
+    # ...and the same bundle taken APART, for the spelling neither path above reaches.
+    # `_stage_words` pre-splits a leading `-S<program>` into its own word, so a bare
+    # `-Slldb-19` is already answered -- but not `-iSlldb-19`, where the S sits inside the
+    # bundle; and the suffix search is deliberately dash-free, because an option's own data
+    # ends with `-lldb-19` too (see `_ATTACHED_INTERP_RE`). So pull the split-string operand
+    # out by parsing env's options and ask it the ordinary whole-name question.
+    # KEEP IN STEP WITH marker_check.
+    # The operand is LEXED, not `str.split()`: `env -S` evaluates quoting, so `-iS\'lldb"-19"\'`
+    # runs `lldb-19` while a raw split yields the literal `lldb"-19"` and matches nothing.
+    # Unlexable fails CLOSED, as everywhere else here.
+    # PRESENCE of the name and of the option, each asked of the whole stage -- deliberately
+    # NOT "is env the command word, and is this option its own". That narrowing was tried
+    # and withdrawn: locating env's own option run means knowing which env options take a
+    # SEPARATE operand (`-u FOO`, `-C DIR`, `--argv0 X`), which wrapper preamble precedes it
+    # (`sudo -u root env -S ...` stops at `root`), and how leading redirections shift it --
+    # and each gap in that knowledge is a fail-OPEN, three of which review found in one
+    # pass. What it bought was the contrived over-block below. Cross-product, and accept it.
+    if any(_basename(w) in _ENV_NAMES for w in words) \
+       and any(_env_names_split_string(w) for w in words):
         return True
     # A stage can RUN a shell without naming one in command position: `eval "$A"` resolves to
     # bash at run time, and its command word is `eval`. So the operands this stage EXECUTES
@@ -1115,6 +1216,10 @@ def _may_read_program_from_stdin(segtext, _depth=0):
         # is still unread when `unshare` execs a shell and that shell runs the payload.
         if _launcher_in_any_simple_command(prog):
             return True
+    # No `time` peel here, unlike marker_check: `time` is already in `_RESERVED`, which
+    # `_effective_command_word` skips, so `time source /dev/stdin` resolves to `source`
+    # on its own. The twin needs an explicit peel only because ITS walk must keep seeing
+    # `time` as a write-capable verb for the audit-log check -- see the note there.
     cw = _effective_command_word(toks)
     # `.` and `source` are the two POSIX/bash spellings of the same builtin, and
     # `. /dev/stdin` / `source /dev/stdin` both run the piped text. Both are tested in

@@ -739,6 +739,56 @@ check "source /dev/stdin runs the piped text" block \
     "$(bash_decision "printf 'rm -rf src' | source /dev/stdin")"
 check "the POSIX . spelling does too" block \
     "$(bash_decision "printf 'rm -rf src' | . /dev/stdin")"
+# `time` is a bash RESERVED WORD prefixing a pipeline without changing what runs, and the
+# command-position `.`/`source` test missed the real command word behind it: `A write piped
+# through time source /dev/stdin can bypass the producer scan` (cubic, #562), verified.
+check "a time-prefixed source /dev/stdin still runs the piped text" block \
+    "$(bash_decision "printf 'rm -rf src' | time source /dev/stdin")"
+check "...and the -p spelling of time" block \
+    "$(bash_decision "printf 'rm -rf src' | time -p source /dev/stdin")"
+# The two above go through cmdword, which has always had `time` in `_RESERVED` -- so they
+# pass with or without the marker classifier's own peel. These use the HELPER payload,
+# which only the marker classifier answers, and so actually pin it. The compound form is
+# the one that mattered: a stage keeps its introducer, so the peel has to find `time`
+# where it sits rather than at index 0, or `{ time source ...; }` walks straight past.
+check "...and the marker classifier peels time too" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | time source /dev/stdin")"
+check "...including behind a compound introducer" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | { time source /dev/stdin; }")"
+# bash accepts a REPEATED keyword, and peeling exactly one just promotes the next to
+# command word.
+check "...and a repeated time keyword" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | { time time source /dev/stdin; }")"
+# bash also allows an INTRODUCER between timed pipelines, so peeling reserved words and
+# then times as two sequential passes leaves the second keyword as the command word.
+check "...and one interleaved with a reserved word" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | time ! time source /dev/stdin")"
+# A LEADING REDIRECTION is stepped over on the same walk. This fixes more than `time`:
+# the marker classifier's peel did not skip redirections at all, so the bare form resolved
+# to `>` and read as harmless. cmdword has always skipped them.
+check "a leading redirection does not hide the receiver" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | 2>/dev/null source /dev/stdin")"
+check "...nor does one behind a time keyword in a compound" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | { time 2>/dev/null source /dev/stdin; }")"
+# `/usr/bin/time` is a PROGRAM, not the keyword, and cannot run the `source` builtin at
+# all. The marker classifier's peel now matches `time` EXACTLY and leaves it alone, but
+# cmdword still reaches `source` behind it, because `_effective_command_word` skips
+# `_RESERVED` by BASENAME -- pre-existing, and out of this change's reach: that walk is
+# shared with write-verb detection, where `/usr/bin/time -o <file> true` IS a write.
+# So this over-blocks, documented: the command is inert, and fail-CLOSED is the direction.
+check "/usr/bin/time before source over-blocks (documented)" block \
+    "$(bash_decision "printf 'rm -rf src' | /usr/bin/time source /dev/stdin")"
+# Same over-block, same reason: QUOTING makes the word the external program rather than
+# the keyword, but shlex erases it before the peel sees the token. Both spellings are
+# inert -- the external `time` cannot run the `source` builtin -- so fail-CLOSED is the
+# cheap side of the trade against threading raw-token metadata through the lexer.
+check "a quoted time before source over-blocks too (documented)" block \
+    "$(bash_decision "printf 'rm -rf src' | 'time' source /dev/stdin")"
+# lldb, alongside gdb: when installed, piped stdin is read as debugger commands, and its
+# `platform shell` command runs an arbitrary shell command on the current platform.
+# Raised by Codex on #562, verified against a real lldb binary.
+check "lldb reads piped stdin as debugger commands too" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | lldb")"
 # `.` is tested in COMMAND POSITION only: a bare `.` is an ordinary argument, and matching
 # it as a name anywhere in the stage cost 100 over-blocks for nothing.
 check "a bare . as an argument is not a receiver" allow \
@@ -1164,6 +1214,115 @@ check "...and both halves of the Tcl/Tk pair" block \
     "$(bash_decision "printf 'rm -rf src' | wish8.5")"
 check "...including wearing an attached option bundle" block \
     "$(bash_decision "printf 'rm -rf src' | env -iStclsh8.6")"
+# ATTACHED versions only, because this question is asked of every WORD: an interpreter
+# name glued to digits is a shape ordinary data never has. `python3.13t` is the
+# free-threaded build, a real executable wearing a trailing `t`.
+check "the free-threaded python spelling is still a receiver" block \
+    "$(bash_decision "printf 'rm -rf src' | python3.13t")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env -iSpython3.13t")"
+# A DASH-separated version is NOT such a shape. `lldb-19` and `gdb-14` are real packaged
+# names, but `grep lldb-19` is an equally real grep -- so they belong to the
+# command-position class tracked in #565. The bare names stay in the exact-name set.
+check "a dash-versioned debugger as an ARGUMENT stays data (#565)" allow \
+    "$(bash_decision "printf 'rm -rf src' | grep lldb-19")"
+check "...likewise gdb" allow \
+    "$(bash_decision "printf 'rm -rf src' | grep gdb-14")"
+check "...while the bare name is still a receiver" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | lldb")"
+check "a hyphenated word grep only searches for is not one" allow \
+    "$(bash_decision "printf 'rm -rf src' | grep python3-report")"
+check "...however many components it carries" allow \
+    "$(bash_decision "printf 'rm -rf src' | grep python3-report-final-copy")"
+check "...nor one riding an attached data option" allow \
+    "$(bash_decision "printf 'rm -rf src' | grep --label=python3-report-final-copy")"
+# The dash-separated version is admitted for a WHOLE NAME only. The attached-bundle check
+# asks whether a dash-word ENDS WITH an interpreter, and that is a search -- so admitting
+# the dash there turned an option's own DATA into a receiver.
+check "an option value that merely ends with one is not a receiver" allow \
+    "$(bash_decision "printf 'rm -rf src' | grep --label=issue-lldb-19")"
+check "...and the marker classifier agrees" allow \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | grep --label=issue-lldb-19")"
+# ...and the dash is debugger-only, because these are the names that ship that way. Opening
+# it to every interpreter read ordinary hyphenated data as a receiver.
+check "a dash-numbered interpreter that ships no such name is data" allow \
+    "$(bash_decision "printf 'rm -rf src' | grep python-3")"
+check "...likewise a dotted one" allow \
+    "$(bash_decision "printf 'rm -rf src' | grep perl-5.38")"
+# The suffix search cannot reach a bundled name that contains a dash, so `-S` -- the letter
+# meaning "the rest is a program" -- gets its operand pulled out and asked directly.
+check "any env -S bundle is a receiver, whatever it wraps" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | env -iSlldb-19")"
+check "...the long spelling too" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | env --split-string=lldb-19")"
+# `env -S` EVALUATES quoting, so the operand is lexed rather than split on whitespace: a
+# raw split leaves the quotes attached and matches nothing.
+check "...and a quoted fragment inside the operand" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | env -iS'lldb\"-19\"'")"
+# GNU long options may be ABBREVIATED to any unambiguous prefix, so matching only the full
+# spelling left every shorter one unread.
+check "...and an abbreviated long option" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | env --split='l\"ld\"b-19'")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env --s=lldb-19")"
+# env RE-PARSES its split-string result as a fresh argument vector, so the result can be
+# another env option word, to any depth -- and each spelling (attached bundle, separated
+# operand, abbreviated long option, shell quoting) erases a boundary the next layer needs.
+# So PRESENCE of the option decides, not its contents: `env -S` hands the rest to execvp
+# with this pipe still on stdin.
+check "a NESTED env -S still reaches the receiver" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | env -S \"-S'-iSlldb'\"")"
+check "...however the operands are separated" block \
+    "$(bash_decision "printf 'platform shell rm -rf src' | env -S \"-i -S '-iSlldb-19'\"")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env -S \"-i -S '-iSlldb-19'\"")"
+# The residual is an over-block: an env -S running something inert answers the same way,
+# because what it hands to execvp is not reliably knowable from the un-run text.
+check "an env -S running something inert over-blocks (documented)" block \
+    "$(bash_decision "printf 'rm -rf src' | env -S 'grep foo'")"
+# Homebrew installs GNU coreutils with a `g` prefix, so `genv` is the same command.
+check "...and genv is the same command" block \
+    "$(bash_decision "printf 'rm -rf src' | genv -S \"-i -S '-iSbash'\"")"
+# The name and the option are each looked for across the WHOLE stage, so a stage that
+# merely mentions both over-blocks. Narrowing it to "env in command position, carrying its
+# own option" was tried and withdrawn: it needs env's separate-operand options (`-u FOO`),
+# the wrapper preamble (`sudo -u root env -S ...`), and leading redirections all resolved
+# correctly, and each gap is a fail-OPEN -- review found three in one pass. Documented.
+check "a stage merely NAMING env over-blocks (documented)" block \
+    "$(bash_decision "printf 'rm -rf src' | echo env -Sfoo")"
+check "...as does one carrying a -S shape in another option's value" block \
+    "$(bash_decision "printf 'rm -rf src' | env --chdir=-Sfoo grep x")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | genv -S \"-i -S '-iSbash'\"")"
+# `--label` is not a prefix of `split-string`, so the env parser leaves it alone; and the
+# dash-versioned name is no longer matched any-word, so this is plain data now. The
+# over-block on an option value naming a KNOWN interpreter is separate and PRE-EXISTING --
+# `_stage_words` splits an attached value into its own word without asking who runs it, so
+# `--label=bash` has always answered block.
+check "an option value naming a dash-versioned debugger is data (#565)" allow \
+    "$(bash_decision "printf 'rm -rf src' | grep --label=lldb-19")"
+check "...while a known interpreter name there over-blocks (documented)" block \
+    "$(bash_decision "printf 'rm -rf src' | grep --label=bash")"
+check "...and the marker classifier agrees" block \
+    "$(bash_decision "printf 'python3 hooks/gate-scripts/lib/lease_slot.py x' | env -iSlldb-19")"
+# env's short options are PARSED, not pattern-matched: `u` and `C` take the rest of the
+# word as their OWN operand, so an `S` inside one is data. And a word that merely LOOKS
+# like an env bundle is not one unless env is what runs.
+check "an S inside another env option's operand is data" allow \
+    "$(bash_decision "printf 'rm -rf src' | env -uFOOSlldb-19 grep x")"
+# A bundle-shaped word over-blocks whatever the command is, because `_stage_words` yields
+# a split-string payload as its own word without asking who runs it. PRE-EXISTING and
+# unchanged here -- `echo -Sbash` and `echo -Spython3` answer the same way on names this
+# file has always known, so this is the established fail-CLOSED reading, not a new one.
+check "a bundle-shaped word over-blocks whatever runs it (documented)" block \
+    "$(bash_decision "printf 'rm -rf src' | echo -Sbash")"
+# KNOWN RESIDUAL (#565), pinned so the gap is visible rather than assumed closed: a
+# MULTIARCH name carries the platform triplet on the versioned name itself. Its suffix is
+# non-numeric, so no any-word pattern can admit it without also admitting the data above,
+# and command-position matching means threading a new receiver class through every
+# receiver site in both classifiers -- tracked as its own change.
+check "a multiarch interpreter name is a documented MISS (#565)" allow \
+    "$(bash_decision "printf 'rm -rf src' | perl5.36-x86_64-linux-gnu")"
 # `source` is the bash spelling of `.`, and like `.` it means something only in COMMAND
 # position: as any-word it flipped `grep source`, where the word is a PATTERN.
 check "source names a command only in command position" allow \

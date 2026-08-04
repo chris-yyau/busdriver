@@ -291,6 +291,85 @@ def _peel_wrappers(words):
     return None
 
 
+def _strip_time_prefix(words):
+    """Peel a leading bare `time [-p]` keyword, for callers asking only what a stage
+    ACTUALLY RUNS.
+
+    `time` is a bash RESERVED WORD prefixing a pipeline without changing what executes --
+    `time source /dev/stdin` still runs `source`, and `_peel_wrappers` did not see past it
+    because `time` returned unpeeled: `A write piped through time source /dev/stdin can
+    bypass the producer scan` (cubic, #562), verified -- the command-position `.`/`source`
+    test below asked of the unpeeled word "time", never reaching "source".
+
+    NOT folded into `_WRAPPER_CMDS`/`_RESERVED_SH` themselves: `_peel_wrappers` is also
+    the walk that finds `time`'s OWN command word for the audit-log-overwrite check
+    (`_INDIRECT_CMDS` treats `time -o <log> true` as a VERB precisely because `time` can
+    write a file itself -- see the comment above `_INDIRECT_CMDS`), and skipping `time`
+    there would hide that write. This peel is scoped to the stdin-producer callers that do
+    not share that concern.
+
+    NOT index 0 only. A compound stage keeps its introducer, and `_peel_wrappers` skips
+    `_RESERVED_SH` on its way in -- so `{ time source /dev/stdin; }` left the peel looking
+    at `{`, finding no `time`, and the peel it was supposed to perform never happened:
+    `_peel_wrappers` then skipped `{`, stopped at `time`, and the command-position test
+    asked of `time` instead of `source`. A fail-OPEN, and the introducer set is large
+    (`{`, `if`, `while`, `until`, ...). Walk the same leading tokens `_peel_wrappers`
+    does, and remove `time` wherever it actually sits.
+
+    No cmdword twin: `time` is already a member of `cmdword._RESERVED`, which its
+    `_effective_command_word` skips, so the sibling resolves `time source /dev/stdin` to
+    `source` without a peel. The asymmetry is the audit-log concern above, not an
+    oversight -- do not "restore" a peel there.
+
+    EXACT `time`, not its basename: `/usr/bin/time` is a PROGRAM, not the keyword, and it
+    cannot run the `source` builtin at all -- peeling it read a harmless producer as a
+    receiver. And peeled in a LOOP: bash accepts `time time source /dev/stdin`, where
+    removing one keyword just promotes the next to command word.
+
+    RESIDUAL, an OVER-block: `'time' source /dev/stdin` and `\\time source /dev/stdin`
+    quote the word, which makes it the external program rather than the keyword -- but
+    shlex has already erased the quoting by the time these tokens arrive, so both peel and
+    read as receivers. Telling them apart needs raw-token quoting metadata threaded
+    through the lexer, for a pair of commands that are INERT either way (the external
+    `time` cannot run the `source` builtin). Fail-CLOSED on an inert spelling is the cheap
+    side of that trade, and it is the same answer `/usr/bin/time source` already gets.
+    """
+    rest, i = list(words), 0
+    # ONE walk, not "reserved words, then times": bash allows an introducer BETWEEN timed
+    # pipelines (`time ! time source ...`, `time { time source ...; }`), so two sequential
+    # loops peel the first keyword and leave the second as the command word.
+    #
+    # LEADING REDIRECTIONS are dropped on the way, which fixes more than `time`:
+    # `_peel_wrappers` does not step over them, so `2>/dev/null source /dev/stdin` resolved
+    # to `>` and read as harmless -- with or without a `time` in front. cmdword's
+    # `_effective_command_word` has always skipped them (`_REDIR_RE`), so this is the twin
+    # catching up rather than a new rule. Same bare-vs-attached operand rule as
+    # `_starts_with_wrapper`: a bare operator takes the FOLLOWING token as its target.
+    while i < len(rest):
+        if rest[i] == "time":
+            del rest[i]
+            if i < len(rest) and rest[i] == "-p":
+                del rest[i]
+            continue
+        m = _REDIR_PREFIX_RE.match(rest[i])
+        if m:
+            attached = m.group(0) != rest[i]
+            del rest[i]
+            if not attached and i < len(rest):
+                del rest[i]
+            continue
+        if _skippable(rest[i]) or _bn(rest[i]) in _RESERVED_SH:
+            # `_skippable` covers the BARE fd of `2 > /dev/null`, which shlex hands over as
+            # its own token -- without it the walk stopped on the `2` and never reached the
+            # operator. Same two predicates `_starts_with_wrapper` uses, so both walks agree
+            # on what a command PREFIX is. Stepped over, not deleted: they are harmless
+            # where they sit, and `_peel_wrappers` skips them again anyway.
+            i += 1
+            continue
+        break
+    return rest
+
+
 def _first_word(words):
     # The first word in COMMAND position, ignoring leading assignments/flags/numeric
     # wrapper operands. Reserved words are NOT skipped here: callers that care about a
@@ -1180,12 +1259,16 @@ def _shell_variants(text):
 # The last six are not shells, but they read a PROGRAM from stdin exactly as one does --
 # `printf <program> | python3` runs it -- and this list answers only that question.
 # KEEP IN STEP WITH cmdword._STDIN_SHELLS.
+# `lldb` alongside `gdb`: when installed, LLDB treats piped stdin as debugger commands and
+# its `platform shell` command runs an arbitrary shell command on the current platform
+# (its own built-in help: "Run a shell command on the current platform"). Verified against
+# a real `lldb` binary. Raised by Codex on #562. KEEP IN STEP WITH cmdword._STDIN_SHELLS.
 _SHELL_NAMES = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "csh", "tcsh", "fish",
                 "yash", "posh", "bosh", "osh", "oil", "elvish", "xonsh", "nu",
                 "python", "python2", "python3", "perl", "ruby", "node",
                 "tclsh", "wish", "lua", "php",
                 "awk", "gawk", "mawk", "nawk",
-                "sqlite3", "ed", "ex", "psql", "gdb",
+                "sqlite3", "ed", "ex", "psql", "gdb", "lldb",
                 "xargs", "make")
 # `source` is deliberately ABSENT, unlike the rest of this set. It is handled in COMMAND
 # POSITION ONLY, alongside `.` below -- an any-word match here cost a real over-block
@@ -1211,9 +1294,77 @@ _SHELL_NAMES = ("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "csh", "tcsh"
 # spellings in practice (python/perl/ruby/node/lua/php/tclsh/wish) -- `wish` ships beside
 # `tclsh` from the same Tcl/Tk package and is version-qualified the same way
 # (`/usr/bin/wish8.5`), so omitting it left exactly the bypass its sibling closes.
+# ATTACHED versions only (`python3.12`, `python3.13t` -- the free-threaded build wears a
+# trailing `t`). This pattern is asked of EVERY WORD in a stage, so it may only accept
+# shapes ordinary data never has: an interpreter name glued to digits is one, a
+# DASH-separated version is not. `lldb-19` and `gdb-14` are real packaged spellings, but
+# `grep lldb-19` is an equally real grep, so they belong to the command-position class
+# tracked in #565 -- the bare names `lldb`/`gdb` are in the exact-name set and unaffected.
+# The numeric requirement is what keeps the rest safe to ask
+# of every word: `python3-report` is ordinary hyphenated data, and matching it read a word
+# `grep` merely searches for as an interpreter.
+#
+# KNOWN RESIDUAL (#565): a MULTIARCH name carries the platform triplet on the versioned
+# name itself (`perl5.36-x86_64-linux-gnu`), which this deliberately does not match -- see
+# the fuller note on cmdword._VERSIONED_INTERP_RE.
 # KEEP IN STEP WITH cmdword._VERSIONED_INTERP_RE / cmdword._is_stdin_shell.
 _VERSIONED_INTERP_RE = re.compile(
-    r"(?:python|perl|ruby|node|tclsh|wish|lua|php)[0-9]+(?:\.[0-9]+)*$")
+    r"(?:python[0-9]+(?:\.[0-9]+)*t?"
+    r"|(?:perl|ruby|node|tclsh|wish|lua|php)[0-9]+(?:\.[0-9]+)*)$")
+
+# The same names for the ATTACHED-bundle question -- does a dash-word END WITH an
+# interpreter (`env -iSpython3.12`) -- which is a SEARCH, not a whole-name match. The
+# dash-separated version is deliberately absent here: `--label=issue-lldb-19` ends with
+# one, and searching for it turned an option's DATA into a receiver.
+# KEEP IN STEP WITH cmdword._ATTACHED_INTERP_RE.
+_ATTACHED_INTERP_RE = re.compile(
+    r"(?:python[0-9]+(?:\.[0-9]+)*t?"
+    r"|(?:perl|ruby|node|tclsh|wish|lua|php)[0-9]+(?:\.[0-9]+)*)$")
+
+
+# `env` under BOTH its spellings: Homebrew installs GNU coreutils with a `g` prefix, so
+# `genv -S` on macOS is the same command with the same re-parsing semantics.
+# KEEP IN STEP WITH the twin.
+_ENV_NAMES = frozenset(("env", "genv"))
+
+
+def _env_names_split_string(w):
+    """Does this `env` option word carry `-S` / `--split-string`, in ANY spelling?
+
+    CONTENTS are deliberately not examined. env RE-PARSES a split-string operand as a
+    fresh argument vector, and that result can be another env option word, to any depth
+    (`-S "-i -S '-iSlldb-19'"`). Every attempt to answer "does the operand name a shell"
+    had to unwrap one more layer than the last -- across attached bundles, separated
+    operands, abbreviated long options, and shell quoting, each of which erases a boundary
+    the next layer needs. So the ANSWER is the presence of the option: `env -S` hands the
+    rest to execvp with this pipe still on stdin, and what it hands over is not
+    reliably knowable from the un-run text. The residual is an over-block on an env -S
+    running something inert, which is the direction this module chooses everywhere else.
+
+    Env's SHORT options are still parsed rather than pattern-matched, because `u` and `C`
+    take the remainder of the word as their OWN operand -- an `S` inside one is data, and
+    matching it read `env -uFOOSlldb-19 grep x`, which merely unsets a variable, as a
+    receiver. Long options may be ABBREVIATED to any unambiguous prefix, attached or
+    separated. KEEP IN STEP WITH the twin.
+    """
+    _name = w.partition("=")[0]
+    if _name.startswith("--") and len(_name) > 2 and "split-string".startswith(_name[2:]):
+        return True
+    if w == "-S":
+        return True
+    if not w.startswith("-") or w.startswith("--"):
+        return False
+    for c in w[1:]:
+        if c == "S":
+            return True
+        if c in ("u", "C"):
+            return False               # the rest is THIS option's operand
+        if c not in ("i", "0", "v"):
+            return False               # not an env option bundle
+    return False
+
+
+
 
 
 def _is_shell_name(name):
@@ -1530,8 +1681,10 @@ def _piped_shell_producers(pairs):
             if _helper_budget[0] < 0:
                 break
             if toks is None or any(_is_shell_name(_bn(w)) for w in _sw) \
-               or any(w.startswith("-") and (any(w.endswith(n) for n in _SHELL_NAMES) or _VERSIONED_INTERP_RE.search(w))
-                      for w in _sw):
+               or any(w.startswith("-") and (any(w.endswith(n) for n in _SHELL_NAMES) or _ATTACHED_INTERP_RE.search(w))
+                      for w in _sw) \
+               or (any(_bn(w) in _ENV_NAMES for w in _sw)
+                   and any(_env_names_split_string(w) for w in _sw)):
                 last = i
             else:
                 # A stage can RUN a shell without ever NAMING one in command position:
@@ -1541,7 +1694,7 @@ def _piped_shell_producers(pairs):
                 # same two questions the stage itself was. KEEP IN STEP WITH
                 # cmdword._may_read_program_from_stdin, whose _executed_operands loop
                 # this mirrors -- the gate lacking it was a live fail-OPEN.
-                cw = _peel_wrappers(toks)
+                cw = _peel_wrappers(_strip_time_prefix(toks))
                 # `.` and `source` are the two POSIX/bash spellings of the same builtin, and
                 # `. /dev/stdin` / `source /dev/stdin` both run the piped text. Command
                 # position ONLY: a bare `.` is an ordinary argument (`find . -name x`) and a
@@ -1594,7 +1747,7 @@ def _piped_shell_producers(pairs):
                         except ValueError:
                             _bt = None
                         _bw = [] if _bt is None else list(_stage_words(_bt))
-                        _bcw = None if _bt is None else _peel_wrappers(_bt)
+                        _bcw = None if _bt is None else _peel_wrappers(_strip_time_prefix(_bt))
                         # The LAUNCHER question belongs here too: `$(unshare)` runs inside
                         # the pipeline, so it inherits the stdin the outer `echo` never
                         # reads and the payload reaches the shell it execs. Asking only

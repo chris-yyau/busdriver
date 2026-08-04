@@ -1,3 +1,10 @@
+## [1.100.14](https://github.com/chris-yyau/busdriver/compare/v1.100.13...v1.100.14) (2026-08-02)
+
+
+### Bug Fixes
+
+* **blueprint-review:** raise k3 witness budget clamp 600s to 1800s ([#559](https://github.com/chris-yyau/busdriver/issues/559)) ([c01726b](https://github.com/chris-yyau/busdriver/commit/c01726b2c73c6eff162a1133da31496d164b2fb6)), closes [#325](https://github.com/chris-yyau/busdriver/issues/325) [#547](https://github.com/chris-yyau/busdriver/issues/547) [#547](https://github.com/chris-yyau/busdriver/issues/547) [#506](https://github.com/chris-yyau/busdriver/issues/506) [#547](https://github.com/chris-yyau/busdriver/issues/547) [#506](https://github.com/chris-yyau/busdriver/issues/506)
+
 ## [1.100.13](https://github.com/chris-yyau/busdriver/compare/v1.100.12...v1.100.13) (2026-08-02)
 
 

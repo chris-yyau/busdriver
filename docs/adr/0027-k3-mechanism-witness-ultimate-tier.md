@@ -152,3 +152,85 @@ to `_AUD_TO + 10` ≤ **910s**. Two facts keep this from surprising the operator
   revisit the surface name (internal `auditor` keys are unaffected either way).
 - If the ultimate-council latency ceiling is ever tightened below the oracle
   window, re-check the "no serial addition" argument above.
+
+---
+
+## Revision 2026-08-03 (+08:00) — blueprint clamp raised 600s → 1800s
+
+**Status:** Accepted (amends the "blueprint 600s" decision above; council 900s unchanged)
+
+### Context
+
+The 600s blueprint clamp set by this ADR was chosen as a DoS bound, not a
+capacity estimate. In practice k3 was observed timing out at 600s on real design
+documents, so the reap killed it mid-flight and the round proceeded without the
+Mechanism Witness — reintroducing exactly the "silently timing out" failure this
+ADR raised 300s → 600s to fix, one size class up.
+
+The operator also runs `ultraOracle.timeoutCapSeconds: 1800`, so the two
+auxiliary voices had asymmetric allowances: 30 minutes for the oracle, 10 for k3.
+
+### Decision
+
+Blueprint `BLUEPRINT_AUDITOR_TIMEOUT` default and hard clamp both move to
+**1800s**, matching the operator's configured oracle cap. Council stays at 900s.
+
+### Alternatives considered
+
+- **Leave at 600.** Rejected: it is the status quo that loses the witness on
+  every heavy document, which is the problem this ADR exists to prevent.
+- **Split the ceiling by source** — compiled default 1800, env-supplied override
+  clamped to 600, on the theory that `BLUEPRINT_AUDITOR_TIMEOUT` is
+  repo-injectable (#325 / ADR 0016) and therefore untrusted. **Implemented, then
+  reverted.** It defends the wrong door: a hostile branch does not need the env
+  var, it only needs k3 to be slow, which an adversarial or merely enormous
+  design document achieves on its own. Omitting the variable already reaches the
+  default, so the split could not reduce the worst case — it only added ~15 lines
+  of ceiling-tracking state. Recorded here because the reasoning is not obvious
+  and the idea will otherwise be reinvented.
+- **900s middle ground.** Viable, and preferable on a multi-contributor repo.
+  Not chosen here because there is no evidence k3 reliably fits 900, and a second
+  round of "still timing out" costs more than the extra 15 minutes of ceiling.
+
+### Consequences
+
+- **The DoS bound is genuinely widened, 10 minutes → 30 minutes per round.** Any
+  branch under review can hold the arbitration critical path (Phase 3) for up to
+  1800s by making k3 slow. This is accepted, not mitigated. It is tolerable only
+  because this repo is single-operator: the maintainer alone chooses when the
+  gate runs and on which branch, so the stall is a scheduling cost to the person
+  who opted into it, not a denial of service against other contributors.
+  **On a multi-contributor repo this belongs back at 600.**
+- **Requires operator harness budget.** `BASH_MAX_TIMEOUT_MS` must exceed the
+  serial worst case, which is a formula rather than a constant:
+  `attach_preflight + max(reviewers(≤1200) + this reap's marginal add +
+  droid rescue(≤1200), ultraOracle.timeoutCapSeconds + 90)`. At the shipped
+  oracle cap the left term binds (~3010s); at the documented 3600 ceiling the
+  right term binds (3690s). Set to 3600000 for this operator's
+  `timeoutCapSeconds: 1800`.
+- **`attach_preflight` sits outside both terms** (raised independently by cubic
+  and Codex on #559). In oracle attach mode with a cold Chrome,
+  `ultra_oracle_consult` runs `scripts/ultra-oracle-attach-preflight.sh`
+  synchronously, and `ULTRA_ORACLE_DEADLINE` is anchored only *after* dispatch
+  returns — so that time elapses before the oracle's own budget starts counting
+  and neither term accounts for it. Bounded (`LAUNCH_WAIT_SECONDS=15` plus Chrome
+  teardown, so ~20-30s) and zero when Chrome is warm or attach mode is off, but it
+  is real headroom the earlier revision of this formula silently omitted.
+- The reap does **not** add a full 1800s to a round: `AUDITOR_DEADLINE` is
+  anchored at dispatch (#506), T0 alongside the reviewers, so it adds only ~610s
+  past a worst-case reviewer wait. Deriving the budget as
+  `reviewers + 1800 + rescue` over-provisions by ~20 minutes.
+- `tests/test-auditor-grace-budget.sh` moves with it. Its Layer-2 extractor is
+  anchored on the clamp line, so leaving the test untouched would have made it
+  silently extract nothing rather than fail — boundaries are now 1800/1801, 600
+  is retained as an in-range case, and the overflow assertion checks an exact
+  ceiling instead of a `1..max` range that would have accepted any in-range
+  garbage.
+
+### Revisit trigger
+
+- **A second approval-capable contributor is added to this repo** — the
+  single-operator premise is the whole justification; lower to 600 or 900.
+- k3 becomes fast enough that 900s consistently completes, or slow enough that
+  1800s also times out (in which case the answer is checkpointing per #547, not
+  a larger number).

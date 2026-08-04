@@ -811,32 +811,81 @@ with open(pending, "w") as f:
   # bound the post-reviewer reap waits for (see the reap below). Sanitize: it is
   # arithmetic input for the reap's `+10` margin, and a non-numeric env value
   # (repo-injectable via settings.json) would otherwise break `$(( ))`.
-  # DEFAULT AND CLAMP 600s (2x the old 300s). NOT 3600s like the council Mechanism
-  # Witness: in blueprint this reap sits ON THE CRITICAL PATH before the arbiter
-  # (Phase 3), so a slow k3 could starve arbitration under the Bash-tool cap the
-  # loop runs beneath. And BLUEPRINT_AUDITOR_TIMEOUT is repo-injectable (a fork's
-  # settings.json `env`, #325), so the clamp is HARD 600 — a higher ceiling would
-  # let a hostile branch delay every always-on blueprint arbitration by up to an
-  # hour. 600s is a generous, bounded pass for a slow k3. See ADR 0027 + the
-  # run-command timeout note in SKILL.md.
-  _AUD_TIMEOUT="${BLUEPRINT_AUDITOR_TIMEOUT:-600}"
-  case "$_AUD_TIMEOUT" in ''|*[!0-9]*) _AUD_TIMEOUT=600 ;; esac       # non-numeric → default
-  # Strip leading zeros so a zero-padded value (0000600 → 600) is measured by
+  # DEFAULT AND CLAMP 1800s. This WIDENS the 600s DoS bound ADR 0027 accepted,
+  # deliberately and on the record — see the 2026-08-03 revision in
+  # docs/adr/0027-k3-mechanism-witness-ultimate-tier.md.
+  #
+  # Be precise about what that bound protects, because it is easy to defend the
+  # wrong door. The threat is NOT "a branch injects a large
+  # BLUEPRINT_AUDITOR_TIMEOUT" — a branch does not need the env var at all. It
+  # only needs k3 to be SLOW, which an adversarial or merely enormous design doc
+  # achieves on its own, and then the DEFAULT is what grants the stall. A
+  # source-aware ceiling that clamps env-supplied values tighter than the
+  # compiled default was tried here and removed: it cannot reduce the worst case,
+  # because omitting the variable already reaches it.
+  # So the honest statement is the simple one: this reap sits ON THE CRITICAL
+  # PATH before the arbiter (Phase 3), and ANY branch under review can hold it
+  # for up to this many seconds per round. 1800 accepts a 30-minute worst case
+  # where ADR 0027 accepted 10, because k3 was observed timing out at 600 on real
+  # design docs and the auxiliary lens was lost on every such round. Accepted for
+  # a single-operator repo where the maintainer alone chooses when to run the
+  # gate and on which branch; on a multi-contributor repo this belongs at 600.
+  # Sizing vs the council Mechanism Witness: council clamps at 900s
+  # (skills/council/SKILL.md `COUNCIL_AUDITOR_TIMEOUT`), so at 1800 this is now
+  # 2x council, INVERTING the original relationship — blueprint used to be the
+  # SMALLER of the two precisely because this reap is on the arbiter's critical
+  # path while council's witness runs concurrently with the oracle and adds no
+  # serial time. (An earlier version of this comment claimed council was 3600s;
+  # that was wrong — 3600 is the ultra-oracle's `timeoutCapSeconds` ceiling, a
+  # different budget entirely.) The inversion is deliberate, not harmonization:
+  # k3 needs the time here and council does not have the evidence to justify it.
+  #
+  # HARNESS BUDGET: the operator's BASH_MAX_TIMEOUT_MS must exceed the serial
+  # worst case, which is a FORMULA, not a fixed number — it moves with the
+  # oracle's configured cap:
+  #     attach_preflight + max( reviewers(≤1200) + this reap's marginal add
+  #                             + droid rescue(≤1200),
+  #                             ultraOracle.timeoutCapSeconds + 90 )
+  # attach_preflight is NOT inside either term. In oracle ATTACH mode with a cold
+  # Chrome, ultra_oracle_consult runs scripts/ultra-oracle-attach-preflight.sh
+  # SYNCHRONOUSLY, and ULTRA_ORACLE_DEADLINE is only anchored AFTER dispatch
+  # returns — so the preflight elapses before the oracle's own budget starts
+  # counting and is invisible to both terms. Bounded but non-zero: the launch wait
+  # is LAUNCH_WAIT_SECONDS=15 plus Chrome teardown, so budget ~20-30s. Zero when
+  # Chrome is already warm or attach mode is off.
+  # At the shipped oracle cap the left term binds (~3010s ⇒ ~3.0e6 ms); at the
+  # documented oracle ceiling of 3600 the RIGHT term binds instead (3690s ⇒
+  # ~3.7e6 ms). Size the harness budget from whichever term is larger for YOUR
+  # `ultraOracle.timeoutCapSeconds`, not from a remembered constant.
+  # This reap does NOT stack a full 1800 on top of the reviewers: AUDITOR_DEADLINE
+  # is anchored at DISPATCH (#506, set below), T0 alongside the reviewers, so it
+  # adds only ~610s past a worst-case reviewer wait. Do not re-derive it as
+  # reviewers+1800+rescue — that over-provisions by ~20 minutes.
+  # If the budget is too small the loop does not necessarily die outright: ADR
+  # 0030 treats the Bash cap as a foreground-wait boundary and the harness may
+  # background an overlong call. Do not rely on that — #547 records a backgrounded
+  # round being killed with a 0-byte output, losing three completed reviewer
+  # artifacts, because nothing checkpoints them.
+  # See SKILL.md's run-command timeout note, #547, ADR 0027, and ADR 0030.
+  _AUD_TIMEOUT="${BLUEPRINT_AUDITOR_TIMEOUT:-1800}"
+  case "$_AUD_TIMEOUT" in ''|*[!0-9]*) _AUD_TIMEOUT=1800 ;; esac      # non-numeric → default
+  # Strip leading zeros so a zero-padded value (0001800 → 1800) is measured by
   # its SIGNIFICANT digits, then cap the length BEFORE `$((10#…))` so an
   # oversized digit string can never reach the arithmetic (where it would wrap
   # 64-bit to some in-range garbage the clamp can't distinguish). Max legal is
-  # 600 (3 digits); ≥8 significant digits (>9,999,999) is well past it AND the
+  # 1800 (4 digits); ≥8 significant digits (>9,999,999) is well past it AND the
   # 64-bit danger zone → clamp to the max before the arithmetic.
   _AUD_TIMEOUT="${_AUD_TIMEOUT#"${_AUD_TIMEOUT%%[!0]*}"}"
   [[ -z "$_AUD_TIMEOUT" ]] && _AUD_TIMEOUT=0                          # all-zeros → 0 (→ default below)
-  [[ "${#_AUD_TIMEOUT}" -ge 8 ]] && _AUD_TIMEOUT=600                  # >7 sig digits → clamp to max
+  [[ "${#_AUD_TIMEOUT}" -ge 8 ]] && _AUD_TIMEOUT=1800                 # >7 sig digits → clamp to max
   _AUD_TIMEOUT=$((10#$_AUD_TIMEOUT))                                  # base-10 on a ≤7-digit value: never octal, never overflow
   # CLAMP — this value gates the reap below, so an unbounded (repo-injectable)
-  # BLUEPRINT_AUDITOR_TIMEOUT is a DoS: 9999999 would stall arbitration for
-  # ~115 days. Hard 600s ceiling: generous for a slow k3, fits the loop's blocking
-  # window, and not repo-raisable past the safe bound.
-  [[ "$_AUD_TIMEOUT" -lt 1 ]] && _AUD_TIMEOUT=600
-  [[ "$_AUD_TIMEOUT" -gt 600 ]] && _AUD_TIMEOUT=600
+  # BLUEPRINT_AUDITOR_TIMEOUT is still a DoS multiplier: 9999999 would stall
+  # arbitration for ~115 days. The clamp bounds the env vector at the same 1800
+  # the default already allows, so the override grants no time a branch could not
+  # get by simply omitting it — see the threat note above.
+  [[ "$_AUD_TIMEOUT" -lt 1 ]] && _AUD_TIMEOUT=1800
+  [[ "$_AUD_TIMEOUT" -gt 1800 ]] && _AUD_TIMEOUT=1800
   if [[ "$AUDITOR_CLI" != "none" && "$AUDITOR_CLI" != "builtin" && ! "$AUDITOR_CLI" =~ ^(missing|unsupported): ]]; then
     (
       _aud_raw=$(get_review_file "auditor-raw.txt")

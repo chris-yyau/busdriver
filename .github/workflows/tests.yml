@@ -273,7 +273,14 @@ jobs:
     # observed runtime rather than tuned to the exact measurement, so normal
     # variance (runner contention, a slightly slower suite) doesn't reproduce
     # the same false-failure on the next PR.
-    timeout-minutes: 20
+    #
+    # 20 -> 30 (#562): the per-test ceiling for test-impl-gate-scope-519 went 420s ->
+    # 900s in run-shell-tests.sh (see the note there). The rest of the job measured
+    # ~7m50s around it, so a suite that used its full new budget would land at ~23m and
+    # be hard-canceled at 20 -- trading a per-test timeout for a job timeout, which is
+    # the same false failure wearing a different name. Raised so the per-test budget is
+    # the binding constraint, which is the one that names the suite at fault.
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:

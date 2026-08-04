@@ -127,6 +127,52 @@ jobs:
             exit "$rc"
           fi
 
+      - name: Unmask the classifier's suppressed stderr
+        # THE LIKELY ROOT CAUSE. The gate closes its MARKER_CHECK python with
+        #     ' 2>/dev/null || echo "OK|")
+        # so a non-zero exit becomes `OK|` (ALLOW) and the reason is discarded.
+        # Linux returns `OK|` where macOS returns a real verdict on identical
+        # bytes — the signature of a swallowed crash. Drop ONLY the 2>/dev/null
+        # so the traceback is visible; keep the `|| echo` so control flow is
+        # otherwise unchanged. The patched copy must sit beside the real gate,
+        # which sources lib/resolve-repo-dir.sh relative to its own directory.
+        run: |
+          cat > /tmp/unmask.py <<'PY'
+          import sys
+          src_path, out_path = sys.argv[1], sys.argv[2]
+          src = open(src_path).read()
+
+          # Two layers hide the failure, and BOTH must come off or the traceback
+          # is still lost:
+          #   1. the classifier catches every Exception and prints OK| itself, so
+          #      dropping the shell redirect alone shows nothing;
+          #   2. the shell then discards stderr on that invocation.
+          EDITS = [
+              ('except Exception:\n    print("OK|")',
+               'except Exception:\n'
+               '    import traceback\n'
+               '    traceback.print_exc(file=sys.stderr)\n'
+               '    print("OK|")'),
+              ("' 2>/dev/null || echo \"OK|\")", "' || echo \"OK|\")"),
+          ]
+          for anchor, replacement in EDITS:
+              n = src.count(anchor)
+              if n != 1:
+                  sys.exit("anchor matched %d times, expected 1: %r" % (n, anchor[:40]))
+              src = src.replace(anchor, replacement)
+
+          open(out_path, "w").write(src)
+          print("patched (handler traceback + stderr unmasked)")
+          PY
+          DBG=hooks/gate-scripts/pre-implementation-gate.dbg.sh
+          python3 /tmp/unmask.py hooks/gate-scripts/pre-implementation-gate.sh "$DBG"
+          H='hooks/gate-scripts/lib/lease_'"slot.py"
+          echo "::group::classifier stderr (expect a traceback if it is crashing)"
+          python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","cwd":sys.argv[1],"tool_input":{"command":sys.argv[2]}}))' \
+            "$PWD" "python3 -I $H .claude 20 0 3600" \
+            | bash "$DBG"
+          echo "::endgroup::"
+
       - name: cmdword.py import + classify probe
         # Isolates the library half of the security twin from the shell half.
         # `is_file_mod` is cmdword's ONLY public entry point — probing for any

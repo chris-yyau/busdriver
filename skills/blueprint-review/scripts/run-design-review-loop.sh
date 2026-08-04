@@ -792,7 +792,7 @@ with open(pending, "w") as f:
   # A 4th voice that is deliberately NOT a coverage slot. The gate condition is
   # `coverage_status == FULL AND fulfilled_lens_count == 3`; making this a real
   # slot would raise that to 4/4, so any witness stall would WITHHOLD PASS. The
-  # backing model (opencode-go/kimi-k3) was measured stalling silently on a
+  # backing model (a slow reasoning model by default) was measured stalling silently on a
   # meaningful fraction of generation-heavy prompts, which would convert model
   # flakiness directly into blocked design reviews. Modeled on the UltraOracle
   # witness instead: its verdict reaches the arbiter, it never counts as a lens,
@@ -818,7 +818,7 @@ with open(pending, "w") as f:
   # Be precise about what that bound protects, because it is easy to defend the
   # wrong door. The threat is NOT "a branch injects a large
   # BLUEPRINT_AUDITOR_TIMEOUT" — a branch does not need the env var at all. It
-  # only needs k3 to be SLOW, which an adversarial or merely enormous design doc
+  # only needs the witness to be SLOW, which an adversarial or merely enormous design doc
   # achieves on its own, and then the DEFAULT is what grants the stall. A
   # source-aware ceiling that clamps env-supplied values tighter than the
   # compiled default was tried here and removed: it cannot reduce the worst case,
@@ -826,7 +826,7 @@ with open(pending, "w") as f:
   # So the honest statement is the simple one: this reap sits ON THE CRITICAL
   # PATH before the arbiter (Phase 3), and ANY branch under review can hold it
   # for up to this many seconds per round. 1800 accepts a 30-minute worst case
-  # where ADR 0027 accepted 10, because k3 was observed timing out at 600 on real
+  # where ADR 0027 accepted 10, because the witness was observed timing out at 600 on real
   # design docs and the auxiliary lens was lost on every such round. Accepted for
   # a single-operator repo where the maintainer alone chooses when to run the
   # gate and on which branch; on a multi-contributor repo this belongs at 600.
@@ -838,7 +838,7 @@ with open(pending, "w") as f:
   # serial time. (An earlier version of this comment claimed council was 3600s;
   # that was wrong — 3600 is the ultra-oracle's `timeoutCapSeconds` ceiling, a
   # different budget entirely.) The inversion is deliberate, not harmonization:
-  # k3 needs the time here and council does not have the evidence to justify it.
+  # The witness needs the time here and council does not have the evidence to justify it.
   #
   # HARNESS BUDGET: the operator's BASH_MAX_TIMEOUT_MS must exceed the serial
   # worst case, which is a FORMULA, not a fixed number — it moves with the
@@ -893,7 +893,7 @@ with open(pending, "w") as f:
       # EXPLICIT budget (default 600s, NOT execute_review's 1200s default). This
       # is the witness's own ceiling — the reap below waits for exactly this,
       # not a stingy tail after the reviewers finish, so a slow reasoning model
-      # (opencode-go/kimi-k3) gets its full budget just like the UltraOracle and
+      # (a slow reasoning model by default) gets its full budget just like the UltraOracle and
       # fable witnesses do. execute_review's internal _portable_timeout still
       # hard-stops the process at this cap, so it can never actually run longer.
       execute_review "$AUDITOR_CLI" "$FULL_PROMPT" "$_AUD_TIMEOUT" > "$_aud_raw" 2>&1 || _aud_exit=$?
@@ -916,7 +916,7 @@ with open(pending, "w") as f:
       mv -f "$_aud_tmp" "$AUDITOR_OUTPUT_FILE" 2>/dev/null || rm -f "$_aud_tmp"
     ) &
     AUDITOR_PID=$!
-    # Absolute deadline for the reap below, anchored at DISPATCH (#506). k3 runs
+    # Absolute deadline for the reap below, anchored at DISPATCH (#506). The witness runs
     # CONCURRENTLY with the three reviewers, but `_aud_grace` starts counting only
     # after their `wait`s — so a counter-only bound charges a fresh budget+10 on
     # top of the reviewer window (worst case R + T + 10 on the critical path ahead
@@ -934,7 +934,7 @@ with open(pending, "w") as f:
   wait "$GROK_PID" 2>/dev/null || true
   # BOUNDED reap for the Mechanism Witness. It waits the witness's OWN budget
   # (_AUD_TIMEOUT + a 10s margin — the same shape as the UltraOracle's `cap+10`
-  # poll), NOT a 20s tail after the reviewers finish. k3 is a slow reasoning
+  # poll), NOT a 20s tail after the reviewers finish. The witness is a slow reasoning
   # model; on a real generation-heavy prompt it needs minutes, and the old 20s
   # tail reaped it mid-flight on every run (zero auditor.json ever produced).
   # This still can't stall arbitration unboundedly: execute_review's internal
@@ -1087,7 +1087,7 @@ with open(pending, "w") as f:
   log_info "  Codex:  $CODEX_STATUS ($(jq '.issues | length' "$CODEX_OUTPUT_FILE") issues)"
   log_info "  Grok:   $GROK_STATUS ($(jq '.issues | length' "$GROK_OUTPUT_FILE") issues)"
 
-  # Mechanism Witness (k3) — AUXILIARY, never gates coverage. A one-line status so
+  # Mechanism Witness — AUXILIARY, never gates coverage. A one-line status so
   # the operator can always see whether the claim-vs-mechanism voice actually fired
   # (it was silently invisible before — its output only ever reaches the arbiter's
   # context, never a report section). Derived from auditor.json: ERROR shape means
@@ -1098,17 +1098,17 @@ with open(pending, "w") as f:
     if [[ "$_mw_status" == "ERROR" ]]; then
       _mw_err=$(jq -r '.error // "unknown"' "$AUDITOR_OUTPUT_FILE" 2>/dev/null || echo "unknown")
       case "$_mw_err" in
-        *"not available"*) log_info "  Mechanism Witness (k3): absent — opencode unavailable (no fallback)" ;;
-        *)                 log_info "  Mechanism Witness (k3): FAILED — $_mw_err (auxiliary; review unaffected)" ;;
+        *"not available"*) log_info "  Mechanism Witness: absent — opencode unavailable (no fallback)" ;;
+        *)                 log_info "  Mechanism Witness: FAILED — $_mw_err (auxiliary; review unaffected)" ;;
       esac
     elif [[ "$_mw_status" == "UNREADABLE" ]]; then
-      log_info "  Mechanism Witness (k3): FAILED — auditor.json present but corrupt/unparseable (auxiliary; review unaffected)"
+      log_info "  Mechanism Witness: FAILED — auditor.json present but corrupt/unparseable (auxiliary; review unaffected)"
     else
       _mw_n=$(jq '(.issues // .findings // []) | length' "$AUDITOR_OUTPUT_FILE" 2>/dev/null || echo "?")
-      log_info "  Mechanism Witness (k3): ran ($_mw_n findings — LEADS not verdicts, arbiter verifies)"
+      log_info "  Mechanism Witness: ran ($_mw_n findings — LEADS not verdicts, arbiter verifies)"
     fi
   else
-    log_info "  Mechanism Witness (k3): absent — no output file (not dispatched)"
+    log_info "  Mechanism Witness: absent — no output file (not dispatched)"
   fi
 
   # Coverage provenance: capture which slots actually ran (non-claude-only only)
@@ -1180,8 +1180,8 @@ with open(pending, "w") as f:
   # was answerable only by opening claude-validation-prompt.txt — the exact gap
   # ADR 0027 closed for the Mechanism Witness.
   #
-  # EMPTY MEANS SILENT, and that is the one deliberate divergence from k3's line.
-  # k3 is always-on, so its "absent" carries information. The oracle is a
+  # EMPTY MEANS SILENT, and that is the one deliberate divergence from the witness's line.
+  # The witness is always-on, so its "absent" carries information. The oracle is a
   # default-OFF USER-config opt-in, so a line on every review would be noise for
   # everyone who never enabled it. The surrounding code already draws exactly this
   # boundary (disabled -> silent, enabled-but-unloadable -> warn); this inherits
@@ -1223,7 +1223,7 @@ OPTIONAL ULTRA-ORACLE (ChatGPT Pro) ADVISORY -- AUXILIARY, *NOT* A REVIEWER. The
 =============================================================================
 
 $(cat "$ULTRA_ORACLE_ADVISORY_FILE")"
-      # Size the verdict in LINES, not findings: unlike k3's auditor.json the oracle
+      # Size the verdict in LINES, not findings: unlike the witness's auditor.json the oracle
       # advisory is free prose with no countable schema, so a finding count would be
       # invented.
       #
@@ -1262,7 +1262,7 @@ $(cat "$ULTRA_ORACLE_ADVISORY_FILE")"
       ULTRA_ORACLE_ADVISORY_SECTION="=============================================================================
 WARNING: ULTRA-ORACLE ADVISORY FAILED [$_uora_term]$_uora_suffix -- verdict NOT included (visible best-effort; the gate converges on the THREE reviewers Agy/Codex/Grok).
 ============================================================================="
-      # ABSENT vs FAILED, the distinction ADR 0027 drew for k3: "never ran" must
+      # ABSENT vs FAILED, the distinction ADR 0027 drew for the witness: "never ran" must
       # never be reported as a failure, nor a failure as "nothing found".
       #
       # THREE statuses reach here without the oracle ever having run. The advisory
@@ -1312,10 +1312,10 @@ WARNING: ULTRA-ORACLE ADVISORY enabled but the adapter could not be loaded -- ve
     # No `else` on purpose: surface disabled -> no section AND no status line.
   fi
 
-  # Emit the oracle's one-line status. Unlike the k3 line (Phase 2), this sits in
+  # Emit the oracle's one-line status. Unlike the witness line (Phase 2), this sits in
   # Phase 3 because the oracle's outcome is not known until the advisory section is
   # built. Consequence, documented in SKILL.md: it DOES print on --claude-only
-  # resumes, where the k3 line does not.
+  # resumes, where the witness line does not.
   [ -n "$_uora_status_line" ] && log_info "  $_uora_status_line"
 
   cat > "$CLAUDE_PROMPT_FILE" <<EOF
@@ -1365,7 +1365,7 @@ $(cat "$GROK_OUTPUT_FILE")
 $ULTRA_ORACLE_ADVISORY_SECTION
 
 =============================================================================
-MECHANISM WITNESS (opencode / kimi-k3) -- AUXILIARY, *NOT* A REVIEWER. There are
+MECHANISM WITNESS (opencode) -- AUXILIARY, *NOT* A REVIEWER. There are
 still exactly THREE reviewers (Agy/Codex/Grok); do NOT count this block as a 4th
 lens or as independent agreement. Its lens is claim-vs-mechanism: places where
 the document says one thing and the cited mechanism does another.

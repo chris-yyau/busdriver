@@ -2,7 +2,7 @@
 # shellcheck disable=SC2016  # grep/awk patterns intentionally contain literal $ ( )
 # shellcheck disable=SC2310,SC2312  # test helpers (eq/bp_norm/cn_norm) intentionally use command substitution in assertions; masking return values is by design here
 # tests/test-auditor-grace-budget.sh — guard for the advisory Auditor
-# (opencode/kimi-k3) reap in blueprint-review + council.
+# (opencode) reap in blueprint-review + council.
 #
 # The old code reaped the Auditor a fixed 20s after the fixed voices finished,
 # killing a slow reasoning model mid-flight (zero auditor.json ever produced).

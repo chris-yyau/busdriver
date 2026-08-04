@@ -38,6 +38,11 @@ fi
 if ! type _portable_timeout &>/dev/null; then
   _portable_timeout() { timeout "$@"; }
 fi
+# Ditto for the Auditor model resolver — without the library there is no config
+# reader, so the opencode arm falls back to the same built-in default.
+if ! type resolve_auditor_model &>/dev/null; then
+  resolve_auditor_model() { printf '%s' "zenmux/moonshotai/kimi-k3"; }
+fi
 # Fallback transient-error predicate (resolve-cli.sh owns the canonical one).
 # Reads candidate output from stdin; returns 0 if it looks transient.
 # 5xx is context-qualified (HTTP/status word or reason phrase) so incidental
@@ -508,7 +513,9 @@ dispatch_one() {
                 # SUBSHELL `cd` (not `env -C`, a non-portable GNU extension) pins
                 # the child process CWD to the neutral dir so startup cannot read
                 # cwd-relative files from the reviewed repo. --model honored:
-                # $MODEL (operator --model flag) wins, else kimi-k3. The EXIT/TERM
+                # $MODEL (operator --model flag) wins, else `.auditor.model` from
+                # the USER busdriver.json, else the built-in default (see
+                # resolve_auditor_model in resolve-cli.sh). The EXIT/TERM
                 # trap rm -rf's the neutral dir even on a council grace-period
                 # kill, and handles the case where opencode created files in it
                 # (a bare rmdir would leak a non-empty dir).
@@ -518,7 +525,7 @@ dispatch_one() {
                     env -i HOME="$_oc_home" PATH="$_oc_path" \
                         OPENCODE_CONFIG="$_oc_cfg" XDG_CONFIG_HOME="$_oc_cwd" \
                     "$_oc_bin" run --dir "$_oc_cwd" --agent busdriver-review \
-                    -m "${MODEL:-opencode-go/kimi-k3}" \
+                    -m "${MODEL:-$(HOME="$_oc_home" resolve_auditor_model)}" \
                     < "$PROMPT_FILE" ) > "$outfile" 2>&1 || exit_code=$?
                 rm -rf "$_oc_cwd" 2>/dev/null || true
                 fi

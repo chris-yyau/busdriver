@@ -107,7 +107,15 @@ _read_config_value() {
       jq -r "$jq_query // empty" "$config_path" 2>/dev/null || return 1
       ;;
     python3)
-      python3 -c "
+      # -I (isolated): do NOT prepend the CWD to sys.path, and ignore PYTHONPATH /
+      # PYTHON* env vars. Without it `python3 -c` imports `json` from the CURRENT
+      # DIRECTORY first — which, for every review path, is the REVIEWED CHECKOUT.
+      # A fork committing a `json.py` at its root would execute arbitrary code
+      # inside the reviewer (verified: it prints from the planted module). This
+      # branch reads config that gates external transmission and review routing,
+      # so the interpreter must not import anything the reviewed repo controls.
+      # Safe for this script: it uses stdlib (json/sys/re) only.
+      python3 -I -c "
 import json, sys, re
 
 def parse_jq_path(query):
@@ -178,6 +186,55 @@ _read_user_config_value() {
         val="$(_read_config_value "$user_config" "$jq_path" 2>/dev/null || true)"
     fi
     if [[ -n "$val" && "$val" != "null" ]]; then printf '%s' "$val"; else printf '%s' "$default"; fi
+}
+
+# ── Auditor (opencode / Mechanism Witness) model ────────────────
+# The model id handed to `opencode run -m`. Configurable so the operator can
+# switch provider or model without editing dispatch code:
+#
+#   ~/.claude/busdriver.json  →  { "auditor": { "model": "zenmux/moonshotai/kimi-k3" } }
+#
+# USER config ONLY, and no env override — both by the same rule the rest of this
+# file follows for external-transmission surfaces (#325 / ADR 0016): the value
+# picks WHICH third party the witness prompt is shipped to, and a reviewed fork
+# controls its own project `.claude/busdriver.json` and can inject env via
+# `settings.json`.
+#
+# CALLER CONTRACT — pass a TRUSTED $HOME. "USER config" is only as trustworthy as
+# the path it is read from, and `$HOME` is itself repo-injectable (#325): a fork's
+# settings.json can point it at a directory the fork controls, which would let the
+# reviewed repo choose the model — i.e. choose where its own review is sent. Both
+# dispatch sites therefore call this as `HOME="$_oc_home" resolve_auditor_model`,
+# with `_oc_home` derived from the PASSWORD DATABASE, exactly as the opencode arm
+# already does for the binary lookup. `BUSDRIVER_STATE_DIR` is sanitized here (it
+# is a path segment under that home, so traversal is the risk, not the value).
+#
+# `opencode models` lists valid ids.
+BUSDRIVER_AUDITOR_MODEL_DEFAULT="zenmux/moonshotai/kimi-k3"
+resolve_auditor_model() {
+  local m
+  # PINNED, not sanitized. `BUSDRIVER_STATE_DIR` is repo-injectable (#325), and no
+  # amount of shape-checking makes an injectable value safe: the reviewed checkout
+  # normally lives under the trusted home, so ANY accepted value — `../x`,
+  # `projects/reviewed/.claude`, or a bare `reviewed` for a checkout at
+  # `$HOME/reviewed` — points at a busdriver.json the fork itself commits, and it
+  # then picks the provider its own review is shipped to. Shape rules chase the
+  # spelling; only pinning the location removes the class. Same reasoning that
+  # denies an env override for the opencode config path and binary below.
+  # Consequence: a custom state dir does not move THIS key — `~/.claude` always.
+  local BUSDRIVER_STATE_DIR=".claude"
+  m="$(_read_user_config_value '.auditor.model' "$BUSDRIVER_AUDITOR_MODEL_DEFAULT")"
+  # The value becomes a single argv word after `-m`. No shell eval reaches it, so
+  # the only real hazards are option injection (a leading `-`) and whitespace/
+  # control characters. Require the `provider/model` shape opencode actually uses
+  # (at least one slash, each segment starting alphanumeric); colons are allowed
+  # because some providers tag variants `model:tag`. A bad value degrades to the
+  # default with a loud note rather than killing an AUXILIARY voice on a typo.
+  if [[ ! "$m" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*(/[A-Za-z0-9][A-Za-z0-9._:-]*)+$ ]]; then
+    echo "busdriver: ignoring invalid .auditor.model '$m' in ~/.claude/busdriver.json (expected provider/model) — using ${BUSDRIVER_AUDITOR_MODEL_DEFAULT}" >&2
+    m="$BUSDRIVER_AUDITOR_MODEL_DEFAULT"
+  fi
+  printf '%s' "$m"
 }
 
 # ── Portable timeout wrapper ────────────────────────────────────
@@ -342,7 +399,7 @@ resolve_role_cli() {
   # honor it BEFORE Step 4b's opencode-only legacy default is ever reached —
   # silently swapping the isolated opencode arm for a normal Droid arm (which
   # defaults to `--auto high`, i.e. real write/exec authority) while the
-  # council/blueprint output is still labeled "opencode / kimi-k3". Route the
+  # council/blueprint output is still labeled the read-only opencode Mechanism Witness. Route the
   # normal precedence chain through `_resolve_role_cli_impl` as before, but
   # for the Auditor role ONLY accept its "opencode"/"none"/"builtin" outputs;
   # anything else (a project- or user-config route naming any other CLI) is
@@ -567,7 +624,7 @@ _resolve_role_cli_impl() {
     # case, a repo with no busdriver.json config falls through Step 4b to
     # Step 5's generic auto-detect (codex/agy/droid) instead of "none" —
     # silently bypassing the opencode isolation harness while blueprint's
-    # output is still labeled "opencode / kimi-k3". No droid fallback here
+    # output is still labeled the read-only opencode Mechanism Witness. No droid fallback here
     # (unlike the fixed voices above): a droid Mechanism Witness is explicitly
     # documented as false corroboration for this lens (see skills/council/SKILL.md).
     council.auditor|blueprint-review.auditor)
@@ -1501,8 +1558,13 @@ execute_review() {
     grok)    echo "Note: grok blueprint-review dispatch — safety relies on user-config 'always approve' being DISABLED. See scripts/lib/resolve-cli.sh and skills/dispatch-cli/scripts/dispatch.sh grok-case comments for the full threat model." >&2
              _run_review_with_retries grok "$prompt" "$duration" pipe \
                grok --prompt-file /dev/stdin --max-turns 150 --sandbox readonly ;;
-    # opencode — added 2026-07-20 as the "Auditor" voice (default model
-    # opencode-go/kimi-k3). Re-enabled after 41d31ef0 removed it; that removal
+    # opencode — added 2026-07-20 as the "Auditor" / Mechanism Witness voice. The
+    # MODEL is not part of this arm's contract: it comes from `.auditor.model`
+    # (resolve_auditor_model above), so provider and model can change without
+    # touching the containment below. What the arm guarantees is the SANDBOX; the
+    # external-transmission boundary ADR 0027 gates is the same class whichever
+    # third party the model resolves to.
+    # Re-enabled after 41d31ef0 removed it; that removal
     # cited "never used in this project / install-target sprawl", not safety,
     # and the operator now uses opencode daily.
     #
@@ -1672,13 +1734,19 @@ execute_review() {
              # cwd-relative files (node_modules, local config) before --dir
              # applies. Prompt is piped on stdin (pipe mode), inherited into the
              # subshell; review output on stdout is captured by the caller.
+             # Model resolved AFTER the PATH pin above, so the jq/python3 the
+             # config reader shells out to comes from system dirs only, and with
+             # the PASSWORD-DB home — never the repo-injectable $HOME, which would
+             # let the reviewed repo choose where its own review is transmitted.
+             local _oc_model
+             _oc_model="$(HOME="$_oc_home" resolve_auditor_model)"
              ( trap 'rm -rf "$_oc_cwd" 2>/dev/null' EXIT TERM INT   # best-effort cleanup even on grace-kill
                cd "$_oc_cwd" 2>/dev/null || exit 1
                _run_review_with_retries opencode "$prompt" "$duration" pipe \
                  env -i HOME="$_oc_home" PATH="$_oc_path" \
                    OPENCODE_CONFIG="$_oc_cfg" XDG_CONFIG_HOME="$_oc_cwd" \
                  "$_oc_bin" run --dir "$_oc_cwd" --agent busdriver-review \
-                   -m opencode-go/kimi-k3 )
+                   -m "$_oc_model" )
              local _oc_rc=$?
              rm -rf "$_oc_cwd" 2>/dev/null || true
              return "$_oc_rc" ;;
